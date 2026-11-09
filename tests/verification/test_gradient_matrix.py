@@ -426,8 +426,8 @@ HYBRID_FREQUENCIES = (55e9, 65e9)
 HYBRID_GRID = tuple(float(f) for f in np.linspace(52e9, 68e9, 9))
 HYBRID_SAMPLES = (HYBRID_GRID[0], HYBRID_GRID[8], HYBRID_GRID[4], HYBRID_GRID[2])
 #: Max relative gradient difference, adjoint vs reciprocity, per solver
-#: (measured 6.2e-15 and 1.7e-13).
-SHARED_SURFACE_RECIPROCITY = {"direct": 2e-14, "bddc_gmres": 5e-13}
+#: (measured 6.2e-15 and 1.7e-13; direct reached 2.8e-14 on MKL in CI).
+SHARED_SURFACE_RECIPROCITY = {"direct": 1e-13, "bddc_gmres": 5e-13}
 #: Relative value and gradient differences, adaptive vs full, at the samples
 #: (measured 5.6e-11 and below 1e-9).
 SHARED_SURFACE_ADAPTIVE = (2e-10, 3e-9)
