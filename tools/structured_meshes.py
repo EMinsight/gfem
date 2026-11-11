@@ -394,3 +394,149 @@ def periodic_cell(
         edges, split, named, mirror=mirror
     )
     return nodes, tets, [n.split("\0")[0] for n in tet_names], tris, tri_names
+
+
+_DROPPED = "\0dropped"
+
+
+def carve(
+    edges: tuple[np.ndarray, np.ndarray, np.ndarray],
+    volume: Callable[[np.ndarray], str | None],
+    surface: Classify,
+    mapping: Callable[[np.ndarray], np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, list[str]]:
+    """`structured`, with the cells ``volume`` names `None` removed.
+
+    The faces between a kept and a removed tetrahedron are boundary faces
+    offered to ``surface``; triangles that touch no kept tetrahedron and
+    nodes no kept tetrahedron uses are dropped, and the nodes renumbered.
+    """
+    nodes, tets, names, tris, tri_names = structured(
+        edges, lambda c: volume(c) or _DROPPED, surface, mapping
+    )
+    keep = np.array([n != _DROPPED for n in names])
+    tets = tets[keep]
+    names = [n for n, k in zip(names, keep, strict=True) if k]
+    faces = np.sort(tets[:, [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]]], axis=2)
+    faces = np.unique(faces.reshape(-1, 3), axis=0)
+    n = len(nodes)
+
+    def key(f: np.ndarray) -> np.ndarray:
+        f = f.astype(np.int64)
+        return (f[:, 0] * n + f[:, 1]) * n + f[:, 2]
+
+    on_kept = np.isin(key(np.sort(tris, axis=1)), key(faces))
+    tris = tris[on_kept]
+    tri_names = [t for t, k in zip(tri_names, on_kept, strict=True) if k]
+    used = np.unique(tets)
+    renumber = np.full(n, -1)
+    renumber[used] = np.arange(len(used))
+    return nodes[used], renumber[tets], names, renumber[tris], tri_names
+
+
+def _graded(lo: float, hi: float, corner: float, n: int, grade: float) -> np.ndarray:
+    """Grid lines on [lo, hi], ``n`` cells per unit length, a node at ``corner``.
+
+    ``grade`` > 1 packs them towards ``corner`` as (k / m) ** grade.
+    """
+    parts = [np.array([corner])]
+    for end in (lo, hi):
+        length = abs(end - corner)
+        if length == 0:
+            continue
+        m = max(1, round(length * n))
+        parts.append(
+            corner + np.sign(end - corner) * length * (np.arange(1, m + 1) / m) ** grade
+        )
+    x = np.unique(np.concatenate(parts))
+    x[0], x[-1] = lo, hi
+    return x
+
+
+def square_coax_quarter(n: int, *, grade: float = 1.0):
+    """A quarter of a square coax: an L-shaped section with a 270 degree corner.
+
+    Inner conductor of half-side 1, outer of half-side 2, extruded by 0.5 (one
+    cell): the section [0, 2]^2 minus [0, 1]^2, whose re-entrant corner is the
+    inner conductor's corner (1, 1). ``n`` cells per unit length in x and y;
+    ``grade`` > 1 packs them towards the corner.
+
+    Volume "dielectric". Surfaces "inner", "outer", "ends" (z = 0 and 0.5) and
+    "symmetry" (x = 0 and y = 0).
+    """
+    a, b, t, tol = 1.0, 2.0, 0.5, 1e-9
+    xy = _graded(0, b, a, n, grade)
+    edges = (xy, xy.copy(), np.array([0.0, t]))
+
+    def volume(c):
+        return None if c[0] < a and c[1] < a else "dielectric"
+
+    def surface(c):
+        x, y, z = c
+        if abs(x - b) < tol or abs(y - b) < tol:
+            return "outer"
+        if (abs(x - a) < tol and y < a + tol) or (abs(y - a) < tol and x < a + tol):
+            return "inner"
+        if abs(z) < tol or abs(z - t) < tol:
+            return "ends"
+        return "symmetry"
+
+    return carve(edges, volume, surface)
+
+
+def step_line(n: int, *, grade: float = 1.0):
+    """A parallel-plate line along x whose top plate steps down halfway.
+
+    Length 10, width 2 (one y cell), height 1; for x > 5 the top plate is at
+    z = 0.5, so the step's lower edge is a 270 degree re-entrant edge along y at
+    (5, 0.5). ``n`` cells per unit length in x and z; ``grade`` > 1 packs them
+    towards the edge.
+
+    Volume "dielectric". Surfaces "bottom" (z = 0), "top" (the stepped plate),
+    "port1" (x = 0, full height), "port2" (x = 10, half height) and "side"
+    (the y walls).
+    """
+    length, width, height, tol = 10.0, 2.0, 1.0, 1e-9
+    edges = (
+        _graded(0, length, length / 2, n, grade),
+        np.array([0.0, width]),
+        _graded(0, height, height / 2, n, grade),
+    )
+
+    def volume(c):
+        return None if c[0] > length / 2 and c[2] > height / 2 else "dielectric"
+
+    def surface(c):
+        x, _, z = c
+        if abs(x) < tol:
+            return "port1"
+        if abs(x - length) < tol:
+            return "port2"
+        if abs(z) < tol:
+            return "bottom"
+        if (
+            abs(z - height) < tol
+            or (abs(x - length / 2) < tol and z > height / 2 - tol)
+            or (abs(z - height / 2) < tol and x > length / 2 - tol)
+        ):
+            return "top"
+        return "side"
+
+    return carve(edges, volume, surface)
+
+
+def l_cavity(n: int, *, grade: float = 1.0):
+    """A cavity of L-shaped section: [-1, 1]^2 minus [0, 1] x [-1, 0], height 0.5.
+
+    The re-entrant corner is at the origin. ``n`` cells per unit length in x
+    and y, one cell in z; ``grade`` > 1 packs them towards the corner.
+
+    Volume "air". Surface "wall" (the whole boundary).
+    """
+    xy = _graded(-1, 1, 0, n, grade)
+    edges = (xy, xy.copy(), np.array([0.0, 0.5]))
+
+    def volume(c):
+        return None if c[0] > 0 and c[1] < 0 else "air"
+
+    return carve(edges, volume, lambda _: "wall")
