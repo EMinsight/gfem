@@ -70,11 +70,15 @@ class Discretization:
     Attributes:
         built: The NGSolve mesh and its element maps.
         spaces: Finite-element spaces by ``(physics domain, space, order)``.
+        ports: The wave port couplings and port networks the last driven
+            solve on it built, behind their key (`gfem._engine.driven`), or
+            ``None``.
     """
 
     built: EngineMesh
     topology: Any
     spaces: dict[Hashable, Any] = dataclasses.field(default_factory=dict)
+    ports: Any = None
 
     def space(self, key: Hashable, build: Callable[[], Any]) -> Any:
         """The cached space ``key``, built by ``build()`` on first use."""
@@ -119,6 +123,11 @@ def discretization(
             _DISCRETIZATIONS.popitem(last=False)
         ENTRIES.free_plans_off({id(d.topology) for d in _DISCRETIZATIONS.values()})
     return entry
+
+
+def cached(built: EngineMesh) -> Discretization | None:
+    """The cached discretization whose NGSolve mesh is ``built``, if still cached."""
+    return next((d for d in _DISCRETIZATIONS.values() if d.built is built), None)
 
 
 # --- solve entries ---------------------------------------------------------------

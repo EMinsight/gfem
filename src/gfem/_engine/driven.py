@@ -83,13 +83,20 @@ from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import (
     LumpedPort,
     WavePort,
+    lead_port,
     sheet_of,
     surfaces_of,
     wave_port_label,
     wave_port_surfaces,
 )
 from gfem._engine import sweep_outputs, terms, workers
-from gfem._engine.cache import ENTRIES, Entry, discretization, retain_budget
+from gfem._engine.cache import (
+    ENTRIES,
+    Entry,
+    cached,
+    discretization,
+    retain_budget,
+)
 from gfem._engine.domain import em_region, hcurl_space, pec_surfaces, space_key
 from gfem._engine.fields import dof_shape
 from gfem._engine.mesh import EngineMesh
@@ -104,6 +111,7 @@ from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
 from gfem._materials import MaterialField
 from gfem._periodic import bloch_phases, check_bloch, check_wave_vector
+from gfem._port_section import port_section_key
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
 from gfem.errors import (
     LinearSolverConvergenceError,
@@ -807,19 +815,33 @@ class DrivenRule:
         the excitations and S functionals. Runs each wave port surface's
         port mode sweep over the output grid and, with ``warn`` (a forward
         pass), warns about cross-projections on shared port surfaces.
+
+        The couplings and the network are kept on the discretization
+        (`_KeptPorts`) and reused while their key holds: a design away from
+        the port faces runs no port mode sweep.
         """
         op = self.operator(model)
         names = self.port_names
         columns = [names.index(n) for n in self.excite]
-        couplings = wave_port_couplings(
-            model,
-            op.built,
-            op.space,
-            order=op.order,
-            frequency=self.problem.frequency,
-            tolerance=self.options.port_mode_tolerance,
-            layout=op.layout or ONE_PROCESS,
-        )
+        frequency = self.problem.frequency
+        tolerance = self.options.port_mode_tolerance
+        disc = cached(op.built)
+        key = _KeptPorts.key_of(model, op, frequency, tolerance)
+        kept = disc.ports if disc is not None else None
+        if not isinstance(kept, _KeptPorts) or kept.key != key:
+            couplings = wave_port_couplings(
+                model,
+                op.built,
+                op.space,
+                order=op.order,
+                frequency=frequency,
+                tolerance=tolerance,
+                layout=op.layout or ONE_PROCESS,
+            )
+            kept = _KeptPorts(key, couplings)
+            if disc is not None:
+                disc.ports = kept
+        couplings = kept.couplings
         if warn:
             _check_port_mode_projection(couplings, stacklevel=4, comm=self.comm)
         transposed = None
@@ -838,13 +860,17 @@ class DrivenRule:
             adjoint_tolerance=adjoint_tolerance(self.options),
             transposed=transposed,
         )
-        ports = PortNetwork.build(
-            model,
-            system.operator,
-            couplings,
-            columns=columns,
-            n_freq=len(self.problem.frequency),
-        )
+        network_key = (tuple(columns), len(frequency), self.problem.wave_vector)
+        ports = kept.networks.get(network_key)
+        if ports is None:
+            ports = PortNetwork.build(
+                model,
+                system.operator,
+                couplings,
+                columns=columns,
+                n_freq=len(frequency),
+            )
+            kept.keep(network_key, ports)
         return system, ports
 
     def _forward_adaptive(
@@ -1726,6 +1752,64 @@ class _Partial:
     #: The linear solver's message where the (first) linear solve did not
     #: converge.
     reason: str
+
+
+#: Port networks kept per set of wave port couplings (one per excited set).
+_MAX_NETWORKS = 4
+
+
+@dataclasses.dataclass(eq=False)
+class _KeptPorts:
+    """Wave port couplings kept across driven solves, and their port networks.
+
+    One per discretization (`gfem._engine.cache.Discretization.ports`),
+    replaced when a solve's key differs: the next design of an optimization
+    reuses them, a design touching a port face or a node move (a new
+    discretization) rebuilds them (ADR 0082).
+
+    Attributes:
+        key: `key_of` the solve that built them.
+        couplings: The wave port surfaces' couplings.
+        networks: Port networks on them by ``(excited columns, number of
+            frequencies, Bloch wave vector)``.
+    """
+
+    key: tuple
+    couplings: list[PortSurfaceCoupling]
+    networks: dict[tuple, PortNetwork] = dataclasses.field(default_factory=dict)
+
+    @staticmethod
+    def key_of(
+        model: Model,
+        op: DrivenOperator,
+        frequency: tuple[float, ...],
+        tolerance: float,
+    ) -> tuple:
+        """What the couplings of ``model`` on ``op``'s discretization depend on.
+
+        The space (a discretization keeps its spaces, so its identity is
+        stable), the order, the output grid, the port mode tolerance, the
+        ports, and per wave port surface `port_section_key`: never the port
+        section itself.
+        """
+        sections = tuple(
+            port_section_key(model, lead_port(group))
+            for group in wave_port_surfaces(model.ports).values()
+        )
+        return (
+            id(op.space),
+            op.order,
+            tuple(frequency),
+            tolerance,
+            repr(model.ports),
+            sections,
+        )
+
+    def keep(self, key: tuple, network: PortNetwork) -> None:
+        """Keep ``network`` under ``key``, the oldest out past `_MAX_NETWORKS`."""
+        self.networks[key] = network
+        while len(self.networks) > _MAX_NETWORKS:
+            del self.networks[next(iter(self.networks))]
 
 
 def _sheet_ports(model: Model) -> dict[int, tuple[str, ...]]:

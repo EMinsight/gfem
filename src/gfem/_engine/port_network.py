@@ -256,8 +256,11 @@ class PortNetwork:
                 for a, (_, pos) in enumerate(fed):
                     select[a, pos] = 1.0
 
-                def lumped_rhs(w: float, select=select) -> np.ndarray:
-                    return 1j * operator.wavenumber(w) * select
+                # the scale, not the operator: a kept network holds no pieces
+                def lumped_rhs(
+                    w: float, select=select, scale=operator.built.scale
+                ) -> np.ndarray:
+                    return 1j * terms.wavenumber(w, scale) * select
 
                 excitation.append(AffineTerm(b, lumped_rhs))
             rows = np.zeros((n_ports, len(lumped)))
