@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 from jax.core import Tracer
 
@@ -15,6 +16,15 @@ from gfem.errors import NonDifferentiableError
 def is_traced(value: Any) -> bool:
     """Whether ``value``, or any leaf of it as a JAX pytree, is a JAX tracer."""
     return any(isinstance(leaf, Tracer) for leaf in jax.tree.leaves(value))
+
+
+def is_staging() -> bool:
+    """Whether JAX is staging operations here (inside `jax.jit`, a scan body).
+
+    A `jax.numpy` operation on constants returns a tracer only while JAX
+    stages; under `jax.grad` or `jax.vmap` with concrete inputs it does not.
+    """
+    return isinstance(jnp.zeros(()) + 1.0, Tracer)
 
 
 def check_fixed(value: Any, what: str) -> None:

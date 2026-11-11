@@ -24,6 +24,8 @@ from gfem.errors import (  # noqa: E402
     LowFrequencyWarning,
     MeshQualityError,
     MeshQualityWarning,
+    MeshRefinementNotConvergedWarning,
+    MeshRefinementUnsupportedError,
     NonDifferentiableError,
     PortGeometryError,
     PortModeError,
@@ -59,6 +61,15 @@ from gfem.model import (  # noqa: E402
 )
 from gfem.options import SolverOptions  # noqa: E402
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode  # noqa: E402
+from gfem.refinement import (  # noqa: E402
+    ErrorEstimate,
+    FieldEstimator,
+    MeshRefinement,
+    QuantityEstimator,
+    RefinementCycle,
+    error_estimate,
+    refine_mesh,
+)
 from gfem.results import (  # noqa: E402
     DrivenResult,
     EigenmodeResult,
@@ -89,7 +100,9 @@ __all__ = [
     "EigenmodeResult",
     "Electrostatic",
     "ElectrostaticResult",
+    "ErrorEstimate",
     "Field",
+    "FieldEstimator",
     "Impedance",
     "InterfaceParticipation",
     "Job",
@@ -101,6 +114,9 @@ __all__ = [
     "Mesh",
     "MeshQualityError",
     "MeshQualityWarning",
+    "MeshRefinement",
+    "MeshRefinementNotConvergedWarning",
+    "MeshRefinementUnsupportedError",
     "Model",
     "NetworkParameters",
     "NonDifferentiableError",
@@ -112,6 +128,8 @@ __all__ = [
     "PortModeProjectionWarning",
     "PortModeResult",
     "PortModeTrackingWarning",
+    "QuantityEstimator",
+    "RefinementCycle",
     "Region",
     "RegionNotFoundError",
     "SheetField",
@@ -127,9 +145,11 @@ __all__ = [
     "cuda_available",
     "design",
     "enclosed_by",
+    "error_estimate",
     "interface_participation",
     "load_result",
     "power_flow",
+    "refine_mesh",
     "shape",
     "solve",
 ]
