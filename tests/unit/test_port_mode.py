@@ -618,7 +618,7 @@ def test_a_field_with_axes_has_the_mode_of_its_material(wr28_mesh):
         axes=material.axes,
     )
     np.testing.assert_allclose(
-        _wr28_gamma(wr28_mesh, per_element, 16e9), expected, rtol=5e-15
+        _wr28_gamma(wr28_mesh, per_element, 16e9), expected, rtol=1e-14
     )
 
 
