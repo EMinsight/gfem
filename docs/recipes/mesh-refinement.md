@@ -108,8 +108,8 @@ gfem.QuantityEstimator(omega=0)  # result.omega[0], an eigenmode problem
 - **Capacitance**: a diagonal entry, named by its terminal twice. The
   estimate is relative to that entry. The discrete capacitance never lies
   below its value on the meshed geometry, `C_h >= C`: the difference is the
-  energy of the potential's error, which is never negative, so refinement
-  lowers it.
+  energy of the potential's error, which is never negative, so mesh
+  refinement lowers it.
 - **S entry**: both ports must be excited (`gfem.Driven(excite=...)`), since
   the estimate uses the second port's field as the weight. The estimate is
   absolute.
@@ -164,7 +164,7 @@ for beta in (2, 4, 8, 16):
   mesh, so L-BFGS curvature pairs and MMA asymptotes from the old mesh no
   longer apply. Compare objective values only within one mesh.
 - **Carry your design parameters.** A `LayerGrid` pixel array keeps its
-  shape: refinement only adds midpoints, so the rebuilt grid has the same
+  shape: bisection only adds midpoints, so the rebuilt grid has the same
   pixels. A density with one value per element goes through
   `ref.transfer(values, "design")`, which gives each refined element the
   value of the input element it lies in; rebuild

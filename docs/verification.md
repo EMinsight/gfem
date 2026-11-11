@@ -172,8 +172,8 @@ the parallel-plate line and the rectangular cavity, which have no sharp
 metal edge. This range is read from the test when the docs are built.
 
 The field estimator is checked the same way, on the same lines and
-cavities. On the three singular cases a mesh refinement run also ends with a
-smaller error than uniform refinement at the same number of unknowns. Both
+cavities. On the three singular benchmark cases a mesh refinement run also ends
+with a smaller error than uniform splits at the same number of unknowns. Both
 sets of checks run on every change.
 
 Tests: [quantity estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_quantity_estimate.py),

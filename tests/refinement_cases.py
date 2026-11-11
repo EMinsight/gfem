@@ -1,10 +1,10 @@
-"""Singular cases shared by the refinement tests, with their reference values.
+"""Singular benchmark cases shared by the mesh refinement tests, with references.
 
 One case per problem type, each a 2D 270 degree re-entrant corner extruded by
-one structured cell (`structured_meshes`, no gmsh). Uniform refinement
-converges at h^(4/3) on all three (`RATE`, order 2), so adaptive refinement
-has room to beat it. Every builder that writes a mesh takes the directory to
-write it to and ``n``, the cells per unit length of the section; ``grade`` > 1
+one structured cell (`structured_meshes`, no gmsh). Uniform splits converge
+at h^(4/3) on all three (`RATE`, order 2), so mesh refinement has room to beat
+them. Every builder that writes a mesh takes the directory to write it to and
+``n``, the cells per unit length of the section; ``grade`` > 1
 packs the cells towards the corner.
 
 - Square coax, `coax_model`: a quarter of a square coax (inner half-side
@@ -42,7 +42,7 @@ import structured_meshes as sm
 
 import gfem
 
-#: Convergence rate of every case under uniform refinement, per halving of h.
+#: Convergence rate of every case under uniform splits, per halving of h.
 RATE = 4 / 3
 
 #: Full square coax, C / (eps0 len); the quarter model (extruded 0.5 um) has
