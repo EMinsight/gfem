@@ -326,6 +326,7 @@ def test_a_singular_reaction_raises_instead_of_dropping_the_correction(
         return built(piece, vectors, np.zeros_like(reaction), ports)
 
     monkeypatch.setattr(wave_ports, "PortSurfaceCoupling", vanishing)
+    cache._DISCRETIZATIONS.clear()  # earlier solves kept the plate's couplings
     with pytest.raises(gfem.PortModeError, match="singular") as caught:
         gfem.solve(line(plate_mesh), gfem.Driven(F), options=OPTIONS)
     message = str(caught.value)
@@ -1157,7 +1158,9 @@ def test_a_shared_surface_of_overlapping_modes_is_reflectionless(hybrid_line_mod
 # "fill") touch them.
 
 KEPT_F = (55e9,)
-KEPT_OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
+# one thread: threaded solves sum in a varying order (S moves by 1e-14 run to
+# run), and S is compared bit for bit
+KEPT_OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct", threads=1)
 
 
 def _kept_line(directory):
@@ -1192,22 +1195,25 @@ def test_a_density_loop_away_from_the_ports_runs_the_port_mode_sweep_once(
         s = gfem.solve(m, gfem.Driven(KEPT_F), options=KEPT_OPTIONS).s.values
         return jnp.abs(s[0, 1, 0]) ** 2, s
 
-    designs = [leads * (1.0 + 0.1 * k) for k in range(3)]
-    kept = []
-    for eps in designs:
-        (_, s), grad = jax.value_and_grad(objective, has_aux=True)(jnp.asarray(eps))
-        assert np.all(np.isfinite(np.asarray(grad)))
-        kept.append(np.asarray(s))
+    def loop(rebuild):
+        out = []
+        for k in range(3):
+            if rebuild:  # every step on a fresh discretization: main's path
+                cache._DISCRETIZATIONS.clear()
+            eps = jnp.asarray(leads * (1.0 + 0.1 * k))
+            (_, s), grad = jax.value_and_grad(objective, has_aux=True)(eps)
+            assert np.all(np.isfinite(np.asarray(grad)))
+            out.append(np.asarray(s))
+        return out
+
+    rebuilt = loop(rebuild=True)
+    assert len(sweeps) == 2 * 3
+    cache._DISCRETIZATIONS.clear()
+    sweeps.clear()
+    kept = loop(rebuild=False)
     assert len(sweeps) == 2  # one port mode sweep per wave port surface
-    # each design's S is the one a fresh discretization gives, bit for bit
-    for eps, s in zip(designs, kept, strict=True):
-        cache._DISCRETIZATIONS.clear()
-        fresh = gfem.solve(
-            model.with_material("core", gfem.MaterialField(eps_r=eps)),
-            gfem.Driven(KEPT_F),
-            options=KEPT_OPTIONS,
-        )
-        np.testing.assert_array_equal(np.asarray(fresh.s.values), s)
+    for a, b in zip(kept, rebuilt, strict=True):
+        np.testing.assert_array_equal(a, b)  # bit for bit
 
 
 def test_a_design_beside_a_port_face_or_a_node_move_runs_the_sweep_again(
