@@ -259,6 +259,28 @@ def test_a_pool_walk_reads_each_handles_bytes_a_bounded_number_of_times():
     assert max(reads.count(id(h)) for h in handles) <= 4
 
 
+class Patterned(FakeHandle):
+    """A pooled handle holding its pieces' pattern."""
+
+    def __init__(self, nbytes, pattern):
+        super().__init__(nbytes)
+        self.pattern = pattern
+
+    def drop_pattern(self):
+        self.pattern = None
+
+
+def test_a_pooled_handle_drops_a_pattern_no_kept_fixed_part_holds():
+    entries = EntryCache()
+    kept, dead = object(), object()
+    holds = Patterned(10, kept)
+    stale = Patterned(10, dead)
+    entries.give_plan(("k",), TOPOLOGY, holds, budget=1000, kept=[kept])
+    entries.give_plan(("k",), TOPOLOGY, stale, budget=1000, kept=[kept])
+    assert holds.pattern is kept
+    assert stale.pattern is None
+
+
 def test_clear_frees_the_pool_too():
     entries = EntryCache()
     handle = FakeHandle(10)
@@ -407,6 +429,49 @@ def test_vmapped_variants_hold_one_pooled_handle_each(path, plans):
     assert len(plans) == 3
     cache.ENTRIES.free_consumed(comm=None, budget=2**40)
     assert cache.ENTRIES.pooled == 3
+
+
+@pytest.mark.usefixtures("plans")  # an empty cache before and after
+def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def pooled_pattern(eps):
+        model = _model(mesh, jnp.full(len(mesh.elements("core")), eps))
+        gfem.solve(model, gfem.Driven(frequency=F), options=options)
+        (pooled,) = cache.ENTRIES._plans.values()
+        return pooled.handle
+
+    # the first solve keeps no fixed part: its pieces' pattern dies with them
+    handle = pooled_pattern(3.0)
+    assert handle.pattern is None
+    # the second keeps them, in the full pattern the piece sum sums into
+    handle = pooled_pattern(3.5)
+    (store,) = (
+        d.spaces[k]
+        for d in cache._DISCRETIZATIONS.values()
+        if d.topology is mesh._topology
+        for k in d.spaces
+        if isinstance(k, tuple) and k[-1] == "fixed pieces"
+    )
+    assert handle.pattern is not None
+    assert any(kept.pattern is handle.pattern for kept in store.kept.values())
+
+
+def test_a_direct_handle_counts_its_pieces_pattern():
+    import scipy.sparse as sp
+
+    from gfem._linalg.base import host_bytes
+
+    matrix = sp.diags_array([2.0] * 50) + sp.eye_array(50, k=1) + sp.eye_array(50, k=-1)
+    handle = DirectHandle.from_scipy(matrix)
+    alone = handle.nbytes
+    pattern = DirectHandle.from_scipy(matrix)._matrix
+    handle._pattern = pattern
+    assert handle.nbytes == alone + host_bytes(pattern)
+    handle.drop_pattern()
+    assert handle.pattern is None
+    assert handle.nbytes == alone
 
 
 @pytest.mark.usefixtures("plans")  # an empty cache before and after

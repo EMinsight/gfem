@@ -239,7 +239,8 @@ class SystemOperator:
         free = free_mask(op.space.FreeDofs(), op.space.ndof)
         digest = hashlib.blake2b(np.packbits(free).tobytes(), digest_size=16)
         site = (id(op.topology), op.space_key, digest.hexdigest(), op.symmetry)
-        return PlanSlot(site, op.topology, budget)
+        store = None if op.fixed is None else op.fixed.store
+        return PlanSlot(site, op.topology, budget, store)
 
     def solve_adjoint(self, n: int, omega: float, loads: np.ndarray) -> np.ndarray:
         """Solve the adjoint loads ``(ndof, q)`` of frequency ``n`` at ``ω``.
@@ -536,7 +537,7 @@ class SystemSweep:
         if base is None:
             return
         if return_plan and plans is not None and key is not None:
-            ENTRIES.give_plan(key, plans.topology, base, plans.budget)
+            ENTRIES.give_plan(key, plans.topology, base, plans.budget, plans.kept())
         else:
             base.free()
 
@@ -558,11 +559,20 @@ class PlanSlot:
         topology: The mesh topology (the pool frees its handles once no
             discretization of it is left).
         budget: ``retain_memory``'s bytes, the walk's budget on return.
+        store: The kept fixed parts of the operator's space, or ``None``
+            without them (`FixedPieces`).
     """
 
     site: tuple
     topology: Any
     budget: int
+    store: KeptParts | None = None
+
+    def kept(self) -> list[Any]:
+        """The patterns of the kept fixed parts: what a pooled base may keep."""
+        return (
+            [] if self.store is None else [k.pattern for k in self.store.kept.values()]
+        )
 
     def key(self) -> tuple:
         """The pool key: ``site`` and the thread count of a plan made now.
