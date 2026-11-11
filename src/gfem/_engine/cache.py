@@ -30,8 +30,9 @@ One byte budget, ``retain_memory``, bounds pooled handles, entries' bases and
 entries together. Over it, the walk of a stored entry frees pooled handles
 (least recently returned first), then live entries' bases (oldest entry
 first), then whole entries (least recently used first); ``retain_memory=0``
-keeps none of them. A handle returning to the pool frees pooled handles only:
-a solve evicts other solves' entries only where it stores one.
+keeps none of them. A handle returning to the pool, or a differentiated
+forward freeing consumed entries, frees pooled handles only: a solve evicts
+other solves' entries only where it stores one.
 """
 
 from __future__ import annotations
@@ -305,8 +306,7 @@ class EntryCache:
             return _mpi.node_bytes(comm, held) > budget
 
         if comm is None:
-            while self._plans and over():
-                self._plans.popitem(last=False)[1].handle.free()
+            self._free_pool(budget)
         for key, entry in list(self._entries.items()):
             free_base = getattr(entry.handle, "free_base", None)
             if self._comms[key] != owner or free_base is None:
@@ -341,8 +341,9 @@ class EntryCache:
         Called when a differentiated forward on ``comm`` starts. Under ranks the
         backward is replicated, so every rank frees the same entries together.
         With a ``budget`` their base handles return to the plan pool, where
-        their handles can (`Entry.free`). No entry that is not consumed goes:
-        only `put` evicts entries.
+        their handles can (`Entry.free`), and on one process pooled handles go
+        down to it. No entry that is not consumed goes: only `put` evicts
+        entries.
         """
         owner = _mpi.comm_key(comm)
         consumed = [
@@ -356,6 +357,8 @@ class EntryCache:
             freed.append(self._entries.pop(key))
         for entry in freed:
             entry.free(return_plans=budget is not None)
+        if budget is not None and comm is None:
+            self._free_pool(budget)
 
     # --- the plan pool -----------------------------------------------------------
 
@@ -372,6 +375,10 @@ class EntryCache:
         if release is not None:
             release()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
+        self._free_pool(budget)
+
+    def _free_pool(self, budget: int) -> None:
+        """Free pooled handles, least recently returned first, down to ``budget``."""
         while self._plans and self.nbytes > budget:
             self._plans.popitem(last=False)[1].handle.free()
 
