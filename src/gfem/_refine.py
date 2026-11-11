@@ -14,18 +14,30 @@ result does not depend on anything but the mesh and the mark. A child keeps
 its parent's node order with one vertex replaced by the midpoint, so it keeps
 the parent's orientation; unrefined elements keep their relative order, old
 nodes keep their indices and midpoints are appended.
+
+`refine_model` refines a whole `Model` (ADR 0084): it refuses traced leaves,
+checks the quality of a moved mesh, bisects it at its current coordinates and
+copies each parent's per-element design values to its children with
+`transfer`, the region-local gather.
 """
 
 from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
 
+from gfem._boundaries import Conductor, Impedance
+from gfem._checks import is_traced
+from gfem._materials import PROPERTY_NAMES, MaterialField
 from gfem._pytree import readonly
+from gfem.errors import NonDifferentiableError
 from gfem.mesh import _TET_EDGES, Mesh, _Topology, _triangle_neighbours
+from gfem.model import Model
+from gfem.shape import _check_quality
 
 _TET_EDGE_PAIRS = np.array(_TET_EDGES)
 _TRI_EDGE_PAIRS = np.array([(0, 1), (0, 2), (1, 2)])
@@ -106,6 +118,140 @@ def bisect(mesh: Mesh, marked) -> tuple[Mesh, Refinement]:
         triangle_parents=readonly(tri_parents),
     )
     return Mesh(jnp.asarray(x), topology), refinement
+
+
+def refine_model(model: Model, marked) -> tuple[Model, Refinement]:
+    """Bisect a model's mesh and carry its design to the children.
+
+    A mesh whose nodes have moved is quality-checked first, then bisected at
+    its current coordinates (they become the refined mesh's imported nodes).
+    Each per-element `MaterialField` property and each `SheetField` fill is
+    copied from parent to children (`transfer`); everything else refers to the
+    mesh by name and is kept. The refined model is built by `Model`, so it is
+    validated like any other.
+
+    Args:
+        model: The model to refine (concrete values only).
+        marked: Boolean mask over the mesh's tetrahedra, shape ``(n_tet,)``.
+
+    Returns:
+        The refined model and the one-level parents of its mesh's elements.
+
+    Raises:
+        NonDifferentiableError: The mesh nodes, a `MaterialField` value or a
+            sheet fill is computed inside `jax.grad`, `jax.jit` or `jax.vmap`.
+        MeshQualityError: The moved mesh has an inverted element.
+        ValueError: ``marked`` is not a boolean mask over the tetrahedra.
+    """
+    _check_concrete(model)
+    coarse = model.mesh
+    _check_quality(coarse, model._domain.active, stacklevel=3)  # noqa: SLF001
+    fine, refinement = bisect(coarse, marked)
+
+    def gather(values: Any, region: str) -> Any:
+        return transfer(values, region, coarse=coarse, fine=fine, refinement=refinement)
+
+    materials = {
+        region: _gather_field(value, region, gather)
+        if isinstance(value, MaterialField)
+        else value
+        for region, value in model.materials.items()
+    }
+    boundaries = tuple(
+        dataclasses.replace(
+            b, fill=dataclasses.replace(b.fill, fill=gather(b.fill.fill, b.surface))
+        )
+        if isinstance(b, (Conductor, Impedance)) and b.fill is not None
+        else b
+        for b in model.boundaries
+    )
+    refined = Model(
+        fine,
+        materials=materials,
+        boundaries=boundaries,
+        ports=model.ports,
+        excluded=model.excluded,
+    )
+    return refined, refinement
+
+
+def transfer(
+    values: Any, region: str, *, coarse: Mesh, fine: Mesh, refinement: Refinement
+) -> Any:
+    """Copy a region's per-element values from parents to children.
+
+    ``values`` holds one value (or one row) per element of ``region`` on the
+    coarse mesh, in ``coarse.elements(region)`` order; the result holds one per
+    element of the region on the fine mesh, in ``fine.elements(region)``
+    order. Children never leave their parent's region, so the gather is
+    defined. It is plain indexing: a NumPy array gives a NumPy array, a JAX
+    array a JAX array, and `jax.grad` passes through it.
+
+    Args:
+        values: Shape ``(n,)`` or ``(n, k)``, ``n`` the region's coarse elements.
+        region: A volume (tetrahedra) or surface (triangles) region name.
+        coarse: The mesh the values live on.
+        fine: The refined mesh.
+        refinement: The parents of ``fine``'s elements in ``coarse``.
+
+    Raises:
+        RegionNotFoundError: ``region`` is not a region of the mesh.
+        ValueError: ``values`` does not hold one value per coarse element.
+    """
+    r = coarse.region(region)
+    if r.dim == 3:
+        parents, n_all = refinement.tetrahedron_parents, len(coarse.tetrahedra)
+    else:
+        parents, n_all = refinement.triangle_parents, len(coarse.triangles)
+    old = coarse.elements(region)
+    shape = np.shape(values)
+    if len(shape) not in (1, 2) or shape[0] != len(old):
+        raise ValueError(
+            f"Cannot transfer values of shape {shape} on {region!r}: give one "
+            f"value per element, shape ({len(old)},) or ({len(old)}, k), in the "
+            f"order of mesh.elements({region!r})."
+        )
+    position = np.full(n_all, -1, dtype=np.int64)
+    position[old] = np.arange(len(old))
+    index = position[parents[fine.elements(region)]]
+    if (index < 0).any():
+        raise RuntimeError(f"A child of region {region!r} has a parent outside it.")
+    return values[index]
+
+
+def _gather_field(field: MaterialField, region: str, gather) -> MaterialField:
+    """The field with every per-element property gathered to the children."""
+    changes = {}
+    for name in PROPERTY_NAMES:
+        value = getattr(field, name)
+        if value is not None and value.ndim == 1 + field.has_principal_values(name):
+            changes[name] = gather(value, region)
+    return dataclasses.replace(field, **changes)
+
+
+def _check_concrete(model: Model) -> None:
+    """Raise if a leaf refinement reads or copies is traced (ADR 0011)."""
+    leaves = [("the mesh nodes", model.mesh.nodes)]
+    leaves += [
+        (f"materials[{region!r}]", value)
+        for region, value in model.materials.items()
+        if isinstance(value, MaterialField)
+    ]
+    leaves += [
+        (f"the fill of the {type(b).__name__} on {b.surface!r}", b.fill)
+        for b in model.boundaries
+        if isinstance(b, (Conductor, Impedance)) and b.fill is not None
+    ]
+    for what, leaf in leaves:
+        if is_traced(leaf):
+            raise NonDifferentiableError(
+                f"Cannot refine a model whose {what} is computed inside "
+                "jax.grad, jax.jit or jax.vmap: a refined mesh is a new mesh, "
+                "which gfem cannot build inside a trace, and refinement has no "
+                "derivative. Refine concrete values, outside the transformed "
+                "function; the transfer of values to the refined mesh is "
+                "differentiable."
+            )
 
 
 class _Splits:
