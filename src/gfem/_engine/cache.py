@@ -8,9 +8,13 @@ members on one mesh share them. Bounded by count.
 **Solve entries** (`ENTRIES`): what a differentiated forward solve leaves for
 its backward pass, a solver `Handle` (factors or preconditioner) and the
 forward fields, under an integer key that travels with the JAX residuals.
-Bounded in bytes by ``SolverOptions.retain_memory``, least recently used out
-first, and only an entry of the storing solve's communicator goes out, since freeing
-may be collective; an entry is never freed by being read, so repeated pullbacks work.
+An entry a backward has read is **consumed**, and is freed when the next
+differentiated forward on its communicator starts, before that forward
+assembles (ADR 0081): an optimization loop keeps only its current step. Reading
+never frees an entry, so ``jax.jacrev`` and repeated pullbacks reuse it. The
+rest is bounded in bytes by ``SolverOptions.retain_memory``, least recently
+used out first, and only an entry of the storing solve's communicator goes out,
+since freeing may be collective.
 A missing entry is not an error: the backward pass recomputes it from the
 design state in its residuals (time, never correctness).
 """
@@ -22,6 +26,7 @@ import dataclasses
 import hashlib
 import itertools
 import os
+import pathlib
 from collections.abc import Callable, Hashable
 from typing import Any
 
@@ -111,11 +116,13 @@ class Entry:
         physics: The physics domain the solve ran on (``"em"``, ...).
         handle: The prepared solver, or ``None`` if the backward needs none.
         fields: Forward fields as NumPy arrays (DOF vectors), by name.
+        consumed: Whether a backward has read the entry (ADR 0081).
     """
 
     physics: str
     handle: Any = None
     fields: dict[str, np.ndarray] = dataclasses.field(default_factory=dict)
+    consumed: bool = False
 
     @property
     def nbytes(self) -> int:
@@ -131,13 +138,68 @@ class Entry:
         self.fields = {}
 
 
-def default_retain_memory() -> int:
-    """Half of the physical memory, in bytes (8 GiB if it cannot be read)."""
+_PROC_CGROUP = pathlib.Path("/proc/self/cgroup")
+_CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup")
+
+
+def _physical_memory() -> int | None:
+    """The machine's RAM in bytes, or ``None`` if it cannot be read."""
     try:
-        total = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+        return int(os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))
     except (AttributeError, ValueError, OSError):
-        total = 16 * 2**30
-    return int(total) // 2
+        return None
+
+
+def _read_limit(path: pathlib.Path) -> int | None:
+    """A cgroup limit file's bytes; ``None`` for "max" or an unreadable file."""
+    try:
+        return int(path.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _cgroup_memory_limit() -> int | None:
+    """The smallest memory limit on this process's cgroup and its ancestors.
+
+    cgroup v2 (``0::<path>``) reads ``memory.max`` under the root; v1 (a line
+    whose controllers include ``memory``) reads ``memory.limit_in_bytes`` under
+    the root's ``memory`` directory. ``None`` without a readable limit.
+    """
+    try:
+        lines = _PROC_CGROUP.read_text().splitlines()
+    except OSError:
+        return None
+    limits = []
+    for line in lines:
+        hierarchy, _, rest = line.partition(":")
+        controllers, _, path = rest.partition(":")
+        if hierarchy == "0" and not controllers:
+            base, name = _CGROUP_ROOT, "memory.max"
+        elif "memory" in controllers.split(","):
+            base, name = _CGROUP_ROOT / "memory", "memory.limit_in_bytes"
+        else:
+            continue
+        directory = base / path.strip().lstrip("/")
+        while True:
+            limit = _read_limit(directory / name)
+            if limit is not None:
+                limits.append(limit)
+            if directory == base:
+                break
+            directory = directory.parent
+    return min(limits, default=None)
+
+
+def default_retain_memory() -> int:
+    """Half of the memory this process may use, in bytes.
+
+    The smaller of the physical memory and the process's cgroup memory limit
+    (searched up through parent cgroups, so a job's limit counts); "max" or an
+    unreadable limit means none. Without readable physical memory or a limit,
+    8 GiB.
+    """
+    sizes = [s for s in (_physical_memory(), _cgroup_memory_limit()) if s is not None]
+    return min(sizes, default=16 * 2**30) // 2
 
 
 class EntryCache:
@@ -191,6 +253,18 @@ class EntryCache:
         if entry is not None:
             del self._comms[int(key)]
             entry.free()
+
+    def free_consumed(self, comm: Any = None) -> None:
+        """Free the consumed entries of ``comm`` (ADR 0081).
+
+        Called when a differentiated forward on ``comm`` starts. Under ranks the
+        backward is replicated, so every rank frees the same entries together.
+        """
+        owner = _mpi.comm_key(comm)
+        consumed = [k for k, e in self._entries.items() if e.consumed]
+        for key in consumed:
+            if self._comms[key] == owner:
+                self.discard(key)
 
     def free_bases(self, comm: Any, keep: Entry | None = None) -> None:
         """Free the base handles kept on ``comm``, all but ``keep``'s (ADR 0065).

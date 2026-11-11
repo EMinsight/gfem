@@ -466,7 +466,9 @@ def test_an_entry_lost_on_one_rank_runs_every_forward_again(tmp_path, lost, solv
         _on, "_an_entry_lost_on_one_rank", solver, tmp_path, lost, ranks=4, limit=300
     )
     assert forwards == 1
-    assert entries == 1  # the first grad's: the pullback's was freed by all
+    # the first grad's was consumed, freed at the vjp's forward (ADR 0081); the
+    # pullback's was freed by all
+    assert entries == 0
     _assert_below_the_gate(grad, reference, "after the loss", solver)
 
 
