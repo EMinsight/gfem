@@ -424,6 +424,25 @@ class PlannedHandle(NgsHandle):
             self._new_plan(new, operator.freedofs)
             self._pattern = pattern
 
+    @property
+    def pattern(self) -> ngs.BaseMatrix | None:
+        """The pattern of the pieces whose sums the held matrix holds, if summed.
+
+        A `refactorize` whose piece sum has this pattern sums into the held
+        matrix in place.
+        """
+        return self._pattern
+
+    def drop_pattern(self) -> None:
+        """Let go of the pieces' pattern: the next `refactorize` assembles.
+
+        For a handle held between solves whose pattern nothing else holds
+        (`gfem._engine.cache.EntryCache.give_plan`). Waits for a running solve
+        or refactorization.
+        """
+        with self._lock:
+            self._pattern = None
+
     def free(self) -> None:
         """Release the backend, drop the matrix and the pieces' pattern.
 

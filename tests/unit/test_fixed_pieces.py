@@ -124,3 +124,34 @@ def test_equal_values_on_another_region_layout_key_another_fixed_part():
         return part.digest
 
     assert split([True, True, False, False]) != split([False, False, True, True])
+
+
+def test_split_pieces_count_their_shared_positions_once():
+    import ngsolve as ngs
+    from netgen.csg import unit_cube
+
+    mesh = ngs.Mesh(unit_cube.GenerateMesh(maxh=0.5))
+    space = ngs.H1(mesh, order=1, complex=True)
+    region = ngs.IfPos(ngs.x - 0.5, 1, 0)
+    store = pieces.KeptParts()
+
+    def build():
+        fixed = [
+            pieces.FixedPart(
+                store, "stiffness", "d", lambda u, v: ngs.grad(u) * ngs.grad(v) * ngs.dx
+            ),
+            pieces.FixedPart(store, "mass", "d", lambda u, v: u * v * ngs.dx),
+        ]
+        varying = [
+            lambda u, v: region * ngs.grad(u) * ngs.grad(v) * ngs.dx,
+            lambda u, v: region * u * v * ngs.dx,
+        ]
+        assembled = pieces.AssembledPieces(space, varying, fixed=fixed)
+        return assembled, assembled.pattern
+
+    build()  # the digest's first sight: nothing kept
+    assembled, pattern = build()
+    nze = pattern.nze
+    # the kept parts are the store's; the two varying parts' complex values,
+    # and their one int64 positions array
+    assert assembled.nbytes == 2 * 16 * nze + 8 * nze

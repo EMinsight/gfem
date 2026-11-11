@@ -263,14 +263,17 @@ class AssembledPieces:
             # pieces' are copies
             values = local_matrix(template, comm).AsVector().FV().NumPy()
             held = host_bytes(local_matrix(template, comm)) - int(values.nbytes)
+        # split pieces' varying parts share one positions array: count it once
+        positions: dict[int, np.ndarray] = {}
         for values, at, _, owned in parts:
             if owned:
                 continue
             if at is None:
                 held += int(values.FV().NumPy().nbytes)
             else:
-                held += int(values.nbytes) + int(at.nbytes)
-        return held
+                held += int(values.nbytes)
+                positions[id(at)] = at
+        return held + sum(int(at.nbytes) for at in positions.values())
 
     def free(self) -> None:
         """Drop the assembled pieces."""

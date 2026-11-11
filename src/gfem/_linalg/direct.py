@@ -28,7 +28,12 @@ import numpy as np
 import scipy.sparse as sp
 
 from gfem._linalg import Symmetry
-from gfem._linalg.base import PlannedHandle, equals_its_transpose, host_bytes
+from gfem._linalg.base import (
+    PlannedHandle,
+    equals_its_transpose,
+    host_bytes,
+    local_matrix,
+)
 from gfem._linalg.pardiso import (  # noqa: F401 (the first two re-exported)
     PARDISO_FLAGS,
     PardisoFactors,
@@ -258,14 +263,19 @@ class DirectHandle(PlannedHandle):
 
     @property
     def nbytes(self) -> int:
-        """Host memory of the matrix and the factors, in bytes.
+        """Host memory of the matrix, the factors and the pieces' pattern, in bytes.
 
         PARDISO's factors count the gather index once built (at the first
-        `refactorize`).
+        `refactorize`). The pattern counts too: a pooled handle may outlive
+        the pieces it came from.
         """
         if self._factors is None or self._matrix is None:
             return 0
-        return host_bytes(self._matrix) + self._factors.nbytes
+        held = host_bytes(self._matrix) + self._factors.nbytes
+        pattern = self._pattern
+        if pattern is not None:
+            held += host_bytes(local_matrix(pattern, self.layout.comm))
+        return held
 
     def _release(self) -> None:
         """Drop the factors; under the lock."""

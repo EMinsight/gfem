@@ -46,7 +46,7 @@ import hashlib
 import itertools
 import os
 import pathlib
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Collection, Hashable
 from typing import Any
 
 import numpy as np
@@ -354,7 +354,8 @@ class EntryCache:
             if e.consumed and self._comms[k] == owner
         ]
         # out of the cache before any is freed: a base returning to the pool
-        # walks the cache
+        # walks the pool against the cache's bytes, which must not count the
+        # consumed entries still to be freed
         freed = []
         for key in consumed:
             del self._comms[key]
@@ -366,7 +367,14 @@ class EntryCache:
 
     # --- the plan pool -----------------------------------------------------------
 
-    def give_plan(self, key: Hashable, topology: Any, handle: Any, budget: int) -> None:
+    def give_plan(
+        self,
+        key: Hashable,
+        topology: Any,
+        handle: Any,
+        budget: int,
+        kept: Collection[Any] = (),
+    ) -> None:
         """Pool ``handle`` under ``key``, with its factors, within ``budget``.
 
         While the cache is over ``budget``, pooled handles' factors are
@@ -375,7 +383,14 @@ class EntryCache:
         so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
         no discretization of it is left (`free_plans_off`). One process only.
+
+        ``kept`` holds the patterns of the kept fixed parts (ADR 0082) of the
+        handle's space: a handle's pieces' pattern that is none of them is
+        dropped, since no later piece sum can share it.
         """
+        pattern = getattr(handle, "pattern", None)
+        if pattern is not None and not any(pattern is k for k in kept):
+            handle.drop_pattern()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
         self._free_pool(budget)
 
@@ -383,15 +398,21 @@ class EntryCache:
         """Walk the pool down to ``budget``, least recently returned first.
 
         Releasing factors keeps a handle's plan, so it goes before freeing any.
+        The cache's bytes are summed once, then follow each release and free.
         """
+        held = self.nbytes
         for pooled in self._plans.values():
-            if self.nbytes <= budget:
+            if held <= budget:
                 return
             release = getattr(pooled.handle, "release_factors", None)
             if release is not None:
+                before = int(pooled.handle.nbytes)
                 release()
-        while self._plans and self.nbytes > budget:
-            self._plans.popitem(last=False)[1].handle.free()
+                held -= before - int(pooled.handle.nbytes)
+        while self._plans and held > budget:
+            handle = self._plans.popitem(last=False)[1].handle
+            held -= int(handle.nbytes)
+            handle.free()
 
     def take_plan(self, key: Hashable) -> Any | None:
         """The most recently returned pooled handle under ``key``, or ``None``.
