@@ -21,11 +21,12 @@ import numpy as np
 from gfem import _mpi
 from gfem._checks import is_staging, is_traced
 from gfem._pytree import readonly
-from gfem._refine import Refinement, refine_model, transfer
+from gfem._refine import Refinement, bisect, transfer, transfer_design
 from gfem.errors import (
     DegenerateModeError,
     EigenmodeConvergenceError,
     LinearSolverConvergenceError,
+    MeshQualityWarning,
     MeshRefinementNotConvergedWarning,
     MeshRefinementUnsupportedError,
     NonDifferentiableError,
@@ -35,6 +36,7 @@ from gfem.model import Absorbing, Conductor, Impedance, LumpedPort, Model, WaveP
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
+from gfem.shape import _check_quality
 from gfem.solve import solve
 
 __all__ = [
@@ -400,6 +402,8 @@ def refine_mesh(
             failed solve with the estimate above ``tolerance``.
         LowFrequencyWarning: A frequency of a driven problem is below the
             returned mesh's low-frequency floor.
+        MeshQualityWarning: The input mesh's nodes have moved and an element
+            fell far below its imported quality.
 
     Raises:
         TypeError: An argument has the wrong type, or a `QuantityEstimator`
@@ -417,6 +421,8 @@ def refine_mesh(
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
             alone: another mode lies within ``options.cluster_rtol`` of it.
         DistributedUnsupportedError: Launched on more than one rank.
+        MeshQualityError: The input mesh's nodes have moved and an element is
+            inverted.
         NonDifferentiableError: A model or problem leaf is a JAX tracer, or
             the call is inside `jax.jit`. Under `jax.grad` or `jax.vmap`
             with concrete inputs it runs; refine outside the transformed
@@ -444,6 +450,9 @@ def refine_mesh(
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)
     _check_untraced("refine_mesh", (model, problem))
+    # a moved input mesh is checked here, so a warning names the caller's line;
+    # the loop's solves and bisections skip the check
+    _check_quality(model.mesh, model._domain.active, stacklevel=2)  # noqa: SLF001
     return _loop(
         model,
         problem,
@@ -476,7 +485,8 @@ def _loop(
         problem = dataclasses.replace(problem, keep_fields=True)
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
-    with driven.low_frequency_deferred():
+    with driven.low_frequency_deferred(), warnings.catch_warnings():
+        warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
         result = solve(model, problem, options=options, comm=comm)
     current = model
     cycles: list[RefinementCycle] = []
@@ -506,10 +516,11 @@ def _loop(
             break
         marked = dorfler(estimate.indicators, error_fraction)
         cycles[-1] = dataclasses.replace(cycle, marked=int(marked.sum()))
-        refined, refinement = refine_model(current, marked)
-        if max_tetrahedra is not None and len(refined.mesh.tetrahedra) > max_tetrahedra:
+        fine, refinement = bisect(current.mesh, marked)
+        if max_tetrahedra is not None and len(fine.tetrahedra) > max_tetrahedra:
             stop = "max_tetrahedra"
             break
+        refined = transfer_design(current, fine, refinement)
         try:
             with driven.low_frequency_deferred():
                 refined_result = solve(refined, problem, options=options, comm=comm)

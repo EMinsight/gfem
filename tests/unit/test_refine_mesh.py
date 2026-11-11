@@ -7,6 +7,7 @@ tetrahedra), whose corner singularity keeps its field error estimate near
 
 import sys
 import types
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -216,6 +217,20 @@ def test_max_tetrahedra_discards_the_mesh_over_the_cap(coax):
     assert len(ref.cycles) == 1
     assert ref.cycles[0].marked > 0
     assert ref.estimate.value == pytest.approx(COAX_ESTIMATE, rel=1e-3)
+
+
+def test_a_poor_moved_mesh_warns_at_the_callers_line(coax):
+    # node 1 pushed 0.4 um along +x: no element inverts, one falls to 0.16 of
+    # its imported quality
+    nodes = coax.mesh.nodes.at[1, 0].add(0.4e-6)
+    moved = coax.replace(mesh=gfem.Mesh(nodes, coax.mesh._topology))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _refine(moved, max_cycles=1)
+    hits = [w for w in caught if w.category is gfem.MeshQualityWarning]
+    assert len(hits) == 1
+    assert hits[0].filename == __file__
+    assert hits[0].lineno == _refine.__code__.co_firstlineno + 2
 
 
 class _Failing:

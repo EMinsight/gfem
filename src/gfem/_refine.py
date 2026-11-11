@@ -123,11 +123,12 @@ def bisect(mesh: Mesh, marked) -> tuple[Mesh, Refinement]:
 def refine_model(model: Model, marked) -> tuple[Model, Refinement]:
     """Bisect a model's mesh and carry its design to the children.
 
-    A mesh whose nodes have moved is quality-checked first, then bisected at
-    its current coordinates (they become the refined mesh's imported nodes).
-    Each per-element `MaterialField` property and each `SheetField` fill is
-    copied from parent to children (`transfer`); everything else refers to the
-    mesh by name and is kept. The refined model is built by `Model`, so it is
+    A mesh whose nodes have moved is quality-checked first, then bisected
+    (`bisect`) at its current coordinates (they become the refined mesh's
+    imported nodes); `transfer_design` then builds the refined model. Each
+    per-element `MaterialField` property and each `SheetField` fill is copied
+    from parent to children (`transfer`); everything else refers to the mesh
+    by name and is kept. The refined model is built by `Model`, so it is
     validated like any other.
 
     Args:
@@ -144,9 +145,18 @@ def refine_model(model: Model, marked) -> tuple[Model, Refinement]:
         ValueError: ``marked`` is not a boolean mask over the tetrahedra.
     """
     _check_concrete(model)
+    _check_quality(model.mesh, model._domain.active, stacklevel=2)  # noqa: SLF001
+    fine, refinement = bisect(model.mesh, marked)
+    return transfer_design(model, fine, refinement), refinement
+
+
+def transfer_design(model: Model, fine: Mesh, refinement: Refinement) -> Model:
+    """``model`` on ``fine``, its mesh bisected by `bisect`; see `refine_model`.
+
+    `refine_mesh` bisects first and calls this only for a mesh under its
+    ``max_tetrahedra`` cap.
+    """
     coarse = model.mesh
-    _check_quality(coarse, model._domain.active, stacklevel=3)  # noqa: SLF001
-    fine, refinement = bisect(coarse, marked)
 
     def gather(values: Any, region: str) -> Any:
         return transfer(values, region, coarse=coarse, fine=fine, refinement=refinement)
@@ -165,14 +175,13 @@ def refine_model(model: Model, marked) -> tuple[Model, Refinement]:
         else b
         for b in model.boundaries
     )
-    refined = Model(
+    return Model(
         fine,
         materials=materials,
         boundaries=boundaries,
         ports=model.ports,
         excluded=model.excluded,
     )
-    return refined, refinement
 
 
 def transfer(
