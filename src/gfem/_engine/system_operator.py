@@ -260,15 +260,22 @@ class SystemOperator:
         """The frequency indices of ``omegas`` in the order a backward solves them.
 
         From the adjoint base's frequency: ascending when the base sits at the
-        first, else descending (a forward leaves it at the last). Repeated
-        backward passes so alternate, and each refactorizes once fewer than
-        there are frequencies.
+        first (up to round-off), else descending (a forward leaves it at the
+        last). Repeated backward passes so alternate, and each refactorizes
+        once fewer than there are frequencies. Under a Bloch wave vector the
+        CPU adjoint solves are the transposed system's, one handle per
+        frequency and no base: descending.
         """
         system = self if self._transposed is None else self._transposed_system
         sweep = None if system is None else system._adjoint_sweep  # noqa: SLF001
         at = None if sweep is None else sweep.frequency
         indices = list(range(len(omegas)))
-        return indices if omegas and at == omegas[0] else indices[::-1]
+        first = (
+            bool(omegas)
+            and at is not None
+            and bool(np.isclose(at, omegas[0], rtol=1e-12, atol=0.0))
+        )
+        return indices if first else indices[::-1]
 
     @property
     def nbytes(self) -> int:

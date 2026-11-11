@@ -175,3 +175,21 @@ def test_corrections_are_block_diagonal_over_wave_port_surfaces(line):
     u, c = system.corrections(OMEGAS[0])
     np.testing.assert_array_equal(u, np.concatenate([v @ p for v, p in pairs], 1))
     np.testing.assert_array_equal(c, scipy.linalg.block_diag(*blocks))
+
+
+def test_a_backward_starts_at_the_kept_base_frequency_up_to_round_off(line):
+    system, _ = _system(line, "direct")
+    # the base's frequency, computed another way: one ulp off the backward's
+    first = np.nextafter(OMEGAS[0], np.inf)
+    with system.sweep() as sweep:
+        sweep.at(first)
+        system.keep_base(sweep)
+    try:
+        assert system.adjoint_order(OMEGAS) == [0, 1]
+        system.free_base()
+        with system.sweep() as sweep:
+            sweep.at(OMEGAS[1])
+            system.keep_base(sweep)
+        assert system.adjoint_order(OMEGAS) == [1, 0]
+    finally:
+        system.free()
