@@ -501,6 +501,7 @@ def _counted_prepares(function, *args):
 
 
 def _prepares_of(row, directory):
+    ENTRIES.clear()  # no plan pooled by an earlier test
     objective, p, _, _ = ROWS[row](directory)
     grad, prepares, refactorized = _counted_prepares(jax.grad(objective), p)
     return np.asarray(grad), prepares, refactorized
@@ -508,6 +509,7 @@ def _prepares_of(row, directory):
 
 def _prepares_of_one_frequency(directory):
     """One frequency, lossy wave ports, an adjoint through Woodbury."""
+    ENTRIES.clear()  # no plan pooled by an earlier test
     mesh = cases.wave_mesh(Path(directory))
     model = cases.wave_line(mesh, "lossy")
     values, _ = cases.core_design(mesh, seed=4)
@@ -536,7 +538,8 @@ def test_a_two_frequency_gradient_prepares_one_base(tmp_path, solver):
         f"prepares: {prepares} under ranks, {serial} on one process; "
         f"refactorizations {refactorized}"
     )
-    assert serial == 3  # the sweep's, and one per frequency for the adjoint
+    # one process keeps the forward's base for the adjoint too (ADR 0065, amended)
+    assert serial == 1
     assert prepares == 1
     # the sweep's second frequency, then the adjoint at each of the two
     assert refactorized == 3
@@ -550,7 +553,7 @@ def test_a_one_frequency_woodbury_gradient_factorizes_once(tmp_path, solver):
         _on, "_prepares_of_one_frequency", solver, tmp_path, ranks=4, limit=300
     )
     print(f"prepares: {prepares} under ranks, {serial} on one process")  # noqa: T201
-    assert serial == 2
+    assert serial == 1  # the adjoint reuses the forward's base on one process too
     assert prepares == 1
     assert refactorized == 0
     _assert_below_the_gate(grad, grad_one, "one base, Woodbury", solver)
