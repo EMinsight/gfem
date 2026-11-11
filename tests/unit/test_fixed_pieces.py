@@ -8,11 +8,14 @@ assembly (the reference here: the same values as a plain `Material`, which
 has no material-field region and so no split).
 """
 
+import types
+
 import numpy as np
 import pytest
 import structured_meshes as sm
 
 import gfem
+from gfem._engine.system_operator import FixedPieces
 from gfem._linalg import pieces
 
 F = (21e9, 24e9)
@@ -106,3 +109,18 @@ def test_iterative_solves_keep_nothing(path, keeps):
     for _ in range(3):
         _s(model, options)
     assert keeps == []
+
+
+def test_equal_values_on_another_region_layout_key_another_fixed_part():
+    # four elements of value 1: the same values outside either layout's regions
+    store = pieces.KeptParts()
+    values = np.ones(4)
+
+    def split(outside):
+        piece = types.SimpleNamespace(name="mass", values=values, integrand="whole")
+        varying = types.SimpleNamespace(name="mass", values=values, integrand="part")
+        fixed = FixedPieces(store, np.asarray(outside), lambda: [varying])
+        (part,) = fixed.split([piece])[1]
+        return part.digest
+
+    assert split([True, True, False, False]) != split([False, False, True, True])

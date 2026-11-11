@@ -27,8 +27,8 @@ adjoint solve keeps one handle per frequency for later backward passes.
 On one process with the CPU ``direct`` solver, each volume piece of an operator
 with material-field regions (`FixedPieces`) is summed as its part on those
 regions, assembled every solve, plus its part on the other elements, kept per
-discretization behind a digest of its coefficient there (ADR 0082). S moves by
-summation round-off only.
+discretization behind a digest of its coefficient there and of the regions'
+layout (ADR 0082). S moves by summation round-off only.
 
 There, too, a forward sweep takes its base handle from the plan pool
 (`gfem._engine.cache`) and refactorizes it, rather than planning again
@@ -97,9 +97,11 @@ class FixedPieces:
 
         A volume piece (one with coefficient values) gives its varying part
         and a `FixedPart` keyed on a digest of its coefficient outside the
-        material-field regions; every other piece itself and ``None``.
+        material-field regions and of those regions' layout (which elements
+        lie outside); every other piece itself and ``None``.
         """
         varying = {p.name: p for p in self.varying() if p.values is not None}
+        layout = np.packbits(np.asarray(self.outside, bool)).tobytes()
         integrands: list[Integrand] = []
         fixed: list[FixedPart | None] = []
         for piece in pieces:
@@ -111,6 +113,7 @@ class FixedPieces:
             values = np.ascontiguousarray(piece.values[self.outside])
             digest = hashlib.blake2b(digest_size=16)
             digest.update(f"{values.dtype.str}{values.shape}".encode())
+            digest.update(layout)
             digest.update(values.tobytes())
             integrands.append(part.integrand)
             fixed.append(
