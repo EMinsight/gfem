@@ -282,6 +282,24 @@ def test_a_mode_in_a_degenerate_cluster_raises(cavity):
         gfem.error_estimate(degenerate, estimator, model=cavity)
 
 
+def test_a_mode_within_cluster_rtol_of_another_raises(cavity):
+    # refine_mesh's rule, with the default SolverOptions().cluster_rtol = 1e-6
+    result = gfem.solve(
+        cavity, gfem.Eigenmode(target=rc.CAVITY_F1, n_modes=2), options=OPTIONS
+    )
+    omega = np.asarray(result.omega)
+    estimator = gfem.QuantityEstimator(omega=0)
+    apart = dataclasses.replace(
+        result, omega=jnp.asarray([omega[0], omega[0] * 1.00001])
+    )
+    gfem.error_estimate(apart, estimator, model=cavity)
+    close = dataclasses.replace(
+        result, omega=jnp.asarray([omega[0], omega[0] * 1.0000001])
+    )
+    with pytest.raises(gfem.DegenerateModeError, match="cluster_rtol=1e-06"):
+        gfem.error_estimate(close, estimator, model=cavity)
+
+
 @pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
 def test_the_mode_is_followed_by_nearest_omega(cavity):
     # Mode 1 of three around the first resonance: on every refined mesh the

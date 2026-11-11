@@ -319,7 +319,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             quantity entry with no verified estimate (see
             `QuantityEstimator`).
         DegenerateModeError: A `QuantityEstimator` names a mode of a
-            degenerate cluster.
+            degenerate cluster, or one within the default
+            `SolverOptions.cluster_rtol` of another mode.
         NonDifferentiableError: A model or result leaf is a JAX tracer, or
             the call is inside `jax.jit`.
     """
@@ -330,7 +331,9 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     _check_estimable(result, estimator, model)
     mode = _estimator_mode(estimator)
     if mode is not None:
-        _track_mode(result, mode, None, 0.0)
+        # `refine_mesh`'s rule, at the default tolerance: the result does not
+        # record the options it was solved with
+        _track_mode(result, mode, None, SolverOptions().cluster_rtol)
     return _estimate(model, result, estimator, threads=None, mode=mode)
 
 
