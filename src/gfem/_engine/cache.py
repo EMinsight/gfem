@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import collections
 import dataclasses
+import functools
 import hashlib
 import itertools
 import os
@@ -225,13 +226,14 @@ def _cgroup_memory_limit() -> int | None:
     return min(limits, default=None)
 
 
+@functools.cache
 def default_retain_memory() -> int:
     """Half of the memory this process may use, in bytes.
 
     The smaller of the physical memory and the process's cgroup memory limit
     (searched up through parent cgroups, so a job's limit counts); "max" or an
     unreadable limit means none. Without readable physical memory or a limit,
-    8 GiB.
+    8 GiB. Read once per process.
     """
     sizes = [s for s in (_physical_memory(), _cgroup_memory_limit()) if s is not None]
     return min(sizes, default=16 * 2**30) // 2
