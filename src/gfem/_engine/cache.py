@@ -354,7 +354,8 @@ class EntryCache:
             if e.consumed and self._comms[k] == owner
         ]
         # out of the cache before any is freed: a base returning to the pool
-        # walks the cache
+        # walks the pool against the cache's bytes, which must not count the
+        # consumed entries still to be freed
         freed = []
         for key in consumed:
             del self._comms[key]
