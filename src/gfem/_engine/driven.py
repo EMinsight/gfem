@@ -1152,9 +1152,11 @@ class DrivenRule:
         is on the unpaired space (`DrivenOperator.pair`). ``z_ref``
         contributes nothing.
 
-        The frequencies are solved last first: a base handle kept from the
-        forward sits at the last frequency (`SystemOperator.keep_base`), so it
-        refactorizes once fewer. The pairs stay in frequency order.
+        The frequencies are solved from the adjoint base's frequency
+        (`SystemOperator.adjoint_order`): a base handle kept from the forward
+        sits at the last (`SystemOperator.keep_base`), and a backward leaves it
+        at the frequency it ended on, so each pass refactorizes once fewer. The
+        pairs stay in frequency order.
         """
         if self.adaptive:
             return self._backward_adaptive(model, entry, cotangents)
@@ -1170,7 +1172,8 @@ class DrivenRule:
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
             domain = em_region(model, op.built)
-            for n in reversed(range(len(frequencies))):
+            omegas = [2 * math.pi * f for f in frequencies]
+            for n in system.adjoint_order(omegas):
                 f = frequencies[n]
                 omega = 2 * math.pi * f
                 x = solution[:, n * width : (n + 1) * width]
@@ -1717,10 +1720,27 @@ class _Kept:
 
     @property
     def nbytes(self) -> int:
-        """Host memory held, in bytes (0 once freed)."""
+        """Host memory held, in bytes (0 once freed).
+
+        Wave port couplings and a port network a discretization keeps
+        (`_KeptPorts`) are not counted: every entry on it shares them, and the
+        discretization count bounds them.
+        """
         if self._freed:
             return 0
-        return self.system.nbytes + self.ports.nbytes
+        held = self.system.nbytes + self.ports.nbytes
+        disc = cached(self.system.operator.built)
+        kept = None if disc is None else disc.ports
+        if not isinstance(kept, _KeptPorts):
+            return held
+        surfaces = self.system.surfaces
+        if len(surfaces) == len(kept.couplings) and all(
+            a is b for a, b in zip(surfaces, kept.couplings, strict=True)
+        ):
+            held -= sum(int(c.vectors.nbytes) for c in surfaces)
+        if any(n is self.ports for n in kept.networks.values()):
+            held -= self.ports.nbytes
+        return held
 
     def free_base(self, comm: Any) -> None:
         """Release the base handle kept for a backward pass, if it is on ``comm``.

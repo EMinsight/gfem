@@ -169,3 +169,15 @@ def test_vmapped_variants_each_back_onto_their_own_base(path, counts, solver):
     for (v, g), (v0, g0) in zip(got, want, strict=True):
         assert v == pytest.approx(v0, rel=1e-12, abs=0)
         np.testing.assert_allclose(g, g0, rtol=0, atol=1e-10 * np.abs(g0).max())
+
+
+@pytest.mark.parametrize("solver", SOLVERS)
+def test_repeated_pullbacks_each_start_at_the_bases_frequency(path, counts, solver):
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    _, vjp = jax.vjp(_s21(mesh, solver), _eps(mesh))
+    grads = [vjp(1.0)[0] for _ in range(3)]
+    assert counts.prepared["backward"] == 0
+    # each pass runs the frequencies from where the last left the base
+    assert counts.refactorized["backward"] == 3 * (len(F) - 1)
+    for g in grads[1:]:
+        np.testing.assert_allclose(g, grads[0], rtol=1e-10, atol=0)

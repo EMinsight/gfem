@@ -11,6 +11,7 @@ entries' bases and entries with one walk, in that order.
 import jax
 import jax.numpy as jnp
 import numpy as np
+import periodic_cases as pc
 import pytest
 import structured_meshes as sm
 
@@ -141,6 +142,76 @@ def test_a_consumed_entry_returns_its_base_to_the_pool():
     entry.consumed = True
     entries.free_consumed(comm=None, budget=100)
     assert returned == [True]
+
+
+def test_freeing_consumed_entries_survives_their_bases_returning_to_the_pool():
+    # each consumed entry returns a base on the way out, over the budget
+    entries = EntryCache()
+
+    class Returning(FakeKept):
+        def free(self, *, return_plans=False):
+            if return_plans and self.base is not None:
+                entries.give_plan(("k",), TOPOLOGY, self.base, budget=0)
+            self.base = None
+
+    first = Entry(physics="em", handle=Returning(10, FakeHandle(50)))
+    second = Entry(physics="em", handle=Returning(10, FakeHandle(50)))
+    entries.put(first, budget=1000)
+    entries.put(second, budget=1000)
+    first.consumed = second.consumed = True
+    entries.free_consumed(comm=None, budget=0)
+    assert len(entries) == 0
+    assert first.handle is None
+    assert second.handle is None
+
+
+def test_a_walk_after_a_solve_leaves_other_solves_unconsumed_entries():
+    # put kept the entry; nothing consumed, a returned plan: only pooled
+    # handles go
+    entries = EntryCache()
+    base = FakeHandle(50)
+    pending = Entry(physics="em", handle=FakeKept(20, base))
+    key = entries.put(pending, budget=1000)
+    pooled = FakeHandle(10)
+    entries.give_plan(("k",), TOPOLOGY, pooled, budget=1000)
+    entries.free_consumed(comm=None, budget=0)
+    assert pooled.freed
+    entries.give_plan(("k",), TOPOLOGY, FakeHandle(10), budget=0)
+    assert entries.get(key) is pending
+    assert not base.freed
+    assert entries.pooled == 0
+
+
+class FakeComm:
+    """A communicator of one process for the cache's reductions."""
+
+
+@pytest.fixture
+def fake_comm(monkeypatch):
+    monkeypatch.setattr(
+        cache._mpi, "comm_key", lambda comm: None if comm is None else id(comm)
+    )
+    monkeypatch.setattr(cache._mpi, "node_bytes", lambda _comm, local: int(local))
+    monkeypatch.setattr(cache._mpi, "node_budget", lambda _comm, local: int(local))
+    return FakeComm()
+
+
+def test_a_walk_under_a_communicator_does_not_count_pooled_handles(fake_comm):
+    entries = EntryCache()
+    pooled = FakeHandle(500)
+    entries.give_plan(("k",), TOPOLOGY, pooled, budget=1000)
+    first = Entry(physics="em", handle=FakeKept(20, FakeHandle(30)))
+    k_first = entries.put(first, budget=200, comm=fake_comm)
+    k_second = entries.put(
+        Entry(physics="em", handle=FakeKept(20, FakeHandle(30))),
+        budget=200,
+        comm=fake_comm,
+    )
+    # the pool is serial: this walk cannot free it, and does not count it
+    assert not pooled.freed
+    assert entries.get(k_first) is first
+    assert first.handle.base is not None
+    assert entries.get(k_second) is not None
 
 
 def test_clear_frees_the_pool_too():
@@ -305,3 +376,28 @@ def test_pooled_handles_of_a_topology_left_out_of_the_discretizations_are_freed(
     for _ in range(cache._MAX_DISCRETIZATIONS):
         cache.discretization(gfem.Mesh.from_gmsh(path, length_unit="mm"))
     assert cache.ENTRIES.pooled == 0
+
+
+@pytest.mark.usefixtures("plans")  # an empty cache before and after
+def test_a_bloch_forward_returns_its_base_to_the_pool(tmp_path):
+    # the adjoint solves are on the transposed system: they never read the base
+    mesh = pc.g_mesh(tmp_path)
+    base = pc.g(mesh)
+    n = len(mesh.elements("cover"))
+    problem = gfem.Driven(pc.G_FREQUENCIES, wave_vector=pc.G_K)
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(eps):
+        model = base.with_material("cover", gfem.MaterialField(eps_r=eps))
+        s = gfem.solve(model, problem, options=options).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    eps = jnp.full(n, 2.0)
+    _, vjp = jax.vjp(objective, eps)
+    (entry,) = cache.ENTRIES._entries.values()
+    assert entry.handle.system._adjoint_sweep is None
+    assert cache.ENTRIES.pooled == 1
+    (got,) = vjp(1.0)
+    cache.ENTRIES.clear()
+    want = jax.grad(objective)(eps)
+    np.testing.assert_allclose(got, want, rtol=1e-10, atol=0)

@@ -1297,3 +1297,26 @@ def test_the_port_section_key_follows_what_the_port_section_reads(tmp_path):
         for eps_z in (3.0, 3.0, 3.5)
     }
     assert len(keys) == 2
+
+
+def test_an_entry_counts_port_couplings_only_when_no_discretization_keeps_them(
+    tmp_path,
+):
+    model, leads = _kept_line(tmp_path)
+
+    def objective(eps):
+        m = model.with_material("core", gfem.MaterialField(eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        s = gfem.solve(m, gfem.Driven(KEPT_F), options=KEPT_OPTIONS).s.values
+        return jnp.abs(s[0, 1, 0]) ** 2
+
+    cache.ENTRIES.clear()
+    jax.vjp(objective, jnp.asarray(leads))
+    (entry,) = cache.ENTRIES._entries.values()
+    system, ports = entry.handle.system, entry.handle.ports
+    shared = sum(c.vectors.nbytes for c in system.surfaces) + ports.nbytes
+    assert shared > 0
+    kept = entry.nbytes
+    cache.cached(system.operator.built).ports = None  # the discretization's go
+    assert entry.nbytes == kept + shared
+    cache.ENTRIES.clear()

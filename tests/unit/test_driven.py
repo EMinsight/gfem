@@ -903,7 +903,8 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
     form = system.operator.form(1.0)
     form.Assemble()
     if keep:
-        assert entry.handle.nbytes == system.nbytes + ports.nbytes
+        # the discretization keeps the port network: the entry does not count it
+        assert entry.handle.nbytes == system.nbytes
     if not (kind in ("direct", "petsc") and keep):
         # BDDC assembles forms; a forward that keeps nothing drops its pieces
         # (no wave port on the line: no W vectors); a kept BDDC forward holds
@@ -920,7 +921,12 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
 
 def test_a_kept_forward_is_freed_once_and_then_holds_nothing():
     freed = []
-    system = SimpleNamespace(nbytes=10, free=lambda **_: freed.append(True))
+    system = SimpleNamespace(
+        nbytes=10,
+        free=lambda **_: freed.append(True),
+        operator=SimpleNamespace(built=object()),  # on no cached discretization
+        surfaces=[],
+    )
     kept = driven._Kept(system, SimpleNamespace(nbytes=5))
     assert kept.nbytes == 15
     kept.free()

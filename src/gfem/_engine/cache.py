@@ -27,15 +27,19 @@ factors are released on the way in. The pool holds several handles per key
 discretization left are freed.
 
 One byte budget, ``retain_memory``, bounds pooled handles, entries' bases and
-entries together. Over it, one walk frees pooled handles (least recently
-returned first), then live entries' bases (oldest entry first), then whole
-entries (least recently used first); ``retain_memory=0`` keeps none of them.
+entries together. Over it, the walk of a stored entry frees pooled handles
+(least recently returned first), then live entries' bases (oldest entry
+first), then whole entries (least recently used first); ``retain_memory=0``
+keeps none of them. A handle returning to the pool, or a differentiated
+forward freeing consumed entries, frees pooled handles only: a solve evicts
+other solves' entries only where it stores one.
 """
 
 from __future__ import annotations
 
 import collections
 import dataclasses
+import functools
 import hashlib
 import itertools
 import os
@@ -223,13 +227,14 @@ def _cgroup_memory_limit() -> int | None:
     return min(limits, default=None)
 
 
+@functools.cache
 def default_retain_memory() -> int:
     """Half of the memory this process may use, in bytes.
 
     The smaller of the physical memory and the process's cgroup memory limit
     (searched up through parent cgroups, so a job's limit counts); "max" or an
     unreadable limit means none. Without readable physical memory or a limit,
-    8 GiB.
+    8 GiB. Read once per process.
     """
     sizes = [s for s in (_physical_memory(), _cgroup_memory_limit()) if s is not None]
     return min(sizes, default=16 * 2**30) // 2
@@ -275,7 +280,7 @@ class EntryCache:
         against the budget, but only ``comm``'s are evicted: freeing a base may be
         collective on a communicator whose ranks are not here, so the budget does not
         bound what a solve on another communicator keeps. The plan pool is serial:
-        it counts, but only a one-process walk frees from it.
+        only a one-process walk counts it and frees from it.
         """
         key = next(self._keys)
         budget = _mpi.node_budget(comm, budget)
@@ -296,11 +301,12 @@ class EntryCache:
         owner = _mpi.comm_key(comm)
 
         def over() -> bool:
-            return _mpi.node_bytes(comm, self.nbytes) > budget
+            # the serial pool counts only where the walk can free it
+            held = self.nbytes if comm is None else self._entry_nbytes
+            return _mpi.node_bytes(comm, held) > budget
 
         if comm is None:
-            while self._plans and over():
-                self._plans.popitem(last=False)[1].handle.free()
+            self._free_pool(budget)
         for key, entry in list(self._entries.items()):
             free_base = getattr(entry.handle, "free_base", None)
             if self._comms[key] != owner or free_base is None:
@@ -335,23 +341,35 @@ class EntryCache:
         Called when a differentiated forward on ``comm`` starts. Under ranks the
         backward is replicated, so every rank frees the same entries together.
         With a ``budget`` their base handles return to the plan pool, where
-        their handles can (`Entry.free`), and the walk runs down to it.
+        their handles can (`Entry.free`), and on one process pooled handles go
+        down to it. No entry that is not consumed goes: only `put` evicts
+        entries.
         """
         owner = _mpi.comm_key(comm)
-        consumed = [k for k, e in self._entries.items() if e.consumed]
+        consumed = [
+            k
+            for k, e in self._entries.items()
+            if e.consumed and self._comms[k] == owner
+        ]
+        # out of the cache before any is freed: a base returning to the pool
+        # walks the cache
+        freed = []
         for key in consumed:
-            if self._comms[key] != owner:
-                continue
             del self._comms[key]
-            self._entries.pop(key).free(return_plans=budget is not None)
-        if budget is not None:
-            self._evict(_mpi.node_budget(comm, budget), comm)
+            freed.append(self._entries.pop(key))
+        for entry in freed:
+            entry.free(return_plans=budget is not None)
+        if budget is not None and comm is None:
+            self._free_pool(budget)
 
     # --- the plan pool -----------------------------------------------------------
 
     def give_plan(self, key: Hashable, topology: Any, handle: Any, budget: int) -> None:
-        """Pool ``handle`` under ``key``, its factors released; walk to ``budget``.
+        """Pool ``handle`` under ``key``, its factors released, within ``budget``.
 
+        Pooled handles go, least recently returned first, while the cache is
+        over ``budget``; entries and their bases stay (only `put` evicts them),
+        so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
         no discretization of it is left (`free_plans_off`). One process only.
         """
@@ -359,7 +377,12 @@ class EntryCache:
         if release is not None:
             release()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
-        self._evict(budget, None)
+        self._free_pool(budget)
+
+    def _free_pool(self, budget: int) -> None:
+        """Free pooled handles, least recently returned first, down to ``budget``."""
+        while self._plans and self.nbytes > budget:
+            self._plans.popitem(last=False)[1].handle.free()
 
     def take_plan(self, key: Hashable) -> Any | None:
         """The most recently returned pooled handle under ``key``, or ``None``.
@@ -400,8 +423,14 @@ class EntryCache:
     @property
     def nbytes(self) -> int:
         """Bytes held by every entry and every pooled handle."""
-        held = sum(e.nbytes for e in self._entries.values())
-        return held + sum(int(p.handle.nbytes) for p in self._plans.values())
+        return self._entry_nbytes + sum(
+            int(p.handle.nbytes) for p in self._plans.values()
+        )
+
+    @property
+    def _entry_nbytes(self) -> int:
+        """Bytes held by every entry."""
+        return sum(e.nbytes for e in self._entries.values())
 
     def __len__(self) -> int:
         return len(self._entries)

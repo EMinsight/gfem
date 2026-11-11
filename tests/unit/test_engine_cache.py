@@ -143,6 +143,27 @@ def test_default_budget_is_half_the_machine():
 GIB = 2**30
 
 
+@pytest.fixture(autouse=True)
+def fresh_default_budget():
+    """The default budget read anew: it is read once per process."""
+    cache.default_retain_memory.cache_clear()
+    yield
+    cache.default_retain_memory.cache_clear()
+
+
+def test_the_default_budget_is_read_once_per_process(monkeypatch):
+    reads = []
+
+    def physical_memory():
+        reads.append(1)
+        return 64 * GIB
+
+    monkeypatch.setattr(cache, "_physical_memory", physical_memory)
+    assert cache.default_retain_memory() == cache.default_retain_memory()
+    assert cache.retain_budget(None) == cache.default_retain_memory()
+    assert len(reads) == 1
+
+
 def _fake_cgroups(tmp_path, monkeypatch, membership, limits):
     """A ``/proc/self/cgroup`` reading ``membership`` and limit files under a root."""
     proc = tmp_path / "proc_self_cgroup"
@@ -200,6 +221,7 @@ def test_default_budget_is_half_the_ram_without_a_limit(tmp_path, monkeypatch):
     )
     assert cache.default_retain_memory() == 32 * GIB
     monkeypatch.setattr(cache, "_PROC_CGROUP", tmp_path / "missing")
+    cache.default_retain_memory.cache_clear()
     assert cache.default_retain_memory() == 32 * GIB
 
 

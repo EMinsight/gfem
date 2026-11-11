@@ -27,8 +27,8 @@ adjoint solve keeps one handle per frequency for later backward passes.
 On one process with the CPU ``direct`` solver, each volume piece of an operator
 with material-field regions (`FixedPieces`) is summed as its part on those
 regions, assembled every solve, plus its part on the other elements, kept per
-discretization behind a digest of its coefficient there (ADR 0082). S moves by
-summation round-off only.
+discretization behind a digest of its coefficient there and of the regions'
+layout (ADR 0082). S moves by summation round-off only.
 
 There, too, a forward sweep takes its base handle from the plan pool
 (`gfem._engine.cache`) and refactorizes it, rather than planning again
@@ -97,9 +97,11 @@ class FixedPieces:
 
         A volume piece (one with coefficient values) gives its varying part
         and a `FixedPart` keyed on a digest of its coefficient outside the
-        material-field regions; every other piece itself and ``None``.
+        material-field regions and of those regions' layout (which elements
+        lie outside); every other piece itself and ``None``.
         """
         varying = {p.name: p for p in self.varying() if p.values is not None}
+        layout = np.packbits(np.asarray(self.outside, bool)).tobytes()
         integrands: list[Integrand] = []
         fixed: list[FixedPart | None] = []
         for piece in pieces:
@@ -111,6 +113,7 @@ class FixedPieces:
             values = np.ascontiguousarray(piece.values[self.outside])
             digest = hashlib.blake2b(digest_size=16)
             digest.update(f"{values.dtype.str}{values.shape}".encode())
+            digest.update(layout)
             digest.update(values.tobytes())
             integrands.append(part.integrand)
             fixed.append(
@@ -252,6 +255,20 @@ class SystemOperator:
         handle = self._adjoint_system()._adjoint_handle(n, omega)  # noqa: SLF001
         return handle.solve(loads, tolerance=self._adjoint_tolerance)
 
+    def adjoint_order(self, omegas: Sequence[float]) -> list[int]:
+        """The frequency indices of ``omegas`` in the order a backward solves them.
+
+        From the adjoint base's frequency: ascending when the base sits at the
+        first, else descending (a forward leaves it at the last). Repeated
+        backward passes so alternate, and each refactorizes once fewer than
+        there are frequencies.
+        """
+        system = self if self._transposed is None else self._transposed_system
+        sweep = None if system is None else system._adjoint_sweep  # noqa: SLF001
+        at = None if sweep is None else sweep.frequency
+        indices = list(range(len(omegas)))
+        return indices if omegas and at == omegas[0] else indices[::-1]
+
     @property
     def nbytes(self) -> int:
         """Host memory held by the adjoint handles, the pieces and ``W``, in bytes.
@@ -288,16 +305,12 @@ class SystemOperator:
         one process with the CPU ``direct`` and ``bddc_gmres`` solvers when the
         operator is its own adjoint's, so that the backward refactorizes it rather
         than preparing a handle per frequency. A base it no longer holds is
-        prepared again at the adjoint tolerance. A base from the plan pool moves
-        in any case, so that it returns to the pool only when the entry holding it
-        is freed (ADR 0082); any other sweep keeps its base, and ``with`` frees
-        it.
+        prepared again at the adjoint tolerance. A shared base from the plan pool
+        returns to the pool only when the entry holding it is freed (ADR 0082). A
+        base the adjoint solves do not share (the transposed system's solves)
+        stays with its sweep: ``with`` returns it to the pool or frees it.
         """
-        if (
-            self.operator.built.comm is None
-            and not sweep.pooled
-            and not self._shares_base()
-        ):
+        if self.operator.built.comm is None and not self._shares_base():
             return
         adjoint = self.sweep(tolerance=self._adjoint_tolerance)
         sweep.move_base(adjoint)
@@ -464,6 +477,11 @@ class SystemSweep:
     def pooled(self) -> bool:
         """Whether the base returns to the plan pool."""
         return self._plans is not None
+
+    @property
+    def frequency(self) -> float | None:
+        """The ω of the handle `at` gave last, or ``None``."""
+        return None if self._last is None else self._last[0]
 
     def at(self, omega: float) -> Handle:
         """A handle of ``A(ω) + W(ω)``, borrowing the sweep's base handle."""
