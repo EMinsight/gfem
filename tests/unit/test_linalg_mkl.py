@@ -415,6 +415,123 @@ def test_pardiso_memory_counts_the_gather_index(built):
     assert handle.nbytes - held == index > 0
 
 
+def _complex_symmetric(built, shift):
+    op, space = _laplace(built, complex_valued=True, shift=shift)
+    return prepare(op, symmetry="complex_symmetric", kind="direct"), space
+
+
+@needs_mkl
+def test_a_pardiso_handle_with_released_factors_refuses_to_solve(built, monkeypatch):
+    # MKL does not refuse a solve on released factors: it returns NaN, or
+    # the old factors' solution (error 0), so gfem must never call it
+    from ngsolve.solvers import mkl_pardiso
+
+    handle, space = _complex_symmetric(built, 1 - 2j)
+    handle.release_factors()
+    phases = []
+    parent = mkl_pardiso.MKLPardiso._call_pardiso
+
+    def recorded(self, phase):
+        phases.append(phase)
+        parent(self, phase)
+
+    monkeypatch.setattr(mkl_pardiso.MKLPardiso, "_call_pardiso", recorded)
+    B = np.ones(space.ndof, complex)
+    for call in (
+        handle.solve,
+        handle.solve_counted,
+        lambda B: handle.solve(B, transpose=True),
+        handle.apply,
+    ):
+        with pytest.raises(RuntimeError, match="released"):
+            call(B)
+    assert phases == []
+
+
+@needs_mkl
+def test_a_pardiso_handle_refactorized_after_its_release_solves_like_a_fresh_handle(
+    built,
+):
+    # outside a TaskManager: one thread, so bitwise
+    handle, space = _complex_symmetric(built, 1 - 2j)
+    inverse = handle._inverse
+    handle.release_factors()
+    handle.refactorize(_laplace(built, complex_valued=True, shift=3 + 1j)[0])
+    assert handle._inverse is inverse  # the analysis kept: phase 22 only
+    fresh, _ = _complex_symmetric(built, 3 + 1j)
+    rng = np.random.default_rng(11)
+    B = rng.standard_normal(space.ndof) + 1j * rng.standard_normal(space.ndof)
+    np.testing.assert_array_equal(handle.solve(B), fresh.solve(B))
+
+
+@needs_mkl
+@needs_two_cores
+@pytest.mark.usefixtures("ngsolve_threads")
+def test_a_threaded_pardiso_handle_refactorized_after_its_release_solves_like_a_fresh_handle(  # noqa: E501
+    built,
+):
+    # MKL's threaded factorization is not run-to-run bitwise, kept or released
+    with task_manager(2):
+        handle, space = _complex_symmetric(built, 1 - 2j)
+        handle.release_factors()
+        handle.refactorize(_laplace(built, complex_valued=True, shift=3 + 1j)[0])
+        fresh, _ = _complex_symmetric(built, 3 + 1j)
+        rng = np.random.default_rng(12)
+        B = rng.standard_normal(space.ndof) + 1j * rng.standard_normal(space.ndof)
+        X, ref = handle.solve(B), fresh.solve(B)
+    assert np.linalg.norm(X - ref) / np.linalg.norm(ref) < 1e-13
+
+
+@needs_mkl
+def test_pardiso_memory_drops_by_the_factors_while_released(built):
+    # MKL keeps reporting the old factor size (iparm[16]) after phase 0:
+    # the count follows gfem's released flag
+    handle, _ = _complex_symmetric(built, 1 - 2j)
+    params = handle._inverse._params
+    factored = handle.nbytes
+    factor_size = 1024 * int(params[16])
+    assert factor_size > 0
+    handle.release_factors()
+    assert handle.nbytes == factored - factor_size
+    handle.release_factors()  # a second release changes nothing
+    assert handle.nbytes == factored - factor_size
+
+
+@needs_mkl
+def test_release_refactorize_cycles_leave_memory_flat(built):
+    handle, space = _complex_symmetric(built, 1 - 2j)
+    rng = np.random.default_rng(13)
+    B = rng.standard_normal(space.ndof) + 1j * rng.standard_normal(space.ndof)
+    shifts = (3 + 1j, 2 - 1j)
+    # the first refactorization builds the gather index, which stays
+    handle.refactorize(_laplace(built, complex_valued=True, shift=shifts[1])[0])
+    held, solutions = [], {}
+    for cycle in range(4):
+        shift = shifts[cycle % 2]
+        handle.release_factors()
+        released = handle.nbytes
+        handle.refactorize(_laplace(built, complex_valued=True, shift=shift)[0])
+        held.append((released, handle.nbytes))
+        X = handle.solve(B)
+        if shift in solutions:
+            np.testing.assert_array_equal(X, solutions[shift])
+        solutions[shift] = X
+    assert len(set(held)) == 1
+    assert held[0][0] < held[0][1]
+
+
+def test_sparse_cholesky_factors_keep_everything_on_release(built, monkeypatch):
+    # NGSolve's sparse Cholesky has no call that frees its factors and keeps
+    # its ordering: release keeps them, and the handle still solves
+    monkeypatch.setattr(direct, "pardiso_inverse", lambda *_, **__: None)
+    handle, space = _complex_symmetric(built, 1 - 2j)
+    B = np.ones(space.ndof, complex)
+    before, held = handle.solve(B), handle.nbytes
+    handle.release_factors()
+    assert handle.nbytes == held
+    np.testing.assert_array_equal(handle.solve(B), before)
+
+
 @needs_mkl
 def test_pardiso_factors_an_all_free_operator_without_projecting_it(built, monkeypatch):
     # every DOF free: PARDISO factors the handle's own matrix, and a sweep
