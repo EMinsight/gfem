@@ -235,6 +235,14 @@ class BddcHandle(NgsHandle):
         self.maxiter = maxiter
         self._hold(form, preconditioner)
 
+    def expect_solves(self, solves: int) -> None:
+        """Restate the solve calls the next setups serve, as `refactorize` does.
+
+        For the coarse factorization only; the held preconditioner stays.
+        """
+        with self._lock:
+            self._expected_columns = self._columns_per_setup(solves)
+
     def _columns_per_setup(self, solves: int) -> int:
         """The columns one setup serves when ``solves`` solve calls are expected.
 

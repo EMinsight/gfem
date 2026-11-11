@@ -1151,6 +1151,10 @@ class DrivenRule:
         system (-k) under a Bloch wave vector. On a periodic model the pair
         is on the unpaired space (`DrivenOperator.pair`). ``z_ref``
         contributes nothing.
+
+        The frequencies are solved last first: a base handle kept from the
+        forward sits at the last frequency (`SystemOperator.keep_base`), so it
+        refactorizes once fewer. The pairs stay in frequency order.
         """
         if self.adaptive:
             return self._backward_adaptive(model, entry, cotangents)
@@ -1158,14 +1162,16 @@ class DrivenRule:
         width = len(self.excite)
         ct_s = cotangents.get("s")
         ct_e = cotangents.get("e_field")
-        pairs = []
+        frequencies = self.problem.frequency
+        pairs: list[FieldPair | None] = [None] * len(frequencies)
         with task_manager(self.options.threads, self.comm):
             if not isinstance(entry.handle, _Kept):  # frequency workers keep none
                 entry.handle = _Kept(*self._ports(model, warn=False))
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
             domain = em_region(model, op.built)
-            for n, f in enumerate(self.problem.frequency):
+            for n in reversed(range(len(frequencies))):
+                f = frequencies[n]
                 omega = 2 * math.pi * f
                 x = solution[:, n * width : (n + 1) * width]
                 if ct_s is not None:
@@ -1189,10 +1195,10 @@ class DrivenRule:
                     except LinearSolverConvergenceError as err:
                         raise _adjoint_error(f, err) from err
                 adjoint[:, undefined] = np.nan
-                pairs.append(
-                    op.pair(-adjoint, x, weights=op.weights(omega), domain=domain)
+                pairs[n] = op.pair(
+                    -adjoint, x, weights=op.weights(omega), domain=domain
                 )
-        return pairs
+        return [p for p in pairs if p is not None]
 
     def _backward_adaptive(
         self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]

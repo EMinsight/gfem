@@ -16,11 +16,13 @@ adjoint tolerance. The adjoint solve is a solve with ``(A + W)^T``: the
 operator itself when it is complex symmetric, and under a Bloch wave vector
 k the transposed system, the system operator at -k (``A(k)^T = A(-k)`` on
 the same DOFs, and ``W`` is symmetric and off every pair), built on the
-first adjoint solve. On the CPU an adjoint solve keeps one handle per
-frequency for later backward passes; on a GPU one base handle refactorized
-at each frequency, so device memory holds one factorization whatever the
-number of frequencies. A distributed solve takes the GPU's path, and starts from
-the forward's base handle (`keep_base`, ADR 0065).
+first adjoint solve. Adjoint solves refactorize one base handle at each
+frequency, so memory holds one factorization whatever the number of
+frequencies: on a GPU, and, starting from the forward's base handle
+(`keep_base`, ADR 0065), under ranks and on one process with the CPU
+``direct`` and ``bddc_gmres`` solvers. Elsewhere on the CPU (the transposed
+system, the ``petsc`` solver, a backward without its forward's system) an
+adjoint solve keeps one handle per frequency for later backward passes.
 
 On one process with the CPU ``direct`` solver, each volume piece of an operator
 with material-field regions (`FixedPieces`) is summed as its part on those
@@ -121,9 +123,9 @@ class SystemOperator:
     """The system operator ``A(ω) + W(ω)`` of one driven solve, and every handle of it.
 
     Owns the wave ports' Robin pieces, the piece sum, the modal corrections
-    ``W``, the adjoint handles (one per frequency on the CPU, one
-    refactorized base on a GPU), the transposed system under a Bloch wave
-    vector, and their memory. A forward sweep's base handle lives in its
+    ``W``, the adjoint handles (one refactorized base, else one per
+    frequency on the CPU), the transposed system under a Bloch wave vector,
+    and their memory. A forward sweep's base handle lives in its
     `SystemSweep`.
 
     Attributes:
@@ -282,17 +284,38 @@ class SystemOperator:
         """Move a finished forward sweep's base handle to the adjoint solves.
 
         Under ranks, where one factorization per frequency does not fit and a
-        backward must not prepare what its forward just freed (ADR 0065). A base it
-        no longer holds is prepared again at the adjoint tolerance. On one process
-        a base from the plan pool moves too, so that it returns to the pool only
-        when the entry holding it is freed (ADR 0082); any other sweep keeps its
-        base, and ``with`` frees it.
+        backward must not prepare what its forward just freed (ADR 0065), and on
+        one process with the CPU ``direct`` and ``bddc_gmres`` solvers when the
+        operator is its own adjoint's, so that the backward refactorizes it rather
+        than preparing a handle per frequency. A base it no longer holds is
+        prepared again at the adjoint tolerance. A base from the plan pool moves
+        in any case, so that it returns to the pool only when the entry holding it
+        is freed (ADR 0082); any other sweep keeps its base, and ``with`` frees
+        it.
         """
-        if self.operator.built.comm is None and not sweep.pooled:
+        if (
+            self.operator.built.comm is None
+            and not sweep.pooled
+            and not self._shares_base()
+        ):
             return
         adjoint = self.sweep(tolerance=self._adjoint_tolerance)
         sweep.move_base(adjoint)
+        # each adjoint frequency is one solve call: BDDC's coarse choice reads it
+        adjoint.expect_solves(1)
         self._adjoint_sweep = adjoint
+
+    def _shares_base(self) -> bool:
+        """Whether one-process adjoint solves refactorize the forward's base.
+
+        The CPU ``direct`` and ``bddc_gmres`` solvers, without a transposed
+        system (whose adjoint solves are on another operator).
+        """
+        return (
+            self._transposed is None
+            and self._linear.device == "cpu"
+            and self._linear.kind in ("direct", "bddc_gmres")
+        )
 
     def free_base(self, *, return_plan: bool = False) -> None:
         """Release the adjoint solves' base handle; the sweep prepares it again.
@@ -305,7 +328,7 @@ class SystemOperator:
     def _held_nbytes(self) -> int:
         """The adjoint handles' and the pieces' bytes (not ``W``'s)."""
         held = sum(int(h.nbytes) for h in self._handles.values())
-        if self._adjoint_sweep is not None:  # the GPU's and the ranks' adjoint base
+        if self._adjoint_sweep is not None:  # the adjoint base
             base = self._adjoint_sweep._base  # noqa: SLF001
             held += 0 if base is None else int(base.nbytes)
         return held + self._pieces.nbytes
@@ -370,10 +393,11 @@ class SystemOperator:
     def _adjoint_handle(self, n: int, omega: float) -> Handle:
         """The adjoint handle of ``A(ω) + W(ω)`` of frequency ``n``.
 
-        On the CPU prepared once per ``n`` and kept; on a GPU the adjoint
-        base refactorized at ``ω``, valid until the next call. Under ranks the same,
-        except that a base already at ``ω`` serves as it is: a one-frequency solve
-        factorizes once.
+        On a GPU the adjoint base refactorized at ``ω``, valid until the next
+        call. Under ranks, and on one process once the forward's base was kept
+        (`keep_base`), the same, except that a base already at ``ω`` serves as
+        it is: a backward starting from the base's frequency factorizes once
+        fewer. Otherwise on the CPU prepared once per ``n`` and kept.
         """
         if self.operator.built.comm is not None:
             if self._adjoint_sweep is None:
@@ -383,6 +407,8 @@ class SystemOperator:
             if self._adjoint_sweep is None:
                 self._adjoint_sweep = self.sweep(tolerance=self._adjoint_tolerance)
             return self._adjoint_sweep.at(omega)
+        if self._adjoint_sweep is not None:
+            return self._adjoint_sweep.reuse_at(omega)
         if n not in self._handles:
             handle = self._linear.prepare(
                 self.operator_at(omega),
@@ -455,6 +481,16 @@ class SystemSweep:
         if self._last is not None and self._last[0] == omega:
             return self._last[1]
         return self.at(omega)
+
+    def expect_solves(self, solves: int) -> None:
+        """Restate the solve calls the base's next setups serve, if it reads them.
+
+        A base moved from a sweep that expected another count (BDDC's coarse
+        choice, `gfem._linalg.bddc.BddcHandle.expect_solves`).
+        """
+        expect = getattr(self._base, "expect_solves", None)
+        if expect is not None:
+            expect(solves)
 
     def move_base(self, other: SystemSweep) -> None:
         """Give ``other`` this sweep's base handle; this one holds none after.
