@@ -613,7 +613,7 @@ def _estimate(
         elif isinstance(result, EigenmodeResult):
             solves = kernels.eigenmode(model, result, threads)
         else:  # pragma: no cover - `_check_estimable` refuses the rest first
-            raise _unsupported_result(result)
+            raise _unsupported_result(result, estimator)
         values, indicators = kernels.combine(solves)
     return ErrorEstimate(
         estimator=estimator, values=values, indicators=readonly(indicators)
@@ -900,15 +900,15 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         _check_quantity_result(estimator, result)
         _check_quantity_model(estimator, model)
     if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
-        raise _unsupported_result(result)
+        raise _unsupported_result(result, estimator)
     if model._periodic:  # noqa: SLF001
         raise MeshRefinementUnsupportedError(
             "periodic",
-            "The field estimator has no path for a periodic model: its "
-            "recovery does not pair the periodic surfaces.",
+            f"gfem.{type(estimator).__name__} has no path for a periodic model: "
+            "its flux recovery does not pair the periodic surfaces.",
         )
     if isinstance(result, DrivenResult):
-        _check_kept(result)
+        _check_kept(result, estimator)
     mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
         np.asarray(mesh.nodes), np.asarray(model.mesh.nodes)
@@ -919,13 +919,13 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         )
 
 
-def _check_kept(result: DrivenResult) -> None:
+def _check_kept(result: DrivenResult, estimator: Estimator) -> None:
     """Raise unless a driven result is a uniform sweep with every field kept."""
     if result.sweep is not None and result.sweep.kind == "adaptive":
         raise MeshRefinementUnsupportedError(
             "adaptive sweep",
-            "The field estimator has no path for an adaptive sweep: estimate a "
-            "uniform sweep at a few frequencies of the band.",
+            f"gfem.{type(estimator).__name__} has no path for an adaptive sweep: "
+            "estimate a uniform sweep at a few frequencies of the band.",
         )
     kept = {f for f, _ in result.kept}
     missing = [f for f in result.s.frequency if f not in kept]
@@ -937,14 +937,14 @@ def _check_kept(result: DrivenResult) -> None:
         )
 
 
-def _unsupported_result(result: Any) -> Exception:
+def _unsupported_result(result: Any, estimator: Estimator) -> Exception:
     kind = type(result).__name__
     if not kind.endswith("Result"):
         return TypeError(f"error_estimate needs a result of gfem.solve, got {kind}.")
     return MeshRefinementUnsupportedError(
         kind.removesuffix("Result").lower(),
-        f"The field estimator has no path for a gfem.{kind}: it estimates "
-        "electrostatic, driven and eigenmode results.",
+        f"gfem.{type(estimator).__name__} has no path for a gfem.{kind}: it "
+        "estimates electrostatic, driven and eigenmode results.",
     )
 
 

@@ -363,6 +363,20 @@ def test_a_port_mode_problem_raises_before_any_solve(tmp_path):
     assert caught.value.feature == "port mode"
 
 
+@pytest.mark.parametrize(
+    "estimator",
+    [gfem.FieldEstimator(), gfem.QuantityEstimator(s=("p2", "p1"))],
+    ids=["field", "quantity"],
+)
+def test_an_estimate_refusal_names_the_estimator_passed(tmp_path, estimator):
+    model, problem, options = mpi_cases.refused("adaptive_sweep", tmp_path)
+    result = gfem.solve(model, problem, options=options)
+    name = type(estimator).__name__
+    with pytest.raises(gfem.MeshRefinementUnsupportedError, match=name) as caught:
+        gfem.error_estimate(result, estimator, model=model)
+    assert caught.value.feature == "adaptive sweep"
+
+
 @pytest.mark.usefixtures("no_solve")
 def test_the_adaptive_sweep_refusal_gives_the_remedy(tmp_path):
     model, problem, options = mpi_cases.refused("adaptive_sweep", tmp_path)
