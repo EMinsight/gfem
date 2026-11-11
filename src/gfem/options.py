@@ -262,12 +262,15 @@ class SolverOptions:
         port_mode_tolerance: Accuracy of each wave port's mode across the
             sweep: the backward error each mode reaches at every frequency
             (``PortModeResult.residual``).
-        retain_memory: Bytes a differentiated solve keeps for its
-            gradients: its solution fields and, for a uniform driven sweep,
-            its assembled system with its linear solver. The oldest entries
-            go first and are recomputed when their gradient runs. ``None``
-            is half of the memory the process may use (the physical memory,
-            or a smaller job memory limit), 0 always recomputes.
+        retain_memory: Bytes gfem keeps between solves: each differentiated
+            solve's fields and solver for its gradients (its solution fields
+            and, for a uniform driven sweep, its assembled system with its
+            linear solver), and the solver plans later designs refactorize
+            on. Solver plans go first, then the oldest entries, which are
+            recomputed when their gradient runs. ``None`` is half of the
+            memory the process may use (the physical memory, or a smaller
+            job memory limit); 0 keeps nothing between solves and always
+            recomputes.
         adjoint_tolerance: Relative residual of adjoint solves, in the norm
             ``tolerance`` names for each backend; ``None`` is ``tolerance``.
         eigen_tolerance: Backward error accepted for an eigenmode (the
