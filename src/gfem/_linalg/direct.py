@@ -66,6 +66,12 @@ class Factors(Protocol):
 
     #: The inverse a solve applies.
     inverse: Any
+    #: The factors were released (`release`): no solve until `new_values`.
+    released: bool
+
+    def release(self) -> None:
+        """Drop the factors and keep the plan, where the backend can."""
+        ...
 
     def new_values(
         self, matrix: ngs.BaseMatrix, write: Callable[[ngs.BaseMatrix], None]
@@ -85,6 +91,11 @@ class UpdateFactors:
     def __init__(self, inverse: ngs.BaseMatrix) -> None:
         """Hold ``inverse``."""
         self.inverse = inverse
+        #: Never set: these factors cannot be released without their ordering.
+        self.released = False
+
+    def release(self) -> None:
+        """Keep everything: NGSolve frees no factors and keeps the ordering."""
 
     def new_values(
         self, matrix: ngs.BaseMatrix, write: Callable[[ngs.BaseMatrix], None]
@@ -126,6 +137,11 @@ class DirectHandle(PlannedHandle):
     factored with, whatever TaskManager the caller is in: a solve outside the
     TaskManager it was factored in stays parallel, and one factored outside
     any TaskManager stays on one thread (`gfem._linalg.pardiso`).
+
+    `release_factors` drops PARDISO's factors and keeps its plan, for a
+    handle held between solves (a plan pool); it refuses to solve or apply
+    until `refactorize` factorizes new values. Sparse Cholesky and UMFPACK
+    keep their factors.
     """
 
     kind = "direct"
@@ -190,6 +206,29 @@ class DirectHandle(PlannedHandle):
             n,
         )
         return cls(assembled, None, "hermitian", is_complex=False)
+
+    def release_factors(self) -> None:
+        """Drop the factors and keep the plan until the next `refactorize`.
+
+        PARDISO releases L and U and keeps its ordering and symbolic
+        analysis; `solve`, `solve_counted` and `apply` then raise until
+        `refactorize` factorizes new values. Sparse Cholesky and UMFPACK keep
+        their factors. Waits for a running solve or refactorization.
+
+        Raises:
+            RuntimeError: The handle was freed.
+        """
+        with self._lock:
+            self._live()
+            cast("Factors", self._factors).release()
+
+    def _check_solvable(self) -> None:
+        """Refuse a handle whose factors were released; under the lock."""
+        if self._factors is not None and self._factors.released:
+            raise RuntimeError(
+                "This direct handle's factors were released: refactorize it "
+                "before solving."
+            )
 
     def _new_values(self, write: Callable[[ngs.BaseMatrix], None]) -> None:
         """Write the held matrix and factorize it on the plan; under the lock."""
