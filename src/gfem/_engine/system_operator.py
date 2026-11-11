@@ -291,16 +291,12 @@ class SystemOperator:
         one process with the CPU ``direct`` and ``bddc_gmres`` solvers when the
         operator is its own adjoint's, so that the backward refactorizes it rather
         than preparing a handle per frequency. A base it no longer holds is
-        prepared again at the adjoint tolerance. A base from the plan pool moves
-        in any case, so that it returns to the pool only when the entry holding it
-        is freed (ADR 0082); any other sweep keeps its base, and ``with`` frees
-        it.
+        prepared again at the adjoint tolerance. A shared base from the plan pool
+        returns to the pool only when the entry holding it is freed (ADR 0082). A
+        base the adjoint solves do not share (the transposed system's solves)
+        stays with its sweep: ``with`` returns it to the pool or frees it.
         """
-        if (
-            self.operator.built.comm is None
-            and not sweep.pooled
-            and not self._shares_base()
-        ):
+        if self.operator.built.comm is None and not self._shares_base():
             return
         adjoint = self.sweep(tolerance=self._adjoint_tolerance)
         sweep.move_base(adjoint)

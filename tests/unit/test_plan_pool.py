@@ -11,6 +11,7 @@ entries' bases and entries with one walk, in that order.
 import jax
 import jax.numpy as jnp
 import numpy as np
+import periodic_cases as pc
 import pytest
 import structured_meshes as sm
 
@@ -376,3 +377,26 @@ def test_pooled_handles_of_a_topology_left_out_of_the_discretizations_are_freed(
         cache.discretization(gfem.Mesh.from_gmsh(path, length_unit="mm"))
     assert cache.ENTRIES.pooled == 0
 
+
+def test_a_bloch_forward_returns_its_base_to_the_pool(tmp_path, plans):
+    # the adjoint solves are on the transposed system: they never read the base
+    mesh = pc.g_mesh(tmp_path)
+    base = pc.g(mesh)
+    n = len(mesh.elements("cover"))
+    problem = gfem.Driven(pc.G_FREQUENCIES, wave_vector=pc.G_K)
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(eps):
+        model = base.with_material("cover", gfem.MaterialField(eps_r=eps))
+        s = gfem.solve(model, problem, options=options).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    eps = jnp.full(n, 2.0)
+    _, vjp = jax.vjp(objective, eps)
+    (entry,) = cache.ENTRIES._entries.values()
+    assert entry.handle.system._adjoint_sweep is None
+    assert cache.ENTRIES.pooled == 1
+    (got,) = vjp(1.0)
+    cache.ENTRIES.clear()
+    want = jax.grad(objective)(eps)
+    np.testing.assert_allclose(got, want, rtol=1e-10, atol=0)
