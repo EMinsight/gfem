@@ -541,8 +541,9 @@ def test_a_two_frequency_gradient_prepares_one_base(tmp_path, solver):
     # one process keeps the forward's base for the adjoint too (ADR 0065, amended)
     assert serial == 1
     assert prepares == 1
-    # the sweep's second frequency, then the adjoint at each of the two
-    assert refactorized == 3
+    # the sweep's second frequency, then the adjoint at the first only: the backward
+    # starts at the base's frequency (ADR 0065, amended)
+    assert refactorized == 2
     _assert_below_the_gate(grad, grad_one, "one base", solver)
 
 
