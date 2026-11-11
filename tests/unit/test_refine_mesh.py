@@ -18,7 +18,7 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
-from gfem.refinement import dorfler
+from gfem.refinement import _dorfler
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 COAX_ESTIMATE = 0.1085  # the n = 2 coax's field error estimate, for orientation
@@ -142,7 +142,7 @@ def test_an_estimate_needs_the_model_of_its_result(coax, tmp_path):
 )
 def test_dorfler_marks_the_fewest_tetrahedra_reaching_the_fraction(fraction, expected):
     # squares 9, 1, 4, 0 of 14: half needs 9; 70 % needs 9 + 4; all needs 14
-    marked = dorfler(np.array([3.0, 1.0, 2.0, 0.0]), fraction)
+    marked = _dorfler(np.array([3.0, 1.0, 2.0, 0.0]), fraction)
     assert np.flatnonzero(marked).tolist() == expected
 
 

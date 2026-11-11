@@ -49,9 +49,6 @@ __all__ = [
     "refine_mesh",
 ]
 
-#: Why `refine_mesh` stopped.
-STOPS = ("tolerance", "max_cycles", "max_tetrahedra", "solve failed")
-
 
 @dataclasses.dataclass(frozen=True)
 class FieldEstimator:
@@ -517,7 +514,7 @@ def _loop(
         if len(cycles) > max_cycles:
             stop = "max_cycles"
             break
-        marked = dorfler(estimate.indicators, error_fraction)
+        marked = _dorfler(estimate.indicators, error_fraction)
         cycles[-1] = dataclasses.replace(cycle, marked=int(marked.sum()))
         fine, refinement = bisect(current.mesh, marked)
         if max_tetrahedra is not None and len(fine.tetrahedra) > max_tetrahedra:
@@ -565,7 +562,7 @@ def _loop(
     )
 
 
-def dorfler(indicators: np.ndarray, error_fraction: float) -> np.ndarray:
+def _dorfler(indicators: np.ndarray, error_fraction: float) -> np.ndarray:
     """Dörfler marking: the fewest tetrahedra holding a share of the squared error.
 
     Marks the tetrahedra with the largest indicators until their squared
