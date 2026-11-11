@@ -147,6 +147,10 @@ _REFUSALS = {
     "power_flow": (
         f"gfem.power_flow has no distributed path: read Field.at, {_COPIES}."
     ),
+    "mesh refinement": (
+        f"Mesh refinement has no distributed path: refine on one process, {_COPIES}, "
+        "then solve the refined model on ranks."
+    ),
 }
 
 

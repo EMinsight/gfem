@@ -137,6 +137,48 @@ Tests: [wave ports](https://github.com/benvial/gfem/blob/main/tests/verification
 
 Tests: [sheets](https://github.com/benvial/gfem/blob/main/tests/verification/test_sheet_gradient.py).
 
+(verification-mesh-refinement)=
+## Mesh refinement error estimates
+
+The {term}`error estimate` of {doc}`recipes/mesh-refinement` is checked by
+its effectivity: the estimated error divided by the error against a known
+answer, which must stay within a range set in the test for every mesh of
+every case. The cases, all at `order=2`:
+
+- **A square coaxial line** (a square conductor in a square shield), whose
+  inner corners make the field singular: its capacitance over a mesh
+  refinement run, against a constant extrapolated from fine uniform meshes
+  and checked on a graded one.
+- **A circular coaxial line**, faceted: its capacitance on meshes of 1 to 8
+  times the base density, against a higher-order solve on the same facets.
+  Against the exact formula for the circle the estimate stays below the
+  true error, since it does not see the faceting.
+- **A stepped parallel-plate line**, whose top plate steps down to half its
+  height, with a singular field at the step's edge: S21 at 3 and 8 GHz on
+  uniform meshes and over a mesh refinement run with lumped ports, and at
+  3 GHz with wave ports, against constants from fine uniform and graded
+  meshes.
+- **A parallel-plate line** between ports of 50 and 30 Ω: S11, S21 and S22
+  from 3 to 25 GHz on three meshes, against the line's closed form.
+- **An L-shaped cavity**, whose re-entrant edge makes the field singular:
+  its first resonance over a mesh refinement run, against a published
+  high-accuracy value.
+- **A rectangular cavity** with metal walls: four modes on two meshes,
+  against the closed form.
+
+Over all cases the estimate was between {gfem-effectivity}`low` and
+{gfem-effectivity}`high` times the true error; the higher ratios came from
+the parallel-plate line and the rectangular cavity, which have no sharp
+metal edge. This range is read from the test when the docs are built.
+
+The field estimator is checked the same way, on the same lines and
+cavities. On the three singular cases a mesh refinement run also ends with a
+smaller error than uniform refinement at the same number of unknowns. Both
+sets of checks run on every change.
+
+Tests: [quantity estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_quantity_estimate.py),
+[field estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_field_estimate.py).
+
 (verification-petsc)=
 ## PETSc and SLEPc
 

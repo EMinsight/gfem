@@ -24,7 +24,6 @@ from gfem._pytree import readonly
 from gfem._refine import Refinement, refine_model, transfer
 from gfem.errors import (
     DegenerateModeError,
-    DistributedUnsupportedError,
     EigenmodeConvergenceError,
     LinearSolverConvergenceError,
     MeshRefinementNotConvergedWarning,
@@ -440,12 +439,7 @@ def refine_mesh(
         _check_quantity_keys(estimator, problem, model)
         _check_quantity_model(estimator, model)
     if _mpi.resolve_comm(comm) is not None:
-        raise DistributedUnsupportedError(
-            "mesh refinement",
-            "Mesh refinement has no distributed path: refine on one process, or "
-            "run independent one-process copies with comm=MPI.COMM_SELF, then "
-            "solve the refined model on ranks.",
-        )
+        _mpi.refuse_feature("mesh refinement")
     _check_parameters(problem, options, tolerance, error_fraction, max_cycles)
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)

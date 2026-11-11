@@ -356,6 +356,47 @@ Non-differentiable quantity
   version, raising an error instead of returning a zero gradient.
 ```
 
+## Mesh refinement
+
+```{glossary}
+Mesh refinement
+  Repeated {term}`refinement cycles <Refinement cycle>` that subdivide the
+  tetrahedra where an {term}`error estimator` reports the most error, until
+  its {term}`error estimate` meets a tolerance or a cap stops them
+  (`gfem.refine_mesh`). It gives a new model whose mesh keeps the physical
+  groups and the imported facets.
+
+Refinement cycle
+  One pass of {term}`mesh refinement`: solve, estimate the error, mark the
+  tetrahedra holding most of it, split them at the midpoint of their longest
+  edge (and their neighbours, so no hanging node remains), and carry the
+  design to the new tetrahedra. Cycle 0 is the solve on the input mesh.
+
+Error estimator
+  A rule that computes, from a result's fields, each tetrahedron's share of
+  the error and one {term}`error estimate`: the {term}`field estimator` or
+  the {term}`quantity estimator`.
+
+Field estimator
+  The {term}`error estimator` of the field's error in the energy norm,
+  relative to the field's energy norm (`gfem.FieldEstimator`). It compares
+  the solved electric flux with a smoother flux recovered from it, so it
+  needs no extra solve.
+
+Quantity estimator
+  The {term}`error estimator` of one quantity: a capacitance entry, an S
+  entry between excited ports, or one mode's `omega`
+  (`gfem.QuantityEstimator`). It weights each tetrahedron's field error by
+  its effect on that quantity, using fields already solved.
+
+Error estimate
+  The number an {term}`error estimator` gives for a result, compared with
+  the tolerance of {term}`mesh refinement`. It has no sign or phase and is
+  an estimate, not a bound. For a {term}`quantity estimator` it is relative
+  to a capacitance entry or to `omega`, absolute for an S entry, and gfem
+  never adds it to the quantity.
+```
+
 ## Distributed runs
 
 ```{glossary}

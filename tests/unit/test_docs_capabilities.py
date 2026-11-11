@@ -412,3 +412,52 @@ def test_a_raise_seen_while_the_gradient_is_computed_links_the_shared_section(
     assert all('href="errors.html#gradient-errors"' in i for i in wrapped)
     assert all("</a> (<a" in i for i in wrapped)  # beside the source link, not in it
     assert not any("#gradient-errors" in i for i in items if i not in wrapped)
+
+
+# --- the error estimate's effectivity range ---------------------------------------
+
+
+@pytest.fixture(scope="module")
+def estimate_test():
+    return caps._import(REPO / caps.ESTIMATE_TEST)
+
+
+def test_the_quoted_effectivity_is_the_quantity_estimate_tests_range(
+    derived, estimate_test
+):
+    low, high = estimate_test.EFFECTIVITY
+    assert derived["effectivity"] == {
+        "low": f"{low:g}",
+        "high": f"{high:g}",
+        "cases": list(estimate_test.EFFECTIVITY_BY_CASE),
+    }
+
+
+def test_an_effectivity_off_the_cases_span_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="span"):
+        caps.effectivity((0.9, 10.0), {"a": (0.9, 2.0), "b": (1.0, 15.0)})
+
+
+def test_an_unordered_case_range_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="bad case ranges"):
+        caps.effectivity((0.9, 2.0), {"a": (2.0, 0.9)})
+
+
+def test_the_effectivity_role_renders_the_range(tmp_path, estimate_test):
+    build = pytest.importorskip("sphinx.cmd.build")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "conf.py").write_text(
+        f"import sys\nsys.path.insert(0, {str(REPO / 'docs' / '_ext')!r})\n"
+        "extensions = ['gfem_capabilities']\n",
+        encoding="utf-8",
+    )
+    (source / "index.rst").write_text(
+        "Range\n=====\n\nFrom :gfem-effectivity:`low` to :gfem-effectivity:`high`.\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "html"
+    assert build.build_main(["-q", "-W", "-b", "html", str(source), str(out)]) == 0
+    low, high = estimate_test.EFFECTIVITY
+    page = (out / "index.html").read_text(encoding="utf-8")
+    assert f"From {low:g} to {high:g}." in page
