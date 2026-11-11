@@ -79,7 +79,7 @@ calls. Between the solve and its gradients gfem keeps what the gradients need
 (for a capacitance, the terminal potentials):
 
 - It keeps up to `SolverOptions(retain_memory=...)` bytes, half of the
-  physical memory by default, and drops the oldest entries first.
+  memory the process may use by default, and drops the oldest entries first.
 - A dropped entry is recomputed from the design when its gradient runs. This
   costs time, never accuracy.
 - The same budget holds the solver plans that later designs reuse, so an
