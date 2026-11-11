@@ -9,6 +9,7 @@ import dataclasses
 import itertools
 import math
 import re
+import time
 import warnings
 from pathlib import Path
 
@@ -21,15 +22,22 @@ import pytest
 import scipy.constants
 import scipy.sparse as sp
 import structured_meshes as sm
-from gradient_cases import HYBRID_PORTS, hybrid_leads_core, hybrid_line, hybrid_mesh
+from gradient_cases import (
+    HYBRID_EPS,
+    HYBRID_PORTS,
+    hybrid_leads_core,
+    hybrid_line,
+    hybrid_mesh,
+)
 from solver_misses import cannot_converge_at
 
 import gfem
-from gfem._engine import anisotropy, terms
+from gfem._engine import anisotropy, cache, terms, wave_ports
 from gfem._engine.driven import driven_operator
 from gfem._engine.wave_ports import trace_dofs, wave_port_couplings
 from gfem._linalg import prepare
 from gfem._linalg.base import PlannedHandle, free_mask
+from gfem._port_section import port_section, port_section_key
 
 DATA = Path(__file__).parent / "data"
 C0 = 299792458.0
@@ -1142,3 +1150,127 @@ def test_a_shared_surface_of_overlapping_modes_is_reflectionless(hybrid_line_mod
     assert max(errors) < 6e-3
     assert rest < 2e-3  # reflections and cross-mode entries, measured 6.2e-4
     assert reciprocity < 1e-8  # measured 2.3e-15
+
+
+# --- port couplings kept across designs (ADR 0082) ------------------------------
+# The hybrid line's core lies away from both port faces; its leads ("block",
+# "fill") touch them.
+
+KEPT_F = (55e9,)
+KEPT_OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
+
+
+def _kept_line(directory):
+    mesh = hybrid_mesh(directory, cells=(4, 2, 2))
+    model = hybrid_line(mesh).replace(
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")]
+    )
+    return model, hybrid_leads_core(mesh)
+
+
+def _count_port_mode_sweeps(monkeypatch):
+    calls = []
+    real = wave_ports.swept_once
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(wave_ports, "swept_once", spy)
+    return calls
+
+
+def test_a_density_loop_away_from_the_ports_runs_the_port_mode_sweep_once(
+    tmp_path, monkeypatch
+):
+    model, leads = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+
+    def objective(eps):
+        m = model.with_material("core", gfem.MaterialField(eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        s = gfem.solve(m, gfem.Driven(KEPT_F), options=KEPT_OPTIONS).s.values
+        return jnp.abs(s[0, 1, 0]) ** 2, s
+
+    designs = [leads * (1.0 + 0.1 * k) for k in range(3)]
+    kept = []
+    for eps in designs:
+        (_, s), grad = jax.value_and_grad(objective, has_aux=True)(jnp.asarray(eps))
+        assert np.all(np.isfinite(np.asarray(grad)))
+        kept.append(np.asarray(s))
+    assert len(sweeps) == 2  # one port mode sweep per wave port surface
+    # each design's S is the one a fresh discretization gives, bit for bit
+    for eps, s in zip(designs, kept, strict=True):
+        cache._DISCRETIZATIONS.clear()
+        fresh = gfem.solve(
+            model.with_material("core", gfem.MaterialField(eps_r=eps)),
+            gfem.Driven(KEPT_F),
+            options=KEPT_OPTIONS,
+        )
+        np.testing.assert_array_equal(np.asarray(fresh.s.values), s)
+
+
+def test_a_design_beside_a_port_face_or_a_node_move_runs_the_sweep_again(
+    tmp_path, monkeypatch
+):
+    model, _ = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+    n_fill = len(model.mesh.elements("fill"))
+    for k in range(3):
+        fill = gfem.MaterialField(eps_r=np.full(n_fill, 2.0 + 0.1 * k))
+        gfem.solve(
+            model.with_material("fill", fill), gfem.Driven(KEPT_F), options=KEPT_OPTIONS
+        )
+    assert len(sweeps) == 2 * 3
+    sweeps.clear()
+    gfem.solve(model, gfem.Driven(KEPT_F), options=KEPT_OPTIONS)
+    gfem.solve(model, gfem.Driven(KEPT_F), options=KEPT_OPTIONS)
+    assert len(sweeps) == 2
+    # a node move is a new discretization: the couplings are rebuilt
+    moved = model.mesh.nodes.at[:, 2].multiply(1.01)
+    gfem.solve(
+        model.replace(mesh=type(model.mesh)(moved, model.mesh._topology)),
+        gfem.Driven(KEPT_F),
+        options=KEPT_OPTIONS,
+    )
+    assert len(sweeps) == 2 * 2
+
+
+def test_the_port_section_key_costs_less_than_the_port_section(tmp_path):
+    # timed for the log, not asserted
+    model, _ = _kept_line(tmp_path)
+    port = model.ports[0]
+    timings = {}
+    for name, f in (("key", port_section_key), ("section", port_section)):
+        f(model, port)
+        t0 = time.perf_counter()
+        for _ in range(5):
+            f(model, port)
+        timings[name] = (time.perf_counter() - t0) / 5
+    key, section = timings["key"], timings["section"]
+    print(f"port_section_key {key:.2e} s, port_section {section:.2e} s")  # noqa: T201
+
+
+def test_the_port_section_key_follows_what_the_port_section_reads(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    port = model.ports[0]
+    key = port_section_key(model, port)
+    core = model.with_material("core", gfem.MaterialField(eps_r=leads * 2.0))
+    assert port_section_key(core, port) == key
+    thermal = model.with_material(
+        "fill", gfem.Material(eps_r=HYBRID_EPS["fill"], thermal_conductivity=3.0)
+    )
+    assert port_section_key(thermal, port) == key
+    for changed in (
+        model.with_material("fill", gfem.Material(eps_r=2.5)),
+        model.with_material("block", gfem.Material(eps_r=4.0, mu_r=1.5)),
+        model.with_material("fill", gfem.Material(eps_r=2.0, conductivity=1.0)),
+        model.with_material("fill", gfem.Material(eps_r=2.0, tan_delta=1e-3)),
+        model.replace(
+            boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), gfem.PEC("side")]
+        ),
+        model.replace(
+            ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2", mode=2)]
+        ),
+    ):
+        assert port_section_key(changed, port) != key

@@ -9,6 +9,7 @@ port along an edge.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 
 import numpy as np
 
@@ -250,6 +251,77 @@ def port_section(model: Model, port: WavePort) -> PortSection:
         impedance_terms=imp_terms,
         impedance_fill=imp_fill,
     )
+
+
+#: The material properties the port mode problem reads (never the thermal ones).
+_PORT_PROPERTIES = ("eps_r", "mu_r", "tan_delta", "conductivity")
+
+
+def port_section_key(model: Model, port: WavePort) -> str:
+    """A digest of what `port_section` reads of ``model`` beyond its mesh.
+
+    Two models on one discretization (mesh topology and node coordinates,
+    which the caller keys on) with equal keys have equal port sections, and
+    equal Robin coefficients on the port's surface
+    (`gfem._engine.terms.wave_port_coefficients`). The key holds the length
+    unit, the solve domain, the port, every boundary condition and port (what
+    each surface is to the section's edges), the electromagnetic material
+    values (eps_r, mu_r, tan_delta, conductivity, principal axes) of the
+    solve-domain tetrahedra beside the port's faces, and the sheet fill of the
+    faces sharing an edge with them. It builds no section: no plane fit and
+    no edge classification, so it costs a fraction of `port_section`.
+    """
+    mesh = model.mesh
+    domain = model._domain  # noqa: SLF001
+    digest = hashlib.blake2b(digest_size=16)
+
+    def add(*parts: object) -> None:
+        digest.update(repr(parts).encode())
+
+    add(mesh.length_unit, domain.excluded, port, model.ports)
+    # a sheet field's repr is not its values: its fill enters below
+    add(
+        tuple(
+            dataclasses.replace(b, fill=None) if sheet_of(b) is not None else b
+            for b in model.boundaries
+        )
+    )
+    faces = mesh.elements(port.surface)
+    nb = mesh.triangle_neighbours[faces]
+    tets = np.unique(nb[(nb >= 0) & domain.active[np.maximum(nb, 0)]])
+    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    region_of = mesh.tetrahedron_tags[tets]
+    for rtag in np.unique(region_of):
+        region = names[int(rtag)]
+        material = model.materials[region]
+        add(region, type(material).__name__, material.axes)
+        if isinstance(material, Material):
+            add(*(getattr(material, n) for n in _PORT_PROPERTIES))
+            continue
+        pos = np.searchsorted(mesh.elements(region), tets[region_of == rtag])
+        for name in _PORT_PROPERTIES:
+            value = getattr(material, name)
+            if value is None:
+                add(name, None)
+                continue
+            values = np.asarray(value)
+            if values.ndim:
+                values = values[pos]
+            add(name, values.dtype.str, values.shape)
+            digest.update(np.ascontiguousarray(values).tobytes())
+    n_nodes = len(mesh.nodes)
+    port_edges = _edge_keys(mesh.triangles[faces]) @ np.array([n_nodes, 1])
+    for i, b in enumerate(model.boundaries):
+        sheet = sheet_of(b)
+        if sheet is None:
+            continue
+        (surface,) = surfaces_of(b)
+        edges = _edge_keys(mesh.triangles[mesh.elements(surface)])
+        beside = np.isin(edges @ np.array([n_nodes, 1]), port_edges)
+        beside = beside.reshape(-1, 3).any(axis=1)
+        add(i, np.flatnonzero(beside).tobytes())
+        digest.update(np.asarray(sheet.fill, float)[beside].tobytes())
+    return digest.hexdigest()
 
 
 def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray):
