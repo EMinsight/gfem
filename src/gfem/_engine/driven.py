@@ -64,11 +64,13 @@ every output shape is known before the solve.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import dataclasses
 import functools
 import math
 import warnings
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
 from typing import Any, Literal, NoReturn
 
 import jax
@@ -130,8 +132,10 @@ __all__ = [
     "DrivenOperator",
     "DrivenRule",
     "Expansion",
+    "check_low_frequency",
     "check_ports_held",
     "driven_operator",
+    "low_frequency_deferred",
     "operator_terms",
     "real_space",
 ]
@@ -1401,19 +1405,55 @@ def check_ports_held(model: Model) -> None:
                 )
 
 
+#: Whether driven solves skip `_check_low_frequency` (`low_frequency_deferred`).
+_LOW_FREQUENCY_DEFERRED = contextvars.ContextVar(
+    "low_frequency_deferred", default=False
+)
+
+
+@contextlib.contextmanager
+def low_frequency_deferred() -> Generator[None]:
+    """Skip the low-frequency check of the driven solves in this context.
+
+    Mesh refinement solves on a new mesh each cycle and checks the floor once,
+    on the mesh it returns (ADR 0088), with `check_low_frequency`.
+    """
+    token = _LOW_FREQUENCY_DEFERRED.set(True)
+    try:
+        yield
+    finally:
+        _LOW_FREQUENCY_DEFERRED.reset(token)
+
+
+def check_low_frequency(
+    model: Model, frequencies: tuple[float, ...], *, stacklevel: int
+) -> None:
+    """`_check_low_frequency` on one process, for a deferred check."""
+    _check_low_frequency(model, frequencies, stacklevel=stacklevel + 1, force=True)
+
+
 def _check_low_frequency(
-    model: Model, frequencies: tuple[float, ...], *, stacklevel: int, comm: Any = None
+    model: Model,
+    frequencies: tuple[float, ...],
+    *,
+    stacklevel: int,
+    comm: Any = None,
+    force: bool = False,
 ) -> None:
     """Warn once if a frequency is below the mesh's low-frequency floor.
 
     h_min is the shortest edge of the solve domain on the imported nodes,
     so the message is the same at every step of a shape optimization.
+    Skipped inside `low_frequency_deferred` unless ``force``.
 
     Args:
         model: The model, its solve domain and its mesh.
         frequencies: The output frequencies (Hz).
         stacklevel: Passed on to `warnings.warn`, counted from the caller.
+        force: Check inside `low_frequency_deferred` too.
     """
+    if _LOW_FREQUENCY_DEFERRED.get() and not force:
+        return
     active = model._domain.active  # noqa: SLF001
     h_min = float(_shortest_edges(model.mesh)[active].min())
     f = np.asarray(frequencies)

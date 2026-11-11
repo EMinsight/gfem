@@ -34,7 +34,7 @@ from gfem.mesh import Mesh
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
-from gfem.results import ElectrostaticResult
+from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
 from gfem.solve import solve
 
 __all__ = [
@@ -256,7 +256,9 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             est.value, est.indicators  # relative energy error, per tetrahedron
 
     Args:
-        result: A result of `gfem.solve` on ``model``.
+        result: A result of `gfem.solve` on ``model``: electrostatic,
+            eigenmode (every mode is estimated), or a uniform driven sweep
+            solved with ``keep_fields=True`` (every kept field).
         estimator: `FieldEstimator()`.
         model: The model the result was solved on (its materials weight the
             fields).
@@ -266,9 +268,12 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
 
     Raises:
         TypeError: An argument has the wrong type.
-        ValueError: The result was not solved on ``model``'s mesh.
-        MeshRefinementUnsupportedError: The estimator or the result type has
-            no estimate in this version of gfem.
+        ValueError: The result was not solved on ``model``'s mesh, or is a
+            driven result without the fields of every frequency (solve with
+            ``keep_fields=True``).
+        MeshRefinementUnsupportedError: The estimator or the result has no
+            estimate in this version of gfem (``feature`` names what): an
+            adaptive sweep, a periodic model, another result type.
         NonDifferentiableError: A model or result leaf is a JAX tracer, or
             the call is inside `jax.jit`.
     """
@@ -302,6 +307,11 @@ def refine_mesh(
     the model's per-element design (`MaterialField` values, sheet fills) to
     the children. Cycle 0 solves the input mesh.
 
+    A driven problem is solved with ``keep_fields=True`` whatever it asks:
+    the estimate reads every frequency's field of every excited port, and
+    ``result`` keeps them. Its low-frequency floor is checked once, on the
+    returned mesh, not on every cycle.
+
     Example:
         Refine a capacitance solve to a 1 % field error::
 
@@ -310,7 +320,10 @@ def refine_mesh(
 
     Args:
         model: The device, with concrete values.
-        problem: An `Electrostatic` problem.
+        problem: An `Electrostatic` problem, a `Driven` problem on a uniform
+            sweep (lumped or wave ports), or an `Eigenmode` problem. The
+            estimate of a driven run is the worst frequency's, of an
+            eigenmode run the worst mode's.
         estimator: `FieldEstimator()`.
         tolerance: The error estimate to reach: relative to the field's energy
             norm for a `FieldEstimator`. At least 10 times
@@ -335,6 +348,8 @@ def refine_mesh(
     Warns:
         MeshRefinementNotConvergedWarning: The loop stopped on a cap or a
             failed solve with the estimate above ``tolerance``.
+        LowFrequencyWarning: A frequency of a driven problem is below the
+            returned mesh's low-frequency floor.
 
     Raises:
         TypeError: An argument has the wrong type.
@@ -373,7 +388,7 @@ def refine_mesh(
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)
     _check_untraced("refine_mesh", (model, problem))
-    _check_supported(problem, estimator)
+    _check_supported(estimator)
     return _loop(
         model,
         problem,
@@ -400,9 +415,14 @@ def _loop(
     comm: Any,
 ) -> MeshRefinement:
     """Solve, estimate, stop, mark, bisect, cap, transfer; see `refine_mesh`."""
+    from gfem._engine import driven
+
+    if isinstance(problem, Driven):
+        problem = dataclasses.replace(problem, keep_fields=True)
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
-    result = solve(model, problem, options=options, comm=comm)
+    with driven.low_frequency_deferred():
+        result = solve(model, problem, options=options, comm=comm)
     current = model
     cycles: list[RefinementCycle] = []
     failure: Exception | None = None
@@ -429,13 +449,16 @@ def _loop(
             stop = "max_tetrahedra"
             break
         try:
-            refined_result = solve(refined, problem, options=options, comm=comm)
+            with driven.low_frequency_deferred():
+                refined_result = solve(refined, problem, options=options, comm=comm)
         except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
             stop, failure = "solve failed", err
             break
         current, result = refined, refined_result
         tet_parents = tet_parents[refinement.tetrahedron_parents]
         tri_parents = tri_parents[refinement.triangle_parents]
+    if isinstance(problem, Driven):
+        driven.check_low_frequency(current, problem.frequency, stacklevel=3)
     converged = estimate.value <= tolerance
     if not converged:
         reason = {
@@ -492,6 +515,10 @@ def _estimate(
 
     if isinstance(result, ElectrostaticResult):
         solves = kernels.electrostatic(model, result, threads)
+    elif isinstance(result, DrivenResult):
+        solves = kernels.driven(model, result, threads)
+    elif isinstance(result, EigenmodeResult):
+        solves = kernels.eigenmode(model, result, threads)
     else:  # pragma: no cover - `_check_estimable` refuses the rest first
         raise _unsupported_result(result)
     values, indicators = kernels.combine(solves)
@@ -502,8 +529,14 @@ def _estimate(
 
 def _dofs(result: Any) -> int:
     """A solve's unknowns: one field's coefficient count."""
-    fields = list(result.potential.values())
-    return int(fields[0].coefficients.shape[0])
+    return int(_fields(result)[0].coefficients.shape[0])
+
+
+def _fields(result: Any) -> list:
+    """The fields of a result an estimate reads."""
+    if isinstance(result, ElectrostaticResult):
+        return list(result.potential.values())
+    return list(result.e_fields)
 
 
 def _check_estimator(estimator: Any) -> None:
@@ -551,31 +584,50 @@ def _check_problem(model: Model, problem: Any) -> None:
         )
 
 
-def _check_supported(problem: Any, estimator: Estimator) -> None:
-    """Raise for an estimator / problem pair this version cannot estimate."""
+def _check_supported(estimator: Estimator) -> None:
+    """Raise for an estimator this version cannot estimate with."""
     if isinstance(estimator, QuantityEstimator):
         raise _unsupported_quantity()
-    if not isinstance(problem, Electrostatic):
-        kind = type(problem).__name__
-        raise MeshRefinementUnsupportedError(
-            kind.lower(),
-            f"The field estimator has no path for a gfem.{kind} problem in this "
-            "version of gfem; only gfem.Electrostatic problems can be refined.",
-        )
 
 
 def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
     if isinstance(estimator, QuantityEstimator):
         raise _unsupported_quantity()
-    if not isinstance(result, ElectrostaticResult):
+    if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
         raise _unsupported_result(result)
-    mesh = next(iter(result.potential.values())).mesh
+    if model._periodic:  # noqa: SLF001
+        raise MeshRefinementUnsupportedError(
+            "periodic",
+            "The field estimator has no path for a periodic model: its "
+            "recovery does not pair the periodic surfaces.",
+        )
+    if isinstance(result, DrivenResult):
+        _check_kept(result)
+    mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
         np.asarray(mesh.nodes), np.asarray(model.mesh.nodes)
     ):
         raise ValueError(
             "error_estimate needs the model the result was solved on: the "
             "result's fields live on another mesh, or on other node positions."
+        )
+
+
+def _check_kept(result: DrivenResult) -> None:
+    """Raise unless a driven result is a uniform sweep with every field kept."""
+    if result.sweep is not None and result.sweep.kind == "adaptive":
+        raise MeshRefinementUnsupportedError(
+            "adaptive sweep",
+            "The field estimator has no path for an adaptive sweep: estimate a "
+            "uniform sweep at a few frequencies of the band.",
+        )
+    kept = {f for f, _ in result.kept}
+    missing = [f for f in result.s.frequency if f not in kept]
+    if missing:
+        raise ValueError(
+            "error_estimate reads the electric fields of every frequency, and "
+            f"this result kept none at {', '.join(f'{f:g}' for f in missing)} Hz: "
+            "solve with gfem.Driven(..., keep_fields=True)."
         )
 
 
@@ -593,8 +645,8 @@ def _unsupported_result(result: Any) -> Exception:
         return TypeError(f"error_estimate needs a result of gfem.solve, got {kind}.")
     return MeshRefinementUnsupportedError(
         kind.removesuffix("Result").lower(),
-        f"The field estimator has no path for a gfem.{kind} in this version of "
-        "gfem; only gfem.ElectrostaticResult can be estimated.",
+        f"The field estimator has no path for a gfem.{kind}: it estimates "
+        "electrostatic, driven and eigenmode results.",
     )
 
 
