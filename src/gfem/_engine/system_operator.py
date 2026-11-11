@@ -529,7 +529,7 @@ class SystemSweep:
         """Release the base handle.
 
         With ``return_plan`` a pooled sweep's base returns to the plan pool
-        instead, its factors released.
+        instead, with its factors (the pool releases them under pressure).
         """
         base, plans, key = self._base, self._plans, self._key
         self._base, self._last = None, None
