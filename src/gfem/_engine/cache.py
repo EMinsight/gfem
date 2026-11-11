@@ -383,15 +383,21 @@ class EntryCache:
         """Walk the pool down to ``budget``, least recently returned first.
 
         Releasing factors keeps a handle's plan, so it goes before freeing any.
+        The cache's bytes are summed once, then follow each release and free.
         """
+        held = self.nbytes
         for pooled in self._plans.values():
-            if self.nbytes <= budget:
+            if held <= budget:
                 return
             release = getattr(pooled.handle, "release_factors", None)
             if release is not None:
+                before = int(pooled.handle.nbytes)
                 release()
-        while self._plans and self.nbytes > budget:
-            self._plans.popitem(last=False)[1].handle.free()
+                held -= before - int(pooled.handle.nbytes)
+        while self._plans and held > budget:
+            handle = self._plans.popitem(last=False)[1].handle
+            held -= int(handle.nbytes)
+            handle.free()
 
     def take_plan(self, key: Hashable) -> Any | None:
         """The most recently returned pooled handle under ``key``, or ``None``.

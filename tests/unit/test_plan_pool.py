@@ -238,6 +238,27 @@ def test_a_walk_under_a_communicator_does_not_count_pooled_handles(fake_comm):
     assert entries.get(k_second) is not None
 
 
+def test_a_pool_walk_reads_each_handles_bytes_a_bounded_number_of_times():
+    # the walk sums the cache once, then follows each release and free
+    entries = EntryCache()
+    reads = []
+
+    class Counted(FakeHandle):
+        @property
+        def nbytes(self):
+            reads.append(id(self))
+            return super().nbytes
+
+    handles = [Counted(10, released_bytes=5) for _ in range(20)]
+    for handle in handles:
+        entries.give_plan(("k",), TOPOLOGY, handle, budget=10**6)
+    reads.clear()
+    entries.free_consumed(comm=None, budget=40)
+    assert all(h.released for h in handles)
+    assert entries.pooled == 8
+    assert max(reads.count(id(h)) for h in handles) <= 4
+
+
 def test_clear_frees_the_pool_too():
     entries = EntryCache()
     handle = FakeHandle(10)
