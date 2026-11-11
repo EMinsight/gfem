@@ -255,6 +255,20 @@ class SystemOperator:
         handle = self._adjoint_system()._adjoint_handle(n, omega)  # noqa: SLF001
         return handle.solve(loads, tolerance=self._adjoint_tolerance)
 
+    def adjoint_order(self, omegas: Sequence[float]) -> list[int]:
+        """The frequency indices of ``omegas`` in the order a backward solves them.
+
+        From the adjoint base's frequency: ascending when the base sits at the
+        first, else descending (a forward leaves it at the last). Repeated
+        backward passes so alternate, and each refactorizes once fewer than
+        there are frequencies.
+        """
+        system = self if self._transposed is None else self._transposed_system
+        sweep = None if system is None else system._adjoint_sweep  # noqa: SLF001
+        at = None if sweep is None else sweep.frequency
+        indices = list(range(len(omegas)))
+        return indices if omegas and at == omegas[0] else indices[::-1]
+
     @property
     def nbytes(self) -> int:
         """Host memory held by the adjoint handles, the pieces and ``W``, in bytes.
@@ -463,6 +477,11 @@ class SystemSweep:
     def pooled(self) -> bool:
         """Whether the base returns to the plan pool."""
         return self._plans is not None
+
+    @property
+    def frequency(self) -> float | None:
+        """The ω of the handle `at` gave last, or ``None``."""
+        return None if self._last is None else self._last[0]
 
     def at(self, omega: float) -> Handle:
         """A handle of ``A(ω) + W(ω)``, borrowing the sweep's base handle."""

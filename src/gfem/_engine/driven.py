@@ -1152,9 +1152,11 @@ class DrivenRule:
         is on the unpaired space (`DrivenOperator.pair`). ``z_ref``
         contributes nothing.
 
-        The frequencies are solved last first: a base handle kept from the
-        forward sits at the last frequency (`SystemOperator.keep_base`), so it
-        refactorizes once fewer. The pairs stay in frequency order.
+        The frequencies are solved from the adjoint base's frequency
+        (`SystemOperator.adjoint_order`): a base handle kept from the forward
+        sits at the last (`SystemOperator.keep_base`), and a backward leaves it
+        at the frequency it ended on, so each pass refactorizes once fewer. The
+        pairs stay in frequency order.
         """
         if self.adaptive:
             return self._backward_adaptive(model, entry, cotangents)
@@ -1170,7 +1172,8 @@ class DrivenRule:
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
             domain = em_region(model, op.built)
-            for n in reversed(range(len(frequencies))):
+            omegas = [2 * math.pi * f for f in frequencies]
+            for n in system.adjoint_order(omegas):
                 f = frequencies[n]
                 omega = 2 * math.pi * f
                 x = solution[:, n * width : (n + 1) * width]
