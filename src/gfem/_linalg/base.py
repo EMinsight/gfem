@@ -176,6 +176,7 @@ class NgsHandle:
             x, y = matrix.CreateColVector(), matrix.CreateRowVector()
             mark_x, mark_y = layout.mark_load, layout.mark_state
         with self._lock:
+            self._check_solvable()
             for j in range(cols.shape[1]):
                 x.FV().NumPy()[:] = cols[:, j]
                 mark_x(x)
@@ -185,6 +186,9 @@ class NgsHandle:
                     after(op, x, y)
                 out[:, j] = y.FV().NumPy()
         return out[:, 0] if flat else out
+
+    def _check_solvable(self) -> None:
+        """Hook for subclasses: raise if the handle cannot map now; under the lock."""
 
     def _inverse_map(
         self,
