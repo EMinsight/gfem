@@ -177,6 +177,38 @@ def test_a_walk_after_a_solve_leaves_other_solves_unconsumed_entries():
     assert entries.pooled == 0
 
 
+class FakeComm:
+    """A communicator of one process for the cache's reductions."""
+
+
+@pytest.fixture
+def fake_comm(monkeypatch):
+    monkeypatch.setattr(
+        cache._mpi, "comm_key", lambda comm: None if comm is None else id(comm)
+    )
+    monkeypatch.setattr(cache._mpi, "node_bytes", lambda _comm, local: int(local))
+    monkeypatch.setattr(cache._mpi, "node_budget", lambda _comm, local: int(local))
+    return FakeComm()
+
+
+def test_a_walk_under_a_communicator_does_not_count_pooled_handles(fake_comm):
+    entries = EntryCache()
+    pooled = FakeHandle(500)
+    entries.give_plan(("k",), TOPOLOGY, pooled, budget=1000)
+    first = Entry(physics="em", handle=FakeKept(20, FakeHandle(30)))
+    k_first = entries.put(first, budget=200, comm=fake_comm)
+    k_second = entries.put(
+        Entry(physics="em", handle=FakeKept(20, FakeHandle(30))),
+        budget=200,
+        comm=fake_comm,
+    )
+    # the pool is serial: this walk cannot free it, and does not count it
+    assert not pooled.freed
+    assert entries.get(k_first) is first
+    assert first.handle.base is not None
+    assert entries.get(k_second) is not None
+
+
 def test_clear_frees_the_pool_too():
     entries = EntryCache()
     handle = FakeHandle(10)

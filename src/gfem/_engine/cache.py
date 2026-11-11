@@ -277,7 +277,7 @@ class EntryCache:
         against the budget, but only ``comm``'s are evicted: freeing a base may be
         collective on a communicator whose ranks are not here, so the budget does not
         bound what a solve on another communicator keeps. The plan pool is serial:
-        it counts, but only a one-process walk frees from it.
+        only a one-process walk counts it and frees from it.
         """
         key = next(self._keys)
         budget = _mpi.node_budget(comm, budget)
@@ -298,7 +298,9 @@ class EntryCache:
         owner = _mpi.comm_key(comm)
 
         def over() -> bool:
-            return _mpi.node_bytes(comm, self.nbytes) > budget
+            # the serial pool counts only where the walk can free it
+            held = self.nbytes if comm is None else self._entry_nbytes
+            return _mpi.node_bytes(comm, held) > budget
 
         if comm is None:
             while self._plans and over():
@@ -410,8 +412,14 @@ class EntryCache:
     @property
     def nbytes(self) -> int:
         """Bytes held by every entry and every pooled handle."""
-        held = sum(e.nbytes for e in self._entries.values())
-        return held + sum(int(p.handle.nbytes) for p in self._plans.values())
+        return self._entry_nbytes + sum(
+            int(p.handle.nbytes) for p in self._plans.values()
+        )
+
+    @property
+    def _entry_nbytes(self) -> int:
+        """Bytes held by every entry."""
+        return sum(e.nbytes for e in self._entries.values())
 
     def __len__(self) -> int:
         return len(self._entries)
