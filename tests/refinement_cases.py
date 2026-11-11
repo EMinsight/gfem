@@ -17,6 +17,21 @@ packs the cells towards the corner.
   height 0.5 mm), `CAVITY_PROBLEM`; quantity `cavity_frequency`, reference
   `CAVITY_F1`.
 
+Two more cases, not singular at a re-entrant corner:
+
+- Sheet, `sheet_model`: two bars "a" and "b" in a grounded box with a
+  zero-thickness grounded sheet "fin" between them
+  (`structured_meshes.sheet_screen`), `SHEET_PROBLEM`; the only case whose
+  estimate is cut along an interior sheet. References `SHEET_C` (F),
+  Richardson extrapolations of uniform order-2 n = 16, 32, 64 with the rate
+  fitted per entry (C_aa 1.32, C_ab 0.98: the sheet's tip dominates the
+  off-diagonal entry), within `SHEET_C_BOUND` (relative) of the
+  extrapolation from n = 8, 16, 32.
+- Anisotropic coax, `anisotropic_coax_model`: the circular coax quarter
+  (`structured_meshes.coax_quarter`, radii 1 and 2 um, extruded 0.5 um)
+  filled with eps_r (2, 5, 3) along rotated axes, `ANISOTROPIC_COAX`; its
+  reference is an order-5 solve on the same mesh, which the tests run.
+
 Tests never recompute the references. Provenance: the coax and step values
 are Richardson extrapolations (alpha = 4/3) of uniform order-2 runs, coax
 n = 64 and 128, step n = 16 and 32, each checked against the fitted alpha
@@ -84,10 +99,39 @@ CAVITY_SPLIT = (
     (246416, 3.8907e-4),
 )
 
+#: The sheet case's capacitance matrix, F, terminals in order a, b.
+SHEET_C = ((4.08621e-17, -1.39274e-19), (-1.39274e-19, 4.19939e-17))
+#: Relative bound of each `SHEET_C` entry.
+SHEET_C_BOUND = ((6e-6, 1.5e-4), (1.5e-4, 6e-6))
+
+
+def _rotation(axis: str, degrees: float) -> np.ndarray:
+    t = np.radians(degrees)
+    c, s = np.cos(t), np.sin(t)
+    i, j = {"x": (1, 2), "y": (2, 0), "z": (0, 1)}[axis]
+    out = np.eye(3)
+    out[i, i] = out[j, j] = c
+    out[i, j], out[j, i] = -s, s
+    return out
+
+
+_ROT3 = _rotation("z", 30) @ _rotation("y", 25) @ _rotation("x", 40)
+
+#: The anisotropic coax's fills: eps_r (2, 5, 3) along the columns of a
+#: rotation about z by 30 degrees ("rotz"), or about z, y and x by 30, 25 and
+#: 40 degrees ("rot3": no principal axis along the coax).
+ANISOTROPIC_COAX = {
+    name: gfem.Material(eps_r=(2.0, 5.0, 3.0), axes=tuple(map(tuple, r.T)))
+    for name, r in (("rotz", _rotation("z", 30)), ("rot3", _ROT3))
+}
+
 _EPS_R = 4.0
 _QUARTER = 0.5e-6 / 4  # the coax model's extrusion over the full coax's 4 quarters
 
 COAX_PROBLEM = gfem.Electrostatic(terminals={"inner": "inner"}, ground="outer")
+SHEET_PROBLEM = gfem.Electrostatic(
+    terminals={"a": "a", "b": "b"}, ground=["box", "fin"]
+)
 CAVITY_PROBLEM = gfem.Eigenmode(target=CAVITY_F1, n_modes=1)
 
 
@@ -112,6 +156,20 @@ def coax_model(directory: Path, n: int, *, grade: float = 1.0) -> gfem.Model:
     """The square coax quarter, in um."""
     mesh = _mesh(directory, "coax", sm.square_coax_quarter(n, grade=grade), "um")
     return gfem.Model(mesh, materials={"dielectric": gfem.Material()})
+
+
+def sheet_model(directory: Path, n: int) -> gfem.Model:
+    """The sheet case, in um, vacuum."""
+    mesh = _mesh(directory, "sheet", sm.sheet_screen(n), "um")
+    vacuum = gfem.Material()
+    return gfem.Model(mesh, materials={"left": vacuum, "right": vacuum})
+
+
+def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:
+    """The circular coax quarter, 2k cells across, 4k around, filled with ``fill``."""
+    cells = sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k)
+    mesh = _mesh(directory, "coax", cells, "um")
+    return gfem.Model(mesh, materials={"dielectric": ANISOTROPIC_COAX[fill]})
 
 
 def step_model(

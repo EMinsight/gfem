@@ -4,10 +4,10 @@ Square coax (electrostatic, singular). For a capacitance with one terminal
 at 1 V, C_h - C = a(e, e) exactly, so the true relative energy error of the
 potential is sqrt((C_h - C) / C), with C the hard-coded reference
 `refinement_cases.COAX_C`. The field estimator's effectivity (estimate over
-that error) measured 1.17, 1.26, 1.31 and 1.32 under uniform refinement,
+that error) measured 1.25, 1.30, 1.32 and 1.33 under uniform refinement,
 n = 2 to 16. Mesh refinement driven by it, run until the next mesh would
 pass a quarter of the uniform n = 16 tetrahedra, ends on 936 tetrahedra and
-1574 DOF with a capacitance error of 4.5e-4, below the uniform n = 16 error
+1578 DOF with a capacitance error of 4.4e-4, below the uniform n = 16 error
 of 5.1e-4 on 9603 DOF.
 
 Step line (driven) and L cavity (eigenmode), singular. The cavity's true
@@ -21,23 +21,39 @@ uniform split of each tetrahedron into 8 (`refinement_cases.STEP_SPLIT`,
 Smooth cases, against a closed-form field or capacitance: a parallel-plate
 line between 50 and 30 ohm lumped ports, whose field is the transmission
 line's TEM wave; the first mode of a rectangular PEC box; a circular coax
-quarter, against the exact log formula, so its faceting counts in the true
+quarter, against an order-5 solve on the same mesh (its error on its own
+facets) and against the exact log formula, where the faceting, which mesh
+refinement never removes and the estimate does not see, counts in the true
 error. The true error of a field is its distance to the exact one in the
 energy norm, || curl e ||^2 + k^2 || e ||^2_eps, relative to the field's, by
 a Gauss rule on each tetrahedron.
 
-Measured (order 2, direct):
+Anisotropic coax (`refinement_cases.anisotropic_coax_model`), electrostatic:
+the circular coax quarter filled with a rotated tensor eps_r, against an
+order-5 solve on the same mesh. The recovery's constraint on the natural
+surfaces (ADR 0087) is what keeps this estimate above the error: without it
+the estimate measured 0.45 times the error.
 
-    step line, uniform n = 2, 4, 8, 16   0.883, 0.892, 0.893, 0.893 (proxy)
+Each case's effectivity must lie in its range of `FIELD_EFFECTIVITY_BY_CASE`;
+`FIELD_EFFECTIVITY` (the lowest low and the highest high) is the range the
+docs quote. The step line's proxy ratio is not an effectivity and is
+asserted on its own.
+
+Measured (order 2, direct, ostau, 1 thread):
+
+    step line, uniform n = 2, 4, 8, 16   0.891, 0.894, 0.894, 0.893 (proxy)
     L cavity, uniform n = 4, 8, 16       1.139, 1.037, 0.995
-    step line, refined to 9097 tets     S21(3 GHz) error 2.5e-5 on 60036 DOF,
-                                        8.2 x below the uniform split
+    step line, refined to 9099 tets     S21(3 GHz) error 2.5e-5 on 60064 DOF,
+                                        8.3 x below the uniform split
     L cavity, refined to 6324 tets      f1 error 5.2e-5 on 43378 DOF,
                                         16 x below the uniform split
-    parallel-plate line, n = 4, 8, 16   1.13 to 1.21 (3 and 8 GHz)
+    parallel-plate line, n = 4, 8, 16   1.16 to 1.25 (3 and 8 GHz)
     PEC box TM110, h = 0.2/m mm,
     m = 1, 2, 3                         1.20, 1.22, 1.22
-    circular coax, k = 2, 4, 8          0.90, 0.92, 0.93
+    circular coax, k = 2, 4, 8          1.21, 1.21, 1.20 (own facets)
+                                        0.94, 0.94, 0.94 (exact circle)
+    anisotropic coax, k = 1, 2, 4, 8    1.28, 1.39, 1.48, 1.54 (rotz)
+                                        1.27, 1.38, 1.47, 1.51 (rot3)
 """
 
 import math
@@ -52,6 +68,27 @@ from scipy.special import roots_jacobi
 import gfem
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
+
+#: Asserted field effectivity range per case (measured, with margin).
+FIELD_EFFECTIVITY_BY_CASE = {
+    "square coax": (0.9, 1.6),
+    "circular coax": (0.9, 1.6),
+    "L cavity": (0.9, 1.5),
+    "parallel-plate line": (0.9, 1.6),
+    "rectangular box": (0.9, 1.6),
+    "anisotropic coax": (0.9, 1.8),
+}
+
+#: The range the docs quote: the lowest low and the highest high.
+FIELD_EFFECTIVITY = (
+    min(low for low, _ in FIELD_EFFECTIVITY_BY_CASE.values()),
+    max(high for _, high in FIELD_EFFECTIVITY_BY_CASE.values()),
+)
+
+
+def _assert_in(case, estimate, error):
+    low, high = FIELD_EFFECTIVITY_BY_CASE[case]
+    assert low <= estimate / error <= high, (case, estimate / error)
 
 
 def _energy_error(result: gfem.ElectrostaticResult) -> float:
@@ -77,8 +114,7 @@ def uniform(tmp_path_factory):
 @pytest.mark.parametrize("n", [2, 4, 8, 16])
 def test_field_estimator_effectivity_is_near_one_on_uniform_meshes(uniform, n):
     _, result, estimate = uniform[n]
-    effectivity = estimate.value / _energy_error(result)
-    assert 0.9 < effectivity < 1.6, effectivity
+    _assert_in("square coax", estimate.value, _energy_error(result))
 
 
 def test_mesh_refinement_reaches_the_uniform_error_with_a_fifth_of_its_dofs(uniform):
@@ -154,7 +190,7 @@ def test_the_step_line_effectivity_is_flat(step_uniform, n):
 @pytest.mark.parametrize("n", [4, 8, 16])
 def test_the_cavity_effectivity_is_near_one(cavity_uniform, n):
     result, estimate = cavity_uniform[n]
-    assert 0.9 < estimate.value / _cavity_error(result) < 1.5
+    _assert_in("L cavity", estimate.value, _cavity_error(result))
 
 
 def _adaptive(model, problem, max_tetrahedra):
@@ -186,9 +222,6 @@ def test_mesh_refinement_beats_the_uniform_split_on_the_cavity(tmp_path):
 
 
 # --- smooth cases ------------------------------------------------------------
-
-#: The range the field estimator's effectivity is asserted in on smooth cases.
-SMOOTH_EFFECTIVITY = (0.5, 3.0)
 
 
 def _gauss_points(mesh: gfem.Mesh, n: int = 3) -> tuple[np.ndarray, np.ndarray]:
@@ -284,7 +317,7 @@ def test_the_field_effectivity_on_a_parallel_plate_line(tmp_path, n):
     for f, value in zip(frequencies, estimate.values, strict=True):
         field = result.e_field(f, "p1")
         true = _relative_energy_error(field, *_line_wave(f), _LINE["eps_r"])
-        assert SMOOTH_EFFECTIVITY[0] < value / true < SMOOTH_EFFECTIVITY[1]
+        _assert_in("parallel-plate line", value, true)
 
 
 @pytest.mark.parametrize("m", [1, 2, 3])
@@ -315,19 +348,54 @@ def test_the_field_effectivity_on_a_pec_box_mode(tmp_path, m):
         return out
 
     true = _relative_energy_error(result.e_fields[0], exact, exact_curl, 1.0, fit=True)
-    assert SMOOTH_EFFECTIVITY[0] < estimate.value / true < SMOOTH_EFFECTIVITY[1]
+    _assert_in("rectangular box", estimate.value, true)
+
+
+ORDER_5 = gfem.SolverOptions(order=5, linear_solver="direct")
+
+
+def _coax_case(model):
+    """(C, its field estimate, C of an order-5 solve on the same mesh)."""
+    result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    fine = gfem.solve(model, rc.COAX_PROBLEM, options=ORDER_5)
+    c, c5 = float(result.capacitance[0, 0]), float(fine.capacitance[0, 0])
+    return c, estimate.value, c5
+
+
+@pytest.fixture(scope="module")
+def circular_coax(tmp_path_factory):
+    """Per k: the circular coax quarter's `_coax_case`."""
+    out = {}
+    for k in (2, 4, 8):
+        directory = tmp_path_factory.mktemp(f"circular{k}")
+        model = _model(
+            directory,
+            sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k),
+            "um",
+            materials={"dielectric": gfem.Material()},
+        )
+        out[k] = _coax_case(model)
+    return out
 
 
 @pytest.mark.parametrize("k", [2, 4, 8])
-def test_the_field_effectivity_on_a_circular_coax(tmp_path, k):
-    model = _model(
-        tmp_path,
-        sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k),
-        "um",
-        materials={"dielectric": gfem.Material()},
-    )
-    result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
-    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+def test_the_field_effectivity_on_a_circular_coax(circular_coax, k):
+    c, estimate, c5 = circular_coax[k]
+    _assert_in("circular coax", estimate, math.sqrt((c - c5) / c5))
+
+
+@pytest.mark.parametrize("k", [2, 4, 8])
+def test_the_field_estimate_does_not_see_the_faceting(circular_coax, k):
+    # Against the true circle the error includes the faceting, which mesh
+    # refinement never removes: the estimate stays below that error.
+    c, estimate, _ = circular_coax[k]
     exact = math.pi * const.epsilon_0 * 0.5e-6 / (2 * math.log(2.0))  # a quarter
-    true = math.sqrt((float(result.capacitance[0, 0]) - exact) / exact)
-    assert SMOOTH_EFFECTIVITY[0] < estimate.value / true < SMOOTH_EFFECTIVITY[1]
+    assert estimate / math.sqrt((c - exact) / exact) < 1.0
+
+
+@pytest.mark.parametrize("fill", list(rc.ANISOTROPIC_COAX))
+@pytest.mark.parametrize("k", [1, 2, 4, 8])
+def test_the_field_effectivity_on_an_anisotropic_coax(tmp_path, k, fill):
+    c, estimate, c5 = _coax_case(rc.anisotropic_coax_model(tmp_path, k, fill))
+    _assert_in("anisotropic coax", estimate, math.sqrt(abs(c - c5) / c5))

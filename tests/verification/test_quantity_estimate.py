@@ -26,22 +26,30 @@ Cases and references (none recomputed by the tests but the closed forms):
 - L cavity, singular: f1 over `refine_mesh` cycles 0-8 against
   `refinement_cases.CAVITY_F1` (Trefethen and Betcke);
 - rectangular PEC box 1 x 0.7 x 0.4 mm: modes 110, 210, 101, 310 on
-  h = 0.2 / m mm, m = 2, 3, against the closed form.
+  h = 0.2 / m mm, m = 2, 3, against the closed form;
+- anisotropic coax (`refinement_cases.anisotropic_coax_model`), both fills,
+  k = 1, 2, 4, 8: C against an order-5 solve on the same mesh;
+- sheet (`refinement_cases.sheet_model`), the only case cut along an
+  interior sheet: C_aa and C_bb on uniform n = 2, 4, 8, 16 and C_aa over
+  `refine_mesh` cycles 0-8, against `refinement_cases.SHEET_C`.
 
-Measured (ostau, 2 threads):
+Measured (ostau, 1 thread):
 
-    square coax           1.07 - 1.38
-    circular coax         1.12 - 1.42   (faceting: 0.80 - 0.86)
-    step line, lumped     1.52 - 1.76
-    step line, wave       1.76
-    parallel-plate line   1.52 - 14.7
-    L cavity              2.68 - 4.08
+    square coax           1.17 - 1.57
+    circular coax         1.43 - 1.47   (faceting: 0.88 - 0.89)
+    step line, lumped     1.65 - 1.81
+    step line, wave       1.77
+    parallel-plate line   1.65 - 15.75
+    L cavity              2.87 - 4.08
     rectangular box       7.05 - 10.6
+    anisotropic coax      1.60 - 2.39
+    sheet                 1.22 - 1.69
     order 3: line 2.87 - 18.1, box (m = 1) 4.69 - 5.39
 
 The higher ratios come from the fields with no sharp metal edge (the uniform
 line and the empty box), where the curl and mass terms of the error identity
 nearly cancel and the estimate, which never lets them cancel, overestimates.
+The line's top is at 15 GHz on n = 8, where its S error crosses near zero.
 """
 
 import math
@@ -53,6 +61,7 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
+from gfem._engine import estimate as kernels
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 
@@ -62,9 +71,11 @@ EFFECTIVITY_BY_CASE = {
     "circular coax": (0.9, 2.0),
     "step line, lumped ports": (0.9, 2.5),
     "step line, wave ports": (0.9, 2.5),
-    "parallel-plate line": (0.9, 15.0),
+    "parallel-plate line": (0.9, 17.0),
     "L cavity": (0.9, 5.0),
     "rectangular box": (0.9, 12.0),
+    "anisotropic coax": (0.9, 2.5),
+    "sheet": (0.9, 2.5),
 }
 
 #: The range the docs quote: the lowest low and the highest high.
@@ -164,6 +175,60 @@ def test_the_estimate_does_not_see_the_faceting(circular_coax, k):
     # refinement never removes; the docs say the estimate leaves it out.
     c, estimate, _ = circular_coax[k]
     assert estimate / abs((c - CIRCULAR_C) / CIRCULAR_C) <= 0.95
+
+
+# --- anisotropic coax: capacitance, a rotated tensor -------------------------
+
+
+@pytest.mark.parametrize("fill", list(rc.ANISOTROPIC_COAX))
+@pytest.mark.parametrize("k", [1, 2, 4, 8])
+def test_the_anisotropic_coax_capacitance(tmp_path, k, fill):
+    # QuantityEstimator still refuses an anisotropic permittivity: the
+    # estimate is the kernel's, as error_estimate would report it.
+    model = rc.anisotropic_coax_model(tmp_path, k, fill)
+    result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
+    estimate, _ = kernels.capacitance(model, result, "inner")
+    fine = gfem.solve(
+        model,
+        rc.COAX_PROBLEM,
+        options=gfem.SolverOptions(order=5, linear_solver="direct"),
+    )
+    c, c5 = float(result.capacitance[0, 0]), float(fine.capacitance[0, 0])
+    _assert_in("anisotropic coax", estimate, (c - c5) / c5)
+
+
+# --- sheet: capacitance, cut along an interior sheet --------------------------
+
+
+def _sheet_error(capacitance, i):
+    return (float(np.real(capacitance)) - rc.SHEET_C[i][i]) / rc.SHEET_C[i][i]
+
+
+@pytest.mark.parametrize("n", [2, 4, 8, 16])
+def test_the_sheet_capacitance_on_uniform_meshes(tmp_path, n):
+    model = rc.sheet_model(tmp_path, n)
+    result = gfem.solve(model, rc.SHEET_PROBLEM, options=OPTIONS)
+    for i, terminal in enumerate(("a", "b")):
+        estimator = gfem.QuantityEstimator(capacitance=(terminal, terminal))
+        estimate = gfem.error_estimate(result, estimator, model=model)
+        error = _sheet_error(result.capacitance[i, i], i)
+        assert error > 0  # C_h >= C
+        _assert_in("sheet", estimate.value, error)
+
+
+def test_the_sheet_capacitance_under_mesh_refinement(tmp_path):
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            rc.sheet_model(tmp_path, 2),
+            rc.SHEET_PROBLEM,
+            estimator=gfem.QuantityEstimator(capacitance=("a", "a")),
+            tolerance=1e-4,
+            max_cycles=8,
+            options=OPTIONS,
+        )
+    assert len(ref.cycles) == 9
+    for cycle in ref.cycles:
+        _assert_in("sheet", cycle.estimate, _sheet_error(cycle.value, 0))
 
 
 # --- step line: S21, singular ------------------------------------------------

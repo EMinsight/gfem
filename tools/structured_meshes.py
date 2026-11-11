@@ -540,3 +540,57 @@ def l_cavity(n: int, *, grade: float = 1.0):
         return None if c[0] > 0 and c[1] < 0 else "air"
 
     return carve(edges, volume, lambda _: "wall")
+
+
+def sheet_screen(n: int):
+    """Two bars in a grounded box with a zero-thickness sheet between them.
+
+    The box is [0, 5] x [0, 3], extruded by 0.5 (one cell). Bar "a" is
+    [0.5, 1.5] x [0.5, 1.5] and bar "b" [3, 4.5] x [1.5, 2.5], both carved
+    out; the sheet "fin" is the plane x = 2 for y < 2, between the volumes
+    "left" (x < 2) and "right", and ends on the box's bottom wall and on
+    both "ends" (z = 0 and 0.5). Surfaces "a", "b", "fin", "box" (the x and
+    y walls) and "ends". ``n`` cells per unit length, nodes on every edge
+    of the bars and the fin.
+    """
+    width, depth, length = 5.0, 3.0, 0.5
+    bars = {"a": (0.5, 1.5, 0.5, 1.5), "b": (3.0, 4.5, 1.5, 2.5)}
+    fin_x, fin_y = 2.0, 2.0
+    eps = 1e-9
+
+    def lines(hi: float, marks: list[float]) -> np.ndarray:
+        points = sorted({0.0, hi, *marks})
+        parts = []
+        for p, q in itertools.pairwise(points):
+            m = max(1, round((q - p) * n))
+            parts.append(p + (q - p) * np.arange(m + 1) / m)
+        return np.unique(np.concatenate(parts))
+
+    xs = lines(width, [v for r in bars.values() for v in r[:2]] + [fin_x])
+    ys = lines(depth, [v for r in bars.values() for v in r[2:]] + [fin_y])
+
+    def inside(c, r):
+        return r[0] < c[0] < r[1] and r[2] < c[1] < r[3]
+
+    def volume(c):
+        if any(inside(c, r) for r in bars.values()):
+            return None
+        return "left" if c[0] < fin_x else "right"
+
+    def on(c, r):
+        x, y = c[0], c[1]
+        across = min(abs(x - r[0]), abs(x - r[1])) < eps and r[2] - eps < y < r[3] + eps
+        along = min(abs(y - r[2]), abs(y - r[3])) < eps and r[0] - eps < x < r[1] + eps
+        return across or along
+
+    def surface(c):
+        for name, r in bars.items():
+            if on(c, r):
+                return name
+        if abs(c[2]) < eps or abs(c[2] - length) < eps:
+            return "ends"
+        if abs(c[0] - fin_x) < eps and 0 < c[1] < depth - eps:
+            return "fin" if c[1] < fin_y else ""  # above the fin: no surface
+        return "box"
+
+    return carve((xs, ys, np.array([0.0, length])), volume, surface)
