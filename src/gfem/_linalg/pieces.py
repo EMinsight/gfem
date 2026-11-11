@@ -125,6 +125,12 @@ class FixedPart:
         at = _positions(rowptr, cols, r, c)
         if at is None:
             return None
+        # the volume pieces' varying parts share their elements, so mostly
+        # their positions: one array lets the piece sum scatter them once
+        for other in self.store.kept.values():
+            if np.array_equal(other.varying[1], at):
+                at = other.varying[1]
+                break
         values = ngs.BaseVector(whole.nze, True)
         out = values.FV().NumPy()
         out[:] = whole.AsVector().FV().NumPy()
@@ -218,10 +224,20 @@ class AssembledPieces:
         target.data = w0 * v0
         for w, values in rest:
             target.data += w * values
-        out = target.FV().NumPy()
+        # the parts at one positions array (split pieces' varying parts) are
+        # summed first and scattered once: the scatter is the costly part
+        scattered: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         for values, at, k, _ in parts:
-            if at is not None:
-                out[at] += weights[k] * values
+            if at is None:
+                continue
+            held = scattered.get(id(at))
+            if held is None:
+                scattered[id(at)] = (at, weights[k] * values)
+            else:
+                np.add(held[1], weights[k] * values, out=held[1])
+        out = target.FV().NumPy()
+        for at, values in scattered.values():
+            out[at] += values
 
     @property
     def nbytes(self) -> int:
