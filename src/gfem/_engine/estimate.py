@@ -16,7 +16,8 @@ of eps across a material interface is not smeared); mu^-1 curl E into
 ``HCurl(order=p-1, type1=False)`` (all of P_{p-1}; gfem's own ``type1``
 kind is not, and its recovery error does not converge). Both are
 ``definedon`` the solve domain and compressed, and cut along interior PEC
-sheets, across which the solved flux jumps. Each mass matrix is factorized
+sheets (and, for a potential, the interior terminal and ground sheets),
+across which the solved flux jumps. Each mass matrix is factorized
 once per mesh (`FluxRecovery`) and the factor reused for every field, real
 and imaginary part. NGSolve's local ``GridFunction.Set`` is never used: it
 does not converge at a corner singularity.
@@ -28,6 +29,7 @@ gfem tetrahedron order.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -48,7 +50,16 @@ from gfem._field import Field
 from gfem.model import Model
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
 
-__all__ = ["FluxRecovery", "combine", "driven", "eigenmode", "electrostatic"]
+__all__ = [
+    "FluxRecovery",
+    "capacitance",
+    "combine",
+    "driven",
+    "eigenmode",
+    "electrostatic",
+    "omega",
+    "s_entry",
+]
 
 
 class _Projection:
@@ -192,14 +203,26 @@ class FluxRecovery:
     the model's interior PEC sheets.
     """
 
-    def __init__(self, model: Model, order: int, *, cracks: bool = False) -> None:
-        """Build the recovery of an order-``order`` solution on ``model``."""
+    def __init__(
+        self,
+        model: Model,
+        order: int,
+        *,
+        cracks: bool = False,
+        sheets: Sequence[str] = (),
+    ) -> None:
+        """Build the recovery of an order-``order`` solution on ``model``.
+
+        ``cracks`` cuts the spaces along the model's interior PEC sheets,
+        ``sheets`` along these surfaces too (where they are interior).
+        """
         self.model = model
         self.order = order
         self.built = discretization(model.mesh).built
         self.region = em_region(model, self.built)
         self.dx = quadrature.dx(order, definedon=self.region)
-        self._cracks = _sheet_faces(model, self.built) if cracks else frozenset()
+        names = set(pec_surfaces(model)) if cracks else set()
+        self._cracks = _sheet_faces(model, self.built, names | set(sheets))
         self._hdiv = self._projection(ngs.HDiv)
         self._hcurl: _Projection | None = None
         self.eps, self.eps_inverse = self._weights("eps_r")
@@ -259,10 +282,10 @@ class FluxRecovery:
         return self.element_integrals(diff * (self.mu * diff))
 
 
-def _sheet_faces(model: Model, built: EngineMesh) -> frozenset[int]:
-    """NGSolve face numbers of the model's PEC surfaces inside the solve domain."""
+def _sheet_faces(model: Model, built: EngineMesh, names: set[str]) -> frozenset[int]:
+    """NGSolve face numbers of the surfaces ``names`` inside the solve domain."""
     domain = model._domain  # noqa: SLF001
-    names = {name for name in pec_surfaces(model) if domain.interior(name)}
+    names = {name for name in names if domain.interior(name)}
     if not names:
         return frozenset()
     return frozenset(
@@ -288,18 +311,52 @@ def electrostatic(
     """Normalized squared indicators of each terminal's potential.
 
     One solve (the whole capacitance matrix), holding one field per
-    terminal: eta_K^2 / || grad V ||^2_eps per tetrahedron.
+    terminal: eta_K^2 / || grad V ||^2_eps per tetrahedron. The recovery is
+    cut along the interior sheets every potential is fixed on (terminals and
+    ground), across which the solved flux jumps.
     """
     fields = list(result.potential.values())
     with task_manager(threads):
-        recovery = FluxRecovery(model, fields[0].order)
+        gfs = [_grid_function(field) for field in fields]
+        recovery = FluxRecovery(
+            model, fields[0].order, sheets=_fixed_sheets(model, gfs)
+        )
         group = []
-        for field in fields:
-            gf = _grid_function(field)
+        for gf in gfs:
             flux = recovery.eps * ngs.grad(gf)
             energy = recovery.element_integrals(ngs.grad(gf) * flux).sum()
             group.append(recovery.flux_error(flux) / energy)
     return [group]
+
+
+#: How close to constant (relative to the largest potential, squared) a
+#: potential must be on a surface for the surface to count as fixed.
+_FIXED_RTOL = 1e-20
+
+
+def _fixed_sheets(model: Model, gfs: Sequence[ngs.GridFunction]) -> tuple[str, ...]:
+    """Interior surfaces on which every potential is constant: terminals, ground."""
+    domain = model._domain  # noqa: SLF001
+    mesh = gfs[0].space.mesh
+    peak = max(float(np.max(np.abs(gf.vec.FV().NumPy()))) for gf in gfs) or 1.0
+    out = []
+    for region in model.mesh.regions:
+        if region.dim != 2 or not domain.interior(region.name):
+            continue
+        where = mesh.Boundaries(re.escape(region.name))
+        area = ngs.Integrate(ngs.CF(1.0), mesh, ngs.BND, definedon=where)
+        if area <= 0:
+            continue
+        fixed = True
+        for gf in gfs:
+            mean = ngs.Integrate(gf, mesh, ngs.BND, definedon=where) / area
+            spread = ngs.Integrate((gf - mean) ** 2, mesh, ngs.BND, definedon=where)
+            if spread > _FIXED_RTOL * area * peak**2:
+                fixed = False
+                break
+        if fixed:
+            out.append(region.name)
+    return tuple(out)
 
 
 def driven(
@@ -370,3 +427,157 @@ def combine(
     values = tuple(float(np.sqrt(eta2.sum())) for eta2 in per_solve)
     indicators = np.sqrt(np.mean(per_solve, axis=0))
     return values, indicators
+
+
+# --- the quantity estimator (ADR 0089 and its amendment) ---------------------
+#
+# Each quantity has an exact quadratic error identity in the error e = u_h - u
+# of its field and of its free dual (the potential itself, the other port's
+# forward field, the eigenvector). The quantity estimator puts the recovered
+# errors (R(flux) - flux, as for the field estimator) in place of e, element
+# by element, volume terms only:
+#
+#   c_K(e_i, e_j) = int_K (R(mu^-1 curl E_i) - mu^-1 curl E_i) . mu (...)_j
+#   m_K(e_i, e_j) = int_K (R(eps E_i) - eps E_i) . eps^-1 (...)_j
+#
+# complex bilinear (not Hermitian). The reported estimate is the magnitude
+# |sum c_K| + k^2 |sum m_K| (the two terms are never let cancel), scaled to
+# the quantity's units; a tetrahedron's weight is its share,
+# |c_K| + k^2 |m_K| with the same scale.
+
+
+def capacitance(
+    model: Model,
+    result: ElectrostaticResult,
+    terminal: str,
+    threads: int | None = None,
+) -> tuple[float, np.ndarray]:
+    """The relative error estimate of ``capacitance[t, t]`` and each tetrahedron's.
+
+    C_h - C = a(e, e) for a terminal at 1 V, so the estimate is the
+    recovered a(e, e) over a(u_h, u_h): the square of the field estimate of
+    that terminal's potential.
+    """
+    (group,) = electrostatic(model, result, threads)
+    weights = group[list(result.potential).index(terminal)]
+    return float(weights.sum()), weights
+
+
+def s_entry(
+    model: Model,
+    result: DrivenResult,
+    to: str,
+    source: str,
+    threads: int | None = None,
+) -> list[tuple[float, np.ndarray]]:
+    """The absolute error estimate of ``s[to, source]``, per frequency and tetrahedron.
+
+    S_ij,h - S_ij = i a(e_i, e_j) / (4 k0 eta0), with k0 in the mesh's
+    length unit, for fields of 1 W incident at either port; the estimate is
+    (|sum c_K| + k0^2 |sum m_K|) / (4 k0 eta0).
+    """
+    fields = dict(zip(result.kept, result.e_fields, strict=True))
+    eta0 = scipy.constants.mu_0 * scipy.constants.c
+    out = []
+    with task_manager(threads):
+        recovery = None
+        for frequency in result.s.frequency:
+            f_to, f_source = (
+                fields[float(frequency), to],
+                fields[float(frequency), source],
+            )
+            if recovery is None:
+                recovery = FluxRecovery(model, f_to.order, cracks=True)
+            k = 2 * np.pi * float(frequency) / scipy.constants.c * recovery.built.scale
+            ri = _residuals(recovery, f_source)
+            rj = ri if source == to else _residuals(recovery, f_to)
+            curl, mass = _pair(recovery, ri, rj)
+            scale = 1.0 / (4 * k * eta0)
+            value = scale * (abs(curl.sum()) + k**2 * abs(mass.sum()))
+            out.append((float(value), scale * (np.abs(curl) + k**2 * np.abs(mass))))
+    return out
+
+
+def omega(
+    model: Model,
+    result: EigenmodeResult,
+    mode: int,
+    threads: int | None = None,
+) -> tuple[float, np.ndarray]:
+    """The relative error estimate of ``omega[mode]`` and each tetrahedron's.
+
+    lambda_h - lambda = (a(e, e) - lambda b(e, e)) / b(u_h, u_h) with
+    lambda = k^2, and omega_h - omega ~ omega (lambda_h - lambda) / (2
+    lambda); the estimate is (|sum c_K| + lambda |sum m_K|) / (2 lambda
+    |b(u_h, u_h)|), b the complex bilinear eps mass form (a lossless mode is
+    real up to one phase, which this ratio does not see).
+    """
+    field = result.e_fields[mode]
+    with task_manager(threads):
+        recovery = FluxRecovery(model, field.order, cracks=True)
+        k = float(np.real(np.asarray(field.omega))) / scipy.constants.c
+        lam = (k * recovery.built.scale) ** 2
+        residuals = _residuals(recovery, field)
+        curl, mass = _pair(recovery, residuals, residuals)
+        parts = _parts(field)
+        b = _complex(
+            [
+                [
+                    recovery.element_integrals(u * (recovery.eps * v)).sum()
+                    for v in parts
+                ]
+                for u in parts
+            ]
+        )
+    scale = 1.0 / (2 * lam * abs(b))
+    value = scale * (abs(curl.sum()) + lam * abs(mass.sum()))
+    return float(value), scale * (np.abs(curl) + lam * np.abs(mass))
+
+
+def _parts(field: Field) -> list[ngs.GridFunction]:
+    """The real part of a field, and its imaginary part if it has one."""
+    if not field.is_complex:
+        return [_grid_function(field)]
+    return [_grid_function(field, True), _grid_function(field, False)]
+
+
+def _residuals(
+    recovery: FluxRecovery, field: Field
+) -> list[tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]]:
+    """Per real / imaginary part, the recovered errors of mu^-1 curl E and eps E."""
+    return [
+        (
+            recovery.curl_residual(ngs.curl(gf)),
+            recovery.flux_residual(recovery.eps * gf),
+        )
+        for gf in _parts(field)
+    ]
+
+
+def _pair(
+    recovery: FluxRecovery,
+    ri: list[tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]],
+    rj: list[tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """c_K and m_K of two fields' recovered errors per tetrahedron, bilinear."""
+    curl = [
+        [recovery.element_integrals(ci * (recovery.mu * cj)) for cj, _ in rj]
+        for ci, _ in ri
+    ]
+    mass = [
+        [recovery.element_integrals(mi * (recovery.eps_inverse * mj)) for _, mj in rj]
+        for _, mi in ri
+    ]
+    return _complex(curl), _complex(mass)
+
+
+def _complex(table: list[list[Any]]) -> Any:
+    """``(a + i b)(c + i d)`` from the parts' products: rows a, b; columns c, d."""
+    out = table[0][0] + 0j
+    if len(table) > 1:
+        out = out + 1j * table[1][0]
+    if len(table[0]) > 1:
+        out = out + 1j * table[0][1]
+    if len(table) > 1 and len(table[0]) > 1:
+        out = out - table[1][1]
+    return out
