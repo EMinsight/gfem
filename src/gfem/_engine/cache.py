@@ -1,4 +1,4 @@
-"""The engine's two caches.
+"""The engine's caches.
 
 **Discretizations** (`discretization`): the NGSolve mesh of a `gfem.Mesh` at
 given node coordinates, and its finite-element spaces keyed by
@@ -17,6 +17,19 @@ used out first, and only an entry of the storing solve's communicator goes out,
 since freeing may be collective.
 A missing entry is not an error: the backward pass recomputes it from the
 design state in its residuals (time, never correctness).
+
+**The plan pool** (in `ENTRIES`, ADR 0082): serial CPU direct base handles no
+solve holds, kept for a later design to refactorize on their solver plan
+(`EntryCache.take_plan`). A handle returns (`EntryCache.give_plan`) at the end
+of a non-differentiated solve, or when its consumed entry is freed; PARDISO's
+factors are released on the way in. The pool holds several handles per key
+(one per ``jax.vmap`` variant). Pooled handles whose mesh topology has no
+discretization left are freed.
+
+One byte budget, ``retain_memory``, bounds pooled handles, entries' bases and
+entries together. Over it, one walk frees pooled handles (least recently
+returned first), then live entries' bases (oldest entry first), then whole
+entries (least recently used first); ``retain_memory=0`` keeps none of them.
 """
 
 from __future__ import annotations
@@ -44,6 +57,7 @@ __all__ = [
     "EntryCache",
     "default_retain_memory",
     "discretization",
+    "retain_budget",
 ]
 
 _MAX_DISCRETIZATIONS = 4
@@ -100,8 +114,10 @@ def discretization(
         return found
     entry = Discretization(built=to_ngsolve(mesh, periodic, comm), topology=topology)
     _DISCRETIZATIONS[key] = entry
-    while len(_DISCRETIZATIONS) > _MAX_DISCRETIZATIONS:
-        _DISCRETIZATIONS.popitem(last=False)
+    if len(_DISCRETIZATIONS) > _MAX_DISCRETIZATIONS:
+        while len(_DISCRETIZATIONS) > _MAX_DISCRETIZATIONS:
+            _DISCRETIZATIONS.popitem(last=False)
+        ENTRIES.free_plans_off({id(d.topology) for d in _DISCRETIZATIONS.values()})
     return entry
 
 
@@ -130,10 +146,18 @@ class Entry:
         held = sum(int(f.nbytes) for f in self.fields.values())
         return held + (int(self.handle.nbytes) if self.handle is not None else 0)
 
-    def free(self) -> None:
-        """Release the solver handle and the fields."""
+    def free(self, *, return_plans: bool = False) -> None:
+        """Release the solver handle and the fields.
+
+        With ``return_plans`` (a consumed entry, ADR 0081) a base handle the
+        solver handle holds goes to the plan pool instead, where it can
+        (handles with a ``free_base``).
+        """
         if self.handle is not None:
-            self.handle.free()
+            if return_plans and hasattr(self.handle, "free_base"):
+                self.handle.free(return_plans=True)
+            else:
+                self.handle.free()
             self.handle = None
         self.fields = {}
 
@@ -202,43 +226,85 @@ def default_retain_memory() -> int:
     return min(sizes, default=16 * 2**30) // 2
 
 
+def retain_budget(retain_memory: int | None) -> int:
+    """The byte budget of ``SolverOptions.retain_memory`` (``None``: the default)."""
+    return default_retain_memory() if retain_memory is None else int(retain_memory)
+
+
+@dataclasses.dataclass(eq=False)
+class _Pooled:
+    """A handle in the plan pool, its key, and the mesh topology of its plan."""
+
+    key: Hashable
+    topology: Any
+    handle: Any
+
+
 class EntryCache:
-    """Solve entries by integer key, least recently used evicted over budget."""
+    """Solve entries by integer key, and the plan pool, under one byte budget."""
 
     def __init__(self) -> None:
         """An empty cache."""
         self._entries: collections.OrderedDict[int, Entry] = collections.OrderedDict()
         self._comms: dict[int, int | None] = {}
         self._keys = itertools.count()
+        # least recently returned first
+        self._plans: collections.OrderedDict[int, _Pooled] = collections.OrderedDict()
 
     def put(self, entry: Entry, budget: int, comm: Any = None) -> int:
         """Store ``entry`` and return its key; evict down to ``budget`` bytes.
 
-        An entry larger than the budget alone is freed at once and evicts
-        nothing (with ``budget=0`` nothing is kept); its key reads as
-        evicted, so the backward pass recomputes it.
+        An entry larger than the budget alone is kept without its base handle
+        when that fits, and is otherwise freed at once and evicts nothing (with
+        ``budget=0`` nothing is kept); its key then reads as evicted, so the
+        backward pass recomputes it. Eviction is the walk of the module
+        docstring: pooled handles, entries' bases, entries.
 
         Under ``comm`` the bytes are the largest node's and the budget the smallest
         node's, so all ranks evict alike: a rank's own bytes would leave some ranks
         to re-run a forward without the others, and hang (ADR 0058). All entries count
         against the budget, but only ``comm``'s are evicted: freeing a base may be
         collective on a communicator whose ranks are not here, so the budget does not
-        bound what a solve on another communicator keeps.
+        bound what a solve on another communicator keeps. The plan pool is serial:
+        it counts, but only a one-process walk frees from it.
         """
         key = next(self._keys)
         budget = _mpi.node_budget(comm, budget)
         if _mpi.node_bytes(comm, entry.nbytes) > budget:
-            entry.free()
-            return key
+            free_base = getattr(entry.handle, "free_base", None)
+            if free_base is not None:
+                free_base(comm)
+            if _mpi.node_bytes(comm, entry.nbytes) > budget:
+                entry.free()
+                return key
         self._entries[key] = entry
-        owner = self._comms[key] = _mpi.comm_key(comm)
-        while _mpi.node_bytes(comm, self.nbytes) > budget:
+        self._comms[key] = _mpi.comm_key(comm)
+        self._evict(budget, comm)
+        return key
+
+    def _evict(self, budget: int, comm: Any) -> None:
+        """Free down to ``budget`` (the node's): pooled handles, bases, entries."""
+        owner = _mpi.comm_key(comm)
+
+        def over() -> bool:
+            return _mpi.node_bytes(comm, self.nbytes) > budget
+
+        if comm is None:
+            while self._plans and over():
+                self._plans.popitem(last=False)[1].handle.free()
+        for key, entry in list(self._entries.items()):
+            free_base = getattr(entry.handle, "free_base", None)
+            if self._comms[key] != owner or free_base is None:
+                continue
+            if not over():
+                return
+            free_base(comm)
+        while over():
             oldest = next((k for k in self._entries if self._comms[k] == owner), None)
             if oldest is None:
                 break
             del self._comms[oldest]
             self._entries.pop(oldest).free()
-        return key
 
     def get(self, key: int) -> Entry | None:
         """The entry under ``key``, or ``None`` if it was evicted."""
@@ -254,17 +320,59 @@ class EntryCache:
             del self._comms[int(key)]
             entry.free()
 
-    def free_consumed(self, comm: Any = None) -> None:
+    def free_consumed(self, comm: Any = None, budget: int | None = None) -> None:
         """Free the consumed entries of ``comm`` (ADR 0081).
 
         Called when a differentiated forward on ``comm`` starts. Under ranks the
         backward is replicated, so every rank frees the same entries together.
+        With a ``budget`` their base handles return to the plan pool, where
+        their handles can (`Entry.free`), and the walk runs down to it.
         """
         owner = _mpi.comm_key(comm)
         consumed = [k for k, e in self._entries.items() if e.consumed]
         for key in consumed:
-            if self._comms[key] == owner:
-                self.discard(key)
+            if self._comms[key] != owner:
+                continue
+            del self._comms[key]
+            self._entries.pop(key).free(return_plans=budget is not None)
+        if budget is not None:
+            self._evict(_mpi.node_budget(comm, budget), comm)
+
+    # --- the plan pool -----------------------------------------------------------
+
+    def give_plan(self, key: Hashable, topology: Any, handle: Any, budget: int) -> None:
+        """Pool ``handle`` under ``key``, its factors released; walk to ``budget``.
+
+        ``topology`` is the mesh topology of its plan: the handle is freed once
+        no discretization of it is left (`free_plans_off`). One process only.
+        """
+        release = getattr(handle, "release_factors", None)
+        if release is not None:
+            release()
+        self._plans[id(handle)] = _Pooled(key, topology, handle)
+        self._evict(budget, None)
+
+    def take_plan(self, key: Hashable) -> Any | None:
+        """The most recently returned pooled handle under ``key``, or ``None``.
+
+        It leaves the pool: no other solve takes it until it returns.
+        """
+        found = next(
+            (k for k, p in reversed(self._plans.items()) if p.key == key), None
+        )
+        return None if found is None else self._plans.pop(found).handle
+
+    def free_plans_off(self, topologies: set[int]) -> None:
+        """Free the pooled handles whose topology's id is not in ``topologies``."""
+        for k, pooled in list(self._plans.items()):
+            if id(pooled.topology) not in topologies:
+                del self._plans[k]
+                pooled.handle.free()
+
+    @property
+    def pooled(self) -> int:
+        """The handles in the plan pool."""
+        return len(self._plans)
 
     def free_bases(self, comm: Any, keep: Entry | None = None) -> None:
         """Free the base handles kept on ``comm``, all but ``keep``'s (ADR 0065).
@@ -282,18 +390,21 @@ class EntryCache:
 
     @property
     def nbytes(self) -> int:
-        """Bytes held by every entry."""
-        return sum(e.nbytes for e in self._entries.values())
+        """Bytes held by every entry and every pooled handle."""
+        held = sum(e.nbytes for e in self._entries.values())
+        return held + sum(int(p.handle.nbytes) for p in self._plans.values())
 
     def __len__(self) -> int:
         return len(self._entries)
 
     def clear(self) -> None:
-        """Free every entry."""
+        """Free every entry and every pooled handle."""
         self._comms.clear()
         while self._entries:
             _, old = self._entries.popitem(last=False)
             old.free()
+        while self._plans:
+            self._plans.popitem(last=False)[1].handle.free()
 
 
 ENTRIES = EntryCache()

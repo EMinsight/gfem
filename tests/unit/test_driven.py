@@ -25,6 +25,7 @@ from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._engine import driven, terms, workers
+from gfem._engine.cache import ENTRIES
 from gfem._engine.driven import DrivenRule
 from gfem._engine.system_operator import SystemOperator
 from gfem._linalg import bddc, pardiso, prepare
@@ -366,6 +367,8 @@ def test_an_exact_sweep_plans_once_and_matches_fresh_handles(
     line, monkeypatch, sweep, linear_solver
 ):
     problem = gfem.Driven(frequency=(3e9, 4e9, 5e9, 6e9), sweep=sweep)
+    # an earlier solve on `line` left a plan in the pool (ADR 0082)
+    ENTRIES.clear()
     calls = _count_prepares(monkeypatch)
     s = np.asarray(_s(line, problem, linear_solver=linear_solver).s.values)
     assert len(calls) == 1
@@ -915,7 +918,7 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
 
 def test_a_kept_forward_is_freed_once_and_then_holds_nothing():
     freed = []
-    system = SimpleNamespace(nbytes=10, free=lambda: freed.append(True))
+    system = SimpleNamespace(nbytes=10, free=lambda **_: freed.append(True))
     kept = driven._Kept(system, SimpleNamespace(nbytes=5))
     assert kept.nbytes == 15
     kept.free()

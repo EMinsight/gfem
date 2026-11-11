@@ -89,7 +89,7 @@ from gfem._boundaries import (
     wave_port_surfaces,
 )
 from gfem._engine import sweep_outputs, terms, workers
-from gfem._engine.cache import ENTRIES, Entry, discretization
+from gfem._engine.cache import ENTRIES, Entry, discretization, retain_budget
 from gfem._engine.domain import em_region, hcurl_space, pec_surfaces, space_key
 from gfem._engine.fields import dof_shape
 from gfem._engine.mesh import EngineMesh
@@ -192,6 +192,10 @@ class DrivenOperator:
         fixed: How the volume pieces split at the material-field regions,
             for a piece sum that keeps their other part (ADR 0082); ``None``
             when nothing is fixed, restricted, or under ranks.
+        topology: The mesh topology ``space`` lies on; with ``space_key``,
+            what a solver plan of the operator is pooled under (ADR 0082).
+        space_key: ``space``'s key in its discretization (order, `PEC`
+            surfaces, periodic pairs and phases).
     """
 
     built: EngineMesh
@@ -203,6 +207,8 @@ class DrivenOperator:
     symmetry: DrivenSymmetry = "complex_symmetric"
     layout: DofLayout | None = None
     fixed: FixedPieces | None = None
+    topology: Any = None
+    space_key: tuple = ()
 
     def expand(self, x: np.ndarray) -> np.ndarray:
         """``P x``: solve-space coefficients ``(ndof, ...)`` on the unpaired space."""
@@ -364,7 +370,17 @@ def driven_operator(
     if comm is None and elements is None and faces is None:
         fixed = _fixed_pieces(model, disc, solve_key, order, ports)
     return DrivenOperator(
-        built, space, pieces, ports, order, expansion, symmetry, layout, fixed
+        built,
+        space,
+        pieces,
+        ports,
+        order,
+        expansion,
+        symmetry,
+        layout,
+        fixed,
+        topology=model.mesh._topology,  # noqa: SLF001
+        space_key=solve_key,
     )
 
 
@@ -624,7 +640,10 @@ class DrivenRule:
             system, ports = self._ports(model)
             s = np.zeros((len(frequencies), len(self.port_names), width), complex)
             previous = None
-            with system.sweep(solves=len(frequencies)) as sweep:
+            with system.sweep(
+                solves=len(frequencies),
+                pool_budget=retain_budget(self.options.retain_memory),
+            ) as sweep:
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
                     try:
@@ -1682,14 +1701,15 @@ class _Kept:
         ) == _mpi.comm_key(comm):
             self.system.free_base()
 
-    def free(self) -> None:
+    def free(self, *, return_plans: bool = False) -> None:
         """Release the system operator's handles and pieces, and drop both.
 
-        A second call does nothing.
+        With ``return_plans`` (a consumed entry) the kept base handle returns
+        to the plan pool, where it came from one. A second call does nothing.
         """
         if self._freed:
             return
-        self.system.free()
+        self.system.free(return_plans=return_plans)
         del self.system, self.ports
         self._freed = True
 
