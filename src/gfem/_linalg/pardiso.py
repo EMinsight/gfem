@@ -29,6 +29,11 @@ call is NGSolve's, on the caller's count.
 `PardisoFactors` refactorizes a direct handle's wrapper on its analysis: it
 gathers the new values straight into the wrapper's buffer and runs phase 22,
 or calls ``Update()`` when it cannot read the wrapper's private fields.
+It can also release the factors (L and U) and keep the analysis: the next
+refactorization runs phase 22 on the kept ordering and symbolic
+factorization. MKL does not refuse a solve on released factors (it returns
+NaN, or the old factors' solution, with error 0), so the release is gfem's
+flag (`PardisoFactors.released`), which the handle reads before any solve.
 """
 
 from __future__ import annotations
@@ -238,6 +243,10 @@ class PardisoFactors:
     refactorizes by NGSolve's ``Update()``. Works on any NGSolve
     ``MKLPardiso``, not only gfem's registered types.
 
+    `release` drops L and U (phase 0) and keeps the analysis, the held
+    matrix's wrapper buffers and the gather index; `new_values` factorizes
+    on them again.
+
     Holds no lock: its handle calls it under its own.
     """
 
@@ -250,6 +259,26 @@ class PardisoFactors:
         #: refactorizes by ``Update()``.
         self._gather: np.ndarray | None = None
         self._built = False
+        #: The factors were released (`release`): nothing may solve on them
+        #: until `new_values` factorizes again.
+        self.released = False
+
+    def release(self) -> None:
+        """Drop L and U and keep the analysis (PARDISO phase 0, ``mnum`` 1).
+
+        Then frees MKL's buffers. A wrapper without the phase call keeps its
+        factors (and `released` stays ``False``); releasing twice does
+        nothing.
+        """
+        if self.released or not hasattr(self.inverse, "_call_pardiso"):
+            return
+        self.inverse._call_pardiso(0)  # noqa: SLF001
+        self.released = True
+        from ngsolve.solvers import mkl_pardiso
+
+        free_buffers = getattr(mkl_pardiso, "_mkl_free_buffers", None)
+        if free_buffers is not None:
+            free_buffers()
 
     def new_values(self, matrix: Any, write: Callable[[Any], None]) -> None:
         """``write(matrix)``, then factorize its new values on the plan.
@@ -263,27 +292,33 @@ class PardisoFactors:
             self._built = True
         write(matrix)
         if self._gather is None:
+            # NGSolve's Factor runs phase 22 too: released factors are refilled
             self.inverse.Update()
-            return
-        # the index is in range (checked when built); "clip" writes straight
-        # into the buffer, "raise" through a temporary copy
-        buffer = self.inverse._data_np  # noqa: SLF001
-        values = np.asarray(matrix.CSR()[0])
-        np.take(values, self._gather, out=buffer, mode="clip")
-        self.inverse._call_pardiso(22)  # noqa: SLF001
+        else:
+            # the index is in range (checked when built); "clip" writes
+            # straight into the buffer, "raise" through a temporary copy
+            buffer = self.inverse._data_np  # noqa: SLF001
+            values = np.asarray(matrix.CSR()[0])
+            np.take(values, self._gather, out=buffer, mode="clip")
+            self.inverse._call_pardiso(22)  # noqa: SLF001
+        self.released = False
 
     @property
     def nbytes(self) -> int:
         """Host memory of the factors and the gather index, in bytes.
 
         The gather index counts once built (at the first `new_values`).
+        Released factors (`released`) count PARDISO's permanent memory
+        alone: MKL keeps reporting the old factor size after the release.
         """
         factors = host_bytes(self.inverse)
         params = getattr(self.inverse, "_params", None)
         if not factors and params is not None:
             # NGSolve's PARDISO wrapper reports no memory: take PARDISO's own
             # permanent (iparm[15]) and factor (iparm[16]) memory, in KiB
-            factors = 1024 * (int(params[15]) + int(params[16]))
+            factors = 1024 * (
+                int(params[15]) + (0 if self.released else int(params[16]))
+            )
         return factors + (0 if self._gather is None else self._gather.nbytes)
 
     def _gather_index(self, matrix: Any) -> np.ndarray | None:
