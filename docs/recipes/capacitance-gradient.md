@@ -82,6 +82,8 @@ calls. Between the solve and its gradients gfem keeps what the gradients need
   physical memory by default, and drops the oldest entries first.
 - A dropped entry is recomputed from the design when its gradient runs. This
   costs time, never accuracy.
+- The same budget holds the solver plans that later designs reuse, so an
+  optimization loop needs no other setting. Results do not depend on it.
 - `retain_memory=0` keeps nothing and always recomputes. Use it when memory,
   not time, is short.
 
