@@ -29,7 +29,6 @@ gfem tetrahedron order.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -47,7 +46,7 @@ from gfem._engine.fields import fe_space
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._field import Field
-from gfem.model import Model
+from gfem.model import PEC, Conductor, Model
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
 
 __all__ = [
@@ -312,51 +311,23 @@ def electrostatic(
 
     One solve (the whole capacitance matrix), holding one field per
     terminal: eta_K^2 / || grad V ||^2_eps per tetrahedron. The recovery is
-    cut along the interior sheets every potential is fixed on (terminals and
-    ground), across which the solved flux jumps.
+    cut along the interior surfaces the problem holds at a fixed potential
+    (its terminals and ground, and the model's PEC and conductor surfaces),
+    across which the solved flux jumps.
     """
     fields = list(result.potential.values())
+    sheets = set(result._fixed) | {  # noqa: SLF001
+        b.surface for b in model.boundaries if isinstance(b, (PEC, Conductor))
+    }
     with task_manager(threads):
         gfs = [_grid_function(field) for field in fields]
-        recovery = FluxRecovery(
-            model, fields[0].order, sheets=_fixed_sheets(model, gfs)
-        )
+        recovery = FluxRecovery(model, fields[0].order, sheets=sorted(sheets))
         group = []
         for gf in gfs:
             flux = recovery.eps * ngs.grad(gf)
             energy = recovery.element_integrals(ngs.grad(gf) * flux).sum()
             group.append(recovery.flux_error(flux) / energy)
     return [group]
-
-
-#: How close to constant (relative to the largest potential, squared) a
-#: potential must be on a surface for the surface to count as fixed.
-_FIXED_RTOL = 1e-20
-
-
-def _fixed_sheets(model: Model, gfs: Sequence[ngs.GridFunction]) -> tuple[str, ...]:
-    """Interior surfaces on which every potential is constant: terminals, ground."""
-    domain = model._domain  # noqa: SLF001
-    mesh = gfs[0].space.mesh
-    peak = max(float(np.max(np.abs(gf.vec.FV().NumPy()))) for gf in gfs) or 1.0
-    out = []
-    for region in model.mesh.regions:
-        if region.dim != 2 or not domain.interior(region.name):
-            continue
-        where = mesh.Boundaries(re.escape(region.name))
-        area = ngs.Integrate(ngs.CF(1.0), mesh, ngs.BND, definedon=where)
-        if area <= 0:
-            continue
-        fixed = True
-        for gf in gfs:
-            mean = ngs.Integrate(gf, mesh, ngs.BND, definedon=where) / area
-            spread = ngs.Integrate((gf - mean) ** 2, mesh, ngs.BND, definedon=where)
-            if spread > _FIXED_RTOL * area * peak**2:
-                fixed = False
-                break
-        if fixed:
-            out.append(region.name)
-    return tuple(out)
 
 
 def driven(

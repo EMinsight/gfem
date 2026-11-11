@@ -100,6 +100,9 @@ class ElectrostaticResult:
     terminals: tuple[str, ...]
     energy: dict[str, jax.Array] = dataclasses.field(default_factory=dict)
     potential: Mapping[str, Field] = dataclasses.field(default_factory=dict)
+    #: The surfaces held at a fixed potential (terminals and ground), which
+    #: `gfem.error_estimate` cuts its flux recovery along.
+    _fixed: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """Hold the potentials as a read-only, ordered mapping."""
