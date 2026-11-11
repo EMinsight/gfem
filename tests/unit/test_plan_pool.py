@@ -164,6 +164,19 @@ def test_freeing_consumed_entries_survives_their_bases_returning_to_the_pool():
     assert second.handle is None
 
 
+def test_a_walk_after_a_solve_leaves_other_solves_unconsumed_entries():
+    # put kept the entry; nothing consumed, a returned plan: no entry goes
+    entries = EntryCache()
+    base = FakeHandle(50)
+    pending = Entry(physics="em", handle=FakeKept(20, base))
+    key = entries.put(pending, budget=1000)
+    entries.free_consumed(comm=None, budget=0)
+    entries.give_plan(("k",), TOPOLOGY, FakeHandle(10), budget=0)
+    assert entries.get(key) is pending
+    assert not base.freed
+    assert entries.pooled == 0
+
+
 def test_clear_frees_the_pool_too():
     entries = EntryCache()
     handle = FakeHandle(10)

@@ -27,9 +27,11 @@ factors are released on the way in. The pool holds several handles per key
 discretization left are freed.
 
 One byte budget, ``retain_memory``, bounds pooled handles, entries' bases and
-entries together. Over it, one walk frees pooled handles (least recently
-returned first), then live entries' bases (oldest entry first), then whole
-entries (least recently used first); ``retain_memory=0`` keeps none of them.
+entries together. Over it, the walk of a stored entry frees pooled handles
+(least recently returned first), then live entries' bases (oldest entry
+first), then whole entries (least recently used first); ``retain_memory=0``
+keeps none of them. A handle returning to the pool frees pooled handles only:
+a solve evicts other solves' entries only where it stores one.
 """
 
 from __future__ import annotations
@@ -335,7 +337,8 @@ class EntryCache:
         Called when a differentiated forward on ``comm`` starts. Under ranks the
         backward is replicated, so every rank frees the same entries together.
         With a ``budget`` their base handles return to the plan pool, where
-        their handles can (`Entry.free`), and the walk runs down to it.
+        their handles can (`Entry.free`). No entry that is not consumed goes:
+        only `put` evicts entries.
         """
         owner = _mpi.comm_key(comm)
         consumed = [
@@ -349,14 +352,15 @@ class EntryCache:
             freed.append(self._entries.pop(key))
         for entry in freed:
             entry.free(return_plans=budget is not None)
-        if budget is not None:
-            self._evict(_mpi.node_budget(comm, budget), comm)
 
     # --- the plan pool -----------------------------------------------------------
 
     def give_plan(self, key: Hashable, topology: Any, handle: Any, budget: int) -> None:
-        """Pool ``handle`` under ``key``, its factors released; walk to ``budget``.
+        """Pool ``handle`` under ``key``, its factors released, within ``budget``.
 
+        Pooled handles go, least recently returned first, while the cache is
+        over ``budget``; entries and their bases stay (only `put` evicts them),
+        so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
         no discretization of it is left (`free_plans_off`). One process only.
         """
@@ -364,7 +368,8 @@ class EntryCache:
         if release is not None:
             release()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
-        self._evict(budget, None)
+        while self._plans and self.nbytes > budget:
+            self._plans.popitem(last=False)[1].handle.free()
 
     def take_plan(self, key: Hashable) -> Any | None:
         """The most recently returned pooled handle under ``key``, or ``None``.
