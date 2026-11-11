@@ -98,10 +98,12 @@ from gfem._engine.port_network import PortNetwork, resistance, split_cotangent
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_sheet
 from gfem._engine.sweep_outputs import SweepOutputs
-from gfem._engine.system_operator import SystemOperator
+from gfem._engine.system_operator import FixedPieces, SystemOperator
 from gfem._engine.wave_ports import PortSurfaceCoupling, wave_port_couplings
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
+from gfem._linalg.pieces import KeptParts
+from gfem._materials import MaterialField
 from gfem._periodic import bloch_phases, check_bloch, check_wave_vector
 from gfem._port_section import port_section_key
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
@@ -189,6 +191,9 @@ class DrivenOperator:
             ``"complex_symmetric"`` otherwise: declared by the problem's
             wave vector, never read from its value.
         layout: How ``space`` lies across ranks; ``None`` on one process.
+        fixed: How the volume pieces split at the material-field regions,
+            for a piece sum that keeps their other part (ADR 0082); ``None``
+            when nothing is fixed, restricted, or under ranks.
     """
 
     built: EngineMesh
@@ -199,6 +204,7 @@ class DrivenOperator:
     expansion: Expansion | None = None
     symmetry: DrivenSymmetry = "complex_symmetric"
     layout: DofLayout | None = None
+    fixed: FixedPieces | None = None
 
     def expand(self, x: np.ndarray) -> np.ndarray:
         """``P x``: solve-space coefficients ``(ndof, ...)`` on the unpaired space."""
@@ -330,14 +336,14 @@ def driven_operator(
     disc = discretization(model.mesh, periodic, comm)
     built = disc.built
     pec = pec_surfaces(model)
+    solve_key = space_key(model, "hcurl", order)
     unpaired = disc.space(
-        space_key(model, "hcurl", order),
-        lambda: hcurl_space(model, built, order, dirichlet=pec),
+        solve_key, lambda: hcurl_space(model, built, order, dirichlet=pec)
     )
     space, expansion = unpaired, None
     if periodic and paired:
         phases = bloch_phases(model, wave_vector)
-        key = space_key(model, "hcurl", order, periodic=True, phases=phases)
+        key = solve_key = space_key(model, "hcurl", order, periodic=True, phases=phases)
         space = disc.space(
             key,
             lambda: hcurl_space(
@@ -356,8 +362,40 @@ def driven_operator(
     if comm is not None:
         key = (*space_key(model, "hcurl", order), "layout")
         layout = disc.space(key, lambda: RankLayout(space, comm))
+    fixed = None
+    if comm is None and elements is None and faces is None:
+        fixed = _fixed_pieces(model, disc, solve_key, order, ports)
     return DrivenOperator(
-        built, space, pieces, ports, order, expansion, symmetry, layout
+        built, space, pieces, ports, order, expansion, symmetry, layout, fixed
+    )
+
+
+def _fixed_pieces(
+    model: Model,
+    disc: Any,
+    key: tuple,
+    order: int,
+    ports: tuple[terms.LumpedPortData, ...],
+) -> FixedPieces | None:
+    """The split of the volume pieces at ``model``'s material-field regions.
+
+    ``None`` when no element, or every element, lies in one (nothing to keep).
+    ``key`` is the solve space's: the store lives with it.
+    """
+    mesh = model.mesh
+    inside = np.zeros(len(mesh.tetrahedra), bool)
+    for region, material in model.materials.items():
+        if isinstance(material, MaterialField):
+            inside[mesh.elements(region)] = True
+    if not inside.any() or inside.all():
+        return None
+    built, no_faces = disc.built, np.zeros(len(mesh.triangles), bool)
+    return FixedPieces(
+        disc.space((*key, "fixed pieces"), KeptParts),
+        ~inside,
+        lambda: terms.pieces(
+            model, built, order, ports, elements=inside, faces=no_faces
+        ),
     )
 
 

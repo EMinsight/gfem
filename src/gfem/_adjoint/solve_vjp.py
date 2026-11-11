@@ -23,6 +23,9 @@ host; this module owns everything JAX sees:
   ``gfem._engine.cache.ENTRIES`` (bounded by
   ``SolverOptions.retain_memory``, least recently used out first, never
   freed by a read, so ``jax.jacrev`` and a pullback called twice reuse it).
+  An entry a backward has read is consumed, and the next differentiated
+  forward frees it before it assembles (ADR 0081), so a pullback called after
+  another differentiated solve runs its forward again.
   The backward rebuilds the model and the problem from the residual leaves,
   never from engine state, and re-runs the forward when the entry was
   evicted or never kept, so eviction costs time, never correctness.
@@ -166,6 +169,8 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
                     host_rule.problem,
                     rule.options,
                 )
+            if keep:
+                _free_consumed(comm)
             outputs, entry = _forward(host_rule, host_model, keep=keep)
             key = -1 if entry is None else _keep(entry, rule.options, comm)
         arrays = tuple(
@@ -268,6 +273,13 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
         comm=getattr(rule, "comm", None),
     )
     return rule.forward(model, keep=keep)
+
+
+def _free_consumed(comm: Any) -> None:
+    """Free the entries a backward has read, before this forward assembles."""
+    from gfem._engine.cache import ENTRIES
+
+    ENTRIES.free_consumed(comm)
 
 
 def _keep(entry: Any, options: Any, comm: Any) -> int:
@@ -385,6 +397,8 @@ def _local_cotangents(
         _, entry = rule.forward(model, keep=True)
         fresh = entry
     else:
+        if entry is not None:  # freed when the next differentiated forward starts
+            entry.consumed = True  # (ADR 0081)
         # the base handles of other entries go before this one prepares (ADR 0065)
         ENTRIES.free_bases(comm, keep=entry)
     try:

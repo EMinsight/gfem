@@ -21,12 +21,19 @@ frequency for later backward passes; on a GPU one base handle refactorized
 at each frequency, so device memory holds one factorization whatever the
 number of frequencies. A distributed solve takes the GPU's path, and starts from
 the forward's base handle (`keep_base`, ADR 0065).
+
+On one process with the CPU ``direct`` solver, each volume piece of an operator
+with material-field regions (`FixedPieces`) is summed as its part on those
+regions, assembled every solve, plus its part on the other elements, kept per
+discretization behind a digest of its coefficient there (ADR 0082). S moves by
+summation round-off only.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import functools
+import hashlib
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Self
 
@@ -41,12 +48,64 @@ from gfem._linalg import (
     low_rank_update,
     refactorize_or_prepare,
 )
-from gfem._linalg.pieces import AssembledPieces, PieceSum
+from gfem._linalg.pieces import (
+    AssembledPieces,
+    FixedPart,
+    Integrand,
+    KeptParts,
+    PieceSum,
+)
 
 if TYPE_CHECKING:
     from gfem._engine.driven import DrivenOperator
+    from gfem._engine.terms import Piece
 
-__all__ = ["SystemOperator", "SystemSweep"]
+__all__ = ["FixedPieces", "SystemOperator", "SystemSweep"]
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class FixedPieces:
+    """How a driven operator's volume pieces split at its material-field regions.
+
+    Attributes:
+        store: The kept fixed parts of the operator's space (per discretization).
+        outside: Per gfem tetrahedron, whether it lies outside every
+            `gfem.MaterialField` region: the fixed parts' elements.
+        varying: Builds the pieces restricted to the material-field regions
+            (`gfem._engine.terms.pieces` with ``elements``), on demand.
+    """
+
+    store: KeptParts
+    outside: np.ndarray
+    varying: Callable[[], list[Piece]]
+
+    def split(
+        self, pieces: Sequence[Piece]
+    ) -> tuple[list[Integrand], list[FixedPart | None]]:
+        """Per piece, the integrand to assemble at every build and its fixed part.
+
+        A volume piece (one with coefficient values) gives its varying part
+        and a `FixedPart` keyed on a digest of its coefficient outside the
+        material-field regions; every other piece itself and ``None``.
+        """
+        varying = {p.name: p for p in self.varying() if p.values is not None}
+        integrands: list[Integrand] = []
+        fixed: list[FixedPart | None] = []
+        for piece in pieces:
+            part = varying.get(piece.name)
+            if piece.values is None or part is None:
+                integrands.append(piece.integrand)
+                fixed.append(None)
+                continue
+            values = np.ascontiguousarray(piece.values[self.outside])
+            digest = hashlib.blake2b(digest_size=16)
+            digest.update(f"{values.dtype.str}{values.shape}".encode())
+            digest.update(values.tobytes())
+            integrands.append(part.integrand)
+            fixed.append(
+                FixedPart(self.store, piece.name, digest.hexdigest(), piece.integrand)
+            )
+        return integrands, fixed
 
 
 class SystemOperator:
@@ -97,11 +156,20 @@ class SystemOperator:
         self._adjoint_tolerance = adjoint_tolerance
         # assembled at the first direct prepare (the piece sum); a backward
         # pass reuses them, `free` drops them
+        integrands = [piece.integrand for piece in operator.pieces]
+        fixed = None
+        if (
+            operator.fixed is not None
+            and operator.built.comm is None
+            and (linear.kind, linear.device) == ("direct", "cpu")
+        ):
+            integrands, fixed = operator.fixed.split(operator.pieces)
         self._pieces = AssembledPieces(
             operator.space,
-            [piece.integrand for piece in operator.pieces],
+            integrands,
             symmetric=operator.symmetric,
             comm=operator.built.comm,
+            fixed=fixed,
         )
         self._handles: dict[int, Handle] = {}
         self._adjoint_sweep: SystemSweep | None = None

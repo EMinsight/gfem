@@ -266,7 +266,8 @@ class SolverOptions:
             gradients: its solution fields and, for a uniform driven sweep,
             its assembled system with its linear solver. The oldest entries
             go first and are recomputed when their gradient runs. ``None``
-            is half of the physical memory, 0 always recomputes.
+            is half of the memory the process may use (the physical memory,
+            or a smaller job memory limit), 0 always recomputes.
         adjoint_tolerance: Relative residual of adjoint solves, in the norm
             ``tolerance`` names for each backend; ``None`` is ``tolerance``.
         eigen_tolerance: Backward error accepted for an eigenmode (the
