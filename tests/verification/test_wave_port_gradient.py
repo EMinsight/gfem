@@ -122,7 +122,7 @@ def test_the_s21_gradient_does_not_depend_on_which_ports_are_excited(
 
 @pytest.mark.parametrize(("port", "solves"), [("lossless", 0), ("lossy", 2)])
 def test_only_lossy_wave_ports_take_an_adjoint_solve(mesh, port, solves, monkeypatch):
-    from gfem import _linalg
+    from gfem._engine.system_operator import SystemOperator
 
     values, _ = core_design(mesh, seed=5)
     objective = _s_objective(
@@ -134,13 +134,15 @@ def test_only_lossy_wave_ports_take_an_adjoint_solve(mesh, port, solves, monkeyp
         [0, 1],
     )
     value, pullback = jax.vjp(objective, values["eps_r"])
-    prepared = []
-    original = _linalg.prepare
+    solved = []
+    original = SystemOperator.solve_adjoint
 
-    def counting(*args, **kwargs):
-        prepared.append(1)
-        return original(*args, **kwargs)
+    def counting(self, *args, **kwargs):
+        solved.append(1)
+        return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(_linalg, "prepare", counting)
+    # the backward refactorizes the forward's base rather than preparing:
+    # count the adjoint solves themselves
+    monkeypatch.setattr(SystemOperator, "solve_adjoint", counting)
     pullback(jnp.ones_like(value))
-    assert len(prepared) == solves  # one operator per frequency
+    assert len(solved) == solves  # one per frequency
