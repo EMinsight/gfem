@@ -4,8 +4,9 @@ A driven solve on one process with the CPU ``direct`` solver takes its base
 handle from the plan pool when a handle of the same key is free there, and
 refactorizes it instead of planning again. A handle returns to the pool at the
 end of a non-differentiated solve, or when its consumed entry is freed (ADR
-0081), its PARDISO factors released. ``retain_memory`` bounds pooled handles,
-entries' bases and entries with one walk, in that order.
+0081), with its factors. ``retain_memory`` bounds pooled handles, entries'
+bases and entries with one walk: pooled handles' PARDISO factors released,
+then pooled handles, bases and entries freed, in that order.
 """
 
 import jax
@@ -68,16 +69,37 @@ class FakeKept:
 TOPOLOGY = object()
 
 
-def test_a_pooled_handle_is_released_and_taken_back_under_its_key():
+def test_a_pooled_handle_keeps_its_factors_and_is_taken_back_under_its_key():
     entries = EntryCache()
     handle = FakeHandle(100, released_bytes=30)
     entries.give_plan(("k",), TOPOLOGY, handle, budget=1000)
-    assert handle.released
-    assert entries.nbytes == 30
+    assert not handle.released
+    assert entries.nbytes == 100
     assert entries.take_plan(("other",)) is None
     assert entries.take_plan(("k",)) is handle
     assert entries.take_plan(("k",)) is None
     assert entries.nbytes == 0
+
+
+def test_pressure_releases_pooled_factors_before_freeing_pooled_handles():
+    entries = EntryCache()
+    old = FakeHandle(100, released_bytes=30)
+    new = FakeHandle(100, released_bytes=30)
+    entries.give_plan(("a",), TOPOLOGY, old, budget=1000)
+    entries.give_plan(("b",), TOPOLOGY, new, budget=1000)
+    # 200 over 150: releasing the least recently returned handle's factors
+    # (to 130) is enough; nothing is freed
+    entries.give_plan(("c",), TOPOLOGY, FakeHandle(0), budget=150)
+    assert old.released
+    assert not new.released
+    assert not old.freed
+    assert entries.pooled == 3
+    # 40 is under what released handles hold (60): every factor goes, then the
+    # least recently returned handle
+    entries.free_consumed(comm=None, budget=40)
+    assert new.released
+    assert old.freed
+    assert not new.freed
 
 
 def test_the_pool_holds_several_handles_per_key():
@@ -101,6 +123,8 @@ def test_a_tight_budget_frees_pooled_handles_before_bases_and_entries():
     entries.put(Entry(physics="em", handle=FakeKept(10, None)), budget=120)
     assert old.freed
     assert not new.freed
+    # FakeHandle releases no bytes: both were released first, to no avail
+    assert new.released
     assert entries.pooled == 1
     # then the rest of the pool, then the oldest entry's base, the entry kept
     entries.put(Entry(physics="em", handle=FakeKept(10, None)), budget=40)

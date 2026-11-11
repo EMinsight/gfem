@@ -21,18 +21,20 @@ design state in its residuals (time, never correctness).
 **The plan pool** (in `ENTRIES`, ADR 0082): serial CPU direct base handles no
 solve holds, kept for a later design to refactorize on their solver plan
 (`EntryCache.take_plan`). A handle returns (`EntryCache.give_plan`) at the end
-of a non-differentiated solve, or when its consumed entry is freed; PARDISO's
-factors are released on the way in. The pool holds several handles per key
+of a non-differentiated solve, or when its consumed entry is freed, with its
+factors and summed pattern: the next forward refactorizes in place, on memory
+already touched. The pool holds several handles per key
 (one per ``jax.vmap`` variant). Pooled handles whose mesh topology has no
 discretization left are freed.
 
 One byte budget, ``retain_memory``, bounds pooled handles, entries' bases and
-entries together. Over it, the walk of a stored entry frees pooled handles
-(least recently returned first), then live entries' bases (oldest entry
-first), then whole entries (least recently used first); ``retain_memory=0``
-keeps none of them. A handle returning to the pool, or a differentiated
-forward freeing consumed entries, frees pooled handles only: a solve evicts
-other solves' entries only where it stores one.
+entries together. Over it, the walk of a stored entry first releases pooled
+handles' PARDISO factors (keeping their plans), then frees pooled handles (both
+least recently returned first), then live entries' bases (oldest entry first),
+then whole entries (least recently used first); ``retain_memory=0`` keeps none
+of them. A handle returning to the pool, or a differentiated forward freeing
+consumed entries, walks the pool only: a solve evicts other solves' entries
+only where it stores one.
 """
 
 from __future__ import annotations
@@ -272,7 +274,7 @@ class EntryCache:
         when that fits, and is otherwise freed at once and evicts nothing (with
         ``budget=0`` nothing is kept); its key then reads as evicted, so the
         backward pass recomputes it. Eviction is the walk of the module
-        docstring: pooled handles, entries' bases, entries.
+        docstring: pooled factors, pooled handles, entries' bases, entries.
 
         Under ``comm`` the bytes are the largest node's and the budget the smallest
         node's, so all ranks evict alike: a rank's own bytes would leave some ranks
@@ -297,7 +299,7 @@ class EntryCache:
         return key
 
     def _evict(self, budget: int, comm: Any) -> None:
-        """Free down to ``budget`` (the node's): pooled handles, bases, entries."""
+        """Free down to ``budget`` (the node's): the pool, bases, entries."""
         owner = _mpi.comm_key(comm)
 
         def over() -> bool:
@@ -365,22 +367,29 @@ class EntryCache:
     # --- the plan pool -----------------------------------------------------------
 
     def give_plan(self, key: Hashable, topology: Any, handle: Any, budget: int) -> None:
-        """Pool ``handle`` under ``key``, its factors released, within ``budget``.
+        """Pool ``handle`` under ``key``, with its factors, within ``budget``.
 
-        Pooled handles go, least recently returned first, while the cache is
-        over ``budget``; entries and their bases stay (only `put` evicts them),
+        While the cache is over ``budget``, pooled handles' factors are
+        released, then pooled handles freed, least recently returned first;
+        entries and their bases stay (only `put` evicts them),
         so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
         no discretization of it is left (`free_plans_off`). One process only.
         """
-        release = getattr(handle, "release_factors", None)
-        if release is not None:
-            release()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
         self._free_pool(budget)
 
     def _free_pool(self, budget: int) -> None:
-        """Free pooled handles, least recently returned first, down to ``budget``."""
+        """Walk the pool down to ``budget``, least recently returned first.
+
+        Releasing factors keeps a handle's plan, so it goes before freeing any.
+        """
+        for pooled in self._plans.values():
+            if self.nbytes <= budget:
+                return
+            release = getattr(pooled.handle, "release_factors", None)
+            if release is not None:
+                release()
         while self._plans and self.nbytes > budget:
             self._plans.popitem(last=False)[1].handle.free()
 
