@@ -1198,14 +1198,16 @@ def test_a_density_loop_away_from_the_ports_runs_the_port_mode_sweep_once(
     def loop(rebuild):
         out = []
         for k in range(3):
-            if rebuild:  # every step on a fresh discretization: main's path
-                cache._DISCRETIZATIONS.clear()
+            if rebuild:  # the port couplings built every step, all else kept
+                for disc in cache._DISCRETIZATIONS.values():
+                    disc.ports = None
             eps = jnp.asarray(leads * (1.0 + 0.1 * k))
             (_, s), grad = jax.value_and_grad(objective, has_aux=True)(eps)
             assert np.all(np.isfinite(np.asarray(grad)))
             out.append(np.asarray(s))
         return out
 
+    cache._DISCRETIZATIONS.clear()
     rebuilt = loop(rebuild=True)
     assert len(sweeps) == 2 * 3
     cache._DISCRETIZATIONS.clear()
@@ -1280,3 +1282,18 @@ def test_the_port_section_key_follows_what_the_port_section_reads(tmp_path):
         ),
     ):
         assert port_section_key(changed, port) != key
+    # a uniform anisotropic field holds its three principal values once
+    axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    keys = {
+        port_section_key(
+            model.with_material(
+                "fill",
+                gfem.MaterialField.uniform(
+                    "fill", gfem.Material(eps_r=(2.0, 2.0, eps_z), axes=axes)
+                ),
+            ),
+            port,
+        )
+        for eps_z in (3.0, 3.0, 3.5)
+    }
+    assert len(keys) == 2

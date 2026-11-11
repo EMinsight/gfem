@@ -305,7 +305,8 @@ def port_section_key(model: Model, port: WavePort) -> str:
                 add(name, None)
                 continue
             values = np.asarray(value)
-            if values.ndim:
+            # per element: (n,) or, with principal axes, (n, 3); else uniform
+            if values.ndim == (1 if material.axes is None else 2):
                 values = values[pos]
             add(name, values.dtype.str, values.shape)
             digest.update(np.ascontiguousarray(values).tobytes())
