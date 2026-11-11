@@ -410,14 +410,6 @@ def test_bad_parameters_raise_before_any_solve(coax, kwargs, error):
         gfem.refine_mesh(coax, rc.COAX_PROBLEM, **kwargs)
 
 
-@pytest.mark.usefixtures("no_solve")
-def test_a_quantity_estimator_is_not_available_yet(coax):
-    estimator = gfem.QuantityEstimator(capacitance=("inner", "inner"))
-    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.refine_mesh(coax, rc.COAX_PROBLEM, estimator=estimator)
-    assert caught.value.feature == "quantity estimator"
-
-
 @pytest.mark.parametrize(
     "kwargs",
     [{}, {"capacitance": ("a", "b"), "omega": 0}, {"s": "p2"}, {"omega": True}],

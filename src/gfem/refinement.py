@@ -23,6 +23,7 @@ from gfem._checks import is_staging, is_traced
 from gfem._pytree import readonly
 from gfem._refine import Refinement, refine_model, transfer
 from gfem.errors import (
+    DegenerateModeError,
     DistributedUnsupportedError,
     EigenmodeConvergenceError,
     LinearSolverConvergenceError,
@@ -31,10 +32,10 @@ from gfem.errors import (
     NonDifferentiableError,
 )
 from gfem.mesh import Mesh
-from gfem.model import Model
+from gfem.model import Absorbing, Conductor, Impedance, LumpedPort, Model, WavePort
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
-from gfem.results import ElectrostaticResult
+from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
 from gfem.solve import solve
 
 __all__ = [
@@ -69,22 +70,48 @@ class FieldEstimator:
 class QuantityEstimator:
     """Estimates the error of one quantity of a solved result.
 
+    Estimates how far one quantity of a solved result (a capacitance entry,
+    an S entry between excited ports, or one mode's ``omega``) is from its
+    value on the same geometry with an infinitely fine mesh. The estimate
+    uses the fields already solved, with no extra solve. It does not include
+    the faceting of curved surfaces or the error left by the linear solve.
+
+    The estimate is a magnitude in the units of ``tolerance``: relative to
+    the capacitance entry or to ``omega``, absolute for an S entry. It has
+    no sign or phase, and gfem never adds it to the quantity. It is an
+    estimate, not a bound. A capacitance never lies below its value on the
+    meshed geometry: ``C_h >= C``.
+
     Give exactly one keyword, named after the result attribute that holds
     the quantity and indexed the same way.
 
-    Not available in this version of gfem: `refine_mesh` and
-    `error_estimate` raise `gfem.MeshRefinementUnsupportedError` for it.
+    Example:
+        Refine for S21, then read its estimated error::
+
+            est = gfem.QuantityEstimator(s=("p2", "p1"))
+            ref = gfem.refine_mesh(model, gfem.Driven([5e9]), estimator=est)
+            ref.result.s["p2", "p1"], ref.estimate.values
 
     Attributes:
-        capacitance: Two terminal names, the entry
-            ``ElectrostaticResult.capacitance[i, j]``.
-        s: ``(to, from)`` port names, the entry ``result.s[to, from]``.
-        omega: An index into ``EigenmodeResult.omega``.
+        capacitance: A terminal name twice, the diagonal entry
+            ``ElectrostaticResult.capacitance[i, i]``.
+        s: ``(to, from)`` port names, the entry ``result.s[to, from]``; both
+            ports must be excited (`Driven.excite`).
+        omega: An index into ``EigenmodeResult.omega`` on the first mesh;
+            on each refined mesh the estimate follows the mode whose omega
+            is nearest the previous mesh's.
 
     Raises:
         TypeError: Not exactly one keyword is given, or a value has the
             wrong type.
         ValueError: ``omega`` is negative.
+
+    `refine_mesh` and `error_estimate` raise
+    `gfem.MeshRefinementUnsupportedError` for entries with no verified
+    estimate: an off-diagonal capacitance, an anisotropic permittivity,
+    ``mu_r`` other than 1 (S and omega), a wave port with a de-embedding
+    offset or in a lossy medium, a shared wave port surface, and a mode
+    with loss.
     """
 
     capacitance: tuple[str, str] | None = None
@@ -142,14 +169,20 @@ class ErrorEstimate:
     Attributes:
         estimator: The estimator that made it.
         values: Estimated size of the error per frequency (a driven result),
-            per mode (an eigenmode result), or one entry, in the units of
-            ``tolerance``: for a `FieldEstimator`, relative to the field's
-            energy norm. Never negative. An estimate, not a bound.
+            per mode (an eigenmode result under a `FieldEstimator`), or one
+            entry, in the units of ``tolerance``. For a `FieldEstimator`
+            this is relative to the field's energy norm. For a
+            `QuantityEstimator` this is the quantity's error: relative to
+            the capacitance entry or to ``omega``, absolute for an S entry.
+            It is never negative and carries no sign or phase. It is an
+            estimate, not a bound.
         indicators: Each tetrahedron's share of the estimated error, shape
             ``(n_tetrahedra,)``, in the order of the model's
             ``mesh.tetrahedra``, combined over frequencies, terminals, ports
             and modes; zero outside the solve domain. For a single solve
-            ``sqrt(sum(indicators**2))`` is ``value``.
+            ``sqrt(sum(indicators**2))`` is ``value`` for a
+            `FieldEstimator`, and ``sum(indicators**2)`` is at least
+            ``value`` for a `QuantityEstimator`.
     """
 
     estimator: Estimator
@@ -170,8 +203,10 @@ class RefinementCycle:
         tetrahedra: The mesh's tetrahedron count.
         dofs: The field's coefficient count (one solve's unknowns).
         estimate: The error estimate's ``value`` on this mesh.
-        value: The quantity of a `QuantityEstimator` on this mesh; ``None``
-            for a `FieldEstimator`.
+        value: The quantity of a `QuantityEstimator` on this mesh: the
+            capacitance entry in farads, a tuple of the S entry per
+            frequency, or the followed mode's complex ``omega`` in rad/s;
+            ``None`` for a `FieldEstimator`.
         marked: How many tetrahedra Dörfler marking picked on this mesh; 0
             when the loop stopped on it before marking.
     """
@@ -179,7 +214,7 @@ class RefinementCycle:
     tetrahedra: int
     dofs: int
     estimate: float
-    value: float | complex | None
+    value: float | complex | tuple[complex, ...] | None
     marked: int
 
 
@@ -256,8 +291,12 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             est.value, est.indicators  # relative energy error, per tetrahedron
 
     Args:
-        result: A result of `gfem.solve` on ``model``.
-        estimator: `FieldEstimator()`.
+        result: A result of `gfem.solve` on ``model``: electrostatic,
+            eigenmode (every mode is estimated), or a uniform driven sweep
+            solved with ``keep_fields=True`` (every kept field).
+        estimator: `FieldEstimator()`, or a `QuantityEstimator` naming an
+            entry of ``result`` (its ``omega`` index is a mode of
+            ``result``).
         model: The model the result was solved on (its materials weight the
             fields).
 
@@ -265,10 +304,21 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         The estimate, with NumPy values.
 
     Raises:
-        TypeError: An argument has the wrong type.
-        ValueError: The result was not solved on ``model``'s mesh.
-        MeshRefinementUnsupportedError: The estimator or the result type has
-            no estimate in this version of gfem.
+        TypeError: An argument has the wrong type, or a `QuantityEstimator`
+            names a quantity of another result type.
+        KeyError: A `QuantityEstimator` names no terminal or port of the
+            result.
+        ValueError: The result was not solved on ``model``'s mesh, or is a
+            driven result without the fields of every frequency (solve with
+            ``keep_fields=True``); a `QuantityEstimator` names a port that
+            was not excited or a mode the result does not hold.
+        MeshRefinementUnsupportedError: The estimator or the result has no
+            estimate in this version of gfem (``feature`` names what): an
+            adaptive sweep, a periodic model, another result type, or a
+            quantity entry with no verified estimate (see
+            `QuantityEstimator`).
+        DegenerateModeError: A `QuantityEstimator` names a mode of a
+            degenerate cluster.
         NonDifferentiableError: A model or result leaf is a JAX tracer, or
             the call is inside `jax.jit`.
     """
@@ -277,7 +327,10 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     _check_estimator(estimator)
     _check_untraced("error_estimate", (model, result))
     _check_estimable(result, estimator, model)
-    return _estimate(model, result, estimator, threads=None)
+    mode = _estimator_mode(estimator)
+    if mode is not None:
+        _track_mode(result, mode, None, 0.0)
+    return _estimate(model, result, estimator, threads=None, mode=mode)
 
 
 def refine_mesh(
@@ -302,6 +355,11 @@ def refine_mesh(
     the model's per-element design (`MaterialField` values, sheet fills) to
     the children. Cycle 0 solves the input mesh.
 
+    A driven problem is solved with ``keep_fields=True`` whatever it asks:
+    the estimate reads every frequency's field of every excited port, and
+    ``result`` keeps them. Its low-frequency floor is checked once, on the
+    returned mesh, not on every cycle.
+
     Example:
         Refine a capacitance solve to a 1 % field error::
 
@@ -310,10 +368,16 @@ def refine_mesh(
 
     Args:
         model: The device, with concrete values.
-        problem: An `Electrostatic` problem.
-        estimator: `FieldEstimator()`.
+        problem: An `Electrostatic` problem, a `Driven` problem on a uniform
+            sweep (lumped or wave ports), or an `Eigenmode` problem. The
+            estimate of a driven run is the worst frequency's, of an
+            eigenmode run the worst mode's.
+        estimator: `FieldEstimator()`, or a `QuantityEstimator` naming a
+            quantity of ``problem``.
         tolerance: The error estimate to reach: relative to the field's energy
-            norm for a `FieldEstimator`. At least 10 times
+            norm for a `FieldEstimator`; for a `QuantityEstimator` relative
+            to the capacitance entry or to ``omega``, absolute for an S
+            entry. At least 10 times
             ``options.tolerance`` (``options.eigen_tolerance`` for an
             `Eigenmode`), since the estimate does not include the linear
             solve's error.
@@ -335,14 +399,24 @@ def refine_mesh(
     Warns:
         MeshRefinementNotConvergedWarning: The loop stopped on a cap or a
             failed solve with the estimate above ``tolerance``.
+        LowFrequencyWarning: A frequency of a driven problem is below the
+            returned mesh's low-frequency floor.
 
     Raises:
-        TypeError: An argument has the wrong type.
+        TypeError: An argument has the wrong type, or a `QuantityEstimator`
+            names a quantity of another problem type.
+        KeyError: A `QuantityEstimator` names no terminal or port of the
+            problem.
         ValueError: A parameter is out of range, or ``tolerance`` is below 10
-            times the solve tolerance.
+            times the solve tolerance; a `QuantityEstimator` names a port
+            that is not excited or a mode index at or above ``n_modes``.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
-            port mode problem, a periodic model or a Bloch wave vector.
+            port mode problem, a periodic model or a Bloch wave vector, or a
+            quantity entry with no verified estimate (see
+            `QuantityEstimator`).
+        DegenerateModeError: The mode a `QuantityEstimator` follows is not
+            alone: another mode lies within ``options.cluster_rtol`` of it.
         DistributedUnsupportedError: Launched on more than one rank.
         NonDifferentiableError: A model or problem leaf is a JAX tracer, or
             the call is inside `jax.jit`. Under `jax.grad` or `jax.vmap`
@@ -362,6 +436,9 @@ def refine_mesh(
         )
     _check_estimator(estimator)
     _check_problem(model, problem)
+    if isinstance(estimator, QuantityEstimator):
+        _check_quantity_keys(estimator, problem, model)
+        _check_quantity_model(estimator, model)
     if _mpi.resolve_comm(comm) is not None:
         raise DistributedUnsupportedError(
             "mesh refinement",
@@ -373,7 +450,6 @@ def refine_mesh(
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)
     _check_untraced("refine_mesh", (model, problem))
-    _check_supported(problem, estimator)
     return _loop(
         model,
         problem,
@@ -400,19 +476,31 @@ def _loop(
     comm: Any,
 ) -> MeshRefinement:
     """Solve, estimate, stop, mark, bisect, cap, transfer; see `refine_mesh`."""
+    from gfem._engine import driven
+
+    if isinstance(problem, Driven):
+        problem = dataclasses.replace(problem, keep_fields=True)
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
-    result = solve(model, problem, options=options, comm=comm)
+    with driven.low_frequency_deferred():
+        result = solve(model, problem, options=options, comm=comm)
     current = model
     cycles: list[RefinementCycle] = []
     failure: Exception | None = None
+    mode = _estimator_mode(estimator)
+    previous: complex | None = None
     while True:
-        estimate = _estimate(current, result, estimator, threads=options.threads)
+        if isinstance(result, EigenmodeResult) and mode is not None:
+            mode = _track_mode(result, mode, previous, options.cluster_rtol)
+            previous = complex(np.asarray(result.omega)[mode])
+        estimate = _estimate(
+            current, result, estimator, threads=options.threads, mode=mode
+        )
         cycle = RefinementCycle(
             tetrahedra=len(current.mesh.tetrahedra),
             dofs=_dofs(result),
             estimate=estimate.value,
-            value=None,
+            value=_quantity(result, estimator, mode),
             marked=0,
         )
         cycles.append(cycle)
@@ -429,13 +517,16 @@ def _loop(
             stop = "max_tetrahedra"
             break
         try:
-            refined_result = solve(refined, problem, options=options, comm=comm)
+            with driven.low_frequency_deferred():
+                refined_result = solve(refined, problem, options=options, comm=comm)
         except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
             stop, failure = "solve failed", err
             break
         current, result = refined, refined_result
         tet_parents = tet_parents[refinement.tetrahedron_parents]
         tri_parents = tri_parents[refinement.triangle_parents]
+    if isinstance(problem, Driven):
+        driven.check_low_frequency(current, problem.frequency, stacklevel=3)
     converged = estimate.value <= tolerance
     if not converged:
         reason = {
@@ -485,25 +576,105 @@ def dorfler(indicators: np.ndarray, error_fraction: float) -> np.ndarray:
 
 
 def _estimate(
-    model: Model, result: Any, estimator: Estimator, *, threads: int | None
+    model: Model,
+    result: Any,
+    estimator: Estimator,
+    *,
+    threads: int | None,
+    mode: int | None = None,
 ) -> ErrorEstimate:
-    """The estimate of ``result``: dispatch on the result type."""
+    """The estimate of ``result``: dispatch on the estimator and result type.
+
+    ``mode`` is the eigenmode a `QuantityEstimator` follows on this result.
+    """
     from gfem._engine import estimate as kernels
 
-    if isinstance(result, ElectrostaticResult):
-        solves = kernels.electrostatic(model, result, threads)
-    else:  # pragma: no cover - `_check_estimable` refuses the rest first
-        raise _unsupported_result(result)
-    values, indicators = kernels.combine(solves)
+    if isinstance(estimator, QuantityEstimator):
+        if estimator.capacitance is not None:
+            parts = [
+                kernels.capacitance(model, result, estimator.capacitance[0], threads)
+            ]
+        elif estimator.s is not None:
+            parts = kernels.s_entry(model, result, *estimator.s, threads)
+        else:
+            parts = [kernels.omega(model, result, int(mode or 0), threads)]
+        values = tuple(value for value, _ in parts)
+        _, indicators = kernels.combine([[weights] for _, weights in parts])
+    else:
+        if isinstance(result, ElectrostaticResult):
+            solves = kernels.electrostatic(model, result, threads)
+        elif isinstance(result, DrivenResult):
+            solves = kernels.driven(model, result, threads)
+        elif isinstance(result, EigenmodeResult):
+            solves = kernels.eigenmode(model, result, threads)
+        else:  # pragma: no cover - `_check_estimable` refuses the rest first
+            raise _unsupported_result(result)
+        values, indicators = kernels.combine(solves)
     return ErrorEstimate(
         estimator=estimator, values=values, indicators=readonly(indicators)
     )
 
 
+def _estimator_mode(estimator: Estimator) -> int | None:
+    """The mode index a `QuantityEstimator(omega=...)` names, else ``None``."""
+    return estimator.omega if isinstance(estimator, QuantityEstimator) else None
+
+
+def _quantity(
+    result: Any, estimator: Estimator, mode: int | None
+) -> float | complex | tuple[complex, ...] | None:
+    """The quantity a `QuantityEstimator` names, read off ``result``."""
+    if not isinstance(estimator, QuantityEstimator):
+        return None
+    if estimator.capacitance is not None:
+        i, j = (result.terminals.index(t) for t in estimator.capacitance)
+        return float(np.asarray(result.capacitance)[i, j])
+    if estimator.s is not None:
+        return tuple(complex(v) for v in np.asarray(result.s[estimator.s]))
+    return complex(np.asarray(result.omega)[mode])
+
+
+def _track_mode(
+    result: EigenmodeResult, mode: int, previous: complex | None, rtol: float
+) -> int:
+    """The mode of ``result`` a quantity follows: nearest ``previous`` omega.
+
+    On the first result (``previous`` is ``None``) it is ``mode`` itself.
+
+    Raises:
+        DegenerateModeError: Another mode lies within ``rtol`` of the
+            followed one, or it belongs to a degenerate cluster.
+    """
+    omegas = np.asarray(result.omega)
+    if previous is not None:
+        mode = int(np.argmin(np.abs(omegas - previous)))
+        reference = previous
+    else:
+        reference = omegas[mode]
+    close = np.flatnonzero(np.abs(omegas - reference) <= rtol * abs(reference))
+    cluster = np.asarray(result.cluster)
+    if len(close) > 1 or np.count_nonzero(cluster == cluster[mode]) > 1:
+        raise DegenerateModeError(
+            f"QuantityEstimator(omega=...) follows one mode by its frequency, "
+            f"and mode {mode} at {omegas[mode].real / (2 * np.pi):.6g} Hz is "
+            "not alone: another mode lies within SolverOptions.cluster_rtol="
+            f"{rtol:g} of it. A degenerate cluster has no one mode to follow: "
+            "use gfem.FieldEstimator(), which estimates every mode, or a "
+            "design that breaks the symmetry."
+        )
+    return mode
+
+
 def _dofs(result: Any) -> int:
     """A solve's unknowns: one field's coefficient count."""
-    fields = list(result.potential.values())
-    return int(fields[0].coefficients.shape[0])
+    return int(_fields(result)[0].coefficients.shape[0])
+
+
+def _fields(result: Any) -> list:
+    """The fields of a result an estimate reads."""
+    if isinstance(result, ElectrostaticResult):
+        return list(result.potential.values())
+    return list(result.e_fields)
 
 
 def _check_estimator(estimator: Any) -> None:
@@ -551,25 +722,189 @@ def _check_problem(model: Model, problem: Any) -> None:
         )
 
 
-def _check_supported(problem: Any, estimator: Estimator) -> None:
-    """Raise for an estimator / problem pair this version cannot estimate."""
-    if isinstance(estimator, QuantityEstimator):
-        raise _unsupported_quantity()
-    if not isinstance(problem, Electrostatic):
-        kind = type(problem).__name__
-        raise MeshRefinementUnsupportedError(
-            kind.lower(),
-            f"The field estimator has no path for a gfem.{kind} problem in this "
-            "version of gfem; only gfem.Electrostatic problems can be refined.",
+def _check_quantity_keys(
+    estimator: QuantityEstimator, problem: Any, model: Model
+) -> None:
+    """Raise unless the quantity names an entry ``problem`` solves for."""
+    if estimator.capacitance is not None:
+        _check_kind("capacitance", problem, Electrostatic)
+        _check_terminals(estimator.capacitance, [name for name, _ in problem.terminals])
+    elif estimator.s is not None:
+        _check_kind("s", problem, Driven)
+        ports = [p.name for p in model.ports]
+        excited = ports if problem.excite is None else list(problem.excite)
+        _check_ports(estimator.s, ports, excited)
+    else:
+        _check_kind("omega", problem, Eigenmode)
+        _check_mode(estimator.omega, problem.n_modes)
+
+
+def _check_quantity_result(estimator: QuantityEstimator, result: Any) -> None:
+    """Raise unless the quantity names an entry of ``result``."""
+    if estimator.capacitance is not None:
+        _check_kind("capacitance", result, ElectrostaticResult)
+        _check_terminals(estimator.capacitance, list(result.terminals))
+    elif estimator.s is not None:
+        _check_kind("s", result, DrivenResult)
+        _check_ports(estimator.s, list(result.s.ports), list(result.s.excited))
+    else:
+        _check_kind("omega", result, EigenmodeResult)
+        _check_mode(estimator.omega, len(np.asarray(result.omega)))
+
+
+def _check_kind(keyword: str, given: Any, expected: type) -> None:
+    if not isinstance(given, expected):
+        raise TypeError(
+            f"QuantityEstimator({keyword}=...) needs a gfem.{expected.__name__}, "
+            f"got {type(given).__name__}: name a quantity of this problem "
+            "(capacitance= for Electrostatic, s= for Driven, omega= for "
+            "Eigenmode)."
         )
+
+
+def _check_terminals(names: tuple[str, str], terminals: list[str]) -> None:
+    for name in names:
+        if name not in terminals:
+            raise KeyError(
+                f"No terminal {name!r}; the terminals are "
+                f"{', '.join(map(repr, terminals))}."
+            )
+
+
+def _check_ports(names: tuple[str, str], ports: list[str], excited: list[str]) -> None:
+    for name in names:
+        if name not in ports:
+            raise KeyError(
+                f"No port {name!r}; the ports are {', '.join(map(repr, ports))}."
+            )
+    for name in names:
+        if name not in excited:
+            raise ValueError(
+                f"QuantityEstimator(s=...) reads the field of both ports, and port "
+                f"{name!r} is not excited: add it to Driven.excite."
+            )
+
+
+def _check_mode(mode: int | None, n_modes: int) -> None:
+    if mode is not None and mode >= n_modes:
+        raise ValueError(
+            f"QuantityEstimator(omega={mode}) names a mode index at or above "
+            f"n_modes={n_modes}: ask for more modes, or name one of 0 to "
+            f"{n_modes - 1}."
+        )
+
+
+def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
+    """Raise for a quantity entry the verification tier has no case for (ADR 0089)."""
+    from gfem._engine.coefficients import element_tensors
+
+    if element_tensors(model, "eps_r").ndim == 3:
+        raise _untested(
+            "anisotropic permittivity",
+            "an anisotropic permittivity",
+        )
+    if estimator.capacitance is not None:
+        if estimator.capacitance[0] != estimator.capacitance[1]:
+            raise _untested(
+                "off-diagonal capacitance",
+                "an off-diagonal capacitance entry; estimate a diagonal one",
+            )
+        return
+    mu = element_tensors(model, "mu_r")
+    if mu.ndim == 3 or np.any(mu != 1):
+        raise _untested("permeability", "a model with mu_r other than 1")
+    lossy = _lossy_elements(model)
+    if estimator.s is not None:
+        waves = {p.name: p for p in model.ports if isinstance(p, WavePort)}
+        surfaces = [p.surface for p in waves.values()]
+        if len(set(surfaces)) < len(surfaces):
+            raise _untested(
+                "shared port surface", "a model with a shared wave port surface"
+            )
+        for name in estimator.s:
+            port = waves.get(name)
+            if port is None:
+                continue
+            if port.offset != 0:
+                raise _untested(
+                    "de-embedding", f"wave port {name!r} with a de-embedding offset"
+                )
+            if lossy[_touching(model, port.surface)].any():
+                raise MeshRefinementUnsupportedError(
+                    "lossy wave port",
+                    "QuantityEstimator(s=...) has no estimate on a wave port in "
+                    f"a lossy medium ({name!r}): its S entry has no free dual. "
+                    "Use gfem.FieldEstimator(), or a lumped port.",
+                )
+        return
+    if lossy.any() or _lossy_boundary(model):
+        raise MeshRefinementUnsupportedError(
+            "lossy eigenmode",
+            "QuantityEstimator(omega=...) has no verified estimate for a mode "
+            "with loss (lossy materials, conductor, impedance or absorbing "
+            "boundaries, resistive or wave ports): use gfem.FieldEstimator().",
+        )
+
+
+def _untested(feature: str, what: str) -> MeshRefinementUnsupportedError:
+    return MeshRefinementUnsupportedError(
+        feature,
+        f"gfem.QuantityEstimator has no verified estimate for {what}: use "
+        "gfem.FieldEstimator().",
+    )
+
+
+def _lossy_elements(model: Model) -> np.ndarray:
+    """Whether each tetrahedron is lossy: tan_delta, conductivity, complex eps, mu."""
+    from gfem._engine.coefficients import element_tensors
+
+    out = np.zeros(len(model.mesh.tetrahedra), bool)
+    for name in ("tan_delta", "conductivity", "eps_r", "mu_r"):
+        values = np.asarray(element_tensors(model, name))
+        lossy = values.imag if name in ("eps_r", "mu_r") else values
+        lossy = np.abs(lossy) > 0
+        out |= lossy.reshape(len(out), -1).any(axis=1)
+    return out
+
+
+def _lossy_boundary(model: Model) -> bool:
+    """Whether a boundary or port of the model takes energy out of a mode."""
+    for b in model.boundaries:
+        if isinstance(b, (Absorbing, Conductor)):
+            return True
+        if isinstance(b, Impedance) and b.resistance is not None:
+            return True
+    for p in model.ports:
+        if isinstance(p, WavePort):
+            return True
+        if isinstance(p, LumpedPort) and p.rlc[0] is not None:
+            return True
+    return False
+
+
+def _touching(model: Model, surface: str) -> np.ndarray:
+    """Whether each tetrahedron has a node on ``surface``."""
+    mesh = model.mesh
+    nodes = np.zeros(len(mesh.nodes), bool)
+    nodes[np.asarray(mesh.triangles)[mesh.elements(surface)].ravel()] = True
+    return nodes[np.asarray(mesh.tetrahedra)].any(axis=1)
 
 
 def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
     if isinstance(estimator, QuantityEstimator):
-        raise _unsupported_quantity()
-    if not isinstance(result, ElectrostaticResult):
+        _check_quantity_result(estimator, result)
+        _check_quantity_model(estimator, model)
+    if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
         raise _unsupported_result(result)
-    mesh = next(iter(result.potential.values())).mesh
+    if model._periodic:  # noqa: SLF001
+        raise MeshRefinementUnsupportedError(
+            "periodic",
+            "The field estimator has no path for a periodic model: its "
+            "recovery does not pair the periodic surfaces.",
+        )
+    if isinstance(result, DrivenResult):
+        _check_kept(result)
+    mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
         np.asarray(mesh.nodes), np.asarray(model.mesh.nodes)
     ):
@@ -579,12 +914,22 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         )
 
 
-def _unsupported_quantity() -> MeshRefinementUnsupportedError:
-    return MeshRefinementUnsupportedError(
-        "quantity estimator",
-        "gfem.QuantityEstimator has no estimate in this version of gfem: use "
-        "gfem.FieldEstimator().",
-    )
+def _check_kept(result: DrivenResult) -> None:
+    """Raise unless a driven result is a uniform sweep with every field kept."""
+    if result.sweep is not None and result.sweep.kind == "adaptive":
+        raise MeshRefinementUnsupportedError(
+            "adaptive sweep",
+            "The field estimator has no path for an adaptive sweep: estimate a "
+            "uniform sweep at a few frequencies of the band.",
+        )
+    kept = {f for f, _ in result.kept}
+    missing = [f for f in result.s.frequency if f not in kept]
+    if missing:
+        raise ValueError(
+            "error_estimate reads the electric fields of every frequency, and "
+            f"this result kept none at {', '.join(f'{f:g}' for f in missing)} Hz: "
+            "solve with gfem.Driven(..., keep_fields=True)."
+        )
 
 
 def _unsupported_result(result: Any) -> Exception:
@@ -593,8 +938,8 @@ def _unsupported_result(result: Any) -> Exception:
         return TypeError(f"error_estimate needs a result of gfem.solve, got {kind}.")
     return MeshRefinementUnsupportedError(
         kind.removesuffix("Result").lower(),
-        f"The field estimator has no path for a gfem.{kind} in this version of "
-        "gfem; only gfem.ElectrostaticResult can be estimated.",
+        f"The field estimator has no path for a gfem.{kind}: it estimates "
+        "electrostatic, driven and eigenmode results.",
     )
 
 

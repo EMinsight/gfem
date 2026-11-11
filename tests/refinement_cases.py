@@ -72,11 +72,30 @@ CAVITY_LAMBDA1 = 9.6397238440219
 #: The cavity's first resonance, Hz: c sqrt(CAVITY_LAMBDA1) / (2 pi), side in mm.
 CAVITY_F1 = 148.14026965e9
 
+#: Uniform 3D split (each tetrahedron into 8) from the n = 2 mesh: (DOF, error)
+#: per level, order 2, direct. Step: |S21(3 GHz) - STEP_S|; cavity: relative
+#: error of f1. Level 0 is the n = 2 mesh (pre-asymptotic; `uniform_split_error`
+#: fits the later levels).
+STEP_SPLIT = ((1706, 1.1377e-3), (11292, 4.5280e-4), (81464, 1.8045e-4))
+CAVITY_SPLIT = (
+    (674, 5.6633e-3),
+    (4484, 2.4081e-3),
+    (32456, 9.7531e-4),
+    (246416, 3.8907e-4),
+)
+
 _EPS_R = 4.0
 _QUARTER = 0.5e-6 / 4  # the coax model's extrusion over the full coax's 4 quarters
 
 COAX_PROBLEM = gfem.Electrostatic(terminals={"inner": "inner"}, ground="outer")
 CAVITY_PROBLEM = gfem.Eigenmode(target=CAVITY_F1, n_modes=1)
+
+
+def uniform_split_error(split: tuple, dofs: int) -> float:
+    """The uniform split's error at ``dofs``: a power law through levels 1 on."""
+    n, e = np.log(np.asarray(split[1:])).T
+    slope, offset = np.polyfit(n, e, 1)
+    return float(np.exp(offset + slope * np.log(dofs)))
 
 
 def step_problem(frequencies=tuple(STEP_S)) -> gfem.Driven:
@@ -95,9 +114,15 @@ def coax_model(directory: Path, n: int, *, grade: float = 1.0) -> gfem.Model:
     return gfem.Model(mesh, materials={"dielectric": gfem.Material()})
 
 
-def step_model(directory: Path, n: int, *, grade: float = 1.0) -> gfem.Model:
-    """The step line, in mm, PEC plates, 50 ohm lumped ports "p1" and "p2"."""
-    mesh = _mesh(directory, "step", sm.step_line(n, grade=grade), "mm")
+def step_model(
+    directory: Path, n: int, *, grade: float = 1.0, unit: str = "mm"
+) -> gfem.Model:
+    """The step line, in mm, PEC plates, 50 ohm lumped ports "p1" and "p2".
+
+    ``unit`` reads the same mesh in another length unit (a chip-scale line
+    in "um").
+    """
+    mesh = _mesh(directory, "step", sm.step_line(n, grade=grade), unit)
     return gfem.Model(
         mesh,
         materials={"dielectric": gfem.Material(eps_r=_EPS_R)},
