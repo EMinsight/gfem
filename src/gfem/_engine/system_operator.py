@@ -27,6 +27,12 @@ with material-field regions (`FixedPieces`) is summed as its part on those
 regions, assembled every solve, plus its part on the other elements, kept per
 discretization behind a digest of its coefficient there (ADR 0082). S moves by
 summation round-off only.
+
+There, too, a forward sweep takes its base handle from the plan pool
+(`gfem._engine.cache`) and refactorizes it, rather than planning again
+(`PlanSlot`). A differentiated forward's base moves to its entry and returns to
+the pool when the consumed entry is freed (ADR 0081); any other returns when
+the sweep ends.
 """
 
 from __future__ import annotations
@@ -34,12 +40,14 @@ from __future__ import annotations
 import dataclasses
 import functools
 import hashlib
-from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Self
+from collections.abc import Callable, Hashable, Sequence
+from typing import TYPE_CHECKING, Any, Self
 
+import ngsolve as ngs
 import numpy as np
 import scipy.linalg
 
+from gfem._engine.cache import ENTRIES
 from gfem._engine.wave_ports import PortSurfaceCoupling
 from gfem._linalg import (
     Handle,
@@ -48,6 +56,7 @@ from gfem._linalg import (
     low_rank_update,
     refactorize_or_prepare,
 )
+from gfem._linalg.base import free_mask
 from gfem._linalg.pieces import (
     AssembledPieces,
     FixedPart,
@@ -60,7 +69,7 @@ if TYPE_CHECKING:
     from gfem._engine.driven import DrivenOperator
     from gfem._engine.terms import Piece
 
-__all__ = ["FixedPieces", "SystemOperator", "SystemSweep"]
+__all__ = ["FixedPieces", "PlanSlot", "SystemOperator", "SystemSweep"]
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -182,6 +191,7 @@ class SystemOperator:
         solves: int = 1,
         reuse_preconditioner: bool = True,
         tolerance: float | None = None,
+        pool_budget: int | None = None,
     ) -> SystemSweep:
         """One base handle for a sweep's frequencies (see `SystemSweep`).
 
@@ -189,7 +199,9 @@ class SystemOperator:
         preconditioner up at every frequency, ``solves`` (a uniform sweep's
         frequencies) is the solve calls the base is expected to serve and
         ``tolerance`` overrides the linear solver's (adjoint solves)
-        (`gfem._linalg.ResolvedLinearSolver.prepare`).
+        (`gfem._linalg.ResolvedLinearSolver.prepare`). With a ``pool_budget``
+        (``retain_memory``'s bytes) a serial CPU direct sweep takes its base
+        from the plan pool and returns it there (`PlanSlot`).
         """
         return SystemSweep(
             self.operator_at,
@@ -202,7 +214,27 @@ class SystemOperator:
                 tolerance=tolerance,
                 reuse_preconditioner=reuse_preconditioner,
             ),
+            plans=None if pool_budget is None else self._plan_slot(pool_budget),
         )
+
+    def _plan_slot(self, budget: int) -> PlanSlot | None:
+        """Where this operator's base handles pool, or ``None`` off the pool.
+
+        Serial CPU direct solves only (ADR 0082). The key holds the topology,
+        the space key, a digest of the free DOFs and the symmetry; the sweep
+        adds the thread count.
+        """
+        op = self.operator
+        if (
+            op.built.comm is not None
+            or op.topology is None
+            or (self._linear.kind, self._linear.device) != ("direct", "cpu")
+        ):
+            return None
+        free = free_mask(op.space.FreeDofs(), op.space.ndof)
+        digest = hashlib.blake2b(np.packbits(free).tobytes(), digest_size=16)
+        site = (id(op.topology), op.space_key, digest.hexdigest(), op.symmetry)
+        return PlanSlot(site, op.topology, budget)
 
     def solve_adjoint(self, n: int, omega: float, loads: np.ndarray) -> np.ndarray:
         """Solve the adjoint loads ``(ndof, q)`` of frequency ``n`` at ``ω``.
@@ -229,15 +261,17 @@ class SystemOperator:
             held += self._transposed_system._held_nbytes()  # noqa: SLF001
         return held + sum(int(c.vectors.nbytes) for c in self.surfaces)
 
-    def free(self) -> None:
+    def free(self, *, return_plans: bool = False) -> None:
         """Release the adjoint handles and the pieces (a prepare reassembles them).
 
-        The transposed system goes too (the next adjoint solve builds it).
+        The transposed system goes too (the next adjoint solve builds it). With
+        ``return_plans`` the kept base handle returns to the plan pool, where it
+        came from one (`free_base`).
         """
         for handle in self._handles.values():
             handle.free()
         self._handles = {}
-        self.free_base()
+        self.free_base(return_plan=return_plans)
         self._adjoint_sweep = None
         self._pieces.free()
         if self._transposed_system is not None:
@@ -247,21 +281,26 @@ class SystemOperator:
     def keep_base(self, sweep: SystemSweep) -> None:
         """Move a finished forward sweep's base handle to the adjoint solves.
 
-        Under ranks only, where one factorization per frequency does not fit and a
+        Under ranks, where one factorization per frequency does not fit and a
         backward must not prepare what its forward just freed (ADR 0065). A base it
         no longer holds is prepared again at the adjoint tolerance. On one process
-        the sweep keeps its base, and ``with`` frees it.
+        a base from the plan pool moves too, so that it returns to the pool only
+        when the entry holding it is freed (ADR 0082); any other sweep keeps its
+        base, and ``with`` frees it.
         """
-        if self.operator.built.comm is None:
+        if self.operator.built.comm is None and not sweep.pooled:
             return
         adjoint = self.sweep(tolerance=self._adjoint_tolerance)
         sweep.move_base(adjoint)
         self._adjoint_sweep = adjoint
 
-    def free_base(self) -> None:
-        """Release the adjoint solves' base handle; the sweep prepares it again."""
+    def free_base(self, *, return_plan: bool = False) -> None:
+        """Release the adjoint solves' base handle; the sweep prepares it again.
+
+        With ``return_plan`` a base from the plan pool returns there instead.
+        """
         if self._adjoint_sweep is not None:
-            self._adjoint_sweep.free()
+            self._adjoint_sweep.free(return_plan=return_plan)
 
     def _held_nbytes(self) -> int:
         """The adjoint handles' and the pieces' bytes (not ``W``'s)."""
@@ -368,6 +407,10 @@ class SystemSweep:
     update. A handle from `at` is valid until the next call. `free` (or
     leaving the ``with`` block) releases the base, also when the sweep
     raises, and the sweep prepares it again if asked.
+
+    With a `PlanSlot` the first call takes the base from the plan pool when a
+    handle of its key is free there, and refactorizes it; leaving the ``with``
+    block without an error returns the base to the pool.
     """
 
     def __init__(
@@ -375,21 +418,33 @@ class SystemSweep:
         operator_at: Callable[[float], Operator],
         system_handle: Callable[[Handle, float], Handle],
         prepare: Callable[[Operator], Handle],
+        plans: PlanSlot | None = None,
     ) -> None:
         """Hold ``ω -> A(ω)``, the wrap into ``A(ω) + W(ω)`` and the base's prepare.
 
-        The wrap borrows the base handle.
+        The wrap borrows the base handle. ``plans``: where the base pools.
         """
         self._operator_at = operator_at
         self._system_handle = system_handle
         self._prepare = prepare
+        self._plans = plans
+        # the pool key of the base, set when the base was taken or prepared
+        self._key: Hashable | None = None
         self._base: Handle | None = None
         # the system handle `at` gave last, and its frequency
         self._last: tuple[float, Handle] | None = None
 
+    @property
+    def pooled(self) -> bool:
+        """Whether the base returns to the plan pool."""
+        return self._plans is not None
+
     def at(self, omega: float) -> Handle:
         """A handle of ``A(ω) + W(ω)``, borrowing the sweep's base handle."""
         operator = self._operator_at(omega)
+        if self._base is None and self._plans is not None:
+            self._key = self._plans.key()
+            self._base = ENTRIES.take_plan(self._key)
         self._base = refactorize_or_prepare(self._base, operator, self._prepare)
         handle = self._system_handle(self._base, omega)
         self._last = (omega, handle)
@@ -402,8 +457,12 @@ class SystemSweep:
         return self.at(omega)
 
     def move_base(self, other: SystemSweep) -> None:
-        """Give ``other`` this sweep's base handle; this one holds none after."""
+        """Give ``other`` this sweep's base handle; this one holds none after.
+
+        The base's place in the plan pool goes with it.
+        """
         other._base, other._last = self._base, self._last
+        other._plans, other._key = self._plans, self._key
         self._base, self._last = None, None
 
     def solve(
@@ -412,14 +471,49 @@ class SystemSweep:
         """Solve at ``ω``: the solution and the Krylov iterations per column."""
         return self.at(omega).solve_counted(rhs, x0=x0)
 
-    def free(self) -> None:
-        """Release the base handle."""
-        if self._base is not None:
-            self._base.free()
+    def free(self, *, return_plan: bool = False) -> None:
+        """Release the base handle.
+
+        With ``return_plan`` a pooled sweep's base returns to the plan pool
+        instead, its factors released.
+        """
+        base, plans, key = self._base, self._plans, self._key
         self._base, self._last = None, None
+        if base is None:
+            return
+        if return_plan and plans is not None and key is not None:
+            ENTRIES.give_plan(key, plans.topology, base, plans.budget)
+        else:
+            base.free()
 
     def __enter__(self) -> Self:
         return self
 
-    def __exit__(self, *exc: object) -> None:
-        self.free()
+    def __exit__(self, error: type[BaseException] | None, *exc: object) -> None:
+        # a sweep that raised may leave its base mid-refactorization
+        self.free(return_plan=error is None)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class PlanSlot:
+    """Where a serial CPU direct sweep's base handle pools (ADR 0082).
+
+    Attributes:
+        site: The pool key but the thread count: topology identity, space
+            key, free-DOF digest, symmetry. Node positions are not in it.
+        topology: The mesh topology (the pool frees its handles once no
+            discretization of it is left).
+        budget: ``retain_memory``'s bytes, the walk's budget on return.
+    """
+
+    site: tuple
+    topology: Any
+    budget: int
+
+    def key(self) -> tuple:
+        """The pool key: ``site`` and the thread count of a plan made now.
+
+        A PARDISO handle runs on the thread count of its analysis (ADR 0032),
+        so another count plans anew.
+        """
+        return (*self.site, max(1, ngs.GetNumThreads()))

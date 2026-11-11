@@ -24,7 +24,8 @@ host; this module owns everything JAX sees:
   ``SolverOptions.retain_memory``, least recently used out first, never
   freed by a read, so ``jax.jacrev`` and a pullback called twice reuse it).
   An entry a backward has read is consumed, and the next differentiated
-  forward frees it before it assembles (ADR 0081), so a pullback called after
+  forward frees it before it assembles (ADR 0081), its base handle returning
+  to the plan pool for that forward (ADR 0082), so a pullback called after
   another differentiated solve runs its forward again.
   The backward rebuilds the model and the problem from the residual leaves,
   never from engine state, and re-runs the forward when the entry was
@@ -170,7 +171,7 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
                     rule.options,
                 )
             if keep:
-                _free_consumed(comm)
+                _free_consumed(comm, rule.options)
             outputs, entry = _forward(host_rule, host_model, keep=keep)
             key = -1 if entry is None else _keep(entry, rule.options, comm)
         arrays = tuple(
@@ -275,21 +276,22 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
     return rule.forward(model, keep=keep)
 
 
-def _free_consumed(comm: Any) -> None:
-    """Free the entries a backward has read, before this forward assembles."""
-    from gfem._engine.cache import ENTRIES
+def _free_consumed(comm: Any, options: Any) -> None:
+    """Free the entries a backward has read, before this forward assembles.
 
-    ENTRIES.free_consumed(comm)
+    Their base handles return to the plan pool, for this forward to take
+    (ADR 0082), within ``options.retain_memory``.
+    """
+    from gfem._engine.cache import ENTRIES, retain_budget
+
+    ENTRIES.free_consumed(comm, retain_budget(options.retain_memory))
 
 
 def _keep(entry: Any, options: Any, comm: Any) -> int:
     """Store a forward's entry under ``options.retain_memory``; its key."""
-    from gfem._engine.cache import ENTRIES, default_retain_memory
+    from gfem._engine.cache import ENTRIES, retain_budget
 
-    budget = options.retain_memory
-    if budget is None:
-        budget = default_retain_memory()
-    return ENTRIES.put(entry, budget, comm)
+    return ENTRIES.put(entry, retain_budget(options.retain_memory), comm)
 
 
 def _wanted(rule: Any, kinds: list[tuple], perturbed: list[bool]) -> tuple[int, ...]:
