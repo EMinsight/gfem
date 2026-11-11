@@ -338,12 +338,17 @@ class EntryCache:
         their handles can (`Entry.free`), and the walk runs down to it.
         """
         owner = _mpi.comm_key(comm)
-        consumed = [k for k, e in self._entries.items() if e.consumed]
+        consumed = [
+            k for k, e in self._entries.items() if e.consumed and self._comms[k] == owner
+        ]
+        # out of the cache before any is freed: a base returning to the pool
+        # walks the cache
+        freed = []
         for key in consumed:
-            if self._comms[key] != owner:
-                continue
             del self._comms[key]
-            self._entries.pop(key).free(return_plans=budget is not None)
+            freed.append(self._entries.pop(key))
+        for entry in freed:
+            entry.free(return_plans=budget is not None)
         if budget is not None:
             self._evict(_mpi.node_budget(comm, budget), comm)
 

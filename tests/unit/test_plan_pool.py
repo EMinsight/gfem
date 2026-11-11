@@ -143,6 +143,27 @@ def test_a_consumed_entry_returns_its_base_to_the_pool():
     assert returned == [True]
 
 
+def test_freeing_consumed_entries_survives_their_bases_returning_to_the_pool():
+    # each consumed entry returns a base on the way out, over the budget
+    entries = EntryCache()
+
+    class Returning(FakeKept):
+        def free(self, *, return_plans=False):
+            if return_plans and self.base is not None:
+                entries.give_plan(("k",), TOPOLOGY, self.base, budget=0)
+            self.base = None
+
+    first = Entry(physics="em", handle=Returning(10, FakeHandle(50)))
+    second = Entry(physics="em", handle=Returning(10, FakeHandle(50)))
+    entries.put(first, budget=1000)
+    entries.put(second, budget=1000)
+    first.consumed = second.consumed = True
+    entries.free_consumed(comm=None, budget=0)
+    assert len(entries) == 0
+    assert first.handle is None
+    assert second.handle is None
+
+
 def test_clear_frees_the_pool_too():
     entries = EntryCache()
     handle = FakeHandle(10)
