@@ -441,9 +441,11 @@ def combine(
 #   m_K(e_i, e_j) = int_K (R(eps E_i) - eps E_i) . eps^-1 (...)_j
 #
 # complex bilinear (not Hermitian). The reported estimate is the magnitude
-# |sum c_K| + k^2 |sum m_K| (the two terms are never let cancel), scaled to
-# the quantity's units; a tetrahedron's weight is its share,
-# |c_K| + k^2 |m_K| with the same scale.
+# |sum c_K| + k^2 |sum m_K| (the two terms are never let cancel over the
+# mesh), scaled to the quantity's units. A tetrahedron's weight is the
+# magnitude of its term of the identity, |a_K| = |c_K - k^2 m_K| with the same
+# scale (ticket 08's indicator): marking is unchanged by the reported sum, and
+# the weights add up to neither that sum nor |sum a_K| in general.
 
 
 def capacitance(
@@ -473,8 +475,9 @@ def s_entry(
     """The absolute error estimate of ``s[to, source]``, per frequency and tetrahedron.
 
     S_ij,h - S_ij = i a(e_i, e_j) / (4 k0 eta0), with k0 in the mesh's
-    length unit, for fields of 1 W incident at either port; the estimate is
-    (|sum c_K| + k0^2 |sum m_K|) / (4 k0 eta0).
+    length unit, for fields of 1 W incident at either port, and a = c - k0^2 m;
+    the estimate is (|sum c_K| + k0^2 |sum m_K|) / (4 k0 eta0), a
+    tetrahedron's |c_K - k0^2 m_K| / (4 k0 eta0).
     """
     fields = dict(zip(result.kept, result.e_fields, strict=True))
     eta0 = scipy.constants.mu_0 * scipy.constants.c
@@ -494,7 +497,7 @@ def s_entry(
             curl, mass = _pair(recovery, ri, rj)
             scale = 1.0 / (4 * k * eta0)
             value = scale * (abs(curl.sum()) + k**2 * abs(mass.sum()))
-            out.append((float(value), scale * (np.abs(curl) + k**2 * np.abs(mass))))
+            out.append((float(value), scale * np.abs(curl - k**2 * mass)))
     return out
 
 
@@ -510,7 +513,8 @@ def omega(
     lambda = k^2, and omega_h - omega ~ omega (lambda_h - lambda) / (2
     lambda); the estimate is (|sum c_K| + lambda |sum m_K|) / (2 lambda
     |b(u_h, u_h)|), b the complex bilinear eps mass form (a lossless mode is
-    real up to one phase, which this ratio does not see).
+    real up to one phase, which this ratio does not see); a tetrahedron's is
+    |c_K - lambda m_K| with the same scale.
     """
     field = result.e_fields[mode]
     with task_manager(threads):
@@ -531,7 +535,7 @@ def omega(
         )
     scale = 1.0 / (2 * lam * abs(b))
     value = scale * (abs(curl.sum()) + lam * abs(mass.sum()))
-    return float(value), scale * (np.abs(curl) + lam * np.abs(mass))
+    return float(value), scale * np.abs(curl - lam * mass)
 
 
 def _parts(field: Field) -> list[ngs.GridFunction]:

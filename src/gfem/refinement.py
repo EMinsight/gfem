@@ -179,8 +179,11 @@ class ErrorEstimate:
             ``mesh.tetrahedra``, combined over frequencies, terminals, ports
             and modes; zero outside the solve domain. For a single solve
             ``sqrt(sum(indicators**2))`` is ``value`` for a
-            `FieldEstimator`, and ``sum(indicators**2)`` is at least
-            ``value`` for a `QuantityEstimator`.
+            `FieldEstimator`. For a `QuantityEstimator`, ``indicators**2``
+            is each tetrahedron's term of the quantity's error, in its
+            units; ``sum(indicators**2)`` is ``value`` for a capacitance,
+            and may lie above or below it for an S entry or ``omega``,
+            whose ``value`` keeps the curl and mass terms from cancelling.
     """
 
     estimator: Estimator

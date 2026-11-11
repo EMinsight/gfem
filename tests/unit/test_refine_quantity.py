@@ -15,6 +15,7 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
+from gfem.refinement import _dorfler
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 
@@ -237,6 +238,23 @@ def test_an_s_estimate_has_one_value_per_frequency(step):
     assert len(estimate.values) == 2
     assert estimate.value == max(estimate.values)
     assert all(0 < v < 1e-2 for v in estimate.values)
+
+
+@pytest.mark.parametrize("frequency", [3e9, 8e9])
+def test_an_s_estimate_marks_as_the_field_estimator(step, frequency):
+    # The indicator is |a_K(e~_1, e~_2)|, the curl and mass terms of one
+    # tetrahedron together: on the step line it follows the field estimator's
+    # (correlation 0.9999997 at n = 4 in the DWR prototype) and marks the same
+    # tetrahedra.
+    result = gfem.solve(step, gfem.Driven(frequency, keep_fields=True), options=OPTIONS)
+    field = gfem.error_estimate(result, gfem.FieldEstimator(), model=step)
+    quantity = gfem.error_estimate(
+        result, gfem.QuantityEstimator(s=("p2", "p1")), model=step
+    )
+    assert np.corrcoef(quantity.indicators**2, field.indicators**2)[0, 1] > 0.99999
+    np.testing.assert_array_equal(
+        _dorfler(quantity.indicators, 0.5), _dorfler(field.indicators, 0.5)
+    )
 
 
 @pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
