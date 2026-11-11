@@ -906,8 +906,10 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
         assert entry.handle.nbytes == system.nbytes + ports.nbytes
     if not (kind in ("direct", "petsc") and keep):
         # BDDC assembles forms; a forward that keeps nothing drops its pieces
-        # (no wave port on the line: no W vectors)
-        assert system.nbytes == 0
+        # (no wave port on the line: no W vectors); a kept BDDC forward holds
+        # its base for the backward
+        held = system._adjoint_sweep._base.nbytes if keep else 0
+        assert system.nbytes == held
         return
     # at least the values of the curl-curl and mass pieces
     values = form.mat.AsVector().FV().NumPy().nbytes
