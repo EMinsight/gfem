@@ -17,7 +17,13 @@ of eps across a material interface is not smeared); mu^-1 curl E into
 kind is not, and its recovery error does not converge). Both are
 ``definedon`` the solve domain and compressed, and cut along interior PEC
 sheets (and, for a potential, the interior terminal and ground sheets),
-across which the solved flux jumps. Each mass matrix is factorized
+across which the solved flux jumps. Both are constrained on the solve
+domain's natural surfaces, n . R(eps E) = 0 and n x R(mu^-1 curl E) = 0
+(zero trace DOFs on their exterior faces; on a cut space every copy of
+one): for a potential every exterior surface not held at a potential, for a
+wave field the PMC and default PMC surfaces. Unconstrained, the recovery
+there is free to miss the solved field's natural condition, and a tensor eps
+then hides the error (ADR 0087). Each mass matrix is factorized
 once per mesh (`FluxRecovery`) and the factor reused for every field, real
 and imaginary part. NGSolve's local ``GridFunction.Set`` is never used: it
 does not converge at a corner singularity.
@@ -46,7 +52,7 @@ from gfem._engine.fields import fe_space
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._field import Field
-from gfem.model import PEC, Conductor, Model
+from gfem.model import PEC, PMC, Conductor, Model
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
 
 __all__ = [
@@ -71,7 +77,10 @@ class _Projection:
     around a sheet edge that no face off the sheet joins, gets its own copy
     of the face's or edge's DOFs, so the recovered field may jump across the
     sheet as the solved one does. That space is reached through the broken
-    (element-wise) space, and solved with SciPy.
+    (element-wise) space, and solved with SciPy. The DOFs of the
+    ``constrained`` boundary elements (their trace: normal for HDiv,
+    tangential for HCurl) are held at zero, and on the cut path every copy of
+    one too.
     """
 
     def __init__(
@@ -80,9 +89,15 @@ class _Projection:
         dx: ngs.comp.DifferentialSymbol,
         cracks: frozenset[int],
         region: ngs.Region,
+        constrained: Sequence[ngs.ElementId] = (),
     ) -> None:
         self._dx = dx
         conforming = ngs.Compress(make())
+        free = ngs.BitArray(conforming.FreeDofs())
+        for el in constrained:
+            for d in conforming.GetDofNrs(el):
+                if d >= 0:
+                    free.Clear(d)
         if not cracks:
             self.space = conforming
             u, v = conforming.TnT()
@@ -90,13 +105,13 @@ class _Projection:
             mass += u * v * dx
             mass.Assemble()
             self._mass = mass
-            self._inverse = mass.mat.Inverse(
-                conforming.FreeDofs(), inverse="sparsecholesky"
-            )
+            self._inverse = mass.mat.Inverse(free, inverse="sparsecholesky")
             self._cut = None
             return
         self.space = ngs.Compress(make(discontinuous=True))
-        self._cut = _cut_space(conforming, self.space, cracks, region)
+        cut, origin = _cut_space(conforming, self.space, cracks, region)
+        kept = np.array([free[d] for d in range(len(free))], dtype=bool)[origin]
+        self._cut = cut[:, np.flatnonzero(kept)]
         u, v = self.space.TnT()
         mass = ngs.BilinearForm(self.space, symmetric=True)
         mass += u * v * dx
@@ -127,11 +142,12 @@ def _cut_space(
     broken: ngs.FESpace,
     cracks: frozenset[int],
     region: ngs.Region,
-) -> sp.csr_matrix:
+) -> tuple[sp.csr_matrix, np.ndarray]:
     """``broken`` DOFs from the DOFs of ``conforming`` cut along ``cracks``.
 
     Both spaces are the same element on the same domain, one continuous and
     one element-wise, so an element's local DOFs correspond one to one.
+    Returns the matrix and, per column, the ``conforming`` DOF it copies.
     """
     mesh = conforming.mesh
     inside = region.Mask()
@@ -140,7 +156,7 @@ def _cut_space(
         return [e.nr for e in mesh[node].elements if inside[mesh[e].index]]
 
     side: dict[tuple[int, int], int] = {}  # (conforming DOF, element) -> copy
-    copies = 0
+    origin = list(range(conforming.ndof))
     nodes: list[tuple[ngs.NodeId, list[list[int]]]] = []
     edges = set()
     for f in cracks:
@@ -160,18 +176,18 @@ def _cut_space(
         for part in parts[1:]:
             for k, d in enumerate(dofs):
                 for e in part:
-                    side[d, e] = conforming.ndof + copies + k
-            copies += len(dofs)
+                    side[d, e] = len(origin) + k
+            origin.extend(dofs)
     rows, cols = [], []
     for el in mesh.Elements(ngs.VOL):
         for c, b in zip(conforming.GetDofNrs(el), broken.GetDofNrs(el), strict=True):
             if b >= 0:
                 rows.append(b)
                 cols.append(side.get((c, el.nr), c))
-    return sp.csr_matrix(
-        (np.ones(len(rows)), (rows, cols)),
-        shape=(broken.ndof, conforming.ndof + copies),
+    cut = sp.csr_matrix(
+        (np.ones(len(rows)), (rows, cols)), shape=(broken.ndof, len(origin))
     )
+    return cut, np.asarray(origin)
 
 
 def _connected(items: list[int], joins: list[list[int]]) -> list[list[int]]:
@@ -199,7 +215,13 @@ class FluxRecovery:
     built and its mass matrix factorized once; `flux_error` and
     `curl_error` then cost one right-hand side, one back substitution and
     two element passes per field. With ``cracks`` the spaces are cut along
-    the model's interior PEC sheets.
+    the model's interior PEC sheets. Both are constrained on the
+    ``natural`` surfaces' exterior faces.
+
+    Attributes:
+        natural: The natural surfaces: with ``cracks`` the model's `PMC` and
+            default PMC surfaces, otherwise every exterior surface not in
+            ``sheets``.
     """
 
     def __init__(
@@ -222,6 +244,10 @@ class FluxRecovery:
         self.dx = quadrature.dx(order, definedon=self.region)
         names = set(pec_surfaces(model)) if cracks else set()
         self._cracks = _sheet_faces(model, self.built, names | set(sheets))
+        self.natural = _natural_surfaces(model, cracks=cracks, sheets=sheets)
+        self._constrained = _exterior_elements(
+            self.built, self.region, set(self.natural)
+        )
         self._hdiv = self._projection(ngs.HDiv)
         self._hcurl: _Projection | None = None
         self.eps, self.eps_inverse = self._weights("eps_r")
@@ -236,7 +262,7 @@ class FluxRecovery:
         def make(**more: Any) -> ngs.FESpace:
             return kind(mesh, order=order, definedon=region, **flags, **more)
 
-        return _Projection(make, self.dx, self._cracks, region)
+        return _Projection(make, self.dx, self._cracks, region, self._constrained)
 
     def _weights(
         self, name: str
@@ -279,6 +305,44 @@ class FluxRecovery:
         """``|| R(mu^-1 curl) - mu^-1 curl ||^2_{mu, K}`` per tetrahedron."""
         diff = self.curl_residual(curl)
         return self.element_integrals(diff * (self.mu * diff))
+
+
+def _natural_surfaces(
+    model: Model, *, cracks: bool, sheets: Sequence[str]
+) -> tuple[str, ...]:
+    """The solve domain's natural surfaces, where the recovery is constrained.
+
+    For a wave field (``cracks``) the model's `PMC` and default PMC surfaces;
+    for a potential every exterior surface not held at a potential (not in
+    ``sheets``). Sorted names; some may be interior in part.
+    """
+    domain = model._domain  # noqa: SLF001
+    if cracks:
+        names = set(model.default_pmc) | {
+            b.surface for b in model.boundaries if isinstance(b, PMC)
+        }
+    else:
+        fixed = set(sheets)
+        names = {s for s in model.mesh.surfaces if domain.exterior(s)} - fixed
+    return tuple(sorted(names))
+
+
+def _exterior_elements(
+    built: EngineMesh, region: ngs.Region, names: set[str]
+) -> list[ngs.ElementId]:
+    """Boundary elements of the surfaces ``names`` on the exterior of ``region``."""
+    if not names:
+        return []
+    mesh = built.mesh
+    inside = region.Mask()
+    out = []
+    for el in mesh.Elements(ngs.BND):
+        if el.mat not in names:
+            continue
+        face = mesh[el.faces[0]]
+        if sum(bool(inside[mesh[e].index]) for e in face.elements) == 1:
+            out.append(ngs.ElementId(el))
+    return out
 
 
 def _sheet_faces(model: Model, built: EngineMesh, names: set[str]) -> frozenset[int]:

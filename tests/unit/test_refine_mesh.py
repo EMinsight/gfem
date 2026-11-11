@@ -12,16 +12,19 @@ import warnings
 import jax
 import jax.numpy as jnp
 import mpi_cases
+import ngsolve as ngs
 import numpy as np
 import pytest
 import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
+from gfem._engine import estimate
+from gfem._engine.estimate import FluxRecovery
 from gfem.refinement import _dorfler
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
-COAX_ESTIMATE = 0.1085  # the n = 2 coax's field error estimate, for orientation
+COAX_ESTIMATE = 0.1157  # the n = 2 coax's field error estimate, for orientation
 
 
 @pytest.fixture(scope="module")
@@ -275,6 +278,100 @@ def test_a_failed_first_solve_raises(coax, monkeypatch):
     monkeypatch.setattr("gfem.refinement.solve", _Failing(error, fail_on=1))
     with pytest.raises(gfem.LinearSolverConvergenceError):
         _refine(coax)
+
+
+# --- the recovery: natural surfaces and the cut path -------------------------
+
+
+def _layered(tmp_path, surface, **kwargs):
+    """Layers a (z < 0.5) and b (z < 1.5) on 3 x 2 um; ``surface`` names faces."""
+    edges = (np.linspace(0, 3, 3), np.linspace(0, 2, 3), np.linspace(0, 1.5, 4))
+    cells = sm.structured(edges, lambda c: "a" if c[2] < 0.5 else "b", surface)
+    path = sm.write_msh22(tmp_path / "layered.msh", cells)
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    materials = {"a": gfem.Material(), "b": gfem.Material()}
+    return gfem.Model(mesh, materials=materials, **kwargs)
+
+
+def _plate_surface(c):
+    if abs(c[2]) < 1e-9:
+        return "bottom"
+    if abs(c[2] - 1.5) < 1e-9:
+        return "top"
+    if abs(c[2] - 0.5) < 1e-9:
+        return "a__b"
+    return "side"
+
+
+@pytest.mark.parametrize(
+    ("boundaries", "natural"),
+    [
+        ([gfem.PEC("bottom")], ("side", "top")),
+        ([gfem.PEC("bottom"), gfem.PMC("top")], ("side", "top")),
+        ([gfem.PEC("bottom"), gfem.Impedance("top", resistance=50.0)], ("side",)),
+        ([gfem.PEC("bottom"), gfem.Absorbing("top")], ("side",)),
+        ([gfem.Conductor("bottom", 1e5), gfem.PEC("top")], ("side",)),
+    ],
+    ids=["default pmc", "pmc", "impedance", "absorbing", "conductor"],
+)
+def test_the_wave_recovery_is_constrained_on_pmc_surfaces(
+    tmp_path, boundaries, natural
+):
+    model = _layered(tmp_path, _plate_surface, boundaries=boundaries)
+    assert FluxRecovery(model, 2, cracks=True).natural == natural
+
+
+def test_the_potential_recovery_is_constrained_on_unfixed_exterior_surfaces(
+    tmp_path,
+):
+    model = _layered(
+        tmp_path,
+        _plate_surface,
+        boundaries=[gfem.Impedance("top", resistance=50.0)],
+    )
+    assert FluxRecovery(model, 2, sheets=["bottom"]).natural == ("side", "top")
+    assert FluxRecovery(model, 2, sheets=["bottom", "top"]).natural == ("side",)
+
+
+def test_a_partly_interior_natural_surface_is_constrained_on_its_exterior_faces(
+    tmp_path,
+):
+    # "mixed" is the top (exterior) and the a/b interface (interior). The
+    # recovered flux's normal component is held at zero on the top only.
+    def surface(c):
+        name = _plate_surface(c)
+        return "mixed" if name in ("top", "a__b") else name
+
+    model = _layered(tmp_path, surface)
+    recovery = FluxRecovery(model, 2, sheets=["bottom"])
+    assert recovery.natural == ("mixed", "side")
+    recovered = recovery.recover(ngs.CoefficientFunction((0.0, 0.0, 1.0)))
+    mesh = recovered.space.mesh
+    xy = [(0.6, 0.4), (1.7, 1.1), (2.2, 0.3)]
+    top = [recovered(mesh(x, y, 1.5))[2] for x, y in xy]
+    interface = [recovered(mesh(x, y, 0.5))[2] for x, y in xy]
+    assert np.max(np.abs(top)) < 1e-12
+    assert np.min(interface) > 0.5
+
+
+def test_the_cut_path_with_no_interior_face_is_the_conforming_path(
+    tmp_path, monkeypatch
+):
+    # A "crack" of one exterior face on the natural surface "ends" cuts
+    # nothing, so the cut path must reproduce the conforming one, with its
+    # constrained DOFs dropped.
+    model = rc.coax_model(tmp_path, 4)
+    result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(capacitance=("inner", "inner"))
+    conforming = gfem.error_estimate(result, estimator, model=model)
+    built = estimate.discretization(model.mesh).built
+    face = next(
+        el.faces[0].nr for el in built.mesh.Elements(ngs.BND) if el.mat == "ends"
+    )
+    monkeypatch.setattr(estimate, "_sheet_faces", lambda *_: frozenset({face}))
+    cut = gfem.error_estimate(result, estimator, model=model)
+    assert cut.value == pytest.approx(conforming.value, rel=1e-12)
+    np.testing.assert_allclose(cut.indicators, conforming.indicators, rtol=1e-10)
 
 
 # --- parents and transfer ----------------------------------------------------
