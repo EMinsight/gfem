@@ -213,7 +213,10 @@ class DirectHandle(PlannedHandle):
         PARDISO releases L and U and keeps its ordering and symbolic
         analysis; `solve`, `solve_counted` and `apply` then raise until
         `refactorize` factorizes new values. Sparse Cholesky and UMFPACK keep
-        their factors. Waits for a running solve or refactorization.
+        their factors. The pieces' pattern goes too, so a held handle does not
+        keep its last operator's pieces alive: the next `refactorize` assembles
+        (sums) into a new matrix and copies its values in. Waits for a running
+        solve or refactorization.
 
         Raises:
             RuntimeError: The handle was freed.
@@ -221,6 +224,7 @@ class DirectHandle(PlannedHandle):
         with self._lock:
             self._live()
             cast("Factors", self._factors).release()
+            self._pattern = None
 
     def _check_solvable(self) -> None:
         """Refuse a handle whose factors were released; under the lock."""
