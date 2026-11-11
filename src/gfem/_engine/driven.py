@@ -1717,10 +1717,27 @@ class _Kept:
 
     @property
     def nbytes(self) -> int:
-        """Host memory held, in bytes (0 once freed)."""
+        """Host memory held, in bytes (0 once freed).
+
+        Wave port couplings and a port network a discretization keeps
+        (`_KeptPorts`) are not counted: every entry on it shares them, and the
+        discretization count bounds them.
+        """
         if self._freed:
             return 0
-        return self.system.nbytes + self.ports.nbytes
+        held = self.system.nbytes + self.ports.nbytes
+        disc = cached(self.system.operator.built)
+        kept = None if disc is None else disc.ports
+        if not isinstance(kept, _KeptPorts):
+            return held
+        surfaces = self.system.surfaces
+        if len(surfaces) == len(kept.couplings) and all(
+            a is b for a, b in zip(surfaces, kept.couplings, strict=True)
+        ):
+            held -= sum(int(c.vectors.nbytes) for c in surfaces)
+        if any(n is self.ports for n in kept.networks.values()):
+            held -= self.ports.nbytes
+        return held
 
     def free_base(self, comm: Any) -> None:
         """Release the base handle kept for a backward pass, if it is on ``comm``.
