@@ -378,7 +378,8 @@ def test_pooled_handles_of_a_topology_left_out_of_the_discretizations_are_freed(
     assert cache.ENTRIES.pooled == 0
 
 
-def test_a_bloch_forward_returns_its_base_to_the_pool(tmp_path, plans):
+@pytest.mark.usefixtures("plans")  # an empty cache before and after
+def test_a_bloch_forward_returns_its_base_to_the_pool(tmp_path):
     # the adjoint solves are on the transposed system: they never read the base
     mesh = pc.g_mesh(tmp_path)
     base = pc.g(mesh)

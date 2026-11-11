@@ -347,7 +347,9 @@ class EntryCache:
         """
         owner = _mpi.comm_key(comm)
         consumed = [
-            k for k, e in self._entries.items() if e.consumed and self._comms[k] == owner
+            k
+            for k, e in self._entries.items()
+            if e.consumed and self._comms[k] == owner
         ]
         # out of the cache before any is freed: a base returning to the pool
         # walks the cache
