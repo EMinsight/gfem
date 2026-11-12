@@ -20,6 +20,12 @@ Cases and references (none recomputed by the tests but the closed forms):
   `refinement_cases.STEP_S`;
 - step line, wave ports: S21 at 3 GHz on n = 4 against an order-3 graded
   reference (`STEP_WAVE_S21`);
+- step line, wave ports de-embedded by 1 and 2 mm: the same S21 times the
+  exact TEM phase of the offsets (the estimate is the one without offsets);
+- block guide (`refinement_cases.block_guide_model`), TE10 and TE20 on each
+  of two shared port surfaces: six S entries at 170 GHz on n = 4, 8 against
+  `refinement_cases.BLOCK_GUIDE_S` (order 4 on n = 4); n = 2, under two
+  cells per wavelength in the block, is pre-asymptotic and not run;
 - parallel-plate line between 50 and 30 ohm lumped ports, eps_r 4: S11, S21
   and S22 at 3, 8, 15, 25 GHz on n = 4, 8, 16 cells along the line, against
   its ABCD closed form;
@@ -45,6 +51,7 @@ Measured (ostau, 1 thread):
     circular coax         1.43 - 1.47   (faceting: 0.88 - 0.89)
     step line, lumped     1.65 - 1.81
     step line, wave       1.77
+    block guide           3.34 - 8.58
     parallel-plate line   1.65 - 15.75
     L cavity              2.87 - 4.08
     rectangular box       7.05 - 10.6
@@ -80,6 +87,7 @@ EFFECTIVITY_BY_CASE = {
     "circular coax": (0.9, 2.0),
     "step line, lumped ports": (0.9, 2.5),
     "step line, wave ports": (0.9, 2.5),
+    "shared port surface": (0.9, 12.0),
     "parallel-plate line": (0.9, 17.0),
     "L cavity": (0.9, 5.0),
     "rectangular box": (0.9, 12.0),
@@ -343,6 +351,45 @@ def test_the_step_line_s21_with_wave_ports(tmp_path):
     estimate = gfem.error_estimate(result, S21, model=model)
     error = complex(result.s["p2", "p1"][0]) - STEP_WAVE_S21
     _assert_in("step line, wave ports", estimate.value, error)
+
+
+def test_the_step_line_s21_with_wave_ports_at_an_offset(tmp_path):
+    # The offsets move the reference planes 1 and 2 mm into the line: the
+    # TEM port's beta is exact, so the reference is STEP_WAVE_S21 times
+    # exp(i beta (1 + 2) mm).
+    offsets = (1e-3, 2e-3)
+    lumped = rc.step_model(tmp_path, 4)
+    model = gfem.Model(
+        lumped.mesh,
+        materials=lumped.materials,
+        boundaries=lumped.boundaries,
+        ports=[
+            gfem.WavePort("p1", "port1", offset=offsets[0]),
+            gfem.WavePort("p2", "port2", offset=offsets[1]),
+        ],
+    )
+    problem = gfem.Driven([3e9], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(result, S21, model=model)
+    beta = 2 * math.pi * 3e9 / const.c * math.sqrt(4.0)
+    reference = STEP_WAVE_S21 * np.exp(1j * beta * sum(offsets))
+    error = complex(result.s["p2", "p1"][0]) - reference
+    _assert_in("step line, wave ports", estimate.value, error)
+
+
+# --- block guide: S, two modes on each shared port surface -------------------
+
+
+@pytest.mark.parametrize("n", [4, 8])
+def test_the_block_guide_s_on_shared_port_surfaces(tmp_path, n):
+    model = rc.block_guide_model(tmp_path, n)
+    problem = gfem.Driven([rc.BLOCK_GUIDE_FREQUENCY], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    for (to, source), reference in rc.BLOCK_GUIDE_S.items():
+        estimator = gfem.QuantityEstimator(s=(to, source))
+        estimate = gfem.error_estimate(result, estimator, model=model)
+        error = complex(result.s[to, source][0]) - reference
+        _assert_in("shared port surface", estimate.value, error)
 
 
 # --- parallel-plate line: S, smooth ------------------------------------------

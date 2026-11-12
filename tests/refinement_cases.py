@@ -138,6 +138,20 @@ ANISOTROPIC_COAX = {
     for name, r in (("rotz", _rotation("z", 30)), ("rot3", _ROT3))
 }
 
+#: The block guide's frequency, Hz: TE10 and TE20 propagate in the air guide.
+BLOCK_GUIDE_FREQUENCY = 170e9
+#: The block guide's S entries (to, from) at `BLOCK_GUIDE_FREQUENCY`: order 4
+#: on the n = 4 mesh, which an order-3 solve on n = 6 meets to 6.4e-5 (3-7 %
+#: of the order-2 error at n = 8).
+BLOCK_GUIDE_S = {
+    ("b1", "a1"): -0.7079432 + 0.3847732j,
+    ("b2", "a2"): 0.5864315 + 0.1803482j,
+    ("b2", "a1"): -0.1076877 + 0.2060751j,
+    ("a2", "a1"): -0.2027340 + 0.1480379j,
+    ("a1", "a1"): 0.2856943 + 0.3897492j,
+    ("a2", "a2"): 0.1262016 - 0.7003084j,
+}
+
 _EPS_R = 4.0
 _QUARTER = 0.5e-6 / 4  # the coax model's extrusion over the full coax's 4 quarters
 
@@ -190,6 +204,49 @@ def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:
     cells = sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k)
     mesh = _mesh(directory, "coax", cells, "um")
     return gfem.Model(mesh, materials={"dielectric": ANISOTROPIC_COAX[fill]})
+
+
+def block_guide_model(directory: Path, n: int) -> gfem.Model:
+    """The block guide, in mm, ``n`` cells per mm, two modes per port surface.
+
+    An air guide 4 mm long (x), 2 x 0.8 mm (y, z), PEC walls, with an eps_r 4
+    block at x 1.5-2.5 and y 0-1 mm through its height; wave ports "a1",
+    "a2" (TE10, TE20) on "port1" at x = 0 and "b1", "b2" on "port2".
+    """
+    length, width, height = 4.0, 2.0, 0.8
+    edges = (
+        np.linspace(0, length, int(length * n) + 1),
+        np.linspace(0, width, int(width * n) + 1),
+        np.linspace(0, height, max(2, int(height * n)) + 1),
+    )
+
+    def volume(c: np.ndarray) -> str:
+        return "block" if 1.5 < c[0] < 2.5 and c[1] < 1.0 else "air"
+
+    def surface(c: np.ndarray) -> str:
+        if abs(c[0]) < 1e-9:
+            return "port1"
+        if abs(c[0] - length) < 1e-9:
+            return "port2"
+        walls = (abs(c[1]) < 1e-9, abs(c[1] - width) < 1e-9)
+        walls += (abs(c[2]) < 1e-9, abs(c[2] - height) < 1e-9)
+        return "wall" if any(walls) else ""
+
+    mesh = _mesh(directory, "guide", sm.structured(edges, volume, surface), "mm")
+    return gfem.Model(
+        mesh,
+        materials={"air": gfem.Material(), "block": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("wall")],
+        ports=[
+            gfem.WavePort(name, surface, mode=mode)
+            for name, surface, mode in (
+                ("a1", "port1", 1),
+                ("a2", "port1", 2),
+                ("b1", "port2", 1),
+                ("b2", "port2", 2),
+            )
+        ],
+    )
 
 
 def step_model(
