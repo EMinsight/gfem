@@ -198,6 +198,7 @@ def test_a_direct_sweep_plans_once_and_matches_fresh_handles(
     problem = gfem.Driven(F, sweep=sweep)
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
     calls = []
+    cache.ENTRIES.clear()  # an earlier case's pooled plan would serve this one
 
     def spy(*args, **kwargs):
         calls.append(1)
