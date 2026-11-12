@@ -261,9 +261,13 @@ def _rebuild(
 
 
 def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
+    from gfem._materials import check_field_values
     from gfem._periodic import check_nodes
     from gfem.shape import _check_quality
 
+    # Traced material values skipped the constructor's check; the host holds
+    # their concrete values here (ADR 0011).
+    check_field_values(model.materials)
     # A moved mesh must keep its periodic pairs and stay valid on the solve
     # domain.
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001

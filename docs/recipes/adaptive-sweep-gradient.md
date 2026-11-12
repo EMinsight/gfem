@@ -59,9 +59,22 @@ for _ in range(20):
 ## How accurate the gradient is
 
 - **At a sample frequency** the gradient equals the full solve's gradient to
-  the solver tolerance, when every port the objective reads is excited.
+  the solver tolerance, for every S entry that is defined, whether its port
+  is excited or not.
 - **Between samples** its error follows the reduced model's field error,
-  about `SolverOptions.adaptive_tolerance` or better.
+  about `SolverOptions.adaptive_tolerance` or better. This holds for samples
+  taken from a converged adaptive solve (`result.sweep.converged`). A
+  hand-picked or short sample set gives a gradient as accurate as its own
+  reduced model: on a two-port line, three hand-picked samples left S off by
+  up to 3.5e-3 and the gradient between samples off by 0.5 % to 27 %. To check
+  a sample set, solve once outside the gradient with the same `samples=` and
+  compare S with a uniform sweep at a few frequencies. Under frozen samples
+  `result.sweep.converged` reads the errors in the order the samples are
+  given, so it is meaningful only for `sampled_frequencies` passed unchanged,
+  at the design they were chosen for.
+- **The S row of a lumped port without a resistance is undefined** (NaN), and
+  so is the gradient of an objective that reads it. The other rows of the
+  same solve keep their gradient.
 - **It is not the exact derivative of the reduced model**: how the basis
   itself moves with the design is left out. Finite differences of an adaptive
   objective therefore agree with it only to the sweep's accuracy, except at
@@ -71,9 +84,13 @@ for _ in range(20):
 The backward pass (the part of `jax.grad` that runs after the solve) solves
 no full-size system and keeps no solver. It solves one small reduced adjoint
 per frequency, then a few element-wise integrals: at most one per basis vector
-and material term, however many frequencies the grid has. A lossy wave port
-in the objective adds one right-hand side per sample to the sweep, which keeps
-the gradient exact at the samples.
+and material term, however many frequencies the grid has. Each port that is
+not excited, and each lossy wave port, adds one right-hand side per sample to
+the sweep, which keeps the gradient exact at the samples. An adaptive sweep
+with `Driven(excite=...)` therefore solves as many right-hand sides per
+sample as one that excites every port; these run in every adaptive solve,
+under `jax.grad` or not, so a value does not depend on whether its gradient
+is taken.
 
 ## Re-sample with a tight tolerance
 
