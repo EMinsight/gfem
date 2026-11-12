@@ -42,6 +42,11 @@ bend3d-history work="/tmp/bend3d-history":
 bend3d-animation record="/tmp/bend3d-history":
     cd tools && VTK_DEFAULT_OPENGL_WINDOW=vtkEGLRenderWindow {{ docs_env }} python bend3d_animation.py "{{ record }}"
 
+# Build the whitepaper, whitepaper/gfem-whitepaper.pdf: its data from the docs and tests (tools/whitepaper_data.py), then typst >= 0.14 (not a Python dependency: install it yourself).
+whitepaper:
+    {{ docs_env }} python tools/whitepaper_data.py
+    typst compile --font-path whitepaper/fonts whitepaper/whitepaper.typ whitepaper/gfem-whitepaper.pdf
+
 # Build the site as docs.yml does (strict, then the Pagefind index) into docs/_build/html.
 docs:
     GFEM_DOCS_STRICT=1 {{ docs_env }} sphinx-build -n -W --keep-going docs docs/_build/html

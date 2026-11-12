@@ -66,25 +66,25 @@ print(abs(result.s["p2", "p1"]))  # |S21| at 2, 5 and 8 GHz
 [0.8306221  0.90133232 0.60517623]
 ```
 
-[Get started](https://benvial.github.io/gfem/get-started.html) explains each line, checks the numbers by hand and differentiates the
+[Get started](https://bvial.info/gfem/get-started.html) explains each line, checks the numbers by hand and differentiates the
 result.
 
 ## Documentation
 
-The documentation is at <https://benvial.github.io/gfem/>. Good places to start:
+The documentation is at <https://bvial.info/gfem/>. Good places to start:
 
-- [Get started](https://benvial.github.io/gfem/get-started.html): install, a first solve and its gradient.
-- [Tutorials](https://benvial.github.io/gfem/tutorials/topology.html): a band-stop filter, a coplanar line matched to 50 Ω and photonic
+- [Get started](https://bvial.info/gfem/get-started.html): install, a first solve and its gradient.
+- [Tutorials](https://bvial.info/gfem/tutorials/topology.html): a band-stop filter, a coplanar line matched to 50 Ω and photonic
   waveguide bends, each designed with gradients.
-- [PETSc and SLEPc](https://benvial.github.io/gfem/recipes/petsc-slepc.html): the PETSc and SLEPc solvers, which need a source build.
-- [Distributed solve](https://benvial.github.io/gfem/recipes/distributed-solve.html): one driven solve across the ranks of an MPI job.
+- [PETSc and SLEPc](https://bvial.info/gfem/recipes/petsc-slepc.html): the PETSc and SLEPc solvers, which need a source build.
+- [Distributed solve](https://bvial.info/gfem/recipes/distributed-solve.html): one driven solve across the ranks of an MPI job.
 
 ## Licence
 
 MIT. gfem depends on NGSolve (LGPL-2.1), whose PyPI wheels also contain GPL-2.0+ SuiteSparse code (UMFPACK, CHOLMOD
 Supernodal); keep that in mind when redistributing a whole gfem environment. The `mkl` and `cuda12`/`cuda13`
-extras pull proprietary vendor libraries: see [Licence](https://benvial.github.io/gfem/project/licence.html).
+extras pull proprietary vendor libraries: see [Licence](https://bvial.info/gfem/project/licence.html).
 
 ## Contributing
 
-To build gfem, run its tests or rebuild the docs, see [Contributing](https://benvial.github.io/gfem/project/development.html).
+To build gfem, run its tests or rebuild the docs, see [Contributing](https://bvial.info/gfem/project/development.html).
