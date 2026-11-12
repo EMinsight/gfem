@@ -66,7 +66,7 @@ from gfem._boundaries import LumpedPort, WavePort, wave_port_surfaces
 from gfem._eigen import slepc
 from gfem._eigen.arpack import shift_invert
 from gfem._eigen.operator import EigenOperator
-from gfem._eigen.refine import Refined, refine
+from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE
 from gfem._engine import terms
 from gfem._engine.cache import Entry
@@ -114,9 +114,9 @@ _INNER_FLOOR = 1e-13
 #: second-order absorbing wall's cluster lies near Re k = 2 sigma: this test
 #: keeps it, and only the distance to the target ranks the modes ahead of it.
 _STATIC = 1e-6
-#: Two refined modes closer than this many eigen tolerances (relative, and
-#: at least ``SolverOptions.cluster_rtol``), with overlapping fields, are the
-#: same mode.
+#: A refined mode closer than this many eigen tolerances (relative, and at
+#: least ``SolverOptions.cluster_rtol``) to accepted modes, with this much of
+#: its norm in their span, is one of them again.
 _DUPLICATE = 10.0
 _OVERLAP = 0.9
 #: Ritz values this close (relative) are one multiple eigenvalue. The seed
@@ -135,8 +135,11 @@ _CONTRACTION = 0.5
 #: too few modes near the target is an error.
 _ATTEMPTS = 3
 #: Arnoldi tolerance of a nonlinear problem's frozen seeds. Their roots are
-#: off the true ones by the freeze error anyway and every seed is refined,
-#: so converging them further only spends shift solves. The linearization
+#: off the true ones by the freeze error anyway (small for a conductor,
+#: whose seeds reach backward error 1e-8 to 1e-4 now that the projection
+#: fixes its potential on the wall, ADR 0097; up to 18 % for a second-order
+#: absorbing wall) and every seed is refined, so converging them further
+#: only spends shift solves. The linearization
 #: cluster's solves are avoided by asking for few pairs (see the nev comment
 #: in the forward pass, ADR 0035), not by this tolerance.
 _SEED_TOLERANCE = 1e-3
@@ -286,9 +289,10 @@ class EigenmodeRule:
                     if len(modes) == n_modes or failed:
                         break
                     nev *= 2  # too few candidates near the target: look wider
-                if len(modes) < n_modes:
+                skipped = self._skipped(modes, failed, sigma)
+                if len(modes) < n_modes or skipped:
                     raise EigenmodeConvergenceError(
-                        self._convergence_message(eop, modes, failed)
+                        self._convergence_message(eop, modes, failed, skipped)
                     )
                 lossless = _is_hermitian if eop.general else _is_real
                 if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
@@ -401,12 +405,17 @@ class EigenmodeRule:
         A second-order absorbing wall's cluster has ``Re k`` near ``2
         sigma``, so it is not dropped; the modes nearer the target come
         first. A seed far from the current shift whose refinement gives
-        nothing to accept (see `_lost`) is refined again on a factorization
-        at its own Ritz value. With ``guard``, the remaining
-        seeds are refined (without
+        nothing to accept as its mode (see `_lost`) is refined again on a
+        factorization at its own Ritz value. A converged pair that is not
+        static and not in the span of the accepted modes (`_in_span`) is
+        never discarded: the first refinement of such a seed is accepted
+        too when it is one (ADR 0097), so the accepted modes can outnumber
+        ``n_modes``; they are sorted by distance to the target and cut.
+        With ``guard``, the remaining seeds are refined (without
         refactorizing) until one more distinct mode converges: the guard
-        mode. It is best-effort: none is found when no remaining seed
-        converges to a mode.
+        mode, or the nearest mode cut off when there is one. It is
+        best-effort: none is found when no remaining seed converges to a
+        mode.
 
         Returns:
             The accepted modes, nearest ``sigma`` first (at most
@@ -421,67 +430,112 @@ class EigenmodeRule:
         accepted: list[Refined] = []
         failed: list[Refined] = []
         extra = None
-        window = max(_DUPLICATE * tolerance, self.options.cluster_rtol)
+        window = self._window()
+        limits = {
+            "tolerance": tolerance,
+            "max_iterations": self.options.max_refine_iterations,
+        }
         for j in seeds:
-            full = len(accepted) == n_modes
+            full = len(accepted) >= n_modes
             if full and not guard:
                 break
             seed = complex(k[j])
             far = _contraction(seed, op.shift, k) > _CONTRACTION
             mode = refine(
-                op,
-                seed,
-                vectors[:, j],
-                tolerance=tolerance,
-                max_iterations=self.options.max_refine_iterations,
-                reshift=not full,
-                reshift_first=far,
+                op, seed, vectors[:, j], reshift=not full, reshift_first=far, **limits
             )
             retry = far and not full
             if retry and _lost(mode, seed, k, sigma, accepted=accepted, window=window):
                 # a frozen seed rougher than TRUSTED, refined on a shift nearer
                 # another mode, wanders where round-off takes it (onto an
                 # accepted mode, a mirror root, or another seed's mode): refine
-                # it again on a factorization at its own Ritz value
+                # it again on a factorization at its own Ritz value. Where it
+                # wandered may be a mode no other seed gives: it is kept
+                if (
+                    mode.converged
+                    and mode.k.real > _STATIC * sigma
+                    and not _in_span(mode, accepted, window)
+                ):
+                    accepted.append(mode)
                 op.reshift(seed)
-                mode = refine(
-                    op,
-                    seed,
-                    vectors[:, j],
-                    tolerance=tolerance,
-                    max_iterations=self.options.max_refine_iterations,
-                )
+                mode = refine(op, seed, vectors[:, j], **limits)
             if mode.k.real <= _STATIC * sigma:
                 continue
             if not mode.converged:
                 if not full:
                     failed.append(mode)
                 continue
-            if any(_same(mode, other, window) for other in accepted):
+            if _in_span(mode, accepted, window):
                 continue
             if full:
                 extra = mode
                 break
             accepted.append(mode)
         accepted.sort(key=lambda m: abs(m.k.real - sigma))
-        return accepted, failed, extra
+        if guard and len(accepted) > n_modes:
+            # nearer the target than a guard found after the count was met
+            extra = accepted[n_modes]
+        return accepted[:n_modes], failed, extra
+
+    def _window(self) -> float:
+        """Relative distance in ``k`` within which two refined pairs can be one mode."""
+        return max(_DUPLICATE * self.options.eigen_tolerance, self.options.cluster_rtol)
+
+    def _skipped(
+        self, accepted: list[Refined], failed: list[Refined], sigma: float
+    ) -> list[Refined]:
+        """The unconverged pairs that the accepted modes may have skipped.
+
+        A pair that stopped within `TRUSTED` of an eigenpair, nearer the
+        target than the farthest accepted mode and outside the span of the
+        accepted modes, is a mode the set would silently leave out. Rougher
+        pairs (members of a linearization cluster) are not modes.
+        """
+        if len(accepted) < self.problem.n_modes:
+            return []  # the count already raises
+        reach = max(abs(m.k.real - sigma) for m in accepted)
+        window = self._window()
+        return [
+            m
+            for m in failed
+            if m.error <= TRUSTED
+            and abs(m.k.real - sigma) < reach
+            and not _in_span(m, accepted, window)
+        ]
 
     def _convergence_message(
-        self, op: EigenOperator, accepted: list[Refined], failed: list[Refined]
+        self,
+        op: EigenOperator,
+        accepted: list[Refined],
+        failed: list[Refined],
+        skipped: list[Refined] | None = None,
     ) -> str:
+        """Why the solve raises: too few modes, or ``skipped`` (see `_skipped`)."""
         c = const.c / op.scale / (2 * math.pi)
-        found = len(accepted)
+        target = f"{self.problem.target / 1e9:.6g} GHz"
+        tolerance = (
+            f"backward error {self.options.eigen_tolerance:g} "
+            "(SolverOptions.eigen_tolerance)"
+        )
+        if skipped:
+            farthest = accepted[-1].k.real * c / 1e9  # sorted by distance
+            head = (
+                f"Eigenmode found {len(accepted)} mode(s) near {target} to "
+                f"{tolerance}, the farthest at {farthest:.6g} GHz, but a pair "
+                "nearer the target did not converge: the modes found would "
+                "skip it."
+            )
+        else:
+            head = (
+                f"Eigenmode found {len(accepted)} of the {self.problem.n_modes} "
+                f"requested mode(s) near {target} to {tolerance}."
+            )
         lines = [
-            (
-                f"Eigenmode found {found} of the {self.problem.n_modes} requested "
-                f"mode(s) near {self.problem.target / 1e9:.6g} GHz to backward "
-                f"error {self.options.eigen_tolerance:g} "
-                "(SolverOptions.eigen_tolerance)."
-            ),
+            head,
             *(
                 f"  not converged: {m.k.real * c / 1e9:.6g} GHz, best backward "
                 f"error {m.error:.3g} after {m.iterations} refinement steps"
-                for m in failed
+                for m in (skipped or failed)
             ),
         ]
         lines.append(
@@ -860,7 +914,7 @@ def _orthonormal_multiples(k: np.ndarray, vectors: np.ndarray) -> np.ndarray:
     """``vectors`` with each multiple Ritz value's vectors orthonormalized.
 
     Any basis of a multiple eigenvalue's eigenspace is as good a set of
-    seeds; an orthonormal one keeps its members apart under `_same`.
+    seeds; an orthonormal one keeps its members apart under `_in_span`.
     """
     out = vectors
     done = np.zeros(len(k), dtype=bool)
@@ -881,6 +935,22 @@ def _same(a: Refined, b: Refined, window: float) -> bool:
         return False
     overlap = abs(np.vdot(a.x, b.x)) / (np.linalg.norm(a.x) * np.linalg.norm(b.x))
     return overlap > _OVERLAP
+
+
+def _in_span(mode: Refined, accepted: list[Refined], window: float) -> bool:
+    """Whether ``mode`` is a combination of accepted modes: a duplicate.
+
+    The norm of its projection on the span of the accepted modes within
+    ``window`` (relative) of its ``k`` exceeds `_OVERLAP` of its own. Against
+    the span, not each mode: any vector of a degenerate cluster's eigenspace
+    is a duplicate, also one at 45 degrees from two accepted members.
+    """
+    near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
+    if not near:
+        return False
+    basis = np.linalg.qr(np.stack(near, axis=1))[0]
+    inside = np.linalg.norm(basis.conj().T @ mode.x)
+    return bool(inside > _OVERLAP * np.linalg.norm(mode.x))
 
 
 def _lost(
