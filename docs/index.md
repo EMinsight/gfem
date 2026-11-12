@@ -50,6 +50,7 @@ recipes/remesh-and-restart
 
 recipes/solve-a-device
 recipes/prepare-a-mesh
+recipes/save-and-export
 recipes/mesh-refinement
 recipes/anisotropic-materials
 recipes/periodic-cell

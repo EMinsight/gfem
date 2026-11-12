@@ -229,6 +229,11 @@ Partial result
   the linear solver stopped converging, carried by the error that reports it
   (`gfem.LinearSolverConvergenceError`).
 
+Result bundle
+  The files a {term}`job`'s run writes for its result, `result.json` and
+  `result.npz`, read back by `gfem.load_result` as the same result the
+  in-process solve returns. It exists only for a run that completed.
+
 Partial bundle
   The files a {term}`job`'s run writes in place of its result files when a
   uniform sweep stopped at an {term}`unsolved frequency`: `partial.json` and

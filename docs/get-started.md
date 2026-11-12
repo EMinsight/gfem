@@ -143,6 +143,8 @@ program, because every gfem solve needs it.
 - {doc}`recipes/solve-a-device` takes this line further: a band of
   frequencies, real metals, its resonances and their Q, its capacitance.
 - {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.
+- {doc}`recipes/save-and-export` writes S to a Touchstone file, a field to
+  ParaView, and the run to a job file that solves again on another machine.
 - The {doc}`recipes <recipes/index>` start from a task: a gradient of S-parameters,
   eigenmodes or capacitance, a periodic cell, a measurement on the fields.
 - {doc}`capabilities` lists what gfem solves and differentiates;
