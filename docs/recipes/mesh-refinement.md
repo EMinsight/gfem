@@ -105,11 +105,12 @@ gfem.QuantityEstimator(capacitance=("top", "top"))  # result.capacitance[0, 0]
 gfem.QuantityEstimator(omega=0)  # result.omega[0], an eigenmode problem
 ```
 
-- **Capacitance**: a diagonal entry, named by its terminal twice. The
-  estimate is relative to that entry. The discrete capacitance never lies
-  below its value on the meshed geometry, `C_h >= C`: the difference is the
-  energy of the potential's error, which is never negative, so mesh
-  refinement lowers it.
+- **Capacitance**: the entry `capacitance[i, j]`, named by its two
+  terminals, or by one terminal twice for a diagonal entry. The estimate is
+  relative to that entry. A diagonal entry never lies below its value on
+  the meshed geometry, `C_h >= C`: the difference is the energy of the
+  potential's error, which is never negative, so mesh refinement lowers it.
+  An off-diagonal entry may lie on either side.
 - **S entry**: both ports must be excited (`gfem.Driven(excite=...)`), since
   the estimate uses the second port's field as the weight. The estimate is
   absolute.
@@ -117,7 +118,9 @@ gfem.QuantityEstimator(omega=0)  # result.omega[0], an eigenmode problem
   each refined mesh the estimate follows the mode whose `omega` is nearest
   the previous one. A mode with another within `SolverOptions.cluster_rtol`
   of it raises {py:obj}`gfem.DegenerateModeError`. The estimate is relative
-  to `omega`.
+  to `omega`. On a model with loss it covers the complex `omega`; the
+  relative error of Q is not estimated, and was measured up to about 3
+  times the estimate.
 - `RefinementCycle.value` holds the quantity on each mesh (a tuple per
   frequency for an S entry), so the quantity against `cycle.dofs` plots
   without another solve.
@@ -222,26 +225,35 @@ How gfem itself checks the estimates against known answers:
 ## Limits
 
 - The error estimate is an estimate, not a bound. On gfem's verification
-  cases it was between {gfem-effectivity}`low` and
-  {gfem-effectivity}`high` times the true error. The higher ratios came
-  from fields with no sharp metal edge: a uniform line and an empty
-  rectangular cavity. These cases ran at `order=2`, the default; at
-  `order=3` the estimate is not checked against this range.
+  cases the field estimator's was between {gfem-effectivity}`field low` and
+  {gfem-effectivity}`field high` times the true error, at `order=2` and
+  `order=3`, and the quantity estimator's between
+  {gfem-effectivity}`quantity low` and {gfem-effectivity}`quantity high` at
+  `order=2`. The quantity estimator's higher ratios came from fields with no
+  sharp metal edge (a uniform line, an empty cavity), where its curl and
+  mass terms are never allowed to cancel. At `order=3` the quantity
+  estimate is not checked against its range; at `order=1` both estimators
+  refuse.
 - It measures the error against your mesh's own facets. Mesh refinement
   subdivides the facets you imported and never moves them onto a curved
-  surface, so the faceting error is neither estimated nor reduced. Mesh
-  curved surfaces finer in your mesher.
+  surface, so the faceting error is neither estimated nor reduced. On a
+  circular coaxial line meshed with flat facets, both estimates were below
+  the error against the exact circle. Mesh curved surfaces finer in your
+  mesher.
+- A wave port's own mode is solved on the port's 2D mesh, and that error
+  is not estimated. It grows with a long de-embedding offset on a coarse
+  port mesh.
 - It does not include the linear solver's error. `refine_mesh` requires
   `tolerance` to be at least 10 times `SolverOptions.tolerance`
   (`eigen_tolerance` for an eigenmode problem).
 - `refine_mesh` raises {py:obj}`gfem.MeshRefinementUnsupportedError`, before
-  any solve, on an adaptive sweep, a port mode problem, a periodic model and
-  a Bloch wave vector. A `QuantityEstimator` also raises it on the entries
-  with no verified estimate: an off-diagonal capacitance, an anisotropic
-  permittivity, `mu_r` other than 1 (S and `omega`), a wave port with a
-  de-embedding offset or in a lossy medium, a shared wave port surface, and
-  a mode of a model with loss (lossy materials or boundaries, resistive or
-  wave ports). Refine those models with the `FieldEstimator`.
+  any solve, on an adaptive sweep, a port mode problem, a periodic model, a
+  Bloch wave vector and `SolverOptions(order=1)` (the `"fast"` preset); both
+  estimators refuse order 1. A `QuantityEstimator` also raises it on the
+  entries with no verified estimate: an S entry of a wave port in a lossy
+  medium, and a mode of a model with a second-order absorbing boundary, a
+  complex `mu_r` or loss inside an anisotropic material. Refine those models
+  with the `FieldEstimator`.
 - Mesh refinement runs on one process. Above one rank it raises
   {py:obj}`gfem.DistributedUnsupportedError`: refine on one process, then
   solve `ref.model` on ranks ({doc}`distributed-solve`).

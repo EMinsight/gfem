@@ -143,7 +143,7 @@ Tests: [sheets](https://github.com/benvial/gfem/blob/main/tests/verification/tes
 The {term}`error estimate` of {doc}`recipes/mesh-refinement` is checked by
 its effectivity: the estimated error divided by the error against a known
 answer, which must stay within a range set in the test for every mesh of
-every case. The cases, all at `order=2`:
+every case. The quantity estimator's cases, all at `order=2`:
 
 - **A square coaxial line** (a square conductor in a square shield), whose
   inner corners make the field singular: its capacitance over a mesh
@@ -166,15 +166,34 @@ every case. The cases, all at `order=2`:
 - **A rectangular cavity** with metal walls: four modes on two meshes,
   against the closed form.
 
-Over all cases the estimate was between {gfem-effectivity}`low` and
-{gfem-effectivity}`high` times the true error; the higher ratios came from
-the parallel-plate line and the rectangular cavity, which have no sharp
-metal edge. This range is read from the test when the docs are built.
+The quantity estimator is also checked on cases that exercise one feature
+each: a capacitance between two bars with a grounded screen between them,
+and one between two conductors on either side of an interior metal sheet;
+lines and cavities filled with anisotropic and magnetic materials, and a
+coaxial line with an anisotropic fill; a stepped line with its wave ports
+de-embedded, and a waveguide with two modes on each of two shared wave port
+surfaces; the resonances of cavities with lossy fills and lossy walls
+(impedance, absorbing and conducting); and a line closed by resistive ports
+as a resonator.
 
-The field estimator is checked the same way, on the same lines and
-cavities. On the three singular benchmark cases a mesh refinement run also ends
-with a smaller error than uniform splits at the same number of unknowns. Both
-sets of checks run on every change.
+Over all cases the quantity estimate was between
+{gfem-effectivity}`quantity low` and {gfem-effectivity}`quantity high`
+times the true error; the higher ratios came from fields with no sharp
+metal edge, such as the parallel-plate line and the rectangular cavity.
+
+The field estimator is checked the same way, against the field's error in
+the energy norm: on the square and circular coaxial lines, the coaxial
+line with an anisotropic fill, the parallel-plate line, and the L-shaped and rectangular cavities. Its estimate
+was between {gfem-effectivity}`field low` and {gfem-effectivity}`field high`
+times the true error, the circular line measured against a higher-order
+solve on its own facets; against the exact circle it stays below the true
+error. These cases run at `order=2`, and all but the anisotropic fill also
+at `order=3`. On the stepped line,
+whose field error has no known value, the estimate is checked to keep a
+steady ratio to the S21 error as the mesh is refined. On the three singular
+benchmark cases a mesh refinement run also ends with a smaller error than
+uniform splits at the same number of unknowns. Both ranges are read from the
+tests when the docs are built, and both sets of checks run on every change.
 
 Tests: [quantity estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_quantity_estimate.py),
 [field estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_field_estimate.py).

@@ -108,12 +108,11 @@ class QuantityEstimator:
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
-    estimate: an anisotropic permittivity,
-    ``mu_r`` other than 1 (S and omega), a wave port with a de-embedding
-    offset or in a lossy medium, a shared wave port surface, and a mode
-    with a second-order absorbing boundary, a complex ``mu_r`` or loss in
-    an anisotropic material. For a lossy mode the estimate covers the
-    complex ``omega``; the error of Q is not estimated and can exceed it.
+    estimate: an S entry of a wave port in a lossy medium, and a mode with
+    a second-order absorbing boundary, a complex ``mu_r`` or loss in an
+    anisotropic material. Both estimators also raise it at order 1. For a
+    lossy mode the estimate covers the complex ``omega``; the relative error
+    of Q is not estimated and was measured up to about 3 times the estimate.
     """
 
     capacitance: tuple[str, str] | None = None
@@ -830,14 +829,6 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
                     "Use gfem.FieldEstimator(), or a lumped port.",
                 )
         return
-
-
-def _untested(feature: str, what: str) -> MeshRefinementUnsupportedError:
-    return MeshRefinementUnsupportedError(
-        feature,
-        f"gfem.QuantityEstimator has no verified estimate for {what}: use "
-        "gfem.FieldEstimator().",
-    )
 
 
 def _lossy_elements(model: Model) -> np.ndarray:

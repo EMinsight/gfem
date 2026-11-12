@@ -414,7 +414,7 @@ def test_a_raise_seen_while_the_gradient_is_computed_links_the_shared_section(
     assert not any("#gradient-errors" in i for i in items if i not in wrapped)
 
 
-# --- the error estimate's effectivity range ---------------------------------------
+# --- the error estimates' effectivity ranges --------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -422,15 +422,32 @@ def estimate_test():
     return caps._import(REPO / caps.ESTIMATE_TEST)
 
 
-def test_the_quoted_effectivity_is_the_quantity_estimate_tests_range(
+@pytest.fixture(scope="module")
+def field_estimate_test():
+    return caps._import(REPO / caps.FIELD_ESTIMATE_TEST)
+
+
+def test_the_quoted_quantity_effectivity_is_the_quantity_estimate_tests_range(
     derived, estimate_test
 ):
     low, high = estimate_test.EFFECTIVITY
-    assert derived["effectivity"] == {
+    assert derived["effectivity"]["quantity"] == {
         "low": f"{low:g}",
         "high": f"{high:g}",
         "cases": list(estimate_test.EFFECTIVITY_BY_CASE),
     }
+
+
+def test_the_quoted_field_effectivity_spans_both_orders_of_the_field_test(
+    derived, field_estimate_test
+):
+    # The field estimator is claimed at orders 2 and 3: the quoted range
+    # covers both dicts, the order-3 cases named as such.
+    quoted = derived["effectivity"]["field"]
+    assert (quoted["low"], quoted["high"]) == ("0.9", "2")
+    order_2 = list(field_estimate_test.FIELD_EFFECTIVITY_BY_CASE)
+    order_3 = list(field_estimate_test.FIELD_EFFECTIVITY_ORDER_3_BY_CASE)
+    assert quoted["cases"] == order_2 + [f"{c}, order 3" for c in order_3]
 
 
 def test_an_effectivity_off_the_cases_span_fails_the_build():
@@ -443,7 +460,7 @@ def test_an_unordered_case_range_fails_the_build():
         caps.effectivity((0.9, 2.0), {"a": (2.0, 0.9)})
 
 
-def test_the_effectivity_role_renders_the_range(tmp_path, estimate_test):
+def _build_role_page(tmp_path, body):
     build = pytest.importorskip("sphinx.cmd.build")
     source = tmp_path / "source"
     source.mkdir()
@@ -452,12 +469,30 @@ def test_the_effectivity_role_renders_the_range(tmp_path, estimate_test):
         "extensions = ['gfem_capabilities']\n",
         encoding="utf-8",
     )
-    (source / "index.rst").write_text(
-        "Range\n=====\n\nFrom :gfem-effectivity:`low` to :gfem-effectivity:`high`.\n",
-        encoding="utf-8",
-    )
+    (source / "index.rst").write_text(f"Range\n=====\n\n{body}\n", encoding="utf-8")
     out = tmp_path / "html"
-    assert build.build_main(["-q", "-W", "-b", "html", str(source), str(out)]) == 0
-    low, high = estimate_test.EFFECTIVITY
-    page = (out / "index.html").read_text(encoding="utf-8")
-    assert f"From {low:g} to {high:g}." in page
+    status = build.build_main(["-q", "-W", "-b", "html", str(source), str(out)])
+    return status, out / "index.html"
+
+
+def test_the_effectivity_role_renders_both_ranges(
+    tmp_path, estimate_test, field_estimate_test
+):
+    status, page = _build_role_page(
+        tmp_path,
+        "Field :gfem-effectivity:`field low` to :gfem-effectivity:`field high`, "
+        "quantity :gfem-effectivity:`quantity low` to "
+        ":gfem-effectivity:`quantity high`.",
+    )
+    assert status == 0
+    q_low, q_high = estimate_test.EFFECTIVITY
+    f_low, f_high = field_estimate_test.FIELD_EFFECTIVITY
+    text = page.read_text(encoding="utf-8")
+    assert f"Field {f_low:g} to {f_high:g}, quantity {q_low:g} to {q_high:g}." in text
+
+
+@pytest.mark.parametrize("text", ["low", "high", "field", "quantity middle"])
+def test_an_effectivity_role_with_no_estimator_fails_the_build(tmp_path, text):
+    # Two estimators have ranges: a bare end is ambiguous, so it is an error.
+    status, _ = _build_role_page(tmp_path, f"From :gfem-effectivity:`{text}`.")
+    assert status != 0

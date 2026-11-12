@@ -380,8 +380,19 @@ Error estimator
 Field estimator
   The {term}`error estimator` of the field's error in the energy norm,
   relative to the field's energy norm (`gfem.FieldEstimator`). It compares
-  the solved electric flux with a smoother flux recovered from it, so it
-  needs no extra solve.
+  the solved electric flux with a smoother flux recovered from it
+  ({term}`flux recovery`), so it needs no extra solve.
+
+Flux recovery
+  Projecting the solved electric flux (`eps E`, or `eps grad V` in
+  electrostatics) and the curl of `E` onto smoother fields, one polynomial
+  degree below the solve's order. On the solve domain's natural surfaces,
+  the exterior surfaces with no potential, port or impedance condition
+  (charge-free surfaces in electrostatics, PMC and unassigned surfaces
+  otherwise), the recovered flux's normal component and the recovered
+  curl's tangential component are held at zero. The difference between the
+  solved and the recovered fields, weighted by the field's energy, is the
+  field's estimated error.
 
 Quantity estimator
   The {term}`error estimator` of one quantity: a capacitance entry, an S
@@ -394,7 +405,13 @@ Error estimate
   the tolerance of {term}`mesh refinement`. It has no sign or phase and is
   an estimate, not a bound. For a {term}`quantity estimator` it is relative
   to a capacitance entry or to `omega`, absolute for an S entry, and gfem
-  never adds it to the quantity.
+  never adds it to the quantity. On gfem's verification cases, against
+  errors on the mesh's own facets, the field estimator's estimate was
+  between {gfem-effectivity}`field low` and {gfem-effectivity}`field high`
+  times the true error (orders 2 and 3) and the quantity estimator's
+  between {gfem-effectivity}`quantity low` and
+  {gfem-effectivity}`quantity high` times (order 2). Neither sees the
+  faceting of curved surfaces.
 ```
 
 ## Distributed runs
