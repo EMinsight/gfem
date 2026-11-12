@@ -185,6 +185,46 @@ def test_a_handle_freed_during_refactorization_raises_freed(built, kind, summed)
         handle.refactorize(dataclasses.replace(op, piece_sum=piece_sum))
 
 
+@pytest.mark.parametrize("kind", PLANNED)
+@pytest.mark.parametrize("summed", [True, False])
+def test_a_refactorization_with_other_free_dofs_is_refused(built, kind, summed):
+    # same pattern, another free-DOF set: the handle would keep solving on
+    # its own free DOFs, silently
+    integrands = (*VOLUME, _on("side"))
+    op, _ = _pieces(built, integrands, (1.0, 2 - 1j, 3j))
+    if not summed:
+        op = dataclasses.replace(op, piece_sum=None)
+    handle = prepare(op, symmetry="complex_symmetric", kind=kind)
+    n = handle.ndof
+    B = np.random.default_rng(15).standard_normal((n, 2)) + 0j
+    before, A = handle.solve(B), handle.apply(np.eye(n))
+    every = ngs.BitArray(n)
+    every.Set()
+    free = op.freedofs.NumSet()
+    with pytest.raises(
+        ValueError,
+        match=rf"prepared with {free} free DOFs .* another free-DOF set "
+        rf"\({n} free\): refactorize keeps the free DOFs; prepare a new handle",
+    ):
+        handle.refactorize(dataclasses.replace(op, freedofs=every))
+    # nothing was written: the handle is the first operator's still
+    np.testing.assert_array_equal(handle.apply(np.eye(n)), A)
+    np.testing.assert_array_equal(handle.solve(B), before)
+
+
+@pytest.mark.parametrize("kind", PLANNED)
+def test_a_refactorization_takes_an_equal_free_dof_set_in_another_object(built, kind):
+    op, _ = _laplace(built, complex_valued=True, shift=1 - 2j)
+    handle = prepare(op, symmetry="complex_symmetric", kind=kind)
+    other, _ = _laplace(built, complex_valued=True, shift=3 + 1j)
+    same = ngs.BitArray(other.freedofs)
+    assert same is not op.freedofs
+    handle.refactorize(dataclasses.replace(other, freedofs=same))
+    fresh = prepare(other, symmetry="complex_symmetric", kind=kind)
+    B = np.random.default_rng(16).standard_normal(handle.ndof) + 0j
+    np.testing.assert_allclose(handle.solve(B), fresh.solve(B), rtol=1e-12)
+
+
 def test_pieces_without_a_common_pattern_leave_the_form_to_assemble(built):
     # neither surface's graph holds the other's DOFs
     op, pieces = _pieces(built, (_on("bottom"), _on("side")), (1.0, 1.0))
@@ -583,6 +623,77 @@ def test_a_refactorization_checks_the_handle_under_its_lock(built, kind):
         handle.free()
     worker.join(timeout=30)
     assert [str(err) for err in raised] == ["This solver handle was freed."]
+    assert handle.nbytes == 0
+
+
+def _direct(built, symmetry):
+    make = _advection if symmetry == "general" else _laplace_shifted
+    return prepare(make(built)[0], symmetry=symmetry, kind="direct")
+
+
+def _laplace_shifted(built):
+    return _laplace(built, complex_valued=True, shift=1 - 2j)
+
+
+CALLS = {
+    "solve": lambda handle, b: handle.solve(b),
+    "transposed solve": lambda handle, b: handle.solve(b, transpose=True),
+    "apply": lambda handle, b: handle.apply(b),
+    "transposed apply": lambda handle, b: handle.apply(b, transpose=True),
+}
+
+
+@pytest.mark.parametrize("call", CALLS)
+@pytest.mark.parametrize("symmetry", ["complex_symmetric", "general"])
+def test_a_direct_handle_freed_before_a_waiting_call_raises_freed(
+    built, symmetry, call
+):
+    # the call passed its early check on a live handle and waits for the
+    # lock: it reads the matrix and the inverse under the lock, after the free
+    handle = _direct(built, symmetry)
+    b = np.ones(handle.ndof, complex)
+    gate = handle._lock = Gate()
+    outcome = []
+
+    def run():
+        try:
+            outcome.append(CALLS[call](handle, b))
+        except Exception as err:  # noqa: BLE001 (the test reads what was raised)
+            outcome.append(err)
+
+    with gate:
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert gate.waiting.wait(timeout=30)
+        handle.free()
+    worker.join(timeout=30)
+    (raised,) = outcome
+    assert isinstance(raised, RuntimeError)
+    assert str(raised) == "This solver handle was freed."
+
+
+@pytest.mark.parametrize("symmetry", ["complex_symmetric", "general"])
+def test_a_free_waits_for_a_running_direct_solve(built, symmetry, monkeypatch):
+    handle = _direct(built, symmetry)
+    b = np.ones(handle.ndof, complex)
+    expected = handle.solve(b)
+    gate = handle._lock = Gate()
+    events = []
+    freeing = threading.Thread(target=lambda: (handle.free(), events.append("freed")))
+    check = handle._check_solvable
+
+    def free_from_another_thread():
+        # under the solve's lock: the free starts now and has to wait
+        check()
+        freeing.start()
+        assert gate.waiting.wait(timeout=30)
+
+    monkeypatch.setattr(handle, "_check_solvable", free_from_another_thread)
+    X = handle.solve(b)
+    events.append("solved")
+    freeing.join(timeout=30)
+    np.testing.assert_array_equal(X, expected)
+    assert events[-1] == "freed"
     assert handle.nbytes == 0
 
 

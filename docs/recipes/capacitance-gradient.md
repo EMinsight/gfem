@@ -87,6 +87,7 @@ calls. Between the solve and its gradients gfem keeps what the gradients need
   {doc}`s-parameter-gradient`.
 - `retain_memory=0` keeps nothing and always recomputes. Use it when memory,
   not time, is short.
+- {py:obj}`gfem.release_memory` drops everything kept so far, at once.
 
 ## What every other input gives
 

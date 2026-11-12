@@ -269,6 +269,10 @@ def refactorize_or_prepare(
             count; ``prepare_operator`` states its own.
         frequency: The ω ``operator`` is at, or ``None``
             (`Refactorable.refactorize`).
+
+    Raises:
+        ValueError: ``operator``'s free-DOF set is not the one ``handle`` was
+            prepared with: a refactorization keeps the free DOFs.
     """
     if isinstance(handle, Refactorable):
         handle.refactorize(operator, solves=solves, frequency=frequency)

@@ -40,6 +40,9 @@ the pool once the entry no longer holds it: when the consumed entry is freed
 (ADR 0081), or when the entry gives it up under ``retain_memory`` (ADR 0093),
 after which its backward takes a plan back from the pool. Any other returns
 when the sweep ends. The transposed system's base returns the same way.
+
+Not thread-safe: one solve at a time per process (`gfem._engine.workers`). A
+handle's own lock only orders a `free` against a running solve.
 """
 
 from __future__ import annotations

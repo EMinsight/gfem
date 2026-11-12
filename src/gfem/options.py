@@ -263,7 +263,10 @@ class SolverOptions:
         threads: CPU threads, or ``None`` for the solve threads:
             ``NGS_NUM_THREADS`` when set to a positive integer, else the physical
             cores the process may run on (its affinity mask), not every hardware
-            thread of the machine.
+            thread of the machine. Run one solve at a time in a process:
+            NGSolve's threads are shared by the whole process, so solves
+            started from several Python threads are not supported. Use
+            ``frequency_workers``, or separate processes.
             ``linear_solver="petsc"`` does not read it: MUMPS's BLAS follows
             ``OPENBLAS_NUM_THREADS``, which frequency workers set to their
             share.
@@ -288,6 +291,10 @@ class SolverOptions:
             runs, and port couplings last. ``None`` is half of the memory the
             process may use (the physical memory, or a smaller job memory
             limit); 0 keeps nothing between solves and always recomputes.
+            The budget bounds what gfem keeps, not the process's memory:
+            meshes and spaces of the last four discretizations, JAX's own
+            caches and memory the allocator has not returned are outside it.
+            `gfem.release_memory()` drops everything kept.
         adjoint_tolerance: Relative residual of adjoint solves, in the norm
             ``tolerance`` names for each backend; ``None`` is ``tolerance``.
         eigen_tolerance: Backward error accepted for an eigenmode (the
