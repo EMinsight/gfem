@@ -42,9 +42,9 @@ value, grad = jax.value_and_grad(coupling)(jnp.full(n, 3.9))  # grad: (n,), fF
   the relative permittivity of oxide element `i`.
 - `result.mutual` and `result.inverse` differentiate like
   `result.capacitance`.
-- The region energies `result.energy` have no gradient yet: a gradient
-  through them raises {py:obj}`gfem.NonDifferentiableError`. Use
-  `capacitance[i, i] / 2`, the total energy of excitation `i`, instead.
+- The region energies `result.energy` differentiate too, with respect to
+  the permittivity and the node coordinates. A gradient through them costs
+  one adjoint solve for all terminals together, on both linear solvers.
 - The gradient costs no extra solve. Each terminal's potential is its own
   adjoint, so the backward pass (the part of `jax.grad` that runs after the
   solve) is one element-wise integral.
@@ -100,9 +100,8 @@ Every input of the model has one of three outcomes:
   elements of excluded volumes, so one `MaterialField` can serve an
   electrostatic and a driven objective together;
 - **`gfem.NonDifferentiableError`**, raised when `jax.grad` is called, before
-  any solve, for what the problem reads but gfem cannot differentiate yet (an
-  output such as `result.energy`). The message names the input or output and
-  the remedy.
+  any solve, for what the problem reads but gfem cannot differentiate yet.
+  The message names the input or output and the remedy.
 
 gfem never returns a silent zero for an input the physics reads.
 

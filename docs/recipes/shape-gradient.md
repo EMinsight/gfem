@@ -83,8 +83,8 @@ How gfem itself is checked: {doc}`../verification`.
   solve's mesh. To differentiate through the field values only, with the
   measurement's own geometry held fixed, freeze it:
   `dataclasses.replace(field, mesh=jax.lax.stop_gradient(field.mesh))`.
-- `result.energy` of an electrostatic problem raises, as for any input the
-  solve reads. Use `capacitance[i, i] / 2` instead.
+- `result.energy` of an electrostatic problem differentiates with respect to
+  the node coordinates, like the capacitance.
 
 ## Next
 
