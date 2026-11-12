@@ -24,6 +24,7 @@ import sys
 import time
 import traceback
 import warnings
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -496,10 +497,13 @@ def node_share(
     node_masks: collections.abc.Sequence[frozenset[int]],
     core: collections.abc.Callable[[int], collections.abc.Hashable] = _sibling_core,
 ) -> int:
-    """A rank's threads: its mask's physical cores over the ranks holding that mask.
+    """A rank's threads: each physical core of its mask, over the ranks that hold it.
 
-    ADR 0056's count alone reads 14 on 7 cores under ``--cpu-bind=cores`` and 224 per
-    rank under ``--cpu-bind=none``.
+    A core held by ``n`` ranks of the node counts ``1 / n`` for each; the sum is
+    rounded down. Identical masks of ``c`` cores on ``n`` ranks give ``c // n``,
+    disjoint masks their own cores, and partly overlapping masks split only the
+    cores both hold. ADR 0056's count alone reads 14 on 7 cores under
+    ``--cpu-bind=cores`` and 224 per rank under ``--cpu-bind=none``.
 
     Args:
         mask: The CPUs this rank may run on.
@@ -509,8 +513,11 @@ def node_share(
     Returns:
         At least 1.
     """
-    cores = len({core(cpu) for cpu in mask})
-    return max(1, cores // node_masks.count(mask))
+    holders = collections.Counter(
+        held for other in node_masks for held in {core(cpu) for cpu in other}
+    )
+    share = sum(Fraction(1, holders[held]) for held in {core(cpu) for cpu in mask})
+    return max(1, int(share))
 
 
 _DEFAULT_THREADS: dict[int | None, int] = {}
