@@ -62,7 +62,8 @@ def test_matrix_matches_the_reviewed_grid(derived):
 def test_counts_come_from_the_cells(derived):
     counts = derived["counts"]
     per_grid_cell = [c["cells"] for r in derived["rows"] for c in r["cells"]]
-    assert counts["cells"] == sum(per_grid_cell)
+    off_grid = [entry["cells"] for entry in derived["also"]]
+    assert counts["cells"] == sum(per_grid_cell) + sum(off_grid)
     assert counts["cells"] == counts["direct"] + counts["bddc_gmres"]
     assert counts["direct"] > 0
     assert counts["bddc_gmres"] > 0
@@ -107,6 +108,31 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
                 assert cell["forms_text"] == "", key
     # the label (and so the front page's compact matrix) does not change
     assert _cell(derived, "driven", "eps_r")["label"] == "FD-verified"
+
+
+def test_permeability_and_loss_tangent_are_verified_off_the_grid(derived):
+    # no column of their own: one phrase per row under the matrix
+    assert [(e["key"], e["inputs"], e["cells"]) for e in derived["also"]] == [
+        ("driven", ["permeability", "loss tangent"], 4),
+        ("eigenmode", ["permeability", "loss tangent"], 2),
+    ]
+    assert [e["text"] for e in derived["also"]] == [
+        (
+            "Driven with respect to the permeability and the loss tangent "
+            "(isotropic and principal values, direct solver, uniform sweep)"
+        ),
+        (
+            "Eigenmode with respect to the permeability and the loss tangent "
+            "(direct solver)"
+        ),
+    ]
+
+
+def test_an_off_grid_cell_the_raise_table_does_not_expect_fails(data):
+    # the electrostatic solve never reads mu_r: an exact zero, not a gradient
+    cells = [*data[0], dataclasses.replace(data[0][0], input="mu_r")]
+    with pytest.raises(caps.CapabilitiesError, match="Electrostatic x permeability"):
+        _derive(data, cells=cells)
 
 
 def test_periodic_rows_carry_their_own_solvers_and_sweeps(derived):

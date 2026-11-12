@@ -21,6 +21,10 @@ property per principal value of a field with fixed axes: it folds into its
 property's column, whose cells then name the forms their tests cover
 ("isotropic and principal values").
 
+The permeability and the loss tangent (``OFF_GRID``) have cells but no
+column: the rows that verify them are listed in one sentence under the
+matrix, and their cells count in the provenance.
+
 Every claim that cannot be derived raises `CapabilitiesError`, which the
 Sphinx hook turns into an `ExtensionError`: a problem key or input kind the
 mapping below does not know, a grid cell with no outcome or with
@@ -156,6 +160,15 @@ CELL_INPUTS = {name: name for name in COLUMNS} | {
 # The value forms of a material column's cells, by cell input.
 FORMS = {"eps_r": "isotropic", "conductivity": "isotropic"} | {
     f"{name}{AXES}": "principal values" for name in ("eps_r", "conductivity")
+}
+# Cell inputs with no grid column, in the site's words. Their cells are
+# listed under the matrix (`also_verified`).
+OFF_GRID = {"mu_r": "permeability", "tan_delta": "loss tangent"}
+OFF_GRID_INPUTS = {name: name for name in OFF_GRID} | {
+    f"{name}{AXES}": name for name in OFF_GRID
+}
+FORMS |= dict.fromkeys(OFF_GRID, "isotropic") | {
+    f"{name}{AXES}": "principal values" for name in OFF_GRID
 }
 MATERIAL_PROPERTIES = {
     "eps_r": "eps_r",
@@ -304,13 +317,14 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
         out_of_scope: ``OUT_OF_SCOPE``, rows ``(label, call, error, match)``.
 
     Returns:
-        ``columns``, ``rows`` (each with one cell per column), ``counts``,
-        ``provenance`` and ``raises``.
+        ``columns``, ``rows`` (each with one cell per column), ``also`` (see
+        `also_verified`), ``counts``, ``provenance`` and ``raises``.
 
     Raises:
         CapabilitiesError: when a claim cannot be derived.
     """
     verified: dict[tuple[str, str], list] = {}
+    off_grid: dict[tuple[str, str], list] = {}
     for cell in cells:
         if cell.solver not in SOLVERS:
             raise CapabilitiesError(
@@ -318,9 +332,14 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
                 "the Capabilities mapping (docs/_ext/gfem_capabilities.py)"
             )
         problem = _problem(cell.problem, MATRIX_TEST)
+        if cell.input in OFF_GRID_INPUTS:
+            key = (problem.row, OFF_GRID_INPUTS[cell.input])
+            off_grid.setdefault(key, []).append(cell)
+            continue
         verified.setdefault((problem.row, _cell_column(cell)), []).append(cell)
 
     claimed: dict[tuple[str, str], set[str]] = {}
+    claimed_off: dict[tuple[str, str], set[str]] = {}
     headlines: set[str] = set()
     for (key, leaf, kind), outcome in expected.items():
         problem = _problem(key, RAISE_TEST)
@@ -335,6 +354,8 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
         headlines.add(key)
         if column is not None:
             claimed.setdefault((problem.row, column), set()).add(outcome)
+        elif kind[2] in OFF_GRID:
+            claimed_off.setdefault((problem.row, kind[2]), set()).add(outcome)
     missing = sorted({k for k, _, _ in expected} - headlines)
     if missing:
         leaves = ", ".join(f"{k!r} ({PROBLEMS[k].headline!r})" for k in missing)
@@ -385,9 +406,10 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
         f"{counts['bddc_gmres']} repeated on BDDC + GMRES), each checked along "
         "3 random directions against fourth-order central differences"
     )
-    off_grid = [label for label in labels if label not in GRID_LABELS]
-    unlabelled = [label for label in off_grid if label not in RAISES_LABELS]
-    stale = [label for label in RAISES_LABELS if label not in off_grid]
+    also = also_verified(off_grid, claimed_off)
+    off_labels = [label for label in labels if label not in GRID_LABELS]
+    unlabelled = [label for label in off_labels if label not in RAISES_LABELS]
+    stale = [label for label in RAISES_LABELS if label not in off_labels]
     if unlabelled or stale:
         raise CapabilitiesError(
             f"{RAISE_TEST}: OUT_OF_SCOPE rows with no site label {unlabelled}, "
@@ -396,17 +418,76 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
         )
     raises = [
         {"key": label, "label": RAISES_LABELS[label], **_error(*labels[label])}
-        for label in off_grid
+        for label in off_labels
     ]
     return {
         "columns": [
             {"key": k, "label": c.label, "recipe": c.recipe} for k, c in COLUMNS.items()
         ],
         "rows": rows,
+        "also": also,
         "counts": counts,
         "provenance": provenance,
         "raises": raises,
     }
+
+
+def also_verified(off_grid: dict, claimed: dict) -> list[dict]:
+    """The FD-verified pairs with no grid column, one entry per row.
+
+    Args:
+        off_grid: ``(row, property) -> cells`` of the `OFF_GRID` inputs.
+        claimed: ``(row, property) -> outcomes`` of ``EXPECTED`` for them.
+
+    Returns:
+        Per row, in `ROWS` order: ``key``, ``label``, ``inputs`` (site
+        words), ``cells``, ``forms_text``, ``solvers``, ``sweeps`` and
+        ``text``, the entry as one phrase.
+
+    Raises:
+        CapabilitiesError: a cell whose pair the raise table does not expect
+            to be a gradient.
+    """
+    out = []
+    for row_key, row in ROWS.items():
+        cells = []
+        inputs = []
+        for name, words in OFF_GRID.items():
+            found = off_grid.get((row_key, name), [])
+            if not found:
+                continue
+            if claimed.get((row_key, name), set()) != {"gradient"}:
+                raise CapabilitiesError(
+                    f"{row.label} x {words}: {MATRIX_TEST} verifies a gradient "
+                    f"that {RAISE_TEST} does not expect"
+                )
+            cells += found
+            inputs.append(words)
+        if not cells:
+            continue
+        forms = forms_text(sorted({FORMS[c.input] for c in cells}))
+        solvers = [SOLVERS[s] for s in dict.fromkeys(c.solver for c in cells)]
+        sweeps = [s for s in dict.fromkeys(c.sweep for c in cells) if s]
+        parts = [forms] if forms else []
+        parts.append(", ".join(solvers))
+        if sweeps:
+            parts.append(f"{' and '.join(sweeps)} sweep")
+        out.append(
+            {
+                "key": row_key,
+                "label": row.label,
+                "inputs": inputs,
+                "cells": len(cells),
+                "forms_text": forms,
+                "solvers": solvers,
+                "sweeps": sweeps,
+                "text": (
+                    f"{row.label} with respect to the {' and the '.join(inputs)} "
+                    f"({', '.join(parts)})"
+                ),
+            }
+        )
+    return out
 
 
 def _resolve(row, column, *, cells, claimed, labels, ports_of_row) -> dict:
@@ -685,7 +766,7 @@ def derive(repo: Path = REPO) -> dict:
     """Every Capabilities claim, from the tests under ``repo``.
 
     Returns:
-        ``columns``, ``rows``, ``counts``, ``provenance`` and ``raises`` (see
+        ``columns``, ``rows``, ``also``, ``counts``, ``provenance`` and ``raises`` (see
         `gradient_matrix`), ``refusals`` (see `distributed_refusals`) and
         ``effectivity`` (see `load_effectivity`).
     """
@@ -838,7 +919,11 @@ def _directives() -> dict:
                     line += _entry(*self.cell(cell))
                 body += line
             group += body
-            return [table]
+            if not data["also"]:
+                return [table]
+            also = "; ".join(entry["text"] for entry in data["also"])
+            text = f"Also FD-verified, with no column above: {also}."
+            return [table, nodes.paragraph(text=text)]
 
         def cell(self, cell: dict) -> list:
             mark = nodes.inline(classes=["gfem-mark", f"gfem-{cell['status']}"])
