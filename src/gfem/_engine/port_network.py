@@ -395,14 +395,6 @@ class PortNetwork:
             layout=self.layout,
         )
 
-    @property
-    def nbytes(self) -> int:
-        """Host memory held by the excitation and output vectors, in bytes.
-
-        The system operator counts ``W``'s (`SystemOperator.nbytes`).
-        """
-        return sum(int(t.vectors.nbytes) for t in (*self.excitation, *self.outputs))
-
     def shared(self) -> dict[int, int]:
         """The excitation and output vectors' bytes, each array once by identity.
 

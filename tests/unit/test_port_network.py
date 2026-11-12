@@ -168,7 +168,7 @@ def test_adjoint_loads_skip_an_excited_lossless_wave_port():
     )
     # port 0 lossless and excited, port 1 lossy, port 2 not excited
     np.testing.assert_array_equal(network.adjoint_loads(OMEGAS[0]), f[:, [1, 2]])
-    assert network.nbytes == e.nbytes + f.nbytes
+    assert network.shared() == {id(e): e.nbytes, id(f): f.nbytes}
 
 
 @pytest.fixture(scope="module")
