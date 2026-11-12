@@ -407,10 +407,14 @@ def test_the_rectangular_box_frequencies(tmp_path, m):
 # --- order 3 -----------------------------------------------------------------
 
 
-# Expected out of range: at order 3 the parallel-plate line measured 2.9 to
-# 18.1 (n = 4, 8; the top at 8 GHz, n = 8), above `EFFECTIVITY`, so the docs
-# claim the range for order 2 only. These ranges are not part of
-# `EFFECTIVITY`; they keep the order-3 behaviour from drifting unseen.
+# A drift fence, not a claim: the docs claim `EFFECTIVITY` at order 2 only,
+# and these ranges are not part of it. At order 3 only the parallel-plate
+# line leaves the order-2 range, at 18.1 on n = 8 (S22, 8 GHz), where order 2
+# also peaks (14.7): the same smooth-field overestimation as at order 2,
+# curl and mass terms the estimate never lets cancel, not an order-3 effect.
+# The box at order 3 lies inside its order-2 range. Recovering into degree p
+# instead of p - 1 (underestimates singular cases, down to 0.51) and a finer
+# quadrature (identical to every printed digit) were measured and rejected.
 #: Asserted order-3 effectivity range per case (measured, with margin).
 ORDER_3_EFFECTIVITY_BY_CASE = {
     "parallel-plate line": (0.9, 25.0),  # measured 2.87-18.1
