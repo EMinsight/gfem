@@ -229,6 +229,11 @@ def _shared(holder: Any) -> dict[int, int]:
     return {} if shared is None else shared()
 
 
+def _alone(entry: Entry) -> int:
+    """The bytes the cache holds with ``entry`` alone: its own and its shared."""
+    return entry.nbytes + sum(entry.shared().values())
+
+
 _PROC_CGROUP = pathlib.Path("/proc/self/cgroup")
 _CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup")
 
@@ -422,7 +427,9 @@ class EntryCache:
     def put(self, entry: Entry, budget: int, comm: Any = None) -> int:
         """Store ``entry`` and return its key; evict down to ``budget`` bytes.
 
-        An entry whose own bytes exceed the budget gives up its base handle
+        An entry whose bytes alone exceed the budget (its own and those of
+        every shared object it references, which no eviction frees while it
+        lives) gives up its base handle
         (to the plan pool, where it can: the walk then releases its factors,
         and frees it only if it still does not fit). It is kept without it
         when that fits, and is otherwise freed at once and evicts no other
@@ -440,9 +447,9 @@ class EntryCache:
         """
         key = next(self._keys)
         budget = _mpi.node_budget(comm, budget)
-        if _mpi.node_bytes(comm, entry.nbytes) > budget:
+        if _mpi.node_bytes(comm, _alone(entry)) > budget:
             self._give_up_base(entry, comm)
-            if _mpi.node_bytes(comm, entry.nbytes) > budget:
+            if _mpi.node_bytes(comm, _alone(entry)) > budget:
                 entry.free()
                 self._walk(budget, comm, entries=False)
                 return key

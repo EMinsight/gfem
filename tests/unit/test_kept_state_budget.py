@@ -338,3 +338,16 @@ def test_an_entry_whose_fields_alone_are_over_budget_walks_the_pool():
     assert pooled.freed
     assert not base.freed
     assert entries.nbytes == 30
+
+
+def test_an_entry_too_large_with_its_shared_state_evicts_no_other():
+    entries = EntryCache()
+    old_key = entries.put(Entry(physics="em", handle=FakeKept(30)), budget=10**6)
+    coupling = np.zeros(100, np.uint8)
+    # its own 10 bytes fit; with the coupling it references, 110 never do
+    new_key = entries.put(
+        Entry(physics="em", handle=FakeKept(10, shared=[coupling])), budget=100
+    )
+    assert entries.get(new_key) is None
+    assert entries.get(old_key) is not None
+    assert entries.nbytes == 30
