@@ -40,6 +40,7 @@ from gfem.job import Job, load_result  # noqa: E402
 from gfem.measurements import (  # noqa: E402
     InterfaceParticipation,
     characteristic_impedance,
+    electric_energy,
     interface_participation,
     power_flow,
 )
@@ -144,6 +145,7 @@ __all__ = [
     "conventions",
     "cuda_available",
     "design",
+    "electric_energy",
     "enclosed_by",
     "error_estimate",
     "interface_participation",

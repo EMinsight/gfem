@@ -496,7 +496,8 @@ class ResolvedLinearSolver:
 
         Args:
             options: The solver options.
-            default: The problem type's linear solver for ``"auto"``.
+            default: The problem type's linear solver for ``"auto"`` on the
+                CPU; on a GPU ``"auto"`` is ``"direct"``.
             problem: The problem type, for the error message.
             comm: The resolved communicator of a distributed solve.
 
@@ -509,7 +510,12 @@ class ResolvedLinearSolver:
         from gfem.options import split_petsc_options
 
         name = options.linear_solver
-        kind = default if name == "auto" else name
+        if name != "auto":
+            kind = name
+        elif options.device != "cpu":
+            kind = "direct"  # the only solver that runs on a GPU
+        else:
+            kind = default
         if kind not in KINDS:  # pragma: no cover - SolverOptions validates
             raise NotImplementedError(
                 f"linear_solver={name!r} is not available for {problem} problems "

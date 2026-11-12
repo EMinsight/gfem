@@ -225,7 +225,8 @@ class SolverOptions:
         order: Polynomial order of the Nédélec (H(curl)) and H1 elements.
         linear_solver: ``"auto"`` (the default) picks per problem type:
             ``"bddc_gmres"`` for driven and electrostatic, ``"direct"`` for
-            eigenmode. Pick ``"direct"`` for small and medium models on one
+            eigenmode, and ``"direct"`` for every problem type on a GPU
+            (``device``). Pick ``"direct"`` for small and medium models on one
             machine: one factorization per frequency serves every port, and
             the ``mkl`` extra makes it faster (MKL PARDISO). Pick
             ``"bddc_gmres"`` for large models or limited memory: an
@@ -245,8 +246,9 @@ class SolverOptions:
             faster) to a twentieth of this tolerance.
         device: Where the direct solver runs: ``"cpu"``, ``"cuda"`` or
             ``"cuda:N"`` (the N-th GPU). A GPU needs
-            ``linear_solver="direct"`` (NVIDIA cuDSS, from the ``cuda12`` or
-            ``cuda13`` extra). Its availability is checked when solving, so
+            ``linear_solver="direct"`` or ``"auto"``, which is ``"direct"``
+            on a GPU (NVIDIA cuDSS, from the ``cuda12`` or ``cuda13``
+            extra). Its availability is checked when solving, so
             options built on a laptop can run on a GPU machine; a GPU that
             cannot be used raises `gfem.DeviceUnavailableError`, never a
             silent CPU fallback. See `gfem.cuda_available`.
@@ -408,10 +410,14 @@ class SolverOptions:
                 "SolverOptions.device must be 'cpu', 'cuda' or 'cuda:N', got "
                 f"{self.device!r}."
             )
-        if self.device.startswith("cuda") and self.linear_solver != "direct":
+        if self.device.startswith("cuda") and self.linear_solver not in (
+            "direct",
+            "auto",
+        ):
             raise ValueError(
-                f"device={self.device!r} needs linear_solver='direct': only the "
-                "direct solver runs on a GPU."
+                f"device={self.device!r} needs linear_solver='direct' or 'auto': "
+                "only the direct solver runs on a GPU, not "
+                f"{self.linear_solver!r}."
             )
         if self.threads is not None:
             _int(self.threads, "threads", 1)
