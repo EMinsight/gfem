@@ -788,18 +788,13 @@ class DrivenRule:
         parts = workers.model_parts(model)
         results = workers.run(
             _solve_block,
-            [
-                (
-                    *parts,
-                    problem,
-                    options,
-                    keep,
-                    [s.rows(block) for s in swept] if swept else None,
-                )
-                for block, problem in zip(indices, problems, strict=True)
-            ],
+            [(*parts, problem, options, keep) for problem in problems],
             [_describe(problem.frequency) for problem in problems],
             threads=threads,
+            keywords=[
+                {"port_modes": [s.rows(block) for s in swept] if swept else None}
+                for block in indices
+            ],
         )
         sweeps = {
             port.name: sweep
@@ -1886,12 +1881,13 @@ def _attenuation_message(
     )
 
 
-def _solve_block(  # noqa: PLR0917
+def _solve_block(
     aux: Any,
     children: Any,
     problem: Driven,
     options: SolverOptions,
     keep: bool,
+    *,
     port_modes: list[dict[str, np.ndarray]] | None = None,
 ) -> tuple[SweepOutputs, np.ndarray | None, str | None]:
     """A frequency worker's `DrivenRule.forward` of its block.
