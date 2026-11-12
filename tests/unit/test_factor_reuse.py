@@ -24,6 +24,7 @@ from gfem._linalg.factor_reuse import (
     REUSED_TOLERANCE,
     AmortizedRule,
 )
+from gfem._linalg.pieces import AssembledPieces, PieceSum
 
 F = 1.0
 
@@ -352,6 +353,78 @@ def test_the_same_design_again_is_no_reused_step(built):
     assert all(c > 0 for c in counts)
     exact = _fresh(built, near, B)
     assert np.linalg.norm(X - exact) <= 1e-6 * np.linalg.norm(exact)
+    handle.free()
+
+
+def _piece_sums(built):
+    """``k2 -> -Δ - k2`` as a piece sum on one set of pieces, and its loads."""
+    space = ngs.H1(built.mesh, order=2, dirichlet="bottom|top", complex=True)
+    u, v = space.TnT()
+    form = ngs.BilinearForm(space, symmetric=True)
+    form += (ngs.grad(u) * ngs.grad(v) - u * v) * quadrature.dx(2)
+    pieces = AssembledPieces(
+        space,
+        (
+            lambda u, v: ngs.grad(u) * ngs.grad(v) * quadrature.dx(2),
+            lambda u, v: u * v * quadrature.dx(2),
+        ),
+    )
+
+    def at(k2):
+        return Operator(form, space.FreeDofs(), PieceSum(pieces, (1.0, -k2)))
+
+    return at, _loads(space)
+
+
+@pytest.fixture
+def sums(monkeypatch):
+    """The number of piece sums summed so far."""
+    count = [0]
+    sum_into = AssembledPieces.sum_into
+
+    def counted(self, weights, matrix):
+        count[0] += 1
+        sum_into(self, weights, matrix)
+
+    monkeypatch.setattr(AssembledPieces, "sum_into", counted)
+    return count
+
+
+@needs_mkl
+@pytest.mark.usefixtures("forced", "uncapped")
+def test_a_new_piece_sum_is_summed_once_whether_reused_or_refactorized(built, sums):
+    at, B = _piece_sums(built)
+    handle = DirectHandle.from_operator(at(2.0 - 1j), "complex_symmetric")
+    handle.refactorize(at(1.0 - 1j), frequency=F)
+    handle.solve(B)
+    sums[0] = 0
+    handle.refactorize(at(1.0 - 1j + 1e-3), frequency=F)
+    assert all(c > 0 for c in handle.solve_counted(B)[1])  # reused
+    assert sums[0] == 1
+    handle.refactorize(at(1.0 - 1j + 2e-3), frequency=2 * F)
+    assert handle.solve_counted(B)[1] == ()  # refactorized
+    assert sums[0] == 2
+    handle.free()
+
+
+@needs_mkl
+@pytest.mark.usefixtures("forced", "uncapped")
+def test_the_same_piece_sum_again_is_not_summed_and_is_no_step(built, sums):
+    at, B = _piece_sums(built)
+    handle = DirectHandle.from_operator(at(2.0 - 1j), "complex_symmetric")
+    handle.refactorize(at(1.0 - 1j), frequency=F)
+    handle.solve(B)
+    near = 1.0 - 1j + 1e-3
+    handle.refactorize(at(near), frequency=F)
+    first = handle.solve_counted(B)[1]
+    sums[0] = 0
+    handle.refactorize(at(near), frequency=F)
+    assert sums[0] == 0
+    # the reused step in progress goes on: its iterations, not ~1 per column
+    again = handle.solve_counted(B)[1]
+    assert sum(again) >= sum(first) // 2
+    handle.refactorize(at(near + 1e-3), frequency=F)
+    assert handle._rule.first_iterations == sum(first + again) / (2 * B.shape[1])
     handle.free()
 
 
