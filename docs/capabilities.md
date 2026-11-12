@@ -28,8 +28,8 @@ v0.1.
   element (isotropic, or principal values on fixed axes), and {py:obj}`gfem.SheetField` for the fill of a patterned metal sheet
   ({doc}`recipes/sheet-design`).
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
-  {py:obj}`gfem.interface_participation` and {py:obj}`gfem.power_flow`
-  ({doc}`recipes/measurements`).
+  {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow` and
+  {py:obj}`gfem.electric_energy` ({doc}`recipes/measurements`).
 
 ## Solvers
 

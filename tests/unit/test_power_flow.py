@@ -83,6 +83,27 @@ def test_power_through_a_plane_is_the_network_power(step):
         assert p == pytest.approx(s21, rel=1e-9), x
 
 
+def test_superposed_fields_carry_the_power_of_both_incident_waves(plate_mesh):
+    # power_flow is quadratic in the field: with incident waves a at the two
+    # ports, the net power into the line at port 1 is |a1|^2 - |b1|^2 and
+    # out of it at port 2 is |b2|^2 - |a2|^2, b = S a
+    model = _line(plate_mesh)
+    problem = gfem.Driven(frequency=F0, keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    e1, e2 = result.e_field(F0, "p1"), result.e_field(F0, "p2")
+    a = np.array([0.6 + 0.2j, -0.3 + 0.7j])
+    both = dataclasses.replace(
+        e1, coefficients=a[0] * e1.coefficients + a[1] * e2.coefficients
+    )
+    b = np.asarray(result.s.values)[0] @ a
+    into = abs(a[0]) ** 2 - abs(b[0]) ** 2
+    assert abs(into) > 0.05
+    near_1 = float(gfem.power_flow(both, _below(2.5), model=model))
+    near_2 = float(gfem.power_flow(both, _below(15.0), model=model))
+    assert near_1 == pytest.approx(into, rel=1e-9)
+    assert near_2 == pytest.approx(abs(b[1]) ** 2 - abs(a[1]) ** 2, rel=1e-9)
+
+
 def test_power_flow_is_the_same_through_every_plane(step):
     model, e, _, _ = step
     p = [float(gfem.power_flow(e, _below(x), model=model)) for x in BEFORE + AFTER]
