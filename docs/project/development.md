@@ -109,5 +109,5 @@ no longer matches the hashes in the record. After changing either, rerun the
 script and commit the new record:
 
 ```bash
-just bend3d-data      # about 2.7 h on 16 cores / 96 GiB, with the mkl extra
+just bend3d-data      # about 2.5 h on 16 cores / 96 GiB, with the mkl extra
 ```
