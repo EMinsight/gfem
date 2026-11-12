@@ -92,6 +92,9 @@ def counts(monkeypatch):
 
         monkeypatch.setattr(cls, "refactorize", counted_refactorize)
     cache.ENTRIES.clear()
+    # earlier tests' discretizations keep fixed parts and port state, which
+    # the cache counts and a walk drops before any base
+    cache._DISCRETIZATIONS.clear()
     yield seen
     cache.ENTRIES.clear()
 
