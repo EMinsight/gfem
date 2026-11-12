@@ -56,7 +56,8 @@ def project(rho: jax.Array, beta: float, eta: float = 0.5) -> jax.Array:
     ``(tanh(beta eta) + tanh(beta (rho - eta))) / (tanh(beta eta)
     + tanh(beta (1 - eta)))``: 0 stays 0, 1 stays 1, and values above the
     threshold ``eta`` move towards 1 (below it, towards 0). ``beta`` sets the
-    sharpness: about linear at 1, nearly a step at 64.
+    sharpness: about linear at 1, nearly a step at 64. Returns values in
+    [0, 1] for rho in [0, 1] (clamped against round-off).
 
     Args:
         rho: Densities in [0, 1], any shape.
@@ -70,7 +71,10 @@ def project(rho: jax.Array, beta: float, eta: float = 0.5) -> jax.Array:
     _check_projection(beta, eta)
     a = jnp.tanh(beta * eta)
     b = jnp.tanh(beta * (1 - eta))
-    return (a + jnp.tanh(beta * (jnp.asarray(rho) - eta))) / (a + b)
+    p = (a + jnp.tanh(beta * (jnp.asarray(rho) - eta))) / (a + b)
+    # Round-off can leave p a few ulp outside [0, 1]. Nested where, not
+    # jnp.clip: clip halves the gradient where p sits exactly on a bound.
+    return jnp.where(p < 0, 0.0, jnp.where(p > 1, 1.0, p))
 
 
 def _check_projection(beta: float, eta: float) -> None:
