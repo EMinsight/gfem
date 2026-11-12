@@ -147,7 +147,9 @@ How gfem itself is checked on wave ports and shared port surfaces:
   loss in the cross-section, one port's S may read part of another port's
   mode (the {term}`mode cross-projection`); above 1e-3 the solve warns with
   {py:obj}`gfem.PortModeProjectionWarning`, which states the size of that
-  error in S. Keep the port line lossless near the port.
+  error in S. A lossy port line, lone or shared, also reflects its own mode at
+  the order of α/β, its attenuation per radian, and warns with the same class
+  above 1e-3. Keep the port line lossless near the port.
 - **Degenerate, crossing and cut-off modes.** The solve raises
   {py:obj}`gfem.PortModeError`, naming the port and the surface, in three
   cases. A requested mode degenerate with another (TE10 and TE01 of a square

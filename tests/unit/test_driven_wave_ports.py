@@ -157,14 +157,16 @@ def test_conductor_plates_make_a_lossy_passive_reciprocal_line(plate_mesh, nodes
     # (2.4e-7 here, 2.6e-6 on another CPU) would gate the solver, not the
     # physics. The direct solve's asymmetry is 1.6e-10 at any thread count.
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
-    r = gfem.solve(model, gfem.Driven(F), options=options)
+    with pytest.warns(gfem.PortModeProjectionWarning, match="alpha/beta"):
+        r = gfem.solve(model, gfem.Driven(F), options=options)
     s = np.asarray(r.s.values)
     gamma = np.asarray(r.port_modes["p1"].gamma)
     assert (gamma.real > 0).all()
     np.testing.assert_allclose(s[:, 0, 1], s[:, 1, 0], rtol=0, atol=1e-8)
     power = np.abs(s[:, 0, 0]) ** 2 + np.abs(s[:, 1, 0]) ** 2
     assert (power < 1).all()
-    # the Robin term keeps Re k_n only: the lossy line is matched to O(alpha/beta)
+    # the conjugated S functional reflects a lossy mode referenced to itself
+    # at order alpha/beta; |S21| is right to its square, a looser bound here
     beta = gamma.imag
     np.testing.assert_allclose(
         np.abs(s[:, 1, 0]), np.exp(-gamma.real * L), atol=4 * (gamma.real / beta).max()
@@ -1050,6 +1052,36 @@ def test_a_lossy_shared_port_surface_warns_its_cross_projection(quadrant_mesh):
         value = float(re.search(r"cross-projection of ([0-9.e+-]+)", message)[1])
         # measured 2.67e-2 (1.34 tan_delta): the order of the block's loss
         assert 2e-2 < value < 3.5e-2
+
+
+def lossy_line(mesh, tan_delta):
+    """The parallel-plate line with a lossy fill: two lone wave ports."""
+    return line(mesh).with_material(
+        "fill", gfem.Material(eps_r=EPS, tan_delta=tan_delta)
+    )
+
+
+def test_a_lossy_lone_port_line_warns_its_attenuation(plate_mesh):
+    # the conjugated S functional reflects a lossy mode referenced to itself
+    # at |S11| ~ alpha/beta (measured 0.99 alpha/beta at three loss levels),
+    # though a uniform line has S11 = 0
+    model = lossy_line(plate_mesh, 0.01)
+    with pytest.warns(gfem.PortModeProjectionWarning) as record:
+        gfem.solve(model, gfem.Driven(F), options=SHARED_OPTIONS)
+    messages = [str(w.message) for w in record]
+    assert len(messages) == 2  # once per port surface
+    for end, message in zip((1, 2), messages, strict=True):
+        for name in (f"'p{end}'", f"'port{end}'", "reflection entries"):
+            assert name in message
+        value = float(re.search(r"alpha/beta of ([0-9.e+-]+)", message)[1])
+        # alpha/beta = tan_delta / 2 on a TEM line
+        assert 4e-3 < value < 6e-3
+
+
+@pytest.mark.parametrize("tan_delta", [0.0, 1e-3])
+def test_a_port_line_below_the_floor_is_silent(plate_mesh, tan_delta):
+    # alpha/beta = 5e-4 at tan_delta = 1e-3
+    _silent(lossy_line(plate_mesh, tan_delta), gfem.Driven(F), SHARED_OPTIONS)
 
 
 # A narrower quadrant guide (2 x 1 mm): mode 1 propagates at 55 and 65 GHz,

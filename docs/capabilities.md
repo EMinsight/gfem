@@ -117,8 +117,9 @@ returning a wrong value:
   flags a mode left out below a requested one).
 - **Lossy port lines**: wave-port S is the conjugated modal projection, exact
   for a lossless port line. On a shared port surface with loss in the
-  cross-section the modes do not fully separate, and
-  {py:obj}`gfem.PortModeProjectionWarning` states the error.
+  cross-section the modes do not fully separate, and a lossy port line
+  reflects its own mode at the order of its attenuation per radian,
+  alpha/beta; {py:obj}`gfem.PortModeProjectionWarning` states either error.
 
 ## Platforms
 
