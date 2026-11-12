@@ -146,7 +146,10 @@ def test_a_traced_lumped_value_out_of_range_raises_when_solved(mesh):
 
     with pytest.raises(
         jax.errors.JaxRuntimeError,
-        match=r"Impedance on surface 'port2': inductance must be a finite number > 0",
+        match=(
+            r"Impedance on surface 'port2': inductance must be a finite number > 0 "
+            r"H, got -1e-09\."
+        ),
     ):
         jax.jit(objective)(-1e-9)
 

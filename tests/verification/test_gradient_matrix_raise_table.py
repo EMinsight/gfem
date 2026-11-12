@@ -340,7 +340,8 @@ EXPECTED |= {
 # Driven S, the kept fields and the eigenfrequencies differentiate with
 # respect to them; z_ref (p1's resistance) and the fields' omega and mesh do
 # not move with them; electrostatics never reads them; the port mode problem
-# is not differentiable. A model without L or C has none of these leaves.
+# is not differentiable. Only a model with no Impedance and no lumped-port L
+# or C has none of these leaves: every Impedance adds them, R-only ones too.
 LUMPED_KINDS = [
     ("port", 0, "inductance"),
     ("port", 0, "capacitance"),

@@ -310,7 +310,7 @@ def check_lumped_values(item: LumpedPort | Impedance) -> None:
         if out.shape or np.iscomplexobj(out) or not np.isfinite(out) or out <= 0:
             raise ValueError(
                 f"{lumped_label(item)}: {name} must be a finite number > 0 {unit}, "
-                f"got {value!r}."
+                f"got {out.item() if out.ndim == 0 else value!r}."
             )
 
 

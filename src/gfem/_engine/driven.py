@@ -1511,9 +1511,9 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
     """The pieces of ``model``'s driven operator as the kernel sees them.
 
     One `Term` per piece, latent ones included, but the ports': a port's
-    pieces, right-hand side and voltage read only its own surface and fixed
-    values, which no gradient moves (shape gradients hold port surfaces in
-    place). Each term
+    pieces, right-hand side and voltage read only its own surface (shape
+    gradients hold port surfaces in place) and its lumped values, whose
+    gradient is the lumped pass's (`lumped_terms`). Each term
     carries its piece's material derivatives, face owners and sheet factor.
     The eigenmode rule's operator is the same pieces, so it shares these.
 
