@@ -1800,8 +1800,11 @@ def _cross_projection_message(
         return None
     q = cross_projection()
     q[:, np.arange(n), np.arange(n)] = 0.0
-    # q[k, l, j]: port j's S functional on port l's mode at frequency k
-    k, l, j = np.unravel_index(int(np.argmax(q)), q.shape)
+    # q[k, l, j]: port j's S functional on port l's mode at frequency k; an
+    # unsolved frequency (a partial sweep) is NaN and does not count
+    if np.isnan(q).all():
+        return None
+    k, l, j = np.unravel_index(int(np.nanargmax(q)), q.shape)
     value = float(q[k, l, j])
     if not value > PORT_MODE_PROJECTION_FLOOR:
         return None
@@ -1825,9 +1828,15 @@ def _attenuation_message(
     frequency: tuple[float, ...],
 ) -> str | None:
     """The warning of a lossy port line above the floor, else ``None``."""
-    # ratio[i, k]: port i's alpha/beta at frequency k
-    ratio = np.array([np.abs(np.real(g)) / np.abs(np.imag(g)) for g in gammas])
-    i, k = np.unravel_index(int(np.argmax(ratio)), ratio.shape)
+    # ratio[i, k]: port i's alpha/beta at frequency k; NaN where unsolved (a
+    # partial sweep) or at cutoff (beta = 0), which do not count
+    beta = np.abs(np.imag(gammas))
+    ratio = np.divide(
+        np.abs(np.real(gammas)), beta, out=np.full(beta.shape, np.nan), where=beta > 0
+    )
+    if np.isnan(ratio).all():
+        return None
+    i, k = np.unravel_index(int(np.nanargmax(ratio)), ratio.shape)
     value = float(ratio[i, k])
     if not value > PORT_MODE_PROJECTION_FLOOR:
         return None
