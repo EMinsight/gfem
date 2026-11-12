@@ -73,6 +73,8 @@ def _slepc(options):
     [
         ({"order": 0}, "order"),
         ({"order": 1.5}, "order"),
+        ({"order": 13}, "order"),
+        ({"order": 10**9}, "order"),
         ({"linear_solver": "umfpack"}, "linear_solver"),
         ({"tolerance": 0.0}, "tolerance"),
         ({"tolerance": 1.0}, "tolerance"),

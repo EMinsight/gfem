@@ -23,10 +23,14 @@ Device = Literal["cpu", "cuda"] | str  # noqa: PYI051 - names the choices
 _DEVICE = re.compile(r"cpu|cuda(:\d+)?")
 
 
-def _int(value: object, name: str, low: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < low:
+def _int(
+    value: object, name: str, low: int, high: int | None = None, why: str = ""
+) -> int:
+    ok = isinstance(value, int) and not isinstance(value, bool) and value >= low
+    if not ok or (high is not None and value > high):
+        span = f">= {low}" if high is None else f"from {low} to {high}"
         raise ValueError(
-            f"SolverOptions.{name} must be an integer >= {low}, got {value!r}."
+            f"SolverOptions.{name} must be an integer {span}, got {value!r}.{why}"
         )
     return value
 
@@ -226,7 +230,10 @@ class SolverOptions:
             result = gfem.solve(model, problem, options=options)
 
     Attributes:
-        order: Polynomial order of the Nédélec (H(curl)) and H1 elements.
+        order: Polynomial order of the Nédélec (H(curl)) and H1 elements, from
+            1 to 12. Unknowns per tetrahedron grow as order^3 and matrix memory
+            as order^6: order 12 already takes about 28 MiB and 3 s of assembly
+            per tetrahedron.
         linear_solver: ``"auto"`` (the default) picks per problem type:
             ``"bddc_gmres"`` for driven and electrostatic, ``"direct"`` for
             eigenmode, and ``"direct"`` for every problem type on a GPU
@@ -388,7 +395,15 @@ class SolverOptions:
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
-        _int(self.order, "order", 1)
+        _int(
+            self.order,
+            "order",
+            1,
+            high=12,
+            why=" Unknowns per tetrahedron grow as order^3 and matrix memory as "
+            "order^6: order 12 already takes about 28 MiB and 3 s of assembly per "
+            "tetrahedron.",
+        )
         if self.linear_solver not in _LINEAR_SOLVERS:
             raise ValueError(
                 f"SolverOptions.linear_solver must be one of "
