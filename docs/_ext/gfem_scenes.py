@@ -15,8 +15,8 @@ with those outputs and the scenes; conf.py copies the viewer into the built
 
 A scene is named after the source of the cell that shows it (a hash: nbconvert
 gives the kernel no cell id) and its rank in that cell, so a re-run overwrites
-it in place; ``just notebooks`` clears the directory first, which drops the
-scenes of edited cells.
+it in place; ``just notebooks`` then runs ``tools/prune_scenes.py``, which
+deletes the scenes no notebook output names any more (those of edited cells).
 """
 
 import base64

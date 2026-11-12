@@ -88,6 +88,7 @@ tutorial, regenerate them and commit the result:
 
 ```bash
 just notebooks        # re-execute docs/tutorials/*.ipynb in place, docs figure style
+just notebooks bend   # only docs/tutorials/bend.ipynb
 just front-page-data  # resample the 3D bend's run record for the front page's hero data
 ```
 
