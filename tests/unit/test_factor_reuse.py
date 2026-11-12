@@ -241,8 +241,14 @@ def _chain(built, tolerance=1e-6):
     return handle, B
 
 
+@pytest.fixture
+def uncapped(monkeypatch):
+    # a test-sized R/C gives a cap of a few iterations, which the timing sets
+    monkeypatch.setattr(AmortizedRule, "cap", property(lambda _: 100))
+
+
 @needs_mkl
-@pytest.mark.usefixtures("forced")
+@pytest.mark.usefixtures("forced", "uncapped")
 def test_a_nearby_design_is_solved_on_the_kept_factors_to_a_twentieth_of_the_tolerance(
     built,
 ):
@@ -261,7 +267,8 @@ def test_a_nearby_design_is_solved_on_the_kept_factors_to_a_twentieth_of_the_tol
 
 @needs_mkl
 @pytest.mark.usefixtures("forced")
-def test_a_column_past_the_cap_refactorizes_and_finishes_direct(built):
+def test_a_column_past_the_cap_refactorizes_and_finishes_direct(built, monkeypatch):
+    monkeypatch.setattr(AmortizedRule, "cap", property(lambda _: 3))
     handle, B = _chain(built)
     far = 30.0 + 5j  # far from 1 - 1j: no Krylov solve converges in the cap
     handle.refactorize(_helmholtz(built, far)[0], frequency=F)
