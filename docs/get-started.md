@@ -134,7 +134,9 @@ program, because every gfem solve needs it.
 ## Next steps
 
 - The {doc}`topology tutorial <tutorials/topology>` turns this same line into a
-  band-stop filter by optimizing the ceramic pattern. The
+  band-stop filter by optimizing the ceramic pattern, and the
+  {doc}`resistive film <tutorials/sheet>` tutorial lays out a 300 Ω film to make
+  a matched 3 dB attenuator. The
   {doc}`shape <tutorials/shape>` tutorial moves a coplanar line's conductor walls
   to match it to 50 Ω, the {doc}`bend <tutorials/bend>` tutorial designs a
   photonic waveguide bend on a slab model, and the
