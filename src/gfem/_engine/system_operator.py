@@ -20,9 +20,12 @@ first adjoint solve. Adjoint solves refactorize one base handle at each
 frequency, so memory holds one factorization whatever the number of
 frequencies: on a GPU, and, starting from the forward's base handle
 (`keep_base`, ADR 0065), under ranks and on one process with the CPU
-``direct`` and ``bddc_gmres`` solvers. Elsewhere on the CPU (the transposed
-system, the ``petsc`` solver, a backward without its forward's system) an
-adjoint solve keeps one handle per frequency for later backward passes.
+``direct`` and ``bddc_gmres`` solvers. On one process with the CPU ``direct``
+solver the transposed system's adjoint solves refactorize one base too, taken
+from the plan pool under the -k key (ADR 0092). Elsewhere on the CPU (the
+transposed system off that solver, the ``petsc`` solver, a backward without
+its forward's system) an adjoint solve keeps one handle per frequency for
+later backward passes.
 
 On one process with the CPU ``direct`` solver, each volume piece of an operator
 with material-field regions (`FixedPieces`) is summed as its part on those
@@ -36,7 +39,7 @@ There, too, a forward sweep takes its base handle from the plan pool
 the pool once the entry no longer holds it: when the consumed entry is freed
 (ADR 0081), or when the entry gives it up under ``retain_memory`` (ADR 0093),
 after which its backward takes a plan back from the pool. Any other returns
-when the sweep ends.
+when the sweep ends. The transposed system's base returns the same way.
 """
 
 from __future__ import annotations
@@ -147,6 +150,7 @@ class SystemOperator:
         width: int,
         adjoint_tolerance: float,
         transposed: Callable[[], DrivenOperator] | None = None,
+        pool_budget: int | None = None,
     ) -> None:
         """Add each wave port surface's Robin piece to ``operator``.
 
@@ -160,6 +164,9 @@ class SystemOperator:
                 transpose (the operator at -k under a Bloch wave vector), for
                 the adjoint solves; ``None`` when ``operator`` is complex
                 symmetric.
+            pool_budget: ``retain_memory``'s bytes: with it the transposed
+                system's adjoint solves refactorize one base from the plan
+                pool where they can (`_adjoint_system`).
         """
         if surfaces:
             operator = dataclasses.replace(
@@ -191,6 +198,7 @@ class SystemOperator:
         self._adjoint_sweep: SystemSweep | None = None
         self._transposed = transposed
         self._transposed_system: SystemOperator | None = None
+        self._pool_budget = pool_budget
 
     def sweep(
         self,
@@ -265,8 +273,7 @@ class SystemOperator:
         first (up to round-off), else descending (a forward leaves it at the
         last). Repeated backward passes so alternate, and each refactorizes
         once fewer than there are frequencies. Under a Bloch wave vector the
-        CPU adjoint solves are the transposed system's, one handle per
-        frequency and no base: descending.
+        adjoint base is the transposed system's.
         """
         system = self if self._transposed is None else self._transposed_system
         sweep = None if system is None else system._adjoint_sweep  # noqa: SLF001
@@ -326,7 +333,7 @@ class SystemOperator:
         self._adjoint_sweep = None
         self._pieces.free()
         if self._transposed_system is not None:
-            self._transposed_system.free()
+            self._transposed_system.free(return_plans=return_plans)
         self._transposed_system = None
 
     def keep_base(self, sweep: SystemSweep) -> None:
@@ -340,8 +347,9 @@ class SystemOperator:
         prepared again at the adjoint tolerance, taking a plan from the pool where
         it can. A shared base from the plan pool returns to the pool once no
         entry holds it (ADRs 0082, 0093). A
-        base the adjoint solves do not share (the transposed system's solves)
-        stays with its sweep: ``with`` returns it to the pool or frees it.
+        base the adjoint solves do not share (the transposed system's solves,
+        which hold a base of their own) stays with its sweep: ``with`` returns it
+        to the pool or frees it.
         """
         if self.operator.built.comm is None and not self._shares_base():
             return
@@ -366,10 +374,13 @@ class SystemOperator:
     def free_base(self, *, return_plan: bool = False) -> None:
         """Release the adjoint solves' base handle; the sweep prepares it again.
 
-        With ``return_plan`` a base from the plan pool returns there instead.
+        The transposed system's too. With ``return_plan`` a base from the plan
+        pool returns there instead.
         """
         if self._adjoint_sweep is not None:
             self._adjoint_sweep.free(return_plan=return_plan)
+        if self._transposed_system is not None:
+            self._transposed_system.free_base(return_plan=return_plan)
 
     def _held_nbytes(self) -> int:
         """The adjoint handles' and the pieces' bytes (not ``W``'s)."""
@@ -384,18 +395,26 @@ class SystemOperator:
 
         ``self`` without a transposed operator; otherwise the transposed
         system, built on first use with the same wave ports, solver and
-        tolerances.
+        tolerances. With a pool budget, where the plan pool serves (one
+        process, CPU ``direct``), its adjoint solves run one sweep whose base
+        comes from the pool under the -k key and returns there with the entry.
         """
         if self._transposed is None:
             return self
         if self._transposed_system is None:
-            self._transposed_system = SystemOperator(
+            system = SystemOperator(
                 self._transposed(),
                 self.surfaces,
                 self._linear,
                 width=self._width,
                 adjoint_tolerance=self._adjoint_tolerance,
             )
+            budget = self._pool_budget
+            if budget is not None and system._plan_slot(budget) is not None:
+                system._adjoint_sweep = system.sweep(
+                    tolerance=self._adjoint_tolerance, pool_budget=budget
+                )
+            self._transposed_system = system
         return self._transposed_system
 
     def operator_at(self, omega: float) -> Operator:

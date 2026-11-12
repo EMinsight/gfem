@@ -861,6 +861,7 @@ class DrivenRule:
             width=len(columns),
             adjoint_tolerance=adjoint_tolerance(self.options),
             transposed=transposed,
+            pool_budget=retain_budget(self.options.retain_memory),
         )
         network_key = (tuple(columns), len(frequency), self.problem.wave_vector)
         ports = kept.networks.get(network_key)
@@ -904,7 +905,10 @@ class DrivenRule:
             system, ports = self._ports(model)
             samples = self.problem.samples
             # samples lie far apart: a reused BDDC would mostly hit its cap
-            with system.sweep(reuse_preconditioner=False) as system_sweep:
+            with system.sweep(
+                reuse_preconditioner=False,
+                pool_budget=retain_budget(options.retain_memory),
+            ) as system_sweep:
 
                 def solve(
                     omega: float, rhs: np.ndarray, x0: np.ndarray | None
