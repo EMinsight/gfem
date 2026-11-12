@@ -1776,7 +1776,9 @@ def _factor(g: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     resistance) gives a NaN column, so the gradient is NaN like the value.
     """
     if not np.isfinite(g).all():
-        column = np.full((g.shape[0], 1), np.nan)
+        # complex, like the factors of a finite matrix: the pair's fields
+        # lie in the operator's complex space
+        column = np.full((g.shape[0], 1), np.nan, dtype=complex)
         return column, column
     u, sigma, vh = np.linalg.svd(g)
     rank = max(1, int(np.count_nonzero(sigma > FACTOR_RANK * sigma[0])))

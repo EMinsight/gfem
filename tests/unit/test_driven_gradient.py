@@ -354,6 +354,68 @@ def test_unexcited_port_rows_use_an_adjoint_solve(line):
     assert np.abs(np.asarray(full)).max() > 0
 
 
+NO_R_GRID = tuple(float(f) for f in np.linspace(5e9, 20e9, 7))
+NO_R_AT = [0, 3, 6]  # the frozen samples: the frozen-basis gradient is exact there
+NO_R_PROBLEMS = {
+    "uniform": gfem.Driven(frequency=NO_R_GRID, excite=("p1",)),
+    "adaptive": gfem.Driven(
+        frequency=NO_R_GRID,
+        sweep="adaptive",
+        samples=(NO_R_GRID[0], NO_R_GRID[6], NO_R_GRID[3]),
+        excite=("p1",),
+    ),
+}
+
+
+@pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
+def test_the_gradient_through_a_port_without_resistance_is_nan_like_its_s_row(
+    tmp_path, sweep
+):
+    # p2 ends in an inductance only: no reference impedance, so its S row is
+    # undefined (NaN) and so is the gradient of an objective that reads it
+    path = tmp_path / "line.msh"
+    sm.write_msh22(path, sm.strip_line(10.0, 2.0, 1.0, (6, 1, 1)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"dielectric": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z", inductance=1e-9),
+        ],
+    )
+    options = gfem.SolverOptions(linear_solver="direct")
+    problem = NO_R_PROBLEMS[sweep]
+    rng = np.random.default_rng(2)
+    p0 = jnp.asarray(rng.uniform(3.0, 5.0, len(mesh.tetrahedra)))
+
+    def solve(p):
+        field = gfem.MaterialField(eps_r=p)
+        return gfem.solve(
+            model.with_material("dielectric", field), problem, options=options
+        ).s
+
+    def objective(row):
+        return lambda p: jnp.sum(
+            jnp.abs(solve(p)[row, "p1"][jnp.asarray(NO_R_AT)]) ** 2
+        )
+
+    s = solve(p0)
+    assert np.isnan(np.asarray(s["p2", "p1"])).all()
+    assert np.isfinite(np.asarray(s["p1", "p1"])).all()
+    undefined = np.asarray(jax.grad(objective("p2"))(p0))
+    assert np.isnan(undefined).all()
+    # the undefined row does not leak into a defined one
+    assert_gradient_matches(
+        objective("p1"), p0, unit_directions(rng, p0.shape, 1), step=1e-2
+    )
+    with pytest.raises(ValueError, match="has no resistance"):
+        gfem.solve(
+            model, gfem.Driven(frequency=NO_R_GRID, excite=("p2",)), options=options
+        )
+
+
 def test_a_gradient_through_a_solve_that_does_not_converge_raises(line, monkeypatch):
     # the adjoint needs every frequency: JAX keeps the message, not the class
     values, _ = _values(line)
