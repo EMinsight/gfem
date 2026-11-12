@@ -127,6 +127,13 @@ Lumped port
   inductance and capacitance in parallel, driven along a stated direction. Its
   resistance is its {term}`reference impedance`.
 
+Lumped value
+  The resistance, inductance or capacitance of a {term}`lumped port` or of an
+  `Impedance` {term}`sheet`. Those that enter only the operator (a port's
+  inductance and capacitance, a sheet's three values) are design inputs; a
+  lumped port's resistance is not, because it is also its
+  {term}`reference impedance`.
+
 Wave port
   A {term}`port` on an exterior surface, fed by one mode of the surface's
   cross-section, which a {term}`port mode problem` supplies. It absorbs that
