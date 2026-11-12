@@ -19,6 +19,7 @@ from gfem._linalg import Operator, prepare
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.factor_reuse import (
     FIRST_ITERATIONS,
+    REPROBE_STEPS,
     REUSE_MIN_REFACTOR_SECONDS,
     REUSED_TOLERANCE,
     AmortizedRule,
@@ -112,6 +113,41 @@ def test_the_first_reused_step_of_a_chain_sets_the_iterations_the_gate_compares(
     assert _next(rule)
     _reused_step(rule, seconds=2.0, iterations=20)  # I1 = 20 > 16.7
     assert not _next(rule)
+
+
+def test_a_closed_gate_reprobes_after_five_refactorized_steps_and_refreshes_i1():
+    # the closing run at 16 threads: one reused step at I1 above R/C closed
+    # the gate, and nothing measured I1 again
+    rule = AmortizedRule()
+    _refactorized_step(rule, t22=10.0, t33=0.1)  # R/C 16.7
+    assert _next(rule)
+    _reused_step(rule, seconds=2.0, iterations=20)  # I1 = 20: closed
+    for _ in range(REPROBE_STEPS):
+        assert not _next(rule)
+        _refactorized_step(rule, t22=10.0, t33=0.1)
+    assert _next(rule)  # the probe
+    _reused_step(rule, seconds=2.0, iterations=8)
+    assert _next(rule)  # I1 = 8 <= R/C 16.7: open again
+    assert rule.first_iterations == 8
+
+
+def test_the_reprobe_waits_five_refactorized_steps():
+    assert REPROBE_STEPS == 5
+    rule = AmortizedRule()
+    _refactorized_step(rule, t22=10.0, t33=0.25)  # R/C 6.7 < 10
+    for _ in range(REPROBE_STEPS - 1):
+        assert not _next(rule)
+        _refactorized_step(rule, t22=10.0, t33=0.25)
+    assert not _next(rule)  # the fifth closed step
+    _refactorized_step(rule, t22=10.0, t33=0.25)
+    assert _next(rule)
+
+
+def test_a_gate_closed_by_the_floor_never_reprobes():
+    rule = AmortizedRule()
+    for _ in range(3 * REPROBE_STEPS):
+        _refactorized_step(rule, t22=0.5 * REUSE_MIN_REFACTOR_SECONDS, t33=1e-5)
+        assert not _next(rule)
 
 
 def test_the_gate_is_off_when_the_last_refactorization_took_under_the_floor():
