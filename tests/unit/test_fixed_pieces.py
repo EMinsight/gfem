@@ -155,3 +155,73 @@ def test_split_pieces_count_their_shared_positions_once():
     # the kept parts are the store's; the two varying parts' complex values,
     # and their one int64 positions array
     assert assembled.nbytes == 2 * 16 * nze + 8 * nze
+
+
+def _split_pieces():
+    """Two split volume pieces (one positions array) and a surface piece, kept."""
+    import ngsolve as ngs
+    from netgen.csg import unit_cube
+
+    mesh = ngs.Mesh(unit_cube.GenerateMesh(maxh=0.5))
+    space = ngs.H1(mesh, order=2, complex=True)
+    region = ngs.IfPos(ngs.x - 0.5, 1 + 0.5j, 0)
+    store = pieces.KeptParts()
+
+    def build():
+        fixed = [
+            pieces.FixedPart(
+                store, "stiffness", "d", lambda u, v: ngs.grad(u) * ngs.grad(v) * ngs.dx
+            ),
+            pieces.FixedPart(store, "mass", "d", lambda u, v: u * v * ngs.dx),
+            None,
+        ]
+        varying = [
+            lambda u, v: region * ngs.grad(u) * ngs.grad(v) * ngs.dx,
+            lambda u, v: region * u * v * ngs.dx,
+            lambda u, v: u * v * ngs.ds(),
+        ]
+        assembled = pieces.AssembledPieces(space, varying, fixed=fixed)
+        return assembled, assembled.pattern
+
+    build()  # the digest's first sight: nothing kept
+    return build()
+
+
+WEIGHTS = (1.0, -(2.3 + 0.4j), 0.7j)
+
+
+def _summed(assembled, pattern):
+    matrix = pattern.CreateMatrix()
+    assembled.sum_into(WEIGHTS, matrix)
+    return matrix.AsVector().FV().NumPy().copy()
+
+
+def test_the_compiled_piece_sum_matches_the_numpy_sum(monkeypatch):
+    assembled, pattern = _split_pieces()
+    calls = []
+    compiled = pieces._csc_matvec
+
+    def counted(*args):
+        calls.append(args)
+        return compiled(*args)
+
+    monkeypatch.setattr(pieces, "_csc_matvec", counted)
+    fused = _summed(assembled, pattern)
+    # the two varying parts and the surface piece, one compiled pass each
+    assert len(calls) == 3
+    # scipy's module is private: without it, the numpy sum
+    monkeypatch.setattr(pieces, "_csc_matvec", None)
+    plain = _summed(assembled, pattern)
+    assert np.abs(fused - plain).max() <= 1e-14 * np.abs(plain).max()
+
+
+def test_a_compiled_pass_refusing_its_arguments_falls_back_to_numpy(monkeypatch):
+    assembled, pattern = _split_pieces()
+    monkeypatch.setattr(pieces, "_csc_matvec", None)
+    plain = _summed(assembled, pattern)
+
+    def refuse(*_):
+        raise TypeError("unsupported data types")
+
+    monkeypatch.setattr(pieces, "_csc_matvec", refuse)
+    np.testing.assert_array_equal(_summed(assembled, pattern), plain)
