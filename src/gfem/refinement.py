@@ -61,6 +61,17 @@ class FieldEstimator:
     recovery), so no extra solve is needed. It is an estimate, not a bound;
     it does not include the faceting of curved surfaces or the error left by
     the linear solve.
+
+    With loss, the flux is the total current eps_eff E, eps_eff = eps_r
+    (1 - i tan_delta) - i sigma / (omega eps_0), and the norm is
+    || curl E ||^2_{mu^-1} + |k|^2 int |eps_eff| |E|^2: the conduction
+    current counts, as it does in the field. Weighting by Re(eps_eff)
+    instead overestimated up to 14 times; the lossless norm,
+    Re(eps_eff^-1), underestimated without bound under conduction loss.
+
+    `refine_mesh` and `error_estimate` raise
+    `gfem.MeshRefinementUnsupportedError` for a driven or eigenmode field
+    with loss inside an anisotropic material, and at order 1.
     """
 
 
@@ -452,6 +463,8 @@ def refine_mesh(
     if isinstance(estimator, QuantityEstimator):
         _check_quantity_keys(estimator, problem, model)
         _check_quantity_model(estimator, model)
+    if isinstance(problem, (Driven, Eigenmode)):
+        _check_field_model(estimator, model)
     _check_order(options.order, estimator)
     if _mpi.resolve_comm(comm) is not None:
         _mpi.refuse_feature("mesh refinement")
@@ -850,24 +863,56 @@ def _check_lossy_mode(model: Model) -> None:
     resistive lumped ports. (A wave port on an eigenmode is refused by the
     eigen solver.)
     """
-    from gfem._engine.coefficients import anisotropic_regions, element_tensors
+    from gfem._engine.coefficients import element_tensors
 
-    what = None
+    what, remedy = None, "use gfem.FieldEstimator()"
     if any(isinstance(b, Absorbing) and b.order == 2 for b in model.boundaries):
         what = "a second-order absorbing boundary"
     elif np.any(np.asarray(element_tensors(model, "mu_r")).imag):
         what = "a complex mu_r"
-    else:
-        lossy = _lossy_elements(model)
-        for region in anisotropic_regions(model, tuple(model.materials)):
-            if lossy[model.mesh.elements(region)].any():
-                what = f"loss in the anisotropic material of {region!r}"
-                break
+    elif (region := _lossy_anisotropic_region(model)) is not None:
+        what = f"loss in the anisotropic material of {region!r}"
+        remedy = _LOSSLESS_COPY
     if what is not None:
         raise MeshRefinementUnsupportedError(
             "lossy eigenmode",
             f"QuantityEstimator(omega=...) has no verified estimate for a mode "
-            f"with {what}: use gfem.FieldEstimator().",
+            f"with {what}: {remedy}.",
+        )
+
+
+#: The remedy where neither estimator has a verified estimate for the loss.
+_LOSSLESS_COPY = (
+    "neither estimator does. Refine a copy of the model with that material "
+    "lossless, then solve the lossy model on the refined mesh"
+)
+
+
+def _lossy_anisotropic_region(model: Model) -> str | None:
+    """The first anisotropic material region holding loss, if any."""
+    from gfem._engine.coefficients import anisotropic_regions
+
+    lossy = _lossy_elements(model)
+    for region in anisotropic_regions(model, tuple(model.materials)):
+        if lossy[model.mesh.elements(region)].any():
+            return region
+    return None
+
+
+def _check_field_model(estimator: Estimator, model: Model) -> None:
+    """Raise for a wave field whose loss no field case covers (ADR 0087).
+
+    Loss inside an anisotropic material: the lossy flux's tensor weight
+    has no verification case.
+    """
+    if not isinstance(estimator, FieldEstimator):
+        return
+    region = _lossy_anisotropic_region(model)
+    if region is not None:
+        raise MeshRefinementUnsupportedError(
+            "lossy anisotropic material",
+            "FieldEstimator() has no verified estimate for a field with loss in "
+            f"the anisotropic material of {region!r}: {_LOSSLESS_COPY}.",
         )
 
 
@@ -885,6 +930,8 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         _check_quantity_model(estimator, model)
     if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
         raise _unsupported_result(result, estimator)
+    if not isinstance(result, ElectrostaticResult):
+        _check_field_model(estimator, model)
     if model._periodic:  # noqa: SLF001
         raise MeshRefinementUnsupportedError(
             "periodic",
