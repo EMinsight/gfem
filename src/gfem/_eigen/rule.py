@@ -68,6 +68,7 @@ import scipy.constants as const
 from gfem import _petsc
 from gfem._boundaries import LumpedPort, WavePort, wave_port_surfaces
 from gfem._eigen import slepc
+from gfem._eigen.adjoint import polish
 from gfem._eigen.arpack import shift_invert
 from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
@@ -165,6 +166,10 @@ _SEED_TOLERANCE = 1e-3
 #: the largest) make an objective symmetric in the cluster to first order
 #: (a smooth symmetric function's cotangents differ by O(gap)).
 _SYMMETRIC_RTOL = 1e-3
+#: The smallest relative gap of a mode in mode-field reach (with
+#: ``SolverOptions.cluster_rtol`` if larger): an isolated mode (ADR 0102),
+#: polished in the forward and given mode-field gradients (ADR 0104).
+_ISOLATED = 1e-4
 #: A Bloch cluster's ``G = Y^T T' X`` with a condition number above this is
 #: singular: a defective eigenvalue, whose frequency has no derivative.
 _DEFECTIVE = 1e8
@@ -306,11 +311,12 @@ class EigenmodeRule:
 
         Raises:
             EigenmodeConvergenceError: Fewer than ``n_modes`` modes
-                converged, or the modes found would skip a pair that nearly
-                converged.
+                converged, the modes found would skip a pair that nearly
+                converged, or an isolated mode's polish did not converge.
             LinearSolverConvergenceError: A shift solve of an iterative
                 linear solver did not converge (the message names
-                ``SolverOptions.eigen_tolerance``).
+                ``SolverOptions.eigen_tolerance``), or a polish step's
+                deflated solve was not accepted.
         """
         opts = self.options
         order = opts.order
@@ -324,7 +330,9 @@ class EigenmodeRule:
             try:
                 eop.factorize()  # before the projector's setup
                 divfree = projector(model, op, self.problem.wave_vector)
-                modes, guard, gaps = self._find(eop, divfree, sigma, guard=keep)
+                modes, guard, gaps = self._find(
+                    eop, divfree, sigma, guard=keep or self.polishable
+                )
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
                 lowest = min(k.real for k in ks) * const.c / built.scale
@@ -389,7 +397,9 @@ class EigenmodeRule:
         Seed solves at the target (each attempt asking for twice as many
         pairs as the last) and the selection of their refined pairs
         (`_select`). ``guard``: refine one mode beyond ``n_modes`` (``None``
-        when no seed gave one).
+        when no seed gave one). Where the forward polishes (`polishable`),
+        each isolated mode is polished (`_polish`) on the factors the search
+        leaves, before a lossless problem's ``k`` are snapped real.
 
         Raises:
             EigenmodeConvergenceError: Fewer than ``n_modes`` modes
@@ -433,6 +443,9 @@ class EigenmodeRule:
             raise EigenmodeConvergenceError(
                 self._convergence_message(eop, modes, failed, skipped)
             )
+        guard_k = None if found is None else found.k
+        if self.polishable:
+            modes = self._polish(eop, modes, GapSet(pool, guard_k, ritz), guard_k)
         lossless = _is_hermitian if eop.general else _is_real
         if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
             modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
@@ -441,6 +454,44 @@ class EigenmodeRule:
             pool = pool.real.astype(complex)
         gaps = GapSet(pool, None if found is None else found.k, ritz)
         return modes, found, gaps
+
+    @property
+    def polishable(self) -> bool:
+        """Whether the forward polishes its isolated modes (ADR 0104).
+
+        On the CPU with ``linear_solver="direct"``, without a periodic pair
+        or a Bloch wave vector: where mode-field gradients reach (ADR 0102).
+        """
+        return (
+            self.options.device == "cpu"
+            and self.linear.kind == "direct"
+            and self.problem.wave_vector is None
+            and not self._periodic_surfaces
+        )
+
+    def _polish(
+        self,
+        eop: EigenOperator,
+        modes: list[Refined],
+        gaps: GapSet,
+        guard: complex | None,
+    ) -> list[Refined]:
+        """``modes`` with each isolated one polished (`polish`), the rest as they are.
+
+        A mode is isolated (`isolated`) when it is alone in its cluster, the
+        guard mode is not in its cluster, and its relative gap is at least
+        `_ISOLATED` (``cluster_rtol`` if larger). The guard mode is never
+        polished.
+        """
+        ks = [m.k for m in modes]
+        rtol = self.options.cluster_rtol
+        labels = clusters(ks, rtol)
+        gap = np.array([gaps.gap(k) for k in ks])
+        reach = isolated(labels, _incomplete(ks, labels, guard, rtol), gap, rtol)
+        return [
+            polish(eop, m, float(gap[i]), index=i) if reach[i] else m
+            for i, m in enumerate(modes)
+        ]
 
     def _shift_invert(
         self, op: EigenOperator, project, nev: int, *, tol: float
@@ -494,16 +545,14 @@ class EigenmodeRule:
         labels = np.asarray(labels)
         k = np.array(ks, dtype=complex)
         gram = np.zeros((len(k), len(k)), dtype=complex)
-        incomplete = np.zeros(len(k), dtype=bool)
         rtol = self.options.cluster_rtol
+        incomplete = _incomplete(ks, labels, None if guard is None else guard.k, rtol)
         op = cast("EigenOperator", holder.operator)
         for label in np.unique(labels):
             members = np.flatnonzero(labels == label)
             mean = k[members].mean()
             tx = np.stack([op.derivative(mean, x[:, j]) for j in members], axis=1)
             gram[np.ix_(members, members)] = left[:, members].T @ tx
-            if guard is not None and any(_close(guard.k, k[j], rtol) for j in members):
-                incomplete[members] = True
         fields = {
             "x": x,
             "k": k,
@@ -1043,6 +1092,39 @@ class EigenmodeRule:
 
 def _close(a: complex, b: complex, rtol: float) -> bool:
     return abs(a - b) <= rtol * max(abs(a), abs(b))
+
+
+def _incomplete(
+    ks: list[complex], labels: np.ndarray, guard: complex | None, rtol: float
+) -> np.ndarray:
+    """Whether each mode's cluster reaches the guard mode ``guard`` (cut short)."""
+    incomplete = np.zeros(len(ks), dtype=bool)
+    if guard is None:
+        return incomplete
+    for label in np.unique(labels):
+        members = np.flatnonzero(labels == label)
+        if any(_close(guard, ks[j], rtol) for j in members):
+            incomplete[members] = True
+    return incomplete
+
+
+def isolated(
+    labels: np.ndarray, incomplete: np.ndarray, gap: np.ndarray, rtol: float
+) -> np.ndarray:
+    """Which modes are in mode-field reach (ADR 0102, ADR 0104).
+
+    A mode is when it is the only member of its cluster (``labels``), its
+    cluster is not cut short by the guard mode (``incomplete``), and its
+    relative gap to its gap set is at least `_ISOLATED`, or ``rtol``
+    (``SolverOptions.cluster_rtol``) when that is larger.
+    """
+    labels = np.asarray(labels)
+    single = np.array([np.count_nonzero(labels == v) == 1 for v in labels], dtype=bool)
+    return (
+        single
+        & ~np.asarray(incomplete, dtype=bool)
+        & (np.asarray(gap) >= max(_ISOLATED, rtol))
+    )
 
 
 def clusters(ks: list[complex], rtol: float) -> np.ndarray:

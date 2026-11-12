@@ -19,6 +19,7 @@ from eigen_cases import EPS, conductor_line, line_mesh, line_roots, terminated_l
 
 import gfem
 from gfem._eigen import rule as eigen_rule
+from gfem._eigen.adjoint import deflated_solve, polish
 from gfem._eigen.kept import KeptOperator
 from gfem._eigen.refine import Refined
 from gfem._eigen.rule import EigenmodeRule
@@ -206,6 +207,14 @@ def test_eigen_refactorizations_never_reuse_factors(mesh, monkeypatch):
         assert its == ()
         assert not eop.handle._rule.reusing
     assert len(counts) == forward + 3
+    # the polish and a deflated solve after a reshift (its own, at k (1 +
+    # 1e-3)): numeric factorizations of the current values only
+    x, k = entry.fields["x"][:, 0], complex(entry.fields["k"][0])
+    mode = Refined(k, x / np.linalg.norm(x), 0.0, 0, converged=True)
+    polish(eop, mode, np.inf, index=0)
+    eop.reshift(k * (1 + 1e-3))
+    deflated_solve(eop, x, None, b, k=k, gap=np.inf, mode=0)
+    assert len(counts) > forward + 4
     assert all(c == ((), False) for c in counts)
     entry.free()
 
