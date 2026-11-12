@@ -35,7 +35,13 @@ from gfem._engine.coefficients import (
     element_tensors,
     principal_permittivity,
 )
-from gfem._engine.domain import h1_space, hcurl_space, pec_surfaces, space_key
+from gfem._engine.domain import (
+    h1_space,
+    hcurl_space,
+    pec_surfaces,
+    potential_surfaces,
+    space_key,
+)
 from gfem._engine.driven import DrivenOperator, real_space
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver
 from gfem._linalg.base import free_mask
@@ -176,8 +182,10 @@ def projector(
 ) -> DivFreeProjector:
     """The divergence-free projection on ``op``'s space (`DivFreeProjector`).
 
-    The H(curl) space has the solve's DOF numbering; the H1 space of the
-    same order fixes the same `PEC` surfaces. Both are real
+    The H(curl) space has the solve's DOF numbering and `PEC` DOFs; the H1
+    space of the same order is fixed on the `PEC` surfaces and on every
+    lossy wall (`gfem._engine.domain.potential_surfaces`, ADR 0097). Both
+    are real
     (`gfem._engine.driven.real_space` without pairs), and periodic over a
     model's pairs. Under a Bloch ``wave_vector`` (rad/m) the H(curl) space
     is the solve's own complex one and the H1 space complex, with the same
@@ -187,16 +195,18 @@ def projector(
     periodic = model._periodic  # noqa: SLF001
     disc = discretization(model.mesh, periodic)
     pec = pec_surfaces(model)
+    fixed = potential_surfaces(model)
     if not periodic:
         hcurl = real_space(model, op)
         h1 = disc.space(
-            space_key(model, "h1", order), lambda: h1_space(model, built, order, pec)
+            space_key(model, "h1", order, fixed=fixed),
+            lambda: h1_space(model, built, order, fixed),
         )
     else:
         phases = bloch_phases(model, wave_vector)
         h1 = disc.space(
-            space_key(model, "h1", order, periodic=True, phases=phases),
-            lambda: h1_space(model, built, order, pec, periodic=True, phases=phases),
+            space_key(model, "h1", order, periodic=True, phases=phases, fixed=fixed),
+            lambda: h1_space(model, built, order, fixed, periodic=True, phases=phases),
         )
         if phases is None:
             hcurl = disc.space(
@@ -289,7 +299,9 @@ class DivFreeProjector:
     """``x -> x - G (G^H M0 G)^-1 G^H M0 x`` on an H(curl) space.
 
     The curl-curl operator vanishes on gradients, so every gradient of an
-    H1 function (zero on the `PEC` surfaces) is an eigenvector of the
+    H1 function (zero on the `PEC` surfaces and the lossy walls, where a
+    gradient with a tangential part is no null vector: the wall term acts
+    on it, ADR 0097) is an eigenvector of the
     eigenmode problem at frequency 0, a huge null space next to the
     physical modes. When the target lies below about half a mode's
     frequency, shift-invert returns these first. Projecting every Arnoldi
@@ -298,7 +310,7 @@ class DivFreeProjector:
     them out, with ``G`` the exact embedding of ``grad H1(p)`` into
     first-kind Nédélec of order p and ``G^H M0 G`` the H1 form ``∫ Re(eps_r)
     grad φ . grad ψ``, factorized once. A volume of the solve domain without
-    `PEC` has constant potentials (zero gradient) in the kernel of that
+    a fixed surface has constant potentials (zero gradient) in the kernel of that
     form; a mass term about 1e-10 of the stiffness removes them without
     affecting the projection.
 
@@ -312,7 +324,8 @@ class DivFreeProjector:
         hcurl: The H(curl) space (the solve's numbering and `PEC` DOFs):
             real, or the complex Bloch-phased solve space.
         h1: The H1 space of the same order, domain, periodicity and phases,
-            `PEC` DOFs fixed (complex iff ``hcurl`` is).
+            fixed on the `PEC` surfaces and the lossy walls (complex iff
+            ``hcurl`` is).
         eps: ``Re(eps_r)`` per element, an NGSolve coefficient (scalar or
             3x3).
         order: The polynomial order (quadrature).

@@ -37,6 +37,7 @@ from eigen_cases import (
     line_mesh,
     terminated_line,
 )
+from gradient_cases import MIRRORED_TARGET, mirrored_cavity
 
 import gfem
 
@@ -257,3 +258,90 @@ def test_a_nonlinear_seed_spends_few_shift_solves(mesh, seed_solves):
     assert len(seed_solves) == 2
     for _, solves in seed_solves:
         assert solves <= 50
+
+
+# --- lossy walls: the projection's potential ---------------------------------------
+
+
+@pytest.fixture(scope="module")
+def cavity(tmp_path_factory):
+    return mirrored_cavity(tmp_path_factory.mktemp("cavity"))
+
+
+@pytest.fixture
+def seed_errors(monkeypatch):
+    """The backward error of every non-static pair each seed solve returned."""
+    import gfem._eigen.rule as eigen_rule
+
+    shift_invert = eigen_rule.shift_invert
+    seen = []
+
+    def spy(op, project, nev, **kwargs):
+        k, vectors = shift_invert(op, project, nev, **kwargs)
+        for j in range(len(k)):
+            if k[j].real > 1e-6 * op.shift.real:
+                x = np.where(op.free, vectors[:, j], 0)
+                seen.append(op.backward_error(k[j], x / np.linalg.norm(x)))
+        return k, vectors
+
+    monkeypatch.setattr(eigen_rule, "shift_invert", spy)
+    return seen
+
+
+@pytest.mark.parametrize(
+    "wall",
+    [
+        gfem.Conductor("wall", 5.8e7),
+        gfem.Conductor("wall", 1e3),
+        gfem.Conductor("wall", 5.8e7, thickness=1e-9),
+        gfem.Impedance("wall", resistance=50.0),
+        gfem.Impedance("wall", inductance=1e-12),
+    ],
+    ids=["copper", "poor", "thin", "resistive", "inductive"],
+)
+def test_a_lossy_wall_cavity_gives_the_modes_nearest_the_target(
+    cavity, wall, seed_errors
+):
+    # the divergence-free projection fixes its potential on the wall (ADR
+    # 0097): a potential free there removes gradients the wall term acts on,
+    # and the seeds are then no eigenpairs (backward error 0.16 to 0.27,
+    # modes skipped); at most 1.4e-4 measured with the potential fixed
+    model = gfem.Model(
+        cavity, materials={"fill": gfem.Material(eps_r=1.0)}, boundaries=[wall]
+    )
+    near = gfem.solve(
+        model, gfem.Eigenmode(target=MIRRORED_TARGET, n_modes=3), options=TIGHT
+    )
+    assert seed_errors
+    assert max(seed_errors) < 1e-3
+    wide = gfem.solve(
+        model, gfem.Eigenmode(target=MIRRORED_TARGET, n_modes=6), options=TIGHT
+    )
+    assert list(np.asarray(near.cluster)) == [0, 0, 1]
+    assert np.asarray(near.omega) == pytest.approx(np.asarray(wide.omega)[:3], rel=1e-7)
+
+
+def test_the_projection_potential_is_fixed_on_walls_with_stiffness_or_damping(cavity):
+    from gfem._engine.domain import potential_surfaces, space_key
+
+    def model(wall):
+        return gfem.Model(
+            cavity, materials={"fill": gfem.Material(eps_r=1.0)}, boundaries=[wall]
+        )
+
+    for wall in (
+        gfem.PEC("wall"),
+        gfem.Conductor("wall", 5.8e7),
+        gfem.Absorbing("wall"),
+        gfem.Impedance("wall", resistance=50.0),
+        gfem.Impedance("wall", inductance=1e-9, capacitance=1e-15),
+    ):
+        assert potential_surfaces(model(wall)) == ("wall",)
+    # a capacitance adds to the mass term only: its wall gradients are null
+    # vectors and stay in the projection
+    free = model(gfem.Impedance("wall", capacitance=1e-15))
+    assert potential_surfaces(free) == ()
+    # two models on one mesh never share a potential space fixed differently
+    fixed = model(gfem.Impedance("wall", resistance=50.0))
+    keys = [space_key(m, "h1", 2, fixed=potential_surfaces(m)) for m in (free, fixed)]
+    assert keys[0] != keys[1]
