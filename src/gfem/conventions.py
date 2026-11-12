@@ -138,10 +138,13 @@ with ``Re(E exp(+iωt))`` source-free; ``Im omega > 0`` decays, and
 ``Q = |omega| / (2 |Im omega|)``. The mode's
 electric energy is::
 
-    E_elec = 1/2 Re ∫ D* · E dV + Σ C_j |V_j|^2 / 2
+    E_elec = 1/2 Re ∫ D* · E dV + Σ C_j |V_j|^2 / 2 + Σ 1/2 ∫ w C_s |E_t|^2 dS
 
-over the solve domain and the capacitive lumped ports (peak phasors: the
-total time-averaged energy of a lossless mode, electric plus magnetic).
+over the solve domain, the capacitive lumped ports (capacitance ``C_j``,
+voltage ``V_j``) and the capacitive `Impedance` sheets (capacitance per
+square ``C_s``, tangential field ``E_t``, fill ``w``, 1 without a
+`SheetField`) (peak phasors: the total time-averaged energy of a lossless
+mode, electric plus magnetic).
 Each mode field is scaled to ``E_elec`` =
 `MODE_ENERGY` and phased so that ``∫ D · E dV`` (no conjugate) is real
 and positive, which makes a lossless mode's field real; the remaining sign

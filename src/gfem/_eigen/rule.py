@@ -32,11 +32,12 @@ pairs, so a cluster cut by the request is detected when its next member is
 among them (best-effort: no Arnoldi attempt is added for it).
 
 Post-processing follows Palace: electric energy ``E = 1/2 Re ∫ D* . E`` per
-volume region plus ``C |V|^2 / 2`` per capacitive lumped port; a port's
-voltage is its driven voltage functional. Each mode is scaled to ``E =
-1 J`` with ``∫ D . E`` real and positive. An anisotropic region's energy is
-also split along its principal axes (``1/2 ε0 eps_k ∫ |a_k . E|^2``, ADR
-0055).
+volume region plus ``C |V|^2 / 2`` per capacitive lumped port and ``1/2 ∫
+w C_s |E_t|^2`` per capacitive `Impedance` sheet (the quadratic form of
+its C piece, ADR 0103); a port's voltage is its driven voltage functional.
+Each mode is scaled to ``E = 1 J`` with ``∫ D . E`` real and positive. An
+anisotropic region's energy is also split along its principal axes (``1/2
+ε0 eps_k ∫ |a_k . E|^2``, ADR 0055).
 
 On a model with `gfem.Periodic` pairs the modes are solved on the periodic
 space and their fields expanded to the unpaired space (``e = P x``,
@@ -56,6 +57,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import warnings
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
@@ -637,6 +639,7 @@ class EigenmodeRule:
         }
         mesh = model.mesh
         density = element_energy(model, op)
+        sheets = _sheet_energy(op)
         split = (
             principal_energy(model, op, self.anisotropic) if self.anisotropic else None
         )
@@ -673,7 +676,8 @@ class EigenmodeRule:
                 for name, data in ports.items()
                 if data.port.rlc[2] is not None
             )
-            energy = per_tet.sum() + capacitors
+            # + 0.0 without a capacitive sheet leaves the sum bit-identical
+            energy = per_tet.sum() + capacitors + (0.0 if sheets is None else sheets(x))
             amplitude = math.sqrt(MODE_ENERGY / energy)
             solve[:, j] = x * amplitude
             for r, region in enumerate(self.regions):
@@ -1090,6 +1094,32 @@ def _check_low_frequency(
         LowFrequencyWarning,
         stacklevel=stacklevel + 1,
     )
+
+
+def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
+    """``x -> Σ 1/2 ∫ w C_s |E_t|^2 dS`` of the capacitive sheets (J), or ``None``.
+
+    A capacitive `Impedance`'s C piece is ``∫ w C_s / (eps0 scale) u_t .
+    v_t``, as the mass piece is ``∫ eps_r u . v``: its quadratic form with
+    ``(conj(x), x)`` times ``eps0 scale / 2`` is the sheet's electric
+    energy, as `element_energy` gives the volume's (ADR 0103). ``None``
+    without a capacitive sheet, so such models add nothing.
+    """
+    sheets = [
+        k
+        for k, piece in enumerate(op.pieces)
+        if piece.lumped is not None
+        and piece.lumped.kind[0] == "boundary"
+        and piece.lumped.kind[2] == "capacitance"
+    ]
+    if not sheets:
+        return None
+    factor = 0.5 * const.epsilon_0 * op.built.scale
+
+    def energy(x: np.ndarray) -> float:
+        return sum(factor * float(np.real(np.conj(x) @ op.apply(k, x))) for k in sheets)
+
+    return energy
 
 
 def _is_real(op: EigenOperator) -> bool:
