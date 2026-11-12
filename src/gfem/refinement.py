@@ -32,7 +32,7 @@ from gfem.errors import (
     NonDifferentiableError,
 )
 from gfem.mesh import Mesh
-from gfem.model import Absorbing, Conductor, Impedance, LumpedPort, Model, WavePort
+from gfem.model import Absorbing, Model, WavePort
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
@@ -109,7 +109,9 @@ class QuantityEstimator:
     estimate: an off-diagonal capacitance, an anisotropic permittivity,
     ``mu_r`` other than 1 (S and omega), a wave port with a de-embedding
     offset or in a lossy medium, a shared wave port surface, and a mode
-    with loss.
+    with a second-order absorbing boundary, a complex ``mu_r`` or loss in
+    an anisotropic material. For a lossy mode the estimate covers the
+    complex ``omega``; the error of Q is not estimated and can exceed it.
     """
 
     capacitance: tuple[str, str] | None = None
@@ -806,6 +808,8 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
     """Raise for a quantity entry the verification tier has no case for (ADR 0089)."""
     from gfem._engine.coefficients import element_tensors
 
+    if estimator.omega is not None:
+        _check_lossy_mode(model)
     if element_tensors(model, "eps_r").ndim == 3:
         raise _untested(
             "anisotropic permittivity",
@@ -845,13 +849,6 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
                     "Use gfem.FieldEstimator(), or a lumped port.",
                 )
         return
-    if lossy.any() or _lossy_boundary(model):
-        raise MeshRefinementUnsupportedError(
-            "lossy eigenmode",
-            "QuantityEstimator(omega=...) has no verified estimate for a mode "
-            "with loss (lossy materials, conductor, impedance or absorbing "
-            "boundaries, resistive or wave ports): use gfem.FieldEstimator().",
-        )
 
 
 def _untested(feature: str, what: str) -> MeshRefinementUnsupportedError:
@@ -875,19 +872,35 @@ def _lossy_elements(model: Model) -> np.ndarray:
     return out
 
 
-def _lossy_boundary(model: Model) -> bool:
-    """Whether a boundary or port of the model takes energy out of a mode."""
-    for b in model.boundaries:
-        if isinstance(b, (Absorbing, Conductor)):
-            return True
-        if isinstance(b, Impedance) and b.resistance is not None:
-            return True
-    for p in model.ports:
-        if isinstance(p, WavePort):
-            return True
-        if isinstance(p, LumpedPort) and p.rlc[0] is not None:
-            return True
-    return False
+def _check_lossy_mode(model: Model) -> None:
+    """Raise for a mode whose loss no verification case covers (ADR 0089).
+
+    Covered: tan_delta, conductivity and complex eps_r of an isotropic
+    material, impedance, first-order absorbing and conductor surfaces, and
+    resistive lumped ports. (A wave port on an eigenmode is refused by the
+    eigen solver.)
+    """
+    from gfem._engine.coefficients import anisotropic_regions, element_tensors
+
+    what = None
+    if any(isinstance(b, Absorbing) and b.order == 2 for b in model.boundaries):
+        what = "a second-order absorbing boundary"
+    elif np.any(np.asarray(element_tensors(model, "mu_r")).imag):
+        what = "a complex mu_r"
+    else:
+        lossy = _lossy_elements(model)
+        for region in anisotropic_regions(model, tuple(model.materials)):
+            if lossy[model.mesh.elements(region)].any():
+                what = f"loss in the anisotropic material of {region!r}"
+                break
+    if what is not None:
+        raise MeshRefinementUnsupportedError(
+            "lossy eigenmode",
+            f"QuantityEstimator(omega=...) has no verified estimate for a mode "
+            f"with {what} (of the lossy modes, only second-order absorbing "
+            "boundaries, a complex mu_r and loss in an anisotropic material have "
+            "none): use gfem.FieldEstimator().",
+        )
 
 
 def _touching(model: Model, surface: str) -> np.ndarray:

@@ -544,33 +544,105 @@ def omega(
 ) -> tuple[float, np.ndarray]:
     """The relative error estimate of ``omega[mode]`` and each tetrahedron's.
 
-    lambda_h - lambda = (a(e, e) - lambda b(e, e)) / b(u_h, u_h) with
-    lambda = k^2, and omega_h - omega ~ omega (lambda_h - lambda) / (2
-    lambda); the estimate is (|sum c_K| + lambda |sum m_K|) / (2 lambda
-    |b(u_h, u_h)|), b the complex bilinear eps mass form (a lossless mode is
-    real up to one phase, which this ratio does not see); a tetrahedron's is
-    |c_K - lambda m_K| with the same scale.
+    A mode of the complex-symmetric T(k) is its own dual, and k_h - k ~=
+    -e^T T(k) e / (x_h^T T'(k_h) x_h), k = omega scale / c complex. The
+    numerator's volume terms are c_K - k^2 m_K: c_K of the recovered error
+    of mu^-1 curl E, m_K = int e_D . eps_eff^-1 e_D of the recovered error
+    e_D of eps_eff E, eps_eff = eps_r (1 - i tan_delta) - i eta0 sigma scale
+    / k (the total current, whose normal component is continuous); the
+    products are complex bilinear. T'(k_h) is the eigen operator's own
+    (`gfem._eigen.operator.EigenOperator.derivative`), so it holds the
+    damping of lumped resistors, impedance, absorbing and conductor surfaces.
+    The estimate is (|sum c_K| + |k^2| |sum m_K|) / (|k| |x_h^T T' x_h|), a
+    tetrahedron's |c_K - k^2 m_K| on the same scale. On a lossless mode
+    T' = -2k M and this is (|sum c_K| + k^2 |sum m_K|) / (2 k^2 |b(E, E)|).
     """
     field = result.e_fields[mode]
     with task_manager(threads):
         recovery = FluxRecovery(model, field.order, cracks=True)
-        k = float(np.real(np.asarray(field.omega))) / scipy.constants.c
-        lam = (k * recovery.built.scale) ** 2
-        residuals = _residuals(recovery, field)
-        curl, mass = _pair(recovery, residuals, residuals)
+        k = complex(np.asarray(field.omega)) / scipy.constants.c * recovery.built.scale
+        lam = k * k
+        eps, eps_inverse = _effective_eps(recovery, k)
         parts = _parts(field)
-        b = _complex(
-            [
-                [
-                    recovery.element_integrals(u * (recovery.eps * v)).sum()
-                    for v in parts
-                ]
-                for u in parts
-            ]
-        )
-    scale = 1.0 / (2 * lam * abs(b))
-    value = scale * (abs(curl.sum()) + lam * abs(mass.sum()))
+        flux = _times(eps, parts)
+        flux_error = [recovery.flux_residual(f) for f in flux]
+        curl_error = [recovery.curl_residual(ngs.curl(gf)) for gf in parts]
+        curl = _bilinear(recovery, curl_error, _times([recovery.mu], curl_error))
+        mass = _bilinear(recovery, flux_error, _times(eps_inverse, flux_error))
+        slope = _slope(model, field, k)
+    scale = 1.0 / (abs(k) * abs(slope))
+    value = scale * (abs(curl.sum()) + abs(lam) * abs(mass.sum()))
     return float(value), scale * np.abs(curl - lam * mass)
+
+
+def _effective_eps(
+    recovery: FluxRecovery, k: complex
+) -> tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]]:
+    """eps_eff and its inverse at ``k``, each as its real (and imaginary) part.
+
+    eps_eff = eps_r (1 - i tan_delta) - i eta0 sigma scale / k per
+    tetrahedron, a scalar or a 3x3 tensor; real (``recovery.eps``) on a
+    lossless model.
+    """
+    from gfem._engine.coefficients import lossy_eps
+    from gfem._engine.terms import ETA0
+
+    model, built = recovery.model, recovery.built
+    sigma = element_tensors(model, "conductivity").real
+    eps = lossy_eps(model)
+    if eps.ndim != sigma.ndim:
+        eye = np.eye(3)
+        eps, sigma = (
+            v if v.ndim == 3 else v[:, None, None] * eye for v in (eps, sigma)
+        )
+    eps = eps - 1j * ETA0 * built.scale * sigma / k
+    if not np.any(eps.imag):
+        return [recovery.eps], [recovery.eps_inverse]
+    inverse = 1.0 / eps if eps.ndim == 1 else np.linalg.inv(eps)
+
+    def parts(values: np.ndarray) -> list[ngs.CoefficientFunction]:
+        return [coefficient(built, values.real), coefficient(built, values.imag)]
+
+    return parts(eps), parts(inverse)
+
+
+def _times(
+    w: Sequence[ngs.CoefficientFunction], x: Sequence[ngs.CoefficientFunction]
+) -> list[ngs.CoefficientFunction]:
+    """``w x`` of a complex coefficient and a complex field, as real parts.
+
+    Each is its real part, then its imaginary part if it has one.
+    """
+    if len(w) == 1:
+        return [w[0] * v for v in x]
+    if len(x) == 1:
+        return [w[0] * x[0], w[1] * x[0]]
+    return [w[0] * x[0] - w[1] * x[1], w[1] * x[0] + w[0] * x[1]]
+
+
+def _bilinear(
+    recovery: FluxRecovery,
+    x: list[ngs.CoefficientFunction],
+    y: list[ngs.CoefficientFunction],
+) -> np.ndarray:
+    """``int_K x . y`` per tetrahedron, complex bilinear, of real-part lists."""
+    return _complex([[recovery.element_integrals(u * v) for v in y] for u in x])
+
+
+def _slope(model: Model, field: Field, k: complex) -> complex:
+    """``x^T T'(k) x``, T the eigen operator of the field's model (``x``: its DOFs)."""
+    from gfem._engine.driven import driven_operator
+    from gfem._engine.eigen import eigen_operator
+    from gfem._linalg import ResolvedLinearSolver
+    from gfem.options import SolverOptions
+
+    op = driven_operator(model, field.order)
+    linear = ResolvedLinearSolver.resolve(
+        SolverOptions(linear_solver="direct"), default="direct", problem="eigenmode"
+    )
+    t = eigen_operator(op, k.real, linear=linear, tolerance=1e-10)
+    x = np.asarray(field.coefficients, complex)
+    return complex(x @ t.derivative(k, x))
 
 
 def _parts(field: Field) -> list[ngs.GridFunction]:

@@ -32,6 +32,18 @@ Cases and references (none recomputed by the tests but the closed forms):
 - sheet (`refinement_cases.sheet_model`), the only case cut along an
   interior sheet: C_aa and C_bb on uniform n = 2, 4, 8, 16 and C_aa over
   `refine_mesh` cycles 0-8, against `refinement_cases.SHEET_C`.
+- lossy box: the rectangular box filled with eps_r 4, tan_delta 0.1 and
+  5 S/m (as a `Material` and as a `MaterialField` with complex eps_r), its
+  four modes on m = 2, against the fill's closed form (complex omega);
+- lossy L cavity: the L cavity filled with eps_r 4, tan_delta 0.1, complex
+  omega over `refine_mesh` cycles 0-7 against the exact scaling of
+  `refinement_cases.CAVITY_LAMBDA1`;
+- lossy walls: the air box with an impedance (377 ohm/sq), first-order
+  absorbing or conductor (1e5 S/m) top wall, mode 110 on m = 2, 3, against
+  `refinement_cases.LOSSY_WALL_OMEGA` (Richardson);
+- resistive line: the parallel-plate line closed by its 50 and 30 ohm
+  lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32,
+  against its transmission-line closed form.
 
 Measured (ostau, 1 thread):
 
@@ -44,6 +56,10 @@ Measured (ostau, 1 thread):
     rectangular box       7.05 - 10.6
     anisotropic coax      1.60 - 2.39
     sheet                 1.22 - 1.69
+    lossy box             7.18 - 10.6   (both fills)
+    lossy L cavity        2.87 - 4.08
+    lossy walls           4.34 - 9.17
+    resistive line        1.47 - 7.44
     order 3: line 2.87 - 18.1, box (m = 1) 4.69 - 5.39
 
 The higher ratios come from the fields with no sharp metal edge (the uniform
@@ -76,6 +92,10 @@ EFFECTIVITY_BY_CASE = {
     "rectangular box": (0.9, 12.0),
     "anisotropic coax": (0.9, 2.5),
     "sheet": (0.9, 2.5),
+    "lossy box": (0.9, 12.0),
+    "lossy L cavity": (0.9, 5.0),
+    "lossy walls": (0.9, 12.0),
+    "resistive line": (0.9, 8.0),
 }
 
 #: The range the docs quote: the lowest low and the highest high.
@@ -402,6 +422,145 @@ def _box(directory, m, order=2):
 def test_the_rectangular_box_frequencies(tmp_path, m):
     for f, estimate, exact in _box(tmp_path, m):
         _assert_in("rectangular box", estimate, f / exact - 1)
+
+
+# --- lossy eigenmodes: complex omega ------------------------------------------
+
+_ETA0 = const.mu_0 * const.c
+#: The lossy fill: eps_r 4, tan_delta 0.1, conductivity 5 S/m.
+_LOSSY_EPS, _LOSSY_TAN, _LOSSY_SIGMA = 4.0, 0.1, 5.0
+LOSSY_FILLS = {
+    "material": gfem.Material(
+        eps_r=_LOSSY_EPS, tan_delta=_LOSSY_TAN, conductivity=_LOSSY_SIGMA
+    ),
+    "complex eps_r": gfem.MaterialField(
+        eps_r=_LOSSY_EPS * (1 - 1j * _LOSSY_TAN), conductivity=_LOSSY_SIGMA
+    ),
+}
+
+
+def _lossy_omega(k0_squared, eps_c, sigma, near):
+    """The root of eps_c k^2 - i eta0 sigma k - k0^2 = 0 nearest ``near``, rad/s.
+
+    ``k0_squared`` is the lossless Dirichlet eigenvalue, rad^2/m^2: a cavity
+    uniformly filled with eps_c and sigma resonates where the fill's
+    eps_c - i eta0 sigma / k times k^2 equals it.
+    """
+    roots = np.roots([eps_c, -1j * _ETA0 * sigma, -k0_squared]) * const.c
+    return complex(roots[np.argmin(abs(roots - near))])
+
+
+def _box_model(directory, m, material, top=None):
+    cells = sm.plate(1.0, 0.7, (("air", 0.4),), (5 * m, 4 * m, 2 * m))
+    path = sm.write_msh22(directory / "box.msh", cells)
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"air": material},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("side"), top or gfem.PEC("top")],
+    )
+
+
+def _omega_and_estimate(model, target):
+    result = gfem.solve(
+        model, gfem.Eigenmode(target=target, n_modes=1), options=OPTIONS
+    )
+    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    return complex(np.asarray(result.omega)[0]), estimate.value
+
+
+@pytest.mark.parametrize("fill", list(LOSSY_FILLS))
+def test_the_lossy_box_frequencies(tmp_path, fill):
+    # The rectangular box filled uniformly: every mode keeps its field and
+    # its omega solves the fill's quadratic, Q from 4.5 to 7.1.
+    model = _box_model(tmp_path, 2, LOSSY_FILLS[fill])
+    eps_c = _LOSSY_EPS * (1 - 1j * _LOSSY_TAN)
+    for mode in BOX_MODES:
+        k0_squared = math.pi**2 * sum(
+            (i / a) ** 2 for i, a in zip(mode, BOX, strict=True)
+        )
+        target = const.c * math.sqrt(k0_squared / _LOSSY_EPS) / (2 * math.pi)
+        omega, estimate = _omega_and_estimate(model, target)
+        exact = _lossy_omega(k0_squared, eps_c, _LOSSY_SIGMA, omega)
+        _assert_in("lossy box", estimate, (omega - exact) / abs(exact))
+
+
+def test_the_lossy_l_cavity_frequency_under_mesh_refinement(tmp_path):
+    lossless = rc.cavity_model(tmp_path, 2)
+    fill = gfem.Material(eps_r=_LOSSY_EPS, tan_delta=_LOSSY_TAN)
+    model = gfem.Model(
+        lossless.mesh, materials={"air": fill}, boundaries=lossless.boundaries
+    )
+    k0_squared = rc.CAVITY_LAMBDA1 * 1e6  # mm^-2 to m^-2
+    eps_c = _LOSSY_EPS * (1 - 1j * _LOSSY_TAN)
+    exact = _lossy_omega(k0_squared, eps_c, 0.0, 2 * math.pi * rc.CAVITY_F1)
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            model,
+            gfem.Eigenmode(target=exact.real / (2 * math.pi), n_modes=1),
+            estimator=gfem.QuantityEstimator(omega=0),
+            tolerance=1e-7,
+            max_cycles=7,
+            options=OPTIONS,
+        )
+    assert len(ref.cycles) == 8
+    for cycle in ref.cycles:
+        _assert_in("lossy L cavity", cycle.estimate, (cycle.value - exact) / abs(exact))
+
+
+LOSSY_WALLS = {
+    "impedance": gfem.Impedance("top", resistance=377.0),
+    "absorbing": gfem.Absorbing("top"),
+    "conductor": gfem.Conductor("top", conductivity=1e5),
+}
+
+
+@pytest.mark.parametrize("wall", list(LOSSY_WALLS))
+@pytest.mark.parametrize("m", [2, 3])
+def test_the_box_with_a_lossy_wall(tmp_path, m, wall):
+    # Air box, PEC but for its top wall; mode 110, Q 4.0 (impedance,
+    # absorbing) and 254 (conductor). The loss is on the boundary only, where
+    # the estimate has no term: it enters through T'(k) alone.
+    model = _box_model(tmp_path, m, gfem.Material(), LOSSY_WALLS[wall])
+    target = const.c * math.sqrt(1 / BOX[0] ** 2 + 1 / BOX[1] ** 2) / 2
+    omega, estimate = _omega_and_estimate(model, target)
+    reference = rc.LOSSY_WALL_OMEGA[wall]
+    _assert_in("lossy walls", estimate, (omega - reference) / abs(reference))
+
+
+#: The parallel-plate line closed by its 50 and 30 ohm lumped ports, PEC
+#: plates: a resonator whose only loss is the two resistors (Q 1.8 and 3.4).
+_RESONANCES = (7.5e9, 15e9)
+
+
+def _line_resonance(near):
+    """The resonance nearest ``near``, rad/s: Gamma1 Gamma2 e^{-2j beta L} = 1."""
+    eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
+    z0 = eta0 * _LINE["height"] / (_LINE["width"] * math.sqrt(_LINE["eps_r"]))
+    gammas = ((_R1 - z0) / (_R1 + z0)) * ((_R2 - z0) / (_R2 + z0))
+    speed = const.c / math.sqrt(_LINE["eps_r"])
+    # beta L = pi n - i ln(Gamma1 Gamma2) / 2, omega = beta speed
+    n = round(near.real * _LINE["length"] / (speed * math.pi))
+    return complex((math.pi * n - 0.5j * np.log(gammas)) * speed / _LINE["length"])
+
+
+@pytest.mark.parametrize("n", [4, 8, 16, 32])
+def test_the_resistive_line_resonances(tmp_path, n):
+    path = sm.write_msh22(
+        tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1))
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"dielectric": gfem.Material(eps_r=_LINE["eps_r"])},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z", resistance=_R1),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=_R2),
+        ],
+    )
+    for target in _RESONANCES:
+        omega, estimate = _omega_and_estimate(model, target)
+        exact = _line_resonance(omega)
+        _assert_in("resistive line", estimate, (omega - exact) / abs(exact))
 
 
 # --- order 3 -----------------------------------------------------------------

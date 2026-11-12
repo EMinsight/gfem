@@ -99,6 +99,21 @@ CAVITY_SPLIT = (
     (246416, 3.8907e-4),
 )
 
+#: The air box 1 x 0.7 x 0.4 mm (`structured_meshes.plate`), PEC but for a lossy
+#: top wall: its 110 mode's omega, rad/s, per wall. Richardson extrapolations
+#: of uniform order-2 direct solves on h = 0.2 / m mm, m = 4 and 5, with the
+#: rate fitted on m = 3, 4, 5 (alpha 3.98 impedance and absorbing, 4.02
+#: conductor); the alpha = 4 extrapolation lies within 4.2e-9 (relative), and
+#: `LOSSY_WALL_BOUND` bounds both, 1/100 of the m = 3 error (2.4e-6 or more).
+#: Provenance: .scratch/adaptive-refinement-followups/probes/04 (wall.jsonl).
+LOSSY_WALL_OMEGA = {
+    "impedance": 1888057987875.6094 + 236196247959.60132j,  # 377 ohm/sq
+    "absorbing": 1887838945992.7559 + 236275835911.12192j,  # first order
+    "conductor": 1639154393785.1357 + 3222701363.0419827j,  # 1e5 S/m
+}
+#: Relative bound of each `LOSSY_WALL_OMEGA`.
+LOSSY_WALL_BOUND = 2e-8
+
 #: The sheet case's capacitance matrix, F, terminals in order a, b.
 SHEET_C = ((4.08621e-17, -1.39274e-19), (-1.39274e-19, 4.19939e-17))
 #: Relative bound of each `SHEET_C` entry.
