@@ -86,6 +86,7 @@ __all__ = [
     "EntryCache",
     "default_retain_memory",
     "discretization",
+    "release_memory",
     "retain_budget",
 ]
 
@@ -734,3 +735,14 @@ class EntryCache:
 
 
 ENTRIES = EntryCache(_DISCRETIZATIONS.values)
+
+
+def release_memory() -> None:
+    """Free every solve entry and pooled handle, then every discretization.
+
+    Entries and pooled handles go first, while the discretizations whose
+    spaces they were built on still exist. Under ranks every rank calls it at
+    the same point: freeing a distributed handle is collective.
+    """
+    ENTRIES.clear()
+    _DISCRETIZATIONS.clear()
