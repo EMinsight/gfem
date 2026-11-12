@@ -218,6 +218,23 @@ class SystemOperator:
         (``retain_memory``'s bytes) a serial CPU direct sweep takes its base
         from the plan pool and returns it there (`PlanSlot`).
         """
+        plans = None if pool_budget is None else self._plan_slot(pool_budget)
+        return self._sweep(
+            solves=solves,
+            reuse_preconditioner=reuse_preconditioner,
+            tolerance=tolerance,
+            plans=plans,
+        )
+
+    def _sweep(
+        self,
+        *,
+        solves: int,
+        reuse_preconditioner: bool,
+        tolerance: float | None,
+        plans: PlanSlot | None,
+    ) -> SystemSweep:
+        """`sweep` on the plan slot ``plans`` (or off the pool)."""
         return SystemSweep(
             self.operator_at,
             functools.partial(self._system_handle, borrow=True),
@@ -229,7 +246,7 @@ class SystemOperator:
                 tolerance=tolerance,
                 reuse_preconditioner=reuse_preconditioner,
             ),
-            plans=None if pool_budget is None else self._plan_slot(pool_budget),
+            plans=plans,
         )
 
     def _plan_slot(self, budget: int) -> PlanSlot | None:
@@ -410,9 +427,13 @@ class SystemOperator:
                 adjoint_tolerance=self._adjoint_tolerance,
             )
             budget = self._pool_budget
-            if budget is not None and system._plan_slot(budget) is not None:
-                system._adjoint_sweep = system.sweep(
-                    tolerance=self._adjoint_tolerance, pool_budget=budget
+            slot = None if budget is None else system._plan_slot(budget)
+            if slot is not None:
+                system._adjoint_sweep = system._sweep(
+                    solves=1,
+                    reuse_preconditioner=True,
+                    tolerance=self._adjoint_tolerance,
+                    plans=slot,
                 )
             self._transposed_system = system
         return self._transposed_system
