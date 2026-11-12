@@ -26,6 +26,7 @@ space, expanded). No wave vector is needed.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -44,7 +45,15 @@ if TYPE_CHECKING:
     from gfem._field import Field
     from gfem.model import Model
 
-__all__ = ["power_flow"]
+__all__ = [
+    "Flux",
+    "Surface",
+    "build",
+    "check_nodes",
+    "check_size",
+    "power_flow",
+    "surface",
+]
 
 #: The three edges of a triangle, by vertex.
 _TRI_EDGES = np.array([[0, 1], [0, 2], [1, 2]])
@@ -59,6 +68,78 @@ _TOPOLOGY_ARRAYS = (
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class Surface:
+    """The element sets of a side's surface: topology only.
+
+    Attributes:
+        tie: The tie class of every node (`tie_classes`).
+        inside: The selected tetrahedra of the field's support.
+        layer: The outside tetrahedra that share an edge with ``inside``:
+            the elements whose terms the power reads.
+        rim: The inside tetrahedra that share an edge with the outside.
+        faces: The triangles whose terms the power reads (`_outside_faces`).
+    """
+
+    tie: np.ndarray
+    inside: np.ndarray
+    layer: np.ndarray
+    rim: np.ndarray
+    faces: np.ndarray
+
+    def read_elements(self, mesh: Mesh) -> np.ndarray:
+        """The tetrahedra whose materials the power reads.
+
+        The layer, and the solve-domain tetrahedra beside a face it reads.
+        """
+        out = self.layer.copy()
+        nb = mesh.triangle_neighbours[self.faces]
+        out[nb[nb >= 0]] = True
+        return out
+
+
+@dataclasses.dataclass(frozen=True)
+class Flux:
+    """The operator and test mask of a surface, ready to contract a field.
+
+    ``P = Im[conj(D e) . M e] / c0`` with ``D = diag(mask)``, ``M`` the sum
+    of the non-port pieces at ω and ``c0 = 2 ω mu0 scale``.
+    """
+
+    op: DrivenOperator
+    mask: np.ndarray
+
+    def _apply(self, x: np.ndarray, omega: float) -> np.ndarray:
+        """``M x`` at ``omega``, ``x`` of shape ``(ndof,)`` or ``(ndof, m)``."""
+        out = np.zeros(x.shape, complex)
+        for k, piece in enumerate(self.op.pieces):
+            if piece.kind != "port":
+                out += complex(piece.theta(omega)) * self.op.apply(k, x)
+        return out
+
+    def _scale(self, omega: float) -> float:
+        return 2 * omega * const.mu_0 * self.op.built.scale
+
+    def power(self, e: np.ndarray, omega: float) -> float:
+        """The power leaving the side, W."""
+        w = np.where(self.mask, e, 0.0)
+        return float(np.imag(np.vdot(w, self._apply(e, omega)))) / self._scale(omega)
+
+    def pullback(self, e: np.ndarray, omega: float) -> np.ndarray:
+        """JAX's gradient of `power` in ``e``: ``dP/dx - i dP/dy = 2 conj(H e)``.
+
+        ``P = e^H H e`` with ``H = (D M - M^H D) / (2i c0)`` Hermitian, and
+        ``M^H D e = conj(M conj(D e))``: the unpaired pieces are complex
+        symmetric.
+        """
+        w = np.where(self.mask, e, 0.0)
+        both = self._apply(np.stack([e, np.conj(w)], axis=1), omega)
+        h = (np.where(self.mask, both[:, 0], 0.0) - np.conj(both[:, 1])) / (
+            2j * self._scale(omega)
+        )
+        return 2 * np.conj(h)
+
+
 def power_flow(
     field: Field,
     side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray],
@@ -71,8 +152,29 @@ def power_flow(
         ValueError: The side, the field or a port near the surface does not
             fit (see `gfem.power_flow`).
     """
+    check_nodes(field, model)
+    flux = build(field.order, model, surface(field, side, model))
+    e = np.asarray(field.coefficients)
+    check_size(e, flux, field.order)
+    return flux.power(e, float(np.asarray(field.omega).real))
+
+
+def surface(
+    field: Field,
+    side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray],
+    model: Model,
+) -> Surface:
+    """The surface of ``side``, from the mesh topology.
+
+    A predicate side reads the node coordinates too.
+
+    Raises:
+        RegionNotFoundError: A named region does not exist.
+        ValueError: The side or the field does not fit, or the surface is
+            within one element of a port (see `gfem.power_flow`).
+    """
     mesh = model.mesh
-    support = _check_field(field, model)
+    support = _check_support(field, model)
     inside = _selection(mesh, side) & support
     outside = support & ~inside
     if not inside.any():
@@ -92,32 +194,55 @@ def power_flow(
     rim = inside & np.isin(tet_edges, np.unique(tet_edges[outside])).any(axis=1)
     faces = _outside_faces(mesh, tie, inside, support, closure)
     for port in model.ports:
-        for surface in surfaces_of(port):
-            if faces[mesh.elements(surface)].any():
+        for name in surfaces_of(port):
+            if faces[mesh.elements(name)].any():
                 raise ValueError(
                     f"The surface of this side is within one element of port "
-                    f"{port.name!r}'s surface {surface!r}: power_flow cannot "
+                    f"{port.name!r}'s surface {name!r}: power_flow cannot "
                     "count a port's excitation. Move the surface at least one "
                     "element away from the port, or put the port's elements "
                     "inside the side."
                 )
+    return Surface(tie=tie, inside=inside, layer=layer, rim=rim, faces=faces)
 
-    op = driven_operator(model, field.order, elements=layer, faces=faces, paired=False)
-    e = np.asarray(field.coefficients)
-    if e.shape[0] != op.space.ndof:
+
+def build(order: int, model: Model, where: Surface) -> Flux:
+    """The `Flux` of a surface on ``model`` at its node positions."""
+    op = driven_operator(
+        model, order, elements=where.layer, faces=where.faces, paired=False
+    )
+    return Flux(op=op, mask=_dofs(op, where.tie, where.rim, where.rim | where.layer))
+
+
+def check_size(e: np.ndarray, flux: Flux, order: int) -> None:
+    """Raise unless the coefficients fit the operator's space.
+
+    Raises:
+        ValueError: Another number of DOFs.
+    """
+    if e.shape[0] != flux.op.space.ndof:
         raise ValueError(
             f"The field has {e.shape[0]} coefficients but the model's order-"
-            f"{field.order} driven space has {op.space.ndof} DOFs: the field "
+            f"{order} driven space has {flux.op.space.ndof} DOFs: the field "
             "was not solved on this model."
         )
-    w = np.where(_dofs(op, tie, rim, rim | layer), e, 0.0)
-    omega = float(np.asarray(field.omega).real)
-    total = sum(
-        piece.theta(omega) * np.vdot(w, op.apply(k, e))
-        for k, piece in enumerate(op.pieces)
-        if piece.kind != "port"
+
+
+def check_nodes(field: Field, model: Model) -> None:
+    """Raise unless the field's node positions are the model's.
+
+    Raises:
+        ValueError: They differ.
+    """
+    if not np.array_equal(np.asarray(field.mesh.nodes), np.asarray(model.mesh.nodes)):
+        raise _other_mesh()
+
+
+def _other_mesh() -> ValueError:
+    return ValueError(
+        "The field lives on another mesh (or other node positions) than the "
+        "model: pass the model the field was solved with."
     )
-    return float(np.imag(total)) / (2 * omega * const.mu_0 * op.built.scale)
 
 
 def _check_field(field: Field, model: Model) -> np.ndarray:
@@ -126,15 +251,19 @@ def _check_field(field: Field, model: Model) -> np.ndarray:
     Raises:
         ValueError: The mesh, its nodes or the support differ.
     """
+    check_nodes(field, model)
+    return _check_support(field, model)
+
+
+def _check_support(field: Field, model: Model) -> np.ndarray:
+    """The field's support mask, after checking its topology is the model's.
+
+    Raises:
+        ValueError: The mesh topology or the support differ.
+    """
     mesh = model.mesh
-    same = _same_topology(field.mesh, mesh) and np.array_equal(
-        np.asarray(field.mesh.nodes), np.asarray(mesh.nodes)
-    )
-    if not same:
-        raise ValueError(
-            "The field lives on another mesh (or other node positions) than the "
-            "model: pass the model the field was solved with."
-        )
+    if not _same_topology(field.mesh, mesh):
+        raise _other_mesh()
     excluded = tuple(field._excluded)  # noqa: SLF001
     layout = probe.Layout(tuple(field.support), excluded, field.space, field.order)
     support = probe.in_support(mesh, layout)

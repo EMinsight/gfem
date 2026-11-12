@@ -515,7 +515,14 @@ def power_flow(
 
     A field of an adaptive sweep (`gfem.ReducedFields`) is exact at the
     solved frequencies and accurate to the sweep's tolerance in between.
-    Not differentiable in this version.
+
+    Differentiable through the field: inside `jax.grad`, `jax.jit` or
+    `jax.vmap` the kept field of a solve (lumped or wave ports) carries the
+    gradient, so absorbed, radiated and transmitted power are objectives.
+    The model's leaves are read only in the element layer just outside
+    ``side``; a traced material field there has no gradient here and
+    raises, and any other leaf gets an exact zero from this measurement
+    (its influence arrives through the field).
 
     Args:
         field: A driven electric field (quantity ``"E"``, in H(curl),
@@ -537,9 +544,16 @@ def power_flow(
             electric field, or was not solved on ``model``; or the
             surface is within one element of a port's surface.
         gfem.DistributedUnsupportedError: The field is a piece across ranks.
-        NonDifferentiableError: ``field`` or ``model`` is computed inside
-            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; call
-            `power_flow` outside them.
+        NonDifferentiableError: While `jax.grad` traces it: a material
+            field with an element in the element layer just outside
+            ``side`` (or beside a face that layer's terms read), or the fill
+            of a sheet with a face there, is differentiated (move the
+            surface one element away from the design region, or wrap the
+            value in `jax.lax.stop_gradient`); the node coordinates or the
+            field's ``omega`` are differentiated; the field is one of an
+            adaptive sweep (`gfem.ReducedFields`) and is differentiated. And
+            whenever the node coordinates are traced and ``side`` is a
+            predicate: name its regions.
     """
     from gfem._field import Field
     from gfem.model import Model
@@ -553,15 +567,20 @@ def power_flow(
             f"power_flow needs model= a gfem.Model, got {type(model).__name__}."
         )
     names = _side_names(side)
-    if is_traced(field) or is_traced(model):
-        raise NonDifferentiableError(
-            "gfem.power_flow is not differentiable in this version: its field and "
-            "model must be fixed values, not computed inside jax.grad, jax.jit or "
-            "jax.vmap. Call it outside the function JAX transforms."
-        )
     _check_driven(field)
-    engine = importlib.import_module("gfem._engine.power_flow")
-    return jnp.asarray(engine.power_flow(field, names, model), dtype=float)
+    if not (is_traced(field) or is_traced(model)):
+        engine = importlib.import_module("gfem._engine.power_flow")
+        return jnp.asarray(engine.power_flow(field, names, model), dtype=float)
+    if callable(names) and is_traced((field.mesh.nodes, model.mesh.nodes)):
+        raise NonDifferentiableError(
+            "power_flow's side is a predicate on element centroids, which needs "
+            "the node coordinates as numbers, but they are computed inside "
+            "jax.grad, jax.jit or jax.vmap here: name the side's volume regions "
+            "instead, so that its surface is known before the transformation runs."
+        )
+    from gfem._power_flow import power_flow as traced_power_flow
+
+    return traced_power_flow(field, names, model)
 
 
 # --- electric energy ---------------------------------------------------------------
@@ -685,7 +704,7 @@ def _check_driven(field: Field) -> None:
             "power_flow needs a time-harmonic field; this one is static (omega is "
             "None): solve a gfem.Driven problem."
         )
-    if np.iscomplexobj(np.asarray(field.omega)):
+    if jnp.iscomplexobj(field.omega):
         raise ValueError(
             "power_flow needs a driven field with a real omega; eigenmode fields "
             "have no time-averaged power flow (complex omega, arbitrary "

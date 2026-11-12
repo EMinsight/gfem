@@ -230,6 +230,17 @@ RAISES_LABELS = {
         "The electric energy of a field per region (`electric_energy`), with "
         "respect to the field or the model"
     ),
+    "power_flow x material in its layer": (
+        "The power through a surface (`power_flow`), with respect to a material "
+        "field with elements in the element layer just outside its side"
+    ),
+    "power_flow x node coordinates": (
+        "The power through a surface (`power_flow`), with respect to node coordinates"
+    ),
+    "power_flow x reduced field": (
+        "The power through a surface (`power_flow`) of a field of an adaptive "
+        "sweep, with respect to anything the field depends on"
+    ),
     "driven x wave_vector": (
         "Driven S-parameters, with respect to the Bloch wave vector"
     ),

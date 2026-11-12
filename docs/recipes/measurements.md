@@ -123,9 +123,27 @@ p_box = gfem.power_flow(e, "design", model=model)
 
   is the net power for that excitation. Through a plane in the lead of port 1
   it is `abs(a1)**2 - abs(b1)**2`, with `b = S @ a` the outgoing waves.
-- **Not differentiable.** `power_flow` inside `jax.grad` raises
-  `gfem.NonDifferentiableError`. Build a gradient objective from S or from
-  probes instead.
+- **Differentiable through the field.** Absorbed, radiated or transmitted
+  power is an objective: inside `jax.grad`, `jax.jit` or `jax.vmap`, pass the
+  kept field and the model of the same design (lumped or wave ports alike):
+
+  ```python
+  def absorbed(eps):
+      m = model.with_material("design", gfem.MaterialField(eps_r=eps))
+      r = gfem.solve(m, gfem.Driven(frequency=f, keep_fields=True))
+      return -gfem.power_flow(r.e_field(f, excite="p1"), "design", model=m)
+
+  g = jax.grad(absorbed)(eps)
+  ```
+
+  The power reads the materials of the element layer just outside `side`, and
+  their gradient there is not available: a material field with an element in
+  that layer, traced, raises `gfem.NonDifferentiableError`. Keep the surface
+  one element away from the design region (inside `side` is fine), or wrap
+  the value in `jax.lax.stop_gradient`. Node coordinates are not
+  differentiable here either; when they are traced (a `jax.jit` over the
+  model), name the side's regions instead of a predicate. A field of an adaptive sweep raises: its
+  frozen basis gives no exact gradient of the power; use `sweep="uniform"`.
 
 :::{note}
 **Why not integrate E × H\* over a plane.** On a finite-element field the
@@ -161,7 +179,8 @@ p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
   `bulk_participation[region][k]` times 1 J.
 - **The model the field was solved with** is a required input, as for
   `power_flow`: a driven result does not carry its materials.
-- **Not differentiable**, like `power_flow`.
+- **Not differentiable.** `electric_energy` inside `jax.grad` raises
+  `gfem.NonDifferentiableError`.
 
 ## Move a wave port's reference plane
 
