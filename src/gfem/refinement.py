@@ -804,13 +804,6 @@ def _check_mode(mode: int | None, n_modes: int) -> None:
 
 def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
     """Raise for a quantity entry the verification tier has no case for (ADR 0089)."""
-    from gfem._engine.coefficients import element_tensors
-
-    if element_tensors(model, "eps_r").ndim == 3:
-        raise _untested(
-            "anisotropic permittivity",
-            "an anisotropic permittivity",
-        )
     if estimator.capacitance is not None:
         if estimator.capacitance[0] != estimator.capacitance[1]:
             raise _untested(
@@ -818,9 +811,6 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
                 "an off-diagonal capacitance entry; estimate a diagonal one",
             )
         return
-    mu = element_tensors(model, "mu_r")
-    if mu.ndim == 3 or np.any(mu != 1):
-        raise _untested("permeability", "a model with mu_r other than 1")
     lossy = _lossy_elements(model)
     if estimator.s is not None:
         waves = {p.name: p for p in model.ports if isinstance(p, WavePort)}

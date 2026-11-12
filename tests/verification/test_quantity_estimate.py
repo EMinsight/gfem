@@ -31,7 +31,18 @@ Cases and references (none recomputed by the tests but the closed forms):
   k = 1, 2, 4, 8: C against an order-5 solve on the same mesh;
 - sheet (`refinement_cases.sheet_model`), the only case cut along an
   interior sheet: C_aa and C_bb on uniform n = 2, 4, 8, 16 and C_aa over
-  `refine_mesh` cycles 0-8, against `refinement_cases.SHEET_C`.
+  `refine_mesh` cycles 0-8, against `refinement_cases.SHEET_C`;
+- the parallel-plate line filled with mu_r 2 ("permeability line") or with
+  diagonal and z-rotated anisotropic eps_r and mu_r ("anisotropic line"),
+  `LINE_FILLS`, on n = 4 and 16 (never 8, an error crossing), against the
+  TEM closed form; the fill rotated about all three axes against an order-4
+  solve on the same mesh;
+- the box with mu_r 3 ("permeability box") or diagonal anisotropic eps_r
+  and mu_r ("anisotropic box"), `refinement_cases.ANISOTROPIC_BOX`, the same
+  modes on m = 2, 3 against the closed form; the fill rotated about all three
+  axes, and an eps_r 3 layer under a mu_r 2.5 layer, each of their four
+  lowest modes targeted on its own on m = 2, against
+  `refinement_cases.ANISOTROPIC_BOX_F` (order 4, same mesh).
 
 Measured (ostau, 1 thread):
 
@@ -44,6 +55,10 @@ Measured (ostau, 1 thread):
     rectangular box       7.05 - 10.6
     anisotropic coax      1.60 - 2.39
     sheet                 1.22 - 1.69
+    permeability line     1.40 - 4.57
+    anisotropic line      1.37 - 5.60   (rotated about x, y, z: 2.16 - 15.6)
+    permeability box      7.05 - 10.6   (layers: 7.43 - 9.65)
+    anisotropic box       5.08 - 11.1   (rotated about x, y, z: 6.05 - 9.89)
     order 3: line 2.87 - 18.1, box (m = 1) 4.69 - 5.39
 
 The higher ratios come from the fields with no sharp metal edge (the uniform
@@ -61,7 +76,6 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
-from gfem._engine import estimate as kernels
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 
@@ -76,6 +90,10 @@ EFFECTIVITY_BY_CASE = {
     "rectangular box": (0.9, 12.0),
     "anisotropic coax": (0.9, 2.5),
     "sheet": (0.9, 2.5),
+    "permeability line": (0.9, 17.0),
+    "anisotropic line": (0.9, 17.0),
+    "permeability box": (0.9, 12.0),
+    "anisotropic box": (0.9, 12.0),
 }
 
 #: The range the docs quote: the lowest low and the highest high.
@@ -183,11 +201,10 @@ def test_the_estimate_does_not_see_the_faceting(circular_coax, k):
 @pytest.mark.parametrize("fill", list(rc.ANISOTROPIC_COAX))
 @pytest.mark.parametrize("k", [1, 2, 4, 8])
 def test_the_anisotropic_coax_capacitance(tmp_path, k, fill):
-    # QuantityEstimator still refuses an anisotropic permittivity: the
-    # estimate is the kernel's, as error_estimate would report it.
     model = rc.anisotropic_coax_model(tmp_path, k, fill)
     result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
-    estimate, _ = kernels.capacitance(model, result, "inner")
+    estimator = gfem.QuantityEstimator(capacitance=("inner", "inner"))
+    estimate = gfem.error_estimate(result, estimator, model=model).value
     fine = gfem.solve(
         model,
         rc.COAX_PROBLEM,
@@ -296,11 +313,15 @@ _R1, _R2 = 50.0, 30.0
 LINE_FREQUENCIES = (3e9, 8e9, 15e9, 25e9)
 
 
-def _line_s(f):
-    """The line's S matrix between 50 and 30 ohm ports, from its ABCD matrix."""
-    beta = 2 * math.pi * f / const.c * math.sqrt(_LINE["eps_r"])
+def _line_s(f, eps_r=_LINE["eps_r"], mu_r=1.0):
+    """The line's S matrix between 50 and 30 ohm ports, from its ABCD matrix.
+
+    ``eps_r`` and ``mu_r`` are the fill's entries the TEM wave sees: eps_r
+    along the plates' normal z, mu_r along the width y.
+    """
+    beta = 2 * math.pi * f / const.c * math.sqrt(eps_r * mu_r)
     eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
-    z0 = eta0 * _LINE["height"] / (_LINE["width"] * math.sqrt(_LINE["eps_r"]))
+    z0 = eta0 * math.sqrt(mu_r / eps_r) * _LINE["height"] / _LINE["width"]
     c, s = math.cos(beta * _LINE["length"]), math.sin(beta * _LINE["length"])
     a, b, cc, d = c, 1j * z0 * s, 1j * s / z0, c
     den = a * _R2 + b + cc * _R1 * _R2 + d * _R1
@@ -310,13 +331,14 @@ def _line_s(f):
     return np.array([[s11, 2 * k * (a * d - b * cc) / den], [2 * k / den, s22]])
 
 
-def _line(directory, n, order=2):
+def _line(directory, n, order=2, material=None):
     path = sm.write_msh22(
         directory / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1))
     )
+    material = material or gfem.Material(eps_r=_LINE["eps_r"])
     model = gfem.Model(
         gfem.Mesh.from_gmsh(path, length_unit="mm"),
-        materials={"dielectric": gfem.Material(eps_r=_LINE["eps_r"])},
+        materials={"dielectric": material},
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
         ports=[
             gfem.LumpedPort("p1", "port1", "+z"),
@@ -328,10 +350,15 @@ def _line(directory, n, order=2):
     return model, gfem.solve(model, problem, options=options)
 
 
-def _line_effectivities(model, result):
-    """(estimate, error) of S11, S21 and S22 at each frequency."""
+def _line_effectivities(model, result, exact=None):
+    """(estimate, error) of S11, S21 and S22 at each frequency.
+
+    ``exact``: the reference S, shape (frequencies, 2, 2); by default the
+    closed form of the eps_r 4 line.
+    """
     out = []
-    exact = np.array([_line_s(f) for f in LINE_FREQUENCIES])
+    if exact is None:
+        exact = np.array([_line_s(f) for f in LINE_FREQUENCIES])
     ports = ("p1", "p2")
     for to, source in (("p1", "p1"), ("p2", "p1"), ("p2", "p2")):
         estimator = gfem.QuantityEstimator(s=(to, source))
@@ -346,6 +373,74 @@ def _line_effectivities(model, result):
 def test_the_parallel_plate_line_s(tmp_path, n):
     for estimate, error in _line_effectivities(*_line(tmp_path, n)):
         _assert_in("parallel-plate line", estimate, error)
+
+
+# --- magnetic and anisotropic lines: S, smooth --------------------------------
+
+#: The line's magnetic and anisotropic fills: (material, eps_zz, mu_yy), the
+#: entries its TEM wave sees, or None where the fill has no closed form.
+#: "rotz" turns eps_r about z, the plates' normal, and keeps mu_r isotropic in
+#: the plates' plane: a turned in-plane mu_r would put H_x on the open sides,
+#: and the wave would no longer be TEM. "rot3" turns both about all three axes.
+LINE_FILLS = {
+    "mu": (gfem.Material(eps_r=2.0, mu_r=2.0), 2.0, 2.0),
+    "diag": (gfem.Material(eps_r=(3.0, 5.0, 2.0), mu_r=(1.5, 2.0, 2.5)), 2.0, 2.0),
+    "rotz": (
+        gfem.Material(
+            eps_r=(3.0, 5.0, 2.0),
+            mu_r=(2.0, 2.0, 2.5),
+            axes=tuple(map(tuple, rc.rotation("z", 30).T)),
+        ),
+        2.0,
+        2.0,
+    ),
+    "rot3": (
+        gfem.Material(
+            eps_r=(3.0, 5.0, 2.0),
+            mu_r=(1.5, 2.5, 2.0),
+            axes=tuple(map(tuple, rc.ROT3.T)),
+        ),
+        None,
+        None,
+    ),
+}
+
+
+# n = 8 is left out: there the error of S crosses near zero at 8 and 15 GHz
+# (effectivity up to 165), a property of the uniform line, not of its fill.
+@pytest.mark.parametrize("n", [4, 16])
+def test_the_permeability_line_s(tmp_path, n):
+    material, eps, mu = LINE_FILLS["mu"]
+    exact = np.array([_line_s(f, eps, mu) for f in LINE_FREQUENCIES])
+    model, result = _line(tmp_path, n, material=material)
+    for estimate, error in _line_effectivities(model, result, exact):
+        _assert_in("permeability line", estimate, error)
+
+
+@pytest.mark.parametrize("fill", ["diag", "rotz"])
+@pytest.mark.parametrize("n", [4, 16])
+def test_the_anisotropic_line_s(tmp_path, n, fill):
+    material, eps, mu = LINE_FILLS[fill]
+    exact = np.array([_line_s(f, eps, mu) for f in LINE_FREQUENCIES])
+    model, result = _line(tmp_path, n, material=material)
+    for estimate, error in _line_effectivities(model, result, exact):
+        _assert_in("anisotropic line", estimate, error)
+
+
+@pytest.mark.parametrize("n", [4, 16])
+def test_the_rotated_anisotropic_line_s_against_order_4(tmp_path, n):
+    # No closed form: the reference is order 4 on the same mesh, whose own
+    # error (|S4 - S6|) is 5 to 10 % of |S2 - S4| on n = 4 and 16.
+    material, _, _ = LINE_FILLS["rot3"]
+    model, result = _line(tmp_path, n, material=material)
+    fine = gfem.solve(
+        model,
+        gfem.Driven(list(LINE_FREQUENCIES)),
+        options=gfem.SolverOptions(order=4, linear_solver="direct"),
+    )
+    exact = np.asarray(fine.s.values)  # (frequencies, to, source), p1 then p2
+    for estimate, error in _line_effectivities(model, result, exact):
+        _assert_in("anisotropic line", estimate, error)
 
 
 # --- L cavity: omega, singular -----------------------------------------------
@@ -402,6 +497,66 @@ def _box(directory, m, order=2):
 def test_the_rectangular_box_frequencies(tmp_path, m):
     for f, estimate, exact in _box(tmp_path, m):
         _assert_in("rectangular box", estimate, f / exact - 1)
+
+
+# --- magnetic and anisotropic boxes: omega, smooth -----------------------------
+
+
+def _diagonal_box_frequency(fill, mode):
+    """The closed-form frequency (Hz) of a mode with one zero index.
+
+    With eps_r and mu_r diagonal and E along the axis d of the zero index,
+    k0^2 eps_dd = sum over i != d of (n_i pi / L_i)^2 / mu_jj, j the third axis.
+    """
+    material = rc.ANISOTROPIC_BOX[fill]["air"]
+    eps = np.broadcast_to(np.asarray(material.eps_r, float), (3,))
+    mu = np.broadcast_to(np.asarray(material.mu_r, float), (3,))
+    d = mode.index(0)
+    k2 = sum(
+        (mode[i] * math.pi / BOX[i]) ** 2 / mu[3 - i - d] for i in range(3) if i != d
+    )
+    return const.c * math.sqrt(k2 / eps[d]) / (2 * math.pi)
+
+
+def _filled_box_mode(model, target):
+    """(frequency, its estimate) of the mode nearest ``target``, order 2."""
+    result = gfem.solve(
+        model, gfem.Eigenmode(target=target, n_modes=1), options=OPTIONS
+    )
+    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    return float(np.real(np.asarray(result.frequency)[0])), estimate.value
+
+
+@pytest.mark.parametrize("mode", BOX_MODES)
+@pytest.mark.parametrize("m", [2, 3])
+def test_the_permeability_box_frequency(tmp_path, m, mode):
+    exact = _diagonal_box_frequency("iso_mu", mode)
+    model = rc.anisotropic_box_model(tmp_path, m, "iso_mu")
+    f, estimate = _filled_box_mode(model, exact)
+    _assert_in("permeability box", estimate, f / exact - 1)
+
+
+@pytest.mark.parametrize("mode", BOX_MODES)
+@pytest.mark.parametrize("m", [2, 3])
+def test_the_anisotropic_box_frequency(tmp_path, m, mode):
+    exact = _diagonal_box_frequency("diag", mode)
+    model = rc.anisotropic_box_model(tmp_path, m, "diag")
+    f, estimate = _filled_box_mode(model, exact)
+    _assert_in("anisotropic box", estimate, f / exact - 1)
+
+
+# The rotated fill and the two layers have no closed form: each of their four
+# lowest modes is targeted at its stored order-4 frequency on the same mesh.
+@pytest.mark.parametrize("mode", range(4))
+@pytest.mark.parametrize(
+    ("fill", "case"),
+    [("rot3", "anisotropic box"), ("layer_mu", "permeability box")],
+)
+def test_the_rotated_anisotropic_and_layered_box_frequency(tmp_path, fill, case, mode):
+    reference = rc.ANISOTROPIC_BOX_F[fill][mode]
+    model = rc.anisotropic_box_model(tmp_path, 2, fill)
+    f, estimate = _filled_box_mode(model, reference)
+    _assert_in(case, estimate, f / reference - 1)
 
 
 # --- order 3 -----------------------------------------------------------------

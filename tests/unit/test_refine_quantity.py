@@ -125,12 +125,6 @@ def test_error_estimate_checks_the_key_against_the_result(coax):
 @pytest.mark.parametrize(
     ("case", "estimator", "feature"),
     [
-        (
-            "coax-anisotropic",
-            ("capacitance", ("inner", "inner")),
-            "anisotropic permittivity",
-        ),
-        ("step-mu", ("s", ("p2", "p1")), "permeability"),
         ("step-deembedded", ("s", ("p2", "p1")), "de-embedding"),
         ("step-shared", ("s", ("p2", "p1")), "shared port surface"),
         ("step-lossy-wave", ("s", ("p2", "p1")), "lossy wave port"),
@@ -140,17 +134,9 @@ def test_error_estimate_checks_the_key_against_the_result(coax):
 )
 @pytest.mark.usefixtures("no_solve")
 def test_untested_entries_raise_before_any_solve(
-    coax, step, cavity, *, case, estimator, feature
+    step, cavity, *, case, estimator, feature
 ):
     model, problem = {
-        "coax-anisotropic": (
-            _with(coax, materials={"dielectric": gfem.Material(eps_r=(1, 2, 3))}),
-            rc.COAX_PROBLEM,
-        ),
-        "step-mu": (
-            _with(step, materials={"dielectric": gfem.Material(eps_r=4.0, mu_r=2.0)}),
-            rc.step_problem(),
-        ),
         "step-deembedded": (
             _with(step, ports=_waves(offset=1e-3)),
             rc.step_problem(),
@@ -189,6 +175,45 @@ def test_untested_entries_raise_before_any_solve(
             model, problem, estimator=gfem.QuantityEstimator(**{keyword: key})
         )
     assert caught.value.feature == feature
+
+
+@pytest.mark.parametrize(
+    ("case", "estimator"),
+    [
+        ("coax-anisotropic", ("capacitance", ("inner", "inner"))),
+        ("step-mu", ("s", ("p2", "p1"))),
+        ("step-anisotropic-mu", ("s", ("p2", "p1"))),
+    ],
+)
+def test_anisotropic_permittivity_and_permeability_are_estimated(
+    coax, step, *, case, estimator
+):
+    # Verified in tests/verification/test_quantity_estimate.py (anisotropic
+    # coax, permeability and anisotropic lines and boxes).
+    rotated = gfem.Material(
+        eps_r=(3.0, 5.0, 2.0), mu_r=(1.5, 2.5, 2.0), axes=tuple(map(tuple, rc.ROT3.T))
+    )
+    model, problem = {
+        "coax-anisotropic": (
+            _with(coax, materials={"dielectric": gfem.Material(eps_r=(1, 2, 3))}),
+            rc.COAX_PROBLEM,
+        ),
+        "step-mu": (
+            _with(step, materials={"dielectric": gfem.Material(eps_r=4.0, mu_r=2.0)}),
+            gfem.Driven([3e9], keep_fields=True),
+        ),
+        "step-anisotropic-mu": (
+            _with(step, materials={"dielectric": rotated}),
+            gfem.Driven([3e9], keep_fields=True),
+        ),
+    }[case]
+    keyword, key = estimator
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(**{keyword: key}), model=model
+    )
+    assert np.all(np.isfinite(estimate.values))
+    assert np.all(np.asarray(estimate.values) > 0)
 
 
 @pytest.mark.usefixtures("no_solve")

@@ -31,6 +31,10 @@ Two more cases, not singular at a re-entrant corner:
   (`structured_meshes.coax_quarter`, radii 1 and 2 um, extruded 0.5 um)
   filled with eps_r (2, 5, 3) along rotated axes, `ANISOTROPIC_COAX`; its
   reference is an order-5 solve on the same mesh, which the tests run.
+- Anisotropic box, `anisotropic_box_model`: the PEC box 1 x 0.7 x 0.4 mm
+  with a magnetic or anisotropic fill, `ANISOTROPIC_BOX`. The "iso_mu" and
+  "diag" fills have a closed form; for "rot3" and "layer_mu" the references
+  are `ANISOTROPIC_BOX_F`, order-4 solves on the m = 2 mesh.
 
 Tests never recompute the references. Provenance: the coax and step values
 are Richardson extrapolations (alpha = 4/3) of uniform order-2 runs, coax
@@ -105,7 +109,8 @@ SHEET_C = ((4.08621e-17, -1.39274e-19), (-1.39274e-19, 4.19939e-17))
 SHEET_C_BOUND = ((6e-6, 1.5e-4), (1.5e-4, 6e-6))
 
 
-def _rotation(axis: str, degrees: float) -> np.ndarray:
+def rotation(axis: str, degrees: float) -> np.ndarray:
+    """The rotation matrix about ``axis`` ("x", "y" or "z") by ``degrees``."""
     t = np.radians(degrees)
     c, s = np.cos(t), np.sin(t)
     i, j = {"x": (1, 2), "y": (2, 0), "z": (0, 1)}[axis]
@@ -115,14 +120,42 @@ def _rotation(axis: str, degrees: float) -> np.ndarray:
     return out
 
 
-_ROT3 = _rotation("z", 30) @ _rotation("y", 25) @ _rotation("x", 40)
+#: A generic rotation, about z, y and x by 30, 25 and 40 degrees: no
+#: principal axis along a coordinate axis.
+ROT3 = rotation("z", 30) @ rotation("y", 25) @ rotation("x", 40)
 
 #: The anisotropic coax's fills: eps_r (2, 5, 3) along the columns of a
 #: rotation about z by 30 degrees ("rotz"), or about z, y and x by 30, 25 and
 #: 40 degrees ("rot3": no principal axis along the coax).
 ANISOTROPIC_COAX = {
     name: gfem.Material(eps_r=(2.0, 5.0, 3.0), axes=tuple(map(tuple, r.T)))
-    for name, r in (("rotz", _rotation("z", 30)), ("rot3", _ROT3))
+    for name, r in (("rotz", rotation("z", 30)), ("rot3", ROT3))
+}
+
+#: The anisotropic box's fills, per region: one region "air" filling the box
+#: with eps_r 2 and mu_r 3 ("iso_mu"), with eps_r (2, 3, 4) and mu_r
+#: (1.5, 2, 2.5) along the coordinate axes ("diag") or along `ROT3`'s columns
+#: ("rot3"); or two layers, "a" (eps_r 3) under "b" (mu_r 2.5) ("layer_mu").
+ANISOTROPIC_BOX = {
+    "iso_mu": {"air": gfem.Material(eps_r=2.0, mu_r=3.0)},
+    "diag": {"air": gfem.Material(eps_r=(2.0, 3.0, 4.0), mu_r=(1.5, 2.0, 2.5))},
+    "rot3": {
+        "air": gfem.Material(
+            eps_r=(2.0, 3.0, 4.0),
+            mu_r=(1.5, 2.0, 2.5),
+            axes=tuple(map(tuple, ROT3.T)),
+        )
+    },
+    "layer_mu": {"a": gfem.Material(eps_r=3.0), "b": gfem.Material(mu_r=2.5)},
+}
+
+#: The four lowest modes of the "rot3" and "layer_mu" boxes, Hz: order 4 on
+#: the m = 2 mesh, direct (ostau, 2026-11-12). On the "diag" box, same mesh,
+#: order 4 lies within 1.7e-8 (relative) of the closed form; the order-2
+#: errors these check are 1.2e-5 to 9.6e-5.
+ANISOTROPIC_BOX_F = {
+    "rot3": (106.357683863e9, 146.424985394e9, 173.585662901e9, 186.214213145e9),
+    "layer_mu": (161.103601495e9, 226.726156671e9, 238.567948030e9, 255.087323796e9),
 }
 
 _EPS_R = 4.0
@@ -170,6 +203,19 @@ def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:
     cells = sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k)
     mesh = _mesh(directory, "coax", cells, "um")
     return gfem.Model(mesh, materials={"dielectric": ANISOTROPIC_COAX[fill]})
+
+
+def anisotropic_box_model(directory: Path, m: int, fill: str) -> gfem.Model:
+    """The PEC box 1 x 0.7 x 0.4 mm, h = 0.2 / m mm, filled with ``fill``."""
+    regions = ANISOTROPIC_BOX[fill]
+    layers = tuple((name, 0.4 / len(regions)) for name in regions)
+    cells = sm.plate(1.0, 0.7, layers, (5 * m, 4 * m, 2 * m // len(regions)))
+    mesh = _mesh(directory, "box", cells, "mm")
+    return gfem.Model(
+        mesh,
+        materials=regions,
+        boundaries=[gfem.PEC(s) for s in ("bottom", "top", "side")],
+    )
 
 
 def step_model(
