@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import difflib
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from gfem.results import DrivenResult
@@ -303,9 +303,12 @@ class LinearSolverConvergenceError(RuntimeError):
     ``gfem.solve(model, gfem.Driven(err.unsolved, excite=...),
     options=gfem.SolverOptions(linear_solver="direct"))``. With frequency
     workers each block stops at its own first such frequency and the error
-    holds the union of the blocks. An adaptive sweep, an eigenmode or
-    electrostatic solve, and any solve under `jax.grad`, `jax.jit` or
-    `jax.vmap` (forward or adjoint) return no partial result. Under
+    holds the union of the blocks. `gfem.Job.run` with ``out``, and so
+    ``python -m gfem run``, write the partial result as a partial bundle
+    (``partial.json`` and ``partial.npz``) and add a note saying where. An
+    adaptive sweep, an eigenmode or electrostatic solve, and any solve under
+    `jax.grad`, `jax.jit` or `jax.vmap` (forward or adjoint) return no
+    partial result. Under
     `jax.grad` it arrives as ``jax.errors.JaxRuntimeError``, or as
     ``ValueError`` from a jitted function that has already run
     successfully, with this message; see the gradient recipes ("When a
@@ -348,3 +351,6 @@ class LinearSolverConvergenceError(RuntimeError):
         self.frequency = frequency
         self.unsolved = unsolved
         self.result = result
+        #: A missed uniform sweep's outputs, until `gfem.solve` builds
+        #: ``result`` from them.
+        self._partial: Any = None

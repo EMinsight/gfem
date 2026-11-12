@@ -5,6 +5,10 @@ error message goes to stderr: a changed mesh file, a newer schema version,
 a device that cannot run, a physics error, ...); 2 for command-line usage
 errors, including a job file that does not exist.
 
+A uniform sweep that stops at an unsolved frequency also exits with 1. What it
+solved is kept as a partial bundle, DIR/partial.json and DIR/partial.npz, and
+a second stderr line, ``gfem: note: ...``, says so; no result.json is written.
+
 Under a launcher rank 0 reads the job and writes the result, all ranks exit together,
 with rank 0 reporting; a failure that only one rank sees ends the whole job, because
 its peers may never reach an exit.
@@ -33,7 +37,9 @@ def _parser() -> argparse.ArgumentParser:
         description=(
             "Solve the job in JOB (a job.json written by gfem.Job.to_json) and "
             "write result.json and result.npz to the --out directory; read them "
-            "back with gfem.load_result(DIR)."
+            "back with gfem.load_result(DIR). A uniform sweep that stops at an "
+            "unsolved frequency exits with 1 and writes what it solved as "
+            "partial.json and partial.npz instead."
         ),
     )
     run.add_argument("job", type=Path, metavar="JOB", help="the job.json file")
@@ -80,6 +86,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as err:  # noqa: BLE001 (report any failure as exit code 1)
         if _mpi.rank(comm) == 0:
             print(f"gfem: error: {type(err).__name__}: {err}", file=sys.stderr)  # noqa: T201
+            for note in getattr(err, "__notes__", ()):
+                print(f"gfem: note: {note}", file=sys.stderr)  # noqa: T201
         return 1
     return 0
 

@@ -7,6 +7,7 @@ import sys
 import numpy as np
 import pytest
 import structured_meshes as sm
+from solver_misses import cannot_converge_at
 
 import gfem
 from gfem import _cuda, _petsc
@@ -133,6 +134,37 @@ def test_a_petsc_job_without_petsc4py_exits_1(model, tmp_path, capsys, monkeypat
     assert "petsc4py" in err
     assert not (out / "result.json").exists()
     _petsc.require_petsc.cache_clear()
+
+
+def test_a_sweep_that_stops_exits_1_and_says_where_the_partial_result_is(
+    tmp_path, capsys, monkeypatch
+):
+    path = sm.write_msh22(
+        tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (10, 1, 1))
+    )
+    line = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"dielectric": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+    f = (2e9, 3e9, 4e9, 5e9, 6e9)
+    job = gfem.Job(
+        line, gfem.Driven(frequency=f), gfem.SolverOptions(linear_solver="bddc_gmres")
+    ).to_json(tmp_path / "job.json")
+    out = tmp_path / "results"
+    cannot_converge_at(monkeypatch, (f[2],))
+    assert main(["run", str(job), "--out", str(out)]) == 1
+    error, note = capsys.readouterr().err.splitlines()
+    assert error.startswith("gfem: error: LinearSolverConvergenceError: At 4e+09 Hz")
+    assert note.startswith(
+        f"gfem: note: The partial result (2 of 5 frequencies) is in {out}"
+    )
+    assert gfem.load_result(out / "partial.json").s.frequency == f[:2]
+    assert not (out / "result.json").exists()
 
 
 def test_a_broken_job_exits_1(model, tmp_path, capsys):

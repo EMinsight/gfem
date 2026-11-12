@@ -212,6 +212,14 @@ Partial result
   the linear solver stopped converging, carried by the error that reports it
   (`gfem.LinearSolverConvergenceError`).
 
+Partial bundle
+  The files a {term}`job`'s run writes in place of its result files when a
+  uniform sweep stopped at an {term}`unsolved frequency`: `partial.json` and
+  `partial.npz`, holding the {term}`partial result`, the unsolved frequencies
+  and the error's message. Read it by name,
+  `gfem.load_result("DIR/partial.json")`; `gfem.load_result("DIR")` reads only
+  a complete result.
+
 Unsolved frequency
   A frequency of a uniform sweep that has no entry in the
   {term}`partial result`: the linear solve did not converge there, or the sweep

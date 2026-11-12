@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import structured_meshes as sm
 from petsc_recipe import SOLVER_OPTIONS
+from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._refine import refine_model
@@ -675,6 +676,122 @@ def test_load_result_refuses_a_job_file(model, tmp_path):
 def test_load_result_needs_a_result(tmp_path):
     with pytest.raises(FileNotFoundError, match=r"result\.json"):
         gfem.load_result(tmp_path)
+
+
+# --- a sweep that stops part-way ----------------------------------------------------
+
+SWEEP = (2e9, 3e9, 4e9, 5e9, 6e9)
+
+
+@pytest.fixture
+def sweep_job(tmp_path):
+    """A uniform sweep of a two-port strip line on the iterative solver."""
+    path = sm.write_msh22(
+        tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (10, 1, 1))
+    )
+    line = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"dielectric": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+    return gfem.Job(
+        line,
+        gfem.Driven(frequency=SWEEP),
+        gfem.SolverOptions(linear_solver="bddc_gmres"),
+    )
+
+
+def _stopped(job, out):
+    with pytest.raises(gfem.LinearSolverConvergenceError) as caught:
+        job.run(out)
+    return caught.value
+
+
+def test_a_sweep_that_stops_leaves_a_partial_bundle_and_a_note(
+    sweep_job, tmp_path, monkeypatch
+):
+    out = tmp_path / "results"
+    cannot_converge_at(monkeypatch, (SWEEP[2],))
+    err = _stopped(sweep_job, out)
+
+    assert sorted(p.name for p in out.iterdir()) == ["partial.json", "partial.npz"]
+    partial = gfem.load_result(out / "partial.json")
+    assert partial.s.frequency == SWEEP[:2]
+    np.testing.assert_array_equal(partial.s.values, err.result.s.values)
+    run = json.loads((out / "partial.json").read_text())["run"]
+    assert run["unsolved"] == list(SWEEP[2:])
+    assert run["error"] == f"LinearSolverConvergenceError: {err}"
+    assert run["device"] == "cpu"
+    assert run["ranks"] == 1
+    assert run["options"]["linear_solver"] == "bddc_gmres"
+    (note,) = err.__notes__
+    assert note == (
+        f"The partial result (2 of 5 frequencies) is in {out / 'partial.json'}: "
+        f'read it with gfem.load_result("{out / "partial.json"}"). Its "run" '
+        "entry lists the unsolved frequencies."
+    )
+
+    with pytest.raises(FileNotFoundError) as missing:
+        gfem.load_result(out)
+    assert str(missing.value) == (
+        f"No result.json in {out}, only a partial result: the run stopped at an "
+        f'unsolved frequency. Read it with gfem.load_result("{out / "partial.json"}").'
+    )
+
+
+def test_a_sweep_that_solves_nothing_writes_nothing(sweep_job, tmp_path, monkeypatch):
+    out = tmp_path / "results"
+    cannot_converge_at(monkeypatch, (SWEEP[0],))
+    err = _stopped(sweep_job, out)
+    assert err.result is None
+    assert not out.exists()
+    assert not hasattr(err, "__notes__")
+
+
+def test_a_complete_run_removes_a_stale_partial_bundle(sweep_job, tmp_path):
+    out = tmp_path / "results"
+    with pytest.MonkeyPatch.context() as patch:
+        cannot_converge_at(patch, (SWEEP[2],))
+        _stopped(sweep_job, out)
+    result = sweep_job.run(out)
+    assert sorted(p.name for p in out.iterdir()) == ["result.json", "result.npz"]
+    assert gfem.load_result(out).s.frequency == result.s.frequency == SWEEP
+
+
+def test_a_partial_run_keeps_an_older_result_and_its_note_says_so(
+    sweep_job, tmp_path, monkeypatch
+):
+    out = tmp_path / "results"
+    sweep_job.run(out)
+    complete = (out / "result.json").read_bytes()
+    cannot_converge_at(monkeypatch, (SWEEP[2],))
+    err = _stopped(sweep_job, out)
+    assert (out / "result.json").read_bytes() == complete
+    assert (out / "partial.json").is_file()
+    (note,) = err.__notes__
+    assert note.endswith(
+        f"{out / 'result.json'} is the complete result of an earlier run."
+    )
+    assert gfem.load_result(out).s.frequency == SWEEP
+
+
+def test_a_partial_bundle_that_cannot_be_written_leaves_the_solver_error(
+    sweep_job, tmp_path, monkeypatch
+):
+    blocked = tmp_path / "a_file"
+    blocked.write_text("")
+    out = blocked / "results"
+    cannot_converge_at(monkeypatch, (SWEEP[2],))
+    err = _stopped(sweep_job, out)
+    assert err.result.s.frequency == SWEEP[:2]
+    (note,) = err.__notes__
+    assert note.startswith(
+        f"The partial result could not be written to {out}: NotADirectoryError: "
+    )
 
 
 @pytest.mark.parametrize(
