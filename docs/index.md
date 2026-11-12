@@ -75,6 +75,7 @@ verification
 :caption: API
 
 api/index
+conventions
 glossary
 ```
 
