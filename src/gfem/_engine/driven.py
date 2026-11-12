@@ -1056,13 +1056,6 @@ class DrivenRule:
                 "transformation and pass Driven(..., samples="
                 "result.sweep.sampled_frequencies), or use sweep='uniform'."
             )
-        if self.wave_ports and self.kept:
-            raise NotImplementedError(
-                "Driven(keep_fields=...) with wave ports cannot run under "
-                "jax.jit, jax.grad or jax.vmap in this version of gfem (the "
-                "port mode fields' size is known only after the solve). Keep "
-                "no fields, or call gfem.solve outside the transformation."
-            )
         ndof = None
         if self.kept:
             with task_manager(self.options.threads, self.comm):
@@ -1354,7 +1347,11 @@ class DrivenRule:
         )
 
     def _port_modes(self, out: SweepOutputs) -> dict[str, PortModeResult]:
-        """The wave ports' `PortModeResult` at the grid indices ``out.rows``."""
+        """The wave ports' `PortModeResult` at the grid indices ``out.rows``.
+
+        With their mode fields on the eager path; under a JAX transformation
+        the port mode sweeps do not cross the seam, so the fields are ``None``.
+        """
         ports = out.ports
         if not self.wave_ports or ports is None:
             return {}
@@ -1370,7 +1367,7 @@ class DrivenRule:
                 Z_PV=jnp.asarray(ports.z_pv[:, k]),
                 residual=jnp.asarray(ports.residual[:, k]),
                 solved=jnp.asarray(ports.solved[:, k]),
-                e_field=ports.field(k) if self.kept else None,
+                e_field=ports.field(k),
             )
         return modes
 

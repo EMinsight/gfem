@@ -59,7 +59,7 @@ value, grad = jax.value_and_grad(passband_loss)(jnp.full(n, 4.4))  # grad: (n,)
 ## Differentiate a kept field
 
 A kept field (`Driven(keep_fields=...)`, then `result.e_field(f, port)`)
-differentiates too:
+differentiates too, with lumped ports and with wave ports:
 
 - Its gradient costs one adjoint solve at that frequency, with all the
   right-hand sides it needs in one call.

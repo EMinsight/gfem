@@ -334,7 +334,7 @@ class PortModeResult:
             solved exactly (shared by the wave ports of a shared port
             surface); elsewhere it comes from the reduced port mode model.
         e_field: The mode's electric field, normalized to 1 W; ``None`` on a
-            driven result that keeps no fields.
+            driven result computed inside `jax.jit`, `jax.grad` or `jax.vmap`.
     """
 
     port: str
@@ -834,9 +834,10 @@ class DrivenResult:
         sweep: How the frequencies were solved (`SweepInfo`).
         port_modes: The mode of each wave port over the frequencies
             (`PortModeResult`, by port name), as the port mode sweep found
-            it before the 3D solve; empty without wave ports. Their fields
-            are kept with ``Driven(keep_fields=...)``. Constants of the
-            solve: not differentiable.
+            it before the 3D solve; empty without wave ports. Each carries
+            its mode field, with or without ``Driven(keep_fields=...)``,
+            except inside `jax.jit`, `jax.grad` or `jax.vmap`, where it is
+            ``None``. Constants of the solve: not differentiable.
         offsets: ``(port name, distance in m)`` of each wave port (static
             labels; ``dict(result.offsets)``), from ``WavePort(offset=...)``:
             S of a wave port is referred to

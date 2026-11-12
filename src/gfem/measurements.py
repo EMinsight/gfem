@@ -436,7 +436,8 @@ def characteristic_impedance(mode: PortModeResult, voltage_path: Any) -> jax.Arr
     Raises:
         TypeError: ``mode`` is not a `gfem.PortModeResult`.
         ValueError: The path is malformed or leaves the port plane, or
-            ``mode`` carries no field (a driven result without kept fields).
+            ``mode`` carries no field (a driven result computed inside
+            `jax.jit`, `jax.grad` or `jax.vmap`).
         NonDifferentiableError: ``voltage_path`` is computed inside
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
             fixed value.
@@ -461,9 +462,10 @@ def characteristic_impedance(mode: PortModeResult, voltage_path: Any) -> jax.Arr
     field = mode.e_field
     if field is None:
         raise ValueError(
-            f"The port mode of {mode.port!r} carries no field: a driven result "
-            "keeps its wave ports' mode fields only with Driven(keep_fields=...). "
-            "Solve with keep_fields, or solve gfem.PortMode for the port."
+            f"The port mode of {mode.port!r} carries no field: the driven result "
+            "was computed inside jax.jit, jax.grad or jax.vmap, where a wave "
+            "port's mode field is not available. Port modes are constants of the "
+            "solve: solve gfem.PortMode for the port outside the transformation."
         )
     volts = path_voltage(
         field._space,  # noqa: SLF001
