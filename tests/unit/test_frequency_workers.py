@@ -19,7 +19,7 @@ import structured_meshes as sm
 from solver_misses import cannot_converge_at
 
 import gfem
-from gfem._engine import runtime, workers
+from gfem._engine import cache, runtime, workers
 from gfem._engine.driven import DrivenRule, _solve_block
 from gfem._linalg import prepare
 
@@ -292,3 +292,39 @@ def test_a_gradient_through_two_workers_matches_one(line):
     two = jax.grad(objective)(eps, 2)
     assert np.abs(np.asarray(one)).max() > 0
     np.testing.assert_allclose(two, one, rtol=1e-10, atol=1e-14)
+
+
+def test_a_backward_that_rebuilds_port_state_walks_it_down(line):
+    # the workers solve in their own processes: here the entry holds the
+    # solutions only, and the backward builds the system and the port state
+    eps = jnp.full(len(line.mesh.tetrahedra), 3.0)
+    problem = gfem.Driven(FREQUENCIES, excite="p1")
+
+    def objective(retain_memory):
+        options = gfem.SolverOptions(
+            linear_solver="direct", frequency_workers=2, retain_memory=retain_memory
+        )
+
+        def s(eps):
+            model = line.with_material("dielectric", gfem.MaterialField(eps_r=eps))
+            return jnp.sum(
+                jnp.abs(gfem.solve(model, problem, options=options).s.values)
+            )
+
+        return s
+
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    _, vjp = jax.vjp(objective(None), eps)
+    (entry,) = cache.ENTRIES._entries.values()
+    budget = entry.nbytes  # the entry and nothing the backward adds
+    vjp(1.0)
+    assert any(d.ports is not None for d in cache._DISCRETIZATIONS.values())
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    _, vjp = jax.vjp(objective(budget), eps)
+    (entry,) = cache.ENTRIES._entries.values()
+    vjp(1.0)
+    assert entry.handle is not None  # the backward built its system here
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+    cache.ENTRIES.clear()

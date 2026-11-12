@@ -1174,8 +1174,9 @@ class DrivenRule:
         ct_e = cotangents.get("e_field")
         frequencies = self.problem.frequency
         pairs: list[FieldPair | None] = [None] * len(frequencies)
+        rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
         with task_manager(self.options.threads, self.comm):
-            if not isinstance(entry.handle, _Kept):  # frequency workers keep none
+            if rebuilt:
                 entry.handle = _Kept(*self._ports(model, warn=False))
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
@@ -1209,6 +1210,10 @@ class DrivenRule:
                 pairs[n] = op.pair(
                     -adjoint, x, weights=op.weights(omega), domain=domain
                 )
+        if rebuilt:
+            # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
+            # this backward built goes down to the budget, no entry evicted
+            ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
         return [p for p in pairs if p is not None]
 
     def _backward_adaptive(
