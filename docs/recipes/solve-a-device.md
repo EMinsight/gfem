@@ -325,6 +325,7 @@ True
 - {doc}`frequency-sweep`: hundreds of frequencies from a few solves.
 - {doc}`measurements`: field values at points, the power through a surface,
   surface-loss Q.
+- {doc}`prepare-a-mesh`: build the mesh of your own device in gmsh.
 - {doc}`mesh-refinement`: refine the mesh where the error is.
 - {doc}`s-parameter-gradient`: the gradient of any of these results with
   respect to the materials, at the cost of one {term}`adjoint solve`.

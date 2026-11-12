@@ -140,11 +140,13 @@ def examples(page: str) -> list[Example]:
     return found
 
 
-def run_page(path: Path, workdir: Path) -> list[Example]:
+def run_page(path: Path, workdir: Path, *, skip: tuple[str, ...] = ()) -> list[Example]:
     """Run a page's Python blocks as a reader does, and record what each prints.
 
     The blocks run in order in one namespace, in ``workdir``, with the mesh
-    download swapped for the repository's own copy.
+    download swapped for the repository's own copy. The blocks of the
+    sections named in ``skip`` are left out (code the test cannot run, such
+    as a gmsh script).
     """
 
     def urlretrieve(url, filename):
@@ -152,7 +154,11 @@ def run_page(path: Path, workdir: Path) -> list[Example]:
         shutil.copy(MESH, Path(workdir) / filename)
 
     namespace = {"__name__": path.stem}
-    found = examples(path.read_text(encoding="utf-8"))
+    found = [
+        example
+        for example in examples(path.read_text(encoding="utf-8"))
+        if example.section not in skip
+    ]
     ran = []
     original = urllib.request.urlretrieve
     urllib.request.urlretrieve = urlretrieve
