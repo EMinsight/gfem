@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 import structured_meshes as sm
 from petsc_recipe import SOLVER_OPTIONS
+from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._refine import refine_model
@@ -505,6 +506,135 @@ def test_principal_participation_round_trips_and_an_old_result_reads_none(
     np.testing.assert_array_equal(old.omega, result.omega)
 
 
+def _tagged(node, seen=None):
+    """The first object of each ``$type`` tag in a JSON form, by tag."""
+    seen = {} if seen is None else seen
+    if isinstance(node, dict):
+        if "$type" in node:
+            seen.setdefault(node["$type"], node)
+        for value in node.values():
+            _tagged(value, seen)
+    elif isinstance(node, list):
+        for value in node:
+            _tagged(value, seen)
+    return seen
+
+
+def _with_an_unknown_key(source, tag, target, **head):
+    """``source`` rewritten at ``target``, one object of ``tag`` given a new key."""
+    doc = json.loads(source.read_text()) | head
+    _tagged(doc)[tag]["field_of_a_newer_gfem"] = 1
+    target.write_text(json.dumps(doc))
+    return target
+
+
+def _driven_jobs(tmp_path):
+    """Driven jobs that hold, between them, every kind of model entry."""
+    edges = tuple(
+        np.linspace(0, size, n + 1)
+        for size, n in zip((10.0, 7.0, 1.0), (4, 3, 1), strict=True)
+    )
+    cell = gfem.Mesh.from_gmsh(
+        sm.write_msh22(tmp_path / "cell.msh", sm.periodic_cell(edges)),
+        length_unit="mm",
+    )
+    eps_r = jnp.linspace(2.0, 4.0, len(cell.elements("cell")))
+    periodic = gfem.Model(
+        cell,
+        materials={"cell": gfem.MaterialField(eps_r=eps_r)},
+        boundaries=[gfem.Periodic(("x_min", "x_max")), gfem.PEC("y_min")],
+        ports=[gfem.LumpedPort("p1", "z_max", "+y")],
+    )
+    plate = gfem.Mesh.from_gmsh(
+        sm.write_msh22(tmp_path / "stack.msh", sm.plate(4.0, 3.0, LAYERS, (1, 1, 1)))
+    )
+    guided = gfem.Model(
+        plate,
+        materials={"oxide": gfem.Material(eps_r=3.9)},
+        ports=[gfem.WavePort("w1", "oxide__nitride")],
+        excluded=(gfem.enclosed_by("oxide__nitride", "top", "side"),),
+    )
+    problem = gfem.Driven(frequency=(1e9,))
+    return [
+        gfem.Job(model, problem).to_json(tmp_path / f"{name}.json")
+        for name, model in (("periodic", periodic), ("guided", guided))
+    ]
+
+
+def test_an_unknown_key_is_refused_by_name_on_every_class(tmp_path):
+    seen = set()
+    for source in _driven_jobs(tmp_path):
+        for tag in _tagged(json.loads(source.read_text())):
+            seen.add(tag)
+            path = _with_an_unknown_key(source, tag, source.with_stem("changed"))
+            with pytest.raises(ValueError) as err:
+                gfem.Job.from_json(path)
+            message = str(err.value)
+            assert message.startswith(f"{path}: {tag} has no 'field_of_a_newer_gfem'")
+    assert seen >= {
+        "Job",
+        "Model",
+        "Mesh",
+        "MaterialField",
+        "Material",
+        "Periodic",
+        "PEC",
+        "LumpedPort",
+        "WavePort",
+        "EnclosedBy",
+        "Driven",
+        "SolverOptions",
+    }
+
+
+def test_an_unknown_key_says_which_gfem_wrote_the_file(model, tmp_path):
+    source = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
+    path = tmp_path / "changed.json"
+    _with_an_unknown_key(source, "SolverOptions", path, gfem_version="99.0")
+    with pytest.raises(ValueError) as err:
+        gfem.Job.from_json(path)
+    assert str(err.value) == (
+        f"{path}: SolverOptions has no 'field_of_a_newer_gfem' in this gfem "
+        f"({gfem.__version__}). The file was written by gfem 99.0: upgrade gfem "
+        "(pip install -U gfem)."
+    )
+    _with_an_unknown_key(source, "SolverOptions", path)
+    with pytest.raises(ValueError) as err:
+        gfem.Job.from_json(path)
+    assert str(err.value) == (
+        f"{path}: SolverOptions has no 'field_of_a_newer_gfem' in this gfem "
+        f"({gfem.__version__}): remove the entry or check its spelling."
+    )
+
+
+def test_several_unknown_keys_are_listed_sorted(model, tmp_path):
+    path = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
+    doc = json.loads(path.read_text())
+    doc["job"]["model"]["mesh"] |= {"zeta": 1, "alpha": 2}
+    path.write_text(json.dumps(doc))
+    with pytest.raises(ValueError, match="Mesh has no 'alpha', 'zeta' in this gfem"):
+        gfem.Job.from_json(path)
+
+
+def test_an_unknown_key_in_a_result_bundle_is_refused_by_name(model, tmp_path):
+    out = tmp_path / "results"
+    gfem.Job(model, PROBLEM, gfem.SolverOptions(order=1)).run(out)
+    path = out / "result.json"
+    _with_an_unknown_key(path, "ElectrostaticResult", path, gfem_version="99.0")
+    with pytest.raises(ValueError) as err:
+        gfem.load_result(out)
+    message = str(err.value)
+    assert message.startswith(
+        f"{path}: ElectrostaticResult has no 'field_of_a_newer_gfem'"
+    )
+    assert "written by gfem 99.0: upgrade gfem" in message
+    _with_an_unknown_key(
+        path, "ElectrostaticResult", path, gfem_version=gfem.__version__
+    )
+    with pytest.raises(ValueError, match="check its spelling"):
+        gfem.load_result(out)
+
+
 # --- running and results -------------------------------------------------------------
 
 
@@ -546,6 +676,122 @@ def test_load_result_refuses_a_job_file(model, tmp_path):
 def test_load_result_needs_a_result(tmp_path):
     with pytest.raises(FileNotFoundError, match=r"result\.json"):
         gfem.load_result(tmp_path)
+
+
+# --- a sweep that stops part-way ----------------------------------------------------
+
+SWEEP = (2e9, 3e9, 4e9, 5e9, 6e9)
+
+
+@pytest.fixture
+def sweep_job(tmp_path):
+    """A uniform sweep of a two-port strip line on the iterative solver."""
+    path = sm.write_msh22(
+        tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (10, 1, 1))
+    )
+    line = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"dielectric": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+    return gfem.Job(
+        line,
+        gfem.Driven(frequency=SWEEP),
+        gfem.SolverOptions(linear_solver="bddc_gmres"),
+    )
+
+
+def _stopped(job, out):
+    with pytest.raises(gfem.LinearSolverConvergenceError) as caught:
+        job.run(out)
+    return caught.value
+
+
+def test_a_sweep_that_stops_leaves_a_partial_bundle_and_a_note(
+    sweep_job, tmp_path, monkeypatch
+):
+    out = tmp_path / "results"
+    cannot_converge_at(monkeypatch, (SWEEP[2],))
+    err = _stopped(sweep_job, out)
+
+    assert sorted(p.name for p in out.iterdir()) == ["partial.json", "partial.npz"]
+    partial = gfem.load_result(out / "partial.json")
+    assert partial.s.frequency == SWEEP[:2]
+    np.testing.assert_array_equal(partial.s.values, err.result.s.values)
+    run = json.loads((out / "partial.json").read_text())["run"]
+    assert run["unsolved"] == list(SWEEP[2:])
+    assert run["error"] == f"LinearSolverConvergenceError: {err}"
+    assert run["device"] == "cpu"
+    assert run["ranks"] == 1
+    assert run["options"]["linear_solver"] == "bddc_gmres"
+    (note,) = err.__notes__
+    assert note == (
+        f"The partial result (2 of 5 frequencies) is in {out / 'partial.json'}: "
+        f'read it with gfem.load_result("{out / "partial.json"}"). Its "run" '
+        "entry lists the unsolved frequencies."
+    )
+
+    with pytest.raises(FileNotFoundError) as missing:
+        gfem.load_result(out)
+    assert str(missing.value) == (
+        f"No result.json in {out}, only a partial result: the run stopped at an "
+        f'unsolved frequency. Read it with gfem.load_result("{out / "partial.json"}").'
+    )
+
+
+def test_a_sweep_that_solves_nothing_writes_nothing(sweep_job, tmp_path, monkeypatch):
+    out = tmp_path / "results"
+    cannot_converge_at(monkeypatch, (SWEEP[0],))
+    err = _stopped(sweep_job, out)
+    assert err.result is None
+    assert not out.exists()
+    assert not hasattr(err, "__notes__")
+
+
+def test_a_complete_run_removes_a_stale_partial_bundle(sweep_job, tmp_path):
+    out = tmp_path / "results"
+    with pytest.MonkeyPatch.context() as patch:
+        cannot_converge_at(patch, (SWEEP[2],))
+        _stopped(sweep_job, out)
+    result = sweep_job.run(out)
+    assert sorted(p.name for p in out.iterdir()) == ["result.json", "result.npz"]
+    assert gfem.load_result(out).s.frequency == result.s.frequency == SWEEP
+
+
+def test_a_partial_run_keeps_an_older_result_and_its_note_says_so(
+    sweep_job, tmp_path, monkeypatch
+):
+    out = tmp_path / "results"
+    sweep_job.run(out)
+    complete = (out / "result.json").read_bytes()
+    cannot_converge_at(monkeypatch, (SWEEP[2],))
+    err = _stopped(sweep_job, out)
+    assert (out / "result.json").read_bytes() == complete
+    assert (out / "partial.json").is_file()
+    (note,) = err.__notes__
+    assert note.endswith(
+        f"{out / 'result.json'} is the complete result of an earlier run."
+    )
+    assert gfem.load_result(out).s.frequency == SWEEP
+
+
+def test_a_partial_bundle_that_cannot_be_written_leaves_the_solver_error(
+    sweep_job, tmp_path, monkeypatch
+):
+    blocked = tmp_path / "a_file"
+    blocked.write_text("")
+    out = blocked / "results"
+    cannot_converge_at(monkeypatch, (SWEEP[2],))
+    err = _stopped(sweep_job, out)
+    assert err.result.s.frequency == SWEEP[:2]
+    (note,) = err.__notes__
+    assert note.startswith(
+        f"The partial result could not be written to {out}: NotADirectoryError: "
+    )
 
 
 @pytest.mark.parametrize(

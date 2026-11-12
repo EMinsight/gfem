@@ -20,13 +20,17 @@ nothing, and a GPU request says that CUDA is not supported there.
 import gfem
 
 device = "cuda" if gfem.cuda_available() else "cpu"
-options = gfem.SolverOptions(linear_solver="direct", device=device)
+options = gfem.SolverOptions(device=device)
 result = gfem.solve(model, problem, options=options)
 ```
 
 - `device="cuda"` is the first GPU, `"cuda:1"` the second.
-- A GPU needs `linear_solver="direct"`; `SolverOptions` refuses any other
-  solver with a GPU.
+- On a GPU the default `linear_solver="auto"` is the direct solver, the only
+  one that runs there; `SolverOptions` refuses `"bddc_gmres"` and `"petsc"`
+  with a GPU. On the CPU the same `"auto"` options run the problem type's
+  default (the iterative solver for a driven problem), and so does a saved
+  {term}`job` run with `--device cpu`. Write `linear_solver="direct"` to get
+  the direct solver on both.
 - There is no automatic choice: you pick the device, and a saved
   {term}`job` keeps it.
 - {py:obj}`gfem.cuda_available` starts a CUDA context, so it is `False` on a machine

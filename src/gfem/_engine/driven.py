@@ -795,7 +795,7 @@ class DrivenRule:
             unsolved=tuple(f for i, f in enumerate(frequencies) if i not in solved),
         )
         if self.keeps_partial:
-            vars(err)["_partial"] = _Partial(outputs, reason)
+            err._partial = _Partial(outputs, reason)  # noqa: SLF001
         raise err from cause
 
     def partial_result(self, err: LinearSolverConvergenceError) -> DrivenResult | None:
@@ -806,7 +806,7 @@ class DrivenRule:
         none, or did not keep it (`keeps_partial`). It is read once: the
         outputs it was built from are dropped from ``err``.
         """
-        partial = vars(err).pop("_partial", None)
+        partial, err._partial = err._partial, None  # noqa: SLF001
         if partial is None or not partial.outputs.rows:
             return None
         return self._uniform_result(partial.outputs)
@@ -1690,7 +1690,7 @@ def _solve_block(
         try:
             outputs, entry = rule.forward(model, keep=keep)
         except LinearSolverConvergenceError as err:
-            partial = vars(err).get("_partial")
+            partial = err._partial  # noqa: SLF001
             if partial is None:  # pragma: no cover - a uniform sweep always sets it
                 raise
             return partial.outputs, None, partial.reason
