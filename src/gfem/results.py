@@ -1074,6 +1074,11 @@ class EigenmodeResult:
             volume region (`Material` or `MaterialField`). Measurements
             that need the media around a surface read them
             (`gfem.interface_participation`).
+        periodic_surfaces: The ``(first, second)`` surface names of each
+            `gfem.Periodic` pair of the model the modes were solved on;
+            empty for a model with no pair, and for a result saved before
+            gfem recorded them. `gfem.interface_participation` refuses
+            these surfaces: they are interior to the periodic cell.
         cluster: Integer label per mode, ``(n_modes,)``: modes with the same
             label form a degenerate cluster, frequencies within
             ``SolverOptions.cluster_rtol`` of each other. A cluster's modes
@@ -1095,11 +1100,14 @@ class EigenmodeResult:
     principal_participation: dict[str, jax.Array] = dataclasses.field(
         default_factory=dict
     )
+    periodic_surfaces: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
-        """Hold fields and materials as tuple and dict; label simple modes."""
+        """Hold fields, materials and pairs as tuples and dict; label simple modes."""
         object.__setattr__(self, "e_fields", tuple(self.e_fields))
         object.__setattr__(self, "materials", dict(self.materials))
+        pairs = tuple((str(a), str(b)) for a, b in self.periodic_surfaces)
+        object.__setattr__(self, "periodic_surfaces", pairs)
         if self.cluster is None:  # every mode simple (results of older files)
             n = int(np.shape(self.omega)[0])
             object.__setattr__(self, "cluster", jnp.arange(n))

@@ -37,7 +37,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
-from gfem import _mpi, _periodic, _probe
+from gfem import _mpi, _probe
 from gfem._checks import check_fixed, is_traced
 from gfem._materials import Material, field_principal_values
 from gfem._pytree import register_fields
@@ -202,6 +202,15 @@ def interface_participation(
         )
     field = modes.e_fields[0]
     surfaces = (surface,) if isinstance(surface, str) else tuple(surface)
+    # read from the result, never from a cache: the pairs of this model only
+    for pair in modes.periodic_surfaces:
+        for name in surfaces:
+            if name in pair:
+                raise ValueError(
+                    f"{name!r} is a surface of periodic pair {pair!r}, which "
+                    "is interior to the periodic cell: it holds no interface "
+                    "layer."
+                )
     geometry = _surface_geometry(field, surfaces)
     coefficients = jnp.stack([f.coefficients for f in modes.e_fields])
     energy = _layer_energy(
@@ -233,13 +242,6 @@ class _SurfaceGeometry:
                 raise ValueError(
                     f"{name!r} is a volume region; interface_participation needs "
                     "a surface region."
-                )
-            pair = _periodic.pair_of_surface(mesh, name)
-            if pair is not None:
-                raise ValueError(
-                    f"{name!r} is a surface of periodic pair "
-                    f"{(pair.first, pair.second)!r}, which is interior to the "
-                    "periodic cell: it holds no interface layer."
                 )
             triangles.append(mesh.elements(name))
         engine = _probe.engine()

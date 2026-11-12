@@ -108,7 +108,8 @@ returning a wrong value:
   eigenmode problems, and the direct or BDDC + GMRES solver for driven
   problems. PETSc and cuDSS refuse it, as does an adaptive sweep.
   Electrostatic problems refuse any periodic pair, and a wave port may not
-  touch one. There are no Floquet ports. Details:
+  touch one. There are no Floquet ports, so an absorbing boundary reflects
+  the waves a Bloch cell radiates onto it obliquely. Details:
   {doc}`recipes/periodic-cell`.
 - **Unrequested port modes**: a propagating mode that no wave port on its
   surface requests is partly reflected at the port, not converted; request

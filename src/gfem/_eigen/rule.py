@@ -90,7 +90,7 @@ from gfem._engine.fields import fe_space
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term
 from gfem._linalg import Kind, ResolvedLinearSolver
-from gfem._periodic import check_bloch, check_wave_vector
+from gfem._periodic import check_bloch, check_wave_vector, pair_names
 from gfem._sign import largest_entry
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import (
@@ -228,6 +228,7 @@ class EigenmodeRule:
         self.anisotropic = anisotropic_regions(model, self.regions)
         self._mesh = model.mesh
         self._materials = dict(model.materials)
+        self._periodic_surfaces = pair_names(model._periodic)  # noqa: SLF001
         self._excluded = model._domain.excluded  # noqa: SLF001
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
@@ -936,6 +937,7 @@ class EigenmodeRule:
             },
             e_fields=tuple(fields),
             materials=self._materials,
+            periodic_surfaces=self._periodic_surfaces,
             cluster=jnp.asarray(outputs["cluster"]),
         )
 

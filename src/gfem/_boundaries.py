@@ -92,6 +92,16 @@ class Absorbing:
     solver using it differs from gfem at order 2 (they agree at order 1 and
     on adequately sized boxes).
 
+    Both orders are exact at normal incidence only. A plane wave arriving at
+    the angle θ from the normal is reflected with amplitude (1 - cos θ) /
+    (1 + cos θ) at order 1 (0.017 at 15°, 0.072 at 30°, 0.17 at 45°), for
+    both polarizations. Order 2 lowers this about tenfold up to 30° for the
+    polarization with E parallel to the surface and normal to k_t; for the
+    other one (E in the plane of incidence, no normal magnetic field) the
+    curl term vanishes and the reflection is that of order 1. In a periodic
+    cell under a Bloch wave vector with a component k_t along the surface,
+    ``sin θ = |k_t| / k``.
+
     Next to an anisotropic material, order 1 uses the normal-incidence
     admittance tensor of that material for the face normal (i k0 ∮ (Y E_t)
     · v_t, exact for a plane wave at normal incidence; real parts of ε and
