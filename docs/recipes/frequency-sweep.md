@@ -26,6 +26,10 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
 - The sweep solves a few sample frequencies in full, every excited port at
   once. It reads S and the kept fields at every frequency of the grid from a
   {term}`reduced model` built on those solutions.
+- Each sample also solves one right-hand side per port left out of
+  `Driven(excite=...)`, so that gradients are exact at the samples
+  ({doc}`adaptive-sweep-gradient`). `excite=` saves solves in a uniform
+  sweep, not in an adaptive one.
 - It pays off above about 20 frequencies. Below that, keep the uniform sweep.
 - `result.sweep.solved` marks, frequency by frequency, the ones solved in
   full. The rest come from the reduced model.
