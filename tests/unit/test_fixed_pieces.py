@@ -226,9 +226,7 @@ def test_the_compiled_piece_sum_matches_the_numpy_sum(monkeypatch):
         ValueError("Output dtype not compatible with inputs."),
     ],
 )
-def test_a_compiled_pass_refusing_its_arguments_falls_back_to_numpy(
-    monkeypatch, error
-):
+def test_a_compiled_pass_refusing_its_arguments_falls_back_to_numpy(monkeypatch, error):
     assembled, pattern = _split_pieces()
     monkeypatch.setattr(pieces, "_csc_matvec", None)
     plain = _summed(assembled, pattern)

@@ -461,7 +461,9 @@ def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
 
 def _store(mesh):
     (store,) = (
-        s for d in cache._DISCRETIZATIONS.values() if d.topology is mesh._topology
+        s
+        for d in cache._DISCRETIZATIONS.values()
+        if d.topology is mesh._topology
         for s in d.stores()
     )
     return store
