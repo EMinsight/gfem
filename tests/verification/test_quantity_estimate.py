@@ -187,7 +187,7 @@ def test_the_anisotropic_coax_capacitance(tmp_path, k, fill):
     # estimate is the kernel's, as error_estimate would report it.
     model = rc.anisotropic_coax_model(tmp_path, k, fill)
     result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
-    estimate, _ = kernels.capacitance(model, result, "inner")
+    estimate, _ = kernels.capacitance(model, result, "inner", "inner")
     fine = gfem.solve(
         model,
         rc.COAX_PROBLEM,

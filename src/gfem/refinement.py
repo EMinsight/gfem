@@ -599,9 +599,7 @@ def _estimate(
 
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
-            parts = [
-                kernels.capacitance(model, result, estimator.capacitance[0], threads)
-            ]
+            parts = [kernels.capacitance(model, result, *estimator.capacitance, threads)]
         elif estimator.s is not None:
             parts = kernels.s_entry(model, result, *estimator.s, threads)
         else:
@@ -812,11 +810,6 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
             "an anisotropic permittivity",
         )
     if estimator.capacitance is not None:
-        if estimator.capacitance[0] != estimator.capacitance[1]:
-            raise _untested(
-                "off-diagonal capacitance",
-                "an off-diagonal capacitance entry; estimate a diagonal one",
-            )
         return
     mu = element_tensors(model, "mu_r")
     if mu.ndim == 3 or np.any(mu != 1):
