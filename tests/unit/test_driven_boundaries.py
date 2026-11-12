@@ -21,6 +21,7 @@ like a half-space of the crystal, at every length.
 import math
 
 import anisotropy as anisotropy_reference
+import gradient_cases
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -137,6 +138,38 @@ def test_an_impedance_inductance_differentiates_like_its_closed_form(mesh):
     h = 1e-12
     expected = (closed(1e-9 + h) - closed(1e-9 - h)) / (2 * h)
     assert float(jax.grad(solved)(1e-9)) == pytest.approx(expected, rel=2e-2)
+
+
+def _central_differences(f, n, h=1e-4):
+    """``f``'s central differences in each of ``n`` relative steps ``t``."""
+    t = jnp.zeros(n)
+    return np.array(
+        [(f(t.at[i].add(h)) - f(t.at[i].add(-h))) / (2 * h) for i in range(n)]
+    )
+
+
+def test_an_impedance_with_a_fill_and_a_capacitance_matches_central_differences(
+    tmp_path,
+):
+    # every value of a filled sheet, whose coefficient is value x fill
+    glued = gradient_cases.sheet_mesh(tmp_path)
+    fill = gfem.SheetField(gradient_cases.sheet_fill(glued, 0)[0])
+    rlc = np.array([2e3, 2e-8, 1e-14])
+    problem = gfem.Driven(frequency=(8e9, 10e9))
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(t):
+        r, l, c = rlc * (1 + t)
+        sheet = gfem.Impedance("sheet", r, l, c, fill=fill)
+        model = gradient_cases.sheet_line(glued, sheet)
+        result = gfem.solve(model, problem, options=options)
+        return gradient_cases.s_functional(result.s.values)
+
+    grad = np.asarray(jax.grad(objective)(jnp.zeros(3)))
+    fd = _central_differences(objective, 3)
+    assert np.abs(fd).min() > 1e-2 * np.abs(fd).max()  # each value moves S
+    # measured 6.7e-9 of the largest entry (direct)
+    np.testing.assert_allclose(grad, fd, rtol=0, atol=1e-6 * np.abs(fd).max())
 
 
 def test_a_traced_lumped_value_out_of_range_raises_when_solved(mesh):

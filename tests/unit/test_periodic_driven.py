@@ -10,7 +10,8 @@ With a Bloch wave vector the operator is general: k = 0 gives the plain S
 (U1), the LU backends and BDDC agree (U3), S(k)^T = S(-k) also with a port
 touching the pair's second surface (U4), and the backends that factor
 symmetric operators only, and the adaptive sweep, refuse a wave vector at
-the rule (U5).
+the rule (U5). A lumped port's inductance and capacitance differentiate on
+plain and Bloch cells.
 """
 
 import math
@@ -22,6 +23,7 @@ import periodic_cases as pc
 import pytest
 import scipy.constants as const
 import structured_meshes as sm
+from gradient_cases import s_functional
 
 import gfem
 from gfem._engine import cache
@@ -487,3 +489,32 @@ def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
     wave_impedance = const.mu_0 * const.c / math.sqrt(OBLIQUE_EPS) * cos
     assert abs(s11 - _sheet_s11(wave_impedance, kx, r)) <= OBLIQUE_MODEL_TOL
     assert abs(s11 - _sheet_s11(wave_impedance, kx, 0.0)) >= OBLIQUE_REFLECTED
+
+
+@pytest.mark.parametrize("wave_vector", [None, pc.C1_K], ids=["plain", "bloch"])
+def test_lumped_values_differentiate_on_a_periodic_cell(c1_mesh, wave_vector):
+    # dS/dL and dS/dC of port p1 against central differences
+    model = pc.c1(c1_mesh)
+    problem = gfem.Driven(frequency=(5e9, 7e9), wave_vector=wave_vector)
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    lc = jnp.array([2e-9, 1e-13])
+
+    def objective(t):
+        l, c = lc * (1 + t)
+        p1 = gfem.LumpedPort(
+            "p1", "sheet1", "+z", resistance=50.0, inductance=l, capacitance=c
+        )
+        ports = [p1, model.ports[1]]
+        result = gfem.solve(model.replace(ports=ports), problem, options=options)
+        return s_functional(result.s.values)
+
+    t, h = jnp.zeros(2), 1e-4
+    grad = np.asarray(jax.grad(objective)(t))
+    fd = np.array(
+        [
+            (objective(t.at[i].add(h)) - objective(t.at[i].add(-h))) / (2 * h)
+            for i in (0, 1)
+        ]
+    )
+    # measured 1.7e-8 (plain) and 1.5e-8 (Bloch) of the largest entry
+    np.testing.assert_allclose(grad, fd, rtol=0, atol=1e-6 * np.abs(fd).max())
