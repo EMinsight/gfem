@@ -510,6 +510,10 @@ REFUSAL_LABELS = {
     "device": '`device="cuda"`',
     "bddc_order_1": '`linear_solver="bddc_gmres"` at `order=1`',
     "bddc_order_1_auto": '`linear_solver="auto"` at `order=1`',
+    "petsc_preconditioner": (
+        '`linear_solver="petsc"` with a `pc_type` that has no distributed form '
+        "(`ilu`, `icc`, or `lu` or `cholesky` on a package other than MUMPS)"
+    ),
     "field_export": "`Field.to_meshio`, `Field.to_pyvista`",
     "load_result_fields": "`load_result` of a bundle with fields",
     "power_flow": "`power_flow`",

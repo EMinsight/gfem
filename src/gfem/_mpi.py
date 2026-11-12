@@ -146,17 +146,27 @@ _REFUSALS = {
         "pass comm=MPI.COMM_SELF for one-process fields on each rank."
     ),
     "power_flow": (
-        f"gfem.power_flow has no distributed path: read Field.at, {_COPIES}."
+        "gfem.power_flow has no distributed path: write the result with "
+        "Job.run(out=) and call it on one process on the field load_result "
+        f"gives, {_COPIES}."
     ),
     "electric_energy": (
-        f"gfem.electric_energy has no distributed path: read Field.at, {_COPIES}."
+        "gfem.electric_energy has no distributed path: write the result with "
+        "Job.run(out=) and call it on one process on the field load_result "
+        f"gives, {_COPIES}."
+    ),
+    "petsc_preconditioner": (
+        "This PETSc preconditioner has no distributed form (pc_type ilu or icc, "
+        "or lu or cholesky with a pc_factor_mat_solver_type other than mumps): "
+        "use pc_type bjacobi or asm with sub_pc_type, or the default MUMPS "
+        f"factorization, {_COPIES}."
     ),
     "error_estimate": (
         "gfem.error_estimate has no distributed path: estimate a result solved "
         "on one process, or run independent one-process copies with "
         "comm=MPI.COMM_SELF."
     ),
-    "mesh refinement": (
+    "mesh_refinement": (
         f"Mesh refinement has no distributed path: refine on one process, {_COPIES}, "
         "then solve the refined model on ranks."
     ),
@@ -289,6 +299,23 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("device")
         if options.order == 1 and options.linear_solver in ("auto", "bddc_gmres"):
             refuse_feature("bddc_order_1")
+        if options.linear_solver == "petsc" and _serial_only_preconditioner(
+            dict(options.petsc_options)
+        ):
+            refuse_feature("petsc_preconditioner")
+
+
+def _serial_only_preconditioner(petsc_options: dict[str, Any]) -> bool:
+    """Whether ``pc_type`` cannot set up on a distributed matrix on this stack.
+
+    MUMPS is the stack's only distributed factorization, and ``lu`` and
+    ``cholesky`` reach it unless another package is named.
+    """
+    kind = str(petsc_options.get("pc_type", "")).lower()
+    if kind in ("ilu", "icc"):
+        return True
+    package = str(petsc_options.get("pc_factor_mat_solver_type", "mumps")).lower()
+    return kind in ("lu", "cholesky") and package != "mumps"
 
 
 def refuse_feature(feature: str) -> None:
