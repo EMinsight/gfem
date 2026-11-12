@@ -225,18 +225,37 @@ def test_an_entry_freed_at_put_still_walks_the_kept_state():
     assert not _store(discs[0]).kept
 
 
-def test_an_entry_keeps_reading_its_own_state_after_eviction():
+def test_a_store_a_live_entry_holds_too_stays_kept_with_its_digests():
     values = np.zeros(40, np.uint8)
     disc = _disc()
     store = disc.space(("em", "hcurl", 1, "fixed pieces"), KeptParts)
     store.kept["mass"] = FakeParts(values)
+    store.seen["mass"] = "d"
     entries = EntryCache(discretizations=lambda: [disc])
     kept = FakeKept(1, shared=[values])
     key = entries.put(Entry(physics="em", handle=kept), budget=10**6)
+    # dropping the store would free nothing: the live entry holds its values
     entries.free_consumed(comm=None, budget=0)
-    assert not store.kept  # the store let go
-    # the live entry still holds them, and they still count
+    assert store.kept
+    assert store.seen == {"mass": "d"}
     assert entries.get(key) is not None
+    assert entries.nbytes == 1 + 40
+
+
+def test_a_store_no_other_holder_references_is_dropped():
+    held, alone = np.zeros(40, np.uint8), np.zeros(30, np.uint8)
+    shared_disc, alone_disc = _disc(), _disc()
+    for disc, values in ((shared_disc, held), (alone_disc, alone)):
+        store = disc.space(("em", "hcurl", 1, "fixed pieces"), KeptParts)
+        store.kept["mass"] = FakeParts(values)
+        store.seen["mass"] = "d"
+    entries = EntryCache(discretizations=lambda: [shared_disc, alone_disc])
+    entries.put(Entry(physics="em", handle=FakeKept(1, shared=[held])), budget=10**6)
+    entries.free_consumed(comm=None, budget=50)
+    # the older store is held by the entry: the newer one goes, and fits
+    assert _store(shared_disc).kept
+    assert not _store(alone_disc).kept
+    assert not _store(alone_disc).seen
     assert entries.nbytes == 1 + 40
 
 

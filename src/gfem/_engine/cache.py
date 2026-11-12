@@ -41,7 +41,8 @@ the walk of a stored entry (`EntryCache.put`):
 
 1. releases pooled handles' PARDISO factors, keeping their plans;
 2. drops kept fixed parts, whole stores, least recently used discretization
-   first;
+   first; a store whose parts another holder references stays (its bytes
+   would not leave), with the digests it has seen;
 3. frees pooled handles, least recently returned first;
 4. moves live entries' bases to the pool, oldest entry first, where tiers 1
    and 3 run on them again (freed where they cannot pool);
@@ -116,27 +117,18 @@ class Discretization:
         """The key of the NGSolve mesh's communicator (`gfem._mpi.comm_key`)."""
         return _mpi.comm_key(self.built.comm)
 
-    def _stores(self) -> list[KeptParts]:
+    def stores(self) -> list[KeptParts]:
+        """The kept fixed part stores among the spaces."""
         return [s for s in self.spaces.values() if isinstance(s, KeptParts)]
 
     def shared(self) -> dict[int, int]:
         """The kept fixed parts' and port state's bytes, by object identity."""
         held: dict[int, int] = {}
-        for store in self._stores():
+        for store in self.stores():
             held.update(store.shared())
         if self.ports is not None:
             held.update(self.ports.shared())
         return held
-
-    @property
-    def has_fixed_parts(self) -> bool:
-        """Whether a kept fixed part store holds a part or a digest seen."""
-        return any(s.kept or s.seen for s in self._stores())
-
-    def drop_fixed_parts(self) -> None:
-        """Clear every kept fixed part store (`KeptParts.clear`)."""
-        for store in self._stores():
-            store.clear()
 
     def drop_ports(self) -> None:
         """Drop the kept port state: the next driven solve builds it again."""
@@ -348,6 +340,13 @@ class _Tally:
         """The bytes held."""
         return self._own + sum(self._bytes.values())
 
+    def shared_elsewhere(self, shared: dict[int, int]) -> bool:
+        """Whether a second holder references one of the objects ``shared``.
+
+        For objects of one counted holder: dropping them there frees nothing.
+        """
+        return any(self._refs.get(key, 0) > 1 for key in shared)
+
 
 class _Walk:
     """A walk's tally against its budget (the node's under ``comm``)."""
@@ -385,6 +384,10 @@ class _Walk:
     def enter(self, holder: Any) -> None:
         """Count a holder that joined the cache."""
         self._tally.replace(_NOTHING, _Tally.of(holder))
+
+    def shared_elsewhere(self, shared: dict[int, int]) -> bool:
+        """See `_Tally.shared_elsewhere`."""
+        return self._tally.shared_elsewhere(shared)
 
 
 @dataclasses.dataclass(eq=False)
@@ -481,8 +484,13 @@ class EntryCache:
             if release is not None and not walk.step(pooled.handle, release):
                 return True
         for disc in discs:
-            if disc.has_fixed_parts and not walk.step(disc, disc.drop_fixed_parts):
-                return True
+            for store in disc.stores():
+                # a store held elsewhere too (an entry's pieces, a pooled
+                # pattern) frees nothing: it stays, and keeps on keeping
+                if not store.kept or walk.shared_elsewhere(store.shared()):
+                    continue
+                if not walk.step(disc, store.clear):
+                    return True
         return self._free_plans(walk)
 
     def _free_plans(self, walk: _Walk) -> bool:

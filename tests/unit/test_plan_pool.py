@@ -459,6 +459,33 @@ def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
     assert any(kept.pattern is handle.pattern for kept in store.kept.values())
 
 
+def _store(mesh):
+    (store,) = (
+        s for d in cache._DISCRETIZATIONS.values() if d.topology is mesh._topology
+        for s in d.stores()
+    )
+    return store
+
+
+@pytest.mark.usefixtures("plans")  # an empty cache before and after
+def test_fixed_parts_stay_kept_across_steps_just_over_budget(path):
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    eps = _eps(mesh)
+    step = jax.value_and_grad(_objective(mesh))
+    for k in range(2):  # the second sight keeps the fixed parts
+        step(eps + 0.1 * k)
+    kept = dict(_store(mesh).kept)
+    assert kept
+    # an entry and the kept parts it holds, less a byte: the base must go,
+    # and dropping the parts the entry holds would free nothing
+    budget = cache.ENTRIES.nbytes - 1
+    step = jax.value_and_grad(_objective(mesh, retain_memory=budget))
+    for k in range(2, 5):
+        step(eps + 0.1 * k)
+        assert _store(mesh).kept == kept  # the same parts, never kept again
+        assert cache.ENTRIES.nbytes <= budget
+
+
 def test_a_direct_handle_shares_its_pieces_pattern():
     import scipy.sparse as sp
 
