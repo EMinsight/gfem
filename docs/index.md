@@ -19,6 +19,7 @@ get-started
 :caption: Tutorials
 
 tutorials/topology
+tutorials/sheet
 tutorials/shape
 tutorials/bend
 tutorials/bend3d

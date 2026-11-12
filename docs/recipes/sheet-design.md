@@ -8,6 +8,9 @@ scales the admittance of the {py:obj}`gfem.Conductor` or
 {py:obj}`gfem.Impedance` on it, `Y_f(ω) = fill_f · Y_solid(ω)`. Fill 0 is no
 metal (plain dielectric continuity), 1 the solid sheet.
 
+The [resistive film tutorial](../tutorials/sheet.ipynb) runs a whole sheet
+optimization, from pixels to a binary film and its checks.
+
 ## The chain
 
 ```python
