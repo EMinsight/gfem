@@ -198,6 +198,30 @@ def _gfem_keys() -> list[str]:
     return [name for name in database if name.startswith("gfem")]
 
 
+def _destroyed_eps(monkeypatch) -> list:
+    """Spy on SLEPc's EPS: per solver created, what its ``destroy`` raised.
+
+    ``None`` for a solver destroyed without error (its handle null after).
+    """
+    from gfem import _petsc
+
+    SLEPc = _petsc.require_slepc()
+    raised = []
+
+    class EPS(SLEPc.EPS):
+        def destroy(self):
+            try:
+                super().destroy()
+            except BaseException as err:
+                raised.append(err)
+                raise
+            raised.append(self or None)
+            return self
+
+    monkeypatch.setattr(SLEPc, "EPS", EPS)
+    return raised
+
+
 # with a misspelled option too: the shift solve's error, not the typo's
 @pytest.mark.parametrize("petsc_options", [{}, {"eps_mpdd": 20}])
 def test_a_failed_shift_solve_raises_its_own_error(mesh, monkeypatch, petsc_options):
@@ -213,10 +237,13 @@ def test_a_failed_shift_solve_raises_its_own_error(mesh, monkeypatch, petsc_opti
         return solve(self, b)
 
     monkeypatch.setattr(EigenOperator, "solve", failing)
+    solvers = _destroyed_eps(monkeypatch)
     options = gfem.SolverOptions(eigen_solver="slepc", petsc_options=petsc_options)
     with pytest.raises(ShiftSolveError, match="the shift solve failed"):
         gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(8e9), options=options)
     assert not _gfem_keys()
+    # the interrupted solve leaks no solver: SLEPc destroyed it without error
+    assert solvers == [None]
 
 
 def test_the_options_database_holds_no_gfem_key_after_a_solve(mesh, solved_eps):
