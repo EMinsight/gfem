@@ -12,7 +12,7 @@ import jax as _jax
 _jax.config.update("jax_enable_x64", True)
 
 # Submodules are imported after the switch, so no gfem array is ever float32.
-from gfem import conventions, design, shape  # noqa: E402
+from gfem import conventions, design, quantum, shape  # noqa: E402
 from gfem._cuda import cuda_available  # noqa: E402
 from gfem.errors import (  # noqa: E402
     DegenerateModeError,
@@ -26,6 +26,7 @@ from gfem.errors import (  # noqa: E402
     MeshQualityWarning,
     MeshRefinementNotConvergedWarning,
     MeshRefinementUnsupportedError,
+    ModeLabelError,
     NonDifferentiableError,
     PortGeometryError,
     PortModeError,
@@ -120,6 +121,7 @@ __all__ = [
     "MeshRefinement",
     "MeshRefinementNotConvergedWarning",
     "MeshRefinementUnsupportedError",
+    "ModeLabelError",
     "Model",
     "NetworkParameters",
     "NonDifferentiableError",
@@ -155,6 +157,7 @@ __all__ = [
     "interface_participation",
     "load_result",
     "power_flow",
+    "quantum",
     "refine_mesh",
     "release_memory",
     "shape",

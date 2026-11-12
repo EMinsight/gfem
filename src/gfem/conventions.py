@@ -165,6 +165,34 @@ Swapping a pair's surfaces flips a and gives the same field.
 Under a Bloch wave vector, ``∫ D · E dV`` over the cell can vanish, so an
 eigenmode field is phased to make its largest coefficient real and positive
 instead (still scaled to `MODE_ENERGY`).
+
+Quantum metrics
+---------------
+`gfem.quantum.dressed_modes` puts one junction's cosine on the solved
+linear modes::
+
+    H / hbar = Σ_m omega_m a_m† a_m - (E_J / hbar) [cos(phi) - 1 + phi² / 2]
+    phi = Σ_m phi_m (a_m + a_m†)
+    phi_m = sign(p_m) sqrt(|p_m| hbar omega_m / (2 E_J))
+    E_J = (hbar / 2e)² / L_J
+
+with ``omega_m`` the real part of the mode's angular frequency, ``p_m`` its
+signed junction participation and ``L_J`` the junction's linear inductance.
+With ``E`` its levels (``E(0)`` the ground state, ``E(1_m)`` one photon in
+mode ``m``), every output is a signed angular frequency in rad/s and a
+difference of transition frequencies, so its sign is an observable:
+
+- dressed frequency ``E(1_m) - E(0)``; the Lamb shift is that minus
+  ``omega_m``;
+- anharmonicity ``alpha = E(2_m) - 2 E(1_m) + E(0)``, the second transition
+  frequency minus the first;
+- dispersive shift ``chi = E(1_m 1_n) - E(1_m) - E(1_n) + E(0)``: the full
+  shift of mode ``n``'s frequency per photon in mode ``m``, not half of it.
+
+For an ordinary transmon all three are negative. Other sources' conventions
+convert as ``chi = -chi_Minev = chi_Nigg = 2 chi_Koch`` and ``alpha =
+-alpha_Minev = alpha_Koch`` (Minev et al. and pyEPR report a downward shift
+as positive; Koch et al. write half the shift).
 """
 
 from __future__ import annotations
