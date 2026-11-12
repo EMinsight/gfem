@@ -1,0 +1,194 @@
+"""Every user page's code is checked against gfem without solving.
+
+The recipes run nothing at docs build time, and most are fragments on meshes
+the repository does not ship, so a renamed keyword or a removed name in one of
+them would reach readers unnoticed. This reads every page as a reader copies
+from it: its Python blocks parse, every gfem name it writes exists, and every
+gfem call binds to the callee's signature. It also keeps the hand-written
+tables of contents, the get-started links and the package description in step
+with the pages.
+"""
+
+import re
+import tomllib
+
+import docs_pages as dp
+import pytest
+
+PAGES = dp.user_pages()
+RECIPES = sorted(
+    page.stem for page in (dp.DOCS / "recipes").glob("*.md") if page.stem != "index"
+)
+
+
+def _id(page):
+    return page.relative_to(dp.DOCS).as_posix()
+
+
+# -- The checker itself, on pages written for the purpose --------------------
+
+
+def _page(*python: str, prose: str = "") -> str:
+    fenced = "\n\n".join(f"```python\n{block}\n```" for block in python)
+    return f"# A page\n\n{prose}\n\n{fenced}\n"
+
+
+def test_a_page_of_current_code_has_no_problem():
+    page = _page(
+        "import gfem\nfrom gfem import Material\n"
+        'mesh = gfem.Mesh.from_gmsh("line.msh", length_unit="mm")\n'
+        "air = Material(eps_r=1.0)",
+        "problem = gfem.Driven(frequency=5e9)\nresult = gfem.solve(model, problem)",
+        prose="Use {py:obj}`gfem.Driven` and `gfem.SolverOptions(order=3)`.",
+    )
+    assert dp.static_problems(page) == []
+
+
+def test_a_block_that_does_not_parse_is_reported():
+    (problem,) = dp.static_problems(_page("result = gfem.solve(model,"))
+    assert "block 1 does not parse" in problem
+
+
+def test_an_indented_block_is_read():
+    page = "- A step:\n\n  ```python\n  import gfem\n  gfem.nothing_here\n  ```\n"
+    (problem,) = dp.static_problems(page)
+    assert "nothing_here" in problem
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```python\nimport gfem\ngfem.Mesh.from_nowhere(path)\n```",
+        "```python\nfrom gfem import NoSuchThing\n```",
+        "```python\nimport gfem.no_such_module\n```",
+        "Call `gfem.no_such_function` first.",
+        "Call `gfem.no_such_function(x)` first.",
+        "See {py:obj}`gfem.NoSuchThing`.",
+        "See {py:obj}`the options <gfem.SolverOptions.no_such_field>`.",
+        "See {py:meth}`~gfem.Mesh.from_nowhere`.",
+    ],
+)
+def test_a_name_gfem_does_not_have_is_reported(text):
+    (problem,) = dp.static_problems(f"# A page\n\n{text}\n")
+    assert re.search(r"no '\w+' in gfem", problem)
+
+
+def test_a_field_without_a_default_is_a_name():
+    assert dp.static_problems("The {py:obj}`gfem.Driven.frequency` grid.\n") == []
+
+
+@pytest.mark.parametrize(
+    ("call", "reason"),
+    [
+        ("gfem.Driven(frequencies=5e9)", "unexpected keyword argument 'frequencies'"),
+        ("gfem.Driven()", "missing a required argument: 'frequency'"),
+        ("gfem.Mesh.from_gmsh('a.msh', 'mm', 'more')", "too many positional"),
+    ],
+)
+def test_a_call_that_does_not_bind_is_reported(call, reason):
+    (problem,) = dp.static_problems(_page(f"import gfem\nproblem = {call}"))
+    assert call.split("(")[0] in problem
+    assert reason in problem
+
+
+def test_a_call_through_an_imported_name_is_bound():
+    page = _page("from gfem import Driven as Sweep\nproblem = Sweep(frequencies=5e9)")
+    (problem,) = dp.static_problems(page)
+    assert "frequencies" in problem
+
+
+def test_a_name_the_page_rebinds_is_the_pages_own():
+    page = _page(
+        "from gfem import solve",
+        "def solve(model, **anything):\n    return model\n\nsolve(1, anything_goes=2)",
+    )
+    assert dp.static_problems(page) == []
+
+
+def test_inline_code_may_abbreviate_a_call_but_not_rename_a_keyword():
+    assert dp.static_problems("Pass `gfem.Driven(keep_fields=True)`.\n") == []
+    assert dp.static_problems("Pass `Driven(keep_fields=True)`.\n") == []
+    (problem,) = dp.static_problems("Pass `Driven(keeps_fields=True)`.\n")
+    assert "keeps_fields" in problem
+
+
+def test_unpacked_arguments_leave_the_named_keywords_checked():
+    page = _page("import gfem\nproblem = gfem.Driven(*args, frequencies=1.0, **more)")
+    (problem,) = dp.static_problems(page)
+    assert "frequencies" in problem
+
+
+def test_a_file_name_is_not_a_gfem_name():
+    assert dp.static_problems("Run `python -m gfem run gfem.json`.\n") == []
+
+
+# -- Every page ---------------------------------------------------------------
+
+
+def test_the_pages_are_found():
+    names = {_id(page) for page in PAGES}
+    assert {"get-started.md", "capabilities.md", "verification.md"} <= names
+    assert {f"recipes/{name}.md" for name in RECIPES} <= names
+
+
+@pytest.mark.parametrize("page", PAGES, ids=_id)
+def test_the_page_code_matches_gfem(page):
+    problems = dp.static_problems(page.read_text(encoding="utf-8"))
+    assert not problems, "\n".join([f"{_id(page)}:", *problems])
+
+
+# -- Tables of contents -------------------------------------------------------
+
+
+def test_every_recipe_is_in_the_site_tree():
+    tree = dp.toctree_entries((dp.DOCS / "index.md").read_text(encoding="utf-8"))
+    assert sorted(set(RECIPES) - {e.removeprefix("recipes/") for e in tree}) == []
+
+
+def test_the_recipes_page_lists_every_recipe():
+    page = (dp.DOCS / "recipes" / "index.md").read_text(encoding="utf-8")
+    assert sorted(set(RECIPES) - dp.doc_links(page)) == []
+
+
+def test_the_recipes_page_follows_the_site_tree():
+    """Same groups, same order as the sidebar: the page is its copy."""
+    index = (dp.DOCS / "index.md").read_text(encoding="utf-8")
+    page = (dp.DOCS / "recipes" / "index.md").read_text(encoding="utf-8")
+    for heading in re.findall(r"^## (.+)$", page, re.MULTILINE):
+        listed = re.findall(r"\{doc\}`([^`]+)`", dp.section(page, heading))
+        tree = dp.toctree_entries(index, caption=heading)
+        assert [f"recipes/{name}" for name in listed] == tree, heading
+
+
+def test_get_started_links_every_tutorial():
+    index = (dp.DOCS / "index.md").read_text(encoding="utf-8")
+    tutorials = dp.toctree_entries(index, caption="Tutorials")
+    assert tutorials
+    page = (dp.DOCS / "get-started.md").read_text(encoding="utf-8")
+    links = dp.doc_links(dp.section(page, "Next steps"))
+    assert sorted(set(tutorials) - links) == []
+
+
+# -- The package description and the aliases' API entries ---------------------
+
+
+def test_the_package_description_is_the_readme_first_sentence():
+    readme = (dp.ROOT / "README.md").read_text(encoding="utf-8")
+    prose = next(
+        line
+        for line in readme.splitlines()
+        if line.strip() and not line.lstrip().startswith(("<", "#", "!", "["))
+    )
+    sentence = prose.split(". ")[0].strip()
+    with (dp.ROOT / "pyproject.toml").open("rb") as file:
+        description = tomllib.load(file)["project"]["description"]
+    assert description == sentence
+
+
+@pytest.mark.parametrize("alias", ["Boundary", "Port"])
+def test_a_type_alias_has_a_documentation_comment(alias):
+    """The API reference shows an alias's text only from a ``#:`` comment."""
+    source = (dp.ROOT / "src" / "gfem" / "_boundaries.py").read_text(encoding="utf-8")
+    lines = source.splitlines()
+    at = next(i for i, line in enumerate(lines) if line.startswith(f"{alias} = "))
+    assert lines[at - 1].startswith("#: "), f"no '#:' comment above {alias}"

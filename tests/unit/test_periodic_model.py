@@ -51,6 +51,25 @@ def _x_pair():
 # --- pairing on the C2 and C4 cells ------------------------------------------------
 
 
+def test_a_gmsh_set_periodic_mesh_pairs_node_for_node():
+    # an unstructured mesh: gmsh copied x_min onto x_max and y_min onto y_max
+    mesh = pc.c2_gmsh_mesh()
+    assert len(mesh.imported_nodes) == 194
+    model = pc.c2(mesh)
+    x, y = model._periodic
+    assert (len(x.first_nodes), len(y.first_nodes)) == (20, 29)
+    np.testing.assert_allclose(
+        model.periodic_translations,
+        [(pc.C2_AX * MM, 0, 0), (0, pc.C2_AY * MM, 0)],
+        rtol=0,
+        atol=1e-12 * pc.C2_AX * MM,
+    )
+    for pair in (x, y):
+        twins = mesh.imported_nodes[pair.second_nodes]
+        moved = mesh.imported_nodes[pair.first_nodes] + pair.translation
+        np.testing.assert_allclose(twins, moved, rtol=0, atol=1e-12 * pc.C2_AX * MM)
+
+
 def test_two_pairs_measure_their_translations_in_metres(c2_mesh):
     model = pc.c2(c2_mesh)
     np.testing.assert_allclose(

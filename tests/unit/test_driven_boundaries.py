@@ -456,6 +456,52 @@ def test_first_order_absorbing_boundary_ends_an_anisotropic_slab_as_a_half_space
     assert abs(s11[0] - s11[1]) <= 3e-9
 
 
+def test_first_order_absorbing_boundary_absorbs_a_tilted_crystal_wave(tmp_path):
+    """A periodic cell of a tilted crystal radiating onto `Absorbing` faces.
+
+    The cell is periodic along y and z and filled with eps = diag(2, 2, 6)
+    tilted 45° about y. A lumped-port sheet driven along z radiates the
+    extraordinary plane wave both ways along x; its E has an x component, so
+    no PEC or PMC wall could guide it. The wave sees eps_zz - eps_xz² /
+    eps_xx = 3, and with both faces absorbing it the port sees two matched
+    half-lines: Z = η0 / sqrt(3) / 2 on the square cross-section.
+    """
+    edges = tuple(
+        np.linspace(0.0, s, n + 1)
+        for s, n in zip((6.0, 1.0, 1.0), (12, 2, 2), strict=True)
+    )
+    raw = sm.periodic_cell(edges, sheets=(("sheet", 2.5),), paired="yz")
+    mesh = gfem.Mesh.from_gmsh(
+        sm.write_msh22(tmp_path / "cell.msh", raw), length_unit="mm"
+    )
+    c = s = math.sqrt(0.5)
+    tilt = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    eps = tilt @ np.diag([2.0, 2.0, 6.0]) @ tilt.T
+    assert eps[2, 2] - eps[0, 2] ** 2 / eps[0, 0] == pytest.approx(3.0, abs=1e-14)
+    model = gfem.Model(
+        mesh,
+        materials={"cell": gfem.Material(eps_r=eps)},
+        boundaries=[
+            gfem.Periodic(("y_min", "y_max")),
+            gfem.Periodic(("z_min", "z_max")),
+            gfem.Absorbing("x_min"),
+            gfem.Absorbing("x_max"),
+        ],
+        ports=[gfem.LumpedPort("p1", "sheet", "+z", impedance=50.0)],
+    )
+    result = gfem.solve(
+        model,
+        gfem.Driven(frequency=10e9),
+        options=gfem.SolverOptions(order=2, linear_solver="direct"),
+    )
+    s11 = complex(np.asarray(result.s.values).ravel()[0])
+    z = const.mu_0 * const.c / math.sqrt(3.0) / 2
+    exact = (z - 50.0) / (z + 50.0)
+    assert exact == pytest.approx(0.37008935, abs=1e-8)
+    # 4.9e-7 measured; a mean-diagonal admittance would move S11 by about 0.1
+    assert abs(s11 - exact) <= 1e-5
+
+
 def _eigenmode(model):
     gfem.solve(model, gfem.Eigenmode(target=10e9, n_modes=1))
 

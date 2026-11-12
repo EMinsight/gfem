@@ -418,3 +418,72 @@ def test_a_bloch_solve_gives_the_same_s_after_its_phase_set_was_evicted(c1_mesh)
     assert len(disc.spaces) > keys
     after = _bloch_s(model, pc.C1_K)
     assert np.abs(after - before).max() <= 1e-12 * np.abs(before).max()
+
+
+# --- a first-order absorbing boundary under an oblique wave ---------------------------
+
+OBLIQUE_L, OBLIQUE_A, OBLIQUE_SHEET = 6.0, 1.0, 2.5  # mm
+OBLIQUE_EPS, OBLIQUE_F, OBLIQUE_R = 3.0, 10e9, 50.0
+OBLIQUE_ANGLE = math.radians(30.0)
+#: |S11 - line model ended by r = (1 - cos θ)/(1 + cos θ)| (1.9e-3 measured).
+OBLIQUE_MODEL_TOL = 1e-2
+#: |S11 - S11 of a perfect absorber|, at least (6.2e-2 measured).
+OBLIQUE_REFLECTED = 4e-2
+
+
+def _sheet_s11(wave_impedance, kx, r):
+    """S11 of the sheet between two lines, each ended by the reflection ``r``."""
+
+    def side(d):
+        g = r * np.exp(-2j * kx * d)
+        return wave_impedance * (1 + g) / (1 - g)
+
+    za = side(OBLIQUE_SHEET * MM)
+    zb = side((OBLIQUE_L - OBLIQUE_SHEET) * MM)
+    z = za * zb / (za + zb)  # square cross-section: height / width = 1
+    return (z - OBLIQUE_R) / (z + OBLIQUE_R)
+
+
+def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
+    """A Bloch cell radiating at 30° onto `Absorbing` faces: r = (1 - cos)/(1 + cos).
+
+    The cell is periodic along y and z; a wave vector k_t along z makes the
+    port sheet radiate at sin θ = k_t / (k0 n), with E in the plane of
+    incidence (wave impedance η cos θ). The first-order boundary has the
+    admittance of normal incidence, so each face reflects (1 - cos θ) /
+    (1 + cos θ) = 0.072, and S11 follows the two unequal lines ended by it.
+    """
+    edges = tuple(
+        np.linspace(0.0, s, n + 1)
+        for s, n in zip((OBLIQUE_L, OBLIQUE_A, OBLIQUE_A), (24, 2, 2), strict=True)
+    )
+    raw = sm.periodic_cell(edges, sheets=(("sheet", OBLIQUE_SHEET),), paired="yz")
+    mesh = gfem.Mesh.from_gmsh(
+        sm.write_msh22(tmp_path / "cell.msh", raw), length_unit="mm"
+    )
+    model = gfem.Model(
+        mesh,
+        materials={"cell": gfem.Material(eps_r=OBLIQUE_EPS)},
+        boundaries=[
+            gfem.Periodic(("y_min", "y_max")),
+            gfem.Periodic(("z_min", "z_max")),
+            gfem.Absorbing("x_min"),
+            gfem.Absorbing("x_max"),
+        ],
+        ports=[gfem.LumpedPort("p1", "sheet", "+z", impedance=OBLIQUE_R)],
+    )
+    k = 2 * math.pi * OBLIQUE_F / const.c * math.sqrt(OBLIQUE_EPS)
+    kt, kx = k * math.sin(OBLIQUE_ANGLE), k * math.cos(OBLIQUE_ANGLE)
+    result = gfem.solve(
+        model,
+        gfem.Driven(frequency=OBLIQUE_F, wave_vector=(0.0, 0.0, kt)),
+        options=gfem.SolverOptions(order=2, linear_solver="direct"),
+    )
+    s11 = complex(np.asarray(result.s.values).ravel()[0])
+
+    cos = math.cos(OBLIQUE_ANGLE)
+    r = (1 - cos) / (1 + cos)
+    assert r == pytest.approx(0.072, abs=5e-4)
+    wave_impedance = const.mu_0 * const.c / math.sqrt(OBLIQUE_EPS) * cos
+    assert abs(s11 - _sheet_s11(wave_impedance, kx, r)) <= OBLIQUE_MODEL_TOL
+    assert abs(s11 - _sheet_s11(wave_impedance, kx, 0.0)) >= OBLIQUE_REFLECTED

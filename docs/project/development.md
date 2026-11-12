@@ -88,6 +88,7 @@ tutorial, regenerate them and commit the result:
 
 ```bash
 just notebooks        # re-execute docs/tutorials/*.ipynb in place, docs figure style
+just notebooks bend   # only docs/tutorials/bend.ipynb
 just front-page-data  # resample the 3D bend's run record for the front page's hero data
 ```
 
@@ -108,5 +109,5 @@ no longer matches the hashes in the record. After changing either, rerun the
 script and commit the new record:
 
 ```bash
-just bend3d-data      # about 2.7 h on 16 cores / 96 GiB, with the mkl extra
+just bend3d-data      # about 2.5 h on 16 cores / 96 GiB, with the mkl extra
 ```

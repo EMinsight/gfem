@@ -580,7 +580,9 @@ class NetworkParameters:
         then be one real value for every port and frequency: gfem never
         labels a port with an impedance S was not computed for. With
         ``z0``, S is first renormalized to it (`renormalize`). Port names
-        and the conventions are written as comments.
+        and the conventions are written as comments. Rows are written in
+        increasing frequency, as the format requires, whatever the order of
+        `frequency`.
 
         Args:
             path: The file, named ``*.s<n_ports>p``.
@@ -696,7 +698,9 @@ def _touchstone(net: NetworkParameters, s: np.ndarray, z0: float) -> str:
     def pairs(values: np.ndarray) -> list[str]:
         return [f"{v.real: .16e} {v.imag: .16e}" for v in values]
 
-    for f, m in zip(net.frequency, s, strict=True):
+    # the format wants increasing frequency; the result keeps the order given
+    for at in np.argsort(net.frequency, kind="stable"):
+        f, m = net.frequency[at], s[at]
         head = f"{f:.16e}"
         if n <= 2:
             # 1- and 2-port files list N11 N21 N12 N22 on one line
@@ -1071,6 +1075,11 @@ class EigenmodeResult:
             volume region (`Material` or `MaterialField`). Measurements
             that need the media around a surface read them
             (`gfem.interface_participation`).
+        periodic_surfaces: The ``(first, second)`` surface names of each
+            `gfem.Periodic` pair of the model the modes were solved on;
+            empty for a model with no pair, and for a result saved before
+            gfem recorded them. `gfem.interface_participation` refuses
+            these surfaces: they are interior to the periodic cell.
         cluster: Integer label per mode, ``(n_modes,)``: modes with the same
             label form a degenerate cluster, frequencies within
             ``SolverOptions.cluster_rtol`` of each other. A cluster's modes
@@ -1092,11 +1101,14 @@ class EigenmodeResult:
     principal_participation: dict[str, jax.Array] = dataclasses.field(
         default_factory=dict
     )
+    periodic_surfaces: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
-        """Hold fields and materials as tuple and dict; label simple modes."""
+        """Hold fields, materials and pairs as tuples and dict; label simple modes."""
         object.__setattr__(self, "e_fields", tuple(self.e_fields))
         object.__setattr__(self, "materials", dict(self.materials))
+        pairs = tuple((str(a), str(b)) for a, b in self.periodic_surfaces)
+        object.__setattr__(self, "periodic_surfaces", pairs)
         if self.cluster is None:  # every mode simple (results of older files)
             n = int(np.shape(self.omega)[0])
             object.__setattr__(self, "cluster", jnp.arange(n))

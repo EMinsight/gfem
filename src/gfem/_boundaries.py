@@ -92,6 +92,16 @@ class Absorbing:
     solver using it differs from gfem at order 2 (they agree at order 1 and
     on adequately sized boxes).
 
+    Both orders are exact at normal incidence only. A plane wave arriving at
+    the angle θ from the normal is reflected with amplitude (1 - cos θ) /
+    (1 + cos θ) at order 1 (0.017 at 15°, 0.072 at 30°, 0.17 at 45°), for
+    both polarizations. Order 2 lowers this about tenfold up to 30° for the
+    polarization with E parallel to the surface and normal to k_t; for the
+    other one (E in the plane of incidence, no normal magnetic field) the
+    curl term vanishes and the reflection is that of order 1. In a periodic
+    cell under a Bloch wave vector with a component k_t along the surface,
+    ``sin θ = |k_t| / k``.
+
     Next to an anisotropic material, order 1 uses the normal-incidence
     admittance tensor of that material for the face normal (i k0 ∮ (Y E_t)
     · v_t, exact for a plane wave at normal incidence; real parts of ε and
@@ -264,6 +274,7 @@ for _cls in (PEC, PMC, Absorbing, Periodic):
 register_fields(Conductor, ("fill",))
 register_fields(Impedance, ("fill",))
 
+#: A boundary condition of a model: any one of the classes this union names.
 Boundary = PEC | PMC | Absorbing | Conductor | Impedance | Periodic
 
 
@@ -272,7 +283,26 @@ Boundary = PEC | PMC | Absorbing | Conductor | Impedance | Periodic
 _AXES = {"x": 0, "y": 1, "z": 2}
 
 Direction = (
-    Literal["+x", "-x", "+y", "-y", "+z", "-z", "+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+    Literal[
+        "x",
+        "y",
+        "z",
+        "X",
+        "Y",
+        "Z",
+        "+x",
+        "-x",
+        "+y",
+        "-y",
+        "+z",
+        "-z",
+        "+X",
+        "-X",
+        "+Y",
+        "-Y",
+        "+Z",
+        "-Z",
+    ]
     | tuple[float, float, float]
 )
 
@@ -288,13 +318,15 @@ def _port_name(name: Any, owner: str) -> str:
 def _direction(value: Any, owner: str) -> tuple[float, float, float]:
     if isinstance(value, str):
         v = value.strip().lower()
+        if v in _AXES:  # no sign means the positive axis
+            v = "+" + v
         if len(v) == 2 and v[0] in "+-" and v[1] in _AXES:
             out = [0.0, 0.0, 0.0]
             out[_AXES[v[1]]] = 1.0 if v[0] == "+" else -1.0
             return (out[0], out[1], out[2])
         raise ValueError(
-            f"{owner}: direction {value!r} is not an axis; use '+x', '-x', '+y', "
-            "'-y', '+z', '-z' or a 3-vector."
+            f"{owner}: direction {value!r} is not an axis; use 'x', 'y', 'z' with "
+            "an optional sign ('+x', '-z'; no sign means '+') or a 3-vector."
         )
     check_fixed(value, f"{owner}: direction must be fixed numbers")
     try:
@@ -338,8 +370,8 @@ class LumpedPort:
         direction: The excitation direction of each element, along its
             surface from one conductor to the other: the reference direction
             of E across the gap, so it sets the polarity of the port voltage.
-            An axis ('+x', '-y', ...) or a 3-vector. With several surfaces,
-            a sequence of the same length.
+            An axis ('+x', '-y', ...; no sign means +) or a 3-vector. With
+            several surfaces, a sequence of the same length.
         resistance: Termination resistance, ohm.
         inductance: Termination inductance, H.
         capacitance: Termination capacitance, F.
@@ -497,6 +529,7 @@ def _path(value: Any, owner: str) -> tuple[tuple[float, float, float], ...]:
 for _cls in (LumpedPort, WavePort):
     jax.tree_util.register_static(_cls)
 
+#: A port of a model: a lumped port or a wave port.
 Port = LumpedPort | WavePort
 
 

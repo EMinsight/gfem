@@ -10,10 +10,12 @@ touches x_min but not x_max, so the measurement must read edges and DOFs
 across the pairs (ticket 10 Q4, Q6).
 """
 
+import json
 import math
 import re
 
 import numpy as np
+import periodic_cases as pc
 import pytest
 import scipy.constants as const
 import structured_meshes as sm
@@ -129,6 +131,7 @@ def test_interface_participation_refuses_a_paired_surface(cell):
         error=np.zeros(1),
         e_fields=(e,),
         materials=cell.materials,
+        periodic_surfaces=(("x_min", "x_max"), ("y_min", "y_max")),
     )
     for name, pair in (
         ("x_max", "('x_min', 'x_max')"),
@@ -143,3 +146,71 @@ def test_interface_participation_refuses_a_paired_surface(cell):
     # an unpaired surface still measures
     p = gfem.interface_participation(modes, "z_min", 1e-9, 10.0, kind="MS")
     assert np.isfinite(np.asarray(p.participation)).all()
+
+
+PAIRED = (
+    "'x_min' is a surface of periodic pair ('x_min', 'x_max'), which is interior "
+    "to the periodic cell: it holds no interface layer."
+)
+EIGEN_OPTIONS = gfem.SolverOptions(order=1, linear_solver="direct")
+EIGEN = gfem.Eigenmode(target=15e9, n_modes=1)
+
+
+def _cavity(mesh):
+    """An all-PEC cavity on C2's mesh: ``x_min`` is a wall, not a pair's surface."""
+    walls = ("x_min", "x_max", "y_min", "y_max", "z_min", "z_max")
+    return gfem.Model(
+        mesh,
+        materials={"cell": gfem.Material(eps_r=pc.C2_EPS)},
+        boundaries=[gfem.PEC(s) for s in walls],
+    )
+
+
+def _wall_participation(modes):
+    return gfem.interface_participation(modes, "x_min", 1e-9, 10.0, kind="MA")
+
+
+def test_a_wall_measures_on_a_mesh_a_periodic_model_was_built_on(tmp_path):
+    mesh = pc.c2_mesh(tmp_path, cells=(4, 4, 1))
+    pc.c2(mesh)  # built, never solved: its pairs are not the cavity's
+    modes = gfem.solve(_cavity(mesh), EIGEN, options=EIGEN_OPTIONS)
+    assert modes.periodic_surfaces == ()
+    assert np.isfinite(np.asarray(_wall_participation(modes).participation)).all()
+
+
+def test_a_paired_surface_is_refused_after_the_same_surface_was_measured(tmp_path):
+    mesh = pc.c2_mesh(tmp_path, cells=(4, 4, 1))
+    cavity = gfem.solve(_cavity(mesh), EIGEN, options=EIGEN_OPTIONS)
+    _wall_participation(cavity)  # the wall first: same mesh, surface and layout
+    modes = gfem.solve(pc.c2(mesh), EIGEN, options=EIGEN_OPTIONS)
+    assert modes.periodic_surfaces == (("x_min", "x_max"), ("y_min", "y_max"))
+    with pytest.raises(ValueError, match=f"^{re.escape(PAIRED)}$"):
+        _wall_participation(modes)
+
+
+def test_a_loaded_result_keeps_its_periodic_surfaces(tmp_path):
+    mesh = pc.c2_mesh(tmp_path, cells=(4, 4, 1))
+    gfem.Job(pc.c2(mesh), EIGEN, EIGEN_OPTIONS).run(tmp_path / "out")
+    modes = gfem.load_result(tmp_path / "out")
+    assert modes.periodic_surfaces == (("x_min", "x_max"), ("y_min", "y_max"))
+    with pytest.raises(ValueError, match=f"^{re.escape(PAIRED)}$"):
+        _wall_participation(modes)
+
+    # a result saved before the pairs were recorded reads as having none
+    path = tmp_path / "out" / "result.json"
+    text = path.read_text()
+    assert '"periodic_surfaces"' in text
+    doc = json.loads(text)
+
+    def strip(node):
+        if isinstance(node, dict):
+            node.pop("periodic_surfaces", None)
+            for value in node.values():
+                strip(value)
+        elif isinstance(node, list):
+            for value in node:
+                strip(value)
+
+    strip(doc)
+    path.write_text(json.dumps(doc))
+    assert gfem.load_result(tmp_path / "out").periodic_surfaces == ()
