@@ -218,7 +218,7 @@ solved. Adaptive sweeps set the preconditioner up at every sample.
 |---|---|---|
 | `-ksp_type` | names are written without `-` | `ksp_type` |
 | `ksp_rtol` | gfem sets it | `tolerance`, `adjoint_tolerance` |
-| `ksp_atol` | gfem sets the stopping rule | `tolerance`, `adjoint_tolerance` |
+| `ksp_atol` | gfem stops on the relative residual only | `tolerance`, `adjoint_tolerance` |
 | `ksp_initial_guess_nonzero` | gfem sets it per solve | nothing: remove it |
 | `eps_tol` | gfem sets it | `eigen_tolerance` |
 | `eps_nev` | gfem sets it | `Eigenmode.n_modes` |

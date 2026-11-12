@@ -96,7 +96,10 @@ def _slepc(options):
         (_petsc({"ksp_type": ["gmres"]}), "petsc_options"),
         (_petsc({"ksp_atol": float("nan")}), "petsc_options"),
         (_petsc({"ksp_rtol": 1e-8}), "tolerance"),
-        (_petsc({"ksp_atol": 1e30}), r"'ksp_atol'\] is set by gfem.*tolerance"),
+        (
+            _petsc({"ksp_atol": 1e30}),
+            r"'ksp_atol'\] is reserved: gfem stops .* on the relative residual only",
+        ),
         (_petsc({"ksp_initial_guess_nonzero": True}), "initial guess"),
         ({"petsc_options": {"ksp_type": "gmres"}}, "petsc_options"),
         ({"device": "cuda", "linear_solver": "petsc"}, "'direct' or 'auto'"),
