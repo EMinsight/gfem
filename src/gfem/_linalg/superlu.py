@@ -14,6 +14,10 @@ import numpy as np
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
+#: ARPACK's default relative tolerance on the shifted eigenvalues: two port
+#: mode solves agree to about this, not to rounding.
+EIGS_TOLERANCE = 1e-10
+
 
 class _ShiftInvert(spla.LinearOperator):
     """``x -> (A - sigma B)^-1 B x`` with ``A - sigma B`` factored by SuperLU."""
@@ -33,7 +37,7 @@ def shift_invert_eigs(
     sigma: complex,
     k: int,
     *,
-    tol: float = 1e-10,
+    tol: float = EIGS_TOLERANCE,
 ) -> tuple[np.ndarray, np.ndarray]:
     """The ``k`` eigenpairs of ``A x = lam B x`` with ``lam`` nearest ``sigma``.
 

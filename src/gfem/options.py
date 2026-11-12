@@ -71,8 +71,9 @@ _RESERVED: dict[str, str] = {
         "solves); set that instead."
     ),
     "ksp_atol": (
-        "is set by gfem: a Krylov solve stops on SolverOptions.tolerance, "
-        "relative to the right-hand side; set that instead."
+        "is reserved: gfem stops a Krylov solve on the relative residual only, "
+        "SolverOptions.tolerance relative to the right-hand side; set that "
+        "instead."
     ),
     "ksp_initial_guess_nonzero": (
         "is set per solve from the initial guess gfem passes; remove it."
@@ -352,8 +353,9 @@ class SolverOptions:
             ``eigen_solver="slepc"``, every other name needs
             ``linear_solver="petsc"``, so an option never goes to a solver
             that is not selected. Options gfem sets from
-            its own fields (``ksp_rtol`` and ``ksp_atol`` from ``tolerance``,
-            ``eps_tol`` from ``eigen_tolerance``, ...) raise `ValueError`. An option the
+            its own fields (``ksp_rtol`` from ``tolerance``, ``eps_tol`` from
+            ``eigen_tolerance``, ...) raise `ValueError`, and so does
+            ``ksp_atol``: gfem stops on the relative residual only. An option the
             PETSc linear solver does not read (a typo, or an option of
             another configuration) raises `ValueError` when the solve
             starts; one SLEPc does not read raises it after the eigen

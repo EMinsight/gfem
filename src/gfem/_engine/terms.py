@@ -461,8 +461,8 @@ def conductivity_piece(
 ) -> Piece:
     """The ``conductivity`` piece of ``model``: θ = i k0, ∫ eta0 sigma scale E · v.
 
-    `pieces` leaves it out when the conductivity is zero everywhere on the
-    solve domain (a zero matrix, and no damping term for the eigenmode
+    `pieces` returns it as latent when the conductivity is zero everywhere
+    on the solve domain (a zero matrix, and no damping term for the eigenmode
     operator). Its derivative by the conductivity is not zero there, so a
     backward pass still reads the piece (`gfem._engine.driven.DrivenOperator.latent`).
     ``elements`` restricts the form as in `pieces`.
@@ -505,8 +505,12 @@ def pieces(
     *,
     elements: np.ndarray | None = None,
     faces: np.ndarray | None = None,
-) -> list[Piece]:
+) -> tuple[list[Piece], tuple[Piece, ...]]:
     """The driven operator's pieces on ``model`` (see the module docstring).
+
+    Returns the pieces and the latent ones: pieces whose matrix is zero at
+    this design but whose derivative is not (the conductivity piece where the
+    conductivity is zero everywhere; `gfem._engine.driven.DrivenOperator.latent`).
 
     `PEC` is a constraint of the space and `PMC` the natural condition, so
     neither has a piece.
@@ -580,8 +584,11 @@ def pieces(
     # the conductivity has its own i k0 piece, not folded into the mass (the
     # eigen operator splits the pieces by power of k)
     conductivity = conductivity_piece(model, built, order, elements=elements)
+    latent: tuple[Piece, ...] = ()
     if np.any(conductivity.values):
         out.append(conductivity)
+    else:
+        latent = (conductivity,)
 
     absorbing = [b for b in model.boundaries if isinstance(b, Absorbing)]
     if absorbing:
@@ -635,7 +642,7 @@ def pieces(
     for data in ports:
         index = model.port_names.index(data.port.name)
         out.extend(_port(built, order, data, tris, index=index))
-    return out
+    return out, latent
 
 
 def absorbing_coefficients(

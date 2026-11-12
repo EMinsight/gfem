@@ -22,6 +22,7 @@ from gfem import _mpi
 from gfem._checks import is_staging, is_traced
 from gfem._pytree import readonly
 from gfem._refine import Refinement, bisect, transfer, transfer_design
+from gfem._text import hertz
 from gfem.errors import (
     DegenerateModeError,
     EigenmodeConvergenceError,
@@ -708,7 +709,7 @@ def _track_mode(
     if len(close) > 1 or np.count_nonzero(cluster == cluster[mode]) > 1:
         raise DegenerateModeError(
             f"QuantityEstimator(omega=...) follows one mode by its frequency, "
-            f"and mode {mode} at {omegas[mode].real / (2 * np.pi):.6g} Hz is "
+            f"and mode {mode} at {hertz(omegas[mode].real / (2 * np.pi))} is "
             "not alone: another mode lies within SolverOptions.cluster_rtol="
             f"{rtol:g} of it. A degenerate cluster has no one mode to follow: "
             "use gfem.FieldEstimator(), which estimates every mode, or a "
@@ -732,14 +733,14 @@ def _check_followed(
     that floor. Further away, the nearest mode is another one.
     """
     nearest = float(distances[mode])
-    hertz = omegas[mode].real / (2 * np.pi)
+    frequency = hertz(omegas[mode].real / (2 * np.pi))
     if previous_estimate is not None:
         allowed = 2 * previous_estimate * abs(previous) / _ESTIMATE_FLOOR
         if nearest > allowed:
             raise DegenerateModeError(
                 "QuantityEstimator(omega=...) follows one mode by its frequency, "
                 f"and the nearest mode on the refined mesh, mode {mode} at "
-                f"{hertz:.6g} Hz, moved {nearest / abs(previous):.3g} of the "
+                f"{frequency}, moved {nearest / abs(previous):.3g} of the "
                 "followed frequency, further than the previous error estimate "
                 f"{previous_estimate:.3g} allows. The followed mode probably "
                 "left the solved modes: ask for more modes "
@@ -749,7 +750,7 @@ def _check_followed(
     if len(others) and float(others.min()) < 2 * nearest:
         raise DegenerateModeError(
             "QuantityEstimator(omega=...) follows one mode by its frequency, "
-            f"and mode {mode} at {hertz:.6g} Hz is not clearly nearest the "
+            f"and mode {mode} at {frequency} is not clearly nearest the "
             "followed frequency on the refined mesh: another mode is less than "
             "twice as far. Start from a finer mesh, on which the two modes "
             "are apart, or use gfem.FieldEstimator(), which estimates every "

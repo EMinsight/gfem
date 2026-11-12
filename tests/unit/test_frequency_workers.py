@@ -244,8 +244,9 @@ SIX = (3e9, 3.5e9, 4e9, 4.5e9, 5e9, 5.5e9)  # two blocks of three
 def _in_process(monkeypatch):
     """Run each worker's block in this process, so test seams reach it."""
 
-    def run(function, arguments, _labels, *, threads):  # noqa: ARG001
-        return [function(*args) for args in arguments]
+    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+        keywords = keywords or [{}] * len(arguments)
+        return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
 
     monkeypatch.setattr(workers, "run", run)
 

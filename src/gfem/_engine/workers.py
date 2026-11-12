@@ -91,14 +91,16 @@ def run(
     labels: Sequence[str],
     *,
     threads: int,
+    keywords: Sequence[dict[str, Any]] | None = None,
 ) -> list[Any]:
-    """``function(*a)`` for each ``a`` of ``arguments``, each in its own worker.
+    """``function(*a, **k)`` for each ``a`` of ``arguments``, in its own worker.
 
     Args:
         function: A module-level function (it is pickled by name).
         arguments: One argument tuple per worker.
         labels: What each worker solves, for errors (e.g. its frequencies).
         threads: Each worker's threads (`worker_threads`).
+        keywords: One keyword-argument dict per worker; none by default.
 
     Returns:
         The workers' results, in ``arguments`` order.
@@ -112,11 +114,12 @@ def run(
         futures = []
         # a pool starts its process on the first submit
         with _worker_environment(threads):
-            for args in arguments:
+            for i, args in enumerate(arguments):
                 pool = stack.enter_context(
                     ProcessPoolExecutor(max_workers=1, mp_context=context)
                 )
-                futures.append(pool.submit(function, *args))
+                kwargs = keywords[i] if keywords is not None else {}
+                futures.append(pool.submit(function, *args, **kwargs))
         out = []
         for future, label in zip(futures, labels, strict=True):
             try:

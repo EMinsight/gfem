@@ -32,6 +32,7 @@ from gfem._linalg import bddc, pardiso, prepare
 from gfem._linalg.base import PlannedHandle, same_pattern
 from gfem._linalg.bddc import BddcHandle
 from gfem._linalg.direct import DirectHandle
+from gfem._text import hertz
 
 L, W, H = 10.0, 2.0, 1.0  # mm
 EPS = 4.0
@@ -1177,7 +1178,8 @@ def test_a_frequency_below_the_low_frequency_floor_warns_once_per_sweep(mesh, li
     (w,) = _low_frequency(record)
     message = str(w.message)
     assert "2 of 3 frequencies" in message
-    assert f"the lowest {_f(2e-7, mesh):.4g} Hz" in message
+    assert f"the lowest {hertz(_f(2e-7, mesh), 4)}," in message
+    assert f"floor of {hertz(_f(1e-6, mesh), 4)} (" in message
     assert "k0*h_min = 2e-07" in message
     assert f"h_min = {_edges(mesh).min():.3g} m" in message
     assert "gfem.Electrostatic" in message

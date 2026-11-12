@@ -672,6 +672,16 @@ def test_a_crossing_raises():
         _track_mode(_modes(10.4, 9.5), 0, 10.0, 1e-6, 1.0)
 
 
+def test_mode_following_errors_give_frequencies_in_their_unit():
+    ghz = 2 * np.pi * 1e9
+    with pytest.raises(gfem.DegenerateModeError, match=r"mode 0 at 10\.4 GHz"):
+        _track_mode(_modes(10.4 * ghz, 9.5 * ghz), 0, 10 * ghz, 1e-6, 1.0)
+    with pytest.raises(gfem.DegenerateModeError, match="mode 0 at 11 GHz, moved"):
+        _track_mode(_modes(11 * ghz, 14 * ghz), 0, 10 * ghz, 1e-6, 1e-3)
+    with pytest.raises(gfem.DegenerateModeError, match="mode 0 at 10 GHz is not alone"):
+        _track_mode(_modes(10 * ghz, 10 * ghz * (1 + 1e-9)), 0, None, 1e-6, None)
+
+
 def test_a_mode_that_left_the_solved_modes_raises():
     # nearest at 11 from 10, further than the previous estimate 1e-3 allows
     with pytest.raises(gfem.DegenerateModeError, match="more modes"):

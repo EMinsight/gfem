@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -38,6 +38,7 @@ from gfem._checks import is_traced
 from gfem._probe import NODES_REASON
 
 if TYPE_CHECKING:
+    from gfem._engine.power_flow import Surface
     from gfem._field import Field
     from gfem.model import Model
 
@@ -47,6 +48,17 @@ __all__ = ["LAYER_REMEDY", "power_flow"]
 #: wrapper adds jax.lax.stop_gradient as the other way out).
 LAYER_REMEDY = "move the surface one element away from the design region"
 _FIELD_INPUTS = {"coefficients": "coefficients", "mesh": "nodes", "omega": "omega"}
+
+
+class _Role(NamedTuple):
+    """What the power does with one input."""
+
+    #: ``"read"`` or ``"unread"`` (an exact zero).
+    role: str
+    #: Why a read input is not differentiable; ``None`` if it is.
+    unsupported: str | None
+    #: The input, as the user knows it.
+    description: str
 
 
 def engine() -> Any:
@@ -67,7 +79,7 @@ def power_flow(
     f_paths, f_def = jax.tree_util.tree_flatten_with_path(field)
     m_paths, m_def = jax.tree_util.tree_flatten_with_path(model)
     inputs: dict[str, Any] = {}
-    roles: dict[str, tuple[str, str | None, str]] = {}
+    roles: dict[str, _Role] = {}
     for path, leaf in f_paths:
         name = _FIELD_INPUTS[path[0].name]
         inputs[name] = leaf
@@ -86,12 +98,14 @@ def power_flow(
     return measure(kernel, inputs)["power"]
 
 
-def _field_role(name: str, field: Field) -> tuple[str, str | None, str]:
-    """(role, reason it is not differentiable or None, description)."""
+def _field_role(name: str, field: Field) -> _Role:
+    """The role of a field input."""
     if name == "nodes":
-        return "read", NODES_REASON, "the mesh node coordinates (field.mesh.nodes)"
+        return _Role(
+            "read", NODES_REASON, "the mesh node coordinates (field.mesh.nodes)"
+        )
     if name == "omega":
-        return (
+        return _Role(
             "read",
             (
                 "a field's angular frequency is fixed: differentiate the solve's "
@@ -100,7 +114,7 @@ def _field_role(name: str, field: Field) -> tuple[str, str | None, str]:
             "the field's omega",
         )
     if field._reduced:  # noqa: SLF001
-        return (
+        return _Role(
             "read",
             (
                 "the field is formed from an adaptive sweep's frozen reduced "
@@ -110,38 +124,40 @@ def _field_role(name: str, field: Field) -> tuple[str, str | None, str]:
             ),
             "the coefficients of a field of an adaptive sweep (gfem.ReducedFields)",
         )
-    return "read", None, "the field coefficients"
+    return _Role("read", None, "the field coefficients")
 
 
-def _model_role(kind: tuple, model: Model, where: Any) -> tuple[str, str | None, str]:
-    """(role, reason it is not differentiable or None, description)."""
+def _model_role(kind: tuple[Any, ...], model: Model, where: Surface) -> _Role:
+    """The role of a model leaf, by its `input_kind`."""
     mesh = model.mesh
     if kind[0] == "nodes":
-        return "read", NODES_REASON, "the mesh node coordinates (model.mesh.nodes)"
+        return _Role(
+            "read", NODES_REASON, "the mesh node coordinates (model.mesh.nodes)"
+        )
     if kind[0] == "material":
         region = kind[1]
         described = f"model.materials[{region!r}].{kind[2]}"
         if where.read_elements(mesh)[mesh.elements(region)].any():
-            return (
+            return _Role(
                 "read",
                 f"region {region!r} has elements in the element layer just "
                 "outside the side, whose materials the power reads; " + LAYER_REMEDY,
                 described,
             )
-        return "unread", None, described
+        return _Role("unread", None, described)
     if kind[0] == "boundary":
         boundary = model.boundaries[kind[1]]
         described = f"model.boundaries[{kind[1]}]" + "".join(f".{k}" for k in kind[2:])
         for name in surfaces_of(boundary):
             if where.faces[mesh.elements(name)].any():
-                return (
+                return _Role(
                     "read",
                     f"surface {name!r} has faces in the element layer just "
                     "outside the side, whose terms the power reads; " + LAYER_REMEDY,
                     described,
                 )
-        return "unread", None, described
-    return "unread", None, "model." + ".".join(str(k) for k in kind)
+        return _Role("unread", None, described)
+    return _Role("unread", None, "model." + ".".join(str(k) for k in kind))
 
 
 class _PowerFlowKernel:
@@ -157,10 +173,10 @@ class _PowerFlowKernel:
     def __init__(
         self,
         *,
-        roles: dict[str, tuple[str, str | None, str]],
+        roles: dict[str, _Role],
         field_def: tuple[Any, tuple[str, ...]],
         model_def: tuple[Any, tuple[str, ...]],
-        where: Any,
+        where: Surface,
         order: int,
     ) -> None:
         self.roles = roles
@@ -172,13 +188,13 @@ class _PowerFlowKernel:
         self._cached: tuple[bytes, Any] | None = None
 
     def role(self, name: str) -> str:
-        return self.roles[name][0]
+        return self.roles[name].role
 
     def unsupported(self, name: str) -> str | None:
-        return self.roles[name][1]
+        return self.roles[name].unsupported
 
     def describe(self, name: str) -> str:
-        return self.roles[name][2]
+        return self.roles[name].description
 
     def _host(self, values: dict[str, np.ndarray]) -> tuple[Any, np.ndarray, float]:
         """The flux, the coefficients and omega of one design state."""
@@ -193,7 +209,7 @@ class _PowerFlowKernel:
             self._cached = (key, pf.build(self.order, model, self.where))
         flux = self._cached[1]
         e = np.asarray(values["coefficients"])
-        pf.check_size(e, flux, self.order)
+        pf.check_size(e, flux.op, self.order)
         return flux, e, float(np.asarray(values["omega"]).real)
 
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:

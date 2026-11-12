@@ -150,6 +150,7 @@ __all__ = [
     "DrivenOperator",
     "DrivenRule",
     "Expansion",
+    "LowFrequencyFloor",
     "check_low_frequency",
     "check_ports_held",
     "driven_operator",
@@ -391,7 +392,9 @@ def driven_operator(
         )
         expansion = Expansion(matrix, unpaired)
     ports = terms.lumped_ports(model, built.scale)
-    pieces = terms.pieces(model, built, order, ports, elements=elements, faces=faces)
+    pieces, latent = terms.pieces(
+        model, built, order, ports, elements=elements, faces=faces
+    )
     symmetry: DrivenSymmetry = "complex_symmetric" if wave_vector is None else "general"
     layout = None
     if comm is not None:
@@ -400,9 +403,6 @@ def driven_operator(
     fixed = None
     if comm is None and elements is None and faces is None:
         fixed = _fixed_pieces(model, disc, solve_key, order, ports, phases=phases)
-    latent: tuple[terms.Piece, ...] = ()
-    if not any(p.name == "conductivity" for p in pieces):
-        latent = (terms.conductivity_piece(model, built, order, elements=elements),)
     return DrivenOperator(
         built,
         space,
@@ -447,7 +447,7 @@ def _fixed_pieces(
         ~inside,
         lambda: terms.pieces(
             model, built, order, ports, elements=inside, faces=no_faces
-        ),
+        )[0],
     )
 
 
@@ -788,18 +788,13 @@ class DrivenRule:
         parts = workers.model_parts(model)
         results = workers.run(
             _solve_block,
-            [
-                (
-                    *parts,
-                    problem,
-                    options,
-                    keep,
-                    [s.rows(block) for s in swept] if swept else None,
-                )
-                for block, problem in zip(indices, problems, strict=True)
-            ],
+            [(*parts, problem, options, keep) for problem in problems],
             [_describe(problem.frequency) for problem in problems],
             threads=threads,
+            keywords=[
+                {"port_modes": [s.rows(block) for s in swept] if swept else None}
+                for block in indices
+            ],
         )
         sweeps = {
             port.name: sweep
@@ -1516,9 +1511,9 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
     """The pieces of ``model``'s driven operator as the kernel sees them.
 
     One `Term` per piece, latent ones included, but the ports': a port's
-    pieces, right-hand side and voltage read only its own surface and fixed
-    values, which no gradient moves (shape gradients hold port surfaces in
-    place). Each term
+    pieces, right-hand side and voltage read only its own surface (shape
+    gradients hold port surfaces in place) and its lumped values, whose
+    gradient is the lumped pass's (`lumped_terms`). Each term
     carries its piece's material derivatives, face owners and sheet factor.
     The eigenmode rule's operator is the same pieces, so it shares these.
 
@@ -1661,6 +1656,42 @@ def low_frequency_deferred() -> Generator[None]:
         _LOW_FREQUENCY_DEFERRED.reset(token)
 
 
+@dataclasses.dataclass(frozen=True)
+class LowFrequencyFloor:
+    """A mesh's low-frequency floor, ``k0 h_min = LOW_FREQUENCY_FLOOR``.
+
+    Shared by the driven and the eigenmode checks.
+
+    Attributes:
+        h_min: The shortest edge of the solve domain on the imported nodes, m.
+    """
+
+    h_min: float
+
+    @classmethod
+    def of(cls, model: Model) -> LowFrequencyFloor:
+        """The floor of ``model``'s solve domain."""
+        active = model._domain.active  # noqa: SLF001
+        return cls(float(_shortest_edges(model.mesh)[active].min()))
+
+    @property
+    def frequency(self) -> float:
+        """The floor's frequency, Hz."""
+        return LOW_FREQUENCY_FLOOR * scipy.constants.c / (2 * math.pi * self.h_min)
+
+    def k0h(self, f: Any) -> Any:
+        """``k0 h_min`` at the frequencies ``f`` (Hz), a float or an array."""
+        return 2 * math.pi * f / scipy.constants.c * self.h_min
+
+    def describe(self, k0h: float) -> str:
+        """The message's clause on the floor, at the reported ``k0 h_min``."""
+        return (
+            f"this mesh's low-frequency floor of {hertz(self.frequency, 4)} "
+            f"(k0*h_min = {k0h:.2g} < {LOW_FREQUENCY_FLOOR:g}, with h_min = "
+            f"{self.h_min:.3g} m the shortest edge in the solve domain)"
+        )
+
+
 def check_low_frequency(
     model: Model, frequencies: tuple[float, ...], *, stacklevel: int
 ) -> None:
@@ -1690,21 +1721,17 @@ def _check_low_frequency(
     """
     if _LOW_FREQUENCY_DEFERRED.get() and not force:
         return
-    active = model._domain.active  # noqa: SLF001
-    h_min = float(_shortest_edges(model.mesh)[active].min())
+    floor = LowFrequencyFloor.of(model)
     f = np.asarray(frequencies)
-    k0h = 2 * math.pi * f / scipy.constants.c * h_min
+    k0h = floor.k0h(f)
     low = k0h < LOW_FREQUENCY_FLOOR
     if not low.any():
         return
-    f_floor = LOW_FREQUENCY_FLOOR * scipy.constants.c / (2 * math.pi * h_min)
     lowest = int(np.argmin(f))
     msg = (
         f"Driven: {int(low.sum())} of {len(f)} frequencies, the lowest "
-        f"{f[lowest]:.4g} Hz, are below this mesh's low-frequency floor of "
-        f"{f_floor:.4g} Hz (k0*h_min = {k0h[lowest]:.2g} < "
-        f"{LOW_FREQUENCY_FLOOR:g}, with h_min = {h_min:.3g} m the shortest edge "
-        "in the solve domain). Below it the fields and their gradients, and "
+        f"{hertz(f[lowest], 4)}, are below {floor.describe(k0h[lowest])}. "
+        "Below it the fields and their gradients, and "
         "with linear_solver='direct', or 'petsc' with its default "
         "factorization, the capacitive part of S, "
         "carry rounding errors up to about 1e-16/(k0*h_min)^2, and MKL "
@@ -1800,8 +1827,11 @@ def _cross_projection_message(
         return None
     q = cross_projection()
     q[:, np.arange(n), np.arange(n)] = 0.0
-    # q[k, l, j]: port j's S functional on port l's mode at frequency k
-    k, l, j = np.unravel_index(int(np.argmax(q)), q.shape)
+    # q[k, l, j]: port j's S functional on port l's mode at frequency k; an
+    # unsolved frequency (a partial sweep) is NaN and does not count
+    if np.isnan(q).all():
+        return None
+    k, l, j = np.unravel_index(int(np.nanargmax(q)), q.shape)
     value = float(q[k, l, j])
     if not value > PORT_MODE_PROJECTION_FLOOR:
         return None
@@ -1825,9 +1855,15 @@ def _attenuation_message(
     frequency: tuple[float, ...],
 ) -> str | None:
     """The warning of a lossy port line above the floor, else ``None``."""
-    # ratio[i, k]: port i's alpha/beta at frequency k
-    ratio = np.array([np.abs(np.real(g)) / np.abs(np.imag(g)) for g in gammas])
-    i, k = np.unravel_index(int(np.argmax(ratio)), ratio.shape)
+    # ratio[i, k]: port i's alpha/beta at frequency k; NaN where unsolved (a
+    # partial sweep) or at cutoff (beta = 0), which do not count
+    beta = np.abs(np.imag(gammas))
+    ratio = np.divide(
+        np.abs(np.real(gammas)), beta, out=np.full(beta.shape, np.nan), where=beta > 0
+    )
+    if np.isnan(ratio).all():
+        return None
+    i, k = np.unravel_index(int(np.nanargmax(ratio)), ratio.shape)
     value = float(ratio[i, k])
     if not value > PORT_MODE_PROJECTION_FLOOR:
         return None
@@ -1845,12 +1881,13 @@ def _attenuation_message(
     )
 
 
-def _solve_block(  # noqa: PLR0917
+def _solve_block(
     aux: Any,
     children: Any,
     problem: Driven,
     options: SolverOptions,
     keep: bool,
+    *,
     port_modes: list[dict[str, np.ndarray]] | None = None,
 ) -> tuple[SweepOutputs, np.ndarray | None, str | None]:
     """A frequency worker's `DrivenRule.forward` of its block.

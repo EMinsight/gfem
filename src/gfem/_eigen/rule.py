@@ -76,6 +76,7 @@ from gfem._engine.domain import em_region
 from gfem._engine.driven import (
     LOW_FREQUENCY_FLOOR,
     DrivenOperator,
+    LowFrequencyFloor,
     driven_operator,
     lumped_terms,
     operator_terms,
@@ -101,7 +102,7 @@ from gfem.errors import (
     LinearSolverConvergenceError,
     LowFrequencyWarning,
 )
-from gfem.mesh import Mesh, _shortest_edges
+from gfem.mesh import Mesh
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Eigenmode
@@ -1074,19 +1075,15 @@ def _check_low_frequency(
         lowest: The lowest ``Re f`` of the modes found (Hz).
         stacklevel: Passed on to `warnings.warn`, counted from the caller.
     """
-    active = model._domain.active  # noqa: SLF001
-    h_min = float(_shortest_edges(model.mesh)[active].min())
+    floor = LowFrequencyFloor.of(model)
     f = min(target, lowest)
-    k0h = 2 * math.pi * f / const.c * h_min
+    k0h = floor.k0h(f)
     if k0h >= LOW_FREQUENCY_FLOOR:
         return
-    f_floor = LOW_FREQUENCY_FLOOR * const.c / (2 * math.pi * h_min)
     what = "target" if target <= lowest else "lowest mode found"
     warnings.warn(
-        f"Eigenmode: the {what}, {f:.4g} Hz, is below this mesh's "
-        f"low-frequency floor of {f_floor:.4g} Hz (k0*h_min = {k0h:.2g} < "
-        f"{LOW_FREQUENCY_FLOOR:g}, with h_min = {h_min:.3g} m the shortest edge "
-        "in the solve domain). Below it the eigenfrequencies, the mode fields "
+        f"Eigenmode: the {what}, {hertz(f, 4)}, is below {floor.describe(k0h)}. "
+        "Below it the eigenfrequencies, the mode fields "
         "and the participations carry rounding errors up to about "
         "1e-16/(k0*h_min)^2, which EigenmodeResult.error does not show. Raise "
         "the resonance or coarsen the smallest elements.",

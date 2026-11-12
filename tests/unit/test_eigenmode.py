@@ -691,6 +691,7 @@ def test_a_mode_below_the_low_frequency_floor_warns(mesh):
     (warning,) = [r for r in record if r.category is gfem.LowFrequencyWarning]
     message = str(warning.message)
     assert "low-frequency floor" in message
+    assert "kHz, is below" in message  # the target, in its unit
     assert "eigenfrequencies" in message
     assert "error" in message
 

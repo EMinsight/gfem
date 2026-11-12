@@ -49,6 +49,7 @@ __all__ = [
     "Flux",
     "Surface",
     "build",
+    "check_field",
     "check_nodes",
     "check_size",
     "power_flow",
@@ -155,7 +156,7 @@ def power_flow(
     check_nodes(field, model)
     flux = build(field.order, model, surface(field, side, model))
     e = np.asarray(field.coefficients)
-    check_size(e, flux, field.order)
+    check_size(e, flux.op, field.order)
     return flux.power(e, float(np.asarray(field.omega).real))
 
 
@@ -214,16 +215,16 @@ def build(order: int, model: Model, where: Surface) -> Flux:
     return Flux(op=op, mask=_dofs(op, where.tie, where.rim, where.rim | where.layer))
 
 
-def check_size(e: np.ndarray, flux: Flux, order: int) -> None:
-    """Raise unless the coefficients fit the operator's space.
+def check_size(e: np.ndarray, op: DrivenOperator, order: int) -> None:
+    """Raise unless the coefficients fit the driven operator's space.
 
     Raises:
         ValueError: Another number of DOFs.
     """
-    if e.shape[0] != flux.op.space.ndof:
+    if e.shape[0] != op.space.ndof:
         raise ValueError(
             f"The field has {e.shape[0]} coefficients but the model's order-"
-            f"{order} driven space has {flux.op.space.ndof} DOFs: the field "
+            f"{order} driven space has {op.space.ndof} DOFs: the field "
             "was not solved on this model."
         )
 
@@ -245,7 +246,7 @@ def _other_mesh() -> ValueError:
     )
 
 
-def _check_field(field: Field, model: Model) -> np.ndarray:
+def check_field(field: Field, model: Model) -> np.ndarray:
     """The field's support mask, after checking it was solved on ``model``.
 
     Raises:

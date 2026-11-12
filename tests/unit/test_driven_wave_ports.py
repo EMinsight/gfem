@@ -12,6 +12,7 @@ import re
 import time
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import anisotropy as anisotropy_reference
 import jax
@@ -33,7 +34,7 @@ from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._engine import anisotropy, cache, terms, wave_ports
-from gfem._engine.driven import driven_operator
+from gfem._engine.driven import _check_port_mode_projection, driven_operator
 from gfem._engine.wave_ports import trace_dofs, wave_port_couplings
 from gfem._linalg import prepare
 from gfem._linalg.base import PlannedHandle, free_mask
@@ -1509,3 +1510,47 @@ def test_evicted_kept_state_is_rebuilt_not_read_stale(tmp_path, monkeypatch):
         np.testing.assert_allclose(s, s0, rtol=1e-12, atol=1e-14)
         np.testing.assert_allclose(grad, grad0, rtol=1e-9, atol=1e-14)
     cache.ENTRIES.clear()
+
+
+def _projection_warnings(ports, cross_projection, gammas):
+    """The warnings `_check_port_mode_projection` gives one surface on 1, 2 GHz."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _check_port_mode_projection(
+            [(ports, lambda: cross_projection, gammas)], (1e9, 2e9), stacklevel=1
+        )
+    return caught
+
+
+_PORTS = tuple(
+    SimpleNamespace(name=f"p{i}", surface="shared") for i in (1, 2)
+)  # the message reads only the name and the surface
+
+
+def test_an_unsolved_row_does_not_hide_a_lossy_port_line():
+    gamma = np.array([np.nan, 0.01 + 1j])
+    caught = _projection_warnings(_PORTS[:1], None, [gamma])
+    assert [type(w.message) for w in caught] == [gfem.PortModeProjectionWarning]
+    assert "alpha/beta of 0.01 at 2 GHz" in str(caught[0].message)
+
+
+def test_an_unsolved_row_does_not_hide_a_cross_projection():
+    q = np.zeros((2, 2, 2))
+    q[0] = np.nan
+    q[1, 0, 1] = 0.01
+    lossless = [np.array([np.nan, 1j])] * 2
+    caught = _projection_warnings(_PORTS, q, lossless)
+    assert [type(w.message) for w in caught] == [gfem.PortModeProjectionWarning]
+    assert "cross-projection of 0.01 at 2 GHz" in str(caught[0].message)
+
+
+def test_unsolved_rows_alone_give_no_projection_warning():
+    q = np.full((2, 2, 2), np.nan)
+    unsolved = [np.full(2, np.nan + 0j)] * 2
+    assert _projection_warnings(_PORTS, q, unsolved) == []
+
+
+def test_a_mode_at_cutoff_gives_no_division_warning():
+    # Im gamma = 0 (cutoff, or below it) has no alpha/beta: not a lossy line
+    at_cutoff = np.array([0.0 + 0j, 0.5 + 0j])
+    assert _projection_warnings(_PORTS[:1], None, [at_cutoff]) == []
