@@ -23,6 +23,10 @@ host; this module owns everything JAX sees:
   ``gfem._engine.cache.ENTRIES`` (bounded by
   ``SolverOptions.retain_memory``, least recently used out first, never
   freed by a read, so ``jax.jacrev`` and a pullback called twice reuse it).
+  An entry a backward has read is consumed, and the next differentiated
+  forward frees it before it assembles (ADR 0081), its base handle returning
+  to the plan pool for that forward (ADR 0082), so a pullback called after
+  another differentiated solve runs its forward again.
   The backward rebuilds the model and the problem from the residual leaves,
   never from engine state, and re-runs the forward when the entry was
   evicted or never kept, so eviction costs time, never correctness.
@@ -166,6 +170,8 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
                     host_rule.problem,
                     rule.options,
                 )
+            if keep:
+                _free_consumed(comm, rule.options)
             outputs, entry = _forward(host_rule, host_model, keep=keep)
             key = -1 if entry is None else _keep(entry, rule.options, comm)
         arrays = tuple(
@@ -270,14 +276,22 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
     return rule.forward(model, keep=keep)
 
 
+def _free_consumed(comm: Any, options: Any) -> None:
+    """Free the entries a backward has read, before this forward assembles.
+
+    Their base handles return to the plan pool, for this forward to take
+    (ADR 0082), within ``options.retain_memory``.
+    """
+    from gfem._engine.cache import ENTRIES, retain_budget
+
+    ENTRIES.free_consumed(comm, retain_budget(options.retain_memory))
+
+
 def _keep(entry: Any, options: Any, comm: Any) -> int:
     """Store a forward's entry under ``options.retain_memory``; its key."""
-    from gfem._engine.cache import ENTRIES, default_retain_memory
+    from gfem._engine.cache import ENTRIES, retain_budget
 
-    budget = options.retain_memory
-    if budget is None:
-        budget = default_retain_memory()
-    return ENTRIES.put(entry, budget, comm)
+    return ENTRIES.put(entry, retain_budget(options.retain_memory), comm)
 
 
 def _wanted(rule: Any, kinds: list[tuple], perturbed: list[bool]) -> tuple[int, ...]:
@@ -374,7 +388,7 @@ def _local_cotangents(
     some ranks alone would hang. A rank that holds one frees it, since the next
     forward on the same design would otherwise keep a second.
     """
-    from gfem._engine.cache import ENTRIES
+    from gfem._engine.cache import ENTRIES, retain_budget
     from gfem._engine.runtime import task_manager
     from gfem._engine.sensitivity import sensitivity
 
@@ -385,13 +399,15 @@ def _local_cotangents(
         _, entry = rule.forward(model, keep=True)
         fresh = entry
     else:
+        if entry is not None:  # freed when the next differentiated forward starts
+            entry.consumed = True  # (ADR 0081)
         # the base handles of other entries go before this one prepares (ADR 0065)
         ENTRIES.free_bases(comm, keep=entry)
     try:
         pairs = rule.backward(model, entry, cotangents)
         # the element passes assemble on the solve's threads
         with task_manager(rule.options.threads, comm):
-            return sensitivity(
+            out = sensitivity(
                 model,
                 pairs,
                 wants,
@@ -404,3 +420,8 @@ def _local_cotangents(
     finally:
         if fresh is not None:
             fresh.free()
+    if fresh is not None:
+        # as an entry `put` frees: the kept state its forward rebuilt goes down
+        # to the budget too (collective, so only once every rank got here)
+        ENTRIES.trim(retain_budget(rule.options.retain_memory), comm)
+    return out

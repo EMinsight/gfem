@@ -174,6 +174,9 @@ class Piece:
             in place).
         coefficient: ``C`` (``c``) of a volume (trace) piece, the element-
             (face-) wise coefficient its integrand reads.
+        values: The values of a volume piece's ``coefficient`` per gfem
+            tetrahedron, ``(n,)`` or ``(n, 3, 3)`` (what a kept fixed part
+            is keyed on, ADR 0082).
         region: The boundary region of a ``"trace"`` or ``"curl trace"``
             piece.
         frequency_class: ``"polynomial"`` (θ a polynomial of degree at most
@@ -210,6 +213,7 @@ class Piece:
     )
     owner: np.ndarray | None = dataclasses.field(default=None, compare=False)
     sheet: tuple[int, float] | None = None
+    values: np.ndarray | None = dataclasses.field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         """Check that θ is a scalar function of ω."""
@@ -448,7 +452,8 @@ def pieces(
     # each piece carries its coefficient and, next to it, the coefficient's
     # derivatives by material property (lazy: a backward pass reads them)
     eps = lossy_eps(model)
-    nu = coefficient(built, _inverse(element_tensors(model, "mu_r")))
+    nu_values = _inverse(element_tensors(model, "mu_r"))
+    nu = coefficient(built, nu_values)
     eps_cf = coefficient(built, eps)
     out = [
         Piece(
@@ -457,6 +462,7 @@ def pieces(
             lambda u, v: (nu * ngs.curl(u)) * ngs.curl(v) * dx,
             kind="curl",
             coefficient=nu,
+            values=nu_values,
             derivatives={
                 "mu_r": Derivative(
                     lambda: -(element_values(model, "mu_r", per_axis=1.0) ** -2.0),
@@ -474,6 +480,7 @@ def pieces(
             lambda u, v: (eps_cf * u) * v * dx,
             kind="value",
             coefficient=eps_cf,
+            values=eps,
             derivatives={
                 "eps_r": Derivative(
                     lambda: _loss(model),
@@ -498,7 +505,8 @@ def pieces(
     if sigma.any():
         # eta0 sigma scale (real symmetric sigma); its derivative eta0 leaves
         # out the length scale
-        sigma_cf = coefficient(built, ETA0 * scale * sigma)
+        sigma_values = ETA0 * scale * sigma
+        sigma_cf = coefficient(built, sigma_values)
         out.append(
             Piece(
                 "conductivity",
@@ -506,6 +514,7 @@ def pieces(
                 lambda u, v: (sigma_cf * u) * v * dx,
                 kind="value",
                 coefficient=sigma_cf,
+                values=sigma_values,
                 derivatives={
                     "conductivity": Derivative(
                         ETA0,

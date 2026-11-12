@@ -239,7 +239,10 @@ class SolverOptions:
             problems only; ``"petsc"`` raises.
         tolerance: S and fields are accurate to about this size: the
             relative residual of an iterative linear solve (see Notes for
-            its norm). An exact factorization ignores it.
+            its norm). A direct solve is exact, except in an optimization of
+            a large model, where a design may be solved on the factorization
+            of an earlier design (when ``retain_memory`` keeps it and that is
+            faster) to a twentieth of this tolerance.
         device: Where the direct solver runs: ``"cpu"``, ``"cuda"`` or
             ``"cuda:N"`` (the N-th GPU). A GPU needs
             ``linear_solver="direct"`` (NVIDIA cuDSS, from the ``cuda12`` or
@@ -262,11 +265,19 @@ class SolverOptions:
         port_mode_tolerance: Accuracy of each wave port's mode across the
             sweep: the backward error each mode reaches at every frequency
             (``PortModeResult.residual``).
-        retain_memory: Bytes a differentiated solve keeps for its
-            gradients: its solution fields and, for a uniform driven sweep,
-            its assembled system with its linear solver. The oldest entries
-            go first and are recomputed when their gradient runs. ``None``
-            is half of the physical memory, 0 always recomputes.
+        retain_memory: Bytes gfem keeps between solves in one process: each
+            differentiated solve's fields and solver for its gradients (its
+            solution fields and, for a uniform driven sweep, its assembled
+            system with its linear solver), and what later designs of a
+            driven model reuse: solver plans, with their factorizations while
+            they fit (a later design at the same frequency may solve on
+            them, see ``tolerance``), the assembled parts that do not depend
+            on the design, and the wave ports' couplings. Over budget, gfem
+            drops kept factorizations, then those parts, then solver plans,
+            then the oldest entries, which are recomputed when their gradient
+            runs, and port couplings last. ``None`` is half of the memory the
+            process may use (the physical memory, or a smaller job memory
+            limit); 0 keeps nothing between solves and always recomputes.
         adjoint_tolerance: Relative residual of adjoint solves, in the norm
             ``tolerance`` names for each backend; ``None`` is ``tolerance``.
         eigen_tolerance: Backward error accepted for an eigenmode (the

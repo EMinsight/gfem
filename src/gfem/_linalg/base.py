@@ -176,6 +176,7 @@ class NgsHandle:
             x, y = matrix.CreateColVector(), matrix.CreateRowVector()
             mark_x, mark_y = layout.mark_load, layout.mark_state
         with self._lock:
+            self._check_solvable()
             for j in range(cols.shape[1]):
                 x.FV().NumPy()[:] = cols[:, j]
                 mark_x(x)
@@ -186,6 +187,9 @@ class NgsHandle:
                 out[:, j] = y.FV().NumPy()
         return out[:, 0] if flat else out
 
+    def _check_solvable(self) -> None:
+        """Hook for subclasses: raise if the handle cannot map now; under the lock."""
+
     def _inverse_map(
         self,
         B: np.ndarray,
@@ -195,7 +199,8 @@ class NgsHandle:
         """Hook for subclasses: the inverse on the free rows of ``B``.
 
         ``x0`` (same shape as ``B``, zero on fixed rows) is an initial guess.
-        Direct backends ignore ``tolerance`` and ``x0``. Returns the Krylov
+        Direct backends ignore ``tolerance`` and ``x0`` (but for reused
+        factors, `gfem._linalg.direct.DirectHandle`). Returns the Krylov
         iterations of each column too, ``()`` for a direct solve.
         """
         return self._map(self._solver, B), ()
@@ -229,7 +234,9 @@ class NgsHandle:
         solve for iterative backends (an adjoint solve on the forward's
         preconditioner); ``None`` is the prepared tolerance. ``x0``, the
         shape of ``B``, is an initial guess for iterative backends; its fixed
-        rows are not read. Direct backends ignore both.
+        rows are not read. Direct backends ignore both, except that a
+        solve on factors reused across designs reads ``tolerance``
+        (`gfem._linalg.direct.DirectHandle`).
 
         Returns ``X`` and the Krylov iterations of each column of ``B`` (see
         `gfem._linalg.Handle.solve_counted`); a real handle solves a complex
@@ -378,6 +385,7 @@ class PlannedHandle(NgsHandle):
         operator: Operator,
         *,
         solves: int | None = None,  # noqa: ARG002
+        frequency: float | None = None,
     ) -> None:
         """Refactorize on ``operator``'s values (see `gfem._linalg.Refactorable`).
 
@@ -389,6 +397,7 @@ class PlannedHandle(NgsHandle):
         (`_new_plan`).
 
         ``solves`` is ignored: only BDDC's coarse choice reads it.
+        ``frequency`` goes to the backend (`_refactorizing_at`).
 
         Raises:
             RuntimeError: The handle was freed.
@@ -398,6 +407,7 @@ class PlannedHandle(NgsHandle):
         summed = None if piece_sum is None else piece_sum.pattern
         with self._lock:
             self._live()
+            self._refactorizing_at(frequency)
             if piece_sum is not None and summed is not None and summed is self._pattern:
                 self._new_values(piece_sum.sum_into)
                 return
@@ -420,6 +430,36 @@ class PlannedHandle(NgsHandle):
             self._new_plan(new, operator.freedofs)
             self._pattern = pattern
 
+    @property
+    def pattern(self) -> ngs.BaseMatrix | None:
+        """The pattern of the pieces whose sums the held matrix holds, if summed.
+
+        A `refactorize` whose piece sum has this pattern sums into the held
+        matrix in place.
+        """
+        return self._pattern
+
+    def shared(self) -> dict[int, int]:
+        """The pieces' pattern's bytes by its identity, if held; not in ``nbytes``.
+
+        A pooled handle may outlive the pieces it came from, and kept fixed
+        parts may hold the same pattern: the entry cache counts it once.
+        """
+        pattern = self._pattern
+        if pattern is None:
+            return {}
+        return {id(pattern): host_bytes(local_matrix(pattern, self.layout.comm))}
+
+    def drop_pattern(self) -> None:
+        """Let go of the pieces' pattern: the next `refactorize` assembles.
+
+        For a handle held between solves whose pattern nothing else holds
+        (`gfem._engine.cache.EntryCache.give_plan`). Waits for a running solve
+        or refactorization.
+        """
+        with self._lock:
+            self._pattern = None
+
     def free(self) -> None:
         """Release the backend, drop the matrix and the pieces' pattern.
 
@@ -433,6 +473,13 @@ class PlannedHandle(NgsHandle):
     def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
         """Raise the backend's refusal of ``symmetry``, if it refuses it."""
         raise NotImplementedError
+
+    def _refactorizing_at(self, frequency: float | None) -> None:
+        """Hook: the refactorization under way is at ``frequency``; under the lock.
+
+        ``None`` when the caller did not say. Only the direct backend reads it
+        (`gfem._linalg.direct.DirectHandle`).
+        """
 
     def _new_values(self, write: Callable[[ngs.BaseMatrix], None]) -> None:
         """``write(held matrix)``, then factorize its values on the current plan."""

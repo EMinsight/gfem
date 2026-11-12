@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **Optimization loops redo less work per design.** Within one process, a driven
+  solve of a new design with the same mesh, ports and frequencies takes up the last
+  design's solver plan, the assembled parts that do not depend on the design, and
+  the wave ports' couplings, instead of rebuilding them. With
+  `linear_solver="direct"` and the `mkl` extra, a large model may solve the next
+  design on the previous design's factorization, with GMRES to a twentieth of
+  `tolerance`, while that takes less time than factorizing again; small models
+  factorize every design as before. See {doc}`../recipes/s-parameter-gradient`.
+  Per step on one MN5 node (Intel Xeon Platinum 8480+, 8 threads), main at 129c4ad
+  against ⟨final commit⟩: the 2D bend tutorial ⟨0.78 → 0.46⟩ s, the harmonic filter
+  tutorial's three variants ⟨0.54 → 0.26⟩ s with peak memory ⟨11.2 → 1.3⟩ GiB, a
+  3D bend of ⟨381 134⟩ unknowns ⟨11.1 → 8.9⟩ s with peak memory ⟨18.8 → 7.3⟩ GiB
+  ⟨; the 3D bend tutorial's model, 2.49 M unknowns, 16 threads: ⟨a⟩ → ⟨b⟩ s⟩.
+  - **Behaviour change.** `retain_memory` now bounds everything gfem keeps between
+    solves, these kept parts and couplings included; 0 keeps nothing. A direct solve
+    on an earlier design's factorization is accurate to `tolerance`, not exact.
 - **Wrong S from a PETSc stack built by 0.1.0's script: rebuild it.** A stack built by
   0.1.0's [`tools/petsc_wheelhouse.sh`](https://github.com/benvial/gfem/blob/main/tools/petsc_wheelhouse.sh)
   can return wrong S, with no error, on a large direct solve with

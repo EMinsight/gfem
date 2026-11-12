@@ -85,13 +85,20 @@ from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import (
     LumpedPort,
     WavePort,
+    lead_port,
     sheet_of,
     surfaces_of,
     wave_port_label,
     wave_port_surfaces,
 )
 from gfem._engine import sweep_outputs, terms, workers
-from gfem._engine.cache import ENTRIES, Entry, discretization
+from gfem._engine.cache import (
+    ENTRIES,
+    Entry,
+    cached,
+    discretization,
+    retain_budget,
+)
 from gfem._engine.domain import em_region, hcurl_space, pec_surfaces, space_key
 from gfem._engine.fields import dof_shape
 from gfem._engine.mesh import EngineMesh
@@ -99,11 +106,14 @@ from gfem._engine.port_network import PortNetwork, resistance, split_cotangent
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_sheet
 from gfem._engine.sweep_outputs import SweepOutputs
-from gfem._engine.system_operator import SystemOperator
+from gfem._engine.system_operator import FixedPieces, SystemOperator
 from gfem._engine.wave_ports import PortSurfaceCoupling, wave_port_couplings
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
+from gfem._linalg.pieces import KeptParts
+from gfem._materials import MaterialField
 from gfem._periodic import bloch_phases, check_bloch, check_wave_vector
+from gfem._port_section import port_section_key
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
 from gfem.errors import (
     LinearSolverConvergenceError,
@@ -191,6 +201,13 @@ class DrivenOperator:
             ``"complex_symmetric"`` otherwise: declared by the problem's
             wave vector, never read from its value.
         layout: How ``space`` lies across ranks; ``None`` on one process.
+        fixed: How the volume pieces split at the material-field regions,
+            for a piece sum that keeps their other part (ADR 0082); ``None``
+            when nothing is fixed, restricted, or under ranks.
+        topology: The mesh topology ``space`` lies on; with ``space_key``,
+            what a solver plan of the operator is pooled under (ADR 0082).
+        space_key: ``space``'s key in its discretization (order, `PEC`
+            surfaces, periodic pairs and phases).
     """
 
     built: EngineMesh
@@ -201,6 +218,9 @@ class DrivenOperator:
     expansion: Expansion | None = None
     symmetry: DrivenSymmetry = "complex_symmetric"
     layout: DofLayout | None = None
+    fixed: FixedPieces | None = None
+    topology: Any = None
+    space_key: tuple = ()
 
     def expand(self, x: np.ndarray) -> np.ndarray:
         """``P x``: solve-space coefficients ``(ndof, ...)`` on the unpaired space."""
@@ -332,14 +352,14 @@ def driven_operator(
     disc = discretization(model.mesh, periodic, comm)
     built = disc.built
     pec = pec_surfaces(model)
+    solve_key = space_key(model, "hcurl", order)
     unpaired = disc.space(
-        space_key(model, "hcurl", order),
-        lambda: hcurl_space(model, built, order, dirichlet=pec),
+        solve_key, lambda: hcurl_space(model, built, order, dirichlet=pec)
     )
     space, expansion = unpaired, None
     if periodic and paired:
         phases = bloch_phases(model, wave_vector)
-        key = space_key(model, "hcurl", order, periodic=True, phases=phases)
+        key = solve_key = space_key(model, "hcurl", order, periodic=True, phases=phases)
         space = disc.space(
             key,
             lambda: hcurl_space(
@@ -358,8 +378,50 @@ def driven_operator(
     if comm is not None:
         key = (*space_key(model, "hcurl", order), "layout")
         layout = disc.space(key, lambda: RankLayout(space, comm))
+    fixed = None
+    if comm is None and elements is None and faces is None:
+        fixed = _fixed_pieces(model, disc, solve_key, order, ports)
     return DrivenOperator(
-        built, space, pieces, ports, order, expansion, symmetry, layout
+        built,
+        space,
+        pieces,
+        ports,
+        order,
+        expansion,
+        symmetry,
+        layout,
+        fixed,
+        topology=model.mesh._topology,  # noqa: SLF001
+        space_key=solve_key,
+    )
+
+
+def _fixed_pieces(
+    model: Model,
+    disc: Any,
+    key: tuple,
+    order: int,
+    ports: tuple[terms.LumpedPortData, ...],
+) -> FixedPieces | None:
+    """The split of the volume pieces at ``model``'s material-field regions.
+
+    ``None`` when no element, or every element, lies in one (nothing to keep).
+    ``key`` is the solve space's: the store lives with it.
+    """
+    mesh = model.mesh
+    inside = np.zeros(len(mesh.tetrahedra), bool)
+    for region, material in model.materials.items():
+        if isinstance(material, MaterialField):
+            inside[mesh.elements(region)] = True
+    if not inside.any() or inside.all():
+        return None
+    built, no_faces = disc.built, np.zeros(len(mesh.triangles), bool)
+    return FixedPieces(
+        disc.space((*key, "fixed pieces"), KeptParts),
+        ~inside,
+        lambda: terms.pieces(
+            model, built, order, ports, elements=inside, faces=no_faces
+        ),
     )
 
 
@@ -590,7 +652,10 @@ class DrivenRule:
             system, ports = self._ports(model)
             s = np.zeros((len(frequencies), len(self.port_names), width), complex)
             previous = None
-            with system.sweep(solves=len(frequencies)) as sweep:
+            with system.sweep(
+                solves=len(frequencies),
+                pool_budget=retain_budget(self.options.retain_memory),
+            ) as sweep:
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
                     try:
@@ -611,6 +676,8 @@ class DrivenRule:
         # no backward pass will prepare from the pieces
         if not keep or miss is not None:
             system.free()
+            # no entry walks the kept port state down: this solve does
+            ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
         out = SweepOutputs.uniform(
             tuple(range(n_solved)),
             s=ports.scattering(s),
@@ -754,19 +821,33 @@ class DrivenRule:
         the excitations and S functionals. Runs each wave port surface's
         port mode sweep over the output grid and, with ``warn`` (a forward
         pass), warns about cross-projections on shared port surfaces.
+
+        The couplings and the network are kept on the discretization
+        (`_KeptPorts`) and reused while their key holds: a design away from
+        the port faces runs no port mode sweep.
         """
         op = self.operator(model)
         names = self.port_names
         columns = [names.index(n) for n in self.excite]
-        couplings = wave_port_couplings(
-            model,
-            op.built,
-            op.space,
-            order=op.order,
-            frequency=self.problem.frequency,
-            tolerance=self.options.port_mode_tolerance,
-            layout=op.layout or ONE_PROCESS,
-        )
+        frequency = self.problem.frequency
+        tolerance = self.options.port_mode_tolerance
+        disc = cached(op.built)
+        key = _KeptPorts.key_of(model, op, frequency, tolerance)
+        kept = disc.ports if disc is not None else None
+        if not isinstance(kept, _KeptPorts) or kept.key != key:
+            couplings = wave_port_couplings(
+                model,
+                op.built,
+                op.space,
+                order=op.order,
+                frequency=frequency,
+                tolerance=tolerance,
+                layout=op.layout or ONE_PROCESS,
+            )
+            kept = _KeptPorts(key, couplings)
+            if disc is not None:
+                disc.ports = kept
+        couplings = kept.couplings
         if warn:
             _check_port_mode_projection(couplings, stacklevel=4, comm=self.comm)
         transposed = None
@@ -784,14 +865,19 @@ class DrivenRule:
             width=len(columns),
             adjoint_tolerance=adjoint_tolerance(self.options),
             transposed=transposed,
+            pool_budget=retain_budget(self.options.retain_memory),
         )
-        ports = PortNetwork.build(
-            model,
-            system.operator,
-            couplings,
-            columns=columns,
-            n_freq=len(self.problem.frequency),
-        )
+        network_key = (tuple(columns), len(frequency), self.problem.wave_vector)
+        ports = kept.networks.get(network_key)
+        if ports is None:
+            ports = PortNetwork.build(
+                model,
+                system.operator,
+                couplings,
+                columns=columns,
+                n_freq=len(frequency),
+            )
+            kept.keep(network_key, ports)
         return system, ports
 
     def _forward_adaptive(
@@ -823,7 +909,10 @@ class DrivenRule:
             system, ports = self._ports(model)
             samples = self.problem.samples
             # samples lie far apart: a reused BDDC would mostly hit its cap
-            with system.sweep(reuse_preconditioner=False) as system_sweep:
+            with system.sweep(
+                reuse_preconditioner=False,
+                pool_budget=retain_budget(options.retain_memory),
+            ) as system_sweep:
 
                 def solve(
                     omega: float, rhs: np.ndarray, x0: np.ndarray | None
@@ -859,6 +948,8 @@ class DrivenRule:
                     z_scale=z_scale,
                 )
         system.free()  # the backward pass solves the reduced model only
+        if not keep:  # no entry walks the kept port state down: this solve does
+            ENTRIES.trim(retain_budget(options.retain_memory))
         kept_fields = None
         size = sweep.model.size
         if self.kept:
@@ -1072,6 +1163,12 @@ class DrivenRule:
         system (-k) under a Bloch wave vector. On a periodic model the pair
         is on the unpaired space (`DrivenOperator.pair`). ``z_ref``
         contributes nothing.
+
+        The frequencies are solved from the adjoint base's frequency
+        (`SystemOperator.adjoint_order`): a base handle kept from the forward
+        sits at the last (`SystemOperator.keep_base`), and a backward leaves it
+        at the frequency it ended on, so each pass refactorizes once fewer. The
+        pairs stay in frequency order.
         """
         if self.adaptive:
             return self._backward_adaptive(model, entry, cotangents)
@@ -1079,14 +1176,18 @@ class DrivenRule:
         width = len(self.excite)
         ct_s = cotangents.get("s")
         ct_e = cotangents.get("e_field")
-        pairs = []
+        frequencies = self.problem.frequency
+        pairs: list[FieldPair | None] = [None] * len(frequencies)
+        rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
         with task_manager(self.options.threads, self.comm):
-            if not isinstance(entry.handle, _Kept):  # frequency workers keep none
+            if rebuilt:
                 entry.handle = _Kept(*self._ports(model, warn=False))
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
             domain = em_region(model, op.built)
-            for n, f in enumerate(self.problem.frequency):
+            omegas = [2 * math.pi * f for f in frequencies]
+            for n in system.adjoint_order(omegas):
+                f = frequencies[n]
                 omega = 2 * math.pi * f
                 x = solution[:, n * width : (n + 1) * width]
                 if ct_s is not None:
@@ -1110,10 +1211,14 @@ class DrivenRule:
                     except LinearSolverConvergenceError as err:
                         raise _adjoint_error(f, err) from err
                 adjoint[:, undefined] = np.nan
-                pairs.append(
-                    op.pair(-adjoint, x, weights=op.weights(omega), domain=domain)
+                pairs[n] = op.pair(
+                    -adjoint, x, weights=op.weights(omega), domain=domain
                 )
-        return pairs
+        if rebuilt:
+            # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
+            # this backward built goes down to the budget, no entry evicted
+            ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
+        return [p for p in pairs if p is not None]
 
     def _backward_adaptive(
         self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
@@ -1668,30 +1773,43 @@ class _Kept:
 
     @property
     def nbytes(self) -> int:
-        """Host memory held, in bytes (0 once freed)."""
+        """Host memory held, in bytes (0 once freed), but the shared objects.
+
+        Wave port couplings, the port network, kept fixed parts and patterns
+        are in `shared`: a discretization or another entry may hold them, so
+        the entry cache counts them once (ADR 0091), and an entry's bytes do
+        not depend on what the discretization still keeps.
+        """
+        return 0 if self._freed else self.system.nbytes
+
+    def shared(self) -> dict[int, int]:
+        """The shared objects' bytes, by identity (empty once freed)."""
         if self._freed:
-            return 0
-        return self.system.nbytes + self.ports.nbytes
+            return {}
+        return {**self.system.shared(), **self.ports.shared()}
 
-    def free_base(self, comm: Any) -> None:
-        """Release the base handle kept for a backward pass, if it is on ``comm``.
+    def free_base(self, comm: Any, *, walk: bool = True) -> None:
+        """Give up the base handle kept for a backward pass, if it is on ``comm``.
 
-        Freeing may be collective on a backend, so an entry of another communicator
-        stays: its ranks are not here.
+        A base from the plan pool returns there, with its factors (ADR 0093),
+        and the pool walks unless not to ``walk`` (`EntryCache.give_plan`);
+        any other is freed. Freeing may be collective on a backend, so an entry
+        of another communicator stays: its ranks are not here.
         """
         if not self._freed and _mpi.comm_key(
             self.system.operator.built.comm
         ) == _mpi.comm_key(comm):
-            self.system.free_base()
+            self.system.free_base(return_plan=True, walk=walk)
 
-    def free(self) -> None:
+    def free(self, *, return_plans: bool = False) -> None:
         """Release the system operator's handles and pieces, and drop both.
 
-        A second call does nothing.
+        With ``return_plans`` (a consumed entry) the kept base handle returns
+        to the plan pool, where it came from one. A second call does nothing.
         """
         if self._freed:
             return
-        self.system.free()
+        self.system.free(return_plans=return_plans)
         del self.system, self.ports
         self._freed = True
 
@@ -1708,6 +1826,71 @@ class _Partial:
     #: The linear solver's message where the (first) linear solve did not
     #: converge.
     reason: str
+
+
+#: Port networks kept per set of wave port couplings (one per excited set).
+_MAX_NETWORKS = 4
+
+
+@dataclasses.dataclass(eq=False)
+class _KeptPorts:
+    """Wave port couplings kept across driven solves, and their port networks.
+
+    One per discretization (`gfem._engine.cache.Discretization.ports`),
+    replaced when a solve's key differs: the next design of an optimization
+    reuses them, a design touching a port face or a node move (a new
+    discretization) rebuilds them (ADR 0082).
+
+    Attributes:
+        key: `key_of` the solve that built them.
+        couplings: The wave port surfaces' couplings.
+        networks: Port networks on them by ``(excited columns, number of
+            frequencies, Bloch wave vector)``.
+    """
+
+    key: tuple
+    couplings: list[PortSurfaceCoupling]
+    networks: dict[tuple, PortNetwork] = dataclasses.field(default_factory=dict)
+
+    @staticmethod
+    def key_of(
+        model: Model,
+        op: DrivenOperator,
+        frequency: tuple[float, ...],
+        tolerance: float,
+    ) -> tuple:
+        """What the couplings of ``model`` on ``op``'s discretization depend on.
+
+        The space (a discretization keeps its spaces, so its identity is
+        stable), the order, the output grid, the port mode tolerance, the
+        ports, and per wave port surface `port_section_key`: never the port
+        section itself.
+        """
+        sections = tuple(
+            port_section_key(model, lead_port(group))
+            for group in wave_port_surfaces(model.ports).values()
+        )
+        return (
+            id(op.space),
+            op.order,
+            tuple(frequency),
+            tolerance,
+            repr(model.ports),
+            sections,
+        )
+
+    def shared(self) -> dict[int, int]:
+        """The couplings' and the networks' arrays' bytes, by identity."""
+        held = {id(c.vectors): int(c.vectors.nbytes) for c in self.couplings}
+        for network in self.networks.values():
+            held.update(network.shared())
+        return held
+
+    def keep(self, key: tuple, network: PortNetwork) -> None:
+        """Keep ``network`` under ``key``, the oldest out past `_MAX_NETWORKS`."""
+        self.networks[key] = network
+        while len(self.networks) > _MAX_NETWORKS:
+            del self.networks[next(iter(self.networks))]
 
 
 def _sheet_ports(model: Model) -> dict[int, tuple[str, ...]]:

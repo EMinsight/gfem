@@ -9,6 +9,7 @@ import dataclasses
 import itertools
 import math
 import re
+import time
 import warnings
 from pathlib import Path
 
@@ -21,15 +22,22 @@ import pytest
 import scipy.constants
 import scipy.sparse as sp
 import structured_meshes as sm
-from gradient_cases import HYBRID_PORTS, hybrid_leads_core, hybrid_line, hybrid_mesh
+from gradient_cases import (
+    HYBRID_EPS,
+    HYBRID_PORTS,
+    hybrid_leads_core,
+    hybrid_line,
+    hybrid_mesh,
+)
 from solver_misses import cannot_converge_at
 
 import gfem
-from gfem._engine import anisotropy, terms
+from gfem._engine import anisotropy, cache, terms, wave_ports
 from gfem._engine.driven import driven_operator
 from gfem._engine.wave_ports import trace_dofs, wave_port_couplings
 from gfem._linalg import prepare
 from gfem._linalg.base import PlannedHandle, free_mask
+from gfem._port_section import port_section, port_section_key
 
 DATA = Path(__file__).parent / "data"
 C0 = 299792458.0
@@ -190,6 +198,7 @@ def test_a_direct_sweep_plans_once_and_matches_fresh_handles(
     problem = gfem.Driven(F, sweep=sweep)
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
     calls = []
+    cache.ENTRIES.clear()  # an earlier case's pooled plan would serve this one
 
     def spy(*args, **kwargs):
         calls.append(1)
@@ -318,6 +327,7 @@ def test_a_singular_reaction_raises_instead_of_dropping_the_correction(
         return built(piece, vectors, np.zeros_like(reaction), ports)
 
     monkeypatch.setattr(wave_ports, "PortSurfaceCoupling", vanishing)
+    cache._DISCRETIZATIONS.clear()  # earlier solves kept the plate's couplings
     with pytest.raises(gfem.PortModeError, match="singular") as caught:
         gfem.solve(line(plate_mesh), gfem.Driven(F), options=OPTIONS)
     message = str(caught.value)
@@ -1142,3 +1152,266 @@ def test_a_shared_surface_of_overlapping_modes_is_reflectionless(hybrid_line_mod
     assert max(errors) < 6e-3
     assert rest < 2e-3  # reflections and cross-mode entries, measured 6.2e-4
     assert reciprocity < 1e-8  # measured 2.3e-15
+
+
+# --- port couplings kept across designs (ADR 0082) ------------------------------
+# The hybrid line's core lies away from both port faces; its leads ("block",
+# "fill") touch them.
+
+KEPT_F = (55e9,)
+# one thread: threaded solves sum in a varying order (S moves by 1e-14 run to
+# run), and S is compared bit for bit
+KEPT_OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct", threads=1)
+
+
+def _kept_line(directory):
+    mesh = hybrid_mesh(directory, cells=(4, 2, 2))
+    model = hybrid_line(mesh).replace(
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")]
+    )
+    return model, hybrid_leads_core(mesh)
+
+
+def _count_port_mode_sweeps(monkeypatch):
+    calls = []
+    real = wave_ports.swept_once
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(wave_ports, "swept_once", spy)
+    return calls
+
+
+def test_a_density_loop_away_from_the_ports_runs_the_port_mode_sweep_once(
+    tmp_path, monkeypatch
+):
+    model, leads = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+
+    def objective(eps):
+        m = model.with_material("core", gfem.MaterialField(eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        s = gfem.solve(m, gfem.Driven(KEPT_F), options=KEPT_OPTIONS).s.values
+        return jnp.abs(s[0, 1, 0]) ** 2, s
+
+    def loop(rebuild):
+        out = []
+        for k in range(3):
+            if rebuild:  # the port couplings built every step, all else kept
+                for disc in cache._DISCRETIZATIONS.values():
+                    disc.ports = None
+            eps = jnp.asarray(leads * (1.0 + 0.1 * k))
+            (_, s), grad = jax.value_and_grad(objective, has_aux=True)(eps)
+            assert np.all(np.isfinite(np.asarray(grad)))
+            out.append(np.asarray(s))
+        return out
+
+    cache._DISCRETIZATIONS.clear()
+    rebuilt = loop(rebuild=True)
+    assert len(sweeps) == 2 * 3
+    cache._DISCRETIZATIONS.clear()
+    sweeps.clear()
+    kept = loop(rebuild=False)
+    assert len(sweeps) == 2  # one port mode sweep per wave port surface
+    for a, b in zip(kept, rebuilt, strict=True):
+        np.testing.assert_array_equal(a, b)  # bit for bit
+
+
+def test_a_design_beside_a_port_face_or_a_node_move_runs_the_sweep_again(
+    tmp_path, monkeypatch
+):
+    model, _ = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+    n_fill = len(model.mesh.elements("fill"))
+    for k in range(3):
+        fill = gfem.MaterialField(eps_r=np.full(n_fill, 2.0 + 0.1 * k))
+        gfem.solve(
+            model.with_material("fill", fill), gfem.Driven(KEPT_F), options=KEPT_OPTIONS
+        )
+    assert len(sweeps) == 2 * 3
+    sweeps.clear()
+    gfem.solve(model, gfem.Driven(KEPT_F), options=KEPT_OPTIONS)
+    gfem.solve(model, gfem.Driven(KEPT_F), options=KEPT_OPTIONS)
+    assert len(sweeps) == 2
+    # a node move is a new discretization: the couplings are rebuilt
+    moved = model.mesh.nodes.at[:, 2].multiply(1.01)
+    gfem.solve(
+        model.replace(mesh=type(model.mesh)(moved, model.mesh._topology)),
+        gfem.Driven(KEPT_F),
+        options=KEPT_OPTIONS,
+    )
+    assert len(sweeps) == 2 * 2
+
+
+def test_the_port_section_key_costs_less_than_the_port_section(tmp_path):
+    # timed for the log, not asserted
+    model, _ = _kept_line(tmp_path)
+    port = model.ports[0]
+    timings = {}
+    for name, f in (("key", port_section_key), ("section", port_section)):
+        f(model, port)
+        t0 = time.perf_counter()
+        for _ in range(5):
+            f(model, port)
+        timings[name] = (time.perf_counter() - t0) / 5
+    key, section = timings["key"], timings["section"]
+    print(f"port_section_key {key:.2e} s, port_section {section:.2e} s")  # noqa: T201
+
+
+def test_the_port_section_key_follows_what_the_port_section_reads(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    port = model.ports[0]
+    key = port_section_key(model, port)
+    core = model.with_material("core", gfem.MaterialField(eps_r=leads * 2.0))
+    assert port_section_key(core, port) == key
+    thermal = model.with_material(
+        "fill", gfem.Material(eps_r=HYBRID_EPS["fill"], thermal_conductivity=3.0)
+    )
+    assert port_section_key(thermal, port) == key
+    for changed in (
+        model.with_material("fill", gfem.Material(eps_r=2.5)),
+        model.with_material("block", gfem.Material(eps_r=4.0, mu_r=1.5)),
+        model.with_material("fill", gfem.Material(eps_r=2.0, conductivity=1.0)),
+        model.with_material("fill", gfem.Material(eps_r=2.0, tan_delta=1e-3)),
+        model.replace(
+            boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), gfem.PEC("side")]
+        ),
+        model.replace(
+            ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2", mode=2)]
+        ),
+    ):
+        assert port_section_key(changed, port) != key
+    # a uniform anisotropic field holds its three principal values once
+    axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    keys = {
+        port_section_key(
+            model.with_material(
+                "fill",
+                gfem.MaterialField.uniform(
+                    "fill", gfem.Material(eps_r=(2.0, 2.0, eps_z), axes=axes)
+                ),
+            ),
+            port,
+        )
+        for eps_z in (3.0, 3.0, 3.5)
+    }
+    assert len(keys) == 2
+
+
+def _kept_objective(model, options=KEPT_OPTIONS):
+    def objective(eps):
+        m = model.with_material("core", gfem.MaterialField(eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        s = gfem.solve(m, gfem.Driven(KEPT_F), options=options).s.values
+        return jnp.abs(s[0, 1, 0]) ** 2, s
+
+    return objective
+
+
+def test_an_entry_counts_the_same_bytes_with_or_without_its_discretization(
+    tmp_path,
+):
+    model, leads = _kept_line(tmp_path)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    jax.vjp(_kept_objective(model), jnp.asarray(leads), has_aux=True)
+    (entry,) = cache.ENTRIES._entries.values()
+    system = entry.handle.system
+    couplings = sum(c.vectors.nbytes for c in system.surfaces)
+    assert couplings > 0
+    kept, held = entry.nbytes, cache.ENTRIES.nbytes
+    assert held >= kept + couplings  # shared state counts at the cache
+    cache.cached(system.operator.built).ports = None  # the discretization's go
+    assert entry.nbytes == kept
+    # the entry still holds the couplings: they still count, once
+    assert cache.ENTRIES.nbytes == held
+    cache.ENTRIES.clear()
+
+
+def test_retain_memory_zero_keeps_nothing_between_solves(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    options = dataclasses.replace(KEPT_OPTIONS, retain_memory=0)
+    objective = _kept_objective(model, options)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    for k in range(2):  # the second sees the fixed parts' digest again
+        jax.value_and_grad(objective, has_aux=True)(jnp.asarray(leads * (1 + 0.1 * k)))
+        assert cache.ENTRIES.nbytes == 0
+    objective(jnp.asarray(leads))
+    assert cache.ENTRIES.nbytes == 0
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+
+
+def test_retain_memory_zero_keeps_no_port_state_on_the_iterative_path(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    options = dataclasses.replace(
+        KEPT_OPTIONS, linear_solver="bddc_gmres", retain_memory=0
+    )
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    # a non-differentiated solve stores no entry and pools no plan: it walks
+    # at its end all the same
+    _kept_objective(model, options)(jnp.asarray(leads))
+    assert cache._DISCRETIZATIONS
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+    assert cache.ENTRIES.nbytes == 0
+
+
+def test_a_live_entry_reads_its_own_couplings_after_their_eviction(
+    tmp_path, monkeypatch
+):
+    model, leads = _kept_line(tmp_path)
+    objective = _kept_objective(model)
+    eps = jnp.asarray(leads)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    _, vjp, _ = jax.vjp(objective, eps, has_aux=True)
+    (grad_want,) = vjp(1.0)
+    _, vjp, _ = jax.vjp(objective, eps, has_aux=True)
+    # a solve at another design under retain_memory=0 walks the kept state
+    # (tiers 1, 2, 3 and 6): the discretization lets go, the live entry stays
+    tight = dataclasses.replace(KEPT_OPTIONS, retain_memory=0)
+    _kept_objective(model, tight)(eps * 1.2)
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+    assert len(cache.ENTRIES) == 1
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+    (grad,) = vjp(1.0)
+    assert not sweeps  # the backward ran no forward again
+    # the first sight of the design summed no kept part: round-off apart
+    np.testing.assert_allclose(
+        np.asarray(grad), np.asarray(grad_want), rtol=1e-9, atol=1e-14
+    )
+    cache.ENTRIES.clear()
+
+
+def test_evicted_kept_state_is_rebuilt_not_read_stale(tmp_path, monkeypatch):
+    model, leads = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+
+    def loop(options, *, fresh):
+        objective = _kept_objective(model, options)
+        out = []
+        for k in range(3):
+            if fresh:
+                cache.ENTRIES.clear()
+                cache._DISCRETIZATIONS.clear()
+            eps = jnp.asarray(leads * (1.0 + 0.1 * k))
+            (_, s), grad = jax.value_and_grad(objective, has_aux=True)(eps)
+            out.append((np.asarray(s), np.asarray(grad)))
+        return out
+
+    fresh = loop(KEPT_OPTIONS, fresh=True)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    sweeps.clear()
+    # the walk drops the kept fixed parts and couplings at every step
+    tight = loop(dataclasses.replace(KEPT_OPTIONS, retain_memory=0), fresh=False)
+    # the couplings were rebuilt at every forward, and at every backward,
+    # which reruns its freed forward (ADR 0081)
+    assert len(sweeps) == 2 * 2 * 3
+    for (s, grad), (s0, grad0) in zip(tight, fresh, strict=True):
+        np.testing.assert_allclose(s, s0, rtol=1e-12, atol=1e-14)
+        np.testing.assert_allclose(grad, grad0, rtol=1e-9, atol=1e-14)
+    cache.ENTRIES.clear()

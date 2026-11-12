@@ -25,6 +25,7 @@ from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._engine import driven, terms, workers
+from gfem._engine.cache import ENTRIES
 from gfem._engine.driven import DrivenRule
 from gfem._engine.system_operator import SystemOperator
 from gfem._linalg import bddc, pardiso, prepare
@@ -366,6 +367,8 @@ def test_an_exact_sweep_plans_once_and_matches_fresh_handles(
     line, monkeypatch, sweep, linear_solver
 ):
     problem = gfem.Driven(frequency=(3e9, 4e9, 5e9, 6e9), sweep=sweep)
+    # an earlier solve on `line` left a plan in the pool (ADR 0082)
+    ENTRIES.clear()
     calls = _count_prepares(monkeypatch)
     s = np.asarray(_s(line, problem, linear_solver=linear_solver).s.values)
     assert len(calls) == 1
@@ -895,33 +898,48 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
     monkeypatch.setattr(rule, "_ports", spy)
     _, entry = rule.forward(line, keep=keep)
     ((system, ports),) = built
-    vectors = sum(t.vectors.nbytes for t in (*ports.excitation, *ports.outputs))
-    assert ports.nbytes == vectors
+    vectors = {
+        id(t.vectors): t.vectors.nbytes for t in (*ports.excitation, *ports.outputs)
+    }
+    assert ports.shared() == vectors
     form = system.operator.form(1.0)
     form.Assemble()
     if keep:
-        assert entry.handle.nbytes == system.nbytes + ports.nbytes
+        # the discretization keeps the port network: the entry does not count it
+        assert entry.handle.nbytes == system.nbytes
     if not (kind in ("direct", "petsc") and keep):
         # BDDC assembles forms; a forward that keeps nothing drops its pieces
-        # (no wave port on the line: no W vectors)
-        assert system.nbytes == 0
+        # (no wave port on the line: no W vectors); a kept BDDC forward holds
+        # its base for the backward
+        held = system._adjoint_sweep._base.nbytes if keep else 0
+        assert system.nbytes == held
         return
-    # at least the values of the curl-curl and mass pieces
+    # at least the values of the curl-curl and mass pieces, its own or kept
+    # parts it shares with the discretization's store (counted at the cache)
     values = form.mat.AsVector().FV().NumPy().nbytes
-    assert system.nbytes >= 2 * values
+    assert system.nbytes + sum(system.shared().values()) >= 2 * values
     entry.free()
     assert system.nbytes == 0
 
 
 def test_a_kept_forward_is_freed_once_and_then_holds_nothing():
     freed = []
-    system = SimpleNamespace(nbytes=10, free=lambda: freed.append(True))
-    kept = driven._Kept(system, SimpleNamespace(nbytes=5))
-    assert kept.nbytes == 15
+    system = SimpleNamespace(
+        nbytes=10,
+        free=lambda **_: freed.append(True),
+        operator=SimpleNamespace(built=object()),  # on no cached discretization
+        surfaces=[],
+        shared=lambda: {1: 7},
+    )
+    kept = driven._Kept(system, SimpleNamespace(nbytes=5, shared=lambda: {2: 5}))
+    # the port network is shared: the cache counts it (ADR 0091)
+    assert kept.nbytes == 10
+    assert kept.shared() == {1: 7, 2: 5}
     kept.free()
     kept.free()
     assert freed == [True]
     assert kept.nbytes == 0
+    assert kept.shared() == {}
 
 
 # --- what the driven problem refuses ---------------------------------------------

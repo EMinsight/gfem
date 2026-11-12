@@ -1,5 +1,7 @@
 """Engine caches, the pinned quadrature rule, and kept forward solves."""
 
+import jax
+import jax.numpy as jnp
 import ngsolve as ngs
 import numpy as np
 import pytest
@@ -136,6 +138,209 @@ def test_entry_bytes_count_fields_and_handle():
 
 def test_default_budget_is_half_the_machine():
     assert cache.default_retain_memory() > 2**28
+
+
+GIB = 2**30
+
+
+@pytest.fixture(autouse=True)
+def fresh_default_budget():
+    """The default budget read anew: it is read once per process."""
+    cache.default_retain_memory.cache_clear()
+    yield
+    cache.default_retain_memory.cache_clear()
+
+
+def test_the_default_budget_is_read_once_per_process(monkeypatch):
+    reads = []
+
+    def physical_memory():
+        reads.append(1)
+        return 64 * GIB
+
+    monkeypatch.setattr(cache, "_physical_memory", physical_memory)
+    assert cache.default_retain_memory() == cache.default_retain_memory()
+    assert cache.retain_budget(None) == cache.default_retain_memory()
+    assert len(reads) == 1
+
+
+def _fake_cgroups(tmp_path, monkeypatch, membership, limits):
+    """A ``/proc/self/cgroup`` reading ``membership`` and limit files under a root."""
+    proc = tmp_path / "proc_self_cgroup"
+    proc.write_text(membership)
+    root = tmp_path / "sys_fs_cgroup"
+    root.mkdir()
+    for relative, (name, value) in limits.items():
+        directory = root / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / name).write_text(value)
+    monkeypatch.setattr(cache, "_PROC_CGROUP", proc)
+    monkeypatch.setattr(cache, "_CGROUP_ROOT", root)
+    monkeypatch.setattr(cache, "_physical_memory", lambda: 64 * GIB)
+
+
+def test_default_budget_follows_a_v2_limit_set_on_a_parent_cgroup(
+    tmp_path, monkeypatch
+):
+    _fake_cgroups(
+        tmp_path,
+        monkeypatch,
+        "0::/slurm/job_1/step_0/task_0\n",
+        {
+            "slurm/job_1/step_0/task_0": ("memory.max", "max\n"),
+            "slurm/job_1/step_0": ("memory.max", "max\n"),
+            "slurm/job_1": ("memory.max", f"{16 * GIB}\n"),
+            "slurm": ("memory.max", f"{32 * GIB}\n"),
+        },
+    )
+    assert cache.default_retain_memory() == 8 * GIB
+
+
+def test_default_budget_reads_a_v1_memory_controller(tmp_path, monkeypatch):
+    _fake_cgroups(
+        tmp_path,
+        monkeypatch,
+        "4:cpu,cpuacct:/job\n3:memory:/job/step\n0::/\n",
+        {
+            "memory/job/step": ("memory.limit_in_bytes", "9223372036854771712\n"),
+            "memory/job": ("memory.limit_in_bytes", f"{12 * GIB}\n"),
+        },
+    )
+    assert cache.default_retain_memory() == 6 * GIB
+
+
+def test_default_budget_is_half_the_ram_without_a_limit(tmp_path, monkeypatch):
+    _fake_cgroups(
+        tmp_path,
+        monkeypatch,
+        "0::/user.slice\n",
+        {
+            "user.slice": ("memory.max", "max\n"),
+            ".": ("memory.max", "garbage\n"),
+        },
+    )
+    assert cache.default_retain_memory() == 32 * GIB
+    monkeypatch.setattr(cache, "_PROC_CGROUP", tmp_path / "missing")
+    cache.default_retain_memory.cache_clear()
+    assert cache.default_retain_memory() == 32 * GIB
+
+
+def test_default_budget_without_readable_ram_or_limit_is_8_gib(tmp_path, monkeypatch):
+    _fake_cgroups(tmp_path, monkeypatch, "0::/\n", {})
+    monkeypatch.setattr(cache, "_physical_memory", lambda: None)
+    assert cache.default_retain_memory() == 8 * GIB
+
+
+def test_a_limit_below_the_ram_wins_without_readable_ram(tmp_path, monkeypatch):
+    _fake_cgroups(tmp_path, monkeypatch, "0::/\n", {".": ("memory.max", f"{GIB}")})
+    monkeypatch.setattr(cache, "_physical_memory", lambda: None)
+    assert cache.default_retain_memory() == GIB // 2
+
+
+# --- consumed entries (ADR 0081) ---------------------------------------------------
+
+
+def test_only_consumed_entries_are_freed_when_a_differentiated_forward_starts():
+    entries = EntryCache()
+    read, unread = _entry(10), _entry(10)
+    k_read = entries.put(read, budget=100)
+    k_unread = entries.put(unread, budget=100)
+    read.consumed = True
+    entries.free_consumed(comm=None)
+    assert entries.get(k_read) is None
+    assert read.handle is None
+    assert entries.get(k_unread) is unread
+    assert not unread.handle.freed
+
+
+@pytest.fixture(scope="module")
+def stack(tmp_path_factory):
+    path = tmp_path_factory.mktemp("mesh") / "stack.msh"
+    layers = (("oxide", 0.5), ("nitride", 0.25))
+    sm.write_msh22(path, sm.plate(4.0, 3.0, layers, (2, 2, 2)))
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path),
+        materials={"oxide": gfem.Material(), "nitride": gfem.Material()},
+    )
+
+
+def _capacitance(stack):
+    problem = gfem.Electrostatic(
+        terminals={"top": "top", "mid": "oxide__nitride"}, ground="bottom"
+    )
+    n_oxide = len(stack.mesh.elements("oxide"))
+
+    def capacitance(eps):
+        model = stack.replace(
+            materials={
+                "oxide": gfem.MaterialField(eps_r=eps[:n_oxide]),
+                "nitride": gfem.MaterialField(eps_r=eps[n_oxide:]),
+            }
+        )
+        return gfem.solve(model, problem).capacitance
+
+    return capacitance
+
+
+@pytest.fixture
+def forwards(monkeypatch):
+    """The ``keep`` flag of every electrostatic forward, in order."""
+    seen = []
+    forward = ElectrostaticRule.forward
+
+    def counted(self, model, *, keep):
+        seen.append(keep)
+        return forward(self, model, keep=keep)
+
+    monkeypatch.setattr(ElectrostaticRule, "forward", counted)
+    cache.ENTRIES.clear()
+    yield seen
+    cache.ENTRIES.clear()
+
+
+WEIGHTS = jnp.asarray([[1.0, 0.3], [-0.7, 2.0]])
+
+
+def _design(stack, seed=0):
+    rng = np.random.default_rng(seed)
+    return jnp.asarray(rng.uniform(2.0, 9.0, len(stack.mesh.tetrahedra)))
+
+
+def test_an_optimization_loop_keeps_only_the_current_steps_entry(stack, forwards):
+    capacitance = _capacitance(stack)
+    step = jax.jit(jax.value_and_grad(lambda e: jnp.sum(WEIGHTS * capacitance(e))))
+    eps = _design(stack)
+    for _ in range(5):
+        _, grad = step(eps)
+        eps = eps - 1e-3 * grad
+    assert forwards == [True] * 5
+    assert len(cache.ENTRIES) == 1
+
+
+def test_jacrev_and_repeated_pullbacks_run_no_extra_forward(stack, forwards):
+    capacitance = _capacitance(stack)
+    eps = _design(stack)
+    jacobian = jax.jacrev(capacitance)(eps)
+    assert forwards == [True]
+    _, pullback = jax.vjp(capacitance, eps)
+    grads = [pullback(k * WEIGHTS)[0] for k in (1.0, 2.0, 3.0)]
+    assert forwards == [True, True]
+    np.testing.assert_allclose(
+        grads[0], jnp.einsum("ij,ijk->k", WEIGHTS, jacobian), rtol=1e-12
+    )
+    np.testing.assert_allclose(grads[2], 3 * grads[0], rtol=1e-12)
+
+
+def test_a_pullback_after_a_later_forward_runs_its_own_again(stack, forwards):
+    capacitance = _capacitance(stack)
+    eps = _design(stack)
+    _, pullback = jax.vjp(capacitance, eps)
+    first = pullback(WEIGHTS)[0]
+    jax.grad(lambda e: jnp.sum(WEIGHTS * capacitance(e)))(eps + 1.0)
+    assert forwards == [True, True]
+    again = pullback(WEIGHTS)[0]
+    assert forwards == [True, True, True]
+    np.testing.assert_allclose(again, first, rtol=1e-12)
 
 
 # --- a kept forward solve --------------------------------------------------------

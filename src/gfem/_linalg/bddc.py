@@ -235,6 +235,14 @@ class BddcHandle(NgsHandle):
         self.maxiter = maxiter
         self._hold(form, preconditioner)
 
+    def expect_solves(self, solves: int) -> None:
+        """Restate the solve calls the next setups serve, as `refactorize` does.
+
+        For the coarse factorization only; the held preconditioner stays.
+        """
+        with self._lock:
+            self._expected_columns = self._columns_per_setup(solves)
+
     def _columns_per_setup(self, solves: int) -> int:
         """The columns one setup serves when ``solves`` solve calls are expected.
 
@@ -331,7 +339,13 @@ class BddcHandle(NgsHandle):
             layout=self.layout,
         )
 
-    def refactorize(self, operator: Operator, *, solves: int | None = None) -> None:
+    def refactorize(
+        self,
+        operator: Operator,
+        *,
+        solves: int | None = None,
+        frequency: float | None = None,  # noqa: ARG002
+    ) -> None:
         """Assemble ``operator`` and solve it on the held preconditioner.
 
         Preconditioner reuse (see `gfem._linalg.Refactorable`): only the
@@ -354,7 +368,7 @@ class BddcHandle(NgsHandle):
         ``solves`` restates the solve calls the next setups are expected to
         serve (``prepare``'s ``solves``), for the coarse factorization only;
         ``None`` keeps the count. A setup may come later than this call, at
-        the first cold solve.
+        the first cold solve. ``frequency`` is ignored.
         """
         form = operator.form
         with self._lock:

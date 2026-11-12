@@ -40,8 +40,13 @@ where the {term}`PETSc stack` is installed (see
 The cells between modes of a shared port surface are among the large cases
 that run before each release; the other cells run on every change.
 
+A driven optimization on `linear_solver="direct"` that solves designs on an
+earlier design's factorization is checked against factorizing every design:
+S agrees to a twentieth of `tolerance` and the gradient to `tolerance`.
+
 Tests: [gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py),
-[gradients that raise](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix_raise_table.py).
+[gradients that raise](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix_raise_table.py),
+[reused factorizations](https://github.com/benvial/gfem/blob/main/tests/verification/test_factor_reuse_gradient.py).
 
 ## Wave ports and shared port surfaces
 
