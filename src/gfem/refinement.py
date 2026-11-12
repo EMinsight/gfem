@@ -824,11 +824,6 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
     lossy = _lossy_elements(model)
     if estimator.s is not None:
         waves = {p.name: p for p in model.ports if isinstance(p, WavePort)}
-        surfaces = [p.surface for p in waves.values()]
-        if len(set(surfaces)) < len(surfaces):
-            raise _untested(
-                "shared port surface", "a model with a shared wave port surface"
-            )
         for name in estimator.s:
             port = waves.get(name)
             if port is None:

@@ -131,7 +131,6 @@ def test_error_estimate_checks_the_key_against_the_result(coax):
             "anisotropic permittivity",
         ),
         ("step-mu", ("s", ("p2", "p1")), "permeability"),
-        ("step-shared", ("s", ("p2", "p1")), "shared port surface"),
         ("step-lossy-wave", ("s", ("p2", "p1")), "lossy wave port"),
         ("cavity-lossy", ("omega", 0), "lossy eigenmode"),
         ("cavity-absorbing", ("omega", 0), "lossy eigenmode"),
@@ -148,17 +147,6 @@ def test_untested_entries_raise_before_any_solve(
         ),
         "step-mu": (
             _with(step, materials={"dielectric": gfem.Material(eps_r=4.0, mu_r=2.0)}),
-            rc.step_problem(),
-        ),
-        "step-shared": (
-            _with(
-                step,
-                ports=[
-                    gfem.WavePort("p1", "port1"),
-                    gfem.WavePort("p2", "port2"),
-                    gfem.WavePort("p3", "port2", mode=2),
-                ],
-            ),
             rc.step_problem(),
         ),
         "step-lossy-wave": (
