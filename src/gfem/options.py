@@ -66,6 +66,10 @@ _RESERVED: dict[str, str] = {
         "is set from SolverOptions.tolerance (adjoint_tolerance for adjoint "
         "solves); set that instead."
     ),
+    "ksp_atol": (
+        "is set by gfem: a Krylov solve stops on SolverOptions.tolerance, "
+        "relative to the right-hand side; set that instead."
+    ),
     "ksp_initial_guess_nonzero": (
         "is set per solve from the initial guess gfem passes; remove it."
     ),
@@ -238,12 +242,16 @@ class SolverOptions:
             the solve starts. With a Bloch wave vector (``wave_vector=`` on
             the problem), use ``"direct"``, or ``"bddc_gmres"`` for driven
             problems only; ``"petsc"`` raises.
-        tolerance: S and fields are accurate to about this size: the
-            relative residual of an iterative linear solve (see Notes for
-            its norm). A direct solve is exact, except in an optimization of
-            a large model, where a design may be solved on the factorization
-            of an earlier design (when ``retain_memory`` keeps it and that is
-            faster) to a twentieth of this tolerance.
+        tolerance: Relative residual at which an iterative linear solve
+            stops (see Notes for its norm). It is not the error of S or of
+            the fields: with ``"bddc_gmres"`` at the default 1e-6, S was
+            within 7e-7 of the exact solve on a short line and within 5e-5
+            on a 100-frequency microstrip sweep. To judge the accuracy,
+            solve again at a tighter ``tolerance`` and compare S. A direct
+            solve is exact, except in an optimization of a large model,
+            where a design may be solved on the factorization of an earlier
+            design (when ``retain_memory`` keeps it and that is faster) to a
+            twentieth of this tolerance.
         device: Where the direct solver runs: ``"cpu"``, ``"cuda"`` or
             ``"cuda:N"`` (the N-th GPU). A GPU needs
             ``linear_solver="direct"`` or ``"auto"``, which is ``"direct"``
@@ -321,12 +329,15 @@ class SolverOptions:
             ``bool`` is ``true`` / ``false``. They override gfem's defaults
             (the MUMPS factorization is ``ksp_type preonly``, ``pc_type
             cholesky``), under each solver's own options prefix: never write
-            one. Names starting ``eps_``, ``bv_``,
-            ``ds_``, ``rg_`` or ``fn_`` need ``eigen_solver="slepc"``, every
-            other name needs ``linear_solver="petsc"``, so an option never
-            goes to a solver that is not selected. Options gfem sets from
-            its own fields (``ksp_rtol`` from ``tolerance``, ``eps_tol``
-            from ``eigen_tolerance``, ...) raise `ValueError`. An option the
+            one. ``ksp_type preonly`` measures no residual, so it takes only
+            ``pc_type`` ``lu`` or ``cholesky``, without a pivot shift; any
+            other preconditioner needs a Krylov ``ksp_type``. Names starting
+            ``eps_``, ``bv_``, ``ds_``, ``rg_`` or ``fn_`` need
+            ``eigen_solver="slepc"``, every other name needs
+            ``linear_solver="petsc"``, so an option never goes to a solver
+            that is not selected. Options gfem sets from
+            its own fields (``ksp_rtol`` and ``ksp_atol`` from ``tolerance``,
+            ``eps_tol`` from ``eigen_tolerance``, ...) raise `ValueError`. An option the
             PETSc linear solver does not read (a typo, or an option of
             another configuration) raises `ValueError` when the solve
             starts; one SLEPc does not read raises it after the eigen
