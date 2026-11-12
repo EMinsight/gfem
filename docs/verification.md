@@ -191,20 +191,21 @@ The field estimator is checked the same way, against the field's error in
 the energy norm: on the square and circular coaxial lines, the coaxial
 line with an anisotropic fill, the parallel-plate line, and the L-shaped
 and rectangular cavities; and with loss, on the parallel-plate line with a
-lossy fill (dielectric loss and conductivity) against its closed form, and
-on a cavity in two layers, the upper one lossy, against a higher-order
-solve on the same mesh. Its estimate was between
-{gfem-effectivity}`field low` and {gfem-effectivity}`field high` times the
-true error, the circular line measured against a higher-order solve on its
-own facets; against the exact circle it stays below the true error. These
-cases run at `order=2`, and all but the anisotropic fill also at
-`order=3`. One configuration lies below that range and is not claimed: on
-a line in two layers, the upper one lossy, with lumped ports spanning both,
-the estimate was {gfem-effectivity}`loss jump low` to
+lossy fill (dielectric loss and conductivity) against its closed form,
+and against a higher-order solve on the same mesh on a cavity in two
+layers, the upper one lossy, and on a cavity whose lossy wall (impedance
+or absorbing) gives its resonance a complex frequency. Its estimate was
+between {gfem-effectivity}`field low` and {gfem-effectivity}`field high`
+times the true error, the circular line measured against a higher-order
+solve on its own facets; against the exact circle it stays below the true
+error. These cases run at `order=2`, and all but the anisotropic fill also
+at `order=3`. One configuration lies below that range and is not claimed:
+on a line in two layers, the upper one lossy, with lumped ports spanning
+both, the estimate was {gfem-effectivity}`loss jump low` to
 {gfem-effectivity}`loss jump high` times the true error on coarse meshes;
-its test holds it to that band. On the stepped line, whose field error has no known value, the
-estimate is checked to keep a steady ratio to the S21 error as the mesh is
-refined. On the three singular benchmark cases a mesh refinement run also
+its test holds it to that band. On the stepped line, whose field error has
+no known value, the estimate is checked to keep a steady ratio to the S21
+error as the mesh is refined. On the three singular benchmark cases a mesh refinement run also
 ends with a smaller error than uniform splits at the same number of
 unknowns. Both ranges are read from the tests when the docs are built, and
 both sets of checks run on every change.

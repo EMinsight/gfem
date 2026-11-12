@@ -39,7 +39,10 @@ lossless norm without loss): the parallel-plate line with tan_delta 0.3 or
 10 S/m in its filling, against the closed-form TEM wave with complex beta and
 Z0; and the PEC box in two 0.2 mm layers, the upper one lossy (tan_delta 0.5
 or 30 S/m), whose mode puts E normal to the loss jump, against an order p + 2
-solve on the same mesh. A lumped port across a loss jump (the line in two
+solve on the same mesh. Loss on a wall only: the air box, PEC but for an
+impedance (377 ohm/sq) or first-order absorbing top wall, whose mode has a
+complex omega (|k| weighs the mass term), against an order p + 2 solve on
+the same mesh. A lumped port across a loss jump (the line in two
 layers, the upper lossy) is a witness: its effectivity is asserted in its
 measured band `LOSS_JUMP_WITNESS`, below the quoted range.
 
@@ -72,6 +75,7 @@ Measured (order 2, direct, ostau, 1 thread):
                                         0.73 at n = 32 recovering eps_r E)
     two-layer box, m = 1, 2             1.20, 1.19 (tan_delta 0.5)
                                         1.18, 1.15 (30 S/m)
+    lossy-wall box, m = 1, 2            1.10, 1.10 (impedance and absorbing)
     loss-jump port line, order 2,
     order-4 reference, n = 4, 8, 12     0.93, 0.95, 0.96 (1 S/m, 3 GHz)
 
@@ -87,6 +91,7 @@ Measured (order 3, direct, ostau, 1 thread):
     lossy line, tan_delta 0.3, n = 4, 16  1.83, 1.80; 1.56, 1.63 (3, 8 GHz)
     lossy line, 10 S/m, n = 4, 16       1.61, 1.50; 1.59, 1.55
     two-layer box, m = 1                1.40 (tan_delta 0.5), 1.21 (30 S/m)
+    lossy-wall box, m = 1               1.33 (impedance and absorbing)
     loss-jump port line, n = 4,
     order-7 reference                   0.88, 0.89 (tan_delta 0.5)
                                         0.85, 0.89 (1 S/m)
@@ -117,6 +122,7 @@ FIELD_EFFECTIVITY_BY_CASE = {
     "anisotropic coax": (0.9, 1.8),
     "lossy parallel-plate line": (0.9, 1.6),
     "two-layer box": (0.9, 1.6),
+    "lossy-wall box": (0.9, 1.6),
 }
 
 #: Asserted field effectivity range per case at order 3 (measured, with margin).
@@ -128,6 +134,7 @@ FIELD_EFFECTIVITY_ORDER_3_BY_CASE = {
     "rectangular box": (0.9, 2.0),
     "lossy parallel-plate line": (0.9, 2.0),
     "two-layer box": (0.9, 1.6),
+    "lossy-wall box": (0.9, 1.6),
 }
 
 #: The range the docs quote: the lowest low and the highest high, both orders.
@@ -590,6 +597,55 @@ def test_the_field_effectivity_on_a_two_layer_box(tmp_path, loss, m):
 @pytest.mark.parametrize("loss", list(UPPER_LOSS))
 def test_the_field_effectivity_on_a_two_layer_box_at_order_3(tmp_path, loss):
     _two_layer_box(tmp_path, 1, ORDER_3, UPPER_LOSS[loss])
+
+
+#: The lossy top walls of the air box: loss on the boundary only.
+LOSSY_WALLS = {
+    "impedance": gfem.Impedance("top", resistance=377.0),
+    "absorbing": gfem.Absorbing("top"),
+}
+
+
+def _lossy_wall_box(tmp_path, m, options, wall):
+    # The 1 x 0.7 x 0.4 mm air box of the omega estimate's lossy-wall case,
+    # Q about 4: the volume is lossless, the mode's omega complex.
+    model = _model(
+        tmp_path,
+        sm.plate(1.0, 0.7, (("air", 0.4),), (5 * m, 4 * m, 2 * m)),
+        "mm",
+        materials={"air": gfem.Material()},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("side"), LOSSY_WALLS[wall]],
+    )
+    f110 = const.c / 2 * math.hypot(1 / 1e-3, 1 / 0.7e-3)
+    problem = gfem.Eigenmode(target=f110, n_modes=1)
+    result = gfem.solve(model, problem, options=options)
+    assert abs(complex(np.asarray(result.omega)[0]).imag) > 0
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    reference = gfem.solve(
+        model,
+        problem,
+        options=gfem.SolverOptions(order=options.order + 2, linear_solver="direct"),
+    ).e_fields[0]
+    omega = complex(np.asarray(reference.omega))
+    true = _relative_energy_error(
+        result.e_fields[0],
+        lambda x: np.asarray(reference.at(x)),
+        lambda x: -1j * omega * np.asarray(reference.b().at(x)),
+        1.0,
+        fit=True,
+    )
+    _assert_in("lossy-wall box", estimate.value, true, order=options.order)
+
+
+@pytest.mark.parametrize("m", [1, 2])
+@pytest.mark.parametrize("wall", list(LOSSY_WALLS))
+def test_the_field_effectivity_on_a_lossy_wall_box(tmp_path, wall, m):
+    _lossy_wall_box(tmp_path, m, OPTIONS, wall)
+
+
+@pytest.mark.parametrize("wall", list(LOSSY_WALLS))
+def test_the_field_effectivity_on_a_lossy_wall_box_at_order_3(tmp_path, wall):
+    _lossy_wall_box(tmp_path, 1, ORDER_3, wall)
 
 
 #: The measured field effectivity of a lumped port across a loss jump: below
