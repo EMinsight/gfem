@@ -99,7 +99,7 @@ from gfem._engine.port_network import PortNetwork, resistance, split_cotangent
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_sheet
 from gfem._engine.sweep_outputs import SweepOutputs
-from gfem._engine.system_operator import SystemOperator
+from gfem._engine.system_operator import SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling, wave_port_couplings
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
@@ -519,6 +519,13 @@ class DrivenRule:
         #: `gfem.solve`'s eager path and by a frequency worker, never under
         #: JAX, where no caller reads it.
         self.keeps_partial = False
+        #: Ports whose S functional's adjoint a uniform forward also solves,
+        #: on its own factorization, where the functional is not parallel to
+        #: the port's excitation: set by `gfem.refine_mesh` for an S estimate
+        #: (ADR 0089), never on a differentiated solve.
+        self.adjoint_ports: tuple[str, ...] = ()
+        #: Those adjoints, per (frequency, port), on the unpaired space.
+        self.adjoints: dict[tuple[float, str], np.ndarray] = {}
         _check_low_frequency(model, problem.frequency, stacklevel=3, comm=comm)
         _check_skipped_port_modes(model, stacklevel=3, comm=comm)
 
@@ -593,8 +600,11 @@ class DrivenRule:
             with system.sweep(solves=len(frequencies)) as sweep:
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
+                    rhs = ports.rhs(omega)
                     try:
-                        x, its = sweep.solve(omega, ports.rhs(omega), x0=previous)
+                        x, its = sweep.solve(omega, rhs, x0=previous)
+                        if self.adjoint_ports:
+                            self._solve_adjoints(sweep, system, ports, f, rhs)
                     except LinearSolverConvergenceError as err:
                         miss, n_solved = err, n
                         break
@@ -631,6 +641,46 @@ class DrivenRule:
                 fields={"solution": np.concatenate(solutions, axis=1)},
             )
         return out.outputs(), entry
+
+    def solve_adjoints(self, model: Model) -> dict[tuple[float, str], np.ndarray]:
+        """`adjoints` of `adjoint_ports` at every frequency, without the forward.
+
+        A frequency is factorized only if one of its functionals is not
+        parallel to its excitation; then once (`gfem.error_estimate` on a
+        finished result).
+        """
+        with task_manager(self.options.threads, self.comm):
+            system, ports = self._ports(model, warn=False)
+            with system.sweep(solves=len(self.problem.frequency)) as sweep:
+                for f in self.problem.frequency:
+                    rhs = ports.rhs(2 * math.pi * f)
+                    self._solve_adjoints(sweep, system, ports, f, rhs)
+            system.free()
+        return self.adjoints
+
+    def _solve_adjoints(
+        self,
+        sweep: SystemSweep,
+        system: SystemOperator,
+        ports: PortNetwork,
+        f: float,
+        rhs: np.ndarray,
+    ) -> None:
+        """Solve the non-parallel `adjoint_ports` at ``f`` on the sweep's handle.
+
+        The handle at ``f`` is the forward's if the sweep is there already
+        (one more back-substitution), else prepared here.
+        """
+        omega = 2 * math.pi * f
+        indices = [self.port_names.index(name) for name in self.adjoint_ports]
+        loads = ports.nonparallel(omega, indices, rhs)
+        if not loads:
+            return
+        functional = ports.functional(omega)
+        z, _ = sweep.reuse_at(omega).solve_counted(functional[:, loads])
+        z = system.operator.expand(z)
+        for k, i in enumerate(loads):
+            self.adjoints[f, self.port_names[i]] = np.array(z[:, k], complex)
 
     def _forward_workers(
         self, model: Model, *, keep: bool

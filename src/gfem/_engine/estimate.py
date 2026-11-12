@@ -35,7 +35,7 @@ gfem tetrahedron order.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import ngsolve as ngs
@@ -530,34 +530,64 @@ def s_entry(
     to: str,
     source: str,
     threads: int | None = None,
+    *,
+    adjoints: Mapping[tuple[float, str], Field] | None = None,
 ) -> list[tuple[float, np.ndarray]]:
     """The absolute error estimate of ``s[to, source]``, per frequency and tetrahedron.
 
-    S_ij,h - S_ij = i a(e_i, e_j) / (4 k0 eta0), with k0 in the mesh's
-    length unit, for fields of 1 W incident at either port, and a = c - k0^2 m;
-    the estimate is (|sum c_K| + k0^2 |sum m_K|) / (4 k0 eta0), a
-    tetrahedron's |c_K - k0^2 m_K| / (4 k0 eta0).
+    With port i = ``to``, j = ``source``, e = u_h - u, and z_i the adjoint
+    of port i's S functional f_i (A z_i = f_i, A complex symmetric):
+    O_ij,h - O_ij = f_i(e_j) = -a(e_j, z_i,h - z_i) for the raw outgoing
+    wave O, and S_ij = (O_ij - delta_ij) d_i d_j with the de-embedding d
+    (``exp(gamma offset)``, 1 for a lumped port). a = c - k0^2 m with k0 in
+    the mesh's length unit; m recovers eps_eff E (`_effective_eps`). The
+    estimate is |d_i d_j| (|sum c_K| + k0^2 |sum m_K|) of the recovered
+    errors of x_j and z_i, a tetrahedron's |d_i d_j| |c_K - k0^2 m_K|.
+
+    ``adjoints`` holds z_i per (frequency, port) where port i's functional
+    is not parallel to its excitation (a hybrid lossy wave port mode).
+    Elsewhere z_i = c_i x_i with |c_i| = 1 / (4 k0 eta0) for fields of 1 W
+    incident (ADR 0089): the free dual, x_i itself on that scale.
     """
     fields = dict(zip(result.kept, result.e_fields, strict=True))
+    adjoints = adjoints or {}
+    d = _deembedding(result)
     eta0 = scipy.constants.mu_0 * scipy.constants.c
     out = []
     with task_manager(threads):
         recovery = None
-        for frequency in result.s.frequency:
-            f_to, f_source = (
-                fields[float(frequency), to],
-                fields[float(frequency), source],
-            )
+        for n, frequency in enumerate(result.s.frequency):
+            f = float(frequency)
+            f_to, f_source = fields[f, to], fields[f, source]
             if recovery is None:
                 recovery = FluxRecovery(model, f_to.order, cracks=True)
-            k = 2 * np.pi * float(frequency) / scipy.constants.c * recovery.built.scale
-            ri = _residuals(recovery, f_source)
-            rj = ri if source == to else _residuals(recovery, f_to)
-            curl, mass = _pair(recovery, ri, rj)
-            scale = 1.0 / (4 * k * eta0)
+            k = 2 * np.pi * f / scipy.constants.c * recovery.built.scale
+            eps, eps_inverse = _effective_eps(recovery, k)
+            ri = _residuals(recovery, f_source, eps)
+            adjoint = adjoints.get((f, to))
+            if adjoint is not None:
+                rj, scale = _residuals(recovery, adjoint, eps), 1.0
+            else:
+                rj = ri if source == to else _residuals(recovery, f_to, eps)
+                scale = 1.0 / (4 * k * eta0)
+            curl, mass = _pair(recovery, ri, rj, eps_inverse)
+            scale *= abs(d[to][n] * d[source][n])
             value = scale * (abs(curl.sum()) + k**2 * abs(mass.sum()))
             out.append((float(value), scale * np.abs(curl - k**2 * mass)))
     return out
+
+
+def _deembedding(result: DrivenResult) -> dict[str, np.ndarray]:
+    """Each port's de-embedding per frequency: ``exp(gamma offset)``, 1 if lumped."""
+    offsets = dict(result.offsets)
+    ones = np.ones(len(result.s.frequency), complex)
+    modes = result.port_modes
+    return {
+        name: np.exp(np.asarray(modes[name].gamma) * offsets.get(name, 0.0))
+        if name in modes
+        else ones
+        for name in result.s.ports
+    }
 
 
 def omega(
@@ -681,33 +711,31 @@ def _parts(field: Field) -> list[ngs.GridFunction]:
 
 
 def _residuals(
-    recovery: FluxRecovery, field: Field
-) -> list[tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]]:
-    """Per real / imaginary part, the recovered errors of mu^-1 curl E and eps E."""
-    return [
-        (
-            recovery.curl_residual(ngs.curl(gf)),
-            recovery.flux_residual(recovery.eps * gf),
-        )
-        for gf in _parts(field)
-    ]
+    recovery: FluxRecovery,
+    field: Field,
+    eps: Sequence[ngs.CoefficientFunction],
+) -> tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]]:
+    """The recovered errors of mu^-1 curl E and of eps E, as real parts.
+
+    ``eps`` is real, or complex as its real and imaginary parts
+    (`_effective_eps`).
+    """
+    parts = _parts(field)
+    curl = [recovery.curl_residual(ngs.curl(gf)) for gf in parts]
+    flux = [recovery.flux_residual(v) for v in _times(eps, parts)]
+    return curl, flux
 
 
 def _pair(
     recovery: FluxRecovery,
-    ri: list[tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]],
-    rj: list[tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]],
+    ri: tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]],
+    rj: tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]],
+    eps_inverse: Sequence[ngs.CoefficientFunction],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """c_K and m_K of two fields' recovered errors per tetrahedron, bilinear."""
-    curl = [
-        [recovery.element_integrals(ci * (recovery.mu * cj)) for cj, _ in rj]
-        for ci, _ in ri
-    ]
-    mass = [
-        [recovery.element_integrals(mi * (recovery.eps_inverse * mj)) for _, mj in rj]
-        for _, mi in ri
-    ]
-    return _complex(curl), _complex(mass)
+    """c_K and m_K of two fields' recovered errors (`_residuals`), bilinear."""
+    curl = _bilinear(recovery, ri[0], _times([recovery.mu], rj[0]))
+    mass = _bilinear(recovery, ri[1], _times(eps_inverse, rj[1]))
+    return curl, mass
 
 
 def _complex(table: list[list[Any]]) -> Any:

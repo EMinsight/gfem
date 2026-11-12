@@ -375,6 +375,22 @@ class PortNetwork:
             return np.zeros((len(functional), 0), complex)
         return np.stack(loads, axis=1)
 
+    def nonparallel(
+        self, omega: float, indices: Sequence[int], rhs: np.ndarray
+    ) -> list[int]:
+        """The ports of ``indices`` whose adjoint is not their own solution scaled.
+
+        Those not excited, or whose S functional is not parallel to their
+        excitation ``rhs`` (`parallel_scale`): a hybrid lossy wave port mode.
+        """
+        functional = self.functional(omega)
+        return [
+            i
+            for i in indices
+            if _reciprocal_scale(functional[:, i], i, self.columns, rhs, self.layout)
+            is None
+        ]
+
     def pullback(
         self, n: int, omega: float, ct: np.ndarray, x: np.ndarray
     ) -> CotangentSplit:

@@ -121,33 +121,125 @@ def test_error_estimate_checks_the_key_against_the_result(coax):
         gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=coax)
 
 
-# --- entries with no verification case, before any solve ---------------------
+# --- lossy wave ports: the S entry's adjoint ---------------------------------
 
 
-@pytest.mark.parametrize(
-    ("case", "estimator", "feature"),
-    [
-        ("step-lossy-wave", ("s", ("p2", "p1")), "lossy wave port"),
-    ],
-)
-@pytest.mark.usefixtures("no_solve")
-def test_untested_entries_raise_before_any_solve(step, *, case, estimator, feature):
-    model, problem = {
-        "step-lossy-wave": (
-            _with(
-                step,
-                materials={"dielectric": gfem.Material(eps_r=4.0, tan_delta=1e-3)},
-                ports=_waves(),
-            ),
-            rc.step_problem(),
-        ),
-    }[case]
-    keyword, key = estimator
-    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.refine_mesh(
-            model, problem, estimator=gfem.QuantityEstimator(**{keyword: key})
+@pytest.fixture
+def prepares(monkeypatch):
+    """The operators the linear solver prepares (factorizes, for "direct")."""
+    from gfem import _linalg
+
+    prepared = []
+    original = _linalg.prepare
+
+    def counting(*args, **kwargs):
+        prepared.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(_linalg, "prepare", counting)
+    return prepared
+
+
+def _forced_adjoint(model, result, port):
+    """Port ``port``'s S-functional adjoint, solved whether parallel or not.
+
+    Returns ``(z, c x)``: the adjoint field, and the port's own field times
+    `parallel_scale` (``None`` where the functional is not parallel).
+    """
+    from gfem._engine.driven import DrivenRule
+    from gfem._engine.port_network import parallel_scale
+
+    frequency = float(result.s.frequency[0])
+    omega = 2 * math.pi * frequency
+    rule = DrivenRule(model, gfem.Driven([frequency]), OPTIONS)
+    system, ports = rule._ports(model, warn=False)
+    i = model.port_names.index(port)
+    with system.sweep() as sweep:
+        functional = ports.functional(omega)[:, i]
+        z = sweep.solve(omega, functional[:, None])[0][:, 0]
+        c = parallel_scale(functional, ports.rhs(omega)[:, i])
+    z = system.operator.expand(z)
+    x = dict(zip(result.kept, result.e_fields, strict=True))[frequency, port]
+    own = None if c is None else c * np.asarray(x.coefficients)
+    return dataclasses.replace(x, coefficients=z), own
+
+
+@pytest.mark.parametrize("tan_delta", [0.0, 0.05])
+def test_a_parallel_port_s_estimate_is_its_adjoint_estimate(tmp_path, tan_delta):
+    # A uniform guide's TE10 (lossy or not) is real up to one phase: its S
+    # functional is parallel to its excitation, so the adjoint is the port's
+    # own field scaled and the free-dual estimate is the adjoint estimate.
+    model = rc.lossy_guide_model(tmp_path, 2, "uniform", tan_delta, offset=1e-3)
+    problem = gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    z, own = _forced_adjoint(model, result, "p2")
+    assert own is not None
+    np.testing.assert_allclose(
+        z.coefficients, own, rtol=0, atol=1e-12 * np.abs(own).max()
+    )
+    free = kernels.s_entry(model, result, "p2", "p1")
+    adjoint = kernels.s_entry(
+        model, result, "p2", "p1", adjoints={(rc.LOSSY_GUIDE_FREQUENCY, "p2"): z}
+    )
+    assert adjoint[0][0] == pytest.approx(free[0][0], rel=1e-12)
+    np.testing.assert_allclose(adjoint[0][1], free[0][1], rtol=1e-10)
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_refine_mesh_solves_the_adjoint_with_the_forward(tmp_path, prepares):
+    # A slab's hybrid lossy port mode is not parallel to its excitation: the
+    # S entry needs port p2's adjoint. refine_mesh solves it as one more
+    # right-hand side of its own solve (one factorization); error_estimate
+    # on the finished result factorizes once more, for the same estimate.
+    model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05, offset=1e-3)
+    problem = gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY])
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    refined = gfem.refine_mesh(
+        model, problem, estimator=estimator, max_cycles=0, options=OPTIONS
+    )
+    assert len(prepares) == 1
+    again = gfem.error_estimate(refined.result, estimator, model=refined.model)
+    assert len(prepares) == 2
+    assert again.value == pytest.approx(refined.estimate.value, rel=1e-8)
+    _, own = _forced_adjoint(model, refined.result, "p2")
+    assert own is None
+    free = kernels.s_entry(model, refined.result, "p2", "p1")[0][0]
+    assert abs(free / refined.estimate.value - 1) > 1e-6
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_a_parallel_lossy_port_takes_no_adjoint_solve(tmp_path, prepares):
+    model = rc.lossy_guide_model(tmp_path, 2, "uniform", 0.05)
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    refined = gfem.refine_mesh(
+        model,
+        gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY]),
+        estimator=estimator,
+        max_cycles=0,
+        options=OPTIONS,
+    )
+    assert len(prepares) == 1
+    gfem.error_estimate(refined.result, estimator, model=refined.model)
+    assert len(prepares) == 1
+
+
+def test_the_s_estimate_scales_with_the_lossy_de_embedding(tmp_path):
+    # S_ij = (O_ij - delta_ij) d_i d_j, |d| = exp(alpha offset) > 1 on a
+    # lossy port: the fields stay, the estimate grows by |d_i d_j|.
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    values, d = [], 1.0
+    for offset in (0.0, 1e-3):
+        model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05, offset=offset)
+        result = gfem.solve(
+            model,
+            gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY], keep_fields=True),
+            options=OPTIONS,
         )
-    assert caught.value.feature == feature
+        values.append(gfem.error_estimate(result, estimator, model=model).value)
+        alpha = [float(np.real(result.port_modes[p].gamma[0])) for p in ("p1", "p2")]
+        d = math.exp(sum(alpha) * offset)
+    assert d > 1.01
+    assert values[1] == pytest.approx(values[0] * d, rel=1e-10)
 
 
 @pytest.mark.parametrize(

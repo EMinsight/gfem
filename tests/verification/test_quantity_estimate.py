@@ -26,9 +26,17 @@ Cases and references (none recomputed by the tests but the closed forms):
   of two shared port surfaces: six S entries at 170 GHz on n = 4, 8 against
   `refinement_cases.BLOCK_GUIDE_S` (order 4 on n = 4); n = 2, under two
   cells per wavelength in the block, is pre-asymptotic and not run;
+- lossy guide (`refinement_cases.lossy_guide_model`), tan_delta 0.05 and
+  0.3, wave ports de-embedded by 0 and 1 mm: all four S entries at 170 GHz
+  on n = 4, 8 against `refinement_cases.LOSSY_GUIDE_S` (order 4 on n = 4),
+  the slab's and step's tan_delta 0.3 thru entries on n = 8 left out (their
+  reference is not within 20 % of their error). "uniform" (TE10, parallel:
+  the free dual), "slab" and "step" (a hybrid lossy port mode: the adjoint
+  of port ``to``'s S functional);
 - parallel-plate line between 50 and 30 ohm lumped ports, eps_r 4: S11, S21
   and S22 at 3, 8, 15, 25 GHz on n = 4, 8, 16 cells along the line, against
-  its ABCD closed form;
+  its ABCD closed form; the same with a lossy fill (tan_delta 0.3, or
+  0.1 S/m), against the closed form with complex eps_r ("lossy line");
 - L cavity, singular: f1 over `refine_mesh` cycles 0-8 against
   `refinement_cases.CAVITY_F1` (Trefethen and Betcke);
 - rectangular PEC box 1 x 0.7 x 0.4 mm: modes 110, 210, 101, 310 on
@@ -75,7 +83,11 @@ Measured (ostau, 1 thread):
     step line, lumped     1.65 - 1.81
     step line, wave       1.77
     block guide           3.34 - 8.58
+    lossy uniform guide   2.24 - 14.0
+    lossy slab guide      1.10 - 14.0
+    lossy step guide      1.19 - 17.1
     parallel-plate line   1.65 - 15.75
+    lossy line            1.38 - 15.7   (tan_delta 1.38 - 15.5, sigma 1.56 - 15.7)
     L cavity              2.87 - 4.08
     rectangular box       7.05 - 10.6
     anisotropic coax      1.60 - 2.39
@@ -103,6 +115,7 @@ signed sum floored at a fraction alpha of the magnitude, sums per region,
 and a degree-p recovery.
 """
 
+import cmath
 import math
 
 import numpy as np
@@ -137,6 +150,9 @@ EFFECTIVITY_BY_CASE = {
     "lossy L cavity": (0.9, 5.0),
     "lossy walls": (0.9, 12.0),
     "resistive line": (0.9, 8.0),
+    "lossy uniform guide": (0.9, 20.0),
+    "lossy slab guide": (0.9, 20.0),
+    "lossy step guide": (0.9, 20.0),
 }
 
 #: The range the docs quote: the lowest low and the highest high.
@@ -433,6 +449,52 @@ def test_the_block_guide_s_on_shared_port_surfaces(tmp_path, n):
         _assert_in("shared port surface", estimate.value, error)
 
 
+# --- lossy guide: S on lossy wave ports --------------------------------------
+
+#: Entries (to, from) of the lossy guide: thru first, then reflections.
+LOSSY_GUIDE_ENTRIES = (("p2", "p1"), ("p1", "p2"), ("p1", "p1"), ("p2", "p2"))
+
+
+def _lossy_guide(tmp_path, kind, n, tan_delta, offset):
+    """Assert every entry of the lossy guide ``kind`` against `LOSSY_GUIDE_S`.
+
+    The tan_delta 0.3 thru entries of the slab and step at n = 8 are left
+    out: their reference is within 20 % of their error only at n = 4.
+    """
+    model = rc.lossy_guide_model(tmp_path, n, kind, tan_delta, offset * 1e-3)
+    problem = gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    references = rc.LOSSY_GUIDE_S[kind, tan_delta, offset]
+    for to, source in LOSSY_GUIDE_ENTRIES:
+        if kind != "uniform" and tan_delta == 0.3 and n == 8 and to != source:
+            continue
+        estimator = gfem.QuantityEstimator(s=(to, source))
+        estimate = gfem.error_estimate(result, estimator, model=model)
+        error = complex(result.s[to, source][0]) - references[to, source]
+        _assert_in(f"lossy {kind} guide", estimate.value, error)
+
+
+_LOSSY_GUIDE_CASES = pytest.mark.parametrize(
+    ("n", "tan_delta", "offset"),
+    [(n, t, o) for n in (4, 8) for t in (0.05, 0.3) for o in (0, 1)],
+)
+
+
+@_LOSSY_GUIDE_CASES
+def test_the_lossy_guide_s_with_a_parallel_port_mode(tmp_path, n, tan_delta, offset):
+    _lossy_guide(tmp_path, "uniform", n, tan_delta, offset)
+
+
+@_LOSSY_GUIDE_CASES
+def test_the_lossy_slab_guide_s_with_an_adjoint(tmp_path, n, tan_delta, offset):
+    _lossy_guide(tmp_path, "slab", n, tan_delta, offset)
+
+
+@_LOSSY_GUIDE_CASES
+def test_the_lossy_step_guide_s_with_an_adjoint(tmp_path, n, tan_delta, offset):
+    _lossy_guide(tmp_path, "step", n, tan_delta, offset)
+
+
 # --- parallel-plate line: S, smooth ------------------------------------------
 
 _LINE = {"length": 10e-3, "height": 1e-3, "width": 2e-3, "eps_r": 4.0}
@@ -444,12 +506,13 @@ def _line_s(f, eps_r=_LINE["eps_r"], mu_r=1.0):
     """The line's S matrix between 50 and 30 ohm ports, from its ABCD matrix.
 
     ``eps_r`` and ``mu_r`` are the fill's entries the TEM wave sees: eps_r
-    along the plates' normal z, mu_r along the width y.
+    along the plates' normal z, mu_r along the width y; a complex eps_r
+    (``eps_r (1 - i tan_delta) - i sigma / (omega eps0)``) is a lossy fill.
     """
-    beta = 2 * math.pi * f / const.c * math.sqrt(eps_r * mu_r)
+    beta = 2 * math.pi * f / const.c * cmath.sqrt(eps_r * mu_r)
     eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
-    z0 = eta0 * math.sqrt(mu_r / eps_r) * _LINE["height"] / _LINE["width"]
-    c, s = math.cos(beta * _LINE["length"]), math.sin(beta * _LINE["length"])
+    z0 = eta0 * cmath.sqrt(mu_r / eps_r) * _LINE["height"] / _LINE["width"]
+    c, s = cmath.cos(beta * _LINE["length"]), cmath.sin(beta * _LINE["length"])
     a, b, cc, d = c, 1j * z0 * s, 1j * s / z0, c
     den = a * _R2 + b + cc * _R1 * _R2 + d * _R1
     k = math.sqrt(_R1 * _R2)
@@ -499,6 +562,31 @@ def _line_effectivities(model, result, exact=None):
 @pytest.mark.parametrize("n", [4, 8, 16])
 def test_the_parallel_plate_line_s(tmp_path, n):
     for estimate, error in _line_effectivities(*_line(tmp_path, n)):
+        _assert_in("parallel-plate line", estimate, error)
+
+
+#: The line's lossy fills: (material, its complex eps_r at a frequency).
+LOSSY_LINE_FILLS = {
+    "tan_delta": (
+        gfem.Material(eps_r=_LINE["eps_r"], tan_delta=0.3),
+        lambda _: _LINE["eps_r"] * (1 - 0.3j),
+    ),
+    "sigma": (
+        gfem.Material(eps_r=_LINE["eps_r"], conductivity=0.1),
+        lambda f: _LINE["eps_r"] - 0.1j / (2 * math.pi * f * const.epsilon_0),
+    ),
+}
+
+
+@pytest.mark.parametrize("n", [4, 8, 16])
+@pytest.mark.parametrize("fill", ["tan_delta", "sigma"])
+def test_the_lossy_line_s(tmp_path, n, fill):
+    # Lumped ports on a lossy fill: the S estimate's mass term recovers
+    # eps_eff E, eps_eff = eps_r (1 - i tan_delta) - i sigma / (omega eps0).
+    material, eps = LOSSY_LINE_FILLS[fill]
+    exact = np.array([_line_s(f, eps(f)) for f in LINE_FREQUENCIES])
+    model, result = _line(tmp_path, n, material=material)
+    for estimate, error in _line_effectivities(model, result, exact):
         _assert_in("parallel-plate line", estimate, error)
 
 

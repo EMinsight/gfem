@@ -43,6 +43,13 @@ Two more cases, not singular at a re-entrant corner:
   with a magnetic or anisotropic fill, `ANISOTROPIC_BOX`. The "iso_mu" and
   "diag" fills have a closed form; for "rot3" and "layer_mu" the references
   are `ANISOTROPIC_BOX_F`, order-4 solves on the m = 2 mesh.
+- Lossy guide, `lossy_guide_model`: a PEC guide 4 mm long (x), 2 x 0.8 mm
+  (y, z), wave ports "p1" and "p2" at its ends, at `LOSSY_GUIDE_FREQUENCY`.
+  "uniform" fills it with a lossy vacuum (TE10, its S functional parallel
+  to its excitation); "slab" puts a lossy eps_r 4 slab under y = 1 mm along
+  its length (a hybrid lossy port mode, not parallel); "step" widens that
+  slab to y < 1.5 mm from x = 2 mm on. References `LOSSY_GUIDE_S`, order 4
+  on the n = 4 mesh with the same offsets.
 
 Tests never recompute the references. Provenance: the coax and step values
 are Richardson extrapolations (alpha = 4/3) of uniform order-2 runs, coax
@@ -200,6 +207,89 @@ BLOCK_GUIDE_S = {
     ("a2", "a2"): 0.1262016 - 0.7003084j,
 }
 
+#: The lossy guide's frequency, Hz: TE10 propagates, TE20 does not.
+LOSSY_GUIDE_FREQUENCY = 170e9
+#: The lossy guide's S entries (to, from), keyed (kind, tan_delta, offset of
+#: both ports in mm): order 4 on the n = 4 mesh (adaptive-refinement
+#: follow-ups probe 12). An order-3 solve on n = 6 meets them to 1e-6
+#: (uniform) and 2e-4 (slab, step), under 20 % of the order-2 error of every
+#: entry the tests use; the tan_delta 0.3 thru entries of slab and step at
+#: n = 8 are above that and not used.
+LOSSY_GUIDE_S = {
+    ("uniform", 0.05, 0): {
+        ("p2", "p1"): 0.6549341658 - 0.1545045333j,
+        ("p1", "p2"): 0.6549341658 - 0.1545045333j,
+        ("p1", "p1"): -0.0027973552 + 0.0091826709j,
+        ("p2", "p2"): -0.0027973552 + 0.0091826709j,
+    },
+    ("uniform", 0.05, 1): {
+        ("p2", "p1"): 0.8150705911 - 0.0948174733j,
+        ("p1", "p2"): 0.8150705911 - 0.0948174733j,
+        ("p1", "p1"): -0.0046827863 + 0.0107281798j,
+        ("p2", "p2"): -0.0046827863 + 0.0107281798j,
+    },
+    ("uniform", 0.3, 0): {
+        ("p2", "p1"): 0.0891372791 - 0.0416226583j,
+        ("p1", "p2"): 0.0891372791 - 0.0416226583j,
+        ("p1", "p1"): 0.0073199509 + 0.0901872005j,
+        ("p2", "p2"): 0.0073199509 + 0.0901872005j,
+    },
+    ("uniform", 0.3, 1): {
+        ("p2", "p1"): 0.3099134668 - 0.0685522195j,
+        ("p1", "p2"): 0.3099134668 - 0.0685522195j,
+        ("p1", "p1"): -0.0402122290 + 0.2891572358j,
+        ("p2", "p2"): -0.0402122290 + 0.2891572358j,
+    },
+    ("slab", 0.05, 0): {
+        ("p2", "p1"): 0.1391315192 - 0.4504759364j,
+        ("p1", "p2"): 0.1392483630 - 0.4504398195j,
+        ("p1", "p1"): -0.0016203356 + 0.0168414211j,
+        ("p2", "p2"): -0.0016203313 + 0.0168417900j,
+    },
+    ("slab", 0.05, 1): {
+        ("p2", "p1"): 0.5527070920 - 0.4077918410j,
+        ("p1", "p2"): 0.5528128391 - 0.4076484465j,
+        ("p1", "p1"): -0.0164649478 + 0.0183428585j,
+        ("p2", "p2"): -0.0164652618 + 0.0183432947j,
+    },
+    ("slab", 0.3, 0): {
+        ("p2", "p1"): -0.0005324469 - 0.0117754010j,
+        ("p1", "p2"): -0.0005141147 - 0.0117762162j,
+        ("p1", "p1"): 0.0068112483 + 0.0839707675j,
+        ("p2", "p2"): 0.0068114282 + 0.0839710285j,
+    },
+    ("slab", 0.3, 1): {
+        ("p2", "p1"): 0.0758057075 - 0.0792812897j,
+        ("p1", "p2"): 0.0759290422 - 0.0791631858j,
+        ("p1", "p1"): -0.5211950332 + 0.5856389582j,
+        ("p2", "p2"): -0.5211956334 + 0.5856418469j,
+    },
+    ("step", 0.05, 0): {
+        ("p2", "p1"): -0.1168939451 - 0.3990112088j,
+        ("p1", "p2"): -0.0838297827 - 0.4084525667j,
+        ("p1", "p1"): -0.0017797940 + 0.0191893159j,
+        ("p2", "p2"): -0.0178326019 - 0.0264509073j,
+    },
+    ("step", 0.05, 1): {
+        ("p2", "p1"): 0.3518543715 - 0.4895479334j,
+        ("p1", "p2"): 0.3921407127 - 0.4601728133j,
+        ("p1", "p1"): -0.0186824711 + 0.0209575285j,
+        ("p2", "p2"): 0.0255207393 - 0.0383163218j,
+    },
+    ("step", 0.3, 0): {
+        ("p2", "p1"): -0.0029550764 + 0.0032810485j,
+        ("p1", "p2"): -0.0043567268 + 0.0019937294j,
+        ("p1", "p1"): 0.0068027220 + 0.0840269645j,
+        ("p2", "p2"): 0.0103244163 + 0.0993725874j,
+    },
+    ("step", 0.3, 1): {
+        ("p2", "p1"): -0.0380443766 + 0.0234107314j,
+        ("p1", "p2"): -0.0479742177 + 0.0069164433j,
+        ("p1", "p1"): -0.5216279567 + 0.5859428563j,
+        ("p2", "p2"): 0.3661330586 + 1.0359589494j,
+    },
+}
+
 _EPS_R = 4.0
 _QUARTER = 0.5e-6 / 4  # the coax model's extrusion over the full coax's 4 quarters
 
@@ -306,6 +396,50 @@ def block_guide_model(directory: Path, n: int) -> gfem.Model:
                 ("b1", "port2", 1),
                 ("b2", "port2", 2),
             )
+        ],
+    )
+
+
+def lossy_guide_model(
+    directory: Path, n: int, kind: str, tan_delta: float, offset: float = 0.0
+) -> gfem.Model:
+    """The lossy guide, in mm, ``n`` cells per mm (see the module docstring).
+
+    ``kind`` is "uniform", "slab" or "step"; every material has
+    ``tan_delta``; both wave ports are de-embedded by ``offset`` (m).
+    """
+    length, width, height = 4.0, 2.0, 0.8
+    edges = (
+        np.linspace(0, length, int(length * n) + 1),
+        np.linspace(0, width, int(width * n) + 1),
+        np.linspace(0, height, max(2, int(height * n)) + 1),
+    )
+
+    def volume(c: np.ndarray) -> str:
+        top = 1.5 if kind == "step" and c[0] >= 2.0 else 1.0
+        return "slab" if kind != "uniform" and c[1] < top else "fill"
+
+    def surface(c: np.ndarray) -> str:
+        if abs(c[0]) < 1e-9:
+            return "port1"
+        if abs(c[0] - length) < 1e-9:
+            return "port2"
+        walls = (abs(c[1]) < 1e-9, abs(c[1] - width) < 1e-9)
+        walls += (abs(c[2]) < 1e-9, abs(c[2] - height) < 1e-9)
+        return "wall" if any(walls) else ""
+
+    cells = sm.structured(edges, volume, surface)
+    mesh = _mesh(directory, f"lossy_{kind}{n}", cells, "mm")
+    materials = {"fill": gfem.Material(tan_delta=tan_delta)}
+    if kind != "uniform":
+        materials["slab"] = gfem.Material(eps_r=4.0, tan_delta=tan_delta)
+    return gfem.Model(
+        mesh,
+        materials=materials,
+        boundaries=[gfem.PEC("wall")],
+        ports=[
+            gfem.WavePort("p1", "port1", offset=offset),
+            gfem.WavePort("p2", "port2", offset=offset),
         ],
     )
 
