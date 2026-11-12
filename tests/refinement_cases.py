@@ -27,6 +27,14 @@ Two more cases, not singular at a re-entrant corner:
   fitted per entry (C_aa 1.32, C_ab 0.98: the sheet's tip dominates the
   off-diagonal entry), within `SHEET_C_BOUND` (relative) of the
   extrapolation from n = 8, 16, 32.
+- Two bars, `bars_model`: bars "a" and "b" in a grounded box
+  (`structured_meshes.two_bars`), `BARS_PROBLEM`, the off-diagonal entry
+  C_ab: "near" (strongly coupled, |C_ab / C_aa| = 0.09) and "screen" (a
+  grounded fin between unequal offset bars, 0.0014). Every bar corner is
+  re-entrant (C converges at h^(4/3)). References `BARS_C_AB` (F),
+  Richardson extrapolations (alpha = 4/3) of uniform order-2 n = 32 and 64
+  (fitted alpha 1.334 and 1.318), within `BARS_C_AB_BOUND` (relative) of
+  the n = 16, 32 pair and of a mesh graded 3 towards the corners.
 - Anisotropic coax, `anisotropic_coax_model`: the circular coax quarter
   (`structured_meshes.coax_quarter`, radii 1 and 2 um, extruded 0.5 um)
   filled with eps_r (2, 5, 3) along rotated axes, `ANISOTROPIC_COAX`; its
@@ -119,6 +127,11 @@ SHEET_C = ((4.08621e-17, -1.39274e-19), (-1.39274e-19, 4.19939e-17))
 #: Relative bound of each `SHEET_C` entry.
 SHEET_C_BOUND = ((6e-6, 1.5e-4), (1.5e-4, 6e-6))
 
+#: The two-bars cases' C_ab, F (`structured_meshes.two_bars`, `BARS_PROBLEM`).
+BARS_C_AB = {"near": -3.760064826e-18, "screen": -5.618272068e-20}
+#: Relative bound of each `BARS_C_AB` entry.
+BARS_C_AB_BOUND = {"near": 2e-6, "screen": 2e-5}
+
 
 def _rotation(axis: str, degrees: float) -> np.ndarray:
     t = np.radians(degrees)
@@ -140,6 +153,20 @@ ANISOTROPIC_COAX = {
     for name, r in (("rotz", _rotation("z", 30)), ("rot3", _ROT3))
 }
 
+#: The block guide's frequency, Hz: TE10 and TE20 propagate in the air guide.
+BLOCK_GUIDE_FREQUENCY = 170e9
+#: The block guide's S entries (to, from) at `BLOCK_GUIDE_FREQUENCY`: order 4
+#: on the n = 4 mesh, which an order-3 solve on n = 6 meets to 6.4e-5 (3-7 %
+#: of the order-2 error at n = 8).
+BLOCK_GUIDE_S = {
+    ("b1", "a1"): -0.7079432 + 0.3847732j,
+    ("b2", "a2"): 0.5864315 + 0.1803482j,
+    ("b2", "a1"): -0.1076877 + 0.2060751j,
+    ("a2", "a1"): -0.2027340 + 0.1480379j,
+    ("a1", "a1"): 0.2856943 + 0.3897492j,
+    ("a2", "a2"): 0.1262016 - 0.7003084j,
+}
+
 _EPS_R = 4.0
 _QUARTER = 0.5e-6 / 4  # the coax model's extrusion over the full coax's 4 quarters
 
@@ -147,6 +174,7 @@ COAX_PROBLEM = gfem.Electrostatic(terminals={"inner": "inner"}, ground="outer")
 SHEET_PROBLEM = gfem.Electrostatic(
     terminals={"a": "a", "b": "b"}, ground=["box", "fin"]
 )
+BARS_PROBLEM = gfem.Electrostatic(terminals={"a": "a", "b": "b"}, ground="box")
 CAVITY_PROBLEM = gfem.Eigenmode(target=CAVITY_F1, n_modes=1)
 
 
@@ -180,11 +208,60 @@ def sheet_model(directory: Path, n: int) -> gfem.Model:
     return gfem.Model(mesh, materials={"left": vacuum, "right": vacuum})
 
 
+def bars_model(directory: Path, case: str, n: int) -> gfem.Model:
+    """A two-bars case (``"near"`` or ``"screen"``), in um, vacuum."""
+    mesh = _mesh(directory, "bars", sm.two_bars(case, n), "um")
+    return gfem.Model(mesh, materials={"dielectric": gfem.Material()})
+
+
 def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:
     """The circular coax quarter, 2k cells across, 4k around, filled with ``fill``."""
     cells = sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k)
     mesh = _mesh(directory, "coax", cells, "um")
     return gfem.Model(mesh, materials={"dielectric": ANISOTROPIC_COAX[fill]})
+
+
+def block_guide_model(directory: Path, n: int) -> gfem.Model:
+    """The block guide, in mm, ``n`` cells per mm, two modes per port surface.
+
+    An air guide 4 mm long (x), 2 x 0.8 mm (y, z), PEC walls, with an eps_r 4
+    block at x 1.5-2.5 and y 0-1 mm through its height; wave ports "a1",
+    "a2" (TE10, TE20) on "port1" at x = 0 and "b1", "b2" on "port2".
+    """
+    length, width, height = 4.0, 2.0, 0.8
+    edges = (
+        np.linspace(0, length, int(length * n) + 1),
+        np.linspace(0, width, int(width * n) + 1),
+        np.linspace(0, height, max(2, int(height * n)) + 1),
+    )
+
+    def volume(c: np.ndarray) -> str:
+        return "block" if 1.5 < c[0] < 2.5 and c[1] < 1.0 else "air"
+
+    def surface(c: np.ndarray) -> str:
+        if abs(c[0]) < 1e-9:
+            return "port1"
+        if abs(c[0] - length) < 1e-9:
+            return "port2"
+        walls = (abs(c[1]) < 1e-9, abs(c[1] - width) < 1e-9)
+        walls += (abs(c[2]) < 1e-9, abs(c[2] - height) < 1e-9)
+        return "wall" if any(walls) else ""
+
+    mesh = _mesh(directory, "guide", sm.structured(edges, volume, surface), "mm")
+    return gfem.Model(
+        mesh,
+        materials={"air": gfem.Material(), "block": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("wall")],
+        ports=[
+            gfem.WavePort(name, surface, mode=mode)
+            for name, surface, mode in (
+                ("a1", "port1", 1),
+                ("a2", "port1", 2),
+                ("b1", "port2", 1),
+                ("b2", "port2", 2),
+            )
+        ],
+    )
 
 
 def step_model(

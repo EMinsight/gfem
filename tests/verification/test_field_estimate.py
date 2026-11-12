@@ -34,10 +34,14 @@ order-5 solve on the same mesh. The recovery's constraint on the natural
 surfaces (ADR 0087) is what keeps this estimate above the error: without it
 the estimate measured 0.45 times the error.
 
-Each case's effectivity must lie in its range of `FIELD_EFFECTIVITY_BY_CASE`;
-`FIELD_EFFECTIVITY` (the lowest low and the highest high) is the range the
-docs quote. The step line's proxy ratio is not an effectivity and is
-asserted on its own.
+Each case's effectivity must lie in its range of `FIELD_EFFECTIVITY_BY_CASE`
+at order 2, and of `FIELD_EFFECTIVITY_ORDER_3_BY_CASE` at order 3 (the
+circular coax against an order-6 solve there); `FIELD_EFFECTIVITY` (the
+lowest low and the highest high over both) is the range the docs quote. The
+step line's proxy ratio is not an effectivity and is asserted on its own.
+At order 1 both estimators refuse: there the L cavity's frequency, on its one
+cell across the thickness, moved away from the exact one under refinement,
+and the estimate measured 0.77 times the error.
 
 Measured (order 2, direct, ostau, 1 thread):
 
@@ -54,6 +58,16 @@ Measured (order 2, direct, ostau, 1 thread):
                                         0.94, 0.94, 0.94 (exact circle)
     anisotropic coax, k = 1, 2, 4, 8    1.28, 1.39, 1.48, 1.54 (rotz)
                                         1.27, 1.38, 1.47, 1.51 (rot3)
+
+Measured (order 3, direct, ostau, 1 thread):
+
+    square coax, n = 2, 4, 8            1.25, 1.29, 1.31
+    step line, n = 2, 4, 8              0.881, 0.886, 0.886 (proxy)
+    L cavity, n = 4, 8                  0.940, 0.923
+    parallel-plate line, n = 4, 16      1.83, 1.84; 1.57, 1.63 (3 and 8 GHz)
+    PEC box TM110, m = 1, 2             1.56, 1.70
+    circular coax, k = 2, 4             1.38, 1.39 (own facets, order 6)
+                                        0.69, 0.70 (exact circle)
 """
 
 import math
@@ -68,6 +82,7 @@ from scipy.special import roots_jacobi
 import gfem
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
+ORDER_3 = gfem.SolverOptions(order=3, linear_solver="direct")
 
 #: Asserted field effectivity range per case (measured, with margin).
 FIELD_EFFECTIVITY_BY_CASE = {
@@ -79,16 +94,36 @@ FIELD_EFFECTIVITY_BY_CASE = {
     "anisotropic coax": (0.9, 1.8),
 }
 
-#: The range the docs quote: the lowest low and the highest high.
+#: Asserted field effectivity range per case at order 3 (measured, with margin).
+FIELD_EFFECTIVITY_ORDER_3_BY_CASE = {
+    "square coax": (0.9, 1.6),
+    "circular coax": (0.9, 1.6),
+    "L cavity": (0.9, 1.5),
+    "parallel-plate line": (0.9, 2.0),
+    "rectangular box": (0.9, 2.0),
+}
+
+#: The range the docs quote: the lowest low and the highest high, both orders.
 FIELD_EFFECTIVITY = (
-    min(low for low, _ in FIELD_EFFECTIVITY_BY_CASE.values()),
-    max(high for _, high in FIELD_EFFECTIVITY_BY_CASE.values()),
+    min(
+        low
+        for ranges in (FIELD_EFFECTIVITY_BY_CASE, FIELD_EFFECTIVITY_ORDER_3_BY_CASE)
+        for low, _ in ranges.values()
+    ),
+    max(
+        high
+        for ranges in (FIELD_EFFECTIVITY_BY_CASE, FIELD_EFFECTIVITY_ORDER_3_BY_CASE)
+        for _, high in ranges.values()
+    ),
 )
 
 
-def _assert_in(case, estimate, error):
-    low, high = FIELD_EFFECTIVITY_BY_CASE[case]
-    assert low <= estimate / error <= high, (case, estimate / error)
+def _assert_in(case, estimate, error, order=2):
+    ranges = (
+        FIELD_EFFECTIVITY_BY_CASE if order == 2 else FIELD_EFFECTIVITY_ORDER_3_BY_CASE
+    )
+    low, high = ranges[case]
+    assert low <= estimate / error <= high, (case, order, estimate / error)
 
 
 def _energy_error(result: gfem.ElectrostaticResult) -> float:
@@ -115,6 +150,14 @@ def uniform(tmp_path_factory):
 def test_field_estimator_effectivity_is_near_one_on_uniform_meshes(uniform, n):
     _, result, estimate = uniform[n]
     _assert_in("square coax", estimate.value, _energy_error(result))
+
+
+@pytest.mark.parametrize("n", [2, 4, 8])
+def test_the_square_coax_effectivity_at_order_3(tmp_path, n):
+    model = rc.coax_model(tmp_path, n)
+    result = gfem.solve(model, rc.COAX_PROBLEM, options=ORDER_3)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    _assert_in("square coax", estimate.value, _energy_error(result), order=3)
 
 
 def test_mesh_refinement_reaches_the_uniform_error_with_a_fifth_of_its_dofs(uniform):
@@ -191,6 +234,23 @@ def test_the_step_line_effectivity_is_flat(step_uniform, n):
 def test_the_cavity_effectivity_is_near_one(cavity_uniform, n):
     result, estimate = cavity_uniform[n]
     _assert_in("L cavity", estimate.value, _cavity_error(result))
+
+
+@pytest.mark.parametrize("n", [2, 4, 8])
+def test_the_step_line_effectivity_is_flat_at_order_3(tmp_path, n):
+    problem = gfem.Driven(list(rc.STEP_S), keep_fields=True)
+    model = rc.step_model(tmp_path, n)
+    result = gfem.solve(model, problem, options=ORDER_3)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    assert 0.7 < _rms(estimate) / _step_proxy(result) < 1.2
+
+
+@pytest.mark.parametrize("n", [4, 8])
+def test_the_cavity_effectivity_at_order_3(tmp_path, n):
+    model = rc.cavity_model(tmp_path, n)
+    result = gfem.solve(model, rc.CAVITY_PROBLEM, options=ORDER_3)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    _assert_in("L cavity", estimate.value, _cavity_error(result), order=3)
 
 
 def _adaptive(model, problem, max_tetrahedra):
@@ -297,8 +357,7 @@ def _model(tmp_path, cells, unit, **kwargs):
     return gfem.Model(gfem.Mesh.from_gmsh(path, length_unit=unit), **kwargs)
 
 
-@pytest.mark.parametrize("n", [4, 8, 16])
-def test_the_field_effectivity_on_a_parallel_plate_line(tmp_path, n):
+def _parallel_plate_line(tmp_path, n, options):
     model = _model(
         tmp_path,
         sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1)),
@@ -312,16 +371,25 @@ def test_the_field_effectivity_on_a_parallel_plate_line(tmp_path, n):
     )
     frequencies = (3e9, 8e9)
     problem = gfem.Driven(list(frequencies), excite="p1", keep_fields=True)
-    result = gfem.solve(model, problem, options=OPTIONS)
+    result = gfem.solve(model, problem, options=options)
     estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
     for f, value in zip(frequencies, estimate.values, strict=True):
         field = result.e_field(f, "p1")
         true = _relative_energy_error(field, *_line_wave(f), _LINE["eps_r"])
-        _assert_in("parallel-plate line", value, true)
+        _assert_in("parallel-plate line", value, true, order=options.order)
 
 
-@pytest.mark.parametrize("m", [1, 2, 3])
-def test_the_field_effectivity_on_a_pec_box_mode(tmp_path, m):
+@pytest.mark.parametrize("n", [4, 8, 16])
+def test_the_field_effectivity_on_a_parallel_plate_line(tmp_path, n):
+    _parallel_plate_line(tmp_path, n, OPTIONS)
+
+
+@pytest.mark.parametrize("n", [4, 16])
+def test_the_field_effectivity_on_a_parallel_plate_line_at_order_3(tmp_path, n):
+    _parallel_plate_line(tmp_path, n, ORDER_3)
+
+
+def _pec_box_mode(tmp_path, m, options):
     a, b = 1e-3, 0.7e-3  # the box is 0.4 mm high; TM110 does not vary along z
     model = _model(
         tmp_path,
@@ -331,7 +399,7 @@ def test_the_field_effectivity_on_a_pec_box_mode(tmp_path, m):
         boundaries=[gfem.PEC(s) for s in ("bottom", "top", "side")],
     )
     f110 = const.c / 2 * math.hypot(1 / a, 1 / b)
-    result = gfem.solve(model, gfem.Eigenmode(target=f110, n_modes=1), options=OPTIONS)
+    result = gfem.solve(model, gfem.Eigenmode(target=f110, n_modes=1), options=options)
     estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
 
     def exact(x):
@@ -348,34 +416,58 @@ def test_the_field_effectivity_on_a_pec_box_mode(tmp_path, m):
         return out
 
     true = _relative_energy_error(result.e_fields[0], exact, exact_curl, 1.0, fit=True)
-    _assert_in("rectangular box", estimate.value, true)
+    _assert_in("rectangular box", estimate.value, true, order=options.order)
+
+
+@pytest.mark.parametrize("m", [1, 2, 3])
+def test_the_field_effectivity_on_a_pec_box_mode(tmp_path, m):
+    _pec_box_mode(tmp_path, m, OPTIONS)
+
+
+@pytest.mark.parametrize("m", [1, 2])
+def test_the_field_effectivity_on_a_pec_box_mode_at_order_3(tmp_path, m):
+    _pec_box_mode(tmp_path, m, ORDER_3)
 
 
 ORDER_5 = gfem.SolverOptions(order=5, linear_solver="direct")
+ORDER_6 = gfem.SolverOptions(order=6, linear_solver="direct")
+_CIRCLE_C = math.pi * const.epsilon_0 * 0.5e-6 / (2 * math.log(2.0))  # a quarter
 
 
-def _coax_case(model):
-    """(C, its field estimate, C of an order-5 solve on the same mesh)."""
-    result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
+def _coax_case(model, options=OPTIONS, reference=ORDER_5):
+    """(C, its field estimate, C of a higher-order solve on the same mesh)."""
+    result = gfem.solve(model, rc.COAX_PROBLEM, options=options)
     estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
-    fine = gfem.solve(model, rc.COAX_PROBLEM, options=ORDER_5)
+    fine = gfem.solve(model, rc.COAX_PROBLEM, options=reference)
     c, c5 = float(result.capacitance[0, 0]), float(fine.capacitance[0, 0])
     return c, estimate.value, c5
+
+
+def _circular_coax_model(directory, k):
+    return _model(
+        directory,
+        sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k),
+        "um",
+        materials={"dielectric": gfem.Material()},
+    )
 
 
 @pytest.fixture(scope="module")
 def circular_coax(tmp_path_factory):
     """Per k: the circular coax quarter's `_coax_case`."""
+    return {
+        k: _coax_case(_circular_coax_model(tmp_path_factory.mktemp(f"circular{k}"), k))
+        for k in (2, 4, 8)
+    }
+
+
+@pytest.fixture(scope="module")
+def circular_coax_order_3(tmp_path_factory):
+    """Per k: the order-3 `_coax_case`, against an order-6 solve."""
     out = {}
-    for k in (2, 4, 8):
-        directory = tmp_path_factory.mktemp(f"circular{k}")
-        model = _model(
-            directory,
-            sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k),
-            "um",
-            materials={"dielectric": gfem.Material()},
-        )
-        out[k] = _coax_case(model)
+    for k in (2, 4):
+        model = _circular_coax_model(tmp_path_factory.mktemp(f"circular3_{k}"), k)
+        out[k] = _coax_case(model, ORDER_3, ORDER_6)
     return out
 
 
@@ -390,8 +482,21 @@ def test_the_field_estimate_does_not_see_the_faceting(circular_coax, k):
     # Against the true circle the error includes the faceting, which mesh
     # refinement never removes: the estimate stays below that error.
     c, estimate, _ = circular_coax[k]
-    exact = math.pi * const.epsilon_0 * 0.5e-6 / (2 * math.log(2.0))  # a quarter
-    assert estimate / math.sqrt((c - exact) / exact) < 1.0
+    assert estimate / math.sqrt((c - _CIRCLE_C) / _CIRCLE_C) < 1.0
+
+
+@pytest.mark.parametrize("k", [2, 4])
+def test_the_field_effectivity_on_a_circular_coax_at_order_3(circular_coax_order_3, k):
+    c, estimate, c6 = circular_coax_order_3[k]
+    _assert_in("circular coax", estimate, math.sqrt((c - c6) / c6), order=3)
+
+
+@pytest.mark.parametrize("k", [2, 4])
+def test_the_field_estimate_does_not_see_the_faceting_at_order_3(
+    circular_coax_order_3, k
+):
+    c, estimate, _ = circular_coax_order_3[k]
+    assert estimate / math.sqrt((c - _CIRCLE_C) / _CIRCLE_C) < 1.0
 
 
 @pytest.mark.parametrize("fill", list(rc.ANISOTROPIC_COAX))

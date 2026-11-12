@@ -16,6 +16,7 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
+from gfem._engine import estimate as kernels
 from gfem.refinement import _dorfler
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
@@ -132,8 +133,6 @@ def test_error_estimate_checks_the_key_against_the_result(coax):
             "anisotropic permittivity",
         ),
         ("step-mu", ("s", ("p2", "p1")), "permeability"),
-        ("step-deembedded", ("s", ("p2", "p1")), "de-embedding"),
-        ("step-shared", ("s", ("p2", "p1")), "shared port surface"),
         ("step-lossy-wave", ("s", ("p2", "p1")), "lossy wave port"),
     ],
 )
@@ -148,21 +147,6 @@ def test_untested_entries_raise_before_any_solve(
         ),
         "step-mu": (
             _with(step, materials={"dielectric": gfem.Material(eps_r=4.0, mu_r=2.0)}),
-            rc.step_problem(),
-        ),
-        "step-deembedded": (
-            _with(step, ports=_waves(offset=1e-3)),
-            rc.step_problem(),
-        ),
-        "step-shared": (
-            _with(
-                step,
-                ports=[
-                    gfem.WavePort("p1", "port1"),
-                    gfem.WavePort("p2", "port2"),
-                    gfem.WavePort("p3", "port2", mode=2),
-                ],
-            ),
             rc.step_problem(),
         ),
         "step-lossy-wave": (
@@ -182,18 +166,6 @@ def test_untested_entries_raise_before_any_solve(
     assert caught.value.feature == feature
 
 
-@pytest.mark.usefixtures("no_solve")
-def test_an_off_diagonal_capacitance_raises_before_any_solve(coax):
-    problem = gfem.Electrostatic(terminals=["inner", "outer"])
-    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.refine_mesh(
-            coax,
-            problem,
-            estimator=gfem.QuantityEstimator(capacitance=("inner", "outer")),
-        )
-    assert caught.value.feature == "off-diagonal capacitance"
-
-
 def test_a_lossless_wave_port_s_entry_is_estimated(step):
     model = _with(step, ports=_waves())
     result = gfem.solve(model, gfem.Driven([3e9], keep_fields=True), options=OPTIONS)
@@ -201,6 +173,20 @@ def test_a_lossless_wave_port_s_entry_is_estimated(step):
         result, gfem.QuantityEstimator(s=("p2", "p1")), model=model
     )
     assert 0 < estimate.value < 1e-2
+
+
+def test_a_de_embedding_offset_leaves_the_s_estimate_unchanged(step):
+    # The offset multiplies S by exp(i beta offset) after the solve, of
+    # modulus 1 on a lossless port: the fields and the estimate stay.
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    values = []
+    for offset in (0.0, 1e-3):
+        model = _with(step, ports=_waves(offset=offset))
+        result = gfem.solve(
+            model, gfem.Driven([3e9], keep_fields=True), options=OPTIONS
+        )
+        values.append(gfem.error_estimate(result, estimator, model=model).value)
+    assert values[1] == pytest.approx(values[0], rel=1e-12)
 
 
 # --- reading a result --------------------------------------------------------
@@ -217,6 +203,34 @@ def test_the_capacitance_estimate_is_the_squared_field_estimate(coax):
     assert quantity.estimator == estimator
     # and it marks the same tetrahedra: its indicators are the field estimator's
     np.testing.assert_allclose(quantity.indicators, field.indicators, rtol=1e-10)
+
+
+def test_the_diagonal_capacitance_kernel_is_the_field_kernel_bit_for_bit(coax):
+    # The (i, j) kernel at i = j is the diagonal estimate it replaced: the
+    # field estimator's squared indicators of that terminal's potential.
+    problem = gfem.Electrostatic(terminals=["inner", "outer"])
+    result = gfem.solve(coax, problem, options=OPTIONS)
+    (group,) = kernels.electrostatic(coax, result)
+    for index, terminal in enumerate(("inner", "outer")):
+        value, weights = kernels.capacitance(coax, result, terminal, terminal)
+        assert value == float(group[index].sum())
+        np.testing.assert_array_equal(weights, group[index])
+
+
+def test_an_off_diagonal_capacitance_is_estimated(tmp_path):
+    model = rc.sheet_model(tmp_path, 2)
+    result = gfem.solve(model, rc.SHEET_PROBLEM, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(capacitance=("a", "b"))
+    estimate = gfem.error_estimate(result, estimator, model=model)
+    assert 0 < estimate.value < 1
+    assert float(np.sum(estimate.indicators**2)) == pytest.approx(
+        estimate.value, rel=1e-12
+    )
+    # the entry is symmetric, and so is its estimate
+    swapped = gfem.QuantityEstimator(capacitance=("b", "a"))
+    assert gfem.error_estimate(result, swapped, model=model).value == pytest.approx(
+        estimate.value, rel=1e-12
+    )
 
 
 def test_an_s_estimate_has_one_value_per_frequency(step):

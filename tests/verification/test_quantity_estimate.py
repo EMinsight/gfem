@@ -20,6 +20,12 @@ Cases and references (none recomputed by the tests but the closed forms):
   `refinement_cases.STEP_S`;
 - step line, wave ports: S21 at 3 GHz on n = 4 against an order-3 graded
   reference (`STEP_WAVE_S21`);
+- step line, wave ports de-embedded by 1 and 2 mm: the same S21 times the
+  exact TEM phase of the offsets (the estimate is the one without offsets);
+- block guide (`refinement_cases.block_guide_model`), TE10 and TE20 on each
+  of two shared port surfaces: six S entries at 170 GHz on n = 4, 8 against
+  `refinement_cases.BLOCK_GUIDE_S` (order 4 on n = 4); n = 2, under two
+  cells per wavelength in the block, is pre-asymptotic and not run;
 - parallel-plate line between 50 and 30 ohm lumped ports, eps_r 4: S11, S21
   and S22 at 3, 8, 15, 25 GHz on n = 4, 8, 16 cells along the line, against
   its ABCD closed form;
@@ -31,7 +37,13 @@ Cases and references (none recomputed by the tests but the closed forms):
   k = 1, 2, 4, 8: C against an order-5 solve on the same mesh;
 - sheet (`refinement_cases.sheet_model`), the only case cut along an
   interior sheet: C_aa and C_bb on uniform n = 2, 4, 8, 16 and C_aa over
-  `refine_mesh` cycles 0-8, against `refinement_cases.SHEET_C`.
+  `refine_mesh` cycles 0-8, against `refinement_cases.SHEET_C`;
+- sheet, off-diagonal: C_ab on uniform n = 2, 4, 8, 16 against
+  `refinement_cases.SHEET_C`;
+- two bars (`refinement_cases.bars_model`), off-diagonal C_ab against
+  `refinement_cases.BARS_C_AB` (Richardson): "screen" (a grounded fin
+  between the bars, where the entry's terms change sign) over
+  `refine_mesh` cycles 0-8, "near" on uniform n = 2, 4, 8;
 - lossy box: the rectangular box filled with eps_r 4, tan_delta 0.1 and
   5 S/m (as a `Material` and as a `MaterialField` with complex eps_r), its
   four modes on m = 2, against the fill's closed form (complex omega);
@@ -51,11 +63,15 @@ Measured (ostau, 1 thread):
     circular coax         1.43 - 1.47   (faceting: 0.88 - 0.89)
     step line, lumped     1.65 - 1.81
     step line, wave       1.77
+    block guide           3.34 - 8.58
     parallel-plate line   1.65 - 15.75
     L cavity              2.87 - 4.08
     rectangular box       7.05 - 10.6
     anisotropic coax      1.60 - 2.39
     sheet                 1.22 - 1.69
+    sheet, C_ab           1.79 - 2.26
+    two bars, screen      3.70 - 9.55
+    two bars, near        1.66 - 1.71
     lossy box             7.18 - 10.6   (both fills)
     lossy L cavity        2.87 - 4.08
     lossy walls           4.34 - 9.17
@@ -87,11 +103,14 @@ EFFECTIVITY_BY_CASE = {
     "circular coax": (0.9, 2.0),
     "step line, lumped ports": (0.9, 2.5),
     "step line, wave ports": (0.9, 2.5),
+    "shared port surface": (0.9, 12.0),
     "parallel-plate line": (0.9, 17.0),
     "L cavity": (0.9, 5.0),
     "rectangular box": (0.9, 12.0),
     "anisotropic coax": (0.9, 2.5),
     "sheet": (0.9, 2.5),
+    "screen": (0.9, 12.0),
+    "near": (0.9, 2.0),
     "lossy box": (0.9, 12.0),
     "lossy L cavity": (0.9, 5.0),
     "lossy walls": (0.9, 12.0),
@@ -207,7 +226,7 @@ def test_the_anisotropic_coax_capacitance(tmp_path, k, fill):
     # estimate is the kernel's, as error_estimate would report it.
     model = rc.anisotropic_coax_model(tmp_path, k, fill)
     result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
-    estimate, _ = kernels.capacitance(model, result, "inner")
+    estimate, _ = kernels.capacitance(model, result, "inner", "inner")
     fine = gfem.solve(
         model,
         rc.COAX_PROBLEM,
@@ -236,6 +255,17 @@ def test_the_sheet_capacitance_on_uniform_meshes(tmp_path, n):
         _assert_in("sheet", estimate.value, error)
 
 
+@pytest.mark.parametrize("n", [2, 4, 8, 16])
+def test_the_sheet_off_diagonal_capacitance_on_uniform_meshes(tmp_path, n):
+    model = rc.sheet_model(tmp_path, n)
+    result = gfem.solve(model, rc.SHEET_PROBLEM, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(capacitance=("a", "b"))
+    estimate = gfem.error_estimate(result, estimator, model=model)
+    reference = rc.SHEET_C[0][1]
+    error = (float(np.real(result.capacitance[0, 1])) - reference) / reference
+    _assert_in("sheet", estimate.value, error)
+
+
 def test_the_sheet_capacitance_under_mesh_refinement(tmp_path):
     with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
         ref = gfem.refine_mesh(
@@ -249,6 +279,40 @@ def test_the_sheet_capacitance_under_mesh_refinement(tmp_path):
     assert len(ref.cycles) == 9
     for cycle in ref.cycles:
         _assert_in("sheet", cycle.estimate, _sheet_error(cycle.value, 0))
+
+
+# --- two bars: off-diagonal capacitance --------------------------------------
+
+
+def _bars_error(case, capacitance):
+    reference = rc.BARS_C_AB[case]
+    return (float(np.real(capacitance)) - reference) / reference
+
+
+def test_the_screened_off_diagonal_capacitance_under_mesh_refinement(tmp_path):
+    # Two bars partly screened by a grounded fin: the entry's terms change
+    # sign around the fin, and the estimate never lets them cancel.
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            rc.bars_model(tmp_path, "screen", 2),
+            rc.BARS_PROBLEM,
+            estimator=gfem.QuantityEstimator(capacitance=("a", "b")),
+            tolerance=1e-4,
+            max_cycles=8,
+            options=OPTIONS,
+        )
+    assert len(ref.cycles) == 9
+    for cycle in ref.cycles:
+        _assert_in("screen", cycle.estimate, _bars_error("screen", cycle.value))
+
+
+@pytest.mark.parametrize("n", [2, 4, 8])
+def test_the_near_off_diagonal_capacitance_on_uniform_meshes(tmp_path, n):
+    model = rc.bars_model(tmp_path, "near", n)
+    result = gfem.solve(model, rc.BARS_PROBLEM, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(capacitance=("a", "b"))
+    estimate = gfem.error_estimate(result, estimator, model=model)
+    _assert_in("near", estimate.value, _bars_error("near", result.capacitance[0, 1]))
 
 
 # --- step line: S21, singular ------------------------------------------------
@@ -307,6 +371,45 @@ def test_the_step_line_s21_with_wave_ports(tmp_path):
     estimate = gfem.error_estimate(result, S21, model=model)
     error = complex(result.s["p2", "p1"][0]) - STEP_WAVE_S21
     _assert_in("step line, wave ports", estimate.value, error)
+
+
+def test_the_step_line_s21_with_wave_ports_at_an_offset(tmp_path):
+    # The offsets move the reference planes 1 and 2 mm into the line: the
+    # TEM port's beta is exact, so the reference is STEP_WAVE_S21 times
+    # exp(i beta (1 + 2) mm).
+    offsets = (1e-3, 2e-3)
+    lumped = rc.step_model(tmp_path, 4)
+    model = gfem.Model(
+        lumped.mesh,
+        materials=lumped.materials,
+        boundaries=lumped.boundaries,
+        ports=[
+            gfem.WavePort("p1", "port1", offset=offsets[0]),
+            gfem.WavePort("p2", "port2", offset=offsets[1]),
+        ],
+    )
+    problem = gfem.Driven([3e9], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(result, S21, model=model)
+    beta = 2 * math.pi * 3e9 / const.c * math.sqrt(4.0)
+    reference = STEP_WAVE_S21 * np.exp(1j * beta * sum(offsets))
+    error = complex(result.s["p2", "p1"][0]) - reference
+    _assert_in("step line, wave ports", estimate.value, error)
+
+
+# --- block guide: S, two modes on each shared port surface -------------------
+
+
+@pytest.mark.parametrize("n", [4, 8])
+def test_the_block_guide_s_on_shared_port_surfaces(tmp_path, n):
+    model = rc.block_guide_model(tmp_path, n)
+    problem = gfem.Driven([rc.BLOCK_GUIDE_FREQUENCY], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    for (to, source), reference in rc.BLOCK_GUIDE_S.items():
+        estimator = gfem.QuantityEstimator(s=(to, source))
+        estimate = gfem.error_estimate(result, estimator, model=model)
+        error = complex(result.s[to, source][0]) - reference
+        _assert_in("shared port surface", estimate.value, error)
 
 
 # --- parallel-plate line: S, smooth ------------------------------------------
@@ -566,10 +669,14 @@ def test_the_resistive_line_resonances(tmp_path, n):
 # --- order 3 -----------------------------------------------------------------
 
 
-# Expected out of range: at order 3 the parallel-plate line measured 2.9 to
-# 18.1 (n = 4, 8; the top at 8 GHz, n = 8), above `EFFECTIVITY`, so the docs
-# claim the range for order 2 only. These ranges are not part of
-# `EFFECTIVITY`; they keep the order-3 behaviour from drifting unseen.
+# A drift fence, not a claim: the docs claim `EFFECTIVITY` at order 2 only,
+# and these ranges are not part of it. At order 3 only the parallel-plate
+# line leaves the order-2 range, at 18.1 on n = 8 (S22, 8 GHz), where order 2
+# also peaks (14.7): the same smooth-field overestimation as at order 2,
+# curl and mass terms the estimate never lets cancel, not an order-3 effect.
+# The box at order 3 lies inside its order-2 range. Recovering into degree p
+# instead of p - 1 (underestimates singular cases, down to 0.51) and a finer
+# quadrature (identical to every printed digit) were measured and rejected.
 #: Asserted order-3 effectivity range per case (measured, with margin).
 ORDER_3_EFFECTIVITY_BY_CASE = {
     "parallel-plate line": (0.9, 25.0),  # measured 2.87-18.1
