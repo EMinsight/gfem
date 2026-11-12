@@ -150,6 +150,11 @@ _REFUSALS = {
     "electric_energy": (
         f"gfem.electric_energy has no distributed path: read Field.at, {_COPIES}."
     ),
+    "error_estimate": (
+        "gfem.error_estimate has no distributed path: estimate a result solved "
+        "on one process, or run independent one-process copies with "
+        "comm=MPI.COMM_SELF."
+    ),
     "mesh refinement": (
         f"Mesh refinement has no distributed path: refine on one process, {_COPIES}, "
         "then solve the refined model on ranks."

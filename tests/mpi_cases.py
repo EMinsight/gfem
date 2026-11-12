@@ -85,13 +85,15 @@ KEYS = (
 )
 
 
-#: What a call other than `gfem.solve` refuses (a method after a solve, or
-#: `gfem.refine_mesh`); `tests/mpi` raises each one on every rank.
+#: What a call other than `gfem.solve` refuses (a method after a solve,
+#: `gfem.error_estimate` or `gfem.refine_mesh`); `tests/mpi` raises each one on
+#: every rank.
 METHOD_KEYS = (
     "field_export",
     "load_result_fields",
     "power_flow",
     "electric_energy",
+    "error_estimate",
     "mesh_refinement",
 )
 #: A guard no public call reaches while Bloch and eigenmode raise, so no page lists it.

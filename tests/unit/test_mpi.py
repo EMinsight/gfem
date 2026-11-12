@@ -1,5 +1,6 @@
 """Launcher resolution and refusals, with no MPI: stub communicators, fake mpi4py."""
 
+import dataclasses
 import math
 import os
 import pickle
@@ -15,6 +16,7 @@ import mpi_cases
 import numpy as np
 import pytest
 import ranks
+import refinement_cases as rc
 
 import gfem
 from gfem import _mpi
@@ -461,6 +463,28 @@ def test_a_field_from_ranks_refuses_export_on_a_stub(tmp_path):
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.electric_energy(piece, model=cases.layered_line(tmp_path))
     assert caught.value.feature == "electric_energy"
+
+
+def test_a_result_from_ranks_refuses_error_estimate_on_a_stub(tmp_path):
+    model = rc.coax_model(tmp_path, 2)
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    result = gfem.solve(model, rc.COAX_PROBLEM, options=options)
+    across = dataclasses.replace(
+        result,
+        potential={
+            name: dataclasses.replace(field, _comm=_mpi.StaticComm(5, Stub(4)))
+            for name, field in result.potential.items()
+        },
+    )
+    for estimator in (
+        gfem.FieldEstimator(),
+        gfem.QuantityEstimator(capacitance=("inner", "inner")),
+    ):
+        with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+            gfem.error_estimate(across, estimator, model=model)
+        assert caught.value.feature == "error_estimate"
+        assert "COMM_SELF" in str(caught.value)
+    gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
 
 
 def test_a_communicator_is_a_static_value_of_a_field(tmp_path):
