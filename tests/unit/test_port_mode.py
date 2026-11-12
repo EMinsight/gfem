@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 import gfem
+from gfem._linalg.superlu import EIGS_TOLERANCE
 
 DATA = Path(__file__).parent / "data"
 C0 = 299792458.0
@@ -726,8 +727,11 @@ def test_port_mode_ignores_solver_choices_it_does_not_use(plate_mesh, options):
     model, problem = plate(plate_mesh), gfem.PortMode("p1", 1e9)
     named = gfem.solve(model, problem, options=gfem.SolverOptions(**options))
     default = gfem.solve(model, problem)
-    # two ARPACK runs differ at rounding (Re gamma ~ 1e-26 against beta ~ 42)
-    np.testing.assert_allclose(named.gamma, default.gamma, rtol=1e-12, atol=0)
+    # two ARPACK runs agree to the eigen tolerance, not to rounding (1.2e-9
+    # measured); Re gamma is a rounding-level 1e-27 against beta ~ 42
+    rtol = 100 * EIGS_TOLERANCE
+    atol = rtol * float(np.abs(default.gamma).max())
+    np.testing.assert_allclose(named.gamma, default.gamma, rtol=rtol, atol=atol)
 
 
 def test_solve_rejects_unknown_problems_and_options(plate_mesh):
