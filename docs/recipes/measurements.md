@@ -103,6 +103,20 @@ p_box = gfem.power_flow(e, "design", model=model)
 - **The model the field was solved with** is a required input: the residual
   reads its materials and boundaries. Pass the same model: gfem does not
   detect a design solved with other `MaterialField` values.
+- **Several ports fed at once.** `power_flow` is quadratic in the field, and
+  the kept fields add up: for incident waves `a1` and `a2` (in sqrt(W)) at two
+  ports, at one frequency,
+
+  ```python
+  e1, e2 = r.e_field(f, excite="p1"), r.e_field(f, excite="p2")
+  both = dataclasses.replace(
+      e1, coefficients=a1 * e1.coefficients + a2 * e2.coefficients
+  )
+  p = gfem.power_flow(both, side, model=model)
+  ```
+
+  is the net power for that excitation. Through a plane in the lead of port 1
+  it is `abs(a1)**2 - abs(b1)**2`, with `b = S @ a` the outgoing waves.
 - **Not differentiable.** `power_flow` inside `jax.grad` raises
   `gfem.NonDifferentiableError`. Build a gradient objective from S or from
   probes instead.
@@ -116,6 +130,40 @@ at roughly ten cells per guided wavelength and falls about as h^1.8; exact
 face quadrature does not remove it. `gfem.power_flow` is exact for the solved
 field.
 :::
+
+## Electric energy per region
+
+`gfem.electric_energy(field, model=model)` is the time-averaged electric energy,
+in J, that a field stores in each volume region of the solve domain,
+`1/4 eps0 ∫ E* · Re(eps_r) E dV`, by region name:
+
+```python
+r = gfem.solve(model, gfem.Driven(frequency=f, keep_fields=True))
+e = r.e_field(f, excite="p1")
+w = gfem.electric_energy(e, model=model)
+# W absorbed by dielectric loss in the substrate, for 1 W incident at p1
+p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
+```
+
+- **Loss per region.** In a region with one loss tangent, dielectric loss
+  absorbs `2 * omega * tan_delta * w[region]`. For a region with nothing else
+  that absorbs, it is the number `-gfem.power_flow(e, region, model=model)`
+  gives.
+- **Time-averaged, on a peak phasor.** Hence the 1/4. A mode of an eigenmode
+  result is normalized to its total energy, twice the time average of the
+  electric part: `2 * w[region]` of `modes.e_field(k)` is
+  `bulk_participation[region][k]` times 1 J.
+- **The model the field was solved with** is a required input, as for
+  `power_flow`: a driven result does not carry its materials.
+- **Not differentiable**, like `power_flow`.
+
+## Move a wave port's reference plane
+
+`result.with_offsets({"p1": 50e-6})` returns the result with S referred to a
+plane 50 um inside the domain at wave port `p1`, from the propagation constants
+the result already holds: no new solve. Distances are absolute, as in
+`WavePort(offset=...)`, so the shifted result equals a solve with that offset,
+and `result.offsets` records the planes S is referred to.
 
 ## Gradients
 
@@ -155,6 +203,6 @@ How gfem itself is checked: {doc}`../verification`.
 ## Next
 
 {py:obj}`gfem.interface_participation`, {py:obj}`gfem.characteristic_impedance`,
-{py:obj}`gfem.power_flow`, {py:obj}`gfem.Field`, {doc}`shared-port-surface`,
+{py:obj}`gfem.power_flow`, {py:obj}`gfem.electric_energy`, {py:obj}`gfem.Field`, {doc}`shared-port-surface`,
 {doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`.
 
