@@ -423,7 +423,9 @@ def _scatter_compiled(out: np.ndarray, scattered: _Scattered) -> bool:
         one[1] = len(at)
         try:
             _csc_matvec(len(out), 1, one, at, values, np.array([w]), out)
-        except TypeError:  # raised before it writes: the rest by numpy
+        # scipy refuses unsupported dtypes (TypeError) and an output dtype the
+        # inputs do not cast to (ValueError) before it writes: the rest by numpy
+        except (TypeError, ValueError):
             _scatter_numpy(out, scattered[i:])
             break
     return True
