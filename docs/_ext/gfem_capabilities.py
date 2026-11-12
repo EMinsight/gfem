@@ -213,6 +213,10 @@ RAISES_LABELS = {
     "probe x node coordinates": (
         "A field value at points (`Field.at`), with respect to node coordinates"
     ),
+    "electric energy of a field": (
+        "The electric energy of a field per region (`electric_energy`), with "
+        "respect to the field or the model"
+    ),
     "driven x wave_vector": (
         "Driven S-parameters, with respect to the Bloch wave vector"
     ),
@@ -509,6 +513,7 @@ REFUSAL_LABELS = {
     "field_export": "`Field.to_meshio`, `Field.to_pyvista`",
     "load_result_fields": "`load_result` of a bundle with fields",
     "power_flow": "`power_flow`",
+    "electric_energy": "`electric_energy`",
     "mesh_refinement": "`refine_mesh`",
 }
 

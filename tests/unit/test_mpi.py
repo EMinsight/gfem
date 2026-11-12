@@ -458,6 +458,9 @@ def test_a_field_from_ranks_refuses_export_on_a_stub(tmp_path):
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.power_flow(piece, "sub", model=cases.layered_line(tmp_path))
     assert caught.value.feature == "power_flow"
+    with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+        gfem.electric_energy(piece, model=cases.layered_line(tmp_path))
+    assert caught.value.feature == "electric_energy"
 
 
 def test_a_communicator_is_a_static_value_of_a_field(tmp_path):

@@ -117,6 +117,32 @@ face quadrature does not remove it. `gfem.power_flow` is exact for the solved
 field.
 :::
 
+## Electric energy per region
+
+`gfem.electric_energy(field, model=model)` is the time-averaged electric energy,
+in J, that a field stores in each volume region of the solve domain,
+`1/4 eps0 ∫ E* · Re(eps_r) E dV`, by region name:
+
+```python
+r = gfem.solve(model, gfem.Driven(frequency=f, keep_fields=True))
+e = r.e_field(f, excite="p1")
+w = gfem.electric_energy(e, model=model)
+# W absorbed by dielectric loss in the substrate, for 1 W incident at p1
+p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
+```
+
+- **Loss per region.** In a region with one loss tangent, dielectric loss
+  absorbs `2 * omega * tan_delta * w[region]`. For a region with nothing else
+  that absorbs, it is the number `-gfem.power_flow(e, region, model=model)`
+  gives.
+- **Time-averaged, on a peak phasor.** Hence the 1/4. A mode of an eigenmode
+  result is normalized to its total energy, twice the time average of the
+  electric part: `2 * w[region]` of `modes.e_field(k)` is
+  `bulk_participation[region][k]` times 1 J.
+- **The model the field was solved with** is a required input, as for
+  `power_flow`: a driven result does not carry its materials.
+- **Not differentiable**, like `power_flow`.
+
 ## Gradients
 
 Probes and interface participation work inside `jax.jit` and `jax.vmap`,
@@ -155,6 +181,6 @@ How gfem itself is checked: {doc}`../verification`.
 ## Next
 
 {py:obj}`gfem.interface_participation`, {py:obj}`gfem.characteristic_impedance`,
-{py:obj}`gfem.power_flow`, {py:obj}`gfem.Field`, {doc}`shared-port-surface`,
+{py:obj}`gfem.power_flow`, {py:obj}`gfem.electric_energy`, {py:obj}`gfem.Field`, {doc}`shared-port-surface`,
 {doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`.
 
