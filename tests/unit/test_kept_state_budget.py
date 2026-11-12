@@ -1,0 +1,240 @@
+"""Kept state counts against ``retain_memory`` (ADRs 0091, 0093).
+
+Kept fixed parts (`KeptParts` stores) and kept port state
+(``Discretization.ports``) count in `EntryCache.nbytes`, each object once, by
+identity. Over budget the walk releases pooled factors, drops kept fixed parts,
+frees pooled plans, then (in `put` only) entries' bases and entries, and last
+drops kept port state. Eviction drops references and keys only.
+"""
+
+import types
+
+import numpy as np
+
+from gfem._engine.cache import Discretization, Entry, EntryCache
+from gfem._linalg.pieces import KeptParts
+
+TOPOLOGY = object()
+
+
+class FakeHandle:
+    def __init__(self, nbytes, *, released_bytes=None, log=None, name=""):
+        self._nbytes = nbytes
+        self._released_bytes = nbytes if released_bytes is None else released_bytes
+        self.released = False
+        self.freed = False
+        self._log, self._name = log, name
+
+    @property
+    def nbytes(self):
+        if self.freed:
+            return 0
+        return self._released_bytes if self.released else self._nbytes
+
+    def release_factors(self):
+        if self._log is not None and not self.released:
+            self._log.append(f"release {self._name}")
+        self.released = True
+
+    def free(self):
+        self.freed = True
+        if self._log is not None:
+            self._log.append(f"free {self._name}")
+
+
+class FakeKept:
+    """An entry's handle that holds a base and references shared arrays."""
+
+    def __init__(self, nbytes, base=None, shared=(), log=None, name=""):
+        self._nbytes = nbytes
+        self.base = base
+        self._shared = list(shared)
+        self._log, self._name = log, name
+
+    @property
+    def nbytes(self):
+        return self._nbytes + (0 if self.base is None else self.base.nbytes)
+
+    def shared(self):
+        return {id(a): a.nbytes for a in self._shared}
+
+    def free_base(self, comm):  # noqa: ARG002
+        if self.base is not None:
+            self.base.free()
+            if self._log is not None:
+                self._log.append(f"base {self._name}")
+        self.base = None
+
+    def free(self, *, return_plans=False):  # noqa: ARG002
+        self.free_base(None)
+        self._shared = []
+        if self._log is not None:
+            self._log.append(f"entry {self._name}")
+
+
+class FakeParts:
+    """A kept fixed part: its arrays."""
+
+    def __init__(self, *arrays):
+        self.arrays = arrays
+
+    def shared(self):
+        return {id(a): a.nbytes for a in self.arrays}
+
+
+class FakePorts:
+    def __init__(self, *arrays):
+        self.arrays = arrays
+
+    def shared(self):
+        return {id(a): a.nbytes for a in self.arrays}
+
+
+def _disc(fixed=0, ports=0):
+    """A discretization keeping ``fixed`` bytes of fixed parts, ``ports`` of ports."""
+    disc = Discretization(built=types.SimpleNamespace(comm=None), topology=TOPOLOGY)
+    if fixed:
+        store = disc.space(("em", "hcurl", 1, "fixed pieces"), KeptParts)
+        store.kept["stiffness"] = FakeParts(np.zeros(fixed, np.uint8))
+        store.seen["stiffness"] = "d"
+    if ports:
+        disc.ports = FakePorts(np.zeros(ports, np.uint8))
+    return disc
+
+
+def _store(disc):
+    return disc.spaces[("em", "hcurl", 1, "fixed pieces")]
+
+
+def _logged(entries, discs, log):
+    """Log each fixed-part and port drop of ``discs``, in walk order."""
+    for i, disc in enumerate(discs):
+        store = _store(disc) if disc.spaces else None
+        if store is not None:
+            clear = store.clear
+
+            def logged_clear(clear=clear, i=i):
+                log.append(f"fixed {i}")
+                clear()
+
+            store.clear = logged_clear
+    return entries
+
+
+def test_kept_state_counts_once_by_identity():
+    shared = np.zeros(100, np.uint8)
+    disc = _disc(fixed=30, ports=0)
+    disc.ports = FakePorts(shared)
+    entries = EntryCache(discretizations=lambda: [disc])
+    entries.put(Entry(physics="em", handle=FakeKept(5, shared=[shared])), budget=1000)
+    assert entries.nbytes == 5 + 100 + 30
+
+
+def test_walks_outside_put_drop_fixed_parts_between_pooled_factors_and_plans():
+    log = []
+    old, new = _disc(fixed=10), _disc(fixed=10)
+    discs = [old, new]  # least recently used first
+    entries = _logged(EntryCache(discretizations=lambda: discs), discs, log)
+    a = FakeHandle(100, released_bytes=40, log=log, name="a")
+    b = FakeHandle(100, released_bytes=40, log=log, name="b")
+    entries.give_plan(("a",), TOPOLOGY, a, budget=10**6)
+    entries.give_plan(("b",), TOPOLOGY, b, budget=10**6)
+    # 220 over 0: every factor, every fixed part, every plan
+    entries.free_consumed(comm=None, budget=0)
+    assert log == ["release a", "release b", "fixed 0", "fixed 1", "free a", "free b"]
+    assert entries.nbytes == 0
+    assert not _store(old).kept
+    assert not _store(old).seen
+
+
+def test_a_walk_stops_at_the_first_tier_that_fits():
+    log = []
+    old, new = _disc(fixed=50), _disc(fixed=50)
+    discs = [old, new]
+    entries = _logged(EntryCache(discretizations=lambda: discs), discs, log)
+    pooled = FakeHandle(100, released_bytes=40, log=log, name="a")
+    # 200 over 150: the release (to 140) is enough
+    entries.give_plan(("a",), TOPOLOGY, pooled, budget=150)
+    assert log == ["release a"]
+    # 140 over 100: the least recently used discretization's fixed parts go
+    entries.free_consumed(comm=None, budget=100)
+    assert log == ["release a", "fixed 0"]
+    assert _store(new).kept
+
+
+def test_walks_outside_put_drop_port_state_last_and_leave_entries():
+    discs = [_disc(ports=20), _disc(ports=20)]
+    entries = EntryCache(discretizations=lambda: discs)
+    base = FakeHandle(50)
+    key = entries.put(Entry(physics="em", handle=FakeKept(10, base)), budget=10**6)
+    # 100 over 90
+    entries.free_consumed(comm=None, budget=90)
+    # the older discretization's ports go first; entries and bases stay
+    assert discs[0].ports is None
+    assert discs[1].ports is not None
+    assert not base.freed
+    entries.free_consumed(comm=None, budget=0)
+    assert discs[1].ports is None
+    assert entries.get(key) is not None
+
+
+def test_put_walks_all_six_tiers_in_order():
+    log = []
+    discs = [_disc(fixed=10, ports=10)]
+    entries = _logged(EntryCache(discretizations=lambda: discs), discs, log)
+    pooled = FakeHandle(100, released_bytes=40, log=log, name="pool")
+    entries.give_plan(("a",), TOPOLOGY, pooled, budget=10**6)
+    base = FakeHandle(50)
+    entries.put(
+        Entry(physics="em", handle=FakeKept(30, base, log=log, name="old")),
+        budget=10**6,
+    )
+    ports = discs[0].ports
+    entries.put(Entry(physics="em", handle=FakeKept(0, log=log, name="new")), budget=0)
+    assert log == [
+        "release pool",
+        "fixed 0",
+        "free pool",
+        "base old",
+        "entry old",
+        "entry new",
+    ]
+    assert ports is not None
+    assert discs[0].ports is None
+    assert entries.nbytes == 0
+
+
+def test_bases_and_entries_go_before_port_state_in_put():
+    discs = [_disc(ports=10)]
+    entries = EntryCache(discretizations=lambda: discs)
+    base = FakeHandle(50)
+    key = entries.put(Entry(physics="em", handle=FakeKept(30, base)), budget=10**6)
+    # 90 over 40: the base goes (to 40), the entry and the ports stay
+    entries.put(Entry(physics="em", handle=FakeKept(0)), budget=40)
+    assert base.freed
+    assert entries.get(key) is not None
+    assert discs[0].ports is not None
+
+
+def test_an_entry_freed_at_put_still_walks_the_kept_state():
+    discs = [_disc(fixed=10, ports=10)]
+    entries = EntryCache(discretizations=lambda: discs)
+    entries.put(Entry(physics="em", handle=FakeKept(5)), budget=0)
+    assert entries.nbytes == 0
+    assert discs[0].ports is None
+    assert not _store(discs[0]).kept
+
+
+def test_an_entry_keeps_reading_its_own_state_after_eviction():
+    values = np.zeros(40, np.uint8)
+    disc = _disc()
+    store = disc.space(("em", "hcurl", 1, "fixed pieces"), KeptParts)
+    store.kept["mass"] = FakeParts(values)
+    entries = EntryCache(discretizations=lambda: [disc])
+    kept = FakeKept(1, shared=[values])
+    key = entries.put(Entry(physics="em", handle=kept), budget=10**6)
+    entries.free_consumed(comm=None, budget=0)
+    assert not store.kept  # the store let go
+    # the live entry still holds them, and they still count
+    assert entries.get(key) is not None
+    assert entries.nbytes == 1 + 40

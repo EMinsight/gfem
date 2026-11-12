@@ -68,6 +68,17 @@ class _Kept:
     values: ngs.BaseVector
     varying: tuple[int, np.ndarray]
 
+    def shared(self) -> dict[int, int]:
+        """Bytes of the pattern, the values and the varying positions, by identity.
+
+        Pieces and handles may hold the same objects (`AssembledPieces.shared`).
+        """
+        return {
+            id(self.pattern): host_bytes(self.pattern),
+            id(self.values): int(self.values.FV().NumPy().nbytes),
+            id(self.varying[1]): int(self.varying[1].nbytes),
+        }
+
 
 class KeptParts:
     """The fixed parts kept on one space, by piece name, and the digests seen.
@@ -78,6 +89,22 @@ class KeptParts:
     def __init__(self) -> None:
         self.kept: dict[str, _Kept] = {}
         self.seen: dict[str, str] = {}
+
+    def shared(self) -> dict[int, int]:
+        """The kept parts' bytes, by the identity of each object held."""
+        held: dict[int, int] = {}
+        for kept in self.kept.values():
+            held.update(kept.shared())
+        return held
+
+    def clear(self) -> None:
+        """Drop every kept part and every digest seen (memory pressure).
+
+        Nothing kept is changed: pieces that hold a part keep reading it. The
+        next build assembles plainly and keeps at the second sighting.
+        """
+        self.kept = {}
+        self.seen = {}
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -194,7 +221,11 @@ class AssembledPieces:
             raise ValueError("One fixed part or None per piece, on one process only.")
         self._built = False
         self._template: ngs.BaseMatrix | None = None
-        #: (values, positions or None, piece index, held by a store)
+        # the template's own values among the parts, and the split pieces
+        self._template_values: Any = None
+        self._split: frozenset[int] = frozenset()
+        #: (values, positions or None, piece index, shared): shared values are
+        #: a kept fixed part's or the template's own, counted in `shared`
         self._parts: list[tuple[Any, np.ndarray | None, int, bool]] = []
         #: Serializes the first use (assembled once) and `free`.
         self._lock = threading.Lock()
@@ -240,44 +271,50 @@ class AssembledPieces:
     def nbytes(self) -> int:
         """Host memory of the assembled pieces, in bytes (0 before first use).
 
-        Kept fixed parts (and a template of theirs) belong to their store and
-        are not counted.
+        The objects others may hold too are in `shared`, not here.
         """
         with self._lock:
-            template, parts = self._template, self._parts
-        if template is None:
-            return 0
-        comm = self._comm
-        stored = any(
-            kept is not None and kept.pattern is template
-            for f in self._fixed
-            if f is not None
-            for kept in (f.store.kept.get(f.name),)
-        )
+            parts = self._parts
         held = 0
-        if not stored:
-            # the template's own values are in its matrix; the other full
-            # pieces' are copies
-            values = local_matrix(template, comm).AsVector().FV().NumPy()
-            held = host_bytes(local_matrix(template, comm)) - int(values.nbytes)
         # split pieces' varying parts share one positions array: count it once
         positions: dict[int, np.ndarray] = {}
-        for values, at, _, owned in parts:
-            if owned:
+        for values, at, k, shared in parts:
+            if shared:
                 continue
             if at is None:
                 held += int(values.FV().NumPy().nbytes)
             else:
                 held += int(values.nbytes)
-                positions[id(at)] = at
+                if k not in self._split:
+                    positions[id(at)] = at
         return held + sum(int(at.nbytes) for at in positions.values())
+
+    def shared(self) -> dict[int, int]:
+        """Bytes of what a handle or a `KeptParts` store may hold too, by identity.
+
+        The template (a handle's pieces' pattern, or a kept part's), the kept
+        fixed parts' values and their varying parts' positions.
+        """
+        with self._lock:
+            template, parts = self._template, self._parts
+        if template is None:
+            return {}
+        held = {id(template): host_bytes(local_matrix(template, self._comm))}
+        for values, at, k, shared in parts:
+            if shared and at is None and values is not self._template_values:
+                held[id(values)] = int(values.FV().NumPy().nbytes)
+            if at is not None and k in self._split:
+                held[id(at)] = int(at.nbytes)
+        return held
 
     def free(self) -> None:
         """Drop the assembled pieces."""
         with self._lock:
             self._built = False
             self._template = None
+            self._template_values = None
             self._parts = []
+            self._split = frozenset()
 
     def _assembled(self) -> tuple[ngs.BaseMatrix | None, list]:
         """The template and the parts, assembled once on first use."""
@@ -344,9 +381,11 @@ class AssembledPieces:
             parts.append((kept.values, None, k, True))
             parts.append((np.array(varying.CSR()[0]), kept.varying[1], k, False))
         outside = False
+        template_values = None
         for k, m in local:
             if m is template:
-                parts.append((template.AsVector(), None, k, False))
+                template_values = template.AsVector()
+                parts.append((template_values, None, k, True))
             elif same_pattern(m, template):
                 # a copy, so that the piece's own matrix and graph are released
                 values = ngs.BaseVector(m.nze, True)
@@ -362,6 +401,8 @@ class AssembledPieces:
         self._built = True
         if not _mpi.agree_any(comm, flag=outside):
             self._template, self._parts = matrix, parts
+            self._template_values = template_values
+            self._split = frozenset(k for k, *_ in split)
 
 
 #: Scattered parts of a piece sum: (weight, compact values, their positions).

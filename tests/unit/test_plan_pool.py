@@ -458,7 +458,7 @@ def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
     assert any(kept.pattern is handle.pattern for kept in store.kept.values())
 
 
-def test_a_direct_handle_counts_its_pieces_pattern():
+def test_a_direct_handle_shares_its_pieces_pattern():
     import scipy.sparse as sp
 
     from gfem._linalg.base import host_bytes
@@ -468,10 +468,12 @@ def test_a_direct_handle_counts_its_pieces_pattern():
     alone = handle.nbytes
     pattern = DirectHandle.from_scipy(matrix)._matrix
     handle._pattern = pattern
-    assert handle.nbytes == alone + host_bytes(pattern)
+    # counted once at the cache, whoever else holds it (ADR 0091)
+    assert handle.nbytes == alone
+    assert handle.shared() == {id(pattern): host_bytes(pattern)}
     handle.drop_pattern()
     assert handle.pattern is None
-    assert handle.nbytes == alone
+    assert handle.shared() == {}
 
 
 @pytest.mark.usefixtures("plans")  # an empty cache before and after

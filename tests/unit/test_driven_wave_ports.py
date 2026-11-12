@@ -1299,24 +1299,103 @@ def test_the_port_section_key_follows_what_the_port_section_reads(tmp_path):
     assert len(keys) == 2
 
 
-def test_an_entry_counts_port_couplings_only_when_no_discretization_keeps_them(
-    tmp_path,
-):
-    model, leads = _kept_line(tmp_path)
-
+def _kept_objective(model, options=KEPT_OPTIONS):
     def objective(eps):
         m = model.with_material("core", gfem.MaterialField(eps_r=eps))
         m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
-        s = gfem.solve(m, gfem.Driven(KEPT_F), options=KEPT_OPTIONS).s.values
-        return jnp.abs(s[0, 1, 0]) ** 2
+        s = gfem.solve(m, gfem.Driven(KEPT_F), options=options).s.values
+        return jnp.abs(s[0, 1, 0]) ** 2, s
 
+    return objective
+
+
+def test_an_entry_counts_the_same_bytes_with_or_without_its_discretization(
+    tmp_path,
+):
+    model, leads = _kept_line(tmp_path)
     cache.ENTRIES.clear()
-    jax.vjp(objective, jnp.asarray(leads))
+    cache._DISCRETIZATIONS.clear()
+    jax.vjp(_kept_objective(model), jnp.asarray(leads), has_aux=True)
     (entry,) = cache.ENTRIES._entries.values()
-    system, ports = entry.handle.system, entry.handle.ports
-    shared = sum(c.vectors.nbytes for c in system.surfaces) + ports.nbytes
-    assert shared > 0
-    kept = entry.nbytes
+    system = entry.handle.system
+    couplings = sum(c.vectors.nbytes for c in system.surfaces)
+    assert couplings > 0
+    kept, held = entry.nbytes, cache.ENTRIES.nbytes
+    assert held >= kept + couplings  # shared state counts at the cache
     cache.cached(system.operator.built).ports = None  # the discretization's go
-    assert entry.nbytes == kept + shared
+    assert entry.nbytes == kept
+    # the entry still holds the couplings: they still count, once
+    assert cache.ENTRIES.nbytes == held
+    cache.ENTRIES.clear()
+
+
+def test_retain_memory_zero_keeps_nothing_between_solves(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    options = dataclasses.replace(KEPT_OPTIONS, retain_memory=0)
+    objective = _kept_objective(model, options)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    for k in range(2):  # the second sees the fixed parts' digest again
+        jax.value_and_grad(objective, has_aux=True)(jnp.asarray(leads * (1 + 0.1 * k)))
+        assert cache.ENTRIES.nbytes == 0
+    objective(jnp.asarray(leads))
+    assert cache.ENTRIES.nbytes == 0
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+
+
+def test_a_live_entry_reads_its_own_couplings_after_their_eviction(
+    tmp_path, monkeypatch
+):
+    model, leads = _kept_line(tmp_path)
+    objective = _kept_objective(model)
+    eps = jnp.asarray(leads)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    _, vjp, _ = jax.vjp(objective, eps, has_aux=True)
+    (grad_want,) = vjp(1.0)
+    _, vjp, _ = jax.vjp(objective, eps, has_aux=True)
+    # a solve at another design under retain_memory=0 walks the kept state
+    # (tiers 1, 2, 3 and 6): the discretization lets go, the live entry stays
+    tight = dataclasses.replace(KEPT_OPTIONS, retain_memory=0)
+    _kept_objective(model, tight)(eps * 1.2)
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+    assert len(cache.ENTRIES) == 1
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+    (grad,) = vjp(1.0)
+    assert not sweeps  # the backward ran no forward again
+    # the first sight of the design summed no kept part: round-off apart
+    np.testing.assert_allclose(
+        np.asarray(grad), np.asarray(grad_want), rtol=1e-9, atol=1e-14
+    )
+    cache.ENTRIES.clear()
+
+
+def test_evicted_kept_state_is_rebuilt_not_read_stale(tmp_path, monkeypatch):
+    model, leads = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+
+    def loop(options, *, fresh):
+        objective = _kept_objective(model, options)
+        out = []
+        for k in range(3):
+            if fresh:
+                cache.ENTRIES.clear()
+                cache._DISCRETIZATIONS.clear()
+            eps = jnp.asarray(leads * (1.0 + 0.1 * k))
+            (_, s), grad = jax.value_and_grad(objective, has_aux=True)(eps)
+            out.append((np.asarray(s), np.asarray(grad)))
+        return out
+
+    fresh = loop(KEPT_OPTIONS, fresh=True)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    sweeps.clear()
+    # the walk drops the kept fixed parts and couplings at every step
+    tight = loop(dataclasses.replace(KEPT_OPTIONS, retain_memory=0), fresh=False)
+    # the couplings were rebuilt at every forward, and at every backward,
+    # which reruns its freed forward (ADR 0081)
+    assert len(sweeps) == 2 * 2 * 3
+    for (s, grad), (s0, grad0) in zip(tight, fresh, strict=True):
+        np.testing.assert_allclose(s, s0, rtol=1e-12, atol=1e-14)
+        np.testing.assert_allclose(grad, grad0, rtol=1e-9, atol=1e-14)
     cache.ENTRIES.clear()

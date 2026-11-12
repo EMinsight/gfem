@@ -402,3 +402,14 @@ class PortNetwork:
         The system operator counts ``W``'s (`SystemOperator.nbytes`).
         """
         return sum(int(t.vectors.nbytes) for t in (*self.excitation, *self.outputs))
+
+    def shared(self) -> dict[int, int]:
+        """The excitation and output vectors' bytes, each array once by identity.
+
+        A wave port's excitation is its coupling's vectors, which a
+        discretization and the system operator hold too.
+        """
+        return {
+            id(t.vectors): int(t.vectors.nbytes)
+            for t in (*self.excitation, *self.outputs)
+        }

@@ -1720,27 +1720,20 @@ class _Kept:
 
     @property
     def nbytes(self) -> int:
-        """Host memory held, in bytes (0 once freed).
+        """Host memory held, in bytes (0 once freed), but the shared objects.
 
-        Wave port couplings and a port network a discretization keeps
-        (`_KeptPorts`) are not counted: every entry on it shares them, and the
-        discretization count bounds them.
+        Wave port couplings, the port network, kept fixed parts and patterns
+        are in `shared`: a discretization or another entry may hold them, so
+        the entry cache counts them once (ADR 0091), and an entry's bytes do
+        not depend on what the discretization still keeps.
         """
+        return 0 if self._freed else self.system.nbytes
+
+    def shared(self) -> dict[int, int]:
+        """The shared objects' bytes, by identity (empty once freed)."""
         if self._freed:
-            return 0
-        held = self.system.nbytes + self.ports.nbytes
-        disc = cached(self.system.operator.built)
-        kept = None if disc is None else disc.ports
-        if not isinstance(kept, _KeptPorts):
-            return held
-        surfaces = self.system.surfaces
-        if len(surfaces) == len(kept.couplings) and all(
-            a is b for a, b in zip(surfaces, kept.couplings, strict=True)
-        ):
-            held -= sum(int(c.vectors.nbytes) for c in surfaces)
-        if any(n is self.ports for n in kept.networks.values()):
-            held -= self.ports.nbytes
-        return held
+            return {}
+        return {**self.system.shared(), **self.ports.shared()}
 
     def free_base(self, comm: Any) -> None:
         """Release the base handle kept for a backward pass, if it is on ``comm``.
@@ -1830,6 +1823,13 @@ class _KeptPorts:
             repr(model.ports),
             sections,
         )
+
+    def shared(self) -> dict[int, int]:
+        """The couplings' and the networks' arrays' bytes, by identity."""
+        held = {id(c.vectors): int(c.vectors.nbytes) for c in self.couplings}
+        for network in self.networks.values():
+            held.update(network.shared())
+        return held
 
     def keep(self, key: tuple, network: PortNetwork) -> None:
         """Keep ``network`` under ``key``, the oldest out past `_MAX_NETWORKS`."""

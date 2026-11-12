@@ -279,14 +279,36 @@ class SystemOperator:
 
     @property
     def nbytes(self) -> int:
-        """Host memory held by the adjoint handles, the pieces and ``W``, in bytes.
+        """Host memory held by the adjoint handles and the pieces, in bytes.
 
-        The transposed system's handles and pieces included.
+        The transposed system's handles and pieces included. What others may
+        hold too (``W``'s vectors, kept fixed parts, patterns) is in `shared`.
         """
         held = self._held_nbytes()
         if self._transposed_system is not None:
             held += self._transposed_system._held_nbytes()  # noqa: SLF001
-        return held + sum(int(c.vectors.nbytes) for c in self.surfaces)
+        return held
+
+    def shared(self) -> dict[int, int]:
+        """Bytes of ``W``'s vectors and of the handles' and pieces' shared objects.
+
+        By object identity, so that the entry cache counts each once.
+        """
+        held = {id(c.vectors): int(c.vectors.nbytes) for c in self.surfaces}
+        systems = [self]
+        if self._transposed_system is not None:
+            systems.append(self._transposed_system)
+        for system in systems:
+            handles = list(system._handles.values())  # noqa: SLF001
+            sweep = system._adjoint_sweep  # noqa: SLF001
+            if sweep is not None and sweep._base is not None:  # noqa: SLF001
+                handles.append(sweep._base)  # noqa: SLF001
+            for handle in handles:
+                shared = getattr(handle, "shared", None)
+                if shared is not None:
+                    held.update(shared())
+            held.update(system._pieces.shared())  # noqa: SLF001
+        return held
 
     def free(self, *, return_plans: bool = False) -> None:
         """Release the adjoint handles and the pieces (a prepare reassembles them).

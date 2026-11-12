@@ -79,6 +79,11 @@ class LowRankUpdate:
         kept = sum(z.nbytes for z in self._z.values())
         return int(self._base.nbytes) + self.vectors.nbytes + kept
 
+    def shared(self) -> dict[int, int]:
+        """The base handle's shared objects' bytes, by identity (not in ``nbytes``)."""
+        shared = getattr(self._base, "shared", None)
+        return {} if shared is None else shared()
+
     def solve(
         self,
         B: np.ndarray,

@@ -926,13 +926,17 @@ def test_a_kept_forward_is_freed_once_and_then_holds_nothing():
         free=lambda **_: freed.append(True),
         operator=SimpleNamespace(built=object()),  # on no cached discretization
         surfaces=[],
+        shared=lambda: {1: 7},
     )
-    kept = driven._Kept(system, SimpleNamespace(nbytes=5))
-    assert kept.nbytes == 15
+    kept = driven._Kept(system, SimpleNamespace(nbytes=5, shared=lambda: {2: 5}))
+    # the port network is shared: the cache counts it (ADR 0091)
+    assert kept.nbytes == 10
+    assert kept.shared() == {1: 7, 2: 5}
     kept.free()
     kept.free()
     assert freed == [True]
     assert kept.nbytes == 0
+    assert kept.shared() == {}
 
 
 # --- what the driven problem refuses ---------------------------------------------
