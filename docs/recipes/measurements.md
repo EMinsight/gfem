@@ -115,9 +115,7 @@ p_box = gfem.power_flow(e, "design", model=model)
 
   ```python
   e1, e2 = r.e_field(f, excite="p1"), r.e_field(f, excite="p2")
-  both = dataclasses.replace(
-      e1, coefficients=a1 * e1.coefficients + a2 * e2.coefficients
-  )
+  both = dataclasses.replace(e1, coefficients=a1 * e1.coefficients + a2 * e2.coefficients)
   p = gfem.power_flow(both, side, model=model)
   ```
 
@@ -132,6 +130,7 @@ p_box = gfem.power_flow(e, "design", model=model)
       m = model.with_material("design", gfem.MaterialField(eps_r=eps))
       r = gfem.solve(m, gfem.Driven(frequency=f, keep_fields=True))
       return -gfem.power_flow(r.e_field(f, excite="p1"), "design", model=m)
+
 
   g = jax.grad(absorbed)(eps)
   ```
