@@ -407,7 +407,7 @@ def _local_cotangents(
         pairs = rule.backward(model, entry, cotangents)
         # the element passes assemble on the solve's threads
         with task_manager(rule.options.threads, comm):
-            return sensitivity(
+            out = sensitivity(
                 model,
                 pairs,
                 wants,
@@ -420,6 +420,8 @@ def _local_cotangents(
     finally:
         if fresh is not None:
             fresh.free()
-            # as an entry `put` frees: the kept state its forward rebuilt goes
-            # down to the budget too
-            ENTRIES.trim(retain_budget(rule.options.retain_memory), comm)
+    if fresh is not None:
+        # as an entry `put` frees: the kept state its forward rebuilt goes down
+        # to the budget too (collective, so only once every rank got here)
+        ENTRIES.trim(retain_budget(rule.options.retain_memory), comm)
+    return out
