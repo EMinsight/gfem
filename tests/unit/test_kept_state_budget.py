@@ -238,3 +238,82 @@ def test_an_entry_keeps_reading_its_own_state_after_eviction():
     # the live entry still holds them, and they still count
     assert entries.get(key) is not None
     assert entries.nbytes == 1 + 40
+
+
+class PoolingKept(FakeKept):
+    """An entry's handle whose base goes back to the plan pool (ADR 0093)."""
+
+    def __init__(self, entries, budget, nbytes, base=None, **kwargs):
+        super().__init__(nbytes, base, **kwargs)
+        self._entries, self._budget = entries, budget
+
+    def free_base(self, comm):  # noqa: ARG002
+        if self.base is not None:
+            self._entries.give_plan((self._name,), TOPOLOGY, self.base, self._budget)
+        self.base = None
+
+
+def test_an_entry_over_budget_gives_its_base_to_the_pool_released():
+    entries = EntryCache()
+    base = FakeHandle(100, released_bytes=30)
+    entry = Entry(physics="em", handle=PoolingKept(entries, 60, 20, base))
+    # 120 over 60: the base goes to the pool, where its factors go (to 50)
+    key = entries.put(entry, budget=60)
+    assert entries.get(key) is entry
+    assert entries.pooled == 1
+    assert base.released
+    assert not base.freed
+    assert entries.nbytes == 50
+
+
+def test_an_entry_giving_up_its_base_walks_in_put_order():
+    discs = [_disc(ports=10)]
+    entries = EntryCache(discretizations=lambda: discs)
+    old_base = FakeHandle(50, released_bytes=40)
+    entries.put(
+        Entry(physics="em", handle=PoolingKept(entries, 60, 30, old_base, name="old")),
+        budget=10**6,
+    )
+    new_base = FakeHandle(100)
+    new = PoolingKept(entries, 60, 5, new_base, name="new")
+    # 105 over 60: the new base goes to the pool and is freed there; then the
+    # old base goes to the pool released, and is freed (5 + 30 + 10 = 45)
+    entries.put(Entry(physics="em", handle=new), budget=60)
+    assert new_base.freed
+    assert old_base.released
+    assert old_base.freed
+    # port state goes last: it never went
+    assert discs[0].ports is not None
+    assert entries.nbytes == 45
+
+
+def test_a_base_given_up_in_the_walk_frees_entries_before_port_state():
+    discs = [_disc(ports=10)]
+    entries = EntryCache(discretizations=lambda: discs)
+    base = FakeHandle(50, released_bytes=40)
+    old = PoolingKept(entries, 35, 30, base, name="old")
+    old_key = entries.put(Entry(physics="em", handle=old), budget=10**6)
+    # 90 over 35: the old base goes to the pool released, then is freed (40);
+    # then the old entry goes (10), and the port state stays
+    new_key = entries.put(Entry(physics="em", handle=FakeKept(0)), budget=35)
+    assert base.freed
+    assert entries.get(old_key) is None
+    assert entries.get(new_key) is not None
+    assert discs[0].ports is not None
+
+
+def test_an_entry_whose_fields_alone_are_over_budget_walks_the_pool():
+    entries = EntryCache()
+    pooled = FakeHandle(40, released_bytes=10)
+    entries.give_plan(("other",), TOPOLOGY, pooled, budget=10**6)
+    base = FakeHandle(100, released_bytes=30)
+    entry = Entry(physics="em", handle=PoolingKept(entries, 30, 50, base))
+    # the fields alone (50) are over 30: the entry goes, its base went to the
+    # pool, and the walk frees down to the budget: every factor (to 40), then
+    # the least recently returned plan
+    key = entries.put(entry, budget=30)
+    assert entries.get(key) is None
+    assert base.released
+    assert pooled.freed
+    assert not base.freed
+    assert entries.nbytes == 30

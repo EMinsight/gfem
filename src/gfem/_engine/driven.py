@@ -672,6 +672,8 @@ class DrivenRule:
         # no backward pass will prepare from the pieces
         if not keep or miss is not None:
             system.free()
+            # no entry walks the kept port state down: this solve does
+            ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
         out = SweepOutputs.uniform(
             tuple(range(n_solved)),
             s=ports.scattering(s),
@@ -938,6 +940,8 @@ class DrivenRule:
                     z_scale=z_scale,
                 )
         system.free()  # the backward pass solves the reduced model only
+        if not keep:  # no entry walks the kept port state down: this solve does
+            ENTRIES.trim(retain_budget(options.retain_memory))
         kept_fields = None
         size = sweep.model.size
         if self.kept:
@@ -1736,15 +1740,16 @@ class _Kept:
         return {**self.system.shared(), **self.ports.shared()}
 
     def free_base(self, comm: Any) -> None:
-        """Release the base handle kept for a backward pass, if it is on ``comm``.
+        """Give up the base handle kept for a backward pass, if it is on ``comm``.
 
-        Freeing may be collective on a backend, so an entry of another communicator
-        stays: its ranks are not here.
+        A base from the plan pool returns there, with its factors (ADR 0093);
+        any other is freed. Freeing may be collective on a backend, so an entry
+        of another communicator stays: its ranks are not here.
         """
         if not self._freed and _mpi.comm_key(
             self.system.operator.built.comm
         ) == _mpi.comm_key(comm):
-            self.system.free_base()
+            self.system.free_base(return_plan=True)
 
     def free(self, *, return_plans: bool = False) -> None:
         """Release the system operator's handles and pieces, and drop both.

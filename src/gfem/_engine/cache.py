@@ -18,14 +18,16 @@ since freeing may be collective.
 A missing entry is not an error: the backward pass recomputes it from the
 design state in its residuals (time, never correctness).
 
-**The plan pool** (in `ENTRIES`, ADR 0082): serial CPU direct base handles no
-solve holds, kept for a later design to refactorize on their solver plan
-(`EntryCache.take_plan`). A handle returns (`EntryCache.give_plan`) at the end
-of a non-differentiated solve, or when its consumed entry is freed, with its
-factors and summed pattern: the next forward refactorizes in place, on memory
-already touched. The pool holds several handles per key
-(one per ``jax.vmap`` variant). Pooled handles whose mesh topology has no
-discretization left are freed.
+**The plan pool** (in `ENTRIES`, ADRs 0082, 0093): serial CPU direct base
+handles no solve holds, kept for a later design to refactorize on their solver
+plan (`EntryCache.take_plan`). A handle returns (`EntryCache.give_plan`) once
+no solve entry holds it: at the end of a non-differentiated solve, when its
+consumed entry is freed, or when an entry gives it up under ``retain_memory``.
+It returns with its factors and summed pattern: the next forward refactorizes
+in place, on memory already touched. An entry that gave up its base serves its
+backward by taking a plan back from the pool, or by preparing one. The pool
+holds several handles per key (one per ``jax.vmap`` variant). Pooled handles
+whose mesh topology has no discretization left are freed.
 
 **Kept discretization state** (ADRs 0082, 0091): a discretization's kept fixed
 parts (`KeptParts` stores among its spaces) and its kept wave port couplings and
@@ -41,7 +43,8 @@ the walk of a stored entry (`EntryCache.put`):
 2. drops kept fixed parts, whole stores, least recently used discretization
    first;
 3. frees pooled handles, least recently returned first;
-4. frees live entries' bases, oldest entry first;
+4. moves live entries' bases to the pool, oldest entry first, where tiers 1
+   and 3 run on them again (freed where they cannot pool);
 5. frees whole entries, least recently used first;
 6. drops kept port state, least recently used discretization first.
 
@@ -369,6 +372,20 @@ class _Walk:
         self._tally.replace(before, _NOTHING if gone else _Tally.of(holder))
         return True
 
+    def move(self, holder: Any, act: Callable[[], Any]) -> Any:
+        """Run ``act`` on ``holder`` and re-read it; what ``act`` returned.
+
+        The caller checked the budget, and `enter`s where the bytes went.
+        """
+        before = _Tally.of(holder)
+        out = act()
+        self._tally.replace(before, _Tally.of(holder))
+        return out
+
+    def enter(self, holder: Any) -> None:
+        """Count a holder that joined the cache."""
+        self._tally.replace(_NOTHING, _Tally.of(holder))
+
 
 @dataclasses.dataclass(eq=False)
 class _Pooled:
@@ -398,12 +415,16 @@ class EntryCache:
         # least recently returned first
         self._plans: collections.OrderedDict[int, _Pooled] = collections.OrderedDict()
         self._discretizations = discretizations
+        # an entry is giving up its base: its walker walks, `give_plan` does not
+        self._giving_up = False
 
     def put(self, entry: Entry, budget: int, comm: Any = None) -> int:
         """Store ``entry`` and return its key; evict down to ``budget`` bytes.
 
-        An entry whose own bytes exceed the budget is kept without its base
-        handle when that fits, and is otherwise freed at once and evicts no other
+        An entry whose own bytes exceed the budget gives up its base handle
+        (to the plan pool, where it can: the walk then releases its factors,
+        and frees it only if it still does not fit). It is kept without it
+        when that fits, and is otherwise freed at once and evicts no other
         entry (with ``budget=0`` nothing is kept); its key then reads as evicted,
         so the backward pass recomputes it. Eviction is the walk of the module
         docstring, all six tiers; a freed entry's walk skips tiers 4 and 5.
@@ -419,9 +440,7 @@ class EntryCache:
         key = next(self._keys)
         budget = _mpi.node_budget(comm, budget)
         if _mpi.node_bytes(comm, entry.nbytes) > budget:
-            free_base = getattr(entry.handle, "free_base", None)
-            if free_base is not None:
-                free_base(comm)
+            self._give_up_base(entry, comm)
             if _mpi.node_bytes(comm, entry.nbytes) > budget:
                 entry.free()
                 self._walk(budget, comm, entries=False)
@@ -451,7 +470,7 @@ class EntryCache:
         walk = _Walk(self._tally(discs, pool=comm is None), budget, comm)
         if comm is None and self._walk_pool(walk, discs):
             return
-        if entries and self._walk_entries(walk, owner, comm):
+        if entries and self._walk_entries(walk, owner, comm, pool=comm is None):
             return
         for disc in discs:
             if disc.ports is not None and not walk.step(disc, disc.drop_ports):
@@ -466,18 +485,39 @@ class EntryCache:
         for disc in discs:
             if disc.has_fixed_parts and not walk.step(disc, disc.drop_fixed_parts):
                 return True
+        return self._free_plans(walk)
+
+    def _free_plans(self, walk: _Walk) -> bool:
+        """Tier 3: free pooled handles, oldest returned first; whether it fits."""
         while self._plans and walk.over():
             handle = self._plans.popitem(last=False)[1].handle
             walk.step(handle, handle.free, gone=True)
         return not walk.over()
 
-    def _walk_entries(self, walk: _Walk, owner: int | None, comm: Any) -> bool:
-        """Tiers 4 and 5 (`put`): ``owner``'s bases, then entries; whether it fits."""
+    def _walk_entries(
+        self, walk: _Walk, owner: int | None, comm: Any, *, pool: bool
+    ) -> bool:
+        """Tiers 4 and 5 (`put`): ``owner``'s bases, then entries; whether it fits.
+
+        With ``pool`` (one process) a base given up to the pool joins the tally
+        there, and tiers 1 and 3 run on it before the next entry's base goes.
+        """
         for key, entry in list(self._entries.items()):
-            free_base = getattr(entry.handle, "free_base", None)
-            if self._comms[key] != owner or free_base is None:
+            if self._comms[key] != owner or not hasattr(entry.handle, "free_base"):
                 continue
-            if not walk.step(entry, functools.partial(free_base, comm)):
+            if not walk.over():
+                return True
+            pooled = walk.move(
+                entry, functools.partial(self._give_up_base, entry, comm)
+            )
+            if not pool:
+                continue
+            for handle in pooled:
+                walk.enter(handle)
+                release = getattr(handle, "release_factors", None)
+                if release is not None:
+                    walk.step(handle, release)
+            if self._free_plans(walk):
                 return True
         while walk.over():
             oldest = next((k for k in self._entries if self._comms[k] == owner), None)
@@ -487,6 +527,23 @@ class EntryCache:
             entry = self._entries.pop(oldest)
             walk.step(entry, entry.free, gone=True)
         return True
+
+    def _give_up_base(self, entry: Entry, comm: Any) -> list[Any]:
+        """``entry``'s base handle to the plan pool, without a walk (ADR 0093).
+
+        Where its handle can (`free_base`): other bases are freed. The handles
+        it pooled, for the caller's walk to count.
+        """
+        free_base = getattr(entry.handle, "free_base", None)
+        if free_base is None:
+            return []
+        before = set(self._plans)
+        self._giving_up = True
+        try:
+            free_base(comm)
+        finally:
+            self._giving_up = False
+        return [p.handle for k, p in self._plans.items() if k not in before]
 
     def _tally(self, discs: Iterable[Discretization], *, pool: bool) -> _Tally:
         """Every entry, with ``pool`` the pool's handles, and ``discs``' kept state."""
@@ -553,7 +610,8 @@ class EntryCache:
     ) -> None:
         """Pool ``handle`` under ``key``, with its factors, within ``budget``.
 
-        While the cache is over ``budget``, the walk's tiers 1, 2, 3 and 6 run;
+        While the cache is over ``budget``, the walk's tiers 1, 2, 3 and 6 run,
+        unless an entry is giving the handle up (that walk counts it);
         entries and their bases stay (only `put` evicts them),
         so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
@@ -567,7 +625,8 @@ class EntryCache:
         if pattern is not None and not any(pattern is k for k in kept):
             handle.drop_pattern()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
-        self._walk(budget, None, entries=False)
+        if not self._giving_up:
+            self._walk(budget, None, entries=False)
 
     def take_plan(self, key: Hashable) -> Any | None:
         """The most recently returned pooled handle under ``key``, or ``None``.
