@@ -4,6 +4,7 @@ import dataclasses
 import math
 import os
 import pickle
+import re
 import subprocess
 import sys
 import textwrap
@@ -330,6 +331,52 @@ def test_a_port_solve_is_all_that_passes_so_far(tmp_path):
     assert _mpi.refuse(wave, gfem.PortMode("w", 5e9), gfem.SolverOptions()) is None
     kept = gfem.Driven(5e9, keep_fields=[5e9])
     assert _mpi.refuse(line, kept, gfem.SolverOptions()) is None
+
+
+def test_every_refusal_key_is_snake_case():
+    assert all(re.fullmatch(r"[a-z0-9_]+", key) for key in _mpi._REFUSALS)
+
+
+@pytest.mark.parametrize("key", ["power_flow", "electric_energy"])
+def test_a_refused_measurement_names_the_route_through_a_saved_result(key):
+    text = _mpi._REFUSALS[key]
+    assert "Job.run(out=)" in text
+    assert "load_result" in text
+    assert "Field.at" not in text  # it gives no power or energy
+
+
+PC_REFUSED = [
+    {"pc_type": "ilu"},
+    {"pc_type": "icc"},
+    {"pc_type": "lu", "pc_factor_mat_solver_type": "superlu"},
+    {"pc_type": "cholesky", "pc_factor_mat_solver_type": "petsc"},
+]
+PC_RUNS = [
+    {},
+    {"pc_type": "bjacobi", "sub_pc_type": "ilu"},
+    {"pc_type": "asm", "sub_pc_type": "icc"},
+    {"pc_type": "lu"},
+    {"pc_type": "cholesky", "pc_factor_mat_solver_type": "mumps"},
+    {"pc_type": "gamg"},
+]
+
+
+@pytest.mark.parametrize("petsc_options", PC_REFUSED)
+def test_a_petsc_preconditioner_with_no_distributed_form_is_refused(
+    petsc_options, tmp_path
+):
+    line = cases.layered_line(tmp_path)
+    options = gfem.SolverOptions(linear_solver="petsc", petsc_options=petsc_options)
+    with pytest.raises(gfem.DistributedUnsupportedError, match="bjacobi") as caught:
+        _mpi.refuse(line, gfem.Driven(5e9), options)
+    assert caught.value.feature == "petsc_preconditioner"
+
+
+@pytest.mark.parametrize("petsc_options", PC_RUNS)
+def test_a_petsc_preconditioner_with_a_distributed_form_passes(petsc_options, tmp_path):
+    line = cases.layered_line(tmp_path)
+    options = gfem.SolverOptions(linear_solver="petsc", petsc_options=petsc_options)
+    assert _mpi.refuse(line, gfem.Driven(5e9), options) is None
 
 
 def test_load_result_above_one_rank_refuses_a_bundle_with_fields(tmp_path, monkeypatch):

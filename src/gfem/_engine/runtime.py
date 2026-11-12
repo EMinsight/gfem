@@ -58,19 +58,25 @@ def solve_threads(threads: int | None) -> int:
 def task_manager(threads: int | None, comm: Any = None) -> Generator[None]:
     """Run NGSolve assembly and solves threaded.
 
+    Inside a TaskManager the caller already entered, the call runs on that
+    TaskManager's count whatever ``threads`` says: NGSolve cannot change the count
+    while one is active, and prints a line for every attempt.
+
     Args:
         threads: CPU threads (``SolverOptions.threads``); ``None`` is `solve_threads`,
-            or the count of a TaskManager the caller already entered, and under
-            ``comm`` is `gfem._mpi.default_threads`.
+            and under ``comm`` is `gfem._mpi.default_threads`.
         comm: The resolved communicator. The first distributed solve also sets
-            each loaded BLAS to the rank's threads (ADR 0076).
+            each loaded BLAS to the threads the rank runs on (ADR 0076).
     """
-    if comm is not None:
-        threads = _mpi.default_threads(comm) if threads is None else threads
-        blas.settle(threads)
-    if threads is not None:
+    if ngs.GetNumThreads() != 1:  # 1 outside any TaskManager
+        threads = ngs.GetNumThreads()
+    elif comm is None:
+        threads = solve_threads(threads)
         ngs.SetNumThreads(threads)
-    elif ngs.GetNumThreads() == 1:  # 1 outside any TaskManager
-        ngs.SetNumThreads(solve_threads(None))
+    else:
+        threads = _mpi.default_threads(comm) if threads is None else threads
+        ngs.SetNumThreads(threads)
+    if comm is not None:
+        blas.settle(threads)
     with ngs.TaskManager():
         yield

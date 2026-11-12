@@ -68,6 +68,11 @@ def refused(key: str, directory: Path):  # noqa: PLR0911
         case "bddc_order_1_auto":
             options = gfem.SolverOptions(order=1)
             return _line(directory), gfem.Driven(FREQUENCY), options
+        case "petsc_preconditioner":
+            options = gfem.SolverOptions(
+                linear_solver="petsc", petsc_options={"pc_type": "ilu"}
+            )
+            return _line(directory), gfem.Driven(FREQUENCY), options
     raise ValueError(key)
 
 
@@ -82,6 +87,7 @@ KEYS = (
     "device",
     "bddc_order_1",
     "bddc_order_1_auto",
+    "petsc_preconditioner",
 )
 
 
@@ -99,13 +105,10 @@ METHOD_KEYS = (
 #: A guard no public call reaches while Bloch and eigenmode raise, so no page lists it.
 GUARD_KEYS = ("general_operator",)
 
-#: The cases whose ``feature`` is not their key.
-_FEATURES = {"mesh_refinement": "mesh refinement"}
-
 
 def feature(key: str) -> str:
     """The ``feature`` a case raises."""
-    return _FEATURES.get(key, key.removesuffix("_auto"))
+    return key.removesuffix("_auto")
 
 
 def permuted(mesh: gfem.Mesh, seed: int = 7) -> gfem.Mesh:

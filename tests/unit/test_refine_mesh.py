@@ -535,7 +535,7 @@ def test_more_than_one_rank_raises_before_any_solve(coax, monkeypatch):
     monkeypatch.setitem(sys.modules, "mpi4py.MPI", mpi)
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         _refine(coax, comm=Stub(4))
-    assert caught.value.feature == "mesh refinement"
+    assert caught.value.feature == "mesh_refinement"
     assert "COMM_SELF" in str(caught.value)
 
 

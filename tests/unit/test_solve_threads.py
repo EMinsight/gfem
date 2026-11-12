@@ -17,6 +17,7 @@ from isolated import isolated
 
 from gfem import _mpi
 from gfem._engine.runtime import solve_threads, task_manager
+from gfem._linalg import blas
 
 
 @pytest.fixture(autouse=True)
@@ -193,6 +194,70 @@ def test_a_threads_none_call_inside_a_callers_task_manager_keeps_its_count(
             assert ngs.GetNumThreads() == 3
     captured = capfd.readouterr()
     assert "can't change number of threads" not in captured.out + captured.err
+
+
+@pytest.mark.usefixtures("ngsolve_threads")
+def test_an_explicit_threads_call_inside_a_callers_task_manager_keeps_its_count(capfd):
+    ngs.SetNumThreads(3)
+    with ngs.TaskManager(), task_manager(2):
+        assert ngs.GetNumThreads() == 3
+    captured = capfd.readouterr()
+    assert "can't change number of threads" not in captured.out + captured.err
+
+
+@pytest.mark.usefixtures("ngsolve_threads")
+@pytest.mark.parametrize("threads", [None, 2])
+def test_under_ranks_a_callers_task_manager_keeps_its_count_and_sets_the_blas(
+    monkeypatch, capfd, threads
+):
+    settled = []
+    monkeypatch.setattr(blas, "settle", settled.append)
+    monkeypatch.setattr(_mpi, "default_threads", lambda _comm: pytest.fail("read"))
+    ngs.SetNumThreads(3)
+    with ngs.TaskManager(), task_manager(threads, _Ranks()):
+        assert ngs.GetNumThreads() == 3
+    assert settled == [3]
+    captured = capfd.readouterr()
+    assert "can't change number of threads" not in captured.out + captured.err
+
+
+@pytest.mark.usefixtures("ngsolve_threads")
+def test_under_ranks_outside_a_task_manager_the_blas_gets_the_count_asked_for(
+    monkeypatch,
+):
+    settled = []
+    monkeypatch.setattr(blas, "settle", settled.append)
+    monkeypatch.setattr(_mpi, "default_threads", lambda _comm: 2)
+    with task_manager(None, _Ranks()):
+        assert ngs.GetNumThreads() == 2
+    with task_manager(3, _Ranks()):
+        assert ngs.GetNumThreads() == 3
+    assert settled == [2, 3]
+
+
+def _cores(first, last):
+    return frozenset(range(first, last + 1))
+
+
+def test_partly_overlapping_masks_share_the_cores_both_hold():
+    # a hand-written rankfile: two ranks on 84 cores, 28 of them held by both
+    node = [_cores(0, 55), _cores(28, 83)]
+    assert [_mpi.node_share(mask, node, core=int) for mask in node] == [42, 42]
+
+
+def test_three_ranks_on_one_mask_of_8_cores_get_2_each():
+    node = [_cores(0, 7)] * 3
+    assert _mpi.node_share(node[0], node, core=int) == 2
+
+
+def test_two_ranks_on_the_two_hardware_threads_of_one_core_get_1_each():
+    node = [frozenset({0}), frozenset({1})]
+    assert [_mpi.node_share(m, node, core=lambda _: 0) for m in node] == [1, 1]
+
+
+def test_disjoint_masks_keep_their_own_cores():
+    node = [_cores(0, 4), _cores(5, 7)]
+    assert [_mpi.node_share(mask, node, core=int) for mask in node] == [5, 3]
 
 
 def _sibling_list(cpu):
