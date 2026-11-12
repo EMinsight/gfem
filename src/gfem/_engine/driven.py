@@ -365,7 +365,7 @@ def driven_operator(
     unpaired = disc.space(
         solve_key, lambda: hcurl_space(model, built, order, dirichlet=pec)
     )
-    space, expansion = unpaired, None
+    space, expansion, phases = unpaired, None, None
     if periodic and paired:
         phases = bloch_phases(model, wave_vector)
         key = solve_key = space_key(model, "hcurl", order, periodic=True, phases=phases)
@@ -374,10 +374,12 @@ def driven_operator(
             lambda: hcurl_space(
                 model, built, order, dirichlet=pec, periodic=True, phases=phases
             ),
+            group=phases,
         )
         matrix = disc.space(
             (*key, "expansion"),
             lambda: expansion_matrix(space, unpaired, real=phases is None),
+            group=phases,
         )
         expansion = Expansion(matrix, unpaired)
     ports = terms.lumped_ports(model, built.scale)
@@ -389,7 +391,7 @@ def driven_operator(
         layout = disc.space(key, lambda: RankLayout(space, comm))
     fixed = None
     if comm is None and elements is None and faces is None:
-        fixed = _fixed_pieces(model, disc, solve_key, order, ports)
+        fixed = _fixed_pieces(model, disc, solve_key, order, ports, phases=phases)
     latent: tuple[terms.Piece, ...] = ()
     if not any(p.name == "conductivity" for p in pieces):
         latent = (terms.conductivity_piece(model, built, order, elements=elements),)
@@ -415,11 +417,14 @@ def _fixed_pieces(
     key: tuple,
     order: int,
     ports: tuple[terms.LumpedPortData, ...],
+    *,
+    phases: tuple[complex, ...] | None = None,
 ) -> FixedPieces | None:
     """The split of the volume pieces at ``model``'s material-field regions.
 
     ``None`` when no element, or every element, lies in one (nothing to keep).
-    ``key`` is the solve space's: the store lives with it.
+    ``key`` is the solve space's: the store lives with it, and leaves with
+    its Bloch ``phases`` (`gfem._engine.cache.Discretization.space`).
     """
     mesh = model.mesh
     inside = np.zeros(len(mesh.tetrahedra), bool)
@@ -430,7 +435,7 @@ def _fixed_pieces(
         return None
     built, no_faces = disc.built, np.zeros(len(mesh.triangles), bool)
     return FixedPieces(
-        disc.space((*key, "fixed pieces"), KeptParts),
+        disc.space((*key, "fixed pieces"), KeptParts, group=phases),
         ~inside,
         lambda: terms.pieces(
             model, built, order, ports, elements=inside, faces=no_faces

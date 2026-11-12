@@ -81,7 +81,7 @@ from gfem.results import (  # noqa: E402
     PortModeResult,
     SweepInfo,
 )
-from gfem.solve import solve  # noqa: E402
+from gfem.solve import release_memory, solve  # noqa: E402
 
 __version__ = _version("gfem")
 
@@ -152,6 +152,7 @@ __all__ = [
     "load_result",
     "power_flow",
     "refine_mesh",
+    "release_memory",
     "shape",
     "solve",
 ]

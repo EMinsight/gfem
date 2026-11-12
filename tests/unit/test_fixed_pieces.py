@@ -200,13 +200,17 @@ def _summed(assembled, pattern):
 
 
 def test_the_compiled_piece_sum_matches_the_numpy_sum(monkeypatch):
+    compiled = pieces._csc_matvec
+    if compiled is None:
+        pytest.skip("this SciPy has no compiled pass: the numpy sum is the only one")
     assembled, pattern = _split_pieces()
     calls = []
-    compiled = pieces._csc_matvec
 
     def counted(*args):
+        # only a pass that returned counts: one that refuses falls back
+        out = compiled(*args)
         calls.append(args)
-        return compiled(*args)
+        return out
 
     monkeypatch.setattr(pieces, "_csc_matvec", counted)
     fused = _summed(assembled, pattern)

@@ -24,6 +24,7 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
+from gfem._engine import cache
 from gfem._linalg import pardiso
 
 MM = 1e-3
@@ -403,3 +404,17 @@ def test_per_axis_gradient_on_a_periodic_cell_with_an_absorbing_face(
     assert float(jnp.sum(grad * direction)) == pytest.approx(
         float(fd), rel=AXES_GRAD_TOL
     )
+
+
+def test_a_bloch_solve_gives_the_same_s_after_its_phase_set_was_evicted(c1_mesh):
+    model = pc.c1(c1_mesh)
+    disc = cache.discretization(model.mesh, model._periodic)
+    before = _bloch_s(model, pc.C1_K)
+    keys = len(disc.spaces)
+    for n in range(2, 10):
+        _bloch_s(model, (n * pc.C1_K[0] / 10, 0.0, 0.0))
+    # eight later wave vectors: the first one's spaces left the discretization
+    assert disc.phase_sets == 8
+    assert len(disc.spaces) > keys
+    after = _bloch_s(model, pc.C1_K)
+    assert np.abs(after - before).max() <= 1e-12 * np.abs(before).max()
