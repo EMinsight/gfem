@@ -70,16 +70,23 @@ absorbing = [
     gfem.Absorbing(name[2, tag], order=bnd["Absorbing"]["Order"])
     for tag in bnd["Absorbing"]["Attributes"]
 ]
-ports = [
-    gfem.LumpedPort(
-        f"p{p['Index']}",
-        tuple(name[2, e["Attributes"][0]] for e in p["Elements"]),
-        tuple(e["Direction"] for e in p["Elements"]),
-        impedance=p["R"],
+ports = []
+for p in sorted(bnd["LumpedPort"], key=lambda p: p["Index"]):
+    elements = p.get("Elements", [p])  # a one-face port has no "Elements" list
+    ports.append(
+        gfem.LumpedPort(
+            f"p{p['Index']}",
+            tuple(name[2, e["Attributes"][0]] for e in elements),
+            tuple(e["Direction"] for e in elements),
+            impedance=p["R"],
+        )
     )
-    for p in sorted(bnd["LumpedPort"], key=lambda p: p["Index"])
-]
 ```
+
+A port on one face, such as a microstrip's, carries its `Attributes` and
+`Direction` itself; a port on several faces, such as a coplanar line's two
+gaps, lists them under `Elements`. gsim writes a direction without a sign
+(`"Z"`) for the positive axis, and gfem reads it the same way.
 
 `config.json` gives each material three principal values and a `MaterialAxes`
 frame; they map onto gfem's principal values and `axes`
