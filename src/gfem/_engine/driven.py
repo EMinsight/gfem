@@ -150,6 +150,7 @@ __all__ = [
     "DrivenOperator",
     "DrivenRule",
     "Expansion",
+    "LowFrequencyFloor",
     "check_low_frequency",
     "check_ports_held",
     "driven_operator",
@@ -1661,6 +1662,42 @@ def low_frequency_deferred() -> Generator[None]:
         _LOW_FREQUENCY_DEFERRED.reset(token)
 
 
+@dataclasses.dataclass(frozen=True)
+class LowFrequencyFloor:
+    """A mesh's low-frequency floor, ``k0 h_min = LOW_FREQUENCY_FLOOR``.
+
+    Shared by the driven and the eigenmode checks.
+
+    Attributes:
+        h_min: The shortest edge of the solve domain on the imported nodes, m.
+    """
+
+    h_min: float
+
+    @classmethod
+    def of(cls, model: Model) -> LowFrequencyFloor:
+        """The floor of ``model``'s solve domain."""
+        active = model._domain.active  # noqa: SLF001
+        return cls(float(_shortest_edges(model.mesh)[active].min()))
+
+    @property
+    def frequency(self) -> float:
+        """The floor's frequency, Hz."""
+        return LOW_FREQUENCY_FLOOR * scipy.constants.c / (2 * math.pi * self.h_min)
+
+    def k0h(self, f: Any) -> Any:
+        """``k0 h_min`` at the frequencies ``f`` (Hz), a float or an array."""
+        return 2 * math.pi * f / scipy.constants.c * self.h_min
+
+    def describe(self, k0h: float) -> str:
+        """The message's clause on the floor, at the reported ``k0 h_min``."""
+        return (
+            f"this mesh's low-frequency floor of {hertz(self.frequency, 4)} "
+            f"(k0*h_min = {k0h:.2g} < {LOW_FREQUENCY_FLOOR:g}, with h_min = "
+            f"{self.h_min:.3g} m the shortest edge in the solve domain)"
+        )
+
+
 def check_low_frequency(
     model: Model, frequencies: tuple[float, ...], *, stacklevel: int
 ) -> None:
@@ -1690,21 +1727,17 @@ def _check_low_frequency(
     """
     if _LOW_FREQUENCY_DEFERRED.get() and not force:
         return
-    active = model._domain.active  # noqa: SLF001
-    h_min = float(_shortest_edges(model.mesh)[active].min())
+    floor = LowFrequencyFloor.of(model)
     f = np.asarray(frequencies)
-    k0h = 2 * math.pi * f / scipy.constants.c * h_min
+    k0h = floor.k0h(f)
     low = k0h < LOW_FREQUENCY_FLOOR
     if not low.any():
         return
-    f_floor = LOW_FREQUENCY_FLOOR * scipy.constants.c / (2 * math.pi * h_min)
     lowest = int(np.argmin(f))
     msg = (
         f"Driven: {int(low.sum())} of {len(f)} frequencies, the lowest "
-        f"{f[lowest]:.4g} Hz, are below this mesh's low-frequency floor of "
-        f"{f_floor:.4g} Hz (k0*h_min = {k0h[lowest]:.2g} < "
-        f"{LOW_FREQUENCY_FLOOR:g}, with h_min = {h_min:.3g} m the shortest edge "
-        "in the solve domain). Below it the fields and their gradients, and "
+        f"{hertz(f[lowest], 4)}, are below {floor.describe(k0h[lowest])}. "
+        "Below it the fields and their gradients, and "
         "with linear_solver='direct', or 'petsc' with its default "
         "factorization, the capacitive part of S, "
         "carry rounding errors up to about 1e-16/(k0*h_min)^2, and MKL "
