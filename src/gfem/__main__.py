@@ -44,7 +44,8 @@ def _parser() -> argparse.ArgumentParser:
         "--device",
         metavar="DEVICE",
         help="override the job's SolverOptions.device: cpu, cuda or cuda:N "
-        "(recorded in result.json)",
+        "(recorded in result.json); a job whose linear_solver is 'auto' runs "
+        "the direct solver on a GPU",
     )
     return parser
 

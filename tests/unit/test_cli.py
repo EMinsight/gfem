@@ -56,6 +56,17 @@ def test_device_override_is_recorded(model, tmp_path):
     assert run["options"]["device"] == "cpu"
 
 
+def test_an_auto_job_written_for_a_gpu_runs_the_cpu_default(model, tmp_path):
+    job = _job(model, tmp_path, device="cuda")
+    assert gfem.Job.from_json(job).options == gfem.SolverOptions(order=1, device="cuda")
+    out = tmp_path / "results"
+    assert main(["run", str(job), "--out", str(out), "--device", "cpu"]) == 0
+    assert (
+        json.loads((out / "result.json").read_text())["run"]["options"]["linear_solver"]
+        == "auto"
+    )
+
+
 def test_no_override_records_the_job_device(model, tmp_path):
     out = tmp_path / "results"
     assert main(["run", str(_job(model, tmp_path)), "--out", str(out)]) == 0
@@ -92,6 +103,22 @@ def test_a_gpu_job_without_a_gpu_names_the_cuda_error(
     assert "DeviceUnavailableError" in err
     assert "CUDA_ERROR_NO_DEVICE" in err
     assert "--device cpu" in err
+    _cuda.probe.cache_clear()
+
+
+def test_a_default_job_sent_to_a_missing_gpu_names_the_cuda_error(
+    model, tmp_path, capsys, monkeypatch
+):
+    # "auto" is the direct solver on a GPU, so the run reaches the GPU check
+    monkeypatch.setattr(_cuda, "_query", lambda: _cuda.Probe(0, "CUDA_ERROR_NO_DEVICE"))
+    _cuda.probe.cache_clear()
+    job = _job(model, tmp_path)
+    out = tmp_path / "r"
+    assert main(["run", str(job), "--out", str(out), "--device", "cuda"]) == 1
+    err = capsys.readouterr().err
+    assert "DeviceUnavailableError" in err
+    assert "CUDA_ERROR_NO_DEVICE" in err
+    assert "ValueError" not in err
     _cuda.probe.cache_clear()
 
 
