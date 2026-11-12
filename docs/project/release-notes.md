@@ -47,6 +47,12 @@ Optimization and gradients:
   factorization, and their S and gradients can differ within `tolerance`. The
   default `linear_solver="auto"` picks `"bddc_gmres"` for a driven problem, which
   sets up again at every design. See {doc}`../recipes/s-parameter-gradient`.
+  Per step on one MN5 node (Intel Xeon Platinum 8480+), main at 129c4ad against
+  this release's code (measured at 135fbfd), 8 threads: the 2D bend tutorial
+  0.77 → 0.48 s, the harmonic filter tutorial's three variants 0.54 → 0.30 s with
+  peak memory 11.2 → 1.4 GiB, a 3D bend of 381 134 unknowns 11.1 → 9.1 s with peak
+  memory 18.1 → 7.5 GiB; the 3D bend tutorial's model, 2.49 M unknowns, 16 threads,
+  `retain_memory` at 64 GiB: 100 → 92 s.
   - **Behaviour change.** `retain_memory` now bounds everything gfem keeps between
     solves, these kept parts and couplings included; 0 keeps nothing and
     factorizes every design. A direct solve on an earlier design's factorization
