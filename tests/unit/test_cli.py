@@ -7,6 +7,7 @@ import sys
 import numpy as np
 import pytest
 import structured_meshes as sm
+from solver_misses import cannot_converge_at
 
 import gfem
 from gfem import _cuda, _petsc
@@ -56,6 +57,17 @@ def test_device_override_is_recorded(model, tmp_path):
     assert run["options"]["device"] == "cpu"
 
 
+def test_an_auto_job_written_for_a_gpu_runs_the_cpu_default(model, tmp_path):
+    job = _job(model, tmp_path, device="cuda")
+    assert gfem.Job.from_json(job).options == gfem.SolverOptions(order=1, device="cuda")
+    out = tmp_path / "results"
+    assert main(["run", str(job), "--out", str(out), "--device", "cpu"]) == 0
+    assert (
+        json.loads((out / "result.json").read_text())["run"]["options"]["linear_solver"]
+        == "auto"
+    )
+
+
 def test_no_override_records_the_job_device(model, tmp_path):
     out = tmp_path / "results"
     assert main(["run", str(_job(model, tmp_path)), "--out", str(out)]) == 0
@@ -95,6 +107,22 @@ def test_a_gpu_job_without_a_gpu_names_the_cuda_error(
     _cuda.probe.cache_clear()
 
 
+def test_a_default_job_sent_to_a_missing_gpu_names_the_cuda_error(
+    model, tmp_path, capsys, monkeypatch
+):
+    # "auto" is the direct solver on a GPU, so the run reaches the GPU check
+    monkeypatch.setattr(_cuda, "_query", lambda: _cuda.Probe(0, "CUDA_ERROR_NO_DEVICE"))
+    _cuda.probe.cache_clear()
+    job = _job(model, tmp_path)
+    out = tmp_path / "r"
+    assert main(["run", str(job), "--out", str(out), "--device", "cuda"]) == 1
+    err = capsys.readouterr().err
+    assert "DeviceUnavailableError" in err
+    assert "CUDA_ERROR_NO_DEVICE" in err
+    assert "ValueError" not in err
+    _cuda.probe.cache_clear()
+
+
 def test_a_petsc_job_without_petsc4py_exits_1(model, tmp_path, capsys, monkeypatch):
     monkeypatch.setitem(sys.modules, "petsc4py", None)
     _petsc.require_petsc.cache_clear()
@@ -106,6 +134,37 @@ def test_a_petsc_job_without_petsc4py_exits_1(model, tmp_path, capsys, monkeypat
     assert "petsc4py" in err
     assert not (out / "result.json").exists()
     _petsc.require_petsc.cache_clear()
+
+
+def test_a_sweep_that_stops_exits_1_and_says_where_the_partial_result_is(
+    tmp_path, capsys, monkeypatch
+):
+    path = sm.write_msh22(
+        tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (10, 1, 1))
+    )
+    line = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"dielectric": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+    f = (2e9, 3e9, 4e9, 5e9, 6e9)
+    job = gfem.Job(
+        line, gfem.Driven(frequency=f), gfem.SolverOptions(linear_solver="bddc_gmres")
+    ).to_json(tmp_path / "job.json")
+    out = tmp_path / "results"
+    cannot_converge_at(monkeypatch, (f[2],))
+    assert main(["run", str(job), "--out", str(out)]) == 1
+    error, note = capsys.readouterr().err.splitlines()
+    assert error.startswith("gfem: error: LinearSolverConvergenceError: At 4e+09 Hz")
+    assert note.startswith(
+        f"gfem: note: The partial result (2 of 5 frequencies) is in {out}"
+    )
+    assert gfem.load_result(out / "partial.json").s.frequency == f[:2]
+    assert not (out / "result.json").exists()
 
 
 def test_a_broken_job_exits_1(model, tmp_path, capsys):
@@ -122,6 +181,21 @@ def test_a_newer_job_exits_1_asking_for_an_upgrade(model, tmp_path, capsys):
     job.write_text(json.dumps(doc))
     assert main(["run", str(job), "--out", str(tmp_path / "r")]) == 1
     assert "upgrade gfem" in capsys.readouterr().err
+
+
+def test_a_job_with_an_unknown_entry_exits_1_asking_for_an_upgrade(
+    model, tmp_path, capsys
+):
+    job = _job(model, tmp_path)
+    doc = json.loads(job.read_text())
+    doc["gfem_version"] = "99.0"
+    doc["job"]["options"]["field_of_a_newer_gfem"] = 1
+    job.write_text(json.dumps(doc))
+    assert main(["run", str(job), "--out", str(tmp_path / "r")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("gfem: error: ValueError:")
+    assert "SolverOptions has no 'field_of_a_newer_gfem'" in err
+    assert "upgrade gfem" in err
 
 
 @pytest.mark.parametrize(

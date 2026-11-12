@@ -5,9 +5,13 @@ sha256) and, when the job has arrays, a ``.npz`` sidecar next to it. The
 sidecar stores every array of the job (material fields, moved mesh nodes, a
 refined mesh, which has no file, ...), keyed by where it sits in the job, e.g.
 ``.model.materials['oxide'].eps_r``. A result bundle is a directory with
-``result.json`` and ``result.npz``. Both documents carry ``schema_version``
+``result.json`` and ``result.npz``. A uniform sweep that stops at an unsolved
+frequency leaves a partial bundle there instead, ``partial.json`` and
+``partial.npz``: the same layout, holding the partial result, never under the
+name ``result.json``. Both documents carry ``schema_version``
 and ``gfem_version``: gfem reads older schema versions and refuses newer
-ones.
+ones, and it refuses by name any entry it does not know (one a newer gfem
+wrote, or a misspelt one).
 
 Run a job bundle with ``python -m gfem run job.json --out results/`` (or
 `Job.run`), and read the result back with `load_result`.
@@ -46,6 +50,7 @@ from gfem._materials import Material, MaterialField
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
 from gfem._sheet import SheetField
+from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
 from gfem.mesh import _TOPOLOGY_ARRAYS, Mesh, Region, _Topology
 from gfem.model import EnclosedBy, Model
@@ -70,6 +75,8 @@ _JOB_FORMAT = "gfem.job"
 _RESULT_FORMAT = "gfem.result"
 RESULT_JSON = "result.json"
 RESULT_NPZ = "result.npz"
+PARTIAL_JSON = "partial.json"
+PARTIAL_NPZ = "partial.npz"
 #: A job's JSON among its arrays on the way across ranks; leaf paths start with ".".
 _DOCUMENT = "$document"
 
@@ -125,7 +132,8 @@ class Job:
         Args:
             out: If given, a directory to write the result bundle to
                 (``result.json`` and ``result.npz``, read by `load_result`).
-                Across ranks this is collective and rank 0 writes.
+                Across ranks this is collective and rank 0 writes. A partial
+                bundle left there by an earlier run is removed.
             device: Overrides ``options.device`` (e.g. a job written for a
                 GPU run on a CPU machine). The bundle records the device used.
             comm: The communicator, as for `gfem.solve`; not part of the job,
@@ -136,6 +144,15 @@ class Job:
 
         Raises:
             OSError: Rank 0 cannot write the bundle; on every rank.
+            gfem.LinearSolverConvergenceError: A linear solve did not
+                converge. When a uniform sweep stopped with a partial result
+                and ``out`` is given, the partial result is written there
+                first as a partial bundle, ``partial.json`` and
+                ``partial.npz`` (never ``result.json``, and a ``result.json``
+                of an earlier run is left alone), and the error carries a
+                note saying where it is. Read it with
+                ``gfem.load_result(out / "partial.json")``; its ``run`` entry
+                lists the unsolved frequencies.
         """
         options = self.options
         if device is not None:
@@ -146,22 +163,26 @@ class Job:
                 raise _mpi.agreed(err) from None
         resolved = _mpi.resolve_comm(comm)
         start = time.perf_counter()
-        result = solve(self.model, self.problem, options=options, comm=comm)
-        elapsed = time.perf_counter() - start
+
+        def run() -> dict[str, Any]:
+            return {
+                "device": options.device,
+                "device_override": device,
+                "options": options,
+                "ranks": 1 if resolved is None else resolved.size,
+                "wall_time_s": time.perf_counter() - start,
+            }
+
+        try:
+            result = solve(self.model, self.problem, options=options, comm=comm)
+        except LinearSolverConvergenceError as err:
+            if out is not None and err.result is not None:
+                _keep_partial(Path(out), err, err.result, run(), resolved)
+            raise
         if out is not None:
+            entry = run()
             with _mpi.section(resolved):
-                _write_result(
-                    Path(out),
-                    result,
-                    {
-                        "device": options.device,
-                        "device_override": device,
-                        "options": options,
-                        "ranks": 1 if resolved is None else resolved.size,
-                        "wall_time_s": elapsed,
-                    },
-                    resolved,
-                )
+                _write_result(Path(out), result, entry, resolved)
         return result
 
     def to_json(self, path: str | Path) -> Path:
@@ -219,8 +240,8 @@ class Job:
         Raises:
             FileNotFoundError: The JSON file, its sidecar or its mesh is
                 missing.
-            ValueError: Not a job file, a newer schema version, a type this
-                gfem does not know, or a mesh file that changed.
+            ValueError: Not a job file, a newer schema version, a type or an
+                entry this gfem does not know, or a mesh file that changed.
             RuntimeError: Ranks asked for different paths.
         """
         path = Path(path)
@@ -252,7 +273,9 @@ def load_result(path: str | Path, *, comm: Any = None) -> Any:
     errors below raise only on one process.
 
     Args:
-        path: The result directory, or its ``result.json``.
+        path: The result directory, or its ``result.json``. A partial bundle
+            is read by its file, ``DIR/partial.json``: it returns the partial
+            result, over the solved frequencies only.
         comm: The communicator, as for `gfem.solve`. ``MPI.COMM_SELF`` under a
             launcher reads a bundle with fields as one-process fields.
 
@@ -261,12 +284,22 @@ def load_result(path: str | Path, *, comm: Any = None) -> Any:
         as the in-process solve.
 
     Raises:
-        FileNotFoundError: No ``result.json``, or its sidecar is missing.
-        ValueError: Not a result file, or a newer schema version.
+        FileNotFoundError: No ``result.json`` (the message says when the
+            directory holds a partial bundle instead), or its sidecar is
+            missing.
+        ValueError: Not a result file, a newer schema version, or an entry
+            this gfem does not know.
         gfem.DistributedUnsupportedError: A bundle with fields, above one rank.
     """
     path = Path(path)
     if path.is_dir():
+        partial = path / PARTIAL_JSON
+        if not (path / RESULT_JSON).is_file() and partial.is_file():
+            raise FileNotFoundError(
+                f"No {RESULT_JSON} in {path}, only a partial result: the run "
+                "stopped at an unsolved frequency. Read it with "
+                f'gfem.load_result("{partial}").'
+            )
         path /= RESULT_JSON
     resolved = _mpi.resolve_comm(comm)
     with _mpi.section(resolved):
@@ -285,8 +318,50 @@ def _holds_a_mesh(value: Any) -> bool:
     return isinstance(value, list) and any(map(_holds_a_mesh, value))
 
 
-def _write_result(out: Path, result: Any, run: dict[str, Any], comm: Any) -> None:
-    """Write the bundle on rank 0, each field gathered in one-process numbering."""
+def _keep_partial(
+    out: Path,
+    err: LinearSolverConvergenceError,
+    result: DrivenResult,
+    run: dict[str, Any],
+    comm: Any,
+) -> None:
+    """Write ``err``'s partial ``result`` as a partial bundle and note it on ``err``.
+
+    A write that fails is noted too: the solver's error stays the one raised.
+    """
+    run = run | {"unsolved": err.unsolved, "error": f"{type(err).__name__}: {err}"}
+    try:
+        with _mpi.section(comm):
+            _write_result(out, result, run, comm, partial=True)
+    except (OSError, TypeError, ValueError) as failure:
+        err.add_note(
+            f"The partial result could not be written to {out}: "
+            f"{type(failure).__name__}: {failure}"
+        )
+        return
+    solved = len(result.s.frequency)
+    path = out / PARTIAL_JSON
+    note = (
+        f"The partial result ({solved} of {solved + len(err.unsolved or ())} "
+        f'frequencies) is in {path}: read it with gfem.load_result("{path}"). '
+        'Its "run" entry lists the unsolved frequencies.'
+    )
+    if (out / RESULT_JSON).is_file():
+        note += f" {out / RESULT_JSON} is the complete result of an earlier run."
+    err.add_note(note)
+
+
+def _write_result(
+    out: Path, result: Any, run: dict[str, Any], comm: Any, *, partial: bool = False
+) -> None:
+    """Write the bundle on rank 0, each field gathered in one-process numbering.
+
+    A partial result is written as a partial bundle, next to any result bundle;
+    a complete one removes a partial bundle first.
+    """
+    json_name, npz_name = (
+        (PARTIAL_JSON, PARTIAL_NPZ) if partial else (RESULT_JSON, RESULT_NPZ)
+    )
     if comm is not None:
         if is_traced(result):
             raise _mpi.agreed(
@@ -308,16 +383,18 @@ def _write_result(out: Path, result: Any, run: dict[str, Any], comm: Any) -> Non
         body = encoder.encode(result)
         run_json = encoder.encode(run, ".run")
         doc = _codec.header(_RESULT_FORMAT) | {
-            "arrays": RESULT_NPZ if encoder.arrays else None,
+            "arrays": npz_name if encoder.arrays else None,
             "run": run_json,
             "result": body,
         }
         if encoder.arrays:
-            _save_npz(out / RESULT_NPZ, encoder.arrays)
+            _save_npz(out / npz_name, encoder.arrays)
+        if not partial:
+            # a stale partial bundle would contradict the result
+            (out / PARTIAL_JSON).unlink(missing_ok=True)
+            (out / PARTIAL_NPZ).unlink(missing_ok=True)
         # result.json last: its presence means the bundle is complete.
-        (out / RESULT_JSON).write_text(
-            json.dumps(doc, indent=1, allow_nan=False) + "\n"
-        )
+        (out / json_name).write_text(json.dumps(doc, indent=1, allow_nan=False) + "\n")
         return {}
 
     _mpi.on_root(comm, write, results=(OSError, TypeError, ValueError))
@@ -367,7 +444,13 @@ def _decode(
 ) -> Any:
     if key not in doc:
         raise ValueError(f"{path} has no {key!r} entry.")
-    decoder = _codec.Decoder(_codec.Context(path.parent.resolve(), comm), arrays)
+    written_by = doc.get("gfem_version")
+    decoder = _codec.Decoder(
+        _codec.Context(path.parent.resolve(), comm),
+        arrays,
+        path=path,
+        written_by=written_by if isinstance(written_by, str) else None,
+    )
     return decoder.decode(doc[key])
 
 
@@ -555,10 +638,30 @@ def _job_from_args(args: dict[str, Any], _: _codec.Context) -> Job:
     return Job(args["model"], args["problem"], args.get("options", SolverOptions()))
 
 
-_codec.register(Mesh, to_args=_mesh_args, from_args=_mesh_from_args)
+#: What a job file's mesh may hold: a file reference, or a mesh with no file.
+_MESH_NAMES = (
+    "path",
+    "sha256",
+    "length_unit",
+    "nodes",
+    "source",
+    "regions",
+    *_TOPOLOGY_ARRAYS,
+)
+
+_codec.register(Mesh, to_args=_mesh_args, from_args=_mesh_from_args, names=_MESH_NAMES)
 _codec.register(Region)
-_codec.register(Model, to_args=_model_args, from_args=_model_from_args)
-_codec.register(EnclosedBy, from_args=lambda a, _: EnclosedBy(tuple(a["surfaces"])))
+_codec.register(
+    Model,
+    to_args=_model_args,
+    from_args=_model_from_args,
+    names=("mesh", "materials", "boundaries", "ports", "excluded"),
+)
+_codec.register(
+    EnclosedBy,
+    from_args=lambda a, _: EnclosedBy(tuple(a["surfaces"])),
+    names=("surfaces",),
+)
 for _cls in (
     Material,
     MaterialField,
@@ -584,11 +687,23 @@ for _cls in (
     InterfaceParticipation,
 ):
     _codec.register(_cls)
-_codec.register(Field, to_args=_field_args)
+_codec.register(
+    Field,
+    to_args=_field_args,
+    names=[f.name for f in dataclasses.fields(Field) if f.name != "_comm"],
+)
 _codec.register(SolverOptions, to_args=_options_args)
-_codec.register(PortSection, from_args=_port_section_from_args)
+_codec.register(
+    PortSection,
+    from_args=_port_section_from_args,
+    # "sigma": the scalar conductivity of sections saved by 0.1.0
+    names=[f.name for f in dataclasses.fields(PortSection) if f.init] + ["sigma"],
+)
 _codec.register(Electrostatic, to_args=_electrostatic_args)
 _codec.register(
-    PortModeField, to_args=_port_mode_field_args, from_args=_port_mode_field_from_args
+    PortModeField,
+    to_args=_port_mode_field_args,
+    from_args=_port_mode_field_from_args,
+    names=("section", "order", "basis", "coords"),
 )
-_codec.register(Job, from_args=_job_from_args)
+_codec.register(Job, from_args=_job_from_args, names=("model", "problem", "options"))
