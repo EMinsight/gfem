@@ -315,7 +315,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             was not excited or a mode the result does not hold.
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
-            adaptive sweep, a periodic model, another result type, or a
+            adaptive sweep, a periodic model, another result type, a result
+            solved at order 1, or a
             quantity entry with no verified estimate (see
             `QuantityEstimator`).
         DegenerateModeError: A `QuantityEstimator` names a mode of a
@@ -418,7 +419,8 @@ def refine_mesh(
             that is not excited or a mode index at or above ``n_modes``.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
-            port mode problem, a periodic model or a Bloch wave vector, or a
+            port mode problem, a periodic model or a Bloch wave vector,
+            ``options.order=1`` (the ``"fast"`` preset), or a
             quantity entry with no verified estimate (see
             `QuantityEstimator`).
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
@@ -447,6 +449,7 @@ def refine_mesh(
     if isinstance(estimator, QuantityEstimator):
         _check_quantity_keys(estimator, problem, model)
         _check_quantity_model(estimator, model)
+    _check_order(options.order, estimator)
     if _mpi.resolve_comm(comm) is not None:
         _mpi.refuse_feature("mesh refinement")
     _check_parameters(problem, options, tolerance, error_fraction, max_cycles)
@@ -912,6 +915,7 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         )
     if isinstance(result, DrivenResult):
         _check_kept(result, estimator)
+    _check_order(_fields(result)[0].order, estimator)
     mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
         np.asarray(mesh.nodes), np.asarray(model.mesh.nodes)
@@ -919,6 +923,19 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         raise ValueError(
             "error_estimate needs the model the result was solved on: the "
             "result's fields live on another mesh, or on other node positions."
+        )
+
+
+def _check_order(order: int, estimator: Estimator) -> None:
+    """Raise at order 1, where no estimate is verified."""
+    if order == 1:
+        raise MeshRefinementUnsupportedError(
+            "order 1",
+            f"gfem.{type(estimator).__name__} has no verified estimate at order 1: "
+            "there, the frequency of a thin layer meshed with one cell across "
+            "its thickness moved away from the exact one as the mesh was "
+            "refined, and the estimate missed it. Solve at order 2 or 3 "
+            "(gfem.SolverOptions(order=2)).",
         )
 
 
