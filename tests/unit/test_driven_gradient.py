@@ -279,6 +279,57 @@ def test_principal_values_beside_a_second_order_wall_of_isotropic_material(
     assert_gradient_matches(objective, eps, directions, step=STEPS["eps_r"])
 
 
+def _conductivity_objective(line):
+    n = len(line.mesh.tetrahedra)
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(sigma):
+        field = gfem.MaterialField(eps_r=jnp.full(n, 3.0), conductivity=sigma)
+        model = line.with_material("dielectric", field)
+        s = gfem.solve(model, gfem.Driven(F), options=options).s.values
+        return jnp.sum(jnp.abs(s) ** 2 * jnp.array([[1.0, 0.5], [2.0, -1.0]]))
+
+    return objective
+
+
+def test_conductivity_gradient_at_zero_conductivity_matches_finite_differences(line):
+    # no conductivity matrix is assembled when sigma is 0 everywhere, but the
+    # derivative there is not zero: the backward keeps the term
+    n = len(line.mesh.tetrahedra)
+    objective = _conductivity_objective(line)
+    d = np.abs(np.random.default_rng(0).standard_normal(n))
+    d /= np.linalg.norm(d)
+    zero = jnp.zeros(n)
+    along = float(np.asarray(jax.grad(objective)(zero)) @ d)
+    # sigma < 0 is refused: a one-sided second-order difference
+    h = 1e-3
+    f0, f1, f2 = (float(objective(zero + k * h * d)) for k in (0, 1, 2))
+    np.testing.assert_allclose(along, (-3 * f0 + 4 * f1 - f2) / (2 * h), rtol=1e-5)
+    beside = float(np.asarray(jax.grad(objective)(zero + 1e-12)) @ d)
+    np.testing.assert_allclose(along, beside, rtol=1e-9)
+
+
+def test_a_lossless_interpolated_design_keeps_its_gradient(line):
+    # interpolating between lossless materials carries a traced conductivity
+    # of zeros; the kept conductivity term must add nothing to d/d(rho)
+    n = len(line.mesh.tetrahedra)
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(rho):
+        field = gfem.MaterialField.interpolate(
+            rho, gfem.Material(eps_r=1.0), gfem.Material(eps_r=4.0)
+        )
+        model = line.with_material("dielectric", field)
+        s = gfem.solve(model, gfem.Driven(F), options=options).s.values
+        return jnp.sum(jnp.abs(s) ** 2 * jnp.array([[1.0, 0.5], [2.0, -1.0]]))
+
+    rng = np.random.default_rng(0)
+    rho = jnp.asarray(rng.uniform(0.2, 0.8, n))
+    assert_gradient_matches(
+        objective, rho, unit_directions(rng, rho.shape, 2), step=1e-2
+    )
+
+
 def test_unexcited_port_rows_use_an_adjoint_solve(line):
     values, _ = _values(line)
     full = jax.grad(_objective(line, values, "eps_r"))(values["eps_r"])

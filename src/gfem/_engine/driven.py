@@ -208,6 +208,10 @@ class DrivenOperator:
             what a solver plan of the operator is pooled under (ADR 0082).
         space_key: ``space``'s key in its discretization (order, `PEC`
             surfaces, periodic pairs and phases).
+        latent: Pieces whose matrix is zero at this design, so that no
+            forward assembles them, but whose derivative is not: the
+            conductivity piece where the conductivity is zero everywhere.
+            Only a backward pass reads them (`weights`, `operator_terms`).
     """
 
     built: EngineMesh
@@ -221,6 +225,7 @@ class DrivenOperator:
     fixed: FixedPieces | None = None
     topology: Any = None
     space_key: tuple = ()
+    latent: tuple[terms.Piece, ...] = ()
 
     def expand(self, x: np.ndarray) -> np.ndarray:
         """``P x``: solve-space coefficients ``(ndof, ...)`` on the unpaired space."""
@@ -286,9 +291,12 @@ class DrivenOperator:
         (`operator_terms`, which leaves the ports' pieces out too).
         The ports' pieces are design-independent (a port's R, L, C, its
         surface and a wave port's mode are fixed), so no pair carries them.
+        The `latent` pieces are included: their derivative is not zero.
         """
         return {
-            p.name: complex(p.theta(omega)) for p in self.pieces if p.kind != "port"
+            p.name: complex(p.theta(omega))
+            for p in (*self.pieces, *self.latent)
+            if p.kind != "port"
         }
 
     def wavenumber(self, omega: float) -> float:
@@ -381,6 +389,9 @@ def driven_operator(
     fixed = None
     if comm is None and elements is None and faces is None:
         fixed = _fixed_pieces(model, disc, solve_key, order, ports)
+    latent: tuple[terms.Piece, ...] = ()
+    if not any(p.name == "conductivity" for p in pieces):
+        latent = (terms.conductivity_piece(model, built, order, elements=elements),)
     return DrivenOperator(
         built,
         space,
@@ -393,6 +404,7 @@ def driven_operator(
         fixed,
         topology=model.mesh._topology,  # noqa: SLF001
         space_key=solve_key,
+        latent=latent,
     )
 
 
@@ -1411,9 +1423,10 @@ class DrivenRule:
 def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Term]:
     """The pieces of ``model``'s driven operator as the kernel sees them.
 
-    One `Term` per piece but the ports': a port's pieces, right-hand side
-    and voltage read only its own surface and fixed values, which no
-    gradient moves (shape gradients hold port surfaces in place). Each term
+    One `Term` per piece, latent ones included, but the ports': a port's
+    pieces, right-hand side and voltage read only its own surface and fixed
+    values, which no gradient moves (shape gradients hold port surfaces in
+    place). Each term
     carries its piece's material derivatives, face owners and sheet factor.
     The eigenmode rule's operator is the same pieces, so it shares these.
 
@@ -1430,7 +1443,7 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
     if nodes:
         check_ports_held(model)
     out = []
-    for piece in op.pieces:
+    for piece in (*op.pieces, *op.latent):
         if piece.kind == "port":
             continue
         common: dict[str, Any] = {

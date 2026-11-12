@@ -47,6 +47,27 @@ def test_conductor_mode_gradient_matches_finite_differences(line):
     assert_gradient_matches(objective, eps, directions, step=1e-2)
 
 
+def test_omega_gradient_by_conductivity_at_zero_conductivity(line):
+    # no conductivity matrix (and no damping) at sigma = 0, yet the mode's
+    # frequency moves with sigma to first order (its damping rate)
+    eps = ramp(line, "dielectric", 3.5, 4.5)
+    n = eps.shape[0]
+
+    def objective(sigma):
+        result = gfem.solve(
+            terminated(line, eps, sigma), gfem.Eigenmode(target=7e9), options=TIGHT
+        )
+        return jnp.real(result.omega[0] * OMEGA_WEIGHT)
+
+    d = np.abs(np.random.default_rng(2).standard_normal(n))
+    d /= np.linalg.norm(d)
+    zero = jnp.zeros(n)
+    along = float(np.asarray(jax.grad(objective)(zero)) @ d)
+    h = 1e-3
+    f0, f1, f2 = (float(objective(zero + k * h * d)) for k in (0, 1, 2))
+    np.testing.assert_allclose(along, (-3 * f0 + 4 * f1 - f2) / (2 * h), rtol=1e-5)
+
+
 CORE, TAIL, WIDTH, HEIGHT = 3.0, 3.0, 10.0, 1.0  # mm
 
 
