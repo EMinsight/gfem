@@ -137,19 +137,33 @@ def interface_participation(
     - ``"SA"`` (substrate-air): ``t * (eps_r |E_t|^2 + |E_n|^2 / eps_r)``,
       ``E`` on the vacuum side.
     - ``"default"``: ``t * eps_r * |E|^2``, ``E`` averaged over the two
-      sides of an interior surface.
+      sides of an interior surface. Not for a film with the same medium on
+      both faces: there the two faces' normal fields are opposite and the
+      mean cancels.
 
     each times ``eps0 / 2`` and integrated over the surface. A medium is
     vacuum when no wave in it is slower than in vacuum: its slowest light
     speed, from its largest principal ``eps_r`` and ``mu_r``, is that of
     vacuum (to 1e-6), so an anisotropic side such as ``eps_r = (1, 1, 4)`` is
-    not vacuum. The layer itself is isotropic. Where both sides are of the
-    wanted kind, the two sides' values are averaged; where neither is
-    (``"MA"`` on a plate under substrate), the surface adds nothing. Sides
-    inside volumes the model excludes from the solve (metal) do not count. The
-    participation is that energy over the mode's electric energy ``E`` (1 J,
-    see `gfem.conventions`), and ``participation * tan_delta`` is the layer's
-    contribution to ``1 / Q``.
+    not vacuum. The layer itself is isotropic. For ``"MA"`` and ``"MS"``
+    each side of the wanted kind carries its own layer and the layers'
+    energies add: a film with vacuum on both faces has one oxide per face,
+    and its ``"MA"`` participation is the sum of the two faces'. Asked on a
+    surface that is not a film and has the same medium on both sides, they
+    count the layer twice, which is a misuse. For ``"SA"`` and ``"default"``
+    the field is averaged over the sides of the wanted kind. Where no side
+    is of the wanted kind (``"MA"`` on a plate under substrate), the surface
+    adds nothing. Sides inside volumes the model excludes from the solve
+    (metal) do not count. The participation is that energy over the mode's
+    electric energy ``E`` (1 J, see `gfem.conventions`), and
+    ``participation * tan_delta`` is the layer's contribution to ``1 / Q``.
+
+    On a zero-thickness film the field at the film edge is singular, and the
+    participation of a layer that reaches the edge grows without bound as
+    the mesh is refined there: by about 6 to 7 % of its value each time the
+    edge cells are halved, on a 10 um strip. It is not a mesh-converged
+    number. Compare designs on meshes with the same edge cell size, and take
+    that size near the real film thickness for an absolute value.
 
     Differentiable with respect to ``thickness``, ``eps_r``, ``tan_delta``,
     the mode fields and the substrate's `MaterialField` permittivity (the
@@ -319,17 +333,18 @@ def _layer_energy(
     if kind == "default":
         density = eps_l * _norm2(_average(e, ex))
     elif kind == "MS":
+        # one layer per selected side (ADR 0106): density per side, then summed
         d = jnp.einsum("tsij,mtsqj->mtsqi", eps_side, e)
-        dn = jnp.einsum("mtqi,ti->mtq", _average(d, ex & ~vacuum), normal)
-        density = _sq(dn) / eps_l
-    else:
+        dn = jnp.einsum("mtsqi,ti->mtsq", d, normal)
+        density = _sum_sides(_sq(dn), ex & ~vacuum) / eps_l
+    elif kind == "MA":
+        en = jnp.einsum("mtsqi,ti->mtsq", e, normal)
+        density = _sum_sides(_sq(en), ex & vacuum) / eps_l
+    else:  # SA
         selected = _average(e, ex & vacuum)
         en = jnp.einsum("mtqi,ti->mtq", selected, normal)
-        if kind == "MA":
-            density = _sq(en) / eps_l
-        else:  # SA
-            et = selected - en[..., None] * normal[None, :, None, :]
-            density = eps_l * _norm2(et) + _sq(en) / eps_l
+        et = selected - en[..., None] * normal[None, :, None, :]
+        density = eps_l * _norm2(et) + _sq(en) / eps_l
     return 0.5 * const.epsilon_0 * thickness * jnp.einsum("mtq,tq->m", density, weights)
 
 
@@ -361,6 +376,12 @@ def _average(x: jax.Array, selected: jax.Array) -> jax.Array:
     w = w / count[:, None]
     shape = (1, *w.shape, 1) + (1,) * (x.ndim - 4)
     return (x * w.reshape(shape)).sum(axis=2)
+
+
+def _sum_sides(x: jax.Array, selected: jax.Array) -> jax.Array:
+    """Sum over the selected sides: ``(m, t, 2, q)`` -> ``(m, t, q)``."""
+    w = selected.astype(float)
+    return (x * w[None, :, :, None]).sum(axis=2)
 
 
 def _media(

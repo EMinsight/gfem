@@ -294,6 +294,21 @@ def test_coupling_q_of_weakly_coupled_ports_adds_up_to_the_mode_q(mesh):
     np.testing.assert_allclose(1 / q1 + 1 / q2, 1 / q, rtol=5 / q)
 
 
+def test_loss_budget_splits_add_up_to_one_over_q(mesh):
+    # the losses in the model are in 1/Q; the substrate's share and the
+    # port's are splits of it that add up to it, to first order in the loss
+    tan_delta = 2e-4
+    port = gfem.LumpedPort("p1", "port1", "+z", impedance=1e5)
+    model = line(mesh, ports=[port], tan_delta=tan_delta)
+    result = gfem.solve(model, gfem.Eigenmode(target=8e9))
+    q = float(result.q[0])
+    bulk = float(result.bulk_participation["dielectric"][0])
+    q_port = float(result.q_port["p1"][0])
+    # both channels are a sizeable part of the budget
+    assert 0.2 < bulk * tan_delta * q < 0.8
+    np.testing.assert_allclose(bulk * tan_delta + 1 / q_port, 1 / q, rtol=1 / q)
+
+
 def test_target_far_below_the_mode_still_finds_the_resonance(mesh):
     # the curl-curl null space (frequency 0) is nearer the shift than the mode:
     # the divergence-free projection keeps it out

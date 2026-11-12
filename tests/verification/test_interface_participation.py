@@ -17,8 +17,14 @@ energy of a thin layer on a plate or an interface.
   under a vacuum line, two homogeneous (TEM) resonators with one-sided
   fields on each face of the sheet. The vacuum line's mode has MA
   t / (eps_MA H2) on the sheet (vacuum side) and no MS; the substrate
-  line's mode has MS t eps / (eps_MS H1) (substrate side) and no MA; the
-  default kind averages the two sides, so it sees half the vacuum field.
+  line's mode has MS t eps / (eps_MS H1) (substrate side) and no MA. Each
+  face carries its own MA or MS layer and the faces add (ADR 0106); with one
+  vacuum and one substrate face, each kind has one face, so the sum is that
+  face alone. The default kind averages the two sides, so it sees half the
+  vacuum field.
+- ``film``: a PEC strip in a box mirror symmetric about it; with vacuum on
+  both faces MA is the sum of the two faces' layers, each read alone by
+  making the other side's permittivity 1.0001.
 
 Order-3 elements resolve g to about 1e-6.
 """
@@ -205,6 +211,7 @@ def test_several_surfaces_add_up(side):
 
 
 def test_two_sided_sheet_picks_the_vacuum_or_substrate_side(sheet):
+    # one face of each kind: the per-face sum is that face's layer alone
     vacuum, substrate = sheet
     ma = gfem.interface_participation(vacuum, "sub__air", T, 10.0, kind="MA")
     np.testing.assert_allclose(ma.participation, [T / (10.0 * H2 * 1e-3)], rtol=1e-5)
@@ -221,6 +228,65 @@ def test_two_sided_sheet_picks_the_vacuum_or_substrate_side(sheet):
     np.testing.assert_allclose(
         default.participation, [T * 3.0 / (4 * H2 * 1e-3)], rtol=1e-4
     )
+
+
+# --- a film with the same medium on both faces (ADR 0106) --------------------------
+
+WF, HF, SF = 1.0, 1.0, 0.5  # box width and height, strip half width, mm
+
+
+def _film_box():
+    """A PEC strip at z = HF / 2, y < SF, mirror symmetric in z, in a PEC box."""
+    edges = (
+        np.linspace(0, L, 6),
+        np.linspace(0, WF, 5),
+        np.linspace(0, HF, 5),
+    )
+    tol = 1e-9
+
+    def volume(c):
+        return "below" if c[2] < HF / 2 else "above"
+
+    def surface(c):
+        if abs(c[2] - HF / 2) < tol:
+            return "strip" if c[1] < SF else "gap"
+        if abs(c[2]) < tol or abs(c[2] - HF) < tol or abs(c[1] - WF) < tol:
+            return "box"
+        return ""  # the ends and y = 0: PMC
+
+    return sm.structured(edges, volume, surface, mirror=(False, False, True))
+
+
+def test_metal_air_on_a_film_in_vacuum_is_the_sum_of_its_faces(tmp_path):
+    # with vacuum on both faces each face carries its own layer and the two
+    # energies add; a permittivity of 1.0001 on one side hides that face
+    # from "MA" while moving the field by about 1e-4, so the one-face
+    # values come from two near-vacuum models
+    path = tmp_path / "film.msh"
+    sm.write_msh22(path, _film_box())
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+
+    def ma(below, above):
+        model = gfem.Model(
+            mesh,
+            materials={
+                "below": gfem.Material(eps_r=below),
+                "above": gfem.Material(eps_r=above),
+            },
+            boundaries=[gfem.PEC("box"), gfem.PEC("strip")],
+        )
+        options = gfem.SolverOptions(order=2)
+        modes = gfem.solve(model, gfem.Eigenmode(target=F1), options=options)
+        np.testing.assert_allclose(modes.frequency, [F1], rtol=1e-3)
+        p = gfem.interface_participation(modes, "strip", T, 10.0, kind="MA")
+        return float(p.participation[0])
+
+    both = ma(1.0, 1.0)
+    top = ma(1.0001, 1.0)
+    bottom = ma(1.0, 1.0001)
+    assert top > 0
+    assert bottom > 0
+    np.testing.assert_allclose(both, top + bottom, rtol=1e-3)
 
 
 # --- the vacuum side next to anisotropic media -----------------------------------
