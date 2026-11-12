@@ -751,6 +751,32 @@ def test_conductivity_damps_the_line_exactly(mesh):
     np.testing.assert_allclose(complex(lossy.omega[0]), k * const.c, rtol=1e-10)
 
 
+def test_a_zero_conductivity_field_adds_no_damping(mesh):
+    # a conductivity of zeros assembles no matrix: the cavity stays on the
+    # undamped path, with the frequencies of the model without the field
+    problem = gfem.Eigenmode(target=8e9, n_modes=2)
+    plain = line(mesh)
+    n = len(mesh.tetrahedra)
+    field = gfem.MaterialField(eps_r=np.full(n, EPS), conductivity=np.zeros(n))
+    with_field = plain.with_material("dielectric", field)
+    rule = eigen_rule.EigenmodeRule(with_field, problem, gfem.SolverOptions())
+    with task_manager(1):
+        op = driven_operator(with_field, rule.options.order)
+        sigma = terms.wavenumber(2 * math.pi * problem.target, op.built.scale)
+        eop = rule.operator(op, sigma)
+        try:
+            assert eop.damping is None
+            assert not eop.seed_damped
+        finally:
+            eop.free_handle()
+    reference = gfem.solve(
+        plain.with_material("dielectric", gfem.MaterialField(eps_r=np.full(n, EPS))),
+        problem,
+    )
+    result = gfem.solve(with_field, problem)
+    np.testing.assert_array_equal(np.asarray(result.omega), np.asarray(reference.omega))
+
+
 def test_per_axis_conductivity_damps_along_its_axis(mesh):
     # the mode is E_z: only the conductivity along z (the first axis here)
     # damps it, as an isotropic conductivity of that value (up to the

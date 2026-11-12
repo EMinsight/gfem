@@ -32,6 +32,25 @@ def em_region(model: Model, built: EngineMesh) -> ngs.Region:
     return ngs.Region(built.mesh, ngs.VOL, bits)
 
 
+def region_domain(model: Model, built: EngineMesh, name: str) -> ngs.Region:
+    """The NGSolve volume region of region ``name`` inside the solve domain.
+
+    Args:
+        model: The model; ``built`` must come from ``model.mesh``.
+        built: The engine mesh.
+        name: A volume region of the mesh. Its excluded entities are left
+            out, so the region holds exactly its active tetrahedra.
+    """
+    tag = model.mesh.region(name).tag
+    out = {ent for region, ent in model.excluded_entities if region == name}
+    bits = ngs.BitArray(len(built.domains))
+    bits.Clear()
+    for k, key in enumerate(built.domains):
+        if key[0] == tag and key[1] not in out:
+            bits.Set(k)
+    return ngs.Region(built.mesh, ngs.VOL, bits)
+
+
 def hcurl_space(
     model: Model,
     built: EngineMesh,

@@ -304,11 +304,12 @@ class Driven:
             this order. ``None``: every port of the model, in model order.
         sweep: ``"uniform"`` solves every frequency in full.
             ``"adaptive"`` solves a few of them in full (every excited port
-            at once) and reads S and the kept fields at every frequency
-            from a reduced model built on those solutions: the greedy picks
-            each next frequency from ``frequency`` where the reduced model
-            is least accurate, until ``SolverOptions.adaptive_memory``
-            samples in a row agree with it to
+            at once, and one more right-hand side per port left out of
+            ``excite``, which keeps gradients exact there) and reads S and
+            the kept fields at every frequency from a reduced model built
+            on those solutions: the greedy picks each next frequency from
+            ``frequency`` where the reduced model is least accurate, until
+            ``SolverOptions.adaptive_memory`` samples in a row agree with it to
             ``SolverOptions.adaptive_tolerance`` (relative error of the
             field). S is then accurate to roughly the square of that error.
             Worth it above about 20 frequencies; the result's ``sweep``

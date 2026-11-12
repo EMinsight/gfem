@@ -26,6 +26,10 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
 - The sweep solves a few sample frequencies in full, every excited port at
   once. It reads S and the kept fields at every frequency of the grid from a
   {term}`reduced model` built on those solutions.
+- Each sample also solves one right-hand side per port left out of
+  `Driven(excite=...)`, so that gradients are exact at the samples
+  ({doc}`adaptive-sweep-gradient`). `excite=` saves solves in a uniform
+  sweep, not in an adaptive one.
 - It pays off above about 20 frequencies. Below that, keep the uniform sweep.
 - `result.sweep.solved` marks, frequency by frequency, the ones solved in
   full. The rest come from the reduced model.
@@ -34,6 +38,10 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
 - A sweep that reaches `SolverOptions.adaptive_max_samples` first warns with
   {py:obj}`gfem.SweepNotConvergedWarning` and reports `converged=False`. Raise
   `adaptive_max_samples`.
+- A sweep that comes near the accuracy of its full solves warns with
+  {py:obj}`gfem.SweepRankDeficientWarning` and goes on. Tighten
+  `SolverOptions.tolerance` or loosen `adaptive_tolerance` if it then fails
+  to converge.
 - On a short grid the sweep may run out of frequencies. It then solves every
   one in full, as a uniform sweep does, and reports `converged=True`.
 

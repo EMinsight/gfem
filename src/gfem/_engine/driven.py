@@ -55,9 +55,10 @@ An adaptive sweep differentiates with its reduced basis V and sample set
 held fixed (`DrivenRule._backward_adaptive`): the cache entry keeps only V
 and the reduced model, the backward solves n x n reduced adjoints and folds
 them into at most n field pairs ``(V a, V b)`` per material term. Each
-sample also solves the S functionals of the wave ports whose adjoint the
-solutions miss (`PortNetwork.adjoint_loads`) into V, so the frozen-basis
-gradient equals the full solve's at the samples. Under a JAX
+sample also solves the S functionals whose adjoint the solutions miss
+(`PortNetwork.adjoint_loads`: wave ports, and lumped ports that are not
+excited) into V, so the frozen-basis gradient equals the full solve's at
+the samples. Under a JAX
 transformation the sample set must be frozen (``Driven.samples``), so
 every output shape is known before the solve.
 """
@@ -208,6 +209,10 @@ class DrivenOperator:
             what a solver plan of the operator is pooled under (ADR 0082).
         space_key: ``space``'s key in its discretization (order, `PEC`
             surfaces, periodic pairs and phases).
+        latent: Pieces whose matrix is zero at this design, so that no
+            forward assembles them, but whose derivative is not: the
+            conductivity piece where the conductivity is zero everywhere.
+            Only a backward pass reads them (`weights`, `operator_terms`).
     """
 
     built: EngineMesh
@@ -221,6 +226,7 @@ class DrivenOperator:
     fixed: FixedPieces | None = None
     topology: Any = None
     space_key: tuple = ()
+    latent: tuple[terms.Piece, ...] = ()
 
     def expand(self, x: np.ndarray) -> np.ndarray:
         """``P x``: solve-space coefficients ``(ndof, ...)`` on the unpaired space."""
@@ -286,9 +292,12 @@ class DrivenOperator:
         (`operator_terms`, which leaves the ports' pieces out too).
         The ports' pieces are design-independent (a port's R, L, C, its
         surface and a wave port's mode are fixed), so no pair carries them.
+        The `latent` pieces are included: their derivative is not zero.
         """
         return {
-            p.name: complex(p.theta(omega)) for p in self.pieces if p.kind != "port"
+            p.name: complex(p.theta(omega))
+            for p in (*self.pieces, *self.latent)
+            if p.kind != "port"
         }
 
     def wavenumber(self, omega: float) -> float:
@@ -356,7 +365,7 @@ def driven_operator(
     unpaired = disc.space(
         solve_key, lambda: hcurl_space(model, built, order, dirichlet=pec)
     )
-    space, expansion = unpaired, None
+    space, expansion, phases = unpaired, None, None
     if periodic and paired:
         phases = bloch_phases(model, wave_vector)
         key = solve_key = space_key(model, "hcurl", order, periodic=True, phases=phases)
@@ -365,10 +374,12 @@ def driven_operator(
             lambda: hcurl_space(
                 model, built, order, dirichlet=pec, periodic=True, phases=phases
             ),
+            group=phases,
         )
         matrix = disc.space(
             (*key, "expansion"),
             lambda: expansion_matrix(space, unpaired, real=phases is None),
+            group=phases,
         )
         expansion = Expansion(matrix, unpaired)
     ports = terms.lumped_ports(model, built.scale)
@@ -380,7 +391,10 @@ def driven_operator(
         layout = disc.space(key, lambda: RankLayout(space, comm))
     fixed = None
     if comm is None and elements is None and faces is None:
-        fixed = _fixed_pieces(model, disc, solve_key, order, ports)
+        fixed = _fixed_pieces(model, disc, solve_key, order, ports, phases=phases)
+    latent: tuple[terms.Piece, ...] = ()
+    if not any(p.name == "conductivity" for p in pieces):
+        latent = (terms.conductivity_piece(model, built, order, elements=elements),)
     return DrivenOperator(
         built,
         space,
@@ -393,6 +407,7 @@ def driven_operator(
         fixed,
         topology=model.mesh._topology,  # noqa: SLF001
         space_key=solve_key,
+        latent=latent,
     )
 
 
@@ -402,11 +417,14 @@ def _fixed_pieces(
     key: tuple,
     order: int,
     ports: tuple[terms.LumpedPortData, ...],
+    *,
+    phases: tuple[complex, ...] | None = None,
 ) -> FixedPieces | None:
     """The split of the volume pieces at ``model``'s material-field regions.
 
     ``None`` when no element, or every element, lies in one (nothing to keep).
-    ``key`` is the solve space's: the store lives with it.
+    ``key`` is the solve space's: the store lives with it, and leaves with
+    its Bloch ``phases`` (`gfem._engine.cache.Discretization.space`).
     """
     mesh = model.mesh
     inside = np.zeros(len(mesh.tetrahedra), bool)
@@ -417,7 +435,7 @@ def _fixed_pieces(
         return None
     built, no_faces = disc.built, np.zeros(len(mesh.triangles), bool)
     return FixedPieces(
-        disc.space((*key, "fixed pieces"), KeptParts),
+        disc.space((*key, "fixed pieces"), KeptParts, group=phases),
         ~inside,
         lambda: terms.pieces(
             model, built, order, ports, elements=inside, faces=no_faces
@@ -543,6 +561,15 @@ class DrivenRule:
         self.regions = tuple(r for r in mesh.volumes if active[mesh.elements(r)].any())
         #: The wave ports' names, in model port order.
         self.wave_ports = tuple(p.name for p in model.ports if isinstance(p, WavePort))
+        #: The lumped ports an adaptive sweep solves as adjoint loads: not
+        #: excited, with a resistance (`PortNetwork.adjoint_loads`).
+        self.lumped_loads = tuple(
+            p.name
+            for p in model.ports
+            if isinstance(p, LumpedPort)
+            and p.name not in self.excite
+            and not math.isnan(resistance(p))
+        )
         workers_run = min(options.frequency_workers, len(problem.frequency)) > 1
         if self.wave_ports and workers_run and not self.adaptive:
             # each worker would track the port modes over its own block only
@@ -1016,11 +1043,13 @@ class DrivenRule:
     def _padded_size(self) -> int:
         """Most basis vectors frozen samples give.
 
-        Two per sample and excited port, and two per sample and wave port
-        for its S functional's adjoint (`PortNetwork.adjoint_loads`).
+        Two per sample and excited port, and two per sample and adjoint
+        load (`PortNetwork.adjoint_loads`): every wave port, and every
+        lumped port that is not excited and has a resistance.
         """
         samples = self.problem.samples or ()
-        return 2 * len(samples) * (len(self.excite) + len(self.wave_ports))
+        loads = len(self.wave_ports) + len(self.lumped_loads)
+        return 2 * len(samples) * (len(self.excite) + loads)
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each forward output."""
@@ -1411,9 +1440,10 @@ class DrivenRule:
 def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Term]:
     """The pieces of ``model``'s driven operator as the kernel sees them.
 
-    One `Term` per piece but the ports': a port's pieces, right-hand side
-    and voltage read only its own surface and fixed values, which no
-    gradient moves (shape gradients hold port surfaces in place). Each term
+    One `Term` per piece, latent ones included, but the ports': a port's
+    pieces, right-hand side and voltage read only its own surface and fixed
+    values, which no gradient moves (shape gradients hold port surfaces in
+    place). Each term
     carries its piece's material derivatives, face owners and sheet factor.
     The eigenmode rule's operator is the same pieces, so it shares these.
 
@@ -1430,7 +1460,7 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
     if nodes:
         check_ports_held(model)
     out = []
-    for piece in op.pieces:
+    for piece in (*op.pieces, *op.latent):
         if piece.kind == "port":
             continue
         common: dict[str, Any] = {
@@ -1751,7 +1781,9 @@ def _factor(g: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     resistance) gives a NaN column, so the gradient is NaN like the value.
     """
     if not np.isfinite(g).all():
-        column = np.full((g.shape[0], 1), np.nan)
+        # complex, like the factors of a finite matrix: the pair's fields
+        # lie in the operator's complex space
+        column = np.full((g.shape[0], 1), np.nan, dtype=complex)
         return column, column
     u, sigma, vh = np.linalg.svd(g)
     rank = max(1, int(np.count_nonzero(sigma > FACTOR_RANK * sigma[0])))

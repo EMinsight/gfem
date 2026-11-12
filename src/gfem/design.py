@@ -38,6 +38,7 @@ from jax.scipy import fft
 
 from gfem import _morph, _mpi, _sparse
 from gfem._checks import is_traced, static_float
+from gfem.errors import UnsampledPixelsWarning
 from gfem.mesh import Mesh
 
 __all__ = [
@@ -56,7 +57,8 @@ def project(rho: jax.Array, beta: float, eta: float = 0.5) -> jax.Array:
     ``(tanh(beta eta) + tanh(beta (rho - eta))) / (tanh(beta eta)
     + tanh(beta (1 - eta)))``: 0 stays 0, 1 stays 1, and values above the
     threshold ``eta`` move towards 1 (below it, towards 0). ``beta`` sets the
-    sharpness: about linear at 1, nearly a step at 64.
+    sharpness: about linear at 1, nearly a step at 64. Returns values in
+    [0, 1] for rho in [0, 1] (clamped against round-off).
 
     Args:
         rho: Densities in [0, 1], any shape.
@@ -70,7 +72,10 @@ def project(rho: jax.Array, beta: float, eta: float = 0.5) -> jax.Array:
     _check_projection(beta, eta)
     a = jnp.tanh(beta * eta)
     b = jnp.tanh(beta * (1 - eta))
-    return (a + jnp.tanh(beta * (jnp.asarray(rho) - eta))) / (a + b)
+    p = (a + jnp.tanh(beta * (jnp.asarray(rho) - eta))) / (a + b)
+    # Round-off can leave p a few ulp outside [0, 1]. Nested where, not
+    # jnp.clip: clip halves the gradient where p sits exactly on a bound.
+    return jnp.where(p < 0, 0.0, jnp.where(p > 1, 1.0, p))
 
 
 def _check_projection(beta: float, eta: float) -> None:
@@ -203,8 +208,8 @@ class LayerGrid:
                 fixed mesh), or a face of the surface is not horizontal.
 
         Warns:
-            UserWarning: Some pixels are sampled by no element (face)
-                centroid.
+            gfem.UnsampledPixelsWarning: Some pixels are sampled by no element
+                (face) centroid.
         """
         comm = _mpi.resolve_comm(comm)
         r = mesh.region(region)
@@ -257,7 +262,7 @@ class LayerGrid:
                 "do not reach the solve. Refine the mesh in the region, or coarsen "
                 f"the pitch (now {pitch:g} m). Pixels outside a non-rectangular "
                 "footprint are always unsampled: mask them with grid.sampled.",
-                UserWarning,
+                UnsampledPixelsWarning,
                 stacklevel=2,
             )
 

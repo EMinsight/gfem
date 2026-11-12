@@ -269,6 +269,27 @@ class SweepNotConvergedWarning(UserWarning):
     """
 
 
+class SweepRankDeficientWarning(UserWarning):
+    """An adaptive sweep's rational interpolation lost rank.
+
+    The sweep is near the accuracy of its full solves. The sweep goes on.
+    Tighten ``SolverOptions.tolerance`` or loosen
+    ``SolverOptions.adaptive_tolerance`` if it then fails to converge. Filter
+    it with Python's `warnings` module.
+    """
+
+
+class UnsampledPixelsWarning(UserWarning):
+    """Some pixels of a `gfem.design.LayerGrid` are sampled by no centroid.
+
+    No element (or face) centroid falls in them, so they get no gradient and
+    do not reach the solve. Refine the mesh in the region or coarsen the
+    pitch; pixels outside a non-rectangular footprint are always unsampled,
+    mask them with ``grid.sampled``. Filter it with Python's `warnings`
+    module.
+    """
+
+
 class LowFrequencyWarning(UserWarning):
     """A driven frequency or an eigenmode is below the mesh's low-frequency floor.
 

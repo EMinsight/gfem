@@ -2,7 +2,8 @@
 
 One cell per problem type x input kind x linear solver x frequency sweep:
 
-- problems: electrostatic capacitance (and a potential functional), driven
+- problems: electrostatic capacitance (and a potential functional, and the
+  region energies), driven
   S on lumped ports and on wave ports (lossless, lossy, and two modes per
   shared port surface, read through cross-mode entries), driven S (and
   probed fields) on a periodic cell with plain and Bloch periodicity,
@@ -10,7 +11,10 @@ One cell per problem type x input kind x linear solver x frequency sweep:
 - inputs: per-element permittivity ``eps_r`` and conductivity, the same per
   principal value of a field with axes (``eps_r_axes``,
   ``conductivity_axes``: biaxial values on the `TILTED` axes, so every
-  entry of each projector is exercised), the fill of a `gfem.SheetField`,
+  entry of each projector is exercised), the permeability ``mu_r`` and the
+  loss tangent ``tan_delta`` (driven and eigenmode, on the direct solver:
+  the solver and sweep paths are the permittivity's), the fill of a
+  `gfem.SheetField`,
   and the mesh node coordinates (through `gfem.shape.boundary_morph`);
 - solvers: ``direct`` and ``bddc_gmres``; sweeps: uniform and adaptive (with
   frozen samples; the objective reads S at the samples, where the reduced
@@ -150,6 +154,10 @@ def _cells() -> list[Cell]:
             Cell("electrostatic", "eps_r_axes", solver),
             Cell("electrostatic", "nodes", solver, variant="capacitance"),
             Cell("electrostatic", "nodes", solver, variant="potential"),
+            *(
+                Cell("electrostatic", name, solver, variant="energy")
+                for name in ("eps_r", "eps_r_axes", "nodes")
+            ),
         ]
         for sweep in ("uniform", "adaptive"):
             cells += [
@@ -199,6 +207,13 @@ def _cells() -> list[Cell]:
                 "nodes",
             )
         ]
+    # the curl (mu_r) and loss (tan_delta) paths: one solver and one sweep
+    cells += [
+        Cell("driven", f"{name}{form}", "direct", "uniform")
+        for form in ("", "_axes")
+        for name in ("mu_r", "tan_delta")
+    ]
+    cells += [Cell("eigenmode", name, "direct") for name in ("mu_r", "tan_delta")]
     return cells
 
 
@@ -405,7 +420,16 @@ def _options(cell: Cell, *, production: bool) -> gfem.SolverOptions:
 
 #: Steps on unit directions: fourth-order truncation and round-off both well
 #: below the 1e-6 gate (measured worst errors 1e-8 .. 1e-10).
-STEPS = {"eps_r": 1e-2, "conductivity": 5e-2, "nodes": 2e-6}
+STEPS = {
+    "eps_r": 1e-2,
+    "mu_r": 1e-2,
+    "tan_delta": 1e-3,
+    "conductivity": 5e-2,
+    "nodes": 2e-6,
+}
+#: Ranges a cell draws its own ``mu_r`` or ``tan_delta`` from (the other
+#: cells' designs carry neither).
+RANGES = {"mu_r": (1.0, 2.0), "tan_delta": (0.01, 0.2)}
 #: A principal-value input's suffix: ``eps_r_axes`` holds principal values of eps_r.
 AXES = "_axes"
 
@@ -477,19 +501,33 @@ def _wave(d: Designs, cell: Cell):
     )
 
 
+#: Weights of the energy objective, (regions, terminals): all distinct.
+ENERGY_WEIGHTS = np.array([[1.0, 0.3], [-0.7, 2.0]])
+
+
+def _stack_functional(cell: Cell, result):
+    """<W, C> of the stack, or <W, E> over its region energies (``energy``)."""
+    weights = ENERGY_WEIGHTS  # not symmetric on purpose
+    if cell.variant == "energy":
+        value = jnp.stack(list(result.energy.values()))
+    else:
+        value = result.capacitance
+    return jnp.sum(weights * value) / (EPS0 * 1e-6)  # O(1) values
+
+
 def _electrostatic_eps(d: Designs, cell: Cell, options, seed: int) -> Case:
     """J(eps) = <W, C(eps)> on a two-terminal stack with a random P0 field.
 
     Per principal value (``eps_r_axes``): ``(n, 3)`` on the tilted axes.
+    Variant ``energy``: ``<W, E(eps)>`` over the region energies.
     """
     model = d.stack
-    weights = np.array([[1.0, 0.3], [-0.7, 2.0]])  # not symmetric on purpose
     axes = TILTED if cell.input.endswith(AXES) else None
 
     def objective(eps):
         fields = stack_fields(model, eps, axes)
-        c = gfem.solve(fields, STACK_PROBLEM, options=options)
-        return jnp.sum(weights * c.capacitance) / (EPS0 * 1e-6)  # O(1) values
+        result = gfem.solve(fields, STACK_PROBLEM, options=options)
+        return _stack_functional(cell, result)
 
     rng = np.random.default_rng(42 + seed)
     shape = (len(model.mesh.tetrahedra),) + ((3,) if axes else ())
@@ -500,8 +538,29 @@ def _electrostatic_eps(d: Designs, cell: Cell, options, seed: int) -> Case:
 ELECTROSTATIC = gfem.Electrostatic(terminals={"top": "top"}, ground="bottom")
 
 
+def _energy_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """<W, E> over the stack's region energies in every node coordinate."""
+    rng = np.random.default_rng(7 + seed)
+    eps = jnp.asarray(rng.uniform(2.0, 9.0, len(d.stack.mesh.tetrahedra)))
+    model = stack_fields(d.stack, eps)
+    structure = jax.tree_util.tree_structure(model.mesh)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(structure, [nodes])
+        result = gfem.solve(model.replace(mesh=mesh), STACK_PROBLEM, options=options)
+        return _stack_functional(cell, result)
+
+    # the stack is in um: its layers' elements are 1.25e-7 m thick
+    return Case(objective, jnp.asarray(model.mesh.nodes), rng, step=1e-9, taylor=1e-8)
+
+
 def _electrostatic_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
-    """C (pF) of a capacitor whose dielectric interface moves (+ a potential)."""
+    """C (pF) of a capacitor whose dielectric interface moves (+ a potential).
+
+    Variant ``energy``: see `_energy_nodes`.
+    """
+    if cell.variant == "energy":
+        return _energy_nodes(d, cell, options, seed)
     model = d.capacitor
     morph = boundary_morph(model, "oxide__nitride", grows="oxide")
     weights = np.random.default_rng(4).uniform(0.5, 1.5, 200)
@@ -528,11 +587,12 @@ def _electrostatic_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
 
 
 def _driven_material(d: Designs, cell: Cell, options, seed: int) -> Case:
-    """S of the two-layer line in its per-element eps_r or conductivity.
+    """S of the two-layer line in one per-element property.
 
     Per principal value (``_axes``): biaxial values on the tilted axes, on
     the line with first-order absorbing sides (each side face's admittance
-    tensor moves with the values of the element behind it).
+    tensor moves with the values of the element behind it). A ``mu_r`` or
+    ``tan_delta`` cell adds its property to the design of the others.
     """
     name = _property(cell.input)
     if cell.input.endswith(AXES):
@@ -541,6 +601,9 @@ def _driven_material(d: Designs, cell: Cell, options, seed: int) -> Case:
     else:
         line, axes = d.line, None
         values, rng = line_design(line, seed)
+    if name in RANGES:
+        drawn = rng.uniform(*RANGES[name], values["eps_r"].shape)
+        values = {**values, name: jnp.asarray(drawn)}
     problem, rows = _sweep(cell, LINE_FREQUENCIES, LINE_GRID, LINE_SAMPLES)
 
     def objective(p):
@@ -548,14 +611,14 @@ def _driven_material(d: Designs, cell: Cell, options, seed: int) -> Case:
         s = gfem.solve(model, problem, options=options).s.values
         return s_functional(s[jnp.asarray(rows)])
 
-    taylor = {"eps_r": 1e-1, "conductivity": 1.0}[name]
+    taylor = {"eps_r": 1e-1, "mu_r": 1e-1, "tan_delta": 3e-2, "conductivity": 1.0}
     p = values[name]
     return Case(
         objective,
         p,
         rng,
         step=STEPS[name],
-        taylor=taylor,
+        taylor=taylor[name],
         imaginary=axes is not None and jnp.iscomplexobj(p),
     )
 
@@ -667,10 +730,11 @@ def _omega(model, options, target):
 
 
 def _eigen_material(d: Designs, cell: Cell, options, seed: int) -> Case:
-    """omega of the terminated line resonator in its eps_r or conductivity.
+    """omega of the terminated line resonator in one per-element property.
 
     Per principal value (``_axes``): the ramps times distinct factors per
-    axis (biaxial), on the tilted axes.
+    axis (biaxial), on the tilted axes. A ``mu_r`` or ``tan_delta`` cell
+    adds its property, a ramp over its range, to the design of the others.
     """
     mesh = d.resonator
     values = {
@@ -678,17 +742,22 @@ def _eigen_material(d: Designs, cell: Cell, options, seed: int) -> Case:
         "conductivity": ramp(mesh, "dielectric", 0.2, 0.6),
     }
     name = _property(cell.input)
+    if name in RANGES:
+        values[name] = ramp(mesh, "dielectric", *RANGES[name])
     axes = TILTED if cell.input.endswith(AXES) else None
     if axes:
         values = {k: v[:, None] * BIAXIAL for k, v in values.items()}
 
     def objective(p):
         fields = values | {name: p}
-        model = terminated(mesh, fields["eps_r"], fields["conductivity"], axes)
+        eps, sigma = fields.pop("eps_r"), fields.pop("conductivity")
+        model = terminated(mesh, eps, sigma, axes, **fields)
         return _omega(model, options, RESONATOR_TARGET)
 
     # a unit step of 1 S/m would make the 0.2 S/m end of the ramp negative
-    taylor = {"eps_r": 1e-1, "conductivity": 3e-1}[name]
+    # (and one of 0.1 the 0.01 end of the loss tangent's)
+    taylor = {"eps_r": 1e-1, "mu_r": 1e-1, "tan_delta": 3e-2, "conductivity": 3e-1}
+    taylor = taylor[name]
     return Case(
         objective,
         values[name],
@@ -920,6 +989,11 @@ BUILDERS = {
     ("driven", "conductivity"): _driven_material,
     ("driven", "eps_r_axes"): _driven_material,
     ("driven", "conductivity_axes"): _driven_material,
+    **{
+        ("driven", f"{name}{form}"): _driven_material
+        for name in RANGES
+        for form in ("", AXES)
+    },
     ("driven", "fill"): _driven_fill,
     ("driven", "nodes"): _driven_nodes,
     ("driven_wave", "eps_r"): _wave_material,
@@ -930,6 +1004,8 @@ BUILDERS = {
     ("eigenmode", "conductivity"): _eigen_material,
     ("eigenmode", "eps_r_axes"): _eigen_material,
     ("eigenmode", "conductivity_axes"): _eigen_material,
+    ("eigenmode", "mu_r"): _eigen_material,
+    ("eigenmode", "tan_delta"): _eigen_material,
     ("eigenmode", "fill"): _eigen_fill,
     ("eigenmode", "nodes"): _eigen_nodes,
     **{

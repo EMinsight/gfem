@@ -5,6 +5,9 @@
   ``direct`` does.
 - SLEPc seeds the plain Bragg line C3 at Γ: its bands are the
   transfer-matrix roots.
+- SLEPc seeds the Bloch Bragg line too (it only replaces the Krylov
+  iteration on the shift's factors): ARPACK's bands, and the
+  transfer-matrix roots.
 - A Bloch wave vector makes the operator general (A^T != A), which PETSc's
   LDL^T cannot factor: the driven and eigenmode rules refuse it before any
   assembly, and so does the PETSc handle itself.
@@ -59,6 +62,31 @@ def test_slepc_plain_bragg_line_bands_match_the_transfer_matrix(c3_mesh, tan_del
         assert abs(value - exact) <= pc.C3_FREQ_RTOL * abs(exact)
     if tan_delta == 0:
         assert not np.asarray(result.omega).imag.any()
+
+
+@pytest.mark.slepc
+@pytest.mark.parametrize("tan_delta", [0.0, pc.C3_TAN_DELTA])
+@pytest.mark.parametrize("fraction", [0.3, 1.0])
+def test_slepc_bloch_bragg_line_bands_match_arpack_and_the_transfer_matrix(
+    c3_mesh, fraction, tan_delta
+):
+    # inside the zone and at its edge (both sides of the gap)
+    k = fraction * math.pi / (pc.C3_A * pc.MM)
+    problem = gfem.Eigenmode(
+        target=pc.C3_PLAIN_TARGET, n_modes=2, wave_vector=(k, 0.0, 0.0)
+    )
+    f = {}
+    for solver in ("arpack", "slepc"):
+        options = gfem.SolverOptions(order=pc.C3_ORDER, eigen_solver=solver)
+        result = gfem.solve(pc.c3(c3_mesh, tan_delta), problem, options=options)
+        f[solver] = np.asarray(result.omega) / (2 * math.pi)
+    assert len(f["slepc"]) == 2
+    np.testing.assert_allclose(f["slepc"], f["arpack"], rtol=1e-10)
+    for value in f["slepc"]:
+        exact = pc.tmm_frequency(k, complex(value), tan_delta)
+        assert abs(value - exact) <= pc.C3_FREQ_RTOL * abs(exact)
+    if tan_delta == 0:
+        assert not f["slepc"].imag.any()
 
 
 @pytest.mark.petsc

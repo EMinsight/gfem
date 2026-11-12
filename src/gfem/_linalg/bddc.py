@@ -471,7 +471,7 @@ class BddcHandle(NgsHandle):
                     return self._warm(B, x0, measure=measure, prepared=prepared)
                 counts: list[int] = []
                 out = self._map(
-                    solver,
+                    lambda _: solver,
                     B,
                     after=lambda *column: counts.append(self._finish(*column)),
                 )
@@ -600,11 +600,12 @@ class BddcHandle(NgsHandle):
     @property
     def nbytes(self) -> int:
         """Host memory of the matrix and the preconditioner, in bytes."""
-        pre = self._preconditioner
-        if self._solver is None or self._matrix is None or pre is None:
+        # read once, without the lock: a concurrent free gives 0 or the old count
+        held, pre, coarse = self._matrix, self._preconditioner, self._coarse
+        if self._solver is None or held is None or pre is None:
             return 0
-        matrix = local_matrix(self._matrix, self.layout.comm)
-        factors = 0 if self._coarse is None else self._coarse.nbytes
+        matrix = local_matrix(held, self.layout.comm)
+        factors = 0 if coarse is None else coarse.nbytes
         return host_bytes(matrix) + host_bytes(pre.mat) + factors
 
     def _free_coarse(self) -> None:

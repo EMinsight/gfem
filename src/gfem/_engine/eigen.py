@@ -207,6 +207,7 @@ def projector(
         h1 = disc.space(
             space_key(model, "h1", order, periodic=True, phases=phases, fixed=fixed),
             lambda: h1_space(model, built, order, fixed, periodic=True, phases=phases),
+            group=phases,
         )
         if phases is None:
             hcurl = disc.space(

@@ -145,7 +145,7 @@ grad = jax.grad(lowest_band)(jnp.full(n, 9.0))  # Hz per unit eps_r
 | `bddc_gmres` | driven and eigenmode | driven only; eigenmode raises `ValueError`: use `direct` |
 | `petsc` | driven | raises `ValueError`: use `direct` |
 | `device="cuda"` | untested: compare with `direct` once on your cell | raises `NotImplementedError`: use `direct` on the CPU |
-| eigen solver | ARPACK or SLEPc | ARPACK (SLEPc untested: use ARPACK) |
+| eigen solver | ARPACK or SLEPc | ARPACK or SLEPc |
 
 ## Check your results
 

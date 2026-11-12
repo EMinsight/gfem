@@ -12,7 +12,8 @@ with k0 = ω scale / c, the wavenumber per file unit, and the pieces
 - ``mass``, θ = -k0²: ∫ eps_r (1 - i tan_delta) E · v (per principal axis
   for an anisotropic material);
 - ``conductivity``, θ = i k0: ∫ eta0 sigma scale E · v (sigma a 3x3
-  tensor along its principal axes for an anisotropic material);
+  tensor along its principal axes for an anisotropic material); left out
+  where sigma is zero everywhere (`conductivity_piece`);
 - ``absorbing``, θ = i k0: ∫ sqrt(eps_r / mu_r) E_t · v_t on every
   absorbing surface (real parts of the adjacent element's values); next to
   an anisotropic material, ∫ (Y E_t) · v_t with the face's normal-incidence
@@ -417,6 +418,51 @@ def _inverse(values: np.ndarray) -> np.ndarray:
     return 1.0 / values if values.ndim == 1 else np.linalg.inv(values)
 
 
+def conductivity_piece(
+    model: Model,
+    built: EngineMesh,
+    order: int,
+    *,
+    elements: np.ndarray | None = None,
+) -> Piece:
+    """The ``conductivity`` piece of ``model``: θ = i k0, ∫ eta0 sigma scale E · v.
+
+    `pieces` leaves it out when the conductivity is zero everywhere on the
+    solve domain (a zero matrix, and no damping term for the eigenmode
+    operator). Its derivative by the conductivity is not zero there, so a
+    backward pass still reads the piece (`gfem._engine.driven.DrivenOperator.latent`).
+    ``elements`` restricts the form as in `pieces`.
+    """
+    scale = built.scale
+    k = lambda w: wavenumber(w, scale)  # noqa: E731
+    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    dx = quadrature.dx(order, definedonelements=tets)
+    active = model._domain.active  # noqa: SLF001
+    # an anisotropic material gives its 3x3 tensor
+    sigma = element_tensors(model, "conductivity").real
+    sigma = np.where(active.reshape((-1,) + (1,) * (sigma.ndim - 1)), sigma, 0.0)
+    # eta0 sigma scale (real symmetric sigma); its derivative eta0 leaves
+    # out the length scale
+    values = ETA0 * scale * sigma
+    cf = coefficient(built, values)
+    return Piece(
+        "conductivity",
+        lambda w: 1j * k(w),
+        lambda u, v: (cf * u) * v * dx,
+        kind="value",
+        coefficient=cf,
+        values=values,
+        derivatives={
+            "conductivity": Derivative(
+                ETA0,
+                holomorphic=False,
+                length_power=1,
+                per_axis=Derivative(ETA0, holomorphic=False, length_power=1),
+            )
+        },
+    )
+
+
 def pieces(
     model: Model,
     built: EngineMesh,
@@ -447,7 +493,6 @@ def pieces(
     tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
     tris = _bits(faces, built.triangle_order, "triangle")
     dx = quadrature.dx(order, definedonelements=tets)
-    active = model._domain.active  # noqa: SLF001
 
     # each piece carries its coefficient and, next to it, the coefficient's
     # derivatives by material property (lazy: a backward pass reads them)
@@ -498,33 +543,11 @@ def pieces(
             },
         ),
     ]
-    # an anisotropic material gives its 3x3 tensor; its own i k0 piece, not
-    # folded into the mass (the eigen operator splits the pieces by power of k)
-    sigma = element_tensors(model, "conductivity").real
-    sigma = np.where(active.reshape((-1,) + (1,) * (sigma.ndim - 1)), sigma, 0.0)
-    if sigma.any():
-        # eta0 sigma scale (real symmetric sigma); its derivative eta0 leaves
-        # out the length scale
-        sigma_values = ETA0 * scale * sigma
-        sigma_cf = coefficient(built, sigma_values)
-        out.append(
-            Piece(
-                "conductivity",
-                lambda w: 1j * k(w),
-                lambda u, v: (sigma_cf * u) * v * dx,
-                kind="value",
-                coefficient=sigma_cf,
-                values=sigma_values,
-                derivatives={
-                    "conductivity": Derivative(
-                        ETA0,
-                        holomorphic=False,
-                        length_power=1,
-                        per_axis=Derivative(ETA0, holomorphic=False, length_power=1),
-                    )
-                },
-            )
-        )
+    # the conductivity has its own i k0 piece, not folded into the mass (the
+    # eigen operator splits the pieces by power of k)
+    conductivity = conductivity_piece(model, built, order, elements=elements)
+    if np.any(conductivity.values):
+        out.append(conductivity)
 
     absorbing = [b for b in model.boundaries if isinstance(b, Absorbing)]
     if absorbing:
