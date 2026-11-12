@@ -118,9 +118,8 @@ gfem.QuantityEstimator(omega=0)  # result.omega[0], an eigenmode problem
   each refined mesh the estimate follows the mode whose `omega` is nearest
   the previous one. A mode with another within `SolverOptions.cluster_rtol`
   of it raises {py:obj}`gfem.DegenerateModeError`. The estimate is relative
-  to `omega`. On a model with loss it covers the complex `omega`; the
-  relative error of Q is not estimated, and was measured up to about 3
-  times the estimate.
+  to `omega`. On a model with loss it covers the complex `omega`; Q's
+  relative error is not estimated.
 - `RefinementCycle.value` holds the quantity on each mesh (a tuple per
   frequency for an S entry), so the quantity against `cycle.dofs` plots
   without another solve.

@@ -183,17 +183,18 @@ metal edge, such as the parallel-plate line and the rectangular cavity.
 
 The field estimator is checked the same way, against the field's error in
 the energy norm: on the square and circular coaxial lines, the coaxial
-line with an anisotropic fill, the parallel-plate line, and the L-shaped and rectangular cavities. Its estimate
-was between {gfem-effectivity}`field low` and {gfem-effectivity}`field high`
-times the true error, the circular line measured against a higher-order
-solve on its own facets; against the exact circle it stays below the true
-error. These cases run at `order=2`, and all but the anisotropic fill also
-at `order=3`. On the stepped line,
-whose field error has no known value, the estimate is checked to keep a
-steady ratio to the S21 error as the mesh is refined. On the three singular
-benchmark cases a mesh refinement run also ends with a smaller error than
-uniform splits at the same number of unknowns. Both ranges are read from the
-tests when the docs are built, and both sets of checks run on every change.
+line with an anisotropic fill, the parallel-plate line, and the L-shaped
+and rectangular cavities. Its estimate was between
+{gfem-effectivity}`field low` and {gfem-effectivity}`field high` times the
+true error, the circular line measured against a higher-order solve on its
+own facets; against the exact circle it stays below the true error. These
+cases run at `order=2`, and all but the anisotropic fill also at
+`order=3`. On the stepped line, whose field error has no known value, the
+estimate is checked to keep a steady ratio to the S21 error as the mesh is
+refined. On the three singular benchmark cases a mesh refinement run also
+ends with a smaller error than uniform splits at the same number of
+unknowns. Both ranges are read from the tests when the docs are built, and
+both sets of checks run on every change.
 
 Tests: [quantity estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_quantity_estimate.py),
 [field estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_field_estimate.py).

@@ -387,12 +387,12 @@ Flux recovery
   Projecting the solved electric flux (`eps E`, or `eps grad V` in
   electrostatics) and the curl of `E` onto smoother fields, one polynomial
   degree below the solve's order. On the solve domain's natural surfaces,
-  the exterior surfaces with no potential, port or impedance condition
-  (charge-free surfaces in electrostatics, PMC and unassigned surfaces
-  otherwise), the recovered flux's normal component and the recovered
-  curl's tangential component are held at zero. The difference between the
-  solved and the recovered fields, weighted by the field's energy, is the
-  field's estimated error.
+  the recovered flux's normal component and the recovered curl's
+  tangential component are held at zero. In electrostatics these are every
+  exterior surface not held at a potential, ports and impedance surfaces
+  included; in wave problems, the PMC surfaces and the exterior surfaces
+  given no condition. The difference between the solved and the recovered
+  fields, weighted by the field's energy, is the field's estimated error.
 
 Quantity estimator
   The {term}`error estimator` of one quantity: a capacitance entry, an S
