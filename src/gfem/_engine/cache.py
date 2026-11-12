@@ -415,8 +415,6 @@ class EntryCache:
         # least recently returned first
         self._plans: collections.OrderedDict[int, _Pooled] = collections.OrderedDict()
         self._discretizations = discretizations
-        # an entry is giving up its base: its walker walks, `give_plan` does not
-        self._giving_up = False
 
     def put(self, entry: Entry, budget: int, comm: Any = None) -> int:
         """Store ``entry`` and return its key; evict down to ``budget`` bytes.
@@ -531,18 +529,14 @@ class EntryCache:
     def _give_up_base(self, entry: Entry, comm: Any) -> list[Any]:
         """``entry``'s base handle to the plan pool, without a walk (ADR 0093).
 
-        Where its handle can (`free_base`): other bases are freed. The handles
-        it pooled, for the caller's walk to count.
+        Where its handle can (`free_base`, told not to walk: the caller's walk
+        counts what it pools): other bases are freed. The handles it pooled.
         """
         free_base = getattr(entry.handle, "free_base", None)
         if free_base is None:
             return []
         before = set(self._plans)
-        self._giving_up = True
-        try:
-            free_base(comm)
-        finally:
-            self._giving_up = False
+        free_base(comm, walk=False)
         return [p.handle for k, p in self._plans.items() if k not in before]
 
     def _tally(self, discs: Iterable[Discretization], *, pool: bool) -> _Tally:
@@ -607,12 +601,14 @@ class EntryCache:
         handle: Any,
         budget: int,
         kept: Collection[Any] = (),
+        *,
+        walk: bool = True,
     ) -> None:
         """Pool ``handle`` under ``key``, with its factors, within ``budget``.
 
         While the cache is over ``budget``, the walk's tiers 1, 2, 3 and 6 run,
-        unless an entry is giving the handle up (that walk counts it);
-        entries and their bases stay (only `put` evicts them),
+        unless not to ``walk`` (an entry giving the handle up: that walk
+        counts it); entries and their bases stay (only `put` evicts them),
         so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
         no discretization of it is left (`free_plans_off`). One process only.
@@ -625,7 +621,7 @@ class EntryCache:
         if pattern is not None and not any(pattern is k for k in kept):
             handle.drop_pattern()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
-        if not self._giving_up:
+        if walk:
             self._walk(budget, None, entries=False)
 
     def take_plan(self, key: Hashable) -> Any | None:

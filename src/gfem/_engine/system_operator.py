@@ -389,16 +389,16 @@ class SystemOperator:
             and self._linear.kind in ("direct", "bddc_gmres")
         )
 
-    def free_base(self, *, return_plan: bool = False) -> None:
+    def free_base(self, *, return_plan: bool = False, walk: bool = True) -> None:
         """Release the adjoint solves' base handle; the sweep prepares it again.
 
         The transposed system's too. With ``return_plan`` a base from the plan
-        pool returns there instead.
+        pool returns there instead (`SystemSweep.free`).
         """
         if self._adjoint_sweep is not None:
-            self._adjoint_sweep.free(return_plan=return_plan)
+            self._adjoint_sweep.free(return_plan=return_plan, walk=walk)
         if self._transposed_system is not None:
-            self._transposed_system.free_base(return_plan=return_plan)
+            self._transposed_system.free_base(return_plan=return_plan, walk=walk)
 
     def _held_nbytes(self) -> int:
         """The adjoint handles' and the pieces' bytes (not ``W``'s)."""
@@ -609,18 +609,21 @@ class SystemSweep:
         """Solve at ``ω``: the solution and the Krylov iterations per column."""
         return self.at(omega).solve_counted(rhs, x0=x0)
 
-    def free(self, *, return_plan: bool = False) -> None:
+    def free(self, *, return_plan: bool = False, walk: bool = True) -> None:
         """Release the base handle.
 
         With ``return_plan`` a pooled sweep's base returns to the plan pool
-        instead, with its factors (the pool releases them under pressure).
+        instead, with its factors (the pool releases them under pressure,
+        where it may ``walk``: `EntryCache.give_plan`).
         """
         base, plans, key = self._base, self._plans, self._key
         self._base, self._last = None, None
         if base is None:
             return
         if return_plan and plans is not None and key is not None:
-            ENTRIES.give_plan(key, plans.topology, base, plans.budget, plans.kept())
+            ENTRIES.give_plan(
+                key, plans.topology, base, plans.budget, plans.kept(), walk=walk
+            )
         else:
             base.free()
 

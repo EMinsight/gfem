@@ -58,7 +58,7 @@ class FakeKept:
     def shared(self):
         return {id(a): a.nbytes for a in self._shared}
 
-    def free_base(self, comm):  # noqa: ARG002
+    def free_base(self, comm, *, walk=True):  # noqa: ARG002
         if self.base is not None:
             self.base.free()
             if self._log is not None:
@@ -247,9 +247,11 @@ class PoolingKept(FakeKept):
         super().__init__(nbytes, base, **kwargs)
         self._entries, self._budget = entries, budget
 
-    def free_base(self, comm):  # noqa: ARG002
+    def free_base(self, comm, *, walk=True):  # noqa: ARG002
         if self.base is not None:
-            self._entries.give_plan((self._name,), TOPOLOGY, self.base, self._budget)
+            self._entries.give_plan(
+                (self._name,), TOPOLOGY, self.base, self._budget, walk=walk
+            )
         self.base = None
 
 

@@ -58,7 +58,7 @@ class FakeKept:
     def nbytes(self):
         return self._nbytes + (0 if self.base is None else self.base.nbytes)
 
-    def free_base(self, comm):  # noqa: ARG002
+    def free_base(self, comm, *, walk=True):  # noqa: ARG002
         if self.base is not None:
             self.base.free()
         self.base = None
