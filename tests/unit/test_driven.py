@@ -474,17 +474,37 @@ KRYLOV = [
 
 
 def _count_setups(monkeypatch, options):
-    """Count preconditioner setups: BDDC builds, or PETSc's PCSetUp events."""
+    """Count preconditioner setups: BDDC builds, or PETSc factorizations.
+
+    PETSc's are read off the preconditioner's factor matrix around each
+    ``KSPSetUp`` of a handle: a set-up that factors gives new factors (PETSc
+    raises their object state), one that reuses the preconditioner leaves
+    them. PETSc's ``PCSetUp`` log event is not used: what it counts depends
+    on the tests that ran before.
+    """
     if options["linear_solver"] == "bddc_gmres":
         builds = count_preconditioners(monkeypatch)
         return lambda: len(builds)
-    from gfem import _petsc
+    from gfem._linalg.petsc import PetscHandle
 
-    PETSc = _petsc.require_petsc()
-    PETSc.Log.begin()
-    event = PETSc.Log.Event("PCSetUp")
-    before = event.getPerfInfo()["count"]
-    return lambda: event.getPerfInfo()["count"] - before
+    def factors(handle):
+        factor = handle._ksp.getPC().getFactorMatrix()
+        return factor.handle, factor.stateGet()
+
+    setups = []
+    set_up_now = PetscHandle._set_up_now
+
+    def counted(self):
+        # the factors are not asked for before the handle's first set-up:
+        # asking would create them
+        before = factors(self) if getattr(self, "_was_set_up", False) else None
+        set_up_now(self)
+        self._was_set_up = True
+        if factors(self) != before:
+            setups.append(1)
+
+    monkeypatch.setattr(PetscHandle, "_set_up_now", counted)
+    return lambda: len(setups)
 
 
 @pytest.mark.parametrize("options", KRYLOV)
