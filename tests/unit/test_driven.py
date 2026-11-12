@@ -914,9 +914,10 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
         held = system._adjoint_sweep._base.nbytes if keep else 0
         assert system.nbytes == held
         return
-    # at least the values of the curl-curl and mass pieces
+    # at least the values of the curl-curl and mass pieces, its own or kept
+    # parts it shares with the discretization's store (counted at the cache)
     values = form.mat.AsVector().FV().NumPy().nbytes
-    assert system.nbytes >= 2 * values
+    assert system.nbytes + sum(system.shared().values()) >= 2 * values
     entry.free()
     assert system.nbytes == 0
 
