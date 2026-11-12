@@ -103,6 +103,20 @@ p_box = gfem.power_flow(e, "design", model=model)
 - **The model the field was solved with** is a required input: the residual
   reads its materials and boundaries. Pass the same model: gfem does not
   detect a design solved with other `MaterialField` values.
+- **Several ports fed at once.** `power_flow` is quadratic in the field, and
+  the kept fields add up: for incident waves `a1` and `a2` (in sqrt(W)) at two
+  ports, at one frequency,
+
+  ```python
+  e1, e2 = r.e_field(f, excite="p1"), r.e_field(f, excite="p2")
+  both = dataclasses.replace(
+      e1, coefficients=a1 * e1.coefficients + a2 * e2.coefficients
+  )
+  p = gfem.power_flow(both, side, model=model)
+  ```
+
+  is the net power for that excitation. Through a plane in the lead of port 1
+  it is `abs(a1)**2 - abs(b1)**2`, with `b = S @ a` the outgoing waves.
 - **Not differentiable.** `power_flow` inside `jax.grad` raises
   `gfem.NonDifferentiableError`. Build a gradient objective from S or from
   probes instead.
@@ -142,6 +156,14 @@ p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
 - **The model the field was solved with** is a required input, as for
   `power_flow`: a driven result does not carry its materials.
 - **Not differentiable**, like `power_flow`.
+
+## Move a wave port's reference plane
+
+`result.with_offsets({"p1": 50e-6})` returns the result with S referred to a
+plane 50 um inside the domain at wave port `p1`, from the propagation constants
+the result already holds: no new solve. Distances are absolute, as in
+`WavePort(offset=...)`, so the shifted result equals a solve with that offset,
+and `result.offsets` records the planes S is referred to.
 
 ## Gradients
 

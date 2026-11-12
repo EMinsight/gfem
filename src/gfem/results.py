@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants
 
-from gfem._checks import is_traced
+from gfem._checks import is_traced, static_float
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
 
@@ -841,7 +841,8 @@ class DrivenResult:
             labels; ``dict(result.offsets)``), from ``WavePort(offset=...)``:
             S of a wave port is referred to
             a plane that far inside the domain, ``S_ij`` multiplied by
-            ``exp(gamma_i d_i) exp(gamma_j d_j)``.
+            ``exp(gamma_i d_i) exp(gamma_j d_j)``. `with_offsets` moves the
+            planes after the solve.
     """
 
     s: NetworkParameters
@@ -913,6 +914,81 @@ class DrivenResult:
         raise ValueError(
             f"No field kept at {frequency:g} Hz; the kept frequencies are "
             f"{', '.join(f'{f:g}' for f in frequencies)} Hz (Driven.keep_fields)."
+        )
+
+    def with_offsets(self, offsets: Mapping[str, float]) -> DrivenResult:
+        """This result with S referred to other wave-port reference planes.
+
+        ``offsets`` gives, by port name, the distance in m of the new plane
+        inside the domain, as ``WavePort(offset=...)`` does: absolute, not
+        an increment, so a result of a solve without offsets shifted to
+        ``d`` equals the result of a solve with ``WavePort(offset=d)``, and
+        shifting twice to the same planes changes nothing. ``S_ij`` is
+        multiplied by ``exp(gamma_i (d_i - d_i_old)) exp(gamma_j (d_j -
+        d_j_old))`` at each frequency, ``gamma`` the ports' propagation
+        constants in `port_modes`, and `offsets` records the new distances.
+        A port not named keeps its plane. ``z_ref``, the kept fields,
+        `port_modes` and `sweep` are unchanged.
+
+        Written in `jax.numpy`, so the new S differentiates like S
+        (``gamma`` is a constant of the solve).
+
+        Args:
+            offsets: The new distance of each named wave port, m, >= 0.
+
+        Returns:
+            A new result; this one is not modified.
+
+        Raises:
+            KeyError: A name is not a port of this result.
+            ValueError: A named port is not a wave port (it has no
+                propagation constant), or a distance is negative or not
+                finite.
+            NonDifferentiableError: A distance is computed inside
+                `jax.grad`, `jax.jit` or `jax.vmap`: offsets are fixed
+                values, like ``WavePort.offset``.
+        """
+        ports = self.s.ports
+        old = dict(self.offsets)
+        new = dict(old)
+        for name, value in dict(offsets).items():
+            if name not in ports:
+                raise KeyError(
+                    f"No port {name!r}; the ports are {', '.join(map(repr, ports))}."
+                )
+            if name not in old or name not in self.port_modes:
+                raise ValueError(
+                    f"Port {name!r} is not a wave port: it has no propagation "
+                    "constant to move a reference plane with. The wave ports are "
+                    f"{', '.join(map(repr, old)) or 'none'}."
+                )
+            distance = static_float(
+                value,
+                f"with_offsets: the offset of port {name!r}",
+                "Pass a concrete distance; the shifted S still differentiates "
+                "with respect to the design.",
+            )
+            if distance < 0:
+                raise ValueError(
+                    f"with_offsets: the offset of port {name!r} must be >= 0 m, "
+                    f"got {distance}."
+                )
+            new[name] = distance
+        factor = jnp.stack(
+            [
+                jnp.exp(jnp.asarray(self.port_modes[p].gamma) * (new[p] - old[p]))
+                if p in new and new[p] != old[p]
+                else jnp.ones(len(self.s.frequency), dtype=complex)
+                for p in ports
+            ],
+            axis=1,
+        )
+        columns = [ports.index(p) for p in self.s.excited]
+        values = self.s.values * factor[:, :, None] * factor[:, None, columns]
+        return dataclasses.replace(
+            self,
+            s=dataclasses.replace(self.s, values=values),
+            offsets=tuple(new.items()),
         )
 
     def __repr__(self) -> str:
