@@ -18,6 +18,7 @@ import scipy.constants
 from gfem._checks import is_traced, static_float
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
+from gfem._text import hertz, hertz_band
 
 if TYPE_CHECKING:
     import xarray
@@ -381,11 +382,7 @@ class PortModeResult:
         f = np.asarray(self.frequency)
         n = np.asarray(self.n_eff)
         z = np.asarray(self.Z_PV)
-        span = (
-            f"{f.min() / 1e9:.4g}-{f.max() / 1e9:.4g} GHz"
-            if len(f) > 1
-            else (f"{f[0] / 1e9:.4g} GHz")
-        )
+        span = hertz_band(f.min(), f.max(), 4) if len(f) > 1 else hertz(f[0], 4)
         zs = (
             "no voltage_path"
             if np.isnan(z).all()
@@ -584,17 +581,24 @@ class NetworkParameters:
         increasing frequency, as the format requires, whatever the order of
         `frequency`.
 
+        A network in which no port has a reference impedance (every port a
+        `WavePort` without ``voltage_path``, S finite) is written with an
+        explicit ``z0`` only: S, normalized to unit modal power, is written
+        unchanged, and a comment line says that ``z0`` is a nominal label.
+
         Args:
             path: The file, named ``*.s<n_ports>p``.
-            z0: The reference impedance to renormalize to, ohm (real, > 0).
+            z0: The reference impedance to renormalize to, ohm (real, > 0);
+                the nominal label of a network without reference impedances.
 
         Returns:
             The path written.
 
         Raises:
             ValueError: The file name does not match the port count, not
-                every port was excited, a port has no reference impedance,
-                or `z_ref` is not one real value and ``z0`` is not given.
+                every port was excited, some but not all ports have no
+                reference impedance (or a row of S is NaN), or ``z0`` is not
+                given and `z_ref` is not one real value or no port has one.
             TypeError: The values are computed inside `jax.grad`, `jax.jit`
                 or `jax.vmap`; write the file from a result outside them.
         """
@@ -615,6 +619,17 @@ class NetworkParameters:
         z_ref = np.asarray(self.z_ref)
         nan = np.isnan(z_ref).any(axis=0)
         missing = [p for p, bad in zip(self.ports, nan, strict=True) if bad]
+        if nan.all() and np.isfinite(s).all():
+            if z0 is None:
+                raise ValueError(
+                    "No port has a reference impedance (z_ref is NaN: wave ports "
+                    "without voltage_path), so S is normalized to unit modal power "
+                    "and has no impedance to label the file with. Pass z0= (e.g. "
+                    "z0=50.0) to write S unchanged under that nominal label, or "
+                    "give each WavePort a voltage_path."
+                )
+            path.write_text(_touchstone(self, s, _touchstone_z0(z0), modal=True))
+            return path
         if missing:
             raise ValueError(
                 f"Port {', '.join(map(repr, missing))} has no reference impedance "
@@ -634,17 +649,7 @@ class NetworkParameters:
                 )
             z0 = float(np.real(first))
         else:
-            if (
-                isinstance(z0, (bool, complex, np.complexfloating))
-                or not isinstance(z0, (int, float, np.integer, np.floating))
-                or not math.isfinite(z0)
-                or z0 <= 0
-            ):
-                raise ValueError(
-                    "to_touchstone z0 must be one real reference impedance > 0 "
-                    f"ohm, got {z0!r}; use renormalize() for complex references."
-                )
-            z0 = float(z0)
+            z0 = _touchstone_z0(z0)
             s = np.asarray(self.renormalize(z0).values)
         path.write_text(_touchstone(self, s, z0))
         return path
@@ -684,16 +689,42 @@ def _diag(v: jax.Array) -> jax.Array:
     return v[:, :, None] * jnp.eye(v.shape[-1])
 
 
-def _touchstone(net: NetworkParameters, s: np.ndarray, z0: float) -> str:
-    """Touchstone 1.1 text of ``s`` (port order) with reference ``z0``."""
+def _touchstone_z0(z0: object) -> float:
+    """``to_touchstone``'s ``z0``, checked: one real value > 0."""
+    if (
+        isinstance(z0, (bool, complex, np.complexfloating))
+        or not isinstance(z0, (int, float, np.integer, np.floating))
+        or not math.isfinite(z0)
+        or z0 <= 0
+    ):
+        raise ValueError(
+            "to_touchstone z0 must be one real reference impedance > 0 "
+            f"ohm, got {z0!r}; use renormalize() for complex references."
+        )
+    return float(z0)
+
+
+def _touchstone(
+    net: NetworkParameters, s: np.ndarray, z0: float, *, modal: bool = False
+) -> str:
+    """Touchstone 1.1 text of ``s`` (port order) with reference ``z0``.
+
+    ``modal``: no port has a reference impedance, and ``z0`` is a label.
+    """
     n = len(net.ports)
     lines = [
         f"! gfem {version('gfem')}: S-parameters, {n} port(s), {len(s)} frequencies",
         "! Power waves (Kurokawa), time convention exp(+j omega t); |a|^2 is the",
         "! time-averaged incident power in W",
         *(f"! Port[{i}] = {name}" for i, name in enumerate(net.ports, start=1)),
-        f"# Hz S RI R {z0:.12g}",
     ]
+    if modal:
+        lines.append(
+            "! No port has a reference impedance (wave ports without "
+            "voltage_path): S is normalized to unit modal power and was not "
+            "renormalized; R is a nominal label"
+        )
+    lines.append(f"# Hz S RI R {z0:.12g}")
 
     def pairs(values: np.ndarray) -> list[str]:
         return [f"{v.real: .16e} {v.imag: .16e}" for v in values]
@@ -997,11 +1028,7 @@ class DrivenResult:
 
     def __repr__(self) -> str:
         f = self.frequency
-        span = (
-            f"{f.min() / 1e9:.4g}-{f.max() / 1e9:.4g} GHz"
-            if len(f) > 1
-            else f"{f[0] / 1e9:.4g} GHz"
-        )
+        span = hertz_band(f.min(), f.max(), 4) if len(f) > 1 else hertz(f[0], 4)
         fields = f", {len(self.e_fields)} kept fields" if self.e_fields else ""
         sweep = "" if self.sweep is None else f", {self.sweep!r}"
         return (
@@ -1199,11 +1226,11 @@ class EigenmodeResult:
 
     def __repr__(self) -> str:
         try:
-            f = np.asarray(self.frequency) / 1e9
+            f = np.asarray(self.frequency)
             q = np.asarray(self.q)
         except (TypeError, jax.errors.TracerArrayConversionError):
             return f"EigenmodeResult({self.n_modes} modes)"
-        rows = ", ".join(f"{a:.6g} GHz (Q {b:.4g})" for a, b in zip(f, q, strict=True))
+        rows = ", ".join(f"{hertz(a)} (Q {b:.4g})" for a, b in zip(f, q, strict=True))
         return f"EigenmodeResult([{rows}])"
 
 

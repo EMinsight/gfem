@@ -194,17 +194,42 @@ def test_no_tracking_warning_without_a_crossing(slab_mesh):
         gfem.solve(slab(slab_mesh), gfem.PortMode("p1", GRID))
 
 
-def test_a_degenerate_mode_raises_port_mode_error():
-    # a square guide whose port mesh keeps the 90 degree rotation symmetry:
-    # TE10 and TE01 are one degenerate pair, so the port field is not defined
-    model = gfem.Model(
+DEGENERATE_REMEDY = (
+    "Select one polarization with a symmetry plane through the guide's axis "
+    "(a mirror half model), or break the cross-section's symmetry with a "
+    "WavePort(pec_edges=...) wall."
+)
+
+
+def _square_guide(ports):
+    return gfem.Model(
         gfem.Mesh.from_gmsh(DATA / "square_waveguide.msh", length_unit="mm"),
         materials={"air": gfem.Material()},
         boundaries=[gfem.PEC("walls")],
-        ports=[gfem.WavePort("p1", "port1")],
+        ports=ports,
     )
-    with pytest.raises(gfem.PortModeError, match="degenerate"):
+
+
+def test_a_degenerate_mode_raises_port_mode_error():
+    # a square guide whose port mesh keeps the 90 degree rotation symmetry:
+    # TE10 and TE01 are one degenerate pair, so the port field is not defined
+    model = _square_guide([gfem.WavePort("p1", "port1")])
+    with pytest.raises(gfem.PortModeError, match="degenerate") as caught:
         gfem.solve(model, gfem.PortMode("p1", np.linspace(20e9, 30e9, 10)))
+    message = str(caught.value)
+    assert "at 20 GHz" in message
+    assert message.endswith(DEGENERATE_REMEDY)
+
+
+def test_a_degenerate_pair_of_requested_modes_raises_port_mode_error():
+    model = _square_guide(
+        [gfem.WavePort("a", "port1", 1), gfem.WavePort("b", "port1", 2)]
+    )
+    with pytest.raises(gfem.PortModeError, match="degenerate") as caught:
+        gfem.solve(model, gfem.Driven(25e9))
+    message = str(caught.value)
+    assert "'a' and 'b'" in message
+    assert message.endswith(DEGENERATE_REMEDY)
 
 
 # --- the sweep's reduced representation (consumed by driven wave ports) ---------

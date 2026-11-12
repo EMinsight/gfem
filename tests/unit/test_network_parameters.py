@@ -239,6 +239,43 @@ def test_touchstone_refuses_ports_without_a_reference_impedance(line, tmp_path):
             net.to_touchstone(tmp_path / "x.s2p", z0=z0)
 
 
+def test_touchstone_writes_a_network_of_wave_ports_without_paths_under_z0(
+    line, tmp_path
+):
+    # every port is a wave port without voltage_path: S is modal, unrenormalized
+    net = _net(line.values, [np.nan, np.nan])
+    comments, option, data = _read_touchstone(
+        net.to_touchstone(tmp_path / "modal.s2p", z0=50.0)
+    )
+    assert option[-1] == "50"
+    pairs = data.reshape(3, 9)[:, 1::2] + 1j * data.reshape(3, 9)[:, 2::2]
+    s = np.asarray(line.values)
+    expected = np.stack([s[:, 0, 0], s[:, 1, 0], s[:, 0, 1], s[:, 1, 1]], axis=1)
+    np.testing.assert_allclose(pairs, expected, rtol=1e-14, atol=1e-16)
+    text = " ".join(comments)
+    assert "No port has a reference impedance" in text
+    assert "not renormalized" in text
+    assert "nominal label" in text
+
+
+def test_touchstone_asks_a_network_of_wave_ports_without_paths_for_z0(line, tmp_path):
+    net = _net(line.values, [np.nan, np.nan])
+    with pytest.raises(ValueError, match=r"No port has a reference impedance.*z0="):
+        net.to_touchstone(tmp_path / "modal.s2p")
+    assert not (tmp_path / "modal.s2p").exists()
+
+
+def test_touchstone_refuses_a_modal_network_with_a_nan_row(line, tmp_path):
+    # a port without a reference impedance and a NaN row: a LumpedPort
+    # without a resistance, not a wave port
+    values = np.asarray(line.values).copy()
+    values[:, 1, :] = np.nan
+    net = _net(values, [np.nan, np.nan])
+    with pytest.raises(ValueError, match="no reference impedance"):
+        net.to_touchstone(tmp_path / "x.s2p", z0=50.0)
+    assert not (tmp_path / "x.s2p").exists()
+
+
 def test_touchstone_checks_the_file_name_and_z0(line, tmp_path):
     with pytest.raises(ValueError, match=r"\.s2p"):
         line.to_touchstone(tmp_path / "line.s3p")

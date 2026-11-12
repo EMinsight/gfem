@@ -92,6 +92,7 @@ from gfem._engine.sensitivity import FieldPair, Term
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
 from gfem._sign import largest_entry
+from gfem._text import hertz
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import (
     DegenerateModeError,
@@ -577,16 +578,16 @@ class EigenmodeRule:
     ) -> str:
         """Why the solve raises: too few modes, or ``skipped`` (see `_skipped`)."""
         c = const.c / op.scale / (2 * math.pi)
-        target = f"{self.problem.target / 1e9:.6g} GHz"
+        target = hertz(self.problem.target)
         tolerance = (
             f"backward error {self.options.eigen_tolerance:g} "
             "(SolverOptions.eigen_tolerance)"
         )
         if skipped:
-            farthest = accepted[-1].k.real * c / 1e9  # sorted by distance
+            farthest = hertz(accepted[-1].k.real * c)  # sorted by distance
             head = (
                 f"Eigenmode found {len(accepted)} mode(s) near {target} to "
-                f"{tolerance}, the farthest at {farthest:.6g} GHz, but a pair "
+                f"{tolerance}, the farthest at {farthest}, but a pair "
                 "nearer the target did not converge: the modes found would "
                 "skip it."
             )
@@ -598,7 +599,7 @@ class EigenmodeRule:
         lines = [
             head,
             *(
-                f"  not converged: {m.k.real * c / 1e9:.6g} GHz, best backward "
+                f"  not converged: {hertz(m.k.real * c)}, best backward "
                 f"error {m.error:.3g} after {m.iterations} refinement steps"
                 for m in (skipped or failed)
             ),
@@ -853,10 +854,10 @@ class EigenmodeRule:
         incomplete: np.ndarray,
         per_k: float,
     ) -> str:
-        ghz = k[members] * per_k / (2 * math.pi * 1e9)
+        hz = k[members] * per_k / (2 * math.pi)
         gap = np.ptp(np.abs(k[members])) / np.abs(k[members]).max()
         modes = ", ".join(
-            f"{int(j)} ({f.real:.9g} GHz)" for j, f in zip(members, ghz, strict=True)
+            f"{int(j)} ({hertz(f.real, 9)})" for j, f in zip(members, hz, strict=True)
         )
         if incomplete[members].any():
             reason = (
@@ -885,9 +886,9 @@ class EigenmodeRule:
     def _defective_message(
         self, k: np.ndarray, members: np.ndarray, g: np.ndarray, per_k: float
     ) -> str:
-        ghz = k[members] * per_k / (2 * math.pi * 1e9)
+        hz = k[members] * per_k / (2 * math.pi)
         modes = ", ".join(
-            f"{int(j)} ({f.real:.9g} GHz)" for j, f in zip(members, ghz, strict=True)
+            f"{int(j)} ({hertz(f.real, 9)})" for j, f in zip(members, hz, strict=True)
         )
         return (
             f"DegenerateModeError: mode(s) {modes} have a singular Y^T T'(k) X "

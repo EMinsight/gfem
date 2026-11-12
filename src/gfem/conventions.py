@@ -63,7 +63,9 @@ real, power waves and pseudo-waves coincide.
   wavenumber, and the mode scaled so that this projection of the mode
   itself carries 1 W; for a lossless mode this is the modal
   power wave. The conjugated projection separates the requested modes of
-  a shared port surface only for a lossless port line.
+  a shared port surface only for a lossless port line, and a lossy port
+  line reflects its own mode at order ``alpha/beta`` (transmission is
+  right to the square of it).
   ``WavePort(offset=d)`` refers S to a plane ``d`` inside the
   domain: ``S_ij`` times ``exp(gamma_i d_i) exp(gamma_j d_j)``.
   Without a ``voltage_path``, the sign of a wave port's row and column of
@@ -73,9 +75,12 @@ real, power waves and pseudo-waves coincide.
   power-wave formulas; ``to_touchstone`` labels a file with ``z_ref`` only
   when it is one real value, and otherwise needs ``z0=`` to renormalize
   first. gfem never labels a port 50 Ω unless S was computed or
-  renormalized for 50 Ω. On a shared port surface each mode is its own
-  port, so ``y()``, ``z()`` and ``renormalize()`` act on modal voltages
-  and currents, not on the conductors' terminal ones.
+  renormalized for 50 Ω, or no port has a reference impedance (wave ports
+  without ``voltage_path``): then an explicit ``z0=`` is a nominal label,
+  S is written unchanged and the file says so in a comment. On a shared
+  port surface each mode is its own port, so ``y()``, ``z()`` and
+  ``renormalize()`` act on modal voltages and currents, not on the
+  conductors' terminal ones.
 - Under a Bloch wave vector (see Bloch periodicity), S is referenced to the
   field E. A solver that reports the periodic envelope
   ``u = E exp(+i k·r)`` gives

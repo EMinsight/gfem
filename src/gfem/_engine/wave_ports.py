@@ -75,6 +75,7 @@ from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._port_section import PortSection, port_section
 from gfem._sweep.port_mode import PortModeSweep, rows_of, sweeps_on, swept_once
+from gfem._text import hertz
 from gfem.errors import PortModeError
 from gfem.model import Model
 
@@ -202,7 +203,7 @@ class PortSurfaceCoupling:
         f = self.lead.omegas[k] / (2 * math.pi)
         return PortModeError(
             f"{label}: the modal correction's {name} matrix is singular at "
-            f"{f / 1e9:.6g} GHz (the port mode's products with its own trace on "
+            f"{hertz(f)} (the port mode's products with its own trace on "
             "the port face vanish), so the port cannot impose its mode. Check the "
             "port's cross-section and mesh, or use a LumpedPort."
         )

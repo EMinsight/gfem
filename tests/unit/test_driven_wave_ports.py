@@ -157,14 +157,16 @@ def test_conductor_plates_make_a_lossy_passive_reciprocal_line(plate_mesh, nodes
     # (2.4e-7 here, 2.6e-6 on another CPU) would gate the solver, not the
     # physics. The direct solve's asymmetry is 1.6e-10 at any thread count.
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
-    r = gfem.solve(model, gfem.Driven(F), options=options)
+    with pytest.warns(gfem.PortModeProjectionWarning, match="alpha/beta"):
+        r = gfem.solve(model, gfem.Driven(F), options=options)
     s = np.asarray(r.s.values)
     gamma = np.asarray(r.port_modes["p1"].gamma)
     assert (gamma.real > 0).all()
     np.testing.assert_allclose(s[:, 0, 1], s[:, 1, 0], rtol=0, atol=1e-8)
     power = np.abs(s[:, 0, 0]) ** 2 + np.abs(s[:, 1, 0]) ** 2
     assert (power < 1).all()
-    # the Robin term keeps Re k_n only: the lossy line is matched to O(alpha/beta)
+    # the conjugated S functional reflects a lossy mode referenced to itself
+    # at order alpha/beta; |S21| is right to its square, a looser bound here
     beta = gamma.imag
     np.testing.assert_allclose(
         np.abs(s[:, 1, 0]), np.exp(-gamma.real * L), atol=4 * (gamma.real / beta).max()
@@ -368,7 +370,7 @@ def test_a_singular_reaction_raises_instead_of_dropping_the_correction(
     message = str(caught.value)
     assert "'p1'" in message
     assert "'port1'" in message
-    assert f"{F[0] / 1e9:.6g} GHz" in message
+    assert "1.5 THz" in message
 
 
 # --- hybrid modes: the modal correction -------------------------------------------
@@ -1012,11 +1014,11 @@ def quadrant_mesh(tmp_path_factory):
     return _quadrant_mesh(tmp_path_factory, QUADRANT_A, QUADRANT_B)
 
 
-def quadrant_guide(mesh, tan_delta, names=HYBRID_SHARED):
+def quadrant_guide(mesh, tan_delta, names=HYBRID_SHARED, eps_r=4.0):
     return gfem.Model(
         mesh,
         materials={
-            "block": gfem.Material(eps_r=4.0, tan_delta=tan_delta),
+            "block": gfem.Material(eps_r=eps_r, tan_delta=tan_delta),
             "fill": gfem.Material(eps_r=2.0),
         },
         boundaries=[gfem.PEC("walls")],
@@ -1050,6 +1052,63 @@ def test_a_lossy_shared_port_surface_warns_its_cross_projection(quadrant_mesh):
         value = float(re.search(r"cross-projection of ([0-9.e+-]+)", message)[1])
         # measured 2.67e-2 (1.34 tan_delta): the order of the block's loss
         assert 2e-2 < value < 3.5e-2
+
+
+def test_a_shared_port_surface_on_an_anisotropic_cross_section(quadrant_mesh):
+    # a per-axis block: the port mode problem and the modal coupling take the
+    # tensor path, and every propagating mode is requested on both surfaces
+    model = quadrant_guide(quadrant_mesh, 0.0, eps_r=(3.5, 4.5, 4.0))
+    result = _silent(model, gfem.Driven(QUADRANT_F), QUADRANT_OPTIONS)
+    s = np.asarray(result.s.values)
+    # measured: reciprocity 1.8e-15, unitarity 7e-5
+    assert np.abs(s - np.swapaxes(s, 1, 2)).max() <= 1e-12
+    unitarity = np.einsum("fki,fkj->fij", s.conj(), s) - np.eye(4)
+    assert np.abs(unitarity).max() <= 5e-4
+    length = QUADRANT_L * 1e-3
+    for m, name in enumerate(HYBRID_SHARED[:2]):
+        gamma = np.asarray(result.port_modes[name].gamma)
+        through = s[:, 2 + m, m]
+        # measured ||S21| - 1| 3.6e-5, phase 9e-4 rad (up to the port's sign)
+        np.testing.assert_allclose(np.abs(through), 1.0, rtol=0, atol=2e-4)
+        phase = np.abs(np.angle(through * np.exp(gamma * length)))
+        assert np.minimum(phase, np.abs(phase - np.pi)).max() <= 5e-3
+    conversion = [(i, j) for i in range(4) for j in range(4) if i % 2 != j % 2]
+    # measured 5e-4
+    assert max(np.abs(s[:, i, j]).max() for i, j in conversion) <= 2e-3
+    # the tensor is read: mode 2's beta at 50 GHz differs from the isotropic
+    # block's 362.8 rad/m
+    beta_2 = float(np.asarray(result.port_modes["p1_m2"].gamma)[0].imag)
+    assert beta_2 == pytest.approx(372.1, abs=0.5)
+
+
+def lossy_line(mesh, tan_delta):
+    """The parallel-plate line with a lossy fill: two lone wave ports."""
+    return line(mesh).with_material(
+        "fill", gfem.Material(eps_r=EPS, tan_delta=tan_delta)
+    )
+
+
+def test_a_lossy_lone_port_line_warns_its_attenuation(plate_mesh):
+    # the conjugated S functional reflects a lossy mode referenced to itself
+    # at |S11| ~ alpha/beta (measured 0.99 alpha/beta at three loss levels),
+    # though a uniform line has S11 = 0
+    model = lossy_line(plate_mesh, 0.01)
+    with pytest.warns(gfem.PortModeProjectionWarning) as record:
+        gfem.solve(model, gfem.Driven(F), options=SHARED_OPTIONS)
+    messages = [str(w.message) for w in record]
+    assert len(messages) == 2  # once per port surface
+    for end, message in zip((1, 2), messages, strict=True):
+        for name in (f"'p{end}'", f"'port{end}'", "reflection entries"):
+            assert name in message
+        value = float(re.search(r"alpha/beta of ([0-9.e+-]+)", message)[1])
+        # alpha/beta = tan_delta / 2 on a TEM line
+        assert 4e-3 < value < 6e-3
+
+
+@pytest.mark.parametrize("tan_delta", [0.0, 1e-3])
+def test_a_port_line_below_the_floor_is_silent(plate_mesh, tan_delta):
+    # alpha/beta = 5e-4 at tan_delta = 1e-3
+    _silent(lossy_line(plate_mesh, tan_delta), gfem.Driven(F), SHARED_OPTIONS)
 
 
 # A narrower quadrant guide (2 x 1 mm): mode 1 propagates at 55 and 65 GHz,

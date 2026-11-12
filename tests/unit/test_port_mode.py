@@ -720,13 +720,14 @@ def test_port_mode_stop_gradient_opts_a_read_input_out(plate_mesh):
         {"eigen_solver": "arpack"},
     ],
 )
-def test_port_mode_rejects_solver_choices_it_does_not_use(plate_mesh, options):
-    with pytest.raises(ValueError, match="SuperLU and SciPy on the CPU"):
-        gfem.solve(
-            plate(plate_mesh),
-            gfem.PortMode("p1", 1e9),
-            options=gfem.SolverOptions(**options),
-        )
+def test_port_mode_ignores_solver_choices_it_does_not_use(plate_mesh, options):
+    # the 2D problem runs SuperLU and SciPy on the CPU whatever the options
+    # name, so one SolverOptions serves PortMode and the Driven solve after it
+    model, problem = plate(plate_mesh), gfem.PortMode("p1", 1e9)
+    named = gfem.solve(model, problem, options=gfem.SolverOptions(**options))
+    default = gfem.solve(model, problem)
+    # two ARPACK runs differ at rounding (Re gamma ~ 1e-26 against beta ~ 42)
+    np.testing.assert_allclose(named.gamma, default.gamma, rtol=1e-12, atol=0)
 
 
 def test_solve_rejects_unknown_problems_and_options(plate_mesh):

@@ -541,16 +541,16 @@ def test_a_port_mode_under_jax_is_as_on_one_process():
 
 def _named_solver(directory):
     options = gfem.SolverOptions(linear_solver="direct")
-    try:
-        gfem.solve(
-            _model("lossless", directory), gfem.PortMode("p1", 12e9), options=options
-        )
-    except ValueError as err:
-        return str(err), _world().allreduce(1)
-    raise AssertionError("a port mode named a solver")
+    model = _model("lossless", directory)
+    return np.asarray(
+        gfem.solve(model, gfem.PortMode("p1", 12e9), options=options).gamma
+    )
 
 
-def test_a_port_mode_naming_a_solver_raises_on_every_rank(tmp_path):
-    (message, ranks), *_ = on_ranks(_named_solver, tmp_path, ranks=3, limit=60)
-    assert "always uses SuperLU" in message
-    assert ranks == 3
+def test_a_port_mode_naming_a_solver_ignores_it_on_every_rank(tmp_path):
+    # the 2D problem runs SuperLU and SciPy whatever the options name
+    one = np.asarray(
+        gfem.solve(_model("lossless", tmp_path), gfem.PortMode("p1", 12e9)).gamma
+    )
+    gamma, *_ = on_ranks(_named_solver, tmp_path, ranks=3, limit=60)
+    np.testing.assert_allclose(gamma, one, rtol=1e-8, atol=0)

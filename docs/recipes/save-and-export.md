@@ -268,9 +268,13 @@ and prints a second line, `gfem: note: ...`, that says where it is.
 
 - A Touchstone 1.1 file has one real reference impedance for every port.
   When the ports' `s.z_ref` differ, or one is complex, pass `z0=`.
-  A port with no reference impedance (a {py:obj}`gfem.WavePort` without a
-  `voltage_path`, a lumped port without a resistance) cannot be written: S is
-  in modal power waves with no voltage to refer it to.
+  A lumped port without a resistance cannot be written: its row of S is NaN.
+  When no port has a reference impedance (every port a
+  {py:obj}`gfem.WavePort` without a `voltage_path`, as in a photonic
+  network), `z0=` is required and is a nominal label only: S is written
+  unchanged, normalized to unit modal power, and a comment line in the file
+  says so. A network that mixes such ports with ports that have a reference
+  impedance cannot be written.
 - A result holds the fields `keep_fields` asked for, and only those; a field
   you did not keep needs a new solve.
 - Across ranks, write S and the job from rank 0, and call a field's
