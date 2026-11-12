@@ -131,7 +131,6 @@ def test_error_estimate_checks_the_key_against_the_result(coax):
             "anisotropic permittivity",
         ),
         ("step-mu", ("s", ("p2", "p1")), "permeability"),
-        ("step-deembedded", ("s", ("p2", "p1")), "de-embedding"),
         ("step-shared", ("s", ("p2", "p1")), "shared port surface"),
         ("step-lossy-wave", ("s", ("p2", "p1")), "lossy wave port"),
         ("cavity-lossy", ("omega", 0), "lossy eigenmode"),
@@ -149,10 +148,6 @@ def test_untested_entries_raise_before_any_solve(
         ),
         "step-mu": (
             _with(step, materials={"dielectric": gfem.Material(eps_r=4.0, mu_r=2.0)}),
-            rc.step_problem(),
-        ),
-        "step-deembedded": (
-            _with(step, ports=_waves(offset=1e-3)),
             rc.step_problem(),
         ),
         "step-shared": (
@@ -210,6 +205,20 @@ def test_a_lossless_wave_port_s_entry_is_estimated(step):
         result, gfem.QuantityEstimator(s=("p2", "p1")), model=model
     )
     assert 0 < estimate.value < 1e-2
+
+
+def test_a_de_embedding_offset_leaves_the_s_estimate_unchanged(step):
+    # The offset multiplies S by exp(i beta offset) after the solve, of
+    # modulus 1 on a lossless port: the fields and the estimate stay.
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    values = []
+    for offset in (0.0, 1e-3):
+        model = _with(step, ports=_waves(offset=offset))
+        result = gfem.solve(
+            model, gfem.Driven([3e9], keep_fields=True), options=OPTIONS
+        )
+        values.append(gfem.error_estimate(result, estimator, model=model).value)
+    assert values[1] == pytest.approx(values[0], rel=1e-12)
 
 
 # --- reading a result --------------------------------------------------------

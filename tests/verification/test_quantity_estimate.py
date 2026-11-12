@@ -289,6 +289,30 @@ def test_the_step_line_s21_with_wave_ports(tmp_path):
     _assert_in("step line, wave ports", estimate.value, error)
 
 
+def test_the_step_line_s21_with_de_embedded_wave_ports(tmp_path):
+    # The offsets move the reference planes 1 and 2 mm into the line: the
+    # TEM port's beta is exact, so the reference is STEP_WAVE_S21 times
+    # exp(i beta (1 + 2) mm).
+    offsets = (1e-3, 2e-3)
+    lumped = rc.step_model(tmp_path, 4)
+    model = gfem.Model(
+        lumped.mesh,
+        materials=lumped.materials,
+        boundaries=lumped.boundaries,
+        ports=[
+            gfem.WavePort("p1", "port1", offset=offsets[0]),
+            gfem.WavePort("p2", "port2", offset=offsets[1]),
+        ],
+    )
+    problem = gfem.Driven([3e9], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(result, S21, model=model)
+    beta = 2 * math.pi * 3e9 / const.c * math.sqrt(4.0)
+    reference = STEP_WAVE_S21 * np.exp(1j * beta * sum(offsets))
+    error = complex(result.s["p2", "p1"][0]) - reference
+    _assert_in("step line, wave ports", estimate.value, error)
+
+
 # --- parallel-plate line: S, smooth ------------------------------------------
 
 _LINE = {"length": 10e-3, "height": 1e-3, "width": 2e-3, "eps_r": 4.0}

@@ -833,10 +833,6 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
             port = waves.get(name)
             if port is None:
                 continue
-            if port.offset != 0:
-                raise _untested(
-                    "de-embedding", f"wave port {name!r} with a de-embedding offset"
-                )
             if lossy[_touching(model, port.surface)].any():
                 raise MeshRefinementUnsupportedError(
                     "lossy wave port",
