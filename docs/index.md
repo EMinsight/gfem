@@ -48,6 +48,7 @@ recipes/remesh-and-restart
 :hidden:
 :caption: Solving
 
+recipes/solve-a-device
 recipes/mesh-refinement
 recipes/anisotropic-materials
 recipes/periodic-cell

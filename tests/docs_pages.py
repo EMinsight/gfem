@@ -7,16 +7,26 @@ resolve, call keywords bind to the signatures).
 """
 
 import ast
+import contextlib
+import dataclasses
 import importlib
 import inspect
+import io
 import re
+import shutil
 import textwrap
+import urllib.request
 from pathlib import Path
 
 import numpy as np
 
 ROOT = Path(__file__).parents[1]
 DOCS = ROOT / "docs"
+#: The mesh every executed page downloads, and the address it downloads it from.
+MESH = DOCS / "tutorials" / "data" / "line.msh"
+MESH_URL = (
+    "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/data/line.msh"
+)
 
 _FENCE = re.compile(
     r"^(?P<indent>[ \t]*)```(?P<lang>[^\n`]*)\n(?P<body>.*?)^(?P=indent)```[ \t]*$",
@@ -88,6 +98,111 @@ def doc_links(text: str) -> set[str]:
         explicit = re.search(r"<([^>]+)>\s*$", role)
         targets.add((explicit[1] if explicit else role).strip())
     return targets
+
+
+# -- Executed pages -----------------------------------------------------------
+
+_NUMBER = re.compile(r"(?<![A-Za-z_\d.])[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+@dataclasses.dataclass(frozen=True)
+class Example:
+    """One Python block of a page, with what the page shows and what it printed."""
+
+    section: str
+    code: str
+    shown: str | None
+    printed: str = ""
+
+
+def examples(page: str) -> list[Example]:
+    """The Python blocks of ``page`` in order, each with its output block.
+
+    The output block of a Python block is the ``text`` block that follows it
+    with nothing but blank lines in between.
+    """
+    titles = re.finditer(r"^## (.+)$", page, re.MULTILINE)
+    headings = [(m.start(), m[1]) for m in titles]
+    fences = list(_FENCE.finditer(page))
+    found = []
+    for fence, after in zip(fences, [*fences[1:], None], strict=True):
+        if fence["lang"].strip() != "python":
+            continue
+        section = next((h for at, h in reversed(headings) if at < fence.start()), "")
+        shown = None
+        if (
+            after is not None
+            and after["lang"].strip() == "text"
+            and not page[fence.end() : after.start()].strip()
+        ):
+            shown = textwrap.dedent(after["body"])
+        found.append(Example(section, textwrap.dedent(fence["body"]), shown))
+    return found
+
+
+def run_page(path: Path, workdir: Path) -> list[Example]:
+    """Run a page's Python blocks as a reader does, and record what each prints.
+
+    The blocks run in order in one namespace, in ``workdir``, with the mesh
+    download swapped for the repository's own copy.
+    """
+
+    def urlretrieve(url, filename):
+        assert url == MESH_URL, url
+        shutil.copy(MESH, Path(workdir) / filename)
+
+    namespace = {"__name__": path.stem}
+    found = examples(path.read_text(encoding="utf-8"))
+    ran = []
+    original = urllib.request.urlretrieve
+    urllib.request.urlretrieve = urlretrieve
+    try:
+        with contextlib.chdir(workdir):
+            for example in found:
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    exec(compile(example.code, str(path), "exec"), namespace)  # noqa: S102
+                ran.append(dataclasses.replace(example, printed=out.getvalue()))
+    finally:
+        urllib.request.urlretrieve = original
+    return ran
+
+
+def numbers(text: str) -> np.ndarray:
+    """Every number written in ``text``, in order."""
+    return np.array([float(n) for n in _NUMBER.findall(text)])
+
+
+def output_problems(ran: list[Example], *, tolerance: float = 1e-5) -> list[str]:
+    """Where a page's output blocks differ from what its code printed.
+
+    A block that prints has an output block and one that does not has none;
+    the words agree, and the numbers agree to ``tolerance`` (relative, and
+    absolute for numbers near zero). The default is ten times the iterative
+    solver's default tolerance: a driven S changes in its seventh digit with
+    the ports excited together.
+    """
+    problems = []
+    for number, example in enumerate(ran, start=1):
+        where = f"python block {number} ({example.section})"
+        if not example.printed.strip():
+            if example.shown is not None:
+                problems.append(f"{where} prints nothing but shows an output block")
+            continue
+        if example.shown is None:
+            problems.append(f"{where} prints but the page shows no output block")
+            continue
+        words = [
+            _NUMBER.sub("#", text).split() for text in (example.printed, example.shown)
+        ]
+        printed, shown = numbers(example.printed), numbers(example.shown)
+        if words[0] != words[1] or not np.allclose(
+            shown, printed, rtol=tolerance, atol=tolerance
+        ):
+            problems.append(
+                f"{where} printed\n{example.printed}but the page shows\n{example.shown}"
+            )
+    return problems
 
 
 # -- Static page check --------------------------------------------------------
