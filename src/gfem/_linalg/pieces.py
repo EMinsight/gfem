@@ -41,6 +41,11 @@ from numpy.typing import ArrayLike
 from gfem import _mpi
 from gfem._linalg.base import host_bytes, local_matrix, same_pattern
 
+try:  # private to scipy: the piece sum falls back to numpy without it
+    from scipy.sparse._sparsetools import csc_matvec as _csc_matvec
+except ImportError:  # pragma: no cover - scipy's layout
+    _csc_matvec = None
+
 Integrand = Callable[[Any, Any], Any]
 
 
@@ -126,7 +131,7 @@ class FixedPart:
         if at is None:
             return None
         # the volume pieces' varying parts share their elements, so mostly
-        # their positions: one array lets the piece sum scatter them once
+        # their positions: one array is held for them all
         for other in self.store.kept.values():
             if np.array_equal(other.varying[1], at):
                 at = other.varying[1]
@@ -224,20 +229,10 @@ class AssembledPieces:
         target.data = w0 * v0
         for w, values in rest:
             target.data += w * values
-        # the parts at one positions array (split pieces' varying parts) are
-        # summed first and scattered once: the scatter is the costly part
-        scattered: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-        for values, at, k, _ in parts:
-            if at is None:
-                continue
-            held = scattered.get(id(at))
-            if held is None:
-                scattered[id(at)] = (at, weights[k] * values)
-            else:
-                np.add(held[1], weights[k] * values, out=held[1])
+        scattered = [(weights[k], v, at) for v, at, k, _ in parts if at is not None]
         out = target.FV().NumPy()
-        for at, values in scattered.values():
-            out[at] += values
+        if not _scatter_compiled(out, scattered):
+            _scatter_numpy(out, scattered)
 
     @property
     def nbytes(self) -> int:
@@ -365,6 +360,43 @@ class AssembledPieces:
         self._built = True
         if not _mpi.agree_any(comm, flag=outside):
             self._template, self._parts = matrix, parts
+
+
+#: Scattered parts of a piece sum: (weight, compact values, their positions).
+_Scattered = list[tuple[complex, np.ndarray, np.ndarray]]
+
+
+def _scatter_compiled(out: np.ndarray, scattered: _Scattered) -> bool:
+    """Add each ``w * values`` at its positions of ``out``, in place.
+
+    One compiled pass per part, without temporaries: scipy's CSC matrix-vector
+    product of the one-column matrix of ``values`` in rows ``at`` with ``[w]``.
+    ``False`` (nothing added) without scipy's private routine.
+    """
+    if _csc_matvec is None:
+        return False
+    one = np.zeros(2, np.int64)
+    for i, (w, values, at) in enumerate(scattered):
+        one[1] = len(at)
+        try:
+            _csc_matvec(len(out), 1, one, at, values, np.array([w]), out)
+        except TypeError:  # raised before it writes: the rest by numpy
+            _scatter_numpy(out, scattered[i:])
+            break
+    return True
+
+
+def _scatter_numpy(out: np.ndarray, scattered: _Scattered) -> None:
+    """`_scatter_compiled` by numpy; parts at one positions array scatter once."""
+    summed: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for w, values, at in scattered:
+        held = summed.get(id(at))
+        if held is None:
+            summed[id(at)] = (at, w * values)
+        else:
+            np.add(held[1], w * values, out=held[1])
+    for at, values in summed.values():
+        out[at] += values
 
 
 def _positions(
