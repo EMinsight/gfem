@@ -827,6 +827,20 @@ def _out_probe_in_the_node_coordinates(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
+def _out_electric_energy_of_a_traced_field(request):
+    # forward only: the measurement takes fixed fields and models
+    model = request.getfixturevalue("driven_model")
+    problem = gfem.Driven(frequency=5e9, keep_fields=True)
+    eps = model.materials["dielectric"].eps_r
+
+    def objective(e):
+        m = model.with_material("dielectric", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(5e9, "p1")
+        return gfem.electric_energy(field, model=m)["dielectric"]
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
 def _out_driven_traced_wave_vector(request):
     # the wave vector is static: a Bloch phase is not a design variable
     model, _ = request.getfixturevalue("driven_periodic_cases")["driven_periodic_bloch"]
@@ -988,6 +1002,12 @@ OUT_OF_SCOPE = [
         _out_probe_in_the_node_coordinates,
         gfem.NonDifferentiableError,
         r"mesh node coordinates.*stop_gradient",
+    ),
+    (
+        "electric energy of a field",
+        _out_electric_energy_of_a_traced_field,
+        gfem.NonDifferentiableError,
+        r"gfem\.electric_energy is not differentiable",
     ),
     # driven on a periodic model
     (

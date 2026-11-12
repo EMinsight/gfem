@@ -49,7 +49,8 @@ The script `petsc_wheelhouse.sh`
 ({download}`download it <../../tools/petsc_wheelhouse.sh>`, or read it at the
 end of this page) builds PETSc, SLEPc, petsc4py and slepc4py, with MUMPS, METIS
 and OpenBLAS, into a wheelhouse: a folder of four wheels. It compiles all of
-them from source, a long build done once per Python version. Run it with the
+them from source, once per Python version: about 22 minutes on a GitHub
+Actions `ubuntu-24.04` runner, 26 with `--mpi`. Run it with the
 environment that runs gfem active, since the wheels are built for its Python:
 
 ```bash
@@ -204,6 +205,10 @@ solved. Adaptive sweeps set the preconditioner up at every sample.
   without fill levels, does not converge on gfem's driven problems. To try
   one anyway, also set `pc_factor_mat_solver_type` to `petsc`: gfem's default
   MUMPS has no ILU, so `pc_type` `ilu` alone is refused.
+- Below the low-frequency floor ({py:obj}`gfem.LowFrequencyWarning`), a Krylov
+  method on the MUMPS factorization loses the same digits of the capacitive
+  part of S as the factorization alone, whatever the `tolerance`, and S12 and
+  S21 agree to about 1e-9 instead of 1e-15.
 
 ## What gfem refuses, and what to set instead
 
@@ -213,6 +218,7 @@ solved. Adaptive sweeps set the preconditioner up at every sample.
 |---|---|---|
 | `-ksp_type` | names are written without `-` | `ksp_type` |
 | `ksp_rtol` | gfem sets it | `tolerance`, `adjoint_tolerance` |
+| `ksp_atol` | gfem sets the stopping rule | `tolerance`, `adjoint_tolerance` |
 | `ksp_initial_guess_nonzero` | gfem sets it per solve | nothing: remove it |
 | `eps_tol` | gfem sets it | `eigen_tolerance` |
 | `eps_nev` | gfem sets it | `Eigenmode.n_modes` |
@@ -224,7 +230,13 @@ solved. Adaptive sweeps set the preconditioner up at every sample.
 
 When the solve starts, gfem also refuses an option the linear solver did not
 read, an option PETSc refuses, and `ksp_reuse_preconditioner` with `ksp_type`
-`preonly`, which would solve with a stale operator.
+`preonly`, which would solve with a stale operator. `ksp_type` `preonly`
+(gfem's default) applies the preconditioner once and measures no residual, so
+gfem refuses it with a `pc_type` other than `lu` or `cholesky`, and with a
+`pc_factor_shift_type` other than `none`: use a Krylov `ksp_type` such as
+`gmres` with any other preconditioner. A Krylov solve that PETSc ends on its
+iteration count without measuring a residual (`ksp_convergence_test` `skip`)
+raises `ValueError` too.
 
 ## Threads
 

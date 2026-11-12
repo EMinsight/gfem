@@ -21,7 +21,7 @@ import structured_meshes as sm
 import gfem
 from gfem._engine import estimate
 from gfem._engine.estimate import FluxRecovery
-from gfem.refinement import _dorfler
+from gfem.refinement import _dorfler, _track_mode
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 COAX_ESTIMATE = 0.1157  # the n = 2 coax's field error estimate, for orientation
@@ -622,6 +622,60 @@ def test_refine_mesh_runs_under_grad_with_concrete_inputs(coax):
 
     with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
         assert float(jax.grad(objective)(2.0)) == pytest.approx(plain)
+
+
+def test_refine_mesh_frees_consumed_solve_entries_before_its_first_solve(coax):
+    from gfem._engine.cache import ENTRIES
+
+    n = len(coax.mesh.elements("dielectric"))
+
+    def loss(eps):
+        model = coax.replace(materials={"dielectric": gfem.MaterialField(eps_r=eps)})
+        result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
+        return result.capacitance[0, 0] * 1e12
+
+    ENTRIES.clear()
+    first = jax.grad(loss)(2.0 * jnp.ones(n))
+    assert any(e.consumed for e in ENTRIES._entries.values())
+    _refine(coax, max_cycles=0, tolerance=1.0)
+    assert not any(e.consumed for e in ENTRIES._entries.values())
+    again = jax.grad(loss)(2.0 * jnp.ones(n))
+    np.testing.assert_array_equal(np.asarray(again), np.asarray(first))
+    ENTRIES.clear()
+
+
+# --- mode following ------------------------------------------------------------
+
+
+def _modes(*omegas):
+    return types.SimpleNamespace(
+        omega=np.asarray(omegas, complex), cluster=np.arange(len(omegas))
+    )
+
+
+def test_a_clean_step_follows_the_nearest_mode():
+    result = _modes(7.0, 10.001, 13.0)
+    assert _track_mode(result, 0, 10.0, 1e-6, 1e-3) == 1
+
+
+def test_the_first_mesh_follows_the_named_mode():
+    assert _track_mode(_modes(7.0, 10.0), 1, None, 1e-6, None) == 1
+
+
+def test_a_mode_alone_in_its_result_is_followed():
+    assert _track_mode(_modes(10.001), 0, 10.0, 1e-6, 1e-3) == 0
+
+
+def test_a_crossing_raises():
+    # the second nearest mode is less than twice as far as the nearest
+    with pytest.raises(gfem.DegenerateModeError, match="not clearly nearest"):
+        _track_mode(_modes(10.4, 9.5), 0, 10.0, 1e-6, 1.0)
+
+
+def test_a_mode_that_left_the_solved_modes_raises():
+    # nearest at 11 from 10, further than the previous estimate 1e-3 allows
+    with pytest.raises(gfem.DegenerateModeError, match="more modes"):
+        _track_mode(_modes(11.0, 14.0), 0, 10.0, 1e-6, 1e-3)
 
 
 def test_the_public_names_are_exported():

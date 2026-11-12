@@ -14,6 +14,8 @@ result reloaded with `gfem.load_result`.
 - `power_flow`: the net power a driven field carries out of a set of
   elements, exact for the solved field (a flux of point-sampled
   ``E x H*`` is not, see the measurements recipe).
+- `electric_energy`: the time-averaged electric energy a field stores in
+  each volume region, with the model's materials.
 
 Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 `jax.grad` they differentiate with respect to the field coefficients (so
@@ -52,6 +54,7 @@ __all__ = [
     "INTERFACE_KINDS",
     "InterfaceParticipation",
     "characteristic_impedance",
+    "electric_energy",
     "interface_participation",
     "power_flow",
 ]
@@ -555,6 +558,89 @@ def power_flow(
     _check_driven(field)
     engine = importlib.import_module("gfem._engine.power_flow")
     return jnp.asarray(engine.power_flow(field, names, model), dtype=float)
+
+
+# --- electric energy ---------------------------------------------------------------
+
+
+def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
+    """Time-averaged electric energy of a field in each volume region, J.
+
+    ``W_e[r] = 1/4 eps0 ∫_r E* . Re(eps_r) E dV`` over the region's elements
+    in the solve domain, with the full real permittivity tensor in an
+    anisotropic medium. The field is a peak phasor, hence the 1/4. A driven
+    field is the one for 1 W incident at its excited port
+    (`gfem.conventions`), so in a region with one loss tangent the power
+    dielectric loss absorbs is ``2 * omega * tan_delta * W_e[r]`` W, the
+    number `power_flow` gives for that region when nothing else in it
+    absorbs.
+
+    A mode field of an `gfem.EigenmodeResult` is accepted too. The mode
+    normalization counts ``1/2 Re ∫ D* . E``, the total energy of a lossless
+    mode and twice this time average: ``2 * W_e[r]`` equals
+    ``bulk_participation[r] * gfem.conventions.MODE_ENERGY``.
+
+    The integral is exact for the solved field and the model's element-wise
+    permittivity. A field of an adaptive sweep (`gfem.ReducedFields`) is
+    exact at the solved frequencies and accurate to the sweep's tolerance in
+    between. Not differentiable in this version.
+
+    Args:
+        field: A time-harmonic electric field (quantity ``"E"``, in H(curl),
+            with an ``omega``), e.g. ``result.e_field(f)``.
+        model: The model the field was solved with: the permittivities and
+            regions the integral reads.
+
+    Returns:
+        A 0-d float64 array per volume region with elements in the solve
+        domain, by region name, J.
+
+    Raises:
+        TypeError: ``field`` is not a `gfem.Field`, or ``model`` is not a
+            `gfem.Model`.
+        ValueError: The field is not a time-harmonic electric field (another
+            quantity, or static), or was not solved on ``model``.
+        gfem.DistributedUnsupportedError: The field is a piece across ranks.
+        NonDifferentiableError: ``field`` or ``model`` is computed inside
+            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; call
+            `electric_energy` outside them.
+    """
+    from gfem._field import Field
+    from gfem.model import Model
+
+    if not isinstance(field, Field):
+        raise TypeError(
+            f"electric_energy needs a gfem.Field, got {type(field).__name__}."
+        )
+    if field._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature("electric_energy")
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"electric_energy needs model= a gfem.Model, got {type(model).__name__}."
+        )
+    if is_traced(field) or is_traced(model):
+        raise NonDifferentiableError(
+            "gfem.electric_energy is not differentiable in this version: its "
+            "field and model must be fixed values, not computed inside jax.grad, "
+            "jax.jit or jax.vmap. Call it outside the function JAX transforms."
+        )
+    if field.quantity != "E" or field.space != "hcurl":
+        raise ValueError(
+            "electric_energy needs an electric field (quantity 'E' in 'hcurl'), "
+            f"got quantity {field.quantity!r} in {field.space!r}: pass the E field "
+            "the B field or potential came from."
+        )
+    if field.omega is None:
+        raise ValueError(
+            "electric_energy needs a time-harmonic field; this one is static "
+            "(omega is None): an electrostatic result has its energy per region "
+            "in result.energy."
+        )
+    engine = importlib.import_module("gfem._engine.energy")
+    return {
+        region: jnp.asarray(energy, dtype=float)
+        for region, energy in engine.electric_energy(field, model).items()
+    }
 
 
 def _side_names(

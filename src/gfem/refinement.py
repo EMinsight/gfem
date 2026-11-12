@@ -99,7 +99,9 @@ class QuantityEstimator:
             ports must be excited (`Driven.excite`).
         omega: An index into ``EigenmodeResult.omega`` on the first mesh;
             on each refined mesh the estimate follows the mode whose omega
-            is nearest the previous mesh's.
+            is nearest the previous mesh's, and `refine_mesh` raises
+            `gfem.DegenerateModeError` when that mode is not clearly the
+            same one.
 
     Raises:
         TypeError: Not exactly one keyword is given, or a value has the
@@ -284,6 +286,11 @@ class MeshRefinement:
         )
 
 
+#: The lowest ratio of an estimate to the error over the verified cases; mode
+#: following bounds a mode's shift between two meshes with it.
+_ESTIMATE_FLOOR = 0.9
+
+
 def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorEstimate:
     """Estimate the error of a solved result, without refining.
 
@@ -325,6 +332,7 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         DegenerateModeError: A `QuantityEstimator` names a mode of a
             degenerate cluster, or one within the default
             `SolverOptions.cluster_rtol` of another mode.
+        DistributedUnsupportedError: The result was solved across ranks.
         NonDifferentiableError: A model or result leaf is a JAX tracer, or
             the call is inside `jax.jit`.
     """
@@ -337,7 +345,7 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     if mode is not None:
         # `refine_mesh`'s rule, at the default tolerance: the result does not
         # record the options it was solved with
-        _track_mode(result, mode, None, SolverOptions().cluster_rtol)
+        _track_mode(result, mode, None, SolverOptions().cluster_rtol, None)
     return _estimate(model, result, estimator, threads=None, mode=mode)
 
 
@@ -428,6 +436,11 @@ def refine_mesh(
             `QuantityEstimator`).
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
             alone: another mode lies within ``options.cluster_rtol`` of it.
+            Or, on a refined mesh, the nearest mode is not clearly the
+            followed one: a second mode is less than twice as far from the
+            previous frequency, or the nearest moved further than the
+            previous estimate allows (the mode probably left the solved
+            modes: ask for more modes or start from a finer mesh).
         DistributedUnsupportedError: Launched on more than one rank.
         MeshQualityError: The input mesh's nodes have moved and an element is
             inverted.
@@ -462,6 +475,7 @@ def refine_mesh(
     # a moved input mesh is checked here, so a warning names the caller's line;
     # the loop's solves and bisections skip the check
     _check_quality(model.mesh, model._domain.active, stacklevel=2)  # noqa: SLF001
+    _free_consumed(options)
     return _loop(
         model,
         problem,
@@ -504,7 +518,9 @@ def _loop(
     previous: complex | None = None
     while True:
         if isinstance(result, EigenmodeResult) and mode is not None:
-            mode = _track_mode(result, mode, previous, options.cluster_rtol)
+            # the omega estimate of the previous mesh bounds the mode's shift
+            estimated = cycles[-1].estimate if cycles else None
+            mode = _track_mode(result, mode, previous, options.cluster_rtol, estimated)
             previous = complex(np.asarray(result.omega)[mode])
         estimate = _estimate(
             current, result, estimator, threads=options.threads, mode=mode
@@ -569,6 +585,18 @@ def _loop(
         triangle_parents=readonly(tri_parents),
         _input_mesh=model.mesh,
     )
+
+
+def _free_consumed(options: SolverOptions) -> None:
+    """Free the solve entries a backward has read, before the first solve.
+
+    As a differentiated forward does: their base handles return to the plan
+    pool, for the solve of the input mesh to take, within
+    ``options.retain_memory``. `refine_mesh` runs on one process.
+    """
+    from gfem._engine.cache import ENTRIES, retain_budget
+
+    ENTRIES.free_consumed(None, retain_budget(options.retain_memory))
 
 
 def _dorfler(indicators: np.ndarray, error_fraction: float) -> np.ndarray:
@@ -649,19 +677,29 @@ def _quantity(
 
 
 def _track_mode(
-    result: EigenmodeResult, mode: int, previous: complex | None, rtol: float
+    result: EigenmodeResult,
+    mode: int,
+    previous: complex | None,
+    rtol: float,
+    previous_estimate: float | None,
 ) -> int:
     """The mode of ``result`` a quantity follows: nearest ``previous`` omega.
 
     On the first result (``previous`` is ``None``) it is ``mode`` itself.
+    ``previous_estimate`` is the omega estimate on the previous mesh, relative
+    to ``previous``.
 
     Raises:
         DegenerateModeError: Another mode lies within ``rtol`` of the
-            followed one, or it belongs to a degenerate cluster.
+            followed one, or it belongs to a degenerate cluster; the nearest
+            mode is further from ``previous`` than the previous estimate
+            allows, or the second nearest is less than twice as far.
     """
     omegas = np.asarray(result.omega)
     if previous is not None:
-        mode = int(np.argmin(np.abs(omegas - previous)))
+        distances = np.abs(omegas - previous)
+        mode = int(np.argmin(distances))
+        _check_followed(omegas, mode, distances, previous, previous_estimate)
         reference = previous
     else:
         reference = omegas[mode]
@@ -677,6 +715,46 @@ def _track_mode(
             "design that breaks the symmetry."
         )
     return mode
+
+
+def _check_followed(
+    omegas: np.ndarray,
+    mode: int,
+    distances: np.ndarray,
+    previous: complex,
+    previous_estimate: float | None,
+) -> None:
+    """Raise unless ``mode`` is clearly the mode followed from ``previous``.
+
+    The followed mode's errors on both meshes are at most the previous one,
+    and the estimate is at least `_ESTIMATE_FLOOR` of the error on every
+    verified case, so the mode moves at most twice the previous estimate over
+    that floor. Further away, the nearest mode is another one.
+    """
+    nearest = float(distances[mode])
+    hertz = omegas[mode].real / (2 * np.pi)
+    if previous_estimate is not None:
+        allowed = 2 * previous_estimate * abs(previous) / _ESTIMATE_FLOOR
+        if nearest > allowed:
+            raise DegenerateModeError(
+                "QuantityEstimator(omega=...) follows one mode by its frequency, "
+                f"and the nearest mode on the refined mesh, mode {mode} at "
+                f"{hertz:.6g} Hz, moved {nearest / abs(previous):.3g} of the "
+                "followed frequency, further than the previous error estimate "
+                f"{previous_estimate:.3g} allows. The followed mode probably "
+                "left the solved modes: ask for more modes "
+                "(gfem.Eigenmode(n_modes=...)) or start from a finer mesh."
+            )
+    others = np.delete(distances, mode)
+    if len(others) and float(others.min()) < 2 * nearest:
+        raise DegenerateModeError(
+            "QuantityEstimator(omega=...) follows one mode by its frequency, "
+            f"and mode {mode} at {hertz:.6g} Hz is not clearly nearest the "
+            "followed frequency on the refined mesh: another mode is less than "
+            "twice as far. Start from a finer mesh, on which the two modes "
+            "are apart, or use gfem.FieldEstimator(), which estimates every "
+            "mode."
+        )
 
 
 def _dofs(result: Any) -> int:
@@ -885,6 +963,8 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         _check_quantity_model(estimator, model)
     if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
         raise _unsupported_result(result, estimator)
+    if any(field._comm is not None for field in _fields(result)):  # noqa: SLF001
+        _mpi.refuse_feature("error_estimate")
     if model._periodic:  # noqa: SLF001
         raise MeshRefinementUnsupportedError(
             "periodic",

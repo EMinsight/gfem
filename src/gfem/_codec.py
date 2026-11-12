@@ -17,8 +17,11 @@ JSON:
 A class is serialized through its constructor arguments. `register` adds a
 class: for a dataclass whose constructor takes its fields, the default
 (every init field, read back by calling the class) is all it needs; other
-classes pass ``to_args`` / ``from_args``. Argument names should be the
-pytree attribute names, so that the sidecar keys are the leaf paths.
+classes pass ``to_args`` / ``from_args``, and a ``from_args`` comes with
+``names``, the arguments it takes. Reading refuses any other key of a
+``$type`` object by name: an entry of a newer gfem is never dropped.
+Argument names should be the pytree attribute names, so that the sidecar
+keys are the leaf paths.
 
 Reading never imports or calls anything that is not registered, and the
 sidecar is read with ``allow_pickle=False``.
@@ -28,7 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -38,8 +41,12 @@ import jax.numpy as jnp
 import numpy as np
 from jax.core import Tracer
 
-#: The format version of job.json and result.json. Bump it only when the
-#: format changes in a way older gfem cannot read, and add a migration.
+#: The format version of job.json and result.json. Bump it, and add a
+#: migration, only when this gfem cannot read an older file as it is: an entry
+#: renamed, removed or stored differently, or a constructor default that
+#: changes. A class that gains an entry with a default needs neither: older
+#: files read through the default, and an older gfem refuses the entry it
+#: does not know by name (`Decoder`).
 #: Version 2 adds the mesh stored as arrays (a refined mesh, which has no file).
 SCHEMA_VERSION = 2
 
@@ -73,6 +80,7 @@ class _Codec:
     tag: str
     to_args: ToArgs
     from_args: FromArgs
+    names: frozenset[str]
 
 
 _BY_TYPE: dict[type, _Codec] = {}
@@ -85,6 +93,7 @@ def register(
     tag: str | None = None,
     to_args: ToArgs | None = None,
     from_args: FromArgs | None = None,
+    names: Iterable[str] | None = None,
 ) -> None:
     """Make a class serializable.
 
@@ -97,6 +106,14 @@ def register(
         from_args: ``(arguments, context) -> value``; defaults to
             ``cls(**arguments)``. Arguments absent from an older file are
             left out, so the constructor's defaults apply.
+        names: The arguments ``from_args`` takes; a file with any other is
+            refused. Defaults to the dataclass's init fields, for the default
+            ``from_args`` only.
+
+    Raises:
+        TypeError: Not a dataclass and no ``to_args``, or a ``from_args``
+            without ``names``.
+        ValueError: The tag is taken.
     """
     tag = tag or cls.__name__
     if tag in _BY_TAG and _BY_TAG[tag].cls is not cls:
@@ -104,19 +121,30 @@ def register(
     if to_args is None:
         if not dataclasses.is_dataclass(cls):
             raise TypeError(f"{cls.__name__} is not a dataclass: give to_args.")
-        names = tuple(f.name for f in dataclasses.fields(cls) if f.init)
+        written = _init_fields(cls)
 
         def to_args(obj: Any, _: Context) -> dict[str, Any]:
-            return {n: getattr(obj, n) for n in names}
+            return {n: getattr(obj, n) for n in written}
 
+    if names is None:
+        if from_args is not None or not dataclasses.is_dataclass(cls):
+            raise TypeError(
+                f"{cls.__name__} is read by its own from_args: give names, the "
+                "arguments it takes."
+            )
+        names = _init_fields(cls)
     if from_args is None:
 
         def from_args(args: dict[str, Any], _: Context) -> Any:
             return cls(**args)
 
-    codec = _Codec(cls, tag, to_args, from_args)
+    codec = _Codec(cls, tag, to_args, from_args, frozenset(names))
     _BY_TYPE[cls] = codec
     _BY_TAG[tag] = codec
+
+
+def _init_fields(cls: Any) -> tuple[str, ...]:
+    return tuple(f.name for f in dataclasses.fields(cls) if f.init)
 
 
 # --- encoding -------------------------------------------------------------------
@@ -186,10 +214,26 @@ def _float(x: float) -> float | dict[str, str]:
 class Decoder:
     """Decodes JSON written by `Encoder`, reading arrays from a table."""
 
-    def __init__(self, context: Context, arrays: Mapping[str, np.ndarray]) -> None:
-        """A decoder resolving file references against ``context``."""
+    def __init__(
+        self,
+        context: Context,
+        arrays: Mapping[str, np.ndarray],
+        *,
+        path: Path | None = None,
+        written_by: str | None = None,
+    ) -> None:
+        """A decoder resolving file references against ``context``.
+
+        Args:
+            context: Where the document is, and the reader's communicator.
+            arrays: The sidecar's arrays by leaf path.
+            path: The document's file, for error messages.
+            written_by: The document's ``gfem_version``, for error messages.
+        """
         self.context = context
         self.arrays = arrays
+        self.path = path
+        self.written_by = written_by
 
     def decode(self, value: Any) -> Any:  # noqa: PLR0911
         """The value of a JSON form."""
@@ -205,6 +249,9 @@ class Decoder:
                     f"The file uses the type {tag!r}, which this gfem "
                     f"({version('gfem')}) does not know: upgrade gfem."
                 )
+            unknown = sorted(value.keys() - codec.names - {"$type"})
+            if unknown:
+                raise ValueError(self._unknown(tag, unknown))
             args = {k: self.decode(v) for k, v in value.items() if k != "$type"}
             return codec.from_args(args, self.context)
         if "$array" in value:
@@ -221,6 +268,19 @@ class Decoder:
         if "$map" in value:
             value = value["$map"]
         return {k: self.decode(v) for k, v in value.items()}
+
+    def _unknown(self, tag: str, keys: list[str]) -> str:
+        """The refusal of entries the class of ``tag`` does not take."""
+        this = version("gfem")
+        where = "" if self.path is None else f"{self.path}: "
+        listed = ", ".join(repr(k) for k in keys)
+        head = f"{where}{tag} has no {listed} in this gfem ({this})"
+        if self.written_by in (None, this):
+            return f"{head}: remove the entry or check its spelling."
+        return (
+            f"{head}. The file was written by gfem {self.written_by}: upgrade "
+            "gfem (pip install -U gfem)."
+        )
 
 
 # --- documents ------------------------------------------------------------------
