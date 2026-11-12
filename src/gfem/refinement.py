@@ -111,8 +111,8 @@ class QuantityEstimator:
     estimate: an S entry of a wave port in a lossy medium, and a mode with
     a second-order absorbing boundary, a complex ``mu_r`` or loss in an
     anisotropic material. Both estimators also raise it at order 1. For a
-    lossy mode the estimate covers the complex ``omega``; the relative error
-    of Q is not estimated and was measured up to about 3 times the estimate.
+    lossy mode the estimate covers the complex ``omega``; Q's relative error
+    is not estimated.
     """
 
     capacitance: tuple[str, str] | None = None
@@ -812,23 +812,21 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
     """Raise for a quantity entry the verification tier has no case for (ADR 0089)."""
     if estimator.omega is not None:
         _check_lossy_mode(model)
-    if estimator.capacitance is not None:
+    if estimator.s is None:
+        return
+    waves = {p.name: p for p in model.ports if isinstance(p, WavePort)}
+    ports = [waves[name] for name in estimator.s if name in waves]
+    if not ports:
         return
     lossy = _lossy_elements(model)
-    if estimator.s is not None:
-        waves = {p.name: p for p in model.ports if isinstance(p, WavePort)}
-        for name in estimator.s:
-            port = waves.get(name)
-            if port is None:
-                continue
-            if lossy[_touching(model, port.surface)].any():
-                raise MeshRefinementUnsupportedError(
-                    "lossy wave port",
-                    "QuantityEstimator(s=...) has no estimate on a wave port in "
-                    f"a lossy medium ({name!r}): its S entry has no free dual. "
-                    "Use gfem.FieldEstimator(), or a lumped port.",
-                )
-        return
+    for port in ports:
+        if lossy[_touching(model, port.surface)].any():
+            raise MeshRefinementUnsupportedError(
+                "lossy wave port",
+                "QuantityEstimator(s=...) has no estimate on a wave port in "
+                f"a lossy medium ({port.name!r}): its S entry has no free dual. "
+                "Use gfem.FieldEstimator(), or a lumped port.",
+            )
 
 
 def _lossy_elements(model: Model) -> np.ndarray:
@@ -869,9 +867,7 @@ def _check_lossy_mode(model: Model) -> None:
         raise MeshRefinementUnsupportedError(
             "lossy eigenmode",
             f"QuantityEstimator(omega=...) has no verified estimate for a mode "
-            f"with {what} (of the lossy modes, only second-order absorbing "
-            "boundaries, a complex mu_r and loss in an anisotropic material have "
-            "none): use gfem.FieldEstimator().",
+            f"with {what}: use gfem.FieldEstimator().",
         )
 
 
