@@ -267,6 +267,17 @@ class EigenOperator:
             self._handle.free()
             self._handle = None
 
+    @property
+    def nbytes(self) -> int:
+        """Host bytes held: the prepared handle's and the assembled maps'.
+
+        A map tells its bytes by an ``nbytes`` attribute (0 when applied
+        matrix-free); one without counts nothing.
+        """
+        held = 0 if self._handle is None else int(self._handle.nbytes)
+        maps = [self.mass, self.damping, *(t.matrix for t in self.nonpolynomial)]
+        return held + sum(int(getattr(m, "nbytes", 0)) for m in maps if m is not None)
+
     def solve(self, b: np.ndarray, *, transpose: bool = False) -> np.ndarray:
         """``T(sigma)^-1 b`` on the free DOFs (``transpose``: ``T(sigma)^-T b``)."""
         b = np.where(self.free, b, 0)

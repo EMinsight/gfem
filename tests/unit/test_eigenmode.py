@@ -425,7 +425,7 @@ def test_a_far_seed_keeps_the_new_mode_its_first_refinement_found(mesh, monkeypa
     monkeypatch.setattr(rule, "_select", with_guard)
     result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
     np.testing.assert_allclose(result.omega, roots[:2], rtol=3e-4)
-    ((_, _, guard), scale) = selected[-1]
+    ((_, _, guard, _, _), scale) = selected[-1]
     np.testing.assert_allclose(guard.k * const.c / scale, roots[3], rtol=3e-4)
 
 
@@ -619,10 +619,10 @@ def test_a_retry_after_a_reshift_seeds_at_the_target(mesh, monkeypatch):
         return shift_invert(self, op, *args, **kwargs)
 
     def too_few(self, *args, **kwargs):
-        accepted, failed, guard = select(self, *args, **kwargs)
+        accepted, failed, guard, pool, ritz = select(self, *args, **kwargs)
         if len(shifts) == 1:  # the first seed solve's modes: one short
-            return accepted[:-1], [], None
-        return accepted, failed, guard
+            return accepted[:-1], [], None, pool, ritz
+        return accepted, failed, guard, pool, ritz
 
     monkeypatch.setattr(rule, "_shift_invert", seed)
     monkeypatch.setattr(rule, "_select", too_few)

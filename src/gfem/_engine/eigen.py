@@ -17,7 +17,6 @@ phases.
 
 from __future__ import annotations
 
-import functools
 from collections.abc import Callable
 
 import ngsolve as ngs
@@ -44,7 +43,7 @@ from gfem._engine.domain import (
 )
 from gfem._engine.driven import DrivenOperator, real_space
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver
-from gfem._linalg.base import free_mask
+from gfem._linalg.base import free_mask, host_bytes
 from gfem._periodic import bloch_phases
 from gfem.model import Model
 
@@ -170,9 +169,25 @@ def matvec(matrix, x: np.ndarray, *, transpose: bool = False) -> np.ndarray:
     return b.FV().NumPy().copy()
 
 
+class _Map:
+    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors, and its bytes."""
+
+    def __init__(self, matrix) -> None:
+        self.matrix = matrix
+
+    def __call__(self, x: np.ndarray, /, *, transpose: bool = False) -> np.ndarray:
+        """``matrix x``, or ``matrix^T x``."""
+        return matvec(self.matrix, x, transpose=transpose)
+
+    @property
+    def nbytes(self) -> int:
+        """The assembled matrix's host bytes; 0 for a matrix-free form."""
+        return host_bytes(self.matrix)
+
+
 def _linear_map(matrix) -> LinearMap:
-    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors."""
-    return functools.partial(matvec, matrix)
+    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors (`_Map`)."""
+    return _Map(matrix)
 
 
 def projector(

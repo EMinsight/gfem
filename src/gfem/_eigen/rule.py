@@ -58,6 +58,7 @@ import dataclasses
 import math
 import warnings
 from collections.abc import Callable
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -68,11 +69,12 @@ from gfem import _petsc
 from gfem._boundaries import LumpedPort, WavePort, wave_port_surfaces
 from gfem._eigen import slepc
 from gfem._eigen.arpack import shift_invert
+from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
 from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE
 from gfem._engine import terms
-from gfem._engine.cache import Entry
+from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import anisotropic_regions
 from gfem._engine.domain import em_region
 from gfem._engine.driven import (
@@ -171,6 +173,48 @@ _DEFECTIVE = 1e8
 _HERMITIAN = 1e-12
 
 
+@dataclasses.dataclass(frozen=True)
+class GapSet:
+    """The modes a mode's relative gap is measured to (ADR 0104).
+
+    Attributes:
+        pool: The ``k`` of every converged, distinct pair the selection
+            accepted, those cut beyond ``n_modes`` included, and of a mode
+            found after the count was met: the modes themselves among them.
+        guard: The guard mode's ``k``, or ``None`` when none was found.
+        ritz: The seed solve's unrefined Ritz values (polynomial operators
+            only): the gap set when the pool and the guard leave it empty.
+    """
+
+    pool: np.ndarray
+    guard: complex | None
+    ritz: np.ndarray
+
+    def gap(self, k: complex) -> float:
+        """``min |k - k_j| / max(|k|, |k_j|)`` over ``k``'s neighbours.
+
+        The neighbours are the pool and the guard, ``k``'s own entry (the
+        pool's nearest to it) left out; without any, the Ritz values but
+        the nearest to ``k`` (its own seed). ``inf`` when there are none:
+        the mode is isolated.
+        """
+        near = _others(self.pool, k)
+        if self.guard is not None:
+            near = np.append(near, self.guard)
+        if not len(near):
+            near = _others(self.ritz, k)
+        if not len(near):
+            return math.inf
+        return float(np.min(np.abs(near - k) / np.maximum(abs(k), np.abs(near))))
+
+
+def _others(values: np.ndarray, k: complex) -> np.ndarray:
+    """``values`` without the one nearest ``k`` (``k``'s own)."""
+    if not len(values):
+        return values
+    return np.delete(values, int(np.argmin(np.abs(values - k))))
+
+
 class EigenmodeRule:
     """Host-side forward of an `Eigenmode` problem on a `Model`."""
 
@@ -248,8 +292,10 @@ class EigenmodeRule:
         Args:
             model: The model, with concrete leaves.
             keep: Keep what the backward pass needs (the modes, their
-                ``x^T T' x`` per cluster and whether a cluster reaches the
-                guard mode, refined beyond ``n_modes`` for this).
+                ``x^T T' x`` per cluster, whether a cluster reaches the
+                guard mode, refined beyond ``n_modes`` for this, each mode's
+                gap, and the eigen operator as the search leaves it, in a
+                `KeptOperator`, instead of freeing it).
 
         Returns:
             ``{"omega": (n,) complex rad/s, "error": (n,), "q_port":
@@ -274,10 +320,11 @@ class EigenmodeRule:
             sigma = terms.wavenumber(2 * math.pi * self.problem.target, built.scale)
             eop = self.operator(op, sigma)
             divfree = None
+            entry = None
             try:
                 eop.factorize()  # before the projector's setup
                 divfree = projector(model, op, self.problem.wave_vector)
-                modes, guard = self._find(eop, divfree, sigma, guard=keep)
+                modes, guard, gaps = self._find(eop, divfree, sigma, guard=keep)
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
                 lowest = min(k.real for k in ks) * const.c / built.scale
@@ -285,7 +332,6 @@ class EigenmodeRule:
                     model, self.problem.target, lowest / (2 * math.pi), stacklevel=2
                 )
                 outputs["cluster"] = clusters(ks, opts.cluster_rtol)
-                entry = None
                 if keep:
                     y = None
                     if eop.general:
@@ -293,13 +339,23 @@ class EigenmodeRule:
                         y = np.stack(
                             [m.x if m.y is None else m.y for m in modes], axis=1
                         )
+                    # the backward maps vectors with the operator as it is
+                    # left (ADR 0104): the entry's holder owns it from here
+                    store = None if op.fixed is None else op.fixed.store
                     entry = self._entry(
-                        eop, ks, x, y, labels=outputs["cluster"], guard=guard
+                        KeptOperator(eop, store),
+                        ks,
+                        x,
+                        y,
+                        labels=outputs["cluster"],
+                        guard=guard,
+                        gaps=gaps,
                     )
             except LinearSolverConvergenceError as err:
                 raise self._inner_failure(err) from err
             finally:
-                eop.free_handle()
+                if entry is None:
+                    eop.free_handle()
                 if divfree is not None:
                     divfree.free()
         return outputs, entry
@@ -327,8 +383,8 @@ class EigenmodeRule:
 
     def _find(
         self, eop: EigenOperator, divfree, sigma: float, *, guard: bool
-    ) -> tuple[list[Refined], Refined | None]:
-        """The ``n_modes`` modes nearest ``sigma``, and the guard mode.
+    ) -> tuple[list[Refined], Refined | None, GapSet]:
+        """The ``n_modes`` modes nearest ``sigma``, the guard mode and the gap set.
 
         Seed solves at the target (each attempt asking for twice as many
         pairs as the last) and the selection of their refined pairs
@@ -366,7 +422,9 @@ class EigenmodeRule:
                 # reshifted it)
                 eop.reshift(sigma, solves=MIN_SUBSPACE)
             k, vectors = self._shift_invert(eop, divfree, nev, tol=seed_tolerance)
-            modes, failed, found = self._select(eop, k, vectors, sigma, guard=guard)
+            modes, failed, found, pool, ritz = self._select(
+                eop, k, vectors, sigma, guard=guard
+            )
             if len(modes) == n_modes or failed:
                 break
             nev *= 2  # too few candidates near the target: look wider
@@ -380,7 +438,9 @@ class EigenmodeRule:
             modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
             if found is not None:
                 found = dataclasses.replace(found, k=found.k.real)
-        return modes, found
+            pool = pool.real.astype(complex)
+        gaps = GapSet(pool, None if found is None else found.k, ritz)
+        return modes, found, gaps
 
     def _shift_invert(
         self, op: EigenOperator, project, nev: int, *, tol: float
@@ -412,21 +472,23 @@ class EigenmodeRule:
 
     def _entry(
         self,
-        op: EigenOperator,
+        holder: KeptOperator,
         ks: list[complex],
         x: np.ndarray,
         y: np.ndarray | None,
         *,
         labels: np.ndarray,
         guard: Refined | None,
+        gaps: GapSet,
     ) -> Entry:
-        """What the backward pass needs: no handle, the modes and their T'.
+        """What the backward pass needs: the kept operator, the modes and their T'.
 
         ``x`` holds the modes on the solve space, ``y`` their left
         eigenvectors (``None``: ``x``, complex symmetric). ``gram`` is block
         diagonal by cluster: ``y_i^T T'(k_c) x_j`` for modes i, j of cluster
         c, with ``k_c`` the cluster's mean. ``incomplete`` flags the modes
-        of a cluster the guard mode belongs to.
+        of a cluster the guard mode belongs to; ``gap`` each mode's relative
+        gap to its gap set (`GapSet.gap`, ``inf`` without a neighbour).
         """
         left = x if y is None else y
         labels = np.asarray(labels)
@@ -434,6 +496,7 @@ class EigenmodeRule:
         gram = np.zeros((len(k), len(k)), dtype=complex)
         incomplete = np.zeros(len(k), dtype=bool)
         rtol = self.options.cluster_rtol
+        op = cast("EigenOperator", holder.operator)
         for label in np.unique(labels):
             members = np.flatnonzero(labels == label)
             mean = k[members].mean()
@@ -447,10 +510,11 @@ class EigenmodeRule:
             "cluster": labels,
             "gram": gram,
             "incomplete": incomplete,
+            "gap": np.array([gaps.gap(z) for z in k]),
         }
         if y is not None:
             fields["y"] = y
-        return Entry(self.physics, fields=fields)
+        return Entry(self.physics, handle=holder, fields=fields)
 
     def _select(
         self,
@@ -460,7 +524,7 @@ class EigenmodeRule:
         sigma: float,
         *,
         guard: bool = False,
-    ) -> tuple[list[Refined], list[Refined], Refined | None]:
+    ) -> tuple[list[Refined], list[Refined], Refined | None, np.ndarray, np.ndarray]:
         """Refine the seeds nearest ``sigma`` until ``n_modes`` distinct ones.
 
         Seeds (and refined pairs) with ``Re k`` near zero or negative are the
@@ -484,8 +548,13 @@ class EigenmodeRule:
 
         Returns:
             The accepted modes, nearest ``sigma`` first (at most
-            ``n_modes``), the seeds that did not converge, and the guard
-            mode (``None`` without ``guard`` or when no seed gave one).
+            ``n_modes``), the seeds that did not converge, the guard
+            mode (``None`` without ``guard`` or when no seed gave one), the
+            pool of the gap set (`GapSet`): the ``k`` of every converged,
+            distinct pair accepted, those cut beyond ``n_modes`` included,
+            and of a mode found after the count was met, nearest ``sigma``
+            first; and the seeds' unrefined Ritz values (none for a
+            nonpolynomial operator, whose frozen seeds are too rough).
         """
         n_modes = self.problem.n_modes
         tolerance = self.options.eigen_tolerance
@@ -542,10 +611,19 @@ class EigenmodeRule:
                 break
             accepted.append(mode)
         accepted.sort(key=lambda m: abs(m.k.real - sigma))
+        pool = [m.k for m in accepted] + ([] if extra is None else [extra.k])
+        pool.sort(key=lambda z: abs(z.real - sigma))
+        ritz = [complex(k[j]) for j in seeds] if not op.nonpolynomial else []
         if guard and len(accepted) > n_modes:
             # nearer the target than a guard found after the count was met
             extra = accepted[n_modes]
-        return accepted[:n_modes], failed, extra
+        return (
+            accepted[:n_modes],
+            failed,
+            extra,
+            np.array(pool, dtype=complex),
+            np.array(ritz, dtype=complex),
+        )
 
     def _window(self) -> float:
         """Relative distance in ``k`` within which two refined pairs can be one mode."""
@@ -826,10 +904,16 @@ class EigenmodeRule:
         """The model's driven operator (the pieces of ``T(k)``) at its nodes.
 
         The last model's operator is kept, so that a backward pass and its
-        terms build it once.
+        terms build it once, while its discretization is the model's cached
+        one: an operator on an evicted discretization would pair with
+        kernel objects of the new one (ADR 0104).
         """
         last = getattr(self, "_last_driven", None)
-        if last is not None and last[0] is model:
+        if (
+            last is not None
+            and last[0] is model
+            and last[1].built is discretization(model.mesh, model._periodic).built  # noqa: SLF001
+        ):
             return last[1]
         op = driven_operator(
             model, self.options.order, wave_vector=self.problem.wave_vector
