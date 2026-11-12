@@ -840,6 +840,55 @@ def _out_electric_energy_of_a_traced_field(request):
     jax.make_jaxpr(jax.grad(objective))(eps)
 
 
+def _out_power_flow_of_a_material_in_its_layer(request):
+    # the side is the leads: the core field is in the layer power_flow reads
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(frequency=20e9, keep_fields=True)
+    eps = model.materials["core"].eps_r
+
+    def objective(e):
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(20e9, "p1")
+        return gfem.power_flow(field, "dielectric", model=m)
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_power_flow_in_the_node_coordinates(request):
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(frequency=20e9, keep_fields=True)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        frozen = model.replace(mesh=jax.lax.stop_gradient(mesh))
+        field = gfem.solve(frozen, problem).e_field(20e9, "p1")
+        field = dataclasses.replace(field, mesh=mesh)
+        return gfem.power_flow(field, "core", model=frozen)
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _out_power_flow_of_a_reduced_field(request):
+    # an adaptive sweep's basis holds no adjoint of the power
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(
+        frequency=(18e9, 20e9, 22e9),
+        sweep="adaptive",
+        samples=(18e9, 22e9),
+        keep_fields=20e9,
+    )
+    eps = model.materials["core"].eps_r
+
+    def objective(e):
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(20e9, "p1")
+        return gfem.power_flow(field, "core", model=m)
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
 def _out_driven_traced_wave_vector(request):
     # the wave vector is static: a Bloch phase is not a design variable
     model, _ = request.getfixturevalue("driven_periodic_cases")["driven_periodic_bloch"]
@@ -1007,6 +1056,24 @@ OUT_OF_SCOPE = [
         _out_electric_energy_of_a_traced_field,
         gfem.NonDifferentiableError,
         r"gfem\.electric_energy is not differentiable",
+    ),
+    (
+        "power_flow x material in its layer",
+        _out_power_flow_of_a_material_in_its_layer,
+        gfem.NonDifferentiableError,
+        r"materials\['core'\]\.eps_r.*element layer.*move the surface",
+    ),
+    (
+        "power_flow x node coordinates",
+        _out_power_flow_in_the_node_coordinates,
+        gfem.NonDifferentiableError,
+        r"mesh node coordinates.*stop_gradient",
+    ),
+    (
+        "power_flow x reduced field",
+        _out_power_flow_of_a_reduced_field,
+        gfem.NonDifferentiableError,
+        r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
     ),
     # driven on a periodic model
     (

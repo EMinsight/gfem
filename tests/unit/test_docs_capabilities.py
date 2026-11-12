@@ -172,7 +172,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 19
+    assert len(rows) == 22
     assert "electrostatic x sheet fill" not in rows
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
     assert rows["material axes (orientation)"] == {

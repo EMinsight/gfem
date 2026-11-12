@@ -352,16 +352,42 @@ def test_power_flow_takes_a_loaded_field(step, tmp_path):
     )
 
 
-def test_power_flow_is_not_differentiable_yet(step):
+def test_the_gradient_in_the_field_is_the_quadratic_form_s_derivative(step):
+    # P is a real quadratic form of e: a central difference is exact up to
+    # rounding, along any complex direction d (JAX: dP/dx - i dP/dy, so the
+    # derivative along d is Re(sum(grad * d)))
     model, e, _, _ = step
 
     def through(coefficients):
         field = dataclasses.replace(e, coefficients=coefficients)
         return gfem.power_flow(field, _below(7.5), model=model)
 
-    with pytest.raises(gfem.NonDifferentiableError, match="power_flow") as err:
-        jax.grad(through)(e.coefficients.real)
-    assert "computed inside jax.grad, jax.jit or jax.vmap" in str(err.value)
-    assert "traced" not in str(err.value)
-    with pytest.raises(gfem.NonDifferentiableError, match="power_flow"):
+    c = e.coefficients
+    grad = jax.grad(through)(c)
+    rng = np.random.default_rng(0)
+    for _ in range(2):
+        d = rng.normal(size=c.shape) + 1j * rng.normal(size=c.shape)
+        d *= 0.01 * np.linalg.norm(c) / np.linalg.norm(d)
+        fd = (float(through(c + d)) - float(through(c - d))) / 2
+        assert float(np.real(np.sum(grad * d))) == pytest.approx(fd, rel=1e-9)
+
+
+def test_power_flow_maps_over_fields_and_compiles(step):
+    model, e, _, _ = step
+    scales = jax.numpy.asarray([1.0, 2.0, 0.5j])
+
+    def scaled(a):
+        field = dataclasses.replace(e, coefficients=a * e.coefficients)
+        return gfem.power_flow(field, _below(7.5), model=model)
+
+    p = float(gfem.power_flow(e, _below(7.5), model=model))
+    np.testing.assert_allclose(
+        jax.vmap(scaled)(scales), p * np.abs(scales) ** 2, rtol=1e-12
+    )
+    assert float(jax.jit(scaled)(2.0)) == pytest.approx(4 * p, rel=1e-12)
+
+
+def test_a_predicate_side_needs_fixed_node_coordinates(step):
+    model, e, _, _ = step
+    with pytest.raises(gfem.NonDifferentiableError, match="name the side's volume"):
         jax.jit(lambda m: gfem.power_flow(e, _below(7.5), model=m))(model)
