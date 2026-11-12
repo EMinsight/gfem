@@ -586,6 +586,77 @@ def test_a_refactorization_checks_the_handle_under_its_lock(built, kind):
     assert handle.nbytes == 0
 
 
+def _direct(built, symmetry):
+    make = _advection if symmetry == "general" else _laplace_shifted
+    return prepare(make(built)[0], symmetry=symmetry, kind="direct")
+
+
+def _laplace_shifted(built):
+    return _laplace(built, complex_valued=True, shift=1 - 2j)
+
+
+CALLS = {
+    "solve": lambda handle, b: handle.solve(b),
+    "transposed solve": lambda handle, b: handle.solve(b, transpose=True),
+    "apply": lambda handle, b: handle.apply(b),
+    "transposed apply": lambda handle, b: handle.apply(b, transpose=True),
+}
+
+
+@pytest.mark.parametrize("call", CALLS)
+@pytest.mark.parametrize("symmetry", ["complex_symmetric", "general"])
+def test_a_direct_handle_freed_before_a_waiting_call_raises_freed(
+    built, symmetry, call
+):
+    # the call passed its early check on a live handle and waits for the
+    # lock: it reads the matrix and the inverse under the lock, after the free
+    handle = _direct(built, symmetry)
+    b = np.ones(handle.ndof, complex)
+    gate = handle._lock = Gate()
+    outcome = []
+
+    def run():
+        try:
+            outcome.append(CALLS[call](handle, b))
+        except Exception as err:  # noqa: BLE001 (the test reads what was raised)
+            outcome.append(err)
+
+    with gate:
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert gate.waiting.wait(timeout=30)
+        handle.free()
+    worker.join(timeout=30)
+    (raised,) = outcome
+    assert isinstance(raised, RuntimeError)
+    assert str(raised) == "This solver handle was freed."
+
+
+@pytest.mark.parametrize("symmetry", ["complex_symmetric", "general"])
+def test_a_free_waits_for_a_running_direct_solve(built, symmetry, monkeypatch):
+    handle = _direct(built, symmetry)
+    b = np.ones(handle.ndof, complex)
+    expected = handle.solve(b)
+    gate = handle._lock = Gate()
+    events = []
+    freeing = threading.Thread(target=lambda: (handle.free(), events.append("freed")))
+    check = handle._check_solvable
+
+    def free_from_another_thread():
+        # under the solve's lock: the free starts now and has to wait
+        check()
+        freeing.start()
+        assert gate.waiting.wait(timeout=30)
+
+    monkeypatch.setattr(handle, "_check_solvable", free_from_another_thread)
+    X = handle.solve(b)
+    events.append("solved")
+    freeing.join(timeout=30)
+    np.testing.assert_array_equal(X, expected)
+    assert events[-1] == "freed"
+    assert handle.nbytes == 0
+
+
 def test_direct_ignores_the_initial_guess(built):
     op, space = _laplace(built, complex_valued=True, shift=1 - 2j)
     handle = prepare(op, symmetry="complex_symmetric", kind="direct")

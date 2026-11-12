@@ -54,6 +54,9 @@ entries, walks tiers 1, 2, 3 and 6 only: a solve evicts other solves' entries
 only where it stores one. Eviction drops references and the keys that find
 them; nothing kept is changed, so a live entry keeps reading its own objects and
 a later solve rebuilds what was dropped. ``retain_memory=0`` keeps none of it.
+
+Not thread-safe: one solve at a time per process (`gfem._engine.workers`). A
+handle's own lock only orders a `free` against a running solve.
 """
 
 from __future__ import annotations

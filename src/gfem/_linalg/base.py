@@ -118,9 +118,11 @@ class NgsHandle:
     Subclasses set ``self._solver`` (an NGSolve operator applying the
     inverse on the free DOFs), implement `nbytes`, and tear their backend
     down in `_release`. Calls are serialized by a lock: NGSolve inverses
-    keep work buffers, and JAX may call a host callback from several
-    threads. `free` takes it too, so it waits for a running solve or
-    refactorization.
+    keep work buffers, and a host callback may run on another thread than
+    the one that frees the handle. `free` takes it too, so it waits for a
+    running solve or refactorization; every solve and `apply` reads the
+    matrix and the inverse under the lock (`_live`), so a call that comes
+    after `free` raises "This solver handle was freed."
     """
 
     kind: str
@@ -155,28 +157,39 @@ class NgsHandle:
             )
         return (B[:, None], True) if B.ndim == 1 else (B, False)
 
-    def _map(self, op, B: np.ndarray, after=None, *, states=False) -> np.ndarray:
-        """``op`` applied to each column of ``B``.
+    def _map(
+        self,
+        pick: Callable[[Any], Any],
+        B: np.ndarray,
+        after=None,
+        *,
+        states=False,
+    ) -> np.ndarray:
+        """``op = pick(held matrix)`` applied to each column of ``B``.
 
-        ``after(op, x, y)`` checks each column's ``y = op * x``, and may
-        change ``y`` in place. Each column is a load and its image a state, or
-        with ``states`` the other way round: the vector picks the status.
+        ``pick`` runs under the lock, on a live handle: it reads the inverse
+        or the matrix to apply there, never before. ``after(op, x, y)`` checks
+        each column's ``y = op * x``, and may change ``y`` in place. Each
+        column is a load and its image a state, or with ``states`` the other
+        way round: the vector picks the status.
+
+        Raises:
+            RuntimeError: The handle was freed.
         """
         cols, flat = self._columns(B)
         dtype = np.complex128 if self._complex else np.float64
         out = np.zeros(cols.shape, dtype=dtype)
-        matrix = self._matrix
-        if matrix is None:
-            raise RuntimeError("This solver handle was freed.")
         layout = self.layout
-        if states:
-            x, y = matrix.CreateRowVector(), matrix.CreateColVector()
-            mark_x, mark_y = layout.mark_state, layout.mark_load
-        else:
-            x, y = matrix.CreateColVector(), matrix.CreateRowVector()
-            mark_x, mark_y = layout.mark_load, layout.mark_state
         with self._lock:
+            matrix = self._live()
             self._check_solvable()
+            op = pick(matrix)
+            if states:
+                x, y = matrix.CreateRowVector(), matrix.CreateColVector()
+                mark_x, mark_y = layout.mark_state, layout.mark_load
+            else:
+                x, y = matrix.CreateColVector(), matrix.CreateRowVector()
+                mark_x, mark_y = layout.mark_load, layout.mark_state
             for j in range(cols.shape[1]):
                 x.FV().NumPy()[:] = cols[:, j]
                 mark_x(x)
@@ -203,7 +216,7 @@ class NgsHandle:
         factors, `gfem._linalg.direct.DirectHandle`). Returns the Krylov
         iterations of each column too, ``()`` for a direct solve.
         """
-        return self._map(self._solver, B), ()
+        return self._map(lambda _: self._solver, B), ()
 
     def solve(
         self,
@@ -248,6 +261,7 @@ class NgsHandle:
                 backend without its transposed solve.
         """
         if self._solver is None:
+            # an early refusal; the solve reads the handle under its lock
             raise RuntimeError("This solver handle was freed.")
         B = np.asarray(B)
         conjugate = transpose and self._complex and self.symmetry == "hermitian"
@@ -288,9 +302,14 @@ class NgsHandle:
         """``A^T X = B`` on the free DOFs, on the factors (``.T`` of the inverse)."""
         free = self._free if B.ndim == 1 else self._free[:, None]
         B = np.where(free, B, 0)
-        inverse = self._solver.T
+
+        def inverse(_: Any) -> Any:
+            return self._solver.T
+
         if not self._complex and np.iscomplexobj(B):
-            X = self._map(inverse, B.real) + 1j * self._map(inverse, B.imag)
+            # one lock for both parts: a free cannot come between them
+            with self._lock:
+                X = self._map(inverse, B.real) + 1j * self._map(inverse, B.imag)
         else:
             X = self._map(inverse, B)
         return np.where(free, X, 0)
@@ -301,9 +320,11 @@ class NgsHandle:
         Raises:
             RuntimeError: The handle was freed.
         """
-        if self._matrix is None:
-            raise RuntimeError("This solver handle was freed.")
-        return self._map(self._matrix.T if transpose else self._matrix, X, states=True)
+
+        def matrix(held: Any) -> Any:
+            return held.T if transpose else held
+
+        return self._map(matrix, X, states=True)
 
     # the held NGSolve sparse matrix: its stubs do not declare CSR()
     def _live(self) -> Any:

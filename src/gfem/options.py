@@ -253,7 +253,10 @@ class SolverOptions:
         threads: CPU threads, or ``None`` for the solve threads:
             ``NGS_NUM_THREADS`` when set to a positive integer, else the physical
             cores the process may run on (its affinity mask), not every hardware
-            thread of the machine.
+            thread of the machine. Run one solve at a time in a process:
+            NGSolve's threads are shared by the whole process, so solves
+            started from several Python threads are not supported. Use
+            ``frequency_workers``, or separate processes.
             ``linear_solver="petsc"`` does not read it: MUMPS's BLAS follows
             ``OPENBLAS_NUM_THREADS``, which frequency workers set to their
             share.
