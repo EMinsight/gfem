@@ -16,6 +16,7 @@ import re
 import shutil
 import textwrap
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -113,6 +114,7 @@ class Example:
     code: str
     shown: str | None
     printed: str = ""
+    start: int = 0  # where the block starts on the page
 
 
 def examples(page: str) -> list[Example]:
@@ -136,17 +138,26 @@ def examples(page: str) -> list[Example]:
             and not page[fence.end() : after.start()].strip()
         ):
             shown = textwrap.dedent(after["body"])
-        found.append(Example(section, textwrap.dedent(fence["body"]), shown))
+        found.append(
+            Example(section, textwrap.dedent(fence["body"]), shown, start=fence.start())
+        )
     return found
 
 
-def run_page(path: Path, workdir: Path, *, skip: tuple[str, ...] = ()) -> list[Example]:
+def run_page(
+    path: Path,
+    workdir: Path,
+    *,
+    skip: tuple[str, ...] = (),
+    shell: Callable[[str], None] | None = None,
+) -> list[Example]:
     """Run a page's Python blocks as a reader does, and record what each prints.
 
     The blocks run in order in one namespace, in ``workdir``, with the mesh
     download swapped for the repository's own copy. The blocks of the
     sections named in ``skip`` are left out (code the test cannot run, such
-    as a gmsh script).
+    as a gmsh script). With ``shell``, each ``bash`` block is passed to it in
+    its place among the Python blocks, in ``workdir``.
     """
 
     def urlretrieve(url, filename):
@@ -159,16 +170,29 @@ def run_page(path: Path, workdir: Path, *, skip: tuple[str, ...] = ()) -> list[E
         for example in examples(path.read_text(encoding="utf-8"))
         if example.section not in skip
     ]
+    commands = []
+    run_shell = shell or (lambda _command: None)
+    if shell is not None:
+        page = path.read_text(encoding="utf-8")
+        commands = [
+            (m.start(), textwrap.dedent(m["body"]))
+            for m in _FENCE.finditer(page)
+            if m["lang"].strip() == "bash"
+        ]
     ran = []
     original = urllib.request.urlretrieve
     urllib.request.urlretrieve = urlretrieve
     try:
         with contextlib.chdir(workdir):
             for example in found:
+                while commands and commands[0][0] < example.start:
+                    run_shell(commands.pop(0)[1])
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     exec(compile(example.code, str(path), "exec"), namespace)  # noqa: S102
                 ran.append(dataclasses.replace(example, printed=out.getvalue()))
+            for _, command in commands:
+                run_shell(command)
     finally:
         urllib.request.urlretrieve = original
     return ran
