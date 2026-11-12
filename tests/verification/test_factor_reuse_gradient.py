@@ -16,6 +16,7 @@ import gfem
 from gfem._engine import cache
 from gfem._engine.system_operator import SystemSweep
 from gfem._linalg.direct import DirectHandle
+from gfem._linalg.factor_reuse import AmortizedRule
 from gfem._linalg.pardiso import pardiso_available
 
 TOLERANCE = 1e-6
@@ -46,6 +47,8 @@ def _run(line, values, designs, monkeypatch, *, forced):
         patch.setattr(SystemSweep, "solve", counted)
         if forced:
             patch.setattr(DirectHandle, "_reuse_pays", lambda _: True)
+            # a test-sized R/C gives a cap of a few iterations, set by timing
+            patch.setattr(AmortizedRule, "cap", property(lambda _: 100))
 
         def objective(eps):
             model = with_fields(line, {**values, "eps_r": eps})
