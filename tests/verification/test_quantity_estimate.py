@@ -31,7 +31,13 @@ Cases and references (none recomputed by the tests but the closed forms):
   k = 1, 2, 4, 8: C against an order-5 solve on the same mesh;
 - sheet (`refinement_cases.sheet_model`), the only case cut along an
   interior sheet: C_aa and C_bb on uniform n = 2, 4, 8, 16 and C_aa over
-  `refine_mesh` cycles 0-8, against `refinement_cases.SHEET_C`.
+  `refine_mesh` cycles 0-8, against `refinement_cases.SHEET_C`;
+- sheet, off-diagonal: C_ab on uniform n = 2, 4, 8, 16 against
+  `refinement_cases.SHEET_C`;
+- two bars (`refinement_cases.bars_model`), off-diagonal C_ab against
+  `refinement_cases.BARS_C_AB` (Richardson): "screen" (a grounded fin
+  between the bars, where the entry's terms change sign) over
+  `refine_mesh` cycles 0-8, "near" on uniform n = 2, 4, 8.
 
 Measured (ostau, 1 thread):
 
@@ -44,6 +50,9 @@ Measured (ostau, 1 thread):
     rectangular box       7.05 - 10.6
     anisotropic coax      1.60 - 2.39
     sheet                 1.22 - 1.69
+    sheet, C_ab           1.79 - 2.26
+    two bars, screen      3.70 - 9.55
+    two bars, near        1.66 - 1.71
     order 3: line 2.87 - 18.1, box (m = 1) 4.69 - 5.39
 
 The higher ratios come from the fields with no sharp metal edge (the uniform
@@ -76,6 +85,8 @@ EFFECTIVITY_BY_CASE = {
     "rectangular box": (0.9, 12.0),
     "anisotropic coax": (0.9, 2.5),
     "sheet": (0.9, 2.5),
+    "screen": (0.9, 12.0),
+    "near": (0.9, 2.0),
 }
 
 #: The range the docs quote: the lowest low and the highest high.
@@ -187,7 +198,7 @@ def test_the_anisotropic_coax_capacitance(tmp_path, k, fill):
     # estimate is the kernel's, as error_estimate would report it.
     model = rc.anisotropic_coax_model(tmp_path, k, fill)
     result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
-    estimate, _ = kernels.capacitance(model, result, "inner")
+    estimate, _ = kernels.capacitance(model, result, "inner", "inner")
     fine = gfem.solve(
         model,
         rc.COAX_PROBLEM,
@@ -216,6 +227,17 @@ def test_the_sheet_capacitance_on_uniform_meshes(tmp_path, n):
         _assert_in("sheet", estimate.value, error)
 
 
+@pytest.mark.parametrize("n", [2, 4, 8, 16])
+def test_the_sheet_off_diagonal_capacitance_on_uniform_meshes(tmp_path, n):
+    model = rc.sheet_model(tmp_path, n)
+    result = gfem.solve(model, rc.SHEET_PROBLEM, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(capacitance=("a", "b"))
+    estimate = gfem.error_estimate(result, estimator, model=model)
+    reference = rc.SHEET_C[0][1]
+    error = (float(np.real(result.capacitance[0, 1])) - reference) / reference
+    _assert_in("sheet", estimate.value, error)
+
+
 def test_the_sheet_capacitance_under_mesh_refinement(tmp_path):
     with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
         ref = gfem.refine_mesh(
@@ -229,6 +251,40 @@ def test_the_sheet_capacitance_under_mesh_refinement(tmp_path):
     assert len(ref.cycles) == 9
     for cycle in ref.cycles:
         _assert_in("sheet", cycle.estimate, _sheet_error(cycle.value, 0))
+
+
+# --- two bars: off-diagonal capacitance --------------------------------------
+
+
+def _bars_error(case, capacitance):
+    reference = rc.BARS_C_AB[case]
+    return (float(np.real(capacitance)) - reference) / reference
+
+
+def test_the_screened_off_diagonal_capacitance_under_mesh_refinement(tmp_path):
+    # Two bars partly screened by a grounded fin: the entry's terms change
+    # sign around the fin, and the estimate never lets them cancel.
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            rc.bars_model(tmp_path, "screen", 2),
+            rc.BARS_PROBLEM,
+            estimator=gfem.QuantityEstimator(capacitance=("a", "b")),
+            tolerance=1e-4,
+            max_cycles=8,
+            options=OPTIONS,
+        )
+    assert len(ref.cycles) == 9
+    for cycle in ref.cycles:
+        _assert_in("screen", cycle.estimate, _bars_error("screen", cycle.value))
+
+
+@pytest.mark.parametrize("n", [2, 4, 8])
+def test_the_near_off_diagonal_capacitance_on_uniform_meshes(tmp_path, n):
+    model = rc.bars_model(tmp_path, "near", n)
+    result = gfem.solve(model, rc.BARS_PROBLEM, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(capacitance=("a", "b"))
+    estimate = gfem.error_estimate(result, estimator, model=model)
+    _assert_in("near", estimate.value, _bars_error("near", result.capacitance[0, 1]))
 
 
 # --- step line: S21, singular ------------------------------------------------
