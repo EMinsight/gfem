@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ngsolve as ngs
 
-from gfem._boundaries import PEC
+from gfem._boundaries import PEC, Absorbing, Conductor, Impedance
 from gfem._engine.mesh import EngineMesh
 from gfem._periodic import pair_names
 from gfem.model import Model
@@ -106,6 +106,30 @@ def pec_surfaces(model: Model) -> tuple[str, ...]:
     return tuple(sorted({b.surface for b in model.boundaries if isinstance(b, PEC)}))
 
 
+def potential_surfaces(model: Model) -> tuple[str, ...]:
+    """The surfaces where the divergence-free projection fixes its potential.
+
+    The `PEC` surfaces and every wall with a stiffness or damping term: a
+    `Conductor`, an `Absorbing`, an `Impedance` with a resistance or an
+    inductance. The gradient of a potential that vanishes on such a wall has
+    no tangential trace there, so the wall term does not act on it and it
+    is a null vector of the curl-curl operator; a gradient with a
+    tangential part on the wall is not (ADR 0097). A capacitance-only
+    `Impedance` adds to the mass term alone and port surfaces carry a term
+    along one tangential direction: their potential stays free. Sorted.
+    """
+    lossy = {
+        b.surface
+        for b in model.boundaries
+        if isinstance(b, (Conductor, Absorbing))
+        or (
+            isinstance(b, Impedance)
+            and (b.resistance is not None or b.inductance is not None)
+        )
+    }
+    return tuple(sorted({*pec_surfaces(model), *lossy}))
+
+
 def domain_key(model: Model) -> tuple:
     """The electromagnetic physics domain, as a cache key.
 
@@ -123,16 +147,20 @@ def space_key(
     periodic: bool = False,
     phases: tuple[complex, ...] | None = None,
     real: bool = False,
+    fixed: tuple[str, ...] | None = None,
 ) -> tuple:
     """The cache key of a ``kind`` space (``"hcurl"``, ``"h1"``) of ``order``.
 
-    Its `PEC` surfaces fixed (`pec_surfaces`); with ``periodic``, periodic
-    over the model's pairs with Bloch ``phases`` (``None``: plain
-    periodicity); ``real`` for a real-valued space. The one key builder of
-    `gfem._engine.cache.Discretization.space` for these spaces, so a paired
-    and an unpaired space never share a key.
+    Its ``fixed`` surfaces fixed (``None``: the `PEC` ones, `pec_surfaces`);
+    with ``periodic``, periodic over the model's pairs with Bloch ``phases``
+    (``None``: plain periodicity); ``real`` for a real-valued space. The one
+    key builder of `gfem._engine.cache.Discretization.space` for these
+    spaces, so a paired and an unpaired space never share a key, nor two
+    spaces fixed on different surfaces.
     """
-    key = (domain_key(model), kind, order, pec_surfaces(model))
+    if fixed is None:
+        fixed = pec_surfaces(model)
+    key = (domain_key(model), kind, order, fixed)
     if periodic:
         key = (*key, pair_names(model._periodic), phases)  # noqa: SLF001
     return (*key, "real") if real else key

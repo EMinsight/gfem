@@ -11,7 +11,9 @@ discretization's dispersion error.
 """
 
 import cmath
+import dataclasses
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -363,6 +365,113 @@ def test_a_far_seed_refined_onto_a_farther_root_still_gives_its_own_mode(
     np.testing.assert_allclose(result.omega, roots[:3], rtol=3e-4)
 
 
+def test_a_far_seed_keeps_the_new_mode_its_first_refinement_found(mesh, monkeypatch):
+    # a rough seed refined on a shift nearer another mode can land on a mode
+    # no other seed gives (ADR 0097: 21.2 GHz of a copper cavity, thrown away
+    # for the 23.4 GHz mode of the retry). Here the seed solve returns no
+    # pair for roots 2 and 3, and root 4's seed is made to land on root 2
+    # first: root 2 is kept, and root 4 from the retry becomes the guard
+    model = terminated_line(mesh, 1000.0)
+    roots = line_roots(1000.0, range(1, 5))
+    rule = eigen_rule.EigenmodeRule
+    shift_invert, refine, select = rule._shift_invert, eigen_rule.refine, rule._select
+    seeds, selected = {}, []
+
+    def near(k, op, root):
+        return abs(k * const.c / op.scale - root) < 1e-3 * abs(root)
+
+    def without_roots_2_and_3(self, op, project, nev, **kwargs):
+        k, vectors = shift_invert(self, op, project, max(nev, 12), **kwargs)
+        j = int(np.argmin(np.abs(k * const.c / op.scale - roots[1])))
+        seeds.update(k=k[j], x=vectors[:, j])
+        keep = [
+            i
+            for i in range(len(k))
+            if not near(k[i], op, roots[1]) and not near(k[i], op, roots[2])
+        ]
+        return k[keep], vectors[:, keep]
+
+    def onto_root_2(op, k, x, **kwargs):
+        if near(k, op, roots[3]) and abs(op.shift - k) > 1e-3 * abs(k):
+            op.reshift(seeds["k"])
+            return refine(op, seeds["k"], seeds["x"], **kwargs)
+        return refine(op, k, x, **kwargs)
+
+    def with_guard(self, op, k, vectors, sigma, **_):
+        out = select(self, op, k, vectors, sigma, guard=True)
+        selected.append((out, op.scale))
+        return out
+
+    monkeypatch.setattr(rule, "_shift_invert", without_roots_2_and_3)
+    monkeypatch.setattr(eigen_rule, "refine", onto_root_2)
+    monkeypatch.setattr(rule, "_select", with_guard)
+    result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
+    np.testing.assert_allclose(result.omega, roots[:2], rtol=3e-4)
+    ((_, _, guard), scale) = selected[-1]
+    np.testing.assert_allclose(guard.k * const.c / scale, roots[3], rtol=3e-4)
+
+
+def test_a_nearly_converged_pair_nearer_than_the_modes_found_raises(mesh, monkeypatch):
+    # root 1's pair stops at backward error 1e-9, this close to an eigenpair:
+    # roots 2 and 3 fill the count and would be returned without it
+    model = terminated_line(mesh, 1000.0)
+    root = line_roots(1000.0, [1])[0]
+    refine = eigen_rule.refine
+
+    def stall_root_1(op, k, x, **kwargs):
+        mode = refine(op, k, x, **kwargs)
+        if abs(mode.k * const.c / op.scale - root) < 1e-3 * abs(root):
+            return dataclasses.replace(mode, error=1e-9, converged=False)
+        return mode
+
+    monkeypatch.setattr(eigen_rule, "refine", stall_root_1)
+    with pytest.raises(
+        gfem.EigenmodeConvergenceError,
+        match=r"(?s)found 2 mode.*nearer the target did not converge.*"
+        rf"not converged: {root.real / 2e9 / math.pi:.3g}\d* GHz.*1e-09.*Remedies",
+    ):
+        gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
+
+
+def test_a_rough_unconverged_pair_nearer_than_the_modes_found_is_no_mode(
+    mesh, monkeypatch
+):
+    # rougher than 1e-6 it is a member of a linearization cluster, not a
+    # mode that stopped short: the solve returns, as before
+    model = terminated_line(mesh, 1000.0)
+    roots = line_roots(1000.0, range(1, 4))
+    refine = eigen_rule.refine
+
+    def rough_root_1(op, k, x, **kwargs):
+        mode = refine(op, k, x, **kwargs)
+        if abs(mode.k * const.c / op.scale - roots[0]) < 1e-3 * abs(roots[0]):
+            return dataclasses.replace(mode, error=1e-3, converged=False)
+        return mode
+
+    monkeypatch.setattr(eigen_rule, "refine", rough_root_1)
+    result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
+    np.testing.assert_allclose(result.omega, roots[1:], rtol=3e-4)
+
+
+def test_a_vector_in_the_span_of_a_degenerate_cluster_is_a_duplicate():
+    # any combination of a cluster's accepted members is that cluster again,
+    # also at 45 degrees from each (overlap 0.71 with either)
+    from gfem._eigen.refine import Refined
+
+    a, b, c = np.eye(3, dtype=complex)
+
+    def mode(x, k=1.0):
+        return Refined(k, x, 1e-12, 0, True)
+
+    accepted = [mode(a), mode(b)]
+    assert eigen_rule._in_span(mode((a + 1j * b) / math.sqrt(2)), accepted, 1e-6)
+    assert eigen_rule._in_span(mode(3 * a), accepted, 1e-6)
+    assert not eigen_rule._in_span(mode(c), accepted, 1e-6)
+    assert not eigen_rule._in_span(mode((a + c) / math.sqrt(2)), accepted, 1e-6)
+    # the same field at another frequency is another mode
+    assert not eigen_rule._in_span(mode(a, k=1.1), accepted, 1e-6)
+
+
 def test_a_pair_with_its_weight_on_the_fixed_dofs_is_not_converged(mesh, monkeypatch):
     # on CI, root 3's seed refined on mode 2's shift ended with 1e-8 of its
     # norm on the free DOFs: measured on the whole vector, its backward
@@ -558,6 +667,41 @@ def test_inductor_participation_matches_the_loaded_line(mesh):
     )
 
 
+def _loaded_line(mesh, inductance):
+    """The line with an inductor across one end, and its lowest resonance (rad/s)."""
+    model = line(
+        mesh, ports=[gfem.LumpedPort("jj", "port1", "+z", inductance=inductance)]
+    )
+    length = L * 1e-3
+    speed = const.c / math.sqrt(EPS)
+    w = brentq(
+        lambda w: math.tan(w / speed * length) - Z0 / (w * inductance),
+        1.0,
+        0.4999 * math.pi * speed / length,
+    )
+    return model, w
+
+
+def test_a_mode_below_the_low_frequency_floor_warns(mesh):
+    # a 100 H inductor resonates the line at 18.9 kHz, k0 h_min = 2e-7: the
+    # frequency is then off by 2e-4 to 4e-4 while `error` reports 1e-16
+    model, w = _loaded_line(mesh, 100.0)
+    with pytest.warns(gfem.LowFrequencyWarning, match="Eigenmode") as record:
+        gfem.solve(model, gfem.Eigenmode(target=w / (2 * math.pi)))
+    (warning,) = [r for r in record if r.category is gfem.LowFrequencyWarning]
+    message = str(warning.message)
+    assert "low-frequency floor" in message
+    assert "eigenfrequencies" in message
+    assert "error" in message
+
+
+def test_a_mode_above_the_low_frequency_floor_does_not_warn(mesh):
+    model, w = _loaded_line(mesh, 1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        gfem.solve(model, gfem.Eigenmode(target=w / (2 * math.pi)))
+
+
 # --- unsupported terms and failures ----------------------------------------------
 
 
@@ -700,6 +844,37 @@ def test_unconverged_modes_raise_without_a_partial_result(mesh):
         gfem.EigenmodeConvergenceError, match=r"(?s)0 of the 1.*Remedies"
     ):
         gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(8e9), options=options)
+
+
+@pytest.mark.parametrize(
+    "remedy",
+    [
+        "Use linear_solver='direct', or a looser tolerance.",
+        "Use linear_solver='direct', a looser tolerance, or other petsc_options.",
+    ],
+    ids=["bddc", "petsc"],
+)
+def test_a_shift_solve_that_does_not_converge_names_the_eigen_tolerance(
+    mesh, monkeypatch, remedy
+):
+    # the eigen rule sets the inner tolerance from eigen_tolerance: loosening
+    # SolverOptions.tolerance, which the linear solver's own message names,
+    # changes nothing here
+    def fail(*_, **__):
+        raise gfem.LinearSolverConvergenceError(
+            f"BDDC + GMRES did not converge to the relative tolerance 1e-12. {remedy}"
+        )
+
+    monkeypatch.setattr(EigenOperator, "solve", fail)
+    options = gfem.SolverOptions(linear_solver="bddc_gmres", eigen_tolerance=1e-9)
+    with pytest.raises(gfem.LinearSolverConvergenceError) as raised:
+        gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(8e9), options=options)
+    message = str(raised.value)
+    assert message.startswith("BDDC + GMRES did not converge")
+    assert "a looser SolverOptions.eigen_tolerance" in message
+    assert "0.01 * eigen_tolerance), here 1e-11" in message
+    assert "a looser tolerance" not in message
+    assert isinstance(raised.value.__cause__, gfem.LinearSolverConvergenceError)
 
 
 # --- the divergence-free projection ----------------------------------------------
