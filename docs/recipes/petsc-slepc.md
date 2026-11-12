@@ -120,7 +120,7 @@ modes.frequency, modes.q
   `"direct"` on a GPU included, and `"petsc"` solves every problem type.
 - `SolverOptions` refuses `device="cuda"` with `"petsc"`. Wave port modes are
   2D problems that always run SuperLU and SciPy on the CPU, so a standalone
-  `gfem.PortMode` solve refuses both fields.
+  `gfem.PortMode` solve ignores both fields.
 - `frequency_workers` work: each worker process starts PETSc itself.
 - gfem checks the stack when the solve starts, never when the options are
   built, so a job naming PETSc can be written anywhere and run where the stack

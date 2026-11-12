@@ -222,8 +222,10 @@ class PortMode:
     somewhere in the band (naming the estimated cutoff) or degenerate, or
     follows the same mode as another wave port of its surface, and
     warns with `PortModeTrackingWarning` when it crosses another mode. The
-    2D problem always runs SuperLU and SciPy on the CPU: options with another
-    ``device``, ``linear_solver`` or ``eigen_solver`` raise `ValueError`.
+    2D problem always runs SuperLU and SciPy on the CPU, so it ignores
+    `SolverOptions.device`, ``linear_solver`` and ``eigen_solver``, as a
+    driven solve's port mode sweep does: one `SolverOptions` serves a
+    `PortMode` check and the driven solve after it.
 
     Port modes are constants: under `jax.grad` an input the problem reads
     (an electromagnetic material property, the node coordinates) raises

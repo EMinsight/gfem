@@ -38,9 +38,8 @@ result = gfem.solve(model, problem, options=options)
   import.
 - Wave port modes are 2D problems and always run on the CPU. Inside a driven
   sweep with wave ports, only the 3D solve uses the GPU. A standalone
-  `gfem.PortMode` solve with a `device` other than `"cpu"`, or any
-  `linear_solver` but the default, raises `ValueError`: leave both at their
-  defaults.
+  `gfem.PortMode` solve ignores `device` and `linear_solver`, so the options
+  of the driven solve serve it too.
 
 When the GPU cannot be used, the solve raises `gfem.DeviceUnavailableError`.
 Its message gives the reason and the fix: install the extra, the CUDA

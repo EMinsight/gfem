@@ -188,23 +188,15 @@ class PortModeRule:
         ``comm`` is the resolved communicator of a distributed solve: every result
         is the one sweep rank 0 ran (ADR 0059).
 
+        The options' ``device``, ``linear_solver`` and ``eigen_solver`` are
+        ignored: the 2D port mode problem always runs SuperLU and SciPy on
+        the CPU, as it does inside a driven solve.
+
         Raises:
-            ValueError: ``problem.port`` is not a wave port of the model, or
-                ``options`` asks for a linear solver, an eigen solver or a
-                device: the 2D port mode problem always runs SuperLU and
-                SciPy on the CPU.
+            ValueError: ``problem.port`` is not a wave port of the model.
         """
         if not isinstance(problem, PortMode):
             raise TypeError(f"Expected gfem.PortMode, got {problem!r}.")
-        chosen = (options.device, options.linear_solver, options.eigen_solver)
-        if chosen != ("cpu", "auto", "auto"):
-            raise ValueError(
-                "The port mode problem always uses SuperLU and SciPy on the CPU "
-                f"(a 2D problem), but the options ask for device={options.device!r}, "
-                f"linear_solver={options.linear_solver!r}, "
-                f"eigen_solver={options.eigen_solver!r}. Solve PortMode with the "
-                "default device, linear_solver and eigen_solver."
-            )
         self.problem = problem
         self.options = options
         self.comm = comm
