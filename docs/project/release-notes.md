@@ -10,11 +10,13 @@
   design on the previous design's factorization, with GMRES to a twentieth of
   `tolerance`, while that takes less time than factorizing again; small models
   factorize every design as before. See {doc}`../recipes/s-parameter-gradient`.
-  Per step on one MN5 node (Intel Xeon Platinum 8480+, 8 threads), main at 129c4ad
-  against ⟨final commit⟩: the 2D bend tutorial ⟨0.78 → 0.46⟩ s, the harmonic filter
-  tutorial's three variants ⟨0.54 → 0.26⟩ s with peak memory ⟨11.2 → 1.3⟩ GiB, a
-  3D bend of ⟨381 134⟩ unknowns ⟨11.1 → 8.9⟩ s with peak memory ⟨18.8 → 7.3⟩ GiB
-  ⟨; the 3D bend tutorial's model, 2.49 M unknowns, 16 threads: ⟨a⟩ → ⟨b⟩ s⟩.
+  Per step on one MN5 node (Intel Xeon Platinum 8480+), main at 129c4ad against
+  this release's code (measured at 323b060; the 381k bend at 46880ba), 8 threads:
+  the 2D bend tutorial 0.77 → 0.48 s, the harmonic filter tutorial's three variants
+  0.53 → 0.23 s with peak memory 11.1 → 1.2 GiB, a 3D bend of 381 134 unknowns
+  11.2 → 8.9 s with peak memory 17.4 → 7.3 GiB; the 3D bend tutorial's model,
+  2.49 M unknowns with `retain_memory` at 64 GiB: 176 → 125 s at 8 threads and
+  100 → 84 s at 16 threads.
   - **Behaviour change.** `retain_memory` now bounds everything gfem keeps between
     solves, these kept parts and couplings included; 0 keeps nothing. A direct solve
     on an earlier design's factorization is accurate to `tolerance`, not exact.
