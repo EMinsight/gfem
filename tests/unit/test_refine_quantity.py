@@ -228,16 +228,17 @@ def test_the_capacitance_estimate_is_the_squared_field_estimate(coax):
     np.testing.assert_allclose(quantity.indicators, field.indicators, rtol=1e-10)
 
 
-def test_the_diagonal_capacitance_kernel_is_the_field_kernel_bit_for_bit(coax):
+def test_the_diagonal_capacitance_kernel_is_the_field_kernel(coax):
     # The (i, j) kernel at i = j is the diagonal estimate it replaced: the
-    # field estimator's squared indicators of that terminal's potential.
+    # field estimator's squared indicators of that terminal's potential, to
+    # round-off (threaded integrals sum in another order on the two paths).
     problem = gfem.Electrostatic(terminals=["inner", "outer"])
     result = gfem.solve(coax, problem, options=OPTIONS)
     (group,) = kernels.electrostatic(coax, result)
     for index, terminal in enumerate(("inner", "outer")):
         value, weights = kernels.capacitance(coax, result, terminal, terminal)
-        assert value == float(group[index].sum())
-        np.testing.assert_array_equal(weights, group[index])
+        assert value == pytest.approx(float(group[index].sum()), rel=1e-13)
+        np.testing.assert_allclose(weights, group[index], rtol=1e-13, atol=0)
 
 
 def test_an_off_diagonal_capacitance_is_estimated(tmp_path):
