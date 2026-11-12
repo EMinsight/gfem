@@ -46,9 +46,12 @@ CASES = {"MA": SHEET, "MS": SHEET, "SA": GAPS, "default": GAPS}
 #: A participation is quadratic in the mode field, like Q, so it shares the
 #: eigenmode goldens' Q tolerance: repeated runs on MareNostrum 5 moved the
 #: smallest value (mode 2, MA) by up to 2.5e-6 relative.
+#: MA and MS regenerated on MareNostrum 5 under ADR 0106 (each face of a film
+#: carries its own layer): every face of this sheet has one sapphire and one
+#: vacuum side, so they agree with the averaged-field values to 3e-11.
 GOLDEN_RTOL = 5e-5
 GOLDEN: dict[str, list[float]] = {
-    "MA": [1.0434512931e-06, 7.4625384967e-07],
+    "MA": [1.0434512931e-06, 7.4625384970e-07],
     "MS": [1.2694871352e-04, 8.7165195157e-05],
     "SA": [4.1317468452e-04, 1.7625906585e-04],
     "default": [4.2066372360e-04, 1.7862938686e-04],
