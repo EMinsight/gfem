@@ -42,7 +42,9 @@ from gfem import _mpi
 from gfem._linalg.base import host_bytes, local_matrix, same_pattern
 
 try:  # private to scipy: the piece sum falls back to numpy without it
-    from scipy.sparse._sparsetools import csc_matvec as _csc_matvec
+    from scipy.sparse._sparsetools import (  # ty: ignore[unresolved-import]
+        csc_matvec as _csc_matvec,
+    )
 except ImportError:  # pragma: no cover - scipy's layout
     _csc_matvec = None
 

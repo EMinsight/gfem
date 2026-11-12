@@ -220,7 +220,7 @@ def test_a_compiled_pass_refusing_its_arguments_falls_back_to_numpy(monkeypatch)
     monkeypatch.setattr(pieces, "_csc_matvec", None)
     plain = _summed(assembled, pattern)
 
-    def refuse(*args):
+    def refuse(*_):
         raise TypeError("unsupported data types")
 
     monkeypatch.setattr(pieces, "_csc_matvec", refuse)
