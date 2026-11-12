@@ -1014,11 +1014,11 @@ def quadrant_mesh(tmp_path_factory):
     return _quadrant_mesh(tmp_path_factory, QUADRANT_A, QUADRANT_B)
 
 
-def quadrant_guide(mesh, tan_delta, names=HYBRID_SHARED):
+def quadrant_guide(mesh, tan_delta, names=HYBRID_SHARED, eps_r=4.0):
     return gfem.Model(
         mesh,
         materials={
-            "block": gfem.Material(eps_r=4.0, tan_delta=tan_delta),
+            "block": gfem.Material(eps_r=eps_r, tan_delta=tan_delta),
             "fill": gfem.Material(eps_r=2.0),
         },
         boundaries=[gfem.PEC("walls")],
@@ -1052,6 +1052,33 @@ def test_a_lossy_shared_port_surface_warns_its_cross_projection(quadrant_mesh):
         value = float(re.search(r"cross-projection of ([0-9.e+-]+)", message)[1])
         # measured 2.67e-2 (1.34 tan_delta): the order of the block's loss
         assert 2e-2 < value < 3.5e-2
+
+
+def test_a_shared_port_surface_on_an_anisotropic_cross_section(quadrant_mesh):
+    # a per-axis block: the port mode problem and the modal coupling take the
+    # tensor path, and every propagating mode is requested on both surfaces
+    model = quadrant_guide(quadrant_mesh, 0.0, eps_r=(3.5, 4.5, 4.0))
+    result = _silent(model, gfem.Driven(QUADRANT_F), QUADRANT_OPTIONS)
+    s = np.asarray(result.s.values)
+    # measured: reciprocity 1.8e-15, unitarity 7e-5
+    assert np.abs(s - np.swapaxes(s, 1, 2)).max() <= 1e-12
+    unitarity = np.einsum("fki,fkj->fij", s.conj(), s) - np.eye(4)
+    assert np.abs(unitarity).max() <= 5e-4
+    length = QUADRANT_L * 1e-3
+    for m, name in enumerate(HYBRID_SHARED[:2]):
+        gamma = np.asarray(result.port_modes[name].gamma)
+        through = s[:, 2 + m, m]
+        # measured ||S21| - 1| 3.6e-5, phase 9e-4 rad (up to the port's sign)
+        np.testing.assert_allclose(np.abs(through), 1.0, rtol=0, atol=2e-4)
+        phase = np.abs(np.angle(through * np.exp(gamma * length)))
+        assert np.minimum(phase, np.abs(phase - np.pi)).max() <= 5e-3
+    conversion = [(i, j) for i in range(4) for j in range(4) if i % 2 != j % 2]
+    # measured 5e-4
+    assert max(np.abs(s[:, i, j]).max() for i, j in conversion) <= 2e-3
+    # the tensor is read: mode 2's beta at 50 GHz differs from the isotropic
+    # block's 362.8 rad/m
+    beta_2 = float(np.asarray(result.port_modes["p1_m2"].gamma)[0].imag)
+    assert beta_2 == pytest.approx(372.1, abs=0.5)
 
 
 def lossy_line(mesh, tan_delta):
