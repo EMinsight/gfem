@@ -374,24 +374,32 @@ def electrostatic(
     """Normalized squared indicators of each terminal's potential.
 
     One solve (the whole capacitance matrix), holding one field per
-    terminal: eta_K^2 / || grad V ||^2_eps per tetrahedron. The recovery is
-    cut along the interior surfaces the problem holds at a fixed potential
-    (its terminals and ground, and the model's PEC and conductor surfaces),
-    across which the solved flux jumps.
+    terminal: eta_K^2 / || grad V ||^2_eps per tetrahedron.
     """
     fields = list(result.potential.values())
-    sheets = set(result._fixed) | {  # noqa: SLF001
-        b.surface for b in model.boundaries if isinstance(b, (PEC, Conductor))
-    }
     with task_manager(threads):
         gfs = [_grid_function(field) for field in fields]
-        recovery = FluxRecovery(model, fields[0].order, sheets=sorted(sheets))
+        recovery = _potential_recovery(model, result)
         group = []
         for gf in gfs:
             flux = recovery.eps * ngs.grad(gf)
             energy = recovery.element_integrals(ngs.grad(gf) * flux).sum()
             group.append(recovery.flux_error(flux) / energy)
     return [group]
+
+
+def _potential_recovery(model: Model, result: ElectrostaticResult) -> FluxRecovery:
+    """The flux recovery of an electrostatic solve's potentials.
+
+    Cut along the interior surfaces the problem holds at a fixed potential
+    (its terminals and ground, and the model's PEC and conductor surfaces),
+    across which the solved flux jumps.
+    """
+    sheets = set(result._fixed) | {  # noqa: SLF001
+        b.surface for b in model.boundaries if isinstance(b, (PEC, Conductor))
+    }
+    order = next(iter(result.potential.values())).order
+    return FluxRecovery(model, order, sheets=sorted(sheets))
 
 
 def driven(
@@ -502,13 +510,10 @@ def capacitance(
     """
     names = list(result.potential)
     fields = list(result.potential.values())
-    sheets = set(result._fixed) | {  # noqa: SLF001
-        b.surface for b in model.boundaries if isinstance(b, (PEC, Conductor))
-    }
     with task_manager(threads):
         gi = _grid_function(fields[names.index(i)])
         gj = gi if i == j else _grid_function(fields[names.index(j)])
-        recovery = FluxRecovery(model, fields[0].order, sheets=sorted(sheets))
+        recovery = _potential_recovery(model, result)
         flux_i = recovery.eps * ngs.grad(gi)
         flux_j = flux_i if i == j else recovery.eps * ngs.grad(gj)
         energy = recovery.element_integrals(ngs.grad(gi) * flux_j).sum()
@@ -656,6 +661,10 @@ def _slope(model: Model, field: Field, k: complex) -> complex:
     from gfem.options import SolverOptions
 
     op = driven_operator(model, field.order)
+    # T'(k) x only multiplies assembled matrices: nothing is factorized, so
+    # the linear solver and its tolerance are placeholders the constructor
+    # requires. The shift k.real is only where the polynomial pieces' theta
+    # is fitted, exact for any shift.
     linear = ResolvedLinearSolver.resolve(
         SolverOptions(linear_solver="direct"), default="direct", problem="eigenmode"
     )
