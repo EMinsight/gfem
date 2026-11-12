@@ -285,6 +285,20 @@ def test_a_column_past_the_cap_refactorizes_and_finishes_direct(built, monkeypat
 
 @needs_mkl
 @pytest.mark.usefixtures("forced")
+def test_a_capped_column_counts_once_in_its_step(built, monkeypatch):
+    monkeypatch.setattr(AmortizedRule, "cap", property(lambda _: 3))
+    handle, B = _chain(built)
+    far = 30.0 + 5j
+    handle.refactorize(_helmholtz(built, far)[0], frequency=F)
+    handle.solve_counted(B)
+    # the next step closes this one: C is its columns
+    handle.refactorize(_helmholtz(built, far + 1e-3)[0], frequency=F)
+    assert handle._rule.columns == B.shape[1]
+    handle.free()
+
+
+@needs_mkl
+@pytest.mark.usefixtures("forced")
 def test_a_release_ends_the_chain(built):
     handle, B = _chain(built)
     handle.release_factors()

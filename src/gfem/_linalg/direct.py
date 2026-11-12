@@ -366,10 +366,12 @@ class DirectHandle(PlannedHandle):
                 solver = Gmres(matrix, self._solver, tol=tight, maxiter=rule.cap)
                 solver.Solve(rhs=b, sol=x, initialize=True)
                 its = int(solver.iterations)  # ty: ignore[unresolved-attribute]
-                rule.solved_reused(1, its, time.perf_counter() - start)
                 counts.append(its)
                 residuals = solver.residuals  # ty: ignore[unresolved-attribute]
-                if residuals and residuals[-1] > tight * residuals[0]:
+                if not residuals or residuals[-1] <= tight * residuals[0]:
+                    rule.solved_reused(1, its, time.perf_counter() - start)
+                else:
+                    # capped: the column counts once, as the direct one below
                     self._refactorize_held(rule)
                     start = time.perf_counter()
                     x.data = self._solver * b
