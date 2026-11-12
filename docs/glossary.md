@@ -398,7 +398,9 @@ Quantity estimator
   The {term}`error estimator` of one quantity: a capacitance entry, an S
   entry between excited ports, or one mode's `omega`
   (`gfem.QuantityEstimator`). It weights each tetrahedron's field error by
-  its effect on that quantity, using fields already solved.
+  its effect on that quantity, using fields already solved, except for an
+  S entry on a wave port whose read-out is not parallel to its excitation,
+  which takes one {term}`adjoint dual` per such port.
 
 Adjoint dual
   The field solved with a port's S read-out as the source instead of its
