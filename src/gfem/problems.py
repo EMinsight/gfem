@@ -162,7 +162,16 @@ def _frequencies(value: Any, owner: str = "PortMode") -> tuple[float, ...]:
     f = f.reshape(-1)
     if not np.isfinite(f).all() or (f <= 0).any():
         raise ValueError(f"{owner}.frequency must be finite and > 0 Hz, got {value!r}.")
-    return tuple(float(x) for x in f)
+    out = tuple(float(x) for x in f)
+    seen: set[float] = set()
+    for x in out:
+        if x in seen:
+            raise ValueError(
+                f"{owner}.frequency names {x:g} Hz twice: each frequency is solved "
+                "once. Drop the repeats, for example with numpy.unique(frequency)."
+            )
+        seen.add(x)
+    return out
 
 
 @dataclasses.dataclass(frozen=True, init=False)
@@ -195,7 +204,8 @@ class PortMode:
 
     Args:
         port: The name of a `WavePort` of the model.
-        frequency: One frequency or a 1D sequence of them, Hz.
+        frequency: One frequency or a 1D sequence of distinct frequencies, Hz,
+            in any order; results keep the order given.
         mode: Which propagating mode at the lowest frequency, in rank
             order: by decreasing effective index for lossless modes (1 = the
             most confined), with strongly attenuated modes ranked lower.
@@ -299,7 +309,8 @@ class Driven:
             result = gfem.solve(model, adaptive)
 
     Args:
-        frequency: One frequency or a 1D sequence of them, Hz.
+        frequency: One frequency or a 1D sequence of distinct frequencies, Hz,
+            in any order; results keep the order given.
         excite: The port name or names fed in turn, one column of S each, in
             this order. ``None``: every port of the model, in model order.
         sweep: ``"uniform"`` solves every frequency in full.
