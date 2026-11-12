@@ -195,7 +195,11 @@ class CudssHandle(PlannedHandle):
                 "only; a general operator needs device='cpu'."
             )
 
-    def _new_values(self, write: Callable[[Any], None]) -> None:
+    def _new_values(
+        self,
+        write: Callable[[Any], None],
+        same: Callable[[], bool],  # noqa: ARG002
+    ) -> None:
         """Write the held matrix and factorize it on the plan; under the lock."""
         matrix = self._live()
         write(matrix)

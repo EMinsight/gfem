@@ -227,6 +227,8 @@ class AssembledPieces:
         #: (values, positions or None, piece index, shared): shared values are
         #: a kept fixed part's or the template's own, counted in `shared`
         self._parts: list[tuple[Any, np.ndarray | None, int, bool]] = []
+        # new at each assembly: freed pieces assemble anew
+        self._generation: object | None = None
         #: Serializes the first use (assembled once) and `free`.
         self._lock = threading.Lock()
 
@@ -238,6 +240,14 @@ class AssembledPieces:
         the pieces cannot be summed, the operator must be assembled.
         """
         return self._assembled()[0]
+
+    @property
+    def generation(self) -> object:
+        """Who holds these values: a new object at each assembly (after `free`)."""
+        with self._lock:
+            if not self._built:
+                self._build()
+            return self._generation
 
     def matrix(self, weights: Sequence[complex]) -> ngs.BaseMatrix | None:
         """A new matrix of `pattern` holding ``Σ θ_k A_k``; ``None`` without one."""
@@ -310,6 +320,7 @@ class AssembledPieces:
         """Drop the assembled pieces."""
         with self._lock:
             self._built = False
+            self._generation = None
             self._template = None
             self._template_values = None
             self._parts = []
@@ -398,6 +409,7 @@ class AssembledPieces:
                     break
                 parts.append((np.array(data), at, k, False))
         self._built = True
+        self._generation = object()
         if not _mpi.agree_any(comm, flag=outside):
             self._template, self._parts = matrix, parts
             self._template_values = template_values
@@ -490,6 +502,15 @@ class PieceSum:
     def pattern(self) -> ngs.BaseMatrix | None:
         """See `AssembledPieces.pattern`."""
         return self.pieces.pattern
+
+    @property
+    def key(self) -> tuple[object, tuple[complex, ...]]:
+        """What the sum's values are made of: equal keys, equal values.
+
+        The pieces' assembly (`AssembledPieces.generation`) and the weights;
+        it holds neither the pieces nor their values.
+        """
+        return self.pieces.generation, self.weights
 
     def matrix(self) -> ngs.BaseMatrix | None:
         """See `AssembledPieces.matrix`."""
