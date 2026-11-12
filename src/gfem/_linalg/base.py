@@ -433,6 +433,17 @@ class PlannedHandle(NgsHandle):
         """
         return self._pattern
 
+    def shared(self) -> dict[int, int]:
+        """The pieces' pattern's bytes by its identity, if held; not in ``nbytes``.
+
+        A pooled handle may outlive the pieces it came from, and kept fixed
+        parts may hold the same pattern: the entry cache counts it once.
+        """
+        pattern = self._pattern
+        if pattern is None:
+            return {}
+        return {id(pattern): host_bytes(local_matrix(pattern, self.layout.comm))}
+
     def drop_pattern(self) -> None:
         """Let go of the pieces' pattern: the next `refactorize` assembles.
 

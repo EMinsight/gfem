@@ -110,8 +110,10 @@ def test_pieces_are_held_only_for_the_piece_sum_linear_solvers(line, kind):
     if kind == "bddc_gmres":  # BDDC assembles the form
         assert system.nbytes == 0
     else:
-        # at least the values of the curl-curl and mass pieces
-        assert system.nbytes >= 2 * _piece_values(system)
+        # at least the values of the curl-curl and mass pieces, one of them
+        # in the pattern the base handle shares
+        held = system.nbytes + sum(system.shared().values())
+        assert held >= 2 * _piece_values(system)
     system.free()
     assert system.nbytes == 0
 

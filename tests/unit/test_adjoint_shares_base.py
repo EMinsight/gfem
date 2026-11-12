@@ -124,12 +124,16 @@ def test_an_entry_too_big_with_its_base_is_kept_without_it(path, counts, solver)
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     eps = _eps(mesh)
     s21 = _s21(mesh, solver)
-    _, vjp = jax.vjp(s21, eps)
-    (want,) = vjp(1.0)
+    # the second sight of the design keeps the fixed parts, as the run below
+    for _ in range(2):
+        _, vjp = jax.vjp(s21, eps)
+        (want,) = vjp(1.0)
     (entry,) = cache.ENTRIES._entries.values()
     base = entry.handle.system._adjoint_sweep._base
     with_base = entry.nbytes
-    budget = with_base - base.nbytes // 2
+    # the cache also counts what the entry shares (its pieces' pattern, kept
+    # fixed parts, ADR 0091)
+    budget = cache.ENTRIES.nbytes - base.nbytes // 2
     cache.ENTRIES.clear()
 
     counts.prepared = {"forward": 0, "backward": 0}

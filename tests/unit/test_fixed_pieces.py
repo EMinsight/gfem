@@ -152,6 +152,9 @@ def test_split_pieces_count_their_shared_positions_once():
     build()  # the digest's first sight: nothing kept
     assembled, pattern = build()
     nze = pattern.nze
-    # the kept parts are the store's; the two varying parts' complex values,
-    # and their one int64 positions array
-    assert assembled.nbytes == 2 * 16 * nze + 8 * nze
+    # the kept parts and their one int64 positions array are shared with the
+    # store; the pieces' own bytes are the two varying parts' complex values
+    assert assembled.nbytes == 2 * 16 * nze
+    shared = assembled.shared()
+    assert shared == {**shared, **store.shared()}  # the store's, by identity
+    assert sum(shared.values()) == sum(store.shared().values())

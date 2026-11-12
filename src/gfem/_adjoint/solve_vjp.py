@@ -388,7 +388,7 @@ def _local_cotangents(
     some ranks alone would hang. A rank that holds one frees it, since the next
     forward on the same design would otherwise keep a second.
     """
-    from gfem._engine.cache import ENTRIES
+    from gfem._engine.cache import ENTRIES, retain_budget
     from gfem._engine.runtime import task_manager
     from gfem._engine.sensitivity import sensitivity
 
@@ -420,3 +420,6 @@ def _local_cotangents(
     finally:
         if fresh is not None:
             fresh.free()
+            # as an entry `put` frees: the kept state its forward rebuilt goes
+            # down to the budget too
+            ENTRIES.trim(retain_budget(rule.options.retain_memory), comm)
