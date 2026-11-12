@@ -5,6 +5,7 @@ handle with its gate forced (`DirectHandle._reuse_pays`), and left alone.
 """
 
 import importlib.metadata
+import itertools
 
 import ngsolve as ngs
 import numpy as np
@@ -19,10 +20,12 @@ from gfem._linalg import Operator, prepare
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.factor_reuse import (
     FIRST_ITERATIONS,
+    REPROBE_STEPS,
     REUSE_MIN_REFACTOR_SECONDS,
     REUSED_TOLERANCE,
     AmortizedRule,
 )
+from gfem._linalg.pieces import AssembledPieces, PieceSum
 
 F = 1.0
 
@@ -112,6 +115,62 @@ def test_the_first_reused_step_of_a_chain_sets_the_iterations_the_gate_compares(
     assert _next(rule)
     _reused_step(rule, seconds=2.0, iterations=20)  # I1 = 20 > 16.7
     assert not _next(rule)
+
+
+def test_a_closed_gate_reprobes_after_five_refactorized_steps_and_refreshes_i1():
+    # the closing run at 16 threads: one reused step at I1 above R/C closed
+    # the gate, and nothing measured I1 again
+    rule = AmortizedRule()
+    _refactorized_step(rule, t22=10.0, t33=0.1)  # R/C 16.7
+    assert _next(rule)
+    _reused_step(rule, seconds=2.0, iterations=20)  # I1 = 20: closed
+    for _ in range(REPROBE_STEPS):
+        assert not _next(rule)
+        _refactorized_step(rule, t22=10.0, t33=0.1)
+    assert _next(rule)  # the probe
+    _reused_step(rule, seconds=2.0, iterations=8)
+    assert _next(rule)  # I1 = 8 <= R/C 16.7: open again
+    assert rule.first_iterations == 8
+
+
+def test_the_reprobe_waits_five_refactorized_steps():
+    assert REPROBE_STEPS == 5
+    rule = AmortizedRule()
+    _refactorized_step(rule, t22=10.0, t33=0.25)  # R/C 6.7 < 10
+    for _ in range(REPROBE_STEPS - 1):
+        assert not _next(rule)
+        _refactorized_step(rule, t22=10.0, t33=0.25)
+    assert not _next(rule)  # the fifth closed step
+    _refactorized_step(rule, t22=10.0, t33=0.25)
+    assert _next(rule)
+
+
+def test_a_probe_that_leaves_the_gate_closed_doubles_the_wait():
+    # the 381k-DOF bend: R/C 6.8 never reaches the lag-1 iterations, so each
+    # probe saves nothing; the probes thin out instead of coming every sixth step
+    rule = AmortizedRule()
+    _refactorized_step(rule, t22=10.0, t33=0.25)  # R/C 6.7 < 10
+    opened = []
+    for _ in range(60):
+        reused = _next(rule)
+        opened.append(reused)
+        if reused:
+            _reused_step(rule, seconds=2.0, iterations=12)  # I1 12 > 6.7
+        else:
+            _refactorized_step(rule, t22=10.0, t33=0.25)
+    probes = [k for k, reused in enumerate(opened) if reused]
+    assert probes[0] == REPROBE_STEPS
+    gaps = [b - a for a, b in itertools.pairwise(probes)]
+    assert gaps == sorted(gaps)
+    assert gaps[0] < gaps[-1]
+    assert len(probes) <= 4
+
+
+def test_a_gate_closed_by_the_floor_never_reprobes():
+    rule = AmortizedRule()
+    for _ in range(3 * REPROBE_STEPS):
+        _refactorized_step(rule, t22=0.5 * REUSE_MIN_REFACTOR_SECONDS, t33=1e-5)
+        assert not _next(rule)
 
 
 def test_the_gate_is_off_when_the_last_refactorization_took_under_the_floor():
@@ -316,6 +375,78 @@ def test_the_same_design_again_is_no_reused_step(built):
     assert all(c > 0 for c in counts)
     exact = _fresh(built, near, B)
     assert np.linalg.norm(X - exact) <= 1e-6 * np.linalg.norm(exact)
+    handle.free()
+
+
+def _piece_sums(built):
+    """``k2 -> -Δ - k2`` as a piece sum on one set of pieces, and its loads."""
+    space = ngs.H1(built.mesh, order=2, dirichlet="bottom|top", complex=True)
+    u, v = space.TnT()
+    form = ngs.BilinearForm(space, symmetric=True)
+    form += (ngs.grad(u) * ngs.grad(v) - u * v) * quadrature.dx(2)
+    pieces = AssembledPieces(
+        space,
+        (
+            lambda u, v: ngs.grad(u) * ngs.grad(v) * quadrature.dx(2),
+            lambda u, v: u * v * quadrature.dx(2),
+        ),
+    )
+
+    def at(k2):
+        return Operator(form, space.FreeDofs(), PieceSum(pieces, (1.0, -k2)))
+
+    return at, _loads(space)
+
+
+@pytest.fixture
+def sums(monkeypatch):
+    """The number of piece sums summed so far."""
+    count = [0]
+    sum_into = AssembledPieces.sum_into
+
+    def counted(self, weights, matrix):
+        count[0] += 1
+        sum_into(self, weights, matrix)
+
+    monkeypatch.setattr(AssembledPieces, "sum_into", counted)
+    return count
+
+
+@needs_mkl
+@pytest.mark.usefixtures("forced", "uncapped")
+def test_a_new_piece_sum_is_summed_once_whether_reused_or_refactorized(built, sums):
+    at, B = _piece_sums(built)
+    handle = DirectHandle.from_operator(at(2.0 - 1j), "complex_symmetric")
+    handle.refactorize(at(1.0 - 1j), frequency=F)
+    handle.solve(B)
+    sums[0] = 0
+    handle.refactorize(at(1.0 - 1j + 1e-3), frequency=F)
+    assert all(c > 0 for c in handle.solve_counted(B)[1])  # reused
+    assert sums[0] == 1
+    handle.refactorize(at(1.0 - 1j + 2e-3), frequency=2 * F)
+    assert handle.solve_counted(B)[1] == ()  # refactorized
+    assert sums[0] == 2
+    handle.free()
+
+
+@needs_mkl
+@pytest.mark.usefixtures("forced", "uncapped")
+def test_the_same_piece_sum_again_is_not_summed_and_is_no_step(built, sums):
+    at, B = _piece_sums(built)
+    handle = DirectHandle.from_operator(at(2.0 - 1j), "complex_symmetric")
+    handle.refactorize(at(1.0 - 1j), frequency=F)
+    handle.solve(B)
+    near = 1.0 - 1j + 1e-3
+    handle.refactorize(at(near), frequency=F)
+    first = handle.solve_counted(B)[1]
+    sums[0] = 0
+    handle.refactorize(at(near), frequency=F)
+    assert sums[0] == 0
+    # the reused step in progress goes on: its iterations, not ~1 per column
+    again = handle.solve_counted(B)[1]
+    assert sum(again) >= sum(first) // 2
+    handle.refactorize(at(near + 1e-3), frequency=F)
+    assert handle._rule.first_iterations == sum(first + again) / (2 * B.shape[1])
     handle.free()
 
 

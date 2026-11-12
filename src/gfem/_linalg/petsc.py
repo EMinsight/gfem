@@ -367,7 +367,11 @@ class PetscHandle(PlannedHandle):
     def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
         _refuse(symmetry, is_complex=is_complex)
 
-    def _new_values(self, write: Callable[[ngs.BaseMatrix], None]) -> None:
+    def _new_values(
+        self,
+        write: Callable[[ngs.BaseMatrix], None],
+        same: Callable[[], bool],  # noqa: ARG002
+    ) -> None:
         """Write the held matrix and set the KSP up on it; under the lock.
 
         The free block's values are gathered into the AIJ's arrays and set

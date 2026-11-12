@@ -14,8 +14,13 @@ The gate: reuse only while ``R / C >= I1`` and the last refactorization took
 at least `REUSE_MIN_REFACTOR_SECONDS`, with ``R = t22 / t33`` (one
 refactorization over one direct column), ``C`` the columns of the last step
 and ``I1`` the iterations per column of the last chain's first reused step
-(`FIRST_ITERATIONS` before any). Only at the frequency the factors were made
-at, and only while they are held. It reads no clock: the handle reports.
+(`FIRST_ITERATIONS` before any). A gate closed by ``I1`` alone re-probes: after
+`REPROBE_STEPS` refactorized steps with it closed, the next step reuses once,
+and its iterations per column become ``I1``; a probe that leaves it closed
+doubles the wait before the next one, so a model where reuse never pays
+probes only a few times in a run. Only at the frequency the factors
+were made at, and only while they are held. It reads no clock: the handle
+reports.
 """
 
 from __future__ import annotations
@@ -30,6 +35,9 @@ REUSED_TOLERANCE = 0.05
 REUSE_MIN_REFACTOR_SECONDS = 1.0
 #: ``I1`` before any chain has had a reused step.
 FIRST_ITERATIONS = 10.0
+#: Refactorized steps with the gate closed by ``I1`` before one reused step
+#: measures it again: early designs move fastest, and the iterations settle.
+REPROBE_STEPS = 5
 
 
 class AmortizedRule:
@@ -59,6 +67,11 @@ class AmortizedRule:
         self._reused = False
         self._step = (0, 0, 0.0)
         self._open = False
+        # refactorized steps since the gate closed on ``I1`` alone, the steps
+        # to wait before the next probe, and whether the last open was a probe
+        self._closed_steps = 0
+        self._wait = REPROBE_STEPS
+        self._probing = False
 
     @property
     def reusing(self) -> bool:
@@ -67,13 +80,15 @@ class AmortizedRule:
 
     def pays(self) -> bool:
         """The gate: ``R / C >= I1`` and the last refactorization at the floor."""
+        ratio = self._measured_ratio()
+        return ratio is not None and ratio >= self.first_iterations
+
+    def _measured_ratio(self) -> float | None:
+        """``R / C`` once measured and the last refactorization at the floor."""
         ratio = self._ratio()
-        return (
-            ratio is not None
-            and self.t22 is not None
-            and self.t22 >= REUSE_MIN_REFACTOR_SECONDS
-            and ratio >= self.first_iterations
-        )
+        if self.t22 is None or self.t22 < REUSE_MIN_REFACTOR_SECONDS:
+            return None
+        return ratio
 
     @property
     def cap(self) -> int:
@@ -103,13 +118,35 @@ class AmortizedRule:
             and frequency is not None
             and self._frequency is not None
             and math.isclose(frequency, self._frequency, rel_tol=1e-12, abs_tol=0.0)
-            and pays()
+            and self._gate(pays)
             and (not self._chain or self._chain[-1] < self._mean(self._start))
         )
         self._reused = reuse
         self._step = (0, 0, 0.0)
         self._open = reuse
         return reuse
+
+    def _gate(self, pays: Callable[[], bool]) -> bool:
+        """``pays()``, or a re-probe of a gate closed by ``I1`` for long enough."""
+        if pays():
+            self._closed_steps = 0
+            self._wait = REPROBE_STEPS
+            self._probing = False
+            return True
+        if self._probing:
+            # the probe left the gate closed: wait twice as long next time
+            self._probing = False
+            self._wait *= 2
+        if self._measured_ratio() is None:
+            # closed by the floor or not measured yet: no probe
+            self._closed_steps = 0
+            return False
+        if self._closed_steps < self._wait:
+            self._closed_steps += 1
+            return False
+        self._closed_steps = 0
+        self._probing = True
+        return True
 
     def _mean(self, start: float) -> float:
         """Mean solver seconds per step of the chain started at ``start`` seconds."""

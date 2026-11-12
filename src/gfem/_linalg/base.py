@@ -372,6 +372,9 @@ class PlannedHandle(NgsHandle):
     sums_pieces: ClassVar[bool]
     #: The pattern of the pieces whose sums the held matrix holds, if summed.
     _pattern: ngs.BaseMatrix | None = None
+    #: The key of the piece sum the held matrix's values are (`PieceSum.key`),
+    #: if known.
+    _summed: tuple[object, tuple[complex, ...]] | None = None
 
     @classmethod
     def from_operator(
@@ -389,6 +392,8 @@ class PlannedHandle(NgsHandle):
             matrix, operator.freedofs, symmetry, is_complex=is_complex, **options
         )
         handle._pattern = pattern
+        if pattern is not None and operator.piece_sum is not None:
+            handle._summed = operator.piece_sum.key
         return handle
 
     @classmethod
@@ -415,7 +420,10 @@ class PlannedHandle(NgsHandle):
         (`_assemble`) into a new matrix. On the held matrix's pattern its
         values are copied in, and the backend factorizes them on the same
         solver plan (`_new_values`); a changed pattern is planned anew
-        (`_new_plan`).
+        (`_new_plan`). Whether the values are the held ones is told to
+        `_new_values` without a second sum or a copy: by the piece sum's key
+        when summed in place, by comparing the assembled matrix with the held
+        one otherwise.
 
         ``solves`` is ignored: only BDDC's coarse choice reads it.
         ``frequency`` goes to the backend (`_refactorizing_at`).
@@ -428,31 +436,44 @@ class PlannedHandle(NgsHandle):
         piece_sum = operator.piece_sum if self.sums_pieces else None
         # read outside the lock: the first read assembles the pieces
         summed = None if piece_sum is None else piece_sum.pattern
+        key = None if piece_sum is None or summed is None else piece_sum.key
         with self._lock:
             self._live()
             self._keeps_free_dofs(operator.freedofs)
             self._refactorizing_at(frequency)
-            if piece_sum is not None and summed is not None and summed is self._pattern:
-                self._new_values(piece_sum.sum_into)
+            if piece_sum is not None and key is not None and summed is self._pattern:
+                # a failed write leaves values of no known sum
+                held_key, self._summed = self._summed, None
+                self._new_values(piece_sum.sum_into, lambda: key == held_key)
+                self._summed = key
                 return
         new, pattern = self._assemble(operator)  # assembly needs no lock
+        if pattern is None:
+            key = None
         with self._lock:
             held = self._live()
-            if same_pattern(held, new, self.layout.comm):
-                self._pattern = pattern
+            comm = self.layout.comm
+            if same_pattern(held, new, comm):
+                self._pattern, self._summed = pattern, None
 
                 def write(matrix: ngs.BaseMatrix) -> None:
-                    comm = self.layout.comm
                     target = local_matrix(matrix, comm).AsVector()
                     target.data = local_matrix(new, comm).AsVector()
 
-                self._new_values(write)
+                def same() -> bool:
+                    return np.array_equal(
+                        local_matrix(held, comm).AsVector().FV().NumPy(),
+                        local_matrix(new, comm).AsVector().FV().NumPy(),
+                    )
+
+                self._new_values(write, same)
+                self._summed = key
                 return
             # a failed plan leaves no pattern to sum into: the next
             # refactorization assembles
-            self._pattern = None
+            self._pattern, self._summed = None, None
             self._new_plan(new, operator.freedofs)
-            self._pattern = pattern
+            self._pattern, self._summed = pattern, key
 
     def _keeps_free_dofs(self, freedofs: ngs.BitArray | None) -> None:
         """Refuse a free-DOF set other than the handle's; under the lock.
@@ -512,7 +533,7 @@ class PlannedHandle(NgsHandle):
         """
         with self._lock:
             super().free()
-            self._pattern = None
+            self._pattern, self._summed = None, None
 
     @classmethod
     def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
@@ -526,8 +547,14 @@ class PlannedHandle(NgsHandle):
         (`gfem._linalg.direct.DirectHandle`).
         """
 
-    def _new_values(self, write: Callable[[ngs.BaseMatrix], None]) -> None:
-        """``write(held matrix)``, then factorize its values on the current plan."""
+    def _new_values(
+        self, write: Callable[[ngs.BaseMatrix], None], same: Callable[[], bool]
+    ) -> None:
+        """``write(held matrix)``, then factorize its values on the current plan.
+
+        ``same()``, read before ``write``, tells whether ``write`` leaves the
+        held values as they are; a backend reads it if it cares.
+        """
         raise NotImplementedError
 
     def _new_plan(self, matrix: ngs.BaseMatrix, freedofs: ngs.BitArray | None) -> None:

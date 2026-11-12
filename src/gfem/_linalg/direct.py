@@ -274,28 +274,23 @@ class DirectHandle(PlannedHandle):
         """The rule's gate (`AmortizedRule.pays`); tests force it."""
         return self._rule is not None and self._rule.pays()
 
-    def _new_values(self, write: Callable[[ngs.BaseMatrix], None]) -> None:
+    def _new_values(
+        self, write: Callable[[ngs.BaseMatrix], None], same: Callable[[], bool]
+    ) -> None:
         """Write the held matrix and factorize it on the plan; under the lock.
 
         Or only write it, when the rule reuses the held factors: PARDISO's
         own copy of the values stays the factored matrix's. Values equal to
-        the held ones (the same design again, a backward taking its plan
-        back) are no new step: the step in progress goes on, on the factors
-        it solves with.
+        the held ones (``same()``: the same design again, a backward taking
+        its plan back) are no new step and are not written: the step in
+        progress goes on, on the factors it solves with.
         """
         matrix = self._live()
         # a live handle holds its factors (`_release` drops them)
         factors = cast("Factors", self._factors)
         rule = self._rule
-        if rule is not None and not factors.released:
-            values = matrix.AsVector().FV().NumPy()
-            held = values.copy()
-            write(matrix)
-            if np.array_equal(values, held):
-                return
-            # PARDISO's first refactorization reads the factored values
-            # before it writes (its gather index)
-            values[:] = held
+        if rule is not None and not factors.released and same():
+            return
         if rule is not None and rule.next_step(
             frequency=self._frequency,
             held=not factors.released,
