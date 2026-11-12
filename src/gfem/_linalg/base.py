@@ -422,12 +422,15 @@ class PlannedHandle(NgsHandle):
 
         Raises:
             RuntimeError: The handle was freed.
+            ValueError: ``operator``'s free-DOF set is not the handle's;
+                nothing was written.
         """
         piece_sum = operator.piece_sum if self.sums_pieces else None
         # read outside the lock: the first read assembles the pieces
         summed = None if piece_sum is None else piece_sum.pattern
         with self._lock:
             self._live()
+            self._keeps_free_dofs(operator.freedofs)
             self._refactorizing_at(frequency)
             if piece_sum is not None and summed is not None and summed is self._pattern:
                 self._new_values(piece_sum.sum_into)
@@ -450,6 +453,27 @@ class PlannedHandle(NgsHandle):
             self._pattern = None
             self._new_plan(new, operator.freedofs)
             self._pattern = pattern
+
+    def _keeps_free_dofs(self, freedofs: ngs.BitArray | None) -> None:
+        """Refuse a free-DOF set other than the handle's; under the lock.
+
+        A refactorization keeps the free DOFs the handle was prepared with:
+        on another set it would solve on its own, silently. All ranks get
+        one answer, so they raise together.
+
+        Raises:
+            ValueError: ``freedofs`` is another set.
+        """
+        count = self.ndof if freedofs is None else freedofs.NumSet()
+        same = (freedofs is None or len(freedofs) == self.ndof) and np.array_equal(
+            free_mask(freedofs, self.ndof), self._free
+        )
+        if not _mpi.agree_all(self.layout.comm, flag=same):
+            raise ValueError(
+                f"This handle was prepared with {int(self._free.sum())} free DOFs "
+                f"and the operator has another free-DOF set ({count} free): "
+                "refactorize keeps the free DOFs; prepare a new handle."
+            )
 
     @property
     def pattern(self) -> ngs.BaseMatrix | None:

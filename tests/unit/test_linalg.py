@@ -185,6 +185,46 @@ def test_a_handle_freed_during_refactorization_raises_freed(built, kind, summed)
         handle.refactorize(dataclasses.replace(op, piece_sum=piece_sum))
 
 
+@pytest.mark.parametrize("kind", PLANNED)
+@pytest.mark.parametrize("summed", [True, False])
+def test_a_refactorization_with_other_free_dofs_is_refused(built, kind, summed):
+    # same pattern, another free-DOF set: the handle would keep solving on
+    # its own free DOFs, silently
+    integrands = (*VOLUME, _on("side"))
+    op, _ = _pieces(built, integrands, (1.0, 2 - 1j, 3j))
+    if not summed:
+        op = dataclasses.replace(op, piece_sum=None)
+    handle = prepare(op, symmetry="complex_symmetric", kind=kind)
+    n = handle.ndof
+    B = np.random.default_rng(15).standard_normal((n, 2)) + 0j
+    before, A = handle.solve(B), handle.apply(np.eye(n))
+    every = ngs.BitArray(n)
+    every.Set()
+    free = op.freedofs.NumSet()
+    with pytest.raises(
+        ValueError,
+        match=rf"prepared with {free} free DOFs .* another free-DOF set "
+        rf"\({n} free\): refactorize keeps the free DOFs; prepare a new handle",
+    ):
+        handle.refactorize(dataclasses.replace(op, freedofs=every))
+    # nothing was written: the handle is the first operator's still
+    np.testing.assert_array_equal(handle.apply(np.eye(n)), A)
+    np.testing.assert_array_equal(handle.solve(B), before)
+
+
+@pytest.mark.parametrize("kind", PLANNED)
+def test_a_refactorization_takes_an_equal_free_dof_set_in_another_object(built, kind):
+    op, _ = _laplace(built, complex_valued=True, shift=1 - 2j)
+    handle = prepare(op, symmetry="complex_symmetric", kind=kind)
+    other, _ = _laplace(built, complex_valued=True, shift=3 + 1j)
+    same = ngs.BitArray(other.freedofs)
+    assert same is not op.freedofs
+    handle.refactorize(dataclasses.replace(other, freedofs=same))
+    fresh = prepare(other, symmetry="complex_symmetric", kind=kind)
+    B = np.random.default_rng(16).standard_normal(handle.ndof) + 0j
+    np.testing.assert_allclose(handle.solve(B), fresh.solve(B), rtol=1e-12)
+
+
 def test_pieces_without_a_common_pattern_leave_the_form_to_assemble(built):
     # neither surface's graph holds the other's DOFs
     op, pieces = _pieces(built, (_on("bottom"), _on("side")), (1.0, 1.0))
