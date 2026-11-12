@@ -580,7 +580,9 @@ class NetworkParameters:
         then be one real value for every port and frequency: gfem never
         labels a port with an impedance S was not computed for. With
         ``z0``, S is first renormalized to it (`renormalize`). Port names
-        and the conventions are written as comments.
+        and the conventions are written as comments. Rows are written in
+        increasing frequency, as the format requires, whatever the order of
+        `frequency`.
 
         Args:
             path: The file, named ``*.s<n_ports>p``.
@@ -696,7 +698,9 @@ def _touchstone(net: NetworkParameters, s: np.ndarray, z0: float) -> str:
     def pairs(values: np.ndarray) -> list[str]:
         return [f"{v.real: .16e} {v.imag: .16e}" for v in values]
 
-    for f, m in zip(net.frequency, s, strict=True):
+    # the format wants increasing frequency; the result keeps the order given
+    for at in np.argsort(net.frequency, kind="stable"):
+        f, m = net.frequency[at], s[at]
         head = f"{f:.16e}"
         if n <= 2:
             # 1- and 2-port files list N11 N21 N12 N22 on one line

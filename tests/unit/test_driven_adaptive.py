@@ -80,6 +80,22 @@ def test_bad_samples_raise(kwargs, message):
         gfem.Driven(frequency=GRID, **kwargs)
 
 
+def test_a_repeated_frequency_is_refused_and_order_is_kept():
+    with pytest.raises(ValueError) as err:
+        gfem.Driven(frequency=[1e9, 2e9, 2e9])
+    assert str(err.value) == (
+        "Driven.frequency names 2e+09 Hz twice: each frequency is solved once. "
+        "Drop the repeats, for example with numpy.unique(frequency)."
+    )
+    with pytest.raises(ValueError, match=r"PortMode\.frequency names 3e\+09 Hz twice"):
+        gfem.PortMode("p1", [3e9, 1e9, 3e9, 1e9])
+    assert gfem.Driven([3e9, 1e9, 2e9]).frequency == (3e9, 1e9, 2e9)
+    assert gfem.PortMode("p1", [3e9, 1e9]).frequency == (3e9, 1e9)
+    # one rounding step apart is the caller's grid, not a repeat
+    near = [1e9, np.nextafter(1e9, 2e9)]
+    assert gfem.Driven(near).frequency == tuple(near)
+
+
 # --- the sweep -------------------------------------------------------------------
 
 

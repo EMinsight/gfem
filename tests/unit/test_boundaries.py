@@ -87,6 +87,26 @@ def test_lumped_port_defaults_to_a_50_ohm_resistor():
     assert p.elements == (("port1", (1.0, 0.0, 0.0)),)
 
 
+def test_lumped_port_axis_without_a_sign_is_the_positive_axis():
+    for name, vector in (
+        ("x", (1.0, 0.0, 0.0)),
+        ("Y", (0.0, 1.0, 0.0)),
+        ("Z", (0.0, 0.0, 1.0)),
+    ):
+        port = gfem.LumpedPort("p1", "s", name)
+        assert port.direction == vector
+        assert port.elements == (("s", vector),)
+        assert port == gfem.LumpedPort("p1", "s", "+" + name)
+    pair = gfem.LumpedPort("p1", ("a", "b"), ("x", "-x"))
+    assert pair.direction == ((1.0, 0.0, 0.0), (-1.0, 0.0, 0.0))
+    with pytest.raises(ValueError) as err:
+        gfem.LumpedPort("p1", "s", "q")
+    assert str(err.value) == (
+        "LumpedPort 'p1': direction 'q' is not an axis; use 'x', 'y', 'z' with an "
+        "optional sign ('+x', '-z'; no sign means '+') or a 3-vector."
+    )
+
+
 def test_lumped_port_impedance_is_a_resistive_shortcut():
     assert gfem.LumpedPort("p", "s", "-Y", impedance=25.0).rlc == (25.0, None, None)
     p = gfem.LumpedPort("p", "s", "+z", resistance=50.0, inductance=1e-9)
