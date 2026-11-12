@@ -33,8 +33,11 @@ from eigen_cases import (
     line,
     line_mesh,
     line_roots,
+    shunt_line,
+    shunt_mesh,
     terminated_line,
 )
+from finite_differences import derivative
 from preconditioners import coarse_columns, count_preconditioners
 from scipy.optimize import brentq
 
@@ -679,6 +682,101 @@ def test_inductor_participation_matches_the_loaded_line(mesh):
     assert result.q_port == {}  # no resistance
     np.testing.assert_allclose(
         np.abs(result.participation["jj"]), [stored / electric], rtol=1e-4
+    )
+
+
+def test_port_with_inductance_and_capacitance_matches_the_loaded_line(mesh):
+    # L_p || C_p across the x = 0 end, the other end open: resonance at
+    # tan(beta L) = Z0 (1 / (omega L_p) - omega C_p); the capacitor's peak
+    # energy 1/2 C_p |V(0)|^2 adds to the line's in the mode energy
+    inductance, capacitance = 1e-9, 1e-13
+    port = gfem.LumpedPort(
+        "jj", "port1", "+z", inductance=inductance, capacitance=capacitance
+    )
+    model = line(mesh, ports=[port])
+    length = L * 1e-3
+    speed = const.c / math.sqrt(EPS)
+
+    def resonance(w):
+        return math.tan(w / speed * length) - Z0 * (
+            1 / (w * inductance) - w * capacitance
+        )
+
+    top = min(
+        0.4999 * math.pi * speed / length, 1 / math.sqrt(inductance * capacitance)
+    )
+    w = brentq(resonance, 1e6, top)
+    bl = w / speed * length
+    c_line = const.epsilon_0 * EPS * W / H
+    v0 = math.cos(bl)
+    electric = 0.5 * c_line * (length / 2 + math.sin(2 * bl) * length / (4 * bl))
+    energy = electric + 0.5 * capacitance * v0**2
+    stored = 0.5 * inductance * (v0 / (w * inductance)) ** 2
+    result = gfem.solve(model, gfem.Eigenmode(target=w / (2 * math.pi)))
+    np.testing.assert_allclose(result.omega, [w], rtol=1e-5)
+    np.testing.assert_allclose(
+        np.abs(result.participation["jj"]), [stored / energy], rtol=1e-4
+    )
+
+
+@pytest.fixture(scope="module")
+def shunted(tmp_path_factory):
+    return shunt_mesh(tmp_path_factory.mktemp("shunt"))
+
+
+def _beside_sheet(mesh, inductance, *, fill=None):
+    """An inductor on port1 and a shunt capacitive sheet across the line's middle.
+
+    The line's field stays uniform over each cross-section, so the port's
+    voltage gives the inductor's energy exactly; a ``fill`` (one value on
+    every face) keeps it so.
+    """
+    field = None
+    if fill is not None:
+        field = gfem.SheetField(jnp.full(len(mesh.elements("sheet")), fill))
+    sheet = gfem.Impedance("sheet", capacitance=5e-14, fill=field)
+    port = gfem.LumpedPort("jj", "port1", "+z", inductance=inductance)
+    return shunt_line(mesh, sheet, ports=[port])
+
+
+def _inductive(case, mesh, shunted, inductance):
+    """The model of ``case`` with inductance ``inductance`` (H) on port jj."""
+    if case.startswith("beside_capacitive_sheet"):
+        fill = 0.4 if case.endswith("with_fill") else None
+        return _beside_sheet(shunted, inductance, fill=fill)
+    values = {"capacitance": 1e-13} if case == "l_and_c" else {}
+    port = gfem.LumpedPort("jj", "port1", "+z", inductance=inductance, **values)
+    return line(mesh, ports=[port])
+
+
+#: The cases' inductance (H) and target (Hz).
+_INDUCTIVE = dict.fromkeys(
+    [
+        "l_only",
+        "l_and_c",
+        "beside_capacitive_sheet",
+        "beside_capacitive_sheet_with_fill",
+    ],
+    (1e-9, 3e9),
+)
+
+
+@pytest.mark.parametrize("case", list(_INDUCTIVE))
+def test_participation_is_minus_twice_the_log_derivative_in_l(mesh, shunted, case):
+    # a lossless mode's omega^2 is a Rayleigh quotient: the inductor's share
+    # of the mode energy (every capacitive element in it, ADR 0103) is
+    # -2 d ln omega / d ln L on any mesh
+    inductance, target = _INDUCTIVE[case]
+    options = gfem.SolverOptions(eigen_tolerance=1e-12)
+
+    def solve(t):
+        model = _inductive(case, mesh, shunted, inductance * math.exp(float(t)))
+        return gfem.solve(model, gfem.Eigenmode(target=target), options=options)
+
+    result = solve(0.0)
+    slope = derivative(lambda t: jnp.log(jnp.real(solve(t).omega[0])), 0.0, 1.0, 1e-2)
+    np.testing.assert_allclose(
+        abs(float(result.participation["jj"][0])), -2 * slope, rtol=1e-7
     )
 
 
