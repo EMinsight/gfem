@@ -370,7 +370,7 @@ def test_a_singular_reaction_raises_instead_of_dropping_the_correction(
     message = str(caught.value)
     assert "'p1'" in message
     assert "'port1'" in message
-    assert f"{F[0] / 1e9:.6g} GHz" in message
+    assert "1.5 THz" in message
 
 
 # --- hybrid modes: the modal correction -------------------------------------------

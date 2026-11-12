@@ -60,6 +60,7 @@ from gfem._engine.runtime import task_manager
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
 from gfem._port_section import PortSection, port_section
 from gfem._sign import largest_entry
+from gfem._text import hertz, hertz_band
 from gfem.errors import PortModeError, PortModeTrackingWarning
 from gfem.model import Model
 from gfem.options import SolverOptions
@@ -93,6 +94,12 @@ _FLOOR = 10.0
 _AMBIGUOUS = 0.05
 # Relative distance of two propagation constants that are one degenerate mode.
 _DEGENERATE = 1e-8
+#: How to fix a degenerate requested mode, ending its error.
+_DEGENERATE_REMEDY = (
+    "Select one polarization with a symmetry plane through the guide's axis "
+    "(a mirror half model), or break the cross-section's symmetry with a "
+    "WavePort(pec_edges=...) wall."
+)
 # A surface impedance on the port's edges (the internal inductance of a
 # conductor, an inductive sheet) slows the mode beyond the bulk wavenumber;
 # propagating candidates may then reach this multiple of it.
@@ -686,7 +693,7 @@ class _Greedy:
             ):
                 raise PortModeError(
                     f"{self._who(k)}: two modes overlap the tracked mode "
-                    f"{mode} almost equally at {self.f[j] / 1e9:.6g} GHz (overlaps "
+                    f"{mode} almost equally at {hertz(self.f[j])} (overlaps "
                     f"{overlap[best[0]]:.3f} and {overlap[best[1]]:.3f}): a degenerate "
                     "pair or an unresolved crossing. Break the cross-section's "
                     "symmetry, or make the unwanted mode non-propagating (for "
@@ -700,7 +707,7 @@ class _Greedy:
                         f"WavePorts {self.ports[k].name!r} and "
                         f"{self.ports[other].name!r} on surface "
                         f"{self.ports[k].surface!r} follow the same mode at "
-                        f"{self.f[j] / 1e9:.6g} GHz (an unresolved crossing between "
+                        f"{hertz(self.f[j])} (an unresolved crossing between "
                         "two requested modes). Narrow the band or break the "
                         "cross-section's symmetry."
                     )
@@ -719,7 +726,7 @@ class _Greedy:
                 warnings.warn(
                     f"WavePort {self.ports[k].name!r}: the tracked mode {mode} is "
                     f"mode {self.pick[j][k] + 1} in rank order at "
-                    f"{self.f[j] / 1e9:.6g} GHz (a mode crossing inside the band). "
+                    f"{hertz(self.f[j])} (a mode crossing inside the band). "
                     "gfem keeps following the physical mode; a solver that ranks "
                     "modes at each frequency would switch modes there, so its "
                     "S-parameters differ beyond the crossing.",
@@ -847,7 +854,7 @@ class _Greedy:
     # --- errors -------------------------------------------------------------------
 
     def _band(self) -> str:
-        return f"{self.f[0] / 1e9:.6g}-{self.f[-1] / 1e9:.6g} GHz"
+        return hertz_band(self.f[0], self.f[-1])
 
     def _who(self, k: int) -> str:
         """Mode ``k``'s wave port, with its surface when that is shared."""
@@ -894,8 +901,8 @@ class _Greedy:
             return PortModeError(
                 f"{who}: mode {mode} does not propagate in the band "
                 f"{self._band()} (the cross-section carries {len(first.lam)} "
-                f"propagating mode(s) at {self.f[0] / 1e9:.6g} GHz and "
-                f"{len(top.lam)} at {self.f[-1] / 1e9:.6g} GHz): the band is below "
+                f"propagating mode(s) at {hertz(self.f[0])} and "
+                f"{len(top.lam)} at {hertz(self.f[-1])}): the band is below "
                 f"the mode's cutoff. {remedy}"
             )
         lo, hi, cand = 0, n - 1, top
@@ -909,9 +916,9 @@ class _Greedy:
         cutoff = self._cutoff_estimate(hi, cand, top, mode)
         return PortModeError(
             f"{who}: mode {mode} has its cutoff inside the band "
-            f"{self._band()}, at about {cutoff / 1e9:.4g} GHz (it is evanescent at "
-            f"{self.f[lo] / 1e9:.6g} GHz and propagates at {self.f[hi] / 1e9:.6g} "
-            f"GHz). {remedy}"
+            f"{self._band()}, at about {hertz(cutoff, 4)} (it is evanescent at "
+            f"{hertz(self.f[lo])} and propagates at {hertz(self.f[hi])}). "
+            f"{remedy}"
         )
 
     def _cutoff_estimate(
@@ -939,7 +946,7 @@ class _Greedy:
             remedy = self._remedy("Restrict the band to where the mode propagates")
             return PortModeError(
                 f"{self._who(k)}: the tracked mode {self.modes[k]} stops "
-                f"propagating at {self.f[j] / 1e9:.6g} GHz inside the band "
+                f"propagating at {hertz(self.f[j])} inside the band "
                 f"{self._band()} (a cutoff in the band). {remedy}"
             )
         *rest, last = (str(self.modes[k]) for k in lost)
@@ -947,7 +954,7 @@ class _Greedy:
         remedy = self._remedy("Restrict the band to where the modes propagate")
         return PortModeError(
             f"{label}: the tracked modes {', '.join(rest)} and {last} stop "
-            f"propagating at {self.f[j] / 1e9:.6g} GHz inside the band "
+            f"propagating at {hertz(self.f[j])} inside the band "
             f"{self._band()} (a cutoff in the band). {remedy}"
         )
 
@@ -966,16 +973,13 @@ class _Greedy:
                 f"WavePorts {port.name!r} and {other.name!r} on surface "
                 f"{port.surface!r} request modes {self.modes[k]} and "
                 f"{self.modes[partners[0]]}, which are degenerate at "
-                f"{self.f[0] / 1e9:.6g} GHz (the same propagation constant), so the "
-                "ports' fields are not defined. Break the cross-section's symmetry "
-                "(for example with the mesh or a WavePort(pec_edges=...) wall)."
+                f"{hertz(self.f[0])} (the same propagation constant), so the "
+                "ports' fields are not defined. " + _DEGENERATE_REMEDY
             )
         raise PortModeError(
             f"{self._who(k)}: mode {self.modes[k]} is degenerate at "
-            f"{self.f[0] / 1e9:.6g} GHz (another mode has the same propagation "
-            "constant), so the port's field is not defined. Break the "
-            "cross-section's symmetry (for example with the mesh or a "
-            "WavePort(pec_edges=...) wall)."
+            f"{hertz(self.f[0])} (another mode has the same propagation "
+            "constant), so the port's field is not defined. " + _DEGENERATE_REMEDY
         )
 
 

@@ -18,6 +18,7 @@ import scipy.constants
 from gfem._checks import is_traced, static_float
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
+from gfem._text import hertz, hertz_band
 
 if TYPE_CHECKING:
     import xarray
@@ -381,11 +382,7 @@ class PortModeResult:
         f = np.asarray(self.frequency)
         n = np.asarray(self.n_eff)
         z = np.asarray(self.Z_PV)
-        span = (
-            f"{f.min() / 1e9:.4g}-{f.max() / 1e9:.4g} GHz"
-            if len(f) > 1
-            else (f"{f[0] / 1e9:.4g} GHz")
-        )
+        span = hertz_band(f.min(), f.max(), 4) if len(f) > 1 else hertz(f[0], 4)
         zs = (
             "no voltage_path"
             if np.isnan(z).all()
@@ -997,11 +994,7 @@ class DrivenResult:
 
     def __repr__(self) -> str:
         f = self.frequency
-        span = (
-            f"{f.min() / 1e9:.4g}-{f.max() / 1e9:.4g} GHz"
-            if len(f) > 1
-            else f"{f[0] / 1e9:.4g} GHz"
-        )
+        span = hertz_band(f.min(), f.max(), 4) if len(f) > 1 else hertz(f[0], 4)
         fields = f", {len(self.e_fields)} kept fields" if self.e_fields else ""
         sweep = "" if self.sweep is None else f", {self.sweep!r}"
         return (
@@ -1199,11 +1192,11 @@ class EigenmodeResult:
 
     def __repr__(self) -> str:
         try:
-            f = np.asarray(self.frequency) / 1e9
+            f = np.asarray(self.frequency)
             q = np.asarray(self.q)
         except (TypeError, jax.errors.TracerArrayConversionError):
             return f"EigenmodeResult({self.n_modes} modes)"
-        rows = ", ".join(f"{a:.6g} GHz (Q {b:.4g})" for a, b in zip(f, q, strict=True))
+        rows = ", ".join(f"{hertz(a)} (Q {b:.4g})" for a, b in zip(f, q, strict=True))
         return f"EigenmodeResult([{rows}])"
 
 

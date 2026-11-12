@@ -153,8 +153,9 @@ How gfem itself is checked on wave ports and shared port surfaces:
 - **Degenerate, crossing and cut-off modes.** The solve raises
   {py:obj}`gfem.PortModeError`, naming the port and the surface, in three
   cases. A requested mode degenerate with another (TE10 and TE01 of a square
-  guide) has no defined field: break the cross-section's symmetry, with the
-  mesh or a `pec_edges` wall. Two requested modes that follow the same mode
+  guide) has no defined field: select one polarization with a symmetry plane
+  through the guide's axis (a {term}`mirror half model`), or break the
+  cross-section's symmetry with a `WavePort(pec_edges=...)` wall. Two requested modes that follow the same mode
   through an unresolved crossing: narrow the band or break the symmetry. A
   requested mode below cutoff somewhere in the band: narrow the band. A lossy
   mode counts as below cutoff where its attenuation is at least its phase
