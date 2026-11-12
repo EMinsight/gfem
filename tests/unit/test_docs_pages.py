@@ -169,6 +169,32 @@ def test_get_started_links_every_tutorial():
     assert sorted(set(tutorials) - links) == []
 
 
+# -- The user glossary --------------------------------------------------------
+
+USER_TERMS = (
+    "S-parameters",
+    "Power waves",
+    "Lumped port",
+    "Wave port",
+    "Loss tangent",
+    "Element order",
+    "Adjoint solve",
+)
+
+
+@pytest.mark.parametrize("term", USER_TERMS)
+def test_a_user_term_is_defined_and_linked_from_a_page(term):
+    """A glossary entry no page links is one no reader finds."""
+    glossary = (dp.DOCS / "glossary.md").read_text(encoding="utf-8")
+    assert re.search(rf"^{re.escape(term)}\n  \S", glossary, re.MULTILINE), term
+    targets = set()
+    for page in PAGES:
+        for role in re.findall(r"\{term\}`([^`]+)`", page.read_text(encoding="utf-8")):
+            explicit = re.search(r"<([^>]+)>\s*$", role)
+            targets.add((explicit[1] if explicit else role).strip().lower())
+    assert term.lower() in targets, f"no user page links the term {term!r}"
+
+
 # -- The package description and the aliases' API entries ---------------------
 
 

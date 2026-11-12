@@ -121,6 +121,17 @@ Port
   A named excitation and measurement surface, lumped or wave, whose order in the
   {term}`model` fixes the order of the network parameters.
 
+Lumped port
+  A {term}`port` on a surface that spans from one conductor to another, or on
+  several such surfaces driven together: a resistor, with an optional
+  inductance and capacitance in parallel, driven along a stated direction. Its
+  resistance is its {term}`reference impedance`.
+
+Wave port
+  A {term}`port` on an exterior surface, fed by one mode of the surface's
+  cross-section, which a {term}`port mode problem` supplies. It absorbs that
+  mode without reflection.
+
 Shared port surface
   An exterior surface that carries several wave ports, each requesting a
   different mode of one {term}`port mode problem`; together they form one
@@ -147,9 +158,15 @@ Terminal
   matrix.
 
 Solver options
-  The numerical knobs of a solve (polynomial order, linear solver,
+  The numerical knobs of a solve ({term}`element order`, linear solver,
   {term}`eigen solver`, tolerances, {term}`device`), kept apart from the
   {term}`model` and problem type.
+
+Element order
+  The polynomial order of the finite elements, `SolverOptions.order`, 2 by
+  default and at most 12 (the order of the Nédélec elements that carry the
+  electric field). A higher order is more accurate on the same mesh and costs
+  more time and memory.
 
 Device
   The hardware a solve's linear algebra runs on, the CPU or one CUDA GPU; part
@@ -226,6 +243,18 @@ Unsolved frequency
   (or its {term}`frequency worker`'s block) stopped at an earlier frequency that
   did not converge.
 
+S-parameters
+  The network parameters of a {term}`driven problem`: the entry from port j to
+  port i is the wave leaving port i for a unit wave sent into port j, every
+  other port terminated in its {term}`reference impedance`. gfem's are
+  {term}`power waves`, one matrix per frequency.
+
+Power waves
+  The incident and outgoing waves a and b of each {term}`port` (Kurokawa),
+  defined from its peak voltage and current and its
+  {term}`reference impedance` so that abs(a)² is the time-averaged incident
+  power in W; b = S a.
+
 Reference impedance
   The impedance per {term}`port` that S-parameters are normalized to: the port
   resistance for a lumped port, the power-voltage impedance for a wave port with
@@ -265,6 +294,12 @@ Material
   tangent and electrical conductivity (S/m), assigned to a whole
   {term}`region`; each property may be one value or, for an
   {term}`anisotropic material`, a tensor.
+
+Loss tangent
+  The ratio tan δ of the imaginary to the real part of a {term}`material`'s
+  permittivity, ε = ε′ (1 − i tan δ) under e^{+iωt}: the dielectric loss
+  (`Material(tan_delta=...)`). A region holding the share p of a mode's
+  electric energy adds p tan δ to the mode's 1/Q.
 
 Anisotropic material
   A {term}`material` whose permittivity, permeability, loss tangent or
@@ -348,6 +383,11 @@ Element quality
 Remesh and restart
   Regenerating the mesh at the current {term}`design parameters` and restarting
   the optimizer's history.
+
+Adjoint solve
+  The extra linear solve, on the system a forward solve already assembled,
+  that gives the gradient of an {term}`objective` with respect to all
+  {term}`design parameters` at once. `jax.grad` runs it; you never write it.
 
 Objective
   A scalar function of a solution (S-parameter, eigenfrequency, Q, field
