@@ -82,8 +82,9 @@ calls. Between the solve and its gradients gfem keeps what the gradients need
   memory the process may use by default, and drops the oldest entries first.
 - A dropped entry is recomputed from the design when its gradient runs. This
   costs time, never accuracy.
-- The same budget holds the solver plans that later designs reuse, so an
-  optimization loop needs no other setting. Results do not depend on it.
+- Results do not depend on it. For a driven solve the same budget also holds
+  what later designs reuse: see "In an optimization loop" in
+  {doc}`s-parameter-gradient`.
 - `retain_memory=0` keeps nothing and always recomputes. Use it when memory,
   not time, is short.
 

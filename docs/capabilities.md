@@ -35,7 +35,8 @@ v0.1.
 
 - **`linear_solver="direct"`**: pick it for a model whose factorization fits
   in one machine's memory, for eigenmode problems, and for the repeated solves
-  of an optimization loop on a small model. It factorizes once per frequency
+  of an optimization loop, where a design can solve on the previous design's
+  factorization ({doc}`recipes/s-parameter-gradient`). It factorizes once per frequency
   and reuses the factorization for every port. Install the `mkl` extra for its fastest
   factorization.
 - **`linear_solver="bddc_gmres"`**: pick it for a large model, or when the
