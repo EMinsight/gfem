@@ -187,8 +187,14 @@ def test_matrix_input_rules():
         "as one value or a 3x3 matrix."
     )
     assert _message(eps_r=tilted * (1 - 1e-3j)) == (
-        "Material: eps_r must be real; give losses with tan_delta and conductivity."
+        "Material: eps_r must be real; give dielectric loss with tan_delta or "
+        "conductivity, or a complex value through gfem.MaterialField."
     )
+    assert _message(mu_r=1 - 0.1j) == (
+        "Material: mu_r must be real; for magnetic loss give a complex mu_r "
+        "through gfem.MaterialField."
+    )
+    assert _message(tan_delta=1e-3j) == "Material: tan_delta must be real."
     bad = tilted.copy()
     bad[0, 1] = np.nan
     assert "Material: eps_r must be finite" in _message(eps_r=bad)
