@@ -17,6 +17,7 @@ from gfem._engine.mesh import to_ngsolve
 from gfem._linalg import Operator, prepare
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.factor_reuse import (
+    FIRST_ITERATIONS,
     REUSE_MIN_REFACTOR_SECONDS,
     REUSED_TOLERANCE,
     AmortizedRule,
@@ -232,8 +233,11 @@ def forced(monkeypatch):
 
 
 def _chain(built, tolerance=1e-6):
-    """A handle refactorized once at ``k2 = 1 - 1j`` (a chain starts), and loads."""
-    op, space = _helmholtz(built, 1.0 - 1j)
+    """A handle refactorized once at ``k2 = 1 - 1j`` (a chain starts), and loads.
+
+    Prepared at another design: a refactorization on unchanged values is none.
+    """
+    op, space = _helmholtz(built, 2.0 - 1j)
     handle = DirectHandle.from_operator(op, "complex_symmetric", tolerance=tolerance)
     handle.refactorize(_helmholtz(built, 1.0 - 1j)[0], frequency=F)
     B = _loads(space)
@@ -294,6 +298,23 @@ def test_a_capped_column_counts_once_in_its_step(built, monkeypatch):
     # the next step closes this one: C is its columns
     handle.refactorize(_helmholtz(built, far + 1e-3)[0], frequency=F)
     assert handle._rule.columns == B.shape[1]
+    handle.free()
+
+
+@needs_mkl
+@pytest.mark.usefixtures("forced", "uncapped")
+def test_the_same_design_again_is_no_reused_step(built):
+    handle, B = _chain(built)
+    handle.refactorize(_helmholtz(built, 1.0 - 1j)[0], frequency=F)
+    # the factors are the design's: solved direct, in the step in progress
+    assert handle.solve_counted(B)[1] == ()
+    near = 1.0 - 1j + 1e-3
+    handle.refactorize(_helmholtz(built, near)[0], frequency=F)
+    assert handle._rule.first_iterations == FIRST_ITERATIONS
+    X, counts = handle.solve_counted(B)
+    assert all(c > 0 for c in counts)
+    exact = _fresh(built, near, B)
+    assert np.linalg.norm(X - exact) <= 1e-6 * np.linalg.norm(exact)
     handle.free()
 
 
