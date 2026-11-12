@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -72,7 +73,12 @@ from gfem._engine import terms
 from gfem._engine.cache import Entry
 from gfem._engine.coefficients import anisotropic_regions
 from gfem._engine.domain import em_region
-from gfem._engine.driven import DrivenOperator, driven_operator, operator_terms
+from gfem._engine.driven import (
+    LOW_FREQUENCY_FLOOR,
+    DrivenOperator,
+    driven_operator,
+    operator_terms,
+)
 from gfem._engine.eigen import (
     DivFreeProjector,
     eigen_operator,
@@ -87,8 +93,13 @@ from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._periodic import check_bloch, check_wave_vector
 from gfem._sign import largest_entry
 from gfem.conventions import MODE_ENERGY
-from gfem.errors import DegenerateModeError, EigenmodeConvergenceError
-from gfem.mesh import Mesh
+from gfem.errors import (
+    DegenerateModeError,
+    EigenmodeConvergenceError,
+    LinearSolverConvergenceError,
+    LowFrequencyWarning,
+)
+from gfem.mesh import Mesh, _shortest_edges
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Eigenmode
@@ -243,11 +254,14 @@ class EigenmodeRule:
 
         Raises:
             EigenmodeConvergenceError: Fewer than ``n_modes`` modes
+                converged, or the modes found would skip a pair that nearly
                 converged.
+            LinearSolverConvergenceError: A shift solve of an iterative
+                linear solver did not converge (the message names
+                ``SolverOptions.eigen_tolerance``).
         """
         opts = self.options
         order = opts.order
-        n_modes = self.problem.n_modes
         with task_manager(opts.threads):
             op = driven_operator(model, order, wave_vector=self.problem.wave_vector)
             built = op.built
@@ -257,50 +271,13 @@ class EigenmodeRule:
             try:
                 eop.factorize()  # before the projector's setup
                 divfree = projector(model, op, self.problem.wave_vector)
-                seed_tolerance = opts.eigen_tolerance
-                # the companion problem also holds each mode's mirror root
-                # -conj(k), |k + sigma| from the shift (behind its mode, about
-                # 2 sigma away for a mode near the target), and pairs near
-                # k = 0 about sigma away; they take slots in front of wanted
-                # modes farther than that, so a damped linear seed asks for
-                # twice as many pairs. A nonpolynomial seed asks for one pair
-                # beyond n_modes, the guard's slot: behind its modes lies the
-                # linearization cluster, which costs shift solves to converge
-                # and holds no mode (ADR 0035).
-                if eop.nonpolynomial:
-                    nev = n_modes + 1
-                    seed_tolerance = max(seed_tolerance, _SEED_TOLERANCE)
-                else:
-                    nev = max(2 * n_modes, n_modes + 2)
-                    nev *= 2 if eop.seed_damped else 1
-                guard = None
-                for _ in range(_ATTEMPTS):
-                    if eop.shift != sigma:
-                        # a retry is a seed solve: at the target, on a
-                        # factorization counted for the seed (refinement
-                        # reshifted it)
-                        eop.reshift(sigma, solves=MIN_SUBSPACE)
-                    k, vectors = self._shift_invert(
-                        eop, divfree, nev, tol=seed_tolerance
-                    )
-                    modes, failed, guard = self._select(
-                        eop, k, vectors, sigma, guard=keep
-                    )
-                    if len(modes) == n_modes or failed:
-                        break
-                    nev *= 2  # too few candidates near the target: look wider
-                skipped = self._skipped(modes, failed, sigma)
-                if len(modes) < n_modes or skipped:
-                    raise EigenmodeConvergenceError(
-                        self._convergence_message(eop, modes, failed, skipped)
-                    )
-                lossless = _is_hermitian if eop.general else _is_real
-                if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
-                    modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
-                    if guard is not None:
-                        guard = dataclasses.replace(guard, k=guard.k.real)
+                modes, guard = self._find(eop, divfree, sigma, guard=keep)
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
+                lowest = min(k.real for k in ks) * const.c / built.scale
+                _check_low_frequency(
+                    model, self.problem.target, lowest / (2 * math.pi), stacklevel=2
+                )
                 outputs["cluster"] = clusters(ks, opts.cluster_rtol)
                 entry = None
                 if keep:
@@ -313,11 +290,91 @@ class EigenmodeRule:
                     entry = self._entry(
                         eop, ks, x, y, labels=outputs["cluster"], guard=guard
                     )
+            except LinearSolverConvergenceError as err:
+                raise self._inner_failure(err) from err
             finally:
                 eop.free_handle()
                 if divfree is not None:
                     divfree.free()
         return outputs, entry
+
+    def _inner_failure(
+        self, err: LinearSolverConvergenceError
+    ) -> LinearSolverConvergenceError:
+        """``err`` of a shift solve, with the remedy that acts on this path.
+
+        The linear solver's message offers "a looser tolerance", but the
+        inner solves run at `_inner_tolerance`, set by
+        ``SolverOptions.eigen_tolerance`` unless ``tolerance`` is tighter.
+        """
+        remedy = (
+            "a looser SolverOptions.eigen_tolerance (the inner solves run at "
+            "min(tolerance, 0.01 * eigen_tolerance), here "
+            f"{self._inner_tolerance():g})"
+        )
+        message = str(err)
+        if "a looser tolerance" in message:
+            message = message.replace("a looser tolerance", remedy)
+        else:
+            message = f"{message} For an eigenmode solve, try {remedy}."
+        return LinearSolverConvergenceError(message)
+
+    def _find(
+        self, eop: EigenOperator, divfree, sigma: float, *, guard: bool
+    ) -> tuple[list[Refined], Refined | None]:
+        """The ``n_modes`` modes nearest ``sigma``, and the guard mode.
+
+        Seed solves at the target (each attempt asking for twice as many
+        pairs as the last) and the selection of their refined pairs
+        (`_select`). ``guard``: refine one mode beyond ``n_modes`` (``None``
+        when no seed gave one).
+
+        Raises:
+            EigenmodeConvergenceError: Fewer than ``n_modes`` modes
+                converged, or the modes found would skip a pair that nearly
+                converged (`_skipped`).
+        """
+        opts = self.options
+        n_modes = self.problem.n_modes
+        seed_tolerance = opts.eigen_tolerance
+        # the companion problem also holds each mode's mirror root
+        # -conj(k), |k + sigma| from the shift (behind its mode, about
+        # 2 sigma away for a mode near the target), and pairs near
+        # k = 0 about sigma away; they take slots in front of wanted
+        # modes farther than that, so a damped linear seed asks for
+        # twice as many pairs. A nonpolynomial seed asks for one pair
+        # beyond n_modes, the guard's slot: behind its modes lies the
+        # linearization cluster, which costs shift solves to converge
+        # and holds no mode (ADR 0035).
+        if eop.nonpolynomial:
+            nev = n_modes + 1
+            seed_tolerance = max(seed_tolerance, _SEED_TOLERANCE)
+        else:
+            nev = max(2 * n_modes, n_modes + 2)
+            nev *= 2 if eop.seed_damped else 1
+        found = None
+        for _ in range(_ATTEMPTS):
+            if eop.shift != sigma:
+                # a retry is a seed solve: at the target, on a
+                # factorization counted for the seed (refinement
+                # reshifted it)
+                eop.reshift(sigma, solves=MIN_SUBSPACE)
+            k, vectors = self._shift_invert(eop, divfree, nev, tol=seed_tolerance)
+            modes, failed, found = self._select(eop, k, vectors, sigma, guard=guard)
+            if len(modes) == n_modes or failed:
+                break
+            nev *= 2  # too few candidates near the target: look wider
+        skipped = self._skipped(modes, failed, sigma)
+        if len(modes) < n_modes or skipped:
+            raise EigenmodeConvergenceError(
+                self._convergence_message(eop, modes, failed, skipped)
+            )
+        lossless = _is_hermitian if eop.general else _is_real
+        if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
+            modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
+            if found is not None:
+                found = dataclasses.replace(found, k=found.k.real)
+        return modes, found
 
     def _shift_invert(
         self, op: EigenOperator, project, nev: int, *, tol: float
@@ -335,15 +392,17 @@ class EigenmodeRule:
         Nothing is factorized until the handle is first used
         (`gfem._engine.eigen.eigen_operator`).
         """
-        opts = self.options
         return eigen_operator(
             op,
             sigma,
             linear=self.linear,
-            tolerance=min(
-                opts.tolerance, max(_INNER * opts.eigen_tolerance, _INNER_FLOOR)
-            ),
+            tolerance=self._inner_tolerance(),
         )
+
+    def _inner_tolerance(self) -> float:
+        """The tolerance of the shift solves of an iterative linear solver."""
+        opts = self.options
+        return min(opts.tolerance, max(_INNER * opts.eigen_tolerance, _INNER_FLOOR))
 
     def _entry(
         self,
@@ -431,10 +490,7 @@ class EigenmodeRule:
         failed: list[Refined] = []
         extra = None
         window = self._window()
-        limits = {
-            "tolerance": tolerance,
-            "max_iterations": self.options.max_refine_iterations,
-        }
+        steps = self.options.max_refine_iterations
         for j in seeds:
             full = len(accepted) >= n_modes
             if full and not guard:
@@ -442,7 +498,13 @@ class EigenmodeRule:
             seed = complex(k[j])
             far = _contraction(seed, op.shift, k) > _CONTRACTION
             mode = refine(
-                op, seed, vectors[:, j], reshift=not full, reshift_first=far, **limits
+                op,
+                seed,
+                vectors[:, j],
+                tolerance=tolerance,
+                max_iterations=steps,
+                reshift=not full,
+                reshift_first=far,
             )
             retry = far and not full
             if retry and _lost(mode, seed, k, sigma, accepted=accepted, window=window):
@@ -458,7 +520,9 @@ class EigenmodeRule:
                 ):
                     accepted.append(mode)
                 op.reshift(seed)
-                mode = refine(op, seed, vectors[:, j], **limits)
+                mode = refine(
+                    op, seed, vectors[:, j], tolerance=tolerance, max_iterations=steps
+                )
             if mode.k.real <= _STATIC * sigma:
                 continue
             if not mode.converged:
@@ -977,6 +1041,45 @@ def _lost(
     return any(
         _same(mode, other, window) and not _close(seed, other.k, window)
         for other in accepted
+    )
+
+
+def _check_low_frequency(
+    model: Model, target: float, lowest: float, *, stacklevel: int
+) -> None:
+    """Warn if the target or the lowest mode is below the low-frequency floor.
+
+    The floor is the driven one, ``k0 h_min = LOW_FREQUENCY_FLOOR`` with
+    h_min the shortest edge of the solve domain: below it the E-field
+    formulation loses about ``1e-16 / (k0 h_min)^2`` of the modes, which
+    their backward error does not show (measured on a line loaded by an
+    inductor: frequency off by 2e-5 at ``k0 h_min = 2e-6`` and by 0.2 at
+    2e-8, with a reported error of 1e-16).
+
+    Args:
+        model: The model, its solve domain and its mesh.
+        target: ``Eigenmode.target`` (Hz).
+        lowest: The lowest ``Re f`` of the modes found (Hz).
+        stacklevel: Passed on to `warnings.warn`, counted from the caller.
+    """
+    active = model._domain.active  # noqa: SLF001
+    h_min = float(_shortest_edges(model.mesh)[active].min())
+    f = min(target, lowest)
+    k0h = 2 * math.pi * f / const.c * h_min
+    if k0h >= LOW_FREQUENCY_FLOOR:
+        return
+    f_floor = LOW_FREQUENCY_FLOOR * const.c / (2 * math.pi * h_min)
+    what = "target" if target <= lowest else "lowest mode found"
+    warnings.warn(
+        f"Eigenmode: the {what}, {f:.4g} Hz, is below this mesh's "
+        f"low-frequency floor of {f_floor:.4g} Hz (k0*h_min = {k0h:.2g} < "
+        f"{LOW_FREQUENCY_FLOOR:g}, with h_min = {h_min:.3g} m the shortest edge "
+        "in the solve domain). Below it the eigenfrequencies, the mode fields "
+        "and the participations carry rounding errors up to about "
+        "1e-16/(k0*h_min)^2, which EigenmodeResult.error does not show. Raise "
+        "the resonance or coarsen the smallest elements.",
+        LowFrequencyWarning,
+        stacklevel=stacklevel + 1,
     )
 
 

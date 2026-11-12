@@ -13,6 +13,7 @@ discretization's dispersion error.
 import cmath
 import dataclasses
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -666,6 +667,41 @@ def test_inductor_participation_matches_the_loaded_line(mesh):
     )
 
 
+def _loaded_line(mesh, inductance):
+    """The line with an inductor across one end, and its lowest resonance (rad/s)."""
+    model = line(
+        mesh, ports=[gfem.LumpedPort("jj", "port1", "+z", inductance=inductance)]
+    )
+    length = L * 1e-3
+    speed = const.c / math.sqrt(EPS)
+    w = brentq(
+        lambda w: math.tan(w / speed * length) - Z0 / (w * inductance),
+        1.0,
+        0.4999 * math.pi * speed / length,
+    )
+    return model, w
+
+
+def test_a_mode_below_the_low_frequency_floor_warns(mesh):
+    # a 100 H inductor resonates the line at 18.9 kHz, k0 h_min = 2e-7: the
+    # frequency is then off by 2e-4 to 4e-4 while `error` reports 1e-16
+    model, w = _loaded_line(mesh, 100.0)
+    with pytest.warns(gfem.LowFrequencyWarning, match="Eigenmode") as record:
+        gfem.solve(model, gfem.Eigenmode(target=w / (2 * math.pi)))
+    (warning,) = [r for r in record if r.category is gfem.LowFrequencyWarning]
+    message = str(warning.message)
+    assert "low-frequency floor" in message
+    assert "eigenfrequencies" in message
+    assert "error" in message
+
+
+def test_a_mode_above_the_low_frequency_floor_does_not_warn(mesh):
+    model, w = _loaded_line(mesh, 1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        gfem.solve(model, gfem.Eigenmode(target=w / (2 * math.pi)))
+
+
 # --- unsupported terms and failures ----------------------------------------------
 
 
@@ -782,6 +818,37 @@ def test_unconverged_modes_raise_without_a_partial_result(mesh):
         gfem.EigenmodeConvergenceError, match=r"(?s)0 of the 1.*Remedies"
     ):
         gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(8e9), options=options)
+
+
+@pytest.mark.parametrize(
+    "remedy",
+    [
+        "Use linear_solver='direct', or a looser tolerance.",
+        "Use linear_solver='direct', a looser tolerance, or other petsc_options.",
+    ],
+    ids=["bddc", "petsc"],
+)
+def test_a_shift_solve_that_does_not_converge_names_the_eigen_tolerance(
+    mesh, monkeypatch, remedy
+):
+    # the eigen rule sets the inner tolerance from eigen_tolerance: loosening
+    # SolverOptions.tolerance, which the linear solver's own message names,
+    # changes nothing here
+    def fail(*_, **__):
+        raise gfem.LinearSolverConvergenceError(
+            f"BDDC + GMRES did not converge to the relative tolerance 1e-12. {remedy}"
+        )
+
+    monkeypatch.setattr(EigenOperator, "solve", fail)
+    options = gfem.SolverOptions(linear_solver="bddc_gmres", eigen_tolerance=1e-9)
+    with pytest.raises(gfem.LinearSolverConvergenceError) as raised:
+        gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(8e9), options=options)
+    message = str(raised.value)
+    assert message.startswith("BDDC + GMRES did not converge")
+    assert "a looser SolverOptions.eigen_tolerance" in message
+    assert "0.01 * eigen_tolerance), here 1e-11" in message
+    assert "a looser tolerance" not in message
+    assert isinstance(raised.value.__cause__, gfem.LinearSolverConvergenceError)
 
 
 # --- the divergence-free projection ----------------------------------------------

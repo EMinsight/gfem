@@ -89,7 +89,10 @@ returning a wrong value:
   solver or PETSc's default MUMPS factorization, the capacitive part of S
   lose digits, and it warns with {py:obj}`gfem.LowFrequencyWarning`. For
   capacitance at low frequency, solve {py:obj}`gfem.Electrostatic`; the
-  details are under {py:obj}`gfem.Driven`.
+  details are under {py:obj}`gfem.Driven`. An eigenmode solve whose target or
+  lowest mode is below the floor warns too: its frequencies, fields and
+  participations lose the same digits, and the reported `error` does not
+  show it.
 - **Gyrotropic materials**: non-symmetric (non-reciprocal) tensors, such as a
   magnetized ferrite, are not supported. Neither is loss whose principal axes
   differ from the permittivity's. Both raise `ValueError`.

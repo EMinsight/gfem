@@ -555,6 +555,16 @@ class Eigenmode:
     with a component outside the span of the pairs' translations, and with
     any ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU
     ``device``.
+
+    Notes:
+        When ``target`` or the lowest mode found is below the mesh's
+        low-frequency floor, k0·h_min = 1e-6 (f·h_min ≈ 48 Hz·m, with h_min
+        the shortest edge; see `gfem.Driven`, Notes), the solve warns with
+        `gfem.LowFrequencyWarning`. Below the floor the eigenfrequencies,
+        the fields and the participations lose digits like
+        1e-16/(k0·h_min)², and `gfem.EigenmodeResult.error` does not show
+        it: a mode at k0·h_min = 2e-7 had a frequency off by 4e-4 with a
+        reported error of 1e-16.
     """
 
     target: float
