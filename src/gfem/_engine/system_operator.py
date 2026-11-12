@@ -33,8 +33,10 @@ layout (ADR 0082). S moves by summation round-off only.
 There, too, a forward sweep takes its base handle from the plan pool
 (`gfem._engine.cache`) and refactorizes it, rather than planning again
 (`PlanSlot`). A differentiated forward's base moves to its entry and returns to
-the pool when the consumed entry is freed (ADR 0081); any other returns when
-the sweep ends.
+the pool once the entry no longer holds it: when the consumed entry is freed
+(ADR 0081), or when the entry gives it up under ``retain_memory`` (ADR 0093),
+after which its backward takes a plan back from the pool. Any other returns
+when the sweep ends.
 """
 
 from __future__ import annotations
@@ -335,8 +337,9 @@ class SystemOperator:
         one process with the CPU ``direct`` and ``bddc_gmres`` solvers when the
         operator is its own adjoint's, so that the backward refactorizes it rather
         than preparing a handle per frequency. A base it no longer holds is
-        prepared again at the adjoint tolerance. A shared base from the plan pool
-        returns to the pool only when the entry holding it is freed (ADR 0082). A
+        prepared again at the adjoint tolerance, taking a plan from the pool where
+        it can. A shared base from the plan pool returns to the pool once no
+        entry holds it (ADRs 0082, 0093). A
         base the adjoint solves do not share (the transposed system's solves)
         stays with its sweep: ``with`` returns it to the pool or frees it.
         """

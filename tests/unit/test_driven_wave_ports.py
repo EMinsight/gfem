@@ -1343,6 +1343,21 @@ def test_retain_memory_zero_keeps_nothing_between_solves(tmp_path):
     assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
 
 
+def test_retain_memory_zero_keeps_no_port_state_on_the_iterative_path(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    options = dataclasses.replace(
+        KEPT_OPTIONS, linear_solver="bddc_gmres", retain_memory=0
+    )
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    # a non-differentiated solve stores no entry and pools no plan: it walks
+    # at its end all the same
+    _kept_objective(model, options)(jnp.asarray(leads))
+    assert cache._DISCRETIZATIONS
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+    assert cache.ENTRIES.nbytes == 0
+
+
 def test_a_live_entry_reads_its_own_couplings_after_their_eviction(
     tmp_path, monkeypatch
 ):

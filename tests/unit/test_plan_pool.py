@@ -19,6 +19,7 @@ import structured_meshes as sm
 import gfem
 from gfem._engine import cache
 from gfem._engine.cache import Entry, EntryCache
+from gfem._linalg import pardiso
 from gfem._linalg.direct import DirectHandle
 
 F = (21e9, 24e9)
@@ -513,3 +514,50 @@ def test_a_bloch_forward_returns_its_base_to_the_pool(tmp_path):
     cache.ENTRIES.clear()
     want = jax.grad(objective)(eps)
     np.testing.assert_allclose(got, want, rtol=1e-10, atol=0)
+
+
+@pytest.fixture(scope="module")
+def fine_path(tmp_path_factory):
+    # fine enough that PARDISO's factors outweigh the kept state
+    out = tmp_path_factory.mktemp("fine") / "line.msh"
+    return sm.write_msh22(
+        out, sm.strip_line(3.0, 2.0, 1.0, (16, 6, 4), core=(1.0, 2.0))
+    )
+
+
+@pytest.mark.skipif(not pardiso.pardiso_available(), reason="needs the mkl extra")
+def test_an_entry_over_budget_gives_its_base_to_the_pool(fine_path, plans):
+    mesh = gfem.Mesh.from_gmsh(fine_path, length_unit="mm")
+
+    def objective(retain_memory):
+        options = gfem.SolverOptions(
+            linear_solver="direct", retain_memory=retain_memory
+        )
+
+        def value(eps):
+            s = gfem.solve(
+                _model(mesh, eps),
+                gfem.Driven(frequency=F, excite="p1"),
+                options=options,
+            ).s
+            # p2's row was not excited: each backward runs an adjoint solve
+            return jnp.sum(jnp.abs(s.values) ** 2 * WEIGHTS[:, :1])
+
+        return value
+
+    want = _loop(objective(None), _eps(mesh), steps=3)
+    (entry,) = cache.ENTRIES._entries.values()
+    budget = entry.nbytes - 1  # below one entry with its base
+    cache.ENTRIES.clear()
+    plans.clear()
+    got = _loop(objective(budget), _eps(mesh), steps=3)
+    _assert_same(got, want)
+    # a forward's entry kept its fields and gave up its base, released
+    jax.vjp(objective(budget), _eps(mesh))
+    # the first forward plans; every later solve refactorizes the pooled plan,
+    # the backward passes too
+    assert len(plans) == 1
+    assert len(cache.ENTRIES) == 1
+    (pooled,) = cache.ENTRIES._plans.values()
+    assert pooled.handle._factors.released
+    assert cache.ENTRIES.nbytes <= budget
