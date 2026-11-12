@@ -182,6 +182,15 @@ def c2_mesh(directory: Path, cells: tuple[int, int, int] = (8, 8, 1)) -> gfem.Me
     return _mesh(directory, "c2", sm.periodic_cell(_edges((C2_AX, C2_AY, C2_H), cells)))
 
 
+def c2_gmsh_mesh() -> gfem.Mesh:
+    """C2's cell meshed unstructured by gmsh, the pairs' faces tied by setPeriodic.
+
+    194 nodes, 500 tetrahedra; written by tools/make_mesh_fixtures.py.
+    """
+    path = Path(__file__).parent / "unit" / "data" / "periodic_cell_gmsh.msh"
+    return gfem.Mesh.from_gmsh(path, length_unit="mm")
+
+
 def c2(mesh: gfem.Mesh) -> gfem.Model:
     """C2: periodic in x and y (the pairs share the z edges), PEC at z = 0 and h."""
     return gfem.Model(
