@@ -31,8 +31,11 @@ __all__ = ["shift_invert"]
 class _Shell:
     """The Python context of the shell matrix: ``y = apply(x)``.
 
-    PETSc reports an exception raised in a callback as its own error; the
-    exception is kept in `error`, so the solve can raise it as it was.
+    An exception raised in a callback would interrupt SLEPc's solve, and
+    SLEPc cannot destroy an EPS interrupted there. So the first exception is
+    kept in `error` and the shell answers zero from then on; the stopping
+    test (`_stopping_test`) ends the solve at its next check, and the caller
+    raises `error` as it was.
     """
 
     def __init__(self, apply: Callable[[np.ndarray], np.ndarray]) -> None:
@@ -40,11 +43,30 @@ class _Shell:
         self.error: BaseException | None = None
 
     def mult(self, mat, x, y) -> None:  # noqa: ARG002 - petsc4py passes the matrix
-        try:
-            y.array = self._apply(x.array_r.copy())
-        except BaseException as err:
-            self.error = err
-            raise
+        if self.error is None:
+            try:
+                y.array = self._apply(x.array_r.copy())
+            except BaseException as err:  # noqa: BLE001 - raised after the solve
+                self.error = err
+            else:
+                return
+        y.array = 0.0
+
+
+def _stopping_test(shell: _Shell):
+    """SLEPc's basic stopping test, which also ends a solve whose shell failed."""
+    reason = _petsc.require_slepc().EPS.ConvergedReason
+
+    def test(eps, its: int, max_it: int, nconv: int, nev: int):  # noqa: ARG001
+        if shell.error is not None:
+            return reason.CONVERGED_USER
+        if nconv >= nev:
+            return reason.CONVERGED_TOL
+        if its >= max_it:
+            return reason.DIVERGED_ITS
+        return reason.CONVERGED_ITERATING
+
+    return test
 
 
 def _ncv(value: PetscValue, nev: int, size: int) -> int:
@@ -175,12 +197,15 @@ def shift_invert(
             mat.setUp()
             prefix = _petsc.next_prefix()
             _configure(eps, mat, prefix, nev=nev, ncv=ncv, tol=tol)
+            eps.setStoppingTest(_stopping_test(shell))
             # SLEPc reads its viewer options (eps_view, eps_error_*, ...) at
             # the end of the solve: the options stay in the database across it
             with _petsc.scoped_options(prefix, pairs):
                 _set_from_options(eps)
                 eps.setInitialSpace([start])
                 eps.solve()
+                if shell.error is not None:
+                    raise shell.error
                 _check_read(eps, [name for name, _ in pairs])
             theta, vectors = _eigenpairs(eps, vector, nev, seed.size)
             failed = False
@@ -196,9 +221,7 @@ def shift_invert(
                 try:
                     obj.destroy()
                 except (PETSc.Error, SystemError):
-                    # SLEPc cannot destroy an EPS whose solve a shell error
-                    # interrupted (its DS still holds a dense submatrix):
-                    # that EPS leaks, and the solve's own error is raised
+                    # a destroy that fails never hides the solve's own error
                     if not failed:
                         raise
     return seed.pairs(theta, vectors)
