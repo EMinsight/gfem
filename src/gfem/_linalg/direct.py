@@ -338,15 +338,17 @@ class DirectHandle(PlannedHandle):
         step, ``()`` on a direct one.
         """
         rule = self._rule
-        if rule is not None and rule.reusing:
-            return self._reused_map(rule, B, tolerance)
-        start = time.perf_counter()
-        X = self._map(self._solver, B)
-        if rule is not None:
-            rule.solved_direct(
-                1 if B.ndim == 1 else B.shape[1], time.perf_counter() - start
-            )
-        return X, ()
+        # the rule's counters are read and written with the solve they time
+        with self._lock:
+            if rule is not None and rule.reusing:
+                return self._reused_map(rule, B, tolerance)
+            start = time.perf_counter()
+            X = self._map(lambda _: self._solver, B)
+            if rule is not None:
+                rule.solved_direct(
+                    1 if B.ndim == 1 else B.shape[1], time.perf_counter() - start
+                )
+            return X, ()
 
     def _reused_map(
         self, rule: AmortizedRule, B: np.ndarray, tolerance: float | None
@@ -405,9 +407,12 @@ class DirectHandle(PlannedHandle):
         `refactorize`). The pieces' pattern, which kept fixed parts and pieces
         may hold too, is in `shared`.
         """
-        if self._factors is None or self._matrix is None:
+        # read once, without the lock: a cache walk must not wait for a
+        # factorization, and a concurrent free gives 0 or the old count
+        matrix, factors = self._matrix, self._factors
+        if factors is None or matrix is None:
             return 0
-        return host_bytes(self._matrix) + self._factors.nbytes
+        return host_bytes(matrix) + factors.nbytes
 
     def _release(self) -> None:
         """Drop the factors; under the lock."""

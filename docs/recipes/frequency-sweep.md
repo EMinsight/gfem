@@ -38,6 +38,10 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
 - A sweep that reaches `SolverOptions.adaptive_max_samples` first warns with
   {py:obj}`gfem.SweepNotConvergedWarning` and reports `converged=False`. Raise
   `adaptive_max_samples`.
+- A sweep that comes near the accuracy of its full solves warns with
+  {py:obj}`gfem.SweepRankDeficientWarning` and goes on. Tighten
+  `SolverOptions.tolerance` or loosen `adaptive_tolerance` if it then fails
+  to converge.
 - On a short grid the sweep may run out of frequencies. It then solves every
   one in full, as a uniform sweep does, and reports `converged=True`.
 

@@ -17,6 +17,7 @@ import pytest
 
 import gfem
 from gfem._eigen import rule as eigen_rule
+from gfem._engine import cache
 from gfem._engine.driven import driven_operator
 from gfem._engine.fields import fe_space
 from gfem._sign import largest_entry
@@ -97,6 +98,32 @@ def test_lossy_bloch_mode_is_refined_two_sided(c3_mesh):
         )
     finally:
         eop.free_handle()
+
+
+def test_a_discretization_keeps_the_spaces_of_eight_bloch_phase_sets(c2_mesh):
+    # a band path: every wave vector adds its spaces to the discretization
+    model = pc.c2(c2_mesh)
+    disc = cache.discretization(model.mesh, model._periodic)
+    kx = math.pi / (pc.C2_AX * MM)
+
+    def omega(n):
+        k = (0.1 * (n + 1) * kx, 0.0, 0.0)
+        target = 0.9 * pc.C0 * k[0] / (2 * math.pi * math.sqrt(2))
+        return np.asarray(
+            gfem.solve(model, gfem.Eigenmode(target, wave_vector=k)).omega
+        )
+
+    first, keys = omega(0), []
+    for n in range(1, 10):
+        omega(n)
+        keys.append(len(disc.spaces))
+        assert disc.phase_sets <= 8
+    # wave vectors 8, 9 and 10 each replace the oldest phase set
+    assert disc.phase_sets == 8
+    assert keys[6] == keys[7] == keys[8]
+    # the first one's spaces are gone, and built again
+    np.testing.assert_allclose(omega(0), first, rtol=1e-10)
+    assert len(disc.spaces) == keys[-1]
 
 
 @pytest.mark.parametrize("linear_solver", ["direct", "bddc_gmres"])

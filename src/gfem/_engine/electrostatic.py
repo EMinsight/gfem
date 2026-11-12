@@ -17,6 +17,12 @@ so a capacitance gradient needs no solve: a kept entry holds the potentials
 only, and the forward frees its factorization or preconditioner. A potential
 cotangent prepares the operator again in the backward pass (once per entry,
 at the adjoint tolerance) for its adjoint solve.
+
+The energy of excitation i in region r is ``E_ri = phi_i^T K_r phi_i / 2``
+with ``K_r`` the operator restricted to the region. It is not stationary in
+the potential, so ``dE_ri = phi_i^T dK_r phi_i / 2 + (K_r phi_i)^T dphi_i``:
+a field pair on the region's own domain, and a potential cotangent
+``K_r phi_i`` that joins the adjoint solve above.
 """
 
 from __future__ import annotations
@@ -32,13 +38,20 @@ from gfem._boundaries import PEC, Conductor, sheet_of, surfaces_of
 from gfem._engine import quadrature
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import permittivity
-from gfem._engine.domain import boundary_region, domain_key, em_region, h1_space
+from gfem._engine.domain import (
+    boundary_region,
+    domain_key,
+    em_region,
+    h1_space,
+    region_domain,
+)
 from gfem._engine.fields import fe_space
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Derivative, FieldPair, Term
 from gfem._field import FieldMap
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver
+from gfem._linalg.base import free_mask
 from gfem.mesh import Mesh
 from gfem.model import Model, check_surface
 from gfem.options import SolverOptions
@@ -64,8 +77,8 @@ class ElectrostaticRule:
     form = "electrostatic"
     #: Material properties the electrostatic forms read.
     reads = frozenset({"eps_r"})
-    #: Outputs whose cotangents the backward pass handles (not ``energy``).
-    differentiable_outputs = frozenset({"capacitance", "potential"})
+    #: Outputs whose cotangents the backward pass handles.
+    differentiable_outputs = frozenset({"capacitance", "energy", "potential"})
 
     def __init__(
         self, model: Model, problem: Electrostatic, options: SolverOptions
@@ -234,18 +247,6 @@ class ElectrostaticRule:
 
     def nondifferentiable_output(self, name: str) -> str:
         """The error message for a cotangent on output ``name``."""
-        if name == "energy":
-            # dE_r = phi^T dK_r phi / 2 + phi^T K_r dphi: unlike C, the region
-            # energy is not stationary in phi, so it needs one adjoint solve
-            # per terminal; not implemented.
-            return (
-                "gfem cannot differentiate the electrostatic region energies "
-                "(result.energy) with respect to eps_r or the mesh nodes. "
-                "Differentiate the capacitance instead (the "
-                "total energy of excitation i is capacitance[i, i] / 2), or wrap "
-                "result.energy in jax.lax.stop_gradient to use its value without "
-                "its derivative."
-            )
         return (
             f"gfem cannot differentiate the electrostatic output {name!r}. Wrap "
             "it in jax.lax.stop_gradient to use its value without its derivative."
@@ -254,7 +255,7 @@ class ElectrostaticRule:
     def backward(
         self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
     ) -> list[FieldPair]:
-        """Fold the capacitance and potential cotangents into field pairs.
+        """Fold the capacitance, energy and potential cotangents into field pairs.
 
         The terminal potentials are their own adjoints for the capacitance:
         ``sum_ij ct_ij dC_ij = sum_i phi_i^T dK (sum_j G_ij phi_j)`` with
@@ -265,38 +266,95 @@ class ElectrostaticRule:
         (zero on the fixed DOFs), K the SI operator. Its operator is
         prepared on first use at the adjoint tolerance and kept in the entry
         for later pullbacks.
+
+        An energy cotangent ``ct_ri`` is both: the pair
+        ``(ct_ri / 2) phi_i^T dK_r phi_i`` on region r's own domain, and the
+        potential cotangent ``sum_r ct_ri K_r phi_i`` (see the module
+        docstring).
         """
         phi = entry.fields["potential"]
         eps0 = scipy.constants.epsilon_0
+        order = self.options.order
         with task_manager(self.options.threads):
             space, built = self._space(model)
-            domain = em_region(model, built)
+            pairs = []
             left, right = [], []
             if "capacitance" in cotangents:
                 ct = np.asarray(cotangents["capacitance"], dtype=float)
                 left.append(phi)
                 right.append(phi @ (0.5 * (ct + ct.T)).T)
+            load = None
             if "potential" in cotangents:
-                ct = np.asarray(cotangents["potential"], dtype=float)
+                load = np.array(cotangents["potential"], dtype=float)
+            if "energy" in cotangents:
+                ct = np.asarray(cotangents["energy"], dtype=float)
+                eps = permittivity(model, built)
+                through = np.zeros_like(phi)
+                for r, name in enumerate(self.regions):
+                    if not ct[r].any():
+                        continue
+                    region = region_domain(model, built, name)
+                    through += self._region_apply(space, eps, region, phi) * ct[r]
+                    pairs.append(
+                        FieldPair(
+                            space=space,
+                            left=phi * (0.5 * ct[r]),
+                            right=phi,
+                            weights={"grad_grad": eps0},
+                            order=order,
+                            domain=region,
+                        )
+                    )
+                if pairs:
+                    # the adjoint solve reads the free DOFs only
+                    through[~free_mask(space.FreeDofs(), space.ndof)] = 0.0
+                    through *= eps0 * built.scale
+                    load = through if load is None else load + through
+            if load is not None:
                 tolerance = adjoint_tolerance(self.options)
                 if entry.handle is None:
                     eps = permittivity(model, built)
                     entry.handle = self._prepare(space, eps, tolerance)
                 # the handle solves the form without eps0 * scale
-                adjoint = entry.handle.solve(ct, tolerance=tolerance)
+                adjoint = entry.handle.solve(load, tolerance=tolerance)
                 adjoint /= eps0 * built.scale
                 left.append(-adjoint)
                 right.append(phi)
-        return [
-            FieldPair(
-                space=space,
-                left=np.concatenate(left, axis=1),
-                right=np.concatenate(right, axis=1),
-                weights={"grad_grad": eps0},
-                order=self.options.order,
-                domain=domain,
-            )
-        ]
+            if left:
+                pairs.append(
+                    FieldPair(
+                        space=space,
+                        left=np.concatenate(left, axis=1),
+                        right=np.concatenate(right, axis=1),
+                        weights={"grad_grad": eps0},
+                        order=order,
+                        domain=em_region(model, built),
+                    )
+                )
+        return pairs
+
+    def _region_apply(
+        self,
+        space: ngs.FESpace,
+        eps: ngs.CoefficientFunction,
+        region: ngs.Region,
+        phi: np.ndarray,
+    ) -> np.ndarray:
+        """``K_r phi_i`` per column: the operator on ``region`` only (file units)."""
+        gf = ngs.GridFunction(space)
+        v = space.TestFunction()
+        form = ngs.LinearForm(space)
+        form += (
+            (eps * ngs.grad(gf))
+            * ngs.grad(v)
+            * quadrature.dx(self.options.order, definedon=region)
+        )
+        out = np.zeros_like(phi)
+        for i in range(phi.shape[1]):
+            gf.vec.FV().NumPy()[:] = phi[:, i]
+            form.Assemble()
+            out[:, i] = form.vec.FV().NumPy()
+        return out
 
     def terms(self, model: Model, *, nodes: bool) -> list[Term]:  # noqa: ARG002
         """The electrostatic form ``int Re(eps_r) grad u . grad v``, as a `Term`.

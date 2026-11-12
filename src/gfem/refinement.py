@@ -467,7 +467,7 @@ def refine_mesh(
         _check_quantity_model(estimator, model)
     _check_order(options.order, estimator)
     if _mpi.resolve_comm(comm) is not None:
-        _mpi.refuse_feature("mesh refinement")
+        _mpi.refuse_feature("mesh_refinement")
     _check_parameters(problem, options, tolerance, error_fraction, max_cycles)
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)

@@ -24,6 +24,7 @@ import sys
 import time
 import traceback
 import warnings
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -145,17 +146,27 @@ _REFUSALS = {
         "pass comm=MPI.COMM_SELF for one-process fields on each rank."
     ),
     "power_flow": (
-        f"gfem.power_flow has no distributed path: read Field.at, {_COPIES}."
+        "gfem.power_flow has no distributed path: write the result with "
+        "Job.run(out=) and call it on one process on the field load_result "
+        f"gives, {_COPIES}."
     ),
     "electric_energy": (
-        f"gfem.electric_energy has no distributed path: read Field.at, {_COPIES}."
+        "gfem.electric_energy has no distributed path: write the result with "
+        "Job.run(out=) and call it on one process on the field load_result "
+        f"gives, {_COPIES}."
+    ),
+    "petsc_preconditioner": (
+        "This PETSc preconditioner has no distributed form (pc_type ilu or icc, "
+        "or lu or cholesky with a pc_factor_mat_solver_type other than mumps): "
+        "use pc_type bjacobi or asm with sub_pc_type, or the default MUMPS "
+        f"factorization, {_COPIES}."
     ),
     "error_estimate": (
         "gfem.error_estimate has no distributed path: estimate a result solved "
         "on one process, or run independent one-process copies with "
         "comm=MPI.COMM_SELF."
     ),
-    "mesh refinement": (
+    "mesh_refinement": (
         f"Mesh refinement has no distributed path: refine on one process, {_COPIES}, "
         "then solve the refined model on ranks."
     ),
@@ -288,6 +299,23 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("device")
         if options.order == 1 and options.linear_solver in ("auto", "bddc_gmres"):
             refuse_feature("bddc_order_1")
+        if options.linear_solver == "petsc" and _serial_only_preconditioner(
+            dict(options.petsc_options)
+        ):
+            refuse_feature("petsc_preconditioner")
+
+
+def _serial_only_preconditioner(petsc_options: dict[str, Any]) -> bool:
+    """Whether ``pc_type`` cannot set up on a distributed matrix on this stack.
+
+    MUMPS is the stack's only distributed factorization, and ``lu`` and
+    ``cholesky`` reach it unless another package is named.
+    """
+    kind = str(petsc_options.get("pc_type", "")).lower()
+    if kind in ("ilu", "icc"):
+        return True
+    package = str(petsc_options.get("pc_factor_mat_solver_type", "mumps")).lower()
+    return kind in ("lu", "cholesky") and package != "mumps"
 
 
 def refuse_feature(feature: str) -> None:
@@ -496,10 +524,13 @@ def node_share(
     node_masks: collections.abc.Sequence[frozenset[int]],
     core: collections.abc.Callable[[int], collections.abc.Hashable] = _sibling_core,
 ) -> int:
-    """A rank's threads: its mask's physical cores over the ranks holding that mask.
+    """A rank's threads: each physical core of its mask, over the ranks that hold it.
 
-    ADR 0056's count alone reads 14 on 7 cores under ``--cpu-bind=cores`` and 224 per
-    rank under ``--cpu-bind=none``.
+    A core held by ``n`` ranks of the node counts ``1 / n`` for each; the sum is
+    rounded down. Identical masks of ``c`` cores on ``n`` ranks give ``c // n``,
+    disjoint masks their own cores, and partly overlapping masks split only the
+    cores both hold. ADR 0056's count alone reads 14 on 7 cores under
+    ``--cpu-bind=cores`` and 224 per rank under ``--cpu-bind=none``.
 
     Args:
         mask: The CPUs this rank may run on.
@@ -509,8 +540,11 @@ def node_share(
     Returns:
         At least 1.
     """
-    cores = len({core(cpu) for cpu in mask})
-    return max(1, cores // node_masks.count(mask))
+    holders = collections.Counter(
+        held for other in node_masks for held in {core(cpu) for cpu in other}
+    )
+    share = sum(Fraction(1, holders[held]) for held in {core(cpu) for cpu in mask})
+    return max(1, int(share))
 
 
 _DEFAULT_THREADS: dict[int | None, int] = {}

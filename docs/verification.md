@@ -23,9 +23,10 @@ the Taylor remainder shrinks at second order as the step shrinks.
 ```
 
 The inputs are the per-element permittivity and conductivity (isotropic, and
-as principal values on tilted axes), the fill of a sheet, and the mesh node
+as principal values on tilted axes), the permeability and the loss tangent
+(driven and eigenmode problems), the fill of a sheet, and the mesh node
 coordinates moved through `gfem.shape.boundary_morph`. The problems are
-capacitance, driven S on lumped ports, on wave ports and between modes of a
+capacitance and the electric energy of each region, driven S on lumped ports, on wave ports and between modes of a
 shared port surface, driven S on periodic and Bloch cells, and
 eigenfrequency and Q.
 

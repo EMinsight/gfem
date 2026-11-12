@@ -269,8 +269,29 @@ class SweepNotConvergedWarning(UserWarning):
     """
 
 
+class SweepRankDeficientWarning(UserWarning):
+    """An adaptive sweep's rational interpolation lost rank.
+
+    The sweep is near the accuracy of its full solves. The sweep goes on.
+    Tighten ``SolverOptions.tolerance`` or loosen
+    ``SolverOptions.adaptive_tolerance`` if it then fails to converge. Filter
+    it with Python's `warnings` module.
+    """
+
+
+class UnsampledPixelsWarning(UserWarning):
+    """Some pixels of a `gfem.design.LayerGrid` are sampled by no centroid.
+
+    No element (or face) centroid falls in them, so they get no gradient and
+    do not reach the solve. Refine the mesh in the region or coarsen the
+    pitch; pixels outside a non-rectangular footprint are always unsampled,
+    mask them with ``grid.sampled``. Filter it with Python's `warnings`
+    module.
+    """
+
+
 class LowFrequencyWarning(UserWarning):
-    """A driven frequency is below the mesh's low-frequency floor.
+    """A driven frequency or an eigenmode is below the mesh's low-frequency floor.
 
     The floor is k0 * h_min = 1e-6 (f * h_min = 48 Hz*m), with k0 the
     vacuum wavenumber and h_min the shortest edge of the solve domain.
@@ -278,8 +299,11 @@ class LowFrequencyWarning(UserWarning):
     factorization so does the capacitive part of S. For capacitance at low
     frequency solve `gfem.Electrostatic`; otherwise raise the lowest
     frequency or coarsen the smallest elements. The solve still runs; see
-    `gfem.Driven`, Notes, for how far each result holds. Filter it with
-    Python's `warnings` module.
+    `gfem.Driven`, Notes, for how far each result holds. An `gfem.Eigenmode`
+    solve warns when its target or its lowest mode is below the floor: the
+    eigenfrequencies, fields and participations lose the same digits, and
+    `gfem.EigenmodeResult.error` does not show it. Filter it with Python's
+    `warnings` module.
     """
 
 

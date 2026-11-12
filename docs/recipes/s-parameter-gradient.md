@@ -124,8 +124,10 @@ Run every design of a loop in one Python process. Between solves gfem keeps what
 the next design with the same mesh, ports and frequencies can use, and a new
 process starts without it:
 
-- the solver plan of the last design (its ordering and analysis), the assembled
-  parts that do not depend on the design, and the wave ports' couplings;
+- with any linear solver, the wave ports' couplings;
+- with `linear_solver="direct"` on the CPU in one process, the solver plan of the
+  last design (its ordering and analysis) and the assembled parts that do not
+  depend on the design;
 - with `linear_solver="direct"` and the `mkl` extra, the last design's
   factorization, when `SolverOptions(retain_memory=...)` has room for it. The next
   design at the same frequency then solves on it, with GMRES to a twentieth of
@@ -134,12 +136,24 @@ process starts without it:
   cheap, always factorize again. A periodic cell with a nonzero wave vector always
   factorizes again.
 
+The default `linear_solver="auto"` picks `"bddc_gmres"` for a driven problem, which
+sets up again at every design; for a model whose factorization fits in memory, set
+`linear_solver="direct"` in a loop.
+
+gfem decides from the times it measures, so two runs of the same script can solve
+different designs on an earlier factorization, and their S and gradients can
+differ within `tolerance`. `retain_memory=0` factorizes every design.
+
 The default `retain_memory`, half of the memory the process may use, needs no
 change on most machines. To keep the factorization of a large model, set it at
 least as large as one solve's peak memory: the peak barely grows, but that memory
 stays held between designs. With less, gfem drops the factorization first, then
 the parts, then the plan. Only the time changes: S and the gradient agree with a
 solve that factorizes every design to within `tolerance`.
+
+{py:obj}`gfem.release_memory` frees everything gfem keeps, at once: call it after
+a loop, before another study in the same process. Results you hold are not
+touched.
 
 ## Check your results
 
