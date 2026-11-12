@@ -434,24 +434,61 @@ def _wave(recovery: FluxRecovery, field: Field) -> np.ndarray:
     """eta_K^2 / energy of one time-harmonic electric field.
 
     eta_K^2 = || R(mu^-1 curl E) - mu^-1 curl E ||^2_{mu,K}
-    + k^2 || R(eps E) - eps E ||^2_{eps^-1,K}, with k = Re(omega) / c in the
-    mesh's length unit, summed over the real and imaginary parts; the energy
-    is || curl E ||^2_{mu^-1} + k^2 || E ||^2_eps over the solve domain.
+    + |k|^2 || R(eps_eff E) - eps_eff E ||^2_{|eps_eff|^-1,K}, with k =
+    omega / c in the mesh's length unit (complex for a lossy mode) and
+    eps_eff = eps_r (1 - i tan_delta) - i eta0 sigma scale / k, the total
+    current whose normal component is continuous; |.|^2 of a complex
+    residual sums its real and imaginary parts. The energy is
+    || curl E ||^2_{mu^-1} + |k|^2 int |eps_eff| |E|^2 over the solve domain.
+    Without loss eps_eff = eps_r and this is the lossless estimate.
     """
-    omega = float(np.real(np.asarray(field.omega)))
-    k = omega / scipy.constants.c * recovery.built.scale
-    parts = [True, False] if field.is_complex else [True]
+    built = recovery.built
+    k = complex(np.asarray(field.omega)) / scipy.constants.c * built.scale
+    k2 = abs(k) ** 2
+    values = _eps_eff_values(recovery.model, built, k)
+    if np.any(values.imag):
+        eps = [coefficient(built, values.real), coefficient(built, values.imag)]
+        flux_weight, mass_weight = (
+            coefficient(built, w) for w in _modulus_weights(values)
+        )
+    else:
+        eps, flux_weight, mass_weight = (
+            [recovery.eps],
+            recovery.eps_inverse,
+            recovery.eps,
+        )
+    parts = _parts(field)
     eta2 = np.zeros(len(recovery.model.mesh.tetrahedra))
     energy = 0.0
-    for real_part in parts:
-        gf = _grid_function(field, real_part)
+    for gf, flux in zip(parts, _times(eps, parts), strict=True):
         curl = ngs.curl(gf)
-        flux = recovery.eps * gf
-        eta2 += recovery.curl_error(curl) + k**2 * recovery.flux_error(flux)
+        diff = recovery.flux_residual(flux)
+        eta2 += recovery.curl_error(curl) + k2 * recovery.element_integrals(
+            diff * (flux_weight * diff)
+        )
         energy += recovery.element_integrals(
-            curl * (recovery.mu_inverse * curl) + k**2 * (gf * flux)
+            curl * (recovery.mu_inverse * curl) + k2 * (gf * (mass_weight * gf))
         ).sum()
     return eta2 / energy
+
+
+def _modulus_weights(eps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The flux and energy weights of a complex eps_eff per tetrahedron.
+
+    |eps|^-1 and |eps| for a scalar; for a tensor A, (A A^H)^{-1/2} and
+    (A^H A)^{1/2}, A^-1 and A for a real symmetric A. Real for the tensors
+    the field estimator accepts (lossless, or a lossy multiple of the
+    identity): loss inside an anisotropic material is refused before.
+    """
+    if eps.ndim == 1:
+        return 1.0 / np.abs(eps), np.abs(eps)
+
+    def power(h: np.ndarray, p: float) -> np.ndarray:
+        values, vectors = np.linalg.eigh(h)
+        return np.einsum("tij,tj,tkj->tik", vectors, values**p, vectors.conj()).real
+
+    adjoint = eps.conj().transpose(0, 2, 1)
+    return power(eps @ adjoint, -0.5), power(adjoint @ eps, 0.5)
 
 
 def combine(
@@ -638,18 +675,8 @@ def _effective_eps(
     tetrahedron, a scalar or a 3x3 tensor; real (``recovery.eps``) on a
     lossless model.
     """
-    from gfem._engine.coefficients import lossy_eps
-    from gfem._engine.terms import ETA0
-
-    model, built = recovery.model, recovery.built
-    sigma = element_tensors(model, "conductivity").real
-    eps = lossy_eps(model)
-    if eps.ndim != sigma.ndim:
-        eye = np.eye(3)
-        eps, sigma = (
-            v if v.ndim == 3 else v[:, None, None] * eye for v in (eps, sigma)
-        )
-    eps = eps - 1j * ETA0 * built.scale * sigma / k
+    built = recovery.built
+    eps = _eps_eff_values(recovery.model, built, k)
     if not np.any(eps.imag):
         return [recovery.eps], [recovery.eps_inverse]
     inverse = 1.0 / eps if eps.ndim == 1 else np.linalg.inv(eps)
@@ -658,6 +685,24 @@ def _effective_eps(
         return [coefficient(built, values.real), coefficient(built, values.imag)]
 
     return parts(eps), parts(inverse)
+
+
+def _eps_eff_values(model: Model, built: EngineMesh, k: complex) -> np.ndarray:
+    """eps_r (1 - i tan_delta) - i eta0 sigma scale / k per tetrahedron.
+
+    ``(n,)``, or ``(n, 3, 3)`` when any material is a tensor.
+    """
+    from gfem._engine.coefficients import lossy_eps
+    from gfem._engine.terms import ETA0
+
+    sigma = element_tensors(model, "conductivity").real
+    eps = lossy_eps(model)
+    if eps.ndim != sigma.ndim:
+        eye = np.eye(3)
+        eps, sigma = (
+            v if v.ndim == 3 else v[:, None, None] * eye for v in (eps, sigma)
+        )
+    return eps - 1j * ETA0 * built.scale * sigma / k
 
 
 def _times(

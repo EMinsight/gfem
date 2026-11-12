@@ -34,6 +34,15 @@ order-5 solve on the same mesh. The recovery's constraint on the natural
 surfaces (ADR 0087) is what keeps this estimate above the error: without it
 the estimate measured 0.45 times the error.
 
+Lossy cases, in the norm || curl e ||^2 + |k|^2 || e ||^2_{|eps_eff|} (the
+lossless norm without loss): the parallel-plate line with tan_delta 0.3 or
+10 S/m in its filling, against the closed-form TEM wave with complex beta and
+Z0; and the PEC box in two 0.2 mm layers, the upper one lossy (tan_delta 0.5
+or 30 S/m), whose mode puts E normal to the loss jump, against an order p + 2
+solve on the same mesh. A lumped port across a loss jump (the line in two
+layers, the upper lossy) is a witness: its effectivity is asserted in its
+measured band `LOSS_JUMP_WITNESS`, below the quoted range.
+
 Each case's effectivity must lie in its range of `FIELD_EFFECTIVITY_BY_CASE`
 at order 2, and of `FIELD_EFFECTIVITY_ORDER_3_BY_CASE` at order 3 (the
 circular coax against an order-6 solve there); `FIELD_EFFECTIVITY` (the
@@ -58,6 +67,13 @@ Measured (order 2, direct, ostau, 1 thread):
                                         0.94, 0.94, 0.94 (exact circle)
     anisotropic coax, k = 1, 2, 4, 8    1.28, 1.39, 1.48, 1.54 (rotz)
                                         1.27, 1.38, 1.47, 1.51 (rot3)
+    lossy line, tan_delta 0.3, n = 4, 16  1.17, 1.25; 1.16, 1.17 (3, 8 GHz)
+    lossy line, 10 S/m, n = 8, 32       1.26, 1.25; 1.06, 1.06 (0.62 and
+                                        0.73 at n = 32 recovering eps_r E)
+    two-layer box, m = 1, 2             1.20, 1.19 (tan_delta 0.5)
+                                        1.18, 1.15 (30 S/m)
+    loss-jump port line, order 2,
+    order-4 reference, n = 4, 8, 12     0.93, 0.95, 0.96 (1 S/m, 3 GHz)
 
 Measured (order 3, direct, ostau, 1 thread):
 
@@ -68,8 +84,15 @@ Measured (order 3, direct, ostau, 1 thread):
     PEC box TM110, m = 1, 2             1.56, 1.70
     circular coax, k = 2, 4             1.38, 1.39 (own facets, order 6)
                                         0.69, 0.70 (exact circle)
+    lossy line, tan_delta 0.3, n = 4, 16  1.83, 1.80; 1.56, 1.63 (3, 8 GHz)
+    lossy line, 10 S/m, n = 4, 16       1.61, 1.50; 1.59, 1.55
+    two-layer box, m = 1                1.40 (tan_delta 0.5), 1.21 (30 S/m)
+    loss-jump port line, n = 4,
+    order-7 reference                   0.88, 0.89 (tan_delta 0.5)
+                                        0.85, 0.89 (1 S/m)
 """
 
+import cmath
 import math
 
 import numpy as np
@@ -92,6 +115,8 @@ FIELD_EFFECTIVITY_BY_CASE = {
     "parallel-plate line": (0.9, 1.6),
     "rectangular box": (0.9, 1.6),
     "anisotropic coax": (0.9, 1.8),
+    "lossy parallel-plate line": (0.9, 1.6),
+    "two-layer box": (0.9, 1.6),
 }
 
 #: Asserted field effectivity range per case at order 3 (measured, with margin).
@@ -101,6 +126,8 @@ FIELD_EFFECTIVITY_ORDER_3_BY_CASE = {
     "L cavity": (0.9, 1.5),
     "parallel-plate line": (0.9, 2.0),
     "rectangular box": (0.9, 2.0),
+    "lossy parallel-plate line": (0.9, 2.0),
+    "two-layer box": (0.9, 1.6),
 }
 
 #: The range the docs quote: the lowest low and the highest high, both orders.
@@ -299,16 +326,22 @@ def _gauss_points(mesh: gfem.Mesh, n: int = 3) -> tuple[np.ndarray, np.ndarray]:
     return points.reshape(-1, 3), (volume[:, None] * weights).ravel()
 
 
-def _relative_energy_error(field, exact, exact_curl, eps_r, *, fit=False):
-    """|| E_h - E ||_energy / || E_h ||_energy; ``fit`` scales E to E_h first."""
+def _relative_energy_error(field, exact, exact_curl, eps, *, fit=False):
+    """|| E_h - E ||_energy / || E_h ||_energy; ``fit`` scales E to E_h first.
+
+    The energy norm is || curl e ||^2 + |k|^2 || e ||^2_{|eps_eff|}, with the
+    field's k (complex for a lossy mode) and ``eps`` the relative eps_eff: a
+    number, or a function of the points and k (in 1/m).
+    """
     x, w = _gauss_points(field.mesh)
     omega = complex(np.asarray(field.omega))
-    k2 = (omega.real / const.c) ** 2
+    k = omega / const.c
+    weight = abs(k) ** 2 * np.abs(eps(x, k) if callable(eps) else eps)
     e, curl = np.asarray(field.at(x)), -1j * omega * np.asarray(field.b().at(x))
     e0, curl0 = exact(x), exact_curl(x)
 
     def inner(a, ca, b, cb):
-        dot = np.sum(ca * cb.conj(), axis=1) + k2 * eps_r * np.sum(a * b.conj(), axis=1)
+        dot = np.sum(ca * cb.conj(), axis=1) + weight * np.sum(a * b.conj(), axis=1)
         return np.sum(w * dot)
 
     if fit:
@@ -322,12 +355,21 @@ _LINE = {"length": 10e-3, "height": 1e-3, "width": 2e-3, "eps_r": 4.0}
 _R1, _R2 = 50.0, 30.0
 
 
-def _line_wave(f):
-    """The line's exact E_z and (curl E)_y for 1 W incident at p1, functions of x."""
-    beta = 2 * math.pi * f / const.c * math.sqrt(_LINE["eps_r"])
+def _eps_eff(eps_r, tan_delta, sigma, k):
+    """eps_r (1 - i tan_delta) - i eta0 sigma / k, k in 1/m."""
     eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
-    z0 = eta0 * _LINE["height"] / (_LINE["width"] * math.sqrt(_LINE["eps_r"]))
-    c, s = math.cos(beta * _LINE["length"]), math.sin(beta * _LINE["length"])
+    return eps_r * (1 - 1j * tan_delta) - 1j * eta0 * sigma / k
+
+
+def _line_wave(f, eps=_LINE["eps_r"]):
+    """The line's exact E_z and (curl E)_y for 1 W incident at p1, functions of x.
+
+    ``eps`` is the filling's eps_eff at f; complex beta and Z0 when lossy.
+    """
+    beta = 2 * math.pi * f / const.c * cmath.sqrt(eps)
+    eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
+    z0 = eta0 * _LINE["height"] / (_LINE["width"] * cmath.sqrt(eps))
+    c, s = cmath.cos(beta * _LINE["length"]), cmath.sin(beta * _LINE["length"])
     a, b, cc = c, 1j * z0 * s, 1j * s / z0  # ABCD of the line, D = A
     s11 = (a * _R2 + b - cc * _R1 * _R2 - a * _R1) / (
         a * _R2 + b + cc * _R1 * _R2 + a * _R1
@@ -357,26 +399,44 @@ def _model(tmp_path, cells, unit, **kwargs):
     return gfem.Model(gfem.Mesh.from_gmsh(path, length_unit=unit), **kwargs)
 
 
-def _parallel_plate_line(tmp_path, n, options):
-    model = _model(
+def _line_model(tmp_path, cells, materials):
+    return _model(
         tmp_path,
-        sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1)),
+        cells,
         "mm",
-        materials={"dielectric": gfem.Material(eps_r=_LINE["eps_r"])},
+        materials=materials,
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
         ports=[
             gfem.LumpedPort("p1", "port1", "+z"),
             gfem.LumpedPort("p2", "port2", "+z", resistance=_R2),
         ],
     )
-    frequencies = (3e9, 8e9)
-    problem = gfem.Driven(list(frequencies), excite="p1", keep_fields=True)
+
+
+_LINE_FREQUENCIES = (3e9, 8e9)
+
+
+def _line_estimate(model, options):
+    """The line solved at 3 and 8 GHz, exciting p1, and its field estimate."""
+    problem = gfem.Driven(list(_LINE_FREQUENCIES), excite="p1", keep_fields=True)
     result = gfem.solve(model, problem, options=options)
-    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
-    for f, value in zip(frequencies, estimate.values, strict=True):
+    return result, gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+
+
+def _parallel_plate_line(
+    tmp_path, n, options, *, tan_delta=0.0, sigma=0.0, case="parallel-plate line"
+):
+    filling = gfem.Material(
+        eps_r=_LINE["eps_r"], tan_delta=tan_delta, conductivity=sigma
+    )
+    cells = sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1))
+    model = _line_model(tmp_path, cells, {"dielectric": filling})
+    result, estimate = _line_estimate(model, options)
+    for f, value in zip(_LINE_FREQUENCIES, estimate.values, strict=True):
+        eps = _eps_eff(_LINE["eps_r"], tan_delta, sigma, 2 * math.pi * f / const.c)
         field = result.e_field(f, "p1")
-        true = _relative_energy_error(field, *_line_wave(f), _LINE["eps_r"])
-        _assert_in("parallel-plate line", value, true, order=options.order)
+        true = _relative_energy_error(field, *_line_wave(f, eps), eps)
+        _assert_in(case, value, true, order=options.order)
 
 
 @pytest.mark.parametrize("n", [4, 8, 16])
@@ -387,6 +447,45 @@ def test_the_field_effectivity_on_a_parallel_plate_line(tmp_path, n):
 @pytest.mark.parametrize("n", [4, 16])
 def test_the_field_effectivity_on_a_parallel_plate_line_at_order_3(tmp_path, n):
     _parallel_plate_line(tmp_path, n, ORDER_3)
+
+
+def test_the_field_estimate_of_a_lossless_line_is_unchanged(tmp_path):
+    # Measured before the lossy flux (ADR 0087, ticket 11 amendment): without
+    # loss eps_eff = eps_r and |k| = k, so the estimate is the same number.
+    cells = sm.strip_line(10.0, 2.0, 1.0, (4, 1, 1))
+    filling = gfem.Material(eps_r=_LINE["eps_r"])
+    model = _line_model(tmp_path, cells, {"dielectric": filling})
+    _, estimate = _line_estimate(model, OPTIONS)
+    assert estimate.values == pytest.approx(
+        (0.0026562524133877095, 0.019399239186158542), rel=1e-12
+    )
+    assert np.sum(estimate.indicators**2) == pytest.approx(
+        0.00019169307894270854, rel=1e-12
+    )
+
+
+#: The lossy line's filling loss: tan_delta 0.3, or 10 S/m.
+LINE_LOSS = {"tan": {"tan_delta": 0.3}, "sigma": {"sigma": 10.0}}
+
+
+@pytest.mark.parametrize(
+    ("loss", "n"), [("tan", 4), ("tan", 16), ("sigma", 8), ("sigma", 32)]
+)
+def test_the_field_effectivity_on_a_lossy_parallel_plate_line(tmp_path, loss, n):
+    # At 10 S/m and n = 32 the recovery of eps_r E measured 0.62.
+    _parallel_plate_line(
+        tmp_path, n, OPTIONS, case="lossy parallel-plate line", **LINE_LOSS[loss]
+    )
+
+
+@pytest.mark.parametrize("n", [4, 16])
+@pytest.mark.parametrize("loss", list(LINE_LOSS))
+def test_the_field_effectivity_on_a_lossy_parallel_plate_line_at_order_3(
+    tmp_path, loss, n
+):
+    _parallel_plate_line(
+        tmp_path, n, ORDER_3, case="lossy parallel-plate line", **LINE_LOSS[loss]
+    )
 
 
 def _pec_box_mode(tmp_path, m, options):
@@ -427,6 +526,111 @@ def test_the_field_effectivity_on_a_pec_box_mode(tmp_path, m):
 @pytest.mark.parametrize("m", [1, 2])
 def test_the_field_effectivity_on_a_pec_box_mode_at_order_3(tmp_path, m):
     _pec_box_mode(tmp_path, m, ORDER_3)
+
+
+# --- loss jumps --------------------------------------------------------------
+
+#: The lossy upper layer of the two-layer box and the layered line.
+UPPER_LOSS = {"tan": {"tan_delta": 0.5}, "sigma": {"conductivity": 30.0}}
+
+
+def _layers_eps(lower, upper, z):
+    """eps_eff of two `Material` layers, ``upper`` above height ``z`` (m)."""
+
+    def eps(x, k):
+        values = [
+            _eps_eff(m.eps_r, m.tan_delta, m.conductivity, k) for m in (lower, upper)
+        ]
+        return np.where(x[:, 2] > z, values[1], values[0])
+
+    return eps
+
+
+def _two_layer_box(tmp_path, m, options, loss):
+    # A 1 x 0.7 x 0.4 mm PEC box of two 0.2 mm layers stacked in z; the
+    # TM110-like mode puts E normal to the interface, where only eps_eff E
+    # has a continuous normal component.
+    lower = gfem.Material(eps_r=4.0)
+    upper = gfem.Material(eps_r=4.0, **loss)
+    model = _model(
+        tmp_path,
+        sm.plate(1.0, 0.7, (("lower", 0.2), ("upper", 0.2)), (5 * m, 4 * m, m)),
+        "mm",
+        materials={"lower": lower, "upper": upper},
+        boundaries=[gfem.PEC(s) for s in ("bottom", "top", "side")],
+    )
+    f110 = const.c / 2 * math.hypot(1 / 1e-3, 1 / 0.7e-3) / 2  # eps_r = 4
+    problem = gfem.Eigenmode(target=f110, n_modes=1)
+    result = gfem.solve(model, problem, options=options)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    reference = gfem.solve(
+        model,
+        problem,
+        options=gfem.SolverOptions(order=options.order + 2, linear_solver="direct"),
+    ).e_fields[0]
+    omega = complex(np.asarray(reference.omega))
+    true = _relative_energy_error(
+        result.e_fields[0],
+        lambda x: np.asarray(reference.at(x)),
+        lambda x: -1j * omega * np.asarray(reference.b().at(x)),
+        _layers_eps(lower, upper, 0.2e-3),
+        fit=True,
+    )
+    _assert_in("two-layer box", estimate.value, true, order=options.order)
+
+
+@pytest.mark.parametrize("m", [1, 2])
+@pytest.mark.parametrize("loss", list(UPPER_LOSS))
+def test_the_field_effectivity_on_a_two_layer_box(tmp_path, loss, m):
+    # Recovering eps_r E measured 1.97 and 4.91 (tan_delta 0.5), 2.86 and
+    # 7.86 (30 S/m) here, growing as the mesh is refined.
+    _two_layer_box(tmp_path, m, OPTIONS, UPPER_LOSS[loss])
+
+
+@pytest.mark.parametrize("loss", list(UPPER_LOSS))
+def test_the_field_effectivity_on_a_two_layer_box_at_order_3(tmp_path, loss):
+    _two_layer_box(tmp_path, 1, ORDER_3, UPPER_LOSS[loss])
+
+
+#: The measured field effectivity of a lumped port across a loss jump: below
+#: the quoted range, so that configuration is not claimed (recipe Limits).
+LOSS_JUMP_WITNESS = (0.84, 0.90)
+
+
+@pytest.mark.parametrize(
+    "loss", [{"tan_delta": 0.5}, {"conductivity": 1.0}], ids=["tan", "sigma"]
+)
+def test_the_field_estimate_under_a_lumped_port_across_a_loss_jump(tmp_path, loss):
+    # The parallel-plate line in two 0.5 mm layers, the upper one lossy, its
+    # lumped ports spanning both: the port face meets the interface in a
+    # singularity. At order 3 on 48 tetrahedra, against an order-7 solve on
+    # the same mesh, the estimate stays below the error (0.85-0.89); it rises
+    # under refinement (order 2: 0.93, 0.95, 0.96 at n = 4, 8, 12, 3 GHz).
+    lower = gfem.Material(eps_r=_LINE["eps_r"])
+    upper = gfem.Material(eps_r=_LINE["eps_r"], **loss)
+    cells = sm.strip_line(
+        10.0, 2.0, 1.0, (4, 1, 1), layers=(("lower", 0.5), ("upper", 0.5))
+    )
+    model = _line_model(tmp_path, cells, {"lower": lower, "upper": upper})
+    result, estimate = _line_estimate(model, ORDER_3)
+    reference = gfem.solve(
+        model,
+        gfem.Driven(list(_LINE_FREQUENCIES), excite="p1", keep_fields=True),
+        options=gfem.SolverOptions(order=7, linear_solver="direct"),
+    )
+    low, high = LOSS_JUMP_WITNESS
+    for f, value in zip(_LINE_FREQUENCIES, estimate.values, strict=True):
+        exact = reference.e_field(f, "p1")
+        omega = complex(np.asarray(exact.omega))
+        true = _relative_energy_error(
+            result.e_field(f, "p1"),
+            lambda x, exact=exact: np.asarray(exact.at(x)),
+            lambda x, exact=exact, omega=omega: (
+                -1j * omega * np.asarray(exact.b().at(x))
+            ),
+            _layers_eps(lower, upper, 0.5e-3),
+        )
+        assert low <= value / true <= high, (f, value / true)
 
 
 ORDER_5 = gfem.SolverOptions(order=5, linear_solver="direct")

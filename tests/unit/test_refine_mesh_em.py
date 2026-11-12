@@ -135,6 +135,44 @@ def test_an_anisotropic_permittivity_runs(tmp_path):
     assert 1e-3 < estimate.value < 1
 
 
+def test_a_lossy_layer_beside_a_tensor_weighs_like_a_scalar(tmp_path):
+    # A tensor anywhere makes eps_eff a tensor everywhere: the lossy layer's
+    # weights |eps_eff|^-1 and |eps_eff| then come from the matrix modulus.
+    lossy = gfem.Material(eps_r=1.5, tan_delta=0.2, conductivity=20.0)
+    scalar = _box(tmp_path, {"a": gfem.Material(eps_r=2.0), "b": lossy})
+    tensor = scalar.replace(
+        materials={"a": gfem.Material(eps_r=(2.0,) * 3), "b": lossy}
+    )
+    problem = gfem.Eigenmode(target=F_BOX / 1.3, n_modes=1)
+    reference = _estimate(scalar, problem)
+    assert 1e-3 < reference.value < 1
+    assert _estimate(tensor, problem).value == pytest.approx(reference.value, rel=1e-6)
+
+
+LOSSY_ANISOTROPIC = {
+    "a": gfem.Material(eps_r=(7.0, 3.0, 2.0), tan_delta=0.01),
+    "b": gfem.Material(),
+}
+
+
+def test_the_field_estimator_refuses_loss_in_an_anisotropic_material(
+    tmp_path, monkeypatch
+):
+    def solve(*_args, **_kwargs):
+        raise AssertionError("refine_mesh solved before refusing")
+
+    model = _box(tmp_path, LOSSY_ANISOTROPIC)
+    problem = gfem.Eigenmode(target=F_BOX / 1.3, n_modes=1)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    assert caught.value.feature == "lossy anisotropic material"
+    assert "loss in the anisotropic material of 'a'" in str(caught.value)
+    monkeypatch.setattr("gfem.refinement.solve", solve)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError, match="FieldEstimator"):
+        gfem.refine_mesh(model, problem, options=OPTIONS)
+
+
 def test_recovery_is_broken_across_an_interior_pec_sheet(tmp_path):
     # The sheet between the layers decouples them: the first mode lives in
     # the denser layer "a" alone, as in a model without layer "b". Recovered
