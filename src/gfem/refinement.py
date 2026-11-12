@@ -65,9 +65,9 @@ class FieldEstimator:
     With loss, the flux is the total current ``eps_eff E``, ``eps_eff =
     eps_r (1 - i tan_delta) - i sigma / (omega eps_0)``, and the norm is
     ``||curl E||^2_{mu^-1} + |k|^2 int |eps_eff| |E|^2``: the conduction
-    current counts, as it does in the field. Weighting by ``Re(eps_eff)``
-    instead overestimated up to 14 times; the lossless norm,
-    ``Re(eps_eff^-1)``, underestimated without bound under conduction loss.
+    current counts, as it does in the field. Weighting the flux error by
+    ``Re(eps_eff)^-1`` instead overestimates; recovering ``eps_r E``, as
+    without loss, underestimates without bound under conduction loss.
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for a driven or eigenmode field
@@ -901,7 +901,8 @@ def _adjoints(
     order = _fields(result)[0].order
     options = SolverOptions(order=order, linear_solver="direct", threads=threads)
     with driven.low_frequency_deferred(), warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # the solve of ``result`` warned
+        for category in driven.FORWARD_WARNINGS:  # the solve of ``result`` warned
+            warnings.simplefilter("ignore", category)
         rule = driven.DrivenRule(model, problem, options)
         rule.adjoint_ports = ports
         return rule.solve_adjoints(model)

@@ -223,6 +223,81 @@ def test_a_parallel_lossy_port_takes_no_adjoint_solve(tmp_path, prepares):
     assert len(prepares) == 1
 
 
+class _Unconverged:
+    """A handle whose solve stops above its tolerance."""
+
+    def solve_counted(self, *_args, **_kwargs):
+        raise gfem.LinearSolverConvergenceError("GMRES stopped at 1e-3.")
+
+
+def test_an_unconverged_adjoint_is_not_reported_as_a_forward_miss(
+    tmp_path, monkeypatch
+):
+    # Only the adjoint solve fails: the forward solved every frequency, so
+    # the error is the adjoint's, with no partial sweep.
+    from gfem._engine.system_operator import SystemSweep
+
+    monkeypatch.setattr(SystemSweep, "reuse_at", lambda _self, _omega: _Unconverged())
+    model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
+    frequencies = [rc.LOSSY_GUIDE_FREQUENCY, 1.01 * rc.LOSSY_GUIDE_FREQUENCY]
+    with pytest.raises(gfem.LinearSolverConvergenceError) as caught:
+        gfem.refine_mesh(
+            model,
+            gfem.Driven(frequencies),
+            estimator=gfem.QuantityEstimator(s=("p2", "p1")),
+            max_cycles=0,
+            options=OPTIONS,
+        )
+    message = str(caught.value)
+    assert "adjoint" in message
+    assert "'p2'" in message
+    assert "GMRES stopped at 1e-3." in message
+    assert "uniform sweep stopped" not in message
+    assert caught.value.frequency == frequencies[0]
+    assert caught.value.unsolved is None
+    assert caught.value.result is None
+
+
+def _adjoint_rule(model, problem):
+    from gfem._engine.driven import DrivenRule
+
+    rule = DrivenRule(model, problem, OPTIONS)
+    rule.adjoint_ports = ("p2",)
+    return rule
+
+
+def test_adjoint_ports_never_reach_a_differentiated_solve(tmp_path):
+    # A backward pass keeps no adjoint columns: the forward refuses them.
+    model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
+    rule = _adjoint_rule(model, gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY]))
+    with pytest.raises(RuntimeError, match="differentiated"):
+        rule.forward(model, keep=True)
+
+
+def test_adjoint_ports_never_reach_an_adaptive_sweep(tmp_path):
+    model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
+    f = rc.LOSSY_GUIDE_FREQUENCY
+    problem = gfem.Driven(np.linspace(f, 1.1 * f, 5), sweep="adaptive")
+    rule = _adjoint_rule(model, problem)
+    with pytest.raises(RuntimeError, match="adaptive"):
+        rule.forward(model, keep=False)
+
+
+def test_frequency_workers_refuse_an_s_estimate_on_a_lossy_wave_port(tmp_path):
+    # Frequency workers solve no wave port, so a block never drops the
+    # adjoint ports: refine_mesh raises before any solve.
+    model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
+    f = rc.LOSSY_GUIDE_FREQUENCY
+    with pytest.raises(NotImplementedError, match="frequency_workers=1"):
+        gfem.refine_mesh(
+            model,
+            gfem.Driven([f, 1.01 * f]),
+            estimator=gfem.QuantityEstimator(s=("p2", "p1")),
+            max_cycles=0,
+            options=dataclasses.replace(OPTIONS, frequency_workers=2),
+        )
+
+
 def test_the_s_estimate_scales_with_the_lossy_de_embedding(tmp_path):
     # S_ij = (O_ij - delta_ij) d_i d_j, |d| = exp(alpha offset) > 1 on a
     # lossy port: the fields stay, the estimate grows by |d_i d_j|.

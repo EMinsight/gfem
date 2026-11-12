@@ -127,6 +127,7 @@ from gfem.results import (
 
 __all__ = [
     "DEFAULT_SOLVER",
+    "FORWARD_WARNINGS",
     "LOW_FREQUENCY_FLOOR",
     "PORT_MODE_PROJECTION_FLOOR",
     "DrivenOperator",
@@ -580,6 +581,7 @@ class DrivenRule:
                 (with `keeps_partial`). An adaptive sweep sets ``frequency``
                 to the sample's.
         """
+        self._check_adjoint_ports(keep=keep)
         if self.adaptive:
             return self._forward_adaptive(model, keep=keep)
         frequencies = self.problem.frequency
@@ -603,11 +605,15 @@ class DrivenRule:
                     rhs = ports.rhs(omega)
                     try:
                         x, its = sweep.solve(omega, rhs, x0=previous)
-                        if self.adjoint_ports:
-                            self._solve_adjoints(sweep, system, ports, f, rhs)
                     except LinearSolverConvergenceError as err:
                         miss, n_solved = err, n
                         break
+                    if self.adjoint_ports:
+                        try:
+                            self._solve_adjoints(sweep, system, ports, f, rhs)
+                        except LinearSolverConvergenceError:
+                            system.free()
+                            raise
                     iterations.append(its)
                     previous = x
                     if keep:
@@ -645,18 +651,43 @@ class DrivenRule:
     def solve_adjoints(self, model: Model) -> dict[tuple[float, str], np.ndarray]:
         """`adjoints` of `adjoint_ports` at every frequency, without the forward.
 
-        A frequency is factorized only if one of its functionals is not
-        parallel to its excitation; then once (`gfem.error_estimate` on a
-        finished result).
+        For `gfem.error_estimate` on a finished result. Each frequency where
+        some port's functional is not parallel to its excitation is
+        factorized once; the others are not factorized at all.
         """
+        self._check_adjoint_ports(keep=False)
         with task_manager(self.options.threads, self.comm):
             system, ports = self._ports(model, warn=False)
-            with system.sweep(solves=len(self.problem.frequency)) as sweep:
-                for f in self.problem.frequency:
-                    rhs = ports.rhs(2 * math.pi * f)
-                    self._solve_adjoints(sweep, system, ports, f, rhs)
-            system.free()
+            try:
+                with system.sweep(solves=len(self.problem.frequency)) as sweep:
+                    for f in self.problem.frequency:
+                        rhs = ports.rhs(2 * math.pi * f)
+                        self._solve_adjoints(sweep, system, ports, f, rhs)
+            finally:
+                system.free()
         return self.adjoints
+
+    def _check_adjoint_ports(self, *, keep: bool) -> None:
+        """Raise if `adjoint_ports` reach a forward that would not solve them.
+
+        Only a uniform sweep on one worker, never differentiated, adds the
+        adjoint columns (`gfem.refine_mesh` asks for no other).
+        """
+        if not self.adjoint_ports:
+            return
+        workers_run = min(self.options.frequency_workers, len(self.problem.frequency))
+        where = None
+        if keep:
+            where = "a differentiated solve"
+        elif self.adaptive:
+            where = "an adaptive sweep"
+        elif workers_run > 1:
+            where = "frequency workers"
+        if where is not None:
+            raise RuntimeError(
+                f"adjoint_ports {self.adjoint_ports} reached {where}: only an "
+                "undifferentiated uniform sweep on one worker solves them."
+            )
 
     def _solve_adjoints(
         self,
@@ -673,13 +704,16 @@ class DrivenRule:
         """
         omega = 2 * math.pi * f
         indices = [self.port_names.index(name) for name in self.adjoint_ports]
-        loads = ports.nonparallel(omega, indices, rhs)
-        if not loads:
+        solved, loads = ports.nonparallel(omega, indices, rhs)
+        if not solved:
             return
-        functional = ports.functional(omega)
-        z, _ = sweep.reuse_at(omega).solve_counted(functional[:, loads])
+        try:
+            z, _ = sweep.reuse_at(omega).solve_counted(loads)
+        except LinearSolverConvergenceError as err:
+            names = ", ".join(repr(self.port_names[i]) for i in solved)
+            raise _estimate_adjoint_error(f, names, err) from err
         z = system.operator.expand(z)
-        for k, i in enumerate(loads):
+        for k, i in enumerate(solved):
             self.adjoints[f, self.port_names[i]] = np.array(z[:, k], complex)
 
     def _forward_workers(
@@ -1609,6 +1643,16 @@ def _check_port_mode_projection(
         _mpi.warn(comm, msg, PortModeProjectionWarning, stacklevel=stacklevel + 1)
 
 
+#: The warnings a driven solve gives about its model and ports, whatever
+#: it solves: a second solve of the same sweep (a frequency worker, an
+#: estimate's adjoint) ignores them, since the first already gave them.
+FORWARD_WARNINGS = (
+    LowFrequencyWarning,
+    SkippedPortModeWarning,
+    PortModeProjectionWarning,
+)
+
+
 def _solve_block(
     aux: Any, children: Any, problem: Driven, options: SolverOptions, keep: bool
 ) -> tuple[SweepOutputs, np.ndarray | None, str | None]:
@@ -1624,11 +1668,7 @@ def _solve_block(
     model = workers.model_from_parts(aux, children)
     with warnings.catch_warnings():
         # the parent's rule already warned for the whole sweep
-        for category in (
-            LowFrequencyWarning,
-            SkippedPortModeWarning,
-            PortModeProjectionWarning,
-        ):
+        for category in FORWARD_WARNINGS:
             warnings.simplefilter("ignore", category)
         rule = DrivenRule(model, problem, options)
         rule.keeps_partial = True
@@ -1672,6 +1712,21 @@ def _adjoint_error(
     """
     return LinearSolverConvergenceError(
         f"At {f:g} Hz, the adjoint solve of the gradient's backward pass: {err}",
+        frequency=f,
+    )
+
+
+def _estimate_adjoint_error(
+    f: float, ports: str, err: LinearSolverConvergenceError
+) -> LinearSolverConvergenceError:
+    """An S error estimate's error where its adjoint solve at ``f`` Hz did not converge.
+
+    The forward solve converged there; no partial result, since the estimate
+    needs the adjoint at every frequency.
+    """
+    return LinearSolverConvergenceError(
+        f"At {f:g} Hz, the adjoint solve of port {ports}'s S read-out for the "
+        f"S error estimate: {err}",
         frequency=f,
     )
 

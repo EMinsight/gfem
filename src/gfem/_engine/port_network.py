@@ -358,38 +358,29 @@ class PortNetwork:
         basis at every sample (`gfem._sweep.adaptive`, ADR 0010), so the
         frozen-basis S gradient of a lossy wave port is exact at the samples.
         """
-        functional = self.functional(omega)
         excited = any(c.index in self.columns for c in self.waves)
         rhs = self.rhs(omega) if excited else None
-        loads = []
-        for c in self.waves:
-            f = functional[:, c.index]
-            if (
-                rhs is not None
-                and _reciprocal_scale(f, c.index, self.columns, rhs, self.layout)
-                is not None
-            ):
-                continue
-            loads.append(f)
-        if not loads:
-            return np.zeros((len(functional), 0), complex)
-        return np.stack(loads, axis=1)
+        return self.nonparallel(omega, [c.index for c in self.waves], rhs)[1]
 
     def nonparallel(
-        self, omega: float, indices: Sequence[int], rhs: np.ndarray
-    ) -> list[int]:
+        self, omega: float, indices: Sequence[int], rhs: np.ndarray | None
+    ) -> tuple[list[int], np.ndarray]:
         """The ports of ``indices`` whose adjoint is not their own solution scaled.
 
         Those not excited, or whose S functional is not parallel to their
-        excitation ``rhs`` (`parallel_scale`): a hybrid lossy wave port mode.
+        excitation ``rhs`` (`parallel_scale`; ``None``: none is excited): a
+        hybrid lossy wave port mode. Returns them and their S functionals,
+        ``(N, len(them))``, the adjoint loads.
         """
         functional = self.functional(omega)
-        return [
+        ports = [
             i
             for i in indices
-            if _reciprocal_scale(functional[:, i], i, self.columns, rhs, self.layout)
+            if rhs is None
+            or _reciprocal_scale(functional[:, i], i, self.columns, rhs, self.layout)
             is None
         ]
+        return ports, np.array(functional[:, ports], complex)
 
     def pullback(
         self, n: int, omega: float, ct: np.ndarray, x: np.ndarray
