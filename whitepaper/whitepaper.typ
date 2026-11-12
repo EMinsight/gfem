@@ -235,31 +235,51 @@ The same pipeline runs, in the tutorials, on a band-stop parallel-plate line (to
 
 = Scale <scale>
 
-How large a driven model one `gfem.solve` has finished across MPI ranks, and in what time, on MareNostrum 5's general-purpose partition: two Intel Xeon Platinum 8480+ per node, 112 cores, run as 28 ranks of 4 threads per node. The meshes are one family of coplanar lines at order 2, one frequency of 50 GHz, both ports excited, BDDC + GMRES at a relative tolerance of $10^(-8)$, and the direct solver as PETSc's MUMPS.
+#let sc = json("data/scaling.json")
+#let L = sc.largest
+#let SV = sc.solvers
+#let T = sc.time
+#let AG = sc.agreement
+// 23148138 -> "23 M"; 1.8e-12 -> 1.8 × 10^-12; 0.42 -> "42 %"
+#let mega(n) = str(calc.floor(n / 1e6)) + " M"
+#let sci(x) = {
+  let e = calc.floor(calc.log(x, base: 10))
+  let m = calc.round(x / calc.pow(10.0, e), digits: 1)
+  box(if m == 1 { $10^#e$ } else { $#m times 10^#e$ })
+}
+#let pct(x) = str(calc.round(x * 100)) + " %"
+#let per-node = sc.weak.map(r => r.dof / r.nodes)
+#let date = datetime(
+  year: int(sc.commit_date.slice(0, 4)), month: int(sc.commit_date.slice(5, 7)), day: int(sc.commit_date.slice(8, 10)),
+)
+
+How large a driven model one `gfem.solve` has finished across MPI ranks, and in what time, on MareNostrum 5's general-purpose partition: Intel Xeon Platinum 8480+ nodes of #sc.cores_per_node cores, run as #sc.layout.replace(" x ", " ranks of ") threads per node. The meshes are one family of coplanar lines at order 2, one frequency of 50 GHz, both ports excited, BDDC + GMRES at a relative tolerance of #sci(sc.tol), and the direct solver as PETSc's MUMPS.
 
 #figure(
   table(
     columns: (auto, 1fr, auto, auto, auto, auto),
     align: (left, right, right, right, right, right),
     [Nodes], [DOF], [BDDC, s], [Iterations], [Direct, s], [Direct, largest node],
-    [1], [3,061,188], [36], [67 / 66], [21], [71 GiB],
-    [2], [6,238,560], [40], [66 / 67], [29], [70 GiB],
-    [4], [14,217,194], [76], [61 / 62], [54], [87 GiB],
-    [8], [23,148,138], [128], [71 / 69], [161], [237 GiB],
-    [16], [47,277,960], [342], [68 / 68], [832], [401 GiB],
-    [32], [108,570,046], [540], [63 / 64], [out of memory], [–],
+    ..sc.weak.map(r => (
+      str(r.nodes),
+      grouped(r.dof),
+      str(r.bddc_s),
+      r.iterations.map(str).join(" / "),
+      if r.direct_s != none { str(r.direct_s) } else if r.direct_end.contains("oom") { [out of memory] } else { [did not finish] },
+      if r.direct_gib != none { str(r.direct_gib) + " GiB" } else { [–] },
+    )).flatten(),
   ),
-  caption: [Weak scaling, about 3 M DOF per node. Times are the median `gfem.solve` of three runs, the slowest rank's whole call; iterations are for ports 1 / 2. Mesh read and partition (about 200 s at 108 M DOF) come before the solve.],
+  caption: [Weak scaling, #fixed(calc.min(..per-node) / 1e6, 1) to #fixed(calc.max(..per-node) / 1e6, 1) M DOF per node. Times are the median `gfem.solve` of the repeats, the slowest rank's whole call; iterations are for ports 1 / 2. Mesh read and partition (#T.before_solve_s s at #mega(L.dof) DOF) come before the solve.],
 ) <weak>
 
 Observations from these runs:
 
-- *Largest model.* BDDC + GMRES solved 108,570,046 DOF on 4 to 32 nodes; its fastest solve was 423 s, on 8 nodes. The iteration count stayed between 61 and 71 across a 35-fold change in model size.
-- *Which solver.* Up to 14 M DOF the direct solver was faster. From 23 M DOF, BDDC + GMRES was faster at every node count tried, and on one node at 23,148,138 DOF it needed 175 GiB on the largest node against the direct solver's 716 GiB.
-- *How many nodes.* Past a point, more nodes made BDDC + GMRES slower: its coarse problem's apply is 42 % to 53 % of the solve at 108 M DOF, and grows from 8 to 32 nodes.
-- *Agreement.* Every rank held the same S, bit for bit. On a 10,248,856 DOF line, each rank count from 1 to 32 nodes agreed with its one-process run to rounding error, with the same iteration count; at 47,277,960 DOF the two solvers agreed to well within the GMRES tolerance.
+- *Largest model.* BDDC + GMRES solved #grouped(L.dof) DOF on #L.nodes.at(0) to #L.nodes.at(1) nodes; its fastest solve was #L.fastest_s s, on #L.fastest_nodes nodes. The iteration count stayed between #L.iterations.at(0) and #L.iterations.at(1) across a #calc.round(L.size_ratio)\-fold change in model size.
+- *Which solver.* Up to #mega(SV.direct_faster_upto) DOF the direct solver was faster. From #mega(SV.bddc_faster_from) DOF, BDDC + GMRES was faster at every node count tried: on one node at #grouped(SV.one_node.dof) DOF, #SV.one_node.bddc_s s against #SV.one_node.direct_s s, with #SV.one_node.bddc_gib GiB on the largest node against #SV.one_node.direct_gib GiB. The direct solver's largest finished model was #grouped(SV.direct_largest.dof) DOF, on #SV.direct_largest.nodes nodes in #SV.direct_largest.s s.
+- *How many nodes.* Past #L.fastest_nodes nodes, more nodes made BDDC + GMRES slower at #mega(L.dof) DOF. The coarse problem's apply is #pct(T.coarse_share.at(0)) to #pct(T.coarse_share.at(1)) of the solve there, and its setup grows from #T.coarse_setup.at(0) s on #T.setup_nodes.at(0) nodes to #T.coarse_setup.at(1) s on #T.setup_nodes.at(1).
+- *Agreement.* Every rank held the same S, bit for bit. On a #grouped(AG.dof) DOF line, each rank count from #AG.nodes.at(0) to #AG.nodes.at(1) nodes agreed with its one-process run to a relative difference of at most #sci(AG.max_diff), and BDDC + GMRES took the same iterations. At #grouped(AG.cross_dof) DOF on #AG.cross_nodes nodes, BDDC + GMRES at a tolerance of #sci(AG.cross_tol) and the direct solver differed by #sci(AG.cross_diff).
 
-These are one machine, one gfem version (the development version of 5 November 2026, after 0.1.0), one family of meshes and one frequency. The run records, logs, job scripts and meshes are archived with the commit they name.
+These are one machine, one gfem version (the development version of #date.display("[day padding:none] [month repr:long] [year]"), commit #raw(sc.commit), after 0.1.0), one family of meshes and one frequency. The run records, logs, job scripts and meshes are archived with the commit they name.
 
 = Limits of version 0.1 <limits>
 
@@ -285,5 +305,5 @@ Extras add MKL PARDISO (`mkl`), the cuDSS GPU solver (`cuda12`, `cuda13`), xarra
 
 #v(1fr)
 #note(kind: "note", title: "Sources")[
-Every number in this paper comes from a data file or test in the gfem repository, read when the paper compiles or copied from the documentation: the 3D bend from `docs/_data/front-page.json` (built by `tools/front_page_data.py` from the tutorial's run record), the gradient matrix from the verification tests through `docs/_ext/gfem_capabilities.py`, and the scaling runs from the tables of the documentation's performance page, generated by `tools/scale_tables.py` from the run records of commit `9a57680`. `just whitepaper` refreshes the data files and compiles this paper.
+Every number in this paper comes from a data file or test in the gfem repository, read when the paper builds: the 3D bend from `docs/_data/front-page.json` (built by `tools/front_page_data.py` from the tutorial's run record), the gradient matrix from the verification tests through `docs/_ext/gfem_capabilities.py`, and the scaling runs from the tables of the documentation's performance page, generated by `tools/scale_tables.py` from the run records of commit #raw(sc.commit), and the build checks each scaling sentence against those tables. `just whitepaper` refreshes the data files and compiles this paper.
 ]
