@@ -481,6 +481,39 @@ def test_the_adaptive_sweep_refusal_gives_the_remedy(tmp_path):
         gfem.refine_mesh(model, problem, options=options)
 
 
+ESTIMATORS = pytest.mark.parametrize(
+    "estimator",
+    [gfem.FieldEstimator(), gfem.QuantityEstimator(capacitance=("inner", "inner"))],
+    ids=["field", "quantity"],
+)
+ORDER_1 = pytest.mark.parametrize(
+    "options",
+    [
+        gfem.SolverOptions(order=1, linear_solver="direct"),
+        gfem.SolverOptions.preset("fast"),
+    ],
+    ids=["order=1", "fast"],
+)
+
+
+@ESTIMATORS
+@ORDER_1
+@pytest.mark.usefixtures("no_solve")
+def test_refine_mesh_refuses_order_1_before_any_solve(coax, estimator, options):
+    with pytest.raises(gfem.MeshRefinementUnsupportedError, match="one cell") as caught:
+        _refine(coax, estimator=estimator, options=options)
+    assert caught.value.feature == "order 1"
+
+
+@ESTIMATORS
+@ORDER_1
+def test_error_estimate_refuses_an_order_1_result(coax, estimator, options):
+    result = gfem.solve(coax, rc.COAX_PROBLEM, options=options)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError, match="one cell") as caught:
+        gfem.error_estimate(result, estimator, model=coax)
+    assert caught.value.feature == "order 1"
+
+
 @pytest.mark.usefixtures("no_solve")
 def test_more_than_one_rank_raises_before_any_solve(coax, monkeypatch):
     class Stub:

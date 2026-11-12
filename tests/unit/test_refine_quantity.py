@@ -7,6 +7,7 @@ asked of it before any solve, and how it reads a result.
 
 import dataclasses
 import itertools
+import math
 
 import jax.numpy as jnp
 import numpy as np
@@ -15,6 +16,7 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
+from gfem._engine import estimate as kernels
 from gfem.refinement import _dorfler
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
@@ -125,33 +127,12 @@ def test_error_estimate_checks_the_key_against_the_result(coax):
 @pytest.mark.parametrize(
     ("case", "estimator", "feature"),
     [
-        ("step-deembedded", ("s", ("p2", "p1")), "de-embedding"),
-        ("step-shared", ("s", ("p2", "p1")), "shared port surface"),
         ("step-lossy-wave", ("s", ("p2", "p1")), "lossy wave port"),
-        ("cavity-lossy", ("omega", 0), "lossy eigenmode"),
-        ("cavity-absorbing", ("omega", 0), "lossy eigenmode"),
     ],
 )
 @pytest.mark.usefixtures("no_solve")
-def test_untested_entries_raise_before_any_solve(
-    step, cavity, *, case, estimator, feature
-):
+def test_untested_entries_raise_before_any_solve(step, *, case, estimator, feature):
     model, problem = {
-        "step-deembedded": (
-            _with(step, ports=_waves(offset=1e-3)),
-            rc.step_problem(),
-        ),
-        "step-shared": (
-            _with(
-                step,
-                ports=[
-                    gfem.WavePort("p1", "port1"),
-                    gfem.WavePort("p2", "port2"),
-                    gfem.WavePort("p3", "port2", mode=2),
-                ],
-            ),
-            rc.step_problem(),
-        ),
         "step-lossy-wave": (
             _with(
                 step,
@@ -159,14 +140,6 @@ def test_untested_entries_raise_before_any_solve(
                 ports=_waves(),
             ),
             rc.step_problem(),
-        ),
-        "cavity-lossy": (
-            _with(cavity, materials={"air": gfem.Material(tan_delta=1e-3)}),
-            rc.CAVITY_PROBLEM,
-        ),
-        "cavity-absorbing": (
-            _with(cavity, boundaries=[gfem.Absorbing("wall")]),
-            rc.CAVITY_PROBLEM,
         ),
     }[case]
     keyword, key = estimator
@@ -216,18 +189,6 @@ def test_anisotropic_permittivity_and_permeability_are_estimated(
     assert np.all(np.asarray(estimate.values) > 0)
 
 
-@pytest.mark.usefixtures("no_solve")
-def test_an_off_diagonal_capacitance_raises_before_any_solve(coax):
-    problem = gfem.Electrostatic(terminals=["inner", "outer"])
-    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.refine_mesh(
-            coax,
-            problem,
-            estimator=gfem.QuantityEstimator(capacitance=("inner", "outer")),
-        )
-    assert caught.value.feature == "off-diagonal capacitance"
-
-
 def test_a_lossless_wave_port_s_entry_is_estimated(step):
     model = _with(step, ports=_waves())
     result = gfem.solve(model, gfem.Driven([3e9], keep_fields=True), options=OPTIONS)
@@ -235,6 +196,20 @@ def test_a_lossless_wave_port_s_entry_is_estimated(step):
         result, gfem.QuantityEstimator(s=("p2", "p1")), model=model
     )
     assert 0 < estimate.value < 1e-2
+
+
+def test_a_de_embedding_offset_leaves_the_s_estimate_unchanged(step):
+    # The offset multiplies S by exp(i beta offset) after the solve, of
+    # modulus 1 on a lossless port: the fields and the estimate stay.
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    values = []
+    for offset in (0.0, 1e-3):
+        model = _with(step, ports=_waves(offset=offset))
+        result = gfem.solve(
+            model, gfem.Driven([3e9], keep_fields=True), options=OPTIONS
+        )
+        values.append(gfem.error_estimate(result, estimator, model=model).value)
+    assert values[1] == pytest.approx(values[0], rel=1e-12)
 
 
 # --- reading a result --------------------------------------------------------
@@ -251,6 +226,34 @@ def test_the_capacitance_estimate_is_the_squared_field_estimate(coax):
     assert quantity.estimator == estimator
     # and it marks the same tetrahedra: its indicators are the field estimator's
     np.testing.assert_allclose(quantity.indicators, field.indicators, rtol=1e-10)
+
+
+def test_the_diagonal_capacitance_kernel_is_the_field_kernel_bit_for_bit(coax):
+    # The (i, j) kernel at i = j is the diagonal estimate it replaced: the
+    # field estimator's squared indicators of that terminal's potential.
+    problem = gfem.Electrostatic(terminals=["inner", "outer"])
+    result = gfem.solve(coax, problem, options=OPTIONS)
+    (group,) = kernels.electrostatic(coax, result)
+    for index, terminal in enumerate(("inner", "outer")):
+        value, weights = kernels.capacitance(coax, result, terminal, terminal)
+        assert value == float(group[index].sum())
+        np.testing.assert_array_equal(weights, group[index])
+
+
+def test_an_off_diagonal_capacitance_is_estimated(tmp_path):
+    model = rc.sheet_model(tmp_path, 2)
+    result = gfem.solve(model, rc.SHEET_PROBLEM, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(capacitance=("a", "b"))
+    estimate = gfem.error_estimate(result, estimator, model=model)
+    assert 0 < estimate.value < 1
+    assert float(np.sum(estimate.indicators**2)) == pytest.approx(
+        estimate.value, rel=1e-12
+    )
+    # the entry is symmetric, and so is its estimate
+    swapped = gfem.QuantityEstimator(capacitance=("b", "a"))
+    assert gfem.error_estimate(result, swapped, model=model).value == pytest.approx(
+        estimate.value, rel=1e-12
+    )
 
 
 def test_an_s_estimate_has_one_value_per_frequency(step):
@@ -361,6 +364,89 @@ def test_the_mode_is_followed_by_nearest_omega(cavity):
     assert omegas[0] == complex(first[1])
     for before, after in itertools.pairwise(omegas):
         assert abs(after - before) < abs(first[1] - first[0]) / 2
+
+
+# --- lossy eigenmodes --------------------------------------------------------
+
+
+def _box(directory, material=None, top=None):
+    """The 1 x 0.7 x 0.4 mm box, h = 0.2 mm, PEC but for ``top``."""
+    path = sm.write_msh22(
+        directory / "box.msh", sm.plate(1.0, 0.7, (("air", 0.4),), (5, 4, 2))
+    )
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"air": material or gfem.Material()},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("side"), top or gfem.PEC("top")],
+    )
+
+
+#: Near the box's 110 mode, Hz.
+BOX_110 = 3e8 * math.sqrt(1 / 1e-6 + 1 / 0.49e-6) / 2
+
+
+def test_a_lossless_mode_keeps_its_estimate(tmp_path):
+    # Measured with the lossless kernel (before the lossy form): on a
+    # lossless mode the lossy form is the same number.
+    model = _box(tmp_path)
+    problem = gfem.Eigenmode(target=BOX_110, n_modes=1)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    assert estimate.value == pytest.approx(0.0016711308802387496, rel=1e-12)
+    assert np.sum(estimate.indicators**2) == pytest.approx(
+        0.0008213829986877815, rel=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    ("material", "top"),
+    [
+        (gfem.Material(tan_delta=0.1, conductivity=5.0), None),
+        (gfem.MaterialField(eps_r=1 - 0.1j), None),
+        (None, gfem.Impedance("top", resistance=377.0)),
+        (None, gfem.Absorbing("top")),
+        (None, gfem.Conductor("top", conductivity=1e5)),
+    ],
+    ids=["volume", "complex-eps", "impedance", "absorbing", "conductor"],
+)
+def test_a_lossy_mode_is_estimated(tmp_path, material, top):
+    model = _box(tmp_path, material, top)
+    problem = gfem.Eigenmode(target=BOX_110, n_modes=1)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    assert abs(complex(result.omega[0]).imag) > 0
+    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    assert 0 < estimate.value < 1e-2
+    assert np.all(np.isfinite(estimate.indicators))
+
+
+@pytest.mark.parametrize(
+    ("material", "boundary"),
+    [
+        (None, gfem.Absorbing("wall", order=2)),
+        (gfem.MaterialField(mu_r=1 - 0.01j), None),
+        (gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01), None),
+    ],
+    ids=["second-order-absorbing", "lossy-mu", "anisotropic-loss"],
+)
+@pytest.mark.usefixtures("no_solve")
+def test_the_lossy_eigenmode_refusal_names_what_stays_refused(
+    cavity, material, boundary
+):
+    changes = {}
+    if material is not None:
+        changes["materials"] = {"air": material}
+    if boundary is not None:
+        changes["boundaries"] = [boundary]
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(
+            _with(cavity, **changes),
+            rc.CAVITY_PROBLEM,
+            estimator=gfem.QuantityEstimator(omega=0),
+        )
+    message = str(caught.value)
+    assert caught.value.feature == "lossy eigenmode"
+    assert "second-order" in message
+    assert "wave port" not in message
 
 
 # --- electrostatic sheets ----------------------------------------------------

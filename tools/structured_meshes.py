@@ -594,3 +594,66 @@ def sheet_screen(n: int):
         return "box"
 
     return carve((xs, ys, np.array([0.0, length])), volume, surface)
+
+
+#: `two_bars` cases: the box's section, bars "a" and "b" and the grounded
+#: blocks, each (x0, x1, y0, y1).
+TWO_BARS = {
+    "near": ((4.0, 2.0), (0.5, 1.5, 0.5, 1.5), (2.5, 3.5, 0.5, 1.5), ()),
+    "screen": (
+        (5.0, 3.0),
+        (0.5, 1.5, 0.5, 1.5),
+        (3.0, 4.5, 1.5, 2.5),
+        ((2.0, 2.5, 0.0, 2.0),),
+    ),
+}
+
+
+def two_bars(case: str, n: int):
+    """Two bars "a" and "b" in a grounded box, one case of `TWO_BARS`.
+
+    "near": box [0, 4] x [0, 2], bars [0.5, 1.5]^2 and [2.5, 3.5] x
+    [0.5, 1.5]. "screen": box [0, 5] x [0, 3], unequal offset bars
+    [0.5, 1.5]^2 and [3, 4.5] x [1.5, 2.5], and between them a grounded fin
+    [2, 2.5] x [0, 2] standing on the box's bottom wall. Bars and fin are
+    carved out; extruded by 0.5 (one cell). Volume "dielectric"; surfaces
+    "a", "b", "ends" (z = 0 and 0.5) and "box" (the walls and the fin).
+    ``n`` cells per unit length, nodes on every edge of the bars and fin.
+    """
+    (width, depth), a, b, grounds = TWO_BARS[case]
+    length, eps = 0.5, 1e-9
+    blocks = [a, b, *grounds]
+
+    def lines(hi: float, marks: list[float]) -> np.ndarray:
+        points = sorted({0.0, hi, *marks})
+        parts = []
+        for p, q in itertools.pairwise(points):
+            m = max(1, round((q - p) * n))
+            parts.append(p + (q - p) * np.arange(m + 1) / m)
+        return np.unique(np.concatenate(parts))
+
+    xs = lines(width, [v for r in blocks for v in r[:2] if 0 < v < width])
+    ys = lines(depth, [v for r in blocks for v in r[2:] if 0 < v < depth])
+
+    def inside(c, r):
+        return r[0] < c[0] < r[1] and r[2] < c[1] < r[3]
+
+    def volume(c):
+        return None if any(inside(c, r) for r in blocks) else "dielectric"
+
+    def on(c, r):
+        x, y = c[0], c[1]
+        across = min(abs(x - r[0]), abs(x - r[1])) < eps and r[2] - eps < y < r[3] + eps
+        along = min(abs(y - r[2]), abs(y - r[3])) < eps and r[0] - eps < x < r[1] + eps
+        return across or along
+
+    def surface(c):
+        if on(c, a):
+            return "a"
+        if on(c, b):
+            return "b"
+        if abs(c[2]) < eps or abs(c[2] - length) < eps:
+            return "ends"
+        return "box"
+
+    return carve((xs, ys, np.array([0.0, length])), volume, surface)

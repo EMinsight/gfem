@@ -32,7 +32,7 @@ from gfem.errors import (
     NonDifferentiableError,
 )
 from gfem.mesh import Mesh
-from gfem.model import Absorbing, Conductor, Impedance, LumpedPort, Model, WavePort
+from gfem.model import Absorbing, Model, WavePort
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
@@ -77,8 +77,9 @@ class QuantityEstimator:
     The estimate is a magnitude in the units of ``tolerance``: relative to
     the capacitance entry or to ``omega``, absolute for an S entry. It has
     no sign or phase, and gfem never adds it to the quantity. It is an
-    estimate, not a bound. A capacitance never lies below its value on the
-    meshed geometry: ``C_h >= C``.
+    estimate, not a bound. A diagonal capacitance entry never lies below
+    its value on the meshed geometry: ``C_h >= C``; an off-diagonal entry
+    may lie on either side.
 
     Give exactly one keyword, named after the result attribute that holds
     the quantity and indexed the same way.
@@ -91,8 +92,9 @@ class QuantityEstimator:
             ref.result.s["p2", "p1"], ref.estimate.values
 
     Attributes:
-        capacitance: A terminal name twice, the diagonal entry
-            ``ElectrostaticResult.capacitance[i, i]``.
+        capacitance: Two terminal names ``(i, j)``, the entry
+            ``ElectrostaticResult.capacitance[i, j]``; the same name twice
+            for a diagonal entry.
         s: ``(to, from)`` port names, the entry ``result.s[to, from]``; both
             ports must be excited (`Driven.excite`).
         omega: An index into ``EigenmodeResult.omega`` on the first mesh;
@@ -106,10 +108,12 @@ class QuantityEstimator:
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
-    estimate: an off-diagonal capacitance, an anisotropic permittivity,
+    estimate: an anisotropic permittivity,
     ``mu_r`` other than 1 (S and omega), a wave port with a de-embedding
     offset or in a lossy medium, a shared wave port surface, and a mode
-    with loss.
+    with a second-order absorbing boundary, a complex ``mu_r`` or loss in
+    an anisotropic material. For a lossy mode the estimate covers the
+    complex ``omega``; the error of Q is not estimated and can exceed it.
     """
 
     capacitance: tuple[str, str] | None = None
@@ -315,7 +319,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             was not excited or a mode the result does not hold.
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
-            adaptive sweep, a periodic model, another result type, or a
+            adaptive sweep, a periodic model, another result type, a result
+            solved at order 1, or a
             quantity entry with no verified estimate (see
             `QuantityEstimator`).
         DegenerateModeError: A `QuantityEstimator` names a mode of a
@@ -418,7 +423,8 @@ def refine_mesh(
             that is not excited or a mode index at or above ``n_modes``.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
-            port mode problem, a periodic model or a Bloch wave vector, or a
+            port mode problem, a periodic model or a Bloch wave vector,
+            ``options.order=1`` (the ``"fast"`` preset), or a
             quantity entry with no verified estimate (see
             `QuantityEstimator`).
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
@@ -447,6 +453,7 @@ def refine_mesh(
     if isinstance(estimator, QuantityEstimator):
         _check_quantity_keys(estimator, problem, model)
         _check_quantity_model(estimator, model)
+    _check_order(options.order, estimator)
     if _mpi.resolve_comm(comm) is not None:
         _mpi.refuse_feature("mesh refinement")
     _check_parameters(problem, options, tolerance, error_fraction, max_cycles)
@@ -600,7 +607,7 @@ def _estimate(
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
             parts = [
-                kernels.capacitance(model, result, estimator.capacitance[0], threads)
+                kernels.capacitance(model, result, *estimator.capacitance, threads)
             ]
         elif estimator.s is not None:
             parts = kernels.s_entry(model, result, *estimator.s, threads)
@@ -804,29 +811,17 @@ def _check_mode(mode: int | None, n_modes: int) -> None:
 
 def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
     """Raise for a quantity entry the verification tier has no case for (ADR 0089)."""
+    if estimator.omega is not None:
+        _check_lossy_mode(model)
     if estimator.capacitance is not None:
-        if estimator.capacitance[0] != estimator.capacitance[1]:
-            raise _untested(
-                "off-diagonal capacitance",
-                "an off-diagonal capacitance entry; estimate a diagonal one",
-            )
         return
     lossy = _lossy_elements(model)
     if estimator.s is not None:
         waves = {p.name: p for p in model.ports if isinstance(p, WavePort)}
-        surfaces = [p.surface for p in waves.values()]
-        if len(set(surfaces)) < len(surfaces):
-            raise _untested(
-                "shared port surface", "a model with a shared wave port surface"
-            )
         for name in estimator.s:
             port = waves.get(name)
             if port is None:
                 continue
-            if port.offset != 0:
-                raise _untested(
-                    "de-embedding", f"wave port {name!r} with a de-embedding offset"
-                )
             if lossy[_touching(model, port.surface)].any():
                 raise MeshRefinementUnsupportedError(
                     "lossy wave port",
@@ -835,13 +830,6 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
                     "Use gfem.FieldEstimator(), or a lumped port.",
                 )
         return
-    if lossy.any() or _lossy_boundary(model):
-        raise MeshRefinementUnsupportedError(
-            "lossy eigenmode",
-            "QuantityEstimator(omega=...) has no verified estimate for a mode "
-            "with loss (lossy materials, conductor, impedance or absorbing "
-            "boundaries, resistive or wave ports): use gfem.FieldEstimator().",
-        )
 
 
 def _untested(feature: str, what: str) -> MeshRefinementUnsupportedError:
@@ -865,19 +853,35 @@ def _lossy_elements(model: Model) -> np.ndarray:
     return out
 
 
-def _lossy_boundary(model: Model) -> bool:
-    """Whether a boundary or port of the model takes energy out of a mode."""
-    for b in model.boundaries:
-        if isinstance(b, (Absorbing, Conductor)):
-            return True
-        if isinstance(b, Impedance) and b.resistance is not None:
-            return True
-    for p in model.ports:
-        if isinstance(p, WavePort):
-            return True
-        if isinstance(p, LumpedPort) and p.rlc[0] is not None:
-            return True
-    return False
+def _check_lossy_mode(model: Model) -> None:
+    """Raise for a mode whose loss no verification case covers (ADR 0089).
+
+    Covered: tan_delta, conductivity and complex eps_r of an isotropic
+    material, impedance, first-order absorbing and conductor surfaces, and
+    resistive lumped ports. (A wave port on an eigenmode is refused by the
+    eigen solver.)
+    """
+    from gfem._engine.coefficients import anisotropic_regions, element_tensors
+
+    what = None
+    if any(isinstance(b, Absorbing) and b.order == 2 for b in model.boundaries):
+        what = "a second-order absorbing boundary"
+    elif np.any(np.asarray(element_tensors(model, "mu_r")).imag):
+        what = "a complex mu_r"
+    else:
+        lossy = _lossy_elements(model)
+        for region in anisotropic_regions(model, tuple(model.materials)):
+            if lossy[model.mesh.elements(region)].any():
+                what = f"loss in the anisotropic material of {region!r}"
+                break
+    if what is not None:
+        raise MeshRefinementUnsupportedError(
+            "lossy eigenmode",
+            f"QuantityEstimator(omega=...) has no verified estimate for a mode "
+            f"with {what} (of the lossy modes, only second-order absorbing "
+            "boundaries, a complex mu_r and loss in an anisotropic material have "
+            "none): use gfem.FieldEstimator().",
+        )
 
 
 def _touching(model: Model, surface: str) -> np.ndarray:
@@ -902,6 +906,7 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         )
     if isinstance(result, DrivenResult):
         _check_kept(result, estimator)
+    _check_order(_fields(result)[0].order, estimator)
     mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
         np.asarray(mesh.nodes), np.asarray(model.mesh.nodes)
@@ -909,6 +914,19 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         raise ValueError(
             "error_estimate needs the model the result was solved on: the "
             "result's fields live on another mesh, or on other node positions."
+        )
+
+
+def _check_order(order: int, estimator: Estimator) -> None:
+    """Raise at order 1, where no estimate is verified."""
+    if order == 1:
+        raise MeshRefinementUnsupportedError(
+            "order 1",
+            f"gfem.{type(estimator).__name__} has no verified estimate at order 1: "
+            "there, the frequency of a thin layer meshed with one cell across "
+            "its thickness moved away from the exact one as the mesh was "
+            "refined, and the estimate missed it. Solve at order 2 or 3 "
+            "(gfem.SolverOptions(order=2)).",
         )
 
 
