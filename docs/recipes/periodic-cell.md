@@ -159,9 +159,9 @@ Four checks you can run on your own cell:
   periodicity with `wave_vector=None`, which is cheaper.
 - **Folding.** With the same target, k and k + 2π a / |a|² should give the
   same band frequencies.
-- **Lossless cell.** With no loss in the cell, `modes.omega` is real, and the
-  driven cell's S with resistive lumped ports keeps SᴴS = I to the solver
-  tolerance.
+- **Lossless cell.** With no loss in the cell, `modes.omega` should be real,
+  and the driven cell's S with resistive lumped ports should give `SᴴS ≈ I`:
+  form the product and look at its largest departure from the identity.
 
 How gfem itself is checked on periodic cells: {doc}`../verification`.
 

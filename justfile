@@ -13,19 +13,22 @@ export VTK_DEFAULT_OPENGL_WINDOW := "vtkOSOpenGLRenderWindow"
 default:
     @just --list
 
-# Re-execute docs/tutorials/*.ipynb in place with the docs IPython profile (gfem style, light/dark figure pairs).
-notebooks:
-    rm -rf docs/_static/scenes  # the 3D scenes the run exports (gfem_scenes.py)
+# Re-execute the tutorials in place with the docs IPython profile (gfem style, light/dark figure pairs): all of docs/tutorials/*.ipynb, or only those named (`just notebooks topology bend`).
+notebooks *names:
+    files=(); for name in {{ names }}; do files+=("docs/tutorials/$(basename "$name" .ipynb).ipynb"); done; \
+    if [ "${#files[@]}" -eq 0 ]; then files=(docs/tutorials/*.ipynb); fi; \
     IPYTHONDIR="{{ justfile_directory() }}/docs/_ipython" JAX_PLATFORMS=cpu \
     {{ docs_env }} jupyter nbconvert --to notebook --execute --inplace \
         --ExecutePreprocessor.timeout=1800 --ExecutePreprocessor.record_timing=False \
-        docs/tutorials/*.ipynb
+        "${files[@]}"
+    # A rerun overwrites its 3D scenes in place (gfem_scenes.py); drop those no notebook shows any more.
+    {{ docs_env }} python tools/prune_scenes.py
 
 # Regenerate the front page's hero data, docs/_data/front-page.json, from the 3D bend's run record (solves nothing).
 front-page-data:
     {{ docs_env }} python tools/front_page_data.py
 
-# Rerun the 3D bend and rewrite its run record, docs/tutorials/data/bend3d.{json,npz} (tools/bend3d_run.py): about 2.7 h on 16 cores / 96 GiB with the mkl extra.
+# Rerun the 3D bend and rewrite its run record, docs/tutorials/data/bend3d.{json,npz} (tools/bend3d_run.py): about 2.5 h on 16 cores / 96 GiB with the mkl extra.
 bend3d-data work="/tmp/bend3d-run":
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_run.py all --out "{{ work }}"
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_run.py merge --out "{{ work }}" --record docs/tutorials/data

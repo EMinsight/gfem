@@ -303,7 +303,7 @@ class SolverOptions:
             The budget bounds what gfem keeps, not the process's memory:
             meshes and spaces of the last four discretizations, JAX's own
             caches and memory the allocator has not returned are outside it.
-            `gfem.release_memory()` drops everything kept.
+            `gfem.release_memory` drops everything kept.
         adjoint_tolerance: Relative residual of adjoint solves, in the norm
             ``tolerance`` names for each backend; ``None`` is ``tolerance``.
         eigen_tolerance: Backward error accepted for an eigenmode (the

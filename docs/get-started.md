@@ -137,8 +137,10 @@ program, because every gfem solve needs it.
 - The {doc}`topology tutorial <tutorials/topology>` turns this same line into a
   band-stop filter by optimizing the ceramic pattern. The
   {doc}`shape <tutorials/shape>` tutorial moves a coplanar line's conductor walls
-  to match it to 50 Ω, and the {doc}`bend <tutorials/bend>` tutorial designs a
-  photonic waveguide bend.
+  to match it to 50 Ω, the {doc}`bend <tutorials/bend>` tutorial designs a
+  photonic waveguide bend on a slab model, and the
+  {doc}`3D bend <tutorials/bend3d>` tutorial designs it again on the real stack,
+  a 220 nm silicon guide in oxide.
 - The {doc}`recipes <recipes/index>` start from a task: a gradient of S-parameters,
   eigenmodes or capacitance, a periodic cell, a measurement on the fields.
 - {doc}`capabilities` lists what gfem solves and differentiates;
