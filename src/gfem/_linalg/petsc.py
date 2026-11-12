@@ -62,6 +62,8 @@ CG_HINT = (
 )
 #: The preconditioners that factorize: their factors count in `nbytes`.
 FACTORIZATIONS = ("cholesky", "lu", "icc", "ilu")
+#: The preconditioners ``ksp_type preonly`` accepts: the exact factorizations.
+EXACT = ("cholesky", "lu")
 
 #: gfem's MUMPS options under ranks, under the user's. PT-Scotch: METIS's analysis is
 #: sequential. ICNTL(14) 60: the default gave INFOG(1)=-9 on tiny meshes at 4 and 8
@@ -301,11 +303,38 @@ class PetscHandle(PlannedHandle):
                 "solve the previous operator after each refactorization; use a "
                 "Krylov ksp_type with it."
             )
+        if self._direct:
+            self._check_exact(user)
         if not self._direct and "ksp_norm_type" not in user:
             ksp.setNormType(PETSc.KSP.NormType.UNPRECONDITIONED)
         if not reuse:
             ksp.getPC().setReusePreconditioner(False)
         self._reuses = reuse and not self._direct and asked
+
+    def _check_exact(self, user: dict[str, Any]) -> None:
+        """Raise unless ``preonly`` applies an exact factorization.
+
+        ``preonly`` applies the preconditioner once and measures no residual,
+        so anything but unshifted ``lu`` or ``cholesky`` factors would return
+        a wrong solution with no error.
+        """
+        pc = self._ksp.getPC().getType()
+        if pc not in EXACT:
+            raise self._bad_option(
+                f"SolverOptions.petsc_options: ksp_type preonly with pc_type {pc!r} "
+                "applies the preconditioner once and measures no residual, so it "
+                "is not a solve. preonly needs pc_type lu or cholesky (an exact "
+                "factorization); with any other preconditioner use a Krylov "
+                "ksp_type such as gmres, which solves to SolverOptions.tolerance."
+            )
+        name = "pc_factor_shift_type"
+        shift = str(user.get(name, "none")).lower()
+        if shift != "none":
+            raise self._bad_option(
+                f"SolverOptions.petsc_options[{name!r}] = {shift!r} with ksp_type "
+                "preonly: a shifted pivot gives factors of another matrix, and "
+                "preonly measures no residual; remove it, or use a Krylov ksp_type."
+            )
 
     def _check_read(self, names: list[str]) -> None:
         """Raise if PETSc did not read some of the user's ``names``.
@@ -558,6 +587,7 @@ class PetscHandle(PlannedHandle):
         the preconditioner is set up at this one (`_set_up_anew`).
         """
         ksp = self._ksp
+        unmeasured = _petsc.require_petsc().KSP.ConvergedReason.CONVERGED_ITS
         prepared = ksp.getTolerances()
         _, atol, divtol, max_it = prepared
         if tolerance is not None:
@@ -583,6 +613,14 @@ class PetscHandle(PlannedHandle):
                     spent += self._solve(b, x)
                 if self._diverged():
                     raise self._not_converged(b.norm(), spent)
+                if ksp.getConvergedReason() == unmeasured:
+                    raise self._bad_option(
+                        "PETSc ended the solve after its iterations without "
+                        "measuring a residual (CONVERGED_ITS), so "
+                        "SolverOptions.tolerance was not checked: remove "
+                        "petsc_options['ksp_convergence_test'], or a "
+                        "ksp_norm_type of none."
+                    )
                 counts.append(spent)
                 X[:, j] = x.array
         finally:
