@@ -561,3 +561,101 @@ def test_an_entry_over_budget_gives_its_base_to_the_pool(fine_path, plans):
     (pooled,) = cache.ENTRIES._plans.values()
     assert pooled.handle._factors.released
     assert cache.ENTRIES.nbytes <= budget
+
+
+def _bloch(tmp_path, retain_memory=None):
+    mesh = pc.g_mesh(tmp_path)
+    base = pc.g(mesh)
+    problem = gfem.Driven(pc.G_FREQUENCIES, wave_vector=pc.G_K)
+    options = gfem.SolverOptions(linear_solver="direct", retain_memory=retain_memory)
+
+    def objective(eps):
+        model = base.with_material("cover", gfem.MaterialField(eps_r=eps))
+        s = gfem.solve(model, problem, options=options).s.values
+        # every S row under a Bloch vector: each backward solves the transposed system
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    return objective, jnp.full(len(mesh.elements("cover")), 2.0)
+
+
+def test_a_bloch_gradient_loop_plans_its_adjoint_once(tmp_path, plans):
+    objective, eps = _bloch(tmp_path)
+    step = jax.value_and_grad(objective)
+    per_step = []
+    got = []
+    for _ in range(3):
+        plans.clear()
+        value, grad = step(eps)
+        per_step.append(len(plans))
+        got.append((float(value), np.asarray(grad)))
+        eps = eps + 0.5 * grad / jnp.max(jnp.abs(grad))
+        (entry,) = cache.ENTRIES._entries.values()
+        transposed = entry.handle.system._transposed_system
+        # one live -k base per entry, no handle per frequency
+        assert not transposed._handles
+        assert transposed._adjoint_sweep._base is not None
+    # the first step plans the forward (k) and the transposed system (-k)
+    assert per_step == [2, 0, 0]
+    cache.ENTRIES.clear()
+    objective, eps = _bloch(tmp_path, retain_memory=0)
+    want = _loop(objective, eps, steps=3)
+    _assert_same(got, want)
+
+
+@pytest.mark.usefixtures("plans")  # an empty cache before and after
+def test_a_bloch_entry_gives_its_transposed_base_to_the_pool(tmp_path):
+    objective, eps = _bloch(tmp_path)
+    _, vjp = jax.vjp(objective, eps)
+    vjp(1.0)
+    (entry,) = cache.ENTRIES._entries.values()
+    transposed = entry.handle.system._transposed_system
+    assert cache.ENTRIES.pooled == 1  # the forward's (k)
+    entry.handle.free_base(None)
+    assert transposed._adjoint_sweep._base is None
+    assert cache.ENTRIES.pooled == 2
+    cache.ENTRIES.clear()
+    _, vjp = jax.vjp(objective, eps)
+    vjp(1.0)
+    cache.ENTRIES.free_consumed(comm=None, budget=2**40)
+    assert len(cache.ENTRIES) == 0
+    assert cache.ENTRIES.pooled == 2
+
+
+@pytest.mark.usefixtures("plans")  # an empty cache before and after
+def test_the_walk_gives_up_the_transposed_base_before_the_entry(tmp_path):
+    objective, eps = _bloch(tmp_path)
+    _, vjp = jax.vjp(objective, eps)
+    vjp(1.0)
+    (entry,) = cache.ENTRIES._entries.values()
+    transposed = entry.handle.system._transposed_system
+    held = transposed._adjoint_sweep._base.nbytes
+    cache.ENTRIES.free_plans_off(set())  # the forward's pooled handle (k)
+    # over budget by less than the -k base: tier 4 gives it up, the entry stays
+    budget = cache.ENTRIES.nbytes - held // 2
+    cache.ENTRIES._walk(budget, None, entries=True)
+    assert len(cache.ENTRIES) == 1
+    assert transposed._adjoint_sweep._base is None
+    assert cache.ENTRIES.nbytes <= budget
+
+
+def test_an_adaptive_sweep_loop_plans_once(path, plans):
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    grid = np.linspace(20e9, 28e9, 9)
+    problem = gfem.Driven(frequency=grid, sweep="adaptive", samples=grid[[0, 8, 4]])
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(eps):
+        s = gfem.solve(_model(mesh, eps), problem, options=options).s
+        return jnp.sum(jnp.abs(s.values) ** 2)
+
+    step = jax.value_and_grad(objective)
+    eps = _eps(mesh)
+    per_step = []
+    for _ in range(3):
+        plans.clear()
+        _, grad = step(eps)
+        per_step.append(len(plans))
+        eps = eps + 0.5 * grad / jnp.max(jnp.abs(grad))
+    # one analysis at the first sample of the first step; later samples and
+    # steps refactorize the pooled plan
+    assert per_step == [1, 0, 0]
