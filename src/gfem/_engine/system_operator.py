@@ -522,7 +522,9 @@ class SystemSweep:
         if self._base is None and self._plans is not None:
             self._key = self._plans.key()
             self._base = ENTRIES.take_plan(self._key)
-        self._base = refactorize_or_prepare(self._base, operator, self._prepare)
+        self._base = refactorize_or_prepare(
+            self._base, operator, self._prepare, frequency=omega
+        )
         handle = self._system_handle(self._base, omega)
         self._last = (omega, handle)
         return handle

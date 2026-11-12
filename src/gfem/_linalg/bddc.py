@@ -339,7 +339,13 @@ class BddcHandle(NgsHandle):
             layout=self.layout,
         )
 
-    def refactorize(self, operator: Operator, *, solves: int | None = None) -> None:
+    def refactorize(
+        self,
+        operator: Operator,
+        *,
+        solves: int | None = None,
+        frequency: float | None = None,  # noqa: ARG002
+    ) -> None:
         """Assemble ``operator`` and solve it on the held preconditioner.
 
         Preconditioner reuse (see `gfem._linalg.Refactorable`): only the
@@ -362,7 +368,7 @@ class BddcHandle(NgsHandle):
         ``solves`` restates the solve calls the next setups are expected to
         serve (``prepare``'s ``solves``), for the coarse factorization only;
         ``None`` keeps the count. A setup may come later than this call, at
-        the first cold solve.
+        the first cold solve. ``frequency`` is ignored.
         """
         form = operator.form
         with self._lock:
