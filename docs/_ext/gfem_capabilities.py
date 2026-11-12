@@ -21,9 +21,11 @@ property per principal value of a field with fixed axes: it folds into its
 property's column, whose cells then name the forms their tests cover
 ("isotropic and principal values").
 
-The permeability and the loss tangent (``OFF_GRID``) have cells but no
-column: the rows that verify them are listed in one sentence under the
-matrix, and their cells count in the provenance.
+The permeability, the loss tangent and the lumped values (``OFF_GRID``: a
+lumped port's inductance and capacitance, an `Impedance`'s values) have cells
+but no column: the rows that verify them are listed in one sentence under the
+matrix, one phrase per row and group (``OFF_GRID_GROUPS``), and their cells
+count in the provenance.
 
 Every claim that cannot be derived raises `CapabilitiesError`, which the
 Sphinx hook turns into an `ExtensionError`: a problem key or input kind the
@@ -149,6 +151,11 @@ PROBLEMS = {
     "electrostatic": Problem("electrostatic", "capacitance"),
     "port_mode": Problem("port_mode", "gamma"),
     "port_mode_sheet": Problem("port_mode", "gamma"),
+    "driven_lumped": Problem("driven", "s.values", "lumped"),
+    "driven_lumped_adaptive": Problem("driven", "s.values", "lumped"),
+    "eigenmode_lumped": Problem("eigenmode", "omega"),
+    "electrostatic_lumped": Problem("electrostatic", "capacitance"),
+    "port_mode_lumped": Problem("port_mode", "gamma"),
 }
 # CELLS input names, and the material properties of EXPECTED's input kinds
 # ("material", <region>, <property>); None: known, but not a grid column.
@@ -163,12 +170,26 @@ FORMS = {"eps_r": "isotropic", "conductivity": "isotropic"} | {
 }
 # Cell inputs with no grid column, in the site's words. Their cells are
 # listed under the matrix (`also_verified`).
-OFF_GRID = {"mu_r": "permeability", "tan_delta": "loss tangent"}
-OFF_GRID_INPUTS = {name: name for name in OFF_GRID} | {
-    f"{name}{AXES}": name for name in OFF_GRID
+OFF_GRID = {
+    "mu_r": "permeability",
+    "tan_delta": "loss tangent",
+    "lumped": "lumped values",
 }
-FORMS |= dict.fromkeys(OFF_GRID, "isotropic") | {
-    f"{name}{AXES}": "principal values" for name in OFF_GRID
+#: The off-grid inputs listed together, one phrase per group and row.
+OFF_GRID_GROUPS = (("mu_r", "tan_delta"), ("lumped",))
+#: The material properties among them (the others have no value forms).
+OFF_GRID_PROPERTIES = ("mu_r", "tan_delta")
+OFF_GRID_INPUTS = {name: name for name in OFF_GRID} | {
+    f"{name}{AXES}": name for name in OFF_GRID_PROPERTIES
+}
+FORMS |= dict.fromkeys(OFF_GRID_PROPERTIES, "isotropic") | {
+    f"{name}{AXES}": "principal values" for name in OFF_GRID_PROPERTIES
+}
+#: The lumped values of EXPECTED's input kinds ("port", <index>, <value>) and
+#: ("boundary", <index>, <value>): the off-grid input "lumped" (ADR 0100).
+LUMPED_VALUES = {
+    "port": ("inductance", "capacitance"),
+    "boundary": ("resistance", "inductance", "capacitance"),
 }
 MATERIAL_PROPERTIES = {
     "eps_r": "eps_r",
@@ -189,6 +210,14 @@ RAISES_LABELS = {
     "driven x fill of a sheet beside a wave port": (
         "Driven S-parameters, with respect to the fill of a sheet that shares "
         "an edge with a wave port's face"
+    ),
+    "driven x Impedance value beside a wave port": (
+        "Driven S-parameters, with respect to the resistance, inductance or "
+        "capacitance of an `Impedance` that shares an edge with a wave port's face"
+    ),
+    "LumpedPort resistance": (
+        "Any result, with respect to a lumped port's resistance (its reference "
+        "impedance)"
     ),
     "driven x material on a wave port face": (
         "Driven S-parameters, with respect to the material of a region with "
@@ -290,10 +319,21 @@ def _input_column(kind) -> str | None:
         return MATERIAL_PROPERTIES[kind[2]]
     if len(kind) == 4 and kind[0] == "boundary" and kind[2:] == ("fill", "fill"):
         return "fill"
+    if _off_grid_input(kind) == "lumped":
+        return None
     raise CapabilitiesError(
         f"{RAISE_TEST}: input kind {kind!r} is not in the Capabilities mapping "
         "(docs/_ext/gfem_capabilities.py)"
     )
+
+
+def _off_grid_input(kind: tuple) -> str | None:
+    """The `OFF_GRID` input of an EXPECTED input kind, or None."""
+    if len(kind) == 3 and kind[2] in LUMPED_VALUES.get(kind[0], ()):
+        return "lumped"
+    if len(kind) == 3 and kind[0] == "material" and kind[2] in OFF_GRID:
+        return kind[2]
+    return None
 
 
 def _problem(key: str, source: str) -> Problem:
@@ -363,10 +403,11 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
         if leaf != problem.headline:
             continue
         headlines.add(key)
+        off = _off_grid_input(kind)
         if column is not None:
             claimed.setdefault((problem.row, column), set()).add(outcome)
-        elif kind[2] in OFF_GRID:
-            claimed_off.setdefault((problem.row, kind[2]), set()).add(outcome)
+        elif off is not None:
+            claimed_off.setdefault((problem.row, off), set()).add(outcome)
     missing = sorted({k for k, _, _ in expected} - headlines)
     if missing:
         leaves = ", ".join(f"{k!r} ({PROBLEMS[k].headline!r})" for k in missing)
@@ -444,14 +485,15 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
 
 
 def also_verified(off_grid: dict, claimed: dict) -> list[dict]:
-    """The FD-verified pairs with no grid column, one entry per row.
+    """The FD-verified pairs with no grid column, one entry per row and group.
 
     Args:
         off_grid: ``(row, property) -> cells`` of the `OFF_GRID` inputs.
         claimed: ``(row, property) -> outcomes`` of ``EXPECTED`` for them.
 
     Returns:
-        Per row, in `ROWS` order: ``key``, ``label``, ``inputs`` (site
+        Per row, in `ROWS` order, and per group of `OFF_GRID_GROUPS` with
+        cells there: ``key``, ``label``, ``inputs`` (site
         words), ``cells``, ``forms_text``, ``solvers``, ``sweeps`` and
         ``text``, the entry as one phrase.
 
@@ -461,44 +503,51 @@ def also_verified(off_grid: dict, claimed: dict) -> list[dict]:
     """
     out = []
     for row_key, row in ROWS.items():
-        cells = []
-        inputs = []
-        for name, words in OFF_GRID.items():
-            found = off_grid.get((row_key, name), [])
-            if not found:
-                continue
-            if claimed.get((row_key, name), set()) != {"gradient"}:
-                raise CapabilitiesError(
-                    f"{row.label} x {words}: {MATRIX_TEST} verifies a gradient "
-                    f"that {RAISE_TEST} does not expect"
-                )
-            cells += found
-            inputs.append(words)
-        if not cells:
-            continue
-        forms = forms_text(sorted({FORMS[c.input] for c in cells}))
-        solvers = [SOLVERS[s] for s in dict.fromkeys(c.solver for c in cells)]
-        sweeps = [s for s in dict.fromkeys(c.sweep for c in cells) if s]
-        parts = [forms] if forms else []
-        parts.append(", ".join(solvers))
-        if sweeps:
-            parts.append(f"{' and '.join(sweeps)} sweep")
-        out.append(
-            {
-                "key": row_key,
-                "label": row.label,
-                "inputs": inputs,
-                "cells": len(cells),
-                "forms_text": forms,
-                "solvers": solvers,
-                "sweeps": sweeps,
-                "text": (
-                    f"{row.label} with respect to the {' and the '.join(inputs)} "
-                    f"({', '.join(parts)})"
-                ),
-            }
-        )
+        for group in OFF_GRID_GROUPS:
+            entry = _also_entry(row_key, row, group, off_grid, claimed)
+            if entry is not None:
+                out.append(entry)
     return out
+
+
+def _also_entry(row_key, row, group, off_grid, claimed) -> dict | None:
+    """One `also_verified` entry: a row's cells of one group of inputs."""
+    cells = []
+    inputs = []
+    for name in group:
+        words = OFF_GRID[name]
+        found = off_grid.get((row_key, name), [])
+        if not found:
+            continue
+        if claimed.get((row_key, name), set()) != {"gradient"}:
+            raise CapabilitiesError(
+                f"{row.label} x {words}: {MATRIX_TEST} verifies a gradient "
+                f"that {RAISE_TEST} does not expect"
+            )
+        cells += found
+        inputs.append(words)
+    if not cells:
+        return None
+    forms = forms_text(sorted({FORMS[c.input] for c in cells if c.input in FORMS}))
+    solvers = [SOLVERS[s] for s in dict.fromkeys(c.solver for c in cells)]
+    sweeps = [s for s in dict.fromkeys(c.sweep for c in cells) if s]
+    parts = [forms] if forms else []
+    parts.append(", ".join(solvers))
+    if sweeps:
+        parts.append(f"{' and '.join(sweeps)} sweep")
+    return {
+        "key": row_key,
+        "label": row.label,
+        "inputs": inputs,
+        "cells": len(cells),
+        "forms_text": forms,
+        "solvers": solvers,
+        "sweeps": sweeps,
+        "text": (
+            f"{row.label} with respect to the {' and the '.join(inputs)} "
+            f"({', '.join(parts)})"
+        ),
+    }
 
 
 def _resolve(row, column, *, cells, claimed, labels, ports_of_row) -> dict:

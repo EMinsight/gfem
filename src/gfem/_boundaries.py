@@ -14,9 +14,13 @@ from gfem._pytree import register_fields
 from gfem._sheet import SheetField
 
 _FIXED = (
-    "Boundary and port parameters are not differentiable in gfem v0.1; wrap the "
-    "value in jax.lax.stop_gradient or keep it a plain number."
+    "Of the boundary and port values, gfem differentiates a lumped port's "
+    "inductance and capacitance and an Impedance's resistance, inductance and "
+    "capacitance only; wrap this value in jax.lax.stop_gradient or keep it a "
+    "plain number."
 )
+#: The lumped values of a lumped port or an `Impedance`, with their units.
+_RLC = (("resistance", "ohm"), ("inductance", "H"), ("capacitance", "F"))
 
 
 def _surface_name(value: Any, owner: str) -> str:
@@ -175,6 +179,14 @@ class Conductor:
 class Impedance:
     """A surface impedance: per-square R (ohm), L (H) and C (F) in parallel.
 
+    The three values are design inputs (pytree leaves; ADR 0100): driven
+    S-parameters, kept fields and eigenfrequencies differentiate with respect
+    to them. A value built under `jax.grad`, `jax.jit` or `jax.vmap` is
+    checked when the solve runs, where a non-finite or non-positive one
+    raises `ValueError`. On a surface that shares an edge with a wave port's
+    face the port mode reads them, so differentiating them there raises
+    `gfem.PortGeometryError`.
+
     Attributes:
         surface: The surface region's name.
         resistance: Sheet resistance, ohm per square, or ``None``.
@@ -194,8 +206,8 @@ class Impedance:
 
     def __post_init__(self) -> None:
         _surface_name(self.surface, "Impedance")
-        _set_rlc(self, "Impedance")
-        if (self.resistance, self.inductance, self.capacitance) == (None, None, None):
+        _set_rlc(self, "Impedance", traced=("resistance", "inductance", "capacitance"))
+        if all(v is None for v in (self.resistance, self.inductance, self.capacitance)):
             raise ValueError(
                 "Impedance needs at least one of resistance, inductance or "
                 "capacitance (per square, in parallel)."
@@ -259,20 +271,53 @@ class Periodic:
         object.__setattr__(self, "surfaces", (value[0], value[1]))
 
 
-def _set_rlc(obj: Any, owner: str) -> None:
-    for name, unit in (
-        ("resistance", "ohm"),
-        ("inductance", "H"),
-        ("capacitance", "F"),
-    ):
-        value = optional_positive(getattr(obj, name), f"{owner}.{name}", unit, _FIXED)
+def _set_rlc(obj: Any, owner: str, traced: tuple[str, ...]) -> None:
+    """Check the lumped values of ``obj``; those named in ``traced`` may be traced.
+
+    A traced value is kept as it is: its value is checked on the host, on every
+    forward (`check_lumped_values`). A concrete one is checked here.
+    """
+    for name, unit in _RLC:
+        value = getattr(obj, name)
+        if name in traced and is_traced(value):
+            continue
+        value = optional_positive(value, f"{owner}.{name}", unit, _FIXED)
         object.__setattr__(obj, name, value)
+
+
+def lumped_label(item: LumpedPort | Impedance) -> str:
+    """``LumpedPort 'p1'`` or ``Impedance on surface 's'``, for messages."""
+    if isinstance(item, LumpedPort):
+        return f"LumpedPort {item.name!r}"
+    return f"Impedance on surface {item.surface!r}"
+
+
+def check_lumped_values(item: LumpedPort | Impedance) -> None:
+    """Raise unless every lumped value of ``item`` is a finite number > 0.
+
+    The constructor checks concrete values; a value built under `jax.grad`,
+    `jax.jit` or `jax.vmap` reaches the host unchecked, so every forward checks
+    the values it reads here.
+
+    Raises:
+        ValueError: A value is not finite, or not > 0.
+    """
+    for name, unit in _RLC:
+        value = getattr(item, name)
+        if value is None:
+            continue
+        out = np.asarray(value)
+        if out.shape or np.iscomplexobj(out) or not np.isfinite(out) or out <= 0:
+            raise ValueError(
+                f"{lumped_label(item)}: {name} must be a finite number > 0 {unit}, "
+                f"got {value!r}."
+            )
 
 
 for _cls in (PEC, PMC, Absorbing, Periodic):
     jax.tree_util.register_static(_cls)
 register_fields(Conductor, ("fill",))
-register_fields(Impedance, ("fill",))
+register_fields(Impedance, ("resistance", "inductance", "capacitance", "fill"))
 
 #: A boundary condition of a model: any one of the classes this union names.
 Boundary = PEC | PMC | Absorbing | Conductor | Impedance | Periodic
@@ -372,11 +417,19 @@ class LumpedPort:
             of E across the gap, so it sets the polarity of the port voltage.
             An axis ('+x', '-y', ...; no sign means +) or a 3-vector. With
             several surfaces, a sequence of the same length.
-        resistance: Termination resistance, ohm.
-        inductance: Termination inductance, H.
-        capacitance: Termination capacitance, F.
+        resistance: Termination resistance, ohm. It is the port's reference
+            impedance, a fixed value: a traced one raises
+            `gfem.NonDifferentiableError`.
+        inductance: Termination inductance, H. A design input (a pytree leaf;
+            ADR 0100): driven S-parameters, kept fields and eigenfrequencies
+            differentiate with respect to it.
+        capacitance: Termination capacitance, F. A design input, like
+            ``inductance``.
         impedance: A resistive termination in ohm, the same as
             ``resistance``. If no termination is given, 50 ohm.
+
+    A traced inductance or capacitance is checked when the solve runs, where a
+    non-finite or non-positive one raises `ValueError`.
     """
 
     name: str
@@ -415,19 +468,21 @@ class LumpedPort:
         dirs = tuple(_direction(d, owner) for d in directions)
         object.__setattr__(self, "surface", surfaces[0] if single else surfaces)
         object.__setattr__(self, "direction", dirs[0] if single else dirs)
-        _set_rlc(self, "LumpedPort")
+        _set_rlc(self, "LumpedPort", traced=("inductance", "capacitance"))
         object.__setattr__(
             self,
             "impedance",
             optional_positive(self.impedance, "LumpedPort.impedance", "ohm", _FIXED),
         )
-        rlc = (self.resistance, self.inductance, self.capacitance)
-        if self.impedance is not None and rlc != (None, None, None):
+        none = all(
+            v is None for v in (self.resistance, self.inductance, self.capacitance)
+        )
+        if self.impedance is not None and not none:
             raise ValueError(
                 f"{owner}: give either impedance (a resistive termination) or "
                 "resistance / inductance / capacitance, not both."
             )
-        if self.impedance is None and rlc == (None, None, None):
+        if self.impedance is None and none:
             object.__setattr__(self, "impedance", 50.0)
 
     @property
@@ -526,8 +581,8 @@ def _path(value: Any, owner: str) -> tuple[tuple[float, float, float], ...]:
     return tuple((float(r[0]), float(r[1]), float(r[2])) for r in p.reshape(-1, 3))
 
 
-for _cls in (LumpedPort, WavePort):
-    jax.tree_util.register_static(_cls)
+jax.tree_util.register_static(WavePort)
+register_fields(LumpedPort, ("inductance", "capacitance"))
 
 #: A port of a model: a lumped port or a wave port.
 Port = LumpedPort | WavePort

@@ -84,6 +84,7 @@ import scipy.sparse
 from gfem import _mpi
 from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import (
+    Impedance,
     LumpedPort,
     WavePort,
     lead_port,
@@ -105,7 +106,7 @@ from gfem._engine.fields import dof_shape
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import PortNetwork, resistance, split_cotangent
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import FieldPair, Term, is_sheet
+from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces, SystemOperator
 from gfem._engine.wave_ports import (
@@ -290,20 +291,21 @@ class DrivenOperator:
         return self.symmetry != "general"
 
     def weights(self, omega: complex) -> dict[str, complex]:
-        """θ(ω) of each piece but the ports', by piece name (`gfem._engine.terms`).
+        """θ(ω) of each piece a gradient moves, by piece name (`gfem._engine.terms`).
 
         The `FieldPair.weights` of a backward pass, driven (real ω) or
         eigenmode (the complex eigenvalue's ω). The sensitivity kernel looks
         them up by name: its terms are the pieces, under their names
-        (`operator_terms`, which leaves the ports' pieces out too).
-        The ports' pieces are design-independent (a port's R, L, C, its
-        surface and a wave port's mode are fixed), so no pair carries them.
-        The `latent` pieces are included: their derivative is not zero.
+        (`operator_terms`, and `lumped_terms` for the lumped values). Of the
+        ports' pieces only a lumped port's L and C pieces move (with their
+        values, ADR 0100); its R piece, its surface and a wave port's mode
+        are fixed, so no pair carries them. The `latent` pieces are
+        included: their derivative is not zero.
         """
         return {
             p.name: complex(p.theta(omega))
             for p in (*self.pieces, *self.latent)
-            if p.kind != "port"
+            if p.kind != "port" or p.lumped is not None
         }
 
     def wavenumber(self, omega: float) -> float:
@@ -592,8 +594,9 @@ class DrivenRule:
             for group in wave_port_surfaces(model.ports).values()
             for p in group
         }
-        #: Per sheet field (index into ``model.boundaries``), the wave ports
-        #: whose face shares an edge with the sheet: the port mode reads it.
+        #: Per sheet field or `Impedance` (index into ``model.boundaries``),
+        #: the wave ports whose face shares an edge with its surface: the port
+        #: mode reads it there.
         self.sheet_ports = _sheet_ports(model)
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
@@ -1150,6 +1153,13 @@ class DrivenRule:
         """
         return operator_terms(model, self.operator(model), nodes=nodes)
 
+    def lumped_terms(self, model: Model) -> list[Term]:
+        """The pieces that move with a lumped value, as the lumped pass reads them.
+
+        See `lumped_terms`.
+        """
+        return lumped_terms(self.operator(model))
+
     def real_space(self, model: Model) -> ngs.FESpace:
         """A real H(curl) space with the field pairs' DOF numbering (``DiffShape``)."""
         return real_space(model, self.operator(model))
@@ -1162,15 +1172,30 @@ class DrivenRule:
         on a wave port face raises.
 
         A sheet field whose surface shares an edge with a wave port face
-        raises likewise: the port mode reads the sheet on that edge.
+        raises likewise: the port mode reads the sheet on that edge. So does
+        a lumped value of an `Impedance` on such a surface.
 
         The node coordinates cannot be differentiated next to a tensor
         absorbing admittance (`terms.absorbing_shape_unsupported`).
 
         Raises:
             PortGeometryError: ``kind`` is the material of a region that
-                touches a wave port face, or the fill of a sheet beside one.
+                touches a wave port face, or the fill of a sheet or a lumped
+                value of an `Impedance` beside one.
         """
+        if is_lumped(kind) and kind[0] == "boundary":
+            ports = self.sheet_ports.get(kind[1], ())
+            if ports:
+                raise PortGeometryError(
+                    f"{self._port_label(ports[0])}: the Impedance model.boundaries"
+                    f"[{kind[1]}] shares an edge with the port face, so gfem cannot "
+                    f"differentiate with respect to its {kind[2]}: the port mode "
+                    "reads the sheet there and is a constant of the solve. Keep the "
+                    "design away from wave port faces (split the surface so the "
+                    "part touching the port is a boundary of its own), or wrap the "
+                    "value in jax.lax.stop_gradient."
+                )
+            return None
         if is_sheet(kind):
             ports = self.sheet_ports.get(kind[1], ())
             if ports:
@@ -1535,6 +1560,32 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
                 **common,
             )
         out.append(term)
+    return out
+
+
+def lumped_terms(op: DrivenOperator) -> list[Term]:
+    """The terms of the lumped pass: the pieces that move with a lumped value.
+
+    One ``"trace"`` `Term` per surface of each piece with a `LumpedValue` (a
+    lumped port's L and C pieces, every piece of an `Impedance`), under the
+    piece's name, carrying its coefficient there and ``(kind, slope)``. The
+    eigenmode rule's operator is the same pieces, so it shares these.
+    """
+    out = []
+    for piece in op.pieces:
+        value = piece.lumped
+        if value is None:
+            continue
+        out += [
+            Term(
+                piece.name,
+                "trace",
+                coefficient=c,
+                region=region,
+                lumped=(value.kind, value.slope),
+            )
+            for region, c in value.faces
+        ]
     return out
 
 
@@ -2035,11 +2086,14 @@ class _KeptPorts:
 
 
 def _sheet_ports(model: Model) -> dict[int, tuple[str, ...]]:
-    """Per sheet-field boundary index, the wave ports sharing an edge with it."""
+    """Per sheet-field or `Impedance` boundary index, the wave ports beside it.
+
+    The wave ports whose face shares an edge with the boundary's surface.
+    """
     mesh = model.mesh
     out = {}
     for i, b in enumerate(model.boundaries):
-        if sheet_of(b) is None:
+        if sheet_of(b) is None and not isinstance(b, Impedance):
             continue
         (surface,) = surfaces_of(b)
         sheet = _edges(mesh.triangles[mesh.elements(surface)])

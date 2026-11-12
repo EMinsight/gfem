@@ -56,7 +56,8 @@ inputs the rule itself cannot differentiate, and ``terms(model, *, nodes)``
 (its operator as the kernel sees it, a list of
 `gfem._engine.sensitivity.Term`: one per piece of a driven or eigenmode
 operator, or the electrostatic form; ``nodes`` when the node coordinates
-are wanted). Host
+are wanted) and ``lumped_terms(model)`` (the pieces that move with a
+lumped value, ADR 0100). Host
 calls get the model and a shallow copy of the rule whose ``problem`` holds
 the call's concrete values, so a rule reads problem values from
 ``self.problem`` and never sees a tracer there.
@@ -130,6 +131,9 @@ def _describe(kind: tuple) -> str:
     if kind[0] == "boundary":
         rest = "".join(f".{k}" for k in kind[2:])
         return f"model.boundaries[{kind[1]}]{rest}"
+    if kind[0] == "port":
+        rest = "".join(f".{k}" for k in kind[2:])
+        return f"model.ports[{kind[1]}]{rest}"
     return "model." + ".".join(str(k) for k in kind)
 
 
@@ -223,8 +227,11 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
                     wanted=wanted,
                     live_names=tuple(n for n, _ in live),
                 ),
+                # a lumped value given as a Python number has no shape (ADR 0100)
                 tuple(
-                    jax.ShapeDtypeStruct(values[i].shape, values[i].dtype)
+                    jax.ShapeDtypeStruct(
+                        jnp.shape(values[i]), jnp.result_type(values[i])
+                    )
                     for i in wanted
                 ),
                 key,
@@ -418,6 +425,9 @@ def _local_cotangents(
                 form=rule.form,
                 terms=(lambda nodes: rule.terms(model, nodes=nodes))
                 if hasattr(rule, "terms")
+                else None,
+                lumped=(lambda: rule.lumped_terms(model))
+                if hasattr(rule, "lumped_terms")
                 else None,
                 comm=comm,
             )

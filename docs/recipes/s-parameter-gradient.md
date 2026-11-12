@@ -116,6 +116,13 @@ model = gfem.Model(
   {doc}`shape-gradient`.
 - The fill of a {py:obj}`gfem.SheetField` on a `Conductor` or `Impedance`
   differentiates: see {doc}`sheet-design`.
+- The {term}`lumped values <lumped value>` that enter only the operator
+  differentiate: a `LumpedPort`'s `inductance` and `capacitance`, and an
+  `Impedance`'s `resistance`, `inductance` and `capacitance`, on both sweeps.
+  Build the port or the sheet inside the differentiated function, for example
+  `gfem.LumpedPort("p1", "port1", "+y", resistance=50.0, inductance=l)`. An
+  `Impedance` whose surface shares an edge with a wave port's face raises
+  `gfem.PortGeometryError` instead: the port mode reads it there.
 - Thermal properties are not read: their gradient is an exact zero.
 
 ## In an optimization loop
@@ -166,10 +173,10 @@ How gfem itself is checked: {doc}`../verification`.
 
 ## Limits
 
-- Port and boundary parameters (lumped `R`, `L`, `C`, `Impedance`,
-  `Conductor` conductivity) and the frequencies are read but not
-  differentiable: a perturbed one raises `gfem.NonDifferentiableError` when
-  `jax.grad` is called. Keep them constant inside the differentiated
+- A lumped port's resistance (its reference impedance), a `Conductor`'s
+  conductivity and thickness, a wave port's `offset` and the frequencies are
+  read but not differentiable: a traced one raises
+  `gfem.NonDifferentiableError`. Keep them constant inside the differentiated
   function, and compare separate solves to see their effect.
 
 ## Next

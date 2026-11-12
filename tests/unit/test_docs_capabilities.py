@@ -110,11 +110,13 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
     assert _cell(derived, "driven", "eps_r")["label"] == "FD-verified"
 
 
-def test_permeability_and_loss_tangent_are_verified_off_the_grid(derived):
-    # no column of their own: one phrase per row under the matrix
+def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
+    # no column of their own: one phrase per row and group under the matrix
     assert [(e["key"], e["inputs"], e["cells"]) for e in derived["also"]] == [
         ("driven", ["permeability", "loss tangent"], 4),
+        ("driven", ["lumped values"], 4),
         ("eigenmode", ["permeability", "loss tangent"], 2),
+        ("eigenmode", ["lumped values"], 2),
     ]
     assert [e["text"] for e in derived["also"]] == [
         (
@@ -122,9 +124,14 @@ def test_permeability_and_loss_tangent_are_verified_off_the_grid(derived):
             "(isotropic and principal values, direct solver, uniform sweep)"
         ),
         (
+            "Driven with respect to the lumped values "
+            "(direct solver, BDDC + GMRES, uniform and adaptive sweep)"
+        ),
+        (
             "Eigenmode with respect to the permeability and the loss tangent "
             "(direct solver)"
         ),
+        "Eigenmode with respect to the lumped values (direct solver, BDDC + GMRES)",
     ]
 
 
@@ -172,7 +179,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 22
+    assert len(rows) == 24
     assert "electrostatic x sheet fill" not in rows
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
     assert rows["material axes (orientation)"] == {

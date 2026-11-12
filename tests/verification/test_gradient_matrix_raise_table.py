@@ -335,6 +335,100 @@ EXPECTED |= {
     for kind in [("nodes",), FILL]
 }
 
+# Lumped values (ADR 0100): port p1's inductance and capacitance and the
+# sheet's resistance and inductance on the glued line (static materials).
+# Driven S, the kept fields and the eigenfrequencies differentiate with
+# respect to them; z_ref (p1's resistance) and the fields' omega and mesh do
+# not move with them; electrostatics never reads them; the port mode problem
+# is not differentiable. A model without L or C has none of these leaves.
+LUMPED_KINDS = [
+    ("port", 0, "inductance"),
+    ("port", 0, "capacitance"),
+    ("boundary", 2, "resistance"),
+    ("boundary", 2, "inductance"),
+]
+EXPECTED |= {
+    ("driven_lumped", out, kind): (
+        EXPECTED[("driven", out, ("nodes",))]
+        if kind == ("nodes",)
+        else GRADIENT
+        if out in _DRIVEN_DEPENDENT
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        *(
+            f"e_fields.{k}.{leaf}"
+            for k in (0, 1)
+            for leaf in ("coefficients", "mesh.nodes", "omega")
+        ),
+    )
+    for kind in [("nodes",), *LUMPED_KINDS]
+}
+EXPECTED |= {
+    ("driven_lumped_adaptive", out, kind): (
+        EXPECTED[("driven_adaptive", out, ("nodes",))]
+        if kind == ("nodes",)
+        else GRADIENT
+        if out in ("s.values", "e_fields.coordinates")
+        else RAISES
+        if out == "e_fields.basis"
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        "e_fields.basis",
+        "e_fields.coordinates",
+        "e_fields.omega",
+        "e_fields.mesh.nodes",
+    )
+    for kind in [("nodes",), *LUMPED_KINDS]
+}
+EXPECTED |= {
+    ("eigenmode_lumped", out, kind): _eigen_outcome(out, kind)
+    for out in (
+        "omega",
+        "error",
+        "q_port.p1",
+        "q_port.p2",
+        "participation.p1",
+        "bulk_participation.lower",
+        "bulk_participation.upper",
+        "cluster",
+        *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
+    )
+    for kind in [("nodes",), *LUMPED_KINDS]
+}
+EXPECTED |= {
+    ("electrostatic_lumped", out, kind): (
+        EXPECTED[("electrostatic", "capacitance", ("nodes",))]
+        if kind == ("nodes",)
+        else ZERO
+    )
+    for out in (
+        "capacitance",
+        "energy.lower",
+        "energy.upper",
+        "potential.top.coefficients",
+        "potential.top.mesh.nodes",
+    )
+    for kind in [("nodes",), *LUMPED_KINDS]
+}
+# the port mode's model: wave port p1, the lumped port p2 holds L and C
+PORT_MODE_LUMPED_KINDS = [
+    ("port", 1, "inductance"),
+    ("port", 1, "capacitance"),
+    ("boundary", 2, "resistance"),
+    ("boundary", 2, "inductance"),
+]
+EXPECTED |= {
+    ("port_mode_lumped", out, kind): RAISES
+    for out in PORT_MODE_OUTPUTS
+    for kind in [("nodes",), *PORT_MODE_LUMPED_KINDS]
+}
+
 
 def _field(mesh, region, **overrides):
     # values vary per element, so the terminal potentials depend on them
@@ -460,6 +554,61 @@ def sheet_cases(sheet_mesh):
     }
 
 
+#: The lumped values of the lumped cases: port inductance (H) and capacitance
+#: (F), sheet resistance (ohm) and inductance (H) per square.
+LUMPED = (2e-9, 5e-14, 2e4, 1e-6)
+#: Near the lumped line's sharpest mode, 15.5 + 1.5j GHz (the next is 4 GHz off).
+LUMPED_TARGET = 15e9
+LUMPED_ADAPTIVE = gfem.Driven(
+    frequency=(18e9, 20e9, 22e9),
+    sweep="adaptive",
+    samples=(18e9, 22e9),
+    keep_fields=20e9,
+)
+
+
+def _lumped_model(mesh, ports):
+    sheet = gfem.Impedance("sheet", resistance=LUMPED[2], inductance=LUMPED[3])
+    return gfem.Model(
+        mesh,
+        materials={"lower": gfem.Material(eps_r=2.0), "upper": gfem.Material()},
+        boundaries=[gfem.PEC("plate1"), gfem.PEC("plate2"), sheet],
+        ports=ports,
+    )
+
+
+def _rlc_port(name, surface):
+    return gfem.LumpedPort(
+        name,
+        surface,
+        "+y",
+        resistance=1000.0,
+        inductance=LUMPED[0],
+        capacitance=LUMPED[1],
+    )
+
+
+@pytest.fixture(scope="module")
+def lumped_cases(sheet_mesh):
+    lumped = _lumped_model(
+        sheet_mesh,
+        [_rlc_port("p1", "port1"), gfem.LumpedPort("p2", "port2", "+y", impedance=1e3)],
+    )
+    mixed = _lumped_model(
+        sheet_mesh, [gfem.WavePort("p1", "port1"), _rlc_port("p2", "port2")]
+    )
+    return {
+        "driven_lumped": (lumped, gfem.Driven(frequency=20e9, keep_fields=True)),
+        "driven_lumped_adaptive": (lumped, LUMPED_ADAPTIVE),
+        "eigenmode_lumped": (lumped, gfem.Eigenmode(target=LUMPED_TARGET)),
+        "electrostatic_lumped": (
+            lumped,
+            gfem.Electrostatic(terminals={"top": "plate2"}, ground="plate1"),
+        ),
+        "port_mode_lumped": (mixed, gfem.PortMode("p1", 20e9)),
+    }
+
+
 @pytest.fixture(scope="module")
 def wave_cases(wave_model, shared_surface_model):
     return {
@@ -530,6 +679,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
         **wave_cases,
         "eigenmode": (eigen_model, gfem.Eigenmode(target=17e9)),
         **request.getfixturevalue("sheet_cases"),
+        **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
         **request.getfixturevalue("eigen_periodic_cases"),
     }
@@ -658,6 +808,36 @@ def _out_sheet_beside_a_wave_port(request):
         _sheet_model(mesh, waves), gfem.Driven(frequency=20e9)
     )
     jax.make_jaxpr(jax.grad(objective))(fill)
+
+
+def _out_impedance_beside_a_wave_port(request):
+    # the port mode reads the sheet on the port face's edge: its lumped
+    # values are constants of the solve there (raised while tracing)
+    mesh = request.getfixturevalue("sheet_mesh")
+    waves = [gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")]
+    problem = gfem.Driven(frequency=20e9)
+
+    def objective(r):
+        model = _lumped_model(mesh, waves)
+        sheet = gfem.Impedance("sheet", resistance=r, inductance=LUMPED[3])
+        model = model.replace(boundaries=[*model.boundaries[:2], sheet])
+        return jnp.sum(jnp.abs(gfem.solve(model, problem).s.values) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(LUMPED[2])
+
+
+def _out_lumped_port_resistance(request):
+    # a port's resistance is its reference impedance: a fixed value (raised
+    # by the constructor)
+    model = request.getfixturevalue("driven_model")
+    problem = gfem.Driven(frequency=5e9)
+
+    def objective(r):
+        ports = [gfem.LumpedPort("p1", "port1", "+z", resistance=r), model.ports[1]]
+        s = gfem.solve(model.replace(ports=ports), problem).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    jax.grad(objective)(50.0)
 
 
 def _out_material_on_a_wave_port_face(request):
@@ -986,6 +1166,18 @@ OUT_OF_SCOPE = [
         _out_sheet_beside_a_wave_port,
         gfem.PortGeometryError,
         "shares an edge with the port face",
+    ),
+    (
+        "driven x Impedance value beside a wave port",
+        _out_impedance_beside_a_wave_port,
+        gfem.PortGeometryError,
+        r"Impedance model\.boundaries\[2\] shares an edge with the port face",
+    ),
+    (
+        "LumpedPort resistance",
+        _out_lumped_port_resistance,
+        gfem.NonDifferentiableError,
+        r"LumpedPort\.resistance is a fixed value.*inductance and capacitance",
     ),
     (
         "driven x material on a wave port face",

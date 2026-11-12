@@ -174,6 +174,22 @@ def _fill_row(kind, seed, directory):
     return objective, fill, unit_directions(rng, fill.shape, 2), STEPS["fill"]
 
 
+def _lumped_row(directory):
+    # a port's L and C and a sheet's R and L, as O(1) relative changes
+    mesh = cases.sheet_mesh(Path(directory))
+    driven = gfem.Driven(frequency=SHEET_FREQUENCIES)
+
+    def objective(t):
+        model = cases.lumped_line(mesh, jnp.asarray(cases.LUMPED) * (1 + t))
+        return cases.s_functional(
+            gfem.solve(model, driven, options=_options()).s.values
+        )
+
+    t = jnp.zeros(len(cases.LUMPED))
+    rng = np.random.default_rng(11)
+    return objective, t, unit_directions(rng, t.shape, 2), 1e-3
+
+
 def _shape_objective(line, mesh_of):
     driven = gfem.Driven(frequency=SHAPE_FREQUENCY)
 
@@ -271,6 +287,7 @@ ROWS = {
     "axes_sigma": lambda d: _axes_row("conductivity", 6, d),
     "fill_conductor": lambda d: _fill_row("conductor", 7, d),
     "fill_impedance": lambda d: _fill_row("impedance", 8, d),
+    "lumped": _lumped_row,
     "nodes_raw": _nodes_raw,
     "nodes_morph": _nodes_morph,
     "wave_lossless": lambda d: _wave_row("lossless", d),

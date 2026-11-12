@@ -126,6 +126,11 @@ reference = modes.e_field(int(tracked(modes, reference))).coefficients
   differentiates: see {doc}`sheet-design`.
 - The mesh node coordinates differentiate, with every port surface held
   where it was imported: see {doc}`shape-gradient`.
+- The {term}`lumped values <lumped value>` that enter only the operator
+  differentiate: a `LumpedPort`'s `inductance` and `capacitance` (a
+  junction inductance, say) and an `Impedance`'s `resistance`, `inductance`
+  and `capacitance`. Build the port or the sheet inside the differentiated
+  function.
 
 ## Check your results
 
@@ -143,8 +148,9 @@ How gfem itself is checked: {doc}`../verification`.
   `field.at`) raises `gfem.NonDifferentiableError` when `jax.grad` is called.
   Wrap such a value in `jax.lax.stop_gradient` to use it without its
   derivative.
-- `Eigenmode.target` and boundary and port parameters are not differentiable.
-  Keep them constant inside the differentiated function.
+- `Eigenmode.target`, a lumped port's resistance and a `Conductor`'s values
+  are not differentiable. Keep them constant inside the differentiated
+  function.
 
 ## Next
 
