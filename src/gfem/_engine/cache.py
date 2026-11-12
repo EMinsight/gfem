@@ -90,6 +90,9 @@ __all__ = [
 ]
 
 _MAX_DISCRETIZATIONS = 4
+#: Bloch phase sets a discretization keeps the spaces of: +k and -k of four
+#: wave vectors.
+_MAX_PHASE_SETS = 8
 
 
 @dataclasses.dataclass(eq=False)
@@ -98,7 +101,10 @@ class Discretization:
 
     Attributes:
         built: The NGSolve mesh and its element maps.
-        spaces: Finite-element spaces by ``(physics domain, space, order)``.
+        spaces: Finite-element spaces by ``(physics domain, space, order)``,
+            and what is kept with them (expansion matrices, kept fixed part
+            stores). Those of at most `_MAX_PHASE_SETS` Bloch phase sets,
+            least recently used out first (`space`); the others stay.
         ports: The wave port couplings and port networks the last driven
             solve on it built, behind their key (`gfem._engine.driven`), or
             ``None``. Anything with a ``shared()`` of its bytes by identity.
@@ -108,12 +114,40 @@ class Discretization:
     topology: Any
     spaces: dict[Hashable, Any] = dataclasses.field(default_factory=dict)
     ports: Any = None
+    _groups: collections.OrderedDict[Hashable, set[Hashable]] = dataclasses.field(
+        default_factory=collections.OrderedDict, repr=False
+    )
 
-    def space(self, key: Hashable, build: Callable[[], Any]) -> Any:
-        """The cached space ``key``, built by ``build()`` on first use."""
+    def space(
+        self, key: Hashable, build: Callable[[], Any], *, group: Hashable = None
+    ) -> Any:
+        """The cached space ``key``, built by ``build()`` on first use.
+
+        ``group`` is the Bloch phase set the space belongs to, or ``None``
+        for a space without phases (unpaired, plain periodic, real, a
+        layout), which is never dropped. A band path would otherwise add
+        every wave vector's spaces for the life of the discretization, outside
+        ``retain_memory``: the keys of the least recently used phase set
+        leave once more than `_MAX_PHASE_SETS` are held. Objects in use live
+        on by reference, and a later solve at that wave vector builds them
+        again (a pooled solver plan is still found: its key holds the space
+        key by value).
+        """
         if key not in self.spaces:
             self.spaces[key] = build()
+        if group is not None:
+            self._groups.setdefault(group, set()).add(key)
+            self._groups.move_to_end(group)
+            while len(self._groups) > _MAX_PHASE_SETS:
+                _, keys = self._groups.popitem(last=False)
+                for old in keys:
+                    self.spaces.pop(old, None)
         return self.spaces[key]
+
+    @property
+    def phase_sets(self) -> int:
+        """The Bloch phase sets whose spaces are held."""
+        return len(self._groups)
 
     @property
     def comm_key(self) -> int | None:
