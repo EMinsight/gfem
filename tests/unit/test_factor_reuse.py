@@ -12,8 +12,9 @@ import pytest
 import structured_meshes as sm
 
 import gfem
-from gfem._engine import quadrature
+from gfem._engine import cache, quadrature
 from gfem._engine.mesh import to_ngsolve
+from gfem._engine.system_operator import PlanSlot, SystemSweep
 from gfem._linalg import Operator, prepare
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.factor_reuse import (
@@ -379,3 +380,26 @@ def test_a_small_model_never_reuses_without_the_gate_forced(built):
         handle.refactorize(_helmholtz(built, 1.0 - 1j + shift)[0], frequency=F)
         assert handle.solve_counted(B)[1] == ()
     handle.free()
+
+
+@needs_mkl
+def test_a_handle_taken_from_the_pool_solves_at_the_taking_sweeps_tolerance(built):
+    # a backward prepared it at the adjoint tolerance; a forward takes it next
+    op, _ = _helmholtz(built, 1.0 - 1j)
+    adjoint = DirectHandle.from_operator(op, "complex_symmetric", tolerance=1e-3)
+    topology = object()
+    slot = PlanSlot(("site",), topology, budget=2**40)
+    cache.ENTRIES.clear()
+    try:
+        cache.ENTRIES.give_plan(slot.key(), topology, adjoint, slot.budget)
+        forward = SystemSweep(
+            lambda _: _helmholtz(built, 1.0 - 1j + 1e-3)[0],
+            lambda base, _: base,
+            lambda _: pytest.fail("the pooled handle serves"),
+            plans=slot,
+            tolerance=1e-8,
+        )
+        assert forward.at(F) is adjoint
+        assert adjoint.tolerance == 1e-8
+    finally:
+        cache.ENTRIES.clear()

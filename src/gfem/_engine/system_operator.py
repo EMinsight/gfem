@@ -247,6 +247,7 @@ class SystemOperator:
                 reuse_preconditioner=reuse_preconditioner,
             ),
             plans=plans,
+            tolerance=self._linear.tolerance if tolerance is None else tolerance,
         )
 
     def _plan_slot(self, budget: int) -> PlanSlot | None:
@@ -522,7 +523,9 @@ class SystemSweep:
 
     With a `PlanSlot` the first call takes the base from the plan pool when a
     handle of its key is free there, and refactorizes it; leaving the ``with``
-    block without an error returns the base to the pool.
+    block without an error returns the base to the pool. A taken base solves
+    at the sweep's ``tolerance``, not at the one of the sweep that prepared it
+    (an adjoint's): a solve on factors reused across designs reads it.
     """
 
     def __init__(
@@ -531,15 +534,19 @@ class SystemSweep:
         system_handle: Callable[[Handle, float], Handle],
         prepare: Callable[[Operator], Handle],
         plans: PlanSlot | None = None,
+        tolerance: float | None = None,
     ) -> None:
         """Hold ``ω -> A(ω)``, the wrap into ``A(ω) + W(ω)`` and the base's prepare.
 
         The wrap borrows the base handle. ``plans``: where the base pools.
+        ``tolerance``: the one ``prepare`` prepares at, given to a base taken
+        from the pool.
         """
         self._operator_at = operator_at
         self._system_handle = system_handle
         self._prepare = prepare
         self._plans = plans
+        self._tolerance = tolerance
         # the pool key of the base, set when the base was taken or prepared
         self._key: Hashable | None = None
         self._base: Handle | None = None
@@ -562,6 +569,8 @@ class SystemSweep:
         if self._base is None and self._plans is not None:
             self._key = self._plans.key()
             self._base = ENTRIES.take_plan(self._key)
+            if self._base is not None and self._tolerance is not None:
+                self._base.tolerance = self._tolerance
         self._base = refactorize_or_prepare(
             self._base, operator, self._prepare, frequency=omega
         )
