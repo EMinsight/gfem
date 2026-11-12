@@ -110,6 +110,9 @@ solve on a moved mesh runs the same check. Inside an objective,
 
 ## 3. Remesh at the current geometry and restart
 
+When the geometry is unchanged and only the mesh is too coarse, refining the
+current mesh is the lighter path: {doc}`mesh-refinement`.
+
 When backtracking stalls, or the warnings keep coming, the mesh has gone as
 far as it can. At the current parameters `q_k`:
 

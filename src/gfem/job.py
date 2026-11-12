@@ -2,8 +2,8 @@
 
 A job bundle is ``job.json``, the mesh file it references (by path and
 sha256) and, when the job has arrays, a ``.npz`` sidecar next to it. The
-sidecar stores every array of the job (material fields, moved mesh nodes,
-...), keyed by where it sits in the job, e.g.
+sidecar stores every array of the job (material fields, moved mesh nodes, a
+refined mesh, which has no file, ...), keyed by where it sits in the job, e.g.
 ``.model.materials['oxide'].eps_r``. A result bundle is a directory with
 ``result.json`` and ``result.npz``. Both documents carry ``schema_version``
 and ``gfem_version``: gfem reads older schema versions and refuses newer
@@ -47,7 +47,7 @@ from gfem._port_section import PortSection
 from gfem._pytree import register_fields
 from gfem._sheet import SheetField
 from gfem.measurements import InterfaceParticipation
-from gfem.mesh import Mesh
+from gfem.mesh import _TOPOLOGY_ARRAYS, Mesh, Region, _Topology
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
@@ -170,7 +170,8 @@ class Job:
         The mesh is referenced by its file path and sha256; the path is
         stored relative to the JSON file's directory when the mesh lies
         inside it, so a directory holding the job and its mesh can be moved
-        or uploaded as one bundle. The sidecar, ``<stem>.npz`` next to the
+        or uploaded as one bundle. A mesh with no file (a refined mesh) is
+        stored whole in the sidecar instead. The sidecar, ``<stem>.npz`` next to the
         JSON file, holds every array of the job (material fields, moved mesh
         nodes), keyed by where it sits in the job, e.g.
         ``.model.materials['oxide'].eps_r``; it is written only when there
@@ -390,7 +391,9 @@ def _sha256(path: Path) -> str:
 
 def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
     source = mesh.source
-    if source is None or not source.is_file():
+    if source is None:
+        return _in_memory_mesh_args(mesh)
+    if not source.is_file():
         raise ValueError(
             f"Cannot write the mesh: its file {source} is gone. A job references "
             "the mesh file, so keep it next to the job."
@@ -405,13 +408,62 @@ def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
         "sha256": _sha256(source),
         "length_unit": mesh.length_unit,
     }
+    return args | _moved_nodes(mesh)
+
+
+def _moved_nodes(mesh: Mesh) -> dict[str, Any]:
     nodes = mesh.nodes
     if is_traced(nodes) or not np.array_equal(np.asarray(nodes), mesh.imported_nodes):
-        args["nodes"] = nodes  # moved (shape optimization): keep them
-    return args
+        return {"nodes": nodes}  # moved (shape optimization): keep them
+    return {}
+
+
+def _in_memory_mesh_args(mesh: Mesh) -> dict[str, Any]:
+    """A mesh with no file (a refined one): its topology's arrays, in the sidecar."""
+    topology = mesh._topology  # noqa: SLF001
+    return (
+        {
+            "source": None,
+            "length_unit": mesh.length_unit,
+            "regions": mesh.regions,
+        }
+        | {name: np.asarray(getattr(topology, name)) for name in _TOPOLOGY_ARRAYS}
+        | _moved_nodes(mesh)
+    )
+
+
+def _in_memory_mesh_from_args(args: dict[str, Any]) -> Mesh:
+    arrays = {}
+    for name in _TOPOLOGY_ARRAYS:
+        array = np.array(args[name])
+        array.flags.writeable = False
+        arrays[name] = array
+    topology = _Topology(
+        length_unit=args["length_unit"],
+        regions=tuple(args["regions"]),
+        source=None,
+        **arrays,
+    )
+    return _with_nodes(Mesh(jnp.asarray(topology.imported_nodes), topology), args)
+
+
+def _with_nodes(mesh: Mesh, args: dict[str, Any]) -> Mesh:
+    """The mesh with the job's moved nodes, if it has any."""
+    if args.get("nodes") is None:
+        return mesh
+    nodes = jnp.asarray(args["nodes"])
+    if nodes.shape != mesh.imported_nodes.shape:
+        where = "the job's mesh" if mesh.source is None else f"the mesh {mesh.source}"
+        raise ValueError(
+            f"The job's moved nodes have shape {nodes.shape}, but {where} has "
+            f"{mesh.imported_nodes.shape}."
+        )
+    return Mesh(nodes, mesh._topology)  # noqa: SLF001
 
 
 def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
+    if "path" not in args:
+        return _in_memory_mesh_from_args(args)
     path = context.base / args["path"]
 
     def check() -> dict[str, np.ndarray]:
@@ -431,15 +483,7 @@ def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
 
     _mpi.on_root(_mpi.resolve_comm(context.comm), check, results=(OSError, ValueError))
     mesh = Mesh.from_gmsh(path, length_unit=args["length_unit"], comm=context.comm)
-    if args.get("nodes") is not None:
-        nodes = jnp.asarray(args["nodes"])
-        if nodes.shape != mesh.imported_nodes.shape:
-            raise ValueError(
-                f"The job's moved nodes have shape {nodes.shape}, but the mesh "
-                f"{path} has {mesh.imported_nodes.shape}."
-            )
-        mesh = Mesh(nodes, mesh._topology)  # noqa: SLF001
-    return mesh
+    return _with_nodes(mesh, args)
 
 
 def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
@@ -512,6 +556,7 @@ def _job_from_args(args: dict[str, Any], _: _codec.Context) -> Job:
 
 
 _codec.register(Mesh, to_args=_mesh_args, from_args=_mesh_from_args)
+_codec.register(Region)
 _codec.register(Model, to_args=_model_args, from_args=_model_from_args)
 _codec.register(EnclosedBy, from_args=lambda a, _: EnclosedBy(tuple(a["surfaces"])))
 for _cls in (

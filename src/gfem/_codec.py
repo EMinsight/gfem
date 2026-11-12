@@ -40,10 +40,13 @@ from jax.core import Tracer
 
 #: The format version of job.json and result.json. Bump it only when the
 #: format changes in a way older gfem cannot read, and add a migration.
-SCHEMA_VERSION = 1
+#: Version 2 adds the mesh stored as arrays (a refined mesh, which has no file).
+SCHEMA_VERSION = 2
 
 #: ``MIGRATIONS[v]`` upgrades a document of schema version ``v`` to ``v + 1``.
-MIGRATIONS: dict[int, Callable[[dict], dict]] = {}
+MIGRATIONS: dict[int, Callable[[dict], dict]] = {
+    1: lambda doc: doc,  # version 2 only adds a mesh form; 1 reads as it is
+}
 
 
 @dataclasses.dataclass(frozen=True)

@@ -6,7 +6,15 @@ data, imported by path without running a solve: ``CELLS``
 (tests/verification/test_gradient_matrix.py), ``EXPECTED`` and
 ``OUT_OF_SCOPE`` (tests/verification/test_gradient_matrix_raise_table.py).
 The table of what raises above one rank comes the same way: its rows are the
-cases of tests/mpi_cases.py, its text gfem's own refusal messages.
+cases of tests/mpi_cases.py, its text gfem's own refusal messages. So does
+the range of the mesh refinement error estimate over the true error that the
+mesh refinement recipe and docs/verification.md quote, one per estimator:
+``EFFECTIVITY`` and ``EFFECTIVITY_BY_CASE``
+(tests/verification/test_quantity_estimate.py) for the quantity estimator,
+``FIELD_EFFECTIVITY``, ``FIELD_EFFECTIVITY_BY_CASE`` and
+``FIELD_EFFECTIVITY_ORDER_3_BY_CASE``
+(tests/verification/test_field_estimate.py) for the field estimator,
+rendered by the ``gfem-effectivity`` role (``quantity low``, ``field high``).
 
 A cell input with the suffix ``_axes`` (``eps_r_axes``) is the same
 property per principal value of a field with fixed axes: it folds into its
@@ -40,10 +48,13 @@ REPO = Path(__file__).resolve().parents[2]
 MATRIX_TEST = "tests/verification/test_gradient_matrix.py"
 RAISE_TEST = "tests/verification/test_gradient_matrix_raise_table.py"
 REFUSAL_CASES = "tests/mpi_cases.py"
+ESTIMATE_TEST = "tests/verification/test_quantity_estimate.py"
+FIELD_ESTIMATE_TEST = "tests/verification/test_field_estimate.py"
 CAPABILITIES_DOC = "capabilities"
-VERIFICATION_DOC = "verification"  # renders the matrix's provenance sentence
+VERIFICATION_DOC = "verification"  # the matrix's provenance, the effectivity range
 FRONT_DOC = "index"  # the gfem-home layout renders the compact matrix
 DISTRIBUTED_DOC = "recipes/distributed-solve"
+REFINEMENT_DOC = "recipes/mesh-refinement"  # quotes the effectivity range
 CONTEXT_KEY = "gfem_capabilities"  # the template context name
 
 
@@ -498,6 +509,7 @@ REFUSAL_LABELS = {
     "field_export": "`Field.to_meshio`, `Field.to_pyvista`",
     "load_result_fields": "`load_result` of a bundle with fields",
     "power_flow": "`power_flow`",
+    "mesh_refinement": "`refine_mesh`",
 }
 
 
@@ -534,6 +546,40 @@ def distributed_refusals(keys, methods, guards, feature, messages) -> list[dict]
         }
         for case in cases
     ]
+
+
+# --- The error estimate's effectivity -------------------------------------------
+
+
+def effectivity(overall, by_case, source: str = ESTIMATE_TEST) -> dict:
+    """The range the docs quote for an error estimate over the true error.
+
+    Args:
+        overall: ``EFFECTIVITY``, the ``(low, high)`` the docs quote.
+        by_case: ``EFFECTIVITY_BY_CASE``, one ``(low, high)`` per case.
+        source: The test module the ranges come from, for the messages.
+
+    Returns:
+        ``low`` and ``high`` as the site writes them (``"0.9"``, ``"15"``),
+        and ``cases``, the case names in the test's order.
+
+    Raises:
+        CapabilitiesError: ``overall`` is not the lowest low and the highest
+            high of ``by_case``, or a case's range is not positive and ordered.
+    """
+    try:
+        low, high = (float(v) for v in overall)
+        ranges = {str(k): tuple(float(v) for v in r) for k, r in by_case.items()}
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise CapabilitiesError(f"{source}: unreadable ranges: {exc}") from exc
+    if not ranges or any(len(r) != 2 or not 0 < r[0] <= r[1] for r in ranges.values()):
+        raise CapabilitiesError(f"{source}: bad case ranges {ranges}")
+    span = (min(r[0] for r in ranges.values()), max(r[1] for r in ranges.values()))
+    if (low, high) != span:
+        raise CapabilitiesError(
+            f"{source}: effectivity {(low, high)} is not the cases' span {span}"
+        )
+    return {"low": f"{low:g}", "high": f"{high:g}", "cases": list(ranges)}
 
 
 # --- Loading the verification tests --------------------------------------------
@@ -582,6 +628,39 @@ def load_verification(repo: Path) -> tuple[list, dict, list]:
         raise CapabilitiesError(f"verification data is gone: {exc}") from exc
 
 
+def load_effectivity(repo: Path) -> dict:
+    """`effectivity` per estimator from the estimate tests under ``repo``.
+
+    Returns:
+        ``quantity`` and ``field``, each as `effectivity` returns it. The
+        field estimator is claimed at orders 2 and 3, so its cases are both
+        dicts, the order-3 ones named ``"<case>, order 3"``.
+    """
+    paths = [str(repo / "tests"), str(repo / "tools")]
+    sys.path[:0] = paths
+    try:
+        quantity = _import(repo / ESTIMATE_TEST)
+        field = _import(repo / FIELD_ESTIMATE_TEST)
+    finally:
+        for p in paths:
+            sys.path.remove(p)
+    try:
+        field_cases = dict(field.FIELD_EFFECTIVITY_BY_CASE) | {
+            f"{case}, order 3": r
+            for case, r in field.FIELD_EFFECTIVITY_ORDER_3_BY_CASE.items()
+        }
+        return {
+            "quantity": effectivity(
+                quantity.EFFECTIVITY, quantity.EFFECTIVITY_BY_CASE, ESTIMATE_TEST
+            ),
+            "field": effectivity(
+                field.FIELD_EFFECTIVITY, field_cases, FIELD_ESTIMATE_TEST
+            ),
+        }
+    except AttributeError as exc:
+        raise CapabilitiesError(f"the effectivity ranges are gone: {exc}") from exc
+
+
 def _import(path: Path):
     name = f"_gfem_capabilities_{path.stem}"
     spec = importlib.util.spec_from_file_location(name, path)
@@ -601,9 +680,13 @@ def derive(repo: Path = REPO) -> dict:
 
     Returns:
         ``columns``, ``rows``, ``counts``, ``provenance`` and ``raises`` (see
-        `gradient_matrix`), and ``refusals`` (see `distributed_refusals`).
+        `gradient_matrix`), ``refusals`` (see `distributed_refusals`) and
+        ``effectivity`` (see `load_effectivity`).
     """
-    return gradient_matrix(*load_verification(repo)) | {"refusals": load_refusals(repo)}
+    return gradient_matrix(*load_verification(repo)) | {
+        "refusals": load_refusals(repo),
+        "effectivity": load_effectivity(repo),
+    }
 
 
 # --- Sphinx --------------------------------------------------------------------
@@ -630,7 +713,13 @@ def setup(app):
     def reread(_app, env, *_changes) -> list[str]:
         # These pages render the tests' data, not their own source: read them
         # again on every build so an incremental build never serves stale claims.
-        pages = (CAPABILITIES_DOC, VERIFICATION_DOC, FRONT_DOC, DISTRIBUTED_DOC)
+        pages = (
+            CAPABILITIES_DOC,
+            VERIFICATION_DOC,
+            FRONT_DOC,
+            DISTRIBUTED_DOC,
+            REFINEMENT_DOC,
+        )
         return [d for d in pages if d in env.found_docs]
 
     app.add_config_value("gfem_capabilities_source_url", "", "html", str)
@@ -639,7 +728,27 @@ def setup(app):
     app.connect("html-page-context", add_context)
     for name, directive in _directives().items():
         app.add_directive(name, directive)
+    app.add_role("gfem-effectivity", _effectivity_role)
     return {"version": "1", "parallel_read_safe": True, "parallel_write_safe": True}
+
+
+def _effectivity_role(_name, rawtext, text, lineno, inliner, *_args):
+    """``{gfem-effectivity}`field low```: one end of an estimator's range.
+
+    The argument is the estimator (``quantity`` or ``field``) and the end
+    (``low`` or ``high``). A bare end is an error: two estimators have ranges.
+    """
+    from docutils import nodes
+
+    data = inliner.document.settings.env.gfem_capabilities["effectivity"]
+    estimator, _, end = text.partition(" ")
+    if estimator not in data or end not in ("low", "high"):
+        message = inliner.reporter.error(
+            f"gfem-effectivity takes quantity low|high or field low|high, not {text!r}",
+            line=lineno,
+        )
+        return [inliner.problematic(rawtext, rawtext, message)], [message]
+    return [nodes.Text(data[estimator][end])], []
 
 
 def _directives() -> dict:

@@ -13,6 +13,7 @@ gfem/model/index
 gfem/problems/index
 gfem/solve/index
 gfem/results/index
+gfem/refinement/index
 gfem/measurements/index
 gfem/design/index
 gfem/shape/index

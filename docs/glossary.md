@@ -356,6 +356,64 @@ Non-differentiable quantity
   version, raising an error instead of returning a zero gradient.
 ```
 
+## Mesh refinement
+
+```{glossary}
+Mesh refinement
+  Repeated {term}`refinement cycles <Refinement cycle>` that subdivide the
+  tetrahedra where an {term}`error estimator` reports the most error, until
+  its {term}`error estimate` meets a tolerance or a cap stops them
+  (`gfem.refine_mesh`). It gives a new model whose mesh keeps the physical
+  groups and the imported facets.
+
+Refinement cycle
+  One pass of {term}`mesh refinement`: solve, estimate the error, mark the
+  tetrahedra holding most of it, split them at the midpoint of their longest
+  edge (and their neighbours, so no hanging node remains), and carry the
+  design to the new tetrahedra. Cycle 0 is the solve on the input mesh.
+
+Error estimator
+  A rule that computes, from a result's fields, each tetrahedron's share of
+  the error and one {term}`error estimate`: the {term}`field estimator` or
+  the {term}`quantity estimator`.
+
+Field estimator
+  The {term}`error estimator` of the field's error in the energy norm,
+  relative to the field's energy norm (`gfem.FieldEstimator`). It compares
+  the solved electric flux with a smoother flux recovered from it
+  ({term}`flux recovery`), so it needs no extra solve.
+
+Flux recovery
+  Projecting the solved electric flux (`eps E`, or `eps grad V` in
+  electrostatics) and the curl of `E` onto smoother fields, one polynomial
+  degree below the solve's order. On the solve domain's natural surfaces,
+  the recovered flux's normal component and the recovered curl's
+  tangential component are held at zero. In electrostatics these are every
+  exterior surface not held at a potential, ports and impedance surfaces
+  included; in wave problems, the PMC surfaces and the exterior surfaces
+  given no condition. The difference between the solved and the recovered
+  fields, weighted by the field's energy, is the field's estimated error.
+
+Quantity estimator
+  The {term}`error estimator` of one quantity: a capacitance entry, an S
+  entry between excited ports, or one mode's `omega`
+  (`gfem.QuantityEstimator`). It weights each tetrahedron's field error by
+  its effect on that quantity, using fields already solved.
+
+Error estimate
+  The number an {term}`error estimator` gives for a result, compared with
+  the tolerance of {term}`mesh refinement`. It has no sign or phase and is
+  an estimate, not a bound. For a {term}`quantity estimator` it is relative
+  to a capacitance entry or to `omega`, absolute for an S entry, and gfem
+  never adds it to the quantity. On gfem's verification cases, against
+  errors on the mesh's own facets, the field estimator's estimate was
+  between {gfem-effectivity}`field low` and {gfem-effectivity}`field high`
+  times the true error (orders 2 and 3) and the quantity estimator's
+  between {gfem-effectivity}`quantity low` and
+  {gfem-effectivity}`quantity high` times (order 2). Neither sees the
+  faceting of curved surfaces.
+```
+
 ## Distributed runs
 
 ```{glossary}

@@ -198,6 +198,21 @@ def test_every_rank_raises_a_refusal_and_a_later_collective_runs(key, tmp_path):
     assert values[0] == (mpi_cases.feature(key), 0 + 1 + 2)
 
 
+def _refined_then_a_collective(directory):
+    world = _world()
+    problem = gfem.Electrostatic(terminals=mpi_cases.TERMINALS)
+    try:
+        gfem.refine_mesh(mpi_cases.stack(Path(directory)), problem)
+    except gfem.DistributedUnsupportedError as err:
+        return err.feature, world.allreduce(world.rank)
+    raise AssertionError("mesh refinement ran")
+
+
+def test_every_rank_refuses_mesh_refinement_and_a_later_collective_runs(tmp_path):
+    values = on_ranks(_refined_then_a_collective, tmp_path, ranks=3, limit=120)
+    assert values[0] == (mpi_cases.feature("mesh_refinement"), 0 + 1 + 2)
+
+
 def test_a_launched_world_of_one_raises_naming_pmix():
     code = """
     from mpi4py import MPI

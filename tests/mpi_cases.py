@@ -85,15 +85,19 @@ KEYS = (
 )
 
 
-#: What a method refuses, after a solve; `tests/mpi` raises each one on every rank.
-METHOD_KEYS = ("field_export", "load_result_fields", "power_flow")
+#: What a call other than `gfem.solve` refuses (a method after a solve, or
+#: `gfem.refine_mesh`); `tests/mpi` raises each one on every rank.
+METHOD_KEYS = ("field_export", "load_result_fields", "power_flow", "mesh_refinement")
 #: A guard no public call reaches while Bloch and eigenmode raise, so no page lists it.
 GUARD_KEYS = ("general_operator",)
+
+#: The cases whose ``feature`` is not their key.
+_FEATURES = {"mesh_refinement": "mesh refinement"}
 
 
 def feature(key: str) -> str:
     """The ``feature`` a case raises."""
-    return key.removesuffix("_auto")
+    return _FEATURES.get(key, key.removesuffix("_auto"))
 
 
 def permuted(mesh: gfem.Mesh, seed: int = 7) -> gfem.Mesh:
