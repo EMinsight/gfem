@@ -5,6 +5,7 @@ handle with its gate forced (`DirectHandle._reuse_pays`), and left alone.
 """
 
 import importlib.metadata
+import itertools
 
 import ngsolve as ngs
 import numpy as np
@@ -142,6 +143,27 @@ def test_the_reprobe_waits_five_refactorized_steps():
     assert not _next(rule)  # the fifth closed step
     _refactorized_step(rule, t22=10.0, t33=0.25)
     assert _next(rule)
+
+
+def test_a_probe_that_leaves_the_gate_closed_doubles_the_wait():
+    # the 381k-DOF bend: R/C 6.8 never reaches the lag-1 iterations, so each
+    # probe saves nothing; the probes thin out instead of coming every sixth step
+    rule = AmortizedRule()
+    _refactorized_step(rule, t22=10.0, t33=0.25)  # R/C 6.7 < 10
+    opened = []
+    for _ in range(60):
+        reused = _next(rule)
+        opened.append(reused)
+        if reused:
+            _reused_step(rule, seconds=2.0, iterations=12)  # I1 12 > 6.7
+        else:
+            _refactorized_step(rule, t22=10.0, t33=0.25)
+    probes = [k for k, reused in enumerate(opened) if reused]
+    assert probes[0] == REPROBE_STEPS
+    gaps = [b - a for a, b in itertools.pairwise(probes)]
+    assert gaps == sorted(gaps)
+    assert gaps[0] < gaps[-1]
+    assert len(probes) <= 4
 
 
 def test_a_gate_closed_by_the_floor_never_reprobes():

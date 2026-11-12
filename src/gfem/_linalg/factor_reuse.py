@@ -16,7 +16,9 @@ refactorization over one direct column), ``C`` the columns of the last step
 and ``I1`` the iterations per column of the last chain's first reused step
 (`FIRST_ITERATIONS` before any). A gate closed by ``I1`` alone re-probes: after
 `REPROBE_STEPS` refactorized steps with it closed, the next step reuses once,
-and its iterations per column become ``I1``. Only at the frequency the factors
+and its iterations per column become ``I1``; a probe that leaves it closed
+doubles the wait before the next one, so a model where reuse never pays
+probes only a few times in a run. Only at the frequency the factors
 were made at, and only while they are held. It reads no clock: the handle
 reports.
 """
@@ -65,8 +67,11 @@ class AmortizedRule:
         self._reused = False
         self._step = (0, 0, 0.0)
         self._open = False
-        # refactorized steps since the gate closed on ``I1`` alone
+        # refactorized steps since the gate closed on ``I1`` alone, the steps
+        # to wait before the next probe, and whether the last open was a probe
         self._closed_steps = 0
+        self._wait = REPROBE_STEPS
+        self._probing = False
 
     @property
     def reusing(self) -> bool:
@@ -125,15 +130,22 @@ class AmortizedRule:
         """``pays()``, or a re-probe of a gate closed by ``I1`` for long enough."""
         if pays():
             self._closed_steps = 0
+            self._wait = REPROBE_STEPS
+            self._probing = False
             return True
+        if self._probing:
+            # the probe left the gate closed: wait twice as long next time
+            self._probing = False
+            self._wait *= 2
         if self._measured_ratio() is None:
             # closed by the floor or not measured yet: no probe
             self._closed_steps = 0
             return False
-        if self._closed_steps < REPROBE_STEPS:
+        if self._closed_steps < self._wait:
             self._closed_steps += 1
             return False
         self._closed_steps = 0
+        self._probing = True
         return True
 
     def _mean(self, start: float) -> float:
