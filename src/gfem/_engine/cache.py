@@ -41,7 +41,8 @@ the walk of a stored entry (`EntryCache.put`):
 
 1. releases pooled handles' PARDISO factors, keeping their plans;
 2. drops kept fixed parts, whole stores, least recently used discretization
-   first;
+   first; a store whose parts another holder references stays (its bytes
+   would not leave), with the digests it has seen;
 3. frees pooled handles, least recently returned first;
 4. moves live entries' bases to the pool, oldest entry first, where tiers 1
    and 3 run on them again (freed where they cannot pool);
@@ -116,27 +117,18 @@ class Discretization:
         """The key of the NGSolve mesh's communicator (`gfem._mpi.comm_key`)."""
         return _mpi.comm_key(self.built.comm)
 
-    def _stores(self) -> list[KeptParts]:
+    def stores(self) -> list[KeptParts]:
+        """The kept fixed part stores among the spaces."""
         return [s for s in self.spaces.values() if isinstance(s, KeptParts)]
 
     def shared(self) -> dict[int, int]:
         """The kept fixed parts' and port state's bytes, by object identity."""
         held: dict[int, int] = {}
-        for store in self._stores():
+        for store in self.stores():
             held.update(store.shared())
         if self.ports is not None:
             held.update(self.ports.shared())
         return held
-
-    @property
-    def has_fixed_parts(self) -> bool:
-        """Whether a kept fixed part store holds a part or a digest seen."""
-        return any(s.kept or s.seen for s in self._stores())
-
-    def drop_fixed_parts(self) -> None:
-        """Clear every kept fixed part store (`KeptParts.clear`)."""
-        for store in self._stores():
-            store.clear()
 
     def drop_ports(self) -> None:
         """Drop the kept port state: the next driven solve builds it again."""
@@ -235,6 +227,11 @@ def _shared(holder: Any) -> dict[int, int]:
     """``holder.shared()``, or nothing for a holder without one."""
     shared = getattr(holder, "shared", None)
     return {} if shared is None else shared()
+
+
+def _alone(entry: Entry) -> int:
+    """The bytes the cache holds with ``entry`` alone: its own and its shared."""
+    return entry.nbytes + sum(entry.shared().values())
 
 
 _PROC_CGROUP = pathlib.Path("/proc/self/cgroup")
@@ -348,6 +345,13 @@ class _Tally:
         """The bytes held."""
         return self._own + sum(self._bytes.values())
 
+    def shared_elsewhere(self, shared: dict[int, int]) -> bool:
+        """Whether a second holder references one of the objects ``shared``.
+
+        For objects of one counted holder: dropping them there frees nothing.
+        """
+        return any(self._refs.get(key, 0) > 1 for key in shared)
+
 
 class _Walk:
     """A walk's tally against its budget (the node's under ``comm``)."""
@@ -386,6 +390,10 @@ class _Walk:
         """Count a holder that joined the cache."""
         self._tally.replace(_NOTHING, _Tally.of(holder))
 
+    def shared_elsewhere(self, shared: dict[int, int]) -> bool:
+        """See `_Tally.shared_elsewhere`."""
+        return self._tally.shared_elsewhere(shared)
+
 
 @dataclasses.dataclass(eq=False)
 class _Pooled:
@@ -415,13 +423,13 @@ class EntryCache:
         # least recently returned first
         self._plans: collections.OrderedDict[int, _Pooled] = collections.OrderedDict()
         self._discretizations = discretizations
-        # an entry is giving up its base: its walker walks, `give_plan` does not
-        self._giving_up = False
 
     def put(self, entry: Entry, budget: int, comm: Any = None) -> int:
         """Store ``entry`` and return its key; evict down to ``budget`` bytes.
 
-        An entry whose own bytes exceed the budget gives up its base handle
+        An entry whose bytes alone exceed the budget (its own and those of
+        every shared object it references, which no eviction frees while it
+        lives) gives up its base handle
         (to the plan pool, where it can: the walk then releases its factors,
         and frees it only if it still does not fit). It is kept without it
         when that fits, and is otherwise freed at once and evicts no other
@@ -439,9 +447,9 @@ class EntryCache:
         """
         key = next(self._keys)
         budget = _mpi.node_budget(comm, budget)
-        if _mpi.node_bytes(comm, entry.nbytes) > budget:
+        if _mpi.node_bytes(comm, _alone(entry)) > budget:
             self._give_up_base(entry, comm)
-            if _mpi.node_bytes(comm, entry.nbytes) > budget:
+            if _mpi.node_bytes(comm, _alone(entry)) > budget:
                 entry.free()
                 self._walk(budget, comm, entries=False)
                 return key
@@ -483,8 +491,13 @@ class EntryCache:
             if release is not None and not walk.step(pooled.handle, release):
                 return True
         for disc in discs:
-            if disc.has_fixed_parts and not walk.step(disc, disc.drop_fixed_parts):
-                return True
+            for store in disc.stores():
+                # a store held elsewhere too (an entry's pieces, a pooled
+                # pattern) frees nothing: it stays, and keeps on keeping
+                if not store.kept or walk.shared_elsewhere(store.shared()):
+                    continue
+                if not walk.step(disc, store.clear):
+                    return True
         return self._free_plans(walk)
 
     def _free_plans(self, walk: _Walk) -> bool:
@@ -531,18 +544,14 @@ class EntryCache:
     def _give_up_base(self, entry: Entry, comm: Any) -> list[Any]:
         """``entry``'s base handle to the plan pool, without a walk (ADR 0093).
 
-        Where its handle can (`free_base`): other bases are freed. The handles
-        it pooled, for the caller's walk to count.
+        Where its handle can (`free_base`, told not to walk: the caller's walk
+        counts what it pools): other bases are freed. The handles it pooled.
         """
         free_base = getattr(entry.handle, "free_base", None)
         if free_base is None:
             return []
         before = set(self._plans)
-        self._giving_up = True
-        try:
-            free_base(comm)
-        finally:
-            self._giving_up = False
+        free_base(comm, walk=False)
         return [p.handle for k, p in self._plans.items() if k not in before]
 
     def _tally(self, discs: Iterable[Discretization], *, pool: bool) -> _Tally:
@@ -607,12 +616,14 @@ class EntryCache:
         handle: Any,
         budget: int,
         kept: Collection[Any] = (),
+        *,
+        walk: bool = True,
     ) -> None:
         """Pool ``handle`` under ``key``, with its factors, within ``budget``.
 
         While the cache is over ``budget``, the walk's tiers 1, 2, 3 and 6 run,
-        unless an entry is giving the handle up (that walk counts it);
-        entries and their bases stay (only `put` evicts them),
+        unless not to ``walk`` (an entry giving the handle up: that walk
+        counts it); entries and their bases stay (only `put` evicts them),
         so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
         no discretization of it is left (`free_plans_off`). One process only.
@@ -625,7 +636,7 @@ class EntryCache:
         if pattern is not None and not any(pattern is k for k in kept):
             handle.drop_pattern()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
-        if not self._giving_up:
+        if walk:
             self._walk(budget, None, entries=False)
 
     def take_plan(self, key: Hashable) -> Any | None:

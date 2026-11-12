@@ -58,7 +58,7 @@ class FakeKept:
     def shared(self):
         return {id(a): a.nbytes for a in self._shared}
 
-    def free_base(self, comm):  # noqa: ARG002
+    def free_base(self, comm, *, walk=True):  # noqa: ARG002
         if self.base is not None:
             self.base.free()
             if self._log is not None:
@@ -225,18 +225,37 @@ def test_an_entry_freed_at_put_still_walks_the_kept_state():
     assert not _store(discs[0]).kept
 
 
-def test_an_entry_keeps_reading_its_own_state_after_eviction():
+def test_a_store_a_live_entry_holds_too_stays_kept_with_its_digests():
     values = np.zeros(40, np.uint8)
     disc = _disc()
     store = disc.space(("em", "hcurl", 1, "fixed pieces"), KeptParts)
     store.kept["mass"] = FakeParts(values)
+    store.seen["mass"] = "d"
     entries = EntryCache(discretizations=lambda: [disc])
     kept = FakeKept(1, shared=[values])
     key = entries.put(Entry(physics="em", handle=kept), budget=10**6)
+    # dropping the store would free nothing: the live entry holds its values
     entries.free_consumed(comm=None, budget=0)
-    assert not store.kept  # the store let go
-    # the live entry still holds them, and they still count
+    assert store.kept
+    assert store.seen == {"mass": "d"}
     assert entries.get(key) is not None
+    assert entries.nbytes == 1 + 40
+
+
+def test_a_store_no_other_holder_references_is_dropped():
+    held, alone = np.zeros(40, np.uint8), np.zeros(30, np.uint8)
+    shared_disc, alone_disc = _disc(), _disc()
+    for disc, values in ((shared_disc, held), (alone_disc, alone)):
+        store = disc.space(("em", "hcurl", 1, "fixed pieces"), KeptParts)
+        store.kept["mass"] = FakeParts(values)
+        store.seen["mass"] = "d"
+    entries = EntryCache(discretizations=lambda: [shared_disc, alone_disc])
+    entries.put(Entry(physics="em", handle=FakeKept(1, shared=[held])), budget=10**6)
+    entries.free_consumed(comm=None, budget=50)
+    # the older store is held by the entry: the newer one goes, and fits
+    assert _store(shared_disc).kept
+    assert not _store(alone_disc).kept
+    assert not _store(alone_disc).seen
     assert entries.nbytes == 1 + 40
 
 
@@ -247,9 +266,11 @@ class PoolingKept(FakeKept):
         super().__init__(nbytes, base, **kwargs)
         self._entries, self._budget = entries, budget
 
-    def free_base(self, comm):  # noqa: ARG002
+    def free_base(self, comm, *, walk=True):  # noqa: ARG002
         if self.base is not None:
-            self._entries.give_plan((self._name,), TOPOLOGY, self.base, self._budget)
+            self._entries.give_plan(
+                (self._name,), TOPOLOGY, self.base, self._budget, walk=walk
+            )
         self.base = None
 
 
@@ -316,4 +337,17 @@ def test_an_entry_whose_fields_alone_are_over_budget_walks_the_pool():
     assert base.released
     assert pooled.freed
     assert not base.freed
+    assert entries.nbytes == 30
+
+
+def test_an_entry_too_large_with_its_shared_state_evicts_no_other():
+    entries = EntryCache()
+    old_key = entries.put(Entry(physics="em", handle=FakeKept(30)), budget=10**6)
+    coupling = np.zeros(100, np.uint8)
+    # its own 10 bytes fit; with the coupling it references, 110 never do
+    new_key = entries.put(
+        Entry(physics="em", handle=FakeKept(10, shared=[coupling])), budget=100
+    )
+    assert entries.get(new_key) is None
+    assert entries.get(old_key) is not None
     assert entries.nbytes == 30

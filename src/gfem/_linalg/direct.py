@@ -278,12 +278,24 @@ class DirectHandle(PlannedHandle):
         """Write the held matrix and factorize it on the plan; under the lock.
 
         Or only write it, when the rule reuses the held factors: PARDISO's
-        own copy of the values stays the factored matrix's.
+        own copy of the values stays the factored matrix's. Values equal to
+        the held ones (the same design again, a backward taking its plan
+        back) are no new step: the step in progress goes on, on the factors
+        it solves with.
         """
         matrix = self._live()
         # a live handle holds its factors (`_release` drops them)
         factors = cast("Factors", self._factors)
         rule = self._rule
+        if rule is not None and not factors.released:
+            values = matrix.AsVector().FV().NumPy()
+            held = values.copy()
+            write(matrix)
+            if np.array_equal(values, held):
+                return
+            # PARDISO's first refactorization reads the factored values
+            # before it writes (its gather index)
+            values[:] = held
         if rule is not None and rule.next_step(
             frequency=self._frequency,
             held=not factors.released,
@@ -366,10 +378,12 @@ class DirectHandle(PlannedHandle):
                 solver = Gmres(matrix, self._solver, tol=tight, maxiter=rule.cap)
                 solver.Solve(rhs=b, sol=x, initialize=True)
                 its = int(solver.iterations)  # ty: ignore[unresolved-attribute]
-                rule.solved_reused(1, its, time.perf_counter() - start)
                 counts.append(its)
                 residuals = solver.residuals  # ty: ignore[unresolved-attribute]
-                if residuals and residuals[-1] > tight * residuals[0]:
+                if not residuals or residuals[-1] <= tight * residuals[0]:
+                    rule.solved_reused(1, its, time.perf_counter() - start)
+                else:
+                    # capped: the column counts once, as the direct one below
                     self._refactorize_held(rule)
                     start = time.perf_counter()
                     x.data = self._solver * b

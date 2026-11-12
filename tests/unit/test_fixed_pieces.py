@@ -218,13 +218,21 @@ def test_the_compiled_piece_sum_matches_the_numpy_sum(monkeypatch):
     assert np.abs(fused - plain).max() <= 1e-14 * np.abs(plain).max()
 
 
-def test_a_compiled_pass_refusing_its_arguments_falls_back_to_numpy(monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [
+        TypeError("unsupported data types"),
+        # scipy's refusal of an output dtype the inputs do not cast to
+        ValueError("Output dtype not compatible with inputs."),
+    ],
+)
+def test_a_compiled_pass_refusing_its_arguments_falls_back_to_numpy(monkeypatch, error):
     assembled, pattern = _split_pieces()
     monkeypatch.setattr(pieces, "_csc_matvec", None)
     plain = _summed(assembled, pattern)
 
     def refuse(*_):
-        raise TypeError("unsupported data types")
+        raise error
 
     monkeypatch.setattr(pieces, "_csc_matvec", refuse)
     np.testing.assert_array_equal(_summed(assembled, pattern), plain)

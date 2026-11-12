@@ -1174,8 +1174,9 @@ class DrivenRule:
         ct_e = cotangents.get("e_field")
         frequencies = self.problem.frequency
         pairs: list[FieldPair | None] = [None] * len(frequencies)
+        rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
         with task_manager(self.options.threads, self.comm):
-            if not isinstance(entry.handle, _Kept):  # frequency workers keep none
+            if rebuilt:
                 entry.handle = _Kept(*self._ports(model, warn=False))
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
@@ -1209,6 +1210,10 @@ class DrivenRule:
                 pairs[n] = op.pair(
                     -adjoint, x, weights=op.weights(omega), domain=domain
                 )
+        if rebuilt:
+            # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
+            # this backward built goes down to the budget, no entry evicted
+            ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
         return [p for p in pairs if p is not None]
 
     def _backward_adaptive(
@@ -1743,17 +1748,18 @@ class _Kept:
             return {}
         return {**self.system.shared(), **self.ports.shared()}
 
-    def free_base(self, comm: Any) -> None:
+    def free_base(self, comm: Any, *, walk: bool = True) -> None:
         """Give up the base handle kept for a backward pass, if it is on ``comm``.
 
-        A base from the plan pool returns there, with its factors (ADR 0093);
+        A base from the plan pool returns there, with its factors (ADR 0093),
+        and the pool walks unless not to ``walk`` (`EntryCache.give_plan`);
         any other is freed. Freeing may be collective on a backend, so an entry
         of another communicator stays: its ranks are not here.
         """
         if not self._freed and _mpi.comm_key(
             self.system.operator.built.comm
         ) == _mpi.comm_key(comm):
-            self.system.free_base(return_plan=True)
+            self.system.free_base(return_plan=True, walk=walk)
 
     def free(self, *, return_plans: bool = False) -> None:
         """Release the system operator's handles and pieces, and drop both.

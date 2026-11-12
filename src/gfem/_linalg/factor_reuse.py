@@ -3,8 +3,8 @@
 Preconditioner reuse for the direct solver (ADR 0094, amended): a serial
 PARDISO handle held in the plan pool keeps design j's factors and solves the
 next design's matrix by GMRES, left-preconditioned by them, instead of
-refactorizing. A step is one refactorization call on the handle, and every
-solve until the next.
+refactorizing. A step is one refactorization call on the handle with new
+values, and every solve until the next (the same values again are no step).
 
 `AmortizedRule` decides each step from the costs the handle times: after a
 refactorization (a chain starts), reuse while the last reused step's solver

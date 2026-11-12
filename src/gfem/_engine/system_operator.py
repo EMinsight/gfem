@@ -218,6 +218,23 @@ class SystemOperator:
         (``retain_memory``'s bytes) a serial CPU direct sweep takes its base
         from the plan pool and returns it there (`PlanSlot`).
         """
+        plans = None if pool_budget is None else self._plan_slot(pool_budget)
+        return self._sweep(
+            solves=solves,
+            reuse_preconditioner=reuse_preconditioner,
+            tolerance=tolerance,
+            plans=plans,
+        )
+
+    def _sweep(
+        self,
+        *,
+        solves: int,
+        reuse_preconditioner: bool,
+        tolerance: float | None,
+        plans: PlanSlot | None,
+    ) -> SystemSweep:
+        """`sweep` on the plan slot ``plans`` (or off the pool)."""
         return SystemSweep(
             self.operator_at,
             functools.partial(self._system_handle, borrow=True),
@@ -229,7 +246,8 @@ class SystemOperator:
                 tolerance=tolerance,
                 reuse_preconditioner=reuse_preconditioner,
             ),
-            plans=None if pool_budget is None else self._plan_slot(pool_budget),
+            plans=plans,
+            tolerance=self._linear.tolerance if tolerance is None else tolerance,
         )
 
     def _plan_slot(self, budget: int) -> PlanSlot | None:
@@ -371,16 +389,16 @@ class SystemOperator:
             and self._linear.kind in ("direct", "bddc_gmres")
         )
 
-    def free_base(self, *, return_plan: bool = False) -> None:
+    def free_base(self, *, return_plan: bool = False, walk: bool = True) -> None:
         """Release the adjoint solves' base handle; the sweep prepares it again.
 
         The transposed system's too. With ``return_plan`` a base from the plan
-        pool returns there instead.
+        pool returns there instead (`SystemSweep.free`).
         """
         if self._adjoint_sweep is not None:
-            self._adjoint_sweep.free(return_plan=return_plan)
+            self._adjoint_sweep.free(return_plan=return_plan, walk=walk)
         if self._transposed_system is not None:
-            self._transposed_system.free_base(return_plan=return_plan)
+            self._transposed_system.free_base(return_plan=return_plan, walk=walk)
 
     def _held_nbytes(self) -> int:
         """The adjoint handles' and the pieces' bytes (not ``W``'s)."""
@@ -410,9 +428,13 @@ class SystemOperator:
                 adjoint_tolerance=self._adjoint_tolerance,
             )
             budget = self._pool_budget
-            if budget is not None and system._plan_slot(budget) is not None:
-                system._adjoint_sweep = system.sweep(
-                    tolerance=self._adjoint_tolerance, pool_budget=budget
+            slot = None if budget is None else system._plan_slot(budget)
+            if slot is not None:
+                system._adjoint_sweep = system._sweep(
+                    solves=1,
+                    reuse_preconditioner=True,
+                    tolerance=self._adjoint_tolerance,
+                    plans=slot,
                 )
             self._transposed_system = system
         return self._transposed_system
@@ -501,7 +523,9 @@ class SystemSweep:
 
     With a `PlanSlot` the first call takes the base from the plan pool when a
     handle of its key is free there, and refactorizes it; leaving the ``with``
-    block without an error returns the base to the pool.
+    block without an error returns the base to the pool. A taken base solves
+    at the sweep's ``tolerance``, not at the one of the sweep that prepared it
+    (an adjoint's): a solve on factors reused across designs reads it.
     """
 
     def __init__(
@@ -510,15 +534,19 @@ class SystemSweep:
         system_handle: Callable[[Handle, float], Handle],
         prepare: Callable[[Operator], Handle],
         plans: PlanSlot | None = None,
+        tolerance: float | None = None,
     ) -> None:
         """Hold ``ω -> A(ω)``, the wrap into ``A(ω) + W(ω)`` and the base's prepare.
 
         The wrap borrows the base handle. ``plans``: where the base pools.
+        ``tolerance``: the one ``prepare`` prepares at, given to a base taken
+        from the pool.
         """
         self._operator_at = operator_at
         self._system_handle = system_handle
         self._prepare = prepare
         self._plans = plans
+        self._tolerance = tolerance
         # the pool key of the base, set when the base was taken or prepared
         self._key: Hashable | None = None
         self._base: Handle | None = None
@@ -541,6 +569,8 @@ class SystemSweep:
         if self._base is None and self._plans is not None:
             self._key = self._plans.key()
             self._base = ENTRIES.take_plan(self._key)
+            if self._base is not None and self._tolerance is not None:
+                self._base.tolerance = self._tolerance
         self._base = refactorize_or_prepare(
             self._base, operator, self._prepare, frequency=omega
         )
@@ -579,18 +609,21 @@ class SystemSweep:
         """Solve at ``ω``: the solution and the Krylov iterations per column."""
         return self.at(omega).solve_counted(rhs, x0=x0)
 
-    def free(self, *, return_plan: bool = False) -> None:
+    def free(self, *, return_plan: bool = False, walk: bool = True) -> None:
         """Release the base handle.
 
         With ``return_plan`` a pooled sweep's base returns to the plan pool
-        instead, with its factors (the pool releases them under pressure).
+        instead, with its factors (the pool releases them under pressure,
+        where it may ``walk``: `EntryCache.give_plan`).
         """
         base, plans, key = self._base, self._plans, self._key
         self._base, self._last = None, None
         if base is None:
             return
         if return_plan and plans is not None and key is not None:
-            ENTRIES.give_plan(key, plans.topology, base, plans.budget, plans.kept())
+            ENTRIES.give_plan(
+                key, plans.topology, base, plans.budget, plans.kept(), walk=walk
+            )
         else:
             base.free()
 

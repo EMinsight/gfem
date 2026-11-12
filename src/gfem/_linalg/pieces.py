@@ -276,18 +276,17 @@ class AssembledPieces:
         with self._lock:
             parts = self._parts
         held = 0
-        # split pieces' varying parts share one positions array: count it once
-        positions: dict[int, np.ndarray] = {}
         for values, at, k, shared in parts:
             if shared:
                 continue
             if at is None:
                 held += int(values.FV().NumPy().nbytes)
-            else:
-                held += int(values.nbytes)
-                if k not in self._split:
-                    positions[id(at)] = at
-        return held + sum(int(at.nbytes) for at in positions.values())
+                continue
+            held += int(values.nbytes)
+            # a split piece's positions are its kept part's, in `shared`
+            if k not in self._split:
+                held += int(at.nbytes)
+        return held
 
     def shared(self) -> dict[int, int]:
         """Bytes of what a handle or a `KeptParts` store may hold too, by identity.
@@ -423,7 +422,9 @@ def _scatter_compiled(out: np.ndarray, scattered: _Scattered) -> bool:
         one[1] = len(at)
         try:
             _csc_matvec(len(out), 1, one, at, values, np.array([w]), out)
-        except TypeError:  # raised before it writes: the rest by numpy
+        # scipy refuses unsupported dtypes (TypeError) and an output dtype the
+        # inputs do not cast to (ValueError) before it writes: the rest by numpy
+        except (TypeError, ValueError):
             _scatter_numpy(out, scattered[i:])
             break
     return True
