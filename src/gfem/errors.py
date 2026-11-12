@@ -265,6 +265,25 @@ class DegenerateModeError(ValueError):
     """
 
 
+class ModeLabelError(RuntimeError):
+    """A dressed level no longer resembles one bare Fock state.
+
+    `gfem.quantum.dressed_modes` labels each level it uses (the ground
+    state, one and two photons in a mode, one photon in each of two modes)
+    by its largest overlap with a bare Fock state; above 1/2 that label is
+    unique. At 1/2 or less two modes have hybridized (near a resonance
+    between them, or in the straddling regime), and "the qubit" and "the
+    resonator" are no longer separate objects. The message names the level,
+    its overlap and the two bare frequencies involved, and the remedies:
+    move the modes apart, or leave the hybridized mode out of the call.
+    ``method="first_order"`` is not a remedy: it gives a number for a
+    picture that no longer holds. With concrete inputs it is raised as is;
+    under a JAX transformation (`jax.jit`, `jax.grad`, `jax.vmap`) it
+    arrives as ``jax.errors.JaxRuntimeError`` carrying this class's name
+    and the message.
+    """
+
+
 class SweepNotConvergedWarning(UserWarning):
     """An adaptive frequency sweep stopped at its sample cap before converging.
 
