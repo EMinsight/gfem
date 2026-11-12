@@ -13,6 +13,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import structured_meshes as sm
 from gradient_cases import layered_line, line_design, s_functional, tight, with_fields
 
 import gfem
@@ -194,3 +195,60 @@ def test_pullbacks_twice_and_after_eviction_equal_fresh_gradients(line):
     )
     recompute = jax.grad(_eps_objective(line, options))
     np.testing.assert_allclose(recompute(eps), fresh, rtol=RTOL)
+
+
+# --- a port that is not excited: its S functional joins the basis ----------------
+
+LUMPED_GRID = np.linspace(1e9, 20e9, 58)
+LUMPED_AT = [0, 57, 30]
+
+
+@pytest.fixture(scope="module")
+def lumped_line(tmp_path_factory):
+    path = tmp_path_factory.mktemp("lumped") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(10.0, 2.0, 1.0, (10, 1, 1)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    return gfem.Model(
+        mesh,
+        materials={"dielectric": gfem.Material(eps_r=4.0, tan_delta=1e-3)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+
+
+@pytest.mark.parametrize("excite", [("p1",), ("p2",)])
+def test_an_unexcited_lumped_port_row_is_exact_at_the_samples(lumped_line, excite):
+    # the adjoint of the unexcited port's row is not in the span of the
+    # excited solutions: each sample also solves that port's S functional
+    options = gfem.SolverOptions(linear_solver="direct")
+    n = len(lumped_line.mesh.tetrahedra)
+    rng = np.random.default_rng(1)
+    p0 = jnp.asarray(rng.uniform(3.0, 5.0, n))
+    d = rng.standard_normal(n)
+    d /= np.linalg.norm(d)
+    frozen = gfem.Driven(
+        frequency=LUMPED_GRID,
+        sweep="adaptive",
+        samples=[LUMPED_GRID[i] for i in LUMPED_AT],
+        excite=excite,
+    )
+    uniform = gfem.Driven(frequency=LUMPED_GRID[LUMPED_AT], excite=excite)
+
+    def jacobian(problem, rows):
+        def s_column(p):
+            field = gfem.MaterialField(eps_r=p * (1 - 1e-3j))
+            model = lumped_line.with_material("dielectric", field)
+            s = gfem.solve(model, problem, options=options).s.values
+            s = s[jnp.asarray(rows)]
+            return jnp.stack([s.real, s.imag])
+
+        # one forward and its tangent along d: every entry's directional gradient
+        return np.asarray(jax.jacrev(lambda t: s_column(p0 + t * d))(0.0))
+
+    got = jacobian(frozen, LUMPED_AT)
+    want = jacobian(uniform, [0, 1, 2])
+    assert got.shape == (2, 3, 2, 1)
+    np.testing.assert_allclose(got, want, rtol=1e-9)

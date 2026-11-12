@@ -55,9 +55,10 @@ An adaptive sweep differentiates with its reduced basis V and sample set
 held fixed (`DrivenRule._backward_adaptive`): the cache entry keeps only V
 and the reduced model, the backward solves n x n reduced adjoints and folds
 them into at most n field pairs ``(V a, V b)`` per material term. Each
-sample also solves the S functionals of the wave ports whose adjoint the
-solutions miss (`PortNetwork.adjoint_loads`) into V, so the frozen-basis
-gradient equals the full solve's at the samples. Under a JAX
+sample also solves the S functionals whose adjoint the solutions miss
+(`PortNetwork.adjoint_loads`: wave ports, and lumped ports that are not
+excited) into V, so the frozen-basis gradient equals the full solve's at
+the samples. Under a JAX
 transformation the sample set must be frozen (``Driven.samples``), so
 every output shape is known before the solve.
 """
@@ -555,6 +556,15 @@ class DrivenRule:
         self.regions = tuple(r for r in mesh.volumes if active[mesh.elements(r)].any())
         #: The wave ports' names, in model port order.
         self.wave_ports = tuple(p.name for p in model.ports if isinstance(p, WavePort))
+        #: The lumped ports an adaptive sweep solves as adjoint loads: not
+        #: excited, with a resistance (`PortNetwork.adjoint_loads`).
+        self.lumped_loads = tuple(
+            p.name
+            for p in model.ports
+            if isinstance(p, LumpedPort)
+            and p.name not in self.excite
+            and not math.isnan(resistance(p))
+        )
         workers_run = min(options.frequency_workers, len(problem.frequency)) > 1
         if self.wave_ports and workers_run and not self.adaptive:
             # each worker would track the port modes over its own block only
@@ -1028,11 +1038,13 @@ class DrivenRule:
     def _padded_size(self) -> int:
         """Most basis vectors frozen samples give.
 
-        Two per sample and excited port, and two per sample and wave port
-        for its S functional's adjoint (`PortNetwork.adjoint_loads`).
+        Two per sample and excited port, and two per sample and adjoint
+        load (`PortNetwork.adjoint_loads`): every wave port, and every
+        lumped port that is not excited and has a resistance.
         """
         samples = self.problem.samples or ()
-        return 2 * len(samples) * (len(self.excite) + len(self.wave_ports))
+        loads = len(self.wave_ports) + len(self.lumped_loads)
+        return 2 * len(samples) * (len(self.excite) + loads)
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each forward output."""

@@ -22,6 +22,13 @@ load. A port without a resistance
 has no reference impedance: its S row and ``z_ref`` are NaN, and a
 cotangent on that row makes the gradient NaN like the value (ADR 0011).
 
+A row that reciprocity does not cover needs its own adjoint solution: the
+row of a lumped port that is not excited, or of a wave port whose mode is
+not real up to a phase. A uniform sweep solves it in the backward pass; an
+adaptive sweep, whose backward has no full-size solver, solves these S
+functionals at every sample and adds them to its basis
+(`PortNetwork.adjoint_loads`, ADR 0010).
+
 The network only consumes the wave port couplings; the system operator
 (`gfem._engine.system_operator`) solves with the same couplings.
 """
@@ -357,9 +364,12 @@ class PortNetwork:
 
         A wave port's S functional, unless the port is excited and its
         functional parallel to its excitation (lossless: the adjoint is the
-        port's own solution). An adaptive sweep adds their solutions to its
-        basis at every sample (`gfem._sweep.adaptive`, ADR 0010), so the
-        frozen-basis S gradient of a lossy wave port is exact at the samples.
+        port's own solution); then the S functional of every lumped port
+        that is not excited (an excited one's adjoint is its own solution)
+        and has a resistance (without one the functional is NaN and the row
+        undefined). An adaptive sweep adds their solutions to its basis at
+        every sample (`gfem._sweep.adaptive`, ADR 0010), so the frozen-basis
+        gradient of every defined S entry is exact at the samples.
         """
         functional = self.functional(omega)
         excited = any(c.index in self.columns for c in self.waves)
@@ -374,6 +384,14 @@ class PortNetwork:
             ):
                 continue
             loads.append(f)
+        wave = {c.index for c in self.waves}
+        for i in range(functional.shape[1]):
+            if i in wave or i in self.columns:
+                continue
+            f = functional[:, i]
+            # a rank without port DOFs sees no NaN: the ranks agree
+            if _mpi.agree_all(self.layout.comm, flag=bool(np.isfinite(f).all())):
+                loads.append(f)
         if not loads:
             return np.zeros((len(functional), 0), complex)
         return np.stack(loads, axis=1)
