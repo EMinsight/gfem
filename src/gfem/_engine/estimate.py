@@ -445,17 +445,14 @@ def _wave(recovery: FluxRecovery, field: Field) -> np.ndarray:
     built = recovery.built
     k = complex(np.asarray(field.omega)) / scipy.constants.c * built.scale
     k2 = abs(k) ** 2
-    values = _eps_eff_values(recovery.model, built, k)
-    if np.any(values.imag):
-        eps = [coefficient(built, values.real), coefficient(built, values.imag)]
+    values = _lossy_eps_eff(recovery, k)
+    if values is None:
+        eps = [recovery.eps]
+        flux_weight, mass_weight = recovery.eps_inverse, recovery.eps
+    else:
+        eps = _split(built, values)
         flux_weight, mass_weight = (
             coefficient(built, w) for w in _modulus_weights(values)
-        )
-    else:
-        eps, flux_weight, mass_weight = (
-            [recovery.eps],
-            recovery.eps_inverse,
-            recovery.eps,
         )
     parts = _parts(field)
     eta2 = np.zeros(len(recovery.model.mesh.tetrahedra))
@@ -588,7 +585,7 @@ def s_entry(
     """
     fields = dict(zip(result.kept, result.e_fields, strict=True))
     adjoints = adjoints or {}
-    d = _deembedding(result)
+    d = _deembedding(result)  # `PortNetwork.deembedding` of the result
     eta0 = scipy.constants.mu_0 * scipy.constants.c
     out = []
     with task_manager(threads):
@@ -616,11 +613,13 @@ def s_entry(
 
 def _deembedding(result: DrivenResult) -> dict[str, np.ndarray]:
     """Each port's de-embedding per frequency: ``exp(gamma offset)``, 1 if lumped."""
+    from gfem._engine.wave_ports import deembedding
+
     offsets = dict(result.offsets)
     ones = np.ones(len(result.s.frequency), complex)
     modes = result.port_modes
     return {
-        name: np.exp(np.asarray(modes[name].gamma) * offsets.get(name, 0.0))
+        name: deembedding(np.asarray(modes[name].gamma), offsets.get(name, 0.0))
         if name in modes
         else ones
         for name in result.s.ports
@@ -654,12 +653,8 @@ def omega(
         k = complex(np.asarray(field.omega)) / scipy.constants.c * recovery.built.scale
         lam = k * k
         eps, eps_inverse = _effective_eps(recovery, k)
-        parts = _parts(field)
-        flux = _times(eps, parts)
-        flux_error = [recovery.flux_residual(f) for f in flux]
-        curl_error = [recovery.curl_residual(ngs.curl(gf)) for gf in parts]
-        curl = _bilinear(recovery, curl_error, _times([recovery.mu], curl_error))
-        mass = _bilinear(recovery, flux_error, _times(eps_inverse, flux_error))
+        errors = _residuals(recovery, field, eps)
+        curl, mass = _pair(recovery, errors, errors, eps_inverse)
         slope = _slope(model, field, k)
     scale = 1.0 / (abs(k) * abs(slope))
     value = scale * (abs(curl.sum()) + abs(lam) * abs(mass.sum()))
@@ -675,16 +670,25 @@ def _effective_eps(
     tetrahedron, a scalar or a 3x3 tensor; real (``recovery.eps``) on a
     lossless model.
     """
-    built = recovery.built
-    eps = _eps_eff_values(recovery.model, built, k)
-    if not np.any(eps.imag):
+    eps = _lossy_eps_eff(recovery, k)
+    if eps is None:
         return [recovery.eps], [recovery.eps_inverse]
     inverse = 1.0 / eps if eps.ndim == 1 else np.linalg.inv(eps)
+    return _split(recovery.built, eps), _split(recovery.built, inverse)
 
-    def parts(values: np.ndarray) -> list[ngs.CoefficientFunction]:
-        return [coefficient(built, values.real), coefficient(built, values.imag)]
 
-    return parts(eps), parts(inverse)
+def _lossy_eps_eff(recovery: FluxRecovery, k: complex) -> np.ndarray | None:
+    """`_eps_eff_values` at ``k``, or ``None`` where it is real (no loss).
+
+    Without loss the recovery's own real ``eps`` coefficients stand.
+    """
+    eps = _eps_eff_values(recovery.model, recovery.built, k)
+    return eps if np.any(eps.imag) else None
+
+
+def _split(built: EngineMesh, values: np.ndarray) -> list[ngs.CoefficientFunction]:
+    """Complex per-tetrahedron values as their real and imaginary coefficients."""
+    return [coefficient(built, values.real), coefficient(built, values.imag)]
 
 
 def _eps_eff_values(model: Model, built: EngineMesh, k: complex) -> np.ndarray:

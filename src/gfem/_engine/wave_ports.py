@@ -55,6 +55,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import math
+from typing import Any
 
 import ngsolve as ngs
 import numpy as np
@@ -79,9 +80,19 @@ from gfem.model import Model
 __all__ = [
     "PortSurfaceCoupling",
     "WavePortCoupling",
+    "deembedding",
     "trace_dofs",
     "wave_port_couplings",
 ]
+
+
+def deembedding(gamma: Any, offset: float) -> Any:
+    """``exp(gamma offset)``: S moves a wave port's reference plane into the domain.
+
+    ``gamma`` the port mode's propagation constant (1/m), per frequency or
+    one; ``offset`` the port's de-embedding distance (m).
+    """
+    return np.exp(gamma * offset)
 
 
 def _at(omegas: np.ndarray, omega: float) -> int:
@@ -139,7 +150,7 @@ class WavePortCoupling:
     def deembedding(self, omega: float) -> complex:
         """``exp(gamma offset)``: S moves its reference plane into the domain."""
         k = _at(self.omegas, omega)
-        return complex(np.exp(self.sweep.gamma[k] * self.port.offset))
+        return complex(deembedding(self.sweep.gamma[k], self.port.offset))
 
 
 @dataclasses.dataclass(eq=False)
