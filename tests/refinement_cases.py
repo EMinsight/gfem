@@ -27,6 +27,14 @@ Two more cases, not singular at a re-entrant corner:
   fitted per entry (C_aa 1.32, C_ab 0.98: the sheet's tip dominates the
   off-diagonal entry), within `SHEET_C_BOUND` (relative) of the
   extrapolation from n = 8, 16, 32.
+- Two bars, `bars_model`: bars "a" and "b" in a grounded box
+  (`structured_meshes.two_bars`), `BARS_PROBLEM`, the off-diagonal entry
+  C_ab: "near" (strongly coupled, |C_ab / C_aa| = 0.09) and "screen" (a
+  grounded fin between unequal offset bars, 0.0014). Every bar corner is
+  re-entrant (C converges at h^(4/3)). References `BARS_C_AB` (F),
+  Richardson extrapolations (alpha = 4/3) of uniform order-2 n = 32 and 64
+  (fitted alpha 1.334 and 1.318), within `BARS_C_AB_BOUND` (relative) of
+  the n = 16, 32 pair and of a mesh graded 3 towards the corners.
 - Anisotropic coax, `anisotropic_coax_model`: the circular coax quarter
   (`structured_meshes.coax_quarter`, radii 1 and 2 um, extruded 0.5 um)
   filled with eps_r (2, 5, 3) along rotated axes, `ANISOTROPIC_COAX`; its
@@ -104,6 +112,11 @@ SHEET_C = ((4.08621e-17, -1.39274e-19), (-1.39274e-19, 4.19939e-17))
 #: Relative bound of each `SHEET_C` entry.
 SHEET_C_BOUND = ((6e-6, 1.5e-4), (1.5e-4, 6e-6))
 
+#: The two-bars cases' C_ab, F (`structured_meshes.two_bars`, `BARS_PROBLEM`).
+BARS_C_AB = {"near": -3.760064826e-18, "screen": -5.618272068e-20}
+#: Relative bound of each `BARS_C_AB` entry.
+BARS_C_AB_BOUND = {"near": 2e-6, "screen": 2e-5}
+
 
 def _rotation(axis: str, degrees: float) -> np.ndarray:
     t = np.radians(degrees)
@@ -146,6 +159,7 @@ COAX_PROBLEM = gfem.Electrostatic(terminals={"inner": "inner"}, ground="outer")
 SHEET_PROBLEM = gfem.Electrostatic(
     terminals={"a": "a", "b": "b"}, ground=["box", "fin"]
 )
+BARS_PROBLEM = gfem.Electrostatic(terminals={"a": "a", "b": "b"}, ground="box")
 CAVITY_PROBLEM = gfem.Eigenmode(target=CAVITY_F1, n_modes=1)
 
 
@@ -177,6 +191,12 @@ def sheet_model(directory: Path, n: int) -> gfem.Model:
     mesh = _mesh(directory, "sheet", sm.sheet_screen(n), "um")
     vacuum = gfem.Material()
     return gfem.Model(mesh, materials={"left": vacuum, "right": vacuum})
+
+
+def bars_model(directory: Path, case: str, n: int) -> gfem.Model:
+    """A two-bars case (``"near"`` or ``"screen"``), in um, vacuum."""
+    mesh = _mesh(directory, "bars", sm.two_bars(case, n), "um")
+    return gfem.Model(mesh, materials={"dielectric": gfem.Material()})
 
 
 def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:

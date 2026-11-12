@@ -486,17 +486,36 @@ def combine(
 def capacitance(
     model: Model,
     result: ElectrostaticResult,
-    terminal: str,
+    i: str,
+    j: str,
     threads: int | None = None,
 ) -> tuple[float, np.ndarray]:
-    """The relative error estimate of ``capacitance[t, t]`` and each tetrahedron's.
+    """The relative error estimate of ``capacitance[i, j]`` and each tetrahedron's.
 
-    C_h - C = a(e, e) for a terminal at 1 V, so the estimate is the
-    recovered a(e, e) over a(u_h, u_h): the square of the field estimate of
-    that terminal's potential.
+    C_ij,h - C_ij = a(e_i, e_j) for the potentials of terminals i and j at
+    1 V, each the other's free dual. A tetrahedron's term is m_K(i, j), the
+    recovered flux errors of the two potentials in the eps^-1 product; the
+    estimate is sum_K |m_K(i, j)| over |a_h(u_i, u_j)|, never letting the
+    terms of an off-diagonal entry (which have no sign) cancel. At i = j it
+    is the square of the field estimate of that terminal's potential, the
+    weights `electrostatic` gives it.
     """
-    (group,) = electrostatic(model, result, threads)
-    weights = group[list(result.potential).index(terminal)]
+    names = list(result.potential)
+    fields = list(result.potential.values())
+    sheets = set(result._fixed) | {  # noqa: SLF001
+        b.surface for b in model.boundaries if isinstance(b, (PEC, Conductor))
+    }
+    with task_manager(threads):
+        gi = _grid_function(fields[names.index(i)])
+        gj = gi if i == j else _grid_function(fields[names.index(j)])
+        recovery = FluxRecovery(model, fields[0].order, sheets=sorted(sheets))
+        flux_i = recovery.eps * ngs.grad(gi)
+        flux_j = flux_i if i == j else recovery.eps * ngs.grad(gj)
+        energy = recovery.element_integrals(ngs.grad(gi) * flux_j).sum()
+        ri = recovery.flux_residual(flux_i)
+        rj = ri if i == j else recovery.flux_residual(flux_j)
+        terms = recovery.element_integrals(ri * (recovery.eps_inverse * rj))
+    weights = np.abs(terms) / abs(energy)
     return float(weights.sum()), weights
 
 

@@ -77,8 +77,9 @@ class QuantityEstimator:
     The estimate is a magnitude in the units of ``tolerance``: relative to
     the capacitance entry or to ``omega``, absolute for an S entry. It has
     no sign or phase, and gfem never adds it to the quantity. It is an
-    estimate, not a bound. A capacitance never lies below its value on the
-    meshed geometry: ``C_h >= C``.
+    estimate, not a bound. A diagonal capacitance entry never lies below
+    its value on the meshed geometry: ``C_h >= C``; an off-diagonal entry
+    may lie on either side.
 
     Give exactly one keyword, named after the result attribute that holds
     the quantity and indexed the same way.
@@ -91,8 +92,9 @@ class QuantityEstimator:
             ref.result.s["p2", "p1"], ref.estimate.values
 
     Attributes:
-        capacitance: A terminal name twice, the diagonal entry
-            ``ElectrostaticResult.capacitance[i, i]``.
+        capacitance: Two terminal names ``(i, j)``, the entry
+            ``ElectrostaticResult.capacitance[i, j]``; the same name twice
+            for a diagonal entry.
         s: ``(to, from)`` port names, the entry ``result.s[to, from]``; both
             ports must be excited (`Driven.excite`).
         omega: An index into ``EigenmodeResult.omega`` on the first mesh;
@@ -106,7 +108,7 @@ class QuantityEstimator:
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
-    estimate: an off-diagonal capacitance, an anisotropic permittivity,
+    estimate: an anisotropic permittivity,
     ``mu_r`` other than 1 (S and omega), a wave port with a de-embedding
     offset or in a lossy medium, a shared wave port surface, and a mode
     with loss.
@@ -600,7 +602,7 @@ def _estimate(
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
             parts = [
-                kernels.capacitance(model, result, estimator.capacitance[0], threads)
+                kernels.capacitance(model, result, *estimator.capacitance, threads)
             ]
         elif estimator.s is not None:
             parts = kernels.s_entry(model, result, *estimator.s, threads)
@@ -812,11 +814,6 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
             "an anisotropic permittivity",
         )
     if estimator.capacitance is not None:
-        if estimator.capacitance[0] != estimator.capacitance[1]:
-            raise _untested(
-                "off-diagonal capacitance",
-                "an off-diagonal capacitance entry; estimate a diagonal one",
-            )
         return
     mu = element_tensors(model, "mu_r")
     if mu.ndim == 3 or np.any(mu != 1):
