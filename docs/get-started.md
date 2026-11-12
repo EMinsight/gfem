@@ -104,10 +104,9 @@ and it raises {py:obj}`gfem.NonDifferentiableError`. Wrap the material in
 
 ## Your own device
 
-gfem reads gmsh `.msh` files. Give every volume and surface you will refer to a
-physical group: its name is the region name the model uses. gmsh is not installed
-with gfem; `pip install gmsh` to script meshes in Python, or build them from a GDS
-layout with {doc}`recipes/gsim`.
+gfem reads gmsh `.msh` files whose volumes and surfaces are named physical
+groups. {doc}`recipes/prepare-a-mesh` builds this line in gmsh, and
+{doc}`recipes/gsim` starts from a GDS layout.
 
 ## Optional extras
 
@@ -143,6 +142,7 @@ program, because every gfem solve needs it.
   a 220 nm silicon guide in oxide.
 - {doc}`recipes/solve-a-device` takes this line further: a band of
   frequencies, real metals, its resonances and their Q, its capacitance.
+- {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.
 - The {doc}`recipes <recipes/index>` start from a task: a gradient of S-parameters,
   eigenmodes or capacitance, a periodic cell, a measurement on the fields.
 - {doc}`capabilities` lists what gfem solves and differentiates;

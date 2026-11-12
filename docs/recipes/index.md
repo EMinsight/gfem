@@ -21,6 +21,7 @@ orphan: true
 ## Solving
 
 - {doc}`solve-a-device`
+- {doc}`prepare-a-mesh`
 - {doc}`mesh-refinement`
 - {doc}`anisotropic-materials`
 - {doc}`periodic-cell`
