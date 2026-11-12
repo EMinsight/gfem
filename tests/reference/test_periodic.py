@@ -33,8 +33,10 @@ import gfem
 
 #: Relative agreement with Palace on a complex band frequency (R1).
 BLOCH_EIGEN_AGREEMENT = 1e-6
-#: Agreement with Palace on S, after the envelope factor (R2).
-BLOCH_S_AGREEMENT = 1e-4
+#: Agreement with Palace on S, after the envelope factor (R2; 1.3e-7 measured).
+BLOCH_S_AGREEMENT = 5e-6
+#: Without the envelope factor S21 and S12 differ from Palace's by more.
+BLOCH_S_ENVELOPE_EFFECT = 1e-2
 
 BRAGG = ("bragg_k1_lossless", "bragg_k05_lossy")
 LINE = "bloch_line_p2"
@@ -125,4 +127,4 @@ def test_bloch_line_s_matches_palace_through_the_envelope_factor(reference):
     palace = _palace_s(case)
     assert np.abs(palace - envelope * s).max() <= BLOCH_S_AGREEMENT
     # the factor is not a detail: without it S21 and S12 disagree
-    assert np.abs(palace - s).max() > 100 * BLOCH_S_AGREEMENT
+    assert np.abs(palace - s).max() > BLOCH_S_ENVELOPE_EFFECT
