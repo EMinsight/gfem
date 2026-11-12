@@ -894,6 +894,7 @@ def test_a_lone_higher_mode_warns_that_the_modes_below_it_are_skipped(plate_mesh
         result = gfem.solve(
             plate_modes(plate_mesh, (2,)), gfem.Driven(F2), options=OPTIONS
         )
+    assert {w.filename for w in record} == {__file__}  # the solve call
     messages = [str(w.message) for w in record]
     assert len(messages) == 2  # once per surface
     for end, message in zip((1, 2), messages, strict=True):
@@ -996,6 +997,7 @@ def test_a_lossy_shared_port_surface_warns_its_cross_projection(quadrant_mesh):
     model = quadrant_guide(quadrant_mesh, 0.02)
     with pytest.warns(gfem.PortModeProjectionWarning) as record:
         gfem.solve(model, gfem.Driven(QUADRANT_F), options=QUADRANT_OPTIONS)
+    assert {w.filename for w in record} == {__file__}  # the solve call
     messages = [str(w.message) for w in record]
     assert len(messages) == 2  # once per surface
     for end, message in zip((1, 2), messages, strict=True):

@@ -37,7 +37,7 @@ from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
 from gfem.shape import _check_quality
-from gfem.solve import solve
+from gfem.solve import _solve
 
 __all__ = [
     "ErrorEstimate",
@@ -523,7 +523,9 @@ def _loop(
     adjoint_ports = _adjoint_ports(estimator, model)
     with driven.low_frequency_deferred(), warnings.catch_warnings():
         warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
-        result, adjoints = _solve(model, problem, options, comm, adjoint_ports)
+        result, adjoints = _solve(
+            model, problem, options=options, comm=comm, adjoint_ports=adjoint_ports
+        )
     current = model
     cycles: list[RefinementCycle] = []
     failure: Exception | None = None
@@ -565,7 +567,11 @@ def _loop(
         try:
             with driven.low_frequency_deferred():
                 refined_result, refined_adjoints = _solve(
-                    refined, problem, options, comm, adjoint_ports
+                    refined,
+                    problem,
+                    options=options,
+                    comm=comm,
+                    adjoint_ports=adjoint_ports,
                 )
         except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
             stop, failure = "solve failed", err
@@ -635,7 +641,8 @@ def _estimate(
     """The estimate of ``result``: dispatch on the estimator and result type.
 
     ``mode`` is the eigenmode a `QuantityEstimator` follows on this result.
-    ``adjoints`` are an S entry's adjoints solved with ``result`` (`_solve`);
+    ``adjoints`` are an S entry's adjoints solved with ``result``
+    (`gfem.solve._solve`);
     ``None`` solves them here if the entry needs them (`_adjoint_ports`).
     """
     from gfem._engine import estimate as kernels
@@ -877,28 +884,6 @@ def _adjoint_ports(estimator: Estimator, model: Model) -> tuple[str, ...]:
     if not isinstance(port, WavePort):
         return ()
     return (to,) if _lossy_elements(model)[_touching(model, port.surface)].any() else ()
-
-
-def _solve(
-    model: Model,
-    problem: Any,
-    options: SolverOptions,
-    comm: Any,
-    adjoint_ports: tuple[str, ...],
-) -> tuple[Any, dict[tuple[float, str], np.ndarray] | None]:
-    """`gfem.solve`, and with ``adjoint_ports`` their adjoints in the same solve.
-
-    The adjoints are extra right-hand sides on the forward's factorization
-    (`DrivenRule.adjoint_ports`), ``None`` without ``adjoint_ports``.
-    """
-    if not adjoint_ports:
-        return solve(model, problem, options=options, comm=comm), None
-    from gfem._engine.driven import DrivenRule
-
-    rule = DrivenRule(model, problem, options)
-    rule.adjoint_ports = adjoint_ports
-    outputs, _ = rule.forward(model, keep=False)
-    return rule.result(outputs), rule.adjoints
 
 
 def _adjoints(

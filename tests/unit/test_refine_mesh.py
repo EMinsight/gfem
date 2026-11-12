@@ -22,6 +22,7 @@ import gfem
 from gfem._engine import estimate
 from gfem._engine.estimate import FluxRecovery
 from gfem.refinement import _dorfler
+from gfem.solve import _solve
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 COAX_ESTIMATE = 0.1157  # the n = 2 coax's field error estimate, for orientation
@@ -237,7 +238,7 @@ def test_a_poor_moved_mesh_warns_at_the_callers_line(coax):
 
 
 class _Failing:
-    """`gfem.solve` that raises ``error`` on its ``fail_on``-th call."""
+    """The refinement loop's solve, raising ``error`` on its ``fail_on``-th call."""
 
     def __init__(self, error, fail_on):
         self.error, self.fail_on, self.calls = error, fail_on, 0
@@ -246,7 +247,7 @@ class _Failing:
         self.calls += 1
         if self.calls == self.fail_on:
             raise self.error
-        return gfem.solve(*args, **kwargs)
+        return _solve(*args, **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -257,7 +258,7 @@ class _Failing:
     ],
 )
 def test_a_failed_solve_ends_the_loop_on_the_last_solved_mesh(coax, monkeypatch, error):
-    monkeypatch.setattr("gfem.refinement.solve", _Failing(error, fail_on=3))
+    monkeypatch.setattr("gfem.refinement._solve", _Failing(error, fail_on=3))
     with pytest.warns(gfem.MeshRefinementNotConvergedWarning, match=str(error)):
         ref = _refine(coax, tolerance=1e-3)
     assert ref.stop == "solve failed"
@@ -268,14 +269,14 @@ def test_a_failed_solve_ends_the_loop_on_the_last_solved_mesh(coax, monkeypatch,
 
 
 def test_any_other_solve_error_propagates(coax, monkeypatch):
-    monkeypatch.setattr("gfem.refinement.solve", _Failing(MemoryError(), fail_on=2))
+    monkeypatch.setattr("gfem.refinement._solve", _Failing(MemoryError(), fail_on=2))
     with pytest.raises(MemoryError):
         _refine(coax, tolerance=1e-3)
 
 
 def test_a_failed_first_solve_raises(coax, monkeypatch):
     error = gfem.LinearSolverConvergenceError("GMRES stopped")
-    monkeypatch.setattr("gfem.refinement.solve", _Failing(error, fail_on=1))
+    monkeypatch.setattr("gfem.refinement._solve", _Failing(error, fail_on=1))
     with pytest.raises(gfem.LinearSolverConvergenceError):
         _refine(coax)
 
@@ -432,7 +433,7 @@ def no_solve(monkeypatch):
     def solve(*_args, **_kwargs):
         raise AssertionError("refine_mesh solved before refusing")
 
-    monkeypatch.setattr("gfem.refinement.solve", solve)
+    monkeypatch.setattr("gfem.refinement._solve", solve)
 
 
 @pytest.mark.parametrize(

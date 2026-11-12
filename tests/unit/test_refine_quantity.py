@@ -27,7 +27,7 @@ def no_solve(monkeypatch):
     def solve(*_args, **_kwargs):
         raise AssertionError("refine_mesh solved before refusing")
 
-    monkeypatch.setattr("gfem.refinement.solve", solve)
+    monkeypatch.setattr("gfem.refinement._solve", solve)
 
 
 @pytest.fixture(scope="module")

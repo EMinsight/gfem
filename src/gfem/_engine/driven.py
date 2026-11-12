@@ -526,8 +526,8 @@ class DrivenRule:
         self.adjoint_ports: tuple[str, ...] = ()
         #: Those adjoints, per (frequency, port), on the unpaired space.
         self.adjoints: dict[tuple[float, str], np.ndarray] = {}
-        _check_low_frequency(model, problem.frequency, stacklevel=3, comm=comm)
-        _check_skipped_port_modes(model, stacklevel=3, comm=comm)
+        _check_low_frequency(model, problem.frequency, stacklevel=4, comm=comm)
+        _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
     def operator(self, model: Model) -> DrivenOperator:
         """The model's driven operator at its current node positions.
@@ -818,7 +818,7 @@ class DrivenRule:
             layout=op.layout or ONE_PROCESS,
         )
         if warn:
-            _check_port_mode_projection(couplings, stacklevel=4, comm=self.comm)
+            _check_port_mode_projection(couplings, stacklevel=5, comm=self.comm)
         transposed = None
         if self.problem.wave_vector is not None:
             # A(k)^T = A(-k): the adjoint solves' operator

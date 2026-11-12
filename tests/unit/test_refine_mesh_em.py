@@ -168,7 +168,7 @@ def test_the_field_estimator_refuses_loss_in_an_anisotropic_material(
         gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
     assert caught.value.feature == "lossy anisotropic material"
     assert "loss in the anisotropic material of 'a'" in str(caught.value)
-    monkeypatch.setattr("gfem.refinement.solve", solve)
+    monkeypatch.setattr("gfem.refinement._solve", solve)
     with pytest.raises(gfem.MeshRefinementUnsupportedError, match="FieldEstimator"):
         gfem.refine_mesh(model, problem, options=OPTIONS)
 
