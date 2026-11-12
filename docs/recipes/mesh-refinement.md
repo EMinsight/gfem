@@ -233,6 +233,10 @@ How gfem itself checks the estimates against known answers:
   mass terms are never allowed to cancel. At `order=3` the quantity
   estimate is not checked against its range; at `order=1` both estimators
   refuse.
+- A lumped port spanning materials of different loss (a lossy substrate
+  and air, say) is not covered by that range: there the field estimate
+  measured {gfem-effectivity}`loss jump low` to
+  {gfem-effectivity}`loss jump high` times the true error on coarse meshes.
 - It measures the error against your mesh's own facets. Mesh refinement
   subdivides the facets you imported and never moves them onto a curved
   surface, so the faceting error is neither estimated nor reduced. On a
@@ -241,18 +245,30 @@ How gfem itself checks the estimates against known answers:
   mesher.
 - A wave port's own mode is solved on the port's 2D mesh, and that error
   is not estimated. It grows with a long de-embedding offset on a coarse
-  port mesh.
+  port mesh. A wave port in a lossy medium also leaves the attenuation
+  along the port out of its boundary condition, so even a matched lossy
+  port reflects a little; the estimate does not see that reflection.
+- An S entry whose first port is a wave port in a lossy cross-section with
+  a hybrid mode (a lossy dielectric slab, say) needs one more solve, of
+  that port's {term}`adjoint dual`. `refine_mesh` adds it to each of its
+  own solves, with your solver options. `error_estimate` on a finished
+  result factorizes the system once more, with the direct solver at the
+  result's order, which on a large model may not fit in memory: estimate
+  such a model through `refine_mesh` (`max_cycles=0` estimates without
+  refining).
 - It does not include the linear solver's error. `refine_mesh` requires
   `tolerance` to be at least 10 times `SolverOptions.tolerance`
   (`eigen_tolerance` for an eigenmode problem).
 - `refine_mesh` raises {py:obj}`gfem.MeshRefinementUnsupportedError`, before
   any solve, on an adaptive sweep, a port mode problem, a periodic model, a
   Bloch wave vector and `SolverOptions(order=1)` (the `"fast"` preset); both
-  estimators refuse order 1. A `QuantityEstimator` also raises it on the
-  entries with no verified estimate: an S entry of a wave port in a lossy
-  medium, and a mode of a model with a second-order absorbing boundary, a
-  complex `mu_r` or loss inside an anisotropic material. Refine those models
-  with the `FieldEstimator`.
+  estimators refuse order 1. A `QuantityEstimator` also raises it on a
+  mode of a model with a second-order absorbing boundary or a complex
+  `mu_r`: refine those models with the `FieldEstimator`. On a driven or
+  eigenmode model with loss inside an anisotropic material, both the
+  `FieldEstimator` and a `QuantityEstimator` on a mode raise it: refine a
+  copy of the model with that material lossless, then solve the lossy model
+  on the refined mesh.
 - Mesh refinement runs on one process. Above one rank it raises
   {py:obj}`gfem.DistributedUnsupportedError`: refine on one process, then
   solve `ref.model` on ranks ({doc}`distributed-solve`).

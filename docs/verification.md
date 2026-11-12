@@ -174,7 +174,13 @@ coaxial line with an anisotropic fill; a stepped line with its wave ports
 de-embedded, and a waveguide with two modes on each of two shared wave port
 surfaces; the resonances of cavities with lossy fills and lossy walls
 (impedance, absorbing and conducting); and a line closed by resistive ports
-as a resonator.
+as a resonator. With loss in the volume: S of the parallel-plate line with
+a lossy fill (dielectric loss and conductivity) between lumped ports,
+against its closed form; and S between wave ports of a lossy waveguide:
+uniformly filled, half filled by a lossy dielectric slab (whose port mode
+is hybrid, so the estimate solves the ports' {term}`adjoint dual`), and
+with that slab widening halfway along, each with and without
+de-embedding, against a higher-order solve.
 
 Over all cases the quantity estimate was between
 {gfem-effectivity}`quantity low` and {gfem-effectivity}`quantity high`
@@ -184,12 +190,19 @@ metal edge, such as the parallel-plate line and the rectangular cavity.
 The field estimator is checked the same way, against the field's error in
 the energy norm: on the square and circular coaxial lines, the coaxial
 line with an anisotropic fill, the parallel-plate line, and the L-shaped
-and rectangular cavities. Its estimate was between
+and rectangular cavities; and with loss, on the parallel-plate line with a
+lossy fill (dielectric loss and conductivity) against its closed form, and
+on a cavity in two layers, the upper one lossy, against a higher-order
+solve on the same mesh. Its estimate was between
 {gfem-effectivity}`field low` and {gfem-effectivity}`field high` times the
 true error, the circular line measured against a higher-order solve on its
 own facets; against the exact circle it stays below the true error. These
 cases run at `order=2`, and all but the anisotropic fill also at
-`order=3`. On the stepped line, whose field error has no known value, the
+`order=3`. One configuration lies below that range and is not claimed: on
+a line in two layers, the upper one lossy, with lumped ports spanning both,
+the estimate was {gfem-effectivity}`loss jump low` to
+{gfem-effectivity}`loss jump high` times the true error on coarse meshes;
+its test holds it to that band. On the stepped line, whose field error has no known value, the
 estimate is checked to keep a steady ratio to the S21 error as the mesh is
 refined. On the three singular benchmark cases a mesh refinement run also
 ends with a smaller error than uniform splits at the same number of

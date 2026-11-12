@@ -400,6 +400,13 @@ Quantity estimator
   (`gfem.QuantityEstimator`). It weights each tetrahedron's field error by
   its effect on that quantity, using fields already solved.
 
+Adjoint dual
+  The field solved with a port's S read-out as the source instead of its
+  excitation, at the same order. The {term}`quantity estimator` weights an
+  S entry's field errors with it when the port's read-out is not parallel
+  to its excitation: a hybrid mode on a wave port in a lossy cross-section.
+  Otherwise it is that port's own field, scaled, and needs no solve.
+
 Error estimate
   The number an {term}`error estimator` gives for a result, compared with
   the tolerance of {term}`mesh refinement`. It has no sign or phase and is

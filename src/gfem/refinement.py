@@ -62,12 +62,12 @@ class FieldEstimator:
     it does not include the faceting of curved surfaces or the error left by
     the linear solve.
 
-    With loss, the flux is the total current eps_eff E, eps_eff = eps_r
-    (1 - i tan_delta) - i sigma / (omega eps_0), and the norm is
-    || curl E ||^2_{mu^-1} + |k|^2 int |eps_eff| |E|^2: the conduction
-    current counts, as it does in the field. Weighting by Re(eps_eff)
+    With loss, the flux is the total current ``eps_eff E``, ``eps_eff =
+    eps_r (1 - i tan_delta) - i sigma / (omega eps_0)``, and the norm is
+    ``||curl E||^2_{mu^-1} + |k|^2 int |eps_eff| |E|^2``: the conduction
+    current counts, as it does in the field. Weighting by ``Re(eps_eff)``
     instead overestimated up to 14 times; the lossless norm,
-    Re(eps_eff^-1), underestimated without bound under conduction loss.
+    ``Re(eps_eff^-1)``, underestimated without bound under conduction loss.
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for a driven or eigenmode field
@@ -124,8 +124,10 @@ class QuantityEstimator:
     it at order 1. For a lossy mode the estimate covers the complex
     ``omega``; Q's relative error is not estimated. An S entry ``(to, from)``
     whose port ``to`` is a wave port with a lossy mode not parallel to its
-    excitation needs that port's adjoint: `refine_mesh` solves it with each
-    solve, `error_estimate` on a finished result solves it once more.
+    excitation needs that port's adjoint dual: `refine_mesh` adds it to each
+    of its solves, with its options; `error_estimate` on a finished result
+    factorizes once more, with the direct solver at the result's order, so
+    estimate a large model through `refine_mesh` (``max_cycles=0``).
     """
 
     capacitance: tuple[str, str] | None = None
@@ -300,6 +302,13 @@ class MeshRefinement:
 def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorEstimate:
     """Estimate the error of a solved result, without refining.
 
+    No solve is needed, except for an S entry whose port ``to`` is a wave
+    port with a lossy mode not parallel to its excitation: its adjoint dual
+    factorizes the system once more, with the direct solver at the result's
+    order (the result does not record its solve options). On a large model,
+    estimate through `refine_mesh` with ``max_cycles=0``, whose adjoint rides
+    on its own solve with your options.
+
     Example:
         The field error of a capacitance solve::
 
@@ -332,9 +341,9 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
             adaptive sweep, a periodic model, another result type, a result
-            solved at order 1, or a
-            quantity entry with no verified estimate (see
-            `QuantityEstimator`).
+            solved at order 1, a driven or eigenmode field with loss inside
+            an anisotropic material (see `FieldEstimator`), or a quantity
+            entry with no verified estimate (see `QuantityEstimator`).
         DegenerateModeError: A `QuantityEstimator` names a mode of a
             degenerate cluster, or one within the default
             `SolverOptions.cluster_rtol` of another mode.
@@ -436,9 +445,10 @@ def refine_mesh(
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
             port mode problem, a periodic model or a Bloch wave vector,
-            ``options.order=1`` (the ``"fast"`` preset), or a
-            quantity entry with no verified estimate (see
-            `QuantityEstimator`).
+            ``options.order=1`` (the ``"fast"`` preset), a driven or
+            eigenmode field with loss inside an anisotropic material (see
+            `FieldEstimator`), or a quantity entry with no verified estimate
+            (see `QuantityEstimator`).
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
             alone: another mode lies within ``options.cluster_rtol`` of it.
         DistributedUnsupportedError: Launched on more than one rank.
