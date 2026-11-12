@@ -141,8 +141,11 @@ program, because every gfem solve needs it.
   photonic waveguide bend on a slab model, and the
   {doc}`3D bend <tutorials/bend3d>` tutorial designs it again on the real stack,
   a 220 nm silicon guide in oxide.
+- {doc}`recipes/solve-a-device` takes this line further: a band of
+  frequencies, real metals, its resonances and their Q, its capacitance.
 - The {doc}`recipes <recipes/index>` start from a task: a gradient of S-parameters,
   eigenmodes or capacitance, a periodic cell, a measurement on the fields.
 - {doc}`capabilities` lists what gfem solves and differentiates;
   {doc}`project/scaling` shows how large a model runs, and how fast.
-- {doc}`glossary` explains the terms these pages use.
+- {doc}`conventions` shows the units, signs and normalizations on a solve, and
+  {doc}`glossary` explains the terms these pages use.
