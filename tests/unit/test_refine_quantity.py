@@ -421,18 +421,20 @@ def test_a_lossy_mode_is_estimated(tmp_path, material, top):
 
 
 @pytest.mark.parametrize(
-    ("material", "boundary"),
+    ("material", "boundary", "cause"),
     [
-        (None, gfem.Absorbing("wall", order=2)),
-        (gfem.MaterialField(mu_r=1 - 0.01j), None),
-        (gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01), None),
+        (None, gfem.Absorbing("wall", order=2), "second-order absorbing"),
+        (gfem.MaterialField(mu_r=1 - 0.01j), None, "complex mu_r"),
+        (
+            gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01),
+            None,
+            "loss in the anisotropic material",
+        ),
     ],
     ids=["second-order-absorbing", "lossy-mu", "anisotropic-loss"],
 )
 @pytest.mark.usefixtures("no_solve")
-def test_the_lossy_eigenmode_refusal_names_what_stays_refused(
-    cavity, material, boundary
-):
+def test_the_lossy_eigenmode_refusal_names_its_cause(cavity, material, boundary, cause):
     changes = {}
     if material is not None:
         changes["materials"] = {"air": material}
@@ -446,7 +448,7 @@ def test_the_lossy_eigenmode_refusal_names_what_stays_refused(
         )
     message = str(caught.value)
     assert caught.value.feature == "lossy eigenmode"
-    assert "second-order" in message
+    assert cause in message
     assert "wave port" not in message
 
 
