@@ -20,6 +20,11 @@ def hertz(f: float, digits: int = 6) -> str:
 
 
 def hertz_band(lo: float, hi: float, digits: int = 6) -> str:
-    """A band ``lo``-``hi`` (Hz) as ``"55-65 GHz"``, in the unit of ``hi``."""
+    """A band ``lo``-``hi`` (Hz) as ``"55-65 GHz"``, in the unit of ``hi``.
+
+    A band of one frequency (``lo == hi``) is that frequency, `hertz`.
+    """
+    if lo == hi:
+        return hertz(hi, digits)
     scale, unit = _unit(hi)
     return f"{lo / scale:.{digits}g}-{hi / scale:.{digits}g} {unit}"

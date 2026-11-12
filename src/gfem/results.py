@@ -382,7 +382,7 @@ class PortModeResult:
         f = np.asarray(self.frequency)
         n = np.asarray(self.n_eff)
         z = np.asarray(self.Z_PV)
-        span = hertz_band(f.min(), f.max(), 4) if len(f) > 1 else hertz(f[0], 4)
+        span = hertz_band(f.min(), f.max(), 4)
         zs = (
             "no voltage_path"
             if np.isnan(z).all()
@@ -1028,7 +1028,7 @@ class DrivenResult:
 
     def __repr__(self) -> str:
         f = self.frequency
-        span = hertz_band(f.min(), f.max(), 4) if len(f) > 1 else hertz(f[0], 4)
+        span = hertz_band(f.min(), f.max(), 4)
         fields = f", {len(self.e_fields)} kept fields" if self.e_fields else ""
         sweep = "" if self.sweep is None else f", {self.sweep!r}"
         return (

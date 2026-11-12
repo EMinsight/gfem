@@ -31,3 +31,7 @@ def test_digits_round_the_mantissa():
 def test_a_band_takes_the_unit_of_its_upper_end():
     assert hertz_band(55e9, 65e9, 4) == "55-65 GHz"
     assert hertz_band(500e9, 1.5e12) == "0.5-1.5 THz"
+
+
+def test_a_band_of_one_frequency_is_that_frequency():
+    assert hertz_band(60e9, 60e9, 4) == "60 GHz"
