@@ -199,7 +199,8 @@ class NgsHandle:
         """Hook for subclasses: the inverse on the free rows of ``B``.
 
         ``x0`` (same shape as ``B``, zero on fixed rows) is an initial guess.
-        Direct backends ignore ``tolerance`` and ``x0``. Returns the Krylov
+        Direct backends ignore ``tolerance`` and ``x0`` (but for reused
+        factors, `gfem._linalg.direct.DirectHandle`). Returns the Krylov
         iterations of each column too, ``()`` for a direct solve.
         """
         return self._map(self._solver, B), ()
@@ -233,7 +234,9 @@ class NgsHandle:
         solve for iterative backends (an adjoint solve on the forward's
         preconditioner); ``None`` is the prepared tolerance. ``x0``, the
         shape of ``B``, is an initial guess for iterative backends; its fixed
-        rows are not read. Direct backends ignore both.
+        rows are not read. Direct backends ignore both, except that a
+        solve on factors reused across designs reads ``tolerance``
+        (`gfem._linalg.direct.DirectHandle`).
 
         Returns ``X`` and the Krylov iterations of each column of ``B`` (see
         `gfem._linalg.Handle.solve_counted`); a real handle solves a complex
@@ -382,6 +385,7 @@ class PlannedHandle(NgsHandle):
         operator: Operator,
         *,
         solves: int | None = None,  # noqa: ARG002
+        frequency: float | None = None,
     ) -> None:
         """Refactorize on ``operator``'s values (see `gfem._linalg.Refactorable`).
 
@@ -393,6 +397,7 @@ class PlannedHandle(NgsHandle):
         (`_new_plan`).
 
         ``solves`` is ignored: only BDDC's coarse choice reads it.
+        ``frequency`` goes to the backend (`_refactorizing_at`).
 
         Raises:
             RuntimeError: The handle was freed.
@@ -402,6 +407,7 @@ class PlannedHandle(NgsHandle):
         summed = None if piece_sum is None else piece_sum.pattern
         with self._lock:
             self._live()
+            self._refactorizing_at(frequency)
             if piece_sum is not None and summed is not None and summed is self._pattern:
                 self._new_values(piece_sum.sum_into)
                 return
@@ -467,6 +473,13 @@ class PlannedHandle(NgsHandle):
     def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
         """Raise the backend's refusal of ``symmetry``, if it refuses it."""
         raise NotImplementedError
+
+    def _refactorizing_at(self, frequency: float | None) -> None:
+        """Hook: the refactorization under way is at ``frequency``; under the lock.
+
+        ``None`` when the caller did not say. Only the direct backend reads it
+        (`gfem._linalg.direct.DirectHandle`).
+        """
 
     def _new_values(self, write: Callable[[ngs.BaseMatrix], None]) -> None:
         """``write(held matrix)``, then factorize its values on the current plan."""

@@ -239,7 +239,10 @@ class SolverOptions:
             problems only; ``"petsc"`` raises.
         tolerance: S and fields are accurate to about this size: the
             relative residual of an iterative linear solve (see Notes for
-            its norm). An exact factorization ignores it.
+            its norm). A direct solve is exact, except in an optimization of
+            a large model, where a design may be solved on the factorization
+            of an earlier design (when ``retain_memory`` keeps it and that is
+            faster) to a twentieth of this tolerance.
         device: Where the direct solver runs: ``"cpu"``, ``"cuda"`` or
             ``"cuda:N"`` (the N-th GPU). A GPU needs
             ``linear_solver="direct"`` (NVIDIA cuDSS, from the ``cuda12`` or
