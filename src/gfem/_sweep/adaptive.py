@@ -47,7 +47,7 @@ from collections.abc import Callable, Sequence
 
 import numpy as np
 
-from gfem.errors import SweepNotConvergedWarning
+from gfem.errors import SweepNotConvergedWarning, SweepRankDeficientWarning
 
 __all__ = ["AffineSystem", "AffineTerm", "ReducedModel", "Sweep", "adaptive_sweep"]
 
@@ -380,7 +380,7 @@ def _next_sample(
             f"(singular value {sigma[-1]:.3g} against {sigma[0]:.3g}): the sweep is "
             "near the accuracy of its full solves. Tighten SolverOptions.tolerance "
             "or loosen adaptive_tolerance if it fails to converge.",
-            UserWarning,
+            SweepRankDeficientWarning,
             stacklevel=3,
         )
     q = vh[m].conj()

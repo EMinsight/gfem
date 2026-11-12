@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from jax.test_util import check_grads
 
+import gfem
 from gfem import design
 
 # --- project -----------------------------------------------------------------------
@@ -143,7 +144,9 @@ def test_layer_grid_is_constant_through_the_thickness(stack):
 
 
 def test_layer_grid_warns_about_pixels_no_element_samples(stack):
-    with pytest.warns(UserWarning, match=r"(?s)\d+ of 800 pixels.*coarsen"):
+    with pytest.warns(
+        gfem.UnsampledPixelsWarning, match=r"(?s)\d+ of 800 pixels.*coarsen"
+    ):
         grid = design.LayerGrid(stack, "design", pitch=0.025 * MM)
     assert grid.shape == (20, 40)
     assert grid.sampled.shape == grid.shape

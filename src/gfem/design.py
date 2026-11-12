@@ -38,6 +38,7 @@ from jax.scipy import fft
 
 from gfem import _morph, _mpi, _sparse
 from gfem._checks import is_traced, static_float
+from gfem.errors import UnsampledPixelsWarning
 from gfem.mesh import Mesh
 
 __all__ = [
@@ -203,8 +204,8 @@ class LayerGrid:
                 fixed mesh), or a face of the surface is not horizontal.
 
         Warns:
-            UserWarning: Some pixels are sampled by no element (face)
-                centroid.
+            gfem.UnsampledPixelsWarning: Some pixels are sampled by no element
+                (face) centroid.
         """
         comm = _mpi.resolve_comm(comm)
         r = mesh.region(region)
@@ -257,7 +258,7 @@ class LayerGrid:
                 "do not reach the solve. Refine the mesh in the region, or coarsen "
                 f"the pitch (now {pitch:g} m). Pixels outside a non-rectangular "
                 "footprint are always unsampled: mask them with grid.sampled.",
-                UserWarning,
+                UnsampledPixelsWarning,
                 stacklevel=2,
             )
 
