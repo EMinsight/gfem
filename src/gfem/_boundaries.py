@@ -274,6 +274,7 @@ for _cls in (PEC, PMC, Absorbing, Periodic):
 register_fields(Conductor, ("fill",))
 register_fields(Impedance, ("fill",))
 
+#: A boundary condition of a model: any one of the classes this union names.
 Boundary = PEC | PMC | Absorbing | Conductor | Impedance | Periodic
 
 
@@ -528,6 +529,7 @@ def _path(value: Any, owner: str) -> tuple[tuple[float, float, float], ...]:
 for _cls in (LumpedPort, WavePort):
     jax.tree_util.register_static(_cls)
 
+#: A port of a model: a lumped port or a wave port.
 Port = LumpedPort | WavePort
 
 

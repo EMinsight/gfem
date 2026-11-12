@@ -20,6 +20,7 @@ orphan: true
 
 ## Solving
 
+- {doc}`mesh-refinement`
 - {doc}`anisotropic-materials`
 - {doc}`periodic-cell`
 - {doc}`shared-port-surface`
