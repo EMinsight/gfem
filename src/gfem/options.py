@@ -270,10 +270,12 @@ class SolverOptions:
         threads: CPU threads, or ``None`` for the solve threads:
             ``NGS_NUM_THREADS`` when set to a positive integer, else the physical
             cores the process may run on (its affinity mask), not every hardware
-            thread of the machine. Run one solve at a time in a process:
-            NGSolve's threads are shared by the whole process, so solves
-            started from several Python threads are not supported. Use
-            ``frequency_workers``, or separate processes.
+            thread of the machine. Inside your own ``ngs.TaskManager()`` a solve
+            runs on that TaskManager's threads, whatever ``threads`` says:
+            NGSolve cannot change the count while one is active. Run one solve
+            at a time in a process: NGSolve's threads are shared by the whole
+            process, so solves started from several Python threads are not
+            supported. Use ``frequency_workers``, or separate processes.
             ``linear_solver="petsc"`` does not read it: MUMPS's BLAS follows
             ``OPENBLAS_NUM_THREADS``, which frequency workers set to their
             share.
@@ -334,8 +336,8 @@ class SolverOptions:
             (SciPy ARPACK), or ``"slepc"`` (SLEPc's Krylov-Schur, through
             slepc4py, from the PETSc stack the "Solve with PETSc and SLEPc"
             recipe builds; never chosen by ``"auto"``). gfem refines and
-            differentiates the modes the same way after either. Other
-            problem types ignore it. SLEPc this Python cannot use raises
+            differentiates the modes the same way after either. Driven
+            and electrostatic solves ignore it. SLEPc this Python cannot use raises
             `gfem.SolverUnavailableError` when the solve starts.
         petsc_options: PETSc and SLEPc option names, without the leading
             ``-``, and their values, read by ``linear_solver="petsc"`` and

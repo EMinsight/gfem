@@ -476,12 +476,13 @@ def ramp(mesh: gfem.Mesh, region: str, start: float, stop: float):
     return jnp.asarray(np.linspace(start, stop, len(mesh.elements(region))))
 
 
-def terminated(mesh: gfem.Mesh, eps, sigma, axes=None) -> gfem.Model:
+def terminated(mesh: gfem.Mesh, eps, sigma, axes=None, **others) -> gfem.Model:
     """The line resonator with P0 fields, ended by 500 ohm lumped ports.
 
     With ``axes``, ``eps`` and ``sigma`` hold principal values on them.
+    ``others``: more properties of the field (``mu_r``, ``tan_delta``).
     """
-    field = gfem.MaterialField(eps_r=eps, conductivity=sigma, axes=axes)
+    field = gfem.MaterialField(eps_r=eps, conductivity=sigma, axes=axes, **others)
     return gfem.Model(
         mesh,
         materials={"dielectric": field},

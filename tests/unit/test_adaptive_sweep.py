@@ -15,7 +15,12 @@ import numpy as np
 import pytest
 
 import gfem
-from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
+from gfem._sweep.adaptive import (
+    AffineSystem,
+    AffineTerm,
+    _next_sample,
+    adaptive_sweep,
+)
 
 N = 60
 GRID = np.linspace(1.0, 3.0, 201)
@@ -230,3 +235,14 @@ def test_one_frequency_is_one_sample():
     assert sweep.samples == (0,)
     assert sweep.converged
     np.testing.assert_allclose(sweep.outputs[0], exact(GRID[0])[1], rtol=1e-10)
+
+
+def test_a_rank_deficient_interpolation_warns_with_its_own_class():
+    # three samples of one unknown span two columns: the interpolation has lost rank
+    column = np.ones((1, 1), complex)
+    with pytest.warns(gfem.SweepRankDeficientWarning, match="rank-deficient"):
+        chosen = _next_sample(1j * GRID[:5], [0, 2, 4], [column] * 3, 1)
+    assert chosen in (1, 3)
+    assert issubclass(gfem.SweepRankDeficientWarning, UserWarning)
+    assert not issubclass(gfem.SweepRankDeficientWarning, gfem.SweepNotConvergedWarning)
+    assert issubclass(gfem.UnsampledPixelsWarning, UserWarning)

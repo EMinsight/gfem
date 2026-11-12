@@ -35,6 +35,8 @@ from gfem.errors import (  # noqa: E402
     SkippedPortModeWarning,
     SolverUnavailableError,
     SweepNotConvergedWarning,
+    SweepRankDeficientWarning,
+    UnsampledPixelsWarning,
 )
 from gfem.job import Job, load_result  # noqa: E402
 from gfem.measurements import (  # noqa: E402
@@ -139,6 +141,8 @@ __all__ = [
     "SolverUnavailableError",
     "SweepInfo",
     "SweepNotConvergedWarning",
+    "SweepRankDeficientWarning",
+    "UnsampledPixelsWarning",
     "WavePort",
     "__version__",
     "characteristic_impedance",

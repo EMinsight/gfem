@@ -13,6 +13,11 @@ below, 6 % below and 23 % above the mode.
   at the target, would have a Q off by +15 %, +3 % and -10 %.
 - Its Q matches first-order perturbation theory for the lossy wall,
   ``Q = omega W / P``, to 0.5 %.
+
+A second cavity (10 x 10 x 15 mm, square symmetry, every wall lossy) checks
+that the modes returned are the ones nearest the target, wall by wall: the
+reference is the union of the converged modes of two solves at higher
+targets.
 """
 
 import cmath
@@ -25,6 +30,7 @@ import scipy.constants as const
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import structured_meshes as sm
+from gradient_cases import MIRRORED_TARGET, mirrored_cavity
 
 import gfem
 from gfem._engine.mesh import to_ngsolve
@@ -156,3 +162,64 @@ def test_refined_q_matches_perturbation_theory(modes):
     assert q == pytest.approx(2587.5, rel=1e-4)
     for result in modes:
         assert float(result.q[0]) == pytest.approx(q, rel=5e-3)
+
+
+# --- no mode skipped, wall by wall -------------------------------------------------
+
+WALLS = [
+    gfem.Conductor("wall", 1e3, thickness=1e-6),
+    gfem.Impedance("wall", resistance=0.05),
+    gfem.Impedance("wall", resistance=5000.0),
+    gfem.Impedance("wall", resistance=50.0, inductance=1e-9),
+    gfem.Impedance("wall", resistance=50.0, capacitance=1e-15),
+    gfem.Absorbing("wall", order=1),
+    gfem.Absorbing("wall", order=2),
+]
+
+
+@pytest.fixture(scope="module")
+def mirrored(tmp_path_factory):
+    return mirrored_cavity(tmp_path_factory.mktemp("mirrored"))
+
+
+def _wall_modes(mesh, wall, target, n_modes):
+    model = gfem.Model(
+        mesh, materials={"fill": gfem.Material(eps_r=1.0)}, boundaries=[wall]
+    )
+    result = gfem.solve(
+        model,
+        gfem.Eigenmode(target=target, n_modes=n_modes),
+        options=gfem.SolverOptions(eigen_tolerance=1e-10),
+    )
+    return list(np.asarray(result.omega))
+
+
+def _union(runs, rtol=1e-6):
+    """The modes of several runs, each as often as the run that has it most."""
+    union = []
+    for run in runs:
+        left = list(union)
+        for w in run:
+            twin = next((u for u in left if abs(u - w) <= rtol * abs(w)), None)
+            if twin is None:
+                union.append(w)
+            else:
+                left.remove(twin)
+    return union
+
+
+@pytest.mark.parametrize("wall", WALLS, ids=repr)
+def test_a_lossy_wall_cavity_skips_no_mode_near_the_target(mirrored, wall):
+    # with the projection's potential free on the wall, five of these seven
+    # returned a set that skipped modes (or none after minutes): ADR 0097
+    target = 2 * math.pi * MIRRORED_TARGET
+    reference = _union(_wall_modes(mirrored, wall, f, 6) for f in (21e9, 25e9))
+    found = _wall_modes(mirrored, wall, MIRRORED_TARGET, 3)
+    reach = max(abs(w.real - target) for w in found)
+    left = list(found)
+    for w in reference:
+        if abs(w.real - target) >= reach * (1 - 1e-9):
+            continue
+        twin = next((x for x in left if abs(x - w) <= 1e-6 * abs(w)), None)
+        assert twin is not None, f"skipped {w / (2e9 * math.pi):.4f} GHz"
+        left.remove(twin)
