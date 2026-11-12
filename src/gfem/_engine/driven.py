@@ -392,7 +392,9 @@ def driven_operator(
         )
         expansion = Expansion(matrix, unpaired)
     ports = terms.lumped_ports(model, built.scale)
-    pieces = terms.pieces(model, built, order, ports, elements=elements, faces=faces)
+    pieces, latent = terms.pieces(
+        model, built, order, ports, elements=elements, faces=faces
+    )
     symmetry: DrivenSymmetry = "complex_symmetric" if wave_vector is None else "general"
     layout = None
     if comm is not None:
@@ -401,9 +403,6 @@ def driven_operator(
     fixed = None
     if comm is None and elements is None and faces is None:
         fixed = _fixed_pieces(model, disc, solve_key, order, ports, phases=phases)
-    latent: tuple[terms.Piece, ...] = ()
-    if not any(p.name == "conductivity" for p in pieces):
-        latent = (terms.conductivity_piece(model, built, order, elements=elements),)
     return DrivenOperator(
         built,
         space,
@@ -448,7 +447,7 @@ def _fixed_pieces(
         ~inside,
         lambda: terms.pieces(
             model, built, order, ports, elements=inside, faces=no_faces
-        ),
+        )[0],
     )
 
 
