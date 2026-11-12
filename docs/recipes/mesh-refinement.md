@@ -266,7 +266,8 @@ How gfem itself checks the estimates against known answers:
   mode of a model with a second-order absorbing boundary or a complex
   `mu_r`: refine those models with the `FieldEstimator`. On a driven or
   eigenmode model with loss inside an anisotropic material, both the
-  `FieldEstimator` and a `QuantityEstimator` on a mode raise it: refine a
+  `FieldEstimator` and a `QuantityEstimator` on a mode or an S entry raise
+  it: refine a
   copy of the model with that material lossless, then solve the lossy model
   on the refined mesh.
 - Mesh refinement runs on one process. Above one rank it raises

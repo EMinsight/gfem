@@ -119,9 +119,10 @@ class QuantityEstimator:
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
-    estimate: a mode with a second-order absorbing boundary, a complex
-    ``mu_r`` or loss in an anisotropic material. Both estimators also raise
-    it at order 1. For a lossy mode the estimate covers the complex
+    estimate: a mode with a second-order absorbing boundary or a complex
+    ``mu_r``, and an S entry or a mode with loss inside an anisotropic
+    material (as `FieldEstimator`). Both estimators also raise it at order
+    1. For a lossy mode the estimate covers the complex
     ``omega``; Q's relative error is not estimated. An S entry ``(to, from)``
     whose port ``to`` is a wave port with a lossy mode not parallel to its
     excitation needs that port's adjoint dual: `refine_mesh` adds it to each
@@ -856,6 +857,8 @@ def _check_mode(mode: int | None, n_modes: int) -> None:
 
 def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
     """Raise for a quantity entry the verification tier has no case for (ADR 0089)."""
+    if estimator.omega is not None or estimator.s is not None:
+        _check_lossy_anisotropic(estimator, model)
     if estimator.omega is not None:
         _check_lossy_mode(model)
 
@@ -938,31 +941,22 @@ def _check_lossy_mode(model: Model) -> None:
     Covered: tan_delta, conductivity and complex eps_r of an isotropic
     material, impedance, first-order absorbing and conductor surfaces, and
     resistive lumped ports. (A wave port on an eigenmode is refused by the
-    eigen solver.)
+    eigen solver; loss inside an anisotropic material by
+    `_check_lossy_anisotropic`.)
     """
     from gfem._engine.coefficients import element_tensors
 
-    what, remedy = None, "use gfem.FieldEstimator()"
+    what = None
     if any(isinstance(b, Absorbing) and b.order == 2 for b in model.boundaries):
         what = "a second-order absorbing boundary"
     elif np.any(np.asarray(element_tensors(model, "mu_r")).imag):
         what = "a complex mu_r"
-    elif (region := _lossy_anisotropic_region(model)) is not None:
-        what = f"loss in the anisotropic material of {region!r}"
-        remedy = _LOSSLESS_COPY
     if what is not None:
         raise MeshRefinementUnsupportedError(
             "lossy eigenmode",
             f"QuantityEstimator(omega=...) has no verified estimate for a mode "
-            f"with {what}: {remedy}.",
+            f"with {what}: use gfem.FieldEstimator().",
         )
-
-
-#: The remedy where neither estimator has a verified estimate for the loss.
-_LOSSLESS_COPY = (
-    "neither estimator does. Refine a copy of the model with that material "
-    "lossless, then solve the lossy model on the refined mesh"
-)
 
 
 def _lossy_anisotropic_region(model: Model) -> str | None:
@@ -977,20 +971,36 @@ def _lossy_anisotropic_region(model: Model) -> str | None:
 
 
 def _check_field_model(estimator: Estimator, model: Model) -> None:
-    """Raise for a wave field whose loss no field case covers (ADR 0087).
+    """Raise for a wave field whose loss no field case covers (ADR 0087)."""
+    if isinstance(estimator, FieldEstimator):
+        _check_lossy_anisotropic(estimator, model)
 
-    Loss inside an anisotropic material: the lossy flux's tensor weight
-    has no verification case.
+
+def _check_lossy_anisotropic(estimator: Estimator, model: Model) -> None:
+    """Raise for loss inside an anisotropic material (ADRs 0087, 0089).
+
+    One refusal for the field, S and omega estimates: the complex tensor
+    eps_eff, which weights the recovered flux error of each, has no
+    verification case.
     """
-    if not isinstance(estimator, FieldEstimator):
-        return
     region = _lossy_anisotropic_region(model)
-    if region is not None:
-        raise MeshRefinementUnsupportedError(
-            "lossy anisotropic material",
-            "FieldEstimator() has no verified estimate for a field with loss in "
-            f"the anisotropic material of {region!r}: {_LOSSLESS_COPY}.",
+    if region is None:
+        return
+    if isinstance(estimator, FieldEstimator):
+        name = "FieldEstimator()"
+    else:
+        name = (
+            "QuantityEstimator(s=...)"
+            if estimator.s
+            else "QuantityEstimator(omega=...)"
         )
+    raise MeshRefinementUnsupportedError(
+        "lossy anisotropic material",
+        f"{name} has no verified estimate with loss in the anisotropic material "
+        f"of {region!r}, and no estimator has one. Refine a copy of the model "
+        "with that material lossless, then solve the lossy model on the "
+        "refined mesh.",
+    )
 
 
 def _touching(model: Model, surface: str) -> np.ndarray:

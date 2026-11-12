@@ -517,13 +517,8 @@ def test_a_lossy_mode_is_estimated(tmp_path, material, top):
     [
         (None, gfem.Absorbing("wall", order=2), "second-order absorbing"),
         (gfem.MaterialField(mu_r=1 - 0.01j), None, "complex mu_r"),
-        (
-            gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01),
-            None,
-            "loss in the anisotropic material",
-        ),
     ],
-    ids=["second-order-absorbing", "lossy-mu", "anisotropic-loss"],
+    ids=["second-order-absorbing", "lossy-mu"],
 )
 @pytest.mark.usefixtures("no_solve")
 def test_the_lossy_eigenmode_refusal_names_its_cause(cavity, material, boundary, cause):
@@ -542,6 +537,37 @@ def test_the_lossy_eigenmode_refusal_names_its_cause(cavity, material, boundary,
     assert caught.value.feature == "lossy eigenmode"
     assert cause in message
     assert "wave port" not in message
+
+
+LOSSY_TENSOR = gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01)
+
+
+@pytest.mark.parametrize(
+    ("fixture", "problem", "estimator"),
+    [
+        ("cavity", rc.CAVITY_PROBLEM, gfem.QuantityEstimator(omega=0)),
+        ("cavity", rc.CAVITY_PROBLEM, gfem.FieldEstimator()),
+        (
+            "step",
+            gfem.Driven([5e9]),
+            gfem.QuantityEstimator(s=("p2", "p1")),
+        ),
+    ],
+    ids=["omega", "field", "s"],
+)
+@pytest.mark.usefixtures("no_solve")
+def test_loss_in_an_anisotropic_material_is_one_refusal(
+    request, fixture, problem, estimator
+):
+    # No estimator has a case for the complex tensor eps_eff: S, omega and
+    # the field refuse it under one feature name (spec 5.5).
+    model = request.getfixturevalue(fixture)
+    lossy = _with(model, materials=dict.fromkeys(model.materials, LOSSY_TENSOR))
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(lossy, problem, estimator=estimator, options=OPTIONS)
+    assert caught.value.feature == "lossy anisotropic material"
+    assert "loss in the anisotropic material of" in str(caught.value)
+    assert "lossless" in str(caught.value)  # the remedy
 
 
 # --- electrostatic sheets ----------------------------------------------------
