@@ -282,7 +282,26 @@ Boundary = PEC | PMC | Absorbing | Conductor | Impedance | Periodic
 _AXES = {"x": 0, "y": 1, "z": 2}
 
 Direction = (
-    Literal["+x", "-x", "+y", "-y", "+z", "-z", "+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+    Literal[
+        "x",
+        "y",
+        "z",
+        "X",
+        "Y",
+        "Z",
+        "+x",
+        "-x",
+        "+y",
+        "-y",
+        "+z",
+        "-z",
+        "+X",
+        "-X",
+        "+Y",
+        "-Y",
+        "+Z",
+        "-Z",
+    ]
     | tuple[float, float, float]
 )
 
@@ -298,13 +317,15 @@ def _port_name(name: Any, owner: str) -> str:
 def _direction(value: Any, owner: str) -> tuple[float, float, float]:
     if isinstance(value, str):
         v = value.strip().lower()
+        if v in _AXES:  # no sign means the positive axis
+            v = "+" + v
         if len(v) == 2 and v[0] in "+-" and v[1] in _AXES:
             out = [0.0, 0.0, 0.0]
             out[_AXES[v[1]]] = 1.0 if v[0] == "+" else -1.0
             return (out[0], out[1], out[2])
         raise ValueError(
-            f"{owner}: direction {value!r} is not an axis; use '+x', '-x', '+y', "
-            "'-y', '+z', '-z' or a 3-vector."
+            f"{owner}: direction {value!r} is not an axis; use 'x', 'y', 'z' with "
+            "an optional sign ('+x', '-z'; no sign means '+') or a 3-vector."
         )
     check_fixed(value, f"{owner}: direction must be fixed numbers")
     try:
@@ -348,8 +369,8 @@ class LumpedPort:
         direction: The excitation direction of each element, along its
             surface from one conductor to the other: the reference direction
             of E across the gap, so it sets the polarity of the port voltage.
-            An axis ('+x', '-y', ...) or a 3-vector. With several surfaces,
-            a sequence of the same length.
+            An axis ('+x', '-y', ...; no sign means +) or a 3-vector. With
+            several surfaces, a sequence of the same length.
         resistance: Termination resistance, ohm.
         inductance: Termination inductance, H.
         capacitance: Termination capacitance, F.

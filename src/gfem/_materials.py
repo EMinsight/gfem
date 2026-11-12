@@ -137,10 +137,13 @@ def _material_value(prop: _Property, value: Any, owner: str) -> Any:
         )
     arr = np.asarray(value)
     if np.iscomplexobj(arr):
-        raise ValueError(
-            f"{owner}: {prop.name} must be real; give losses with tan_delta and "
-            "conductivity."
-        )
+        remedy = {
+            "eps_r": "; give dielectric loss with tan_delta or conductivity, or a "
+            "complex value through gfem.MaterialField",
+            "mu_r": "; for magnetic loss give a complex mu_r through "
+            "gfem.MaterialField",
+        }.get(prop.name, "")
+        raise ValueError(f"{owner}: {prop.name} must be real{remedy}.")
     try:
         arr = arr.astype(float)
     except (TypeError, ValueError):

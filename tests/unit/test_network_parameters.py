@@ -182,6 +182,19 @@ def test_touchstone_two_port_uses_column_major_order_and_its_z_ref(line, tmp_pat
     assert re.search(r"power waves", text, re.IGNORECASE)
 
 
+def test_touchstone_rows_are_written_in_increasing_frequency(tmp_path):
+    s = np.array([[[0.1, 0.2], [0.3, 0.4]], [[0.5, 0.6], [0.7, 0.8]]]) * (1 + 1j)
+    net = _net(s, 50.0, frequency=(2e9, 1e9))
+    assert net.frequency == (2e9, 1e9)
+    _, _, data = _read_touchstone(net.to_touchstone(tmp_path / "net.s2p"))
+    rows = data.reshape(2, 9)
+    np.testing.assert_array_equal(rows[:, 0], [1e9, 2e9])
+    # each row keeps its own S: S11 of the 1 GHz row is the second matrix's
+    np.testing.assert_allclose(rows[:, 1], [0.5, 0.1], rtol=1e-15)
+    np.testing.assert_allclose(rows[:, 3], [0.7, 0.3], rtol=1e-15)
+    assert net.to_xarray().frequency.values.tolist() == [2e9, 1e9]
+
+
 def test_touchstone_with_more_ports_uses_rows(tmp_path):
     s = np.arange(27).reshape(3, 3, 3) * (0.01 + 0.02j)
     net = _net(s, 50.0, ports=("a", "b", "c"))
