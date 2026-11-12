@@ -14,7 +14,10 @@ mesh refinement recipe and docs/verification.md quote, one per estimator:
 ``FIELD_EFFECTIVITY``, ``FIELD_EFFECTIVITY_BY_CASE`` and
 ``FIELD_EFFECTIVITY_ORDER_3_BY_CASE``
 (tests/verification/test_field_estimate.py) for the field estimator,
-rendered by the ``gfem-effectivity`` role (``quantity low``, ``field high``).
+rendered by the ``gfem-effectivity`` role (``quantity low``, ``field high``),
+and the field estimator's measured band under a lumped port across a loss
+jump, ``LOSS_JUMP_WITNESS`` (same module), quoted as unclaimed
+(``loss jump low``).
 
 A cell input with the suffix ``_axes`` (``eps_r_axes``) is the same
 property per principal value of a field with fixed axes: it folds into its
@@ -582,6 +585,36 @@ def effectivity(overall, by_case, source: str = ESTIMATE_TEST) -> dict:
     return {"low": f"{low:g}", "high": f"{high:g}", "cases": list(ranges)}
 
 
+def witness(band, quoted: dict, source: str = FIELD_ESTIMATE_TEST) -> dict:
+    """A measured band the docs quote as unclaimed, below an estimator's range.
+
+    Args:
+        band: ``(low, high)``, the effectivity a witness test asserts (the
+            field estimator's ``LOSS_JUMP_WITNESS``).
+        quoted: The estimator's range, as `effectivity` returns it.
+        source: The test module the band comes from, for the messages.
+
+    Returns:
+        ``low`` and ``high`` as the site writes them.
+
+    Raises:
+        CapabilitiesError: ``band`` is not positive and ordered, or it reaches
+            above the low end of ``quoted`` (then it is no longer unclaimed).
+    """
+    try:
+        low, high = (float(v) for v in band)
+    except (TypeError, ValueError) as exc:
+        raise CapabilitiesError(f"{source}: unreadable witness: {exc}") from exc
+    if not 0 < low <= high:
+        raise CapabilitiesError(f"{source}: bad witness band {(low, high)}")
+    if high > float(quoted["low"]):
+        raise CapabilitiesError(
+            f"{source}: witness {(low, high)} is not below the quoted "
+            f"range from {quoted['low']}"
+        )
+    return {"low": f"{low:g}", "high": f"{high:g}"}
+
+
 # --- Loading the verification tests --------------------------------------------
 
 
@@ -634,7 +667,8 @@ def load_effectivity(repo: Path) -> dict:
     Returns:
         ``quantity`` and ``field``, each as `effectivity` returns it. The
         field estimator is claimed at orders 2 and 3, so its cases are both
-        dicts, the order-3 ones named ``"<case>, order 3"``.
+        dicts, the order-3 ones named ``"<case>, order 3"``. And ``loss
+        jump``, the field estimator's witness band (see `witness`).
     """
     paths = [str(repo / "tests"), str(repo / "tools")]
     sys.path[:0] = paths
@@ -649,13 +683,15 @@ def load_effectivity(repo: Path) -> dict:
             f"{case}, order 3": r
             for case, r in field.FIELD_EFFECTIVITY_ORDER_3_BY_CASE.items()
         }
+        field_range = effectivity(
+            field.FIELD_EFFECTIVITY, field_cases, FIELD_ESTIMATE_TEST
+        )
         return {
             "quantity": effectivity(
                 quantity.EFFECTIVITY, quantity.EFFECTIVITY_BY_CASE, ESTIMATE_TEST
             ),
-            "field": effectivity(
-                field.FIELD_EFFECTIVITY, field_cases, FIELD_ESTIMATE_TEST
-            ),
+            "field": field_range,
+            "loss jump": witness(field.LOSS_JUMP_WITNESS, field_range),
         }
     except AttributeError as exc:
         raise CapabilitiesError(f"the effectivity ranges are gone: {exc}") from exc
@@ -735,16 +771,18 @@ def setup(app):
 def _effectivity_role(_name, rawtext, text, lineno, inliner, *_args):
     """``{gfem-effectivity}`field low```: one end of an estimator's range.
 
-    The argument is the estimator (``quantity`` or ``field``) and the end
-    (``low`` or ``high``). A bare end is an error: two estimators have ranges.
+    The argument is the range (``quantity``, ``field``, or ``loss jump``, the
+    field estimator's unclaimed band under a lumped port across a loss jump)
+    and the end (``low`` or ``high``). A bare end is an error: several ranges
+    exist.
     """
     from docutils import nodes
 
     data = inliner.document.settings.env.gfem_capabilities["effectivity"]
-    estimator, _, end = text.partition(" ")
+    estimator, _, end = text.rpartition(" ")
     if estimator not in data or end not in ("low", "high"):
         message = inliner.reporter.error(
-            f"gfem-effectivity takes quantity low|high or field low|high, not {text!r}",
+            f"gfem-effectivity takes quantity|field|loss jump low|high, not {text!r}",
             line=lineno,
         )
         return [inliner.problematic(rawtext, rawtext, message)], [message]

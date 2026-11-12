@@ -450,6 +450,22 @@ def test_the_quoted_field_effectivity_spans_both_orders_of_the_field_test(
     assert quoted["cases"] == order_2 + [f"{c}, order 3" for c in order_3]
 
 
+def test_the_loss_jump_witness_is_the_field_tests_measured_band(derived):
+    # A lumped port across a loss jump: a measured band below the field
+    # range, quoted so the recipe's Limits says how far below.
+    assert derived["effectivity"]["loss jump"] == {"low": "0.84", "high": "0.9"}
+
+
+def test_a_witness_inside_the_quoted_range_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="below"):
+        caps.witness((0.85, 0.95), {"low": "0.9", "high": "2"})
+
+
+def test_an_unordered_witness_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="bad witness"):
+        caps.witness((0.9, 0.84), {"low": "0.9", "high": "2"})
+
+
 def test_an_effectivity_off_the_cases_span_fails_the_build():
     with pytest.raises(caps.CapabilitiesError, match="span"):
         caps.effectivity((0.9, 10.0), {"a": (0.9, 2.0), "b": (1.0, 15.0)})
@@ -482,16 +498,23 @@ def test_the_effectivity_role_renders_both_ranges(
         tmp_path,
         "Field :gfem-effectivity:`field low` to :gfem-effectivity:`field high`, "
         "quantity :gfem-effectivity:`quantity low` to "
-        ":gfem-effectivity:`quantity high`.",
+        ":gfem-effectivity:`quantity high`, loss jump "
+        ":gfem-effectivity:`loss jump low` to :gfem-effectivity:`loss jump high`.",
     )
     assert status == 0
     q_low, q_high = estimate_test.EFFECTIVITY
     f_low, f_high = field_estimate_test.FIELD_EFFECTIVITY
+    w_low, w_high = field_estimate_test.LOSS_JUMP_WITNESS
     text = page.read_text(encoding="utf-8")
-    assert f"Field {f_low:g} to {f_high:g}, quantity {q_low:g} to {q_high:g}." in text
+    assert (
+        f"Field {f_low:g} to {f_high:g}, quantity {q_low:g} to {q_high:g}, "
+        f"loss jump {w_low:g} to {w_high:g}." in text
+    )
 
 
-@pytest.mark.parametrize("text", ["low", "high", "field", "quantity middle"])
+@pytest.mark.parametrize(
+    "text", ["low", "high", "field", "quantity middle", "loss low", "jump high"]
+)
 def test_an_effectivity_role_with_no_estimator_fails_the_build(tmp_path, text):
     # Two estimators have ranges: a bare end is ambiguous, so it is an error.
     status, _ = _build_role_page(tmp_path, f"From :gfem-effectivity:`{text}`.")
