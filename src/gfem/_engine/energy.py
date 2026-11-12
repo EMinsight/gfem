@@ -16,7 +16,7 @@ import scipy.constants as const
 
 from gfem._engine.driven import driven_operator
 from gfem._engine.eigen import element_energy
-from gfem._engine.power_flow import _check_field
+from gfem._engine.power_flow import check_field, check_size
 
 if TYPE_CHECKING:
     from gfem._field import Field
@@ -32,7 +32,7 @@ def electric_energy(field: Field, model: Model) -> dict[str, float]:
         ValueError: The field was not solved on ``model``.
     """
     mesh = model.mesh
-    support = _check_field(field, model)
+    support = check_field(field, model)
     # only the space is read: no piece is assembled
     op = driven_operator(
         model,
@@ -42,12 +42,7 @@ def electric_energy(field: Field, model: Model) -> dict[str, float]:
         paired=False,
     )
     e = np.asarray(field.coefficients)
-    if e.shape[0] != op.space.ndof:
-        raise ValueError(
-            f"The field has {e.shape[0]} coefficients but the model's order-"
-            f"{field.order} driven space has {op.space.ndof} DOFs: the field "
-            "was not solved on this model."
-        )
+    check_size(e, op, field.order)
     density = element_energy(model, op)
     per_tet = np.zeros(len(mesh.tetrahedra))
     per_tet[op.built.tetrahedron_order] = (

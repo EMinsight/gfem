@@ -647,18 +647,11 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
             "field and model must be fixed values, not computed inside jax.grad, "
             "jax.jit or jax.vmap. Call it outside the function JAX transforms."
         )
-    if field.quantity != "E" or field.space != "hcurl":
-        raise ValueError(
-            "electric_energy needs an electric field (quantity 'E' in 'hcurl'), "
-            f"got quantity {field.quantity!r} in {field.space!r}: pass the E field "
-            "the B field or potential came from."
-        )
-    if field.omega is None:
-        raise ValueError(
-            "electric_energy needs a time-harmonic field; this one is static "
-            "(omega is None): an electrostatic result has its energy per region "
-            "in result.energy."
-        )
+    _check_time_harmonic(
+        field,
+        "electric_energy",
+        static="an electrostatic result has its energy per region in result.energy",
+    )
     engine = importlib.import_module("gfem._engine.energy")
     return {
         region: jnp.asarray(energy, dtype=float)
@@ -686,6 +679,28 @@ def _side_names(
     )
 
 
+def _check_time_harmonic(field: Field, who: str, *, static: str) -> None:
+    """Raise unless ``field`` is a time-harmonic electric field.
+
+    ``who`` names the measurement in the messages, ``static`` is the remedy
+    for a static field.
+
+    Raises:
+        ValueError: Another quantity or space, or no ``omega``.
+    """
+    if field.quantity != "E" or field.space != "hcurl":
+        raise ValueError(
+            f"{who} needs an electric field (quantity 'E' in 'hcurl'), got "
+            f"quantity {field.quantity!r} in {field.space!r}: pass the E field "
+            "the B field or potential came from."
+        )
+    if field.omega is None:
+        raise ValueError(
+            f"{who} needs a time-harmonic field; this one is static (omega is "
+            f"None): {static}."
+        )
+
+
 def _check_driven(field: Field) -> None:
     """Raise unless ``field`` is a driven electric field.
 
@@ -693,17 +708,7 @@ def _check_driven(field: Field) -> None:
         ValueError: Another quantity or space, real coefficients, or an
             ``omega`` that is missing or complex.
     """
-    if field.quantity != "E" or field.space != "hcurl":
-        raise ValueError(
-            "power_flow needs a driven electric field (quantity 'E' in 'hcurl'), "
-            f"got quantity {field.quantity!r} in {field.space!r}: pass the E field "
-            "the B field or potential came from."
-        )
-    if field.omega is None:
-        raise ValueError(
-            "power_flow needs a time-harmonic field; this one is static (omega is "
-            "None): solve a gfem.Driven problem."
-        )
+    _check_time_harmonic(field, "power_flow", static="solve a gfem.Driven problem")
     if jnp.iscomplexobj(field.omega):
         raise ValueError(
             "power_flow needs a driven field with a real omega; eigenmode fields "

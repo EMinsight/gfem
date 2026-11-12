@@ -193,7 +193,7 @@ class _PowerFlowKernel:
             self._cached = (key, pf.build(self.order, model, self.where))
         flux = self._cached[1]
         e = np.asarray(values["coefficients"])
-        pf.check_size(e, flux, self.order)
+        pf.check_size(e, flux.op, self.order)
         return flux, e, float(np.asarray(values["omega"]).real)
 
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
