@@ -7,7 +7,8 @@ refined mesh, which has no file, ...), keyed by where it sits in the job, e.g.
 ``.model.materials['oxide'].eps_r``. A result bundle is a directory with
 ``result.json`` and ``result.npz``. Both documents carry ``schema_version``
 and ``gfem_version``: gfem reads older schema versions and refuses newer
-ones.
+ones, and it refuses by name any entry it does not know (one a newer gfem
+wrote, or a misspelt one).
 
 Run a job bundle with ``python -m gfem run job.json --out results/`` (or
 `Job.run`), and read the result back with `load_result`.
@@ -219,8 +220,8 @@ class Job:
         Raises:
             FileNotFoundError: The JSON file, its sidecar or its mesh is
                 missing.
-            ValueError: Not a job file, a newer schema version, a type this
-                gfem does not know, or a mesh file that changed.
+            ValueError: Not a job file, a newer schema version, a type or an
+                entry this gfem does not know, or a mesh file that changed.
             RuntimeError: Ranks asked for different paths.
         """
         path = Path(path)
@@ -262,7 +263,8 @@ def load_result(path: str | Path, *, comm: Any = None) -> Any:
 
     Raises:
         FileNotFoundError: No ``result.json``, or its sidecar is missing.
-        ValueError: Not a result file, or a newer schema version.
+        ValueError: Not a result file, a newer schema version, or an entry
+            this gfem does not know.
         gfem.DistributedUnsupportedError: A bundle with fields, above one rank.
     """
     path = Path(path)
@@ -367,7 +369,13 @@ def _decode(
 ) -> Any:
     if key not in doc:
         raise ValueError(f"{path} has no {key!r} entry.")
-    decoder = _codec.Decoder(_codec.Context(path.parent.resolve(), comm), arrays)
+    written_by = doc.get("gfem_version")
+    decoder = _codec.Decoder(
+        _codec.Context(path.parent.resolve(), comm),
+        arrays,
+        path=path,
+        written_by=written_by if isinstance(written_by, str) else None,
+    )
     return decoder.decode(doc[key])
 
 
@@ -555,10 +563,30 @@ def _job_from_args(args: dict[str, Any], _: _codec.Context) -> Job:
     return Job(args["model"], args["problem"], args.get("options", SolverOptions()))
 
 
-_codec.register(Mesh, to_args=_mesh_args, from_args=_mesh_from_args)
+#: What a job file's mesh may hold: a file reference, or a mesh with no file.
+_MESH_NAMES = (
+    "path",
+    "sha256",
+    "length_unit",
+    "nodes",
+    "source",
+    "regions",
+    *_TOPOLOGY_ARRAYS,
+)
+
+_codec.register(Mesh, to_args=_mesh_args, from_args=_mesh_from_args, names=_MESH_NAMES)
 _codec.register(Region)
-_codec.register(Model, to_args=_model_args, from_args=_model_from_args)
-_codec.register(EnclosedBy, from_args=lambda a, _: EnclosedBy(tuple(a["surfaces"])))
+_codec.register(
+    Model,
+    to_args=_model_args,
+    from_args=_model_from_args,
+    names=("mesh", "materials", "boundaries", "ports", "excluded"),
+)
+_codec.register(
+    EnclosedBy,
+    from_args=lambda a, _: EnclosedBy(tuple(a["surfaces"])),
+    names=("surfaces",),
+)
 for _cls in (
     Material,
     MaterialField,
@@ -584,11 +612,23 @@ for _cls in (
     InterfaceParticipation,
 ):
     _codec.register(_cls)
-_codec.register(Field, to_args=_field_args)
+_codec.register(
+    Field,
+    to_args=_field_args,
+    names=[f.name for f in dataclasses.fields(Field) if f.name != "_comm"],
+)
 _codec.register(SolverOptions, to_args=_options_args)
-_codec.register(PortSection, from_args=_port_section_from_args)
+_codec.register(
+    PortSection,
+    from_args=_port_section_from_args,
+    # "sigma": the scalar conductivity of sections saved by 0.1.0
+    names=[f.name for f in dataclasses.fields(PortSection) if f.init] + ["sigma"],
+)
 _codec.register(Electrostatic, to_args=_electrostatic_args)
 _codec.register(
-    PortModeField, to_args=_port_mode_field_args, from_args=_port_mode_field_from_args
+    PortModeField,
+    to_args=_port_mode_field_args,
+    from_args=_port_mode_field_from_args,
+    names=("section", "order", "basis", "coords"),
 )
-_codec.register(Job, from_args=_job_from_args)
+_codec.register(Job, from_args=_job_from_args, names=("model", "problem", "options"))

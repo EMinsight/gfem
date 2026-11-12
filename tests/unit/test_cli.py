@@ -151,6 +151,21 @@ def test_a_newer_job_exits_1_asking_for_an_upgrade(model, tmp_path, capsys):
     assert "upgrade gfem" in capsys.readouterr().err
 
 
+def test_a_job_with_an_unknown_entry_exits_1_asking_for_an_upgrade(
+    model, tmp_path, capsys
+):
+    job = _job(model, tmp_path)
+    doc = json.loads(job.read_text())
+    doc["gfem_version"] = "99.0"
+    doc["job"]["options"]["field_of_a_newer_gfem"] = 1
+    job.write_text(json.dumps(doc))
+    assert main(["run", str(job), "--out", str(tmp_path / "r")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("gfem: error: ValueError:")
+    assert "SolverOptions has no 'field_of_a_newer_gfem'" in err
+    assert "upgrade gfem" in err
+
+
 @pytest.mark.parametrize(
     "argv",
     [[], ["solve", "job.json"], ["run"], ["run", "job.json"], ["run", "--out", "r"]],
