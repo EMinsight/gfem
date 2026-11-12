@@ -91,12 +91,16 @@ Measured (ostau, 1 thread):
     lossy L cavity        2.87 - 4.08
     lossy walls           4.34 - 9.17
     resistive line        1.47 - 7.44
-    order 3: line 2.87 - 18.1, box (m = 1) 4.69 - 5.39
+    order 3: line 3.10 - 19.6, box (m = 1) 4.69 - 5.39
 
 The higher ratios come from the fields with no sharp metal edge (the uniform
 line and the empty box), where the curl and mass terms of the error identity
 nearly cancel and the estimate, which never lets them cancel, overestimates.
 The line's top is at 15 GHz on n = 8, where its S error crosses near zero.
+Three ways to cut that overestimation were measured and rejected, as each
+underestimates somewhere or rests on a constant fitted to one case: the
+signed sum floored at a fraction alpha of the magnitude, sums per region,
+and a degree-p recovery.
 """
 
 import math
@@ -826,15 +830,16 @@ def test_the_resistive_line_resonances(tmp_path, n):
 
 # A drift fence, not a claim: the docs claim `EFFECTIVITY` at order 2 only,
 # and these ranges are not part of it. At order 3 only the parallel-plate
-# line leaves the order-2 range, at 18.1 on n = 8 (S22, 8 GHz), where order 2
-# also peaks (14.7): the same smooth-field overestimation as at order 2,
-# curl and mass terms the estimate never lets cancel, not an order-3 effect.
-# The box at order 3 lies inside its order-2 range. Recovering into degree p
-# instead of p - 1 (underestimates singular cases, down to 0.51) and a finer
+# line leaves the order-2 range, at 19.6 on n = 8 (S22, 8 GHz), the mesh where
+# order 2 also peaks (15.75): the same smooth-field overestimation as at
+# order 2, curl and mass terms the estimate never lets cancel, not an order-3
+# effect. The box at order 3 lies inside its order-2 range. Recovering into
+# degree p instead of p - 1 (underestimates singular benchmark cases, down to
+# 0.51, measured before the natural-surface constraint) and a finer
 # quadrature (identical to every printed digit) were measured and rejected.
 #: Asserted order-3 effectivity range per case (measured, with margin).
 ORDER_3_EFFECTIVITY_BY_CASE = {
-    "parallel-plate line": (0.9, 25.0),  # measured 2.87-18.1
+    "parallel-plate line": (0.9, 25.0),  # measured 3.10-19.6
     "rectangular box": (0.9, 8.0),  # measured 4.69-5.39 (m = 1)
 }
 
