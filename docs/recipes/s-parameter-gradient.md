@@ -118,6 +118,29 @@ model = gfem.Model(
   differentiates: see {doc}`sheet-design`.
 - Thermal properties are not read: their gradient is an exact zero.
 
+## In an optimization loop
+
+Run every design of a loop in one Python process. Between solves gfem keeps what
+the next design with the same mesh, ports and frequencies can use, and a new
+process starts without it:
+
+- the solver plan of the last design (its ordering and analysis), the assembled
+  parts that do not depend on the design, and the wave ports' couplings;
+- with `linear_solver="direct"` and the `mkl` extra, the last design's
+  factorization, when `SolverOptions(retain_memory=...)` has room for it. The next
+  design at the same frequency then solves on it, with GMRES to a twentieth of
+  `tolerance`, for as long as that takes less time than factorizing again. gfem
+  decides from the times it measures, so small models, where factorizing is
+  cheap, always factorize again. A periodic cell with a nonzero wave vector always
+  factorizes again.
+
+The default `retain_memory`, half of the memory the process may use, needs no
+change on most machines. To keep the factorization of a large model, set it at
+least as large as one solve's peak memory: the peak barely grows, but that memory
+stays held between designs. With less, gfem drops the factorization first, then
+the parts, then the plan. Only the time changes: S and the gradient agree with a
+solve that factorizes every design to within `tolerance`.
+
 ## Check your results
 
 - Compare the gradient with a central difference of your objective along a
