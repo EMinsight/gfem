@@ -68,7 +68,13 @@ import ngsolve as ngs
 import numpy as np
 import scipy.constants as const
 
-from gfem._boundaries import Absorbing, Conductor, Impedance, LumpedPort
+from gfem._boundaries import (
+    Absorbing,
+    Conductor,
+    Impedance,
+    LumpedPort,
+    check_lumped_values,
+)
 from gfem._engine import anisotropy, quadrature
 from gfem._engine.coefficients import (
     anisotropic_elements,
@@ -96,6 +102,7 @@ __all__ = [
     "ETA0",
     "LumpedElement",
     "LumpedPortData",
+    "LumpedValue",
     "Piece",
     "Tabulated",
     "absorbing_coefficients",
@@ -159,6 +166,28 @@ class Tabulated:
 
 
 @dataclasses.dataclass(frozen=True)
+class LumpedValue:
+    """How a piece moves with one lumped value ``p`` (ADR 0100).
+
+    The piece's coefficient is proportional to ``p`` (a capacitance) or to
+    ``1 / p`` (a resistance or an inductance), so ``dA / dp = slope A``.
+
+    Attributes:
+        kind: The design input: ``("port", index, "inductance")`` or
+            ``("boundary", index, "resistance")``, as `gfem._adjoint` names
+            the leaf.
+        slope: ``+1 / p`` or ``-1 / p``.
+        faces: The piece's form as ``(region, c)`` per surface: the piece is
+            ``sum int c u_t . v_t`` over them, ``c`` a number or a face-wise
+            coefficient function.
+    """
+
+    kind: tuple
+    slope: float
+    faces: tuple[tuple[Any, Any], ...]
+
+
+@dataclasses.dataclass(frozen=True)
 class Piece:
     """One frequency-independent bilinear form and its scalar factor θ(ω).
 
@@ -194,6 +223,10 @@ class Piece:
             on an interior surface), ``(index, c)``: the boundary's index in
             ``model.boundaries`` and the coefficient per unit fill (1 for a
             conductor, the R, L or C weight for an impedance).
+        lumped: For the L or C piece of a lumped port, or a piece of an
+            `Impedance`, how it moves with its lumped value (`LumpedValue`);
+            ``None`` otherwise (a lumped port's resistance is not a design
+            input).
 
     Raises:
         ValueError: ``theta`` does not give one scalar: the term is not
@@ -215,6 +248,7 @@ class Piece:
     owner: np.ndarray | None = dataclasses.field(default=None, compare=False)
     sheet: tuple[int, float] | None = None
     values: np.ndarray | None = dataclasses.field(default=None, compare=False)
+    lumped: LumpedValue | None = dataclasses.field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         """Check that θ is a scalar function of ω."""
@@ -599,7 +633,8 @@ def pieces(
             out.extend(_impedance(model, built, order, b, tris, index=index))
 
     for data in ports:
-        out.extend(_port(built, order, data, tris))
+        index = model.port_names.index(data.port.name)
+        out.extend(_port(built, order, data, tris, index=index))
     return out
 
 
@@ -947,12 +982,18 @@ def _conductor(
     return out
 
 
+#: The lumped value of each R, L and C piece, and the power of its coefficient.
+_ELEMENTS = {"R": ("resistance", -1), "L": ("inductance", -1), "C": ("capacitance", 1)}
+
+
 def _rlc(
     label: str,
     scale: float,
     sheets: list,
     kind: Literal["trace", "port"],
     index: int | None = None,
+    *,
+    inputs: Mapping[str, tuple[tuple, Any]] | None = None,
 ) -> list[Piece]:
     """Pieces of per-square R, L and C in parallel on surfaces.
 
@@ -961,7 +1002,9 @@ def _rlc(
     / R_s + mu0 scale / L_s - k0^2 C_s / (eps0 scale) in the equation's
     units (times the fill), one piece per kind. A ``"trace"`` piece has one
     sheet, that of ``model.boundaries[index]``: its R, L or C weight is its
-    coefficient per unit fill.
+    coefficient per unit fill. ``inputs`` gives, per lumped value name
+    (``"inductance"``), its design input kind and value: the pieces of those
+    values carry their `LumpedValue`.
     """
     weights: dict[str, list] = {"R": [], "L": [], "C": []}
     for form, rs, ls, cs, *fill in sheets:
@@ -988,6 +1031,14 @@ def _rlc(
                     "region": form.region,
                     "sheet": None if index is None else (index, factor),
                 }
+            value, power = _ELEMENTS[element]
+            if inputs is not None and value in inputs:
+                input_kind, p = inputs[value]
+                extra["lumped"] = LumpedValue(
+                    input_kind,
+                    power / float(p),
+                    tuple((form.region, c) for form, _, c in items),
+                )
             out.append(Piece(name, thetas[element], integrand, kind=kind, **extra))
     return out
 
@@ -1023,13 +1074,26 @@ def sheet_fill(model: Model, boundary: Conductor | Impedance) -> np.ndarray | No
 
 
 def _port(
-    built: EngineMesh, order: int, data: LumpedPortData, faces: Any = None
+    built: EngineMesh,
+    order: int,
+    data: LumpedPortData,
+    faces: Any = None,
+    *,
+    index: int,
 ) -> list[Piece]:
+    """The R, L and C pieces of ``model.ports[index]``; its L and C are inputs."""
+    port = data.port
+    check_lumped_values(port)
     sheets = [
         (_tangential(built, (e.surface,), order, faces), *data.per_square(e))
         for e in data.elements
     ]
-    return _rlc(f"port {data.port.name}", built.scale, sheets, "port")
+    inputs = {
+        name: (("port", index, name), getattr(port, name))
+        for name in ("inductance", "capacitance")
+        if getattr(port, name) is not None
+    }
+    return _rlc(f"port {port.name}", built.scale, sheets, "port", inputs=inputs)
 
 
 def _impedance(
@@ -1041,12 +1105,19 @@ def _impedance(
     *,
     index: int,
 ) -> list[Piece]:
+    check_lumped_values(b)
     form = _tangential(built, (b.surface,), order, faces)
     sheet: tuple = (form, b.resistance, b.inductance, b.capacitance)
     fill = sheet_fill(model, b)
     if fill is not None:
         sheet = (*sheet, surface_p0(built, fill))
-    return _rlc(f"impedance {b.surface}", built.scale, [sheet], "trace", index)
+    inputs = {
+        name: (("boundary", index, name), getattr(b, name))
+        for name in ("resistance", "inductance", "capacitance")
+        if getattr(b, name) is not None
+    }
+    label = f"impedance {b.surface}"
+    return _rlc(label, built.scale, [sheet], "trace", index, inputs=inputs)
 
 
 def wave_port_coefficients(model: Model, surface: str) -> np.ndarray:

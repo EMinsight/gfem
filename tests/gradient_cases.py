@@ -400,6 +400,40 @@ def sheet_line(mesh: gfem.Mesh, sheet) -> gfem.Model:
     )
 
 
+#: The lumped values of the lumped cells: port p1's inductance (H) and
+#: capacitance (F), the sheet's resistance (ohm) and inductance (H) per square.
+#: Each moves S by 10-50 % per unit relative change, and the eigenmode nearest
+#: `LUMPED_TARGET` (6.0 + 2.5j GHz) by 2-11 %, 9 GHz from the next one.
+LUMPED = (2e-9, 5e-14, 2e4, 1e-6)
+LUMPED_TARGET = 6e9
+
+
+def lumped_line(mesh: gfem.Mesh, values) -> gfem.Model:
+    """The glued line with an R, L, C port p1 and an R, L `gfem.Impedance` sheet.
+
+    ``values``: port p1's inductance and capacitance, the sheet's resistance
+    and inductance (`LUMPED`); the ports' resistances are 1000 ohm.
+    """
+    l_port, c_port, r_sheet, l_sheet = (values[i] for i in range(4))
+    sheet = gfem.Impedance("sheet", resistance=r_sheet, inductance=l_sheet)
+    return gfem.Model(
+        mesh,
+        materials={"lower": gfem.Material(eps_r=3.0), "upper": gfem.Material()},
+        boundaries=[gfem.PEC("plate1"), gfem.PEC("plate2"), sheet],
+        ports=[
+            gfem.LumpedPort(
+                "p1",
+                "port1",
+                "+y",
+                resistance=1000.0,
+                inductance=l_port,
+                capacitance=c_port,
+            ),
+            gfem.LumpedPort("p2", "port2", "+y", impedance=1000.0),
+        ],
+    )
+
+
 def sheet_fill(mesh: gfem.Mesh, seed: int):
     """A random grey fill of every face of "sheet"."""
     rng = np.random.default_rng(seed)

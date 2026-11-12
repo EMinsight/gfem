@@ -119,6 +119,38 @@ def test_impedance_end_face_loads_the_line_with_its_parallel_rlc(mesh, rlc):
     assert abs(s11 - expected) < 2e-3
 
 
+def test_an_impedance_inductance_differentiates_like_its_closed_form(mesh):
+    # d|S11|^2 / dL of the line closed by R || L, against the closed form's
+    # central difference (both carry the mesh's error, 2e-3 in S11)
+    w = 2 * math.pi * F
+    line = _abcd_line(F, L * 1e-3)
+
+    def closed(inductance):
+        y_square = 1 / 80.0 + 1 / (1j * w * inductance)
+        return abs(_s11_loaded(line, y_square * W / H)) ** 2
+
+    def solved(inductance):
+        model = _one_port(mesh, gfem.Impedance("port2", 80.0, inductance))
+        s = gfem.solve(model, gfem.Driven(frequency=F)).s.values
+        return jnp.abs(s[0, 0, 0]) ** 2
+
+    h = 1e-12
+    expected = (closed(1e-9 + h) - closed(1e-9 - h)) / (2 * h)
+    assert float(jax.grad(solved)(1e-9)) == pytest.approx(expected, rel=2e-2)
+
+
+def test_a_traced_lumped_value_out_of_range_raises_when_solved(mesh):
+    def objective(inductance):
+        model = _one_port(mesh, gfem.Impedance("port2", 80.0, inductance))
+        return jnp.abs(gfem.solve(model, gfem.Driven(frequency=F)).s.values).sum()
+
+    with pytest.raises(
+        jax.errors.JaxRuntimeError,
+        match=r"Impedance on surface 'port2': inductance must be a finite number > 0",
+    ):
+        jax.jit(objective)(-1e-9)
+
+
 def test_new_boundary_terms_are_affine_pieces(mesh):
     rlc = gfem.Impedance("port2", resistance=1.0, inductance=1e-9, capacitance=1e-12)
     abc = gfem.Absorbing("side", order=2)

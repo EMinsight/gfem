@@ -77,6 +77,7 @@ from gfem._engine.driven import (
     LOW_FREQUENCY_FLOOR,
     DrivenOperator,
     driven_operator,
+    lumped_terms,
     operator_terms,
 )
 from gfem._engine.eigen import (
@@ -845,6 +846,14 @@ class EigenmodeRule:
                 moved.
         """
         return operator_terms(model, self.driven(model), nodes=nodes)
+
+    def lumped_terms(self, model: Model) -> list[Term]:
+        """The pieces of ``T(k)`` that move with a lumped value (ADR 0100).
+
+        The driven operator's (`gfem._engine.driven.lumped_terms`), weighted
+        with their θ at the mode like the other pieces.
+        """
+        return lumped_terms(self.driven(model))
 
     def _degenerate_message(
         self,

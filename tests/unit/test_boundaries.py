@@ -69,11 +69,32 @@ def test_boundaries_are_hashable_values_with_no_leaves():
         gfem.PMC("a"),
         gfem.Absorbing("a"),
         gfem.Conductor("a", conductivity=1.0),
-        gfem.Impedance("a", resistance=1.0),
     ):
         hash(b)
         assert jax.tree.leaves(b) == []
         assert b == jax.tree.map(lambda x: x, b)
+
+
+def test_lumped_values_are_leaves_and_a_port_resistance_is_not():
+    sheet = gfem.Impedance("a", resistance=1.0, capacitance=2e-15)
+    assert jax.tree.leaves(sheet) == [1.0, 2e-15]
+    port = gfem.LumpedPort("p", "s", "+z", resistance=50.0, inductance=1e-9)
+    assert jax.tree.leaves(port) == [1e-9]
+    assert jax.tree.leaves(gfem.LumpedPort("p", "s", "+z")) == []
+    for value in (sheet, port):
+        hash(value)
+        assert value == jax.tree.map(lambda x: x, value)
+
+
+def test_traced_lumped_values_are_kept_and_a_traced_resistance_raises():
+    def inductance(value):
+        port = gfem.LumpedPort("p", "s", "+z", resistance=50.0, inductance=value)
+        sheet = gfem.Impedance("a", resistance=value * 1e12)
+        return port.inductance + sheet.resistance
+
+    assert jax.grad(inductance)(1e-9) == pytest.approx(1.0 + 1e12)
+    with pytest.raises(gfem.NonDifferentiableError, match=r"LumpedPort\.resistance"):
+        jax.grad(lambda r: gfem.LumpedPort("p", "s", "+z", resistance=r).rlc[0])(50.0)
 
 
 # --- ports ----------------------------------------------------------------------

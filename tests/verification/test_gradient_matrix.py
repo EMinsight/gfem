@@ -76,6 +76,8 @@ from gradient_cases import (
     BIAXIAL,
     CAVITY_TARGET,
     EPS0,
+    LUMPED,
+    LUMPED_TARGET,
     MIRRORED_TARGET,
     OMEGA_WEIGHT,
     RESONATOR_TARGET,
@@ -91,6 +93,7 @@ from gradient_cases import (
     layered_resonator,
     line_axes_design,
     line_design,
+    lumped_line,
     mirrored_cavity,
     on_the_sheet,
     ramp,
@@ -172,6 +175,8 @@ def _cells() -> list[Cell]:
                 ("conductor", "impedance") if sweep == "uniform" else ("impedance",)
             )
             cells += [Cell("driven", "fill", solver, sweep, s) for s in sheets]
+            # a lumped port's L and C, an impedance sheet's R and L
+            cells.append(Cell("driven", "lumped", solver, sweep))
             # Wave ports: every port x input on the direct solver; on BDDC +
             # GMRES the lossy ports (the adjoint solve through the port
             # operator's Woodbury update, the adjoint loads' extra columns at
@@ -204,6 +209,7 @@ def _cells() -> list[Cell]:
                 "eps_r_axes",
                 "conductivity_axes",
                 "fill",
+                "lumped",
                 "nodes",
             )
         ]
@@ -651,6 +657,38 @@ def _driven_fill(d: Designs, cell: Cell, options, seed: int) -> Case:
     )
 
 
+def _lumped_values(t):
+    """The lumped values `LUMPED` scaled by ``1 + t``: an O(1) input."""
+    return jnp.asarray(LUMPED) * (1 + t)
+
+
+def _driven_lumped(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S of the glued line in its port's L and C and its sheet's R and L."""
+    mesh = d.sheet_mesh
+    problem, rows = _sweep(cell, SHEET_FREQUENCIES, SHEET_GRID, SHEET_SAMPLES)
+
+    def objective_on(problem, rows):
+        def objective(t):
+            model = lumped_line(mesh, _lumped_values(t))
+            s = gfem.solve(model, problem, options=options).s.values
+            return s_functional(s[jnp.asarray(rows)])
+
+        return objective
+
+    reference = None
+    if cell.sweep == "adaptive":
+        # the differences are taken on a uniform sweep of the samples
+        reference = objective_on(gfem.Driven(frequency=SHEET_SAMPLES), [0, 1, 2])
+    return Case(
+        objective_on(problem, rows),
+        jnp.zeros(len(LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
+        taylor=1e-1,
+        reference=reference,
+    )
+
+
 def _driven_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
     """S of the line with every kind of shape term; its interface moves."""
     line = d.shape_line
@@ -782,6 +820,22 @@ def _eigen_fill(d: Designs, _cell: Cell, options, seed: int) -> Case:
         step=5e-2,
         taylor=1e-1,
         mask=lambda directions: on_the_sheet(directions, fill),
+    )
+
+
+def _eigen_lumped(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """omega of the glued line in its port's L and C and its sheet's R and L."""
+    mesh = d.sheet_mesh
+
+    def objective(t):
+        return _omega(lumped_line(mesh, _lumped_values(t)), options, LUMPED_TARGET)
+
+    return Case(
+        objective,
+        jnp.zeros(len(LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
+        taylor=1e-1,
     )
 
 
@@ -995,6 +1049,7 @@ BUILDERS = {
         for form in ("", AXES)
     },
     ("driven", "fill"): _driven_fill,
+    ("driven", "lumped"): _driven_lumped,
     ("driven", "nodes"): _driven_nodes,
     ("driven_wave", "eps_r"): _wave_material,
     ("driven_wave", "conductivity"): _wave_material,
@@ -1007,6 +1062,7 @@ BUILDERS = {
     ("eigenmode", "mu_r"): _eigen_material,
     ("eigenmode", "tan_delta"): _eigen_material,
     ("eigenmode", "fill"): _eigen_fill,
+    ("eigenmode", "lumped"): _eigen_lumped,
     ("eigenmode", "nodes"): _eigen_nodes,
     **{
         (problem, name): builder
