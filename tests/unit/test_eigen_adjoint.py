@@ -8,12 +8,15 @@ run out of applies, the identity.
 """
 
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
+import gfem
 from gfem._eigen.adjoint import deflated_solve, polish
 from gfem._eigen.refine import Refined
+from gfem._eigen.rule import EigenmodeRule, GapSet, isolated
 from gfem.errors import EigenmodeConvergenceError, LinearSolverConvergenceError
 
 
@@ -152,3 +155,30 @@ def test_polish_raises_after_three_large_corrections():
     mode = Refined(stub.rayleigh(x, 0), x, 0.0, 1, True)
     with pytest.raises(EigenmodeConvergenceError, match="mode 1"):
         polish(stub, mode, 1e-9, index=1)
+
+
+def test_a_polish_that_fails_keeps_the_unpolished_mode_and_marks_it():
+    # the forward's fallback (ticket 19 amendment from ticket 04): the mixed
+    # mode of the test above is kept as it came, its neighbour is polished,
+    # and the failure is recorded for the reach test (gap 0)
+    lam = np.linspace(1.0, 4.0, 40) ** 2
+    lam[11] = lam[10] * (1 + 1e-9)
+    stub = Stub(lam, shift=math.sqrt(lam[10]) * 1.2)
+    v = stub.vectors
+    mixed = (v[:, 10] + 0.7 * v[:, 11]) / np.linalg.norm([1, 0.7])
+    clean = v[:, 20] + 1e-6 * v[:, 21]
+    clean /= np.linalg.norm(clean)
+    modes = [
+        Refined(stub.rayleigh(mixed, 0), mixed, 1e-12, 1, True),
+        Refined(stub.rayleigh(clean, 0), clean, 1e-12, 1, True),
+    ]
+    # the gap set misses the mixed mode's twin, as the cavity's does
+    gaps = GapSet(np.array([m.k for m in modes]), None, np.array([]))
+    rule = SimpleNamespace(options=gfem.SolverOptions())
+    polished, failed = EigenmodeRule._polish(rule, stub, modes, gaps, None)
+    np.testing.assert_array_equal(failed, [True, False])
+    assert polished[0] is modes[0]
+    assert polished[1].k == pytest.approx(math.sqrt(lam[20]), rel=1e-14)
+    # a failed polish's gap of 0 is out of reach
+    reach = isolated(np.array([0, 1]), np.zeros(2, bool), np.array([0.0, 0.1]), 1e-6)
+    np.testing.assert_array_equal(reach, [False, True])

@@ -291,6 +291,32 @@ def test_empty_gap_set_takes_the_seed_ritz_values(mesh):
     )
 
 
+def test_entry_records_a_failed_polish_with_a_zero_gap(mesh, monkeypatch):
+    model = terminated_line(mesh, 1000.0)
+    monkeypatch.setattr(eigen_rule, "polish", lambda _eop, mode, _gap, **_: mode)
+    unpolished, _ = EigenmodeRule(
+        model, gfem.Eigenmode(target=TARGET), gfem.SolverOptions()
+    ).forward(model, keep=False)
+
+    def fails(_eop, _mode, _gap, *, index):
+        raise gfem.EigenmodeConvergenceError(f"Polishing mode {index} did not converge")
+
+    monkeypatch.setattr(eigen_rule, "polish", fails)
+    _, outputs, entry = _kept(model)
+    # the mode as it came from the refinement, recorded as not isolated
+    np.testing.assert_array_equal(outputs["omega"], unpolished["omega"])
+    np.testing.assert_array_equal(outputs["e_field"], unpolished["e_field"])
+    np.testing.assert_array_equal(entry.fields["gap"], [0.0])
+    np.testing.assert_array_equal(entry.fields["polish_failed"], [True])
+    entry.free()
+    # and polished modes record no failure
+    monkeypatch.undo()
+    _, _, entry = _kept(model)
+    np.testing.assert_array_equal(entry.fields["polish_failed"], [False])
+    assert entry.fields["gap"][0] > 0
+    entry.free()
+
+
 # --- the driven memo --------------------------------------------------------------
 
 

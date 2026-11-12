@@ -330,7 +330,7 @@ class EigenmodeRule:
             try:
                 eop.factorize()  # before the projector's setup
                 divfree = projector(model, op, self.problem.wave_vector)
-                modes, guard, gaps = self._find(
+                modes, guard, gaps, unpolished = self._find(
                     eop, divfree, sigma, guard=keep or self.polishable
                 )
                 outputs, x = self._postprocess(model, op, divfree, modes)
@@ -358,6 +358,7 @@ class EigenmodeRule:
                         labels=outputs["cluster"],
                         guard=guard,
                         gaps=gaps,
+                        polish_failed=unpolished,
                     )
             except LinearSolverConvergenceError as err:
                 raise self._inner_failure(err) from err
@@ -391,15 +392,16 @@ class EigenmodeRule:
 
     def _find(
         self, eop: EigenOperator, divfree, sigma: float, *, guard: bool
-    ) -> tuple[list[Refined], Refined | None, GapSet]:
-        """The ``n_modes`` modes nearest ``sigma``, the guard mode and the gap set.
+    ) -> tuple[list[Refined], Refined | None, GapSet, np.ndarray]:
+        """The ``n_modes`` modes, the guard mode, the gap set, and failed polishes.
 
         Seed solves at the target (each attempt asking for twice as many
         pairs as the last) and the selection of their refined pairs
         (`_select`). ``guard``: refine one mode beyond ``n_modes`` (``None``
         when no seed gave one). Where the forward polishes (`polishable`),
         each isolated mode is polished (`_polish`) on the factors the search
-        leaves, before a lossless problem's ``k`` are snapped real.
+        leaves, before a lossless problem's ``k`` are snapped real; the last
+        return flags the modes whose polish failed (kept unpolished).
 
         Raises:
             EigenmodeConvergenceError: Fewer than ``n_modes`` modes
@@ -444,8 +446,10 @@ class EigenmodeRule:
                 self._convergence_message(eop, modes, failed, skipped)
             )
         guard_k = None if found is None else found.k
+        unpolished = np.zeros(len(modes), dtype=bool)
         if self.polishable:
-            modes = self._polish(eop, modes, GapSet(pool, guard_k, ritz), guard_k)
+            gap_set = GapSet(pool, guard_k, ritz)
+            modes, unpolished = self._polish(eop, modes, gap_set, guard_k)
         lossless = _is_hermitian if eop.general else _is_real
         if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
             modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
@@ -453,7 +457,7 @@ class EigenmodeRule:
                 found = dataclasses.replace(found, k=found.k.real)
             pool = pool.real.astype(complex)
         gaps = GapSet(pool, None if found is None else found.k, ritz)
-        return modes, found, gaps
+        return modes, found, gaps, unpolished
 
     @property
     def polishable(self) -> bool:
@@ -475,23 +479,34 @@ class EigenmodeRule:
         modes: list[Refined],
         gaps: GapSet,
         guard: complex | None,
-    ) -> list[Refined]:
-        """``modes`` with each isolated one polished (`polish`), the rest as they are.
+    ) -> tuple[list[Refined], np.ndarray]:
+        """``modes`` with each isolated one polished (`polish`), and which failed.
 
         A mode is isolated (`isolated`) when it is alone in its cluster, the
         guard mode is not in its cluster, and its relative gap is at least
         `_ISOLATED` (``cluster_rtol`` if larger). The guard mode is never
-        polished.
+        polished. A polish that does not converge (or whose solve is not
+        accepted) is evidence of a neighbour the gap set missed, such as the
+        twin of a degenerate pair the seed solve never returned: the mode
+        is kept as the refinement left it and flagged, and its entry
+        records it as not isolated (ADR 0104, amendment of ticket 04). A
+        solve never raises because of polishing.
         """
         ks = [m.k for m in modes]
         rtol = self.options.cluster_rtol
         labels = clusters(ks, rtol)
         gap = np.array([gaps.gap(k) for k in ks])
         reach = isolated(labels, _incomplete(ks, labels, guard, rtol), gap, rtol)
-        return [
-            polish(eop, m, float(gap[i]), index=i) if reach[i] else m
-            for i, m in enumerate(modes)
-        ]
+        failed = np.zeros(len(modes), dtype=bool)
+        out = []
+        for i, m in enumerate(modes):
+            if reach[i]:
+                try:
+                    m = polish(eop, m, float(gap[i]), index=i)  # noqa: PLW2901
+                except (EigenmodeConvergenceError, LinearSolverConvergenceError):
+                    failed[i] = True
+            out.append(m)
+        return out, failed
 
     def _shift_invert(
         self, op: EigenOperator, project, nev: int, *, tol: float
@@ -531,6 +546,7 @@ class EigenmodeRule:
         labels: np.ndarray,
         guard: Refined | None,
         gaps: GapSet,
+        polish_failed: np.ndarray | None = None,
     ) -> Entry:
         """What the backward pass needs: the kept operator, the modes and their T'.
 
@@ -539,7 +555,9 @@ class EigenmodeRule:
         diagonal by cluster: ``y_i^T T'(k_c) x_j`` for modes i, j of cluster
         c, with ``k_c`` the cluster's mean. ``incomplete`` flags the modes
         of a cluster the guard mode belongs to; ``gap`` each mode's relative
-        gap to its gap set (`GapSet.gap`, ``inf`` without a neighbour).
+        gap to its gap set (`GapSet.gap`, ``inf`` without a neighbour), 0
+        for a mode whose polish failed; ``polish_failed`` flags those modes
+        (`isolated` is then false for them: the backward names the failure).
         """
         left = x if y is None else y
         labels = np.asarray(labels)
@@ -560,7 +578,11 @@ class EigenmodeRule:
             "gram": gram,
             "incomplete": incomplete,
             "gap": np.array([gaps.gap(z) for z in k]),
+            "polish_failed": np.zeros(len(k), dtype=bool)
+            if polish_failed is None
+            else np.asarray(polish_failed, dtype=bool),
         }
+        fields["gap"][fields["polish_failed"]] = 0.0
         if y is not None:
             fields["y"] = y
         return Entry(self.physics, handle=holder, fields=fields)
@@ -1116,7 +1138,9 @@ def isolated(
     A mode is when it is the only member of its cluster (``labels``), its
     cluster is not cut short by the guard mode (``incomplete``), and its
     relative gap to its gap set is at least `_ISOLATED`, or ``rtol``
-    (``SolverOptions.cluster_rtol``) when that is larger.
+    (``SolverOptions.cluster_rtol``) when that is larger. An entry stores a
+    gap of 0 for a mode whose forward polish failed (its ``polish_failed``
+    field), so such a mode is never isolated.
     """
     labels = np.asarray(labels)
     single = np.array([np.count_nonzero(labels == v) == 1 for v in labels], dtype=bool)
