@@ -71,7 +71,7 @@ import dataclasses
 import functools
 import math
 import warnings
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping, Sequence
 from typing import Any, Literal, NoReturn
 
 import jax
@@ -108,7 +108,12 @@ from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_sheet
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces, SystemOperator
-from gfem._engine.wave_ports import PortSurfaceCoupling, wave_port_couplings
+from gfem._engine.wave_ports import (
+    PortSurfaceCoupling,
+    SweptSurface,
+    port_mode_sweeps,
+    wave_port_couplings,
+)
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
@@ -565,15 +570,6 @@ class DrivenRule:
             and p.name not in self.excite
             and not math.isnan(resistance(p))
         )
-        workers_run = min(options.frequency_workers, len(problem.frequency)) > 1
-        if self.wave_ports and workers_run and not self.adaptive:
-            # each worker would track the port modes over its own block only
-            raise NotImplementedError(
-                f"WavePort {self.wave_ports[0]!r}: frequency workers cannot solve "
-                "wave ports in this version of gfem, so a uniform sweep with "
-                f"wave ports needs frequency_workers=1, got "
-                f"{options.frequency_workers}."
-            )
         #: The wave ports' modes.
         self.modes = {p.name: p.mode for p in model.ports if isinstance(p, WavePort)}
         #: The wave ports' de-embedding offsets, m.
@@ -603,6 +599,10 @@ class DrivenRule:
         #: `gfem.solve`'s eager path and by a frequency worker, never under
         #: JAX, where no caller reads it.
         self.keeps_partial = False
+        #: Per wave port surface, the rows of its parent's port mode sweep at
+        #: the problem's frequencies: set in a frequency worker, which then
+        #: sweeps no port mode itself (ADR 0099). ``None`` anywhere else.
+        self.handed_port_modes: list[dict[str, np.ndarray]] | None = None
         _check_low_frequency(model, problem.frequency, stacklevel=3, comm=comm)
         _check_skipped_port_modes(model, stacklevel=3, comm=comm)
 
@@ -734,8 +734,28 @@ class DrivenRule:
         block whose linear solve does not converge returns the rows it
         solved before (`_solve_block`); once every worker is done, one error
         reports every block's miss.
+
+        With wave ports, each surface's port mode sweep runs here, once over
+        the whole grid and before any worker starts (ADR 0099): a block's
+        own sweep would track other modes. Each worker takes its rows of the
+        swept arrays; the port modes of the result, a `PortModeError` and
+        the cross-projection warning are this process's.
         """
         frequencies = self.problem.frequency
+        swept: list[SweptSurface] = []
+        if self.wave_ports:
+            with task_manager(self.options.threads):
+                swept = port_mode_sweeps(
+                    model,
+                    order=self.options.order,
+                    frequency=frequencies,
+                    tolerance=self.options.port_mode_tolerance,
+                )
+            _check_port_mode_projection(
+                [(s.ports, s.cross_projection) for s in swept],
+                frequencies,
+                stacklevel=4,
+            )
         indices = np.array_split(
             np.arange(len(frequencies)), self.options.frequency_workers
         )
@@ -756,12 +776,27 @@ class DrivenRule:
         parts = workers.model_parts(model)
         results = workers.run(
             _solve_block,
-            [(*parts, problem, options, keep) for problem in problems],
+            [
+                (
+                    *parts,
+                    problem,
+                    options,
+                    keep,
+                    [s.rows(block) for s in swept] if swept else None,
+                )
+                for block, problem in zip(indices, problems, strict=True)
+            ],
             [_describe(problem.frequency) for problem in problems],
             threads=threads,
         )
+        sweeps = {
+            port.name: sweep
+            for s in swept
+            for port, sweep in zip(s.ports, s.sweeps, strict=True)
+        }
         out = SweepOutputs.join(
-            [(block, r[0]) for block, r in zip(indices, results, strict=True)]
+            [(block, r[0]) for block, r in zip(indices, results, strict=True)],
+            sweeps=[sweeps[name] for name in self.wave_ports],
         )
         # each block stopped at its first miss: its solved rows lead it
         misses = [
@@ -846,7 +881,8 @@ class DrivenRule:
 
         The couplings and the network are kept on the discretization
         (`_KeptPorts`) and reused while their key holds: a design away from
-        the port faces runs no port mode sweep.
+        the port faces runs no port mode sweep. A frequency worker's
+        couplings stand on `handed_port_modes`, its parent's sweep.
         """
         op = self.operator(model)
         names = self.port_names
@@ -865,13 +901,22 @@ class DrivenRule:
                 frequency=frequency,
                 tolerance=tolerance,
                 layout=op.layout or ONE_PROCESS,
+                swept=self.handed_port_modes,
             )
             kept = _KeptPorts(key, couplings)
             if disc is not None:
                 disc.ports = kept
         couplings = kept.couplings
         if warn:
-            _check_port_mode_projection(couplings, stacklevel=4, comm=self.comm)
+            _check_port_mode_projection(
+                [
+                    (tuple(c.port for c in s.ports), s.cross_projection)
+                    for s in couplings
+                ],
+                frequency,
+                stacklevel=4,
+                comm=self.comm,
+            )
         transposed = None
         if self.problem.wave_vector is not None:
             # A(k)^T = A(-k): the adjoint solves' operator
@@ -1646,7 +1691,11 @@ def _check_skipped_port_modes(
 
 
 def _check_port_mode_projection(
-    surfaces: list[PortSurfaceCoupling], *, stacklevel: int, comm: Any = None
+    surfaces: Sequence[tuple[Sequence[WavePort], Callable[[], np.ndarray]]],
+    frequency: tuple[float, ...],
+    *,
+    stacklevel: int,
+    comm: Any = None,
 ) -> None:
     """Warn once per shared port surface whose modes project on each other.
 
@@ -1656,22 +1705,25 @@ def _check_port_mode_projection(
     is never checked.
 
     Args:
-        surfaces: The wave port surfaces' couplings.
+        surfaces: Per wave port surface, its wave ports and its
+            ``cross_projection`` (of its coupling, or of its port mode
+            sweep alone in the parent of frequency workers).
+        frequency: The output grid, Hz.
         stacklevel: Passed on to `warnings.warn`, counted from the caller.
     """
-    for surface in surfaces:
-        n = len(surface.ports)
+    for ports, cross_projection in surfaces:
+        n = len(ports)
         if n < 2:
             continue
-        q = surface.cross_projection()
+        q = cross_projection()
         q[:, np.arange(n), np.arange(n)] = 0.0
         # q[k, l, j]: port j's S functional on port l's mode at frequency k
         k, l, j = np.unravel_index(int(np.argmax(q)), q.shape)
         value = float(q[k, l, j])
         if not value > PORT_MODE_PROJECTION_FLOOR:
             continue
-        a, b = surface.ports[l].port, surface.ports[j].port
-        f = surface.lead.omegas[k] / (2 * math.pi)
+        a, b = ports[int(l)], ports[int(j)]
+        f = frequency[int(k)]
         msg = (
             f"WavePorts {a.name!r} and {b.name!r} on surface {a.surface!r}: the S "
             f"functional of {b.name!r} reads the mode of {a.name!r} with a "
@@ -1686,13 +1738,21 @@ def _check_port_mode_projection(
         _mpi.warn(comm, msg, PortModeProjectionWarning, stacklevel=stacklevel + 1)
 
 
-def _solve_block(
-    aux: Any, children: Any, problem: Driven, options: SolverOptions, keep: bool
+def _solve_block(  # noqa: PLR0917
+    aux: Any,
+    children: Any,
+    problem: Driven,
+    options: SolverOptions,
+    keep: bool,
+    port_modes: list[dict[str, np.ndarray]] | None = None,
 ) -> tuple[SweepOutputs, np.ndarray | None, str | None]:
     """A frequency worker's `DrivenRule.forward` of its block.
 
-    ``aux`` and ``children`` are the model's parts (`gfem._engine.workers`).
-    Returns the block's outputs (rows: indices into the block), its
+    ``aux`` and ``children`` are the model's parts (`gfem._engine.workers`),
+    ``port_modes`` the block's rows of the parent's port mode sweeps, per
+    wave port surface (`DrivenRule.handed_port_modes`).
+    Returns the block's outputs (rows: indices into the block; without the
+    wave ports' modes, which are the parent's), its
     solutions (``keep``; else ``None``) and ``None``. A block whose linear
     solve does not converge at some frequency stops there and returns the
     rows it solved, no solutions, and the linear solver's message, plain
@@ -1709,18 +1769,19 @@ def _solve_block(
             warnings.simplefilter("ignore", category)
         rule = DrivenRule(model, problem, options)
         rule.keeps_partial = True
+        rule.handed_port_modes = port_modes
         try:
             outputs, entry = rule.forward(model, keep=keep)
         except LinearSolverConvergenceError as err:
             partial = err._partial  # noqa: SLF001
             if partial is None:  # pragma: no cover - a uniform sweep always sets it
                 raise
-            return partial.outputs, None, partial.reason
+            return partial.outputs.without_port_modes(), None, partial.reason
     solution = None
     if entry is not None:
         solution = entry.fields["solution"]
         entry.free()
-    return SweepOutputs.read(outputs), solution, None
+    return SweepOutputs.read(outputs).without_port_modes(), solution, None
 
 
 def _sample_error(

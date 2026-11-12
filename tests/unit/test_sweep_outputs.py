@@ -140,10 +140,32 @@ def test_join_keeps_no_field_when_no_block_kept_any():
     assert "e_field" not in out.outputs()
 
 
-def test_join_refuses_blocks_with_wave_ports():
+def test_join_takes_the_whole_grids_port_modes_at_the_joined_rows():
+    # workers return their blocks without port modes: the parent's sweeps
+    # over the whole grid give the rows the blocks solved
     rng = np.random.default_rng(5)
+    sweeps = [_wave(rng, "w1").sweep, _wave(rng, "w2").sweep]
+    blocks = [
+        ((0, 1), _uniform(rng, (0,), fields=False)),
+        ((2, 3), _uniform(rng, (0, 1), fields=False)),
+    ]
+    out = SweepOutputs.join(blocks, sweeps=sweeps)
+    assert out.rows == (0, 2, 3)
+    ports = out.ports
+    assert ports is not None
+    assert ports.rows == out.rows
+    for name in ("gamma", "z_pv", "residual", "solved"):
+        expected = np.stack([getattr(w, name) for w in sweeps], axis=1)[[0, 2, 3]]
+        np.testing.assert_array_equal(getattr(ports, name), expected)
+    np.testing.assert_array_equal(ports.field(1)._parts[2], sweeps[1].coords[[0, 2, 3]])
+    assert out.outputs()["port_sweeps"] == sweeps
+
+
+def test_join_refuses_a_blocks_own_port_modes():
+    # a block's own port mode sweep is not the whole grid's (ADR 0099)
+    rng = np.random.default_rng(6)
     block = _uniform(rng, (0, 1), waves=[_wave(rng, "w1")])
-    with pytest.raises(ValueError, match="wave ports"):
+    with pytest.raises(ValueError, match="port mode"):
         SweepOutputs.join([((0, 1, 2, 3), block)])
 
 

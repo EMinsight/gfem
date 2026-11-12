@@ -90,6 +90,10 @@ if __name__ == "__main__":
 - Each frequency is still a full solve, so S agrees with a one-worker run to
   the solver tolerance.
 - Gradients work as usual. The adjoint solves run in the main process.
+- Wave ports work too. The main process solves their port modes once over the
+  whole grid before the workers start, so S and the reference impedances are
+  those of a one-worker run, and a {py:obj}`gfem.PortModeError` is raised
+  before any worker starts.
 
 ## Choose between them
 
@@ -119,9 +123,6 @@ How gfem itself is checked: {doc}`../verification`.
 
 - A GPU device needs `frequency_workers=1` (`ValueError` otherwise): the
   workers would share one GPU's memory. Run the sweep in one process there.
-- A uniform sweep with wave ports over more than one frequency raises
-  `NotImplementedError` with `frequency_workers` above 1. Use
-  `frequency_workers=1` or the adaptive sweep.
 - A Bloch wave vector takes only the uniform sweep: the adaptive sweep raises
   `NotImplementedError` ({doc}`periodic-cell`). Plain periodicity takes both.
 - Across MPI ranks, frequency workers raise

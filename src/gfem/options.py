@@ -310,9 +310,9 @@ class SolverOptions:
             driven sweeps only: adaptive sweeps, eigenmode and electrostatic
             solves ignore it. Memory grows about ``frequency_workers`` times,
             one solve per worker. S agrees with one worker's to the solver
-            precision (each block's iterative solves start cold). Not available
-            with wave ports on more than one frequency (`NotImplementedError`)
-            or a GPU device. The workers are
+            precision (each block's iterative solves start cold). Wave ports'
+            modes are solved once, over the whole grid, before the workers
+            start. Not available on a GPU device. The workers are
             spawned processes, so a script that sets it must guard its
             entry point with ``if __name__ == "__main__":``.
         eigen_solver: What finds an `gfem.Eigenmode` problem's modes near
