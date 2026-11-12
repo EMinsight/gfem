@@ -8,6 +8,7 @@ to the 3D discretization error.
 import dataclasses
 import itertools
 import math
+import pickle
 import re
 import time
 import warnings
@@ -274,6 +275,28 @@ def test_kept_fields_keep_the_port_mode_fields(plate_mesh):
     field = r.port_modes["p1"].e_field
     e = np.asarray(field.at([W / 4, D / 2, 0.0]))  # (n_freq, 3)
     np.testing.assert_allclose(np.abs(e[:, 1]), math.sqrt(2 * z_tem()) / D, rtol=1e-8)
+
+
+@pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
+def test_a_wave_port_result_round_trips_through_pickle(plate_mesh, sweep):
+    # A result crosses a process boundary (multiprocessing) by pickle; the
+    # port mode fields come back readable, with the same values.
+    result = gfem.solve(
+        line(plate_mesh), gfem.Driven(GRID, sweep=sweep), options=OPTIONS
+    )
+    loaded = pickle.loads(pickle.dumps(result))  # noqa: S301 - our own bytes
+    np.testing.assert_array_equal(loaded.s.values, result.s.values)
+    for name, z in (("p1", 0.0), ("p2", L)):
+        point = [W / 4, D / 2, z]
+        mode, back = result.port_modes[name], loaded.port_modes[name]
+        np.testing.assert_array_equal(back.gamma, mode.gamma)
+        expected = np.asarray(mode.e_field.at(point))
+        np.testing.assert_allclose(
+            back.e_field.at(point),
+            expected,
+            rtol=0,
+            atol=1e-12 * np.abs(expected).max(),
+        )
 
 
 def test_a_sweep_that_does_not_converge_keeps_its_solved_port_modes(
