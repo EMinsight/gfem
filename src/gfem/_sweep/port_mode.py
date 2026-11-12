@@ -38,7 +38,7 @@ import dataclasses
 import itertools
 import math
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import jax
@@ -71,6 +71,8 @@ __all__ = [
     "PortModeSweep",
     "path_voltage",
     "port_mode_sweep",
+    "rows_of",
+    "sweeps_on",
     "swept_once",
 ]
 
@@ -445,7 +447,28 @@ def swept_once(
 
     # ValueError: a voltage path off the port, on replicated inputs
     arrays = _mpi.on_root(comm, compute, results=(PortModeError, ValueError))
-    sweeps = [
+    return sweeps_on(space, frequency, arrays), arrays
+
+
+def sweeps_on(
+    space: PortModeSpace,
+    frequency: tuple[float, ...] | np.ndarray,
+    arrays: dict[str, np.ndarray],
+) -> list[PortModeSweep]:
+    """The sweeps that stand on ``space`` and on `swept_once`'s ``arrays``.
+
+    What a rank does with the arrays rank 0 sent, and a frequency worker with
+    the rows its parent handed it (`rows_of`, ADR 0099): no port mode solve.
+
+    Args:
+        space: The surface's discrete port mode problem, built here.
+        frequency: The frequencies of the arrays' rows, Hz.
+        arrays: `swept_once`'s arrays, or their rows at ``frequency``.
+
+    Returns:
+        One `PortModeSweep` per mode.
+    """
+    return [
         PortModeSweep(
             space=space,
             frequency=np.asarray(frequency, float),
@@ -453,9 +476,25 @@ def swept_once(
             solved=arrays["solved"],
             **{name: arrays[name][k] for name in _PER_MODE},
         )
-        for k in range(len(modes))
+        for k in range(len(arrays["gamma"]))
     ]
-    return sweeps, arrays
+
+
+def rows_of(
+    arrays: dict[str, np.ndarray], rows: Sequence[int] | np.ndarray
+) -> dict[str, np.ndarray]:
+    """`swept_once`'s ``arrays`` at the grid indices ``rows``.
+
+    The per-frequency arrays are sliced; the basis and what was derived from
+    it are the whole sweep's, so a block of the grid solves on the modes the
+    whole grid's sweep found.
+    """
+    rows = np.asarray(rows, int)
+    out = dict(arrays)
+    for name in _PER_MODE:
+        out[name] = arrays[name][:, rows]
+    out["solved"] = arrays["solved"][rows]
+    return out
 
 
 @dataclasses.dataclass(frozen=True)

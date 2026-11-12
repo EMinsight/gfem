@@ -55,6 +55,8 @@ from __future__ import annotations
 import dataclasses
 import functools
 import math
+from collections.abc import Sequence
+from typing import Any
 
 import ngsolve as ngs
 import numpy as np
@@ -72,13 +74,15 @@ from gfem._engine.port_mode import PortModeSpace
 from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._port_section import PortSection, port_section
-from gfem._sweep.port_mode import PortModeSweep, swept_once
+from gfem._sweep.port_mode import PortModeSweep, rows_of, sweeps_on, swept_once
 from gfem.errors import PortModeError
 from gfem.model import Model
 
 __all__ = [
     "PortSurfaceCoupling",
+    "SweptSurface",
     "WavePortCoupling",
+    "port_mode_sweeps",
     "trace_dofs",
     "wave_port_couplings",
 ]
@@ -234,14 +238,11 @@ class PortSurfaceCoupling:
         the diagonal it is zero up to the modes' residuals on a lossless
         port line, and of the order of the loss otherwise.
         """
-        m = self.reaction.shape[1]
-        tangential = np.stack([c.sweep.coords[:, :m] for c in self.ports], axis=1)
-        phi = np.stack([c.phi for c in self.ports], axis=1)
-        q = np.einsum(
-            "fli,ji,fkj->flk", tangential, np.conj(self.reaction), np.conj(phi)
+        return _cross_projection(
+            self.reaction,
+            [c.sweep.coords for c in self.ports],
+            [c.phi for c in self.ports],
         )
-        d = np.sqrt(np.abs(np.einsum("fkk->fk", q)))
-        return np.abs(q) / (d[:, :, None] * d[:, None, :])
 
     def correction_coefficients(self, omega: float) -> np.ndarray:
         """``C(ω)`` ``(2 m, 2 m)`` with ``W = vectors C vectorsᵀ`` (rank ``2 n``).
@@ -261,6 +262,119 @@ def _singular(a: np.ndarray) -> bool:
     return bool(sigma[0] == 0 or sigma[-1] <= 1e-12 * sigma[0])
 
 
+def _phi(sweep: PortModeSweep, scale: float, m: int) -> np.ndarray:
+    """``(n_freq, 2 m)``: `WavePortCoupling.phi` of a mode's sweep."""
+    coords = sweep.coords
+    gamma = sweep.gamma * scale
+    return np.concatenate([gamma[:, None] * coords[:, :m], coords[:, m:]], 1)
+
+
+def _cross_projection(
+    reaction: np.ndarray, coords: list[np.ndarray], phi: list[np.ndarray]
+) -> np.ndarray:
+    """`PortSurfaceCoupling.cross_projection` from the surface's 2D arrays."""
+    m = reaction.shape[1]
+    tangential = np.stack([c[:, :m] for c in coords], axis=1)
+    q = np.einsum(
+        "fli,ji,fkj->flk", tangential, np.conj(reaction), np.conj(np.stack(phi, axis=1))
+    )
+    d = np.sqrt(np.abs(np.einsum("fkk->fk", q)))
+    return np.abs(q) / (d[:, :, None] * d[:, None, :])
+
+
+@dataclasses.dataclass(eq=False)
+class SweptSurface:
+    """One wave port surface's port mode sweep over a grid: 2D only.
+
+    What `wave_port_couplings` couples to the 3D field, and what the parent
+    of frequency workers runs once over the whole grid, keeps for the
+    result and hands over by rows (ADR 0099).
+
+    Attributes:
+        ports: The surface's wave ports, in model port order.
+        modes: The surface's discrete port mode problem.
+        sweeps: Each port's mode over the grid.
+        arrays: `gfem._sweep.port_mode.swept_once`'s arrays, with the
+            columns read off the basis (``r``, ``reaction``, ``q``).
+    """
+
+    ports: tuple[WavePort, ...]
+    modes: PortModeSpace
+    sweeps: list[PortModeSweep]
+    arrays: dict[str, np.ndarray]
+
+    def rows(self, rows: np.ndarray) -> dict[str, np.ndarray]:
+        """The arrays at the grid indices ``rows``: plain data that pickles."""
+        return rows_of(self.arrays, rows)
+
+    def cross_projection(self) -> np.ndarray:
+        """`PortSurfaceCoupling.cross_projection`, without any 3D term."""
+        reaction = self.arrays["reaction"]
+        scale, m = self.modes.section.scale, reaction.shape[1]
+        return _cross_projection(
+            reaction,
+            [sweep.coords for sweep in self.sweeps],
+            [_phi(sweep, scale, m) for sweep in self.sweeps],
+        )
+
+
+def port_mode_sweeps(
+    model: Model,
+    *,
+    order: int,
+    frequency: tuple[float, ...],
+    tolerance: float,
+    comm: Any = None,
+    handed: Sequence[dict[str, np.ndarray]] | None = None,
+) -> list[SweptSurface]:
+    """Each wave port surface's port mode sweep over ``frequency``.
+
+    Needs no 3D space. With ``handed`` nothing is solved: the sweeps stand
+    on those arrays, as a rank's do on the arrays rank 0 sent.
+
+    Args:
+        model: The model.
+        order: The element order of the port mode problem.
+        frequency: The grid, Hz.
+        tolerance: ``SolverOptions.port_mode_tolerance``.
+        comm: The resolved communicator (the sweep runs once, on rank 0).
+        handed: Per surface, a whole-grid sweep's arrays at ``frequency``
+            (`SweptSurface.rows`).
+
+    Returns:
+        One per surface with wave ports, in the order of each surface's
+        first wave port.
+
+    Raises:
+        PortModeError: As `gfem._sweep.port_mode.port_mode_sweep`.
+    """
+    groups = list(wave_port_surfaces(model.ports).values())
+    if handed is not None and len(handed) != len(groups):  # pragma: no cover
+        raise ValueError(
+            f"{len(handed)} handed port mode sweeps for {len(groups)} wave port "
+            "surfaces."
+        )
+    out = []
+    for k, group in enumerate(groups):
+        section = port_section(model, lead_port(group))
+        modes = PortModeSpace(section, order)
+        if handed is not None:
+            arrays = handed[k]
+            sweeps = sweeps_on(modes, frequency, arrays)
+        else:
+            sweeps, arrays = swept_once(
+                comm,
+                modes,
+                frequency,
+                [p.mode for p in group],
+                tolerance=tolerance,
+                ports=list(group),
+                derived=functools.partial(_port_columns, modes),
+            )
+        out.append(SweptSurface(tuple(group), modes, sweeps, arrays))
+    return out
+
+
 def wave_port_couplings(
     model: Model,
     built: EngineMesh,
@@ -270,6 +384,7 @@ def wave_port_couplings(
     frequency: tuple[float, ...],
     tolerance: float,
     layout: DofLayout = ONE_PROCESS,
+    swept: Sequence[dict[str, np.ndarray]] | None = None,
 ) -> list[PortSurfaceCoupling]:
     """Run each wave port surface's port mode sweep and build its driven terms.
 
@@ -281,6 +396,9 @@ def wave_port_couplings(
         frequency: The output grid, Hz.
         tolerance: ``SolverOptions.port_mode_tolerance``.
         layout: How ``space`` lies across ranks.
+        swept: Per surface, a port mode sweep's arrays at ``frequency``,
+            handed over in place of the sweep (a frequency worker's rows of
+            its parent's whole-grid sweep, `port_mode_sweeps`).
 
     Returns:
         One coupling per surface with wave ports, in the order of each
@@ -289,19 +407,23 @@ def wave_port_couplings(
     omegas = 2 * np.pi * np.asarray(frequency, float)
     index = {p.name: i for i, p in enumerate(model.ports)}
     out = []
-    for group in wave_port_surfaces(model.ports).values():
-        lead = lead_port(group)
-        section = port_section(model, lead)
-        modes = PortModeSpace(section, order)
-        sweeps, columns = swept_once(
-            layout.comm,
-            modes,
-            frequency,
-            [p.mode for p in group],
-            tolerance=tolerance,
-            ports=list(group),
-            derived=functools.partial(_port_columns, modes),
+    surfaces = port_mode_sweeps(
+        model,
+        order=order,
+        frequency=frequency,
+        tolerance=tolerance,
+        comm=layout.comm,
+        handed=swept,
+    )
+    for surface in surfaces:
+        group, modes, sweeps, columns = (
+            surface.ports,
+            surface.modes,
+            surface.sweeps,
+            surface.arrays,
         )
+        lead = lead_port(group)
+        section = modes.section
         r, reaction, q = columns["r"], columns["reaction"], columns["q"]
         m = r.shape[1] // 2
         idx3, idx2 = trace_dofs(model, section, modes, built, space)
@@ -317,8 +439,7 @@ def wave_port_couplings(
         ports = []
         for port, sweep in zip(group, sweeps, strict=True):
             coords = sweep.coords
-            gamma = sweep.gamma * scale
-            phi = np.concatenate([gamma[:, None] * coords[:, :m], coords[:, m:]], 1)
+            phi = _phi(sweep, scale, m)
             # Palace's normalization: |(i / (omega mu0)) int E_t . conj(h)| = 2
             proj = np.einsum("fi,ij,fj->f", coords[:, :m], q, np.conj(phi))
             power = np.abs(scale * proj / (omegas * scipy.constants.mu_0))

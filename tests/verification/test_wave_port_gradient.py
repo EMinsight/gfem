@@ -79,6 +79,35 @@ def test_a_wave_port_and_a_lumped_port_mix(mesh, sweep):
     assert_gradient_matches(objective, p, directions, step=STEPS["eps_r"])
 
 
+@pytest.mark.parametrize("port", ["lossless", "lossy", "mixed"])
+def test_a_kept_field_objective_with_wave_ports(mesh, port):
+    # the kept-field cotangent is one more load on the adjoint solve, whose
+    # operator holds the wave ports' Robin terms and modal corrections
+    values, rng = core_design(mesh, seed=4)
+    model = wave_line(mesh, port)
+    kept = FREQUENCIES[1]
+    problem = gfem.Driven(FREQUENCIES, excite="p1", keep_fields=kept)
+
+    def solve(p):
+        core = gfem.MaterialField(**{**values, "eps_r": p})
+        m = model.with_material("core", core)
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return gfem.solve(m, problem, options=tight("direct"))
+
+    p = values["eps_r"]
+    n = solve(p).e_field(kept, "p1").coefficients.shape[0]
+    w = np.array([1, 1j]) @ np.random.default_rng(1).normal(size=(2, n))
+    w = jnp.asarray(w / np.linalg.norm(w))
+
+    def objective(p):
+        result = solve(p)
+        e = result.e_field(kept, "p1").coefficients
+        return jnp.abs(jnp.sum(w * e)) ** 2 + jnp.sum(jnp.abs(result.s.values) ** 2)
+
+    directions = unit_directions(rng, p.shape, 2)
+    assert_gradient_matches(objective, p, directions, step=STEPS["eps_r"])
+
+
 def test_complex_permittivity_gradient_has_both_parts(mesh):
     values, rng = core_design(mesh, seed=2)
     problem = gfem.Driven(frequency=FREQUENCIES)

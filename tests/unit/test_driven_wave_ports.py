@@ -102,7 +102,7 @@ def test_the_result_holds_each_wave_ports_mode(plate_result):
     np.testing.assert_allclose(np.asarray(modes["p1"].Z_PV), z_tem(), rtol=1e-8)
     assert np.isnan(np.asarray(modes["p2"].Z_PV)).all()
     assert np.asarray(modes["p1"].solved).all()  # three frequencies: exact solves
-    assert modes["p1"].e_field is None  # no fields kept
+    assert modes["p1"].e_field is not None  # with or without kept fields
 
 
 def test_reference_impedance_is_z_pv_or_nan(plate_result):
@@ -305,15 +305,50 @@ def test_wave_port_results_round_trip_through_a_bundle(plate_mesh, tmp_path):
     )
 
 
-def test_characteristic_impedance_needs_kept_port_mode_fields(plate_mesh, plate_result):
+def test_characteristic_impedance_reads_any_eager_result(plate_mesh, plate_result):
+    fill = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
+    # the fixture kept no field: the port mode fields are there regardless
     path = ((W / 2, 0.0, 0.0), (W / 2, D, 0.0))
-    with pytest.raises(ValueError, match="keep_fields"):
-        gfem.characteristic_impedance(plate_result.port_modes["p1"], path)
-    kept = gfem.solve(
-        line(plate_mesh), gfem.Driven(F, excite="p1", keep_fields=True), options=OPTIONS
-    )
-    z = np.asarray(gfem.characteristic_impedance(kept.port_modes["p1"], path))
+    mode = plate_result.port_modes["p1"]
+    z = np.asarray(gfem.characteristic_impedance(mode, path))
+    np.testing.assert_allclose(z, mode.Z_PV, rtol=1e-13)
     np.testing.assert_allclose(z, z_tem(), rtol=1e-8)
+    inside = []
+
+    @jax.jit
+    def solve(eps):
+        model = line(plate_mesh).with_material(
+            "fill", dataclasses.replace(fill, eps_r=eps)
+        )
+        result = gfem.solve(model, gfem.Driven(F[:1]), options=OPTIONS)
+        inside.append(result.port_modes["p1"])
+        return result.s.values
+
+    solve(fill.eps_r)
+    # no field crosses a transformation: gfem.PortMode outside it has one
+    with pytest.raises(ValueError, match="PortMode"):
+        gfem.characteristic_impedance(inside[0], path)
+
+
+def test_kept_fields_with_wave_ports_run_under_jit(plate_mesh):
+    fill = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
+    problem = gfem.Driven(F[:2], excite="p1", keep_fields=F[1])
+    inside = []
+
+    def solve(eps):
+        model = line(plate_mesh).with_material(
+            "fill", dataclasses.replace(fill, eps_r=eps)
+        )
+        result = gfem.solve(model, problem, options=OPTIONS)
+        inside.append(result.port_modes["p1"].e_field)
+        return result.e_field(F[1], "p1").coefficients
+
+    eager = solve(fill.eps_r)
+    assert inside.pop() is not None
+    traced = jax.jit(solve)(fill.eps_r)
+    np.testing.assert_array_equal(traced, eager)
+    # the port mode fields have no shape to declare before the solve
+    assert inside.pop() is None
 
 
 def test_a_singular_reaction_raises_instead_of_dropping_the_correction(

@@ -64,6 +64,12 @@ mode = gfem.solve(model, gfem.PortMode("p1", [10e9, 20e9]))
 z = gfem.characteristic_impedance(mode, [(0.0, 0.0, 0.0), (0.0, 10e-6, 0.0)])
 ```
 
+A driven result holds the mode of each wave port too, so
+`result.port_modes["p1"]` takes the place of `mode`, with or without kept
+fields. Inside `jax.jit`, `jax.grad` or `jax.vmap` a driven result's port
+modes carry no field and the call raises `ValueError`: solve `gfem.PortMode`
+outside the transformation, since port modes are constants of the solve.
+
 ## Power through a surface
 
 `gfem.power_flow(field, side, model=model)` is the net time-averaged power, in
