@@ -195,3 +195,15 @@ def test_a_constant_regions_overlap_names_no_law_term(plate, monkeypatch):
     with pytest.raises(gfem.EigenmodeConvergenceError) as raised:
         gfem.solve(crowded(plate), CROWDED, options=ORDER_1)
     assert "law.terms" not in str(raised.value)
+
+
+def test_a_scalar_permittivity_with_principal_loss_tangents_names_its_overlap(
+    plate, monkeypatch
+):
+    # Material admits a scalar eps_r beside three principal loss tangents
+    monkeypatch.setattr(seed, "_SEED_RESTARTS", BOUND)
+    fill = gfem.Material(eps_r=22.3, tan_delta=(0.448, 0.448, 0.46))
+    model = crowded(plate).replace(materials={"host": fill, "core": fill})
+    with pytest.raises(gfem.EigenmodeConvergenceError) as raised:
+        gfem.solve(model, CROWDED, options=ORDER_1)
+    assert "Region 'host' holds about" in str(raised.value)

@@ -134,6 +134,14 @@ def test_an_estimate_refuses_a_frequency_where_a_law_is_zero(mesh):
         gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
 
 
+@pytest.mark.usefixtures("no_solve")
+def test_refinement_refuses_a_frequency_where_a_law_rounds_to_zero(mesh):
+    # eps = 1 - (5 GHz / f)^2 is about 2e-12 here: no exact zero in floating point
+    model = _line(mesh, gfem.Material(eps_r=PLASMA))
+    with pytest.raises(ValueError, match=r"'core'.*5 GHz.*no weight"):
+        gfem.refine_mesh(model, gfem.Driven([5 * GHZ * (1 + 1e-12)]))
+
+
 @pytest.mark.parametrize(
     ("law", "lossy"),
     [

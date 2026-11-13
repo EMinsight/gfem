@@ -176,6 +176,24 @@ def test_an_output_frequency_on_a_lossless_pole_raises_before_assembly(
     assert "damping" in str(err.value)
 
 
+def test_the_frequency_check_reads_a_one_pass_iterable(mesh):
+    # a generator is consumed once: the blend's check reads it first, and the
+    # law regions must still see it
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=8 * GHZ, damping=0.0)],
+    )
+    rho = np.full(len(mesh.elements("dielectric")), 0.5)
+    host = gfem.MaterialField.interpolate(
+        rho,
+        gfem.Material(eps_r=EPS_HOST),
+        gfem.Material(eps_r=gfem.PermittivityLaw(eps_inf=2.0, terms=[DEBYE])),
+    )
+    model = _model(mesh, gfem.Material(eps_r=law), host=host)
+    with pytest.raises(ValueError, match=r"8e\+09 Hz.*region 'core'"):
+        dispersion.check_frequencies(model, (f for f in [5 * GHZ, 8 * GHZ]))
+
+
 def test_the_greedy_solves_the_grid_neighbours_of_an_in_band_resonance_first(mesh):
     # ADR 0116: after the endpoints, the two grid frequencies on either side
     # of each in-band Lorentz resonance, region by region; one outside the

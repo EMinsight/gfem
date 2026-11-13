@@ -191,6 +191,12 @@ def _constant_eps_solve(mesh, eps, problem):
 
 # --- the paths that refuse a blend ------------------------------------------------
 
+#: The remedy every refusal of a law blend names (ADR 0113).
+UNIFORM_ONLY = (
+    r"metal-dielectric blend \(MaterialField.interpolate with a permittivity "
+    r"law\) is supported on the driven uniform sweep only"
+)
+
 
 def _blend(mesh, end=METAL, scheme="index"):
     return gfem.MaterialField.interpolate(_rho(mesh), DIELECTRIC, end, scheme=scheme)
@@ -209,9 +215,7 @@ def _blend(mesh, end=METAL, scheme="index"):
     ids=["eigenmode", "adaptive", "port_mode"],
 )
 def test_a_blend_off_the_driven_uniform_sweep_raises(mesh, problem, match):
-    with pytest.raises(
-        NotImplementedError, match=f"'core' is a density blend.*{match}"
-    ):
+    with pytest.raises(NotImplementedError, match=f"'core'.*{match}.*{UNIFORM_ONLY}"):
         gfem.solve(_line(mesh, _blend(mesh)), problem, options=OPTIONS)
 
 
@@ -279,3 +283,112 @@ def test_the_static_check_refuses_a_blend_with_a_drude_end(mesh):
 
     with pytest.raises(ValueError, match=r"'core' blends .* Drude"):
         check_static(_line(mesh, _blend(mesh)))
+
+
+def test_the_static_check_refuses_a_blend_without_a_drude_end_as_unsupported(mesh):
+    lossy = gfem.Material(
+        eps_r=gfem.PermittivityLaw.djordjevic_sarkar(4.3, 0.02, frequency=1e9)
+    )
+    from gfem._engine.dispersion import check_static
+
+    with pytest.raises(NotImplementedError, match=f"'core'.*{UNIFORM_ONLY}"):
+        check_static(_line(mesh, _blend(mesh, end=lossy)))
+
+
+@pytest.fixture(scope="module")
+def solved_blend(mesh):
+    model = _line(mesh, _blend(mesh))
+    problem = gfem.Driven(frequency=[5 * GHZ], excite="p1", keep_fields=True)
+    return model, gfem.solve(model, problem, options=OPTIONS)
+
+
+def test_an_error_estimate_of_a_blend_raises_with_the_remedy(solved_blend):
+    model, result = solved_blend
+    with pytest.raises(
+        NotImplementedError, match=f"'core'.*error_estimate.*{UNIFORM_ONLY}"
+    ):
+        gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+
+
+def test_the_electric_energy_of_a_blend_raises_with_the_remedy(solved_blend):
+    model, result = solved_blend
+    with pytest.raises(
+        NotImplementedError, match=f"'core'.*electric_energy.*{UNIFORM_ONLY}"
+    ):
+        gfem.electric_energy(result.e_field(5 * GHZ), model=model)
+
+
+@pytest.mark.parametrize(
+    "estimator",
+    [gfem.FieldEstimator(), gfem.QuantityEstimator(s=("p2", "p1"))],
+    ids=["field", "s"],
+)
+def test_mesh_refinement_of_a_blend_raises_before_any_solve(
+    mesh, monkeypatch, estimator
+):
+    def solve(*_args, **_kwargs):
+        raise AssertionError("refine_mesh solved before refusing")
+
+    monkeypatch.setattr("gfem.refinement._solve", solve)
+    with pytest.raises(
+        NotImplementedError, match=f"'core'.*refine_mesh.*{UNIFORM_ONLY}"
+    ):
+        gfem.refine_mesh(
+            _line(mesh, _blend(mesh)),
+            gfem.Driven(frequency=[5 * GHZ]),
+            estimator=estimator,
+        )
+
+
+def test_a_reader_that_takes_no_frequency_names_the_remedy(mesh):
+    from gfem._engine.coefficients import lossy_eps
+
+    with pytest.raises(NotImplementedError, match=f"'core'.*{UNIFORM_ONLY}") as err:
+        lossy_eps(_line(mesh, _blend(mesh)))
+    assert "internal" not in str(err.value)
+
+
+# --- serialization and the density's range -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("void", "solid", "scheme"),
+    [
+        (gfem.Material(eps_r=3.0, tan_delta=0.01), METAL, "ramp"),
+        (METAL, gfem.Material(eps_r=3.0, tan_delta=0.01), "index"),
+    ],
+    ids=["constant-void", "law-void"],
+)
+def test_a_job_with_a_law_blend_round_trips(mesh, tmp_path, void, solid, scheme):
+    blend = gfem.MaterialField.interpolate(_rho(mesh), void, solid, scheme=scheme)
+    model = _line(mesh, blend)
+    job = gfem.Job(model, gfem.Driven(frequency=[5 * GHZ]))
+    back = gfem.Job.from_json(job.to_json(tmp_path / "job.json"))
+    core = back.model.materials["core"]
+    assert core.blend_ends == blend.blend_ends
+    np.testing.assert_array_equal(np.asarray(core.blend), _rho(mesh))
+
+
+@pytest.mark.parametrize("value", [1.2, -0.1])
+@pytest.mark.parametrize("scheme", ["index", "linear", "simp"])
+def test_a_blend_density_outside_0_1_raises(mesh, value, scheme):
+    rho = _rho(mesh)
+    rho[0] = value
+    with pytest.raises(ValueError, match=r"blend.*\[0, 1\]"):
+        gfem.MaterialField.interpolate(rho, DIELECTRIC, METAL, scheme=scheme)
+
+
+@pytest.mark.parametrize("value", [1.2, -0.1])
+def test_a_traced_blend_density_outside_0_1_raises_naming_the_region(mesh, value):
+    rho = _rho(mesh)
+    rho[0] = value
+
+    def objective(r):
+        field = gfem.MaterialField.interpolate(r, DIELECTRIC, METAL, scheme="linear")
+        problem = gfem.Driven(frequency=[5 * GHZ])
+        s = gfem.solve(_line(mesh, field), problem, options=OPTIONS).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    with pytest.raises(Exception, match=r"blend.*\[0, 1\]") as raised:
+        jax.grad(objective)(jnp.asarray(rho))
+    assert "region 'core'" in str(raised.value)

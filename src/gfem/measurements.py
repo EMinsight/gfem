@@ -700,6 +700,9 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
             region at the field's frequency (loss dominates there: a metal
             below its damping frequency, a Lorentz pole inside its
             linewidth).
+        NotImplementedError: ``model`` holds a metal-dielectric blend
+            (`MaterialField.interpolate` with a permittivity law), which is
+            supported on the driven uniform sweep only.
         gfem.DistributedUnsupportedError: The field is a piece across ranks.
         NonDifferentiableError: ``field`` or ``model`` is computed inside
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; call
@@ -718,6 +721,9 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
         raise TypeError(
             f"electric_energy needs model= a gfem.Model, got {type(model).__name__}."
         )
+    from gfem._engine.dispersion import refuse_blends
+
+    refuse_blends(model, "electric_energy")
     if is_traced(field) or is_traced(model):
         raise NonDifferentiableError(
             "gfem.electric_energy is not differentiable in this version: its "

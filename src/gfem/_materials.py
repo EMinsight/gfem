@@ -977,6 +977,22 @@ def _check_field_values(prop: _Property, arr: np.ndarray) -> None:
         raise err
 
 
+def _check_blend_values(rho: np.ndarray) -> None:
+    """Raise unless a blend's concrete density is finite and in [0, 1].
+
+    Outside [0, 1] a weight end's coefficient 1 - w or w turns negative,
+    which makes a lossy susceptibility gain, and SIMP of a negative density
+    is NaN: no passivity check of a blended eps_r catches it, since a law
+    blend blends no eps_r (ADR 0113).
+    """
+    if not np.isfinite(rho).all():
+        raise ValueError("MaterialField: blend must be finite.")
+    bad = (rho < 0) | (rho > 1)
+    if bad.any():
+        first = float(rho.reshape(-1)[int(np.flatnonzero(bad.reshape(-1))[0])])
+        raise ValueError(f"MaterialField: blend is a density in [0, 1], got {first:g}.")
+
+
 def check_field_values(materials: Mapping[str, Any]) -> None:
     """Check the concrete values of every `MaterialField`, region by region.
 
@@ -988,9 +1004,9 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
         materials: A model's materials by region, with concrete values.
 
     Raises:
-        ValueError: A value the constructor refuses (not finite, or not
-            passive), with the region named; the same for a permittivity
-            law's parameters (ADR 0112).
+        ValueError: A value the constructor refuses (not finite, not
+            passive, or a blend density outside [0, 1]), with the region
+            named; the same for a permittivity law's parameters (ADR 0112).
     """
     for region, material in materials.items():
         if isinstance(material, Material) and isinstance(
@@ -999,12 +1015,15 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
             _check_law(region, material.eps_r)
         if not isinstance(material, MaterialField):
             continue
-        for name in PROPERTY_NAMES:
+        for name in (*PROPERTY_NAMES, "blend"):
             value = getattr(material, name)
             if value is None:
                 continue
             try:
-                _check_field_values(_BY_NAME[name], np.asarray(value))
+                if name == "blend":
+                    _check_blend_values(np.asarray(value))
+                else:
+                    _check_field_values(_BY_NAME[name], np.asarray(value))
             except ValueError as err:
                 raise ValueError(
                     f"{err} (region {region!r}; the value was computed under a "
@@ -1301,8 +1320,8 @@ class MaterialField:
                 f"or one for the region, got shape {rho.shape}."
             )
         rho = rho.astype(jnp.float64)
-        if not is_traced(rho) and not np.isfinite(np.asarray(rho)).all():
-            raise ValueError("MaterialField: blend must be finite.")
+        if not is_traced(rho):
+            _check_blend_values(np.asarray(rho))
         object.__setattr__(self, "blend", rho)
         return int(rho.shape[0]) if rho.ndim == 1 else None
 

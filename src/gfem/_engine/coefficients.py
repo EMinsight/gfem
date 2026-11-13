@@ -88,7 +88,9 @@ def element_values(
         ValueError: A region holds ``name`` as principal values and
             ``per_axis`` is ``None``.
         NotImplementedError: ``name`` is ``"eps_r"``, a region holds a
-            permittivity law and ``law`` is ``None``.
+            permittivity law and ``law`` is ``None``; a law blend names
+            the uniform driven sweep, the only problem that reads it
+            (`gfem._engine.dispersion.refuse_blends`).
     """
     mesh = model.mesh
     default = _DEFAULTS[name]
@@ -105,6 +107,11 @@ def element_values(
         if value is None:
             continue
         if isinstance(value, PermittivityLaw | Blend):
+            if law is None and isinstance(value, Blend):
+                # imported here: dispersion imports this module
+                from gfem._engine.dispersion import refuse_blends
+
+                refuse_blends(model, "a reader of eps_r that takes no frequency")
             if law is None:
                 raise NotImplementedError(
                     f"The material of region {region!r} has a permittivity law (a "

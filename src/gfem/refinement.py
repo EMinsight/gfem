@@ -363,6 +363,9 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         DegenerateModeError: A `QuantityEstimator` names a mode of a
             degenerate cluster, or one within the default
             `SolverOptions.cluster_rtol` of another mode.
+        NotImplementedError: ``model`` holds a metal-dielectric blend
+            (`MaterialField.interpolate` with a permittivity law), which is
+            supported on the driven uniform sweep only.
         DistributedUnsupportedError: The result was solved across ranks.
         NonDifferentiableError: A model or result leaf is a JAX tracer, or
             the call is inside `jax.jit`.
@@ -370,6 +373,7 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     if not isinstance(model, Model):
         raise TypeError(f"model must be a gfem.Model, got {type(model).__name__}.")
     _check_estimator(estimator)
+    _refuse_blends(model, "error_estimate")
     _check_untraced("error_estimate", (model, result))
     _check_estimable(result, estimator, model)
     mode = _estimator_mode(estimator)
@@ -476,6 +480,9 @@ def refine_mesh(
             previous frequency, or the nearest moved further than the
             previous estimate allows (the mode probably left the solved
             modes: ask for more modes or start from a finer mesh).
+        NotImplementedError: ``model`` holds a metal-dielectric blend
+            (`MaterialField.interpolate` with a permittivity law), which is
+            supported on the driven uniform sweep only.
         DistributedUnsupportedError: Launched on more than one rank.
         MeshQualityError: The input mesh's nodes have moved and an element is
             inverted.
@@ -497,6 +504,7 @@ def refine_mesh(
         )
     _check_estimator(estimator)
     _check_problem(model, problem)
+    _refuse_blends(model, "refine_mesh")
     if isinstance(estimator, QuantityEstimator):
         _check_quantity_keys(estimator, problem, model)
         _check_quantity_model(estimator, model)
@@ -862,6 +870,13 @@ def _fields(result: Any) -> list:
     if isinstance(result, ElectrostaticResult):
         return list(result.potential.values())
     return list(result.e_fields)
+
+
+def _refuse_blends(model: Model, where: str) -> None:
+    """Raise for a law blend: the estimators do not read one (ADR 0113)."""
+    from gfem._engine import dispersion
+
+    dispersion.refuse_blends(model, where)
 
 
 def _check_estimator(estimator: Any) -> None:

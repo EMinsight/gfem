@@ -77,6 +77,7 @@ __all__ = [
     "high_frequency_eps",
     "law_regions",
     "nearest_term",
+    "refuse_blends",
     "resonance_seeds",
     "static_eps",
     "susceptibility",
@@ -313,31 +314,16 @@ def check_static(model: Model) -> None:
     one gives Re chi(0) = -ωp²/γ² < 0, which would make the electrostatic
     operator indefinite; dropping the term would give a metal eps_inf.
 
-    A density blend with a law end (ADR 0113) is refused too: with a Drude
-    end for the same reason, otherwise because the electrostatic problem
-    does not read a blend.
+    A density blend with a law end (ADR 0113) is refused too
+    (`refuse_blends`).
 
     Raises:
         ValueError: A law region's law, or an end of a law blend, has a
             `gfem.Drude` term.
         NotImplementedError: A law blend without a Drude end.
     """
+    refuse_blends(model, "the Electrostatic problem", static=True)
     for region, material in model.materials.items():
-        ends = material.blend_ends if isinstance(material, MaterialField) else None
-        if ends is not None and ends.drude:
-            raise ValueError(
-                f"Region {region!r} blends a permittivity law with a Drude term, "
-                "which has no static permittivity (eps(0) is infinite), so the "
-                "electrostatic problem cannot read it. Use a constant material "
-                "for the electrostatic model."
-            )
-        if ends is not None:
-            raise NotImplementedError(
-                f"Region {region!r} is a density blend with a permittivity-law "
-                "end (MaterialField.interpolate), which the Electrostatic "
-                "problem does not support: a blend is solved by gfem.Driven on "
-                "the uniform sweep only."
-            )
         if not (
             isinstance(material, Material)
             and isinstance(material.eps_r, PermittivityLaw)
@@ -351,6 +337,60 @@ def check_static(model: Model) -> None:
                 "frequency. In an electrostatic model, make it a terminal or a "
                 "PEC surface."
             )
+
+
+#: The remedy of every refusal of a law blend (ADR 0113).
+_UNIFORM_ONLY = (
+    "a metal-dielectric blend (MaterialField.interpolate with a permittivity "
+    "law) is supported on the driven uniform sweep only (gfem.Driven with "
+    'sweep="uniform")'
+)
+
+
+def _blends(model: Model) -> list[tuple[str, Blend]]:
+    """``(region, ends)`` of each law blend, in ``model.materials`` order.
+
+    Reads the ends only (static data), never the density, so it runs on a
+    traced model too.
+    """
+    return [
+        (region, material.blend_ends)
+        for region, material in model.materials.items()
+        if isinstance(material, MaterialField) and material.blend_ends is not None
+    ]
+
+
+def refuse_blends(model: Model, where: str, *, static: bool = False) -> None:
+    """Raise if the model has a law blend: ``where`` does not support one.
+
+    A density blend with a permittivity-law end (ADR 0113) is solved by
+    `gfem.Driven` on the uniform sweep only: its cross piece's square root
+    has branch cuts in complex omega (eigenmode), the adaptive sweep, the
+    port mode problem, the estimators and the energies do not read it.
+    ``where`` names the caller in the message (``"the Eigenmode problem"``,
+    ``"error_estimate"``); with ``static`` a `Drude` end is named first,
+    since it has no static permittivity at all.
+
+    Raises:
+        ValueError: With ``static``, an end of the first blend has a
+            `gfem.Drude` term.
+        NotImplementedError: The model has a law blend.
+    """
+    blends = _blends(model)
+    if not blends:
+        return
+    region, ends = blends[0]
+    if static and ends.drude:
+        raise ValueError(
+            f"Region {region!r} blends a permittivity law with a Drude term, "
+            "which has no static permittivity (eps(0) is infinite), so the "
+            "electrostatic problem cannot read it. Use a constant material for "
+            "the electrostatic model."
+        )
+    raise NotImplementedError(
+        f"Region {region!r} holds a density blend with a permittivity-law end, "
+        f"which {where} does not support: {_UNIFORM_ONLY}."
+    )
 
 
 def static_eps(model: Model) -> np.ndarray:
@@ -622,6 +662,7 @@ def check_frequencies(
             Re eps <= 0 at a frequency on a law region behind an absorbing
             face.
     """
+    frequencies = list(frequencies)
     _check_blend_poles(model, frequencies)
     # a traced law is checked on the host, on its concrete values
     regions = [lr for lr in law_regions(model) if not is_traced(lr.law)]
@@ -669,10 +710,8 @@ def _check_blend_poles(model: Model, frequencies: Iterable[float]) -> None:
     Raises:
         ValueError: A frequency lies on the resonance of a lossless term.
     """
-    for region, material in model.materials.items():
-        ends = material.blend_ends if isinstance(material, MaterialField) else None
-        if ends is None:
-            continue
+    frequencies = list(frequencies)
+    for region, ends in _blends(model):
         for which, end in (("void", ends.void), ("solid", ends.solid)):
             if not isinstance(end, PermittivityLaw):
                 continue
@@ -886,12 +925,17 @@ def has_loss(law: PermittivityLaw) -> bool:
     )
 
 
+#: |eps| / max(1, |eps_inf|) at or below which a law's permittivity is zero.
+_ZERO = 1e-9
+
+
 def check_estimator_frequencies(model: Model, frequencies: Iterable[float]) -> None:
     """Raise for a frequency where a law region's eps_eff is zero (ADR 0111).
 
     The flux recovery of every wave estimator weights a tetrahedron's flux
-    error with |eps_eff|^-1: at eps(omega) = 0 exactly (a lossless Drude term
-    at its plasma frequency) and no conductivity it has no weight. The solve
+    error with |eps_eff|^-1: at eps(omega) = 0 (a lossless Drude term at its
+    plasma frequency; zero to `_ZERO` relative to eps_inf, since rounding
+    leaves a residual) and no conductivity it has no weight. The solve
     itself is defined there, so only the estimators refuse.
 
     Raises:
@@ -908,7 +952,8 @@ def check_estimator_frequencies(model: Model, frequencies: Iterable[float]) -> N
     for f in frequencies:
         for lr in regions:
             eps = complex(lr.law.eps_inf) + susceptibility(lr.law, _TWO_PI * f)
-            if eps == 0:
+            # relative to eps_inf: a computed zero is a rounding residual
+            if abs(eps) <= _ZERO * max(1.0, abs(float(lr.law.eps_inf))):
                 raise ValueError(
                     f"The permittivity law of region {lr.region!r} gives |eps| = 0 "
                     f"at {f / 1e9:g} GHz ({f:g} Hz): the flux recovery of the "

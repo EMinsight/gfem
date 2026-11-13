@@ -198,41 +198,29 @@ def _check_blends(model: Model, problem: Any) -> None:
     """Raise for a density blend with a law end off the driven uniform sweep.
 
     Such a blend (ADR 0113) is solved by `gfem.Driven` on the uniform sweep
-    only: its cross piece's square root has branch cuts in complex omega
-    (eigenmode), the adaptive sweep and the port mode problem do not read
-    it, and a `Drude` end has no static permittivity (electrostatic).
+    only (`gfem._engine.dispersion.refuse_blends`).
 
     Raises:
         ValueError: An electrostatic problem and a blend with a `Drude` end.
         NotImplementedError: Any other problem than a uniform driven sweep.
     """
-    blends = [
-        (region, m.blend_ends)
-        for region, m in model.materials.items()
-        if isinstance(m, MaterialField) and m.blend_ends is not None
-    ]
-    if not blends:
+    if not any(
+        isinstance(m, MaterialField) and m.blend_ends is not None
+        for m in model.materials.values()
+    ):
         return
-    region, ends = blends[0]
     kind = type(problem).__name__
-    if kind == "Driven":
-        if problem.sweep == "uniform":
-            return
-        where = 'the adaptive sweep (solve sweep="uniform")'
-    elif kind == "Electrostatic" and ends.drude:
-        raise ValueError(
-            f"Region {region!r} blends a permittivity law with a Drude term, "
-            "which has no static permittivity (eps(0) is infinite), so the "
-            "electrostatic problem cannot read it. Use a constant material for "
-            "the electrostatic model."
-        )
-    else:
-        where = f"the {kind} problem"
-    raise NotImplementedError(
-        f"Region {region!r} is a density blend with a permittivity-law end "
-        f"(MaterialField.interpolate), which {where} does not support: a blend "
-        "is solved by gfem.Driven on the uniform sweep only."
+    if kind == "Driven" and problem.sweep == "uniform":
+        return
+    # imported here: importing gfem does not import the engine
+    from gfem._engine.dispersion import refuse_blends
+
+    where = (
+        'the adaptive sweep (solve sweep="uniform")'
+        if kind == "Driven"
+        else f"the {kind} problem"
     )
+    refuse_blends(model, where, static=kind == "Electrostatic")
 
 
 def _rule_class(problem: Any) -> type:

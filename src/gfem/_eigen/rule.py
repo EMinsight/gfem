@@ -1814,8 +1814,11 @@ def _modal_overlap(
         law = material.eps_r
         eps = complex(law.eps_inf) + dispersion.susceptibility(law, omega)
     else:
-        eps_r = np.asarray(material.eps_r, dtype=float)
-        tan = np.broadcast_to(np.asarray(material.tan_delta, dtype=float), eps_r.shape)
+        # a scalar eps_r may sit beside three principal loss tangents
+        eps_r, tan = np.broadcast_arrays(
+            np.asarray(material.eps_r, dtype=float),
+            np.asarray(material.tan_delta, dtype=float),
+        )
         eps = complex(np.mean(eps_r * (1 - 1j * tan)))
     eps -= 1j * sigma / (omega * const.epsilon_0)
     if not cmath.isfinite(eps):

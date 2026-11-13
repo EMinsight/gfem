@@ -47,6 +47,7 @@ from gfem._boundaries import (
 )
 from gfem._checks import is_traced
 from gfem._materials import (
+    Blend,
     Debye,
     DjordjevicSarkar,
     Drude,
@@ -679,6 +680,8 @@ for _cls in (
     Debye,
     DjordjevicSarkar,
     MaterialField,
+    # a law blend's fixed ends (MaterialField.blend_ends, ADR 0113)
+    Blend,
     SheetField,
     PEC,
     PMC,
