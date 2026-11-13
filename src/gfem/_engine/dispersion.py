@@ -437,6 +437,7 @@ def check_frequencies(
             Re eps <= 0 at a frequency on a law region behind an absorbing
             face.
     """
+    _check_blend_poles(model, frequencies)
     # a traced law is checked on the host, on its concrete values
     regions = [lr for lr in law_regions(model) if not is_traced(lr.law)]
     if not regions:
@@ -472,6 +473,33 @@ def check_frequencies(
                     "metal with a dielectric or air layer and put the boundary "
                     "there."
                 )
+
+
+def _check_blend_poles(model: Model, frequencies: Iterable[float]) -> None:
+    """Raise for a frequency on a lossless pole of a law blend's end (ADR 0113).
+
+    Reads the ends only (static data), never the density, so it runs on a
+    traced model too.
+
+    Raises:
+        ValueError: A frequency lies on the resonance of a lossless term.
+    """
+    for region, material in model.materials.items():
+        ends = material.blend_ends if isinstance(material, MaterialField) else None
+        if ends is None:
+            continue
+        for which, end in (("void", ends.void), ("solid", ends.solid)):
+            if not isinstance(end, PermittivityLaw):
+                continue
+            for f in frequencies:
+                if not cmath.isfinite(susceptibility(end, 2 * math.pi * f)):
+                    raise ValueError(
+                        f"Driven frequency {f:g} Hz lies on a lossless resonance "
+                        f"of the permittivity law at the {which} end of the blend "
+                        f"in region {region!r}: its permittivity is infinite "
+                        "there. Give the term a damping, or leave this frequency "
+                        "out."
+                    )
 
 
 def absorbing_surfaces(

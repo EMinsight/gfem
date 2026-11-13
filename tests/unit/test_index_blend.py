@@ -259,3 +259,15 @@ def test_refinement_copies_a_blend_density_to_the_children(mesh):
     field = fine.materials["core"]
     assert field.n_elements == len(fine.mesh.elements("core"))
     assert set(np.round(np.asarray(field.blend), 12)) == set(np.round(_rho(mesh), 12))
+
+
+def test_a_frequency_on_a_lossless_pole_of_a_blend_end_raises(mesh):
+    lossless = gfem.Material(
+        eps_r=gfem.PermittivityLaw(
+            eps_inf=2.0,
+            terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=8 * GHZ, damping=0)],
+        )
+    )
+    model = _line(mesh, _blend(mesh, end=lossless))
+    with pytest.raises(ValueError, match="solid end of the blend in region 'core'"):
+        gfem.solve(model, gfem.Driven(frequency=8 * GHZ), options=OPTIONS)
