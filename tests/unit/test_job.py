@@ -826,6 +826,29 @@ def test_port_mode_result_round_trips_with_its_field(tmp_path, walls):
     np.testing.assert_array_equal(loaded.e_field.at(points), result.e_field.at(points))
 
 
+def test_a_port_section_with_a_law_round_trips_with_its_field(tmp_path):
+    mesh = gfem.Mesh.from_gmsh(DATA / "waveguide.msh", length_unit="mm")
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=30e9, damping=1e9)],
+    )
+    model = gfem.Model(
+        mesh,
+        materials={"air": gfem.Material(eps_r=law)},
+        boundaries=[gfem.Absorbing("walls")],
+        ports=[gfem.WavePort("p1", "port1")],
+    )
+    job = gfem.Job(model, gfem.PortMode("p1", [8e9, 10e9]), gfem.SolverOptions(order=1))
+    result = job.run(out=tmp_path / "results")
+    loaded = gfem.load_result(tmp_path / "results")
+    section, back = result.e_field._section, loaded.e_field._section
+    assert back.laws == section.laws == (("air", law),)
+    np.testing.assert_array_equal(back.law_index, section.law_index)
+    np.testing.assert_array_equal(back.absorbing_law, section.absorbing_law)
+    points = np.asarray(mesh.nodes)[mesh.triangles[mesh.elements("port1")][:, 0]]
+    np.testing.assert_array_equal(loaded.e_field.at(points), result.e_field.at(points))
+
+
 def _of_type(node, tag):
     if isinstance(node, dict):
         if node.get("$type") == tag:
