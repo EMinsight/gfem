@@ -11,6 +11,10 @@ readers that understand a law read it here, each at a named frequency:
   coefficient (`check_static` refuses a Drude term);
 - `law_regions`: the laws and their tetrahedra, for the susceptibility
   pieces (`susceptibility`, `d_susceptibility`) and the checks;
+- `blend_regions`: the density blends with a law end (ADR 0113), whose
+  eps_inf limit `high_frequency_eps` holds and whose susceptibility parts
+  (`blend_parts`) the driven operator reads; `gfem.solve` refuses them on
+  every other problem;
 - `check_frequencies`: what a driven sweep checks before any assembly;
 - `resonance_seeds`: the grid frequencies the adaptive sweep solves first;
 - `absorbing_surfaces`: the absorbing surfaces each law region lies behind;
@@ -27,7 +31,7 @@ from __future__ import annotations
 import cmath
 import dataclasses
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 import numpy as np
 
@@ -35,18 +39,26 @@ from gfem._boundaries import Absorbing
 from gfem._checks import is_traced
 from gfem._engine.coefficients import element_values, lossy_eps
 from gfem._materials import (
+    Blend,
     Debye,
     DjordjevicSarkar,
     Drude,
     Lorentz,
     Material,
+    MaterialField,
     PermittivityLaw,
+    refractive_index,
 )
 from gfem.model import Model
 
 __all__ = [
+    "BlendPart",
+    "BlendRegion",
     "LawRegion",
     "absorbing_surfaces",
+    "blend_mass",
+    "blend_parts",
+    "blend_regions",
     "check_estimator_frequencies",
     "check_frequencies",
     "check_static",
@@ -95,19 +107,171 @@ def law_regions(model: Model) -> tuple[LawRegion, ...]:
     return tuple(out)
 
 
+@dataclasses.dataclass(frozen=True)
+class BlendRegion:
+    """A region whose `MaterialField` blends a law end by a density (ADR 0113).
+
+    Attributes:
+        region: The volume region.
+        ends: The fixed ends and scheme.
+        mask: Its tetrahedra on the solve domain, a boolean per gfem
+            tetrahedron.
+        rho: The density per gfem tetrahedron (0 off the region).
+    """
+
+    region: str
+    ends: Blend
+    mask: np.ndarray = dataclasses.field(compare=False)
+    rho: np.ndarray = dataclasses.field(compare=False)
+
+
+def blend_regions(model: Model) -> tuple[BlendRegion, ...]:
+    """The model's law blends, in ``model.materials`` order (concrete densities)."""
+    mesh = model.mesh
+    active = model._domain.active  # noqa: SLF001
+    out = []
+    for region, material in model.materials.items():
+        if isinstance(material, MaterialField) and material.blend_ends is not None:
+            elements = mesh.elements(region)
+            mask = np.zeros(len(mesh.tetrahedra), bool)
+            mask[elements] = True
+            rho = np.zeros(len(mesh.tetrahedra))
+            rho[elements] = np.asarray(material.blend, dtype=float)
+            out.append(BlendRegion(region, material.blend_ends, mask & active, rho))
+    return tuple(out)
+
+
+def _end_eps_inf(end: PermittivityLaw | complex) -> float:
+    """The eps_inf of a blend end; a constant end's is Re eps."""
+    if isinstance(end, PermittivityLaw):
+        return float(end.eps_inf)
+    return complex(end).real
+
+
+def _end_chi(end: PermittivityLaw | complex, omega: complex) -> complex:
+    """eps(omega) - eps_inf of a blend end (a constant end's: i Im eps)."""
+    if isinstance(end, PermittivityLaw):
+        return susceptibility(end, omega)
+    return 1j * complex(end).imag
+
+
+def _end_d_chi(end: PermittivityLaw | complex, omega: complex) -> complex:
+    """D chi / d omega of a blend end."""
+    if isinstance(end, PermittivityLaw):
+        return d_susceptibility(end, omega)
+    return 0.0
+
+
+@dataclasses.dataclass(frozen=True)
+class BlendPart:
+    """One susceptibility piece of a law blend: eps = mass + sum_parts c X(omega).
+
+    Attributes:
+        name: The part, ``"void"``, ``"solid"`` or ``"cross"``.
+        chi: X(omega), with an analytic dX/domega in `d_chi`.
+        d_chi: dX / domega.
+        c: The coefficient per gfem tetrahedron (0 off the region).
+        dc: dc / d rho per gfem tetrahedron.
+    """
+
+    name: str
+    chi: Callable[[complex], complex]
+    d_chi: Callable[[complex], complex]
+    c: np.ndarray = dataclasses.field(compare=False)
+    dc: np.ndarray = dataclasses.field(compare=False)
+
+
+def blend_mass(br: BlendRegion) -> tuple[np.ndarray, np.ndarray]:
+    """The blend's eps_inf limit on its region and d/d rho, per gfem tetrahedron.
+
+    ``"index"``: ((1 - rho) sqrt(eps_inf,a) + rho sqrt(eps_inf,b))^2; a weight
+    scheme: (1 - w) eps_inf,a + w eps_inf,b. Zero off the region.
+    """
+    ea, eb = _end_eps_inf(br.ends.void), _end_eps_inf(br.ends.solid)
+    rho = br.rho
+    if br.ends.scheme == "index":
+        sa, sb = math.sqrt(ea), math.sqrt(eb)
+        n = (1 - rho) * sa + rho * sb
+        value, slope = n**2, 2 * n * (sb - sa)
+    else:
+        w = br.ends.weight(rho)
+        value, slope = (1 - w) * ea + w * eb, br.ends.slope(rho) * (eb - ea)
+    return np.where(br.mask, value, 0.0), np.where(br.mask, slope, 0.0)
+
+
+def blend_parts(br: BlendRegion) -> list[BlendPart]:
+    """The susceptibility parts of a law blend (ADR 0113).
+
+    ``"index"``: chi_a with c = (1 - rho)^2, chi_b with c = rho^2, and the
+    cross part N_a N_b - sqrt(eps_inf,a eps_inf,b) with c = 2 rho (1 - rho),
+    N = sqrt(eps) with Im N <= 0. A weight scheme: chi_a with c = 1 - w,
+    chi_b with c = w. A lossless constant end has no part of its own.
+    """
+    ends, rho, mask = br.ends, br.rho, br.mask
+    a, b = ends.void, ends.solid
+    ea, eb = _end_eps_inf(a), _end_eps_inf(b)
+    if ends.scheme == "index":
+        coefficients = {
+            "void": ((1 - rho) ** 2, -2 * (1 - rho)),
+            "solid": (rho**2, 2 * rho),
+        }
+    else:
+        w, dw = ends.weight(rho), ends.slope(rho)
+        coefficients = {"void": (1 - w, -dw), "solid": (w, dw)}
+    out = []
+    for name, end in (("void", a), ("solid", b)):
+        if not isinstance(end, PermittivityLaw) and end.imag == 0:
+            continue
+        c, dc = coefficients[name]
+        out.append(
+            BlendPart(
+                name,
+                lambda w, end=end: _end_chi(end, w),
+                lambda w, end=end: _end_d_chi(end, w),
+                np.where(mask, c, 0.0),
+                np.where(mask, dc, 0.0),
+            )
+        )
+    if ends.scheme == "index":
+        root = math.sqrt(ea * eb)
+
+        def n(end: PermittivityLaw | complex, e: float, w: complex) -> complex:
+            return refractive_index(e + _end_chi(end, w))
+
+        def cross(w: complex) -> complex:
+            return n(a, ea, w) * n(b, eb, w) - root
+
+        def d_cross(w: complex) -> complex:
+            na, nb = n(a, ea, w), n(b, eb, w)
+            return _end_d_chi(a, w) / (2 * na) * nb + na * _end_d_chi(b, w) / (2 * nb)
+
+        out.append(
+            BlendPart(
+                "cross",
+                cross,
+                d_cross,
+                np.where(mask, 2 * rho * (1 - rho), 0.0),
+                np.where(mask, 2 - 4 * rho, 0.0),
+            )
+        )
+    return out
+
+
 def high_frequency_eps(model: Model) -> np.ndarray:
     """`gfem._engine.coefficients.lossy_eps` with eps_inf on the law regions.
 
     The value of the shared mass piece (ADR 0110): a law's frequency
-    dependence is its susceptibility piece.
+    dependence is its susceptibility piece. A law blend's region holds its
+    eps_inf limit (`blend_mass`, ADR 0113).
     """
     eps = lossy_eps(model, law=0.0)
-    for lr in law_regions(model):
-        value = float(lr.law.eps_inf)
+    values = [(lr.mask, float(lr.law.eps_inf)) for lr in law_regions(model)]
+    values += [(br.mask, blend_mass(br)[0][br.mask]) for br in blend_regions(model)]
+    for mask, value in values:
         if eps.ndim == 1:
-            eps[lr.mask] = value
+            eps[mask] = value
         else:
-            eps[lr.mask] = value * np.eye(3)
+            eps[mask] = np.multiply.outer(value, np.eye(3))
     return eps
 
 
@@ -115,16 +279,20 @@ def eps_at(model: Model, omega: complex) -> np.ndarray:
     """The complex relative permittivity per tetrahedron at ``omega`` (rad/s).
 
     ``eps_r (1 - i tan_delta)`` off the law regions (`lossy_eps`'s shape),
-    eps_inf + chi(omega) on them. The conductivity is not included. ``omega``
+    eps_inf + chi(omega) on them, and a law blend's permittivity at that
+    frequency on its region. The conductivity is not included. ``omega``
     may be complex (the analytic continuation).
     """
     eps = high_frequency_eps(model).astype(complex)
-    for lr in law_regions(model):
-        chi = susceptibility(lr.law, omega)
+    chis = [(lr.mask, susceptibility(lr.law, omega)) for lr in law_regions(model)]
+    for br in blend_regions(model):
+        chi = sum((p.c * p.chi(omega) for p in blend_parts(br)), np.zeros(len(br.rho)))
+        chis.append((br.mask, chi[br.mask]))
+    for mask, chi in chis:
         if eps.ndim == 1:
-            eps[lr.mask] += chi
+            eps[mask] += chi
         else:
-            eps[lr.mask] += chi * np.eye(3)
+            eps[mask] += np.multiply.outer(chi, np.eye(3))
     return eps
 
 
@@ -136,10 +304,31 @@ def check_static(model: Model) -> None:
     one gives Re chi(0) = -ωp²/γ² < 0, which would make the electrostatic
     operator indefinite; dropping the term would give a metal eps_inf.
 
+    A density blend with a law end (ADR 0113) is refused too: with a Drude
+    end for the same reason, otherwise because the electrostatic problem
+    does not read a blend.
+
     Raises:
-        ValueError: A law region's law has a `gfem.Drude` term.
+        ValueError: A law region's law, or an end of a law blend, has a
+            `gfem.Drude` term.
+        NotImplementedError: A law blend without a Drude end.
     """
     for region, material in model.materials.items():
+        ends = material.blend_ends if isinstance(material, MaterialField) else None
+        if ends is not None and ends.drude:
+            raise ValueError(
+                f"Region {region!r} blends a permittivity law with a Drude term, "
+                "which has no static permittivity (eps(0) is infinite), so the "
+                "electrostatic problem cannot read it. Use a constant material "
+                "for the electrostatic model."
+            )
+        if ends is not None:
+            raise NotImplementedError(
+                f"Region {region!r} is a density blend with a permittivity-law "
+                "end (MaterialField.interpolate), which the Electrostatic "
+                "problem does not support: a blend is solved by gfem.Driven on "
+                "the uniform sweep only."
+            )
         if not (
             isinstance(material, Material)
             and isinstance(material.eps_r, PermittivityLaw)
@@ -351,6 +540,7 @@ def check_frequencies(
             Re eps <= 0 at a frequency on a law region behind an absorbing
             face.
     """
+    _check_blend_poles(model, frequencies)
     # a traced law is checked on the host, on its concrete values
     regions = [lr for lr in law_regions(model) if not is_traced(lr.law)]
     if not regions:
@@ -386,6 +576,33 @@ def check_frequencies(
                     "metal with a dielectric or air layer and put the boundary "
                     "there."
                 )
+
+
+def _check_blend_poles(model: Model, frequencies: Iterable[float]) -> None:
+    """Raise for a frequency on a lossless pole of a law blend's end (ADR 0113).
+
+    Reads the ends only (static data), never the density, so it runs on a
+    traced model too.
+
+    Raises:
+        ValueError: A frequency lies on the resonance of a lossless term.
+    """
+    for region, material in model.materials.items():
+        ends = material.blend_ends if isinstance(material, MaterialField) else None
+        if ends is None:
+            continue
+        for which, end in (("void", ends.void), ("solid", ends.solid)):
+            if not isinstance(end, PermittivityLaw):
+                continue
+            for f in frequencies:
+                if not cmath.isfinite(susceptibility(end, 2 * math.pi * f)):
+                    raise ValueError(
+                        f"Driven frequency {f:g} Hz lies on a lossless resonance "
+                        f"of the permittivity law at the {which} end of the blend "
+                        f"in region {region!r}: its permittivity is infinite "
+                        "there. Give the term a damping, or leave this frequency "
+                        "out."
+                    )
 
 
 def absorbing_surfaces(

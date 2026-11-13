@@ -29,6 +29,7 @@ import numpy as np
 from gfem._engine.mesh import EngineMesh
 from gfem._materials import (
     PROPERTIES,
+    Blend,
     Material,
     MaterialField,
     PermittivityLaw,
@@ -77,7 +78,8 @@ def element_values(
 
     A `Material` whose ``eps_r`` is a `PermittivityLaw` has no one
     ``eps_r`` either: it depends on frequency, and only
-    `gfem._engine.dispersion` reads it (ADR 0111). Its tetrahedra get
+    `gfem._engine.dispersion` reads it (ADR 0111); nor does a
+    `MaterialField` blend with a law end (ADR 0113). Its tetrahedra get
     ``law``, a placeholder for a caller that never reads them, and raise
     when it is ``None``, so a reader not taught about laws fails loudly
     instead of reading a frequency-free value.
@@ -93,9 +95,16 @@ def element_values(
     out = np.full(len(mesh.tetrahedra), np.nan if default is None else default)
     for region, material in model.materials.items():
         value = getattr(material, name)
+        if (
+            name == "eps_r"
+            and isinstance(material, MaterialField)
+            and material.blend_ends is not None
+        ):
+            # a density blend with a law end (ADR 0113): a law per element
+            value = material.blend_ends
         if value is None:
             continue
-        if isinstance(value, PermittivityLaw):
+        if isinstance(value, PermittivityLaw | Blend):
             if law is None:
                 raise NotImplementedError(
                     f"The material of region {region!r} has a permittivity law (a "

@@ -241,6 +241,9 @@ def _gather_field(field: MaterialField, region: str, gather) -> MaterialField:
         value = getattr(field, name)
         if value is not None and value.ndim == 1 + field.has_principal_values(name):
             changes[name] = gather(value, region)
+    # a law blend's density (ADR 0113)
+    if field.blend is not None and field.blend.ndim == 1:
+        changes["blend"] = gather(field.blend, region)
     return dataclasses.replace(field, **changes)
 
 

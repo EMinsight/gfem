@@ -119,6 +119,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("driven", ["permeability", "loss tangent"], 4),
         ("driven", ["lumped values"], 4),
         ("driven", ["permittivity-law parameters"], 7),
+        ("driven", ["density of a metal-dielectric blend"], 2),
         ("eigenmode", ["permeability", "loss tangent"], 2),
         ("eigenmode", ["lumped values"], 2),
         ("electrostatic", ["permittivity-law parameters"], 1),
@@ -138,6 +139,10 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         (
             "Driven with respect to the permittivity-law parameters "
             "(direct solver, uniform and adaptive sweep)"
+        ),
+        (
+            "Driven with respect to the density of a metal-dielectric blend "
+            "(direct solver, uniform sweep)"
         ),
         (
             "Eigenmode with respect to the permeability and the loss tangent "
@@ -206,8 +211,9 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 39
+    assert len(rows) == 40
     assert "electrostatic x sheet fill" not in rows
+    assert rows["law parameter of a blend's end"]["error"] == "NonDifferentiableError"
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
     assert rows["material axes (orientation)"] == {
         "key": "material axes (orientation)",
