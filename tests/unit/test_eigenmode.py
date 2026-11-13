@@ -490,6 +490,67 @@ def test_a_vector_in_the_span_of_a_degenerate_cluster_is_a_duplicate():
     assert not eigen_rule._in_span(mode(a, k=1.1), accepted, 1e-6)
 
 
+@dataclasses.dataclass
+class _Stub:
+    """An operator with a degenerate mode at 12 (span of e0, e1) and one at 14 (e2)."""
+
+    shift: complex
+    nonpolynomial: tuple = ()
+
+    def reshift(self, k, **_):
+        self.shift = k
+
+
+def _twin_select(mesh, monkeypatch, n_modes):
+    """`_select` with seeds at 12.2 (e0) and 13.8 (e2), the shift at 12.5.
+
+    The frozen seed solve gave one Ritz value for the degenerate pair. The
+    seed at 13.8 refined away from its own shift lands on the pair's
+    eigenspace with 36 % of its norm outside the accepted member's span: in
+    the span by the 0.9 test, yet that part is the twin (lossy-wall mirrored
+    cavity on MN5, quantum-metrics ticket 17).
+    """
+    from gfem._eigen.refine import Refined
+
+    e0, e1, e2, _ = np.eye(4, dtype=complex)
+    landed = math.sqrt(1 - 0.36**2) * e0 + 0.36 * e1
+
+    def refine(op, seed, x, **_):
+        if seed == 13.8 and op.shift != 13.8:
+            k, v = 12.0, landed
+        else:
+            pair = x[:2].copy()
+            if np.linalg.norm(pair) > 0.5 * np.linalg.norm(x):
+                k, v = 12.0, np.concatenate([pair / np.linalg.norm(pair), [0, 0]])
+            else:
+                k, v = 14.0, e2
+        return Refined(complex(k), v, 0.0, 1, converged=True)
+
+    monkeypatch.setattr(eigen_rule, "refine", refine)
+    rule = eigen_rule.EigenmodeRule(
+        line(mesh), gfem.Eigenmode(target=F1, n_modes=n_modes), gfem.SolverOptions()
+    )
+    ritz = np.array([12.2, 13.8], dtype=complex)
+    return rule._select(_Stub(12.5), ritz, np.stack([e0, e2], axis=1), 12.5, guard=True)
+
+
+def test_a_wandered_pair_reaching_out_of_the_span_gives_the_twin(mesh, monkeypatch):
+    # before, the pair was dropped and the set skipped the twin for 14
+    modes, failed, guard, *_ = _twin_select(mesh, monkeypatch, n_modes=2)
+    assert not failed
+    assert [m.k for m in modes] == [12.0, 12.0]
+    assert abs(np.vdot(modes[0].x, modes[1].x)) < 1e-12
+    assert guard.k == 14.0
+
+
+def test_a_guard_pair_reaching_out_of_the_span_gives_the_twin(mesh, monkeypatch):
+    # after the count is met the same landing gives the guard mode: the twin
+    modes, _, guard, *_ = _twin_select(mesh, monkeypatch, n_modes=1)
+    assert [m.k for m in modes] == [12.0]
+    assert guard.k == 12.0
+    assert abs(np.vdot(modes[0].x, guard.x)) < 1e-12
+
+
 def test_a_pair_with_its_weight_on_the_fixed_dofs_is_not_converged(mesh, monkeypatch):
     # on CI, root 3's seed refined on mode 2's shift ended with 1e-8 of its
     # norm on the free DOFs: measured on the whole vector, its backward
