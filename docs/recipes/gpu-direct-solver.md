@@ -28,7 +28,8 @@ result = gfem.solve(model, problem, options=options)
 - On a GPU the default `linear_solver="auto"` is the direct solver, the only
   one that runs there; `SolverOptions` refuses `"bddc_gmres"` and `"petsc"`
   with a GPU. On the CPU the same `"auto"` options run the problem type's
-  default (the iterative solver for a driven problem), and so does a saved
+  default (for a driven problem, the iterative solver once the factorization
+  would not fit in half the memory), and so does a saved
   {term}`job` run with `--device cpu`. Write `linear_solver="direct"` to get
   the direct solver on both.
 - There is no automatic choice: you pick the device, and a saved

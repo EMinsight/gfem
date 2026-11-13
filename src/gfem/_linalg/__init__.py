@@ -48,7 +48,8 @@ Backends:
   tolerance (a Krylov breakdown) restarts once from its iterate, and raises
   `gfem.LinearSolverConvergenceError` if it stops short again. GMRES takes
   an initial guess (``solve(B, x0=...)``, e.g. the previous frequency's
-  solution). BDDC reads the fixed DOFs from the space, so the operator's
+  solution, or the previous design's at a design's first frequency); CG
+  ignores it. BDDC reads the fixed DOFs from the space, so the operator's
   free DOFs must be the space's ``FreeDofs()``.
 - ``"cudss"``: the ``direct`` solver on a GPU (``device="cuda"`` or
   ``"cuda:N"``), NVIDIA cuDSS. The host holds all data; the factors stay on
@@ -209,8 +210,10 @@ class Handle(Protocol):
         ``transpose`` solves ``A^T X = B``; of a general operator, only on the
         ``direct`` backend (its factors). ``tolerance`` overrides the prepared
         relative residual of iterative backends for this solve (adjoint
-        solves); ``x0`` (the shape of ``B``) is an initial guess for
-        iterative backends. Direct backends ignore both.
+        solves); ``x0`` (the shape of ``B``) is an initial guess for GMRES
+        (``bddc_gmres`` on a non-Hermitian operator). CG and the direct
+        backends ignore ``x0``; direct backends ignore ``tolerance`` too,
+        except that a solve on factors reused across designs reads it.
 
         Returns ``X`` and the Krylov iterations of each column of ``B``, in
         order: every iteration the column cost in this call (restarts and

@@ -235,14 +235,22 @@ class SolverOptions:
             1 to 12. Unknowns per tetrahedron grow as order^3 and matrix memory
             as order^6: order 12 already takes about 28 MiB and 3 s of assembly
             per tetrahedron.
-        linear_solver: ``"auto"`` (the default) picks per problem type:
-            ``"bddc_gmres"`` for driven and electrostatic, ``"direct"`` for
-            eigenmode, and ``"direct"`` for every problem type on a GPU
-            (``device``). Pick ``"direct"`` for small and medium models on one
-            machine: one factorization per frequency serves every port, and
-            the ``mkl`` extra makes it faster (MKL PARDISO). Pick
-            ``"bddc_gmres"`` for large models or limited memory: an
-            iterative solve to ``tolerance``. Pick ``"petsc"`` to use an
+        linear_solver: ``"auto"`` (the default) picks per problem type. For
+            a driven problem on the CPU in one process, ``"direct"`` when its
+            factorization (estimated at about 40 KiB per unknown, per
+            frequency worker, twice that with a Bloch wave vector) fits in
+            half the memory the process may use, else ``"bddc_gmres"``;
+            ``"bddc_gmres"`` for electrostatic; ``"direct"`` for eigenmode
+            and for every problem type on a GPU (``device``);
+            ``"bddc_gmres"`` across MPI ranks. The choice is logged on the
+            ``gfem.solver`` logger. ``"direct"`` suits small and medium
+            models on one machine: one factorization per frequency serves
+            every port, and the ``mkl`` extra makes it faster (MKL PARDISO);
+            for two-port lumped-port lines without the ``mkl`` extra,
+            ``"bddc_gmres"`` can be faster. Pick ``"bddc_gmres"`` for large
+            models or limited memory: an iterative solve to ``tolerance``.
+            Pick ``"direct"`` explicitly to lift ``"auto"``'s memory guard.
+            Pick ``"petsc"`` to use an
             existing PETSc build (the "Solve with PETSc and SLEPc" recipe):
             an exact MUMPS factorization by default, or the PETSc solver
             ``petsc_options`` configures; ``"auto"`` never picks it. A solver
@@ -256,10 +264,11 @@ class SolverOptions:
             within 7e-7 of the exact solve on a short line and within 5e-5
             on a 100-frequency microstrip sweep. To judge the accuracy,
             solve again at a tighter ``tolerance`` and compare S. A direct
-            solve is exact, except in an optimization of a large model,
-            where a design may be solved on the factorization of an earlier
-            design (when ``retain_memory`` keeps it and that is faster) to a
-            twentieth of this tolerance.
+            solve, the default for a driven problem that fits in memory, is
+            exact, except in an optimization of a model above the reuse
+            floor, where a design may be solved on the factorization of an
+            earlier design (when ``retain_memory`` keeps it and the counted
+            costs say that is cheaper) to a twentieth of this tolerance.
         device: Where the direct solver runs: ``"cpu"``, ``"cuda"`` or
             ``"cuda:N"`` (the N-th GPU). A GPU needs
             ``linear_solver="direct"`` or ``"auto"``, which is ``"direct"``
@@ -292,11 +301,14 @@ class SolverOptions:
             differentiated solve's fields and solver for its gradients (its
             solution fields and, for a uniform driven sweep, its assembled
             system with its linear solver), and what later designs of a
-            driven model reuse: solver plans, with their factorizations while
-            they fit (a later design at the same frequency may solve on
-            them, see ``tolerance``), the assembled parts that do not depend
-            on the design, and the wave ports' couplings. Over budget, gfem
-            drops kept factorizations, then those parts, then solver plans,
+            driven model reuse: solver plans, with one factorization per
+            frequency while they fit (a later design at the same frequency
+            may solve on it, see ``tolerance``), the assembled parts that do
+            not depend on the design, the wave ports' couplings, and BDDC
+            initial guesses (the previous design's solution, from which the
+            next design's first frequency starts). Over budget, gfem drops
+            BDDC initial guesses first, then kept factorizations, then those
+            parts, then solver plans,
             then the oldest entries, which are recomputed when their gradient
             runs, and port couplings last. ``None`` is half of the memory the
             process may use (the physical memory, or a smaller job memory

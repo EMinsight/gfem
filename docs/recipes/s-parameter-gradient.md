@@ -133,30 +133,67 @@ process starts without it:
 
 - with any linear solver, the wave ports' couplings;
 - with `linear_solver="direct"` on the CPU in one process, the solver plan of the
-  last design (its ordering and analysis) and the assembled parts that do not
-  depend on the design;
-- with `linear_solver="direct"` and the `mkl` extra, the last design's
-  factorization, when `SolverOptions(retain_memory=...)` has room for it. The next
-  design at the same frequency then solves on it, with GMRES to a twentieth of
-  `tolerance`, for as long as that takes less time than factorizing again. gfem
-  decides from the times it measures, so small models, where factorizing is
-  cheap, always factorize again. A periodic cell with a nonzero wave vector always
-  factorizes again.
+  last design (its ordering and analysis), the assembled parts that do not
+  depend on the design and, while `SolverOptions(retain_memory=...)` has room,
+  one factorization per frequency (per sample of an adaptive sweep with frozen
+  samples), with or without the `mkl` extra. The next design at that frequency
+  solves on it, with GMRES to a twentieth of `tolerance`, while the counted
+  costs (the factorization's size and work against the GMRES iterations) say
+  that is cheaper than factorizing again. Small models, where factorizing is
+  cheap, factorize every design. A periodic cell with a nonzero wave vector
+  always factorizes again;
+- with `linear_solver="bddc_gmres"` in one process, each design's first
+  frequency of a uniform sweep starts its iterations from the previous
+  design's solution there.
 
-The default `linear_solver="auto"` picks `"bddc_gmres"` for a driven problem, which
-sets up again at every design; for a model whose factorization fits in memory, set
-`linear_solver="direct"` in a loop.
+On the CPU in one process, the default `linear_solver="auto"` already picks
+`"direct"` for a driven problem whose factorization fits in half the memory the process may use, by an estimate
+of about 40 KiB per unknown, and `"bddc_gmres"` above. The estimate is
+cautious: on a machine where a larger model still fits, an explicit
+`linear_solver="direct"` lifts that guard.
 
-gfem decides from the times it measures, so two runs of the same script can solve
-different designs on an earlier factorization, and their S and gradients can
-differ within `tolerance`. `retain_memory=0` factorizes every design.
+gfem decides what to reuse from counts (factor sizes, factorization work,
+iterations), never from times, so a script run again with the same thread count
+and an explicit `retain_memory` reuses at the same designs. S and gradients
+depend on the design history only within `tolerance`: a design solved on an
+earlier factorization, or started from the previous design's solution, agrees
+with one solved afresh to within `tolerance`. `retain_memory=0` keeps nothing
+and factorizes every design.
 
-The default `retain_memory`, half of the memory the process may use, needs no
-change on most machines. To keep the factorization of a large model, set it at
-least as large as one solve's peak memory: the peak barely grows, but that memory
-stays held between designs. With less, gfem drops the factorization first, then
-the parts, then the plan. Only the time changes: S and the gradient agree with a
-solve that factorizes every design to within `tolerance`.
+A finite-difference check across designs (see below) must start each
+evaluation afresh: call {py:obj}`gfem.release_memory` before each one, or set
+`retain_memory=0`. Otherwise each evaluation's solve error depends on the
+design solved before it, and that error does not cancel in the difference.
+
+The default `retain_memory` is half of the memory the process may use. It also
+keeps a large model's last factorization, even over that half, while the
+process's peak memory leaves a tenth of that memory free, so the decision can
+change with the measured peak. An explicit `retain_memory` is a hard bound and
+the decision no longer depends on the peak. To keep the factorizations of a
+large model under an explicit value, set it at least as large as one solve's
+peak memory: the peak barely grows, but that memory stays held between
+designs. On a machine shared with other memory-heavy processes, set it
+explicitly. With less room, gfem drops the BDDC initial guesses first, then the
+factorizations, then the parts, then the plans. Only the time changes: S and
+the gradient agree with a solve that keeps nothing to within `tolerance`.
+
+To see what each design reused, read `result.sweep.iterations` (the Krylov
+iterations of each excited port, per frequency; empty for a solve on fresh
+factors) and `result.sweep.preconditioner_reused` (per frequency) on a result
+solved outside JAX transformations; under them both are `None`. To see every
+solve, those under `jax.grad` included, turn on the `gfem.solver` logger:
+
+```python
+import logging
+
+logging.basicConfig()
+logging.getLogger("gfem.solver").setLevel(logging.INFO)
+```
+
+Each record names the frequency, the direction (`forward` or `backward`), the
+solver and what it did (`factorized`, `refactorized`, `reused`), and, for a
+design that factorized again, its `reason`. When `"auto"` resolves, one more
+record says which solver it chose and why.
 
 {py:obj}`gfem.release_memory` frees everything gfem keeps, at once: call it after
 a loop, before another study in the same process. Results you hold are not
@@ -167,7 +204,8 @@ touched.
 - Compare the gradient with a central difference of your objective along a
   random direction `v`: `(f(p + h v) - f(p - h v)) / (2 h)` against
   `grad @ v`. Their difference shrinks as `h` shrinks, until the solver
-  tolerance limits it.
+  tolerance limits it. Call {py:obj}`gfem.release_memory` before each
+  evaluation of `f`, as in an optimization loop above.
 
 How gfem itself is checked: {doc}`../verification`.
 

@@ -104,27 +104,79 @@ Optimization and gradients:
 - **Optimization loops redo less work per design.** Within one process, a driven
   solve of a new design with the same mesh, ports and frequencies takes up the
   wave ports' couplings instead of rebuilding them. With `linear_solver="direct"`
-  on the CPU in one process, it also takes up the last design's solver plan and
-  the assembled parts that do not depend on the design. With
-  `linear_solver="direct"` and the `mkl` extra, a large model may solve the next
-  design on the previous design's factorization, with GMRES to a twentieth of
-  `tolerance`, while that takes less time than factorizing again; small models
-  factorize every design as before. gfem decides from the times it measures, so
-  two runs of the same script can solve different designs on an earlier
-  factorization, and their S and gradients can differ within `tolerance`. The
-  default `linear_solver="auto"` picks `"bddc_gmres"` for a driven problem, which
-  sets up again at every design. See {doc}`../recipes/s-parameter-gradient`.
-  Per step on one MN5 node (Intel Xeon Platinum 8480+), main at 129c4ad against
-  this release's code (measured at 323b060; the 381k bend at 46880ba), 8 threads:
-  the 2D bend tutorial 0.77 → 0.48 s, the harmonic filter tutorial's three variants
-  0.53 → 0.23 s with peak memory 11.1 → 1.2 GiB, a 3D bend of 381 134 unknowns
-  11.2 → 8.9 s with peak memory 17.4 → 7.3 GiB; the 3D bend tutorial's model,
-  2.49 M unknowns with `retain_memory` at 64 GiB: 176 → 125 s at 8 threads and
-  100 → 84 s at 16 threads.
+  on the CPU in one process, it also takes up the last design's solver plan, the
+  assembled parts that do not depend on the design and, while `retain_memory`
+  has room, one factorization per frequency, with or without the `mkl` extra. A
+  model above the reuse floor may solve the next design at a frequency on that
+  frequency's earlier factorization, with GMRES to a twentieth of `tolerance`,
+  while the counted costs (factor size, factorization work, GMRES iterations)
+  say that is cheaper than factorizing again; small models factorize every
+  design. See {doc}`../recipes/s-parameter-gradient`.
   - **Behaviour change.** `retain_memory` now bounds everything gfem keeps between
     solves, these kept parts and couplings included; 0 keeps nothing and
     factorizes every design. A direct solve on an earlier design's factorization
     is accurate to `tolerance`, not exact.
+  - **Reuse decisions repeat for a script.** gfem decides what to reuse from
+    counts, never from times, so a script run again with the same thread count
+    and an explicit `retain_memory` reuses at the same designs. S and gradients
+    depend on the design history only within `tolerance`. A finite-difference
+    check across designs must call `gfem.release_memory()` (or set
+    `retain_memory=0`) before each evaluation: a solve on an earlier design's
+    factorization or from its solution differs from a fresh one within
+    `tolerance`, and that difference does not cancel between the evaluations.
+- **Behaviour change: `linear_solver="auto"` picks the direct solver for driven
+  problems that fit.** On the CPU in one process, a driven problem now solves
+  with `"direct"` when its factorization, estimated at about 40 KiB per unknown
+  and per frequency worker, fits in half the memory the process may use, and
+  with `"bddc_gmres"` above. It was `"bddc_gmres"` at every size. Measured on
+  MN5 (8 threads, at 9f004a7), direct took 1.2-48x less time per optimization
+  step than `"bddc_gmres"` from 24k to 2.49M unknowns, at 1.3-2.8x the memory.
+  Without the `mkl` extra the choice is the same and the direct solver is
+  sparse Cholesky; on a two-port lumped-port line, `"bddc_gmres"` can then be
+  faster. Electrostatic problems keep `"bddc_gmres"`, eigenmode problems and
+  GPUs `"direct"`, and solves across MPI ranks `"bddc_gmres"`. Where the default
+  changes, S moves by the iterative solve's error. An explicit `linear_solver="direct"`
+  lifts the memory guard.
+- **Each frequency keeps its own factorization across designs.** A uniform
+  sweep, and an adaptive sweep with frozen samples, keeps one direct
+  factorization per frequency (per sample) while `retain_memory` has room, so
+  every frequency, not only the first, can solve the next design on its own
+  earlier factors, and a gradient's adjoint solves factorize nothing again:
+  one factorization per frequency and design instead of two for all but one
+  frequency.
+- **Sparse Cholesky joins factor reuse.** Without the `mkl` extra, the direct
+  solver's sparse Cholesky reuses a design's factorization for the next design
+  under the same rule as MKL PARDISO.
+- **`bddc_gmres` starts each design from the previous solution.** In one
+  process, a uniform sweep's first frequency starts its GMRES iterations from
+  the previous design's solution there, and the adjoint solves of a
+  multi-frequency gradient no longer set BDDC up again on a preconditioner
+  kept from another frequency. These initial guesses count in
+  `retain_memory` and are the first thing dropped over it.
+- **Electrostatic energy and potential gradients prepare once per step.** A
+  differentiated electrostatic solve keeps its prepared operator, within
+  `retain_memory`, and the backward of an `energy` or `potential` objective
+  solves on it instead of preparing again. Capacitance gradients are
+  unchanged.
+- **Behaviour change: the default `retain_memory` keeps a large model's last
+  factorization.** Under `retain_memory=None`, the last factorization stays
+  held, even over half the memory, while the process's peak memory leaves a
+  tenth of the memory free, so a model whose factorization takes more than half
+  the memory can still reuse it. The decision then follows the measured peak:
+  on a machine shared with other memory-heavy processes, or to make the
+  decisions repeat exactly, set `retain_memory` explicitly, which stays a hard
+  bound.
+- **See what each solve did.** `SweepInfo.iterations` (Krylov iterations of
+  each excited port, per frequency) and `SweepInfo.preconditioner_reused` (per
+  frequency) are recorded on driven results solved outside JAX
+  transformations; they are `None` under them and on results saved by earlier
+  versions. The logger `gfem.solver` (silent by default) records every driven
+  and electrostatic solve step, under `jax.grad` too: frequency, direction,
+  solver, what it did (`factorized`, `refactorized`, `reused`), and why a
+  design factorized again. Resolving `linear_solver="auto"` logs its choice
+  there.
+- **A wave port's couplings are held once.** The port state kept between
+  solves is half its former size; S, values and gradients are unchanged.
 - **Lumped values are design inputs.** A `LumpedPort`'s `inductance` and
   `capacitance`, and an `Impedance`'s `resistance`, `inductance` and
   `capacitance`, now differentiate: driven S-parameters on uniform sweeps and on
