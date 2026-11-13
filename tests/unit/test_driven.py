@@ -662,6 +662,46 @@ def test_a_bddc_adjoint_sets_its_coarse_problem_up_for_one_solve(line, monkeypat
     assert columns == [4, 2, 2]  # the forward sweep's, then the adjoint's
 
 
+TWO_FREQUENCIES = gfem.Driven(frequency=(3e9, 3.5e9))
+
+
+def test_a_direct_sweep_reports_no_iterations_and_no_reuse(line):
+    sweep = _s(line, TWO_FREQUENCIES).sweep
+    assert sweep.iterations == ((), ())
+    assert sweep.preconditioner_reused == (False, False)
+
+
+def test_a_bddc_sweep_reports_its_iterations_and_its_reused_preconditioner(line):
+    # BDDC set up at the first frequency serves the second
+    rule = DrivenRule(
+        line, TWO_FREQUENCIES, gfem.SolverOptions(linear_solver="bddc_gmres")
+    )
+    outputs, _ = rule.forward(line, keep=False)
+    sweep = rule.result(outputs).sweep
+    assert sweep.preconditioner_reused == (False, True)
+    assert sweep.iterations == tuple(tuple(its) for its in outputs["iterations"])
+    assert [len(its) for its in sweep.iterations] == [2, 2]  # per excited port
+    assert all(n > 0 for its in sweep.iterations for n in its)
+
+
+@pytest.mark.parametrize("transform", ["grad", "jit"])
+def test_a_transformed_sweep_reports_no_iterations_and_no_reuse(line, transform):
+    sweeps = []
+
+    def objective(eps):
+        model = line.with_material("dielectric", gfem.MaterialField(eps_r=eps))
+        result = _s(model, TWO_FREQUENCIES, linear_solver="bddc_gmres")
+        sweeps.append(result.sweep)
+        return jnp.sum(jnp.abs(result.s.values) ** 2)
+
+    eps = jnp.full(len(line.mesh.tetrahedra), EPS)
+    (jax.grad if transform == "grad" else jax.jit)(objective)(eps)
+    assert sweeps
+    for sweep in sweeps:
+        assert sweep.iterations is None
+        assert sweep.preconditioner_reused is None
+
+
 def test_excite_selects_the_columns_of_s(line):
     full = np.asarray(_s(line).s.values)
     one = _s(line, gfem.Driven(frequency=F, excite="p2")).s

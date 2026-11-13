@@ -11,12 +11,17 @@ refactorized``), ``iterations`` (per column, ``()`` for a direct solve on
 fresh factors) and ``reason`` (why a step set up or refactorized, else
 ``None``), plus the reason's numbers where it has some.
 
+A frequency worker logs in its own process: `collected` keeps its records
+and the parent logs them with `replay`.
+
 `_linalg` owns the logger so that it imports nothing from `_engine`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from collections.abc import Generator, Sequence
 from typing import Any
 
 LOGGER = logging.getLogger("gfem.solver")
@@ -67,3 +72,41 @@ def solve_step(
             **details,
         },
     )
+
+
+class _Keep(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.INFO)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def collected(keep: bool) -> Generator[list[logging.LogRecord]]:
+    """The records logged inside the block, not handled here (``keep``).
+
+    For a process whose parent logs them (`replay`); without ``keep`` the
+    list stays empty and the logger is left as it is.
+    """
+    if not keep:
+        yield []
+        return
+    handler = _Keep()
+    level, propagate = LOGGER.level, LOGGER.propagate
+    LOGGER.addHandler(handler)
+    LOGGER.setLevel(logging.INFO)
+    LOGGER.propagate = False
+    try:
+        yield handler.records
+    finally:
+        LOGGER.removeHandler(handler)
+        LOGGER.setLevel(level)
+        LOGGER.propagate = propagate
+
+
+def replay(records: Sequence[logging.LogRecord]) -> None:
+    """Log another process's ``records`` (`collected`) here, in order."""
+    for record in records:
+        LOGGER.handle(record)
