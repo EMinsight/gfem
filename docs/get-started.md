@@ -143,7 +143,8 @@ program, because every gfem solve needs it.
   to its pad gap, the {doc}`bend <tutorials/bend>` tutorial designs a
   photonic waveguide bend on a slab model, and the
   {doc}`3D bend <tutorials/bend3d>` tutorial designs it again on the real stack,
-  a 220 nm silicon guide in oxide.
+  a 220 nm silicon guide in oxide. The {doc}`metal bend <tutorials/metal-bend>`
+  tutorial places gold in the same bend, over a band of wavelengths.
 - {doc}`recipes/solve-a-device` takes this line further: a band of
   frequencies, real metals, its resonances and their Q, its capacitance.
 - {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.

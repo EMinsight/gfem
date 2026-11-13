@@ -24,6 +24,7 @@ tutorials/shape
 tutorials/transmon
 tutorials/bend
 tutorials/bend3d
+tutorials/metal-bend
 ```
 
 ```{toctree}
