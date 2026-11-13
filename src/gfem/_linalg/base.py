@@ -413,6 +413,7 @@ class PlannedHandle(NgsHandle):
         *,
         solves: int | None = None,  # noqa: ARG002
         frequency: float | None = None,
+        sweep: bool = False,  # noqa: ARG002
     ) -> None:
         """Refactorize on ``operator``'s values (see `gfem._linalg.Refactorable`).
 
@@ -426,7 +427,7 @@ class PlannedHandle(NgsHandle):
         when summed in place, by comparing the assembled matrix with the held
         one otherwise.
 
-        ``solves`` is ignored: only BDDC's coarse choice reads it.
+        ``solves`` and ``sweep`` are ignored: only BDDC reads them.
         ``frequency`` goes to the backend (`_refactorizing_at`).
 
         Raises:

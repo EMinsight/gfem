@@ -498,7 +498,7 @@ def test_bddc_refactorization_without_a_guess_solves_on_the_kept_preconditioner(
         if setups == 2:
             # far away, a column caps (at n_ref, no slack)
             monkeypatch.setattr(bddc, "_slack", lambda _: 0)
-        handle.refactorize(operator(shift), frequency=1.0)
+        handle.refactorize(operator(shift), frequency=1.0, sweep=True)
         X = handle.solve(B)
         assert len(builds) == setups
         assert (handle.last_action, handle.last_reason) == action
@@ -635,12 +635,15 @@ def test_a_bddc_handle_names_each_steps_action_and_reason(built, monkeypatch):
     assert step(handle) == ("reused", None)
     handle.solve(B, x0=previous)
     assert step(handle) == ("reused", None)
-    # a solve without a guess runs on the reused preconditioner from zero at
-    # a sweep's frequency; after an eigen reshift (no frequency) it sets BDDC
-    # up at the new operator first
-    handle.refactorize(operator(1.1 - 2j), frequency=1.0)
+    # a solve without a guess runs on the reused preconditioner from zero in
+    # a frequency sweep; elsewhere (an eigen reshift, a frequency alone) it
+    # sets BDDC up at the new operator first
+    handle.refactorize(operator(1.1 - 2j), frequency=1.0, sweep=True)
     previous = handle.solve(B)
     assert step(handle) == ("reused", None)
+    handle.refactorize(operator(1.1 - 2j), frequency=1.0)
+    previous = handle.solve(B)
+    assert step(handle) == ("factorized", "cold solve")
     handle.refactorize(operator(1.1 - 2j))
     previous = handle.solve(B)
     assert step(handle) == ("factorized", "cold solve")

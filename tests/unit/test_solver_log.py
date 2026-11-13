@@ -11,9 +11,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
+from gfem._engine.driven import DrivenRule
 
 F = (21e9, 22e9)
 LOGGER = "gfem.solver"
@@ -115,6 +117,25 @@ def test_a_direct_base_factorizes_then_refactorizes_with_its_reason(line, record
     ]
 
 
+def test_a_backward_on_a_frequency_base_holding_its_design_refactorizes_nothing(
+    line, records, caplog
+):
+    # from the third design each frequency refactorizes its own pooled base
+    # (ADR 0121): the backward takes back the base its forward left at F[0],
+    # which holds this design's values
+    def objective(eps):
+        return jnp.sum(jnp.abs(_s(line, eps, excite="p1")) ** 2)
+
+    step = jax.value_and_grad(objective)
+    for eps in (2.0, 2.5):
+        step(jnp.asarray(eps))
+    caplog.clear()
+    step(jnp.asarray(3.0))
+    (first,) = [r for r in records("backward") if r.frequency == pytest.approx(F[0])]
+    assert (first.action, first.reason) == ("held", "same design")
+    assert "direct held (same design)" in first.getMessage()
+
+
 def test_a_bddc_base_is_set_up_once_and_reused_across_frequencies(line, records):
     _s(line, 2.0, solver="bddc_gmres")
     logged = records()
@@ -135,6 +156,27 @@ def test_the_message_names_the_step(line, records):
     assert "driven forward" in message
     assert "direct factorized" in message
     assert "21 GHz" in message
+
+
+@pytest.mark.filterwarnings("ignore::gfem.PortModeProjectionWarning")
+def test_adjoint_port_solves_are_logged(tmp_path, records):
+    model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
+    frequencies = [rc.LOSSY_GUIDE_FREQUENCY, 1.01 * rc.LOSSY_GUIDE_FREQUENCY]
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    rule = DrivenRule(model, gfem.Driven(frequencies), options)
+    rule.adjoint_ports = ("p2",)
+    rule.forward(model, keep=False)
+    adjoint = [r for r in records("forward") if r.columns == "adjoint port"]
+    assert [r.frequency for r in adjoint] == pytest.approx(frequencies)
+    # on the forward's handle, as the forward left it
+    assert [r.action for r in adjoint] == ["reused", "reused"]
+    message = adjoint[0].getMessage()
+    assert "driven forward solve of the adjoint port columns" in message
+    # without the forward, each frequency's handle is the adjoint solve's own
+    rule.solve_adjoints(model)
+    later = [r for r in records("forward") if r.columns == "adjoint port"][2:]
+    assert [r.frequency for r in later] == pytest.approx(frequencies)
+    assert all(r.action in {"factorized", "refactorized"} for r in later)
 
 
 # --- electrostatic -------------------------------------------------------------------

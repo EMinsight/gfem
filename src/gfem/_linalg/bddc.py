@@ -377,7 +377,8 @@ class BddcHandle(NgsHandle):
         operator: Operator,
         *,
         solves: int | None = None,
-        frequency: float | None = None,
+        frequency: float | None = None,  # noqa: ARG002
+        sweep: bool = False,
     ) -> None:
         """Assemble ``operator`` and solve it on the held preconditioner.
 
@@ -395,8 +396,8 @@ class BddcHandle(NgsHandle):
         ``Δ`` `SETUP_ITERATIONS` shared by the solve's columns. So every warm
         solve on a reused preconditioner is capped (see `_warm`). A GMRES
         solve without an initial guess on a reused preconditioner runs that
-        warm path from zero when this refactorization states its
-        ``frequency`` (a sweep's, ADR 0127); without one (an eigen reshift,
+        warm path from zero when this refactorization is a frequency
+        ``sweep``'s (ADR 0127); otherwise (an eigen reshift,
         far from the operator the preconditioner was set up at, ADR 0118) and
         for a CG solve, it sets BDDC up again first. The rule counts
         iterations, never times, so runs repeat exactly.
@@ -404,8 +405,9 @@ class BddcHandle(NgsHandle):
         ``solves`` restates the solve calls the next setups are expected to
         serve (``prepare``'s ``solves``), for the coarse factorization only;
         ``None`` keeps the count. A setup may come later than this call,
-        inside a solve (a capped column, or a cold solve). ``frequency``
-        tells only whether a cold GMRES solve may reuse the preconditioner.
+        inside a solve (a capped column, or a cold solve). ``sweep`` tells
+        whether a cold GMRES solve may reuse the preconditioner;
+        ``frequency`` is ignored (only the direct solver reads it).
         """
         form = operator.form
         with self._lock:
@@ -422,7 +424,7 @@ class BddcHandle(NgsHandle):
             self._matrix = form.mat
             self._solver = self._krylov(form.mat, pre)
             self._reused = True
-            self._swept = frequency is not None
+            self._swept = sweep
             self.last_action, self.last_reason = "reused", None
 
     def _converged(

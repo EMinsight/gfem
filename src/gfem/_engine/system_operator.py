@@ -38,7 +38,10 @@ There, too, a forward sweep takes its base handle from the plan pool
 (`PlanSlot`). It holds one base per frequency (frequency bases, ADR 0121): at
 each new frequency the base returns to the pool under the frequency it was
 at, and the base of the new one is taken, which still holds that frequency's
-factors of the last design. A backward's adjoint solves take them the same
+factors of the last design. A frequency gets its own base only the second
+time the site solves at it: the first time the sweep refactorizes the base it
+holds, so a one-shot sweep keeps one base, and a design loop plans its
+frequency bases at its second design. A backward's adjoint solves take them the same
 way, each still holding its design's values, and refactorize nothing. Where
 ``retain_memory`` holds fewer bases than frequencies, a returning base gives up
 its own factors first, so a fixed set of frequencies keeps theirs. A
@@ -262,6 +265,12 @@ class SystemOperator:
             tolerance=self._linear.tolerance if tolerance is None else tolerance,
         )
 
+    def free_digest(self) -> str:
+        """A digest of the operator's free DOFs: a key's, where they may change."""
+        op = self.operator
+        free = free_mask(op.space.FreeDofs(), op.space.ndof)
+        return hashlib.blake2b(np.packbits(free).tobytes(), digest_size=16).hexdigest()
+
     def _plan_slot(self, budget: int) -> PlanSlot | None:
         """Where this operator's base handles pool, or ``None`` off the pool.
 
@@ -276,9 +285,7 @@ class SystemOperator:
             or (self._linear.kind, self._linear.device) != ("direct", "cpu")
         ):
             return None
-        free = free_mask(op.space.FreeDofs(), op.space.ndof)
-        digest = hashlib.blake2b(np.packbits(free).tobytes(), digest_size=16)
-        site = (id(op.topology), op.space_key, digest.hexdigest(), op.symmetry)
+        site = (id(op.topology), op.space_key, self.free_digest(), op.symmetry)
         store = None if op.fixed is None else op.fixed.store
         return PlanSlot(site, op.topology, budget, store)
 
@@ -584,6 +591,11 @@ class SystemSweep:
         return self._plans is not None
 
     @property
+    def base(self) -> Handle | None:
+        """The base handle held, or ``None``: what a step's record reads."""
+        return self._base
+
+    @property
     def frequency(self) -> float | None:
         """The ω of the handle `at` gave last, or ``None``."""
         return None if self._last is None else self._last[0]
@@ -593,7 +605,9 @@ class SystemSweep:
 
         A pooled sweep holds a base per frequency (ADR 0121): at another ω the
         base returns to the pool under its last frequency, and ω's is taken
-        (`gfem._engine.cache.EntryCache.take_plan`).
+        (`gfem._engine.cache.EntryCache.take_plan`), or the same base again
+        where the site meets ω for the first time. It refactorizes as a
+        frequency ``sweep`` (`gfem._linalg.Refactorable.refactorize`).
         """
         operator = self._operator_at(omega)
         plans = self._plans
@@ -602,7 +616,7 @@ class SystemSweep:
         ):
             self._take_base(plans, omega)
         self._base = refactorize_or_prepare(
-            self._base, operator, self._prepare, frequency=omega
+            self._base, operator, self._prepare, frequency=omega, sweep=True
         )
         handle = self._system_handle(self._base, omega)
         self._last = (omega, handle)
@@ -767,6 +781,6 @@ class PlanSlot:
 
         The thread count of a plan made now: a PARDISO handle runs on the
         thread count of its analysis (ADR 0032), so another count plans anew.
-        A sweep holds one base per frequency (ADR 0121).
+        A sweep holds one base per frequency it met before (ADR 0121).
         """
         return (*self.site, max(1, ngs.GetNumThreads()), float(omega))

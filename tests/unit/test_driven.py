@@ -389,8 +389,13 @@ def test_an_exact_sweep_plans_once_per_base_and_matches_fresh_handles(
     first = _s(line, problem, linear_solver=linear_solver)
     s = np.asarray(first.s.values)
     solved = 4 if sweep == "uniform" else len(first.sweep.sampled_frequencies)
-    # direct: one pooled base per frequency (ADR 0121); petsc: one base
-    assert len(calls) == (solved if linear_solver == "direct" else 1)
+    # one base: direct meets each frequency for the first time (ADR 0121)
+    assert len(calls) == 1
+    calls.clear()
+    _s(line, problem, linear_solver=linear_solver)
+    # direct: the second time, each frequency but the base's own gets a
+    # pooled base; petsc: one base
+    assert len(calls) == (solved - 1 if linear_solver == "direct" else 1)
     calls.clear()
     _s(line, problem, linear_solver=linear_solver)
     # the bases came back from the pool: none is planned again

@@ -136,7 +136,8 @@ process starts without it:
   last design (its ordering and analysis), the assembled parts that do not
   depend on the design and, while `SolverOptions(retain_memory=...)` has room,
   one factorization per frequency (per sample of an adaptive sweep with frozen
-  samples), with or without the `mkl` extra. The next design at that frequency
+  samples) from the second design on, with or without the `mkl` extra (a single
+  solve keeps one). The next design at that frequency
   solves on it, with GMRES to a twentieth of `tolerance`, while the counted
   costs (the factorization's size and work against the GMRES iterations) say
   that is cheaper than factorizing again. Small models, where factorizing is

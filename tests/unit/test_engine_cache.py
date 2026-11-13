@@ -16,6 +16,7 @@ from gfem._engine.electrostatic import ElectrostaticRule
 from gfem._engine.mesh import to_ngsolve
 from gfem._linalg import Operator, report
 from gfem._linalg.direct import DirectHandle
+from gfem._linalg.pieces import KeptParts
 
 
 @pytest.fixture(scope="module")
@@ -248,15 +249,27 @@ def test_a_limit_below_the_ram_wins_without_readable_ram(tmp_path, monkeypatch):
 
 
 class Base:
-    """A pooled direct base: releasing its factors leaves ``released_bytes``."""
+    """A pooled direct base: releasing its factors leaves ``released_bytes``.
 
-    def __init__(self, nbytes, *, released_bytes=10):
+    It may share ``pattern`` with a kept fixed part.
+    """
+
+    def __init__(self, nbytes, *, released_bytes=10, pattern=None):
         self._nbytes, self._released_bytes = nbytes, released_bytes
+        self.pattern = pattern
         self.released = self.freed = False
 
     @property
     def nbytes(self):
         return self._released_bytes if self.released else self._nbytes
+
+    @property
+    def factor_bytes(self):
+        return 0 if self.released else self._nbytes - self._released_bytes
+
+    def shared(self):
+        pattern = self.pattern
+        return {} if pattern is None else {id(pattern): pattern.nbytes}
 
     def release_factors(self):
         self.released = True
@@ -324,6 +337,40 @@ def test_only_the_latest_returned_base_is_exempt():
     assert stuck.freed
     assert not new.released
     assert not new.freed
+
+
+@pytest.mark.usefixtures("machine")
+def test_an_exempt_base_still_counts_its_plan_and_matrix():
+    entries = EntryCache()
+    budget = cache.retain_budget(None)
+    # nothing to release: only freeing it trims it
+    old = Base(350, released_bytes=350)
+    entries.give_plan(("a",), TOPOLOGY, old, budget=budget)
+    assert not old.freed
+    # the latest keeps its 400 bytes of factors; its other 200 count, and
+    # 350 + 200 exceeds the 500 of the default
+    latest = Base(600, released_bytes=200)
+    entries.give_plan(("b",), TOPOLOGY, latest, budget=budget)
+    assert not latest.released
+    assert old.freed
+
+
+@pytest.mark.usefixtures("machine")
+def test_an_exempt_base_keeps_the_kept_part_it_shares_counted():
+    pattern = np.zeros(300, np.uint8)
+    store = KeptParts()
+    store.kept["piece"] = SimpleNamespace(shared=lambda: {id(pattern): pattern.nbytes})
+    disc = _held(ports_bytes=400)
+    disc.spaces["em"] = store
+    entries = EntryCache(lambda: [disc])
+    base = Base(600, released_bytes=10, pattern=pattern)
+    # 10 + 300 (shared once) + 400 > 500: dropping the kept part frees
+    # nothing while the exempt base holds its pattern, so the port state goes
+    budget = cache.retain_budget(None)
+    entries.give_plan(("k",), TOPOLOGY, base, budget, kept=[pattern])
+    assert not base.released
+    assert store.kept
+    assert disc.ports is None
 
 
 # --- design initial guesses (ADR 0126) ----------------------------------------------

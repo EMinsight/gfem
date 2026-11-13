@@ -6,6 +6,7 @@ Pure NumPy on the `gfem.Mesh` arrays; the engine maps the result to NGSolve.
 from __future__ import annotations
 
 import dataclasses
+import weakref
 
 import numpy as np
 
@@ -29,11 +30,6 @@ class EMDomain:
     excluded: tuple[tuple[int, int], ...]
     active: np.ndarray
     sides: dict[str, tuple[int, int, int]]
-    #: Edges, faces and tetrahedra of the domain, once counted
-    #: (`nedelec_unknowns`).
-    _entities: list[tuple[int, int, int]] = dataclasses.field(
-        default_factory=list, repr=False
-    )
 
     def exterior(self, surface: str) -> bool:
         """Some triangle of ``surface`` has the domain on one side only."""
@@ -48,6 +44,13 @@ class EMDomain:
         return self.sides[surface][2] > 0
 
 
+#: Edges, faces and tetrahedra of each domain, once counted
+#: (`nedelec_unknowns`), for as long as the domain lives.
+_ENTITIES: weakref.WeakKeyDictionary[EMDomain, tuple[int, int, int]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
 def nedelec_unknowns(mesh: Mesh, domain: EMDomain, order: int) -> int:
     """First-kind Nédélec unknowns of ``order`` on ``domain`` of ``mesh``.
 
@@ -56,13 +59,14 @@ def nedelec_unknowns(mesh: Mesh, domain: EMDomain, order: int) -> int:
     unknowns count and periodic pairs are not compressed, so it bounds the
     system size from above. Counted once per domain.
     """
-    if not domain._entities:  # noqa: SLF001
+    counts = _ENTITIES.get(domain)
+    if counts is None:
         tets = mesh.tetrahedra[domain.active]
         edges = tets[:, np.array(_TET_EDGES)].reshape(-1, 2)
         faces = tets[:, _TET_FACES].reshape(-1, 3)
         counts = (_distinct_rows(edges), _distinct_rows(faces), len(tets))
-        domain._entities.append(counts)  # noqa: SLF001
-    e, f, t = domain._entities[0]  # noqa: SLF001
+        _ENTITIES[domain] = counts
+    e, f, t = counts
     p = order
     return p * e + p * (p - 1) * f + p * (p - 1) * (p - 2) // 2 * t
 

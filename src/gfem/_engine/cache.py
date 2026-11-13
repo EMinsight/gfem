@@ -28,8 +28,10 @@ in place, on memory already touched. An entry that gave up its base serves its
 backward by taking a plan back from the pool, or by preparing one. The pool
 holds several handles per key (one per ``jax.vmap`` variant). A sweep's key
 ends in a frequency: it keeps one handle per frequency (frequency bases, ADR
-0121), and a frequency without its own takes another's (`take_plan`). Pooled
-handles whose mesh topology has no discretization left are freed.
+0121), and a frequency without its own takes another's (`take_plan`); a
+frequency the sweep's site meets for the first time takes the most recently
+returned, so a one-shot sweep keeps one handle. Pooled handles whose mesh
+topology has no discretization left are freed.
 
 **Kept discretization state** (ADRs 0082, 0091, 0126): a discretization's kept
 fixed parts (`KeptParts` stores among its spaces), its kept wave port couplings
@@ -476,8 +478,9 @@ class _Walk:
     """A walk's tally against its budget (the node's under ``comm``).
 
     An ``exempt`` pooled handle keeps its factors and stays pooled (ADR 0123):
-    it leaves the tally, so everything else is trimmed as if its factors
-    had been released.
+    its factor bytes (``factor_bytes``, what releasing them frees) leave the
+    tally, so everything else is trimmed as if its factors had been released;
+    its plan, matrix and shared objects still count.
     """
 
     def __init__(
@@ -486,7 +489,9 @@ class _Walk:
         self._tally, self._budget, self._comm = tally, budget, comm
         self.exempt = exempt
         if exempt is not None:
-            tally.replace(_Tally.of(exempt), _NOTHING)
+            own, shared = _Tally.of(exempt)
+            factors = int(getattr(exempt, "factor_bytes", 0))
+            tally.replace((own, shared), (own - factors, shared))
 
     @property
     def budget(self) -> int:
@@ -577,6 +582,9 @@ class EntryCache:
         self._plans: collections.OrderedDict[int, _Pooled] = collections.OrderedDict()
         # the most recently returned pooled direct base (ADR 0123)
         self._latest: Any = None
+        # per site (a frequency key but its frequency): its plans' topology
+        # and the frequencies a returned base was keyed by (ADR 0121)
+        self._seen: dict[Hashable, tuple[Any, set[Any]]] = {}
         self._discretizations = discretizations
 
     def put(self, entry: Entry, budget: int, comm: Any = None) -> int:
@@ -878,6 +886,9 @@ class EntryCache:
         self._plans[id(handle)] = _Pooled(key, topology, handle)
         if hasattr(handle, "release_factors"):
             self._latest = handle
+        if isinstance(key, tuple) and key:
+            _, seen = self._seen.setdefault(key[:-1], (topology, set()))
+            seen.add(key[-1])
 
     def switch_plan(
         self,
@@ -917,10 +928,13 @@ class EntryCache:
 
         With a ``budget``, ``key`` is a frequency base's (ADR 0121): its last
         element the frequency, the rest its site and thread count. Without a
-        handle of its own it takes one of the site's other frequencies: one
-        whose factors were released, else the most recently returned when one
-        more base with factors (the largest pooled one's bytes) would put the
-        cache over ``budget``; else ``None``, and the caller prepares a new one.
+        handle of its own it takes one of the site's other frequencies. The
+        first time the site meets the frequency (no base was ever returned
+        under it), the most recently returned: a one-shot sweep keeps one
+        base. Later, one whose factors were released, else the most recently
+        returned when one more base with factors (the largest pooled one's
+        bytes) would put the cache over ``budget``; else ``None``, and the
+        caller prepares a new one.
         """
         found = next(
             (k for k, p in reversed(self._plans.items()) if p.key == key), None
@@ -938,6 +952,9 @@ class EntryCache:
         ]
         if not others:
             return None
+        _, seen = self._seen.get(key[:-1], (None, set()))
+        if key[-1] not in seen:
+            return others[-1][0]
         released = next((k for k, h in others if getattr(h, "released", False)), None)
         if released is not None:
             return released
@@ -945,11 +962,17 @@ class EntryCache:
         return others[-1][0] if self.nbytes + one > budget else None
 
     def free_plans_off(self, topologies: set[int]) -> None:
-        """Free the pooled handles whose topology's id is not in ``topologies``."""
+        """Free the pooled handles whose topology's id is not in ``topologies``.
+
+        Their sites' frequencies are forgotten too.
+        """
         for k, pooled in list(self._plans.items()):
             if id(pooled.topology) not in topologies:
                 del self._plans[k]
                 pooled.handle.free()
+        for site, (topology, _) in list(self._seen.items()):
+            if id(topology) not in topologies:
+                del self._seen[site]
 
     @property
     def pooled(self) -> int:
@@ -990,6 +1013,7 @@ class EntryCache:
         while self._plans:
             self._plans.popitem(last=False)[1].handle.free()
         self._latest = None
+        self._seen.clear()
 
 
 ENTRIES = EntryCache(_DISCRETIZATIONS.values)

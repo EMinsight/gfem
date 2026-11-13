@@ -32,6 +32,7 @@ import gfem
 from gfem._engine import cache, driven, runtime, workers
 from gfem._engine.driven import DrivenRule, _solve_block
 from gfem._linalg import prepare
+from gfem._linalg.direct import DirectHandle
 
 DATA = Path(__file__).parent / "data"
 FREQUENCIES = (3e9, 3.5e9, 4e9, 4.5e9)
@@ -206,8 +207,8 @@ def test_two_exact_workers_give_the_sequential_sweep(line, monkeypatch, linear_s
     calls = _count_prepares(monkeypatch)
     cache.ENTRIES.clear()  # no pooled base of an earlier test serves
     one, one_entry = _forward(line, problem, keep=True, linear_solver=linear_solver)
-    # direct: one pooled base per frequency (ADR 0121); petsc: one base
-    planned = len(FREQUENCIES) if linear_solver == "direct" else 1
+    # one base: direct meets each frequency for the first time (ADR 0121)
+    planned = 1
     assert len(calls) == planned
     two, two_entry = _forward(
         line, problem, keep=True, linear_solver=linear_solver, frequency_workers=2
@@ -261,6 +262,38 @@ def _in_process(monkeypatch):
         return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
 
     monkeypatch.setattr(workers, "run", run)
+
+
+def test_a_worker_keeps_nothing_and_plans_once(line, monkeypatch):
+    handed = []
+
+    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+        handed.extend(a[-2].retain_memory for a in arguments)
+        keywords = keywords or [{}] * len(arguments)
+        return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
+
+    monkeypatch.setattr(workers, "run", run)
+    calls = _count_factorizations(monkeypatch)
+    cache.ENTRIES.clear()
+    options = gfem.SolverOptions(linear_solver="direct", frequency_workers=2)
+    gfem.solve(line, gfem.Driven(SIX), options=options)
+    # each block of three frequencies refactorizes one base
+    assert handed == [0, 0]
+    assert len(calls) == 2
+    assert cache.ENTRIES.pooled == 0
+
+
+def _count_factorizations(monkeypatch) -> list[int]:
+    """Spy on direct handles' new plans in this process."""
+    calls = []
+    factor = DirectHandle._factor
+
+    def counted(self, *args, **kwargs):
+        calls.append(1)
+        return factor(self, *args, **kwargs)
+
+    monkeypatch.setattr(DirectHandle, "_factor", counted)
+    return calls
 
 
 @pytest.mark.parametrize("fits", [True, False])

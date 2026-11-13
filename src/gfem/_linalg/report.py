@@ -7,11 +7,13 @@ fields are also record attributes (``extra``), for a handler or ``caplog``:
 ``problem``, ``frequency`` (Hz, ``None`` for a static problem),
 ``direction`` (``forward``/``backward``), ``solver``, ``action``
 (``factorized``, ``refactorized``, ``reused``, ``reused, capped,
-refactorized``), ``iterations`` (per column, ``()`` for a direct solve on
-fresh factors), ``reason`` (why a step set up or refactorized, else
-``None``) and ``guess`` (``"previous design"`` for a solve that started from
-the previous design's solution (ADR 0126), else ``None``), plus the reason's
-numbers where it has some.
+refactorized``, ``held``: a direct step on the values it holds),
+``iterations`` (per column, ``()`` for a direct solve on fresh factors),
+``reason`` (why a step set up or refactorized, else ``None``), ``guess``
+(``"previous design"`` for a solve that started from the previous design's
+solution (ADR 0126), else ``None``) and ``columns``
+(``"adjoint port"`` for a uniform sweep's adjoint port columns, else
+``None``), plus the reason's numbers where it has some.
 
 Resolving ``linear_solver="auto"`` logs one record of the choice
 (`auto_choice`).
@@ -41,6 +43,7 @@ def solve_step(
     frequency: float | None = None,
     guess: str | None = None,
     reused: bool = False,
+    columns: str | None = None,
 ) -> None:
     """Log one solve step on ``handle``, the base handle that solved it.
 
@@ -48,7 +51,8 @@ def solve_step(
     (``last_action``, ``last_reason``, ``last_details``; ``None`` on a
     backend that tracks none), or with ``reused`` the action ``"reused"``:
     the step solved on a handle an earlier step prepared and left as it was.
-    ``guess`` names the initial guess's source.
+    ``guess`` names the initial guess's source; ``columns`` what the
+    columns are when not the excitations' (``"adjoint port"``).
     """
     if not LOGGER.isEnabledFor(logging.INFO):
         return
@@ -64,10 +68,12 @@ def solve_step(
     why = "" if reason is None else f" ({reason})"
     numbers = "".join(f", {k}={v:g}" for k, v in details.items())
     start = "" if guess is None else f", from the {guess}'s solution"
+    of = "" if columns is None else f" of the {columns} columns"
     LOGGER.info(
-        "%s %s solve%s: %s%s%s, iterations %s%s",
+        "%s %s solve%s%s: %s%s%s, iterations %s%s",
         problem,
         direction,
+        of,
         at,
         what,
         why,
@@ -83,6 +89,7 @@ def solve_step(
             "reason": reason,
             "iterations": iterations,
             "guess": guess,
+            "columns": columns,
             **details,
         },
     )
