@@ -263,9 +263,10 @@ The numerical settings are apart from the model and the problem, in
 
 - `order` is the {term}`element order`, 2 by default. Order 3 is more
   accurate on the same mesh and costs more time and memory.
-- `linear_solver` is `"auto"` by default: an iterative solver for driven and
-  electrostatic problems, a direct one for eigenmodes. `"direct"` suits small
-  and medium models on one machine.
+- `linear_solver` is `"auto"` by default: for a driven problem on one
+  machine, the direct solver while its factorization fits in half the memory,
+  else an iterative one; an iterative solver for electrostatic problems, and
+  a direct one for eigenmodes.
 - `tolerance` is where the iterative solver stops (1e-6, relative to the
   right-hand side). It is not the error of S.
 - `gfem.SolverOptions.preset("fast")` and `preset("accurate")` set these in
