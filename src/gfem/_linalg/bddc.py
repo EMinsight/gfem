@@ -18,13 +18,15 @@ Across a sweep the handle keeps its preconditioner (`BddcHandle.refactorize`)
 once a solve on it measured a reference iteration count, solves on the reused
 preconditioner to a tolerance `REUSED_TOLERANCE` times tighter, caps every
 warm solve there from that count, and sets it up again when GMRES iterations
-grow past one setup's worth. A handle prepared without
+grow past one setup's worth. A GMRES solve without an initial guess on the
+reused preconditioner (an adjoint solve of a multi-frequency backward) runs
+that warm path from a zero guess (ADR 0127). A handle prepared without
 reuse sets BDDC up at each `BddcHandle.refactorize`.
 
 `BddcHandle.last_action` and `last_reason` say what the last step did and
 why (`gfem._linalg.report`, ADR 0120): ``factorized`` (set up: ``first``,
-``rebuild rule``, or ``cold solve`` for a solve without an initial guess on
-a reused preconditioner), ``reused``, or ``reused, capped, refactorized``
+``rebuild rule``, or ``cold solve`` for a CG solve on a reused
+preconditioner), ``reused``, or ``reused, capped, refactorized``
 (``capped``: a warm column set BDDC up inside the solve).
 
 Under ranks (an operator with a layout) BDDC's coarse problem is factored by MUMPS
@@ -369,15 +371,16 @@ class BddcHandle(NgsHandle):
         went past ``n_ref + Δ`` iterations per column (``n_ref`` scaled to
         the reused solve's tighter tolerance, `_reused_reference`), with
         ``Δ`` `SETUP_ITERATIONS` shared by the solve's columns. So every warm
-        solve on a reused preconditioner is capped (see `_warm`). A reused
-        preconditioner serves warm GMRES solves only; a solve without an
-        initial guess sets it up again first. The rule counts iterations,
-        never times, so runs repeat exactly.
+        solve on a reused preconditioner is capped (see `_warm`). A GMRES
+        solve without an initial guess on a reused preconditioner runs that
+        warm path from zero; a CG solve sets BDDC up again first. The rule
+        counts iterations, never times, so runs repeat exactly.
 
         ``solves`` restates the solve calls the next setups are expected to
         serve (``prepare``'s ``solves``), for the coarse factorization only;
-        ``None`` keeps the count. A setup may come later than this call, at
-        the first cold solve. ``frequency`` is ignored.
+        ``None`` keeps the count. A setup may come later than this call,
+        inside a solve (a capped column, or a CG solve). ``frequency`` is
+        ignored.
         """
         form = operator.form
         with self._lock:
@@ -468,10 +471,13 @@ class BddcHandle(NgsHandle):
     ) -> tuple[np.ndarray, tuple[int, ...]]:
         _, _, form = self._held()
         with self._lock, self.layout.blas_threads(1):  # reentrant: _map, _warm
-            if self._reused and (x0 is None or self.symmetry == "hermitian"):
-                # only a warm start pays for a reused preconditioner
+            if self._reused and self.symmetry == "hermitian":
+                # CG has no warm path: it solves on a fresh preconditioner
                 self._build(form)
                 self.last_action, self.last_reason = "factorized", "cold solve"
+            elif self._reused and x0 is None:
+                # GMRES on the reused preconditioner from zero (ADR 0127)
+                x0 = np.zeros(B.shape, dtype=np.complex128 if self._complex else float)
             solver = self._solver
             prepared = self.tolerance
             # only a solve at the prepared tolerance measures n_ref
