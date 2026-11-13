@@ -59,6 +59,20 @@ Port mode sweep
   frequencies before the 3D solve, giving each wave port's propagation constant
   and mode profile at every output frequency. The wave ports of a
   {term}`shared port surface` share one sweep.
+
+Unresolved band
+  The frequencies at which a region with a {term}`permittivity law` carries a
+  wavelength shorter than two of its longest element edges,
+  k0 Re √ε(f) h_max > π. An eigenmode target or mode there raises
+  `ValueError`: near a Lorentz resonance the modes crowd so densely that which
+  ones are nearest depends on the mesh.
+
+Modal overlap
+  The number of a lossy region's cavity modes within one linewidth of a
+  frequency, about 8π (V / λ_m³) |Im ε| / Re ε, with V the region's volume and
+  λ_m the wavelength in it. Above about 10 the modes nearest a target cannot
+  be told apart, and an {term}`eigenmode problem` there may stop with
+  `gfem.EigenmodeConvergenceError`.
 ```
 
 ## Models
@@ -158,6 +172,11 @@ Mode cross-projection
   The conjugated S functional of one {term}`requested mode` applied to another
   requested mode of the same {term}`shared port surface`; zero for a lossless
   cross-section, otherwise the error it puts into S.
+
+Dispersive cross-section
+  A wave port's cross-section that contains a region with a
+  {term}`permittivity law`. It is supported where Re ε(f) > 0 throughout, at
+  every frequency of the sweep; a metal in it raises.
 
 Terminal
   A conductor, given as one or more regions (volumes or surfaces), whose
@@ -333,16 +352,40 @@ Bloch reciprocity
 
 ```{glossary}
 Material
-  A linear medium with constant relative permittivity, permeability, loss
-  tangent and electrical conductivity (S/m), assigned to a whole
-  {term}`region`; each property may be one value or, for an
-  {term}`anisotropic material`, a tensor.
+  A linear medium with relative permittivity, permeability, loss tangent and
+  electrical conductivity (S/m), assigned to a whole {term}`region`; each
+  property may be one value or, for an {term}`anisotropic material`, a tensor,
+  and the permittivity may follow a {term}`permittivity law`.
 
 Loss tangent
   The ratio tan δ of the imaginary to the real part of a {term}`material`'s
   permittivity, ε = ε′ (1 − i tan δ) under e^{+iωt}: the dielectric loss
   (`Material(tan_delta=...)`). A region holding the share p of a mode's
   electric energy adds p tan δ to the mode's 1/Q.
+
+Dispersive material
+  A {term}`material` whose permittivity depends on frequency through a
+  {term}`permittivity law`.
+
+Permittivity law
+  A relative permittivity that depends on frequency: a high-frequency
+  permittivity ε∞ plus a sum of {term}`dispersion terms <dispersion term>`
+  (`gfem.PermittivityLaw`), given as a `Material`'s `eps_r`.
+
+Dispersion term
+  One Drude, Lorentz, Debye or Djordjevic-Sarkar contribution to a
+  {term}`permittivity law`, passive by its own parameter bounds.
+
+Static permittivity
+  The zero-frequency value of a {term}`permittivity law`: ε∞ plus the
+  strengths of its Lorentz, Debye and Djordjevic-Sarkar terms. A Drude term
+  has none, because a Drude metal conducts at zero frequency. The
+  electrostatic problem reads it.
+
+Energy permittivity
+  The weight Re[ε + (ω/2) dε/dω] of |E|² in a mode's energy at its frequency,
+  for a region with a {term}`permittivity law`: Re ε_r for a constant
+  material, and ε∞ for a lossless Drude law.
 
 Anisotropic material
   A {term}`material` whose permittivity, permeability, loss tangent or
@@ -376,6 +419,11 @@ Anisotropic material field
   {term}`principal values` per element along one fixed set of
   {term}`principal axes` shared by the whole field; the principal values are
   design inputs, the axes are not.
+
+Index interpolation
+  A density blend in which the complex refractive index n − iκ is linear in
+  the density ρ, ε = ((1 − ρ) N_a + ρ N_b)² (`scheme="index"`); the blend to
+  use between a metal and a dielectric.
 
 Sheet
   A zero-thickness conducting layer on an interior surface, described by its

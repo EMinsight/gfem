@@ -186,6 +186,15 @@ USER_TERMS = (
     "Anharmonicity",
     "Lamb shift",
     "Loss budget",
+    "Dispersive material",
+    "Permittivity law",
+    "Dispersion term",
+    "Static permittivity",
+    "Energy permittivity",
+    "Index interpolation",
+    "Dispersive cross-section",
+    "Unresolved band",
+    "Modal overlap",
 )
 
 
