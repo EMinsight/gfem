@@ -242,6 +242,15 @@ class EigenmodeConvergenceError(RuntimeError):
     ``SolverOptions.eigen_tolerance`` or raise
     ``SolverOptions.max_refine_iterations``, or, for a mode with a Q below
     about 2, find the resonance from a `Driven` sweep instead.
+
+    It is also raised when the eigen solver's first pass stops after 100
+    restarts (``eps_max_it`` in ``SolverOptions.petsc_options`` overrides
+    the bound on SLEPc). The modes near the target are then closer together
+    than their linewidth, so the nearest cannot be told apart. The message
+    names the lossy region with the most modes within one linewidth of the
+    target when it holds about 10 or more, and for a permittivity law its
+    term nearest the target. Move ``target`` where the modes are separated,
+    or find the resonances from a `Driven` sweep.
     """
 
 

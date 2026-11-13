@@ -560,14 +560,22 @@ class Eigenmode:
             pass a fixed value.
 
     `gfem.solve` raises `gfem.EigenmodeConvergenceError` when fewer than
-    ``n_modes`` modes converge (never a partial result), and
-    NotImplementedError for a `WavePort` or a shared port surface (its
+    ``n_modes`` modes converge (never a partial result), including when the
+    eigen solver's first pass stops at its bound of 100 restarts. That happens
+    where the modes near ``target`` are closer together than their linewidth:
+    above a modal overlap of about 10 in a lossy region, "nearest" is
+    ill-defined, and the message names the region. Close to a lossless resonance
+    of a `gfem.PermittivityLaw` the modes crowd too, and a mode one step farther
+    can come back in place of a nearer one: ask for more modes and compare two
+    targets. A target or a mode in a law region's unresolved band, where its
+    wavelength is shorter than two of its longest edges, raises ValueError. It
+    raises NotImplementedError for a `WavePort` or a shared port surface (its
     propagation constants would have to be solved at the complex
-    eigenfrequency): replace a lone wave port with a `LumpedPort` of the
-    line impedance, or use a `gfem.Driven` sweep. With ``wave_vector``, it
-    raises ValueError on a model without a `gfem.Periodic` pair, for a k
-    with a component outside the span of the pairs' translations, and with
-    any ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU
+    eigenfrequency): replace a lone wave port with a `LumpedPort` of the line
+    impedance, or use a `gfem.Driven` sweep. With ``wave_vector``, it raises
+    ValueError on a model without a `gfem.Periodic` pair, for a k with a
+    component outside the span of the pairs' translations, and with any
+    ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU
     ``device``.
 
     Notes:
