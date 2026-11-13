@@ -24,7 +24,6 @@ from gfem._boundaries import (
     surfaces_of,
 )
 from gfem._engine.anisotropy import CROSS_N, edge_admittance
-from gfem._engine.dispersion import susceptibility
 from gfem._materials import (
     PROPERTIES,
     Material,
@@ -182,6 +181,8 @@ class PortSection:
     def susceptibilities(self, frequency: float) -> list[complex]:
         """The susceptibility chi of each of ``laws`` at ``frequency`` (Hz)."""
         omega = 2 * math.pi * frequency
+        from gfem._engine.dispersion import susceptibility  # lazy: no engine at import
+
         return [susceptibility(law, omega) for _, law in self.laws]
 
     def check_frequencies(self, frequencies) -> None:
