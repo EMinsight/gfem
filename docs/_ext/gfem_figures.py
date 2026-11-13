@@ -189,6 +189,8 @@ def _recolour(artist, undo, unknown):
     get_cmap = getattr(artist, "get_cmap", None)
     if get_cmap is None or artist.get_array() is None:
         return
+    if artist.get_array().ndim == 3:  # an RGB(A) image: its own colours, no map
+        return
     name = get_cmap().name
     if name in CMAP_SWAP:
         undo.append((artist.set_cmap, get_cmap()))
