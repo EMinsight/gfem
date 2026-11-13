@@ -165,15 +165,19 @@ def test_law_parameters_on_the_adaptive_sweep_equal_the_full_solve_at_the_sample
 # --- still raising by name ----------------------------------------------------------
 
 
-def test_law_parameters_raise_on_the_eigenmode_problem(mesh):
+def test_law_parameters_differentiate_the_eigenfrequency(mesh):
+    # the eigenmode pairs carry the law pass's weights too (ADR 0112):
+    # tests/unit/test_eigenmode_dispersive.py checks them by differences
     def objective(law):
         result = gfem.solve(
             _line(mesh, law), gfem.Eigenmode(target=10 * GHZ), options=OPTIONS
         )
         return jnp.real(result.omega[0])
 
-    with pytest.raises(gfem.NonDifferentiableError, match="permittivity law"):
-        jax.grad(objective)(LAW)
+    grad = jax.grad(objective)(LAW)
+    values = np.asarray(jax.tree.leaves(grad), dtype=float)
+    assert np.all(np.isfinite(values))
+    assert np.any(values != 0)
 
 
 def test_law_parameters_differentiate_beside_an_unread_eps(mesh):

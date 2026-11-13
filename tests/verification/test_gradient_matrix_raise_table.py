@@ -1070,7 +1070,7 @@ def _objective(model, problem, out_path, index):
             for p, v in jax.tree_util.tree_flatten_with_path(result)[0]
             if p == out_path
         ]
-        weights = np.random.default_rng(1).uniform(0.5, 1.5, value.shape)
+        weights = np.random.default_rng(1).uniform(0.5, 1.5, np.shape(value))
         return jnp.sum(jnp.real(value) * weights)
 
     return objective, leaves[index]
