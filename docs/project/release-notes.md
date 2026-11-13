@@ -8,6 +8,9 @@
   could skip modes without a word, or return a different set from run to run.
   Eigenmode results on models with `Conductor`, `Impedance` or `Absorbing` walls
   from earlier versions may have skipped modes and should be rerun.
+  A symmetric model with such walls could also return only one mode of a
+  degenerate pair, depending on the number of threads; the second mode is now
+  recovered when the solve comes close to it.
 
 Quantum metrics and mode-field gradients:
 
