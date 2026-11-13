@@ -185,6 +185,8 @@ PROBLEMS = {
     "driven_periodic_law": Problem("driven_periodic_plain", "s.values", "lumped"),
     # a metal-dielectric density blend (ADR 0113)
     "driven_blend": Problem("driven", "s.values", "lumped"),
+    # the static permittivity of a law (ADR 0111)
+    "electrostatic_law": Problem("electrostatic", "capacitance"),
 }
 #: The rows whose cell-only keys have no ``EXPECTED`` entries of their own:
 #: the raise table's leaves of their row's keys answer for them, by prefix
@@ -614,6 +616,15 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
     }
 
 
+#: The ``EXPECTED`` outcomes an off-grid input's cells may verify, by input:
+#: gradients, and for a permittivity law also the exact zeros of the
+#: parameters a problem never reads (the electrostatic static permittivity
+#: reads no frequency, ADR 0011's amendment).
+_VERIFIED_CLAIMS = {name: ({"gradient"},) for name in OFF_GRID} | {
+    "law": ({"gradient"}, {"gradient", "zero"})
+}
+
+
 def also_verified(off_grid: dict, claimed: dict) -> list[dict]:
     """The FD-verified pairs with no grid column, one entry per row and group.
 
@@ -649,7 +660,7 @@ def _also_entry(row_key, row, group, off_grid, claimed) -> dict | None:
         found = off_grid.get((row_key, name), [])
         if not found:
             continue
-        if claimed.get((row_key, name), set()) != {"gradient"}:
+        if claimed.get((row_key, name), set()) not in _VERIFIED_CLAIMS[name]:
             raise CapabilitiesError(
                 f"{row.label} x {words}: {MATRIX_TEST} verifies a gradient "
                 f"that {RAISE_TEST} does not expect"

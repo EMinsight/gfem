@@ -849,6 +849,18 @@ BLEND_METAL = gfem.Material(
 BLEND_FREQUENCIES = (5 * GHZ, 12 * GHZ)
 
 
+#: The capacitor's nitride as a dielectric law with no Drude term (cell S1):
+#: the electrostatic problem reads its static permittivity, 7.0.
+STATIC_LAW = gfem.PermittivityLaw(
+    eps_inf=3.2,
+    terms=[
+        gfem.Lorentz(delta_eps=1.5, resonance_frequency=30 * GHZ, damping=2 * GHZ),
+        gfem.Debye(delta_eps=1.2, relaxation_frequency=4 * GHZ),
+        gfem.DjordjevicSarkar(delta_eps=1.1, low_frequency=1e3, high_frequency=1e12),
+    ],
+)
+
+
 def scaled_law(law: gfem.PermittivityLaw, t) -> gfem.PermittivityLaw:
     """``law`` with each parameter p0 as p0 (1 + t): an O(1) input, one per leaf."""
     leaves, tree = jax.tree.flatten(law)

@@ -7,6 +7,8 @@ readers that understand a law read it here, each at a named frequency:
 - `high_frequency_eps`: the law's eps_inf, the shared mass piece's value
   (ADR 0110);
 - `eps_at`: the complex permittivity at an angular frequency;
+- `static_eps`: the static permittivity eps(0), the electrostatic
+  coefficient (`check_static` refuses a Drude term);
 - `law_regions`: the laws and their tetrahedra, for the susceptibility
   pieces (`susceptibility`, `d_susceptibility`) and the checks;
 - `blend_regions`: the density blends with a law end (ADR 0113), whose
@@ -34,7 +36,7 @@ import numpy as np
 
 from gfem._boundaries import Absorbing
 from gfem._checks import is_traced
-from gfem._engine.coefficients import lossy_eps
+from gfem._engine.coefficients import element_values, lossy_eps
 from gfem._materials import (
     Blend,
     Debye,
@@ -58,12 +60,14 @@ __all__ = [
     "blend_regions",
     "check_estimator_frequencies",
     "check_frequencies",
+    "check_static",
     "d_eps",
     "d_susceptibility",
     "eps_at",
     "has_loss",
     "high_frequency_eps",
     "law_regions",
+    "static_eps",
     "susceptibility",
 ]
 
@@ -287,6 +291,76 @@ def eps_at(model: Model, omega: complex) -> np.ndarray:
             eps[mask] += chi
         else:
             eps[mask] += np.multiply.outer(chi, np.eye(3))
+    return eps
+
+
+def check_static(model: Model) -> None:
+    """Raise for a law region with no static permittivity (a Drude term).
+
+    Static: it reads the term kinds only, so it runs before any value is
+    known (ticket 09 Q4). A lossless Drude term diverges at 0 Hz and a lossy
+    one gives Re chi(0) = -ωp²/γ² < 0, which would make the electrostatic
+    operator indefinite; dropping the term would give a metal eps_inf.
+
+    A density blend with a law end (ADR 0113) is refused too: with a Drude
+    end for the same reason, otherwise because the electrostatic problem
+    does not read a blend.
+
+    Raises:
+        ValueError: A law region's law, or an end of a law blend, has a
+            `gfem.Drude` term.
+        NotImplementedError: A law blend without a Drude end.
+    """
+    for region, material in model.materials.items():
+        ends = material.blend_ends if isinstance(material, MaterialField) else None
+        if ends is not None and ends.drude:
+            raise ValueError(
+                f"Region {region!r} blends a permittivity law with a Drude term, "
+                "which has no static permittivity (eps(0) is infinite), so the "
+                "electrostatic problem cannot read it. Use a constant material "
+                "for the electrostatic model."
+            )
+        if ends is not None:
+            raise NotImplementedError(
+                f"Region {region!r} is a density blend with a permittivity-law "
+                "end (MaterialField.interpolate), which the Electrostatic "
+                "problem does not support: a blend is solved by gfem.Driven on "
+                "the uniform sweep only."
+            )
+        if not (
+            isinstance(material, Material)
+            and isinstance(material.eps_r, PermittivityLaw)
+        ):
+            continue
+        if any(isinstance(t, Drude) for t in material.eps_r.terms):
+            name = material.name or region
+            raise ValueError(
+                f"Material {name!r} (region {region!r}) has a Drude term, and a "
+                "Drude metal has no static permittivity: it conducts at zero "
+                "frequency. In an electrostatic model, make it a terminal or a "
+                "PEC surface."
+            )
+
+
+def static_eps(model: Model) -> np.ndarray:
+    """The real static permittivity per tetrahedron, ``(n,)``.
+
+    `gfem._engine.coefficients.element_values`'s real ``eps_r`` off the law
+    regions; ``law(0)`` on them, eps_inf + the strengths of the Lorentz,
+    Debye and Djordjevic-Sarkar terms, evaluated by the law itself so a
+    constant `Material` set to ``law(0)`` reads the same value to the bit.
+
+    Raises:
+        ValueError: A law has a Drude term (`check_static`).
+    """
+    check_static(model)
+    eps = element_values(model, "eps_r", per_axis=0.0, law=0.0).real
+    mesh = model.mesh
+    for region, material in model.materials.items():
+        if isinstance(material, Material) and isinstance(
+            material.eps_r, PermittivityLaw
+        ):
+            eps[mesh.elements(region)] = float(np.real(complex(material.eps_r(0.0))))
     return eps
 
 

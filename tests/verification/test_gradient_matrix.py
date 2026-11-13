@@ -95,6 +95,7 @@ from gradient_cases import (
     RESONATOR_TARGET,
     SHEETS,
     STACK_PROBLEM,
+    STATIC_LAW,
     absorbing_guide,
     capacitor,
     cavity_fill,
@@ -418,6 +419,15 @@ def _blend_cells() -> list[Cell]:
     ]
 
 
+def _electrostatic_law_cells() -> list[Cell]:
+    """Cell S1: the capacitance in a law's parameters (ADR 0111), on ``direct``.
+
+    The capacitor's nitride holds `STATIC_LAW`: the static permittivity reads
+    eps_inf and the strengths, and the frequency parameters are exact zeros.
+    """
+    return [Cell("electrostatic", "law", "direct", variant="static")]
+
+
 CELLS = [
     *_cells(),
     *_driven_periodic_cells(),
@@ -426,6 +436,7 @@ CELLS = [
     *_field_cells(),
     *_law_cells(),
     *_blend_cells(),
+    *_electrostatic_law_cells(),
 ]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
@@ -1597,6 +1608,26 @@ def _driven_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     return _law_case(objective, law, seed)
 
 
+def _electrostatic_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """C (pF) of the capacitor whose nitride holds `STATIC_LAW`, in its parameters."""
+    model = d.capacitor
+
+    def objective(t):
+        law = scaled_law(STATIC_LAW, t)
+        m = model.with_material("nitride", gfem.Material(eps_r=law))
+        return gfem.solve(m, ELECTROSTATIC, options=options).capacitance[0, 0] * 1e12
+
+    return _law_case(objective, STATIC_LAW, seed)
+
+
+def _static_leaves(law: gfem.PermittivityLaw) -> np.ndarray:
+    """Which leaves of ``law`` the static permittivity reads (eps_inf, strengths)."""
+    paths = jax.tree_util.tree_flatten_with_path(law)[0]
+    return np.array(
+        [jax.tree_util.keystr(p).endswith(("eps_inf", "delta_eps")) for p, _ in paths]
+    )
+
+
 def _driven_host_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
     """S of the strip line in the host's per-element eps_r, beside the ``poles`` law."""
     mesh = d.dispersive
@@ -1802,6 +1833,7 @@ BUILDERS = {
     ("driven_wave", "law"): _wave_law,
     ("driven_periodic_plain", "law"): _periodic_law,
     ("driven", "blend"): _driven_blend,
+    ("electrostatic", "law"): _electrostatic_law,
 }
 #: Builders of the existing inputs beside a law, by (problem, input, variant).
 VARIANT_BUILDERS = {
@@ -1828,8 +1860,14 @@ def test_gradient_matrix_matches_central_differences(designs, cell):
     case = _case(designs, cell, production=False)
     grad = jax.grad(case.objective)(case.p)
     if cell.input == "law":
-        # every normalized law parameter moves the objective
+        # every normalized law parameter moves the objective; on the
+        # electrostatic problem, every one its static permittivity reads, and
+        # the frequency parameters are exact zeros
         g = np.abs(np.asarray(grad))
+        if cell.problem == "electrostatic":
+            read = _static_leaves(STATIC_LAW)
+            assert not g[~read].any(), f"{cell}: {g}"
+            g = g[read]
         assert g.min() >= LAW_COMPONENT * np.linalg.norm(g), f"{cell}: {g}"
     assert_gradient_matches(
         case.objective,

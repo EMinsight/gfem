@@ -271,3 +271,11 @@ def test_a_frequency_on_a_lossless_pole_of_a_blend_end_raises(mesh):
     model = _line(mesh, _blend(mesh, end=lossless))
     with pytest.raises(ValueError, match="solid end of the blend in region 'core'"):
         gfem.solve(model, gfem.Driven(frequency=8 * GHZ), options=OPTIONS)
+
+
+def test_the_static_check_refuses_a_blend_with_a_drude_end(mesh):
+    # the electrostatic rule's own check, whatever calls it (ADR 0111, 0113)
+    from gfem._engine.dispersion import check_static
+
+    with pytest.raises(ValueError, match=r"'core' blends .* Drude"):
+        check_static(_line(mesh, _blend(mesh)))
