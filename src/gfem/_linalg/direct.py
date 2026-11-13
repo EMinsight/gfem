@@ -39,6 +39,7 @@ from gfem._linalg.factor_reuse import (
     GATE,
     RELEASED,
     REUSED_TOLERANCE,
+    SAME_DESIGN,
     AmortizedRule,
     cholesky_ratio,
 )
@@ -98,6 +99,11 @@ class Factors(Protocol):
         """Host memory of the factors and whatever else this holds, in bytes."""
         ...
 
+    @property
+    def factor_bytes(self) -> int:
+        """The bytes of `nbytes` that `release` frees."""
+        ...
+
     def model_ratio(self) -> float:
         """One refactorization over one direct column, from the plan's counts."""
         ...
@@ -144,6 +150,11 @@ class UpdateFactors:
     def nbytes(self) -> int:
         """Host memory NGSolve reports for the factors, in bytes."""
         return host_bytes(self.inverse)
+
+    @property
+    def factor_bytes(self) -> int:
+        """0: `release` frees nothing."""
+        return 0
 
 
 class DirectHandle(PlannedHandle):
@@ -197,8 +208,9 @@ class DirectHandle(PlannedHandle):
     `last_action` and `last_reason` say what the last step did and why
     (`gfem._linalg.report`): ``factorized`` (a new plan, ``first``),
     ``refactorized`` (the rule's `AmortizedRule.reason`; ``None`` on a handle
-    without the rule), ``reused``, or ``reused, capped, refactorized``
-    (``capped``); `last_details` the reason's numbers. Under the rule a
+    without the rule), ``reused``, ``reused, capped, refactorized``
+    (``capped``), or ``held`` (``same design``: the values it holds, nothing
+    refactorized); `last_details` the reason's numbers. Under the rule a
     refactorization on the held values is no step and changes none of them.
     """
 
@@ -343,13 +355,15 @@ class DirectHandle(PlannedHandle):
         own copy of the values stays the factored matrix's. Values equal to
         the held ones (``same()``: the same design again, a backward taking
         its plan back) are no new step and are not written: the step in
-        progress goes on, on the factors it solves with.
+        progress goes on, on the factors it solves with, and the step reads
+        ``held`` (``same design``): it refactorized nothing.
         """
         matrix = self._live()
         # a live handle holds its factors (`_release` drops them)
         factors = cast("Factors", self._factors)
         rule = self._rule
         if rule is not None and not factors.released and same():
+            self._stepped("held", SAME_DESIGN)
             return
         if rule is not None and rule.next_step(
             frequency=self._frequency,
@@ -477,6 +491,12 @@ class DirectHandle(PlannedHandle):
         if factors is None or matrix is None:
             return 0
         return host_bytes(matrix) + factors.nbytes
+
+    @property
+    def factor_bytes(self) -> int:
+        """The bytes of `nbytes` that `release_factors` frees (ADR 0123)."""
+        factors = self._factors
+        return 0 if factors is None else factors.factor_bytes
 
     def _release(self) -> None:
         """Drop the factors; under the lock."""

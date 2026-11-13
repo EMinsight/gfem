@@ -9,9 +9,10 @@ and finishes direct: S and the gradient are then the exact run's. The same
 holds on sparse Cholesky, the factorization without MKL, and a script run
 twice at one thread reuses at the same designs (the rule reads counts).
 
-Over several frequencies each frequency keeps its own base (ADR 0121): every
-frequency's forward reuses, and a backward that solves finds each base holding
-its design's values and refactorizes nothing.
+Over several frequencies each frequency gets its own base the second time
+the sweep meets it (ADR 0121, amended): from then on every frequency's
+forward reuses, and a backward that solves finds each base holding its
+design's values and refactorizes nothing (``held``, ``same design``).
 """
 
 import dataclasses
@@ -27,7 +28,12 @@ from gfem._engine import cache
 from gfem._engine.system_operator import SystemSweep
 from gfem._linalg import direct
 from gfem._linalg.direct import DirectHandle
-from gfem._linalg.factor_reuse import FIRST, OTHER_FREQUENCY, AmortizedRule
+from gfem._linalg.factor_reuse import (
+    FIRST,
+    OTHER_FREQUENCY,
+    SAME_DESIGN,
+    AmortizedRule,
+)
 from gfem._linalg.pardiso import pardiso_available
 
 TOLERANCE = 1e-6
@@ -217,14 +223,28 @@ def test_each_frequency_reuses_its_own_factors_and_a_backward_refactorizes_nothi
         line, values, designs, monkeypatch, forced=True
     )
     omegas = [2 * np.pi * f for f in FREQUENCIES]
-    # design 0 plans each frequency's base (a new handle steps nothing), design
-    # 1 refactorizes it (a chain starts), design 2 reuses at every frequency;
+    # design 0's forward meets each frequency for the first time: one base,
+    # refactorized at the next ones; its backward meets the first two again
+    # and plans their bases (a new handle steps nothing)
+    assert forward[0] == [
+        (omegas[1], "refactorized", FIRST),
+        (omegas[2], "refactorized", OTHER_FREQUENCY),
+    ]
+    assert backward[0] == []
+    # design 1 refactorizes the new bases (a chain starts) and reuses the
+    # first one's at the last frequency; design 2 reuses at every frequency;
     # each base stays at its frequency
-    assert forward[0] == []
-    assert forward[1] == [(omega, "refactorized", FIRST) for omega in omegas]
+    assert forward[1] == [
+        (omegas[0], "refactorized", FIRST),
+        (omegas[1], "refactorized", FIRST),
+        (omegas[2], "reused", None),
+    ]
     assert forward[2] == [(omega, "reused", None) for omega in omegas]
     for steps in forward[3:]:
         assert [step[0] for step in steps] == omegas
         assert all(step[2] != OTHER_FREQUENCY for step in steps)
-    assert backward == [[]] * len(designs)
+    # from the last frequency down: the forward left the base there, and each
+    # other base holds this design's values
+    held = [(omegas[1], "held", SAME_DESIGN), (omegas[0], "held", SAME_DESIGN)]
+    assert backward[1:] == [held] * (len(designs) - 1)
     _within_bounds(reused, exact)

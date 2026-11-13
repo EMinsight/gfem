@@ -10,7 +10,7 @@ the ``mkl`` extra, NGSolve sparse Cholesky otherwise). The system operator
 (`gfem._engine.system_operator.SystemOperator`) answers the forward and
 adjoint solves. A sweep keeps one base handle: a direct solver plans at the
 first frequency and refactorizes at the others (on the plan pool, one base per
-frequency, kept across designs: ADR 0121), and sums each frequency's
+frequency met before, kept across designs: ADR 0121), and sums each frequency's
 matrix from the pieces ``A_k`` assembled once per forward (the piece sum,
 kept with the system operator for the backward pass) instead of assembling
 it.
@@ -71,7 +71,6 @@ import contextlib
 import contextvars
 import dataclasses
 import functools
-import hashlib
 import logging
 import math
 import warnings
@@ -123,7 +122,6 @@ from gfem._engine.wave_ports import (
     wave_port_couplings,
 )
 from gfem._linalg import Kind, ResolvedLinearSolver, report
-from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
 from gfem._materials import MaterialField
@@ -825,11 +823,21 @@ class DrivenRule:
         solved, loads = ports.nonparallel(omega, indices, rhs)
         if not solved:
             return
+        held = sweep.frequency == omega
         try:
-            z, _ = sweep.reuse_at(omega).solve_counted(loads)
+            z, its = sweep.reuse_at(omega).solve_counted(loads)
         except LinearSolverConvergenceError as err:
             names = ", ".join(repr(self.port_names[i]) for i in solved)
             raise _estimate_adjoint_error(f, names, err) from err
+        report.solve_step(
+            sweep.base,
+            problem="driven",
+            direction="forward",
+            iterations=its,
+            frequency=f,
+            reused=held,
+            columns="adjoint port",
+        )
         z = system.operator.expand(z)
         for k, i in enumerate(solved):
             self.adjoints[f, self.port_names[i]] = np.array(z[:, k], complex)
@@ -877,12 +885,14 @@ class DrivenRule:
         )
         indices = [block for block in indices if len(block)]
         threads = workers.worker_threads(self.options.threads, len(indices))
-        # a worker's block cannot re-decide "auto" (ADR 0124)
+        # a worker's block cannot re-decide "auto" (ADR 0124); its bases die
+        # with it, and would each take half the machine (ADR 0121)
         options = dataclasses.replace(
             self.options,
             threads=threads,
             frequency_workers=1,
             linear_solver=self.linear.kind,
+            retain_memory=0,
         )
         problems = [
             Driven(
@@ -2246,10 +2256,8 @@ class _DesignGuess:
             or disc is None
         ):
             return cls(None)
-        free = free_mask(op.space.FreeDofs(), op.space.ndof)
-        digest = hashlib.blake2b(np.packbits(free).tobytes(), digest_size=16)
         key = ("design guess", tuple(rule.excite), rule.problem.wave_vector)
-        match = (op.space_key, digest.hexdigest(), op.symmetry, rule.linear.tolerance)
+        match = (op.space_key, system.free_digest(), op.symmetry, rule.linear.tolerance)
         return cls(disc, key, match)
 
     def solve(

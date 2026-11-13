@@ -125,13 +125,14 @@ DIRECT_BYTES_PER_UNKNOWN = 40 * 2**10
 
 def auto_linear_solver(
     default: Kind, *, unknowns: int, in_flight: int, general: bool, budget: int
-) -> tuple[Kind, str]:
+) -> tuple[Kind, str, int]:
     """``"direct"`` while its factorizations fit ``budget``, else ``default``.
 
     The estimate is `DIRECT_BYTES_PER_UNKNOWN` times ``unknowns`` per
     factorization ``in_flight``, doubled for a ``general`` operator (LU
     stores L and U). Equal to the budget fits. Reads no clock and no
-    installed library (ADR 0124). Returns the kind and why, in words.
+    installed library (ADR 0124). Returns the kind, why in words, and the
+    estimate in bytes.
     """
     estimate = direct_estimate(unknowns, in_flight=in_flight, general=general)
     fits = estimate <= budget
@@ -141,7 +142,7 @@ def auto_linear_solver(
         f"{'<=' if fits else '>'} {budget / gib:.1f} GiB budget "
         f"(half of {2 * budget / gib:.3g} GiB)"
     )
-    return ("direct" if fits else default), reason
+    return ("direct" if fits else default), reason, estimate
 
 
 def direct_estimate(unknowns: int, *, in_flight: int, general: bool) -> int:
@@ -259,6 +260,7 @@ class Refactorable(Handle, Protocol):
         *,
         solves: int | None = None,
         frequency: float | None = None,
+        sweep: bool = False,
     ) -> None:
         """Assemble ``operator`` and factorize its values in place.
 
@@ -270,10 +272,11 @@ class Refactorable(Handle, Protocol):
         serve, when they differ from the count the handle was prepared with
         (`prepare`'s ``solves``); ``None`` keeps it. Only BDDC's coarse
         choice reads it. ``frequency``: the ω the operator is at, when the
-        caller knows it: the direct solver reads it to solve a design on
-        factors made at the same ω for an earlier one (ADR 0094), and BDDC
-        to solve without an initial guess on its reused preconditioner (ADR
-        0127; without a frequency it sets BDDC up again first).
+        caller knows it; only the direct solver reads it, to solve a design on
+        factors made at the same ω for an earlier one (ADR 0094). ``sweep``:
+        the operator is a frequency sweep's next one; only BDDC reads it, to
+        solve without an initial guess on its reused preconditioner (ADR
+        0127; otherwise it sets BDDC up again first).
 
         Raises:
             RuntimeError: The handle was freed.
@@ -288,6 +291,7 @@ def refactorize_or_prepare(
     *,
     solves: int | None = None,
     frequency: float | None = None,
+    sweep: bool = False,
 ) -> Handle:
     """A handle of ``operator`` that reuses ``handle``'s solver plan when it can.
 
@@ -304,13 +308,15 @@ def refactorize_or_prepare(
             count; ``prepare_operator`` states its own.
         frequency: The ω ``operator`` is at, or ``None``
             (`Refactorable.refactorize`).
+        sweep: ``operator`` is a frequency sweep's next one
+            (`Refactorable.refactorize`).
 
     Raises:
         ValueError: ``operator``'s free-DOF set is not the one ``handle`` was
             prepared with: a refactorization keeps the free DOFs.
     """
     if isinstance(handle, Refactorable):
-        handle.refactorize(operator, solves=solves, frequency=frequency)
+        handle.refactorize(operator, solves=solves, frequency=frequency, sweep=sweep)
         return handle
     if handle is not None:
         handle.free()
@@ -575,7 +581,7 @@ class ResolvedLinearSolver:
         else:
             if budget is None:  # pragma: no cover - a caller error
                 raise TypeError("resolve needs a budget with unknowns.")
-            kind, reason = auto_linear_solver(
+            kind, reason, estimate = auto_linear_solver(
                 default,
                 unknowns=unknowns,
                 in_flight=in_flight,
@@ -587,9 +593,7 @@ class ResolvedLinearSolver:
                 problem=problem,
                 reason=reason,
                 unknowns=unknowns,
-                estimate=direct_estimate(
-                    unknowns, in_flight=in_flight, general=general
-                ),
+                estimate=estimate,
                 budget=budget,
             )
         if kind not in KINDS:  # pragma: no cover - SolverOptions validates

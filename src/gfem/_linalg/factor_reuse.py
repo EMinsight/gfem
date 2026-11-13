@@ -78,6 +78,8 @@ BELOW_FLOOR = "below floor"
 GATE = "gate"
 CHAIN = "chain"
 CAPPED = "capped"
+#: Why a step refactorized nothing: its values are the ones held.
+SAME_DESIGN = "same design"
 
 
 def kappa(threads: int) -> float:

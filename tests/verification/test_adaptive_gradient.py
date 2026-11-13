@@ -19,7 +19,12 @@ from gradient_cases import layered_line, line_design, s_functional, tight, with_
 import gfem
 from gfem._engine.cache import ENTRIES
 from gfem._linalg.direct import DirectHandle
-from gfem._linalg.factor_reuse import FIRST, AmortizedRule
+from gfem._linalg.factor_reuse import (
+    FIRST,
+    OTHER_FREQUENCY,
+    SAME_DESIGN,
+    AmortizedRule,
+)
 from gfem._linalg.pardiso import pardiso_available
 
 GRID = tuple(float(f) for f in np.linspace(10e9, 30e9, 21))
@@ -208,7 +213,7 @@ SAMPLE_ROWS = [GRID.index(f) for f in SAMPLES]
 
 
 def _reuse_run(line, monkeypatch, *, forced, retain_memory=None):
-    """S at the samples, gradients and each design's handle steps, 3 designs.
+    """S at the samples, gradients and each design's handle steps, 4 designs.
 
     A step is ``(frequency, action, reason)``. The designs move by 1e-4 of a
     random direction, so a reused solve converges in a few iterations.
@@ -244,7 +249,7 @@ def _reuse_run(line, monkeypatch, *, forced, retain_memory=None):
         step = jax.value_and_grad(objective, has_aux=True)
         ENTRIES.clear()
         try:
-            for k in range(3):
+            for k in range(4):
                 steps.append([])
                 (_, s), grad = step(values["eps_r"] + 1e-4 * k * direction)
                 out.append((np.asarray(s), np.asarray(grad)))
@@ -258,13 +263,16 @@ def test_each_frozen_sample_reuses_its_own_factors_across_designs(line, monkeypa
     exact, _ = _reuse_run(line, monkeypatch, forced=False, retain_memory=0)
     reused, steps = _reuse_run(line, monkeypatch, forced=True)
     omegas = sorted(2 * np.pi * f for f in SAMPLES)
-    # design 0 plans each sample's base, design 1 refactorizes it (a chain
-    # starts), design 2 reuses it at every sample
-    assert steps[0] == []
-    assert sorted(step[0] for step in steps[1]) == omegas
-    assert {step[1:] for step in steps[1]} == {("refactorized", FIRST)}
-    assert sorted(step[0] for step in steps[2]) == omegas
-    assert {step[1:] for step in steps[2]} == {("reused", None)}
+    # design 0 meets each sample for the first time: one base, refactorized
+    # from sample to sample; a sample met again gets its own base (ADR 0121,
+    # amended), whose chain starts at its next refactorization; by design 3
+    # every sample reuses its own, and a backward's steps refactorize nothing
+    assert not [step for step in steps[0] if step[1] == "reused"]
+    assert {step[2] for step in steps[0]} <= {FIRST, OTHER_FREQUENCY}
+    last = steps[3]
+    assert sorted(step[0] for step in last if step[1] == "reused") == omegas
+    others = {step[1:] for step in last if step[1] != "reused"}
+    assert others <= {("held", SAME_DESIGN)}
     for (s, grad), (s_exact, grad_exact) in zip(reused, exact, strict=True):
         assert np.max(np.abs(s - s_exact)) <= 0.05 * REUSE_TOLERANCE
         error = np.linalg.norm(grad - grad_exact) / np.linalg.norm(grad_exact)

@@ -365,6 +365,18 @@ class PardisoFactors:
             )
         return factors + (0 if self._gather is None else self._gather.nbytes)
 
+    @property
+    def factor_bytes(self) -> int:
+        """The bytes of `nbytes` that `release` frees: L and U.
+
+        0 once released, and for a wrapper that reports its own memory, which
+        a release leaves as it was.
+        """
+        params = getattr(self.inverse, "_params", None)
+        if self.released or params is None or host_bytes(self.inverse):
+            return 0
+        return 1024 * int(params[16])
+
     def _gather_index(self, matrix: Any) -> np.ndarray | None:
         """Where PARDISO's buffer reads ``matrix``'s values, or ``None``.
 
