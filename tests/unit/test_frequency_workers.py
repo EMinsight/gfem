@@ -207,8 +207,8 @@ def test_two_exact_workers_give_the_sequential_sweep(line, monkeypatch, linear_s
     calls = _count_prepares(monkeypatch)
     cache.ENTRIES.clear()  # no pooled base of an earlier test serves
     one, one_entry = _forward(line, problem, keep=True, linear_solver=linear_solver)
-    # direct: one pooled base per frequency (ADR 0121); petsc: one base
-    planned = len(FREQUENCIES) if linear_solver == "direct" else 1
+    # one base: direct meets each frequency for the first time (ADR 0121)
+    planned = 1
     assert len(calls) == planned
     two, two_entry = _forward(
         line, problem, keep=True, linear_solver=linear_solver, frequency_workers=2
