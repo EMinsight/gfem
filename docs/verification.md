@@ -24,8 +24,10 @@ the Taylor remainder shrinks at second order as the step shrinks.
 
 The inputs are the per-element permittivity and conductivity (isotropic, and
 as principal values on tilted axes), the permeability and the loss tangent
-(driven and eigenmode problems), the fill of a sheet, and the mesh node
-coordinates moved through `gfem.shape.boundary_morph`. The problems are
+(driven and eigenmode problems), the fill of a sheet, the mesh node
+coordinates moved through `gfem.shape.boundary_morph`, the parameters of a
+permittivity law (its high-frequency permittivity, strengths and
+frequencies) and the density of a metal-dielectric blend. The problems are
 capacitance and the electric energy of each region, driven S on lumped ports, on wave ports and between modes of a
 shared port surface, driven S on periodic and Bloch cells,
 eigenfrequency and Q, and, on the direct solver, the participation ratios,
@@ -129,6 +131,75 @@ Tests: [wave ports](https://github.com/benvial/gfem/blob/main/tests/verification
 [principal participation](https://github.com/benvial/gfem/blob/main/tests/unit/test_eigenmode.py),
 [material field](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven.py).
 
+## Dispersive materials
+
+Each check below uses a region whose permittivity follows a
+{term}`permittivity law`:
+
+- **Equivalence.** A dispersive region solves exactly as a constant material
+  set to the law's permittivity at each frequency. This holds for every term
+  kind, with a conductivity, and beside first- and second-order absorbing
+  boundaries. It also holds for a metal (Re ε < 0), against the same
+  permittivity set directly. In the electrostatic problem the law gives its
+  {term}`static permittivity`.
+- **Filled cavities.** A closed box filled with a Lorentz or Drude medium
+  resonates at the closed-form polariton and plasma branches of its cutoffs.
+  A Drude medium returns no field at its plasma frequency. A lossless Drude
+  metal solved as a polynomial problem gives the same modes.
+- **Resonances.** A target or mode where a law region's wavelength is
+  shorter than two of its longest edges raises before solving. Below that
+  limit the modes are the exact ones of the discretization, at orders 1
+  and 3.
+- **Mode energy.** The {term}`energy permittivity` makes the mode energy
+  equal to the eigenproblem's own normalization. Beside a dispersive region,
+  a junction's participation obeys −2 d ln ω / d ln L, and the host's share
+  obeys −2 d ln ω / d ln ε. Where the energy permittivity is not positive,
+  the solve refuses.
+- **Wave ports.** A guide filled with a Debye or Lorentz medium transmits its
+  fundamental mode with the closed-form propagation constant at every
+  frequency of a sweep. A metal in a port's cross-section is refused before
+  any solve.
+- **Adaptive sweep.** A lossless resonance inside the band is sampled on both
+  sides, and the reduced model matches the uniform sweep. So does the sweep
+  of a Djordjevic-Sarkar substrate and of a law region behind an absorbing
+  boundary.
+- **Gradients.** Law parameters are checked by finite differences on driven
+  S (uniform and adaptive sweeps, wave ports, a periodic cell, behind
+  absorbing boundaries), on eigenfrequency and Q, and on capacitance.
+  Existing inputs are checked beside a law, including participations and
+  mode fields beside a lossy Lorentz region. The density of a
+  metal-dielectric blend is checked under both the index and the linear
+  interpolation. The gradient of {doc}`tutorials/metal-bend` through gold
+  is checked by finite differences.
+- **Solvers and ranks.** The driven and eigenmode law cells also run on
+  `linear_solver="petsc"`. On two MPI ranks, S and its gradient by a law
+  agree with one process.
+- **Mesh refinement.** A line with a Drude metal block is one of the field
+  estimator's cases (see [Mesh refinement error
+  estimates](#verification-mesh-refinement)).
+
+Not checked: port modes of plasmonic guides (refused), absorbed power in a
+dispersive region, agreement with measured metal data, eigenmodes inside a
+resonance's crowded band, and convergence of the tutorial's unresolved skin
+depth.
+
+All of these run on every change. The PETSc cells run twice a week, as in
+[PETSc and SLEPc](#verification-petsc).
+
+Tests: [driven](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven_dispersive.py),
+[law gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven_law_gradient.py),
+[cavities and bands](https://github.com/benvial/gfem/blob/main/tests/unit/test_eigenmode_dispersive.py),
+[mode energy](https://github.com/benvial/gfem/blob/main/tests/unit/test_mode_energy_dispersive.py),
+[electrostatic](https://github.com/benvial/gfem/blob/main/tests/unit/test_electrostatic_dispersive.py),
+[index blend](https://github.com/benvial/gfem/blob/main/tests/unit/test_index_blend.py),
+[wave ports](https://github.com/benvial/gfem/blob/main/tests/verification/test_dispersive_wave_ports.py),
+[adaptive sweep](https://github.com/benvial/gfem/blob/main/tests/verification/test_dispersive_adaptive.py),
+[metal bend](https://github.com/benvial/gfem/blob/main/tests/verification/test_metal_bend.py),
+[field estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_field_estimate.py),
+[MPI](https://github.com/benvial/gfem/blob/main/tests/mpi/test_dispersive.py), and the law and blend cells of the
+[gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py) and the
+[gradients that raise](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix_raise_table.py).
+
 ## Patterned sheets
 
 - On a parallel-plate line, a sheet of 2 µm of copper or of a 1 pH kinetic
@@ -229,8 +300,8 @@ The field estimator is checked the same way, against the field's error in
 the energy norm: on the square and circular coaxial lines, the coaxial
 line with an anisotropic fill, the parallel-plate line, and the L-shaped
 and rectangular cavities; and with loss, on the parallel-plate line with a
-lossy fill (dielectric loss and conductivity) against its closed form,
-and against a higher-order solve on the same mesh on a cavity in two
+lossy fill (dielectric loss and conductivity) and with a Drude metal block
+(Re ε < 0) against their closed forms, and against a higher-order solve on the same mesh on a cavity in two
 layers, the upper one lossy, and on a cavity whose lossy wall (impedance
 or absorbing) gives its resonance a complex frequency. Its estimate was
 between {gfem-effectivity}`field low` and {gfem-effectivity}`field high`
