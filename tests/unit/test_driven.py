@@ -645,9 +645,10 @@ def test_an_adaptive_bddc_sweep_sets_its_coarse_problem_up_for_one_sample(
     assert len(columns) > 1
 
 
-def test_a_bddc_adjoint_sets_its_coarse_problem_up_for_one_solve(line, monkeypatch):
+def test_a_bddc_adjoint_solves_on_the_forwards_preconditioner(line, monkeypatch):
     # both ports excited over 2 frequencies; the kept fields' cotangents take
-    # one adjoint solve per frequency, on its own handle of width 2
+    # one adjoint solve per frequency, cold on the preconditioner the forward
+    # sweep set up: it runs there from zero and sets nothing up (ADR 0127)
     frequency = (3e9, 3.5e9)
     problem = gfem.Driven(frequency=frequency, keep_fields=True)
     options = gfem.SolverOptions(linear_solver="bddc_gmres")
@@ -664,7 +665,7 @@ def test_a_bddc_adjoint_sets_its_coarse_problem_up_for_one_solve(line, monkeypat
     eps = jnp.full(len(line.mesh.tetrahedra), EPS)
     columns = coarse_columns(monkeypatch)
     jax.grad(objective)(eps)
-    assert columns == [4, 2, 2]  # the forward sweep's, then the adjoint's
+    assert columns == [4]  # the forward sweep's setup only
 
 
 TWO_FREQUENCIES = gfem.Driven(frequency=(3e9, 3.5e9))
