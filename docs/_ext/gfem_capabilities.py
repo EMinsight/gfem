@@ -213,10 +213,6 @@ SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 # OUT_OF_SCOPE rows the grid needs (by their label): the row's cell raises.
 GRID_LABELS = {
     "electrostatic x sheet fill": ("electrostatic", "fill"),
-    "eigenmode participation x node coordinates": (
-        "eigenmode_participation",
-        "nodes",
-    ),
 }
 #: What each raises row asks for, in the site's words, by the test's label (the
 #: match key). A row off the grid with no label here, or a label with no row,
@@ -261,6 +257,10 @@ RAISES_LABELS = {
     ),
     "eigenmode x nodes of a port surface": (
         "Eigenmode results, with respect to node coordinates on a port surface"
+    ),
+    "eigenmode mode-field output x nodes of a port surface": (
+        "Eigenmode participations, port Q and mode fields, with respect to node "
+        "coordinates on a port surface"
     ),
     "greedy adaptive sweep under a transformation": (
         '`Driven(sweep="adaptive")` without `samples`, inside `jax.grad`, '
