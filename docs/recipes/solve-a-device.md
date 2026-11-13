@@ -288,10 +288,9 @@ print(abs(s21[3]), abs(finer.s["p2", "p1"][0]))  # |S21| at 5 GHz, orders 2 and 
 ```
 
 ```text
-[0.99999941 0.99999999 1.00000047 0.99999978 1.00000003 1.00000028
- 1.        ]
+[1. 1. 1. 1. 1. 1. 1.]
 True
-0.9013322305443373 0.9013341565407679
+0.9013321719282609 0.9013341565407665
 ```
 
 - Here the power balance holds to better than 1e-6. A larger gap in a model
