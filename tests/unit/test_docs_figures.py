@@ -127,6 +127,17 @@ def test_greyscale_density_maps_stay_unchanged(gfem_figures, fig, capsys):
     assert capsys.readouterr().err == ""
 
 
+def test_an_rgb_image_stays_unchanged_and_is_not_reported(gfem_figures, fig, capsys):
+    figure, ax = fig
+    ax.imshow(np.broadcast_to([0.83, 0.62, 0.15], (4, 4, 3)))
+    ax.set_axis_off()
+
+    images = renders(gfem_figures.figure_html(figure))
+
+    assert has_colour(images["dark"], (212, 158, 38))
+    assert capsys.readouterr().err == ""
+
+
 def test_the_sensitivity_ramp_swaps_to_its_dark_colormap(gfem_figures, fig):
     figure, ax = fig
     ax.imshow(np.zeros((4, 4)), cmap="gfem_sensitivity", vmin=0, vmax=1)
