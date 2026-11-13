@@ -27,8 +27,10 @@ as principal values on tilted axes), the permeability and the loss tangent
 (driven and eigenmode problems), the fill of a sheet, and the mesh node
 coordinates moved through `gfem.shape.boundary_morph`. The problems are
 capacitance and the electric energy of each region, driven S on lumped ports, on wave ports and between modes of a
-shared port surface, driven S on periodic and Bloch cells, and
-eigenfrequency and Q.
+shared port surface, driven S on periodic and Bloch cells,
+eigenfrequency and Q, and, on the direct solver, the participation ratios,
+port Q and mode field of an isolated mode and the dispersive shift and
+anharmonicity of a junction's dressed modes.
 
 An exact zero is checked to be zero. Each "raises" mark, and each row of
 "Gradients that raise", is a call that must raise the named error. Both the
@@ -142,6 +144,36 @@ Tests: [wave ports](https://github.com/benvial/gfem/blob/main/tests/verification
   step.
 
 Tests: [sheets](https://github.com/benvial/gfem/blob/main/tests/verification/test_sheet_gradient.py).
+
+## Quantum metrics
+
+- **Participations.** A junction's participation equals
+  −2 d ln ω / d ln L_J from two solves, with and without a capacitance on the
+  port and beside a capacitive sheet. A port with an inductance and a
+  capacitance at the end of a line resonates at the closed-form frequency of
+  the loaded line.
+- **The dressed modes.** As the junction's phase shrinks they tend to the
+  first-order closed forms. They do not move when more Fock levels are
+  added, a transmon below its resonator gets negative shifts, and a
+  hybridized pair raises. They reproduce two stored outputs of the pyEPR
+  tutorials, for one and two modes.
+- **Gradients.** The gradient of the dressed modes matches fourth-order
+  differences and differentiating the eigenvalue problem directly. The
+  dispersive shift's gradient through a solve is checked by finite
+  differences on a small two-mode model on every change, and before each
+  release on the tutorial's transmon, along its pad gap.
+- **Interface layers.** `"MA"` on a film with vacuum on both faces equals the
+  sum of its two faces read one at a time.
+
+Not checked: agreement with a measured device, and convergence of a sheet's
+or an interface's participation at a film edge.
+
+Tests: [dressed modes](https://github.com/benvial/gfem/blob/main/tests/unit/test_quantum.py),
+[participations](https://github.com/benvial/gfem/blob/main/tests/unit/test_eigenmode.py),
+[transmon](https://github.com/benvial/gfem/blob/main/tests/verification/test_transmon_chi.py),
+[interface layers](https://github.com/benvial/gfem/blob/main/tests/verification/test_interface_participation.py),
+and the dispersive-shift cells of the
+[gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py).
 
 (verification-mesh-refinement)=
 ## Mesh refinement error estimates

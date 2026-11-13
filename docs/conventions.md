@@ -119,10 +119,14 @@ print(modes.q[0], abs(omega) / (2 * omega.imag))
 ## Eigenmode fields
 
 A mode has no source to set its amplitude, so gfem scales every mode field to
-store `MODE_ENERGY`, 1 J, of electric energy: ½ Re ∫ D\* · E dV, which for a
-lossless mode is its total energy. The time-averaged electric energy
-`gfem.electric_energy` measures is half of that. Participation ratios are
-shares of the same energy, so over all the volumes they add up to 1:
+store `MODE_ENERGY`, 1 J, of electric energy: ½ Re ∫ D\* · E dV, plus
+C|V|²/2 in each lumped port with a capacitance C, plus ½ ∫ C_s |E_t|² dS on
+each {py:obj}`gfem.Impedance` sheet with a capacitance C_s per square. For a
+lossless mode this is its total energy. The time-averaged electric energy
+`gfem.electric_energy` measures is half of the volume term. Participation
+ratios are shares of the same energy. Over all the volumes, the capacitive
+ports and the capacitive sheets they add up to 1, and over the volumes alone
+when the model has neither, as here:
 
 ```python
 energy = gfem.electric_energy(modes.e_field(0), model=resonator)  # J, per volume
@@ -134,6 +138,12 @@ print(sum(modes.bulk_participation.values())[0])
 1.0
 1.0000000000000002
 ```
+
+The inductive participations of a lumped port with an inductance L and of an
+inductive sheet are shares of the same energy too. For a lossless mode, a
+sheet's `sheet_participation` is −2 d ln ω / d ln L_s on any mesh. A port's
+`participation` is −2 d ln ω / d ln L when the field is uniform across the
+port; otherwise it is read from the port's mean voltage and differs slightly.
 
 ## Periodic cells
 

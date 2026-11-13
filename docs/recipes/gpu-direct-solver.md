@@ -73,6 +73,13 @@ factors in CPU memory (cuDSS's hybrid memory mode): slower, but it runs.
 
 How gfem itself is checked: {doc}`../verification`.
 
+## Limits
+
+- An eigenmode solve on the GPU differentiates its eigenfrequencies only. A
+  gradient through a mode's field (participations, port Q, the field itself)
+  raises `gfem.NonDifferentiableError` with `device="cuda"`: solve on the CPU
+  for those ({doc}`eigenmode-gradient`).
+
 ## Next
 
 {py:obj}`gfem.SolverOptions`, {py:obj}`gfem.cuda_available`,

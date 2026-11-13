@@ -33,6 +33,7 @@ tutorials/bend3d
 recipes/s-parameter-gradient
 recipes/capacitance-gradient
 recipes/eigenmode-gradient
+recipes/quantum-metrics
 recipes/shape-gradient
 recipes/adaptive-sweep-gradient
 ```
@@ -58,6 +59,7 @@ recipes/anisotropic-materials
 recipes/periodic-cell
 recipes/shared-port-surface
 recipes/measurements
+recipes/loss-budget
 recipes/gpu-direct-solver
 recipes/petsc-slepc
 recipes/distributed-solve

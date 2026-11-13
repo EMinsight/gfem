@@ -48,3 +48,10 @@ def test_the_committed_run_reached_the_closing_cell(cells):
     assert all(c["execution_count"] is not None for c in code), "not executed"
     errors = [o for c in code for o in c["outputs"] if o["output_type"] == "error"]
     assert errors == []
+
+
+def test_the_next_section_links_the_quantum_recipes(cells):
+    prose = "\n".join(_source(c) for c in cells if c["cell_type"] == "markdown")
+    nxt = prose.split("## Next", 1)[1]
+    for page in ("quantum-metrics", "loss-budget"):
+        assert f"{{doc}}`../recipes/{page}`" in nxt, page

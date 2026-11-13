@@ -274,13 +274,44 @@ Reference impedance
 
 Participation ratio
   The fraction of a mode's electric or inductive energy stored in one region,
-  port or interface.
+  port, sheet or interface. The participation ratio of a lumped port with an
+  inductance is the junction participation when that port stands for a
+  Josephson junction.
 
 Principal participation
   The fraction of a mode's electric energy stored in one
   {term}`anisotropic <Anisotropic material>` region by the field component
   along one of the region's {term}`principal axes`; the three sum to the
   region's {term}`participation ratio`.
+
+Sheet participation
+  The {term}`participation ratio` of an inductive {term}`sheet`: the fraction
+  of a mode's energy stored in the sheet's inductance. For a lossless mode on
+  a superconducting film it equals the kinetic inductance fraction.
+
+Dressed mode
+  A mode of the structure after the junction's cosine potential is added to
+  the solved linear modes: its transition frequency, {term}`Lamb shift`,
+  {term}`anharmonicity` and {term}`dispersive shifts <Dispersive shift>`.
+
+Dispersive shift
+  The change of one {term}`dressed mode`'s transition frequency per photon in
+  another, a signed angular frequency; the full shift, not half of it.
+
+Anharmonicity
+  The second transition frequency of a {term}`dressed mode` minus its first, a
+  signed angular frequency; negative for a transmon.
+
+Lamb shift
+  A {term}`dressed mode`'s transition frequency minus the frequency of the
+  solved linear mode.
+
+Loss budget
+  The split of a mode's 1/Q into the contributions of its loss channels: the
+  loss in the model (materials, walls, sheets, resistive ports, absorbing
+  boundaries), which the eigenfrequency already carries, plus each channel
+  outside the model, which adds its {term}`participation ratio` times its
+  loss tangent.
 
 Measurement
   A post-solve function of a result's {term}`fields <Field>` that needs extra

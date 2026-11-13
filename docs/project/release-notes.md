@@ -9,6 +9,70 @@
   Eigenmode results on models with `Conductor`, `Impedance` or `Absorbing` walls
   from earlier versions may have skipped modes and should be rerun.
 
+Quantum metrics and mode-field gradients:
+
+- **Participation ratios and port Q differentiate.** `participation`,
+  `q_port`, `bulk_participation`, `principal_participation` and
+  `sheet_participation` of an eigenmode result take gradients with respect to
+  materials, sheet fill, node coordinates and lumped values, for an isolated
+  mode (a relative frequency gap of at least 1e-4 to every other mode found).
+  Each mode an objective reads this way costs one extra linear solve on the
+  eigensolve's factorization. `principal_participation` raises with respect to
+  a lumped value. See {doc}`../recipes/eigenmode-gradient`.
+- **Mode fields differentiate.** `e_field`, `Field.at` and
+  `gfem.interface_participation` of an eigenmode result take gradients with
+  respect to materials, sheet fill and lumped values; with respect to node
+  coordinates they raise `gfem.NonDifferentiableError`.
+- **Lumped values are mode-field inputs.** A `LumpedPort`'s inductance and
+  capacitance and an `Impedance`'s values reach the participations and the
+  mode fields, so a junction's `L_J` and a film's kinetic inductance are
+  design inputs.
+- A mode-field gradient raises `gfem.NonDifferentiableError` on periodic and
+  Bloch models, with `linear_solver="bddc_gmres"` or `"petsc"`, with
+  `device="cuda"`, through `result.error`, and when `eigen_tolerance` is above
+  1e-10. A member of a degenerate cluster, a cluster cut by `n_modes` or a
+  nearer pair raises `gfem.DegenerateModeError`, and a moved port node
+  `gfem.PortGeometryError`. A gradient through an infinite `q_port` raises
+  `gfem.NonDifferentiableError`: differentiate `1 / q_port`. The frequencies
+  differentiate as before in every case.
+- **`gfem.quantum`.** `gfem.quantum.dressed_modes(omega, participation,
+  inductance=L_J)` puts one junction's cosine on the solved modes and returns
+  `gfem.quantum.DressedModes`: dressed frequencies, Lamb shifts,
+  anharmonicities and dispersive shifts, in rad/s, differentiable to first
+  order. `method="first_order"` gives the perturbative closed forms. A level
+  whose label is ambiguous raises the new `gfem.ModeLabelError`. A reverse-mode
+  gradient through `DressedModes.overlap` raises
+  `gfem.NonDifferentiableError`; its forward-mode tangent is NaN. The
+  conventions, with conversions to other sources', are in `gfem.conventions`.
+  See {doc}`../recipes/quantum-metrics`.
+- **`EigenmodeResult.sheet_participation`**: the share of each mode's energy
+  in the inductance of each `Impedance` sheet with one, the kinetic inductance
+  fraction of a superconducting film for a lossless mode.
+- **Behaviour change: modes are polished.** On the direct solver, each mode
+  that can take a mode-field gradient now gets a few Newton steps after the
+  eigensolve. Participations, `q_port`, fields and interface participation
+  of such modes move by about 1e-6 to 1e-4 relative, and the default
+  `eigen_tolerance` is enough for participations and their gradients. A mode
+  whose polishing does not converge is left unpolished and takes no
+  mode-field gradient: a gradient through its field raises
+  `gfem.DegenerateModeError` naming it. A plain solve never raises because of
+  polishing.
+- **Behaviour change: the mode energy counts capacitive sheets.** Each mode's
+  1 J of electric energy now includes ½ ∫ C_s |E_t|² dS on every `Impedance`
+  sheet with a capacitance. On models with such a sheet, field amplitudes,
+  participations and `q_port` change; models without one are unchanged.
+- **Behaviour change: `interface_participation` adds the two faces of a
+  film.** For `"MA"` and `"MS"`, each selected side of a surface carries its
+  own layer and the two layers' energies add. On a film with the same medium
+  on both faces the value rises from near zero to the sum of the two faces;
+  on a film between substrate and vacuum it is unchanged. `"default"` and
+  `"SA"` still take the mean field of the two sides.
+- New pages: the tutorial {doc}`../tutorials/transmon`, and the recipes
+  {doc}`../recipes/quantum-metrics` and {doc}`../recipes/loss-budget` (a
+  mode's 1/Q from its loss channels, and their T1 limits). The capabilities
+  matrix gains the rows "Eigenmode, participations" and "Eigenmode, mode
+  field", and the glossary the quantum terms.
+
 Eigenmode solves:
 
 - When a pair nearer the target than the farthest mode found stops within 1e-6 of

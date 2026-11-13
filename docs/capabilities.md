@@ -30,6 +30,12 @@ v0.1.
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
   {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow` and
   {py:obj}`gfem.electric_energy` ({doc}`recipes/measurements`).
+- **Quantum metrics**: {py:obj}`gfem.quantum.dressed_modes` (the dressed
+  frequencies, Lamb shifts, anharmonicities and dispersive shifts of one
+  junction on the solved modes) and `EigenmodeResult.sheet_participation`
+  (the kinetic inductance fraction of a film), with their gradients
+  ({doc}`recipes/quantum-metrics`). A mode's loss splits into a 1/Q budget
+  and T1 limits ({doc}`recipes/loss-budget`).
 
 ## Solvers
 
@@ -120,6 +126,15 @@ returning a wrong value:
   cross-section the modes do not fully separate, and a lossy port line
   reflects its own mode at the order of its attenuation per radian,
   alpha/beta; {py:obj}`gfem.PortModeProjectionWarning` states either error.
+
+- **Mode-field gradients**: participations, port Q and the mode field
+  differentiate for isolated modes of non-periodic models, on the direct
+  solver, on the CPU, in one process ({doc}`recipes/eigenmode-gradient`).
+  Elsewhere only the eigenfrequencies differentiate.
+- **Quantum metrics**: one junction per model; the junction's cosine on the
+  solved linear modes, in the transmon regime. They are checked against
+  identities, finite differences and published outputs, not against a
+  measured device.
 
 ## Platforms
 

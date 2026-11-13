@@ -1047,6 +1047,20 @@ class EigenmodeResult:
     Every array has one entry per mode, in order of increasing distance of
     the mode's frequency from ``Eigenmode.target``.
 
+    Differentiation: ``omega`` differentiates with respect to every model
+    input the capabilities matrix lists. The ratios (`q_port`,
+    `participation`, `bulk_participation`, `principal_participation`,
+    `sheet_participation`) and the mode fields are read from the modes'
+    fields; they differentiate with respect to materials, sheet fill, mesh
+    node coordinates and lumped values for an isolated mode (a relative
+    frequency gap of at least 1e-4 to every other mode found), on
+    ``linear_solver="direct"`` on the CPU, in one process, with
+    ``eigen_tolerance`` at most 1e-10, on a non-periodic model. The fields
+    raise with respect to node coordinates, and `principal_participation`
+    with respect to a lumped value. Outside that reach a gradient through
+    them raises `gfem.NonDifferentiableError` (or `gfem.DegenerateModeError`
+    for a mode that is not isolated); ``error`` is not differentiable.
+
     Attributes:
         omega: Complex angular frequencies, rad/s, ``(n_modes,)``. Under
             e^{+iωt} a decaying mode has ``Im omega > 0``.
@@ -1063,7 +1077,9 @@ class EigenmodeResult:
             over its elements, as in a driven problem; when the elements of
             a multi-element port see different voltages, R dissipates more
             than ``|V|^2 / (2 R)``, and ``1 / Q`` exceeds the sum of the
-            ``1 / q_port`` and the dielectric losses.
+            ``1 / q_port`` and the dielectric losses. Differentiable as the
+            ratios above, but an infinite value takes no gradient:
+            differentiate ``1 / q_port``.
         participation: Inductive energy participation ratio of each lumped
             port with an inductance L, by port name: ``L |I|^2 / (2 E)``
             with ``I = V / (i Re(omega) L)``, the junction participation of
@@ -1072,13 +1088,16 @@ class EigenmodeResult:
             polarity along its port direction (not ``Re I``, which is zero
             for a real field). Under a Bloch wave vector the sign is
             relative to the mode's phase convention (its largest
-            coefficient real).
+            coefficient real). For a lossless mode with a field uniform
+            across the port it is ``-2 d ln omega / d ln L``.
+            Differentiable as the ratios above.
         bulk_participation: Electric energy participation of each volume
             region of the solve domain, by region name: the fraction of the
             mode's electric energy ``E`` stored in it. For an isotropic
             loss, the region's contribution to ``1 / Q`` is ``p * (tan_delta
             + conductivity / (eps0 eps_r Re omega))``; for a loss given as
             principal values use `principal_participation`.
+            Differentiable as the ratios above.
         principal_participation: The electric energy participation of each
             anisotropic volume region (an anisotropic `Material`, or a
             `MaterialField` with ``axes``) split along its principal axes, by
@@ -1088,8 +1107,9 @@ class EigenmodeResult:
             `bulk_participation`. The region's contribution to ``1 / Q`` is
             ``sum_k p_k (tan_delta[k] + conductivity[k] / (eps0 eps_r[k] Re
             omega))`` for any field direction (with losses uniform over the
-            region). Isotropic regions have no entry. Not differentiable,
-            like `bulk_participation`.
+            region). Isotropic regions have no entry. Differentiable as the
+            ratios above, except with respect to a lumped value, which
+            raises: use `bulk_participation` there.
         sheet_participation: Inductive energy participation of each
             `Impedance` sheet with an inductance ``L_s``, by surface name,
             ``(n_modes,)``: ``∫ w |E_t|^2 dS / (2 Re(omega)^2 L_s E)``,
@@ -1100,14 +1120,16 @@ class EigenmodeResult:
             inductance fraction ``-2 d ln omega / d ln L_s``, in [0, 1]; only
             the current through L counts when the sheet also has R or C. A
             `Conductor` and a sheet without an inductance have no entry.
+            Differentiable as the ratios above, ``L_s`` included.
         e_fields: The mode fields, one `Field` per mode (read them with
             `e_field`): peak phasors in V/m, quantity ``"E"``, on H(curl)
             of the solve order over the solve domain, each with its mode's
             complex ``omega``. Each mode stores 1 J of electric energy,
             ``E = 1/2 Re(integral of D* . E dV)`` plus the lumped
-            capacitors' ``C |V|^2 / 2`` (the total time-averaged energy of
-            a lossless mode), and its phase makes ``integral of D . E dV``
-            real and positive.
+            capacitors' ``C |V|^2 / 2`` and the capacitive sheets'
+            ``1/2 integral of w C_s |E_t|^2 dS`` (the total time-averaged
+            energy of a lossless mode), and its phase makes ``integral of
+            D . E dV`` real and positive.
         materials: The model's materials the modes were solved with, by
             volume region (`Material` or `MaterialField`). Measurements
             that need the media around a surface read them
