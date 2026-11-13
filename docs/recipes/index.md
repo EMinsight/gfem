@@ -26,6 +26,7 @@ orphan: true
 - {doc}`save-and-export`
 - {doc}`mesh-refinement`
 - {doc}`anisotropic-materials`
+- {doc}`dispersive-materials`
 - {doc}`periodic-cell`
 - {doc}`shared-port-surface`
 - {doc}`measurements`

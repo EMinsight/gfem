@@ -57,6 +57,7 @@ recipes/prepare-a-mesh
 recipes/save-and-export
 recipes/mesh-refinement
 recipes/anisotropic-materials
+recipes/dispersive-materials
 recipes/periodic-cell
 recipes/shared-port-surface
 recipes/measurements
