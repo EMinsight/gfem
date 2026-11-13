@@ -18,8 +18,12 @@ block and ``i k0 Y_n (E_T, V_T)`` to the second
 edge adds its admittance to both, as the driven problem's face term
 (`gfem._engine.terms`): ``i k0 eta0 / Z_s(omega)`` for a conductor, ``i k0
 eta0 / R``, ``mu0 scale / L`` and ``-k0^2 C / (eps0 scale)`` for an
-impedance. Both matrices are affine: each is a sum of fixed matrices times
-1, -k0^2, i k0 or a conductor's own scalar, assembled once.
+impedance. A region whose eps_r is a permittivity law holds eps_inf in
+``eps_tt`` and ``eps_nn`` and adds its susceptibility as one more piece,
+``-k0^2 chi(omega) ((e_t, v_t) + (e_n, v_n))`` on its triangles, and an
+absorbing edge beside it ``i k0 sqrt(Re eps(omega) / Re mu)`` on both blocks
+(ADR 0114). Both matrices are affine: each is a sum of fixed matrices times
+1, -k0^2, i k0, a conductor's own scalar or a law's, assembled once.
 Coordinates are in the mesh file's unit, so ``k0`` is per local unit.
 """
 
@@ -37,6 +41,7 @@ import scipy.sparse as sp
 
 from gfem._boundaries import Conductor
 from gfem._engine import quadrature
+from gfem._engine.dispersion import susceptibility
 from gfem._engine.terms import surface_impedance
 from gfem._linalg.base import free_mask
 from gfem._port_section import PortSection
@@ -55,7 +60,8 @@ class Pencil:
     Attributes:
         a: Matrices multiplying 1, -k0^2, i k0, then each of ``extra``.
         b: Likewise for ``B``.
-        extra: The further scalars of k0 (one per conductor edge group).
+        extra: The further scalars of k0 (one per conductor edge group, then
+            one per law and one per law with absorbing edges).
     """
 
     a: tuple[sp.csr_matrix, ...]
@@ -125,7 +131,7 @@ class PortModeSpace:
         sigma_scale = Z0 * self.section.scale
         wt = et + ngs.grad(en)
         wv = vt + ngs.grad(vn)
-        has_abc = len(self.section.absorbing_edges) > 0
+        has_abc = len(_admittance_groups(self.section)) > 0
         abc_t = c["Y_tau"] * et.Trace() * vt.Trace() * ds_abc if has_abc else None
         abc_n = c["Y_n"] * en.Trace() * vn.Trace() * ds_abc if has_abc else None
         forms_a = [
@@ -154,6 +160,20 @@ class PortModeSpace:
             for slot, weight in self._impedance_weights(item):
                 forms_a[slot].append(weight * edge_t)
                 forms_b[slot].append(weight * edge_n)
+        index = self.section.law_index
+        absorbing_law = self.section.absorbing_law
+        for g, (_, law) in enumerate(self.section.laws):
+            inside = _p0(self.mesh, (np.asarray(index) == g).astype(float))
+            forms_a.append([inside * et * vt * dx])
+            forms_b.append([inside * en * vn * dx])
+            extra.append(self._law_theta(law))
+            if absorbing_law is not None and (absorbing_law == g).any():
+                ds = ngs.ds(
+                    f"law{g}", intrules={ngs.SEGM: ngs.IntegrationRule(ngs.SEGM, q)}
+                )
+                forms_a.append([et.Trace() * vt.Trace() * ds])
+                forms_b.append([en.Trace() * vn.Trace() * ds])
+                extra.append(self._law_edge_theta(law, g))
         a = tuple(self._matrix(f) for f in forms_a)
         b = tuple(self._matrix(f) for f in forms_b)
         return Pencil(a=a, b=b, extra=tuple(extra))
@@ -169,6 +189,30 @@ class PortModeSpace:
         def theta(k0: float) -> complex:
             omega = k0 * scipy.constants.c / scale
             return 1j * k0 * Z0 / surface_impedance(sigma, h, omega)
+
+        return theta
+
+    def _omega(self, k0: float) -> float:
+        """The angular frequency (rad/s) of a wavenumber per local unit."""
+        return k0 * scipy.constants.c / self.section.scale
+
+    def _law_theta(self, law) -> Callable[[float], complex]:
+        """``-k0^2 chi(omega)`` of a law's susceptibility piece."""
+
+        def theta(k0: float) -> complex:
+            return -(k0**2) * susceptibility(law, self._omega(k0))
+
+        return theta
+
+    def _law_edge_theta(self, law, g: int) -> Callable[[float], complex]:
+        """``i k0 sqrt(Re eps(omega) / Re mu)`` of a law's absorbing edges."""
+        rows = np.asarray(self.section.law_index) == g
+        mu = 1 / float(self.section.nu_nn[rows][0].real)
+        eps_inf = float(law.eps_inf)
+
+        def theta(k0: float) -> complex:
+            eps = eps_inf + susceptibility(law, self._omega(k0)).real
+            return 1j * k0 * np.sqrt(eps / mu)
 
         return theta
 
@@ -385,6 +429,17 @@ def _build_mesh(section: PortSection) -> ngs.Mesh:
                     [int(edge[0]) + 1, int(edge[1]) + 1], index=first + g + 1
                 )
             )
+    first += len(section.impedance_terms)
+    for g in range(len(section.laws)):
+        m.SetBCName(first + g, f"law{g}")
+        if section.absorbing_law is None:
+            continue
+        for edge in section.absorbing_edges[section.absorbing_law == g]:
+            m.Add(
+                ngm.Element1D(  # ty: ignore[unresolved-attribute]
+                    [int(edge[0]) + 1, int(edge[1]) + 1], index=first + g + 1
+                )
+            )
     return ngs.Mesh(m)
 
 
@@ -412,12 +467,19 @@ def _edge_fill(mesh: ngs.Mesh, section: PortSection) -> ngs.CoefficientFunction:
 def _admittance_groups(
     section: PortSection,
 ) -> list[tuple[tuple[float, float], np.ndarray]]:
-    """The absorbing edges grouped by their ``(Y_tau, Y_n)``."""
+    """The absorbing edges grouped by their ``(Y_tau, Y_n)``.
+
+    Not those beside a law triangle: each law's own edge piece holds them.
+    """
+    keep = np.ones(len(section.absorbing_edges), bool)
+    if section.absorbing_law is not None:
+        keep = section.absorbing_law < 0
     values, inverse = np.unique(
-        section.absorbing_admittance.reshape(-1, 2), axis=0, return_inverse=True
+        section.absorbing_admittance[keep].reshape(-1, 2), axis=0, return_inverse=True
     )
+    edges = section.absorbing_edges[keep]
     return [
-        ((float(v[0]), float(v[1])), section.absorbing_edges[inverse.ravel() == g])
+        ((float(v[0]), float(v[1])), edges[inverse.ravel() == g])
         for g, v in enumerate(values)
     ]
 

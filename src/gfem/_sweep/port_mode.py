@@ -368,6 +368,9 @@ def port_mode_sweep(
         PortModeError: A mode is below cutoff somewhere in the band, or is
             degenerate, or two candidates cannot be told apart, or two modes
             follow the same candidate.
+        ValueError: A frequency lies on a lossless pole of a law in the
+            cross-section, or a law region there has Re eps <= 0 (a metal;
+            ADR 0114), checked before any exact solve.
 
     Warns:
         PortModeTrackingWarning: A tracked mode stops being its ``mode``-th
@@ -375,6 +378,7 @@ def port_mode_sweep(
     """
     f_given = np.asarray(frequency, float)
     section = space.section
+    section.check_frequencies(f_given)
     rules = [
         None
         if p.voltage_path is None
@@ -1094,12 +1098,16 @@ def _overlaps(mass, x_ref: np.ndarray, vecs: np.ndarray) -> np.ndarray:
 def _wavenumbers(section: PortSection, frequency: float) -> tuple[float, float, float]:
     """``k0``, the largest propagating wavenumber and the shift, per local unit.
 
+    The section's laws are read at ``frequency`` (ADR 0114).
+
     The largest wavenumber is the largest bulk one, times `_SLOW_WAVE` when
     `Conductor` or `Impedance` edges can slow the mode down.
     """
     k0_si = 2 * math.pi * frequency / scipy.constants.c
     k0 = k0_si * section.scale
-    n2_shift, n2_max = section.index_squared(section.max_conductivity * _Z0 / k0_si)
+    n2_shift, n2_max = section.index_squared(
+        section.max_conductivity * _Z0 / k0_si, frequency
+    )
     k_max = math.sqrt(n2_max) * k0
     if len(section.impedance_terms):
         k_max *= _SLOW_WAVE

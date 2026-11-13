@@ -177,6 +177,7 @@ PROBLEMS = {
     "eigenmode_lumped": Problem("eigenmode", "omega"),
     "electrostatic_lumped": Problem("electrostatic", "capacitance"),
     "port_mode_lumped": Problem("port_mode", "gamma"),
+    "port_mode_law": Problem("port_mode", "gamma"),
     # a permittivity law beside a material field (ADR 0112)
     "driven_law": Problem("driven", "s.values", "lumped"),
     "driven_law_absorbing": Problem("driven", "s.values", "lumped"),
@@ -423,11 +424,11 @@ def _input_column(kind) -> str | None:
 
 def _off_grid_input(kind: tuple) -> str | None:
     """The `OFF_GRID` input of an EXPECTED input kind, or None."""
+    # a law's ("law", region, "eps_inf") or ("law", region, term, parameter)
+    if kind[0] == "law" and len(kind) in (3, 4):
+        return "law"
     if len(kind) == 3 and kind[2] in LUMPED_VALUES.get(kind[0], ()):
         return "lumped"
-    # ("law", region, "eps_inf") and ("law", region, term index, parameter)
-    if kind[0] == "law":
-        return "law"
     if len(kind) == 3 and kind[0] == "material" and kind[2] in OFF_GRID:
         return kind[2]
     return None

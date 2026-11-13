@@ -524,6 +524,38 @@ EXPECTED |= {
 }
 
 
+# A permittivity law in a wave port's cross-section (ADR 0114): the port mode
+# problem is not differentiable, so every law parameter raises, with the node
+# coordinates. One term of each kind, each with Re eps > 0 at 10 GHz.
+PORT_MODE_LAW = gfem.PermittivityLaw(
+    eps_inf=2.0,
+    terms=[
+        gfem.Drude(plasma_frequency=5e9, damping=1e9),
+        gfem.Lorentz(delta_eps=1.0, resonance_frequency=50e9, damping=1e9),
+        gfem.Debye(delta_eps=0.5, relaxation_frequency=20e9),
+        gfem.DjordjevicSarkar(delta_eps=0.3, low_frequency=1e3, high_frequency=1e12),
+    ],
+)
+PORT_MODE_LAW_KINDS = [
+    ("law", "fill", "eps_inf"),
+    ("law", "fill", 0, "plasma_frequency"),
+    ("law", "fill", 0, "damping"),
+    ("law", "fill", 1, "delta_eps"),
+    ("law", "fill", 1, "resonance_frequency"),
+    ("law", "fill", 1, "damping"),
+    ("law", "fill", 2, "delta_eps"),
+    ("law", "fill", 2, "relaxation_frequency"),
+    ("law", "fill", 3, "delta_eps"),
+    ("law", "fill", 3, "low_frequency"),
+    ("law", "fill", 3, "high_frequency"),
+]
+EXPECTED |= {
+    ("port_mode_law", out, kind): RAISES
+    for out in PORT_MODE_OUTPUTS
+    for kind in [("nodes",), *PORT_MODE_LAW_KINDS]
+}
+
+
 def _field(mesh, region, **overrides):
     # values vary per element, so the terminal potentials depend on them
     n = len(mesh.elements(region))
@@ -815,6 +847,10 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
     return {
         "electrostatic": (model, PROBLEMS["electrostatic"]),
         "port_mode": (port_model, gfem.PortMode("p1", 10e9)),
+        "port_mode_law": (
+            port_model.with_material("fill", gfem.Material(eps_r=PORT_MODE_LAW)),
+            gfem.PortMode("p1", 10e9),
+        ),
         "driven": (driven_model, gfem.Driven(frequency=5e9, keep_fields=True)),
         "driven_adaptive": (driven_model, ADAPTIVE),
         **wave_cases,
