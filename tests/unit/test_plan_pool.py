@@ -357,7 +357,8 @@ def frequency_bases(monkeypatch):
     """Sweeps of fake bases on the plan pool; the bases each sweep prepared."""
     threads = [3]
     monkeypatch.setattr(system_operator.ngs, "GetNumThreads", lambda: threads[0])
-    cache.ENTRIES.clear()
+    # earlier tests' discretizations keep state the pool's budget counts
+    gfem.release_memory()
     prepared = []
 
     def prepare(operator):  # noqa: ARG001
