@@ -238,11 +238,12 @@ EXPECTED |= {
 # Eigenmode: the eigenvalues (omega, also as each mode field's omega)
 # differentiate with respect to every electromagnetic property, the node
 # coordinates and the lumped values. The ratios of the mode fields (port Q,
-# participations, region and principal shares) and the normalized mode
-# fields' coefficients differentiate with respect to the electromagnetic
-# properties and sheet fills (ADR 0102); with respect to the node coordinates
-# and the lumped values they raise in this version (the normalized fields by
-# the nodes in every version), as does the backward error. The
+# participations, region and principal shares) differentiate with respect to
+# the electromagnetic properties, sheet fills and node coordinates (ADR
+# 0102), and the normalized mode fields' coefficients with respect to the
+# electromagnetic properties and sheet fills (never the node coordinates);
+# with respect to the lumped values they raise in this version, as does the
+# backward error. The
 # cluster labels are integers: exact zeros. The mode fields' mesh is the
 # input mesh passed through (identity in the nodes, constant otherwise). A
 # periodic model's mode-field outputs raise whatever the input.
@@ -262,7 +263,10 @@ def _eigen_outcome(out, kind, *, periodic=False):
         if out == "cluster":
             return ZERO
         dependent = (*_EIGEN_DEPENDENT, "e_fields.0.mesh.nodes")
-        return GRADIENT if out in dependent else RAISES
+        # the normalized field has no node gradient (ADR 0102)
+        ratio = out.startswith(_EIGEN_RATIOS) and not periodic
+        field = out == "e_fields.0.coefficients"
+        return GRADIENT if out in dependent or (ratio and not field) else RAISES
     if (kind[0] == "material" and kind[2] not in EM_PROPERTIES) or (
         out in _EIGEN_CONSTANT
     ):
@@ -1003,6 +1007,17 @@ def _out_eigenmode_port_nodes_moved(request):
     jax.grad(objective)(1e-6)
 
 
+def _out_eigenmode_field_port_nodes_moved(request):
+    # the ratios' node gradient holds the port surfaces too: a moved port node
+    # raises on the host, as for omega
+    model = request.getfixturevalue("eigen_model")
+    problem = gfem.Eigenmode(target=17e9)
+    objective = _moved_port_objective(
+        model, lambda m: gfem.solve(m, problem).q_port["p1"][0]
+    )
+    jax.grad(objective)(1e-6)
+
+
 def _out_greedy_adaptive_sweep(request):
     # the sample set must be frozen (Driven(samples=...)) under a transform
     model = request.getfixturevalue("driven_model")
@@ -1254,20 +1269,6 @@ def _out_eigenmode_field_cuda(request):
 
 def _out_eigenmode_field_tolerance(request):
     _trace_eigen_q_port(request, eigen_tolerance=1e-8)
-
-
-def _out_eigenmode_field_nodes(request):
-    # the ratios by the node coordinates: not in this version yet
-    model = request.getfixturevalue("eigen_model")
-    problem = gfem.Eigenmode(target=17e9)
-
-    def objective(nodes):
-        mesh = jax.tree_util.tree_unflatten(
-            jax.tree_util.tree_structure(model.mesh), [nodes]
-        )
-        return jnp.sum(gfem.solve(model.replace(mesh=mesh), problem).q_port["p1"])
-
-    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
 def _out_eigenmode_mode_field_nodes(request):
@@ -1560,10 +1561,10 @@ OUT_OF_SCOPE = [
         "Bloch wave vector",
     ),
     (
-        "eigenmode participation x node coordinates",
-        _out_eigenmode_field_nodes,
-        gfem.NonDifferentiableError,
-        r"'q_port' with respect to the mesh node coordinates",
+        "eigenmode mode-field output x nodes of a port surface",
+        _out_eigenmode_field_port_nodes_moved,
+        HOST,
+        r"PortGeometryError.*port1",
     ),
     (
         "eigenmode mode field x node coordinates",

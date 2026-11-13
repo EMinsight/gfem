@@ -37,7 +37,7 @@ GRID = {
     "driven_periodic_bloch": (V, V, V, V),
     "eigenmode_periodic_plain": (V, V, V, V),
     "eigenmode_periodic_bloch": (V, V, V, V),
-    "eigenmode_participation": (V, V, V, R),
+    "eigenmode_participation": (V, V, V, V),
     "eigenmode_field": (V, V, V, R),
 }
 FRONT = ("driven", "eigenmode", "electrostatic", "port_mode")
@@ -182,7 +182,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 35
+    assert len(rows) == 36
     assert "electrostatic x sheet fill" not in rows
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
     assert rows["material axes (orientation)"] == {

@@ -32,13 +32,15 @@ pairs, so a cluster cut by the request is detected when its next member is
 among them (best-effort: no Arnoldi attempt is added for it).
 
 The ratios of the mode fields (``q_port``, ``participation``, the region
-and principal shares) and the normalized mode fields themselves (through
-the normalization multipliers of `gfem._eigen.ratios`; never by the node
-coordinates) differentiate for isolated modes (ADR 0102) with
-respect to materials and sheet fills, on one CPU process with the
-``direct`` linear solver: per mode with a cotangent, one deflated GMRES
-solve of the singular adjoint system ``T(k) lam0 = -w``, ``t^T lam0 = 0``
-on the live factors the forward kept (`gfem._eigen.adjoint`, ADR 0104), the
+and principal shares) differentiate for isolated modes (ADR 0102) with
+respect to materials, sheet fills and node coordinates (port surfaces
+held), and the normalized mode fields themselves (through the
+normalization multipliers of `gfem._eigen.ratios`) with respect to
+materials and sheet fills, never the node coordinates; on one CPU process
+with the ``direct`` linear solver: per mode with a cotangent, one deflated
+GMRES solve of the singular adjoint system ``T(k) lam0 = -w``, ``t^T lam0
+= 0`` on the live factors the forward kept (`gfem._eigen.adjoint`, ADR
+0104), the
 load ``(w, kappa, explicit terms)`` of `gfem._eigen.ratios`, and the pairs
 ``(2 lam, x)`` and ``(conj(x), x)`` on the mode energy's ``Re(eps_r)``
 terms (ADR 0103). What does not differentiate is refused by name: at trace
@@ -957,9 +959,9 @@ class EigenmodeRule:
         normalized fields ``e_fields``) differentiate on one CPU process with
         ``linear_solver="direct"``, ``eigen_tolerance`` at most 1e-10,
         without periodic pairs or a Bloch wave vector or a capacitive
-        `Impedance`, with respect to materials and sheet fills; the
-        normalized fields never with respect to the node coordinates. The
-        backward error never differentiates. Checked at trace time; what
+        `Impedance`, with respect to materials, sheet fills and node
+        coordinates (port surfaces held); the normalized fields never with
+        respect to the node coordinates.
         depends on the modes (a cluster, a near pair, a port without
         voltage) raises in the backward.
         """
@@ -1053,11 +1055,6 @@ class EigenmodeRule:
                 "differentiates with respect to materials and sheet fills. For "
                 "a shape derivative take finite differences of the measurement "
                 "over meshes moved by gfem.shape.boundary_morph"
-            )
-        if ("nodes",) in kinds:
-            return (
-                "with respect to the mesh node coordinates in this version; it "
-                "differentiates with respect to materials and sheet fills"
             )
         lumped = sorted(k for k in kinds if is_lumped(k))
         if lumped:
@@ -1354,11 +1351,15 @@ class EigenmodeRule:
 
         The explicit energy terms of the mode-field outputs follow
         (`Ratios.terms`, ADR 0103): ``Re(eps_r)`` per region and per
-        principal axis, which only their energy pairs weight.
+        principal axis, which only their energy pairs weight. They are
+        ``"value"`` terms on the element-wise ``Re(eps_r)`` masked to their
+        part, so the node pass transports them as it does the mass piece; the
+        port voltages read only the held port surfaces, so a node gradient
+        of the ratios needs no other term.
 
         Raises:
             PortGeometryError: ``nodes`` and a node of a port surface has
-                moved.
+                moved (with an ``omega`` or a mode-field cotangent alike).
         """
         op = self.driven(model)
         ratios = Ratios(

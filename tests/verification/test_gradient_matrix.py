@@ -291,20 +291,28 @@ def _participation_cells() -> list[Cell]:
     a capacitive junction, with fields of principal values; the shorted
     guide's second-order absorbing wall; the glued line's resistive
     `gfem.Impedance` sheet; the mirrored cavity's pair split to a relative
-    gap of 2.5e-4 (above the isolation threshold 1e-4).
+    gap of 2.5e-4 (above the isolation threshold 1e-4). The node cells move
+    fixture J's interface (`_participation_nodes`), with the static values
+    of each variant (the lossy one's loss tangent among them).
     """
     key = "eigenmode_participation"
     return [
         Cell(key, "eps_r", "direct", variant="inductive"),
+        Cell(key, "nodes", "direct", variant="inductive"),
         Cell(key, "eps_r", "direct", variant="resistive"),
+        Cell(key, "nodes", "direct", variant="resistive"),
         Cell(key, "eps_r", "direct", variant="lossy"),
         Cell(key, "conductivity", "direct", variant="lossy"),
+        Cell(key, "nodes", "direct", variant="lossy"),
         Cell(key, "eps_r", "direct", variant="conductor"),
+        Cell(key, "nodes", "direct", variant="conductor"),
         Cell(key, "eps_r", "direct", variant="absorbing2"),
         Cell(key, "eps_r", "direct", variant="capacitive_port"),
+        Cell(key, "nodes", "direct", variant="capacitive_port"),
         Cell(key, "fill", "direct", variant="resistive_sheet"),
         Cell(key, "eps_r", "direct", variant="near_pair"),
         Cell(key, "eps_r_axes", "direct", variant="principal"),
+        Cell(key, "nodes", "direct", variant="principal"),
     ]
 
 
@@ -1136,6 +1144,31 @@ def _field(d: Designs, cell: Cell, options, seed: int) -> Case:
     )
 
 
+def _participation_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Mode 0's ratios of fixture J as its interface "sub__cover" moves.
+
+    The morph holds the ports' surfaces (both junction and resistive port
+    sit on the line's ends), so the node gradient is exact along it.
+    """
+    variant = cell.variant
+    model = junction_line(d.junction, variant)
+    morph = boundary_morph(model, "sub__cover", grows="sub")
+    problem = gfem.Eigenmode(target=JUNCTION_TARGET)
+
+    def objective(t):
+        moved = model.replace(mesh=morph(t))
+        return _ratios(gfem.solve(moved, problem, options=options), variant)
+
+    return Case(
+        objective,
+        jnp.zeros(morph.n_params),
+        np.random.default_rng(seed),
+        step=STEPS["nodes"],
+        taylor=4e-5,
+        taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+
+
 # --- driven on a periodic model (the gradient cell G) ------------------------------
 
 #: The adaptive grid and samples of the periodic cells.
@@ -1363,6 +1396,7 @@ BUILDERS = {
         for name in ("eps_r", "conductivity", "eps_r_axes", "fill")
     },
     **{("eigenmode_field", name): _field for name in ("eps_r", "conductivity", "fill")},
+    ("eigenmode_participation", "nodes"): _participation_nodes,
 }
 
 
@@ -1413,6 +1447,7 @@ FAMILIES = [
     # the mode-field adjoint: ratios (cell 1), a probed field (cell 26)
     Cell("eigenmode_participation", "eps_r", "direct", variant="inductive"),
     Cell("eigenmode_field", "eps_r", "direct", variant="probe"),
+    Cell("eigenmode_participation", "nodes", "direct", variant="inductive"),
     Cell("driven_periodic_bloch", "eps_r", "direct", "uniform"),
     Cell("eigenmode_periodic_bloch", "eps_r", "direct"),
 ]
