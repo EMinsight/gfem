@@ -308,11 +308,30 @@ def _participation_cells() -> list[Cell]:
     ]
 
 
+def _field_cells() -> list[Cell]:
+    """The normalized mode field (``eigenmode_field``), on ``direct``.
+
+    By fixture variant (`_field`): the interface participation of fixture
+    J's layer interface (lossless) and of the sheet cavity's walls (a
+    `gfem.Conductor` film, in its fill); a probed field component times a
+    phase, so the phase rule's multiplier is nonzero, on fixture J with a
+    resistive port and on the terminated resonator (in its conductivity).
+    """
+    key = "eigenmode_field"
+    return [
+        Cell(key, "eps_r", "direct", variant="interface"),
+        Cell(key, "eps_r", "direct", variant="probe"),
+        Cell(key, "conductivity", "direct", variant="probe"),
+        Cell(key, "fill", "direct", variant="interface"),
+    ]
+
+
 CELLS = [
     *_cells(),
     *_driven_periodic_cells(),
     *_eigen_periodic_cells(),
     *_participation_cells(),
+    *_field_cells(),
 ]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
@@ -1022,6 +1041,101 @@ def _participation(d: Designs, cell: Cell, options, seed: int) -> Case:
     )
 
 
+# --- eigenmode normalized field: probes and interface participation ----------------
+
+#: The probed point of the field cells, m: inside the lower layer of fixture
+#: J and of the resonator (both 10 x 2 x 1 mm), off every element face.
+FIELD_POINT = np.array([3.37, 0.93, 0.41]) * 1e-3
+#: The probe objective's phase multiplier: ``Re(exp(0.7i) E_z)`` reads the
+#: imaginary part of a lossy mode's field, so the phase rule's ``mu2`` is
+#: nonzero; and its scale (``|E|`` is about 1e9 V/m at 1 J).
+FIELD_PHASE, FIELD_SCALE = np.exp(0.7j), 1e-9
+#: The interface layers: J's sub / cover interface (``"default"``), and an
+#: oxide on the cavity's metal walls (``"MA"``): thickness (m) and eps_r.
+FIELD_LAYER = (3e-9, 10.0)
+
+
+def _probe(result) -> jax.Array:
+    """Mode 0's probed z component, times the phase, scaled."""
+    e = result.e_fields[0].at(FIELD_POINT)
+    return FIELD_SCALE * jnp.real(FIELD_PHASE * e[2])
+
+
+def _field(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """A measurement of mode 0's normalized field in one input (`_field_cells`)."""
+    thickness, eps_layer = FIELD_LAYER
+    if cell.input == "fill":
+        mesh = d.sheet_cavity
+        fill, rng = cavity_fill(mesh, seed=1 + seed)
+
+        def objective(p):
+            result = gfem.solve(
+                cavity_model(mesh, p),
+                gfem.Eigenmode(target=CAVITY_TARGET),
+                options=options,
+            )
+            return (
+                1e3
+                * gfem.interface_participation(
+                    result, "pec", thickness, eps_layer, kind="MA"
+                ).participation[0]
+            )
+
+        return Case(
+            objective,
+            fill,
+            rng,
+            step=5e-2,
+            taylor=1e-1,
+            mask=lambda directions: on_the_sheet(directions, fill),
+        )
+    if cell.input == "conductivity":
+        mesh = d.resonator
+        eps = ramp(mesh, "dielectric", 3.5, 4.5)
+        sigma = ramp(mesh, "dielectric", 0.2, 0.6)
+
+        def objective(p):
+            problem = gfem.Eigenmode(target=RESONATOR_TARGET)
+            return _probe(
+                gfem.solve(terminated(mesh, eps, p), problem, options=options)
+            )
+
+        return Case(
+            objective,
+            sigma,
+            np.random.default_rng(seed),
+            step=STEPS["conductivity"],
+            taylor=3e-1,
+        )
+    mesh = d.junction
+    fixture = "resistive" if cell.variant == "probe" else "inductive"
+    values = junction_values(mesh, fixture)
+
+    def objective(p):
+        moved = {r: dict(v) for r, v in values.items()}
+        moved["sub"]["eps_r"] = p
+        model = junction_line(mesh, fixture, moved)
+        result = gfem.solve(
+            model, gfem.Eigenmode(target=JUNCTION_TARGET), options=options
+        )
+        if cell.variant == "probe":
+            return _probe(result)
+        return (
+            1e3
+            * gfem.interface_participation(
+                result, "sub__cover", thickness, eps_layer
+            ).participation[0]
+        )
+
+    return Case(
+        objective,
+        values["sub"]["eps_r"],
+        np.random.default_rng(seed),
+        step=STEPS["eps_r"],
+        taylor=1e-1,
+    )
+
+
 # --- driven on a periodic model (the gradient cell G) ------------------------------
 
 #: The adaptive grid and samples of the periodic cells.
@@ -1248,6 +1362,7 @@ BUILDERS = {
         ("eigenmode_participation", name): _participation
         for name in ("eps_r", "conductivity", "eps_r_axes", "fill")
     },
+    **{("eigenmode_field", name): _field for name in ("eps_r", "conductivity", "fill")},
 }
 
 
@@ -1295,6 +1410,9 @@ FAMILIES = [
     Cell("eigenmode", "conductivity", "direct"),
     Cell("eigenmode", "fill", "direct"),
     Cell("eigenmode", "nodes", "direct"),
+    # the mode-field adjoint: ratios (cell 1), a probed field (cell 26)
+    Cell("eigenmode_participation", "eps_r", "direct", variant="inductive"),
+    Cell("eigenmode_field", "eps_r", "direct", variant="probe"),
     Cell("driven_periodic_bloch", "eps_r", "direct", "uniform"),
     Cell("eigenmode_periodic_bloch", "eps_r", "direct"),
 ]
@@ -1305,6 +1423,8 @@ FAMILIES = [
 #: solves' gradients differ by up to ~1e-7 (the value by 1e-15).
 RTOL = {
     "eigenmode": 1e-6,
+    "eigenmode_participation": 1e-6,
+    "eigenmode_field": 1e-6,
     "eigenmode_periodic_plain": 1e-6,
     "eigenmode_periodic_bloch": 1e-6,
 }

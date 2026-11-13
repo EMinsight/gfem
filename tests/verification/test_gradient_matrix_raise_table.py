@@ -238,10 +238,11 @@ EXPECTED |= {
 # Eigenmode: the eigenvalues (omega, also as each mode field's omega)
 # differentiate with respect to every electromagnetic property, the node
 # coordinates and the lumped values. The ratios of the mode fields (port Q,
-# participations, region and principal shares) differentiate with respect to
-# the electromagnetic properties and sheet fills (ADR 0102); with respect to
-# the node coordinates and the lumped values they raise in this version, as
-# do the normalized mode fields themselves and the backward error. The
+# participations, region and principal shares) and the normalized mode
+# fields' coefficients differentiate with respect to the electromagnetic
+# properties and sheet fills (ADR 0102); with respect to the node coordinates
+# and the lumped values they raise in this version (the normalized fields by
+# the nodes in every version), as does the backward error. The
 # cluster labels are integers: exact zeros. The mode fields' mesh is the
 # input mesh passed through (identity in the nodes, constant otherwise). A
 # periodic model's mode-field outputs raise whatever the input.
@@ -252,6 +253,7 @@ _EIGEN_RATIOS = (
     "participation.",
     "bulk_participation.",
     "principal_participation.",
+    "e_fields.0.coefficients",
 )
 
 
@@ -1268,6 +1270,22 @@ def _out_eigenmode_field_nodes(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
+def _out_eigenmode_mode_field_nodes(request):
+    # the normalized field (so Field.at, interface_participation) by the node
+    # coordinates: never in reach (finite differences over morphed meshes)
+    model = request.getfixturevalue("eigen_model")
+    problem = gfem.Eigenmode(target=17e9)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        field = gfem.solve(model.replace(mesh=mesh), problem).e_fields[0]
+        return jnp.sum(jnp.abs(field.coefficients) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
 def _bragg_bulk(request, problem):
     model = request.getfixturevalue("bragg_cell")
     n = len(model.mesh.elements("low"))
@@ -1546,6 +1564,12 @@ OUT_OF_SCOPE = [
         _out_eigenmode_field_nodes,
         gfem.NonDifferentiableError,
         r"'q_port' with respect to the mesh node coordinates",
+    ),
+    (
+        "eigenmode mode field x node coordinates",
+        _out_eigenmode_mode_field_nodes,
+        gfem.NonDifferentiableError,
+        r"'e_fields.*' with respect to the mesh node coordinates.*finite differences",
     ),
     (
         "eigenmode mode-field output x member of a cluster",
