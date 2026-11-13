@@ -44,6 +44,7 @@ from gfem._engine.domain import (
 from gfem._engine.driven import DrivenOperator, real_space
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver
 from gfem._linalg.base import free_mask, host_bytes
+from gfem._materials import PermittivityLaw
 from gfem._periodic import bloch_phases
 from gfem.model import Model
 
@@ -53,10 +54,12 @@ __all__ = [
     "eigen_operator",
     "element_energy",
     "energy_parts",
+    "law_scale",
     "matvec",
     "principal_energy",
     "projector",
     "real_eps",
+    "scale_per_tetrahedron",
 ]
 
 #: Relative weight of the mass term that makes the H1 form definite.
@@ -205,13 +208,40 @@ def real_eps(model: Model) -> np.ndarray:
 
     A permittivity law region reads its eps_inf
     (`gfem._engine.dispersion.high_frequency_eps`, ADR 0109, ADR 0115): the
-    divergence-free projection's inner product. The mode energy reads the
-    same until it takes the energy permittivity at each mode. A model without
-    a law reads ``element_tensors`` as before (bit-identical).
+    divergence-free projection's inner product and the phase rule's form.
+    The energies integrate it too, and `law_scale` turns a law region's
+    eps_inf into the weight at a frequency. A model without a law reads
+    ``element_tensors`` as before (bit-identical).
     """
     if not dispersion.law_regions(model):
         return np.real(element_tensors(model, "eps_r"))
     return np.real(dispersion.high_frequency_eps(model))
+
+
+def law_scale(
+    model: Model, omega: float, weight: Callable[[PermittivityLaw, float], float]
+) -> dict[str, float]:
+    """``weight(law, omega) / eps_inf`` by law region: the energies' factor there.
+
+    `real_eps` holds eps_inf on a law region, and an energy integrates it
+    times ``|x|^2`` per element: the factor turns that into ``weight`` times
+    ``|x|^2`` (`gfem._engine.dispersion.energy_eps` for the mode energy,
+    `gfem._engine.dispersion.brillouin_eps` for `gfem.electric_energy`,
+    ADR 0109). Empty without a law.
+    """
+    return {
+        lr.region: weight(lr.law, omega) / float(lr.law.eps_inf)
+        for lr in dispersion.law_regions(model)
+    }
+
+
+def scale_per_tetrahedron(model: Model, factors: dict[str, float]) -> np.ndarray:
+    """`law_scale`'s ``factors`` per tetrahedron (gfem order), 1 elsewhere."""
+    mesh = model.mesh
+    out = np.ones(len(mesh.tetrahedra))
+    for region, factor in factors.items():
+        out[mesh.elements(region)] = factor
+    return out
 
 
 def projector(
@@ -277,6 +307,8 @@ def element_energy(
     gives the integral over each tetrahedron in the engine mesh's element
     order (`gfem._engine.mesh.EngineMesh.tetrahedron_order` maps it to the
     mesh's), in the mesh's file units, at quadrature order ``2 order``.
+    ``Re(eps_r)`` is `real_eps`'s: eps_inf on a law region, which the
+    caller scales to its weight at a frequency (`law_scale`).
     """
     built = op.built
     eps = coefficient(built, real_eps(model))
@@ -300,7 +332,9 @@ class EnergyPart:
 
     ``C`` is ``Re(eps_r)`` on the part's tetrahedra (a region's, or one
     principal axis's ``Re(eps_k) a_k a_k^T`` of an anisotropic region's),
-    zero elsewhere, as `element_energy` and `principal_energy` integrate it.
+    zero elsewhere, as `element_energy` and `principal_energy` integrate it:
+    eps_inf on a law region (`real_eps`), the phase rule's form there, which
+    the mode energy scales by `law_scale` per mode.
 
     Attributes:
         values: ``C`` per tetrahedron (gfem order), ``(n,)`` or ``(n, 3, 3)``.

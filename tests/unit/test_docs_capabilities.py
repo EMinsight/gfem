@@ -125,7 +125,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("eigenmode", ["permittivity-law parameters"], 4),
         ("electrostatic", ["permittivity-law parameters"], 1),
         ("driven_periodic_plain", ["permittivity-law parameters"], 1),
-        ("eigenmode_participation", ["lumped values"], 5),
+        ("eigenmode_participation", ["lumped values"], 6),
         ("eigenmode_field", ["lumped values"], 1),
     ]
     assert [e["text"] for e in derived["also"]] == [

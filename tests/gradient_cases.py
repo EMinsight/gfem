@@ -36,6 +36,8 @@ pytest ``tmp_path_factory.mktemp`` directory).
   normalizes a law's parameters for the law cells.
 - `dispersive_resonator`: the layered resonator whose cover holds a law
   (`EIGEN_LAWS`), for the eigenmode law cells.
+- `junction_law_line`: fixture J whose cover holds a lossy Lorentz law
+  (`JUNCTION_LAW`), for the mode-field cells beside a law.
 """
 
 import math
@@ -932,3 +934,36 @@ EIGEN_LAWS = {
 def dispersive_resonator(resonator: gfem.Model, law) -> gfem.Model:
     """The layered resonator (`layered_resonator`) with ``law`` on its cover."""
     return resonator.with_material("cover", gfem.Material(eps_r=law))
+
+
+#: Fixture J's cover as a lossy Lorentz medium (cells P1-P4): its pole at
+#: 6 GHz above J's 3.2 GHz mode, eps 4.0 - 0.06i and an energy permittivity
+#: of 4.7 there (eps_inf alone would weigh it 2.0).
+JUNCTION_LAW = gfem.PermittivityLaw(
+    eps_inf=2.0,
+    terms=[gfem.Lorentz(delta_eps=1.5, resonance_frequency=6 * GHZ, damping=0.3 * GHZ)],
+)
+
+
+def junction_law_line(
+    mesh: gfem.Mesh, sub=None, inductance: float = JUNCTION_L
+) -> gfem.Model:
+    """Fixture J with a resistive port "r" and `JUNCTION_LAW` on its cover.
+
+    ``sub``: the sub layer's per-element eps_r (`junction_values`' ramp by
+    default); ``inductance``: the junction's (H).
+    """
+    if sub is None:
+        sub = junction_values(mesh)["sub"]["eps_r"]
+    return gfem.Model(
+        mesh,
+        materials={
+            "sub": gfem.MaterialField(eps_r=sub),
+            "cover": gfem.Material(eps_r=JUNCTION_LAW),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("jj", "port1", "+z", inductance=inductance),
+            gfem.LumpedPort("r", "port2", "+z", impedance=JUNCTION_R),
+        ],
+    )

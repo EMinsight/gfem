@@ -62,12 +62,16 @@ __all__ = [
     "blend_mass",
     "blend_parts",
     "blend_regions",
+    "brillouin_eps",
     "check_band",
+    "check_energy",
     "check_estimator_frequencies",
     "check_frequencies",
     "check_static",
+    "d_energy_eps",
     "d_eps",
     "d_susceptibility",
+    "energy_eps",
     "eps_at",
     "has_loss",
     "high_frequency_eps",
@@ -495,6 +499,79 @@ def d_susceptibility(law: PermittivityLaw, omega: complex) -> complex:
         return complex(math.inf, math.nan)
 
 
+def _second(term: object, f: complex) -> complex:
+    """``d^2 chi / d f^2`` of one term at ``f`` (Hz)."""
+    if isinstance(term, Drude):
+        fp, g = float(term.plasma_frequency), float(term.damping)
+        den, slope = f * (f - 1j * g), 2 * f - 1j * g
+        return fp**2 * (2 * den - 2 * slope**2) / den**3
+    if isinstance(term, Lorentz):
+        d, f0, g = (
+            float(term.delta_eps),
+            float(term.resonance_frequency),
+            float(term.damping),
+        )
+        den, slope = f0**2 - f * f + 1j * g * f, -2 * f + 1j * g
+        return d * f0**2 * (2 * den + 2 * slope**2) / den**3
+    if isinstance(term, Debye):
+        d, fr = float(term.delta_eps), float(term.relaxation_frequency)
+        den, slope = 1 + 1j * f / fr, 1j / fr
+        return 2 * d * slope**2 / den**3
+    if isinstance(term, DjordjevicSarkar):
+        d, f1, f2 = (
+            float(term.delta_eps),
+            float(term.low_frequency),
+            float(term.high_frequency),
+        )
+        scale = d / math.log(f2 / f1)
+        return scale * (1 / (f2 + 1j * f) ** 2 - 1 / (f1 + 1j * f) ** 2)
+    raise TypeError(f"Unknown dispersion term {term!r}.")  # pragma: no cover
+
+
+def _derivatives(
+    law: PermittivityLaw, omega: float
+) -> tuple[complex, complex, complex]:
+    """``(eps, omega eps', omega^2 eps'')`` of ``law`` at real ``omega`` (rad/s)."""
+    f = omega / _TWO_PI
+    with np.errstate(all="ignore"):
+        try:
+            pairs = [_term(t, f) for t in law.terms]
+            second = sum(_second(t, f) for t in law.terms)
+        except ZeroDivisionError:
+            nan = complex(math.nan, math.nan)
+            return nan, nan, nan
+    eps = complex(law.eps_inf) + sum(chi for chi, _ in pairs)
+    # omega d/d omega = f d/d f
+    return eps, f * sum(d for _, d in pairs), f * f * second
+
+
+def energy_eps(law: PermittivityLaw, omega: float) -> float:
+    """The energy permittivity Re[eps + (omega / 2) eps'] at ``omega`` (rad/s).
+
+    The weight of ``|E|^2`` in a mode's total energy (ADR 0109): half the
+    Brillouin electric weight plus Re eps. eps_inf for a lossless Drude law.
+    Non-finite on a lossless pole.
+    """
+    eps, slope, _ = _derivatives(law, omega)
+    return float((eps + 0.5 * slope).real)
+
+
+def d_energy_eps(law: PermittivityLaw, omega: float) -> float:
+    """``d eps_W / d omega = Re[(3/2) eps' + (omega / 2) eps'']`` per rad/s."""
+    _, slope, curve = _derivatives(law, omega)
+    return float((1.5 * slope + 0.5 * curve).real) / omega
+
+
+def brillouin_eps(law: PermittivityLaw, omega: float) -> float:
+    """The Brillouin electric weight Re d(omega eps)/d omega at ``omega`` (rad/s).
+
+    ``gfem.electric_energy`` reads ``1/4 eps0 Re d(omega eps)/d omega |E|^2``
+    (ADR 0109); Re eps_r for a constant material.
+    """
+    eps, slope, _ = _derivatives(law, omega)
+    return float((eps + slope).real)
+
+
 # --- checks before assembly --------------------------------------------------------
 
 
@@ -737,6 +814,57 @@ def check_band(model: Model, frequency: float, what: str) -> None:
                 "elements. The modes there crowd at the resonance, and which of "
                 "them the mesh holds depends on the mesh. Move Eigenmode.target "
                 "away from the resonance, or refine the mesh in the region."
+            )
+
+
+#: The remedy of a weight that is not positive (ADR 0109).
+_LOSS_DOMINATES = (
+    "the energy is undefined where loss dominates the law (a metal below "
+    "its damping frequency, a Lorentz pole inside its linewidth): model a "
+    "metal as gfem.Conductor or gfem.PEC"
+)
+
+
+def check_energy(
+    model: Model,
+    frequency: float,
+    what: str,
+    *,
+    brillouin: bool = False,
+    regions: Iterable[str] | None = None,
+) -> None:
+    """Raise where a law region's energy weight at ``frequency`` (Hz) is <= 0.
+
+    The mode energy reads the energy permittivity `energy_eps`; with
+    ``brillouin``, `gfem.electric_energy` reads `brillouin_eps` (ADR 0109).
+    ``what`` names the frequency in the message (a mode, or a field);
+    ``regions`` limits the check to those regions.
+
+    Raises:
+        ValueError: The weight is not positive (or not finite) in a law
+            region.
+    """
+    omega = _TWO_PI * frequency
+    weight, name = (
+        (brillouin_eps, "Re d(omega eps)/d omega")
+        if brillouin
+        else (energy_eps, "the energy permittivity Re[eps + (omega/2) eps']")
+    )
+    keep = None if regions is None else set(regions)
+    for lr in law_regions(model):
+        if keep is not None and lr.region not in keep:
+            continue
+        value = weight(lr.law, omega)
+        if not value > 0:
+            remedy = (
+                "or move Eigenmode.target."
+                if not brillouin
+                else "or solve at another frequency."
+            )
+            raise ValueError(
+                f"The {what} {hertz(frequency)} has {name} = {value:.3g} <= 0 in "
+                f"region {lr.region!r}, near {nearest_term(lr.law, frequency)}: "
+                f"{_LOSS_DOMINATES}, {remedy}"
             )
 
 

@@ -97,6 +97,7 @@ from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
 from gfem._engine import dispersion, terms
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import anisotropic_regions
+from gfem._engine.dispersion import energy_eps
 from gfem._engine.domain import em_region
 from gfem._engine.driven import (
     LOW_FREQUENCY_FLOOR,
@@ -110,8 +111,10 @@ from gfem._engine.eigen import (
     DivFreeProjector,
     eigen_operator,
     element_energy,
+    law_scale,
     principal_energy,
     projector,
+    scale_per_tetrahedron,
 )
 from gfem._engine.fields import fe_space
 from gfem._engine.runtime import task_manager
@@ -428,6 +431,8 @@ class EigenmodeRule:
                 for j, mode in enumerate(modes):
                     f = mode.k.real * per_hz
                     dispersion.check_band(model, f, f"mode {j} at")
+                    # the mode energy's weight (ADR 0109)
+                    dispersion.check_energy(model, f, f"mode {j} at")
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
                 lowest = min(k.real for k in ks) * const.c / built.scale
@@ -1018,6 +1023,7 @@ class EigenmodeRule:
             per_tet[built.tetrahedron_order] = (
                 0.5 * const.epsilon_0 * scale * np.real(density(x))
             )
+            per_tet *= self._law_factor(model, mode.k, scale)
             volts = {name: complex(v @ x) for name, v in voltage.items()}
             capacitors = sum(
                 0.5 * data.port.rlc[2] * abs(volts[name]) ** 2
@@ -1060,6 +1066,18 @@ class EigenmodeRule:
             "e_field": op.expand(solve),
         }
         return outputs, solve
+
+    def _law_factor(self, model: Model, k: complex, scale: float) -> np.ndarray | float:
+        """The mode energy's factor per tetrahedron at the mode ``k`` (ADR 0109).
+
+        eps_W / eps_inf on a law region (its energy permittivity at ``Re
+        omega`` over the eps_inf that `element_energy` integrates), 1
+        elsewhere; the number 1 without a law (bit-identical).
+        """
+        if not self._laws:
+            return 1.0
+        omega = k.real * const.c / scale
+        return scale_per_tetrahedron(model, law_scale(model, omega, energy_eps))
 
     def _sheet_shares(
         self, op: DrivenOperator, solve: np.ndarray, omega: np.ndarray
