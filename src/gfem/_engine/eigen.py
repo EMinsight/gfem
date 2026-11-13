@@ -80,6 +80,9 @@ def eigen_operator(
     space, scale = op.space, op.built.scale
     classes = split(op.pieces, scale, sigma)
     powers = classes.powers
+    # the constant θ of polynomial law pieces (lossless Drude), out of the
+    # curl energy of the longitudinal-mode test (ADR 0115)
+    constant = [(c, p) for c, p in powers[0] if p.law is not None]
     free = free_mask(space.FreeDofs(), space.ndof)
     symmetry, matrix_free = op.symmetry, op.symmetric
 
@@ -132,6 +135,11 @@ def eigen_operator(
             for piece in classes.nonpolynomial
         ),
         symmetry=symmetry,
+        law_constant=(
+            _linear_map(assemble(space, constant, symmetric=op.symmetric))
+            if constant
+            else None
+        ),
     )
 
 

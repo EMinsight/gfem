@@ -153,6 +153,12 @@ _INNER_FLOOR = 1e-13
 #: second-order absorbing wall's cluster lies near Re k = 2 sigma: this test
 #: keeps it, and only the distance to the target ranks the modes ahead of it.
 _STATIC = 1e-6
+#: A converged pair of a law model whose curl energy is at most this fraction
+#: of its electric energy (`EigenOperator.curl_ratio`) is a gradient field at
+#: a zero of eps(omega), a longitudinal mode: dropped like a static pair
+#: (ADR 0115 amendment; round-off reaches it only below k h_max ~ 3e-6,
+#: transverse modes measured 0.55 and up).
+_LONGITUDINAL = 1e-4
 #: A refined mode closer than this many eigen tolerances (relative, and at
 #: least ``SolverOptions.cluster_rtol``) to accepted modes, with this much of
 #: its norm in their span, is one of them again.
@@ -362,6 +368,9 @@ class EigenmodeRule:
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
         #: The last backward's explicit terms in the lumped ports' values.
         self._explicit: dict[tuple, float] = {}
+        #: Whether a region holds a permittivity law: only then can a
+        #: converged pair be a longitudinal mode (`_longitudinal`).
+        self._laws = bool(dispersion.law_regions(model))
 
     # --- forward -----------------------------------------------------------------
 
@@ -694,7 +703,8 @@ class EigenmodeRule:
         Seeds (and refined pairs) with ``Re k`` near zero or negative are the
         curl-curl null space, a lossy medium's relaxation modes, mirror
         roots or a conductor's linearization cluster, not resonances: they
-        are dropped.
+        are dropped, and so is a converged longitudinal mode of a law model
+        (`_longitudinal`).
         A second-order absorbing wall's cluster has ``Re k`` near ``2
         sigma``, so it is not dropped; the modes nearer the target come
         first. A seed far from the current shift whose refinement gives
@@ -755,6 +765,7 @@ class EigenmodeRule:
             if (
                 twin.converged
                 and twin.k.real > _STATIC * sigma
+                and not self._longitudinal(op, twin)
                 and not _in_span(twin, accepted, window)
             ):
                 return twin
@@ -776,13 +787,18 @@ class EigenmodeRule:
                 reshift_first=far,
             )
             retry = far and not full
-            if retry and _lost(mode, seed, k, sigma, accepted=accepted, window=window):
+            lost = _lost(mode, seed, k, sigma, accepted=accepted, window=window)
+            if retry and (lost or self._longitudinal(op, mode)):
                 # a frozen seed rougher than TRUSTED, refined on a shift nearer
                 # another mode, wanders where round-off takes it (onto an
                 # accepted mode, a mirror root, or another seed's mode): refine
                 # it again on a factorization at its own Ritz value. Where it
                 # wandered may be a mode no other seed gives: it is kept
-                if mode.converged and mode.k.real > _STATIC * sigma:
+                if (
+                    mode.converged
+                    and mode.k.real > _STATIC * sigma
+                    and not self._longitudinal(op, mode)
+                ):
                     kept = distinct(mode)
                     if kept is not None:
                         accepted.append(kept)
@@ -790,7 +806,7 @@ class EigenmodeRule:
                 mode = refine(
                     op, seed, vectors[:, j], tolerance=tolerance, max_iterations=steps
                 )
-            if mode.k.real <= _STATIC * sigma:
+            if mode.k.real <= _STATIC * sigma or self._longitudinal(op, mode):
                 continue
             if not mode.converged:
                 if not full:
@@ -817,6 +833,18 @@ class EigenmodeRule:
             np.array(pool, dtype=complex),
             np.array(ritz, dtype=complex),
         )
+
+    def _longitudinal(self, op: EigenOperator, mode: Refined) -> bool:
+        """Whether ``mode`` is a converged longitudinal mode of a law model.
+
+        A gradient field at a zero of a law's eps(omega): its curl energy
+        is at most `_LONGITUDINAL` of its electric energy
+        (`EigenOperator.curl_ratio`, ADR 0115). One ``K`` apply; never on a
+        model without a law, where eps has no zero.
+        """
+        if not self._laws or not mode.converged:
+            return False
+        return op.curl_ratio(mode.k, mode.x) <= _LONGITUDINAL
 
     def _window(self) -> float:
         """Relative distance in ``k`` within which two refined pairs can be one mode."""

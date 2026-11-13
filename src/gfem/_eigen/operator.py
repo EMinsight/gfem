@@ -206,6 +206,9 @@ class EigenOperator:
         nonpolynomial: The nonpolynomial terms ``θ_p(k) A_p``.
         symmetry: ``"complex_symmetric"``, or ``"general"`` under a Bloch
             wave vector (the driven operator's).
+        law_constant: The part of ``K`` from polynomial permittivity law
+            pieces (a lossless Drude law's constant θ = k_p², ADR 0115), or
+            ``None``: `curl_ratio` leaves it out of the curl energy.
         shifts: How many times `reshift` refactorized.
     """
 
@@ -218,6 +221,7 @@ class EigenOperator:
     scale: float
     nonpolynomial: tuple[NonPolynomial, ...] = ()
     symmetry: EigenSymmetry = "complex_symmetric"
+    law_constant: LinearMap | None = None
     shifts: int = 0
     _norms: tuple[float, ...] | None = None
     _handle: Handle | None = None
@@ -346,6 +350,21 @@ class EigenOperator:
         for t in self.nonpolynomial:
             out = out + t.derivative(k) * self._matvec(t.matrix, x)
         return out
+
+    def curl_ratio(self, k: complex, x: np.ndarray) -> float:
+        """``|x^H K_c x| / (|k|^2 |x^H M x|)``: curl energy over electric energy.
+
+        ``K_c`` is ``K`` without `law_constant` (the curl-curl and the
+        lumped inductances). A gradient field has none: at a zero of a
+        law's eps(omega) it is an eigenvector of ``T`` (a longitudinal
+        mode), with a ratio at round-off (1e-15 / (k h)^2); a transverse
+        mode's is of order one (0.55 to 15 measured, ADR 0115).
+        """
+        kx, _, mx = self.parts(x)
+        if self.law_constant is not None:
+            kx = kx - self._matvec(self.law_constant, x)
+        electric = abs(k) ** 2 * abs(np.vdot(x, mx))
+        return float(abs(np.vdot(x, kx)) / electric) if electric > 0 else math.inf
 
     # --- the frozen seed -----------------------------------------------------------
 

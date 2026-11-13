@@ -318,3 +318,85 @@ def test_a_returned_mode_in_the_band_raises(coarse, seed_solves):
             options=gfem.SolverOptions(order=1),
         )
     assert seed_solves[0] >= 1
+
+
+# --- longitudinal modes (ADR 0115 amendment) -----------------------------------------
+
+
+def _gradient_pair(model, f_b, options):
+    """The rule, its eigen operator at f_B and a gradient field (complex).
+
+    ``x - P x`` for a random ``x``: the gradient part the divergence-free
+    projection removes, an exact eigenvector at the plasma zero f_B of a
+    lossless Drude fill, where T(k_B) grad phi = (k_p^2 - k_B^2 eps_inf) A
+    grad phi = 0.
+    """
+    from gfem._engine.driven import driven_operator
+    from gfem._engine.eigen import projector
+
+    rule = eigen_rule.EigenmodeRule(model, gfem.Eigenmode(target=f_b), options)
+    op = driven_operator(model, options.order)
+    sigma = terms.wavenumber(2 * math.pi * f_b, op.built.scale)
+    eop = rule.operator(op, sigma)
+    eop.factorize()
+    divfree = projector(model, op)
+    rng = np.random.default_rng(0)
+    y = np.where(eop.free, rng.standard_normal(len(eop.free)), 0).astype(complex)
+    x = y - divfree(y)
+    divfree.free()
+    return rule, eop, sigma, x / np.linalg.norm(x)
+
+
+@pytest.mark.parametrize("kh", [1.0, 1e-3])
+def test_a_gradient_pair_at_a_plasma_zero_is_dropped(coarse, kh):
+    # k_B h_max = kh: f_B = kh c / (2 pi h_max), h_max 2.52 mm
+    options = gfem.SolverOptions(order=1, eigen_tolerance=1e-10)
+    f_b = kh * 299792458.0 / (2 * math.pi * 2.5166e-3)
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0, terms=[gfem.Drude(plasma_frequency=math.sqrt(2) * f_b, damping=0)]
+    )
+    rule, eop, sigma, gradient = _gradient_pair(filled(coarse, law), f_b, options)
+    assert (
+        np.linalg.norm(eop.apply(sigma, gradient))
+        < 1e-8 * np.linalg.norm(eop.parts(gradient)[2]) * abs(sigma) ** 2
+    )
+    assert eop.curl_ratio(sigma, gradient) < 1e-4
+    modes, *_ = rule._select(eop, np.array([sigma + 0j]), gradient[:, None], sigma)
+    assert modes == []
+    # the box's lowest transverse field at the same k is far above the threshold
+    vacuum = gfem.solve(
+        filled(coarse, 1.0), gfem.Eigenmode(target=24 * GHZ, n_modes=1), options=options
+    )
+    transverse = np.asarray(vacuum.e_fields[0].coefficients)
+    assert eop.curl_ratio(sigma, transverse) > 0.5
+    eop.free_handle()
+
+
+def test_a_drude_core_next_to_its_plasma_zero_returns_transverse_modes(
+    tmp_path_factory, operators
+):
+    # ticket 04's case: host eps 4, a 2 mm Drude core with f_B = 19.799 GHz,
+    # the target 1e-6 above it; hundreds of gradient eigenvalues sit at f_B
+    path = tmp_path_factory.mktemp("core") / "box.msh"
+    sm.write_msh22(path, sm.plate(A, B, (("host", 3.0), ("core", 2.0)), (6, 5, 3)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0, terms=[gfem.Drude(plasma_frequency=28 * GHZ, damping=0)]
+    )
+    model = gfem.Model(
+        mesh,
+        materials={"host": gfem.Material(eps_r=4.0), "core": gfem.Material(eps_r=law)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), gfem.PEC("side")],
+    )
+    f_b = 28 * GHZ / math.sqrt(2.0)
+    result = gfem.solve(
+        model,
+        gfem.Eigenmode(target=f_b * (1 + 1e-6), n_modes=4),
+        options=gfem.SolverOptions(order=2),
+    )
+    eop = operators[-1]
+    for mode, field in zip(result.omega, result.e_fields, strict=True):
+        f = float(np.real(mode)) / (2 * math.pi)
+        assert abs(f - f_b) > 1e-3 * f_b
+        k = complex(mode) * eop.scale / 299792458.0
+        assert eop.curl_ratio(k, np.asarray(field.coefficients)) > 0.5
