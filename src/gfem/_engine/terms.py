@@ -90,6 +90,7 @@ from gfem._engine.coefficients import (
 from gfem._engine.domain import boundary_region
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.sensitivity import Derivative
+from gfem._materials import Drude
 from gfem._morph import unit_normals
 from gfem._sheet import check_fill
 from gfem.conventions import EXTERIOR_THICKNESS_FACTOR
@@ -113,6 +114,7 @@ __all__ = [
     "law_faces",
     "lumped_ports",
     "pieces",
+    "polynomial_law",
     "port_vectors",
     "sheet_fill",
     "surface_impedance",
@@ -471,6 +473,19 @@ def _inverse(values: np.ndarray) -> np.ndarray:
     return 1.0 / values if values.ndim == 1 else np.linalg.inv(values)
 
 
+def polynomial_law(law: Any) -> bool:
+    """Whether every term of ``law`` is a lossless Drude term (ADR 0115).
+
+    Its susceptibility piece's θ = -k0² chi = k_p² is then a constant: the
+    piece is declared polynomial, so the eigenmode problem puts it in ``K``
+    (and a lossless model keeps its real snap). Any damping, or any other
+    term, keeps the piece nonpolynomial.
+    """
+    return all(
+        isinstance(term, Drude) and float(term.damping) == 0 for term in law.terms
+    )
+
+
 def susceptibility_pieces(
     model: Model,
     built: EngineMesh,
@@ -483,7 +498,8 @@ def susceptibility_pieces(
     θ = -k0² chi(ω), chi = eps(ω) - eps_inf summed over the law's terms,
     with an analytic dθ/dω; the coefficient is the region's element
     indicator (its eps_inf is in the mass). The piece is probed at
-    `_LAW_PROBE`. ``elements`` restricts the form as in `pieces`.
+    `_LAW_PROBE`. ``elements`` restricts the form as in `pieces`. A law of
+    lossless Drude terms only gives a polynomial piece (`polynomial_law`).
     """
     scale = built.scale
     tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
@@ -522,7 +538,9 @@ def susceptibility_pieces(
                 kind="value",
                 coefficient=cf,
                 values=values,
-                frequency_class="nonpolynomial",
+                frequency_class=(
+                    "polynomial" if polynomial_law(law) else "nonpolynomial"
+                ),
                 d_theta=d_theta,
                 probe=_LAW_PROBE,
                 law=(lr.region, by_parameter),

@@ -27,7 +27,7 @@ import scipy.sparse as sp
 from gfem import _linalg
 from gfem._eigen.operator import EigenOperator, LinearMap, NonPolynomial, split
 from gfem._eigen.seed import MIN_SUBSPACE
-from gfem._engine import quadrature, terms
+from gfem._engine import dispersion, quadrature, terms
 from gfem._engine.cache import discretization
 from gfem._engine.coefficients import (
     coefficient,
@@ -56,6 +56,7 @@ __all__ = [
     "matvec",
     "principal_energy",
     "projector",
+    "real_eps",
 ]
 
 #: Relative weight of the mass term that makes the H1 form definite.
@@ -191,6 +192,20 @@ def _linear_map(matrix) -> LinearMap:
     return _Map(matrix)
 
 
+def real_eps(model: Model) -> np.ndarray:
+    """``Re(eps_r)`` per tetrahedron, ``(n,)`` or ``(n, 3, 3)``: the projector's weight.
+
+    A permittivity law region reads its eps_inf
+    (`gfem._engine.dispersion.high_frequency_eps`, ADR 0109, ADR 0115): the
+    divergence-free projection's inner product. The mode energy reads the
+    same until it takes the energy permittivity at each mode. A model without
+    a law reads ``element_tensors`` as before (bit-identical).
+    """
+    if not dispersion.law_regions(model):
+        return np.real(element_tensors(model, "eps_r"))
+    return np.real(dispersion.high_frequency_eps(model))
+
+
 def projector(
     model: Model,
     op: DrivenOperator,
@@ -239,7 +254,7 @@ def projector(
             )
         else:
             hcurl = op.space
-    eps = coefficient(built, np.real(element_tensors(model, "eps_r")))
+    eps = coefficient(built, real_eps(model))
     nodes = np.asarray(model.mesh.nodes) / built.scale
     diameter = float(np.linalg.norm(np.ptp(nodes, axis=0)))
     return DivFreeProjector(hcurl, h1, eps, order, diameter)
@@ -256,7 +271,7 @@ def element_energy(
     mesh's), in the mesh's file units, at quadrature order ``2 order``.
     """
     built = op.built
-    eps = coefficient(built, np.real(element_tensors(model, "eps_r")))
+    eps = coefficient(built, real_eps(model))
     gf = ngs.GridFunction(op.space)
 
     def density(x: np.ndarray) -> np.ndarray:
@@ -329,7 +344,7 @@ def energy_parts(
     (`gfem._engine.sensitivity.energy_term`, ADR 0103).
     """
     mesh = model.mesh
-    eps = np.real(element_tensors(model, "eps_r"))
+    eps = real_eps(model)
 
     def members(region: str) -> np.ndarray:
         inside = np.zeros(len(mesh.tetrahedra), dtype=bool)
