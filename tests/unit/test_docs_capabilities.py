@@ -171,6 +171,14 @@ def test_periodic_rows_carry_their_own_solvers_and_sweeps(derived):
     }
 
 
+def test_the_mode_field_rows_link_the_recipe_of_their_outputs(derived):
+    # participations and port Q are eigenmode outputs; the field is read by
+    # the measurements (probes and interface participation)
+    rows = {r["key"]: r for r in derived["rows"]}
+    assert rows["eigenmode_participation"]["recipe"] == "recipes/eigenmode-gradient"
+    assert rows["eigenmode_field"]["recipe"] == "recipes/measurements"
+
+
 def test_only_the_four_problem_types_are_front_page_rows(derived):
     front = [r["key"] for r in derived["rows"] if r["front"]]
     assert front == list(FRONT)

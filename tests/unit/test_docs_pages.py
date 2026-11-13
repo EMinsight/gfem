@@ -179,6 +179,13 @@ USER_TERMS = (
     "Loss tangent",
     "Element order",
     "Adjoint solve",
+    "Participation ratio",
+    "Sheet participation",
+    "Dressed mode",
+    "Dispersive shift",
+    "Anharmonicity",
+    "Lamb shift",
+    "Loss budget",
 )
 
 

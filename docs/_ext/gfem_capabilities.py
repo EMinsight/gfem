@@ -140,7 +140,7 @@ ROWS = {
     "eigenmode_field": Row(
         "Eigenmode, mode field",
         "the normalized field at points and interface participation",
-        recipe="recipes/eigenmode-gradient",
+        recipe="recipes/measurements",
         front=False,
     ),
 }

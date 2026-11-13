@@ -32,6 +32,18 @@ permittivity tensor), so one surface serves both. A side counts as vacuum
 only if no wave in it is slower than in vacuum, so an anisotropic substrate is
 never taken for vacuum. The thin layer itself is isotropic.
 
+On a film with the same medium on both faces, such as an airbridge or a
+suspended film, `"MA"` and `"MS"` count one layer on each face and add the
+two. On a surface that is not a film but has the same medium on both sides,
+they would count the layer twice: use `"default"` or `"SA"` there. Those two take the mean of the
+fields on the two sides, so they are not for a film.
+
+At the edge of a zero-thickness film the field is singular, and the
+participation of a layer that reaches the edge grows as the mesh is refined
+there. Compare designs on meshes with the same edge cell size; the
+{doc}`loss-budget` recipe gives the rule for an absolute value and adds the
+layers to the mode's other losses.
+
 ## Probes
 
 `field.at(points)` evaluates any result field at points in metres: kept
@@ -208,11 +220,13 @@ grad = jax.grad(field_at_probe)(eps)
 - Mesh-node coordinates and probe points are fixed: differentiating with
   respect to them raises `gfem.NonDifferentiableError`. Wrap them in
   `jax.lax.stop_gradient` to hold them fixed.
-- Mode fields are not differentiable in this version, so a gradient of an
-  interface participation that reaches the eigenmode solve raises there.
-  The layer's thickness, permittivity and loss tangent differentiate: take
-  the gradient with respect to those, or build the objective from the
-  eigenmode's `frequency` and `q`.
+- Mode fields differentiate with respect to the materials, the sheet fill
+  and the lumped values, for an isolated mode: probes and interface
+  participation of an eigenmode result are objectives too. With respect to
+  the node coordinates they raise `gfem.NonDifferentiableError`; take finite
+  differences over moved meshes instead. The conditions are in
+  {doc}`eigenmode-gradient`.
+- The layer's thickness, permittivity and loss tangent differentiate.
 
 ## Check your results
 
@@ -228,5 +242,5 @@ How gfem itself is checked: {doc}`../verification`.
 
 {py:obj}`gfem.interface_participation`, {py:obj}`gfem.characteristic_impedance`,
 {py:obj}`gfem.power_flow`, {py:obj}`gfem.electric_energy`, {py:obj}`gfem.Field`, {doc}`shared-port-surface`,
-{doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`.
+{doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`, {doc}`loss-budget`.
 

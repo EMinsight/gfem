@@ -267,6 +267,10 @@ installed.
 - SLEPc's polynomial and nonlinear eigensolvers are not used: damped and
   nonlinear eigenmode problems go through the same shift-invert iteration as
   with ARPACK.
+- An eigenmode solve with `linear_solver="petsc"` differentiates its
+  eigenfrequencies only. A gradient through a mode's field (participations,
+  port Q, the field itself) raises `gfem.NonDifferentiableError`: use
+  `linear_solver="direct"` for those ({doc}`eigenmode-gradient`).
 - Your own petsc4py code in the same process: gfem starts PETSc without
   command-line options (or uses the PETSc you started), keeps its options to
   itself, and serializes only its own PETSc calls. Do not call PETSc from
