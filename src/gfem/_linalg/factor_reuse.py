@@ -21,6 +21,10 @@ doubles the wait before the next one, so a model where reuse never pays
 probes only a few times in a run. Only at the frequency the factors
 were made at, and only while they are held. It reads no clock: the handle
 reports.
+
+A refactorized step names its `AmortizedRule.reason`: the first condition
+of `next_step` that failed, or ``capped`` for a reused step a capped
+column turned into a refactorized one (ADR 0120).
 """
 
 from __future__ import annotations
@@ -38,6 +42,16 @@ FIRST_ITERATIONS = 10.0
 #: Refactorized steps with the gate closed by ``I1`` before one reused step
 #: measures it again: early designs move fastest, and the iterations settle.
 REPROBE_STEPS = 5
+
+#: The reasons a step refactorizes, in the order `AmortizedRule.next_step`
+#: checks them; then a capped column's.
+FIRST = "first"
+RELEASED = "factors released (retain_memory)"
+OTHER_FREQUENCY = "other frequency"
+BELOW_FLOOR = "below floor"
+GATE = "gate"
+CHAIN = "chain"
+CAPPED = "capped"
 
 
 class AmortizedRule:
@@ -72,6 +86,10 @@ class AmortizedRule:
         self._closed_steps = 0
         self._wait = REPROBE_STEPS
         self._probing = False
+        #: Why the last step refactorized, ``None`` while it reuses.
+        self.reason: str | None = FIRST
+        # why the chain ended: a new plan, or factors released
+        self._ended = FIRST
 
     @property
     def reusing(self) -> bool:
@@ -96,6 +114,11 @@ class AmortizedRule:
         ratio = self._ratio()
         return 1 if ratio is None else math.ceil(ratio) + 1
 
+    @property
+    def ratio(self) -> float | None:
+        """``R / C``, or ``None`` before both were measured."""
+        return self._ratio()
+
     def _ratio(self) -> float | None:
         """``R / C``, or ``None`` before both were measured."""
         if not self.t22 or not self.t33 or not self.columns:
@@ -109,18 +132,28 @@ class AmortizedRule:
 
         ``frequency`` is the next step's (``None``: not told), ``held``
         whether the factors are still held, ``pays`` the gate, read once the
-        step is closed. A step that reuses is in progress after this.
+        step is closed. A step that reuses is in progress after this; one
+        that does not names the first failing condition in `reason`.
         """
         self._close()
-        reuse = (
-            self._start is not None
-            and held
-            and frequency is not None
-            and self._frequency is not None
-            and math.isclose(frequency, self._frequency, rel_tol=1e-12, abs_tol=0.0)
-            and self._gate(pays)
-            and (not self._chain or self._chain[-1] < self._mean(self._start))
-        )
+        reason = None
+        if self._start is None:
+            reason = self._ended
+        elif not held:
+            reason = RELEASED
+        elif (
+            frequency is None
+            or self._frequency is None
+            or not math.isclose(frequency, self._frequency, rel_tol=1e-12, abs_tol=0.0)
+        ):
+            reason = OTHER_FREQUENCY
+        elif not self._gate(pays):
+            floor = self.t22 is None or self.t22 < REUSE_MIN_REFACTOR_SECONDS
+            reason = BELOW_FLOOR if floor else GATE
+        elif self._chain and self._chain[-1] >= self._mean(self._start):
+            reason = CHAIN
+        reuse = reason is None
+        self.reason = reason
         self._reused = reuse
         self._step = (0, 0, 0.0)
         self._open = reuse
@@ -158,6 +191,8 @@ class AmortizedRule:
         Also inside a reused step (a capped column): the step becomes a
         refactorized one, and its chain starts.
         """
+        if self._reused:
+            self.reason = CAPPED
         self.t22 = seconds
         self._frequency = frequency
         self._reused = False
@@ -177,8 +212,12 @@ class AmortizedRule:
         n, its, spent = self._step
         self._step = (n + columns, its + iterations, spent + seconds)
 
-    def end_chain(self) -> None:
-        """The factors went (released, or planned anew): the next step refactorizes."""
+    def end_chain(self, *, released: bool = False) -> None:
+        """The factors went (``released``, or planned anew).
+
+        The next step refactorizes, and names the cause (`reason`).
+        """
+        self._ended = RELEASED if released else FIRST
         self._close()
         self._start, self._chain = None, []
         self._frequency = None

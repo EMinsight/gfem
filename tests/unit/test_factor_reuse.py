@@ -235,6 +235,66 @@ def test_the_reused_stop_is_a_twentieth_of_the_tolerance():
     assert REUSED_TOLERANCE == 0.05
 
 
+def _reason(rule, **kwargs):
+    reused = _next(rule, **kwargs)
+    return None if reused else rule.reason
+
+
+def test_each_refactorized_step_reports_the_first_failing_condition():
+    # the order of next_step: chain started, held, frequency, gate, chain stop
+    rule = AmortizedRule()
+    assert _reason(rule, pays=lambda: True) == "first"
+    _refactorized_step(rule)
+    assert _reason(rule, held=False) == "factors released (retain_memory)"
+    rule = AmortizedRule()
+    _refactorized_step(rule, frequency=1.0)
+    assert _reason(rule, frequency=2.0, held=False) == (
+        "factors released (retain_memory)"
+    )
+    _refactorized_step(rule, frequency=1.0)
+    assert _reason(rule, frequency=2.0, pays=lambda: False) == "other frequency"
+    _refactorized_step(rule)
+    assert _reason(rule, frequency=None) == "other frequency"
+
+
+def test_a_closed_gate_reports_the_floor_before_the_ratio():
+    rule = AmortizedRule()
+    _refactorized_step(rule, t22=0.5 * REUSE_MIN_REFACTOR_SECONDS, t33=1e-5)
+    assert _reason(rule) == "below floor"
+    rule = AmortizedRule()
+    _refactorized_step(rule, t22=10.0, t33=0.25)  # R/C 6.7 < I1 = 10
+    assert _reason(rule) == "gate"
+    assert rule.ratio == pytest.approx(10.0 / 0.25 / 6)
+    assert rule.first_iterations == FIRST_ITERATIONS
+
+
+def test_a_chain_past_its_mean_reports_chain():
+    rule = AmortizedRule()
+    _refactorized_step(rule)  # 10.6 s
+    assert _reason(rule) is None
+    _reused_step(rule, seconds=10.6)
+    assert _reason(rule) == "chain"
+
+
+def test_a_release_or_a_new_plan_ending_the_chain_names_its_cause():
+    rule = AmortizedRule()
+    _refactorized_step(rule)
+    rule.end_chain(released=True)
+    assert _reason(rule, held=False) == "factors released (retain_memory)"
+    _refactorized_step(rule)
+    rule.end_chain()
+    assert _reason(rule) == "first"
+
+
+def test_a_capped_column_reports_capped():
+    rule = AmortizedRule()
+    _refactorized_step(rule)
+    assert _next(rule)
+    assert rule.reason is None
+    rule.refactorized(12.0, F)
+    assert rule.reason == "capped"
+
+
 # --- a PARDISO handle ----------------------------------------------------------------
 
 
@@ -460,6 +520,64 @@ def test_a_release_ends_the_chain(built):
     X, counts = handle.solve_counted(B)
     assert counts == ()
     np.testing.assert_allclose(X, _fresh(built, near, B), rtol=1e-12, atol=0)
+    handle.free()
+
+
+@needs_mkl
+@pytest.mark.usefixtures("forced", "uncapped")
+def test_a_handle_names_each_steps_action_reason_and_numbers(built):
+    def step(handle):
+        return handle.last_action, handle.last_reason
+
+    op, space = _helmholtz(built, 2.0 - 1j)
+    handle = DirectHandle.from_operator(op, "complex_symmetric")
+    assert step(handle) == ("factorized", "first")
+    handle.refactorize(_helmholtz(built, 1.0 - 1j)[0], frequency=F)
+    assert step(handle) == ("refactorized", "first")
+    B = _loads(space)
+    handle.solve(B)
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 1e-3)[0], frequency=F)
+    assert step(handle) == ("reused", None)
+    handle.solve(B)
+    # the same values again: no step, nothing changes
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 1e-3)[0], frequency=F)
+    assert step(handle) == ("reused", None)
+    handle.note_release(base_bytes=123, budget_bytes=45)
+    handle.release_factors()
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 2e-3)[0], frequency=F)
+    assert step(handle) == ("refactorized", "factors released (retain_memory)")
+    assert handle.last_details == {"base_bytes": 123, "budget_bytes": 45}
+    handle.solve(B)
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 3e-3)[0], frequency=2 * F)
+    assert step(handle) == ("refactorized", "other frequency")
+    assert handle.last_details == {}
+    handle.free()
+
+
+@needs_mkl
+def test_a_closed_gate_gives_its_ratio_and_first_iterations(built, monkeypatch):
+    monkeypatch.setattr(DirectHandle, "_reuse_pays", lambda _: False)
+    handle, _ = _chain(built)
+    handle._rule.t22 = 10 * REUSE_MIN_REFACTOR_SECONDS  # above the floor
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 1e-3)[0], frequency=F)
+    assert handle.last_reason == "gate"
+    assert set(handle.last_details) == {"ratio", "first_iterations"}
+    assert handle.last_details["first_iterations"] == FIRST_ITERATIONS
+    handle.free()
+
+
+@needs_mkl
+@pytest.mark.usefixtures("forced")
+def test_a_capped_column_names_its_step(built, monkeypatch):
+    monkeypatch.setattr(AmortizedRule, "cap", property(lambda _: 3))
+    handle, B = _chain(built)
+    handle.refactorize(_helmholtz(built, 30.0 + 5j)[0], frequency=F)
+    assert handle.last_action == "reused"
+    handle.solve(B)
+    assert (handle.last_action, handle.last_reason) == (
+        "reused, capped, refactorized",
+        "capped",
+    )
     handle.free()
 
 

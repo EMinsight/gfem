@@ -21,6 +21,12 @@ warm solve there from that count, and sets it up again when GMRES iterations
 grow past one setup's worth. A handle prepared without
 reuse sets BDDC up at each `BddcHandle.refactorize`.
 
+`BddcHandle.last_action` and `last_reason` say what the last step did and
+why (`gfem._linalg.report`, ADR 0120): ``factorized`` (set up: ``first``,
+``rebuild rule``, or ``cold solve`` for a solve without an initial guess on
+a reused preconditioner), ``reused``, or ``reused, capped, refactorized``
+(``capped``: a warm column set BDDC up inside the solve).
+
 Under ranks (an operator with a layout) BDDC's coarse problem is factored by MUMPS
 across ranks when the MPI PETSc stack is installed (`gfem._linalg.coarse`), otherwise
 on rank 0 by the same rule; GMRES runs on owned entries (`gfem._linalg.gmres`), and
@@ -234,6 +240,9 @@ class BddcHandle(NgsHandle):
         self.tolerance = tolerance
         self.maxiter = maxiter
         self._hold(form, preconditioner)
+        #: What the last step did, and why (see the module docstring).
+        self.last_action: str | None = "factorized"
+        self.last_reason: str | None = "first"
 
     def expect_solves(self, solves: int) -> None:
         """Restate the solve calls the next setups serve, as `refactorize` does.
@@ -376,13 +385,16 @@ class BddcHandle(NgsHandle):
             if solves is not None:
                 self._expected_columns = self._columns_per_setup(solves)
             if self._rebuild or not self.reuse or self._reference_iterations is None:
+                reason = "rebuild rule" if self.reuse and self._rebuild else "first"
                 self._build(form)
+                self.last_action, self.last_reason = "factorized", reason
                 return
             form.Assemble()
             self._form = form
             self._matrix = form.mat
             self._solver = self._krylov(form.mat, pre)
             self._reused = True
+            self.last_action, self.last_reason = "reused", None
 
     def _converged(
         self, solver, reference: float | None, tolerance: float | None = None
@@ -459,6 +471,7 @@ class BddcHandle(NgsHandle):
             if self._reused and (x0 is None or self.symmetry == "hermitian"):
                 # only a warm start pays for a reused preconditioner
                 self._build(form)
+                self.last_action, self.last_reason = "factorized", "cold solve"
             solver = self._solver
             prepared = self.tolerance
             # only a solve at the prepared tolerance measures n_ref
@@ -577,6 +590,8 @@ class BddcHandle(NgsHandle):
                     # set up at this matrix, and go on from the partial iterate
                     spent = int(solver.iterations)
                     self._build(form)
+                    self.last_action = "reused, capped, refactorized"
+                    self.last_reason = "capped"
                     matrix, pre, _ = self._held()
                     r.data = pre.mat * b
                     reference = layout.state_norm(r)

@@ -397,6 +397,11 @@ class _Walk:
     def __init__(self, tally: _Tally, budget: int, comm: Any) -> None:
         self._tally, self._budget, self._comm = tally, budget, comm
 
+    @property
+    def budget(self) -> int:
+        """The bytes the walk frees down to (the node's under ranks)."""
+        return self._budget
+
     def over(self) -> bool:
         """Whether the node's bytes exceed the budget (collective under ranks)."""
         return _mpi.node_bytes(self._comm, self._tally.total) > self._budget
@@ -431,6 +436,25 @@ class _Walk:
     def shared_elsewhere(self, shared: dict[int, int]) -> bool:
         """See `_Tally.shared_elsewhere`."""
         return self._tally.shared_elsewhere(shared)
+
+
+def _release_for_budget(handle: Any, walk: _Walk) -> Callable[[], None] | None:
+    """``handle.release_factors``, telling the handle the bytes and the budget.
+
+    For the next step's record (`gfem._linalg.report`); ``None`` for a handle
+    that cannot release its factors.
+    """
+    release = getattr(handle, "release_factors", None)
+    if release is None:
+        return None
+
+    def act() -> None:
+        note = getattr(handle, "note_release", None)
+        if note is not None:
+            note(base_bytes=int(handle.nbytes), budget_bytes=int(walk.budget))
+        release()
+
+    return act
 
 
 @dataclasses.dataclass(eq=False)
@@ -525,7 +549,7 @@ class EntryCache:
     def _walk_pool(self, walk: _Walk, discs: list[Discretization]) -> bool:
         """Tiers 1, 2 and 3 (one process); whether the cache fits after."""
         for pooled in self._plans.values():
-            release = getattr(pooled.handle, "release_factors", None)
+            release = _release_for_budget(pooled.handle, walk)
             if release is not None and not walk.step(pooled.handle, release):
                 return True
         for disc in discs:
@@ -565,7 +589,7 @@ class EntryCache:
                 continue
             for handle in pooled:
                 walk.enter(handle)
-                release = getattr(handle, "release_factors", None)
+                release = _release_for_budget(handle, walk)
                 if release is not None:
                     walk.step(handle, release)
             if self._free_plans(walk):
