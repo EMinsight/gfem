@@ -1090,6 +1090,16 @@ class EigenmodeResult:
             omega))`` for any field direction (with losses uniform over the
             region). Isotropic regions have no entry. Not differentiable,
             like `bulk_participation`.
+        sheet_participation: Inductive energy participation of each
+            `Impedance` sheet with an inductance ``L_s``, by surface name,
+            ``(n_modes,)``: ``∫ w |E_t|^2 dS / (2 Re(omega)^2 L_s E)``,
+            the energy of the current through ``L_s`` over the mode's
+            electric energy ``E``, with ``w`` the sheet's fill (1 without a
+            `SheetField`), one number for the whole patterned sheet. It is
+            non-negative and, for a lossless mode, the sheet's kinetic
+            inductance fraction ``-2 d ln omega / d ln L_s``, in [0, 1]; only
+            the current through L counts when the sheet also has R or C. A
+            `Conductor` and a sheet without an inductance have no entry.
         e_fields: The mode fields, one `Field` per mode (read them with
             `e_field`): peak phasors in V/m, quantity ``"E"``, on H(curl)
             of the solve order over the solve domain, each with its mode's
@@ -1129,6 +1139,7 @@ class EigenmodeResult:
         default_factory=dict
     )
     periodic_surfaces: tuple[tuple[str, str], ...] = ()
+    sheet_participation: dict[str, jax.Array] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Hold fields, materials and pairs as tuples and dict; label simple modes."""
@@ -1177,7 +1188,8 @@ class EigenmodeResult:
         axis for both (NaN where a port has no value), and
         `bulk_participation` over ``("mode", "region")``, and
         `principal_participation` over ``("mode", "anisotropic_region",
-        "axis")`` (axis 0, 1, 2 in each material's ``axes`` order). The fields
+        "axis")`` (axis 0, 1, 2 in each material's ``axes`` order), and
+        `sheet_participation` over ``("mode", "sheet")``. The fields
         and materials are not exported. Needs the ``xarray`` extra: ``pip
         install "gfem[xarray]"``.
 
@@ -1222,6 +1234,12 @@ class EigenmodeResult:
                     [np.asarray(v) for v in self.principal_participation.values()], 1
                 ),
             )
+        if self.sheet_participation:
+            coords["sheet"] = list(self.sheet_participation)
+            data["sheet_participation"] = _variable(
+                ("mode", "sheet"),
+                np.stack([np.asarray(v) for v in self.sheet_participation.values()], 1),
+            )
         return xr.Dataset(data, coords=coords)
 
     def __repr__(self) -> str:
@@ -1246,5 +1264,6 @@ register_fields(
         "materials",
         "cluster",
         "principal_participation",
+        "sheet_participation",
     ),
 )

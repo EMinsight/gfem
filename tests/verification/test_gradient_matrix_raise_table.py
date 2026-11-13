@@ -238,7 +238,7 @@ EXPECTED |= {
 # Eigenmode: the eigenvalues (omega, also as each mode field's omega)
 # differentiate with respect to every electromagnetic property, the node
 # coordinates and the lumped values. The ratios of the mode fields (port Q,
-# participations, region and principal shares) differentiate with respect to
+# participations, region, principal and sheet shares) differentiate with respect to
 # the electromagnetic properties, sheet fills and node coordinates (ADR
 # 0102); with respect to the lumped values they raise in this version, as do
 # the normalized mode fields themselves and the backward error. The
@@ -252,6 +252,7 @@ _EIGEN_RATIOS = (
     "participation.",
     "bulk_participation.",
     "principal_participation.",
+    "sheet_participation.",
 )
 
 
@@ -426,6 +427,7 @@ EXPECTED |= {
         "participation.p1",
         "bulk_participation.lower",
         "bulk_participation.upper",
+        "sheet_participation.sheet",
         "cluster",
         *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
     )

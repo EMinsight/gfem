@@ -78,6 +78,8 @@ from gradient_cases import (
     EPS0,
     GUIDE_TARGET,
     JUNCTION_TARGET,
+    KINETIC_CAPACITANCE,
+    KINETIC_TARGET,
     LUMPED,
     LUMPED_TARGET,
     MIRRORED_TARGET,
@@ -96,6 +98,7 @@ from gradient_cases import (
     junction_line,
     junction_mesh,
     junction_values,
+    kinetic_cavity,
     layered_line,
     layered_resonator,
     line_axes_design,
@@ -293,7 +296,10 @@ def _participation_cells() -> list[Cell]:
     `gfem.Impedance` sheet; the mirrored cavity's pair split to a relative
     gap of 2.5e-4 (above the isolation threshold 1e-4). The node cells move
     fixture J's interface (`_participation_nodes`), with the static values
-    of each variant (the lossy one's loss tangent among them).
+    of each variant (the lossy one's loss tangent among them). The sheet
+    cavity's inductive `gfem.Impedance`, with a capacitance or without,
+    gives the sheet participation and the sheet's share of the mode energy
+    (`_kinetic`); its node cells move the sheet.
     """
     key = "eigenmode_participation"
     return [
@@ -313,6 +319,12 @@ def _participation_cells() -> list[Cell]:
         Cell(key, "eps_r", "direct", variant="near_pair"),
         Cell(key, "eps_r_axes", "direct", variant="principal"),
         Cell(key, "nodes", "direct", variant="principal"),
+        Cell(key, "fill", "direct", variant="sheet"),
+        Cell(key, "eps_r", "direct", variant="sheet"),
+        Cell(key, "nodes", "direct", variant="sheet"),
+        Cell(key, "eps_r", "direct", variant="capacitive_sheet"),
+        Cell(key, "fill", "direct", variant="capacitive_sheet"),
+        Cell(key, "nodes", "direct", variant="capacitive_sheet"),
     ]
 
 
@@ -961,9 +973,64 @@ def _ratios(result, variant: str):
     return out
 
 
+def _kinetic(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The kinetic cavity's mode 0 in its sheet's fill, "lower"'s eps_r or nodes.
+
+    The ``"sheet"`` variant reads the sheet participation; the
+    ``"capacitive_sheet"`` one adds a capacitance to the sheet and reads
+    "lower"'s share of the mode energy beside it (both move with the
+    sheet's term of the energy, ADR 0103). The node cells move the sheet
+    with its glue plane, "lower" growing.
+    """
+    mesh = d.sheet_cavity
+    fill, rng = cavity_fill(mesh, seed=1 + seed)
+    capacitance = KINETIC_CAPACITANCE if cell.variant == "capacitive_sheet" else None
+    problem = gfem.Eigenmode(target=KINETIC_TARGET)
+
+    def read(model):
+        result = gfem.solve(model, problem, options=options)
+        out = result.sheet_participation["sheet"][0]
+        if capacitance is not None:
+            out = result.bulk_participation["lower"][0] + 0.5 * out
+        return out
+
+    def model(fill, eps=None, mesh=mesh):
+        return kinetic_cavity(mesh, fill, eps, capacitance=capacitance)
+
+    if cell.input == "fill":
+        return Case(
+            lambda p: read(model(p)),
+            fill,
+            rng,
+            step=1e-2,
+            taylor=1e-1,
+            mask=lambda directions: on_the_sheet(directions, fill),
+        )
+    if cell.input == "eps_r":
+        eps = ramp(mesh, "lower", 1.0, 2.0)
+        return Case(
+            lambda p: read(model(fill, p)),
+            eps,
+            rng,
+            step=STEPS["eps_r"],
+            taylor=1e-1,
+        )
+    morph = boundary_morph(model(fill), "sheet", grows="lower")
+    return Case(
+        lambda t: read(model(fill, mesh=morph(t))),
+        jnp.zeros(morph.n_params),
+        rng,
+        step=STEPS["nodes"],
+        taylor=4e-5,
+        taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+
+
 def _participation(d: Designs, cell: Cell, options, seed: int) -> Case:
     """Mode 0's ratios in one input (`_participation_cells`)."""
     variant = cell.variant
+    if variant in ("sheet", "capacitive_sheet"):
+        return _kinetic(d, cell, options, seed)
     if variant == "absorbing2":
         mesh = d.guide
         core = ramp(mesh, "core", 9.0, 11.0)
@@ -1037,6 +1104,8 @@ def _participation_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
     sit on the line's ends), so the node gradient is exact along it.
     """
     variant = cell.variant
+    if variant in ("sheet", "capacitive_sheet"):
+        return _kinetic(d, cell, options, seed)
     model = junction_line(d.junction, variant)
     morph = boundary_morph(model, "sub__cover", grows="sub")
     problem = gfem.Eigenmode(target=JUNCTION_TARGET)

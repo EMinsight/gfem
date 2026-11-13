@@ -780,6 +780,85 @@ def test_participation_is_minus_twice_the_log_derivative_in_l(mesh, shunted, cas
     )
 
 
+def _kinetic_line(mesh, l_sheet, *, fill=None, mu_r=1.0, junction=1e-9):
+    """The shunt line with an inductive sheet across its middle and an inductor.
+
+    The sheet's per-square inductance ``l_sheet`` (H) is a lumped ``l_sheet
+    H / W`` across the line; ``fill`` (a seed) gives it a random grey fill;
+    the inductor ``junction`` (H) sits on port1.
+    """
+    field = None
+    if fill is not None:
+        n = len(mesh.elements("sheet"))
+        rng = np.random.default_rng(fill)
+        field = gfem.SheetField(jnp.asarray(rng.uniform(0.2, 0.8, n)))
+    material = gfem.Material(eps_r=EPS, mu_r=mu_r)
+    return gfem.Model(
+        mesh,
+        materials={"left": material, "right": material},
+        boundaries=[
+            gfem.PEC("bottom"),
+            gfem.PEC("top"),
+            gfem.Impedance("sheet", inductance=l_sheet, fill=field),
+        ],
+        ports=[gfem.LumpedPort("jj", "port1", "+z", inductance=junction)],
+    )
+
+
+#: The kinetic line's sheet inductance (H per square) and target (Hz): its
+#: lowest mode shares its inductive energy between the sheet and the inductor.
+_KINETIC = (2e-9, 3e9)
+
+
+@pytest.mark.parametrize("fill", [None, 3])
+def test_sheet_participation_is_minus_twice_the_log_derivative_in_l_s(shunted, fill):
+    # a lossless mode's omega^2 is a Rayleigh quotient: the sheet's share of
+    # the inductive energy is -2 d ln omega / d ln L_s on any mesh and fill
+    l_sheet, target = _KINETIC
+    options = gfem.SolverOptions(eigen_tolerance=1e-12)
+
+    def solve(t):
+        model = _kinetic_line(shunted, l_sheet * math.exp(float(t)), fill=fill)
+        return gfem.solve(model, gfem.Eigenmode(target=target), options=options)
+
+    result = solve(0.0)
+    assert list(result.sheet_participation) == ["sheet"]
+    p = float(result.sheet_participation["sheet"][0])
+    assert 0.05 < p < 0.95
+    slope = derivative(lambda t: jnp.log(jnp.real(solve(t).omega[0])), 0.0, 1.0, 1e-2)
+    np.testing.assert_allclose(p, -2 * slope, rtol=1e-7)
+
+
+def test_participations_and_magnetic_share_sum_to_one(shunted):
+    # without capacitive elements a lossless mode's electric energy equals its
+    # inductive energy: the inductor's, the sheet's and the volume's magnetic
+    # one, whose share is -2 d ln omega / d ln mu_r
+    l_sheet, target = _KINETIC
+    options = gfem.SolverOptions(eigen_tolerance=1e-12)
+
+    def solve(t):
+        model = _kinetic_line(shunted, l_sheet, mu_r=math.exp(float(t)))
+        return gfem.solve(model, gfem.Eigenmode(target=target), options=options)
+
+    result = solve(0.0)
+    magnetic = -2 * derivative(
+        lambda t: jnp.log(jnp.real(solve(t).omega[0])), 0.0, 1.0, 1e-2
+    )
+    total = (
+        abs(float(result.participation["jj"][0]))
+        + float(result.sheet_participation["sheet"][0])
+        + magnetic
+    )
+    assert magnetic > 0.05
+    np.testing.assert_allclose(total, 1.0, atol=1e-7)
+
+
+def test_sheets_without_inductance_have_no_sheet_participation(shunted):
+    model = shunt_line(shunted, gfem.Impedance("sheet", capacitance=5e-14))
+    result = gfem.solve(model, gfem.Eigenmode(target=3e9))
+    assert result.sheet_participation == {}
+
+
 def _loaded_line(mesh, inductance):
     """The line with an inductor across one end, and its lowest resonance (rad/s)."""
     model = line(

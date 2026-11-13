@@ -492,6 +492,36 @@ def cavity_model(mesh: gfem.Mesh, fill) -> gfem.Model:
     )
 
 
+#: The kinetic cavity: an inductive (and capacitive) `gfem.Impedance` of the
+#: cavity's grey fill at mid-height. Its TE101-like mode sits at 10.9 GHz
+#: (10.2 GHz with the capacitance), sheet participation 0.05; the sheet's
+#: plasmon modes are below 8.4 GHz (5.1 GHz).
+KINETIC_INDUCTANCE, KINETIC_CAPACITANCE = 2e-8, 3e-14
+KINETIC_TARGET = 11e9
+
+
+def kinetic_cavity(
+    mesh: gfem.Mesh, fill, eps=None, *, capacitance: float | None = None
+) -> gfem.Model:
+    """The sheet cavity with an inductive `gfem.Impedance` of ``fill``.
+
+    ``eps``: a P0 permittivity of "lower" (vacuum without); ``capacitance``:
+    the sheet's capacitance per square (F) beside its inductance.
+    """
+    sheet = gfem.Impedance(
+        "sheet",
+        inductance=KINETIC_INDUCTANCE,
+        capacitance=capacitance,
+        fill=gfem.SheetField(fill=fill),
+    )
+    lower = gfem.Material() if eps is None else gfem.MaterialField(eps_r=eps)
+    return gfem.Model(
+        mesh,
+        materials={"lower": lower, "upper": gfem.Material()},
+        boundaries=[gfem.PEC("pec"), sheet],
+    )
+
+
 def on_the_sheet(directions, fill):
     """Unit directions moving only the filled faces (a fill stays >= 0)."""
     on = np.asarray(fill) > 0

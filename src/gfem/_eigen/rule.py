@@ -31,8 +31,8 @@ refines one guard mode beyond ``n_modes`` from the seed solve's remaining
 pairs, so a cluster cut by the request is detected when its next member is
 among them (best-effort: no Arnoldi attempt is added for it).
 
-The ratios of the mode fields (``q_port``, ``participation``, the region
-and principal shares) differentiate for isolated modes (ADR 0102) with
+The ratios of the mode fields (``q_port``, ``participation``, the region,
+principal and sheet shares) differentiate for isolated modes (ADR 0102) with
 respect to materials, sheet fills and node coordinates (port surfaces
 held), on one CPU process with the ``direct`` linear solver: per mode
 with a cotangent, one deflated GMRES solve of the singular adjoint
@@ -40,10 +40,11 @@ system ``T(k) lam0 = -w``, ``t^T lam0 = 0`` on the live factors the
 forward kept (`gfem._eigen.adjoint`, ADR 0104), the
 load ``(w, kappa, explicit terms)`` of `gfem._eigen.ratios`, and the pairs
 ``(2 lam, x)`` and ``(conj(x), x)`` on the mode energy's ``Re(eps_r)``
-terms (ADR 0103). What does not differentiate is refused by name: at trace
-time from the model, the options and the wanted inputs
-(`EigenmodeRule.nondifferentiable_output`), in the backward from the modes
-(a cluster, a near pair, a defective mode, an infinite ``q_port``).
+terms (ADR 0103) and the sheets' L and C pieces. What does not
+differentiate is refused by name: at trace time from the model, the
+options and the wanted inputs (`EigenmodeRule.nondifferentiable_output`),
+in the backward from the modes (a cluster, a near pair, a defective mode,
+an infinite ``q_port``).
 
 Post-processing follows Palace: electric energy ``E = 1/2 Re ∫ D* . E`` per
 volume region plus ``C |V|^2 / 2`` per capacitive lumped port and ``1/2 ∫
@@ -86,7 +87,7 @@ from gfem._eigen.adjoint import deflated_solve, polish, reshift_offset
 from gfem._eigen.arpack import shift_invert
 from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
-from gfem._eigen.ratios import Ratios
+from gfem._eigen.ratios import Ratios, sheet_capacitors, sheet_inductors
 from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE
 from gfem._engine import terms
@@ -195,13 +196,16 @@ _DEFECTIVE_FIELD = 1e-8
 #: fields differentiate: it keeps the forward polish's Newton start close.
 _FIELD_TOLERANCE = 1e-10
 #: The outputs that are quantities of the mode fields (mode-field outputs).
-_MODE_FIELD = frozenset({"q_port", "participation", "bulk", "principal", "e_field"})
+_MODE_FIELD = frozenset(
+    {"q_port", "participation", "bulk", "principal", "sheet", "e_field"}
+)
 #: Their names on `EigenmodeResult`, for messages.
 _PUBLIC = {
     "q_port": "q_port",
     "participation": "participation",
     "bulk": "bulk_participation",
     "principal": "principal_participation",
+    "sheet": "sheet_participation",
     "e_field": "e_fields (the normalized mode fields)",
     "error": "error",
 }
@@ -312,6 +316,13 @@ class EigenmodeRule:
         #: (participation), in model order.
         self.resistive = tuple(p.name for p in lumped if p.rlc[0] is not None)
         self.inductive = tuple(p.name for p in lumped if p.rlc[1] is not None)
+        #: The surfaces of the `Impedance` sheets with an inductance (sheet
+        #: participation), in model order.
+        self.kinetic = tuple(
+            b.surface
+            for b in model.boundaries
+            if isinstance(b, Impedance) and b.inductance is not None
+        )
         mesh, active = model.mesh, model._domain.active  # noqa: SLF001
         #: Volume regions with tetrahedra in the solve domain: the field support.
         self.regions = tuple(r for r in mesh.volumes if active[mesh.elements(r)].any())
@@ -323,12 +334,6 @@ class EigenmodeRule:
         self._excluded = model._domain.excluded  # noqa: SLF001
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
-        #: Whether an `Impedance` has a capacitance (its mode energy term's
-        #: gradient is not in this version).
-        self.capacitive_sheets = any(
-            isinstance(b, Impedance) and b.capacitance is not None
-            for b in model.boundaries
-        )
 
     # --- forward -----------------------------------------------------------------
 
@@ -348,8 +353,9 @@ class EigenmodeRule:
         Returns:
             ``{"omega": (n,) complex rad/s, "error": (n,), "q_port":
             (n_resistive, n), "participation": (n_inductive, n), "bulk":
-            (n_regions, n), "principal": (n_anisotropic, n, 3), "e_field":
-            (ndof, n) complex, "cluster": (n,) int}``, modes nearest the
+            (n_regions, n), "principal": (n_anisotropic, n, 3), "sheet":
+            (n_kinetic, n), "e_field": (ndof, n) complex, "cluster": (n,)
+            int}``, modes nearest the
             target first, and the kept `Entry` (``None`` unless ``keep``).
 
         Raises:
@@ -900,9 +906,29 @@ class EigenmodeRule:
             "participation": participation,
             "bulk": bulk,
             "principal": principal,
+            "sheet": self._sheet_shares(op, solve, omega),
             "e_field": op.expand(solve),
         }
         return outputs, solve
+
+    def _sheet_shares(
+        self, op: DrivenOperator, solve: np.ndarray, omega: np.ndarray
+    ) -> np.ndarray:
+        """``(n_kinetic, n)`` sheet participations of the modes scaled to 1 J.
+
+        A sheet's L piece is ``mu0 scale / L_s ∫ w u_t . v_t`` (the fill
+        ``w`` as in the operator, ADR 0013): ``∫ w |E_t|^2 / (2 omega^2
+        L_s)`` is its form over ``2 mu0 scale omega^2``.
+        """
+        out = np.zeros((len(self.kinetic), len(omega)))
+        for s, piece in enumerate(sheet_inductors(op, self.kinetic)):
+            applied = op.apply(piece, solve)
+            for j in range(len(omega)):
+                form = float(np.real(np.conj(solve[:, j]) @ applied[:, j]))
+                out[s, j] = form / (
+                    2 * const.mu_0 * op.built.scale * omega[j].real ** 2 * MODE_ENERGY
+                )
+        return out
 
     # --- the solve_vjp interface ---------------------------------------------------
 
@@ -926,6 +952,7 @@ class EigenmodeRule:
             "principal": jax.ShapeDtypeStruct(
                 (len(self.anisotropic), n, 3), jnp.float64
             ),
+            "sheet": jax.ShapeDtypeStruct((len(self.kinetic), n), jnp.float64),
             "e_field": jax.ShapeDtypeStruct((space.ndof, n), jnp.complex128),
             "cluster": jax.ShapeDtypeStruct((n,), jnp.int64),
         }
@@ -952,11 +979,11 @@ class EigenmodeRule:
         Input-aware (ADR 0102): ``kinds`` are the wanted input kinds. The
         eigenvalues differentiate with respect to every read input. The
         mode-field outputs (``q_port``, ``participation``,
-        ``bulk_participation``, ``principal_participation``) differentiate on
-        one CPU process with ``linear_solver="direct"``, ``eigen_tolerance``
-        at most 1e-10, without periodic pairs or a Bloch wave vector or a
-        capacitive `Impedance`, with respect to materials, sheet fills and
-        node coordinates (port surfaces held).
+        ``bulk_participation``, ``principal_participation``,
+        ``sheet_participation``) differentiate on one CPU process with
+        ``linear_solver="direct"``, ``eigen_tolerance`` at most 1e-10,
+        without periodic pairs or a Bloch wave vector, with respect to
+        materials, sheet fills and node coordinates (port surfaces held).
         The backward error never differentiates. Checked at trace time; what
         depends on the modes (a cluster, a near pair, a port without
         voltage) raises in the backward.
@@ -1025,13 +1052,6 @@ class EigenmodeRule:
                     f"solved with SolverOptions.eigen_tolerance = "
                     f"{options.eigen_tolerance:g}: mode-field gradients need "
                     f"eigen_tolerance <= {_FIELD_TOLERANCE:g} (the default)"
-                ),
-            ),
-            (
-                self.capacitive_sheets,
-                (
-                    "on a model with a capacitive Impedance: the gradient of its "
-                    "sheet's share of the mode energy is not in this version"
                 ),
             ),
         )
@@ -1147,7 +1167,7 @@ class EigenmodeRule:
         ``retain_memory``) gets one from ``op``, prepared at ``k (1 + d)`` of
         its first such mode, and freed at the end.
         """
-        names = ("q_port", "participation", "bulk", "principal")
+        names = ("q_port", "participation", "bulk", "principal", "sheet")
         cts = {
             n: np.real(np.asarray(cotangents[n]))
             for n in names
@@ -1196,6 +1216,7 @@ class EigenmodeRule:
                 anisotropic=self.anisotropic,
                 resistive=self.resistive,
                 inductive=self.inductive,
+                kinetic=self.kinetic,
             )
             for j in wanted:
                 u, kj, ut = x[:, j], complex(k[j]), gram[j]
@@ -1440,6 +1461,10 @@ class EigenmodeRule:
                 for r, region in enumerate(self.anisotropic)
             },
             e_fields=tuple(fields),
+            sheet_participation={
+                surface: jnp.asarray(outputs["sheet"][s])
+                for s, surface in enumerate(self.kinetic)
+            },
             materials=self._materials,
             periodic_surfaces=self._periodic_surfaces,
             cluster=jnp.asarray(outputs["cluster"]),
@@ -1629,13 +1654,7 @@ def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
     energy, as `element_energy` gives the volume's (ADR 0103). ``None``
     without a capacitive sheet, so such models add nothing.
     """
-    sheets = [
-        k
-        for k, piece in enumerate(op.pieces)
-        if piece.lumped is not None
-        and piece.lumped.kind[0] == "boundary"
-        and piece.lumped.kind[2] == "capacitance"
-    ]
+    sheets = sheet_capacitors(op)
     if not sheets:
         return None
     factor = 0.5 * const.epsilon_0 * op.built.scale

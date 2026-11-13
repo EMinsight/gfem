@@ -7,7 +7,6 @@ complex symmetric) stands in for the eigen operator: its eigenpairs are
 run out of applies, the identity.
 """
 
-import functools
 import math
 from types import SimpleNamespace
 
@@ -275,12 +274,13 @@ def test_sparsecholesky_backward_matches_pardiso(line_mesh_dir, monkeypatch):
     np.testing.assert_allclose(along, derivative(objective, eps, d, 1e-2), rtol=1e-6)
 
 
-def test_capacitive_sheet_refuses_mode_field_gradients(tmp_path):
-    # the sheet's share of the mode energy has no gradient yet: a mode-field
-    # cotangent raises while tracing; the eigenfrequencies keep theirs
+def test_capacitive_sheet_mode_field_gradient_matches_differences(tmp_path):
+    # the sheet's share of the mode energy (ADR 0103) differentiates with the
+    # rest of it: a region's share and the sheet participation in eps_r
     mesh = shunt_mesh(tmp_path)
+    options = gfem.SolverOptions(eigen_tolerance=1e-12)
 
-    def objective(e, read):
+    def objective(e):
         model = gfem.Model(
             mesh,
             materials={
@@ -293,11 +293,15 @@ def test_capacitive_sheet_refuses_mode_field_gradients(tmp_path):
                 gfem.Impedance("sheet", inductance=1e-9, capacitance=1e-15),
             ],
         )
-        return read(gfem.solve(model, gfem.Eigenmode(target=8e9)))
+        result = gfem.solve(model, gfem.Eigenmode(target=8e9), options=options)
+        return (
+            result.bulk_participation["left"][0]
+            + 0.5 * result.sheet_participation["sheet"][0]
+        )
 
     eps = jnp.full(len(mesh.elements("left")), EPS)
-    bulk = functools.partial(objective, read=lambda r: r.bulk_participation["left"][0])
-    with pytest.raises(gfem.NonDifferentiableError, match="capacitive Impedance"):
-        jax.make_jaxpr(jax.grad(bulk))(eps)
-    omega = functools.partial(objective, read=lambda r: jnp.real(r.omega[0]) * 1e-9)
-    jax.make_jaxpr(jax.grad(omega))(eps)
+    d = np.random.default_rng(5).standard_normal(len(eps))
+    d /= np.linalg.norm(d)
+    along = float(np.asarray(jax.grad(objective)(eps)) @ d)
+    assert along != 0
+    np.testing.assert_allclose(along, derivative(objective, eps, d, 1e-2), rtol=1e-6)

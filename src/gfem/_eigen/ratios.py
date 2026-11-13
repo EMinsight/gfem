@@ -1,13 +1,16 @@
 """The loads of the mode-field adjoint for the eigenmode ratios (ADR 0102).
 
 The ratios on an `EigenmodeResult` (``q_port``, ``participation``,
-``bulk_participation``, ``principal_participation``) are scale- and
-phase-invariant functions of a mode ``(k, u)``: quadratic forms of ``u`` over
-the electric energy
+``bulk_participation``, ``principal_participation``,
+``sheet_participation``) are scale- and phase-invariant functions of a
+mode ``(k, u)``: quadratic forms of ``u`` over the electric energy
 
     E = 1/2 eps0 int Re(eps_r) |u|^2 + sum_ports C_p |V_p|^2 / 2
+        + sum_sheets 1/2 eps0 scale u^H A_C u
 
-(``V_p = l_p^T u`` the port voltage, ADR 0103), and ``Re k``. A real objective
+(``V_p = l_p^T u`` the port voltage, ``A_C`` a capacitive sheet's C piece,
+ADR 0103), and ``Re k``. A sheet's participation is its L piece's form
+``u^H A_L u / (2 mu0 scale Re(omega)^2 E)``. A real objective
 ``G = sum ct g`` of them gives the load of quantum-metrics ticket 03: its
 Wirtinger partial ``w = dG/du`` (``dG = 2 Re(w^T du + kappa dk) + ...``),
 ``kappa = dG/dk``, and the explicit terms, the derivative of ``G`` by each
@@ -20,7 +23,9 @@ The explicit part is contracted by the sensitivity kernel through one
 per principal axis of an anisotropic region, weighted by ``1/2 eps0 scale``
 times ``dG`` by that part's energy: a pair ``(conj(u), u)``. Every element
 lies in one region, so the whole energy's derivative is spread over the
-region terms.
+region terms. The sheets' L and C pieces are explicit too, through the
+same pair weighted by piece name: the kernel's sheet pass gives their fill
+derivative and its node pass their transport, as for the operator.
 """
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ from gfem._engine.sensitivity import Term, energy_term
 from gfem.errors import NonDifferentiableError
 from gfem.model import Model
 
-__all__ = ["Load", "Ratios", "energy_name"]
+__all__ = ["Load", "Ratios", "energy_name", "sheet_capacitors", "sheet_inductors"]
 
 #: The prefix of the explicit energy terms' names (no piece has it).
 _ENERGY = "mode energy"
@@ -53,6 +58,23 @@ def energy_name(region: str, axis: int | None = None) -> str:
     return f"{_ENERGY} {region} axis {axis}"
 
 
+def sheet_capacitors(op: DrivenOperator) -> list[int]:
+    """The index of each capacitive `Impedance`'s C piece in ``op``."""
+    return [
+        k
+        for k, piece in enumerate(op.pieces)
+        if piece.lumped is not None
+        and piece.lumped.kind[0] == "boundary"
+        and piece.lumped.kind[2] == "capacitance"
+    ]
+
+
+def sheet_inductors(op: DrivenOperator, surfaces: tuple[str, ...]) -> list[int]:
+    """The index of each sheet's L piece (``"impedance <surface> L"``) in ``op``."""
+    index = {piece.name: k for k, piece in enumerate(op.pieces)}
+    return [index[f"impedance {surface} L"] for surface in surfaces]
+
+
 @dataclasses.dataclass(frozen=True)
 class Load:
     """What one mode's cotangents ask of the adjoint.
@@ -61,7 +83,8 @@ class Load:
         w: ``dG/du`` (Wirtinger, unconjugated pairing) on the solve space.
         kappa: ``dG/dk``.
         energy: The explicit terms: the weight of each energy term
-            (`energy_name`) on the pair ``(conj(u), u)``.
+            (`energy_name`) and sheet piece (by name) on the pair
+            ``(conj(u), u)``.
     """
 
     w: np.ndarray
@@ -81,12 +104,14 @@ class Ratios:
         anisotropic: tuple[str, ...],
         resistive: tuple[str, ...],
         inductive: tuple[str, ...],
+        kinetic: tuple[str, ...] = (),
     ) -> None:
         built = op.built
         self.regions = regions
         self.anisotropic = anisotropic
         self.resistive = resistive
         self.inductive = inductive
+        self.kinetic = kinetic
         #: J per file-unit integral of ``Re(eps_r) |u|^2``.
         self.unit = 0.5 * const.epsilon_0 * built.scale
         #: rad/s per unit of ``k``.
@@ -94,6 +119,20 @@ class Ratios:
         self.parts, self.axis_parts = energy_parts(model, op, regions, anisotropic)
         self._op = op
         self.rlc = {data.port.name: data.port.rlc for data in op.ports}
+        #: The capacitive sheets' C pieces and the ``kinetic`` sheets' L
+        #: pieces: indices in ``op.pieces``.
+        self.capacitors = sheet_capacitors(op)
+        self.inductors = sheet_inductors(op, kinetic)
+        #: The L pieces' form per unit of ``1 / (2 mu0 scale)``.
+        self.per_form = 1 / (2 * const.mu_0 * built.scale)
+
+    def apply(self, piece: int, u: np.ndarray) -> np.ndarray:
+        """``A u`` of ``op``'s piece ``piece``."""
+        return self._op.apply(piece, u)
+
+    def piece_name(self, piece: int) -> str:
+        """The name of ``op``'s piece ``piece`` (its key in the pairs' weights)."""
+        return self._op.pieces[piece].name
 
     @functools.cached_property
     def voltage(self) -> dict[str, np.ndarray]:
@@ -137,8 +176,8 @@ class Ratios:
             k: Its eigenvalue.
             ct: This mode's cotangents by output: ``"q_port"`` ``(n_resistive,)``,
                 ``"participation"`` ``(n_inductive,)``, ``"bulk"``
-                ``(n_regions,)``, ``"principal"`` ``(n_anisotropic, 3)``; a
-                missing output carries none.
+                ``(n_regions,)``, ``"principal"`` ``(n_anisotropic, 3)``,
+                ``"sheet"`` ``(n_kinetic,)``; a missing output carries none.
             mode: The mode's index, for the error message.
 
         Raises:
@@ -156,16 +195,15 @@ class Ratios:
             mode_state.apply_axes(self)
             for (r, a), share in np.ndenumerate(mode_state.axis_energy):
                 partials.share(principal[r, a], mode_state, (r, a), share)
-        q_port = ct.get("q_port")
-        if q_port is not None:
-            for p, name in enumerate(self.resistive):
-                if q_port[p]:
-                    partials.q_port(q_port[p], mode_state, name, index=mode)
-        participation = ct.get("participation")
-        if participation is not None:
-            for p, name in enumerate(self.inductive):
-                if participation[p]:
-                    partials.participation(participation[p], mode_state, name)
+        for c, name in zip(ct.get("q_port", ()), self.resistive, strict=False):
+            if c:
+                partials.q_port(c, mode_state, name, index=mode)
+        for c, name in zip(ct.get("participation", ()), self.inductive, strict=False):
+            if c:
+                partials.participation(c, mode_state, name)
+        for s, c in enumerate(ct.get("sheet", ())):
+            if c:
+                partials.sheet(c, mode_state, s)
         return partials.load(mode_state)
 
 
@@ -183,9 +221,24 @@ class _Mode:
         self.capacitors = {
             name: rlc[2] for name, rlc in ratios.rlc.items() if rlc[2] is not None
         }
+        #: The capacitive sheets' C pieces on the mode, and their energies.
+        self.sheet_applied = [ratios.apply(piece, u) for piece in ratios.capacitors]
+        self.sheet_energy = [
+            ratios.unit * float(np.real(np.conj(u) @ a)) for a in self.sheet_applied
+        ]
+        #: The kinetic sheets' L pieces on the mode, and their forms.
+        self.inductor_applied = [ratios.apply(piece, u) for piece in ratios.inductors]
+        self.inductor_form = [
+            float(np.real(np.conj(u) @ a)) for a in self.inductor_applied
+        ]
         #: The mode energy, J.
-        self.energy = self.region_energy.sum() + sum(
-            0.5 * c * abs(self.volts[name]) ** 2 for name, c in self.capacitors.items()
+        self.energy = (
+            self.region_energy.sum()
+            + sum(
+                0.5 * c * abs(self.volts[name]) ** 2
+                for name, c in self.capacitors.items()
+            )
+            + sum(self.sheet_energy)
         )
         self.omega = k.real * ratios.per_k
         self.axis_applied: list[list[np.ndarray]] = [[] for _ in ratios.anisotropic]
@@ -210,6 +263,7 @@ class _Partials:
         self.region = np.zeros(len(ratios.regions))
         self.axis = np.zeros((len(ratios.anisotropic), 3))
         self.volts2 = dict.fromkeys(ratios.voltage, 0.0)
+        self.inductor = np.zeros(len(ratios.kinetic))
         self.kappa = 0.0
 
     def share(self, c: float, mode: _Mode, where: int | tuple, value: float) -> None:
@@ -248,6 +302,14 @@ class _Partials:
         self.volts2[name] += c * factor
         self.kappa -= c * g / mode.k.real
 
+    def sheet(self, c: float, mode: _Mode, s: int) -> None:
+        """``c`` times sheet ``s``'s ``p = u^H A_L u / (2 mu0 scale omega^2 E)``."""
+        factor = self.ratios.per_form / (mode.omega**2 * mode.energy)
+        g = factor * mode.inductor_form[s]
+        self.energy -= c * g / mode.energy
+        self.inductor[s] += c * factor
+        self.kappa -= c * g / mode.k.real
+
     def load(self, mode: _Mode) -> Load:
         """The load: ``w``, ``kappa`` and the energy terms' weights.
 
@@ -268,6 +330,19 @@ class _Partials:
             if c:
                 w += c * ratios.unit * np.conj(mode.axis_applied[r][a])
                 weights[energy_name(ratios.anisotropic[r], a)] = c * ratios.unit
+        # the energy's sheet terms, and the sheets' L forms
+        sheets = [
+            (piece, applied, self.energy * ratios.unit)
+            for piece, applied in zip(
+                ratios.capacitors, mode.sheet_applied, strict=True
+            )
+        ] + list(
+            zip(ratios.inductors, mode.inductor_applied, self.inductor, strict=True)
+        )
+        for piece, applied, c in sheets:
+            if c:
+                w += c * np.conj(applied)
+                weights[ratios.piece_name(piece)] = c
         volts2 = dict(self.volts2)
         for name, c in mode.capacitors.items():
             volts2[name] += self.energy * 0.5 * c

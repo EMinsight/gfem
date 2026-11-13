@@ -474,7 +474,7 @@ def test_unknown_type_asks_for_a_newer_gfem(model, tmp_path):
         gfem.Job.from_json(path)
 
 
-def test_principal_participation_round_trips_and_an_old_result_reads_none(
+def test_principal_and_sheet_participation_round_trip_and_an_old_result_reads_none(
     tmp_path,
 ):
     from gfem import _codec
@@ -489,6 +489,7 @@ def test_principal_participation_round_trips_and_an_old_result_reads_none(
         principal_participation={
             "crystal": jnp.array([[0.1, 0.2, 0.3], [0.05, 0.25, 0.2]])
         },
+        sheet_participation={"film": jnp.array([0.3, 0.05])},
     )
     context = _codec.Context(tmp_path)
     encoder = _codec.Encoder(context)
@@ -499,10 +500,15 @@ def test_principal_participation_round_trips_and_an_old_result_reads_none(
         back.principal_participation["crystal"],
         result.principal_participation["crystal"],
     )
+    np.testing.assert_array_equal(
+        back.sheet_participation["film"], result.sheet_participation["film"]
+    )
     (stored,) = _typed_in(doc, "EigenmodeResult")
     del stored["principal_participation"]  # as 0.1.0 wrote it
+    del stored["sheet_participation"]
     old = _codec.Decoder(context, encoder.arrays).decode(doc)
     assert old.principal_participation == {}
+    assert old.sheet_participation == {}
     np.testing.assert_array_equal(old.omega, result.omega)
 
 
