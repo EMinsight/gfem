@@ -12,6 +12,48 @@
   degenerate pair, depending on the number of threads; the second mode is now
   recovered when the solve comes close to it.
 
+Dispersive materials:
+
+- **Permittivity laws.** A `gfem.Material`'s `eps_r` may now be a
+  `gfem.PermittivityLaw`: a high-frequency permittivity plus `gfem.Drude`,
+  `gfem.Lorentz`, `gfem.Debye` and `gfem.DjordjevicSarkar` terms, with every
+  frequency in Hz. `PermittivityLaw.djordjevic_sarkar` fits a datasheet
+  permittivity and loss tangent. A law is callable, `law(f)`, and each
+  term is passive alone; a negative strength raises. Metals (Re ε < 0) are
+  allowed. See {doc}`../recipes/dispersive-materials`.
+- **Which problems.** Driven uniform and adaptive sweeps (every linear
+  solver, frequency workers, MPI ranks, plain and Bloch periodic cells),
+  eigenmode solves outside a law's {term}`unresolved band`, the port mode
+  problem where Re ε > 0 in the cross-section, and the electrostatic problem
+  through the {term}`static permittivity`. A law region behind an `Absorbing`
+  face needs Re ε > 0 on a driven sweep and raises on an eigenmode solve. A
+  Drude law raises in the electrostatic problem, and a metal in a port
+  cross-section raises before any solve.
+- **Gradients.** The law's numbers differentiate driven S and kept fields
+  (uniform and adaptive sweeps, wave ports, plain periodic cells, behind
+  absorbing faces), eigenfrequency and Q, and capacitance. Every existing
+  input differentiates beside a law. By a law's numbers, a mode's
+  participations and field, `gfem.electric_energy`, the port mode problem
+  and a Bloch cell raise `gfem.NonDifferentiableError`.
+- **Metal-dielectric topology optimization.**
+  `MaterialField.interpolate(..., scheme="index")` blends the refractive
+  index, the blend to use between a metal and a dielectric, and every scheme
+  takes a law at either end. A blend with a law end solves on the driven
+  uniform sweep only. Start such an optimization from a binary design: a
+  density of 0.5 absorbs. New tutorial: {doc}`../tutorials/metal-bend`.
+- **The adaptive sweep** solves both grid neighbours of a Lorentz resonance
+  inside the band first, so an in-band resonance costs a few more samples.
+- **Mode energy and measurements.** In a law region, the mode energy weighs
+  |E|² with the {term}`energy permittivity`, and `gfem.electric_energy` with
+  Re d(ωε)/dω; both raise where that weight is not positive.
+  `gfem.interface_participation` raises when a selected side lies in a law
+  region. Constant-material results are unchanged.
+- Job files and saved results carry laws; older files read unchanged.
+- New pages: the recipe {doc}`../recipes/dispersive-materials` and the
+  tutorial {doc}`../tutorials/metal-bend`. The conventions page gains the
+  law forms, {doc}`../verification` a "Dispersive materials" section, and
+  the glossary the dispersive terms.
+
 Quantum metrics and mode-field gradients:
 
 - **Participation ratios and port Q differentiate.** `participation`,
@@ -78,6 +120,15 @@ Quantum metrics and mode-field gradients:
 
 Eigenmode solves:
 
+- **Behaviour change: the eigen solver's first pass stops after 100
+  restarts.** Where the modes near the target overlap within their linewidth,
+  a solve could run for hours. It now raises
+  `gfem.EigenmodeConvergenceError` after 100 restarts, naming the lossy
+  region with the most modes within one linewidth of the target (its
+  {term}`modal overlap`) and, for a permittivity law, its term nearest the
+  target. Move the target where the modes are separated, or find the
+  resonances from a `gfem.Driven` sweep. With `eigen_solver="slepc"`,
+  `eps_max_it` in `SolverOptions.petsc_options` overrides the bound.
 - When a pair nearer the target than the farthest mode found stops within 1e-6 of
   an eigenpair without converging, `gfem.Eigenmode` now raises
   `gfem.EigenmodeConvergenceError` instead of returning a set of modes without it.
