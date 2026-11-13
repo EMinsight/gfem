@@ -246,6 +246,9 @@ def test_build_gives_one_term_per_wave_port_surface(line):
     assert len(network.excitation) == 1
     assert len(network.outputs) == 1
     assert [c.index for c in network.waves] == [0, 1]
+    # the couplings are held once: the output reads them conjugated
+    assert network.outputs[0].vectors is vectors
+    assert network.shared() == {id(vectors): vectors.nbytes}
     np.testing.assert_array_equal(network.z_ref, [[10.0, 20.0], [10.0, 20.0]])
     w = OMEGAS[1]
     rhs = vectors @ np.stack([second, first], axis=1) * (w / OMEGAS[0])
