@@ -214,6 +214,12 @@ nitpick_ignore = [
             "PetscOptions",
         )
     ],
+    # The private base of the dispersion terms (shown as "Bases:"), and the
+    # fixed ends of a law blend, MaterialField.blend_ends: not exported, and
+    # the docstrings describe them.
+    ("py:obj", "_DispersionTerm"),
+    ("py:obj", "Blend"),
+    ("py:class", "Blend"),
     # JAX documents ArrayLike as data (a type alias), so a class reference misses.
     ("py:class", "jax.typing.ArrayLike"),
     # meshio publishes no objects.inv.
