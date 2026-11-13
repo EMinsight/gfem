@@ -163,3 +163,35 @@ def test_a_seed_solve_well_inside_its_bound_is_unchanged(line, seed_solves):
     result = gfem.solve(terminated_line(line, 1000.0), gfem.Eigenmode(8e9, n_modes=2))
     assert np.all(np.isfinite(result.omega))
     assert len(seed_solves) == 1
+
+
+#: Ticket 14's law case: a Lorentz fill (eps_inf 2, delta 1, f0 25 GHz,
+#: gamma 0.5 GHz) one damping below its resonance, eps 22.3 - 10.0i there:
+#: below the unresolved band (kh 3.02), in the same crowd as the twin.
+CROWDED_LAW = gfem.PermittivityLaw(
+    eps_inf=2.0,
+    terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=25e9, damping=0.5e9)],
+)
+
+
+def test_a_crowded_law_seed_solve_stops_at_its_bound_and_names_the_term(
+    plate, monkeypatch, seed_solves
+):
+    monkeypatch.setattr(seed, "_SEED_RESTARTS", BOUND)
+    fill = gfem.Material(eps_r=CROWDED_LAW)
+    model = crowded(plate).replace(materials={"host": fill, "core": fill})
+    with pytest.raises(gfem.EigenmodeConvergenceError) as raised:
+        gfem.solve(model, CROWDED, options=ORDER_1)
+    message = str(raised.value)
+    assert f"did not converge in {BOUND} restarts" in message
+    assert "Region 'host' holds about 15" in message
+    assert "law.terms[0] (Lorentz, resonance 25 GHz)" in message
+    ((nev, ncv, applies),) = seed_solves
+    assert applies <= ncv + 1 + BOUND * (ncv - nev)
+
+
+def test_a_constant_regions_overlap_names_no_law_term(plate, monkeypatch):
+    monkeypatch.setattr(seed, "_SEED_RESTARTS", BOUND)
+    with pytest.raises(gfem.EigenmodeConvergenceError) as raised:
+        gfem.solve(crowded(plate), CROWDED, options=ORDER_1)
+    assert "law.terms" not in str(raised.value)

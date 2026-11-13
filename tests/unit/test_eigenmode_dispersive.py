@@ -372,22 +372,32 @@ def test_a_gradient_pair_at_a_plasma_zero_is_dropped(coarse, kh):
     eop.free_handle()
 
 
+@pytest.fixture(scope="module")
+def core_box(tmp_path_factory):
+    """The box at (6, 5, 3 + 3) cells: a 3 mm "host" under a 2 mm "core"."""
+    path = tmp_path_factory.mktemp("core") / "box.msh"
+    sm.write_msh22(path, sm.plate(A, B, (("host", 3.0), ("core", 2.0)), (6, 5, 3)))
+    return gfem.Mesh.from_gmsh(path, length_unit="mm")
+
+
+def cored(mesh, core):
+    """The core box with ``core`` (an eps_r) on "core", eps 4 on "host"."""
+    return gfem.Model(
+        mesh,
+        materials={"host": gfem.Material(eps_r=4.0), "core": gfem.Material(eps_r=core)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), gfem.PEC("side")],
+    )
+
+
 def test_a_drude_core_next_to_its_plasma_zero_returns_transverse_modes(
-    tmp_path_factory, operators
+    core_box, operators
 ):
     # ticket 04's case: host eps 4, a 2 mm Drude core with f_B = 19.799 GHz,
     # the target 1e-6 above it; hundreds of gradient eigenvalues sit at f_B
-    path = tmp_path_factory.mktemp("core") / "box.msh"
-    sm.write_msh22(path, sm.plate(A, B, (("host", 3.0), ("core", 2.0)), (6, 5, 3)))
-    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     law = gfem.PermittivityLaw(
         eps_inf=2.0, terms=[gfem.Drude(plasma_frequency=28 * GHZ, damping=0)]
     )
-    model = gfem.Model(
-        mesh,
-        materials={"host": gfem.Material(eps_r=4.0), "core": gfem.Material(eps_r=law)},
-        boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), gfem.PEC("side")],
-    )
+    model = cored(core_box, law)
     f_b = 28 * GHZ / math.sqrt(2.0)
     result = gfem.solve(
         model,
@@ -400,3 +410,25 @@ def test_a_drude_core_next_to_its_plasma_zero_returns_transverse_modes(
         assert abs(f - f_b) > 1e-3 * f_b
         k = complex(mode) * eop.scale / 299792458.0
         assert eop.curl_ratio(k, np.asarray(field.coefficients)) > 0.5
+
+
+def test_a_lossless_law_mode_is_the_constant_materials_at_its_frequency(core_box):
+    # a lossless Lorentz core: at its mode f*, the core with the constant
+    # eps(f*) resonates at f* too
+    options = gfem.SolverOptions(order=2, eigen_tolerance=1e-12)
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=2.0, resonance_frequency=40 * GHZ, damping=0)],
+    )
+    result = gfem.solve(
+        cored(core_box, law), gfem.Eigenmode(target=15 * GHZ), options=options
+    )
+    f = float(np.real(result.omega[0])) / (2 * math.pi)
+    eps = complex(law(f))
+    assert eps.imag == 0
+    constant = gfem.solve(
+        cored(core_box, eps.real), gfem.Eigenmode(target=f), options=options
+    )
+    np.testing.assert_allclose(
+        np.real(constant.omega[0]) / (2 * math.pi), f, rtol=1e-10
+    )

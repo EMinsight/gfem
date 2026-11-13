@@ -72,6 +72,7 @@ vanish).
 
 from __future__ import annotations
 
+import cmath
 import dataclasses
 import math
 import warnings
@@ -116,7 +117,7 @@ from gfem._engine.fields import fe_space
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped
 from gfem._linalg import Kind, ResolvedLinearSolver
-from gfem._materials import Material
+from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
 from gfem._sign import largest_entry
 from gfem._text import hertz
@@ -919,7 +920,8 @@ class EigenmodeRule:
         """Why the solve raises after a seed solve stopped at its restart bound.
 
         Names the lossy region with the largest modal overlap at the target
-        (`_modal_overlap`) when it is `_CROWDED` or more: a diagnosis only.
+        (`_modal_overlap`) when it is `_CROWDED` or more, and for a law
+        region its term nearest the target: a diagnosis only.
         """
         target = self.problem.target
         head = (
@@ -937,9 +939,15 @@ class EigenmodeRule:
         if overlaps:
             region = max(overlaps, key=lambda r: overlaps[r])
             if overlaps[region] >= _CROWDED:
+                eps_r = self._materials[region].eps_r
+                term = (
+                    f" ({dispersion.nearest_term(eps_r, target)})"
+                    if isinstance(eps_r, PermittivityLaw)
+                    else ""
+                )
                 lines.append(
                     f"Region {region!r} holds about {overlaps[region]:.0f} modes "
-                    "within one linewidth of the target."
+                    f"within one linewidth of the target{term}."
                 )
         lines.append(
             "Remedies: move Eigenmode.target where the modes are separated (away "
@@ -1734,16 +1742,22 @@ def _modal_overlap(
     Weyl's density of cavity modes times the linewidth, ``M = V k0^3 |Im
     eps| sqrt(Re eps) / pi^2``, with ``V`` the region's volume and ``eps``
     its complex permittivity at ``frequency`` (the mean of its principal
-    values; ``tan_delta`` and ``conductivity`` give the loss). 0 where ``Re
-    eps <= 0``. It matched the counted modes to 10-30 % (ADR 0122).
+    values, or its permittivity law's value; ``tan_delta`` and
+    ``conductivity`` give the loss). 0 where ``Re eps <= 0``. It matched the
+    counted modes to 10-30 % (ADR 0122).
     """
     omega = 2 * math.pi * frequency
-    eps_r = np.asarray(material.eps_r, dtype=float)
-    tan = np.broadcast_to(np.asarray(material.tan_delta, dtype=float), eps_r.shape)
     sigma = np.mean(np.asarray(material.conductivity, dtype=float))
-    eps = complex(np.mean(eps_r * (1 - 1j * tan))) - 1j * sigma / (
-        omega * const.epsilon_0
-    )
+    if isinstance(material.eps_r, PermittivityLaw):
+        law = material.eps_r
+        eps = complex(law.eps_inf) + dispersion.susceptibility(law, omega)
+    else:
+        eps_r = np.asarray(material.eps_r, dtype=float)
+        tan = np.broadcast_to(np.asarray(material.tan_delta, dtype=float), eps_r.shape)
+        eps = complex(np.mean(eps_r * (1 - 1j * tan)))
+    eps -= 1j * sigma / (omega * const.epsilon_0)
+    if not cmath.isfinite(eps):
+        return 0.0
     if eps.real <= 0:
         return 0.0
     nodes = np.asarray(mesh.nodes, dtype=float)[mesh.tetrahedra[mesh.elements(region)]]
