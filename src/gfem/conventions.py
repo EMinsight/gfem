@@ -172,6 +172,12 @@ voltage ``V_j``) and the capacitive `Impedance` sheets (capacitance per
 square ``C_s``, tangential field ``E_t``, fill ``w``, 1 without a
 `SheetField`) (peak phasors: the total time-averaged energy of a lossless
 mode, electric plus magnetic).
+In a region with a `gfem.PermittivityLaw`, ``Re(D* · E)`` reads the energy
+permittivity ``Re[eps + (omega / 2) d eps / d omega]`` at the mode's real
+frequency, so that ``E_elec`` stays the total energy of a lossless mode
+(Brillouin); for a lossy law it is the weak-loss value. An eigenmode solve
+raises where that weight is not positive (loss dominates the law there).
+The phase below reads the law's ``eps_inf`` in ``D``.
 Each mode field is scaled to ``E_elec`` =
 `MODE_ENERGY` and phased so that ``∫ D · E dV`` (no conjugate) is real
 and positive, which makes a lossless mode's field real; the remaining sign

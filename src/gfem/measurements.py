@@ -44,7 +44,7 @@ import scipy.constants as const
 
 from gfem import _mpi, _probe
 from gfem._checks import check_fixed, is_traced
-from gfem._materials import Material, field_principal_values
+from gfem._materials import Material, _is_law, field_principal_values
 from gfem._pytree import register_fields
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import NonDifferentiableError
@@ -195,10 +195,13 @@ def interface_participation(
     Raises:
         TypeError: ``modes`` is not a `gfem.EigenmodeResult`.
         RegionNotFoundError: The mesh has no region of that name.
+        TypeError: ``eps_r`` is a `gfem.PermittivityLaw` (the layer is a
+            number).
         ValueError: A name is a volume region or a surface of a
             `gfem.Periodic` pair (interior to the periodic cell), a number is
-            out of range, or the result does not carry its materials (saved
-            by an older gfem).
+            out of range, the result does not carry its materials (saved
+            by an older gfem), or a side of the surface lies in a region
+            with a permittivity law.
     """
     from gfem.results import EigenmodeResult
 
@@ -213,6 +216,11 @@ def interface_participation(
             f"{', '.join(repr(k) for k in INTERFACE_KINDS)}."
         )
     _positive(thickness, "thickness", strict=True)
+    if _is_law(eps_r):
+        raise TypeError(
+            "The interface layer's eps_r must be a number; dispersive layers are "
+            f"not supported (got {type(eps_r).__name__})."
+        )
     _positive(eps_r, "eps_r", strict=True)
     if tan_delta is not None:
         _positive(tan_delta, "tan_delta", strict=False)
@@ -235,6 +243,7 @@ def interface_participation(
                     "layer."
                 )
     geometry = _surface_geometry(field, surfaces)
+    _refuse_law_sides(modes.materials, field.mesh, geometry, surfaces)
     coefficients = jnp.stack([f.coefficients for f in modes.e_fields])
     energy = _layer_energy(
         geometry,
@@ -357,6 +366,31 @@ def _layer_energy(
     return 0.5 * const.epsilon_0 * thickness * jnp.einsum("mtq,tq->m", density, weights)
 
 
+def _refuse_law_sides(
+    materials: Any, mesh: Mesh, geometry: _SurfaceGeometry, surfaces: tuple[str, ...]
+) -> None:
+    """Raise if a side of a measured surface lies in a permittivity law region.
+
+    The ``"MS"`` and ``"SA"`` layers read a side's Re eps_r, which a law does
+    not have (ADR 0109). A law region that touches no measured face is
+    skipped by `_media`.
+
+    Raises:
+        ValueError: A law region has a tetrahedron on a side of ``surfaces``.
+    """
+    sides = geometry.sides[geometry.exists]
+    for region, material in materials.items():
+        if not (isinstance(material, Material) and _is_law(material.eps_r)):
+            continue
+        if np.isin(sides, mesh.elements(region)).any():
+            raise ValueError(
+                f"interface_participation on {', '.join(map(repr, surfaces))}: "
+                f"region {region!r} on a side of the surface holds a permittivity "
+                "law, which has no one permittivity for the layer's field. Measure "
+                "an interface between constant materials."
+            )
+
+
 def _positive(value: Any, name: str, *, strict: bool) -> None:
     if is_traced(value):
         return
@@ -409,6 +443,9 @@ def _media(
         position = np.full(len(mesh.tetrahedra), -1)
         position[members] = np.arange(len(members))
         inside = jnp.asarray((position[tets] >= 0) & exists)
+        if isinstance(material, Material) and _is_law(material.eps_r):
+            # on no measured side (`_refuse_law_sides`): never read
+            continue
         if isinstance(material, Material):
             tensor = jnp.asarray(_tensor(material).real)
             high = float(np.max(material.eps_r)) * float(np.max(material.mu_r))
@@ -621,8 +658,12 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
 
     ``W_e[r] = 1/4 eps0 ∫_r E* . Re(eps_r) E dV`` over the region's elements
     in the solve domain, with the full real permittivity tensor in an
-    anisotropic medium. The field is a peak phasor, hence the 1/4. A driven
-    field is the one for 1 W incident at its excited port
+    anisotropic medium. In a region with a `gfem.PermittivityLaw` the
+    weight is the Brillouin one, ``Re d(omega eps)/d omega`` at the field's
+    real frequency (the time-averaged electric energy of a dispersive
+    medium, exact for a lossless law and the weak-loss value otherwise).
+    The field is a peak phasor, hence the 1/4. A driven field is the one for
+    1 W incident at its excited port
     (`gfem.conventions`), so in a region with one loss tangent the power
     dielectric loss absorbs is ``2 * omega * tan_delta * W_e[r]`` W, the
     number `power_flow` gives for that region when nothing else in it
@@ -631,7 +672,9 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
     A mode field of an `gfem.EigenmodeResult` is accepted too. The mode
     normalization counts ``1/2 Re ∫ D* . E``, the total energy of a lossless
     mode and twice this time average: ``2 * W_e[r]`` equals
-    ``bulk_participation[r] * gfem.conventions.MODE_ENERGY``.
+    ``bulk_participation[r] * gfem.conventions.MODE_ENERGY`` in a region
+    without a permittivity law (the mode energy weighs a law region with its
+    energy permittivity instead, see `gfem.conventions`).
 
     The integral is exact for the solved field and the model's element-wise
     permittivity. A field of an adaptive sweep (`gfem.ReducedFields`) is
@@ -652,7 +695,11 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
         TypeError: ``field`` is not a `gfem.Field`, or ``model`` is not a
             `gfem.Model`.
         ValueError: The field is not a time-harmonic electric field (another
-            quantity, or static), or was not solved on ``model``.
+            quantity, or static), or was not solved on ``model``; or a
+            permittivity law gives ``Re d(omega eps)/d omega <= 0`` in its
+            region at the field's frequency (loss dominates there: a metal
+            below its damping frequency, a Lorentz pole inside its
+            linewidth).
         gfem.DistributedUnsupportedError: The field is a piece across ranks.
         NonDifferentiableError: ``field`` or ``model`` is computed inside
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; call
