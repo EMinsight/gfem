@@ -26,6 +26,7 @@ region terms.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import math
 from collections.abc import Mapping
 
@@ -91,12 +92,17 @@ class Ratios:
         #: rad/s per unit of ``k``.
         self.per_k = const.c / built.scale
         self.parts, self.axis_parts = energy_parts(model, op, regions, anisotropic)
-        ports = {data.port.name: data for data in op.ports}
-        self.voltage = {
-            name: terms.port_vectors(op.space, built, op.order, data)[1]
-            for name, data in ports.items()
+        self._op = op
+        self.rlc = {data.port.name: data.port.rlc for data in op.ports}
+
+    @functools.cached_property
+    def voltage(self) -> dict[str, np.ndarray]:
+        """Each lumped port's voltage functional ``l`` (built on first use)."""
+        op = self._op
+        return {
+            data.port.name: terms.port_vectors(op.space, op.built, op.order, data)[1]
+            for data in op.ports
         }
-        self.rlc = {name: data.port.rlc for name, data in ports.items()}
 
     def terms(self) -> list[Term]:
         """The explicit energy terms, one per region and per principal axis."""

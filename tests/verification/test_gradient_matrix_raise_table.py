@@ -276,6 +276,7 @@ EIGEN_KINDS = [
     ("nodes",),
     *(("material", "dielectric", p) for p in ALL_PROPERTIES),
     ("port", 0, "inductance"),
+    ("port", 0, "capacitance"),
 ]
 EXPECTED |= {
     ("eigenmode", out, kind): _eigen_outcome(out, kind)
@@ -501,13 +502,22 @@ def eigen_model(tmp_path_factory):
     path = tmp_path_factory.mktemp("resonator") / "line.msh"
     sm.write_msh22(path, sm.strip_line(4.0, 2.0, 1.0, (4, 1, 1)))
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
-    # p1 also holds an inductance: a participation, and a lumped value
+    # p1 also holds an inductance and a capacitance: a participation, two
+    # lumped values, and a share of the mode energy outside the dielectric
+    # (with the dielectric's alone, its bulk participation is exactly 1)
     return gfem.Model(
         mesh,
         materials={"dielectric": _field(mesh, "dielectric", conductivity=1e-3)},
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
         ports=[
-            gfem.LumpedPort("p1", "port1", "+z", resistance=1000.0, inductance=1e-9),
+            gfem.LumpedPort(
+                "p1",
+                "port1",
+                "+z",
+                resistance=1000.0,
+                inductance=1e-9,
+                capacitance=1e-14,
+            ),
             gfem.LumpedPort("p2", "port2", "+z", impedance=1000.0),
         ],
     )
