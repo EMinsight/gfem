@@ -322,20 +322,16 @@ def _debye_objective(mesh, parameter):
 
 
 @pytest.mark.parametrize(
-    ("parameter", "value", "where"),
-    [
-        ("eps_inf", 3.0, r"materials\['core'\]\.eps_r\.eps_inf"),
-        (
-            "relaxation_frequency",
-            5 * GHZ,
-            r"materials\['core'\]\.eps_r\.terms\[0\]\.relaxation_frequency",
-        ),
-    ],
+    ("parameter", "value"),
+    [("eps_inf", 3.0), ("relaxation_frequency", 5 * GHZ)],
 )
-def test_a_traced_law_parameter_raises_nondifferentiable(mesh, parameter, value, where):
+def test_a_traced_law_parameter_solves_and_differentiates(mesh, parameter, value):
+    # the law pass (ADR 0112); its finite-difference cells are the gradient
+    # matrix's "law" input
     objective = _debye_objective(mesh, parameter)
-    with pytest.raises(gfem.NonDifferentiableError, match=f"{where}.*permittivity law"):
-        jax.grad(objective)(value)
+    grad = float(jax.grad(objective)(value))
+    assert np.isfinite(grad)
+    assert grad != 0
     # a traced law solves: jit runs the forward on the concrete values
     assert float(jax.jit(objective)(value)) == pytest.approx(
         float(objective(value)), rel=1e-12
