@@ -263,6 +263,29 @@ def _in_process(monkeypatch):
     monkeypatch.setattr(workers, "run", run)
 
 
+@pytest.mark.parametrize("fits", [True, False])
+def test_workers_solve_with_the_parents_auto_choice(line, monkeypatch, fits):
+    handed = []
+
+    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+        handed.extend(a[-2].linear_solver for a in arguments)
+        keywords = keywords or [{}] * len(arguments)
+        return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
+
+    monkeypatch.setattr(workers, "run", run)
+    if not fits:
+        monkeypatch.setattr(driven, "default_retain_memory", lambda: 1)
+    rule = DrivenRule(
+        line, gfem.Driven(FREQUENCIES), gfem.SolverOptions(frequency_workers=2)
+    )
+    kind = "direct" if fits else "bddc_gmres"
+    assert rule.linear.kind == kind
+    outputs, _ = rule.forward(line, keep=False)
+    assert handed == [kind, kind]
+    direct = all(its == () for its in outputs["iterations"])
+    assert direct == fits
+
+
 @pytest.mark.parametrize(
     ("misses", "solved"),
     [

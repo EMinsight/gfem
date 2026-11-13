@@ -9,7 +9,7 @@ import dataclasses
 
 import numpy as np
 
-from gfem.mesh import _TET_FACES, Mesh
+from gfem.mesh import _TET_EDGES, _TET_FACES, Mesh
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -29,6 +29,11 @@ class EMDomain:
     excluded: tuple[tuple[int, int], ...]
     active: np.ndarray
     sides: dict[str, tuple[int, int, int]]
+    #: Edges, faces and tetrahedra of the domain, once counted
+    #: (`nedelec_unknowns`).
+    _entities: list[tuple[int, int, int]] = dataclasses.field(
+        default_factory=list, repr=False
+    )
 
     def exterior(self, surface: str) -> bool:
         """Some triangle of ``surface`` has the domain on one side only."""
@@ -41,6 +46,32 @@ class EMDomain:
     def interior(self, surface: str) -> bool:
         """Some triangle of ``surface`` has the domain on both sides."""
         return self.sides[surface][2] > 0
+
+
+def nedelec_unknowns(mesh: Mesh, domain: EMDomain, order: int) -> int:
+    """First-kind Nédélec unknowns of ``order`` on ``domain`` of ``mesh``.
+
+    ``p E + p(p-1) F + p(p-1)(p-2)/2 T`` over the domain's edges, faces and
+    tetrahedra: NGSolve's ``HCurl(order=p, type1=True)`` size. Dirichlet
+    unknowns count and periodic pairs are not compressed, so it bounds the
+    system size from above. Counted once per domain.
+    """
+    if not domain._entities:  # noqa: SLF001
+        tets = mesh.tetrahedra[domain.active]
+        edges = tets[:, np.array(_TET_EDGES)].reshape(-1, 2)
+        faces = tets[:, _TET_FACES].reshape(-1, 3)
+        counts = (_distinct_rows(edges), _distinct_rows(faces), len(tets))
+        domain._entities.append(counts)  # noqa: SLF001
+    e, f, t = domain._entities[0]  # noqa: SLF001
+    p = order
+    return p * e + p * (p - 1) * f + p * (p - 1) * (p - 2) // 2 * t
+
+
+def _distinct_rows(rows: np.ndarray) -> int:
+    """How many distinct vertex sets the rows hold."""
+    rows = np.ascontiguousarray(np.sort(rows, axis=1), dtype=np.int64)
+    keys = rows.view(np.dtype((np.void, rows.itemsize * rows.shape[1])))
+    return len(np.unique(keys))
 
 
 def entity_keys(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:

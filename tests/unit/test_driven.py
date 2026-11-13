@@ -317,6 +317,20 @@ def test_bddc_gmres_matches_direct(line):
     assert all(len(its) == 2 for its in outputs["iterations"])
 
 
+def test_auto_is_direct_while_it_fits(line, monkeypatch, caplog):
+    problem = gfem.Driven(frequency=[3e9, 4e9])
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    assert rule.linear.kind == "direct"
+    (record,) = [r for r in caplog.records if hasattr(r, "linear_solver")]
+    assert record.linear_solver == "direct"
+    assert record.estimate <= record.budget
+    # a budget below the estimate: GMRES + BDDC
+    monkeypatch.setattr(driven, "default_retain_memory", lambda: record.estimate - 1)
+    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    assert rule.linear.kind == "bddc_gmres"
+
+
 def test_bddc_tolerance_is_the_preconditioned_residual(line, monkeypatch):
     # GMRES stops on |P(b - Ax)| <= tol |P b|; S is accurate to about tol,
     # while |b - Ax| / |b| (1.6e-5 here) is not asserted: it is no error measure

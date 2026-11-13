@@ -13,6 +13,9 @@ fresh factors), ``reason`` (why a step set up or refactorized, else
 the previous design's solution (ADR 0126), else ``None``), plus the reason's
 numbers where it has some.
 
+Resolving ``linear_solver="auto"`` logs one record of the choice
+(`auto_choice`).
+
 A frequency worker logs in its own process: `collected` keeps its records
 and the parent logs them with `replay`.
 
@@ -76,6 +79,37 @@ def solve_step(
             "iterations": iterations,
             "guess": guess,
             **details,
+        },
+    )
+
+
+def auto_choice(
+    kind: str,
+    *,
+    problem: str,
+    reason: str | None = None,
+    unknowns: int | None = None,
+    estimate: int | None = None,
+    budget: int | None = None,
+) -> None:
+    """Log what ``linear_solver="auto"`` resolved to for a ``problem`` problem.
+
+    ``reason`` states the driven rule's numbers (ADR 0124); a fixed choice
+    has none. Attributes ``linear_solver``, ``unknowns``, ``estimate`` and
+    ``budget`` (bytes; ``None`` for a fixed choice).
+    """
+    why = "" if reason is None else f": {reason}"
+    LOGGER.info(
+        "linear_solver='auto' chose %r for this %s problem%s",
+        kind,
+        problem,
+        why,
+        extra={
+            "problem": problem,
+            "linear_solver": kind,
+            "unknowns": unknowns,
+            "estimate": estimate,
+            "budget": budget,
         },
     )
 
