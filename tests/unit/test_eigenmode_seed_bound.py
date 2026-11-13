@@ -64,19 +64,20 @@ def seed_solves(monkeypatch):
         solves[0] += 1
         return solve(self, b)
 
-    shift_invert = eigen_rule.shift_invert
+    rule = eigen_rule.EigenmodeRule
+    shift_invert = rule._shift_invert
     seen = []
 
-    def spy(op, project, nev, **kwargs):
+    def spy(self, op, project, nev, **kwargs):
         before = solves[0]
         try:
-            return shift_invert(op, project, nev, **kwargs)
+            return shift_invert(self, op, project, nev, **kwargs)
         finally:
             dims = seed.seed_operator(op, project).dimensions(nev)
             seen.append((*dims, solves[0] - before))
 
     monkeypatch.setattr(EigenOperator, "solve", counted)
-    monkeypatch.setattr(eigen_rule, "shift_invert", spy)
+    monkeypatch.setattr(rule, "_shift_invert", spy)
     return seen
 
 
