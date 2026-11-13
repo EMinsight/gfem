@@ -633,6 +633,17 @@ class SystemSweep:
         )
         return x, its
 
+    @property
+    def reused(self) -> bool:
+        """Whether the last solve ran on a preconditioner built for another matrix.
+
+        As the base handle's ``last_action`` tells it (``reused``, or
+        ``reused, capped, refactorized``: it started on one); ``False`` for a
+        backend that tracks none.
+        """
+        action = getattr(self._base, "last_action", None)
+        return action is not None and action.startswith("reused")
+
     def free(self, *, return_plan: bool = False, walk: bool = True) -> None:
         """Release the base handle.
 
