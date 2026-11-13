@@ -177,11 +177,18 @@ def bend(half=2.5):
     return sm.structured(edges, volume, surface)
 
 
-if __name__ == "__main__":
-    out = Path(sys.argv[1])
+def write(out: Path) -> list[Path]:
+    """Write every tutorial mesh into the directory ``out``; return the files."""
     out.mkdir(parents=True, exist_ok=True)
-    print(sm.write_msh22(out / "line.msh", line()))
-    print(sm.write_msh22(out / "cpw.msh", cpw()))
-    print(sm.write_msh22(out / "sheet_line.msh", sheet_line()))
-    print(sm.write_msh22(out / "bend.msh", bend()))
-    print(sm.write_msh22(out / "bend_7um.msh", bend(half=3.5)))
+    return [
+        sm.write_msh22(out / "line.msh", line()),
+        sm.write_msh22(out / "cpw.msh", cpw()),
+        sm.write_msh22(out / "sheet_line.msh", sheet_line()),
+        sm.write_msh22(out / "bend.msh", bend()),
+        sm.write_msh22(out / "bend_7um.msh", bend(half=3.5)),
+    ]
+
+
+if __name__ == "__main__":
+    for written in write(Path(sys.argv[1])):
+        print(written)

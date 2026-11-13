@@ -121,6 +121,24 @@ Port
   A named excitation and measurement surface, lumped or wave, whose order in the
   {term}`model` fixes the order of the network parameters.
 
+Lumped port
+  A {term}`port` on a surface that spans from one conductor to another, or on
+  several such surfaces driven together: a resistor, with an optional
+  inductance and capacitance in parallel, driven along a stated direction. Its
+  resistance is its {term}`reference impedance`.
+
+Lumped value
+  The resistance, inductance or capacitance of a {term}`lumped port` or of an
+  `Impedance` {term}`sheet`. Those that enter only the operator (a port's
+  inductance and capacitance, a sheet's three values) are design inputs; a
+  lumped port's resistance is not, because it is also its
+  {term}`reference impedance`.
+
+Wave port
+  A {term}`port` on an exterior surface, fed by one mode of the surface's
+  cross-section, which a {term}`port mode problem` supplies. It absorbs that
+  mode without reflection.
+
 Shared port surface
   An exterior surface that carries several wave ports, each requesting a
   different mode of one {term}`port mode problem`; together they form one
@@ -147,9 +165,15 @@ Terminal
   matrix.
 
 Solver options
-  The numerical knobs of a solve (polynomial order, linear solver,
+  The numerical knobs of a solve ({term}`element order`, linear solver,
   {term}`eigen solver`, tolerances, {term}`device`), kept apart from the
   {term}`model` and problem type.
+
+Element order
+  The polynomial order of the finite elements, `SolverOptions.order`, 2 by
+  default and at most 12 (the order of the Nédélec elements that carry the
+  electric field). A higher order is more accurate on the same mesh and costs
+  more time and memory.
 
 Device
   The hardware a solve's linear algebra runs on, the CPU or one CUDA GPU; part
@@ -212,11 +236,36 @@ Partial result
   the linear solver stopped converging, carried by the error that reports it
   (`gfem.LinearSolverConvergenceError`).
 
+Result bundle
+  The files a {term}`job`'s run writes for its result, `result.json` and
+  `result.npz`, read back by `gfem.load_result` as the same result the
+  in-process solve returns. It exists only for a run that completed.
+
+Partial bundle
+  The files a {term}`job`'s run writes in place of its result files when a
+  uniform sweep stopped at an {term}`unsolved frequency`: `partial.json` and
+  `partial.npz`, holding the {term}`partial result`, the unsolved frequencies
+  and the error's message. Read it by name,
+  `gfem.load_result("DIR/partial.json")`; `gfem.load_result("DIR")` reads only
+  a complete result.
+
 Unsolved frequency
   A frequency of a uniform sweep that has no entry in the
   {term}`partial result`: the linear solve did not converge there, or the sweep
   (or its {term}`frequency worker`'s block) stopped at an earlier frequency that
   did not converge.
+
+S-parameters
+  The network parameters of a {term}`driven problem`: the entry from port j to
+  port i is the wave leaving port i for a unit wave sent into port j, every
+  other port terminated in its {term}`reference impedance`. gfem's are
+  {term}`power waves`, one matrix per frequency.
+
+Power waves
+  The incident and outgoing waves a and b of each {term}`port` (Kurokawa),
+  defined from its peak voltage and current and its
+  {term}`reference impedance` so that abs(a)² is the time-averaged incident
+  power in W; b = S a.
 
 Reference impedance
   The impedance per {term}`port` that S-parameters are normalized to: the port
@@ -225,13 +274,44 @@ Reference impedance
 
 Participation ratio
   The fraction of a mode's electric or inductive energy stored in one region,
-  port or interface.
+  port, sheet or interface. The participation ratio of a lumped port with an
+  inductance is the junction participation when that port stands for a
+  Josephson junction.
 
 Principal participation
   The fraction of a mode's electric energy stored in one
   {term}`anisotropic <Anisotropic material>` region by the field component
   along one of the region's {term}`principal axes`; the three sum to the
   region's {term}`participation ratio`.
+
+Sheet participation
+  The {term}`participation ratio` of an inductive {term}`sheet`: the fraction
+  of a mode's energy stored in the sheet's inductance. For a lossless mode on
+  a superconducting film it equals the kinetic inductance fraction.
+
+Dressed mode
+  A mode of the structure after the junction's cosine potential is added to
+  the solved linear modes: its transition frequency, {term}`Lamb shift`,
+  {term}`anharmonicity` and {term}`dispersive shifts <Dispersive shift>`.
+
+Dispersive shift
+  The change of one {term}`dressed mode`'s transition frequency per photon in
+  another, a signed angular frequency; the full shift, not half of it.
+
+Anharmonicity
+  The second transition frequency of a {term}`dressed mode` minus its first, a
+  signed angular frequency; negative for a transmon.
+
+Lamb shift
+  A {term}`dressed mode`'s transition frequency minus the frequency of the
+  solved linear mode.
+
+Loss budget
+  The split of a mode's 1/Q into the contributions of its loss channels: the
+  loss in the model (materials, walls, sheets, resistive ports, absorbing
+  boundaries), which the eigenfrequency already carries, plus each channel
+  outside the model, which adds its {term}`participation ratio` times its
+  loss tangent.
 
 Measurement
   A post-solve function of a result's {term}`fields <Field>` that needs extra
@@ -257,6 +337,12 @@ Material
   tangent and electrical conductivity (S/m), assigned to a whole
   {term}`region`; each property may be one value or, for an
   {term}`anisotropic material`, a tensor.
+
+Loss tangent
+  The ratio tan δ of the imaginary to the real part of a {term}`material`'s
+  permittivity, ε = ε′ (1 − i tan δ) under e^{+iωt}: the dielectric loss
+  (`Material(tan_delta=...)`). A region holding the share p of a mode's
+  electric energy adds p tan δ to the mode's 1/Q.
 
 Anisotropic material
   A {term}`material` whose permittivity, permeability, loss tangent or
@@ -340,6 +426,11 @@ Element quality
 Remesh and restart
   Regenerating the mesh at the current {term}`design parameters` and restarting
   the optimizer's history.
+
+Adjoint solve
+  The extra linear solve, on the system a forward solve already assembled,
+  that gives the gradient of an {term}`objective` with respect to all
+  {term}`design parameters` at once. `jax.grad` runs it; you never write it.
 
 Objective
   A scalar function of a solution (S-parameter, eigenfrequency, Q, field

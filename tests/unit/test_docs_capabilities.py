@@ -37,6 +37,8 @@ GRID = {
     "driven_periodic_bloch": (V, V, V, V),
     "eigenmode_periodic_plain": (V, V, V, V),
     "eigenmode_periodic_bloch": (V, V, V, V),
+    "eigenmode_participation": (V, V, V, V),
+    "eigenmode_field": (V, V, V, R),
 }
 FRONT = ("driven", "eigenmode", "electrostatic", "port_mode")
 
@@ -62,7 +64,8 @@ def test_matrix_matches_the_reviewed_grid(derived):
 def test_counts_come_from_the_cells(derived):
     counts = derived["counts"]
     per_grid_cell = [c["cells"] for r in derived["rows"] for c in r["cells"]]
-    assert counts["cells"] == sum(per_grid_cell)
+    off_grid = [entry["cells"] for entry in derived["also"]]
+    assert counts["cells"] == sum(per_grid_cell) + sum(off_grid)
     assert counts["cells"] == counts["direct"] + counts["bddc_gmres"]
     assert counts["direct"] > 0
     assert counts["bddc_gmres"] > 0
@@ -96,6 +99,7 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
         ("eigenmode", "eps_r"),
         ("eigenmode", "conductivity"),
         ("electrostatic", "eps_r"),
+        ("eigenmode_participation", "eps_r"),
     }
     for row in derived["rows"]:
         for cell in row["cells"]:
@@ -107,6 +111,42 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
                 assert cell["forms_text"] == "", key
     # the label (and so the front page's compact matrix) does not change
     assert _cell(derived, "driven", "eps_r")["label"] == "FD-verified"
+
+
+def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
+    # no column of their own: one phrase per row and group under the matrix
+    assert [(e["key"], e["inputs"], e["cells"]) for e in derived["also"]] == [
+        ("driven", ["permeability", "loss tangent"], 4),
+        ("driven", ["lumped values"], 4),
+        ("eigenmode", ["permeability", "loss tangent"], 2),
+        ("eigenmode", ["lumped values"], 2),
+        ("eigenmode_participation", ["lumped values"], 5),
+        ("eigenmode_field", ["lumped values"], 1),
+    ]
+    assert [e["text"] for e in derived["also"]] == [
+        (
+            "Driven with respect to the permeability and the loss tangent "
+            "(isotropic and principal values, direct solver, uniform sweep)"
+        ),
+        (
+            "Driven with respect to the lumped values "
+            "(direct solver, BDDC + GMRES, uniform and adaptive sweep)"
+        ),
+        (
+            "Eigenmode with respect to the permeability and the loss tangent "
+            "(direct solver)"
+        ),
+        "Eigenmode with respect to the lumped values (direct solver, BDDC + GMRES)",
+        "Eigenmode, participations with respect to the lumped values (direct solver)",
+        "Eigenmode, mode field with respect to the lumped values (direct solver)",
+    ]
+
+
+def test_an_off_grid_cell_the_raise_table_does_not_expect_fails(data):
+    # the electrostatic solve never reads mu_r: an exact zero, not a gradient
+    cells = [*data[0], dataclasses.replace(data[0][0], input="mu_r")]
+    with pytest.raises(caps.CapabilitiesError, match="Electrostatic x permeability"):
+        _derive(data, cells=cells)
 
 
 def test_periodic_rows_carry_their_own_solvers_and_sweeps(derived):
@@ -126,9 +166,17 @@ def test_periodic_rows_carry_their_own_solvers_and_sweeps(derived):
     ]
     for cell in rows["driven_periodic_bloch"]["cells"]:
         assert cell["sweeps"] == ["uniform"]
-    assert {r["recipe"] for k, r in rows.items() if k not in FRONT} == {
+    assert {r["recipe"] for k, r in rows.items() if "periodic" in k} == {
         "recipes/periodic-cell"
     }
+
+
+def test_the_mode_field_rows_link_the_recipe_of_their_outputs(derived):
+    # participations and port Q are eigenmode outputs; the field is read by
+    # the measurements (probes and interface participation)
+    rows = {r["key"]: r for r in derived["rows"]}
+    assert rows["eigenmode_participation"]["recipe"] == "recipes/eigenmode-gradient"
+    assert rows["eigenmode_field"]["recipe"] == "recipes/measurements"
 
 
 def test_only_the_four_problem_types_are_front_page_rows(derived):
@@ -146,7 +194,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 18
+    assert len(rows) == 37
     assert "electrostatic x sheet fill" not in rows
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
     assert rows["material axes (orientation)"] == {
@@ -214,7 +262,7 @@ def _derive(data, cells=None, expected=None, out_of_scope=None):
 
 
 def test_unchanged_data_derives(data):
-    assert len(_derive(data)["rows"]) == 8
+    assert len(_derive(data)["rows"]) == 10
 
 
 def test_a_new_problem_in_the_cells_fails(data):

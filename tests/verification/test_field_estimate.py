@@ -95,6 +95,11 @@ Measured (order 3, direct, ostau, 1 thread):
     loss-jump port line, n = 4,
     order-7 reference                   0.88, 0.89 (tan_delta 0.5)
                                         0.85, 0.89 (1 S/m)
+
+Measured (order 4, direct, ostau, 1 thread), a drift fence outside the
+claimed orders:
+
+    L cavity, n = 2, 4                  0.947, 0.929
 """
 
 import cmath
@@ -111,6 +116,7 @@ import gfem
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 ORDER_3 = gfem.SolverOptions(order=3, linear_solver="direct")
+ORDER_4 = gfem.SolverOptions(order=4, linear_solver="direct")
 
 #: Asserted field effectivity range per case (measured, with margin).
 FIELD_EFFECTIVITY_BY_CASE = {
@@ -136,6 +142,9 @@ FIELD_EFFECTIVITY_ORDER_3_BY_CASE = {
     "two-layer box": (0.9, 1.6),
     "lossy-wall box": (0.9, 1.6),
 }
+
+#: The order-4 drift fence on the L cavity (measured 0.947, 0.929); not claimed.
+FIELD_EFFECTIVITY_ORDER_4 = (0.9, 2.0)
 
 #: The range the docs quote: the lowest low and the highest high, both orders.
 FIELD_EFFECTIVITY = (
@@ -285,6 +294,17 @@ def test_the_cavity_effectivity_at_order_3(tmp_path, n):
     result = gfem.solve(model, rc.CAVITY_PROBLEM, options=ORDER_3)
     estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
     _assert_in("L cavity", estimate.value, _cavity_error(result), order=3)
+
+
+# A drift fence, not a claim: the docs claim `FIELD_EFFECTIVITY` at orders 2
+# and 3 only. Order 4 and above run, unverified beyond this one case.
+@pytest.mark.parametrize("n", [2, 4])
+def test_the_cavity_effectivity_at_order_4(tmp_path, n):
+    model = rc.cavity_model(tmp_path, n)
+    result = gfem.solve(model, rc.CAVITY_PROBLEM, options=ORDER_4)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    low, high = FIELD_EFFECTIVITY_ORDER_4
+    assert low < estimate.value / _cavity_error(result) < high
 
 
 def _adaptive(model, problem, max_tetrahedra):

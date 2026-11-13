@@ -1,13 +1,21 @@
 """Sweep outputs at their interface: rows, join, the seam's names and specs.
 
-Small arrays and duck-typed wave port couplings; no mesh, no solve.
+Small arrays and duck-typed wave port couplings; no mesh, no solve. The
+eigenmode and electrostatic rules have no such encoding: their forward
+outputs are checked against their own ``output_specs`` at the end, on the
+smallest meshes.
 """
 
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import structured_meshes as sm
+from eigen_cases import F1, line, line_mesh
 
+import gfem
+from gfem._eigen.rule import EigenmodeRule
+from gfem._engine.electrostatic import ElectrostaticRule
 from gfem._engine.sweep_outputs import DIFFERENTIABLE, SweepOutputs
 
 N_FREQ, N_PORTS, N_EXC, NDOF, M = 4, 3, 2, 7, 5
@@ -140,10 +148,32 @@ def test_join_keeps_no_field_when_no_block_kept_any():
     assert "e_field" not in out.outputs()
 
 
-def test_join_refuses_blocks_with_wave_ports():
+def test_join_takes_the_whole_grids_port_modes_at_the_joined_rows():
+    # workers return their blocks without port modes: the parent's sweeps
+    # over the whole grid give the rows the blocks solved
     rng = np.random.default_rng(5)
+    sweeps = [_wave(rng, "w1").sweep, _wave(rng, "w2").sweep]
+    blocks = [
+        ((0, 1), _uniform(rng, (0,), fields=False)),
+        ((2, 3), _uniform(rng, (0, 1), fields=False)),
+    ]
+    out = SweepOutputs.join(blocks, sweeps=sweeps)
+    assert out.rows == (0, 2, 3)
+    ports = out.ports
+    assert ports is not None
+    assert ports.rows == out.rows
+    for name in ("gamma", "z_pv", "residual", "solved"):
+        expected = np.stack([getattr(w, name) for w in sweeps], axis=1)[[0, 2, 3]]
+        np.testing.assert_array_equal(getattr(ports, name), expected)
+    np.testing.assert_array_equal(ports.field(1)._parts[2], sweeps[1].coords[[0, 2, 3]])
+    assert out.outputs()["port_sweeps"] == sweeps
+
+
+def test_join_refuses_a_blocks_own_port_modes():
+    # a block's own port mode sweep is not the whole grid's (ADR 0099)
+    rng = np.random.default_rng(6)
     block = _uniform(rng, (0, 1), waves=[_wave(rng, "w1")])
-    with pytest.raises(ValueError, match="wave ports"):
+    with pytest.raises(ValueError, match="port mode"):
         SweepOutputs.join([((0, 1, 2, 3), block)])
 
 
@@ -264,3 +294,60 @@ def test_reading_the_spec_names_only_gives_no_host_only_field():
     assert back.ports.field(0) is None
     np.testing.assert_array_equal(back.s, out.s)
     assert back.reduced[0] is out.reduced[0]
+
+
+# --- the rules without a sweep: forward outputs against output_specs -------------
+
+
+def _check_forward(rule, model):
+    """Every forward output has its spec's name, dtype and shape."""
+    specs = rule.output_specs(model)
+    outputs, _ = rule.forward(model, keep=False)
+    assert set(outputs) == set(specs)
+    for name, spec in specs.items():
+        value = np.asarray(outputs[name])
+        assert value.shape == spec.shape, name
+        assert value.dtype == spec.dtype, name
+    return specs
+
+
+@pytest.fixture(scope="module")
+def line_grid(tmp_path_factory):
+    return line_mesh(tmp_path_factory.mktemp("line"))
+
+
+def test_eigenmode_outputs_match_their_specs_without_ports(line_grid):
+    model = line(line_grid, tan_delta=1e-3)
+    problem = gfem.Eigenmode(1.6 * F1, n_modes=2)
+    specs = _check_forward(EigenmodeRule(model, problem, gfem.SolverOptions()), model)
+    assert specs["q_port"].shape == (0, 2)
+    assert specs["participation"].shape == (0, 2)
+
+
+def test_eigenmode_outputs_match_their_specs_with_both_kinds_of_port(line_grid):
+    ports = [
+        gfem.LumpedPort("load", "port1", "+z", impedance=1000.0),
+        gfem.LumpedPort("jj", "port2", "+z", inductance=1e-9),
+    ]
+    model = line(line_grid, ports=ports)
+    problem = gfem.Eigenmode(8e9, n_modes=2)
+    specs = _check_forward(EigenmodeRule(model, problem, gfem.SolverOptions()), model)
+    assert specs["q_port"].shape == (1, 2)
+    assert specs["participation"].shape == (1, 2)
+
+
+@pytest.mark.parametrize(
+    "terminals", [{"top": "top"}, {"top": "top", "mid": "oxide__nitride"}]
+)
+def test_electrostatic_outputs_match_their_specs(tmp_path, terminals):
+    path = tmp_path / "stack.msh"
+    layers = (("oxide", 0.5), ("nitride", 0.25))
+    sm.write_msh22(path, sm.plate(4.0, 3.0, layers, (1, 1, 1)))
+    materials = {"oxide": gfem.Material(eps_r=3.9), "nitride": gfem.Material(eps_r=7.5)}
+    model = gfem.Model(gfem.Mesh.from_gmsh(path), materials=materials)
+    problem = gfem.Electrostatic(terminals=terminals, ground="bottom")
+    rule = ElectrostaticRule(model, problem, gfem.SolverOptions())
+    specs = _check_forward(rule, model)
+    n = len(terminals)
+    assert specs["capacitance"].shape == (n, n)
+    assert specs["energy"].shape == (2, n)

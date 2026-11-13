@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from jax.test_util import check_grads
 
+import gfem
 from gfem import design
 
 # --- project -----------------------------------------------------------------------
@@ -37,6 +38,31 @@ def test_project_gradients():
     rho = jnp.linspace(0.05, 0.95, 7)
     check_grads(lambda r: design.project(r, beta=6.0, eta=0.4), (rho,), order=2)
     check_grads(lambda b: design.project(rho, beta=b), (4.0,), order=1)
+
+
+@pytest.mark.parametrize("beta", [16.0, 32.0, 48.0])
+def test_project_stays_in_the_unit_interval_against_round_off(beta):
+    rho = jnp.concatenate(
+        [jnp.linspace(0, 0.05, 100001), jnp.linspace(0.95, 1, 100001)]
+    )
+    p = np.asarray(design.project(rho, beta=beta))
+    assert p.min() >= 0.0
+    assert p.max() <= 1.0
+    assert p[0] == 0.0
+    assert p[-1] == 1.0
+
+
+def test_project_gradient_at_void_and_solid_is_the_tanh_slope():
+    # A clamp that halves the slope at a tie (jnp.clip) fails this.
+    grad = jax.grad(lambda r: design.project(r, beta=8.0).sum())(jnp.array([0.0, 1.0]))
+    slope = 8 / np.cosh(4.0) ** 2 / (2 * np.tanh(4.0))
+    np.testing.assert_allclose(grad, [slope, slope], rtol=1e-12)
+
+
+def test_sheet_field_accepts_a_projected_density():
+    fill = design.project(jnp.linspace(0, 0.05, 100001), beta=32.0)
+    field = gfem.SheetField.interpolate(fill)
+    assert np.asarray(field.fill).min() == 0.0
 
 
 # --- robust ------------------------------------------------------------------------
@@ -143,7 +169,9 @@ def test_layer_grid_is_constant_through_the_thickness(stack):
 
 
 def test_layer_grid_warns_about_pixels_no_element_samples(stack):
-    with pytest.warns(UserWarning, match=r"(?s)\d+ of 800 pixels.*coarsen"):
+    with pytest.warns(
+        gfem.UnsampledPixelsWarning, match=r"(?s)\d+ of 800 pixels.*coarsen"
+    ):
         grid = design.LayerGrid(stack, "design", pitch=0.025 * MM)
     assert grid.shape == (20, 40)
     assert grid.sampled.shape == grid.shape

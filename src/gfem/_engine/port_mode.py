@@ -103,6 +103,15 @@ class PortModeSpace:
         self._coef = _coefficients(self.mesh, section)
         self.pencil = self._assemble()
 
+    def __reduce__(self) -> tuple[type[PortModeSpace], tuple[PortSection, int]]:
+        """Pickle as the section and order, rebuilt on load.
+
+        The NGSolve mesh and spaces do not pickle; the rebuild from the same
+        section is deterministic, so a basis on the old space (the mode
+        fields of a result sent across processes) stands on the new one.
+        """
+        return (PortModeSpace, (self.section, self.order))
+
     # --- assembly -------------------------------------------------------------
 
     def _assemble(self) -> Pencil:

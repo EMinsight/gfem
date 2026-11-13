@@ -21,6 +21,7 @@ get-started
 tutorials/topology
 tutorials/sheet
 tutorials/shape
+tutorials/transmon
 tutorials/bend
 tutorials/bend3d
 ```
@@ -32,6 +33,7 @@ tutorials/bend3d
 recipes/s-parameter-gradient
 recipes/capacitance-gradient
 recipes/eigenmode-gradient
+recipes/quantum-metrics
 recipes/shape-gradient
 recipes/adaptive-sweep-gradient
 ```
@@ -49,11 +51,15 @@ recipes/remesh-and-restart
 :hidden:
 :caption: Solving
 
+recipes/solve-a-device
+recipes/prepare-a-mesh
+recipes/save-and-export
 recipes/mesh-refinement
 recipes/anisotropic-materials
 recipes/periodic-cell
 recipes/shared-port-surface
 recipes/measurements
+recipes/loss-budget
 recipes/gpu-direct-solver
 recipes/petsc-slepc
 recipes/distributed-solve
@@ -75,6 +81,7 @@ verification
 :caption: API
 
 api/index
+conventions
 glossary
 ```
 

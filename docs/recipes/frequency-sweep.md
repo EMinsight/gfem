@@ -26,6 +26,10 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
 - The sweep solves a few sample frequencies in full, every excited port at
   once. It reads S and the kept fields at every frequency of the grid from a
   {term}`reduced model` built on those solutions.
+- Each sample also solves one right-hand side per port left out of
+  `Driven(excite=...)`, so that gradients are exact at the samples
+  ({doc}`adaptive-sweep-gradient`). `excite=` saves solves in a uniform
+  sweep, not in an adaptive one.
 - It pays off above about 20 frequencies. Below that, keep the uniform sweep.
 - `result.sweep.solved` marks, frequency by frequency, the ones solved in
   full. The rest come from the reduced model.
@@ -34,6 +38,10 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
 - A sweep that reaches `SolverOptions.adaptive_max_samples` first warns with
   {py:obj}`gfem.SweepNotConvergedWarning` and reports `converged=False`. Raise
   `adaptive_max_samples`.
+- A sweep that comes near the accuracy of its full solves warns with
+  {py:obj}`gfem.SweepRankDeficientWarning` and goes on. Tighten
+  `SolverOptions.tolerance` or loosen `adaptive_tolerance` if it then fails
+  to converge.
 - On a short grid the sweep may run out of frequencies. It then solves every
   one in full, as a uniform sweep does, and reports `converged=True`.
 
@@ -86,6 +94,10 @@ if __name__ == "__main__":
 - Each frequency is still a full solve, so S agrees with a one-worker run to
   the solver tolerance.
 - Gradients work as usual. The adjoint solves run in the main process.
+- Wave ports work too. The main process solves their port modes once over the
+  whole grid before the workers start, so S and the reference impedances are
+  those of a one-worker run, and a {py:obj}`gfem.PortModeError` is raised
+  before any worker starts.
 
 ## Choose between them
 
@@ -115,9 +127,6 @@ How gfem itself is checked: {doc}`../verification`.
 
 - A GPU device needs `frequency_workers=1` (`ValueError` otherwise): the
   workers would share one GPU's memory. Run the sweep in one process there.
-- A uniform sweep with wave ports over more than one frequency raises
-  `NotImplementedError` with `frequency_workers` above 1. Use
-  `frequency_workers=1` or the adaptive sweep.
 - A Bloch wave vector takes only the uniform sweep: the adaptive sweep raises
   `NotImplementedError` ({doc}`periodic-cell`). Plain periodicity takes both.
 - Across MPI ranks, frequency workers raise

@@ -104,6 +104,7 @@ Measured (ostau, 1 thread):
     lossy walls           4.34 - 9.17
     resistive line        1.47 - 7.44
     order 3: line 3.10 - 19.6, box (m = 1) 4.69 - 5.39
+    order 4: L cavity (n = 2, 4) 1.80, 1.73
 
 The higher ratios come from the fields with no sharp metal edge (the uniform
 line and the empty box), where the curl and mass terms of the error identity
@@ -946,3 +947,23 @@ def test_the_parallel_plate_line_s_at_order_3(tmp_path, n):
 def test_the_rectangular_box_frequencies_at_order_3(tmp_path):
     for f, estimate, exact in _box(tmp_path, 1, order=3):
         _assert_order_3("rectangular box", estimate, f / exact - 1)
+
+
+# --- order 4 -----------------------------------------------------------------
+
+
+#: The order-4 drift fence on the L cavity's omega (measured 1.80, 1.73): the
+#: order-3 fence's bounds. Not a claim: order 4 and above run, unverified
+#: beyond this one case.
+ORDER_4_EFFECTIVITY = (0.9, 25.0)
+
+
+@pytest.mark.parametrize("n", [2, 4])
+def test_the_l_cavity_frequency_at_order_4(tmp_path, n):
+    model = rc.cavity_model(tmp_path, n)
+    options = gfem.SolverOptions(order=4, linear_solver="direct")
+    result = gfem.solve(model, rc.CAVITY_PROBLEM, options=options)
+    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    error = abs(rc.cavity_frequency(result) / rc.CAVITY_F1 - 1)
+    low, high = ORDER_4_EFFECTIVITY
+    assert low < estimate.value / error < high

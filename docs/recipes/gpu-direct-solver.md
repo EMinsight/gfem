@@ -20,13 +20,17 @@ nothing, and a GPU request says that CUDA is not supported there.
 import gfem
 
 device = "cuda" if gfem.cuda_available() else "cpu"
-options = gfem.SolverOptions(linear_solver="direct", device=device)
+options = gfem.SolverOptions(device=device)
 result = gfem.solve(model, problem, options=options)
 ```
 
 - `device="cuda"` is the first GPU, `"cuda:1"` the second.
-- A GPU needs `linear_solver="direct"`; `SolverOptions` refuses any other
-  solver with a GPU.
+- On a GPU the default `linear_solver="auto"` is the direct solver, the only
+  one that runs there; `SolverOptions` refuses `"bddc_gmres"` and `"petsc"`
+  with a GPU. On the CPU the same `"auto"` options run the problem type's
+  default (the iterative solver for a driven problem), and so does a saved
+  {term}`job` run with `--device cpu`. Write `linear_solver="direct"` to get
+  the direct solver on both.
 - There is no automatic choice: you pick the device, and a saved
   {term}`job` keeps it.
 - {py:obj}`gfem.cuda_available` starts a CUDA context, so it is `False` on a machine
@@ -34,9 +38,8 @@ result = gfem.solve(model, problem, options=options)
   import.
 - Wave port modes are 2D problems and always run on the CPU. Inside a driven
   sweep with wave ports, only the 3D solve uses the GPU. A standalone
-  `gfem.PortMode` solve with a `device` other than `"cpu"`, or any
-  `linear_solver` but the default, raises `ValueError`: leave both at their
-  defaults.
+  `gfem.PortMode` solve ignores `device` and `linear_solver`, so the options
+  of the driven solve serve it too.
 
 When the GPU cannot be used, the solve raises `gfem.DeviceUnavailableError`.
 Its message gives the reason and the fix: install the extra, the CUDA
@@ -69,6 +72,13 @@ factors in CPU memory (cuDSS's hybrid memory mode): slower, but it runs.
   eigenfrequencies, should agree to the solver tolerance.
 
 How gfem itself is checked: {doc}`../verification`.
+
+## Limits
+
+- An eigenmode solve on the GPU differentiates its eigenfrequencies only. A
+  gradient through a mode's field (participations, port Q, the field itself)
+  raises `gfem.NonDifferentiableError` with `device="cuda"`: solve on the CPU
+  for those ({doc}`eigenmode-gradient`).
 
 ## Next
 

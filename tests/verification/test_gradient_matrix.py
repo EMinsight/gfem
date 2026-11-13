@@ -2,7 +2,8 @@
 
 One cell per problem type x input kind x linear solver x frequency sweep:
 
-- problems: electrostatic capacitance (and a potential functional), driven
+- problems: electrostatic capacitance (and a potential functional, and the
+  region energies), driven
   S on lumped ports and on wave ports (lossless, lossy, and two modes per
   shared port surface, read through cross-mode entries), driven S (and
   probed fields) on a periodic cell with plain and Bloch periodicity,
@@ -10,7 +11,10 @@ One cell per problem type x input kind x linear solver x frequency sweep:
 - inputs: per-element permittivity ``eps_r`` and conductivity, the same per
   principal value of a field with axes (``eps_r_axes``,
   ``conductivity_axes``: biaxial values on the `TILTED` axes, so every
-  entry of each projector is exercised), the fill of a `gfem.SheetField`,
+  entry of each projector is exercised), the permeability ``mu_r`` and the
+  loss tangent ``tan_delta`` (driven and eigenmode, on the direct solver:
+  the solver and sweep paths are the permittivity's), the fill of a
+  `gfem.SheetField`,
   and the mesh node coordinates (through `gfem.shape.boundary_morph`);
 - solvers: ``direct`` and ``bddc_gmres``; sweeps: uniform and adaptive (with
   frozen samples; the objective reads S at the samples, where the reduced
@@ -72,21 +76,37 @@ from gradient_cases import (
     BIAXIAL,
     CAVITY_TARGET,
     EPS0,
+    GUIDE_TARGET,
+    JUNCTION_CHI_L,
+    JUNCTION_TARGET,
+    KINETIC_CAPACITANCE,
+    KINETIC_TARGET,
+    LOSSLESS_LUMPED,
+    LUMPED,
+    LUMPED_TARGET,
     MIRRORED_TARGET,
     OMEGA_WEIGHT,
     RESONATOR_TARGET,
     SHEETS,
     STACK_PROBLEM,
+    absorbing_guide,
     capacitor,
     cavity_fill,
     cavity_model,
     core_design,
+    guide_model,
     hybrid_line,
     hybrid_mesh,
+    junction_line,
+    junction_mesh,
+    junction_values,
+    kinetic_cavity,
     layered_line,
     layered_resonator,
     line_axes_design,
     line_design,
+    lossless_lumped_line,
+    lumped_line,
     mirrored_cavity,
     on_the_sheet,
     ramp,
@@ -98,6 +118,7 @@ from gradient_cases import (
     sheet_fill,
     sheet_line,
     sheet_mesh,
+    split_cavity,
     stack,
     stack_fields,
     terminated,
@@ -150,6 +171,10 @@ def _cells() -> list[Cell]:
             Cell("electrostatic", "eps_r_axes", solver),
             Cell("electrostatic", "nodes", solver, variant="capacitance"),
             Cell("electrostatic", "nodes", solver, variant="potential"),
+            *(
+                Cell("electrostatic", name, solver, variant="energy")
+                for name in ("eps_r", "eps_r_axes", "nodes")
+            ),
         ]
         for sweep in ("uniform", "adaptive"):
             cells += [
@@ -164,6 +189,8 @@ def _cells() -> list[Cell]:
                 ("conductor", "impedance") if sweep == "uniform" else ("impedance",)
             )
             cells += [Cell("driven", "fill", solver, sweep, s) for s in sheets]
+            # a lumped port's L and C, an impedance sheet's R and L
+            cells.append(Cell("driven", "lumped", solver, sweep))
             # Wave ports: every port x input on the direct solver; on BDDC +
             # GMRES the lossy ports (the adjoint solve through the port
             # operator's Woodbury update, the adjoint loads' extra columns at
@@ -196,9 +223,17 @@ def _cells() -> list[Cell]:
                 "eps_r_axes",
                 "conductivity_axes",
                 "fill",
+                "lumped",
                 "nodes",
             )
         ]
+    # the curl (mu_r) and loss (tan_delta) paths: one solver and one sweep
+    cells += [
+        Cell("driven", f"{name}{form}", "direct", "uniform")
+        for form in ("", "_axes")
+        for name in ("mu_r", "tan_delta")
+    ]
+    cells += [Cell("eigenmode", name, "direct") for name in ("mu_r", "tan_delta")]
     return cells
 
 
@@ -250,7 +285,98 @@ def _eigen_periodic_cells() -> list[Cell]:
     ]
 
 
-CELLS = [*_cells(), *_driven_periodic_cells(), *_eigen_periodic_cells()]
+# --- eigenmode mode-field cells (quantum metrics) ----------------------------------
+
+
+def _participation_cells() -> list[Cell]:
+    """The ratios of the result (``eigenmode_participation``), on ``direct``.
+
+    By fixture variant (`_participation`): fixture J (`junction_line`)
+    lossless, with a resistive port, lossy (complex permittivity, a
+    conductivity, a static loss tangent), with a `gfem.Conductor` top, with
+    a capacitive junction, with fields of principal values; the shorted
+    guide's second-order absorbing wall; the glued line's resistive
+    `gfem.Impedance` sheet; the mirrored cavity's pair split to a relative
+    gap of 2.5e-4 (above the isolation threshold 1e-4). The node cells move
+    fixture J's interface (`_participation_nodes`), with the static values
+    of each variant (the lossy one's loss tangent among them). The sheet
+    cavity's inductive `gfem.Impedance`, with a capacitance or without,
+    gives the sheet participation and the sheet's share of the mode energy
+    (`_kinetic`); its node cells move the sheet. The ``"chi"`` cells read
+    the dispersive shift of `gfem.quantum.dressed_modes` between fixture J's
+    two lowest modes (`_chi`), the whole chain from the solve. The lumped
+    cells read one ratio each of the lossy glued line in its port's L and C
+    and its sheet's R, L and C, and the dressed anharmonicity of the
+    lossless line's junction mode in its port's and sheet's L and C, the
+    port's L also given to `gfem.quantum.dressed_modes` (`_lumped_ratio`).
+    """
+    key = "eigenmode_participation"
+    return [
+        Cell(key, "eps_r", "direct", variant="inductive"),
+        Cell(key, "nodes", "direct", variant="inductive"),
+        Cell(key, "eps_r", "direct", variant="resistive"),
+        Cell(key, "nodes", "direct", variant="resistive"),
+        Cell(key, "eps_r", "direct", variant="lossy"),
+        Cell(key, "conductivity", "direct", variant="lossy"),
+        Cell(key, "nodes", "direct", variant="lossy"),
+        Cell(key, "eps_r", "direct", variant="conductor"),
+        Cell(key, "nodes", "direct", variant="conductor"),
+        Cell(key, "eps_r", "direct", variant="absorbing2"),
+        Cell(key, "eps_r", "direct", variant="capacitive_port"),
+        Cell(key, "nodes", "direct", variant="capacitive_port"),
+        Cell(key, "fill", "direct", variant="resistive_sheet"),
+        Cell(key, "eps_r", "direct", variant="near_pair"),
+        Cell(key, "eps_r_axes", "direct", variant="principal"),
+        Cell(key, "nodes", "direct", variant="principal"),
+        Cell(key, "fill", "direct", variant="sheet"),
+        Cell(key, "eps_r", "direct", variant="sheet"),
+        Cell(key, "nodes", "direct", variant="sheet"),
+        Cell(key, "eps_r", "direct", variant="capacitive_sheet"),
+        Cell(key, "fill", "direct", variant="capacitive_sheet"),
+        Cell(key, "nodes", "direct", variant="capacitive_sheet"),
+        Cell(key, "eps_r", "direct", variant="chi"),
+        Cell(key, "nodes", "direct", variant="chi"),
+        # the lumped values (ticket 21): one cell per ratio (`_lumped_ratio`)
+        *(
+            Cell(key, "lumped", "direct", variant=v)
+            for v in (
+                "participation",
+                "q_port",
+                "bulk",
+                "sheet_participation",
+                "anharmonicity",
+            )
+        ),
+    ]
+
+
+def _field_cells() -> list[Cell]:
+    """The normalized mode field (``eigenmode_field``), on ``direct``.
+
+    By fixture variant (`_field`): the interface participation of fixture
+    J's layer interface (lossless) and of the sheet cavity's walls (a
+    `gfem.Conductor` film, in its fill); a probed field component times a
+    phase, so the phase rule's multiplier is nonzero, on fixture J with a
+    resistive port and on the terminated resonator (in its conductivity),
+    and on the lossy glued line in its lumped values (`_lumped_ratio`).
+    """
+    key = "eigenmode_field"
+    return [
+        Cell(key, "eps_r", "direct", variant="interface"),
+        Cell(key, "eps_r", "direct", variant="probe"),
+        Cell(key, "conductivity", "direct", variant="probe"),
+        Cell(key, "fill", "direct", variant="interface"),
+        Cell(key, "lumped", "direct", variant="probe"),
+    ]
+
+
+CELLS = [
+    *_cells(),
+    *_driven_periodic_cells(),
+    *_eigen_periodic_cells(),
+    *_participation_cells(),
+    *_field_cells(),
+]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
 #: Woodbury update, and the eigenmode seed on SLEPc.
@@ -262,11 +388,16 @@ PETSC_CELLS = [
     Cell("eigenmode", "eps_r", "petsc"),
     # plain periodicity keeps every backend (Bloch on PETSc raises)
     Cell("driven_periodic_plain", "eps_r", "petsc", "uniform"),
+    # the mode-field adjoint after SLEPc seeds (its linear solver stays
+    # direct: a PETSc one raises for a mode-field cotangent)
+    Cell("eigenmode_participation", "eps_r", "direct", variant="slepc"),
 ]
 PETSC_PARAMS = [
     pytest.param(
         cell,
-        marks=pytest.mark.slepc if cell.problem == "eigenmode" else pytest.mark.petsc,
+        marks=pytest.mark.slepc
+        if cell.problem.startswith("eigenmode")
+        else pytest.mark.petsc,
     )
     for cell in PETSC_CELLS
 ]
@@ -377,6 +508,18 @@ class Designs:
         return mirrored_cavity(self._dir("mirrored"))
 
     @functools.cached_property
+    def corner_cavity(self):
+        return mirrored_cavity(self._dir("corner"), corner=True)
+
+    @functools.cached_property
+    def junction(self):
+        return junction_mesh(self._dir("junction"))
+
+    @functools.cached_property
+    def guide(self):
+        return absorbing_guide(self._dir("guide"))
+
+    @functools.cached_property
     def periodic(self):
         return pc.g_mesh(self._dir("periodic"))
 
@@ -390,13 +533,22 @@ def designs(tmp_path_factory):
     return Designs(tmp_path_factory)
 
 
+#: The mode-field cells' keys: their eigenpairs to 1e-13 (the forward polishes
+#: the modes anyway; the differences stay clean).
+MODE_FIELD_KEYS = ("eigenmode_participation", "eigenmode_field")
+
+
 def _options(cell: Cell, *, production: bool) -> gfem.SolverOptions:
     extra = {}
     if cell.problem == "eigenmode" and cell.solver == "petsc":
         extra["eigen_solver"] = "slepc"  # a PETSc cell runs the whole PETSc stack
+    if cell.problem in MODE_FIELD_KEYS and cell.variant == "slepc":
+        extra["eigen_solver"] = "slepc"  # SLEPc seeds, the direct adjoint
     if production:
         return gfem.SolverOptions(order=2, linear_solver=cell.solver, **extra)
-    if cell.problem.startswith("eigenmode"):
+    if cell.problem in MODE_FIELD_KEYS:
+        extra["eigen_tolerance"] = 1e-13
+    elif cell.problem.startswith("eigenmode"):
         extra["eigen_tolerance"] = 1e-12
     return tight(cell.solver, **extra)
 
@@ -405,7 +557,16 @@ def _options(cell: Cell, *, production: bool) -> gfem.SolverOptions:
 
 #: Steps on unit directions: fourth-order truncation and round-off both well
 #: below the 1e-6 gate (measured worst errors 1e-8 .. 1e-10).
-STEPS = {"eps_r": 1e-2, "conductivity": 5e-2, "nodes": 2e-6}
+STEPS = {
+    "eps_r": 1e-2,
+    "mu_r": 1e-2,
+    "tan_delta": 1e-3,
+    "conductivity": 5e-2,
+    "nodes": 2e-6,
+}
+#: Ranges a cell draws its own ``mu_r`` or ``tan_delta`` from (the other
+#: cells' designs carry neither).
+RANGES = {"mu_r": (1.0, 2.0), "tan_delta": (0.01, 0.2)}
 #: A principal-value input's suffix: ``eps_r_axes`` holds principal values of eps_r.
 AXES = "_axes"
 
@@ -477,19 +638,33 @@ def _wave(d: Designs, cell: Cell):
     )
 
 
+#: Weights of the energy objective, (regions, terminals): all distinct.
+ENERGY_WEIGHTS = np.array([[1.0, 0.3], [-0.7, 2.0]])
+
+
+def _stack_functional(cell: Cell, result):
+    """<W, C> of the stack, or <W, E> over its region energies (``energy``)."""
+    weights = ENERGY_WEIGHTS  # not symmetric on purpose
+    if cell.variant == "energy":
+        value = jnp.stack(list(result.energy.values()))
+    else:
+        value = result.capacitance
+    return jnp.sum(weights * value) / (EPS0 * 1e-6)  # O(1) values
+
+
 def _electrostatic_eps(d: Designs, cell: Cell, options, seed: int) -> Case:
     """J(eps) = <W, C(eps)> on a two-terminal stack with a random P0 field.
 
     Per principal value (``eps_r_axes``): ``(n, 3)`` on the tilted axes.
+    Variant ``energy``: ``<W, E(eps)>`` over the region energies.
     """
     model = d.stack
-    weights = np.array([[1.0, 0.3], [-0.7, 2.0]])  # not symmetric on purpose
     axes = TILTED if cell.input.endswith(AXES) else None
 
     def objective(eps):
         fields = stack_fields(model, eps, axes)
-        c = gfem.solve(fields, STACK_PROBLEM, options=options)
-        return jnp.sum(weights * c.capacitance) / (EPS0 * 1e-6)  # O(1) values
+        result = gfem.solve(fields, STACK_PROBLEM, options=options)
+        return _stack_functional(cell, result)
 
     rng = np.random.default_rng(42 + seed)
     shape = (len(model.mesh.tetrahedra),) + ((3,) if axes else ())
@@ -500,8 +675,29 @@ def _electrostatic_eps(d: Designs, cell: Cell, options, seed: int) -> Case:
 ELECTROSTATIC = gfem.Electrostatic(terminals={"top": "top"}, ground="bottom")
 
 
+def _energy_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """<W, E> over the stack's region energies in every node coordinate."""
+    rng = np.random.default_rng(7 + seed)
+    eps = jnp.asarray(rng.uniform(2.0, 9.0, len(d.stack.mesh.tetrahedra)))
+    model = stack_fields(d.stack, eps)
+    structure = jax.tree_util.tree_structure(model.mesh)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(structure, [nodes])
+        result = gfem.solve(model.replace(mesh=mesh), STACK_PROBLEM, options=options)
+        return _stack_functional(cell, result)
+
+    # the stack is in um: its layers' elements are 1.25e-7 m thick
+    return Case(objective, jnp.asarray(model.mesh.nodes), rng, step=1e-9, taylor=1e-8)
+
+
 def _electrostatic_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
-    """C (pF) of a capacitor whose dielectric interface moves (+ a potential)."""
+    """C (pF) of a capacitor whose dielectric interface moves (+ a potential).
+
+    Variant ``energy``: see `_energy_nodes`.
+    """
+    if cell.variant == "energy":
+        return _energy_nodes(d, cell, options, seed)
     model = d.capacitor
     morph = boundary_morph(model, "oxide__nitride", grows="oxide")
     weights = np.random.default_rng(4).uniform(0.5, 1.5, 200)
@@ -528,11 +724,12 @@ def _electrostatic_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
 
 
 def _driven_material(d: Designs, cell: Cell, options, seed: int) -> Case:
-    """S of the two-layer line in its per-element eps_r or conductivity.
+    """S of the two-layer line in one per-element property.
 
     Per principal value (``_axes``): biaxial values on the tilted axes, on
     the line with first-order absorbing sides (each side face's admittance
-    tensor moves with the values of the element behind it).
+    tensor moves with the values of the element behind it). A ``mu_r`` or
+    ``tan_delta`` cell adds its property to the design of the others.
     """
     name = _property(cell.input)
     if cell.input.endswith(AXES):
@@ -541,6 +738,9 @@ def _driven_material(d: Designs, cell: Cell, options, seed: int) -> Case:
     else:
         line, axes = d.line, None
         values, rng = line_design(line, seed)
+    if name in RANGES:
+        drawn = rng.uniform(*RANGES[name], values["eps_r"].shape)
+        values = {**values, name: jnp.asarray(drawn)}
     problem, rows = _sweep(cell, LINE_FREQUENCIES, LINE_GRID, LINE_SAMPLES)
 
     def objective(p):
@@ -548,14 +748,14 @@ def _driven_material(d: Designs, cell: Cell, options, seed: int) -> Case:
         s = gfem.solve(model, problem, options=options).s.values
         return s_functional(s[jnp.asarray(rows)])
 
-    taylor = {"eps_r": 1e-1, "conductivity": 1.0}[name]
+    taylor = {"eps_r": 1e-1, "mu_r": 1e-1, "tan_delta": 3e-2, "conductivity": 1.0}
     p = values[name]
     return Case(
         objective,
         p,
         rng,
         step=STEPS[name],
-        taylor=taylor,
+        taylor=taylor[name],
         imaginary=axes is not None and jnp.iscomplexobj(p),
     )
 
@@ -584,6 +784,38 @@ def _driven_fill(d: Designs, cell: Cell, options, seed: int) -> Case:
         rng,
         step=5e-3,
         taylor=5e-2,
+        reference=reference,
+    )
+
+
+def _lumped_values(t):
+    """The lumped values `LUMPED` scaled by ``1 + t``: an O(1) input."""
+    return jnp.asarray(LUMPED) * (1 + t)
+
+
+def _driven_lumped(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S of the glued line in its port's L and C and its sheet's R, L and C."""
+    mesh = d.sheet_mesh
+    problem, rows = _sweep(cell, SHEET_FREQUENCIES, SHEET_GRID, SHEET_SAMPLES)
+
+    def objective_on(problem, rows):
+        def objective(t):
+            model = lumped_line(mesh, _lumped_values(t))
+            s = gfem.solve(model, problem, options=options).s.values
+            return s_functional(s[jnp.asarray(rows)])
+
+        return objective
+
+    reference = None
+    if cell.sweep == "adaptive":
+        # the differences are taken on a uniform sweep of the samples
+        reference = objective_on(gfem.Driven(frequency=SHEET_SAMPLES), [0, 1, 2])
+    return Case(
+        objective_on(problem, rows),
+        jnp.zeros(len(LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
+        taylor=1e-1,
         reference=reference,
     )
 
@@ -667,10 +899,11 @@ def _omega(model, options, target):
 
 
 def _eigen_material(d: Designs, cell: Cell, options, seed: int) -> Case:
-    """omega of the terminated line resonator in its eps_r or conductivity.
+    """omega of the terminated line resonator in one per-element property.
 
     Per principal value (``_axes``): the ramps times distinct factors per
-    axis (biaxial), on the tilted axes.
+    axis (biaxial), on the tilted axes. A ``mu_r`` or ``tan_delta`` cell
+    adds its property, a ramp over its range, to the design of the others.
     """
     mesh = d.resonator
     values = {
@@ -678,17 +911,22 @@ def _eigen_material(d: Designs, cell: Cell, options, seed: int) -> Case:
         "conductivity": ramp(mesh, "dielectric", 0.2, 0.6),
     }
     name = _property(cell.input)
+    if name in RANGES:
+        values[name] = ramp(mesh, "dielectric", *RANGES[name])
     axes = TILTED if cell.input.endswith(AXES) else None
     if axes:
         values = {k: v[:, None] * BIAXIAL for k, v in values.items()}
 
     def objective(p):
         fields = values | {name: p}
-        model = terminated(mesh, fields["eps_r"], fields["conductivity"], axes)
+        eps, sigma = fields.pop("eps_r"), fields.pop("conductivity")
+        model = terminated(mesh, eps, sigma, axes, **fields)
         return _omega(model, options, RESONATOR_TARGET)
 
     # a unit step of 1 S/m would make the 0.2 S/m end of the ramp negative
-    taylor = {"eps_r": 1e-1, "conductivity": 3e-1}[name]
+    # (and one of 0.1 the 0.01 end of the loss tangent's)
+    taylor = {"eps_r": 1e-1, "mu_r": 1e-1, "tan_delta": 3e-2, "conductivity": 3e-1}
+    taylor = taylor[name]
     return Case(
         objective,
         values[name],
@@ -716,6 +954,22 @@ def _eigen_fill(d: Designs, _cell: Cell, options, seed: int) -> Case:
     )
 
 
+def _eigen_lumped(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """omega of the glued line in its port's L and C and its sheet's R, L and C."""
+    mesh = d.sheet_mesh
+
+    def objective(t):
+        return _omega(lumped_line(mesh, _lumped_values(t)), options, LUMPED_TARGET)
+
+    return Case(
+        objective,
+        jnp.zeros(len(LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
+        taylor=1e-1,
+    )
+
+
 def _eigen_nodes(d: Designs, _cell: Cell, options, seed: int) -> Case:
     """omega of the two-layer resonator; its interface moves."""
     model = d.layered_resonator
@@ -723,6 +977,411 @@ def _eigen_nodes(d: Designs, _cell: Cell, options, seed: int) -> Case:
 
     def objective(t):
         return _omega(model.replace(mesh=morph(t)), options, RESONATOR_TARGET)
+
+    return Case(
+        objective,
+        jnp.zeros(morph.n_params),
+        np.random.default_rng(seed),
+        step=STEPS["nodes"],
+        taylor=4e-5,
+        taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+
+
+# --- eigenmode ratios: participation, port Q, region and principal shares ----------
+
+#: The split cavity's pair: a relative gap of 2.49e-4 (above the isolation
+#: threshold 1e-4); differences take steps well below the gap.
+NEAR_PAIR_DELTA, NEAR_PAIR_STEP = 1e-3, 5e-5
+#: The R-only sheet's mode on the glued line (13.47 + 4.28i GHz, Q 1.6).
+SHEET_LINE_TARGET = 13.5e9
+#: Weights of the principal shares of a cell's principal objective.
+PRINCIPAL_WEIGHTS = jnp.array([1.0, -0.6, 0.8])
+
+
+def _ratios(result, variant: str):
+    """A cell's objective: a weighted sum of mode 0's ratios.
+
+    Every J variant reads the junction's participation and the sub layer's
+    share; a resistive port adds ``1 / q_port`` (the loss term an objective
+    uses, never ``q_port``); the principal variant the sub layer's shares
+    along its axes.
+    """
+    out = result.participation["jj"][0] + 0.7 * result.bulk_participation["sub"][0]
+    if "r" in result.q_port:
+        out = out + 3.0 / result.q_port["r"][0]
+    if variant == "principal":
+        shares = result.principal_participation["sub"][0]
+        out = out + jnp.dot(PRINCIPAL_WEIGHTS, shares)
+    return out
+
+
+def _kinetic(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The kinetic cavity's mode 0 in its sheet's fill, "lower"'s eps_r or nodes.
+
+    The ``"sheet"`` variant reads the sheet participation; the
+    ``"capacitive_sheet"`` one adds a capacitance to the sheet and reads
+    "lower"'s share of the mode energy beside it (both move with the
+    sheet's term of the energy, ADR 0103). The node cells move the sheet
+    with its glue plane, "lower" growing.
+    """
+    mesh = d.sheet_cavity
+    fill, rng = cavity_fill(mesh, seed=1 + seed)
+    capacitance = KINETIC_CAPACITANCE if cell.variant == "capacitive_sheet" else None
+    problem = gfem.Eigenmode(target=KINETIC_TARGET)
+
+    def read(model):
+        result = gfem.solve(model, problem, options=options)
+        out = result.sheet_participation["sheet"][0]
+        if capacitance is not None:
+            out = result.bulk_participation["lower"][0] + 0.5 * out
+        return out
+
+    def model(fill, eps=None, mesh=mesh):
+        return kinetic_cavity(mesh, fill, eps, capacitance=capacitance)
+
+    if cell.input == "fill":
+        return Case(
+            lambda p: read(model(p)),
+            fill,
+            rng,
+            step=1e-2,
+            taylor=1e-1,
+            mask=lambda directions: on_the_sheet(directions, fill),
+        )
+    if cell.input == "eps_r":
+        eps = ramp(mesh, "lower", 1.0, 2.0)
+        return Case(
+            lambda p: read(model(fill, p)),
+            eps,
+            rng,
+            step=STEPS["eps_r"],
+            taylor=1e-1,
+        )
+    morph = boundary_morph(model(fill), "sheet", grows="lower")
+    return Case(
+        lambda t: read(model(fill, mesh=morph(t))),
+        jnp.zeros(morph.n_params),
+        rng,
+        step=STEPS["nodes"],
+        taylor=4e-5,
+        taylor_at=jnp.full(morph.n_params, 1e-5),
+    )
+
+
+def _participation(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Mode 0's ratios in one input (`_participation_cells`)."""
+    variant = cell.variant
+    if variant in ("sheet", "capacitive_sheet"):
+        return _kinetic(d, cell, options, seed)
+    if variant == "absorbing2":
+        mesh = d.guide
+        core = ramp(mesh, "core", 9.0, 11.0)
+
+        def objective(p):
+            problem = gfem.Eigenmode(target=GUIDE_TARGET)
+            result = gfem.solve(guide_model(mesh, p), problem, options=options)
+            return result.bulk_participation["core"][0]
+
+        return Case(
+            objective, core, np.random.default_rng(seed), step=1e-2, taylor=1e-1
+        )
+    if variant == "resistive_sheet":
+        mesh = d.sheet_mesh
+        fill, rng = sheet_fill(mesh, seed=1 + seed)
+
+        def objective(p):
+            sheet = gfem.Impedance(
+                "sheet", resistance=2e3, fill=gfem.SheetField(fill=p)
+            )
+            problem = gfem.Eigenmode(target=SHEET_LINE_TARGET)
+            result = gfem.solve(sheet_line(mesh, sheet), problem, options=options)
+            return 1.0 / result.q_port["p1"][0] + 0.5 / result.q_port["p2"][0]
+
+        return Case(objective, fill, rng, step=5e-2, taylor=1e-1)
+    if variant == "chi":
+        return _chi(d, cell, options, seed)
+    if variant == "near_pair":
+        mesh = d.corner_cavity
+        base = jnp.ones(len(mesh.tetrahedra))
+
+        def objective(p):
+            model = split_cavity(mesh, p, NEAR_PAIR_DELTA)
+            problem = gfem.Eigenmode(target=MIRRORED_TARGET, n_modes=2)
+            result = gfem.solve(model, problem, options=options)
+            # mode 0, the nearer the target, is the lower of the pair
+            return result.bulk_participation["corner"][0]
+
+        return Case(
+            objective,
+            base,
+            np.random.default_rng(seed),
+            step=NEAR_PAIR_STEP,
+            taylor=1e-4,
+        )
+    mesh = d.junction
+    fixture = "inductive" if variant == "slepc" else variant
+    values = junction_values(mesh, fixture)
+    name = _property(cell.input)
+
+    def objective(p):
+        moved = {r: dict(v) for r, v in values.items()}
+        moved["sub"][name] = p
+        model = junction_line(mesh, fixture, moved)
+        problem = gfem.Eigenmode(target=JUNCTION_TARGET)
+        return _ratios(gfem.solve(model, problem, options=options), fixture)
+
+    p = values["sub"][name]
+    return Case(
+        objective,
+        p,
+        np.random.default_rng(seed),
+        step=STEPS[name],
+        taylor={"eps_r": 1e-1, "conductivity": 3e-1}[name],
+        imaginary=bool(jnp.iscomplexobj(p)),
+    )
+
+
+# --- eigenmode normalized field: probes and interface participation ----------------
+
+#: The probed point of the field cells, m: inside the lower layer of fixture
+#: J and of the resonator (both 10 x 2 x 1 mm) and of the glued line (8 x 2 x
+#: 1 mm), off every element face.
+FIELD_POINT = np.array([3.37, 0.93, 0.41]) * 1e-3
+#: The probe objective's phase multiplier: ``Re(exp(0.7i) E_z)`` reads the
+#: imaginary part of a lossy mode's field, so the phase rule's ``mu2`` is
+#: nonzero; and its scale (``|E|`` is about 1e9 V/m at 1 J).
+FIELD_PHASE, FIELD_SCALE = np.exp(0.7j), 1e-9
+#: The interface layers: J's sub / cover interface (``"default"``), and an
+#: oxide on the cavity's metal walls (``"MA"``): thickness (m) and eps_r.
+FIELD_LAYER = (3e-9, 10.0)
+
+
+def _probe(result) -> jax.Array:
+    """Mode 0's probed z component, times the phase, scaled."""
+    e = result.e_fields[0].at(FIELD_POINT)
+    return FIELD_SCALE * jnp.real(FIELD_PHASE * e[2])
+
+
+def _field(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """A measurement of mode 0's normalized field in one input (`_field_cells`)."""
+    thickness, eps_layer = FIELD_LAYER
+    if cell.input == "fill":
+        mesh = d.sheet_cavity
+        fill, rng = cavity_fill(mesh, seed=1 + seed)
+
+        def objective(p):
+            result = gfem.solve(
+                cavity_model(mesh, p),
+                gfem.Eigenmode(target=CAVITY_TARGET),
+                options=options,
+            )
+            return (
+                1e3
+                * gfem.interface_participation(
+                    result, "pec", thickness, eps_layer, kind="MA"
+                ).participation[0]
+            )
+
+        return Case(
+            objective,
+            fill,
+            rng,
+            step=5e-2,
+            taylor=1e-1,
+            mask=lambda directions: on_the_sheet(directions, fill),
+        )
+    if cell.input == "conductivity":
+        mesh = d.resonator
+        eps = ramp(mesh, "dielectric", 3.5, 4.5)
+        sigma = ramp(mesh, "dielectric", 0.2, 0.6)
+
+        def objective(p):
+            problem = gfem.Eigenmode(target=RESONATOR_TARGET)
+            return _probe(
+                gfem.solve(terminated(mesh, eps, p), problem, options=options)
+            )
+
+        return Case(
+            objective,
+            sigma,
+            np.random.default_rng(seed),
+            step=STEPS["conductivity"],
+            taylor=3e-1,
+        )
+    mesh = d.junction
+    fixture = "resistive" if cell.variant == "probe" else "inductive"
+    values = junction_values(mesh, fixture)
+
+    def objective(p):
+        moved = {r: dict(v) for r, v in values.items()}
+        moved["sub"]["eps_r"] = p
+        model = junction_line(mesh, fixture, moved)
+        result = gfem.solve(
+            model, gfem.Eigenmode(target=JUNCTION_TARGET), options=options
+        )
+        if cell.variant == "probe":
+            return _probe(result)
+        return (
+            1e3
+            * gfem.interface_participation(
+                result, "sub__cover", thickness, eps_layer
+            ).participation[0]
+        )
+
+    return Case(
+        objective,
+        values["sub"]["eps_r"],
+        np.random.default_rng(seed),
+        step=STEPS["eps_r"],
+        taylor=1e-1,
+    )
+
+
+def _lumped_ratio(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Mode 0 of the lossy glued line in its five lumped values (ticket 21).
+
+    All five values scaled by ``1 + t`` (`_lumped_values`). By variant: port
+    p1's participation, its port Q, "lower"'s share of the mode energy, the
+    sheet's participation, or (``eigenmode_field``) the probed field's
+    component along the plates (y) times a phase. The ``"anharmonicity"``
+    variant is the lossless line's instead (`_lumped_anharmonicity`).
+    """
+    mesh = d.sheet_mesh
+    problem = gfem.Eigenmode(target=LUMPED_TARGET)
+    if cell.variant == "anharmonicity":
+        return _lumped_anharmonicity(mesh, problem, options, seed)
+    read = {
+        "participation": lambda r: r.participation["p1"][0],
+        "q_port": lambda r: r.q_port["p1"][0],
+        "bulk": lambda r: r.bulk_participation["lower"][0],
+        "sheet_participation": lambda r: r.sheet_participation["sheet"][0],
+        "probe": lambda r: (
+            FIELD_SCALE * jnp.real(FIELD_PHASE * r.e_fields[0].at(FIELD_POINT)[1])
+        ),
+    }[cell.variant]
+
+    def objective(t):
+        model = lumped_line(mesh, _lumped_values(t))
+        return read(gfem.solve(model, problem, options=options))
+
+    return Case(
+        objective,
+        jnp.zeros(len(LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
+        taylor=1e-1,
+    )
+
+
+#: The dressed outputs' scale: rad/s to MHz.
+TO_MHZ = 1 / (2 * np.pi * 1e6)
+
+
+def _lumped_anharmonicity(mesh, problem, options, seed: int) -> Case:
+    """Cell L6: the dressed anharmonicity of the lossless line's junction mode.
+
+    Port p1 (L, C) is the linearized junction; its four values
+    (`LOSSLESS_LUMPED`) are scaled by ``1 + t``, and the same traced port
+    inductance is the ``inductance`` of `gfem.quantum.dressed_modes`, so the
+    gradient runs through the solve (``omega``, ``participation``) and
+    through the junction energy alike.
+    """
+
+    def objective(t):
+        values = jnp.asarray(LOSSLESS_LUMPED) * (1 + t)
+        result = gfem.solve(
+            lossless_lumped_line(mesh, values), problem, options=options
+        )
+        dressed = gfem.quantum.dressed_modes(
+            result.omega, result.participation["p1"], inductance=values[0]
+        )
+        return TO_MHZ * dressed.anharmonicity[0]
+
+    return Case(
+        objective,
+        jnp.zeros(len(LOSSLESS_LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
+        taylor=1e-1,
+    )
+
+
+def _dispersive_shift(result) -> jax.Array:
+    """The dressed dispersive shift between fixture J's modes 0 and 1, MHz."""
+    dressed = gfem.quantum.dressed_modes(
+        result.omega, result.participation["jj"], inductance=JUNCTION_CHI_L
+    )
+    return TO_MHZ * dressed.dispersive_shift[0, 1]
+
+
+def _chi(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Cells 15 and 16: the dispersive shift of fixture J's two lowest modes.
+
+    The ``"chi"`` variant's junction (`JUNCTION_CHI_L`): both modes (1.70
+    and 7.98 GHz) carry it (participations 0.81 and 0.11), and
+    `gfem.quantum.dressed_modes` diagonalizes its cosine on them, with the
+    solve's inductance. In the lower layer's permittivity, or as the
+    layers' interface moves (the ports held). The node step is 5x the other
+    node cells': the dressed step's round-off (4e-14 of the shift) then sits
+    further under the gate (measured errors 1e-8 to 1e-7, against up to
+    5e-7 at 2e-6 m).
+    """
+    mesh = d.junction
+    problem = gfem.Eigenmode(target=JUNCTION_TARGET, n_modes=2)
+    rng = np.random.default_rng(seed)
+    if cell.input == "nodes":
+        model = junction_line(mesh, "chi")
+        morph = boundary_morph(model, "sub__cover", grows="sub")
+
+        def moved(t):
+            result = gfem.solve(model.replace(mesh=morph(t)), problem, options=options)
+            return _dispersive_shift(result)
+
+        return Case(
+            moved,
+            jnp.zeros(morph.n_params),
+            rng,
+            step=5 * STEPS["nodes"],
+            taylor=4e-5,
+            taylor_at=jnp.full(morph.n_params, 1e-5),
+        )
+    values = junction_values(mesh)
+
+    def objective(p):
+        changed = {r: dict(v) for r, v in values.items()}
+        changed["sub"]["eps_r"] = p
+        model = junction_line(mesh, "chi", changed)
+        result = gfem.solve(model, problem, options=options)
+        return _dispersive_shift(result)
+
+    return Case(
+        objective,
+        values["sub"]["eps_r"],
+        rng,
+        step=STEPS["eps_r"],
+        taylor=1e-1,
+    )
+
+
+def _participation_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Mode 0's ratios of fixture J as its interface "sub__cover" moves.
+
+    The morph holds the ports' surfaces (both junction and resistive port
+    sit on the line's ends), so the node gradient is exact along it.
+    """
+    variant = cell.variant
+    if variant in ("sheet", "capacitive_sheet"):
+        return _kinetic(d, cell, options, seed)
+    if variant == "chi":
+        return _chi(d, cell, options, seed)
+    model = junction_line(d.junction, variant)
+    morph = boundary_morph(model, "sub__cover", grows="sub")
+    problem = gfem.Eigenmode(target=JUNCTION_TARGET)
+
+    def objective(t):
+        moved = model.replace(mesh=morph(t))
+        return _ratios(gfem.solve(moved, problem, options=options), variant)
 
     return Case(
         objective,
@@ -920,7 +1579,13 @@ BUILDERS = {
     ("driven", "conductivity"): _driven_material,
     ("driven", "eps_r_axes"): _driven_material,
     ("driven", "conductivity_axes"): _driven_material,
+    **{
+        ("driven", f"{name}{form}"): _driven_material
+        for name in RANGES
+        for form in ("", AXES)
+    },
     ("driven", "fill"): _driven_fill,
+    ("driven", "lumped"): _driven_lumped,
     ("driven", "nodes"): _driven_nodes,
     ("driven_wave", "eps_r"): _wave_material,
     ("driven_wave", "conductivity"): _wave_material,
@@ -930,7 +1595,10 @@ BUILDERS = {
     ("eigenmode", "conductivity"): _eigen_material,
     ("eigenmode", "eps_r_axes"): _eigen_material,
     ("eigenmode", "conductivity_axes"): _eigen_material,
+    ("eigenmode", "mu_r"): _eigen_material,
+    ("eigenmode", "tan_delta"): _eigen_material,
     ("eigenmode", "fill"): _eigen_fill,
+    ("eigenmode", "lumped"): _eigen_lumped,
     ("eigenmode", "nodes"): _eigen_nodes,
     **{
         (problem, name): builder
@@ -947,6 +1615,14 @@ BUILDERS = {
         for problem in ("eigenmode_periodic_plain", "eigenmode_periodic_bloch")
         for name in ("eps_r", "conductivity", "fill", "nodes")
     },
+    **{
+        ("eigenmode_participation", name): _participation
+        for name in ("eps_r", "conductivity", "eps_r_axes", "fill")
+    },
+    **{("eigenmode_field", name): _field for name in ("eps_r", "conductivity", "fill")},
+    ("eigenmode_participation", "nodes"): _participation_nodes,
+    ("eigenmode_participation", "lumped"): _lumped_ratio,
+    ("eigenmode_field", "lumped"): _lumped_ratio,
 }
 
 
@@ -994,6 +1670,10 @@ FAMILIES = [
     Cell("eigenmode", "conductivity", "direct"),
     Cell("eigenmode", "fill", "direct"),
     Cell("eigenmode", "nodes", "direct"),
+    # the mode-field adjoint: ratios (cell 1), a probed field (cell 26)
+    Cell("eigenmode_participation", "eps_r", "direct", variant="inductive"),
+    Cell("eigenmode_field", "eps_r", "direct", variant="probe"),
+    Cell("eigenmode_participation", "nodes", "direct", variant="inductive"),
     Cell("driven_periodic_bloch", "eps_r", "direct", "uniform"),
     Cell("eigenmode_periodic_bloch", "eps_r", "direct"),
 ]
@@ -1002,8 +1682,12 @@ FAMILIES = [
 #: refined eigenvector, to the eigen tolerance (1e-12) times the operator's
 #: condition: each solve's Arnoldi run starts from a random vector, so two
 #: solves' gradients differ by up to ~1e-7 (the value by 1e-15).
+MODE_FIELD = frozenset({"eigenmode_participation", "eigenmode_field"})
+
 RTOL = {
     "eigenmode": 1e-6,
+    "eigenmode_participation": 1e-6,
+    "eigenmode_field": 1e-6,
     "eigenmode_periodic_plain": 1e-6,
     "eigenmode_periodic_bloch": 1e-6,
 }
@@ -1032,8 +1716,12 @@ def test_gradient_matrix_transformations_and_eviction_agree(designs, cell):
     _, pullback = jax.vjp(case.objective, case.p)
     first = pullback(1.0)[0]
     _assert_same(first, looped[0], cell)
-    # the same kept entry: the second pullback repeats the first exactly
-    np.testing.assert_allclose(pullback(2.0)[0], 2 * first, rtol=1e-12)
+    # the same kept entry: the second pullback repeats the first exactly, but
+    # for a mode-field adjoint, an iterative solve on the kept operator that a
+    # first pullback may have reshifted (ADR 0104): there it agrees to the
+    # solve's acceptance (measured 1e-11 on MN5), not bit for bit
+    repeat = 1e-9 if cell.problem in MODE_FIELD else 1e-12
+    np.testing.assert_allclose(pullback(2.0)[0], 2 * first, rtol=repeat)
 
     options = dataclasses.replace(_options(cell, production=False), retain_memory=0)
     evicted = BUILDERS[cell.problem, cell.input](designs, cell, options, 0)

@@ -22,6 +22,7 @@ from gfem import _mpi
 from gfem._checks import is_staging, is_traced
 from gfem._pytree import readonly
 from gfem._refine import Refinement, bisect, transfer, transfer_design
+from gfem._text import hertz
 from gfem.errors import (
     DegenerateModeError,
     EigenmodeConvergenceError,
@@ -110,7 +111,9 @@ class QuantityEstimator:
             ports must be excited (`Driven.excite`).
         omega: An index into ``EigenmodeResult.omega`` on the first mesh;
             on each refined mesh the estimate follows the mode whose omega
-            is nearest the previous mesh's.
+            is nearest the previous mesh's, and `refine_mesh` raises
+            `gfem.DegenerateModeError` when that mode is not clearly the
+            same one.
 
     Raises:
         TypeError: Not exactly one keyword is given, or a value has the
@@ -300,6 +303,11 @@ class MeshRefinement:
         )
 
 
+#: The lowest ratio of an estimate to the error over the verified cases; mode
+#: following bounds a mode's shift between two meshes with it.
+_ESTIMATE_FLOOR = 0.9
+
+
 def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorEstimate:
     """Estimate the error of a solved result, without refining.
 
@@ -348,6 +356,7 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         DegenerateModeError: A `QuantityEstimator` names a mode of a
             degenerate cluster, or one within the default
             `SolverOptions.cluster_rtol` of another mode.
+        DistributedUnsupportedError: The result was solved across ranks.
         NonDifferentiableError: A model or result leaf is a JAX tracer, or
             the call is inside `jax.jit`.
     """
@@ -360,7 +369,7 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     if mode is not None:
         # `refine_mesh`'s rule, at the default tolerance: the result does not
         # record the options it was solved with
-        _track_mode(result, mode, None, SolverOptions().cluster_rtol)
+        _track_mode(result, mode, None, SolverOptions().cluster_rtol, None)
     return _estimate(model, result, estimator, threads=None, mode=mode)
 
 
@@ -448,10 +457,17 @@ def refine_mesh(
             port mode problem, a periodic model or a Bloch wave vector,
             ``options.order=1`` (the ``"fast"`` preset), a driven or
             eigenmode field with loss inside an anisotropic material (see
-            `FieldEstimator`), or a quantity entry with no verified estimate
-            (see `QuantityEstimator`).
+            `FieldEstimator`), a quantity entry with no verified estimate
+            (see `QuantityEstimator`), or ``frequency_workers`` above 1 for
+            an S estimate on a lossy wave port, whose adjoint rides on the
+            forward solve.
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
             alone: another mode lies within ``options.cluster_rtol`` of it.
+            Or, on a refined mesh, the nearest mode is not clearly the
+            followed one: a second mode is less than twice as far from the
+            previous frequency, or the nearest moved further than the
+            previous estimate allows (the mode probably left the solved
+            modes: ask for more modes or start from a finer mesh).
         DistributedUnsupportedError: Launched on more than one rank.
         MeshQualityError: The input mesh's nodes have moved and an element is
             inverted.
@@ -480,7 +496,8 @@ def refine_mesh(
         _check_field_model(estimator, model)
     _check_order(options.order, estimator)
     if _mpi.resolve_comm(comm) is not None:
-        _mpi.refuse_feature("mesh refinement")
+        _mpi.refuse_feature("mesh_refinement")
+    _check_adjoint_workers(estimator, model, problem, options)
     _check_parameters(problem, options, tolerance, error_fraction, max_cycles)
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)
@@ -488,6 +505,7 @@ def refine_mesh(
     # a moved input mesh is checked here, so a warning names the caller's line;
     # the loop's solves and bisections skip the check
     _check_quality(model.mesh, model._domain.active, stacklevel=2)  # noqa: SLF001
+    _free_consumed(options)
     return _loop(
         model,
         problem,
@@ -533,7 +551,9 @@ def _loop(
     previous: complex | None = None
     while True:
         if isinstance(result, EigenmodeResult) and mode is not None:
-            mode = _track_mode(result, mode, previous, options.cluster_rtol)
+            # the omega estimate of the previous mesh bounds the mode's shift
+            estimated = cycles[-1].estimate if cycles else None
+            mode = _track_mode(result, mode, previous, options.cluster_rtol, estimated)
             previous = complex(np.asarray(result.omega)[mode])
         estimate = _estimate(
             current,
@@ -583,20 +603,13 @@ def _loop(
         driven.check_low_frequency(current, problem.frequency, stacklevel=3)
     converged = estimate.value <= tolerance
     if not converged:
-        reason = {
-            "max_cycles": f"after max_cycles={max_cycles} refinements",
-            "max_tetrahedra": (
-                f"because the next mesh would exceed max_tetrahedra={max_tetrahedra}"
-            ),
-            "solve failed": f"because the solve on the next mesh failed: {failure}",
-        }[stop]
-        warnings.warn(
-            f"Mesh refinement stopped {reason}, with the error estimate "
-            f"{estimate.value:.3g} above tolerance={tolerance:g}. The record "
-            "holds the last solved mesh. Raise the cap, loosen tolerance, or "
-            "start from a finer mesh.",
-            MeshRefinementNotConvergedWarning,
-            stacklevel=3,
+        _warn_not_converged(
+            stop,
+            failure,
+            estimate.value,
+            tolerance=tolerance,
+            max_cycles=max_cycles,
+            max_tetrahedra=max_tetrahedra,
         )
     return MeshRefinement(
         model=current,
@@ -609,6 +622,48 @@ def _loop(
         triangle_parents=readonly(tri_parents),
         _input_mesh=model.mesh,
     )
+
+
+def _warn_not_converged(
+    stop: str,
+    failure: Exception | None,
+    value: float,
+    *,
+    tolerance: float,
+    max_cycles: int,
+    max_tetrahedra: int | None,
+) -> None:
+    """Warn that `refine_mesh` stopped on ``stop`` above ``tolerance``.
+
+    The warning points at the caller of `refine_mesh`, three frames up.
+    """
+    reason = {
+        "max_cycles": f"after max_cycles={max_cycles} refinements",
+        "max_tetrahedra": (
+            f"because the next mesh would exceed max_tetrahedra={max_tetrahedra}"
+        ),
+        "solve failed": f"because the solve on the next mesh failed: {failure}",
+    }[stop]
+    warnings.warn(
+        f"Mesh refinement stopped {reason}, with the error estimate "
+        f"{value:.3g} above tolerance={tolerance:g}. The record "
+        "holds the last solved mesh. Raise the cap, loosen tolerance, or "
+        "start from a finer mesh.",
+        MeshRefinementNotConvergedWarning,
+        stacklevel=4,
+    )
+
+
+def _free_consumed(options: SolverOptions) -> None:
+    """Free the solve entries a backward has read, before the first solve.
+
+    As a differentiated forward does: their base handles return to the plan
+    pool, for the solve of the input mesh to take, within
+    ``options.retain_memory``. `refine_mesh` runs on one process.
+    """
+    from gfem._engine.cache import ENTRIES, retain_budget
+
+    ENTRIES.free_consumed(None, retain_budget(options.retain_memory))
 
 
 def _dorfler(indicators: np.ndarray, error_fraction: float) -> np.ndarray:
@@ -703,19 +758,29 @@ def _quantity(
 
 
 def _track_mode(
-    result: EigenmodeResult, mode: int, previous: complex | None, rtol: float
+    result: EigenmodeResult,
+    mode: int,
+    previous: complex | None,
+    rtol: float,
+    previous_estimate: float | None,
 ) -> int:
     """The mode of ``result`` a quantity follows: nearest ``previous`` omega.
 
     On the first result (``previous`` is ``None``) it is ``mode`` itself.
+    ``previous_estimate`` is the omega estimate on the previous mesh, relative
+    to ``previous``.
 
     Raises:
         DegenerateModeError: Another mode lies within ``rtol`` of the
-            followed one, or it belongs to a degenerate cluster.
+            followed one, or it belongs to a degenerate cluster; the nearest
+            mode is further from ``previous`` than the previous estimate
+            allows, or the second nearest is less than twice as far.
     """
     omegas = np.asarray(result.omega)
     if previous is not None:
-        mode = int(np.argmin(np.abs(omegas - previous)))
+        distances = np.abs(omegas - previous)
+        mode = int(np.argmin(distances))
+        _check_followed(omegas, mode, distances, previous, previous_estimate)
         reference = previous
     else:
         reference = omegas[mode]
@@ -724,13 +789,53 @@ def _track_mode(
     if len(close) > 1 or np.count_nonzero(cluster == cluster[mode]) > 1:
         raise DegenerateModeError(
             f"QuantityEstimator(omega=...) follows one mode by its frequency, "
-            f"and mode {mode} at {omegas[mode].real / (2 * np.pi):.6g} Hz is "
+            f"and mode {mode} at {hertz(omegas[mode].real / (2 * np.pi))} is "
             "not alone: another mode lies within SolverOptions.cluster_rtol="
             f"{rtol:g} of it. A degenerate cluster has no one mode to follow: "
             "use gfem.FieldEstimator(), which estimates every mode, or a "
             "design that breaks the symmetry."
         )
     return mode
+
+
+def _check_followed(
+    omegas: np.ndarray,
+    mode: int,
+    distances: np.ndarray,
+    previous: complex,
+    previous_estimate: float | None,
+) -> None:
+    """Raise unless ``mode`` is clearly the mode followed from ``previous``.
+
+    The followed mode's errors on both meshes are at most the previous one,
+    and the estimate is at least `_ESTIMATE_FLOOR` of the error on every
+    verified case, so the mode moves at most twice the previous estimate over
+    that floor. Further away, the nearest mode is another one.
+    """
+    nearest = float(distances[mode])
+    frequency = hertz(omegas[mode].real / (2 * np.pi))
+    if previous_estimate is not None:
+        allowed = 2 * previous_estimate * abs(previous) / _ESTIMATE_FLOOR
+        if nearest > allowed:
+            raise DegenerateModeError(
+                "QuantityEstimator(omega=...) follows one mode by its frequency, "
+                f"and the nearest mode on the refined mesh, mode {mode} at "
+                f"{frequency}, moved {nearest / abs(previous):.3g} of the "
+                "followed frequency, further than the previous error estimate "
+                f"{previous_estimate:.3g} allows. The followed mode probably "
+                "left the solved modes: ask for more modes "
+                "(gfem.Eigenmode(n_modes=...)) or start from a finer mesh."
+            )
+    others = np.delete(distances, mode)
+    if len(others) and float(others.min()) < 2 * nearest:
+        raise DegenerateModeError(
+            "QuantityEstimator(omega=...) follows one mode by its frequency, "
+            f"and mode {mode} at {frequency} is not clearly nearest the "
+            "followed frequency on the refined mesh: another mode is less than "
+            "twice as far. Start from a finer mesh, on which the two modes "
+            "are apart, or use gfem.FieldEstimator(), which estimates every "
+            "mode."
+        )
 
 
 def _dofs(result: Any) -> int:
@@ -886,6 +991,29 @@ def _adjoint_ports(estimator: Estimator, model: Model) -> tuple[str, ...]:
     return (to,) if _lossy_elements(model)[_touching(model, port.surface)].any() else ()
 
 
+def _check_adjoint_workers(
+    estimator: Estimator, model: Model, problem: Any, options: SolverOptions
+) -> None:
+    """Refuse frequency workers for an S estimate that solves its adjoint.
+
+    The adjoint of `_adjoint_ports` rides on the forward's factorization
+    (ADR 0089), which a frequency worker does not hand back: frequency
+    workers take wave ports (ADR 0099) but spread no adjoint solve.
+    """
+    if not isinstance(problem, Driven):
+        return
+    ports = _adjoint_ports(estimator, model)
+    workers = min(options.frequency_workers, len(problem.frequency))
+    if ports and workers > 1:
+        raise MeshRefinementUnsupportedError(
+            "frequency workers",
+            f"QuantityEstimator(s={getattr(estimator, 's', None)!r}) on the lossy "
+            f"wave port {ports[0]!r} solves its adjoint with the forward, which "
+            "frequency workers do not do in this version of gfem: it needs "
+            f"frequency_workers=1, got {options.frequency_workers}.",
+        )
+
+
 def _adjoints(
     model: Model, result: DrivenResult, ports: tuple[str, ...], threads: int | None
 ) -> dict[tuple[float, str], np.ndarray]:
@@ -1003,6 +1131,8 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         _check_quantity_model(estimator, model)
     if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
         raise _unsupported_result(result, estimator)
+    if any(field._comm is not None for field in _fields(result)):  # noqa: SLF001
+        _mpi.refuse_feature("error_estimate")
     if not isinstance(result, ElectrostaticResult):
         _check_field_model(estimator, model)
     if model._periodic:  # noqa: SLF001

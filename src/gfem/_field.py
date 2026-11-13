@@ -84,6 +84,9 @@ class Field:
     omega: jax.Array | None = None
     _excluded: tuple[tuple[int, int], ...] = ()
     _comm: _mpi.StaticComm | None = None
+    #: Formed from a frozen reduced basis (`ReducedFields`): its coefficients
+    #: differentiate through the reduced coordinates alone.
+    _reduced: bool = False
 
     def __post_init__(self) -> None:
         """Check the descriptor against the mesh."""
@@ -394,6 +397,7 @@ class ReducedFields(Sequence[Field]):
             support=self.support,
             omega=self.omega[k],
             _excluded=self._excluded,
+            _reduced=True,
         )
 
     def __iter__(self) -> Iterator[Field]:

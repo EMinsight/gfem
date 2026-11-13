@@ -22,6 +22,13 @@ load. A port without a resistance
 has no reference impedance: its S row and ``z_ref`` are NaN, and a
 cotangent on that row makes the gradient NaN like the value (ADR 0011).
 
+A row that reciprocity does not cover needs its own adjoint solution: the
+row of a lumped port that is not excited, or of a wave port whose mode is
+not real up to a phase. A uniform sweep solves it in the backward pass; an
+adaptive sweep, whose backward has no full-size solver, solves these S
+functionals at every sample and adds them to its basis
+(`PortNetwork.adjoint_loads`, ADR 0010).
+
 The network only consumes the wave port couplings; the system operator
 (`gfem._engine.system_operator`) solves with the same couplings.
 """
@@ -256,8 +263,11 @@ class PortNetwork:
                 for a, (_, pos) in enumerate(fed):
                     select[a, pos] = 1.0
 
-                def lumped_rhs(w: float, select=select) -> np.ndarray:
-                    return 1j * operator.wavenumber(w) * select
+                # the scale, not the operator: a kept network holds no pieces
+                def lumped_rhs(
+                    w: float, select=select, scale=operator.built.scale
+                ) -> np.ndarray:
+                    return 1j * terms.wavenumber(w, scale) * select
 
                 excitation.append(AffineTerm(b, lumped_rhs))
             rows = np.zeros((n_ports, len(lumped)))
@@ -354,25 +364,50 @@ class PortNetwork:
 
         A wave port's S functional, unless the port is excited and its
         functional parallel to its excitation (lossless: the adjoint is the
-        port's own solution). An adaptive sweep adds their solutions to its
-        basis at every sample (`gfem._sweep.adaptive`, ADR 0010), so the
-        frozen-basis S gradient of a lossy wave port is exact at the samples.
+        port's own solution); then the S functional of every lumped port
+        that is not excited (an excited one's adjoint is its own solution)
+        and has a resistance (without one the functional is NaN and the row
+        undefined). An adaptive sweep adds their solutions to its basis at
+        every sample (`gfem._sweep.adaptive`, ADR 0010), so the frozen-basis
+        gradient of every defined S entry is exact at the samples.
         """
         excited = any(c.index in self.columns for c in self.waves)
         rhs = self.rhs(omega) if excited else None
-        return self.nonparallel(omega, [c.index for c in self.waves], rhs)[1]
+        functional = self.functional(omega)
+        _, waves = self.nonparallel(
+            omega, [c.index for c in self.waves], rhs, functional=functional
+        )
+        loads = list(waves.T)
+        wave = {c.index for c in self.waves}
+        for i in range(functional.shape[1]):
+            if i in wave or i in self.columns:
+                continue
+            f = functional[:, i]
+            # a rank without port DOFs sees no NaN: the ranks agree
+            if _mpi.agree_all(self.layout.comm, flag=bool(np.isfinite(f).all())):
+                loads.append(f)
+        if not loads:
+            return np.zeros((len(functional), 0), complex)
+        return np.stack(loads, axis=1)
 
     def nonparallel(
-        self, omega: float, indices: Sequence[int], rhs: np.ndarray | None
+        self,
+        omega: float,
+        indices: Sequence[int],
+        rhs: np.ndarray | None,
+        *,
+        functional: np.ndarray | None = None,
     ) -> tuple[list[int], np.ndarray]:
         """The ports of ``indices`` whose adjoint is not their own solution scaled.
 
         Those not excited, or whose S functional is not parallel to their
         excitation ``rhs`` (`parallel_scale`; ``None``: none is excited): a
         hybrid lossy wave port mode. Returns them and their S functionals,
-        ``(N, len(them))``, the adjoint loads.
+        ``(N, len(them))``, the adjoint loads. ``functional`` is
+        `functional` at ``omega`` when the caller has it already.
         """
-        functional = self.functional(omega)
+        if functional is None:
+            functional = self.functional(omega)
         ports = [
             i
             for i in indices
@@ -399,10 +434,13 @@ class PortNetwork:
             layout=self.layout,
         )
 
-    @property
-    def nbytes(self) -> int:
-        """Host memory held by the excitation and output vectors, in bytes.
+    def shared(self) -> dict[int, int]:
+        """The excitation and output vectors' bytes, each array once by identity.
 
-        The system operator counts ``W``'s (`SystemOperator.nbytes`).
+        A wave port's excitation is its coupling's vectors, which a
+        discretization and the system operator hold too.
         """
-        return sum(int(t.vectors.nbytes) for t in (*self.excitation, *self.outputs))
+        return {
+            id(t.vectors): int(t.vectors.nbytes)
+            for t in (*self.excitation, *self.outputs)
+        }

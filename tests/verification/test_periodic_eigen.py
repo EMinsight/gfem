@@ -4,6 +4,7 @@
   Bloch bands are the empty lattice, real (the real snap of a lossless,
   Hermitian cell), and the lowest band's field advances by exp(-i k·Δr)
   between two points, which pins the sign of the Bloch phase.
+  The same bands on an unstructured gmsh mesh tied by `setPeriodic`.
 - C3, a layered (Bragg) line: its bands are the transfer-matrix roots,
   lossless (real) and lossy (complex), at both edges of the gap k = π/a, at
   π/2a, and plain at Γ.
@@ -57,6 +58,18 @@ def test_empty_plate_cell_field_pins_the_sign_of_the_phase(c2_modes):
     e = np.asarray(c2_modes.e_fields[j].at(np.array(pc.C2_PROBES)))
     want = np.exp(-1j * np.dot(pc.C2_K, np.subtract(pc.C2_PROBES[1], pc.C2_PROBES[0])))
     assert abs(e[1, 2] / e[0, 2] - want) <= pc.C2_PHASE_TOL
+
+
+def test_a_gmsh_set_periodic_cell_has_the_empty_lattice_bands():
+    # C2 on an unstructured gmsh mesh whose pairs were tied by setPeriodic
+    exact = _c2_exact()
+    problem = gfem.Eigenmode(target=0.9 * exact[0], n_modes=4, wave_vector=pc.C2_K)
+    options = gfem.SolverOptions(order=pc.C2_ORDER)
+    modes = gfem.solve(pc.c2(pc.c2_gmsh_mesh()), problem, options=options)
+    omega = np.asarray(modes.omega)
+    f = np.sort(omega.real) / (2 * math.pi)
+    np.testing.assert_allclose(f, exact, rtol=pc.C2_BAND_RTOL)  # 2.4e-5 measured
+    assert not omega.imag.any()
 
 
 # --- C3: Bragg line --------------------------------------------------------------

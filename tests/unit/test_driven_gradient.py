@@ -279,6 +279,57 @@ def test_principal_values_beside_a_second_order_wall_of_isotropic_material(
     assert_gradient_matches(objective, eps, directions, step=STEPS["eps_r"])
 
 
+def _conductivity_objective(line):
+    n = len(line.mesh.tetrahedra)
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(sigma):
+        field = gfem.MaterialField(eps_r=jnp.full(n, 3.0), conductivity=sigma)
+        model = line.with_material("dielectric", field)
+        s = gfem.solve(model, gfem.Driven(F), options=options).s.values
+        return jnp.sum(jnp.abs(s) ** 2 * jnp.array([[1.0, 0.5], [2.0, -1.0]]))
+
+    return objective
+
+
+def test_conductivity_gradient_at_zero_conductivity_matches_finite_differences(line):
+    # no conductivity matrix is assembled when sigma is 0 everywhere, but the
+    # derivative there is not zero: the backward keeps the term
+    n = len(line.mesh.tetrahedra)
+    objective = _conductivity_objective(line)
+    d = np.abs(np.random.default_rng(0).standard_normal(n))
+    d /= np.linalg.norm(d)
+    zero = jnp.zeros(n)
+    along = float(np.asarray(jax.grad(objective)(zero)) @ d)
+    # sigma < 0 is refused: a one-sided second-order difference
+    h = 1e-3
+    f0, f1, f2 = (float(objective(zero + k * h * d)) for k in (0, 1, 2))
+    np.testing.assert_allclose(along, (-3 * f0 + 4 * f1 - f2) / (2 * h), rtol=1e-5)
+    beside = float(np.asarray(jax.grad(objective)(zero + 1e-12)) @ d)
+    np.testing.assert_allclose(along, beside, rtol=1e-9)
+
+
+def test_a_lossless_interpolated_design_keeps_its_gradient(line):
+    # interpolating between lossless materials carries a traced conductivity
+    # of zeros; the kept conductivity term must add nothing to d/d(rho)
+    n = len(line.mesh.tetrahedra)
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(rho):
+        field = gfem.MaterialField.interpolate(
+            rho, gfem.Material(eps_r=1.0), gfem.Material(eps_r=4.0)
+        )
+        model = line.with_material("dielectric", field)
+        s = gfem.solve(model, gfem.Driven(F), options=options).s.values
+        return jnp.sum(jnp.abs(s) ** 2 * jnp.array([[1.0, 0.5], [2.0, -1.0]]))
+
+    rng = np.random.default_rng(0)
+    rho = jnp.asarray(rng.uniform(0.2, 0.8, n))
+    assert_gradient_matches(
+        objective, rho, unit_directions(rng, rho.shape, 2), step=1e-2
+    )
+
+
 def test_unexcited_port_rows_use_an_adjoint_solve(line):
     values, _ = _values(line)
     full = jax.grad(_objective(line, values, "eps_r"))(values["eps_r"])
@@ -301,6 +352,68 @@ def test_unexcited_port_rows_use_an_adjoint_solve(line):
         rtol=1e-9,
     )
     assert np.abs(np.asarray(full)).max() > 0
+
+
+NO_R_GRID = tuple(float(f) for f in np.linspace(5e9, 20e9, 7))
+NO_R_AT = [0, 3, 6]  # the frozen samples: the frozen-basis gradient is exact there
+NO_R_PROBLEMS = {
+    "uniform": gfem.Driven(frequency=NO_R_GRID, excite=("p1",)),
+    "adaptive": gfem.Driven(
+        frequency=NO_R_GRID,
+        sweep="adaptive",
+        samples=(NO_R_GRID[0], NO_R_GRID[6], NO_R_GRID[3]),
+        excite=("p1",),
+    ),
+}
+
+
+@pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
+def test_the_gradient_through_a_port_without_resistance_is_nan_like_its_s_row(
+    tmp_path, sweep
+):
+    # p2 ends in an inductance only: no reference impedance, so its S row is
+    # undefined (NaN) and so is the gradient of an objective that reads it
+    path = tmp_path / "line.msh"
+    sm.write_msh22(path, sm.strip_line(10.0, 2.0, 1.0, (6, 1, 1)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={"dielectric": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z", inductance=1e-9),
+        ],
+    )
+    options = gfem.SolverOptions(linear_solver="direct")
+    problem = NO_R_PROBLEMS[sweep]
+    rng = np.random.default_rng(2)
+    p0 = jnp.asarray(rng.uniform(3.0, 5.0, len(mesh.tetrahedra)))
+
+    def solve(p):
+        field = gfem.MaterialField(eps_r=p)
+        return gfem.solve(
+            model.with_material("dielectric", field), problem, options=options
+        ).s
+
+    def objective(row):
+        return lambda p: jnp.sum(
+            jnp.abs(solve(p)[row, "p1"][jnp.asarray(NO_R_AT)]) ** 2
+        )
+
+    s = solve(p0)
+    assert np.isnan(np.asarray(s["p2", "p1"])).all()
+    assert np.isfinite(np.asarray(s["p1", "p1"])).all()
+    undefined = np.asarray(jax.grad(objective("p2"))(p0))
+    assert np.isnan(undefined).all()
+    # the undefined row does not leak into a defined one
+    assert_gradient_matches(
+        objective("p1"), p0, unit_directions(rng, p0.shape, 1), step=1e-2
+    )
+    with pytest.raises(ValueError, match="has no resistance"):
+        gfem.solve(
+            model, gfem.Driven(frequency=NO_R_GRID, excite=("p2",)), options=options
+        )
 
 
 def test_a_gradient_through_a_solve_that_does_not_converge_raises(line, monkeypatch):

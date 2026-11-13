@@ -59,7 +59,7 @@ value, grad = jax.value_and_grad(passband_loss)(jnp.full(n, 4.4))  # grad: (n,)
 ## Differentiate a kept field
 
 A kept field (`Driven(keep_fields=...)`, then `result.e_field(f, port)`)
-differentiates too:
+differentiates too, with lumped ports and with wave ports:
 
 - Its gradient costs one adjoint solve at that frequency, with all the
   right-hand sides it needs in one call.
@@ -116,7 +116,51 @@ model = gfem.Model(
   {doc}`shape-gradient`.
 - The fill of a {py:obj}`gfem.SheetField` on a `Conductor` or `Impedance`
   differentiates: see {doc}`sheet-design`.
+- The {term}`lumped values <lumped value>` that enter only the operator
+  differentiate: a `LumpedPort`'s `inductance` and `capacitance`, and an
+  `Impedance`'s `resistance`, `inductance` and `capacitance`, on both sweeps.
+  Build the port or the sheet inside the differentiated function, for example
+  `gfem.LumpedPort("p1", "port1", "+y", resistance=50.0, inductance=l)`. An
+  `Impedance` whose surface shares an edge with a wave port's face raises
+  `gfem.PortGeometryError` instead: the port mode reads it there.
 - Thermal properties are not read: their gradient is an exact zero.
+
+## In an optimization loop
+
+Run every design of a loop in one Python process. Between solves gfem keeps what
+the next design with the same mesh, ports and frequencies can use, and a new
+process starts without it:
+
+- with any linear solver, the wave ports' couplings;
+- with `linear_solver="direct"` on the CPU in one process, the solver plan of the
+  last design (its ordering and analysis) and the assembled parts that do not
+  depend on the design;
+- with `linear_solver="direct"` and the `mkl` extra, the last design's
+  factorization, when `SolverOptions(retain_memory=...)` has room for it. The next
+  design at the same frequency then solves on it, with GMRES to a twentieth of
+  `tolerance`, for as long as that takes less time than factorizing again. gfem
+  decides from the times it measures, so small models, where factorizing is
+  cheap, always factorize again. A periodic cell with a nonzero wave vector always
+  factorizes again.
+
+The default `linear_solver="auto"` picks `"bddc_gmres"` for a driven problem, which
+sets up again at every design; for a model whose factorization fits in memory, set
+`linear_solver="direct"` in a loop.
+
+gfem decides from the times it measures, so two runs of the same script can solve
+different designs on an earlier factorization, and their S and gradients can
+differ within `tolerance`. `retain_memory=0` factorizes every design.
+
+The default `retain_memory`, half of the memory the process may use, needs no
+change on most machines. To keep the factorization of a large model, set it at
+least as large as one solve's peak memory: the peak barely grows, but that memory
+stays held between designs. With less, gfem drops the factorization first, then
+the parts, then the plan. Only the time changes: S and the gradient agree with a
+solve that factorizes every design to within `tolerance`.
+
+{py:obj}`gfem.release_memory` frees everything gfem keeps, at once: call it after
+a loop, before another study in the same process. Results you hold are not
+touched.
 
 ## Check your results
 
@@ -129,10 +173,10 @@ How gfem itself is checked: {doc}`../verification`.
 
 ## Limits
 
-- Port and boundary parameters (lumped `R`, `L`, `C`, `Impedance`,
-  `Conductor` conductivity) and the frequencies are read but not
-  differentiable: a perturbed one raises `gfem.NonDifferentiableError` when
-  `jax.grad` is called. Keep them constant inside the differentiated
+- A lumped port's resistance (its reference impedance), a `Conductor`'s
+  conductivity and thickness, a wave port's `offset` and the frequencies are
+  read but not differentiable: a traced one raises
+  `gfem.NonDifferentiableError`. Keep them constant inside the differentiated
   function, and compare separate solves to see their effect.
 
 ## Next

@@ -142,13 +142,18 @@ Give every rank the same number of cores, and size the layout by the solver:
 - Do not pass `--cpu-bind`. Rank 0 needs no node or threads of its own.
 
 With `threads=None`, each rank takes `NGS_NUM_THREADS` if set. Otherwise it
-shares the physical cores of its CPU mask with the other ranks on that mask.
+shares each physical core of its CPU mask with the other ranks of the node
+whose mask holds that core.
 Every rank then uses the smallest of these counts over all ranks, so one
 narrow mask slows the whole job. `mpirun -n 2` binds each rank to one core:
-add `--bind-to none` or pass `threads`. gfem sets the BLAS threads itself
+add `--bind-to none` or pass `threads`. This default count is read at the
+first solve on a communicator: a later change of `NGS_NUM_THREADS` is not
+seen, so pass `threads` to change it. gfem sets the BLAS threads itself
 during the solve and does not read `OMP_NUM_THREADS`. Under ranks, the
 default of `retain_memory` compares the memory held by a node's ranks with
-half of the smallest node's memory.
+half of the smallest node's memory. `retain_memory` evicts only what the
+solving communicator holds, so solves on a second communicator
+({term}`rank copies`, `comm.Split`) can keep memory past it.
 
 Measured times for each layout, up to 108.6 M DOF on 32 nodes, are on
 {doc}`../project/scaling`.

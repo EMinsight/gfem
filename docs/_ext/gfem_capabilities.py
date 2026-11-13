@@ -24,6 +24,12 @@ property per principal value of a field with fixed axes: it folds into its
 property's column, whose cells then name the forms their tests cover
 ("isotropic and principal values").
 
+The permeability, the loss tangent and the lumped values (``OFF_GRID``: a
+lumped port's inductance and capacitance, an `Impedance`'s values) have cells
+but no column: the rows that verify them are listed in one sentence under the
+matrix, one phrase per row and group (``OFF_GRID_GROUPS``), and their cells
+count in the provenance.
+
 Every claim that cannot be derived raises `CapabilitiesError`, which the
 Sphinx hook turns into an `ExtensionError`: a problem key or input kind the
 mapping below does not know, a grid cell with no outcome or with
@@ -126,6 +132,20 @@ ROWS = {
         recipe="recipes/periodic-cell",
         front=False,
     ),
+    # the ratios and normalized fields of isolated modes (ADR 0102):
+    # Capabilities page only
+    "eigenmode_participation": Row(
+        "Eigenmode, participations",
+        "participation ratios and port Q",
+        recipe="recipes/eigenmode-gradient",
+        front=False,
+    ),
+    "eigenmode_field": Row(
+        "Eigenmode, mode field",
+        "the normalized field at points and interface participation",
+        recipe="recipes/measurements",
+        front=False,
+    ),
 }
 COLUMNS = {
     "eps_r": Row("Permittivity", ""),
@@ -145,9 +165,27 @@ PROBLEMS = {
     "eigenmode_sheet": Problem("eigenmode", "omega"),
     "eigenmode_periodic_plain": Problem("eigenmode_periodic_plain", "omega"),
     "eigenmode_periodic_bloch": Problem("eigenmode_periodic_bloch", "omega"),
+    # cell-only key: the raise table's eigenmode keys answer for its leaves
+    "eigenmode_participation": Problem("eigenmode_participation", "participation"),
+    "eigenmode_field": Problem("eigenmode_field", "e_fields.0.coefficients"),
     "electrostatic": Problem("electrostatic", "capacitance"),
     "port_mode": Problem("port_mode", "gamma"),
     "port_mode_sheet": Problem("port_mode", "gamma"),
+    "driven_lumped": Problem("driven", "s.values", "lumped"),
+    "driven_lumped_adaptive": Problem("driven", "s.values", "lumped"),
+    "eigenmode_lumped": Problem("eigenmode", "omega"),
+    "electrostatic_lumped": Problem("electrostatic", "capacitance"),
+    "port_mode_lumped": Problem("port_mode", "gamma"),
+}
+#: The rows whose cell-only keys have no ``EXPECTED`` entries of their own:
+#: the raise table's leaves of their row's keys answer for them, by prefix
+#: (the principal shares, which raise by a lumped value, are not among them).
+CELL_ONLY_LEAVES = {
+    "eigenmode_participation": (
+        "eigenmode",
+        ("q_port.", "participation.", "bulk_participation.", "sheet_participation."),
+    ),
+    "eigenmode_field": ("eigenmode", ("e_fields.0.coefficients",)),
 }
 # CELLS input names, and the material properties of EXPECTED's input kinds
 # ("material", <region>, <property>); None: known, but not a grid column.
@@ -160,6 +198,29 @@ CELL_INPUTS = {name: name for name in COLUMNS} | {
 FORMS = {"eps_r": "isotropic", "conductivity": "isotropic"} | {
     f"{name}{AXES}": "principal values" for name in ("eps_r", "conductivity")
 }
+# Cell inputs with no grid column, in the site's words. Their cells are
+# listed under the matrix (`also_verified`).
+OFF_GRID = {
+    "mu_r": "permeability",
+    "tan_delta": "loss tangent",
+    "lumped": "lumped values",
+}
+#: The off-grid inputs listed together, one phrase per group and row.
+OFF_GRID_GROUPS = (("mu_r", "tan_delta"), ("lumped",))
+#: The material properties among them (the others have no value forms).
+OFF_GRID_PROPERTIES = ("mu_r", "tan_delta")
+OFF_GRID_INPUTS = {name: name for name in OFF_GRID} | {
+    f"{name}{AXES}": name for name in OFF_GRID_PROPERTIES
+}
+FORMS |= dict.fromkeys(OFF_GRID_PROPERTIES, "isotropic") | {
+    f"{name}{AXES}": "principal values" for name in OFF_GRID_PROPERTIES
+}
+#: The lumped values of EXPECTED's input kinds ("port", <index>, <value>) and
+#: ("boundary", <index>, <value>): the off-grid input "lumped" (ADR 0100).
+LUMPED_VALUES = {
+    "port": ("inductance", "capacitance"),
+    "boundary": ("resistance", "inductance", "capacitance"),
+}
 MATERIAL_PROPERTIES = {
     "eps_r": "eps_r",
     "conductivity": "conductivity",
@@ -171,7 +232,10 @@ MATERIAL_PROPERTIES = {
 }
 SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 # OUT_OF_SCOPE rows the grid needs (by their label): the row's cell raises.
-GRID_LABELS = {"electrostatic x sheet fill": ("electrostatic", "fill")}
+GRID_LABELS = {
+    "electrostatic x sheet fill": ("electrostatic", "fill"),
+    "eigenmode mode field x node coordinates": ("eigenmode_field", "nodes"),
+}
 #: What each raises row asks for, in the site's words, by the test's label (the
 #: match key). A row off the grid with no label here, or a label with no row,
 #: fails the build.
@@ -179,6 +243,14 @@ RAISES_LABELS = {
     "driven x fill of a sheet beside a wave port": (
         "Driven S-parameters, with respect to the fill of a sheet that shares "
         "an edge with a wave port's face"
+    ),
+    "driven x Impedance value beside a wave port": (
+        "Driven S-parameters, with respect to the resistance, inductance or "
+        "capacitance of an `Impedance` that shares an edge with a wave port's face"
+    ),
+    "LumpedPort resistance": (
+        "Any result, with respect to a lumped port's resistance (its reference "
+        "impedance)"
     ),
     "driven x material on a wave port face": (
         "Driven S-parameters, with respect to the material of a region with "
@@ -208,6 +280,10 @@ RAISES_LABELS = {
     "eigenmode x nodes of a port surface": (
         "Eigenmode results, with respect to node coordinates on a port surface"
     ),
+    "eigenmode mode-field output x nodes of a port surface": (
+        "Eigenmode participations, port Q and mode fields, with respect to node "
+        "coordinates on a port surface"
+    ),
     "greedy adaptive sweep under a transformation": (
         '`Driven(sweep="adaptive")` without `samples`, inside `jax.grad`, '
         "`jax.jit` or `jax.vmap`"
@@ -215,6 +291,21 @@ RAISES_LABELS = {
     "forward mode": "Forward mode: `jax.jvp` of a solve",
     "probe x node coordinates": (
         "A field value at points (`Field.at`), with respect to node coordinates"
+    ),
+    "electric energy of a field": (
+        "The electric energy of a field per region (`electric_energy`), with "
+        "respect to the field or the model"
+    ),
+    "power_flow x material in its layer": (
+        "The power through a surface (`power_flow`), with respect to a material "
+        "field with elements in the element layer just outside its side"
+    ),
+    "power_flow x node coordinates": (
+        "The power through a surface (`power_flow`), with respect to node coordinates"
+    ),
+    "power_flow x reduced field": (
+        "The power through a surface (`power_flow`) of a field of an adaptive "
+        "sweep, with respect to anything the field depends on"
     ),
     "driven x wave_vector": (
         "Driven S-parameters, with respect to the Bloch wave vector"
@@ -233,6 +324,49 @@ RAISES_LABELS = {
     ),
     "Bloch eigenmode x bddc_gmres": (
         '`Eigenmode` with a Bloch `wave_vector` on `linear_solver="bddc_gmres"`'
+    ),
+    "eigenmode backward error": (
+        "The backward error of eigenmodes (`EigenmodeResult.error`), with "
+        "respect to anything"
+    ),
+    "eigenmode mode-field output x bddc_gmres": (
+        "Eigenmode participations, port Q and mode fields on "
+        '`linear_solver="bddc_gmres"`'
+    ),
+    "eigenmode mode-field output x petsc": (
+        'Eigenmode participations, port Q and mode fields on `linear_solver="petsc"`'
+    ),
+    "eigenmode mode-field output x cuda": (
+        'Eigenmode participations, port Q and mode fields on a GPU (`device="cuda"`)'
+    ),
+    "eigenmode mode-field output x eigen_tolerance above 1e-10": (
+        "Eigenmode participations, port Q and mode fields solved with "
+        "`eigen_tolerance` above 1e-10"
+    ),
+    "eigenmode mode-field output x plain periodic model": (
+        "Eigenmode participations, port Q and mode fields of a periodic model"
+    ),
+    "eigenmode mode-field output x Bloch wave vector": (
+        "Eigenmode participations, port Q and mode fields at a Bloch wave vector"
+    ),
+    "eigenmode mode-field output x member of a cluster": (
+        "Eigenmode participations, port Q and mode fields of one mode of a "
+        "degenerate cluster, or a sum over it"
+    ),
+    "eigenmode mode-field output x cluster cut by n_modes": (
+        "Eigenmode participations, port Q and mode fields of a mode whose "
+        "cluster `n_modes` cuts"
+    ),
+    "eigenmode mode-field output x nearly degenerate mode": (
+        "Eigenmode participations, port Q and mode fields of a mode within a "
+        "relative gap of 1e-4 of another"
+    ),
+    "eigenmode q_port of a mode with no voltage on the port": (
+        "Port Q of a mode that does not load the port (differentiate `1 / q_port`)"
+    ),
+    "eigenmode principal_participation x lumped value": (
+        "Eigenmode principal participation, with respect to a lumped port's or "
+        "an `Impedance`'s values"
     ),
 }
 STATUS_TEXT = {"verified": "FD-verified", "zero": "exact zero", "raises": "raises"}
@@ -265,10 +399,45 @@ def _input_column(kind) -> str | None:
         return MATERIAL_PROPERTIES[kind[2]]
     if len(kind) == 4 and kind[0] == "boundary" and kind[2:] == ("fill", "fill"):
         return "fill"
+    if _off_grid_input(kind) == "lumped":
+        return None
     raise CapabilitiesError(
         f"{RAISE_TEST}: input kind {kind!r} is not in the Capabilities mapping "
         "(docs/_ext/gfem_capabilities.py)"
     )
+
+
+def _off_grid_input(kind: tuple) -> str | None:
+    """The `OFF_GRID` input of an EXPECTED input kind, or None."""
+    if len(kind) == 3 and kind[2] in LUMPED_VALUES.get(kind[0], ()):
+        return "lumped"
+    if len(kind) == 3 and kind[0] == "material" and kind[2] in OFF_GRID:
+        return kind[2]
+    return None
+
+
+def _claiming_rows(problem: Problem, leaf: str) -> list[str]:
+    """The rows an ``EXPECTED`` leaf of ``problem`` answers for.
+
+    Its own row for the headline leaf, and each cell-only row whose leaves
+    (`CELL_ONLY_LEAVES`) it is.
+    """
+    rows = [
+        row
+        for row, (base, prefixes) in CELL_ONLY_LEAVES.items()
+        if problem.row == base and leaf.startswith(prefixes)
+    ]
+    if leaf == problem.headline:
+        rows.append(problem.row)
+    return rows
+
+
+def _claim(claims: dict, rows: list[str], column: str | None, outcome: str) -> None:
+    """Add ``outcome`` to each row's claims in ``column`` (none if ``None``)."""
+    if column is None:
+        return
+    for row in rows:
+        claims.setdefault((row, column), set()).add(outcome)
 
 
 def _problem(key: str, source: str) -> Problem:
@@ -303,13 +472,14 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
         out_of_scope: ``OUT_OF_SCOPE``, rows ``(label, call, error, match)``.
 
     Returns:
-        ``columns``, ``rows`` (each with one cell per column), ``counts``,
-        ``provenance`` and ``raises``.
+        ``columns``, ``rows`` (each with one cell per column), ``also`` (see
+        `also_verified`), ``counts``, ``provenance`` and ``raises``.
 
     Raises:
         CapabilitiesError: when a claim cannot be derived.
     """
     verified: dict[tuple[str, str], list] = {}
+    off_grid: dict[tuple[str, str], list] = {}
     for cell in cells:
         if cell.solver not in SOLVERS:
             raise CapabilitiesError(
@@ -317,9 +487,14 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
                 "the Capabilities mapping (docs/_ext/gfem_capabilities.py)"
             )
         problem = _problem(cell.problem, MATRIX_TEST)
+        if cell.input in OFF_GRID_INPUTS:
+            key = (problem.row, OFF_GRID_INPUTS[cell.input])
+            off_grid.setdefault(key, []).append(cell)
+            continue
         verified.setdefault((problem.row, _cell_column(cell)), []).append(cell)
 
     claimed: dict[tuple[str, str], set[str]] = {}
+    claimed_off: dict[tuple[str, str], set[str]] = {}
     headlines: set[str] = set()
     for (key, leaf, kind), outcome in expected.items():
         problem = _problem(key, RAISE_TEST)
@@ -329,11 +504,13 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
                 f"{RAISE_TEST}: outcome {outcome!r} of {(key, leaf, kind)!r} is not "
                 f"one of {sorted(OUTCOMES)}"
             )
-        if leaf != problem.headline:
-            continue
-        headlines.add(key)
+        rows = _claiming_rows(problem, leaf)
+        if leaf == problem.headline:
+            headlines.add(key)
         if column is not None:
-            claimed.setdefault((problem.row, column), set()).add(outcome)
+            _claim(claimed, rows, column, outcome)
+        else:
+            _claim(claimed_off, rows, _off_grid_input(kind), outcome)
     missing = sorted({k for k, _, _ in expected} - headlines)
     if missing:
         leaves = ", ".join(f"{k!r} ({PROBLEMS[k].headline!r})" for k in missing)
@@ -384,9 +561,10 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
         f"{counts['bddc_gmres']} repeated on BDDC + GMRES), each checked along "
         "3 random directions against fourth-order central differences"
     )
-    off_grid = [label for label in labels if label not in GRID_LABELS]
-    unlabelled = [label for label in off_grid if label not in RAISES_LABELS]
-    stale = [label for label in RAISES_LABELS if label not in off_grid]
+    also = also_verified(off_grid, claimed_off)
+    off_labels = [label for label in labels if label not in GRID_LABELS]
+    unlabelled = [label for label in off_labels if label not in RAISES_LABELS]
+    stale = [label for label in RAISES_LABELS if label not in off_labels]
     if unlabelled or stale:
         raise CapabilitiesError(
             f"{RAISE_TEST}: OUT_OF_SCOPE rows with no site label {unlabelled}, "
@@ -395,16 +573,83 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
         )
     raises = [
         {"key": label, "label": RAISES_LABELS[label], **_error(*labels[label])}
-        for label in off_grid
+        for label in off_labels
     ]
     return {
         "columns": [
             {"key": k, "label": c.label, "recipe": c.recipe} for k, c in COLUMNS.items()
         ],
         "rows": rows,
+        "also": also,
         "counts": counts,
         "provenance": provenance,
         "raises": raises,
+    }
+
+
+def also_verified(off_grid: dict, claimed: dict) -> list[dict]:
+    """The FD-verified pairs with no grid column, one entry per row and group.
+
+    Args:
+        off_grid: ``(row, property) -> cells`` of the `OFF_GRID` inputs.
+        claimed: ``(row, property) -> outcomes`` of ``EXPECTED`` for them.
+
+    Returns:
+        Per row, in `ROWS` order, and per group of `OFF_GRID_GROUPS` with
+        cells there: ``key``, ``label``, ``inputs`` (site
+        words), ``cells``, ``forms_text``, ``solvers``, ``sweeps`` and
+        ``text``, the entry as one phrase.
+
+    Raises:
+        CapabilitiesError: a cell whose pair the raise table does not expect
+            to be a gradient.
+    """
+    out = []
+    for row_key, row in ROWS.items():
+        for group in OFF_GRID_GROUPS:
+            entry = _also_entry(row_key, row, group, off_grid, claimed)
+            if entry is not None:
+                out.append(entry)
+    return out
+
+
+def _also_entry(row_key, row, group, off_grid, claimed) -> dict | None:
+    """One `also_verified` entry: a row's cells of one group of inputs."""
+    cells = []
+    inputs = []
+    for name in group:
+        words = OFF_GRID[name]
+        found = off_grid.get((row_key, name), [])
+        if not found:
+            continue
+        if claimed.get((row_key, name), set()) != {"gradient"}:
+            raise CapabilitiesError(
+                f"{row.label} x {words}: {MATRIX_TEST} verifies a gradient "
+                f"that {RAISE_TEST} does not expect"
+            )
+        cells += found
+        inputs.append(words)
+    if not cells:
+        return None
+    forms = forms_text(sorted({FORMS[c.input] for c in cells if c.input in FORMS}))
+    solvers = [SOLVERS[s] for s in dict.fromkeys(c.solver for c in cells)]
+    sweeps = [s for s in dict.fromkeys(c.sweep for c in cells) if s]
+    parts = [forms] if forms else []
+    parts.append(", ".join(solvers))
+    if sweeps:
+        parts.append(f"{' and '.join(sweeps)} sweep")
+    return {
+        "key": row_key,
+        "label": row.label,
+        "inputs": inputs,
+        "cells": len(cells),
+        "forms_text": forms,
+        "solvers": solvers,
+        "sweeps": sweeps,
+        "text": (
+            f"{row.label} with respect to the {' and the '.join(inputs)} "
+            f"({', '.join(parts)})"
+        ),
     }
 
 
@@ -509,9 +754,15 @@ REFUSAL_LABELS = {
     "device": '`device="cuda"`',
     "bddc_order_1": '`linear_solver="bddc_gmres"` at `order=1`',
     "bddc_order_1_auto": '`linear_solver="auto"` at `order=1`',
+    "petsc_preconditioner": (
+        '`linear_solver="petsc"` with a `pc_type` that has no distributed form '
+        "(`ilu`, `icc`, or `lu` or `cholesky` on a package other than MUMPS)"
+    ),
     "field_export": "`Field.to_meshio`, `Field.to_pyvista`",
     "load_result_fields": "`load_result` of a bundle with fields",
     "power_flow": "`power_flow`",
+    "electric_energy": "`electric_energy`",
+    "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
 }
 
@@ -715,7 +966,7 @@ def derive(repo: Path = REPO) -> dict:
     """Every Capabilities claim, from the tests under ``repo``.
 
     Returns:
-        ``columns``, ``rows``, ``counts``, ``provenance`` and ``raises`` (see
+        ``columns``, ``rows``, ``also``, ``counts``, ``provenance`` and ``raises`` (see
         `gradient_matrix`), ``refusals`` (see `distributed_refusals`) and
         ``effectivity`` (see `load_effectivity`).
     """
@@ -870,7 +1121,11 @@ def _directives() -> dict:
                     line += _entry(*self.cell(cell))
                 body += line
             group += body
-            return [table]
+            if not data["also"]:
+                return [table]
+            also = "; ".join(entry["text"] for entry in data["also"])
+            text = f"Also FD-verified, with no column above: {also}."
+            return [table, nodes.paragraph(text=text)]
 
         def cell(self, cell: dict) -> list:
             mark = nodes.inline(classes=["gfem-mark", f"gfem-{cell['status']}"])

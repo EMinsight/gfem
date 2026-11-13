@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import difflib
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from gfem.results import DrivenResult
@@ -113,16 +113,24 @@ class SkippedPortModeWarning(UserWarning):
 
 
 class PortModeProjectionWarning(UserWarning):
-    """Two wave ports of one surface read part of each other's mode.
+    """A wave port's S functional is inexact because its port line is lossy.
 
     Each wave port's S functional projects the field on its conjugated
-    mode, which separates the modes of one surface only when the port line
-    is lossless. It fires when, at some frequency, the normalized
-    projection of one requested mode on another port's functional exceeds
-    ``1e-3``; the S entries between those ports then carry an error of that
-    order. The remedy is a lossless port line near the port (the
-    biorthogonal functional that would remove the error is not implemented
-    in this version of gfem). Filter it with Python's `warnings` module.
+    mode, which is exact only when the port line is lossless. It fires at
+    most once per port surface, in one of two cases:
+
+    - Two wave ports of one surface read part of each other's mode: at some
+      frequency, the normalized projection of one requested mode on another
+      port's functional exceeds ``1e-3``. The S entries between those ports
+      carry an error of that order.
+    - Otherwise, a port's mode has ``alpha/beta = |Re gamma| / |Im gamma|``
+      above ``1e-3`` at some frequency, a lone port included. The port's
+      reflection entries of S carry an error of that order; transmission
+      is right to the square of it.
+
+    The remedy is a lossless port line near the port (the biorthogonal
+    functional that would remove the error is not implemented in this
+    version of gfem). Filter it with Python's `warnings` module.
     """
 
 
@@ -257,6 +265,25 @@ class DegenerateModeError(ValueError):
     """
 
 
+class ModeLabelError(RuntimeError):
+    """A dressed level no longer resembles one bare Fock state.
+
+    `gfem.quantum.dressed_modes` labels each level it uses (the ground
+    state, one and two photons in a mode, one photon in each of two modes)
+    by its largest overlap with a bare Fock state; above 1/2 that label is
+    unique. At 1/2 or less two modes have hybridized (near a resonance
+    between them, or in the straddling regime), and "the qubit" and "the
+    resonator" are no longer separate objects. The message names the level,
+    its overlap and the two bare frequencies involved, and the remedies:
+    move the modes apart, or leave the hybridized mode out of the call.
+    ``method="first_order"`` is not a remedy: it gives a number for a
+    picture that no longer holds. With concrete inputs it is raised as is;
+    under a JAX transformation (`jax.jit`, `jax.grad`, `jax.vmap`) it
+    arrives as ``jax.errors.JaxRuntimeError`` carrying this class's name
+    and the message.
+    """
+
+
 class SweepNotConvergedWarning(UserWarning):
     """An adaptive frequency sweep stopped at its sample cap before converging.
 
@@ -269,8 +296,29 @@ class SweepNotConvergedWarning(UserWarning):
     """
 
 
+class SweepRankDeficientWarning(UserWarning):
+    """An adaptive sweep's rational interpolation lost rank.
+
+    The sweep is near the accuracy of its full solves. The sweep goes on.
+    Tighten ``SolverOptions.tolerance`` or loosen
+    ``SolverOptions.adaptive_tolerance`` if it then fails to converge. Filter
+    it with Python's `warnings` module.
+    """
+
+
+class UnsampledPixelsWarning(UserWarning):
+    """Some pixels of a `gfem.design.LayerGrid` are sampled by no centroid.
+
+    No element (or face) centroid falls in them, so they get no gradient and
+    do not reach the solve. Refine the mesh in the region or coarsen the
+    pitch; pixels outside a non-rectangular footprint are always unsampled,
+    mask them with ``grid.sampled``. Filter it with Python's `warnings`
+    module.
+    """
+
+
 class LowFrequencyWarning(UserWarning):
-    """A driven frequency is below the mesh's low-frequency floor.
+    """A driven frequency or an eigenmode is below the mesh's low-frequency floor.
 
     The floor is k0 * h_min = 1e-6 (f * h_min = 48 Hz*m), with k0 the
     vacuum wavenumber and h_min the shortest edge of the solve domain.
@@ -278,8 +326,11 @@ class LowFrequencyWarning(UserWarning):
     factorization so does the capacitive part of S. For capacitance at low
     frequency solve `gfem.Electrostatic`; otherwise raise the lowest
     frequency or coarsen the smallest elements. The solve still runs; see
-    `gfem.Driven`, Notes, for how far each result holds. Filter it with
-    Python's `warnings` module.
+    `gfem.Driven`, Notes, for how far each result holds. An `gfem.Eigenmode`
+    solve warns when its target or its lowest mode is below the floor: the
+    eigenfrequencies, fields and participations lose the same digits, and
+    `gfem.EigenmodeResult.error` does not show it. Filter it with Python's
+    `warnings` module.
     """
 
 
@@ -303,9 +354,12 @@ class LinearSolverConvergenceError(RuntimeError):
     ``gfem.solve(model, gfem.Driven(err.unsolved, excite=...),
     options=gfem.SolverOptions(linear_solver="direct"))``. With frequency
     workers each block stops at its own first such frequency and the error
-    holds the union of the blocks. An adaptive sweep, an eigenmode or
-    electrostatic solve, and any solve under `jax.grad`, `jax.jit` or
-    `jax.vmap` (forward or adjoint) return no partial result. Under
+    holds the union of the blocks. `gfem.Job.run` with ``out``, and so
+    ``python -m gfem run``, write the partial result as a partial bundle
+    (``partial.json`` and ``partial.npz``) and add a note saying where. An
+    adaptive sweep, an eigenmode or electrostatic solve, and any solve under
+    `jax.grad`, `jax.jit` or `jax.vmap` (forward or adjoint) return no
+    partial result. Under
     `jax.grad` it arrives as ``jax.errors.JaxRuntimeError``, or as
     ``ValueError`` from a jitted function that has already run
     successfully, with this message; see the gradient recipes ("When a
@@ -348,3 +402,6 @@ class LinearSolverConvergenceError(RuntimeError):
         self.frequency = frequency
         self.unsolved = unsolved
         self.result = result
+        #: A missed uniform sweep's outputs, until `gfem.solve` builds
+        #: ``result`` from them.
+        self._partial: Any = None

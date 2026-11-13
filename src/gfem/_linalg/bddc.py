@@ -235,6 +235,14 @@ class BddcHandle(NgsHandle):
         self.maxiter = maxiter
         self._hold(form, preconditioner)
 
+    def expect_solves(self, solves: int) -> None:
+        """Restate the solve calls the next setups serve, as `refactorize` does.
+
+        For the coarse factorization only; the held preconditioner stays.
+        """
+        with self._lock:
+            self._expected_columns = self._columns_per_setup(solves)
+
     def _columns_per_setup(self, solves: int) -> int:
         """The columns one setup serves when ``solves`` solve calls are expected.
 
@@ -331,7 +339,13 @@ class BddcHandle(NgsHandle):
             layout=self.layout,
         )
 
-    def refactorize(self, operator: Operator, *, solves: int | None = None) -> None:
+    def refactorize(
+        self,
+        operator: Operator,
+        *,
+        solves: int | None = None,
+        frequency: float | None = None,  # noqa: ARG002
+    ) -> None:
         """Assemble ``operator`` and solve it on the held preconditioner.
 
         Preconditioner reuse (see `gfem._linalg.Refactorable`): only the
@@ -354,7 +368,7 @@ class BddcHandle(NgsHandle):
         ``solves`` restates the solve calls the next setups are expected to
         serve (``prepare``'s ``solves``), for the coarse factorization only;
         ``None`` keeps the count. A setup may come later than this call, at
-        the first cold solve.
+        the first cold solve. ``frequency`` is ignored.
         """
         form = operator.form
         with self._lock:
@@ -457,7 +471,7 @@ class BddcHandle(NgsHandle):
                     return self._warm(B, x0, measure=measure, prepared=prepared)
                 counts: list[int] = []
                 out = self._map(
-                    solver,
+                    lambda _: solver,
                     B,
                     after=lambda *column: counts.append(self._finish(*column)),
                 )
@@ -586,11 +600,12 @@ class BddcHandle(NgsHandle):
     @property
     def nbytes(self) -> int:
         """Host memory of the matrix and the preconditioner, in bytes."""
-        pre = self._preconditioner
-        if self._solver is None or self._matrix is None or pre is None:
+        # read once, without the lock: a concurrent free gives 0 or the old count
+        held, pre, coarse = self._matrix, self._preconditioner, self._coarse
+        if self._solver is None or held is None or pre is None:
             return 0
-        matrix = local_matrix(self._matrix, self.layout.comm)
-        factors = 0 if self._coarse is None else self._coarse.nbytes
+        matrix = local_matrix(held, self.layout.comm)
+        factors = 0 if coarse is None else coarse.nbytes
         return host_bytes(matrix) + host_bytes(pre.mat) + factors
 
     def _free_coarse(self) -> None:

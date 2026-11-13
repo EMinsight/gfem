@@ -79,6 +79,35 @@ def test_a_wave_port_and_a_lumped_port_mix(mesh, sweep):
     assert_gradient_matches(objective, p, directions, step=STEPS["eps_r"])
 
 
+@pytest.mark.parametrize("port", ["lossless", "lossy", "mixed"])
+def test_a_kept_field_objective_with_wave_ports(mesh, port):
+    # the kept-field cotangent is one more load on the adjoint solve, whose
+    # operator holds the wave ports' Robin terms and modal corrections
+    values, rng = core_design(mesh, seed=4)
+    model = wave_line(mesh, port)
+    kept = FREQUENCIES[1]
+    problem = gfem.Driven(FREQUENCIES, excite="p1", keep_fields=kept)
+
+    def solve(p):
+        core = gfem.MaterialField(**{**values, "eps_r": p})
+        m = model.with_material("core", core)
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return gfem.solve(m, problem, options=tight("direct"))
+
+    p = values["eps_r"]
+    n = solve(p).e_field(kept, "p1").coefficients.shape[0]
+    w = np.array([1, 1j]) @ np.random.default_rng(1).normal(size=(2, n))
+    w = jnp.asarray(w / np.linalg.norm(w))
+
+    def objective(p):
+        result = solve(p)
+        e = result.e_field(kept, "p1").coefficients
+        return jnp.abs(jnp.sum(w * e)) ** 2 + jnp.sum(jnp.abs(result.s.values) ** 2)
+
+    directions = unit_directions(rng, p.shape, 2)
+    assert_gradient_matches(objective, p, directions, step=STEPS["eps_r"])
+
+
 def test_complex_permittivity_gradient_has_both_parts(mesh):
     values, rng = core_design(mesh, seed=2)
     problem = gfem.Driven(frequency=FREQUENCIES)
@@ -123,6 +152,7 @@ def test_the_s21_gradient_does_not_depend_on_which_ports_are_excited(
 @pytest.mark.parametrize(("port", "solves"), [("lossless", 0), ("lossy", 2)])
 def test_only_lossy_wave_ports_take_an_adjoint_solve(mesh, port, solves, monkeypatch):
     from gfem import _linalg
+    from gfem._engine.system_operator import SystemOperator
 
     values, _ = core_design(mesh, seed=5)
     objective = _s_objective(
@@ -134,13 +164,20 @@ def test_only_lossy_wave_ports_take_an_adjoint_solve(mesh, port, solves, monkeyp
         [0, 1],
     )
     value, pullback = jax.vjp(objective, values["eps_r"])
-    prepared = []
-    original = _linalg.prepare
+    solved, prepared = [], []
+    solve, prepare = SystemOperator.solve_adjoint, _linalg.prepare
 
-    def counting(*args, **kwargs):
+    def counting_solve(self, *args, **kwargs):
+        solved.append(1)
+        return solve(self, *args, **kwargs)
+
+    def counting_prepare(*args, **kwargs):
         prepared.append(1)
-        return original(*args, **kwargs)
+        return prepare(*args, **kwargs)
 
-    monkeypatch.setattr(_linalg, "prepare", counting)
+    monkeypatch.setattr(SystemOperator, "solve_adjoint", counting_solve)
+    monkeypatch.setattr(_linalg, "prepare", counting_prepare)
     pullback(jnp.ones_like(value))
-    assert len(prepared) == solves  # one operator per frequency
+    assert len(solved) == solves  # one per frequency
+    # the backward refactorizes the forward's base: it prepares nothing
+    assert prepared == []

@@ -9,6 +9,7 @@ orphan: true
 - {doc}`s-parameter-gradient`
 - {doc}`capacitance-gradient`
 - {doc}`eigenmode-gradient`
+- {doc}`quantum-metrics`
 - {doc}`shape-gradient`
 - {doc}`adaptive-sweep-gradient`
 
@@ -20,10 +21,15 @@ orphan: true
 
 ## Solving
 
+- {doc}`solve-a-device`
+- {doc}`prepare-a-mesh`
+- {doc}`save-and-export`
+- {doc}`mesh-refinement`
 - {doc}`anisotropic-materials`
 - {doc}`periodic-cell`
 - {doc}`shared-port-surface`
 - {doc}`measurements`
+- {doc}`loss-budget`
 - {doc}`gpu-direct-solver`
 - {doc}`petsc-slepc`
 - {doc}`distributed-solve`

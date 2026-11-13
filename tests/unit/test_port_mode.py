@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 import gfem
+from gfem._linalg.superlu import EIGS_TOLERANCE
 
 DATA = Path(__file__).parent / "data"
 C0 = 299792458.0
@@ -604,9 +605,10 @@ def test_a_field_with_axes_has_the_mode_of_its_material(wr28_mesh):
     )
     expected = _wr28_gamma(wr28_mesh, material, 16e9)
     uniform = gfem.MaterialField.uniform("fill", material)
-    # measured on MN5: 1.0e-15 relative, 1.5e-15 per element
+    # measured on MN5: 1.0e-15 relative, 1.5e-15 per element, once 5.4e-15
+    # (job 48936024, threaded summation; passed in the same commit's job 48936026)
     np.testing.assert_allclose(
-        _wr28_gamma(wr28_mesh, uniform, 16e9), expected, rtol=5e-15
+        _wr28_gamma(wr28_mesh, uniform, 16e9), expected, rtol=1e-14
     )
     n = len(wr28_mesh.elements("fill"))
     per_element = gfem.MaterialField(
@@ -617,7 +619,7 @@ def test_a_field_with_axes_has_the_mode_of_its_material(wr28_mesh):
         axes=material.axes,
     )
     np.testing.assert_allclose(
-        _wr28_gamma(wr28_mesh, per_element, 16e9), expected, rtol=5e-15
+        _wr28_gamma(wr28_mesh, per_element, 16e9), expected, rtol=1e-14
     )
 
 
@@ -719,13 +721,17 @@ def test_port_mode_stop_gradient_opts_a_read_input_out(plate_mesh):
         {"eigen_solver": "arpack"},
     ],
 )
-def test_port_mode_rejects_solver_choices_it_does_not_use(plate_mesh, options):
-    with pytest.raises(ValueError, match="SuperLU and SciPy on the CPU"):
-        gfem.solve(
-            plate(plate_mesh),
-            gfem.PortMode("p1", 1e9),
-            options=gfem.SolverOptions(**options),
-        )
+def test_port_mode_ignores_solver_choices_it_does_not_use(plate_mesh, options):
+    # the 2D problem runs SuperLU and SciPy on the CPU whatever the options
+    # name, so one SolverOptions serves PortMode and the Driven solve after it
+    model, problem = plate(plate_mesh), gfem.PortMode("p1", 1e9)
+    named = gfem.solve(model, problem, options=gfem.SolverOptions(**options))
+    default = gfem.solve(model, problem)
+    # two ARPACK runs agree to the eigen tolerance, not to rounding (1.2e-9
+    # measured); Re gamma is a rounding-level 1e-27 against beta ~ 42
+    rtol = 100 * EIGS_TOLERANCE
+    atol = rtol * float(np.abs(default.gamma).max())
+    np.testing.assert_allclose(named.gamma, default.gamma, rtol=rtol, atol=atol)
 
 
 def test_solve_rejects_unknown_problems_and_options(plate_mesh):

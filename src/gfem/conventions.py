@@ -63,7 +63,9 @@ real, power waves and pseudo-waves coincide.
   wavenumber, and the mode scaled so that this projection of the mode
   itself carries 1 W; for a lossless mode this is the modal
   power wave. The conjugated projection separates the requested modes of
-  a shared port surface only for a lossless port line.
+  a shared port surface only for a lossless port line, and a lossy port
+  line reflects its own mode at order ``alpha/beta`` (transmission is
+  right to the square of it).
   ``WavePort(offset=d)`` refers S to a plane ``d`` inside the
   domain: ``S_ij`` times ``exp(gamma_i d_i) exp(gamma_j d_j)``.
   Without a ``voltage_path``, the sign of a wave port's row and column of
@@ -73,9 +75,12 @@ real, power waves and pseudo-waves coincide.
   power-wave formulas; ``to_touchstone`` labels a file with ``z_ref`` only
   when it is one real value, and otherwise needs ``z0=`` to renormalize
   first. gfem never labels a port 50 Ω unless S was computed or
-  renormalized for 50 Ω. On a shared port surface each mode is its own
-  port, so ``y()``, ``z()`` and ``renormalize()`` act on modal voltages
-  and currents, not on the conductors' terminal ones.
+  renormalized for 50 Ω, or no port has a reference impedance (wave ports
+  without ``voltage_path``): then an explicit ``z0=`` is a nominal label,
+  S is written unchanged and the file says so in a comment. On a shared
+  port surface each mode is its own port, so ``y()``, ``z()`` and
+  ``renormalize()`` act on modal voltages and currents, not on the
+  conductors' terminal ones.
 - Under a Bloch wave vector (see Bloch periodicity), S is referenced to the
   field E. A solver that reports the periodic envelope
   ``u = E exp(+i k·r)`` gives
@@ -133,10 +138,13 @@ with ``Re(E exp(+iωt))`` source-free; ``Im omega > 0`` decays, and
 ``Q = |omega| / (2 |Im omega|)``. The mode's
 electric energy is::
 
-    E_elec = 1/2 Re ∫ D* · E dV + Σ C_j |V_j|^2 / 2
+    E_elec = 1/2 Re ∫ D* · E dV + Σ C_j |V_j|^2 / 2 + Σ 1/2 ∫ w C_s |E_t|^2 dS
 
-over the solve domain and the capacitive lumped ports (peak phasors: the
-total time-averaged energy of a lossless mode, electric plus magnetic).
+over the solve domain, the capacitive lumped ports (capacitance ``C_j``,
+voltage ``V_j``) and the capacitive `Impedance` sheets (capacitance per
+square ``C_s``, tangential field ``E_t``, fill ``w``, 1 without a
+`SheetField`) (peak phasors: the total time-averaged energy of a lossless
+mode, electric plus magnetic).
 Each mode field is scaled to ``E_elec`` =
 `MODE_ENERGY` and phased so that ``∫ D · E dV`` (no conjugate) is real
 and positive, which makes a lossless mode's field real; the remaining sign
@@ -160,6 +168,34 @@ Swapping a pair's surfaces flips a and gives the same field.
 Under a Bloch wave vector, ``∫ D · E dV`` over the cell can vanish, so an
 eigenmode field is phased to make its largest coefficient real and positive
 instead (still scaled to `MODE_ENERGY`).
+
+Quantum metrics
+---------------
+`gfem.quantum.dressed_modes` puts one junction's cosine on the solved
+linear modes::
+
+    H / hbar = Σ_m omega_m a_m† a_m - (E_J / hbar) [cos(phi) - 1 + phi² / 2]
+    phi = Σ_m phi_m (a_m + a_m†)
+    phi_m = sign(p_m) sqrt(|p_m| hbar omega_m / (2 E_J))
+    E_J = (hbar / 2e)² / L_J
+
+with ``omega_m`` the real part of the mode's angular frequency, ``p_m`` its
+signed junction participation and ``L_J`` the junction's linear inductance.
+With ``E`` its levels (``E(0)`` the ground state, ``E(1_m)`` one photon in
+mode ``m``), every output is a signed angular frequency in rad/s and a
+difference of transition frequencies, so its sign is an observable:
+
+- dressed frequency ``E(1_m) - E(0)``; the Lamb shift is that minus
+  ``omega_m``;
+- anharmonicity ``alpha = E(2_m) - 2 E(1_m) + E(0)``, the second transition
+  frequency minus the first;
+- dispersive shift ``chi = E(1_m 1_n) - E(1_m) - E(1_n) + E(0)``: the full
+  shift of mode ``n``'s frequency per photon in mode ``m``, not half of it.
+
+For an ordinary transmon all three are negative. Other sources' conventions
+convert as ``chi = -chi_Minev = chi_Nigg = 2 chi_Koch`` and ``alpha =
+-alpha_Minev = alpha_Koch`` (Minev et al. and pyEPR report a downward shift
+as positive; Koch et al. write half the shift).
 """
 
 from __future__ import annotations

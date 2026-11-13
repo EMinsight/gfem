@@ -12,7 +12,8 @@ with k0 = ω scale / c, the wavenumber per file unit, and the pieces
 - ``mass``, θ = -k0²: ∫ eps_r (1 - i tan_delta) E · v (per principal axis
   for an anisotropic material);
 - ``conductivity``, θ = i k0: ∫ eta0 sigma scale E · v (sigma a 3x3
-  tensor along its principal axes for an anisotropic material);
+  tensor along its principal axes for an anisotropic material); left out
+  where sigma is zero everywhere (`conductivity_piece`);
 - ``absorbing``, θ = i k0: ∫ sqrt(eps_r / mu_r) E_t · v_t on every
   absorbing surface (real parts of the adjacent element's values); next to
   an anisotropic material, ∫ (Y E_t) · v_t with the face's normal-incidence
@@ -67,7 +68,13 @@ import ngsolve as ngs
 import numpy as np
 import scipy.constants as const
 
-from gfem._boundaries import Absorbing, Conductor, Impedance, LumpedPort
+from gfem._boundaries import (
+    Absorbing,
+    Conductor,
+    Impedance,
+    LumpedPort,
+    check_lumped_values,
+)
 from gfem._engine import anisotropy, quadrature
 from gfem._engine.coefficients import (
     anisotropic_elements,
@@ -95,6 +102,7 @@ __all__ = [
     "ETA0",
     "LumpedElement",
     "LumpedPortData",
+    "LumpedValue",
     "Piece",
     "Tabulated",
     "absorbing_coefficients",
@@ -158,6 +166,28 @@ class Tabulated:
 
 
 @dataclasses.dataclass(frozen=True)
+class LumpedValue:
+    """How a piece moves with one lumped value ``p`` (ADR 0100).
+
+    The piece's coefficient is proportional to ``p`` (a capacitance) or to
+    ``1 / p`` (a resistance or an inductance), so ``dA / dp = slope A``.
+
+    Attributes:
+        kind: The design input: ``("port", index, "inductance")`` or
+            ``("boundary", index, "resistance")``, as `gfem._adjoint` names
+            the leaf.
+        slope: ``+1 / p`` or ``-1 / p``.
+        faces: The piece's form as ``(region, c)`` per surface: the piece is
+            ``sum int c u_t . v_t`` over them, ``c`` a number or a face-wise
+            coefficient function.
+    """
+
+    kind: tuple
+    slope: float
+    faces: tuple[tuple[Any, Any], ...]
+
+
+@dataclasses.dataclass(frozen=True)
 class Piece:
     """One frequency-independent bilinear form and its scalar factor θ(ω).
 
@@ -174,6 +204,9 @@ class Piece:
             in place).
         coefficient: ``C`` (``c``) of a volume (trace) piece, the element-
             (face-) wise coefficient its integrand reads.
+        values: The values of a volume piece's ``coefficient`` per gfem
+            tetrahedron, ``(n,)`` or ``(n, 3, 3)`` (what a kept fixed part
+            is keyed on, ADR 0082).
         region: The boundary region of a ``"trace"`` or ``"curl trace"``
             piece.
         frequency_class: ``"polynomial"`` (θ a polynomial of degree at most
@@ -190,6 +223,10 @@ class Piece:
             on an interior surface), ``(index, c)``: the boundary's index in
             ``model.boundaries`` and the coefficient per unit fill (1 for a
             conductor, the R, L or C weight for an impedance).
+        lumped: For the L or C piece of a lumped port, or a piece of an
+            `Impedance`, how it moves with its lumped value (`LumpedValue`);
+            ``None`` otherwise (a lumped port's resistance is not a design
+            input).
 
     Raises:
         ValueError: ``theta`` does not give one scalar: the term is not
@@ -210,6 +247,8 @@ class Piece:
     )
     owner: np.ndarray | None = dataclasses.field(default=None, compare=False)
     sheet: tuple[int, float] | None = None
+    values: np.ndarray | None = dataclasses.field(default=None, compare=False)
+    lumped: LumpedValue | None = dataclasses.field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         """Check that θ is a scalar function of ω."""
@@ -413,6 +452,51 @@ def _inverse(values: np.ndarray) -> np.ndarray:
     return 1.0 / values if values.ndim == 1 else np.linalg.inv(values)
 
 
+def conductivity_piece(
+    model: Model,
+    built: EngineMesh,
+    order: int,
+    *,
+    elements: np.ndarray | None = None,
+) -> Piece:
+    """The ``conductivity`` piece of ``model``: θ = i k0, ∫ eta0 sigma scale E · v.
+
+    `pieces` returns it as latent when the conductivity is zero everywhere
+    on the solve domain (a zero matrix, and no damping term for the eigenmode
+    operator). Its derivative by the conductivity is not zero there, so a
+    backward pass still reads the piece (`gfem._engine.driven.DrivenOperator.latent`).
+    ``elements`` restricts the form as in `pieces`.
+    """
+    scale = built.scale
+    k = lambda w: wavenumber(w, scale)  # noqa: E731
+    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    dx = quadrature.dx(order, definedonelements=tets)
+    active = model._domain.active  # noqa: SLF001
+    # an anisotropic material gives its 3x3 tensor
+    sigma = element_tensors(model, "conductivity").real
+    sigma = np.where(active.reshape((-1,) + (1,) * (sigma.ndim - 1)), sigma, 0.0)
+    # eta0 sigma scale (real symmetric sigma); its derivative eta0 leaves
+    # out the length scale
+    values = ETA0 * scale * sigma
+    cf = coefficient(built, values)
+    return Piece(
+        "conductivity",
+        lambda w: 1j * k(w),
+        lambda u, v: (cf * u) * v * dx,
+        kind="value",
+        coefficient=cf,
+        values=values,
+        derivatives={
+            "conductivity": Derivative(
+                ETA0,
+                holomorphic=False,
+                length_power=1,
+                per_axis=Derivative(ETA0, holomorphic=False, length_power=1),
+            )
+        },
+    )
+
+
 def pieces(
     model: Model,
     built: EngineMesh,
@@ -421,8 +505,12 @@ def pieces(
     *,
     elements: np.ndarray | None = None,
     faces: np.ndarray | None = None,
-) -> list[Piece]:
+) -> tuple[list[Piece], tuple[Piece, ...]]:
     """The driven operator's pieces on ``model`` (see the module docstring).
+
+    Returns the pieces and the latent ones: pieces whose matrix is zero at
+    this design but whose derivative is not (the conductivity piece where the
+    conductivity is zero everywhere; `gfem._engine.driven.DrivenOperator.latent`).
 
     `PEC` is a constraint of the space and `PMC` the natural condition, so
     neither has a piece.
@@ -443,12 +531,12 @@ def pieces(
     tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
     tris = _bits(faces, built.triangle_order, "triangle")
     dx = quadrature.dx(order, definedonelements=tets)
-    active = model._domain.active  # noqa: SLF001
 
     # each piece carries its coefficient and, next to it, the coefficient's
     # derivatives by material property (lazy: a backward pass reads them)
     eps = lossy_eps(model)
-    nu = coefficient(built, _inverse(element_tensors(model, "mu_r")))
+    nu_values = _inverse(element_tensors(model, "mu_r"))
+    nu = coefficient(built, nu_values)
     eps_cf = coefficient(built, eps)
     out = [
         Piece(
@@ -457,6 +545,7 @@ def pieces(
             lambda u, v: (nu * ngs.curl(u)) * ngs.curl(v) * dx,
             kind="curl",
             coefficient=nu,
+            values=nu_values,
             derivatives={
                 "mu_r": Derivative(
                     lambda: -(element_values(model, "mu_r", per_axis=1.0) ** -2.0),
@@ -474,6 +563,7 @@ def pieces(
             lambda u, v: (eps_cf * u) * v * dx,
             kind="value",
             coefficient=eps_cf,
+            values=eps,
             derivatives={
                 "eps_r": Derivative(
                     lambda: _loss(model),
@@ -491,31 +581,14 @@ def pieces(
             },
         ),
     ]
-    # an anisotropic material gives its 3x3 tensor; its own i k0 piece, not
-    # folded into the mass (the eigen operator splits the pieces by power of k)
-    sigma = element_tensors(model, "conductivity").real
-    sigma = np.where(active.reshape((-1,) + (1,) * (sigma.ndim - 1)), sigma, 0.0)
-    if sigma.any():
-        # eta0 sigma scale (real symmetric sigma); its derivative eta0 leaves
-        # out the length scale
-        sigma_cf = coefficient(built, ETA0 * scale * sigma)
-        out.append(
-            Piece(
-                "conductivity",
-                lambda w: 1j * k(w),
-                lambda u, v: (sigma_cf * u) * v * dx,
-                kind="value",
-                coefficient=sigma_cf,
-                derivatives={
-                    "conductivity": Derivative(
-                        ETA0,
-                        holomorphic=False,
-                        length_power=1,
-                        per_axis=Derivative(ETA0, holomorphic=False, length_power=1),
-                    )
-                },
-            )
-        )
+    # the conductivity has its own i k0 piece, not folded into the mass (the
+    # eigen operator splits the pieces by power of k)
+    conductivity = conductivity_piece(model, built, order, elements=elements)
+    latent: tuple[Piece, ...] = ()
+    if np.any(conductivity.values):
+        out.append(conductivity)
+    else:
+        latent = (conductivity,)
 
     absorbing = [b for b in model.boundaries if isinstance(b, Absorbing)]
     if absorbing:
@@ -567,8 +640,9 @@ def pieces(
             out.extend(_impedance(model, built, order, b, tris, index=index))
 
     for data in ports:
-        out.extend(_port(built, order, data, tris))
-    return out
+        index = model.port_names.index(data.port.name)
+        out.extend(_port(built, order, data, tris, index=index))
+    return out, latent
 
 
 def absorbing_coefficients(
@@ -915,12 +989,18 @@ def _conductor(
     return out
 
 
+#: The lumped value of each R, L and C piece, and the power of its coefficient.
+_ELEMENTS = {"R": ("resistance", -1), "L": ("inductance", -1), "C": ("capacitance", 1)}
+
+
 def _rlc(
     label: str,
     scale: float,
     sheets: list,
     kind: Literal["trace", "port"],
     index: int | None = None,
+    *,
+    inputs: Mapping[str, tuple[tuple, Any]] | None = None,
 ) -> list[Piece]:
     """Pieces of per-square R, L and C in parallel on surfaces.
 
@@ -929,7 +1009,9 @@ def _rlc(
     / R_s + mu0 scale / L_s - k0^2 C_s / (eps0 scale) in the equation's
     units (times the fill), one piece per kind. A ``"trace"`` piece has one
     sheet, that of ``model.boundaries[index]``: its R, L or C weight is its
-    coefficient per unit fill.
+    coefficient per unit fill. ``inputs`` gives, per lumped value name
+    (``"inductance"``), its design input kind and value: the pieces of those
+    values carry their `LumpedValue`.
     """
     weights: dict[str, list] = {"R": [], "L": [], "C": []}
     for form, rs, ls, cs, *fill in sheets:
@@ -956,6 +1038,14 @@ def _rlc(
                     "region": form.region,
                     "sheet": None if index is None else (index, factor),
                 }
+            value, power = _ELEMENTS[element]
+            if inputs is not None and value in inputs:
+                input_kind, p = inputs[value]
+                extra["lumped"] = LumpedValue(
+                    input_kind,
+                    power / float(p),
+                    tuple((form.region, c) for form, _, c in items),
+                )
             out.append(Piece(name, thetas[element], integrand, kind=kind, **extra))
     return out
 
@@ -991,13 +1081,26 @@ def sheet_fill(model: Model, boundary: Conductor | Impedance) -> np.ndarray | No
 
 
 def _port(
-    built: EngineMesh, order: int, data: LumpedPortData, faces: Any = None
+    built: EngineMesh,
+    order: int,
+    data: LumpedPortData,
+    faces: Any = None,
+    *,
+    index: int,
 ) -> list[Piece]:
+    """The R, L and C pieces of ``model.ports[index]``; its L and C are inputs."""
+    port = data.port
+    check_lumped_values(port)
     sheets = [
         (_tangential(built, (e.surface,), order, faces), *data.per_square(e))
         for e in data.elements
     ]
-    return _rlc(f"port {data.port.name}", built.scale, sheets, "port")
+    inputs = {
+        name: (("port", index, name), getattr(port, name))
+        for name in ("inductance", "capacitance")
+        if getattr(port, name) is not None
+    }
+    return _rlc(f"port {port.name}", built.scale, sheets, "port", inputs=inputs)
 
 
 def _impedance(
@@ -1009,12 +1112,19 @@ def _impedance(
     *,
     index: int,
 ) -> list[Piece]:
+    check_lumped_values(b)
     form = _tangential(built, (b.surface,), order, faces)
     sheet: tuple = (form, b.resistance, b.inductance, b.capacitance)
     fill = sheet_fill(model, b)
     if fill is not None:
         sheet = (*sheet, surface_p0(built, fill))
-    return _rlc(f"impedance {b.surface}", built.scale, [sheet], "trace", index)
+    inputs = {
+        name: (("boundary", index, name), getattr(b, name))
+        for name in ("resistance", "inductance", "capacitance")
+        if getattr(b, name) is not None
+    }
+    label = f"impedance {b.surface}"
+    return _rlc(label, built.scale, [sheet], "trace", index, inputs=inputs)
 
 
 def wave_port_coefficients(model: Model, surface: str) -> np.ndarray:

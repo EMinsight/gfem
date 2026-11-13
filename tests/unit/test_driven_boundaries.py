@@ -21,6 +21,7 @@ like a half-space of the crystal, at every length.
 import math
 
 import anisotropy as anisotropy_reference
+import gradient_cases
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -117,6 +118,73 @@ def test_impedance_end_face_loads_the_line_with_its_parallel_rlc(mesh, rlc):
     )
     expected = _s11_loaded(_abcd_line(F, L * 1e-3), y_square * W / H)
     assert abs(s11 - expected) < 2e-3
+
+
+def test_an_impedance_inductance_differentiates_like_its_closed_form(mesh):
+    # d|S11|^2 / dL of the line closed by R || L, against the closed form's
+    # central difference (both carry the mesh's error, 2e-3 in S11)
+    w = 2 * math.pi * F
+    line = _abcd_line(F, L * 1e-3)
+
+    def closed(inductance):
+        y_square = 1 / 80.0 + 1 / (1j * w * inductance)
+        return abs(_s11_loaded(line, y_square * W / H)) ** 2
+
+    def solved(inductance):
+        model = _one_port(mesh, gfem.Impedance("port2", 80.0, inductance))
+        s = gfem.solve(model, gfem.Driven(frequency=F)).s.values
+        return jnp.abs(s[0, 0, 0]) ** 2
+
+    h = 1e-12
+    expected = (closed(1e-9 + h) - closed(1e-9 - h)) / (2 * h)
+    assert float(jax.grad(solved)(1e-9)) == pytest.approx(expected, rel=2e-2)
+
+
+def _central_differences(f, n, h=1e-4):
+    """``f``'s central differences in each of ``n`` relative steps ``t``."""
+    t = jnp.zeros(n)
+    return np.array(
+        [(f(t.at[i].add(h)) - f(t.at[i].add(-h))) / (2 * h) for i in range(n)]
+    )
+
+
+def test_an_impedance_with_a_fill_and_a_capacitance_matches_central_differences(
+    tmp_path,
+):
+    # every value of a filled sheet, whose coefficient is value x fill
+    glued = gradient_cases.sheet_mesh(tmp_path)
+    fill = gfem.SheetField(gradient_cases.sheet_fill(glued, 0)[0])
+    rlc = np.array([2e3, 2e-8, 1e-14])
+    problem = gfem.Driven(frequency=(8e9, 10e9))
+    options = gfem.SolverOptions(linear_solver="direct")
+
+    def objective(t):
+        r, l, c = rlc * (1 + t)
+        sheet = gfem.Impedance("sheet", r, l, c, fill=fill)
+        model = gradient_cases.sheet_line(glued, sheet)
+        result = gfem.solve(model, problem, options=options)
+        return gradient_cases.s_functional(result.s.values)
+
+    grad = np.asarray(jax.grad(objective)(jnp.zeros(3)))
+    fd = _central_differences(objective, 3)
+    assert np.abs(fd).min() > 1e-2 * np.abs(fd).max()  # each value moves S
+    # measured 6.7e-9 of the largest entry (direct)
+    np.testing.assert_allclose(grad, fd, rtol=0, atol=1e-6 * np.abs(fd).max())
+
+
+def test_a_traced_lumped_value_out_of_range_raises_when_solved(mesh):
+    def objective(inductance):
+        model = _one_port(mesh, gfem.Impedance("port2", 80.0, inductance))
+        return jnp.abs(gfem.solve(model, gfem.Driven(frequency=F)).s.values).sum()
+
+    with pytest.raises(
+        jax.errors.JaxRuntimeError,
+        match=(
+            r"Impedance on surface 'port2': inductance must be a finite number > 0 "
+            r"H, got -1e-09\."
+        ),
+    ):
+        jax.jit(objective)(-1e-9)
 
 
 def test_new_boundary_terms_are_affine_pieces(mesh):
@@ -454,6 +522,52 @@ def test_first_order_absorbing_boundary_ends_an_anisotropic_slab_as_a_half_space
     # reflected up to 0.022 off, Palace's coefficient 0.098)
     np.testing.assert_allclose(np.abs(s11), half_space, rtol=0, atol=1e-9)
     assert abs(s11[0] - s11[1]) <= 3e-9
+
+
+def test_first_order_absorbing_boundary_absorbs_a_tilted_crystal_wave(tmp_path):
+    """A periodic cell of a tilted crystal radiating onto `Absorbing` faces.
+
+    The cell is periodic along y and z and filled with eps = diag(2, 2, 6)
+    tilted 45° about y. A lumped-port sheet driven along z radiates the
+    extraordinary plane wave both ways along x; its E has an x component, so
+    no PEC or PMC wall could guide it. The wave sees eps_zz - eps_xz² /
+    eps_xx = 3, and with both faces absorbing it the port sees two matched
+    half-lines: Z = η0 / sqrt(3) / 2 on the square cross-section.
+    """
+    edges = tuple(
+        np.linspace(0.0, s, n + 1)
+        for s, n in zip((6.0, 1.0, 1.0), (12, 2, 2), strict=True)
+    )
+    raw = sm.periodic_cell(edges, sheets=(("sheet", 2.5),), paired="yz")
+    mesh = gfem.Mesh.from_gmsh(
+        sm.write_msh22(tmp_path / "cell.msh", raw), length_unit="mm"
+    )
+    c = s = math.sqrt(0.5)
+    tilt = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    eps = tilt @ np.diag([2.0, 2.0, 6.0]) @ tilt.T
+    assert eps[2, 2] - eps[0, 2] ** 2 / eps[0, 0] == pytest.approx(3.0, abs=1e-14)
+    model = gfem.Model(
+        mesh,
+        materials={"cell": gfem.Material(eps_r=eps)},
+        boundaries=[
+            gfem.Periodic(("y_min", "y_max")),
+            gfem.Periodic(("z_min", "z_max")),
+            gfem.Absorbing("x_min"),
+            gfem.Absorbing("x_max"),
+        ],
+        ports=[gfem.LumpedPort("p1", "sheet", "+z", impedance=50.0)],
+    )
+    result = gfem.solve(
+        model,
+        gfem.Driven(frequency=10e9),
+        options=gfem.SolverOptions(order=2, linear_solver="direct"),
+    )
+    s11 = complex(np.asarray(result.s.values).ravel()[0])
+    z = const.mu_0 * const.c / math.sqrt(3.0) / 2
+    exact = (z - 50.0) / (z + 50.0)
+    assert exact == pytest.approx(0.37008935, abs=1e-8)
+    # 4.9e-7 measured; a mean-diagonal admittance would move S11 by about 0.1
+    assert abs(s11 - exact) <= 1e-5
 
 
 def _eigenmode(model):

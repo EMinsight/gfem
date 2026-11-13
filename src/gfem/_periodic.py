@@ -109,19 +109,6 @@ def pairing(mesh: Mesh, first: str, second: str) -> Pairing:
     return cache[key]
 
 
-def pair_of_surface(mesh: Mesh, name: str) -> Pairing | None:
-    """The periodic pair a model on ``mesh``'s topology made of surface ``name``.
-
-    Read from the per-topology cache of `pairing`, so it knows the pairs of
-    every `gfem.Periodic` model built on this topology; ``None`` when no
-    pair has ``name`` as a surface.
-    """
-    for p in _PAIRINGS.get(mesh._topology, {}).values():  # noqa: SLF001
-        if name in (p.first, p.second):
-            return p
-    return None
-
-
 def _surface_triangles(mesh: Mesh, name: str) -> np.ndarray:
     return mesh.triangles[mesh.triangle_tags == mesh.region(name).tag]
 

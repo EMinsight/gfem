@@ -104,10 +104,9 @@ and it raises {py:obj}`gfem.NonDifferentiableError`. Wrap the material in
 
 ## Your own device
 
-gfem reads gmsh `.msh` files. Give every volume and surface you will refer to a
-physical group: its name is the region name the model uses. gmsh is not installed
-with gfem; `pip install gmsh` to script meshes in Python, or build them from a GDS
-layout with {doc}`recipes/gsim`.
+gfem reads gmsh `.msh` files whose volumes and surfaces are named physical
+groups. {doc}`recipes/prepare-a-mesh` builds this line in gmsh, and
+{doc}`recipes/gsim` starts from a GDS layout.
 
 ## Optional extras
 
@@ -135,12 +134,24 @@ program, because every gfem solve needs it.
 ## Next steps
 
 - The {doc}`topology tutorial <tutorials/topology>` turns this same line into a
-  band-stop filter by optimizing the ceramic pattern. The
+  band-stop filter by optimizing the ceramic pattern, and the
+  {doc}`resistive film <tutorials/sheet>` tutorial lays out a 300 Ω film to make
+  a matched 3 dB attenuator. The
   {doc}`shape <tutorials/shape>` tutorial moves a coplanar line's conductor walls
-  to match it to 50 Ω, and the {doc}`bend <tutorials/bend>` tutorial designs a
-  photonic waveguide bend.
+  to match it to 50 Ω, the {doc}`transmon <tutorials/transmon>` tutorial
+  takes the gradient of a superconducting qubit's dispersive shift with respect
+  to its pad gap, the {doc}`bend <tutorials/bend>` tutorial designs a
+  photonic waveguide bend on a slab model, and the
+  {doc}`3D bend <tutorials/bend3d>` tutorial designs it again on the real stack,
+  a 220 nm silicon guide in oxide.
+- {doc}`recipes/solve-a-device` takes this line further: a band of
+  frequencies, real metals, its resonances and their Q, its capacitance.
+- {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.
+- {doc}`recipes/save-and-export` writes S to a Touchstone file, a field to
+  ParaView, and the run to a job file that solves again on another machine.
 - The {doc}`recipes <recipes/index>` start from a task: a gradient of S-parameters,
   eigenmodes or capacitance, a periodic cell, a measurement on the fields.
 - {doc}`capabilities` lists what gfem solves and differentiates;
   {doc}`project/scaling` shows how large a model runs, and how fast.
-- {doc}`glossary` explains the terms these pages use.
+- {doc}`conventions` shows the units, signs and normalizations on a solve, and
+  {doc}`glossary` explains the terms these pages use.

@@ -65,3 +65,31 @@ def test_unregistered_values_are_refused():
 def test_tags_are_unique():
     with pytest.raises(ValueError, match="already taken"):
         _codec.register(dataclasses.make_dataclass("Other", ["a"]), tag="_TestToy")
+
+
+def test_a_reader_of_its_own_declares_the_keys_it_takes():
+    cls = dataclasses.make_dataclass("_TestOwnReader", ["a"])
+    with pytest.raises(TypeError, match="names"):
+        _codec.register(cls, from_args=lambda args, _: cls(args["a"]))
+    assert cls not in _codec._BY_TYPE
+
+
+def test_an_unknown_key_is_refused_without_a_file_name():
+    cls = dataclasses.make_dataclass("_TestKeyed", ["a", ("b", int, 0)])
+    _codec.register(cls)
+    decoder = _codec.Decoder(CONTEXT, {})
+    assert decoder.decode({"$type": "_TestKeyed", "a": 1}) == cls(1)
+    with pytest.raises(ValueError, match=r"^_TestKeyed has no 'c' in this gfem"):
+        decoder.decode({"$type": "_TestKeyed", "a": 1, "c": 2})
+
+
+def test_lumped_values_round_trip_as_plain_numbers():
+    import gfem.job  # noqa: F401 - registers the gfem classes
+    from gfem import Impedance, LumpedPort
+
+    port = LumpedPort("p1", "s", "+z", resistance=50.0, inductance=2e-9)
+    sheet = Impedance("a", resistance=1e3, capacitance=1e-15)
+    doc, arrays, back = _round_trip((port, sheet))
+    assert arrays == {}
+    assert doc[0]["inductance"] == 2e-9
+    assert back == (port, sheet)

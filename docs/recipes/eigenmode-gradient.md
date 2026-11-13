@@ -1,12 +1,13 @@
-# Differentiate eigenfrequencies and Q
+# Differentiate eigenfrequencies, Q and participation ratios
 
 Tune a resonator's frequency and Q by differentiating them with respect to the
 material in each element. `jax.grad` of an objective built from
 `result.omega`, and so from `result.frequency` and `result.q`, reaches the
 per-element `eps_r` (complex where lossy), `mu_r`, `tan_delta` and
 `conductivity` of every {py:obj}`gfem.MaterialField`, also when the model has
-`Conductor` plates or a second-order `Absorbing` boundary. Batches, memory,
-`stop_gradient` and errors work as for a capacitance: see
+`Conductor` plates or a second-order `Absorbing` boundary. The participation
+ratios and the port Q of a mode differentiate too, through its field. Batches,
+memory, `stop_gradient` and errors work as for a capacitance: see
 {doc}`capacitance-gradient`.
 
 ## A frequency and loss objective
@@ -120,33 +121,99 @@ reference = modes.e_field(int(tracked(modes, reference))).coefficients
 - Ask for a few more modes than you track (`n_modes`), so the mode stays in
   the result when it drifts away from `target`.
 
+## Participation ratios and port Q
+
+A mode's {term}`participation ratios <participation ratio>` and the coupling
+Q of its ports are read from its field, and they differentiate as well. Keep a
+resonator's coupling through port `p1` and the share of its energy in a lossy
+substrate low:
+
+```python
+coupled = model.replace(ports=[gfem.LumpedPort("p1", "feed", "+z", resistance=50.0)])
+
+
+def loss(eps):
+    """The first mode's coupling loss plus its substrate loss, as 1 / Q."""
+    m = coupled.with_material("substrate", gfem.MaterialField(eps_r=eps))
+    modes = gfem.solve(m, problem, options=options)
+    return 1 / modes.q_port["p1"][0] + modes.bulk_participation["substrate"][0] * 2e-6
+
+
+g = jax.grad(loss)(jnp.full(n, 11.45))
+```
+
+- These outputs differentiate: `participation` (the junction participation
+  of an inductive port), `q_port`, `bulk_participation`,
+  `principal_participation` and `sheet_participation`. So do the mode fields
+  themselves, `e_field`, `field.at` and `gfem.interface_participation`, with
+  respect to the materials, the sheet fill and the lumped values.
+- Each mode your objective reads through its field costs one extra linear
+  solve, on the factorization the eigensolve already made: a fraction of the
+  forward solve.
+- The default `eigen_tolerance` is enough for participations and their
+  gradients: gfem polishes each mode that can take such a gradient. Above
+  1e-10 such a gradient raises `gfem.NonDifferentiableError`.
+- Prefer `1 / q_port` to `q_port`: a port the mode does not reach has an
+  infinite `q_port`, and a gradient through it raises
+  `gfem.NonDifferentiableError`.
+- The dressed modes of a junction (anharmonicity, dispersive shift) build on
+  the junction participation: see {doc}`quantum-metrics`.
+
 ## Other inputs
 
 - The fill of a {py:obj}`gfem.SheetField` on a `Conductor` or `Impedance`
   differentiates: see {doc}`sheet-design`.
 - The mesh node coordinates differentiate, with every port surface held
-  where it was imported: see {doc}`shape-gradient`.
+  where it was imported: see {doc}`shape-gradient`. The gradient is exact for
+  displacements that hold the port surfaces; a port's voltage path, width and
+  capacitance stay as imported, also for a junction port between moving
+  pads.
+- The {term}`lumped values <lumped value>` that enter only the operator
+  differentiate: a `LumpedPort`'s `inductance` and `capacitance` (a
+  junction inductance, say) and an `Impedance`'s `resistance`, `inductance`
+  and `capacitance`. Build the port or the sheet inside the differentiated
+  function.
 
 ## Check your results
 
 - Compare the gradient with a central difference of your objective along a
-  random direction. Set `eigen_tolerance` to about 1e-12 for this check:
-  at the design default the eigensolve's own error can hide the agreement.
+  random direction, at the default `eigen_tolerance`. The default is enough
+  for frequencies and participations alike.
+- For a junction port with a field uniform across it, the participation is
+  `-2 d ln(omega) / d ln(L)`: two solves with the port's inductance changed by
+  1 % check it.
 
 How gfem itself is checked: {doc}`../verification`.
 
 ## Limits
 
-- Only the eigenfrequencies differentiate. A gradient through anything
-  computed from the mode fields (`e_field`, `bulk_participation`,
-  `participation`, `q_port`, `error`, `gfem.interface_participation`,
-  `field.at`) raises `gfem.NonDifferentiableError` when `jax.grad` is called.
-  Wrap such a value in `jax.lax.stop_gradient` to use it without its
-  derivative.
-- `Eigenmode.target` and boundary and port parameters are not differentiable.
-  Keep them constant inside the differentiated function.
+- A gradient through a mode's field needs an isolated mode: a relative
+  frequency gap of at least 1e-4 (or `cluster_rtol`, if larger) to every
+  other converged mode the solve found, those beyond `n_modes` included. A member of a
+  degenerate cluster, a cluster cut by `n_modes` or a nearer pair raises
+  `gfem.DegenerateModeError`, also for a symmetric objective. Separate the
+  modes in the design, or build that objective from frequencies.
+- Mode-field outputs differentiate as the matrix on {doc}`../capabilities`
+  shows, the lumped values included, with two exceptions. The mode field
+  (`e_field`, `field.at`, `gfem.interface_participation`) raises with respect
+  to the node coordinates: take finite differences over moved meshes
+  ({doc}`loss-budget`). `principal_participation` raises with respect to a
+  lumped value; use `bulk_participation` there.
+- Periodic and Bloch models, `linear_solver` other than `"direct"`,
+  `device="cuda"` and `result.error` raise
+  `gfem.NonDifferentiableError` for a mode-field gradient. The frequencies
+  still differentiate there, as {doc}`../capabilities` shows; or wrap the
+  value in `jax.lax.stop_gradient` to use it without its derivative.
+- A mode whose polishing does not converge is left unpolished and is not
+  isolated: a gradient through its field raises `gfem.DegenerateModeError`
+  naming it. Separate the modes in the design, or build the objective from
+  frequencies.
+- `Eigenmode.target`, a lumped port's resistance and a `Conductor`'s values
+  are not differentiable. Keep them constant inside the differentiated
+  function.
 
 ## Next
 
-{py:obj}`gfem.Eigenmode`, {py:obj}`gfem.SolverOptions`; {doc}`capacitance-gradient`,
-{doc}`s-parameter-gradient`, {doc}`shape-gradient`; {doc}`../capabilities`.
+{py:obj}`gfem.Eigenmode`, {py:obj}`gfem.SolverOptions`; {doc}`quantum-metrics`,
+{doc}`loss-budget`, {doc}`capacitance-gradient`, {doc}`s-parameter-gradient`,
+{doc}`shape-gradient`; {doc}`../capabilities`.

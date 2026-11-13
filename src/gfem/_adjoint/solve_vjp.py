@@ -23,6 +23,10 @@ host; this module owns everything JAX sees:
   ``gfem._engine.cache.ENTRIES`` (bounded by
   ``SolverOptions.retain_memory``, least recently used out first, never
   freed by a read, so ``jax.jacrev`` and a pullback called twice reuse it).
+  An entry a backward has read is consumed, and the next differentiated
+  forward frees it before it assembles (ADR 0081), its base handle returning
+  to the plan pool for that forward (ADR 0082), so a pullback called after
+  another differentiated solve runs its forward again.
   The backward rebuilds the model and the problem from the residual leaves,
   never from engine state, and re-runs the forward when the entry was
   evicted or never kept, so eviction costs time, never correctness.
@@ -43,7 +47,9 @@ kernel writes each rank's elements into global zeros, and each wanted leaf is su
 over ranks once, where the backward returns. A missing sum raises nothing.
 
 A rule provides: ``form`` (its operator family, a key of
-`gfem._engine.sensitivity.PROPERTIES`), ``differentiable_outputs``,
+`gfem._engine.sensitivity.PROPERTIES`), ``differentiable_outputs`` (or, with
+``input_aware``, a ``nondifferentiable_output(name, kinds)`` that also sees
+the wanted input kinds and returns ``None`` where it can differentiate),
 ``output_specs(model)`` (name -> ``jax.ShapeDtypeStruct``), ``role(kind)``
 (``"read"`` or ``"unread"``), ``forward(model, *, keep)``,
 ``backward(model, entry, cotangents)``, ``options`` and ``problem``,
@@ -52,7 +58,8 @@ inputs the rule itself cannot differentiate, and ``terms(model, *, nodes)``
 (its operator as the kernel sees it, a list of
 `gfem._engine.sensitivity.Term`: one per piece of a driven or eigenmode
 operator, or the electrostatic form; ``nodes`` when the node coordinates
-are wanted). Host
+are wanted) and ``lumped_terms(model)`` (the pieces that move with a
+lumped value, ADR 0100). Host
 calls get the model and a shallow copy of the rule whose ``problem`` holds
 the call's concrete values, so a rule reads problem values from
 ``self.problem`` and never sees a tracer there.
@@ -126,6 +133,9 @@ def _describe(kind: tuple) -> str:
     if kind[0] == "boundary":
         rest = "".join(f".{k}" for k in kind[2:])
         return f"model.boundaries[{kind[1]}]{rest}"
+    if kind[0] == "port":
+        rest = "".join(f".{k}" for k in kind[2:])
+        return f"model.ports[{kind[1]}]{rest}"
     return "model." + ".".join(str(k) for k in kind)
 
 
@@ -166,6 +176,8 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
                     host_rule.problem,
                     rule.options,
                 )
+            if keep:
+                _free_consumed(comm, rule.options)
             outputs, entry = _forward(host_rule, host_model, keep=keep)
             key = -1 if entry is None else _keep(entry, rule.options, comm)
         arrays = tuple(
@@ -199,13 +211,16 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
     def bwd(residuals: tuple, cotangents: tuple) -> tuple:
         key, values = residuals
         wanted = state["wanted"]
+        wanted_kinds = frozenset(kinds[i] for i in wanted)
         live = []
         for name, ct in zip(names, cotangents, strict=True):
             if isinstance(ct, SymbolicZero):
                 continue
             # with every perturbed input unread, every output's zero is exact
-            if wanted and name not in rule.differentiable_outputs:
-                raise NonDifferentiableError(rule.nondifferentiable_output(name))
+            if wanted:
+                reason = _refusal(rule, name, wanted_kinds)
+                if reason is not None:
+                    raise NonDifferentiableError(reason)
             live.append((name, ct))
         grads: list[Any] = [jnp.zeros_like(v) for v in values]
         if live and wanted:
@@ -217,8 +232,11 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
                     wanted=wanted,
                     live_names=tuple(n for n, _ in live),
                 ),
+                # a lumped value given as a Python number has no shape (ADR 0100)
                 tuple(
-                    jax.ShapeDtypeStruct(values[i].shape, values[i].dtype)
+                    jax.ShapeDtypeStruct(
+                        jnp.shape(values[i]), jnp.result_type(values[i])
+                    )
                     for i in wanted
                 ),
                 key,
@@ -235,6 +253,20 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
     p_leaves = [leaf for _, leaf in p_paths]
     outputs = primal(m_leaves, p_leaves)
     return dict(zip(names, outputs, strict=True))
+
+
+def _refusal(rule: Any, name: str, kinds: frozenset[tuple]) -> str | None:
+    """Why a cotangent on output ``name`` cannot be pulled back, or ``None``.
+
+    A rule with ``input_aware`` answers from the output and the wanted input
+    kinds (``rule.nondifferentiable_output(name, kinds)``, ``None`` when it
+    can); any other from its ``differentiable_outputs``.
+    """
+    if getattr(rule, "input_aware", False):
+        return rule.nondifferentiable_output(name, kinds)
+    if name in rule.differentiable_outputs:
+        return None
+    return rule.nondifferentiable_output(name)
 
 
 def _rebuild(
@@ -255,9 +287,13 @@ def _rebuild(
 
 
 def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
+    from gfem._materials import check_field_values
     from gfem._periodic import check_nodes
     from gfem.shape import _check_quality
 
+    # Traced material values skipped the constructor's check; the host holds
+    # their concrete values here (ADR 0011).
+    check_field_values(model.materials)
     # A moved mesh must keep its periodic pairs and stay valid on the solve
     # domain.
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
@@ -270,14 +306,22 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
     return rule.forward(model, keep=keep)
 
 
+def _free_consumed(comm: Any, options: Any) -> None:
+    """Free the entries a backward has read, before this forward assembles.
+
+    Their base handles return to the plan pool, for this forward to take
+    (ADR 0082), within ``options.retain_memory``.
+    """
+    from gfem._engine.cache import ENTRIES, retain_budget
+
+    ENTRIES.free_consumed(comm, retain_budget(options.retain_memory))
+
+
 def _keep(entry: Any, options: Any, comm: Any) -> int:
     """Store a forward's entry under ``options.retain_memory``; its key."""
-    from gfem._engine.cache import ENTRIES, default_retain_memory
+    from gfem._engine.cache import ENTRIES, retain_budget
 
-    budget = options.retain_memory
-    if budget is None:
-        budget = default_retain_memory()
-    return ENTRIES.put(entry, budget, comm)
+    return ENTRIES.put(entry, retain_budget(options.retain_memory), comm)
 
 
 def _wanted(rule: Any, kinds: list[tuple], perturbed: list[bool]) -> tuple[int, ...]:
@@ -359,6 +403,27 @@ def _replicated_cotangents(cotangents: dict[str, np.ndarray]) -> dict[str, np.nd
     }
 
 
+def _add_explicit_lumped(
+    out: dict, explicit: dict[tuple, float], *, wants: set[Hashable]
+) -> None:
+    """Add a rule's explicit lumped terms to the lumped pass's values in ``out``.
+
+    A term of an input that is not wanted is dropped (the rule computes them
+    for every lumped port). A wanted one always has its lumped pass in
+    ``out``: one without is a programming error.
+    """
+    for kind, value in explicit.items():
+        if kind not in wants:
+            continue
+        if kind not in out:
+            msg = (
+                f"The explicit lumped term of {kind} has no lumped pass value to "
+                "add to (an internal error)."
+            )
+            raise RuntimeError(msg)
+        out[kind] = out[kind] + value
+
+
 def _local_cotangents(
     key: Any,
     rule: Any,
@@ -372,9 +437,10 @@ def _local_cotangents(
 
     The forward runs again unless every rank still holds its entry: a backward on
     some ranks alone would hang. A rank that holds one frees it, since the next
-    forward on the same design would otherwise keep a second.
+    forward on the same design would otherwise keep a second. A rule's
+    ``explicit_lumped`` values (by input kind) add to the lumped pass's.
     """
-    from gfem._engine.cache import ENTRIES
+    from gfem._engine.cache import ENTRIES, retain_budget
     from gfem._engine.runtime import task_manager
     from gfem._engine.sensitivity import sensitivity
 
@@ -385,13 +451,15 @@ def _local_cotangents(
         _, entry = rule.forward(model, keep=True)
         fresh = entry
     else:
+        if entry is not None:  # freed when the next differentiated forward starts
+            entry.consumed = True  # (ADR 0081)
         # the base handles of other entries go before this one prepares (ADR 0065)
         ENTRIES.free_bases(comm, keep=entry)
     try:
         pairs = rule.backward(model, entry, cotangents)
         # the element passes assemble on the solve's threads
         with task_manager(rule.options.threads, comm):
-            return sensitivity(
+            out = sensitivity(
                 model,
                 pairs,
                 wants,
@@ -399,8 +467,20 @@ def _local_cotangents(
                 terms=(lambda nodes: rule.terms(model, nodes=nodes))
                 if hasattr(rule, "terms")
                 else None,
+                lumped=(lambda: rule.lumped_terms(model))
+                if hasattr(rule, "lumped_terms")
+                else None,
                 comm=comm,
             )
+        # the rule's explicit terms in the lumped values (outside any piece:
+        # the eigenmode ratios' 1 / L and C |V|^2 / 2), once over the ranks
+        if hasattr(rule, "explicit_lumped") and _mpi.rank(comm) == 0:
+            _add_explicit_lumped(out, rule.explicit_lumped(), wants=wants)
     finally:
         if fresh is not None:
             fresh.free()
+    if fresh is not None:
+        # as an entry `put` frees: the kept state its forward rebuilt goes down
+        # to the budget too (collective, so only once every rank got here)
+        ENTRIES.trim(retain_budget(rule.options.retain_memory), comm)
+    return out

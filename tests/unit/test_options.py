@@ -9,6 +9,7 @@ import pytest
 from petsc_recipe import SOLVER_OPTIONS
 
 import gfem
+from gfem._linalg import ResolvedLinearSolver
 from gfem.options import split_petsc_options
 
 
@@ -72,6 +73,8 @@ def _slepc(options):
     [
         ({"order": 0}, "order"),
         ({"order": 1.5}, "order"),
+        ({"order": 13}, "order"),
+        ({"order": 10**9}, "order"),
         ({"linear_solver": "umfpack"}, "linear_solver"),
         ({"tolerance": 0.0}, "tolerance"),
         ({"tolerance": 1.0}, "tolerance"),
@@ -93,9 +96,14 @@ def _slepc(options):
         (_petsc({"ksp_type": ["gmres"]}), "petsc_options"),
         (_petsc({"ksp_atol": float("nan")}), "petsc_options"),
         (_petsc({"ksp_rtol": 1e-8}), "tolerance"),
+        (
+            _petsc({"ksp_atol": 1e30}),
+            r"'ksp_atol'\] is reserved: gfem stops .* on the relative residual only",
+        ),
         (_petsc({"ksp_initial_guess_nonzero": True}), "initial guess"),
         ({"petsc_options": {"ksp_type": "gmres"}}, "petsc_options"),
-        ({"device": "cuda", "linear_solver": "petsc"}, "linear_solver"),
+        ({"device": "cuda", "linear_solver": "petsc"}, "'direct' or 'auto'"),
+        ({"device": "cuda", "linear_solver": "bddc_gmres"}, "'direct' or 'auto'"),
         (_slepc({"eps_largest_real": None}), "target"),
         (_slepc({"eps_gen_hermitian": None}), "non-Hermitian"),
         (_slepc({"eps_conv_abs": None}), "eigen_tolerance"),
@@ -136,12 +144,29 @@ def test_reserved_slepc_options_say_what_gfem_sets_in_user_terms(option):
     assert not re.search(r"\bseed", str(err.value))
 
 
-def test_cuda_needs_the_direct_solver():
+def test_auto_is_the_direct_solver_on_a_gpu():
     assert (
         gfem.SolverOptions(device="cuda:1", linear_solver="direct").device == "cuda:1"
     )
-    with pytest.raises(ValueError, match="linear_solver='direct'"):
-        gfem.SolverOptions(device="cuda")
+    # the options keep what the user wrote; the pick is made when solving
+    assert gfem.SolverOptions(device="cuda").linear_solver == "auto"
+    assert gfem.SolverOptions(device="cuda:1").linear_solver == "auto"
+    resolve = ResolvedLinearSolver.resolve
+    gpu = resolve(
+        gfem.SolverOptions(device="cuda"), default="bddc_gmres", problem="driven"
+    )
+    assert gpu.kind == "direct"
+    cpu = resolve(gfem.SolverOptions(), default="bddc_gmres", problem="driven")
+    assert cpu.kind == "bddc_gmres"
+
+
+def test_a_gpu_refuses_the_iterative_solver_by_name():
+    with pytest.raises(ValueError) as err:
+        gfem.SolverOptions(device="cuda", linear_solver="bddc_gmres")
+    assert str(err.value) == (
+        "device='cuda' needs linear_solver='direct' or 'auto': only the direct "
+        "solver runs on a GPU, not 'bddc_gmres'."
+    )
 
 
 def test_frequency_workers_stay_off_a_gpu():

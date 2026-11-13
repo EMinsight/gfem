@@ -112,3 +112,39 @@ gmsh.write(f"{out}/cube_overlap_msh22.msh")
 gmsh.option.setNumber("Mesh.MshFileVersion", 4.1)
 gmsh.write(f"{out}/cube_overlap_msh41.msh")
 gmsh.finalize()
+
+# A periodic cell meshed unstructured: the 10 x 7 x 1 mm box "cell" (1) with
+# setPeriodic copying the x_min mesh onto x_max and y_min onto y_max, the six
+# faces named "x_min" ... "z_max" (tags 2 to 7 in that order).
+AX, AY, H = 10.0, 7.0, 1.0
+gmsh.initialize()
+gmsh.option.setNumber("General.Terminal", 0)
+gmsh.option.setNumber("General.NumThreads", 1)
+gmsh.option.setNumber("Mesh.RandomSeed", 1)
+occ = gmsh.model.occ
+box = occ.addBox(0, 0, 0, AX, AY, H)
+occ.synchronize()
+faces = {}
+for _, t in gmsh.model.getEntities(2):
+    c = occ.getCenterOfMass(2, t)
+    for axis, (name, length) in enumerate((("x", AX), ("y", AY), ("z", H))):
+        if abs(c[axis]) < 1e-9:
+            faces[f"{name}_min"] = t
+        if abs(c[axis] - length) < 1e-9:
+            faces[f"{name}_max"] = t
+# affine maps (4 x 4, row-major) from the source face to its periodic copy
+along_x = [1, 0, 0, AX, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+along_y = [1, 0, 0, 0, 0, 1, 0, AY, 0, 0, 1, 0, 0, 0, 0, 1]
+gmsh.model.mesh.setPeriodic(2, [faces["x_max"]], [faces["x_min"]], along_x)
+gmsh.model.mesh.setPeriodic(2, [faces["y_max"]], [faces["y_min"]], along_y)
+gmsh.model.addPhysicalGroup(3, [box], 1, name="cell")
+for i, (name, t) in enumerate(sorted(faces.items()), start=2):
+    gmsh.model.addPhysicalGroup(2, [t], i, name=name)
+gmsh.option.setNumber("Mesh.MeshSizeMin", 0.72)
+gmsh.option.setNumber("Mesh.MeshSizeMax", 1.2)
+gmsh.option.setNumber("Mesh.Algorithm", 6)  # frontal: unstructured faces
+gmsh.model.mesh.generate(3)
+gmsh.option.setNumber("Mesh.Binary", 0)
+gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+gmsh.write(f"{out}/periodic_cell_gmsh.msh")
+gmsh.finalize()

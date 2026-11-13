@@ -28,14 +28,21 @@ v0.1.
   element (isotropic, or principal values on fixed axes), and {py:obj}`gfem.SheetField` for the fill of a patterned metal sheet
   ({doc}`recipes/sheet-design`).
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
-  {py:obj}`gfem.interface_participation` and {py:obj}`gfem.power_flow`
-  ({doc}`recipes/measurements`).
+  {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow` and
+  {py:obj}`gfem.electric_energy` ({doc}`recipes/measurements`).
+- **Quantum metrics**: {py:obj}`gfem.quantum.dressed_modes` (the dressed
+  frequencies, Lamb shifts, anharmonicities and dispersive shifts of one
+  junction on the solved modes) and `EigenmodeResult.sheet_participation`
+  (the kinetic inductance fraction of a film), with their gradients
+  ({doc}`recipes/quantum-metrics`). A mode's loss splits into a 1/Q budget
+  and T1 limits ({doc}`recipes/loss-budget`).
 
 ## Solvers
 
 - **`linear_solver="direct"`**: pick it for a model whose factorization fits
   in one machine's memory, for eigenmode problems, and for the repeated solves
-  of an optimization loop on a small model. It factorizes once per frequency
+  of an optimization loop, where a design can solve on the previous design's
+  factorization ({doc}`recipes/s-parameter-gradient`). It factorizes once per frequency
   and reuses the factorization for every port. Install the `mkl` extra for its fastest
   factorization.
 - **`linear_solver="bddc_gmres"`**: pick it for a large model, or when the
@@ -88,7 +95,10 @@ returning a wrong value:
   solver or PETSc's default MUMPS factorization, the capacitive part of S
   lose digits, and it warns with {py:obj}`gfem.LowFrequencyWarning`. For
   capacitance at low frequency, solve {py:obj}`gfem.Electrostatic`; the
-  details are under {py:obj}`gfem.Driven`.
+  details are under {py:obj}`gfem.Driven`. An eigenmode solve whose target or
+  lowest mode is below the floor warns too: its frequencies, fields and
+  participations lose the same digits, and the reported `error` does not
+  show it.
 - **Gyrotropic materials**: non-symmetric (non-reciprocal) tensors, such as a
   magnetized ferrite, are not supported. Neither is loss whose principal axes
   differ from the permittivity's. Both raise `ValueError`.
@@ -104,7 +114,8 @@ returning a wrong value:
   eigenmode problems, and the direct or BDDC + GMRES solver for driven
   problems. PETSc and cuDSS refuse it, as does an adaptive sweep.
   Electrostatic problems refuse any periodic pair, and a wave port may not
-  touch one. There are no Floquet ports. Details:
+  touch one. There are no Floquet ports, so an absorbing boundary reflects
+  the waves a Bloch cell radiates onto it obliquely. Details:
   {doc}`recipes/periodic-cell`.
 - **Unrequested port modes**: a propagating mode that no wave port on its
   surface requests is partly reflected at the port, not converted; request
@@ -112,8 +123,18 @@ returning a wrong value:
   flags a mode left out below a requested one).
 - **Lossy port lines**: wave-port S is the conjugated modal projection, exact
   for a lossless port line. On a shared port surface with loss in the
-  cross-section the modes do not fully separate, and
-  {py:obj}`gfem.PortModeProjectionWarning` states the error.
+  cross-section the modes do not fully separate, and a lossy port line
+  reflects its own mode at the order of its attenuation per radian,
+  alpha/beta; {py:obj}`gfem.PortModeProjectionWarning` states either error.
+
+- **Mode-field gradients**: participations, port Q and the mode field
+  differentiate for isolated modes of non-periodic models, on the direct
+  solver, on the CPU, in one process ({doc}`recipes/eigenmode-gradient`).
+  Elsewhere only the eigenfrequencies differentiate.
+- **Quantum metrics**: one junction per model; the junction's cosine on the
+  solved linear modes, in the transmon regime. They are checked against
+  identities, finite differences and published outputs, not against a
+  measured device.
 
 ## Platforms
 

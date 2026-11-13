@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import sys
 from typing import TYPE_CHECKING, Any, overload
 
 from gfem import _mpi
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
         PortModeResult,
     )
 
-__all__ = ["solve"]
+__all__ = ["release_memory", "solve"]
 
 
 @overload
@@ -206,3 +207,34 @@ def _rule_class(problem: Any) -> type:
         )
     module, name = path.split(":")
     return getattr(importlib.import_module(module), name)
+
+
+def release_memory() -> None:
+    """Free everything gfem keeps between solves in this process.
+
+    That is what ``SolverOptions.retain_memory`` bounds, and the meshes and
+    spaces it does not: what differentiated solves keep for their gradients,
+    the solver plans, factorizations, assembled parts and wave port couplings
+    kept for later designs, and the last discretizations of each mesh.
+
+    Results, fields, meshes and models you hold are not touched, and no later
+    result changes. A gradient whose solve was released is recomputed from
+    the design when it runs, and the next solve builds its mesh, spaces and
+    solver plan again: this costs time, never accuracy. Call it between two
+    studies in one process, for example before a check at a higher order
+    after an optimization loop.
+
+    ``retain_memory=0`` keeps nothing from then on; this call drops what is
+    kept now. JAX's own compilation caches are not touched: see
+    ``jax.clear_caches()``. Under ``mpiexec`` or ``srun`` every rank must
+    call it at the same point.
+
+    Example:
+        After an optimization loop, before another study::
+
+            gfem.release_memory()
+    """
+    # nothing is kept before the engine's cache was first loaded
+    cache = sys.modules.get("gfem._engine.cache")
+    if cache is not None:
+        cache.release_memory()

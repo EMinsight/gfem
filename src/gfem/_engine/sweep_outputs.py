@@ -6,8 +6,9 @@ wave ports' modes at the grid indices ``rows``, in order: every
 per-frequency array has ``len(rows)`` rows, the port mode fields'
 coordinates included (`PortModeRows.field`), so trimming to the solved
 frequencies is one ``rows``. Frequency workers' blocks join into one value
-(`SweepOutputs.join`), and a uniform sweep's partial result is the value
-at its solved rows, carried by the error that reports it.
+(`SweepOutputs.join`), with the wave ports' modes of the parent's sweep, and
+a uniform sweep's partial result is the value at its solved rows, carried by
+the error that reports it.
 
 It also owns the names at the ``custom_vjp`` seam (`gfem._adjoint.solve_vjp`,
 ADR 0007), which stays a dict: `SweepOutputs.outputs` is the forward's
@@ -81,16 +82,15 @@ class PortModeRows:
     rows: tuple[int, ...]
 
     @classmethod
-    def of(
-        cls, waves: Sequence[WavePortCoupling], rows: tuple[int, ...]
-    ) -> PortModeRows | None:
-        """The modes of the wave ports ``waves`` (model port order) at ``rows``.
+    def of(cls, sweeps: Sequence[Any], rows: tuple[int, ...]) -> PortModeRows | None:
+        """The modes at ``rows`` of the wave ports' whole-grid ``sweeps``.
 
-        ``None`` without any.
+        One `gfem._sweep.port_mode.PortModeSweep` per wave port, in model
+        port order; ``None`` without any.
         """
-        if not waves:
+        if not sweeps:
             return None
-        sweeps = tuple(c.sweep for c in waves)
+        sweeps = tuple(sweeps)
         return cls(
             gamma=_at(np.stack([s.gamma for s in sweeps], axis=1), rows),
             z_pv=_at(np.stack([s.z_pv for s in sweeps], axis=1), rows),
@@ -163,7 +163,7 @@ class SweepOutputs:
             iterations=iterations,
             e_field=e_field,
             reduced=None,
-            ports=PortModeRows.of(waves, rows),
+            ports=PortModeRows.of([c.sweep for c in waves], rows),
             sweep=None,
         )
 
@@ -187,41 +187,59 @@ class SweepOutputs:
             iterations=iterations,
             e_field=None,
             reduced=reduced,
-            ports=PortModeRows.of(waves, rows),
+            ports=PortModeRows.of([c.sweep for c in waves], rows),
             sweep=sweep,
         )
 
     @classmethod
     def join(
-        cls, blocks: Sequence[tuple[Sequence[int] | np.ndarray, SweepOutputs]]
+        cls,
+        blocks: Sequence[tuple[Sequence[int] | np.ndarray, SweepOutputs]],
+        *,
+        sweeps: Sequence[Any] = (),
     ) -> SweepOutputs:
         """Frequency workers' blocks joined in order.
+
+        The wave ports' modes are the parent's: it swept them once over the
+        whole grid, and the blocks come without (ADR 0099).
 
         Args:
             blocks: Per block, the grid indices of its frequencies and its
                 outputs, whose rows index those.
+            sweeps: Each wave port's port mode sweep over the whole grid, in
+                model port order; empty without wave ports.
 
         Raises:
-            ValueError: A block has wave ports' modes or an adaptive sweep's
-                outputs (a frequency worker sweeps neither).
+            ValueError: A block has its own port modes or an adaptive
+                sweep's outputs (a frequency worker sweeps neither).
         """
         for _, block in blocks:
             if block.ports is not None or block.sweep is not None:
                 raise ValueError(
-                    "Only uniform sweeps without wave ports join over frequency "
-                    "workers."
+                    "Only uniform sweeps join over frequency workers, and a "
+                    "block's own port modes are not the whole grid's: the "
+                    "parent's port mode sweeps go in sweeps."
                 )
         fields = [b.e_field for _, b in blocks if b.e_field is not None]
+        rows = tuple(int(grid[r]) for grid, b in blocks for r in b.rows)
         return cls(
-            rows=tuple(int(grid[r]) for grid, b in blocks for r in b.rows),
+            rows=rows,
             s=np.concatenate([b.s for _, b in blocks]),
             z_ref=np.concatenate([b.z_ref for _, b in blocks]),
             iterations=[its for _, b in blocks for its in b.iterations or ()],
             e_field=np.concatenate(fields, axis=1) if fields else None,
             reduced=None,
-            ports=None,
+            ports=PortModeRows.of(sweeps, rows),
             sweep=None,
         )
+
+    def without_port_modes(self) -> SweepOutputs:
+        """These outputs without the wave ports' modes.
+
+        What a frequency worker returns: the modes are its parent's, and a
+        port mode space does not pickle.
+        """
+        return dataclasses.replace(self, ports=None)
 
     def outputs(self) -> dict[str, object]:
         """The forward outputs at the ``custom_vjp`` seam, by name.

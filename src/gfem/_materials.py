@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
 import jax
@@ -137,10 +137,13 @@ def _material_value(prop: _Property, value: Any, owner: str) -> Any:
         )
     arr = np.asarray(value)
     if np.iscomplexobj(arr):
-        raise ValueError(
-            f"{owner}: {prop.name} must be real; give losses with tan_delta and "
-            "conductivity."
-        )
+        remedy = {
+            "eps_r": "; give dielectric loss with tan_delta or conductivity, or a "
+            "complex value through gfem.MaterialField",
+            "mu_r": "; for magnetic loss give a complex mu_r through "
+            "gfem.MaterialField",
+        }.get(prop.name, "")
+        raise ValueError(f"{owner}: {prop.name} must be real{remedy}.")
     try:
         arr = arr.astype(float)
     except (TypeError, ValueError):
@@ -478,6 +481,37 @@ def _check_field_values(prop: _Property, arr: np.ndarray) -> None:
                 "imaginary part."
             )
         raise err
+
+
+def check_field_values(materials: Mapping[str, Any]) -> None:
+    """Check the concrete values of every `MaterialField`, region by region.
+
+    A field built under a JAX transformation holds tracers, which its
+    constructor cannot check; the host calls this at solve time, on the
+    concrete values, before any assembly.
+
+    Args:
+        materials: A model's materials by region, with concrete values.
+
+    Raises:
+        ValueError: A value the constructor refuses (not finite, or not
+            passive), with the region named.
+    """
+    for region, material in materials.items():
+        if not isinstance(material, MaterialField):
+            continue
+        for name in PROPERTY_NAMES:
+            value = getattr(material, name)
+            if value is None:
+                continue
+            try:
+                _check_field_values(_BY_NAME[name], np.asarray(value))
+            except ValueError as err:
+                raise ValueError(
+                    f"{err} (region {region!r}; the value was computed under a "
+                    "JAX transformation, so it is checked at solve time. Keep "
+                    "the design in range, e.g. a density in [0, 1].)"
+                ) from None
 
 
 _SCHEMES: dict[str, Callable[[jax.Array, float], jax.Array]] = {

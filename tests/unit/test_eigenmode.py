@@ -11,7 +11,9 @@ discretization's dispersion error.
 """
 
 import cmath
+import dataclasses
 import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -31,8 +33,11 @@ from eigen_cases import (
     line,
     line_mesh,
     line_roots,
+    shunt_line,
+    shunt_mesh,
     terminated_line,
 )
+from finite_differences import derivative
 from preconditioners import coarse_columns, count_preconditioners
 from scipy.optimize import brentq
 
@@ -292,6 +297,21 @@ def test_coupling_q_of_weakly_coupled_ports_adds_up_to_the_mode_q(mesh):
     np.testing.assert_allclose(1 / q1 + 1 / q2, 1 / q, rtol=5 / q)
 
 
+def test_loss_budget_splits_add_up_to_one_over_q(mesh):
+    # the losses in the model are in 1/Q; the substrate's share and the
+    # port's are splits of it that add up to it, to first order in the loss
+    tan_delta = 2e-4
+    port = gfem.LumpedPort("p1", "port1", "+z", impedance=1e5)
+    model = line(mesh, ports=[port], tan_delta=tan_delta)
+    result = gfem.solve(model, gfem.Eigenmode(target=8e9))
+    q = float(result.q[0])
+    bulk = float(result.bulk_participation["dielectric"][0])
+    q_port = float(result.q_port["p1"][0])
+    # both channels are a sizeable part of the budget
+    assert 0.2 < bulk * tan_delta * q < 0.8
+    np.testing.assert_allclose(bulk * tan_delta + 1 / q_port, 1 / q, rtol=1 / q)
+
+
 def test_target_far_below_the_mode_still_finds_the_resonance(mesh):
     # the curl-curl null space (frequency 0) is nearer the shift than the mode:
     # the divergence-free projection keeps it out
@@ -361,6 +381,174 @@ def test_a_far_seed_refined_onto_a_farther_root_still_gives_its_own_mode(
     monkeypatch.setattr(eigen_rule, "refine", onto_root_4)
     result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=3))
     np.testing.assert_allclose(result.omega, roots[:3], rtol=3e-4)
+
+
+def test_a_far_seed_keeps_the_new_mode_its_first_refinement_found(mesh, monkeypatch):
+    # a rough seed refined on a shift nearer another mode can land on a mode
+    # no other seed gives (ADR 0097: 21.2 GHz of a copper cavity, thrown away
+    # for the 23.4 GHz mode of the retry). Here the seed solve returns no
+    # pair for roots 2 and 3, and root 4's seed is made to land on root 2
+    # first: root 2 is kept, and root 4 from the retry becomes the guard
+    model = terminated_line(mesh, 1000.0)
+    roots = line_roots(1000.0, range(1, 5))
+    rule = eigen_rule.EigenmodeRule
+    shift_invert, refine, select = rule._shift_invert, eigen_rule.refine, rule._select
+    seeds, selected = {}, []
+
+    def near(k, op, root):
+        return abs(k * const.c / op.scale - root) < 1e-3 * abs(root)
+
+    def without_roots_2_and_3(self, op, project, nev, **kwargs):
+        k, vectors = shift_invert(self, op, project, max(nev, 12), **kwargs)
+        j = int(np.argmin(np.abs(k * const.c / op.scale - roots[1])))
+        seeds.update(k=k[j], x=vectors[:, j])
+        keep = [
+            i
+            for i in range(len(k))
+            if not near(k[i], op, roots[1]) and not near(k[i], op, roots[2])
+        ]
+        return k[keep], vectors[:, keep]
+
+    def onto_root_2(op, k, x, **kwargs):
+        if near(k, op, roots[3]) and abs(op.shift - k) > 1e-3 * abs(k):
+            op.reshift(seeds["k"])
+            return refine(op, seeds["k"], seeds["x"], **kwargs)
+        return refine(op, k, x, **kwargs)
+
+    def with_guard(self, op, k, vectors, sigma, **_):
+        out = select(self, op, k, vectors, sigma, guard=True)
+        selected.append((out, op.scale))
+        return out
+
+    monkeypatch.setattr(rule, "_shift_invert", without_roots_2_and_3)
+    monkeypatch.setattr(eigen_rule, "refine", onto_root_2)
+    monkeypatch.setattr(rule, "_select", with_guard)
+    result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
+    np.testing.assert_allclose(result.omega, roots[:2], rtol=3e-4)
+    ((_, _, guard, _, _), scale) = selected[-1]
+    np.testing.assert_allclose(guard.k * const.c / scale, roots[3], rtol=3e-4)
+
+
+def test_a_nearly_converged_pair_nearer_than_the_modes_found_raises(mesh, monkeypatch):
+    # root 1's pair stops at backward error 1e-9, this close to an eigenpair:
+    # roots 2 and 3 fill the count and would be returned without it
+    model = terminated_line(mesh, 1000.0)
+    root = line_roots(1000.0, [1])[0]
+    refine = eigen_rule.refine
+
+    def stall_root_1(op, k, x, **kwargs):
+        mode = refine(op, k, x, **kwargs)
+        if abs(mode.k * const.c / op.scale - root) < 1e-3 * abs(root):
+            return dataclasses.replace(mode, error=1e-9, converged=False)
+        return mode
+
+    monkeypatch.setattr(eigen_rule, "refine", stall_root_1)
+    with pytest.raises(
+        gfem.EigenmodeConvergenceError,
+        match=r"(?s)found 2 mode.*nearer the target did not converge.*"
+        rf"not converged: {root.real / 2e9 / math.pi:.3g}\d* GHz.*1e-09.*Remedies",
+    ):
+        gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
+
+
+def test_a_rough_unconverged_pair_nearer_than_the_modes_found_is_no_mode(
+    mesh, monkeypatch
+):
+    # rougher than 1e-6 it is a member of a linearization cluster, not a
+    # mode that stopped short: the solve returns, as before
+    model = terminated_line(mesh, 1000.0)
+    roots = line_roots(1000.0, range(1, 4))
+    refine = eigen_rule.refine
+
+    def rough_root_1(op, k, x, **kwargs):
+        mode = refine(op, k, x, **kwargs)
+        if abs(mode.k * const.c / op.scale - roots[0]) < 1e-3 * abs(roots[0]):
+            return dataclasses.replace(mode, error=1e-3, converged=False)
+        return mode
+
+    monkeypatch.setattr(eigen_rule, "refine", rough_root_1)
+    result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
+    np.testing.assert_allclose(result.omega, roots[1:], rtol=3e-4)
+
+
+def test_a_vector_in_the_span_of_a_degenerate_cluster_is_a_duplicate():
+    # any combination of a cluster's accepted members is that cluster again,
+    # also at 45 degrees from each (overlap 0.71 with either)
+    from gfem._eigen.refine import Refined
+
+    a, b, c = np.eye(3, dtype=complex)
+
+    def mode(x, k=1.0):
+        return Refined(k, x, 1e-12, 0, True)
+
+    accepted = [mode(a), mode(b)]
+    assert eigen_rule._in_span(mode((a + 1j * b) / math.sqrt(2)), accepted, 1e-6)
+    assert eigen_rule._in_span(mode(3 * a), accepted, 1e-6)
+    assert not eigen_rule._in_span(mode(c), accepted, 1e-6)
+    assert not eigen_rule._in_span(mode((a + c) / math.sqrt(2)), accepted, 1e-6)
+    # the same field at another frequency is another mode
+    assert not eigen_rule._in_span(mode(a, k=1.1), accepted, 1e-6)
+
+
+@dataclasses.dataclass
+class _Stub:
+    """An operator with a degenerate mode at 12 (span of e0, e1) and one at 14 (e2)."""
+
+    shift: complex
+    nonpolynomial: tuple = ()
+
+    def reshift(self, k, **_):
+        self.shift = k
+
+
+def _twin_select(mesh, monkeypatch, n_modes):
+    """`_select` with seeds at 12.2 (e0) and 13.8 (e2), the shift at 12.5.
+
+    The frozen seed solve gave one Ritz value for the degenerate pair. The
+    seed at 13.8 refined away from its own shift lands on the pair's
+    eigenspace with 36 % of its norm outside the accepted member's span: in
+    the span by the 0.9 test, yet that part is the twin (lossy-wall mirrored
+    cavity on MN5, quantum-metrics ticket 17).
+    """
+    from gfem._eigen.refine import Refined
+
+    e0, e1, e2, _ = np.eye(4, dtype=complex)
+    landed = math.sqrt(1 - 0.36**2) * e0 + 0.36 * e1
+
+    def refine(op, seed, x, **_):
+        if seed == 13.8 and op.shift != 13.8:
+            k, v = 12.0, landed
+        else:
+            pair = x[:2].copy()
+            if np.linalg.norm(pair) > 0.5 * np.linalg.norm(x):
+                k, v = 12.0, np.concatenate([pair / np.linalg.norm(pair), [0, 0]])
+            else:
+                k, v = 14.0, e2
+        return Refined(complex(k), v, 0.0, 1, converged=True)
+
+    monkeypatch.setattr(eigen_rule, "refine", refine)
+    rule = eigen_rule.EigenmodeRule(
+        line(mesh), gfem.Eigenmode(target=F1, n_modes=n_modes), gfem.SolverOptions()
+    )
+    ritz = np.array([12.2, 13.8], dtype=complex)
+    return rule._select(_Stub(12.5), ritz, np.stack([e0, e2], axis=1), 12.5, guard=True)
+
+
+def test_a_wandered_pair_reaching_out_of_the_span_gives_the_twin(mesh, monkeypatch):
+    # before, the pair was dropped and the set skipped the twin for 14
+    modes, failed, guard, *_ = _twin_select(mesh, monkeypatch, n_modes=2)
+    assert not failed
+    assert [m.k for m in modes] == [12.0, 12.0]
+    assert abs(np.vdot(modes[0].x, modes[1].x)) < 1e-12
+    assert guard.k == 14.0
+
+
+def test_a_guard_pair_reaching_out_of_the_span_gives_the_twin(mesh, monkeypatch):
+    # after the count is met the same landing gives the guard mode: the twin
+    modes, _, guard, *_ = _twin_select(mesh, monkeypatch, n_modes=1)
+    assert [m.k for m in modes] == [12.0]
+    assert guard.k == 12.0
+    assert abs(np.vdot(modes[0].x, guard.x)) < 1e-12
 
 
 def test_a_pair_with_its_weight_on_the_fixed_dofs_is_not_converged(mesh, monkeypatch):
@@ -492,10 +680,10 @@ def test_a_retry_after_a_reshift_seeds_at_the_target(mesh, monkeypatch):
         return shift_invert(self, op, *args, **kwargs)
 
     def too_few(self, *args, **kwargs):
-        accepted, failed, guard = select(self, *args, **kwargs)
+        accepted, failed, guard, pool, ritz = select(self, *args, **kwargs)
         if len(shifts) == 1:  # the first seed solve's modes: one short
-            return accepted[:-1], [], None
-        return accepted, failed, guard
+            return accepted[:-1], [], None, pool, ritz
+        return accepted, failed, guard, pool, ritz
 
     monkeypatch.setattr(rule, "_shift_invert", seed)
     monkeypatch.setattr(rule, "_select", too_few)
@@ -558,6 +746,216 @@ def test_inductor_participation_matches_the_loaded_line(mesh):
     )
 
 
+def test_port_with_inductance_and_capacitance_matches_the_loaded_line(mesh):
+    # L_p || C_p across the x = 0 end, the other end open: resonance at
+    # tan(beta L) = Z0 (1 / (omega L_p) - omega C_p); the capacitor's peak
+    # energy 1/2 C_p |V(0)|^2 adds to the line's in the mode energy
+    inductance, capacitance = 1e-9, 1e-13
+    port = gfem.LumpedPort(
+        "jj", "port1", "+z", inductance=inductance, capacitance=capacitance
+    )
+    model = line(mesh, ports=[port])
+    length = L * 1e-3
+    speed = const.c / math.sqrt(EPS)
+
+    def resonance(w):
+        return math.tan(w / speed * length) - Z0 * (
+            1 / (w * inductance) - w * capacitance
+        )
+
+    top = min(
+        0.4999 * math.pi * speed / length, 1 / math.sqrt(inductance * capacitance)
+    )
+    w = brentq(resonance, 1e6, top)
+    bl = w / speed * length
+    c_line = const.epsilon_0 * EPS * W / H
+    v0 = math.cos(bl)
+    electric = 0.5 * c_line * (length / 2 + math.sin(2 * bl) * length / (4 * bl))
+    energy = electric + 0.5 * capacitance * v0**2
+    stored = 0.5 * inductance * (v0 / (w * inductance)) ** 2
+    result = gfem.solve(model, gfem.Eigenmode(target=w / (2 * math.pi)))
+    np.testing.assert_allclose(result.omega, [w], rtol=1e-5)
+    np.testing.assert_allclose(
+        np.abs(result.participation["jj"]), [stored / energy], rtol=1e-4
+    )
+
+
+@pytest.fixture(scope="module")
+def shunted(tmp_path_factory):
+    return shunt_mesh(tmp_path_factory.mktemp("shunt"))
+
+
+def _beside_sheet(mesh, inductance, *, fill=None):
+    """An inductor on port1 and a shunt capacitive sheet across the line's middle.
+
+    The line's field stays uniform over each cross-section, so the port's
+    voltage gives the inductor's energy exactly; a ``fill`` (one value on
+    every face) keeps it so.
+    """
+    field = None
+    if fill is not None:
+        field = gfem.SheetField(jnp.full(len(mesh.elements("sheet")), fill))
+    sheet = gfem.Impedance("sheet", capacitance=5e-14, fill=field)
+    port = gfem.LumpedPort("jj", "port1", "+z", inductance=inductance)
+    return shunt_line(mesh, sheet, ports=[port])
+
+
+def _inductive(case, mesh, shunted, inductance):
+    """The model of ``case`` with inductance ``inductance`` (H) on port jj."""
+    if case.startswith("beside_capacitive_sheet"):
+        fill = 0.4 if case.endswith("with_fill") else None
+        return _beside_sheet(shunted, inductance, fill=fill)
+    values = {"capacitance": 1e-13} if case == "l_and_c" else {}
+    port = gfem.LumpedPort("jj", "port1", "+z", inductance=inductance, **values)
+    return line(mesh, ports=[port])
+
+
+#: The cases' inductance (H) and target (Hz).
+_INDUCTIVE = dict.fromkeys(
+    [
+        "l_only",
+        "l_and_c",
+        "beside_capacitive_sheet",
+        "beside_capacitive_sheet_with_fill",
+    ],
+    (1e-9, 3e9),
+)
+
+
+@pytest.mark.parametrize("case", list(_INDUCTIVE))
+def test_participation_is_minus_twice_the_log_derivative_in_l(mesh, shunted, case):
+    # a lossless mode's omega^2 is a Rayleigh quotient: the inductor's share
+    # of the mode energy (every capacitive element in it, ADR 0103) is
+    # -2 d ln omega / d ln L on any mesh
+    inductance, target = _INDUCTIVE[case]
+    options = gfem.SolverOptions(eigen_tolerance=1e-12)
+
+    def solve(t):
+        model = _inductive(case, mesh, shunted, inductance * math.exp(float(t)))
+        return gfem.solve(model, gfem.Eigenmode(target=target), options=options)
+
+    result = solve(0.0)
+    slope = derivative(lambda t: jnp.log(jnp.real(solve(t).omega[0])), 0.0, 1.0, 1e-2)
+    np.testing.assert_allclose(
+        abs(float(result.participation["jj"][0])), -2 * slope, rtol=1e-7
+    )
+
+
+def _kinetic_line(mesh, l_sheet, *, fill=None, mu_r=1.0, junction=1e-9):
+    """The shunt line with an inductive sheet across its middle and an inductor.
+
+    The sheet's per-square inductance ``l_sheet`` (H) is a lumped ``l_sheet
+    H / W`` across the line; ``fill`` (a seed) gives it a random grey fill;
+    the inductor ``junction`` (H) sits on port1.
+    """
+    field = None
+    if fill is not None:
+        n = len(mesh.elements("sheet"))
+        rng = np.random.default_rng(fill)
+        field = gfem.SheetField(jnp.asarray(rng.uniform(0.2, 0.8, n)))
+    material = gfem.Material(eps_r=EPS, mu_r=mu_r)
+    return gfem.Model(
+        mesh,
+        materials={"left": material, "right": material},
+        boundaries=[
+            gfem.PEC("bottom"),
+            gfem.PEC("top"),
+            gfem.Impedance("sheet", inductance=l_sheet, fill=field),
+        ],
+        ports=[gfem.LumpedPort("jj", "port1", "+z", inductance=junction)],
+    )
+
+
+#: The kinetic line's sheet inductance (H per square) and target (Hz): its
+#: lowest mode shares its inductive energy between the sheet and the inductor.
+_KINETIC = (2e-9, 3e9)
+
+
+@pytest.mark.parametrize("fill", [None, 3])
+def test_sheet_participation_is_minus_twice_the_log_derivative_in_l_s(shunted, fill):
+    # a lossless mode's omega^2 is a Rayleigh quotient: the sheet's share of
+    # the inductive energy is -2 d ln omega / d ln L_s on any mesh and fill
+    l_sheet, target = _KINETIC
+    options = gfem.SolverOptions(eigen_tolerance=1e-12)
+
+    def solve(t):
+        model = _kinetic_line(shunted, l_sheet * math.exp(float(t)), fill=fill)
+        return gfem.solve(model, gfem.Eigenmode(target=target), options=options)
+
+    result = solve(0.0)
+    assert list(result.sheet_participation) == ["sheet"]
+    p = float(result.sheet_participation["sheet"][0])
+    assert 0.05 < p < 0.95
+    slope = derivative(lambda t: jnp.log(jnp.real(solve(t).omega[0])), 0.0, 1.0, 1e-2)
+    np.testing.assert_allclose(p, -2 * slope, rtol=1e-7)
+
+
+def test_participations_and_magnetic_share_sum_to_one(shunted):
+    # without capacitive elements a lossless mode's electric energy equals its
+    # inductive energy: the inductor's, the sheet's and the volume's magnetic
+    # one, whose share is -2 d ln omega / d ln mu_r
+    l_sheet, target = _KINETIC
+    options = gfem.SolverOptions(eigen_tolerance=1e-12)
+
+    def solve(t):
+        model = _kinetic_line(shunted, l_sheet, mu_r=math.exp(float(t)))
+        return gfem.solve(model, gfem.Eigenmode(target=target), options=options)
+
+    result = solve(0.0)
+    magnetic = -2 * derivative(
+        lambda t: jnp.log(jnp.real(solve(t).omega[0])), 0.0, 1.0, 1e-2
+    )
+    total = (
+        abs(float(result.participation["jj"][0]))
+        + float(result.sheet_participation["sheet"][0])
+        + magnetic
+    )
+    assert magnetic > 0.05
+    np.testing.assert_allclose(total, 1.0, atol=1e-7)
+
+
+def test_sheets_without_inductance_have_no_sheet_participation(shunted):
+    model = shunt_line(shunted, gfem.Impedance("sheet", capacitance=5e-14))
+    result = gfem.solve(model, gfem.Eigenmode(target=3e9))
+    assert result.sheet_participation == {}
+
+
+def _loaded_line(mesh, inductance):
+    """The line with an inductor across one end, and its lowest resonance (rad/s)."""
+    model = line(
+        mesh, ports=[gfem.LumpedPort("jj", "port1", "+z", inductance=inductance)]
+    )
+    length = L * 1e-3
+    speed = const.c / math.sqrt(EPS)
+    w = brentq(
+        lambda w: math.tan(w / speed * length) - Z0 / (w * inductance),
+        1.0,
+        0.4999 * math.pi * speed / length,
+    )
+    return model, w
+
+
+def test_a_mode_below_the_low_frequency_floor_warns(mesh):
+    # a 100 H inductor resonates the line at 18.9 kHz, k0 h_min = 2e-7: the
+    # frequency is then off by 2e-4 to 4e-4 while `error` reports 1e-16
+    model, w = _loaded_line(mesh, 100.0)
+    with pytest.warns(gfem.LowFrequencyWarning, match="Eigenmode") as record:
+        gfem.solve(model, gfem.Eigenmode(target=w / (2 * math.pi)))
+    (warning,) = [r for r in record if r.category is gfem.LowFrequencyWarning]
+    message = str(warning.message)
+    assert "low-frequency floor" in message
+    assert "kHz, is below" in message  # the target, in its unit
+    assert "eigenfrequencies" in message
+    assert "error" in message
+
+
+def test_a_mode_above_the_low_frequency_floor_does_not_warn(mesh):
+    model, w = _loaded_line(mesh, 1e-9)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        gfem.solve(model, gfem.Eigenmode(target=w / (2 * math.pi)))
+
+
 # --- unsupported terms and failures ----------------------------------------------
 
 
@@ -605,6 +1003,32 @@ def test_conductivity_damps_the_line_exactly(mesh):
     a = ETA0 * sigma / EPS
     k = 0.5j * a + cmath.sqrt(k0**2 - a**2 / 4)
     np.testing.assert_allclose(complex(lossy.omega[0]), k * const.c, rtol=1e-10)
+
+
+def test_a_zero_conductivity_field_adds_no_damping(mesh):
+    # a conductivity of zeros assembles no matrix: the cavity stays on the
+    # undamped path, with the frequencies of the model without the field
+    problem = gfem.Eigenmode(target=8e9, n_modes=2)
+    plain = line(mesh)
+    n = len(mesh.tetrahedra)
+    field = gfem.MaterialField(eps_r=np.full(n, EPS), conductivity=np.zeros(n))
+    with_field = plain.with_material("dielectric", field)
+    rule = eigen_rule.EigenmodeRule(with_field, problem, gfem.SolverOptions())
+    with task_manager(1):
+        op = driven_operator(with_field, rule.options.order)
+        sigma = terms.wavenumber(2 * math.pi * problem.target, op.built.scale)
+        eop = rule.operator(op, sigma)
+        try:
+            assert eop.damping is None
+            assert not eop.seed_damped
+        finally:
+            eop.free_handle()
+    reference = gfem.solve(
+        plain.with_material("dielectric", gfem.MaterialField(eps_r=np.full(n, EPS))),
+        problem,
+    )
+    result = gfem.solve(with_field, problem)
+    np.testing.assert_array_equal(np.asarray(result.omega), np.asarray(reference.omega))
 
 
 def test_per_axis_conductivity_damps_along_its_axis(mesh):
@@ -674,6 +1098,37 @@ def test_unconverged_modes_raise_without_a_partial_result(mesh):
         gfem.EigenmodeConvergenceError, match=r"(?s)0 of the 1.*Remedies"
     ):
         gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(8e9), options=options)
+
+
+@pytest.mark.parametrize(
+    "remedy",
+    [
+        "Use linear_solver='direct', or a looser tolerance.",
+        "Use linear_solver='direct', a looser tolerance, or other petsc_options.",
+    ],
+    ids=["bddc", "petsc"],
+)
+def test_a_shift_solve_that_does_not_converge_names_the_eigen_tolerance(
+    mesh, monkeypatch, remedy
+):
+    # the eigen rule sets the inner tolerance from eigen_tolerance: loosening
+    # SolverOptions.tolerance, which the linear solver's own message names,
+    # changes nothing here
+    def fail(*_, **__):
+        raise gfem.LinearSolverConvergenceError(
+            f"BDDC + GMRES did not converge to the relative tolerance 1e-12. {remedy}"
+        )
+
+    monkeypatch.setattr(EigenOperator, "solve", fail)
+    options = gfem.SolverOptions(linear_solver="bddc_gmres", eigen_tolerance=1e-9)
+    with pytest.raises(gfem.LinearSolverConvergenceError) as raised:
+        gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(8e9), options=options)
+    message = str(raised.value)
+    assert message.startswith("BDDC + GMRES did not converge")
+    assert "a looser SolverOptions.eigen_tolerance" in message
+    assert "0.01 * eigen_tolerance), here 1e-11" in message
+    assert "a looser tolerance" not in message
+    assert isinstance(raised.value.__cause__, gfem.LinearSolverConvergenceError)
 
 
 # --- the divergence-free projection ----------------------------------------------

@@ -145,7 +145,7 @@ grad = jax.grad(lowest_band)(jnp.full(n, 9.0))  # Hz per unit eps_r
 | `bddc_gmres` | driven and eigenmode | driven only; eigenmode raises `ValueError`: use `direct` |
 | `petsc` | driven | raises `ValueError`: use `direct` |
 | `device="cuda"` | untested: compare with `direct` once on your cell | raises `NotImplementedError`: use `direct` on the CPU |
-| eigen solver | ARPACK or SLEPc | ARPACK (SLEPc untested: use ARPACK) |
+| eigen solver | ARPACK or SLEPc | ARPACK or SLEPc |
 
 ## Check your results
 
@@ -154,12 +154,14 @@ Four checks you can run on your own cell:
 - **Transpose.** Solve the driven cell at k and at −k. `S(k).T` should equal
   `S(−k)` to the solver tolerance.
 - **Zero wave vector.** `wave_vector=(0, 0, 0)` should give the same result as
-  no wave vector: a cheap check of the pairing and the ports.
+  no wave vector: a cheap check of the pairing and the ports. It is a check
+  only: the zero wave vector still takes the general Bloch solve, so run plain
+  periodicity with `wave_vector=None`, which is cheaper.
 - **Folding.** With the same target, k and k + 2π a / |a|² should give the
   same band frequencies.
-- **Lossless cell.** With no loss in the cell, `modes.omega` is real, and the
-  driven cell's S with resistive lumped ports keeps SᴴS = I to the solver
-  tolerance.
+- **Lossless cell.** With no loss in the cell, `modes.omega` should be real,
+  and the driven cell's S with resistive lumped ports should give `SᴴS ≈ I`:
+  form the product and look at its largest departure from the identity.
 
 How gfem itself is checked on periodic cells: {doc}`../verification`.
 
@@ -167,6 +169,16 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
 
 - No Floquet ports, so no plane-wave incidence and no diffraction orders.
   Drive the cell with lumped or wave ports inside it.
+- A {py:obj}`gfem.Absorbing` face reflects a wave that meets it obliquely.
+  With a wave vector that has a component k_t along the face, the cell
+  radiates at the angle θ from the face normal given by sin θ = |k_t| / (k0 n), with n the
+  refractive index behind the face. The first-order boundary then reflects
+  (1 − cos θ) / (1 + cos θ) in amplitude: 1.7 % at 15°, 7 % at 30°, 17 % at
+  45°. `order=2` lowers this about tenfold up to 30°, but only for the
+  polarization with E parallel to the face and normal to k_t; for the other
+  polarization it changes nothing. No Floquet port exists to absorb an oblique
+  wave exactly, so keep |k_t| small against k0 n, or read the reflection off
+  the formula.
 - Translations only, one to three pairs. For a rotational symmetry, mesh the
   whole structure.
 - `gfem.Electrostatic` on a periodic model raises `NotImplementedError`. Mesh
@@ -174,6 +186,10 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
 - `gfem.interface_participation` on a paired face raises `ValueError`, since
   that face is inside the repeated structure. `gfem.power_flow` works on
   planes that cross or touch a pair.
+- A gradient with respect to `mesh.nodes` is given per node, not summed over
+  a node and its partner on the other surface of a pair. A move that breaks a
+  pair raises `ValueError`; move nodes through
+  {py:obj}`gfem.shape.boundary_morph`, which keeps the pairs.
 - No k-path argument: loop over k, as in the first example.
 - A gradient through an eigenmode's field raises, as on every model. Build the
   objective from `frequency` and `q`.

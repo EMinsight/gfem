@@ -162,7 +162,16 @@ def _frequencies(value: Any, owner: str = "PortMode") -> tuple[float, ...]:
     f = f.reshape(-1)
     if not np.isfinite(f).all() or (f <= 0).any():
         raise ValueError(f"{owner}.frequency must be finite and > 0 Hz, got {value!r}.")
-    return tuple(float(x) for x in f)
+    out = tuple(float(x) for x in f)
+    seen: set[float] = set()
+    for x in out:
+        if x in seen:
+            raise ValueError(
+                f"{owner}.frequency names {x:g} Hz twice: each frequency is solved "
+                "once. Drop the repeats, for example with numpy.unique(frequency)."
+            )
+        seen.add(x)
+    return out
 
 
 @dataclasses.dataclass(frozen=True, init=False)
@@ -195,7 +204,8 @@ class PortMode:
 
     Args:
         port: The name of a `WavePort` of the model.
-        frequency: One frequency or a 1D sequence of them, Hz.
+        frequency: One frequency or a 1D sequence of distinct frequencies, Hz,
+            in any order; results keep the order given.
         mode: Which propagating mode at the lowest frequency, in rank
             order: by decreasing effective index for lossless modes (1 = the
             most confined), with strongly attenuated modes ranked lower.
@@ -212,8 +222,10 @@ class PortMode:
     somewhere in the band (naming the estimated cutoff) or degenerate, or
     follows the same mode as another wave port of its surface, and
     warns with `PortModeTrackingWarning` when it crosses another mode. The
-    2D problem always runs SuperLU and SciPy on the CPU: options with another
-    ``device``, ``linear_solver`` or ``eigen_solver`` raise `ValueError`.
+    2D problem always runs SuperLU and SciPy on the CPU, so it ignores
+    `SolverOptions.device`, ``linear_solver`` and ``eigen_solver``, as a
+    driven solve's port mode sweep does: one `SolverOptions` serves a
+    `PortMode` check and the driven solve after it.
 
     Port modes are constants: under `jax.grad` an input the problem reads
     (an electromagnetic material property, the node coordinates) raises
@@ -299,16 +311,18 @@ class Driven:
             result = gfem.solve(model, adaptive)
 
     Args:
-        frequency: One frequency or a 1D sequence of them, Hz.
+        frequency: One frequency or a 1D sequence of distinct frequencies, Hz,
+            in any order; results keep the order given.
         excite: The port name or names fed in turn, one column of S each, in
             this order. ``None``: every port of the model, in model order.
         sweep: ``"uniform"`` solves every frequency in full.
             ``"adaptive"`` solves a few of them in full (every excited port
-            at once) and reads S and the kept fields at every frequency
-            from a reduced model built on those solutions: the greedy picks
-            each next frequency from ``frequency`` where the reduced model
-            is least accurate, until ``SolverOptions.adaptive_memory``
-            samples in a row agree with it to
+            at once, and one more right-hand side per port left out of
+            ``excite``, which keeps gradients exact there) and reads S and
+            the kept fields at every frequency from a reduced model built
+            on those solutions: the greedy picks each next frequency from
+            ``frequency`` where the reduced model is least accurate, until
+            ``SolverOptions.adaptive_memory`` samples in a row agree with it to
             ``SolverOptions.adaptive_tolerance`` (relative error of the
             field). S is then accurate to roughly the square of that error.
             Worth it above about 20 frequencies; the result's ``sweep``
@@ -555,6 +569,16 @@ class Eigenmode:
     with a component outside the span of the pairs' translations, and with
     any ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU
     ``device``.
+
+    Notes:
+        When ``target`` or the lowest mode found is below the mesh's
+        low-frequency floor, k0·h_min = 1e-6 (f·h_min ≈ 48 Hz·m, with h_min
+        the shortest edge; see `gfem.Driven`, Notes), the solve warns with
+        `gfem.LowFrequencyWarning`. Below the floor the eigenfrequencies,
+        the fields and the participations lose digits like
+        1e-16/(k0·h_min)², and `gfem.EigenmodeResult.error` does not show
+        it: a mode at k0·h_min = 2e-7 had a frequency off by 4e-4 with a
+        reported error of 1e-16.
     """
 
     target: float

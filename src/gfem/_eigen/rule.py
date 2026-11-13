@@ -31,12 +31,31 @@ refines one guard mode beyond ``n_modes`` from the seed solve's remaining
 pairs, so a cluster cut by the request is detected when its next member is
 among them (best-effort: no Arnoldi attempt is added for it).
 
+The ratios of the mode fields (``q_port``, ``participation``, the region,
+principal and sheet shares) differentiate for isolated modes (ADR 0102) with
+respect to materials, sheet fills and node coordinates (port surfaces
+held), and the normalized mode fields themselves (through the
+normalization multipliers of `gfem._eigen.ratios`) with respect to
+materials and sheet fills, never the node coordinates; on one CPU process
+with the ``direct`` linear solver: per mode with a cotangent, one deflated
+GMRES solve of the singular system of the mode-field adjoint, ``T(k) lam0
+= -w``, ``t^T lam0 = 0``, on the live factors the forward kept
+(`gfem._eigen.adjoint`, ADR 0104), the load ``(w, kappa, explicit terms)``
+of `gfem._eigen.ratios`, and the pairs
+``(2 lam, x)`` and ``(conj(x), x)`` on the mode energy's ``Re(eps_r)``
+terms (ADR 0103) and the sheets' L and C pieces. What does not
+differentiate is refused by name: at trace time from the model, the
+options and the wanted inputs (`EigenmodeRule.nondifferentiable_output`),
+in the backward from the modes (a cluster, a near pair, a defective mode,
+an infinite ``q_port``).
+
 Post-processing follows Palace: electric energy ``E = 1/2 Re ∫ D* . E`` per
-volume region plus ``C |V|^2 / 2`` per capacitive lumped port; a port's
-voltage is its driven voltage functional. Each mode is scaled to ``E =
-1 J`` with ``∫ D . E`` real and positive. An anisotropic region's energy is
-also split along its principal axes (``1/2 ε0 eps_k ∫ |a_k . E|^2``, ADR
-0055).
+volume region plus ``C |V|^2 / 2`` per capacitive lumped port and ``1/2 ∫
+w C_s |E_t|^2`` per capacitive `Impedance` sheet (the quadratic form of
+its C piece, ADR 0103); a port's voltage is its driven voltage functional.
+Each mode is scaled to ``E = 1 J`` with ``∫ D . E`` real and positive. An
+anisotropic region's energy is also split along its principal axes (``1/2
+ε0 eps_k ∫ |a_k . E|^2``, ADR 0055).
 
 On a model with `gfem.Periodic` pairs the modes are solved on the periodic
 space and their fields expanded to the unpaired space (``e = P x``,
@@ -55,6 +74,9 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import warnings
+from collections.abc import Callable
+from typing import Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -62,17 +84,27 @@ import numpy as np
 import scipy.constants as const
 
 from gfem import _petsc
-from gfem._boundaries import LumpedPort, WavePort, wave_port_surfaces
+from gfem._boundaries import Impedance, LumpedPort, WavePort, wave_port_surfaces
 from gfem._eigen import slepc
+from gfem._eigen.adjoint import deflated_solve, polish, reshift_offset
 from gfem._eigen.arpack import shift_invert
+from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
-from gfem._eigen.refine import Refined, refine
+from gfem._eigen.ratios import Ratios, sheet_capacitors, sheet_inductors
+from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE
 from gfem._engine import terms
-from gfem._engine.cache import Entry
+from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import anisotropic_regions
 from gfem._engine.domain import em_region
-from gfem._engine.driven import DrivenOperator, driven_operator, operator_terms
+from gfem._engine.driven import (
+    LOW_FREQUENCY_FLOOR,
+    DrivenOperator,
+    LowFrequencyFloor,
+    driven_operator,
+    lumped_terms,
+    operator_terms,
+)
 from gfem._engine.eigen import (
     DivFreeProjector,
     eigen_operator,
@@ -82,12 +114,18 @@ from gfem._engine.eigen import (
 )
 from gfem._engine.fields import fe_space
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import FieldPair, Term
+from gfem._engine.sensitivity import FieldPair, Term, is_lumped
 from gfem._linalg import Kind, ResolvedLinearSolver
-from gfem._periodic import check_bloch, check_wave_vector
+from gfem._periodic import check_bloch, check_wave_vector, pair_names
 from gfem._sign import largest_entry
+from gfem._text import hertz
 from gfem.conventions import MODE_ENERGY
-from gfem.errors import DegenerateModeError, EigenmodeConvergenceError
+from gfem.errors import (
+    DegenerateModeError,
+    EigenmodeConvergenceError,
+    LinearSolverConvergenceError,
+    LowFrequencyWarning,
+)
 from gfem.mesh import Mesh
 from gfem.model import Model
 from gfem.options import SolverOptions
@@ -114,11 +152,16 @@ _INNER_FLOOR = 1e-13
 #: second-order absorbing wall's cluster lies near Re k = 2 sigma: this test
 #: keeps it, and only the distance to the target ranks the modes ahead of it.
 _STATIC = 1e-6
-#: Two refined modes closer than this many eigen tolerances (relative, and
-#: at least ``SolverOptions.cluster_rtol``), with overlapping fields, are the
-#: same mode.
+#: A refined mode closer than this many eigen tolerances (relative, and at
+#: least ``SolverOptions.cluster_rtol``) to accepted modes, with this much of
+#: its norm in their span, is one of them again.
 _DUPLICATE = 10.0
 _OVERLAP = 0.9
+#: A duplicate with more than this fraction of its norm outside the span
+#: landed on a degenerate eigenspace: that part is refined as the twin the
+#: seed solve may not have returned (a frozen seed solve gives one Ritz
+#: value for a pair, ticket 17 of quantum-metrics).
+_TWIN = 1e-2
 #: Ritz values this close (relative) are one multiple eigenvalue. The seed
 #: solver returns an arbitrary basis of its eigenspace, as nearly parallel as
 #: round-off makes it: the seeds are orthonormalized, or two members would
@@ -135,8 +178,11 @@ _CONTRACTION = 0.5
 #: too few modes near the target is an error.
 _ATTEMPTS = 3
 #: Arnoldi tolerance of a nonlinear problem's frozen seeds. Their roots are
-#: off the true ones by the freeze error anyway and every seed is refined,
-#: so converging them further only spends shift solves. The linearization
+#: off the true ones by the freeze error anyway (small for a conductor,
+#: whose seeds reach backward error 1e-8 to 1e-4 now that the projection
+#: fixes its potential on the wall, ADR 0097; up to 18 % for a second-order
+#: absorbing wall) and every seed is refined, so converging them further
+#: only spends shift solves. The linearization
 #: cluster's solves are avoided by asking for few pairs (see the nev comment
 #: in the forward pass, ADR 0035), not by this tolerance.
 _SEED_TOLERANCE = 1e-3
@@ -144,12 +190,91 @@ _SEED_TOLERANCE = 1e-3
 #: the largest) make an objective symmetric in the cluster to first order
 #: (a smooth symmetric function's cotangents differ by O(gap)).
 _SYMMETRIC_RTOL = 1e-3
+#: The smallest relative gap of a mode in mode-field reach (with
+#: ``SolverOptions.cluster_rtol`` if larger): an isolated mode (ADR 0102),
+#: polished in the forward and given mode-field gradients (ADR 0104).
+_ISOLATED = 1e-4
 #: A Bloch cluster's ``G = Y^T T' X`` with a condition number above this is
 #: singular: a defective eigenvalue, whose frequency has no derivative.
 _DEFECTIVE = 1e8
+#: A mode with ``|y^T T'(k) x|`` below this times ``|y| |T'(k) x|`` is
+#: defective: the singular system of its mode-field adjoint has no solution
+#: (ADR 0102).
+_DEFECTIVE_FIELD = 1e-8
+#: The largest ``SolverOptions.eigen_tolerance`` of a solve whose mode
+#: fields differentiate: it keeps the forward polish's Newton start close.
+_FIELD_TOLERANCE = 1e-10
+#: The outputs that are quantities of the mode fields (mode-field outputs),
+#: with their names on `EigenmodeResult` for messages.
+_MODE_FIELD = {
+    "q_port": "q_port",
+    "participation": "participation",
+    "bulk": "bulk_participation",
+    "principal": "principal_participation",
+    "sheet": "sheet_participation",
+    "e_field": "e_fields (the normalized mode fields)",
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class _InputRefusal:
+    """Why a mode-field output does not differentiate by a wanted input.
+
+    Attributes:
+        kind: ``"nodes"`` (no node gradient of the normalized field) or
+            ``"lumped"`` (a lumped value the output has no gradient by yet).
+        message: The reason, starting "with respect to".
+    """
+
+    kind: Literal["nodes", "lumped"]
+    message: str
+
+
 #: ``|v^H A u - conj(u^H A v)|`` below this times ``|A| |u| |v|`` for ``K``
 #: and ``M``: a Hermitian (lossless) Bloch problem, whose eigenvalues are real.
 _HERMITIAN = 1e-12
+
+
+@dataclasses.dataclass(frozen=True)
+class GapSet:
+    """The modes a mode's relative gap is measured to (ADR 0104).
+
+    Attributes:
+        pool: The ``k`` of every converged, distinct pair the selection
+            accepted, those cut beyond ``n_modes`` included, and of a mode
+            found after the count was met: the modes themselves among them.
+        guard: The guard mode's ``k``, or ``None`` when none was found.
+        ritz: The seed solve's unrefined Ritz values (polynomial operators
+            only): the gap set when the pool and the guard leave it empty.
+    """
+
+    pool: np.ndarray
+    guard: complex | None
+    ritz: np.ndarray
+
+    def gap(self, k: complex) -> float:
+        """``min |k - k_j| / max(|k|, |k_j|)`` over ``k``'s neighbours.
+
+        The neighbours are the pool and the guard, ``k``'s own entry (the
+        pool's nearest to it) left out; without any, the Ritz values but
+        the nearest to ``k`` (its own seed). ``inf`` when there are none:
+        the mode is isolated.
+        """
+        near = _others(self.pool, k)
+        if self.guard is not None:
+            near = np.append(near, self.guard)
+        if not len(near):
+            near = _others(self.ritz, k)
+        if not len(near):
+            return math.inf
+        return float(np.min(np.abs(near - k) / np.maximum(abs(k), np.abs(near))))
+
+
+def _others(values: np.ndarray, k: complex) -> np.ndarray:
+    """``values`` without the one nearest ``k`` (``k``'s own)."""
+    if not len(values):
+        return values
+    return np.delete(values, int(np.argmin(np.abs(values - k))))
 
 
 class EigenmodeRule:
@@ -160,9 +285,14 @@ class EigenmodeRule:
     form = "eigenmode"
     #: Material properties the eigenmode forms read.
     reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity"})
-    #: Outputs whose cotangents the backward pass handles: the eigenvalues
-    #: (``cluster`` holds integer labels: its cotangent is always zero).
-    differentiable_outputs = frozenset({"omega", "cluster"})
+    #: Outputs whose cotangents the backward pass can handle: the eigenvalues
+    #: (``cluster`` holds integer labels: its cotangent is always zero) and
+    #: the mode-field outputs, within the reach `nondifferentiable_output`
+    #: checks for the wanted inputs (ADR 0102).
+    differentiable_outputs = frozenset({"omega", "cluster", *_MODE_FIELD})
+    #: `nondifferentiable_output` takes the wanted input kinds and may
+    #: return ``None`` (`gfem._adjoint.solve_vjp`).
+    input_aware = True
 
     def __init__(
         self, model: Model, problem: Eigenmode, options: SolverOptions
@@ -207,6 +337,13 @@ class EigenmodeRule:
         #: (participation), in model order.
         self.resistive = tuple(p.name for p in lumped if p.rlc[0] is not None)
         self.inductive = tuple(p.name for p in lumped if p.rlc[1] is not None)
+        #: The surfaces of the `Impedance` sheets with an inductance (sheet
+        #: participation), in model order.
+        self.kinetic = tuple(
+            b.surface
+            for b in model.boundaries
+            if isinstance(b, Impedance) and b.inductance is not None
+        )
         mesh, active = model.mesh, model._domain.active  # noqa: SLF001
         #: Volume regions with tetrahedra in the solve domain: the field support.
         self.regions = tuple(r for r in mesh.volumes if active[mesh.elements(r)].any())
@@ -214,9 +351,12 @@ class EigenmodeRule:
         self.anisotropic = anisotropic_regions(model, self.regions)
         self._mesh = model.mesh
         self._materials = dict(model.materials)
+        self._periodic_surfaces = pair_names(model._periodic)  # noqa: SLF001
         self._excluded = model._domain.excluded  # noqa: SLF001
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
+        #: The last backward's explicit terms in the lumped ports' values.
+        self._explicit: dict[tuple, float] = {}
 
     # --- forward -----------------------------------------------------------------
 
@@ -228,77 +368,50 @@ class EigenmodeRule:
         Args:
             model: The model, with concrete leaves.
             keep: Keep what the backward pass needs (the modes, their
-                ``x^T T' x`` per cluster and whether a cluster reaches the
-                guard mode, refined beyond ``n_modes`` for this).
+                ``x^T T' x`` per cluster, whether a cluster reaches the
+                guard mode, refined beyond ``n_modes`` for this, each mode's
+                gap, and the eigen operator as the search leaves it, in a
+                `KeptOperator`, instead of freeing it).
 
         Returns:
             ``{"omega": (n,) complex rad/s, "error": (n,), "q_port":
             (n_resistive, n), "participation": (n_inductive, n), "bulk":
-            (n_regions, n), "principal": (n_anisotropic, n, 3), "e_field":
-            (ndof, n) complex, "cluster": (n,) int}``, modes nearest the
+            (n_regions, n), "principal": (n_anisotropic, n, 3), "sheet":
+            (n_kinetic, n), "e_field": (ndof, n) complex, "cluster": (n,)
+            int}``, modes nearest the
             target first, and the kept `Entry` (``None`` unless ``keep``).
 
         Raises:
             EigenmodeConvergenceError: Fewer than ``n_modes`` modes
-                converged.
+                converged, the modes found would skip a pair that nearly
+                converged, or an isolated mode's polish did not converge.
+            LinearSolverConvergenceError: A shift solve of an iterative
+                linear solver did not converge (the message names
+                ``SolverOptions.eigen_tolerance``), or a polish step's
+                deflated solve was not accepted.
         """
         opts = self.options
         order = opts.order
-        n_modes = self.problem.n_modes
         with task_manager(opts.threads):
             op = driven_operator(model, order, wave_vector=self.problem.wave_vector)
             built = op.built
             sigma = terms.wavenumber(2 * math.pi * self.problem.target, built.scale)
             eop = self.operator(op, sigma)
             divfree = None
+            entry = None
             try:
                 eop.factorize()  # before the projector's setup
                 divfree = projector(model, op, self.problem.wave_vector)
-                seed_tolerance = opts.eigen_tolerance
-                # the companion problem also holds each mode's mirror root
-                # -conj(k), |k + sigma| from the shift (behind its mode, about
-                # 2 sigma away for a mode near the target), and pairs near
-                # k = 0 about sigma away; they take slots in front of wanted
-                # modes farther than that, so a damped linear seed asks for
-                # twice as many pairs. A nonpolynomial seed asks for one pair
-                # beyond n_modes, the guard's slot: behind its modes lies the
-                # linearization cluster, which costs shift solves to converge
-                # and holds no mode (ADR 0035).
-                if eop.nonpolynomial:
-                    nev = n_modes + 1
-                    seed_tolerance = max(seed_tolerance, _SEED_TOLERANCE)
-                else:
-                    nev = max(2 * n_modes, n_modes + 2)
-                    nev *= 2 if eop.seed_damped else 1
-                guard = None
-                for _ in range(_ATTEMPTS):
-                    if eop.shift != sigma:
-                        # a retry is a seed solve: at the target, on a
-                        # factorization counted for the seed (refinement
-                        # reshifted it)
-                        eop.reshift(sigma, solves=MIN_SUBSPACE)
-                    k, vectors = self._shift_invert(
-                        eop, divfree, nev, tol=seed_tolerance
-                    )
-                    modes, failed, guard = self._select(
-                        eop, k, vectors, sigma, guard=keep
-                    )
-                    if len(modes) == n_modes or failed:
-                        break
-                    nev *= 2  # too few candidates near the target: look wider
-                if len(modes) < n_modes:
-                    raise EigenmodeConvergenceError(
-                        self._convergence_message(eop, modes, failed)
-                    )
-                lossless = _is_hermitian if eop.general else _is_real
-                if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
-                    modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
-                    if guard is not None:
-                        guard = dataclasses.replace(guard, k=guard.k.real)
+                modes, guard, gaps, unpolished = self._find(
+                    eop, divfree, sigma, guard=keep or self.polishable
+                )
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
+                lowest = min(k.real for k in ks) * const.c / built.scale
+                _check_low_frequency(
+                    model, self.problem.target, lowest / (2 * math.pi), stacklevel=2
+                )
                 outputs["cluster"] = clusters(ks, opts.cluster_rtol)
-                entry = None
                 if keep:
                     y = None
                     if eop.general:
@@ -306,14 +419,166 @@ class EigenmodeRule:
                         y = np.stack(
                             [m.x if m.y is None else m.y for m in modes], axis=1
                         )
+                    # the backward maps vectors with the operator as it is
+                    # left (ADR 0104): the entry's holder owns it from here
+                    store = None if op.fixed is None else op.fixed.store
                     entry = self._entry(
-                        eop, ks, x, y, labels=outputs["cluster"], guard=guard
+                        KeptOperator(eop, store),
+                        ks,
+                        x,
+                        y,
+                        labels=outputs["cluster"],
+                        guard=guard,
+                        gaps=gaps,
+                        polish_failed=unpolished,
                     )
+            except LinearSolverConvergenceError as err:
+                raise self._inner_failure(err) from err
             finally:
-                eop.free_handle()
+                if entry is None:
+                    eop.free_handle()
                 if divfree is not None:
                     divfree.free()
         return outputs, entry
+
+    def _inner_failure(
+        self, err: LinearSolverConvergenceError
+    ) -> LinearSolverConvergenceError:
+        """``err`` of a shift solve, with the remedy that acts on this path.
+
+        The linear solver's message offers "a looser tolerance", but the
+        inner solves run at `_inner_tolerance`, set by
+        ``SolverOptions.eigen_tolerance`` unless ``tolerance`` is tighter.
+        """
+        remedy = (
+            "a looser SolverOptions.eigen_tolerance (the inner solves run at "
+            "min(tolerance, 0.01 * eigen_tolerance), here "
+            f"{self._inner_tolerance():g})"
+        )
+        message = str(err)
+        if "a looser tolerance" in message:
+            message = message.replace("a looser tolerance", remedy)
+        else:
+            message = f"{message} For an eigenmode solve, try {remedy}."
+        return LinearSolverConvergenceError(message)
+
+    def _find(
+        self, eop: EigenOperator, divfree, sigma: float, *, guard: bool
+    ) -> tuple[list[Refined], Refined | None, GapSet, np.ndarray]:
+        """The ``n_modes`` modes, the guard mode, the gap set, and failed polishes.
+
+        Seed solves at the target (each attempt asking for twice as many
+        pairs as the last) and the selection of their refined pairs
+        (`_select`). ``guard``: refine one mode beyond ``n_modes`` (``None``
+        when no seed gave one). Where the forward polishes (`polishable`),
+        each isolated mode is polished (`_polish`) on the factors the search
+        leaves, before a lossless problem's ``k`` are snapped real; the last
+        return flags the modes whose polish failed (kept unpolished).
+
+        Raises:
+            EigenmodeConvergenceError: Fewer than ``n_modes`` modes
+                converged, or the modes found would skip a pair that nearly
+                converged (`_skipped`).
+        """
+        opts = self.options
+        n_modes = self.problem.n_modes
+        seed_tolerance = opts.eigen_tolerance
+        # the companion problem also holds each mode's mirror root
+        # -conj(k), |k + sigma| from the shift (behind its mode, about
+        # 2 sigma away for a mode near the target), and pairs near
+        # k = 0 about sigma away; they take slots in front of wanted
+        # modes farther than that, so a damped linear seed asks for
+        # twice as many pairs. A nonpolynomial seed asks for one pair
+        # beyond n_modes, the guard's slot: behind its modes lies the
+        # linearization cluster, which costs shift solves to converge
+        # and holds no mode (ADR 0035).
+        if eop.nonpolynomial:
+            nev = n_modes + 1
+            seed_tolerance = max(seed_tolerance, _SEED_TOLERANCE)
+        else:
+            nev = max(2 * n_modes, n_modes + 2)
+            nev *= 2 if eop.seed_damped else 1
+        found = None
+        for _ in range(_ATTEMPTS):
+            if eop.shift != sigma:
+                # a retry is a seed solve: at the target, on a
+                # factorization counted for the seed (refinement
+                # reshifted it)
+                eop.reshift(sigma, solves=MIN_SUBSPACE)
+            k, vectors = self._shift_invert(eop, divfree, nev, tol=seed_tolerance)
+            modes, failed, found, pool, ritz = self._select(
+                eop, k, vectors, sigma, guard=guard
+            )
+            if len(modes) == n_modes or failed:
+                break
+            nev *= 2  # too few candidates near the target: look wider
+        skipped = self._skipped(modes, failed, sigma)
+        if len(modes) < n_modes or skipped:
+            raise EigenmodeConvergenceError(
+                self._convergence_message(eop, modes, failed, skipped)
+            )
+        guard_k = None if found is None else found.k
+        unpolished = np.zeros(len(modes), dtype=bool)
+        if self.polishable:
+            gap_set = GapSet(pool, guard_k, ritz)
+            modes, unpolished = self._polish(eop, modes, gap_set, guard_k)
+        lossless = _is_hermitian if eop.general else _is_real
+        if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
+            modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
+            if found is not None:
+                found = dataclasses.replace(found, k=found.k.real)
+            pool = pool.real.astype(complex)
+        gaps = GapSet(pool, None if found is None else found.k, ritz)
+        return modes, found, gaps, unpolished
+
+    @property
+    def polishable(self) -> bool:
+        """Whether the forward polishes its isolated modes (ADR 0104).
+
+        On the CPU with ``linear_solver="direct"``, without a periodic pair
+        or a Bloch wave vector: where mode-field gradients reach (ADR 0102).
+        """
+        return (
+            self.options.device == "cpu"
+            and self.linear.kind == "direct"
+            and self.problem.wave_vector is None
+            and not self._periodic_surfaces
+        )
+
+    def _polish(
+        self,
+        eop: EigenOperator,
+        modes: list[Refined],
+        gaps: GapSet,
+        guard: complex | None,
+    ) -> tuple[list[Refined], np.ndarray]:
+        """``modes`` with each isolated one polished (`polish`), and which failed.
+
+        A mode is isolated (`isolated`) when it is alone in its cluster, the
+        guard mode is not in its cluster, and its relative gap is at least
+        `_ISOLATED` (``cluster_rtol`` if larger). The guard mode is never
+        polished. A polish that does not converge (or whose solve is not
+        accepted) is evidence of a neighbour the gap set missed, such as the
+        twin of a degenerate pair the seed solve never returned: the mode
+        is kept as mode refinement left it and flagged, and its entry
+        records it as not isolated (ADR 0104, amendment of ticket 04). A
+        solve never raises because of polishing.
+        """
+        ks = [m.k for m in modes]
+        rtol = self.options.cluster_rtol
+        labels = clusters(ks, rtol)
+        gap = np.array([gaps.gap(k) for k in ks])
+        reach = isolated(labels, _incomplete(ks, labels, guard, rtol), gap, rtol)
+        failed = np.zeros(len(modes), dtype=bool)
+        out = []
+        for i, m in enumerate(modes):
+            if reach[i]:
+                try:
+                    m = polish(eop, m, float(gap[i]), index=i)  # noqa: PLW2901
+                except (EigenmodeConvergenceError, LinearSolverConvergenceError):
+                    failed[i] = True
+            out.append(m)
+        return out, failed
 
     def _shift_invert(
         self, op: EigenOperator, project, nev: int, *, tol: float
@@ -331,57 +596,68 @@ class EigenmodeRule:
         Nothing is factorized until the handle is first used
         (`gfem._engine.eigen.eigen_operator`).
         """
-        opts = self.options
         return eigen_operator(
             op,
             sigma,
             linear=self.linear,
-            tolerance=min(
-                opts.tolerance, max(_INNER * opts.eigen_tolerance, _INNER_FLOOR)
-            ),
+            tolerance=self._inner_tolerance(),
         )
+
+    def _inner_tolerance(self) -> float:
+        """The tolerance of the shift solves of an iterative linear solver."""
+        opts = self.options
+        return min(opts.tolerance, max(_INNER * opts.eigen_tolerance, _INNER_FLOOR))
 
     def _entry(
         self,
-        op: EigenOperator,
+        holder: KeptOperator,
         ks: list[complex],
         x: np.ndarray,
         y: np.ndarray | None,
         *,
         labels: np.ndarray,
         guard: Refined | None,
+        gaps: GapSet,
+        polish_failed: np.ndarray | None = None,
     ) -> Entry:
-        """What the backward pass needs: no handle, the modes and their T'.
+        """What the backward pass needs: the kept operator, the modes and their T'.
 
         ``x`` holds the modes on the solve space, ``y`` their left
         eigenvectors (``None``: ``x``, complex symmetric). ``gram`` is block
         diagonal by cluster: ``y_i^T T'(k_c) x_j`` for modes i, j of cluster
         c, with ``k_c`` the cluster's mean. ``incomplete`` flags the modes
-        of a cluster the guard mode belongs to.
+        of a cluster the guard mode belongs to; ``gap`` each mode's relative
+        gap to its gap set (`GapSet.gap`, ``inf`` without a neighbour), 0
+        for a mode whose polish failed; ``polish_failed`` flags those modes
+        (`isolated` is then false for them: the backward names the failure).
         """
         left = x if y is None else y
         labels = np.asarray(labels)
         k = np.array(ks, dtype=complex)
         gram = np.zeros((len(k), len(k)), dtype=complex)
-        incomplete = np.zeros(len(k), dtype=bool)
         rtol = self.options.cluster_rtol
+        incomplete = _incomplete(ks, labels, None if guard is None else guard.k, rtol)
+        op = cast("EigenOperator", holder.operator)
         for label in np.unique(labels):
             members = np.flatnonzero(labels == label)
             mean = k[members].mean()
             tx = np.stack([op.derivative(mean, x[:, j]) for j in members], axis=1)
             gram[np.ix_(members, members)] = left[:, members].T @ tx
-            if guard is not None and any(_close(guard.k, k[j], rtol) for j in members):
-                incomplete[members] = True
         fields = {
             "x": x,
             "k": k,
             "cluster": labels,
             "gram": gram,
             "incomplete": incomplete,
+            "gap": np.array([gaps.gap(z) for z in k]),
+            "polish_failed": np.zeros(len(k), dtype=bool)
+            if polish_failed is None
+            else np.asarray(polish_failed, dtype=bool),
         }
+        fields["gap"][fields["polish_failed"]] = 0.0
         if y is not None:
             fields["y"] = y
-        return Entry(self.physics, fields=fields)
+        return Entry(self.physics, handle=holder, fields=fields)
 
     def _select(
         self,
@@ -391,7 +667,7 @@ class EigenmodeRule:
         sigma: float,
         *,
         guard: bool = False,
-    ) -> tuple[list[Refined], list[Refined], Refined | None]:
+    ) -> tuple[list[Refined], list[Refined], Refined | None, np.ndarray, np.ndarray]:
         """Refine the seeds nearest ``sigma`` until ``n_modes`` distinct ones.
 
         Seeds (and refined pairs) with ``Re k`` near zero or negative are the
@@ -401,17 +677,30 @@ class EigenmodeRule:
         A second-order absorbing wall's cluster has ``Re k`` near ``2
         sigma``, so it is not dropped; the modes nearer the target come
         first. A seed far from the current shift whose refinement gives
-        nothing to accept (see `_lost`) is refined again on a factorization
-        at its own Ritz value. With ``guard``, the remaining
-        seeds are refined (without
+        nothing to accept as its mode (see `_lost`) is refined again on a
+        factorization at its own Ritz value. A converged pair that is not
+        static and not in the span of the accepted modes (`_in_span`) is
+        never discarded: the first refinement of such a seed is accepted
+        too when it is one (ADR 0097), so the accepted modes can outnumber
+        ``n_modes``; they are sorted by distance to the target and cut. A
+        pair in that span with more than `_TWIN` of its norm outside it
+        landed on a degenerate eigenspace: its outside part is refined and,
+        converged, is the twin the seed solve did not give.
+        With ``guard``, the remaining seeds are refined (without
         refactorizing) until one more distinct mode converges: the guard
-        mode. It is best-effort: none is found when no remaining seed
-        converges to a mode.
+        mode, or the nearest mode cut off when there is one. It is
+        best-effort: none is found when no remaining seed converges to a
+        mode.
 
         Returns:
             The accepted modes, nearest ``sigma`` first (at most
-            ``n_modes``), the seeds that did not converge, and the guard
-            mode (``None`` without ``guard`` or when no seed gave one).
+            ``n_modes``), the seeds that did not converge, the guard
+            mode (``None`` without ``guard`` or when no seed gave one), the
+            pool of the gap set (`GapSet`): the ``k`` of every converged,
+            distinct pair accepted, those cut beyond ``n_modes`` included,
+            and of a mode found after the count was met, nearest ``sigma``
+            first; and the seeds' unrefined Ritz values (none for a
+            nonpolynomial operator, whose frozen seeds are too rough).
         """
         n_modes = self.problem.n_modes
         tolerance = self.options.eigen_tolerance
@@ -421,9 +710,37 @@ class EigenmodeRule:
         accepted: list[Refined] = []
         failed: list[Refined] = []
         extra = None
-        window = max(_DUPLICATE * tolerance, self.options.cluster_rtol)
+        window = self._window()
+        steps = self.options.max_refine_iterations
+
+        def distinct(mode: Refined) -> Refined | None:
+            # a converged pair in the span of the accepted modes is a duplicate
+            # unless its part outside the span is more than round-off: then it
+            # landed on a degenerate eigenspace whose twin the seed solve
+            # missed, and that part, refined, is the twin (ticket 17)
+            if not _in_span(mode, accepted, window):
+                return mode
+            rest = _outside(mode, accepted, window)
+            if rest is None:
+                return None
+            twin = refine(
+                op,
+                mode.k,
+                rest,
+                tolerance=tolerance,
+                max_iterations=steps,
+                reshift=False,
+            )
+            if (
+                twin.converged
+                and twin.k.real > _STATIC * sigma
+                and not _in_span(twin, accepted, window)
+            ):
+                return twin
+            return None
+
         for j in seeds:
-            full = len(accepted) == n_modes
+            full = len(accepted) >= n_modes
             if full and not guard:
                 break
             seed = complex(k[j])
@@ -433,7 +750,7 @@ class EigenmodeRule:
                 seed,
                 vectors[:, j],
                 tolerance=tolerance,
-                max_iterations=self.options.max_refine_iterations,
+                max_iterations=steps,
                 reshift=not full,
                 reshift_first=far,
             )
@@ -442,14 +759,15 @@ class EigenmodeRule:
                 # a frozen seed rougher than TRUSTED, refined on a shift nearer
                 # another mode, wanders where round-off takes it (onto an
                 # accepted mode, a mirror root, or another seed's mode): refine
-                # it again on a factorization at its own Ritz value
+                # it again on a factorization at its own Ritz value. Where it
+                # wandered may be a mode no other seed gives: it is kept
+                if mode.converged and mode.k.real > _STATIC * sigma:
+                    kept = distinct(mode)
+                    if kept is not None:
+                        accepted.append(kept)
                 op.reshift(seed)
                 mode = refine(
-                    op,
-                    seed,
-                    vectors[:, j],
-                    tolerance=tolerance,
-                    max_iterations=self.options.max_refine_iterations,
+                    op, seed, vectors[:, j], tolerance=tolerance, max_iterations=steps
                 )
             if mode.k.real <= _STATIC * sigma:
                 continue
@@ -457,31 +775,87 @@ class EigenmodeRule:
                 if not full:
                     failed.append(mode)
                 continue
-            if any(_same(mode, other, window) for other in accepted):
+            mode = distinct(mode)
+            if mode is None:
                 continue
             if full:
                 extra = mode
                 break
             accepted.append(mode)
         accepted.sort(key=lambda m: abs(m.k.real - sigma))
-        return accepted, failed, extra
+        pool = [m.k for m in accepted] + ([] if extra is None else [extra.k])
+        pool.sort(key=lambda z: abs(z.real - sigma))
+        ritz = [complex(k[j]) for j in seeds] if not op.nonpolynomial else []
+        if guard and len(accepted) > n_modes:
+            # nearer the target than a guard found after the count was met
+            extra = accepted[n_modes]
+        return (
+            accepted[:n_modes],
+            failed,
+            extra,
+            np.array(pool, dtype=complex),
+            np.array(ritz, dtype=complex),
+        )
+
+    def _window(self) -> float:
+        """Relative distance in ``k`` within which two refined pairs can be one mode."""
+        return max(_DUPLICATE * self.options.eigen_tolerance, self.options.cluster_rtol)
+
+    def _skipped(
+        self, accepted: list[Refined], failed: list[Refined], sigma: float
+    ) -> list[Refined]:
+        """The unconverged pairs that the accepted modes may have skipped.
+
+        A pair that stopped within `TRUSTED` of an eigenpair, nearer the
+        target than the farthest accepted mode and outside the span of the
+        accepted modes, is a mode the set would silently leave out. Rougher
+        pairs (members of a linearization cluster) are not modes.
+        """
+        if len(accepted) < self.problem.n_modes:
+            return []  # the count already raises
+        reach = max(abs(m.k.real - sigma) for m in accepted)
+        window = self._window()
+        return [
+            m
+            for m in failed
+            if m.error <= TRUSTED
+            and abs(m.k.real - sigma) < reach
+            and not _in_span(m, accepted, window)
+        ]
 
     def _convergence_message(
-        self, op: EigenOperator, accepted: list[Refined], failed: list[Refined]
+        self,
+        op: EigenOperator,
+        accepted: list[Refined],
+        failed: list[Refined],
+        skipped: list[Refined] | None = None,
     ) -> str:
+        """Why the solve raises: too few modes, or ``skipped`` (see `_skipped`)."""
         c = const.c / op.scale / (2 * math.pi)
-        found = len(accepted)
+        target = hertz(self.problem.target)
+        tolerance = (
+            f"backward error {self.options.eigen_tolerance:g} "
+            "(SolverOptions.eigen_tolerance)"
+        )
+        if skipped:
+            farthest = hertz(accepted[-1].k.real * c)  # sorted by distance
+            head = (
+                f"Eigenmode found {len(accepted)} mode(s) near {target} to "
+                f"{tolerance}, the farthest at {farthest}, but a pair "
+                "nearer the target did not converge: the modes found would "
+                "skip it."
+            )
+        else:
+            head = (
+                f"Eigenmode found {len(accepted)} of the {self.problem.n_modes} "
+                f"requested mode(s) near {target} to {tolerance}."
+            )
         lines = [
-            (
-                f"Eigenmode found {found} of the {self.problem.n_modes} requested "
-                f"mode(s) near {self.problem.target / 1e9:.6g} GHz to backward "
-                f"error {self.options.eigen_tolerance:g} "
-                "(SolverOptions.eigen_tolerance)."
-            ),
+            head,
             *(
-                f"  not converged: {m.k.real * c / 1e9:.6g} GHz, best backward "
+                f"  not converged: {hertz(m.k.real * c)}, best backward "
                 f"error {m.error:.3g} after {m.iterations} refinement steps"
-                for m in failed
+                for m in (skipped or failed)
             ),
         ]
         lines.append(
@@ -515,6 +889,7 @@ class EigenmodeRule:
         }
         mesh = model.mesh
         density = element_energy(model, op)
+        sheets = _sheet_energy(op)
         split = (
             principal_energy(model, op, self.anisotropic) if self.anisotropic else None
         )
@@ -551,7 +926,8 @@ class EigenmodeRule:
                 for name, data in ports.items()
                 if data.port.rlc[2] is not None
             )
-            energy = per_tet.sum() + capacitors
+            # + 0.0 without a capacitive sheet leaves the sum bit-identical
+            energy = per_tet.sum() + capacitors + (0.0 if sheets is None else sheets(x))
             amplitude = math.sqrt(MODE_ENERGY / energy)
             solve[:, j] = x * amplitude
             for r, region in enumerate(self.regions):
@@ -582,9 +958,29 @@ class EigenmodeRule:
             "participation": participation,
             "bulk": bulk,
             "principal": principal,
+            "sheet": self._sheet_shares(op, solve, omega),
             "e_field": op.expand(solve),
         }
         return outputs, solve
+
+    def _sheet_shares(
+        self, op: DrivenOperator, solve: np.ndarray, omega: np.ndarray
+    ) -> np.ndarray:
+        """``(n_kinetic, n)`` sheet participations of the modes scaled to 1 J.
+
+        A sheet's L piece is ``mu0 scale / L_s ∫ w u_t . v_t`` (the fill
+        ``w`` as in the operator, ADR 0013): ``∫ w |E_t|^2 / (2 omega^2
+        L_s)`` is its form over ``2 mu0 scale omega^2``.
+        """
+        out = np.zeros((len(self.kinetic), len(omega)))
+        for s, piece in enumerate(sheet_inductors(op, self.kinetic)):
+            applied = op.apply(piece, solve)
+            for j in range(len(omega)):
+                form = float(np.real(np.conj(solve[:, j]) @ applied[:, j]))
+                out[s, j] = form / (
+                    2 * const.mu_0 * op.built.scale * omega[j].real ** 2 * MODE_ENERGY
+                )
+        return out
 
     # --- the solve_vjp interface ---------------------------------------------------
 
@@ -608,6 +1004,7 @@ class EigenmodeRule:
             "principal": jax.ShapeDtypeStruct(
                 (len(self.anisotropic), n, 3), jnp.float64
             ),
+            "sheet": jax.ShapeDtypeStruct((len(self.kinetic), n), jnp.float64),
             "e_field": jax.ShapeDtypeStruct((space.ndof, n), jnp.complex128),
             "cluster": jax.ShapeDtypeStruct((n,), jnp.int64),
         }
@@ -626,84 +1023,407 @@ class EigenmodeRule:
         """
         return self.nodes_unsupported if kind == ("nodes",) else None
 
-    def nondifferentiable_output(self, name: str) -> str:
-        """The error message for a cotangent on output ``name``."""
-        return (
-            f"gfem cannot differentiate the eigenmode output {name!r} in this "
-            "version: only the eigenfrequencies (omega, so frequency and q) "
-            "are differentiable, not quantities of the mode fields (the "
-            "fields themselves, participations, port Q, interface "
-            "participation, probes). Wrap it in jax.lax.stop_gradient to use "
-            "its value without its derivative."
+    def nondifferentiable_output(
+        self, name: str, kinds: frozenset[tuple] | set[tuple] = frozenset()
+    ) -> str | None:
+        """Why a cotangent on output ``name`` cannot be pulled back, or ``None``.
+
+        Input-aware (ADR 0102): ``kinds`` are the wanted input kinds. The
+        eigenvalues differentiate with respect to every read input. The
+        mode-field outputs (``q_port``, ``participation``,
+        ``bulk_participation``, ``principal_participation``,
+        ``sheet_participation`` and the normalized fields ``e_fields``)
+        differentiate on one CPU process with ``linear_solver="direct"``,
+        ``eigen_tolerance`` at most 1e-10, without periodic pairs or a Bloch
+        wave vector, with respect to materials, sheet fills, node
+        coordinates (port surfaces held) and lumped values; the normalized
+        fields never with respect to the node coordinates, the principal
+        shares not with respect to a lumped value. What depends on the modes
+        (a cluster, a near pair, a port without voltage) raises in the
+        backward.
+        """
+        if name in ("omega", "cluster"):
+            return None
+        public = _MODE_FIELD.get(name, name)
+        head = f"gfem cannot differentiate the eigenmode output {public!r}"
+        opt_out = (
+            "Wrap it in jax.lax.stop_gradient to use its value without its derivative."
         )
+        if name not in _MODE_FIELD:
+            return (
+                f"{head}: it is the backward error of the solve, which has no "
+                "derivative with respect to anything. " + opt_out
+            )
+        why = self._solve_refusal()
+        refusal = None if why is not None else self._input_refusal(name, kinds)
+        if refusal is not None and refusal.kind == "lumped":
+            return (
+                f"{head} {refusal.message} in this version; the eigenfrequencies "
+                "differentiate with respect to it. Wrap the value in "
+                "jax.lax.stop_gradient to hold it."
+            )
+        if refusal is not None:
+            why = refusal.message
+        if why is None:
+            return None
+        return (
+            f"{head} {why}. The eigenfrequencies (omega, so frequency and q) "
+            "keep their gradients. " + opt_out
+        )
+
+    def _solve_refusal(self) -> str | None:
+        """Why no mode-field output of this solve differentiates, or ``None``."""
+        options = self.options
+        reasons = (
+            (
+                self.problem.wave_vector is not None,
+                (
+                    "at a Bloch wave vector: mode-field gradients are for "
+                    "non-periodic models only"
+                ),
+            ),
+            (
+                bool(self._periodic_surfaces),
+                (
+                    "of a periodic model: mode-field gradients are for "
+                    "non-periodic models only"
+                ),
+            ),
+            (
+                options.device != "cpu",
+                (
+                    f'on device="{options.device}": its mode-field adjoint runs on '
+                    'the CPU with linear_solver="direct" only'
+                ),
+            ),
+            (
+                self.linear.kind != "direct",
+                (
+                    f'on linear_solver="{self.linear.kind}": its mode-field adjoint '
+                    'runs on linear_solver="direct" only'
+                ),
+            ),
+            (
+                options.eigen_tolerance > _FIELD_TOLERANCE,
+                (
+                    f"solved with SolverOptions.eigen_tolerance = "
+                    f"{options.eigen_tolerance:g}: mode-field gradients need "
+                    f"eigen_tolerance <= {_FIELD_TOLERANCE:g} (the default)"
+                ),
+            ),
+        )
+        return next((why for refused, why in reasons if refused), None)
+
+    @staticmethod
+    def _input_refusal(
+        name: str, kinds: frozenset[tuple] | set[tuple]
+    ) -> _InputRefusal | None:
+        """Why output ``name`` does not differentiate by ``kinds``, or ``None``.
+
+        The normalized field by the node coordinates, and the principal
+        shares by a lumped value.
+        """
+        if name == "e_field" and ("nodes",) in kinds:
+            return _InputRefusal(
+                "nodes",
+                "with respect to the mesh node coordinates: the normalized mode "
+                "field (and the measurements of it: Field.at, "
+                "interface_participation) has no node gradient; it "
+                "differentiates with respect to materials and sheet fills. For "
+                "a shape derivative take finite differences of the measurement "
+                "over meshes moved by gfem.shape.boundary_morph",
+            )
+        lumped = sorted(k for k in kinds if is_lumped(k))
+        # the principal shares have no finite-difference cell by a lumped
+        # value yet (ADR 0102 amendment); every other output does
+        if lumped and name == "principal":
+            kind = lumped[0]
+            where = "ports" if kind[0] == "port" else "boundaries"
+            return _InputRefusal(
+                "lumped", f"with respect to model.{where}[{kind[1]}].{kind[2]}"
+            )
+        return None
 
     def backward(
         self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
     ) -> list[FieldPair]:
-        """Fold the ``omega`` cotangents into one field pair per cluster.
+        """Fold the cotangents into field pairs: per cluster, and per mode.
 
-        With ``ω = k c / scale``, cluster c's modes ``X``, their left
-        eigenvectors ``Y`` (``X`` unless Bloch) and ``G = Y^T T'(k_c) X``:
-        ``ct_c d(Σ ω)/dp = -(c / scale) ct_c tr(G^-1 Y^T (dT/dp) X)``, the
-        pair ``(-(c / scale) ct_c Y, X G^-1)`` weighted with the pieces' θ
-        at ``k_c``. A simple mode is a cluster of one (``G = y^T T' x``). No
-        solve. On a periodic model the pair is expanded to the unpaired
-        space, ``(conj(P) Y, P X G^-1)``: ``y^T P^H a P x = (conj(P) y)^T a
-        (P x)`` for the unpaired forms ``a`` (`DrivenOperator.pair`).
+        **Eigenvalues.** With ``ω = k c / scale``, cluster c's modes ``X``,
+        their left eigenvectors ``Y`` (``X`` unless Bloch) and ``G = Y^T
+        T'(k_c) X``: ``ct_c d(Σ ω)/dp = -(c / scale) ct_c tr(G^-1 Y^T
+        (dT/dp) X)``, the pair ``(-(c / scale) ct_c Y, X G^-1)`` weighted with
+        the pieces' θ at ``k_c``. A simple mode is a cluster of one (``G =
+        y^T T' x``). No solve. On a periodic model the pair is expanded to
+        the unpaired space, ``(conj(P) Y, P X G^-1)``: ``y^T P^H a P x =
+        (conj(P) y)^T a (P x)`` for the unpaired forms ``a``
+        (`DrivenOperator.pair`).
+
+        **Mode-field outputs** (`_field_pairs`): per mode with a cotangent
+        on its ratios, one adjoint solve on the kept eigen operator and two
+        pairs, ``(2 lam, x)`` on the pieces and the explicit energy pair;
+        the explicit terms of the lumped ports' values are kept for
+        `explicit_lumped`.
 
         Raises:
-            DegenerateModeError: The cotangents on a cluster's modes differ
-                (an objective not symmetric in them), a cluster with a
-                nonzero cotangent extends beyond the ``n_modes`` modes, or a
-                Bloch cluster's ``G`` is singular (a defective eigenvalue).
+            DegenerateModeError: The ``omega`` cotangents on a cluster's
+                modes differ (an objective not symmetric in them), a cluster
+                with a nonzero cotangent extends beyond the ``n_modes``
+                modes, a Bloch cluster's ``G`` is singular (a defective
+                eigenvalue), or a mode with a mode-field cotangent is not
+                isolated or is defective.
+            NonDifferentiableError: A nonzero cotangent on an infinite
+                ``q_port``.
+            LinearSolverConvergenceError: An adjoint solve was not accepted.
         """
-        ct = cotangents.get("omega")
-        if ct is None or not np.any(ct):
-            return []
         fields = entry.fields
         x, k, labels = fields["x"], fields["k"], fields["cluster"]
         y = fields.get("y", x)
         gram, incomplete = fields["gram"], fields["incomplete"]
-        ct = np.asarray(ct, dtype=complex)
+        ct = cotangents.get("omega")
         pairs = []
+        self._explicit = {}
         with task_manager(self.options.threads):
             op = self.driven(model)
             domain = em_region(model, op.built)
             per_k = const.c / op.built.scale
-            for label in np.unique(labels):
-                members = np.flatnonzero(labels == label)
-                c = ct[members]
-                if not c.any():
-                    continue
-                spread = np.abs(c - c.mean()).max()
-                symmetric = spread <= _SYMMETRIC_RTOL * np.abs(c).max()
-                if incomplete[members].any() or not symmetric:
-                    raise DegenerateModeError(
-                        self._degenerate_message(k, members, c, incomplete, per_k)
+            if ct is not None and np.any(ct):
+                ct = np.asarray(ct, dtype=complex)
+                for label in np.unique(labels):
+                    members = np.flatnonzero(labels == label)
+                    c = ct[members]
+                    if not c.any():
+                        continue
+                    spread = np.abs(c - c.mean()).max()
+                    symmetric = spread <= _SYMMETRIC_RTOL * np.abs(c).max()
+                    if incomplete[members].any() or not symmetric:
+                        raise DegenerateModeError(
+                            self._degenerate_message(k, members, c, incomplete, per_k)
+                        )
+                    g = gram[np.ix_(members, members)]
+                    if "y" in fields and np.linalg.cond(g) > _DEFECTIVE:
+                        raise DegenerateModeError(
+                            self._defective_message(
+                                k, members, np.linalg.cond(g), per_k
+                            )
+                        )
+                    pairs.append(
+                        op.pair(
+                            -per_k * c.mean() * y[:, members],
+                            x[:, members] @ np.linalg.inv(g),
+                            weights=op.weights(k[members].mean() * per_k),
+                            domain=domain,
+                        )
                     )
-                g = gram[np.ix_(members, members)]
-                if "y" in fields and np.linalg.cond(g) > _DEFECTIVE:
+            pairs += self._field_pairs(model, entry, cotangents, op, domain)
+        return pairs
+
+    def _field_pairs(
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        op: DrivenOperator,
+        domain,
+    ) -> list[FieldPair]:
+        """The mode-field outputs' pairs (quantum-metrics ticket 03, ADR 0104).
+
+        Per mode ``(k, x)`` with a nonzero cotangent on its ratios or on its
+        normalized field: the load ``(w, kappa, explicit terms)``
+        (`Ratios.load`, with the field's normalization multipliers ``mu1``,
+        ``mu2``), the deflated solve ``T(k) lam0 = -w``, ``t^T lam0 = 0``
+        (``t = T'(k) x``) on the kept operator's live factors
+        (`deflated_solve`), ``lam = lam0 - kappa x / (x^T t)``, and the pairs
+        ``(2 lam, x)`` with the pieces' θ at the mode (``dG/dp = 2 Re(lam^T
+        dT/dp x)``), ``(conj(x), x)`` with the explicit energy terms' weights
+        and ``(x, x)`` with the phase rule's. The load's explicit terms in
+        the lumped ports' values (`Load.lumped`) add up in ``_explicit``. An
+        entry without its operator (over ``retain_memory``) gets one from
+        ``op``, prepared at ``k (1 + d)`` of its first such mode, and freed
+        at the end.
+        """
+        names = ("q_port", "participation", "bulk", "principal", "sheet")
+        cts = {
+            n: np.real(np.asarray(cotangents[n]))
+            for n in names
+            if n in cotangents and np.any(cotangents[n])
+        }
+        # the normalized field's cotangent, complex (non-periodic: the solve
+        # space is the unpaired one)
+        field = cotangents.get("e_field")
+        if field is not None and not np.any(field):
+            field = None
+        if not cts and field is None:
+            return []
+        fields = entry.fields
+        x, k = fields["x"], fields["k"]
+        n = len(k)
+
+        def column(c: np.ndarray, j: int) -> np.ndarray:
+            return c[:, j] if c.ndim == 2 else c[:, j, :]
+
+        wanted = [
+            j
+            for j in range(n)
+            if any(column(c, j).any() for c in cts.values())
+            or (field is not None and field[:, j].any())
+        ]
+        if not wanted:
+            return []
+        per_k = const.c / op.built.scale
+        self._check_reach(entry, wanted, per_k)
+        holder = entry.handle
+        eop = getattr(holder, "operator", None)
+        own = eop is None
+        gap = fields["gap"]
+        if own:
+            first = wanted[0]
+            eop = self.operator(op, k[first] * (1 + reshift_offset(float(gap[first]))))
+        pairs = []
+        try:
+            # every mode's guard before any form is built
+            gram = {}
+            for j in wanted:
+                u, kj = x[:, j], complex(k[j])
+                t = eop.derivative(kj, u)
+                gram[j] = u @ t
+                size = np.linalg.norm(u) * np.linalg.norm(t)
+                if abs(gram[j]) < _DEFECTIVE_FIELD * size:
                     raise DegenerateModeError(
-                        self._defective_message(k, members, g, per_k)
+                        self._defective_message(
+                            k, np.array([j]), size / max(abs(gram[j]), 1e-300), per_k
+                        )
                     )
+            ratios = Ratios(
+                model,
+                op,
+                regions=self.regions,
+                anisotropic=self.anisotropic,
+                resistive=self.resistive,
+                inductive=self.inductive,
+                kinetic=self.kinetic,
+            )
+            index = {port.name: i for i, port in enumerate(model.ports)}
+            for j in wanted:
+                u, kj, ut = x[:, j], complex(k[j]), gram[j]
+                load = ratios.load(
+                    u,
+                    kj,
+                    {name: column(c, j) for name, c in cts.items()},
+                    mode=j,
+                    field=None
+                    if field is None
+                    else np.where(eop.free, np.asarray(field[:, j], complex), 0),
+                )
+                lam = (
+                    deflated_solve(
+                        eop, u, None, -load.w, k=kj, gap=float(gap[j]), mode=j
+                    ).z
+                    - load.kappa * u / ut
+                )
                 pairs.append(
                     op.pair(
-                        -per_k * c.mean() * y[:, members],
-                        x[:, members] @ np.linalg.inv(g),
-                        weights=op.weights(k[members].mean() * per_k),
+                        2 * lam[:, None],
+                        u[:, None],
+                        weights=op.weights(kj * per_k),
                         domain=domain,
                     )
                 )
+                if load.energy:
+                    pairs.append(
+                        op.pair(
+                            np.conj(u)[:, None],
+                            u[:, None],
+                            weights=load.energy,
+                            domain=domain,
+                        )
+                    )
+                if load.phase:
+                    pairs.append(
+                        op.pair(
+                            u[:, None], u[:, None], weights=load.phase, domain=domain
+                        )
+                    )
+                for (port, value), c in load.lumped.items():
+                    kind = ("port", index[port], value)
+                    self._explicit[kind] = self._explicit.get(kind, 0.0) + c
+        finally:
+            if own:
+                eop.free_handle()
         return pairs
+
+    def _check_reach(self, entry: Entry, modes: list[int], per_k: float) -> None:
+        """Raise unless every mode of ``modes`` is isolated (`isolated`).
+
+        Raises:
+            DegenerateModeError: A mode's polish failed in the forward, it
+                belongs to a cluster of several modes or one cut by
+                ``n_modes``, or its relative gap is below `_ISOLATED`
+                (``cluster_rtol`` if larger): nearly degenerate.
+        """
+        fields = entry.fields
+        k, labels = fields["k"], fields["cluster"]
+        incomplete, gap = fields["incomplete"], fields["gap"]
+        failed = fields.get("polish_failed", np.zeros(len(k), dtype=bool))
+        rtol = self.options.cluster_rtol
+        threshold = max(_ISOLATED, rtol)
+        reach = isolated(labels, incomplete, gap, rtol)
+        for j in modes:
+            if reach[j]:
+                continue
+            members = np.flatnonzero(labels == labels[j])
+            hz = k * per_k / (2 * math.pi)
+            named = ", ".join(
+                f"{int(i)} ({hertz(hz[i].real, 9)})" for i in members if i != j
+            )
+            mode = f"mode {j} ({hertz(hz[j].real, 9)})"
+            if failed[j]:
+                reason = (
+                    "its polish in the forward did not converge (a sign of a "
+                    "neighbour the solve did not return)"
+                )
+            elif len(members) > 1:
+                reason = (
+                    f"it belongs to a degenerate cluster with mode(s) {named} "
+                    f"(relative gap at most SolverOptions.cluster_rtol = {rtol:g})"
+                )
+            elif incomplete[j]:
+                reason = (
+                    "its cluster extends beyond the "
+                    f"{self.problem.n_modes} mode(s) asked for (Eigenmode.n_modes)"
+                )
+            else:
+                reason = (
+                    f"it is nearly degenerate: its relative gap to the nearest "
+                    f"mode found is {gap[j]:.3g}, below {threshold:g} (the "
+                    f"isolation threshold 1e-4, or SolverOptions.cluster_rtol = "
+                    f"{rtol:g} if larger)"
+                )
+            raise DegenerateModeError(
+                f"DegenerateModeError: a quantity of the field of {mode} "
+                f"(participation, port Q, a field) is not differentiable: "
+                f"{reason}. Mode-field gradients are for isolated modes only "
+                "(ADR 0102): near another mode the field is a mix of the two "
+                "that any perturbation rotates. Remedies: separate the modes "
+                "(break the design's symmetry, move them apart); differentiate "
+                "the frequencies only; or wrap the field quantity in "
+                "jax.lax.stop_gradient."
+            )
 
     def driven(self, model: Model) -> DrivenOperator:
         """The model's driven operator (the pieces of ``T(k)``) at its nodes.
 
         The last model's operator is kept, so that a backward pass and its
-        terms build it once.
+        terms build it once, while its discretization is the model's cached
+        one: an operator on an evicted discretization would pair with
+        kernel objects of the new one (ADR 0104).
         """
         last = getattr(self, "_last_driven", None)
-        if last is not None and last[0] is model:
+        if (
+            last is not None
+            and last[0] is model
+            and last[1].built is discretization(model.mesh, model._periodic).built  # noqa: SLF001
+        ):
             return last[1]
         op = driven_operator(
             model, self.options.order, wave_vector=self.problem.wave_vector
@@ -720,11 +1440,51 @@ class EigenmodeRule:
         node coordinates. Port pieces are left out: shape gradients hold
         every port surface.
 
+        The explicit energy terms of the mode-field outputs follow
+        (`Ratios.terms`, ADR 0103): ``Re(eps_r)`` per region and per
+        principal axis, which only their energy pairs weight. They are
+        ``"value"`` terms on the element-wise ``Re(eps_r)`` masked to their
+        part, so the node pass transports them as it does the mass piece; the
+        port voltages read only the held port surfaces, so a node gradient
+        of the ratios needs no other term.
+
         Raises:
             PortGeometryError: ``nodes`` and a node of a port surface has
-                moved.
+                moved (with an ``omega`` or a mode-field cotangent alike).
         """
-        return operator_terms(model, self.driven(model), nodes=nodes)
+        op = self.driven(model)
+        ratios = Ratios(
+            model,
+            op,
+            regions=self.regions,
+            anisotropic=self.anisotropic,
+            resistive=(),
+            inductive=(),
+        )
+        return operator_terms(model, op, nodes=nodes) + ratios.terms()
+
+    def lumped_terms(self, model: Model) -> list[Term]:
+        """The pieces of ``T(k)`` that move with a lumped value (ADR 0100).
+
+        The driven operator's (`gfem._engine.driven.lumped_terms`), weighted
+        with their θ at the mode like the other pieces.
+        """
+        return lumped_terms(self.driven(model))
+
+    def explicit_lumped(self) -> dict[tuple, float]:
+        """The last backward's explicit terms in the lumped values, by input kind.
+
+        The lumped pass contracts the pairs with the pieces that move with
+        a lumped value: the implicit part ``2 Re(lam^T dT/dp x)``, and a
+        sheet's L and C through the explicit energy pair. A lumped port's L
+        and C enter the mode-field outputs outside any piece, at fixed mode:
+        ``-p / L`` in its participation, ``|V|^2 / 2`` in the mode energy
+        (and so in every ratio and, through ``mu1``, the normalized field).
+        These are scalars, by ``("port", index, "inductance" |
+        "capacitance")``, which `solve_vjp` adds to the lumped pass's values
+        (quantum-metrics ticket 21, ADR 0102 amendment).
+        """
+        return dict(self._explicit)
 
     def _degenerate_message(
         self,
@@ -734,10 +1494,10 @@ class EigenmodeRule:
         incomplete: np.ndarray,
         per_k: float,
     ) -> str:
-        ghz = k[members] * per_k / (2 * math.pi * 1e9)
+        hz = k[members] * per_k / (2 * math.pi)
         gap = np.ptp(np.abs(k[members])) / np.abs(k[members]).max()
         modes = ", ".join(
-            f"{int(j)} ({f.real:.9g} GHz)" for j, f in zip(members, ghz, strict=True)
+            f"{int(j)} ({hertz(f.real, 9)})" for j, f in zip(members, hz, strict=True)
         )
         if incomplete[members].any():
             reason = (
@@ -764,19 +1524,19 @@ class EigenmodeRule:
         )
 
     def _defective_message(
-        self, k: np.ndarray, members: np.ndarray, g: np.ndarray, per_k: float
+        self, k: np.ndarray, members: np.ndarray, condition: float, per_k: float
     ) -> str:
-        ghz = k[members] * per_k / (2 * math.pi * 1e9)
+        hz = k[members] * per_k / (2 * math.pi)
         modes = ", ".join(
-            f"{int(j)} ({f.real:.9g} GHz)" for j, f in zip(members, ghz, strict=True)
+            f"{int(j)} ({hertz(f.real, 9)})" for j, f in zip(members, hz, strict=True)
         )
         return (
             f"DegenerateModeError: mode(s) {modes} have a singular Y^T T'(k) X "
-            f"(condition number {np.linalg.cond(g):.3g}): under a Bloch wave "
-            "vector, the eigenvalue is defective (an exceptional point of the "
-            "lossy cell), where its left and right eigenvectors are orthogonal "
-            "and its frequency is not differentiable. Remedies: move the wave "
-            "vector or the design off the exceptional point, or use a "
+            f"(condition number {condition:.3g}): the eigenvalue is defective "
+            "(an exceptional point of a lossy problem), where its left and "
+            "right eigenvectors are orthogonal, and neither its frequency nor "
+            "a quantity of its field is differentiable. Remedies: move the "
+            "design (or the wave vector) off the exceptional point, or use a "
             "gfem.Driven sweep as a surrogate."
         )
 
@@ -817,13 +1577,53 @@ class EigenmodeRule:
                 for r, region in enumerate(self.anisotropic)
             },
             e_fields=tuple(fields),
+            sheet_participation={
+                surface: jnp.asarray(outputs["sheet"][s])
+                for s, surface in enumerate(self.kinetic)
+            },
             materials=self._materials,
+            periodic_surfaces=self._periodic_surfaces,
             cluster=jnp.asarray(outputs["cluster"]),
         )
 
 
 def _close(a: complex, b: complex, rtol: float) -> bool:
     return abs(a - b) <= rtol * max(abs(a), abs(b))
+
+
+def _incomplete(
+    ks: list[complex], labels: np.ndarray, guard: complex | None, rtol: float
+) -> np.ndarray:
+    """Whether each mode's cluster reaches the guard mode ``guard`` (cut short)."""
+    incomplete = np.zeros(len(ks), dtype=bool)
+    if guard is None:
+        return incomplete
+    for label in np.unique(labels):
+        members = np.flatnonzero(labels == label)
+        if any(_close(guard, ks[j], rtol) for j in members):
+            incomplete[members] = True
+    return incomplete
+
+
+def isolated(
+    labels: np.ndarray, incomplete: np.ndarray, gap: np.ndarray, rtol: float
+) -> np.ndarray:
+    """Which modes are in mode-field reach (ADR 0102, ADR 0104).
+
+    A mode is when it is the only member of its cluster (``labels``), its
+    cluster is not cut short by the guard mode (``incomplete``), and its
+    relative gap to its gap set is at least `_ISOLATED`, or ``rtol``
+    (``SolverOptions.cluster_rtol``) when that is larger. An entry stores a
+    gap of 0 for a mode whose forward polish failed (its ``polish_failed``
+    field), so such a mode is never isolated.
+    """
+    labels = np.asarray(labels)
+    single = np.array([np.count_nonzero(labels == v) == 1 for v in labels], dtype=bool)
+    return (
+        single
+        & ~np.asarray(incomplete, dtype=bool)
+        & (np.asarray(gap) >= max(_ISOLATED, rtol))
+    )
 
 
 def clusters(ks: list[complex], rtol: float) -> np.ndarray:
@@ -860,7 +1660,7 @@ def _orthonormal_multiples(k: np.ndarray, vectors: np.ndarray) -> np.ndarray:
     """``vectors`` with each multiple Ritz value's vectors orthonormalized.
 
     Any basis of a multiple eigenvalue's eigenspace is as good a set of
-    seeds; an orthonormal one keeps its members apart under `_same`.
+    seeds; an orthonormal one keeps its members apart under `_in_span`.
     """
     out = vectors
     done = np.zeros(len(k), dtype=bool)
@@ -881,6 +1681,42 @@ def _same(a: Refined, b: Refined, window: float) -> bool:
         return False
     overlap = abs(np.vdot(a.x, b.x)) / (np.linalg.norm(a.x) * np.linalg.norm(b.x))
     return overlap > _OVERLAP
+
+
+def _in_span(mode: Refined, accepted: list[Refined], window: float) -> bool:
+    """Whether ``mode`` is a combination of accepted modes: a duplicate.
+
+    The norm of its projection on the span of the accepted modes within
+    ``window`` (relative) of its ``k`` exceeds `_OVERLAP` of its own. Against
+    the span, not each mode: any vector of a degenerate cluster's eigenspace
+    is a duplicate, also one at 45 degrees from two accepted members.
+    """
+    near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
+    if not near:
+        return False
+    basis = np.linalg.qr(np.stack(near, axis=1))[0]
+    inside = np.linalg.norm(basis.conj().T @ mode.x)
+    return bool(inside > _OVERLAP * np.linalg.norm(mode.x))
+
+
+def _outside(
+    mode: Refined, accepted: list[Refined], window: float
+) -> np.ndarray | None:
+    """``mode``'s part outside the span of the accepted modes near its ``k``.
+
+    ``None`` when it is at most `_TWIN` of its norm: round-off of a duplicate
+    of a simple mode (1e-11 to 2e-9 measured), not a twin (0.36 to 0.94 on the
+    lossy-wall mirrored cavity, quantum-metrics ticket 17).
+    """
+    near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
+    if not near:
+        return None
+    basis = np.linalg.qr(np.stack(near, axis=1))[0]
+    rest = mode.x - basis @ (basis.conj().T @ mode.x)
+    norm = np.linalg.norm(rest)
+    if norm <= _TWIN * np.linalg.norm(mode.x):
+        return None
+    return rest / norm
 
 
 def _lost(
@@ -908,6 +1744,61 @@ def _lost(
         _same(mode, other, window) and not _close(seed, other.k, window)
         for other in accepted
     )
+
+
+def _check_low_frequency(
+    model: Model, target: float, lowest: float, *, stacklevel: int
+) -> None:
+    """Warn if the target or the lowest mode is below the low-frequency floor.
+
+    The floor is the driven one, ``k0 h_min = LOW_FREQUENCY_FLOOR`` with
+    h_min the shortest edge of the solve domain: below it the E-field
+    formulation loses about ``1e-16 / (k0 h_min)^2`` of the modes, which
+    their backward error does not show (measured on a line loaded by an
+    inductor: frequency off by 2e-5 at ``k0 h_min = 2e-6`` and by 0.2 at
+    2e-8, with a reported error of 1e-16).
+
+    Args:
+        model: The model, its solve domain and its mesh.
+        target: ``Eigenmode.target`` (Hz).
+        lowest: The lowest ``Re f`` of the modes found (Hz).
+        stacklevel: Passed on to `warnings.warn`, counted from the caller.
+    """
+    floor = LowFrequencyFloor.of(model)
+    f = min(target, lowest)
+    k0h = floor.k0h(f)
+    if k0h >= LOW_FREQUENCY_FLOOR:
+        return
+    what = "target" if target <= lowest else "lowest mode found"
+    warnings.warn(
+        f"Eigenmode: the {what}, {hertz(f, 4)}, is below {floor.describe(k0h)}. "
+        "Below it the eigenfrequencies, the mode fields "
+        "and the participations carry rounding errors up to about "
+        "1e-16/(k0*h_min)^2, which EigenmodeResult.error does not show. Raise "
+        "the resonance or coarsen the smallest elements.",
+        LowFrequencyWarning,
+        stacklevel=stacklevel + 1,
+    )
+
+
+def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
+    """``x -> Σ 1/2 ∫ w C_s |E_t|^2 dS`` of the capacitive sheets (J), or ``None``.
+
+    A capacitive `Impedance`'s C piece is ``∫ w C_s / (eps0 scale) u_t .
+    v_t``, as the mass piece is ``∫ eps_r u . v``: its quadratic form with
+    ``(conj(x), x)`` times ``eps0 scale / 2`` is the sheet's electric
+    energy, as `element_energy` gives the volume's (ADR 0103). ``None``
+    without a capacitive sheet, so such models add nothing.
+    """
+    sheets = sheet_capacitors(op)
+    if not sheets:
+        return None
+    factor = 0.5 * const.epsilon_0 * op.built.scale
+
+    def energy(x: np.ndarray) -> float:
+        return sum(factor * float(np.real(np.conj(x) @ op.apply(k, x))) for k in sheets)
+
+    return energy
 
 
 def _is_real(op: EigenOperator) -> bool:

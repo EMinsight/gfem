@@ -12,7 +12,7 @@ import jax as _jax
 _jax.config.update("jax_enable_x64", True)
 
 # Submodules are imported after the switch, so no gfem array is ever float32.
-from gfem import conventions, design, shape  # noqa: E402
+from gfem import conventions, design, quantum, shape  # noqa: E402
 from gfem._cuda import cuda_available  # noqa: E402
 from gfem.errors import (  # noqa: E402
     DegenerateModeError,
@@ -26,6 +26,7 @@ from gfem.errors import (  # noqa: E402
     MeshQualityWarning,
     MeshRefinementNotConvergedWarning,
     MeshRefinementUnsupportedError,
+    ModeLabelError,
     NonDifferentiableError,
     PortGeometryError,
     PortModeError,
@@ -35,11 +36,14 @@ from gfem.errors import (  # noqa: E402
     SkippedPortModeWarning,
     SolverUnavailableError,
     SweepNotConvergedWarning,
+    SweepRankDeficientWarning,
+    UnsampledPixelsWarning,
 )
 from gfem.job import Job, load_result  # noqa: E402
 from gfem.measurements import (  # noqa: E402
     InterfaceParticipation,
     characteristic_impedance,
+    electric_energy,
     interface_participation,
     power_flow,
 )
@@ -80,7 +84,7 @@ from gfem.results import (  # noqa: E402
     PortModeResult,
     SweepInfo,
 )
-from gfem.solve import solve  # noqa: E402
+from gfem.solve import release_memory, solve  # noqa: E402
 
 __version__ = _version("gfem")
 
@@ -117,6 +121,7 @@ __all__ = [
     "MeshRefinement",
     "MeshRefinementNotConvergedWarning",
     "MeshRefinementUnsupportedError",
+    "ModeLabelError",
     "Model",
     "NetworkParameters",
     "NonDifferentiableError",
@@ -138,18 +143,23 @@ __all__ = [
     "SolverUnavailableError",
     "SweepInfo",
     "SweepNotConvergedWarning",
+    "SweepRankDeficientWarning",
+    "UnsampledPixelsWarning",
     "WavePort",
     "__version__",
     "characteristic_impedance",
     "conventions",
     "cuda_available",
     "design",
+    "electric_energy",
     "enclosed_by",
     "error_estimate",
     "interface_participation",
     "load_result",
     "power_flow",
+    "quantum",
     "refine_mesh",
+    "release_memory",
     "shape",
     "solve",
 ]

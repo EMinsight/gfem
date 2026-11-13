@@ -26,7 +26,14 @@ import numpy as np
 import periodic_cases as pc
 import pytest
 import structured_meshes as sm
-from gradient_cases import HYBRID_PORTS, hybrid_line, hybrid_mesh
+from gradient_cases import (
+    HYBRID_PORTS,
+    MIRRORED_TARGET,
+    hybrid_line,
+    hybrid_mesh,
+    mirrored_cavity,
+    split_cavity,
+)
 
 import gfem
 from gfem._adjoint import solve_vjp
@@ -75,13 +82,12 @@ EXPECTED |= {
     for leaf in ("coefficients", "mesh.nodes")
     for kind in [("nodes",)] + [("material", "oxide", p) for p in ALL_PROPERTIES]
 }
-# Region energies are not functions of the capacitance (they would need one
-# adjoint solve per terminal): they raise for every input the solve reads,
-# and are exact zeros for the inputs it never reads. (`mutual` and `inverse`
-# are jnp functions of `capacitance`, not leaves: they differentiate.)
+# Region energies: each differentiates with respect to what the solve reads
+# (the nitride's energy moves with the oxide's permittivity through the
+# potential), and is an exact zero for the inputs it never reads.
 EXPECTED |= {
     ("electrostatic", f"energy.{region}", kind): (
-        ZERO if kind[0] == "material" and kind[2] != "eps_r" else RAISES
+        ZERO if kind[0] == "material" and kind[2] != "eps_r" else GRADIENT
     )
     for region in ("oxide", "nitride")
     for kind in [("nodes",)] + [("material", "oxide", p) for p in ALL_PROPERTIES]
@@ -230,28 +236,57 @@ EXPECTED |= {
 }
 
 # Eigenmode: the eigenvalues (omega, also as each mode field's omega)
-# differentiate with respect to every electromagnetic property and the node
-# coordinates; quantities of the mode fields (backward error, port Q,
-# participations, the fields) raise for the inputs the forms read. The
+# differentiate with respect to every electromagnetic property, the node
+# coordinates and the lumped values. The ratios of the mode fields (port Q,
+# participations, region, principal and sheet shares) differentiate with respect to
+# the electromagnetic properties, sheet fills, node coordinates and lumped
+# values (ADR 0102 and its amendment), and the normalized mode fields'
+# coefficients with respect to the electromagnetic properties, sheet fills
+# and lumped values (never the node coordinates); the principal shares raise
+# with respect to the lumped values in this version, as does the backward
+# error with respect to anything. The
 # cluster labels are integers: exact zeros. The mode fields' mesh is the
-# input mesh passed through (identity in the nodes, constant otherwise).
+# input mesh passed through (identity in the nodes, constant otherwise). A
+# periodic model's mode-field outputs raise whatever the input.
 _EIGEN_DEPENDENT = ("omega", "e_fields.0.omega")
 _EIGEN_CONSTANT = ("cluster", "e_fields.0.mesh.nodes")
+_EIGEN_RATIOS = (
+    "q_port.",
+    "participation.",
+    "bulk_participation.",
+    "principal_participation.",
+    "sheet_participation.",
+    "e_fields.0.coefficients",
+)
 
 
-def _eigen_outcome(out, kind):
+def _eigen_outcome(out, kind, *, periodic=False):
     if kind == ("nodes",):
         if out == "cluster":
             return ZERO
         dependent = (*_EIGEN_DEPENDENT, "e_fields.0.mesh.nodes")
-        return GRADIENT if out in dependent else RAISES
+        # the normalized field has no node gradient (ADR 0102)
+        ratio = out.startswith(_EIGEN_RATIOS) and not periodic
+        field = out == "e_fields.0.coefficients"
+        return GRADIENT if out in dependent or (ratio and not field) else RAISES
     if (kind[0] == "material" and kind[2] not in EM_PROPERTIES) or (
         out in _EIGEN_CONSTANT
     ):
         return ZERO
-    return GRADIENT if out in _EIGEN_DEPENDENT else RAISES
+    if out in _EIGEN_DEPENDENT:
+        return GRADIENT
+    ratio = out.startswith(_EIGEN_RATIOS)
+    lumped = kind[0] in ("port", "boundary") and kind[2:] != ("fill", "fill")
+    principal = out.startswith("principal_participation.")
+    return GRADIENT if ratio and not periodic and not (lumped and principal) else RAISES
 
 
+EIGEN_KINDS = [
+    ("nodes",),
+    *(("material", "dielectric", p) for p in ALL_PROPERTIES),
+    ("port", 0, "inductance"),
+    ("port", 0, "capacitance"),
+]
 EXPECTED |= {
     ("eigenmode", out, kind): _eigen_outcome(out, kind)
     for out in (
@@ -259,20 +294,21 @@ EXPECTED |= {
         "error",
         "q_port.p1",
         "q_port.p2",
+        "participation.p1",
         "bulk_participation.dielectric",
         "cluster",
         *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
     )
-    for kind in [("nodes",)] + [("material", "dielectric", p) for p in ALL_PROPERTIES]
+    for kind in EIGEN_KINDS
 }
 # The result carries the model's materials as solved (for measurements): each
 # leaf is its input passed through (identity), a constant in the nodes.
 EXPECTED |= {
     ("eigenmode", f"materials.dielectric.{out}", kind): (
-        ZERO if kind == ("nodes",) else GRADIENT if kind[2] == out else ZERO
+        GRADIENT if kind[0] == "material" and kind[2] == out else ZERO
     )
     for out in ALL_PROPERTIES
-    for kind in [("nodes",)] + [("material", "dielectric", p) for p in ALL_PROPERTIES]
+    for kind in EIGEN_KINDS
 }
 
 # Eigenmode on a periodic model (the C3 Bragg line, plain at Γ and Bloch at
@@ -291,7 +327,7 @@ EXPECTED |= {
             else ZERO
         )
         if out.startswith("materials.low.")
-        else _eigen_outcome(out, kind)
+        else _eigen_outcome(out, kind, periodic=True)
     )
     for problem in ("eigenmode_periodic_plain", "eigenmode_periodic_bloch")
     for out in (
@@ -334,6 +370,105 @@ EXPECTED |= {
     ("port_mode_sheet", out, kind): RAISES
     for out in PORT_MODE_OUTPUTS
     for kind in [("nodes",), FILL]
+}
+
+# Lumped values (ADR 0100): port p1's inductance and capacitance and the
+# sheet's resistance, inductance and capacitance on the glued line (static
+# materials).
+# Driven S, the kept fields and the eigenfrequencies differentiate with
+# respect to them; z_ref (p1's resistance) and the fields' omega and mesh do
+# not move with them; electrostatics never reads them; the port mode problem
+# is not differentiable. Only a model with no Impedance and no lumped-port L
+# or C has none of these leaves: every Impedance adds them, R-only ones too.
+LUMPED_KINDS = [
+    ("port", 0, "inductance"),
+    ("port", 0, "capacitance"),
+    ("boundary", 2, "resistance"),
+    ("boundary", 2, "inductance"),
+    ("boundary", 2, "capacitance"),
+]
+EXPECTED |= {
+    ("driven_lumped", out, kind): (
+        EXPECTED[("driven", out, ("nodes",))]
+        if kind == ("nodes",)
+        else GRADIENT
+        if out in _DRIVEN_DEPENDENT
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        *(
+            f"e_fields.{k}.{leaf}"
+            for k in (0, 1)
+            for leaf in ("coefficients", "mesh.nodes", "omega")
+        ),
+    )
+    for kind in [("nodes",), *LUMPED_KINDS]
+}
+EXPECTED |= {
+    ("driven_lumped_adaptive", out, kind): (
+        EXPECTED[("driven_adaptive", out, ("nodes",))]
+        if kind == ("nodes",)
+        else GRADIENT
+        if out in ("s.values", "e_fields.coordinates")
+        else RAISES
+        if out == "e_fields.basis"
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        "e_fields.basis",
+        "e_fields.coordinates",
+        "e_fields.omega",
+        "e_fields.mesh.nodes",
+    )
+    for kind in [("nodes",), *LUMPED_KINDS]
+}
+EXPECTED |= {
+    ("eigenmode_lumped", out, kind): _eigen_outcome(out, kind)
+    for out in (
+        "omega",
+        "error",
+        "q_port.p1",
+        "q_port.p2",
+        "participation.p1",
+        "bulk_participation.lower",
+        "bulk_participation.upper",
+        "sheet_participation.sheet",
+        "cluster",
+        *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
+    )
+    for kind in [("nodes",), *LUMPED_KINDS]
+}
+EXPECTED |= {
+    ("electrostatic_lumped", out, kind): (
+        EXPECTED[("electrostatic", "capacitance", ("nodes",))]
+        if kind == ("nodes",)
+        else ZERO
+    )
+    for out in (
+        "capacitance",
+        "energy.lower",
+        "energy.upper",
+        "potential.top.coefficients",
+        "potential.top.mesh.nodes",
+    )
+    for kind in [("nodes",), *LUMPED_KINDS]
+}
+# the port mode's model: wave port p1, the lumped port p2 holds L and C
+PORT_MODE_LUMPED_KINDS = [
+    ("port", 1, "inductance"),
+    ("port", 1, "capacitance"),
+    ("boundary", 2, "resistance"),
+    ("boundary", 2, "inductance"),
+    ("boundary", 2, "capacitance"),
+]
+EXPECTED |= {
+    ("port_mode_lumped", out, kind): RAISES
+    for out in PORT_MODE_OUTPUTS
+    for kind in [("nodes",), *PORT_MODE_LUMPED_KINDS]
 }
 
 
@@ -380,12 +515,22 @@ def eigen_model(tmp_path_factory):
     path = tmp_path_factory.mktemp("resonator") / "line.msh"
     sm.write_msh22(path, sm.strip_line(4.0, 2.0, 1.0, (4, 1, 1)))
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    # p1 also holds an inductance and a capacitance: a participation, two
+    # lumped values, and a share of the mode energy outside the dielectric
+    # (with the dielectric's alone, its bulk participation is exactly 1)
     return gfem.Model(
         mesh,
         materials={"dielectric": _field(mesh, "dielectric", conductivity=1e-3)},
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
         ports=[
-            gfem.LumpedPort("p1", "port1", "+z", impedance=1000.0),
+            gfem.LumpedPort(
+                "p1",
+                "port1",
+                "+z",
+                resistance=1000.0,
+                inductance=1e-9,
+                capacitance=1e-14,
+            ),
             gfem.LumpedPort("p2", "port2", "+z", impedance=1000.0),
         ],
     )
@@ -461,6 +606,67 @@ def sheet_cases(sheet_mesh):
     }
 
 
+#: The lumped values of the lumped cases: port inductance (H) and capacitance
+#: (F), sheet resistance (ohm), inductance (H) and capacitance (F) per square.
+LUMPED = (2e-9, 5e-14, 2e4, 1e-6, 2e-16)
+#: Near the lumped line's sharpest mode, 15.07 + 1.46j GHz (the next ones,
+#: 11.7 + 4.2j and 19.8 + 4.8j GHz, are 4.4 and 5.8 GHz off).
+LUMPED_TARGET = 15e9
+LUMPED_ADAPTIVE = gfem.Driven(
+    frequency=(18e9, 20e9, 22e9),
+    sweep="adaptive",
+    samples=(18e9, 22e9),
+    keep_fields=20e9,
+)
+
+
+def _lumped_model(mesh, ports, lower=None):
+    sheet = gfem.Impedance(
+        "sheet", resistance=LUMPED[2], inductance=LUMPED[3], capacitance=LUMPED[4]
+    )
+    return gfem.Model(
+        mesh,
+        materials={
+            "lower": gfem.Material(eps_r=2.0) if lower is None else lower,
+            "upper": gfem.Material(),
+        },
+        boundaries=[gfem.PEC("plate1"), gfem.PEC("plate2"), sheet],
+        ports=ports,
+    )
+
+
+def _rlc_port(name, surface):
+    return gfem.LumpedPort(
+        name,
+        surface,
+        "+y",
+        resistance=1000.0,
+        inductance=LUMPED[0],
+        capacitance=LUMPED[1],
+    )
+
+
+@pytest.fixture(scope="module")
+def lumped_cases(sheet_mesh):
+    lumped = _lumped_model(
+        sheet_mesh,
+        [_rlc_port("p1", "port1"), gfem.LumpedPort("p2", "port2", "+y", impedance=1e3)],
+    )
+    mixed = _lumped_model(
+        sheet_mesh, [gfem.WavePort("p1", "port1"), _rlc_port("p2", "port2")]
+    )
+    return {
+        "driven_lumped": (lumped, gfem.Driven(frequency=20e9, keep_fields=True)),
+        "driven_lumped_adaptive": (lumped, LUMPED_ADAPTIVE),
+        "eigenmode_lumped": (lumped, gfem.Eigenmode(target=LUMPED_TARGET)),
+        "electrostatic_lumped": (
+            lumped,
+            gfem.Electrostatic(terminals={"top": "plate2"}, ground="plate1"),
+        ),
+        "port_mode_lumped": (mixed, gfem.PortMode("p1", 20e9)),
+    }
+
+
 @pytest.fixture(scope="module")
 def wave_cases(wave_model, shared_surface_model):
     return {
@@ -531,6 +737,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
         **wave_cases,
         "eigenmode": (eigen_model, gfem.Eigenmode(target=17e9)),
         **request.getfixturevalue("sheet_cases"),
+        **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
         **request.getfixturevalue("eigen_periodic_cases"),
     }
@@ -661,6 +868,36 @@ def _out_sheet_beside_a_wave_port(request):
     jax.make_jaxpr(jax.grad(objective))(fill)
 
 
+def _out_impedance_beside_a_wave_port(request):
+    # the port mode reads the sheet on the port face's edge: its lumped
+    # values are constants of the solve there (raised while tracing)
+    mesh = request.getfixturevalue("sheet_mesh")
+    waves = [gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")]
+    problem = gfem.Driven(frequency=20e9)
+
+    def objective(r):
+        model = _lumped_model(mesh, waves)
+        sheet = gfem.Impedance("sheet", resistance=r, inductance=LUMPED[3])
+        model = model.replace(boundaries=[*model.boundaries[:2], sheet])
+        return jnp.sum(jnp.abs(gfem.solve(model, problem).s.values) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(LUMPED[2])
+
+
+def _out_lumped_port_resistance(request):
+    # a port's resistance is its reference impedance: a fixed value (raised
+    # by the constructor)
+    model = request.getfixturevalue("driven_model")
+    problem = gfem.Driven(frequency=5e9)
+
+    def objective(r):
+        ports = [gfem.LumpedPort("p1", "port1", "+z", resistance=r), model.ports[1]]
+        s = gfem.solve(model.replace(ports=ports), problem).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    jax.grad(objective)(50.0)
+
+
 def _out_material_on_a_wave_port_face(request):
     # likewise for a material of a region with elements on a port face
     model = request.getfixturevalue("wave_model")
@@ -783,6 +1020,17 @@ def _out_eigenmode_port_nodes_moved(request):
     jax.grad(objective)(1e-6)
 
 
+def _out_eigenmode_field_port_nodes_moved(request):
+    # the ratios' node gradient holds the port surfaces too: a moved port node
+    # raises on the host, as for omega
+    model = request.getfixturevalue("eigen_model")
+    problem = gfem.Eigenmode(target=17e9)
+    objective = _moved_port_objective(
+        model, lambda m: gfem.solve(m, problem).q_port["p1"][0]
+    )
+    jax.grad(objective)(1e-6)
+
+
 def _out_greedy_adaptive_sweep(request):
     # the sample set must be frozen (Driven(samples=...)) under a transform
     model = request.getfixturevalue("driven_model")
@@ -825,6 +1073,69 @@ def _out_probe_in_the_node_coordinates(request):
         return jnp.sum(jnp.abs(field.at(points)) ** 2)
 
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _out_electric_energy_of_a_traced_field(request):
+    # forward only: the measurement takes fixed fields and models
+    model = request.getfixturevalue("driven_model")
+    problem = gfem.Driven(frequency=5e9, keep_fields=True)
+    eps = model.materials["dielectric"].eps_r
+
+    def objective(e):
+        m = model.with_material("dielectric", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(5e9, "p1")
+        return gfem.electric_energy(field, model=m)["dielectric"]
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_power_flow_of_a_material_in_its_layer(request):
+    # the side is the leads: the core field is in the layer power_flow reads
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(frequency=20e9, keep_fields=True)
+    eps = model.materials["core"].eps_r
+
+    def objective(e):
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(20e9, "p1")
+        return gfem.power_flow(field, "dielectric", model=m)
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_power_flow_in_the_node_coordinates(request):
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(frequency=20e9, keep_fields=True)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        frozen = model.replace(mesh=jax.lax.stop_gradient(mesh))
+        field = gfem.solve(frozen, problem).e_field(20e9, "p1")
+        field = dataclasses.replace(field, mesh=mesh)
+        return gfem.power_flow(field, "core", model=frozen)
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _out_power_flow_of_a_reduced_field(request):
+    # an adaptive sweep's basis holds no adjoint of the power
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(
+        frequency=(18e9, 20e9, 22e9),
+        sweep="adaptive",
+        samples=(18e9, 22e9),
+        keep_fields=20e9,
+    )
+    eps = model.materials["core"].eps_r
+
+    def objective(e):
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(20e9, "p1")
+        return gfem.power_flow(field, "core", model=m)
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
 
 
 def _out_driven_traced_wave_vector(request):
@@ -909,6 +1220,178 @@ def _out_bloch_eigenmode_on_bddc(request):
     gfem.solve(model, _bloch_eigenmode(k), options=options)
 
 
+# --- eigenmode mode-field rows (ADR 0102) ---------------------------------------------
+
+
+def _eigen_ratio_objective(model, problem, options, read):
+    """``read(result)`` as a function of the dielectric's permittivity."""
+    eps = model.materials["dielectric"].eps_r
+
+    def objective(e):
+        m = model.with_material(
+            "dielectric", dataclasses.replace(model.materials["dielectric"], eps_r=e)
+        )
+        return read(gfem.solve(m, problem, options=options))
+
+    return objective, eps
+
+
+def _trace_eigen_q_port(request, **options):
+    # the static refusals: raised while tracing, before any host work
+    model = request.getfixturevalue("eigen_model")
+    objective, eps = _eigen_ratio_objective(
+        model,
+        gfem.Eigenmode(target=17e9),
+        gfem.SolverOptions(**options),
+        lambda r: jnp.sum(r.q_port["p1"]),
+    )
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_eigenmode_error(request):
+    model = request.getfixturevalue("eigen_model")
+    objective, eps = _eigen_ratio_objective(
+        model,
+        gfem.Eigenmode(target=17e9),
+        gfem.SolverOptions(),
+        lambda r: jnp.sum(r.error),
+    )
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_eigenmode_field_bddc(request):
+    _trace_eigen_q_port(request, linear_solver="bddc_gmres")
+
+
+def _out_eigenmode_field_petsc(request):
+    # the rule resolves the PETSc linear solver before tracing: without a
+    # usable PETSc stack that is the error, not the refusal
+    from gfem import _petsc
+
+    try:
+        _petsc.require_petsc("linear_solver")
+    except gfem.SolverUnavailableError as err:
+        pytest.skip(str(err))
+    _trace_eigen_q_port(request, linear_solver="petsc")
+
+
+def _out_eigenmode_field_cuda(request):
+    # the GPU is first used by the forward, which the trace does not run
+    _trace_eigen_q_port(request, device="cuda")
+
+
+def _out_eigenmode_field_tolerance(request):
+    _trace_eigen_q_port(request, eigen_tolerance=1e-8)
+
+
+def _out_eigenmode_mode_field_nodes(request):
+    # the normalized field (so Field.at, interface_participation) by the node
+    # coordinates: never in reach (finite differences over morphed meshes)
+    model = request.getfixturevalue("eigen_model")
+    problem = gfem.Eigenmode(target=17e9)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        field = gfem.solve(model.replace(mesh=mesh), problem).e_fields[0]
+        return jnp.sum(jnp.abs(field.coefficients) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _bragg_bulk(request, problem):
+    model = request.getfixturevalue("bragg_cell")
+    n = len(model.mesh.elements("low"))
+
+    def objective(e):
+        m = model.with_material("low", gfem.MaterialField(eps_r=e))
+        return gfem.solve(m, problem).bulk_participation["low"][0]
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.full(n, pc.C3_EPS_LOW))
+
+
+def _out_eigenmode_field_periodic(request):
+    _bragg_bulk(request, gfem.Eigenmode(target=pc.C3_PLAIN_TARGET))
+
+
+def _out_eigenmode_field_bloch(request):
+    _bragg_bulk(request, _bloch_eigenmode(math.pi / (pc.C3_A * pc.MM)))
+
+
+@pytest.fixture(scope="module")
+def corner_cavity(tmp_path_factory):
+    """The mirrored cavity with a corner region (an energy share)."""
+    return mirrored_cavity(tmp_path_factory.mktemp("corner"), corner=True)
+
+
+def _corner_share(request, *, delta, n_modes, read):
+    mesh = request.getfixturevalue("corner_cavity")
+    problem = gfem.Eigenmode(target=MIRRORED_TARGET, n_modes=n_modes)
+
+    def objective(eps):
+        result = gfem.solve(split_cavity(mesh, eps, delta), problem)
+        return read(result.bulk_participation["corner"])
+
+    jax.grad(objective)(jnp.ones(len(mesh.tetrahedra)))
+
+
+def _out_eigenmode_field_cluster_member(request):
+    # TE101 = TE011 on the mirrored mesh: one mode's share, and their sum
+    # (symmetric in the pair) too, since each member's field is arbitrary
+    with pytest.raises(HOST, match=r"DegenerateModeError.*degenerate cluster"):
+        _corner_share(request, delta=0.0, n_modes=2, read=jnp.sum)
+    _corner_share(request, delta=0.0, n_modes=2, read=lambda share: share[0])
+
+
+def _out_eigenmode_field_cut_cluster(request):
+    _corner_share(request, delta=0.0, n_modes=1, read=lambda share: share[0])
+
+
+def _out_eigenmode_field_near_pair(request):
+    # split to a relative gap of 2.5e-5: outside cluster_rtol, below 1e-4
+    _corner_share(request, delta=1e-4, n_modes=2, read=lambda share: share[0])
+
+
+def _out_eigenmode_q_port_without_voltage(request):
+    # no physical port reads exactly zero voltage on a mode (round-off), so
+    # p2's voltage functional is replaced by zero: its q_port is infinite
+    from gfem._engine import terms
+
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    model = request.getfixturevalue("eigen_model")
+    original = terms.port_vectors
+
+    def deaf(space, built, order, data):
+        b, v = original(space, built, order, data)
+        return (b, np.zeros_like(v)) if data.port.name == "p2" else (b, v)
+
+    monkeypatch.setattr(terms, "port_vectors", deaf)
+    objective, eps = _eigen_ratio_objective(
+        model,
+        gfem.Eigenmode(target=17e9),
+        gfem.SolverOptions(),
+        lambda r: r.q_port["p2"][0],
+    )
+    jax.grad(objective)(eps)
+
+
+def _out_eigenmode_principal_by_a_lumped_value(request):
+    # the glued line's lumped model with principal values in "lower": its
+    # principal shares by port p1's inductance (no cell checks that pair yet)
+    mesh = request.getfixturevalue("sheet_mesh")
+    lower = gfem.Material(eps_r=(2.0, 2.4, 1.8))
+
+    def objective(inductance):
+        p1 = dataclasses.replace(_rlc_port("p1", "port1"), inductance=inductance)
+        p2 = gfem.LumpedPort("p2", "port2", "+y", impedance=1e3)
+        model = _lumped_model(mesh, [p1, p2], lower=lower)
+        result = gfem.solve(model, gfem.Eigenmode(target=LUMPED_TARGET))
+        return jnp.sum(result.principal_participation["lower"][0])
+
+    jax.make_jaxpr(jax.grad(objective))(LUMPED[0])
+
+
 # (row, raising call, error, message): DegenerateModeError on one mode of a
 # degenerate eigenmode cluster is in tests/verification/test_gradient_matrix.py.
 HOST = jax.errors.JaxRuntimeError  # a gfem error raised in the backward pass
@@ -924,6 +1407,18 @@ OUT_OF_SCOPE = [
         _out_sheet_beside_a_wave_port,
         gfem.PortGeometryError,
         "shares an edge with the port face",
+    ),
+    (
+        "driven x Impedance value beside a wave port",
+        _out_impedance_beside_a_wave_port,
+        gfem.PortGeometryError,
+        r"Impedance model\.boundaries\[2\] shares an edge with the port face",
+    ),
+    (
+        "LumpedPort resistance",
+        _out_lumped_port_resistance,
+        gfem.NonDifferentiableError,
+        r"LumpedPort\.resistance is a fixed value.*inductance and capacitance",
     ),
     (
         "driven x material on a wave port face",
@@ -989,6 +1484,30 @@ OUT_OF_SCOPE = [
         gfem.NonDifferentiableError,
         r"mesh node coordinates.*stop_gradient",
     ),
+    (
+        "electric energy of a field",
+        _out_electric_energy_of_a_traced_field,
+        gfem.NonDifferentiableError,
+        r"gfem\.electric_energy is not differentiable",
+    ),
+    (
+        "power_flow x material in its layer",
+        _out_power_flow_of_a_material_in_its_layer,
+        gfem.NonDifferentiableError,
+        r"materials\['core'\]\.eps_r.*element layer.*move the surface",
+    ),
+    (
+        "power_flow x node coordinates",
+        _out_power_flow_in_the_node_coordinates,
+        gfem.NonDifferentiableError,
+        r"mesh node coordinates.*stop_gradient",
+    ),
+    (
+        "power_flow x reduced field",
+        _out_power_flow_of_a_reduced_field,
+        gfem.NonDifferentiableError,
+        r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
+    ),
     # driven on a periodic model
     (
         "driven x wave_vector",
@@ -1027,6 +1546,91 @@ OUT_OF_SCOPE = [
         ValueError,
         "linear_solver='direct'",
     ),
+    # eigenmode mode-field outputs (ADR 0102)
+    (
+        "eigenmode backward error",
+        _out_eigenmode_error,
+        gfem.NonDifferentiableError,
+        "'error'",
+    ),
+    (
+        "eigenmode mode-field output x bddc_gmres",
+        _out_eigenmode_field_bddc,
+        gfem.NonDifferentiableError,
+        'linear_solver="bddc_gmres"',
+    ),
+    (
+        "eigenmode mode-field output x petsc",
+        _out_eigenmode_field_petsc,
+        gfem.NonDifferentiableError,
+        'linear_solver="petsc"',
+    ),
+    (
+        "eigenmode mode-field output x cuda",
+        _out_eigenmode_field_cuda,
+        gfem.NonDifferentiableError,
+        'device="cuda"',
+    ),
+    (
+        "eigenmode mode-field output x eigen_tolerance above 1e-10",
+        _out_eigenmode_field_tolerance,
+        gfem.NonDifferentiableError,
+        "eigen_tolerance = 1e-08",
+    ),
+    (
+        "eigenmode mode-field output x plain periodic model",
+        _out_eigenmode_field_periodic,
+        gfem.NonDifferentiableError,
+        "periodic model",
+    ),
+    (
+        "eigenmode mode-field output x Bloch wave vector",
+        _out_eigenmode_field_bloch,
+        gfem.NonDifferentiableError,
+        "Bloch wave vector",
+    ),
+    (
+        "eigenmode mode-field output x nodes of a port surface",
+        _out_eigenmode_field_port_nodes_moved,
+        HOST,
+        r"PortGeometryError.*port1",
+    ),
+    (
+        "eigenmode mode field x node coordinates",
+        _out_eigenmode_mode_field_nodes,
+        gfem.NonDifferentiableError,
+        r"'e_fields.*' with respect to the mesh node coordinates.*finite differences",
+    ),
+    (
+        "eigenmode mode-field output x member of a cluster",
+        _out_eigenmode_field_cluster_member,
+        HOST,
+        "DegenerateModeError.*degenerate cluster",
+    ),
+    (
+        "eigenmode mode-field output x cluster cut by n_modes",
+        _out_eigenmode_field_cut_cluster,
+        HOST,
+        "DegenerateModeError.*n_modes",
+    ),
+    (
+        "eigenmode mode-field output x nearly degenerate mode",
+        _out_eigenmode_field_near_pair,
+        HOST,
+        "DegenerateModeError.*nearly degenerate",
+    ),
+    (
+        "eigenmode q_port of a mode with no voltage on the port",
+        _out_eigenmode_q_port_without_voltage,
+        HOST,
+        r"NonDifferentiableError.*1 / q_port",
+    ),
+    (
+        "eigenmode principal_participation x lumped value",
+        _out_eigenmode_principal_by_a_lumped_value,
+        gfem.NonDifferentiableError,
+        r"'principal_participation'.*model\.ports\[0\]\.inductance.*stop_gradient",
+    ),
 ]
 
 
@@ -1040,23 +1644,90 @@ def test_out_of_scope_pairs_raise_named_errors(request, call, error, match):
         call(request)
 
 
-def test_energy_error_names_the_output_and_the_opt_out(model):
-    problem = PROBLEMS["electrostatic"]
-    n = len(model.mesh.elements("oxide"))
+# --- the frequency path beside the mode-field rows --------------------------------
 
-    def objective(eps, *, stop):
-        m = model.with_material("oxide", gfem.MaterialField(eps_r=eps))
-        result = gfem.solve(m, problem)
-        energy = result.energy["oxide"]
-        energy = jax.lax.stop_gradient(energy) if stop else energy
-        return result.capacitance[0, 0] + energy.sum()
 
-    eps = jnp.full(n, 3.9)
-    with pytest.raises(
-        gfem.NonDifferentiableError, match=r"result\.energy.*stop_gradient"
-    ):
-        jax.make_jaxpr(jax.grad(lambda e: objective(e, stop=False)))(eps)
-    assert np.abs(np.asarray(jax.grad(lambda e: objective(e, stop=True))(eps))).max()
+def _omega_options(request, **options):
+    # rows 3 to 6: the refusals are static, so tracing is the whole check
+    model = request.getfixturevalue("eigen_model")
+    objective, eps = _eigen_ratio_objective(
+        model,
+        gfem.Eigenmode(target=17e9),
+        gfem.SolverOptions(**options),
+        lambda r: jnp.real(r.omega[0]) * 1e-9,
+    )
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _omega_petsc(request):
+    from gfem import _petsc
+
+    try:
+        _petsc.require_petsc("linear_solver")
+    except gfem.SolverUnavailableError as err:
+        pytest.skip(str(err))
+    _omega_options(request, linear_solver="petsc")
+
+
+def _omega_bragg(request, problem):
+    model = request.getfixturevalue("bragg_cell")
+    n = len(model.mesh.elements("low"))
+
+    def objective(e):
+        m = model.with_material("low", gfem.MaterialField(eps_r=e))
+        return jnp.real(gfem.solve(m, problem).omega[0]) * 1e-9
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.full(n, pc.C3_EPS_LOW))
+
+
+def _omega_corner(request, *, delta, read):
+    # rows 10 and 12 refuse in the backward: these run it
+    mesh = request.getfixturevalue("corner_cavity")
+    problem = gfem.Eigenmode(target=MIRRORED_TARGET, n_modes=2)
+
+    def objective(eps):
+        result = gfem.solve(split_cavity(mesh, eps, delta), problem)
+        return read(jnp.real(result.omega)) * 1e-9
+
+    grad = jax.grad(objective)(jnp.ones(len(mesh.tetrahedra)))
+    assert np.isfinite(np.asarray(grad)).all()
+    assert np.abs(np.asarray(grad)).max() > 0
+
+
+#: The models of the mode-field rows 3 to 12 (ticket 23's numbering) with
+#: an omega-only objective: the new refusals stay off the frequency path.
+#: Rows 9 (a moved port node) and 11 (a cluster cut by n_modes) are left
+#: out: omega raises there too, by its own rows ("eigenmode x nodes of a
+#: port surface", and tests/verification/test_gradient_matrix.py). On the
+#: cluster of row 10 omega differentiates as a sum over the cluster.
+OMEGA_BESIDE_ROWS = [
+    ("bddc_gmres", lambda r: _omega_options(r, linear_solver="bddc_gmres")),
+    ("petsc", _omega_petsc),
+    ("cuda", lambda r: _omega_options(r, device="cuda")),
+    ("eigen_tolerance above 1e-10", lambda r: _omega_options(r, eigen_tolerance=1e-8)),
+    (
+        "plain periodic model",
+        lambda r: _omega_bragg(r, gfem.Eigenmode(target=pc.C3_PLAIN_TARGET)),
+    ),
+    (
+        "Bloch wave vector",
+        lambda r: _omega_bragg(r, _bloch_eigenmode(math.pi / (pc.C3_A * pc.MM))),
+    ),
+    ("cluster sum", lambda r: _omega_corner(r, delta=0.0, read=jnp.sum)),
+    (
+        "nearly degenerate mode",
+        lambda r: _omega_corner(r, delta=1e-4, read=lambda omega: omega[0]),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [row[1] for row in OMEGA_BESIDE_ROWS],
+    ids=[row[0] for row in OMEGA_BESIDE_ROWS],
+)
+def test_omega_on_the_mode_field_rows_models_still_differentiates(request, call):
+    call(request)
 
 
 def test_stop_gradient_opts_a_read_input_out(model):

@@ -32,6 +32,18 @@ permittivity tensor), so one surface serves both. A side counts as vacuum
 only if no wave in it is slower than in vacuum, so an anisotropic substrate is
 never taken for vacuum. The thin layer itself is isotropic.
 
+On a film with the same medium on both faces, such as an airbridge or a
+suspended film, `"MA"` and `"MS"` count one layer on each face and add the
+two. On a surface that is not a film but has the same medium on both sides,
+they would count the layer twice: use `"default"` or `"SA"` there. Those two take the mean of the
+fields on the two sides, so they are not for a film.
+
+At the edge of a zero-thickness film the field is singular, and the
+participation of a layer that reaches the edge grows as the mesh is refined
+there. Compare designs on meshes with the same edge cell size; the
+{doc}`loss-budget` recipe gives the rule for an absolute value and adds the
+layers to the mode's other losses.
+
 ## Probes
 
 `field.at(points)` evaluates any result field at points in metres: kept
@@ -63,6 +75,12 @@ port, when the wave port declares none:
 mode = gfem.solve(model, gfem.PortMode("p1", [10e9, 20e9]))
 z = gfem.characteristic_impedance(mode, [(0.0, 0.0, 0.0), (0.0, 10e-6, 0.0)])
 ```
+
+A driven result holds the mode of each wave port too, so
+`result.port_modes["p1"]` takes the place of `mode`, with or without kept
+fields. Inside `jax.jit`, `jax.grad` or `jax.vmap` a driven result's port
+modes carry no field and the call raises `ValueError`: solve `gfem.PortMode`
+outside the transformation, since port modes are constants of the solve.
 
 ## Power through a surface
 
@@ -103,9 +121,40 @@ p_box = gfem.power_flow(e, "design", model=model)
 - **The model the field was solved with** is a required input: the residual
   reads its materials and boundaries. Pass the same model: gfem does not
   detect a design solved with other `MaterialField` values.
-- **Not differentiable.** `power_flow` inside `jax.grad` raises
-  `gfem.NonDifferentiableError`. Build a gradient objective from S or from
-  probes instead.
+- **Several ports fed at once.** `power_flow` is quadratic in the field, and
+  the kept fields add up: for incident waves `a1` and `a2` (in sqrt(W)) at two
+  ports, at one frequency,
+
+  ```python
+  e1, e2 = r.e_field(f, excite="p1"), r.e_field(f, excite="p2")
+  both = dataclasses.replace(e1, coefficients=a1 * e1.coefficients + a2 * e2.coefficients)
+  p = gfem.power_flow(both, side, model=model)
+  ```
+
+  is the net power for that excitation. Through a plane in the lead of port 1
+  it is `abs(a1)**2 - abs(b1)**2`, with `b = S @ a` the outgoing waves.
+- **Differentiable through the field.** Absorbed, radiated or transmitted
+  power is an objective: inside `jax.grad`, `jax.jit` or `jax.vmap`, pass the
+  kept field and the model of the same design (lumped or wave ports alike):
+
+  ```python
+  def absorbed(eps):
+      m = model.with_material("design", gfem.MaterialField(eps_r=eps))
+      r = gfem.solve(m, gfem.Driven(frequency=f, keep_fields=True))
+      return -gfem.power_flow(r.e_field(f, excite="p1"), "design", model=m)
+
+
+  g = jax.grad(absorbed)(eps)
+  ```
+
+  The power reads the materials of the element layer just outside `side`, and
+  their gradient there is not available: a material field with an element in
+  that layer, traced, raises `gfem.NonDifferentiableError`. Keep the surface
+  one element away from the design region (inside `side` is fine), or wrap
+  the value in `jax.lax.stop_gradient`. Node coordinates are not
+  differentiable here either; when they are traced (a `jax.jit` over the
+  model), name the side's regions instead of a predicate. A field of an adaptive sweep raises: its
+  frozen basis gives no exact gradient of the power; use `sweep="uniform"`.
 
 :::{note}
 **Why not integrate E × H\* over a plane.** On a finite-element field the
@@ -116,6 +165,41 @@ at roughly ten cells per guided wavelength and falls about as h^1.8; exact
 face quadrature does not remove it. `gfem.power_flow` is exact for the solved
 field.
 :::
+
+## Electric energy per region
+
+`gfem.electric_energy(field, model=model)` is the time-averaged electric energy,
+in J, that a field stores in each volume region of the solve domain,
+`1/4 eps0 ∫ E* · Re(eps_r) E dV`, by region name:
+
+```python
+r = gfem.solve(model, gfem.Driven(frequency=f, keep_fields=True))
+e = r.e_field(f, excite="p1")
+w = gfem.electric_energy(e, model=model)
+# W absorbed by dielectric loss in the substrate, for 1 W incident at p1
+p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
+```
+
+- **Loss per region.** In a region with one loss tangent, dielectric loss
+  absorbs `2 * omega * tan_delta * w[region]`. For a region with nothing else
+  that absorbs, it is the number `-gfem.power_flow(e, region, model=model)`
+  gives.
+- **Time-averaged, on a peak phasor.** Hence the 1/4. A mode of an eigenmode
+  result is normalized to its total energy, twice the time average of the
+  electric part: `2 * w[region]` of `modes.e_field(k)` is
+  `bulk_participation[region][k]` times 1 J.
+- **The model the field was solved with** is a required input, as for
+  `power_flow`: a driven result does not carry its materials.
+- **Not differentiable.** `electric_energy` inside `jax.grad` raises
+  `gfem.NonDifferentiableError`.
+
+## Move a wave port's reference plane
+
+`result.with_offsets({"p1": 50e-6})` returns the result with S referred to a
+plane 50 um inside the domain at wave port `p1`, from the propagation constants
+the result already holds: no new solve. Distances are absolute, as in
+`WavePort(offset=...)`, so the shifted result equals a solve with that offset,
+and `result.offsets` records the planes S is referred to.
 
 ## Gradients
 
@@ -136,11 +220,13 @@ grad = jax.grad(field_at_probe)(eps)
 - Mesh-node coordinates and probe points are fixed: differentiating with
   respect to them raises `gfem.NonDifferentiableError`. Wrap them in
   `jax.lax.stop_gradient` to hold them fixed.
-- Mode fields are not differentiable in this version, so a gradient of an
-  interface participation that reaches the eigenmode solve raises there.
-  The layer's thickness, permittivity and loss tangent differentiate: take
-  the gradient with respect to those, or build the objective from the
-  eigenmode's `frequency` and `q`.
+- Mode fields differentiate with respect to the materials, the sheet fill
+  and the lumped values, for an isolated mode: probes and interface
+  participation of an eigenmode result are objectives too. With respect to
+  the node coordinates they raise `gfem.NonDifferentiableError`; take finite
+  differences over moved meshes instead. The conditions are in
+  {doc}`eigenmode-gradient`.
+- The layer's thickness, permittivity and loss tangent differentiate.
 
 ## Check your results
 
@@ -155,6 +241,6 @@ How gfem itself is checked: {doc}`../verification`.
 ## Next
 
 {py:obj}`gfem.interface_participation`, {py:obj}`gfem.characteristic_impedance`,
-{py:obj}`gfem.power_flow`, {py:obj}`gfem.Field`, {doc}`shared-port-surface`,
-{doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`.
+{py:obj}`gfem.power_flow`, {py:obj}`gfem.electric_energy`, {py:obj}`gfem.Field`, {doc}`shared-port-surface`,
+{doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`, {doc}`loss-budget`.
 

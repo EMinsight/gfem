@@ -15,9 +15,10 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants
 
-from gfem._checks import is_traced
+from gfem._checks import is_traced, static_float
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
+from gfem._text import hertz, hertz_band
 
 if TYPE_CHECKING:
     import xarray
@@ -84,10 +85,9 @@ class ElectrostaticResult:
             the solve domain, by region name: an ``(n_terminals,)`` array,
             entry ``i`` for excitation ``i`` at 1 V. Excluded volumes are
             left out. Summed over the regions, excitation ``i`` stores
-            ``capacitance[i, i] / 2``. Not differentiable with respect to
-            what the solve reads: a gradient through it that reaches
-            ``eps_r`` or the mesh nodes raises `gfem.NonDifferentiableError`
-            (`mutual` and `inverse` do differentiate).
+            ``capacitance[i, i] / 2``. Differentiable with respect to
+            ``eps_r`` and the mesh nodes, at the cost of one adjoint solve
+            for all terminals together.
         potential: The potential of each terminal's solve, a `Field` by
             terminal name (in `terminals` order): 1 V on that terminal, 0 V on
             every other terminal and the ground. Quantity ``"V"``, in volts,
@@ -334,7 +334,7 @@ class PortModeResult:
             solved exactly (shared by the wave ports of a shared port
             surface); elsewhere it comes from the reduced port mode model.
         e_field: The mode's electric field, normalized to 1 W; ``None`` on a
-            driven result that keeps no fields.
+            driven result computed inside `jax.jit`, `jax.grad` or `jax.vmap`.
     """
 
     port: str
@@ -382,11 +382,7 @@ class PortModeResult:
         f = np.asarray(self.frequency)
         n = np.asarray(self.n_eff)
         z = np.asarray(self.Z_PV)
-        span = (
-            f"{f.min() / 1e9:.4g}-{f.max() / 1e9:.4g} GHz"
-            if len(f) > 1
-            else (f"{f[0] / 1e9:.4g} GHz")
-        )
+        span = hertz_band(f.min(), f.max(), 4)
         zs = (
             "no voltage_path"
             if np.isnan(z).all()
@@ -581,19 +577,28 @@ class NetworkParameters:
         then be one real value for every port and frequency: gfem never
         labels a port with an impedance S was not computed for. With
         ``z0``, S is first renormalized to it (`renormalize`). Port names
-        and the conventions are written as comments.
+        and the conventions are written as comments. Rows are written in
+        increasing frequency, as the format requires, whatever the order of
+        `frequency`.
+
+        A network in which no port has a reference impedance (every port a
+        `WavePort` without ``voltage_path``, S finite) is written with an
+        explicit ``z0`` only: S, normalized to unit modal power, is written
+        unchanged, and a comment line says that ``z0`` is a nominal label.
 
         Args:
             path: The file, named ``*.s<n_ports>p``.
-            z0: The reference impedance to renormalize to, ohm (real, > 0).
+            z0: The reference impedance to renormalize to, ohm (real, > 0);
+                the nominal label of a network without reference impedances.
 
         Returns:
             The path written.
 
         Raises:
             ValueError: The file name does not match the port count, not
-                every port was excited, a port has no reference impedance,
-                or `z_ref` is not one real value and ``z0`` is not given.
+                every port was excited, some but not all ports have no
+                reference impedance (or a row of S is NaN), or ``z0`` is not
+                given and `z_ref` is not one real value or no port has one.
             TypeError: The values are computed inside `jax.grad`, `jax.jit`
                 or `jax.vmap`; write the file from a result outside them.
         """
@@ -614,6 +619,17 @@ class NetworkParameters:
         z_ref = np.asarray(self.z_ref)
         nan = np.isnan(z_ref).any(axis=0)
         missing = [p for p, bad in zip(self.ports, nan, strict=True) if bad]
+        if nan.all() and np.isfinite(s).all():
+            if z0 is None:
+                raise ValueError(
+                    "No port has a reference impedance (z_ref is NaN: wave ports "
+                    "without voltage_path), so S is normalized to unit modal power "
+                    "and has no impedance to label the file with. Pass z0= (e.g. "
+                    "z0=50.0) to write S unchanged under that nominal label, or "
+                    "give each WavePort a voltage_path."
+                )
+            path.write_text(_touchstone(self, s, _touchstone_z0(z0), modal=True))
+            return path
         if missing:
             raise ValueError(
                 f"Port {', '.join(map(repr, missing))} has no reference impedance "
@@ -633,17 +649,7 @@ class NetworkParameters:
                 )
             z0 = float(np.real(first))
         else:
-            if (
-                isinstance(z0, (bool, complex, np.complexfloating))
-                or not isinstance(z0, (int, float, np.integer, np.floating))
-                or not math.isfinite(z0)
-                or z0 <= 0
-            ):
-                raise ValueError(
-                    "to_touchstone z0 must be one real reference impedance > 0 "
-                    f"ohm, got {z0!r}; use renormalize() for complex references."
-                )
-            z0 = float(z0)
+            z0 = _touchstone_z0(z0)
             s = np.asarray(self.renormalize(z0).values)
         path.write_text(_touchstone(self, s, z0))
         return path
@@ -683,21 +689,49 @@ def _diag(v: jax.Array) -> jax.Array:
     return v[:, :, None] * jnp.eye(v.shape[-1])
 
 
-def _touchstone(net: NetworkParameters, s: np.ndarray, z0: float) -> str:
-    """Touchstone 1.1 text of ``s`` (port order) with reference ``z0``."""
+def _touchstone_z0(z0: object) -> float:
+    """``to_touchstone``'s ``z0``, checked: one real value > 0."""
+    if (
+        isinstance(z0, (bool, complex, np.complexfloating))
+        or not isinstance(z0, (int, float, np.integer, np.floating))
+        or not math.isfinite(z0)
+        or z0 <= 0
+    ):
+        raise ValueError(
+            "to_touchstone z0 must be one real reference impedance > 0 "
+            f"ohm, got {z0!r}; use renormalize() for complex references."
+        )
+    return float(z0)
+
+
+def _touchstone(
+    net: NetworkParameters, s: np.ndarray, z0: float, *, modal: bool = False
+) -> str:
+    """Touchstone 1.1 text of ``s`` (port order) with reference ``z0``.
+
+    ``modal``: no port has a reference impedance, and ``z0`` is a label.
+    """
     n = len(net.ports)
     lines = [
         f"! gfem {version('gfem')}: S-parameters, {n} port(s), {len(s)} frequencies",
         "! Power waves (Kurokawa), time convention exp(+j omega t); |a|^2 is the",
         "! time-averaged incident power in W",
         *(f"! Port[{i}] = {name}" for i, name in enumerate(net.ports, start=1)),
-        f"# Hz S RI R {z0:.12g}",
     ]
+    if modal:
+        lines.append(
+            "! No port has a reference impedance (wave ports without "
+            "voltage_path): S is normalized to unit modal power and was not "
+            "renormalized; R is a nominal label"
+        )
+    lines.append(f"# Hz S RI R {z0:.12g}")
 
     def pairs(values: np.ndarray) -> list[str]:
         return [f"{v.real: .16e} {v.imag: .16e}" for v in values]
 
-    for f, m in zip(net.frequency, s, strict=True):
+    # the format wants increasing frequency; the result keeps the order given
+    for at in np.argsort(net.frequency, kind="stable"):
+        f, m = net.frequency[at], s[at]
         head = f"{f:.16e}"
         if n <= 2:
             # 1- and 2-port files list N11 N21 N12 N22 on one line
@@ -834,14 +868,16 @@ class DrivenResult:
         sweep: How the frequencies were solved (`SweepInfo`).
         port_modes: The mode of each wave port over the frequencies
             (`PortModeResult`, by port name), as the port mode sweep found
-            it before the 3D solve; empty without wave ports. Their fields
-            are kept with ``Driven(keep_fields=...)``. Constants of the
-            solve: not differentiable.
+            it before the 3D solve; empty without wave ports. Each carries
+            its mode field, with or without ``Driven(keep_fields=...)``,
+            except inside `jax.jit`, `jax.grad` or `jax.vmap`, where it is
+            ``None``. Constants of the solve: not differentiable.
         offsets: ``(port name, distance in m)`` of each wave port (static
             labels; ``dict(result.offsets)``), from ``WavePort(offset=...)``:
             S of a wave port is referred to
             a plane that far inside the domain, ``S_ij`` multiplied by
-            ``exp(gamma_i d_i) exp(gamma_j d_j)``.
+            ``exp(gamma_i d_i) exp(gamma_j d_j)``. `with_offsets` moves the
+            planes after the solve.
     """
 
     s: NetworkParameters
@@ -915,13 +951,84 @@ class DrivenResult:
             f"{', '.join(f'{f:g}' for f in frequencies)} Hz (Driven.keep_fields)."
         )
 
+    def with_offsets(self, offsets: Mapping[str, float]) -> DrivenResult:
+        """This result with S referred to other wave-port reference planes.
+
+        ``offsets`` gives, by port name, the distance in m of the new plane
+        inside the domain, as ``WavePort(offset=...)`` does: absolute, not
+        an increment, so a result of a solve without offsets shifted to
+        ``d`` equals the result of a solve with ``WavePort(offset=d)``, and
+        shifting twice to the same planes changes nothing. ``S_ij`` is
+        multiplied by ``exp(gamma_i (d_i - d_i_old)) exp(gamma_j (d_j -
+        d_j_old))`` at each frequency, ``gamma`` the ports' propagation
+        constants in `port_modes`, and `offsets` records the new distances.
+        A port not named keeps its plane. ``z_ref``, the kept fields,
+        `port_modes` and `sweep` are unchanged.
+
+        Written in `jax.numpy`, so the new S differentiates like S
+        (``gamma`` is a constant of the solve).
+
+        Args:
+            offsets: The new distance of each named wave port, m, >= 0.
+
+        Returns:
+            A new result; this one is not modified.
+
+        Raises:
+            KeyError: A name is not a port of this result.
+            ValueError: A named port is not a wave port (it has no
+                propagation constant), or a distance is negative or not
+                finite.
+            NonDifferentiableError: A distance is computed inside
+                `jax.grad`, `jax.jit` or `jax.vmap`: offsets are fixed
+                values, like ``WavePort.offset``.
+        """
+        ports = self.s.ports
+        old = dict(self.offsets)
+        new = dict(old)
+        for name, value in dict(offsets).items():
+            if name not in ports:
+                raise KeyError(
+                    f"No port {name!r}; the ports are {', '.join(map(repr, ports))}."
+                )
+            if name not in old or name not in self.port_modes:
+                raise ValueError(
+                    f"Port {name!r} is not a wave port: it has no propagation "
+                    "constant to move a reference plane with. The wave ports are "
+                    f"{', '.join(map(repr, old)) or 'none'}."
+                )
+            distance = static_float(
+                value,
+                f"with_offsets: the offset of port {name!r}",
+                "Pass a concrete distance; the shifted S still differentiates "
+                "with respect to the design.",
+            )
+            if distance < 0:
+                raise ValueError(
+                    f"with_offsets: the offset of port {name!r} must be >= 0 m, "
+                    f"got {distance}."
+                )
+            new[name] = distance
+        factor = jnp.stack(
+            [
+                jnp.exp(jnp.asarray(self.port_modes[p].gamma) * (new[p] - old[p]))
+                if p in new and new[p] != old[p]
+                else jnp.ones(len(self.s.frequency), dtype=complex)
+                for p in ports
+            ],
+            axis=1,
+        )
+        columns = [ports.index(p) for p in self.s.excited]
+        values = self.s.values * factor[:, :, None] * factor[:, None, columns]
+        return dataclasses.replace(
+            self,
+            s=dataclasses.replace(self.s, values=values),
+            offsets=tuple(new.items()),
+        )
+
     def __repr__(self) -> str:
         f = self.frequency
-        span = (
-            f"{f.min() / 1e9:.4g}-{f.max() / 1e9:.4g} GHz"
-            if len(f) > 1
-            else f"{f[0] / 1e9:.4g} GHz"
-        )
+        span = hertz_band(f.min(), f.max(), 4)
         fields = f", {len(self.e_fields)} kept fields" if self.e_fields else ""
         sweep = "" if self.sweep is None else f", {self.sweep!r}"
         return (
@@ -940,6 +1047,23 @@ class EigenmodeResult:
     Every array has one entry per mode, in order of increasing distance of
     the mode's frequency from ``Eigenmode.target``.
 
+    Differentiation: ``omega`` differentiates with respect to every model
+    input the capabilities matrix lists. The ratios (`q_port`,
+    `participation`, `bulk_participation`, `principal_participation`,
+    `sheet_participation`) and the mode fields are read from the modes'
+    fields; they differentiate with respect to materials, sheet fill, mesh
+    node coordinates and lumped values for an isolated mode: a relative
+    frequency gap of at least ``max(1e-4, SolverOptions.cluster_rtol)`` to
+    every other converged mode the selection accepted (those cut beyond
+    ``n_modes`` included) and to the guard mode (the nearest converged mode
+    beyond ``n_modes``), on
+    ``linear_solver="direct"`` on the CPU, in one process, with
+    ``eigen_tolerance`` at most 1e-10, on a non-periodic model. The fields
+    raise with respect to node coordinates, and `principal_participation`
+    with respect to a lumped value. Outside that reach a gradient through
+    them raises `gfem.NonDifferentiableError` (or `gfem.DegenerateModeError`
+    for a mode that is not isolated); ``error`` is not differentiable.
+
     Attributes:
         omega: Complex angular frequencies, rad/s, ``(n_modes,)``. Under
             e^{+iωt} a decaying mode has ``Im omega > 0``.
@@ -956,7 +1080,9 @@ class EigenmodeResult:
             over its elements, as in a driven problem; when the elements of
             a multi-element port see different voltages, R dissipates more
             than ``|V|^2 / (2 R)``, and ``1 / Q`` exceeds the sum of the
-            ``1 / q_port`` and the dielectric losses.
+            ``1 / q_port`` and the dielectric losses. Differentiable as the
+            ratios above, but an infinite value takes no gradient:
+            differentiate ``1 / q_port``.
         participation: Inductive energy participation ratio of each lumped
             port with an inductance L, by port name: ``L |I|^2 / (2 E)``
             with ``I = V / (i Re(omega) L)``, the junction participation of
@@ -965,13 +1091,16 @@ class EigenmodeResult:
             polarity along its port direction (not ``Re I``, which is zero
             for a real field). Under a Bloch wave vector the sign is
             relative to the mode's phase convention (its largest
-            coefficient real).
+            coefficient real). For a lossless mode with a field uniform
+            across the port it is ``-2 d ln omega / d ln L``.
+            Differentiable as the ratios above.
         bulk_participation: Electric energy participation of each volume
             region of the solve domain, by region name: the fraction of the
             mode's electric energy ``E`` stored in it. For an isotropic
             loss, the region's contribution to ``1 / Q`` is ``p * (tan_delta
             + conductivity / (eps0 eps_r Re omega))``; for a loss given as
             principal values use `principal_participation`.
+            Differentiable as the ratios above.
         principal_participation: The electric energy participation of each
             anisotropic volume region (an anisotropic `Material`, or a
             `MaterialField` with ``axes``) split along its principal axes, by
@@ -981,20 +1110,38 @@ class EigenmodeResult:
             `bulk_participation`. The region's contribution to ``1 / Q`` is
             ``sum_k p_k (tan_delta[k] + conductivity[k] / (eps0 eps_r[k] Re
             omega))`` for any field direction (with losses uniform over the
-            region). Isotropic regions have no entry. Not differentiable,
-            like `bulk_participation`.
+            region). Isotropic regions have no entry. Differentiable as the
+            ratios above, except with respect to a lumped value, which
+            raises: use `bulk_participation` there.
+        sheet_participation: Inductive energy participation of each
+            `Impedance` sheet with an inductance ``L_s``, by surface name,
+            ``(n_modes,)``: ``∫ w |E_t|^2 dS / (2 Re(omega)^2 L_s E)``,
+            the energy of the current through ``L_s`` over the mode's
+            electric energy ``E``, with ``w`` the sheet's fill (1 without a
+            `SheetField`), one number for the whole patterned sheet. It is
+            non-negative and, for a lossless mode, the sheet's kinetic
+            inductance fraction ``-2 d ln omega / d ln L_s``, in [0, 1]; only
+            the current through L counts when the sheet also has R or C. A
+            `Conductor` and a sheet without an inductance have no entry.
+            Differentiable as the ratios above, ``L_s`` included.
         e_fields: The mode fields, one `Field` per mode (read them with
             `e_field`): peak phasors in V/m, quantity ``"E"``, on H(curl)
             of the solve order over the solve domain, each with its mode's
             complex ``omega``. Each mode stores 1 J of electric energy,
             ``E = 1/2 Re(integral of D* . E dV)`` plus the lumped
-            capacitors' ``C |V|^2 / 2`` (the total time-averaged energy of
-            a lossless mode), and its phase makes ``integral of D . E dV``
-            real and positive.
+            capacitors' ``C |V|^2 / 2`` and the capacitive sheets'
+            ``1/2 integral of w C_s |E_t|^2 dS`` (the total time-averaged
+            energy of a lossless mode), and its phase makes ``integral of
+            D . E dV`` real and positive.
         materials: The model's materials the modes were solved with, by
             volume region (`Material` or `MaterialField`). Measurements
             that need the media around a surface read them
             (`gfem.interface_participation`).
+        periodic_surfaces: The ``(first, second)`` surface names of each
+            `gfem.Periodic` pair of the model the modes were solved on;
+            empty for a model with no pair, and for a result saved before
+            gfem recorded them. `gfem.interface_participation` refuses
+            these surfaces: they are interior to the periodic cell.
         cluster: Integer label per mode, ``(n_modes,)``: modes with the same
             label form a degenerate cluster, frequencies within
             ``SolverOptions.cluster_rtol`` of each other. A cluster's modes
@@ -1016,11 +1163,15 @@ class EigenmodeResult:
     principal_participation: dict[str, jax.Array] = dataclasses.field(
         default_factory=dict
     )
+    periodic_surfaces: tuple[tuple[str, str], ...] = ()
+    sheet_participation: dict[str, jax.Array] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Hold fields and materials as tuple and dict; label simple modes."""
+        """Hold fields, materials and pairs as tuples and dict; label simple modes."""
         object.__setattr__(self, "e_fields", tuple(self.e_fields))
         object.__setattr__(self, "materials", dict(self.materials))
+        pairs = tuple((str(a), str(b)) for a, b in self.periodic_surfaces)
+        object.__setattr__(self, "periodic_surfaces", pairs)
         if self.cluster is None:  # every mode simple (results of older files)
             n = int(np.shape(self.omega)[0])
             object.__setattr__(self, "cluster", jnp.arange(n))
@@ -1062,7 +1213,8 @@ class EigenmodeResult:
         axis for both (NaN where a port has no value), and
         `bulk_participation` over ``("mode", "region")``, and
         `principal_participation` over ``("mode", "anisotropic_region",
-        "axis")`` (axis 0, 1, 2 in each material's ``axes`` order). The fields
+        "axis")`` (axis 0, 1, 2 in each material's ``axes`` order), and
+        `sheet_participation` over ``("mode", "sheet")``. The fields
         and materials are not exported. Needs the ``xarray`` extra: ``pip
         install "gfem[xarray]"``.
 
@@ -1107,15 +1259,21 @@ class EigenmodeResult:
                     [np.asarray(v) for v in self.principal_participation.values()], 1
                 ),
             )
+        if self.sheet_participation:
+            coords["sheet"] = list(self.sheet_participation)
+            data["sheet_participation"] = _variable(
+                ("mode", "sheet"),
+                np.stack([np.asarray(v) for v in self.sheet_participation.values()], 1),
+            )
         return xr.Dataset(data, coords=coords)
 
     def __repr__(self) -> str:
         try:
-            f = np.asarray(self.frequency) / 1e9
+            f = np.asarray(self.frequency)
             q = np.asarray(self.q)
         except (TypeError, jax.errors.TracerArrayConversionError):
             return f"EigenmodeResult({self.n_modes} modes)"
-        rows = ", ".join(f"{a:.6g} GHz (Q {b:.4g})" for a, b in zip(f, q, strict=True))
+        rows = ", ".join(f"{hertz(a)} (Q {b:.4g})" for a, b in zip(f, q, strict=True))
         return f"EigenmodeResult([{rows}])"
 
 
@@ -1131,5 +1289,6 @@ register_fields(
         "materials",
         "cluster",
         "principal_participation",
+        "sheet_participation",
     ),
 )

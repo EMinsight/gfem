@@ -118,9 +118,11 @@ class NgsHandle:
     Subclasses set ``self._solver`` (an NGSolve operator applying the
     inverse on the free DOFs), implement `nbytes`, and tear their backend
     down in `_release`. Calls are serialized by a lock: NGSolve inverses
-    keep work buffers, and JAX may call a host callback from several
-    threads. `free` takes it too, so it waits for a running solve or
-    refactorization.
+    keep work buffers, and a host callback may run on another thread than
+    the one that frees the handle. `free` takes it too, so it waits for a
+    running solve or refactorization; every solve and `apply` reads the
+    matrix and the inverse under the lock (`_live`), so a call that comes
+    after `free` raises "This solver handle was freed."
     """
 
     kind: str
@@ -155,27 +157,39 @@ class NgsHandle:
             )
         return (B[:, None], True) if B.ndim == 1 else (B, False)
 
-    def _map(self, op, B: np.ndarray, after=None, *, states=False) -> np.ndarray:
-        """``op`` applied to each column of ``B``.
+    def _map(
+        self,
+        pick: Callable[[Any], Any],
+        B: np.ndarray,
+        after=None,
+        *,
+        states=False,
+    ) -> np.ndarray:
+        """``op = pick(held matrix)`` applied to each column of ``B``.
 
-        ``after(op, x, y)`` checks each column's ``y = op * x``, and may
-        change ``y`` in place. Each column is a load and its image a state, or
-        with ``states`` the other way round: the vector picks the status.
+        ``pick`` runs under the lock, on a live handle: it reads the inverse
+        or the matrix to apply there, never before. ``after(op, x, y)`` checks
+        each column's ``y = op * x``, and may change ``y`` in place. Each
+        column is a load and its image a state, or with ``states`` the other
+        way round: the vector picks the status.
+
+        Raises:
+            RuntimeError: The handle was freed.
         """
         cols, flat = self._columns(B)
         dtype = np.complex128 if self._complex else np.float64
         out = np.zeros(cols.shape, dtype=dtype)
-        matrix = self._matrix
-        if matrix is None:
-            raise RuntimeError("This solver handle was freed.")
         layout = self.layout
-        if states:
-            x, y = matrix.CreateRowVector(), matrix.CreateColVector()
-            mark_x, mark_y = layout.mark_state, layout.mark_load
-        else:
-            x, y = matrix.CreateColVector(), matrix.CreateRowVector()
-            mark_x, mark_y = layout.mark_load, layout.mark_state
         with self._lock:
+            matrix = self._live()
+            self._check_solvable()
+            op = pick(matrix)
+            if states:
+                x, y = matrix.CreateRowVector(), matrix.CreateColVector()
+                mark_x, mark_y = layout.mark_state, layout.mark_load
+            else:
+                x, y = matrix.CreateColVector(), matrix.CreateRowVector()
+                mark_x, mark_y = layout.mark_load, layout.mark_state
             for j in range(cols.shape[1]):
                 x.FV().NumPy()[:] = cols[:, j]
                 mark_x(x)
@@ -186,6 +200,9 @@ class NgsHandle:
                 out[:, j] = y.FV().NumPy()
         return out[:, 0] if flat else out
 
+    def _check_solvable(self) -> None:
+        """Hook for subclasses: raise if the handle cannot map now; under the lock."""
+
     def _inverse_map(
         self,
         B: np.ndarray,
@@ -195,10 +212,11 @@ class NgsHandle:
         """Hook for subclasses: the inverse on the free rows of ``B``.
 
         ``x0`` (same shape as ``B``, zero on fixed rows) is an initial guess.
-        Direct backends ignore ``tolerance`` and ``x0``. Returns the Krylov
+        Direct backends ignore ``tolerance`` and ``x0`` (but for reused
+        factors, `gfem._linalg.direct.DirectHandle`). Returns the Krylov
         iterations of each column too, ``()`` for a direct solve.
         """
-        return self._map(self._solver, B), ()
+        return self._map(lambda _: self._solver, B), ()
 
     def solve(
         self,
@@ -229,7 +247,9 @@ class NgsHandle:
         solve for iterative backends (an adjoint solve on the forward's
         preconditioner); ``None`` is the prepared tolerance. ``x0``, the
         shape of ``B``, is an initial guess for iterative backends; its fixed
-        rows are not read. Direct backends ignore both.
+        rows are not read. Direct backends ignore both, except that a
+        solve on factors reused across designs reads ``tolerance``
+        (`gfem._linalg.direct.DirectHandle`).
 
         Returns ``X`` and the Krylov iterations of each column of ``B`` (see
         `gfem._linalg.Handle.solve_counted`); a real handle solves a complex
@@ -241,6 +261,7 @@ class NgsHandle:
                 backend without its transposed solve.
         """
         if self._solver is None:
+            # an early refusal; the solve reads the handle under its lock
             raise RuntimeError("This solver handle was freed.")
         B = np.asarray(B)
         conjugate = transpose and self._complex and self.symmetry == "hermitian"
@@ -281,9 +302,14 @@ class NgsHandle:
         """``A^T X = B`` on the free DOFs, on the factors (``.T`` of the inverse)."""
         free = self._free if B.ndim == 1 else self._free[:, None]
         B = np.where(free, B, 0)
-        inverse = self._solver.T
+
+        def inverse(_: Any) -> Any:
+            return self._solver.T
+
         if not self._complex and np.iscomplexobj(B):
-            X = self._map(inverse, B.real) + 1j * self._map(inverse, B.imag)
+            # one lock for both parts: a free cannot come between them
+            with self._lock:
+                X = self._map(inverse, B.real) + 1j * self._map(inverse, B.imag)
         else:
             X = self._map(inverse, B)
         return np.where(free, X, 0)
@@ -294,9 +320,11 @@ class NgsHandle:
         Raises:
             RuntimeError: The handle was freed.
         """
-        if self._matrix is None:
-            raise RuntimeError("This solver handle was freed.")
-        return self._map(self._matrix.T if transpose else self._matrix, X, states=True)
+
+        def matrix(held: Any) -> Any:
+            return held.T if transpose else held
+
+        return self._map(matrix, X, states=True)
 
     # the held NGSolve sparse matrix: its stubs do not declare CSR()
     def _live(self) -> Any:
@@ -344,6 +372,9 @@ class PlannedHandle(NgsHandle):
     sums_pieces: ClassVar[bool]
     #: The pattern of the pieces whose sums the held matrix holds, if summed.
     _pattern: ngs.BaseMatrix | None = None
+    #: The key of the piece sum the held matrix's values are (`PieceSum.key`),
+    #: if known.
+    _summed: tuple[object, tuple[complex, ...]] | None = None
 
     @classmethod
     def from_operator(
@@ -361,6 +392,8 @@ class PlannedHandle(NgsHandle):
             matrix, operator.freedofs, symmetry, is_complex=is_complex, **options
         )
         handle._pattern = pattern
+        if pattern is not None and operator.piece_sum is not None:
+            handle._summed = operator.piece_sum.key
         return handle
 
     @classmethod
@@ -378,6 +411,7 @@ class PlannedHandle(NgsHandle):
         operator: Operator,
         *,
         solves: int | None = None,  # noqa: ARG002
+        frequency: float | None = None,
     ) -> None:
         """Refactorize on ``operator``'s values (see `gfem._linalg.Refactorable`).
 
@@ -386,39 +420,111 @@ class PlannedHandle(NgsHandle):
         (`_assemble`) into a new matrix. On the held matrix's pattern its
         values are copied in, and the backend factorizes them on the same
         solver plan (`_new_values`); a changed pattern is planned anew
-        (`_new_plan`).
+        (`_new_plan`). Whether the values are the held ones is told to
+        `_new_values` without a second sum or a copy: by the piece sum's key
+        when summed in place, by comparing the assembled matrix with the held
+        one otherwise.
 
         ``solves`` is ignored: only BDDC's coarse choice reads it.
+        ``frequency`` goes to the backend (`_refactorizing_at`).
 
         Raises:
             RuntimeError: The handle was freed.
+            ValueError: ``operator``'s free-DOF set is not the handle's;
+                nothing was written.
         """
         piece_sum = operator.piece_sum if self.sums_pieces else None
         # read outside the lock: the first read assembles the pieces
         summed = None if piece_sum is None else piece_sum.pattern
+        key = None if piece_sum is None or summed is None else piece_sum.key
         with self._lock:
             self._live()
-            if piece_sum is not None and summed is not None and summed is self._pattern:
-                self._new_values(piece_sum.sum_into)
+            self._keeps_free_dofs(operator.freedofs)
+            self._refactorizing_at(frequency)
+            if piece_sum is not None and key is not None and summed is self._pattern:
+                # a failed write leaves values of no known sum
+                held_key, self._summed = self._summed, None
+                self._new_values(piece_sum.sum_into, lambda: key == held_key)
+                self._summed = key
                 return
         new, pattern = self._assemble(operator)  # assembly needs no lock
+        if pattern is None:
+            key = None
         with self._lock:
             held = self._live()
-            if same_pattern(held, new, self.layout.comm):
-                self._pattern = pattern
+            comm = self.layout.comm
+            if same_pattern(held, new, comm):
+                self._pattern, self._summed = pattern, None
 
                 def write(matrix: ngs.BaseMatrix) -> None:
-                    comm = self.layout.comm
                     target = local_matrix(matrix, comm).AsVector()
                     target.data = local_matrix(new, comm).AsVector()
 
-                self._new_values(write)
+                def same() -> bool:
+                    return np.array_equal(
+                        local_matrix(held, comm).AsVector().FV().NumPy(),
+                        local_matrix(new, comm).AsVector().FV().NumPy(),
+                    )
+
+                self._new_values(write, same)
+                self._summed = key
                 return
             # a failed plan leaves no pattern to sum into: the next
             # refactorization assembles
-            self._pattern = None
+            self._pattern, self._summed = None, None
             self._new_plan(new, operator.freedofs)
-            self._pattern = pattern
+            self._pattern, self._summed = pattern, key
+
+    def _keeps_free_dofs(self, freedofs: ngs.BitArray | None) -> None:
+        """Refuse a free-DOF set other than the handle's; under the lock.
+
+        A refactorization keeps the free DOFs the handle was prepared with:
+        on another set it would solve on its own, silently. All ranks get
+        one answer, so they raise together.
+
+        Raises:
+            ValueError: ``freedofs`` is another set.
+        """
+        count = self.ndof if freedofs is None else freedofs.NumSet()
+        same = (freedofs is None or len(freedofs) == self.ndof) and np.array_equal(
+            free_mask(freedofs, self.ndof), self._free
+        )
+        if not _mpi.agree_all(self.layout.comm, flag=same):
+            raise ValueError(
+                f"This handle was prepared with {int(self._free.sum())} free DOFs "
+                f"and the operator has another free-DOF set ({count} free): "
+                "refactorize keeps the free DOFs; prepare a new handle."
+            )
+
+    @property
+    def pattern(self) -> ngs.BaseMatrix | None:
+        """The pattern of the pieces whose sums the held matrix holds, if summed.
+
+        A `refactorize` whose piece sum has this pattern sums into the held
+        matrix in place.
+        """
+        return self._pattern
+
+    def shared(self) -> dict[int, int]:
+        """The pieces' pattern's bytes by its identity, if held; not in ``nbytes``.
+
+        A pooled handle may outlive the pieces it came from, and kept fixed
+        parts may hold the same pattern: the entry cache counts it once.
+        """
+        pattern = self._pattern
+        if pattern is None:
+            return {}
+        return {id(pattern): host_bytes(local_matrix(pattern, self.layout.comm))}
+
+    def drop_pattern(self) -> None:
+        """Let go of the pieces' pattern: the next `refactorize` assembles.
+
+        For a handle held between solves whose pattern nothing else holds
+        (`gfem._engine.cache.EntryCache.give_plan`). Waits for a running solve
+        or refactorization.
+        """
+        with self._lock:
+            self._pattern = None
 
     def free(self) -> None:
         """Release the backend, drop the matrix and the pieces' pattern.
@@ -427,15 +533,28 @@ class PlannedHandle(NgsHandle):
         """
         with self._lock:
             super().free()
-            self._pattern = None
+            self._pattern, self._summed = None, None
 
     @classmethod
     def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
         """Raise the backend's refusal of ``symmetry``, if it refuses it."""
         raise NotImplementedError
 
-    def _new_values(self, write: Callable[[ngs.BaseMatrix], None]) -> None:
-        """``write(held matrix)``, then factorize its values on the current plan."""
+    def _refactorizing_at(self, frequency: float | None) -> None:
+        """Hook: the refactorization under way is at ``frequency``; under the lock.
+
+        ``None`` when the caller did not say. Only the direct backend reads it
+        (`gfem._linalg.direct.DirectHandle`).
+        """
+
+    def _new_values(
+        self, write: Callable[[ngs.BaseMatrix], None], same: Callable[[], bool]
+    ) -> None:
+        """``write(held matrix)``, then factorize its values on the current plan.
+
+        ``same()``, read before ``write``, tells whether ``write`` leaves the
+        held values as they are; a backend reads it if it cares.
+        """
         raise NotImplementedError
 
     def _new_plan(self, matrix: ngs.BaseMatrix, freedofs: ngs.BitArray | None) -> None:

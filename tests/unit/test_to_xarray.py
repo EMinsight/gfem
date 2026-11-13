@@ -5,6 +5,7 @@ coordinates (frequencies in Hz, port, terminal, region and mode labels) and
 a ``units`` attribute.
 """
 
+import dataclasses
 import sys
 
 import jax
@@ -108,6 +109,21 @@ def test_eigenmode_scalars_are_labelled_by_mode(modes):
     assert float(ds["participation"].sel(port="j1", mode=0)) == 0.9
     assert ds["bulk_participation"].dims == ("mode", "region")
     assert float(ds["bulk_participation"].sel(region="air", mode=1)) == 0.3
+
+
+def test_sheet_participation_is_labelled_by_mode_and_sheet(modes):
+    assert "sheet" not in modes.to_xarray().coords
+    kinetic = dataclasses.replace(
+        modes,
+        sheet_participation={
+            "film": jnp.array([0.3, 0.05]),
+            "wire": jnp.array([0.1, 0.6]),
+        },
+    )
+    ds = kinetic.to_xarray()
+    assert ds["sheet_participation"].dims == ("mode", "sheet")
+    assert list(ds["sheet"].values) == ["film", "wire"]
+    assert float(ds["sheet_participation"].sel(sheet="wire", mode=1)) == 0.6
 
 
 def test_port_mode_is_labelled_by_frequency(port_mode):

@@ -174,6 +174,22 @@ def _fill_row(kind, seed, directory):
     return objective, fill, unit_directions(rng, fill.shape, 2), STEPS["fill"]
 
 
+def _lumped_row(directory):
+    # a port's L and C and a sheet's R and L, as O(1) relative changes
+    mesh = cases.sheet_mesh(Path(directory))
+    driven = gfem.Driven(frequency=SHEET_FREQUENCIES)
+
+    def objective(t):
+        model = cases.lumped_line(mesh, jnp.asarray(cases.LUMPED) * (1 + t))
+        return cases.s_functional(
+            gfem.solve(model, driven, options=_options()).s.values
+        )
+
+    t = jnp.zeros(len(cases.LUMPED))
+    rng = np.random.default_rng(11)
+    return objective, t, unit_directions(rng, t.shape, 2), 1e-3
+
+
 def _shape_objective(line, mesh_of):
     driven = gfem.Driven(frequency=SHAPE_FREQUENCY)
 
@@ -271,6 +287,7 @@ ROWS = {
     "axes_sigma": lambda d: _axes_row("conductivity", 6, d),
     "fill_conductor": lambda d: _fill_row("conductor", 7, d),
     "fill_impedance": lambda d: _fill_row("impedance", 8, d),
+    "lumped": _lumped_row,
     "nodes_raw": _nodes_raw,
     "nodes_morph": _nodes_morph,
     "wave_lossless": lambda d: _wave_row("lossless", d),
@@ -466,7 +483,9 @@ def test_an_entry_lost_on_one_rank_runs_every_forward_again(tmp_path, lost, solv
         _on, "_an_entry_lost_on_one_rank", solver, tmp_path, lost, ranks=4, limit=300
     )
     assert forwards == 1
-    assert entries == 1  # the first grad's: the pullback's was freed by all
+    # the first grad's was consumed, freed at the vjp's forward (ADR 0081); the
+    # pullback's was freed by all
+    assert entries == 0
     _assert_below_the_gate(grad, reference, "after the loss", solver)
 
 
@@ -499,6 +518,7 @@ def _counted_prepares(function, *args):
 
 
 def _prepares_of(row, directory):
+    ENTRIES.clear()  # no plan pooled by an earlier test
     objective, p, _, _ = ROWS[row](directory)
     grad, prepares, refactorized = _counted_prepares(jax.grad(objective), p)
     return np.asarray(grad), prepares, refactorized
@@ -506,6 +526,7 @@ def _prepares_of(row, directory):
 
 def _prepares_of_one_frequency(directory):
     """One frequency, lossy wave ports, an adjoint through Woodbury."""
+    ENTRIES.clear()  # no plan pooled by an earlier test
     mesh = cases.wave_mesh(Path(directory))
     model = cases.wave_line(mesh, "lossy")
     values, _ = cases.core_design(mesh, seed=4)
@@ -534,10 +555,12 @@ def test_a_two_frequency_gradient_prepares_one_base(tmp_path, solver):
         f"prepares: {prepares} under ranks, {serial} on one process; "
         f"refactorizations {refactorized}"
     )
-    assert serial == 3  # the sweep's, and one per frequency for the adjoint
+    # one process keeps the forward's base for the adjoint too (ADR 0065, amended)
+    assert serial == 1
     assert prepares == 1
-    # the sweep's second frequency, then the adjoint at each of the two
-    assert refactorized == 3
+    # the sweep's second frequency, then the adjoint at the first only: the backward
+    # starts at the base's frequency (ADR 0065, amended)
+    assert refactorized == 2
     _assert_below_the_gate(grad, grad_one, "one base", solver)
 
 
@@ -548,7 +571,7 @@ def test_a_one_frequency_woodbury_gradient_factorizes_once(tmp_path, solver):
         _on, "_prepares_of_one_frequency", solver, tmp_path, ranks=4, limit=300
     )
     print(f"prepares: {prepares} under ranks, {serial} on one process")  # noqa: T201
-    assert serial == 2
+    assert serial == 1  # the adjoint reuses the forward's base on one process too
     assert prepares == 1
     assert refactorized == 0
     _assert_below_the_gate(grad, grad_one, "one base, Woodbury", solver)

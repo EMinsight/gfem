@@ -69,11 +69,32 @@ def test_boundaries_are_hashable_values_with_no_leaves():
         gfem.PMC("a"),
         gfem.Absorbing("a"),
         gfem.Conductor("a", conductivity=1.0),
-        gfem.Impedance("a", resistance=1.0),
     ):
         hash(b)
         assert jax.tree.leaves(b) == []
         assert b == jax.tree.map(lambda x: x, b)
+
+
+def test_lumped_values_are_leaves_and_a_port_resistance_is_not():
+    sheet = gfem.Impedance("a", resistance=1.0, capacitance=2e-15)
+    assert jax.tree.leaves(sheet) == [1.0, 2e-15]
+    port = gfem.LumpedPort("p", "s", "+z", resistance=50.0, inductance=1e-9)
+    assert jax.tree.leaves(port) == [1e-9]
+    assert jax.tree.leaves(gfem.LumpedPort("p", "s", "+z")) == []
+    for value in (sheet, port):
+        hash(value)
+        assert value == jax.tree.map(lambda x: x, value)
+
+
+def test_traced_lumped_values_are_kept_and_a_traced_resistance_raises():
+    def inductance(value):
+        port = gfem.LumpedPort("p", "s", "+z", resistance=50.0, inductance=value)
+        sheet = gfem.Impedance("a", resistance=value * 1e12)
+        return port.inductance + sheet.resistance
+
+    assert jax.grad(inductance)(1e-9) == pytest.approx(1.0 + 1e12)
+    with pytest.raises(gfem.NonDifferentiableError, match=r"LumpedPort\.resistance"):
+        jax.grad(lambda r: gfem.LumpedPort("p", "s", "+z", resistance=r).rlc[0])(50.0)
 
 
 # --- ports ----------------------------------------------------------------------
@@ -85,6 +106,26 @@ def test_lumped_port_defaults_to_a_50_ohm_resistor():
     assert p.surface == "port1"
     assert p.rlc == (50.0, None, None)
     assert p.elements == (("port1", (1.0, 0.0, 0.0)),)
+
+
+def test_lumped_port_axis_without_a_sign_is_the_positive_axis():
+    for name, vector in (
+        ("x", (1.0, 0.0, 0.0)),
+        ("Y", (0.0, 1.0, 0.0)),
+        ("Z", (0.0, 0.0, 1.0)),
+    ):
+        port = gfem.LumpedPort("p1", "s", name)
+        assert port.direction == vector
+        assert port.elements == (("s", vector),)
+        assert port == gfem.LumpedPort("p1", "s", "+" + name)
+    pair = gfem.LumpedPort("p1", ("a", "b"), ("x", "-x"))
+    assert pair.direction == ((1.0, 0.0, 0.0), (-1.0, 0.0, 0.0))
+    with pytest.raises(ValueError) as err:
+        gfem.LumpedPort("p1", "s", "q")
+    assert str(err.value) == (
+        "LumpedPort 'p1': direction 'q' is not an axis; use 'x', 'y', 'z' with an "
+        "optional sign ('+x', '-z'; no sign means '+') or a 3-vector."
+    )
 
 
 def test_lumped_port_impedance_is_a_resistive_shortcut():

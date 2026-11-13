@@ -168,7 +168,25 @@ def test_adjoint_loads_skip_an_excited_lossless_wave_port():
     )
     # port 0 lossless and excited, port 1 lossy, port 2 not excited
     np.testing.assert_array_equal(network.adjoint_loads(OMEGAS[0]), f[:, [1, 2]])
-    assert network.nbytes == e.nbytes + f.nbytes
+    assert network.shared() == {id(e): e.nbytes, id(f): f.nbytes}
+
+
+def test_adjoint_loads_add_an_unexcited_lumped_port_and_skip_one_without_resistance():
+    rng = np.random.default_rng(9)
+    e = _complex(rng, N, 1)
+    f = np.stack([e[:, 0] / 10.0, _complex(rng, N), _complex(rng, N)], 1)
+    # a port without a resistance: its voltage over sqrt(2 R) is NaN
+    scale = np.diag([1.0, 1.0, np.nan])
+    network = PortNetwork(
+        [AffineTerm(e, lambda _: np.eye(1))],
+        [AffineTerm(f, lambda _: scale)],
+        [],
+        [0],
+        np.full((2, 3), 50.0),
+    )
+    assert np.isnan(network.functional(OMEGAS[0])[:, 2]).all()
+    # lumped ports: 0 excited, 1 not excited, 2 without a resistance
+    np.testing.assert_array_equal(network.adjoint_loads(OMEGAS[0]), f[:, [1]])
 
 
 @pytest.fixture(scope="module")

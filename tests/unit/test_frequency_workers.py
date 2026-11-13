@@ -16,10 +16,19 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import structured_meshes as sm
+from gradient_cases import (
+    core_design,
+    hybrid_line,
+    hybrid_mesh,
+    s_functional,
+    tight,
+    wave_line,
+    wave_mesh,
+)
 from solver_misses import cannot_converge_at
 
 import gfem
-from gfem._engine import runtime, workers
+from gfem._engine import cache, driven, runtime, workers
 from gfem._engine.driven import DrivenRule, _solve_block
 from gfem._linalg import prepare
 
@@ -42,22 +51,109 @@ def line(tmp_path_factory):
     )
 
 
-def test_wave_ports_need_one_worker():
+def _plates(path=None):
     mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
-    model = gfem.Model(
+    return gfem.Model(
         mesh,
         materials={"fill": gfem.Material(eps_r=4.0)},
         boundaries=[gfem.PEC("plates")],
-        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")],
+        ports=[
+            gfem.WavePort("p1", "port1", voltage_path=path),
+            gfem.WavePort("p2", "port2"),
+        ],
     )
+
+
+def test_two_workers_with_wave_ports_give_the_sequential_sweep():
+    # the parent sweeps the port modes once over the grid and hands each
+    # worker its rows; a kept frequency in each block
+    # THz on this micrometre line: at GHz it sits near the low-frequency
+    # floor, where a kept field keeps fewer digits than S
+    path = ((20e-6, 0.0, 0.0), (20e-6, 10e-6, 0.0))
+    model = _plates(path)
+    grid = (1.5e12, 2.0e12, 2.5e12, 3.0e12)
+    problem = gfem.Driven(grid, keep_fields=(grid[1], grid[3]))
+    one = gfem.solve(
+        model, problem, options=gfem.SolverOptions(order=1, linear_solver="direct")
+    )
+    two = gfem.solve(
+        model,
+        problem,
+        options=gfem.SolverOptions(
+            order=1, linear_solver="direct", frequency_workers=2
+        ),
+    )
+    np.testing.assert_allclose(two.s.values, one.s.values, rtol=0, atol=1e-12)
+    # the workers solve on the parent's port modes exactly; the port mode
+    # sweeps of two solves agree to rounding, bit for bit only on one thread
+    np.testing.assert_allclose(two.s.z_ref, one.s.z_ref, rtol=1e-12)
+    for name in ("p1", "p2"):
+        mode, expected = two.port_modes[name], one.port_modes[name]
+        np.testing.assert_allclose(mode.gamma, expected.gamma, rtol=1e-12)
+        np.testing.assert_array_equal(mode.solved, expected.solved)
+    assert two.kept == one.kept
+    for f, port in one.kept:
+        np.testing.assert_allclose(
+            two.e_field(f, port).coefficients,
+            one.e_field(f, port).coefficients,
+            rtol=0,
+            atol=1e-10 * np.abs(one.e_field(f, port).coefficients).max(),
+        )
+    mode = two.port_modes["p1"]
+    z = gfem.characteristic_impedance(mode, path)
+    np.testing.assert_allclose(z, mode.Z_PV, rtol=1e-13)
+
+
+def test_one_frequency_with_wave_ports_runs_no_worker():
+    model = _plates()
     options = gfem.SolverOptions(order=1, frequency_workers=2)
-    with pytest.raises(NotImplementedError, match="frequency_workers=1"):
-        gfem.solve(model, gfem.Driven(FREQUENCIES), options=options)
-    # one frequency runs no worker, so it solves as with frequency_workers=1
-    one = gfem.SolverOptions(order=1)
     s = gfem.solve(model, gfem.Driven(3e9), options=options).s.values
-    ref = gfem.solve(model, gfem.Driven(3e9), options=one).s.values
-    np.testing.assert_allclose(s, ref, rtol=0, atol=1e-9)
+    ref = gfem.solve(model, gfem.Driven(3e9), options=gfem.SolverOptions(order=1))
+    np.testing.assert_allclose(s, ref.s.values, rtol=0, atol=1e-9)
+
+
+WAVE_GRID = tuple(float(f) for f in np.linspace(10e9, 30e9, 4))
+
+
+def test_a_lossy_wave_port_beside_a_lumped_port_over_two_workers(tmp_path):
+    # a block that swept its own port modes would move S by about 1e-3 here
+    mesh = wave_mesh(tmp_path)
+    model = wave_line(mesh, "mixed")
+    values, _ = core_design(mesh, seed=4)
+
+    def objective(eps, workers):
+        core = gfem.MaterialField(**{**values, "eps_r": eps})
+        m = model.with_material("core", core)
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        options = tight("direct", frequency_workers=workers)
+        s = gfem.solve(m, gfem.Driven(WAVE_GRID), options=options).s.values
+        return s_functional(s), jax.lax.stop_gradient(s)
+
+    eps = values["eps_r"]
+    one, s_one = jax.grad(objective, has_aux=True)(eps, 1)
+    two, s_two = jax.grad(objective, has_aux=True)(eps, 2)
+    np.testing.assert_allclose(s_two, s_one, rtol=0, atol=1e-12)
+    assert np.abs(np.asarray(one)).max() > 0
+    np.testing.assert_allclose(two, one, rtol=0, atol=1e-9 * np.abs(one).max())
+
+
+def test_the_parent_warns_of_cross_projections_on_a_shared_port_surface(
+    tmp_path, monkeypatch
+):
+    # a worker's warnings never reach the user: the parent's port mode sweep
+    # gives the cross-projection
+    monkeypatch.setattr(driven, "PORT_MODE_PROJECTION_FLOOR", 0.0)
+    model = hybrid_line(hybrid_mesh(tmp_path))
+    grid = (60e9, 70e9)
+    options = gfem.SolverOptions(order=2, linear_solver="direct", frequency_workers=2)
+    rule = DrivenRule(model, gfem.Driven(grid), options)
+    with pytest.warns(gfem.PortModeProjectionWarning) as caught:
+        two, _ = rule.forward(model, keep=False)
+    assert len(caught) == 2  # one per shared port surface
+    with pytest.warns(gfem.PortModeProjectionWarning):
+        one, _ = _forward(model, gfem.Driven(grid), order=2, linear_solver="direct")
+    np.testing.assert_allclose(two["s"], one["s"], rtol=0, atol=1e-12)
+    np.testing.assert_allclose(two["port_gamma"], one["port_gamma"], rtol=1e-12)
 
 
 def test_a_worker_does_not_repeat_the_parents_port_mode_warnings():
@@ -148,8 +244,9 @@ SIX = (3e9, 3.5e9, 4e9, 4.5e9, 5e9, 5.5e9)  # two blocks of three
 def _in_process(monkeypatch):
     """Run each worker's block in this process, so test seams reach it."""
 
-    def run(function, arguments, _labels, *, threads):  # noqa: ARG001
-        return [function(*args) for args in arguments]
+    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+        keywords = keywords or [{}] * len(arguments)
+        return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
 
     monkeypatch.setattr(workers, "run", run)
 
@@ -292,3 +389,39 @@ def test_a_gradient_through_two_workers_matches_one(line):
     two = jax.grad(objective)(eps, 2)
     assert np.abs(np.asarray(one)).max() > 0
     np.testing.assert_allclose(two, one, rtol=1e-10, atol=1e-14)
+
+
+def test_a_backward_that_rebuilds_port_state_walks_it_down(line):
+    # the workers solve in their own processes: here the entry holds the
+    # solutions only, and the backward builds the system and the port state
+    eps = jnp.full(len(line.mesh.tetrahedra), 3.0)
+    problem = gfem.Driven(FREQUENCIES, excite="p1")
+
+    def objective(retain_memory):
+        options = gfem.SolverOptions(
+            linear_solver="direct", frequency_workers=2, retain_memory=retain_memory
+        )
+
+        def s(eps):
+            model = line.with_material("dielectric", gfem.MaterialField(eps_r=eps))
+            return jnp.sum(
+                jnp.abs(gfem.solve(model, problem, options=options).s.values)
+            )
+
+        return s
+
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    _, vjp = jax.vjp(objective(None), eps)
+    (entry,) = cache.ENTRIES._entries.values()
+    budget = entry.nbytes  # the entry and nothing the backward adds
+    vjp(1.0)
+    assert any(d.ports is not None for d in cache._DISCRETIZATIONS.values())
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    _, vjp = jax.vjp(objective(budget), eps)
+    (entry,) = cache.ENTRIES._entries.values()
+    vjp(1.0)
+    assert entry.handle is not None  # the backward built its system here
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+    cache.ENTRIES.clear()

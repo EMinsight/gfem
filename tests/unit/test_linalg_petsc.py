@@ -563,6 +563,49 @@ def test_preonly_refuses_petscs_preconditioner_reuse(built):
     assert _gfem_keys() == []
 
 
+@pytest.mark.parametrize(
+    "options",
+    [
+        (("pc_type", "jacobi"),),
+        (("pc_type", "sor"),),
+        (("pc_type", "none"),),
+        (("pc_type", "bjacobi"),),
+        (("pc_type", "ilu"), ("pc_factor_mat_solver_type", "petsc")),
+    ],
+)
+def test_preonly_refuses_a_preconditioner_that_is_not_an_exact_factorization(
+    built, options
+):
+    op, _ = _laplace(built, complex_valued=True, shift=1 - 2j)
+    pc = options[0][1]
+    with pytest.raises(
+        ValueError, match=rf"pc_type '{pc}'.*preonly needs pc_type lu or cholesky"
+    ):
+        prepare(op, symmetry="complex_symmetric", kind="petsc", petsc_options=options)
+    assert _gfem_keys() == []
+
+
+def test_preonly_refuses_a_pivot_shift(built):
+    op, _ = _laplace(built, complex_valued=True, shift=1 - 2j)
+    options = (
+        ("pc_factor_mat_solver_type", "petsc"),
+        ("pc_factor_shift_type", "nonzero"),
+        ("pc_type", "lu"),
+    )
+    with pytest.raises(
+        ValueError, match=r"pc_factor_shift_type.*factors of another matrix"
+    ):
+        prepare(op, symmetry="complex_symmetric", kind="petsc", petsc_options=options)
+    assert _gfem_keys() == []
+
+
+def test_a_krylov_solve_petsc_ends_without_a_residual_raises(built):
+    options = (*GMRES, ("ksp_convergence_test", "skip"), ("ksp_max_it", 5))
+    handle = _krylov(built, options=options)
+    with pytest.raises(ValueError, match="without measuring a residual"):
+        handle.solve(np.ones(handle.ndof, complex))
+
+
 # --- what PETSc and gfem refuse ---------------------------------------------------
 
 
@@ -570,7 +613,8 @@ def test_preonly_refuses_petscs_preconditioner_reuse(built):
     "options",
     [
         (("ksp_tpye", "gmres"),),  # a typo
-        (("mat_mumps_icntl_14", 50), ("pc_type", "jacobi")),  # not MUMPS's PC
+        # not MUMPS's PC
+        (("mat_mumps_icntl_14", 50), ("ksp_type", "gmres"), ("pc_type", "jacobi")),
     ],
 )
 def test_an_option_petsc_did_not_read_raises(built, options):

@@ -14,7 +14,8 @@ would still report the caller's high-water mark. Instead:
 - elsewhere (gVisor, Modal's sandbox) the caller, idle while it waits and
   outside the child's GIL, samples the child's ``VmRSS`` every
   `SAMPLE_INTERVAL`; the child adds its own reading just before it returns.
-  A peak held for less than about one interval can be missed;
+  A peak held for less than the caller's scheduling delay can be missed: one
+  interval on an idle host, a few hundred milliseconds on a loaded one;
 - without ``/proc`` (macOS, Windows) the child reports `peak_rss_gib`.
 
 The call must be a module-level function of a Python file (a test module

@@ -42,9 +42,9 @@ value, grad = jax.value_and_grad(coupling)(jnp.full(n, 3.9))  # grad: (n,), fF
   the relative permittivity of oxide element `i`.
 - `result.mutual` and `result.inverse` differentiate like
   `result.capacitance`.
-- The region energies `result.energy` have no gradient yet: a gradient
-  through them raises {py:obj}`gfem.NonDifferentiableError`. Use
-  `capacitance[i, i] / 2`, the total energy of excitation `i`, instead.
+- The region energies `result.energy` differentiate too, with respect to
+  the permittivity and the node coordinates. A gradient through them costs
+  one adjoint solve for all terminals together, on both linear solvers.
 - The gradient costs no extra solve. Each terminal's potential is its own
   adjoint, so the backward pass (the part of `jax.grad` that runs after the
   solve) is one element-wise integral.
@@ -79,11 +79,15 @@ calls. Between the solve and its gradients gfem keeps what the gradients need
 (for a capacitance, the terminal potentials):
 
 - It keeps up to `SolverOptions(retain_memory=...)` bytes, half of the
-  physical memory by default, and drops the oldest entries first.
+  memory the process may use by default, and drops the oldest entries first.
 - A dropped entry is recomputed from the design when its gradient runs. This
   costs time, never accuracy.
+- Results do not depend on it. For a driven solve the same budget also holds
+  what later designs reuse: see "In an optimization loop" in
+  {doc}`s-parameter-gradient`.
 - `retain_memory=0` keeps nothing and always recomputes. Use it when memory,
   not time, is short.
+- {py:obj}`gfem.release_memory` drops everything kept so far, at once.
 
 ## What every other input gives
 
@@ -97,9 +101,8 @@ Every input of the model has one of three outcomes:
   elements of excluded volumes, so one `MaterialField` can serve an
   electrostatic and a driven objective together;
 - **`gfem.NonDifferentiableError`**, raised when `jax.grad` is called, before
-  any solve, for what the problem reads but gfem cannot differentiate yet (an
-  output such as `result.energy`). The message names the input or output and
-  the remedy.
+  any solve, for what the problem reads but gfem cannot differentiate yet.
+  The message names the input or output and the remedy.
 
 gfem never returns a silent zero for an input the physics reads.
 

@@ -220,7 +220,13 @@ class Refactorable(Handle, Protocol):
     ``isinstance(handle, Refactorable)`` tells whether a handle can.
     """
 
-    def refactorize(self, operator: Operator, *, solves: int | None = None) -> None:
+    def refactorize(
+        self,
+        operator: Operator,
+        *,
+        solves: int | None = None,
+        frequency: float | None = None,
+    ) -> None:
         """Assemble ``operator`` and factorize its values in place.
 
         A backend may sum the operator's piece sum (``operator.piece_sum``)
@@ -230,7 +236,9 @@ class Refactorable(Handle, Protocol):
         ``solves``: the solve calls the new factorization is expected to
         serve, when they differ from the count the handle was prepared with
         (`prepare`'s ``solves``); ``None`` keeps it. Only BDDC's coarse
-        choice reads it.
+        choice reads it. ``frequency``: the ω the operator is at, when the
+        caller knows it; only the direct solver reads it, to solve a design on
+        factors made at the same ω for an earlier one (ADR 0094).
 
         Raises:
             RuntimeError: The handle was freed.
@@ -244,6 +252,7 @@ def refactorize_or_prepare(
     prepare_operator: Callable[[Operator], Handle],
     *,
     solves: int | None = None,
+    frequency: float | None = None,
 ) -> Handle:
     """A handle of ``operator`` that reuses ``handle``'s solver plan when it can.
 
@@ -258,9 +267,15 @@ def refactorize_or_prepare(
         solves: The solves the refactorization is expected to serve
             (`Refactorable.refactorize`), or ``None`` to keep the handle's
             count; ``prepare_operator`` states its own.
+        frequency: The ω ``operator`` is at, or ``None``
+            (`Refactorable.refactorize`).
+
+    Raises:
+        ValueError: ``operator``'s free-DOF set is not the one ``handle`` was
+            prepared with: a refactorization keeps the free DOFs.
     """
     if isinstance(handle, Refactorable):
-        handle.refactorize(operator, solves=solves)
+        handle.refactorize(operator, solves=solves, frequency=frequency)
         return handle
     if handle is not None:
         handle.free()
@@ -292,7 +307,8 @@ def prepare(
             backend on a GPU (cuDSS). The GPU is checked before assembly.
         tolerance: Relative preconditioned residual of iterative backends
             (``|P(b - Ax)| / |P b|`` for BDDC + GMRES, the P-norm of the
-            residual over its first value for CG).
+            residual over its first value for CG). The direct backend reads
+            it only on factors reused across designs (ADR 0094).
         maxiter: Most iterations of iterative backends; a solve that does
             not converge in them raises `gfem.LinearSolverConvergenceError`.
         width: Right-hand-side columns of a usual solve (the block width:
@@ -375,7 +391,7 @@ def prepare(
     if kind == "direct":
         from gfem._linalg.direct import DirectHandle
 
-        return DirectHandle.from_operator(operator, symmetry)
+        return DirectHandle.from_operator(operator, symmetry, tolerance=tolerance)
     if kind == "bddc_gmres":
         from gfem._linalg.bddc import BddcHandle
 
@@ -480,7 +496,8 @@ class ResolvedLinearSolver:
 
         Args:
             options: The solver options.
-            default: The problem type's linear solver for ``"auto"``.
+            default: The problem type's linear solver for ``"auto"`` on the
+                CPU; on a GPU ``"auto"`` is ``"direct"``.
             problem: The problem type, for the error message.
             comm: The resolved communicator of a distributed solve.
 
@@ -493,7 +510,12 @@ class ResolvedLinearSolver:
         from gfem.options import split_petsc_options
 
         name = options.linear_solver
-        kind = default if name == "auto" else name
+        if name != "auto":
+            kind = name
+        elif options.device != "cpu":
+            kind = "direct"  # the only solver that runs on a GPU
+        else:
+            kind = default
         if kind not in KINDS:  # pragma: no cover - SolverOptions validates
             raise NotImplementedError(
                 f"linear_solver={name!r} is not available for {problem} problems "

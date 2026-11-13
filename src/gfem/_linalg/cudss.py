@@ -195,7 +195,11 @@ class CudssHandle(PlannedHandle):
                 "only; a general operator needs device='cpu'."
             )
 
-    def _new_values(self, write: Callable[[Any], None]) -> None:
+    def _new_values(
+        self,
+        write: Callable[[Any], None],
+        same: Callable[[], bool],  # noqa: ARG002
+    ) -> None:
         """Write the held matrix and factorize it on the plan; under the lock."""
         matrix = self._live()
         write(matrix)
@@ -298,12 +302,13 @@ class CudssHandle(PlannedHandle):
     @property
     def nbytes(self) -> int:
         """Host and device memory of the matrix and the factors, in bytes."""
-        if self._solver is None or self._matrix is None:
+        # read once, without the lock: a concurrent free gives 0 or the old count
+        matrix, lower, gather = self._matrix, self._lower, self._gather
+        if self._solver is None or matrix is None:
             return 0
-        lower = self._lower
         csr = lower.data.nbytes + lower.indices.nbytes + lower.indptr.nbytes
-        held = 2 * csr + self._gather.nbytes
-        return host_bytes(self._matrix) + held + sum(self._estimates)
+        held = 2 * csr + gather.nbytes
+        return host_bytes(matrix) + held + sum(self._estimates)
 
     def _release(self) -> None:
         """Release the GPU factors; under the lock."""

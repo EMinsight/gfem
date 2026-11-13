@@ -14,12 +14,19 @@ result reloaded with `gfem.load_result`.
 - `power_flow`: the net power a driven field carries out of a set of
   elements, exact for the solved field (a flux of point-sampled
   ``E x H*`` is not, see the measurements recipe).
+- `electric_energy`: the time-averaged electric energy a field stores in
+  each volume region, with the model's materials.
 
 Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 `jax.grad` they differentiate with respect to the field coefficients (so
 material-field gradients flow through the solve that made the field) and
-the measurement's own numbers. Mesh-node gradients raise
-`gfem.NonDifferentiableError` in this version.
+the measurement's own numbers. That includes the normalized mode fields of
+an eigenmode solve, which differentiate with respect to `gfem.MaterialField`
+properties and `gfem.SheetField` fills for an isolated mode (see the
+"Differentiate eigenfrequencies, Q and participation ratios" recipe).
+Mesh-node gradients raise `gfem.NonDifferentiableError`: for a shape
+derivative of a measurement, take finite differences of it over meshes
+moved by `gfem.shape.boundary_morph`.
 """
 
 from __future__ import annotations
@@ -35,7 +42,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
-from gfem import _mpi, _periodic, _probe
+from gfem import _mpi, _probe
 from gfem._checks import check_fixed, is_traced
 from gfem._materials import Material, field_principal_values
 from gfem._pytree import register_fields
@@ -52,6 +59,7 @@ __all__ = [
     "INTERFACE_KINDS",
     "InterfaceParticipation",
     "characteristic_impedance",
+    "electric_energy",
     "interface_participation",
     "power_flow",
 ]
@@ -134,26 +142,44 @@ def interface_participation(
     - ``"SA"`` (substrate-air): ``t * (eps_r |E_t|^2 + |E_n|^2 / eps_r)``,
       ``E`` on the vacuum side.
     - ``"default"``: ``t * eps_r * |E|^2``, ``E`` averaged over the two
-      sides of an interior surface.
+      sides of an interior surface. Not for a film with the same medium on
+      both faces: there the two faces' normal fields are opposite and the
+      mean cancels.
 
     each times ``eps0 / 2`` and integrated over the surface. A medium is
     vacuum when no wave in it is slower than in vacuum: its slowest light
     speed, from its largest principal ``eps_r`` and ``mu_r``, is that of
     vacuum (to 1e-6), so an anisotropic side such as ``eps_r = (1, 1, 4)`` is
-    not vacuum. The layer itself is isotropic. Where both sides are of the
-    wanted kind, the two sides' values are averaged; where neither is
-    (``"MA"`` on a plate under substrate), the surface adds nothing. Sides
-    inside volumes the model excludes from the solve (metal) do not count. The
-    participation is that energy over the mode's electric energy ``E`` (1 J,
-    see `gfem.conventions`), and ``participation * tan_delta`` is the layer's
-    contribution to ``1 / Q``.
+    not vacuum. The layer itself is isotropic. For ``"MA"`` and ``"MS"``
+    each side of the wanted kind carries its own layer and the layers'
+    energies add: a film with vacuum on both faces has one oxide per face,
+    and its ``"MA"`` participation is the sum of the two faces'. Asked on a
+    surface that is not a film and has the same medium on both sides, they
+    count the layer twice, which is a misuse. For ``"SA"`` and ``"default"``
+    the field is averaged over the sides of the wanted kind. Where no side
+    is of the wanted kind (``"MA"`` on a plate under substrate), the surface
+    adds nothing. Sides inside volumes the model excludes from the solve
+    (metal) do not count. The participation is that energy over the mode's
+    electric energy ``E`` (1 J, see `gfem.conventions`), and
+    ``participation * tan_delta`` is the layer's contribution to ``1 / Q``.
+
+    On a zero-thickness film the field at the film edge is singular, and the
+    participation of a layer that reaches the edge grows without bound as
+    the mesh is refined there: by about 6 to 7 % of its value each time the
+    edge cells are halved, on a 10 um strip. It is not a mesh-converged
+    number. Compare designs on meshes with the same edge cell size, and take
+    that size near the real film thickness for an absolute value.
 
     Differentiable with respect to ``thickness``, ``eps_r``, ``tan_delta``,
     the mode fields and the substrate's `MaterialField` permittivity (the
-    ``"MS"`` flux), per principal axis for a field with ``axes``. Mode fields
-    are not differentiable in this version, so a gradient that reaches the
-    eigenmode solve raises `gfem.NonDifferentiableError` there; mesh-node
-    gradients raise.
+    ``"MS"`` flux), per principal axis for a field with ``axes``. Through
+    the eigenmode solve, the mode fields differentiate with respect to
+    `gfem.MaterialField` properties and `gfem.SheetField` fills of an
+    isolated mode (see the "Differentiate eigenfrequencies, Q and
+    participation ratios" recipe; a mode of a degenerate cluster raises
+    `gfem.DegenerateModeError`). Mesh-node gradients raise
+    `gfem.NonDifferentiableError`: take finite differences of the
+    participation over meshes moved by `gfem.shape.boundary_morph` instead.
 
     Args:
         modes: An eigenmode result.
@@ -199,6 +225,15 @@ def interface_participation(
         )
     field = modes.e_fields[0]
     surfaces = (surface,) if isinstance(surface, str) else tuple(surface)
+    # read from the result, never from a cache: the pairs of this model only
+    for pair in modes.periodic_surfaces:
+        for name in surfaces:
+            if name in pair:
+                raise ValueError(
+                    f"{name!r} is a surface of periodic pair {pair!r}, which "
+                    "is interior to the periodic cell: it holds no interface "
+                    "layer."
+                )
     geometry = _surface_geometry(field, surfaces)
     coefficients = jnp.stack([f.coefficients for f in modes.e_fields])
     energy = _layer_energy(
@@ -230,13 +265,6 @@ class _SurfaceGeometry:
                 raise ValueError(
                     f"{name!r} is a volume region; interface_participation needs "
                     "a surface region."
-                )
-            pair = _periodic.pair_of_surface(mesh, name)
-            if pair is not None:
-                raise ValueError(
-                    f"{name!r} is a surface of periodic pair "
-                    f"{(pair.first, pair.second)!r}, which is interior to the "
-                    "periodic cell: it holds no interface layer."
                 )
             triangles.append(mesh.elements(name))
         engine = _probe.engine()
@@ -314,17 +342,18 @@ def _layer_energy(
     if kind == "default":
         density = eps_l * _norm2(_average(e, ex))
     elif kind == "MS":
+        # one layer per selected side (ADR 0106): density per side, then summed
         d = jnp.einsum("tsij,mtsqj->mtsqi", eps_side, e)
-        dn = jnp.einsum("mtqi,ti->mtq", _average(d, ex & ~vacuum), normal)
-        density = _sq(dn) / eps_l
-    else:
+        dn = jnp.einsum("mtsqi,ti->mtsq", d, normal)
+        density = _sum_sides(_sq(dn), ex & ~vacuum) / eps_l
+    elif kind == "MA":
+        en = jnp.einsum("mtsqi,ti->mtsq", e, normal)
+        density = _sum_sides(_sq(en), ex & vacuum) / eps_l
+    else:  # SA
         selected = _average(e, ex & vacuum)
         en = jnp.einsum("mtqi,ti->mtq", selected, normal)
-        if kind == "MA":
-            density = _sq(en) / eps_l
-        else:  # SA
-            et = selected - en[..., None] * normal[None, :, None, :]
-            density = eps_l * _norm2(et) + _sq(en) / eps_l
+        et = selected - en[..., None] * normal[None, :, None, :]
+        density = eps_l * _norm2(et) + _sq(en) / eps_l
     return 0.5 * const.epsilon_0 * thickness * jnp.einsum("mtq,tq->m", density, weights)
 
 
@@ -356,6 +385,12 @@ def _average(x: jax.Array, selected: jax.Array) -> jax.Array:
     w = w / count[:, None]
     shape = (1, *w.shape, 1) + (1,) * (x.ndim - 4)
     return (x * w.reshape(shape)).sum(axis=2)
+
+
+def _sum_sides(x: jax.Array, selected: jax.Array) -> jax.Array:
+    """Sum over the selected sides: ``(m, t, 2, q)`` -> ``(m, t, q)``."""
+    w = selected.astype(float)
+    return (x * w[None, :, :, None]).sum(axis=2)
 
 
 def _media(
@@ -433,7 +468,8 @@ def characteristic_impedance(mode: PortModeResult, voltage_path: Any) -> jax.Arr
     Raises:
         TypeError: ``mode`` is not a `gfem.PortModeResult`.
         ValueError: The path is malformed or leaves the port plane, or
-            ``mode`` carries no field (a driven result without kept fields).
+            ``mode`` carries no field (a driven result computed inside
+            `jax.jit`, `jax.grad` or `jax.vmap`).
         NonDifferentiableError: ``voltage_path`` is computed inside
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
             fixed value.
@@ -458,9 +494,10 @@ def characteristic_impedance(mode: PortModeResult, voltage_path: Any) -> jax.Arr
     field = mode.e_field
     if field is None:
         raise ValueError(
-            f"The port mode of {mode.port!r} carries no field: a driven result "
-            "keeps its wave ports' mode fields only with Driven(keep_fields=...). "
-            "Solve with keep_fields, or solve gfem.PortMode for the port."
+            f"The port mode of {mode.port!r} carries no field: the driven result "
+            "was computed inside jax.jit, jax.grad or jax.vmap, where a wave "
+            "port's mode field is not available. Port modes are constants of the "
+            "solve: solve gfem.PortMode for the port outside the transformation."
         )
     volts = path_voltage(
         field._space,  # noqa: SLF001
@@ -508,7 +545,14 @@ def power_flow(
 
     A field of an adaptive sweep (`gfem.ReducedFields`) is exact at the
     solved frequencies and accurate to the sweep's tolerance in between.
-    Not differentiable in this version.
+
+    Differentiable through the field: inside `jax.grad`, `jax.jit` or
+    `jax.vmap` the kept field of a solve (lumped or wave ports) carries the
+    gradient, so absorbed, radiated and transmitted power are objectives.
+    The model's leaves are read only in the element layer just outside
+    ``side``; a traced material field there has no gradient here and
+    raises, and any other leaf gets an exact zero from this measurement
+    (its influence arrives through the field).
 
     Args:
         field: A driven electric field (quantity ``"E"``, in H(curl),
@@ -530,9 +574,16 @@ def power_flow(
             electric field, or was not solved on ``model``; or the
             surface is within one element of a port's surface.
         gfem.DistributedUnsupportedError: The field is a piece across ranks.
-        NonDifferentiableError: ``field`` or ``model`` is computed inside
-            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; call
-            `power_flow` outside them.
+        NonDifferentiableError: While `jax.grad` traces it: a material
+            field with an element in the element layer just outside
+            ``side`` (or beside a face that layer's terms read), or the fill
+            of a sheet with a face there, is differentiated (move the
+            surface one element away from the design region, or wrap the
+            value in `jax.lax.stop_gradient`); the node coordinates or the
+            field's ``omega`` are differentiated; the field is one of an
+            adaptive sweep (`gfem.ReducedFields`) and is differentiated. And
+            whenever the node coordinates are traced and ``side`` is a
+            predicate: name its regions.
     """
     from gfem._field import Field
     from gfem.model import Model
@@ -546,15 +597,96 @@ def power_flow(
             f"power_flow needs model= a gfem.Model, got {type(model).__name__}."
         )
     names = _side_names(side)
+    _check_driven(field)
+    if not (is_traced(field) or is_traced(model)):
+        engine = importlib.import_module("gfem._engine.power_flow")
+        return jnp.asarray(engine.power_flow(field, names, model), dtype=float)
+    if callable(names) and is_traced((field.mesh.nodes, model.mesh.nodes)):
+        raise NonDifferentiableError(
+            "power_flow's side is a predicate on element centroids, which needs "
+            "the node coordinates as numbers, but they are computed inside "
+            "jax.grad, jax.jit or jax.vmap here: name the side's volume regions "
+            "instead, so that its surface is known before the transformation runs."
+        )
+    from gfem._power_flow import power_flow as traced_power_flow
+
+    return traced_power_flow(field, names, model)
+
+
+# --- electric energy ---------------------------------------------------------------
+
+
+def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
+    """Time-averaged electric energy of a field in each volume region, J.
+
+    ``W_e[r] = 1/4 eps0 ∫_r E* . Re(eps_r) E dV`` over the region's elements
+    in the solve domain, with the full real permittivity tensor in an
+    anisotropic medium. The field is a peak phasor, hence the 1/4. A driven
+    field is the one for 1 W incident at its excited port
+    (`gfem.conventions`), so in a region with one loss tangent the power
+    dielectric loss absorbs is ``2 * omega * tan_delta * W_e[r]`` W, the
+    number `power_flow` gives for that region when nothing else in it
+    absorbs.
+
+    A mode field of an `gfem.EigenmodeResult` is accepted too. The mode
+    normalization counts ``1/2 Re ∫ D* . E``, the total energy of a lossless
+    mode and twice this time average: ``2 * W_e[r]`` equals
+    ``bulk_participation[r] * gfem.conventions.MODE_ENERGY``.
+
+    The integral is exact for the solved field and the model's element-wise
+    permittivity. A field of an adaptive sweep (`gfem.ReducedFields`) is
+    exact at the solved frequencies and accurate to the sweep's tolerance in
+    between. Not differentiable in this version.
+
+    Args:
+        field: A time-harmonic electric field (quantity ``"E"``, in H(curl),
+            with an ``omega``), e.g. ``result.e_field(f)``.
+        model: The model the field was solved with: the permittivities and
+            regions the integral reads.
+
+    Returns:
+        A 0-d float64 array per volume region with elements in the solve
+        domain, by region name, J.
+
+    Raises:
+        TypeError: ``field`` is not a `gfem.Field`, or ``model`` is not a
+            `gfem.Model`.
+        ValueError: The field is not a time-harmonic electric field (another
+            quantity, or static), or was not solved on ``model``.
+        gfem.DistributedUnsupportedError: The field is a piece across ranks.
+        NonDifferentiableError: ``field`` or ``model`` is computed inside
+            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; call
+            `electric_energy` outside them.
+    """
+    from gfem._field import Field
+    from gfem.model import Model
+
+    if not isinstance(field, Field):
+        raise TypeError(
+            f"electric_energy needs a gfem.Field, got {type(field).__name__}."
+        )
+    if field._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature("electric_energy")
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"electric_energy needs model= a gfem.Model, got {type(model).__name__}."
+        )
     if is_traced(field) or is_traced(model):
         raise NonDifferentiableError(
-            "gfem.power_flow is not differentiable in this version: its field and "
-            "model must be fixed values, not computed inside jax.grad, jax.jit or "
-            "jax.vmap. Call it outside the function JAX transforms."
+            "gfem.electric_energy is not differentiable in this version: its "
+            "field and model must be fixed values, not computed inside jax.grad, "
+            "jax.jit or jax.vmap. Call it outside the function JAX transforms."
         )
-    _check_driven(field)
-    engine = importlib.import_module("gfem._engine.power_flow")
-    return jnp.asarray(engine.power_flow(field, names, model), dtype=float)
+    _check_time_harmonic(
+        field,
+        "electric_energy",
+        static="an electrostatic result has its energy per region in result.energy",
+    )
+    engine = importlib.import_module("gfem._engine.energy")
+    return {
+        region: jnp.asarray(energy, dtype=float)
+        for region, energy in engine.electric_energy(field, model).items()
+    }
 
 
 def _side_names(
@@ -577,6 +709,28 @@ def _side_names(
     )
 
 
+def _check_time_harmonic(field: Field, who: str, *, static: str) -> None:
+    """Raise unless ``field`` is a time-harmonic electric field.
+
+    ``who`` names the measurement in the messages, ``static`` is the remedy
+    for a static field.
+
+    Raises:
+        ValueError: Another quantity or space, or no ``omega``.
+    """
+    if field.quantity != "E" or field.space != "hcurl":
+        raise ValueError(
+            f"{who} needs an electric field (quantity 'E' in 'hcurl'), got "
+            f"quantity {field.quantity!r} in {field.space!r}: pass the E field "
+            "the B field or potential came from."
+        )
+    if field.omega is None:
+        raise ValueError(
+            f"{who} needs a time-harmonic field; this one is static (omega is "
+            f"None): {static}."
+        )
+
+
 def _check_driven(field: Field) -> None:
     """Raise unless ``field`` is a driven electric field.
 
@@ -584,18 +738,8 @@ def _check_driven(field: Field) -> None:
         ValueError: Another quantity or space, real coefficients, or an
             ``omega`` that is missing or complex.
     """
-    if field.quantity != "E" or field.space != "hcurl":
-        raise ValueError(
-            "power_flow needs a driven electric field (quantity 'E' in 'hcurl'), "
-            f"got quantity {field.quantity!r} in {field.space!r}: pass the E field "
-            "the B field or potential came from."
-        )
-    if field.omega is None:
-        raise ValueError(
-            "power_flow needs a time-harmonic field; this one is static (omega is "
-            "None): solve a gfem.Driven problem."
-        )
-    if np.iscomplexobj(np.asarray(field.omega)):
+    _check_time_harmonic(field, "power_flow", static="solve a gfem.Driven problem")
+    if jnp.iscomplexobj(field.omega):
         raise ValueError(
             "power_flow needs a driven field with a real omega; eigenmode fields "
             "have no time-averaged power flow (complex omega, arbitrary "

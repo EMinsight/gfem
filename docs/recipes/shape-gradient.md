@@ -5,8 +5,8 @@ eigenfrequency with respect to a few geometric parameters that move the mesh.
 `gfem.solve` differentiates its results with respect to the mesh node
 coordinates, `model.mesh.nodes` (metres, shape `(n_nodes, 3)`), for
 electrostatic, driven (uniform sweeps, and adaptive sweeps with frozen
-samples) and eigenmode problems (the eigenfrequencies, as for material
-gradients). A shape design is a JAX function from a few parameters to moved
+samples) and eigenmode problems (eigenfrequencies and participation
+ratios). A shape design is a JAX function from a few parameters to moved
 node coordinates, usually through {py:obj}`gfem.shape.boundary_morph`.
 
 ## Widen a strip
@@ -60,6 +60,14 @@ imported, and `boundary_morph` holds the model's ports for you.
   {ref}`gradient-errors`).
 - Wave ports follow the same rule: their modes come from the port faces'
   geometry, which stays as imported.
+- A junction port between two moving pads keeps its imported voltage path,
+  width and capacitance. The pad edges move beside it, and the leads that
+  join it stretch: the gradient is that of a gap that changes beside a fixed
+  junction.
+- Give every face that must stay flat a name in the mesh, such as a chip
+  surface, even when it carries no boundary condition. `boundary_morph`
+  slides the nodes of every named surface in its plane; an unnamed face
+  moves with the volume around it and warps.
 
 ## Check your results
 
@@ -74,20 +82,22 @@ How gfem itself is checked: {doc}`../verification`.
 
 ## Limits
 
-- Eigenmode quantities of the mode fields (anything but `omega`) have no
-  gradient, as for material gradients: they raise
-  `gfem.NonDifferentiableError` when `jax.grad` is called. Wrap them in
-  `jax.lax.stop_gradient`.
+- Participation ratios and port Q of an eigenmode differentiate with
+  respect to the node coordinates, for an isolated mode (see
+  {doc}`eigenmode-gradient`). The mode field itself (`e_field`, `field.at`,
+  `gfem.interface_participation`) does not: it raises
+  `gfem.NonDifferentiableError`; take finite differences over moved meshes.
 - Measurements on result fields (`Field.at`, `gfem.interface_participation`)
   raise with respect to the node coordinates, because the field's mesh is the
   solve's mesh. To differentiate through the field values only, with the
   measurement's own geometry held fixed, freeze it:
   `dataclasses.replace(field, mesh=jax.lax.stop_gradient(field.mesh))`.
-- `result.energy` of an electrostatic problem raises, as for any input the
-  solve reads. Use `capacitance[i, i] / 2` instead.
+- `result.energy` of an electrostatic problem differentiates with respect to
+  the node coordinates, like the capacitance.
 
 ## Next
 
 {py:obj}`gfem.shape.boundary_morph`, {py:obj}`gfem.shape.quality`;
 {doc}`s-parameter-gradient`, {doc}`capacitance-gradient`,
-{doc}`eigenmode-gradient`; {doc}`../capabilities`.
+{doc}`eigenmode-gradient`, {doc}`quantum-metrics`; {doc}`../tutorials/transmon`;
+{doc}`../capabilities`.

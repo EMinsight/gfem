@@ -72,6 +72,15 @@ triangle of the surface (surface P0, the pinned rule) and returns one value
 per face, with no owner tetrahedron: the fill is a property of the face.
 Each sheet piece's term carries its ``c_p`` (`Term.sheet`).
 
+A **lumped value** ``p`` (a lumped port's inductance or capacitance, an
+`Impedance`'s resistance, inductance or capacitance; ADR 0100) scales the
+coefficient of its pieces, ``c ∝ p`` (C) or ``1 / p`` (R, L), so ``dA / dp =
+(s / p) sum_t theta_t A_t`` with ``s = ±1``. Its **lumped pass** integrates
+``sum_t theta_t (s / p) c_t left_t . right_t`` on the pieces' surfaces with the
+sheet pass's surface P0 form and sums the faces: one complex number per value.
+The rule gives those pieces as `Term` values carrying ``Term.lumped``, through a
+``lumped_terms`` hook beside ``terms``.
+
 Adding a problem type means giving its rule a ``terms`` hook (its operator
 as `Term` values, with their derivatives) and a row of `PROPERTIES`, not a
 code path. A later pass plugs in beside these: load pairs ``int lambda psi``
@@ -81,7 +90,9 @@ Design inputs are named by kind tuples, the same ones `gfem._adjoint` uses:
 ``("material", region, property)`` is a `MaterialField` leaf (per axis when
 the field has `axes`),
 ``("boundary", index, "fill", "fill")`` the fill of the sheet field of
-``model.boundaries[index]`` and ``("nodes",)`` the mesh node coordinates.
+``model.boundaries[index]``, ``("port", index, "inductance")`` and
+``("boundary", index, "resistance")`` (and the like) a lumped value, and
+``("nodes",)`` the mesh node coordinates.
 """
 
 from __future__ import annotations
@@ -105,6 +116,7 @@ from gfem.model import Model
 
 __all__ = [
     "INTEGRANDS",
+    "LUMPED_FORMS",
     "MOMENTS",
     "PROPERTIES",
     "SHAPE_FORMS",
@@ -112,6 +124,8 @@ __all__ = [
     "Derivative",
     "FieldPair",
     "Term",
+    "energy_term",
+    "is_lumped",
     "is_sheet",
     "sensitivity",
     "unsupported",
@@ -207,6 +221,9 @@ class Term:
         sheet: For a piece of a sheet boundary, ``(index, c)``: the
             boundary's index in ``model.boundaries`` and the piece's
             coefficient per unit fill. ``None`` otherwise.
+        lumped: For a ``"trace"`` term of a piece that moves with a lumped
+            value ``p`` (the lumped pass's terms), ``(kind, slope)``: the
+            value's input kind and ``dc / dp = slope c``. ``None`` otherwise.
     """
 
     name: str
@@ -219,6 +236,7 @@ class Term:
     owner: np.ndarray | None = None
     derivatives: Mapping[str, Derivative] = dataclasses.field(default_factory=dict)
     sheet: tuple[int, float] | None = None
+    lumped: tuple[tuple, float] | None = None
 
 
 def _dot(u: ngs.CoefficientFunction, v: ngs.CoefficientFunction) -> ngs.CF:
@@ -298,10 +316,69 @@ class FieldPair:
     domain: ngs.Region
 
 
+def energy_term(
+    name: str,
+    coefficient: Any,
+    elements: np.ndarray,
+    *,
+    axis: int | None = None,
+) -> Term:
+    """An explicit term of the mode energy: ``int Re(eps_r) u . v`` on ``elements``.
+
+    The eigenmode rule's ratios divide by the electric energy ``1/2 eps0 int
+    Re(eps_r) |E|^2`` (ADR 0103), and a region's or a principal axis's share
+    is the same integral on part of the mesh. Their explicit design
+    derivative is this term, not the operator's mass piece ``eps_r (1 - i
+    tan_delta)``: its coefficient reads ``r = Re(eps_r)`` (``dc/dr = 1`` on
+    ``elements``, so a complex leaf's cotangent is real), and nothing else,
+    so ``tan_delta``, ``conductivity`` and ``mu_r`` give it no derivative.
+    A pair ``(conj(u), u)`` weighted with ``1/2 eps0 scale`` times the
+    objective's derivative by that energy contracts it.
+
+    Args:
+        name: The term's key in the pairs' weights.
+        coefficient: ``Re(eps_r)`` on ``elements`` (zero elsewhere), as the
+            node pass would transport it: the whole tensor, or with
+            ``axis`` its part ``Re(eps_k) a_k a_k^T`` along one principal
+            axis.
+        elements: One boolean per tetrahedron (gfem order).
+        axis: The principal axis of a share along one (``None``: the whole
+            permittivity). Its derivative is along that axis only, and an
+            isotropic leaf has none.
+    """
+    mask = np.asarray(elements, dtype=float)
+    if axis is None:
+        isotropic: Any = lambda: mask  # noqa: E731
+        per_axis = np.repeat(mask[:, None], 3, axis=1)
+    else:
+        isotropic = 0.0
+        per_axis = np.zeros((len(mask), 3))
+        per_axis[:, axis] = mask
+    return Term(
+        name,
+        "value",
+        coefficient=coefficient,
+        derivatives={
+            "eps_r": Derivative(
+                isotropic,
+                holomorphic=False,
+                per_axis=Derivative(lambda: per_axis, holomorphic=False),
+            )
+        },
+    )
+
+
 #: Operator families whose rules' terms the node pass reads.
 SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode"})
 #: Operator families whose pairs carry the sheet pieces' weights (by name).
 SHEET_FORMS = frozenset({"driven", "eigenmode"})
+#: Operator families whose pairs carry the lumped pieces' weights (by name).
+LUMPED_FORMS = frozenset({"driven", "eigenmode"})
+#: The lumped values that are design inputs (ADR 0100), by owner.
+_LUMPED = {
+    "port": ("inductance", "capacitance"),
+    "boundary": ("resistance", "inductance", "capacitance"),
+}
 
 
 def is_sheet(kind: tuple) -> bool:
@@ -309,14 +386,22 @@ def is_sheet(kind: tuple) -> bool:
     return kind[0] == "boundary" and tuple(kind[2:]) == ("fill", "fill")
 
 
+def is_lumped(kind: tuple) -> bool:
+    """Whether input ``kind`` is a lumped value: a port's L or C, an `Impedance`'s."""
+    return len(kind) == 3 and kind[2] in _LUMPED.get(kind[0], ())
+
+
 def unsupported(form: str, kind: tuple) -> str | None:
     """Why the kernel cannot differentiate ``form`` by input ``kind``, or None."""
-    if is_sheet(kind):
-        return (
-            None
-            if form in SHEET_FORMS
-            else f"the {form} forms of this version do not read sheet fields"
-        )
+    for kinds, forms, what in (
+        (is_sheet, SHEET_FORMS, "sheet fields"),
+        (is_lumped, LUMPED_FORMS, "lumped values"),
+    ):
+        if kinds(kind):
+            read = form in forms
+            return (
+                None if read else f"the {form} forms of this version do not read {what}"
+            )
     if kind[0] == "material":
         if kind[2] in PROPERTIES.get(form, frozenset()):
             return None
@@ -558,6 +643,40 @@ def _sheet_pass(
     return per_face[faces]
 
 
+def _lumped_pass(
+    model: Model,
+    pairs: list[FieldPair],
+    kind: tuple,
+    terms: Sequence[Term],
+    comm: Any = None,
+) -> complex:
+    """``sum_pairs sum_t theta_t slope_t int c_t left_t . right_t``: one lumped value.
+
+    ``t`` runs over the terms of the pieces that move with input ``kind``
+    (`Term.lumped`), one per surface of a piece; ``dA_t / dp = slope_t A_t``.
+    The terms are in the driven equation's units (length power 0). Under ranks
+    the value is this rank's faces' share, as the sheet pass's faces are.
+    """
+    built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
+    weighted = []
+    for term in terms:
+        if term.lumped is None or term.lumped[0] != kind:
+            continue
+        for pair in pairs:
+            weight = pair.weights.get(term.name, 0.0) * term.lumped[1]
+            if weight != 0:
+                weighted.append((complex(weight), term, pair))
+    if not weighted:
+        return 0j
+    p0, (q,), read = _surface_tests(built, is_complex=True)
+    form = ngs.LinearForm(p0)
+    for weight, term, pair in weighted:
+        ds = quadrature.ds(pair.order, definedon=term.region)
+        form += weight * term.coefficient * _pair_integrand(_tangential, pair) * q * ds
+    form.Assemble()
+    return complex(read(form)[0].sum())
+
+
 def _transport(term: Term, u: Any, v: Any) -> Any:
     """The transport tensor of ``term`` for fields ``u``, ``v`` (module doc)."""
     c = term.coefficient
@@ -763,6 +882,7 @@ def sensitivity(
     *,
     form: str,
     terms: Callable[[bool], Sequence[Term]] | None = None,
+    lumped: Callable[[], Sequence[Term]] | None = None,
     comm: Any = None,
 ) -> dict[Hashable, np.ndarray]:
     """The cotangent of every wanted design input, from the rule's pairs.
@@ -776,6 +896,8 @@ def sensitivity(
         terms: ``terms(nodes)`` returns the operator's `Term` list, called
             once when anything is wanted; ``nodes`` is whether the node
             coordinates are.
+        lumped: ``lumped()`` returns the lumped pass's terms (`Term.lumped`),
+            called once when a lumped value is wanted.
         comm: The resolved communicator, which names the pairs' discretization. The
             passes are local: under ranks each result holds this rank's elements in
             global zeros, and the caller sums over ranks.
@@ -787,7 +909,9 @@ def sensitivity(
         complex one (``sum ct * dy/dp`` when holomorphic, see
         `Derivative`). Per sheet fill, one complex value per face of
         the surface (``mesh.elements(surface)`` order), ``sum ct * dy/dfill``.
-        For ``("nodes",)``, ``(n_nodes, 3)``, real, per metre.
+        For ``("nodes",)``, ``(n_nodes, 3)``, real, per metre. Per lumped
+        value (``("port", index, "inductance")``, ``("boundary", index,
+        "resistance")``, ...), one complex number, ``sum ct * dy/dp``.
 
     Raises:
         NotImplementedError: A wanted kind is not supported (see
@@ -807,6 +931,16 @@ def sensitivity(
     for kind in wants:
         if is_sheet(kind):  # ty: ignore[invalid-argument-type]
             out[kind] = _sheet_pass(model, pairs, kind[1], operator, comm)  # ty: ignore[not-subscriptable]
+    values = [k for k in wants if is_lumped(k)]  # ty: ignore[invalid-argument-type]
+    if values:
+        if lumped is None:  # pragma: no cover - rule bug
+            msg = f"The {form} rule gives no lumped terms."
+            raise NotImplementedError(msg)
+        lumped_terms = lumped()
+        for kind in values:
+            out[kind] = np.asarray(
+                _lumped_pass(model, pairs, kind, lumped_terms, comm)  # ty: ignore[invalid-argument-type]
+            )
     if ("nodes",) in wants:
         out["nodes",] = _node_pass(model, pairs, operator, comm)
     materials = {k for k in wants if k[0] == "material"}  # ty: ignore[not-subscriptable]

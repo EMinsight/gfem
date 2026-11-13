@@ -9,12 +9,18 @@ one (Linux ``VmHWM``), and with the sampled path that kernels without it
 (gVisor, Modal's sandbox) take.
 """
 
+import time
+
 import isolated as isolated_module
 import numpy as np
 import pytest
 from isolated import isolated, peak_rss_gib
 
 MIB = 2**20
+#: How long `_hold` keeps its block. The sampled path sees a peak only if the
+#: caller gets the CPU while it lasts; on a loaded host (ostau, run queue 8-22
+#: on 8 vCPUs) the caller went up to 0.32 s without a sample.
+HOLD = 0.5
 
 
 @pytest.fixture(autouse=True, params=["kernel", "sampled"])
@@ -28,6 +34,13 @@ def _touch(mib):
     return int(block[::4096].sum())
 
 
+def _hold(mib):
+    """`_touch`, keeping the block for `HOLD` seconds: a peak a sampler can see."""
+    block = np.ones(mib * MIB, dtype=np.uint8)
+    time.sleep(HOLD)
+    return int(block[::4096].sum())
+
+
 def _fail():
     raise KeyError("inside the child")
 
@@ -38,7 +51,7 @@ def test_returns_the_value_of_the_call():
 
 
 def test_peak_counts_what_the_call_allocates():
-    _, rss = isolated(_touch, 300)
+    _, rss = isolated(_hold, 300)
     assert rss >= 300 / 1024
 
 

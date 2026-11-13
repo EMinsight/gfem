@@ -8,9 +8,12 @@ to the 3D discretization error.
 import dataclasses
 import itertools
 import math
+import pickle
 import re
+import time
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import anisotropy as anisotropy_reference
 import jax
@@ -21,15 +24,22 @@ import pytest
 import scipy.constants
 import scipy.sparse as sp
 import structured_meshes as sm
-from gradient_cases import HYBRID_PORTS, hybrid_leads_core, hybrid_line, hybrid_mesh
+from gradient_cases import (
+    HYBRID_EPS,
+    HYBRID_PORTS,
+    hybrid_leads_core,
+    hybrid_line,
+    hybrid_mesh,
+)
 from solver_misses import cannot_converge_at
 
 import gfem
-from gfem._engine import anisotropy, terms
-from gfem._engine.driven import driven_operator
+from gfem._engine import anisotropy, cache, terms, wave_ports
+from gfem._engine.driven import _check_port_mode_projection, driven_operator
 from gfem._engine.wave_ports import trace_dofs, wave_port_couplings
 from gfem._linalg import prepare
 from gfem._linalg.base import PlannedHandle, free_mask
+from gfem._port_section import port_section, port_section_key
 
 DATA = Path(__file__).parent / "data"
 C0 = 299792458.0
@@ -94,7 +104,7 @@ def test_the_result_holds_each_wave_ports_mode(plate_result):
     np.testing.assert_allclose(np.asarray(modes["p1"].Z_PV), z_tem(), rtol=1e-8)
     assert np.isnan(np.asarray(modes["p2"].Z_PV)).all()
     assert np.asarray(modes["p1"].solved).all()  # three frequencies: exact solves
-    assert modes["p1"].e_field is None  # no fields kept
+    assert modes["p1"].e_field is not None  # with or without kept fields
 
 
 def test_reference_impedance_is_z_pv_or_nan(plate_result):
@@ -149,14 +159,16 @@ def test_conductor_plates_make_a_lossy_passive_reciprocal_line(plate_mesh, nodes
     # (2.4e-7 here, 2.6e-6 on another CPU) would gate the solver, not the
     # physics. The direct solve's asymmetry is 1.6e-10 at any thread count.
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
-    r = gfem.solve(model, gfem.Driven(F), options=options)
+    with pytest.warns(gfem.PortModeProjectionWarning, match="alpha/beta"):
+        r = gfem.solve(model, gfem.Driven(F), options=options)
     s = np.asarray(r.s.values)
     gamma = np.asarray(r.port_modes["p1"].gamma)
     assert (gamma.real > 0).all()
     np.testing.assert_allclose(s[:, 0, 1], s[:, 1, 0], rtol=0, atol=1e-8)
     power = np.abs(s[:, 0, 0]) ** 2 + np.abs(s[:, 1, 0]) ** 2
     assert (power < 1).all()
-    # the Robin term keeps Re k_n only: the lossy line is matched to O(alpha/beta)
+    # the conjugated S functional reflects a lossy mode referenced to itself
+    # at order alpha/beta; |S21| is right to its square, a looser bound here
     beta = gamma.imag
     np.testing.assert_allclose(
         np.abs(s[:, 1, 0]), np.exp(-gamma.real * L), atol=4 * (gamma.real / beta).max()
@@ -190,6 +202,7 @@ def test_a_direct_sweep_plans_once_and_matches_fresh_handles(
     problem = gfem.Driven(F, sweep=sweep)
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
     calls = []
+    cache.ENTRIES.clear()  # an earlier case's pooled plan would serve this one
 
     def spy(*args, **kwargs):
         calls.append(1)
@@ -264,6 +277,28 @@ def test_kept_fields_keep_the_port_mode_fields(plate_mesh):
     np.testing.assert_allclose(np.abs(e[:, 1]), math.sqrt(2 * z_tem()) / D, rtol=1e-8)
 
 
+@pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
+def test_a_wave_port_result_round_trips_through_pickle(plate_mesh, sweep):
+    # A result crosses a process boundary (multiprocessing) by pickle; the
+    # port mode fields come back readable, with the same values.
+    result = gfem.solve(
+        line(plate_mesh), gfem.Driven(GRID, sweep=sweep), options=OPTIONS
+    )
+    loaded = pickle.loads(pickle.dumps(result))  # noqa: S301 - our own bytes
+    np.testing.assert_array_equal(loaded.s.values, result.s.values)
+    for name, z in (("p1", 0.0), ("p2", L)):
+        point = [W / 4, D / 2, z]
+        mode, back = result.port_modes[name], loaded.port_modes[name]
+        np.testing.assert_array_equal(back.gamma, mode.gamma)
+        expected = np.asarray(mode.e_field.at(point))
+        np.testing.assert_allclose(
+            back.e_field.at(point),
+            expected,
+            rtol=0,
+            atol=1e-12 * np.abs(expected).max(),
+        )
+
+
 def test_a_sweep_that_does_not_converge_keeps_its_solved_port_modes(
     plate_mesh, monkeypatch
 ):
@@ -296,15 +331,50 @@ def test_wave_port_results_round_trip_through_a_bundle(plate_mesh, tmp_path):
     )
 
 
-def test_characteristic_impedance_needs_kept_port_mode_fields(plate_mesh, plate_result):
+def test_characteristic_impedance_reads_any_eager_result(plate_mesh, plate_result):
+    fill = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
+    # the fixture kept no field: the port mode fields are there regardless
     path = ((W / 2, 0.0, 0.0), (W / 2, D, 0.0))
-    with pytest.raises(ValueError, match="keep_fields"):
-        gfem.characteristic_impedance(plate_result.port_modes["p1"], path)
-    kept = gfem.solve(
-        line(plate_mesh), gfem.Driven(F, excite="p1", keep_fields=True), options=OPTIONS
-    )
-    z = np.asarray(gfem.characteristic_impedance(kept.port_modes["p1"], path))
+    mode = plate_result.port_modes["p1"]
+    z = np.asarray(gfem.characteristic_impedance(mode, path))
+    np.testing.assert_allclose(z, mode.Z_PV, rtol=1e-13)
     np.testing.assert_allclose(z, z_tem(), rtol=1e-8)
+    inside = []
+
+    @jax.jit
+    def solve(eps):
+        model = line(plate_mesh).with_material(
+            "fill", dataclasses.replace(fill, eps_r=eps)
+        )
+        result = gfem.solve(model, gfem.Driven(F[:1]), options=OPTIONS)
+        inside.append(result.port_modes["p1"])
+        return result.s.values
+
+    solve(fill.eps_r)
+    # no field crosses a transformation: gfem.PortMode outside it has one
+    with pytest.raises(ValueError, match="PortMode"):
+        gfem.characteristic_impedance(inside[0], path)
+
+
+def test_kept_fields_with_wave_ports_run_under_jit(plate_mesh):
+    fill = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
+    problem = gfem.Driven(F[:2], excite="p1", keep_fields=F[1])
+    inside = []
+
+    def solve(eps):
+        model = line(plate_mesh).with_material(
+            "fill", dataclasses.replace(fill, eps_r=eps)
+        )
+        result = gfem.solve(model, problem, options=OPTIONS)
+        inside.append(result.port_modes["p1"].e_field)
+        return result.e_field(F[1], "p1").coefficients
+
+    eager = solve(fill.eps_r)
+    assert inside.pop() is not None
+    traced = jax.jit(solve)(fill.eps_r)
+    np.testing.assert_array_equal(traced, eager)
+    # the port mode fields have no shape to declare before the solve
+    assert inside.pop() is None
 
 
 def test_a_singular_reaction_raises_instead_of_dropping_the_correction(
@@ -318,12 +388,13 @@ def test_a_singular_reaction_raises_instead_of_dropping_the_correction(
         return built(piece, vectors, np.zeros_like(reaction), ports)
 
     monkeypatch.setattr(wave_ports, "PortSurfaceCoupling", vanishing)
+    cache._DISCRETIZATIONS.clear()  # earlier solves kept the plate's couplings
     with pytest.raises(gfem.PortModeError, match="singular") as caught:
         gfem.solve(line(plate_mesh), gfem.Driven(F), options=OPTIONS)
     message = str(caught.value)
     assert "'p1'" in message
     assert "'port1'" in message
-    assert f"{F[0] / 1e9:.6g} GHz" in message
+    assert "1.5 THz" in message
 
 
 # --- hybrid modes: the modal correction -------------------------------------------
@@ -968,11 +1039,11 @@ def quadrant_mesh(tmp_path_factory):
     return _quadrant_mesh(tmp_path_factory, QUADRANT_A, QUADRANT_B)
 
 
-def quadrant_guide(mesh, tan_delta, names=HYBRID_SHARED):
+def quadrant_guide(mesh, tan_delta, names=HYBRID_SHARED, eps_r=4.0):
     return gfem.Model(
         mesh,
         materials={
-            "block": gfem.Material(eps_r=4.0, tan_delta=tan_delta),
+            "block": gfem.Material(eps_r=eps_r, tan_delta=tan_delta),
             "fill": gfem.Material(eps_r=2.0),
         },
         boundaries=[gfem.PEC("walls")],
@@ -1007,6 +1078,63 @@ def test_a_lossy_shared_port_surface_warns_its_cross_projection(quadrant_mesh):
         value = float(re.search(r"cross-projection of ([0-9.e+-]+)", message)[1])
         # measured 2.67e-2 (1.34 tan_delta): the order of the block's loss
         assert 2e-2 < value < 3.5e-2
+
+
+def test_a_shared_port_surface_on_an_anisotropic_cross_section(quadrant_mesh):
+    # a per-axis block: the port mode problem and the modal coupling take the
+    # tensor path, and every propagating mode is requested on both surfaces
+    model = quadrant_guide(quadrant_mesh, 0.0, eps_r=(3.5, 4.5, 4.0))
+    result = _silent(model, gfem.Driven(QUADRANT_F), QUADRANT_OPTIONS)
+    s = np.asarray(result.s.values)
+    # measured: reciprocity 1.8e-15, unitarity 7e-5
+    assert np.abs(s - np.swapaxes(s, 1, 2)).max() <= 1e-12
+    unitarity = np.einsum("fki,fkj->fij", s.conj(), s) - np.eye(4)
+    assert np.abs(unitarity).max() <= 5e-4
+    length = QUADRANT_L * 1e-3
+    for m, name in enumerate(HYBRID_SHARED[:2]):
+        gamma = np.asarray(result.port_modes[name].gamma)
+        through = s[:, 2 + m, m]
+        # measured ||S21| - 1| 3.6e-5, phase 9e-4 rad (up to the port's sign)
+        np.testing.assert_allclose(np.abs(through), 1.0, rtol=0, atol=2e-4)
+        phase = np.abs(np.angle(through * np.exp(gamma * length)))
+        assert np.minimum(phase, np.abs(phase - np.pi)).max() <= 5e-3
+    conversion = [(i, j) for i in range(4) for j in range(4) if i % 2 != j % 2]
+    # measured 5e-4
+    assert max(np.abs(s[:, i, j]).max() for i, j in conversion) <= 2e-3
+    # the tensor is read: mode 2's beta at 50 GHz differs from the isotropic
+    # block's 362.8 rad/m
+    beta_2 = float(np.asarray(result.port_modes["p1_m2"].gamma)[0].imag)
+    assert beta_2 == pytest.approx(372.1, abs=0.5)
+
+
+def lossy_line(mesh, tan_delta):
+    """The parallel-plate line with a lossy fill: two lone wave ports."""
+    return line(mesh).with_material(
+        "fill", gfem.Material(eps_r=EPS, tan_delta=tan_delta)
+    )
+
+
+def test_a_lossy_lone_port_line_warns_its_attenuation(plate_mesh):
+    # the conjugated S functional reflects a lossy mode referenced to itself
+    # at |S11| ~ alpha/beta (measured 0.99 alpha/beta at three loss levels),
+    # though a uniform line has S11 = 0
+    model = lossy_line(plate_mesh, 0.01)
+    with pytest.warns(gfem.PortModeProjectionWarning) as record:
+        gfem.solve(model, gfem.Driven(F), options=SHARED_OPTIONS)
+    messages = [str(w.message) for w in record]
+    assert len(messages) == 2  # once per port surface
+    for end, message in zip((1, 2), messages, strict=True):
+        for name in (f"'p{end}'", f"'port{end}'", "reflection entries"):
+            assert name in message
+        value = float(re.search(r"alpha/beta of ([0-9.e+-]+)", message)[1])
+        # alpha/beta = tan_delta / 2 on a TEM line
+        assert 4e-3 < value < 6e-3
+
+
+@pytest.mark.parametrize("tan_delta", [0.0, 1e-3])
+def test_a_port_line_below_the_floor_is_silent(plate_mesh, tan_delta):
+    # alpha/beta = 5e-4 at tan_delta = 1e-3
+    _silent(lossy_line(plate_mesh, tan_delta), gfem.Driven(F), SHARED_OPTIONS)
 
 
 # A narrower quadrant guide (2 x 1 mm): mode 1 propagates at 55 and 65 GHz,
@@ -1144,3 +1272,310 @@ def test_a_shared_surface_of_overlapping_modes_is_reflectionless(hybrid_line_mod
     assert max(errors) < 6e-3
     assert rest < 2e-3  # reflections and cross-mode entries, measured 6.2e-4
     assert reciprocity < 1e-8  # measured 2.3e-15
+
+
+# --- port couplings kept across designs (ADR 0082) ------------------------------
+# The hybrid line's core lies away from both port faces; its leads ("block",
+# "fill") touch them.
+
+KEPT_F = (55e9,)
+# one thread: threaded solves sum in a varying order (S moves by 1e-14 run to
+# run), and S is compared bit for bit
+KEPT_OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct", threads=1)
+
+
+def _kept_line(directory):
+    mesh = hybrid_mesh(directory, cells=(4, 2, 2))
+    model = hybrid_line(mesh).replace(
+        ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2")]
+    )
+    return model, hybrid_leads_core(mesh)
+
+
+def _count_port_mode_sweeps(monkeypatch):
+    calls = []
+    real = wave_ports.swept_once
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(wave_ports, "swept_once", spy)
+    return calls
+
+
+def test_a_density_loop_away_from_the_ports_runs_the_port_mode_sweep_once(
+    tmp_path, monkeypatch
+):
+    model, leads = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+
+    def objective(eps):
+        m = model.with_material("core", gfem.MaterialField(eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        s = gfem.solve(m, gfem.Driven(KEPT_F), options=KEPT_OPTIONS).s.values
+        return jnp.abs(s[0, 1, 0]) ** 2, s
+
+    def loop(rebuild):
+        out = []
+        for k in range(3):
+            if rebuild:  # the port couplings built every step, all else kept
+                for disc in cache._DISCRETIZATIONS.values():
+                    disc.ports = None
+            eps = jnp.asarray(leads * (1.0 + 0.1 * k))
+            (_, s), grad = jax.value_and_grad(objective, has_aux=True)(eps)
+            assert np.all(np.isfinite(np.asarray(grad)))
+            out.append(np.asarray(s))
+        return out
+
+    cache._DISCRETIZATIONS.clear()
+    rebuilt = loop(rebuild=True)
+    assert len(sweeps) == 2 * 3
+    cache._DISCRETIZATIONS.clear()
+    sweeps.clear()
+    kept = loop(rebuild=False)
+    assert len(sweeps) == 2  # one port mode sweep per wave port surface
+    for a, b in zip(kept, rebuilt, strict=True):
+        np.testing.assert_array_equal(a, b)  # bit for bit
+
+
+def test_a_design_beside_a_port_face_or_a_node_move_runs_the_sweep_again(
+    tmp_path, monkeypatch
+):
+    model, _ = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+    n_fill = len(model.mesh.elements("fill"))
+    for k in range(3):
+        fill = gfem.MaterialField(eps_r=np.full(n_fill, 2.0 + 0.1 * k))
+        gfem.solve(
+            model.with_material("fill", fill), gfem.Driven(KEPT_F), options=KEPT_OPTIONS
+        )
+    assert len(sweeps) == 2 * 3
+    sweeps.clear()
+    gfem.solve(model, gfem.Driven(KEPT_F), options=KEPT_OPTIONS)
+    gfem.solve(model, gfem.Driven(KEPT_F), options=KEPT_OPTIONS)
+    assert len(sweeps) == 2
+    # a node move is a new discretization: the couplings are rebuilt
+    moved = model.mesh.nodes.at[:, 2].multiply(1.01)
+    gfem.solve(
+        model.replace(mesh=type(model.mesh)(moved, model.mesh._topology)),
+        gfem.Driven(KEPT_F),
+        options=KEPT_OPTIONS,
+    )
+    assert len(sweeps) == 2 * 2
+
+
+def test_the_port_section_key_costs_less_than_the_port_section(tmp_path):
+    # timed for the log, not asserted
+    model, _ = _kept_line(tmp_path)
+    port = model.ports[0]
+    timings = {}
+    for name, f in (("key", port_section_key), ("section", port_section)):
+        f(model, port)
+        t0 = time.perf_counter()
+        for _ in range(5):
+            f(model, port)
+        timings[name] = (time.perf_counter() - t0) / 5
+    key, section = timings["key"], timings["section"]
+    print(f"port_section_key {key:.2e} s, port_section {section:.2e} s")  # noqa: T201
+
+
+def test_the_port_section_key_follows_what_the_port_section_reads(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    port = model.ports[0]
+    key = port_section_key(model, port)
+    core = model.with_material("core", gfem.MaterialField(eps_r=leads * 2.0))
+    assert port_section_key(core, port) == key
+    thermal = model.with_material(
+        "fill", gfem.Material(eps_r=HYBRID_EPS["fill"], thermal_conductivity=3.0)
+    )
+    assert port_section_key(thermal, port) == key
+    for changed in (
+        model.with_material("fill", gfem.Material(eps_r=2.5)),
+        model.with_material("block", gfem.Material(eps_r=4.0, mu_r=1.5)),
+        model.with_material("fill", gfem.Material(eps_r=2.0, conductivity=1.0)),
+        model.with_material("fill", gfem.Material(eps_r=2.0, tan_delta=1e-3)),
+        model.replace(
+            boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), gfem.PEC("side")]
+        ),
+        model.replace(
+            ports=[gfem.WavePort("p1", "port1"), gfem.WavePort("p2", "port2", mode=2)]
+        ),
+    ):
+        assert port_section_key(changed, port) != key
+    # a uniform anisotropic field holds its three principal values once
+    axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    keys = {
+        port_section_key(
+            model.with_material(
+                "fill",
+                gfem.MaterialField.uniform(
+                    "fill", gfem.Material(eps_r=(2.0, 2.0, eps_z), axes=axes)
+                ),
+            ),
+            port,
+        )
+        for eps_z in (3.0, 3.0, 3.5)
+    }
+    assert len(keys) == 2
+
+
+def _kept_objective(model, options=KEPT_OPTIONS):
+    def objective(eps):
+        m = model.with_material("core", gfem.MaterialField(eps_r=eps))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        s = gfem.solve(m, gfem.Driven(KEPT_F), options=options).s.values
+        return jnp.abs(s[0, 1, 0]) ** 2, s
+
+    return objective
+
+
+def test_an_entry_counts_the_same_bytes_with_or_without_its_discretization(
+    tmp_path,
+):
+    model, leads = _kept_line(tmp_path)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    jax.vjp(_kept_objective(model), jnp.asarray(leads), has_aux=True)
+    (entry,) = cache.ENTRIES._entries.values()
+    system = entry.handle.system
+    couplings = sum(c.vectors.nbytes for c in system.surfaces)
+    assert couplings > 0
+    kept, held = entry.nbytes, cache.ENTRIES.nbytes
+    assert held >= kept + couplings  # shared state counts at the cache
+    cache.cached(system.operator.built).ports = None  # the discretization's go
+    assert entry.nbytes == kept
+    # the entry still holds the couplings: they still count, once
+    assert cache.ENTRIES.nbytes == held
+    cache.ENTRIES.clear()
+
+
+def test_retain_memory_zero_keeps_nothing_between_solves(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    options = dataclasses.replace(KEPT_OPTIONS, retain_memory=0)
+    objective = _kept_objective(model, options)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    for k in range(2):  # the second sees the fixed parts' digest again
+        jax.value_and_grad(objective, has_aux=True)(jnp.asarray(leads * (1 + 0.1 * k)))
+        assert cache.ENTRIES.nbytes == 0
+    objective(jnp.asarray(leads))
+    assert cache.ENTRIES.nbytes == 0
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+
+
+def test_retain_memory_zero_keeps_no_port_state_on_the_iterative_path(tmp_path):
+    model, leads = _kept_line(tmp_path)
+    options = dataclasses.replace(
+        KEPT_OPTIONS, linear_solver="bddc_gmres", retain_memory=0
+    )
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    # a non-differentiated solve stores no entry and pools no plan: it walks
+    # at its end all the same
+    _kept_objective(model, options)(jnp.asarray(leads))
+    assert cache._DISCRETIZATIONS
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+    assert cache.ENTRIES.nbytes == 0
+
+
+def test_a_live_entry_reads_its_own_couplings_after_their_eviction(
+    tmp_path, monkeypatch
+):
+    model, leads = _kept_line(tmp_path)
+    objective = _kept_objective(model)
+    eps = jnp.asarray(leads)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    _, vjp, _ = jax.vjp(objective, eps, has_aux=True)
+    (grad_want,) = vjp(1.0)
+    _, vjp, _ = jax.vjp(objective, eps, has_aux=True)
+    # a solve at another design under retain_memory=0 walks the kept state
+    # (tiers 1, 2, 3 and 6): the discretization lets go, the live entry stays
+    tight = dataclasses.replace(KEPT_OPTIONS, retain_memory=0)
+    _kept_objective(model, tight)(eps * 1.2)
+    assert all(d.ports is None for d in cache._DISCRETIZATIONS.values())
+    assert len(cache.ENTRIES) == 1
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+    (grad,) = vjp(1.0)
+    assert not sweeps  # the backward ran no forward again
+    # the first sight of the design summed no kept part: round-off apart
+    np.testing.assert_allclose(
+        np.asarray(grad), np.asarray(grad_want), rtol=1e-9, atol=1e-14
+    )
+    cache.ENTRIES.clear()
+
+
+def test_evicted_kept_state_is_rebuilt_not_read_stale(tmp_path, monkeypatch):
+    model, leads = _kept_line(tmp_path)
+    sweeps = _count_port_mode_sweeps(monkeypatch)
+
+    def loop(options, *, fresh):
+        objective = _kept_objective(model, options)
+        out = []
+        for k in range(3):
+            if fresh:
+                cache.ENTRIES.clear()
+                cache._DISCRETIZATIONS.clear()
+            eps = jnp.asarray(leads * (1.0 + 0.1 * k))
+            (_, s), grad = jax.value_and_grad(objective, has_aux=True)(eps)
+            out.append((np.asarray(s), np.asarray(grad)))
+        return out
+
+    fresh = loop(KEPT_OPTIONS, fresh=True)
+    cache.ENTRIES.clear()
+    cache._DISCRETIZATIONS.clear()
+    sweeps.clear()
+    # the walk drops the kept fixed parts and couplings at every step
+    tight = loop(dataclasses.replace(KEPT_OPTIONS, retain_memory=0), fresh=False)
+    # the couplings were rebuilt at every forward, and at every backward,
+    # which reruns its freed forward (ADR 0081)
+    assert len(sweeps) == 2 * 2 * 3
+    for (s, grad), (s0, grad0) in zip(tight, fresh, strict=True):
+        np.testing.assert_allclose(s, s0, rtol=1e-12, atol=1e-14)
+        np.testing.assert_allclose(grad, grad0, rtol=1e-9, atol=1e-14)
+    cache.ENTRIES.clear()
+
+
+def _projection_warnings(ports, cross_projection, gammas):
+    """The warnings `_check_port_mode_projection` gives one surface on 1, 2 GHz."""
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        _check_port_mode_projection(
+            [(ports, lambda: cross_projection, gammas)], (1e9, 2e9), stacklevel=1
+        )
+    return caught
+
+
+_PORTS = tuple(
+    SimpleNamespace(name=f"p{i}", surface="shared") for i in (1, 2)
+)  # the message reads only the name and the surface
+
+
+def test_an_unsolved_row_does_not_hide_a_lossy_port_line():
+    gamma = np.array([np.nan, 0.01 + 1j])
+    caught = _projection_warnings(_PORTS[:1], None, [gamma])
+    assert [type(w.message) for w in caught] == [gfem.PortModeProjectionWarning]
+    assert "alpha/beta of 0.01 at 2 GHz" in str(caught[0].message)
+
+
+def test_an_unsolved_row_does_not_hide_a_cross_projection():
+    q = np.zeros((2, 2, 2))
+    q[0] = np.nan
+    q[1, 0, 1] = 0.01
+    lossless = [np.array([np.nan, 1j])] * 2
+    caught = _projection_warnings(_PORTS, q, lossless)
+    assert [type(w.message) for w in caught] == [gfem.PortModeProjectionWarning]
+    assert "cross-projection of 0.01 at 2 GHz" in str(caught[0].message)
+
+
+def test_unsolved_rows_alone_give_no_projection_warning():
+    q = np.full((2, 2, 2), np.nan)
+    unsolved = [np.full(2, np.nan + 0j)] * 2
+    assert _projection_warnings(_PORTS, q, unsolved) == []
+
+
+def test_a_mode_at_cutoff_gives_no_division_warning():
+    # Im gamma = 0 (cutoff, or below it) has no alpha/beta: not a lossy line
+    at_cutoff = np.array([0.0 + 0j, 0.5 + 0j])
+    assert _projection_warnings(_PORTS[:1], None, [at_cutoff]) == []

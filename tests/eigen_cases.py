@@ -13,6 +13,10 @@ directory to write it to (a pytest ``tmp_path_factory.mktemp`` directory).
   the transmission-line roots of its complex frequencies.
 - `conductor_line`: the line with a `gfem.Conductor` top plate (a
   nonpolynomial operator).
+- `shunt_mesh` / `shunt_line`: the line cut at x = L / 2 by the interior
+  surface "sheet" across its cross-section, where a capacitive
+  `gfem.Impedance` is a shunt capacitor that keeps the field uniform over
+  every cross-section.
 """
 
 import cmath
@@ -37,6 +41,36 @@ def line_mesh(directory: Path, cells: tuple[int, int, int] = (20, 1, 1)) -> gfem
     """The line's mesh, ``cells`` hexahedra along (x, y, z), in mm."""
     path = sm.write_msh22(Path(directory) / "line.msh", sm.strip_line(L, W, H, cells))
     return gfem.Mesh.from_gmsh(path, length_unit="mm")
+
+
+def shunt_mesh(directory: Path, cells: tuple[int, int, int] = (20, 1, 1)) -> gfem.Mesh:
+    """The line's mesh as volumes "left" and "right" glued at "sheet" (x = L / 2)."""
+    nodes, tets, volumes, tris, surfaces = sm.strip_line(L, W, H, cells)
+    centroids = nodes[tets].mean(axis=1)
+    volumes = ["left" if c[0] < L / 2 else "right" for c in centroids]
+    faces = tets[:, [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]]].reshape(-1, 3)
+    middle = faces[np.all(np.isclose(nodes[faces][:, :, 0], L / 2), axis=1)]
+    middle = np.unique(np.sort(middle, axis=1), axis=0)
+    mesh = (
+        nodes,
+        tets,
+        volumes,
+        np.concatenate([tris, middle]),
+        [*surfaces, *["sheet"] * len(middle)],
+    )
+    path = sm.write_msh22(Path(directory) / "shunt.msh", mesh)
+    return gfem.Mesh.from_gmsh(path, length_unit="mm")
+
+
+def shunt_line(mesh, sheet, ports=()) -> gfem.Model:
+    """The line on `shunt_mesh`, with boundary ``sheet`` on "sheet"."""
+    material = gfem.Material(eps_r=EPS)
+    return gfem.Model(
+        mesh,
+        materials={"left": material, "right": material},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), sheet],
+        ports=list(ports),
+    )
 
 
 def line(mesh, ports=(), **material) -> gfem.Model:

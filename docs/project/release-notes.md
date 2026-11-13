@@ -2,6 +2,272 @@
 
 ## Unreleased
 
+- **Rerun eigenmode results on models with lossy walls.** `gfem.Eigenmode` now
+  returns the modes nearest the target on a model with a `Conductor`, `Impedance`
+  or `Absorbing` wall. Its starting vectors were wrong on such walls, so a solve
+  could skip modes without a word, or return a different set from run to run.
+  Eigenmode results on models with `Conductor`, `Impedance` or `Absorbing` walls
+  from earlier versions may have skipped modes and should be rerun.
+  A symmetric model with such walls could also return only one mode of a
+  degenerate pair, depending on the number of threads; the second mode is now
+  recovered when the solve comes close to it.
+
+Quantum metrics and mode-field gradients:
+
+- **Participation ratios and port Q differentiate.** `participation`,
+  `q_port`, `bulk_participation`, `principal_participation` and
+  `sheet_participation` of an eigenmode result take gradients with respect to
+  materials, sheet fill, node coordinates and lumped values, for an isolated
+  mode (a relative frequency gap of at least 1e-4 to every other mode found).
+  Each mode an objective reads this way costs one extra linear solve on the
+  eigensolve's factorization. `principal_participation` raises with respect to
+  a lumped value. See {doc}`../recipes/eigenmode-gradient`.
+- **Mode fields differentiate.** `e_field`, `Field.at` and
+  `gfem.interface_participation` of an eigenmode result take gradients with
+  respect to materials, sheet fill and lumped values; with respect to node
+  coordinates they raise `gfem.NonDifferentiableError`.
+- **Lumped values are mode-field inputs.** A `LumpedPort`'s inductance and
+  capacitance and an `Impedance`'s values reach the participations and the
+  mode fields, so a junction's `L_J` and a film's kinetic inductance are
+  design inputs.
+- A mode-field gradient raises `gfem.NonDifferentiableError` on periodic and
+  Bloch models, with `linear_solver="bddc_gmres"` or `"petsc"`, with
+  `device="cuda"`, through `result.error`, and when `eigen_tolerance` is above
+  1e-10. A member of a degenerate cluster, a cluster cut by `n_modes` or a
+  nearer pair raises `gfem.DegenerateModeError`, and a moved port node
+  `gfem.PortGeometryError`. A gradient through an infinite `q_port` raises
+  `gfem.NonDifferentiableError`: differentiate `1 / q_port`. The frequencies
+  differentiate as before in every case.
+- **`gfem.quantum`.** `gfem.quantum.dressed_modes(omega, participation,
+  inductance=L_J)` puts one junction's cosine on the solved modes and returns
+  `gfem.quantum.DressedModes`: dressed frequencies, Lamb shifts,
+  anharmonicities and dispersive shifts, in rad/s, differentiable to first
+  order. `method="first_order"` gives the perturbative closed forms. A level
+  whose label is ambiguous raises the new `gfem.ModeLabelError`. A reverse-mode
+  gradient through `DressedModes.overlap` raises
+  `gfem.NonDifferentiableError`; its forward-mode tangent is NaN. The
+  conventions, with conversions to other sources', are in `gfem.conventions`.
+  See {doc}`../recipes/quantum-metrics`.
+- **`EigenmodeResult.sheet_participation`**: the share of each mode's energy
+  in the inductance of each `Impedance` sheet with one, the kinetic inductance
+  fraction of a superconducting film for a lossless mode.
+- **Behaviour change: modes are polished.** On the direct solver, each mode
+  that can take a mode-field gradient now gets a few Newton steps after the
+  eigensolve. Participations, `q_port`, fields and interface participation
+  of such modes move by about 1e-6 to 1e-4 relative, and the default
+  `eigen_tolerance` is enough for participations and their gradients. A mode
+  whose polishing does not converge is left unpolished and takes no
+  mode-field gradient: a gradient through its field raises
+  `gfem.DegenerateModeError` naming it. A plain solve never raises because of
+  polishing.
+- **Behaviour change: the mode energy counts capacitive sheets.** Each mode's
+  1 J of electric energy now includes ½ ∫ C_s |E_t|² dS on every `Impedance`
+  sheet with a capacitance. On models with such a sheet, field amplitudes,
+  participations and `q_port` change; models without one are unchanged.
+- **Behaviour change: `interface_participation` adds the two faces of a
+  film.** For `"MA"` and `"MS"`, each selected side of a surface carries its
+  own layer and the two layers' energies add. On a film with the same medium
+  on both faces the value rises from near zero to the sum of the two faces;
+  on a film between substrate and vacuum it is unchanged. `"default"` and
+  `"SA"` still take the mean field of the two sides.
+- New pages: the tutorial {doc}`../tutorials/transmon`, and the recipes
+  {doc}`../recipes/quantum-metrics` and {doc}`../recipes/loss-budget` (a
+  mode's 1/Q from its loss channels, and their T1 limits). The capabilities
+  matrix gains the rows "Eigenmode, participations" and "Eigenmode, mode
+  field", and the glossary the quantum terms.
+
+Eigenmode solves:
+
+- When a pair nearer the target than the farthest mode found stops within 1e-6 of
+  an eigenpair without converging, `gfem.Eigenmode` now raises
+  `gfem.EigenmodeConvergenceError` instead of returning a set of modes without it.
+- A heavily inductive `Impedance` wall can now return its sheet modes near the
+  target, where cavity modes farther away were returned before.
+- `gfem.Eigenmode` warns with `gfem.LowFrequencyWarning` when its target or its
+  lowest mode is below the low-frequency floor (k0·h_min = 1e-6). The reported
+  `error` does not show the digits lost there.
+- A linear solve that does not converge inside an eigenmode solve now names
+  `SolverOptions.eigen_tolerance` as the remedy, with the inner tolerance in use.
+- With `eigen_solver="slepc"`, a shift solve that fails while seeding no longer
+  leaks SLEPc's eigen solver; the solve's own error is raised as before. Bloch
+  eigenmode problems with `eigen_solver="slepc"` are supported and tested.
+- `gfem.interface_participation` decided whether a surface belongs to a periodic
+  pair from a cache kept per mesh. A wall of a non-periodic model was refused once
+  a `gfem.Periodic` model had been built on the same mesh, and a paired surface was
+  measured without a word after it had been measured on another model or on a
+  result read with `gfem.load_result`. It now reads the pairs the result records,
+  in the new `EigenmodeResult.periodic_surfaces`, which is saved with the result.
+  Results saved by earlier versions read as having no pair.
+
+Optimization and gradients:
+
+- **Optimization loops redo less work per design.** Within one process, a driven
+  solve of a new design with the same mesh, ports and frequencies takes up the
+  wave ports' couplings instead of rebuilding them. With `linear_solver="direct"`
+  on the CPU in one process, it also takes up the last design's solver plan and
+  the assembled parts that do not depend on the design. With
+  `linear_solver="direct"` and the `mkl` extra, a large model may solve the next
+  design on the previous design's factorization, with GMRES to a twentieth of
+  `tolerance`, while that takes less time than factorizing again; small models
+  factorize every design as before. gfem decides from the times it measures, so
+  two runs of the same script can solve different designs on an earlier
+  factorization, and their S and gradients can differ within `tolerance`. The
+  default `linear_solver="auto"` picks `"bddc_gmres"` for a driven problem, which
+  sets up again at every design. See {doc}`../recipes/s-parameter-gradient`.
+  Per step on one MN5 node (Intel Xeon Platinum 8480+), main at 129c4ad against
+  this release's code (measured at 323b060; the 381k bend at 46880ba), 8 threads:
+  the 2D bend tutorial 0.77 → 0.48 s, the harmonic filter tutorial's three variants
+  0.53 → 0.23 s with peak memory 11.1 → 1.2 GiB, a 3D bend of 381 134 unknowns
+  11.2 → 8.9 s with peak memory 17.4 → 7.3 GiB; the 3D bend tutorial's model,
+  2.49 M unknowns with `retain_memory` at 64 GiB: 176 → 125 s at 8 threads and
+  100 → 84 s at 16 threads.
+  - **Behaviour change.** `retain_memory` now bounds everything gfem keeps between
+    solves, these kept parts and couplings included; 0 keeps nothing and
+    factorizes every design. A direct solve on an earlier design's factorization
+    is accurate to `tolerance`, not exact.
+- **Lumped values are design inputs.** A `LumpedPort`'s `inductance` and
+  `capacitance`, and an `Impedance`'s `resistance`, `inductance` and
+  `capacitance`, now differentiate: driven S-parameters on uniform sweeps and on
+  adaptive sweeps with frozen samples (plain and Bloch periodic models included),
+  kept fields, and eigenfrequencies. Electrostatic results get exact zeros, and the
+  port mode problem raises.
+  - A model with an `Impedance`, or with a lumped port's L or C, gains scalar
+    leaves in `jax.tree.leaves(model)` and in a model's cotangent. Models with
+    neither keep their leaf count. Every `Impedance` adds leaves, resistance-only
+    ones included.
+  - An `Impedance` whose surface shares an edge with a wave port face raises
+    `gfem.PortGeometryError` when its values are differentiated.
+  - A lumped port's resistance stays fixed, because it is the port's reference
+    impedance: a traced one raises `gfem.NonDifferentiableError`, and the message
+    says which values are differentiable.
+  - A lumped value built under `jax.grad`, `jax.jit` or `jax.vmap` is checked when
+    the solve runs: a non-finite or non-positive one raises `ValueError`.
+- **`gfem.power_flow` is differentiable** through its field: under `jax.grad`,
+  `jax.jit` and `jax.vmap`, the power absorbed, radiated or transmitted through a
+  surface is an objective, on lumped-port, wave-port and periodic models. A
+  material field or sheet fill in the element layer just outside the side (move
+  the surface one element away), the node coordinates, the field's `omega`, and a
+  field of an adaptive sweep (use `sweep="uniform"`) raise
+  `gfem.NonDifferentiableError` when differentiated; every other model input gets
+  an exact zero from the measurement. A side given by a predicate needs fixed node
+  coordinates: under a `jax.jit` over the model, name the side's regions instead.
+- **The electrostatic energy is differentiable.** `result.energy` of an
+  electrostatic solve differentiates with respect to `eps_r` (isotropic and
+  principal values) and the node coordinates, on both linear solvers, for one
+  adjoint solve for all terminals together. No electrostatic output raises under
+  `jax.grad` any more.
+- **Kept fields with wave ports under a transformation.** `Driven(keep_fields=...)`
+  on a model with wave ports now runs under `jax.jit`, `jax.grad` and `jax.vmap`,
+  and the kept fields are differentiable there. The wave ports' mode fields are
+  `None` inside a transformation.
+- Fixed: the gradient with respect to a `MaterialField` conductivity was exactly
+  zero where the conductivity is zero everywhere (driven and eigenmode); it is now
+  the one-sided derivative.
+- Fixed: in an adaptive sweep with frozen samples, the gradient of an S entry
+  whose port is not excited was off at the samples, by up to about 1e-2. Each
+  sample now also solves one right-hand side per lumped port left out of
+  `excite`. Adaptive results with `excite=` a strict subset of the lumped ports
+  move by less than the sweep tolerance, and `excite=` no longer saves solves in an
+  adaptive sweep.
+- An objective reading the S row of a lumped port without a resistance gets a NaN
+  gradient in an adaptive sweep, as in a uniform one, where it raised an NGSolve
+  exception.
+- **Behaviour change.** `MaterialField` values built under `jax.grad`, `jax.jit` or
+  `jax.vmap` are checked when the solve runs. A non-finite or non-passive value
+  raises the constructor's error with the region named, where it gave NaN, a
+  solver convergence error or a finite result.
+- `gfem.design.project` returns values in [0, 1] exactly; round-off could leave a
+  few ulp outside, which `SheetField` refused. The gradient at densities 0 and 1
+  is unchanged.
+- The {doc}`../capabilities` page's gradient checks gain the permeability and the
+  loss tangent (driven, isotropic and principal values; eigenmode) and the
+  electrostatic region energies.
+- **Fixed: periodic gradients of a `MaterialField` with `axes`.** Recompute them if
+  your periodic model's fields touch a first-order `Absorbing` surface. There, the
+  gradients with respect to `eps_r` and `mu_r` principal values were wrong: off by 0.5 %
+  to 10 % in the cases measured, more for eigenmodes. They now agree with finite
+  differences. Periodic models without such a surface got the right gradients and now
+  get them faster. Non-periodic models were not affected.
+
+Wave ports, S-parameters and measurements:
+
+- **`Field.at` reads the tetrahedron that holds the point.** A point near a face, within
+  1e-4 of an element's size, could get the neighbouring element's value, off by the
+  field's full jump there, and the value could change with the rank count. It now gets
+  the tetrahedron it lies in, on any number of ranks. Within 1e-9 of an element's size
+  from a face, a point counts as on the face. A point on or just above an excluded
+  conductor no longer raises a false "lies in volume region"; a point just inside one,
+  which used to read the air's value, now raises. See {doc}`../recipes/measurements`.
+- A wave port whose port line is lossy now warns with
+  `gfem.PortModeProjectionWarning` when α/β exceeds 1e-3, lone ports included: its
+  reflection entries of S are off by about α/β, and transmission is right to the
+  square of it. A shared surface still warns once, for its cross-projection when
+  that is above the floor. The warning is no longer hidden by an unsolved
+  frequency of a partial sweep, and a mode exactly at cutoff no longer gives a
+  spurious warning.
+- `characteristic_impedance` works on any eager driven result with wave ports,
+  with or without `keep_fields`. Inside a transformation it raises `ValueError`
+  pointing to `gfem.PortMode`.
+- A uniform sweep with wave ports runs with `frequency_workers > 1`. The main
+  process solves the port modes once over the whole grid before the workers
+  start. S and the reference impedances match the one-worker sweep, bit for bit on
+  one thread and to rounding otherwise.
+- `gfem.PortMode` ignores `SolverOptions.device`, `linear_solver` and
+  `eigen_solver` instead of raising, so the options of a driven solve can be
+  reused. Its degenerate-mode `PortModeError` now suggests a mirror half model (a
+  symmetry plane through the guide's axis) before a `pec_edges` wall.
+- `DrivenResult.with_offsets({port: d})` moves wave-port reference planes after
+  the solve, from the stored propagation constants. Offsets are absolute, and the
+  result equals a solve with `WavePort(offset=d)`.
+- `gfem.electric_energy(field, model=model)` gives the time-averaged electric
+  energy, in J, that a kept driven field or a mode field stores in each volume
+  region. Dielectric loss in a region with one loss tangent absorbs
+  `2 * omega * tan_delta * W_e`. It is forward only. The measurements recipe adds
+  that the power of several ports fed at once is `power_flow` of the superposed
+  kept fields.
+- `NetworkParameters.to_touchstone` writes rows in increasing frequency, as the
+  format requires, whatever the order of the result. `to_touchstone(path, z0=R)`
+  writes a network in which no port has a reference impedance, such as wave ports
+  without `voltage_path`: S is written unchanged with R as a nominal label, and a
+  comment line says so. Without `z0` it raises with that remedy.
+- **Behaviour change.** `Driven.frequency` and `PortMode.frequency` refuse a
+  frequency given twice (`ValueError`). A repeat was solved in full twice, crashed
+  `keep_fields=True` and wrote an invalid Touchstone file. Drop repeats with
+  `numpy.unique(frequency)`. The order stays free, and results keep the order
+  given.
+- A `LumpedPort` direction accepts an axis without a sign (`"x"`, `"Z"`): it means
+  the positive axis.
+- `Material`'s message for a complex `eps_r` or `mu_r` names the remedy for each:
+  `tan_delta` or `conductivity` for dielectric loss, a complex value through
+  `gfem.MaterialField` for either.
+- Frequencies in error messages, warnings and result reprs use Hz, kHz, MHz, GHz
+  or THz, so a 193 THz cutoff no longer reads "193414 GHz"; text between 1 GHz and
+  1 THz is unchanged. The low-frequency warnings of driven and eigenmode solves and
+  the mode-following errors of `refine_mesh` use the same units, and a
+  one-frequency band in port mode messages reads "60 GHz", not "60-60 GHz".
+- `power_flow`'s wrong-quantity error now reads "needs an electric field".
+
+Mesh refinement:
+
+- **Adaptive mesh refinement.** `gfem.refine_mesh` solves, estimates the error in
+  each tetrahedron, subdivides where most of it is and solves again, until the
+  {term}`error estimate` meets a tolerance. It returns the refined model, its
+  result and the history of the run. See {doc}`../recipes/mesh-refinement`.
+- `gfem.refine_mesh` frees the solve entries a gradient has already read before
+  its first solve, so the last optimizer step's factorization no longer stays in
+  memory through the refinement cycles.
+- With `QuantityEstimator(omega=...)`, `gfem.refine_mesh` raises
+  `gfem.DegenerateModeError` when the followed mode is not clearly the nearest on a
+  refined mesh (a second mode less than twice as far), or when the nearest mode
+  moved further than the previous error estimate allows: ask for more modes or
+  start from a finer mesh.
+- `gfem.error_estimate` raises `gfem.DistributedUnsupportedError` (feature
+  `error_estimate`) for a result solved across ranks, instead of a NumPy broadcast
+  error or a wrong value. `refine_mesh` across ranks raises with feature
+  `mesh_refinement`.
+
+Solvers, memory and ranks:
+
 - **Wrong S from a PETSc stack built by 0.1.0's script: rebuild it.** A stack built by
   0.1.0's [`tools/petsc_wheelhouse.sh`](https://github.com/benvial/gfem/blob/main/tools/petsc_wheelhouse.sh)
   can return wrong S, with no error, on a large direct solve with
@@ -12,25 +278,17 @@
   - **Behaviour change.** gfem refuses a stack built without this fix, at any size, with
     `gfem.SolverUnavailableError`. `linear_solver="bddc_gmres"` above one rank still
     runs on such a stack, without using it for its coarse problem.
-- **`Field.at` reads the tetrahedron that holds the point.** A point near a face, within
-  1e-4 of an element's size, could get the neighbouring element's value, off by the
-  field's full jump there, and the value could change with the rank count. It now gets
-  the tetrahedron it lies in, on any number of ranks. Within 1e-9 of an element's size
-  from a face, a point counts as on the face. A point on or just above an excluded
-  conductor no longer raises a false "lies in volume region"; a point just inside one,
-  which used to read the air's value, now raises. See {doc}`../recipes/measurements`.
 - **Behaviour change: default thread count.** With `threads=None`, NGSolve now runs on
   `NGS_NUM_THREADS`, else on the physical cores the process may run on, instead of every
   hardware thread of the machine. Without an affinity mask (macOS, Windows) the count is
   the logical CPUs. Your own `ngs.SetNumThreads` no longer carries into such a solve:
-  set `SolverOptions.threads` instead. Inside your own `ngs.TaskManager()`, your thread
-  count is kept.
-- **Fixed: periodic gradients of a `MaterialField` with `axes`.** Recompute them if
-  your periodic model's fields touch a first-order `Absorbing` surface. There, the
-  gradients with respect to `eps_r` and `mu_r` principal values were wrong: off by 0.5 %
-  to 10 % in the cases measured, more for eigenmodes. They now agree with finite
-  differences. Periodic models without such a surface got the right gradients and now
-  get them faster. Non-periodic models were not affected.
+  set `SolverOptions.threads` instead. Inside your own `ngs.TaskManager()`, a solve
+  runs on that TaskManager's threads, whatever `threads` says, on one process and
+  under ranks; gfem no longer calls `SetNumThreads` there, so NGSolve's "can't
+  change number of threads" line is gone. Under ranks, `threads=None` shares each
+  physical core between the ranks whose affinity mask holds it, so partly
+  overlapping masks no longer oversubscribe; identical and disjoint masks give
+  the same counts as before.
 - **Driven solves across MPI ranks.** `mpirun -n N python script.py` or
   `srun --mpi=pmix` now runs a uniform driven sweep and its gradients across the
   ranks, with `comm=` on `gfem.solve`, `Job.run`, `Mesh.from_gmsh`, `Job.from_json`
@@ -45,6 +303,81 @@
     with no warning. It now runs distributed or raises, and a launched install
     without mpi4py raises `gfem.SolverUnavailableError`.
     `comm=MPI.COMM_SELF` asks for the copies by name.
+- **`gfem.release_memory()`** frees everything gfem keeps between solves in a
+  process: solve entries, pooled solver plans and factorizations, and cached
+  discretizations. Results are unchanged; a released gradient is recomputed.
+- A band sweep no longer grows memory with every wave vector: a discretization
+  keeps the spaces of at most 8 Bloch phase sets.
+- Freeing a direct solver handle from another thread during a solve now always
+  gives "This solver handle was freed." or waits for the solve, never a native
+  exception or an answer from a freed handle. `refactorize` on a direct, PETSc or
+  cuDSS handle with another free-DOF set raises `ValueError` instead of solving on
+  the old free DOFs. The `SolverOptions.threads` docs say that a process runs one
+  solve at a time.
+- **Behaviour change.** With `linear_solver="petsc"`, `ksp_type preonly` (the
+  default) is refused with a `pc_type` other than `lu` or `cholesky`, and with a
+  `pc_factor_shift_type` other than `none`: these returned a wrong S with no error.
+  Use a Krylov `ksp_type` such as `gmres` with any other preconditioner. A PETSc
+  Krylov solve that ends on its iteration count without measuring a residual
+  (`ksp_convergence_test skip`) raises `ValueError`. `petsc_options["ksp_atol"]` is
+  reserved, like `ksp_rtol`: gfem stops on the relative residual set from
+  `tolerance`. The `SolverOptions.tolerance` docstring no longer says S is accurate
+  to the tolerance.
+- Above one rank, `linear_solver="petsc"` with `pc_type` `ilu` or `icc`, or `lu`
+  or `cholesky` on a package other than MUMPS, raises
+  `gfem.DistributedUnsupportedError` (feature `petsc_preconditioner`) before any
+  mesh is read. The `power_flow` and `electric_energy` refusals across ranks name
+  the route that works: `Job.run(out=)`, then `load_result` on one process.
+- `linear_solver="auto"` (the default) runs the direct solver on a GPU:
+  `SolverOptions(device="cuda")` and `python -m gfem run --device cuda` on a
+  default job are accepted. `"bddc_gmres"` and `"petsc"` on a GPU stay refused,
+  with a message naming both accepted values. An `"auto"` job written for a GPU and
+  run with `--device cpu` runs the problem type's CPU default.
+- `SolverOptions.order` above 12 raises `ValueError`; higher orders failed inside
+  NGSolve or hung.
+- New warning classes `gfem.SweepRankDeficientWarning` (an adaptive sweep near the
+  accuracy of its full solves) and `gfem.UnsampledPixelsWarning` (`LayerGrid`
+  pixels that no centroid samples). Both subclass `UserWarning`; their messages
+  are unchanged.
+
+Jobs and files:
+
+- A uniform sweep that stops at an unsolved frequency under `Job.run(out)` or
+  `python -m gfem run` now leaves a {term}`partial bundle`, `partial.json` and
+  `partial.npz`, never `result.json`. The error carries a note saying where it is;
+  the command line prints it as a second stderr line `gfem: note: ...` and still
+  exits with 1. Read it with `gfem.load_result("DIR/partial.json")`: its `run`
+  entry lists `unsolved` and `error`. A complete run removes a stale partial
+  bundle.
+- **Behaviour change.** An unknown key in a job or result file is refused by name,
+  with a `ValueError` giving the file, the class, the keys and both gfem versions.
+  `Job` and `Mesh` dropped such keys without a word, and other classes raised a
+  bare `TypeError`.
+
+Documentation:
+
+- New user pages: {doc}`../recipes/solve-a-device`, {doc}`../recipes/prepare-a-mesh`,
+  {doc}`../recipes/save-and-export` and {doc}`../conventions`. Every number they
+  print comes from a solve and is checked against a hand formula or a file read
+  back. The glossary gains S-parameters, power waves, lumped port, wave port, loss
+  tangent, element order and adjoint solve.
+- Every user page's code is checked against the API without solving: names
+  resolve and call keywords bind.
+- The {doc}`../recipes/gsim` recipe reads gsim's one-face lumped ports
+  (microstrip), which raised `KeyError: 'Elements'`.
+- The periodic-cell recipe and `gfem.Absorbing` state the reflection of an
+  absorbing boundary under oblique incidence in a Bloch cell, (1 − cos θ)/(1 + cos θ)
+  at order 1, and that order 2 lowers it for one polarization only. Bloch S is now
+  checked against its reference to 5e-6, and periodic pairing and Bloch bands are
+  tested on an unstructured gmsh mesh.
+- The PETSc recipe states the stack's build time (about 22 minutes, 26 with
+  `--mpi`) and what a Krylov method on the MUMPS factorization does below the
+  low-frequency floor.
+- The get-started page links the 3D bend tutorial, the recipes page lists mesh
+  refinement, and the package description matches the README.
+
+Anisotropic materials and shared port surfaces:
+
 - **Anisotropic materials.** Driven, eigenmode, electrostatic and port mode
   solves, wave ports, first-order absorbing boundaries, `MaterialField` and
   its gradients, `EigenmodeResult.principal_participation`,

@@ -17,7 +17,6 @@ phases.
 
 from __future__ import annotations
 
-import functools
 from collections.abc import Callable
 
 import ngsolve as ngs
@@ -35,10 +34,16 @@ from gfem._engine.coefficients import (
     element_tensors,
     principal_permittivity,
 )
-from gfem._engine.domain import h1_space, hcurl_space, pec_surfaces, space_key
+from gfem._engine.domain import (
+    h1_space,
+    hcurl_space,
+    pec_surfaces,
+    potential_surfaces,
+    space_key,
+)
 from gfem._engine.driven import DrivenOperator, real_space
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver
-from gfem._linalg.base import free_mask
+from gfem._linalg.base import free_mask, host_bytes
 from gfem._periodic import bloch_phases
 from gfem.model import Model
 
@@ -47,6 +52,7 @@ __all__ = [
     "assemble",
     "eigen_operator",
     "element_energy",
+    "energy_parts",
     "matvec",
     "principal_energy",
     "projector",
@@ -164,9 +170,25 @@ def matvec(matrix, x: np.ndarray, *, transpose: bool = False) -> np.ndarray:
     return b.FV().NumPy().copy()
 
 
+class _Map:
+    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors, and its bytes."""
+
+    def __init__(self, matrix) -> None:
+        self.matrix = matrix
+
+    def __call__(self, x: np.ndarray, /, *, transpose: bool = False) -> np.ndarray:
+        """``matrix x``, or ``matrix^T x``."""
+        return matvec(self.matrix, x, transpose=transpose)
+
+    @property
+    def nbytes(self) -> int:
+        """The assembled matrix's host bytes; 0 for a matrix-free form."""
+        return host_bytes(self.matrix)
+
+
 def _linear_map(matrix) -> LinearMap:
-    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors."""
-    return functools.partial(matvec, matrix)
+    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors (`_Map`)."""
+    return _Map(matrix)
 
 
 def projector(
@@ -176,8 +198,10 @@ def projector(
 ) -> DivFreeProjector:
     """The divergence-free projection on ``op``'s space (`DivFreeProjector`).
 
-    The H(curl) space has the solve's DOF numbering; the H1 space of the
-    same order fixes the same `PEC` surfaces. Both are real
+    The H(curl) space has the solve's DOF numbering and `PEC` DOFs; the H1
+    space of the same order is fixed on the `PEC` surfaces and on every
+    lossy wall (`gfem._engine.domain.potential_surfaces`, ADR 0097). Both
+    are real
     (`gfem._engine.driven.real_space` without pairs), and periodic over a
     model's pairs. Under a Bloch ``wave_vector`` (rad/m) the H(curl) space
     is the solve's own complex one and the H1 space complex, with the same
@@ -187,16 +211,19 @@ def projector(
     periodic = model._periodic  # noqa: SLF001
     disc = discretization(model.mesh, periodic)
     pec = pec_surfaces(model)
+    fixed = potential_surfaces(model)
     if not periodic:
         hcurl = real_space(model, op)
         h1 = disc.space(
-            space_key(model, "h1", order), lambda: h1_space(model, built, order, pec)
+            space_key(model, "h1", order, fixed=fixed),
+            lambda: h1_space(model, built, order, fixed),
         )
     else:
         phases = bloch_phases(model, wave_vector)
         h1 = disc.space(
-            space_key(model, "h1", order, periodic=True, phases=phases),
-            lambda: h1_space(model, built, order, pec, periodic=True, phases=phases),
+            space_key(model, "h1", order, periodic=True, phases=phases, fixed=fixed),
+            lambda: h1_space(model, built, order, fixed, periodic=True, phases=phases),
+            group=phases,
         )
         if phases is None:
             hcurl = disc.space(
@@ -245,6 +272,102 @@ def element_energy(
     return density
 
 
+class EnergyPart:
+    """One part of the mode energy's volume term: ``int C u . v`` on some elements.
+
+    ``C`` is ``Re(eps_r)`` on the part's tetrahedra (a region's, or one
+    principal axis's ``Re(eps_k) a_k a_k^T`` of an anisotropic region's),
+    zero elsewhere, as `element_energy` and `principal_energy` integrate it.
+
+    Attributes:
+        values: ``C`` per tetrahedron (gfem order), ``(n,)`` or ``(n, 3, 3)``.
+        elements: The part's tetrahedra, one boolean per tetrahedron.
+        axis: The principal axis of an axis's part, else ``None``.
+    """
+
+    def __init__(
+        self,
+        op: DrivenOperator,
+        values: np.ndarray,
+        elements: np.ndarray,
+        axis: int | None = None,
+    ) -> None:
+        self.values = values
+        self.elements = elements
+        self.axis = axis
+        self.coefficient = coefficient(op.built, values)
+        self._op = op
+        self._form: ngs.BilinearForm | None = None
+
+    def apply(self, x: np.ndarray) -> np.ndarray:
+        """``A x`` of the part's form (file units), matrix-free."""
+        space = self._op.space
+        if self._form is None:
+            u, v = space.TnT()
+            form = ngs.BilinearForm(space, symmetric=True, nonassemble=True)
+            form += (self.coefficient * u) * v * quadrature.dx(self._op.order)
+            self._form = form
+        source = ngs.GridFunction(space).vec
+        target = source.CreateVector()
+        source.FV().NumPy()[:] = x
+        self._form.Apply(source, target)
+        return target.FV().NumPy().copy()
+
+
+def energy_parts(
+    model: Model,
+    op: DrivenOperator,
+    regions: tuple[str, ...],
+    anisotropic: tuple[str, ...],
+) -> tuple[list[EnergyPart], list[list[EnergyPart]]]:
+    """The volume energy's parts per region, and per principal axis.
+
+    Returns one `EnergyPart` per region of ``regions`` (they add up to the
+    `element_energy` form on the solve domain), and for each region of
+    ``anisotropic`` its three axis parts (adding up to its region part),
+    the forms of the eigenmode ratios' explicit energy terms
+    (`gfem._engine.sensitivity.energy_term`, ADR 0103).
+    """
+    mesh = model.mesh
+    eps = np.real(element_tensors(model, "eps_r"))
+
+    def members(region: str) -> np.ndarray:
+        inside = np.zeros(len(mesh.tetrahedra), dtype=bool)
+        inside[mesh.elements(region)] = True
+        return inside
+
+    def masked(values: np.ndarray, inside: np.ndarray) -> np.ndarray:
+        shape = (-1,) + (1,) * (values.ndim - 1)
+        return np.where(inside.reshape(shape), values, 0.0)
+
+    parts = [
+        EnergyPart(op, masked(eps, inside), inside)
+        for inside in (members(r) for r in regions)
+    ]
+    axes_parts = []
+    if anisotropic:
+        values, axes = principal_permittivity(model, anisotropic)
+        for region in anisotropic:
+            inside = members(region)
+            axes_parts.append(
+                [
+                    EnergyPart(
+                        op,
+                        masked(
+                            values[:, k, None, None]
+                            * axes[:, k, :, None]
+                            * axes[:, k, None, :],
+                            inside,
+                        ),
+                        inside,
+                        axis=k,
+                    )
+                    for k in range(3)
+                ]
+            )
+    return parts, axes_parts
+
+
 def principal_energy(
     model: Model, op: DrivenOperator, regions: tuple[str, ...]
 ) -> Callable[[np.ndarray], np.ndarray]:
@@ -289,7 +412,9 @@ class DivFreeProjector:
     """``x -> x - G (G^H M0 G)^-1 G^H M0 x`` on an H(curl) space.
 
     The curl-curl operator vanishes on gradients, so every gradient of an
-    H1 function (zero on the `PEC` surfaces) is an eigenvector of the
+    H1 function (zero on the `PEC` surfaces and the lossy walls, where a
+    gradient with a tangential part is no null vector: the wall term acts
+    on it, ADR 0097) is an eigenvector of the
     eigenmode problem at frequency 0, a huge null space next to the
     physical modes. When the target lies below about half a mode's
     frequency, shift-invert returns these first. Projecting every Arnoldi
@@ -298,7 +423,7 @@ class DivFreeProjector:
     them out, with ``G`` the exact embedding of ``grad H1(p)`` into
     first-kind Nédélec of order p and ``G^H M0 G`` the H1 form ``∫ Re(eps_r)
     grad φ . grad ψ``, factorized once. A volume of the solve domain without
-    `PEC` has constant potentials (zero gradient) in the kernel of that
+    a fixed surface has constant potentials (zero gradient) in the kernel of that
     form; a mass term about 1e-10 of the stiffness removes them without
     affecting the projection.
 
@@ -312,7 +437,8 @@ class DivFreeProjector:
         hcurl: The H(curl) space (the solve's numbering and `PEC` DOFs):
             real, or the complex Bloch-phased solve space.
         h1: The H1 space of the same order, domain, periodicity and phases,
-            `PEC` DOFs fixed (complex iff ``hcurl`` is).
+            fixed on the `PEC` surfaces and the lossy walls (complex iff
+            ``hcurl`` is).
         eps: ``Re(eps_r)`` per element, an NGSolve coefficient (scalar or
             3x3).
         order: The polynomial order (quadrature).

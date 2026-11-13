@@ -283,12 +283,15 @@ def test_adjoint_ports_never_reach_an_adaptive_sweep(tmp_path):
         rule.forward(model, keep=False)
 
 
+@pytest.mark.usefixtures("no_solve")
 def test_frequency_workers_refuse_an_s_estimate_on_a_lossy_wave_port(tmp_path):
-    # Frequency workers solve no wave port, so a block never drops the
-    # adjoint ports: refine_mesh raises before any solve.
+    # Frequency workers take wave ports (ADR 0099) but solve no adjoint:
+    # refine_mesh raises before any solve rather than drop the adjoint ports.
     model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
     f = rc.LOSSY_GUIDE_FREQUENCY
-    with pytest.raises(NotImplementedError, match="frequency_workers=1"):
+    with pytest.raises(
+        gfem.MeshRefinementUnsupportedError, match="frequency_workers=1"
+    ) as caught:
         gfem.refine_mesh(
             model,
             gfem.Driven([f, 1.01 * f]),
@@ -296,6 +299,7 @@ def test_frequency_workers_refuse_an_s_estimate_on_a_lossy_wave_port(tmp_path):
             max_cycles=0,
             options=dataclasses.replace(OPTIONS, frequency_workers=2),
         )
+    assert caught.value.feature == "frequency workers"
 
 
 def test_the_s_estimate_scales_with_the_lossy_de_embedding(tmp_path):

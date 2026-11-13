@@ -1,11 +1,13 @@
 """`Material` and `MaterialField`: keyword-only physics values with checks."""
 
 import re
+import warnings
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import structured_meshes as sm
 from anisotropy import TILTED, rodrigues
 
 import gfem
@@ -185,8 +187,14 @@ def test_matrix_input_rules():
         "as one value or a 3x3 matrix."
     )
     assert _message(eps_r=tilted * (1 - 1e-3j)) == (
-        "Material: eps_r must be real; give losses with tan_delta and conductivity."
+        "Material: eps_r must be real; give dielectric loss with tan_delta or "
+        "conductivity, or a complex value through gfem.MaterialField."
     )
+    assert _message(mu_r=1 - 0.1j) == (
+        "Material: mu_r must be real; for magnetic loss give a complex mu_r "
+        "through gfem.MaterialField."
+    )
+    assert _message(tan_delta=1e-3j) == "Material: tan_delta must be real."
     bad = tilted.copy()
     bad[0, 1] = np.nan
     assert "Material: eps_r must be finite" in _message(eps_r=bad)
@@ -578,3 +586,126 @@ def test_element_values_refuse_a_property_held_as_principal_values(tmp_path):
     np.testing.assert_array_equal(
         tensors[b], np.broadcast_to(4.0 * np.eye(3), (len(b), 3, 3))
     )
+
+
+# --- traced values are checked on the host at solve time ---------------------------
+
+
+def _line_model(mesh, order=2):
+    return gfem.Model(
+        mesh,
+        materials={"dielectric": gfem.Material()},
+        boundaries=[
+            gfem.PEC("bottom"),
+            gfem.PEC("top"),
+            gfem.Absorbing("side", order=order),
+        ],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+
+
+@pytest.fixture(scope="module")
+def traced_line(tmp_path_factory):
+    path = tmp_path_factory.mktemp("traced") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(3.0, 2.0, 1.0, (3, 3, 1)))
+    return _line_model(gfem.Mesh.from_gmsh(path, length_unit="mm"))
+
+
+def _traced_value_and_grad(model, build, p, solver="direct"):
+    def objective(p):
+        s = gfem.solve(
+            model.with_material("dielectric", build(p)),
+            gfem.Driven((21e9,)),
+            options=gfem.SolverOptions(linear_solver=solver),
+        ).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    return jax.value_and_grad(objective)(jnp.asarray(p))
+
+
+def _one(n, value, rest=3.0):
+    p = np.full(n, rest)
+    p[0] = value
+    return p
+
+
+_BAD_TRACED = {
+    "eps_r nan, direct": ("eps_r", "must be finite", np.nan, "direct"),
+    "eps_r nan, auto": ("eps_r", "must be finite", np.nan, "auto"),
+    "eps_r negative": ("eps_r", "is not passive", -2.0, "direct"),
+    "eps_r zero": ("eps_r", "is not passive", 0.0, "direct"),
+    "eps_r gain": ("eps_r", "is not passive", 3.0, "direct"),
+    "mu_r negative": ("mu_r", "is not passive", -1.0, "direct"),
+    "tan_delta negative": ("tan_delta", "is not passive", -0.1, "direct"),
+    "conductivity negative": ("conductivity", "is not passive", -1.0, "direct"),
+    "conductivity inf": ("conductivity", "must be finite", np.inf, "direct"),
+}
+
+
+@pytest.mark.parametrize("case", list(_BAD_TRACED))
+def test_a_traced_material_value_out_of_range_raises_like_an_eager_one(
+    traced_line, case
+):
+    name, word, value, solver = _BAD_TRACED[case]
+    n = len(traced_line.mesh.tetrahedra)
+    if case == "eps_r gain":
+        build, p = (lambda p: gfem.MaterialField(eps_r=p * (1 + 0.1j))), np.full(n, 3.0)
+    elif name == "tan_delta":
+        build = lambda p: gfem.MaterialField(eps_r=3.0, tan_delta=p)  # noqa: E731
+        p = np.full(n, value)
+    elif name == "conductivity":
+        build = lambda p: gfem.MaterialField(conductivity=p)  # noqa: E731
+        p = np.full(n, value) if value < 0 else _one(n, value)
+    else:
+        build = lambda p: gfem.MaterialField(**{name: p})  # noqa: E731
+        p = _one(n, value)
+    # the same numbers are refused when the field is built eagerly
+    with pytest.raises(ValueError, match=word):
+        build(np.asarray(p))
+    with pytest.raises(Exception, match=word) as raised:
+        _traced_value_and_grad(traced_line, build, p, solver)
+    message = str(raised.value)
+    assert "MaterialField" in message
+    assert name in message
+    assert "region 'dielectric'" in message
+
+
+@pytest.mark.parametrize("order", [1, 2])
+def test_a_traced_negative_permittivity_behind_an_absorbing_wall_raises(
+    traced_line, order
+):
+    mesh = traced_line.mesh
+    model = _line_model(mesh, order)
+    wall = mesh.triangles[mesh.elements("side")]
+    behind = next(
+        e for e, tet in enumerate(mesh.tetrahedra) if len(set(tet) & set(wall[0])) == 3
+    )
+    p = np.full(len(mesh.tetrahedra), 3.0)
+    p[behind] = -2.0
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(Exception, match=r"is not passive.*region 'dielectric'"):
+            _traced_value_and_grad(model, lambda p: gfem.MaterialField(eps_r=p), p)
+
+
+def test_valid_traced_material_values_still_solve(traced_line):
+    n = len(traced_line.mesh.tetrahedra)
+    value, grad = _traced_value_and_grad(
+        traced_line, lambda p: gfem.MaterialField(eps_r=p), np.full(n, 3.0)
+    )
+    assert np.isfinite(float(value))
+    assert np.isfinite(np.asarray(grad)).all()
+    rng = np.random.default_rng(0)
+    rho = np.concatenate([[0.0, 1.0], rng.uniform(0, 1, n - 2)])
+    value, grad = _traced_value_and_grad(
+        traced_line,
+        lambda r: gfem.MaterialField.interpolate(
+            r, gfem.Material(), gfem.Material(eps_r=4.0, conductivity=10.0)
+        ),
+        rho,
+    )
+    assert np.isfinite(float(value))
+    assert np.isfinite(np.asarray(grad)).all()
