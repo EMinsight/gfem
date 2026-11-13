@@ -20,8 +20,12 @@ result reloaded with `gfem.load_result`.
 Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 `jax.grad` they differentiate with respect to the field coefficients (so
 material-field gradients flow through the solve that made the field) and
-the measurement's own numbers. Mesh-node gradients raise
-`gfem.NonDifferentiableError` in this version.
+the measurement's own numbers. That includes the normalized mode fields of
+an eigenmode solve, which differentiate with respect to `gfem.MaterialField`
+properties and `gfem.SheetField` fills for an isolated mode (ADR 0102).
+Mesh-node gradients raise `gfem.NonDifferentiableError`: for a shape
+derivative of a measurement, take finite differences of it over meshes
+moved by `gfem.shape.boundary_morph`.
 """
 
 from __future__ import annotations
@@ -167,10 +171,13 @@ def interface_participation(
 
     Differentiable with respect to ``thickness``, ``eps_r``, ``tan_delta``,
     the mode fields and the substrate's `MaterialField` permittivity (the
-    ``"MS"`` flux), per principal axis for a field with ``axes``. Mode fields
-    are not differentiable in this version, so a gradient that reaches the
-    eigenmode solve raises `gfem.NonDifferentiableError` there; mesh-node
-    gradients raise.
+    ``"MS"`` flux), per principal axis for a field with ``axes``. Through
+    the eigenmode solve, the mode fields differentiate with respect to
+    `gfem.MaterialField` properties and `gfem.SheetField` fills of an
+    isolated mode (ADR 0102; a mode of a degenerate cluster raises
+    `gfem.DegenerateModeError`). Mesh-node gradients raise
+    `gfem.NonDifferentiableError`: take finite differences of the
+    participation over meshes moved by `gfem.shape.boundary_morph` instead.
 
     Args:
         modes: An eigenmode result.

@@ -14,7 +14,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from eigen_cases import EPS, line_mesh, shunt_mesh
+from eigen_cases import EPS, line_mesh, shunt_line, shunt_mesh
 from finite_differences import derivative
 
 import gfem
@@ -274,11 +274,22 @@ def test_sparsecholesky_backward_matches_pardiso(line_mesh_dir, monkeypatch):
     np.testing.assert_allclose(along, derivative(objective, eps, d, 1e-2), rtol=1e-6)
 
 
-def test_capacitive_sheet_mode_field_gradient_matches_differences(tmp_path):
+@pytest.mark.parametrize("read", ["ratios", "field"])
+def test_capacitive_sheet_mode_field_gradient_matches_differences(tmp_path, read):
     # the sheet's share of the mode energy (ADR 0103) differentiates with the
-    # rest of it: a region's share and the sheet participation in eps_r
+    # rest of it: a region's share and the sheet participation, and the field
+    # normalized to that energy, in eps_r; the mode at 5.6 GHz puts its
+    # voltage on the sheet, which stores 6 % of its electric energy
     mesh = shunt_mesh(tmp_path)
     options = gfem.SolverOptions(eigen_tolerance=1e-12)
+    probe = np.random.default_rng(6).standard_normal(
+        gfem.solve(
+            shunt_line(mesh, gfem.Impedance("sheet", capacitance=1e-13)),
+            gfem.Eigenmode(target=5.6e9),
+        )
+        .e_fields[0]
+        .coefficients.shape
+    )
 
     def objective(e):
         model = gfem.Model(
@@ -290,10 +301,15 @@ def test_capacitive_sheet_mode_field_gradient_matches_differences(tmp_path):
             boundaries=[
                 gfem.PEC("bottom"),
                 gfem.PEC("top"),
-                gfem.Impedance("sheet", inductance=1e-9, capacitance=1e-15),
+                gfem.Impedance("sheet", inductance=1e-9, capacitance=1e-13),
             ],
         )
-        result = gfem.solve(model, gfem.Eigenmode(target=8e9), options=options)
+        result = gfem.solve(model, gfem.Eigenmode(target=5.6e9), options=options)
+        if read == "field":
+            # squared: the mode's sign rule picks among tied entries of the
+            # uniform line field, which a perturbation reorders
+            projection = result.e_fields[0].coefficients @ probe
+            return jnp.real(jnp.exp(0.7j) * projection**2) * 1e-12
         return (
             result.bulk_participation["left"][0]
             + 0.5 * result.sheet_participation["sheet"][0]

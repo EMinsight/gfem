@@ -18,6 +18,22 @@ energy part at fixed ``u``. Scale and phase invariance give ``u^T w = 0``, so
 the normalization multipliers vanish and the adjoint's right-hand side is
 ``w`` itself.
 
+The normalized field ``e`` itself (``e_fields[m].coefficients``, and through
+it `gfem.Field.at` and `gfem.interface_participation`) is not invariant: it
+is the mode scaled to ``u^H W u = E`` (1 J, ``W`` the energy's Hermitian
+form) with ``u^T B u`` real and positive (``B = int Re(eps_r) u . v``, the
+phase rule of the forward). A cotangent ``ct`` on it pairs as ``dG = Re(ct^T
+de)`` (JAX's convention, unconjugated), so its ``w`` is ``ct / 2``, and with
+``s = u^T w`` the normalization multipliers
+
+    mu1 = -Re(s) / E,    mu2 = Im(s) / (u^T B u)
+
+give the adjoint's right-hand side ``r = w + mu1 conj(W u) - i mu2 B u``
+(``u^T r = 0``) and the explicit terms ``mu1 u^H (dW/dp) u + mu2 Im(u^T
+(dB/dp) u)``: ``mu1`` adds to ``dG`` by the energy, and ``mu2`` weighs the
+pair ``(u, u)`` on the same ``Re(eps_r)`` terms with ``-i mu2``
+(quantum-metrics ticket 03).
+
 The explicit part is contracted by the sensitivity kernel through one
 `gfem._engine.sensitivity.energy_term` per region (``Re(eps_r)`` there) and
 per principal axis of an anisotropic region, weighted by ``1/2 eps0 scale``
@@ -85,11 +101,15 @@ class Load:
         energy: The explicit terms: the weight of each energy term
             (`energy_name`) and sheet piece (by name) on the pair
             ``(conj(u), u)``.
+        phase: The phase rule's explicit terms: the weight of each region's
+            energy term on the pair ``(u, u)`` (empty without a field
+            cotangent).
     """
 
     w: np.ndarray
     kappa: complex
     energy: dict[str, float]
+    phase: dict[str, complex] = dataclasses.field(default_factory=dict)
 
 
 class Ratios:
@@ -166,19 +186,28 @@ class Ratios:
         return {name: complex(v @ u) for name, v in self.voltage.items()}
 
     def load(
-        self, u: np.ndarray, k: complex, ct: Mapping[str, np.ndarray], *, mode: int
+        self,
+        u: np.ndarray,
+        k: complex,
+        ct: Mapping[str, np.ndarray],
+        *,
+        mode: int,
+        field: np.ndarray | None = None,
     ) -> Load:
         """The load of the cotangents ``ct`` on the mode ``(k, u)``.
 
         Args:
-            u: The mode on the solve space (any scale: the ratios are
-                invariant).
+            u: The mode on the solve space (any scale for the ratios, which
+                are invariant; the normalized mode with a ``field``
+                cotangent).
             k: Its eigenvalue.
             ct: This mode's cotangents by output: ``"q_port"`` ``(n_resistive,)``,
                 ``"participation"`` ``(n_inductive,)``, ``"bulk"``
                 ``(n_regions,)``, ``"principal"`` ``(n_anisotropic, 3)``,
                 ``"sheet"`` ``(n_kinetic,)``; a missing output carries none.
             mode: The mode's index, for the error message.
+            field: The cotangent on the normalized field's coefficients
+                (solve space, complex), or ``None``.
 
         Raises:
             NonDifferentiableError: A nonzero cotangent on an infinite
@@ -204,7 +233,10 @@ class Ratios:
         for s, c in enumerate(ct.get("sheet", ())):
             if c:
                 partials.sheet(c, mode_state, s)
-        return partials.load(mode_state)
+        load = partials.load(mode_state)
+        if field is None or not np.any(field):
+            return load
+        return _normalized(self, mode_state, load, field)
 
 
 class _Mode:
@@ -350,3 +382,40 @@ class _Partials:
             if c:
                 w += c * np.conj(mode.volts[name]) * ratios.voltage[name]
         return Load(w=w, kappa=complex(self.kappa), energy=weights)
+
+
+def _normalized(ratios: Ratios, mode: _Mode, load: Load, field: np.ndarray) -> Load:
+    """``load`` plus a cotangent ``field`` on the normalized mode ``u``.
+
+    ``w = field / 2`` (``dG = Re(field^T du)``), and the normalization
+    multipliers of the module docstring: ``mu1`` on ``dG`` by the energy
+    (``conj(W u)`` in ``w``, ``mu1 unit`` on each region's and capacitive
+    sheet's ``(conj(u), u)`` pair), ``mu2`` on the phase rule (``-i mu2 B
+    u`` in ``w``, ``-i mu2`` on each region's ``(u, u)`` pair). ``s = u^T
+    w`` is taken over the whole ``w``, whose ratio part has ``u^T w = 0`` up
+    to round-off.
+    """
+    u = mode.u
+    w = load.w + 0.5 * field
+    b_u = sum(mode.region_applied, np.zeros_like(u, dtype=complex))
+    s = complex(u @ w)
+    mu1 = -s.real / mode.energy
+    mu2 = s.imag / float(np.real(u @ b_u))
+    # conj(W u): the energy's Wirtinger partial (volume, port capacitors and
+    # capacitive sheets)
+    w_u = ratios.unit * np.conj(b_u)
+    for name, c in mode.capacitors.items():
+        w_u = w_u + 0.5 * c * np.conj(mode.volts[name]) * ratios.voltage[name]
+    for applied in mode.sheet_applied:
+        w_u = w_u + ratios.unit * np.conj(applied)
+    w = w + mu1 * w_u - 1j * mu2 * b_u
+    energy = dict(load.energy)
+    for piece in ratios.capacitors:
+        name = ratios.piece_name(piece)
+        energy[name] = energy.get(name, 0.0) + mu1 * ratios.unit
+    phase = {}
+    for region in ratios.regions:
+        name = energy_name(region)
+        energy[name] = energy.get(name, 0.0) + mu1 * ratios.unit
+        phase[name] = -1j * mu2
+    return Load(w=w, kappa=load.kappa, energy=energy, phase=phase)

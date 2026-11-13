@@ -428,25 +428,39 @@ def test_per_axis_substrate_permittivity_differentiates_the_metal_substrate_laye
     np.testing.assert_allclose(g, fd, rtol=5e-11)
 
 
-def test_through_the_eigenmode_solve_the_gradient_raises(tmp_path):
-    # mode fields are not differentiable in this version: never a silent zero
+def test_through_the_eigenmode_solve_the_permittivity_gradient_is_exact(tmp_path):
+    # Mode fields differentiate with respect to materials (ADR 0102). A
+    # uniform dielectric's permittivity keeps the mode's shape: its 1 J field
+    # scales as eps^(-1/2), so p_MS ~ |eps E_n|^2 grows as eps and dp/deps =
+    # p / eps. The node coordinates raise (the measurement refuses them).
     path = tmp_path / "line.msh"
     sm.write_msh22(path, sm.strip_line(L, 2.0, H, (8, 1, 1)))
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
 
-    def f(eps):
-        model = gfem.Model(
+    def model(eps, mesh=mesh):
+        return gfem.Model(
             mesh,
             materials={"dielectric": gfem.MaterialField(eps_r=eps)},
             boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
         )
-        modes = gfem.solve(model, gfem.Eigenmode(target=F1 / 2))
+
+    def participation(m):
+        modes = gfem.solve(m, gfem.Eigenmode(target=F1 / 2))
         return gfem.interface_participation(
             modes, "top", T, 5.0, kind="MS"
         ).participation[0]
 
-    with pytest.raises(gfem.NonDifferentiableError):
-        jax.grad(f)(jnp.asarray(4.0))
+    eps = jnp.asarray(4.0)
+    p, g = jax.value_and_grad(lambda e: participation(model(e)))(eps)
+    np.testing.assert_allclose(g, p / eps, rtol=1e-6)
+
+    tree = jax.tree_util.tree_structure(mesh)
+
+    def moved(nodes):
+        return participation(model(eps, jax.tree_util.tree_unflatten(tree, [nodes])))
+
+    with pytest.raises(gfem.NonDifferentiableError, match="mesh node coordinates"):
+        jax.grad(moved)(jnp.asarray(mesh.nodes))
 
 
 def test_runs_under_jit(side):

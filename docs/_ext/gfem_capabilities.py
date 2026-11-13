@@ -129,10 +129,17 @@ ROWS = {
         recipe="recipes/periodic-cell",
         front=False,
     ),
-    # the ratios of isolated modes (ADR 0102): Capabilities page only
+    # the ratios and normalized fields of isolated modes (ADR 0102):
+    # Capabilities page only
     "eigenmode_participation": Row(
         "Eigenmode, participations",
         "participation ratios and port Q",
+        recipe="recipes/eigenmode-gradient",
+        front=False,
+    ),
+    "eigenmode_field": Row(
+        "Eigenmode, mode field",
+        "the normalized field at points and interface participation",
         recipe="recipes/eigenmode-gradient",
         front=False,
     ),
@@ -157,6 +164,7 @@ PROBLEMS = {
     "eigenmode_periodic_bloch": Problem("eigenmode_periodic_bloch", "omega"),
     # cell-only key: the raise table's eigenmode keys answer for its leaves
     "eigenmode_participation": Problem("eigenmode_participation", "participation"),
+    "eigenmode_field": Problem("eigenmode_field", "e_fields.0.coefficients"),
     "electrostatic": Problem("electrostatic", "capacitance"),
     "port_mode": Problem("port_mode", "gamma"),
     "port_mode_sheet": Problem("port_mode", "gamma"),
@@ -213,6 +221,7 @@ SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 # OUT_OF_SCOPE rows the grid needs (by their label): the row's cell raises.
 GRID_LABELS = {
     "electrostatic x sheet fill": ("electrostatic", "fill"),
+    "eigenmode mode field x node coordinates": ("eigenmode_field", "nodes"),
 }
 #: What each raises row asks for, in the site's words, by the test's label (the
 #: match key). A row off the grid with no label here, or a label with no row,

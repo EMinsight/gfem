@@ -38,6 +38,7 @@ GRID = {
     "eigenmode_periodic_plain": (V, V, V, V),
     "eigenmode_periodic_bloch": (V, V, V, V),
     "eigenmode_participation": (V, V, V, V),
+    "eigenmode_field": (V, V, V, R),
 }
 FRONT = ("driven", "eigenmode", "electrostatic", "port_mode")
 
@@ -249,7 +250,7 @@ def _derive(data, cells=None, expected=None, out_of_scope=None):
 
 
 def test_unchanged_data_derives(data):
-    assert len(_derive(data)["rows"]) == 9
+    assert len(_derive(data)["rows"]) == 10
 
 
 def test_a_new_problem_in_the_cells_fails(data):

@@ -34,10 +34,13 @@ among them (best-effort: no Arnoldi attempt is added for it).
 The ratios of the mode fields (``q_port``, ``participation``, the region,
 principal and sheet shares) differentiate for isolated modes (ADR 0102) with
 respect to materials, sheet fills and node coordinates (port surfaces
-held), on one CPU process with the ``direct`` linear solver: per mode
-with a cotangent, one deflated GMRES solve of the singular adjoint
-system ``T(k) lam0 = -w``, ``t^T lam0 = 0`` on the live factors the
-forward kept (`gfem._eigen.adjoint`, ADR 0104), the
+held), and the normalized mode fields themselves (through the
+normalization multipliers of `gfem._eigen.ratios`) with respect to
+materials and sheet fills, never the node coordinates; on one CPU process
+with the ``direct`` linear solver: per mode with a cotangent, one deflated
+GMRES solve of the singular adjoint system ``T(k) lam0 = -w``, ``t^T lam0
+= 0`` on the live factors the forward kept (`gfem._eigen.adjoint`, ADR
+0104), the
 load ``(w, kappa, explicit terms)`` of `gfem._eigen.ratios`, and the pairs
 ``(2 lam, x)`` and ``(conj(x), x)`` on the mode energy's ``Re(eps_r)``
 terms (ADR 0103) and the sheets' L and C pieces. What does not
@@ -980,11 +983,12 @@ class EigenmodeRule:
         eigenvalues differentiate with respect to every read input. The
         mode-field outputs (``q_port``, ``participation``,
         ``bulk_participation``, ``principal_participation``,
-        ``sheet_participation``) differentiate on one CPU process with
-        ``linear_solver="direct"``, ``eigen_tolerance`` at most 1e-10,
-        without periodic pairs or a Bloch wave vector, with respect to
-        materials, sheet fills and node coordinates (port surfaces held).
-        The backward error never differentiates. Checked at trace time; what
+        ``sheet_participation`` and the normalized fields ``e_fields``)
+        differentiate on one CPU process with ``linear_solver="direct"``,
+        ``eigen_tolerance`` at most 1e-10, without periodic pairs or a Bloch
+        wave vector, with respect to materials, sheet fills and node
+        coordinates (port surfaces held); the normalized fields never with
+        respect to the node coordinates.
         depends on the modes (a cluster, a near pair, a port without
         voltage) raises in the backward.
         """
@@ -1063,11 +1067,14 @@ class EigenmodeRule:
 
         A lumped value's reason starts "with respect to model.".
         """
-        if name == "e_field":
+        if name == "e_field" and ("nodes",) in kinds:
             return (
-                "in this version: the normalized mode fields (and the "
-                "measurements of them: Field.at, interface_participation) do "
-                "not differentiate yet; the ratios on the result do"
+                "with respect to the mesh node coordinates: the normalized mode "
+                "field (and the measurements of it: Field.at, "
+                "interface_participation) has no node gradient; it "
+                "differentiates with respect to materials and sheet fills. For "
+                "a shape derivative take finite differences of the measurement "
+                "over meshes moved by gfem.shape.boundary_morph"
             )
         lumped = sorted(k for k in kinds if is_lumped(k))
         if lumped:
@@ -1157,13 +1164,15 @@ class EigenmodeRule:
     ) -> list[FieldPair]:
         """The mode-field outputs' pairs (quantum-metrics ticket 03, ADR 0104).
 
-        Per mode ``(k, x)`` with a nonzero cotangent on its ratios: the load
-        ``(w, kappa, explicit terms)`` (`Ratios.load`), the deflated solve
-        ``T(k) lam0 = -w``, ``t^T lam0 = 0`` (``t = T'(k) x``) on the kept
-        operator's live factors (`deflated_solve`), ``lam = lam0 - kappa x /
-        (x^T t)``, and the pairs ``(2 lam, x)`` with the pieces' θ at the
-        mode (``dG/dp = 2 Re(lam^T dT/dp x)``) and ``(conj(x), x)`` with the
-        explicit energy terms' weights. An entry without its operator (over
+        Per mode ``(k, x)`` with a nonzero cotangent on its ratios or on its
+        normalized field: the load ``(w, kappa, explicit terms)``
+        (`Ratios.load`, with the field's normalization multipliers ``mu1``,
+        ``mu2``), the deflated solve ``T(k) lam0 = -w``, ``t^T lam0 = 0``
+        (``t = T'(k) x``) on the kept operator's live factors
+        (`deflated_solve`), ``lam = lam0 - kappa x / (x^T t)``, and the pairs
+        ``(2 lam, x)`` with the pieces' θ at the mode (``dG/dp = 2 Re(lam^T
+        dT/dp x)``), ``(conj(x), x)`` with the explicit energy terms' weights
+        and ``(x, x)`` with the phase rule's. An entry without its operator (over
         ``retain_memory``) gets one from ``op``, prepared at ``k (1 + d)`` of
         its first such mode, and freed at the end.
         """
@@ -1173,7 +1182,12 @@ class EigenmodeRule:
             for n in names
             if n in cotangents and np.any(cotangents[n])
         }
-        if not cts:
+        # the normalized field's cotangent, complex (non-periodic: the solve
+        # space is the unpaired one)
+        field = cotangents.get("e_field")
+        if field is not None and not np.any(field):
+            field = None
+        if not cts and field is None:
             return []
         fields = entry.fields
         x, k = fields["x"], fields["k"]
@@ -1182,7 +1196,12 @@ class EigenmodeRule:
         def column(c: np.ndarray, j: int) -> np.ndarray:
             return c[:, j] if c.ndim == 2 else c[:, j, :]
 
-        wanted = [j for j in range(n) if any(column(c, j).any() for c in cts.values())]
+        wanted = [
+            j
+            for j in range(n)
+            if any(column(c, j).any() for c in cts.values())
+            or (field is not None and field[:, j].any())
+        ]
         if not wanted:
             return []
         per_k = const.c / op.built.scale
@@ -1221,7 +1240,13 @@ class EigenmodeRule:
             for j in wanted:
                 u, kj, ut = x[:, j], complex(k[j]), gram[j]
                 load = ratios.load(
-                    u, kj, {name: column(c, j) for name, c in cts.items()}, mode=j
+                    u,
+                    kj,
+                    {name: column(c, j) for name, c in cts.items()},
+                    mode=j,
+                    field=None
+                    if field is None
+                    else np.where(eop.free, np.asarray(field[:, j], complex), 0),
                 )
                 lam = (
                     deflated_solve(
@@ -1244,6 +1269,12 @@ class EigenmodeRule:
                             u[:, None],
                             weights=load.energy,
                             domain=domain,
+                        )
+                    )
+                if load.phase:
+                    pairs.append(
+                        op.pair(
+                            u[:, None], u[:, None], weights=load.phase, domain=domain
                         )
                     )
         finally:

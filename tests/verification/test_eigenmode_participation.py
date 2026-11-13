@@ -9,7 +9,10 @@ permeability (whose explicit energy term is zero: the mode energy reads
 ``q_port`` is infinite and has no derivative while ``1 / q_port`` is an
 exact zero. And the node pullback of the ratios on the `gfem.Conductor`
 variant, against the cache: other discretizations between the forward and
-the pullback (they evict the forward's), with and without its entry.
+the pullback (they evict the forward's), with and without its entry. And
+the convention of a complex field's cotangent: a real ``g`` of the
+normalized mode field's coefficients ``e`` pulls back with ``dg = Re(ct^T
+de)``, unconjugated (quantum-metrics ticket 03).
 """
 
 import jax
@@ -113,6 +116,38 @@ def test_one_over_q_port_without_port_voltage_is_exactly_zero(mesh, monkeypatch)
     assert np.abs(np.asarray(both)).max() > 0
     with pytest.raises(jax.errors.JaxRuntimeError, match="1 / q_port"):
         jax.grad(lambda p: solve(p).q_port["r"][0])(jnp.asarray(eps))
+
+
+def test_field_cotangent_convention_is_unconjugated(mesh):
+    # a lossy mode (complex k, complex field): jax.grad of g = Re(c^T e)
+    # along d equals Re(c^T de) by differences of e itself, and not the
+    # conjugated pairing Re(c^H de)
+    values = junction_values(mesh)
+    eps = values["sub"]["eps_r"]
+
+    def field(p):
+        moved = {r: dict(v) for r, v in values.items()}
+        moved["sub"]["eps_r"] = p
+        model = junction_line(mesh, "resistive", moved)
+        return gfem.solve(model, PROBLEM, options=OPTIONS).e_fields[0].coefficients
+
+    e0 = np.asarray(field(eps))
+    rng = np.random.default_rng(7)
+    c = (rng.standard_normal(e0.shape) + 1j * rng.standard_normal(e0.shape)) / (
+        np.abs(e0).max() * np.sqrt(e0.size)
+    )
+    (d,) = unit_directions(rng, eps.shape, 1)
+    grad = jax.grad(lambda p: jnp.real(jnp.sum(c * field(p))))(eps)
+    got = float(jnp.dot(grad, d))
+    h = 1e-2
+    samples = [np.asarray(field(eps + s * h * d)) for s in (-2, -1, 1, 2)]
+    de = (8 * (samples[2] - samples[1]) - (samples[3] - samples[0])) / (12 * h)
+    unconjugated = float(np.real(np.sum(c * de)))
+    conjugated = float(np.real(np.sum(np.conj(c) * de)))
+    assert np.iscomplexobj(e0)
+    assert abs(np.imag(e0)).max() > 1e-3 * abs(e0).max()  # a complex field
+    np.testing.assert_allclose(got, unconjugated, rtol=1e-6)
+    assert abs(got - conjugated) > 1e-2 * abs(unconjugated)
 
 
 #: Other discretizations between a forward and its pullback: more than the
