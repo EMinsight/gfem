@@ -157,6 +157,11 @@ _STATIC = 1e-6
 #: its norm in their span, is one of them again.
 _DUPLICATE = 10.0
 _OVERLAP = 0.9
+#: A duplicate with more than this fraction of its norm outside the span
+#: landed on a degenerate eigenspace: that part is refined as the twin the
+#: seed solve may not have returned (a frozen seed solve gives one Ritz
+#: value for a pair, ticket 17 of quantum-metrics).
+_TWIN = 1e-2
 #: Ritz values this close (relative) are one multiple eigenvalue. The seed
 #: solver returns an arbitrary basis of its eigenspace, as nearly parallel as
 #: round-off makes it: the seeds are orthonormalized, or two members would
@@ -664,7 +669,10 @@ class EigenmodeRule:
         static and not in the span of the accepted modes (`_in_span`) is
         never discarded: the first refinement of such a seed is accepted
         too when it is one (ADR 0097), so the accepted modes can outnumber
-        ``n_modes``; they are sorted by distance to the target and cut.
+        ``n_modes``; they are sorted by distance to the target and cut. A
+        pair in that span with more than `_TWIN` of its norm outside it
+        landed on a degenerate eigenspace: its outside part is refined and,
+        converged, is the twin the seed solve did not give.
         With ``guard``, the remaining seeds are refined (without
         refactorizing) until one more distinct mode converges: the guard
         mode, or the nearest mode cut off when there is one. It is
@@ -691,6 +699,33 @@ class EigenmodeRule:
         extra = None
         window = self._window()
         steps = self.options.max_refine_iterations
+
+        def distinct(mode: Refined) -> Refined | None:
+            # a converged pair in the span of the accepted modes is a duplicate
+            # unless its part outside the span is more than round-off: then it
+            # landed on a degenerate eigenspace whose twin the seed solve
+            # missed, and that part, refined, is the twin (ticket 17)
+            if not _in_span(mode, accepted, window):
+                return mode
+            rest = _outside(mode, accepted, window)
+            if rest is None:
+                return None
+            twin = refine(
+                op,
+                mode.k,
+                rest,
+                tolerance=tolerance,
+                max_iterations=steps,
+                reshift=False,
+            )
+            if (
+                twin.converged
+                and twin.k.real > _STATIC * sigma
+                and not _in_span(twin, accepted, window)
+            ):
+                return twin
+            return None
+
         for j in seeds:
             full = len(accepted) >= n_modes
             if full and not guard:
@@ -713,12 +748,10 @@ class EigenmodeRule:
                 # accepted mode, a mirror root, or another seed's mode): refine
                 # it again on a factorization at its own Ritz value. Where it
                 # wandered may be a mode no other seed gives: it is kept
-                if (
-                    mode.converged
-                    and mode.k.real > _STATIC * sigma
-                    and not _in_span(mode, accepted, window)
-                ):
-                    accepted.append(mode)
+                if mode.converged and mode.k.real > _STATIC * sigma:
+                    kept = distinct(mode)
+                    if kept is not None:
+                        accepted.append(kept)
                 op.reshift(seed)
                 mode = refine(
                     op, seed, vectors[:, j], tolerance=tolerance, max_iterations=steps
@@ -729,7 +762,8 @@ class EigenmodeRule:
                 if not full:
                     failed.append(mode)
                 continue
-            if _in_span(mode, accepted, window):
+            mode = distinct(mode)
+            if mode is None:
                 continue
             if full:
                 extra = mode
@@ -1643,6 +1677,26 @@ def _in_span(mode: Refined, accepted: list[Refined], window: float) -> bool:
     basis = np.linalg.qr(np.stack(near, axis=1))[0]
     inside = np.linalg.norm(basis.conj().T @ mode.x)
     return bool(inside > _OVERLAP * np.linalg.norm(mode.x))
+
+
+def _outside(
+    mode: Refined, accepted: list[Refined], window: float
+) -> np.ndarray | None:
+    """``mode``'s part outside the span of the accepted modes near its ``k``.
+
+    ``None`` when it is at most `_TWIN` of its norm: round-off of a duplicate
+    of a simple mode (1e-11 to 2e-9 measured), not a twin (0.36 to 0.94 on the
+    lossy-wall mirrored cavity, quantum-metrics ticket 17).
+    """
+    near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
+    if not near:
+        return None
+    basis = np.linalg.qr(np.stack(near, axis=1))[0]
+    rest = mode.x - basis @ (basis.conj().T @ mode.x)
+    norm = np.linalg.norm(rest)
+    if norm <= _TWIN * np.linalg.norm(mode.x):
+        return None
+    return rest / norm
 
 
 def _lost(
