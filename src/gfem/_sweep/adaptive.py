@@ -249,6 +249,7 @@ def adaptive_sweep(
     max_samples: int,
     memory: int,
     samples: Sequence[int] | None = None,
+    seeds: Sequence[int] = (),
     z_scale: float = 1.0,
 ) -> Sweep:
     """Sweep ``system`` over the grid ``omegas`` (see the module docstring).
@@ -261,6 +262,10 @@ def adaptive_sweep(
         max_samples: Most frequencies the greedy solves.
         memory: Consecutive samples under ``tolerance`` that converge.
         samples: Grid indices to solve, in order, instead of the greedy.
+        seeds: Grid indices the greedy solves right after the endpoints, in
+            order, before it picks its own (ADR 0116: the grid neighbours of
+            an in-band material resonance). Measured and counted like greedy
+            samples; ignored with ``samples``.
         z_scale: ω times ``z_scale`` is the MRI's (dimensionless)
             interpolation variable.
 
@@ -310,8 +315,15 @@ def adaptive_sweep(
         for i in dict.fromkeys((0, n_freq - 1)):
             add(i, measure=False)
         streak = 0
-        while streak < memory and len(chosen) < min(n_freq, max_samples):
-            add(_next_sample(z, chosen, snapshots, model.size), measure=True)
+        pending = [int(i) for i in dict.fromkeys(seeds) if int(i) not in chosen]
+        # the seeds are solved whatever the streak: a model that looks
+        # converged away from a resonance is wrong next to it
+        while (pending or streak < memory) and len(chosen) < min(n_freq, max_samples):
+            if pending:
+                i = pending.pop(0)
+            else:
+                i = _next_sample(z, chosen, snapshots, model.size)
+            add(i, measure=True)
             streak = streak + 1 if errors[-1] < tolerance else 0
         converged = streak >= memory or len(chosen) == n_freq
         if not converged:
@@ -321,7 +333,8 @@ def adaptive_sweep(
                 f"{errors[-1]:.3g} against adaptive_tolerance={tolerance:g}. The "
                 "S-parameters come from the reduced model as it stands. Raise "
                 "SolverOptions.adaptive_max_samples, loosen adaptive_tolerance, or "
-                "use sweep='uniform'.",
+                "use sweep='uniform'. A material resonance inside the band (a "
+                "Lorentz term of a permittivity law) costs extra samples.",
                 SweepNotConvergedWarning,
                 stacklevel=2,
             )

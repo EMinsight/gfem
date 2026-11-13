@@ -1118,6 +1118,7 @@ class DrivenRule:
                     samples=None
                     if samples is None
                     else [frequencies.index(f) for f in samples],
+                    seeds=dispersion.resonance_seeds(model, frequencies),
                     z_scale=z_scale,
                 )
         system.free()  # the backward pass solves the reduced model only

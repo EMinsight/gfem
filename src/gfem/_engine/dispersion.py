@@ -10,6 +10,7 @@ readers that understand a law read it here, each at a named frequency:
 - `law_regions`: the laws and their tetrahedra, for the susceptibility
   pieces (`susceptibility`, `d_susceptibility`) and the checks;
 - `check_frequencies`: what a driven sweep checks before any assembly;
+- `resonance_seeds`: the grid frequencies the adaptive sweep solves first;
 - `absorbing_surfaces`: the absorbing surfaces each law region lies behind;
 - `has_loss`, `check_estimator_frequencies`: what the refinement estimators
   ask of a law.
@@ -24,7 +25,7 @@ from __future__ import annotations
 import cmath
 import dataclasses
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 import numpy as np
 
@@ -52,6 +53,7 @@ __all__ = [
     "has_loss",
     "high_frequency_eps",
     "law_regions",
+    "resonance_seeds",
     "susceptibility",
 ]
 
@@ -247,6 +249,33 @@ def d_susceptibility(law: PermittivityLaw, omega: complex) -> complex:
 
 
 # --- checks before assembly --------------------------------------------------------
+
+
+def resonance_seeds(model: Model, frequencies: Sequence[float]) -> list[int]:
+    """Indices into ``frequencies`` the adaptive greedy solves first (ADR 0116).
+
+    For each `Lorentz` term of each law region, in ``model.materials`` and
+    term order, whose resonance frequency lies strictly inside the grid's
+    range: the grid frequency just below it (or on it) and the one just
+    above. The field shapes next to a resonance are absent from a basis
+    built away from it, so a greedy that has not touched them can stop with
+    S wrong. Drude (bounded theta at 0), Debye and Djordjevic-Sarkar terms
+    are smooth and add none. Repeats are kept once, first place.
+    """
+    grid = np.asarray(frequencies, dtype=float)
+    seeds: dict[int, None] = {}
+    for lr in law_regions(model):
+        for term in lr.law.terms:
+            if not isinstance(term, Lorentz):
+                continue
+            f0 = float(term.resonance_frequency)
+            if not grid.min() < f0 < grid.max():
+                continue
+            below = np.flatnonzero(grid <= f0)
+            above = np.flatnonzero(grid > f0)
+            seeds[int(below[np.argmax(grid[below])])] = None
+            seeds[int(above[np.argmin(grid[above])])] = None
+    return list(seeds)
 
 
 def check_frequencies(
