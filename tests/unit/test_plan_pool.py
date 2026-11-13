@@ -652,6 +652,9 @@ def test_a_bloch_entry_gives_its_transposed_base_to_the_pool(tmp_path):
 
 @pytest.mark.usefixtures("plans")  # an empty cache before and after
 def test_the_walk_gives_up_the_transposed_base_before_the_entry(tmp_path):
+    # no kept fixed parts of an earlier test's discretization: tier 2 would drop
+    # them before tier 4 and fit the budget with the -k base still held
+    gfem.release_memory()
     objective, eps = _bloch(tmp_path)
     _, vjp = jax.vjp(objective, eps)
     vjp(1.0)
