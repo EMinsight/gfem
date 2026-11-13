@@ -7,6 +7,7 @@ sweep (``frequency_workers=1``) on a small parallel-plate line. Each
 worker sweep pays the workers' start-up (seconds), so the tests are few.
 """
 
+import logging
 import os
 import warnings
 from pathlib import Path
@@ -172,7 +173,7 @@ def test_a_worker_does_not_repeat_the_parents_port_mode_warnings():
     with warnings.catch_warnings():
         warnings.simplefilter("error", gfem.SkippedPortModeWarning)
         warnings.simplefilter("error", gfem.PortModeProjectionWarning)
-        outputs, _, reason = _solve_block(
+        outputs, _, reason, _ = _solve_block(
             *workers.model_parts(model), problem, options, keep=False
         )
     assert reason is None
@@ -221,11 +222,19 @@ def test_two_exact_workers_give_the_sequential_sweep(line, monkeypatch, linear_s
     one_entry.free()
 
 
-def test_two_bddc_workers_agree_to_the_solver_tolerance(line):
+def test_two_bddc_workers_agree_to_the_solver_tolerance(line, caplog):
     # a kept frequency in each block: the fields join in frequency order
     problem = gfem.Driven(FREQUENCIES, keep_fields=(3.5e9, 4.5e9))
     one, _ = _forward(line, problem, linear_solver="bddc_gmres")
+    caplog.set_level(logging.INFO, logger="gfem.solver")
     two, _ = _forward(line, problem, linear_solver="bddc_gmres", frequency_workers=2)
+    # each block sets BDDC up at its first frequency and reuses it at its second
+    assert two["reused"] == [False, True, False, True]
+    # the workers' records, logged here in frequency order
+    logged = [r for r in caplog.records if r.name == "gfem.solver"]
+    assert [r.frequency for r in logged] == list(FREQUENCIES)
+    assert [r.action for r in logged] == ["factorized", "reused"] * 2
+    assert [r.iterations for r in logged] == two["iterations"]
     # each block's GMRES starts cold, so S moves within the tolerance
     np.testing.assert_allclose(two["s"], one["s"], rtol=0, atol=1e-6)
     assert len(two["iterations"]) == 4

@@ -19,7 +19,7 @@ from gfem._engine.electrostatic import ElectrostaticRule
 from gfem._engine.sweep_outputs import DIFFERENTIABLE, SweepOutputs
 
 N_FREQ, N_PORTS, N_EXC, NDOF, M = 4, 3, 2, 7, 5
-HOST_ONLY = {"iterations", "port_sweeps", "sweep"}
+HOST_ONLY = {"iterations", "reused", "port_sweeps", "sweep"}
 
 
 def _complex(rng, *shape):
@@ -47,6 +47,7 @@ def _uniform(rng, rows, *, waves=(), fields=True):
         s=_complex(rng, N_FREQ, N_PORTS, N_EXC),
         z_ref=rng.random((N_FREQ, N_PORTS)),
         iterations=[(3, 4)] * len(rows),
+        reused=[False] + [True] * (len(rows) - 1),
         e_field=_complex(rng, NDOF, N_EXC) if fields else None,
         waves=list(waves),
     )
@@ -59,6 +60,7 @@ def _adaptive(rng, *, waves=(), fields=True):
         s=_complex(rng, N_FREQ, N_PORTS, N_EXC),
         z_ref=rng.random((N_FREQ, N_PORTS)),
         iterations=[(5, 5), (6, 7)],
+        reused=[False, False],
         sweep={"samples": [0, 3], "errors": [1.0], "converged": True, "basis_size": 4},
         reduced=reduced if fields else None,
         waves=list(waves),
@@ -71,7 +73,13 @@ def test_uniform_trims_every_array_and_the_port_mode_coordinates_together():
     s = _complex(rng, N_FREQ, N_PORTS, N_EXC)
     z_ref = rng.random((N_FREQ, N_PORTS))
     out = SweepOutputs.uniform(
-        (0, 1), s=s, z_ref=z_ref, iterations=[(1,), (2,)], e_field=None, waves=waves
+        (0, 1),
+        s=s,
+        z_ref=z_ref,
+        iterations=[(1,), (2,)],
+        reused=[False, True],
+        e_field=None,
+        waves=waves,
     )
     assert out.rows == (0, 1)
     np.testing.assert_array_equal(out.s, s[:2])
@@ -111,6 +119,7 @@ def test_join_maps_each_blocks_rows_to_grid_indices():
         s=_complex(rng, 3, N_PORTS, N_EXC),
         z_ref=rng.random((3, N_PORTS)),
         iterations=[(1,), (2,)],
+        reused=[False, True],
         e_field=_complex(rng, NDOF, N_EXC),
         waves=[],
     )
@@ -119,6 +128,7 @@ def test_join_maps_each_blocks_rows_to_grid_indices():
         s=_complex(rng, 3, N_PORTS, N_EXC),
         z_ref=rng.random((3, N_PORTS)),
         iterations=[(3,), (4,), (5,)],
+        reused=[False, True, True],
         e_field=_complex(rng, NDOF, 2 * N_EXC),
         waves=[],
     )
@@ -129,6 +139,7 @@ def test_join_maps_each_blocks_rows_to_grid_indices():
         out.z_ref, np.concatenate([first.z_ref, second.z_ref])
     )
     assert out.iterations == [(1,), (2,), (3,), (4,), (5,)]
+    assert out.reused == [False, True, False, True, True]
     np.testing.assert_array_equal(
         out.e_field, np.concatenate([first.e_field, second.e_field], axis=1)
     )
@@ -182,7 +193,7 @@ def _check_specs(out, specs):
     assert set(specs) <= set(outputs)
     for name, spec in specs.items():
         np.asarray(outputs[name], spec.dtype).reshape(spec.shape)
-    host = {"iterations", "sweep"} & set(outputs)
+    host = {"iterations", "reused", "sweep"} & set(outputs)
     if out.ports is not None:
         host.add("port_sweeps")
     assert set(outputs) - set(specs) == host
@@ -260,7 +271,7 @@ def test_reading_the_encoding_gives_back_every_field(kind):
         out = _adaptive(rng, waves=waves)
     back = SweepOutputs.read(out.outputs())
     assert back.rows == out.rows
-    for name in ("s", "z_ref", "iterations", "e_field", "sweep"):
+    for name in ("s", "z_ref", "iterations", "reused", "e_field", "sweep"):
         assert getattr(back, name) is getattr(out, name)
     if out.reduced is None:
         assert back.reduced is None
@@ -289,11 +300,20 @@ def test_reading_the_spec_names_only_gives_no_host_only_field():
     back = SweepOutputs.read({name: outputs[name] for name in specs})
     assert back.rows == tuple(range(N_FREQ))
     assert back.iterations is None
+    assert back.reused is None
     assert back.sweep is None
     assert back.ports.sweeps is None
     assert back.ports.field(0) is None
     np.testing.assert_array_equal(back.s, out.s)
     assert back.reduced[0] is out.reduced[0]
+
+
+def test_reading_outputs_without_reuse_flags_gives_none():
+    outputs = _uniform(np.random.default_rng(11), (0, 1)).outputs()
+    del outputs["reused"]
+    back = SweepOutputs.read(outputs)
+    assert back.reused is None
+    assert back.iterations == [(3, 4), (3, 4)]
 
 
 # --- the rules without a sweep: forward outputs against output_specs -------------

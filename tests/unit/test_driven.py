@@ -303,10 +303,10 @@ def test_a_uniform_field_of_a_crystal_solves_like_the_crystal(mesh):
     np.testing.assert_allclose(s, expected, rtol=1e-14, atol=0)
 
 
-def test_bddc_gmres_is_the_default_and_matches_direct(line):
+def test_bddc_gmres_matches_direct(line):
     problem = gfem.Driven(frequency=[3e9, 4e9])
     direct = np.asarray(_s(line, problem).s.values)
-    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    rule = DrivenRule(line, problem, gfem.SolverOptions(linear_solver="bddc_gmres"))
     assert rule.linear.kind == "bddc_gmres"
     outputs, entry = rule.forward(line, keep=False)
     assert entry is None
@@ -460,7 +460,7 @@ def test_a_reused_solve_at_its_cap_rebuilds_and_converges(line, monkeypatch):
 def test_a_bddc_sweep_rebuilds_at_the_same_iterations_every_run(line):
     # the rebuild rule counts iterations, never times: runs repeat exactly
     problem = gfem.Driven(frequency=(1e9, 1.5e9, 12e9, 13e9, 20e9, 30e9))
-    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    rule = DrivenRule(line, problem, gfem.SolverOptions(linear_solver="bddc_gmres"))
     first, _ = rule.forward(line, keep=False)
     second, _ = rule.forward(line, keep=False)
     assert first["iterations"] == second["iterations"]
@@ -579,9 +579,8 @@ def test_an_error_holds_a_missed_sweeps_outputs_only_until_they_are_read(
 
 
 def _bddc_forward(model, problem):
-    outputs, _ = DrivenRule(model, problem, gfem.SolverOptions()).forward(
-        model, keep=False
-    )
+    options = gfem.SolverOptions(linear_solver="bddc_gmres")
+    outputs, _ = DrivenRule(model, problem, options).forward(model, keep=False)
     return outputs
 
 
@@ -660,6 +659,46 @@ def test_a_bddc_adjoint_sets_its_coarse_problem_up_for_one_solve(line, monkeypat
     columns = coarse_columns(monkeypatch)
     jax.grad(objective)(eps)
     assert columns == [4, 2, 2]  # the forward sweep's, then the adjoint's
+
+
+TWO_FREQUENCIES = gfem.Driven(frequency=(3e9, 3.5e9))
+
+
+def test_a_direct_sweep_reports_no_iterations_and_no_reuse(line):
+    sweep = _s(line, TWO_FREQUENCIES).sweep
+    assert sweep.iterations == ((), ())
+    assert sweep.preconditioner_reused == (False, False)
+
+
+def test_a_bddc_sweep_reports_its_iterations_and_its_reused_preconditioner(line):
+    # BDDC set up at the first frequency serves the second
+    rule = DrivenRule(
+        line, TWO_FREQUENCIES, gfem.SolverOptions(linear_solver="bddc_gmres")
+    )
+    outputs, _ = rule.forward(line, keep=False)
+    sweep = rule.result(outputs).sweep
+    assert sweep.preconditioner_reused == (False, True)
+    assert sweep.iterations == tuple(tuple(its) for its in outputs["iterations"])
+    assert [len(its) for its in sweep.iterations] == [2, 2]  # per excited port
+    assert all(n > 0 for its in sweep.iterations for n in its)
+
+
+@pytest.mark.parametrize("transform", ["grad", "jit"])
+def test_a_transformed_sweep_reports_no_iterations_and_no_reuse(line, transform):
+    sweeps = []
+
+    def objective(eps):
+        model = line.with_material("dielectric", gfem.MaterialField(eps_r=eps))
+        result = _s(model, TWO_FREQUENCIES, linear_solver="bddc_gmres")
+        sweeps.append(result.sweep)
+        return jnp.sum(jnp.abs(result.s.values) ** 2)
+
+    eps = jnp.full(len(line.mesh.tetrahedra), EPS)
+    (jax.grad if transform == "grad" else jax.jit)(objective)(eps)
+    assert sweeps
+    for sweep in sweeps:
+        assert sweep.iterations is None
+        assert sweep.preconditioner_reused is None
 
 
 def test_excite_selects_the_columns_of_s(line):
