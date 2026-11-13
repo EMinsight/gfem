@@ -20,7 +20,6 @@ Installing ``mkl`` switches NGSolve's process-wide default inverse to PARDISO
 from __future__ import annotations
 
 import functools
-import time
 from collections.abc import Callable
 from typing import Any, Protocol, cast
 
@@ -35,11 +34,13 @@ from gfem._linalg.base import (
     host_bytes,
 )
 from gfem._linalg.factor_reuse import (
+    CHOLESKY_FLOOR_NONZEROS,
     FIRST,
     GATE,
     RELEASED,
     REUSED_TOLERANCE,
     AmortizedRule,
+    cholesky_ratio,
 )
 from gfem._linalg.gmres import Gmres
 from gfem._linalg.pardiso import (  # noqa: F401 (the first two re-exported)
@@ -97,15 +98,37 @@ class Factors(Protocol):
         """Host memory of the factors and whatever else this holds, in bytes."""
         ...
 
+    def model_ratio(self) -> float:
+        """One refactorization over one direct column, from the plan's counts."""
+        ...
+
+    def above_floor(self) -> bool:
+        """Whether the plan is large enough for the factor-reuse rule."""
+        ...
+
 
 class UpdateFactors:
     """An inverse NGSolve refactorizes itself (``Update()``): Cholesky, UMFPACK."""
 
-    def __init__(self, inverse: ngs.BaseMatrix) -> None:
-        """Hold ``inverse``."""
+    def __init__(self, inverse: ngs.BaseMatrix, free: int) -> None:
+        """Hold ``inverse``, factored on ``free`` DOFs."""
         self.inverse = inverse
         #: Never set: these factors cannot be released without their ordering.
         self.released = False
+        self._free = free
+
+    @functools.cached_property
+    def _nonzeros(self) -> float:
+        """Sparse Cholesky's factor nonzeros (``nze``; UMFPACK raises on it)."""
+        return float(self.inverse.nze)
+
+    def model_ratio(self) -> float:
+        """Sparse Cholesky's model ratio (`cholesky_ratio`), no thread term."""
+        return cholesky_ratio(self._nonzeros, self._free)
+
+    def above_floor(self) -> bool:
+        """Whether the factors hold at least `CHOLESKY_FLOOR_NONZEROS` nonzeros."""
+        return self._nonzeros >= CHOLESKY_FLOOR_NONZEROS
 
     def release(self) -> None:
         """Keep everything: NGSolve frees no factors and keeps the ordering."""
@@ -156,14 +179,17 @@ class DirectHandle(PlannedHandle):
     until `refactorize` factorizes new values. Sparse Cholesky and UMFPACK
     keep their factors.
 
-    A PARDISO handle of an operator equal to its transpose may solve a
-    refactorization on the factors it holds instead (preconditioner reuse
-    across designs, ADR 0094): `refactorize` at the ``frequency`` its factors
-    were made at writes the new values into the held matrix and leaves the
-    factors, and its solves run `Gmres` on the held matrix, left-preconditioned
-    by them, to `REUSED_TOLERANCE` times the tolerance. The handle's
-    `AmortizedRule` decides each refactorization from the times it measures;
-    its gate is `_reuse_pays`. A column past the rule's cap, or one that
+    A handle (PARDISO or sparse Cholesky) of an operator equal to its
+    transpose may solve a refactorization on the factors it holds instead
+    (preconditioner reuse across designs, ADR 0094): `refactorize` at the
+    ``frequency`` its factors were made at writes the new values into the
+    held matrix and leaves the factors, and its solves run `Gmres` on the
+    held matrix, left-preconditioned by them, to `REUSED_TOLERANCE` times the
+    tolerance. The handle's `AmortizedRule` decides each refactorization from
+    counts, never a clock: the plan's model ratio and floor (`Factors`, read
+    once per plan) and the iterations of reused columns; its gate is
+    `_reuse_pays`. Sparse Cholesky frees nothing at `release_factors`, which
+    still ends the rule's chain. A column past the rule's cap, or one that
     breaks down above its tolerance, refactorizes at the held matrix and
     finishes that solve direct: a reused solve never raises. Reused columns
     report their iterations (`solve_counted`); direct ones none.
@@ -197,14 +223,15 @@ class DirectHandle(PlannedHandle):
         """
         super().__init__(matrix, freedofs, symmetry, is_complex=is_complex)
         self.tolerance = tolerance
-        self._factors: Factors | None = self._factor(matrix, freedofs)
-        self._solver = self._factors.inverse
-        #: The reuse rule: a PARDISO handle with ``A^T = A`` only.
+        factors = self._factor(matrix, freedofs)
+        self._factors: Factors | None = factors
+        self._solver = factors.inverse
+        #: The reuse rule: a handle with ``A^T = A`` only.
         self._rule: AmortizedRule | None = None
-        if isinstance(self._factors, PardisoFactors) and equals_its_transpose(
-            symmetry, is_complex=is_complex
-        ):
-            self._rule = AmortizedRule()
+        if equals_its_transpose(symmetry, is_complex=is_complex):
+            self._rule = AmortizedRule(
+                factors.model_ratio(), above_floor=factors.above_floor()
+            )
         # the frequency of the refactorization under way, if told
         self._frequency: float | None = None
         #: What the last step did, and why (see the class docstring).
@@ -238,8 +265,8 @@ class DirectHandle(PlannedHandle):
         else:
             solver = matrix.Inverse(freedofs, inverse=inverse)
         if pardiso is None:
-            return UpdateFactors(solver)
-        return PardisoFactors(solver, self._free)
+            return UpdateFactors(solver, free)
+        return PardisoFactors(solver, self._free, is_complex=self._complex)
 
     @classmethod
     def from_scipy(cls, matrix: sp.sparray | sp.spmatrix) -> DirectHandle:
@@ -326,10 +353,9 @@ class DirectHandle(PlannedHandle):
             write(matrix)
             self._stepped("reused", None)
             return
-        start = time.perf_counter()
         factors.new_values(matrix, write)
         if rule is not None:
-            rule.refactorized(time.perf_counter() - start, self._frequency)
+            rule.refactorized(self._frequency)
         self._stepped("refactorized", None if rule is None else rule.reason)
 
     def _stepped(self, action: str, reason: str | None) -> None:
@@ -352,6 +378,8 @@ class DirectHandle(PlannedHandle):
         self._matrix, self._solver, self._factors = matrix, factors.inverse, factors
         if self._rule is not None:
             self._rule.end_chain()
+            self._rule.model_ratio = factors.model_ratio()
+            self._rule.above_floor = factors.above_floor()
         self._stepped("factorized", FIRST)
 
     @classmethod
@@ -374,16 +402,13 @@ class DirectHandle(PlannedHandle):
         step, ``()`` on a direct one.
         """
         rule = self._rule
-        # the rule's counters are read and written with the solve they time
+        # the rule's counters are read and written with the solve they count
         with self._lock:
             if rule is not None and rule.reusing:
                 return self._reused_map(rule, B, tolerance)
-            start = time.perf_counter()
             X = self._map(lambda _: self._solver, B)
             if rule is not None:
-                rule.solved_direct(
-                    1 if B.ndim == 1 else B.shape[1], time.perf_counter() - start
-                )
+                rule.solved_direct(1 if B.ndim == 1 else B.shape[1])
             return X, ()
 
     def _reused_map(
@@ -406,34 +431,30 @@ class DirectHandle(PlannedHandle):
             for j in range(cols.shape[1]):
                 b.FV().NumPy()[:] = cols[:, j]
                 if not rule.reusing:
-                    start = time.perf_counter()
                     x.data = self._solver * b
-                    rule.solved_direct(1, time.perf_counter() - start)
+                    rule.solved_direct(1)
                     counts.append(0)
                     out[:, j] = x.FV().NumPy()
                     continue
-                start = time.perf_counter()
                 solver = Gmres(matrix, self._solver, tol=tight, maxiter=rule.cap)
                 solver.Solve(rhs=b, sol=x, initialize=True)
                 its = int(solver.iterations)  # ty: ignore[unresolved-attribute]
                 counts.append(its)
                 residuals = solver.residuals  # ty: ignore[unresolved-attribute]
                 if not residuals or residuals[-1] <= tight * residuals[0]:
-                    rule.solved_reused(1, its, time.perf_counter() - start)
+                    rule.solved_reused(1, its)
                 else:
                     # capped: the column counts once, as the direct one below
                     self._refactorize_held(rule)
-                    start = time.perf_counter()
                     x.data = self._solver * b
-                    rule.solved_direct(1, time.perf_counter() - start)
+                    rule.solved_direct(1)
                 out[:, j] = x.FV().NumPy()
         return (out[:, 0] if flat else out), tuple(counts)
 
     def _refactorize_held(self, rule: AmortizedRule) -> None:
         """Factorize the held matrix's values (the new design); under the lock."""
-        start = time.perf_counter()
         cast("Factors", self._factors).new_values(self._live(), lambda _: None)
-        rule.refactorized(time.perf_counter() - start, self._frequency)
+        rule.refactorized(self._frequency)
         self._stepped("reused, capped, refactorized", rule.reason)
 
     @property
