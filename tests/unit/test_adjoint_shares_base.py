@@ -135,8 +135,9 @@ def test_an_entry_too_big_with_its_base_is_kept_without_it(path, counts, solver)
     base = entry.handle.system._adjoint_sweep._base
     with_base = entry.nbytes
     # the cache also counts what the entry shares (its pieces' pattern, kept
-    # fixed parts, ADR 0091)
-    budget = cache.ENTRIES.nbytes - base.nbytes // 2
+    # fixed parts, ADR 0091), not the other frequency's pooled base (ADR 0121)
+    pooled = sum(int(p.handle.nbytes) for p in cache.ENTRIES._plans.values())
+    budget = cache.ENTRIES.nbytes - pooled - base.nbytes // 2
     cache.ENTRIES.clear()
 
     counts.prepared = {"forward": 0, "backward": 0}

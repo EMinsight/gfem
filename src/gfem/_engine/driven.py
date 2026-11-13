@@ -8,7 +8,8 @@ or one LDL^T factorization (``direct``: MKL PARDISO with the ``mkl`` extra,
 NGSolve sparse Cholesky otherwise). The system operator
 (`gfem._engine.system_operator.SystemOperator`) answers the forward and
 adjoint solves. A sweep keeps one base handle: a direct solver plans at the
-first frequency and refactorizes at the others, and sums each frequency's
+first frequency and refactorizes at the others (on the plan pool, one base per
+frequency, kept across designs: ADR 0121), and sums each frequency's
 matrix from the pieces ``A_k`` assembled once per forward (the piece sum,
 kept with the system operator for the backward pass) instead of assembling
 it.
@@ -1360,8 +1361,9 @@ class DrivenRule:
         The frequencies are solved from the adjoint base's frequency
         (`SystemOperator.adjoint_order`): a base handle kept from the forward
         sits at the last (`SystemOperator.keep_base`), and a backward leaves it
-        at the frequency it ended on, so each pass refactorizes once fewer. The
-        pairs stay in frequency order.
+        at the frequency it ended on, so each pass refactorizes once fewer. On
+        the plan pool each frequency's base still holds the design, and a pass
+        refactorizes nothing (ADR 0121). The pairs stay in frequency order.
         """
         if self.adaptive:
             return self._backward_adaptive(model, entry, cotangents)

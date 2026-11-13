@@ -194,10 +194,11 @@ def test_adaptive_s_matches_the_uniform_sweep(plate_mesh):
 
 
 @pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
-def test_a_direct_sweep_plans_once_and_matches_fresh_handles(
+def test_a_direct_sweep_plans_once_per_frequency_and_matches_fresh_handles(
     plate_mesh, monkeypatch, sweep
 ):
-    # one base handle, wrapped per frequency in a borrowing Woodbury update
+    # a pooled base per frequency (ADR 0121), wrapped in a borrowing Woodbury
+    # update
     model = line(plate_mesh, second="lumped")
     problem = gfem.Driven(F, sweep=sweep)
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
@@ -209,13 +210,17 @@ def test_a_direct_sweep_plans_once_and_matches_fresh_handles(
         return prepare(*args, **kwargs)
 
     monkeypatch.setattr("gfem._linalg.prepare", spy)
-    s = np.asarray(gfem.solve(model, problem, options=options).s.values)
-    assert len(calls) == 1
+    first = gfem.solve(model, problem, options=options)
+    s = np.asarray(first.s.values)
+    solved = len(F) if sweep == "uniform" else len(first.sweep.sampled_frequencies)
+    assert len(calls) == solved
+    calls.clear()
+    gfem.solve(model, problem, options=options)
+    assert not calls  # each frequency's base came back from the pool
     # a handle that cannot refactorize is prepared afresh at each frequency
     monkeypatch.delattr(PlannedHandle, "refactorize")
     calls.clear()
     result = gfem.solve(model, problem, options=options)
-    solved = len(F) if sweep == "uniform" else len(result.sweep.sampled_frequencies)
     assert len(calls) == solved > 1
     np.testing.assert_allclose(result.s.values, s, rtol=0, atol=1e-12)
 

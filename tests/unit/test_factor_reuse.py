@@ -746,7 +746,7 @@ def test_a_handle_taken_from_the_pool_solves_at_the_taking_sweeps_tolerance(buil
     slot = PlanSlot(("site",), topology, budget=2**40)
     cache.ENTRIES.clear()
     try:
-        cache.ENTRIES.give_plan(slot.key(), topology, adjoint, slot.budget)
+        cache.ENTRIES.give_plan(slot.key(F), topology, adjoint, slot.budget)
         forward = SystemSweep(
             lambda _: _helmholtz(built, 1.0 - 1j + 1e-3)[0],
             lambda base, _: base,

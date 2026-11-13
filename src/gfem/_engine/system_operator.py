@@ -20,9 +20,9 @@ first adjoint solve. Adjoint solves refactorize one base handle at each
 frequency, so memory holds one factorization whatever the number of
 frequencies: on a GPU, and, starting from the forward's base handle
 (`keep_base`, ADR 0065), under ranks and on one process with the CPU
-``direct`` and ``bddc_gmres`` solvers. On one process with the CPU ``direct``
-solver the transposed system's adjoint solves refactorize one base too, taken
-from the plan pool under the -k key (ADR 0092). Elsewhere on the CPU (the
+``bddc_gmres`` solver. On one process with the CPU ``direct`` solver they take
+each frequency's base from the plan pool instead (frequency bases, below), the
+transposed system's under the -k key (ADR 0092). Elsewhere on the CPU (the
 transposed system off that solver, the ``petsc`` solver, a backward without
 its forward's system) an adjoint solve keeps one handle per frequency for
 later backward passes.
@@ -35,7 +35,14 @@ layout (ADR 0082). S moves by summation round-off only.
 
 There, too, a forward sweep takes its base handle from the plan pool
 (`gfem._engine.cache`) and refactorizes it, rather than planning again
-(`PlanSlot`). A differentiated forward's base moves to its entry and returns to
+(`PlanSlot`). It holds one base per frequency (frequency bases, ADR 0121): at
+each new frequency the base returns to the pool under the frequency it was
+at, and the base of the new one is taken, which still holds that frequency's
+factors of the last design. A backward's adjoint solves take them the same
+way, each still holding its design's values, and refactorize nothing. Where
+``retain_memory`` holds fewer bases than frequencies, a returning base gives up
+its own factors first, so a fixed set of frequencies keeps theirs. A
+differentiated forward's last base moves to its entry and returns to
 the pool once the entry no longer holds it: when the consumed entry is freed
 (ADR 0081), or when the entry gives it up under ``retain_memory`` (ADR 0093),
 after which its backward takes a plan back from the pool. Any other returns
@@ -51,7 +58,7 @@ import dataclasses
 import functools
 import hashlib
 import math
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Self
 
 import ngsolve as ngs
@@ -303,8 +310,9 @@ class SystemOperator:
         From the adjoint base's frequency: ascending when the base sits at the
         first (up to round-off), else descending (a forward leaves it at the
         last). Repeated backward passes so alternate, and each refactorizes
-        once fewer than there are frequencies. Under a Bloch wave vector the
-        adjoint base is the transposed system's.
+        once fewer than there are frequencies, where one base serves them all
+        (off the plan pool). Under a Bloch wave vector the adjoint base is the
+        transposed system's.
         """
         system = self if self._transposed is None else self._transposed_system
         sweep = None if system is None else system._adjoint_sweep  # noqa: SLF001
@@ -374,7 +382,8 @@ class SystemOperator:
         backward must not prepare what its forward just freed (ADR 0065), and on
         one process with the CPU ``direct`` and ``bddc_gmres`` solvers when the
         operator is its own adjoint's, so that the backward refactorizes it rather
-        than preparing a handle per frequency. A base it no longer holds is
+        than preparing a handle per frequency (on the plan pool, takes each
+        frequency's base in turn: `SystemSweep.at`). A base it no longer holds is
         prepared again at the adjoint tolerance, taking a plan from the pool where
         it can. A shared base from the plan pool returns to the pool once no
         entry holds it (ADRs 0082, 0093). A
@@ -497,7 +506,8 @@ class SystemOperator:
         call. Under ranks, and on one process once the forward's base was kept
         (`keep_base`), the same, except that a base already at ``ω`` serves as
         it is: a backward starting from the base's frequency factorizes once
-        fewer. Otherwise on the CPU prepared once per ``n`` and kept.
+        fewer; on the plan pool ``ω``'s own base, which refactorizes nothing.
+        Otherwise on the CPU prepared once per ``n`` and kept.
         """
         if self.operator.built.comm is not None:
             if self._adjoint_sweep is None:
@@ -521,7 +531,7 @@ class SystemOperator:
 
 
 class SystemSweep:
-    """One base handle of ``A(ω)`` for a whole sweep: one solver plan.
+    """One base handle of ``A(ω)`` at a time for a sweep: one solver plan.
 
     `at` gives a handle of the system operator ``A(ω) + W(ω)`` at each
     frequency. The first call prepares the base handle; later ones
@@ -534,11 +544,13 @@ class SystemSweep:
     leaving the ``with`` block) releases the base, also when the sweep
     raises, and the sweep prepares it again if asked.
 
-    With a `PlanSlot` the first call takes the base from the plan pool when a
-    handle of its key is free there, and refactorizes it; leaving the ``with``
-    block without an error returns the base to the pool. A taken base solves
-    at the sweep's ``tolerance``, not at the one of the sweep that prepared it
-    (an adjoint's): a solve on factors reused across designs reads it.
+    With a `PlanSlot` the base is a frequency base (ADR 0121): each new ω
+    returns the held base to the plan pool under the ω it was at and takes
+    ω's (`gfem._engine.cache.EntryCache.take_plan`), or prepares one; leaving
+    the ``with`` block without an error returns the base to the pool. A taken
+    base solves at the sweep's ``tolerance``, not at the one of the sweep that
+    prepared it (an adjoint's): a solve on factors reused across designs reads
+    it.
     """
 
     def __init__(
@@ -561,7 +573,7 @@ class SystemSweep:
         self._plans = plans
         self._tolerance = tolerance
         # the pool key of the base, set when the base was taken or prepared
-        self._key: Hashable | None = None
+        self._key: tuple | None = None
         self._base: Handle | None = None
         # the system handle `at` gave last, and its frequency
         self._last: tuple[float, Handle] | None = None
@@ -577,19 +589,54 @@ class SystemSweep:
         return None if self._last is None else self._last[0]
 
     def at(self, omega: float) -> Handle:
-        """A handle of ``A(ω) + W(ω)``, borrowing the sweep's base handle."""
+        """A handle of ``A(ω) + W(ω)``, borrowing the sweep's base handle.
+
+        A pooled sweep holds a base per frequency (ADR 0121): at another ω the
+        base returns to the pool under its last frequency, and ω's is taken
+        (`gfem._engine.cache.EntryCache.take_plan`).
+        """
         operator = self._operator_at(omega)
-        if self._base is None and self._plans is not None:
-            self._key = self._plans.key()
-            self._base = ENTRIES.take_plan(self._key)
-            if self._base is not None and self._tolerance is not None:
-                self._base.tolerance = self._tolerance
+        plans = self._plans
+        if plans is not None and (
+            self._base is None or (self._last is not None and self._last[0] != omega)
+        ):
+            self._take_base(plans, omega)
         self._base = refactorize_or_prepare(
             self._base, operator, self._prepare, frequency=omega
         )
         handle = self._system_handle(self._base, omega)
         self._last = (omega, handle)
         return handle
+
+    def _take_base(self, plans: PlanSlot, omega: float) -> None:
+        """Hold ω's pooled base, returning the one held; ``None`` if none serves.
+
+        The key keeps the thread count of the sweep's first take: its bases
+        were planned on it, whatever the caller's count now.
+        """
+        base, key = self._base, self._key
+        if base is None or key is None:
+            self._key = plans.key(omega)
+            self._base = ENTRIES.take_plan(self._key, budget=plans.budget)
+        else:
+            self._key = (*key[:-1], float(omega))
+            self._base = ENTRIES.switch_plan(
+                self._returned_key(),
+                plans.topology,
+                base,
+                plans.budget,
+                kept=plans.kept(),
+                to=self._key,
+            )
+        if self._base is not None and self._tolerance is not None:
+            self._base.tolerance = self._tolerance
+
+    def _returned_key(self) -> tuple | None:
+        """The pool key of the held base: its last frequency's."""
+        key, last = self._key, self._last
+        if key is None or last is None:
+            return key
+        return (*key[:-1], float(last[0]))
 
     def reuse_at(self, omega: float) -> Handle:
         """As `at`, but the last handle if it is still at ``ω``, Woodbury state too."""
@@ -651,7 +698,7 @@ class SystemSweep:
         instead, with its factors (the pool releases them under pressure,
         where it may ``walk``: `EntryCache.give_plan`).
         """
-        base, plans, key = self._base, self._plans, self._key
+        base, plans, key = self._base, self._plans, self._returned_key()
         self._base, self._last = None, None
         if base is None:
             return
@@ -695,10 +742,11 @@ class PlanSlot:
             [] if self.store is None else [k.pattern for k in self.store.kept.values()]
         )
 
-    def key(self) -> tuple:
-        """The pool key: ``site`` and the thread count of a plan made now.
+    def key(self, omega: float) -> tuple:
+        """The pool key of a base at ``ω``: ``site``, the thread count, ``ω``.
 
-        A PARDISO handle runs on the thread count of its analysis (ADR 0032),
-        so another count plans anew.
+        The thread count of a plan made now: a PARDISO handle runs on the
+        thread count of its analysis (ADR 0032), so another count plans anew.
+        A sweep holds one base per frequency (ADR 0121).
         """
-        return (*self.site, max(1, ngs.GetNumThreads()))
+        return (*self.site, max(1, ngs.GetNumThreads()), float(omega))
