@@ -270,8 +270,10 @@ class Refactorable(Handle, Protocol):
         serve, when they differ from the count the handle was prepared with
         (`prepare`'s ``solves``); ``None`` keeps it. Only BDDC's coarse
         choice reads it. ``frequency``: the ω the operator is at, when the
-        caller knows it; only the direct solver reads it, to solve a design on
-        factors made at the same ω for an earlier one (ADR 0094).
+        caller knows it: the direct solver reads it to solve a design on
+        factors made at the same ω for an earlier one (ADR 0094), and BDDC
+        to solve without an initial guess on its reused preconditioner (ADR
+        0127; without a frequency it sets BDDC up again first).
 
         Raises:
             RuntimeError: The handle was freed.
