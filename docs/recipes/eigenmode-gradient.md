@@ -188,7 +188,8 @@ How gfem itself is checked: {doc}`../verification`.
 ## Limits
 
 - A gradient through a mode's field needs an isolated mode: a relative
-  frequency gap of at least 1e-4 to every other mode found. A member of a
+  frequency gap of at least 1e-4 (or `cluster_rtol`, if larger) to every
+  other converged mode the solve found, those beyond `n_modes` included. A member of a
   degenerate cluster, a cluster cut by `n_modes` or a nearer pair raises
   `gfem.DegenerateModeError`, also for a symmetric objective. Separate the
   modes in the design, or build that objective from frequencies.

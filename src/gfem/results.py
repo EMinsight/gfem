@@ -1052,8 +1052,11 @@ class EigenmodeResult:
     `participation`, `bulk_participation`, `principal_participation`,
     `sheet_participation`) and the mode fields are read from the modes'
     fields; they differentiate with respect to materials, sheet fill, mesh
-    node coordinates and lumped values for an isolated mode (a relative
-    frequency gap of at least 1e-4 to every other mode found), on
+    node coordinates and lumped values for an isolated mode: a relative
+    frequency gap of at least ``max(1e-4, SolverOptions.cluster_rtol)`` to
+    every other converged mode the selection accepted (those cut beyond
+    ``n_modes`` included) and to the guard mode (the nearest converged mode
+    beyond ``n_modes``), on
     ``linear_solver="direct"`` on the CPU, in one process, with
     ``eigen_tolerance`` at most 1e-10, on a non-periodic model. The fields
     raise with respect to node coordinates, and `principal_participation`

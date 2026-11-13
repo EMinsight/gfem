@@ -154,8 +154,8 @@ misses the solve's share. Pass one variable to both.
   to compare with published first-order numbers: at ordinary detunings its
   dispersive shift is off by a factor of 1.5 to 1.9.
 - Select modes by slicing: pass `modes.omega[:2]` and the matching
-  participations. A mode you leave out adds no Lamb shift and no cross-Kerr
-  term.
+  participations. A mode you leave out adds no Lamb shift and no dispersive
+  shift.
 
 ## When it refuses
 

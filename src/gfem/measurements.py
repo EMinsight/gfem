@@ -22,7 +22,8 @@ Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 material-field gradients flow through the solve that made the field) and
 the measurement's own numbers. That includes the normalized mode fields of
 an eigenmode solve, which differentiate with respect to `gfem.MaterialField`
-properties and `gfem.SheetField` fills for an isolated mode (ADR 0102).
+properties and `gfem.SheetField` fills for an isolated mode (see the
+"Differentiate eigenfrequencies, Q and participation ratios" recipe).
 Mesh-node gradients raise `gfem.NonDifferentiableError`: for a shape
 derivative of a measurement, take finite differences of it over meshes
 moved by `gfem.shape.boundary_morph`.
@@ -174,7 +175,8 @@ def interface_participation(
     ``"MS"`` flux), per principal axis for a field with ``axes``. Through
     the eigenmode solve, the mode fields differentiate with respect to
     `gfem.MaterialField` properties and `gfem.SheetField` fills of an
-    isolated mode (ADR 0102; a mode of a degenerate cluster raises
+    isolated mode (see the "Differentiate eigenfrequencies, Q and
+    participation ratios" recipe; a mode of a degenerate cluster raises
     `gfem.DegenerateModeError`). Mesh-node gradients raise
     `gfem.NonDifferentiableError`: take finite differences of the
     participation over meshes moved by `gfem.shape.boundary_morph` instead.

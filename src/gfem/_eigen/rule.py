@@ -38,10 +38,10 @@ held), and the normalized mode fields themselves (through the
 normalization multipliers of `gfem._eigen.ratios`) with respect to
 materials and sheet fills, never the node coordinates; on one CPU process
 with the ``direct`` linear solver: per mode with a cotangent, one deflated
-GMRES solve of the singular adjoint system ``T(k) lam0 = -w``, ``t^T lam0
-= 0`` on the live factors the forward kept (`gfem._eigen.adjoint`, ADR
-0104), the
-load ``(w, kappa, explicit terms)`` of `gfem._eigen.ratios`, and the pairs
+GMRES solve of the singular system of the mode-field adjoint, ``T(k) lam0
+= -w``, ``t^T lam0 = 0``, on the live factors the forward kept
+(`gfem._eigen.adjoint`, ADR 0104), the load ``(w, kappa, explicit terms)``
+of `gfem._eigen.ratios`, and the pairs
 ``(2 lam, x)`` and ``(conj(x), x)`` on the mode energy's ``Re(eps_r)``
 terms (ADR 0103) and the sheets' L and C pieces. What does not
 differentiate is refused by name: at trace time from the model, the
@@ -76,7 +76,7 @@ import dataclasses
 import math
 import warnings
 from collections.abc import Callable
-from typing import cast
+from typing import Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -198,25 +198,38 @@ _ISOLATED = 1e-4
 #: singular: a defective eigenvalue, whose frequency has no derivative.
 _DEFECTIVE = 1e8
 #: A mode with ``|y^T T'(k) x|`` below this times ``|y| |T'(k) x|`` is
-#: defective: its mode-field adjoint system has no solution (ADR 0102).
+#: defective: the singular system of its mode-field adjoint has no solution
+#: (ADR 0102).
 _DEFECTIVE_FIELD = 1e-8
 #: The largest ``SolverOptions.eigen_tolerance`` of a solve whose mode
 #: fields differentiate: it keeps the forward polish's Newton start close.
 _FIELD_TOLERANCE = 1e-10
-#: The outputs that are quantities of the mode fields (mode-field outputs).
-_MODE_FIELD = frozenset(
-    {"q_port", "participation", "bulk", "principal", "sheet", "e_field"}
-)
-#: Their names on `EigenmodeResult`, for messages.
-_PUBLIC = {
+#: The outputs that are quantities of the mode fields (mode-field outputs),
+#: with their names on `EigenmodeResult` for messages.
+_MODE_FIELD = {
     "q_port": "q_port",
     "participation": "participation",
     "bulk": "bulk_participation",
     "principal": "principal_participation",
     "sheet": "sheet_participation",
     "e_field": "e_fields (the normalized mode fields)",
-    "error": "error",
 }
+
+
+@dataclasses.dataclass(frozen=True)
+class _InputRefusal:
+    """Why a mode-field output does not differentiate by a wanted input.
+
+    Attributes:
+        kind: ``"nodes"`` (no node gradient of the normalized field) or
+            ``"lumped"`` (a lumped value the output has no gradient by yet).
+        message: The reason, starting "with respect to".
+    """
+
+    kind: Literal["nodes", "lumped"]
+    message: str
+
+
 #: ``|v^H A u - conj(u^H A v)|`` below this times ``|A| |u| |v|`` for ``K``
 #: and ``M``: a Hermitian (lossless) Bloch problem, whose eigenvalues are real.
 _HERMITIAN = 1e-12
@@ -276,7 +289,7 @@ class EigenmodeRule:
     #: (``cluster`` holds integer labels: its cotangent is always zero) and
     #: the mode-field outputs, within the reach `nondifferentiable_output`
     #: checks for the wanted inputs (ADR 0102).
-    differentiable_outputs = frozenset({"omega", "cluster"}) | _MODE_FIELD
+    differentiable_outputs = frozenset({"omega", "cluster", *_MODE_FIELD})
     #: `nondifferentiable_output` takes the wanted input kinds and may
     #: return ``None`` (`gfem._adjoint.solve_vjp`).
     input_aware = True
@@ -547,7 +560,7 @@ class EigenmodeRule:
         polished. A polish that does not converge (or whose solve is not
         accepted) is evidence of a neighbour the gap set missed, such as the
         twin of a degenerate pair the seed solve never returned: the mode
-        is kept as the refinement left it and flagged, and its entry
+        is kept as mode refinement left it and flagged, and its entry
         records it as not isolated (ADR 0104, amendment of ticket 04). A
         solve never raises because of polishing.
         """
@@ -1031,7 +1044,7 @@ class EigenmodeRule:
         """
         if name in ("omega", "cluster"):
             return None
-        public = _PUBLIC.get(name, name)
+        public = _MODE_FIELD.get(name, name)
         head = f"gfem cannot differentiate the eigenmode output {public!r}"
         opt_out = (
             "Wrap it in jax.lax.stop_gradient to use its value without its derivative."
@@ -1041,13 +1054,16 @@ class EigenmodeRule:
                 f"{head}: it is the backward error of the solve, which has no "
                 "derivative with respect to anything. " + opt_out
             )
-        why = self._solve_refusal() or self._input_refusal(name, kinds)
-        if why is not None and why.startswith("with respect to model."):
+        why = self._solve_refusal()
+        refusal = None if why is not None else self._input_refusal(name, kinds)
+        if refusal is not None and refusal.kind == "lumped":
             return (
-                f"{head} {why} in this version; the eigenfrequencies "
+                f"{head} {refusal.message} in this version; the eigenfrequencies "
                 "differentiate with respect to it. Wrap the value in "
                 "jax.lax.stop_gradient to hold it."
             )
+        if refusal is not None:
+            why = refusal.message
         if why is None:
             return None
         return (
@@ -1099,21 +1115,23 @@ class EigenmodeRule:
         return next((why for refused, why in reasons if refused), None)
 
     @staticmethod
-    def _input_refusal(name: str, kinds: frozenset[tuple] | set[tuple]) -> str | None:
+    def _input_refusal(
+        name: str, kinds: frozenset[tuple] | set[tuple]
+    ) -> _InputRefusal | None:
         """Why output ``name`` does not differentiate by ``kinds``, or ``None``.
 
         The normalized field by the node coordinates, and the principal
-        shares by a lumped value, whose reason starts "with respect to
-        model.".
+        shares by a lumped value.
         """
         if name == "e_field" and ("nodes",) in kinds:
-            return (
+            return _InputRefusal(
+                "nodes",
                 "with respect to the mesh node coordinates: the normalized mode "
                 "field (and the measurements of it: Field.at, "
                 "interface_participation) has no node gradient; it "
                 "differentiates with respect to materials and sheet fills. For "
                 "a shape derivative take finite differences of the measurement "
-                "over meshes moved by gfem.shape.boundary_morph"
+                "over meshes moved by gfem.shape.boundary_morph",
             )
         lumped = sorted(k for k in kinds if is_lumped(k))
         # the principal shares have no finite-difference cell by a lumped
@@ -1121,7 +1139,9 @@ class EigenmodeRule:
         if lumped and name == "principal":
             kind = lumped[0]
             where = "ports" if kind[0] == "port" else "boundaries"
-            return f"with respect to model.{where}[{kind[1]}].{kind[2]}"
+            return _InputRefusal(
+                "lumped", f"with respect to model.{where}[{kind[1]}].{kind[2]}"
+            )
         return None
 
     def backward(

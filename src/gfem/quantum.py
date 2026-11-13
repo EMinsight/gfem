@@ -24,7 +24,7 @@ import dataclasses
 import functools
 import math
 from collections.abc import Sequence
-from typing import Any, Literal, get_args
+from typing import Any, Literal, NamedTuple, get_args
 
 import jax
 import jax.numpy as jnp
@@ -117,15 +117,11 @@ def dressed_modes(
 ) -> DressedModes:
     """The dressed modes of one junction on the given linear modes.
 
-    The model is the junction's cosine potential on top of the solved
-    linear modes::
-
-        H / hbar = sum_m omega_m a_m† a_m - (E_J / hbar) [cos(phi) - 1 + phi^2 / 2]
-        phi = sum_m phi_m (a_m + a_m†)
-        phi_m = sign(p_m) sqrt(|p_m| hbar omega_m / (2 E_J))
-        E_J = (hbar / 2e)^2 / L_J
-
-    built on ``levels`` Fock states per mode. The cosine is exact (not a
+    The model is the junction's cosine potential, with ``E_J = (hbar /
+    2e)^2 / L_J``, on top of the solved linear modes; the Hamiltonian, the
+    output definitions and their signs are in `gfem.conventions`, under
+    "Quantum metrics". It is built on ``levels`` Fock states per mode. The
+    cosine is exact (not a
     Taylor series). Each level used is labelled by its largest overlap with
     a bare Fock state. With one junction only the product of the
     participation signs of two modes enters, and it cancels in every
@@ -146,7 +142,7 @@ def dressed_modes(
       no charge dispersion: it is for the transmon regime.
     - It uses ``Re omega`` only, so it is meaningful for ``Q >> 1``.
     - Modes not passed in (not solved, or not selected) contribute no Lamb
-      shift and no Kerr term.
+      shift and no dispersive shift.
     - The solve's qubit frequency is the linearized one: the dressed
       frequency is lower by about ``|alpha|``.
     - Labels need an overlap above 1/2 (`gfem.ModeLabelError` otherwise).
@@ -453,6 +449,16 @@ def _labels(dims: tuple[int, ...]) -> tuple[list[tuple[int, ...]], dict[str, Any
     return states, {"one": one, "two": two, "pair": pair}
 
 
+class _LabelCheck(NamedTuple):
+    """What the label check needs from one diagonalization, in check order."""
+
+    bare: jax.Array  # bare energy of every Fock state, rad/s
+    best: jax.Array  # largest overlap of each used level with a Fock state
+    rows: jax.Array  # the Fock state each used level is labelled by
+    rival: jax.Array  # the other Fock state that level holds most of
+    p: jax.Array  # the participations, for the zero check
+
+
 def _diagonalized(
     w: jax.Array, p: jax.Array, ej: jax.Array, dims: tuple[int, ...], traced: bool
 ) -> DressedModes:
@@ -466,7 +472,7 @@ def _diagonalized(
 @functools.partial(jax.jit, static_argnames=("dims", "host"))
 def _levels(
     w: jax.Array, p: jax.Array, ej: jax.Array, *, dims: tuple[int, ...], host: bool
-) -> tuple[DressedModes, tuple[jax.Array, ...]]:
+) -> tuple[DressedModes, _LabelCheck]:
     occupation, _, _ = _operators(dims)
     phi = jnp.sign(p) * jnp.sqrt(jnp.abs(p) * w / (2 * ej))
     pot = -ej * _cosine(phi, dims)
@@ -482,7 +488,7 @@ def _levels(
         v[:, k].T ** 2 - 2.0 * (jnp.arange(v.shape[0]) == rows[:, None]), 1
     )
     bare = jax.lax.stop_gradient(jnp.asarray(occupation) @ w)
-    check = (bare, best, jnp.asarray(rows), rival, jax.lax.stop_gradient(p))
+    check = _LabelCheck(bare, best, jnp.asarray(rows), rival, jax.lax.stop_gradient(p))
     # Under a transformation the labels are checked on the host; the check's
     # zero is added to every level so that jit cannot drop it.
     zero = _host_check(*check, dims=dims) if host else jnp.zeros(())

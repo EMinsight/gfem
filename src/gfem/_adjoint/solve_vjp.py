@@ -403,6 +403,27 @@ def _replicated_cotangents(cotangents: dict[str, np.ndarray]) -> dict[str, np.nd
     }
 
 
+def _add_explicit_lumped(
+    out: dict, explicit: dict[tuple, float], *, wants: set[Hashable]
+) -> None:
+    """Add a rule's explicit lumped terms to the lumped pass's values in ``out``.
+
+    A term of an input that is not wanted is dropped (the rule computes them
+    for every lumped port). A wanted one always has its lumped pass in
+    ``out``: one without is a programming error.
+    """
+    for kind, value in explicit.items():
+        if kind not in wants:
+            continue
+        if kind not in out:
+            msg = (
+                f"The explicit lumped term of {kind} has no lumped pass value to "
+                "add to (an internal error)."
+            )
+            raise RuntimeError(msg)
+        out[kind] = out[kind] + value
+
+
 def _local_cotangents(
     key: Any,
     rule: Any,
@@ -454,9 +475,7 @@ def _local_cotangents(
         # the rule's explicit terms in the lumped values (outside any piece:
         # the eigenmode ratios' 1 / L and C |V|^2 / 2), once over the ranks
         if hasattr(rule, "explicit_lumped") and _mpi.rank(comm) == 0:
-            for kind, value in rule.explicit_lumped().items():
-                if kind in out:
-                    out[kind] = out[kind] + value
+            _add_explicit_lumped(out, rule.explicit_lumped(), wants=wants)
     finally:
         if fresh is not None:
             fresh.free()

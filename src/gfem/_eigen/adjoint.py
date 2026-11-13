@@ -17,15 +17,15 @@ factors the eigen operator holds at its current shift ``sigma`` near ``k``
 ticket 19): an Arnoldi stop at ``stop |P b|``, then one more solve gives
 ``rho = |P(b - T z)| / |z|``, accepted at ``rho <= accept``; otherwise it
 restarts from the iterate with the absolute tolerance ``stop |z|``. After
-`CAP` applies (factor solves) without acceptance the operator reshifts once
-to ``k (1 + d)``, ``d = min(1e-3, 1e-2 gap)``, never exactly at ``k``, and
-stays there; after another `CAP`, `LinearSolverConvergenceError`. No call
-passes a frequency to the refactorization, so ADR 0094's factor reuse never
-serves it.
+`APPLY_CAP` applies (factor solves) without acceptance the operator reshifts
+once to ``k (1 + d)``, ``d = min(1e-3, 1e-2 gap)``, never exactly at ``k``,
+and stays there; after another `APPLY_CAP`, `LinearSolverConvergenceError`.
+No call passes a frequency to the refactorization, so ADR 0094's factor reuse
+never serves it.
 
-`polish` takes Newton steps on a refined mode with the same solve: the
-forward's correction of every mode in mode-field reach (ADR 0104,
-amendment of ticket 19).
+`polish` takes Newton steps on a converged mode with the same solve: mode
+polishing, the forward's correction of every mode in mode-field reach (ADR
+0104, amendment of ticket 19).
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from gfem.errors import EigenmodeConvergenceError, LinearSolverConvergenceError
 if TYPE_CHECKING:
     from gfem._eigen.operator import EigenOperator
 
-__all__ = ["CAP", "Deflated", "deflated_solve", "polish", "reshift_offset"]
+__all__ = ["APPLY_CAP", "Deflated", "deflated_solve", "polish", "reshift_offset"]
 
 #: The adjoint solve's Arnoldi stop (relative to ``|P b|``, then the
 #: absolute restart tolerance relative to ``|z|``) and its acceptance of
@@ -56,7 +56,7 @@ POLISH_STOP, POLISH_ACCEPT = 1e-6, 1e-4
 POLISH_LIMIT, POLISH_STEPS = 1e-4, 3
 #: Factor solves on one factorization before a reshift, and after it
 #: before the error.
-CAP = 60
+APPLY_CAP = 60
 #: The largest reshift offset (relative): a mode without a neighbour's.
 RESHIFT = 1e-3
 #: The reshift offset's fraction of the mode's relative gap.
@@ -151,8 +151,9 @@ def deflated_solve(
         purpose: What the solve is for, for the error message.
 
     Raises:
-        LinearSolverConvergenceError: Not accepted after `CAP` applies, the
-            reshift and `CAP` more (or `CAP` without ``reshift``).
+        LinearSolverConvergenceError: Not accepted after `APPLY_CAP` applies,
+            the reshift and `APPLY_CAP` more (or `APPLY_CAP` without
+            ``reshift``).
     """
     system = _System(eop, k, x, y)
     b = np.where(eop.free, b, 0).astype(complex)
@@ -167,13 +168,13 @@ def deflated_solve(
         eop.reshift(system.k * (1 + reshift_offset(gap)))
         reshifted = True
     after = (
-        f", a reshift to k (1 + {reshift_offset(gap):g}) and {CAP} more"
+        f", a reshift to k (1 + {reshift_offset(gap):g}) and {APPLY_CAP} more"
         if reshifted
         else ""
     )
     raise LinearSolverConvergenceError(
         f"The deflated GMRES of the {purpose} of mode {mode} was not accepted: "
-        f"rho = {rho:.3g} > {accept:g} after {CAP} applies{after}. The mode "
+        f"rho = {rho:.3g} > {accept:g} after {APPLY_CAP} applies{after}. The mode "
         "may be nearly degenerate with another (its relative gap is "
         f"{gap:.3g})."
     )
@@ -182,7 +183,7 @@ def deflated_solve(
 def _cycles(
     system: _System, b: np.ndarray, z: np.ndarray, *, stop: float, accept: float
 ) -> tuple[np.ndarray, float, bool]:
-    """Restarted GMRES from ``z`` on the current factors, `CAP` applies at most."""
+    """Restarted GMRES from ``z`` on the current factors, `APPLY_CAP` applies."""
     eop, k = system.eop, system.k
     start = system.applies
     r = system.precondition(b - eop.apply(k, z) if z.any() else b)
@@ -191,8 +192,8 @@ def _cycles(
         return z, 0.0, True
     tolerance = stop * size
     rho = math.inf
-    while system.applies - start < CAP:
-        left = CAP - (system.applies - start)
+    while system.applies - start < APPLY_CAP:
+        left = APPLY_CAP - (system.applies - start)
         z = system.gauge(z + _gmres(system.matvec, r, tolerance, left))
         r = system.precondition(b - eop.apply(k, z))
         norm = np.linalg.norm(z)
@@ -212,7 +213,7 @@ def _gmres(
     """GMRES from zero, stopped when its Arnoldi estimate is at most ``tolerance``.
 
     Classical Gram-Schmidt twice; the least-squares problem is solved anew
-    each step (at most `CAP` columns).
+    each step (at most `APPLY_CAP` columns).
     """
     beta = np.linalg.norm(b)
     if beta <= tolerance:
@@ -240,7 +241,7 @@ def _gmres(
 
 
 def polish(eop: EigenOperator, mode: Refined, gap: float, *, index: int) -> Refined:
-    """Newton corrections of a refined mode on the operator's live factors.
+    """Mode polishing: Newton corrections of a converged mode on live factors.
 
     Each step solves ``T(k) d = -T(k) x`` (`deflated_solve`, stop
     `POLISH_STOP`, accept `POLISH_ACCEPT`), sets ``x <- x + d`` and takes
