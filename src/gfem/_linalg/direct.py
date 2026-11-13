@@ -34,7 +34,13 @@ from gfem._linalg.base import (
     equals_its_transpose,
     host_bytes,
 )
-from gfem._linalg.factor_reuse import REUSED_TOLERANCE, AmortizedRule
+from gfem._linalg.factor_reuse import (
+    FIRST,
+    GATE,
+    RELEASED,
+    REUSED_TOLERANCE,
+    AmortizedRule,
+)
 from gfem._linalg.gmres import Gmres
 from gfem._linalg.pardiso import (  # noqa: F401 (the first two re-exported)
     PARDISO_FLAGS,
@@ -161,6 +167,13 @@ class DirectHandle(PlannedHandle):
     breaks down above its tolerance, refactorizes at the held matrix and
     finishes that solve direct: a reused solve never raises. Reused columns
     report their iterations (`solve_counted`); direct ones none.
+
+    `last_action` and `last_reason` say what the last step did and why
+    (`gfem._linalg.report`): ``factorized`` (a new plan, ``first``),
+    ``refactorized`` (the rule's `AmortizedRule.reason`; ``None`` on a handle
+    without the rule), ``reused``, or ``reused, capped, refactorized``
+    (``capped``); `last_details` the reason's numbers. Under the rule a
+    refactorization on the held values is no step and changes none of them.
     """
 
     kind = "direct"
@@ -194,6 +207,13 @@ class DirectHandle(PlannedHandle):
             self._rule = AmortizedRule()
         # the frequency of the refactorization under way, if told
         self._frequency: float | None = None
+        #: What the last step did, and why (see the class docstring).
+        self.last_action: str | None = "factorized"
+        self.last_reason: str | None = FIRST
+        #: The numbers of `last_reason`, by name.
+        self.last_details: dict[str, float] = {}
+        # bytes and budget of a release for retain_memory (`note_release`)
+        self._release_note: dict[str, float] = {}
 
     def _factor(self, matrix: ngs.BaseMatrix, freedofs: ngs.BitArray | None) -> Factors:
         free = matrix.height if freedofs is None else freedofs.NumSet()
@@ -256,7 +276,14 @@ class DirectHandle(PlannedHandle):
             cast("Factors", self._factors).release()
             self._pattern = None
             if self._rule is not None:
-                self._rule.end_chain()
+                self._rule.end_chain(released=True)
+
+    def note_release(self, *, base_bytes: int, budget_bytes: int) -> None:
+        """A cache walk releases this handle's factors for ``retain_memory``.
+
+        The next refactorized step's record carries the two numbers.
+        """
+        self._release_note = {"base_bytes": base_bytes, "budget_bytes": budget_bytes}
 
     def _check_solvable(self) -> None:
         """Refuse a handle whose factors were released; under the lock."""
@@ -297,11 +324,24 @@ class DirectHandle(PlannedHandle):
             pays=self._reuse_pays,
         ):
             write(matrix)
+            self._stepped("reused", None)
             return
         start = time.perf_counter()
         factors.new_values(matrix, write)
         if rule is not None:
             rule.refactorized(time.perf_counter() - start, self._frequency)
+        self._stepped("refactorized", None if rule is None else rule.reason)
+
+    def _stepped(self, action: str, reason: str | None) -> None:
+        """Hold the step's action, reason and its numbers; under the lock."""
+        details: dict[str, float] = {}
+        rule = self._rule
+        if reason == GATE and rule is not None and rule.ratio is not None:
+            details = {"ratio": rule.ratio, "first_iterations": rule.first_iterations}
+        elif reason == RELEASED:
+            details = self._release_note
+        self._release_note = {}
+        self.last_action, self.last_reason, self.last_details = action, reason, details
 
     def _new_plan(self, matrix: ngs.BaseMatrix, freedofs: ngs.BitArray | None) -> None:
         """Factorize ``matrix`` anew and hold it; under the lock.
@@ -312,6 +352,7 @@ class DirectHandle(PlannedHandle):
         self._matrix, self._solver, self._factors = matrix, factors.inverse, factors
         if self._rule is not None:
             self._rule.end_chain()
+        self._stepped("factorized", FIRST)
 
     @classmethod
     def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
@@ -393,6 +434,7 @@ class DirectHandle(PlannedHandle):
         start = time.perf_counter()
         cast("Factors", self._factors).new_values(self._live(), lambda _: None)
         rule.refactorized(time.perf_counter() - start, self._frequency)
+        self._stepped("reused, capped, refactorized", rule.reason)
 
     @property
     def nbytes(self) -> int:

@@ -50,7 +50,7 @@ from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Derivative, FieldPair, Term
 from gfem._field import FieldMap
-from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver
+from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
 from gfem._linalg.base import free_mask
 from gfem.mesh import Mesh
 from gfem.model import Model, check_surface
@@ -174,7 +174,11 @@ class ElectrostaticRule:
                 gf = ngs.GridFunction(space)
                 gf.Set(ngs.CF(1.0), definedon=region)
                 lift[:, i] = gf.vec.FV().NumPy()
-            phi = lift + handle.solve(-handle.apply(lift))
+            phi, its = handle.solve_counted(-handle.apply(lift))
+            report.solve_step(
+                handle, problem="electrostatic", direction="forward", iterations=its
+            )
+            phi += lift
             scale = scipy.constants.epsilon_0 * built.scale
             c = phi.T @ handle.apply(phi) * scale
             energy = 0.5 * scale * self._region_energies(model, built, space, eps, phi)
@@ -316,7 +320,13 @@ class ElectrostaticRule:
                     eps = permittivity(model, built)
                     entry.handle = self._prepare(space, eps, tolerance)
                 # the handle solves the form without eps0 * scale
-                adjoint = entry.handle.solve(load, tolerance=tolerance)
+                adjoint, its = entry.handle.solve_counted(load, tolerance=tolerance)
+                report.solve_step(
+                    entry.handle,
+                    problem="electrostatic",
+                    direction="backward",
+                    iterations=its,
+                )
                 adjoint /= eps0 * built.scale
                 left.append(-adjoint)
                 right.append(phi)
