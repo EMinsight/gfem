@@ -475,6 +475,10 @@ PETSC_CELLS = [
     # the mode-field adjoint after SLEPc seeds (its linear solver stays
     # direct: a PETSc one raises for a mode-field cotangent)
     Cell("eigenmode_participation", "eps_r", "direct", variant="slepc"),
+    # a permittivity law's parameters (ADR 0112): the law pass after a PETSc
+    # solve, and the eigenfrequency after SLEPc seeds
+    Cell("driven", "law", "petsc", "uniform", "poles"),
+    Cell("eigenmode", "law", "petsc", variant="lorentz"),
 ]
 PETSC_PARAMS = [
     pytest.param(
@@ -2069,6 +2073,9 @@ FAMILIES = [
     Cell("eigenmode_participation", "nodes", "direct", variant="inductive"),
     Cell("driven_periodic_bloch", "eps_r", "direct", "uniform"),
     Cell("eigenmode_periodic_bloch", "eps_r", "direct"),
+    # a permittivity law as a pytree inside `gfem.Material` (cells D1 and E1)
+    Cell("driven", "law", "direct", "uniform", "poles"),
+    Cell("eigenmode", "law", "direct", variant="lorentz"),
 ]
 #: Two solves of one design agree to about 1 ulp (threaded assembly), so do
 #: their gradients. An eigenmode gradient is only as reproducible as the
