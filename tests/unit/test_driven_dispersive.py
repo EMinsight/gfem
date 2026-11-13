@@ -342,22 +342,26 @@ def test_a_traced_law_parameter_raises_nondifferentiable(mesh, parameter, value,
     )
 
 
-def test_an_existing_input_beside_a_law_differentiates(mesh):
+@pytest.mark.parametrize("order", [0, 1, 2])
+def test_an_existing_input_beside_a_law_differentiates(mesh, order):
+    # order: of an Absorbing side wall over the host and the law region
+    # (0: none); the law's faces carry no host derivative
     law = CASES["debye"][0]
     f = 5 * GHZ
     eps = complex(law(f))
     constant = gfem.Material(eps_r=eps.real, tan_delta=-eps.imag / eps.real)
+    side = (gfem.Absorbing("side", order=order),) if order else ()
 
     def gradient(core):
         def objective(e):
             host = gfem.MaterialField(eps_r=jnp.asarray(e), region="dielectric")
-            model = _model(mesh, core, host=host)
+            model = _model(mesh, core, host=host, boundaries=side)
             s = gfem.solve(model, gfem.Driven(frequency=[f]), options=OPTIONS).s.values
             return jnp.sum(jnp.abs(s) ** 2 * jnp.array([[1.0, 0.5], [2.0, -1.0]]))
 
         return float(jax.grad(objective)(EPS_HOST))
 
-    with_law = gradient(gfem.Material(eps_r=law, name="grad law"))
+    with_law = gradient(gfem.Material(eps_r=law, name=f"grad law {order}"))
     reference = gradient(constant)
     assert with_law != 0.0
     assert abs(with_law - reference) <= 1e-9 * abs(reference)
