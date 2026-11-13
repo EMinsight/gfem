@@ -263,8 +263,9 @@ How gfem itself checks the estimates against known answers:
   any solve, on an adaptive sweep, a port mode problem, a periodic model, a
   Bloch wave vector and `SolverOptions(order=1)` (the `"fast"` preset); both
   estimators refuse order 1. A `QuantityEstimator` also raises it on a
-  mode of a model with a second-order absorbing boundary or a complex
-  `mu_r`: refine those models with the `FieldEstimator`. On a driven or
+  mode of a model with a second-order absorbing boundary, a complex
+  `mu_r` or a permittivity law: refine those models with the
+  `FieldEstimator`. On a driven or
   eigenmode model with loss inside an anisotropic material, both the
   `FieldEstimator` and a `QuantityEstimator` on a mode or an S entry raise
   it: refine a

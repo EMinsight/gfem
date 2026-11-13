@@ -47,6 +47,7 @@ import scipy.sparse.linalg as spla
 from gfem._engine import quadrature
 from gfem._engine.cache import discretization
 from gfem._engine.coefficients import coefficient, element_tensors
+from gfem._engine.dispersion import eps_at, high_frequency_eps, law_regions
 from gfem._engine.domain import em_region, pec_surfaces
 from gfem._engine.fields import fe_space
 from gfem._engine.mesh import EngineMesh
@@ -231,11 +232,15 @@ class FluxRecovery:
         *,
         cracks: bool = False,
         sheets: Sequence[str] = (),
+        static: bool = False,
     ) -> None:
         """Build the recovery of an order-``order`` solution on ``model``.
 
         ``cracks`` cuts the spaces along the model's interior PEC sheets,
         ``sheets`` along these surfaces too (where they are interior).
+        ``static`` marks an electrostatic solve, whose ``eps`` is the static
+        permittivity; a wave solve's real ``eps`` takes a law region's
+        eps_inf, read only where no law is present (`_lossy_eps_eff`).
         """
         self.model = model
         self.order = order
@@ -250,7 +255,7 @@ class FluxRecovery:
         )
         self._hdiv = self._projection(ngs.HDiv)
         self._hcurl: _Projection | None = None
-        self.eps, self.eps_inverse = self._weights("eps_r")
+        self.eps, self.eps_inverse = self._eps_weights(static)
         self.mu, self.mu_inverse = self._weights("mu_r")
         self._p0 = ngs.L2(self.built.mesh, order=0)
 
@@ -264,11 +269,28 @@ class FluxRecovery:
 
         return _Projection(make, self.dx, self._cracks, region, self._constrained)
 
+    def _eps_weights(
+        self, static: bool
+    ) -> tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]:
+        """The real eps_r and its inverse; a law region's eps_inf on a wave solve.
+
+        An electrostatic solve reads eps_r through `element_tensors`, which
+        refuses a law region.
+        """
+        if static or not law_regions(self.model):
+            return self._weights("eps_r")
+        return self._real_weights(high_frequency_eps(self.model).real)
+
     def _weights(
         self, name: str
     ) -> tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]:
         """A real material property and its inverse, scalar or tensor, per element."""
-        values = element_tensors(self.model, name).real
+        return self._real_weights(element_tensors(self.model, name).real)
+
+    def _real_weights(
+        self, values: np.ndarray
+    ) -> tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]:
+        """Real per-element values and their inverse as coefficients."""
         inverse = 1.0 / values if values.ndim == 1 else np.linalg.inv(values)
         return coefficient(self.built, values), coefficient(self.built, inverse)
 
@@ -399,7 +421,7 @@ def _potential_recovery(model: Model, result: ElectrostaticResult) -> FluxRecove
         b.surface for b in model.boundaries if isinstance(b, (PEC, Conductor))
     }
     order = next(iter(result.potential.values())).order
-    return FluxRecovery(model, order, sheets=sorted(sheets))
+    return FluxRecovery(model, order, sheets=sorted(sheets), static=True)
 
 
 def driven(
@@ -680,10 +702,12 @@ def _effective_eps(
 def _lossy_eps_eff(recovery: FluxRecovery, k: complex) -> np.ndarray | None:
     """`_eps_eff_values` at ``k``, or ``None`` where it is real (no loss).
 
-    Without loss the recovery's own real ``eps`` coefficients stand.
+    Without loss the recovery's own real ``eps`` coefficients stand. With a
+    law region the values stand even when real: a lossless law depends on
+    frequency, and ``recovery.eps`` holds its eps_inf (ADR 0111).
     """
     eps = _eps_eff_values(recovery.model, recovery.built, k)
-    return eps if np.any(eps.imag) else None
+    return eps if np.any(eps.imag) or law_regions(recovery.model) else None
 
 
 def _split(built: EngineMesh, values: np.ndarray) -> list[ngs.CoefficientFunction]:
@@ -694,13 +718,18 @@ def _split(built: EngineMesh, values: np.ndarray) -> list[ngs.CoefficientFunctio
 def _eps_eff_values(model: Model, built: EngineMesh, k: complex) -> np.ndarray:
     """eps_r (1 - i tan_delta) - i eta0 sigma scale / k per tetrahedron.
 
-    ``(n,)``, or ``(n, 3, 3)`` when any material is a tensor.
+    ``(n,)``, or ``(n, 3, 3)`` when any material is a tensor. A law region
+    gives its eps(omega) at omega = k c / scale (`dispersion.eps_at`,
+    analytic, so a mode's complex k is fine).
     """
     from gfem._engine.coefficients import lossy_eps
     from gfem._engine.terms import ETA0
 
     sigma = element_tensors(model, "conductivity").real
-    eps = lossy_eps(model)
+    if law_regions(model):
+        eps = eps_at(model, k * scipy.constants.c / built.scale)
+    else:
+        eps = lossy_eps(model)
     if eps.ndim != sigma.ndim:
         eye = np.eye(3)
         eps, sigma = (
