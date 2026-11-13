@@ -70,6 +70,12 @@ class FieldEstimator:
     ``Re(eps_eff)^-1`` instead overestimates; recovering ``eps_r E``, as
     without loss, underestimates without bound under conduction loss.
 
+    A dispersive material (a `gfem.PermittivityLaw`) enters at its
+    permittivity at each solved frequency, lossless or not, Re eps < 0
+    included. Where it is exactly zero (a lossless Drude term at its plasma
+    frequency, without conductivity) the flux has no weight, and
+    `refine_mesh` and `error_estimate` raise `ValueError`.
+
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for a driven or eigenmode field
     with loss inside an anisotropic material, and at order 1.
@@ -122,11 +128,11 @@ class QuantityEstimator:
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
-    estimate: a mode with a second-order absorbing boundary or a complex
-    ``mu_r``, and an S entry or a mode with loss inside an anisotropic
-    material (as `FieldEstimator`). Both estimators also raise it at order
-    1. For a lossy mode the estimate covers the complex
-    ``omega``; Q's relative error is not estimated. An S entry ``(to, from)``
+    estimate: a mode with a second-order absorbing boundary, a complex
+    ``mu_r`` or a permittivity law, and an S entry or a mode with loss
+    inside an anisotropic material (as `FieldEstimator`). Both estimators
+    also raise it at order 1. For a lossy mode the estimate covers the
+    complex ``omega``; Q's relative error is not estimated. An S entry ``(to, from)``
     whose port ``to`` is a wave port with a lossy mode not parallel to its
     excitation needs that port's adjoint dual: `refine_mesh` adds it to each
     of its solves, with its options; `error_estimate` on a finished result
@@ -346,7 +352,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         ValueError: The result was not solved on ``model``'s mesh, or is a
             driven result without the fields of every frequency (solve with
             ``keep_fields=True``); a `QuantityEstimator` names a port that
-            was not excited or a mode the result does not hold.
+            was not excited or a mode the result does not hold; a
+            permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
             adaptive sweep, a periodic model, another result type, a result
@@ -451,7 +458,8 @@ def refine_mesh(
             problem.
         ValueError: A parameter is out of range, or ``tolerance`` is below 10
             times the solve tolerance; a `QuantityEstimator` names a port
-            that is not excited or a mode index at or above ``n_modes``.
+            that is not excited or a mode index at or above ``n_modes``; a
+            permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
             port mode problem, a periodic model or a Bloch wave vector,
@@ -494,6 +502,12 @@ def refine_mesh(
         _check_quantity_model(estimator, model)
     if isinstance(problem, (Driven, Eigenmode)):
         _check_field_model(estimator, model)
+    if isinstance(problem, Driven):
+        from gfem._engine import dispersion
+
+        dispersion.check_estimator_frequencies(
+            model, [float(f) for f in problem.frequency]
+        )
     _check_order(options.order, estimator)
     if _mpi.resolve_comm(comm) is not None:
         _mpi.refuse_feature("mesh_refinement")
@@ -1037,15 +1051,29 @@ def _adjoints(
 
 
 def _lossy_elements(model: Model) -> np.ndarray:
-    """Whether each tetrahedron is lossy: tan_delta, conductivity, complex eps, mu."""
+    """Whether each tetrahedron is lossy: tan_delta, conductivity, complex eps, mu.
+
+    A law region is lossy when a term of its law carries loss (ADR 0111).
+    """
+    from gfem._engine import dispersion
     from gfem._engine.coefficients import element_tensors
 
+    laws = dispersion.law_regions(model)
     out = np.zeros(len(model.mesh.tetrahedra), bool)
     for name in ("tan_delta", "conductivity", "eps_r", "mu_r"):
-        values = np.asarray(element_tensors(model, name))
+        if name == "eps_r" and laws:
+            # eps_r (1 - i tan_delta) is complex exactly where eps_r is or
+            # tan_delta (counted above) is nonzero; a law region holds its
+            # real eps_inf, its loss is the law's
+            values = np.asarray(dispersion.high_frequency_eps(model))
+        else:
+            values = np.asarray(element_tensors(model, name))
         lossy = values.imag if name in ("eps_r", "mu_r") else values
         lossy = np.abs(lossy) > 0
         out |= lossy.reshape(len(out), -1).any(axis=1)
+    for lr in laws:
+        if dispersion.has_loss(lr.law):
+            out |= lr.mask
     return out
 
 
@@ -1054,12 +1082,22 @@ def _check_lossy_mode(model: Model) -> None:
 
     Covered: tan_delta, conductivity and complex eps_r of an isotropic
     material, impedance, first-order absorbing and conductor surfaces, and
-    resistive lumped ports. (A wave port on an eigenmode is refused by the
+    resistive lumped ports. A permittivity law is refused until a case
+    covers it (ADR 0111). (A wave port on an eigenmode is refused by the
     eigen solver; loss inside an anisotropic material by
     `_check_lossy_anisotropic`.)
     """
+    from gfem._engine import dispersion
     from gfem._engine.coefficients import element_tensors
 
+    laws = dispersion.law_regions(model)
+    if laws:
+        raise MeshRefinementUnsupportedError(
+            "dispersive eigenmode",
+            "QuantityEstimator(omega=...) has no verified estimate for a mode "
+            f"of a model with a permittivity law (region {laws[0].region!r}): "
+            "use gfem.FieldEstimator().",
+        )
     what = None
     if any(isinstance(b, Absorbing) and b.order == 2 for b in model.boundaries):
         what = "a second-order absorbing boundary"
@@ -1143,6 +1181,11 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         )
     if isinstance(result, DrivenResult):
         _check_kept(result, estimator)
+        from gfem._engine import dispersion
+
+        dispersion.check_estimator_frequencies(
+            model, [float(f) for f in result.s.frequency]
+        )
     _check_order(_fields(result)[0].order, estimator)
     mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001

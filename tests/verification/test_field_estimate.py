@@ -46,6 +46,11 @@ the same mesh. A lumped port across a loss jump (the line in two
 layers, the upper lossy) is a witness: its effectivity is asserted in its
 measured band `LOSS_JUMP_WITNESS`, below the quoted range.
 
+Metal block (ADR 0111): the parallel-plate line with its middle 2 mm filled
+with a damped Drude law at Re eps < 0 at both frequencies, where the flux
+and energy weights are |eps(omega)|, against the closed-form cascade of
+three TEM sections.
+
 Each case's effectivity must lie in its range of `FIELD_EFFECTIVITY_BY_CASE`
 at order 2, and of `FIELD_EFFECTIVITY_ORDER_3_BY_CASE` at order 3 (the
 circular coax against an order-6 solve there); `FIELD_EFFECTIVITY` (the
@@ -78,6 +83,8 @@ Measured (order 2, direct, ostau, 1 thread):
     lossy-wall box, m = 1, 2            1.10, 1.10 (impedance and absorbing)
     loss-jump port line, order 2,
     order-4 reference, n = 4, 8, 12     0.93, 0.95, 0.96 (1 S/m, 3 GHz)
+    metal block line, n = 5, 10, 20     1.65, 1.43, 1.18; 1.63, 1.38, 1.14
+                                        (3, 8 GHz)
 
 Measured (order 3, direct, ostau, 1 thread):
 
@@ -129,6 +136,7 @@ FIELD_EFFECTIVITY_BY_CASE = {
     "lossy parallel-plate line": (0.9, 1.6),
     "two-layer box": (0.9, 1.6),
     "lossy-wall box": (0.9, 1.6),
+    "metal block": (0.9, 1.8),
 }
 
 #: Asserted field effectivity range per case at order 3 (measured, with margin).
@@ -707,6 +715,104 @@ def test_the_field_estimate_under_a_lumped_port_across_a_loss_jump(tmp_path, los
             _layers_eps(lower, upper, 0.5e-3),
         )
         assert low <= value / true <= high, (f, value / true)
+
+
+# --- a metal block ------------------------------------------------------------
+
+#: The metal core of the line: a Drude law at Re eps < 0 at both frequencies
+#: (eps = -29.8 - 20.5i at 3 GHz, -4.9 - 1.5i at 8 GHz).
+METAL = gfem.PermittivityLaw(terms=[gfem.Drude(plasma_frequency=20e9, damping=2e9)])
+#: The line's metal core, x in [4, 6] mm, between two dielectric sections.
+_CORE = (4e-3, 6e-3)
+
+
+def _section_wave(f, eps_core):
+    """The exact E_z and (curl E)_y of the line with a core of ``eps_core``.
+
+    Three TEM sections in cascade (dielectric, core, dielectric), each with
+    its own complex beta and Z0; V and I are continuous at the junctions.
+    1 W incident at p1, functions of x (m).
+    """
+    k0 = 2 * math.pi * f / const.c
+    eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
+    h, w = _LINE["height"], _LINE["width"]
+    bounds = (0.0, *_CORE, _LINE["length"])
+    sections = []
+    for eps in (_LINE["eps_r"], eps_core, _LINE["eps_r"]):
+        root = cmath.sqrt(eps)
+        sections.append((k0 * root, eta0 * h / (w * root)))
+    abcd = np.eye(2, dtype=complex)
+    for (beta, z0), x0, x1 in zip(sections, bounds, bounds[1:], strict=False):
+        c, s = cmath.cos(beta * (x1 - x0)), cmath.sin(beta * (x1 - x0))
+        abcd = abcd @ np.array([[c, 1j * z0 * s], [1j * s / z0, c]])
+    (a, b), (cc, d) = abcd
+    s11 = (a * _R2 + b - cc * _R1 * _R2 - d * _R1) / (
+        a * _R2 + b + cc * _R1 * _R2 + d * _R1
+    )
+    incident = math.sqrt(2)  # the peak power wave of 1 W
+    starts = [
+        (math.sqrt(_R1) * incident * (1 + s11), incident * (1 - s11) / math.sqrt(_R1))
+    ]
+    for (beta, z0), x0, x1 in zip(sections, bounds, bounds[1:], strict=False):
+        v, i = starts[-1]
+        c, s = cmath.cos(beta * (x1 - x0)), cmath.sin(beta * (x1 - x0))
+        starts.append((v * c - 1j * z0 * i * s, i * c - 1j * v * s / z0))
+
+    def pieces(x):
+        index = np.clip(np.searchsorted(bounds, x[:, 0], side="right") - 1, 0, 2)
+        beta = np.array([sections[j][0] for j in index])
+        z0 = np.array([sections[j][1] for j in index])
+        v = np.array([starts[j][0] for j in index])
+        i = np.array([starts[j][1] for j in index])
+        bx = beta * (x[:, 0] - np.asarray(bounds)[index])
+        return beta, z0, v, i, bx
+
+    def exact(x):
+        _, z0, v, i, bx = pieces(x)
+        out = np.zeros((len(x), 3), complex)
+        out[:, 2] = (v * np.cos(bx) - 1j * z0 * i * np.sin(bx)) / h
+        return out
+
+    def exact_curl(x):
+        beta, z0, v, i, bx = pieces(x)
+        out = np.zeros((len(x), 3), complex)
+        out[:, 1] = beta * (v * np.sin(bx) + 1j * z0 * i * np.cos(bx)) / h
+        return out
+
+    return exact, exact_curl
+
+
+def _metal_line(tmp_path, n, options):
+    cells = sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1), core=(4.0, 6.0))
+    model = _line_model(
+        tmp_path,
+        cells,
+        {
+            "dielectric": gfem.Material(eps_r=_LINE["eps_r"]),
+            "core": gfem.Material(eps_r=METAL),
+        },
+    )
+    result, estimate = _line_estimate(model, options)
+    for f, value in zip(_LINE_FREQUENCIES, estimate.values, strict=True):
+        eps_core = complex(METAL(f))
+        assert eps_core.real < 0
+
+        def eps(x, _k, eps_core=eps_core):
+            inside = (_CORE[0] < x[:, 0]) & (x[:, 0] < _CORE[1])
+            return np.where(inside, eps_core, _LINE["eps_r"])
+
+        field = result.e_field(f, "p1")
+        true = _relative_energy_error(field, *_section_wave(f, eps_core), eps)
+        _assert_in("metal block", value, true, order=options.order)
+
+
+@pytest.mark.parametrize("n", [5, 10, 20])
+def test_the_field_effectivity_on_a_line_through_a_metal_block(tmp_path, n):
+    # Re eps < 0 in the core: the flux and energy weights are |eps(omega)|
+    # (ADR 0111), the core's own value at each frequency. At n = 40 it
+    # measured 1.05, 1.03; a dielectric core of eps_r 4 gives 1.20 to 1.05
+    # over n = 5 to 40 on the same line.
+    _metal_line(tmp_path, n, OPTIONS)
 
 
 ORDER_5 = gfem.SolverOptions(order=5, linear_solver="direct")
