@@ -33,6 +33,8 @@ pytest ``tmp_path_factory.mktemp`` directory).
 - `dispersive_mesh` / `dispersive_line`: a strip line whose "core" holds a
   permittivity law (`LAWS`), optionally behind absorbing walls; `scaled_law`
   normalizes a law's parameters for the law cells.
+- `dispersive_resonator`: the layered resonator whose cover holds a law
+  (`EIGEN_LAWS`), for the eigenmode law cells.
 """
 
 import math
@@ -877,3 +879,33 @@ def dispersive_line(
             gfem.LumpedPort("p2", "port2", "+z"),
         ],
     )
+
+
+#: The eigenmode law cells' laws on the layered resonator's cover (its mode
+#: near 7 GHz): ``lorentz`` and ``drude_lorentz`` with their resonance at
+#: 20 GHz, ``relaxation`` (Debye and Djordjevic-Sarkar) and
+#: ``drude_lossless``, the polynomial path (theta = k_p^2 in K).
+EIGEN_LAWS = {
+    "lorentz": gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[
+            gfem.Lorentz(delta_eps=2.0, resonance_frequency=20 * GHZ, damping=0.5 * GHZ)
+        ],
+    ),
+    "drude_lorentz": gfem.PermittivityLaw(
+        eps_inf=3.0,
+        terms=[
+            gfem.Drude(plasma_frequency=5 * GHZ, damping=0.5 * GHZ),
+            gfem.Lorentz(delta_eps=1.0, resonance_frequency=20 * GHZ, damping=1 * GHZ),
+        ],
+    ),
+    "relaxation": LAWS["relaxation"],
+    "drude_lossless": gfem.PermittivityLaw(
+        eps_inf=3.0, terms=[gfem.Drude(plasma_frequency=5 * GHZ, damping=0.0)]
+    ),
+}
+
+
+def dispersive_resonator(resonator: gfem.Model, law) -> gfem.Model:
+    """The layered resonator (`layered_resonator`) with ``law`` on its cover."""
+    return resonator.with_material("cover", gfem.Material(eps_r=law))

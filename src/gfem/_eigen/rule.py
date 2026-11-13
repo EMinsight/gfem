@@ -233,12 +233,14 @@ class _InputRefusal:
     """Why a mode-field output does not differentiate by a wanted input.
 
     Attributes:
-        kind: ``"nodes"`` (no node gradient of the normalized field) or
-            ``"lumped"`` (a lumped value the output has no gradient by yet).
+        kind: ``"nodes"`` (no node gradient of the normalized field),
+            ``"lumped"`` (a lumped value the output has no gradient by yet)
+            or ``"law"`` (a permittivity law's parameter: the mode-field
+            outputs read the mode energy, ADR 0112).
         message: The reason, starting "with respect to".
     """
 
-    kind: Literal["nodes", "lumped"]
+    kind: Literal["nodes", "lumped", "law"]
     message: str
 
 
@@ -787,9 +789,14 @@ class EigenmodeRule:
                 reshift=not full,
                 reshift_first=far,
             )
-            retry = far and not full
-            lost = _lost(mode, seed, k, sigma, accepted=accepted, window=window)
-            if retry and (lost or self._longitudinal(op, mode)):
+            if (
+                far
+                and not full
+                and (
+                    _lost(mode, seed, k, sigma, accepted=accepted, window=window)
+                    or self._longitudinal(op, mode)
+                )
+            ):
                 # a frozen seed rougher than TRUSTED, refined on a shift nearer
                 # another mode, wanders where round-off takes it (onto an
                 # accepted mode, a mirror root, or another seed's mode): refine
@@ -1110,9 +1117,19 @@ class EigenmodeRule:
         """Why a read input cannot be differentiated here, or ``None``.
 
         The node coordinates, next to a tensor absorbing admittance
-        (`terms.absorbing_shape_unsupported`).
+        (`terms.absorbing_shape_unsupported`); a permittivity law's
+        parameter on a periodic model (no verification cell, ADR 0112).
         """
-        return self.nodes_unsupported if kind == ("nodes",) else None
+        if kind == ("nodes",):
+            return self.nodes_unsupported
+        if kind[0] == "law" and (
+            self._periodic_surfaces or self.problem.wave_vector is not None
+        ):
+            return (
+                "gradients with respect to a permittivity law's parameters are not "
+                "verified on a periodic eigenmode model in this version"
+            )
+        return None
 
     def nondifferentiable_output(
         self, name: str, kinds: frozenset[tuple] | set[tuple] = frozenset()
@@ -1129,7 +1146,8 @@ class EigenmodeRule:
         wave vector, with respect to materials, sheet fills, node
         coordinates (port surfaces held) and lumped values; the normalized
         fields never with respect to the node coordinates, the principal
-        shares not with respect to a lumped value. What depends on the modes
+        shares not with respect to a lumped value, and none of them with
+        respect to a permittivity law's parameter. What depends on the modes
         (a cluster, a near pair, a port without voltage) raises in the
         backward.
         """
@@ -1147,6 +1165,14 @@ class EigenmodeRule:
             )
         why = self._solve_refusal()
         refusal = None if why is not None else self._input_refusal(name, kinds)
+        if refusal is not None and refusal.kind == "law":
+            return (
+                f"{head} {refusal.message}: the mode fields and the ratios of a "
+                "dispersive model have no verified gradient by its permittivity "
+                "law in this version. Differentiate the eigenfrequency or Q "
+                "(omega) instead, or wrap the value in jax.lax.stop_gradient to "
+                "use it without its derivative."
+            )
         if refusal is not None and refusal.kind == "lumped":
             return (
                 f"{head} {refusal.message} in this version; the eigenfrequencies "
@@ -1211,9 +1237,17 @@ class EigenmodeRule:
     ) -> _InputRefusal | None:
         """Why output ``name`` does not differentiate by ``kinds``, or ``None``.
 
-        The normalized field by the node coordinates, and the principal
+        Every mode-field output by a permittivity law's parameter (ADR 0112),
+        the normalized field by the node coordinates, and the principal
         shares by a lumped value.
         """
+        laws = [k for k in kinds if k[0] == "law"]
+        if laws:
+            region = min(laws, key=str)[1]
+            return _InputRefusal(
+                "law",
+                f"with respect to the permittivity law of model.materials[{region!r}]",
+            )
         if name == "e_field" and ("nodes",) in kinds:
             return _InputRefusal(
                 "nodes",

@@ -363,6 +363,55 @@ EXPECTED |= {
     for kind in EIGEN_KINDS
 }
 
+# Eigenmode with TABLE_LAW on a second region "core" (ADR 0112, ADR 0115):
+# omega (so frequency and Q) differentiates by every law parameter; the
+# mode-field outputs and the backward error raise by them ("differentiate
+# the eigenfrequency or Q"); the cluster labels and the fields' mesh are
+# constants. The result's law leaves are the inputs passed through. The
+# other inputs are as on the plain resonator, the core's share like the
+# dielectric's.
+EIGEN_LAW_KINDS = [*EIGEN_KINDS, *LAW_KINDS]
+_EIGEN_LAW_LEAVES = {
+    ("eps_inf",): "materials.core.eps_r.eps_inf",
+    **{
+        (i, f.name): f"materials.core.eps_r.terms.{i}.{f.name}"
+        for i, term in enumerate(TABLE_LAW.terms)
+        for f in dataclasses.fields(term)
+    },
+}
+
+
+def _eigen_law_outcome(out, kind):
+    if out.startswith("materials.core."):
+        return GRADIENT if _EIGEN_LAW_LEAVES.get(tuple(kind[2:])) == out else ZERO
+    if kind[0] != "law":
+        if out.startswith("materials.dielectric."):
+            return EXPECTED[("eigenmode", out, kind)]
+        base = out.replace("bulk_participation.core", "bulk_participation.dielectric")
+        return EXPECTED[("eigenmode", base, kind)]
+    if out.startswith("materials.dielectric.") or out in _EIGEN_CONSTANT:
+        return ZERO
+    return GRADIENT if out in _EIGEN_DEPENDENT else RAISES
+
+
+EXPECTED |= {
+    ("eigenmode_law", out, kind): _eigen_law_outcome(out, kind)
+    for out in (
+        "omega",
+        "error",
+        "q_port.p1",
+        "q_port.p2",
+        "participation.p1",
+        "bulk_participation.dielectric",
+        "bulk_participation.core",
+        "cluster",
+        *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
+        *(f"materials.dielectric.{p}" for p in ALL_PROPERTIES),
+        *_EIGEN_LAW_LEAVES.values(),
+    )
+    for kind in EIGEN_LAW_KINDS
+}
+
 # Eigenmode on a periodic model (the C3 Bragg line, plain at Γ and Bloch at
 # the zone edge; no ports): as the non-periodic resonator, region "low".
 # Its material field carries only the permittivity and the conductivity
@@ -648,6 +697,34 @@ def eigen_model(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def eigen_law_model(tmp_path_factory):
+    # the eigenmode resonator with TABLE_LAW on a 2 mm "core": its mode near
+    # 18.6 GHz sees eps about 9.1 - 3.0i (below the unresolved band)
+    path = tmp_path_factory.mktemp("law_resonator") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(4.0, 2.0, 1.0, (4, 1, 1), core=(1.0, 3.0)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    return gfem.Model(
+        mesh,
+        materials={
+            "dielectric": _field(mesh, "dielectric", conductivity=1e-3),
+            "core": gfem.Material(eps_r=TABLE_LAW),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort(
+                "p1",
+                "port1",
+                "+z",
+                resistance=1000.0,
+                inductance=1e-9,
+                capacitance=1e-14,
+            ),
+            gfem.LumpedPort("p2", "port2", "+z", impedance=1000.0),
+        ],
+    )
+
+
+@pytest.fixture(scope="module")
 def wave_model(tmp_path_factory):
     path = tmp_path_factory.mktemp("wave") / "line.msh"
     sm.write_msh22(path, sm.strip_line(3.0, 2.0, 1.0, (3, 1, 1), core=(1.0, 2.0)))
@@ -860,6 +937,10 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
         **request.getfixturevalue("driven_periodic_cases"),
         **request.getfixturevalue("eigen_periodic_cases"),
         **request.getfixturevalue("law_cases"),
+        "eigenmode_law": (
+            request.getfixturevalue("eigen_law_model"),
+            gfem.Eigenmode(target=17e9),
+        ),
     }
 
 
@@ -1367,6 +1448,64 @@ def _out_bloch_eigenmode_on_bddc(request):
     gfem.solve(model, _bloch_eigenmode(k), options=options)
 
 
+# --- eigenmode rows of a permittivity law (ADR 0112, ADR 0115) ------------------------
+
+
+def _eigen_law_objective(request, read, *, model=None, problem=None):
+    """``read(result)`` as a function of the core law's eps_inf."""
+    model = model or request.getfixturevalue("eigen_law_model")
+    problem = problem or gfem.Eigenmode(target=17e9)
+
+    def objective(eps_inf):
+        law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
+        m = model.with_material("core", gfem.Material(eps_r=law))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return read(gfem.solve(m, problem))
+
+    return objective
+
+
+def _out_eigenmode_probe_by_a_law_parameter(request):
+    # a phase-dependent measurement of the normalized mode field
+    point = np.array([2.1, 0.9, 0.4]) * 1e-3
+    objective = _eigen_law_objective(
+        request, lambda r: jnp.real(r.e_fields[0].at(point)[2])
+    )
+    jax.make_jaxpr(jax.grad(objective))(2.0)
+
+
+def _out_eigenmode_absorbing_law_face(request):
+    # the analytic sqrt(eps(omega)) wall would differ from the driven one
+    model = request.getfixturevalue("eigen_law_model")
+    model = model.replace(
+        boundaries=[*model.boundaries, gfem.Absorbing("side", order=1)]
+    )
+    gfem.solve(model, gfem.Eigenmode(target=17e9))
+
+
+def _periodic_law_model(request):
+    model = request.getfixturevalue("bragg_cell")
+    return model.with_material("low", gfem.Material(eps_r=TABLE_LAW))
+
+
+def _periodic_law_objective(request, problem):
+    model = _periodic_law_model(request)
+
+    def objective(eps_inf):
+        law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
+        m = model.with_material("low", gfem.Material(eps_r=law))
+        return jnp.real(gfem.solve(m, problem).omega[0]) * 1e-9
+
+    return objective
+
+
+def _out_periodic_eigenmode_by_a_law_parameter(request):
+    objective = _periodic_law_objective(
+        request, gfem.Eigenmode(target=pc.C3_PLAIN_TARGET)
+    )
+    jax.make_jaxpr(jax.grad(objective))(2.0)
+
+
 # --- eigenmode mode-field rows (ADR 0102) ---------------------------------------------
 
 
@@ -1790,6 +1929,24 @@ OUT_OF_SCOPE = [
         gfem.NonDifferentiableError,
         r"'principal_participation'.*model\.ports\[0\]\.inductance.*stop_gradient",
     ),
+    (
+        "eigenmode mode-field output x law parameter",
+        _out_eigenmode_probe_by_a_law_parameter,
+        gfem.NonDifferentiableError,
+        r"permittivity law of model\.materials\['core'\].*eigenfrequency or Q",
+    ),
+    (
+        "eigenmode x absorbing face on a law region",
+        _out_eigenmode_absorbing_law_face,
+        NotImplementedError,
+        "absorbing boundary on a dispersive region",
+    ),
+    (
+        "periodic eigenmode x law parameter",
+        _out_periodic_eigenmode_by_a_law_parameter,
+        gfem.NonDifferentiableError,
+        r"eps_r\.eps_inf.*periodic eigenmode",
+    ),
 ]
 
 
@@ -1878,6 +2035,20 @@ OMEGA_BESIDE_ROWS = [
         lambda r: _omega_corner(r, delta=1e-4, read=lambda omega: omega[0]),
     ),
 ]
+
+
+#: The model of the law rows whose omega still differentiates: the
+#: mode-field row's resonator (its probe raises, its frequency does not). The
+#: periodic law row raises for omega too, and the absorbing row in the
+#: forward, so neither has an omega companion.
+def _omega_by_a_law_parameter(request):
+    objective = _eigen_law_objective(request, lambda r: jnp.real(r.omega[0]) * 1e-9)
+    grad = jax.grad(objective)(2.0)
+    assert np.isfinite(grad)
+    assert grad != 0
+
+
+OMEGA_BESIDE_ROWS.append(("law parameter", _omega_by_a_law_parameter))
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,7 @@ model exactly outside the law's unresolved band. The references:
 
 import math
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 import structured_meshes as sm
@@ -185,7 +186,7 @@ def test_a_lossless_drude_law_is_solved_as_a_polynomial_problem(
     assert not operators[-1].nonpolynomial
     assert np.all(polynomial.imag == 0)
     # the general route: the same law as a nonpolynomial piece
-    monkeypatch.setattr(terms, "polynomial_law", lambda law: False)
+    monkeypatch.setattr(terms, "polynomial_law", lambda _law: False)
     general = np.asarray(gfem.solve(model, problem, options=ORDER_3).omega)
     assert operators[-1].nonpolynomial
     np.testing.assert_allclose(polynomial, general, rtol=1e-12)
@@ -432,3 +433,59 @@ def test_a_lossless_law_mode_is_the_constant_materials_at_its_frequency(core_box
     np.testing.assert_allclose(
         np.real(constant.omega[0]) / (2 * math.pi), f, rtol=1e-10
     )
+
+
+# --- gradients by the law's parameters (ADR 0112) ------------------------------------
+
+
+def test_omega_differentiates_by_the_law_parameters(core_box):
+    # a lossy Lorentz core: the mode is complex, so the weight reads Q too
+    import jax
+    import jax.numpy as jnp
+    from finite_differences import derivative
+
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=2.0, resonance_frequency=40 * GHZ, damping=2e9)],
+    )
+    leaves, tree = jax.tree.flatten(law)
+    options = gfem.SolverOptions(order=1, eigen_tolerance=1e-12)
+    problem = gfem.Eigenmode(target=15 * GHZ)
+
+    def objective(t):
+        moved = [p * (1 + t[i]) for i, p in enumerate(leaves)]
+        scaled = jax.tree.unflatten(tree, moved)
+        omega = gfem.solve(cored(core_box, scaled), problem, options=options).omega[0]
+        return jnp.real(omega * (1 + 3j)) * 1e-9
+
+    t0 = jnp.zeros(len(leaves))
+    grad = np.asarray(jax.grad(objective)(t0))
+    for i in range(len(leaves)):
+        e = np.zeros(len(leaves))
+        e[i] = 1.0
+        fd = derivative(objective, t0, jnp.asarray(e), 1e-3)
+        np.testing.assert_allclose(grad[i], fd, rtol=1e-6)
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda r: r.bulk_participation["core"][0],
+        lambda r: jnp.real(r.e_fields[0].coefficients[5]),
+    ],
+    ids=["bulk_participation", "e_fields"],
+)
+def test_mode_field_outputs_refuse_a_law_parameter(core_box, read):
+    import jax
+
+    def objective(eps_inf):
+        law = gfem.PermittivityLaw(
+            eps_inf=eps_inf, terms=[gfem.Drude(plasma_frequency=5 * GHZ, damping=1e9)]
+        )
+        return read(gfem.solve(cored(core_box, law), gfem.Eigenmode(target=15 * GHZ)))
+
+    with pytest.raises(
+        gfem.NonDifferentiableError,
+        match=r"permittivity law of model\.materials\['core'\].*eigenfrequency or Q",
+    ):
+        jax.make_jaxpr(jax.grad(objective))(2.0)

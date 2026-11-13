@@ -121,6 +121,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("driven", ["permittivity-law parameters"], 5),
         ("eigenmode", ["permeability", "loss tangent"], 2),
         ("eigenmode", ["lumped values"], 2),
+        ("eigenmode", ["permittivity-law parameters"], 4),
         ("driven_periodic_plain", ["permittivity-law parameters"], 1),
         ("eigenmode_participation", ["lumped values"], 5),
         ("eigenmode_field", ["lumped values"], 1),
@@ -143,6 +144,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
             "(direct solver)"
         ),
         "Eigenmode with respect to the lumped values (direct solver, BDDC + GMRES)",
+        "Eigenmode with respect to the permittivity-law parameters (direct solver)",
         (
             "Driven, plain periodic with respect to the permittivity-law "
             "parameters (direct solver, uniform sweep)"
@@ -204,7 +206,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 39
+    assert len(rows) == 42
     assert "electrostatic x sheet fill" not in rows
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
     assert rows["material axes (orientation)"] == {

@@ -182,6 +182,7 @@ PROBLEMS = {
     "driven_law": Problem("driven", "s.values", "lumped"),
     "driven_law_absorbing": Problem("driven", "s.values", "lumped"),
     "driven_periodic_law": Problem("driven_periodic_plain", "s.values", "lumped"),
+    "eigenmode_law": Problem("eigenmode", "omega"),
 }
 #: The rows whose cell-only keys have no ``EXPECTED`` entries of their own:
 #: the raise table's leaves of their row's keys answer for them, by prefix
@@ -247,6 +248,18 @@ GRID_LABELS = {
 #: match key). A row off the grid with no label here, or a label with no row,
 #: fails the build.
 RAISES_LABELS = {
+    "eigenmode mode-field output x law parameter": (
+        "Eigenmode participations, port Q and mode fields, with respect to the "
+        "parameters of a permittivity law (the frequency and Q differentiate)"
+    ),
+    "eigenmode x absorbing face on a law region": (
+        "Eigenmode with an `Absorbing` boundary on a region with a permittivity "
+        "law (raised by the solve)"
+    ),
+    "periodic eigenmode x law parameter": (
+        "Eigenmode of a periodic model, with respect to the parameters of a "
+        "permittivity law"
+    ),
     "driven x fill of a sheet beside a wave port": (
         "Driven S-parameters, with respect to the fill of a sheet that shares "
         "an edge with a wave port's face"

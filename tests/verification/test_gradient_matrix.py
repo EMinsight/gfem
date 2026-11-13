@@ -76,6 +76,7 @@ from gradient_cases import (
     BIAXIAL,
     CAVITY_TARGET,
     COVER_LAW,
+    EIGEN_LAWS,
     EPS0,
     GUIDE_TARGET,
     JUNCTION_CHI_L,
@@ -99,6 +100,7 @@ from gradient_cases import (
     core_design,
     dispersive_line,
     dispersive_mesh,
+    dispersive_resonator,
     guide_model,
     hybrid_line,
     hybrid_mesh,
@@ -400,6 +402,11 @@ def _law_cells() -> list[Cell]:
         Cell("driven", "nodes", "direct", "uniform", "law"),
         Cell("driven_wave", "law", "direct", "uniform", "lossy"),
         Cell("driven_periodic_plain", "law", "direct", "uniform"),
+        # eigenmode omega (frequency and Q) in the cover's law parameters
+        *(
+            Cell("eigenmode", "law", "direct", variant=variant)
+            for variant in ("lorentz", "drude_lorentz", "relaxation", "drude_lossless")
+        ),
     ]
 
 
@@ -1627,6 +1634,46 @@ def _periodic_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     return _law_case(objective, law, seed)
 
 
+def _eigen_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """omega of the layered resonator in its cover's law parameters (`EIGEN_LAWS`).
+
+    ``drude_lossless`` (the polynomial path) moves its eps_inf and plasma
+    frequency: its damping, 0, has no normalized direction.
+    """
+    law = EIGEN_LAWS[cell.variant]
+    resonator = d.layered_resonator
+    if cell.variant == "drude_lossless":
+        (term,) = law.terms
+
+        def build(t):
+            drude = dataclasses.replace(
+                term, plasma_frequency=term.plasma_frequency * (1 + t[1])
+            )
+            return dataclasses.replace(
+                law, eps_inf=law.eps_inf * (1 + t[0]), terms=[drude]
+            )
+
+        size = 2
+    else:
+
+        def build(t):
+            return scaled_law(law, t)
+
+        size = len(jax.tree.leaves(law))
+
+    def objective(t):
+        model = dispersive_resonator(resonator, build(t))
+        return _omega(model, options, RESONATOR_TARGET)
+
+    return Case(
+        objective,
+        jnp.zeros(size),
+        np.random.default_rng(seed),
+        step=STEPS["law"],
+        taylor=1e-1,
+    )
+
+
 # --- the periodic eigenmode cells' objectives ---------------------------------------
 
 #: The design inputs of the periodic eigen cell, by cell input.
@@ -1758,6 +1805,7 @@ BUILDERS = {
     ("driven", "law"): _driven_law,
     ("driven_wave", "law"): _wave_law,
     ("driven_periodic_plain", "law"): _periodic_law,
+    ("eigenmode", "law"): _eigen_law,
 }
 #: Builders of the existing inputs beside a law, by (problem, input, variant).
 VARIANT_BUILDERS = {

@@ -347,7 +347,7 @@ def absorbing_surfaces(
 #: its wavelength is shorter than two of its longest edges.
 BAND = math.pi
 #: Each term's frequencies a message measures nearness by.
-_CORNERS = {
+_CORNERS: dict[type, tuple[str, ...]] = {
     Drude: ("plasma_frequency",),
     Lorentz: ("resonance_frequency",),
     Debye: ("relaxation_frequency",),
