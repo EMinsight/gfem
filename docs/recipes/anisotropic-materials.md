@@ -31,8 +31,8 @@ ln.eps_r  # (4.889, 4.571, 4.889), along x, y, z
   `a_k a_kᵀ`. A single value counts for all three axes.
 - Every tensor property of one material shares the same principal axes, so
   the loss is coaxial with the permittivity.
-- As for an isotropic `gfem.Material`, the media are linear, local and
-  reciprocal, with values constant in frequency.
+- The media are linear, local and reciprocal, with values constant in
+  frequency: a permittivity law is isotropic only (see Limits).
 
 ## Turn the axes
 
@@ -211,9 +211,12 @@ How gfem itself is checked on anisotropic materials: {doc}`../verification`.
   `gfem.interface_participation` is isotropic. Its neighbours may be
   anisotropic, and a side counts as vacuum only when no wave in it is slower
   than in vacuum ({doc}`measurements`).
-- **No dispersion and no rotation helper.** Values are constant in frequency:
-  solve each band with its own values. gfem has no constructor for axes from
-  Euler angles or a crystal cut: build the rotation with numpy or scipy.
+- **Dispersion is isotropic only.** A permittivity law on an anisotropic
+  material raises `ValueError`. For a dispersive isotropic region see
+  {doc}`dispersive-materials`; an anisotropic one still takes constant
+  values, so solve each band with its own values.
+- **No rotation helper.** gfem has no constructor for axes from Euler angles
+  or a crystal cut: build the rotation with numpy or scipy.
 
 ## Next
 

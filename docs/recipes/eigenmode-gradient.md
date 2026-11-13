@@ -173,6 +173,11 @@ g = jax.grad(loss)(jnp.full(n, 11.45))
   junction inductance, say) and an `Impedance`'s `resistance`, `inductance`
   and `capacitance`. Build the port or the sheet inside the differentiated
   function.
+- The numbers of a permittivity law differentiate the eigenfrequency and Q.
+  By them, participations, port Q and the mode field raise
+  `gfem.NonDifferentiableError`: differentiate the eigenfrequency or Q. The
+  inputs above still reach every output of a model with a law
+  ({doc}`dispersive-materials`).
 
 ## Check your results
 

@@ -69,6 +69,10 @@ result = gfem.solve(model, problem, options=options)
 - Where the fields matter most, keep the uniform sweep.
 - Under `jax.grad`, `jax.jit` or `jax.vmap` an adaptive sweep needs its
   samples frozen (`Driven(samples=...)`): see {doc}`adaptive-sweep-gradient`.
+- A material resonance inside the band costs samples. For each Lorentz term
+  of a permittivity law whose resonance lies in the grid, the sweep solves
+  the two grid frequencies on either side of it first
+  ({doc}`dispersive-materials`).
 
 ## Solve several frequencies at once
 

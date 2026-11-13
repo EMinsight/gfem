@@ -123,6 +123,8 @@ model = gfem.Model(
   `gfem.LumpedPort("p1", "port1", "+y", resistance=50.0, inductance=l)`. An
   `Impedance` whose surface shares an edge with a wave port's face raises
   `gfem.PortGeometryError` instead: the port mode reads it there.
+- The numbers of a permittivity law differentiate, on both sweeps: see
+  {doc}`dispersive-materials`.
 - Thermal properties are not read: their gradient is an exact zero.
 
 ## In an optimization loop

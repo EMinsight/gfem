@@ -8,9 +8,11 @@ v0.1.
 - **Problems**: {py:obj}`gfem.Driven` (the response of a model to its ports over a
   frequency grid, uniform or adaptive sweep), {py:obj}`gfem.Eigenmode` (resonant
   modes nearest a target frequency, with their Q; lumped ports only: a wave
-  port raises), {py:obj}`gfem.Electrostatic` (the
+  port raises; with a permittivity law, outside the law's
+  {term}`unresolved band`), {py:obj}`gfem.Electrostatic` (the
   Maxwell capacitance matrix between named terminals) and {py:obj}`gfem.PortMode`
-  (the 2D mode of a wave port). Eigenmode and uniform driven problems take a
+  (the 2D mode of a wave port; a permittivity law in its cross-section where
+  Re ε > 0). Eigenmode and uniform driven problems take a
   Bloch wave vector (`wave_vector=`, rad/m) on a periodic model.
 - **Ports**: {py:obj}`gfem.LumpedPort` on one or several surfaces driven together,
   and {py:obj}`gfem.WavePort` on an exterior surface, fed by its port mode;
@@ -26,7 +28,10 @@ v0.1.
   anisotropic: real symmetric tensors on shared principal axes,
   {doc}`recipes/anisotropic-materials`), {py:obj}`gfem.MaterialField` per
   element (isotropic, or principal values on fixed axes), and {py:obj}`gfem.SheetField` for the fill of a patterned metal sheet
-  ({doc}`recipes/sheet-design`).
+  ({doc}`recipes/sheet-design`). A `Material`'s permittivity may follow a
+  {py:obj}`gfem.PermittivityLaw` of Drude, Lorentz, Debye and
+  Djordjevic-Sarkar terms, metals included
+  ({doc}`recipes/dispersive-materials`).
 - **Measurements**: {py:obj}`gfem.characteristic_impedance`,
   {py:obj}`gfem.interface_participation`, {py:obj}`gfem.power_flow` and
   {py:obj}`gfem.electric_energy` ({doc}`recipes/measurements`).
@@ -127,6 +132,13 @@ returning a wrong value:
   reflects its own mode at the order of its attenuation per radian,
   alpha/beta; {py:obj}`gfem.PortModeProjectionWarning` states either error.
 
+- **Dispersive materials**: a permittivity law is isotropic, and
+  `mu_r` does not disperse; give an anisotropic or magnetic material constant
+  values per band. A metal in a wave port's cross-section raises: keep it off
+  the port faces or use lumped ports. A blend with a law end solves on the
+  driven uniform sweep only. An eigenmode target or mode in a law region's
+  {term}`unresolved band` raises; move the target or refine that region.
+  Details: {doc}`recipes/dispersive-materials`.
 - **Mode-field gradients**: participations, port Q and the mode field
   differentiate for isolated modes of non-periodic models, on the direct
   solver, on the CPU, in one process ({doc}`recipes/eigenmode-gradient`).

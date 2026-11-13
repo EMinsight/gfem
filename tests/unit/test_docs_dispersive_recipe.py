@@ -106,3 +106,59 @@ def test_the_check_section_compares_with_a_constant_material(page):
     (block, *_) = dp.blocks(check, "python")
     assert "tan_delta=" in block
     assert "conductivity=" in block
+
+
+# -- The pages that send readers here ------------------------------------------
+
+
+def _read(name: str) -> str:
+    return (dp.DOCS / name).read_text(encoding="utf-8")
+
+
+def test_the_capabilities_list_laws_and_their_limits():
+    page = _read("capabilities.md")
+    solve = dp._prose(dp.section(page, "What you can solve"))
+    assert "{py:obj}`gfem.PermittivityLaw`" in solve
+    assert "{doc}`recipes/dispersive-materials`" in solve
+    limits = dp._prose(dp.section(page, "Limits"))
+    assert "**Dispersive materials**" in limits
+    assert "{term}`unresolved band`" in limits
+
+
+def test_the_anisotropic_recipe_splits_dispersion_from_rotation():
+    limits = dp._prose(dp.section(_read("recipes/anisotropic-materials.md"), "Limits"))
+    assert "No dispersion" not in limits
+    assert "{doc}`dispersive-materials`" in limits
+    assert "**No rotation helper.**" in limits
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "recipes/measurements.md",
+        "recipes/eigenmode-gradient.md",
+        "recipes/s-parameter-gradient.md",
+        "recipes/frequency-sweep.md",
+        "recipes/solve-a-device.md",
+    ],
+)
+def test_a_page_a_law_changes_links_the_recipe(name):
+    assert "{doc}`dispersive-materials`" in _read(name)
+
+
+def test_the_frequency_sweep_says_a_resonance_costs_samples():
+    assert "costs samples" in dp._prose(_read("recipes/frequency-sweep.md"))
+
+
+def test_the_verification_page_has_a_dispersive_section():
+    page = _read("verification.md")
+    section = dp._prose(dp.section(page, "Dispersive materials"))
+    assert "Mode energy" in section
+    assert "Not checked" in section
+    assert "permittivity law" in dp._prose(dp.section(page, "Gradients"))
+
+
+def test_the_release_notes_announce_laws_and_the_restart_bound():
+    notes = _read("project/release-notes.md").split("## 0.1.0")[0]
+    assert "gfem.PermittivityLaw" in notes
+    assert "100 restarts" in notes

@@ -30,7 +30,9 @@ On a metal sheet between substrate and vacuum, `"MA"` reads the vacuum face
 and `"MS"` the substrate face (its normal flux, with the substrate's
 permittivity tensor), so one surface serves both. A side counts as vacuum
 only if no wave in it is slower than in vacuum, so an anisotropic substrate is
-never taken for vacuum. The thin layer itself is isotropic.
+never taken for vacuum. The thin layer itself is isotropic. A selected side
+in a region with a permittivity law raises `ValueError`, since the layer's
+field reads one permittivity there: measure a surface away from that region.
 
 On a film with the same medium on both faces, such as an airbridge or a
 suspended film, `"MA"` and `"MS"` count one layer on each face and add the
@@ -192,6 +194,10 @@ p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
   `power_flow`: a driven result does not carry its materials.
 - **Not differentiable.** `electric_energy` inside `jax.grad` raises
   `gfem.NonDifferentiableError`.
+- **A region with a permittivity law** is weighed with Re d(ωε)/dω at the
+  field's frequency, the energy of a dispersive medium. Where that weight is
+  not positive (loss dominates the law) it raises `ValueError`; model such a
+  metal as `gfem.Conductor` or `gfem.PEC` ({doc}`dispersive-materials`).
 
 ## Move a wave port's reference plane
 

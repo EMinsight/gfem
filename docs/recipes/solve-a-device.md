@@ -319,6 +319,11 @@ True
   mode of a band: ask for more modes than you expect and check that the
   farthest one lies outside the band. A model with a wave port has no
   eigenmode solve; it raises.
+- Where a lossy region holds about 10 or more modes within one linewidth of
+  the target, "nearest" is ill-defined. The eigen solver's first pass then
+  stops after 100 restarts and raises `gfem.EigenmodeConvergenceError`
+  naming the region. Move the target, or find the resonances from a driven
+  sweep ({doc}`dispersive-materials`).
 
 ## Next
 
