@@ -67,7 +67,7 @@ def _bump(morph):
 
 def test_shape_kernel_costs_a_tenth_of_a_forward_solve_per_pair(r8):
     problem = gfem.Driven(frequency=50e9, excite="p1")
-    options = gfem.SolverOptions(threads=THREADS)
+    options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
     rule = DrivenRule(r8, problem, options)
     rule.forward(r8, keep=False)  # warm: the discretization and its spaces
     start = time.perf_counter()
@@ -113,7 +113,7 @@ def test_shape_backward_is_a_quarter_of_the_forward(r8, sweep):
         grid = tuple(float(f) for f in np.linspace(1e9, 100e9, 100))
         samples = (grid[0], grid[99], grid[49], grid[24], grid[74])
         problem = gfem.Driven(frequency=grid, sweep="adaptive", samples=samples)
-    options = gfem.SolverOptions(threads=THREADS)
+    options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
 
     def objective(a):
         model = r8.replace(mesh=morph(a * UM * bump))
