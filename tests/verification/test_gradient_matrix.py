@@ -1525,6 +1525,8 @@ FAMILIES = [
 #: refined eigenvector, to the eigen tolerance (1e-12) times the operator's
 #: condition: each solve's Arnoldi run starts from a random vector, so two
 #: solves' gradients differ by up to ~1e-7 (the value by 1e-15).
+MODE_FIELD = frozenset({"eigenmode_participation", "eigenmode_field"})
+
 RTOL = {
     "eigenmode": 1e-6,
     "eigenmode_participation": 1e-6,
@@ -1557,8 +1559,12 @@ def test_gradient_matrix_transformations_and_eviction_agree(designs, cell):
     _, pullback = jax.vjp(case.objective, case.p)
     first = pullback(1.0)[0]
     _assert_same(first, looped[0], cell)
-    # the same kept entry: the second pullback repeats the first exactly
-    np.testing.assert_allclose(pullback(2.0)[0], 2 * first, rtol=1e-12)
+    # the same kept entry: the second pullback repeats the first exactly, but
+    # for a mode-field adjoint, an iterative solve on the kept operator that a
+    # first pullback may have reshifted (ADR 0104): there it agrees to the
+    # solve's acceptance (measured 1e-11 on MN5), not bit for bit
+    repeat = 1e-9 if cell.problem in MODE_FIELD else 1e-12
+    np.testing.assert_allclose(pullback(2.0)[0], 2 * first, rtol=repeat)
 
     options = dataclasses.replace(_options(cell, production=False), retain_memory=0)
     evicted = BUILDERS[cell.problem, cell.input](designs, cell, options, 0)
