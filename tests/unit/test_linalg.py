@@ -600,6 +600,38 @@ def test_a_bddc_solve_at_another_tolerance_never_sets_the_preconditioner_up_agai
     assert len(builds) == 1
 
 
+def test_a_bddc_handle_names_each_steps_action_and_reason(built, monkeypatch):
+    def operator(shift):
+        return _laplace(built, complex_valued=True, shift=shift, order=4)[0]
+
+    def step(handle):
+        return handle.last_action, handle.last_reason
+
+    handle = prepare(operator(1 - 2j), symmetry="complex_symmetric", kind="bddc_gmres")
+    assert step(handle) == ("factorized", "first")
+    rng = np.random.default_rng(23)
+    B = rng.standard_normal((handle.ndof, 2)) + 0j
+    previous = handle.solve(B)
+    handle.refactorize(operator(1.05 - 2j))
+    assert step(handle) == ("reused", None)
+    handle.solve(B, x0=previous)
+    assert step(handle) == ("reused", None)
+    # a solve without a guess sets the reused preconditioner up again
+    handle.refactorize(operator(1.1 - 2j))
+    previous = handle.solve(B)
+    assert step(handle) == ("factorized", "cold solve")
+    # far away, a warm column caps (at n_ref, no slack) and sets BDDC up
+    # inside the solve
+    monkeypatch.setattr(bddc, "_slack", lambda _: 0)
+    handle.refactorize(operator(-40 + 1j))
+    handle.solve(B, x0=previous)
+    assert step(handle) == ("reused, capped, refactorized", "capped")
+    handle._rebuild = True  # what a reused solve past n_ref + Δ leaves
+    handle.refactorize(operator(-40.1 + 1j))
+    assert step(handle) == ("factorized", "rebuild rule")
+    handle.free()
+
+
 @pytest.mark.parametrize("kind", [*PLANNED, "bddc_gmres"])
 def test_a_refactorization_checks_the_handle_under_its_lock(built, kind):
     # a handle freed while a refactorization waits for the lock is not

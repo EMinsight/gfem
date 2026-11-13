@@ -50,6 +50,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import hashlib
+import math
 from collections.abc import Callable, Hashable, Sequence
 from typing import TYPE_CHECKING, Any, Self
 
@@ -65,6 +66,7 @@ from gfem._linalg import (
     ResolvedLinearSolver,
     low_rank_update,
     refactorize_or_prepare,
+    report,
 )
 from gfem._linalg.base import free_mask
 from gfem._linalg.pieces import (
@@ -285,7 +287,15 @@ class SystemOperator:
                 converge.
         """
         handle = self._adjoint_system()._adjoint_handle(n, omega)  # noqa: SLF001
-        return handle.solve(loads, tolerance=self._adjoint_tolerance)
+        x, its = handle.solve_counted(loads, tolerance=self._adjoint_tolerance)
+        report.solve_step(
+            getattr(handle, "base", handle),
+            problem="driven",
+            direction="backward",
+            iterations=its,
+            frequency=omega / (2 * math.pi),
+        )
+        return x
 
     def adjoint_order(self, omegas: Sequence[float]) -> list[int]:
         """The frequency indices of ``omegas`` in the order a backward solves them.
@@ -609,8 +619,30 @@ class SystemSweep:
     def solve(
         self, omega: float, rhs: np.ndarray, *, x0: np.ndarray | None = None
     ) -> tuple[np.ndarray, tuple[int, ...]]:
-        """Solve at ``ω``: the solution and the Krylov iterations per column."""
-        return self.at(omega).solve_counted(rhs, x0=x0)
+        """Solve at ``ω``: the solution and the Krylov iterations per column.
+
+        Logs the step (`gfem._linalg.report`), as the base handle tells it.
+        """
+        x, its = self.at(omega).solve_counted(rhs, x0=x0)
+        report.solve_step(
+            self._base,
+            problem="driven",
+            direction="forward",
+            iterations=its,
+            frequency=omega / (2 * math.pi),
+        )
+        return x, its
+
+    @property
+    def reused(self) -> bool:
+        """Whether the last solve ran on a preconditioner built for another matrix.
+
+        As the base handle's ``last_action`` tells it (``reused``, or
+        ``reused, capped, refactorized``: it started on one); ``False`` for a
+        backend that tracks none.
+        """
+        action = getattr(self._base, "last_action", None)
+        return action is not None and action.startswith("reused")
 
     def free(self, *, return_plan: bool = False, walk: bool = True) -> None:
         """Release the base handle.
