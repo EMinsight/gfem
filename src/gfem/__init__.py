@@ -14,6 +14,13 @@ _jax.config.update("jax_enable_x64", True)
 # Submodules are imported after the switch, so no gfem array is ever float32.
 from gfem import conventions, design, quantum, shape  # noqa: E402
 from gfem._cuda import cuda_available  # noqa: E402
+from gfem._materials import (  # noqa: E402
+    Debye,
+    DjordjevicSarkar,
+    Drude,
+    Lorentz,
+    PermittivityLaw,
+)
 from gfem.errors import (  # noqa: E402
     DegenerateModeError,
     DeviceMemoryWarning,
@@ -93,12 +100,15 @@ __all__ = [
     "PMC",
     "Absorbing",
     "Conductor",
+    "Debye",
     "DegenerateModeError",
     "DeviceMemoryWarning",
     "DeviceUnavailableError",
     "DistributedUnsupportedError",
+    "DjordjevicSarkar",
     "Driven",
     "DrivenResult",
+    "Drude",
     "Eigenmode",
     "EigenmodeConvergenceError",
     "EigenmodeResult",
@@ -111,6 +121,7 @@ __all__ = [
     "InterfaceParticipation",
     "Job",
     "LinearSolverConvergenceError",
+    "Lorentz",
     "LowFrequencyWarning",
     "LumpedPort",
     "Material",
@@ -126,6 +137,7 @@ __all__ = [
     "NetworkParameters",
     "NonDifferentiableError",
     "Periodic",
+    "PermittivityLaw",
     "PortGeometryError",
     "PortMode",
     "PortModeError",

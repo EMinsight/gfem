@@ -131,6 +131,33 @@ excluded metal volume is: for a film much thinner than its skin depth,
 
 gsim layouts assume this convention face for face.
 
+Dispersive permittivity
+-----------------------
+A `gfem.PermittivityLaw` is a relative permittivity that depends on
+frequency, ``eps_r(f) = eps_inf + Σ term(f)``. Every law parameter that is
+a frequency is an ordinary frequency in hertz (``ω = 2π f``), not rad/s or
+eV (convert an energy as ``f = E / h``). Under e^{+iωt} the terms are:
+
+- `gfem.Drude`: ``-ωp² / (ω (ω - i gamma))``, ``ωp = 2π plasma_frequency``,
+  ``gamma = 2π damping``; no static value (it diverges as f -> 0);
+- `gfem.Lorentz`: ``Δε ω0² / (ω0² - ω² + i gamma ω)``,
+  ``ω0 = 2π resonance_frequency``;
+- `gfem.Debye`: ``Δε / (1 + i f / f_r)``, ``f_r = relaxation_frequency``
+  (a relaxation time τ is ``f_r = 1 / (2π τ)``);
+- `gfem.DjordjevicSarkar`: ``Δε / ln(f2 / f1) · ln((f2 + i f) / (f1 + i f))``,
+  the principal log of the ratio, corners ``f1 = low_frequency`` and
+  ``f2 = high_frequency``.
+
+``Δε`` is each term's ``delta_eps``. With every strength and damping >= 0
+each term is passive alone, so a law has ``Im eps_r <= 0`` at every real
+frequency; a negative strength is refused. A law evaluates at a complex
+frequency as the analytic continuation (``Im f > 0`` decays), and
+``law(0)`` is the static permittivity. Most optics fits (Drude, Lorentz)
+are written under e^{-iωt}: there the same law is the complex conjugate,
+so their ``+i gamma`` reads ``-i gamma`` here, with the same parameter values.
+Circuit-board laws (Djordjevic-Sarkar) are usually written under e^{+jωt}
+already.
+
 Eigenmodes
 ----------
 An eigenmode is a complex angular frequency ``omega`` and a field ``E``

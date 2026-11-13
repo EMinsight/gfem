@@ -120,6 +120,24 @@ def _check_shape(prop: _Property, arr: np.ndarray, owner: str) -> None:
         raise ValueError(f"{owner}: {prop.name} must be a single number.")
 
 
+def _refuse_law_value(prop: _Property, value: Any, owner: str) -> None:
+    """Raise if ``value``, a constant property's value, is a law or a term."""
+    if not _is_law(value):
+        return
+    if prop.name != "eps_r":
+        raise ValueError(
+            f"{owner}: {prop.name} cannot be a permittivity law or term; "
+            "only eps_r can depend on frequency."
+        )
+    if isinstance(value, _DispersionTerm):
+        raise TypeError(
+            f"{owner}: eps_r is a bare {type(value).__name__} term, a "
+            "susceptibility rather than a permittivity. Give "
+            f"eps_r=gfem.PermittivityLaw(eps_inf=..., terms=[{value!r}])."
+        )
+    raise ValueError(f"{owner}: {_ANISOTROPIC_LAW}.")
+
+
 def _material_value(prop: _Property, value: Any, owner: str) -> Any:
     """A checked value: a float, a 3-tuple, or a symmetric 3x3 matrix.
 
@@ -130,6 +148,7 @@ def _material_value(prop: _Property, value: Any, owner: str) -> Any:
         if prop.default is not None:
             raise ValueError(f"{owner}: {prop.name} cannot be None.")
         return None
+    _refuse_law_value(prop, value, owner)
     if is_traced(value):
         raise NonDifferentiableError(
             f"{owner}: {prop.name} is computed inside jax.grad, jax.jit or jax.vmap, "
@@ -291,6 +310,444 @@ def _principal(
     return out, (a if tensor and a is not None else None)
 
 
+# --- permittivity laws -----------------------------------------------------------
+
+_GAIN = (
+    " A term with a negative strength or damping is a gain; with every "
+    "strength and damping >= 0 each term, and so the law, is passive "
+    "(Im eps <= 0 at every real frequency under e^{+iωt}, see "
+    "gfem.conventions)."
+)
+
+
+def _law_number(owner: str, name: str, value: Any, bound: str, unit: str) -> Any:
+    """A checked law parameter: a float, or ``value`` itself when traced.
+
+    ``bound`` is ``">"`` (> 0) or ``">="`` (>= 0). A traced value skips the
+    check; the host re-checks the concrete law before assembly.
+    """
+    if is_traced(value):
+        return value
+    arr = np.asarray(value)
+    if np.iscomplexobj(arr):
+        raise ValueError(f"{owner}: {name} must be real, got {value!r}.")
+    if arr.dtype.kind not in "iuf":
+        raise ValueError(f"{owner}: {name} must be a number, got {value!r}.")
+    arr = arr.astype(float)
+    if arr.ndim != 0:
+        raise ValueError(f"{owner}: {name} must be a single number, got {value!r}.")
+    if not np.isfinite(arr):
+        raise ValueError(f"{owner}: {name} must be finite, got {value!r}.")
+    x = float(arr)
+    if (x <= 0) if bound == ">" else (x < 0):
+        shown = f"{_short(x)}{' ' + unit if unit else ''}"
+        what = f"{name}={shown} but {name} must be {bound} 0"
+        if name in ("delta_eps", "damping", "plasma_frequency"):
+            raise ValueError(f"{owner} is not passive: {what}.{_GAIN}")
+        raise ValueError(f"{owner}: {what}.")
+    return x
+
+
+class _DispersionTerm:
+    """A dispersion term: a susceptibility added to a law's eps_inf.
+
+    Each subclass is a frozen keyword-only dataclass whose fields are all
+    numbers (the pytree leaves), and ``_bounds`` gives each field's bound and
+    unit.
+    """
+
+    _bounds: tuple[tuple[str, str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        owner = f"{type(self).__name__} term"
+        for name, bound, unit in self._bounds:
+            value = _law_number(owner, name, getattr(self, name), bound, unit)
+            object.__setattr__(self, name, value)
+
+    def __call__(self, frequency: Any) -> jax.Array:
+        """This term's contribution to the relative permittivity.
+
+        Args:
+            frequency: Frequency in Hz: a number or an array (the result
+                broadcasts), real or complex (the analytic continuation; under
+                e^{+iωt} a decaying mode has Im f > 0).
+
+        Returns:
+            The complex susceptibility, complex128, the shape of ``frequency``.
+        """
+        return self._value(jnp.asarray(frequency).astype(jnp.complex128))
+
+    def _value(self, f: jax.Array) -> jax.Array:
+        raise NotImplementedError
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class Drude(_DispersionTerm):
+    """A free-electron (Drude) term of a `PermittivityLaw`.
+
+    Under e^{+iωt} it adds ``-ωp² / (ω (ω - i gamma))``, with ``ω = 2π f``,
+    ``ωp = 2π plasma_frequency`` and ``gamma = 2π damping``; under e^{-iωt}
+    (most optics papers) the same term is its complex conjugate, with
+    ``+i gamma``. See `gfem.conventions` (Dispersive permittivity).
+
+    It has no static permittivity: it diverges as f -> 0. A fit in eV
+    converts as f = E / h (ħωp = 9.03 eV is 2.183e15 Hz).
+
+    Attributes:
+        plasma_frequency: The plasma frequency, Hz, > 0.
+        damping: The collision frequency gamma / 2π, Hz, >= 0.
+
+    Raises:
+        ValueError: A parameter is not a finite real number, or out of its
+            bound.
+    """
+
+    plasma_frequency: float
+    damping: float
+
+    _bounds = (("plasma_frequency", ">", "Hz"), ("damping", ">=", "Hz"))
+
+    def __call__(self, frequency: Any) -> jax.Array:
+        """This term's contribution at ``frequency`` (Hz); see `_DispersionTerm`.
+
+        Raises:
+            ValueError: A frequency is 0: a Drude term has no static permittivity.
+        """
+        if not is_traced(frequency) and np.any(np.asarray(frequency) == 0):
+            raise ValueError(
+                "A Drude term has no static permittivity: it diverges as the "
+                "frequency goes to 0 (a free-electron metal screens a static "
+                "field). Evaluate it at a frequency > 0."
+            )
+        return super().__call__(frequency)
+
+    def _value(self, f: jax.Array) -> jax.Array:
+        fp, g = self.plasma_frequency, self.damping
+        return -(fp**2) / (f * (f - 1j * g))
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class Lorentz(_DispersionTerm):
+    """A bound-oscillator (Lorentz) term of a `PermittivityLaw`.
+
+    Under e^{+iωt} it adds ``Δε ω0² / (ω0² - ω² + i gamma ω)``, with ``ω = 2π f``,
+    ``ω0 = 2π resonance_frequency`` and ``gamma = 2π damping``; under e^{-iωt}
+    it is the complex conjugate (``-i gamma ω``). See `gfem.conventions`
+    (Dispersive permittivity). Its static value is ``delta_eps``. A
+    Sellmeier term ``B λ² / (λ² - C)`` is a lossless Lorentz term with
+    ``delta_eps = B`` and ``resonance_frequency = c / sqrt(C)``.
+
+    Attributes:
+        delta_eps: The strength, > 0 (dimensionless).
+        resonance_frequency: The resonance frequency, Hz, > 0.
+        damping: The damping gamma / 2π, Hz, >= 0 (0: lossless).
+
+    Raises:
+        ValueError: A parameter is not a finite real number, or out of its
+            bound (a negative strength is a gain).
+    """
+
+    delta_eps: float
+    resonance_frequency: float
+    damping: float
+
+    _bounds = (
+        ("delta_eps", ">", ""),
+        ("resonance_frequency", ">", "Hz"),
+        ("damping", ">=", "Hz"),
+    )
+
+    def _value(self, f: jax.Array) -> jax.Array:
+        f0 = self.resonance_frequency
+        return self.delta_eps * f0**2 / (f0**2 - f**2 + 1j * self.damping * f)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class Debye(_DispersionTerm):
+    """A relaxation (Debye) term of a `PermittivityLaw`.
+
+    Under e^{+iωt} it adds ``Δε / (1 + i f / f_r)``; under e^{-iωt} it is
+    the complex conjugate. A relaxation time τ converts as
+    ``f_r = 1 / (2π τ)``. See `gfem.conventions` (Dispersive permittivity).
+    Its static value is ``delta_eps``.
+
+    Attributes:
+        delta_eps: The strength (static minus high-frequency permittivity),
+            > 0.
+        relaxation_frequency: The relaxation frequency f_r, Hz, > 0.
+
+    Raises:
+        ValueError: A parameter is not a finite real number, or out of its
+            bound (a negative strength is a gain).
+    """
+
+    delta_eps: float
+    relaxation_frequency: float
+
+    _bounds = (("delta_eps", ">", ""), ("relaxation_frequency", ">", "Hz"))
+
+    def _value(self, f: jax.Array) -> jax.Array:
+        return self.delta_eps / (1 + 1j * f / self.relaxation_frequency)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class DjordjevicSarkar(_DispersionTerm):
+    """A wideband (Djordjevic-Sarkar) term of a `PermittivityLaw`.
+
+    Under e^{+iωt} it adds
+    ``Δε / ln(f2 / f1) · ln((f2 + i f) / (f1 + i f))``, the principal log of
+    the ratio (a continuum of Debye relaxations between the corners, with a
+    nearly constant loss tangent between them); under e^{-iωt} it is the
+    complex conjugate. The corners in Hz are exact: the form depends on
+    frequency ratios only. Its static value is ``delta_eps``. RF datasheets
+    give a permittivity and a loss tangent at one frequency: use
+    `PermittivityLaw.djordjevic_sarkar` to fit this term to them. See
+    `gfem.conventions` (Dispersive permittivity).
+
+    Attributes:
+        delta_eps: The strength, > 0.
+        low_frequency: The lower corner f1, Hz, > 0.
+        high_frequency: The upper corner f2, Hz, > f1.
+
+    Raises:
+        ValueError: A parameter is not a finite real number, or out of its
+            bound (a negative strength is a gain), or f1 >= f2.
+    """
+
+    delta_eps: float
+    low_frequency: float
+    high_frequency: float
+
+    _bounds = (
+        ("delta_eps", ">", ""),
+        ("low_frequency", ">", "Hz"),
+        ("high_frequency", ">", "Hz"),
+    )
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        f1, f2 = self.low_frequency, self.high_frequency
+        if not is_traced((f1, f2)) and f1 >= f2:
+            raise ValueError(
+                f"DjordjevicSarkar term: low_frequency={_short(f1)} Hz must be "
+                f"below high_frequency={_short(f2)} Hz."
+            )
+
+    def _value(self, f: jax.Array) -> jax.Array:
+        f1, f2 = self.low_frequency, self.high_frequency
+        return (
+            self.delta_eps / jnp.log(f2 / f1) * jnp.log((f2 + 1j * f) / (f1 + 1j * f))
+        )
+
+
+_TERMS = (Drude, Lorentz, Debye, DjordjevicSarkar)
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class PermittivityLaw:
+    """A relative permittivity that depends on frequency: eps_inf plus terms.
+
+    The value of `Material`'s ``eps_r`` for a dispersive material::
+
+        eps_r(f) = eps_inf + Σ term(f)
+
+    with f in Hz, under e^{+iωt}, so a lossy law has Im eps_r < 0. Every
+    term is passive alone (strengths and damping >= 0), so the law is
+    passive at every real frequency. The forms, and how to convert a fit
+    written under e^{-iωt}, are in `gfem.conventions` (Dispersive
+    permittivity).
+
+    A law is callable: ``law(f)`` is the complex relative permittivity at
+    ``f`` (Hz, broadcast, complex accepted as the analytic continuation),
+    computed in `jax.numpy`; ``law(0)`` is the static permittivity. A law
+    is a JAX pytree whose leaves are its numbers, so `jax.grad` through a
+    model reaches each parameter, in its own units (per Hz for a
+    frequency).
+
+    Example:
+        Gold (a Drude fit) and an FR-4 datasheet value::
+
+            gold = gfem.Material(
+                eps_r=gfem.PermittivityLaw(
+                    terms=[gfem.Drude(plasma_frequency=2.183e15, damping=1.28e13)]
+                ),
+                name="gold",
+            )
+            fr4 = gfem.Material(
+                eps_r=gfem.PermittivityLaw.djordjevic_sarkar(4.3, 0.02, frequency=1e9)
+            )
+
+    Attributes:
+        eps_inf: The high-frequency permittivity, > 0.
+        terms: The dispersion terms (`Drude`, `Lorentz`, `Debye`,
+            `DjordjevicSarkar`), at least one, stored as a tuple.
+
+    Raises:
+        ValueError: ``eps_inf`` is not a finite real number > 0, or
+            ``terms`` is empty (a constant permittivity is ``eps_r=<number>``).
+        TypeError: An entry of ``terms`` is not a dispersion term.
+    """
+
+    eps_inf: float = 1.0
+    terms: tuple[Drude | Lorentz | Debye | DjordjevicSarkar, ...]
+
+    def __post_init__(self) -> None:
+        eps_inf = _law_number("PermittivityLaw", "eps_inf", self.eps_inf, ">", "")
+        object.__setattr__(self, "eps_inf", eps_inf)
+        try:
+            terms = tuple(self.terms)
+        except TypeError:
+            raise TypeError(
+                "PermittivityLaw: terms takes a list of terms, e.g. "
+                f"terms=[{self.terms!r}]."
+            ) from None
+        if not terms:
+            raise ValueError(
+                "PermittivityLaw needs at least one term; a permittivity that "
+                "does not depend on frequency is eps_r=<number>."
+            )
+        for term in terms:
+            if not isinstance(term, _TERMS):
+                raise TypeError(
+                    "PermittivityLaw: each term must be a gfem.Drude, Lorentz, "
+                    f"Debye or DjordjevicSarkar, got {term!r}."
+                )
+        object.__setattr__(self, "terms", terms)
+
+    def __call__(self, frequency: Any) -> jax.Array:
+        """The complex relative permittivity at ``frequency``.
+
+        Args:
+            frequency: Frequency in Hz: a number or an array (the result
+                broadcasts), real or complex (the analytic continuation).
+
+        Returns:
+            ``eps_inf + Σ term(frequency)``, complex128.
+
+        Raises:
+            ValueError: A frequency is 0 and the law has a `Drude` term
+                (no static permittivity).
+        """
+        f = jnp.asarray(frequency)
+        return self.eps_inf + sum((t(f) for t in self.terms), jnp.zeros(f.shape))
+
+    @classmethod
+    def djordjevic_sarkar(
+        cls,
+        eps_r: float,
+        tan_delta: float,
+        *,
+        frequency: float,
+        low_frequency: float = 1e3,
+        high_frequency: float = 1e12,
+    ) -> PermittivityLaw:
+        """A wideband law fitted to a datasheet permittivity and loss tangent.
+
+        Returns ``eps_inf`` plus one `DjordjevicSarkar` term such that the
+        law equals ``eps_r (1 - i tan_delta)`` at ``frequency``. The corner
+        defaults (1 kHz, 1 THz) are those of KiCad and scikit-rf.
+
+        Args:
+            eps_r: The datasheet relative permittivity, > 0.
+            tan_delta: The datasheet loss tangent, > 0.
+            frequency: Where the datasheet gives them, Hz.
+            low_frequency: The lower corner, Hz.
+            high_frequency: The upper corner, Hz.
+
+        Raises:
+            ValueError: A value is out of range, or the fitted eps_inf is
+                <= 0 (the loss is too large for the permittivity between
+                these corners).
+        """
+        owner = "PermittivityLaw.djordjevic_sarkar"
+        eps = _law_number(owner, "eps_r", eps_r, ">", "")
+        tan = _law_number(owner, "tan_delta", tan_delta, ">", "")
+        f = _law_number(owner, "frequency", frequency, ">", "Hz")
+        unit = complex(
+            DjordjevicSarkar(
+                delta_eps=1.0,
+                low_frequency=low_frequency,
+                high_frequency=high_frequency,
+            )(f)
+        )
+        delta = eps * tan / -unit.imag
+        eps_inf = eps - delta * unit.real
+        if eps_inf <= 0:
+            raise ValueError(
+                f"{owner}: eps_r={_short(eps)} with tan_delta={_short(tan)} at "
+                f"{_short(f)} Hz needs eps_inf={_short(eps_inf)}, but eps_inf "
+                "must be > 0; check the datasheet values or widen the corners."
+            )
+        return cls(
+            eps_inf=eps_inf,
+            terms=(
+                DjordjevicSarkar(
+                    delta_eps=delta,
+                    low_frequency=low_frequency,
+                    high_frequency=high_frequency,
+                ),
+            ),
+        )
+
+
+for _cls in _TERMS:
+    register_fields(_cls, tuple(f.name for f in dataclasses.fields(_cls)))
+register_fields(PermittivityLaw, ("eps_inf", "terms"))
+
+
+_ANISOTROPIC_LAW = (
+    "anisotropic dispersive materials are not supported: a permittivity law "
+    "is isotropic, beside one scalar mu_r and conductivity and no axes"
+)
+
+
+def _is_law(value: Any) -> bool:
+    """Whether ``value`` is a law or a term, or a sequence holding one."""
+    if isinstance(value, (PermittivityLaw, _DispersionTerm)):
+        return True
+    return isinstance(value, (tuple, list)) and any(_is_law(v) for v in value)
+
+
+def _law_material_values(material: Material, owner: str) -> dict[str, Any]:
+    """The checked values of a `Material` whose ``eps_r`` is a law."""
+    if material.axes is not None:
+        raise ValueError(f"{owner}: {_ANISOTROPIC_LAW}; leave axes as None.")
+    values: dict[str, Any] = {"eps_r": material.eps_r}
+    for p in PROPERTIES[1:]:
+        value = _material_value(p, getattr(material, p.name), owner)
+        if p.may_be_tensor and isinstance(value, (tuple, np.ndarray)):
+            raise ValueError(f"{owner}: {_ANISOTROPIC_LAW}; {p.name} is a tensor.")
+        values[p.name] = value
+    if values["tan_delta"] != 0:
+        raise ValueError(
+            f"{owner}: tan_delta must be 0 beside a permittivity law: a constant "
+            "loss tangent is not causal over a wide band. Use "
+            "gfem.PermittivityLaw.djordjevic_sarkar(eps_r=, tan_delta=, "
+            "frequency=) for a datasheet loss tangent, or add a Debye or "
+            "Lorentz damping term."
+        )
+    return values
+
+
+def refuse_laws(materials: Mapping[str, Any]) -> None:
+    """Raise if a region's material has a permittivity law.
+
+    No solve reads a law yet; this stands in for the dispersive operator so
+    no reader falls back to a frequency-free permittivity.
+
+    Raises:
+        NotImplementedError: A region's ``eps_r`` is a `PermittivityLaw`.
+    """
+    for region, material in materials.items():
+        if isinstance(material, Material) and isinstance(
+            material.eps_r, PermittivityLaw
+        ):
+            raise NotImplementedError(
+                f"The material of region {region!r} has a permittivity law (a "
+                "dispersive material), which this gfem cannot solve yet."
+            )
+
+
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Material:
     """A linear medium, constant over the region it is assigned to.
@@ -301,6 +758,11 @@ class Material:
     a_k a_kᵀ; a single value counts for all three axes. The two loss
     models, `tan_delta` and `conductivity`, add.
 
+    A dispersive material's `eps_r` is a `PermittivityLaw`: then
+    ε = ε0 [eps_r(f) - i conductivity / (ε0 ω)], isotropic, with `tan_delta`
+    0 (the law carries the dielectric loss), one `mu_r` and one
+    `conductivity`, and no `axes`.
+
     Anisotropic values are real symmetric tensors that share one set of
     principal axes; non-symmetric (gyrotropic) tensors are not supported. A
     wave port's cross-section accepts an anisotropic material only with a
@@ -308,7 +770,8 @@ class Material:
 
     Attributes:
         eps_r: Relative permittivity: one value, three principal values
-            along `axes`, or a real symmetric 3x3 matrix in the global frame.
+            along `axes`, a real symmetric 3x3 matrix in the global frame, or
+            a `PermittivityLaw` (a dispersive material).
         mu_r: Relative permeability, in the same forms as `eps_r`.
         tan_delta: Dielectric loss tangent, >= 0, in the same forms as
             `eps_r` (an anisotropic material such as sapphire). Each principal
@@ -336,14 +799,20 @@ class Material:
             mu_r <= 0, or of a loss < 0), a value is not finite, `axes` is
             not orthonormal, a matrix is not symmetric (gyrotropic tensors are
             not supported), a matrix is given with `axes` or beside three
-            principal values, or the matrices do not share principal axes.
-        NonDifferentiableError: A value is computed inside `jax.grad`,
-            `jax.jit` or `jax.vmap` from their arguments; pass a fixed value,
-            or use `MaterialField.uniform` to differentiate with respect to
-            a region's material.
+            principal values, or the matrices do not share principal axes;
+            beside a `PermittivityLaw`, a nonzero `tan_delta`, `axes`, or a
+            tensor `mu_r` or `conductivity`; a law or term as `mu_r` (only
+            eps_r depends on frequency).
+        TypeError: `eps_r` is a bare dispersion term such as `Drude`; wrap
+            it in a `PermittivityLaw`.
+        NonDifferentiableError: A constant value is computed inside
+            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
+            fixed value, or use `MaterialField.uniform` to differentiate with
+            respect to a region's material. A law's parameters are
+            differentiable: the law is a pytree.
     """
 
-    eps_r: float | tuple[float, float, float] = 1.0
+    eps_r: float | tuple[float, float, float] | PermittivityLaw = 1.0
     mu_r: float | tuple[float, float, float] = 1.0
     tan_delta: float | tuple[float, float, float] = 0.0
     conductivity: float | tuple[float, float, float] = 0.0
@@ -355,6 +824,10 @@ class Material:
 
     def __post_init__(self) -> None:
         owner = f"Material {self.name!r}" if self.name else "Material"
+        if isinstance(self.eps_r, PermittivityLaw):
+            for name, value in _law_material_values(self, owner).items():
+                object.__setattr__(self, name, value)
+            return
         values = {
             p.name: _material_value(p, getattr(self, p.name), owner) for p in PROPERTIES
         }
@@ -387,7 +860,42 @@ class Material:
         )
 
 
-jax.tree_util.register_static(Material)
+_MATERIAL_FIELDS = tuple(f.name for f in dataclasses.fields(Material))
+_MATERIAL_STATICS = tuple(n for n in _MATERIAL_FIELDS if n != "eps_r")
+
+
+def _flatten_material_with_keys(m: Material) -> tuple[tuple, tuple]:
+    """A law material's only child is its law; a constant material has none.
+
+    A constant material's every field is static aux data, as when `Material`
+    was registered static, so existing models keep their leaves.
+    """
+    if isinstance(m.eps_r, PermittivityLaw):
+        kids = ((jax.tree_util.GetAttrKey("eps_r"), m.eps_r),)
+        return kids, (True, *(getattr(m, n) for n in _MATERIAL_STATICS))
+    return (), (False, *(getattr(m, n) for n in _MATERIAL_FIELDS))
+
+
+def _flatten_material(m: Material) -> tuple[tuple, tuple]:
+    kids, aux = _flatten_material_with_keys(m)
+    return tuple(v for _, v in kids), aux
+
+
+def _unflatten_material(aux: tuple, kids: Any) -> Material:
+    m = object.__new__(Material)
+    has_law, *statics = aux
+    names = _MATERIAL_STATICS if has_law else _MATERIAL_FIELDS
+    for n, v in zip(names, statics, strict=True):
+        object.__setattr__(m, n, v)
+    if has_law:
+        (law,) = kids
+        object.__setattr__(m, "eps_r", law)
+    return m
+
+
+jax.tree_util.register_pytree_with_keys(
+    Material, _flatten_material_with_keys, _unflatten_material, _flatten_material
+)
 
 
 def principal_tensor(
@@ -432,6 +940,11 @@ def _field_value(prop: _Property, value: Any, principal: bool) -> jax.Array | No
     """A checked field value; ``principal``: three principal values (along `axes`)."""
     if value is None:
         return None
+    if _is_law(value):
+        raise TypeError(
+            f"MaterialField: {prop.name} cannot be a PermittivityLaw or term; a "
+            "law is per region: assign gfem.Material(eps_r=<law>) to the region."
+        )
     arr = jnp.asarray(value)
     if jnp.iscomplexobj(arr):
         if not prop.may_be_complex:
@@ -718,6 +1231,11 @@ class MaterialField:
                 f"Unknown interpolation scheme {scheme!r}; use one of "
                 f"{', '.join(repr(s) for s in _SCHEMES)}."
             )
+        if any(isinstance(m.eps_r, PermittivityLaw) for m in (void, solid)):
+            raise NotImplementedError(
+                "MaterialField.interpolate: blending a material whose eps_r is a "
+                "PermittivityLaw is not supported yet."
+            )
         rho = jnp.asarray(density, dtype=jnp.float64)
         w = _SCHEMES[scheme](rho, penalty)
         if void.isotropic and solid.isotropic:
@@ -749,6 +1267,12 @@ class MaterialField:
             region: The volume region the field is for.
             material: The material.
         """
+        if isinstance(material.eps_r, PermittivityLaw):
+            raise TypeError(
+                "MaterialField.uniform: the material's eps_r is a PermittivityLaw. "
+                "Assign the Material itself: jax.grad reaches the law's "
+                "parameters directly (the law is a pytree)."
+            )
         axes = None
         if not material.isotropic:
             axes = material.axes or _axes(np.eye(3), "MaterialField.uniform")

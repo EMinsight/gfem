@@ -350,7 +350,8 @@ def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray
             mu = principal_tensor(material.mu_r, material.axes).astype(complex)
             sigma = principal_tensor(material.conductivity, material.axes)
             # tan_delta alone can make the lossy permittivity a tensor
-            eps_name = "tan_delta" if np.ndim(material.eps_r) == 0 else "eps_r"
+            # a law never reaches here: lossy_permittivity refuses it
+            eps_name = "tan_delta" if np.ndim(material.eps_r) == 0 else "eps_r"  # ty: ignore[invalid-argument-type]
             et, en = _in_frame(eps, frame, port, region, eps_name)
             mt, mn = _in_frame(mu, frame, port, region, "mu_r")
             st, sn = _in_frame(sigma, frame, port, region, "conductivity")
