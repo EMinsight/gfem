@@ -31,6 +31,7 @@ from gfem._materials import (
     PROPERTIES,
     Material,
     MaterialField,
+    PermittivityLaw,
     field_principal_values,
     lossy_permittivity,
     principal_tensor,
@@ -59,7 +60,11 @@ _DEFAULTS = {p.name: p.default for p in PROPERTIES}
 
 
 def element_values(
-    model: Model, name: str, *, per_axis: float | None = None
+    model: Model,
+    name: str,
+    *,
+    per_axis: float | None = None,
+    law: float | None = None,
 ) -> np.ndarray:
     """Property ``name`` per tetrahedron (gfem element order), one value each.
 
@@ -70,9 +75,18 @@ def element_values(
     caller that reads them from the tensors (`element_tensors`,
     `lossy_eps`, `principal_values`), and raise when it is ``None``.
 
+    A `Material` whose ``eps_r`` is a `PermittivityLaw` has no one
+    ``eps_r`` either: it depends on frequency, and only
+    `gfem._engine.dispersion` reads it (ADR 0111). Its tetrahedra get
+    ``law``, a placeholder for a caller that never reads them, and raise
+    when it is ``None``, so a reader not taught about laws fails loudly
+    instead of reading a frequency-free value.
+
     Raises:
         ValueError: A region holds ``name`` as principal values and
             ``per_axis`` is ``None``.
+        NotImplementedError: ``name`` is ``"eps_r"``, a region holds a
+            permittivity law and ``law`` is ``None``.
     """
     mesh = model.mesh
     default = _DEFAULTS[name]
@@ -80,6 +94,16 @@ def element_values(
     for region, material in model.materials.items():
         value = getattr(material, name)
         if value is None:
+            continue
+        if isinstance(value, PermittivityLaw):
+            if law is None:
+                raise NotImplementedError(
+                    f"The material of region {region!r} has a permittivity law (a "
+                    "dispersive material), and this reader of eps_r takes no "
+                    "frequency, so it cannot read one (internal: read it through "
+                    "gfem._engine.dispersion: high_frequency_eps or eps_at)."
+                )
+            out[mesh.elements(region)] = law
             continue
         if isinstance(material, Material):
             principal = isinstance(value, tuple)
@@ -135,10 +159,11 @@ def principal_values(model: Model, name: str) -> np.ndarray:
     The values of the `MaterialField` with `axes` each tetrahedron lies in,
     along `element_axes` (a field's default where it leaves ``name`` out).
     Elsewhere the element's one value three times, and 1 for a `Material`
-    with principal values of ``name`` (`element_values`): a placeholder for
-    a reader of the fields' tetrahedra only.
+    with principal values of ``name`` or a permittivity law
+    (`element_values`): a placeholder for a reader of the fields'
+    tetrahedra only.
     """
-    scalar = element_values(model, name, per_axis=1.0)
+    scalar = element_values(model, name, per_axis=1.0, law=1.0)
     fields = _per_axis_fields(model)
     values = {r: np.asarray(field_principal_values(f, name)) for r, f in fields.items()}
     dtype = np.result_type(scalar, *values.values())
@@ -300,15 +325,21 @@ def anisotropic_elements(model: Model) -> np.ndarray:
     return out
 
 
-def lossy_eps(model: Model) -> np.ndarray:
+def lossy_eps(model: Model, *, law: float | None = None) -> np.ndarray:
     """``eps_r (1 - i tan_delta)`` per tetrahedron, ``(n,)`` or ``(n, 3, 3)``.
 
     A `Material` with principal values of `eps_r` or `tan_delta`, and a
     `MaterialField` with `axes`, give the tensor of their principal values
     ``eps_r[k] (1 - i tan_delta[k])`` along their axes (the ``(n, 3, 3)``
-    form then holds multiples of the identity elsewhere).
+    form then holds multiples of the identity elsewhere). A region with a
+    permittivity law raises, or gets ``law`` as in `element_values`
+    (`gfem._engine.dispersion.high_frequency_eps` fills in its eps_inf).
+
+    Raises:
+        NotImplementedError: A region holds a permittivity law and ``law``
+            is ``None``.
     """
-    scalar = element_values(model, "eps_r", per_axis=0.0) * (
+    scalar = element_values(model, "eps_r", per_axis=0.0, law=law) * (
         1.0 - 1j * element_values(model, "tan_delta", per_axis=0.0).real
     )
     anisotropic = {

@@ -75,14 +75,13 @@ from gfem._boundaries import (
     LumpedPort,
     check_lumped_values,
 )
-from gfem._engine import anisotropy, quadrature
+from gfem._engine import anisotropy, dispersion, quadrature
 from gfem._engine.coefficients import (
     anisotropic_elements,
     coefficient,
     element_axes,
     element_tensors,
     element_values,
-    lossy_eps,
     per_axis_elements,
     principal_values,
     surface_coefficient,
@@ -117,6 +116,7 @@ __all__ = [
     "sheet_fill",
     "surface_impedance",
     "surface_impedance_slope",
+    "susceptibility_pieces",
     "wave_port_coefficients",
     "wave_port_piece",
     "wavenumber",
@@ -125,6 +125,10 @@ __all__ = [
 ETA0 = const.mu_0 * const.c
 #: Angular frequency at which a piece's θ is checked to be a scalar.
 _PROBE = 2 * math.pi * 1e9
+#: The probe of a permittivity law's pieces: in the lower half plane, where
+#: every passive law is analytic under e^{+iωt} (ADR 0111), so it meets no
+#: pole, no real output frequency and no decaying eigenfrequency.
+_LAW_PROBE = _PROBE * (1 - 1j)
 #: |d . n| above which a port direction is not tangent to its surface.
 _TANGENT = 1e-6
 #: Re(h / (2 delta)) above which a metal film is thick to machine precision.
@@ -227,6 +231,11 @@ class Piece:
             `Impedance`, how it moves with its lumped value (`LumpedValue`);
             ``None`` otherwise (a lumped port's resistance is not a design
             input).
+        probe: The angular frequency at which construction checks θ:
+            `_PROBE`, or `_LAW_PROBE` off the real axis for a permittivity
+            law's pieces. θ itself never raises and never returns a
+            placeholder; which frequencies are valid is checked before
+            assembly (`gfem._engine.dispersion.check_frequencies`).
 
     Raises:
         ValueError: ``theta`` does not give one scalar: the term is not
@@ -249,6 +258,7 @@ class Piece:
     sheet: tuple[int, float] | None = None
     values: np.ndarray | None = dataclasses.field(default=None, compare=False)
     lumped: LumpedValue | None = dataclasses.field(default=None, compare=False)
+    probe: complex = _PROBE
 
     def __post_init__(self) -> None:
         """Check that θ is a scalar function of ω."""
@@ -259,7 +269,7 @@ class Piece:
                     "scalar per frequency."
                 )
             return
-        value = np.asarray(self.theta(_PROBE))
+        value = np.asarray(self.theta(self.probe))
         if value.ndim != 0 or not np.isfinite(value):
             raise ValueError(
                 f"The driven term {self.name!r} is not affine in frequency (a "
@@ -452,6 +462,60 @@ def _inverse(values: np.ndarray) -> np.ndarray:
     return 1.0 / values if values.ndim == 1 else np.linalg.inv(values)
 
 
+def susceptibility_pieces(
+    model: Model,
+    built: EngineMesh,
+    order: int,
+    *,
+    elements: np.ndarray | None = None,
+) -> list[Piece]:
+    """One susceptibility piece per permittivity law region (ADR 0110).
+
+    θ = -k0² chi(ω), chi = eps(ω) - eps_inf summed over the law's terms,
+    with an analytic dθ/dω; the coefficient is the region's element
+    indicator (its eps_inf is in the mass). The piece is probed at
+    `_LAW_PROBE`. ``elements`` restricts the form as in `pieces`.
+    """
+    scale = built.scale
+    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    dx = quadrature.dx(order, definedonelements=tets)
+
+    def k2(w: complex) -> complex:
+        """k0² at a real or complex ω (the construction probe is complex)."""
+        return (w * scale / const.c) ** 2
+
+    out = []
+    for lr in dispersion.law_regions(model):
+        values = lr.mask.astype(float)
+        cf = coefficient(built, values)
+        law = lr.law
+
+        def theta(w: complex, law: Any = law) -> complex:
+            return -k2(w) * dispersion.susceptibility(law, w)
+
+        def d_theta(w: complex, law: Any = law) -> complex:
+            # d/dω [-k² chi] = -(2 k² / ω) chi - k² chi', k = ω scale / c
+            return -k2(w) * (
+                2 / w * dispersion.susceptibility(law, w)
+                + dispersion.d_susceptibility(law, w)
+            )
+
+        out.append(
+            Piece(
+                f"susceptibility {lr.region}",
+                theta,
+                lambda u, v, cf=cf: (cf * u) * v * dx,
+                kind="value",
+                coefficient=cf,
+                values=values,
+                frequency_class="nonpolynomial",
+                d_theta=d_theta,
+                probe=_LAW_PROBE,
+            )
+        )
+    return out
+
+
 def conductivity_piece(
     model: Model,
     built: EngineMesh,
@@ -534,7 +598,8 @@ def pieces(
 
     # each piece carries its coefficient and, next to it, the coefficient's
     # derivatives by material property (lazy: a backward pass reads them)
-    eps = lossy_eps(model)
+    # a permittivity law keeps its eps_inf in the mass (ADR 0110)
+    eps = dispersion.high_frequency_eps(model)
     nu_values = _inverse(element_tensors(model, "mu_r"))
     nu = coefficient(built, nu_values)
     eps_cf = coefficient(built, eps)
@@ -571,7 +636,8 @@ def pieces(
                     per_axis=Derivative(lambda: _axis_loss(model), holomorphic=True),
                 ),
                 "tan_delta": Derivative(
-                    lambda: -1j * element_values(model, "eps_r", per_axis=1.0),
+                    # a law region has no tan_delta (nor a field): never read
+                    lambda: -1j * element_values(model, "eps_r", per_axis=1.0, law=1.0),
                     holomorphic=False,
                     per_axis=Derivative(
                         lambda: -1j * principal_values(model, "eps_r"),
@@ -583,6 +649,7 @@ def pieces(
     ]
     # the conductivity has its own i k0 piece, not folded into the mass (the
     # eigen operator splits the pieces by power of k)
+    out.extend(susceptibility_pieces(model, built, order, elements=elements))
     conductivity = conductivity_piece(model, built, order, elements=elements)
     latent: tuple[Piece, ...] = ()
     if np.any(conductivity.values):
@@ -662,8 +729,12 @@ def absorbing_coefficients(
     # a field with axes holds no one value per element: its faces take the
     # tensor path below (`anisotropic_elements`), so the placeholder 1 there
     # reaches no absorbing face
+    # `check_absorbing` refuses a face behind a permittivity law, so the
+    # placeholder 1 there reaches no absorbing face either
     tan = np.real(element_values(model, "tan_delta", per_axis=1.0))
-    e = np.real(element_values(model, "eps_r", per_axis=1.0) * (1.0 - 1j * tan))
+    e = np.real(
+        element_values(model, "eps_r", per_axis=1.0, law=1.0) * (1.0 - 1j * tan)
+    )
     m = np.real(element_values(model, "mu_r", per_axis=1.0))
     values = np.stack([_absorbing(e, m, 1), _absorbing(e, m, 2)], axis=1)
     out = np.zeros((len(owner), 2))
@@ -675,7 +746,7 @@ def absorbing_coefficients(
     tensor &= np.isin(mesh.triangle_tags, [mesh.region(s).tag for s in surfaces])
     if not tensor.any():
         return first, curl
-    eps = _tensors(np.real(lossy_eps(model)))
+    eps = _tensors(np.real(dispersion.high_frequency_eps(model)))
     mu = _tensors(np.real(element_tensors(model, "mu_r")))
     normals = _face_normals(mesh)
     y = first[:, None, None] * np.eye(3)
@@ -711,12 +782,32 @@ def _anisotropic_faces(model: Model, surface: str) -> bool:
 def check_absorbing(model: Model) -> None:
     """Raise for an absorbing boundary this version cannot apply.
 
-    Structural: it reads which materials are anisotropic, never values.
+    Structural: it reads which materials are anisotropic or dispersive,
+    never values.
 
     Raises:
         NotImplementedError: A second-order `Absorbing` surface has an
-            anisotropic element behind a face (`anisotropic_elements`).
+            anisotropic element behind a face (`anisotropic_elements`); an
+            `Absorbing` surface has an element of a permittivity law's region
+            behind a face (an absorbing boundary on a dispersive region).
     """
+    laws = dispersion.law_regions(model)
+    if laws:
+        mesh = model.mesh
+        owner = face_owner(model)
+        for b in model.boundaries:
+            if not isinstance(b, Absorbing):
+                continue
+            behind = owner[mesh.triangle_tags == mesh.region(b.surface).tag]
+            behind = behind[behind >= 0]
+            for lr in laws:
+                if lr.mask[behind].any():
+                    raise NotImplementedError(
+                        f"Absorbing {b.surface!r} lies on region {lr.region!r}, "
+                        "whose eps_r is a permittivity law: an absorbing boundary on "
+                        "a dispersive region is not supported yet. Put a "
+                        "non-dispersive layer between the region and the boundary."
+                    )
     for b in model.boundaries:
         second = isinstance(b, Absorbing) and b.order == 2
         if second and _anisotropic_faces(model, b.surface):
@@ -790,7 +881,9 @@ def _absorbing_derivatives(
     """
 
     def em() -> tuple[np.ndarray, np.ndarray]:
-        e = np.real(element_values(model, "eps_r", per_axis=1.0) * _loss(model))
+        e = np.real(
+            element_values(model, "eps_r", per_axis=1.0, law=1.0) * _loss(model)
+        )
         return e, np.real(element_values(model, "mu_r", per_axis=1.0))
 
     def by_e() -> np.ndarray:
@@ -808,7 +901,9 @@ def _absorbing_derivatives(
             per_axis=axis.get("eps_r"),
         ),
         "tan_delta": Derivative(
-            lambda: by_e() * np.imag(element_values(model, "eps_r", per_axis=1.0)),
+            lambda: (
+                by_e() * np.imag(element_values(model, "eps_r", per_axis=1.0, law=1.0))
+            ),
             holomorphic=False,
             per_axis=axis.get("tan_delta"),
         ),

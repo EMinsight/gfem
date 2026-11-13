@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, overload
 from gfem import _mpi
 from gfem._adjoint import solve_vjp
 from gfem._checks import is_traced
-from gfem._materials import refuse_laws
 from gfem._periodic import check_nodes
 from gfem.errors import LinearSolverConvergenceError
 from gfem.model import Model
@@ -151,7 +150,6 @@ def _solve(
         raise TypeError(
             f"options must be a gfem.SolverOptions, got {type(options).__name__}."
         )
-    refuse_laws(model.materials)
     resolved = _mpi.resolve_comm(comm)
     if resolved is not None:
         _mpi.refuse(model, problem, options)

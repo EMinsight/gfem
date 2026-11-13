@@ -373,18 +373,6 @@ def test_a_job_with_a_law_round_trips(tmp_path):
     assert back.model.materials["a"] == fr4
 
 
-def test_solving_a_model_with_a_law_raises_until_dispersive_solves_land(tmp_path):
-    path = sm.write_msh22(
-        tmp_path / "stack.msh", sm.plate(4.0, 3.0, (("a", 0.5), ("b", 0.25)), (1, 1, 1))
-    )
-    model = gfem.Model(
-        gfem.Mesh.from_gmsh(path),
-        materials={"a": gfem.Material(eps_r=GOLD_LAW), "b": gfem.Material()},
-    )
-    with pytest.raises(NotImplementedError, match="region 'a'"):
-        gfem.solve(model, gfem.Driven(frequency=[1e9]))
-
-
 def test_the_conventions_document_the_dispersive_forms():
     doc = gfem.conventions.__doc__
     assert "Dispersive permittivity" in doc

@@ -93,7 +93,7 @@ from gfem._boundaries import (
     wave_port_label,
     wave_port_surfaces,
 )
-from gfem._engine import sweep_outputs, terms, workers
+from gfem._engine import dispersion, sweep_outputs, terms, workers
 from gfem._engine.cache import (
     ENTRIES,
     Entry,
@@ -538,6 +538,8 @@ class DrivenRule:
             options, default=DEFAULT_SOLVER, problem="driven", comm=comm
         )
         _check_supported(model)
+        # a frequency on a lossless pole, before any assembly or worker
+        dispersion.check_frequencies(model, problem.frequency)
         if not model.ports:
             raise ValueError(
                 "The model has no ports, so a driven problem has nothing to "
@@ -674,6 +676,8 @@ class DrivenRule:
                 (with `keeps_partial`). An adaptive sweep sets ``frequency``
                 to the sample's.
         """
+        # a law traced at construction is checked here, on concrete values
+        dispersion.check_frequencies(model, self.problem.frequency)
         self._check_adjoint_ports(keep=keep)
         if self.adaptive:
             return self._forward_adaptive(model, keep=keep)

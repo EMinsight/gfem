@@ -729,25 +729,6 @@ def _law_material_values(material: Material, owner: str) -> dict[str, Any]:
     return values
 
 
-def refuse_laws(materials: Mapping[str, Any]) -> None:
-    """Raise if a region's material has a permittivity law.
-
-    No solve reads a law yet; this stands in for the dispersive operator so
-    no reader falls back to a frequency-free permittivity.
-
-    Raises:
-        NotImplementedError: A region's ``eps_r`` is a `PermittivityLaw`.
-    """
-    for region, material in materials.items():
-        if isinstance(material, Material) and isinstance(
-            material.eps_r, PermittivityLaw
-        ):
-            raise NotImplementedError(
-                f"The material of region {region!r} has a permittivity law (a "
-                "dispersive material), which this gfem cannot solve yet."
-            )
-
-
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Material:
     """A linear medium, constant over the region it is assigned to.

@@ -115,7 +115,11 @@ def input_kind(path: Sequence[Any], owner: str) -> tuple:
     if names[0] == "mesh":
         return ("nodes",)
     if names[0] == "materials":
-        return ("material", names[1], names[2])
+        # a permittivity law's leaf (eps_r.eps_inf, or a term's parameter
+        # eps_r.terms[i].<name>) is a "law" kind: region, then "eps_inf", or
+        # the term's index and the parameter's name
+        law = names[4:] if names[3:4] == ("terms",) else names[3:]
+        return ("law", names[1], *law) if law else ("material", names[1], names[2])
     if names[0] == "boundaries":
         return ("boundary", *names[1:])
     if names[0] == "ports":
@@ -126,8 +130,10 @@ def input_kind(path: Sequence[Any], owner: str) -> tuple:
 def _describe(kind: tuple) -> str:
     if kind[0] == "nodes":
         return "the mesh node coordinates (model.mesh.nodes)"
-    if kind[0] == "material":
-        return f"model.materials[{kind[1]!r}].{kind[2]}"
+    if kind[0] in ("material", "law"):
+        rest = "".join(f"[{k}]" if isinstance(k, int) else f".{k}" for k in kind[2:])
+        law = ".eps_r" + (".terms" if len(kind) > 3 else "") if kind[0] == "law" else ""
+        return f"model.materials[{kind[1]!r}]{law}{rest}"
     if kind[0] == "problem":
         return f"problem{kind[1]}"
     if kind[0] == "boundary":

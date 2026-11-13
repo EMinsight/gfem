@@ -391,7 +391,7 @@ def is_lumped(kind: tuple) -> bool:
     return len(kind) == 3 and kind[2] in _LUMPED.get(kind[0], ())
 
 
-def unsupported(form: str, kind: tuple) -> str | None:
+def unsupported(form: str, kind: tuple) -> str | None:  # noqa: PLR0911
     """Why the kernel cannot differentiate ``form`` by input ``kind``, or None."""
     for kinds, forms, what in (
         (is_sheet, SHEET_FORMS, "sheet fields"),
@@ -406,6 +406,11 @@ def unsupported(form: str, kind: tuple) -> str | None:
         if kind[2] in PROPERTIES.get(form, frozenset()):
             return None
         return f"the {form} forms of this version do not differentiate {kind[2]}"
+    if kind[0] == "law":
+        return (
+            "gradients with respect to a permittivity law's parameters are not "
+            "available in this version of gfem"
+        )
     if kind[0] == "nodes":
         if form in SHAPE_FORMS:
             return None
