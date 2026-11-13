@@ -9,7 +9,8 @@ readers that understand a law read it here, each at a named frequency:
 - `eps_at`: the complex permittivity at an angular frequency;
 - `law_regions`: the laws and their tetrahedra, for the susceptibility
   pieces (`susceptibility`, `d_susceptibility`) and the checks;
-- `check_frequencies`: what a driven sweep checks before any assembly.
+- `check_frequencies`: what a driven sweep checks before any assembly;
+- `absorbing_surfaces`: the absorbing surfaces each law region lies behind.
 
 The law is evaluated here on the host in complex scalars, by hand, term by
 term (``chi`` and ``d chi / d omega``), never through JAX: assembly does not
@@ -25,6 +26,7 @@ from collections.abc import Iterable
 
 import numpy as np
 
+from gfem._boundaries import Absorbing
 from gfem._checks import is_traced
 from gfem._engine.coefficients import lossy_eps
 from gfem._materials import (
@@ -39,6 +41,7 @@ from gfem.model import Model
 
 __all__ = [
     "LawRegion",
+    "absorbing_surfaces",
     "check_frequencies",
     "d_susceptibility",
     "eps_at",
@@ -177,8 +180,14 @@ def d_susceptibility(law: PermittivityLaw, omega: complex) -> complex:
 # --- checks before assembly --------------------------------------------------------
 
 
-def check_frequencies(model: Model, frequencies: Iterable[float]) -> None:
+def check_frequencies(
+    model: Model, frequencies: Iterable[float], *, absorbing: bool = True
+) -> None:
     """Raise for an output frequency a law region cannot be solved at.
+
+    With ``absorbing``, a law region behind a face of an `Absorbing` surface
+    must hold a propagating medium (Re eps > 0) at every frequency: its face
+    pieces read sqrt(Re eps(omega)) (ADR 0110, ticket 09 Q3), at either order.
 
     Static: it reads the laws and the frequencies only, so every rank of a
     distributed solve raises the same error before any collective. A law
@@ -187,12 +196,15 @@ def check_frequencies(model: Model, frequencies: Iterable[float]) -> None:
 
     Raises:
         ValueError: A frequency lies exactly on the resonance of a lossless
-            term (its permittivity is infinite there).
+            term (its permittivity is infinite there); with ``absorbing``,
+            Re eps <= 0 at a frequency on a law region behind an absorbing
+            face.
     """
     # a traced law is checked on the host, on its concrete values
     regions = [lr for lr in law_regions(model) if not is_traced(lr.law)]
     if not regions:
         return
+    behind = absorbing_surfaces(model, regions) if absorbing else {}
     for f in frequencies:
         for lr in regions:
             for index, term in enumerate(lr.law.terms):
@@ -210,3 +222,46 @@ def check_frequencies(model: Model, frequencies: Iterable[float]) -> None:
                         "permittivity is infinite there. Give the term a damping, "
                         "or leave this frequency out."
                     )
+            surfaces = behind.get(lr.region, ())
+            if not surfaces:
+                continue
+            value = float(lr.law.eps_inf) + susceptibility(lr.law, 2 * math.pi * f).real
+            if not value > 0:
+                raise ValueError(
+                    f"The Absorbing surface {surfaces[0]!r} lies on region "
+                    f"{lr.region!r}, whose permittivity law gives Re eps = "
+                    f"{value:.3g} at {f:g} Hz. An absorbing boundary needs a "
+                    "propagating medium behind it (Re eps > 0): surround the "
+                    "metal with a dielectric or air layer and put the boundary "
+                    "there."
+                )
+
+
+def absorbing_surfaces(
+    model: Model, regions: Iterable[LawRegion] | None = None
+) -> dict[str, tuple[str, ...]]:
+    """The `Absorbing` surfaces with a face on each law region, by region.
+
+    A face belongs to the tetrahedron its terms read
+    (`gfem._engine.terms.face_owner`). Regions without such a face are left
+    out.
+    """
+    # imported here: terms imports this module
+    from gfem._engine.terms import face_owner
+
+    regions = law_regions(model) if regions is None else tuple(regions)
+    absorbing = [b.surface for b in model.boundaries if isinstance(b, Absorbing)]
+    if not regions or not absorbing:
+        return {}
+    mesh = model.mesh
+    owner = face_owner(model)
+    out = {}
+    for lr in regions:
+        found = []
+        for surface in dict.fromkeys(absorbing):
+            tets = owner[mesh.triangle_tags == mesh.region(surface).tag]
+            if lr.mask[tets[tets >= 0]].any():
+                found.append(surface)
+        if found:
+            out[lr.region] = tuple(found)
+    return out

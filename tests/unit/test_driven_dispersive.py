@@ -207,17 +207,94 @@ def test_an_absorbing_face_beside_a_law_elsewhere_solves(mesh):
     assert np.max(np.abs(s - ref)) < 1e-12
 
 
+# (law, frequencies) beside an Absorbing side wall: Re eps > 0 at each
+# frequency (a Drude metal above its plasma frequency, Lorentz on both sides
+# of its pole), and 1 GHz, the real construction probe of other pieces
+ABSORBING_CASES = {
+    "debye": (CASES["debye"][0], [1 * GHZ, 5 * GHZ, 10 * GHZ]),
+    "lorentz": (CASES["lorentz"][0], [4 * GHZ, 6 * GHZ, 14 * GHZ]),
+    "drude": (CASES["drude"][0], [25 * GHZ, 30 * GHZ]),
+    "djordjevic_sarkar": (CASES["djordjevic_sarkar"][0], [5 * GHZ]),
+}
+
+
 @pytest.mark.parametrize("order", [1, 2])
-def test_an_absorbing_face_on_a_law_region_raises_by_name(mesh, order):
+@pytest.mark.parametrize("case", list(ABSORBING_CASES))
+def test_an_absorbing_face_on_a_law_region_solves_as_a_constant_material(
+    mesh, case, order, monkeypatch
+):
+    # the y walls run the line's whole length: faces of the host and of the
+    # law region on one surface
+    law, freqs = ABSORBING_CASES[case]
+    side = (gfem.Absorbing("side", order=order),)
+    model = _model(
+        mesh, gfem.Material(eps_r=law, name=f"absorbing {case}"), boundaries=side
+    )
+    s = np.asarray(
+        gfem.solve(model, gfem.Driven(frequency=freqs), options=OPTIONS).s.values
+    )
+    for n, f in enumerate(freqs):
+        eps = complex(law(f))
+        assert eps.real > 0
+        ref = _reference(mesh, eps, f, monkeypatch, boundaries=side)
+        assert np.max(np.abs(s[n] - ref)) < 1e-12, (case, order, f, eps)
+
+
+@pytest.mark.parametrize("order", [1, 2])
+def test_an_absorbing_face_on_a_law_region_with_mu_r_solves(mesh, order):
+    law = CASES["debye"][0]
+    f = 5 * GHZ
+    eps = complex(law(f))
+    side = (gfem.Absorbing("side", order=order),)
+    model = _model(
+        mesh, gfem.Material(eps_r=law, mu_r=1.7, name="mu law"), boundaries=side
+    )
+    s = np.asarray(
+        gfem.solve(model, gfem.Driven(frequency=[f]), options=OPTIONS).s.values
+    )[0]
+    core = gfem.Material(
+        eps_r=eps.real, tan_delta=-eps.imag / eps.real, mu_r=1.7, name="mu ref"
+    )
+    ref_model = _model(mesh, core, boundaries=side)
+    ref = np.asarray(
+        gfem.solve(ref_model, gfem.Driven(frequency=[f]), options=OPTIONS).s.values
+    )[0]
+    assert np.max(np.abs(s - ref)) < 1e-12
+
+
+@pytest.mark.parametrize("order", [1, 2])
+def test_a_non_positive_permittivity_behind_an_absorbing_face_raises(
+    mesh, order, monkeypatch
+):
+    law = CASES["drude"][0]
+    model = _model(
+        mesh,
+        gfem.Material(eps_r=law),
+        boundaries=(gfem.Absorbing("side", order=order),),
+    )
+
+    def no_assembly(*_args, **_kwargs):
+        raise AssertionError("assembled")
+
+    monkeypatch.setattr(terms, "pieces", no_assembly)
+    value = complex(law(5 * GHZ)).real
+    with pytest.raises(ValueError, match=r"'side'.*region 'core'.*Re eps") as err:
+        gfem.solve(model, gfem.Driven(frequency=[25 * GHZ, 5 * GHZ]), options=OPTIONS)
+    assert "5e+09 Hz" in str(err.value)
+    assert f"{value:.3g}" in str(err.value)
+    assert "Re eps > 0" in str(err.value)
+
+
+def test_an_eigenmode_with_an_absorbing_face_on_a_law_region_raises(mesh):
     model = _model(
         mesh,
         gfem.Material(eps_r=CASES["debye"][0]),
-        boundaries=(gfem.Absorbing("side", order=order),),
+        boundaries=(gfem.Absorbing("side"),),
     )
     with pytest.raises(
         NotImplementedError, match="absorbing boundary on a dispersive region"
     ):
-        gfem.solve(model, gfem.Driven(frequency=[5 * GHZ]), options=OPTIONS)
+        gfem.solve(model, gfem.Eigenmode(target=5 * GHZ), options=OPTIONS)
 
 
 def test_element_values_refuses_a_law_region(mesh):

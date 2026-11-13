@@ -110,6 +110,7 @@ __all__ = [
     "check_absorbing",
     "excitation_per_voltage",
     "face_owner",
+    "law_faces",
     "lumped_ports",
     "pieces",
     "port_vectors",
@@ -659,9 +660,15 @@ def pieces(
 
     absorbing = [b for b in model.boundaries if isinstance(b, Absorbing)]
     if absorbing:
-        check_absorbing(model)
+        check_absorbing(model, dispersive=True)
         surfaces, owner = absorbing_faces(model, order=1)
         admittance, curl = absorbing_coefficients(model, surfaces, owner)
+        # the faces a permittivity law owns leave the shared pieces
+        # (coefficient and owner) for their law's face pieces (ADR 0110)
+        laws = law_faces(model, surfaces, owner)
+        on_law = np.zeros(len(owner), bool)
+        for _, lf in laws:
+            on_law |= lf
         form = _tangential(built, surfaces, order, tris)
         y_cf = surface_coefficient(built, admittance)
         out.append(
@@ -675,7 +682,7 @@ def pieces(
                 derivatives=_absorbing_derivatives(
                     model, order=1, faces=(surfaces, owner)
                 ),
-                owner=_owned(model, surfaces, owner, faces),
+                owner=np.where(on_law, -1, _owned(model, surfaces, owner, faces)),
             )
         )
         second = tuple(b.surface for b in absorbing if b.order == 2)
@@ -696,7 +703,20 @@ def pieces(
                     frequency_class="nonpolynomial",
                     d_theta=lambda w: -1 / (2j * k(w) * w),
                     derivatives=_absorbing_derivatives(model, order=2),
-                    owner=_owned(model, second, owner, faces),
+                    owner=np.where(on_law, -1, _owned(model, second, owner, faces)),
+                )
+            )
+        if laws:
+            out.extend(
+                _law_absorbing_pieces(
+                    model,
+                    built,
+                    order,
+                    laws=laws,
+                    absorbing=(surfaces, second, owner),
+                    form=form,
+                    tris=tris,
+                    faces=faces,
                 )
             )
 
@@ -729,8 +749,8 @@ def absorbing_coefficients(
     # a field with axes holds no one value per element: its faces take the
     # tensor path below (`anisotropic_elements`), so the placeholder 1 there
     # reaches no absorbing face
-    # `check_absorbing` refuses a face behind a permittivity law, so the
-    # placeholder 1 there reaches no absorbing face either
+    # a face behind a permittivity law takes its law's face pieces, so the
+    # placeholder 1 there is zeroed below
     tan = np.real(element_values(model, "tan_delta", per_axis=1.0))
     e = np.real(
         element_values(model, "eps_r", per_axis=1.0, law=1.0) * (1.0 - 1j * tan)
@@ -741,6 +761,10 @@ def absorbing_coefficients(
     ok = owner >= 0
     out[ok] = values[owner[ok]]
     first, curl = out[:, 0], out[:, 1]
+    # a law's faces take its face pieces (`_law_absorbing_pieces`)
+    for _, lf in law_faces(model, surfaces, owner):
+        first[lf] = 0.0
+        curl[lf] = 0.0
     mesh = model.mesh
     tensor = ok & anisotropic_elements(model)[np.maximum(owner, 0)]
     tensor &= np.isin(mesh.triangle_tags, [mesh.region(s).tag for s in surfaces])
@@ -779,35 +803,33 @@ def _anisotropic_faces(model: Model, surface: str) -> bool:
     return bool(anisotropic_elements(model)[owner[owner >= 0]].any())
 
 
-def check_absorbing(model: Model) -> None:
+def check_absorbing(model: Model, *, dispersive: bool = False) -> None:
     """Raise for an absorbing boundary this version cannot apply.
 
     Structural: it reads which materials are anisotropic or dispersive,
-    never values.
+    never values. ``dispersive`` admits a face behind a permittivity law's
+    region: the driven problem's face pieces read sqrt(Re eps(omega)), which
+    is not analytic in omega, so the eigenmode problem refuses it (ADR 0110,
+    0111). Whether Re eps > 0 there is checked per frequency
+    (`gfem._engine.dispersion.check_frequencies`).
 
     Raises:
         NotImplementedError: A second-order `Absorbing` surface has an
-            anisotropic element behind a face (`anisotropic_elements`); an
-            `Absorbing` surface has an element of a permittivity law's region
-            behind a face (an absorbing boundary on a dispersive region).
+            anisotropic element behind a face (`anisotropic_elements`);
+            without ``dispersive``, an `Absorbing` surface has an element of
+            a permittivity law's region behind a face (an absorbing boundary
+            on a dispersive region).
     """
-    laws = dispersion.law_regions(model)
-    if laws:
-        mesh = model.mesh
-        owner = face_owner(model)
-        for b in model.boundaries:
-            if not isinstance(b, Absorbing):
-                continue
-            behind = owner[mesh.triangle_tags == mesh.region(b.surface).tag]
-            behind = behind[behind >= 0]
-            for lr in laws:
-                if lr.mask[behind].any():
-                    raise NotImplementedError(
-                        f"Absorbing {b.surface!r} lies on region {lr.region!r}, "
-                        "whose eps_r is a permittivity law: an absorbing boundary on "
-                        "a dispersive region is not supported yet. Put a "
-                        "non-dispersive layer between the region and the boundary."
-                    )
+    if not dispersive:
+        for region, surfaces in dispersion.absorbing_surfaces(model).items():
+            raise NotImplementedError(
+                f"Absorbing {surfaces[0]!r} lies on region {region!r}, whose "
+                "eps_r is a permittivity law: an absorbing boundary on a "
+                "dispersive region is not supported by the eigenmode problem "
+                "(its admittance sqrt(Re eps(omega)) is not analytic in "
+                "omega). Put a non-dispersive layer between the region and the "
+                "boundary, or solve a gfem.Driven sweep."
+            )
     for b in model.boundaries:
         second = isinstance(b, Absorbing) and b.order == 2
         if second and _anisotropic_faces(model, b.surface):
@@ -817,6 +839,131 @@ def check_absorbing(model: Model) -> None:
                 "Use order=1, or put an isotropic layer between the material "
                 "and the boundary."
             )
+
+
+def law_faces(
+    model: Model, surfaces: tuple[str, ...], owner: np.ndarray
+) -> list[tuple[dispersion.LawRegion, np.ndarray]]:
+    """The faces of ``surfaces`` behind each permittivity law region.
+
+    One boolean per gfem triangle for each law region with such a face
+    (``owner`` per triangle, as `absorbing_faces` gives it).
+    """
+    laws = dispersion.law_regions(model)
+    if not laws or not surfaces:
+        return []
+    mesh = model.mesh
+    on = np.isin(mesh.triangle_tags, [mesh.region(s).tag for s in surfaces])
+    on &= owner >= 0
+    out = []
+    for lr in laws:
+        lf = on & lr.mask[np.maximum(owner, 0)]
+        if lf.any():
+            out.append((lr, lf))
+    return out
+
+
+def _law_absorbing_pieces(
+    model: Model,
+    built: EngineMesh,
+    order: int,
+    *,
+    laws: list[tuple[dispersion.LawRegion, np.ndarray]],
+    absorbing: tuple[tuple[str, ...], tuple[str, ...], np.ndarray],
+    form: Any,
+    tris: Any,
+    faces: np.ndarray | None,
+) -> list[Piece]:
+    """The absorbing face pieces of each permittivity law (ADR 0110).
+
+    On the faces a law region owns (``laws``, from `law_faces`): order 1
+    θ = i k0 sqrt(Re eps(ω)) with coefficient mu_r^-1/2, and on the
+    second-order surfaces θ = 1 / (2 i k0 sqrt(Re eps(ω))) with
+    coefficient mu_r^-3/2: the shared pieces' sqrt(e / m) and
+    1 / (m sqrt(e m)) with e read at ω. Re makes θ non-analytic, so these
+    serve the driven problem only (`check_absorbing`); ``d_theta`` is the
+    slope along real ω. Each is its own piece, so a law-parameter weight
+    can take its key. Probed at `_LAW_PROBE`; Re eps > 0 at the output
+    frequencies is `gfem._engine.dispersion.check_frequencies`' check.
+    ``absorbing`` is ``(surfaces, second-order surfaces, owner)``.
+    """
+    surfaces, second, owner = absorbing
+    scale = built.scale
+    m = np.real(element_values(model, "mu_r", per_axis=1.0))[np.maximum(owner, 0)]
+    first_owner = _owned(model, surfaces, owner, faces)
+    mesh = model.mesh
+    on_second = np.isin(mesh.triangle_tags, [mesh.region(s).tag for s in second])
+    if second:
+        region = boundary_region(built, second)
+        ds = quadrature.ds(order, definedon=region, definedonelements=tris)
+        second_owner = _owned(model, second, owner, faces)
+
+    def k(w: complex) -> complex:
+        return w * scale / const.c
+
+    out = []
+    for lr, lf in laws:
+        law = lr.law
+
+        def eps(w: complex, law: Any = law) -> float:
+            """The real part of eps at ω (of its continuation off the real axis)."""
+            return float(law.eps_inf) + dispersion.susceptibility(law, w).real
+
+        def theta(w: complex, eps: Any = eps) -> complex:
+            return 1j * k(w) * cmath.sqrt(eps(w))
+
+        def d_theta(w: complex, eps: Any = eps, law: Any = law) -> complex:
+            # d/dω [i k sqrt(e)] = i k (sqrt(e) / ω + e' / (2 sqrt(e)))
+            e = cmath.sqrt(eps(w))
+            slope = dispersion.d_susceptibility(law, w).real
+            return 1j * k(w) * (e / w + slope / (2 * e))
+
+        y = np.where(lf, m**-0.5, 0.0)
+        y_cf = surface_coefficient(built, y)
+        out.append(
+            Piece(
+                f"absorbing {lr.region}",
+                theta,
+                lambda u, v, y_cf=y_cf: form(u, v, y_cf),
+                kind="trace",
+                coefficient=y_cf,
+                region=form.region,
+                frequency_class="nonpolynomial",
+                d_theta=d_theta,
+                owner=np.where(lf, first_owner, -1),
+                probe=_LAW_PROBE,
+            )
+        )
+        curl = lf & on_second
+        if not curl.any():
+            continue
+
+        def theta2(w: complex, eps: Any = eps) -> complex:
+            return 1 / (2j * k(w) * cmath.sqrt(eps(w)))
+
+        def d_theta2(w: complex, eps: Any = eps, law: Any = law) -> complex:
+            # d/dω [1 / (2 i k sqrt(e))] = -θ2 (1 / ω + e' / (2 e))
+            slope = dispersion.d_susceptibility(law, w).real
+            return -theta2(w) * (1 / w + slope / (2 * eps(w)))
+
+        c_cf = surface_p0(built, np.where(curl, m**-1.5, 0.0))
+        out.append(
+            Piece(
+                f"absorbing order 2 {lr.region}",
+                theta2,
+                lambda u, v, c_cf=c_cf: (
+                    c_cf * ngs.curl(u).Trace() * ngs.curl(v).Trace() * ds
+                ),
+                kind="curl trace",
+                coefficient=c_cf,
+                region=region,
+                frequency_class="nonpolynomial",
+                d_theta=d_theta2,
+                owner=np.where(curl, second_owner, -1),
+                probe=_LAW_PROBE,
+            )
+        )
+    return out
 
 
 def absorbing_shape_unsupported(model: Model) -> str | None:

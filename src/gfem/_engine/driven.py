@@ -2281,4 +2281,5 @@ def _check_supported(model: Model) -> None:
     for port in model.ports:
         if not isinstance(port, (LumpedPort, WavePort)):  # pragma: no cover
             raise TypeError(f"Unknown port {port!r}.")
-    terms.check_absorbing(model)
+    # a law region behind an absorbing face takes its face pieces (ADR 0110)
+    terms.check_absorbing(model, dispersive=True)
