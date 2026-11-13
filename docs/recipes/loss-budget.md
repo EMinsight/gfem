@@ -1,7 +1,7 @@
 # Budget a mode's loss and its T1 limits
 
-Add up the loss channels of a resonator or qubit mode into one 1/Q, read the
-T1 limit each channel sets, and differentiate the total. A
+Add up the loss channels of a resonator mode or a qubit's linear mode into
+one 1/Q, read the T1 limit each channel sets, and differentiate the total. A
 {term}`loss budget` sums three kinds of term: the loss already in the model,
 thin layers too thin to mesh, and regions you solved without their loss
 tangent.
@@ -61,9 +61,9 @@ A channel with contribution `1 / Q_i` limits the energy relaxation time to
 `1 / T1 = Re(omega) * sum_i 1 / Q_i`. For the modelled loss alone this is
 `1 / (2 Im omega)`, since the energy decays twice as fast as the field.
 
-- The Purcell limit through a readout line is `q_port` of the qubit mode on
-  the line's resistive port, or all of `1 / q` when that port is the only
-  loss in the model.
+- The Purcell limit through a readout line is `q_port` of the qubit's linear
+  mode on the line's resistive port, or all of `1 / q` when that port is the
+  only loss in the model.
 - It is the T1 limit of the linear mode that stands for the qubit, from the
   channels you list. Quasiparticles, flux noise and the saturation of
   two-level systems are not in it: add them from your own estimates as further

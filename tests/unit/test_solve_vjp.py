@@ -10,6 +10,7 @@ import structured_meshes as sm
 
 import gfem
 from gfem._adjoint import adjoint_tolerance, solve_vjp
+from gfem._adjoint.solve_vjp import _add_explicit_lumped
 from gfem._pytree import register_fields
 
 
@@ -92,3 +93,20 @@ def test_adjoint_tolerance_defaults_to_the_forward_tolerance():
     assert adjoint_tolerance(gfem.SolverOptions(tolerance=1e-9)) == 1e-9
     options = gfem.SolverOptions(tolerance=1e-9, adjoint_tolerance=1e-11)
     assert adjoint_tolerance(options) == 1e-11
+
+
+def test_explicit_lumped_terms_add_to_the_wanted_lumped_values():
+    port_l = ("port", 0, "inductance")
+    port_c = ("port", 0, "capacitance")
+    out = {port_l: np.asarray(1.0)}
+    _add_explicit_lumped(
+        out, {port_l: 2.0, port_c: 5.0}, wants={port_l, ("material", "box", "eps_r")}
+    )
+    # an unwanted kind's explicit term has nothing to add to
+    assert out == {port_l: 3.0}
+
+
+def test_an_explicit_lumped_term_of_a_wanted_kind_without_its_pass_is_a_bug():
+    kind = ("port", 0, "inductance")
+    with pytest.raises(RuntimeError, match=r"port.*0.*inductance"):
+        _add_explicit_lumped({}, {kind: 2.0}, wants={kind})
