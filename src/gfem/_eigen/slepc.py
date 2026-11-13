@@ -8,6 +8,8 @@ The problem is a standard non-Hermitian one, its largest eigenvalues sought,
 and the spectral transform is SLEPc's default ``shift`` at 0, so SLEPc sets
 up no linear solver of its own. The start vector is the seed's fixed,
 projected vector, so a solve is deterministic; no deflation space is set.
+A solve stops after ``seed._SEED_RESTARTS`` restarts, unless the user's
+``eps_max_it`` says otherwise (ADR 0122).
 
 petsc4py and slepc4py come from `gfem._petsc` on the first solve; nothing is
 imported at module scope.
@@ -21,8 +23,9 @@ from typing import cast
 import numpy as np
 
 from gfem import _petsc
+from gfem._eigen import seed as _seed
 from gfem._eigen.operator import EigenOperator
-from gfem._eigen.seed import seed_operator
+from gfem._eigen.seed import SeedBoundReached, SeedOperator, seed_operator
 from gfem.options import PetscOptions, PetscValue, split_petsc_options
 
 __all__ = ["shift_invert"]
@@ -41,9 +44,12 @@ class _Shell:
     def __init__(self, apply: Callable[[np.ndarray], np.ndarray]) -> None:
         self._apply = apply
         self.error: BaseException | None = None
+        #: How many times the operator was applied.
+        self.applies = 0
 
     def mult(self, mat, x, y) -> None:  # noqa: ARG002 - petsc4py passes the matrix
         if self.error is None:
+            self.applies += 1
             try:
                 y.array = self._apply(x.array_r.copy())
             except BaseException as err:  # noqa: BLE001 - raised after the solve
@@ -94,7 +100,11 @@ def _check_read(eps, names: list[str]) -> None:
 
 
 def _configure(eps, mat, prefix: str, *, nev: int, ncv: int, tol: float) -> None:
-    """Set what gfem decides on ``eps``: Krylov-Schur on ``mat``, its prefix."""
+    """Set what gfem decides on ``eps``: Krylov-Schur on ``mat``, its prefix.
+
+    ``max_it`` is the seed's restart bound (`gfem._eigen.seed._SEED_RESTARTS`);
+    ``eps_max_it`` overrides it, as ``setFromOptions`` runs after.
+    """
     SLEPc = _petsc.require_slepc()
     eps.setOptionsPrefix(prefix)
     eps.setOperators(mat)
@@ -102,7 +112,7 @@ def _configure(eps, mat, prefix: str, *, nev: int, ncv: int, tol: float) -> None
     eps.setType(SLEPc.EPS.Type.KRYLOVSCHUR)
     eps.setWhichEigenpairs(SLEPc.EPS.Which.LARGEST_MAGNITUDE)
     eps.setDimensions(nev=nev, ncv=ncv)
-    eps.setTolerances(tol=tol)
+    eps.setTolerances(tol=tol, max_it=_seed._SEED_RESTARTS)  # noqa: SLF001
 
 
 def _set_from_options(eps) -> None:
@@ -135,6 +145,17 @@ def _eigenpairs(eps, vector, nev: int, size: int) -> tuple[np.ndarray, np.ndarra
     return theta, vectors
 
 
+def _bound(
+    eps, seed: SeedOperator, theta: np.ndarray, vectors: np.ndarray, applies: int
+) -> SeedBoundReached | None:
+    """What a solved ``eps`` that stopped at its ``max_it`` raises, else ``None``."""
+    reason = _petsc.require_slepc().EPS.ConvergedReason
+    if eps.getConvergedReason() != reason.DIVERGED_ITS:
+        return None
+    k, x = seed.pairs(theta, vectors)
+    return SeedBoundReached(k, x, restarts=eps.getTolerances()[1], applies=applies)
+
+
 def shift_invert(
     op: EigenOperator,
     project,
@@ -157,10 +178,11 @@ def shift_invert(
 
     Returns:
         Wavenumbers ``(m,)`` (per file unit, ``m <= nev``; may include
-        pairs with ``Re k <= 0``) and eigenvectors ``(n, m)``. If SLEPc
-        stops early, the pairs it converged.
+        pairs with ``Re k <= 0``) and eigenvectors ``(n, m)``.
 
     Raises:
+        SeedBoundReached: SLEPc stopped at its restart bound (``max_it``);
+            it carries the pairs it converged.
         gfem.SolverUnavailableError: slepc4py cannot be used.
         ValueError: SLEPc refused the options, or did not read one of them
             (after a solve that succeeded).
@@ -208,6 +230,7 @@ def shift_invert(
                     raise shell.error
                 _check_read(eps, [name for name, _ in pairs])
             theta, vectors = _eigenpairs(eps, vector, nev, seed.size)
+            bound = _bound(eps, seed, theta, vectors, shell.applies)
             failed = False
         except (PETSc.Error, SystemError) as err:
             if shell.error is not None:
@@ -224,4 +247,6 @@ def shift_invert(
                     # a destroy that fails never hides the solve's own error
                     if not failed:
                         raise
+    if bound is not None:
+        raise bound
     return seed.pairs(theta, vectors)

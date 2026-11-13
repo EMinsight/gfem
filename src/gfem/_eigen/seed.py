@@ -36,11 +36,45 @@ import numpy as np
 
 from gfem._eigen.operator import EigenOperator
 
-__all__ = ["MIN_SUBSPACE", "SeedOperator", "seed_operator"]
+__all__ = ["MIN_SUBSPACE", "SeedBoundReached", "SeedOperator", "seed_operator"]
 
 #: The smallest subspace (ncv) a seed solve builds: it applies the seed
 #: operator, one ``T(sigma)`` solve, at least this many times per shift.
 MIN_SUBSPACE = 20
+
+#: The most restarts a seed solve makes (ARPACK's ``maxiter``, SLEPc's
+#: ``max_it``, which ``eps_max_it`` overrides). Good cases need 0 to 2, the
+#: slowest converging case measured about 31; a seed solve among modes
+#: closer than their linewidth would otherwise run for days (ADR 0122).
+#: Read at each solve: tests patch it.
+_SEED_RESTARTS = 100
+
+
+class SeedBoundReached(Exception):  # noqa: N818 - a signal, not a user error
+    """A seed solve stopped at its restart bound, with the pairs it converged.
+
+    Raised by the eigen solvers' ``shift_invert`` instead of returning;
+    the rule selects among ``k`` and ``vectors`` as for a solve that
+    returned, and does not retry (ADR 0122).
+
+    Attributes:
+        k: The converged wavenumbers, ``(m,)``.
+        vectors: Their eigenvectors, ``(n, m)``.
+        restarts: The restart bound it reached.
+        applies: The seed operator applies (``T(sigma)`` solves) it made.
+    """
+
+    def __init__(
+        self, k: np.ndarray, vectors: np.ndarray, *, restarts: int, applies: int
+    ) -> None:
+        super().__init__(
+            f"the seed solve did not converge in {restarts} restarts "
+            f"({applies} shift solves)"
+        )
+        self.k = k
+        self.vectors = vectors
+        self.restarts = restarts
+        self.applies = applies
 
 
 @dataclasses.dataclass(frozen=True)

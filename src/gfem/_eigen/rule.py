@@ -92,7 +92,7 @@ from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
 from gfem._eigen.ratios import Ratios, sheet_capacitors, sheet_inductors
 from gfem._eigen.refine import TRUSTED, Refined, refine
-from gfem._eigen.seed import MIN_SUBSPACE
+from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
 from gfem._engine import terms
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import anisotropic_regions
@@ -116,6 +116,7 @@ from gfem._engine.fields import fe_space
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped
 from gfem._linalg import Kind, ResolvedLinearSolver
+from gfem._materials import Material
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
 from gfem._sign import largest_entry
 from gfem._text import hertz
@@ -156,6 +157,10 @@ _STATIC = 1e-6
 #: least ``SolverOptions.cluster_rtol``) to accepted modes, with this much of
 #: its norm in their span, is one of them again.
 _DUPLICATE = 10.0
+#: The modal overlap from which a seed solve's error names the region: every
+#: case below it converged in 47 shift solves or fewer, every hang had 70 or
+#: more (ADR 0122).
+_CROWDED = 10.0
 _OVERLAP = 0.9
 #: A duplicate with more than this fraction of its norm outside the span
 #: landed on a degenerate eigenspace: that part is refined as the twin the
@@ -469,11 +474,14 @@ class EigenmodeRule:
 
         Seed solves at the target (each attempt asking for twice as many
         pairs as the last) and the selection of their refined pairs
-        (`_select`). ``guard``: refine one mode beyond ``n_modes`` (``None``
-        when no seed gave one). Where the forward polishes (`polishable`),
-        each isolated mode is polished (`_polish`) on the factors the search
-        leaves, before a lossless problem's ``k`` are snapped real; the last
-        return flags the modes whose polish failed (kept unpolished).
+        (`_select`). A seed solve that stops at its restart bound ends the
+        attempts: its converged pairs are selected, and a wider retry would
+        converge none (ADR 0122). ``guard``: refine one mode beyond
+        ``n_modes`` (``None`` when no seed gave one). Where the forward
+        polishes (`polishable`), each isolated mode is polished (`_polish`)
+        on the factors the search leaves, before a lossless problem's ``k``
+        are snapped real; the last return flags the modes whose polish
+        failed (kept unpolished).
 
         Raises:
             EigenmodeConvergenceError: Fewer than ``n_modes`` modes
@@ -499,19 +507,26 @@ class EigenmodeRule:
             nev = max(2 * n_modes, n_modes + 2)
             nev *= 2 if eop.seed_damped else 1
         found = None
+        bound = None
         for _ in range(_ATTEMPTS):
             if eop.shift != sigma:
                 # a retry is a seed solve: at the target, on a
                 # factorization counted for the seed (refinement
                 # reshifted it)
                 eop.reshift(sigma, solves=MIN_SUBSPACE)
-            k, vectors = self._shift_invert(eop, divfree, nev, tol=seed_tolerance)
+            try:
+                k, vectors = self._shift_invert(eop, divfree, nev, tol=seed_tolerance)
+            except SeedBoundReached as err:
+                bound = err
+                k, vectors = err.k, err.vectors
             modes, failed, found, pool, ritz = self._select(
                 eop, k, vectors, sigma, guard=guard
             )
-            if len(modes) == n_modes or failed:
+            if len(modes) == n_modes or failed or bound is not None:
                 break
             nev *= 2  # too few candidates near the target: look wider
+        if bound is not None and len(modes) < n_modes:
+            raise EigenmodeConvergenceError(self._seed_message(bound))
         skipped = self._skipped(modes, failed, sigma)
         if len(modes) < n_modes or skipped:
             raise EigenmodeConvergenceError(
@@ -863,6 +878,40 @@ class EigenmodeRule:
             "SolverOptions.eigen_tolerance or raise max_refine_iterations; for a "
             "mode with Q below about 2, find the resonance from a gfem.Driven "
             "sweep instead."
+        )
+        return "\n".join(lines)
+
+    def _seed_message(self, bound: SeedBoundReached) -> str:
+        """Why the solve raises after a seed solve stopped at its restart bound.
+
+        Names the lossy region with the largest modal overlap at the target
+        (`_modal_overlap`) when it is `_CROWDED` or more: a diagnosis only.
+        """
+        target = self.problem.target
+        head = (
+            f"Eigenmode's seed solve near {hertz(target)} did not converge in "
+            f"{bound.restarts} restarts ({bound.applies} shift solves): the modes "
+            "there are closer together than their linewidth, so the nearest ones "
+            "cannot be told apart."
+        )
+        lines = [head]
+        overlaps = {
+            region: _modal_overlap(self._mesh, region, material, target)
+            for region, material in self._materials.items()
+            if region in self.regions and isinstance(material, Material)
+        }
+        if overlaps:
+            region = max(overlaps, key=lambda r: overlaps[r])
+            if overlaps[region] >= _CROWDED:
+                lines.append(
+                    f"Region {region!r} holds about {overlaps[region]:.0f} modes "
+                    "within one linewidth of the target."
+                )
+        lines.append(
+            "Remedies: move Eigenmode.target where the modes are separated (away "
+            "from a lossy resonance); find overlapping resonances from a "
+            "gfem.Driven sweep; raise eps_max_it in SolverOptions.petsc_options "
+            "(SLEPc) only if the modes are known to be separated."
         )
         return "\n".join(lines)
 
@@ -1641,6 +1690,33 @@ def clusters(ks: list[complex], rtol: float) -> np.ndarray:
     for v in labels:
         renumber.setdefault(v, len(renumber))
     return np.array([renumber[v] for v in labels], dtype=np.int64)
+
+
+def _modal_overlap(
+    mesh: Mesh, region: str, material: Material, frequency: float
+) -> float:
+    """How many of ``region``'s modes lie within one linewidth of ``frequency``.
+
+    Weyl's density of cavity modes times the linewidth, ``M = V k0^3 |Im
+    eps| sqrt(Re eps) / pi^2``, with ``V`` the region's volume and ``eps``
+    its complex permittivity at ``frequency`` (the mean of its principal
+    values; ``tan_delta`` and ``conductivity`` give the loss). 0 where ``Re
+    eps <= 0``. It matched the counted modes to 10-30 % (ADR 0122).
+    """
+    omega = 2 * math.pi * frequency
+    eps_r = np.asarray(material.eps_r, dtype=float)
+    tan = np.broadcast_to(np.asarray(material.tan_delta, dtype=float), eps_r.shape)
+    sigma = np.mean(np.asarray(material.conductivity, dtype=float))
+    eps = complex(np.mean(eps_r * (1 - 1j * tan))) - 1j * sigma / (
+        omega * const.epsilon_0
+    )
+    if eps.real <= 0:
+        return 0.0
+    nodes = np.asarray(mesh.nodes, dtype=float)[mesh.tetrahedra[mesh.elements(region)]]
+    edges = nodes[:, 1:] - nodes[:, :1]
+    volume = float(np.abs(np.linalg.det(edges)).sum()) / 6
+    k0 = omega / const.c
+    return volume * k0**3 * abs(eps.imag) * math.sqrt(eps.real) / math.pi**2
 
 
 def _contraction(seed: complex, shift: complex, ritz: np.ndarray) -> float:
