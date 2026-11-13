@@ -10,6 +10,8 @@ readers that understand a law read it here, each at a named frequency:
 - `law_regions`: the laws and their tetrahedra, for the susceptibility
   pieces (`susceptibility`, `d_susceptibility`) and the checks;
 - `check_frequencies`: what a driven sweep checks before any assembly;
+- `check_band`: the eigenmode problem's unresolved band (ADR 0115), and
+  `nearest_term`, the term a message names;
 - `absorbing_surfaces`: the absorbing surfaces each law region lies behind;
 - `has_loss`, `check_estimator_frequencies`: what the refinement estimators
   ask of a law.
@@ -39,11 +41,13 @@ from gfem._materials import (
     Material,
     PermittivityLaw,
 )
+from gfem._text import hertz
 from gfem.model import Model
 
 __all__ = [
     "LawRegion",
     "absorbing_surfaces",
+    "check_band",
     "check_estimator_frequencies",
     "check_frequencies",
     "d_eps",
@@ -52,6 +56,7 @@ __all__ = [
     "has_loss",
     "high_frequency_eps",
     "law_regions",
+    "nearest_term",
     "susceptibility",
 ]
 
@@ -334,6 +339,106 @@ def absorbing_surfaces(
         if found:
             out[lr.region] = tuple(found)
     return out
+
+
+# --- the eigenmode problem's unresolved band (ADR 0115) ----------------------------
+
+#: k0 Re sqrt(eps) h_max above which a law region is in its unresolved band:
+#: its wavelength is shorter than two of its longest edges.
+BAND = math.pi
+#: Each term's frequencies a message measures nearness by.
+_CORNERS = {
+    Drude: ("plasma_frequency",),
+    Lorentz: ("resonance_frequency",),
+    Debye: ("relaxation_frequency",),
+    DjordjevicSarkar: ("low_frequency", "high_frequency"),
+}
+_NAMES = {
+    "plasma_frequency": "plasma frequency",
+    "resonance_frequency": "resonance",
+    "relaxation_frequency": "relaxation frequency",
+    "low_frequency": "low corner",
+    "high_frequency": "high corner",
+}
+
+
+def nearest_term(law: PermittivityLaw, frequency: float) -> str:
+    """The term of ``law`` nearest ``frequency`` (Hz), for messages.
+
+    Nearness is measured to each term's own frequencies (a Lorentz term's
+    resonance, a Drude term's plasma frequency, a Debye term's relaxation
+    frequency, a Djordjevic-Sarkar term's corners): ``"law.terms[0]
+    (Lorentz, resonance 25 GHz)"``.
+    """
+    best = None
+    for index, term in enumerate(law.terms):
+        for name in _CORNERS[type(term)]:
+            value = float(getattr(term, name))
+            distance = abs(value - frequency)
+            if best is None or distance < best[0]:
+                best = (distance, index, term, name, value)
+    if best is None:  # pragma: no cover - a law has terms
+        return "its high-frequency permittivity"
+    _, index, term, name, value = best
+    return f"law.terms[{index}] ({type(term).__name__}, {_NAMES[name]} {hertz(value)})"
+
+
+def _longest_edges(model: Model, regions: Iterable[LawRegion]) -> dict[str, float]:
+    """The longest tetrahedron edge (m) of each law region on the solve domain."""
+    nodes = np.asarray(model.mesh.nodes, dtype=float)
+    tets = np.asarray(model.mesh.tetrahedra)
+    out = {}
+    for lr in regions:
+        corners = nodes[tets[lr.mask]]
+        if not len(corners):
+            continue
+        edges = [
+            np.linalg.norm(corners[:, i] - corners[:, j], axis=1).max()
+            for i in range(4)
+            for j in range(i + 1, 4)
+        ]
+        out[lr.region] = float(max(edges))
+    return out
+
+
+def check_band(model: Model, frequency: float, what: str) -> None:
+    """Raise if ``frequency`` (Hz) lies in a law region's unresolved band.
+
+    A law region with longest edge ``h_max`` is in its band where ``k0 Re
+    sqrt(eps(f)) h_max > pi`` (`BAND`, principal root): its propagating
+    wavelength is shorter than two longest edges. There, next to a Lorentz
+    resonance, the modes crowd at the resonance, which of them the mesh
+    holds depends on it, and the seed solve cannot tell the nearest apart
+    (ADR 0115 and its amendment). An infinite permittivity (a lossless
+    pole) is in the band. ``what`` names the frequency in the message (the
+    target, or a mode).
+
+    Raises:
+        ValueError: ``frequency`` lies in a law region's band.
+    """
+    regions = law_regions(model)
+    if not regions:
+        return
+    omega = _TWO_PI * frequency
+    k0 = omega / 299792458.0
+    for lr in regions:
+        h = _longest_edges(model, [lr]).get(lr.region)
+        if h is None:
+            continue
+        eps = complex(lr.law.eps_inf) + susceptibility(lr.law, omega)
+        value = k0 * cmath.sqrt(eps).real * h if cmath.isfinite(eps) else math.inf
+        if value > BAND:
+            shown = f"{eps:.3g}" if cmath.isfinite(eps) else "infinite"
+            raise ValueError(
+                f"Eigenmode's {what} {hertz(frequency)} lies in the unresolved band "
+                f"of region {lr.region!r}: its permittivity law gives eps = {shown} "
+                f"there, near {nearest_term(lr.law, frequency)}, and k0 Re "
+                f"sqrt(eps) h_max = {value:.3g} > pi (h_max = {h * 1e3:.3g} mm, the "
+                "region's longest edge): its wavelength is shorter than two "
+                "elements. The modes there crowd at the resonance, and which of "
+                "them the mesh holds depends on the mesh. Move Eigenmode.target "
+                "away from the resonance, or refine the mesh in the region."
+            )
 
 
 # --- refinement estimators ---------------------------------------------------------

@@ -93,7 +93,7 @@ from gfem._eigen.operator import EigenOperator
 from gfem._eigen.ratios import Ratios, sheet_capacitors, sheet_inductors
 from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
-from gfem._engine import terms
+from gfem._engine import dispersion, terms
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import anisotropic_regions
 from gfem._engine.domain import em_region
@@ -397,6 +397,8 @@ class EigenmodeRule:
         """
         opts = self.options
         order = opts.order
+        # before any assembly: a target in a law's unresolved band (ADR 0115)
+        dispersion.check_band(model, self.problem.target, "target")
         with task_manager(opts.threads):
             op = driven_operator(model, order, wave_vector=self.problem.wave_vector)
             built = op.built
@@ -410,6 +412,10 @@ class EigenmodeRule:
                 modes, guard, gaps, unpolished = self._find(
                     eop, divfree, sigma, guard=keep or self.polishable
                 )
+                per_hz = const.c / built.scale / (2 * math.pi)
+                for j, mode in enumerate(modes):
+                    f = mode.k.real * per_hz
+                    dispersion.check_band(model, f, f"mode {j} at")
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
                 lowest = min(k.real for k in ks) * const.c / built.scale

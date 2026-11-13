@@ -66,7 +66,7 @@ def discrete(box):
 def filled(mesh, eps_r):
     return gfem.Model(
         mesh,
-        materials={"box": gfem.Material(eps_r=eps_r)},
+        materials={region: gfem.Material(eps_r=eps_r) for region in mesh.volumes},
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), gfem.PEC("side")],
     )
 
@@ -132,9 +132,7 @@ def discrete_error(law, f, discrete):
     ],
     ids=["lorentz-lower", "lorentz-upper", "drude", "drude-lossy"],
 )
-def test_a_filled_box_resonates_at_the_closed_form_branches(
-    box, discrete, law, target
-):
+def test_a_filled_box_resonates_at_the_closed_form_branches(box, discrete, law, target):
     result = gfem.solve(
         filled(box, law), gfem.Eigenmode(target=target, n_modes=4), options=ORDER_3
     )
@@ -191,3 +189,132 @@ def test_a_lossless_drude_law_is_solved_as_a_polynomial_problem(
     general = np.asarray(gfem.solve(model, problem, options=ORDER_3).omega)
     assert operators[-1].nonpolynomial
     np.testing.assert_allclose(polynomial, general, rtol=1e-12)
+
+
+# --- the unresolved band (ADR 0115) ------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def coarse(tmp_path_factory):
+    """The probe-04 box at (6, 5, 5) cells (h_max 2.52 mm), for order 1."""
+    return _box(tmp_path_factory.mktemp("coarse"), (6, 5, 5))
+
+
+@pytest.fixture(scope="module")
+def plate(tmp_path_factory):
+    """The box at (13, 11, 5 + 5) cells in two layers (h_max 1.22 mm), for order 1.
+
+    Ticket 10's order-1 mesh: there the frozen seed's four nearest roots
+    were measured exact. (On the coarse box at order 1, 20 and 22 GHz
+    targets skip one nearer root of the crowded lower branch.)
+    """
+    path = tmp_path_factory.mktemp("plate") / "plate.msh"
+    sm.write_msh22(path, sm.plate(A, B, (("host", 3.0), ("core", 2.0)), (13, 11, 5)))
+    return gfem.Mesh.from_gmsh(path, length_unit="mm")
+
+
+@pytest.fixture
+def seed_solves(monkeypatch):
+    """The seed solves the eigenmode solves run."""
+    count = [0]
+    shift_invert = eigen_rule.EigenmodeRule._shift_invert
+
+    def spy(self, *args, **kwargs):
+        count[0] += 1
+        return shift_invert(self, *args, **kwargs)
+
+    monkeypatch.setattr(eigen_rule.EigenmodeRule, "_shift_invert", spy)
+    return count
+
+
+def lower_branch(law, fc):
+    """The lower polariton root (Hz) of a lossless Lorentz law at cutoff ``fc``."""
+    return float(np.min(roots(law, fc).real))
+
+
+def nearest_roots(mesh, law, target, n, options):
+    """The ``n`` exact lower-branch roots nearest ``target`` on ``mesh``'s space.
+
+    From the vacuum box's discrete cutoffs around the target's own cutoff
+    ``f sqrt(eps(f))``: three times ``n`` of them, so the nearest roots are
+    among their images.
+    """
+    fc = target * math.sqrt(complex(law(target)).real)
+    vacuum = gfem.solve(
+        filled(mesh, 1.0), gfem.Eigenmode(target=fc, n_modes=3 * n), options=options
+    )
+    cut = np.real(np.asarray(vacuum.omega)) / (2 * math.pi)
+    images = np.array([lower_branch(law, c) for c in cut])
+    order = np.argsort(np.abs(images - target))
+    # the images beyond the n nearest lie farther than the nth: none skipped
+    assert np.abs(images[order[n:]] - target).min() >= np.abs(
+        images[order[n - 1]] - target
+    )
+    return np.sort(images[order[:n]])
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "order", "target"),
+    [("plate", 1, 24 * GHZ), ("box", 3, 12 * GHZ)],
+    ids=["order1", "order3"],
+)
+def test_below_the_band_the_nearest_exact_roots_come_back(
+    request, mesh_name, order, target
+):
+    # kh 2.3 (24 GHz, 4 % below the pole, eps 14.8) and 1.6 (12 GHz)
+    mesh = request.getfixturevalue(mesh_name)
+    options = gfem.SolverOptions(order=order, eigen_tolerance=1e-12)
+    result = gfem.solve(
+        filled(mesh, LORENTZ), gfem.Eigenmode(target=target, n_modes=4), options=options
+    )
+    f = np.sort(np.real(np.asarray(result.omega))) / (2 * math.pi)
+    np.testing.assert_allclose(
+        f, nearest_roots(mesh, LORENTZ, target, 4, options), rtol=1e-10
+    )
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "order"), [("coarse", 1), ("box", 3)], ids=["order1", "order3"]
+)
+def test_a_target_in_the_band_raises_before_any_seed_solve(
+    request, seed_solves, mesh_name, order
+):
+    # 24 GHz, 4 % below the lossless 25 GHz pole: eps = 14.8, kh 4.9 / 6.4
+    mesh = request.getfixturevalue(mesh_name)
+    with pytest.raises(ValueError, match="unresolved band") as raised:
+        gfem.solve(
+            filled(mesh, LORENTZ),
+            gfem.Eigenmode(target=24 * GHZ),
+            options=gfem.SolverOptions(order=order),
+        )
+    message = str(raised.value)
+    assert "region 'box'" in message
+    assert "law.terms[0] (Lorentz" in message
+    assert "25 GHz" in message
+    assert "24 GHz" in message
+    assert "eps = 14.8" in message
+    assert seed_solves[0] == 0
+
+
+def test_a_target_on_a_lossless_pole_is_in_the_band(coarse, seed_solves):
+    with pytest.raises(ValueError, match="unresolved band"):
+        gfem.solve(
+            filled(coarse, LORENTZ),
+            gfem.Eigenmode(target=25 * GHZ),
+            options=gfem.SolverOptions(order=1),
+        )
+    assert seed_solves[0] == 0
+
+
+def test_a_returned_mode_in_the_band_raises(coarse, seed_solves):
+    # a target just below the band (kh 3.09 at 22.3 GHz): the nearest modes
+    # reach above it, where kh passes pi from about 22.4 GHz
+    with pytest.raises(
+        ValueError, match=r"Eigenmode's mode \d at .* GHz lies in the unresolved band"
+    ):
+        gfem.solve(
+            filled(coarse, LORENTZ),
+            gfem.Eigenmode(target=22.3 * GHZ, n_modes=6),
+            options=gfem.SolverOptions(order=1),
+        )
+    assert seed_solves[0] >= 1
