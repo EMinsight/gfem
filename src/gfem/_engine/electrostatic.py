@@ -352,6 +352,7 @@ class ElectrostaticRule:
                 for r, e in zip(self.regions, outputs["energy"], strict=True)
             },
             potential=potential,
+            _fixed=self.fixed,
         )
 
     def _region_energies(

@@ -394,3 +394,266 @@ def periodic_cell(
         edges, split, named, mirror=mirror
     )
     return nodes, tets, [n.split("\0")[0] for n in tet_names], tris, tri_names
+
+
+_DROPPED = "\0dropped"
+
+
+def carve(
+    edges: tuple[np.ndarray, np.ndarray, np.ndarray],
+    volume: Callable[[np.ndarray], str | None],
+    surface: Classify,
+    mapping: Callable[[np.ndarray], np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray, list[str]]:
+    """`structured`, with the cells ``volume`` names `None` removed.
+
+    The faces between a kept and a removed tetrahedron are boundary faces
+    offered to ``surface``; triangles that touch no kept tetrahedron and
+    nodes no kept tetrahedron uses are dropped, and the nodes renumbered.
+    """
+    nodes, tets, names, tris, tri_names = structured(
+        edges, lambda c: volume(c) or _DROPPED, surface, mapping
+    )
+    keep = np.array([n != _DROPPED for n in names])
+    tets = tets[keep]
+    names = [n for n, k in zip(names, keep, strict=True) if k]
+    faces = np.sort(tets[:, [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]]], axis=2)
+    faces = np.unique(faces.reshape(-1, 3), axis=0)
+    n = len(nodes)
+
+    def key(f: np.ndarray) -> np.ndarray:
+        f = f.astype(np.int64)
+        return (f[:, 0] * n + f[:, 1]) * n + f[:, 2]
+
+    on_kept = np.isin(key(np.sort(tris, axis=1)), key(faces))
+    tris = tris[on_kept]
+    tri_names = [t for t, k in zip(tri_names, on_kept, strict=True) if k]
+    used = np.unique(tets)
+    renumber = np.full(n, -1)
+    renumber[used] = np.arange(len(used))
+    return nodes[used], renumber[tets], names, renumber[tris], tri_names
+
+
+def _graded(lo: float, hi: float, corner: float, n: int, grade: float) -> np.ndarray:
+    """Grid lines on [lo, hi], ``n`` cells per unit length, a node at ``corner``.
+
+    ``grade`` > 1 packs them towards ``corner`` as (k / m) ** grade.
+    """
+    parts = [np.array([corner])]
+    for end in (lo, hi):
+        length = abs(end - corner)
+        if length == 0:
+            continue
+        m = max(1, round(length * n))
+        parts.append(
+            corner + np.sign(end - corner) * length * (np.arange(1, m + 1) / m) ** grade
+        )
+    x = np.unique(np.concatenate(parts))
+    x[0], x[-1] = lo, hi
+    return x
+
+
+def square_coax_quarter(n: int, *, grade: float = 1.0):
+    """A quarter of a square coax: an L-shaped section with a 270 degree corner.
+
+    Inner conductor of half-side 1, outer of half-side 2, extruded by 0.5 (one
+    cell): the section [0, 2]^2 minus [0, 1]^2, whose re-entrant corner is the
+    inner conductor's corner (1, 1). ``n`` cells per unit length in x and y;
+    ``grade`` > 1 packs them towards the corner.
+
+    Volume "dielectric". Surfaces "inner", "outer", "ends" (z = 0 and 0.5) and
+    "symmetry" (x = 0 and y = 0).
+    """
+    a, b, t, tol = 1.0, 2.0, 0.5, 1e-9
+    xy = _graded(0, b, a, n, grade)
+    edges = (xy, xy.copy(), np.array([0.0, t]))
+
+    def volume(c):
+        return None if c[0] < a and c[1] < a else "dielectric"
+
+    def surface(c):
+        x, y, z = c
+        if abs(x - b) < tol or abs(y - b) < tol:
+            return "outer"
+        if (abs(x - a) < tol and y < a + tol) or (abs(y - a) < tol and x < a + tol):
+            return "inner"
+        if abs(z) < tol or abs(z - t) < tol:
+            return "ends"
+        return "symmetry"
+
+    return carve(edges, volume, surface)
+
+
+def step_line(n: int, *, grade: float = 1.0):
+    """A parallel-plate line along x whose top plate steps down halfway.
+
+    Length 10, width 2 (one y cell), height 1; for x > 5 the top plate is at
+    z = 0.5, so the step's lower edge is a 270 degree re-entrant edge along y at
+    (5, 0.5). ``n`` cells per unit length in x and z; ``grade`` > 1 packs them
+    towards the edge.
+
+    Volume "dielectric". Surfaces "bottom" (z = 0), "top" (the stepped plate),
+    "port1" (x = 0, full height), "port2" (x = 10, half height) and "side"
+    (the y walls).
+    """
+    length, width, height, tol = 10.0, 2.0, 1.0, 1e-9
+    edges = (
+        _graded(0, length, length / 2, n, grade),
+        np.array([0.0, width]),
+        _graded(0, height, height / 2, n, grade),
+    )
+
+    def volume(c):
+        return None if c[0] > length / 2 and c[2] > height / 2 else "dielectric"
+
+    def surface(c):
+        x, _, z = c
+        if abs(x) < tol:
+            return "port1"
+        if abs(x - length) < tol:
+            return "port2"
+        if abs(z) < tol:
+            return "bottom"
+        if (
+            abs(z - height) < tol
+            or (abs(x - length / 2) < tol and z > height / 2 - tol)
+            or (abs(z - height / 2) < tol and x > length / 2 - tol)
+        ):
+            return "top"
+        return "side"
+
+    return carve(edges, volume, surface)
+
+
+def l_cavity(n: int, *, grade: float = 1.0):
+    """A cavity of L-shaped section: [-1, 1]^2 minus [0, 1] x [-1, 0], height 0.5.
+
+    The re-entrant corner is at the origin. ``n`` cells per unit length in x
+    and y, one cell in z; ``grade`` > 1 packs them towards the corner.
+
+    Volume "air". Surface "wall" (the whole boundary).
+    """
+    xy = _graded(-1, 1, 0, n, grade)
+    edges = (xy, xy.copy(), np.array([0.0, 0.5]))
+
+    def volume(c):
+        return None if c[0] > 0 and c[1] < 0 else "air"
+
+    return carve(edges, volume, lambda _: "wall")
+
+
+def sheet_screen(n: int):
+    """Two bars in a grounded box with a zero-thickness sheet between them.
+
+    The box is [0, 5] x [0, 3], extruded by 0.5 (one cell). Bar "a" is
+    [0.5, 1.5] x [0.5, 1.5] and bar "b" [3, 4.5] x [1.5, 2.5], both carved
+    out; the sheet "fin" is the plane x = 2 for y < 2, between the volumes
+    "left" (x < 2) and "right", and ends on the box's bottom wall and on
+    both "ends" (z = 0 and 0.5). Surfaces "a", "b", "fin", "box" (the x and
+    y walls) and "ends". ``n`` cells per unit length, nodes on every edge
+    of the bars and the fin.
+    """
+    width, depth, length = 5.0, 3.0, 0.5
+    bars = {"a": (0.5, 1.5, 0.5, 1.5), "b": (3.0, 4.5, 1.5, 2.5)}
+    fin_x, fin_y = 2.0, 2.0
+    eps = 1e-9
+
+    def lines(hi: float, marks: list[float]) -> np.ndarray:
+        points = sorted({0.0, hi, *marks})
+        parts = []
+        for p, q in itertools.pairwise(points):
+            m = max(1, round((q - p) * n))
+            parts.append(p + (q - p) * np.arange(m + 1) / m)
+        return np.unique(np.concatenate(parts))
+
+    xs = lines(width, [v for r in bars.values() for v in r[:2]] + [fin_x])
+    ys = lines(depth, [v for r in bars.values() for v in r[2:]] + [fin_y])
+
+    def inside(c, r):
+        return r[0] < c[0] < r[1] and r[2] < c[1] < r[3]
+
+    def volume(c):
+        if any(inside(c, r) for r in bars.values()):
+            return None
+        return "left" if c[0] < fin_x else "right"
+
+    def on(c, r):
+        x, y = c[0], c[1]
+        across = min(abs(x - r[0]), abs(x - r[1])) < eps and r[2] - eps < y < r[3] + eps
+        along = min(abs(y - r[2]), abs(y - r[3])) < eps and r[0] - eps < x < r[1] + eps
+        return across or along
+
+    def surface(c):
+        for name, r in bars.items():
+            if on(c, r):
+                return name
+        if abs(c[2]) < eps or abs(c[2] - length) < eps:
+            return "ends"
+        if abs(c[0] - fin_x) < eps and 0 < c[1] < depth - eps:
+            return "fin" if c[1] < fin_y else ""  # above the fin: no surface
+        return "box"
+
+    return carve((xs, ys, np.array([0.0, length])), volume, surface)
+
+
+#: `two_bars` cases: the box's section, bars "a" and "b" and the grounded
+#: blocks, each (x0, x1, y0, y1).
+TWO_BARS = {
+    "near": ((4.0, 2.0), (0.5, 1.5, 0.5, 1.5), (2.5, 3.5, 0.5, 1.5), ()),
+    "screen": (
+        (5.0, 3.0),
+        (0.5, 1.5, 0.5, 1.5),
+        (3.0, 4.5, 1.5, 2.5),
+        ((2.0, 2.5, 0.0, 2.0),),
+    ),
+}
+
+
+def two_bars(case: str, n: int):
+    """Two bars "a" and "b" in a grounded box, one case of `TWO_BARS`.
+
+    "near": box [0, 4] x [0, 2], bars [0.5, 1.5]^2 and [2.5, 3.5] x
+    [0.5, 1.5]. "screen": box [0, 5] x [0, 3], unequal offset bars
+    [0.5, 1.5]^2 and [3, 4.5] x [1.5, 2.5], and between them a grounded fin
+    [2, 2.5] x [0, 2] standing on the box's bottom wall. Bars and fin are
+    carved out; extruded by 0.5 (one cell). Volume "dielectric"; surfaces
+    "a", "b", "ends" (z = 0 and 0.5) and "box" (the walls and the fin).
+    ``n`` cells per unit length, nodes on every edge of the bars and fin.
+    """
+    (width, depth), a, b, grounds = TWO_BARS[case]
+    length, eps = 0.5, 1e-9
+    blocks = [a, b, *grounds]
+
+    def lines(hi: float, marks: list[float]) -> np.ndarray:
+        points = sorted({0.0, hi, *marks})
+        parts = []
+        for p, q in itertools.pairwise(points):
+            m = max(1, round((q - p) * n))
+            parts.append(p + (q - p) * np.arange(m + 1) / m)
+        return np.unique(np.concatenate(parts))
+
+    xs = lines(width, [v for r in blocks for v in r[:2] if 0 < v < width])
+    ys = lines(depth, [v for r in blocks for v in r[2:] if 0 < v < depth])
+
+    def inside(c, r):
+        return r[0] < c[0] < r[1] and r[2] < c[1] < r[3]
+
+    def volume(c):
+        return None if any(inside(c, r) for r in blocks) else "dielectric"
+
+    def on(c, r):
+        x, y = c[0], c[1]
+        across = min(abs(x - r[0]), abs(x - r[1])) < eps and r[2] - eps < y < r[3] + eps
+        along = min(abs(y - r[2]), abs(y - r[3])) < eps and r[0] - eps < x < r[1] + eps
+        return across or along
+
+    def surface(c):
+        if on(c, a):
+            return "a"
+        if on(c, b):
+            return "b"
+        if abs(c[2]) < eps or abs(c[2] - length) < eps:
+            return "ends"
+        return "box"
+
+    return carve((xs, ys, np.array([0.0, length])), volume, surface)

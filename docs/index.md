@@ -49,6 +49,7 @@ recipes/remesh-and-restart
 :hidden:
 :caption: Solving
 
+recipes/mesh-refinement
 recipes/anisotropic-materials
 recipes/periodic-cell
 recipes/shared-port-surface

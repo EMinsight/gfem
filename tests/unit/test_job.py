@@ -12,6 +12,8 @@ import structured_meshes as sm
 from petsc_recipe import SOLVER_OPTIONS
 
 import gfem
+from gfem._refine import refine_model
+from gfem.mesh import _TOPOLOGY_ARRAYS
 
 DATA = Path(__file__).parent / "data"
 LAYERS = (("oxide", 0.5), ("nitride", 0.25))
@@ -102,7 +104,7 @@ def test_options_default_to_solver_defaults(model, tmp_path):
 def test_job_json_is_versioned_and_hashes_the_mesh(model, mesh_path, tmp_path):
     path = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
     doc = json.loads(path.read_text())
-    assert doc["schema_version"] == 1
+    assert doc["schema_version"] == 2
     assert doc["gfem_version"] == gfem.__version__
     mesh = doc["job"]["model"]["mesh"]
     assert mesh["path"] == "stack.msh"  # next to job.json: stored relative
@@ -137,6 +139,65 @@ def test_a_missing_mesh_file_is_reported(model, mesh_path, tmp_path):
     mesh_path.unlink()
     with pytest.raises(FileNotFoundError, match=r"stack\.msh"):
         gfem.Job.from_json(path)
+
+
+def test_a_mesh_whose_file_is_gone_cannot_be_written(model, mesh_path, tmp_path):
+    mesh_path.unlink()
+    with pytest.raises(ValueError, match=r"its file .*stack\.msh is gone"):
+        gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
+
+
+def _refined(model):
+    mesh = model.mesh
+    marked = np.zeros(len(mesh.tetrahedra), bool)
+    marked[::3] = True
+    return refine_model(model, marked)[0]
+
+
+def _assert_same_topology(a, b):
+    assert a.source is None
+    assert b.source is None
+    assert a.length_unit == b.length_unit
+    assert a.regions == b.regions
+    for name in _TOPOLOGY_ARRAYS:
+        x, y = getattr(a._topology, name), getattr(b._topology, name)
+        assert x.dtype == y.dtype
+        np.testing.assert_array_equal(x, y)
+        assert not y.flags.writeable
+    assert np.asarray(a.nodes).dtype == np.asarray(b.nodes).dtype
+    np.testing.assert_array_equal(a.nodes, b.nodes)
+
+
+def test_a_refined_mesh_round_trips_through_the_sidecar(model, tmp_path):
+    refined = _refined(model)
+    path = gfem.Job(refined, PROBLEM).to_json(tmp_path / "job.json")
+    doc = json.loads(path.read_text())
+    assert doc["schema_version"] == 2
+    assert doc["job"]["model"]["mesh"]["source"] is None
+    with np.load(tmp_path / "job.npz") as npz:
+        assert ".model.mesh.tetrahedra" in npz.files
+        assert ".model.mesh.nodes" not in npz.files
+    back = gfem.Job.from_json(path).model
+    _assert_same_topology(refined.mesh, back.mesh)
+    _assert_same_model(refined, back)
+
+
+def test_a_refined_moved_mesh_round_trips_with_its_nodes(model, tmp_path):
+    refined = _refined(model)
+    nodes = refined.mesh.nodes.at[0, 2].add(1e-8)
+    moved = refined.replace(mesh=gfem.Mesh(nodes, refined.mesh._topology))
+    path = gfem.Job(moved, PROBLEM).to_json(tmp_path / "job.json")
+    with np.load(tmp_path / "job.npz") as npz:
+        assert ".model.mesh.nodes" in npz.files
+    back = gfem.Job.from_json(path).model
+    _assert_same_topology(moved.mesh, back.mesh)
+
+
+def test_a_refined_moved_mesh_is_refined_again_and_round_trips(model, tmp_path):
+    moved = model.replace(mesh=gfem.Mesh(model.mesh.nodes * 1.01, model.mesh._topology))
+    refined = _refined(moved)
+    back = _round_trip(gfem.Job(refined, PROBLEM), tmp_path).model
+    _assert_same_topology(refined.mesh, back.mesh)
 
 
 def test_material_fields_go_to_the_sidecar_by_leaf_path(model, tmp_path):
@@ -368,8 +429,8 @@ def _edit(path, **changes):
 
 def test_newer_schema_is_refused_with_an_upgrade_message(model, tmp_path):
     path = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
-    _edit(path, schema_version=2, gfem_version="9.0.0")
-    with pytest.raises(ValueError, match=r"schema_version 2.*gfem 9\.0\.0.*upgrade"):
+    _edit(path, schema_version=3, gfem_version="9.0.0")
+    with pytest.raises(ValueError, match=r"schema_version 3.*gfem 9\.0\.0.*upgrade"):
         gfem.Job.from_json(path)
 
 
@@ -377,13 +438,19 @@ def test_older_schema_is_migrated(model, tmp_path, monkeypatch):
     path = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
     codec = __import__("gfem._codec", fromlist=["_"])
 
-    def v1_to_v2(doc):
+    def v2_to_v3(doc):
         doc["job"]["options"]["order"] = 1
         return doc
 
-    monkeypatch.setattr(codec, "SCHEMA_VERSION", 2)
-    monkeypatch.setitem(codec.MIGRATIONS, 1, v1_to_v2)
+    monkeypatch.setattr(codec, "SCHEMA_VERSION", 3)
+    monkeypatch.setitem(codec.MIGRATIONS, 2, v2_to_v3)
     assert gfem.Job.from_json(path).options.order == 1
+
+
+def test_a_schema_1_job_still_loads(model, tmp_path):
+    path = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
+    _edit(path, schema_version=1)
+    _assert_same_model(model, gfem.Job.from_json(path).model)
 
 
 @pytest.mark.parametrize(
@@ -461,7 +528,7 @@ def test_run_equals_solve_and_result_round_trips(model, tmp_path):
         np.testing.assert_array_equal(loaded.energy[region], energy)
 
     doc = json.loads((tmp_path / "results" / "result.json").read_text())
-    assert doc["schema_version"] == 1
+    assert doc["schema_version"] == 2
     assert doc["gfem_version"] == gfem.__version__
     assert doc["run"]["device"] == "cpu"
     assert gfem.load_result(tmp_path / "results" / "result.json").terminals == (

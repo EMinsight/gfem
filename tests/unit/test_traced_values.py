@@ -11,6 +11,7 @@ import re
 import jax
 import jax.numpy as jnp
 import pytest
+import refinement_cases as rc
 
 import gfem
 
@@ -54,3 +55,55 @@ def test_the_message_names_the_jax_transformations():
 def test_the_error_is_still_a_value_error():
     with pytest.raises(ValueError, match="frequency"):
         jax.jit(lambda f: gfem.Driven(frequency=f))(1e9)
+
+
+# --- mesh refinement ---------------------------------------------------------
+# `refine_mesh` and `error_estimate` are never differentiated: a traced model
+# leaf (under jax.grad or jax.vmap) and any call inside jax.jit, even on a
+# concrete closed-over model, raise naming the function.
+
+REFINE_OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
+
+
+@pytest.fixture(scope="module")
+def coax(tmp_path_factory):
+    return rc.coax_model(tmp_path_factory.mktemp("coax"), 2)
+
+
+@pytest.fixture(scope="module")
+def refinement_calls(coax):
+    """name -> call(model): each refinement function on ``model``."""
+    result = gfem.solve(coax, rc.COAX_PROBLEM, options=REFINE_OPTIONS)
+    return {
+        "refine_mesh": lambda model: gfem.refine_mesh(
+            model, rc.COAX_PROBLEM, max_cycles=0, options=REFINE_OPTIONS
+        ),
+        "error_estimate": lambda model: gfem.error_estimate(
+            result, gfem.FieldEstimator(), model=model
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", ["refine_mesh", "error_estimate"])
+@pytest.mark.parametrize("transform", ["grad", "vmap", "jit"])
+def test_mesh_refinement_raises_nondifferentiable(
+    coax, refinement_calls, name, transform
+):
+    call = refinement_calls[name]
+    n = len(coax.mesh.elements("dielectric"))
+
+    def objective(x):
+        # a traced leaf: the design is the transformed variable
+        field = gfem.MaterialField(eps_r=x * jnp.ones(n))
+        call(coax.replace(materials={"dielectric": field}))
+        return x
+
+    if transform == "jit":
+        # concrete inputs, but the call is staged: the closure raises
+        wrapped, x = jax.jit(lambda x: (call(coax), x)[1]), 1.0
+    elif transform == "grad":
+        wrapped, x = jax.grad(objective), 1.0
+    else:
+        wrapped, x = jax.vmap(objective), jnp.ones(2)
+    with pytest.raises(gfem.NonDifferentiableError, match=name):
+        wrapped(x)

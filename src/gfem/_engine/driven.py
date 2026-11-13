@@ -64,11 +64,13 @@ every output shape is known before the solve.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import dataclasses
 import functools
 import math
 import warnings
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
 from typing import Any, Literal, NoReturn
 
 import jax
@@ -97,7 +99,7 @@ from gfem._engine.port_network import PortNetwork, resistance, split_cotangent
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_sheet
 from gfem._engine.sweep_outputs import SweepOutputs
-from gfem._engine.system_operator import SystemOperator
+from gfem._engine.system_operator import SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling, wave_port_couplings
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
@@ -125,13 +127,16 @@ from gfem.results import (
 
 __all__ = [
     "DEFAULT_SOLVER",
+    "FORWARD_WARNINGS",
     "LOW_FREQUENCY_FLOOR",
     "PORT_MODE_PROJECTION_FLOOR",
     "DrivenOperator",
     "DrivenRule",
     "Expansion",
+    "check_low_frequency",
     "check_ports_held",
     "driven_operator",
+    "low_frequency_deferred",
     "operator_terms",
     "real_space",
 ]
@@ -515,8 +520,15 @@ class DrivenRule:
         #: `gfem.solve`'s eager path and by a frequency worker, never under
         #: JAX, where no caller reads it.
         self.keeps_partial = False
-        _check_low_frequency(model, problem.frequency, stacklevel=3, comm=comm)
-        _check_skipped_port_modes(model, stacklevel=3, comm=comm)
+        #: Ports whose S functional's adjoint a uniform forward also solves,
+        #: on its own factorization, where the functional is not parallel to
+        #: the port's excitation: set by `gfem.refine_mesh` for an S estimate
+        #: (ADR 0089), never on a differentiated solve.
+        self.adjoint_ports: tuple[str, ...] = ()
+        #: Those adjoints, per (frequency, port), on the unpaired space.
+        self.adjoints: dict[tuple[float, str], np.ndarray] = {}
+        _check_low_frequency(model, problem.frequency, stacklevel=4, comm=comm)
+        _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
     def operator(self, model: Model) -> DrivenOperator:
         """The model's driven operator at its current node positions.
@@ -569,6 +581,7 @@ class DrivenRule:
                 (with `keeps_partial`). An adaptive sweep sets ``frequency``
                 to the sample's.
         """
+        self._check_adjoint_ports(keep=keep)
         if self.adaptive:
             return self._forward_adaptive(model, keep=keep)
         frequencies = self.problem.frequency
@@ -589,11 +602,18 @@ class DrivenRule:
             with system.sweep(solves=len(frequencies)) as sweep:
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
+                    rhs = ports.rhs(omega)
                     try:
-                        x, its = sweep.solve(omega, ports.rhs(omega), x0=previous)
+                        x, its = sweep.solve(omega, rhs, x0=previous)
                     except LinearSolverConvergenceError as err:
                         miss, n_solved = err, n
                         break
+                    if self.adjoint_ports:
+                        try:
+                            self._solve_adjoints(sweep, system, ports, f, rhs)
+                        except LinearSolverConvergenceError:
+                            system.free()
+                            raise
                     iterations.append(its)
                     previous = x
                     if keep:
@@ -627,6 +647,74 @@ class DrivenRule:
                 fields={"solution": np.concatenate(solutions, axis=1)},
             )
         return out.outputs(), entry
+
+    def solve_adjoints(self, model: Model) -> dict[tuple[float, str], np.ndarray]:
+        """`adjoints` of `adjoint_ports` at every frequency, without the forward.
+
+        For `gfem.error_estimate` on a finished result. Each frequency where
+        some port's functional is not parallel to its excitation is
+        factorized once; the others are not factorized at all.
+        """
+        self._check_adjoint_ports(keep=False)
+        with task_manager(self.options.threads, self.comm):
+            system, ports = self._ports(model, warn=False)
+            try:
+                with system.sweep(solves=len(self.problem.frequency)) as sweep:
+                    for f in self.problem.frequency:
+                        rhs = ports.rhs(2 * math.pi * f)
+                        self._solve_adjoints(sweep, system, ports, f, rhs)
+            finally:
+                system.free()
+        return self.adjoints
+
+    def _check_adjoint_ports(self, *, keep: bool) -> None:
+        """Raise if `adjoint_ports` reach a forward that would not solve them.
+
+        Only a uniform sweep on one worker, never differentiated, adds the
+        adjoint columns (`gfem.refine_mesh` asks for no other).
+        """
+        if not self.adjoint_ports:
+            return
+        workers_run = min(self.options.frequency_workers, len(self.problem.frequency))
+        where = None
+        if keep:
+            where = "a differentiated solve"
+        elif self.adaptive:
+            where = "an adaptive sweep"
+        elif workers_run > 1:
+            where = "frequency workers"
+        if where is not None:
+            raise RuntimeError(
+                f"adjoint_ports {self.adjoint_ports} reached {where}: only an "
+                "undifferentiated uniform sweep on one worker solves them."
+            )
+
+    def _solve_adjoints(
+        self,
+        sweep: SystemSweep,
+        system: SystemOperator,
+        ports: PortNetwork,
+        f: float,
+        rhs: np.ndarray,
+    ) -> None:
+        """Solve the non-parallel `adjoint_ports` at ``f`` on the sweep's handle.
+
+        The handle at ``f`` is the forward's if the sweep is there already
+        (one more back-substitution), else prepared here.
+        """
+        omega = 2 * math.pi * f
+        indices = [self.port_names.index(name) for name in self.adjoint_ports]
+        solved, loads = ports.nonparallel(omega, indices, rhs)
+        if not solved:
+            return
+        try:
+            z, _ = sweep.reuse_at(omega).solve_counted(loads)
+        except LinearSolverConvergenceError as err:
+            names = ", ".join(repr(self.port_names[i]) for i in solved)
+            raise _estimate_adjoint_error(f, names, err) from err
+        z = system.operator.expand(z)
+        for k, i in enumerate(solved):
+            self.adjoints[f, self.port_names[i]] = np.array(z[:, k], complex)
 
     def _forward_workers(
         self, model: Model, *, keep: bool
@@ -764,7 +852,7 @@ class DrivenRule:
             layout=op.layout or ONE_PROCESS,
         )
         if warn:
-            _check_port_mode_projection(couplings, stacklevel=4, comm=self.comm)
+            _check_port_mode_projection(couplings, stacklevel=5, comm=self.comm)
         transposed = None
         if self.problem.wave_vector is not None:
             # A(k)^T = A(-k): the adjoint solves' operator
@@ -1401,19 +1489,55 @@ def check_ports_held(model: Model) -> None:
                 )
 
 
+#: Whether driven solves skip `_check_low_frequency` (`low_frequency_deferred`).
+_LOW_FREQUENCY_DEFERRED = contextvars.ContextVar(
+    "low_frequency_deferred", default=False
+)
+
+
+@contextlib.contextmanager
+def low_frequency_deferred() -> Generator[None]:
+    """Skip the low-frequency check of the driven solves in this context.
+
+    Mesh refinement solves on a new mesh each cycle and checks the floor once,
+    on the mesh it returns (ADR 0088), with `check_low_frequency`.
+    """
+    token = _LOW_FREQUENCY_DEFERRED.set(True)
+    try:
+        yield
+    finally:
+        _LOW_FREQUENCY_DEFERRED.reset(token)
+
+
+def check_low_frequency(
+    model: Model, frequencies: tuple[float, ...], *, stacklevel: int
+) -> None:
+    """`_check_low_frequency` on one process, for a deferred check."""
+    _check_low_frequency(model, frequencies, stacklevel=stacklevel + 1, force=True)
+
+
 def _check_low_frequency(
-    model: Model, frequencies: tuple[float, ...], *, stacklevel: int, comm: Any = None
+    model: Model,
+    frequencies: tuple[float, ...],
+    *,
+    stacklevel: int,
+    comm: Any = None,
+    force: bool = False,
 ) -> None:
     """Warn once if a frequency is below the mesh's low-frequency floor.
 
     h_min is the shortest edge of the solve domain on the imported nodes,
     so the message is the same at every step of a shape optimization.
+    Skipped inside `low_frequency_deferred` unless ``force``.
 
     Args:
         model: The model, its solve domain and its mesh.
         frequencies: The output frequencies (Hz).
         stacklevel: Passed on to `warnings.warn`, counted from the caller.
+        force: Check inside `low_frequency_deferred` too.
     """
+    if _LOW_FREQUENCY_DEFERRED.get() and not force:
+        return
     active = model._domain.active  # noqa: SLF001
     h_min = float(_shortest_edges(model.mesh)[active].min())
     f = np.asarray(frequencies)
@@ -1519,6 +1643,16 @@ def _check_port_mode_projection(
         _mpi.warn(comm, msg, PortModeProjectionWarning, stacklevel=stacklevel + 1)
 
 
+#: The warnings a driven solve gives about its model and ports, whatever
+#: it solves: a second solve of the same sweep (a frequency worker, an
+#: estimate's adjoint) ignores them, since the first already gave them.
+FORWARD_WARNINGS = (
+    LowFrequencyWarning,
+    SkippedPortModeWarning,
+    PortModeProjectionWarning,
+)
+
+
 def _solve_block(
     aux: Any, children: Any, problem: Driven, options: SolverOptions, keep: bool
 ) -> tuple[SweepOutputs, np.ndarray | None, str | None]:
@@ -1534,11 +1668,7 @@ def _solve_block(
     model = workers.model_from_parts(aux, children)
     with warnings.catch_warnings():
         # the parent's rule already warned for the whole sweep
-        for category in (
-            LowFrequencyWarning,
-            SkippedPortModeWarning,
-            PortModeProjectionWarning,
-        ):
+        for category in FORWARD_WARNINGS:
             warnings.simplefilter("ignore", category)
         rule = DrivenRule(model, problem, options)
         rule.keeps_partial = True
@@ -1582,6 +1712,21 @@ def _adjoint_error(
     """
     return LinearSolverConvergenceError(
         f"At {f:g} Hz, the adjoint solve of the gradient's backward pass: {err}",
+        frequency=f,
+    )
+
+
+def _estimate_adjoint_error(
+    f: float, ports: str, err: LinearSolverConvergenceError
+) -> LinearSolverConvergenceError:
+    """An S error estimate's error where its adjoint solve at ``f`` Hz did not converge.
+
+    The forward solve converged there; no partial result, since the estimate
+    needs the adjoint at every frequency.
+    """
+    return LinearSolverConvergenceError(
+        f"At {f:g} Hz, the adjoint solve of port {ports}'s S read-out for the "
+        f"S error estimate: {err}",
         frequency=f,
     )
 

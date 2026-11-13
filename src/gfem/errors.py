@@ -162,6 +162,40 @@ class DistributedUnsupportedError(NotImplementedError):
         return self.message
 
 
+class MeshRefinementUnsupportedError(NotImplementedError):
+    """`gfem.refine_mesh` or `gfem.error_estimate` has no path for this problem.
+
+    Raised before any solve, so a script can catch it and go on.
+
+    Attributes:
+        feature: What has no path: ``"adaptive sweep"``, ``"port mode"``,
+            ``"periodic"``, ``"bloch"``, or an estimator or problem type that
+            this version of gfem cannot estimate yet.
+    """
+
+    def __init__(self, feature: str, message: str) -> None:
+        """Store the key and the message, which gives the remedy."""
+        super().__init__(feature, message)
+        self.feature = feature
+        self.message = message
+
+    def __str__(self) -> str:
+        """The message, without the key."""
+        return self.message
+
+
+class MeshRefinementNotConvergedWarning(UserWarning):
+    """Mesh refinement stopped before its error estimate met the tolerance.
+
+    It fires when `gfem.refine_mesh` stops on ``max_cycles``, on
+    ``max_tetrahedra`` or on a solve that failed, with the last error
+    estimate above ``tolerance``. The record is still returned: it holds the
+    last solved model, its result and its estimate, and ``converged`` is
+    False. Raise the cap, loosen ``tolerance``, or start from a finer mesh.
+    Filter it with Python's `warnings` module.
+    """
+
+
 class SolverUnavailableError(RuntimeError):
     """``SolverOptions`` names PETSc or SLEPc, which this Python cannot use.
 

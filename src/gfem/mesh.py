@@ -339,7 +339,7 @@ class Mesh:
 
     @property
     def imported_nodes(self) -> np.ndarray:
-        """Node coordinates (m) as imported, kept when the nodes move."""
+        """Node coordinates (m) as imported or refined, kept when the nodes move."""
         return self._topology.imported_nodes
 
     @property

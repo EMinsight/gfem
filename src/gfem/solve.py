@@ -121,6 +121,26 @@ def solve(
             ``result`` holds the frequencies it solved, ``unsolved`` the
             rest.
     """
+    return _solve(model, problem, options=options, comm=comm)[0]
+
+
+def _solve(
+    model: Model,
+    problem: Any,
+    *,
+    options: SolverOptions | None = None,
+    comm: Any = None,
+    adjoint_ports: tuple[str, ...] = (),
+) -> tuple[Any, dict[tuple[float, str], Any] | None]:
+    """`solve`, and the S-functional adjoints of ``adjoint_ports`` with it.
+
+    ``gfem.refine_mesh`` asks for the adjoints of an S estimate's port
+    (ADR 0089): extra right-hand sides on the forward's factorization
+    (`gfem._engine.driven.DrivenRule.adjoint_ports`), a driven problem
+    only. Returns the result, and those adjoints per (frequency, port), or
+    ``None`` without ``adjoint_ports``. Warnings point at the caller of
+    `solve`, one frame above this one.
+    """
     if not isinstance(model, Model):
         raise TypeError(f"solve needs a gfem.Model, got {type(model).__name__}.")
     if options is None:
@@ -143,15 +163,17 @@ def solve(
             # the rule reads inputs the entry check has just found equal
             _mpi.agreed(err)
             raise
+    if adjoint_ports:
+        rule.adjoint_ports = adjoint_ports
     if is_traced((model, problem)):
-        return rule.result(solve_vjp(rule, model, problem))
+        return rule.result(solve_vjp(rule, model, problem)), None
     # A moved mesh must keep its periodic pairs and stay valid on the solve
     # domain.
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
     _check_quality(
         model.mesh,
         model._domain.active,  # noqa: SLF001
-        stacklevel=3,
+        stacklevel=4,
         comm=resolved,
     )
     # a uniform sweep's partial result, built here: never in a JAX callback
@@ -165,7 +187,8 @@ def solve(
         if partial_result is not None:
             err.result = partial_result(err)
         raise
-    return rule.result(outputs)
+    adjoints = rule.adjoints if adjoint_ports else None
+    return rule.result(outputs), adjoints
 
 
 def _rule_class(problem: Any) -> type:
