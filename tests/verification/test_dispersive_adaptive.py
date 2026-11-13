@@ -60,7 +60,9 @@ def _mesh(directory, block):
             return "side"
         return ""  # interior faces
 
-    path = sm.write_msh22(directory / "patch.msh", sm.structured(edges, volume, surface))
+    path = sm.write_msh22(
+        directory / "patch.msh", sm.structured(edges, volume, surface)
+    )
     return gfem.Mesh.from_gmsh(path, length_unit="mm")
 
 

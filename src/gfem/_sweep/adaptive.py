@@ -284,22 +284,7 @@ def adaptive_sweep(
         guess = None
         if model.size:
             guess = model.basis @ model.coordinates(omega)
-        rhs = system.rhs(omega)
-        width = rhs.shape[1]
-        loads = None
-        if system.adjoint_loads is not None:
-            loads = np.asarray(system.adjoint_loads(omega))
-        if loads is not None and loads.shape[1]:
-            # one solve: the loads are extra columns, from a zero guess
-            x0 = None
-            if guess is not None:
-                x0 = np.concatenate([guess, np.zeros(loads.shape, complex)], axis=1)
-            both = np.asarray(
-                system.solve(omega, np.concatenate([rhs, loads], axis=1), x0)
-            )
-            x, duals = both[:, :width], both[:, width:]
-        else:
-            x, duals = np.asarray(system.solve(omega, rhs, guess)), None
+        x, duals = _solve_sample(system, omega, guess)
         error = math.inf
         if measure and guess is not None:
             error = _error(x, guess)
@@ -359,6 +344,25 @@ def adaptive_sweep(
         coordinates=coordinates,
         outputs=outputs,
     )
+
+
+def _solve_sample(
+    system: AffineSystem, omega: float, guess: np.ndarray | None
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """The full solution at ``omega`` from ``guess``, and the adjoint loads' duals."""
+    rhs = system.rhs(omega)
+    width = rhs.shape[1]
+    loads = None
+    if system.adjoint_loads is not None:
+        loads = np.asarray(system.adjoint_loads(omega))
+    if loads is None or not loads.shape[1]:
+        return np.asarray(system.solve(omega, rhs, guess)), None
+    # one solve: the loads are extra columns, from a zero guess
+    x0 = None
+    if guess is not None:
+        x0 = np.concatenate([guess, np.zeros(loads.shape, complex)], axis=1)
+    both = np.asarray(system.solve(omega, np.concatenate([rhs, loads], axis=1), x0))
+    return both[:, :width], both[:, width:]
 
 
 def _error(x: np.ndarray, guess: np.ndarray) -> float:

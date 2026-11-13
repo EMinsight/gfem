@@ -1,11 +1,12 @@
-"""Gradients by a permittivity law's parameters on the driven sweep (ADR 0112).
+"""Gradients by a permittivity law's parameters on the driven sweep (ADRs 0112, 0116).
 
 The law pass weighs each law piece's form with d theta / dp at each pair's
 frequency. The finite-difference cells are in the gradient matrix
 (tests/verification/test_gradient_matrix.py, input ``"law"``); here: the
 hand-written d eps / dp against the law's own JAX derivative, the host
-re-check of a law built under a transformation, and the combinations that
-still raise by name.
+re-check of a law built under a transformation, the adaptive sweep at its
+samples against the full solve, and the combinations that still raise by
+name.
 
 The line is a 10 x 2 x 1 mm parallel-plate line with lumped ports at both
 ends; its 2 mm "core" (x in [4, 6]) holds the law.
@@ -132,17 +133,36 @@ def test_a_traced_law_is_refused_by_refinement(mesh):
         jax.grad(refined_mesh)(2.0)
 
 
-# --- still raising by name ----------------------------------------------------------
+# --- the adaptive sweep (ADR 0116) ----------------------------------------------------
 
 
-def test_law_parameters_raise_on_the_adaptive_sweep(mesh):
-    problem = gfem.Driven(
+def test_law_parameters_on_the_adaptive_sweep_equal_the_full_solve_at_the_samples(
+    mesh,
+):
+    # the frozen-basis backward builds one pair set per law key; at a sample
+    # the full solution lies in the basis, so the gradient is the full one
+    samples = [5 * GHZ, 9 * GHZ, 7 * GHZ]
+    adaptive = gfem.Driven(
         frequency=np.linspace(5 * GHZ, 9 * GHZ, 5).tolist(),
         sweep="adaptive",
-        samples=[5 * GHZ, 9 * GHZ, 7 * GHZ],
+        samples=samples,
     )
-    with pytest.raises(gfem.NonDifferentiableError, match="adaptive"):
-        jax.grad(_s21(mesh, problem))(LAW)
+
+    def objective(problem, rows):
+        def at_rows(law):
+            result = gfem.solve(_line(mesh, law), problem, options=OPTIONS)
+            return jnp.sum(jnp.abs(result.s.values[jnp.asarray(rows), 1, 0]) ** 2)
+
+        return at_rows
+
+    got = jax.grad(objective(adaptive, [0, 4, 2]))(LAW)
+    want = jax.grad(objective(gfem.Driven(frequency=samples), [0, 1, 2]))(LAW)
+    got, want = (np.asarray(jax.tree.leaves(g), dtype=float) for g in (got, want))
+    assert np.all(want != 0)
+    np.testing.assert_allclose(got, want, rtol=1e-7)
+
+
+# --- still raising by name ----------------------------------------------------------
 
 
 def test_law_parameters_raise_on_the_eigenmode_problem(mesh):

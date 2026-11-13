@@ -241,6 +241,33 @@ EXPECTED |= {
     )
     for kind in [("nodes",)] + [("material", "dielectric", p) for p in ALL_PROPERTIES]
 }
+# The law line on the adaptive sweep (ADR 0116): the law's leaves
+# differentiate S and the kept fields' reduced coordinates, like the host's
+# material; the frozen basis raises; the other inputs as `driven_adaptive`.
+EXPECTED |= {
+    ("driven_law_adaptive", out, kind): (
+        EXPECTED[("driven_adaptive", out, kind)]
+        if kind[0] != "law"
+        else GRADIENT
+        if out in ("s.values", "e_fields.coordinates")
+        else RAISES
+        if out == "e_fields.basis"
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        "e_fields.basis",
+        "e_fields.coordinates",
+        "e_fields.omega",
+        "e_fields.mesh.nodes",
+    )
+    for kind in [
+        ("nodes",),
+        *(("material", "dielectric", p) for p in ALL_PROPERTIES),
+        *LAW_KINDS,
+    ]
+}
 
 # Wave ports (design region "core" away from the port faces): S
 # differentiates like the lumped-port line's, in the materials and the node
@@ -617,6 +644,7 @@ def law_cases(tmp_path_factory):
     return {
         "driven_law": (model, problem),
         "driven_law_absorbing": (absorbing, problem),
+        "driven_law_adaptive": (model, ADAPTIVE),
     }
 
 

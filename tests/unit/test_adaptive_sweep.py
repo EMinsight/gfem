@@ -207,9 +207,7 @@ def test_seeds_are_solved_right_after_the_endpoints_then_the_greedy_resumes():
     # the seeds are measured like any greedy sample
     assert all(np.isfinite(sweep.errors[2:]))
     assert sweep.converged
-    np.testing.assert_allclose(
-        sweep.outputs[60], exact(GRID[60])[1], atol=1e-6, rtol=0
-    )
+    np.testing.assert_allclose(sweep.outputs[60], exact(GRID[60])[1], atol=1e-6, rtol=0)
 
 
 def test_frozen_samples_ignore_the_seeds():
