@@ -7,16 +7,24 @@ complex symmetric) stands in for the eigen operator: its eigenpairs are
 run out of applies, the identity.
 """
 
+import functools
 import math
 from types import SimpleNamespace
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
+from eigen_cases import EPS, line_mesh, shunt_mesh
+from finite_differences import derivative
 
 import gfem
 from gfem._eigen.adjoint import deflated_solve, polish
+from gfem._eigen.kept import KeptOperator
 from gfem._eigen.refine import Refined
 from gfem._eigen.rule import EigenmodeRule, GapSet, isolated
+from gfem._engine import cache
+from gfem._linalg import direct
 from gfem.errors import EigenmodeConvergenceError, LinearSolverConvergenceError
 
 
@@ -182,3 +190,114 @@ def test_a_polish_that_fails_keeps_the_unpolished_mode_and_marks_it():
     # a failed polish's gap of 0 is out of reach
     reach = isolated(np.array([0, 1]), np.zeros(2, bool), np.array([0.0, 0.1]), 1e-6)
     np.testing.assert_array_equal(reach, [False, True])
+
+
+# --- the mode-field backward (ADR 0102) ------------------------------------------
+
+
+class _Defective(Stub):
+    """A stub whose ``T'(k)`` is the identity: ``x^T T' x = x^T x``."""
+
+    def derivative(self, k, x):  # noqa: ARG002
+        return x
+
+
+def test_defective_mode_raises_on_a_stub_entry():
+    # x = (1, i, 0, ...) has x^T x = 0: its left and right eigenvectors are
+    # orthogonal, the adjoint system has no solution (a lossy exceptional
+    # point), whatever the mode's gap
+    n = 6
+    stub = _Defective(np.arange(1.0, n + 1), shift=1.5)
+    x = np.zeros((n, 1), dtype=complex)
+    x[:2, 0] = (1.0, 1j)
+    entry = cache.Entry(
+        "em",
+        handle=KeptOperator(stub),
+        fields={
+            "x": x,
+            "k": np.array([1.0 + 0.1j]),
+            "cluster": np.array([0]),
+            "gram": np.zeros((1, 1), complex),
+            "incomplete": np.zeros(1, bool),
+            "gap": np.array([math.inf]),
+            "polish_failed": np.zeros(1, bool),
+        },
+    )
+    rule = EigenmodeRule.__new__(EigenmodeRule)
+    rule.options = gfem.SolverOptions()
+    rule.problem = gfem.Eigenmode(target=1e9)
+    op = SimpleNamespace(built=SimpleNamespace(scale=1e-3))
+    with pytest.raises(gfem.DegenerateModeError, match=r"mode.s. 0 .*defective"):
+        rule._field_pairs(None, entry, {"bulk": np.ones((1, 1))}, op, None)
+
+
+@pytest.fixture(scope="module")
+def line_mesh_dir(tmp_path_factory):
+    return line_mesh(tmp_path_factory.mktemp("line"))
+
+
+def _terminated_field(mesh, eps):
+    return gfem.Model(
+        mesh,
+        materials={"dielectric": gfem.MaterialField(eps_r=eps)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z", impedance=1000.0),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=1000.0, inductance=1e-9),
+        ],
+    )
+
+
+def test_sparsecholesky_backward_matches_pardiso(line_mesh_dir, monkeypatch):
+    # NGSolve's sparse Cholesky (LDL^T) as the shift's factorization without
+    # MKL: the forward polish and the adjoint iterate on its factors, and the
+    # gradient of the ratios agrees with differences as on PARDISO's
+    monkeypatch.setattr(direct, "pardiso_inverse", lambda *_, **__: None)
+    mesh = line_mesh_dir
+    n = len(mesh.elements("dielectric"))
+    eps = jnp.asarray(np.linspace(3.5, 4.5, n))
+    options = gfem.SolverOptions(eigen_tolerance=1e-13)
+
+    def objective(e):
+        result = gfem.solve(
+            _terminated_field(mesh, e), gfem.Eigenmode(target=8e9), options=options
+        )
+        return (
+            2.0 / result.q_port["p1"][0]
+            + result.participation["p2"][0]
+            + result.bulk_participation["dielectric"][0]
+        )
+
+    d = np.random.default_rng(4).standard_normal(n)
+    d /= np.linalg.norm(d)
+    along = float(np.asarray(jax.grad(objective)(eps)) @ d)
+    assert along != 0
+    np.testing.assert_allclose(along, derivative(objective, eps, d, 1e-2), rtol=1e-6)
+
+
+def test_capacitive_sheet_refuses_mode_field_gradients(tmp_path):
+    # the sheet's share of the mode energy has no gradient yet: a mode-field
+    # cotangent raises while tracing; the eigenfrequencies keep theirs
+    mesh = shunt_mesh(tmp_path)
+
+    def objective(e, read):
+        model = gfem.Model(
+            mesh,
+            materials={
+                "left": gfem.MaterialField(eps_r=e),
+                "right": gfem.Material(eps_r=EPS),
+            },
+            boundaries=[
+                gfem.PEC("bottom"),
+                gfem.PEC("top"),
+                gfem.Impedance("sheet", inductance=1e-9, capacitance=1e-15),
+            ],
+        )
+        return read(gfem.solve(model, gfem.Eigenmode(target=8e9)))
+
+    eps = jnp.full(len(mesh.elements("left")), EPS)
+    bulk = functools.partial(objective, read=lambda r: r.bulk_participation["left"][0])
+    with pytest.raises(gfem.NonDifferentiableError, match="capacitive Impedance"):
+        jax.make_jaxpr(jax.grad(bulk))(eps)
+    omega = functools.partial(objective, read=lambda r: jnp.real(r.omega[0]) * 1e-9)
+    jax.make_jaxpr(jax.grad(omega))(eps)

@@ -192,7 +192,8 @@ def test_eigen_refactorizations_never_reuse_factors(mesh, monkeypatch):
         return X, its
 
     monkeypatch.setattr(DirectHandle, "_inverse_map", counted)
-    _, _, entry = _kept(terminated_line(mesh, 1000.0), linear_solver="direct")
+    model = terminated_line(mesh, 1000.0)
+    rule, _, entry = _kept(model, linear_solver="direct")
     eop = entry.handle.operator
     handle = eop.handle
     assert isinstance(handle, DirectHandle)
@@ -214,6 +215,10 @@ def test_eigen_refactorizations_never_reuse_factors(mesh, monkeypatch):
     polish(eop, mode, np.inf, index=0)
     eop.reshift(k * (1 + 1e-3))
     deflated_solve(eop, x, None, b, k=k, gap=np.inf, mode=0)
+    # and the mode-field backward's adjoint solve
+    solves = len(counts)
+    assert rule.backward(model, entry, {"q_port": np.ones((2, 1))})
+    assert len(counts) > solves
     assert len(counts) > forward + 4
     assert all(c == ((), False) for c in counts)
     entry.free()
@@ -330,3 +335,35 @@ def test_driven_memo_rebuilds_on_a_new_discretization(mesh):
     rebuilt = rule.driven(model)
     assert rebuilt is not op
     assert rebuilt.built is cache.discretization(model.mesh, model._periodic).built
+
+
+def test_mode_field_backward_without_the_operator_prepares_and_frees_one(mesh):
+    # an entry over retain_memory keeps its fields only: the mode-field
+    # backward prepares the eigen operator at k (1 + 1e-3) from its own
+    # driven operator, solves on it, and frees it; the adjoint is the same
+    model = terminated_line(mesh, 1000.0)
+    rule, _, entry = _kept(model)
+    cotangents = {"q_port": np.array([[1.0], [0.5]]), "bulk": np.ones((1, 1))}
+    kept = rule.backward(model, entry, cotangents)
+    entry.handle.free()
+    built = []
+    make = rule.operator
+
+    def operator(op, sigma):
+        eop = make(op, sigma)
+        built.append((eop, sigma))
+        return eop
+
+    rule.operator = operator
+    own = rule.backward(model, entry, cotangents)
+    ((eop, sigma),) = built
+    k = complex(entry.fields["k"][0])
+    assert sigma == pytest.approx(k * (1 + 1e-3), rel=1e-15)
+    assert eop._handle is None  # freed at the end of the backward
+    assert len(own) == len(kept) == 2  # (2 lam, x) and the energy pair
+    for a, b in zip(own, kept, strict=True):
+        np.testing.assert_allclose(
+            a.left, b.left, rtol=1e-7, atol=1e-7 * abs(b.left).max()
+        )
+        assert a.weights.keys() == b.weights.keys()
+    entry.free()

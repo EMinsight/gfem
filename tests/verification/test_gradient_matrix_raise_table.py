@@ -26,7 +26,14 @@ import numpy as np
 import periodic_cases as pc
 import pytest
 import structured_meshes as sm
-from gradient_cases import HYBRID_PORTS, hybrid_line, hybrid_mesh
+from gradient_cases import (
+    HYBRID_PORTS,
+    MIRRORED_TARGET,
+    hybrid_line,
+    hybrid_mesh,
+    mirrored_cavity,
+    split_cavity,
+)
 
 import gfem
 from gfem._adjoint import solve_vjp
@@ -229,16 +236,26 @@ EXPECTED |= {
 }
 
 # Eigenmode: the eigenvalues (omega, also as each mode field's omega)
-# differentiate with respect to every electromagnetic property and the node
-# coordinates; quantities of the mode fields (backward error, port Q,
-# participations, the fields) raise for the inputs the forms read. The
+# differentiate with respect to every electromagnetic property, the node
+# coordinates and the lumped values. The ratios of the mode fields (port Q,
+# participations, region and principal shares) differentiate with respect to
+# the electromagnetic properties and sheet fills (ADR 0102); with respect to
+# the node coordinates and the lumped values they raise in this version, as
+# do the normalized mode fields themselves and the backward error. The
 # cluster labels are integers: exact zeros. The mode fields' mesh is the
-# input mesh passed through (identity in the nodes, constant otherwise).
+# input mesh passed through (identity in the nodes, constant otherwise). A
+# periodic model's mode-field outputs raise whatever the input.
 _EIGEN_DEPENDENT = ("omega", "e_fields.0.omega")
 _EIGEN_CONSTANT = ("cluster", "e_fields.0.mesh.nodes")
+_EIGEN_RATIOS = (
+    "q_port.",
+    "participation.",
+    "bulk_participation.",
+    "principal_participation.",
+)
 
 
-def _eigen_outcome(out, kind):
+def _eigen_outcome(out, kind, *, periodic=False):
     if kind == ("nodes",):
         if out == "cluster":
             return ZERO
@@ -248,9 +265,18 @@ def _eigen_outcome(out, kind):
         out in _EIGEN_CONSTANT
     ):
         return ZERO
-    return GRADIENT if out in _EIGEN_DEPENDENT else RAISES
+    if out in _EIGEN_DEPENDENT:
+        return GRADIENT
+    ratio = out.startswith(_EIGEN_RATIOS)
+    lumped = kind[0] in ("port", "boundary") and kind[2:] != ("fill", "fill")
+    return GRADIENT if ratio and not periodic and not lumped else RAISES
 
 
+EIGEN_KINDS = [
+    ("nodes",),
+    *(("material", "dielectric", p) for p in ALL_PROPERTIES),
+    ("port", 0, "inductance"),
+]
 EXPECTED |= {
     ("eigenmode", out, kind): _eigen_outcome(out, kind)
     for out in (
@@ -258,20 +284,21 @@ EXPECTED |= {
         "error",
         "q_port.p1",
         "q_port.p2",
+        "participation.p1",
         "bulk_participation.dielectric",
         "cluster",
         *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
     )
-    for kind in [("nodes",)] + [("material", "dielectric", p) for p in ALL_PROPERTIES]
+    for kind in EIGEN_KINDS
 }
 # The result carries the model's materials as solved (for measurements): each
 # leaf is its input passed through (identity), a constant in the nodes.
 EXPECTED |= {
     ("eigenmode", f"materials.dielectric.{out}", kind): (
-        ZERO if kind == ("nodes",) else GRADIENT if kind[2] == out else ZERO
+        GRADIENT if kind[0] == "material" and kind[2] == out else ZERO
     )
     for out in ALL_PROPERTIES
-    for kind in [("nodes",)] + [("material", "dielectric", p) for p in ALL_PROPERTIES]
+    for kind in EIGEN_KINDS
 }
 
 # Eigenmode on a periodic model (the C3 Bragg line, plain at Γ and Bloch at
@@ -290,7 +317,7 @@ EXPECTED |= {
             else ZERO
         )
         if out.startswith("materials.low.")
-        else _eigen_outcome(out, kind)
+        else _eigen_outcome(out, kind, periodic=True)
     )
     for problem in ("eigenmode_periodic_plain", "eigenmode_periodic_bloch")
     for out in (
@@ -474,12 +501,13 @@ def eigen_model(tmp_path_factory):
     path = tmp_path_factory.mktemp("resonator") / "line.msh"
     sm.write_msh22(path, sm.strip_line(4.0, 2.0, 1.0, (4, 1, 1)))
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    # p1 also holds an inductance: a participation, and a lumped value
     return gfem.Model(
         mesh,
         materials={"dielectric": _field(mesh, "dielectric", conductivity=1e-3)},
         boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
         ports=[
-            gfem.LumpedPort("p1", "port1", "+z", impedance=1000.0),
+            gfem.LumpedPort("p1", "port1", "+z", resistance=1000.0, inductance=1e-9),
             gfem.LumpedPort("p2", "port2", "+z", impedance=1000.0),
         ],
     )
@@ -1152,6 +1180,160 @@ def _out_bloch_eigenmode_on_bddc(request):
     gfem.solve(model, _bloch_eigenmode(k), options=options)
 
 
+# --- eigenmode mode-field rows (ADR 0102) ---------------------------------------------
+
+
+def _eigen_ratio_objective(model, problem, options, read):
+    """``read(result)`` as a function of the dielectric's permittivity."""
+    eps = model.materials["dielectric"].eps_r
+
+    def objective(e):
+        m = model.with_material(
+            "dielectric", dataclasses.replace(model.materials["dielectric"], eps_r=e)
+        )
+        return read(gfem.solve(m, problem, options=options))
+
+    return objective, eps
+
+
+def _trace_eigen_q_port(request, **options):
+    # the static refusals: raised while tracing, before any host work
+    model = request.getfixturevalue("eigen_model")
+    objective, eps = _eigen_ratio_objective(
+        model,
+        gfem.Eigenmode(target=17e9),
+        gfem.SolverOptions(**options),
+        lambda r: jnp.sum(r.q_port["p1"]),
+    )
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_eigenmode_error(request):
+    model = request.getfixturevalue("eigen_model")
+    objective, eps = _eigen_ratio_objective(
+        model,
+        gfem.Eigenmode(target=17e9),
+        gfem.SolverOptions(),
+        lambda r: jnp.sum(r.error),
+    )
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_eigenmode_field_bddc(request):
+    _trace_eigen_q_port(request, linear_solver="bddc_gmres")
+
+
+def _out_eigenmode_field_petsc(request):
+    # the rule resolves the PETSc linear solver before tracing: without a
+    # usable PETSc stack that is the error, not the refusal
+    from gfem import _petsc
+
+    try:
+        _petsc.require_petsc("linear_solver")
+    except gfem.SolverUnavailableError as err:
+        pytest.skip(str(err))
+    _trace_eigen_q_port(request, linear_solver="petsc")
+
+
+def _out_eigenmode_field_cuda(request):
+    # the GPU is first used by the forward, which the trace does not run
+    _trace_eigen_q_port(request, device="cuda")
+
+
+def _out_eigenmode_field_tolerance(request):
+    _trace_eigen_q_port(request, eigen_tolerance=1e-8)
+
+
+def _out_eigenmode_field_nodes(request):
+    # the ratios by the node coordinates: not in this version yet
+    model = request.getfixturevalue("eigen_model")
+    problem = gfem.Eigenmode(target=17e9)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        return jnp.sum(gfem.solve(model.replace(mesh=mesh), problem).q_port["p1"])
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _bragg_bulk(request, problem):
+    model = request.getfixturevalue("bragg_cell")
+    n = len(model.mesh.elements("low"))
+
+    def objective(e):
+        m = model.with_material("low", gfem.MaterialField(eps_r=e))
+        return gfem.solve(m, problem).bulk_participation["low"][0]
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.full(n, pc.C3_EPS_LOW))
+
+
+def _out_eigenmode_field_periodic(request):
+    _bragg_bulk(request, gfem.Eigenmode(target=pc.C3_PLAIN_TARGET))
+
+
+def _out_eigenmode_field_bloch(request):
+    _bragg_bulk(request, _bloch_eigenmode(math.pi / (pc.C3_A * pc.MM)))
+
+
+@pytest.fixture(scope="module")
+def corner_cavity(tmp_path_factory):
+    """The mirrored cavity with a corner region (an energy share)."""
+    return mirrored_cavity(tmp_path_factory.mktemp("corner"), corner=True)
+
+
+def _corner_share(request, *, delta, n_modes, read):
+    mesh = request.getfixturevalue("corner_cavity")
+    problem = gfem.Eigenmode(target=MIRRORED_TARGET, n_modes=n_modes)
+
+    def objective(eps):
+        result = gfem.solve(split_cavity(mesh, eps, delta), problem)
+        return read(result.bulk_participation["corner"])
+
+    jax.grad(objective)(jnp.ones(len(mesh.tetrahedra)))
+
+
+def _out_eigenmode_field_cluster_member(request):
+    # TE101 = TE011 on the mirrored mesh: one mode's share, and their sum
+    # (symmetric in the pair) too, since each member's field is arbitrary
+    with pytest.raises(HOST, match=r"DegenerateModeError.*degenerate cluster"):
+        _corner_share(request, delta=0.0, n_modes=2, read=jnp.sum)
+    _corner_share(request, delta=0.0, n_modes=2, read=lambda share: share[0])
+
+
+def _out_eigenmode_field_cut_cluster(request):
+    _corner_share(request, delta=0.0, n_modes=1, read=lambda share: share[0])
+
+
+def _out_eigenmode_field_near_pair(request):
+    # split to a relative gap of 2.5e-5: outside cluster_rtol, below 1e-4
+    _corner_share(request, delta=1e-4, n_modes=2, read=lambda share: share[0])
+
+
+def _out_eigenmode_q_port_without_voltage(request):
+    # no physical port reads exactly zero voltage on a mode (round-off), so
+    # p2's voltage functional is replaced by zero: its q_port is infinite
+    from gfem._engine import terms
+
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    model = request.getfixturevalue("eigen_model")
+    original = terms.port_vectors
+
+    def deaf(space, built, order, data):
+        b, v = original(space, built, order, data)
+        return (b, np.zeros_like(v)) if data.port.name == "p2" else (b, v)
+
+    monkeypatch.setattr(terms, "port_vectors", deaf)
+    objective, eps = _eigen_ratio_objective(
+        model,
+        gfem.Eigenmode(target=17e9),
+        gfem.SolverOptions(),
+        lambda r: r.q_port["p2"][0],
+    )
+    jax.grad(objective)(eps)
+
+
 # (row, raising call, error, message): DegenerateModeError on one mode of a
 # degenerate eigenmode cluster is in tests/verification/test_gradient_matrix.py.
 HOST = jax.errors.JaxRuntimeError  # a gfem error raised in the backward pass
@@ -1305,6 +1487,79 @@ OUT_OF_SCOPE = [
         _out_bloch_eigenmode_on_bddc,
         ValueError,
         "linear_solver='direct'",
+    ),
+    # eigenmode mode-field outputs (ADR 0102)
+    (
+        "eigenmode backward error",
+        _out_eigenmode_error,
+        gfem.NonDifferentiableError,
+        "'error'",
+    ),
+    (
+        "eigenmode mode-field output x bddc_gmres",
+        _out_eigenmode_field_bddc,
+        gfem.NonDifferentiableError,
+        'linear_solver="bddc_gmres"',
+    ),
+    (
+        "eigenmode mode-field output x petsc",
+        _out_eigenmode_field_petsc,
+        gfem.NonDifferentiableError,
+        'linear_solver="petsc"',
+    ),
+    (
+        "eigenmode mode-field output x cuda",
+        _out_eigenmode_field_cuda,
+        gfem.NonDifferentiableError,
+        'device="cuda"',
+    ),
+    (
+        "eigenmode mode-field output x eigen_tolerance above 1e-10",
+        _out_eigenmode_field_tolerance,
+        gfem.NonDifferentiableError,
+        "eigen_tolerance = 1e-08",
+    ),
+    (
+        "eigenmode mode-field output x plain periodic model",
+        _out_eigenmode_field_periodic,
+        gfem.NonDifferentiableError,
+        "periodic model",
+    ),
+    (
+        "eigenmode mode-field output x Bloch wave vector",
+        _out_eigenmode_field_bloch,
+        gfem.NonDifferentiableError,
+        "Bloch wave vector",
+    ),
+    (
+        "eigenmode participation x node coordinates",
+        _out_eigenmode_field_nodes,
+        gfem.NonDifferentiableError,
+        r"'q_port' with respect to the mesh node coordinates",
+    ),
+    (
+        "eigenmode mode-field output x member of a cluster",
+        _out_eigenmode_field_cluster_member,
+        HOST,
+        "DegenerateModeError.*degenerate cluster",
+    ),
+    (
+        "eigenmode mode-field output x cluster cut by n_modes",
+        _out_eigenmode_field_cut_cluster,
+        HOST,
+        "DegenerateModeError.*n_modes",
+    ),
+    (
+        "eigenmode mode-field output x nearly degenerate mode",
+        _out_eigenmode_field_near_pair,
+        HOST,
+        "DegenerateModeError.*nearly degenerate",
+    ),
+    (
+        "eigenmode q_port of a mode with no voltage on the port",
+        _out_eigenmode_q_port_without_voltage,
+        HOST,
+        r"NonDifferentiableError.*1 / q_port",
     ),
 ]
 

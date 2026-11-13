@@ -52,6 +52,7 @@ __all__ = [
     "assemble",
     "eigen_operator",
     "element_energy",
+    "energy_parts",
     "matvec",
     "principal_energy",
     "projector",
@@ -269,6 +270,102 @@ def element_energy(
         return values.NumPy()
 
     return density
+
+
+class EnergyPart:
+    """One part of the mode energy's volume term: ``int C u . v`` on some elements.
+
+    ``C`` is ``Re(eps_r)`` on the part's tetrahedra (a region's, or one
+    principal axis's ``Re(eps_k) a_k a_k^T`` of an anisotropic region's),
+    zero elsewhere, as `element_energy` and `principal_energy` integrate it.
+
+    Attributes:
+        values: ``C`` per tetrahedron (gfem order), ``(n,)`` or ``(n, 3, 3)``.
+        elements: The part's tetrahedra, one boolean per tetrahedron.
+        axis: The principal axis of an axis's part, else ``None``.
+    """
+
+    def __init__(
+        self,
+        op: DrivenOperator,
+        values: np.ndarray,
+        elements: np.ndarray,
+        axis: int | None = None,
+    ) -> None:
+        self.values = values
+        self.elements = elements
+        self.axis = axis
+        self.coefficient = coefficient(op.built, values)
+        self._op = op
+        self._form: ngs.BilinearForm | None = None
+
+    def apply(self, x: np.ndarray) -> np.ndarray:
+        """``A x`` of the part's form (file units), matrix-free."""
+        space = self._op.space
+        if self._form is None:
+            u, v = space.TnT()
+            form = ngs.BilinearForm(space, symmetric=True, nonassemble=True)
+            form += (self.coefficient * u) * v * quadrature.dx(self._op.order)
+            self._form = form
+        source = ngs.GridFunction(space).vec
+        target = source.CreateVector()
+        source.FV().NumPy()[:] = x
+        self._form.Apply(source, target)
+        return target.FV().NumPy().copy()
+
+
+def energy_parts(
+    model: Model,
+    op: DrivenOperator,
+    regions: tuple[str, ...],
+    anisotropic: tuple[str, ...],
+) -> tuple[list[EnergyPart], list[list[EnergyPart]]]:
+    """The volume energy's parts per region, and per principal axis.
+
+    Returns one `EnergyPart` per region of ``regions`` (they add up to the
+    `element_energy` form on the solve domain), and for each region of
+    ``anisotropic`` its three axis parts (adding up to its region part),
+    the forms of the eigenmode ratios' explicit energy terms
+    (`gfem._engine.sensitivity.energy_term`, ADR 0103).
+    """
+    mesh = model.mesh
+    eps = np.real(element_tensors(model, "eps_r"))
+
+    def members(region: str) -> np.ndarray:
+        inside = np.zeros(len(mesh.tetrahedra), dtype=bool)
+        inside[mesh.elements(region)] = True
+        return inside
+
+    def masked(values: np.ndarray, inside: np.ndarray) -> np.ndarray:
+        shape = (-1,) + (1,) * (values.ndim - 1)
+        return np.where(inside.reshape(shape), values, 0.0)
+
+    parts = [
+        EnergyPart(op, masked(eps, inside), inside)
+        for inside in (members(r) for r in regions)
+    ]
+    axes_parts = []
+    if anisotropic:
+        values, axes = principal_permittivity(model, anisotropic)
+        for region in anisotropic:
+            inside = members(region)
+            axes_parts.append(
+                [
+                    EnergyPart(
+                        op,
+                        masked(
+                            values[:, k, None, None]
+                            * axes[:, k, :, None]
+                            * axes[:, k, None, :],
+                            inside,
+                        ),
+                        inside,
+                        axis=k,
+                    )
+                    for k in range(3)
+                ]
+            )
+    return parts, axes_parts
 
 
 def principal_energy(

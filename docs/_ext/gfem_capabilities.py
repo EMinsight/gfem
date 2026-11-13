@@ -129,6 +129,13 @@ ROWS = {
         recipe="recipes/periodic-cell",
         front=False,
     ),
+    # the ratios of isolated modes (ADR 0102): Capabilities page only
+    "eigenmode_participation": Row(
+        "Eigenmode, participations",
+        "participation ratios and port Q",
+        recipe="recipes/eigenmode-gradient",
+        front=False,
+    ),
 }
 COLUMNS = {
     "eps_r": Row("Permittivity", ""),
@@ -148,6 +155,8 @@ PROBLEMS = {
     "eigenmode_sheet": Problem("eigenmode", "omega"),
     "eigenmode_periodic_plain": Problem("eigenmode_periodic_plain", "omega"),
     "eigenmode_periodic_bloch": Problem("eigenmode_periodic_bloch", "omega"),
+    # cell-only key: the raise table's eigenmode keys answer for its leaves
+    "eigenmode_participation": Problem("eigenmode_participation", "participation"),
     "electrostatic": Problem("electrostatic", "capacitance"),
     "port_mode": Problem("port_mode", "gamma"),
     "port_mode_sheet": Problem("port_mode", "gamma"),
@@ -202,7 +211,13 @@ MATERIAL_PROPERTIES = {
 }
 SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 # OUT_OF_SCOPE rows the grid needs (by their label): the row's cell raises.
-GRID_LABELS = {"electrostatic x sheet fill": ("electrostatic", "fill")}
+GRID_LABELS = {
+    "electrostatic x sheet fill": ("electrostatic", "fill"),
+    "eigenmode participation x node coordinates": (
+        "eigenmode_participation",
+        "nodes",
+    ),
+}
 #: What each raises row asks for, in the site's words, by the test's label (the
 #: match key). A row off the grid with no label here, or a label with no row,
 #: fails the build.
@@ -287,6 +302,45 @@ RAISES_LABELS = {
     ),
     "Bloch eigenmode x bddc_gmres": (
         '`Eigenmode` with a Bloch `wave_vector` on `linear_solver="bddc_gmres"`'
+    ),
+    "eigenmode backward error": (
+        "The backward error of eigenmodes (`EigenmodeResult.error`), with "
+        "respect to anything"
+    ),
+    "eigenmode mode-field output x bddc_gmres": (
+        "Eigenmode participations, port Q and mode fields on "
+        '`linear_solver="bddc_gmres"`'
+    ),
+    "eigenmode mode-field output x petsc": (
+        'Eigenmode participations, port Q and mode fields on `linear_solver="petsc"`'
+    ),
+    "eigenmode mode-field output x cuda": (
+        'Eigenmode participations, port Q and mode fields on a GPU (`device="cuda"`)'
+    ),
+    "eigenmode mode-field output x eigen_tolerance above 1e-10": (
+        "Eigenmode participations, port Q and mode fields solved with "
+        "`eigen_tolerance` above 1e-10"
+    ),
+    "eigenmode mode-field output x plain periodic model": (
+        "Eigenmode participations, port Q and mode fields of a periodic model"
+    ),
+    "eigenmode mode-field output x Bloch wave vector": (
+        "Eigenmode participations, port Q and mode fields at a Bloch wave vector"
+    ),
+    "eigenmode mode-field output x member of a cluster": (
+        "Eigenmode participations, port Q and mode fields of one mode of a "
+        "degenerate cluster, or a sum over it"
+    ),
+    "eigenmode mode-field output x cluster cut by n_modes": (
+        "Eigenmode participations, port Q and mode fields of a mode whose "
+        "cluster `n_modes` cuts"
+    ),
+    "eigenmode mode-field output x nearly degenerate mode": (
+        "Eigenmode participations, port Q and mode fields of a mode within a "
+        "relative gap of 1e-4 of another"
+    ),
+    "eigenmode q_port of a mode with no voltage on the port": (
+        "Port Q of a mode that does not load the port (differentiate `1 / q_port`)"
     ),
 }
 STATUS_TEXT = {"verified": "FD-verified", "zero": "exact zero", "raises": "raises"}

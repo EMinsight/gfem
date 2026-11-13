@@ -24,7 +24,12 @@ pytest ``tmp_path_factory.mktemp`` directory).
 - `resonator_mesh` / `terminated`, `layered_resonator`: line resonators
   terminated in resistors (eigenmode material and shape gradients).
 - `mirrored_cavity`: a square-based PEC box whose mesh has the square's
-  symmetry (an exactly degenerate pair).
+  symmetry (an exactly degenerate pair); with ``corner``, a corner of it is a
+  region of its own (an energy share), and `split_cavity` splits the pair.
+- `junction_mesh` / `junction_line`: fixture J of the quantum-metrics
+  cells, a two-layer line resonator with an inductive lumped port "jj"
+  (participation ratios and their gradients), in its variants.
+- `absorbing_guide`: a shorted guide ended by a second-order absorbing wall.
 """
 
 import math
@@ -556,11 +561,13 @@ MIRRORED = (10.0, 15.0)  # side and depth, mm
 MIRRORED_TARGET = 17e9
 
 
-def mirrored_cavity(directory: Path) -> gfem.Mesh:
+def mirrored_cavity(directory: Path, *, corner: bool = False) -> gfem.Mesh:
     """A square-based PEC box (surface "wall", volume "fill").
 
     Mirrored Kuhn cells: the mesh has the square's symmetry, so the
-    TE101 / TE011 pair is degenerate in the discrete problem too.
+    TE101 / TE011 pair is degenerate in the discrete problem too. With
+    ``corner``, the cells with x < side / 2 and y < side / 4 are the volume
+    "corner" (the mesh is the same).
     """
     side, depth = MIRRORED
     edges = (
@@ -573,5 +580,148 @@ def mirrored_cavity(directory: Path) -> gfem.Mesh:
         on = (c[0], side - c[0], c[1], side - c[1], c[2], depth - c[2])
         return "wall" if min(np.abs(on)) < 1e-9 else ""
 
-    mesh = sm.structured(edges, lambda _: "fill", surface, mirror=(True, True, False))
+    def volume(c):
+        if corner and c[0] < side / 2 and c[1] < side / 4:
+            return "corner"
+        return "fill"
+
+    mesh = sm.structured(edges, volume, surface, mirror=(True, True, False))
     return _mesh(directory, "cavity.msh", mesh)
+
+
+def split_cavity(mesh: gfem.Mesh, eps_r, delta: float) -> gfem.Model:
+    """The corner cavity, its pair split to a relative gap of about delta / 4.
+
+    ``eps_r`` holds one value per tetrahedron of the whole box (mesh order),
+    times ``1 + delta cos(2 pi x / side)``: TE101 and TE011 feel it apart.
+    """
+    side = MIRRORED[0]
+    nodes = np.asarray(mesh.imported_nodes) * 1e3  # mm
+    centroids = nodes[np.asarray(mesh.tetrahedra)].mean(axis=1)
+    pattern = 1.0 + delta * np.cos(2 * math.pi * centroids[:, 0] / side)
+    values = jnp.asarray(eps_r) * pattern
+    return gfem.Model(
+        mesh,
+        materials={
+            region: gfem.MaterialField(eps_r=values[mesh.elements(region)])
+            for region in ("fill", "corner")
+        },
+        boundaries=[gfem.PEC("wall")],
+    )
+
+
+# --- eigenmode: fixture J and the mode-field fixtures ------------------------------
+
+#: Fixture J's target: its mode 3.18 GHz, the next 9.9 GHz.
+JUNCTION_TARGET = 3e9
+#: The junction's inductance (H), and the capacitance of the capacitive
+#: variant (F); the resistive variant's second port (ohm).
+JUNCTION_L, JUNCTION_C, JUNCTION_R = 1e-9, 1e-13, 500.0
+
+
+def junction_mesh(directory: Path) -> gfem.Mesh:
+    """Fixture J's mesh: a 10 x 2 x 1 mm two-layer line, layers sub / cover."""
+    return _mesh(
+        directory,
+        "junction.msh",
+        sm.strip_line(10.0, 2.0, 1.0, (10, 2, 1), layers=LAYERS),
+    )
+
+
+def junction_values(mesh: gfem.Mesh, variant: str = "inductive") -> dict:
+    """Fixture J's material values per region and property.
+
+    Permittivity ramps (3.5 to 4.5) in both layers. ``"lossy"``: ``eps_r (1
+    - 0.02i)``, a conductivity ramp (0.2 to 0.6 S/m) in sub and ``tan_delta``
+    0.01 in cover. ``"principal"``: the ramps times `BIAXIAL` per axis.
+    """
+    values = {r: {"eps_r": ramp(mesh, r, 3.5, 4.5)} for r in ("sub", "cover")}
+    if variant == "lossy":
+        values = {r: {"eps_r": v["eps_r"] * (1 - 0.02j)} for r, v in values.items()}
+        values["sub"]["conductivity"] = ramp(mesh, "sub", 0.2, 0.6)
+        values["cover"]["tan_delta"] = ramp(mesh, "cover", 0.01, 0.01)
+    if variant == "principal":
+        values = {
+            r: {"eps_r": v["eps_r"][:, None] * BIAXIAL} for r, v in values.items()
+        }
+    return values
+
+
+def junction_line(
+    mesh: gfem.Mesh, variant: str = "inductive", values: dict | None = None
+) -> gfem.Model:
+    """Fixture J: the two-layer line with the junction port "jj" on port1.
+
+    ``LumpedPort("jj", "port1", "+z", inductance=1e-9)``, PEC top and
+    bottom. Variants: ``"inductive"`` (lossless), ``"resistive"`` (and a 500
+    ohm port "r" on port2), ``"lossy"`` (`junction_values`, and port "r"),
+    ``"conductor"`` (a `gfem.Conductor` top, 1e5 S/m), ``"capacitive_port"``
+    (``capacitance=1e-13`` on "jj") and ``"principal"`` (fields with
+    `anisotropy.TILTED` axes). ``values`` replaces `junction_values`.
+    """
+    values = junction_values(mesh, variant) if values is None else values
+    axes = anisotropy.TILTED if variant == "principal" else None
+    top = gfem.Conductor("top", 1e5) if variant == "conductor" else gfem.PEC("top")
+    junction = {"inductance": JUNCTION_L}
+    if variant == "capacitive_port":
+        junction["capacitance"] = JUNCTION_C
+    ports = [gfem.LumpedPort("jj", "port1", "+z", **junction)]
+    if variant in ("resistive", "lossy"):
+        ports.append(gfem.LumpedPort("r", "port2", "+z", impedance=JUNCTION_R))
+    return gfem.Model(
+        mesh,
+        materials={
+            region: gfem.MaterialField(axes=axes, **fields)
+            for region, fields in values.items()
+        },
+        boundaries=[gfem.PEC("bottom"), top],
+        ports=ports,
+    )
+
+
+#: The guide's core and tail lengths, width and height (mm); its mode near
+#: 24.4 + 1.3i GHz (Q about 10).
+GUIDE = (3.0, 3.0, 10.0, 1.0)
+GUIDE_TARGET = 24e9
+
+
+def absorbing_guide(directory: Path) -> gfem.Mesh:
+    """A TE10 guide shorted at x = 0 with a core, ended by a wall "end".
+
+    Volumes "core" and "tail", surfaces "short", "wall" and "end" (for a
+    second-order `gfem.Absorbing`).
+    """
+    core, tail, width, height = GUIDE
+    length = core + tail
+    edges = (
+        np.concatenate([np.linspace(0, core, 4), np.linspace(core, length, 4)[1:]]),
+        np.linspace(0, width, 5),
+        np.linspace(0, height, 2),
+    )
+
+    def surface(c):
+        on = [abs(c[0]), abs(c[0] - length)]
+        if min(on) < 1e-9:
+            return "short" if on[0] < 1e-9 else "end"
+        if min(abs(c[1]), abs(c[1] - width), abs(c[2]), abs(c[2] - height)) < 1e-9:
+            return "wall"
+        return ""
+
+    mesh = sm.structured(edges, lambda c: "core" if c[0] < core else "tail", surface)
+    return _mesh(directory, "guide.msh", mesh)
+
+
+def guide_model(mesh: gfem.Mesh, core) -> gfem.Model:
+    """The absorbing guide with ``core``'s permittivity, the tail a ramp."""
+    return gfem.Model(
+        mesh,
+        materials={
+            "core": gfem.MaterialField(eps_r=core),
+            "tail": gfem.MaterialField(eps_r=ramp(mesh, "tail", 1.0, 1.5)),
+        },
+        boundaries=[
+            gfem.PEC("short"),
+            gfem.PEC("wall"),
+            gfem.Absorbing("end", order=2),
+        ],
+    )

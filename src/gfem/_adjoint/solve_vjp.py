@@ -47,7 +47,9 @@ kernel writes each rank's elements into global zeros, and each wanted leaf is su
 over ranks once, where the backward returns. A missing sum raises nothing.
 
 A rule provides: ``form`` (its operator family, a key of
-`gfem._engine.sensitivity.PROPERTIES`), ``differentiable_outputs``,
+`gfem._engine.sensitivity.PROPERTIES`), ``differentiable_outputs`` (or, with
+``input_aware``, a ``nondifferentiable_output(name, kinds)`` that also sees
+the wanted input kinds and returns ``None`` where it can differentiate),
 ``output_specs(model)`` (name -> ``jax.ShapeDtypeStruct``), ``role(kind)``
 (``"read"`` or ``"unread"``), ``forward(model, *, keep)``,
 ``backward(model, entry, cotangents)``, ``options`` and ``problem``,
@@ -209,13 +211,16 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
     def bwd(residuals: tuple, cotangents: tuple) -> tuple:
         key, values = residuals
         wanted = state["wanted"]
+        wanted_kinds = frozenset(kinds[i] for i in wanted)
         live = []
         for name, ct in zip(names, cotangents, strict=True):
             if isinstance(ct, SymbolicZero):
                 continue
             # with every perturbed input unread, every output's zero is exact
-            if wanted and name not in rule.differentiable_outputs:
-                raise NonDifferentiableError(rule.nondifferentiable_output(name))
+            if wanted:
+                reason = _refusal(rule, name, wanted_kinds)
+                if reason is not None:
+                    raise NonDifferentiableError(reason)
             live.append((name, ct))
         grads: list[Any] = [jnp.zeros_like(v) for v in values]
         if live and wanted:
@@ -248,6 +253,20 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
     p_leaves = [leaf for _, leaf in p_paths]
     outputs = primal(m_leaves, p_leaves)
     return dict(zip(names, outputs, strict=True))
+
+
+def _refusal(rule: Any, name: str, kinds: frozenset[tuple]) -> str | None:
+    """Why a cotangent on output ``name`` cannot be pulled back, or ``None``.
+
+    A rule with ``input_aware`` answers from the output and the wanted input
+    kinds (``rule.nondifferentiable_output(name, kinds)``, ``None`` when it
+    can); any other from its ``differentiable_outputs``.
+    """
+    if getattr(rule, "input_aware", False):
+        return rule.nondifferentiable_output(name, kinds)
+    if name in rule.differentiable_outputs:
+        return None
+    return rule.nondifferentiable_output(name)
 
 
 def _rebuild(

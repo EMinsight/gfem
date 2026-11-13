@@ -31,6 +31,19 @@ refines one guard mode beyond ``n_modes`` from the seed solve's remaining
 pairs, so a cluster cut by the request is detected when its next member is
 among them (best-effort: no Arnoldi attempt is added for it).
 
+The ratios of the mode fields (``q_port``, ``participation``, the region
+and principal shares) differentiate for isolated modes (ADR 0102) with
+respect to materials and sheet fills, on one CPU process with the
+``direct`` linear solver: per mode with a cotangent, one deflated GMRES
+solve of the singular adjoint system ``T(k) lam0 = -w``, ``t^T lam0 = 0``
+on the live factors the forward kept (`gfem._eigen.adjoint`, ADR 0104), the
+load ``(w, kappa, explicit terms)`` of `gfem._eigen.ratios`, and the pairs
+``(2 lam, x)`` and ``(conj(x), x)`` on the mode energy's ``Re(eps_r)``
+terms (ADR 0103). What does not differentiate is refused by name: at trace
+time from the model, the options and the wanted inputs
+(`EigenmodeRule.nondifferentiable_output`), in the backward from the modes
+(a cluster, a near pair, a defective mode, an infinite ``q_port``).
+
 Post-processing follows Palace: electric energy ``E = 1/2 Re ∫ D* . E`` per
 volume region plus ``C |V|^2 / 2`` per capacitive lumped port and ``1/2 ∫
 w C_s |E_t|^2`` per capacitive `Impedance` sheet (the quadratic form of
@@ -66,12 +79,13 @@ import numpy as np
 import scipy.constants as const
 
 from gfem import _petsc
-from gfem._boundaries import LumpedPort, WavePort, wave_port_surfaces
+from gfem._boundaries import Impedance, LumpedPort, WavePort, wave_port_surfaces
 from gfem._eigen import slepc
-from gfem._eigen.adjoint import polish
+from gfem._eigen.adjoint import deflated_solve, polish, reshift_offset
 from gfem._eigen.arpack import shift_invert
 from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
+from gfem._eigen.ratios import Ratios
 from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE
 from gfem._engine import terms
@@ -95,7 +109,7 @@ from gfem._engine.eigen import (
 )
 from gfem._engine.fields import fe_space
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import FieldPair, Term
+from gfem._engine.sensitivity import FieldPair, Term, is_lumped
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
 from gfem._sign import largest_entry
@@ -173,6 +187,23 @@ _ISOLATED = 1e-4
 #: A Bloch cluster's ``G = Y^T T' X`` with a condition number above this is
 #: singular: a defective eigenvalue, whose frequency has no derivative.
 _DEFECTIVE = 1e8
+#: A mode with ``|y^T T'(k) x|`` below this times ``|y| |T'(k) x|`` is
+#: defective: its mode-field adjoint system has no solution (ADR 0102).
+_DEFECTIVE_FIELD = 1e-8
+#: The largest ``SolverOptions.eigen_tolerance`` of a solve whose mode
+#: fields differentiate: it keeps the forward polish's Newton start close.
+_FIELD_TOLERANCE = 1e-10
+#: The outputs that are quantities of the mode fields (mode-field outputs).
+_MODE_FIELD = frozenset({"q_port", "participation", "bulk", "principal", "e_field"})
+#: Their names on `EigenmodeResult`, for messages.
+_PUBLIC = {
+    "q_port": "q_port",
+    "participation": "participation",
+    "bulk": "bulk_participation",
+    "principal": "principal_participation",
+    "e_field": "e_fields (the normalized mode fields)",
+    "error": "error",
+}
 #: ``|v^H A u - conj(u^H A v)|`` below this times ``|A| |u| |v|`` for ``K``
 #: and ``M``: a Hermitian (lossless) Bloch problem, whose eigenvalues are real.
 _HERMITIAN = 1e-12
@@ -228,9 +259,14 @@ class EigenmodeRule:
     form = "eigenmode"
     #: Material properties the eigenmode forms read.
     reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity"})
-    #: Outputs whose cotangents the backward pass handles: the eigenvalues
-    #: (``cluster`` holds integer labels: its cotangent is always zero).
-    differentiable_outputs = frozenset({"omega", "cluster"})
+    #: Outputs whose cotangents the backward pass can handle: the eigenvalues
+    #: (``cluster`` holds integer labels: its cotangent is always zero) and
+    #: the mode-field outputs, within the reach `nondifferentiable_output`
+    #: checks for the wanted inputs (ADR 0102).
+    differentiable_outputs = frozenset({"omega", "cluster"}) | _MODE_FIELD
+    #: `nondifferentiable_output` takes the wanted input kinds and may
+    #: return ``None`` (`gfem._adjoint.solve_vjp`).
+    input_aware = True
 
     def __init__(
         self, model: Model, problem: Eigenmode, options: SolverOptions
@@ -286,6 +322,12 @@ class EigenmodeRule:
         self._excluded = model._domain.excluded  # noqa: SLF001
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
+        #: Whether an `Impedance` has a capacitance (its mode energy term's
+        #: gradient is not in this version).
+        self.capacitive_sheets = any(
+            isinstance(b, Impedance) and b.capacitance is not None
+            for b in model.boundaries
+        )
 
     # --- forward -----------------------------------------------------------------
 
@@ -901,75 +943,353 @@ class EigenmodeRule:
         """
         return self.nodes_unsupported if kind == ("nodes",) else None
 
-    def nondifferentiable_output(self, name: str) -> str:
-        """The error message for a cotangent on output ``name``."""
-        return (
-            f"gfem cannot differentiate the eigenmode output {name!r} in this "
-            "version: only the eigenfrequencies (omega, so frequency and q) "
-            "are differentiable, not quantities of the mode fields (the "
-            "fields themselves, participations, port Q, interface "
-            "participation, probes). Wrap it in jax.lax.stop_gradient to use "
-            "its value without its derivative."
+    def nondifferentiable_output(
+        self, name: str, kinds: frozenset[tuple] | set[tuple] = frozenset()
+    ) -> str | None:
+        """Why a cotangent on output ``name`` cannot be pulled back, or ``None``.
+
+        Input-aware (ADR 0102): ``kinds`` are the wanted input kinds. The
+        eigenvalues differentiate with respect to every read input. The
+        mode-field outputs (``q_port``, ``participation``,
+        ``bulk_participation``, ``principal_participation``) differentiate on
+        one CPU process with ``linear_solver="direct"``, ``eigen_tolerance``
+        at most 1e-10, without periodic pairs or a Bloch wave vector or a
+        capacitive `Impedance`, with respect to materials and sheet fills.
+        The backward error never differentiates. Checked at trace time; what
+        depends on the modes (a cluster, a near pair, a port without
+        voltage) raises in the backward.
+        """
+        if name in ("omega", "cluster"):
+            return None
+        public = _PUBLIC.get(name, name)
+        head = f"gfem cannot differentiate the eigenmode output {public!r}"
+        opt_out = (
+            "Wrap it in jax.lax.stop_gradient to use its value without its derivative."
         )
+        if name not in _MODE_FIELD:
+            return (
+                f"{head}: it is the backward error of the solve, which has no "
+                "derivative with respect to anything. " + opt_out
+            )
+        why = self._solve_refusal() or self._input_refusal(name, kinds)
+        if why is not None and why.startswith("with respect to model."):
+            return (
+                f"{head} {why} in this version; the eigenfrequencies "
+                "differentiate with respect to it. Wrap the value in "
+                "jax.lax.stop_gradient to hold it."
+            )
+        if why is None:
+            return None
+        return (
+            f"{head} {why}. The eigenfrequencies (omega, so frequency and q) "
+            "keep their gradients. " + opt_out
+        )
+
+    def _solve_refusal(self) -> str | None:
+        """Why no mode-field output of this solve differentiates, or ``None``."""
+        options = self.options
+        reasons = (
+            (
+                self.problem.wave_vector is not None,
+                (
+                    "at a Bloch wave vector: mode-field gradients are for "
+                    "non-periodic models only"
+                ),
+            ),
+            (
+                bool(self._periodic_surfaces),
+                (
+                    "of a periodic model: mode-field gradients are for "
+                    "non-periodic models only"
+                ),
+            ),
+            (
+                options.device != "cpu",
+                (
+                    f'on device="{options.device}": its mode-field adjoint runs on '
+                    'the CPU with linear_solver="direct" only'
+                ),
+            ),
+            (
+                self.linear.kind != "direct",
+                (
+                    f'on linear_solver="{self.linear.kind}": its mode-field adjoint '
+                    'runs on linear_solver="direct" only'
+                ),
+            ),
+            (
+                options.eigen_tolerance > _FIELD_TOLERANCE,
+                (
+                    f"solved with SolverOptions.eigen_tolerance = "
+                    f"{options.eigen_tolerance:g}: mode-field gradients need "
+                    f"eigen_tolerance <= {_FIELD_TOLERANCE:g} (the default)"
+                ),
+            ),
+            (
+                self.capacitive_sheets,
+                (
+                    "on a model with a capacitive Impedance: the gradient of its "
+                    "sheet's share of the mode energy is not in this version"
+                ),
+            ),
+        )
+        return next((why for refused, why in reasons if refused), None)
+
+    @staticmethod
+    def _input_refusal(name: str, kinds: frozenset[tuple] | set[tuple]) -> str | None:
+        """Why output ``name`` does not differentiate by ``kinds``, or ``None``.
+
+        A lumped value's reason starts "with respect to model.".
+        """
+        if name == "e_field":
+            return (
+                "in this version: the normalized mode fields (and the "
+                "measurements of them: Field.at, interface_participation) do "
+                "not differentiate yet; the ratios on the result do"
+            )
+        if ("nodes",) in kinds:
+            return (
+                "with respect to the mesh node coordinates in this version; it "
+                "differentiates with respect to materials and sheet fills"
+            )
+        lumped = sorted(k for k in kinds if is_lumped(k))
+        if lumped:
+            kind = lumped[0]
+            where = "ports" if kind[0] == "port" else "boundaries"
+            return f"with respect to model.{where}[{kind[1]}].{kind[2]}"
+        return None
 
     def backward(
         self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
     ) -> list[FieldPair]:
-        """Fold the ``omega`` cotangents into one field pair per cluster.
+        """Fold the cotangents into field pairs: per cluster, and per mode.
 
-        With ``ω = k c / scale``, cluster c's modes ``X``, their left
-        eigenvectors ``Y`` (``X`` unless Bloch) and ``G = Y^T T'(k_c) X``:
-        ``ct_c d(Σ ω)/dp = -(c / scale) ct_c tr(G^-1 Y^T (dT/dp) X)``, the
-        pair ``(-(c / scale) ct_c Y, X G^-1)`` weighted with the pieces' θ
-        at ``k_c``. A simple mode is a cluster of one (``G = y^T T' x``). No
-        solve. On a periodic model the pair is expanded to the unpaired
-        space, ``(conj(P) Y, P X G^-1)``: ``y^T P^H a P x = (conj(P) y)^T a
-        (P x)`` for the unpaired forms ``a`` (`DrivenOperator.pair`).
+        **Eigenvalues.** With ``ω = k c / scale``, cluster c's modes ``X``,
+        their left eigenvectors ``Y`` (``X`` unless Bloch) and ``G = Y^T
+        T'(k_c) X``: ``ct_c d(Σ ω)/dp = -(c / scale) ct_c tr(G^-1 Y^T
+        (dT/dp) X)``, the pair ``(-(c / scale) ct_c Y, X G^-1)`` weighted with
+        the pieces' θ at ``k_c``. A simple mode is a cluster of one (``G =
+        y^T T' x``). No solve. On a periodic model the pair is expanded to
+        the unpaired space, ``(conj(P) Y, P X G^-1)``: ``y^T P^H a P x =
+        (conj(P) y)^T a (P x)`` for the unpaired forms ``a``
+        (`DrivenOperator.pair`).
+
+        **Mode-field outputs** (`_field_pairs`): per mode with a cotangent
+        on its ratios, one adjoint solve on the kept eigen operator and two
+        pairs, ``(2 lam, x)`` on the pieces and the explicit energy pair.
 
         Raises:
-            DegenerateModeError: The cotangents on a cluster's modes differ
-                (an objective not symmetric in them), a cluster with a
-                nonzero cotangent extends beyond the ``n_modes`` modes, or a
-                Bloch cluster's ``G`` is singular (a defective eigenvalue).
+            DegenerateModeError: The ``omega`` cotangents on a cluster's
+                modes differ (an objective not symmetric in them), a cluster
+                with a nonzero cotangent extends beyond the ``n_modes``
+                modes, a Bloch cluster's ``G`` is singular (a defective
+                eigenvalue), or a mode with a mode-field cotangent is not
+                isolated or is defective.
+            NonDifferentiableError: A nonzero cotangent on an infinite
+                ``q_port``.
+            LinearSolverConvergenceError: An adjoint solve was not accepted.
         """
-        ct = cotangents.get("omega")
-        if ct is None or not np.any(ct):
-            return []
         fields = entry.fields
         x, k, labels = fields["x"], fields["k"], fields["cluster"]
         y = fields.get("y", x)
         gram, incomplete = fields["gram"], fields["incomplete"]
-        ct = np.asarray(ct, dtype=complex)
+        ct = cotangents.get("omega")
         pairs = []
         with task_manager(self.options.threads):
             op = self.driven(model)
             domain = em_region(model, op.built)
             per_k = const.c / op.built.scale
-            for label in np.unique(labels):
-                members = np.flatnonzero(labels == label)
-                c = ct[members]
-                if not c.any():
-                    continue
-                spread = np.abs(c - c.mean()).max()
-                symmetric = spread <= _SYMMETRIC_RTOL * np.abs(c).max()
-                if incomplete[members].any() or not symmetric:
-                    raise DegenerateModeError(
-                        self._degenerate_message(k, members, c, incomplete, per_k)
+            if ct is not None and np.any(ct):
+                ct = np.asarray(ct, dtype=complex)
+                for label in np.unique(labels):
+                    members = np.flatnonzero(labels == label)
+                    c = ct[members]
+                    if not c.any():
+                        continue
+                    spread = np.abs(c - c.mean()).max()
+                    symmetric = spread <= _SYMMETRIC_RTOL * np.abs(c).max()
+                    if incomplete[members].any() or not symmetric:
+                        raise DegenerateModeError(
+                            self._degenerate_message(k, members, c, incomplete, per_k)
+                        )
+                    g = gram[np.ix_(members, members)]
+                    if "y" in fields and np.linalg.cond(g) > _DEFECTIVE:
+                        raise DegenerateModeError(
+                            self._defective_message(
+                                k, members, np.linalg.cond(g), per_k
+                            )
+                        )
+                    pairs.append(
+                        op.pair(
+                            -per_k * c.mean() * y[:, members],
+                            x[:, members] @ np.linalg.inv(g),
+                            weights=op.weights(k[members].mean() * per_k),
+                            domain=domain,
+                        )
                     )
-                g = gram[np.ix_(members, members)]
-                if "y" in fields and np.linalg.cond(g) > _DEFECTIVE:
+            pairs += self._field_pairs(model, entry, cotangents, op, domain)
+        return pairs
+
+    def _field_pairs(
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        op: DrivenOperator,
+        domain,
+    ) -> list[FieldPair]:
+        """The mode-field outputs' pairs (quantum-metrics ticket 03, ADR 0104).
+
+        Per mode ``(k, x)`` with a nonzero cotangent on its ratios: the load
+        ``(w, kappa, explicit terms)`` (`Ratios.load`), the deflated solve
+        ``T(k) lam0 = -w``, ``t^T lam0 = 0`` (``t = T'(k) x``) on the kept
+        operator's live factors (`deflated_solve`), ``lam = lam0 - kappa x /
+        (x^T t)``, and the pairs ``(2 lam, x)`` with the pieces' θ at the
+        mode (``dG/dp = 2 Re(lam^T dT/dp x)``) and ``(conj(x), x)`` with the
+        explicit energy terms' weights. An entry without its operator (over
+        ``retain_memory``) gets one from ``op``, prepared at ``k (1 + d)`` of
+        its first such mode, and freed at the end.
+        """
+        names = ("q_port", "participation", "bulk", "principal")
+        cts = {
+            n: np.real(np.asarray(cotangents[n]))
+            for n in names
+            if n in cotangents and np.any(cotangents[n])
+        }
+        if not cts:
+            return []
+        fields = entry.fields
+        x, k = fields["x"], fields["k"]
+        n = len(k)
+
+        def column(c: np.ndarray, j: int) -> np.ndarray:
+            return c[:, j] if c.ndim == 2 else c[:, j, :]
+
+        wanted = [j for j in range(n) if any(column(c, j).any() for c in cts.values())]
+        if not wanted:
+            return []
+        per_k = const.c / op.built.scale
+        self._check_reach(entry, wanted, per_k)
+        holder = entry.handle
+        eop = getattr(holder, "operator", None)
+        own = eop is None
+        gap = fields["gap"]
+        if own:
+            first = wanted[0]
+            eop = self.operator(op, k[first] * (1 + reshift_offset(float(gap[first]))))
+        pairs = []
+        try:
+            # every mode's guard before any form is built
+            gram = {}
+            for j in wanted:
+                u, kj = x[:, j], complex(k[j])
+                t = eop.derivative(kj, u)
+                gram[j] = u @ t
+                size = np.linalg.norm(u) * np.linalg.norm(t)
+                if abs(gram[j]) < _DEFECTIVE_FIELD * size:
                     raise DegenerateModeError(
-                        self._defective_message(k, members, g, per_k)
+                        self._defective_message(
+                            k, np.array([j]), size / max(abs(gram[j]), 1e-300), per_k
+                        )
                     )
+            ratios = Ratios(
+                model,
+                op,
+                regions=self.regions,
+                anisotropic=self.anisotropic,
+                resistive=self.resistive,
+                inductive=self.inductive,
+            )
+            for j in wanted:
+                u, kj, ut = x[:, j], complex(k[j]), gram[j]
+                load = ratios.load(
+                    u, kj, {name: column(c, j) for name, c in cts.items()}, mode=j
+                )
+                lam = (
+                    deflated_solve(
+                        eop, u, None, -load.w, k=kj, gap=float(gap[j]), mode=j
+                    ).z
+                    - load.kappa * u / ut
+                )
                 pairs.append(
                     op.pair(
-                        -per_k * c.mean() * y[:, members],
-                        x[:, members] @ np.linalg.inv(g),
-                        weights=op.weights(k[members].mean() * per_k),
+                        2 * lam[:, None],
+                        u[:, None],
+                        weights=op.weights(kj * per_k),
                         domain=domain,
                     )
                 )
+                if load.energy:
+                    pairs.append(
+                        op.pair(
+                            np.conj(u)[:, None],
+                            u[:, None],
+                            weights=load.energy,
+                            domain=domain,
+                        )
+                    )
+        finally:
+            if own:
+                eop.free_handle()
         return pairs
+
+    def _check_reach(self, entry: Entry, modes: list[int], per_k: float) -> None:
+        """Raise unless every mode of ``modes`` is isolated (`isolated`).
+
+        Raises:
+            DegenerateModeError: A mode's polish failed in the forward, it
+                belongs to a cluster of several modes or one cut by
+                ``n_modes``, or its relative gap is below `_ISOLATED`
+                (``cluster_rtol`` if larger): nearly degenerate.
+        """
+        fields = entry.fields
+        k, labels = fields["k"], fields["cluster"]
+        incomplete, gap = fields["incomplete"], fields["gap"]
+        failed = fields.get("polish_failed", np.zeros(len(k), dtype=bool))
+        rtol = self.options.cluster_rtol
+        threshold = max(_ISOLATED, rtol)
+        reach = isolated(labels, incomplete, gap, rtol)
+        for j in modes:
+            if reach[j]:
+                continue
+            members = np.flatnonzero(labels == labels[j])
+            hz = k * per_k / (2 * math.pi)
+            named = ", ".join(
+                f"{int(i)} ({hertz(hz[i].real, 9)})" for i in members if i != j
+            )
+            mode = f"mode {j} ({hertz(hz[j].real, 9)})"
+            if failed[j]:
+                reason = (
+                    "its polish in the forward did not converge (a sign of a "
+                    "neighbour the solve did not return)"
+                )
+            elif len(members) > 1:
+                reason = (
+                    f"it belongs to a degenerate cluster with mode(s) {named} "
+                    f"(relative gap at most SolverOptions.cluster_rtol = {rtol:g})"
+                )
+            elif incomplete[j]:
+                reason = (
+                    "its cluster extends beyond the "
+                    f"{self.problem.n_modes} mode(s) asked for (Eigenmode.n_modes)"
+                )
+            else:
+                reason = (
+                    f"it is nearly degenerate: its relative gap to the nearest "
+                    f"mode found is {gap[j]:.3g}, below {threshold:g} (the "
+                    f"isolation threshold 1e-4, or SolverOptions.cluster_rtol = "
+                    f"{rtol:g} if larger)"
+                )
+            raise DegenerateModeError(
+                f"DegenerateModeError: a quantity of the field of {mode} "
+                f"(participation, port Q, a field) is not differentiable: "
+                f"{reason}. Mode-field gradients are for isolated modes only "
+                "(ADR 0102): near another mode the field is a mix of the two "
+                "that any perturbation rotates. Remedies: separate the modes "
+                "(break the design's symmetry, move them apart); differentiate "
+                "the frequencies only; or wrap the field quantity in "
+                "jax.lax.stop_gradient."
+            )
 
     def driven(self, model: Model) -> DrivenOperator:
         """The model's driven operator (the pieces of ``T(k)``) at its nodes.
@@ -1001,11 +1321,24 @@ class EigenmodeRule:
         node coordinates. Port pieces are left out: shape gradients hold
         every port surface.
 
+        The explicit energy terms of the mode-field outputs follow
+        (`Ratios.terms`, ADR 0103): ``Re(eps_r)`` per region and per
+        principal axis, which only their energy pairs weight.
+
         Raises:
             PortGeometryError: ``nodes`` and a node of a port surface has
                 moved.
         """
-        return operator_terms(model, self.driven(model), nodes=nodes)
+        op = self.driven(model)
+        ratios = Ratios(
+            model,
+            op,
+            regions=self.regions,
+            anisotropic=self.anisotropic,
+            resistive=(),
+            inductive=(),
+        )
+        return operator_terms(model, op, nodes=nodes) + ratios.terms()
 
     def lumped_terms(self, model: Model) -> list[Term]:
         """The pieces of ``T(k)`` that move with a lumped value (ADR 0100).
@@ -1053,7 +1386,7 @@ class EigenmodeRule:
         )
 
     def _defective_message(
-        self, k: np.ndarray, members: np.ndarray, g: np.ndarray, per_k: float
+        self, k: np.ndarray, members: np.ndarray, condition: float, per_k: float
     ) -> str:
         hz = k[members] * per_k / (2 * math.pi)
         modes = ", ".join(
@@ -1061,11 +1394,11 @@ class EigenmodeRule:
         )
         return (
             f"DegenerateModeError: mode(s) {modes} have a singular Y^T T'(k) X "
-            f"(condition number {np.linalg.cond(g):.3g}): under a Bloch wave "
-            "vector, the eigenvalue is defective (an exceptional point of the "
-            "lossy cell), where its left and right eigenvectors are orthogonal "
-            "and its frequency is not differentiable. Remedies: move the wave "
-            "vector or the design off the exceptional point, or use a "
+            f"(condition number {condition:.3g}): the eigenvalue is defective "
+            "(an exceptional point of a lossy problem), where its left and "
+            "right eigenvectors are orthogonal, and neither its frequency nor "
+            "a quantity of its field is differentiable. Remedies: move the "
+            "design (or the wave vector) off the exceptional point, or use a "
             "gfem.Driven sweep as a surrogate."
         )
 

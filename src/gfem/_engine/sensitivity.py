@@ -124,6 +124,7 @@ __all__ = [
     "Derivative",
     "FieldPair",
     "Term",
+    "energy_term",
     "is_lumped",
     "is_sheet",
     "sensitivity",
@@ -313,6 +314,58 @@ class FieldPair:
     weights: Mapping[str, complex]
     order: int
     domain: ngs.Region
+
+
+def energy_term(
+    name: str,
+    coefficient: Any,
+    elements: np.ndarray,
+    *,
+    axis: int | None = None,
+) -> Term:
+    """An explicit term of the mode energy: ``int Re(eps_r) u . v`` on ``elements``.
+
+    The eigenmode rule's ratios divide by the electric energy ``1/2 eps0 int
+    Re(eps_r) |E|^2`` (ADR 0103), and a region's or a principal axis's share
+    is the same integral on part of the mesh. Their explicit design
+    derivative is this term, not the operator's mass piece ``eps_r (1 - i
+    tan_delta)``: its coefficient reads ``r = Re(eps_r)`` (``dc/dr = 1`` on
+    ``elements``, so a complex leaf's cotangent is real), and nothing else,
+    so ``tan_delta``, ``conductivity`` and ``mu_r`` give it no derivative.
+    A pair ``(conj(u), u)`` weighted with ``1/2 eps0 scale`` times the
+    objective's derivative by that energy contracts it.
+
+    Args:
+        name: The term's key in the pairs' weights.
+        coefficient: ``Re(eps_r)`` on ``elements`` (zero elsewhere), as the
+            node pass would transport it: the whole tensor, or with
+            ``axis`` its part ``Re(eps_k) a_k a_k^T`` along one principal
+            axis.
+        elements: One boolean per tetrahedron (gfem order).
+        axis: The principal axis of a share along one (``None``: the whole
+            permittivity). Its derivative is along that axis only, and an
+            isotropic leaf has none.
+    """
+    mask = np.asarray(elements, dtype=float)
+    if axis is None:
+        isotropic: Any = lambda: mask  # noqa: E731
+        per_axis = np.repeat(mask[:, None], 3, axis=1)
+    else:
+        isotropic = 0.0
+        per_axis = np.zeros((len(mask), 3))
+        per_axis[:, axis] = mask
+    return Term(
+        name,
+        "value",
+        coefficient=coefficient,
+        derivatives={
+            "eps_r": Derivative(
+                isotropic,
+                holomorphic=False,
+                per_axis=Derivative(lambda: per_axis, holomorphic=False),
+            )
+        },
+    )
 
 
 #: Operator families whose rules' terms the node pass reads.

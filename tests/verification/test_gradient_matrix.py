@@ -76,6 +76,8 @@ from gradient_cases import (
     BIAXIAL,
     CAVITY_TARGET,
     EPS0,
+    GUIDE_TARGET,
+    JUNCTION_TARGET,
     LUMPED,
     LUMPED_TARGET,
     MIRRORED_TARGET,
@@ -83,12 +85,17 @@ from gradient_cases import (
     RESONATOR_TARGET,
     SHEETS,
     STACK_PROBLEM,
+    absorbing_guide,
     capacitor,
     cavity_fill,
     cavity_model,
     core_design,
+    guide_model,
     hybrid_line,
     hybrid_mesh,
+    junction_line,
+    junction_mesh,
+    junction_values,
     layered_line,
     layered_resonator,
     line_axes_design,
@@ -105,6 +112,7 @@ from gradient_cases import (
     sheet_fill,
     sheet_line,
     sheet_mesh,
+    split_cavity,
     stack,
     stack_fields,
     terminated,
@@ -271,7 +279,41 @@ def _eigen_periodic_cells() -> list[Cell]:
     ]
 
 
-CELLS = [*_cells(), *_driven_periodic_cells(), *_eigen_periodic_cells()]
+# --- eigenmode mode-field cells (quantum metrics) ----------------------------------
+
+
+def _participation_cells() -> list[Cell]:
+    """The ratios of the result (``eigenmode_participation``), on ``direct``.
+
+    By fixture variant (`_participation`): fixture J (`junction_line`)
+    lossless, with a resistive port, lossy (complex permittivity, a
+    conductivity, a static loss tangent), with a `gfem.Conductor` top, with
+    a capacitive junction, with fields of principal values; the shorted
+    guide's second-order absorbing wall; the glued line's resistive
+    `gfem.Impedance` sheet; the mirrored cavity's pair split to a relative
+    gap of 2.5e-4 (above the isolation threshold 1e-4).
+    """
+    key = "eigenmode_participation"
+    return [
+        Cell(key, "eps_r", "direct", variant="inductive"),
+        Cell(key, "eps_r", "direct", variant="resistive"),
+        Cell(key, "eps_r", "direct", variant="lossy"),
+        Cell(key, "conductivity", "direct", variant="lossy"),
+        Cell(key, "eps_r", "direct", variant="conductor"),
+        Cell(key, "eps_r", "direct", variant="absorbing2"),
+        Cell(key, "eps_r", "direct", variant="capacitive_port"),
+        Cell(key, "fill", "direct", variant="resistive_sheet"),
+        Cell(key, "eps_r", "direct", variant="near_pair"),
+        Cell(key, "eps_r_axes", "direct", variant="principal"),
+    ]
+
+
+CELLS = [
+    *_cells(),
+    *_driven_periodic_cells(),
+    *_eigen_periodic_cells(),
+    *_participation_cells(),
+]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
 #: Woodbury update, and the eigenmode seed on SLEPc.
@@ -283,11 +325,16 @@ PETSC_CELLS = [
     Cell("eigenmode", "eps_r", "petsc"),
     # plain periodicity keeps every backend (Bloch on PETSc raises)
     Cell("driven_periodic_plain", "eps_r", "petsc", "uniform"),
+    # the mode-field adjoint after SLEPc seeds (its linear solver stays
+    # direct: a PETSc one raises for a mode-field cotangent)
+    Cell("eigenmode_participation", "eps_r", "direct", variant="slepc"),
 ]
 PETSC_PARAMS = [
     pytest.param(
         cell,
-        marks=pytest.mark.slepc if cell.problem == "eigenmode" else pytest.mark.petsc,
+        marks=pytest.mark.slepc
+        if cell.problem.startswith("eigenmode")
+        else pytest.mark.petsc,
     )
     for cell in PETSC_CELLS
 ]
@@ -398,6 +445,18 @@ class Designs:
         return mirrored_cavity(self._dir("mirrored"))
 
     @functools.cached_property
+    def corner_cavity(self):
+        return mirrored_cavity(self._dir("corner"), corner=True)
+
+    @functools.cached_property
+    def junction(self):
+        return junction_mesh(self._dir("junction"))
+
+    @functools.cached_property
+    def guide(self):
+        return absorbing_guide(self._dir("guide"))
+
+    @functools.cached_property
     def periodic(self):
         return pc.g_mesh(self._dir("periodic"))
 
@@ -411,13 +470,22 @@ def designs(tmp_path_factory):
     return Designs(tmp_path_factory)
 
 
+#: The mode-field cells' keys: their eigenpairs to 1e-13 (the forward polishes
+#: the modes anyway; the differences stay clean).
+MODE_FIELD_KEYS = ("eigenmode_participation", "eigenmode_field")
+
+
 def _options(cell: Cell, *, production: bool) -> gfem.SolverOptions:
     extra = {}
     if cell.problem == "eigenmode" and cell.solver == "petsc":
         extra["eigen_solver"] = "slepc"  # a PETSc cell runs the whole PETSc stack
+    if cell.problem in MODE_FIELD_KEYS and cell.variant == "slepc":
+        extra["eigen_solver"] = "slepc"  # SLEPc seeds, the direct adjoint
     if production:
         return gfem.SolverOptions(order=2, linear_solver=cell.solver, **extra)
-    if cell.problem.startswith("eigenmode"):
+    if cell.problem in MODE_FIELD_KEYS:
+        extra["eigen_tolerance"] = 1e-13
+    elif cell.problem.startswith("eigenmode"):
         extra["eigen_tolerance"] = 1e-12
     return tight(cell.solver, **extra)
 
@@ -857,6 +925,103 @@ def _eigen_nodes(d: Designs, _cell: Cell, options, seed: int) -> Case:
     )
 
 
+# --- eigenmode ratios: participation, port Q, region and principal shares ----------
+
+#: The split cavity's pair: a relative gap of 2.49e-4 (above the isolation
+#: threshold 1e-4); differences take steps well below the gap.
+NEAR_PAIR_DELTA, NEAR_PAIR_STEP = 1e-3, 5e-5
+#: The R-only sheet's mode on the glued line (13.47 + 4.28i GHz, Q 1.6).
+SHEET_LINE_TARGET = 13.5e9
+#: Weights of the principal shares of a cell's principal objective.
+PRINCIPAL_WEIGHTS = jnp.array([1.0, -0.6, 0.8])
+
+
+def _ratios(result, variant: str):
+    """A cell's objective: a weighted sum of mode 0's ratios.
+
+    Every J variant reads the junction's participation and the sub layer's
+    share; a resistive port adds ``1 / q_port`` (the loss term an objective
+    uses, never ``q_port``); the principal variant the sub layer's shares
+    along its axes.
+    """
+    out = result.participation["jj"][0] + 0.7 * result.bulk_participation["sub"][0]
+    if "r" in result.q_port:
+        out = out + 3.0 / result.q_port["r"][0]
+    if variant == "principal":
+        shares = result.principal_participation["sub"][0]
+        out = out + jnp.dot(PRINCIPAL_WEIGHTS, shares)
+    return out
+
+
+def _participation(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Mode 0's ratios in one input (`_participation_cells`)."""
+    variant = cell.variant
+    if variant == "absorbing2":
+        mesh = d.guide
+        core = ramp(mesh, "core", 9.0, 11.0)
+
+        def objective(p):
+            problem = gfem.Eigenmode(target=GUIDE_TARGET)
+            result = gfem.solve(guide_model(mesh, p), problem, options=options)
+            return result.bulk_participation["core"][0]
+
+        return Case(
+            objective, core, np.random.default_rng(seed), step=1e-2, taylor=1e-1
+        )
+    if variant == "resistive_sheet":
+        mesh = d.sheet_mesh
+        fill, rng = sheet_fill(mesh, seed=1 + seed)
+
+        def objective(p):
+            sheet = gfem.Impedance(
+                "sheet", resistance=2e3, fill=gfem.SheetField(fill=p)
+            )
+            problem = gfem.Eigenmode(target=SHEET_LINE_TARGET)
+            result = gfem.solve(sheet_line(mesh, sheet), problem, options=options)
+            return 1.0 / result.q_port["p1"][0] + 0.5 / result.q_port["p2"][0]
+
+        return Case(objective, fill, rng, step=5e-2, taylor=1e-1)
+    if variant == "near_pair":
+        mesh = d.corner_cavity
+        base = jnp.ones(len(mesh.tetrahedra))
+
+        def objective(p):
+            model = split_cavity(mesh, p, NEAR_PAIR_DELTA)
+            problem = gfem.Eigenmode(target=MIRRORED_TARGET, n_modes=2)
+            result = gfem.solve(model, problem, options=options)
+            # mode 0, the nearer the target, is the lower of the pair
+            return result.bulk_participation["corner"][0]
+
+        return Case(
+            objective,
+            base,
+            np.random.default_rng(seed),
+            step=NEAR_PAIR_STEP,
+            taylor=1e-4,
+        )
+    mesh = d.junction
+    fixture = "inductive" if variant == "slepc" else variant
+    values = junction_values(mesh, fixture)
+    name = _property(cell.input)
+
+    def objective(p):
+        moved = {r: dict(v) for r, v in values.items()}
+        moved["sub"][name] = p
+        model = junction_line(mesh, fixture, moved)
+        problem = gfem.Eigenmode(target=JUNCTION_TARGET)
+        return _ratios(gfem.solve(model, problem, options=options), fixture)
+
+    p = values["sub"][name]
+    return Case(
+        objective,
+        p,
+        np.random.default_rng(seed),
+        step=STEPS[name],
+        taylor={"eps_r": 1e-1, "conductivity": 3e-1}[name],
+        imaginary=bool(jnp.iscomplexobj(p)),
+    )
+
+
 # --- driven on a periodic model (the gradient cell G) ------------------------------
 
 #: The adaptive grid and samples of the periodic cells.
@@ -1078,6 +1243,10 @@ BUILDERS = {
         (problem, name): _eigen_periodic
         for problem in ("eigenmode_periodic_plain", "eigenmode_periodic_bloch")
         for name in ("eps_r", "conductivity", "fill", "nodes")
+    },
+    **{
+        ("eigenmode_participation", name): _participation
+        for name in ("eps_r", "conductivity", "eps_r_axes", "fill")
     },
 }
 

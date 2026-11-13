@@ -37,6 +37,7 @@ GRID = {
     "driven_periodic_bloch": (V, V, V, V),
     "eigenmode_periodic_plain": (V, V, V, V),
     "eigenmode_periodic_bloch": (V, V, V, V),
+    "eigenmode_participation": (V, V, V, R),
 }
 FRONT = ("driven", "eigenmode", "electrostatic", "port_mode")
 
@@ -97,6 +98,7 @@ def test_principal_value_cells_fold_into_their_property_column(derived):
         ("eigenmode", "eps_r"),
         ("eigenmode", "conductivity"),
         ("electrostatic", "eps_r"),
+        ("eigenmode_participation", "eps_r"),
     }
     for row in derived["rows"]:
         for cell in row["cells"]:
@@ -159,7 +161,7 @@ def test_periodic_rows_carry_their_own_solvers_and_sweeps(derived):
     ]
     for cell in rows["driven_periodic_bloch"]["cells"]:
         assert cell["sweeps"] == ["uniform"]
-    assert {r["recipe"] for k, r in rows.items() if k not in FRONT} == {
+    assert {r["recipe"] for k, r in rows.items() if "periodic" in k} == {
         "recipes/periodic-cell"
     }
 
@@ -179,7 +181,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 24
+    assert len(rows) == 35
     assert "electrostatic x sheet fill" not in rows
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
     assert rows["material axes (orientation)"] == {
@@ -247,7 +249,7 @@ def _derive(data, cells=None, expected=None, out_of_scope=None):
 
 
 def test_unchanged_data_derives(data):
-    assert len(_derive(data)["rows"]) == 8
+    assert len(_derive(data)["rows"]) == 9
 
 
 def test_a_new_problem_in_the_cells_fails(data):
