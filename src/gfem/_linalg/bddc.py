@@ -254,6 +254,23 @@ class BddcHandle(NgsHandle):
         with self._lock:
             self._expected_columns = self._columns_per_setup(solves)
 
+    @property
+    def reference_iterations(self) -> int | None:
+        """``n_ref`` of the held preconditioner (see `refactorize`), or ``None``."""
+        return self._reference_iterations
+
+    def assume_reference(self, iterations: int) -> None:
+        """Take ``iterations`` as ``n_ref`` of a fresh preconditioner not yet measured.
+
+        For a solve from the previous design's solution (ADR 0126): it takes
+        fewer iterations than a cold solve, and would set ``n_ref`` so low
+        that the next frequencies' reused solves cap and set BDDC up again.
+        The ``n_ref`` the previous design measured stands in.
+        """
+        with self._lock:
+            if not self._reused and self._reference_iterations is None:
+                self._reference_iterations = int(iterations)
+
     def _columns_per_setup(self, solves: int) -> int:
         """The columns one setup serves when ``solves`` solve calls are expected.
 

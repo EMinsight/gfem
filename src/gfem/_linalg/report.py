@@ -8,8 +8,10 @@ fields are also record attributes (``extra``), for a handler or ``caplog``:
 ``direction`` (``forward``/``backward``), ``solver``, ``action``
 (``factorized``, ``refactorized``, ``reused``, ``reused, capped,
 refactorized``), ``iterations`` (per column, ``()`` for a direct solve on
-fresh factors) and ``reason`` (why a step set up or refactorized, else
-``None``), plus the reason's numbers where it has some.
+fresh factors), ``reason`` (why a step set up or refactorized, else
+``None``) and ``guess`` (``"previous design"`` for a solve that started from
+the previous design's solution (ADR 0126), else ``None``), plus the reason's
+numbers where it has some.
 
 A frequency worker logs in its own process: `collected` keeps its records
 and the parent logs them with `replay`.
@@ -34,12 +36,13 @@ def solve_step(
     direction: str,
     iterations: tuple[int, ...],
     frequency: float | None = None,
+    guess: str | None = None,
 ) -> None:
     """Log one solve step on ``handle``, the base handle that solved it.
 
     The action, reason and the reason's numbers are the handle's
     (``last_action``, ``last_reason``, ``last_details``; ``None`` on a
-    backend that tracks none).
+    backend that tracks none). ``guess`` names the initial guess's source.
     """
     if not LOGGER.isEnabledFor(logging.INFO):
         return
@@ -52,8 +55,9 @@ def solve_step(
     what = f"{solver} {action}" if action is not None else f"{solver}"
     why = "" if reason is None else f" ({reason})"
     numbers = "".join(f", {k}={v:g}" for k, v in details.items())
+    start = "" if guess is None else f", from the {guess}'s solution"
     LOGGER.info(
-        "%s %s solve%s: %s%s%s, iterations %s",
+        "%s %s solve%s: %s%s%s, iterations %s%s",
         problem,
         direction,
         at,
@@ -61,6 +65,7 @@ def solve_step(
         why,
         numbers,
         list(iterations),
+        start,
         extra={
             "problem": problem,
             "frequency": frequency,
@@ -69,6 +74,7 @@ def solve_step(
             "action": action,
             "reason": reason,
             "iterations": iterations,
+            "guess": guess,
             **details,
         },
     )

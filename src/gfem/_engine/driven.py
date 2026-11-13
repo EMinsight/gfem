@@ -3,9 +3,10 @@
 At each frequency the operator ``A(ω) = Σ θ_k(ω) A_k`` (see
 `gfem._engine.terms`) is assembled and prepared once, and every excited
 port's right-hand side is solved in one handle call: GMRES + BDDC by
-default, each port starting from its solution at the previous frequency,
-or one LDL^T factorization (``direct``: MKL PARDISO with the ``mkl`` extra,
-NGSolve sparse Cholesky otherwise). The system operator
+default, each port starting from its solution at the previous frequency
+(at a uniform sweep's first, on one process, from the previous design's
+there: ADR 0126), or one LDL^T factorization (``direct``: MKL PARDISO with
+the ``mkl`` extra, NGSolve sparse Cholesky otherwise). The system operator
 (`gfem._engine.system_operator.SystemOperator`) answers the forward and
 adjoint solves. A sweep keeps one base handle: a direct solver plans at the
 first frequency and refactorizes at the others (on the plan pool, one base per
@@ -70,6 +71,7 @@ import contextlib
 import contextvars
 import dataclasses
 import functools
+import hashlib
 import logging
 import math
 import warnings
@@ -98,6 +100,7 @@ from gfem._boundaries import (
 from gfem._engine import sweep_outputs, terms, workers
 from gfem._engine.cache import (
     ENTRIES,
+    Discretization,
     Entry,
     cached,
     discretization,
@@ -118,6 +121,7 @@ from gfem._engine.wave_ports import (
     wave_port_couplings,
 )
 from gfem._linalg import Kind, ResolvedLinearSolver, report
+from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
 from gfem._materials import MaterialField
@@ -696,7 +700,8 @@ class DrivenRule:
         with task_manager(self.options.threads, self.comm):
             system, ports = self._ports(model)
             s = np.zeros((len(frequencies), len(self.port_names), width), complex)
-            previous = None
+            # the first frequency starts from the previous design (ADR 0126)
+            previous, design = None, _DesignGuess.of(self, system)
             with system.sweep(
                 solves=len(frequencies),
                 pool_budget=retain_budget(self.options.retain_memory),
@@ -705,7 +710,7 @@ class DrivenRule:
                     omega = 2 * math.pi * f
                     rhs = ports.rhs(omega)
                     try:
-                        x, its = sweep.solve(omega, rhs, x0=previous)
+                        x, its = design.solve(sweep, omega, rhs, previous)
                     except LinearSolverConvergenceError as err:
                         miss, n_solved = err, n
                         break
@@ -2174,6 +2179,90 @@ class _Kept:
         self.system.free(return_plans=return_plans)
         del self.system, self.ports
         self._freed = True
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _DesignGuess:
+    """Where a uniform BDDC sweep's cold solves find the previous design's solution.
+
+    ADR 0126: on one process, a ``bddc_gmres`` sweep's first frequency starts
+    from the previous design's solution there, kept with the discretization
+    (`Discretization.guesses`, dropped first by the walk). It is used only
+    for the same excited ports and wave vector, free DOFs, symmetry and
+    right-hand-side shape. The guess carries the ``n_ref`` its design's
+    BDDC measured (`gfem._linalg.bddc.BddcHandle.assume_reference`): a solve
+    from it takes too few iterations to measure one.
+    """
+
+    disc: Discretization | None
+    key: tuple = ()
+    match: tuple = ()
+
+    @classmethod
+    def of(cls, rule: DrivenRule, system: SystemOperator) -> _DesignGuess:
+        """``rule``'s guesses on ``system``'s discretization.
+
+        None kept or used (no ``disc``) but for ``bddc_gmres`` on one process
+        with a ``retain_memory`` above 0 and a cached discretization.
+        """
+        op = system.operator
+        disc = cached(op.built)
+        if (
+            rule.linear.kind != "bddc_gmres"
+            or rule.comm is not None
+            or rule.options.retain_memory == 0
+            or disc is None
+        ):
+            return cls(None)
+        free = free_mask(op.space.FreeDofs(), op.space.ndof)
+        digest = hashlib.blake2b(np.packbits(free).tobytes(), digest_size=16)
+        key = ("design guess", tuple(rule.excite), rule.problem.wave_vector)
+        match = (op.space_key, digest.hexdigest(), op.symmetry, rule.linear.tolerance)
+        return cls(disc, key, match)
+
+    def solve(
+        self,
+        sweep: SystemSweep,
+        omega: float,
+        rhs: np.ndarray,
+        previous: np.ndarray | None,
+    ) -> tuple[np.ndarray, tuple[int, ...]]:
+        """`SystemSweep.solve` from the ``previous`` frequency's solution.
+
+        Without one (the sweep's first frequency), from the previous design's
+        solution at ``ω`` where one fits; this design's is kept for the next.
+        """
+        if previous is not None or self.disc is None:
+            return sweep.solve(omega, rhs, x0=previous)
+        key = (*self.key, float(omega))
+        kept = self.disc.guess(key, self.match)
+        if isinstance(kept, _Solution) and kept.block.shape == rhs.shape:
+            x, its = sweep.solve(
+                omega,
+                rhs,
+                x0=kept.block,
+                guess="previous design",
+                reference=kept.reference,
+            )
+        else:
+            x, its = sweep.solve(omega, rhs)
+        reference = sweep.reference_iterations
+        if reference is not None:
+            self.disc.keep_guess(key, self.match, _Solution(x, reference))
+        return x, its
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _Solution:
+    """A design's solution block and the reference iterations its BDDC measured."""
+
+    block: np.ndarray
+    reference: int
+
+    @property
+    def nbytes(self) -> int:
+        """The block's bytes."""
+        return int(self.block.nbytes)
 
 
 @dataclasses.dataclass(frozen=True)

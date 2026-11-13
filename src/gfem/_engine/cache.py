@@ -31,9 +31,10 @@ ends in a frequency: it keeps one handle per frequency (frequency bases, ADR
 0121), and a frequency without its own takes another's (`take_plan`). Pooled
 handles whose mesh topology has no discretization left are freed.
 
-**Kept discretization state** (ADRs 0082, 0091): a discretization's kept fixed
-parts (`KeptParts` stores among its spaces) and its kept wave port couplings and
-port networks (``Discretization.ports``).
+**Kept discretization state** (ADRs 0082, 0091, 0126): a discretization's kept
+fixed parts (`KeptParts` stores among its spaces), its kept wave port couplings
+and port networks (``Discretization.ports``) and its design initial guesses
+(``Discretization.guesses``).
 
 One byte budget, ``retain_memory``, bounds pooled handles, entries, their bases
 and the kept discretization state together. Objects several holders reference
@@ -41,6 +42,7 @@ and the kept discretization state together. Objects several holders reference
 identity, at the cache: an entry's own bytes never include them. Over budget,
 the walk of a stored entry (`EntryCache.put`):
 
+0. drops design initial guesses (they cost iterations, never correctness);
 1. releases pooled handles' PARDISO factors, keeping their plans (a
    returning handle's own first, ADR 0121);
 2. drops kept fixed parts, whole stores, least recently used discretization
@@ -59,7 +61,7 @@ limit stays under that limit (ADR 0123); the rest is trimmed as if its
 factors had been released. An explicit ``retain_memory`` is a hard bound.
 
 A handle returning to the pool, or a differentiated forward freeing consumed
-entries, walks tiers 1, 2, 3 and 6 only: a solve evicts other solves' entries
+entries, walks tiers 0, 1, 2, 3 and 6 only: a solve evicts other solves' entries
 only where it stores one. Eviction drops references and the keys that find
 them; nothing kept is changed, so a live entry keeps reading its own objects and
 a later solve rebuilds what was dropped. ``retain_memory=0`` keeps none of it.
@@ -107,6 +109,8 @@ _MAX_DISCRETIZATIONS = 4
 #: Bloch phase sets a discretization keeps the spaces of: +k and -k of four
 #: wave vectors.
 _MAX_PHASE_SETS = 8
+#: Design initial guesses a discretization keeps, least recently kept out first.
+_MAX_GUESSES = 4
 
 
 @dataclasses.dataclass(eq=False)
@@ -122,12 +126,18 @@ class Discretization:
         ports: The wave port couplings and port networks the last driven
             solve on it built, behind their key (`gfem._engine.driven`), or
             ``None``. Anything with a ``shared()`` of its bytes by identity.
+        guesses: Design initial guesses (ADR 0126): a design's solution
+            blocks (anything with ``nbytes``), by key, each with what a later
+            solve must match to start from it (`guess`).
     """
 
     built: EngineMesh
     topology: Any
     spaces: dict[Hashable, Any] = dataclasses.field(default_factory=dict)
     ports: Any = None
+    guesses: dict[Hashable, tuple[Hashable, Any]] = dataclasses.field(
+        default_factory=dict
+    )
     _groups: collections.OrderedDict[Hashable, set[Hashable]] = dataclasses.field(
         default_factory=collections.OrderedDict, repr=False
     )
@@ -173,17 +183,38 @@ class Discretization:
         return [s for s in self.spaces.values() if isinstance(s, KeptParts)]
 
     def shared(self) -> dict[int, int]:
-        """The kept fixed parts' and port state's bytes, by object identity."""
+        """The kept fixed parts', port state's and guesses' bytes, by identity."""
         held: dict[int, int] = {}
         for store in self.stores():
             held.update(store.shared())
         if self.ports is not None:
             held.update(self.ports.shared())
+        for _, guess in self.guesses.values():
+            held[id(guess)] = int(guess.nbytes)
         return held
 
     def drop_ports(self) -> None:
         """Drop the kept port state: the next driven solve builds it again."""
         self.ports = None
+
+    def guess(self, key: Hashable, match: Hashable) -> Any:
+        """The block kept under ``key``, if kept with ``match``; else ``None``."""
+        kept = self.guesses.get(key)
+        return kept[1] if kept is not None and kept[0] == match else None
+
+    def keep_guess(self, key: Hashable, match: Hashable, block: Any) -> None:
+        """Keep ``block`` (anything with ``nbytes``) under ``key`` for ``match``.
+
+        Replaces what ``key`` held; past `_MAX_GUESSES` keys the oldest goes.
+        """
+        self.guesses.pop(key, None)
+        self.guesses[key] = (match, block)
+        while len(self.guesses) > _MAX_GUESSES:
+            del self.guesses[next(iter(self.guesses))]
+
+    def drop_guesses(self) -> None:
+        """Drop the design initial guesses: the next designs start from zero."""
+        self.guesses = {}
 
 
 _DISCRETIZATIONS: collections.OrderedDict[tuple, Discretization] = (
@@ -559,7 +590,7 @@ class EntryCache:
         when that fits, and is otherwise freed at once and evicts no other
         entry (with ``budget=0`` nothing is kept); its key then reads as evicted,
         so the backward pass recomputes it. Eviction is the walk of the module
-        docstring, all six tiers; a freed entry's walk skips tiers 4 and 5.
+        docstring, every tier; a freed entry's walk skips tiers 4 and 5.
 
         Under ``comm`` the bytes are the largest node's and the budget the smallest
         node's, so all ranks evict alike: a rank's own bytes would leave some ranks
@@ -584,7 +615,7 @@ class EntryCache:
         return key
 
     def trim(self, budget: int, comm: Any = None) -> None:
-        """Walk tiers 1, 2, 3 and 6 down to ``budget``; no entry goes.
+        """Walk tiers 0, 1, 2, 3 and 6 down to ``budget``; no entry goes.
 
         For a backward that reran its forward and freed that entry: the kept
         state the forward rebuilt is bounded as at `put`.
@@ -606,12 +637,12 @@ class EntryCache:
         release_only: bool = False,
         default: bool = False,
     ) -> None:
-        """Free down to ``budget`` (the node's) by the six tiers; 4-5 if ``entries``.
+        """Free down to ``budget`` (the node's) by the tiers; 4-5 if ``entries``.
 
         The bytes are tallied once, then follow each step: a step re-reads only
         the holder it changed, and a shared object leaves the tally with the
         last holder that references it. Tier 1 releases the pooled handle
-        ``first`` before the others; ``release_only`` stops after tier 1.
+        ``first`` before the others; ``release_only`` stops after tiers 0 and 1.
         A ``default`` budget (``retain_memory`` unset) exempts the latest
         returned base while the process has room (`_exempt`).
         """
@@ -619,6 +650,9 @@ class EntryCache:
         discs = [d for d in self._discretizations() if d.comm_key == owner]
         exempt = self._exempt() if comm is None and default else None
         walk = _Walk(self._tally(discs, pool=comm is None), budget, comm, exempt)
+        for disc in discs:
+            if disc.guesses and not walk.step(disc, disc.drop_guesses):
+                return
         if comm is None and release_only:
             self._release_pooled(walk, first)
             return
@@ -770,7 +804,7 @@ class EntryCache:
         Called when a differentiated forward on ``comm`` starts. Under ranks the
         backward is replicated, so every rank frees the same entries together.
         With a ``budget`` their base handles return to the plan pool, where
-        their handles can (`Entry.free`), and the walk's tiers 1, 2, 3 and 6
+        their handles can (`Entry.free`), and the walk's tiers 0, 1, 2, 3 and 6
         run down to it. No entry that is not consumed goes: only `put` evicts
         entries.
         """
@@ -811,7 +845,7 @@ class EntryCache:
     ) -> None:
         """Pool ``handle`` under ``key``, with its factors, within ``budget``.
 
-        While the cache is over ``budget``, the walk's tiers 1, 2, 3 and 6 run,
+        While the cache is over ``budget``, the walk's tiers 0, 1, 2, 3 and 6 run,
         tier 1 on ``handle`` first (its own factors go before other pooled
         handles', ADR 0121), unless not to ``walk`` (an entry giving the
         handle up: that walk counts it); entries and their bases stay (only
