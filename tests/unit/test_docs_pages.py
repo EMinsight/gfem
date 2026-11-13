@@ -234,3 +234,11 @@ def test_a_type_alias_has_a_documentation_comment(alias):
     lines = source.splitlines()
     at = next(i for i, line in enumerate(lines) if line.startswith(f"{alias} = "))
     assert lines[at - 1].startswith("#: "), f"no '#:' comment above {alias}"
+
+
+def test_the_permittivity_law_names_sit_beside_material_in_the_api():
+    """The API reference documents a name on the first public module listing it."""
+    import gfem.model
+
+    laws = {"PermittivityLaw", "Drude", "Lorentz", "Debye", "DjordjevicSarkar"}
+    assert laws <= set(gfem.model.__all__)

@@ -27,7 +27,15 @@ from gfem._boundaries import (
 )
 from gfem._checks import is_traced
 from gfem._domain import EMDomain, em_domain, enclosed_entities
-from gfem._materials import Material, MaterialField
+from gfem._materials import (
+    Debye,
+    DjordjevicSarkar,
+    Drude,
+    Lorentz,
+    Material,
+    MaterialField,
+    PermittivityLaw,
+)
 from gfem._periodic import Pairing, check_domain, check_nodes, check_pec, pairing
 from gfem._sheet import SheetField
 from gfem.errors import RegionNotFoundError
@@ -39,13 +47,18 @@ __all__ = [
     "Absorbing",
     "Boundary",
     "Conductor",
+    "Debye",
+    "DjordjevicSarkar",
+    "Drude",
     "EnclosedBy",
     "Impedance",
+    "Lorentz",
     "LumpedPort",
     "Material",
     "MaterialField",
     "Model",
     "Periodic",
+    "PermittivityLaw",
     "Port",
     "SheetField",
     "WavePort",

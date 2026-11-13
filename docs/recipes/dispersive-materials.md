@@ -46,7 +46,9 @@ fr4 = gfem.Material(
 # the same law written out: eps_inf about 3.92 and one wideband term
 written = gfem.PermittivityLaw(
     eps_inf=3.92,
-    terms=[gfem.DjordjevicSarkar(delta_eps=1.135, low_frequency=1e3, high_frequency=1e12)],
+    terms=[
+        gfem.DjordjevicSarkar(delta_eps=1.135, low_frequency=1e3, high_frequency=1e12)
+    ],
 )
 
 # a law is callable: the complex relative permittivity at f, Hz
