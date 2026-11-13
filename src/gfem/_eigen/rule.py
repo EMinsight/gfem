@@ -1586,7 +1586,17 @@ class EigenmodeRule:
             resistive=(),
             inductive=(),
         )
-        return operator_terms(model, op, nodes=nodes) + ratios.terms()
+        # a density blend never reaches an eigenmode solve (ADR 0113): its
+        # mass derivative is the driven family's only
+        pieces = [
+            dataclasses.replace(
+                t, derivatives={k: d for k, d in t.derivatives.items() if k != "blend"}
+            )
+            if "blend" in t.derivatives
+            else t
+            for t in operator_terms(model, op, nodes=nodes)
+        ]
+        return pieces + ratios.terms()
 
     def lumped_terms(self, model: Model) -> list[Term]:
         """The pieces of ``T(k)`` that move with a lumped value (ADR 0100).
