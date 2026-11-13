@@ -37,7 +37,8 @@ from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import PEC, Conductor, sheet_of, surfaces_of
 from gfem._engine import quadrature
 from gfem._engine.cache import Entry, discretization
-from gfem._engine.coefficients import permittivity
+from gfem._engine.coefficients import p0, permittivity
+from gfem._engine.dispersion import check_static, law_regions
 from gfem._engine.domain import (
     boundary_region,
     domain_key,
@@ -48,7 +49,7 @@ from gfem._engine.domain import (
 from gfem._engine.fields import fe_space
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import Derivative, FieldPair, Term
+from gfem._engine.sensitivity import Derivative, FieldPair, Term, law_key
 from gfem._field import FieldMap
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver
 from gfem._linalg.base import free_mask
@@ -88,6 +89,8 @@ class ElectrostaticRule:
         Raises:
             NotImplementedError: The model has a periodic pair, or a sheet
                 field.
+            ValueError: A permittivity law has a Drude term (no static
+                permittivity).
             gfem.SolverUnavailableError: ``linear_solver="petsc"`` and PETSc
                 cannot be used.
         """
@@ -99,6 +102,8 @@ class ElectrostaticRule:
         self.linear = ResolvedLinearSolver.resolve(
             options, default=DEFAULT_SOLVER, problem="electrostatic"
         )
+        # a law reads its static permittivity; a Drude term has none
+        check_static(model)
         periodic = model._periodic  # noqa: SLF001
         if periodic:
             raise NotImplementedError(
@@ -237,10 +242,15 @@ class ElectrostaticRule:
 
         The permittivity and the node coordinates are read; every other
         material property (losses, ``mu_r``, thermal values), boundary and
-        port value is not, so its gradient is an exact zero.
+        port value is not, so its gradient is an exact zero. Of a
+        permittivity law, the static permittivity reads eps_inf and the
+        strengths only; its frequency parameters are exact zeros (ADR 0011's
+        amendment).
         """
         if kind[0] == "material":
             return "read" if kind[2] in self.reads else "unread"
+        if kind[0] == "law":
+            return "read" if kind[-1] in _STATIC_PARAMETERS else "unread"
         if kind[0] in ("boundary", "port"):
             return "unread"
         return "read"
@@ -300,7 +310,7 @@ class ElectrostaticRule:
                             space=space,
                             left=phi * (0.5 * ct[r]),
                             right=phi,
-                            weights={"grad_grad": eps0},
+                            weights=self._pair_weights(model),
                             order=order,
                             domain=region,
                         )
@@ -326,7 +336,7 @@ class ElectrostaticRule:
                         space=space,
                         left=np.concatenate(left, axis=1),
                         right=np.concatenate(right, axis=1),
-                        weights={"grad_grad": eps0},
+                        weights=self._pair_weights(model),
                         order=order,
                         domain=em_region(model, built),
                     )
@@ -365,9 +375,25 @@ class ElectrostaticRule:
         (per-axis factor 1). The terminal
         liftings are DOF values (1 on a terminal's DOFs, 0 elsewhere), so
         they do not move with the nodes.
+
+        Each law region adds a term of its own (`_law_term`), read only by
+        the law pass: the static permittivity eps_inf + sum of the strengths
+        is linear in them, so each one's form is the region's
+        ``grad u . grad v`` (its coefficient 1 there, 0 elsewhere).
         """
         _, built = self._space(model)
+        laws = [
+            Term(
+                _law_term(lr.region),
+                "gradient",
+                coefficient=p0(built, lr.mask.astype(float)),
+                length_power=1,
+                law=lr.region,
+            )
+            for lr in law_regions(model)
+        ]
         return [
+            *laws,
             Term(
                 "grad_grad",
                 "gradient",
@@ -380,8 +406,24 @@ class ElectrostaticRule:
                         per_axis=Derivative(1.0, holomorphic=False),
                     )
                 },
-            )
+            ),
         ]
+
+    @staticmethod
+    def _pair_weights(model: Model) -> dict[str, float]:
+        """The pairs' weights by term name and `law_key`.
+
+        ``eps0`` on the form, and on each law parameter the static
+        permittivity reads: d eps(0) / dp = 1 on its region's `_law_term`.
+        """
+        eps0 = scipy.constants.epsilon_0
+        weights = {"grad_grad": eps0}
+        for lr in law_regions(model):
+            name = _law_term(lr.region)
+            weights[law_key(name, ("eps_inf",))] = eps0
+            for index in range(len(lr.law.terms)):
+                weights[law_key(name, (index, "delta_eps"))] = eps0
+        return weights
 
     def result(self, outputs: dict) -> ElectrostaticResult:
         """The public result from the forward outputs."""
@@ -445,6 +487,16 @@ class ElectrostaticRule:
             tets = mesh.elements(region)
             out[k] = per_tet[tets[active[tets]]].sum(axis=0)
         return out
+
+
+#: The law parameters the static permittivity reads: eps(0) = eps_inf + the
+#: strengths (a Drude term, which has no strength, is refused).
+_STATIC_PARAMETERS = frozenset({"eps_inf", "delta_eps"})
+
+
+def _law_term(region: str) -> str:
+    """The name of the law pass's term of law region ``region``."""
+    return f"grad_grad static {region}"
 
 
 def _check_surface(model: Model, name: str, role: str) -> None:

@@ -260,9 +260,14 @@ def _tensor(material: Material, name: str = "eps_r") -> np.ndarray:
 def permittivity(model: Model, built: EngineMesh) -> ngs.CoefficientFunction:
     """Relative permittivity, real part, per element: a scalar or 3x3 tensor.
 
-    Only the real part is taken: the electrostatic problem has no loss.
+    Only the real part is taken: the electrostatic problem has no loss. A
+    permittivity law gives its static permittivity
+    (`gfem._engine.dispersion.static_eps`; a Drude term raises).
     """
-    scalar = element_values(model, "eps_r", per_axis=0.0).real
+    # imported here: dispersion imports this module
+    from gfem._engine.dispersion import static_eps
+
+    scalar = static_eps(model)
     anisotropic = {
         r: _tensor(m)
         for r, m in model.materials.items()

@@ -395,7 +395,7 @@ SHEET_FORMS = frozenset({"driven", "eigenmode"})
 #: Operator families whose pairs carry the lumped pieces' weights (by name).
 LUMPED_FORMS = frozenset({"driven", "eigenmode"})
 #: Operator families whose pairs carry the law pieces' dθ/dp (`law_key`).
-LAW_FORMS = frozenset({"driven"})
+LAW_FORMS = frozenset({"driven", "electrostatic"})
 #: The lumped values that are design inputs (ADR 0100), by owner.
 _LUMPED = {
     "port": ("inductance", "capacitance"),

@@ -47,7 +47,12 @@ import scipy.sparse.linalg as spla
 from gfem._engine import quadrature
 from gfem._engine.cache import discretization
 from gfem._engine.coefficients import coefficient, element_tensors
-from gfem._engine.dispersion import eps_at, high_frequency_eps, law_regions
+from gfem._engine.dispersion import (
+    eps_at,
+    high_frequency_eps,
+    law_regions,
+    static_eps,
+)
 from gfem._engine.domain import em_region, pec_surfaces
 from gfem._engine.fields import fe_space
 from gfem._engine.mesh import EngineMesh
@@ -272,14 +277,23 @@ class FluxRecovery:
     def _eps_weights(
         self, static: bool
     ) -> tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]:
-        """The real eps_r and its inverse; a law region's eps_inf on a wave solve.
+        """The real eps_r and its inverse, per element.
 
-        An electrostatic solve reads eps_r through `element_tensors`, which
-        refuses a law region.
+        On a law region: the static permittivity on an electrostatic solve
+        (`static_eps`, the solve's own coefficient), eps_inf on a wave solve.
         """
-        if static or not law_regions(self.model):
+        regions = law_regions(self.model)
+        if not regions:
             return self._weights("eps_r")
-        return self._real_weights(high_frequency_eps(self.model).real)
+        values = high_frequency_eps(self.model).real
+        if static:
+            eps0 = static_eps(self.model)
+            for lr in regions:
+                if values.ndim == 1:
+                    values[lr.mask] = eps0[lr.mask]
+                else:
+                    values[lr.mask] = eps0[lr.mask, None, None] * np.eye(3)
+        return self._real_weights(values)
 
     def _weights(
         self, name: str
