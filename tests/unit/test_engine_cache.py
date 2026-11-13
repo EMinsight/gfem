@@ -562,16 +562,19 @@ def test_a_pullback_after_a_later_forward_runs_its_own_again(stack, forwards):
 # --- a kept forward solve --------------------------------------------------------
 
 
-def test_kept_electrostatic_solve_holds_the_potentials_and_no_solver(model):
-    # a capacitance gradient needs no solve: the factorization is not kept
+def test_kept_electrostatic_solve_holds_the_potentials_and_its_operator(model):
+    # the operator serves an energy or potential gradient (ADR 0125); the
+    # cache drops it before the potentials
     problem = gfem.Electrostatic(terminals={"top": "top"}, ground="bottom")
     rule = ElectrostaticRule(model, problem, gfem.SolverOptions(order=2))
     outputs, entry = rule.forward(model, keep=True)
     assert entry is not None
     assert entry.physics == "em"
-    assert entry.handle is None
+    assert entry.handle.nbytes > 0
     phi = entry.fields["potential"]
     assert phi.shape[1] == 1
+    assert entry.nbytes == phi.nbytes + entry.handle.nbytes
+    entry.handle.free_base(None)
     assert entry.nbytes == phi.nbytes
     # 1 V on the top plate, 0 V on the bottom one
     assert phi[:, 0].max() == pytest.approx(1.0, abs=1e-6)
