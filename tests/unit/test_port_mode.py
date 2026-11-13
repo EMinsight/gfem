@@ -623,6 +623,92 @@ def test_a_field_with_axes_has_the_mode_of_its_material(wr28_mesh):
     )
 
 
+# --- dispersive cross-sections (ADR 0114) ----------------------------------------
+
+#: Re eps <= 0 from its resonance (12 GHz) to sqrt(2) times it (16.97 GHz).
+BAND_LORENTZ = gfem.PermittivityLaw(
+    eps_inf=1.0,
+    terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=12e9, damping=1e8)],
+)
+
+
+def _air_law(mesh, law, walls=None):
+    model = guide(mesh, walls)
+    return model.with_material("air", gfem.Material(eps_r=law))
+
+
+@pytest.fixture
+def exact_solves(monkeypatch):
+    """The number of exact port mode solves run so far."""
+    from gfem._sweep import port_mode
+
+    count = [0]
+    solve = port_mode._Greedy._solve
+
+    def counted(self, j):
+        count[0] += 1
+        return solve(self, j)
+
+    monkeypatch.setattr(port_mode._Greedy, "_solve", counted)
+    return count
+
+
+def test_a_dispersive_section_solves_where_it_is_a_dielectric(guide_mesh):
+    result = gfem.solve(_air_law(guide_mesh, BAND_LORENTZ), gfem.PortMode("p1", 8e9))
+    eps = complex(BAND_LORENTZ(8e9))
+    constant = gfem.Material(eps_r=eps.real, tan_delta=-eps.imag / eps.real)
+    expected = gfem.solve(
+        guide(guide_mesh).with_material("air", constant), gfem.PortMode("p1", 8e9)
+    )
+    np.testing.assert_allclose(result.gamma, expected.gamma, rtol=1e-12)
+
+
+@pytest.mark.parametrize("problem", ["port_mode", "driven"])
+def test_a_metal_at_one_grid_frequency_raises_before_any_exact_solve(
+    guide_mesh, exact_solves, problem
+):
+    model = _air_law(guide_mesh, BAND_LORENTZ)
+    grid = [8e9, 10e9, 14e9]
+    problem = gfem.PortMode("p1", grid) if problem == "port_mode" else gfem.Driven(grid)
+    with pytest.raises(
+        ValueError,
+        match=r"WavePort 'p1': region 'air' has Re eps = -[\d.]+ at 14 GHz in the "
+        r"port's cross-section; a port mode with a metal \(Re eps <= 0\)",
+    ):
+        gfem.solve(model, problem)
+    assert exact_solves[0] == 0
+
+
+def test_a_drude_metal_in_the_section_raises(guide_mesh, exact_solves):
+    gold = gfem.PermittivityLaw(
+        eps_inf=1.0,
+        terms=[gfem.Drude(plasma_frequency=2.183e15, damping=1.28e13)],
+    )
+    with pytest.raises(ValueError, match=r"region 'air' has Re eps = -.*LumpedPort"):
+        gfem.solve(_air_law(guide_mesh, gold), gfem.PortMode("p1", 10e9))
+    assert exact_solves[0] == 0
+
+
+def test_a_grid_frequency_on_a_lossless_pole_raises(guide_mesh, exact_solves):
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=12e9, damping=0.0)],
+    )
+    with pytest.raises(
+        ValueError, match=r"WavePort 'p1': frequency 12 GHz lies on a lossless pole"
+    ):
+        gfem.solve(_air_law(guide_mesh, law), gfem.PortMode("p1", [10e9, 12e9]))
+    assert exact_solves[0] == 0
+
+
+def test_a_second_order_absorbing_edge_beside_a_law_raises(guide_mesh):
+    model = _air_law(guide_mesh, BAND_LORENTZ, gfem.Absorbing("walls", order=2))
+    with pytest.raises(
+        NotImplementedError, match=r"second-order absorbing surface 'walls'.*'air'"
+    ):
+        gfem.solve(model, gfem.PortMode("p1", 8e9))
+
+
 # --- errors ---------------------------------------------------------------------
 
 

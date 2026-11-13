@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import math
 
 import numpy as np
 
@@ -23,14 +24,17 @@ from gfem._boundaries import (
     surfaces_of,
 )
 from gfem._engine.anisotropy import CROSS_N, edge_admittance
+from gfem._engine.dispersion import susceptibility
 from gfem._materials import (
     PROPERTIES,
     Material,
     MaterialField,
+    PermittivityLaw,
     field_principal_values,
     lossy_permittivity,
     principal_tensor,
 )
+from gfem._text import hertz
 from gfem.conventions import EXTERIOR_THICKNESS_FACTOR
 from gfem.errors import PortGeometryError
 from gfem.mesh import LENGTH_UNITS
@@ -57,7 +61,7 @@ class PortSection:
         points: Node coordinates ``(n_nodes, 2)`` in the plane.
         triangles: ``(n_tri, 3)`` node indices, counter-clockwise in (u, v).
         eps_tt: Complex relative permittivity in the plane, ``(n_tri, 2, 2)``,
-            without conductivity.
+            without conductivity; a law triangle's eps_inf.
         eps_nn: Complex relative permittivity along ``n``, ``(n_tri,)``.
         nu_tt: ``R^T mu_tt^-1 R`` with ``R a = a x n``, ``(n_tri, 2, 2)``.
         nu_nn: ``1 / mu_nn``, ``(n_tri,)``.
@@ -69,7 +73,9 @@ class PortSection:
             the medium beside each absorbing edge for the field along the
             edge and along ``n``, ``(n, 2)``
             (`gfem._engine.anisotropy.edge_admittance`; both ``sqrt(eps /
-            mu)`` in an isotropic medium).
+            mu)`` in an isotropic medium). Zero on an edge beside a law
+            triangle: its admittance depends on the frequency
+            (``absorbing_law``).
         faces: The mesh triangle (gfem index) of each of ``triangles``, or
             ``None`` (sections saved before it was recorded).
         impedance_edges: ``(n, 2)`` node pairs on `Conductor` or `Impedance`
@@ -83,6 +89,12 @@ class PortSection:
         impedance_fill: ``(n,)`` the sheet field's fill on the face of the
             3D surface along each impedance edge (1 for a boundary without
             one), or ``None`` when no edge's boundary has a sheet field.
+        laws: ``(region, law)`` per region of the section whose eps_r is a
+            `gfem.PermittivityLaw` (ADR 0114); empty without one.
+        law_index: ``(n_tri,)`` each triangle's index in ``laws``, -1 off
+            them; ``None`` without laws.
+        absorbing_law: ``(n,)`` the index in ``laws`` of the triangle beside
+            each absorbing edge, -1 off them; ``None`` without laws.
     """
 
     port: WavePort
@@ -109,6 +121,9 @@ class PortSection:
     )
     impedance_terms: tuple = ()
     impedance_fill: np.ndarray | None = None
+    laws: tuple[tuple[str, PermittivityLaw], ...] = ()
+    law_index: np.ndarray | None = None
+    absorbing_law: np.ndarray | None = None
 
     @property
     def diameter(self) -> float:
@@ -120,7 +135,9 @@ class PortSection:
         """The largest principal conductivity over the cross-section, S/m."""
         return float(max(np.linalg.eigvalsh(self.sigma_tt).max(), self.sigma_nn.max()))
 
-    def index_squared(self, sigma_term: float = 0.0) -> tuple[float, float]:
+    def index_squared(
+        self, sigma_term: float = 0.0, frequency: float | None = None
+    ) -> tuple[float, float]:
         """Bounds on the squared bulk index over the cross-section.
 
         From the principal values of each triangle's tensors (the diagonal
@@ -128,6 +145,8 @@ class PortSection:
 
         Args:
             sigma_term: ``max_conductivity / (omega eps0)`` to add to ``|eps|``.
+            frequency: Hz, where the laws are read (`eps_at`); without it, a
+                law triangle counts its eps_inf.
 
         Returns:
             ``max Re(eps) max Re(mu)`` (the shift, as in Palace; largest
@@ -136,10 +155,66 @@ class PortSection:
         """
         # mu_tt^-1 is congruent to nu_tt by a rotation: same eigenvalues
         mu_tt, mu_nn = np.linalg.inv(self.nu_tt), 1 / self.nu_nn
-        return (
-            float(_largest(self.eps_tt, self.eps_nn) * _largest(mu_tt, mu_nn)),
-            float((_norm(self.eps_tt, self.eps_nn) + sigma_term) * _norm(mu_tt, mu_nn)),
+        eps_tt, eps_nn = (
+            (self.eps_tt, self.eps_nn) if frequency is None else self.eps_at(frequency)
         )
+        return (
+            float(_largest(eps_tt, eps_nn) * _largest(mu_tt, mu_nn)),
+            float((_norm(eps_tt, eps_nn) + sigma_term) * _norm(mu_tt, mu_nn)),
+        )
+
+    def eps_at(self, frequency: float) -> tuple[np.ndarray, np.ndarray]:
+        """``(eps_tt, eps_nn)`` with each law's permittivity at ``frequency`` (Hz).
+
+        eps_inf + chi(omega) on the law triangles (isotropic), the stored
+        values elsewhere. Non-finite on a lossless pole (`check_frequencies`).
+        """
+        if not self.laws:
+            return self.eps_tt, self.eps_nn
+        eps_tt, eps_nn = self.eps_tt.copy(), self.eps_nn.copy()
+        index = np.asarray(self.law_index)
+        for g, chi in enumerate(self.susceptibilities(frequency)):
+            rows = index == g
+            eps_tt[rows] += chi * np.eye(2)
+            eps_nn[rows] += chi
+        return eps_tt, eps_nn
+
+    def susceptibilities(self, frequency: float) -> list[complex]:
+        """The susceptibility chi of each of ``laws`` at ``frequency`` (Hz)."""
+        omega = 2 * math.pi * frequency
+        return [susceptibility(law, omega) for _, law in self.laws]
+
+    def check_frequencies(self, frequencies) -> None:
+        """Raise where a law of the section cannot be solved (ADR 0114).
+
+        Static: reads the laws and the frequencies only, before any solve.
+
+        Raises:
+            ValueError: A frequency lies on a lossless pole of a law, or a
+                law region has Re eps <= 0 there (a metal in the section).
+        """
+        for f in frequencies:
+            for (region, law), chi in zip(
+                self.laws, self.susceptibilities(float(f)), strict=True
+            ):
+                name = self.port.name
+                if not np.isfinite(chi):
+                    raise ValueError(
+                        f"WavePort {name!r}: frequency {hertz(f)} lies on a "
+                        f"lossless pole of the permittivity law of region "
+                        f"{region!r} in the port's cross-section: its permittivity "
+                        "is infinite there. Give the term a damping, or leave "
+                        "this frequency out."
+                    )
+                eps = float(law.eps_inf) + chi.real
+                if eps <= 0:
+                    raise ValueError(
+                        f"WavePort {name!r}: region {region!r} has Re eps = "
+                        f"{eps:.3g} at {hertz(f)} in the port's cross-section; a "
+                        "port mode with a metal (Re eps <= 0) in its cross-section "
+                        "is not supported. Move the port plane so that its "
+                        "cross-section is dielectric, or use a LumpedPort."
+                    )
 
     def to_local(self, points_m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Plane coordinates ``(n, 2)`` and normal distances of global points (m)."""
@@ -220,7 +295,8 @@ def port_section(model: Model, port: WavePort) -> PortSection:
     eps_tt, eps_nn, nu_tt, nu_nn, sigma_tt, sigma_nn, isotropic = _materials(
         model, port, tets, frame
     )
-    pec, absorbing, admittance, (imp_edges, imp_group, imp_terms, imp_fill) = _edges(
+    laws, law_index = _laws(model, tets)
+    edges = _edges(
         model,
         port,
         tris,
@@ -228,7 +304,11 @@ def port_section(model: Model, port: WavePort) -> PortSection:
         points=points,
         tensors=(eps_tt, eps_nn, nu_tt, nu_nn),
         isotropic=isotropic,
+        law_index=law_index,
+        laws=laws,
     )
+    pec, absorbing, admittance, impedance, absorbing_law = edges
+    imp_edges, imp_group, imp_terms, imp_fill = impedance
     return PortSection(
         port=port,
         scale=scale,
@@ -250,6 +330,9 @@ def port_section(model: Model, port: WavePort) -> PortSection:
         impedance_group=imp_group,
         impedance_terms=imp_terms,
         impedance_fill=imp_fill,
+        laws=laws,
+        law_index=law_index if laws else None,
+        absorbing_law=absorbing_law if laws else None,
     )
 
 
@@ -328,7 +411,8 @@ def port_section_key(model: Model, port: WavePort) -> str:
 def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray):
     """Per-triangle material values in the port frame.
 
-    Also whether each triangle's material is isotropic.
+    Also whether each triangle's material is isotropic. A law triangle holds
+    eps_inf (ADR 0114).
     """
     mesh = model.mesh
     names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
@@ -346,12 +430,9 @@ def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray
         rows = np.flatnonzero(region_of == rtag)
         material = model.materials[region]
         if isinstance(material, Material):
-            eps = lossy_permittivity(material)
+            eps, eps_name = _permittivity(material)
             mu = principal_tensor(material.mu_r, material.axes).astype(complex)
             sigma = principal_tensor(material.conductivity, material.axes)
-            # tan_delta alone can make the lossy permittivity a tensor
-            # a law never reaches here: lossy_permittivity refuses it
-            eps_name = "tan_delta" if np.ndim(material.eps_r) == 0 else "eps_r"  # ty: ignore[invalid-argument-type]
             et, en = _in_frame(eps, frame, port, region, eps_name)
             mt, mn = _in_frame(mu, frame, port, region, "mu_r")
             st, sn = _in_frame(sigma, frame, port, region, "conductivity")
@@ -381,6 +462,41 @@ def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray
             sigma_tt[rows] = sigma[:, None, None] * np.eye(2)
             sigma_nn[rows] = sigma
     return eps_tt, eps_nn, nu_tt, nu_nn, sigma_tt, sigma_nn, isotropic
+
+
+def _laws(model: Model, tets: np.ndarray):
+    """The section's laws, ``((region, law), ...)``, and each triangle's index.
+
+    ``tets`` are the volume elements behind the triangles; the index is -1
+    off the law regions.
+    """
+    mesh = model.mesh
+    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    laws: list[tuple[str, PermittivityLaw]] = []
+    index = np.full(len(tets), -1, np.int64)
+    region_of = mesh.tetrahedron_tags[tets]
+    for rtag in np.unique(region_of):
+        region = names[int(rtag)]
+        material = model.materials[region]
+        if isinstance(material, Material) and isinstance(
+            material.eps_r, PermittivityLaw
+        ):
+            index[region_of == rtag] = len(laws)
+            laws.append((region, material.eps_r))
+    return tuple(laws), index
+
+
+def _permittivity(material: Material) -> tuple[np.ndarray, str]:
+    """A material's lossy permittivity tensor, and the property it comes from.
+
+    A law gives its eps_inf (isotropic, with no tan_delta beside it): its
+    susceptibility is a piece of the port mode pencil (ADR 0114).
+    """
+    eps_r = material.eps_r
+    if isinstance(eps_r, PermittivityLaw):
+        return float(eps_r.eps_inf) * np.eye(3, dtype=complex), "eps_r"
+    # tan_delta alone can make the lossy permittivity a tensor
+    return lossy_permittivity(material), "tan_delta" if np.ndim(eps_r) == 0 else "eps_r"
 
 
 def _field(material: MaterialField, name: str, default: float, pos: np.ndarray):
@@ -462,7 +578,8 @@ def _edge_keys(tris: np.ndarray) -> np.ndarray:
 def _edge_kinds(model: Model, port: WavePort) -> dict[str, object]:
     """What each named surface is to the port mode problem's edges.
 
-    ``"pec"``, ``"absorbing"``, or the `Conductor` / `Impedance` itself.
+    ``"pec"``, ``"absorbing"`` (``"absorbing2"`` at order 2), or the
+    `Conductor` / `Impedance` itself.
     """
     kinds: dict[str, object] = {}
     for item in (*model.boundaries, *model.ports):
@@ -472,7 +589,7 @@ def _edge_kinds(model: Model, port: WavePort) -> dict[str, object]:
             elif isinstance(item, (Conductor, Impedance)):
                 kinds[s] = item
             elif isinstance(item, Absorbing):
-                kinds[s] = "absorbing"
+                kinds[s] = "absorbing2" if item.order == 2 else "absorbing"
     for s in port.pec_edges:
         kinds[s] = "pec"
     return kinds
@@ -507,12 +624,18 @@ def _surfaces_on_edges(
     return [found.get(int(e), {}) for e in p_ids]
 
 
-def _edges(model, port, tris, used, *, points, tensors, isotropic):
+def _edges(model, port, tris, used, *, points, tensors, isotropic, law_index, laws):
     """Perfect-conductor, absorbing and impedance edges of the cross-section.
 
     An edge on several surfaces takes the first of: perfect conductor,
     `Conductor` / `Impedance`, absorbing. ``tensors`` are the triangles'
-    ``(eps_tt, eps_nn, nu_tt, nu_nn)``.
+    ``(eps_tt, eps_nn, nu_tt, nu_nn)``. Also the law index of the triangle
+    beside each absorbing edge (``law_index`` of `_materials`), whose
+    admittance is left zero.
+
+    Raises:
+        NotImplementedError: A second-order absorbing edge lies beside a law
+            triangle (unverified, ADR 0114).
     """
     port_edges = _edge_keys(tris)
     kinds = _edge_kinds(model, port)
@@ -546,32 +669,46 @@ def _edges(model, port, tris, used, *, points, tensors, isotropic):
             on_sheet = sheet_fill.get(item.surface, {})  # ty: ignore[unresolved-attribute]
             fills.append(on_sheet.get(tuple(port_edges[k]), 1.0))
             continue
-        if "absorbing" in types:
+        absorbing_types = [t for t in types if t in ("absorbing", "absorbing2")]
+        if absorbing_types:
             absorbing.append(local[k])
             owners.append(k // 3)
-            names.append(
-                next(
-                    s
-                    for s, t in zip(sorted(surfaces), types, strict=True)
-                    if t == "absorbing"
-                )
+            name = next(
+                s
+                for s, t in zip(sorted(surfaces), types, strict=True)
+                if t in ("absorbing", "absorbing2")
             )
+            names.append(name)
+            g = law_index[k // 3]
+            if g >= 0 and "absorbing2" in absorbing_types:
+                raise NotImplementedError(
+                    f"WavePort {port.name!r}: the second-order absorbing surface "
+                    f"{name!r} meets region {laws[g][0]!r}, whose eps_r is a "
+                    "permittivity law, along the port's cross-section; a "
+                    "second-order absorbing edge beside a dispersive region is not "
+                    "supported in the port mode problem. Use Absorbing(order=1) "
+                    "there."
+                )
+    owners = np.asarray(owners, np.int64)
     admittance = _absorbing_admittance(
         port,
         points,
         np.asarray(absorbing).reshape(-1, 2),
-        np.asarray(owners, np.int64),
+        owners,
         surfaces=names,
         tensors=tensors,
         isotropic=isotropic,
     )
+    absorbing_law = law_index[owners]
+    # beside a law: the law's own edge piece (`gfem._engine.port_mode`)
+    admittance[absorbing_law >= 0] = 0.0
     pairs = [
         np.asarray(e, dtype=np.int64).reshape(-1, 2)
         for e in (pec, absorbing, imp_edges)
     ]
     fill = np.asarray(fills, float) if sheet_fill else None
     impedance = (pairs[2], np.asarray(imp_group, np.int64), tuple(terms), fill)
-    return pairs[0], pairs[1], admittance, impedance
+    return pairs[0], pairs[1], admittance, impedance, absorbing_law
 
 
 def _absorbing_admittance(port, points, edges, owners, *, surfaces, tensors, isotropic):

@@ -176,6 +176,7 @@ PROBLEMS = {
     "eigenmode_lumped": Problem("eigenmode", "omega"),
     "electrostatic_lumped": Problem("electrostatic", "capacitance"),
     "port_mode_lumped": Problem("port_mode", "gamma"),
+    "port_mode_law": Problem("port_mode", "gamma"),
 }
 #: The rows whose cell-only keys have no ``EXPECTED`` entries of their own:
 #: the raise table's leaves of their row's keys answer for them, by prefix
@@ -204,9 +205,10 @@ OFF_GRID = {
     "mu_r": "permeability",
     "tan_delta": "loss tangent",
     "lumped": "lumped values",
+    "law": "permittivity-law parameters",
 }
 #: The off-grid inputs listed together, one phrase per group and row.
-OFF_GRID_GROUPS = (("mu_r", "tan_delta"), ("lumped",))
+OFF_GRID_GROUPS = (("mu_r", "tan_delta"), ("lumped",), ("law",))
 #: The material properties among them (the others have no value forms).
 OFF_GRID_PROPERTIES = ("mu_r", "tan_delta")
 OFF_GRID_INPUTS = {name: name for name in OFF_GRID} | {
@@ -399,7 +401,7 @@ def _input_column(kind) -> str | None:
         return MATERIAL_PROPERTIES[kind[2]]
     if len(kind) == 4 and kind[0] == "boundary" and kind[2:] == ("fill", "fill"):
         return "fill"
-    if _off_grid_input(kind) == "lumped":
+    if _off_grid_input(kind) in ("lumped", "law"):
         return None
     raise CapabilitiesError(
         f"{RAISE_TEST}: input kind {kind!r} is not in the Capabilities mapping "
@@ -409,6 +411,9 @@ def _input_column(kind) -> str | None:
 
 def _off_grid_input(kind: tuple) -> str | None:
     """The `OFF_GRID` input of an EXPECTED input kind, or None."""
+    # a law's ("law", region, "eps_inf") or ("law", region, term, parameter)
+    if kind[0] == "law" and len(kind) in (3, 4):
+        return "law"
     if len(kind) == 3 and kind[2] in LUMPED_VALUES.get(kind[0], ()):
         return "lumped"
     if len(kind) == 3 and kind[0] == "material" and kind[2] in OFF_GRID:
