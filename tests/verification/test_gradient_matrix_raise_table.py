@@ -604,6 +604,37 @@ EXPECTED |= {
     for kind in [("nodes",), *PORT_MODE_LAW_KINDS]
 }
 
+# The stack with a permittivity law on its nitride (ADR 0111): the table's
+# law without its Drude term (a Drude metal has no static permittivity). The
+# capacitance, the energies and the potentials differentiate by eps_inf and
+# every strength, which the static permittivity reads; every frequency
+# parameter is an exact zero (ADR 0011's amendment: a leaf the physics never
+# reads). The oxide field and the nodes are as on the plain stack.
+ELECTROSTATIC_LAW = dataclasses.replace(TABLE_LAW, terms=TABLE_LAW.terms[1:])
+ELECTROSTATIC_LAW_KINDS = [
+    ("law", "nitride", "eps_inf"),
+    *(
+        ("law", "nitride", i, f.name)
+        for i, term in enumerate(ELECTROSTATIC_LAW.terms)
+        for f in dataclasses.fields(term)
+    ),
+]
+EXPECTED |= {
+    ("electrostatic_law", out, kind): (
+        EXPECTED[("electrostatic", out, kind)]
+        if kind[0] != "law"
+        else GRADIENT
+        if kind[-1] in ("eps_inf", "delta_eps") and not out.endswith("mesh.nodes")
+        else ZERO
+    )
+    for out in sorted({out for name, out, _ in EXPECTED if name == "electrostatic"})
+    for kind in [
+        ("nodes",),
+        *(("material", "oxide", p) for p in ALL_PROPERTIES),
+        *ELECTROSTATIC_LAW_KINDS,
+    ]
+}
+
 
 def _field(mesh, region, **overrides):
     # values vary per element, so the terminal potentials depend on them
@@ -923,6 +954,10 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
     )
     return {
         "electrostatic": (model, PROBLEMS["electrostatic"]),
+        "electrostatic_law": (
+            model.with_material("nitride", gfem.Material(eps_r=ELECTROSTATIC_LAW)),
+            PROBLEMS["electrostatic"],
+        ),
         "port_mode": (port_model, gfem.PortMode("p1", 10e9)),
         "port_mode_law": (
             port_model.with_material("fill", gfem.Material(eps_r=PORT_MODE_LAW)),
