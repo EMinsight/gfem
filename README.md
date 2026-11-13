@@ -63,7 +63,7 @@ print(abs(result.s["p2", "p1"]))  # |S21| at 2, 5 and 8 GHz
 ```
 
 ```text
-[0.8306221  0.90133232 0.60517623]
+[0.83062238 0.90133217 0.60517471]
 ```
 
 [Get started](https://bvial.info/gfem/get-started.html) explains each line, checks the numbers by hand and differentiates the

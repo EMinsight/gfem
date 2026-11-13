@@ -104,6 +104,7 @@ __all__ = [
     "Refactorable",
     "ResolvedLinearSolver",
     "Symmetry",
+    "auto_linear_solver",
     "factorize",
     "low_rank_update",
     "prepare",
@@ -116,6 +117,35 @@ Kind = Literal["direct", "bddc_gmres", "petsc"]
 KINDS: tuple[Kind, ...] = get_args(Kind)
 #: Most Krylov iterations of an iterative solve (as Palace).
 MAXITER = 400
+#: Bytes per unknown of a direct factorization, above every measured peak
+#: (36.2 KiB, sparse Cholesky; PARDISO about half): `auto_linear_solver`.
+DIRECT_BYTES_PER_UNKNOWN = 40 * 2**10
+
+
+def auto_linear_solver(
+    default: Kind, *, unknowns: int, in_flight: int, general: bool, budget: int
+) -> tuple[Kind, str]:
+    """``"direct"`` while its factorizations fit ``budget``, else ``default``.
+
+    The estimate is `DIRECT_BYTES_PER_UNKNOWN` times ``unknowns`` per
+    factorization ``in_flight``, doubled for a ``general`` operator (LU
+    stores L and U). Equal to the budget fits. Reads no clock and no
+    installed library (ADR 0124). Returns the kind and why, in words.
+    """
+    estimate = direct_estimate(unknowns, in_flight=in_flight, general=general)
+    fits = estimate <= budget
+    gib = 2**30
+    reason = (
+        f"{unknowns:,} unknowns, est. {estimate / gib:.1f} GiB factorization "
+        f"{'<=' if fits else '>'} {budget / gib:.1f} GiB budget "
+        f"(half of {2 * budget / gib:.3g} GiB)"
+    )
+    return ("direct" if fits else default), reason
+
+
+def direct_estimate(unknowns: int, *, in_flight: int, general: bool) -> int:
+    """Bytes of ``in_flight`` direct factorizations of ``unknowns``."""
+    return DIRECT_BYTES_PER_UNKNOWN * unknowns * in_flight * (2 if general else 1)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -490,9 +520,23 @@ class ResolvedLinearSolver:
 
     @classmethod
     def resolve(
-        cls, options: SolverOptions, *, default: Kind, problem: str, comm: Any = None
+        cls,
+        options: SolverOptions,
+        *,
+        default: Kind,
+        problem: str,
+        comm: Any = None,
+        unknowns: int | None = None,
+        in_flight: int = 1,
+        general: bool = False,
+        budget: int | None = None,
     ) -> Self:
         """The linear solver of ``options`` for a ``problem`` problem.
+
+        With ``unknowns``, ``"auto"`` on one CPU process is `auto_linear_solver`
+        (``"direct"`` while it fits ``budget``, else ``default``). A resolved
+        ``"auto"`` is logged on ``gfem.solver`` (`report.auto_choice`); an
+        explicit choice is not.
 
         Args:
             options: The solver options.
@@ -500,6 +544,10 @@ class ResolvedLinearSolver:
                 CPU; on a GPU ``"auto"`` is ``"direct"``.
             problem: The problem type, for the error message.
             comm: The resolved communicator of a distributed solve.
+            unknowns: The system size, an upper bound, for the rule.
+            in_flight: The factorizations held at once (frequency workers).
+            general: Whether the operator is general (not ``A^T = A``).
+            budget: The rule's bytes; required with ``unknowns``.
 
         Raises:
             NotImplementedError: The linear solver is not available.
@@ -507,6 +555,7 @@ class ResolvedLinearSolver:
                 cannot be used, or ``"direct"`` or ``"petsc"`` under ``comm``
                 without the MPI PETSc stack.
         """
+        from gfem._linalg import report
         from gfem.options import split_petsc_options
 
         name = options.linear_solver
@@ -514,8 +563,30 @@ class ResolvedLinearSolver:
             kind = name
         elif options.device != "cpu":
             kind = "direct"  # the only solver that runs on a GPU
-        else:
+            report.auto_choice(kind, problem=problem)
+        elif comm is not None or unknowns is None:
             kind = default
+            report.auto_choice(kind, problem=problem)
+        else:
+            if budget is None:  # pragma: no cover - a caller error
+                raise TypeError("resolve needs a budget with unknowns.")
+            kind, reason = auto_linear_solver(
+                default,
+                unknowns=unknowns,
+                in_flight=in_flight,
+                general=general,
+                budget=budget,
+            )
+            report.auto_choice(
+                kind,
+                problem=problem,
+                reason=reason,
+                unknowns=unknowns,
+                estimate=direct_estimate(
+                    unknowns, in_flight=in_flight, general=general
+                ),
+                budget=budget,
+            )
         if kind not in KINDS:  # pragma: no cover - SolverOptions validates
             raise NotImplementedError(
                 f"linear_solver={name!r} is not available for {problem} problems "

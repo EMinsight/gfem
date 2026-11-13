@@ -97,12 +97,14 @@ from gfem._boundaries import (
     wave_port_label,
     wave_port_surfaces,
 )
+from gfem._domain import nedelec_unknowns
 from gfem._engine import sweep_outputs, terms, workers
 from gfem._engine.cache import (
     ENTRIES,
     Discretization,
     Entry,
     cached,
+    default_retain_memory,
     discretization,
     retain_budget,
 )
@@ -170,7 +172,9 @@ __all__ = [
 #: Hermitian.
 DrivenSymmetry = Literal["complex_symmetric", "general"]
 
-#: The linear solver for ``linear_solver="auto"``: GMRES + BDDC.
+#: The linear solver for ``linear_solver="auto"`` when direct does not fit
+#: (`gfem._linalg.auto_linear_solver`): direct while it fits, else GMRES +
+#: BDDC (ADR 0124).
 DEFAULT_SOLVER: Kind = "bddc_gmres"
 
 #: k0 * h_min below which a driven solve warns (gfem.LowFrequencyWarning).
@@ -541,7 +545,11 @@ class DrivenRule:
             )
         # before any assembly, and before any worker
         self.linear = ResolvedLinearSolver.resolve(
-            options, default=DEFAULT_SOLVER, problem="driven", comm=comm
+            options,
+            default=DEFAULT_SOLVER,
+            problem="driven",
+            comm=comm,
+            **_auto_inputs(model, problem, options, comm),
         )
         _check_supported(model)
         if not model.ports:
@@ -869,8 +877,12 @@ class DrivenRule:
         )
         indices = [block for block in indices if len(block)]
         threads = workers.worker_threads(self.options.threads, len(indices))
+        # a worker's block cannot re-decide "auto" (ADR 0124)
         options = dataclasses.replace(
-            self.options, threads=threads, frequency_workers=1
+            self.options,
+            threads=threads,
+            frequency_workers=1,
+            linear_solver=self.linear.kind,
         )
         problems = [
             Driven(
@@ -2001,6 +2013,26 @@ FORWARD_WARNINGS = (
     SkippedPortModeWarning,
     PortModeProjectionWarning,
 )
+
+
+def _auto_inputs(
+    model: Model, problem: Driven, options: SolverOptions, comm: Any
+) -> dict[str, Any]:
+    """What ``linear_solver="auto"`` reads on one CPU process (ADR 0124).
+
+    Empty when the rule does not apply, so the unknowns are counted only
+    when it does.
+    """
+    if options.linear_solver != "auto" or options.device != "cpu" or comm is not None:
+        return {}
+    workers = 1 if problem.sweep == "adaptive" else options.frequency_workers
+    return {
+        "unknowns": nedelec_unknowns(model.mesh, model._domain, options.order),  # noqa: SLF001
+        # each frequency worker holds its own factorization
+        "in_flight": min(workers, len(problem.frequency)),
+        "general": problem.wave_vector is not None,
+        "budget": default_retain_memory(),
+    }
 
 
 def _solve_block(
