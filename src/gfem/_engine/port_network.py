@@ -29,7 +29,9 @@ adaptive sweep, whose backward has no full-size solver, solves these S
 functionals at every sample and adds them to its basis
 (`PortNetwork.adjoint_loads`, ADR 0010).
 
-The network only consumes the wave port couplings; the system operator
+The network only consumes the wave port couplings and holds them once: a
+wave port's output term reads them conjugated on the fly
+(`AffineTerm.conjugate`, ADR 0091). The system operator
 (`gfem._engine.system_operator`) solves with the same couplings.
 """
 
@@ -295,7 +297,7 @@ class PortNetwork:
                     out[c.index] = c.functional(w)
                 return out
 
-            outputs.append(AffineTerm(np.conj(surface.vectors), wave_rows))
+            outputs.append(AffineTerm(surface.vectors, wave_rows, conjugate=True))
         waves = sorted((c for s in surfaces for c in s.ports), key=lambda c: c.index)
         z_ref = np.zeros((n_freq, n_ports))
         for i in lumped:
@@ -321,7 +323,7 @@ class PortNetwork:
     def outgoing(self, omega: float, x: np.ndarray) -> np.ndarray:
         """``(n_ports, width)``: each port's outgoing wave in the solutions ``x``."""
         pair = self.layout.pair
-        return self._rows(omega, (pair(t.vectors, x) for t in self.outputs))
+        return self._rows(omega, (t.project(x, pair) for t in self.outputs))
 
     def reduced_functional(
         self, omega: float, projected: Sequence[np.ndarray]
@@ -344,8 +346,8 @@ class PortNetwork:
 
         A wave port's projects on its conjugated mode (`WavePortCoupling`).
         """
-        return sum(
-            t.vectors @ np.asarray(t.coefficients(omega)).T for t in self.outputs
+        return np.asarray(
+            sum(t.combine(np.asarray(t.coefficients(omega)).T) for t in self.outputs)
         )
 
     def scattering(self, waves: np.ndarray) -> np.ndarray:
@@ -437,8 +439,8 @@ class PortNetwork:
     def shared(self) -> dict[int, int]:
         """The excitation and output vectors' bytes, each array once by identity.
 
-        A wave port's excitation is its coupling's vectors, which a
-        discretization and the system operator hold too.
+        A wave port's excitation and output are its coupling's vectors,
+        which a discretization and the system operator hold too.
         """
         return {
             id(t.vectors): int(t.vectors.nbytes)

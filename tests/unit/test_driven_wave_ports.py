@@ -359,13 +359,15 @@ def test_characteristic_impedance_reads_any_eager_result(plate_mesh, plate_resul
 def test_kept_fields_with_wave_ports_run_under_jit(plate_mesh):
     fill = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
     problem = gfem.Driven(F[:2], excite="p1", keep_fields=F[1])
+    # bit for bit on BDDC; direct differs between the two solves in the last digits
+    options = dataclasses.replace(OPTIONS, linear_solver="bddc_gmres")
     inside = []
 
     def solve(eps):
         model = line(plate_mesh).with_material(
             "fill", dataclasses.replace(fill, eps_r=eps)
         )
-        result = gfem.solve(model, problem, options=OPTIONS)
+        result = gfem.solve(model, problem, options=options)
         inside.append(result.port_modes["p1"].e_field)
         return result.e_field(F[1], "p1").coefficients
 

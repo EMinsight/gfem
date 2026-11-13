@@ -303,10 +303,10 @@ def test_a_uniform_field_of_a_crystal_solves_like_the_crystal(mesh):
     np.testing.assert_allclose(s, expected, rtol=1e-14, atol=0)
 
 
-def test_bddc_gmres_is_the_default_and_matches_direct(line):
+def test_bddc_gmres_matches_direct(line):
     problem = gfem.Driven(frequency=[3e9, 4e9])
     direct = np.asarray(_s(line, problem).s.values)
-    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    rule = DrivenRule(line, problem, gfem.SolverOptions(linear_solver="bddc_gmres"))
     assert rule.linear.kind == "bddc_gmres"
     outputs, entry = rule.forward(line, keep=False)
     assert entry is None
@@ -460,7 +460,7 @@ def test_a_reused_solve_at_its_cap_rebuilds_and_converges(line, monkeypatch):
 def test_a_bddc_sweep_rebuilds_at_the_same_iterations_every_run(line):
     # the rebuild rule counts iterations, never times: runs repeat exactly
     problem = gfem.Driven(frequency=(1e9, 1.5e9, 12e9, 13e9, 20e9, 30e9))
-    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    rule = DrivenRule(line, problem, gfem.SolverOptions(linear_solver="bddc_gmres"))
     first, _ = rule.forward(line, keep=False)
     second, _ = rule.forward(line, keep=False)
     assert first["iterations"] == second["iterations"]
@@ -579,9 +579,8 @@ def test_an_error_holds_a_missed_sweeps_outputs_only_until_they_are_read(
 
 
 def _bddc_forward(model, problem):
-    outputs, _ = DrivenRule(model, problem, gfem.SolverOptions()).forward(
-        model, keep=False
-    )
+    options = gfem.SolverOptions(linear_solver="bddc_gmres")
+    outputs, _ = DrivenRule(model, problem, options).forward(model, keep=False)
     return outputs
 
 
