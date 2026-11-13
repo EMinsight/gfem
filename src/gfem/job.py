@@ -46,7 +46,15 @@ from gfem._boundaries import (
     WavePort,
 )
 from gfem._checks import is_traced
-from gfem._materials import Material, MaterialField
+from gfem._materials import (
+    Debye,
+    DjordjevicSarkar,
+    Drude,
+    Lorentz,
+    Material,
+    MaterialField,
+    PermittivityLaw,
+)
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
 from gfem._sheet import SheetField
@@ -664,6 +672,12 @@ _codec.register(
 )
 for _cls in (
     Material,
+    # a Material's eps_r may hold a law: tags of their own, no Material key
+    PermittivityLaw,
+    Drude,
+    Lorentz,
+    Debye,
+    DjordjevicSarkar,
     MaterialField,
     SheetField,
     PEC,
