@@ -219,3 +219,45 @@ def test_complex_permittivity_gradient_is_the_real_part_derivative(tmp_path):
     assert_gradient_matches(
         objective, lossy, unit_directions(rng, eps.shape, 1), step=1e-2, grad=grad
     )
+
+
+@pytest.mark.parametrize("solver", ["direct", "bddc_gmres"])
+@pytest.mark.parametrize("output", ["energy", "potential"])
+def test_backward_on_the_kept_operator_equals_one_that_prepares_again(
+    tmp_path, solver, output
+):
+    # The forward keeps its prepared operator for the adjoint solve; emptied
+    # first, the backward prepares it again (ADR 0125).
+    from gfem._engine.cache import ENTRIES
+
+    model = stack(tmp_path)
+    options = tight(solver)
+    rng = np.random.default_rng(5)
+    eps = jnp.asarray(rng.uniform(2.0, 9.0, len(model.mesh.tetrahedra)))
+    weights = None
+
+    def objective(e):
+        nonlocal weights
+        result = gfem.solve(stack_fields(model, e), STACK_PROBLEM, options=options)
+        if output == "energy":
+            energy = jnp.stack(list(result.energy.values()))
+            return jnp.sum(np.array([[1.0, 0.3], [-0.7, 2.0]]) * energy) / (EPS0 * UM)
+        phi = result.potential["top"].coefficients
+        if weights is None:
+            weights = rng.uniform(0.5, 1.5, phi.shape)
+        return jnp.sum(weights * phi)
+
+    def grad(*, empty):
+        ENTRIES.clear()
+        _, pullback = jax.vjp(objective, eps)
+        (entry,) = ENTRIES._entries.values()
+        assert entry.handle.nbytes > 0
+        if empty:
+            entry.handle.free_base(None)
+            assert entry.handle.nbytes == 0
+        return np.asarray(pullback(jnp.ones(()))[0])
+
+    kept = grad(empty=False)
+    fresh = grad(empty=True)
+    assert np.abs(kept).max() > 0
+    assert np.linalg.norm(kept - fresh) <= 1e-12 * np.linalg.norm(fresh)

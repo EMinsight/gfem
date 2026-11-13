@@ -13,10 +13,12 @@ residual on the free ones), so the capacitance is far more accurate than
 the solver tolerance.
 
 The terminal potentials are their own adjoints (``dC_ij = phi_i^T dK phi_j``),
-so a capacitance gradient needs no solve: a kept entry holds the potentials
-only, and the forward frees its factorization or preconditioner. A potential
-cotangent prepares the operator again in the backward pass (once per entry,
-at the adjoint tolerance) for its adjoint solve.
+so a capacitance gradient needs no solve. A kept entry holds the potentials
+and the forward's prepared operator (`KeptHandle`, ADR 0125): a potential
+cotangent solves its adjoint on it, at the adjoint tolerance, and a backward
+with no such cotangent frees it. An entry over ``retain_memory`` loses the
+operator first and keeps its potentials; its backward then prepares the
+operator again (once per entry).
 
 The energy of excitation i in region r is ``E_ri = phi_i^T K_r phi_i / 2``
 with ``K_r`` the operator restricted to the region. It is not stationary in
@@ -26,6 +28,9 @@ a field pair on the region's own domain, and a potential cotangent
 """
 
 from __future__ import annotations
+
+import dataclasses
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -58,10 +63,50 @@ from gfem.options import SolverOptions
 from gfem.problems import Electrostatic
 from gfem.results import ElectrostaticResult, Field
 
-__all__ = ["ElectrostaticRule"]
+__all__ = ["ElectrostaticRule", "KeptHandle"]
 
 #: The linear solver for ``linear_solver="auto"``: CG + BDDC.
 DEFAULT_SOLVER: Kind = "bddc_gmres"
+
+
+@dataclasses.dataclass(eq=False)
+class KeptHandle:
+    """An electrostatic forward's prepared operator, kept for its backward pass.
+
+    The cache entry's ``handle`` (`gfem._engine.cache.Entry`), modelled on
+    `gfem._eigen.kept.KeptOperator` (ADR 0104): the cache counts its bytes
+    and, through `free_base`, drops the operator of an entry over
+    ``SolverOptions.retain_memory`` before it drops any entry, which keeps
+    its potentials. Nothing of it goes to the plan pool.
+
+    Attributes:
+        handle: The prepared operator, or ``None`` once freed.
+    """
+
+    handle: Handle | None
+
+    @property
+    def nbytes(self) -> int:
+        """The operator's bytes (0 once freed), but `shared`."""
+        return 0 if self.handle is None else int(self.handle.nbytes)
+
+    def shared(self) -> dict[int, int]:
+        """The bytes the operator may share with others, by identity."""
+        shared = getattr(self.handle, "shared", None)
+        return {} if shared is None else shared()
+
+    def free_base(self, comm: Any, *, walk: bool = True) -> None:  # noqa: ARG002
+        """Free the operator; the entry keeps its potentials.
+
+        Nothing goes to the plan pool, so there is no walk to run.
+        """
+        self.free()
+
+    def free(self, *, return_plans: bool = False) -> None:  # noqa: ARG002
+        """Free the operator and drop it; nothing returns to the pool."""
+        if self.handle is not None:
+            self.handle.free()
+            self.handle = None
 
 
 class ElectrostaticRule:
@@ -149,13 +194,14 @@ class ElectrostaticRule:
 
         Args:
             model: The model, with concrete leaves.
-            keep: Keep the potentials for a backward pass.
+            keep: Keep the potentials and the prepared operator for a
+                backward pass.
 
         Returns:
             ``{"capacitance": (n, n) array in F, "energy": (len(regions), n)
             array in J, "potential": (ndof, n) array in V, one column per
-            terminal}``, and the cache entry (``fields["potential"]``; no
-            handle) or ``None``.
+            terminal}``, and the cache entry (``fields["potential"]``, the
+            prepared operator in a `KeptHandle`) or ``None``.
 
         Raises:
             ValueError: Part of the solve domain touches no terminal or
@@ -182,8 +228,9 @@ class ElectrostaticRule:
             scale = scipy.constants.epsilon_0 * built.scale
             c = phi.T @ handle.apply(phi) * scale
             energy = 0.5 * scale * self._region_energies(model, built, space, eps, phi)
-        handle.free()
         c = 0.5 * (c + c.T)
+        if not keep or not np.isfinite(c).all():
+            handle.free()
         if not np.isfinite(c).all():
             raise ValueError(
                 "The electrostatic potential is undetermined: some part of the "
@@ -192,7 +239,11 @@ class ElectrostaticRule:
             )
         entry = None
         if keep:
-            entry = Entry(physics=self.physics, fields={"potential": phi})
+            entry = Entry(
+                physics=self.physics,
+                handle=KeptHandle(handle),
+                fields={"potential": phi},
+            )
         return {"capacitance": c, "energy": energy, "potential": phi}, entry
 
     def _prepare(
@@ -267,9 +318,10 @@ class ElectrostaticRule:
         A potential cotangent ``ct_i`` takes one adjoint solve per terminal,
         all columns at once: ``K phi_i = 0`` on the free DOFs gives
         ``ct_i . dphi_i = -lambda_i^T dK phi_i`` with ``K lambda_i = ct_i``
-        (zero on the fixed DOFs), K the SI operator. Its operator is
-        prepared on first use at the adjoint tolerance and kept in the entry
-        for later pullbacks.
+        (zero on the fixed DOFs), K the SI operator. It solves on the
+        forward's kept operator; an entry that lost it prepares it again at
+        the adjoint tolerance and keeps it for later pullbacks. A backward
+        with no potential or energy cotangent frees the kept operator.
 
         An energy cotangent ``ct_ri`` is both: the pair
         ``(ct_ri / 2) phi_i^T dK_r phi_i`` on region r's own domain, and the
@@ -314,18 +366,26 @@ class ElectrostaticRule:
                     through[~free_mask(space.FreeDofs(), space.ndof)] = 0.0
                     through *= eps0 * built.scale
                     load = through if load is None else load + through
-            if load is not None:
+            if load is None:
+                if entry.handle is not None:
+                    entry.handle.free()
+                    entry.handle = None
+            else:
                 tolerance = adjoint_tolerance(self.options)
-                if entry.handle is None:
+                handle = None if entry.handle is None else entry.handle.handle
+                kept = handle is not None
+                if handle is None:
                     eps = permittivity(model, built)
-                    entry.handle = self._prepare(space, eps, tolerance)
+                    handle = self._prepare(space, eps, tolerance)
+                    entry.handle = KeptHandle(handle)
                 # the handle solves the form without eps0 * scale
-                adjoint, its = entry.handle.solve_counted(load, tolerance=tolerance)
+                adjoint, its = handle.solve_counted(load, tolerance=tolerance)
                 report.solve_step(
-                    entry.handle,
+                    handle,
                     problem="electrostatic",
                     direction="backward",
                     iterations=its,
+                    reused=kept,
                 )
                 adjoint /= eps0 * built.scale
                 left.append(-adjoint)

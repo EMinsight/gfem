@@ -40,12 +40,15 @@ def solve_step(
     iterations: tuple[int, ...],
     frequency: float | None = None,
     guess: str | None = None,
+    reused: bool = False,
 ) -> None:
     """Log one solve step on ``handle``, the base handle that solved it.
 
     The action, reason and the reason's numbers are the handle's
     (``last_action``, ``last_reason``, ``last_details``; ``None`` on a
-    backend that tracks none). ``guess`` names the initial guess's source.
+    backend that tracks none), or with ``reused`` the action ``"reused"``:
+    the step solved on a handle an earlier step prepared and left as it was.
+    ``guess`` names the initial guess's source.
     """
     if not LOGGER.isEnabledFor(logging.INFO):
         return
@@ -53,6 +56,8 @@ def solve_step(
     action = getattr(handle, "last_action", None)
     reason = getattr(handle, "last_reason", None)
     details = dict(getattr(handle, "last_details", None) or {})
+    if reused:
+        action, reason, details = "reused", None, {}
     iterations = tuple(int(i) for i in iterations)
     at = "" if frequency is None else f" at {frequency / 1e9:g} GHz"
     what = f"{solver} {action}" if action is not None else f"{solver}"

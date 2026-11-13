@@ -123,9 +123,10 @@ def test_gradient_through_derived_matrices_matches_central_differences(
 
 @pytest.mark.parametrize("solver", ["direct", "bddc_gmres"])
 def test_kept_entry_and_recomputed_entry_give_the_same_gradient(plate, solver):
-    # The forward keeps its potentials (not its solver: a capacitance
-    # gradient needs no solve) in ENTRIES; with retain_memory=0 nothing is
-    # kept and the backward re-runs the forward.
+    # The forward keeps its potentials and its prepared operator in ENTRIES;
+    # a capacitance gradient needs no solve, so its backward frees the
+    # operator. With retain_memory=0 nothing is kept and the backward re-runs
+    # the forward.
     from gfem._engine.cache import ENTRIES
 
     n = len(plate.mesh.elements("oxide"))
@@ -151,3 +152,58 @@ def test_kept_entry_and_recomputed_entry_give_the_same_gradient(plate, solver):
     recomputed = grad(retain_memory=0)
     assert len(ENTRIES) == 0
     np.testing.assert_allclose(recomputed, kept, rtol=1e-12)
+
+
+def _plate_energy(plate, options):
+    def energy_of(e):
+        m = plate.with_material("oxide", gfem.MaterialField(eps_r=e))
+        return gfem.solve(m, PROBLEM, options=options).energy["oxide"][0]
+
+    return energy_of
+
+
+def test_capacitance_only_backward_frees_the_kept_operator(plate):
+    from gfem._engine.cache import ENTRIES
+
+    eps = jnp.linspace(3.0, 5.0, len(plate.mesh.elements("oxide")))
+    ENTRIES.clear()
+    _, pullback = jax.vjp(lambda e: _field_c(plate, e), eps)
+    (entry,) = ENTRIES._entries.values()
+    assert entry.handle.nbytes > 0
+    pullback(jnp.ones(()))
+    assert entry.handle is None
+    assert entry.nbytes == entry.fields["potential"].nbytes
+
+
+def test_entry_over_budget_keeps_its_potentials_and_loses_only_the_operator(
+    plate, monkeypatch
+):
+    from gfem._engine.cache import ENTRIES
+    from gfem._engine.electrostatic import ElectrostaticRule
+
+    eps = jnp.linspace(3.0, 5.0, len(plate.mesh.elements("oxide")))
+    options = gfem.SolverOptions(linear_solver="direct", tolerance=1e-12)
+    ENTRIES.clear()
+    kept = jax.grad(_plate_energy(plate, options))(eps)
+    (entry,) = ENTRIES._entries.values()
+    potentials = entry.fields["potential"].nbytes
+    ENTRIES.clear()
+
+    forwards = []
+    forward = ElectrostaticRule.forward
+
+    def counted(self, model, *, keep):
+        forwards.append(keep)
+        return forward(self, model, keep=keep)
+
+    monkeypatch.setattr(ElectrostaticRule, "forward", counted)
+    tight = gfem.SolverOptions(
+        linear_solver="direct", tolerance=1e-12, retain_memory=potentials
+    )
+    _, pullback = jax.vjp(_plate_energy(plate, tight), eps)
+    (entry,) = ENTRIES._entries.values()
+    assert entry.handle.nbytes == 0
+    assert entry.nbytes == entry.fields["potential"].nbytes == potentials
+    (grad,) = pullback(jnp.ones(()))
+    assert forwards == [True]
+    np.testing.assert_allclose(grad, kept, rtol=1e-12)
