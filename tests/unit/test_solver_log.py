@@ -169,7 +169,8 @@ def test_an_electrostatic_energy_gradient_logs_its_forward_and_backward(
         assert r.problem == "electrostatic"
         assert r.solver == solver
         assert r.frequency is None
-        assert r.action == "factorized"
-        assert r.reason == "first"
+    # the backward solves on the forward's kept operator (ADR 0125)
+    assert (forward[0].action, forward[0].reason) == ("factorized", "first")
+    assert (backward[0].action, backward[0].reason) == ("reused", None)
     # one column per terminal
     assert len(forward[0].iterations) == (0 if solver == "direct" else 1)
