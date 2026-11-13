@@ -135,7 +135,12 @@ def test_uniform_results_report_every_frequency_solved(uniform):
     assert info.converged
     assert info.basis_size == 0
     assert all(math.isinf(e) for e in info.sample_errors)
-    assert info == gfem.results.SweepInfo.uniform(tuple(GRID))
+    assert len(info.iterations) == len(info.preconditioner_reused) == len(GRID)
+    assert info == gfem.results.SweepInfo.uniform(
+        tuple(GRID),
+        iterations=info.iterations,
+        preconditioner_reused=info.preconditioner_reused,
+    )
 
 
 def test_kept_fields_are_basis_backed_and_match_the_full_solve(uniform, adaptive):
