@@ -496,8 +496,9 @@ class DrivenRule:
     physics = "em"
     #: The operator family (a key of `sensitivity.PROPERTIES`).
     form = "driven"
-    #: Material properties the driven forms read.
-    reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity"})
+    #: Material properties the driven forms read, and a law blend's density
+    #: (ADR 0113).
+    reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity", "blend"})
     #: Outputs whose cotangents the backward pass handles (a design may not
     #: touch a wave port face: `unsupported_input`).
     differentiable_outputs = sweep_outputs.DIFFERENTIABLE

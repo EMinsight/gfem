@@ -302,7 +302,9 @@ PROPERTIES: dict[str, frozenset[str]] = {
     "electrostatic": frozenset({"eps_r"}),
     # driven: mass eps_r (1 - i tan_delta), curl-curl 1 / mu_r, conductivity
     # eta0 sigma scale (real sigma), absorbing c1 and c2 of the real e and m
-    "driven": frozenset({"eps_r", "tan_delta", "mu_r", "conductivity"}),
+    # and the density of a blend with a law end (ADR 0113): its mass limit
+    # and its susceptibility pieces' coefficients
+    "driven": frozenset({"eps_r", "tan_delta", "mu_r", "conductivity", "blend"}),
     # the driven pieces (`gfem._eigen.operator`), weighted at the complex
     # eigenvalue
     "eigenmode": frozenset({"eps_r", "tan_delta", "mu_r", "conductivity"}),

@@ -25,8 +25,9 @@ property's column, whose cells then name the forms their tests cover
 ("isotropic and principal values").
 
 The permeability, the loss tangent, the lumped values (``OFF_GRID``: a
-lumped port's inductance and capacitance, an `Impedance`'s values) and the
-parameters of a permittivity law (input kinds ``("law", ...)``) have cells
+lumped port's inductance and capacitance, an `Impedance`'s values), the
+parameters of a permittivity law (input kinds ``("law", ...)``) and the
+density of a metal-dielectric blend (``("material", region, "blend")``) have cells
 but no column: the rows that verify them are listed in one sentence under the
 matrix, one phrase per row and group (``OFF_GRID_GROUPS``), and their cells
 count in the provenance.
@@ -182,6 +183,8 @@ PROBLEMS = {
     "driven_law": Problem("driven", "s.values", "lumped"),
     "driven_law_absorbing": Problem("driven", "s.values", "lumped"),
     "driven_periodic_law": Problem("driven_periodic_plain", "s.values", "lumped"),
+    # a metal-dielectric density blend (ADR 0113)
+    "driven_blend": Problem("driven", "s.values", "lumped"),
 }
 #: The rows whose cell-only keys have no ``EXPECTED`` entries of their own:
 #: the raise table's leaves of their row's keys answer for them, by prefix
@@ -211,9 +214,11 @@ OFF_GRID = {
     "tan_delta": "loss tangent",
     "lumped": "lumped values",
     "law": "permittivity-law parameters",
+    # the density leaf of a law blend, ("material", region, "blend") (ADR 0113)
+    "blend": "density of a metal-dielectric blend",
 }
 #: The off-grid inputs listed together, one phrase per group and row.
-OFF_GRID_GROUPS = (("mu_r", "tan_delta"), ("lumped",), ("law",))
+OFF_GRID_GROUPS = (("mu_r", "tan_delta"), ("lumped",), ("law",), ("blend",))
 #: The material properties among them (the others have no value forms).
 OFF_GRID_PROPERTIES = ("mu_r", "tan_delta")
 OFF_GRID_INPUTS = {name: name for name in OFF_GRID} | {
@@ -266,6 +271,10 @@ RAISES_LABELS = {
     "driven x law parameter of a region on a wave port face": (
         "Driven S-parameters, with respect to the parameters of a permittivity "
         "law in a region with elements on a wave port's face"
+    ),
+    "law parameter of a blend's end": (
+        "Any result, with respect to the parameters of a permittivity law at an "
+        "end of a metal-dielectric blend"
     ),
     "driven x law parameter under a Bloch wave vector": (
         "Driven S-parameters at a Bloch `wave_vector`, with respect to the "
@@ -414,7 +423,7 @@ def _input_column(kind) -> str | None:
         return MATERIAL_PROPERTIES[kind[2]]
     if len(kind) == 4 and kind[0] == "boundary" and kind[2:] == ("fill", "fill"):
         return "fill"
-    if _off_grid_input(kind) in ("lumped", "law"):
+    if _off_grid_input(kind) in ("lumped", "law", "blend"):
         return None
     raise CapabilitiesError(
         f"{RAISE_TEST}: input kind {kind!r} is not in the Capabilities mapping "

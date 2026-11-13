@@ -1036,6 +1036,98 @@ _SCHEMES: dict[str, Callable[[jax.Array, float], jax.Array]] = {
     "simp": lambda rho, p: rho**p,
     "ramp": lambda rho, p: rho / (1 + p * (1 - rho)),
 }
+#: The interpolation schemes `MaterialField.interpolate` takes: the weights,
+#: and the refractive-index blend of the permittivity (ADR 0113).
+_ALL_SCHEMES = (*_SCHEMES, "index")
+#: dw / d rho of each weight, on the host (a law blend's pieces).
+_SLOPES: dict[str, Callable[[np.ndarray, float], np.ndarray]] = {
+    "linear": lambda rho, _: np.ones_like(rho),
+    "simp": lambda rho, p: p * rho ** (p - 1),
+    "ramp": lambda rho, p: (1 + p) / (1 + p * (1 - rho)) ** 2,
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class Blend:
+    """The fixed half of a blend with a permittivity-law end (ADR 0113).
+
+    A `MaterialField` built by `MaterialField.interpolate` from a material
+    whose ``eps_r`` is a `PermittivityLaw` holds its density as the leaf
+    `MaterialField.blend` and this record as static data: the permittivity
+    of each end and the scheme. The driven operator reads it as the mass's
+    eps_inf limit plus one susceptibility piece per end and, for
+    ``"index"``, a cross piece (`gfem._engine.terms.blend_pieces`).
+
+    Attributes:
+        void: The permittivity at density 0: a law, or a constant end's
+            complex ``eps_r (1 - i tan_delta)``.
+        solid: The permittivity at density 1, the same way.
+        scheme: ``"index"``, ``"linear"``, ``"simp"`` or ``"ramp"``.
+        penalty: The SIMP / RAMP penalty.
+    """
+
+    void: PermittivityLaw | complex
+    solid: PermittivityLaw | complex
+    scheme: str
+    penalty: float
+
+    def weight(self, rho: np.ndarray) -> np.ndarray:
+        """``w(rho)`` of a weight scheme (``rho`` for ``"index"``)."""
+        rho = np.asarray(rho, dtype=float)
+        if self.scheme == "index":
+            return rho
+        return np.asarray(_SCHEMES[self.scheme](rho, self.penalty), dtype=float)  # ty: ignore[invalid-argument-type]
+
+    def slope(self, rho: np.ndarray) -> np.ndarray:
+        """``dw / d rho`` of `weight`."""
+        rho = np.asarray(rho, dtype=float)
+        if self.scheme == "index":
+            return np.ones_like(rho)
+        return np.asarray(_SLOPES[self.scheme](rho, self.penalty), dtype=float)
+
+    @property
+    def drude(self) -> bool:
+        """Whether an end's law has a `Drude` term (no static permittivity)."""
+        return any(
+            isinstance(t, Drude)
+            for end in (self.void, self.solid)
+            if isinstance(end, PermittivityLaw)
+            for t in end.terms
+        )
+
+
+def _blend_end(material: Material, which: str) -> PermittivityLaw | complex:
+    """One end of a blend: its law, or its constant lossy permittivity.
+
+    Raises:
+        ValueError: The end is anisotropic.
+        NonDifferentiableError: The end's law is computed inside a JAX
+            transformation (its parameters are fixed, ADR 0113).
+    """
+    eps_r = material.eps_r
+    if isinstance(eps_r, PermittivityLaw):
+        if is_traced(eps_r):
+            raise NonDifferentiableError(
+                f"MaterialField.interpolate: the permittivity law of the {which} "
+                "end is computed inside jax.grad, jax.jit or jax.vmap, but the "
+                "laws of a blend's ends are fixed: the blend differentiates its "
+                "density only. To differentiate a law's parameters, "
+                "differentiate the law on a `Material` region "
+                "(model.with_material(region, gfem.Material(eps_r=law)))."
+            )
+        return eps_r
+    if not material.isotropic:
+        raise ValueError(
+            f"MaterialField.interpolate: the {which} end is anisotropic, but the "
+            "index scheme and a permittivity-law blend take isotropic ends only."
+        )
+    return complex(float(eps_r) * (1 - 1j * float(material.tan_delta)))  # ty: ignore[invalid-argument-type]
+
+
+def refractive_index(eps: complex) -> complex:
+    """``n - i kappa = sqrt(eps)`` on the branch with ``kappa >= 0`` (ADR 0113)."""
+    n = complex(np.sqrt(complex(eps)))
+    return -n if n.imag > 0 else n
 
 
 def _common_axes(
@@ -1131,6 +1223,13 @@ class MaterialField:
         axes: Three orthonormal vectors, the principal axes of the
             principal values, or ``None`` (an isotropic field). Fixed: it
             cannot be differentiated.
+        blend: For a blend with a permittivity-law end
+            (`MaterialField.interpolate`), its density per element, the
+            design leaf that `jax.grad` reaches; ``None`` otherwise. Its
+            permittivity is then `blend_ends` at that density (`eps_r` and
+            `tan_delta` are ``None``).
+        blend_ends: The fixed ends and scheme of that blend (`Blend`), or
+            ``None``.
 
     Raises:
         ValueError: A value is not passive or finite, a tensor property's
@@ -1150,6 +1249,8 @@ class MaterialField:
     specific_heat: jax.Array | None = None
     region: str | None = None
     axes: tuple[tuple[float, float, float], ...] | None = None
+    blend: jax.Array | None = None
+    blend_ends: Blend | None = None
 
     def __post_init__(self) -> None:
         if self.axes is not None:
@@ -1165,7 +1266,10 @@ class MaterialField:
             object.__setattr__(self, prop.name, value)
             if value is not None and value.ndim == 1 + principal:
                 sizes.add(value.shape[0])
-        if all(getattr(self, n) is None for n in PROPERTY_NAMES):
+        size = self._check_blend()
+        if size is not None:
+            sizes.add(size)
+        if self.blend is None and all(getattr(self, n) is None for n in PROPERTY_NAMES):
             raise ValueError(
                 "MaterialField needs at least one property, e.g. "
                 "MaterialField(eps_r=values)."
@@ -1176,9 +1280,37 @@ class MaterialField:
                 f"number of values (one per element), got {sorted(sizes)}."
             )
 
+    def _check_blend(self) -> int | None:
+        """Check `blend` and `blend_ends`; the size of a per-element `blend`."""
+        if (self.blend is None) != (self.blend_ends is None):
+            raise ValueError(
+                "MaterialField: blend and blend_ends go together; build a blend "
+                "with MaterialField.interpolate."
+            )
+        if self.blend is None:
+            return None
+        if self.eps_r is not None or self.tan_delta is not None or self.axes:
+            raise ValueError(
+                "MaterialField: a blend holds its permittivity in blend_ends; "
+                "eps_r, tan_delta and axes must be None."
+            )
+        rho = jnp.asarray(self.blend)
+        if jnp.iscomplexobj(rho) or rho.ndim > 1:
+            raise ValueError(
+                "MaterialField: blend is a real density, one value per element "
+                f"or one for the region, got shape {rho.shape}."
+            )
+        rho = rho.astype(jnp.float64)
+        if not is_traced(rho) and not np.isfinite(np.asarray(rho)).all():
+            raise ValueError("MaterialField: blend must be finite.")
+        object.__setattr__(self, "blend", rho)
+        return int(rho.shape[0]) if rho.ndim == 1 else None
+
     @property
     def n_elements(self) -> int | None:
         """Number of per-element values, or ``None`` if every value is uniform."""
+        if self.blend is not None and self.blend.ndim == 1:
+            return int(self.blend.shape[0])
         for name in PROPERTY_NAMES:
             v = getattr(self, name)
             if v is not None and v.ndim == 1 + self.has_principal_values(name):
@@ -1201,7 +1333,7 @@ class MaterialField:
         void: Material,
         solid: Material,
         *,
-        scheme: Literal["linear", "simp", "ramp"] = "linear",
+        scheme: Literal["linear", "simp", "ramp", "index"] = "linear",
         penalty: float = 3.0,
     ) -> MaterialField:
         """Blend two materials by a density per element.
@@ -1211,36 +1343,67 @@ class MaterialField:
         weight: ``linear`` (w = rho), ``simp`` (w = rho^penalty) or ``ramp``
         (w = rho / (1 + penalty (1 - rho))). Differentiable in ``density``.
 
+        ``index`` blends the refractive index instead: ``n - i kappa`` is
+        linear in rho, so eps = ((1 - rho) N_void + rho N_solid)^2 with N =
+        sqrt(eps_r (1 - i tan_delta)) on the branch with kappa >= 0
+        (Christiansen et al., CMAME 343, 2019); the other properties blend
+        with w = rho. Use it to blend a metal and a dielectric: a linear blend
+        of eps crosses Re eps = -2 eps_host, where an intermediate element is
+        a small plasmonic resonator, almost lossless, and the optimizer finds
+        artificial resonances there. Two constant ends give a complex
+        `eps_r` per element.
+
+        Either end's ``eps_r`` may be a `PermittivityLaw` (a dispersive
+        material, a Drude metal for example), under every scheme. The field
+        then holds the density as its leaf `blend` and the two ends as fixed
+        data (`blend_ends`); its permittivity follows the scheme at every
+        frequency. Such a blend is solved by the driven problem on the
+        uniform sweep only; the adaptive sweep, the eigenmode and port mode
+        problems and an `Absorbing` or wave port face on the region raise,
+        and so does the electrostatic problem (a `Drude` end has no static
+        permittivity). The ends' law parameters are not design inputs.
+
+        Warning:
+            Under ``"index"`` an intermediate density between a dielectric
+            and a metal is a strong absorber: kappa is linear in rho, so at
+            rho = 0.5 next to gold kappa is about 5. A design of uniform rho
+            = 0.5 transmits almost nothing and its gradient vanishes; start a
+            metal-dielectric optimization from a binary design (or one close
+            to it), not from 0.5 everywhere.
+
         Anisotropic materials blend per principal value, when every tensor
         of both shares one set of principal axes (an isotropic material
         shares any, so air and an anisotropic material blend). The field
         then has those `axes` (in `Material`'s normal form: axis k the one
         closest to coordinate axis k), so axes given in another order or
         sign give the same field. Two isotropic materials give an isotropic
-        field (an anisotropic material field otherwise).
+        field (an anisotropic material field otherwise). The ``index``
+        scheme and a law end take isotropic ends only.
 
         Args:
             density: One value per element, in [0, 1] (0 = void, 1 = solid).
             void: The material at density 0.
             solid: The material at density 1.
-            scheme: The interpolation weight.
+            scheme: The interpolation: a weight, or ``"index"``.
             penalty: The SIMP / RAMP penalty.
 
         Raises:
-            ValueError: Unknown scheme, or two materials whose tensors have
-                different principal axes.
+            ValueError: Unknown scheme, two materials whose tensors have
+                different principal axes, or an anisotropic end under
+                ``"index"`` or beside a law.
+            NonDifferentiableError: An end's law is computed inside
+                `jax.grad`, `jax.jit` or `jax.vmap`: differentiate a law on a
+                `Material` region instead.
         """
-        if scheme not in _SCHEMES:
+        if scheme not in _ALL_SCHEMES:
             raise ValueError(
                 f"Unknown interpolation scheme {scheme!r}; use one of "
-                f"{', '.join(repr(s) for s in _SCHEMES)}."
-            )
-        if any(isinstance(m.eps_r, PermittivityLaw) for m in (void, solid)):
-            raise NotImplementedError(
-                "MaterialField.interpolate: blending a material whose eps_r is a "
-                "PermittivityLaw is not supported yet."
+                f"{', '.join(repr(s) for s in _ALL_SCHEMES)}."
             )
         rho = jnp.asarray(density, dtype=jnp.float64)
+        law = any(isinstance(m.eps_r, PermittivityLaw) for m in (void, solid))
+        if law or scheme == "index":
+            return cls._interpolate_eps(rho, void, solid, scheme, penalty, law=law)
         w = _SCHEMES[scheme](rho, penalty)
         if void.isotropic and solid.isotropic:
             axes = None
@@ -1256,6 +1419,39 @@ class MaterialField:
                 principal = axes is not None and _BY_NAME[name].may_be_tensor
                 props[name] = a + (w[..., None] if principal else w) * (b - a)
         return cls(**props, axes=axes)
+
+    @classmethod
+    def _interpolate_eps(
+        cls,
+        rho: jax.Array,
+        void: Material,
+        solid: Material,
+        scheme: str,
+        penalty: float,
+        *,
+        law: bool,
+    ) -> MaterialField:
+        """`interpolate` under ``"index"`` or with a law end (ADR 0113).
+
+        The permittivity (with its loss tangent) blends by the scheme; every
+        other property both ends define by the weight (rho for ``"index"``).
+        """
+        ends = (_blend_end(void, "void"), _blend_end(solid, "solid"))
+        w = rho if scheme == "index" else _SCHEMES[scheme](rho, penalty)
+        props: dict[str, Any] = {}
+        for name in PROPERTY_NAMES:
+            if name in ("eps_r", "tan_delta"):
+                continue
+            a, b = getattr(void, name), getattr(solid, name)
+            if a is not None and b is not None:
+                props[name] = a + w * (b - a)
+        if law:
+            blend = Blend(ends[0], ends[1], scheme, float(penalty))
+            return cls(**props, blend=rho, blend_ends=blend)
+        na, nb = (
+            refractive_index(e) for e in ends if not isinstance(e, PermittivityLaw)
+        )
+        return cls(**props, eps_r=((1 - rho) * na + rho * nb) ** 2)
 
     @classmethod
     def uniform(cls, region: str, material: Material) -> MaterialField:
@@ -1280,7 +1476,7 @@ class MaterialField:
         axes = None
         if not material.isotropic:
             axes = material.axes or _axes(np.eye(3), "MaterialField.uniform")
-        props = {}
+        props: dict[str, Any] = {}
         for n in PROPERTY_NAMES:
             value = getattr(material, n)
             if value is None:
@@ -1305,13 +1501,21 @@ class MaterialField:
             parts.append(
                 f"{name}={lo:.4g}" if lo == hi else f"{name} in [{lo:.4g}, {hi:.4g}]"
             )
+        if self.blend is not None and self.blend_ends is not None:
+            ends = self.blend_ends
+            rho = "<traced>" if is_traced(self.blend) else self.blend
+            if not isinstance(rho, str):
+                a = np.asarray(rho)
+                lo, hi = a.min(), a.max()
+                rho = f"{lo:.4g}" if lo == hi else f"in [{lo:.4g}, {hi:.4g}]"
+            parts.append(f"blend {ends.scheme!r} density {rho}")
         where = f", region={self.region!r}" if self.region else ""
         if self.axes is not None:
             parts.append(f"axes={self.axes!r}")
         return f"MaterialField({size}{where}, {', '.join(parts)})"
 
 
-register_fields(MaterialField, PROPERTY_NAMES)
+register_fields(MaterialField, (*PROPERTY_NAMES, "blend"))
 
 
 def field_principal_values(

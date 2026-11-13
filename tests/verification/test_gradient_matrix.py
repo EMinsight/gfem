@@ -74,6 +74,9 @@ from finite_differences import (
 )
 from gradient_cases import (
     BIAXIAL,
+    BLEND_DIELECTRIC,
+    BLEND_FREQUENCIES,
+    BLEND_METAL,
     CAVITY_TARGET,
     COVER_LAW,
     EPS0,
@@ -403,6 +406,18 @@ def _law_cells() -> list[Cell]:
     ]
 
 
+def _blend_cells() -> list[Cell]:
+    """The density of a metal-dielectric blend (ADR 0113): cells D11 and D12.
+
+    The strip line's core blends a constant dielectric and a Drude metal by a
+    density in [0.2, 0.8], under the index scheme and the linear one.
+    """
+    return [
+        Cell("driven", "blend", "direct", "uniform", scheme)
+        for scheme in ("index", "linear")
+    ]
+
+
 CELLS = [
     *_cells(),
     *_driven_periodic_cells(),
@@ -410,6 +425,7 @@ CELLS = [
     *_participation_cells(),
     *_field_cells(),
     *_law_cells(),
+    *_blend_cells(),
 ]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
@@ -609,6 +625,9 @@ STEPS = {
     "nodes": 2e-6,
     # a law's parameters, normalized: p0 (1 + t)
     "law": 1e-3,
+    # a blend's density, in [0.2, 0.8] (the linear blend's S is strongly
+    # curved: 1e-2 leaves 6e-7 of truncation, 5e-3 4e-8)
+    "blend": 5e-3,
 }
 #: Ranges a cell draws its own ``mu_r`` or ``tan_delta`` from (the other
 #: cells' designs carry neither).
@@ -1594,6 +1613,30 @@ def _driven_host_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
     return Case(objective, eps, rng, step=STEPS["eps_r"], taylor=1e-1)
 
 
+def _driven_blend(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S of the strip line whose core blends a dielectric and a Drude metal.
+
+    The input is the density, one per core element, in [0.2, 0.8]; the
+    variant is the scheme (``index`` or ``linear``).
+    """
+    mesh = d.dispersive
+    rng = np.random.default_rng(seed)
+    rho = jnp.asarray(rng.uniform(0.2, 0.8, len(mesh.elements("core"))))
+    problem = gfem.Driven(frequency=BLEND_FREQUENCIES)
+
+    def objective(p):
+        core = gfem.MaterialField.interpolate(
+            p, BLEND_DIELECTRIC, BLEND_METAL, scheme=cell.variant
+        )
+        model = dispersive_line(mesh, BLEND_DIELECTRIC.eps_r)
+        model = model.with_material("core", core)
+        return s_functional(gfem.solve(model, problem, options=options).s.values)
+
+    # the linear blend's S is strongly curved: its third-order term shows at a
+    # Taylor step of 1e-1 (slope 2.11), not from 3e-2
+    return Case(objective, rho, rng, step=STEPS["blend"], taylor=3e-2)
+
+
 def _driven_nodes_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     """S of the shape line whose cover holds a law; its interface moves."""
     return _driven_nodes(d, cell, options, seed, line=d.law_shape_line)
@@ -1758,6 +1801,7 @@ BUILDERS = {
     ("driven", "law"): _driven_law,
     ("driven_wave", "law"): _wave_law,
     ("driven_periodic_plain", "law"): _periodic_law,
+    ("driven", "blend"): _driven_blend,
 }
 #: Builders of the existing inputs beside a law, by (problem, input, variant).
 VARIANT_BUILDERS = {

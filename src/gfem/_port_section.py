@@ -441,6 +441,15 @@ def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray
             nu_tt[rows], nu_nn[rows] = _inverse_permeability(mt, mn)
             sigma_tt[rows], sigma_nn[rows] = st, sn
             isotropic[rows] = material.isotropic
+        elif material.blend_ends is not None:
+            raise NotImplementedError(
+                f"WavePort {port.name!r}: region {region!r} has elements on the "
+                "port face and is a density blend with a permittivity-law end "
+                "(MaterialField.interpolate), which the port mode problem does "
+                "not read. Keep the design away from wave port faces (give the "
+                "elements beside the port a region of their own with a constant "
+                "gfem.Material)."
+            )
         elif material.axes is not None:
             pos = np.searchsorted(mesh.elements(region), tets[rows])
             blocks = _field_blocks(material, frame, port, region, pos)
