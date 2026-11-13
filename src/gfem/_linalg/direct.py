@@ -305,6 +305,12 @@ class DirectHandle(PlannedHandle):
             if self._rule is not None:
                 self._rule.end_chain(released=True)
 
+    @property
+    def released(self) -> bool:
+        """Whether its factors were released and not factorized since."""
+        factors = self._factors
+        return factors is not None and factors.released
+
     def note_release(self, *, base_bytes: int, budget_bytes: int) -> None:
         """A cache walk releases this handle's factors for ``retain_memory``.
 

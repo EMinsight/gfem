@@ -26,8 +26,10 @@ consumed entry is freed, or when an entry gives it up under ``retain_memory``.
 It returns with its factors and summed pattern: the next forward refactorizes
 in place, on memory already touched. An entry that gave up its base serves its
 backward by taking a plan back from the pool, or by preparing one. The pool
-holds several handles per key (one per ``jax.vmap`` variant). Pooled handles
-whose mesh topology has no discretization left are freed.
+holds several handles per key (one per ``jax.vmap`` variant). A sweep's key
+ends in a frequency: it keeps one handle per frequency (frequency bases, ADR
+0121), and a frequency without its own takes another's (`take_plan`). Pooled
+handles whose mesh topology has no discretization left are freed.
 
 **Kept discretization state** (ADRs 0082, 0091): a discretization's kept fixed
 parts (`KeptParts` stores among its spaces) and its kept wave port couplings and
@@ -39,7 +41,8 @@ and the kept discretization state together. Objects several holders reference
 identity, at the cache: an entry's own bytes never include them. Over budget,
 the walk of a stored entry (`EntryCache.put`):
 
-1. releases pooled handles' PARDISO factors, keeping their plans;
+1. releases pooled handles' PARDISO factors, keeping their plans (a
+   returning handle's own first, ADR 0121);
 2. drops kept fixed parts, whole stores, least recently used discretization
    first; a store whose parts another holder references stays (its bytes
    would not leave), with the digests it has seen;
@@ -528,17 +531,29 @@ class EntryCache:
         """
         self._walk(_mpi.node_budget(comm, budget), comm, entries=False)
 
-    def _walk(self, budget: int, comm: Any, *, entries: bool) -> None:
+    def _walk(
+        self,
+        budget: int,
+        comm: Any,
+        *,
+        entries: bool,
+        first: Any = None,
+        release_only: bool = False,
+    ) -> None:
         """Free down to ``budget`` (the node's) by the six tiers; 4-5 if ``entries``.
 
         The bytes are tallied once, then follow each step: a step re-reads only
         the holder it changed, and a shared object leaves the tally with the
-        last holder that references it.
+        last holder that references it. Tier 1 releases the pooled handle
+        ``first`` before the others; ``release_only`` stops after tier 1.
         """
         owner = _mpi.comm_key(comm)
         discs = [d for d in self._discretizations() if d.comm_key == owner]
         walk = _Walk(self._tally(discs, pool=comm is None), budget, comm)
-        if comm is None and self._walk_pool(walk, discs):
+        if comm is None and release_only:
+            self._release_pooled(walk, first)
+            return
+        if comm is None and self._walk_pool(walk, discs, first):
             return
         if entries and self._walk_entries(walk, owner, comm, pool=comm is None):
             return
@@ -546,12 +561,12 @@ class EntryCache:
             if disc.ports is not None and not walk.step(disc, disc.drop_ports):
                 return
 
-    def _walk_pool(self, walk: _Walk, discs: list[Discretization]) -> bool:
+    def _walk_pool(
+        self, walk: _Walk, discs: list[Discretization], first: Any = None
+    ) -> bool:
         """Tiers 1, 2 and 3 (one process); whether the cache fits after."""
-        for pooled in self._plans.values():
-            release = _release_for_budget(pooled.handle, walk)
-            if release is not None and not walk.step(pooled.handle, release):
-                return True
+        if self._release_pooled(walk, first):
+            return True
         for disc in discs:
             for store in disc.stores():
                 # a store held elsewhere too (an entry's pieces, a pooled
@@ -561,6 +576,23 @@ class EntryCache:
                 if not walk.step(disc, store.clear):
                     return True
         return self._free_plans(walk)
+
+    def _release_pooled(self, walk: _Walk, first: Any = None) -> bool:
+        """Tier 1, ``first`` (a pooled handle) first; whether the cache fits after.
+
+        A returning frequency base releases its own factors before the others'
+        (ADR 0121): in a cyclic sweep the least recently returned base is the
+        one the next frequency takes, so a fixed set of frequencies keeps its
+        factors only this way.
+        """
+        handles = [p.handle for p in self._plans.values() if p.handle is not first]
+        if first is not None:
+            handles.insert(0, first)
+        for handle in handles:
+            release = _release_for_budget(handle, walk)
+            if release is not None and not walk.step(handle, release):
+                return True
+        return not walk.over()
 
     def _free_plans(self, walk: _Walk) -> bool:
         """Tier 3: free pooled handles, oldest returned first; whether it fits."""
@@ -684,8 +716,10 @@ class EntryCache:
         """Pool ``handle`` under ``key``, with its factors, within ``budget``.
 
         While the cache is over ``budget``, the walk's tiers 1, 2, 3 and 6 run,
-        unless not to ``walk`` (an entry giving the handle up: that walk
-        counts it); entries and their bases stay (only `put` evicts them),
+        tier 1 on ``handle`` first (its own factors go before other pooled
+        handles', ADR 0121), unless not to ``walk`` (an entry giving the
+        handle up: that walk counts it); entries and their bases stay (only
+        `put` evicts them),
         so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
         no discretization of it is left (`free_plans_off`). One process only.
@@ -694,22 +728,75 @@ class EntryCache:
         handle's space: a handle's pieces' pattern that is none of them is
         dropped, since no later piece sum can share it.
         """
+        self._pool(key, topology, handle, kept)
+        if walk:
+            self._walk(budget, None, entries=False, first=handle)
+
+    def _pool(
+        self, key: Hashable, topology: Any, handle: Any, kept: Collection[Any]
+    ) -> None:
+        """Pool ``handle`` under ``key``, without a walk (`give_plan`)."""
         pattern = getattr(handle, "pattern", None)
         if pattern is not None and not any(pattern is k for k in kept):
             handle.drop_pattern()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
-        if walk:
-            self._walk(budget, None, entries=False)
 
-    def take_plan(self, key: Hashable) -> Any | None:
+    def switch_plan(
+        self,
+        key: Hashable,
+        topology: Any,
+        handle: Any,
+        budget: int,
+        *,
+        kept: Collection[Any],
+        to: tuple,
+    ) -> Any | None:
+        """Pool a frequency base under ``key`` and take one for ``to`` (ADR 0121).
+
+        As `give_plan` then `take_plan` with ``budget``, but the walk before
+        the take only releases factors (``handle``'s first): a sweep whose
+        plans do not fit takes back the base it just returned, released, and
+        plans no new one. The rest of the walk runs after the take.
+        """
+        self._pool(key, topology, handle, kept)
+        self._walk(budget, None, entries=False, first=handle, release_only=True)
+        taken = self.take_plan(to, budget=budget)
+        self._walk(budget, None, entries=False)
+        return taken
+
+    def take_plan(self, key: Hashable, budget: int | None = None) -> Any | None:
         """The most recently returned pooled handle under ``key``, or ``None``.
 
         It leaves the pool: no other solve takes it until it returns.
+
+        With a ``budget``, ``key`` is a frequency base's (ADR 0121): its last
+        element the frequency, the rest its site and thread count. Without a
+        handle of its own it takes one of the site's other frequencies: one
+        whose factors were released, else the most recently returned when one
+        more base with factors (the largest pooled one's bytes) would put the
+        cache over ``budget``; else ``None``, and the caller prepares a new one.
         """
         found = next(
             (k for k, p in reversed(self._plans.items()) if p.key == key), None
         )
+        if found is None and budget is not None and isinstance(key, tuple):
+            found = self._other_frequency(key, budget)
         return None if found is None else self._plans.pop(found).handle
+
+    def _other_frequency(self, key: tuple, budget: int) -> int | None:
+        """The pool slot of another frequency's base `take_plan` takes, or ``None``."""
+        others = [
+            (k, p.handle)
+            for k, p in self._plans.items()
+            if isinstance(p.key, tuple) and p.key[:-1] == key[:-1]
+        ]
+        if not others:
+            return None
+        released = next((k for k, h in others if getattr(h, "released", False)), None)
+        if released is not None:
+            return released
+        one = max(int(h.nbytes) for _, h in others)
+        return others[-1][0] if self.nbytes + one > budget else None
 
     def free_plans_off(self, topologies: set[int]) -> None:
         """Free the pooled handles whose topology's id is not in ``topologies``."""

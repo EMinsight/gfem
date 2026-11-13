@@ -17,7 +17,7 @@ import pytest
 import structured_meshes as sm
 
 import gfem
-from gfem._engine import cache
+from gfem._engine import cache, system_operator
 from gfem._engine.cache import Entry, EntryCache
 from gfem._linalg import pardiso
 from gfem._linalg.direct import DirectHandle
@@ -291,6 +291,149 @@ def test_clear_frees_the_pool_too():
     assert entries.pooled == 0
 
 
+# --- frequency bases (ADR 0121) ---------------------------------------------------
+
+
+def test_a_returning_handle_over_budget_releases_its_own_factors_first():
+    entries = EntryCache()
+    old = FakeHandle(100, released_bytes=30)
+    entries.give_plan(("s", 1.0), TOPOLOGY, old, budget=1000)
+    new = FakeHandle(100, released_bytes=30)
+    entries.give_plan(("s", 2.0), TOPOLOGY, new, budget=150)
+    assert new.released
+    assert not old.released
+
+
+def test_a_frequency_takes_its_own_then_a_released_then_the_latest_base():
+    entries = EntryCache()
+    a = FakeHandle(100, released_bytes=30)
+    b = FakeHandle(100, released_bytes=30)
+    entries.give_plan(("s", 1.0), TOPOLOGY, a, budget=1000)
+    entries.give_plan(("s", 2.0), TOPOLOGY, b, budget=1000)
+    # its own
+    assert entries.take_plan(("s", 2.0), budget=1000) is b
+    entries.give_plan(("s", 2.0), TOPOLOGY, b, budget=1000)
+    # one more base with factors fits (200 + 100 <= 1000): a new one
+    assert entries.take_plan(("s", 3.0), budget=1000) is None
+    # it would not (300 > 250): the most recently returned base
+    assert entries.take_plan(("s", 3.0), budget=250) is b
+    entries.give_plan(("s", 2.0), TOPOLOGY, b, budget=1000)
+    # a base whose factors were released first, even where one more fits
+    a.release_factors()
+    assert entries.take_plan(("s", 3.0), budget=1000) is a
+    # never another site's, and without a budget only its own
+    assert entries.take_plan(("t", 3.0), budget=0) is None
+    assert entries.take_plan(("s", 3.0)) is None
+
+
+class Refactoring(FakeHandle):
+    """A base handle that refactorizes in place: its factors come back."""
+
+    kind = "direct"
+    symmetry = "complex_symmetric"
+    ndof = 1
+    layout = None
+
+    def __init__(self, nbytes, *, released_bytes=None):
+        super().__init__(nbytes, released_bytes=released_bytes)
+        self.frequencies = []
+
+    def refactorize(self, operator, *, solves=None, frequency=None):  # noqa: ARG002
+        self.released = False
+        self.frequencies.append(frequency)
+
+    def solve_counted(self, B, **kwargs):  # noqa: ARG002
+        return B, ()
+
+    def solve(self, B, **kwargs):  # noqa: ARG002
+        return B
+
+    def apply(self, X, *, transpose=False):  # noqa: ARG002
+        return X
+
+
+@pytest.fixture
+def frequency_bases(monkeypatch):
+    """Sweeps of fake bases on the plan pool; the bases each sweep prepared."""
+    threads = [3]
+    monkeypatch.setattr(system_operator.ngs, "GetNumThreads", lambda: threads[0])
+    cache.ENTRIES.clear()
+    prepared = []
+
+    def prepare(operator):  # noqa: ARG001
+        prepared.append(Refactoring(100, released_bytes=30))
+        return prepared[-1]
+
+    def sweep(budget):
+        slot = system_operator.PlanSlot(("site",), TOPOLOGY, budget)
+        return system_operator.SystemSweep(
+            lambda omega: omega, lambda base, _: base, prepare, plans=slot
+        )
+
+    yield sweep, prepared, threads
+    cache.ENTRIES.clear()
+
+
+def _keys_with_factors():
+    return sorted(
+        p.key[-1] for p in cache.ENTRIES._plans.values() if not p.handle.released
+    )
+
+
+def test_a_frequency_base_pools_under_its_frequency_and_take_time_threads(
+    frequency_bases,
+):
+    sweep, prepared, threads = frequency_bases
+    with sweep(10**6) as s:
+        s.at(1.0)
+        s.at(2.0)
+        threads[0] = 1  # outside the TaskManager the count differs
+    assert sorted(p.key for p in cache.ENTRIES._plans.values()) == [
+        ("site", 3, 1.0),
+        ("site", 3, 2.0),
+    ]
+    assert len(prepared) == 2
+
+
+def test_each_frequency_refactorizes_its_own_base_across_designs(frequency_bases):
+    sweep, prepared, _ = frequency_bases
+    for _ in range(3):
+        with sweep(10**6) as s:
+            for omega in (1.0, 2.0, 3.0):
+                s.at(omega)
+    assert len(prepared) == 3
+    for base, omega in zip(prepared, (1.0, 2.0, 3.0), strict=True):
+        assert base.frequencies == [omega, omega]
+
+
+def test_with_two_of_three_bases_fitting_the_same_two_keep_their_factors(
+    frequency_bases,
+):
+    sweep, prepared, _ = frequency_bases
+    with sweep(10**6) as s:
+        for omega in (1.0, 2.0, 3.0):
+            s.at(omega)
+    # three bases of 100 held; one's factors (70) must go
+    for _ in range(4):
+        with sweep(250) as s:
+            for omega in (1.0, 2.0, 3.0):
+                s.at(omega)
+        assert _keys_with_factors() == [2.0, 3.0]
+        assert cache.ENTRIES.nbytes <= 250
+    assert len(prepared) == 3
+
+
+def test_a_sweep_whose_plans_do_not_fit_keeps_one_base(frequency_bases):
+    sweep, prepared, _ = frequency_bases
+    for _ in range(2):
+        with sweep(0) as s:
+            for omega in (1.0, 2.0, 3.0):
+                s.at(omega)
+    # never planned again within a sweep; the pool frees it after each
+    assert len(prepared) == 2
+    assert cache.ENTRIES.pooled == 0
+
+
 # --- driven loops --------------------------------------------------------------
 
 
@@ -366,10 +509,11 @@ def _eps(mesh):
     return jnp.full(len(mesh.elements("core")), 3.0)
 
 
-def test_a_density_loop_plans_once(path, plans):
+def test_a_density_loop_plans_once_per_frequency(path, plans):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     got = _loop(_objective(mesh), _eps(mesh))
-    assert len(plans) == 1
+    # one base per frequency (ADR 0121)
+    assert len(plans) == len(F)
     plans.clear()
     want = _loop(_objective(mesh, retain_memory=0), _eps(mesh))
     # retain_memory=0 keeps no plan and no entry: each step plans for its
@@ -378,7 +522,7 @@ def test_a_density_loop_plans_once(path, plans):
     _assert_same(got, want)
 
 
-def test_a_node_move_loop_plans_once(path, plans):
+def test_a_node_move_loop_plans_once_per_frequency(path, plans):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     eps = _eps(mesh)
     nodes = np.asarray(mesh.nodes)
@@ -396,14 +540,14 @@ def test_a_node_move_loop_plans_once(path, plans):
         return out
 
     got = run()
-    assert len(plans) == 1
+    assert len(plans) == len(F)
     plans.clear()
     want = run(retain_memory=0)
     assert len(plans) == 8
     _assert_same(got, want)
 
 
-def test_non_differentiated_solves_share_one_plan(path, plans):
+def test_non_differentiated_solves_share_one_plan_per_frequency(path, plans):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     for eps in (3.0, 3.5, 4.0):
         gfem.solve(
@@ -411,11 +555,13 @@ def test_non_differentiated_solves_share_one_plan(path, plans):
             gfem.Driven(frequency=F),
             options=gfem.SolverOptions(linear_solver="direct"),
         )
-    assert len(plans) == 1
-    assert cache.ENTRIES.pooled == 1
+    assert len(plans) == len(F)
+    assert sorted(p.key[-1] for p in cache.ENTRIES._plans.values()) == [
+        2 * np.pi * f for f in F
+    ]
 
 
-def test_vmapped_variants_hold_one_pooled_handle_each(path, plans):
+def test_vmapped_variants_hold_a_pooled_handle_each(path, plans):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     objective = _objective(mesh)
     robust = jax.value_and_grad(
@@ -427,9 +573,11 @@ def test_vmapped_variants_hold_one_pooled_handle_each(path, plans):
     for _ in range(3):
         _, grad = robust(eps)
         eps = eps + 0.5 * grad / jnp.max(jnp.abs(grad))
-    assert len(plans) == 3
+    # each variant's entry holds its last frequency's base; the variants take
+    # the first frequency's in turn
+    assert len(plans) == 3 + 1
     cache.ENTRIES.free_consumed(comm=None, budget=2**40)
-    assert cache.ENTRIES.pooled == 3
+    assert cache.ENTRIES.pooled == 3 + 1
 
 
 @pytest.mark.usefixtures("plans")  # an empty cache before and after
@@ -437,17 +585,15 @@ def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     options = gfem.SolverOptions(linear_solver="direct")
 
-    def pooled_pattern(eps):
+    def pooled_patterns(eps):
         model = _model(mesh, jnp.full(len(mesh.elements("core")), eps))
         gfem.solve(model, gfem.Driven(frequency=F), options=options)
-        (pooled,) = cache.ENTRIES._plans.values()
-        return pooled.handle
+        return [p.handle.pattern for p in cache.ENTRIES._plans.values()]
 
     # the first solve keeps no fixed part: its pieces' pattern dies with them
-    handle = pooled_pattern(3.0)
-    assert handle.pattern is None
+    assert pooled_patterns(3.0) == [None] * len(F)
     # the second keeps them, in the full pattern the piece sum sums into
-    handle = pooled_pattern(3.5)
+    patterns = pooled_patterns(3.5)
     (store,) = (
         d.spaces[k]
         for d in cache._DISCRETIZATIONS.values()
@@ -455,8 +601,9 @@ def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
         for k in d.spaces
         if isinstance(k, tuple) and k[-1] == "fixed pieces"
     )
-    assert handle.pattern is not None
-    assert any(kept.pattern is handle.pattern for kept in store.kept.values())
+    for pattern in patterns:
+        assert pattern is not None
+        assert any(kept.pattern is pattern for kept in store.kept.values())
 
 
 def _store(mesh):
@@ -514,7 +661,7 @@ def test_pooled_handles_of_a_topology_left_out_of_the_discretizations_are_freed(
         gfem.Driven(frequency=F),
         options=gfem.SolverOptions(linear_solver="direct"),
     )
-    assert cache.ENTRIES.pooled == 1
+    assert cache.ENTRIES.pooled == len(F)
     for _ in range(cache._MAX_DISCRETIZATIONS):
         cache.discretization(gfem.Mesh.from_gmsh(path, length_unit="mm"))
     assert cache.ENTRIES.pooled == 0
@@ -538,7 +685,7 @@ def test_a_bloch_forward_returns_its_base_to_the_pool(tmp_path):
     _, vjp = jax.vjp(objective, eps)
     (entry,) = cache.ENTRIES._entries.values()
     assert entry.handle.system._adjoint_sweep is None
-    assert cache.ENTRIES.pooled == 1
+    assert cache.ENTRIES.pooled == len(pc.G_FREQUENCIES)
     (got,) = vjp(1.0)
     cache.ENTRIES.clear()
     want = jax.grad(objective)(eps)
@@ -607,7 +754,7 @@ def _bloch(tmp_path, retain_memory=None):
     return objective, jnp.full(len(mesh.elements("cover")), 2.0)
 
 
-def test_a_bloch_gradient_loop_plans_its_adjoint_once(tmp_path, plans):
+def test_a_bloch_gradient_loop_plans_its_adjoint_once_per_frequency(tmp_path, plans):
     objective, eps = _bloch(tmp_path)
     step = jax.value_and_grad(objective)
     per_step = []
@@ -623,8 +770,9 @@ def test_a_bloch_gradient_loop_plans_its_adjoint_once(tmp_path, plans):
         # one live -k base per entry, no handle per frequency
         assert not transposed._handles
         assert transposed._adjoint_sweep._base is not None
-    # the first step plans the forward (k) and the transposed system (-k)
-    assert per_step == [2, 0, 0]
+    # the first step plans the forward (k) and the transposed system (-k), one
+    # base per frequency each
+    assert per_step == [2 * len(pc.G_FREQUENCIES), 0, 0]
     cache.ENTRIES.clear()
     objective, eps = _bloch(tmp_path, retain_memory=0)
     want = _loop(objective, eps, steps=3)
@@ -638,16 +786,18 @@ def test_a_bloch_entry_gives_its_transposed_base_to_the_pool(tmp_path):
     vjp(1.0)
     (entry,) = cache.ENTRIES._entries.values()
     transposed = entry.handle.system._transposed_system
-    assert cache.ENTRIES.pooled == 1  # the forward's (k)
+    n = len(pc.G_FREQUENCIES)
+    # the forward's (k), and the transposed system's (-k) but the one it holds
+    assert cache.ENTRIES.pooled == n + n - 1
     entry.handle.free_base(None)
     assert transposed._adjoint_sweep._base is None
-    assert cache.ENTRIES.pooled == 2
+    assert cache.ENTRIES.pooled == 2 * n
     cache.ENTRIES.clear()
     _, vjp = jax.vjp(objective, eps)
     vjp(1.0)
     cache.ENTRIES.free_consumed(comm=None, budget=2**40)
     assert len(cache.ENTRIES) == 0
-    assert cache.ENTRIES.pooled == 2
+    assert cache.ENTRIES.pooled == 2 * n
 
 
 @pytest.mark.usefixtures("plans")  # an empty cache before and after
@@ -670,7 +820,7 @@ def test_the_walk_gives_up_the_transposed_base_before_the_entry(tmp_path):
     assert cache.ENTRIES.nbytes <= budget
 
 
-def test_an_adaptive_sweep_loop_plans_once(path, plans):
+def test_a_frozen_sample_adaptive_loop_plans_once_per_sample(path, plans):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     grid = np.linspace(20e9, 28e9, 9)
     problem = gfem.Driven(frequency=grid, sweep="adaptive", samples=grid[[0, 8, 4]])
@@ -688,6 +838,10 @@ def test_an_adaptive_sweep_loop_plans_once(path, plans):
         _, grad = step(eps)
         per_step.append(len(plans))
         eps = eps + 0.5 * grad / jnp.max(jnp.abs(grad))
-    # one analysis at the first sample of the first step; later samples and
-    # steps refactorize the pooled plan
-    assert per_step == [1, 0, 0]
+    # one analysis per sample at the first step; later steps refactorize each
+    # sample's pooled base (ADR 0121)
+    assert per_step == [3, 0, 0]
+    cache.ENTRIES.free_consumed(comm=None, budget=2**40)
+    assert sorted(p.key[-1] for p in cache.ENTRIES._plans.values()) == sorted(
+        2 * np.pi * grid[[0, 8, 4]]
+    )

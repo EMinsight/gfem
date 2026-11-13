@@ -8,6 +8,10 @@ With the rule's cap at 1 every reused column passes it, refactorizes mid-step
 and finishes direct: S and the gradient are then the exact run's. The same
 holds on sparse Cholesky, the factorization without MKL, and a script run
 twice at one thread reuses at the same designs (the rule reads counts).
+
+Over several frequencies each frequency keeps its own base (ADR 0121): every
+frequency's forward reuses, and a backward that solves finds each base holding
+its design's values and refactorizes nothing.
 """
 
 import dataclasses
@@ -23,7 +27,7 @@ from gfem._engine import cache
 from gfem._engine.system_operator import SystemSweep
 from gfem._linalg import direct
 from gfem._linalg.direct import DirectHandle
-from gfem._linalg.factor_reuse import AmortizedRule
+from gfem._linalg.factor_reuse import FIRST, OTHER_FREQUENCY, AmortizedRule
 from gfem._linalg.pardiso import pardiso_available
 
 TOLERANCE = 1e-6
@@ -152,3 +156,75 @@ def test_a_script_run_twice_at_one_thread_reuses_at_the_same_designs(line, monke
     assert recount == counts
     _within_bounds(first, exact)
     _within_bounds(again, exact)
+
+
+FREQUENCIES = (16e9, 20e9, 24e9)
+
+
+def _run_frequencies(line, values, designs, monkeypatch, *, forced):
+    """S, gradients and, per design, the forward's and backward's handle steps.
+
+    The objective adds a field term at the line's centre, so each backward
+    solves. A step is ``(frequency, action, reason)``.
+    """
+    problem = gfem.Driven(frequency=FREQUENCIES, keep_fields=True)
+    point = np.asarray(line.mesh.nodes).mean(axis=0)[None, :]
+    steps: list = []
+    stepped = DirectHandle._stepped
+
+    def recorded(self, action, reason):
+        steps[-1].append((self._frequency, action, reason))
+        stepped(self, action, reason)
+
+    def objective(eps):
+        result = gfem.solve(
+            with_fields(line, {**values, "eps_r": eps}), problem, options=OPTIONS
+        )
+        value = s_functional(result.s.values)
+        for f in FREQUENCIES:
+            field = result.e_field(f, line.port_names[0]).at(point)
+            value = value + 1e-20 * jnp.sum(jnp.abs(field) ** 2)
+        return value, result.s.values
+
+    out, forward, backward = [], [], []
+    with monkeypatch.context() as patch:
+        patch.setattr(DirectHandle, "_stepped", recorded)
+        if forced:
+            patch.setattr(DirectHandle, "_reuse_pays", lambda _: True)
+            patch.setattr(AmortizedRule, "cap", property(lambda _: 100))
+        cache.ENTRIES.clear()
+        try:
+            for eps in designs:
+                steps.append([])
+                _, pullback, s = jax.vjp(objective, eps, has_aux=True)
+                forward.append(steps[-1])
+                steps.append([])
+                (grad,) = pullback(1.0)
+                backward.append(steps[-1])
+                out.append((np.asarray(s), np.asarray(grad)))
+        finally:
+            cache.ENTRIES.clear()
+    return out, forward, backward
+
+
+@needs_pardiso
+def test_each_frequency_reuses_its_own_factors_and_a_backward_refactorizes_nothing(
+    line, monkeypatch
+):
+    values, designs = _designs(line)
+    exact, _, _ = _run_frequencies(line, values, designs, monkeypatch, forced=False)
+    reused, forward, backward = _run_frequencies(
+        line, values, designs, monkeypatch, forced=True
+    )
+    omegas = [2 * np.pi * f for f in FREQUENCIES]
+    # design 0 plans each frequency's base (a new handle steps nothing), design
+    # 1 refactorizes it (a chain starts), design 2 reuses at every frequency;
+    # each base stays at its frequency
+    assert forward[0] == []
+    assert forward[1] == [(omega, "refactorized", FIRST) for omega in omegas]
+    assert forward[2] == [(omega, "reused", None) for omega in omegas]
+    for steps in forward[3:]:
+        assert [step[0] for step in steps] == omegas
+        assert all(step[2] != OTHER_FREQUENCY for step in steps)
+    assert backward == [[]] * len(designs)
+    _within_bounds(reused, exact)
