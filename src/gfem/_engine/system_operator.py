@@ -664,21 +664,40 @@ class SystemSweep:
         self._base, self._last = None, None
 
     def solve(
-        self, omega: float, rhs: np.ndarray, *, x0: np.ndarray | None = None
+        self,
+        omega: float,
+        rhs: np.ndarray,
+        *,
+        x0: np.ndarray | None = None,
+        guess: str | None = None,
+        reference: int | None = None,
     ) -> tuple[np.ndarray, tuple[int, ...]]:
         """Solve at ``ω``: the solution and the Krylov iterations per column.
 
-        Logs the step (`gfem._linalg.report`), as the base handle tells it.
+        Logs the step (`gfem._linalg.report`), as the base handle tells it;
+        ``guess`` names where ``x0`` came from. A ``reference`` iteration count
+        stands in for the one a fresh BDDC base would measure on this solve
+        (`gfem._linalg.bddc.BddcHandle.assume_reference`).
         """
-        x, its = self.at(omega).solve_counted(rhs, x0=x0)
+        handle = self.at(omega)
+        assume = getattr(self._base, "assume_reference", None)
+        if reference is not None and assume is not None:
+            assume(reference)
+        x, its = handle.solve_counted(rhs, x0=x0)
         report.solve_step(
             self._base,
             problem="driven",
             direction="forward",
             iterations=its,
             frequency=omega / (2 * math.pi),
+            guess=guess,
         )
         return x, its
+
+    @property
+    def reference_iterations(self) -> int | None:
+        """The base's reference iteration count, if it keeps one (BDDC's ``n_ref``)."""
+        return getattr(self._base, "reference_iterations", None)
 
     @property
     def reused(self) -> bool:

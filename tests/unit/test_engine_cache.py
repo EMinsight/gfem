@@ -1,5 +1,7 @@
 """Engine caches, the pinned quadrature rule, and kept forward solves."""
 
+from types import SimpleNamespace
+
 import jax
 import jax.numpy as jnp
 import ngsolve as ngs
@@ -322,6 +324,56 @@ def test_only_the_latest_returned_base_is_exempt():
     assert stuck.freed
     assert not new.released
     assert not new.freed
+
+
+# --- design initial guesses (ADR 0126) ----------------------------------------------
+
+
+class Ports:
+    """Kept port state of ``nbytes``."""
+
+    def __init__(self, nbytes):
+        self.array = np.zeros(nbytes, np.uint8)
+
+    def shared(self):
+        return {id(self.array): self.array.nbytes}
+
+
+def _held(ports_bytes=0):
+    built = SimpleNamespace(comm=None)
+    disc = cache.Discretization(built=built, topology=TOPOLOGY)
+    if ports_bytes:
+        disc.ports = Ports(ports_bytes)
+    return disc
+
+
+def test_a_discretization_keeps_a_design_guess_only_for_its_match():
+    disc = _held()
+    block = np.ones((4, 2), complex)
+    disc.keep_guess(("cols", 1.0), "free digest", block)
+    assert disc.guess(("cols", 1.0), "free digest") is block
+    assert disc.guess(("cols", 1.0), "other free DOFs") is None
+    assert disc.guess(("cols", 2.0), "free digest") is None
+    assert disc.shared() == {id(block): block.nbytes}
+
+
+def test_the_walk_drops_design_guesses_before_releasing_pooled_factors():
+    disc = _held(ports_bytes=100)
+    disc.keep_guess("k", "free", np.zeros(400, np.uint8))
+    entries = EntryCache(lambda: [disc])
+    base = Base(600)
+    # 1100 bytes over 800: the guess alone goes
+    entries.give_plan(("k",), TOPOLOGY, base, budget=800)
+    assert disc.guess("k", "free") is None
+    assert not base.released
+    assert disc.ports is not None
+
+
+def test_a_zero_budget_keeps_no_design_guess():
+    disc = _held()
+    disc.keep_guess("k", "free", np.zeros(10, np.uint8))
+    EntryCache(lambda: [disc]).trim(0)
+    assert disc.guess("k", "free") is None
 
 
 @pytest.mark.usefixtures("machine")
