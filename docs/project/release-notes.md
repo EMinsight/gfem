@@ -170,7 +170,7 @@ Optimization and gradients:
   each excited port, per frequency) and `SweepInfo.preconditioner_reused` (per
   frequency) are recorded on driven results solved outside JAX
   transformations; they are `None` under them and on results saved by earlier
-  versions. The logger `gfem.solver` (silent by default) records every driven
+  versions. The logger `"gfem.solver"` (silent by default) records every driven
   and electrostatic solve step, under `jax.grad` too: frequency, direction,
   solver, what it did (`factorized`, `refactorized`, `reused`), and why a
   design factorized again. Resolving `linear_solver="auto"` logs its choice

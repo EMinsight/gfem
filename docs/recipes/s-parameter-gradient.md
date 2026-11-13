@@ -181,7 +181,7 @@ To see what each design reused, read `result.sweep.iterations` (the Krylov
 iterations of each excited port, per frequency; empty for a solve on fresh
 factors) and `result.sweep.preconditioner_reused` (per frequency) on a result
 solved outside JAX transformations; under them both are `None`. To see every
-solve, those under `jax.grad` included, turn on the `gfem.solver` logger:
+solve, those under `jax.grad` included, turn on the logger `"gfem.solver"`:
 
 ```python
 import logging
