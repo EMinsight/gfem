@@ -147,7 +147,13 @@ def test_an_entry_too_big_with_its_base_is_kept_without_it(path, counts, solver)
     (got,) = vjp(1.0)
     # the backward prepares one handle, as the forward did, and runs no forward
     assert counts.prepared == {"forward": 1, "backward": 1}
-    np.testing.assert_allclose(got, want, rtol=1e-10, atol=0)
+    if solver == "direct":
+        np.testing.assert_allclose(got, want, rtol=1e-10, atol=0)
+    else:
+        # the kept base's adjoints ran on its reused preconditioner, these on
+        # a fresh one (ADR 0127): equal within the solve tolerance
+        bound = 10 * gfem.SolverOptions().tolerance * np.abs(want).max()
+        np.testing.assert_allclose(got, want, rtol=0, atol=bound)
 
 
 @pytest.mark.parametrize("solver", SOLVERS)
