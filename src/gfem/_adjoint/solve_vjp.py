@@ -461,6 +461,9 @@ def _local_cotangents(
             entry.consumed = True  # (ADR 0081)
         # the base handles of other entries go before this one prepares (ADR 0065)
         ENTRIES.free_bases(comm, keep=entry)
+    if hasattr(rule, "law_inputs"):
+        # no law parameter wanted: the pairs carry no dθ/dp (ADR 0112)
+        rule.law_inputs = any(kind[0] == "law" for kind in wants)  # ty: ignore[not-subscriptable]
     try:
         pairs = rule.backward(model, entry, cotangents)
         # the element passes assemble on the solve's threads

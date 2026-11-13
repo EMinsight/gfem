@@ -187,3 +187,45 @@ def test_law_parameters_differentiate_beside_an_unread_eps(mesh):
     values = np.asarray(jax.tree.leaves(grad), dtype=float)
     assert np.all(np.isfinite(values))
     assert np.all(values != 0)
+
+
+# --- no law work without a law input -------------------------------------------------
+
+
+@pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
+def test_a_gradient_without_a_law_input_carries_no_law_weights(
+    mesh, monkeypatch, sweep
+):
+    # a design beside a law: the law's dθ/dp is neither computed nor factored
+    from gfem._engine import sensitivity
+
+    seen = []
+    original = sensitivity.sensitivity
+
+    def spy(model, pairs, wants, **kwargs):
+        seen.extend(key for pair in pairs for key in pair.weights)
+        return original(model, pairs, wants, **kwargs)
+
+    monkeypatch.setattr(sensitivity, "sensitivity", spy)
+    n = len(mesh.elements("dielectric"))
+    problem = (
+        gfem.Driven(
+            frequency=np.linspace(5 * GHZ, 9 * GHZ, 5).tolist(),
+            sweep="adaptive",
+            samples=[5 * GHZ, 9 * GHZ, 7 * GHZ],
+        )
+        if sweep == "adaptive"
+        else gfem.Driven(frequency=[7 * GHZ])
+    )
+
+    def objective(eps):
+        model = _line(mesh, LAW).with_material(
+            "dielectric", gfem.MaterialField(eps_r=eps)
+        )
+        s = gfem.solve(model, problem, options=OPTIONS).s.values
+        return jnp.sum(jnp.abs(s[:, 1, 0]) ** 2)
+
+    grad = jax.grad(objective)(jnp.full(n, 4.0))
+    assert np.isfinite(np.asarray(grad)).all()
+    assert seen
+    assert not [key for key in seen if " d/d " in key]

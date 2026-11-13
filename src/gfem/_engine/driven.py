@@ -292,7 +292,7 @@ class DrivenOperator:
         """Whether A^T = A (no Bloch phase): the forms' ``symmetric`` flag."""
         return self.symmetry != "general"
 
-    def weights(self, omega: complex) -> dict[str, complex]:
+    def weights(self, omega: complex, *, laws: bool = True) -> dict[str, complex]:
         """θ(ω) of each piece a gradient moves, by piece name (`gfem._engine.terms`).
 
         The `FieldPair.weights` of a backward pass, driven (real ω) or
@@ -304,14 +304,15 @@ class DrivenOperator:
         are fixed, so no pair carries them. The `latent` pieces are
         included: their derivative is not zero. A permittivity law's pieces
         add dθ/dp by each law parameter, each under its own key
-        (`gfem._engine.sensitivity.law_key`, the law pass, ADR 0112).
+        (`gfem._engine.sensitivity.law_key`, the law pass, ADR 0112), unless
+        ``laws`` is false (no law parameter is a wanted input).
         """
         out = {
             p.name: complex(p.theta(omega))
             for p in (*self.pieces, *self.latent)
             if p.kind != "port" or p.lumped is not None
         }
-        for p in self.pieces:
+        for p in self.pieces if laws else ():
             if p.law is not None:
                 for parameter, value in p.law[1](omega).items():
                     out[law_key(p.name, parameter)] = complex(value)
@@ -499,6 +500,10 @@ class DrivenRule:
     #: Material properties the driven forms read, and a law blend's density
     #: (ADR 0113).
     reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity", "blend"})
+    #: Whether the backward's pairs carry the law pieces' dθ/dp: the adjoint
+    #: wrapper clears it when no law parameter is a wanted input, so a
+    #: gradient beside a law computes and factors none of them.
+    law_inputs = True
     #: Outputs whose cotangents the backward pass handles (a design may not
     #: touch a wave port face: `unsupported_input`).
     differentiable_outputs = sweep_outputs.DIFFERENTIABLE
@@ -1432,7 +1437,10 @@ class DrivenRule:
                         raise _adjoint_error(f, err) from err
                 adjoint[:, undefined] = np.nan
                 pairs[n] = op.pair(
-                    -adjoint, x, weights=op.weights(omega), domain=domain
+                    -adjoint,
+                    x,
+                    weights=op.weights(omega, laws=self.law_inputs),
+                    domain=domain,
                 )
         if rebuilt:
             # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
@@ -1485,7 +1493,7 @@ class DrivenRule:
                 if not g.any():
                     continue
                 outer = np.linalg.solve(matrices[i].T, g) @ coordinates[i].T
-                for term, theta in op.weights(omega).items():
+                for term, theta in op.weights(omega, laws=self.law_inputs).items():
                     accumulated[term] = accumulated.get(term, 0) + theta * outer
             pairs = []
             for term, g in accumulated.items():
