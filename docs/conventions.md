@@ -116,14 +116,57 @@ print(modes.q[0], abs(omega) / (2 * omega.imag))
 1251.6804868146692 1251.6804868146692
 ```
 
+## Dispersive materials
+
+A {term}`permittivity law` follows the same sign of loss. Its parameters are
+ordinary frequencies in hertz (ω = 2π f), and under exp(+iωt) its terms are:
+
+| Term | Adds to ε∞ |
+| --- | --- |
+| {py:obj}`gfem.Drude` | −ωp² / (ω (ω − iγ)) |
+| {py:obj}`gfem.Lorentz` | Δε ω0² / (ω0² − ω² + iγω) |
+| {py:obj}`gfem.Debye` | Δε / (1 + i f / f_r) |
+| {py:obj}`gfem.DjordjevicSarkar` | Δε ln((f2 + i f) / (f1 + i f)) / ln(f2 / f1) |
+
+Here ωp, ω0 and γ are 2π times the term's plasma, resonance and damping
+frequencies, and f_r, f1 and f2 are its relaxation and corner frequencies.
+With every strength positive and every damping at least 0, each term is
+passive alone, so Im ε ≤ 0 at every real frequency. A Lorentz medium just
+below its resonance:
+
+```python
+law = gfem.PermittivityLaw(
+    eps_inf=2.0,
+    terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=10e9, damping=1e9)],
+)
+eps = complex(law(9e9))
+print(eps.real, eps.imag)  # at 9 GHz: Im eps < 0, a loss
+print(law(0.0).real)  # the static permittivity, eps_inf + delta_eps
+```
+
+```text
+6.298642533936651 -2.0361990950226243
+3.0
+```
+
+Most optics papers write their fits under exp(−iωt). There the same law is
+the complex conjugate: keep the parameter values, and read their −iγ as +iγ.
+`law(0)` is the {term}`static permittivity`, which the electrostatic problem
+reads. A mode's energy weighs a law region with its
+{term}`energy permittivity` instead of Re ε (see below). How to write a law:
+{doc}`recipes/dispersive-materials`.
+
 ## Eigenmode fields
 
 A mode has no source to set its amplitude, so gfem scales every mode field to
 store `MODE_ENERGY`, 1 J, of electric energy: ½ Re ∫ D\* · E dV, plus
 C|V|²/2 in each lumped port with a capacitance C, plus ½ ∫ C_s |E_t|² dS on
 each {py:obj}`gfem.Impedance` sheet with a capacitance C_s per square. For a
-lossless mode this is its total energy. The time-averaged electric energy
-`gfem.electric_energy` measures is half of the volume term. Participation
+lossless mode this is its total energy. In a region with a permittivity
+law, the volume term weighs |E|² with the energy permittivity at the mode's
+real frequency, so it stays the total energy of a lossless mode. Elsewhere,
+the time-averaged electric energy `gfem.electric_energy` measures is half of
+the volume term. Participation
 ratios are shares of the same energy. Over all the volumes, the capacitive
 ports and the capacitive sheets they add up to 1, and over the volumes alone
 when the model has neither, as here:

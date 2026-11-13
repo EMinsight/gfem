@@ -100,3 +100,19 @@ def test_a_mode_field_stores_the_mode_energy(ran):
     energy, shares = _printed(ran, "Eigenmode fields")
     assert energy == pytest.approx(gfem.conventions.MODE_ENERGY, rel=1e-9)
     assert shares == pytest.approx(1.0, rel=1e-9)
+
+
+def test_a_lossy_law_has_a_negative_imaginary_part_and_a_static_value(ran):
+    (example,) = [e for e in ran if e.section == "Dispersive materials"]
+    real, imag, static = dp.numbers(example.printed)
+    # 2 + 1 * f0^2 / (f0^2 - f^2 + i gamma f) at f = 9, f0 = 10, gamma = 1 GHz
+    assert complex(real, imag) == pytest.approx(2 + 100 / (19 + 9j), rel=1e-12)
+    assert imag < 0
+    assert static == 3.0
+
+
+def test_the_dispersive_section_names_the_two_derived_permittivities(page):
+    section = dp._prose(dp.section(page, "Dispersive materials"))
+    assert "{term}`static permittivity`" in section
+    assert "{term}`energy permittivity`" in section
+    assert "{doc}`recipes/dispersive-materials`" in section
