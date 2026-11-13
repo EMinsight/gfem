@@ -223,10 +223,13 @@ def has_loss(law: PermittivityLaw) -> bool:
     """Whether a term of ``law`` carries loss (Im eps < 0 at real frequencies).
 
     A damped Drude or Lorentz term, and every Debye and Djordjevic-Sarkar
-    term; a lossless law is real but not eps_inf.
+    term; a lossless law is real but not eps_inf. A traced damping counts
+    as loss (the refining entry points refuse a traced law).
     """
     return any(
-        not isinstance(term, (Drude, Lorentz)) or float(term.damping) > 0
+        not isinstance(term, (Drude, Lorentz))
+        or is_traced(term.damping)
+        or float(term.damping) > 0
         for term in law.terms
     )
 
@@ -246,7 +249,9 @@ def check_estimator_frequencies(model: Model, frequencies: Iterable[float]) -> N
     regions = [
         lr
         for lr in law_regions(model)
-        if not np.any(np.asarray(model.materials[lr.region].conductivity))
+        # a traced law is refused by the refining entry points themselves
+        if not is_traced(lr.law)
+        and not np.any(np.asarray(model.materials[lr.region].conductivity))
     ]
     for f in frequencies:
         for lr in regions:

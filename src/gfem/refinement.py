@@ -1056,16 +1056,16 @@ def _lossy_elements(model: Model) -> np.ndarray:
     A law region is lossy when a term of its law carries loss (ADR 0111).
     """
     from gfem._engine import dispersion
-    from gfem._engine.coefficients import element_tensors
+    from gfem._engine.coefficients import element_tensors, lossy_eps
 
     laws = dispersion.law_regions(model)
     out = np.zeros(len(model.mesh.tetrahedra), bool)
     for name in ("tan_delta", "conductivity", "eps_r", "mu_r"):
         if name == "eps_r" and laws:
             # eps_r (1 - i tan_delta) is complex exactly where eps_r is or
-            # tan_delta (counted above) is nonzero; a law region holds its
-            # real eps_inf, its loss is the law's
-            values = np.asarray(dispersion.high_frequency_eps(model))
+            # tan_delta (counted above) is nonzero; a law region holds a real
+            # placeholder (no traced value read), its loss is the law's
+            values = np.asarray(lossy_eps(model, law=1.0))
         else:
             values = np.asarray(element_tensors(model, name))
         lossy = values.imag if name in ("eps_r", "mu_r") else values
