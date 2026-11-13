@@ -21,6 +21,7 @@ get-started
 tutorials/topology
 tutorials/sheet
 tutorials/shape
+tutorials/transmon
 tutorials/bend
 tutorials/bend3d
 ```

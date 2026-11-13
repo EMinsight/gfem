@@ -138,7 +138,9 @@ program, because every gfem solve needs it.
   {doc}`resistive film <tutorials/sheet>` tutorial lays out a 300 Ω film to make
   a matched 3 dB attenuator. The
   {doc}`shape <tutorials/shape>` tutorial moves a coplanar line's conductor walls
-  to match it to 50 Ω, the {doc}`bend <tutorials/bend>` tutorial designs a
+  to match it to 50 Ω, the {doc}`transmon <tutorials/transmon>` tutorial
+  takes the gradient of a superconducting qubit's dispersive shift with respect
+  to its pad gap, the {doc}`bend <tutorials/bend>` tutorial designs a
   photonic waveguide bend on a slab model, and the
   {doc}`3D bend <tutorials/bend3d>` tutorial designs it again on the real stack,
   a 220 nm silicon guide in oxide.

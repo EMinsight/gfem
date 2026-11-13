@@ -214,6 +214,8 @@ nitpick_ignore = [
             "PetscOptions",
         )
     ],
+    # JAX documents ArrayLike as data (a type alias), so a class reference misses.
+    ("py:class", "jax.typing.ArrayLike"),
     # meshio publishes no objects.inv.
     ("py:class", "meshio.Mesh"),
     ("py:obj", "meshio.Mesh"),
