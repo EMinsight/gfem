@@ -193,6 +193,25 @@ EXPECTED |= {
         *LAW_KINDS,
     ]
 }
+# A density blend of a constant end and TABLE_LAW on "core" (ADR 0113,
+# index scheme): S and the kept fields' coefficients differentiate by its
+# density and by the mu_r and conductivity the blend interpolates; the host
+# field and the nodes are as on the plain line.
+EXPECTED |= {
+    ("driven_blend", out, kind): (
+        EXPECTED[("driven", out, kind)]
+        if kind[1:2] != ("core",)
+        else GRADIENT
+        if out in _DRIVEN_DEPENDENT
+        else ZERO
+    )
+    for out in sorted({out for name, out, _ in EXPECTED if name == "driven"})
+    for kind in [
+        ("nodes",),
+        *(("material", "dielectric", p) for p in ALL_PROPERTIES),
+        *(("material", "core", p) for p in ("mu_r", "conductivity", "blend")),
+    ]
+}
 # The C1 periodic line with the law on its cell (plain periodicity): as
 # the plain periodic line in the nodes, the law's leaves as above.
 EXPECTED |= {
@@ -240,6 +259,33 @@ EXPECTED |= {
         "e_fields.mesh.nodes",
     )
     for kind in [("nodes",)] + [("material", "dielectric", p) for p in ALL_PROPERTIES]
+}
+# The law line on the adaptive sweep (ADR 0116): the law's leaves
+# differentiate S and the kept fields' reduced coordinates, like the host's
+# material; the frozen basis raises; the other inputs as `driven_adaptive`.
+EXPECTED |= {
+    ("driven_law_adaptive", out, kind): (
+        EXPECTED[("driven_adaptive", out, kind)]
+        if kind[0] != "law"
+        else GRADIENT
+        if out in ("s.values", "e_fields.coordinates")
+        else RAISES
+        if out == "e_fields.basis"
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        "e_fields.basis",
+        "e_fields.coordinates",
+        "e_fields.omega",
+        "e_fields.mesh.nodes",
+    )
+    for kind in [
+        ("nodes",),
+        *(("material", "dielectric", p) for p in ALL_PROPERTIES),
+        *LAW_KINDS,
+    ]
 }
 
 # Wave ports (design region "core" away from the port faces): S
@@ -694,9 +740,18 @@ def law_cases(tmp_path_factory):
         boundaries=[*model.boundaries, gfem.Absorbing("side", order=1)]
     )
     problem = gfem.Driven(frequency=5e9, keep_fields=True)
+    n = len(mesh.elements("core"))
+    blend = gfem.MaterialField.interpolate(
+        jnp.linspace(0.3, 0.7, n),
+        gfem.Material(eps_r=2.0),
+        gfem.Material(eps_r=TABLE_LAW),
+        scheme="index",
+    )
     return {
         "driven_law": (model, problem),
         "driven_law_absorbing": (absorbing, problem),
+        "driven_law_adaptive": (model, ADAPTIVE),
+        "driven_blend": (model.with_material("core", blend), problem),
     }
 
 
@@ -1171,6 +1226,22 @@ def _out_law_under_a_bloch_wave_vector(request):
         law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
         m = model.with_material("cell", gfem.Material(eps_r=law))
         return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(2.0)
+
+
+def _out_law_of_a_blend_end(_request):
+    # the ends of a blend are fixed (ADR 0113): a traced law raises while
+    # the field is built, with the remedy
+    def objective(eps_inf):
+        law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
+        field = gfem.MaterialField.interpolate(
+            jnp.array([0.5]),
+            gfem.Material(eps_r=2.0),
+            gfem.Material(eps_r=law),
+            scheme="index",
+        )
+        return jnp.sum(field.blend)
 
     jax.make_jaxpr(jax.grad(objective))(2.0)
 
@@ -1957,6 +2028,12 @@ OUT_OF_SCOPE = [
         _out_eigenmode_q_port_without_voltage,
         HOST,
         r"NonDifferentiableError.*1 / q_port",
+    ),
+    (
+        "law parameter of a blend's end",
+        _out_law_of_a_blend_end,
+        gfem.NonDifferentiableError,
+        "differentiate the law on a `Material` region",
     ),
     (
         "eigenmode principal_participation x lumped value",

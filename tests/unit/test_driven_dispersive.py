@@ -176,6 +176,50 @@ def test_an_output_frequency_on_a_lossless_pole_raises_before_assembly(
     assert "damping" in str(err.value)
 
 
+def test_the_greedy_solves_the_grid_neighbours_of_an_in_band_resonance_first(mesh):
+    # ADR 0116: after the endpoints, the two grid frequencies on either side
+    # of each in-band Lorentz resonance, region by region; one outside the
+    # grid and the Drude pole at 0 add none
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[
+            gfem.Lorentz(delta_eps=3.0, resonance_frequency=13.1 * GHZ, damping=0.0),
+            gfem.Drude(plasma_frequency=5 * GHZ, damping=1 * GHZ),
+            gfem.Lorentz(delta_eps=0.5, resonance_frequency=30 * GHZ, damping=1e8),
+        ],
+    )
+    other = gfem.PermittivityLaw(
+        eps_inf=3.0,
+        terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=7.5 * GHZ, damping=0)],
+    )
+    model = _model(
+        mesh, gfem.Material(eps_r=law), host=gfem.Material(eps_r=other, name="host")
+    )
+    grid = [f * GHZ for f in range(24, 3, -1)]  # descending: order is the user's
+    result = gfem.solve(
+        model, gfem.Driven(frequency=grid, sweep="adaptive"), options=OPTIONS
+    )
+    sampled = list(result.sweep.sampled_frequencies)
+    assert sampled[:2] == [24 * GHZ, 4 * GHZ]
+    assert sampled[2:6] == [7 * GHZ, 8 * GHZ, 13 * GHZ, 14 * GHZ]
+    assert len(set(sampled)) == len(sampled)
+
+
+def test_frozen_samples_are_not_seeded(mesh):
+    law = gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[gfem.Lorentz(delta_eps=3.0, resonance_frequency=13.1 * GHZ, damping=0)],
+    )
+    grid = [f * GHZ for f in range(4, 25)]
+    samples = (4 * GHZ, 24 * GHZ, 10 * GHZ)
+    result = gfem.solve(
+        _model(mesh, gfem.Material(eps_r=law)),
+        gfem.Driven(frequency=grid, sweep="adaptive", samples=samples),
+        options=OPTIONS,
+    )
+    assert tuple(result.sweep.sampled_frequencies) == samples
+
+
 def test_an_absorbing_face_beside_a_law_elsewhere_solves(mesh):
     end = (gfem.Absorbing("port2"),)
     law = CASES["debye"][0]

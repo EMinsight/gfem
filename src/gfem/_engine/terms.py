@@ -108,6 +108,7 @@ __all__ = [
     "absorbing_coefficients",
     "absorbing_faces",
     "absorbing_shape_unsupported",
+    "blend_pieces",
     "check_absorbing",
     "excitation_per_voltage",
     "face_owner",
@@ -549,6 +550,66 @@ def susceptibility_pieces(
     return out
 
 
+def blend_pieces(
+    model: Model,
+    built: EngineMesh,
+    order: int,
+    *,
+    elements: np.ndarray | None = None,
+) -> list[Piece]:
+    """The susceptibility pieces of each law blend (ADR 0113).
+
+    One piece per part of `gfem._engine.dispersion.blend_parts` (at most a
+    void, a solid and a cross piece per region): θ = -k0² X(ω) with an
+    analytic dθ/dω, and the coefficient c(rho) per element, whose derivative
+    by the density is the material pass's ``"blend"`` property. The eps_inf
+    limit is in the mass. ``elements`` restricts the form as in `pieces`.
+    """
+    scale = built.scale
+    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    dx = quadrature.dx(order, definedonelements=tets)
+
+    def k2(w: complex) -> complex:
+        return (w * scale / const.c) ** 2
+
+    out = []
+    for br in dispersion.blend_regions(model):
+        for part in dispersion.blend_parts(br):
+            cf = coefficient(built, part.c)
+
+            def theta(w: complex, part: Any = part) -> complex:
+                return -k2(w) * part.chi(w)
+
+            def d_theta(w: complex, part: Any = part) -> complex:
+                return -k2(w) * (2 / w * part.chi(w) + part.d_chi(w))
+
+            out.append(
+                Piece(
+                    f"blend {br.region} {part.name}",
+                    theta,
+                    lambda u, v, cf=cf: (cf * u) * v * dx,
+                    kind="value",
+                    coefficient=cf,
+                    values=part.c,
+                    frequency_class="nonpolynomial",
+                    d_theta=d_theta,
+                    derivatives={
+                        "blend": Derivative(lambda dc=part.dc: dc, holomorphic=True)
+                    },
+                    probe=_LAW_PROBE,
+                )
+            )
+    return out
+
+
+def _blend_mass_slope(model: Model) -> np.ndarray:
+    """D (mass value) / d rho per tetrahedron: the law blends' eps_inf limits."""
+    out = np.zeros(len(model.mesh.tetrahedra))
+    for br in dispersion.blend_regions(model):
+        out += dispersion.blend_mass(br)[1]
+    return out
+
+
 def conductivity_piece(
     model: Model,
     built: EngineMesh,
@@ -668,6 +729,8 @@ def pieces(
                     holomorphic=True,
                     per_axis=Derivative(lambda: _axis_loss(model), holomorphic=True),
                 ),
+                # a law blend's eps_inf limit moves with its density
+                "blend": Derivative(lambda: _blend_mass_slope(model), holomorphic=True),
                 "tan_delta": Derivative(
                     # a law region has no tan_delta (nor a field): never read
                     lambda: -1j * element_values(model, "eps_r", per_axis=1.0, law=1.0),
@@ -683,6 +746,7 @@ def pieces(
     # the conductivity has its own i k0 piece, not folded into the mass (the
     # eigen operator splits the pieces by power of k)
     out.extend(susceptibility_pieces(model, built, order, elements=elements))
+    out.extend(blend_pieces(model, built, order, elements=elements))
     conductivity = conductivity_piece(model, built, order, elements=elements)
     latent: tuple[Piece, ...] = ()
     if np.any(conductivity.values):
@@ -693,6 +757,7 @@ def pieces(
     absorbing = [b for b in model.boundaries if isinstance(b, Absorbing)]
     if absorbing:
         check_absorbing(model, dispersive=True)
+        _refuse_absorbing_blends(model)
         surfaces, owner = absorbing_faces(model, order=1)
         admittance, curl = absorbing_coefficients(model, surfaces, owner)
         # the faces a permittivity law owns leave the shared pieces
@@ -871,6 +936,22 @@ def check_absorbing(model: Model, *, dispersive: bool = False) -> None:
                 "Use order=1, or put an isotropic layer between the material "
                 "and the boundary."
             )
+
+
+def _refuse_absorbing_blends(model: Model) -> None:
+    """Raise for an `Absorbing` face on a law blend's region (ADR 0113).
+
+    Raises:
+        NotImplementedError: An absorbing surface has a face on a blend.
+    """
+    blends = dispersion.blend_regions(model)
+    for region, surfaces in dispersion.absorbing_surfaces(model, blends).items():  # ty: ignore[invalid-argument-type]
+        raise NotImplementedError(
+            f"Absorbing {surfaces[0]!r} lies on region {region!r}, a density "
+            "blend with a permittivity-law end: an absorbing boundary on a blend "
+            "is not supported. Put a constant layer between the design region and "
+            "the boundary."
+        )
 
 
 def law_faces(

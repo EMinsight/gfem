@@ -74,6 +74,9 @@ from finite_differences import (
 )
 from gradient_cases import (
     BIAXIAL,
+    BLEND_DIELECTRIC,
+    BLEND_FREQUENCIES,
+    BLEND_METAL,
     CAVITY_TARGET,
     COVER_LAW,
     EIGEN_LAWS,
@@ -408,6 +411,34 @@ def _law_cells() -> list[Cell]:
             Cell("eigenmode", "law", "direct", variant=variant)
             for variant in ("lorentz", "drude_lorentz", "relaxation", "drude_lossless")
         ),
+        *_adaptive_law_cells(),
+    ]
+
+
+def _adaptive_law_cells() -> list[Cell]:
+    """The adaptive sweep's law cells (ADR 0116), frozen samples.
+
+    The ``poles`` law with its Lorentz pole moved into the band
+    (`ADAPTIVE_LAWS`) and the ``lorentz`` law behind first-order absorbing
+    walls, in their parameters; the host's per-element permittivity beside
+    the moved ``poles`` law.
+    """
+    return [
+        Cell("driven", "law", "direct", "adaptive", "poles"),
+        Cell("driven", "law", "direct", "adaptive", "absorbing1"),
+        Cell("driven", "eps_r", "direct", "adaptive", "law"),
+    ]
+
+
+def _blend_cells() -> list[Cell]:
+    """The density of a metal-dielectric blend (ADR 0113): cells D11 and D12.
+
+    The strip line's core blends a constant dielectric and a Drude metal by a
+    density in [0.2, 0.8], under the index scheme and the linear one.
+    """
+    return [
+        Cell("driven", "blend", "direct", "uniform", scheme)
+        for scheme in ("index", "linear")
     ]
 
 
@@ -427,6 +458,7 @@ CELLS = [
     *_participation_cells(),
     *_field_cells(),
     *_law_cells(),
+    *_blend_cells(),
     *_electrostatic_law_cells(),
 ]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
@@ -627,6 +659,9 @@ STEPS = {
     "nodes": 2e-6,
     # a law's parameters, normalized: p0 (1 + t)
     "law": 1e-3,
+    # a blend's density, in [0.2, 0.8] (the linear blend's S is strongly
+    # curved: 1e-2 leaves 6e-7 of truncation, 5e-3 4e-8)
+    "blend": 5e-3,
 }
 #: Ranges a cell draws its own ``mu_r`` or ``tan_delta`` from (the other
 #: cells' designs carry neither).
@@ -1583,6 +1618,8 @@ def _driven_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     ``absorbing1`` / ``absorbing2``: the ``lorentz`` law behind absorbing y
     walls of that order (their law face pieces' terms).
     """
+    if cell.sweep == "adaptive":
+        return _adaptive_law(d, cell, options, seed)
     name, absorbing = cell.variant, None
     if name.startswith("absorbing"):
         name, absorbing = "lorentz", int(name.removeprefix("absorbing"))
@@ -1616,8 +1653,10 @@ def _static_leaves(law: gfem.PermittivityLaw) -> np.ndarray:
     )
 
 
-def _driven_host_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
+def _driven_host_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     """S of the strip line in the host's per-element eps_r, beside the ``poles`` law."""
+    if cell.sweep == "adaptive":
+        return _adaptive_host_law(d, cell, options, seed)
     mesh = d.dispersive
     rng = np.random.default_rng(seed)
     n = len(mesh.elements("dielectric"))
@@ -1630,6 +1669,122 @@ def _driven_host_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
         return s_functional(gfem.solve(model, problem, options=options).s.values)
 
     return Case(objective, eps, rng, step=STEPS["eps_r"], taylor=1e-1)
+
+
+#: The adaptive law cells' laws: ``poles`` with its Lorentz pole moved from
+#: 30 GHz into the band, and ``lorentz`` (behind the absorbing walls).
+ADAPTIVE_LAWS = {
+    "poles": dataclasses.replace(
+        LAWS["poles"],
+        terms=(
+            LAWS["poles"].terms[0],
+            dataclasses.replace(LAWS["poles"].terms[1], resonance_frequency=13.1e9),
+        ),
+    ),
+    "absorbing1": LAWS["lorentz"],
+}
+#: Their grids and frozen samples: the endpoints, the two grid neighbours of
+#: the pole, two more. Behind an absorbing face Re eps must stay > 0, so the
+#: ``lorentz`` grid skips its metallic band (8 to 12.6 GHz) and its margin.
+ADAPTIVE_LAW_GRIDS = {
+    "poles": tuple(float(f) for f in np.linspace(4e9, 24e9, 21)),
+    "absorbing1": tuple(
+        float(f) for f in (*np.linspace(4e9, 7e9, 7), *np.linspace(15e9, 24e9, 10))
+    ),
+}
+ADAPTIVE_LAW_SAMPLES = {
+    "poles": (4e9, 24e9, 13e9, 14e9, 8e9, 19e9),
+    "absorbing1": (4e9, 24e9, 7e9, 15e9, 5.5e9, 19e9),
+}
+
+
+def _adaptive_law_sweep(name: str) -> tuple[gfem.Driven, list[int], gfem.Driven]:
+    """The adaptive problem, its sample rows, and the uniform sweep of the samples."""
+    grid, samples = ADAPTIVE_LAW_GRIDS[name], ADAPTIVE_LAW_SAMPLES[name]
+    problem = gfem.Driven(frequency=grid, sweep="adaptive", samples=samples)
+    return problem, [grid.index(f) for f in samples], gfem.Driven(frequency=samples)
+
+
+def _adaptive_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S at the samples of an adaptive sweep, in the core's law parameters.
+
+    The differences are taken on a uniform sweep of the samples
+    (`_driven_fill`'s pattern): at a sample the full solution lies in the
+    frozen basis.
+    """
+    name = cell.variant
+    law = ADAPTIVE_LAWS[name]
+    absorbing = 1 if name == "absorbing1" else None
+    problem, rows, uniform = _adaptive_law_sweep(name)
+
+    def objective_on(problem, rows):
+        def objective(t):
+            model = dispersive_line(
+                d.dispersive, scaled_law(law, t), absorbing=absorbing
+            )
+            s = gfem.solve(model, problem, options=options).s.values
+            return s_functional(s[jnp.asarray(rows)])
+
+        return objective
+
+    case = _law_case(objective_on(problem, rows), law, seed)
+    case.reference = objective_on(uniform, list(range(len(rows))))
+    if name == "absorbing1":
+        # the 7 GHz sample sits 1 GHz under a pole 0.4 GHz wide: at 10 %
+        # steps the third-order term still shows (slopes 1.66, 1.91)
+        case.taylor = 1e-2
+    return case
+
+
+def _adaptive_host_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """The host's per-element eps_r beside the moved ``poles`` law, adaptive."""
+    mesh = d.dispersive
+    rng = np.random.default_rng(seed)
+    n = len(mesh.elements("dielectric"))
+    eps = jnp.asarray(rng.uniform(2.0, 6.0, n) * (1 - 0.02j))
+    problem, rows, uniform = _adaptive_law_sweep("poles")
+
+    def objective_on(problem, rows):
+        def objective(p):
+            host = gfem.MaterialField(eps_r=p)
+            model = dispersive_line(mesh, ADAPTIVE_LAWS["poles"], host=host)
+            s = gfem.solve(model, problem, options=options).s.values
+            return s_functional(s[jnp.asarray(rows)])
+
+        return objective
+
+    return Case(
+        objective_on(problem, rows),
+        eps,
+        rng,
+        step=STEPS["eps_r"],
+        taylor=1e-1,
+        reference=objective_on(uniform, list(range(len(rows)))),
+    )
+
+
+def _driven_blend(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S of the strip line whose core blends a dielectric and a Drude metal.
+
+    The input is the density, one per core element, in [0.2, 0.8]; the
+    variant is the scheme (``index`` or ``linear``).
+    """
+    mesh = d.dispersive
+    rng = np.random.default_rng(seed)
+    rho = jnp.asarray(rng.uniform(0.2, 0.8, len(mesh.elements("core"))))
+    problem = gfem.Driven(frequency=BLEND_FREQUENCIES)
+
+    def objective(p):
+        core = gfem.MaterialField.interpolate(
+            p, BLEND_DIELECTRIC, BLEND_METAL, scheme=cell.variant
+        )
+        model = dispersive_line(mesh, BLEND_DIELECTRIC.eps_r)
+        model = model.with_material("core", core)
+        return s_functional(gfem.solve(model, problem, options=options).s.values)
+
+    # the linear blend's S is strongly curved: its third-order term shows at a
+    # Taylor step of 1e-1 (slope 2.11), not from 3e-2
+    return Case(objective, rho, rng, step=STEPS["blend"], taylor=3e-2)
 
 
 def _driven_nodes_law(d: Designs, cell: Cell, options, seed: int) -> Case:
@@ -1837,6 +1992,7 @@ BUILDERS = {
     ("driven_wave", "law"): _wave_law,
     ("driven_periodic_plain", "law"): _periodic_law,
     ("eigenmode", "law"): _eigen_law,
+    ("driven", "blend"): _driven_blend,
     ("electrostatic", "law"): _electrostatic_law,
 }
 #: Builders of the existing inputs beside a law, by (problem, input, variant).
@@ -1989,11 +2145,20 @@ def test_gradient_matrix_reciprocity_equals_the_explicit_adjoint(designs, solver
 
 
 @pytest.mark.parametrize("solver", SOLVERS)
-@pytest.mark.parametrize("name", ["eps_r", "conductivity"])
+@pytest.mark.parametrize("name", ["eps_r", "conductivity", "law"])
 def test_gradient_matrix_adaptive_equals_the_full_solve_at_the_samples(
     designs, solver, name
 ):
     # at a sample the full solution lies in the frozen basis
+    if name == "law":
+        # the strip line's moved poles law (cell D3), in its parameters
+        cell = Cell("driven", "law", solver, "adaptive", "poles")
+        case = _adaptive_law(designs, cell, tight(solver), 0)
+        value, grad = jax.value_and_grad(case.objective)(case.p)
+        full_value, full_grad = jax.value_and_grad(case.reference)(case.p)
+        assert float(value) == pytest.approx(float(full_value), rel=1e-9)
+        assert _relative_norm(grad, full_grad) <= 1e-7
+        return
     line = designs.line
     values, _ = line_design(line)
     options = tight(solver)
@@ -2009,7 +2174,11 @@ def test_gradient_matrix_adaptive_equals_the_full_solve_at_the_samples(
     value, grad = jax.value_and_grad(adaptive)(p)
     full_value, full_grad = jax.value_and_grad(full)(p)
     assert float(value) == pytest.approx(float(full_value), rel=1e-9)
-    assert float(jnp.linalg.norm(grad - full_grad) / jnp.linalg.norm(full_grad)) <= 1e-7
+    assert _relative_norm(grad, full_grad) <= 1e-7
+
+
+def _relative_norm(a, b) -> float:
+    return float(jnp.linalg.norm(a - b) / jnp.linalg.norm(b))
 
 
 def _shared_surface_core(designs, problem, options, *, seed=0):

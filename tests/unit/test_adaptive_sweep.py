@@ -197,6 +197,25 @@ def test_each_new_sample_starts_from_the_reduced_prediction():
     assert np.linalg.norm(x0 - x) <= 1e-8 * np.linalg.norm(x)
 
 
+def test_seeds_are_solved_right_after_the_endpoints_then_the_greedy_resumes():
+    system, exact, calls = _system()
+    sweep = _sweep(system, seeds=(120, 121, 0))
+    # an endpoint among the seeds is not solved twice
+    assert sweep.samples[:4] == (0, len(GRID) - 1, 120, 121)
+    assert [w for w, _ in calls[:4]] == [GRID[i] for i in sweep.samples[:4]]
+    assert len(set(sweep.samples)) == len(sweep.samples)
+    # the seeds are measured like any greedy sample
+    assert all(np.isfinite(sweep.errors[2:]))
+    assert sweep.converged
+    np.testing.assert_allclose(sweep.outputs[60], exact(GRID[60])[1], atol=1e-6, rtol=0)
+
+
+def test_frozen_samples_ignore_the_seeds():
+    system, _, _ = _system()
+    picks = (100, 0, 200)
+    assert _sweep(system, samples=picks, seeds=(120, 121)).samples == picks
+
+
 def test_frozen_samples_are_solved_as_given_without_greedy():
     system, exact, calls = _system()
     picks = (100, 0, 200, 37)

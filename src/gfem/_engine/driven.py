@@ -496,8 +496,9 @@ class DrivenRule:
     physics = "em"
     #: The operator family (a key of `sensitivity.PROPERTIES`).
     form = "driven"
-    #: Material properties the driven forms read.
-    reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity"})
+    #: Material properties the driven forms read, and a law blend's density
+    #: (ADR 0113).
+    reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity", "blend"})
     #: Outputs whose cotangents the backward pass handles (a design may not
     #: touch a wave port face: `unsupported_input`).
     differentiable_outputs = sweep_outputs.DIFFERENTIABLE
@@ -1118,6 +1119,9 @@ class DrivenRule:
                     samples=None
                     if samples is None
                     else [frequencies.index(f) for f in samples],
+                    seeds=()
+                    if samples is not None
+                    else dispersion.resonance_seeds(model, frequencies),
                     z_scale=z_scale,
                 )
         system.free()  # the backward pass solves the reduced model only
@@ -1267,8 +1271,8 @@ class DrivenRule:
 
         The node coordinates cannot be differentiated next to a tensor
         absorbing admittance (`terms.absorbing_shape_unsupported`). A
-        permittivity law's parameter is differentiated on the uniform sweep
-        without a Bloch wave vector (`_law_unsupported`).
+        permittivity law's parameter is differentiated on the uniform and
+        adaptive sweeps without a Bloch wave vector (`_law_unsupported`).
 
         Raises:
             PortGeometryError: ``kind`` is the material, or a law parameter,
@@ -1331,15 +1335,11 @@ class DrivenRule:
     def _law_unsupported(self) -> str | None:
         """Why a law parameter cannot be differentiated on this sweep, or None.
 
-        The law pass is verified on the uniform sweep, without a Bloch wave
-        vector (ADR 0112): the adaptive sweep's law pairs wait for their
-        verification cell (ADR 0116), and a Bloch-periodic cell has none.
+        The law pass is verified on the uniform and adaptive sweeps (ADRs
+        0112, 0116: the adaptive backward's per-key pairs carry d theta/dp
+        under the law's own keys), without a Bloch wave vector: a
+        Bloch-periodic cell has no verification cell.
         """
-        if self.adaptive:
-            return (
-                "gradients with respect to a permittivity law's parameters are not "
-                'verified on the adaptive sweep in this version; solve sweep="uniform"'
-            )
         if self.problem.wave_vector is not None:
             return (
                 "gradients with respect to a permittivity law's parameters are not "

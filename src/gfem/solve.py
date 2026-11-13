@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, overload
 from gfem import _mpi
 from gfem._adjoint import solve_vjp
 from gfem._checks import is_traced
+from gfem._materials import MaterialField
 from gfem._periodic import check_nodes
 from gfem.errors import LinearSolverConvergenceError
 from gfem.model import Model
@@ -154,6 +155,7 @@ def _solve(
     if resolved is not None:
         _mpi.refuse(model, problem, options)
     rule_class = _rule_class(problem)
+    _check_blends(model, problem)
     if resolved is None:
         rule = rule_class(model, problem, options)
     else:
@@ -190,6 +192,47 @@ def _solve(
         raise
     adjoints = rule.adjoints if adjoint_ports else None
     return rule.result(outputs), adjoints
+
+
+def _check_blends(model: Model, problem: Any) -> None:
+    """Raise for a density blend with a law end off the driven uniform sweep.
+
+    Such a blend (ADR 0113) is solved by `gfem.Driven` on the uniform sweep
+    only: its cross piece's square root has branch cuts in complex omega
+    (eigenmode), the adaptive sweep and the port mode problem do not read
+    it, and a `Drude` end has no static permittivity (electrostatic).
+
+    Raises:
+        ValueError: An electrostatic problem and a blend with a `Drude` end.
+        NotImplementedError: Any other problem than a uniform driven sweep.
+    """
+    blends = [
+        (region, m.blend_ends)
+        for region, m in model.materials.items()
+        if isinstance(m, MaterialField) and m.blend_ends is not None
+    ]
+    if not blends:
+        return
+    region, ends = blends[0]
+    kind = type(problem).__name__
+    if kind == "Driven":
+        if problem.sweep == "uniform":
+            return
+        where = 'the adaptive sweep (solve sweep="uniform")'
+    elif kind == "Electrostatic" and ends.drude:
+        raise ValueError(
+            f"Region {region!r} blends a permittivity law with a Drude term, "
+            "which has no static permittivity (eps(0) is infinite), so the "
+            "electrostatic problem cannot read it. Use a constant material for "
+            "the electrostatic model."
+        )
+    else:
+        where = f"the {kind} problem"
+    raise NotImplementedError(
+        f"Region {region!r} is a density blend with a permittivity-law end "
+        f"(MaterialField.interpolate), which {where} does not support: a blend "
+        "is solved by gfem.Driven on the uniform sweep only."
+    )
 
 
 def _rule_class(problem: Any) -> type:
