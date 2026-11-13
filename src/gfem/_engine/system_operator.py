@@ -726,7 +726,8 @@ class PlanSlot:
             key, free-DOF digest, symmetry. Node positions are not in it.
         topology: The mesh topology (the pool frees its handles once no
             discretization of it is left).
-        budget: ``retain_memory``'s bytes, the walk's budget on return.
+        budget: ``retain_memory``'s bytes, the walk's budget on return (a
+            `gfem._engine.cache.DefaultBudget` under the default).
         store: The kept fixed parts of the operator's space, or ``None``
             without them (`FixedPieces`).
     """
