@@ -330,9 +330,11 @@ def plans(monkeypatch):
         return factor(self, *args, **kwargs)
 
     monkeypatch.setattr(DirectHandle, "_factor", counted)
-    cache.ENTRIES.clear()
+    # the discretizations too: an earlier test's kept fixed parts would be
+    # freed by a walk's tier 2 before the entries' bases a test watches
+    cache.release_memory()
     yield calls
-    cache.ENTRIES.clear()
+    cache.release_memory()
 
 
 def _objective(mesh, retain_memory=None):
