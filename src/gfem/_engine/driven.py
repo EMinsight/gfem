@@ -5,8 +5,8 @@ At each frequency the operator ``A(ω) = Σ θ_k(ω) A_k`` (see
 port's right-hand side is solved in one handle call: GMRES + BDDC by
 default, each port starting from its solution at the previous frequency
 (at a uniform sweep's first, on one process, from the previous design's
-there: ADR 0126), or one LDL^T factorization (``direct``: MKL PARDISO with the ``mkl`` extra,
-NGSolve sparse Cholesky otherwise). The system operator
+there: ADR 0126), or one LDL^T factorization (``direct``: MKL PARDISO with
+the ``mkl`` extra, NGSolve sparse Cholesky otherwise). The system operator
 (`gfem._engine.system_operator.SystemOperator`) answers the forward and
 adjoint solves. A sweep keeps one base handle: a direct solver plans at the
 first frequency and refactorizes at the others (on the plan pool, one base per
