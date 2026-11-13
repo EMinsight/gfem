@@ -121,6 +121,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("driven", ["permittivity-law parameters"], 5),
         ("eigenmode", ["permeability", "loss tangent"], 2),
         ("eigenmode", ["lumped values"], 2),
+        ("electrostatic", ["permittivity-law parameters"], 1),
         ("driven_periodic_plain", ["permittivity-law parameters"], 1),
         ("eigenmode_participation", ["lumped values"], 5),
         ("eigenmode_field", ["lumped values"], 1),
@@ -143,6 +144,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
             "(direct solver)"
         ),
         "Eigenmode with respect to the lumped values (direct solver, BDDC + GMRES)",
+        "Electrostatic with respect to the permittivity-law parameters (direct solver)",
         (
             "Driven, plain periodic with respect to the permittivity-law "
             "parameters (direct solver, uniform sweep)"
@@ -343,7 +345,10 @@ def test_a_cell_with_no_outcome_fails(data):
     expected = {
         k: v
         for k, v in data[1].items()
-        if k[:2] != ("electrostatic", "capacitance") or k[2][-1] != "conductivity"
+        # every electrostatic model's (the law's too) conductivity rows
+        if k[0] not in ("electrostatic", "electrostatic_law")
+        or k[1] != "capacitance"
+        or k[2][-1] != "conductivity"
     }
     with pytest.raises(caps.CapabilitiesError, match="no outcome"):
         _derive(data, expected=expected)
