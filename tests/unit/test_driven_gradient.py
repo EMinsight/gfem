@@ -20,6 +20,7 @@ import pytest
 import structured_meshes as sm
 from anisotropy import TILTED
 from finite_differences import assert_gradient_matches, unit_directions
+from preconditioners import count_preconditioners
 from solver_misses import adjoint_cannot_converge_at, cannot_converge_at
 
 import gfem
@@ -472,6 +473,27 @@ def test_a_gradient_whose_adjoint_solve_does_not_converge_raises(line, monkeypat
         jax.errors.JaxRuntimeError, match=r"At 2\.1e\+10 Hz, the adjoint"
     ):
         jax.grad(objective)(values["eps_r"])
+
+
+def test_a_one_port_three_frequency_step_sets_bddc_up_once(line, monkeypatch):
+    # the adjoint solves are cold on the preconditioner the forward reused:
+    # they run on it from zero instead of setting BDDC up again
+    values, _ = _values(line)
+    problem = gfem.Driven(frequency=(20e9, 21e9, 22e9), excite="p1")
+    options = gfem.SolverOptions(linear_solver="bddc_gmres")
+
+    def objective(p):
+        model = line.with_material(
+            "dielectric", gfem.MaterialField(**{**values, "eps_r": p})
+        )
+        s = gfem.solve(model, problem, options=options).s
+        return jnp.sum(jnp.abs(s["p2", "p1"]) ** 2)
+
+    gfem.release_memory()
+    builds = count_preconditioners(monkeypatch)
+    gradient = jax.grad(objective)(values["eps_r"])
+    assert len(builds) == 1
+    assert np.isfinite(np.asarray(gradient)).all()
 
 
 def test_pair_weights_are_the_thetas_of_the_operator_pieces(line):
