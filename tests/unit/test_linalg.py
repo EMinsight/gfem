@@ -471,22 +471,40 @@ def test_gmres_initial_guess_saves_iterations_at_the_same_tolerance(built):
     assert exact <= 1
 
 
-def test_bddc_refactorization_without_a_guess_solves_like_a_fresh_handle(built):
-    # the preconditioner is kept for warm starts only: a cold solve after a
-    # refactorization sets BDDC up again at the new operator
+def test_bddc_refactorization_without_a_guess_solves_on_the_kept_preconditioner(
+    built, monkeypatch
+):
+    # a cold solve after a refactorization runs the reused warm path from a
+    # zero guess: no setup before it, the answer of a fresh handle within the
+    # tolerance; far away it caps, sets BDDC up inside the solve and converges
     def operator(shift):
         return _laplace(built, complex_valued=True, shift=shift, order=4)[0]
 
-    handle, fresh = (
-        prepare(operator(s), symmetry="complex_symmetric", kind="bddc_gmres")
-        for s in (1 - 2j, -40 + 1j)
-    )
-    handle.refactorize(operator(-40 + 1j))
+    shifts = (1.05 - 2j, -40 + 1j)
     rng = np.random.default_rng(14)
-    B = rng.standard_normal((handle.ndof, 2)) + 0j
-    (X, its), (ref, ref_its) = handle.solve_counted(B), fresh.solve_counted(B)
-    assert its == ref_its
-    np.testing.assert_allclose(X, ref, rtol=0, atol=1e-12 * np.abs(ref).max())
+    fresh = [
+        prepare(operator(s), symmetry="complex_symmetric", kind="bddc_gmres")
+        for s in shifts
+    ]
+    B = rng.standard_normal((fresh[0].ndof, 2)) + 0j
+    refs = [f.solve(B) for f in fresh]
+    builds = count_preconditioners(monkeypatch)
+    handle = prepare(operator(1 - 2j), symmetry="complex_symmetric", kind="bddc_gmres")
+    handle.solve(B)
+    free = handle._free
+    actions = [("reused", None), ("reused, capped, refactorized", "capped")]
+    for shift, ref, setups, action in zip(shifts, refs, (1, 2), actions, strict=True):
+        if setups == 2:
+            # far away, a column caps (at n_ref, no slack)
+            monkeypatch.setattr(bddc, "_slack", lambda _: 0)
+        handle.refactorize(operator(shift))
+        X = handle.solve(B)
+        assert len(builds) == setups
+        assert (handle.last_action, handle.last_reason) == action
+        for j in range(2):
+            fresh_residual = _residual(handle, B[:, j], ref[:, j], free)
+            assert _residual(handle, B[:, j], X[:, j], free) < 10 * fresh_residual
+        np.testing.assert_allclose(X, ref, rtol=0, atol=1e-5 * np.abs(ref).max())
 
 
 def test_bddc_handle_without_reuse_sets_up_at_every_refactorization(built, monkeypatch):
@@ -616,10 +634,10 @@ def test_a_bddc_handle_names_each_steps_action_and_reason(built, monkeypatch):
     assert step(handle) == ("reused", None)
     handle.solve(B, x0=previous)
     assert step(handle) == ("reused", None)
-    # a solve without a guess sets the reused preconditioner up again
+    # a solve without a guess runs on the reused preconditioner from zero
     handle.refactorize(operator(1.1 - 2j))
     previous = handle.solve(B)
-    assert step(handle) == ("factorized", "cold solve")
+    assert step(handle) == ("reused", None)
     # far away, a warm column caps (at n_ref, no slack) and sets BDDC up
     # inside the solve
     monkeypatch.setattr(bddc, "_slack", lambda _: 0)
