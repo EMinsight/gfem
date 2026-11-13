@@ -41,7 +41,12 @@ times ``dG`` by that part's energy: a pair ``(conj(u), u)``. Every element
 lies in one region, so the whole energy's derivative is spread over the
 region terms. The sheets' L and C pieces are explicit too, through the
 same pair weighted by piece name: the kernel's sheet pass gives their fill
-derivative and its node pass their transport, as for the operator.
+derivative and its node pass their transport, as for the operator, and its
+lumped pass their derivative in the sheet's L and C (each piece is
+proportional to ``1 / L_s`` or ``C_s``). A lumped port's L and C enter the
+ratios through no piece (``1 / L`` in its participation, ``C |V|^2 / 2`` in
+the energy), so their explicit terms are scalars (`Load.lumped`) the rule
+adds to the lumped pass's values (quantum-metrics ticket 21).
 """
 
 from __future__ import annotations
@@ -104,12 +109,19 @@ class Load:
         phase: The phase rule's explicit terms: the weight of each region's
             energy term on the pair ``(u, u)`` (empty without a field
             cotangent).
+        lumped: The explicit derivative of ``G`` by a lumped port's value at
+            fixed ``u`` and ``k``, by ``(port name, "inductance" |
+            "capacitance")``: ``-c p / L`` for a participation ``p`` (its
+            ``1 / L`` factor), and ``dG/dE |V|^2 / 2`` for a capacitance (the
+            port's term of the energy). A sheet's L and C pieces need none: the
+            energy pair carries their weights, which the lumped pass contracts.
     """
 
     w: np.ndarray
     kappa: complex
     energy: dict[str, float]
     phase: dict[str, complex] = dataclasses.field(default_factory=dict)
+    lumped: dict[tuple[str, str], float] = dataclasses.field(default_factory=dict)
 
 
 class Ratios:
@@ -297,6 +309,8 @@ class _Partials:
         self.volts2 = dict.fromkeys(ratios.voltage, 0.0)
         self.inductor = np.zeros(len(ratios.kinetic))
         self.kappa = 0.0
+        #: ``dG`` by each inductive port's ``L`` at fixed ``u`` and ``k``.
+        self.inductance = dict.fromkeys(ratios.inductive, 0.0)
 
     def share(self, c: float, mode: _Mode, where: int | tuple, value: float) -> None:
         """``c`` times a share ``value / E`` of a region (or axis ``where``)."""
@@ -333,6 +347,7 @@ class _Partials:
         self.energy -= c * g / mode.energy
         self.volts2[name] += c * factor
         self.kappa -= c * g / mode.k.real
+        self.inductance[name] -= c * g / inductance
 
     def sheet(self, c: float, mode: _Mode, s: int) -> None:
         """``c`` times sheet ``s``'s ``p = u^H A_L u / (2 mu0 scale omega^2 E)``."""
@@ -381,7 +396,13 @@ class _Partials:
         for name, c in volts2.items():
             if c:
                 w += c * np.conj(mode.volts[name]) * ratios.voltage[name]
-        return Load(w=w, kappa=complex(self.kappa), energy=weights)
+        # the explicit lumped terms: participation's 1 / L, the energy's C |V|^2 / 2
+        lumped = {(name, "inductance"): c for name, c in self.inductance.items() if c}
+        for name in mode.capacitors:
+            c = self.energy * 0.5 * abs(mode.volts[name]) ** 2
+            if c:
+                lumped[name, "capacitance"] = c
+        return Load(w=w, kappa=complex(self.kappa), energy=weights, lumped=lumped)
 
 
 def _normalized(ratios: Ratios, mode: _Mode, load: Load, field: np.ndarray) -> Load:
@@ -418,4 +439,9 @@ def _normalized(ratios: Ratios, mode: _Mode, load: Load, field: np.ndarray) -> L
         name = energy_name(region)
         energy[name] = energy.get(name, 0.0) + mu1 * ratios.unit
         phase[name] = -1j * mu2
-    return Load(w=w, kappa=load.kappa, energy=energy, phase=phase)
+    # mu1 u^H (dW/dC) u: a capacitive port's term of the energy
+    lumped = dict(load.lumped)
+    for name in mode.capacitors:
+        key = (name, "capacitance")
+        lumped[key] = lumped.get(key, 0.0) + mu1 * 0.5 * abs(mode.volts[name]) ** 2
+    return Load(w=w, kappa=load.kappa, energy=energy, phase=phase, lumped=lumped)

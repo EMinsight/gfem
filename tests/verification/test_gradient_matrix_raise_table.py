@@ -239,11 +239,12 @@ EXPECTED |= {
 # differentiate with respect to every electromagnetic property, the node
 # coordinates and the lumped values. The ratios of the mode fields (port Q,
 # participations, region, principal and sheet shares) differentiate with respect to
-# the electromagnetic properties, sheet fills and node coordinates (ADR
-# 0102), and the normalized mode fields' coefficients with respect to the
-# electromagnetic properties and sheet fills (never the node coordinates);
-# with respect to the lumped values they raise in this version, as does the
-# backward error. The
+# the electromagnetic properties, sheet fills, node coordinates and lumped
+# values (ADR 0102 and its amendment), and the normalized mode fields'
+# coefficients with respect to the electromagnetic properties, sheet fills
+# and lumped values (never the node coordinates); the principal shares raise
+# with respect to the lumped values in this version, as does the backward
+# error with respect to anything. The
 # cluster labels are integers: exact zeros. The mode fields' mesh is the
 # input mesh passed through (identity in the nodes, constant otherwise). A
 # periodic model's mode-field outputs raise whatever the input.
@@ -276,7 +277,8 @@ def _eigen_outcome(out, kind, *, periodic=False):
         return GRADIENT
     ratio = out.startswith(_EIGEN_RATIOS)
     lumped = kind[0] in ("port", "boundary") and kind[2:] != ("fill", "fill")
-    return GRADIENT if ratio and not periodic and not lumped else RAISES
+    principal = out.startswith("principal_participation.")
+    return GRADIENT if ratio and not periodic and not (lumped and principal) else RAISES
 
 
 EIGEN_KINDS = [
@@ -371,7 +373,8 @@ EXPECTED |= {
 }
 
 # Lumped values (ADR 0100): port p1's inductance and capacitance and the
-# sheet's resistance and inductance on the glued line (static materials).
+# sheet's resistance, inductance and capacitance on the glued line (static
+# materials).
 # Driven S, the kept fields and the eigenfrequencies differentiate with
 # respect to them; z_ref (p1's resistance) and the fields' omega and mesh do
 # not move with them; electrostatics never reads them; the port mode problem
@@ -382,6 +385,7 @@ LUMPED_KINDS = [
     ("port", 0, "capacitance"),
     ("boundary", 2, "resistance"),
     ("boundary", 2, "inductance"),
+    ("boundary", 2, "capacitance"),
 ]
 EXPECTED |= {
     ("driven_lumped", out, kind): (
@@ -459,6 +463,7 @@ PORT_MODE_LUMPED_KINDS = [
     ("port", 1, "capacitance"),
     ("boundary", 2, "resistance"),
     ("boundary", 2, "inductance"),
+    ("boundary", 2, "capacitance"),
 ]
 EXPECTED |= {
     ("port_mode_lumped", out, kind): RAISES
@@ -602,8 +607,8 @@ def sheet_cases(sheet_mesh):
 
 
 #: The lumped values of the lumped cases: port inductance (H) and capacitance
-#: (F), sheet resistance (ohm) and inductance (H) per square.
-LUMPED = (2e-9, 5e-14, 2e4, 1e-6)
+#: (F), sheet resistance (ohm), inductance (H) and capacitance (F) per square.
+LUMPED = (2e-9, 5e-14, 2e4, 1e-6, 2e-16)
 #: Near the lumped line's sharpest mode, 15.5 + 1.5j GHz (the next is 4 GHz off).
 LUMPED_TARGET = 15e9
 LUMPED_ADAPTIVE = gfem.Driven(
@@ -614,11 +619,16 @@ LUMPED_ADAPTIVE = gfem.Driven(
 )
 
 
-def _lumped_model(mesh, ports):
-    sheet = gfem.Impedance("sheet", resistance=LUMPED[2], inductance=LUMPED[3])
+def _lumped_model(mesh, ports, lower=None):
+    sheet = gfem.Impedance(
+        "sheet", resistance=LUMPED[2], inductance=LUMPED[3], capacitance=LUMPED[4]
+    )
     return gfem.Model(
         mesh,
-        materials={"lower": gfem.Material(eps_r=2.0), "upper": gfem.Material()},
+        materials={
+            "lower": gfem.Material(eps_r=2.0) if lower is None else lower,
+            "upper": gfem.Material(),
+        },
         boundaries=[gfem.PEC("plate1"), gfem.PEC("plate2"), sheet],
         ports=ports,
     )
@@ -1365,6 +1375,22 @@ def _out_eigenmode_q_port_without_voltage(request):
     jax.grad(objective)(eps)
 
 
+def _out_eigenmode_principal_by_a_lumped_value(request):
+    # the glued line's lumped model with principal values in "lower": its
+    # principal shares by port p1's inductance (no cell checks that pair yet)
+    mesh = request.getfixturevalue("sheet_mesh")
+    lower = gfem.Material(eps_r=(2.0, 2.4, 1.8))
+
+    def objective(inductance):
+        p1 = dataclasses.replace(_rlc_port("p1", "port1"), inductance=inductance)
+        p2 = gfem.LumpedPort("p2", "port2", "+y", impedance=1e3)
+        model = _lumped_model(mesh, [p1, p2], lower=lower)
+        result = gfem.solve(model, gfem.Eigenmode(target=LUMPED_TARGET))
+        return jnp.sum(result.principal_participation["lower"][0])
+
+    jax.make_jaxpr(jax.grad(objective))(LUMPED[0])
+
+
 # (row, raising call, error, message): DegenerateModeError on one mode of a
 # degenerate eigenmode cluster is in tests/verification/test_gradient_matrix.py.
 HOST = jax.errors.JaxRuntimeError  # a gfem error raised in the backward pass
@@ -1597,6 +1623,12 @@ OUT_OF_SCOPE = [
         _out_eigenmode_q_port_without_voltage,
         HOST,
         r"NonDifferentiableError.*1 / q_port",
+    ),
+    (
+        "eigenmode principal_participation x lumped value",
+        _out_eigenmode_principal_by_a_lumped_value,
+        gfem.NonDifferentiableError,
+        r"'principal_participation'.*model\.ports\[0\]\.inductance.*stop_gradient",
     ),
 ]
 

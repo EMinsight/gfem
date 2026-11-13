@@ -416,7 +416,8 @@ def _local_cotangents(
 
     The forward runs again unless every rank still holds its entry: a backward on
     some ranks alone would hang. A rank that holds one frees it, since the next
-    forward on the same design would otherwise keep a second.
+    forward on the same design would otherwise keep a second. A rule's
+    ``explicit_lumped`` values (by input kind) add to the lumped pass's.
     """
     from gfem._engine.cache import ENTRIES, retain_budget
     from gfem._engine.runtime import task_manager
@@ -450,6 +451,12 @@ def _local_cotangents(
                 else None,
                 comm=comm,
             )
+        # the rule's explicit terms in the lumped values (outside any piece:
+        # the eigenmode ratios' 1 / L and C |V|^2 / 2), once over the ranks
+        if hasattr(rule, "explicit_lumped") and _mpi.rank(comm) == 0:
+            for kind, value in rule.explicit_lumped().items():
+                if kind in out:
+                    out[kind] = out[kind] + value
     finally:
         if fresh is not None:
             fresh.free()

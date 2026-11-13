@@ -299,7 +299,9 @@ def _participation_cells() -> list[Cell]:
     of each variant (the lossy one's loss tangent among them). The sheet
     cavity's inductive `gfem.Impedance`, with a capacitance or without,
     gives the sheet participation and the sheet's share of the mode energy
-    (`_kinetic`); its node cells move the sheet.
+    (`_kinetic`); its node cells move the sheet. The lumped cells read one
+    ratio each of the lossy glued line in its port's L and C and its sheet's
+    R, L and C (`_lumped_ratio`).
     """
     key = "eigenmode_participation"
     return [
@@ -325,6 +327,11 @@ def _participation_cells() -> list[Cell]:
         Cell(key, "eps_r", "direct", variant="capacitive_sheet"),
         Cell(key, "fill", "direct", variant="capacitive_sheet"),
         Cell(key, "nodes", "direct", variant="capacitive_sheet"),
+        # the lumped values (ticket 21): one cell per ratio (`_lumped_ratio`)
+        *(
+            Cell(key, "lumped", "direct", variant=v)
+            for v in ("participation", "q_port", "bulk", "sheet_participation")
+        ),
     ]
 
 
@@ -335,7 +342,8 @@ def _field_cells() -> list[Cell]:
     J's layer interface (lossless) and of the sheet cavity's walls (a
     `gfem.Conductor` film, in its fill); a probed field component times a
     phase, so the phase rule's multiplier is nonzero, on fixture J with a
-    resistive port and on the terminated resonator (in its conductivity).
+    resistive port and on the terminated resonator (in its conductivity),
+    and on the lossy glued line in its lumped values (`_lumped_ratio`).
     """
     key = "eigenmode_field"
     return [
@@ -343,6 +351,7 @@ def _field_cells() -> list[Cell]:
         Cell(key, "eps_r", "direct", variant="probe"),
         Cell(key, "conductivity", "direct", variant="probe"),
         Cell(key, "fill", "direct", variant="interface"),
+        Cell(key, "lumped", "direct", variant="probe"),
     ]
 
 
@@ -770,7 +779,7 @@ def _lumped_values(t):
 
 
 def _driven_lumped(d: Designs, cell: Cell, options, seed: int) -> Case:
-    """S of the glued line in its port's L and C and its sheet's R and L."""
+    """S of the glued line in its port's L and C and its sheet's R, L and C."""
     mesh = d.sheet_mesh
     problem, rows = _sweep(cell, SHEET_FREQUENCIES, SHEET_GRID, SHEET_SAMPLES)
 
@@ -931,7 +940,7 @@ def _eigen_fill(d: Designs, _cell: Cell, options, seed: int) -> Case:
 
 
 def _eigen_lumped(d: Designs, _cell: Cell, options, seed: int) -> Case:
-    """omega of the glued line in its port's L and C and its sheet's R and L."""
+    """omega of the glued line in its port's L and C and its sheet's R, L and C."""
     mesh = d.sheet_mesh
 
     def objective(t):
@@ -1119,7 +1128,8 @@ def _participation(d: Designs, cell: Cell, options, seed: int) -> Case:
 # --- eigenmode normalized field: probes and interface participation ----------------
 
 #: The probed point of the field cells, m: inside the lower layer of fixture
-#: J and of the resonator (both 10 x 2 x 1 mm), off every element face.
+#: J and of the resonator (both 10 x 2 x 1 mm) and of the glued line (8 x 2 x
+#: 1 mm), off every element face.
 FIELD_POINT = np.array([3.37, 0.93, 0.41]) * 1e-3
 #: The probe objective's phase multiplier: ``Re(exp(0.7i) E_z)`` reads the
 #: imaginary part of a lossy mode's field, so the phase rule's ``mu2`` is
@@ -1207,6 +1217,39 @@ def _field(d: Designs, cell: Cell, options, seed: int) -> Case:
         values["sub"]["eps_r"],
         np.random.default_rng(seed),
         step=STEPS["eps_r"],
+        taylor=1e-1,
+    )
+
+
+def _lumped_ratio(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Mode 0 of the lossy glued line in its five lumped values (ticket 21).
+
+    All five values scaled by ``1 + t`` (`_lumped_values`). By variant: port
+    p1's participation, its port Q, "lower"'s share of the mode energy, the
+    sheet's participation, or (``eigenmode_field``) the probed field's
+    component along the plates (y) times a phase.
+    """
+    mesh = d.sheet_mesh
+    problem = gfem.Eigenmode(target=LUMPED_TARGET)
+    read = {
+        "participation": lambda r: r.participation["p1"][0],
+        "q_port": lambda r: r.q_port["p1"][0],
+        "bulk": lambda r: r.bulk_participation["lower"][0],
+        "sheet_participation": lambda r: r.sheet_participation["sheet"][0],
+        "probe": lambda r: (
+            FIELD_SCALE * jnp.real(FIELD_PHASE * r.e_fields[0].at(FIELD_POINT)[1])
+        ),
+    }[cell.variant]
+
+    def objective(t):
+        model = lumped_line(mesh, _lumped_values(t))
+        return read(gfem.solve(model, problem, options=options))
+
+    return Case(
+        objective,
+        jnp.zeros(len(LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
         taylor=1e-1,
     )
 
@@ -1466,6 +1509,8 @@ BUILDERS = {
     },
     **{("eigenmode_field", name): _field for name in ("eps_r", "conductivity", "fill")},
     ("eigenmode_participation", "nodes"): _participation_nodes,
+    ("eigenmode_participation", "lumped"): _lumped_ratio,
+    ("eigenmode_field", "lumped"): _lumped_ratio,
 }
 
 

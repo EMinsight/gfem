@@ -174,6 +174,16 @@ PROBLEMS = {
     "electrostatic_lumped": Problem("electrostatic", "capacitance"),
     "port_mode_lumped": Problem("port_mode", "gamma"),
 }
+#: The rows whose cell-only keys have no ``EXPECTED`` entries of their own:
+#: the raise table's leaves of their row's keys answer for them, by prefix
+#: (the principal shares, which raise by a lumped value, are not among them).
+CELL_ONLY_LEAVES = {
+    "eigenmode_participation": (
+        "eigenmode",
+        ("q_port.", "participation.", "bulk_participation.", "sheet_participation."),
+    ),
+    "eigenmode_field": ("eigenmode", ("e_fields.0.coefficients",)),
+}
 # CELLS input names, and the material properties of EXPECTED's input kinds
 # ("material", <region>, <property>); None: known, but not a grid column.
 # A suffix AXES names the property per principal value (fixed axes).
@@ -351,6 +361,10 @@ RAISES_LABELS = {
     "eigenmode q_port of a mode with no voltage on the port": (
         "Port Q of a mode that does not load the port (differentiate `1 / q_port`)"
     ),
+    "eigenmode principal_participation x lumped value": (
+        "Eigenmode principal participation, with respect to a lumped port's or "
+        "an `Impedance`'s values"
+    ),
 }
 STATUS_TEXT = {"verified": "FD-verified", "zero": "exact zero", "raises": "raises"}
 OUTCOMES = {"gradient", "zero", "raises"}
@@ -397,6 +411,30 @@ def _off_grid_input(kind: tuple) -> str | None:
     if len(kind) == 3 and kind[0] == "material" and kind[2] in OFF_GRID:
         return kind[2]
     return None
+
+
+def _claiming_rows(problem: Problem, leaf: str) -> list[str]:
+    """The rows an ``EXPECTED`` leaf of ``problem`` answers for.
+
+    Its own row for the headline leaf, and each cell-only row whose leaves
+    (`CELL_ONLY_LEAVES`) it is.
+    """
+    rows = [
+        row
+        for row, (base, prefixes) in CELL_ONLY_LEAVES.items()
+        if problem.row == base and leaf.startswith(prefixes)
+    ]
+    if leaf == problem.headline:
+        rows.append(problem.row)
+    return rows
+
+
+def _claim(claims: dict, rows: list[str], column: str | None, outcome: str) -> None:
+    """Add ``outcome`` to each row's claims in ``column`` (none if ``None``)."""
+    if column is None:
+        return
+    for row in rows:
+        claims.setdefault((row, column), set()).add(outcome)
 
 
 def _problem(key: str, source: str) -> Problem:
@@ -463,14 +501,13 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
                 f"{RAISE_TEST}: outcome {outcome!r} of {(key, leaf, kind)!r} is not "
                 f"one of {sorted(OUTCOMES)}"
             )
-        if leaf != problem.headline:
-            continue
-        headlines.add(key)
-        off = _off_grid_input(kind)
+        rows = _claiming_rows(problem, leaf)
+        if leaf == problem.headline:
+            headlines.add(key)
         if column is not None:
-            claimed.setdefault((problem.row, column), set()).add(outcome)
-        elif off is not None:
-            claimed_off.setdefault((problem.row, off), set()).add(outcome)
+            _claim(claimed, rows, column, outcome)
+        else:
+            _claim(claimed_off, rows, _off_grid_input(kind), outcome)
     missing = sorted({k for k, _, _ in expected} - headlines)
     if missing:
         leaves = ", ".join(f"{k!r} ({PROBLEMS[k].headline!r})" for k in missing)
