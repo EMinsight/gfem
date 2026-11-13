@@ -12,20 +12,27 @@ variant, against the cache: other discretizations between the forward and
 the pullback (they evict the forward's), with and without its entry. And
 the convention of a complex field's cotangent: a real ``g`` of the
 normalized mode field's coefficients ``e`` pulls back with ``dg = Re(ct^T
-de)``, unconjugated (quantum-metrics ticket 03).
+de)``, unconjugated (quantum-metrics ticket 03). And the dressed modes of
+`gfem.quantum` in the junction's inductance through the solve: one traced
+``L_J`` feeds the `gfem.LumpedPort` and `gfem.quantum.dressed_modes`, on
+the lossless glued line of lumped cell L6.
 """
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from finite_differences import assert_gradient_matches, unit_directions
+from finite_differences import assert_gradient_matches, derivative, unit_directions
 from gradient_cases import (
     JUNCTION_TARGET,
+    LOSSLESS_LUMPED,
+    LUMPED_TARGET,
     junction_line,
     junction_mesh,
     junction_values,
+    lossless_lumped_line,
     ramp,
+    sheet_mesh,
 )
 
 import gfem
@@ -202,3 +209,31 @@ def test_node_pullback_after_five_discretizations_matches_the_immediate_one_with
     others()
     cache.ENTRIES.clear()  # the backward solves the forward again
     assert _relative(pullback(1.0)[0], immediate) <= 1e-12
+
+
+def test_dressed_modes_through_the_solve_in_l_j(tmp_path):
+    # One traced L_J, the junction port's inductance and the dressed step's:
+    # the derivative runs through omega and participation as well as E_J,
+    # and agrees with differences of re-solves. Holding the modes (the port's
+    # value stopped) leaves the explicit term only, far off (ticket 21: 65 %).
+    mesh = sheet_mesh(tmp_path)
+    problem = gfem.Eigenmode(target=LUMPED_TARGET)
+
+    def anharmonicity(s, *, hold_modes=False):
+        l_j = LOSSLESS_LUMPED[0] * (1 + s)
+        port_l = jax.lax.stop_gradient(l_j) if hold_modes else l_j
+        values = (port_l, *LOSSLESS_LUMPED[1:])
+        result = gfem.solve(
+            lossless_lumped_line(mesh, values), problem, options=OPTIONS
+        )
+        dressed = gfem.quantum.dressed_modes(
+            result.omega, result.participation["p1"], inductance=l_j
+        )
+        return dressed.anharmonicity[0] / (2e6 * np.pi)  # MHz
+
+    s = jnp.asarray(0.0)
+    total = float(jax.grad(anharmonicity)(s))
+    differences = derivative(anharmonicity, s, 1.0, 1e-3)
+    assert abs(total - differences) <= 1e-6 * abs(differences)
+    explicit = float(jax.grad(lambda s: anharmonicity(s, hold_modes=True))(s))
+    assert abs(explicit - total) > 0.1 * abs(total)

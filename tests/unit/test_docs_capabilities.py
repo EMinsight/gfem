@@ -120,7 +120,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("driven", ["lumped values"], 4),
         ("eigenmode", ["permeability", "loss tangent"], 2),
         ("eigenmode", ["lumped values"], 2),
-        ("eigenmode_participation", ["lumped values"], 4),
+        ("eigenmode_participation", ["lumped values"], 5),
         ("eigenmode_field", ["lumped values"], 1),
     ]
     assert [e["text"] for e in derived["also"]] == [

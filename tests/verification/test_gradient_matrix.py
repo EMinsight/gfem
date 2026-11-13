@@ -77,9 +77,11 @@ from gradient_cases import (
     CAVITY_TARGET,
     EPS0,
     GUIDE_TARGET,
+    JUNCTION_CHI_L,
     JUNCTION_TARGET,
     KINETIC_CAPACITANCE,
     KINETIC_TARGET,
+    LOSSLESS_LUMPED,
     LUMPED,
     LUMPED_TARGET,
     MIRRORED_TARGET,
@@ -103,6 +105,7 @@ from gradient_cases import (
     layered_resonator,
     line_axes_design,
     line_design,
+    lossless_lumped_line,
     lumped_line,
     mirrored_cavity,
     on_the_sheet,
@@ -299,9 +302,13 @@ def _participation_cells() -> list[Cell]:
     of each variant (the lossy one's loss tangent among them). The sheet
     cavity's inductive `gfem.Impedance`, with a capacitance or without,
     gives the sheet participation and the sheet's share of the mode energy
-    (`_kinetic`); its node cells move the sheet. The lumped cells read one
-    ratio each of the lossy glued line in its port's L and C and its sheet's
-    R, L and C (`_lumped_ratio`).
+    (`_kinetic`); its node cells move the sheet. The ``"chi"`` cells read
+    the dispersive shift of `gfem.quantum.dressed_modes` between fixture J's
+    two lowest modes (`_chi`), the whole chain from the solve. The lumped
+    cells read one ratio each of the lossy glued line in its port's L and C
+    and its sheet's R, L and C, and the dressed anharmonicity of the
+    lossless line's junction mode in its port's and sheet's L and C, the
+    port's L also given to `gfem.quantum.dressed_modes` (`_lumped_ratio`).
     """
     key = "eigenmode_participation"
     return [
@@ -327,10 +334,18 @@ def _participation_cells() -> list[Cell]:
         Cell(key, "eps_r", "direct", variant="capacitive_sheet"),
         Cell(key, "fill", "direct", variant="capacitive_sheet"),
         Cell(key, "nodes", "direct", variant="capacitive_sheet"),
+        Cell(key, "eps_r", "direct", variant="chi"),
+        Cell(key, "nodes", "direct", variant="chi"),
         # the lumped values (ticket 21): one cell per ratio (`_lumped_ratio`)
         *(
             Cell(key, "lumped", "direct", variant=v)
-            for v in ("participation", "q_port", "bulk", "sheet_participation")
+            for v in (
+                "participation",
+                "q_port",
+                "bulk",
+                "sheet_participation",
+                "anharmonicity",
+            )
         ),
     ]
 
@@ -1084,6 +1099,8 @@ def _participation(d: Designs, cell: Cell, options, seed: int) -> Case:
             return 1.0 / result.q_port["p1"][0] + 0.5 / result.q_port["p2"][0]
 
         return Case(objective, fill, rng, step=5e-2, taylor=1e-1)
+    if variant == "chi":
+        return _chi(d, cell, options, seed)
     if variant == "near_pair":
         mesh = d.corner_cavity
         base = jnp.ones(len(mesh.tetrahedra))
@@ -1227,10 +1244,13 @@ def _lumped_ratio(d: Designs, cell: Cell, options, seed: int) -> Case:
     All five values scaled by ``1 + t`` (`_lumped_values`). By variant: port
     p1's participation, its port Q, "lower"'s share of the mode energy, the
     sheet's participation, or (``eigenmode_field``) the probed field's
-    component along the plates (y) times a phase.
+    component along the plates (y) times a phase. The ``"anharmonicity"``
+    variant is the lossless line's instead (`_lumped_anharmonicity`).
     """
     mesh = d.sheet_mesh
     problem = gfem.Eigenmode(target=LUMPED_TARGET)
+    if cell.variant == "anharmonicity":
+        return _lumped_anharmonicity(mesh, problem, options, seed)
     read = {
         "participation": lambda r: r.participation["p1"][0],
         "q_port": lambda r: r.q_port["p1"][0],
@@ -1254,6 +1274,96 @@ def _lumped_ratio(d: Designs, cell: Cell, options, seed: int) -> Case:
     )
 
 
+#: The dressed outputs' scale: rad/s to MHz.
+TO_MHZ = 1 / (2 * np.pi * 1e6)
+
+
+def _lumped_anharmonicity(mesh, problem, options, seed: int) -> Case:
+    """Cell L6: the dressed anharmonicity of the lossless line's junction mode.
+
+    Port p1 (L, C) is the linearized junction; its four values
+    (`LOSSLESS_LUMPED`) are scaled by ``1 + t``, and the same traced port
+    inductance is the ``inductance`` of `gfem.quantum.dressed_modes`, so the
+    gradient runs through the solve (``omega``, ``participation``) and
+    through the junction energy alike.
+    """
+
+    def objective(t):
+        values = jnp.asarray(LOSSLESS_LUMPED) * (1 + t)
+        result = gfem.solve(
+            lossless_lumped_line(mesh, values), problem, options=options
+        )
+        dressed = gfem.quantum.dressed_modes(
+            result.omega, result.participation["p1"], inductance=values[0]
+        )
+        return TO_MHZ * dressed.anharmonicity[0]
+
+    return Case(
+        objective,
+        jnp.zeros(len(LOSSLESS_LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
+        taylor=1e-1,
+    )
+
+
+def _dispersive_shift(result) -> jax.Array:
+    """The dressed dispersive shift between fixture J's modes 0 and 1, MHz."""
+    dressed = gfem.quantum.dressed_modes(
+        result.omega, result.participation["jj"], inductance=JUNCTION_CHI_L
+    )
+    return TO_MHZ * dressed.dispersive_shift[0, 1]
+
+
+def _chi(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Cells 15 and 16: the dispersive shift of fixture J's two lowest modes.
+
+    The ``"chi"`` variant's junction (`JUNCTION_CHI_L`): both modes (1.70
+    and 7.98 GHz) carry it (participations 0.81 and 0.11), and
+    `gfem.quantum.dressed_modes` diagonalizes its cosine on them, with the
+    solve's inductance. In the lower layer's permittivity, or as the
+    layers' interface moves (the ports held). The node step is 5x the other
+    node cells': the dressed step's round-off (4e-14 of the shift) then sits
+    further under the gate (measured errors 1e-8 to 1e-7, against up to
+    5e-7 at 2e-6 m).
+    """
+    mesh = d.junction
+    problem = gfem.Eigenmode(target=JUNCTION_TARGET, n_modes=2)
+    rng = np.random.default_rng(seed)
+    if cell.input == "nodes":
+        model = junction_line(mesh, "chi")
+        morph = boundary_morph(model, "sub__cover", grows="sub")
+
+        def moved(t):
+            result = gfem.solve(model.replace(mesh=morph(t)), problem, options=options)
+            return _dispersive_shift(result)
+
+        return Case(
+            moved,
+            jnp.zeros(morph.n_params),
+            rng,
+            step=5 * STEPS["nodes"],
+            taylor=4e-5,
+            taylor_at=jnp.full(morph.n_params, 1e-5),
+        )
+    values = junction_values(mesh)
+
+    def objective(p):
+        changed = {r: dict(v) for r, v in values.items()}
+        changed["sub"]["eps_r"] = p
+        model = junction_line(mesh, "chi", changed)
+        result = gfem.solve(model, problem, options=options)
+        return _dispersive_shift(result)
+
+    return Case(
+        objective,
+        values["sub"]["eps_r"],
+        rng,
+        step=STEPS["eps_r"],
+        taylor=1e-1,
+    )
+
+
 def _participation_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
     """Mode 0's ratios of fixture J as its interface "sub__cover" moves.
 
@@ -1263,6 +1373,8 @@ def _participation_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
     variant = cell.variant
     if variant in ("sheet", "capacitive_sheet"):
         return _kinetic(d, cell, options, seed)
+    if variant == "chi":
+        return _chi(d, cell, options, seed)
     model = junction_line(d.junction, variant)
     morph = boundary_morph(model, "sub__cover", grows="sub")
     problem = gfem.Eigenmode(target=JUNCTION_TARGET)

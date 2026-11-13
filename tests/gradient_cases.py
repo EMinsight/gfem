@@ -409,9 +409,13 @@ def sheet_line(mesh: gfem.Mesh, sheet) -> gfem.Model:
 #: capacitance (F), the sheet's resistance (ohm), inductance (H) and
 #: capacitance (F) per square. Each moves S by 10-50 % per unit relative
 #: change, and the eigenmode nearest `LUMPED_TARGET` (5.95 + 2.45j GHz) by a
-#: few %, 9 GHz from the next one.
+#: few %; the next ones are a pair near 1.78 + 0.55j GHz.
 LUMPED = (2e-9, 5e-14, 2e4, 1e-6, 2e-16)
 LUMPED_TARGET = 6e9
+#: The lossless lumped line's values (a linearized junction on p1): `LUMPED`
+#: without the sheet's resistance. Its mode nearest `LUMPED_TARGET` is at
+#: 6.02 GHz (participation of p1 0.22), the next ones near 1.87 GHz.
+LOSSLESS_LUMPED = (2e-9, 5e-14, 1e-6, 2e-16)
 
 
 def lumped_line(mesh: gfem.Mesh, values) -> gfem.Model:
@@ -438,6 +442,25 @@ def lumped_line(mesh: gfem.Mesh, values) -> gfem.Model:
                 capacitance=c_port,
             ),
             gfem.LumpedPort("p2", "port2", "+y", impedance=1000.0),
+        ],
+    )
+
+
+def lossless_lumped_line(mesh: gfem.Mesh, values) -> gfem.Model:
+    """The glued line with an L, C port p1 and an L, C `gfem.Impedance` sheet.
+
+    ``values``: port p1's inductance and capacitance, the sheet's inductance
+    and capacitance (`LOSSLESS_LUMPED`). No resistor anywhere: p2 is left
+    out, so the modes are lossless.
+    """
+    l_port, c_port, l_sheet, c_sheet = (values[i] for i in range(4))
+    sheet = gfem.Impedance("sheet", inductance=l_sheet, capacitance=c_sheet)
+    return gfem.Model(
+        mesh,
+        materials={"lower": gfem.Material(eps_r=3.0), "upper": gfem.Material()},
+        boundaries=[gfem.PEC("plate1"), gfem.PEC("plate2"), sheet],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+y", inductance=l_port, capacitance=c_port)
         ],
     )
 
@@ -650,6 +673,12 @@ JUNCTION_TARGET = 3e9
 #: The junction's inductance (H), and the capacitance of the capacitive
 #: variant (F); the resistive variant's second port (ohm).
 JUNCTION_L, JUNCTION_C, JUNCTION_R = 1e-9, 1e-13, 500.0
+#: The chi variant's junction inductance (H): its modes at 1.70 and 7.98 GHz
+#: (participations 0.81 and 0.11), the next at 15.3 GHz; E_J / hbar omega
+#: about 10 on mode 0. At `JUNCTION_L` (about 50) the junction's cosine
+#: cancels to a round-off of 3e-12 of the dispersive shift, which the node
+#: cells' differences cannot see past (4e-14 here).
+JUNCTION_CHI_L = 1e-8
 
 
 def junction_mesh(directory: Path) -> gfem.Mesh:
@@ -689,13 +718,14 @@ def junction_line(
     bottom. Variants: ``"inductive"`` (lossless), ``"resistive"`` (and a 500
     ohm port "r" on port2), ``"lossy"`` (`junction_values`, and port "r"),
     ``"conductor"`` (a `gfem.Conductor` top, 1e5 S/m), ``"capacitive_port"``
-    (``capacitance=1e-13`` on "jj") and ``"principal"`` (fields with
-    `anisotropy.TILTED` axes). ``values`` replaces `junction_values`.
+    (``capacitance=1e-13`` on "jj"), ``"principal"`` (fields with
+    `anisotropy.TILTED` axes) and ``"chi"`` (lossless, ``inductance=1e-8``,
+    `JUNCTION_CHI_L`). ``values`` replaces `junction_values`.
     """
     values = junction_values(mesh, variant) if values is None else values
     axes = anisotropy.TILTED if variant == "principal" else None
     top = gfem.Conductor("top", 1e5) if variant == "conductor" else gfem.PEC("top")
-    junction = {"inductance": JUNCTION_L}
+    junction = {"inductance": JUNCTION_CHI_L if variant == "chi" else JUNCTION_L}
     if variant == "capacitive_port":
         junction["capacitance"] = JUNCTION_C
     ports = [gfem.LumpedPort("jj", "port1", "+z", **junction)]

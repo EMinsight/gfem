@@ -609,7 +609,8 @@ def sheet_cases(sheet_mesh):
 #: The lumped values of the lumped cases: port inductance (H) and capacitance
 #: (F), sheet resistance (ohm), inductance (H) and capacitance (F) per square.
 LUMPED = (2e-9, 5e-14, 2e4, 1e-6, 2e-16)
-#: Near the lumped line's sharpest mode, 15.5 + 1.5j GHz (the next is 4 GHz off).
+#: Near the lumped line's sharpest mode, 15.07 + 1.46j GHz (the next ones,
+#: 11.7 + 4.2j and 19.8 + 4.8j GHz, are 4.4 and 5.8 GHz off).
 LUMPED_TARGET = 15e9
 LUMPED_ADAPTIVE = gfem.Driven(
     frequency=(18e9, 20e9, 22e9),
@@ -1641,6 +1642,92 @@ OUT_OF_SCOPE = [
 def test_out_of_scope_pairs_raise_named_errors(request, call, error, match):
     with pytest.raises(error, match=match):
         call(request)
+
+
+# --- the frequency path beside the mode-field rows --------------------------------
+
+
+def _omega_options(request, **options):
+    # rows 3 to 6: the refusals are static, so tracing is the whole check
+    model = request.getfixturevalue("eigen_model")
+    objective, eps = _eigen_ratio_objective(
+        model,
+        gfem.Eigenmode(target=17e9),
+        gfem.SolverOptions(**options),
+        lambda r: jnp.real(r.omega[0]) * 1e-9,
+    )
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _omega_petsc(request):
+    from gfem import _petsc
+
+    try:
+        _petsc.require_petsc("linear_solver")
+    except gfem.SolverUnavailableError as err:
+        pytest.skip(str(err))
+    _omega_options(request, linear_solver="petsc")
+
+
+def _omega_bragg(request, problem):
+    model = request.getfixturevalue("bragg_cell")
+    n = len(model.mesh.elements("low"))
+
+    def objective(e):
+        m = model.with_material("low", gfem.MaterialField(eps_r=e))
+        return jnp.real(gfem.solve(m, problem).omega[0]) * 1e-9
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.full(n, pc.C3_EPS_LOW))
+
+
+def _omega_corner(request, *, delta, read):
+    # rows 10 and 12 refuse in the backward: these run it
+    mesh = request.getfixturevalue("corner_cavity")
+    problem = gfem.Eigenmode(target=MIRRORED_TARGET, n_modes=2)
+
+    def objective(eps):
+        result = gfem.solve(split_cavity(mesh, eps, delta), problem)
+        return read(jnp.real(result.omega)) * 1e-9
+
+    grad = jax.grad(objective)(jnp.ones(len(mesh.tetrahedra)))
+    assert np.isfinite(np.asarray(grad)).all()
+    assert np.abs(np.asarray(grad)).max() > 0
+
+
+#: The models of the mode-field rows 3 to 12 (ticket 23's numbering) with
+#: an omega-only objective: the new refusals stay off the frequency path.
+#: Rows 9 (a moved port node) and 11 (a cluster cut by n_modes) are left
+#: out: omega raises there too, by its own rows ("eigenmode x nodes of a
+#: port surface", and tests/verification/test_gradient_matrix.py). On the
+#: cluster of row 10 omega differentiates as a sum over the cluster.
+OMEGA_BESIDE_ROWS = [
+    ("bddc_gmres", lambda r: _omega_options(r, linear_solver="bddc_gmres")),
+    ("petsc", _omega_petsc),
+    ("cuda", lambda r: _omega_options(r, device="cuda")),
+    ("eigen_tolerance above 1e-10", lambda r: _omega_options(r, eigen_tolerance=1e-8)),
+    (
+        "plain periodic model",
+        lambda r: _omega_bragg(r, gfem.Eigenmode(target=pc.C3_PLAIN_TARGET)),
+    ),
+    (
+        "Bloch wave vector",
+        lambda r: _omega_bragg(r, _bloch_eigenmode(math.pi / (pc.C3_A * pc.MM))),
+    ),
+    ("cluster sum", lambda r: _omega_corner(r, delta=0.0, read=jnp.sum)),
+    (
+        "nearly degenerate mode",
+        lambda r: _omega_corner(r, delta=1e-4, read=lambda omega: omega[0]),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [row[1] for row in OMEGA_BESIDE_ROWS],
+    ids=[row[0] for row in OMEGA_BESIDE_ROWS],
+)
+def test_omega_on_the_mode_field_rows_models_still_differentiates(request, call):
+    call(request)
 
 
 def test_stop_gradient_opts_a_read_input_out(model):
