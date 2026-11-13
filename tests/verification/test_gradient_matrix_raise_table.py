@@ -154,6 +154,58 @@ EXPECTED |= {
     for (name, out, kind), outcome in list(EXPECTED.items())
     if name == "driven"
 }
+# A permittivity law on a second region "core" (ADR 0112): one term of each
+# kind (Re eps > 0 at the table's 5 GHz), 11 leaves. S and the kept fields'
+# coefficients differentiate by every law parameter; z_ref and the fields'
+# omega and mesh are constants. The host field and the nodes are as on the
+# plain line. ``driven_law_absorbing``: the same behind first-order absorbing
+# y walls on both regions (the law's face pieces).
+TABLE_LAW = gfem.PermittivityLaw(
+    eps_inf=2.0,
+    terms=[
+        gfem.Drude(plasma_frequency=3e9, damping=0.5e9),
+        gfem.Lorentz(delta_eps=1.0, resonance_frequency=20e9, damping=1e9),
+        gfem.Debye(delta_eps=2.0, relaxation_frequency=5e9),
+        gfem.DjordjevicSarkar(delta_eps=1.1, low_frequency=1e3, high_frequency=1e12),
+    ],
+)
+LAW_KINDS = [
+    ("law", "core", "eps_inf"),
+    *(
+        ("law", "core", i, f.name)
+        for i, term in enumerate(TABLE_LAW.terms)
+        for f in dataclasses.fields(term)
+    ),
+]
+EXPECTED |= {
+    (problem, out, kind): (
+        EXPECTED[("driven", out, kind)]
+        if kind[0] != "law"
+        else GRADIENT
+        if out in _DRIVEN_DEPENDENT
+        else ZERO
+    )
+    for problem in ("driven_law", "driven_law_absorbing")
+    for out in sorted({out for name, out, _ in EXPECTED if name == "driven"})
+    for kind in [
+        ("nodes",),
+        *(("material", "dielectric", p) for p in ALL_PROPERTIES),
+        *LAW_KINDS,
+    ]
+}
+# The C1 periodic line with the law on its cell (plain periodicity): as
+# the plain periodic line in the nodes, the law's leaves as above.
+EXPECTED |= {
+    ("driven_periodic_law", out, kind): (
+        EXPECTED[("driven_periodic_plain", out, kind)]
+        if kind[0] != "law"
+        else GRADIENT
+        if out in _DRIVEN_DEPENDENT
+        else ZERO
+    )
+    for out in sorted({out for name, out, _ in EXPECTED if name == "driven"})
+    for kind in [("nodes",), *(("law", "cell", *k[2:]) for k in LAW_KINDS)]
+}
 # Adaptive sweep (frozen samples, so it traces): S and the kept fields'
 # reduced coordinates differentiate like the uniform sweep's S and fields.
 # The reduced basis is frozen by definition of the gradient, so a cotangent
@@ -510,6 +562,33 @@ def driven_model(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def law_cases(tmp_path_factory):
+    path = tmp_path_factory.mktemp("law_line") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(4.0, 2.0, 1.0, (4, 1, 1), core=(1.0, 3.0)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    model = gfem.Model(
+        mesh,
+        materials={
+            "dielectric": _field(mesh, "dielectric"),
+            "core": gfem.Material(eps_r=TABLE_LAW),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+    absorbing = model.replace(
+        boundaries=[*model.boundaries, gfem.Absorbing("side", order=1)]
+    )
+    problem = gfem.Driven(frequency=5e9, keep_fields=True)
+    return {
+        "driven_law": (model, problem),
+        "driven_law_absorbing": (absorbing, problem),
+    }
+
+
+@pytest.fixture(scope="module")
 def eigen_model(tmp_path_factory):
     # weakly damped (resistive ports, little conduction): the modes are sharp
     path = tmp_path_factory.mktemp("resonator") / "line.msh"
@@ -690,6 +769,10 @@ def driven_periodic_cases(tmp_path_factory):
             model,
             gfem.Driven(frequency=5e9, keep_fields=True),
         ),
+        "driven_periodic_law": (
+            model.with_material("cell", gfem.Material(eps_r=TABLE_LAW)),
+            gfem.Driven(frequency=5e9, keep_fields=True),
+        ),
         "driven_periodic_bloch": (
             model,
             gfem.Driven(frequency=5e9, keep_fields=True, wave_vector=pc.C1_K),
@@ -740,6 +823,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
         **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
         **request.getfixturevalue("eigen_periodic_cases"),
+        **request.getfixturevalue("law_cases"),
     }
 
 
@@ -910,6 +994,33 @@ def _out_material_on_a_wave_port_face(request):
         return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
 
     jax.make_jaxpr(jax.grad(objective))(jnp.full(n, 2.0))
+
+
+def _out_law_on_a_wave_port_face(request):
+    # a law region with elements on a wave port face: the port mode reads it
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(frequency=20e9)
+
+    def objective(eps_inf):
+        law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
+        m = model.with_material("dielectric", gfem.Material(eps_r=law))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(2.0)
+
+
+def _out_law_under_a_bloch_wave_vector(request):
+    model, problem = request.getfixturevalue("driven_periodic_cases")[
+        "driven_periodic_bloch"
+    ]
+
+    def objective(eps_inf):
+        law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
+        m = model.with_material("cell", gfem.Material(eps_r=law))
+        return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(2.0)
 
 
 def _out_field_with_axes_on_a_wave_port_face(request):
@@ -1425,6 +1536,18 @@ OUT_OF_SCOPE = [
         _out_material_on_a_wave_port_face,
         gfem.PortGeometryError,
         "has elements on the port face",
+    ),
+    (
+        "driven x law parameter of a region on a wave port face",
+        _out_law_on_a_wave_port_face,
+        gfem.PortGeometryError,
+        r"has elements on the port face.*permittivity law",
+    ),
+    (
+        "driven x law parameter under a Bloch wave vector",
+        _out_law_under_a_bloch_wave_vector,
+        gfem.NonDifferentiableError,
+        r"eps_r\.eps_inf.*Bloch wave vector",
     ),
     (
         "driven x material field with axes on a wave port face",

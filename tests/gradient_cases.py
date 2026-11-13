@@ -30,12 +30,16 @@ pytest ``tmp_path_factory.mktemp`` directory).
   cells, a two-layer line resonator with an inductive lumped port "jj"
   (participation ratios and their gradients), in its variants.
 - `absorbing_guide`: a shorted guide ended by a second-order absorbing wall.
+- `dispersive_mesh` / `dispersive_line`: a strip line whose "core" holds a
+  permittivity law (`LAWS`), optionally behind absorbing walls; `scaled_law`
+  normalizes a law's parameters for the law cells.
 """
 
 import math
 from pathlib import Path
 
 import anisotropy
+import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
@@ -786,5 +790,90 @@ def guide_model(mesh: gfem.Mesh, core) -> gfem.Model:
             gfem.PEC("short"),
             gfem.PEC("wall"),
             gfem.Absorbing("end", order=2),
+        ],
+    )
+
+
+# --- dispersive materials ----------------------------------------------------------
+
+GHZ = 1e9
+#: The permittivity laws of the law cells, each with its driven frequencies
+#: (Hz): ``poles`` crosses the Lorentz pole's flank and holds Re eps < 0 at 5
+#: GHz; ``relaxation`` spans its Debye corner; ``lorentz`` keeps Re eps > 0
+#: (0.55 at 14 GHz) behind an absorbing face.
+LAWS = {
+    "poles": gfem.PermittivityLaw(
+        eps_inf=1.5,
+        terms=[
+            gfem.Drude(plasma_frequency=15 * GHZ, damping=2 * GHZ),
+            gfem.Lorentz(delta_eps=1.0, resonance_frequency=30 * GHZ, damping=3 * GHZ),
+        ],
+    ),
+    "relaxation": gfem.PermittivityLaw(
+        eps_inf=3.0,
+        terms=[
+            gfem.Debye(delta_eps=2.0, relaxation_frequency=5 * GHZ),
+            gfem.DjordjevicSarkar(
+                delta_eps=1.1, low_frequency=1e3, high_frequency=1e12
+            ),
+        ],
+    ),
+    "lorentz": gfem.PermittivityLaw(
+        eps_inf=2.0,
+        terms=[
+            gfem.Lorentz(delta_eps=3.0, resonance_frequency=8 * GHZ, damping=0.4 * GHZ)
+        ],
+    ),
+}
+LAW_FREQUENCIES = {
+    "poles": (5 * GHZ, 12 * GHZ, 20 * GHZ),
+    "relaxation": (1 * GHZ, 5 * GHZ, 10 * GHZ),
+    "lorentz": (4 * GHZ, 6 * GHZ, 14 * GHZ),
+}
+#: The magnetic cover of `shape_line` as a Lorentz medium (Re eps > 0 below
+#: its 40 GHz pole, behind the second-order side walls).
+COVER_LAW = gfem.PermittivityLaw(
+    eps_inf=2.5,
+    terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=40 * GHZ, damping=2 * GHZ)],
+)
+
+
+def scaled_law(law: gfem.PermittivityLaw, t) -> gfem.PermittivityLaw:
+    """``law`` with each parameter p0 as p0 (1 + t): an O(1) input, one per leaf."""
+    leaves, tree = jax.tree.flatten(law)
+    return jax.tree.unflatten(tree, [p * (1 + t[i]) for i, p in enumerate(leaves)])
+
+
+def dispersive_mesh(directory: Path) -> gfem.Mesh:
+    """The 10 x 2 x 1 mm strip line, (20, 2, 2), with a "core" over x in [4, 6]."""
+    return _mesh(
+        directory,
+        "line.msh",
+        sm.strip_line(10.0, 2.0, 1.0, (20, 2, 2), core=(4.0, 6.0)),
+    )
+
+
+def dispersive_line(
+    mesh: gfem.Mesh, law, *, host=None, absorbing: int | None = None
+) -> gfem.Model:
+    """The strip line with ``law`` on "core" and ``host`` (eps 4) on "dielectric".
+
+    PEC plates, lumped ports at both ends; with ``absorbing`` (1 or 2), an
+    `gfem.Absorbing` of that order on the y walls "side", on the law region
+    too.
+    """
+    boundaries = [gfem.PEC("bottom"), gfem.PEC("top")]
+    if absorbing is not None:
+        boundaries.append(gfem.Absorbing("side", order=absorbing))
+    return gfem.Model(
+        mesh,
+        materials={
+            "dielectric": gfem.Material(eps_r=4.0) if host is None else host,
+            "core": gfem.Material(eps_r=law),
+        },
+        boundaries=boundaries,
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
         ],
     )

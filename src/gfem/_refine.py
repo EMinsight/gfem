@@ -32,7 +32,12 @@ import numpy as np
 
 from gfem._boundaries import Conductor, Impedance
 from gfem._checks import is_traced
-from gfem._materials import PROPERTY_NAMES, MaterialField
+from gfem._materials import (
+    PROPERTY_NAMES,
+    Material,
+    MaterialField,
+    PermittivityLaw,
+)
 from gfem._pytree import readonly
 from gfem.errors import NonDifferentiableError
 from gfem.mesh import _TET_EDGES, Mesh, _Topology, _triangle_neighbours
@@ -139,8 +144,9 @@ def refine_model(model: Model, marked) -> tuple[Model, Refinement]:
         The refined model and the one-level parents of its mesh's elements.
 
     Raises:
-        NonDifferentiableError: The mesh nodes, a `MaterialField` value or a
-            sheet fill is computed inside `jax.grad`, `jax.jit` or `jax.vmap`.
+        NonDifferentiableError: The mesh nodes, a `MaterialField` value, a
+            permittivity law or a sheet fill is computed inside `jax.grad`,
+            `jax.jit` or `jax.vmap`.
         MeshQualityError: The moved mesh has an inverted element.
         ValueError: ``marked`` is not a boolean mask over the tetrahedra.
     """
@@ -245,6 +251,11 @@ def _check_concrete(model: Model) -> None:
         (f"materials[{region!r}]", value)
         for region, value in model.materials.items()
         if isinstance(value, MaterialField)
+    ]
+    leaves += [
+        (f"materials[{region!r}] permittivity law", value.eps_r)
+        for region, value in model.materials.items()
+        if isinstance(value, Material) and isinstance(value.eps_r, PermittivityLaw)
     ]
     leaves += [
         (f"the fill of the {type(b).__name__} on {b.surface!r}", b.fill)

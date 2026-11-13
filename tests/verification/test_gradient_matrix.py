@@ -75,12 +75,15 @@ from finite_differences import (
 from gradient_cases import (
     BIAXIAL,
     CAVITY_TARGET,
+    COVER_LAW,
     EPS0,
     GUIDE_TARGET,
     JUNCTION_CHI_L,
     JUNCTION_TARGET,
     KINETIC_CAPACITANCE,
     KINETIC_TARGET,
+    LAW_FREQUENCIES,
+    LAWS,
     LOSSLESS_LUMPED,
     LUMPED,
     LUMPED_TARGET,
@@ -94,6 +97,8 @@ from gradient_cases import (
     cavity_fill,
     cavity_model,
     core_design,
+    dispersive_line,
+    dispersive_mesh,
     guide_model,
     hybrid_line,
     hybrid_mesh,
@@ -112,6 +117,7 @@ from gradient_cases import (
     ramp,
     resonator_mesh,
     s_functional,
+    scaled_law,
     shape_line,
     shared_surface_functional,
     sheet_cavity,
@@ -370,12 +376,40 @@ def _field_cells() -> list[Cell]:
     ]
 
 
+# --- dispersive materials ------------------------------------------------------------
+
+
+def _law_cells() -> list[Cell]:
+    """The driven cells of a permittivity law (ADR 0112), on ``direct``.
+
+    Input ``"law"``: the law's parameters, normalized as p0 (1 + t), on the
+    strip line (`dispersive_line`) for each law of `LAWS` (``poles``,
+    ``relaxation``) and behind first- and second-order absorbing walls on the
+    law region (``absorbing1``, ``absorbing2``: their face terms), through
+    wave ports (``lossy``) and on the plain periodic cell. The existing inputs
+    beside a law (variant ``"law"``): the host's per-element permittivity, and
+    the nodes of the shape line whose cover holds a law (its susceptibility
+    and absorbing face pieces transported).
+    """
+    return [
+        *(
+            Cell("driven", "law", "direct", "uniform", variant)
+            for variant in ("poles", "relaxation", "absorbing1", "absorbing2")
+        ),
+        Cell("driven", "eps_r", "direct", "uniform", "law"),
+        Cell("driven", "nodes", "direct", "uniform", "law"),
+        Cell("driven_wave", "law", "direct", "uniform", "lossy"),
+        Cell("driven_periodic_plain", "law", "direct", "uniform"),
+    ]
+
+
 CELLS = [
     *_cells(),
     *_driven_periodic_cells(),
     *_eigen_periodic_cells(),
     *_participation_cells(),
     *_field_cells(),
+    *_law_cells(),
 ]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
@@ -527,6 +561,16 @@ class Designs:
     def eigen_cell(self):
         return eigen_cell_mesh(self._dir("eigen_cell"))
 
+    @functools.cached_property
+    def dispersive(self):
+        return dispersive_mesh(self._dir("dispersive"))
+
+    @functools.cached_property
+    def law_shape_line(self):
+        # the shape line's magnetic cover as a Lorentz medium (mu_r kept)
+        line = shape_line(self._dir("law_shape_line"))
+        return line.with_material("cover", gfem.Material(eps_r=COVER_LAW, mu_r=1.3))
+
 
 @pytest.fixture(scope="module")
 def designs(tmp_path_factory):
@@ -563,6 +607,8 @@ STEPS = {
     "tan_delta": 1e-3,
     "conductivity": 5e-2,
     "nodes": 2e-6,
+    # a law's parameters, normalized: p0 (1 + t)
+    "law": 1e-3,
 }
 #: Ranges a cell draws its own ``mu_r`` or ``tan_delta`` from (the other
 #: cells' designs carry neither).
@@ -820,9 +866,9 @@ def _driven_lumped(d: Designs, cell: Cell, options, seed: int) -> Case:
     )
 
 
-def _driven_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+def _driven_nodes(d: Designs, cell: Cell, options, seed: int, *, line=None) -> Case:
     """S of the line with every kind of shape term; its interface moves."""
-    line = d.shape_line
+    line = d.shape_line if line is None else line
     morph = boundary_morph(line, "sub__cover", grows="sub")
     problem, rows = _sweep(cell, SHAPE_FREQUENCIES, GRID, SHAPE_SAMPLES)
 
@@ -1495,6 +1541,92 @@ def _periodic_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
     )
 
 
+# --- the law cells' objectives --------------------------------------------------------
+
+#: The smallest normalized law-gradient component a law cell admits, relative
+#: to the gradient's norm: no parameter hides under the 1e-6 gate (ADR 0112).
+LAW_COMPONENT = 1e-4
+
+
+def _law_case(objective, law, seed: int) -> Case:
+    """A law cell's case: ``objective`` of the normalized parameters t."""
+    return Case(
+        objective,
+        jnp.zeros(len(jax.tree.leaves(law))),
+        np.random.default_rng(seed),
+        step=STEPS["law"],
+        taylor=1e-1,
+    )
+
+
+def _driven_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S of the strip line in its core's law parameters (`LAWS`).
+
+    ``absorbing1`` / ``absorbing2``: the ``lorentz`` law behind absorbing y
+    walls of that order (their law face pieces' terms).
+    """
+    name, absorbing = cell.variant, None
+    if name.startswith("absorbing"):
+        name, absorbing = "lorentz", int(name.removeprefix("absorbing"))
+    mesh, law = d.dispersive, LAWS[name]
+    problem = gfem.Driven(frequency=LAW_FREQUENCIES[name])
+
+    def objective(t):
+        model = dispersive_line(mesh, scaled_law(law, t), absorbing=absorbing)
+        return s_functional(gfem.solve(model, problem, options=options).s.values)
+
+    return _law_case(objective, law, seed)
+
+
+def _driven_host_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """S of the strip line in the host's per-element eps_r, beside the ``poles`` law."""
+    mesh = d.dispersive
+    rng = np.random.default_rng(seed)
+    n = len(mesh.elements("dielectric"))
+    eps = jnp.asarray(rng.uniform(2.0, 6.0, n) * (1 - 0.02j))
+    problem = gfem.Driven(frequency=LAW_FREQUENCIES["poles"])
+
+    def objective(p):
+        host = gfem.MaterialField(eps_r=p)
+        model = dispersive_line(mesh, LAWS["poles"], host=host)
+        return s_functional(gfem.solve(model, problem, options=options).s.values)
+
+    return Case(objective, eps, rng, step=STEPS["eps_r"], taylor=1e-1)
+
+
+def _driven_nodes_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S of the shape line whose cover holds a law; its interface moves."""
+    return _driven_nodes(d, cell, options, seed, line=d.law_shape_line)
+
+
+def _wave_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S through wave ports in the law parameters of the core (``poles``)."""
+    _, model, problem, functional = _wave(d, cell)
+    law = LAWS["poles"]
+
+    def objective(t):
+        m = model.with_material("core", gfem.Material(eps_r=scaled_law(law, t)))
+        m = m.replace(mesh=jax.lax.stop_gradient(m.mesh))
+        return functional(gfem.solve(m, problem, options=options).s)
+
+    return _law_case(objective, law, seed)
+
+
+def _periodic_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """S of G whose floor "core" holds the ``poles`` law, in its parameters."""
+    mesh = d.periodic
+    law = LAWS["poles"]
+    problem, rows = _periodic_sweep(cell)
+
+    def objective(t):
+        model = pc.g(mesh).with_material(
+            "core", gfem.Material(eps_r=scaled_law(law, t))
+        )
+        return _periodic_value(cell, gfem.solve(model, problem, options=options), rows)
+
+    return _law_case(objective, law, seed)
+
+
 # --- the periodic eigenmode cells' objectives ---------------------------------------
 
 #: The design inputs of the periodic eigen cell, by cell input.
@@ -1623,11 +1755,24 @@ BUILDERS = {
     ("eigenmode_participation", "nodes"): _participation_nodes,
     ("eigenmode_participation", "lumped"): _lumped_ratio,
     ("eigenmode_field", "lumped"): _lumped_ratio,
+    ("driven", "law"): _driven_law,
+    ("driven_wave", "law"): _wave_law,
+    ("driven_periodic_plain", "law"): _periodic_law,
+}
+#: Builders of the existing inputs beside a law, by (problem, input, variant).
+VARIANT_BUILDERS = {
+    ("driven", "eps_r", "law"): _driven_host_law,
+    ("driven", "nodes", "law"): _driven_nodes_law,
 }
 
 
+def _builder(cell: Cell) -> Callable:
+    variant = VARIANT_BUILDERS.get((cell.problem, cell.input, cell.variant))
+    return variant or BUILDERS[cell.problem, cell.input]
+
+
 def _case(designs: Designs, cell: Cell, *, production: bool, seed: int = 0) -> Case:
-    build = BUILDERS[cell.problem, cell.input]
+    build = _builder(cell)
     return build(designs, cell, _options(cell, production=production), seed)
 
 
@@ -1637,12 +1782,18 @@ def _case(designs: Designs, cell: Cell, *, production: bool, seed: int = 0) -> C
 @pytest.mark.parametrize("cell", [*CELL_PARAMS, *PETSC_PARAMS], ids=str)
 def test_gradient_matrix_matches_central_differences(designs, cell):
     case = _case(designs, cell, production=False)
+    grad = jax.grad(case.objective)(case.p)
+    if cell.input == "law":
+        # every normalized law parameter moves the objective
+        g = np.abs(np.asarray(grad))
+        assert g.min() >= LAW_COMPONENT * np.linalg.norm(g), f"{cell}: {g}"
     assert_gradient_matches(
         case.objective,
         case.p,
         case.directions(3),
         step=case.step,
         reference=case.reference,
+        grad=grad,
     )
 
 
@@ -1724,7 +1875,7 @@ def test_gradient_matrix_transformations_and_eviction_agree(designs, cell):
     np.testing.assert_allclose(pullback(2.0)[0], 2 * first, rtol=repeat)
 
     options = dataclasses.replace(_options(cell, production=False), retain_memory=0)
-    evicted = BUILDERS[cell.problem, cell.input](designs, cell, options, 0)
+    evicted = _builder(cell)(designs, cell, options, 0)
     _assert_same(jax.grad(evicted.objective)(case.p), looped[0], cell)
 
 

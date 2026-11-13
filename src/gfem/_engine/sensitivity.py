@@ -81,6 +81,19 @@ sheet pass's surface P0 form and sums the faces: one complex number per value.
 The rule gives those pieces as `Term` values carrying ``Term.lumped``, through a
 ``lumped_terms`` hook beside ``terms``.
 
+A **law parameter** ``p`` (a permittivity law's eps_inf, a strength or a
+frequency; ADR 0112) moves the θ of its law's pieces, not their
+coefficients: the susceptibility piece (whose form, the region's indicator
+times ``u . v``, is also eps_inf's part of the mass) and the law's absorbing
+face pieces. The rule gives dθ/dp at each pair's frequency as a weight of
+its own, under `law_key` (piece name, parameter), and its terms carry
+`Term.law`. The **law pass** contracts each such term once per pair carrying
+one of its keys, ``int c left . right`` (one scalar per pair), and
+multiplies by each parameter's weight: one integral per pair and law
+piece, whatever the parameter count. It reads the weight under its own key
+only, so it accepts pairs that carry only that key (an adaptive sweep's,
+weight 1 per key).
+
 Adding a problem type means giving its rule a ``terms`` hook (its operator
 as `Term` values, with their derivatives) and a row of `PROPERTIES`, not a
 code path. A later pass plugs in beside these: load pairs ``int lambda psi``
@@ -91,8 +104,9 @@ Design inputs are named by kind tuples, the same ones `gfem._adjoint` uses:
 the field has `axes`),
 ``("boundary", index, "fill", "fill")`` the fill of the sheet field of
 ``model.boundaries[index]``, ``("port", index, "inductance")`` and
-``("boundary", index, "resistance")`` (and the like) a lumped value, and
-``("nodes",)`` the mesh node coordinates.
+``("boundary", index, "resistance")`` (and the like) a lumped value,
+``("law", region, "eps_inf")`` and ``("law", region, term_index, name)`` a
+permittivity law's parameter, and ``("nodes",)`` the mesh node coordinates.
 """
 
 from __future__ import annotations
@@ -116,6 +130,7 @@ from gfem.model import Model
 
 __all__ = [
     "INTEGRANDS",
+    "LAW_FORMS",
     "LUMPED_FORMS",
     "MOMENTS",
     "PROPERTIES",
@@ -127,6 +142,7 @@ __all__ = [
     "energy_term",
     "is_lumped",
     "is_sheet",
+    "law_key",
     "sensitivity",
     "unsupported",
 ]
@@ -224,6 +240,9 @@ class Term:
         lumped: For a ``"trace"`` term of a piece that moves with a lumped
             value ``p`` (the lumped pass's terms), ``(kind, slope)``: the
             value's input kind and ``dc / dp = slope c``. ``None`` otherwise.
+        law: For a piece of a permittivity law (its θ moves with the law's
+            parameters), the law's region: the law pass reads its weights
+            under `law_key`. ``None`` otherwise.
     """
 
     name: str
@@ -237,6 +256,7 @@ class Term:
     derivatives: Mapping[str, Derivative] = dataclasses.field(default_factory=dict)
     sheet: tuple[int, float] | None = None
     lumped: tuple[tuple, float] | None = None
+    law: str | None = None
 
 
 def _dot(u: ngs.CoefficientFunction, v: ngs.CoefficientFunction) -> ngs.CF:
@@ -374,6 +394,8 @@ SHAPE_FORMS = frozenset({"electrostatic", "driven", "eigenmode"})
 SHEET_FORMS = frozenset({"driven", "eigenmode"})
 #: Operator families whose pairs carry the lumped pieces' weights (by name).
 LUMPED_FORMS = frozenset({"driven", "eigenmode"})
+#: Operator families whose pairs carry the law pieces' dθ/dp (`law_key`).
+LAW_FORMS = frozenset({"driven"})
 #: The lumped values that are design inputs (ADR 0100), by owner.
 _LUMPED = {
     "port": ("inductance", "capacitance"),
@@ -389,6 +411,15 @@ def is_sheet(kind: tuple) -> bool:
 def is_lumped(kind: tuple) -> bool:
     """Whether input ``kind`` is a lumped value: a port's L or C, an `Impedance`'s."""
     return len(kind) == 3 and kind[2] in _LUMPED.get(kind[0], ())
+
+
+def law_key(name: str, parameter: tuple) -> str:
+    """The weight key of dθ/dp of piece ``name`` by a law parameter.
+
+    ``parameter`` is a law input kind's tail: ``("eps_inf",)`` or
+    ``(term_index, name)``.
+    """
+    return f"{name} d/d " + ".".join(str(p) for p in parameter)
 
 
 def unsupported(form: str, kind: tuple) -> str | None:  # noqa: PLR0911
@@ -407,6 +438,8 @@ def unsupported(form: str, kind: tuple) -> str | None:  # noqa: PLR0911
             return None
         return f"the {form} forms of this version do not differentiate {kind[2]}"
     if kind[0] == "law":
+        if form in LAW_FORMS:
+            return None
         return (
             "gradients with respect to a permittivity law's parameters are not "
             "available in this version of gfem"
@@ -682,6 +715,62 @@ def _lumped_pass(
     return complex(read(form)[0].sum())
 
 
+def _law_pass(
+    model: Model,
+    pairs: list[FieldPair],
+    kinds: list[tuple],
+    terms: Sequence[Term],
+    comm: Any = None,
+) -> dict[Hashable, np.ndarray]:
+    """``sum_pairs sum_t (dθ_t/dp) int c_t left . right`` per law parameter.
+
+    ``t`` runs over the terms of each wanted parameter's law region
+    (`Term.law`); dθ_t/dp is the pair's weight under `law_key`. Each term is
+    integrated once per pair that carries one of its wanted keys, and the
+    scalar is reused for every parameter. One complex number per parameter,
+    ``sum ct * dy/dp`` (real-linear: the caller takes the real part for a real
+    leaf). Under ranks it is this rank's elements' share.
+    """
+    built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
+    out: dict[Hashable, np.ndarray] = {k: np.asarray(0j) for k in kinds}
+    for term in terms:
+        mine = [k for k in kinds if k[1] == term.law]
+        if term.law is None or not mine:
+            continue
+        keys = {k: law_key(term.name, tuple(k[2:])) for k in mine}
+        integrand = INTEGRANDS[term.kind]
+        for pair in pairs:
+            if not any(key in pair.weights for key in keys.values()):
+                continue
+            value = _law_integral(built, term, integrand, pair)
+            value *= built.scale**term.length_power
+            for kind, key in keys.items():
+                weight = pair.weights.get(key)
+                if weight is not None:
+                    out[kind] = out[kind] + complex(weight) * value
+    return out
+
+
+def _law_integral(
+    built: Any, term: Term, integrand: Callable[[Any, Any], Any], pair: FieldPair
+) -> complex:
+    """``int c_t sum_k a(left_k, right_k)``: one law term on one pair, this rank's."""
+    cf = term.coefficient * _pair_integrand(integrand, pair)
+    if term.owner is None:
+        p0 = ngs.L2(built.mesh, order=0, complex=True)
+        form = ngs.LinearForm(p0)
+        form += (
+            cf * p0.TestFunction() * quadrature.dx(pair.order, definedon=pair.domain)
+        )
+        form.Assemble()
+        return complex(form.vec.FV().NumPy().sum())
+    p0, (q,), read = _surface_tests(built, is_complex=True)
+    form = ngs.LinearForm(p0)
+    form += cf * q * quadrature.ds(pair.order, definedon=term.region)
+    form.Assemble()
+    return complex(read(form)[0].sum())
+
+
 def _transport(term: Term, u: Any, v: Any) -> Any:
     """The transport tensor of ``term`` for fields ``u``, ``v`` (module doc)."""
     c = term.coefficient
@@ -946,6 +1035,9 @@ def sensitivity(
             out[kind] = np.asarray(
                 _lumped_pass(model, pairs, kind, lumped_terms, comm)  # ty: ignore[invalid-argument-type]
             )
+    laws = [k for k in wants if k[0] == "law"]  # ty: ignore[not-subscriptable]
+    if laws:
+        out |= _law_pass(model, pairs, laws, operator, comm)  # ty: ignore[invalid-argument-type]
     if ("nodes",) in wants:
         out["nodes",] = _node_pass(model, pairs, operator, comm)
     materials = {k for k in wants if k[0] == "material"}  # ty: ignore[not-subscriptable]

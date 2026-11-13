@@ -237,6 +237,11 @@ class Piece:
             law's pieces. θ itself never raises and never returns a
             placeholder; which frequencies are valid is checked before
             assembly (`gfem._engine.dispersion.check_frequencies`).
+        law: For a permittivity law's piece (its susceptibility piece and its
+            absorbing face pieces), ``(region, d_theta_dp)``: the law's
+            region and dθ/dp(ω) by each law parameter, keyed as
+            `gfem._engine.dispersion.d_eps` (the law pass, ADR 0112);
+            ``None`` otherwise.
 
     Raises:
         ValueError: ``theta`` does not give one scalar: the term is not
@@ -260,6 +265,9 @@ class Piece:
     values: np.ndarray | None = dataclasses.field(default=None, compare=False)
     lumped: LumpedValue | None = dataclasses.field(default=None, compare=False)
     probe: complex = _PROBE
+    law: tuple[str, Callable[[complex], dict[tuple, complex]]] | None = (
+        dataclasses.field(default=None, compare=False)
+    )
 
     def __post_init__(self) -> None:
         """Check that θ is a scalar function of ω."""
@@ -501,6 +509,11 @@ def susceptibility_pieces(
                 + dispersion.d_susceptibility(law, w)
             )
 
+        def by_parameter(w: complex, law: Any = law) -> dict[tuple, complex]:
+            # dθ/dp = -k² d eps/dp: eps_inf's mass term (θ -k², coefficient
+            # eps_inf on this region) is this piece's form too
+            return {p: -k2(w) * d for p, d in dispersion.d_eps(law, w).items()}
+
         out.append(
             Piece(
                 f"susceptibility {lr.region}",
@@ -512,6 +525,7 @@ def susceptibility_pieces(
                 frequency_class="nonpolynomial",
                 d_theta=d_theta,
                 probe=_LAW_PROBE,
+                law=(lr.region, by_parameter),
             )
         )
     return out
@@ -918,6 +932,13 @@ def _law_absorbing_pieces(
             slope = dispersion.d_susceptibility(law, w).real
             return 1j * k(w) * (e / w + slope / (2 * e))
 
+        def by_parameter(
+            w: complex, eps: Any = eps, law: Any = law
+        ) -> dict[tuple, complex]:
+            # d/dp [i k sqrt(Re eps)] = i k Re(d eps/dp) / (2 sqrt(Re eps))
+            scale = 1j * k(w) / (2 * cmath.sqrt(eps(w)))
+            return {p: scale * d.real for p, d in dispersion.d_eps(law, w).items()}
+
         y = np.where(lf, m**-0.5, 0.0)
         y_cf = surface_coefficient(built, y)
         out.append(
@@ -932,6 +953,7 @@ def _law_absorbing_pieces(
                 d_theta=d_theta,
                 owner=np.where(lf, first_owner, -1),
                 probe=_LAW_PROBE,
+                law=(lr.region, by_parameter),
             )
         )
         curl = lf & on_second
@@ -945,6 +967,13 @@ def _law_absorbing_pieces(
             # d/dω [1 / (2 i k sqrt(e))] = -θ2 (1 / ω + e' / (2 e))
             slope = dispersion.d_susceptibility(law, w).real
             return -theta2(w) * (1 / w + slope / (2 * eps(w)))
+
+        def by_parameter2(
+            w: complex, eps: Any = eps, law: Any = law
+        ) -> dict[tuple, complex]:
+            # d/dp [1 / (2 i k sqrt(Re eps))] = -θ2 Re(d eps/dp) / (2 Re eps)
+            scale = -theta2(w) / (2 * eps(w))
+            return {p: scale * d.real for p, d in dispersion.d_eps(law, w).items()}
 
         c_cf = surface_p0(built, np.where(curl, m**-1.5, 0.0))
         out.append(
@@ -961,6 +990,7 @@ def _law_absorbing_pieces(
                 d_theta=d_theta2,
                 owner=np.where(curl, second_owner, -1),
                 probe=_LAW_PROBE,
+                law=(lr.region, by_parameter2),
             )
         )
     return out

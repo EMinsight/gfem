@@ -106,7 +106,7 @@ from gfem._engine.fields import dof_shape
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import PortNetwork, resistance, split_cotangent
 from gfem._engine.runtime import task_manager
-from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet
+from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet, law_key
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces, SystemOperator, SystemSweep
 from gfem._engine.wave_ports import (
@@ -302,13 +302,20 @@ class DrivenOperator:
         ports' pieces only a lumped port's L and C pieces move (with their
         values, ADR 0100); its R piece, its surface and a wave port's mode
         are fixed, so no pair carries them. The `latent` pieces are
-        included: their derivative is not zero.
+        included: their derivative is not zero. A permittivity law's pieces
+        add dθ/dp by each law parameter, each under its own key
+        (`gfem._engine.sensitivity.law_key`, the law pass, ADR 0112).
         """
-        return {
+        out = {
             p.name: complex(p.theta(omega))
             for p in (*self.pieces, *self.latent)
             if p.kind != "port" or p.lumped is not None
         }
+        for p in self.pieces:
+            if p.law is not None:
+                for parameter, value in p.law[1](omega).items():
+                    out[law_key(p.name, parameter)] = complex(value)
+        return out
 
     def wavenumber(self, omega: float) -> float:
         """k0 per mesh file unit."""
@@ -1259,12 +1266,14 @@ class DrivenRule:
         a lumped value of an `Impedance` on such a surface.
 
         The node coordinates cannot be differentiated next to a tensor
-        absorbing admittance (`terms.absorbing_shape_unsupported`).
+        absorbing admittance (`terms.absorbing_shape_unsupported`). A
+        permittivity law's parameter is differentiated on the uniform sweep
+        without a Bloch wave vector (`_law_unsupported`).
 
         Raises:
-            PortGeometryError: ``kind`` is the material of a region that
-                touches a wave port face, or the fill of a sheet or a lumped
-                value of an `Impedance` beside one.
+            PortGeometryError: ``kind`` is the material, or a law parameter,
+                of a region that touches a wave port face, or the fill of a
+                sheet or a lumped value of an `Impedance` beside one.
         """
         if is_lumped(kind) and kind[0] == "boundary":
             ports = self.sheet_ports.get(kind[1], ())
@@ -1294,19 +1303,47 @@ class DrivenRule:
             return None
         if kind == ("nodes",):
             return self.nodes_unsupported
-        if kind[0] != "material":
+        if kind[0] == "law":
+            reason = self._law_unsupported()
+            if reason is not None:
+                return reason
+        elif kind[0] != "material":
             return None
-        region, prop = kind[1], kind[2]
+        region = kind[1]
         touched = [p for p, regions in self.port_regions.items() if region in regions]
         if touched:
+            leaf = (
+                f"the permittivity law of model.materials[{region!r}]"
+                if kind[0] == "law"
+                else f"model.materials[{region!r}].{kind[2]}"
+            )
             raise PortGeometryError(
                 f"{self._port_label(touched[0])}: region {region!r} has elements "
                 f"on the port face, so gfem cannot differentiate with respect to "
-                f"model.materials[{region!r}].{prop}: the port mode reads that "
+                f"{leaf}: the port mode reads that "
                 "material and is a constant of the solve. Keep the design away "
                 "from wave port faces (give the elements beside the port a "
                 "region of their own with a constant gfem.Material), or wrap "
                 "the value in jax.lax.stop_gradient."
+            )
+        return None
+
+    def _law_unsupported(self) -> str | None:
+        """Why a law parameter cannot be differentiated on this sweep, or None.
+
+        The law pass is verified on the uniform sweep, without a Bloch wave
+        vector (ADR 0112): the adaptive sweep's law pairs wait for their
+        verification cell (ADR 0116), and a Bloch-periodic cell has none.
+        """
+        if self.adaptive:
+            return (
+                "gradients with respect to a permittivity law's parameters are not "
+                'verified on the adaptive sweep in this version; solve sweep="uniform"'
+            )
+        if self.problem.wave_vector is not None:
+            return (
+                "gradients with respect to a permittivity law's parameters are not "
+                "verified under a Bloch wave vector in this version"
             )
         return None
 
@@ -1625,6 +1662,7 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
             "derivatives": piece.derivatives,
             "owner": piece.owner,
             "sheet": piece.sheet,
+            "law": None if piece.law is None else piece.law[0],
         }
         if piece.kind == "surface":
             term = Term(

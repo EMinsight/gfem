@@ -989,9 +989,14 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
 
     Raises:
         ValueError: A value the constructor refuses (not finite, or not
-            passive), with the region named.
+            passive), with the region named; the same for a permittivity
+            law's parameters (ADR 0112).
     """
     for region, material in materials.items():
+        if isinstance(material, Material) and isinstance(
+            material.eps_r, PermittivityLaw
+        ):
+            _check_law(region, material.eps_r)
         if not isinstance(material, MaterialField):
             continue
         for name in PROPERTY_NAMES:
@@ -1006,6 +1011,24 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
                     "JAX transformation, so it is checked at solve time. Keep "
                     "the design in range, e.g. a density in [0, 1].)"
                 ) from None
+
+
+def _check_law(region: str, law: PermittivityLaw) -> None:
+    """Rerun a law's construction checks on its concrete values (ADR 0112).
+
+    A law built under a JAX transformation skipped them: each term and the
+    law are rebuilt with `dataclasses.replace`, and the constructor's error
+    is raised with the region named.
+    """
+    try:
+        terms = [dataclasses.replace(t) for t in law.terms]
+        dataclasses.replace(law, terms=terms)
+    except ValueError as err:
+        raise ValueError(
+            f"{err} (region {region!r}; the permittivity law was computed under "
+            "a JAX transformation, so it is checked at solve time. Keep its "
+            "parameters in range, e.g. through a positive parametrization.)"
+        ) from None
 
 
 _SCHEMES: dict[str, Callable[[jax.Array, float], jax.Array]] = {

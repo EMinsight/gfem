@@ -46,6 +46,7 @@ __all__ = [
     "absorbing_surfaces",
     "check_estimator_frequencies",
     "check_frequencies",
+    "d_eps",
     "d_susceptibility",
     "eps_at",
     "has_loss",
@@ -152,6 +153,70 @@ def _term(term: object, f: complex) -> tuple[complex, complex]:
         value = scale * cmath.log((f2 + 1j * f) / (f1 + 1j * f))
         return value, scale * (1j / (f2 + 1j * f) - 1j / (f1 + 1j * f))
     raise TypeError(f"Unknown dispersion term {term!r}.")  # pragma: no cover
+
+
+def _by_parameter(term: object, f: complex) -> dict[str, complex]:
+    """D chi / dp of one term at ``f`` (Hz) by each parameter, in its own units."""
+    if isinstance(term, Drude):
+        fp, g = float(term.plasma_frequency), float(term.damping)
+        chi = -(fp**2) / (f * (f - 1j * g))
+        return {"plasma_frequency": 2 * chi / fp, "damping": chi * 1j / (f - 1j * g)}
+    if isinstance(term, Lorentz):
+        d, f0, g = (
+            float(term.delta_eps),
+            float(term.resonance_frequency),
+            float(term.damping),
+        )
+        den = f0**2 - f * f + 1j * g * f
+        return {
+            "delta_eps": f0**2 / den,
+            "resonance_frequency": 2 * d * f0 * (1j * g * f - f * f) / den**2,
+            "damping": -d * f0**2 * 1j * f / den**2,
+        }
+    if isinstance(term, Debye):
+        d, fr = float(term.delta_eps), float(term.relaxation_frequency)
+        den = 1 + 1j * f / fr
+        return {
+            "delta_eps": 1 / den,
+            "relaxation_frequency": d * 1j * f / (fr * den) ** 2,
+        }
+    if isinstance(term, DjordjevicSarkar):
+        d, f1, f2 = (
+            float(term.delta_eps),
+            float(term.low_frequency),
+            float(term.high_frequency),
+        )
+        span = math.log(f2 / f1)
+        log = cmath.log((f2 + 1j * f) / (f1 + 1j * f))
+        scale = d / span
+        return {
+            "delta_eps": log / span,
+            "low_frequency": scale * log / (f1 * span) - scale / (f1 + 1j * f),
+            "high_frequency": -scale * log / (f2 * span) + scale / (f2 + 1j * f),
+        }
+    raise TypeError(f"Unknown dispersion term {term!r}.")  # pragma: no cover
+
+
+def d_eps(law: PermittivityLaw, omega: complex) -> dict[tuple, complex]:
+    """D eps / dp at ``omega`` (rad/s) by each parameter of ``law``.
+
+    Keyed in the order of the law's leaves: ``("eps_inf",)`` (d eps / d
+    eps_inf = 1), then ``(i, name)`` for parameter ``name`` of
+    ``law.terms[i]``, per Hz for a frequency. Written by hand beside
+    `d_susceptibility` (ADR 0112): the law pass weighs each law piece's
+    form with it. Non-finite (never raising) on a lossless pole.
+    """
+    f = omega / _TWO_PI
+    out: dict[tuple, complex] = {("eps_inf",): 1.0}
+    for index, term in enumerate(law.terms):
+        try:
+            with np.errstate(all="ignore"):
+                values = _by_parameter(term, f)
+        except ZeroDivisionError:
+            names = (fd.name for fd in dataclasses.fields(term))
+            values = {name: complex(math.inf, math.nan) for name in names}
+        out |= {(index, name): complex(v) for name, v in values.items()}
+    return out
 
 
 def _terms(law: PermittivityLaw, omega: complex) -> list[tuple[complex, complex]]:
