@@ -435,6 +435,24 @@ def test_a_sweep_whose_plans_do_not_fit_keeps_one_base(frequency_bases):
     assert cache.ENTRIES.pooled == 0
 
 
+def test_under_the_default_budget_a_sweep_keeps_one_base_over_it(
+    frequency_bases, monkeypatch
+):
+    sweep, prepared, _ = frequency_bases
+    # a 120-byte process (default budget 60) whose peak leaves a tenth free
+    monkeypatch.setattr(cache, "memory_limit", lambda: 120)
+    monkeypatch.setattr(cache, "default_retain_memory", lambda: 60)
+    monkeypatch.setattr(cache, "peak_rss", lambda: 100)
+    for _ in range(3):
+        with sweep(cache.retain_budget(None)) as s:
+            for omega in (1.0, 2.0, 3.0):
+                s.at(omega)
+        # the last frequency's base, the only one, holds its factors
+        assert _keys_with_factors() == [3.0]
+        assert cache.ENTRIES.pooled == 1
+    assert len(prepared) == 1
+
+
 # --- driven loops --------------------------------------------------------------
 
 

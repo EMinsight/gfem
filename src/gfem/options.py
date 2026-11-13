@@ -300,7 +300,10 @@ class SolverOptions:
             then the oldest entries, which are recomputed when their gradient
             runs, and port couplings last. ``None`` is half of the memory the
             process may use (the physical memory, or a smaller job memory
-            limit); 0 keeps nothing between solves and always recomputes.
+            limit), except that the last factorization stays held, even over
+            it, while the process's peak memory leaves a tenth of that memory
+            free; an explicit value is a hard bound. 0 keeps nothing between
+            solves and always recomputes.
             The budget bounds what gfem keeps, not the process's memory:
             meshes and spaces of the last four discretizations, JAX's own
             caches and memory the allocator has not returned are outside it.

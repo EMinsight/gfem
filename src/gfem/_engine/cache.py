@@ -52,6 +52,12 @@ the walk of a stored entry (`EntryCache.put`):
 5. frees whole entries, least recently used first;
 6. drops kept port state, least recently used discretization first.
 
+Under the default budget (``retain_memory=None``, a `DefaultBudget`) the walk
+of one process leaves the most recently returned pooled direct base alone,
+factors and all, while the process's peak memory plus a tenth of its memory
+limit stays under that limit (ADR 0123); the rest is trimmed as if its
+factors had been released. An explicit ``retain_memory`` is a hard bound.
+
 A handle returning to the pool, or a differentiated forward freeing consumed
 entries, walks tiers 1, 2, 3 and 6 only: a solve evicts other solves' entries
 only where it stores one. Eviction drops references and the keys that find
@@ -71,6 +77,7 @@ import hashlib
 import itertools
 import os
 import pathlib
+import sys
 from collections.abc import Callable, Collection, Hashable, Iterable
 from typing import Any
 
@@ -84,11 +91,14 @@ from gfem.mesh import Mesh
 
 __all__ = [
     "ENTRIES",
+    "DefaultBudget",
     "Discretization",
     "Entry",
     "EntryCache",
     "default_retain_memory",
     "discretization",
+    "memory_limit",
+    "peak_rss",
     "release_memory",
     "retain_budget",
 ]
@@ -328,21 +338,58 @@ def _cgroup_memory_limit() -> int | None:
 
 
 @functools.cache
-def default_retain_memory() -> int:
-    """Half of the memory this process may use, in bytes.
+def memory_limit() -> int:
+    """The memory this process may use, in bytes.
 
     The smaller of the physical memory and the process's cgroup memory limit
     (searched up through parent cgroups, so a job's limit counts); "max" or an
     unreadable limit means none. Without readable physical memory or a limit,
-    8 GiB. Read once per process.
+    16 GiB. Read once per process.
     """
     sizes = [s for s in (_physical_memory(), _cgroup_memory_limit()) if s is not None]
-    return min(sizes, default=16 * 2**30) // 2
+    return min(sizes, default=16 * 2**30)
+
+
+@functools.cache
+def default_retain_memory() -> int:
+    """Half of the memory this process may use (`memory_limit`), in bytes."""
+    return memory_limit() // 2
+
+
+def peak_rss() -> int:
+    """This process's peak resident memory so far, in bytes (0 if unknown)."""
+    try:
+        import resource
+    except ImportError:  # not a POSIX system
+        return 0
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    # kilobytes on Linux, bytes on macOS
+    return int(peak) if sys.platform == "darwin" else int(peak) * 1024
+
+
+def _room_for_the_latest() -> bool:
+    """Whether the peak so far leaves a tenth of `memory_limit` free (ADR 0123)."""
+    limit = memory_limit()
+    return peak_rss() + limit // 10 <= limit
+
+
+class DefaultBudget(int):
+    """The bytes of the default ``retain_memory`` (``None``), marked as such.
+
+    A walk on it leaves the most recently returned pooled direct base its
+    factors while the process has room (ADR 0123); any other budget is a hard
+    bound.
+    """
 
 
 def retain_budget(retain_memory: int | None) -> int:
-    """The byte budget of ``SolverOptions.retain_memory`` (``None``: the default)."""
-    return default_retain_memory() if retain_memory is None else int(retain_memory)
+    """The byte budget of ``SolverOptions.retain_memory``.
+
+    ``None`` (the default) gives a `DefaultBudget`.
+    """
+    if retain_memory is None:
+        return DefaultBudget(default_retain_memory())
+    return int(retain_memory)
 
 
 _Held = tuple[int, dict[int, int]]
@@ -395,10 +442,20 @@ class _Tally:
 
 
 class _Walk:
-    """A walk's tally against its budget (the node's under ``comm``)."""
+    """A walk's tally against its budget (the node's under ``comm``).
 
-    def __init__(self, tally: _Tally, budget: int, comm: Any) -> None:
+    An ``exempt`` pooled handle keeps its factors and stays pooled (ADR 0123):
+    it leaves the tally, so everything else is trimmed as if its factors
+    had been released.
+    """
+
+    def __init__(
+        self, tally: _Tally, budget: int, comm: Any, exempt: Any = None
+    ) -> None:
         self._tally, self._budget, self._comm = tally, budget, comm
+        self.exempt = exempt
+        if exempt is not None:
+            tally.replace(_Tally.of(exempt), _NOTHING)
 
     @property
     def budget(self) -> int:
@@ -487,6 +544,8 @@ class EntryCache:
         self._keys = itertools.count()
         # least recently returned first
         self._plans: collections.OrderedDict[int, _Pooled] = collections.OrderedDict()
+        # the most recently returned pooled direct base (ADR 0123)
+        self._latest: Any = None
         self._discretizations = discretizations
 
     def put(self, entry: Entry, budget: int, comm: Any = None) -> int:
@@ -511,16 +570,17 @@ class EntryCache:
         fixed parts are serial: only a one-process walk counts them and frees them.
         """
         key = next(self._keys)
+        default = isinstance(budget, DefaultBudget)
         budget = _mpi.node_budget(comm, budget)
         if _mpi.node_bytes(comm, _alone(entry)) > budget:
             self._give_up_base(entry, comm)
             if _mpi.node_bytes(comm, _alone(entry)) > budget:
                 entry.free()
-                self._walk(budget, comm, entries=False)
+                self._walk(budget, comm, entries=False, default=default)
                 return key
         self._entries[key] = entry
         self._comms[key] = _mpi.comm_key(comm)
-        self._walk(budget, comm, entries=True)
+        self._walk(budget, comm, entries=True, default=default)
         return key
 
     def trim(self, budget: int, comm: Any = None) -> None:
@@ -529,7 +589,12 @@ class EntryCache:
         For a backward that reran its forward and freed that entry: the kept
         state the forward rebuilt is bounded as at `put`.
         """
-        self._walk(_mpi.node_budget(comm, budget), comm, entries=False)
+        self._walk(
+            _mpi.node_budget(comm, budget),
+            comm,
+            entries=False,
+            default=isinstance(budget, DefaultBudget),
+        )
 
     def _walk(
         self,
@@ -539,6 +604,7 @@ class EntryCache:
         entries: bool,
         first: Any = None,
         release_only: bool = False,
+        default: bool = False,
     ) -> None:
         """Free down to ``budget`` (the node's) by the six tiers; 4-5 if ``entries``.
 
@@ -546,10 +612,13 @@ class EntryCache:
         the holder it changed, and a shared object leaves the tally with the
         last holder that references it. Tier 1 releases the pooled handle
         ``first`` before the others; ``release_only`` stops after tier 1.
+        A ``default`` budget (``retain_memory`` unset) exempts the latest
+        returned base while the process has room (`_exempt`).
         """
         owner = _mpi.comm_key(comm)
         discs = [d for d in self._discretizations() if d.comm_key == owner]
-        walk = _Walk(self._tally(discs, pool=comm is None), budget, comm)
+        exempt = self._exempt() if comm is None and default else None
+        walk = _Walk(self._tally(discs, pool=comm is None), budget, comm, exempt)
         if comm is None and release_only:
             self._release_pooled(walk, first)
             return
@@ -560,6 +629,20 @@ class EntryCache:
         for disc in discs:
             if disc.ports is not None and not walk.step(disc, disc.drop_ports):
                 return
+
+    def _exempt(self) -> Any:
+        """The pooled base a default budget's walk leaves alone, or ``None``.
+
+        The most recently returned pooled direct base, with its factors, while
+        the process's peak memory plus a tenth of `memory_limit` stays under
+        that limit (ADR 0123): the peak already counts it beside everything
+        else held, since it was just factorized with them. One process only.
+        """
+        latest = self._latest
+        pooled = None if latest is None else self._plans.get(id(latest))
+        if pooled is None or pooled.handle is not latest or latest.released:
+            return None
+        return latest if _room_for_the_latest() else None
 
     def _walk_pool(
         self, walk: _Walk, discs: list[Discretization], first: Any = None
@@ -585,8 +668,12 @@ class EntryCache:
         one the next frequency takes, so a fixed set of frequencies keeps its
         factors only this way.
         """
-        handles = [p.handle for p in self._plans.values() if p.handle is not first]
-        if first is not None:
+        handles = [
+            p.handle
+            for p in self._plans.values()
+            if p.handle is not first and p.handle is not walk.exempt
+        ]
+        if first is not None and first is not walk.exempt:
             handles.insert(0, first)
         for handle in handles:
             release = _release_for_budget(handle, walk)
@@ -596,9 +683,13 @@ class EntryCache:
 
     def _free_plans(self, walk: _Walk) -> bool:
         """Tier 3: free pooled handles, oldest returned first; whether it fits."""
-        while self._plans and walk.over():
-            handle = self._plans.popitem(last=False)[1].handle
-            walk.step(handle, handle.free, gone=True)
+        for k, pooled in list(self._plans.items()):
+            if not walk.over():
+                break
+            if pooled.handle is walk.exempt:
+                continue
+            del self._plans[k]
+            walk.step(pooled.handle, pooled.handle.free, gone=True)
         return not walk.over()
 
     def _walk_entries(
@@ -699,7 +790,12 @@ class EntryCache:
         for entry in freed:
             entry.free(return_plans=budget is not None)
         if budget is not None:
-            self._walk(_mpi.node_budget(comm, budget), comm, entries=False)
+            self._walk(
+                _mpi.node_budget(comm, budget),
+                comm,
+                entries=False,
+                default=isinstance(budget, DefaultBudget),
+            )
 
     # --- the plan pool -----------------------------------------------------------
 
@@ -730,7 +826,13 @@ class EntryCache:
         """
         self._pool(key, topology, handle, kept)
         if walk:
-            self._walk(budget, None, entries=False, first=handle)
+            self._walk(
+                budget,
+                None,
+                entries=False,
+                first=handle,
+                default=isinstance(budget, DefaultBudget),
+            )
 
     def _pool(
         self, key: Hashable, topology: Any, handle: Any, kept: Collection[Any]
@@ -740,6 +842,8 @@ class EntryCache:
         if pattern is not None and not any(pattern is k for k in kept):
             handle.drop_pattern()
         self._plans[id(handle)] = _Pooled(key, topology, handle)
+        if hasattr(handle, "release_factors"):
+            self._latest = handle
 
     def switch_plan(
         self,
@@ -758,10 +862,18 @@ class EntryCache:
         plans do not fit takes back the base it just returned, released, and
         plans no new one. The rest of the walk runs after the take.
         """
+        default = isinstance(budget, DefaultBudget)
         self._pool(key, topology, handle, kept)
-        self._walk(budget, None, entries=False, first=handle, release_only=True)
+        self._walk(
+            budget,
+            None,
+            entries=False,
+            first=handle,
+            release_only=True,
+            default=default,
+        )
         taken = self.take_plan(to, budget=budget)
-        self._walk(budget, None, entries=False)
+        self._walk(budget, None, entries=False, default=default)
         return taken
 
     def take_plan(self, key: Hashable, budget: int | None = None) -> Any | None:
@@ -843,6 +955,7 @@ class EntryCache:
             old.free()
         while self._plans:
             self._plans.popitem(last=False)[1].handle.free()
+        self._latest = None
 
 
 ENTRIES = EntryCache(_DISCRETIZATIONS.values)
