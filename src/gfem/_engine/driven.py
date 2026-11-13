@@ -69,6 +69,7 @@ import contextlib
 import contextvars
 import dataclasses
 import functools
+import logging
 import math
 import warnings
 from collections.abc import Callable, Generator, Mapping, Sequence
@@ -115,7 +116,7 @@ from gfem._engine.wave_ports import (
     port_mode_sweeps,
     wave_port_couplings,
 )
-from gfem._linalg import Kind, ResolvedLinearSolver
+from gfem._linalg import Kind, ResolvedLinearSolver, report
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
 from gfem._materials import MaterialField
@@ -658,7 +659,9 @@ class DrivenRule:
             ``{"s": (n_freq, n_ports, n_excited) complex, "z_ref":
             (n_freq, n_ports) ohm, "iterations": Krylov iterations per
             frequency and excited port (empty for direct solves, including
-            linear_solver='petsc' with ksp_type preonly)}``, plus
+            linear_solver='petsc' with ksp_type preonly), "reused": per
+            frequency, whether its solve ran on a preconditioner built for
+            another matrix}``, plus
             ``"e_field"``, ``(ndof, n_kept * n_excited)`` complex, when
             fields are kept (frequency-major), the wave ports' modes (see
             `SweepOutputs`) when there are wave ports, and the cache entry
@@ -682,6 +685,7 @@ class DrivenRule:
             return self._forward_workers(model, keep=keep)
         width = len(self.excite)
         iterations: list[tuple[int, ...]] = []
+        reused: list[bool] = []
         fields: list[np.ndarray] = []
         solutions: list[np.ndarray] = []
         miss: LinearSolverConvergenceError | None = None
@@ -711,6 +715,7 @@ class DrivenRule:
                             system.free()
                             raise
                     iterations.append(its)
+                    reused.append(sweep.reused)
                     previous = x
                     if keep:
                         solutions.append(np.array(x, dtype=complex))
@@ -730,6 +735,7 @@ class DrivenRule:
             s=ports.scattering(s),
             z_ref=ports.z_ref,
             iterations=iterations,
+            reused=reused,
             e_field=self._piece(model, np.concatenate(fields, axis=1))
             if fields
             else None,
@@ -876,10 +882,15 @@ class DrivenRule:
             [_describe(problem.frequency) for problem in problems],
             threads=threads,
             keywords=[
-                {"port_modes": [s.rows(block) for s in swept] if swept else None}
+                {
+                    "port_modes": [s.rows(block) for s in swept] if swept else None,
+                    "log": report.LOGGER.isEnabledFor(logging.INFO),
+                }
                 for block in indices
             ],
         )
+        for r in results:
+            report.replay(r[3])
         sweeps = {
             port.name: sweep
             for s in swept
@@ -1047,13 +1058,13 @@ class DrivenRule:
     ) -> tuple[dict[str, object], Entry | None]:
         """The adaptive sweep of `forward` (see `gfem._sweep.adaptive`).
 
-        Outputs as `forward`'s, except that ``"iterations"`` is per sample,
-        kept fields come as ``"e_basis"`` ``(ndof, n)`` real and
-        ``"e_coordinates"`` ``(n_kept * n_excited, n)`` (frequency-major),
-        and ``"sweep"`` holds ``{"samples": grid indices in solve order,
-        "errors", "converged", "basis_size"}``. With frozen samples, ``n``
-        is `_padded_size` (zero columns after the basis), so the kept
-        fields' shapes are known before the solve.
+        Outputs as `forward`'s, except that ``"iterations"`` and
+        ``"reused"`` are per sample, kept fields come as ``"e_basis"``
+        ``(ndof, n)`` real and ``"e_coordinates"`` ``(n_kept * n_excited,
+        n)`` (frequency-major), and ``"sweep"`` holds ``{"samples": grid
+        indices in solve order, "errors", "converged", "basis_size"}``. With
+        frozen samples, ``n`` is `_padded_size` (zero columns after the
+        basis), so the kept fields' shapes are known before the solve.
 
         The entry (``keep``) holds the reduced model only: the basis
         ``"basis"`` ``(ndof, n)``, the reduced pieces ``"operators"``
@@ -1064,6 +1075,7 @@ class DrivenRule:
         frequencies = self.problem.frequency
         options = self.options
         iterations: list[tuple[int, ...]] = []
+        reused: list[bool] = []
         # Palace's dimensionless frequency: omega times the largest extent / c
         extent = np.ptp(np.asarray(model.mesh.nodes), axis=0).max()
         z_scale = float(extent) / scipy.constants.c
@@ -1084,6 +1096,7 @@ class DrivenRule:
                     except LinearSolverConvergenceError as err:
                         raise _sample_error(frequencies, omega, err) from err
                     iterations.append(its)
+                    reused.append(system_sweep.reused)
                     return x
 
                 affine = AffineSystem(
@@ -1129,6 +1142,7 @@ class DrivenRule:
             s=ports.scattering(sweep.outputs),
             z_ref=ports.z_ref,
             iterations=iterations,
+            reused=reused,
             sweep={
                 "samples": sweep.samples,
                 "errors": sweep.errors,
@@ -1504,6 +1518,11 @@ class DrivenRule:
             ),
             e_fields=tuple(e_fields),
             kept=tuple(kept),
+            sweep=SweepInfo.uniform(
+                frequencies,
+                iterations=out.iterations,
+                preconditioner_reused=out.reused,
+            ),
             port_modes=self._port_modes(out),
             offsets=self.offsets,
         )
@@ -1557,6 +1576,8 @@ class DrivenRule:
             converged=info["converged"],
             tolerance=self.options.adaptive_tolerance,
             basis_size=info["basis_size"],
+            iterations=None if out.iterations is None else tuple(out.iterations),
+            preconditioner_reused=None if out.reused is None else tuple(out.reused),
         )
         e_fields: ReducedFields | tuple = ()
         if kept and out.reduced is not None:
@@ -1983,7 +2004,8 @@ def _solve_block(
     keep: bool,
     *,
     port_modes: list[dict[str, np.ndarray]] | None = None,
-) -> tuple[SweepOutputs, np.ndarray | None, str | None]:
+    log: bool = False,
+) -> tuple[SweepOutputs, np.ndarray | None, str | None, list[logging.LogRecord]]:
     """A frequency worker's `DrivenRule.forward` of its block.
 
     ``aux`` and ``children`` are the model's parts (`gfem._engine.workers`),
@@ -1991,10 +2013,12 @@ def _solve_block(
     wave port surface (`DrivenRule.handed_port_modes`).
     Returns the block's outputs (rows: indices into the block; without the
     wave ports' modes, which are the parent's), its
-    solutions (``keep``; else ``None``) and ``None``. A block whose linear
-    solve does not converge at some frequency stops there and returns the
-    rows it solved, no solutions, and the linear solver's message, plain
-    data that pickles (the parent raises once for every block).
+    solutions (``keep``; else ``None``), ``None`` and, with ``log``, its
+    ``gfem.solver`` records for the parent to log (`report.replay`). A
+    block whose linear solve does not converge at some frequency stops
+    there and returns the rows it solved, no solutions, and the linear
+    solver's message, plain data that pickles (the parent raises once for
+    every block).
     """
     model = workers.model_from_parts(aux, children)
     with warnings.catch_warnings():
@@ -2004,18 +2028,20 @@ def _solve_block(
         rule = DrivenRule(model, problem, options)
         rule.keeps_partial = True
         rule.handed_port_modes = port_modes
-        try:
-            outputs, entry = rule.forward(model, keep=keep)
-        except LinearSolverConvergenceError as err:
-            partial = err._partial  # noqa: SLF001
-            if partial is None:  # pragma: no cover - a uniform sweep always sets it
-                raise
-            return partial.outputs.without_port_modes(), None, partial.reason
+        with report.collected(log) as records:
+            try:
+                outputs, entry = rule.forward(model, keep=keep)
+            except LinearSolverConvergenceError as err:
+                partial = err._partial  # noqa: SLF001
+                if partial is None:  # pragma: no cover - a uniform sweep sets it
+                    raise
+                out = partial.outputs.without_port_modes()
+                return out, None, partial.reason, records
     solution = None
     if entry is not None:
         solution = entry.fields["solution"]
         entry.free()
-    return SweepOutputs.read(outputs).without_port_modes(), solution, None
+    return SweepOutputs.read(outputs).without_port_modes(), solution, None, records
 
 
 def _sample_error(

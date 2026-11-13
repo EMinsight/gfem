@@ -684,6 +684,38 @@ def test_load_result_needs_a_result(tmp_path):
         gfem.load_result(tmp_path)
 
 
+# A driven result.json as gfem wrote it at 9f004a7, before SweepInfo had
+# iterations and preconditioner_reused (two frequencies, both ports excited).
+DRIVEN_RESULT_9F004A7 = (
+    '{"format":"gfem.result","schema_version":2,"gfem_version":"0.1.0",'
+    '"arrays":"result.npz","run":{"device":"cpu","device_override":null,'
+    '"options":{"$type":"SolverOptions","order":2,"linear_solver":"direct",'
+    '"tolerance":1e-06,"device":"cpu","threads":null,"adaptive_tolerance":0.001,'
+    '"adaptive_max_samples":20,"adaptive_memory":2,"port_mode_tolerance":1e-06,'
+    '"retain_memory":null,"adjoint_tolerance":null,"eigen_tolerance":1e-10,'
+    '"cluster_rtol":1e-06,"max_refine_iterations":50,"frequency_workers":1,'
+    '"eigen_solver":"auto","petsc_options":{}},"ranks":1,"wall_time_s":0.75},'
+    '"result":{"$type":"DrivenResult","s":{"$type":"NetworkParameters",'
+    '"values":{"$array":".s.values"},"z_ref":{"$array":".s.z_ref"},'
+    '"frequency":[4000000000.0,5000000000.0],"ports":["p1","p2"],'
+    '"excited":["p1","p2"]},"e_fields":[],"kept":[],"sweep":{"$type":"SweepInfo",'
+    '"kind":"uniform","solved":[true,true],'
+    '"sampled_frequencies":[4000000000.0,5000000000.0],'
+    '"sample_errors":[{"$float":"inf"},{"$float":"inf"}],"converged":true,'
+    '"tolerance":null,"basis_size":0},"port_modes":{},"offsets":[]}}'
+)
+
+
+def test_a_driven_result_saved_before_the_solve_record_loads_without_it(tmp_path):
+    (tmp_path / "result.json").write_text(DRIVEN_RESULT_9F004A7)
+    arrays = {".s.values": np.zeros((2, 2, 2), complex), ".s.z_ref": np.ones((2, 2))}
+    np.savez(tmp_path / "result.npz", **arrays)
+    sweep = gfem.load_result(tmp_path).sweep
+    assert sweep.solved == (True, True)
+    assert sweep.iterations is None
+    assert sweep.preconditioner_reused is None
+
+
 # --- a sweep that stops part-way ----------------------------------------------------
 
 SWEEP = (2e9, 3e9, 4e9, 5e9, 6e9)
