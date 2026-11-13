@@ -152,7 +152,8 @@ Each check below uses a region whose permittivity follows a
   and 3.
 - **Mode energy.** The {term}`energy permittivity` makes the mode energy
   equal to the eigenproblem's own normalization. Beside a dispersive region,
-  a junction's participation obeys −2 d ln ω / d ln L, and the host's share
+  a junction's participation obeys −2 d ln ω / d ln L, and the surrounding
+  dielectric's share
   obeys −2 d ln ω / d ln ε. Where the energy permittivity is not positive,
   the solve refuses.
 - **Wave ports.** A guide filled with a Debye or Lorentz medium transmits its

@@ -141,7 +141,8 @@ blended = model.with_material("design", field)
 ```
 
 - **Why the index.** A linear blend of the permittivity between a dielectric
-  and a metal crosses Re ε ≈ −2 ε_host. There a grey element is a small,
+  and a metal crosses Re ε ≈ −2 ε_d, with ε_d the dielectric's
+  permittivity. There a grey element is a small,
   almost lossless plasmonic resonator, and an optimizer finds such
   artificial resonances. `scheme="index"` blends n − iκ instead, so a grey
   element absorbs.
