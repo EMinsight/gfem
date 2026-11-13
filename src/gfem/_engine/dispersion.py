@@ -9,7 +9,9 @@ readers that understand a law read it here, each at a named frequency:
 - `eps_at`: the complex permittivity at an angular frequency;
 - `law_regions`: the laws and their tetrahedra, for the susceptibility
   pieces (`susceptibility`, `d_susceptibility`) and the checks;
-- `check_frequencies`: what a driven sweep checks before any assembly.
+- `check_frequencies`: what a driven sweep checks before any assembly;
+- `has_loss`, `check_estimator_frequencies`: what the refinement estimators
+  ask of a law.
 
 The law is evaluated here on the host in complex scalars, by hand, term by
 term (``chi`` and ``d chi / d omega``), never through JAX: assembly does not
@@ -39,9 +41,11 @@ from gfem.model import Model
 
 __all__ = [
     "LawRegion",
+    "check_estimator_frequencies",
     "check_frequencies",
     "d_susceptibility",
     "eps_at",
+    "has_loss",
     "high_frequency_eps",
     "law_regions",
     "susceptibility",
@@ -210,3 +214,52 @@ def check_frequencies(model: Model, frequencies: Iterable[float]) -> None:
                         "permittivity is infinite there. Give the term a damping, "
                         "or leave this frequency out."
                     )
+
+
+# --- refinement estimators ---------------------------------------------------------
+
+
+def has_loss(law: PermittivityLaw) -> bool:
+    """Whether a term of ``law`` carries loss (Im eps < 0 at real frequencies).
+
+    A damped Drude or Lorentz term, and every Debye and Djordjevic-Sarkar
+    term; a lossless law is real but not eps_inf. A traced damping counts
+    as loss (the refining entry points refuse a traced law).
+    """
+    return any(
+        not isinstance(term, (Drude, Lorentz))
+        or is_traced(term.damping)
+        or float(term.damping) > 0
+        for term in law.terms
+    )
+
+
+def check_estimator_frequencies(model: Model, frequencies: Iterable[float]) -> None:
+    """Raise for a frequency where a law region's eps_eff is zero (ADR 0111).
+
+    The flux recovery of every wave estimator weights a tetrahedron's flux
+    error with |eps_eff|^-1: at eps(omega) = 0 exactly (a lossless Drude term
+    at its plasma frequency) and no conductivity it has no weight. The solve
+    itself is defined there, so only the estimators refuse.
+
+    Raises:
+        ValueError: A law region without conductivity has eps = 0 at one of
+            ``frequencies`` (Hz).
+    """
+    regions = [
+        lr
+        for lr in law_regions(model)
+        # a traced law is refused by the refining entry points themselves
+        if not is_traced(lr.law)
+        and not np.any(np.asarray(model.materials[lr.region].conductivity))
+    ]
+    for f in frequencies:
+        for lr in regions:
+            eps = complex(lr.law.eps_inf) + susceptibility(lr.law, _TWO_PI * f)
+            if eps == 0:
+                raise ValueError(
+                    f"The permittivity law of region {lr.region!r} gives |eps| = 0 "
+                    f"at {f / 1e9:g} GHz ({f:g} Hz): the flux recovery of the "
+                    "error estimate has no weight there. Leave this frequency out "
+                    "of the estimated sweep, or estimate at a nearby one."
+                )
