@@ -83,6 +83,7 @@ from gradient_cases import (
     EPS0,
     GUIDE_TARGET,
     JUNCTION_CHI_L,
+    JUNCTION_L,
     JUNCTION_TARGET,
     KINETIC_CAPACITANCE,
     KINETIC_TARGET,
@@ -108,6 +109,7 @@ from gradient_cases import (
     guide_model,
     hybrid_line,
     hybrid_mesh,
+    junction_law_line,
     junction_line,
     junction_mesh,
     junction_values,
@@ -411,6 +413,17 @@ def _law_cells() -> list[Cell]:
             Cell("eigenmode", "law", "direct", variant=variant)
             for variant in ("lorentz", "drude_lorentz", "relaxation", "drude_lossless")
         ),
+        # beside the cover's lossy Lorentz law: omega in the sub layer's
+        # permittivity and the interface's nodes (E5, E6); fixture J's ratios
+        # and a probed field (P1-P4: the energy permittivity per mode, the
+        # kappa term, the phase rule on eps_inf)
+        Cell("eigenmode", "eps_r", "direct", variant="lorentz"),
+        Cell("eigenmode", "nodes", "direct", variant="lorentz"),
+        *(
+            Cell("eigenmode_participation", name, "direct", variant="lorentz")
+            for name in ("eps_r", "lumped", "nodes")
+        ),
+        Cell("eigenmode_field", "eps_r", "direct", variant="lorentz"),
         *_adaptive_law_cells(),
     ]
 
@@ -1860,6 +1873,102 @@ def _eigen_law(d: Designs, cell: Cell, options, seed: int) -> Case:
     )
 
 
+def _eigen_beside_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """omega of the layered resonator beside its cover's Lorentz law (E5, E6).
+
+    ``eps_r``: the sub layer as a field (a ramp, its conductivity kept);
+    ``nodes``: the interface "sub__cover" moves, through the law region.
+    """
+    resonator = dispersive_resonator(d.layered_resonator, EIGEN_LAWS["lorentz"])
+    if cell.input == "nodes":
+        morph = boundary_morph(resonator, "sub__cover", grows="sub")
+
+        def moved(t):
+            return _omega(resonator.replace(mesh=morph(t)), options, RESONATOR_TARGET)
+
+        return Case(
+            moved,
+            jnp.zeros(morph.n_params),
+            np.random.default_rng(seed),
+            step=STEPS["nodes"],
+            taylor=4e-5,
+            taylor_at=jnp.full(morph.n_params, 1e-5),
+        )
+    eps = ramp(resonator.mesh, "sub", 3.5, 4.5)
+
+    def objective(p):
+        sub = gfem.MaterialField(eps_r=p, conductivity=0.3)
+        return _omega(resonator.with_material("sub", sub), options, RESONATOR_TARGET)
+
+    return Case(
+        objective,
+        eps,
+        np.random.default_rng(seed),
+        step=STEPS["eps_r"],
+        taylor=1e-1,
+    )
+
+
+def _law_ratios(result):
+    """P1-P3's objective: mode 0's ratios beside fixture J's law cover.
+
+    The two shares are weighted unequally: they add up to 1 (no capacitor),
+    so an equal sum would have no derivative.
+    """
+    bulk = result.bulk_participation
+    return (
+        result.participation["jj"][0]
+        + 0.7 * bulk["sub"][0]
+        - 0.4 * bulk["cover"][0]
+        + 3.0 / result.q_port["r"][0]
+    )
+
+
+def _junction_beside_law(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Fixture J with its cover's lossy Lorentz law (P1-P4, `junction_law_line`).
+
+    Ratios (`_law_ratios`) in the sub layer's eps_r, the junction's L (scaled
+    by ``1 + t``) or the interface's nodes; the probed field (`_probe`, the
+    phase rule's multiplier nonzero) in the sub layer's eps_r.
+    """
+    mesh = d.junction
+    problem = gfem.Eigenmode(target=JUNCTION_TARGET)
+    read = _probe if cell.problem == "eigenmode_field" else _law_ratios
+
+    def solve(model):
+        return read(gfem.solve(model, problem, options=options))
+
+    rng = np.random.default_rng(seed)
+    if cell.input == "nodes":
+        model = junction_law_line(mesh)
+        morph = boundary_morph(model, "sub__cover", grows="sub")
+        return Case(
+            lambda t: solve(model.replace(mesh=morph(t))),
+            jnp.zeros(morph.n_params),
+            rng,
+            step=STEPS["nodes"],
+            taylor=4e-5,
+            taylor_at=jnp.full(morph.n_params, 1e-5),
+        )
+    if cell.input == "lumped":
+        return Case(
+            lambda t: solve(
+                junction_law_line(mesh, inductance=JUNCTION_L * (1 + t[0]))
+            ),
+            jnp.zeros(1),
+            rng,
+            step=1e-3,
+            taylor=1e-1,
+        )
+    return Case(
+        lambda p: solve(junction_law_line(mesh, p)),
+        junction_values(mesh)["sub"]["eps_r"],
+        rng,
+        step=STEPS["eps_r"],
+        taylor=1e-1,
+    )
+
+
 # --- the periodic eigenmode cells' objectives ---------------------------------------
 
 #: The design inputs of the periodic eigen cell, by cell input.
@@ -1999,6 +2108,13 @@ BUILDERS = {
 VARIANT_BUILDERS = {
     ("driven", "eps_r", "law"): _driven_host_law,
     ("driven", "nodes", "law"): _driven_nodes_law,
+    ("eigenmode", "eps_r", "lorentz"): _eigen_beside_law,
+    ("eigenmode", "nodes", "lorentz"): _eigen_beside_law,
+    **{
+        ("eigenmode_participation", name, "lorentz"): _junction_beside_law
+        for name in ("eps_r", "lumped", "nodes")
+    },
+    ("eigenmode_field", "eps_r", "lorentz"): _junction_beside_law,
 }
 
 

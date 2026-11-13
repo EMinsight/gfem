@@ -3,19 +3,23 @@
 The host kernel of `gfem.electric_energy`: ``1/4 eps0 ∫ Re(eps_r) E .
 conj(E)`` over each region's tetrahedra in the solve domain, at quadrature
 order ``2 order``, exact for the discrete field and an element-wise
-permittivity. The field's coefficients are on the unpaired space of the
-driven operator, also on a model with `gfem.Periodic` pairs.
+permittivity. A permittivity law region reads the Brillouin weight ``Re
+d(omega eps)/d omega`` at the field's real frequency instead (ADR 0109).
+The field's coefficients are on the unpaired space of the driven operator,
+also on a model with `gfem.Periodic` pairs.
 """
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.constants as const
 
+from gfem._engine import dispersion
 from gfem._engine.driven import driven_operator
-from gfem._engine.eigen import element_energy
+from gfem._engine.eigen import element_energy, law_scale, scale_per_tetrahedron
 from gfem._engine.power_flow import check_field, check_size
 
 if TYPE_CHECKING:
@@ -29,7 +33,8 @@ def electric_energy(field: Field, model: Model) -> dict[str, float]:
     """Time-averaged electric energy per region, J (see `gfem.electric_energy`).
 
     Raises:
-        ValueError: The field was not solved on ``model``.
+        ValueError: The field was not solved on ``model``, or a law
+            region's Brillouin weight is not positive at its frequency.
     """
     mesh = model.mesh
     support = check_field(field, model)
@@ -48,6 +53,16 @@ def electric_energy(field: Field, model: Model) -> dict[str, float]:
     per_tet[op.built.tetrahedron_order] = (
         0.25 * const.epsilon_0 * op.built.scale * np.real(density(e))
     )
+    if dispersion.law_regions(model):
+        # a law region's eps_inf to its Brillouin weight at the field's
+        # frequency (ADR 0109)
+        omega = float(np.real(np.asarray(field.omega)))
+        dispersion.check_energy(
+            model, omega / (2 * math.pi), "field at", brillouin=True
+        )
+        per_tet *= scale_per_tetrahedron(
+            model, law_scale(model, omega, dispersion.brillouin_eps)
+        )
     out = {}
     for region in mesh.volumes:
         tets = mesh.elements(region)

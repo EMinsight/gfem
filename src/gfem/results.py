@@ -1096,7 +1096,9 @@ class EigenmodeResult:
             Differentiable as the ratios above.
         bulk_participation: Electric energy participation of each volume
             region of the solve domain, by region name: the fraction of the
-            mode's electric energy ``E`` stored in it. For an isotropic
+            mode's electric energy ``E`` stored in it (in a region with a
+            permittivity law, its share of the mode's total energy, weighed
+            by the energy permittivity: see `gfem.conventions`). For an isotropic
             loss, the region's contribution to ``1 / Q`` is ``p * (tan_delta
             + conductivity / (eps0 eps_r Re omega))``; for a loss given as
             principal values use `principal_participation`.

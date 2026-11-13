@@ -9,10 +9,16 @@ mode ``(k, u)``: quadratic forms of ``u`` over the electric energy
         + sum_sheets 1/2 eps0 scale u^H A_C u
 
 (``V_p = l_p^T u`` the port voltage, ``A_C`` a capacitive sheet's C piece,
-ADR 0103), and ``Re k``. A sheet's participation is its L piece's form
-``u^H A_L u / (2 mu0 scale Re(omega)^2 E)``. A real objective
-``G = sum ct g`` of them gives the load of quantum-metrics ticket 03: its
-Wirtinger partial ``w = dG/du`` (``dG = 2 Re(w^T du + kappa dk) + ...``),
+ADR 0103), and ``Re k``. On a permittivity law region ``Re(eps_r)`` is the
+energy permittivity eps_W at the mode's ``Re omega`` (ADR 0109): the region's
+form is built on eps_inf (`gfem._engine.eigen.real_eps`) and scaled by
+``s = eps_W / eps_inf`` per mode, so its explicit term's weight carries
+``s`` and ``kappa`` gains ``1/2 dG/dE_r dE_r/dRe k`` with ``dE_r/dRe k =
+1/2 eps0 (d eps_W / d omega) (c / scale) int_r |u|^2``. A sheet's
+participation is its L piece's form ``u^H A_L u / (2 mu0 scale
+Re(omega)^2 E)``. A real objective ``G = sum ct g`` of them gives the load
+of quantum-metrics ticket 03: its Wirtinger partial ``w = dG/du`` (``dG = 2
+Re(w^T du + kappa dk) + ...``),
 ``kappa = dG/dk``, and the explicit terms, the derivative of ``G`` by each
 energy part at fixed ``u``. Scale and phase invariance give ``u^T w = 0``, so
 the normalization multipliers vanish and the adjoint's right-hand side is
@@ -22,9 +28,10 @@ The normalized field ``e`` itself (``e_fields[m].coefficients``, and through
 it `gfem.Field.at` and `gfem.interface_participation`) is not invariant: it
 is the mode scaled to ``u^H W u = E`` (1 J, ``W`` the energy's Hermitian
 form) with ``u^T B u`` real and positive (``B = int Re(eps_r) u . v``, the
-phase rule of the forward). A cotangent ``ct`` on it pairs as ``dG = Re(ct^T
-de)`` (JAX's convention, unconjugated), so its ``w`` is ``ct / 2``, and with
-``s = u^T w`` the normalization multipliers
+phase rule of the forward; eps_inf on a law region, frequency-free). A
+cotangent ``ct`` on it pairs as ``dG = Re(ct^T de)`` (JAX's convention,
+unconjugated), so its ``w`` is ``ct / 2``, and with ``s = u^T w`` the
+normalization multipliers
 
     mu1 = -Re(s) / E,    mu2 = Im(s) / (u^T B u)
 
@@ -59,7 +66,7 @@ from collections.abc import Mapping
 import numpy as np
 import scipy.constants as const
 
-from gfem._engine import terms
+from gfem._engine import dispersion, terms
 from gfem._engine.driven import DrivenOperator
 from gfem._engine.eigen import energy_parts
 from gfem._engine.sensitivity import Term, energy_term
@@ -149,6 +156,10 @@ class Ratios:
         #: rad/s per unit of ``k``.
         self.per_k = const.c / built.scale
         self.parts, self.axis_parts = energy_parts(model, op, regions, anisotropic)
+        #: The permittivity law of each law region among ``regions``: their
+        #: parts hold eps_inf, scaled to eps_W per mode (`_Mode`).
+        laws = {lr.region: lr.law for lr in dispersion.law_regions(model)}
+        self.laws = [laws.get(region) for region in regions]
         self._op = op
         self.rlc = {data.port.name: data.port.rlc for data in op.ports}
         #: The capacitive sheets' C pieces and the ``kinetic`` sheets' L
@@ -259,9 +270,24 @@ class _Mode:
         self.k = k
         self.volts = ratios.voltages(u)
         self.region_applied = [part.apply(u) for part in ratios.parts]
-        self.region_energy = np.array(
-            [ratios.unit * float(np.real(np.conj(u) @ a)) for a in self.region_applied]
-        )
+        forms = np.array([float(np.real(np.conj(u) @ a)) for a in self.region_applied])
+        #: Each region part's factor to its energy weight (eps_W / eps_inf on
+        #: a law region, 1 elsewhere), and its energy's derivative in Re k.
+        self.factor = np.ones(len(forms))
+        self.slope = np.zeros(len(forms))
+        omega = k.real * ratios.per_k
+        for r, law in enumerate(ratios.laws):
+            if law is not None:
+                eps_inf = float(law.eps_inf)
+                self.factor[r] = dispersion.energy_eps(law, omega) / eps_inf
+                self.slope[r] = (
+                    ratios.unit
+                    * forms[r]
+                    * dispersion.d_energy_eps(law, omega)
+                    * ratios.per_k
+                    / eps_inf
+                )
+        self.region_energy = ratios.unit * self.factor * forms
         self.capacitors = {
             name: rlc[2] for name, rlc in ratios.rlc.items() if rlc[2] is not None
         }
@@ -367,12 +393,14 @@ class _Partials:
         w = np.zeros_like(mode.u, dtype=complex)
         weights = {}
         whole = self.region + self.energy
-        for region, applied, c in zip(
-            ratios.regions, mode.region_applied, whole, strict=True
+        for region, applied, c, s in zip(
+            ratios.regions, mode.region_applied, whole, mode.factor, strict=True
         ):
             if c:
-                w += c * ratios.unit * np.conj(applied)
-                weights[energy_name(region)] = c * ratios.unit
+                w += c * s * ratios.unit * np.conj(applied)
+                weights[energy_name(region)] = c * s * ratios.unit
+        # a law region's energy depends on Re k through eps_W (ADR 0109)
+        kappa = self.kappa + 0.5 * float(whole @ mode.slope)
         for (r, a), c in np.ndenumerate(self.axis):
             if c:
                 w += c * ratios.unit * np.conj(mode.axis_applied[r][a])
@@ -402,7 +430,7 @@ class _Partials:
             c = self.energy * 0.5 * abs(mode.volts[name]) ** 2
             if c:
                 lumped[name, "capacitance"] = c
-        return Load(w=w, kappa=complex(self.kappa), energy=weights, lumped=lumped)
+        return Load(w=w, kappa=complex(kappa), energy=weights, lumped=lumped)
 
 
 def _normalized(ratios: Ratios, mode: _Mode, load: Load, field: np.ndarray) -> Load:
@@ -423,8 +451,13 @@ def _normalized(ratios: Ratios, mode: _Mode, load: Load, field: np.ndarray) -> L
     mu1 = -s.real / mode.energy
     mu2 = s.imag / float(np.real(u @ b_u))
     # conj(W u): the energy's Wirtinger partial (volume, port capacitors and
-    # capacitive sheets)
-    w_u = ratios.unit * np.conj(b_u)
+    # capacitive sheets); W weighs a law region with eps_W, B with eps_inf
+    w_u = ratios.unit * np.conj(
+        sum(
+            (s * a for s, a in zip(mode.factor, mode.region_applied, strict=True)),
+            np.zeros_like(u, dtype=complex),
+        )
+    )
     for name, c in mode.capacitors.items():
         w_u = w_u + 0.5 * c * np.conj(mode.volts[name]) * ratios.voltage[name]
     for applied in mode.sheet_applied:
@@ -435,13 +468,15 @@ def _normalized(ratios: Ratios, mode: _Mode, load: Load, field: np.ndarray) -> L
         name = ratios.piece_name(piece)
         energy[name] = energy.get(name, 0.0) + mu1 * ratios.unit
     phase = {}
-    for region in ratios.regions:
+    for region, s in zip(ratios.regions, mode.factor, strict=True):
         name = energy_name(region)
-        energy[name] = energy.get(name, 0.0) + mu1 * ratios.unit
+        energy[name] = energy.get(name, 0.0) + mu1 * s * ratios.unit
         phase[name] = -1j * mu2
     # mu1 u^H (dW/dC) u: a capacitive port's term of the energy
     lumped = dict(load.lumped)
     for name in mode.capacitors:
         key = (name, "capacitance")
         lumped[key] = lumped.get(key, 0.0) + mu1 * 0.5 * abs(mode.volts[name]) ** 2
-    return Load(w=w, kappa=load.kappa, energy=energy, phase=phase, lumped=lumped)
+    # mu1 dE/dRe k: a law region's eps_W (ADR 0109)
+    kappa = load.kappa + 0.5 * mu1 * float(mode.slope.sum())
+    return Load(w=w, kappa=kappa, energy=energy, phase=phase, lumped=lumped)
