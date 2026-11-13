@@ -337,6 +337,8 @@ class EigenmodeRule:
         self._excluded = model._domain.excluded  # noqa: SLF001
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
+        #: The last backward's explicit terms in the lumped ports' values.
+        self._explicit: dict[tuple, float] = {}
 
     # --- forward -----------------------------------------------------------------
 
@@ -986,11 +988,12 @@ class EigenmodeRule:
         ``sheet_participation`` and the normalized fields ``e_fields``)
         differentiate on one CPU process with ``linear_solver="direct"``,
         ``eigen_tolerance`` at most 1e-10, without periodic pairs or a Bloch
-        wave vector, with respect to materials, sheet fills and node
-        coordinates (port surfaces held); the normalized fields never with
-        respect to the node coordinates.
-        depends on the modes (a cluster, a near pair, a port without
-        voltage) raises in the backward.
+        wave vector, with respect to materials, sheet fills, node
+        coordinates (port surfaces held) and lumped values; the normalized
+        fields never with respect to the node coordinates, the principal
+        shares not with respect to a lumped value. What depends on the modes
+        (a cluster, a near pair, a port without voltage) raises in the
+        backward.
         """
         if name in ("omega", "cluster"):
             return None
@@ -1065,7 +1068,9 @@ class EigenmodeRule:
     def _input_refusal(name: str, kinds: frozenset[tuple] | set[tuple]) -> str | None:
         """Why output ``name`` does not differentiate by ``kinds``, or ``None``.
 
-        A lumped value's reason starts "with respect to model.".
+        The normalized field by the node coordinates, and the principal
+        shares by a lumped value, whose reason starts "with respect to
+        model.".
         """
         if name == "e_field" and ("nodes",) in kinds:
             return (
@@ -1077,7 +1082,9 @@ class EigenmodeRule:
                 "over meshes moved by gfem.shape.boundary_morph"
             )
         lumped = sorted(k for k in kinds if is_lumped(k))
-        if lumped:
+        # the principal shares have no finite-difference cell by a lumped
+        # value yet (ADR 0102 amendment); every other output does
+        if lumped and name == "principal":
             kind = lumped[0]
             where = "ports" if kind[0] == "port" else "boundaries"
             return f"with respect to model.{where}[{kind[1]}].{kind[2]}"
@@ -1100,7 +1107,9 @@ class EigenmodeRule:
 
         **Mode-field outputs** (`_field_pairs`): per mode with a cotangent
         on its ratios, one adjoint solve on the kept eigen operator and two
-        pairs, ``(2 lam, x)`` on the pieces and the explicit energy pair.
+        pairs, ``(2 lam, x)`` on the pieces and the explicit energy pair;
+        the explicit terms of the lumped ports' values are kept for
+        `explicit_lumped`.
 
         Raises:
             DegenerateModeError: The ``omega`` cotangents on a cluster's
@@ -1119,6 +1128,7 @@ class EigenmodeRule:
         gram, incomplete = fields["gram"], fields["incomplete"]
         ct = cotangents.get("omega")
         pairs = []
+        self._explicit = {}
         with task_manager(self.options.threads):
             op = self.driven(model)
             domain = em_region(model, op.built)
@@ -1172,9 +1182,11 @@ class EigenmodeRule:
         (`deflated_solve`), ``lam = lam0 - kappa x / (x^T t)``, and the pairs
         ``(2 lam, x)`` with the pieces' θ at the mode (``dG/dp = 2 Re(lam^T
         dT/dp x)``), ``(conj(x), x)`` with the explicit energy terms' weights
-        and ``(x, x)`` with the phase rule's. An entry without its operator (over
-        ``retain_memory``) gets one from ``op``, prepared at ``k (1 + d)`` of
-        its first such mode, and freed at the end.
+        and ``(x, x)`` with the phase rule's. The load's explicit terms in
+        the lumped ports' values (`Load.lumped`) add up in ``_explicit``. An
+        entry without its operator (over ``retain_memory``) gets one from
+        ``op``, prepared at ``k (1 + d)`` of its first such mode, and freed
+        at the end.
         """
         names = ("q_port", "participation", "bulk", "principal", "sheet")
         cts = {
@@ -1237,6 +1249,7 @@ class EigenmodeRule:
                 inductive=self.inductive,
                 kinetic=self.kinetic,
             )
+            index = {port.name: i for i, port in enumerate(model.ports)}
             for j in wanted:
                 u, kj, ut = x[:, j], complex(k[j]), gram[j]
                 load = ratios.load(
@@ -1277,6 +1290,9 @@ class EigenmodeRule:
                             u[:, None], u[:, None], weights=load.phase, domain=domain
                         )
                     )
+                for (port, value), c in load.lumped.items():
+                    kind = ("port", index[port], value)
+                    self._explicit[kind] = self._explicit.get(kind, 0.0) + c
         finally:
             if own:
                 eop.free_handle()
@@ -1400,6 +1416,21 @@ class EigenmodeRule:
         with their θ at the mode like the other pieces.
         """
         return lumped_terms(self.driven(model))
+
+    def explicit_lumped(self) -> dict[tuple, float]:
+        """The last backward's explicit terms in the lumped values, by input kind.
+
+        The lumped pass contracts the pairs with the pieces that move with
+        a lumped value: the implicit part ``2 Re(lam^T dT/dp x)``, and a
+        sheet's L and C through the explicit energy pair. A lumped port's L
+        and C enter the mode-field outputs outside any piece, at fixed mode:
+        ``-p / L`` in its participation, ``|V|^2 / 2`` in the mode energy
+        (and so in every ratio and, through ``mu1``, the normalized field).
+        These are scalars, by ``("port", index, "inductance" |
+        "capacitance")``, which `solve_vjp` adds to the lumped pass's values
+        (quantum-metrics ticket 21, ADR 0102 amendment).
+        """
+        return dict(self._explicit)
 
     def _degenerate_message(
         self,
