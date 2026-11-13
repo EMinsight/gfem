@@ -376,8 +376,12 @@ def test_kept_fields_with_wave_ports_run_under_jit(plate_mesh):
         inside.append(result.port_modes["p1"].e_field)
         return result.e_field(F[1], "p1").coefficients
 
+    # each from no kept state: BDDC would start from the previous solution
+    # at the first frequency (ADR 0126)
+    gfem.release_memory()
     eager = solve(fill.eps_r)
     assert inside.pop() is not None
+    gfem.release_memory()
     traced = jax.jit(solve)(fill.eps_r)
     np.testing.assert_array_equal(traced, eager)
     # the port mode fields have no shape to declare before the solve

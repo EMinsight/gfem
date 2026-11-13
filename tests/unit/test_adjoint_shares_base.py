@@ -180,9 +180,14 @@ def test_vmapped_variants_each_back_onto_their_own_base(path, counts, solver):
     assert counts.refactorized["backward"] == 3 * (len(F) - 1)
     cache.ENTRIES.clear()
     want = loop(robust(retain_memory=0))
+    # BDDC's forwards there start from the previous design's solution (ADR
+    # 0126), these from zero: equal within the solve tolerance
+    rel, grad_rel = 1e-12, 1e-10
+    if solver == "bddc_gmres":
+        rel = grad_rel = 10 * gfem.SolverOptions().tolerance
     for (v, g), (v0, g0) in zip(got, want, strict=True):
-        assert v == pytest.approx(v0, rel=1e-12, abs=0)
-        np.testing.assert_allclose(g, g0, rtol=0, atol=1e-10 * np.abs(g0).max())
+        assert v == pytest.approx(v0, rel=rel, abs=0)
+        np.testing.assert_allclose(g, g0, rtol=0, atol=grad_rel * np.abs(g0).max())
 
 
 @pytest.mark.parametrize("solver", SOLVERS)
