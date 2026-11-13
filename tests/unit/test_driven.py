@@ -364,20 +364,26 @@ EXACT = ["direct", pytest.param("petsc", marks=pytest.mark.petsc)]
 
 @pytest.mark.parametrize("linear_solver", EXACT)
 @pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
-def test_an_exact_sweep_plans_once_and_matches_fresh_handles(
+def test_an_exact_sweep_plans_once_per_base_and_matches_fresh_handles(
     line, monkeypatch, sweep, linear_solver
 ):
     problem = gfem.Driven(frequency=(3e9, 4e9, 5e9, 6e9), sweep=sweep)
     # an earlier solve on `line` left a plan in the pool (ADR 0082)
     ENTRIES.clear()
     calls = _count_prepares(monkeypatch)
-    s = np.asarray(_s(line, problem, linear_solver=linear_solver).s.values)
-    assert len(calls) == 1
+    first = _s(line, problem, linear_solver=linear_solver)
+    s = np.asarray(first.s.values)
+    solved = 4 if sweep == "uniform" else len(first.sweep.sampled_frequencies)
+    # direct: one pooled base per frequency (ADR 0121); petsc: one base
+    assert len(calls) == (solved if linear_solver == "direct" else 1)
+    calls.clear()
+    _s(line, problem, linear_solver=linear_solver)
+    # the bases came back from the pool: none is planned again
+    assert len(calls) == (0 if linear_solver == "direct" else 1)
     # a handle that cannot refactorize is prepared afresh at each frequency
     monkeypatch.delattr(PlannedHandle, "refactorize")
     calls.clear()
     result = _s(line, problem, linear_solver=linear_solver)
-    solved = 4 if sweep == "uniform" else len(result.sweep.sampled_frequencies)
     assert len(calls) == solved > 1
     np.testing.assert_allclose(result.s.values, s, rtol=0, atol=1e-12)
 

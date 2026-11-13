@@ -204,12 +204,15 @@ def test_two_exact_workers_give_the_sequential_sweep(line, monkeypatch, linear_s
     # a kept frequency in each block: the fields join in frequency order
     problem = gfem.Driven(FREQUENCIES, keep_fields=(3.5e9, 4.5e9))
     calls = _count_prepares(monkeypatch)
+    cache.ENTRIES.clear()  # no pooled base of an earlier test serves
     one, one_entry = _forward(line, problem, keep=True, linear_solver=linear_solver)
-    assert len(calls) == 1
+    # direct: one pooled base per frequency (ADR 0121); petsc: one base
+    planned = len(FREQUENCIES) if linear_solver == "direct" else 1
+    assert len(calls) == planned
     two, two_entry = _forward(
         line, problem, keep=True, linear_solver=linear_solver, frequency_workers=2
     )
-    assert len(calls) == 1  # the parent solved nothing
+    assert len(calls) == planned  # the parent solved nothing
     np.testing.assert_allclose(two["s"], one["s"], rtol=0, atol=1e-12)
     np.testing.assert_array_equal(two["z_ref"], one["z_ref"])
     assert two["iterations"] == one["iterations"] == [()] * 4
