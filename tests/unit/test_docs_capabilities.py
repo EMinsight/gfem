@@ -118,7 +118,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
     assert [(e["key"], e["inputs"], e["cells"]) for e in derived["also"]] == [
         ("driven", ["permeability", "loss tangent"], 4),
         ("driven", ["lumped values"], 4),
-        ("driven", ["permittivity-law parameters"], 5),
+        ("driven", ["permittivity-law parameters"], 7),
         ("eigenmode", ["permeability", "loss tangent"], 2),
         ("eigenmode", ["lumped values"], 2),
         ("driven_periodic_plain", ["permittivity-law parameters"], 1),
@@ -136,7 +136,7 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ),
         (
             "Driven with respect to the permittivity-law parameters "
-            "(direct solver, uniform sweep)"
+            "(direct solver, uniform and adaptive sweep)"
         ),
         (
             "Eigenmode with respect to the permeability and the loss tangent "

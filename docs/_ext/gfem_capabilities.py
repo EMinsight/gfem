@@ -181,6 +181,7 @@ PROBLEMS = {
     # a permittivity law beside a material field (ADR 0112)
     "driven_law": Problem("driven", "s.values", "lumped"),
     "driven_law_absorbing": Problem("driven", "s.values", "lumped"),
+    "driven_law_adaptive": Problem("driven", "s.values", "lumped"),
     "driven_periodic_law": Problem("driven_periodic_plain", "s.values", "lumped"),
 }
 #: The rows whose cell-only keys have no ``EXPECTED`` entries of their own:
