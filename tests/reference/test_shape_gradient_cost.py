@@ -13,6 +13,12 @@ bump, through `gfem.shape.boundary_morph` with the ports held. Gates:
   and for an adaptive sweep with frozen samples, both warm (as in every
   iteration of an optimization after the first).
 
+A BDDC solve starts from the previous design's solution (ADR 0126), so a
+design solved twice costs almost no iterations the second time. The kernel
+gate drops that initial guess before its timed forward solve; the backward
+gates time each evaluation at a new bump amplitude (a new mesh, as in a shape
+optimizer step), from which no guess carries over.
+
 Run under the heavy lock with 4 threads.
 """
 
@@ -28,6 +34,7 @@ import numpy as np
 import pytest
 
 import gfem
+from gfem._engine.cache import discretization
 from gfem._engine.driven import DrivenRule
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import sensitivity
@@ -70,6 +77,7 @@ def test_shape_kernel_costs_a_tenth_of_a_forward_solve_per_pair(r8):
     options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
     rule = DrivenRule(r8, problem, options)
     rule.forward(r8, keep=False)  # warm: the discretization and its spaces
+    discretization(r8.mesh).drop_guesses()  # a forward solve from zero
     start = time.perf_counter()
     _, entry = rule.forward(r8, keep=True)
     forward = time.perf_counter() - start
@@ -120,14 +128,14 @@ def test_shape_backward_is_a_quarter_of_the_forward(r8, sweep):
         s = gfem.solve(model, problem, options=options).s.values
         return jnp.sum(WEIGHTS * jnp.abs(s) ** 2) / s.shape[0]
 
-    a = jnp.asarray(2.0)
     # warm up: the discretization cache, and JAX's compilation of the backward
-    value, pullback = jax.vjp(objective, a)
+    value, pullback = jax.vjp(objective, jnp.asarray(1.9))
     jax.block_until_ready(pullback(jnp.ones_like(value)))
     start = time.perf_counter()
-    jax.block_until_ready(objective(a))
+    jax.block_until_ready(objective(jnp.asarray(1.95)))
     forward = time.perf_counter() - start
 
+    a = jnp.asarray(2.0)
     start = time.perf_counter()
     value, pullback = jax.vjp(objective, a)
     jax.block_until_ready(value)
