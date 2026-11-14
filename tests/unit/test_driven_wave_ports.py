@@ -213,7 +213,12 @@ def test_a_direct_sweep_plans_once_per_frequency_and_matches_fresh_handles(
     first = gfem.solve(model, problem, options=options)
     s = np.asarray(first.s.values)
     solved = len(F) if sweep == "uniform" else len(first.sweep.sampled_frequencies)
-    assert len(calls) == solved
+    # the sweep meets each frequency for the first time: one base
+    assert len(calls) == 1
+    calls.clear()
+    gfem.solve(model, problem, options=options)
+    # the second time each frequency but the base's own gets its base
+    assert len(calls) == solved - 1
     calls.clear()
     gfem.solve(model, problem, options=options)
     assert not calls  # each frequency's base came back from the pool

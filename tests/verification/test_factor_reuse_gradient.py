@@ -223,26 +223,26 @@ def test_each_frequency_reuses_its_own_factors_and_a_backward_refactorizes_nothi
         line, values, designs, monkeypatch, forced=True
     )
     omegas = [2 * np.pi * f for f in FREQUENCIES]
-    # design 0's forward meets each frequency for the first time: one base,
-    # refactorized at the next ones; its backward meets the first two again
-    # and plans their bases (a new handle steps nothing)
+    # design 0 meets each frequency for the first time, its backward too (the
+    # same visit): one base, refactorized from frequency to frequency
     assert forward[0] == [
         (omegas[1], "refactorized", FIRST),
         (omegas[2], "refactorized", OTHER_FREQUENCY),
     ]
-    assert backward[0] == []
-    # design 1 refactorizes the new bases (a chain starts) and reuses the
-    # first one's at the last frequency, a design ahead of the others; from
-    # design 2 each base stays at its frequency, reusing or ending a chain
-    assert forward[1] == [
-        (omegas[0], "refactorized", FIRST),
-        (omegas[1], "refactorized", FIRST),
-        (omegas[2], "reused", None),
+    assert backward[0] == [
+        (omegas[1], "refactorized", OTHER_FREQUENCY),
+        (omegas[0], "refactorized", OTHER_FREQUENCY),
     ]
-    assert forward[2][:2] == [(omega, "reused", None) for omega in omegas[:2]]
-    for steps in forward[2:]:
-        assert [step[0] for step in steps] == omegas
-        assert all(step[2] not in (FIRST, OTHER_FREQUENCY) for step in steps)
+    # design 1 plans the other frequencies' bases (a new handle steps
+    # nothing); from then on each base stays at its frequency, and every
+    # frequency reuses its own factors
+    for steps in forward[1:]:
+        frequencies = [step[0] for step in steps]
+        assert frequencies == [omega for omega in omegas if omega in frequencies]
+        assert all(step[2] != OTHER_FREQUENCY for step in steps)
+    reusing = {step[0] for steps in forward[1:] for step in steps if step[2] is None}
+    assert reusing == set(omegas)
+    assert [step[0] for step in forward[-1]] == omegas
     # from the last frequency down: the forward left the base there, and each
     # other base holds this design's values
     held = [(omegas[1], "held", SAME_DESIGN), (omegas[0], "held", SAME_DESIGN)]

@@ -144,9 +144,9 @@ Optimization and gradients:
   earlier factors, and a gradient's adjoint solves factorize nothing again:
   one factorization per frequency and design instead of two for all but one
   frequency. A frequency gets its own factorization the second time a sweep
-  meets it: a single solve, or a sweep over new frequencies (a greedy adaptive
-  sweep), keeps one, and a design loop keeps one per frequency from its second
-  design. Frequency workers keep none between solves.
+  meets it, a gradient's backward counting with its forward: a single solve
+  or gradient, or a sweep over new frequencies (a greedy adaptive sweep),
+  keeps one, and a design loop keeps one per frequency from its second design. Frequency workers keep none between solves.
 - **Sparse Cholesky joins factor reuse.** Without the `mkl` extra, the direct
   solver's sparse Cholesky reuses a design's factorization for the next design
   under the same rule as MKL PARDISO.

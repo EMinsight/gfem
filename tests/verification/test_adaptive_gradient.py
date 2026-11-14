@@ -20,6 +20,7 @@ import gfem
 from gfem._engine.cache import ENTRIES
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.factor_reuse import (
+    CHAIN,
     FIRST,
     OTHER_FREQUENCY,
     SAME_DESIGN,
@@ -263,16 +264,19 @@ def test_each_frozen_sample_reuses_its_own_factors_across_designs(line, monkeypa
     exact, _ = _reuse_run(line, monkeypatch, forced=False, retain_memory=0)
     reused, steps = _reuse_run(line, monkeypatch, forced=True)
     omegas = sorted(2 * np.pi * f for f in SAMPLES)
-    # design 0 meets each sample for the first time: one base, refactorized
-    # from sample to sample; a sample met again gets its own base (ADR 0121,
-    # amended), whose chain starts at its next refactorization; by design 3
-    # every sample reuses its own, and a backward's steps refactorize nothing
+    # design 0 meets each sample for the first time, its backward too (the
+    # same visit): one base, refactorized from sample to sample; design 1
+    # gives each sample its own base (ADR 0121, amended), whose chain starts
+    # at its next refactorization; then every sample reuses its own, and a
+    # backward's steps refactorize nothing
     assert not [step for step in steps[0] if step[1] == "reused"]
     assert {step[2] for step in steps[0]} <= {FIRST, OTHER_FREQUENCY}
-    last = steps[3]
-    assert sorted(step[0] for step in last if step[1] == "reused") == omegas
-    others = {step[1:] for step in last if step[1] != "reused"}
-    assert others <= {("held", SAME_DESIGN)}
+    for design in steps[1:]:
+        assert all(step[2] != OTHER_FREQUENCY for step in design)
+    reusing = {step[0] for design in steps[1:] for step in design if step[2] is None}
+    assert sorted(reusing) == omegas
+    others = {step[1:] for step in steps[3] if step[1] != "reused"}
+    assert others <= {("held", SAME_DESIGN), ("refactorized", CHAIN)}
     for (s, grad), (s_exact, grad_exact) in zip(reused, exact, strict=True):
         assert np.max(np.abs(s - s_exact)) <= 0.05 * REUSE_TOLERANCE
         error = np.linalg.norm(grad - grad_exact) / np.linalg.norm(grad_exact)

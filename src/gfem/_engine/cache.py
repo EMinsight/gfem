@@ -29,8 +29,9 @@ backward by taking a plan back from the pool, or by preparing one. The pool
 holds several handles per key (one per ``jax.vmap`` variant). A sweep's key
 ends in a frequency: it keeps one handle per frequency (frequency bases, ADR
 0121), and a frequency without its own takes another's (`take_plan`); a
-frequency the sweep's site meets for the first time takes the most recently
-returned, so a one-shot sweep keeps one handle. Pooled handles whose mesh
+frequency the sweep's site meets for the first time (a design's forward and
+its backward are one visit) takes the most recently returned, so a one-shot
+sweep or gradient keeps one handle. Pooled handles whose mesh
 topology has no discretization left are freed.
 
 **Kept discretization state** (ADRs 0082, 0091, 0126): a discretization's kept
@@ -583,8 +584,9 @@ class EntryCache:
         # the most recently returned pooled direct base (ADR 0123)
         self._latest: Any = None
         # per site (a frequency key but its frequency): its plans' topology
-        # and the frequencies a returned base was keyed by (ADR 0121)
-        self._seen: dict[Hashable, tuple[Any, set[Any]]] = {}
+        # and, by frequency a returned base was keyed by, the visit that
+        # returned it last (ADR 0121)
+        self._seen: dict[Hashable, tuple[Any, dict[Any, Any]]] = {}
         self._discretizations = discretizations
 
     def put(self, entry: Entry, budget: int, comm: Any = None) -> int:
@@ -850,6 +852,7 @@ class EntryCache:
         kept: Collection[Any] = (),
         *,
         walk: bool = True,
+        visit: Any = None,
     ) -> None:
         """Pool ``handle`` under ``key``, with its factors, within ``budget``.
 
@@ -865,8 +868,10 @@ class EntryCache:
         ``kept`` holds the patterns of the kept fixed parts (ADR 0082) of the
         handle's space: a handle's pieces' pattern that is none of them is
         dropped, since no later piece sum can share it.
+
+        ``visit`` names the design's sweeps that returned it (`take_plan`).
         """
-        self._pool(key, topology, handle, kept)
+        self._pool(key, topology, handle, kept, visit)
         if walk:
             self._walk(
                 budget,
@@ -877,7 +882,12 @@ class EntryCache:
             )
 
     def _pool(
-        self, key: Hashable, topology: Any, handle: Any, kept: Collection[Any]
+        self,
+        key: Hashable,
+        topology: Any,
+        handle: Any,
+        kept: Collection[Any],
+        visit: Any = None,
     ) -> None:
         """Pool ``handle`` under ``key``, without a walk (`give_plan`)."""
         pattern = getattr(handle, "pattern", None)
@@ -887,8 +897,8 @@ class EntryCache:
         if hasattr(handle, "release_factors"):
             self._latest = handle
         if isinstance(key, tuple) and key:
-            _, seen = self._seen.setdefault(key[:-1], (topology, set()))
-            seen.add(key[-1])
+            _, seen = self._seen.setdefault(key[:-1], (topology, {}))
+            seen[key[-1]] = visit
 
     def switch_plan(
         self,
@@ -899,6 +909,7 @@ class EntryCache:
         *,
         kept: Collection[Any],
         to: tuple,
+        visit: Any = None,
     ) -> Any | None:
         """Pool a frequency base under ``key`` and take one for ``to`` (ADR 0121).
 
@@ -908,7 +919,7 @@ class EntryCache:
         plans no new one. The rest of the walk runs after the take.
         """
         default = isinstance(budget, DefaultBudget)
-        self._pool(key, topology, handle, kept)
+        self._pool(key, topology, handle, kept, visit)
         self._walk(
             budget,
             None,
@@ -917,11 +928,13 @@ class EntryCache:
             release_only=True,
             default=default,
         )
-        taken = self.take_plan(to, budget=budget)
+        taken = self.take_plan(to, budget=budget, visit=visit)
         self._walk(budget, None, entries=False, default=default)
         return taken
 
-    def take_plan(self, key: Hashable, budget: int | None = None) -> Any | None:
+    def take_plan(
+        self, key: Hashable, budget: int | None = None, visit: Any = None
+    ) -> Any | None:
         """The most recently returned pooled handle under ``key``, or ``None``.
 
         It leaves the pool: no other solve takes it until it returns.
@@ -929,9 +942,11 @@ class EntryCache:
         With a ``budget``, ``key`` is a frequency base's (ADR 0121): its last
         element the frequency, the rest its site and thread count. Without a
         handle of its own it takes one of the site's other frequencies. The
-        first time the site meets the frequency (no base was ever returned
-        under it), the most recently returned: a one-shot sweep keeps one
-        base. Later, one whose factors were released, else the most recently
+        first time the site meets the frequency, the most recently returned:
+        a one-shot sweep keeps one base. First means no base was returned
+        under it yet, or only by this ``visit`` (a design's forward and the
+        backward it hands its base to share one, so a single gradient keeps
+        one base too). Later, one whose factors were released, else the most recently
         returned when one more base with factors (the largest pooled one's
         bytes) would put the cache over ``budget``; else ``None``, and the
         caller prepares a new one.
@@ -940,10 +955,10 @@ class EntryCache:
             (k for k, p in reversed(self._plans.items()) if p.key == key), None
         )
         if found is None and budget is not None and isinstance(key, tuple):
-            found = self._other_frequency(key, budget)
+            found = self._other_frequency(key, budget, visit)
         return None if found is None else self._plans.pop(found).handle
 
-    def _other_frequency(self, key: tuple, budget: int) -> int | None:
+    def _other_frequency(self, key: tuple, budget: int, visit: Any) -> int | None:
         """The pool slot of another frequency's base `take_plan` takes, or ``None``."""
         others = [
             (k, p.handle)
@@ -952,8 +967,8 @@ class EntryCache:
         ]
         if not others:
             return None
-        _, seen = self._seen.get(key[:-1], (None, set()))
-        if key[-1] not in seen:
+        _, seen = self._seen.get(key[:-1], (None, {}))
+        if key[-1] not in seen or (visit is not None and seen[key[-1]] is visit):
             return others[-1][0]
         released = next((k for k, h in others if getattr(h, "released", False)), None)
         if released is not None:

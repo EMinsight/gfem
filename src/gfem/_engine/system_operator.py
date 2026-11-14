@@ -631,7 +631,9 @@ class SystemSweep:
         base, key = self._base, self._key
         if base is None or key is None:
             self._key = plans.key(omega)
-            self._base = ENTRIES.take_plan(self._key, budget=plans.budget)
+            self._base = ENTRIES.take_plan(
+                self._key, budget=plans.budget, visit=plans.visit
+            )
         else:
             self._key = (*key[:-1], float(omega))
             self._base = ENTRIES.switch_plan(
@@ -641,6 +643,7 @@ class SystemSweep:
                 plans.budget,
                 kept=plans.kept(),
                 to=self._key,
+                visit=plans.visit,
             )
         if self._base is not None and self._tolerance is not None:
             self._base.tolerance = self._tolerance
@@ -737,7 +740,13 @@ class SystemSweep:
             return
         if return_plan and plans is not None and key is not None:
             ENTRIES.give_plan(
-                key, plans.topology, base, plans.budget, plans.kept(), walk=walk
+                key,
+                plans.topology,
+                base,
+                plans.budget,
+                plans.kept(),
+                walk=walk,
+                visit=plans.visit,
             )
         else:
             base.free()
@@ -763,12 +772,17 @@ class PlanSlot:
             `gfem._engine.cache.DefaultBudget` under the default).
         store: The kept fixed parts of the operator's space, or ``None``
             without them (`FixedPieces`).
+        visit: This design's sweeps on the slot: a forward's, and the backward
+            it hands its base to (`SystemSweep.move_base`). The pool counts a
+            frequency they return a base under as met only for later visits
+            (`gfem._engine.cache.EntryCache.take_plan`).
     """
 
     site: tuple
     topology: Any
     budget: int
     store: KeptParts | None = None
+    visit: object = dataclasses.field(default_factory=object)
 
     def kept(self) -> list[Any]:
         """The patterns of the kept fixed parts: what a pooled base may keep."""

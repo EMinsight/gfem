@@ -637,9 +637,9 @@ def test_a_handle_names_each_steps_action_reason_and_numbers(built):
     handle.refactorize(_helmholtz(built, 1.0 - 1j + 1e-3)[0], frequency=F)
     assert step(handle) == ("reused", None)
     handle.solve(B)
-    # the same values again: no step, nothing changes
+    # the same values again: nothing refactorized, the factors held
     handle.refactorize(_helmholtz(built, 1.0 - 1j + 1e-3)[0], frequency=F)
-    assert step(handle) == ("reused", None)
+    assert step(handle) == ("held", "same design")
     handle.note_release(base_bytes=123, budget_bytes=45)
     handle.release_factors()
     handle.refactorize(_helmholtz(built, 1.0 - 1j + 2e-3)[0], frequency=F)
