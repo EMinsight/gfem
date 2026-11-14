@@ -776,12 +776,21 @@ class SweepInfo:
         tolerance: ``SolverOptions.adaptive_tolerance`` of an adaptive
             sweep, ``None`` for a uniform one.
         basis_size: The number of reduced basis vectors (0 for uniform).
+        iterations: For each sampled frequency (in solve order), the Krylov
+            iterations of each excited port's solve; ``()`` for a direct
+            solve on fresh factors.
+        preconditioner_reused: For each sampled frequency, whether its
+            solve ran on a preconditioner built for another matrix (BDDC
+            set up at an earlier frequency, or direct factors from an
+            earlier design: preconditioner reuse).
 
     Under `jax.grad`, `jax.jit` or `jax.vmap` an adaptive sweep needs
     frozen samples (``Driven(samples=...)``), and ``sample_errors``,
     ``converged`` and ``basis_size`` are ``None``: they are only known
     after the solve, and this record is static. Solve outside the
-    transformation to read them.
+    transformation to read them. ``iterations`` and
+    ``preconditioner_reused`` are ``None`` there for any sweep, and in a
+    result saved by a gfem that did not record them.
     """
 
     kind: str
@@ -791,6 +800,8 @@ class SweepInfo:
     converged: bool | None
     tolerance: float | None = None
     basis_size: int | None = 0
+    iterations: tuple[tuple[int, ...], ...] | None = None
+    preconditioner_reused: tuple[bool, ...] | None = None
 
     def __post_init__(self) -> None:
         """Normalize to plain Python values (hashable, JSON-friendly)."""
@@ -809,9 +820,27 @@ class SweepInfo:
             set_(self, "basis_size", int(self.basis_size))
         if self.tolerance is not None:
             set_(self, "tolerance", float(self.tolerance))
+        if self.iterations is not None:
+            set_(
+                self,
+                "iterations",
+                tuple(tuple(int(i) for i in its) for its in self.iterations),
+            )
+        if self.preconditioner_reused is not None:
+            set_(
+                self,
+                "preconditioner_reused",
+                tuple(bool(r) for r in self.preconditioner_reused),
+            )
 
     @classmethod
-    def uniform(cls, frequency: tuple[float, ...]) -> SweepInfo:
+    def uniform(
+        cls,
+        frequency: tuple[float, ...],
+        *,
+        iterations: Sequence[Sequence[int]] | None = None,
+        preconditioner_reused: Sequence[bool] | None = None,
+    ) -> SweepInfo:
         """Every frequency of ``frequency`` solved in full."""
         n = len(frequency)
         return cls(
@@ -820,6 +849,10 @@ class SweepInfo:
             sampled_frequencies=frequency,
             sample_errors=(math.inf,) * n,
             converged=True,
+            iterations=None if iterations is None else tuple(map(tuple, iterations)),
+            preconditioner_reused=None
+            if preconditioner_reused is None
+            else tuple(preconditioner_reused),
         )
 
     def __repr__(self) -> str:

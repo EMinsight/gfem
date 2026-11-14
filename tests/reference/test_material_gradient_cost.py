@@ -50,7 +50,7 @@ def test_material_gradient_backward_is_a_tenth_of_the_forward(reference):
             "tan_delta": jnp.full(n, material.tan_delta),
         }
     problem = gfem.Driven(frequency=FREQUENCY)
-    options = gfem.SolverOptions(threads=THREADS)
+    options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
     weights = jnp.array([[1.0, 0.5], [2.0, -1.0]])
 
     def objective(values):

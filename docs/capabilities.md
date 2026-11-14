@@ -48,11 +48,12 @@ v0.1.
   in one machine's memory, for eigenmode problems, and for the repeated solves
   of an optimization loop, where a design can solve on the previous design's
   factorization ({doc}`recipes/s-parameter-gradient`). It factorizes once per frequency
-  and reuses the factorization for every port. Install the `mkl` extra for its fastest
-  factorization.
+  and reuses the factorization for every port. The default (`"auto"`) picks it
+  for a driven problem on one machine while its factorization fits in half the
+  memory. Install the `mkl` extra for its fastest factorization.
 - **`linear_solver="bddc_gmres"`**: pick it for a large model, or when the
-  direct factorization does not fit in memory. It is the default
-  (`"auto"`) for driven problems.
+  direct factorization does not fit in memory; `"auto"` picks it for such a
+  driven problem and for electrostatic problems.
 - **`linear_solver="petsc"`** and **`eigen_solver="slepc"`**: pick them for
   MUMPS and its options, your own PETSc Krylov method and preconditioner, or
   SLEPc's own controls. With no options, `"petsc"` gives the same results as

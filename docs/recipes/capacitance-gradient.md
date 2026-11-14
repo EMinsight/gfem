@@ -76,7 +76,8 @@ robust = jax.grad(lambda ds: jnp.max(jax.vmap(coupling)(ds)))(designs)
 `jax.jacrev` of the whole capacitance matrix, and the function `jax.vjp`
 returns called several times, give the same numbers as separate `jax.grad`
 calls. Between the solve and its gradients gfem keeps what the gradients need
-(for a capacitance, the terminal potentials):
+(for a capacitance, the terminal potentials; for an energy or potential
+gradient also the prepared operator, so the backward does not prepare again):
 
 - It keeps up to `SolverOptions(retain_memory=...)` bytes, half of the
   memory the process may use by default, and drops the oldest entries first.

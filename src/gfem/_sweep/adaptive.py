@@ -67,10 +67,39 @@ class AffineTerm:
         vectors: ``(N, m)``.
         coefficients: ``ω -> (m, n_excitations)`` for an excitation term,
             ``ω -> (n_outputs, m)`` for an output term.
+        conjugate: The block is ``conj(vectors)``, read on the fly so a
+            wave port's couplings are held once (ADR 0091).
     """
 
     vectors: np.ndarray
     coefficients: Callable[[float], np.ndarray]
+    conjugate: bool = False
+
+    def project(
+        self,
+        x: np.ndarray,
+        pair: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
+    ) -> np.ndarray:
+        """``Lᵀ x`` for the block ``L``; ``pair(a, b)`` is ``a.T @ b`` by default."""
+        if pair is None:
+            pair = _transpose_product
+        if not self.conjugate:
+            return pair(self.vectors, x)
+        # conj(V)ᵀ x = conj(Vᵀ conj(x)); a real x needs no conjugated copy
+        out = np.asarray(pair(self.vectors, np.conj(x) if np.iscomplexobj(x) else x))
+        return np.conj(out, out=out) if np.iscomplexobj(out) else out
+
+    def combine(self, c: np.ndarray) -> np.ndarray:
+        """``L c`` for the block ``L``."""
+        if not self.conjugate:
+            return self.vectors @ c
+        # conj(V) c = conj(V conj(c)), conjugated in place
+        out = self.vectors @ np.conj(c)
+        return np.conj(out, out=out)
+
+
+def _transpose_product(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return a.T @ b
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -172,7 +201,7 @@ class ReducedModel:
             for r, t in zip(self.excitation, self.system.excitation, strict=True)
         ]
         self.outputs = [
-            np.hstack([r, t.vectors.T @ new])
+            np.hstack([r, t.project(new)])
             for r, t in zip(self.outputs, self.system.outputs, strict=True)
         ]
         self.corrections = [

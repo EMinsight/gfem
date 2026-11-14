@@ -148,7 +148,7 @@ def test_driven_parity_s_matches_palace(reference, name, ndof, max_iterations):
     model = _model(case)
     frequency, palace = _palace(case)
     frequency, palace = frequency[list(ROWS)], palace[list(ROWS)]
-    options = gfem.SolverOptions(threads=THREADS)
+    options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
     problem = gfem.Driven(frequency=frequency)
     rule = DrivenRule(model, problem, options)
     assert rule.linear.kind == "bddc_gmres"
@@ -208,7 +208,7 @@ def test_driven_physics_box150_converged_transmission(reference):
     model = _model(case)
     assert {b.order for b in model.boundaries if isinstance(b, gfem.Absorbing)} == {2}
     frequency = np.array([10e9, 50e9, 100e9])
-    options = gfem.SolverOptions(threads=THREADS)
+    options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
     rule = DrivenRule(model, gfem.Driven(frequency=frequency), options)
     assert rule.operator(model).space.ndof == 333_910
     start = time.perf_counter()
@@ -245,7 +245,7 @@ def test_driven_per_sample_time_against_palace(reference, name):
     case = reference / name
     model = _model(case)
     f = 50e9
-    options = gfem.SolverOptions(threads=THREADS)
+    options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
     rule = DrivenRule(model, gfem.Driven(frequency=f), options)
     with task_manager(THREADS):
         op = rule.operator(model)
@@ -305,7 +305,7 @@ def _sweep(case: Path):
     """``(result, wall s)`` of the adaptive sweep on Palace's grid."""
     model = _model(case)
     frequency, _ = _palace(case)
-    options = gfem.SolverOptions(threads=THREADS)
+    options = gfem.SolverOptions(threads=THREADS, linear_solver="bddc_gmres")
     problem = gfem.Driven(frequency=frequency, sweep="adaptive")
     start = time.perf_counter()
     result = gfem.solve(model, problem, options=options)

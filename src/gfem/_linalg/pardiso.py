@@ -55,6 +55,7 @@ from pyngcore import SuspendTaskManager
 
 from gfem._linalg import Symmetry
 from gfem._linalg.base import equals_its_transpose, host_bytes
+from gfem._linalg.factor_reuse import PARDISO_FLOOR_MFLOP, pardiso_ratio
 
 #: gfem's flags for NGSolve's MKL PARDISO wrapper: MKL's OpenMP parallel METIS
 #: ordering (the same nested dissection and fill as serial METIS, with a
@@ -68,11 +69,14 @@ from gfem._linalg.base import equals_its_transpose, host_bytes
 #: iparm(10) = 16: perturb a pivot only below 1e-16 ‖A‖, not NGSolve's
 #: 1e-13; a perturbed pivot triggers MKL's two refinement steps, which break
 #: A^T = A in the solution near the low-frequency floor (ADR 0029).
+#: iparm(19) = -1: MKL reports the factorization's Mflop in iparm[18], a
+#: count the factor-reuse rule reads (`PardisoFactors.model_ratio`).
 PARDISO_FLAGS = {
     "ordering": "parallel_metis",
     "symmetric": True,
     "refinement": 0,
     "iparm9": 16,
+    "iparm18": -1,
 }
 #: The inverse name of gfem's PARDISO with `PARDISO_FLAGS` (``A^T = A``).
 SYMMETRIC = "gfem_pardiso"
@@ -232,6 +236,18 @@ def _call_on_threads(solver: Any, phase: int, threads: int) -> bool:
 # --- Refactorizing a handle's wrapper ------------------------------------------------
 
 
+def factor_nonzeros(reported: int, factor_kib: int, *, entry_bytes: int = 16) -> int:
+    """The factors' nonzeros from PARDISO's int32 ``iparm[17]``.
+
+    Read unsigned (it passes 2^31 near 2.5M DOF), then raised by the
+    multiple of 2^32 that the factor memory ``factor_kib`` (``iparm[16]``)
+    allows at ``entry_bytes`` or more per entry (16 complex, 8 real).
+    """
+    count = reported % 2**32
+    most = 1024 * factor_kib // entry_bytes
+    return count + max(0, (most - count) // 2**32) * 2**32
+
+
 class PardisoFactors:
     """A PARDISO inverse of a direct handle, refactorized on its own plan.
 
@@ -250,8 +266,13 @@ class PardisoFactors:
     Holds no lock: its handle calls it under its own.
     """
 
-    def __init__(self, inverse: Any, free: np.ndarray) -> None:
-        """Hold ``inverse``, factored on the matrix's ``free`` rows and columns."""
+    def __init__(
+        self, inverse: Any, free: np.ndarray, *, is_complex: bool = True
+    ) -> None:
+        """Hold ``inverse``, factored on the matrix's ``free`` rows and columns.
+
+        ``is_complex``: whether its entries are complex (16 B) or real (8 B).
+        """
         #: The inverse a solve applies.
         self.inverse = inverse
         self._free = free
@@ -262,6 +283,29 @@ class PardisoFactors:
         #: The factors were released (`release`): nothing may solve on them
         #: until `new_values` factorizes again.
         self.released = False
+        # the plan's counts, read once after its analysis and factorization:
+        # Mflop (iparm[18], unsigned; it would wrap only past about 2e15
+        # flop, 46x the 2.49M-DOF bend, which is not handled), the factors'
+        # nonzeros and the analysis's thread count
+        params = getattr(inverse, "_params", None)
+        entry = 16 if is_complex else 8
+        self._mflop = 0 if params is None else int(params[18]) % 2**32
+        self._nonzeros = (
+            0
+            if params is None
+            else factor_nonzeros(int(params[17]), int(params[16]), entry_bytes=entry)
+        )
+        self._threads = int(
+            getattr(inverse, "_gfem_threads", None) or max(1, ngs.GetNumThreads())
+        )
+
+    def model_ratio(self) -> float:
+        """One refactorization over one direct column, from the plan's counts."""
+        return pardiso_ratio(self._mflop, self._nonzeros, self._threads)
+
+    def above_floor(self) -> bool:
+        """Whether the plan factorizes at least `PARDISO_FLOOR_MFLOP` Mflop."""
+        return self._mflop >= PARDISO_FLOOR_MFLOP
 
     def release(self) -> None:
         """Drop L and U and keep the analysis (PARDISO phase 0, ``mnum`` 1).
@@ -320,6 +364,18 @@ class PardisoFactors:
                 int(params[15]) + (0 if self.released else int(params[16]))
             )
         return factors + (0 if self._gather is None else self._gather.nbytes)
+
+    @property
+    def factor_bytes(self) -> int:
+        """The bytes of `nbytes` that `release` frees: L and U.
+
+        0 once released, and for a wrapper that reports its own memory, which
+        a release leaves as it was.
+        """
+        params = getattr(self.inverse, "_params", None)
+        if self.released or params is None or host_bytes(self.inverse):
+            return 0
+        return 1024 * int(params[16])
 
     def _gather_index(self, matrix: Any) -> np.ndarray | None:
         """Where PARDISO's buffer reads ``matrix``'s values, or ``None``.

@@ -48,7 +48,8 @@ Backends:
   tolerance (a Krylov breakdown) restarts once from its iterate, and raises
   `gfem.LinearSolverConvergenceError` if it stops short again. GMRES takes
   an initial guess (``solve(B, x0=...)``, e.g. the previous frequency's
-  solution). BDDC reads the fixed DOFs from the space, so the operator's
+  solution, or the previous design's at a design's first frequency); CG
+  ignores it. BDDC reads the fixed DOFs from the space, so the operator's
   free DOFs must be the space's ``FreeDofs()``.
 - ``"cudss"``: the ``direct`` solver on a GPU (``device="cuda"`` or
   ``"cuda:N"``), NVIDIA cuDSS. The host holds all data; the factors stay on
@@ -104,6 +105,7 @@ __all__ = [
     "Refactorable",
     "ResolvedLinearSolver",
     "Symmetry",
+    "auto_linear_solver",
     "factorize",
     "low_rank_update",
     "prepare",
@@ -116,6 +118,37 @@ Kind = Literal["direct", "bddc_gmres", "petsc"]
 KINDS: tuple[Kind, ...] = get_args(Kind)
 #: Most Krylov iterations of an iterative solve (as Palace).
 MAXITER = 400
+#: Bytes per unknown of a direct factorization, above every measured peak
+#: (46.9 KiB, sparse Cholesky at order 3; PARDISO 16.7-21.7 KiB):
+#: `auto_linear_solver` (ADR 0124).
+DIRECT_BYTES_PER_UNKNOWN = 48 * 2**10
+
+
+def auto_linear_solver(
+    default: Kind, *, unknowns: int, in_flight: int, general: bool, budget: int
+) -> tuple[Kind, str, int]:
+    """``"direct"`` while its factorizations fit ``budget``, else ``default``.
+
+    The estimate is `DIRECT_BYTES_PER_UNKNOWN` times ``unknowns`` per
+    factorization ``in_flight``, doubled for a ``general`` operator (LU
+    stores L and U). Equal to the budget fits. Reads no clock and no
+    installed library (ADR 0124). Returns the kind, why in words, and the
+    estimate in bytes.
+    """
+    estimate = direct_estimate(unknowns, in_flight=in_flight, general=general)
+    fits = estimate <= budget
+    gib = 2**30
+    reason = (
+        f"{unknowns:,} unknowns, est. {estimate / gib:.1f} GiB factorization "
+        f"{'<=' if fits else '>'} {budget / gib:.1f} GiB budget "
+        f"(half of {2 * budget / gib:.3g} GiB)"
+    )
+    return ("direct" if fits else default), reason, estimate
+
+
+def direct_estimate(unknowns: int, *, in_flight: int, general: bool) -> int:
+    """Bytes of ``in_flight`` direct factorizations of ``unknowns``."""
+    return DIRECT_BYTES_PER_UNKNOWN * unknowns * in_flight * (2 if general else 1)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -179,8 +212,10 @@ class Handle(Protocol):
         ``transpose`` solves ``A^T X = B``; of a general operator, only on the
         ``direct`` backend (its factors). ``tolerance`` overrides the prepared
         relative residual of iterative backends for this solve (adjoint
-        solves); ``x0`` (the shape of ``B``) is an initial guess for
-        iterative backends. Direct backends ignore both.
+        solves); ``x0`` (the shape of ``B``) is an initial guess for GMRES
+        (``bddc_gmres`` on a non-Hermitian operator). CG and the direct
+        backends ignore ``x0``; direct backends ignore ``tolerance`` too,
+        except that a solve on factors reused across designs reads it.
 
         Returns ``X`` and the Krylov iterations of each column of ``B``, in
         order: every iteration the column cost in this call (restarts and
@@ -226,6 +261,7 @@ class Refactorable(Handle, Protocol):
         *,
         solves: int | None = None,
         frequency: float | None = None,
+        sweep: bool = False,
     ) -> None:
         """Assemble ``operator`` and factorize its values in place.
 
@@ -238,7 +274,10 @@ class Refactorable(Handle, Protocol):
         (`prepare`'s ``solves``); ``None`` keeps it. Only BDDC's coarse
         choice reads it. ``frequency``: the ω the operator is at, when the
         caller knows it; only the direct solver reads it, to solve a design on
-        factors made at the same ω for an earlier one (ADR 0094).
+        factors made at the same ω for an earlier one (ADR 0094). ``sweep``:
+        the operator is a frequency sweep's next one; only BDDC reads it, to
+        solve without an initial guess on its reused preconditioner (ADR
+        0127; otherwise it sets BDDC up again first).
 
         Raises:
             RuntimeError: The handle was freed.
@@ -253,6 +292,7 @@ def refactorize_or_prepare(
     *,
     solves: int | None = None,
     frequency: float | None = None,
+    sweep: bool = False,
 ) -> Handle:
     """A handle of ``operator`` that reuses ``handle``'s solver plan when it can.
 
@@ -269,13 +309,15 @@ def refactorize_or_prepare(
             count; ``prepare_operator`` states its own.
         frequency: The ω ``operator`` is at, or ``None``
             (`Refactorable.refactorize`).
+        sweep: ``operator`` is a frequency sweep's next one
+            (`Refactorable.refactorize`).
 
     Raises:
         ValueError: ``operator``'s free-DOF set is not the one ``handle`` was
             prepared with: a refactorization keeps the free DOFs.
     """
     if isinstance(handle, Refactorable):
-        handle.refactorize(operator, solves=solves, frequency=frequency)
+        handle.refactorize(operator, solves=solves, frequency=frequency, sweep=sweep)
         return handle
     if handle is not None:
         handle.free()
@@ -490,9 +532,23 @@ class ResolvedLinearSolver:
 
     @classmethod
     def resolve(
-        cls, options: SolverOptions, *, default: Kind, problem: str, comm: Any = None
+        cls,
+        options: SolverOptions,
+        *,
+        default: Kind,
+        problem: str,
+        comm: Any = None,
+        unknowns: int | None = None,
+        in_flight: int = 1,
+        general: bool = False,
+        budget: int | None = None,
     ) -> Self:
         """The linear solver of ``options`` for a ``problem`` problem.
+
+        With ``unknowns``, ``"auto"`` on one CPU process is `auto_linear_solver`
+        (``"direct"`` while it fits ``budget``, else ``default``). A resolved
+        ``"auto"`` is logged on ``gfem.solver`` (`report.auto_choice`); an
+        explicit choice is not.
 
         Args:
             options: The solver options.
@@ -500,6 +556,10 @@ class ResolvedLinearSolver:
                 CPU; on a GPU ``"auto"`` is ``"direct"``.
             problem: The problem type, for the error message.
             comm: The resolved communicator of a distributed solve.
+            unknowns: The system size, an upper bound, for the rule.
+            in_flight: The factorizations held at once (frequency workers).
+            general: Whether the operator is general (not ``A^T = A``).
+            budget: The rule's bytes; required with ``unknowns``.
 
         Raises:
             NotImplementedError: The linear solver is not available.
@@ -507,6 +567,7 @@ class ResolvedLinearSolver:
                 cannot be used, or ``"direct"`` or ``"petsc"`` under ``comm``
                 without the MPI PETSc stack.
         """
+        from gfem._linalg import report
         from gfem.options import split_petsc_options
 
         name = options.linear_solver
@@ -514,8 +575,28 @@ class ResolvedLinearSolver:
             kind = name
         elif options.device != "cpu":
             kind = "direct"  # the only solver that runs on a GPU
-        else:
+            report.auto_choice(kind, problem=problem)
+        elif comm is not None or unknowns is None:
             kind = default
+            report.auto_choice(kind, problem=problem)
+        else:
+            if budget is None:  # pragma: no cover - a caller error
+                raise TypeError("resolve needs a budget with unknowns.")
+            kind, reason, estimate = auto_linear_solver(
+                default,
+                unknowns=unknowns,
+                in_flight=in_flight,
+                general=general,
+                budget=budget,
+            )
+            report.auto_choice(
+                kind,
+                problem=problem,
+                reason=reason,
+                unknowns=unknowns,
+                estimate=estimate,
+                budget=budget,
+            )
         if kind not in KINDS:  # pragma: no cover - SolverOptions validates
             raise NotImplementedError(
                 f"linear_solver={name!r} is not available for {problem} problems "

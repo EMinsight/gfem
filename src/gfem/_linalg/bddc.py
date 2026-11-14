@@ -18,8 +18,19 @@ Across a sweep the handle keeps its preconditioner (`BddcHandle.refactorize`)
 once a solve on it measured a reference iteration count, solves on the reused
 preconditioner to a tolerance `REUSED_TOLERANCE` times tighter, caps every
 warm solve there from that count, and sets it up again when GMRES iterations
-grow past one setup's worth. A handle prepared without
+grow past one setup's worth. A GMRES solve without an initial guess on a
+preconditioner reused across a sweep's frequencies (an adjoint solve of a
+multi-frequency backward) runs that warm path from a zero guess (ADR 0127);
+after a refactorization at no stated frequency (an eigen reshift) it sets
+BDDC up at the new operator first. A handle prepared without
 reuse sets BDDC up at each `BddcHandle.refactorize`.
+
+`BddcHandle.last_action` and `last_reason` say what the last step did and
+why (`gfem._linalg.report`, ADR 0120): ``factorized`` (set up: ``first``,
+``rebuild rule``, or ``cold solve`` for a CG solve, or a GMRES solve after
+an eigen reshift, on a reused preconditioner), ``reused``, or ``reused,
+capped, refactorized`` (``capped``: a warm column set BDDC up inside the
+solve).
 
 Under ranks (an operator with a layout) BDDC's coarse problem is factored by MUMPS
 across ranks when the MPI PETSc stack is installed (`gfem._linalg.coarse`), otherwise
@@ -234,6 +245,9 @@ class BddcHandle(NgsHandle):
         self.tolerance = tolerance
         self.maxiter = maxiter
         self._hold(form, preconditioner)
+        #: What the last step did, and why (see the module docstring).
+        self.last_action: str | None = "factorized"
+        self.last_reason: str | None = "first"
 
     def expect_solves(self, solves: int) -> None:
         """Restate the solve calls the next setups serve, as `refactorize` does.
@@ -242,6 +256,23 @@ class BddcHandle(NgsHandle):
         """
         with self._lock:
             self._expected_columns = self._columns_per_setup(solves)
+
+    @property
+    def reference_iterations(self) -> int | None:
+        """``n_ref`` of the held preconditioner (see `refactorize`), or ``None``."""
+        return self._reference_iterations
+
+    def assume_reference(self, iterations: int) -> None:
+        """Take ``iterations`` as ``n_ref`` of a fresh preconditioner not yet measured.
+
+        For a solve from the previous design's solution (ADR 0126): it takes
+        fewer iterations than a cold solve, and would set ``n_ref`` so low
+        that the next frequencies' reused solves cap and set BDDC up again.
+        The ``n_ref`` the previous design measured stands in.
+        """
+        with self._lock:
+            if not self._reused and self._reference_iterations is None:
+                self._reference_iterations = int(iterations)
 
     def _columns_per_setup(self, solves: int) -> int:
         """The columns one setup serves when ``solves`` solve calls are expected.
@@ -267,6 +298,8 @@ class BddcHandle(NgsHandle):
         self._matrix = form.mat
         self._solver = self._krylov(form.mat, preconditioner)
         self._reused = False
+        #: Whether the reuse came from a refactorization at a sweep's frequency.
+        self._swept = False
         self._reference_iterations: int | None = None
         self._rebuild = False
 
@@ -345,6 +378,7 @@ class BddcHandle(NgsHandle):
         *,
         solves: int | None = None,
         frequency: float | None = None,  # noqa: ARG002
+        sweep: bool = False,
     ) -> None:
         """Assemble ``operator`` and solve it on the held preconditioner.
 
@@ -360,15 +394,20 @@ class BddcHandle(NgsHandle):
         went past ``n_ref + Δ`` iterations per column (``n_ref`` scaled to
         the reused solve's tighter tolerance, `_reused_reference`), with
         ``Δ`` `SETUP_ITERATIONS` shared by the solve's columns. So every warm
-        solve on a reused preconditioner is capped (see `_warm`). A reused
-        preconditioner serves warm GMRES solves only; a solve without an
-        initial guess sets it up again first. The rule counts iterations,
-        never times, so runs repeat exactly.
+        solve on a reused preconditioner is capped (see `_warm`). A GMRES
+        solve without an initial guess on a reused preconditioner runs that
+        warm path from zero when this refactorization is a frequency
+        ``sweep``'s (ADR 0127); otherwise (an eigen reshift,
+        far from the operator the preconditioner was set up at, ADR 0118) and
+        for a CG solve, it sets BDDC up again first. The rule counts
+        iterations, never times, so runs repeat exactly.
 
         ``solves`` restates the solve calls the next setups are expected to
         serve (``prepare``'s ``solves``), for the coarse factorization only;
-        ``None`` keeps the count. A setup may come later than this call, at
-        the first cold solve. ``frequency`` is ignored.
+        ``None`` keeps the count. A setup may come later than this call,
+        inside a solve (a capped column, or a cold solve). ``sweep`` tells
+        whether a cold GMRES solve may reuse the preconditioner;
+        ``frequency`` is ignored (only the direct solver reads it).
         """
         form = operator.form
         with self._lock:
@@ -376,13 +415,17 @@ class BddcHandle(NgsHandle):
             if solves is not None:
                 self._expected_columns = self._columns_per_setup(solves)
             if self._rebuild or not self.reuse or self._reference_iterations is None:
+                reason = "rebuild rule" if self.reuse and self._rebuild else "first"
                 self._build(form)
+                self.last_action, self.last_reason = "factorized", reason
                 return
             form.Assemble()
             self._form = form
             self._matrix = form.mat
             self._solver = self._krylov(form.mat, pre)
             self._reused = True
+            self._swept = sweep
+            self.last_action, self.last_reason = "reused", None
 
     def _converged(
         self, solver, reference: float | None, tolerance: float | None = None
@@ -456,9 +499,16 @@ class BddcHandle(NgsHandle):
     ) -> tuple[np.ndarray, tuple[int, ...]]:
         _, _, form = self._held()
         with self._lock, self.layout.blas_threads(1):  # reentrant: _map, _warm
-            if self._reused and (x0 is None or self.symmetry == "hermitian"):
-                # only a warm start pays for a reused preconditioner
+            if self._reused and (
+                self.symmetry == "hermitian" or (x0 is None and not self._swept)
+            ):
+                # CG has no warm path, and an eigen reshift's shift-invert
+                # solves run on a preconditioner set up at the new shift
                 self._build(form)
+                self.last_action, self.last_reason = "factorized", "cold solve"
+            elif self._reused and x0 is None:
+                # GMRES on the reused preconditioner from zero (ADR 0127)
+                x0 = np.zeros(B.shape, dtype=np.complex128 if self._complex else float)
             solver = self._solver
             prepared = self.tolerance
             # only a solve at the prepared tolerance measures n_ref
@@ -577,6 +627,8 @@ class BddcHandle(NgsHandle):
                     # set up at this matrix, and go on from the partial iterate
                     spent = int(solver.iterations)
                     self._build(form)
+                    self.last_action = "reused, capped, refactorized"
+                    self.last_reason = "capped"
                     matrix, pre, _ = self._held()
                     r.data = pre.mat * b
                     reference = layout.state_norm(r)

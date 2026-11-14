@@ -72,6 +72,11 @@ class LowRankUpdate:
         self._z: dict[tuple[bool, float | None], np.ndarray] = {}
 
     @property
+    def base(self) -> Handle | None:
+        """The handle of ``A`` this wraps, ``None`` once freed."""
+        return self._base
+
+    @property
     def nbytes(self) -> int:
         """Host memory of the base handle, ``U`` and the kept ``A⁻¹ U``."""
         if self._base is None:

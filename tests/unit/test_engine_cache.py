@@ -1,5 +1,7 @@
 """Engine caches, the pinned quadrature rule, and kept forward solves."""
 
+from types import SimpleNamespace
+
 import jax
 import jax.numpy as jnp
 import ngsolve as ngs
@@ -11,6 +13,10 @@ import gfem
 from gfem._engine import cache, quadrature
 from gfem._engine.cache import Entry, EntryCache, discretization
 from gfem._engine.electrostatic import ElectrostaticRule
+from gfem._engine.mesh import to_ngsolve
+from gfem._linalg import Operator, report
+from gfem._linalg.direct import DirectHandle
+from gfem._linalg.pieces import KeptParts
 
 
 @pytest.fixture(scope="module")
@@ -146,8 +152,10 @@ GIB = 2**30
 @pytest.fixture(autouse=True)
 def fresh_default_budget():
     """The default budget read anew: it is read once per process."""
+    cache.memory_limit.cache_clear()
     cache.default_retain_memory.cache_clear()
     yield
+    cache.memory_limit.cache_clear()
     cache.default_retain_memory.cache_clear()
 
 
@@ -235,6 +243,261 @@ def test_a_limit_below_the_ram_wins_without_readable_ram(tmp_path, monkeypatch):
     _fake_cgroups(tmp_path, monkeypatch, "0::/\n", {".": ("memory.max", f"{GIB}")})
     monkeypatch.setattr(cache, "_physical_memory", lambda: None)
     assert cache.default_retain_memory() == GIB // 2
+
+
+# --- the default budget's exemption (ADR 0123) ------------------------------------
+
+
+class Base:
+    """A pooled direct base: releasing its factors leaves ``released_bytes``.
+
+    It may share ``pattern`` with a kept fixed part.
+    """
+
+    def __init__(self, nbytes, *, released_bytes=10, pattern=None):
+        self._nbytes, self._released_bytes = nbytes, released_bytes
+        self.pattern = pattern
+        self.released = self.freed = False
+
+    @property
+    def nbytes(self):
+        return self._released_bytes if self.released else self._nbytes
+
+    @property
+    def factor_bytes(self):
+        return 0 if self.released else self._nbytes - self._released_bytes
+
+    def shared(self):
+        pattern = self.pattern
+        return {} if pattern is None else {id(pattern): pattern.nbytes}
+
+    def release_factors(self):
+        self.released = True
+
+    def free(self):
+        self.freed = True
+
+
+TOPOLOGY = object()
+
+
+@pytest.fixture
+def machine(monkeypatch):
+    """A process limited to 1000 bytes (default budget 500); set its peak RSS."""
+    peak = [0]
+    monkeypatch.setattr(cache, "_physical_memory", lambda: 1000)
+    monkeypatch.setattr(cache, "_cgroup_memory_limit", lambda: None)
+    monkeypatch.setattr(cache, "peak_rss", lambda: peak[0])
+    return peak
+
+
+@pytest.mark.usefixtures("machine")
+def test_the_default_budget_is_half_the_memory_limit():
+    assert cache.memory_limit() == 1000
+    assert cache.retain_budget(None) == 500
+
+
+@pytest.mark.parametrize(("peak", "kept"), [(900, True), (901, False)])
+def test_the_latest_base_keeps_its_factors_over_the_default_while_there_is_room(
+    machine, peak, kept
+):
+    machine[0] = peak  # kept while peak + 1000/10 <= 1000
+    entries = EntryCache()
+    base = Base(600)
+    entries.give_plan(("k",), TOPOLOGY, base, budget=cache.retain_budget(None))
+    assert base.released is not kept
+    # later walks under the default leave it as well
+    entries.trim(cache.retain_budget(None))
+    entries.free_consumed(None, cache.retain_budget(None))
+    assert base.released is not kept
+    assert not base.freed
+
+
+@pytest.mark.usefixtures("machine")
+def test_an_explicit_retain_memory_always_releases():
+    entries = EntryCache()
+    base = Base(600)
+    entries.give_plan(("k",), TOPOLOGY, base, budget=cache.retain_budget(500))
+    assert base.released
+
+
+@pytest.mark.usefixtures("machine")
+def test_only_the_latest_returned_base_is_exempt():
+    entries = EntryCache()
+    old, new = Base(600), Base(600)
+    budget = cache.retain_budget(None)
+    entries.give_plan(("a",), TOPOLOGY, old, budget=budget)
+    entries.give_plan(("b",), TOPOLOGY, new, budget=budget)
+    assert old.released
+    assert not new.released
+    # a handle that frees nothing on release is freed; the latest stays whole
+    stuck = Base(600, released_bytes=600)
+    entries.give_plan(("c",), TOPOLOGY, stuck, budget=budget, walk=False)
+    entries.give_plan(("b",), TOPOLOGY, entries.take_plan(("b",)), budget=budget)
+    assert stuck.freed
+    assert not new.released
+    assert not new.freed
+
+
+@pytest.mark.usefixtures("machine")
+def test_an_exempt_base_still_counts_its_plan_and_matrix():
+    entries = EntryCache()
+    budget = cache.retain_budget(None)
+    # nothing to release: only freeing it trims it
+    old = Base(350, released_bytes=350)
+    entries.give_plan(("a",), TOPOLOGY, old, budget=budget)
+    assert not old.freed
+    # the latest keeps its 400 bytes of factors; its other 200 count, and
+    # 350 + 200 exceeds the 500 of the default
+    latest = Base(600, released_bytes=200)
+    entries.give_plan(("b",), TOPOLOGY, latest, budget=budget)
+    assert not latest.released
+    assert old.freed
+
+
+@pytest.mark.usefixtures("machine")
+def test_an_exempt_base_keeps_the_kept_part_it_shares_counted():
+    pattern = np.zeros(300, np.uint8)
+    store = KeptParts()
+    store.kept["piece"] = SimpleNamespace(shared=lambda: {id(pattern): pattern.nbytes})
+    disc = _held(ports_bytes=400)
+    disc.spaces["em"] = store
+    entries = EntryCache(lambda: [disc])
+    base = Base(600, released_bytes=10, pattern=pattern)
+    # 10 + 300 (shared once) + 400 > 500: dropping the kept part frees
+    # nothing while the exempt base holds its pattern, so the port state goes
+    budget = cache.retain_budget(None)
+    entries.give_plan(("k",), TOPOLOGY, base, budget, kept=[pattern])
+    assert not base.released
+    assert store.kept
+    assert disc.ports is None
+
+
+# --- design initial guesses (ADR 0126) ----------------------------------------------
+
+
+class Ports:
+    """Kept port state of ``nbytes``."""
+
+    def __init__(self, nbytes):
+        self.array = np.zeros(nbytes, np.uint8)
+
+    def shared(self):
+        return {id(self.array): self.array.nbytes}
+
+
+def _held(ports_bytes=0):
+    built = SimpleNamespace(comm=None)
+    disc = cache.Discretization(built=built, topology=TOPOLOGY)
+    if ports_bytes:
+        disc.ports = Ports(ports_bytes)
+    return disc
+
+
+def test_a_discretization_keeps_a_design_guess_only_for_its_match():
+    disc = _held()
+    block = np.ones((4, 2), complex)
+    disc.keep_guess(("cols", 1.0), "free digest", block)
+    assert disc.guess(("cols", 1.0), "free digest") is block
+    assert disc.guess(("cols", 1.0), "other free DOFs") is None
+    assert disc.guess(("cols", 2.0), "free digest") is None
+    assert disc.shared() == {id(block): block.nbytes}
+
+
+def test_the_walk_drops_design_guesses_before_releasing_pooled_factors():
+    disc = _held(ports_bytes=100)
+    disc.keep_guess("k", "free", np.zeros(400, np.uint8))
+    entries = EntryCache(lambda: [disc])
+    base = Base(600)
+    # 1100 bytes over 800: the guess alone goes
+    entries.give_plan(("k",), TOPOLOGY, base, budget=800)
+    assert disc.guess("k", "free") is None
+    assert not base.released
+    assert disc.ports is not None
+
+
+def test_a_zero_budget_keeps_no_design_guess():
+    disc = _held()
+    disc.keep_guess("k", "free", np.zeros(10, np.uint8))
+    EntryCache(lambda: [disc]).trim(0)
+    assert disc.guess("k", "free") is None
+
+
+@pytest.mark.usefixtures("machine")
+def test_an_entry_over_the_default_gives_its_base_to_the_pool_with_factors():
+    entries = EntryCache()
+    budget = cache.retain_budget(None)
+
+    class Kept:
+        def __init__(self, base):
+            self.base = base
+
+        @property
+        def nbytes(self):
+            return 20 + (0 if self.base is None else self.base.nbytes)
+
+        def free_base(self, comm, *, walk=True):  # noqa: ARG002
+            entries.give_plan(("k",), TOPOLOGY, self.base, budget, walk=walk)
+            self.base = None
+
+        def free(self, *, return_plans=False):  # noqa: ARG002
+            self.base = None
+
+    base = Base(600)
+    entry = Entry(physics="em", handle=Kept(base))
+    key = entries.put(entry, budget)
+    assert entries.get(key) is entry
+    assert entries.take_plan(("k",)) is base
+    assert not base.released
+
+
+@pytest.fixture(scope="module")
+def helmholtz(tmp_path_factory):
+    """A complex symmetric ``-Δ - k2`` on a small box, and loads."""
+    path = tmp_path_factory.mktemp("mesh") / "box.msh"
+    sm.write_msh22(path, sm.plate(1.0, 1.0, (("box", 1.0),), (3, 3, 3)))
+    mesh = to_ngsolve(gfem.Mesh.from_gmsh(path))
+    space = ngs.H1(mesh.mesh, order=2, dirichlet="bottom|top", complex=True)
+    u, v = space.TnT()
+
+    def at(k2):
+        form = ngs.BilinearForm(space, symmetric=True)
+        form += (ngs.grad(u) * ngs.grad(v) - k2 * u * v) * quadrature.dx(2)
+        return Operator(form, space.FreeDofs())
+
+    rng = np.random.default_rng(0)
+    free = np.asarray([space.FreeDofs()[i] for i in range(space.ndof)])
+    B = (rng.standard_normal((space.ndof, 2)) + 0j) * free[:, None]
+    return at, B
+
+
+@pytest.mark.parametrize("room", [True, False])
+def test_the_next_step_names_a_release_for_retain_memory(
+    machine, monkeypatch, caplog, helmholtz, room
+):
+    peak, action = (0, "reused") if room else (2**62, "refactorized")
+    at, B = helmholtz
+    monkeypatch.setattr(DirectHandle, "_reuse_pays", lambda _: True)
+    handle = DirectHandle.from_operator(at(2.0 - 1j), "complex_symmetric")
+    handle.refactorize(at(1.0 - 1j), frequency=1.0)
+    handle.solve(B)
+    base_bytes = handle.nbytes
+    # the factors alone are over the default budget
+    machine[0] = peak
+    monkeypatch.setattr(cache, "_physical_memory", lambda: 3 * base_bytes // 2)
+    entries = EntryCache()
+    budget = cache.retain_budget(None)
+    entries.give_plan(("k",), TOPOLOGY, handle, budget=budget)
+    taken = entries.take_plan(("k",))
+    taken.refactorize(at(1.0 - 1j + 1e-3), frequency=1.0)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        report.solve_step(taken, problem="driven", direction="forward", iterations=())
+    (record,) = caplog.records
+    assert record.action == action
+    if action == "refactorized":
+        assert record.reason == "factors released (retain_memory)"
+        assert (record.base_bytes, record.budget_bytes) == (base_bytes, budget)
+    handle.free()
 
 
 # --- consumed entries (ADR 0081) ---------------------------------------------------
@@ -346,16 +609,19 @@ def test_a_pullback_after_a_later_forward_runs_its_own_again(stack, forwards):
 # --- a kept forward solve --------------------------------------------------------
 
 
-def test_kept_electrostatic_solve_holds_the_potentials_and_no_solver(model):
-    # a capacitance gradient needs no solve: the factorization is not kept
+def test_kept_electrostatic_solve_holds_the_potentials_and_its_operator(model):
+    # the operator serves an energy or potential gradient (ADR 0125); the
+    # cache drops it before the potentials
     problem = gfem.Electrostatic(terminals={"top": "top"}, ground="bottom")
     rule = ElectrostaticRule(model, problem, gfem.SolverOptions(order=2))
     outputs, entry = rule.forward(model, keep=True)
     assert entry is not None
     assert entry.physics == "em"
-    assert entry.handle is None
+    assert entry.handle.nbytes > 0
     phi = entry.fields["potential"]
     assert phi.shape[1] == 1
+    assert entry.nbytes == phi.nbytes + entry.handle.nbytes
+    entry.handle.free_base(None)
     assert entry.nbytes == phi.nbytes
     # 1 V on the top plate, 0 V on the bottom one
     assert phi[:, 0].max() == pytest.approx(1.0, abs=1e-6)

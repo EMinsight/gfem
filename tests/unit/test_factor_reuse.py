@@ -1,11 +1,13 @@
 """Direct factors reused across designs under the amortized rule (ADR 0094).
 
-The rule on synthetic and recorded costs, with no timing; then a serial PARDISO
-handle with its gate forced (`DirectHandle._reuse_pays`), and left alone.
+The rule on synthetic and recorded counts, with no clock; the counts PARDISO
+and sparse Cholesky report; then a direct handle (PARDISO or sparse Cholesky)
+with its gate forced (`DirectHandle._reuse_pays`), and left alone.
 """
 
 import importlib.metadata
 import itertools
+from types import SimpleNamespace
 
 import ngsolve as ngs
 import numpy as np
@@ -16,15 +18,16 @@ import gfem
 from gfem._engine import cache, quadrature
 from gfem._engine.mesh import to_ngsolve
 from gfem._engine.system_operator import PlanSlot, SystemSweep
-from gfem._linalg import Operator, prepare
-from gfem._linalg.direct import DirectHandle
+from gfem._linalg import Operator, direct, prepare
+from gfem._linalg.direct import DirectHandle, UpdateFactors
 from gfem._linalg.factor_reuse import (
     FIRST_ITERATIONS,
     REPROBE_STEPS,
-    REUSE_MIN_REFACTOR_SECONDS,
     REUSED_TOLERANCE,
     AmortizedRule,
+    kappa,
 )
+from gfem._linalg.pardiso import PardisoFactors, factor_nonzeros
 from gfem._linalg.pieces import AssembledPieces, PieceSum
 
 F = 1.0
@@ -32,13 +35,18 @@ F = 1.0
 # --- the rule ------------------------------------------------------------------------
 
 
-def _refactorized_step(rule, *, t22=10.0, t33=0.1, columns=6, frequency=F):
-    rule.refactorized(t22, frequency)
-    rule.solved_direct(columns, columns * t33)
+def _rule(ratio=100.0, *, above_floor=True):
+    """A rule on a plan whose refactorization costs ``ratio`` direct columns."""
+    return AmortizedRule(ratio, above_floor=above_floor)
 
 
-def _reused_step(rule, *, seconds, iterations=5, columns=6):
-    rule.solved_reused(columns, iterations * columns, seconds)
+def _refactorized_step(rule, *, columns=6, frequency=F):
+    rule.refactorized(frequency)
+    rule.solved_direct(columns)
+
+
+def _reused_step(rule, *, iterations=5, columns=6):
+    rule.solved_reused(columns, iterations * columns)
 
 
 def _next(rule, *, frequency=F, held=True, pays=None):
@@ -48,116 +56,141 @@ def _next(rule, *, frequency=F, held=True, pays=None):
 
 
 def test_after_a_refactorization_the_next_step_reuses():
-    rule = AmortizedRule()
+    rule = _rule()
     _refactorized_step(rule)
     assert _next(rule)
 
 
 def test_reuse_continues_while_the_last_reused_step_costs_less_than_the_mean():
-    rule = AmortizedRule()
-    _refactorized_step(rule)  # 10.6 s
+    rule = _rule()
+    _refactorized_step(rule)  # 100 + 6 columns
     assert _next(rule)
-    _reused_step(rule, seconds=3.0)  # mean (10.6 + 3) / 2 = 6.8
+    _reused_step(rule, iterations=5)  # 30: mean (106 + 30) / 2 = 68
     assert _next(rule)
-    _reused_step(rule, seconds=6.0)  # mean 6.53: 6 below it
+    _reused_step(rule, iterations=10)  # 60: mean 65.3, 60 below it
     assert _next(rule)
 
 
 def test_a_reused_step_at_the_mean_refactorizes():
-    rule = AmortizedRule()
-    _refactorized_step(rule, t22=10.0, t33=0.1)  # 10.6 s
+    rule = _rule(94.0)
+    _refactorized_step(rule)  # 94 + 6 = 100 columns
     assert _next(rule)
-    _reused_step(rule, seconds=10.6)  # mean (10.6 + 10.6) / 2: at it
+    rule.solved_reused(6, 20)  # I1 3.3 keeps the gate open; mean 60
+    assert _next(rule)
+    rule.solved_reused(6, 60)  # mean (100 + 20 + 60) / 3 = 60: at it
     assert not _next(rule)
+    assert rule.reason == "chain"
+
+
+# ticket 02's amortized run on the 2.49M-DOF 3D bend, 16 threads
+# (probes/02/all/t16-amort): each chain's reused steps, in GMRES iterations
+# per column of 6 columns; its measured R = t22 / t33 was 89-92 columns
+RECORDED_CHAINS = (
+    (14, 19),
+    (11, 15),
+    (10, 12, 13),
+    (7, 9, 11),
+    (8, 10, 12),
+    (9, 12, 17),
+)
+
+
+def _recorded_decisions(ratio):
+    rule = _rule(ratio)
+    steps = []
+    for reused in RECORDED_CHAINS:
+        steps.append("F" if not steps else ("u" if _next(rule) else "R"))
+        _refactorized_step(rule)
+        for iterations in reused:
+            steps.append("u" if _next(rule) else "R")
+            _reused_step(rule, iterations=iterations)
+    return "".join(steps)
 
 
 def test_the_recorded_16_thread_run_gives_its_refactorization_pattern():
-    # ticket 02's amortized run on the 2.49M-DOF 3D bend, 16 threads
-    # (probes/02/all/t16-amort): t22, a step's direct seconds; then each
-    # reused step's GMRES seconds and iterations per column, 6 columns
-    chains = [
-        (75.79, 5.1, [(71.5, 14), (96.7, 19)]),
-        (76.37, 5.0, [(56.0, 11), (76.1, 15)]),
-        (76.38, 5.1, [(50.7, 10), (61.1, 12), (68.0, 13)]),
-        (76.45, 5.1, [(35.5, 7), (45.6, 9), (56.0, 11)]),
-        (76.33, 5.1, [(40.8, 8), (50.8, 10), (60.8, 12)]),
-        (76.33, 5.0, [(46.0, 9), (61.1, 12), (86.7, 17)]),
-    ]
-    rule = AmortizedRule()
-    steps = []
-    for t22, direct, reused in chains:
-        steps.append("F" if not steps else ("u" if _next(rule) else "R"))
-        rule.refactorized(t22, F)
-        rule.solved_direct(6, direct)
-        for seconds, iterations in reused:
-            steps.append("u" if _next(rule) else "R")
-            rule.solved_reused(6, 6 * iterations, seconds)
-    assert "".join(steps) == "FuuRuuRuuuRuuuRuuuRuuu"
+    assert _recorded_decisions(90.0) == "FuuRuuRuuuRuuuRuuuRuuu"
+
+
+def test_the_same_counts_give_the_same_decisions():
+    # a pure function of the counts: no clock, so a script repeats them
+    assert _recorded_decisions(90.0) == _recorded_decisions(90.0)
+
+
+@pytest.mark.parametrize("s", [0.95, 1.05])
+def test_a_model_ratio_near_the_measured_one_gives_the_same_decisions(s):
+    # R-hat = s R: a calibration a few percent off chooses as the measured R
+    assert _recorded_decisions(s * 90.0) == _recorded_decisions(90.0)
 
 
 def test_the_gate_is_off_while_r_over_c_is_below_the_first_reused_iterations():
-    rule = AmortizedRule()
-    # R = 10 / 0.25 = 40, C = 6: R/C = 6.7, below the starting I1 = 10
-    _refactorized_step(rule, t22=10.0, t33=0.25)
+    rule = _rule(25.0)  # R/C = 25 / 6 = 4.2, below the starting I1 = 5
+    _refactorized_step(rule)
     assert not _next(rule)
 
 
+def test_the_gate_starts_at_five_iterations():
+    # ticket 15: the fewest iterations per column measured at lag 1 (CPW, 5)
+    assert FIRST_ITERATIONS == 5.0
+    rule = _rule(36.0)  # R/C = 6: the 4-port CPWs reuse from the second step
+    _refactorized_step(rule)
+    assert _next(rule)
+
+
 def test_the_gate_is_on_at_r_over_c_at_least_the_first_reused_iterations():
-    rule = AmortizedRule()
-    # R/C = 10 / 0.1 / 6 = 16.7 >= 10
-    _refactorized_step(rule, t22=10.0, t33=0.1)
+    rule = _rule(100.0)  # R/C = 16.7 >= 5
+    _refactorized_step(rule)
     assert _next(rule)
 
 
 def test_the_first_reused_step_of_a_chain_sets_the_iterations_the_gate_compares():
-    rule = AmortizedRule()
-    _refactorized_step(rule, t22=10.0, t33=0.1)  # R/C 16.7
+    rule = _rule()  # R/C 16.7
+    _refactorized_step(rule)
     assert _next(rule)
-    _reused_step(rule, seconds=2.0, iterations=20)  # I1 = 20 > 16.7
+    _reused_step(rule, iterations=20)  # I1 = 20 > 16.7
     assert not _next(rule)
 
 
 def test_a_closed_gate_reprobes_after_five_refactorized_steps_and_refreshes_i1():
     # the closing run at 16 threads: one reused step at I1 above R/C closed
     # the gate, and nothing measured I1 again
-    rule = AmortizedRule()
-    _refactorized_step(rule, t22=10.0, t33=0.1)  # R/C 16.7
+    rule = _rule()  # R/C 16.7
+    _refactorized_step(rule)
     assert _next(rule)
-    _reused_step(rule, seconds=2.0, iterations=20)  # I1 = 20: closed
+    _reused_step(rule, iterations=20)  # I1 = 20: closed
     for _ in range(REPROBE_STEPS):
         assert not _next(rule)
-        _refactorized_step(rule, t22=10.0, t33=0.1)
+        _refactorized_step(rule)
     assert _next(rule)  # the probe
-    _reused_step(rule, seconds=2.0, iterations=8)
+    _reused_step(rule, iterations=8)
     assert _next(rule)  # I1 = 8 <= R/C 16.7: open again
     assert rule.first_iterations == 8
 
 
 def test_the_reprobe_waits_five_refactorized_steps():
     assert REPROBE_STEPS == 5
-    rule = AmortizedRule()
-    _refactorized_step(rule, t22=10.0, t33=0.25)  # R/C 6.7 < 10
+    rule = _rule(25.0)  # R/C 4.2 < 5
+    _refactorized_step(rule)
     for _ in range(REPROBE_STEPS - 1):
         assert not _next(rule)
-        _refactorized_step(rule, t22=10.0, t33=0.25)
+        _refactorized_step(rule)
     assert not _next(rule)  # the fifth closed step
-    _refactorized_step(rule, t22=10.0, t33=0.25)
+    _refactorized_step(rule)
     assert _next(rule)
 
 
 def test_a_probe_that_leaves_the_gate_closed_doubles_the_wait():
-    # the 381k-DOF bend: R/C 6.8 never reaches the lag-1 iterations, so each
-    # probe saves nothing; the probes thin out instead of coming every sixth step
-    rule = AmortizedRule()
-    _refactorized_step(rule, t22=10.0, t33=0.25)  # R/C 6.7 < 10
+    # a model whose R/C never reaches the lag-1 iterations: each probe saves
+    # nothing; the probes thin out instead of coming every sixth step
+    rule = _rule(25.0)  # R/C 4.2 < 5
+    _refactorized_step(rule)
     opened = []
     for _ in range(60):
         reused = _next(rule)
         opened.append(reused)
         if reused:
-            _reused_step(rule, seconds=2.0, iterations=12)  # I1 12 > 6.7
+            _reused_step(rule, iterations=12)  # I1 12 > 4.2
         else:
-            _refactorized_step(rule, t22=10.0, t33=0.25)
+            _refactorized_step(rule)
     probes = [k for k, reused in enumerate(opened) if reused]
     assert probes[0] == REPROBE_STEPS
     gaps = [b - a for a, b in itertools.pairwise(probes)]
@@ -167,67 +200,66 @@ def test_a_probe_that_leaves_the_gate_closed_doubles_the_wait():
 
 
 def test_a_gate_closed_by_the_floor_never_reprobes():
-    rule = AmortizedRule()
+    rule = _rule(1e4, above_floor=False)
     for _ in range(3 * REPROBE_STEPS):
-        _refactorized_step(rule, t22=0.5 * REUSE_MIN_REFACTOR_SECONDS, t33=1e-5)
+        _refactorized_step(rule)
         assert not _next(rule)
 
 
-def test_the_gate_is_off_when_the_last_refactorization_took_under_the_floor():
-    rule = AmortizedRule()
-    # R/C = 1e4, but the refactorization took half a second
-    _refactorized_step(rule, t22=0.5 * REUSE_MIN_REFACTOR_SECONDS, t33=1e-5)
+def test_the_gate_is_off_on_a_plan_below_the_floor():
+    rule = _rule(1e4, above_floor=False)  # R/C 1667, but a small model
+    _refactorized_step(rule)
     assert not _next(rule)
 
 
 def test_another_frequency_refactorizes():
-    rule = AmortizedRule()
+    rule = _rule()
     _refactorized_step(rule, frequency=1.0)
     assert not _next(rule, frequency=2.0)
 
 
 def test_a_frequency_not_told_refactorizes():
-    rule = AmortizedRule()
+    rule = _rule()
     _refactorized_step(rule)
     assert not _next(rule, frequency=None)
 
 
 def test_released_factors_refactorize():
-    rule = AmortizedRule()
+    rule = _rule()
     _refactorized_step(rule)
     assert not _next(rule, held=False)
 
 
 def test_a_forced_gate_still_needs_a_refactorization_to_start_a_chain():
-    # the first factorization (the handle's creation) is not timed
-    rule = AmortizedRule()
+    # the first factorization (the handle's creation) is no step
+    rule = _rule()
     assert not _next(rule, pays=lambda: True)
 
 
 def test_ending_the_chain_refactorizes_the_next_step():
-    rule = AmortizedRule()
+    rule = _rule()
     _refactorized_step(rule)
     rule.end_chain()
     assert not _next(rule, pays=lambda: True)
 
 
 def test_the_cap_is_r_over_c_rounded_up_plus_one():
-    rule = AmortizedRule()
-    _refactorized_step(rule, t22=10.0, t33=0.1, columns=6)  # R/C = 16.67
+    rule = _rule(100.0)
+    _refactorized_step(rule, columns=6)  # R/C = 16.67
     assert _next(rule)
     assert rule.cap == 18
 
 
 def test_a_capped_reused_step_starts_a_new_chain():
-    rule = AmortizedRule()
+    rule = _rule()
     _refactorized_step(rule)
     assert _next(rule)
-    _reused_step(rule, seconds=1.0, columns=1)
+    _reused_step(rule, iterations=18, columns=1)
     # the handle refactorizes at the new matrix and finishes direct
-    rule.refactorized(12.0, F)
-    rule.solved_direct(5, 0.5)
-    assert _next(rule)  # a new chain: its first reused step
-    _reused_step(rule, seconds=11.0)  # mean (12 + 6 * 0.1 + 11) / 2 = 11.8
+    rule.refactorized(F)
+    rule.solved_direct(5)
+    assert _next(rule)  # a new chain (100 + 6 columns): its first reused step
+    _reused_step(rule, iterations=11)  # 66: mean (106 + 66) / 2 = 86
     assert _next(rule)
 
 
@@ -235,7 +267,123 @@ def test_the_reused_stop_is_a_twentieth_of_the_tolerance():
     assert REUSED_TOLERANCE == 0.05
 
 
-# --- a PARDISO handle ----------------------------------------------------------------
+def _reason(rule, **kwargs):
+    reused = _next(rule, **kwargs)
+    return None if reused else rule.reason
+
+
+def test_each_refactorized_step_reports_the_first_failing_condition():
+    # the order of next_step: chain started, held, frequency, gate, chain stop
+    rule = _rule()
+    assert _reason(rule, pays=lambda: True) == "first"
+    _refactorized_step(rule)
+    assert _reason(rule, held=False) == "factors released (retain_memory)"
+    rule = _rule()
+    _refactorized_step(rule, frequency=1.0)
+    assert _reason(rule, frequency=2.0, held=False) == (
+        "factors released (retain_memory)"
+    )
+    _refactorized_step(rule, frequency=1.0)
+    assert _reason(rule, frequency=2.0, pays=lambda: False) == "other frequency"
+    _refactorized_step(rule)
+    assert _reason(rule, frequency=None) == "other frequency"
+
+
+def test_a_closed_gate_reports_the_floor_before_the_ratio():
+    rule = _rule(1e4, above_floor=False)
+    _refactorized_step(rule)
+    assert _reason(rule) == "below floor"
+    rule = _rule(25.0)
+    _refactorized_step(rule)  # R/C 4.2 < I1 = 5
+    assert _reason(rule) == "gate"
+    assert rule.ratio == pytest.approx(25.0 / 6)
+    assert rule.first_iterations == FIRST_ITERATIONS
+
+
+def test_a_chain_past_its_mean_reports_chain():
+    rule = _rule(94.0)
+    _refactorized_step(rule)  # 100 columns
+    assert _reason(rule) is None
+    rule.solved_reused(6, 20)
+    assert _reason(rule) is None
+    rule.solved_reused(6, 70)  # mean 63.3
+    assert _reason(rule) == "chain"
+
+
+def test_a_release_or_a_new_plan_ending_the_chain_names_its_cause():
+    rule = _rule()
+    _refactorized_step(rule)
+    rule.end_chain(released=True)
+    assert _reason(rule, held=False) == "factors released (retain_memory)"
+    _refactorized_step(rule)
+    rule.end_chain()
+    assert _reason(rule) == "first"
+
+
+def test_a_capped_column_reports_capped():
+    rule = _rule()
+    _refactorized_step(rule)
+    assert _next(rule)
+    assert rule.reason is None
+    rule.refactorized(F)
+    assert rule.reason == "capped"
+
+
+# --- the counts ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("threads", "expected"),
+    [
+        (1, 0.0113),  # a table entry
+        (6, 0.0075 + (0.0060 - 0.0075) * np.log(6 / 4) / np.log(2)),  # 4 to 8
+        (12, 0.0060 + (0.0037 - 0.0060) * np.log(12 / 8) / np.log(2)),  # 8 to 16
+        (112, 0.0018),  # at or past 56
+    ],
+)
+def test_kappa_is_interpolated_log_linearly_in_the_thread_count(threads, expected):
+    assert kappa(threads) == pytest.approx(expected, rel=1e-12)
+
+
+def test_a_factor_nonzero_count_past_int32_reads_unsigned():
+    # the 2.49M-DOF bend at 8 threads (MN5 job 49006702): iparm[17] and [16]
+    assert factor_nonzeros(-2065854147, 36411405) == 2_229_113_149
+
+
+def test_a_factor_nonzero_count_wrapped_past_2_32_is_corrected_by_the_factor_size():
+    true = 3 * 2**32 + 12345
+    wrapped = (true + 2**31) % 2**32 - 2**31  # as int32
+    kib = true * 18 // 1024  # about 18 B per complex entry, as measured
+    assert factor_nonzeros(wrapped, kib) == true
+    # real entries take 8 B
+    assert factor_nonzeros(wrapped, true * 9 // 1024, entry_bytes=8) == true
+
+
+def _pardiso(mflop, nnz, kib, threads):
+    params = [0] * 64
+    params[16], params[17], params[18] = kib, nnz, mflop
+    inverse = SimpleNamespace(_params=params, _gfem_threads=threads)
+    return PardisoFactors(inverse, np.ones(10, dtype=bool))
+
+
+def test_pardiso_counts_give_the_model_ratio_and_the_floor():
+    # the 2.49M-DOF bend: F / nnz(L) = 20900, 8 threads: R-hat about 125
+    factors = _pardiso(46587563, -2065854147, 36411405, 8)
+    assert factors.model_ratio() == pytest.approx(0.0060 * 46587563e6 / 2229113149)
+    assert factors.above_floor()
+    assert _pardiso(100_000, 10**6, 10**4, 8).above_floor()
+    assert not _pardiso(99_999, 10**6, 10**4, 8).above_floor()
+
+
+def test_sparse_cholesky_counts_give_the_model_ratio_and_the_floor():
+    factors = UpdateFactors(SimpleNamespace(nze=5.3e8), 381_134)
+    assert factors.model_ratio() == pytest.approx(0.14 * 5.3e8 / 381_134)
+    assert factors.above_floor()
+    assert UpdateFactors(SimpleNamespace(nze=2e7), 10**5).above_floor()
+    assert not UpdateFactors(SimpleNamespace(nze=2e7 - 1), 10**5).above_floor()
+
+
+# --- a direct handle -----------------------------------------------------------------
 
 
 def _mkl_installed() -> bool:
@@ -247,6 +395,16 @@ def _mkl_installed() -> bool:
 
 
 needs_mkl = pytest.mark.skipif(not _mkl_installed(), reason="needs the mkl extra")
+
+
+@pytest.fixture(
+    params=[pytest.param("pardiso", marks=needs_mkl), "sparsecholesky"],
+)
+def backend(request, monkeypatch):
+    """The direct handle's factorization: PARDISO, or the fallback without MKL."""
+    if request.param == "sparsecholesky":
+        monkeypatch.setattr(direct, "pardiso_inverse", lambda *_, **__: None)
+    return request.param
 
 
 @pytest.fixture(scope="module")
@@ -307,11 +465,11 @@ def _chain(built, tolerance=1e-6):
 
 @pytest.fixture
 def uncapped(monkeypatch):
-    # a test-sized R/C gives a cap of a few iterations, which the timing sets
+    # a test-sized R/C gives a cap of a few iterations, which the counts set
     monkeypatch.setattr(AmortizedRule, "cap", property(lambda _: 100))
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced", "uncapped")
 def test_a_nearby_design_is_solved_on_the_kept_factors_to_a_twentieth_of_the_tolerance(
     built,
@@ -329,7 +487,7 @@ def test_a_nearby_design_is_solved_on_the_kept_factors_to_a_twentieth_of_the_tol
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced")
 def test_a_column_past_the_cap_refactorizes_and_finishes_direct(built, monkeypatch):
     monkeypatch.setattr(AmortizedRule, "cap", property(lambda _: 3))
@@ -347,7 +505,7 @@ def test_a_column_past_the_cap_refactorizes_and_finishes_direct(built, monkeypat
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced")
 def test_a_capped_column_counts_once_in_its_step(built, monkeypatch):
     monkeypatch.setattr(AmortizedRule, "cap", property(lambda _: 3))
@@ -361,7 +519,7 @@ def test_a_capped_column_counts_once_in_its_step(built, monkeypatch):
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced", "uncapped")
 def test_the_same_design_again_is_no_reused_step(built):
     handle, B = _chain(built)
@@ -412,7 +570,7 @@ def sums(monkeypatch):
     return count
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced", "uncapped")
 def test_a_new_piece_sum_is_summed_once_whether_reused_or_refactorized(built, sums):
     at, B = _piece_sums(built)
@@ -429,7 +587,7 @@ def test_a_new_piece_sum_is_summed_once_whether_reused_or_refactorized(built, su
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced", "uncapped")
 def test_the_same_piece_sum_again_is_not_summed_and_is_no_step(built, sums):
     at, B = _piece_sums(built)
@@ -450,7 +608,7 @@ def test_the_same_piece_sum_again_is_not_summed_and_is_no_step(built, sums):
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced")
 def test_a_release_ends_the_chain(built):
     handle, B = _chain(built)
@@ -463,7 +621,73 @@ def test_a_release_ends_the_chain(built):
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
+@pytest.mark.usefixtures("forced", "uncapped")
+def test_a_handle_names_each_steps_action_reason_and_numbers(built):
+    def step(handle):
+        return handle.last_action, handle.last_reason
+
+    op, space = _helmholtz(built, 2.0 - 1j)
+    handle = DirectHandle.from_operator(op, "complex_symmetric")
+    assert step(handle) == ("factorized", "first")
+    handle.refactorize(_helmholtz(built, 1.0 - 1j)[0], frequency=F)
+    assert step(handle) == ("refactorized", "first")
+    B = _loads(space)
+    handle.solve(B)
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 1e-3)[0], frequency=F)
+    assert step(handle) == ("reused", None)
+    handle.solve(B)
+    # the same values again: nothing refactorized, the factors held
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 1e-3)[0], frequency=F)
+    assert step(handle) == ("held", "same design")
+    handle.note_release(base_bytes=123, budget_bytes=45)
+    handle.release_factors()
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 2e-3)[0], frequency=F)
+    assert step(handle) == ("refactorized", "factors released (retain_memory)")
+    assert handle.last_details == {"base_bytes": 123, "budget_bytes": 45}
+    handle.solve(B)
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 3e-3)[0], frequency=2 * F)
+    assert step(handle) == ("refactorized", "other frequency")
+    assert handle.last_details == {}
+    handle.free()
+
+
+@pytest.mark.usefixtures("backend")
+def test_a_handle_counts_its_plan_and_a_small_model_is_below_the_floor(built):
+    handle, _ = _chain(built)
+    assert handle._rule.model_ratio > 0
+    assert not handle._rule.above_floor
+    handle.free()
+
+
+@pytest.mark.usefixtures("backend")
+def test_a_closed_gate_gives_its_ratio_and_first_iterations(built, monkeypatch):
+    monkeypatch.setattr(DirectHandle, "_reuse_pays", lambda _: False)
+    handle, _ = _chain(built)
+    handle._rule.above_floor = True  # as a large model
+    handle.refactorize(_helmholtz(built, 1.0 - 1j + 1e-3)[0], frequency=F)
+    assert handle.last_reason == "gate"
+    assert set(handle.last_details) == {"ratio", "first_iterations"}
+    assert handle.last_details["first_iterations"] == FIRST_ITERATIONS
+    handle.free()
+
+
+@pytest.mark.usefixtures("backend")
+@pytest.mark.usefixtures("forced")
+def test_a_capped_column_names_its_step(built, monkeypatch):
+    monkeypatch.setattr(AmortizedRule, "cap", property(lambda _: 3))
+    handle, B = _chain(built)
+    handle.refactorize(_helmholtz(built, 30.0 + 5j)[0], frequency=F)
+    assert handle.last_action == "reused"
+    handle.solve(B)
+    assert (handle.last_action, handle.last_reason) == (
+        "reused, capped, refactorized",
+        "capped",
+    )
+    handle.free()
+
+
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced")
 def test_a_refactorization_after_reused_steps_solves_exactly(built):
     # the gather index was built from the factored values, not a reused write
@@ -480,7 +704,7 @@ def test_a_refactorization_after_reused_steps_solves_exactly(built):
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced")
 def test_another_frequency_refactorizes_even_with_the_gate_forced(built):
     handle, B = _chain(built)
@@ -490,7 +714,7 @@ def test_another_frequency_refactorizes_even_with_the_gate_forced(built):
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 @pytest.mark.usefixtures("forced")
 def test_a_general_operator_never_reuses(built):
     op, space = _helmholtz(built, 1.0 - 1j)
@@ -503,7 +727,7 @@ def test_a_general_operator_never_reuses(built):
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 def test_a_small_model_never_reuses_without_the_gate_forced(built):
     # the floor: its refactorization takes milliseconds
     handle, B = _chain(built)
@@ -513,7 +737,7 @@ def test_a_small_model_never_reuses_without_the_gate_forced(built):
     handle.free()
 
 
-@needs_mkl
+@pytest.mark.usefixtures("backend")
 def test_a_handle_taken_from_the_pool_solves_at_the_taking_sweeps_tolerance(built):
     # a backward prepared it at the adjoint tolerance; a forward takes it next
     op, _ = _helmholtz(built, 1.0 - 1j)
@@ -522,7 +746,7 @@ def test_a_handle_taken_from_the_pool_solves_at_the_taking_sweeps_tolerance(buil
     slot = PlanSlot(("site",), topology, budget=2**40)
     cache.ENTRIES.clear()
     try:
-        cache.ENTRIES.give_plan(slot.key(), topology, adjoint, slot.budget)
+        cache.ENTRIES.give_plan(slot.key(F), topology, adjoint, slot.budget)
         forward = SystemSweep(
             lambda _: _helmholtz(built, 1.0 - 1j + 1e-3)[0],
             lambda base, _: base,

@@ -18,6 +18,7 @@ import gfem
 from gfem._sweep.adaptive import (
     AffineSystem,
     AffineTerm,
+    ReducedModel,
     _next_sample,
     adaptive_sweep,
 )
@@ -143,6 +144,33 @@ def test_a_low_rank_operator_term_is_projected_with_its_coefficient():
     )
     np.testing.assert_allclose(
         sweep.model.matrix(w), full, atol=1e-12 * np.abs(full).max()
+    )
+
+
+def test_a_conjugated_output_term_projects_like_an_explicit_conjugate():
+    system, *_ = _system()
+    rng = np.random.default_rng(3)
+    v = rng.standard_normal((N, 3)) + 1j * rng.standard_normal((N, 3))
+    rows = rng.standard_normal((2, 3)) + 1j * rng.standard_normal((2, 3))
+    flagged = AffineTerm(v, lambda _: rows, conjugate=True)
+    explicit = AffineTerm(np.conj(v), lambda _: rows)
+    models = [
+        ReducedModel(dataclasses.replace(system, outputs=(t,)))
+        for t in (flagged, explicit)
+    ]
+    snapshots = rng.standard_normal((N, 2)) + 1j * rng.standard_normal((N, 2))
+    for model in models:
+        model.extend(snapshots[:, :1])
+        model.extend(snapshots[:, 1:])
+    np.testing.assert_allclose(
+        models[0].outputs[0], models[1].outputs[0], rtol=1e-14, atol=0
+    )
+    x = rng.standard_normal((N, 2)) + 1j * rng.standard_normal((N, 2))
+    np.testing.assert_allclose(
+        flagged.project(x), np.conj(v).T @ x, rtol=1e-14, atol=1e-14
+    )
+    np.testing.assert_allclose(
+        flagged.combine(rows.T), np.conj(v) @ rows.T, rtol=1e-14, atol=1e-14
     )
 
 

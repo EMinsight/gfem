@@ -263,9 +263,10 @@ The numerical settings are apart from the model and the problem, in
 
 - `order` is the {term}`element order`, 2 by default. Order 3 is more
   accurate on the same mesh and costs more time and memory.
-- `linear_solver` is `"auto"` by default: an iterative solver for driven and
-  electrostatic problems, a direct one for eigenmodes. `"direct"` suits small
-  and medium models on one machine.
+- `linear_solver` is `"auto"` by default: for a driven problem on one
+  machine, the direct solver while its factorization fits in half the memory,
+  else an iterative one; an iterative solver for electrostatic problems, and
+  a direct one for eigenmodes.
 - `tolerance` is where the iterative solver stops (1e-6, relative to the
   right-hand side). It is not the error of S.
 - `gfem.SolverOptions.preset("fast")` and `preset("accurate")` set these in
@@ -288,10 +289,9 @@ print(abs(s21[3]), abs(finer.s["p2", "p1"][0]))  # |S21| at 5 GHz, orders 2 and 
 ```
 
 ```text
-[0.99999941 0.99999999 1.00000047 0.99999978 1.00000003 1.00000028
- 1.        ]
+[1. 1. 1. 1. 1. 1. 1.]
 True
-0.9013322305443373 0.9013341565407679
+0.9013321719282609 0.9013341565407665
 ```
 
 - Here the power balance holds to better than 1e-6. A larger gap in a model

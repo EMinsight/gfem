@@ -7,6 +7,7 @@ sweep (``frequency_workers=1``) on a small parallel-plate line. Each
 worker sweep pays the workers' start-up (seconds), so the tests are few.
 """
 
+import logging
 import os
 import warnings
 from pathlib import Path
@@ -31,6 +32,7 @@ import gfem
 from gfem._engine import cache, driven, runtime, workers
 from gfem._engine.driven import DrivenRule, _solve_block
 from gfem._linalg import prepare
+from gfem._linalg.direct import DirectHandle
 
 DATA = Path(__file__).parent / "data"
 FREQUENCIES = (3e9, 3.5e9, 4e9, 4.5e9)
@@ -172,7 +174,7 @@ def test_a_worker_does_not_repeat_the_parents_port_mode_warnings():
     with warnings.catch_warnings():
         warnings.simplefilter("error", gfem.SkippedPortModeWarning)
         warnings.simplefilter("error", gfem.PortModeProjectionWarning)
-        outputs, _, reason = _solve_block(
+        outputs, _, reason, _ = _solve_block(
             *workers.model_parts(model), problem, options, keep=False
         )
     assert reason is None
@@ -203,12 +205,15 @@ def test_two_exact_workers_give_the_sequential_sweep(line, monkeypatch, linear_s
     # a kept frequency in each block: the fields join in frequency order
     problem = gfem.Driven(FREQUENCIES, keep_fields=(3.5e9, 4.5e9))
     calls = _count_prepares(monkeypatch)
+    cache.ENTRIES.clear()  # no pooled base of an earlier test serves
     one, one_entry = _forward(line, problem, keep=True, linear_solver=linear_solver)
-    assert len(calls) == 1
+    # one base: direct meets each frequency for the first time (ADR 0121)
+    planned = 1
+    assert len(calls) == planned
     two, two_entry = _forward(
         line, problem, keep=True, linear_solver=linear_solver, frequency_workers=2
     )
-    assert len(calls) == 1  # the parent solved nothing
+    assert len(calls) == planned  # the parent solved nothing
     np.testing.assert_allclose(two["s"], one["s"], rtol=0, atol=1e-12)
     np.testing.assert_array_equal(two["z_ref"], one["z_ref"])
     assert two["iterations"] == one["iterations"] == [()] * 4
@@ -221,11 +226,19 @@ def test_two_exact_workers_give_the_sequential_sweep(line, monkeypatch, linear_s
     one_entry.free()
 
 
-def test_two_bddc_workers_agree_to_the_solver_tolerance(line):
+def test_two_bddc_workers_agree_to_the_solver_tolerance(line, caplog):
     # a kept frequency in each block: the fields join in frequency order
     problem = gfem.Driven(FREQUENCIES, keep_fields=(3.5e9, 4.5e9))
     one, _ = _forward(line, problem, linear_solver="bddc_gmres")
+    caplog.set_level(logging.INFO, logger="gfem.solver")
     two, _ = _forward(line, problem, linear_solver="bddc_gmres", frequency_workers=2)
+    # each block sets BDDC up at its first frequency and reuses it at its second
+    assert two["reused"] == [False, True, False, True]
+    # the workers' records, logged here in frequency order
+    logged = [r for r in caplog.records if r.name == "gfem.solver"]
+    assert [r.frequency for r in logged] == list(FREQUENCIES)
+    assert [r.action for r in logged] == ["factorized", "reused"] * 2
+    assert [r.iterations for r in logged] == two["iterations"]
     # each block's GMRES starts cold, so S moves within the tolerance
     np.testing.assert_allclose(two["s"], one["s"], rtol=0, atol=1e-6)
     assert len(two["iterations"]) == 4
@@ -249,6 +262,61 @@ def _in_process(monkeypatch):
         return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
 
     monkeypatch.setattr(workers, "run", run)
+
+
+def test_a_worker_keeps_nothing_and_plans_once(line, monkeypatch):
+    handed = []
+
+    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+        handed.extend(a[-2].retain_memory for a in arguments)
+        keywords = keywords or [{}] * len(arguments)
+        return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
+
+    monkeypatch.setattr(workers, "run", run)
+    calls = _count_factorizations(monkeypatch)
+    cache.ENTRIES.clear()
+    options = gfem.SolverOptions(linear_solver="direct", frequency_workers=2)
+    gfem.solve(line, gfem.Driven(SIX), options=options)
+    # each block of three frequencies refactorizes one base
+    assert handed == [0, 0]
+    assert len(calls) == 2
+    assert cache.ENTRIES.pooled == 0
+
+
+def _count_factorizations(monkeypatch) -> list[int]:
+    """Spy on direct handles' new plans in this process."""
+    calls = []
+    factor = DirectHandle._factor
+
+    def counted(self, *args, **kwargs):
+        calls.append(1)
+        return factor(self, *args, **kwargs)
+
+    monkeypatch.setattr(DirectHandle, "_factor", counted)
+    return calls
+
+
+@pytest.mark.parametrize("fits", [True, False])
+def test_workers_solve_with_the_parents_auto_choice(line, monkeypatch, fits):
+    handed = []
+
+    def run(function, arguments, _labels, *, threads, keywords=None):  # noqa: ARG001
+        handed.extend(a[-2].linear_solver for a in arguments)
+        keywords = keywords or [{}] * len(arguments)
+        return [function(*a, **k) for a, k in zip(arguments, keywords, strict=True)]
+
+    monkeypatch.setattr(workers, "run", run)
+    if not fits:
+        monkeypatch.setattr(driven, "default_retain_memory", lambda: 1)
+    rule = DrivenRule(
+        line, gfem.Driven(FREQUENCIES), gfem.SolverOptions(frequency_workers=2)
+    )
+    kind = "direct" if fits else "bddc_gmres"
+    assert rule.linear.kind == kind
+    outputs, _ = rule.forward(line, keep=False)
+    assert handed == [kind, kind]
+    direct = all(its == () for its in outputs["iterations"])
+    assert direct == fits
 
 
 @pytest.mark.parametrize(

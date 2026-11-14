@@ -17,6 +17,16 @@ import structured_meshes as sm
 from gradient_cases import layered_line, line_design, s_functional, tight, with_fields
 
 import gfem
+from gfem._engine.cache import ENTRIES
+from gfem._linalg.direct import DirectHandle
+from gfem._linalg.factor_reuse import (
+    CHAIN,
+    FIRST,
+    OTHER_FREQUENCY,
+    SAME_DESIGN,
+    AmortizedRule,
+)
+from gfem._linalg.pardiso import pardiso_available
 
 GRID = tuple(float(f) for f in np.linspace(10e9, 30e9, 21))
 SAMPLES = (GRID[0], GRID[20], GRID[10], GRID[4], GRID[16])
@@ -195,6 +205,82 @@ def test_pullbacks_twice_and_after_eviction_equal_fresh_gradients(line):
     )
     recompute = jax.grad(_eps_objective(line, options))
     np.testing.assert_allclose(recompute(eps), fresh, rtol=RTOL)
+
+
+# --- factors reused across designs at each sample (ADR 0121) ---------------------
+
+REUSE_TOLERANCE = 1e-6
+SAMPLE_ROWS = [GRID.index(f) for f in SAMPLES]
+
+
+def _reuse_run(line, monkeypatch, *, forced, retain_memory=None):
+    """S at the samples, gradients and each design's handle steps, 4 designs.
+
+    A step is ``(frequency, action, reason)``. The designs move by 1e-4 of a
+    random direction, so a reused solve converges in a few iterations.
+    """
+    values, rng = line_design(line, seed=3)
+    direction = jnp.asarray(rng.standard_normal(values["eps_r"].shape))
+    options = gfem.SolverOptions(
+        order=2,
+        linear_solver="direct",
+        tolerance=REUSE_TOLERANCE,
+        retain_memory=retain_memory,
+    )
+    rows = jnp.asarray(SAMPLE_ROWS)
+
+    def objective(eps):
+        model = with_fields(line, {**values, "eps_r": eps})
+        s = gfem.solve(model, ADAPTIVE, options=options).s.values[rows]
+        return s_functional(s), s
+
+    steps: list = []
+    stepped = DirectHandle._stepped
+
+    def recorded(self, action, reason):
+        steps[-1].append((self._frequency, action, reason))
+        stepped(self, action, reason)
+
+    out = []
+    with monkeypatch.context() as patch:
+        patch.setattr(DirectHandle, "_stepped", recorded)
+        if forced:
+            patch.setattr(DirectHandle, "_reuse_pays", lambda _: True)
+            patch.setattr(AmortizedRule, "cap", property(lambda _: 100))
+        step = jax.value_and_grad(objective, has_aux=True)
+        ENTRIES.clear()
+        try:
+            for k in range(4):
+                steps.append([])
+                (_, s), grad = step(values["eps_r"] + 1e-4 * k * direction)
+                out.append((np.asarray(s), np.asarray(grad)))
+        finally:
+            ENTRIES.clear()
+    return out, steps
+
+
+@pytest.mark.skipif(not pardiso_available(), reason="PARDISO's reuse (the mkl extra)")
+def test_each_frozen_sample_reuses_its_own_factors_across_designs(line, monkeypatch):
+    exact, _ = _reuse_run(line, monkeypatch, forced=False, retain_memory=0)
+    reused, steps = _reuse_run(line, monkeypatch, forced=True)
+    omegas = sorted(2 * np.pi * f for f in SAMPLES)
+    # design 0 meets each sample for the first time, its backward too (the
+    # same visit): one base, refactorized from sample to sample; design 1
+    # gives each sample its own base (ADR 0121, amended), whose chain starts
+    # at its next refactorization; then every sample reuses its own, and a
+    # backward's steps refactorize nothing
+    assert not [step for step in steps[0] if step[1] == "reused"]
+    assert {step[2] for step in steps[0]} <= {FIRST, OTHER_FREQUENCY}
+    for design in steps[1:]:
+        assert all(step[2] != OTHER_FREQUENCY for step in design)
+    reusing = {step[0] for design in steps[1:] for step in design if step[2] is None}
+    assert sorted(reusing) == omegas
+    others = {step[1:] for step in steps[3] if step[1] != "reused"}
+    assert others <= {("held", SAME_DESIGN), ("refactorized", CHAIN)}
+    for (s, grad), (s_exact, grad_exact) in zip(reused, exact, strict=True):
+        assert np.max(np.abs(s - s_exact)) <= 0.05 * REUSE_TOLERANCE
+        error = np.linalg.norm(grad - grad_exact) / np.linalg.norm(grad_exact)
+        assert error <= REUSE_TOLERANCE
 
 
 # --- a port that is not excited: its S functional joins the basis ----------------
