@@ -21,26 +21,26 @@ GIB = 2**30
 
 
 def test_direct_while_the_estimate_fits_the_budget():
-    # 40 KiB per unknown: 1000 unknowns need 40,960,000 bytes
+    # 48 KiB per unknown: 1000 unknowns need 49,152,000 bytes
     kind, _, estimate = auto_linear_solver(
-        "bddc_gmres", unknowns=1000, in_flight=1, general=False, budget=40_960_000
+        "bddc_gmres", unknowns=1000, in_flight=1, general=False, budget=49_152_000
     )
     assert kind == "direct"
-    assert estimate == 40_960_000
+    assert estimate == 49_152_000
     kind, _, _ = auto_linear_solver(
-        "bddc_gmres", unknowns=1000, in_flight=1, general=False, budget=40_959_999
+        "bddc_gmres", unknowns=1000, in_flight=1, general=False, budget=49_151_999
     )
     assert kind == "bddc_gmres"
 
 
 def test_each_factorization_in_flight_counts():
-    fits = {"unknowns": 1000, "general": False, "budget": 3 * 40 * KIB * 1000}
+    fits = {"unknowns": 1000, "general": False, "budget": 3 * 48 * KIB * 1000}
     assert auto_linear_solver("bddc_gmres", in_flight=3, **fits)[0] == "direct"
     assert auto_linear_solver("bddc_gmres", in_flight=4, **fits)[0] == "bddc_gmres"
 
 
 def test_a_bloch_operator_counts_double():
-    fits = {"unknowns": 1000, "in_flight": 1, "budget": 2 * 40 * KIB * 1000}
+    fits = {"unknowns": 1000, "in_flight": 1, "budget": 2 * 48 * KIB * 1000}
     assert auto_linear_solver("bddc_gmres", general=True, **fits)[0] == "direct"
     fits["budget"] -= 1
     assert auto_linear_solver("bddc_gmres", general=True, **fits)[0] == "bddc_gmres"
@@ -48,14 +48,14 @@ def test_a_bloch_operator_counts_double():
 
 def test_the_reason_states_unknowns_estimate_and_budget():
     _, reason, _ = auto_linear_solver(
-        "bddc_gmres", unknowns=412_336, in_flight=1, general=False, budget=16 * GIB
+        "bddc_gmres", unknowns=340_000, in_flight=1, general=False, budget=16 * GIB
     )
     assert reason == (
-        "412,336 unknowns, est. 15.7 GiB factorization <= 16.0 GiB budget "
+        "340,000 unknowns, est. 15.6 GiB factorization <= 16.0 GiB budget "
         "(half of 32 GiB)"
     )
     _, reason, _ = auto_linear_solver(
-        "bddc_gmres", unknowns=500_000, in_flight=1, general=False, budget=16 * GIB
+        "bddc_gmres", unknowns=349_526, in_flight=1, general=False, budget=16 * GIB
     )
     assert "> 16.0 GiB budget" in reason
 
@@ -100,7 +100,7 @@ def test_the_choice_is_logged_once_with_its_numbers(caplog):
     assert record.levelno == logging.INFO
     assert record.linear_solver == "direct"
     assert record.unknowns == 1000
-    assert record.estimate == 2 * 40 * KIB * 1000
+    assert record.estimate == 2 * 48 * KIB * 1000
     assert record.budget == GIB
     assert record.getMessage().startswith(
         "linear_solver='auto' chose 'direct' for this driven problem: 1,000 unknowns"

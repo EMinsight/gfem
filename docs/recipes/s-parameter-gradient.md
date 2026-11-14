@@ -149,7 +149,7 @@ process starts without it:
 
 On the CPU in one process, the default `linear_solver="auto"` already picks
 `"direct"` for a driven problem whose factorization fits in half the memory the process may use, by an estimate
-of about 40 KiB per unknown, and `"bddc_gmres"` above. The estimate is
+of about 48 KiB per unknown, and `"bddc_gmres"` above. The estimate is
 cautious: on a machine where a larger model still fits, an explicit
 `linear_solver="direct"` lifts that guard.
 

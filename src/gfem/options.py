@@ -237,7 +237,7 @@ class SolverOptions:
             per tetrahedron.
         linear_solver: ``"auto"`` (the default) picks per problem type. For
             a driven problem on the CPU in one process, ``"direct"`` when its
-            factorization (estimated at about 40 KiB per unknown, per
+            factorization (estimated at about 48 KiB per unknown, per
             frequency worker, twice that with a Bloch wave vector) fits in
             half the memory the process may use, else ``"bddc_gmres"``;
             ``"bddc_gmres"`` for electrostatic; ``"direct"`` for eigenmode

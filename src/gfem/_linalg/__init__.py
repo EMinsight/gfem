@@ -119,8 +119,9 @@ KINDS: tuple[Kind, ...] = get_args(Kind)
 #: Most Krylov iterations of an iterative solve (as Palace).
 MAXITER = 400
 #: Bytes per unknown of a direct factorization, above every measured peak
-#: (36.2 KiB, sparse Cholesky; PARDISO about half): `auto_linear_solver`.
-DIRECT_BYTES_PER_UNKNOWN = 40 * 2**10
+#: (46.9 KiB, sparse Cholesky at order 3; PARDISO 16.7-21.7 KiB):
+#: `auto_linear_solver` (ADR 0124).
+DIRECT_BYTES_PER_UNKNOWN = 48 * 2**10
 
 
 def auto_linear_solver(
