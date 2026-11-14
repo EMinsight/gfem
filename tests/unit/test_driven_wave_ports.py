@@ -194,10 +194,11 @@ def test_adaptive_s_matches_the_uniform_sweep(plate_mesh):
 
 
 @pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
-def test_a_direct_sweep_plans_once_and_matches_fresh_handles(
+def test_a_direct_sweep_plans_once_per_frequency_and_matches_fresh_handles(
     plate_mesh, monkeypatch, sweep
 ):
-    # one base handle, wrapped per frequency in a borrowing Woodbury update
+    # a pooled base per frequency (ADR 0121), wrapped in a borrowing Woodbury
+    # update
     model = line(plate_mesh, second="lumped")
     problem = gfem.Driven(F, sweep=sweep)
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
@@ -209,13 +210,22 @@ def test_a_direct_sweep_plans_once_and_matches_fresh_handles(
         return prepare(*args, **kwargs)
 
     monkeypatch.setattr("gfem._linalg.prepare", spy)
-    s = np.asarray(gfem.solve(model, problem, options=options).s.values)
+    first = gfem.solve(model, problem, options=options)
+    s = np.asarray(first.s.values)
+    solved = len(F) if sweep == "uniform" else len(first.sweep.sampled_frequencies)
+    # the sweep meets each frequency for the first time: one base
     assert len(calls) == 1
+    calls.clear()
+    gfem.solve(model, problem, options=options)
+    # the second time each frequency but the base's own gets its base
+    assert len(calls) == solved - 1
+    calls.clear()
+    gfem.solve(model, problem, options=options)
+    assert not calls  # each frequency's base came back from the pool
     # a handle that cannot refactorize is prepared afresh at each frequency
     monkeypatch.delattr(PlannedHandle, "refactorize")
     calls.clear()
     result = gfem.solve(model, problem, options=options)
-    solved = len(F) if sweep == "uniform" else len(result.sweep.sampled_frequencies)
     assert len(calls) == solved > 1
     np.testing.assert_allclose(result.s.values, s, rtol=0, atol=1e-12)
 
@@ -356,21 +366,33 @@ def test_characteristic_impedance_reads_any_eager_result(plate_mesh, plate_resul
         gfem.characteristic_impedance(inside[0], path)
 
 
+def _drop_design_guesses() -> None:
+    for disc in cache._DISCRETIZATIONS.values():
+        disc.drop_guesses()
+
+
 def test_kept_fields_with_wave_ports_run_under_jit(plate_mesh):
     fill = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
     problem = gfem.Driven(F[:2], excite="p1", keep_fields=F[1])
+    # bit for bit on BDDC; direct differs between the two solves in the last digits
+    options = dataclasses.replace(OPTIONS, linear_solver="bddc_gmres")
     inside = []
 
     def solve(eps):
         model = line(plate_mesh).with_material(
             "fill", dataclasses.replace(fill, eps_r=eps)
         )
-        result = gfem.solve(model, problem, options=OPTIONS)
+        result = gfem.solve(model, problem, options=options)
         inside.append(result.port_modes["p1"].e_field)
         return result.e_field(F[1], "p1").coefficients
 
+    # each without a design guess: BDDC would start from the previous solution
+    # at the first frequency (ADR 0126). The rest of the kept state stays: two
+    # runs from released memory differ in the last digits at two threads
+    _drop_design_guesses()
     eager = solve(fill.eps_r)
     assert inside.pop() is not None
+    _drop_design_guesses()
     traced = jax.jit(solve)(fill.eps_r)
     np.testing.assert_array_equal(traced, eager)
     # the port mode fields have no shape to declare before the solve

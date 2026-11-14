@@ -6,10 +6,11 @@ Pure NumPy on the `gfem.Mesh` arrays; the engine maps the result to NGSolve.
 from __future__ import annotations
 
 import dataclasses
+import weakref
 
 import numpy as np
 
-from gfem.mesh import _TET_FACES, Mesh
+from gfem.mesh import _TET_EDGES, _TET_FACES, Mesh
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -41,6 +42,40 @@ class EMDomain:
     def interior(self, surface: str) -> bool:
         """Some triangle of ``surface`` has the domain on both sides."""
         return self.sides[surface][2] > 0
+
+
+#: Edges, faces and tetrahedra of each domain, once counted
+#: (`nedelec_unknowns`), for as long as the domain lives.
+_ENTITIES: weakref.WeakKeyDictionary[EMDomain, tuple[int, int, int]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def nedelec_unknowns(mesh: Mesh, domain: EMDomain, order: int) -> int:
+    """First-kind Nédélec unknowns of ``order`` on ``domain`` of ``mesh``.
+
+    ``p E + p(p-1) F + p(p-1)(p-2)/2 T`` over the domain's edges, faces and
+    tetrahedra: NGSolve's ``HCurl(order=p, type1=True)`` size. Dirichlet
+    unknowns count and periodic pairs are not compressed, so it bounds the
+    system size from above. Counted once per domain.
+    """
+    counts = _ENTITIES.get(domain)
+    if counts is None:
+        tets = mesh.tetrahedra[domain.active]
+        edges = tets[:, np.array(_TET_EDGES)].reshape(-1, 2)
+        faces = tets[:, _TET_FACES].reshape(-1, 3)
+        counts = (_distinct_rows(edges), _distinct_rows(faces), len(tets))
+        _ENTITIES[domain] = counts
+    e, f, t = counts
+    p = order
+    return p * e + p * (p - 1) * f + p * (p - 1) * (p - 2) // 2 * t
+
+
+def _distinct_rows(rows: np.ndarray) -> int:
+    """How many distinct vertex sets the rows hold."""
+    rows = np.ascontiguousarray(np.sort(rows, axis=1), dtype=np.int64)
+    keys = rows.view(np.dtype((np.void, rows.itemsize * rows.shape[1])))
+    return len(np.unique(keys))
 
 
 def entity_keys(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:

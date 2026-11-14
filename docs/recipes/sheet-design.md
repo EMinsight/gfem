@@ -81,9 +81,10 @@ as for any density method. Grey inductive sheets stay lossless.
 
 Use `direct` for inductive sheet designs, and for the small, repeated solves
 of an optimization loop: it factorizes once per frequency and is insensitive
-to the contrast. `bddc_gmres`, the driven default, suits large models of resistive
-or conductor sheets. On any sheet design, check its iteration counts at your
-design's extremes (all void, all solid) and at a grey fill.
+to the contrast; the default `auto` picks it while the factorization fits in
+half the memory. `bddc_gmres`, which `auto` picks above that, suits large
+models of resistive or conductor sheets. On any sheet design, check its
+iteration counts at your design's extremes (all void, all solid) and at a grey fill.
 
 A design sweeps the sheet's admittance over many orders of magnitude, and a
 solid metal sheet is PEC-like (`eta |Y|` of 1e4 for 2 µm of copper). That

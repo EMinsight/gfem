@@ -10,6 +10,14 @@ then has two errors:
   ``h**4 J'''''/30`` for the fourth-order one used here;
 - round-off: about ``delta/h`` (``1.5 delta/h`` for fourth order).
 
+The iterative solve's error is far larger than 1e-15 at production
+tolerance, but it is the same smooth function of the design at every sample
+and cancels in the differences, as long as each evaluation solves as if
+alone: a ``bddc_gmres`` solve would otherwise start from the previous
+evaluation's solution (the design initial guess, ADR 0126), stop at another
+iterate, and leave noise of the tolerance's order. Every evaluation here
+drops the design guesses first.
+
 Both are measured against the directional derivative ``grad . d``, which
 for a random ``d`` can sit far below ``|grad|`` (a direction nearly
 orthogonal to the gradient). With second-order differences, a step small
@@ -39,6 +47,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from gfem._engine import cache
+
 __all__ = [
     "RTOL",
     "assert_gradient_matches",
@@ -62,8 +72,15 @@ def unit_directions(rng: np.random.Generator, shape, n: int) -> list[np.ndarray]
     return out
 
 
+def _alone(objective: Objective, p) -> jax.Array:
+    """``objective(p)`` solved as if alone: without design guesses (ADR 0126)."""
+    for disc in cache._DISCRETIZATIONS.values():
+        disc.drop_guesses()
+    return objective(p)
+
+
 def _samples(objective: Objective, p, d, h: float) -> list[float]:
-    return [float(jnp.real(objective(p + k * h * d))) for k in (-2, -1, 1, 2)]
+    return [float(jnp.real(_alone(objective, p + k * h * d))) for k in (-2, -1, 1, 2)]
 
 
 def _fourth_order(f: list[float], h: float) -> float:
@@ -106,7 +123,7 @@ def assert_gradient_matches(
         grad: Gradient to check; ``jax.grad(objective)(p)`` when omitted.
     """
     if grad is None:
-        grad = jax.grad(objective)(p)
+        grad = _alone(jax.grad(objective), p)
     reference = reference or objective
     for i, d in enumerate(directions):
         got = _along(grad, d)
@@ -136,12 +153,13 @@ def assert_taylor_second_order(
     Steps must be large enough that the remainder sits well above the
     objective's round-off (``h**2 J''`` >> 1e-15 ``|J|``).
     """
-    j0 = jnp.real(objective(p))
+    j0 = jnp.real(_alone(objective, p))
     if grad is None:
-        grad = jax.grad(objective)(p)
+        grad = _alone(jax.grad(objective), p)
     slope = _along(grad, d)
     remainders = [
-        abs(float(jnp.real(objective(p + h * d)) - j0) - h * slope) for h in steps
+        abs(float(jnp.real(_alone(objective, p + h * d)) - j0) - h * slope)
+        for h in steps
     ]
     slopes = np.diff(np.log(remainders)) / np.diff(np.log(steps))
     if not np.allclose(slopes, 2.0, rtol=0, atol=tolerance):

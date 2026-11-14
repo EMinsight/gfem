@@ -1,8 +1,8 @@
 """A driven forward's sweep outputs: one value at the frequencies it solved.
 
-`SweepOutputs` holds S, ``z_ref``, the Krylov iterations, the kept fields
-(a uniform sweep's ``e_field``, an adaptive sweep's reduced fields) and the
-wave ports' modes at the grid indices ``rows``, in order: every
+`SweepOutputs` holds S, ``z_ref``, the Krylov iterations and reuse flags,
+the kept fields (a uniform sweep's ``e_field``, an adaptive sweep's reduced
+fields) and the wave ports' modes at the grid indices ``rows``, in order: every
 per-frequency array has ``len(rows)`` rows, the port mode fields'
 coordinates included (`PortModeRows.field`), so trimming to the solved
 frequencies is one ``rows``. Frequency workers' blocks join into one value
@@ -122,6 +122,8 @@ class SweepOutputs:
         z_ref: ``(len(rows), n_ports)`` ohm.
         iterations: Krylov iterations per solve (per frequency, or per
             adaptive sample) and excited port (host only).
+        reused: Per solve, whether it ran on a preconditioner built for
+            another matrix (host only).
         e_field: A uniform sweep's kept fields at the rows, ``(ndof,
             n_kept * n_excited)`` complex (frequency-major), or ``None``.
         reduced: An adaptive sweep's kept fields ``(e_basis,
@@ -135,6 +137,7 @@ class SweepOutputs:
     s: np.ndarray
     z_ref: np.ndarray
     iterations: list[tuple[int, ...]] | None
+    reused: list[bool] | None
     e_field: np.ndarray | None
     reduced: tuple[np.ndarray, np.ndarray] | None
     ports: PortModeRows | None
@@ -148,6 +151,7 @@ class SweepOutputs:
         s: np.ndarray,
         z_ref: np.ndarray,
         iterations: list[tuple[int, ...]],
+        reused: list[bool],
         e_field: np.ndarray | None,
         waves: Sequence[WavePortCoupling],
     ) -> SweepOutputs:
@@ -161,6 +165,7 @@ class SweepOutputs:
             s=_at(s, rows),
             z_ref=_at(z_ref, rows),
             iterations=iterations,
+            reused=reused,
             e_field=e_field,
             reduced=None,
             ports=PortModeRows.of([c.sweep for c in waves], rows),
@@ -174,6 +179,7 @@ class SweepOutputs:
         s: np.ndarray,
         z_ref: np.ndarray,
         iterations: list[tuple[int, ...]],
+        reused: list[bool],
         sweep: Mapping[str, Any],
         reduced: tuple[np.ndarray, np.ndarray] | None,
         waves: Sequence[WavePortCoupling],
@@ -185,6 +191,7 @@ class SweepOutputs:
             s=s,
             z_ref=z_ref,
             iterations=iterations,
+            reused=reused,
             e_field=None,
             reduced=reduced,
             ports=PortModeRows.of([c.sweep for c in waves], rows),
@@ -227,6 +234,7 @@ class SweepOutputs:
             s=np.concatenate([b.s for _, b in blocks]),
             z_ref=np.concatenate([b.z_ref for _, b in blocks]),
             iterations=[its for _, b in blocks for its in b.iterations or ()],
+            reused=[r for _, b in blocks for r in b.reused or ()],
             e_field=np.concatenate(fields, axis=1) if fields else None,
             reduced=None,
             ports=PortModeRows.of(sweeps, rows),
@@ -244,14 +252,16 @@ class SweepOutputs:
     def outputs(self) -> dict[str, object]:
         """The forward outputs at the ``custom_vjp`` seam, by name.
 
-        ``"s"``, ``"z_ref"``, ``"iterations"``, ``"sweep"``, the wave ports'
-        ``"port_gamma"``, ``"port_z_pv"``, ``"port_residual"``,
+        ``"s"``, ``"z_ref"``, ``"iterations"``, ``"reused"``, ``"sweep"``, the
+        wave ports' ``"port_gamma"``, ``"port_z_pv"``, ``"port_residual"``,
         ``"port_solved"`` and ``"port_sweeps"``, then ``"e_field"`` or
         ``"e_basis"`` and ``"e_coordinates"``; only the ones present.
         """
         outputs: dict[str, object] = {"s": self.s, "z_ref": self.z_ref}
         if self.iterations is not None:
             outputs["iterations"] = self.iterations
+        if self.reused is not None:
+            outputs["reused"] = self.reused
         if self.sweep is not None:
             outputs["sweep"] = self.sweep
         if self.ports is not None:
@@ -272,8 +282,9 @@ class SweepOutputs:
         """The value of forward outputs by name (`outputs`).
 
         A host-only output that is absent (on the JAX path: ``"iterations"``,
-        ``"port_sweeps"``, ``"sweep"``) reads as ``None``. The outputs of a
-        complete sweep only cross the seam, so the rows are every row.
+        ``"reused"``, ``"port_sweeps"``, ``"sweep"``) reads as ``None``. The
+        outputs of a complete sweep only cross the seam, so the rows are every
+        row.
         """
         rows = tuple(range(len(outputs["s"])))
         ports = None
@@ -295,6 +306,7 @@ class SweepOutputs:
             s=outputs["s"],
             z_ref=outputs["z_ref"],
             iterations=outputs.get("iterations"),
+            reused=outputs.get("reused"),
             e_field=outputs.get("e_field"),
             reduced=reduced,
             ports=ports,

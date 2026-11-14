@@ -136,7 +136,7 @@ print(abs(s21))  # |S21| at 2, 5 and 8 GHz
 ```
 
 ```text
-[0.83062229 0.90133317 0.60517502]
+[0.83062229 0.90133319 0.6051741 ]
 ```
 
 These are the get-started values, 0.8306, 0.9013 and 0.6052, to the fourth

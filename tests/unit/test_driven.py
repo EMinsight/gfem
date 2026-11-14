@@ -9,6 +9,7 @@ the discretization's dispersion error.
 
 import cmath
 import dataclasses
+import logging
 import math
 import warnings
 from types import SimpleNamespace
@@ -303,10 +304,10 @@ def test_a_uniform_field_of_a_crystal_solves_like_the_crystal(mesh):
     np.testing.assert_allclose(s, expected, rtol=1e-14, atol=0)
 
 
-def test_bddc_gmres_is_the_default_and_matches_direct(line):
+def test_bddc_gmres_matches_direct(line):
     problem = gfem.Driven(frequency=[3e9, 4e9])
     direct = np.asarray(_s(line, problem).s.values)
-    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    rule = DrivenRule(line, problem, gfem.SolverOptions(linear_solver="bddc_gmres"))
     assert rule.linear.kind == "bddc_gmres"
     outputs, entry = rule.forward(line, keep=False)
     assert entry is None
@@ -314,6 +315,20 @@ def test_bddc_gmres_is_the_default_and_matches_direct(line):
     # GMRES at the second frequency starts from the first one's solution
     assert len(outputs["iterations"]) == 2
     assert all(len(its) == 2 for its in outputs["iterations"])
+
+
+def test_auto_is_direct_while_it_fits(line, monkeypatch, caplog):
+    problem = gfem.Driven(frequency=[3e9, 4e9])
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    assert rule.linear.kind == "direct"
+    (record,) = [r for r in caplog.records if hasattr(r, "linear_solver")]
+    assert record.linear_solver == "direct"
+    assert record.estimate <= record.budget
+    # a budget below the estimate: GMRES + BDDC
+    monkeypatch.setattr(driven, "default_retain_memory", lambda: record.estimate - 1)
+    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    assert rule.linear.kind == "bddc_gmres"
 
 
 def test_bddc_tolerance_is_the_preconditioned_residual(line, monkeypatch):
@@ -364,20 +379,31 @@ EXACT = ["direct", pytest.param("petsc", marks=pytest.mark.petsc)]
 
 @pytest.mark.parametrize("linear_solver", EXACT)
 @pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
-def test_an_exact_sweep_plans_once_and_matches_fresh_handles(
+def test_an_exact_sweep_plans_once_per_base_and_matches_fresh_handles(
     line, monkeypatch, sweep, linear_solver
 ):
     problem = gfem.Driven(frequency=(3e9, 4e9, 5e9, 6e9), sweep=sweep)
     # an earlier solve on `line` left a plan in the pool (ADR 0082)
     ENTRIES.clear()
     calls = _count_prepares(monkeypatch)
-    s = np.asarray(_s(line, problem, linear_solver=linear_solver).s.values)
+    first = _s(line, problem, linear_solver=linear_solver)
+    s = np.asarray(first.s.values)
+    solved = 4 if sweep == "uniform" else len(first.sweep.sampled_frequencies)
+    # one base: direct meets each frequency for the first time (ADR 0121)
     assert len(calls) == 1
+    calls.clear()
+    _s(line, problem, linear_solver=linear_solver)
+    # direct: the second time, each frequency but the base's own gets a
+    # pooled base; petsc: one base
+    assert len(calls) == (solved - 1 if linear_solver == "direct" else 1)
+    calls.clear()
+    _s(line, problem, linear_solver=linear_solver)
+    # the bases came back from the pool: none is planned again
+    assert len(calls) == (0 if linear_solver == "direct" else 1)
     # a handle that cannot refactorize is prepared afresh at each frequency
     monkeypatch.delattr(PlannedHandle, "refactorize")
     calls.clear()
     result = _s(line, problem, linear_solver=linear_solver)
-    solved = 4 if sweep == "uniform" else len(result.sweep.sampled_frequencies)
     assert len(calls) == solved > 1
     np.testing.assert_allclose(result.s.values, s, rtol=0, atol=1e-12)
 
@@ -459,9 +485,13 @@ def test_a_reused_solve_at_its_cap_rebuilds_and_converges(line, monkeypatch):
 
 def test_a_bddc_sweep_rebuilds_at_the_same_iterations_every_run(line):
     # the rebuild rule counts iterations, never times: runs repeat exactly
+    # (each from no kept state: the second would start from the first's
+    # solution, ADR 0126)
     problem = gfem.Driven(frequency=(1e9, 1.5e9, 12e9, 13e9, 20e9, 30e9))
-    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    rule = DrivenRule(line, problem, gfem.SolverOptions(linear_solver="bddc_gmres"))
+    gfem.release_memory()
     first, _ = rule.forward(line, keep=False)
+    gfem.release_memory()
     second, _ = rule.forward(line, keep=False)
     assert first["iterations"] == second["iterations"]
     assert max(map(max, first["iterations"])) > 45  # a capped solve, set up again
@@ -549,6 +579,7 @@ def test_a_sweep_that_cannot_converge_at_its_first_frequency_has_no_partial_resu
 ):
     f = (2e9, 3e9, 4e9)
     cannot_converge_at(monkeypatch, (f[0],))
+    gfem.release_memory()  # a cold first solve: no previous design's solution
     with pytest.raises(gfem.LinearSolverConvergenceError) as caught:
         _s(line, gfem.Driven(frequency=f), **options)
     assert caught.value.result is None
@@ -579,9 +610,8 @@ def test_an_error_holds_a_missed_sweeps_outputs_only_until_they_are_read(
 
 
 def _bddc_forward(model, problem):
-    outputs, _ = DrivenRule(model, problem, gfem.SolverOptions()).forward(
-        model, keep=False
-    )
+    options = gfem.SolverOptions(linear_solver="bddc_gmres")
+    outputs, _ = DrivenRule(model, problem, options).forward(model, keep=False)
     return outputs
 
 
@@ -596,11 +626,13 @@ def test_a_bddc_sweep_caps_the_first_warm_solve_after_a_large_jump(
     problem = gfem.Driven(frequency=(1e9, 60e9))
     direct = np.asarray(_s(model, problem).s.values)
     builds = count_preconditioners(monkeypatch)
+    gfem.release_memory()  # cold solves: no previous design's solution
     out = _bddc_forward(model, problem)
     np.testing.assert_allclose(out["s"], direct, rtol=0, atol=1e-5)
     assert len(builds) == 2
     monkeypatch.undo()
     slack = bddc._slack(2)
+    gfem.release_memory()
     cold = max(_bddc_forward(model, gfem.Driven(frequency=60e9))["iterations"][0])
     # the capped stale part, then a fresh solve from the partial iterate, which
     # may take a few more than a cold one
@@ -640,9 +672,10 @@ def test_an_adaptive_bddc_sweep_sets_its_coarse_problem_up_for_one_sample(
     assert len(columns) > 1
 
 
-def test_a_bddc_adjoint_sets_its_coarse_problem_up_for_one_solve(line, monkeypatch):
+def test_a_bddc_adjoint_solves_on_the_forwards_preconditioner(line, monkeypatch):
     # both ports excited over 2 frequencies; the kept fields' cotangents take
-    # one adjoint solve per frequency, on its own handle of width 2
+    # one adjoint solve per frequency, cold on the preconditioner the forward
+    # sweep set up: it runs there from zero and sets nothing up (ADR 0127)
     frequency = (3e9, 3.5e9)
     problem = gfem.Driven(frequency=frequency, keep_fields=True)
     options = gfem.SolverOptions(linear_solver="bddc_gmres")
@@ -659,7 +692,114 @@ def test_a_bddc_adjoint_sets_its_coarse_problem_up_for_one_solve(line, monkeypat
     eps = jnp.full(len(line.mesh.tetrahedra), EPS)
     columns = coarse_columns(monkeypatch)
     jax.grad(objective)(eps)
-    assert columns == [4, 2, 2]  # the forward sweep's, then the adjoint's
+    assert columns == [4]  # the forward sweep's setup only
+
+
+TWO_FREQUENCIES = gfem.Driven(frequency=(3e9, 3.5e9))
+
+
+def test_a_direct_sweep_reports_no_iterations_and_no_reuse(line):
+    sweep = _s(line, TWO_FREQUENCIES).sweep
+    assert sweep.iterations == ((), ())
+    assert sweep.preconditioner_reused == (False, False)
+
+
+def test_a_bddc_sweep_reports_its_iterations_and_its_reused_preconditioner(line):
+    # BDDC set up at the first frequency serves the second
+    rule = DrivenRule(
+        line, TWO_FREQUENCIES, gfem.SolverOptions(linear_solver="bddc_gmres")
+    )
+    outputs, _ = rule.forward(line, keep=False)
+    sweep = rule.result(outputs).sweep
+    assert sweep.preconditioner_reused == (False, True)
+    assert sweep.iterations == tuple(tuple(its) for its in outputs["iterations"])
+    assert [len(its) for its in sweep.iterations] == [2, 2]  # per excited port
+    assert all(n > 0 for its in sweep.iterations for n in its)
+
+
+# --- the BDDC design initial guess (ADR 0126) ---------------------------------------
+
+
+@pytest.fixture
+def guesses(caplog):
+    """The ``guess`` of each forward ``gfem.solver`` record, from no kept state."""
+    gfem.release_memory()
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+
+    def read():
+        logged = [r for r in caplog.records if r.name == "gfem.solver"]
+        caplog.clear()
+        return [r.guess for r in logged if r.direction == "forward"]  # ty: ignore[unresolved-attribute]
+
+    yield read
+    gfem.release_memory()
+
+
+def _design(line, eps):
+    return line.with_material("dielectric", gfem.Material(eps_r=eps))
+
+
+def test_a_bddc_design_starts_from_the_previous_designs_solution(line, guesses):
+    first = _s(_design(line, EPS), TWO_FREQUENCIES, linear_solver="bddc_gmres")
+    assert guesses() == [None, None]
+    second = _s(_design(line, 1.02 * EPS), TWO_FREQUENCIES, linear_solver="bddc_gmres")
+    assert guesses() == ["previous design", None]
+    assert max(second.sweep.iterations[0]) < max(first.sweep.iterations[0])
+    direct = _s(_design(line, 1.02 * EPS), TWO_FREQUENCIES).s.values
+    np.testing.assert_allclose(second.s.values, direct, rtol=0, atol=1e-5)
+
+
+def test_a_bddc_design_from_an_exact_guess_keeps_its_preconditioner_over_the_sweep(
+    line, guesses, monkeypatch
+):
+    # the same design again: its first solve starts at the solution and takes
+    # an iteration or so; the cold n_ref it carries, not that count, sets the
+    # later frequencies' cap, so BDDC is still set up once
+    problem = gfem.Driven(frequency=(3e9, 3.5e9, 4e9, 4.5e9))
+    _s(_design(line, EPS), problem, linear_solver="bddc_gmres")
+    guesses()
+    builds = count_preconditioners(monkeypatch)
+    again = _s(_design(line, EPS), problem, linear_solver="bddc_gmres")
+    assert guesses()[0] == "previous design"
+    assert max(again.sweep.iterations[0]) <= 2
+    assert len(builds) == 1
+
+
+@pytest.mark.parametrize("change", ["excitations", "free DOFs", "retain_memory=0"])
+def test_a_bddc_design_starts_from_zero_where_the_guess_does_not_fit(
+    line, guesses, change
+):
+    problem, options = TWO_FREQUENCIES, {"linear_solver": "bddc_gmres"}
+    model = _design(line, 1.02 * EPS)
+    if change == "excitations":
+        problem = dataclasses.replace(problem, excite=("p1",))
+    elif change == "free DOFs":
+        model = model.replace(boundaries=[*model.boundaries, gfem.PEC("side")])
+    else:
+        options["retain_memory"] = 0
+    first_options = {"retain_memory": 0} if change == "retain_memory=0" else {}
+    _s(_design(line, EPS), TWO_FREQUENCIES, linear_solver="bddc_gmres", **first_options)
+    guesses()
+    _s(model, problem, **options)
+    assert guesses() == [None, None]
+
+
+@pytest.mark.parametrize("transform", ["grad", "jit"])
+def test_a_transformed_sweep_reports_no_iterations_and_no_reuse(line, transform):
+    sweeps = []
+
+    def objective(eps):
+        model = line.with_material("dielectric", gfem.MaterialField(eps_r=eps))
+        result = _s(model, TWO_FREQUENCIES, linear_solver="bddc_gmres")
+        sweeps.append(result.sweep)
+        return jnp.sum(jnp.abs(result.s.values) ** 2)
+
+    eps = jnp.full(len(line.mesh.tetrahedra), EPS)
+    (jax.grad if transform == "grad" else jax.jit)(objective)(eps)
+    assert sweeps
+    for sweep in sweeps:
+        assert sweep.iterations is None
+        assert sweep.preconditioner_reused is None
 
 
 def test_excite_selects_the_columns_of_s(line):

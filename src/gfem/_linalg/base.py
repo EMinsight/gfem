@@ -212,8 +212,8 @@ class NgsHandle:
         """Hook for subclasses: the inverse on the free rows of ``B``.
 
         ``x0`` (same shape as ``B``, zero on fixed rows) is an initial guess.
-        Direct backends ignore ``tolerance`` and ``x0`` (but for reused
-        factors, `gfem._linalg.direct.DirectHandle`). Returns the Krylov
+        Direct backends ignore ``x0``, and ``tolerance`` but on factors
+        reused across designs (`gfem._linalg.direct.DirectHandle`). Returns the Krylov
         iterations of each column too, ``()`` for a direct solve.
         """
         return self._map(lambda _: self._solver, B), ()
@@ -246,9 +246,10 @@ class NgsHandle:
         (`transposes_general`). ``tolerance`` is the relative residual of this
         solve for iterative backends (an adjoint solve on the forward's
         preconditioner); ``None`` is the prepared tolerance. ``x0``, the
-        shape of ``B``, is an initial guess for iterative backends; its fixed
-        rows are not read. Direct backends ignore both, except that a
-        solve on factors reused across designs reads ``tolerance``
+        shape of ``B``, is an initial guess for GMRES (``bddc_gmres`` on a
+        non-Hermitian operator); its fixed rows are not read. CG and the
+        direct backends ignore ``x0``; direct backends ignore ``tolerance``
+        too, except that a solve on factors reused across designs reads it
         (`gfem._linalg.direct.DirectHandle`).
 
         Returns ``X`` and the Krylov iterations of each column of ``B`` (see
@@ -412,6 +413,7 @@ class PlannedHandle(NgsHandle):
         *,
         solves: int | None = None,  # noqa: ARG002
         frequency: float | None = None,
+        sweep: bool = False,  # noqa: ARG002
     ) -> None:
         """Refactorize on ``operator``'s values (see `gfem._linalg.Refactorable`).
 
@@ -425,7 +427,7 @@ class PlannedHandle(NgsHandle):
         when summed in place, by comparing the assembled matrix with the held
         one otherwise.
 
-        ``solves`` is ignored: only BDDC's coarse choice reads it.
+        ``solves`` and ``sweep`` are ignored: only BDDC reads them.
         ``frequency`` goes to the backend (`_refactorizing_at`).
 
         Raises:

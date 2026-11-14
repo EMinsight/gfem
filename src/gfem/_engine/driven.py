@@ -3,12 +3,14 @@
 At each frequency the operator ``A(ω) = Σ θ_k(ω) A_k`` (see
 `gfem._engine.terms`) is assembled and prepared once, and every excited
 port's right-hand side is solved in one handle call: GMRES + BDDC by
-default, each port starting from its solution at the previous frequency,
-or one LDL^T factorization (``direct``: MKL PARDISO with the ``mkl`` extra,
-NGSolve sparse Cholesky otherwise). The system operator
+default, each port starting from its solution at the previous frequency
+(at a uniform sweep's first, on one process, from the previous design's
+there: ADR 0126), or one LDL^T factorization (``direct``: MKL PARDISO with
+the ``mkl`` extra, NGSolve sparse Cholesky otherwise). The system operator
 (`gfem._engine.system_operator.SystemOperator`) answers the forward and
 adjoint solves. A sweep keeps one base handle: a direct solver plans at the
-first frequency and refactorizes at the others, and sums each frequency's
+first frequency and refactorizes at the others (on the plan pool, one base per
+frequency met before, kept across designs: ADR 0121), and sums each frequency's
 matrix from the pieces ``A_k`` assembled once per forward (the piece sum,
 kept with the system operator for the backward pass) instead of assembling
 it.
@@ -69,6 +71,7 @@ import contextlib
 import contextvars
 import dataclasses
 import functools
+import logging
 import math
 import warnings
 from collections.abc import Callable, Generator, Mapping, Sequence
@@ -93,11 +96,14 @@ from gfem._boundaries import (
     wave_port_label,
     wave_port_surfaces,
 )
+from gfem._domain import nedelec_unknowns
 from gfem._engine import sweep_outputs, terms, workers
 from gfem._engine.cache import (
     ENTRIES,
+    Discretization,
     Entry,
     cached,
+    default_retain_memory,
     discretization,
     retain_budget,
 )
@@ -115,7 +121,7 @@ from gfem._engine.wave_ports import (
     port_mode_sweeps,
     wave_port_couplings,
 )
-from gfem._linalg import Kind, ResolvedLinearSolver
+from gfem._linalg import Kind, ResolvedLinearSolver, report
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
 from gfem._materials import MaterialField
@@ -164,7 +170,9 @@ __all__ = [
 #: Hermitian.
 DrivenSymmetry = Literal["complex_symmetric", "general"]
 
-#: The linear solver for ``linear_solver="auto"``: GMRES + BDDC.
+#: The linear solver for ``linear_solver="auto"`` when direct does not fit
+#: (`gfem._linalg.auto_linear_solver`): direct while it fits, else GMRES +
+#: BDDC (ADR 0124).
 DEFAULT_SOLVER: Kind = "bddc_gmres"
 
 #: k0 * h_min below which a driven solve warns (gfem.LowFrequencyWarning).
@@ -535,7 +543,11 @@ class DrivenRule:
             )
         # before any assembly, and before any worker
         self.linear = ResolvedLinearSolver.resolve(
-            options, default=DEFAULT_SOLVER, problem="driven", comm=comm
+            options,
+            default=DEFAULT_SOLVER,
+            problem="driven",
+            comm=comm,
+            **_auto_inputs(model, problem, options, comm),
         )
         _check_supported(model)
         if not model.ports:
@@ -658,7 +670,9 @@ class DrivenRule:
             ``{"s": (n_freq, n_ports, n_excited) complex, "z_ref":
             (n_freq, n_ports) ohm, "iterations": Krylov iterations per
             frequency and excited port (empty for direct solves, including
-            linear_solver='petsc' with ksp_type preonly)}``, plus
+            linear_solver='petsc' with ksp_type preonly), "reused": per
+            frequency, whether its solve ran on a preconditioner built for
+            another matrix}``, plus
             ``"e_field"``, ``(ndof, n_kept * n_excited)`` complex, when
             fields are kept (frequency-major), the wave ports' modes (see
             `SweepOutputs`) when there are wave ports, and the cache entry
@@ -682,6 +696,7 @@ class DrivenRule:
             return self._forward_workers(model, keep=keep)
         width = len(self.excite)
         iterations: list[tuple[int, ...]] = []
+        reused: list[bool] = []
         fields: list[np.ndarray] = []
         solutions: list[np.ndarray] = []
         miss: LinearSolverConvergenceError | None = None
@@ -691,7 +706,8 @@ class DrivenRule:
         with task_manager(self.options.threads, self.comm):
             system, ports = self._ports(model)
             s = np.zeros((len(frequencies), len(self.port_names), width), complex)
-            previous = None
+            # the first frequency starts from the previous design (ADR 0126)
+            previous, design = None, _DesignGuess.of(self, system)
             with system.sweep(
                 solves=len(frequencies),
                 pool_budget=retain_budget(self.options.retain_memory),
@@ -700,7 +716,7 @@ class DrivenRule:
                     omega = 2 * math.pi * f
                     rhs = ports.rhs(omega)
                     try:
-                        x, its = sweep.solve(omega, rhs, x0=previous)
+                        x, its = design.solve(sweep, omega, rhs, previous)
                     except LinearSolverConvergenceError as err:
                         miss, n_solved = err, n
                         break
@@ -711,6 +727,7 @@ class DrivenRule:
                             system.free()
                             raise
                     iterations.append(its)
+                    reused.append(sweep.reused)
                     previous = x
                     if keep:
                         solutions.append(np.array(x, dtype=complex))
@@ -730,6 +747,7 @@ class DrivenRule:
             s=ports.scattering(s),
             z_ref=ports.z_ref,
             iterations=iterations,
+            reused=reused,
             e_field=self._piece(model, np.concatenate(fields, axis=1))
             if fields
             else None,
@@ -805,11 +823,21 @@ class DrivenRule:
         solved, loads = ports.nonparallel(omega, indices, rhs)
         if not solved:
             return
+        held = sweep.frequency == omega
         try:
-            z, _ = sweep.reuse_at(omega).solve_counted(loads)
+            z, its = sweep.reuse_at(omega).solve_counted(loads)
         except LinearSolverConvergenceError as err:
             names = ", ".join(repr(self.port_names[i]) for i in solved)
             raise _estimate_adjoint_error(f, names, err) from err
+        report.solve_step(
+            sweep.base,
+            problem="driven",
+            direction="forward",
+            iterations=its,
+            frequency=f,
+            reused=held,
+            columns="adjoint port",
+        )
         z = system.operator.expand(z)
         for k, i in enumerate(solved):
             self.adjoints[f, self.port_names[i]] = np.array(z[:, k], complex)
@@ -857,8 +885,14 @@ class DrivenRule:
         )
         indices = [block for block in indices if len(block)]
         threads = workers.worker_threads(self.options.threads, len(indices))
+        # a worker's block cannot re-decide "auto" (ADR 0124); its bases die
+        # with it, and would each take half the machine (ADR 0121)
         options = dataclasses.replace(
-            self.options, threads=threads, frequency_workers=1
+            self.options,
+            threads=threads,
+            frequency_workers=1,
+            linear_solver=self.linear.kind,
+            retain_memory=0,
         )
         problems = [
             Driven(
@@ -876,10 +910,15 @@ class DrivenRule:
             [_describe(problem.frequency) for problem in problems],
             threads=threads,
             keywords=[
-                {"port_modes": [s.rows(block) for s in swept] if swept else None}
+                {
+                    "port_modes": [s.rows(block) for s in swept] if swept else None,
+                    "log": report.LOGGER.isEnabledFor(logging.INFO),
+                }
                 for block in indices
             ],
         )
+        for r in results:
+            report.replay(r[3])
         sweeps = {
             port.name: sweep
             for s in swept
@@ -1047,13 +1086,13 @@ class DrivenRule:
     ) -> tuple[dict[str, object], Entry | None]:
         """The adaptive sweep of `forward` (see `gfem._sweep.adaptive`).
 
-        Outputs as `forward`'s, except that ``"iterations"`` is per sample,
-        kept fields come as ``"e_basis"`` ``(ndof, n)`` real and
-        ``"e_coordinates"`` ``(n_kept * n_excited, n)`` (frequency-major),
-        and ``"sweep"`` holds ``{"samples": grid indices in solve order,
-        "errors", "converged", "basis_size"}``. With frozen samples, ``n``
-        is `_padded_size` (zero columns after the basis), so the kept
-        fields' shapes are known before the solve.
+        Outputs as `forward`'s, except that ``"iterations"`` and
+        ``"reused"`` are per sample, kept fields come as ``"e_basis"``
+        ``(ndof, n)`` real and ``"e_coordinates"`` ``(n_kept * n_excited,
+        n)`` (frequency-major), and ``"sweep"`` holds ``{"samples": grid
+        indices in solve order, "errors", "converged", "basis_size"}``. With
+        frozen samples, ``n`` is `_padded_size` (zero columns after the
+        basis), so the kept fields' shapes are known before the solve.
 
         The entry (``keep``) holds the reduced model only: the basis
         ``"basis"`` ``(ndof, n)``, the reduced pieces ``"operators"``
@@ -1064,6 +1103,7 @@ class DrivenRule:
         frequencies = self.problem.frequency
         options = self.options
         iterations: list[tuple[int, ...]] = []
+        reused: list[bool] = []
         # Palace's dimensionless frequency: omega times the largest extent / c
         extent = np.ptp(np.asarray(model.mesh.nodes), axis=0).max()
         z_scale = float(extent) / scipy.constants.c
@@ -1084,6 +1124,7 @@ class DrivenRule:
                     except LinearSolverConvergenceError as err:
                         raise _sample_error(frequencies, omega, err) from err
                     iterations.append(its)
+                    reused.append(system_sweep.reused)
                     return x
 
                 affine = AffineSystem(
@@ -1129,6 +1170,7 @@ class DrivenRule:
             s=ports.scattering(sweep.outputs),
             z_ref=ports.z_ref,
             iterations=iterations,
+            reused=reused,
             sweep={
                 "samples": sweep.samples,
                 "errors": sweep.errors,
@@ -1346,8 +1388,9 @@ class DrivenRule:
         The frequencies are solved from the adjoint base's frequency
         (`SystemOperator.adjoint_order`): a base handle kept from the forward
         sits at the last (`SystemOperator.keep_base`), and a backward leaves it
-        at the frequency it ended on, so each pass refactorizes once fewer. The
-        pairs stay in frequency order.
+        at the frequency it ended on, so each pass refactorizes once fewer. On
+        the plan pool each frequency's base still holds the design, and a pass
+        refactorizes nothing (ADR 0121). The pairs stay in frequency order.
         """
         if self.adaptive:
             return self._backward_adaptive(model, entry, cotangents)
@@ -1504,6 +1547,11 @@ class DrivenRule:
             ),
             e_fields=tuple(e_fields),
             kept=tuple(kept),
+            sweep=SweepInfo.uniform(
+                frequencies,
+                iterations=out.iterations,
+                preconditioner_reused=out.reused,
+            ),
             port_modes=self._port_modes(out),
             offsets=self.offsets,
         )
@@ -1557,6 +1605,8 @@ class DrivenRule:
             converged=info["converged"],
             tolerance=self.options.adaptive_tolerance,
             basis_size=info["basis_size"],
+            iterations=None if out.iterations is None else tuple(out.iterations),
+            preconditioner_reused=None if out.reused is None else tuple(out.reused),
         )
         e_fields: ReducedFields | tuple = ()
         if kept and out.reduced is not None:
@@ -1975,6 +2025,26 @@ FORWARD_WARNINGS = (
 )
 
 
+def _auto_inputs(
+    model: Model, problem: Driven, options: SolverOptions, comm: Any
+) -> dict[str, Any]:
+    """What ``linear_solver="auto"`` reads on one CPU process (ADR 0124).
+
+    Empty when the rule does not apply, so the unknowns are counted only
+    when it does.
+    """
+    if options.linear_solver != "auto" or options.device != "cpu" or comm is not None:
+        return {}
+    workers = 1 if problem.sweep == "adaptive" else options.frequency_workers
+    return {
+        "unknowns": nedelec_unknowns(model.mesh, model._domain, options.order),  # noqa: SLF001
+        # each frequency worker holds its own factorization
+        "in_flight": min(workers, len(problem.frequency)),
+        "general": problem.wave_vector is not None,
+        "budget": default_retain_memory(),
+    }
+
+
 def _solve_block(
     aux: Any,
     children: Any,
@@ -1983,7 +2053,8 @@ def _solve_block(
     keep: bool,
     *,
     port_modes: list[dict[str, np.ndarray]] | None = None,
-) -> tuple[SweepOutputs, np.ndarray | None, str | None]:
+    log: bool = False,
+) -> tuple[SweepOutputs, np.ndarray | None, str | None, list[logging.LogRecord]]:
     """A frequency worker's `DrivenRule.forward` of its block.
 
     ``aux`` and ``children`` are the model's parts (`gfem._engine.workers`),
@@ -1991,10 +2062,12 @@ def _solve_block(
     wave port surface (`DrivenRule.handed_port_modes`).
     Returns the block's outputs (rows: indices into the block; without the
     wave ports' modes, which are the parent's), its
-    solutions (``keep``; else ``None``) and ``None``. A block whose linear
-    solve does not converge at some frequency stops there and returns the
-    rows it solved, no solutions, and the linear solver's message, plain
-    data that pickles (the parent raises once for every block).
+    solutions (``keep``; else ``None``), ``None`` and, with ``log``, its
+    ``gfem.solver`` records for the parent to log (`report.replay`). A
+    block whose linear solve does not converge at some frequency stops
+    there and returns the rows it solved, no solutions, and the linear
+    solver's message, plain data that pickles (the parent raises once for
+    every block).
     """
     model = workers.model_from_parts(aux, children)
     with warnings.catch_warnings():
@@ -2004,18 +2077,20 @@ def _solve_block(
         rule = DrivenRule(model, problem, options)
         rule.keeps_partial = True
         rule.handed_port_modes = port_modes
-        try:
-            outputs, entry = rule.forward(model, keep=keep)
-        except LinearSolverConvergenceError as err:
-            partial = err._partial  # noqa: SLF001
-            if partial is None:  # pragma: no cover - a uniform sweep always sets it
-                raise
-            return partial.outputs.without_port_modes(), None, partial.reason
+        with report.collected(log) as records:
+            try:
+                outputs, entry = rule.forward(model, keep=keep)
+            except LinearSolverConvergenceError as err:
+                partial = err._partial  # noqa: SLF001
+                if partial is None:  # pragma: no cover - a uniform sweep sets it
+                    raise
+                out = partial.outputs.without_port_modes()
+                return out, None, partial.reason, records
     solution = None
     if entry is not None:
         solution = entry.fields["solution"]
         entry.free()
-    return SweepOutputs.read(outputs).without_port_modes(), solution, None
+    return SweepOutputs.read(outputs).without_port_modes(), solution, None, records
 
 
 def _sample_error(
@@ -2146,6 +2221,88 @@ class _Kept:
         self.system.free(return_plans=return_plans)
         del self.system, self.ports
         self._freed = True
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _DesignGuess:
+    """Where a uniform BDDC sweep's cold solves find the previous design's solution.
+
+    ADR 0126: on one process, a ``bddc_gmres`` sweep's first frequency starts
+    from the previous design's solution there, kept with the discretization
+    (`Discretization.guesses`, dropped first by the walk). It is used only
+    for the same excited ports and wave vector, free DOFs, symmetry and
+    right-hand-side shape. The guess carries the ``n_ref`` its design's
+    BDDC measured (`gfem._linalg.bddc.BddcHandle.assume_reference`): a solve
+    from it takes too few iterations to measure one.
+    """
+
+    disc: Discretization | None
+    key: tuple = ()
+    match: tuple = ()
+
+    @classmethod
+    def of(cls, rule: DrivenRule, system: SystemOperator) -> _DesignGuess:
+        """``rule``'s guesses on ``system``'s discretization.
+
+        None kept or used (no ``disc``) but for ``bddc_gmres`` on one process
+        with a ``retain_memory`` above 0 and a cached discretization.
+        """
+        op = system.operator
+        disc = cached(op.built)
+        if (
+            rule.linear.kind != "bddc_gmres"
+            or rule.comm is not None
+            or rule.options.retain_memory == 0
+            or disc is None
+        ):
+            return cls(None)
+        key = ("design guess", tuple(rule.excite), rule.problem.wave_vector)
+        match = (op.space_key, system.free_digest(), op.symmetry, rule.linear.tolerance)
+        return cls(disc, key, match)
+
+    def solve(
+        self,
+        sweep: SystemSweep,
+        omega: float,
+        rhs: np.ndarray,
+        previous: np.ndarray | None,
+    ) -> tuple[np.ndarray, tuple[int, ...]]:
+        """`SystemSweep.solve` from the ``previous`` frequency's solution.
+
+        Without one (the sweep's first frequency), from the previous design's
+        solution at ``ω`` where one fits; this design's is kept for the next.
+        """
+        if previous is not None or self.disc is None:
+            return sweep.solve(omega, rhs, x0=previous)
+        key = (*self.key, float(omega))
+        kept = self.disc.guess(key, self.match)
+        if isinstance(kept, _Solution) and kept.block.shape == rhs.shape:
+            x, its = sweep.solve(
+                omega,
+                rhs,
+                x0=kept.block,
+                guess="previous design",
+                reference=kept.reference,
+            )
+        else:
+            x, its = sweep.solve(omega, rhs)
+        reference = sweep.reference_iterations
+        if reference is not None:
+            self.disc.keep_guess(key, self.match, _Solution(x, reference))
+        return x, its
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _Solution:
+    """A design's solution block and the reference iterations its BDDC measured."""
+
+    block: np.ndarray
+    reference: int
+
+    @property
+    def nbytes(self) -> int:
+        """The block's bytes."""
+        return int(self.block.nbytes)
 
 
 @dataclasses.dataclass(frozen=True)
