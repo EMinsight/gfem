@@ -112,6 +112,15 @@ Optimization and gradients:
   while the counted costs (factor size, factorization work, GMRES iterations)
   say that is cheaper than factorizing again; small models factorize every
   design. See {doc}`../recipes/s-parameter-gradient`.
+  Measured on MN5 at 8 threads, 9f004a7 against 28a2bf4, the gain is small
+  or absent where a reused step costs about what a factorization costs: a
+  3D bend of 381k unknowns took 8.93 s per step before and 9.13 s after,
+  reusing on 19 of 41 steps instead of 9, and a 4-port coplanar line of
+  1.32M unknowns 14.6 s against 13.8 s per gradient step. On a 2.49M-unknown
+  3D bend at 16 threads under the default `retain_memory`, 28a2bf4 reused on
+  10 of 21 steps, and its solver time was 1.10x shorter than a replay of
+  9f004a7's history that factorizes again at every step (1625 s against
+  1783 s).
   - **Behaviour change.** `retain_memory` now bounds everything gfem keeps between
     solves, these kept parts and couplings included; 0 keeps nothing and
     factorizes every design. A direct solve on an earlier design's factorization
@@ -126,7 +135,7 @@ Optimization and gradients:
     `tolerance`, and that difference does not cancel between the evaluations.
 - **Behaviour change: `linear_solver="auto"` picks the direct solver for driven
   problems that fit.** On the CPU in one process, a driven problem now solves
-  with `"direct"` when its factorization, estimated at about 40 KiB per unknown
+  with `"direct"` when its factorization, estimated at about 48 KiB per unknown
   and per frequency worker, fits in half the memory the process may use, and
   with `"bddc_gmres"` above. It was `"bddc_gmres"` at every size. Measured on
   MN5 (8 threads, at 9f004a7), direct took 1.2-48x less time per optimization
@@ -147,6 +156,11 @@ Optimization and gradients:
   meets it, a gradient's backward counting with its forward: a single solve
   or gradient, or a sweep over new frequencies (a greedy adaptive sweep),
   keeps one, and a design loop keeps one per frequency from its second design. Frequency workers keep none between solves.
+  Measured on MN5 at 8 threads, 9f004a7 against 28a2bf4, a 571k-unknown 3D
+  bend at three frequencies with `retain_memory` at 128 GiB reused 23 of 33
+  frequency solves over 11 steps instead of none, but a step was only 1.06x
+  faster (46.1 s against 49.0 s), at 2.4x the peak memory (25.4 GiB against
+  10.8 GiB).
 - **Sparse Cholesky joins factor reuse.** Without the `mkl` extra, the direct
   solver's sparse Cholesky reuses a design's factorization for the next design
   under the same rule as MKL PARDISO.
@@ -156,6 +170,12 @@ Optimization and gradients:
   multi-frequency gradient no longer set BDDC up again on a preconditioner
   kept from another frequency. These initial guesses count in
   `retain_memory` and are the first thing dropped over it.
+  Measured on MN5 at 8 threads, 9f004a7 against 28a2bf4, lumped-port coplanar
+  lines of 338k and 1.32M unknowns with 2 or 4 ports took 1.3-1.5x less time
+  per optimization step at one frequency (GMRES iterations per column from
+  43-46 to 27-28), and a one-port gradient over three frequencies on the 1.32M line
+  set BDDC up once per step instead of 4 times (4.05 s against 15.05 s of
+  setup, 1.16x per step). A 3D bend of 1.02M unknowns gained 2 %.
 - **Electrostatic energy and potential gradients prepare once per step.** A
   differentiated electrostatic solve keeps its prepared operator, within
   `retain_memory`, and the backward of an `energy` or `potential` objective
@@ -168,7 +188,11 @@ Optimization and gradients:
   the memory can still reuse it. The decision then follows the measured peak:
   on a machine shared with other memory-heavy processes, or to make the
   decisions repeat exactly, set `retain_memory` explicitly, which stays a hard
-  bound.
+  bound. Measured on MN5 in a 64 GB slot at 8 threads, a 2.49M-unknown 3D bend
+  under `linear_solver="direct"` reused its factorization on steps 2-5 at
+  28a2bf4, at 57-81 s per step against 160-170 s for a step that factorizes,
+  with a peak memory of 51.9 GiB; 9f004a7 reused on none of its steps there
+  (160 s per step).
 - **See what each solve did.** `SweepInfo.iterations` (Krylov iterations of
   each excited port, per frequency) and `SweepInfo.preconditioner_reused` (per
   frequency) are recorded on driven results solved outside JAX
