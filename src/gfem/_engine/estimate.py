@@ -1024,6 +1024,60 @@ def objective_of_s(
     return ObjectiveTerms(linear=float(linear), remainder=remainder, weights=weights)
 
 
+def objective_of_omega(
+    model: Model,
+    result: EigenmodeResult,
+    reads: Sequence[tuple[int, complex]],
+    curvature: np.ndarray,
+    threads: int | None = None,
+    *,
+    cache: RecoveryCache | None = None,
+) -> ObjectiveTerms:
+    """An objective of the modes' omega (ADR 0131 amendment), free duals.
+
+    Per mode read, omega's identity (`omega`) gives k_h - k ~= -(A1 - A2),
+    A1 = sum c_K / s, A2 = k^2 sum m_K / s, s = x_h^T T'(k_h) x_h. A real J
+    of omega changes by Re(g delta omega), g its cotangent (``dJ/dRe - i
+    dJ/dIm``). The estimate keeps the two terms from cancelling (ADR 0131):
+
+        sum_m (|Re(g_m A1_m)| + |Re(g_m A2_m)|) c / scale
+            + 1/2 sum_mn ||H_mn|| eta_m eta_n,
+
+    eta_m = (|A1_m| + |A2_m|) c / scale, mode m's omega estimate in rad/s.
+    A tetrahedron's weight is |Re(g_m (c_K - k^2 m_K) / s)| c / scale per
+    mode, plus its share of the remainder, 1/2 sum_mn ||H_mn|| eta_n times
+    mode m's |c_K - k^2 m_K| c / (scale |s|).
+
+    Args:
+        reads: Per mode read, (its index in ``result``, J's cotangent on its
+            omega), in the order of ``curvature``'s rows.
+        curvature: ``||H_mn||_2`` over the omega read, in (rad/s)^-2.
+    """
+    cache = cache or RecoveryCache()
+    n_tet = len(model.mesh.tetrahedra)
+    linear = 0.0
+    weights = np.zeros(n_tet)
+    etas, own = [], []
+    for mode, ct in reads:
+        curl, mass, k, slope = _mode_terms(model, result, mode, threads, cache)
+        order = result.e_fields[mode].order
+        scale = cache.recovery(model, order, cracks=True).built.scale
+        g = ct * scipy.constants.c / scale
+        a1, a2 = complex(curl.sum()) / slope, k * k * complex(mass.sum()) / slope
+        linear += abs((g * a1).real) + abs((g * a2).real)
+        terms = curl - k * k * mass
+        weights = weights + np.abs((g * terms / slope).real)
+        per_k = scipy.constants.c / scale
+        etas.append(per_k * (abs(a1) + abs(a2)))
+        own.append(per_k * np.abs(terms) / abs(slope))
+    eta = np.asarray(etas, float)
+    remainder = float(0.5 * eta @ curvature @ eta) if len(eta) else 0.0
+    share = 0.5 * curvature @ eta
+    for a, w in enumerate(own):
+        weights = weights + share[a] * w
+    return ObjectiveTerms(linear=float(linear), remainder=remainder, weights=weights)
+
+
 def _deembedding(result: DrivenResult) -> dict[str, np.ndarray]:
     """Each port's de-embedding per frequency: ``exp(gamma offset)``, 1 if lumped."""
     from gfem._engine.wave_ports import deembedding

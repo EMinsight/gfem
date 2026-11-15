@@ -152,7 +152,12 @@ class QuantityEstimator:
             of kinds, a branch on a value it reads (max, min, sort, where)
             or a custom derivative of its own. In this version an objective
             of S is estimated (S and its networks: ``db``, ``y()``, ``z()``,
-            ``renormalize``, ``with_offsets``). The estimate is absolute, in
+            ``renormalize``, ``with_offsets``), and an objective of an
+            eigenmode result's ``omega`` (``frequency``, ``q``), each mode
+            it reads followed as a mode of its own; ``q_port``,
+            ``participation``, ``sheet_participation``,
+            ``principal_participation`` and the mode fields raise. The
+            estimate is absolute, in
             the objective's units, and `refine_mesh` needs its
             ``tolerance`` given. A read row whose port is not excited, or is
             a lossy wave port, uses that port's adjoint dual, as for ``s``;
@@ -315,6 +320,7 @@ EMITTED_KINDS = (
     "q",
     "cluster mean",
     "objective of s",
+    "objective of omega",
 )
 
 
@@ -361,6 +367,8 @@ class ErrorEstimate:
     _dual_ports: tuple[str, ...] = dataclasses.field(default=(), repr=False)
     #: An objective's first-order sensitivity, sum_a |ct_a| s_a (its floor).
     _sensitivity: float = dataclasses.field(default=0.0, repr=False)
+    #: The modes an objective reads, by index on its result: each is followed.
+    _modes: tuple[int, ...] = dataclasses.field(default=(), repr=False)
 
     @property
     def value(self) -> float:
@@ -900,19 +908,16 @@ def _loop(
     tracks = _Tracks(estimators)
     while True:
         cache = _recovery_cache()  # this mesh's, dropped before the next solve
-        modes = tracks.follow(result, options.cluster_rtol)
-        estimates = tuple(
-            _estimate(
-                current,
-                result,
-                each,
-                threads=options.threads,
-                mode=_followed(modes, each),
-                adjoints=adjoints,
-                ridden=duals.ports,
-                cache=cache,
-            )
-            for each in estimators
+        estimates, modes = _estimates(
+            current,
+            result,
+            estimators,
+            tracks,
+            options,
+            adjoints=adjoints,
+            ridden=duals.ports,
+            cache=cache,
+            first=not cycles,
         )
         _check_first_estimates(
             problem,
@@ -1026,6 +1031,55 @@ def _followed(
     return modes[start[0]]
 
 
+def _estimates(
+    model: Model,
+    result: Any,
+    estimators: tuple[Estimator, ...],
+    tracks: _Tracks,
+    options: SolverOptions,
+    *,
+    adjoints: Any,
+    ridden: tuple[str, ...],
+    cache: RecoveryCache,
+    first: bool,
+) -> tuple[tuple[ErrorEstimate, ...], dict[int, int]]:
+    """Every estimator's estimate of one mesh's ``result``, and the modes followed.
+
+    The modes are ``tracks``' (`_Tracks.follow`), plus, on the ``first``
+    mesh, those its objectives read (`_Tracks.add`). An objective sees an
+    eigenmode result's followed modes in the first mesh's order (ADR 0143,
+    `_aligned`).
+    """
+    modes = tracks.follow(result, options.cluster_rtol)
+    view = _aligned(result, modes)
+    estimates = tuple(
+        _estimate(
+            model,
+            view if _is_objective(each) else result,
+            each,
+            threads=options.threads,
+            mode=_followed(modes, each),
+            adjoints=adjoints,
+            ridden=ridden,
+            cache=cache,
+            rtol=options.cluster_rtol,
+        )
+        for each in estimators
+    )
+    if first:
+        modes = tracks.add(estimates, modes, result)
+    return estimates, modes
+
+
+def _aligned(result: Any, modes: dict[int, int]) -> Any:
+    """An eigenmode ``result`` with the followed modes in the first mesh's order."""
+    if not isinstance(result, EigenmodeResult) or not modes:
+        return result
+    from gfem import _objective
+
+    return _objective.aligned(result, modes)
+
+
 def _shaped(items: list, joint: bool) -> Any:
     """``items`` as a tuple for a tuple of estimators, else its one item."""
     return tuple(items) if joint else items[0]
@@ -1074,6 +1128,26 @@ class _Tracks:
             for i, e in enumerate(estimators)
             if isinstance(e, QuantityEstimator) and e.omega is not None
         }
+        self._reached: dict[tuple[int, ...], tuple[int, ...]] = {}
+        self._omegas = np.zeros(0, complex)
+
+    def add(
+        self, estimates: tuple[ErrorEstimate, ...], modes: dict[int, int], result: Any
+    ) -> dict[int, int]:
+        """Follow the modes the first mesh's objectives read, one track each.
+
+        On the first mesh each such mode is itself (ADR 0130 amendment):
+        ``modes`` with them added.
+        """
+        read = sorted({m for e in estimates for m in e._modes})  # noqa: SLF001
+        new = [m for m in read if (m,) not in self._state]
+        if not new:
+            return modes
+        self._omegas = np.asarray(result.omega)
+        for m in new:
+            self._state[(m,)] = ((m,), None, None)
+            self._reached[(m,)] = (m,)
+        return {**modes, **{m: m for m in new}}
 
     def follow(self, result: Any, rtol: float) -> dict[int, int]:
         """Each named mode's index on ``result``: index on the first mesh -> there."""
@@ -1242,6 +1316,7 @@ def _estimate(
     adjoints: dict[tuple[float, Hashable], np.ndarray] | None = None,
     ridden: tuple[str, ...] = (),
     cache: RecoveryCache | None = None,
+    rtol: float | None = None,
 ) -> ErrorEstimate:
     """The estimate of ``result``: dispatch on the estimator and result type.
 
@@ -1253,6 +1328,8 @@ def _estimate(
     objective solves here those of its dual's ports not ``ridden``.
     ``cache`` is the mesh's `gfem._engine.estimate.RecoveryCache`, shared by
     every estimate of ``result``'s mesh; ``None`` makes one for this call.
+    ``rtol`` is the solve's ``cluster_rtol`` (`SolverOptions`' default for
+    ``None``): an objective's modes are checked for degeneracy with it.
     """
     from gfem._engine import estimate as kernels
 
@@ -1267,6 +1344,7 @@ def _estimate(
             adjoints=adjoints or {},
             ridden=ridden if adjoints is not None else (),
             cache=cache,
+            rtol=SolverOptions().cluster_rtol if rtol is None else rtol,
         )
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
@@ -1335,6 +1413,7 @@ def _estimate_objective(
     adjoints: Mapping[tuple[float, Hashable], np.ndarray],
     ridden: tuple[str, ...],
     cache: RecoveryCache,
+    rtol: float,
 ) -> ErrorEstimate:
     """An objective's estimate: classify it, then its kind's kernel (ADR 0143).
 
@@ -1347,6 +1426,10 @@ def _estimate_objective(
     from gfem._engine import estimate as kernels
 
     objective = _objective.classify(estimator.objective, result, model)  # ty: ignore[invalid-argument-type]
+    if objective.kind == "objective of omega":
+        return _estimate_objective_of_omega(
+            model, result, estimator, objective, threads=threads, rtol=rtol, cache=cache
+        )
     if objective.kind != "objective of s":
         raise MeshRefinementUnsupportedError(
             objective.kind,
@@ -1386,6 +1469,42 @@ def _estimate_objective(
         _quantity=objective.value,
         _dual_ports=ports,
         _sensitivity=objective.sensitivity,
+    )
+
+
+def _estimate_objective_of_omega(
+    model: Model,
+    result: EigenmodeResult,
+    estimator: QuantityEstimator,
+    objective: Any,
+    *,
+    threads: int | None,
+    rtol: float,
+    cache: RecoveryCache,
+) -> ErrorEstimate:
+    """An objective of the modes' omega (ADR 0131 amendment): free duals.
+
+    Each mode read is followed as a mode of its own (``_modes``), and must
+    be clearly apart from the others (`_track_mode`). The terms ADR 0138
+    lifted for the omega estimate alone raise (`_check_lossy_mode`).
+    """
+    from gfem._engine import estimate as kernels
+
+    _check_lossy_mode(model, "objective")
+    reads = [(r.index[0], r.cotangent) for r in objective.reads]
+    for mode, _ in reads:
+        _track_mode(result, mode, None, rtol, None)
+    terms = kernels.objective_of_omega(
+        model, result, reads, objective.curvature, threads, cache=cache
+    )
+    return ErrorEstimate(
+        estimator=estimator,
+        kind=objective.kind,
+        values=(terms.value,),
+        indicators=readonly(np.sqrt(terms.weights)),
+        _quantity=objective.value,
+        _sensitivity=objective.sensitivity,
+        _modes=tuple(mode for mode, _ in reads),
     )
 
 

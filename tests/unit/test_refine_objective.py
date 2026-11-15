@@ -7,6 +7,8 @@ The effectivity of the objective estimates is verified in
 `tests/verification/test_objective_estimate.py`.
 """
 
+import dataclasses
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -550,3 +552,107 @@ def test_the_objective_dual_factorizes_once_then_rides_on_the_solves(step, monke
     # the ridden dual gives the estimate error_estimate gives on the last mesh
     again = gfem.error_estimate(refinement_.result, estimator, model=refinement_.model)
     assert again.value == pytest.approx(refinement_.estimate.value, rel=1e-8)
+
+
+# --- objectives of eigenmode results ----------------------------------------------
+
+
+def _with_leaf(result, name, value):
+    return dataclasses.replace(result, **{name: {"x": jnp.asarray(value)}})
+
+
+@pytest.mark.parametrize(
+    ("leaf", "shape"),
+    [
+        ("q_port", (3,)),
+        ("participation", (3,)),
+        ("sheet_participation", (3,)),
+        ("principal_participation", (3, 3)),
+    ],
+)
+def test_an_eigen_objective_reading_a_refused_leaf_raises(cavity, leaf, shape):
+    model, result = cavity
+    fabricated = _with_leaf(result, leaf, np.full(shape, 0.5))
+
+    def objective(r, _model):
+        return jnp.sum(getattr(r, leaf)["x"][0]) + r.frequency[0] * 1e-9
+
+    _raises(leaf, objective, fabricated, model)
+
+
+def test_an_eigen_objective_reading_a_mode_field_raises(cavity):
+    model, result = cavity
+
+    def coefficients(r, _model):
+        return jnp.sum(jnp.abs(r.e_fields[0].coefficients) ** 2)
+
+    def point(r, _model):
+        e = r.e_fields[0].at(np.array([0.2e-3, 0.2e-3, 0.1e-3]))
+        return jnp.sum(jnp.abs(e) ** 2)
+
+    _raises("normalized mode field", coefficients, result, model)
+    _raises("normalized mode field", point, result, model)
+
+
+def test_error_estimate_of_an_eigen_objective_of_omega(cavity):
+    model, result = cavity
+
+    def objective(r, _model):
+        return (r.frequency[1].real / r.frequency[0].real - 1.1) ** 2
+
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(objective=objective), model=model
+    )
+    assert estimate.kind == "objective of omega"
+    assert estimate.value > 0
+    assert estimate.indicators.shape == (len(model.mesh.tetrahedra),)
+    assert estimate._modes == (0, 1)
+
+
+def test_an_eigen_objective_reading_a_degenerate_mode_raises(cavity):
+    model, result = cavity
+    clustered = dataclasses.replace(result, cluster=jnp.asarray([0, 0, 1]))
+    estimator = gfem.QuantityEstimator(objective=lambda r, _: r.frequency[0].real)
+    with pytest.raises(gfem.DegenerateModeError, match="degenerate cluster"):
+        gfem.error_estimate(clustered, estimator, model=model)
+
+
+def test_an_eigen_objective_keeps_the_lossy_eigenmode_refusal(tmp_path):
+    lossless = rc.cavity_model(tmp_path, 2)
+    model = gfem.Model(
+        lossless.mesh,
+        materials={"air": gfem.MaterialField(mu_r=2.0 * (1 - 0.1j))},
+        boundaries=lossless.boundaries,
+    )
+    result = gfem.solve(
+        model, gfem.Eigenmode(target=rc.CAVITY_F1 / 1.4, n_modes=1), options=OPTIONS
+    )
+    estimator = gfem.QuantityEstimator(objective=lambda r, _: r.frequency[0].real)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, estimator, model=model)
+    assert caught.value.feature == "lossy eigenmode"
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_an_eigen_objective_follows_each_mode_it_reads(cavity):
+    model, _ = cavity
+
+    def objective(r, _model):
+        return r.frequency[1].real * 1e-9
+
+    refined = gfem.refine_mesh(
+        model,
+        gfem.Eigenmode(target=rc.CAVITY_F1, n_modes=3),
+        estimator=gfem.QuantityEstimator(objective=objective),
+        tolerance=1e-6,
+        options=OPTIONS,
+        max_cycles=1,
+    )
+    assert len(refined.cycles) == 2
+    for cycle in refined.cycles:
+        assert 1 in cycle.modes
+        assert cycle.estimate > 0
+    # the objective's value is mode 1 of the first mesh, followed
+    last = refined.cycles[-1]
+    omega = np.asarray(refined.result.omega)[last.modes[1]]
+    assert last.value == pytest.approx(omega.real / (2 * np.pi) * 1e-9, rel=1e-12)

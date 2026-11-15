@@ -35,10 +35,23 @@ Objectives of S (kind ``objective of s``, the C form of ADR 0129):
 - deep metal (`contrast_cases.metal_floor_model`, wedge and flat at Re eps
   -29.7, n = 1, 2): |S21|^2 against `contrast_cases.METAL_FLOOR_S`.
 
+Objectives of omega (kind ``objective of omega``, ADR 0131 amendment):
+free duals, the Re rule per mode read plus the Hessian remainder, against
+exact omegas:
+
+- L cavity (`refinement_cases.cavity_model`, eps_r 4, lossless and 5 S/m,
+  n = 2, 4, 8): the frequency in GHz, (f/f0 - 1)^2 off target (f0 0.99 of
+  the exact f) and on target (f0 the solved f), and 1/q;
+- lumped-R line (50 and 30 ohm ports, n = 4, 16, 64): 1/q, and the
+  detuning off (0.99 f_h) and on target;
+- two-mode box (eps_r 4, 0.5 S/m, modes 110 and 210, m = 1, 2): the ratio
+  f2/f1 off target, the split in GHz and the sum of 1/q.
+
 Overestimates (`OVERESTIMATES`), asserted >= 0.9 and quoted on their own:
 an objective at its target, (|S|^2 - |S_h|^2)^2 and |S - S_h|^2 on the
 first entry of the lossy line and of the block guide, whose cotangent is
-zero, so that only the Hessian remainder is left.
+zero, so that only the Hessian remainder is left; several modes at their
+target, (f2/f1 - its solved value)^2 on the two-mode box.
 
 A robust max over frequencies or entries is not estimated: it branches on
 what it reads and raises ``"non-smooth objective"``
@@ -54,6 +67,10 @@ Measured (ostau, 2 threads):
     at its target         3.56 - 53.7   (lossy line n = 4, block guide; on
                                          the finer lines the error is under
                                          1e-12)
+    L cavity (omega)      2.15 - 14.4
+    lumped-R line         1.04 - 36.8   (1.04: detuning at n = 64)
+    two-mode box          8.53 - 16.0
+    modes at target       162 - 176
 
 The lossy guide's slab at tan_delta 0.05 without offset is not run: its
 reference uncertainty exceeds 20 % of every row's error. The top, 175, is
@@ -87,12 +104,18 @@ EFFECTIVITY_BY_KIND = {
         "lossy guides": (0.9, 200.0),
         "deep metal": (0.9, 8.0),
     },
+    "objective of omega": {
+        "L cavity": (0.9, 40.0),
+        "lumped-R line": (0.9, 40.0),
+        "two-mode box": (0.9, 40.0),
+    },
 }
 
 #: Cases asserted >= 0.9 whose high end the docs quote on its own (Limits)
 #: instead of widening their kind's range: name -> (kind, (low, high)).
 OVERESTIMATES = {
     "objective at its target": ("objective of s", (0.9, 2e5)),
+    "several modes at their target": ("objective of omega", (0.9, 200.0)),
 }
 
 #: Configurations that are not claimed: name -> (kind, (low, high)).
@@ -380,3 +403,179 @@ def test_objective_of_s_on_deep_metal(tmp_path, geometry, n):
         model, result, reference, 0.0, lambda r, _m: _a2(_s(r, "p2", "p1", 0))
     )
     _assert_rows("objective of s", "deep metal", [row])
+
+
+# --- objectives of omega ------------------------------------------------------------
+
+_ETA0 = const.mu_0 * const.c
+
+
+def _lossy_omega(k0_squared, eps_c, sigma, near):
+    """The root of eps_c k^2 - i eta0 sigma k - k0^2 = 0 nearest ``near``, rad/s."""
+    roots = np.roots([eps_c, -1j * _ETA0 * sigma, -k0_squared]) * const.c
+    return complex(roots[np.argmin(abs(roots - near))])
+
+
+def _inverse_q(omega):
+    return 2 * jnp.abs(jnp.imag(omega)) / jnp.abs(omega)
+
+
+def _hz(omega):
+    return jnp.real(omega) / (2 * jnp.pi)
+
+
+def _omega_rows(model, result, exact, objectives):
+    """Per objective, its estimate and effectivity against the exact omegas.
+
+    ``exact`` maps a mode index of ``result`` to its exact omega; the error
+    is J on the result minus J with those omegas put in.
+    """
+    omega = np.asarray(result.omega).copy()
+    for mode, value in exact.items():
+        omega[mode] = value
+    reference = dataclasses.replace(result, omega=jnp.asarray(omega))
+    rows = []
+    for objective in objectives:
+        estimate = gfem.error_estimate(
+            result, gfem.QuantityEstimator(objective=objective), model=model
+        )
+        error = float(objective(result, model)) - float(objective(reference, model))
+        assert error != 0
+        rows.append((estimate, estimate.value / abs(error)))
+    return rows
+
+
+def _detunings(f0, f_h, mode=0):
+    """(f/f0 - 1)^2 off target (f0) and on target (the solved f_h)."""
+
+    def off(r, _model):
+        return (_hz(r.omega[mode]) / f0 - 1) ** 2
+
+    def on(r, _model):
+        return (_hz(r.omega[mode]) / f_h - 1) ** 2
+
+    return [off, on]
+
+
+@pytest.mark.parametrize("sigma", [0.0, 5.0])
+@pytest.mark.parametrize("n", [2, 4, 8])
+def test_objective_of_omega_on_the_l_cavity(tmp_path, n, sigma):
+    # Singular corner, eps_r 4, lossless or 5 S/m: exact omega (the fill's
+    # scaling of the L cavity's eigenvalue). Frequency, detuning off and on
+    # target, and 1/q on the lossy fill.
+    lossless = rc.cavity_model(tmp_path, n)
+    fill = gfem.Material(eps_r=4.0, conductivity=sigma)
+    model = gfem.Model(
+        lossless.mesh, materials={"air": fill}, boundaries=lossless.boundaries
+    )
+    near = 2 * math.pi * rc.CAVITY_F1 / 2
+    exact = _lossy_omega(rc.CAVITY_LAMBDA1 * 1e6, 4.0, sigma, near)
+    problem = gfem.Eigenmode(target=exact.real / (2 * math.pi), n_modes=1)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    f_h = float(_hz(np.asarray(result.omega)[0]))
+    objectives = [
+        lambda r, _m: _hz(r.omega[0]) * 1e-9,
+        *_detunings(0.99 * exact.real / (2 * math.pi), f_h),
+    ]
+    if sigma:
+        objectives.append(lambda r, _m: _inverse_q(r.omega[0]))
+    rows = _omega_rows(model, result, {0: exact}, objectives)
+    _assert_rows("objective of omega", "L cavity", rows)
+
+
+#: The parallel-plate line closed by 50 and 30 ohm lumped ports (Q 1.8).
+_LINE_EPS = 4.0
+
+
+def _line_resonance(near):
+    """The resonance nearest ``near``, rad/s: Gamma1 Gamma2 e^{-2j beta L} = 1."""
+    eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
+    z0 = eta0 * _LINE["height"] / (_LINE["width"] * math.sqrt(_LINE_EPS))
+    gammas = ((_R1 - z0) / (_R1 + z0)) * ((_R2 - z0) / (_R2 + z0))
+    speed = const.c / math.sqrt(_LINE_EPS)
+    n = round(near.real * _LINE["length"] / (speed * math.pi))
+    return complex((math.pi * n - 0.5j * np.log(gammas)) * speed / _LINE["length"])
+
+
+@pytest.mark.parametrize("n", [4, 16, 64])
+def test_objective_of_omega_on_the_lumped_resistor_line(tmp_path, n):
+    # The only loss is in the two port resistors: closed-form omega. 1/q,
+    # detuning off (0.99 f_h) and on target.
+    path = sm.write_msh22(
+        tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1))
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"dielectric": gfem.Material(eps_r=_LINE_EPS)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z", resistance=_R1),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=_R2),
+        ],
+    )
+    problem = gfem.Eigenmode(target=7.5e9, n_modes=1)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    omega = complex(np.asarray(result.omega)[0])
+    f_h = omega.real / (2 * math.pi)
+    objectives = [
+        lambda r, _m: _inverse_q(r.omega[0]),
+        *_detunings(0.99 * f_h, f_h),
+    ]
+    rows = _omega_rows(model, result, {0: _line_resonance(omega)}, objectives)
+    _assert_rows("objective of omega", "lumped-R line", rows)
+
+
+_BOX = (1e-3, 0.7e-3, 0.4e-3)
+
+
+def _two_mode_box(directory, m):
+    """The box filled with eps_r 4, 0.5 S/m: its modes 110 and 210, exact."""
+    cells = sm.plate(1.0, 0.7, (("air", 0.4),), (5 * m, 4 * m, 2 * m))
+    path = sm.write_msh22(directory / "box.msh", cells)
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"air": gfem.Material(eps_r=4.0, conductivity=0.5)},
+        boundaries=[gfem.PEC(s) for s in ("bottom", "top", "side")],
+    )
+    exact = []
+    for mode in ((1, 1, 0), (2, 1, 0)):
+        k0_squared = math.pi**2 * sum(
+            (i / a) ** 2 for i, a in zip(mode, _BOX, strict=True)
+        )
+        near = const.c * math.sqrt(k0_squared / 4.0)
+        exact.append(_lossy_omega(k0_squared, 4.0, 0.5, near))
+    problem = gfem.Eigenmode(target=exact[0].real / (2 * math.pi), n_modes=2)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    omega = np.asarray(result.omega)
+    by_mode = {
+        i: exact[int(np.argmin(abs(np.asarray(exact) - omega[i])))] for i in range(2)
+    }
+    return model, result, by_mode
+
+
+def _ratio(r):
+    return jnp.real(r.omega[1]) / jnp.real(r.omega[0])
+
+
+@pytest.mark.parametrize("m", [1, 2])
+def test_objective_of_omega_on_two_modes_of_a_box(tmp_path, m):
+    # Two modes read together, each followed on its own track: the ratio
+    # f2/f1 off target, the split in GHz and the sum of 1/q.
+    model, result, exact = _two_mode_box(tmp_path, m)
+    ratio_h = float(_ratio(result))
+    objectives = [
+        lambda r, _m: (_ratio(r) - 1.02 * ratio_h) ** 2,
+        lambda r, _m: (_hz(r.omega[1]) - _hz(r.omega[0])) * 1e-9,
+        lambda r, _m: _inverse_q(r.omega[0]) + _inverse_q(r.omega[1]),
+    ]
+    rows = _omega_rows(model, result, exact, objectives)
+    _assert_rows("objective of omega", "two-mode box", rows)
+
+
+@pytest.mark.parametrize("m", [1, 2])
+def test_objective_of_omega_with_two_modes_at_their_target(tmp_path, m):
+    # (f2/f1 - its solved value)^2: zero cotangent, the remainder alone
+    model, result, exact = _two_mode_box(tmp_path, m)
+    ratio_h = float(_ratio(result))
+    rows = _omega_rows(model, result, exact, [lambda r, _m: (_ratio(r) - ratio_h) ** 2])
+    _assert_overestimate("several modes at their target", rows)
