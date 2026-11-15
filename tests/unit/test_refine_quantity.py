@@ -10,6 +10,7 @@ import itertools
 import logging
 import math
 
+import contrast_cases as cc
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -861,6 +862,211 @@ def test_loss_in_an_anisotropic_material_is_one_refusal(
     assert caught.value.feature == "lossy anisotropic material"
     assert "loss in the anisotropic material of" in str(caught.value)
     assert "lossless" in str(caught.value)  # the remedy
+
+
+# --- driven refusals (ADRs 0134, 0139, 0140) ----------------------------------
+
+
+class _SolvedError(Exception):
+    """Raised in place of the first solve: every check before it passed."""
+
+
+@pytest.fixture
+def reaches_solve(monkeypatch):
+    def solve(*_args, **_kwargs):
+        raise _SolvedError
+
+    monkeypatch.setattr("gfem.refinement._solve", solve)
+
+
+S21 = gfem.QuantityEstimator(s=("p2", "p1"))
+
+
+def _refused(model, problem, estimator=S21):
+    """The `MeshRefinementUnsupportedError` refine_mesh raises before any solve."""
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(model, problem, estimator=estimator, options=OPTIONS)
+    assert "FieldEstimator()" in str(caught.value)  # the remedy
+    return caught.value
+
+
+def _admitted(model, problem, estimator=S21):
+    """Every check of refine_mesh passes: it reaches the first solve."""
+    with pytest.raises(_SolvedError):
+        gfem.refine_mesh(model, problem, estimator=estimator, options=OPTIONS)
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        gfem.Impedance("side", resistance=100.0),
+        gfem.Impedance("side", inductance=1e-9),
+        gfem.Absorbing("side"),
+        gfem.Absorbing("side", order=2),
+    ],
+    ids=["resistive-impedance", "inductive-impedance", "absorbing", "absorbing-2"],
+)
+@pytest.mark.usefixtures("no_solve")
+def test_an_impedance_or_absorbing_surface_refuses_the_s_estimate(step, surface):
+    model = _with(step, boundaries=[*step.boundaries, surface])
+    error = _refused(model, gfem.Driven([5e9]))
+    assert error.feature == "impedance or absorbing surface"
+    assert "'side'" in str(error)
+
+
+def test_an_estimate_of_s_by_an_impedance_surface_is_refused(step):
+    model = _with(step, boundaries=[*step.boundaries, gfem.Absorbing("side")])
+    result = gfem.solve(model, gfem.Driven([5e9], keep_fields=True), options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, S21, model=model)
+    assert caught.value.feature == "impedance or absorbing surface"
+    field = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    assert field.value > 0  # unclaimed there, not refused
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_conductor_surface_admits_the_s_estimate(step):
+    conductor = gfem.Conductor("side", conductivity=1e5)
+    _admitted(_with(step, boundaries=[*step.boundaries, conductor]), gfem.Driven([5e9]))
+
+
+@pytest.mark.parametrize(
+    "estimator",
+    [gfem.QuantityEstimator(omega=0), gfem.FieldEstimator()],
+    ids=["omega", "field"],
+)
+@pytest.mark.usefixtures("reaches_solve")
+def test_an_impedance_surface_admits_omega_and_the_field(cavity, estimator):
+    wall = gfem.Impedance("wall", resistance=377.0)
+    _admitted(_with(cavity, boundaries=[wall]), rc.CAVITY_PROBLEM, estimator)
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_an_impedance_surface_admits_the_field_estimate_of_a_driven_model(step):
+    model = _with(step, boundaries=[*step.boundaries, gfem.Absorbing("side")])
+    _admitted(model, gfem.Driven([5e9]), gfem.FieldEstimator())
+
+
+MU_HALVES = (gfem.Material(), gfem.Material(mu_r=2.5))
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_lumped_port_on_a_permeability_contrast_refuses_the_s_estimate(tmp_path):
+    model = cc.split_line_model(tmp_path, "beside", MU_HALVES, 2)
+    error = _refused(model, gfem.Driven([15e9]))
+    assert error.feature == "lumped port spanning a permeability contrast"
+    assert "'p1'" in str(error)
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_lumped_port_across_a_permeability_interface_refuses_too(tmp_path):
+    model = cc.split_line_model(tmp_path, "across", MU_HALVES, 2)
+    error = _refused(model, gfem.Driven([3e9]))
+    assert error.feature == "lumped port spanning a permeability contrast"
+
+
+def test_an_estimate_of_s_by_a_permeability_contrast_is_refused(tmp_path):
+    model = cc.split_line_model(tmp_path, "beside", MU_HALVES, 2)
+    result = gfem.solve(model, gfem.Driven([15e9], keep_fields=True), options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, S21, model=model)
+    assert caught.value.feature == "lumped port spanning a permeability contrast"
+
+
+@pytest.mark.parametrize(
+    "fill",
+    [
+        gfem.Material(eps_r=2.0, mu_r=2.0),
+        gfem.Material(mu_r=(1.5, 2.0, 2.5)),
+        gfem.Material(mu_r=(1.5, 2.0, 2.5), axes=tuple(map(tuple, rc.ROT3.T))),
+    ],
+    ids=["uniform", "diagonal", "rotated"],
+)
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_uniform_permeability_at_a_lumped_port_is_admitted(tmp_path, fill):
+    # The tensors are compared whole: one anisotropic fill is no contrast.
+    _admitted(
+        cc.split_line_model(tmp_path, "beside", (fill, fill), 2), gfem.Driven([3e9])
+    )
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_wave_port_on_a_permeability_contrast_is_admitted(tmp_path):
+    model = cc.split_line_model(tmp_path, "beside", MU_HALVES, 2, ports="wave")
+    _admitted(model, gfem.Driven([15e9]))
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_lumped_port_on_a_permittivity_contrast_is_admitted(tmp_path):
+    eps = (gfem.Material(eps_r=3.0), gfem.Material())
+    _admitted(cc.split_line_model(tmp_path, "across", eps, 2), gfem.Driven([3e9]))
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_lumped_port_on_a_conductivity_contrast_is_admitted(tmp_path):
+    model = cc.contrast_line_model(tmp_path, "sigma", 1, ports="lumped")
+    _admitted(model, gfem.Driven([10e9]))
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_lumped_port_on_a_permeability_contrast_admits_the_field_estimate(tmp_path):
+    model = cc.split_line_model(tmp_path, "beside", MU_HALVES, 2)
+    _admitted(model, gfem.Driven([15e9]), gfem.FieldEstimator())
+
+
+#: The Drude core of the plasmonic tests: Re eps -29.8 at 3 GHz, -4.9 at 8 GHz.
+DRUDE_CORE = gfem.PermittivityLaw(
+    terms=[gfem.Drude(plasma_frequency=20e9, damping=2e9)]
+)
+
+
+@pytest.fixture(scope="module")
+def drude_line(tmp_path_factory):
+    """A 10 x 2 x 1 mm line, eps_r 4, with a `DRUDE_CORE` at 4 < x < 6 mm."""
+    path = tmp_path_factory.mktemp("drude") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(10.0, 2.0, 1.0, (10, 1, 1), core=(4.0, 6.0)))
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={
+            "dielectric": gfem.Material(eps_r=4.0),
+            "core": gfem.Material(eps_r=DRUDE_CORE),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=30.0),
+        ],
+    )
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_law_in_the_plasmonic_window_refuses_the_s_estimate(drude_line):
+    error = _refused(drude_line, gfem.Driven([3e9, 8e9]))
+    assert error.feature == "plasmonic permittivity"
+    message = str(error)
+    assert "'core'" in message
+    assert "8 GHz" in message
+    assert "Re eps = -4.88" in message
+
+
+def test_an_estimate_of_s_in_the_plasmonic_window_is_refused(drude_line):
+    problem = gfem.Driven([8e9], keep_fields=True)
+    result = gfem.solve(drude_line, problem, options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, S21, model=drude_line)
+    assert caught.value.feature == "plasmonic permittivity"
+    field = gfem.error_estimate(result, gfem.FieldEstimator(), model=drude_line)
+    assert field.value > 0  # unclaimed there, not refused
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_deep_metal_law_is_admitted(drude_line):
+    _admitted(drude_line, gfem.Driven([3e9]))
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_law_in_the_plasmonic_window_admits_the_field_estimate(drude_line):
+    _admitted(drude_line, gfem.Driven([8e9]), gfem.FieldEstimator())
 
 
 # --- electrostatic sheets ----------------------------------------------------
