@@ -337,7 +337,7 @@ def test_every_refusal_key_is_snake_case():
     assert all(re.fullmatch(r"[a-z0-9_]+", key) for key in _mpi._REFUSALS)
 
 
-@pytest.mark.parametrize("key", ["power_flow", "electric_energy"])
+@pytest.mark.parametrize("key", ["power_flow", "region_mean", "electric_energy"])
 def test_a_refused_measurement_names_the_route_through_a_saved_result(key):
     text = _mpi._REFUSALS[key]
     assert "Job.run(out=)" in text
@@ -507,6 +507,9 @@ def test_a_field_from_ranks_refuses_export_on_a_stub(tmp_path):
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.power_flow(piece, "sub", model=cases.layered_line(tmp_path))
     assert caught.value.feature == "power_flow"
+    with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+        gfem.region_mean(piece, "sub")
+    assert caught.value.feature == "region_mean"
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.electric_energy(piece, model=cases.layered_line(tmp_path))
     assert caught.value.feature == "electric_energy"

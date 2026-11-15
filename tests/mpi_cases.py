@@ -98,6 +98,7 @@ METHOD_KEYS = (
     "field_export",
     "load_result_fields",
     "power_flow",
+    "region_mean",
     "electric_energy",
     "error_estimate",
     "mesh_refinement",

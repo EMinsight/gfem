@@ -1568,14 +1568,21 @@ def test_the_loop_stops_when_every_quantity_meets_its_tolerance(step, recwarn):
     assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
 
 
-def test_a_tuple_takes_the_union_of_the_adjoints(step, prepares):
+def test_a_tuple_takes_the_union_of_the_adjoints(step, factorizations):
     # S21 with p2 unexcited solves p2's adjoint with the forward; S11 needs
-    # none. Together they solve the same, once.
+    # none. Together they factorize as S21 alone does: the adjoint rides once.
     problem = gfem.Driven([3e9], excite=["p1"])
     joint = _refine_step(step, (S21, S11), 1.0, 0, problem)
-    count = len(prepares)
-    single = [_refine_step(step, e, 1.0, 0, problem) for e in (S21, S11)]
-    assert count == len(prepares) - count
+    together = factorizations()
+    gfem.release_memory()  # no handle carries over to the next run
+    single = []
+    for estimator in (S21, S11):
+        before = factorizations()
+        single.append(_refine_step(step, estimator, 1.0, 0, problem))
+        single_count = factorizations() - before
+        if estimator is S21:
+            assert single_count == together
+        gfem.release_memory()
     for estimate, alone in zip(joint.estimate, single, strict=True):
         assert estimate.values == pytest.approx(alone.estimate.values, rel=1e-12)
 

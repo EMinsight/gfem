@@ -16,6 +16,8 @@ result reloaded with `gfem.load_result`.
   ``E x H*`` is not, see the measurements recipe).
 - `electric_energy`: the time-averaged electric energy a field stores in
   each volume region, with the model's materials.
+- `region_mean`: a field's mean over named volume regions, exact for the
+  solved field (an electric field's, or a potential's).
 
 Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 `jax.grad` they differentiate with respect to the field coefficients (so
@@ -43,6 +45,7 @@ import numpy as np
 import scipy.constants as const
 
 from gfem import _mpi, _objective, _probe
+from gfem._adjoint.measure import measure
 from gfem._checks import check_fixed, is_traced
 from gfem._materials import Material, _is_law, field_principal_values
 from gfem._pytree import register_fields
@@ -62,6 +65,7 @@ __all__ = [
     "electric_energy",
     "interface_participation",
     "power_flow",
+    "region_mean",
 ]
 
 # --- interface participation -------------------------------------------------------
@@ -729,6 +733,174 @@ def _check_estimated_side(names: tuple[str, ...], model: Model) -> None:
             f"dispersive region {odd[0]!r}, where the absorbed-power estimate "
             "was not verified: use gfem.FieldEstimator().",
         )
+
+
+# --- region mean -----------------------------------------------------------------
+
+
+def region_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
+    """Mean of a field over volume regions: |R|^-1 int_R E dV, or of a potential.
+
+    ``R`` is the union of the named regions' elements in the field's
+    support. The mean is exact for the solved field (the integral of its
+    finite-element polynomial, not a sample of it), and linear in its
+    coefficients: under `jax.grad` the gradient flows back into the solve
+    that made the field, and it works under `jax.jit` and `jax.vmap`. A
+    weighted component ``w . mean`` is ``jnp.dot(w, region_mean(E, "R"))``.
+
+    Regions are named, never selected by a predicate: mesh refinement
+    (`gfem.refine_mesh`) keeps region tags, so a named mean is the same
+    quantity on every refined mesh. It is the measurement to use in place
+    of a point value (`gfem.Field.at`) in an objective: a mean over a
+    small region has an error estimate (`gfem.QuantityEstimator`), a
+    point value has none.
+
+    Args:
+        field: A field of a result, e.g. ``result.e_field(f)`` or
+            ``result.potential["t1"]``.
+        region: A volume region name, or a sequence of names (their union).
+
+    Returns:
+        ``(3,)`` for a vector field (an electric field in V/m, complex for
+        a phasor), ``()`` for a scalar field (a potential in V).
+
+    Raises:
+        TypeError: ``field`` is not a `gfem.Field`, or ``region`` is
+            neither a name nor a non-empty sequence of names.
+        RegionNotFoundError: A named region does not exist.
+        ValueError: A name is a surface region, or the regions hold no
+            element of the field's support.
+        gfem.DistributedUnsupportedError: The field is a piece across ranks.
+        NonDifferentiableError: The mesh node coordinates are differentiated.
+    """
+    from gfem._field import Field
+
+    if not isinstance(field, Field):
+        raise TypeError(f"region_mean needs a gfem.Field, got {type(field).__name__}.")
+    if field._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature("region_mean")
+    names = _region_names(region)
+    _check_mean_regions(field, names)
+    recorder = _objective.recording()
+    if recorder is not None:
+        return _recorded_region_mean(recorder, field, names)
+    kernel = _MeanKernel(field, names)
+    return measure(
+        kernel, {"coefficients": field.coefficients, "nodes": field.mesh.nodes}
+    )["mean"]
+
+
+def _region_names(region: Any) -> tuple[str, ...]:
+    if isinstance(region, str):
+        return (region,)
+    if (
+        isinstance(region, Sequence)
+        and region
+        and all(isinstance(r, str) for r in region)
+    ):
+        return tuple(dict.fromkeys(region))
+    raise TypeError(
+        "region_mean's region must be a volume region name or a non-empty "
+        f"sequence of names, got {region!r}."
+    )
+
+
+def _check_mean_regions(field: Field, names: tuple[str, ...]) -> None:
+    """Raise for a surface name, or regions with no element in the support."""
+    mesh = field.mesh
+    for name in names:
+        if mesh.region(name).dim != 3:
+            raise ValueError(
+                f"region_mean averages over volume regions, but {name!r} is a "
+                "surface region of the mesh."
+            )
+    tags = np.asarray(mesh.tetrahedron_tags)
+    wanted = [mesh.region(n).tag for n in names if n in field.support]
+    selected = np.isin(tags, wanted)
+    if selected.any() and field._excluded:  # noqa: SLF001
+        entities = np.asarray(mesh.tetrahedron_entities)
+        for tag, entity in field._excluded:  # noqa: SLF001
+            selected &= ~((tags == tag) & (entities == entity))
+    if not selected.any():
+        raise ValueError(
+            f"region_mean over {list(names)} holds no element of the field's "
+            f"support {list(field.support)}: average over regions the field is "
+            "defined on."
+        )
+
+
+class _MeanKernel:
+    """A field's region mean: ``M c`` and its transpose."""
+
+    name = "a region mean"
+    pieces = frozenset({"coefficients"})
+
+    def __init__(self, field: Field, names: tuple[str, ...]) -> None:
+        self.topology = field.mesh._topology  # noqa: SLF001
+        self.layout = (
+            tuple(field.support),
+            tuple(field._excluded),  # noqa: SLF001
+            field.space,
+            field.order,
+        )
+        self.names = names
+        self.comm = None
+        components = _probe.COMPONENTS[field.space]
+        shape = () if components == 1 else (components,)
+        dtype = field.coefficients.dtype
+        self.output_specs = {"mean": jax.ShapeDtypeStruct(shape, dtype)}
+
+    def role(self, name: str) -> str:
+        del name
+        return "read"
+
+    def unsupported(self, name: str) -> str | None:
+        return _probe.NODES_REASON if name == "nodes" else None
+
+    def describe(self, name: str) -> str:
+        return {"nodes": "the mesh node coordinates (field.mesh.nodes)"}.get(
+            name, f"the field {name}"
+        )
+
+    def _rows(self, nodes: np.ndarray) -> np.ndarray:
+        from gfem._engine.fields import mean_rows
+
+        return mean_rows(Mesh(nodes, self.topology), self.layout, self.names)
+
+    def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        rows = self._rows(values["nodes"])
+        mean = rows @ values["coefficients"]
+        return {"mean": mean[0] if len(rows) == 1 else mean}
+
+    def backward(
+        self,
+        values: dict[str, np.ndarray],
+        cotangents: dict[str, np.ndarray],
+        wanted: tuple[str, ...],
+    ) -> dict[str, np.ndarray]:
+        if wanted != ("coefficients",):  # the measure wrapper raised for others
+            raise NotImplementedError(f"no region mean gradient for {wanted}")
+        rows = self._rows(values["nodes"])
+        ct = np.reshape(cotangents["mean"], (len(rows),))
+        return {"coefficients": rows.T @ ct}
+
+
+def _recorded_region_mean(
+    recorder: _objective.Recorder, field: Field, names: tuple[str, ...]
+) -> jax.Array:
+    """`region_mean` while an objective is classified: one recorded output."""
+    label = recorder.label(field, "region_mean")
+    concrete = recorder.field(label)
+    components = _probe.COMPONENTS[field.space]
+    return recorder.output(
+        f"region_mean|{label}|{'+'.join(names)}",
+        () if components == 1 else (components,),
+        concrete.coefficients.dtype,
+        lambda: region_mean(concrete, list(names)),
+        measurement="region_mean",
+        label=label,
+        regions=names,
+    )
 
 
 # --- electric energy ---------------------------------------------------------------
