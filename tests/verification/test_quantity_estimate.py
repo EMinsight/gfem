@@ -34,6 +34,12 @@ Cases and references (none recomputed by the tests but the closed forms):
   reference is not within 20 % of their error). "uniform" (TE10, parallel:
   the free dual), "slab" and "step" (a hybrid lossy port mode: the adjoint
   of port ``to``'s S functional);
+- hybrid strip guide (`refinement_cases.hybrid_strip_model`), lossless,
+  wave ports de-embedded by half its length in all: S21 and S11 at 170 GHz
+  on n = 4 against the closed form in `refinement_cases.HYBRID_STRIP_GAMMA`;
+  on the same guide without offsets, the share of the S21 estimate that the
+  port mode's own gamma error brings at offsets over the whole length stays
+  below `PORT_MODE_SHARE` (ADR 0137);
 - parallel-plate line between 50 and 30 ohm lumped ports, eps_r 4: S11, S21
   and S22 at 3, 8, 15, 25 GHz on n = 4, 8, 16 cells along the line, against
   its ABCD closed form; the same with a lossy fill (tan_delta 0.3, or
@@ -271,6 +277,7 @@ EFFECTIVITY_BY_KIND = {
         "lumped port beside a loss contrast": (0.9, 2.5),
         "lossy permeability line": (0.9, 6.0),
         "lossy anisotropic line": (0.9, 9.0),
+        "hybrid port with offset": (0.9, 12.0),
     },
     "omega": {
         "L cavity": (0.9, 5.0),
@@ -316,6 +323,13 @@ WITNESSES: dict[str, tuple[str, tuple[float, float]]] = {
         (0.65, 0.85),
     ),
 }
+
+#: The de-embedding share of a wave port's 2D mode error (ADR 0137): on the
+#: hybrid strip guide de-embedded over its whole port-to-port length, the
+#: S21 term |(d_h - d) S21| (d = exp(gamma sum(offsets)), d_h with the port
+#: mode's own gamma) over the S21 estimate stays below it. Measured 0.014 at
+#: n = 4 (0.026 at n = 2). The docs quote it (``port mode share high``).
+PORT_MODE_SHARE = 0.03
 
 #: Refused configurations, measured past the refusal through the private
 #: kernel (not quoted: the docs only say these raise): name -> (low, high).
@@ -718,6 +732,49 @@ def test_the_lossy_slab_guide_s_with_an_adjoint(tmp_path, n, tan_delta, offset):
 @_LOSSY_GUIDE_CASES
 def test_the_lossy_step_guide_s_with_an_adjoint(tmp_path, n, tan_delta, offset):
     _lossy_guide(tmp_path, "step", n, tan_delta, offset)
+
+
+
+# --- hybrid strip guide: S with offsets, the port mode's own error ------------
+
+#: The hybrid strip guide's de-embedding offsets (m), half its length in all.
+HYBRID_STRIP_OFFSETS = (0.5e-3, 1.5e-3)
+_HYBRID_STRIP_LENGTH = 4e-3
+
+
+def test_the_hybrid_strip_port_s_with_offsets(tmp_path):
+    # The estimate does not see the port mode's 2D error, which enters S
+    # through the de-embedding factor (ADR 0137): S21 against the closed form
+    # with the exact gamma, the offsets applied by the solve with its own.
+    model = rc.hybrid_strip_model(tmp_path, 4, HYBRID_STRIP_OFFSETS)
+    problem = gfem.Driven([rc.HYBRID_STRIP_FREQUENCY], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    gamma = rc.HYBRID_STRIP_GAMMA
+    left = _HYBRID_STRIP_LENGTH - sum(HYBRID_STRIP_OFFSETS)
+    references = {("p2", "p1"): np.exp(-gamma * left), ("p1", "p1"): 0.0}
+    for (to, source), reference in references.items():
+        estimator = gfem.QuantityEstimator(s=(to, source))
+        estimate = gfem.error_estimate(result, estimator, model=model)
+        error = complex(result.s[to, source][0]) - reference
+        _assert_in("s", "hybrid port with offset", estimate, error)
+
+
+def test_the_hybrid_strip_port_mode_share_of_the_s_estimate(tmp_path):
+    # De-embedded over the whole port-to-port length, the S21 error the port
+    # mode's gamma error brings, |(d_h - d) S21|, against the S21 estimate.
+    model = rc.hybrid_strip_model(tmp_path, 4)
+    problem = gfem.Driven([rc.HYBRID_STRIP_FREQUENCY], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    estimate = gfem.error_estimate(result, estimator, model=model)
+    gamma_h = complex(np.asarray(result.port_modes["p1"].gamma)[0])
+    gamma = rc.HYBRID_STRIP_GAMMA
+    assert abs(gamma_h - gamma) > 10 * rc.HYBRID_STRIP_GAMMA_BOUND * abs(gamma)
+    length = _HYBRID_STRIP_LENGTH
+    d_h, d = np.exp(gamma_h * length), np.exp(gamma * length)
+    term = abs((d_h - d) * np.exp(-gamma * length))
+    share = term / (estimate.value * abs(d_h))
+    assert 0 < share < PORT_MODE_SHARE, share
 
 
 # --- parallel-plate line: S, smooth ------------------------------------------

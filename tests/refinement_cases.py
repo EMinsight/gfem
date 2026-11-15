@@ -58,6 +58,10 @@ Two more cases, not singular at a re-entrant corner:
   its length (a hybrid lossy port mode, not parallel); "step" widens that
   slab to y < 1.5 mm from x = 2 mm on. References `LOSSY_GUIDE_S`, order 4
   on the n = 4 mesh with the same offsets.
+- Hybrid strip guide, `hybrid_strip_model`: the same PEC guide with an
+  eps_r 4 strip at y 0.5-1.5, z 0-0.4 mm along its length, so both wave
+  ports carry one hybrid mode, at `HYBRID_STRIP_FREQUENCY`. Lossless, its S
+  has a closed form in `HYBRID_STRIP_GAMMA`.
 
 Tests never recompute the references. Provenance: the coax and step values
 are Richardson extrapolations (alpha = 4/3) of uniform order-2 runs, coax
@@ -487,6 +491,15 @@ LOSSY_GUIDE_S = {
     },
 }
 
+#: The hybrid strip guide's frequency, Hz (ADR 0137).
+HYBRID_STRIP_FREQUENCY = 170e9
+#: The hybrid strip guide's propagation constant (1/m) at
+#: `HYBRID_STRIP_FREQUENCY`: Richardson (fitted rate h^1.5, the strip's
+#: corners) of port-only order-4 2D solves on n = 16, 24, 32, within
+#: `HYBRID_STRIP_GAMMA_BOUND` (relative) of the n = 32 solve.
+HYBRID_STRIP_GAMMA = 5748.3589j
+HYBRID_STRIP_GAMMA_BOUND = 6e-7
+
 _EPS_R = 4.0
 _QUARTER = 0.5e-6 / 4  # the coax model's extrusion over the full coax's 4 quarters
 
@@ -650,6 +663,50 @@ def lossy_guide_model(
         ports=[
             gfem.WavePort("p1", "port1", offset=offset),
             gfem.WavePort("p2", "port2", offset=offset),
+        ],
+    )
+
+
+def hybrid_strip_model(
+    directory: Path, n: int, offsets: tuple[float, float] = (0.0, 0.0)
+) -> gfem.Model:
+    """The hybrid strip guide, in mm, ``n`` cells per mm (ADR 0137).
+
+    A PEC guide 4 mm long (x), 2 x 0.8 mm (y, z), with an eps_r 4 strip at
+    y 0.5-1.5 and z 0-0.4 mm along its whole length, so both port faces carry
+    the same hybrid, inhomogeneous mode; wave ports "p1" and "p2" at its
+    ends, de-embedded by ``offsets`` (m). Lossless, it has the closed form
+    S21 = exp(-gamma (L - sum(offsets))), S11 = 0, with gamma
+    `HYBRID_STRIP_GAMMA`.
+    """
+    length, width, height = 4.0, 2.0, 0.8
+    edges = (
+        np.linspace(0, length, int(length * n) + 1),
+        np.linspace(0, width, int(width * n) + 1),
+        np.linspace(0, height, 2 * int(np.ceil(0.4 * n)) + 1),
+    )
+
+    def volume(c: np.ndarray) -> str:
+        return "strip" if 0.5 < c[1] < 1.5 and c[2] < 0.4 else "air"
+
+    def surface(c: np.ndarray) -> str:
+        if abs(c[0]) < 1e-9:
+            return "port1"
+        if abs(c[0] - length) < 1e-9:
+            return "port2"
+        walls = (abs(c[1]) < 1e-9, abs(c[1] - width) < 1e-9)
+        walls += (abs(c[2]) < 1e-9, abs(c[2] - height) < 1e-9)
+        return "wall" if any(walls) else ""
+
+    cells = sm.structured(edges, volume, surface)
+    mesh = _mesh(directory, f"hybrid_strip{n}", cells, "mm")
+    return gfem.Model(
+        mesh,
+        materials={"air": gfem.Material(), "strip": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("wall")],
+        ports=[
+            gfem.WavePort("p1", "port1", offset=offsets[0]),
+            gfem.WavePort("p2", "port2", offset=offsets[1]),
         ],
     )
 

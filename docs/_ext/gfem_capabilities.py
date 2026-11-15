@@ -19,7 +19,11 @@ witness is a measured band reaching under its kind's range, quoted as
 unclaimed; an overestimate a claimed band whose high end is quoted on its
 own. The ``gfem-effectivity`` role renders one end of a range by name
 (``quantity low``, ``field high``, ``lumped port across a loss jump low``),
-and the ``gfem-effectivity-table`` directive every kind's range.
+and the ``gfem-effectivity-table`` directive every kind's range. Every kind
+of ``gfem.refinement.ESTIMATE_KINDS`` must be emitted (``EMITTED_KINDS``)
+and verified. ``PORT_MODE_SHARE`` (tests/verification/test_quantity_estimate.py)
+bounds a wave port's 2D mode share of the S estimate (``port mode share
+high``).
 
 A cell input with the suffix ``_axes`` (``eps_r_axes``) is the same
 property per principal value of a field with fixed axes: it folds into its
@@ -1033,6 +1037,31 @@ def overestimate(band, quoted: dict, source: str = ESTIMATE_TEST) -> dict:
     return {"low": f"{low:g}", "high": f"{high:g}"}
 
 
+def port_mode_share(share, source: str = ESTIMATE_TEST) -> dict:
+    """The bound on a wave port's 2D mode share of the S estimate (ADR 0137).
+
+    Args:
+        share: ``PORT_MODE_SHARE``, the bound the hybrid strip test holds the
+            de-embedding term to, as a fraction of the S estimate.
+        source: The test module it comes from, for the messages.
+
+    Returns:
+        ``high`` as the site writes it; the share has no low end.
+
+    Raises:
+        CapabilitiesError: ``share`` is not a number in (0, 1).
+    """
+    try:
+        value = float(share)
+    except (TypeError, ValueError) as exc:
+        raise CapabilitiesError(f"{source}: unreadable port mode share: {exc}") from exc
+    if not 0 < value < 1:
+        raise CapabilitiesError(
+            f"{source}: port mode share {value:g} is not a fraction in (0, 1)"
+        )
+    return {"high": f"{value:g}"}
+
+
 def effectivity_table(ranges: dict, kinds, emitted, words=None) -> list[dict]:
     """The rows of the ``gfem-effectivity-table`` directive, one per emitted kind.
 
@@ -1110,13 +1139,26 @@ def load_verification(repo: Path) -> tuple[list, dict, list]:
 
 
 def _estimate_kinds() -> tuple[tuple, tuple]:
-    """``ESTIMATE_KINDS`` and ``EMITTED_KINDS`` of ``gfem.refinement``."""
+    """``ESTIMATE_KINDS`` and ``EMITTED_KINDS`` of ``gfem.refinement``.
+
+    Raises:
+        CapabilitiesError: They are gone, or differ: every kind the code
+            knows must be emitted (and so verified and in the table).
+    """
     from gfem import refinement
 
     try:
-        return tuple(refinement.ESTIMATE_KINDS), tuple(refinement.EMITTED_KINDS)
+        kinds = tuple(refinement.ESTIMATE_KINDS)
+        emitted = tuple(refinement.EMITTED_KINDS)
     except AttributeError as exc:
         raise CapabilitiesError(f"the estimate kinds are gone: {exc}") from exc
+    if emitted != kinds:
+        silent = [k for k in kinds if k not in emitted]
+        raise CapabilitiesError(
+            f"EMITTED_KINDS {list(emitted)} is not ESTIMATE_KINDS: the "
+            f"estimators do not emit {silent}, or emit them in another order"
+        )
+    return kinds, emitted
 
 
 def _merge(target: dict, name: str, values, source: str, owners: dict) -> None:
@@ -1141,7 +1183,9 @@ def load_effectivity(repo: Path) -> dict:
     Returns:
         Per emitted kind, as `effectivity_by_kind` returns it; ``quantity``,
         the span of the entry kinds (`entry_span`); and each witness (see
-        `witness`) and overestimate (see `overestimate`) by its name.
+        `witness`) and overestimate (see `overestimate`) by its name; and
+        ``port mode share``, the bound on a wave port's 2D mode share of the
+        S estimate (see `port_mode_share`).
     """
     paths = [str(repo / "tests"), str(repo / "tools")]
     sys.path[:0] = paths
@@ -1180,6 +1224,11 @@ def load_effectivity(repo: Path) -> dict:
                     "quoted range"
                 )
             out[key] = check(band, out[kind], source)
+    try:
+        share = modules[ESTIMATE_TEST].PORT_MODE_SHARE
+    except AttributeError as exc:
+        raise CapabilitiesError(f"the port mode share is gone: {exc}") from exc
+    out["port mode share"] = port_mode_share(share)
     return out
 
 
@@ -1271,7 +1320,7 @@ def _effectivity_role(_name, rawtext, text, lineno, inliner, *_args):
 
     data = inliner.document.settings.env.gfem_capabilities["effectivity"]
     name, _, end = text.rpartition(" ")
-    if name not in data or end not in ("low", "high"):
+    if name not in data or end not in ("low", "high") or end not in data[name]:
         message = inliner.reporter.error(
             f"gfem-effectivity takes a range name and low|high, not {text!r}",
             line=lineno,

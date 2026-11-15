@@ -675,6 +675,41 @@ def test_the_effectivity_table_has_a_row_per_emitted_kind(derived):
         assert row["words"] == caps.KIND_WORDS[row["kind"]]
 
 
+def test_every_estimate_kind_is_emitted():
+    # Every kind the code knows is emitted, so every one is in the table.
+    from gfem.refinement import EMITTED_KINDS, ESTIMATE_KINDS
+
+    assert EMITTED_KINDS == ESTIMATE_KINDS
+    assert caps._estimate_kinds() == (ESTIMATE_KINDS, ESTIMATE_KINDS)
+
+
+def test_a_kind_the_estimators_do_not_emit_fails_the_build(monkeypatch):
+    from gfem import refinement
+
+    monkeypatch.setattr(refinement, "EMITTED_KINDS", refinement.ESTIMATE_KINDS[:-1])
+    with pytest.raises(caps.CapabilitiesError, match="objective of participation"):
+        caps._estimate_kinds()
+
+
+def test_the_effectivity_table_lists_every_estimate_kind(derived):
+    from gfem.refinement import ESTIMATE_KINDS
+
+    rows = derived["effectivity_table"]
+    assert [row["kind"] for row in rows] == list(ESTIMATE_KINDS)
+
+
+def test_the_port_mode_share_is_the_estimate_tests_bound(derived, estimate_test):
+    # ADR 0137: the Limits sentence quotes the bound the hybrid strip test holds.
+    share = estimate_test.PORT_MODE_SHARE
+    assert derived["effectivity"]["port mode share"] == {"high": f"{share:g}"}
+
+
+@pytest.mark.parametrize("share", [0.0, -0.1, 1.0, 2.0, "x", None])
+def test_a_port_mode_share_outside_zero_and_one_fails_the_build(share):
+    with pytest.raises(caps.CapabilitiesError, match="port mode share"):
+        caps.port_mode_share(share)
+
+
 def _build_role_page(tmp_path, body):
     build = pytest.importorskip("sphinx.cmd.build")
     source = tmp_path / "source"
@@ -711,6 +746,15 @@ def test_the_effectivity_role_renders_both_ranges(tmp_path, derived):
     )
 
 
+def test_the_effectivity_role_renders_the_port_mode_share(tmp_path, derived):
+    status, page = _build_role_page(
+        tmp_path, "Below :gfem-effectivity:`port mode share high`."
+    )
+    assert status == 0
+    share = derived["effectivity"]["port mode share"]["high"]
+    assert f"Below {share}." in page.read_text(encoding="utf-8")
+
+
 def test_the_effectivity_table_directive_renders_every_emitted_kind(tmp_path):
     from gfem.refinement import EMITTED_KINDS
 
@@ -731,6 +775,7 @@ def test_the_effectivity_table_directive_renders_every_emitted_kind(tmp_path):
         "loss low",
         "jump high",
         "loss jump low",
+        "port mode share low",
     ],
 )
 def test_an_effectivity_role_with_no_range_name_fails_the_build(tmp_path, text):

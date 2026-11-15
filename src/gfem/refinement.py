@@ -329,26 +329,10 @@ ESTIMATE_KINDS = (
     "objective of participation",
 )
 
-#: The kinds of `ESTIMATE_KINDS` the estimators emit today, in that order. A
-#: kind joins when its estimate lands; the docs build requires verification
-#: cases for exactly these. Equal to `ESTIMATE_KINDS` once every kind has.
-EMITTED_KINDS = (
-    "field",
-    "capacitance",
-    "s",
-    "omega",
-    "q",
-    "cluster mean",
-    "objective of s",
-    "objective of s, lossless rewrite",
-    "objective of capacitance",
-    "objective of electrostatic energy",
-    "objective of potential means",
-    "objective of absorbed power",
-    "objective of field means",
-    "objective of omega",
-    "objective of participation",
-)
+#: The kinds the estimators emit, in `ESTIMATE_KINDS`'s order. A kind joined
+#: when its estimate landed; every kind has now, and the docs build requires
+#: the two to be equal, each kind with its verification cases.
+EMITTED_KINDS = ESTIMATE_KINDS
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
