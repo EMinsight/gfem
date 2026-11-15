@@ -103,6 +103,22 @@ with conductor walls of 1e5 S/m on n = 4, 8, 16 against
 tan_delta Q is exact on any mesh, and its estimate is asserted below 1e-10
 of omega's on the box and the L cavity.
 
+Cluster means (kind ``cluster mean``, ADR 0136), the mean omega of whole
+degenerate clusters relative to its modulus, on air boxes in mm with PEC
+walls (`refinement_cases.cluster_box_model`, mirrored meshes): the 1 x 1 x
+1.5 box's exactly degenerate TE101/TE011 pair on uniform n = 2, 4 and over
+`refine_mesh(omega=(0, 1))` cycles 0-4 from n = 2, the unit cube's
+TE101/TE011/TM110 triple on n = 2, 4, and the pair split by widening y to
+1.003 (two singleton clusters) on n = 4, all exact; the pair inside
+`Conductor` walls of 1e4 S/m (Q about 30) on n = 2, 4 against
+`refinement_cases.CONDUCTOR_PAIR_F` (adaptive order 4). Gap stress: the 1 x 1
+x 1.02 box, whose TM110 lies about 1 % above the pair in k, on n = 2, 4 (the
+gap test passes, the pair is estimated); at 1 x 1 x 1.001 the pair and TM110
+cross on the first refined mesh, and `refine_mesh` raises
+`gfem.DegenerateModeError` on the gap test instead of following another mode.
+In the reference tier, `refine_mesh` runs of 8 cycles: the pair from n = 2
+and 4, the triple from n = 2.
+
 The eigen terms ADR 0138 lifted, and the lossy magnetic and anisotropic
 fills of the line:
 
@@ -187,6 +203,18 @@ Measured (ostau, 1 thread):
     plasmon-bound mode (refused)  0.96
     order 3: line 3.10 - 19.6, box (m = 1) 4.69 - 5.39
     order 4: L cavity (n = 2, 4) 1.80, 1.73
+    cluster: pair         7.13 - 7.59   (refine_mesh from n = 2: 5.49 - 10.5)
+    cluster: triple       2.88 - 2.98
+    cluster: split pair   7.14
+    cluster: conductor    8.35 - 8.92
+    cluster: gap stress   6.50 - 7.45
+    cluster, reference tier: pair from n = 2 5.49 - 10.5, from n = 4
+             4.54 - 7.13, triple 2.98 - 7.60 (8 cycles each)
+
+Bisection keeps a cluster's mesh symmetric only as far as marking does:
+Dörfler marking takes indicators equal to round-off as ties and marks a tie
+group whole (`gfem.refinement._dorfler`), so the refined meshes, and these
+numbers, repeat from run to run.
 
 The higher ratios come from the fields with no sharp metal edge (the uniform
 line and the empty box), where the curl and mass terms of the error identity
@@ -265,6 +293,13 @@ EFFECTIVITY_BY_KIND = {
         "lossy box": (0.9, 12.0),
         "lossy L cavity": (0.9, 5.0),
         "L cavity, conductor walls": (0.9, 4.0),
+    },
+    "cluster mean": {
+        "pair": (0.9, 26.0),
+        "triple": (0.9, 26.0),
+        "split pair": (0.9, 26.0),
+        "conductor pair": (0.9, 26.0),
+        "gap stress": (0.9, 26.0),
     },
 }
 
@@ -1814,6 +1849,132 @@ def test_the_plasmon_bound_mode_measures_below_the_floor(tmp_path):
 #: The refused plasmon-bound mode's omega effectivity (measured 0.959 on
 #: m = 2): a band below the floor's reach, not a claim.
 PLASMON_WITNESS = (0.93, 0.99)
+
+
+# --- cluster means (ADR 0136) ------------------------------------------------
+
+
+def _pair_k2(depth=1.5, width=1.0):
+    """The box's TE101 and TE011 k^2 in (pi / mm)^2: its 1 x width x depth pair."""
+    return np.array([1 + 1 / depth**2, 1 / width**2 + 1 / depth**2])
+
+
+#: Each cluster case: box size (mm), the exact members' k^2 in (pi / mm)^2.
+CLUSTER_BOXES = {
+    "pair": ((1.0, 1.0, 1.5), _pair_k2()),
+    "triple": ((1.0, 1.0, 1.0), np.array([2.0, 2.0, 2.0])),
+    "split pair": ((1.0, 1.003, 1.5), _pair_k2(width=1.003)),
+    "gap stress": ((1.0, 1.0, 1.02), _pair_k2(depth=1.02)),
+}
+
+
+def _hz(k2):
+    """The frequency (Hz) of k^2 in (pi / mm)^2."""
+    return const.c * 1e3 * np.sqrt(k2) / 2
+
+
+def _cluster_case(directory, case, n, conductivity=None):
+    """The case's model, problem (one guard mode) and exact mean omega."""
+    size, k2 = CLUSTER_BOXES[case]
+    model = rc.cluster_box_model(directory, size, n, conductivity=conductivity)
+    mean = float(np.mean(_hz(k2)))
+    problem = gfem.Eigenmode(target=mean, n_modes=len(k2) + 1)
+    return model, problem, 2 * math.pi * mean
+
+
+def _members(result, count):
+    """The cluster on the first mesh: the ``count`` lowest modes."""
+    order = np.argsort(np.asarray(result.omega).real)
+    return tuple(sorted(int(i) for i in order[:count]))
+
+
+def _cluster_effectivity(case, model, problem, exact):
+    result = gfem.solve(model, problem, options=OPTIONS)
+    members = _members(result, problem.n_modes - 1)
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(omega=members), model=model
+    )
+    mean = complex(np.asarray(result.omega)[list(members)].mean())
+    _assert_in("cluster mean", case, estimate, abs(mean - exact) / abs(exact))
+
+
+@pytest.mark.parametrize("n", [2, 4])
+@pytest.mark.parametrize("case", ["pair", "triple", "gap stress"])
+def test_the_cluster_mean_on_uniform_meshes(tmp_path, case, n):
+    _cluster_effectivity(case, *_cluster_case(tmp_path, case, n))
+
+
+def test_the_split_pair_mean(tmp_path):
+    # Two singleton clusters 2.1e-3 apart (exact): the mean is admitted for
+    # whole clusters of any size, here two of one mode.
+    model, problem, exact = _cluster_case(tmp_path, "split pair", 4)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    labels = np.asarray(result.cluster)
+    assert len(set(labels[list(_members(result, 2))])) == 2
+    _cluster_effectivity("split pair", model, problem, exact)
+
+
+@pytest.mark.parametrize("n", [2, 4])
+def test_the_conductor_pair_mean(tmp_path, n):
+    model, problem, _ = _cluster_case(tmp_path, "pair", n, conductivity=1e4)
+    exact = 2 * math.pi * rc.CONDUCTOR_PAIR_F
+    _cluster_effectivity("conductor pair", model, problem, exact)
+
+
+def _refined_cluster(directory, case, n, cycles):
+    """`refine_mesh` on the case's cluster: the record and the exact mean omega."""
+    model, problem, exact = _cluster_case(directory, case, n)
+    first = gfem.solve(model, problem, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(omega=_members(first, problem.n_modes - 1))
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            model,
+            problem,
+            estimator=estimator,
+            tolerance=1e-8,
+            max_cycles=cycles,
+            options=OPTIONS,
+        )
+    assert len(ref.cycles) == cycles + 1
+    return ref, exact
+
+
+def _assert_cycles(case, ref, exact):
+    for cycle in ref.cycles:
+        error = abs(cycle.value - exact) / abs(exact)
+        _assert_in("cluster mean", case, ref.estimate, error, cycle.estimate)
+
+
+def test_the_pair_mean_under_mesh_refinement(tmp_path):
+    # Bisection breaks the mirror symmetry: the pair splits and its labels
+    # change from mesh to mesh; it is followed as the two modes nearest the
+    # previous mean.
+    _assert_cycles("pair", *_refined_cluster(tmp_path, "pair", 2, 4))
+
+
+@pytest.mark.reference
+@pytest.mark.parametrize(("case", "n"), [("pair", 2), ("pair", 4), ("triple", 2)])
+def test_the_cluster_mean_over_long_refinements(tmp_path, case, n):
+    _assert_cycles(case, *_refined_cluster(tmp_path, case, n, 8))
+
+
+def test_a_cluster_crossing_its_guard_mode_raises(tmp_path):
+    # 1 x 1 x 1.001: TM110 lies 5e-4 above the pair in k; on the first
+    # refined mesh the three modes are within the discretization error of
+    # each other, and following must refuse rather than take another mode.
+    model = rc.cluster_box_model(tmp_path, (1.0, 1.0, 1.001), 2)
+    problem = gfem.Eigenmode(target=float(_hz(_pair_k2(depth=1.001))[0]), n_modes=3)
+    first = gfem.solve(model, problem, options=OPTIONS)
+    estimator = gfem.QuantityEstimator(omega=_members(first, 2))
+    with pytest.raises(gfem.DegenerateModeError, match="not clearly apart"):
+        gfem.refine_mesh(
+            model,
+            problem,
+            estimator=estimator,
+            tolerance=1e-8,
+            max_cycles=2,
+            options=OPTIONS,
+        )
 
 
 # --- order 3 -----------------------------------------------------------------

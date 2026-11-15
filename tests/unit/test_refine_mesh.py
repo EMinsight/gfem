@@ -170,6 +170,22 @@ def test_dorfler_marks_the_fewest_tetrahedra_reaching_the_fraction(fraction, exp
     assert np.flatnonzero(marked).tolist() == expected
 
 
+def test_dorfler_marks_near_ties_the_same_under_round_off():
+    # A symmetric vector: pairs of equal indicators, perturbed at 1e-14
+    # relative. Every perturbation marks the same tetrahedra, and the pair at
+    # the cut is marked whole.
+    base = np.array([3.0, 1.0, 2.0, 3.0, 1.0, 2.0, 0.5, 0.5])
+    rng = np.random.default_rng(0)
+    first = _dorfler(base, 0.5)
+    assert np.flatnonzero(first).tolist() == [0, 3]  # 9 + 9 of 28.5
+    for fraction in (0.3, 0.5, 0.7, 0.9):
+        expected = _dorfler(base, fraction)
+        for _ in range(20):
+            noisy = base * (1 + 1e-14 * rng.standard_normal(len(base)))
+            np.testing.assert_array_equal(_dorfler(noisy, fraction), expected)
+        assert np.array_equal(expected[:3], expected[3:6])
+
+
 def test_a_cycle_marks_the_fewest_tetrahedra_holding_the_error_fraction(coax):
     with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
         ref = _refine(coax, max_cycles=1, error_fraction=0.3, tolerance=1e-3)
@@ -709,7 +725,9 @@ def test_mode_following_errors_give_frequencies_in_their_unit():
         _track_mode(_modes(10.4 * ghz, 9.5 * ghz), 0, 10 * ghz, 1e-6, 1.0)
     with pytest.raises(gfem.DegenerateModeError, match="mode 0 at 11 GHz, moved"):
         _track_mode(_modes(11 * ghz, 14 * ghz), 0, 10 * ghz, 1e-6, 1e-3)
-    with pytest.raises(gfem.DegenerateModeError, match="mode 0 at 10 GHz is not alone"):
+    with pytest.raises(
+        gfem.DegenerateModeError, match="mode 0 at 10 GHz is in a degenerate cluster"
+    ):
         _track_mode(_modes(10 * ghz, 10 * ghz * (1 + 1e-9)), 0, None, 1e-6, None)
 
 

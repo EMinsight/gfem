@@ -147,6 +147,15 @@ LOSSY_WALL_BOUND = 2e-8
 CONDUCTOR_CAVITY_OMEGA = 460170192679.7072 + 5074129465.918461j
 #: Relative bound of the Q of `CONDUCTOR_CAVITY_OMEGA`.
 CONDUCTOR_CAVITY_Q_BOUND = 8.3e-4
+#: The 1 x 1 x 1.5 mm box of `cluster_box_model` inside `gfem.Conductor`
+#: walls of 1e4 S/m: the mean complex frequency (Hz) of its TE101/TE011 pair
+#: (Q about 30), exactly degenerate on the mirrored mesh. Adaptive order-4
+#: refinement on the cluster indicators to 139,848 DOF; its last estimate,
+#: `CONDUCTOR_PAIR_BOUND` (relative), bounds the change between the last
+#: cycles. Provenance: .scratch/quantity-estimates/probes/09 (ref.jsonl).
+CONDUCTOR_PAIR_F = 177166666304.92017 + 2933904245.038058j
+#: Relative bound of `CONDUCTOR_PAIR_F`.
+CONDUCTOR_PAIR_BOUND = 2e-9
 
 #: The sheet case's capacitance matrix, F, terminals in order a, b.
 SHEET_C = ((4.08621e-17, -1.39274e-19), (-1.39274e-19, 4.19939e-17))
@@ -620,6 +629,48 @@ def cavity_model(directory: Path, n: int, *, grade: float = 1.0) -> gfem.Model:
     mesh = _mesh(directory, "cavity", sm.l_cavity(n, grade=grade), "mm")
     return gfem.Model(
         mesh, materials={"air": gfem.Material()}, boundaries=[gfem.PEC("wall")]
+    )
+
+
+def cluster_box_model(
+    directory: Path,
+    size: tuple[float, float, float],
+    n: int,
+    *,
+    conductivity: float | None = None,
+) -> gfem.Model:
+    """A box of ``size`` mm, air, PEC (or `gfem.Conductor`) walls "wall".
+
+    About ``n`` cells per mm on each axis, Kuhn-split and mirrored about the
+    midplanes of x and y, and of z for a cube: a degenerate pair or triple
+    stays exactly degenerate on this mesh (the Kuhn split alone would split
+    it by about the discretization error, ADR 0136).
+    """
+    lx, ly, lz = size
+    counts = [max(1, round(n * side)) for side in size]
+    edges = tuple(
+        np.linspace(0.0, side, count + 1)
+        for side, count in zip(size, counts, strict=True)
+    )
+    tol = 1e-9
+
+    def surface(c: np.ndarray) -> str:
+        on = any(abs(c[a]) < tol or abs(c[a] - size[a]) < tol for a in range(3))
+        return "wall" if on else ""
+
+    cube = abs(lz - lx) < tol and abs(ly - lx) < tol
+    mirror = (counts[0] % 2 == 0, counts[1] % 2 == 0, counts[2] % 2 == 0 and cube)
+    mesh = sm.structured(edges, lambda _c: "air", surface, mirror=mirror)
+    name = f"cluster_{lx:g}_{ly:g}_{lz:g}_{n}"
+    wall = (
+        gfem.PEC("wall")
+        if conductivity is None
+        else gfem.Conductor("wall", conductivity=conductivity)
+    )
+    return gfem.Model(
+        _mesh(directory, name, mesh, "mm"),
+        materials={"air": gfem.Material()},
+        boundaries=[wall],
     )
 
 

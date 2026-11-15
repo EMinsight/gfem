@@ -130,7 +130,14 @@ class QuantityEstimator:
             on each refined mesh the estimate follows the mode whose omega
             is nearest the previous mesh's, and `refine_mesh` raises
             `gfem.DegenerateModeError` when that mode is not clearly the
-            same one.
+            same one. Or a tuple of indices naming whole degenerate clusters
+            (``result.cluster``), stored sorted, whose mean omega is the
+            quantity, estimated relative to its modulus: on each refined
+            mesh the estimate follows as many modes, those nearest the
+            previous mean, and raises `gfem.DegenerateModeError` when the
+            mean moved further than the previous estimate allows, or another
+            mode is less than twice as far from it as the farthest of them.
+            Ask for at least one mode more than the tuple names.
         q: An index into ``EigenmodeResult.q``, followed as ``omega``; the
             estimate is relative to Q. Q's relative error is cot(arg omega)
             times the imaginary part of omega's relative error, estimated on
@@ -156,7 +163,8 @@ class QuantityEstimator:
         TypeError: Not exactly one keyword is given, or a value has the
             wrong type (a tuple for ``q``: the Q of a cluster is not
             estimated; an ``objective`` that is not callable).
-        ValueError: ``omega`` or ``q`` is negative.
+        ValueError: ``omega`` or ``q`` is negative, or a tuple ``omega``
+            names fewer than two modes or a mode twice.
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
@@ -177,7 +185,7 @@ class QuantityEstimator:
 
     capacitance: tuple[str, str] | None = None
     s: tuple[str, str] | None = None
-    omega: int | None = None
+    omega: int | tuple[int, ...] | None = None
     q: int | None = None
     objective: Callable[[Any, Model], Any] | None = None
 
@@ -221,6 +229,9 @@ class QuantityEstimator:
                     f"QuantityEstimator(q=...) takes one mode index, got {value!r}: "
                     "the Q of a cluster is not estimated."
                 )
+            if isinstance(value, (tuple, list)):
+                object.__setattr__(self, name, _cluster_members(value))
+                continue
             if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
                 raise TypeError(
                     f"QuantityEstimator({name}=...) takes a mode index, got {value!r}."
@@ -237,6 +248,33 @@ class QuantityEstimator:
         if self.omega is not None:
             return "omega"
         return "q" if self.q is not None else None
+
+
+def _cluster_members(value: tuple | list) -> tuple[int, ...]:
+    """The sorted modes of ``omega=(i, j, ...)``: two or more, each once."""
+    for each in value:
+        if isinstance(each, bool) or not isinstance(each, (int, np.integer)):
+            raise TypeError(
+                "QuantityEstimator(omega=(...)) takes mode indices, got "
+                f"{each!r} in {value!r}."
+            )
+        if each < 0:
+            raise ValueError(
+                f"QuantityEstimator(omega=(...)) takes indices >= 0, got {each} "
+                f"in {value!r}."
+            )
+    members = tuple(sorted(int(each) for each in value))
+    if len(set(members)) != len(members):
+        raise ValueError(
+            f"QuantityEstimator(omega={tuple(value)!r}) names a mode twice: name "
+            "each mode of the cluster once."
+        )
+    if len(members) < 2:
+        raise ValueError(
+            f"QuantityEstimator(omega={tuple(value)!r}) names one mode: a cluster "
+            "mean needs at least two modes; for one mode, give omega=i."
+        )
+    return members
 
 
 Estimator = FieldEstimator | QuantityEstimator
@@ -269,7 +307,15 @@ ESTIMATE_KINDS = (
 #: The kinds of `ESTIMATE_KINDS` the estimators emit today, in that order. A
 #: kind joins when its estimate lands; the docs build requires verification
 #: cases for exactly these. Equal to `ESTIMATE_KINDS` once every kind has.
-EMITTED_KINDS = ("field", "capacitance", "s", "omega", "q", "objective of s")
+EMITTED_KINDS = (
+    "field",
+    "capacitance",
+    "s",
+    "omega",
+    "q",
+    "cluster mean",
+    "objective of s",
+)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -280,16 +326,17 @@ class ErrorEstimate:
         estimator: The estimator that made it.
         kind: What was estimated: ``"field"`` for a `FieldEstimator`;
             ``"capacitance"``, ``"s"``, ``"omega"`` or ``"q"`` for a
-            `QuantityEstimator`, after its keyword; for an objective, what it
-            reads (``"objective of s"``). Each kind has its own measured
+            `QuantityEstimator`, after its keyword, ``"cluster mean"``
+            for a tuple ``omega``; for an objective, what it reads
+            (``"objective of s"``). Each kind has its own measured
             effectivity range (verification page).
         values: Estimated size of the error per frequency (a driven result),
             per mode (an eigenmode result under a `FieldEstimator`), or one
             entry, in the units of ``tolerance``. For a `FieldEstimator`
             this is relative to the field's energy norm. For a
             `QuantityEstimator` this is the quantity's error: relative to
-            the capacitance entry, to ``omega`` or to Q, absolute for an S
-            entry.
+            the capacitance entry, to ``omega``, to a cluster's mean
+            ``omega`` or to Q, absolute for an S entry.
             It is never negative and carries no sign or phase. It is an
             estimate, not a bound.
         indicators: Each tetrahedron's share of the estimated error, shape
@@ -335,12 +382,14 @@ class RefinementCycle:
         value: The quantity of a `QuantityEstimator` on this mesh: the
             capacitance entry in farads, a tuple of the S entry per
             frequency, the followed mode's complex ``omega`` in rad/s, its
-            Q, or an objective's value; ``None`` for a `FieldEstimator`.
+            Q, the followed cluster's mean complex ``omega``, or an
+            objective's value; ``None`` for a `FieldEstimator`.
         marked: How many tetrahedra Dörfler marking picked on this mesh; 0
             when the loop stopped on it before marking.
         modes: For an eigenmode quantity, each mode index the estimators
             name on the first mesh, mapped to the index of the mode followed
-            to this mesh (read-only); empty otherwise.
+            to this mesh (read-only); empty otherwise. A cluster's members,
+            in order, map to the modes followed as the cluster, in order.
     """
 
     tetrahedra: int
@@ -464,8 +513,9 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         ValueError: The result was not solved on ``model``'s mesh, or is a
             driven result without the fields of every frequency (solve with
             ``keep_fields=True``); a `QuantityEstimator` names a source port
-            that was not excited, a mode the result does not hold, or the Q of
-            a lossless mode; a permittivity law is zero at a driven frequency.
+            that was not excited, a mode the result does not hold, the Q of a
+            lossless mode, or a cluster with no other mode in the result; a
+            permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
             adaptive sweep, a periodic model, another result type, a result
@@ -473,7 +523,10 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             estimate (see `QuantityEstimator`).
         DegenerateModeError: A `QuantityEstimator` names a mode of a
             degenerate cluster, or one within the default
-            `SolverOptions.cluster_rtol` of another mode.
+            `SolverOptions.cluster_rtol` of another mode (the message names
+            the cluster); a cluster ``omega=(i, ...)`` holds part of a
+            degenerate cluster, or another mode lies less than twice as far
+            from its mean as its farthest member.
         NotImplementedError: ``model`` holds a metal-dielectric blend
             (`MaterialField.interpolate` with a permittivity law), which is
             supported on the driven uniform sweep only.
@@ -492,11 +545,13 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     _refuse_blends(model, "error_estimate")
     _check_untraced("error_estimate", (model, result))
     _check_estimable(result, estimator, model)
-    mode = _estimator_mode(estimator)
+    mode: int | tuple[int, ...] | None = _estimator_mode(estimator)
     if mode is not None:
         # `refine_mesh`'s rule, at the default tolerance: the result does not
         # record the options it was solved with
         _track_mode(result, mode, None, SolverOptions().cluster_rtol, None)
+    elif (start := _track_start(estimator)) is not None:
+        mode = _track_cluster(result, start, None, None)
     return _estimate(model, result, estimator, threads=None, mode=mode)
 
 
@@ -568,8 +623,8 @@ def refine_mesh(
             estimate).
             Relative to the field's energy
             norm for a `FieldEstimator`; for a `QuantityEstimator` relative
-            to the capacitance entry, to ``omega`` or to Q, absolute for an S
-            entry. At least 10 times
+            to the capacitance entry, to ``omega``, to a cluster's mean
+            ``omega`` or to Q, absolute for an S entry. At least 10 times
             ``options.tolerance`` (``options.eigen_tolerance`` for an
             `Eigenmode`; for Q times cot(arg omega), about 2Q, checked on
             the first solve), since the estimate does not include the linear
@@ -606,11 +661,14 @@ def refine_mesh(
             problem.
         ValueError: A parameter is out of range; a tuple of estimators is
             empty or names a quantity twice, or the tolerances do not match
-            the estimators one to one; a tolerance is below 10
+            the estimators one to one, or a cluster shares a mode with
+            another estimator; a tolerance is below 10
             times the solve tolerance (for Q, times cot(arg omega)); a
             `QuantityEstimator` names a source port that is not excited, a
-            mode index at or above ``n_modes``, or the Q of a lossless mode; a
-            permittivity law is zero at a driven frequency.
+            mode index at or above ``n_modes``, a cluster of at least
+            ``n_modes`` modes (one more is needed to tell it apart), or the Q
+            of a lossless mode; a permittivity law is zero at a driven
+            frequency.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
             port mode problem, a periodic model or a Bloch wave vector,
@@ -621,13 +679,20 @@ def refine_mesh(
             solves its adjoint dual (an unexcited ``to`` or a lossy wave
             port), which rides on the forward solve.
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
-            alone: another mode lies within ``options.cluster_rtol`` of it.
+            alone: another mode lies within ``options.cluster_rtol`` of it,
+            or shares its ``result.cluster`` label (the message names the
+            cluster, to estimate its mean with ``omega=(i, j, ...)``).
             Or, on a refined mesh, the nearest mode is not clearly the
             followed one: a second mode is less than twice as far from the
             previous frequency, or the nearest moved further than the
             previous estimate allows (the mode probably left the solved
-            modes: ask for more modes or start from a finer mesh). Or two
-            modes named on the first mesh reached one mode.
+            modes: ask for more modes or start from a finer mesh). A
+            cluster ``omega=(i, ...)`` raises it when it holds part of a
+            labelled cluster, when another mode lies less than twice as far
+            from its mean (on the first mesh) or from its previous mean as
+            its farthest member, or when its mean moved further than the
+            previous estimate allows. Or two modes named on the first mesh
+            reached one mode.
         NotImplementedError: ``model`` holds a metal-dielectric blend
             (`MaterialField.interpolate` with a permittivity law), which is
             supported on the driven uniform sweep only.
@@ -733,6 +798,7 @@ def _quantities(
                     f"The tuple of estimators names {_describe(first)} twice: "
                     "give each quantity once."
                 )
+            _check_disjoint_tracks(first, second)
         estimators: tuple[Estimator, ...] = estimator
     else:
         _check_estimator(estimator)
@@ -761,6 +827,23 @@ def _quantities(
     return estimators, tolerance
 
 
+def _check_disjoint_tracks(first: Estimator, second: Estimator) -> None:
+    """Raise when a cluster shares a mode with another estimator's mode or cluster.
+
+    A cluster is followed as a whole (ADR 0136), and one mode of it has no
+    track of its own; two estimators of one mode share its track.
+    """
+    a, b = _track_start(first), _track_start(second)
+    if a is None or b is None or a == b or not set(a) & set(b):
+        return
+    raise ValueError(
+        f"{_describe(first)} and {_describe(second)} share mode "
+        f"{min(set(a) & set(b))}: a cluster is followed as a whole, so a mode "
+        "of it can be named in one cluster only, and not alone. Estimate the "
+        "cluster, or its modes one by one where they are apart."
+    )
+
+
 def _describe(estimator: Estimator) -> str:
     """``QuantityEstimator(s=('p2', 'p1'))``: an estimator by its one keyword."""
     if isinstance(estimator, FieldEstimator):
@@ -770,8 +853,12 @@ def _describe(estimator: Estimator) -> str:
             estimator.objective, "__name__", type(estimator.objective).__name__
         )
         return f"QuantityEstimator(objective={name})"
-    kind = _kind(estimator)
-    return f"QuantityEstimator({kind}={getattr(estimator, kind)!r})"
+    keyword = next(
+        name
+        for name in ("capacitance", "s", "omega", "q")
+        if getattr(estimator, name) is not None
+    )
+    return f"QuantityEstimator({keyword}={getattr(estimator, keyword)!r})"
 
 
 def _loop(
@@ -924,10 +1011,19 @@ def _check_q_floors(
             _check_q_floor(result, modes[each.q], tolerance, options)
 
 
-def _followed(modes: dict[int, int], estimator: Estimator) -> int | None:
-    """The index on this mesh of the mode ``estimator`` names, else ``None``."""
-    mode = _estimator_mode(estimator)
-    return None if mode is None else modes[mode]
+def _followed(
+    modes: dict[int, int], estimator: Estimator
+) -> int | tuple[int, ...] | None:
+    """The index on this mesh of the mode ``estimator`` names, else ``None``.
+
+    For a cluster, the indices of the modes followed as the cluster.
+    """
+    start = _track_start(estimator)
+    if start is None:
+        return None
+    if len(start) > 1:
+        return tuple(modes[each] for each in start)
+    return modes[start[0]]
 
 
 def _shaped(items: list, joint: bool) -> Any:
@@ -955,51 +1051,61 @@ def _marking(
 
 
 class _Tracks:
-    """The modes the estimators follow: one track per distinct starting index.
+    """The modes the estimators follow: one track per distinct start.
 
+    A start is one mode index, or a cluster's members (``omega=(i, ...)``).
     Estimators naming the same mode on the first mesh share its track
-    (ADR 0130). On each mesh every track follows the mode nearest its
-    previous omega (`_track_mode`), its shift bounded by the omega estimate
-    of the mode on its own sums on the previous mesh (`bound`); two tracks
-    landing on one mode raise `DegenerateModeError`.
+    (ADR 0130). On each mesh a mode's track follows the mode nearest its
+    previous omega (`_track_mode`), a cluster's the as many modes nearest its
+    previous mean (`_track_cluster`), each shift bounded by the omega
+    estimate on the previous mesh (`bound`); two tracks landing on one mode
+    raise `DegenerateModeError`.
     """
 
     def __init__(self, estimators: tuple[Estimator, ...]) -> None:
-        starts = sorted(
-            {m for e in estimators if (m := _estimator_mode(e)) is not None}
-        )
-        #: Per starting index: the followed index, its omega and its omega
+        starts = sorted({m for e in estimators if (m := _track_start(e)) is not None})
+        #: Per start: the followed indices, their mean omega and its omega
         #: estimate on the last mesh (``None`` before the first).
-        self._state: dict[int, tuple[int, complex | None, float | None]] = {
-            start: (start, None, None) for start in starts
-        }
+        self._state: dict[
+            tuple[int, ...], tuple[tuple[int, ...], complex | None, float | None]
+        ] = {start: (start, None, None) for start in starts}
         self._omega = {
-            e.omega: i
+            _track_start(e): i
             for i, e in enumerate(estimators)
             if isinstance(e, QuantityEstimator) and e.omega is not None
         }
 
     def follow(self, result: Any, rtol: float) -> dict[int, int]:
-        """Each track's mode on ``result``: starting index -> its index there."""
+        """Each named mode's index on ``result``: index on the first mesh -> there."""
         if not isinstance(result, EigenmodeResult) or not self._state:
             return {}
-        modes = {
-            start: _track_mode(result, index, previous, rtol, bound)
-            for start, (index, previous, bound) in self._state.items()
-        }
-        for (a, ma), (b, mb) in itertools.combinations(modes.items(), 2):
-            if ma == mb:
-                omega = complex(np.asarray(result.omega)[ma])
+        reached: dict[tuple[int, ...], tuple[int, ...]] = {}
+        for start, (indices, previous, bound) in self._state.items():
+            if len(start) == 1:
+                reached[start] = (
+                    _track_mode(result, indices[0], previous, rtol, bound),
+                )
+            else:
+                reached[start] = _track_cluster(result, indices, previous, bound)
+        for (a, ma), (b, mb) in itertools.combinations(reached.items(), 2):
+            if set(ma) & set(mb):
+                mode = min(set(ma) & set(mb))
+                omega = complex(np.asarray(result.omega)[mode])
                 raise DegenerateModeError(
-                    f"Two followed modes reached one mode: the modes named {a} "
-                    f"and {b} on the first mesh both followed mode {ma} at "
+                    f"Two followed modes reached one mode: the modes named "
+                    f"{_named(a)} and {_named(b)} on the first mesh both "
+                    f"followed mode {mode} at "
                     f"{hertz(omega.real / (2 * np.pi))} on a refined mesh. Start "
                     "from a finer mesh, on which the modes are apart, or ask "
                     "for more modes (gfem.Eigenmode(n_modes=...))."
                 )
-        self._modes = modes
+        self._reached = reached
         self._omegas = np.asarray(result.omega)
-        return modes
+        return {
+            named: index
+            for start, indices in reached.items()
+            for named, index in zip(start, indices, strict=True)
+        }
 
     def bound(
         self,
@@ -1010,21 +1116,30 @@ class _Tracks:
         threads: int | None,
         cache: RecoveryCache,
     ) -> None:
-        """Keep each track's omega and omega estimate on ``result`` for the next mesh.
+        """Keep each track's mean omega and estimate on ``result`` for the next mesh.
 
-        An ``omega=`` estimate of the track's mode is its bound; any other
-        track computes the omega kernel of its mode on the mesh's cache.
+        An ``omega=`` estimate of the track's mode or cluster is its bound;
+        any other track computes the omega kernel of its mode on the mesh's
+        cache.
         """
         if not self._state:
             return
         from gfem._engine import estimate as kernels
 
-        for start, index in self._modes.items():
+        for start, indices in self._reached.items():
             if start in self._omega:
                 bound = estimates[self._omega[start]].value
             else:
-                bound = kernels.omega(model, result, index, threads, cache=cache).value
-            self._state[start] = (index, complex(self._omegas[index]), bound)
+                bound = kernels.omega(
+                    model, result, indices[0], threads, cache=cache
+                ).value
+            mean = complex(self._omegas[list(indices)].mean())
+            self._state[start] = (indices, mean, bound)
+
+
+def _named(start: tuple[int, ...]) -> str:
+    """A track's start in words: ``"2"`` or ``"(0, 1)"``."""
+    return str(start[0]) if len(start) == 1 else str(start)
 
 
 def _warn_not_converged(
@@ -1079,21 +1194,41 @@ def _free_consumed(options: SolverOptions) -> None:
     ENTRIES.free_consumed(None, retain_budget(options.retain_memory))
 
 
+#: Squared indicators within this share of the largest are one tie group
+#: in Dörfler marking (`_dorfler`).
+_TIE_RTOL = 1e-9
+
+
 def _dorfler(indicators: np.ndarray, error_fraction: float) -> np.ndarray:
     """Dörfler marking: the fewest tetrahedra holding a share of the squared error.
 
     Marks the tetrahedra with the largest indicators until their squared
-    indicators add up to at least ``error_fraction`` of the total.
+    indicators add up to at least ``error_fraction`` of the total. Squared
+    indicators equal to `_TIE_RTOL` of the largest are ties: they are sorted
+    by tetrahedron index, and the tie group at the cut is marked whole, so
+    round-off never picks among the equal indicators of a symmetric mesh,
+    which refines symmetrically.
 
     Returns:
         A boolean mask over the tetrahedra; at least one is marked.
     """
     squared = np.asarray(indicators, float) ** 2
-    order = np.argsort(-squared, kind="stable")
+    largest = float(squared.max(initial=0.0))
+    keys = (
+        np.rint(squared / (_TIE_RTOL * largest)).astype(np.int64)
+        if largest > 0
+        else np.zeros(len(squared), np.int64)
+    )
+    order = np.argsort(-keys, kind="stable")
     cumulative = np.cumsum(squared[order])
     count = int(np.searchsorted(cumulative, error_fraction * cumulative[-1])) + 1
+    count = min(count, len(squared))
+    if largest > 0:
+        sorted_keys = keys[order]
+        # the whole tie group of the last marked tetrahedron
+        count = int(np.searchsorted(-sorted_keys, -sorted_keys[count - 1], "right"))
     marked = np.zeros(len(squared), bool)
-    marked[order[: min(count, len(squared))]] = True
+    marked[order[:count]] = True
     return marked
 
 
@@ -1103,14 +1238,15 @@ def _estimate(
     estimator: Estimator,
     *,
     threads: int | None,
-    mode: int | None = None,
+    mode: int | tuple[int, ...] | None = None,
     adjoints: dict[tuple[float, Hashable], np.ndarray] | None = None,
     ridden: tuple[str, ...] = (),
     cache: RecoveryCache | None = None,
 ) -> ErrorEstimate:
     """The estimate of ``result``: dispatch on the estimator and result type.
 
-    ``mode`` is the eigenmode a `QuantityEstimator` follows on this result.
+    ``mode`` is the eigenmode a `QuantityEstimator` follows on this result,
+    or the modes of a cluster it follows.
     ``adjoints`` are the S-functional adjoints solved with ``result``
     (`gfem.solve._solve`) for the ports ``ridden``;
     ``None`` solves them here if the entry needs them (`_adjoint_ports`). An
@@ -1147,12 +1283,12 @@ def _estimate(
             parts = kernels.s_entry(
                 model, result, *estimator.s, threads, adjoints=duals, cache=cache
             )
-        elif estimator.q is not None:
-            _check_lossy_q(result, int(mode or 0))
-            parts = [kernels.q(model, result, int(mode or 0), threads, cache=cache)]
         else:
-            _check_mode_eps(model, result, int(mode or 0))
-            parts = [kernels.omega(model, result, int(mode or 0), threads, cache=cache)]
+            parts = [
+                _mode_terms(
+                    model, result, estimator, mode, threads=threads, cache=cache
+                )
+            ]
         values = tuple(terms.value for terms in parts)
         _, indicators = kernels.combine([[terms.weights] for terms in parts])
     else:
@@ -1312,10 +1448,35 @@ def _is_objective(estimator: Any) -> bool:
     return isinstance(estimator, QuantityEstimator) and estimator.objective is not None
 
 
+def _mode_terms(
+    model: Model,
+    result: Any,
+    estimator: QuantityEstimator,
+    mode: int | tuple[int, ...] | None,
+    *,
+    threads: int | None,
+    cache: RecoveryCache,
+) -> Any:
+    """The kernel terms of a mode's ``q`` or ``omega``, or a cluster's mean omega."""
+    from gfem._engine import estimate as kernels
+
+    if isinstance(mode, tuple):
+        for each in mode:
+            _check_mode_eps(model, result, each)
+        return kernels.omega_cluster(model, result, mode, threads, cache=cache)
+    if estimator.q is not None:
+        _check_lossy_q(result, int(mode or 0))
+        return kernels.q(model, result, int(mode or 0), threads, cache=cache)
+    _check_mode_eps(model, result, int(mode or 0))
+    return kernels.omega(model, result, int(mode or 0), threads, cache=cache)
+
+
 def _kind(estimator: Estimator) -> str:
     """The `ESTIMATE_KINDS` entry an estimator's estimate is of."""
     if isinstance(estimator, FieldEstimator):
         return "field"
+    if isinstance(estimator.omega, tuple):
+        return "cluster mean"
     for kind in ("capacitance", "s", "omega", "q", "objective"):
         if getattr(estimator, kind) is not None:
             return kind
@@ -1330,10 +1491,20 @@ def _recovery_cache() -> RecoveryCache:
 
 
 def _estimator_mode(estimator: Estimator) -> int | None:
-    """The mode index of a `QuantityEstimator` (``omega=``, ``q=``), else ``None``."""
-    if not isinstance(estimator, QuantityEstimator):
+    """The mode index of a `QuantityEstimator` (``omega=i``, ``q=``), else ``None``."""
+    if not isinstance(estimator, QuantityEstimator) or isinstance(
+        estimator.omega, tuple
+    ):
         return None
     return estimator.omega if estimator.omega is not None else estimator.q
+
+
+def _track_start(estimator: Estimator) -> tuple[int, ...] | None:
+    """The modes an estimator follows on the first mesh: ``(i,)`` or a cluster."""
+    if isinstance(estimator, QuantityEstimator) and isinstance(estimator.omega, tuple):
+        return estimator.omega
+    mode = _estimator_mode(estimator)
+    return None if mode is None else (mode,)
 
 
 def _check_lossy_q(result: EigenmodeResult, mode: int) -> None:
@@ -1373,17 +1544,16 @@ def _check_q_floor(
 def _quantity(
     result: Any,
     estimator: Estimator,
-    mode: int | None,
+    mode: int | tuple[int, ...] | None,
     estimate: ErrorEstimate | None = None,
 ) -> float | complex | tuple[complex, ...] | None:
     """The quantity a `QuantityEstimator` names, read off ``result``.
 
     An objective's is its value, which its ``estimate`` holds.
     """
-    if not isinstance(estimator, QuantityEstimator):
-        return None
-    if estimator.objective is not None:
-        return None if estimate is None else estimate._quantity  # noqa: SLF001
+    if not isinstance(estimator, QuantityEstimator) or estimator.objective is not None:
+        # None for a FieldEstimator, whose estimate holds no quantity
+        return getattr(estimate, "_quantity", None)
     if estimator.capacitance is not None:
         i, j = (result.terminals.index(t) for t in estimator.capacitance)
         return float(np.asarray(result.capacitance)[i, j])
@@ -1391,6 +1561,8 @@ def _quantity(
         return tuple(complex(v) for v in np.asarray(result.s[estimator.s]))
     if estimator.q is not None:
         return float(np.asarray(result.q)[mode])
+    if isinstance(mode, tuple):
+        return complex(np.asarray(result.omega)[list(mode)].mean())
     return complex(np.asarray(result.omega)[mode])
 
 
@@ -1411,7 +1583,9 @@ def _track_mode(
         DegenerateModeError: Another mode lies within ``rtol`` of the
             followed one, or it belongs to a degenerate cluster; the nearest
             mode is further from ``previous`` than the previous estimate
-            allows, or the second nearest is less than twice as far.
+            allows, or the second nearest is less than twice as far. The
+            message names the cluster's modes and points to the cluster
+            keyword.
     """
     omegas = np.asarray(result.omega)
     if previous is not None:
@@ -1421,18 +1595,38 @@ def _track_mode(
         reference = previous
     else:
         reference = omegas[mode]
-    close = np.flatnonzero(np.abs(omegas - reference) <= rtol * abs(reference))
+    close = np.abs(omegas - reference) <= rtol * abs(reference)
     cluster = np.asarray(result.cluster)
-    if len(close) > 1 or np.count_nonzero(cluster == cluster[mode]) > 1:
+    together = np.flatnonzero(close | (cluster == cluster[mode]))
+    if len(together) > 1:
+        others = [int(i) for i in together if i != mode]
+        named = (
+            f", QuantityEstimator(omega={tuple(int(i) for i in together)})"
+            if previous is None
+            else " on the first mesh, QuantityEstimator(omega=(i, j, ...))"
+        )
         raise DegenerateModeError(
-            f"QuantityEstimator(omega=...) follows one mode by its frequency, "
-            f"and mode {mode} at {hertz(omegas[mode].real / (2 * np.pi))} is "
-            "not alone: another mode lies within SolverOptions.cluster_rtol="
-            f"{rtol:g} of it. A degenerate cluster has no one mode to follow: "
-            "use gfem.FieldEstimator(), which estimates every mode, or a "
-            "design that breaks the symmetry."
+            f"QuantityEstimator follows one mode by its frequency, and mode "
+            f"{mode} at {_frequency(omegas, mode)} is in a degenerate cluster "
+            f"with {_modes_text(omegas, others)} (labelled together in "
+            "result.cluster, or within SolverOptions.cluster_rtol="
+            f"{rtol:g}): name all of them{named}, or use "
+            "gfem.FieldEstimator(), which estimates every mode."
         )
     return mode
+
+
+def _frequency(omegas: np.ndarray, mode: int) -> str:
+    """Mode ``mode``'s frequency in words, ``"9.12 GHz"``."""
+    return hertz(complex(omegas[mode]).real / (2 * np.pi))
+
+
+def _modes_text(omegas: np.ndarray, modes: list[int]) -> str:
+    """``"modes 0 (9.12 GHz) and 2 (9.12 GHz)"``: modes with their frequencies."""
+    items = [f"{i} ({_frequency(omegas, i)})" for i in modes]
+    if len(items) == 1:
+        return f"mode {items[0]}"
+    return f"modes {', '.join(items[:-1])} and {items[-1]}"
 
 
 def _check_followed(
@@ -1450,7 +1644,7 @@ def _check_followed(
     that floor. Further away, the nearest mode is another one.
     """
     nearest = float(distances[mode])
-    frequency = hertz(omegas[mode].real / (2 * np.pi))
+    frequency = _frequency(omegas, mode)
     if previous_estimate is not None:
         allowed = 2 * previous_estimate * abs(previous) / _ESTIMATE_FLOOR
         if nearest > allowed:
@@ -1463,16 +1657,95 @@ def _check_followed(
                 "left the solved modes: ask for more modes "
                 "(gfem.Eigenmode(n_modes=...)) or start from a finer mesh."
             )
-    others = np.delete(distances, mode)
-    if len(others) and float(others.min()) < 2 * nearest:
+    near = [int(i) for i in np.flatnonzero(distances < 2 * nearest) if int(i) != mode]
+    if near:
         raise DegenerateModeError(
             "QuantityEstimator(omega=...) follows one mode by its frequency, "
             f"and mode {mode} at {frequency} is not clearly nearest the "
-            "followed frequency on the refined mesh: another mode is less than "
-            "twice as far. Start from a finer mesh, on which the two modes "
-            "are apart, or use gfem.FieldEstimator(), which estimates every "
-            "mode."
+            f"followed frequency on the refined mesh: "
+            f"{_modes_text(omegas, near)} {'is' if len(near) == 1 else 'are'} "
+            "less than twice as far, a degenerate cluster with it. Name all of "
+            "them on the first mesh, QuantityEstimator(omega=(i, j, ...)), "
+            "start from a finer mesh, on which the modes are apart, or use "
+            "gfem.FieldEstimator(), which estimates every mode."
         )
+
+
+def _track_cluster(
+    result: EigenmodeResult,
+    members: tuple[int, ...],
+    previous: complex | None,
+    previous_estimate: float | None,
+) -> tuple[int, ...]:
+    """The modes of ``result`` a cluster mean follows (ADR 0136).
+
+    On the first result (``previous`` is ``None``) they are ``members``, which
+    must be whole ``result.cluster`` groups. On a refined mesh they are the
+    as many modes nearest ``previous``, the previous mean, whose mean moved
+    at most twice the previous estimate over `_ESTIMATE_FLOOR` (the
+    single-mode bound, `_check_followed`). On every mesh the nearest other
+    mode must lie at least twice as far from the mean (the first mesh) or
+    from ``previous`` as the farthest member (the gap test).
+
+    Raises:
+        DegenerateModeError: ``members`` holds part of a labelled cluster;
+            the mean moved too far; another mode is too near.
+    """
+    omegas = np.asarray(result.omega)
+    count = len(members)
+    keyword = f"QuantityEstimator(omega={members})"
+    if previous is None:
+        cluster = np.asarray(result.cluster)
+        for mode in members:
+            group = [int(i) for i in np.flatnonzero(cluster == cluster[mode])]
+            missing = [i for i in group if i not in members]
+            if missing:
+                others = [i for i in group if i != mode]
+                raise DegenerateModeError(
+                    f"{keyword}: mode {mode} at {_frequency(omegas, mode)} is in "
+                    f"a degenerate cluster with {_modes_text(omegas, others)} "
+                    "(result.cluster): name all of them, QuantityEstimator("
+                    f"omega={tuple(sorted({*members, *group}))})."
+                )
+        reference = complex(omegas[list(members)].mean())
+        chosen = members
+        where = "on the first mesh"
+    else:
+        distances = np.abs(omegas - previous)
+        order = np.argsort(distances, kind="stable")
+        chosen = tuple(sorted(int(i) for i in order[:count]))
+        mean = complex(omegas[list(chosen)].mean())
+        reference = previous
+        if previous_estimate is not None:
+            moved = abs(mean - previous)
+            allowed = 2 * previous_estimate * abs(previous) / _ESTIMATE_FLOOR
+            if moved > allowed:
+                raise DegenerateModeError(
+                    f"{keyword} follows a cluster by its mean frequency, and "
+                    f"the {count} modes nearest it on the refined mesh, "
+                    f"{_modes_text(omegas, list(chosen))}, moved their mean "
+                    f"{moved / abs(previous):.3g} of the followed frequency, "
+                    "further than the previous error estimate "
+                    f"{previous_estimate:.3g} allows. The cluster probably left "
+                    "the solved modes: ask for more modes "
+                    "(gfem.Eigenmode(n_modes=...)) or start from a finer mesh."
+                )
+        where = "on the refined mesh"
+    distances = np.abs(omegas - reference)
+    farthest = float(distances[list(chosen)].max())
+    others = [int(i) for i in np.argsort(distances, kind="stable") if i not in chosen]
+    nearest = others[0]
+    if distances[nearest] < 2 * farthest or distances[nearest] == 0:
+        raise DegenerateModeError(
+            f"{keyword} follows a cluster by its mean frequency, and the "
+            f"cluster, {_modes_text(omegas, list(chosen))} {where}, is not "
+            f"clearly apart from mode {nearest} at {_frequency(omegas, nearest)}: "
+            "it is less than twice as far from the mean as the farthest "
+            "member. Start from a finer mesh, on which the modes are apart, "
+            "name it in the cluster too, or use gfem.FieldEstimator(), which "
+            "estimates every mode."
+        )
+    return chosen
 
 
 def _dofs(result: Any) -> int:
@@ -1555,7 +1828,7 @@ def _check_quantity_keys(
     else:
         keyword = estimator._mode_keyword or "omega"  # noqa: SLF001
         _check_kind(keyword, problem, Eigenmode)
-        _check_mode(_estimator_mode(estimator), problem.n_modes, keyword)
+        _check_modes(estimator, problem.n_modes, keyword)
 
 
 def _check_quantity_result(estimator: QuantityEstimator, result: Any) -> None:
@@ -1569,7 +1842,7 @@ def _check_quantity_result(estimator: QuantityEstimator, result: Any) -> None:
     else:
         keyword = estimator._mode_keyword or "omega"  # noqa: SLF001
         _check_kind(keyword, result, EigenmodeResult)
-        _check_mode(_estimator_mode(estimator), len(np.asarray(result.omega)), keyword)
+        _check_modes(estimator, len(np.asarray(result.omega)), keyword)
 
 
 def _check_kind(keyword: str, given: Any, expected: type) -> None:
@@ -1607,6 +1880,26 @@ def _check_ports(names: tuple[str, str], ports: list[str], excited: list[str]) -
         raise ValueError(
             f"QuantityEstimator(s=...) reads the field of its source port, and "
             f"port {source!r} is not excited: add it to Driven.excite."
+        )
+
+
+def _check_modes(estimator: QuantityEstimator, n_modes: int, keyword: str) -> None:
+    """Raise unless the estimator's modes, and a cluster's guard mode, are solved.
+
+    A cluster's gap test (`_track_cluster`) needs one mode more than the
+    cluster holds.
+    """
+    members = _track_start(estimator) or ()
+    if len(members) < 2:
+        _check_mode(_estimator_mode(estimator), n_modes, keyword)
+        return
+    _check_mode(max(members), n_modes, keyword)
+    if n_modes <= len(members):
+        raise ValueError(
+            f"QuantityEstimator(omega={members}) follows a cluster of "
+            f"{len(members)} modes, told apart from the nearest other mode, "
+            f"and n_modes={n_modes} leaves none: ask for one more mode: "
+            f"gfem.Eigenmode(n_modes={len(members) + 1})."
         )
 
 
