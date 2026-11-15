@@ -1162,7 +1162,7 @@ def _two_mode_box(directory, m):
     return model, result, by_mode
 
 
-def _ratio(r):
+def _omega_ratio(r):
     return jnp.real(r.omega[1]) / jnp.real(r.omega[0])
 
 
@@ -1171,9 +1171,9 @@ def test_objective_of_omega_on_two_modes_of_a_box(tmp_path, m):
     # Two modes read together, each followed on its own track: the ratio
     # f2/f1 off target, the split in GHz and the sum of 1/q.
     model, result, exact = _two_mode_box(tmp_path, m)
-    ratio_h = float(_ratio(result))
+    ratio_h = float(_omega_ratio(result))
     objectives = [
-        lambda r, _m: (_ratio(r) - 1.02 * ratio_h) ** 2,
+        lambda r, _m: (_omega_ratio(r) - 1.02 * ratio_h) ** 2,
         lambda r, _m: (_hz(r.omega[1]) - _hz(r.omega[0])) * 1e-9,
         lambda r, _m: _inverse_q(r.omega[0]) + _inverse_q(r.omega[1]),
     ]
@@ -1185,8 +1185,8 @@ def test_objective_of_omega_on_two_modes_of_a_box(tmp_path, m):
 def test_objective_of_omega_with_two_modes_at_their_target(tmp_path, m):
     # (f2/f1 - its solved value)^2: zero cotangent, the remainder alone
     model, result, exact = _two_mode_box(tmp_path, m)
-    ratio_h = float(_ratio(result))
-    rows = _omega_rows(model, result, exact, [lambda r, _m: (_ratio(r) - ratio_h) ** 2])
+    ratio_h = float(_omega_ratio(result))
+    rows = _omega_rows(model, result, exact, [lambda r, _m: (_omega_ratio(r) - ratio_h) ** 2])
     _assert_overestimate("several modes at their target", rows)
 
 
