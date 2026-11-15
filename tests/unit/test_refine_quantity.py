@@ -1242,7 +1242,6 @@ def test_q_keeps_the_lossy_eigenmode_refusals(
 
 # --- several quantities (ADR 0130) ---------------------------------------------
 
-S21 = gfem.QuantityEstimator(s=("p2", "p1"))
 S11 = gfem.QuantityEstimator(s=("p1", "p1"))
 
 
@@ -1464,3 +1463,13 @@ def test_each_track_records_its_mode(cavity):
         complex(omegas[last.modes[2]]),
         complex(omegas[last.modes[0]]),
     )
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_tuple_keeps_each_estimators_driven_refusal(step):
+    model = _with(step, boundaries=[*step.boundaries, gfem.Absorbing("side")])
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(
+            model, gfem.Driven([5e9]), estimator=(S11, S21), options=OPTIONS
+        )
+    assert caught.value.feature == "impedance or absorbing surface"

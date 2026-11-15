@@ -642,7 +642,8 @@ def refine_mesh(
         _check_int(max_tetrahedra, "max_tetrahedra", 1)
     _check_untraced("refine_mesh", (model, problem))
     if isinstance(problem, Driven):
-        _check_driven_estimable(estimator, model, [float(f) for f in problem.frequency])
+        frequencies = [float(f) for f in problem.frequency]
+        _check_driven_estimable(estimators, model, frequencies)
     # a moved input mesh is checked here, so a warning names the caller's line;
     # the loop's solves and bisections skip the check
     _check_quality(model.mesh, model._domain.active, stacklevel=2)  # noqa: SLF001
@@ -1632,15 +1633,16 @@ _PLASMONIC_WINDOW = (-20.0, 0.0)
 
 
 def _check_driven_estimable(
-    estimator: Estimator, model: Model, frequencies: list[float]
+    estimators: tuple[Estimator, ...], model: Model, frequencies: list[float]
 ) -> None:
     """Raise for a driven quantity estimate the identity has no term for.
 
     The S estimate's only for now; objectives of S and driven field
     objectives call `_check_driven_quantity` too.
     """
-    if isinstance(estimator, QuantityEstimator) and estimator.s is not None:
-        _check_driven_quantity(model, frequencies, "QuantityEstimator(s=...)")
+    for estimator in estimators:
+        if isinstance(estimator, QuantityEstimator) and estimator.s is not None:
+            _check_driven_quantity(model, frequencies, "QuantityEstimator(s=...)")
 
 
 def _check_driven_quantity(model: Model, frequencies: list[float], what: str) -> None:
@@ -1777,7 +1779,7 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
 
         frequencies = [float(f) for f in result.s.frequency]
         dispersion.check_estimator_frequencies(model, frequencies)
-        _check_driven_estimable(estimator, model, frequencies)
+        _check_driven_estimable((estimator,), model, frequencies)
     _check_order(_fields(result)[0].order, estimator)
     mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
