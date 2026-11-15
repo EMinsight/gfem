@@ -734,7 +734,6 @@ def test_the_lossy_step_guide_s_with_an_adjoint(tmp_path, n, tan_delta, offset):
     _lossy_guide(tmp_path, "step", n, tan_delta, offset)
 
 
-
 # --- hybrid strip guide: S with offsets, the port mode's own error ------------
 
 #: The hybrid strip guide's de-embedding offsets (m), half its length in all.

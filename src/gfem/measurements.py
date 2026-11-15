@@ -739,7 +739,7 @@ def _check_estimated_side(names: tuple[str, ...], model: Model) -> None:
 
 
 def region_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
-    """Mean of a field over volume regions: |R|^-1 int_R E dV, or of a potential.
+    """Mean of a field over volume regions, ``int_R E dV / |R|``, or of a potential.
 
     ``R`` is the union of the named regions' elements in the field's
     support. The mean is exact for the solved field (the integral of its

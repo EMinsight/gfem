@@ -104,8 +104,10 @@ class QuantityEstimator:
 
     Estimates how far one quantity of a solved result (a capacitance entry,
     an S entry whose source port is excited, one mode's ``omega`` or its
-    Q, or an objective of the result) is from its value on the same geometry
-    with an infinitely fine mesh.
+    Q, the mean ``omega`` of a degenerate cluster, or an objective of the
+    result) is from its value on the same geometry with an infinitely fine
+    mesh. `ErrorEstimate.kind` names which, and each kind has its own
+    measured effectivity range (verification page).
     The estimate uses the fields already solved, with no extra solve, except
     for the adjoint duals below. It does not include
     the faceting of curved surfaces or the error left by the linear solve.
@@ -193,9 +195,16 @@ class QuantityEstimator:
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
-    estimate: the ``omega`` of a mode bound to a permittivity law region
-    where Re eps < 0 at the mode, raised when it is estimated. Both
-    estimators also raise it at order 1. For a lossy mode the ``omega``
+    estimate. An S entry and every objective of a driven result raise it
+    before any solve on a model with an `gfem.Impedance` or `gfem.Absorbing`
+    surface (``feature`` ``"impedance or absorbing surface"``), with a
+    lumped port whose face borders materials of different ``mu_r``
+    (``"lumped port spanning a permeability contrast"``), or with a
+    permittivity law at -20 < Re eps < 0 at a solve frequency
+    (``"plasmonic permittivity"``); refine those with `FieldEstimator`. The
+    ``omega`` of a mode bound to a permittivity law region where Re eps < 0
+    at the mode raises it when it is estimated. Both estimators also raise
+    it at order 1. For a lossy mode the ``omega``
     estimate covers the complex ``omega``; ``q`` estimates Q, and raises on a
     mode of a model with a permittivity law (``feature`` ``"dispersive
     eigenmode"``), a second-order absorbing boundary, a complex ``mu_r`` or
@@ -553,8 +562,12 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
             adaptive sweep, a periodic model, another result type, a result
-            solved at order 1, or a quantity entry with no verified
-            estimate (see `QuantityEstimator`).
+            solved at order 1, a quantity entry with no verified estimate
+            (an S entry or a driven objective beside an impedance or
+            absorbing surface, a lumped port across a permeability contrast
+            or a permittivity law at -20 < Re eps < 0; a plasmon-bound mode;
+            see `QuantityEstimator`), or an objective reading what it may
+            not.
         DegenerateModeError: A `QuantityEstimator` names a mode of a
             degenerate cluster, or one within the default
             `SolverOptions.cluster_rtol` of another mode (the message names
@@ -647,8 +660,8 @@ def refine_mesh(
             eigenmode run the worst mode's.
         estimator: `FieldEstimator()`, a `QuantityEstimator` naming a
             quantity of ``problem``, or a tuple of distinct
-            `QuantityEstimator`s; the record then holds tuples, one entry per
-            estimator in this order.
+            `QuantityEstimator` objects; the record then holds tuples, one
+            entry per estimator in this order.
         tolerance: The error estimate to reach, one float for every
             estimator or a tuple with one per estimator; ``None`` is 1e-2,
             except for an objective, whose tolerance is in its own units and
@@ -707,11 +720,16 @@ def refine_mesh(
             mesh refinement (``feature`` names what): an adaptive sweep, a
             port mode problem, a periodic model or a Bloch wave vector,
             ``options.order=1`` (the ``"fast"`` preset), a quantity entry
-            with no verified estimate (see `QuantityEstimator`; a
-            plasmon-bound mode raises on the first estimate, after the first
-            solve), or ``frequency_workers`` above 1 for an S estimate that
-            solves its adjoint dual (an unexcited ``to`` or a lossy wave
-            port), which rides on the forward solve.
+            with no verified estimate (an S entry or a driven objective
+            beside an impedance or absorbing surface, a lumped port across a
+            permeability contrast or a permittivity law at
+            -20 < Re eps < 0, all before any solve; a plasmon-bound mode on
+            the first estimate, after the first solve; see
+            `QuantityEstimator`), an objective reading what it may not (on
+            the first estimate), or ``frequency_workers`` above 1 for an
+            estimate that solves an adjoint dual (an unexcited ``to``, a
+            lossy wave port, or an objective's dual), which rides on the
+            forward solve.
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
             alone: another mode lies within ``options.cluster_rtol`` of it,
             or shares its ``result.cluster`` label (the message names the

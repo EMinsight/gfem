@@ -296,38 +296,107 @@ against its closed form; and S between wave ports of a lossy waveguide:
 uniformly filled, half filled by a lossy dielectric slab (whose port mode
 is hybrid, so the estimate solves the ports' {term}`adjoint dual`), and
 with that slab widening halfway along, each with and without
-de-embedding, against a higher-order solve.
+de-embedding, against a higher-order solve. A waveguide holding a
+dielectric strip along its length, whose wave ports carry a hybrid mode,
+is checked de-embedded over half its length against its closed form.
 
-Over all cases the quantity estimate was between
-{gfem-effectivity}`quantity low` and {gfem-effectivity}`quantity high`
-times the true error; the higher ratios came from fields with no sharp
-metal edge, such as the parallel-plate line and the rectangular cavity.
+The S estimate is also checked on a line between conducting plates of
+finite conductivity; on a line through a metal described by a permittivity
+law deep below zero (Re ε about -30), at a wedge, on a flat face and
+through a metal block; on wave ports whose face crosses a permeability
+contrast and lumped ports beside a loss contrast; and on lines filled with
+lossy magnetic and lossy anisotropic materials. The resonance estimate
+covers permittivity laws with Re ε > 0 (a dispersive fill and layered
+cavities), second-order absorbing side walls, and lossy magnetic fills in
+one and two layers.
+
+The other kinds of quantity:
+
+- **Q** of a mode: a line closed by resistive ports as a resonator, cavities
+  with resistive, absorbing and conducting walls, and lossy fills whose Q
+  is known exactly.
+- **The mean frequency of a degenerate cluster**: pairs and triples of
+  modes in symmetric cavities, a pair split slightly by the geometry, a
+  pair in a cavity with conducting walls, and a pair with a third mode
+  close by.
+- **Objectives of S**: lossy and lossless lines (matched and nearly
+  matched), the stepped line, waveguides with shared and lossy wave ports,
+  and a line through a deep metal. On a lossless model with lumped ports
+  the estimate goes through the {term}`lossless rewrite`.
+- **Objectives of capacitance and electrostatic energy, and of potential
+  means**: the two bars, with the space around them split into regions,
+  and the coaxial line.
+- **Objectives of frequency and Q**: the L-shaped cavity, the line closed
+  by resistive ports, and a cavity with two modes.
+- **Absorbed power and field means**: a waveguide with a lossy dielectric
+  block, a waveguide with regions across half its width, and stepped lines
+  with a lossy layer and with a small region at the step's edge.
+- **Participations**: a cavity with a dielectric slab and one with a
+  dielectric block.
+
+A few references are extrapolated from finer meshes, with their
+uncertainty kept below a fifth of every error checked.
+
+Over the capacitance, S and resonance cases, the quantity estimate was
+between {gfem-effectivity}`quantity low` and
+{gfem-effectivity}`quantity high` times the true error; the higher ratios
+came from fields with no sharp metal edge, such as the parallel-plate line
+and the rectangular cavity, and from layered cavities. Some objectives are
+estimated far more pessimistically near their target; the recipe's Limits
+quote those ratios.
 
 The field estimator is checked the same way, against the field's error in
 the energy norm: on the square and circular coaxial lines, the coaxial
 line with an anisotropic fill, the parallel-plate line, and the L-shaped
 and rectangular cavities; and with loss, on the parallel-plate line with a
 lossy fill (dielectric loss and conductivity) and with a Drude metal block
-(Re ε < 0) against their closed forms, and against a higher-order solve on the same mesh on a cavity in two
-layers, the upper one lossy, and on a cavity whose lossy wall (impedance
-or absorbing) gives its resonance a complex frequency. Its estimate was
-between {gfem-effectivity}`field low` and {gfem-effectivity}`field high`
-times the true error, the circular line measured against a higher-order
-solve on its own facets; against the exact circle it stays below the true
-error. These cases run at `order=2`, and all but the anisotropic fill also
-at `order=3`. One configuration lies below that range and is not claimed:
-on a line in two layers, the upper one lossy, with lumped ports spanning
-both, the estimate was
-{gfem-effectivity}`lumped port across a loss jump low` to
-{gfem-effectivity}`lumped port across a loss jump high` times the true
-error on coarse meshes; its test holds it to that band. On the stepped line, whose field error has
+(Re ε < 0) against their closed forms, and against a higher-order solve on
+the same mesh on a cavity in two layers, the upper one lossy, and on a
+cavity whose lossy wall (impedance or absorbing) gives its resonance a
+complex frequency. It is also checked on the line between conducting
+plates, at a deep metal's wedge and flat face, in lossy magnetic and lossy
+anisotropic fills, and in a cavity with second-order absorbing side walls.
+Its estimate was between {gfem-effectivity}`field low` and
+{gfem-effectivity}`field high` times the true error, the circular line
+measured against a higher-order solve on its own facets; against the exact
+circle it stays below the true error. These cases run at `order=2`, and
+the original cases also at `order=3`.
+
+Four configurations lie below that range and are not claimed; each test
+holds the estimate to its measured band:
+
+- on a line in two layers, the upper one lossy, with lumped ports spanning
+  both: {gfem-effectivity}`lumped port across a loss jump low` to
+  {gfem-effectivity}`lumped port across a loss jump high` times the true
+  error on coarse meshes;
+- next to impedance walls that carry the field's current:
+  {gfem-effectivity}`impedance surface low` to
+  {gfem-effectivity}`impedance surface high`;
+- next to a lumped port spanning a permeability contrast:
+  {gfem-effectivity}`lumped port across a permeability contrast low` to
+  {gfem-effectivity}`lumped port across a permeability contrast high`;
+- at a metal wedge with a permittivity law at Re ε = -1.5, against a
+  higher-order solve the field itself does not converge to:
+  {gfem-effectivity}`plasmonic window low` to
+  {gfem-effectivity}`plasmonic window high`.
+
+The S estimate has one such configuration: a lumped port whose face
+crosses a permittivity interface, on cells stretched 10:1 along the line,
+measured
+{gfem-effectivity}`stretched cells at a lumped port across a permittivity contrast low`
+to
+{gfem-effectivity}`stretched cells at a lumped port across a permittivity contrast high`
+times the S error.
+
+On the stepped line, whose field error has
 no known value, the estimate is checked to keep a steady ratio to the S21
 error as the mesh is refined. On the three singular benchmark cases a mesh refinement run also
 ends with a smaller error than uniform splits at the same number of
-unknowns. Both ranges are read from the tests when the docs are built, and
-both sets of checks run on every change.
+unknowns. Every range is read from the tests when the docs are built, and
+every set of checks runs on every change.
 
 Tests: [quantity estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_quantity_estimate.py),
+[objective estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_objective_estimate.py),
 [field estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_field_estimate.py).
 
 (verification-petsc)=

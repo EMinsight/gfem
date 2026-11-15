@@ -1,7 +1,7 @@
 # Refine the mesh where the error is
 
-Get a converged capacitance, S-parameter or resonance without meshing the
-whole device finely. {py:obj}`gfem.refine_mesh` solves, estimates the error
+Get a converged capacitance, S-parameter, resonance, Q, or the value of your
+optimization objective without meshing the whole device finely. {py:obj}`gfem.refine_mesh` solves, estimates the error
 of the solution in each tetrahedron, subdivides the tetrahedra holding most
 of it, and solves again, until the {term}`error estimate` meets a tolerance.
 It returns a new model on the refined mesh, its result, and the history of
@@ -71,6 +71,10 @@ estimate.value, estimate.indicators  # relative energy error, per tetrahedron
 A driven result must keep its fields for this: solve it with
 `gfem.Driven(..., keep_fields=True)`. `refine_mesh` keeps them itself.
 
+`ref.estimate.kind` names what was estimated (`"field"`, `"s"`, `"q"`,
+`"objective of absorbed power"`, ...); the verification page gives the
+range measured for each kind ({ref}`verification-mesh-refinement`).
+
 ## Refine for one quantity
 
 When one number matters, a capacitance entry, an S entry or one mode's
@@ -98,11 +102,13 @@ relative: multiply by `abs(C)` or `abs(f)`. It has no sign or phase: it
 tells you how far the quantity may be from the converged answer, not in
 which direction. gfem does not add it to the quantity.
 
-The other two quantities:
+The other quantities:
 
 ```python
 gfem.QuantityEstimator(capacitance=("top", "top"))  # result.capacitance[0, 0]
 gfem.QuantityEstimator(omega=0)  # result.omega[0], an eigenmode problem
+gfem.QuantityEstimator(q=0)  # result.q[0]
+gfem.QuantityEstimator(omega=(0, 1))  # the mean of result.omega[0] and [1]
 ```
 
 - **Capacitance**: the entry `capacitance[i, j]`, named by its two
@@ -118,12 +124,102 @@ gfem.QuantityEstimator(omega=0)  # result.omega[0], an eigenmode problem
 - **Mode**: `omega=0` names the first mode of the input mesh's solve; on
   each refined mesh the estimate follows the mode whose `omega` is nearest
   the previous one. A mode with another within `SolverOptions.cluster_rtol`
-  of it raises {py:obj}`gfem.DegenerateModeError`. The estimate is relative
-  to `omega`. On a model with loss it covers the complex `omega`; Q's
-  relative error is not estimated.
+  of it raises {py:obj}`gfem.DegenerateModeError`: estimate the cluster's
+  mean instead, `omega=(i, j)`. The estimate is relative to `omega`. On a
+  model with loss it covers the complex `omega`.
+- **Q**: `q=0` is the mode's Q, followed as `omega=`; the estimate is
+  relative to Q. A lossless mode raises `ValueError`.
+- **Degenerate modes**: `omega=(0, 1)` names a whole degenerate cluster
+  (`result.cluster`); the quantity is the members' mean `omega`, followed
+  on each refined mesh as the modes nearest the previous mean. Ask for at
+  least one mode more than the cluster holds (`gfem.Eigenmode(n_modes=...)`).
 - `RefinementCycle.value` holds the quantity on each mesh (a tuple per
   frequency for an S entry), so the quantity against `cycle.dofs` plots
   without another solve.
+
+(refine-for-an-objective)=
+## Refine for an objective
+
+Refine for the function you optimize: `QuantityEstimator(objective=J)`
+takes `J(result, model)`, the same function you differentiate, and
+estimates its error.
+
+```python
+import jax.numpy as jnp
+
+import gfem
+
+
+def loss(result, model):  # the same function the gradient uses
+    return jnp.mean(1 - jnp.abs(result.s["p2", "p1"]) ** 2)
+
+
+estimator = gfem.QuantityEstimator(objective=loss)
+ref = gfem.refine_mesh(
+    model,
+    gfem.Driven([3e9, 8e9]),
+    estimator=estimator,
+    tolerance=1e-3,
+    max_tetrahedra=200_000,
+)
+ref.estimate.value  # in loss's units
+ref.estimate.kind  # "objective of s" (lossless lumped ports: ", lossless rewrite")
+ref.cycles[-1].value  # loss on the last mesh
+```
+
+- **What `J` may read.** S and its networks (`db`, `y()`, `z()`,
+  `renormalize`, `with_offsets`); `capacitance`, `mutual`, `inverse` and
+  `energy` (per region) of an electrostatic result; `omega`, `frequency`,
+  `q` and `bulk_participation` of an eigenmode result; and fields only through
+  {py:obj}`gfem.power_flow` (the power absorbed in a side with no port and
+  only volume losses) and {py:obj}`gfem.region_mean`. gfem traces `J` once
+  to find what it reads, and anything else raises
+  {py:obj}`gfem.MeshRefinementUnsupportedError`, whose `feature` names it: a
+  point value, a branch on a value it reads (`max`, `min`, `where`), a
+  mixture of kinds, a custom derivative of your own.
+- **Tolerance in your units.** The estimate is absolute, in the objective's
+  units: give `tolerance=` in them. `refine_mesh` raises without it.
+- **Point values.** `Field.at` has no estimate: use
+  `gfem.region_mean(field, "small_region")` over a small region instead
+  ({doc}`measurements`).
+- **Lossless lumped-port models.** On a lossless model with lumped ports, an
+  objective of S is estimated through its {term}`lossless rewrite`, which
+  is tighter; `ref.estimate.kind` says so (`"objective of s, lossless
+  rewrite"`).
+- **Modes.** On refined meshes, `J` sees the modes in the first mesh's
+  order: each mode it reads is followed, and `RefinementCycle.modes` maps
+  each first-mesh index to the index followed on that mesh.
+- **One-argument objectives.** `lambda result, model: J(result)` adapts an
+  objective that does not need the model.
+
+## Refine for several quantities
+
+A tuple of estimators refines one mesh for all of them, each to its own
+tolerance:
+
+```python
+estimators = (
+    gfem.QuantityEstimator(capacitance=("a", "a")),
+    gfem.QuantityEstimator(capacitance=("a", "b")),
+)
+ref = gfem.refine_mesh(
+    model,
+    problem,
+    estimator=estimators,
+    tolerance=(1e-3, 5e-3),
+    max_tetrahedra=200_000,
+)
+c_aa, c_ab = ref.estimate  # one ErrorEstimate per estimator, in order
+ref.cycles[-1].value  # (C_aa, C_ab) on the last mesh
+```
+
+- The record mirrors the tuple: `ref.estimate`, `cycle.estimate` and
+  `cycle.value` are tuples in the estimators' order.
+- Marking weighs each quantity's indicators by its tolerance, over the
+  quantities still above it, and `ref.converged` means every one met its
+  tolerance.
+- A float `tolerance` applies to every estimator, an objective included;
+  `None` gives each 1e-2 and raises when the tuple holds an objective.
 
 ## Refine between optimization stages
 
@@ -140,13 +236,19 @@ import jax.numpy as jnp
 
 from gfem import design
 
-# material_of, make_loss, make_optimizer and run_stage are your own code.
+# material_of, loss_of_result, make_loss, make_optimizer and run_stage are your
+# own code; loss_of_result(result, model) is the objective make_loss calls.
 for beta in (2, 4, 8, 16):
     # 1. The model holding the current physical design, with concrete values.
     current = model.with_material("design", material_of(rho, beta))
     # 2. Refine it, with a cap.
     ref = gfem.refine_mesh(
-        current, problem, estimator=estimator, max_cycles=3, max_tetrahedra=200_000
+        current,
+        problem,
+        estimator=gfem.QuantityEstimator(objective=loss_of_result),
+        tolerance=TOL,
+        max_cycles=3,
+        max_tetrahedra=200_000,
     )
     model = ref.model
     # 3. Rebuild every helper on the refined mesh.
@@ -186,10 +288,14 @@ for beta in (2, 4, 8, 16):
 - **Refine once more on the final design** before you report its
   quantity, so the reported value comes with an error estimate on the
   design you deliver.
-- The {py:obj}`gfem.QuantityEstimator` on the objective's quantity puts the
-  elements where the objective needs them. Where it raises
-  {py:obj}`gfem.MeshRefinementUnsupportedError` (see Limits), use the
+- **Refine for the objective itself**, `QuantityEstimator(objective=...)`,
+  written as a function of the result and model that your loss also calls,
+  so the mesh grows where the objective needs it and the loop stops when
+  its error is below a tolerance in its units. Where it raises
+  {py:obj}`gfem.MeshRefinementUnsupportedError` (see Limits), use
   {py:obj}`gfem.FieldEstimator`.
+- An objective near its optimum, or a reflection near zero, is estimated
+  pessimistically: refinement stops late, never early (see Limits).
 
 ## Options
 
@@ -202,9 +308,11 @@ for beta in (2, 4, 8, 16):
 - **`error_fraction`** (default 0.5): the share of the summed squared
   indicators the marked tetrahedra hold. A larger fraction refines more per
   cycle, in fewer cycles.
-- **`tolerance`** must be at least 10 times `SolverOptions.tolerance`
-  (`eigen_tolerance` for an eigenmode problem), or `refine_mesh` raises
-  `ValueError`.
+- **`tolerance`**: `None` (the default) is 1e-2 for every estimator but an
+  objective, which needs its own; a tuple gives one per estimator. Each
+  must be at least 10 times the solve's tolerance carried into its units
+  (`SolverOptions.tolerance`, `eigen_tolerance` for an eigenmode problem),
+  or `refine_mesh` raises `ValueError`.
 - **Memory.** Every cycle of a driven problem keeps the field of every
   excited port at every frequency, and `ref.result` keeps those of the last
   mesh: memory grows with ports × frequencies × DOF. Refine on the few
@@ -227,50 +335,104 @@ How gfem itself checks the estimates against known answers:
 - The error estimate is an estimate, not a bound. On gfem's verification
   cases the field estimator's was between {gfem-effectivity}`field low` and
   {gfem-effectivity}`field high` times the true error, at `order=2` and
-  `order=3`, and the quantity estimator's between
-  {gfem-effectivity}`quantity low` and {gfem-effectivity}`quantity high` at
-  `order=2`. The quantity estimator's higher ratios came from fields with no
-  sharp metal edge (a uniform line, an empty cavity), where its curl and
-  mass terms are never allowed to cancel. At `order=3` the quantity
-  estimate is not checked against its range; at `order=1` both estimators
-  refuse.
+  `order=3`, and the quantity estimator's on a capacitance, S entry or
+  frequency between {gfem-effectivity}`quantity low` and
+  {gfem-effectivity}`quantity high` at `order=2`; Q, a cluster mean and each
+  kind of objective have their own measured ranges, listed on the
+  verification page. The quantity estimator's higher ratios came from
+  fields with no sharp metal edge (a uniform line, an empty cavity), where
+  its curl and mass terms are never allowed to cancel. At `order=3` the
+  quantity estimate is not checked against its range; at `order=1` both
+  estimators refuse.
+- Some estimates are much more pessimistic. An objective at its target
+  measured up to {gfem-effectivity}`objective at its target high` times its
+  error; a reflection objective near a reflection zero, up to
+  {gfem-effectivity}`reflection objective near a reflection zero high`;
+  several modes' frequencies at their target, up to
+  {gfem-effectivity}`several modes at their target high`; a participation
+  times its frequency, up to
+  {gfem-effectivity}`participation times frequency high`. S on a wave port
+  whose face meets a microstrip's edge is also overestimated far beyond its
+  range. Refinement then stops late, never early.
+- Where an error changes sign between meshes (a mode of a cavity with a
+  dielectric insert, the mean of a degenerate pair), the estimate cannot
+  follow the crossing and can overestimate by far more than its range.
 - A lumped port spanning materials of different loss (a lossy substrate
-  and air, say) is not covered by that range: there the field estimate
+  and air, say) is not covered by the field estimator's range: there it
   measured {gfem-effectivity}`lumped port across a loss jump low` to
   {gfem-effectivity}`lumped port across a loss jump high` times the true
   error on coarse meshes.
+- A lumped port whose face crosses a permittivity interface, meshed with
+  cells stretched 10:1 or more along the line, measured
+  {gfem-effectivity}`stretched cells at a lumped port across a permittivity contrast low`
+  to
+  {gfem-effectivity}`stretched cells at a lumped port across a permittivity contrast high`
+  times the S error. Mesh such ports with cells of moderate aspect, or let
+  refinement split them first.
+- Next to an `Impedance` or `Absorbing` surface that carries the field's
+  current, the field estimate measured
+  {gfem-effectivity}`impedance surface low` to
+  {gfem-effectivity}`impedance surface high` times the error; S,
+  objectives of S and field objectives raise there.
+- Next to a lumped port spanning a permeability contrast, the field
+  estimate measured
+  {gfem-effectivity}`lumped port across a permeability contrast low` to
+  {gfem-effectivity}`lumped port across a permeability contrast high` and
+  does not improve under refinement; S and objectives raise there.
+- On a permittivity law with -20 < Re ε < 0 at a solve frequency, metal
+  edges and port junctions make the field itself mesh-dependent: S and
+  objectives raise, and the field estimate measured as low as
+  {gfem-effectivity}`plasmonic window low`. A lumped port's edge on a metal
+  interface converges slowly even at Re ε = -30. The -20 bound assumes
+  metal wedges of 17° or more and a damping of about 2 % of the frequency.
+- Below a guide's cutoff, a mesh coarser than the field's decay length
+  underestimates both S and the field: resolve the decay length.
 - It measures the error against your mesh's own facets. Mesh refinement
   subdivides the facets you imported and never moves them onto a curved
   surface, so the faceting error is neither estimated nor reduced. On a
   circular coaxial line meshed with flat facets, both estimates were below
   the error against the exact circle. Mesh curved surfaces finer in your
   mesher.
-- A wave port's own mode is solved on the port's 2D mesh, and that error
-  is not estimated. It grows with a long de-embedding offset on a coarse
-  port mesh. A wave port in a lossy medium also leaves the attenuation
-  along the port out of its boundary condition, so even a matched lossy
-  port reflects a little; the estimate does not see that reflection.
-- An S entry whose read port is not excited, or is a wave port in a lossy
-  cross-section with a hybrid mode (a lossy dielectric slab, say), needs one
-  more solve, of that port's {term}`adjoint dual`. `refine_mesh` adds it to
-  each of its own solves, with your solver options. `error_estimate` on a
-  finished result factorizes the system once more per frequency, with the
-  direct solver at the result's order, which on a large model may not fit in memory: estimate
-  such a model through `refine_mesh` (`max_cycles=0` estimates without
-  refining).
+- A wave port's own mode is solved on the port's 2D mesh, and the error of
+  its propagation constant is not estimated; it enters S through
+  de-embedding offsets. On a dielectric-strip guide de-embedded over the
+  whole port-to-port distance it stayed below
+  {gfem-effectivity}`port mode share high` times the S estimate. Keep offsets
+  shorter than the leads you model. A wave port in a lossy medium also
+  leaves the attenuation along the port out of its boundary condition, so
+  even a matched lossy port reflects a little; the estimate does not see
+  that reflection.
+- Some estimates need one more solve, of an {term}`adjoint dual`: an S
+  entry whose read port is not excited, or is a wave port with a hybrid
+  mode in a lossy cross-section (a lossy dielectric slab, say), and an
+  objective of a field measurement, of electrostatic energy or a potential
+  mean, or of a participation. `refine_mesh` rides it on its own solves,
+  with your solver options, except on the first mesh of an objective, whose
+  reads are known only once the objective has been traced on a result.
+  There, and in `error_estimate` on a finished result, the system is
+  factorized once more (per frequency, or per mode), with the direct
+  solver at the result's order, which on a large model may not fit in
+  memory: estimate such a model through `refine_mesh` (`max_cycles=0`
+  estimates without refining). A participation's dual also needs an
+  isolated mode, the direct solver on the CPU and `eigen_tolerance` at most
+  1e-10.
 - It does not include the linear solver's error. `refine_mesh` requires
   `tolerance` to be at least 10 times `SolverOptions.tolerance`
-  (`eigen_tolerance` for an eigenmode problem).
+  (`eigen_tolerance` for an eigenmode problem); for Q, times cot(arg ω);
+  for an objective, times its sensitivity.
 - `refine_mesh` raises {py:obj}`gfem.MeshRefinementUnsupportedError`, before
   any solve, on an adaptive sweep, a port mode problem, a periodic model, a
   Bloch wave vector and `SolverOptions(order=1)` (the `"fast"` preset); both
-  estimators refuse order 1. The estimate of a mode's `omega` raises it,
-  when it estimates, on a mode bound to a permittivity law region where
-  Re ε < 0 at the mode (a mode guided along a metal surface): refine such a
-  model with the `FieldEstimator`. Permittivity laws where Re ε > 0,
-  second-order absorbing boundaries, a complex `mu_r` and loss inside an
-  anisotropic material are estimated; a mode's Q (`q=`) still raises on
-  each of them.
+  estimators refuse order 1. An estimate of a mode bound to a permittivity
+  law region where Re ε < 0 at the mode (a mode guided along a metal
+  surface) raises it when it estimates: refine such a model with the
+  `FieldEstimator`. Permittivity laws where Re ε > 0, second-order
+  absorbing boundaries, a complex `mu_r` and loss inside an anisotropic
+  material are estimated for a mode's `omega`; Q and objectives of a mode
+  still raise on each of them. The dispersive shifts of
+  `gfem.quantum.dressed_modes` are not estimated: they read the junction's
+  participation, which raises. An objective raises by name on anything it
+  may not read (see {ref}`refine-for-an-objective`).
 - Mesh refinement runs on one process. Above one rank it raises
   {py:obj}`gfem.DistributedUnsupportedError`: refine on one process, then
   solve `ref.model` on ranks ({doc}`distributed-solve`).
@@ -279,5 +441,6 @@ How gfem itself checks the estimates against known answers:
 
 {py:obj}`gfem.refine_mesh`, {py:obj}`gfem.error_estimate`,
 {py:obj}`gfem.FieldEstimator`, {py:obj}`gfem.QuantityEstimator`,
-{py:obj}`gfem.MeshRefinement`, {doc}`remesh-and-restart`,
+{py:obj}`gfem.MeshRefinement`, {py:obj}`gfem.RefinementCycle`,
+{py:obj}`gfem.region_mean`, {doc}`measurements`, {doc}`remesh-and-restart`,
 {doc}`robust-optimization`, {doc}`frequency-sweep`.
