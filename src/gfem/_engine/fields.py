@@ -19,6 +19,7 @@ import ngsolve as ngs
 import numpy as np
 
 from gfem import _mpi
+from gfem._engine import quadrature
 from gfem._engine.cache import discretization
 from gfem._engine.coefficients import p0
 from gfem._engine.mesh import EngineMesh, inverse_order, tetrahedron_domains
@@ -32,6 +33,7 @@ __all__ = [
     "curl_matrix",
     "dof_shape",
     "fe_space",
+    "mean_rows",
     "one_process_column",
     "one_process_dofs",
     "sample",
@@ -520,3 +522,59 @@ def curl_matrix(field: Field) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     while len(_CURLS) > _MAX_CURLS:
         _CURLS.popitem(last=False)
     return matrix
+
+
+# --- region means -----------------------------------------------------------------
+
+_MEANS: collections.OrderedDict[tuple, tuple] = collections.OrderedDict()
+_MAX_MEANS = 8
+
+
+def mean_rows(
+    mesh: Mesh,
+    layout: tuple[tuple[str, ...], tuple[tuple[int, int], ...], str, int],
+    regions: tuple[str, ...],
+) -> np.ndarray:
+    """``(components, ndof)``: a field's mean over ``regions`` is ``rows @ c``.
+
+    Row ``k`` is |R|^-1 int_R phi_j . e_k over the regions' elements in the
+    support (``R``), in SI units (``scale ** LENGTH_POWER``): exact for
+    the discrete field, since the integrand is a polynomial of the space's
+    order on each straight-sided element. It depends on the node positions,
+    which ``mesh`` holds as numbers. ``layout`` is the field's (support,
+    excluded entities, space, order). One process only.
+    """
+    support, excluded, space, order = layout
+    topology = mesh._topology  # noqa: SLF001
+    nodes = np.ascontiguousarray(mesh.nodes)
+    key = (
+        id(topology),
+        support,
+        excluded,
+        space,
+        order,
+        regions,
+        hash(nodes.tobytes()),
+    )
+    found = _MEANS.get(key)
+    if found is not None and found[0] is topology:
+        _MEANS.move_to_end(key)
+        return found[1]
+    built, fes, _ = fe_space(mesh, support, excluded, space, order)
+    inside = tuple(r for r in regions if r in support)
+    region = support_region(built, mesh, inside, excluded)
+    dx = quadrature.dx(order, definedon=region)
+    volume = ngs.Integrate(ngs.CF(1.0) * dx, built.mesh)
+    v = fes.TestFunction()
+    components = [v] if v.dim == 1 else [v[k] for k in range(v.dim)]
+    rows = np.zeros((len(components), fes.ndof))
+    for k, part in enumerate(components):
+        form = ngs.LinearForm(fes)
+        form += part * dx
+        form.Assemble()
+        rows[k] = form.vec.FV().NumPy()
+    rows *= built.scale ** LENGTH_POWER[space] / volume
+    _MEANS[key] = (topology, rows)
+    while len(_MEANS) > _MAX_MEANS:
+        _MEANS.popitem(last=False)
+    return rows

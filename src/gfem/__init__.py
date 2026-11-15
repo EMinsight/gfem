@@ -53,6 +53,7 @@ from gfem.measurements import (  # noqa: E402
     electric_energy,
     interface_participation,
     power_flow,
+    region_mean,
 )
 from gfem.mesh import Mesh, Region  # noqa: E402
 from gfem.model import (  # noqa: E402
@@ -171,6 +172,7 @@ __all__ = [
     "power_flow",
     "quantum",
     "refine_mesh",
+    "region_mean",
     "release_memory",
     "shape",
     "solve",
