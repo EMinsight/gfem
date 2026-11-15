@@ -30,6 +30,7 @@ a field pair on the region's own domain, and a potential cotangent
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import Any
 
 import jax
@@ -64,7 +65,14 @@ from gfem.options import SolverOptions
 from gfem.problems import Electrostatic
 from gfem.results import ElectrostaticResult, Field
 
-__all__ = ["ElectrostaticRule", "KeptHandle"]
+__all__ = [
+    "DualContext",
+    "ElectrostaticLoads",
+    "ElectrostaticRule",
+    "KeptHandle",
+    "objective_loads",
+    "solve_duals",
+]
 
 #: The linear solver for ``linear_solver="auto"``: CG + BDDC.
 DEFAULT_SOLVER: Kind = "bddc_gmres"
@@ -108,6 +116,175 @@ class KeptHandle:
         if self.handle is not None:
             self.handle.free()
             self.handle = None
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class DualContext:
+    """What an `ElectrostaticLoads` callback sees: one solve's potentials.
+
+    Attributes:
+        model: The model solved.
+        potential: ``(ndof, n_terminals)``, the terminal potentials.
+        terminals: The terminal names, in column order.
+    """
+
+    model: Model
+    potential: np.ndarray
+    terminals: tuple[str, ...]
+    _space: ngs.FESpace
+    _built: EngineMesh
+    _eps: ngs.CoefficientFunction
+    _order: int
+    _support: tuple[str, ...]
+    _excluded: tuple[tuple[int, int], ...]
+
+    def region_load(self, region: str, terminal: str) -> np.ndarray:
+        """``K_r phi_i``: the load of the dual of region ``r``'s energy (file units)."""
+        phi = self.potential[:, [self.terminals.index(terminal)]]
+        domain = region_domain(self.model, self._built, region)
+        gf = ngs.GridFunction(self._space)
+        v = self._space.TestFunction()
+        form = ngs.LinearForm(self._space)
+        form += (
+            (self._eps * ngs.grad(gf))
+            * ngs.grad(v)
+            * quadrature.dx(self._order, definedon=domain)
+        )
+        gf.vec.FV().NumPy()[:] = phi[:, 0]
+        form.Assemble()
+        return np.array(form.vec.FV().NumPy())
+
+    def mean_load(self, regions: tuple[str, ...]) -> np.ndarray:
+        """``|R|^-1 int_R v``: the load of a potential mean's dual."""
+        from gfem._engine.fields import mean_rows
+
+        layout = (self._support, self._excluded, "h1", self._order)
+        return mean_rows(self.model.mesh, layout, regions)[0]
+
+
+#: An electrostatic dual load callback: given a solve's `DualContext`, the
+#: loads ``(ndof,)`` (file units, ``int eps_r grad u . grad v``'s) to solve
+#: ``K z = load`` for, by key; each dual comes back in
+#: `ElectrostaticRule.adjoints` by key, zero on the fixed DOFs.
+ElectrostaticLoads = Callable[[DualContext], Mapping[Hashable, np.ndarray]]
+
+
+def objective_loads(keys: Sequence[tuple[Any, ...]]) -> ElectrostaticLoads:
+    """The dual loads of an electrostatic objective's reads (ADR 0141).
+
+    A key ``("energy", region, terminal)`` is the load ``K_r phi_i`` of the
+    energy of excitation ``terminal`` in ``region``; ``("mean", regions)``
+    the averaging load of a potential mean over the regions (the same for
+    every terminal).
+    """
+    keys = tuple(keys)
+
+    def loads(context: DualContext) -> dict[Hashable, np.ndarray]:
+        out: dict[Hashable, np.ndarray] = {}
+        for key in keys:
+            if key[0] == "energy":
+                out[key] = context.region_load(key[1], key[2])
+            else:
+                out[key] = context.mean_load(key[1])
+        return out
+
+    return loads
+
+
+def solve_duals(
+    model: Model,
+    result: ElectrostaticResult,
+    loads: ElectrostaticLoads,
+    threads: int | None,
+) -> dict[Hashable, np.ndarray]:
+    """The duals of ``loads`` on a finished result: one more factorization.
+
+    For `gfem.error_estimate`, and the first mesh of `gfem.refine_mesh`.
+    The result does not record its options: the direct solver at the
+    result's order, which the estimate's few digits need no iterative
+    tolerance for.
+    """
+    fields = list(result.potential.values())
+    order = fields[0].order
+    options = SolverOptions(order=order, linear_solver="direct", threads=threads)
+    linear = ResolvedLinearSolver.resolve(
+        options, default=DEFAULT_SOLVER, problem="electrostatic"
+    )
+    fixed = tuple(result._fixed)  # noqa: SLF001
+    phi = np.stack([np.asarray(f.coefficients) for f in fields], axis=1)
+    with task_manager(threads):
+        disc = discretization(model.mesh)
+        built = disc.built
+        space = disc.space(
+            (domain_key(model), "h1", order, fixed),
+            lambda: h1_space(model, built, order, fixed),
+        )
+        eps = permittivity(model, built)
+        context = DualContext(
+            model=model,
+            potential=phi,
+            terminals=tuple(result.terminals),
+            _space=space,
+            _built=built,
+            _eps=eps,
+            _order=order,
+            _support=fields[0].support,
+            _excluded=fields[0]._excluded,  # noqa: SLF001
+        )
+        keyed = dict(loads(context))
+        if not keyed:
+            return {}
+        handle = _prepare_form(
+            linear, space, eps, order=order, width=len(keyed), tolerance=1e-12
+        )
+        try:
+            return _solve_keyed(handle, space, keyed, reused=False)
+        finally:
+            handle.free()
+
+
+def _prepare_form(
+    linear: ResolvedLinearSolver,
+    space: ngs.FESpace,
+    eps: ngs.CoefficientFunction,
+    *,
+    order: int,
+    width: int,
+    tolerance: float,
+) -> Handle:
+    """The prepared operator ``int eps_r grad u . grad v`` (file units)."""
+    u, v = space.TnT()
+    form = ngs.BilinearForm(space, symmetric=True)
+    form += eps * ngs.grad(u) * ngs.grad(v) * quadrature.dx(order)
+    return linear.prepare(
+        Operator(form, space.FreeDofs()),
+        symmetry="hermitian",
+        width=width,
+        tolerance=tolerance,
+    )
+
+
+def _solve_keyed(
+    handle: Handle,
+    space: ngs.FESpace,
+    keyed: Mapping[Hashable, np.ndarray],
+    *,
+    reused: bool,
+) -> dict[Hashable, np.ndarray]:
+    """Solve each keyed load on ``handle``: the duals, zero on the fixed DOFs."""
+    keys = list(keyed)
+    loads = np.stack([np.asarray(keyed[k], float) for k in keys], axis=1)
+    loads[~free_mask(space.FreeDofs(), space.ndof)] = 0.0
+    z, its = handle.solve_counted(loads)
+    report.solve_step(
+        handle,
+        problem="electrostatic",
+        direction="forward",
+        iterations=its,
+        reused=reused,
+        columns="adjoint load",
+    )
+    return {k: np.array(z[:, i]) for i, k in enumerate(keys)}
 
 
 class ElectrostaticRule:
@@ -191,6 +368,11 @@ class ElectrostaticRule:
         # The potentials live on the mesh as given (traced or not).
         self._mesh = model.mesh
         self._excluded = model._domain.excluded  # noqa: SLF001
+        #: Dual loads to solve with the forward on its handle: set by
+        #: `gfem.refine_mesh` for an objective's duals (`objective_loads`).
+        self.adjoint_loads: ElectrostaticLoads | None = None
+        #: The duals of `adjoint_loads`, by key, after `forward`.
+        self.adjoints: dict[Hashable, np.ndarray] = {}
 
     def forward(
         self, model: Model, *, keep: bool
@@ -233,6 +415,8 @@ class ElectrostaticRule:
             scale = scipy.constants.epsilon_0 * built.scale
             c = phi.T @ handle.apply(phi) * scale
             energy = 0.5 * scale * self._region_energies(model, built, space, eps, phi)
+            if self.adjoint_loads is not None and np.isfinite(c).all():
+                self._solve_duals(model, handle, space, built=built, eps=eps, phi=phi)
         c = 0.5 * (c + c.T)
         if not keep or not np.isfinite(c).all():
             handle.free()
@@ -255,16 +439,41 @@ class ElectrostaticRule:
         self, space: ngs.FESpace, eps: ngs.CoefficientFunction, tolerance: float
     ) -> Handle:
         """The prepared operator ``int eps_r grad u . grad v`` (file units)."""
-        order = self.options.order
-        u, v = space.TnT()
-        form = ngs.BilinearForm(space, symmetric=True)
-        form += eps * ngs.grad(u) * ngs.grad(v) * quadrature.dx(order)
-        return self.linear.prepare(
-            Operator(form, space.FreeDofs()),
-            symmetry="hermitian",
+        return _prepare_form(
+            self.linear,
+            space,
+            eps,
+            order=self.options.order,
             width=len(self.problem.terminals),
             tolerance=tolerance,
         )
+
+    def _solve_duals(
+        self,
+        model: Model,
+        handle: Handle,
+        space: ngs.FESpace,
+        *,
+        built: EngineMesh,
+        eps: ngs.CoefficientFunction,
+        phi: np.ndarray,
+    ) -> None:
+        """Solve `adjoint_loads` on the forward's handle: one back-substitution."""
+        assert self.adjoint_loads is not None  # noqa: S101 - the caller checked
+        context = DualContext(
+            model=model,
+            potential=phi,
+            terminals=tuple(self.problem.terminal_names),
+            _space=space,
+            _built=built,
+            _eps=eps,
+            _order=self.options.order,
+            _support=self.regions,
+            _excluded=self._excluded,
+        )
+        keyed = dict(self.adjoint_loads(context))
+        if keyed:
+            self.adjoints.update(_solve_keyed(handle, space, keyed, reused=True))
 
     def _space(self, model: Model) -> tuple[ngs.FESpace, EngineMesh]:
         order = self.options.order

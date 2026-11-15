@@ -59,6 +59,31 @@ The lossy guide's slab at tan_delta 0.05 without offset is not run: its
 reference uncertainty exceeds 20 % of every row's error. The top, 175, is
 the near-lossless uniform guide's |S21|^2, whose error is second order and
 mostly a phase error of S21 that the magnitude form cannot see (ADR 0129).
+
+Electrostatic objectives (ADR 0141), on the split two bars
+(`refinement_cases.bars_split_model`, near and screen, n = 4, 8) against
+`refinement_cases.BARS_SPLIT_REFERENCE`, and the coax (n = 2, 4, 8)
+against `refinement_cases.COAX_C`; the effectivity is the estimate over
+``|J(result) - J(reference values)|``:
+
+- ``objective of capacitance``: C_ab, the mutual capacitances to ground,
+  the inverse's (a, a) and (a, b), C_ab / C_aa and a sum of squares on the
+  bars; C, 1/C, C^2 and (C - C_h)^2 (at its target: the remainder alone)
+  on the coax;
+- ``objective of electrostatic energy``: each excitation's energy in each
+  region (the stationary row, a region holding its own bar, is carried by
+  its remainder);
+- ``objective of potential means``: each potential's mean over each
+  region, and (several reads within the kind) the mean over "left" minus
+  the mean over "right", measured here first.
+
+Measured (ostau, 2 threads):
+
+    capacitance, bars     1.65 - 6.30
+    capacitance, coax     1.58 - 3.03   (on target 2.50 - 3.03)
+    energy, bars          2.28 - 5.52
+    means, bars           1.71 - 15.3
+    means, two regions    1.65 - 2.18
 """
 
 import cmath
@@ -86,6 +111,12 @@ EFFECTIVITY_BY_KIND = {
         "block guide": (0.9, 50.0),
         "lossy guides": (0.9, 200.0),
         "deep metal": (0.9, 8.0),
+    },
+    "objective of capacitance": {"bars": (0.9, 8.0), "coax": (0.9, 8.0)},
+    "objective of electrostatic energy": {"bars": (0.9, 7.0)},
+    "objective of potential means": {
+        "bars": (0.9, 18.0),
+        "bars, two regions": (0.9, 18.0),
     },
 }
 
@@ -380,3 +411,164 @@ def test_objective_of_s_on_deep_metal(tmp_path, geometry, n):
         model, result, reference, 0.0, lambda r, _m: _a2(_s(r, "p2", "p1", 0))
     )
     _assert_rows("objective of s", "deep metal", [row])
+
+
+# --- electrostatic objectives (ADR 0141) ------------------------------------------
+#
+# Each objective is written once on a reader of the quantities it needs, and
+# evaluated on the result (the objective gfem classifies) and on the
+# reference values (the infinitely fine mesh's).
+
+ELECTROSTATIC = gfem.SolverOptions(order=2, linear_solver="direct")
+
+
+class _Solved:
+    """Reads a solved electrostatic result: C, energies and potential means."""
+
+    def __init__(self, result):
+        self.result = result
+
+    def c(self):
+        return self.result.capacitance
+
+    def energy(self, region, terminal):
+        return self.result.energy[region][self.result.terminals.index(terminal)]
+
+    def mean(self, region, terminal):
+        return gfem.region_mean(self.result.potential[terminal], region)
+
+
+class _Reference:
+    """The same reads on a case's reference values."""
+
+    def __init__(self, reference, terminals):
+        self.reference = reference
+        self.terminals = terminals
+
+    def c(self):
+        return jnp.asarray(self.reference["C"])
+
+    def energy(self, region, terminal):
+        return self.reference["energy"][region][self.terminals.index(terminal)]
+
+    def mean(self, region, terminal):
+        return self.reference["mean"][region][self.terminals.index(terminal)]
+
+
+def _electrostatic_effectivity(model, result, reference, relative, g):
+    """``g``'s estimate and effectivity on ``result``; ``None`` if not asserted.
+
+    ``g(reader)`` is the objective; ``relative`` bounds every reference
+    value relative to it, carried into J by its cotangents and curvature.
+    """
+
+    def objective(r, _model):
+        return g(_Solved(r))
+
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(objective=objective), model=model
+    )
+    exact = float(g(_Reference(reference, list(result.terminals))))
+    error = float(objective(result, model)) - exact
+    classified = _objective.classify(objective, result, model)
+    bounds = np.array([relative * abs(r.value) for r in classified.reads])
+    ct = np.array([abs(r.cotangent) for r in classified.reads])
+    uncertainty = ct @ bounds + 0.5 * bounds @ classified.curvature @ bounds
+    if error == 0 or uncertainty > 0.2 * abs(error):
+        return estimate, None
+    return estimate, estimate.value / abs(error)
+
+
+def _capacitance_objectives():
+    return [
+        lambda q: q.c()[0, 1],
+        lambda q: q.c().sum(axis=1)[0],
+        lambda q: q.c().sum(axis=1)[1],
+        lambda q: jnp.linalg.inv(q.c())[0, 0],
+        lambda q: jnp.linalg.inv(q.c())[0, 1],
+        lambda q: q.c()[0, 1] / q.c()[0, 0],
+        lambda q: (q.c()[0, 0] ** 2 + q.c()[0, 1] ** 2) / 1e-34,
+    ]
+
+
+def _energy_objectives():
+    return [
+        (lambda q, r=r, t=t: q.energy(r, t))
+        for r in ("left", "right")
+        for t in ("a", "b")
+    ]
+
+
+def _mean_objectives():
+    return [
+        (lambda q, r=r, t=t: q.mean(r, t))
+        for r in ("left", "right")
+        for t in ("a", "b")
+    ]
+
+
+@pytest.fixture(
+    scope="module", params=[(c, n) for c in ("near", "screen") for n in (4, 8)]
+)
+def split_bars(request, tmp_path_factory):
+    case, n = request.param
+    model = rc.bars_split_model(tmp_path_factory.mktemp("bars"), case, n)
+    result = gfem.solve(model, rc.BARS_PROBLEM, options=ELECTROSTATIC)
+    return model, result, rc.BARS_SPLIT_REFERENCE[case]
+
+
+def _bars_rows(split_bars, objectives):
+    model, result, reference = split_bars
+    return [
+        _electrostatic_effectivity(model, result, reference, rc.BARS_SPLIT_BOUND, g)
+        for g in objectives
+    ]
+
+
+def test_objective_of_capacitance_on_the_bars(split_bars):
+    rows = _bars_rows(split_bars, _capacitance_objectives())
+    _assert_rows("objective of capacitance", "bars", rows)
+
+
+def test_objective_of_capacitance_on_the_coax(tmp_path):
+    rows = []
+    c_ref = rc.COAX_C * const.epsilon_0 * rc._QUARTER
+    for n in (2, 4, 8):
+        model = rc.coax_model(tmp_path, n)
+        result = gfem.solve(model, rc.COAX_PROBLEM, options=ELECTROSTATIC)
+        c_h = float(result.capacitance[0, 0])
+        reference = {"C": ((c_ref,),)}
+        objectives = [
+            lambda q: q.c()[0, 0],
+            lambda q: 1 / q.c()[0, 0],
+            lambda q: (q.c()[0, 0] / 1e-17) ** 2,
+            lambda q, c_h=c_h: ((q.c()[0, 0] - c_h) / 1e-17) ** 2,
+        ]
+        relative = rc.COAX_C_BOUND / rc.COAX_C
+        rows += [
+            _electrostatic_effectivity(model, result, reference, relative, g)
+            for g in objectives
+        ]
+    _assert_rows("objective of capacitance", "coax", rows)
+
+
+def test_objective_of_electrostatic_energy_on_the_bars(split_bars):
+    rows = _bars_rows(split_bars, _energy_objectives())
+    _assert_rows("objective of electrostatic energy", "bars", rows)
+
+
+def test_objective_of_potential_means_on_the_bars(split_bars):
+    rows = _bars_rows(split_bars, _mean_objectives())
+    _assert_rows("objective of potential means", "bars", rows)
+
+
+def test_objective_of_potential_means_over_two_regions(split_bars):
+    """Several reads within the kind: mean of phi_a over "left" minus "right"."""
+    rows = _bars_rows(
+        split_bars,
+        [
+            lambda q: q.mean("left", "a") - q.mean("right", "a"),
+            lambda q: q.mean("left", "b") - q.mean("right", "b"),
+        ],
+    )
+    _assert_rows("objective of potential means", "bars, two regions", rows)

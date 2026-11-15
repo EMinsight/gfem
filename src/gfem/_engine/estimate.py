@@ -53,7 +53,7 @@ import scipy.sparse.linalg as spla
 
 from gfem._engine import quadrature
 from gfem._engine.cache import discretization
-from gfem._engine.coefficients import coefficient, element_tensors
+from gfem._engine.coefficients import coefficient, element_tensors, p0
 from gfem._engine.dispersion import (
     eps_at,
     high_frequency_eps,
@@ -77,6 +77,7 @@ __all__ = [
     "driven",
     "eigenmode",
     "electrostatic",
+    "objective_of_potentials",
     "objective_of_s",
     "omega",
     "s_entry",
@@ -1022,6 +1023,133 @@ def objective_of_s(
     for a, w in enumerate(entry_weights):
         weights = weights + share[a] * w
     return ObjectiveTerms(linear=float(linear), remainder=remainder, weights=weights)
+
+
+#: A read of an electrostatic objective (`objective_of_potentials`): a
+#: capacitance entry ``("capacitance", i, j)``, an energy ``("energy",
+#: region, terminal)`` or a potential mean ``("mean", regions, terminal)``.
+PotentialRead = tuple[str, Any, str]
+
+
+def objective_of_potentials(
+    model: Model,
+    result: ElectrostaticResult,
+    reads: Sequence[tuple[PotentialRead, float]],
+    curvature: np.ndarray,
+    threads: int | None = None,
+    *,
+    duals: Mapping[Hashable, np.ndarray] | None = None,
+    cache: RecoveryCache | None = None,
+) -> ObjectiveTerms:
+    """An electrostatic objective's estimate (ADR 0141).
+
+    Each read ``a`` has per-tetrahedron terms t_K,a of its error identity, in
+    the read's units, and an own remainder rho_K,a:
+
+    - ``capacitance[i, j]``: F m_K(i, j), the potentials' free duals (no
+      solve), rho = 0;
+    - ``energy[r][i]``: F int_K r_i . eps^-1 r_z, with z the dual of
+      K z = K_r phi_i and r_z the recovered error of its flux equilibrated
+      with the load, eps grad z - chi_r eps grad phi_i; rho_K = 1/2 F
+      int_K eps^-1 |r_i|^2 on the region's tetrahedra;
+    - a potential mean of phi_i over R: int_K r_i . eps^-1 r_z, z the dual
+      of the averaging load |R|^-1 int_R v; rho = 0.
+
+    F = eps0 x the mesh scale, r_i the recovered error of eps grad phi_i.
+    The estimate is sum_K |sum_a ct_a t_K,a| + sum_a |ct_a| sum_K rho_K,a +
+    1/2 sum_ab ||H_ab|| eta_a eta_b, with eta_a = sum_K |t_K,a| + rho_K,a,
+    read a's own estimate. A tetrahedron's weight is its terms of the first
+    two sums plus its share of the third, 1/2 sum_ab ||H_ab|| eta_b
+    (|t_K,a| + rho_K,a).
+
+    Args:
+        reads: Per read, its key and the objective's (real) cotangent, in
+            the order of ``curvature``'s rows.
+        curvature: ``||H_ab||_2`` over the reads.
+        duals: The dual solutions by `gfem._engine.electrostatic` load key
+            (``("energy", region, terminal)``, ``("mean", regions)``), on
+            the potentials' space.
+    """
+    cache = cache or RecoveryCache()
+    duals = duals or {}
+    n_tet = len(model.mesh.tetrahedra)
+    linear = np.zeros(n_tet)
+    owned = np.zeros(n_tet)
+    terms, rhos, cts = [], [], []
+    with task_manager(threads):
+        recovery = _potential_recovery(model, result, cache)
+        scale = scipy.constants.epsilon_0 * recovery.built.scale
+        for read, ct in reads:
+            t, rho = _potential_read_terms(
+                model, result, recovery, read, duals=duals, scale=scale, cache=cache
+            )
+            linear += ct * t
+            owned += abs(ct) * rho
+            terms.append(t)
+            rhos.append(rho)
+            cts.append(ct)
+    eta = np.array(
+        [np.abs(t).sum() + rho.sum() for t, rho in zip(terms, rhos, strict=True)]
+    )
+    remainder = float(0.5 * eta @ curvature @ eta) if len(eta) else 0.0
+    weights = np.abs(linear) + owned
+    share = 0.5 * curvature @ eta
+    for a, (t, rho) in enumerate(zip(terms, rhos, strict=True)):
+        weights = weights + share[a] * (np.abs(t) + rho)
+    return ObjectiveTerms(
+        linear=float(np.abs(linear).sum() + owned.sum()),
+        remainder=remainder,
+        weights=weights,
+    )
+
+
+def _potential_read_terms(
+    model: Model,
+    result: ElectrostaticResult,
+    recovery: FluxRecovery,
+    read: PotentialRead,
+    *,
+    duals: Mapping[Hashable, np.ndarray],
+    scale: float,
+    cache: RecoveryCache,
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(t_K, rho_K)`` of one read (`objective_of_potentials`)."""
+    what, where, terminal = read
+    field = result.potential[terminal]
+    gf, flux, residual = cache.potential_residual(recovery, field)
+    zero = np.zeros(len(model.mesh.tetrahedra))
+    if what == "capacitance":
+        _, _, other = cache.potential_residual(recovery, result.potential[where])
+        m = recovery.element_integrals(residual * (recovery.eps_inverse * other))
+        return scale * m, zero
+    if what == "energy":
+        z = _potential_view(field, duals[what, where, terminal])
+        mask = np.zeros(len(model.mesh.tetrahedra))
+        mask[model.mesh.elements(where)] = 1.0
+        chi = p0(recovery.built, mask)
+        dual = recovery.flux_residual(recovery.eps * ngs.grad(z) - chi * flux)
+        t = recovery.element_integrals(residual * (recovery.eps_inverse * dual))
+        own = recovery.element_integrals(residual * (recovery.eps_inverse * residual))
+        return scale * t, 0.5 * scale * own * mask
+    z = _potential_view(field, duals[what, where])
+    dual = recovery.flux_residual(recovery.eps * ngs.grad(z))
+    t = recovery.element_integrals(residual * (recovery.eps_inverse * dual))
+    del gf
+    return t, zero
+
+
+def _potential_view(field: Field, values: np.ndarray) -> ngs.GridFunction:
+    """``values`` on ``field``'s space (a dual of its potential)."""
+    _, space, _ = fe_space(
+        field.mesh,
+        field.support,
+        field._excluded,  # noqa: SLF001
+        field.space,
+        field.order,
+    )
+    gf = ngs.GridFunction(space)
+    gf.vec.FV().NumPy()[:] = values
+    return gf
 
 
 def _deembedding(result: DrivenResult) -> dict[str, np.ndarray]:

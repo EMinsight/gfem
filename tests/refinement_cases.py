@@ -35,6 +35,14 @@ Two more cases, not singular at a re-entrant corner:
   Richardson extrapolations (alpha = 4/3) of uniform order-2 n = 32 and 64
   (fitted alpha 1.334 and 1.318), within `BARS_C_AB_BOUND` (relative) of
   the n = 16, 32 pair and of a mesh graded 3 towards the corners.
+- Split two bars, `bars_split_model`: the same meshes with the dielectric
+  split by element centroid at x = `BARS_SPLIT` um into volumes "left" and
+  "right" (vacuum both), for the objectives that read region energies and
+  potential means. References `BARS_SPLIT_REFERENCE`: C, the energy of
+  each excitation in each region (J) and the mean potential of each
+  excitation over each region (V), Richardson extrapolations of uniform
+  order-2 n = 16, 32, 64 with the rate fitted per quantity (1.31-1.34),
+  within `BARS_SPLIT_BOUND` (relative) of the 4/3-rate extrapolations.
 - Anisotropic coax, `anisotropic_coax_model`: the circular coax quarter
   (`structured_meshes.coax_quarter`, radii 1 and 2 um, extruded 0.5 um)
   filled with eps_r (2, 5, 3) along rotated axes, `ANISOTROPIC_COAX`; its
@@ -166,6 +174,38 @@ SHEET_C_BOUND = ((6e-6, 1.5e-4), (1.5e-4, 6e-6))
 BARS_C_AB = {"near": -3.760064826e-18, "screen": -5.618272068e-20}
 #: Relative bound of each `BARS_C_AB` entry.
 BARS_C_AB_BOUND = {"near": 2e-6, "screen": 2e-5}
+
+#: Where `bars_split_model` splits the dielectric into "left" and "right", um.
+BARS_SPLIT = {"near": 2.0, "screen": 2.75}
+#: The split bars' references per case: ``"C"`` (F, terminals a, b),
+#: ``"energy"`` and ``"mean"`` by region, one entry per excitation (a, b),
+#: in J and V.
+BARS_SPLIT_REFERENCE = {
+    "near": {
+        "C": ((4.154721122e-17, -3.760064826e-18), (-3.760064826e-18, 4.154721122e-17)),
+        "energy": {
+            "left": (1.983358940e-17, 9.400162066e-19),
+            "right": (9.400162066e-19, 1.983358940e-17),
+        },
+        "mean": {
+            "left": (4.272181115e-01, 4.561844461e-02),
+            "right": (4.561844461e-02, 4.272181115e-01),
+        },
+    },
+    "screen": {
+        "C": ((4.087311572e-17, -5.618272068e-20), (-5.618272068e-20, 4.583589877e-17)),
+        "energy": {
+            "left": (2.043639443e-17, 2.712770993e-18),
+            "right": (1.634315616e-22, 2.020517839e-17),
+        },
+        "mean": {
+            "left": (2.561508238e-01, 3.142496101e-02),
+            "right": (1.224361763e-04, 3.743286185e-01),
+        },
+    },
+}
+#: Relative bound of every `BARS_SPLIT_REFERENCE` value.
+BARS_SPLIT_BOUND = 2e-5
 
 
 def rotation(axis: str, degrees: float) -> np.ndarray:
@@ -492,6 +532,16 @@ def bars_model(directory: Path, case: str, n: int) -> gfem.Model:
     """A two-bars case (``"near"`` or ``"screen"``), in um, vacuum."""
     mesh = _mesh(directory, "bars", sm.two_bars(case, n), "um")
     return gfem.Model(mesh, materials={"dielectric": gfem.Material()})
+
+
+def bars_split_model(directory: Path, case: str, n: int) -> gfem.Model:
+    """A two-bars case with its dielectric split into "left" and "right", vacuum."""
+    nodes, tets, _, tris, tnames = sm.two_bars(case, n)
+    x = nodes[tets].mean(axis=1)[:, 0]
+    names = ["left" if c < BARS_SPLIT[case] else "right" for c in x]
+    mesh = _mesh(directory, "bars_split", (nodes, tets, names, tris, tnames), "um")
+    vacuum = gfem.Material()
+    return gfem.Model(mesh, materials={"left": vacuum, "right": vacuum})
 
 
 def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:
