@@ -7,8 +7,10 @@ asked of it before any solve, and how it reads a result.
 
 import dataclasses
 import itertools
+import logging
 import math
 
+import contrast_cases as cc
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -16,7 +18,6 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
-from gfem import refinement
 from gfem._engine import estimate as kernels
 from gfem.refinement import _dorfler
 
@@ -83,11 +84,12 @@ def test_an_unknown_terminal_or_port_raises_key_error(coax, step):
 
 
 @pytest.mark.usefixtures("no_solve")
-def test_an_unexcited_port_raises_with_the_remedy(step):
+def test_an_unexcited_source_port_raises_with_the_remedy(step):
+    # The entry's column is the source port's field: it must be excited.
     problem = gfem.Driven([3e9], excite="p1")
     with pytest.raises(ValueError, match=r"Driven\.excite"):
         gfem.refine_mesh(
-            step, problem, estimator=gfem.QuantityEstimator(s=("p2", "p1"))
+            step, problem, estimator=gfem.QuantityEstimator(s=("p1", "p2"))
         )
 
 
@@ -141,16 +143,35 @@ def prepares(monkeypatch):
     return prepared
 
 
-def _forced_adjoint(model, result, port):
+@pytest.fixture
+def factorizations(caplog):
+    """The solve steps that factorize (or refactorize) a matrix, so far."""
+    gfem.release_memory()
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+
+    def count():
+        return sum(
+            r.name == "gfem.solver"
+            and getattr(r, "action", None) in {"factorized", "refactorized"}
+            for r in caplog.records
+        )
+
+    yield count
+    gfem.release_memory()
+
+
+def _forced_adjoint(model, result, port, frequency=None):
     """Port ``port``'s S-functional adjoint, solved whether parallel or not.
 
-    Returns ``(z, c x)``: the adjoint field, and the port's own field times
-    `parallel_scale` (``None`` where the functional is not parallel).
+    Returns ``(z, c x)``: the adjoint field at ``frequency`` (the result's
+    first by default), and the port's own field times `parallel_scale`
+    (``None`` where the functional is not parallel).
     """
     from gfem._engine.driven import DrivenRule
     from gfem._engine.port_network import parallel_scale
 
-    frequency = float(result.s.frequency[0])
+    if frequency is None:
+        frequency = float(result.s.frequency[0])
     omega = 2 * math.pi * frequency
     rule = DrivenRule(model, gfem.Driven([frequency]), OPTIONS)
     system, ports = rule._ports(model, warn=False)
@@ -224,6 +245,87 @@ def test_a_parallel_lossy_port_takes_no_adjoint_solve(tmp_path, prepares):
     assert len(prepares) == 1
 
 
+# --- an unexcited read port: its solved adjoint --------------------------------
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_an_unexcited_read_port_is_estimated_through_its_solved_adjoint(
+    step, factorizations
+):
+    # A lumped functional is parallel to its excitation, so the solved
+    # adjoint of an unexcited p2 is p2's own field scaled: the estimate is
+    # the all-excited one. It rides on the forward's factorization in
+    # refine_mesh; error_estimate factorizes once more per frequency.
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    every = gfem.refine_mesh(
+        step, rc.step_problem(), estimator=estimator, max_cycles=0, options=OPTIONS
+    )
+    forward = factorizations()
+    assert forward == len(rc.STEP_S)
+    gfem.release_memory()  # no handle carries over to the next solve
+    one = gfem.refine_mesh(
+        step,
+        gfem.Driven(list(rc.STEP_S), excite="p1"),
+        estimator=estimator,
+        max_cycles=0,
+        options=OPTIONS,
+    )
+    assert factorizations() == 2 * forward
+    assert one.estimate.value == pytest.approx(every.estimate.value, rel=1e-12)
+    np.testing.assert_allclose(
+        one.estimate.indicators, every.estimate.indicators, rtol=1e-10
+    )
+    gfem.release_memory()
+    again = gfem.error_estimate(one.result, estimator, model=one.model)
+    assert factorizations() == 3 * forward
+    assert again.value == pytest.approx(one.estimate.value, rel=1e-12)
+
+
+def test_an_adjoint_load_callback_sees_each_frequency_expanded_solution(step):
+    # The callback is called per frequency with that frequency's solution on
+    # the fields' space and returns keyed loads; each key's adjoint comes
+    # back per (frequency, key). Truth: p2's S-functional adjoint is p2's
+    # own field times its parallel scale (a lumped port).
+    from gfem.solve import _solve
+
+    seen = {}
+
+    def loads(context):
+        seen[context.frequency] = np.array(context.solution)
+        assert context.excite == ("p1",)
+        return {("dual", "p2"): context.s_functional("p2")}
+
+    frequencies = list(rc.STEP_S)
+    result, adjoints = _solve(
+        step,
+        gfem.Driven(frequencies, excite="p1", keep_fields=True),
+        options=OPTIONS,
+        adjoint_loads=loads,
+    )
+    full = gfem.solve(step, gfem.Driven(frequencies, keep_fields=True), options=OPTIONS)
+    fields = dict(zip(result.kept, result.e_fields, strict=True))
+    assert sorted(adjoints) == [(f, ("dual", "p2")) for f in frequencies]
+    for f in frequencies:
+        x = np.asarray(fields[f, "p1"].coefficients)
+        np.testing.assert_allclose(seen[f][:, 0], x, rtol=0, atol=1e-14 * abs(x).max())
+        _, own = _forced_adjoint(step, full, "p2", f)
+        z = adjoints[f, ("dual", "p2")]
+        np.testing.assert_allclose(z, own, rtol=0, atol=1e-10 * abs(own).max())
+
+
+def test_an_empty_adjoint_load_solves_nothing_more(step, factorizations):
+    from gfem.solve import _solve
+
+    _, adjoints = _solve(
+        step,
+        gfem.Driven([3e9], excite="p1"),
+        options=OPTIONS,
+        adjoint_loads=lambda _context: {},
+    )
+    assert adjoints == {}
+    assert factorizations() == 1
+
+
 class _Unconverged:
     """A handle whose solve stops above its tolerance."""
 
@@ -260,10 +362,10 @@ def test_an_unconverged_adjoint_is_not_reported_as_a_forward_miss(
 
 
 def _adjoint_rule(model, problem):
-    from gfem._engine.driven import DrivenRule
+    from gfem._engine.driven import DrivenRule, port_loads
 
     rule = DrivenRule(model, problem, OPTIONS)
-    rule.adjoint_ports = ("p2",)
+    rule.adjoint_loads = port_loads(("p2",))
     return rule
 
 
@@ -737,27 +839,6 @@ def test_a_lifted_lossy_mode_is_estimated(tmp_path, name):
     assert np.all(np.isfinite(estimate.indicators))
 
 
-@pytest.mark.parametrize(
-    ("name", "cause"),
-    [
-        ("second-order-absorbing", "second-order absorbing"),
-        ("lossy-mu", "complex mu_r"),
-        ("lossy-anisotropic", "loss inside the anisotropic material of 'air'"),
-    ],
-)
-def test_the_lossy_eigenmode_check_still_names_its_cause(tmp_path, name, cause):
-    # What omega lifted, the estimates of a mode built on it (Q, objectives
-    # of omega) keep refusing (ADR 0138, ADR 0143 Assumptions).
-    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        refinement._check_lossy_mode(
-            _lifted_box(tmp_path, name), "QuantityEstimator(q=...)"
-        )
-    message = str(caught.value)
-    assert caught.value.feature == "lossy eigenmode"
-    assert cause in message
-    assert "FieldEstimator()" in message
-
-
 LOSSY_TENSOR = gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01)
 
 
@@ -791,6 +872,211 @@ def test_loss_in_an_anisotropic_material_is_estimated(
     assert ref.estimate.value > 0
 
 
+# --- driven refusals (ADRs 0134, 0139, 0140) ----------------------------------
+
+
+class _SolvedError(Exception):
+    """Raised in place of the first solve: every check before it passed."""
+
+
+@pytest.fixture
+def reaches_solve(monkeypatch):
+    def solve(*_args, **_kwargs):
+        raise _SolvedError
+
+    monkeypatch.setattr("gfem.refinement._solve", solve)
+
+
+S21 = gfem.QuantityEstimator(s=("p2", "p1"))
+
+
+def _refused(model, problem, estimator=S21):
+    """The `MeshRefinementUnsupportedError` refine_mesh raises before any solve."""
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(model, problem, estimator=estimator, options=OPTIONS)
+    assert "FieldEstimator()" in str(caught.value)  # the remedy
+    return caught.value
+
+
+def _admitted(model, problem, estimator=S21):
+    """Every check of refine_mesh passes: it reaches the first solve."""
+    with pytest.raises(_SolvedError):
+        gfem.refine_mesh(model, problem, estimator=estimator, options=OPTIONS)
+
+
+@pytest.mark.parametrize(
+    "surface",
+    [
+        gfem.Impedance("side", resistance=100.0),
+        gfem.Impedance("side", inductance=1e-9),
+        gfem.Absorbing("side"),
+        gfem.Absorbing("side", order=2),
+    ],
+    ids=["resistive-impedance", "inductive-impedance", "absorbing", "absorbing-2"],
+)
+@pytest.mark.usefixtures("no_solve")
+def test_an_impedance_or_absorbing_surface_refuses_the_s_estimate(step, surface):
+    model = _with(step, boundaries=[*step.boundaries, surface])
+    error = _refused(model, gfem.Driven([5e9]))
+    assert error.feature == "impedance or absorbing surface"
+    assert "'side'" in str(error)
+
+
+def test_an_estimate_of_s_by_an_impedance_surface_is_refused(step):
+    model = _with(step, boundaries=[*step.boundaries, gfem.Absorbing("side")])
+    result = gfem.solve(model, gfem.Driven([5e9], keep_fields=True), options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, S21, model=model)
+    assert caught.value.feature == "impedance or absorbing surface"
+    field = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    assert field.value > 0  # unclaimed there, not refused
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_conductor_surface_admits_the_s_estimate(step):
+    conductor = gfem.Conductor("side", conductivity=1e5)
+    _admitted(_with(step, boundaries=[*step.boundaries, conductor]), gfem.Driven([5e9]))
+
+
+@pytest.mark.parametrize(
+    "estimator",
+    [gfem.QuantityEstimator(omega=0), gfem.FieldEstimator()],
+    ids=["omega", "field"],
+)
+@pytest.mark.usefixtures("reaches_solve")
+def test_an_impedance_surface_admits_omega_and_the_field(cavity, estimator):
+    wall = gfem.Impedance("wall", resistance=377.0)
+    _admitted(_with(cavity, boundaries=[wall]), rc.CAVITY_PROBLEM, estimator)
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_an_impedance_surface_admits_the_field_estimate_of_a_driven_model(step):
+    model = _with(step, boundaries=[*step.boundaries, gfem.Absorbing("side")])
+    _admitted(model, gfem.Driven([5e9]), gfem.FieldEstimator())
+
+
+MU_HALVES = (gfem.Material(), gfem.Material(mu_r=2.5))
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_lumped_port_on_a_permeability_contrast_refuses_the_s_estimate(tmp_path):
+    model = cc.split_line_model(tmp_path, "beside", MU_HALVES, 2)
+    error = _refused(model, gfem.Driven([15e9]))
+    assert error.feature == "lumped port spanning a permeability contrast"
+    assert "'p1'" in str(error)
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_lumped_port_across_a_permeability_interface_refuses_too(tmp_path):
+    model = cc.split_line_model(tmp_path, "across", MU_HALVES, 2)
+    error = _refused(model, gfem.Driven([3e9]))
+    assert error.feature == "lumped port spanning a permeability contrast"
+
+
+def test_an_estimate_of_s_by_a_permeability_contrast_is_refused(tmp_path):
+    model = cc.split_line_model(tmp_path, "beside", MU_HALVES, 2)
+    result = gfem.solve(model, gfem.Driven([15e9], keep_fields=True), options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, S21, model=model)
+    assert caught.value.feature == "lumped port spanning a permeability contrast"
+
+
+@pytest.mark.parametrize(
+    "fill",
+    [
+        gfem.Material(eps_r=2.0, mu_r=2.0),
+        gfem.Material(mu_r=(1.5, 2.0, 2.5)),
+        gfem.Material(mu_r=(1.5, 2.0, 2.5), axes=tuple(map(tuple, rc.ROT3.T))),
+    ],
+    ids=["uniform", "diagonal", "rotated"],
+)
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_uniform_permeability_at_a_lumped_port_is_admitted(tmp_path, fill):
+    # The tensors are compared whole: one anisotropic fill is no contrast.
+    _admitted(
+        cc.split_line_model(tmp_path, "beside", (fill, fill), 2), gfem.Driven([3e9])
+    )
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_wave_port_on_a_permeability_contrast_is_admitted(tmp_path):
+    model = cc.split_line_model(tmp_path, "beside", MU_HALVES, 2, ports="wave")
+    _admitted(model, gfem.Driven([15e9]))
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_lumped_port_on_a_permittivity_contrast_is_admitted(tmp_path):
+    eps = (gfem.Material(eps_r=3.0), gfem.Material())
+    _admitted(cc.split_line_model(tmp_path, "across", eps, 2), gfem.Driven([3e9]))
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_lumped_port_on_a_conductivity_contrast_is_admitted(tmp_path):
+    model = cc.contrast_line_model(tmp_path, "sigma", 1, ports="lumped")
+    _admitted(model, gfem.Driven([10e9]))
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_lumped_port_on_a_permeability_contrast_admits_the_field_estimate(tmp_path):
+    model = cc.split_line_model(tmp_path, "beside", MU_HALVES, 2)
+    _admitted(model, gfem.Driven([15e9]), gfem.FieldEstimator())
+
+
+#: The Drude core of the plasmonic tests: Re eps -29.8 at 3 GHz, -4.9 at 8 GHz.
+DRUDE_CORE = gfem.PermittivityLaw(
+    terms=[gfem.Drude(plasma_frequency=20e9, damping=2e9)]
+)
+
+
+@pytest.fixture(scope="module")
+def drude_line(tmp_path_factory):
+    """A 10 x 2 x 1 mm line, eps_r 4, with a `DRUDE_CORE` at 4 < x < 6 mm."""
+    path = tmp_path_factory.mktemp("drude") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(10.0, 2.0, 1.0, (10, 1, 1), core=(4.0, 6.0)))
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={
+            "dielectric": gfem.Material(eps_r=4.0),
+            "core": gfem.Material(eps_r=DRUDE_CORE),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=30.0),
+        ],
+    )
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_law_in_the_plasmonic_window_refuses_the_s_estimate(drude_line):
+    error = _refused(drude_line, gfem.Driven([3e9, 8e9]))
+    assert error.feature == "plasmonic permittivity"
+    message = str(error)
+    assert "'core'" in message
+    assert "8 GHz" in message
+    assert "Re eps = -4.88" in message
+
+
+def test_an_estimate_of_s_in_the_plasmonic_window_is_refused(drude_line):
+    problem = gfem.Driven([8e9], keep_fields=True)
+    result = gfem.solve(drude_line, problem, options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, S21, model=drude_line)
+    assert caught.value.feature == "plasmonic permittivity"
+    field = gfem.error_estimate(result, gfem.FieldEstimator(), model=drude_line)
+    assert field.value > 0  # unclaimed there, not refused
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_deep_metal_law_is_admitted(drude_line):
+    _admitted(drude_line, gfem.Driven([3e9]))
+
+
+@pytest.mark.usefixtures("reaches_solve")
+def test_a_law_in_the_plasmonic_window_admits_the_field_estimate(drude_line):
+    _admitted(drude_line, gfem.Driven([8e9]), gfem.FieldEstimator())
+
+
 # --- electrostatic sheets ----------------------------------------------------
 
 
@@ -811,3 +1097,152 @@ def test_an_interior_sheet_terminal_does_not_smear_the_estimate(tmp_path):
     quantity = gfem.error_estimate(result, estimator, model=model)
     assert field.value < 1e-6
     assert quantity.value < 1e-12
+
+
+# --- Q (ADR 0131) --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error"),
+    [
+        ({"q": (0, 1)}, TypeError),
+        ({"q": True}, TypeError),
+        ({"q": 0, "omega": 0}, TypeError),
+        ({"q": -1}, ValueError),
+    ],
+    ids=["cluster", "bool", "two-keywords", "negative"],
+)
+def test_q_takes_one_mode_index(kwargs, error):
+    with pytest.raises(error) as caught:
+        gfem.QuantityEstimator(**kwargs)
+    if kwargs == {"q": (0, 1)}:
+        assert "cluster" in str(caught.value)
+    assert gfem.QuantityEstimator(q=np.int64(1)).q == 1
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_q_names_a_mode_of_an_eigenmode_problem(coax, cavity):
+    with pytest.raises(TypeError, match="Eigenmode"):
+        gfem.refine_mesh(coax, rc.COAX_PROBLEM, estimator=gfem.QuantityEstimator(q=0))
+    with pytest.raises(ValueError, match=r"q=1.*n_modes=1"):
+        gfem.refine_mesh(
+            cavity, rc.CAVITY_PROBLEM, estimator=gfem.QuantityEstimator(q=1)
+        )
+
+
+def _resistive_line(directory, n):
+    """The 10 mm parallel-plate line, eps_r 4, closed by 50 and 30 ohm ports."""
+    path = sm.write_msh22(
+        directory / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1))
+    )
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"dielectric": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z", resistance=50.0),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=30.0),
+        ],
+    )
+
+
+def test_q_estimate_of_the_resistive_line(tmp_path):
+    # Its value and indicators as measured by the ticket-06 probe's own
+    # implementation of ADR 0131 (line, n = 4, first resonance, Q 1.78).
+    model = _resistive_line(tmp_path, 4)
+    problem = gfem.Eigenmode(target=7.5e9, n_modes=1)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(q=0), model=model)
+    assert estimate.kind == "q"
+    assert estimate.value == pytest.approx(0.0010167422563164418, rel=1e-8)
+    assert np.sum(estimate.indicators**2) == pytest.approx(
+        0.0007770395510489388, rel=1e-8
+    )
+
+
+def test_q_of_a_lossless_mode_raises(cavity):
+    result = gfem.solve(cavity, rc.CAVITY_PROBLEM, options=OPTIONS)
+    with pytest.raises(ValueError, match=r"lossless.*omega=0"):
+        gfem.error_estimate(result, gfem.QuantityEstimator(q=0), model=cavity)
+
+
+def _lossy_cavity(cavity):
+    return _with(cavity, materials={"air": gfem.Material(eps_r=4.0, conductivity=5.0)})
+
+
+#: The lossy cavity's first mode, Hz.
+LOSSY_CAVITY_F = rc.CAVITY_F1 / 2
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_q_cycles_record_the_followed_mode_q(cavity):
+    ref = gfem.refine_mesh(
+        _lossy_cavity(cavity),
+        gfem.Eigenmode(target=LOSSY_CAVITY_F, n_modes=1),
+        estimator=gfem.QuantityEstimator(q=0),
+        tolerance=1e-5,
+        max_cycles=1,
+        options=OPTIONS,
+    )
+    assert ref.estimate.kind == "q"
+    assert len(ref.cycles) == 2
+    assert ref.cycles[-1].value == float(ref.result.q[0])
+    assert 3.2 < ref.cycles[0].value < 3.4  # Q 3.30 (sigma 5 S/m, eps_r 4)
+
+
+def test_q_tolerance_below_its_floor_raises(cavity):
+    # Q's relative error is cot(arg omega) times omega's (about 2Q): the
+    # floor is 10 x eigen_tolerance x cot(arg omega_h), here about 6.3e-7.
+    options = dataclasses.replace(OPTIONS, eigen_tolerance=1e-8)
+    with pytest.raises(ValueError, match=r"eigen_tolerance") as caught:
+        gfem.refine_mesh(
+            _lossy_cavity(cavity),
+            gfem.Eigenmode(target=LOSSY_CAVITY_F, n_modes=1),
+            estimator=gfem.QuantityEstimator(q=0),
+            tolerance=5e-7,
+            max_cycles=0,
+            options=options,
+        )
+    assert "cot" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("material", "boundary", "feature", "cause"),
+    [
+        (None, gfem.Absorbing("wall", order=2), "lossy eigenmode", "second-order"),
+        (gfem.MaterialField(mu_r=1 - 0.01j), None, "lossy eigenmode", "complex mu_r"),
+        (LOSSY_TENSOR, None, "lossy eigenmode", "anisotropic"),
+        (
+            gfem.Material(
+                eps_r=gfem.PermittivityLaw(
+                    eps_inf=2.0,
+                    terms=[gfem.Debye(delta_eps=1.0, relaxation_frequency=1e11)],
+                )
+            ),
+            None,
+            "dispersive eigenmode",
+            "permittivity law",
+        ),
+    ],
+    ids=["second-order-absorbing", "lossy-mu", "anisotropic-loss", "law"],
+)
+@pytest.mark.usefixtures("no_solve")
+def test_q_keeps_the_lossy_eigenmode_refusals(
+    cavity, material, boundary, feature, cause
+):
+    # ADR 0138 lifts these for omega= only: Q has no case for them.
+    changes = {}
+    if material is not None:
+        changes["materials"] = {"air": material}
+    if boundary is not None:
+        changes["boundaries"] = [boundary]
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(
+            _with(cavity, **changes),
+            rc.CAVITY_PROBLEM,
+            estimator=gfem.QuantityEstimator(q=0),
+            options=OPTIONS,
+        )
+    assert caught.value.feature == feature
+    assert cause in str(caught.value)
+    assert "q=" in str(caught.value)

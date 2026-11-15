@@ -42,7 +42,7 @@ its value and its weights.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import Any
 
 import ngsolve as ngs
@@ -833,7 +833,7 @@ def s_entry(
     source: str,
     threads: int | None = None,
     *,
-    adjoints: Mapping[tuple[float, str], Field] | None = None,
+    adjoints: Mapping[tuple[float, Hashable], Field] | None = None,
     cache: RecoveryCache | None = None,
 ) -> list[Terms]:
     """The terms of ``s[to, source]``'s absolute error identity, per frequency.
@@ -849,8 +849,9 @@ def s_entry(
     is |d_i d_j| (|sum c_K| + k0^2 |sum m_K|), a tetrahedron's
     |d_i d_j| |c_K - k0^2 m_K|.
 
-    ``adjoints`` holds z_i per (frequency, port) where port i's functional
-    is not parallel to its excitation (a hybrid lossy wave port mode).
+    ``adjoints`` holds z_i per (frequency, port) where port i is not
+    excited or its functional is not parallel to its excitation (a hybrid
+    lossy wave port mode).
     Elsewhere z_i = c_i x_i with |c_i| = 1 / (4 k0 eta0) for fields of 1 W
     incident (ADR 0089): the free dual, x_i itself on that scale.
     """
@@ -863,8 +864,8 @@ def s_entry(
     with task_manager(threads):
         for n, frequency in enumerate(result.s.frequency):
             f = float(frequency)
-            f_to, f_source = fields[f, to], fields[f, source]
-            recovery = cache.recovery(model, f_to.order, cracks=True)
+            f_source = fields[f, source]
+            recovery = cache.recovery(model, f_source.order, cracks=True)
             k = 2 * np.pi * f / scipy.constants.c * recovery.built.scale
             _, eps_inverse = cache.effective_eps(recovery, k)
             ri = cache.wave_residuals(recovery, f_source, k)
@@ -872,7 +873,7 @@ def s_entry(
             if adjoint is not None:
                 rj, scale = cache.wave_residuals(recovery, adjoint, k), 1.0
             else:
-                rj = cache.wave_residuals(recovery, f_to, k)
+                rj = cache.wave_residuals(recovery, fields[f, to], k)
                 scale = 1.0 / (4 * k * eta0)
             curl, mass = _pair(recovery, ri, rj, eps_inverse)
             scale *= abs(d[to][n] * d[source][n])
@@ -920,6 +921,19 @@ def omega(
     scale. On a lossless mode T' = -2k M and this is (|sum c_K| + k^2
     |sum m_K|) / (2 k^2 |b(E, E)|).
     """
+    curl, mass, k, slope = _mode_terms(model, result, mode, threads, cache)
+    scale = 1.0 / (abs(k) * abs(slope))
+    return Terms(curl=curl, mass=mass, lam=k * k, scale=scale)
+
+
+def _mode_terms(
+    model: Model,
+    result: EigenmodeResult,
+    mode: int,
+    threads: int | None,
+    cache: RecoveryCache | None,
+) -> tuple[np.ndarray, np.ndarray, complex, complex]:
+    """c_K, m_K, k and x_h^T T'(k_h) x_h of ``omega[mode]``'s identity (`omega`)."""
     cache = cache or RecoveryCache()
     field = result.e_fields[mode]
     with task_manager(threads):
@@ -929,8 +943,70 @@ def omega(
         errors = cache.wave_residuals(recovery, field, k)
         curl, mass = _pair(recovery, errors, errors, eps_inverse)
         slope = _slope(model, field, k)
-    scale = 1.0 / (abs(k) * abs(slope))
-    return Terms(curl=curl, mass=mass, lam=k * k, scale=scale)
+    return curl, mass, k, slope
+
+
+@dataclasses.dataclass(frozen=True)
+class QTerms(Terms):
+    """The terms of a mode's Q relative error (ADR 0131), from omega's identity.
+
+    Q = |k| / (2 Im k) = 1 / (2 sin phi), phi = arg k_h, so dQ/Q = -cot phi
+    Im(delta k / k): the real part of omega's relative error drops out. With
+    omega's identity delta k / k ~= -(P1 - P2), P1 = sum c_K / (s k), P2 =
+    lam sum m_K / (s k), the value is cot phi (|Im P1| + |Im P2|), the two
+    terms never let cancel, and a tetrahedron's weight cot phi |Im((c_K - lam
+    m_K) / (s k))|.
+
+    Attributes:
+        phase: 1 / (s k), s = x_h^T T'(k_h) x_h.
+        scale: cot phi (positive: a decaying mode has 0 < phi < pi / 2).
+        omega_value: Omega's own estimate on the same sums (`Terms.value`
+            of `omega`), which bounds the mode's shift between meshes.
+    """
+
+    phase: complex = 0j
+    omega_value: float = 0.0
+
+    @property
+    def weights(self) -> np.ndarray:
+        """Each tetrahedron's weight, cot phi |Im((c_K - lam m_K) / (s k))|."""
+        return self.scale * np.abs(
+            (self.phase * (self.curl - self.lam * self.mass)).imag
+        )
+
+    @property
+    def value(self) -> float:
+        """Q's estimate, cot phi (|Im P1| + |Im P2|), relative to Q."""
+        p1 = self.phase * self.curl_sum
+        p2 = self.phase * self.lam * self.mass_sum
+        return float(self.scale * (abs(p1.imag) + abs(p2.imag)))
+
+
+def q(
+    model: Model,
+    result: EigenmodeResult,
+    mode: int,
+    threads: int | None = None,
+    *,
+    cache: RecoveryCache | None = None,
+) -> QTerms:
+    """The terms of ``q[mode]``'s relative error (ADR 0131); see `QTerms`.
+
+    The mode must be lossy (Im omega > 0): Q is infinite otherwise.
+    """
+    curl, mass, k, slope = _mode_terms(model, result, mode, threads, cache)
+    cot = k.real / k.imag
+    lam = k * k
+    omega_scale = 1.0 / (abs(k) * abs(slope))
+    omega_value = omega_scale * (abs(curl.sum()) + abs(lam) * abs(mass.sum()))
+    return QTerms(
+        curl=curl,
+        mass=mass,
+        lam=lam,
+        scale=abs(cot),
+        phase=1.0 / (slope * k),
+        omega_value=float(omega_value),
+    )
 
 
 def _effective_eps(

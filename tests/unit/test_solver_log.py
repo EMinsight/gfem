@@ -15,7 +15,7 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
-from gfem._engine.driven import DrivenRule
+from gfem._engine.driven import DrivenRule, port_loads
 
 F = (21e9, 22e9)
 LOGGER = "gfem.solver"
@@ -164,17 +164,17 @@ def test_adjoint_port_solves_are_logged(tmp_path, records):
     frequencies = [rc.LOSSY_GUIDE_FREQUENCY, 1.01 * rc.LOSSY_GUIDE_FREQUENCY]
     options = gfem.SolverOptions(order=2, linear_solver="direct")
     rule = DrivenRule(model, gfem.Driven(frequencies), options)
-    rule.adjoint_ports = ("p2",)
+    rule.adjoint_loads = port_loads(("p2",))
     rule.forward(model, keep=False)
-    adjoint = [r for r in records("forward") if r.columns == "adjoint port"]
+    adjoint = [r for r in records("forward") if r.columns == "adjoint load"]
     assert [r.frequency for r in adjoint] == pytest.approx(frequencies)
     # on the forward's handle, as the forward left it
     assert [r.action for r in adjoint] == ["reused", "reused"]
     message = adjoint[0].getMessage()
-    assert "driven forward solve of the adjoint port columns" in message
+    assert "driven forward solve of the adjoint load columns" in message
     # without the forward, each frequency's handle is the adjoint solve's own
     rule.solve_adjoints(model)
-    later = [r for r in records("forward") if r.columns == "adjoint port"][2:]
+    later = [r for r in records("forward") if r.columns == "adjoint load"][2:]
     assert [r.frequency for r in later] == pytest.approx(frequencies)
     assert all(r.action in {"factorized", "refactorized"} for r in later)
 

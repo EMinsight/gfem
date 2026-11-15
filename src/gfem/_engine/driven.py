@@ -74,7 +74,7 @@ import functools
 import logging
 import math
 import warnings
-from collections.abc import Callable, Generator, Mapping, Sequence
+from collections.abc import Callable, Generator, Hashable, Mapping, Sequence
 from typing import Any, Literal, NoReturn
 
 import jax
@@ -495,6 +495,76 @@ def expansion_matrix(
     return out
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
+class AdjointContext:
+    """What an `AdjointLoads` callback sees at one frequency.
+
+    Attributes:
+        frequency: The frequency, Hz.
+        solution: ``(ndof, n_excited)`` complex, the excited ports' solutions
+            at ``frequency`` on the fields' (unpaired) space, columns in
+            ``excite`` order; ``None`` where the caller has no forward
+            solution (`DrivenRule.solve_adjoints` without ``solutions``).
+        excite: The excited ports' names.
+    """
+
+    frequency: float
+    solution: np.ndarray | None
+    excite: tuple[str, ...]
+    _operator: DrivenOperator
+    _ports: PortNetwork
+    _port_names: tuple[str, ...]
+    _rhs: np.ndarray
+
+    def restrict(self, g: np.ndarray) -> np.ndarray:
+        """``P^T g``: the load, on the solve space, of a functional ``g`` of the field.
+
+        ``g`` ``(ndof, ...)`` is on the fields' space; with periodic pairs
+        the field is ``P x``, so its functional loads ``P^T g`` (as a field
+        cotangent does in the backward pass).
+        """
+        expansion = self._operator.expansion
+        return g if expansion is None else expansion.matrix.T @ g
+
+    def s_functional(self, port: str) -> np.ndarray:
+        """``(N,)``: port ``port``'s S functional on the solve space (its load)."""
+        i = self._port_names.index(port)
+        return np.array(self._ports.functional(2 * math.pi * self.frequency)[:, i])
+
+
+#: A per-frequency adjoint load callback: given one frequency's
+#: `AdjointContext`, the loads ``(N,)`` on the solve space to solve
+#: ``A z = load`` for, by key. An empty mapping solves nothing at that
+#: frequency. Each key's adjoint comes back in `DrivenRule.adjoints` per
+#: ``(frequency, key)``, on the fields' space.
+AdjointLoads = Callable[[AdjointContext], Mapping[Hashable, np.ndarray]]
+
+
+def port_loads(names: Sequence[str]) -> AdjointLoads:
+    """The S-functional adjoint loads of ports ``names`` (ADR 0089).
+
+    Keyed by port name, and only where a port's adjoint is not its own
+    solution scaled: a port that is not excited, or whose S functional is
+    not parallel to its excitation (`PortNetwork.nonparallel`; a hybrid
+    lossy wave port mode).
+    """
+    names = tuple(names)
+
+    def loads(context: AdjointContext) -> dict[Hashable, np.ndarray]:
+        indices = [context._port_names.index(n) for n in names]  # noqa: SLF001
+        solved, columns = context._ports.nonparallel(  # noqa: SLF001
+            2 * math.pi * context.frequency,
+            indices,
+            context._rhs,  # noqa: SLF001
+        )
+        return {
+            context._port_names[i]: columns[:, k]  # noqa: SLF001
+            for k, i in enumerate(solved)
+        }
+
+    return loads
+
+
 class DrivenRule:
     """Host-side forward of a `Driven` problem on a `Model`.
 
@@ -636,13 +706,13 @@ class DrivenRule:
         #: `gfem.solve`'s eager path and by a frequency worker, never under
         #: JAX, where no caller reads it.
         self.keeps_partial = False
-        #: Ports whose S functional's adjoint a uniform forward also solves,
-        #: on its own factorization, where the functional is not parallel to
-        #: the port's excitation: set by `gfem.refine_mesh` for an S estimate
-        #: (ADR 0089), never on a differentiated solve.
-        self.adjoint_ports: tuple[str, ...] = ()
-        #: Those adjoints, per (frequency, port), on the unpaired space.
-        self.adjoints: dict[tuple[float, str], np.ndarray] = {}
+        #: The per-frequency adjoint loads a uniform forward also solves, on
+        #: its own factorization (`AdjointLoads`): set by `gfem.refine_mesh`
+        #: for an estimate's solved duals (ADR 0089 amendment, ADR 0132),
+        #: never on a differentiated solve.
+        self.adjoint_loads: AdjointLoads | None = None
+        #: Those adjoints, per (frequency, key), on the unpaired space.
+        self.adjoints: dict[tuple[float, Hashable], np.ndarray] = {}
         #: Per wave port surface, the rows of its parent's port mode sweep at
         #: the problem's frequencies: set in a frequency worker, which then
         #: sweeps no port mode itself (ADR 0099). ``None`` anywhere else.
@@ -743,9 +813,16 @@ class DrivenRule:
                     except LinearSolverConvergenceError as err:
                         miss, n_solved = err, n
                         break
-                    if self.adjoint_ports:
+                    if self.adjoint_loads is not None:
                         try:
-                            self._solve_adjoints(sweep, system, ports, f, rhs)
+                            self._solve_adjoints(
+                                sweep,
+                                system,
+                                ports,
+                                f,
+                                rhs,
+                                solution=system.operator.expand(x),
+                            )
                         except LinearSolverConvergenceError:
                             system.free()
                             raise
@@ -787,12 +864,16 @@ class DrivenRule:
             )
         return out.outputs(), entry
 
-    def solve_adjoints(self, model: Model) -> dict[tuple[float, str], np.ndarray]:
-        """`adjoints` of `adjoint_ports` at every frequency, without the forward.
+    def solve_adjoints(
+        self, model: Model, solutions: Mapping[float, np.ndarray] | None = None
+    ) -> dict[tuple[float, Hashable], np.ndarray]:
+        """`adjoints` of `adjoint_loads` at every frequency, without the forward.
 
-        For `gfem.error_estimate` on a finished result. Each frequency where
-        some port's functional is not parallel to its excitation is
-        factorized once; the others are not factorized at all.
+        For `gfem.error_estimate` on a finished result: ``solutions`` holds
+        its fields per frequency, ``(ndof, n_excited)`` on the unpaired
+        space, for loads formed from them (`AdjointContext.solution`). Each
+        frequency with a load is factorized once; the others are not
+        factorized at all.
         """
         self._check_adjoint_ports(keep=False)
         with task_manager(self.options.threads, self.comm):
@@ -801,18 +882,19 @@ class DrivenRule:
                 with system.sweep(solves=len(self.problem.frequency)) as sweep:
                     for f in self.problem.frequency:
                         rhs = ports.rhs(2 * math.pi * f)
-                        self._solve_adjoints(sweep, system, ports, f, rhs)
+                        x = None if solutions is None else solutions[f]
+                        self._solve_adjoints(sweep, system, ports, f, rhs, solution=x)
             finally:
                 system.free()
         return self.adjoints
 
     def _check_adjoint_ports(self, *, keep: bool) -> None:
-        """Raise if `adjoint_ports` reach a forward that would not solve them.
+        """Raise if `adjoint_loads` reach a forward that would not solve them.
 
         Only a uniform sweep on one worker, never differentiated, adds the
         adjoint columns (`gfem.refine_mesh` asks for no other).
         """
-        if not self.adjoint_ports:
+        if self.adjoint_loads is None:
             return
         workers_run = min(self.options.frequency_workers, len(self.problem.frequency))
         where = None
@@ -824,7 +906,7 @@ class DrivenRule:
             where = "frequency workers"
         if where is not None:
             raise RuntimeError(
-                f"adjoint_ports {self.adjoint_ports} reached {where}: only an "
+                f"adjoint_loads reached {where}: only an "
                 "undifferentiated uniform sweep on one worker solves them."
             )
 
@@ -835,22 +917,38 @@ class DrivenRule:
         ports: PortNetwork,
         f: float,
         rhs: np.ndarray,
+        *,
+        solution: np.ndarray | None,
     ) -> None:
-        """Solve the non-parallel `adjoint_ports` at ``f`` on the sweep's handle.
+        """Solve `adjoint_loads` at ``f`` on the sweep's handle.
 
-        The handle at ``f`` is the forward's if the sweep is there already
-        (one more back-substitution), else prepared here.
+        ``solution`` is the forward's at ``f`` on the unpaired space, or
+        ``None``. The handle at ``f`` is the forward's if the sweep is there
+        already (one more back-substitution), else prepared here; a
+        frequency without loads prepares nothing.
         """
-        omega = 2 * math.pi * f
-        indices = [self.port_names.index(name) for name in self.adjoint_ports]
-        solved, loads = ports.nonparallel(omega, indices, rhs)
-        if not solved:
+        if self.adjoint_loads is None:
             return
+        omega = 2 * math.pi * f
+        context = AdjointContext(
+            frequency=f,
+            solution=solution,
+            excite=tuple(self.excite),
+            _operator=system.operator,
+            _ports=ports,
+            _port_names=self.port_names,
+            _rhs=rhs,
+        )
+        keyed = dict(self.adjoint_loads(context))
+        if not keyed:
+            return
+        keys = list(keyed)
+        loads = np.stack([np.asarray(keyed[key], complex) for key in keys], axis=1)
         held = sweep.frequency == omega
         try:
             z, its = sweep.reuse_at(omega).solve_counted(loads)
         except LinearSolverConvergenceError as err:
-            names = ", ".join(repr(self.port_names[i]) for i in solved)
+            names = ", ".join(map(repr, keys))
             raise _estimate_adjoint_error(f, names, err) from err
         report.solve_step(
             sweep.base,
@@ -859,11 +957,11 @@ class DrivenRule:
             iterations=its,
             frequency=f,
             reused=held,
-            columns="adjoint port",
+            columns="adjoint load",
         )
         z = system.operator.expand(z)
-        for k, i in enumerate(solved):
-            self.adjoints[f, self.port_names[i]] = np.array(z[:, k], complex)
+        for k, key in enumerate(keys):
+            self.adjoints[f, key] = np.array(z[:, k], complex)
 
     def _forward_workers(
         self, model: Model, *, keep: bool
@@ -920,7 +1018,7 @@ class DrivenRule:
         problems = [
             Driven(
                 [frequencies[i] for i in block],
-                excite=self.excite,
+                excite=tuple(self.excite),
                 keep_fields=[frequencies[i] for i in block if i in self.kept],
                 wave_vector=self.problem.wave_vector,
             )
@@ -2180,16 +2278,16 @@ def _adjoint_error(
 
 
 def _estimate_adjoint_error(
-    f: float, ports: str, err: LinearSolverConvergenceError
+    f: float, keys: str, err: LinearSolverConvergenceError
 ) -> LinearSolverConvergenceError:
-    """An S error estimate's error where its adjoint solve at ``f`` Hz did not converge.
+    """An error estimate's error where its adjoint solve at ``f`` Hz did not converge.
 
     The forward solve converged there; no partial result, since the estimate
-    needs the adjoint at every frequency.
+    needs the adjoint at every frequency. ``keys`` names the loads (a port's
+    name for its S read-out).
     """
     return LinearSolverConvergenceError(
-        f"At {f:g} Hz, the adjoint solve of port {ports}'s S read-out for the "
-        f"S error estimate: {err}",
+        f"At {f:g} Hz, the adjoint solve of {keys} for the error estimate: {err}",
         frequency=f,
     )
 

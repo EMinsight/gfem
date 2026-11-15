@@ -1,7 +1,7 @@
 """The quantity estimator's effectivity, on singular and smooth known answers.
 
-A `gfem.QuantityEstimator` estimates how far a capacitance entry, an S entry
-or a mode's omega is from its value on the same geometry with an infinitely
+A `gfem.QuantityEstimator` estimates how far a capacitance entry, an S entry,
+a mode's omega or its Q is from its value on the same geometry with an infinitely
 fine mesh. Its effectivity is the estimate divided by the error against a
 known answer; every listed estimate must lie in its case's range of
 `EFFECTIVITY_BY_KIND`, keyed by the estimate's kind (`ErrorEstimate.kind`),
@@ -74,8 +74,28 @@ Cases and references (none recomputed by the tests but the closed forms):
   absorbing or conductor (1e5 S/m) top wall, mode 110 on m = 2, 3, against
   `refinement_cases.LOSSY_WALL_OMEGA` (Richardson);
 - resistive line: the parallel-plate line closed by its 50 and 30 ohm
-  lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32,
-  against its transmission-line closed form.
+  lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32, 64,
+  256, against its transmission-line closed form.
+- beside the driven refusals (ADRs 0134, 0139, 0140; `contrast_cases`):
+  the conductor plate line (1e3 and 1e5 S/m, n = 1, 2, 3) against order 4
+  on the same mesh; the deep-metal wedge and flat floor (Re eps -29.7,
+  n = 1, 2) against `contrast_cases.METAL_FLOOR_S`; the metal-block line at
+  3 GHz (Re eps -29.8, n = 5, 10, 20) against its TEM cascade; a wave port
+  beside a permeability contrast and a lumped port beside a conductivity
+  contrast (k = 1) against `contrast_cases.CONTRAST_LINE_S`. Witness:
+  stretched cells at a lumped port across a permittivity contrast. The
+  refused impedance wall, permeability contrast at a lumped port and metal
+  wedge at Re eps -1.5 are measured past the refusal (`REFUSED_S`).
+
+Q (kind ``q``, ADR 0131), relative to Q, on the solves of the omega cases:
+the resistive line; the lossy walls, plus an impedance wall of 50 ohm/sq
+(`refinement_cases.LOSSY_WALL_OMEGA`, Richardson); the lossy box (exact);
+the L cavity filled with eps_r 4 and 5 S/m, with and without tan_delta 0.05,
+on n = 2, 4, 8 and over `refine_mesh(q=0)` cycles 0-8 (exact); the L cavity
+with conductor walls of 1e5 S/m on n = 4, 8, 16 against
+`refinement_cases.CONDUCTOR_CAVITY_OMEGA` (Richardson). Under a uniform
+tan_delta Q is exact on any mesh, and its estimate is asserted below 1e-10
+of omega's on the box and the L cavity.
 
 The eigen terms ADR 0138 lifted, and the lossy magnetic and anisotropic
 fills of the line:
@@ -135,7 +155,20 @@ Measured (ostau, 1 thread):
     lossy box             7.18 - 10.6   (both fills)
     lossy L cavity        2.87 - 4.08
     lossy walls           4.34 - 9.17
-    resistive line        1.47 - 7.44
+    resistive line        1.01 - 7.44
+    Q: resistive line     1.01 - 11.7
+    Q: lossy walls        1.13 - 4.73
+    Q: lossy box          7.18 - 10.6
+    Q: lossy L cavity     2.15 - 4.08   (uniform and refine_mesh)
+    Q: conductor walls    2.39 - 3.04   (L cavity)
+    conductor plate line  1.42 - 3.23
+    deep-metal wedge      3.01 - 3.09   (flat: 2.05 - 2.27)
+    deep-metal block line 1.33 - 8.48
+    wave port, mu beside  1.83 - 8.16
+    lumped port, sigma    1.39 - 1.78
+    witness, stretched    0.68 - 0.82
+    refused: impedance wall S11 0.37 - 0.39, mu at a lumped port 0.57 - 0.61,
+             wedge at Re eps -1.5 0.62 - 0.64
     dispersive box        7.18 - 8.63
     layered box           6.14 - 21.2   (law 7.50 - 20.5, constant 6.14 - 21.2)
     second-order absorbing walls  1.17 - 4.18
@@ -160,6 +193,7 @@ and a degree-p recovery.
 import cmath
 import math
 
+import contrast_cases as cc
 import numpy as np
 import pytest
 import refinement_cases as rc
@@ -167,6 +201,7 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
+from gfem.refinement import _estimate
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 
@@ -192,6 +227,12 @@ EFFECTIVITY_BY_KIND = {
         "lossy uniform guide": (0.9, 20.0),
         "lossy slab guide": (0.9, 20.0),
         "lossy step guide": (0.9, 20.0),
+        "conductor plate line": (0.9, 4.0),
+        "deep-metal wedge": (0.9, 4.0),
+        "deep-metal flat": (0.9, 3.0),
+        "deep-metal block line": (0.9, 10.0),
+        "wave port beside a permeability contrast": (0.9, 10.0),
+        "lumped port beside a loss contrast": (0.9, 2.5),
         "lossy permeability line": (0.9, 6.0),
         "lossy anisotropic line": (0.9, 9.0),
     },
@@ -210,6 +251,13 @@ EFFECTIVITY_BY_KIND = {
         "lossy permeability box": (0.9, 12.0),
         "lossy permeability layers": (0.9, 12.0),
     },
+    "q": {
+        "resistive line": (0.9, 15.0),
+        "lossy walls": (0.9, 6.0),
+        "lossy box": (0.9, 12.0),
+        "lossy L cavity": (0.9, 5.0),
+        "L cavity, conductor walls": (0.9, 4.0),
+    },
 }
 
 #: Cases asserted >= 0.9 whose high end the docs quote on their own (Limits)
@@ -217,8 +265,22 @@ EFFECTIVITY_BY_KIND = {
 OVERESTIMATES: dict[str, tuple[str, tuple[float, float]]] = {}
 
 #: Configurations that are not claimed, measured bands that reach below 0.9:
-#: name -> (kind, (low, high)).
-WITNESSES: dict[str, tuple[str, tuple[float, float]]] = {}
+#: name -> (kind, (low, high)). Stretched cells: a lumped port whose face
+#: crosses a permittivity interface, on cells 10:1 along the line (ADR 0139).
+WITNESSES: dict[str, tuple[str, tuple[float, float]]] = {
+    "stretched cells at a lumped port across a permittivity contrast": (
+        "s",
+        (0.65, 0.85),
+    ),
+}
+
+#: Refused configurations, measured past the refusal through the private
+#: kernel (not quoted: the docs only say these raise): name -> (low, high).
+REFUSED_S = {
+    "impedance surface": (0.3, 0.6),
+    "lumped port spanning a permeability contrast": (0.5, 0.7),
+    "plasmonic permittivity": (0.55, 0.7),
+}
 
 
 def _assert_in(kind, case, estimate, error, value=None):
@@ -735,6 +797,210 @@ def test_the_rotated_anisotropic_line_s_against_order_4(tmp_path, n):
         _assert_in("s", "anisotropic line", estimate, error, value)
 
 
+# --- next to the driven refusals (ADRs 0134, 0139, 0140) ----------------------
+
+_ENTRIES = (("p1", "p1"), ("p2", "p1"), ("p2", "p2"))
+
+
+def _entry_ratios(model, result, reference, *, refused=False):
+    """(estimate, estimate value / |error|) per entry of `_ENTRIES` and frequency.
+
+    ``reference[(to, from)]``: the entry's reference S at each frequency.
+    ``refused``: the model is one the S estimate refuses; it is estimated
+    past the refusal, by the private kernel.
+    """
+    out = []
+    for to, source in _ENTRIES:
+        estimator = gfem.QuantityEstimator(s=(to, source))
+        if refused:
+            estimate = _estimate(model, result, estimator, threads=None, mode=None)
+        else:
+            estimate = gfem.error_estimate(result, estimator, model=model)
+        values = np.asarray(result.s[to, source])
+        exact = np.broadcast_to(reference[to, source], values.shape)
+        out += [
+            (estimate, value / abs(s - r))
+            for value, s, r in zip(estimate.values, values, exact, strict=True)
+        ]
+    return out
+
+
+def _same_mesh_order_4(model, frequencies):
+    """The S entries of an order-4 solve on the model's own mesh."""
+    fine = gfem.solve(
+        model,
+        gfem.Driven(list(frequencies)),
+        options=gfem.SolverOptions(order=4, linear_solver="direct"),
+    )
+    return {e: np.asarray(fine.s[e]) for e in _ENTRIES}
+
+
+def _assert_ratios(kind, case, ratios):
+    for estimate, ratio in ratios:
+        assert estimate.kind == kind, (case, estimate.kind)
+        low, high = EFFECTIVITY_BY_KIND[kind][case]
+        assert low <= ratio <= high, (case, ratio)
+
+
+def _driven(model, frequencies):
+    problem = gfem.Driven(list(frequencies), keep_fields=True)
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    return gfem.solve(model, problem, options=options)
+
+
+@pytest.mark.parametrize("n", [1, 2, 3])
+@pytest.mark.parametrize("sigma", [1e3, 1e5])
+def test_the_conductor_plate_line_s(tmp_path, sigma, n):
+    # Conductor plates on a propagating line keep the S estimate (ADR 0134):
+    # their surface share of the error is at most 0.07.
+    plates = tuple(gfem.Conductor(p, conductivity=sigma) for p in ("plate1", "plate2"))
+    model = cc.plate_line_model(tmp_path, n, plates=plates)
+    f = (cc.PLATE_LINE_FREQUENCY,)
+    ratios = _entry_ratios(model, _driven(model, f), _same_mesh_order_4(model, f))
+    _assert_ratios("s", "conductor plate line", ratios)
+
+
+@pytest.mark.parametrize("n", [1, 2])
+@pytest.mark.parametrize("geometry", ["wedge", "flat"])
+def test_the_deep_metal_s(tmp_path, geometry, n):
+    # Re eps -29.7: past the plasmonic window (ADR 0140). Its edge at -19.9,
+    # also measured (wedge 3.12 to 3.17, flat 2.07 to 2.29), lies inside the
+    # window, so the public estimate refuses it.
+    model = cc.metal_floor_model(tmp_path, geometry, n)
+    reference = cc.METAL_FLOOR_S[geometry, n, cc.METAL_DEEP]
+    ratios = _entry_ratios(model, _driven(model, [cc.METAL_DEEP]), reference)
+    _assert_ratios("s", f"deep-metal {geometry}", ratios)
+
+
+#: The metal block of `_metal_block_line`: Re eps -29.8 at 3 GHz.
+_METAL_BLOCK = gfem.PermittivityLaw(
+    terms=[gfem.Drude(plasma_frequency=20e9, damping=2e9)]
+)
+
+
+def _metal_block_s(f):
+    """The S matrix of `_LINE` (eps_r 4) with the metal at 4 < x < 6 mm.
+
+    Three TEM sections in cascade, each of its own complex beta and Z0.
+    """
+    k0 = 2 * math.pi * f / const.c
+    eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
+    bounds = (0.0, 4e-3, 6e-3, _LINE["length"])
+    abcd = np.eye(2, dtype=complex)
+    sections = (_LINE["eps_r"], complex(_METAL_BLOCK(f)), _LINE["eps_r"])
+    for eps, x0, x1 in zip(sections, bounds, bounds[1:], strict=False):
+        root = cmath.sqrt(eps)
+        z0 = eta0 * _LINE["height"] / (_LINE["width"] * root)
+        c, s = cmath.cos(k0 * root * (x1 - x0)), cmath.sin(k0 * root * (x1 - x0))
+        abcd = abcd @ np.array([[c, 1j * z0 * s], [1j * s / z0, c]])
+    (a, b), (cc_, d) = abcd
+    den = a * _R2 + b + cc_ * _R1 * _R2 + d * _R1
+    k = math.sqrt(_R1 * _R2)
+    s11 = (a * _R2 + b - cc_ * _R1 * _R2 - d * _R1) / den
+    s22 = (-a * _R2 + b - cc_ * _R1 * _R2 + d * _R1) / den
+    return np.array([[s11, 2 * k * (a * d - b * cc_) / den], [2 * k / den, s22]])
+
+
+@pytest.mark.parametrize("n", [5, 10, 20])
+def test_the_metal_block_line_s(tmp_path, n):
+    # The field case's metal block at 3 GHz (Re eps -29.8): a full cross-
+    # section, so its TEM cascade is exact. At 8 GHz (-4.9) S refuses.
+    path = sm.write_msh22(
+        tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1), core=(4.0, 6.0))
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={
+            "dielectric": gfem.Material(eps_r=_LINE["eps_r"]),
+            "core": gfem.Material(eps_r=_METAL_BLOCK),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=_R2),
+        ],
+    )
+    exact = _metal_block_s(3e9)
+    ports = ("p1", "p2")
+    reference = {
+        (to, source): exact[ports.index(to), ports.index(source)]
+        for to, source in _ENTRIES
+    }
+    ratios = _entry_ratios(model, _driven(model, [3e9]), reference)
+    _assert_ratios("s", "deep-metal block line", ratios)
+
+
+@pytest.mark.parametrize(
+    ("contrast", "ports", "case"),
+    [
+        ("mu", "wave", "wave port beside a permeability contrast"),
+        ("sigma", "lumped", "lumped port beside a loss contrast"),
+    ],
+)
+def test_a_port_beside_a_contrast_keeps_the_s_estimate(tmp_path, contrast, ports, case):
+    # The lumped-port refusal (ADR 0139) is not needed for a wave port on a
+    # permeability contrast, nor for a lumped port on a loss contrast.
+    model = cc.contrast_line_model(tmp_path, contrast, 1, ports=ports)
+    reference = cc.CONTRAST_LINE_S[contrast, ports]
+    ratios = _entry_ratios(
+        model, _driven(model, cc.CONTRAST_LINE_FREQUENCIES), reference
+    )
+    _assert_ratios("s", case, ratios)
+
+
+def test_stretched_cells_at_a_lumped_port_across_a_permittivity_contrast(tmp_path):
+    # Cells 10:1 along the line next to the port: an end layer they do not
+    # resolve (ADR 0139). It vanishes on cells of 5:1 or less.
+    model = cc.split_line_model(tmp_path, "across", cc.SPLIT_LINE_HALVES["eps"], 4, 2)
+    reference = cc.SPLIT_LINE_S["across", "eps", 4, 2, 3e9]
+    kind, (low, high) = WITNESSES[
+        "stretched cells at a lumped port across a permittivity contrast"
+    ]
+    for estimate, ratio in _entry_ratios(model, _driven(model, [3e9]), reference):
+        assert estimate.kind == kind
+        assert low <= ratio <= high, ratio
+
+
+def _refused_band(name, ratios):
+    low, high = REFUSED_S[name]
+    for _, ratio in ratios:
+        assert low <= ratio <= high, (name, ratio)
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_the_s_estimate_misses_the_current_on_an_impedance_surface(tmp_path, n):
+    # Why the S estimate refuses it (ADR 0134): S11's error share on the
+    # resistive walls is not in the volume identity.
+    side = gfem.Impedance("side", resistance=100.0)
+    model = cc.plate_line_model(tmp_path, n, side=side)
+    f = (cc.PLATE_LINE_FREQUENCY,)
+    ratios = _entry_ratios(
+        model, _driven(model, f), _same_mesh_order_4(model, f), refused=True
+    )
+    _refused_band("impedance surface", ratios[:1])  # S11
+
+
+def test_the_s_estimate_misses_the_edge_of_a_permeability_contrast_at_a_port(
+    tmp_path,
+):
+    # Why the S estimate refuses it (ADR 0139): it falls under refinement.
+    model = cc.split_line_model(tmp_path, "beside", cc.SPLIT_LINE_HALVES["mu"], 16)
+    reference = cc.SPLIT_LINE_S["beside", "mu", 16, 1, 15e9]
+    ratios = _entry_ratios(model, _driven(model, [15e9]), reference, refused=True)
+    _refused_band("lumped port spanning a permeability contrast", ratios)
+
+
+def test_the_s_estimate_misses_a_metal_wedge_in_the_plasmonic_window(tmp_path):
+    # Why the S estimate refuses it (ADR 0140): Re eps -1.5, where the
+    # solution itself does not converge at the wedge.
+    model = cc.metal_floor_model(tmp_path, "wedge", 2)
+    reference = cc.METAL_FLOOR_S["wedge", 2, cc.METAL_PLASMONIC]
+    ratios = _entry_ratios(
+        model, _driven(model, [cc.METAL_PLASMONIC]), reference, refused=True
+    )
+    _refused_band("plasmonic permittivity", ratios)
+
+
 # --- lossy magnetic and anisotropic lines: S (ADR 0138) ----------------------
 
 _LOSSY_AXES = np.array([3.0, 5.0, 2.0]) * (1 - 1j * np.array([0.05, 0.1, 0.3]))
@@ -976,11 +1242,28 @@ def _box_model(directory, m, material, top=None):
 
 
 def _omega_and_estimate(model, target):
+    omega, estimate, _ = _omega_and_estimates(model, target)
+    return omega, estimate
+
+
+def _omega_and_estimates(model, target):
+    """omega of the mode nearest ``target``, its omega and Q estimates, one solve."""
     result = gfem.solve(
         model, gfem.Eigenmode(target=target, n_modes=1), options=OPTIONS
     )
-    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
-    return complex(np.asarray(result.omega)[0]), estimate
+    omega = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    q = gfem.error_estimate(result, gfem.QuantityEstimator(q=0), model=model)
+    return complex(np.asarray(result.omega)[0]), omega, q
+
+
+def _q(omega):
+    """Q = |omega| / (2 |Im omega|)."""
+    return abs(omega) / (2 * abs(omega.imag))
+
+
+def _q_error(omega, reference):
+    """The relative error of the Q of ``omega`` against that of ``reference``."""
+    return _q(omega) / _q(reference) - 1
 
 
 @pytest.mark.parametrize("fill", list(LOSSY_FILLS))
@@ -994,9 +1277,10 @@ def test_the_lossy_box_frequencies(tmp_path, fill):
             (i / a) ** 2 for i, a in zip(mode, BOX, strict=True)
         )
         target = const.c * math.sqrt(k0_squared / _LOSSY_EPS) / (2 * math.pi)
-        omega, estimate = _omega_and_estimate(model, target)
+        omega, estimate, q = _omega_and_estimates(model, target)
         exact = _lossy_omega(k0_squared, eps_c, _LOSSY_SIGMA, omega)
         _assert_in("omega", "lossy box", estimate, (omega - exact) / abs(exact))
+        _assert_in("q", "lossy box", q, _q_error(omega, exact))
 
 
 def test_the_lossy_l_cavity_frequency_under_mesh_refinement(tmp_path):
@@ -1027,6 +1311,7 @@ LOSSY_WALLS = {
     "impedance": gfem.Impedance("top", resistance=377.0),
     "absorbing": gfem.Absorbing("top"),
     "conductor": gfem.Conductor("top", conductivity=1e5),
+    "impedance 50": gfem.Impedance("top", resistance=50.0),
 }
 
 
@@ -1034,14 +1319,16 @@ LOSSY_WALLS = {
 @pytest.mark.parametrize("m", [2, 3])
 def test_the_box_with_a_lossy_wall(tmp_path, m, wall):
     # Air box, PEC but for its top wall; mode 110, Q 4.0 (impedance,
-    # absorbing) and 254 (conductor). The loss is on the boundary only, where
-    # the estimate has no term: it enters through T'(k) alone.
+    # absorbing), 16.6 (impedance 50) and 254 (conductor). The loss is on the
+    # boundary only, where the estimate has no term: it enters through T'(k)
+    # alone. Q is estimated on the same solve.
     model = _box_model(tmp_path, m, gfem.Material(), LOSSY_WALLS[wall])
     target = const.c * math.sqrt(1 / BOX[0] ** 2 + 1 / BOX[1] ** 2) / 2
-    omega, estimate = _omega_and_estimate(model, target)
+    omega, estimate, q = _omega_and_estimates(model, target)
     reference = rc.LOSSY_WALL_OMEGA[wall]
     error = (omega - reference) / abs(reference)
     _assert_in("omega", "lossy walls", estimate, error)
+    _assert_in("q", "lossy walls", q, _q_error(omega, reference))
 
 
 #: The parallel-plate line closed by its 50 and 30 ohm lumped ports, PEC
@@ -1060,7 +1347,7 @@ def _line_resonance(near):
     return complex((math.pi * n - 0.5j * np.log(gammas)) * speed / _LINE["length"])
 
 
-@pytest.mark.parametrize("n", [4, 8, 16, 32])
+@pytest.mark.parametrize("n", [4, 8, 16, 32, 64, 256])
 def test_the_resistive_line_resonances(tmp_path, n):
     path = sm.write_msh22(
         tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1))
@@ -1075,9 +1362,94 @@ def test_the_resistive_line_resonances(tmp_path, n):
         ],
     )
     for target in _RESONANCES:
-        omega, estimate = _omega_and_estimate(model, target)
+        omega, estimate, q = _omega_and_estimates(model, target)
         exact = _line_resonance(omega)
         _assert_in("omega", "resistive line", estimate, (omega - exact) / abs(exact))
+        _assert_in("q", "resistive line", q, _q_error(omega, exact))
+
+
+# --- Q of lossy L cavities ----------------------------------------------------
+
+#: The L cavity's fills for Q: eps_r 4 with 5 S/m, and with tan_delta 0.05 too.
+LOSSY_CAVITY_FILLS = {"conductivity": 0.0, "conductivity and tan_delta": 0.05}
+
+
+def _lossy_cavity(directory, n, tan_delta):
+    """The L cavity (`refinement_cases.cavity_model`) filled with eps_r 4, 5 S/m."""
+    lossless = rc.cavity_model(directory, n)
+    fill = gfem.Material(eps_r=_LOSSY_EPS, tan_delta=tan_delta, conductivity=5.0)
+    model = gfem.Model(
+        lossless.mesh, materials={"air": fill}, boundaries=lossless.boundaries
+    )
+    eps_c = _LOSSY_EPS * (1 - 1j * tan_delta)
+    k0_squared = rc.CAVITY_LAMBDA1 * 1e6  # mm^-2 to m^-2
+    near = 2 * math.pi * rc.CAVITY_F1 / math.sqrt(_LOSSY_EPS)
+    return model, _lossy_omega(k0_squared, eps_c, 5.0, near)
+
+
+@pytest.mark.parametrize("fill", list(LOSSY_CAVITY_FILLS))
+@pytest.mark.parametrize("n", [2, 4, 8])
+def test_the_lossy_l_cavity_q(tmp_path, n, fill):
+    # Singular corner, loss in the volume; Q 3.30 and 2.84, exact.
+    model, exact = _lossy_cavity(tmp_path, n, LOSSY_CAVITY_FILLS[fill])
+    omega, _, q = _omega_and_estimates(model, exact.real / (2 * math.pi))
+    _assert_in("q", "lossy L cavity", q, _q_error(omega, exact))
+
+
+@pytest.mark.parametrize("fill", list(LOSSY_CAVITY_FILLS))
+def test_the_lossy_l_cavity_q_under_mesh_refinement(tmp_path, fill):
+    model, exact = _lossy_cavity(tmp_path, 2, LOSSY_CAVITY_FILLS[fill])
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            model,
+            gfem.Eigenmode(target=exact.real / (2 * math.pi), n_modes=1),
+            estimator=gfem.QuantityEstimator(q=0),
+            tolerance=1e-6,
+            max_cycles=8,
+            options=OPTIONS,
+        )
+    assert len(ref.cycles) == 9
+    for cycle in ref.cycles:
+        error = cycle.value / _q(exact) - 1
+        _assert_in("q", "lossy L cavity", ref.estimate, error, cycle.estimate)
+
+
+@pytest.mark.parametrize("n", [4, 8, 16])
+def test_the_l_cavity_q_with_conductor_walls(tmp_path, n):
+    # Loss on the walls only, Q 45.3: the curl term carries Im here, at the
+    # singular corner. n = 32 is left out: its error is within 4 times the
+    # reference's bound.
+    lossless = rc.cavity_model(tmp_path, n)
+    model = gfem.Model(
+        lossless.mesh,
+        materials={"air": gfem.Material(eps_r=_LOSSY_EPS)},
+        boundaries=[gfem.Conductor("wall", conductivity=1e5)],
+    )
+    reference = rc.CONDUCTOR_CAVITY_OMEGA
+    omega, _, q = _omega_and_estimates(model, reference.real / (2 * math.pi))
+    error = _q_error(omega, reference)
+    assert abs(error) > 5 * rc.CONDUCTOR_CAVITY_Q_BOUND
+    _assert_in("q", "L cavity, conductor walls", q, error)
+
+
+def test_an_exact_q_has_a_vanishing_estimate(tmp_path):
+    # Under a uniform tan_delta every mode's k^2 has the phase of 1 /
+    # (1 - i tan_delta), so its Q is 1 / (2 sin(atan(tan_delta) / 2)) exactly,
+    # on any mesh: Q's estimate is round-off next to omega's (not an
+    # effectivity: there is no error to divide by).
+    fill = gfem.Material(eps_r=_LOSSY_EPS, tan_delta=0.1)
+    box = _box_model(tmp_path, 2, fill)
+    target = const.c * math.sqrt(1 / BOX[0] ** 2 + 1 / BOX[1] ** 2) / 4
+    lossless = rc.cavity_model(tmp_path, 4)
+    cavity = gfem.Model(
+        lossless.mesh, materials={"air": fill}, boundaries=lossless.boundaries
+    )
+    for model, f in ((box, target), (cavity, rc.CAVITY_F1 / 2)):
+        omega, estimate, q = _omega_and_estimates(model, f)
+        exact = 1 / (2 * math.sin(math.atan(0.1) / 2))
+        assert _q(omega) == pytest.approx(exact, rel=1e-12)
+        assert q.kind == "q"
+        assert q.value < 1e-10 * estimate.value
 
 
 # --- lifted eigen terms (ADR 0138): laws, second-order walls, lossy mu, loss --
