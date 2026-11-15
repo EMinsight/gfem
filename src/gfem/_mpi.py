@@ -145,6 +145,11 @@ _REFUSALS = {
         "on each rank, so it is refused above one rank: read it on one process, or "
         "pass comm=MPI.COMM_SELF for one-process fields on each rank."
     ),
+    "region_mean": (
+        "gfem.region_mean has no distributed path: write the result with "
+        "Job.run(out=) and call it on one process on the field load_result "
+        f"gives, {_COPIES}."
+    ),
     "power_flow": (
         "gfem.power_flow has no distributed path: write the result with "
         "Job.run(out=) and call it on one process on the field load_result "

@@ -55,7 +55,6 @@ from gfem.solve import _solve
 if TYPE_CHECKING:
     from collections.abc import Hashable, Mapping
 
-    from gfem._engine.driven import AdjointLoads
     from gfem._engine.estimate import RecoveryCache
 
 __all__ = [
@@ -157,15 +156,19 @@ class QuantityEstimator:
             reads (``ErrorEstimate.kind``) and raises
             `gfem.MeshRefinementUnsupportedError` for anything it does not
             estimate (``feature`` names it): a field read other than through
-            `gfem.power_flow`, a point value, a port mode output, a mixture
-            of kinds, a branch on a value it reads (max, min, sort, where)
-            or a custom derivative of its own. In this version an objective
-            of S is estimated (S and its networks: ``db``, ``y()``, ``z()``,
-            ``renormalize``, ``with_offsets``). The estimate is absolute, in
-            the objective's units, and `refine_mesh` needs its
-            ``tolerance`` given. A read row whose port is not excited, or is
-            a lossy wave port, uses that port's adjoint dual, as for ``s``;
-            in `refine_mesh` it is solved once more on the first mesh and
+            `gfem.power_flow` or `gfem.region_mean`, a point value, a port
+            mode output, a mixture of kinds, a branch on a value it reads
+            (max, min, sort, where) or a custom derivative of its own. In
+            this version an objective of S is estimated (S and its networks:
+            ``db``, ``y()``, ``z()``, ``renormalize``, ``with_offsets``),
+            and of an electrostatic result: of its capacitance (``mutual``
+            and ``inverse`` too), of its region energies, or of potential
+            means (`gfem.region_mean` of ``result.potential``). The estimate
+            is absolute, in the objective's units, and `refine_mesh` needs
+            its ``tolerance`` given. A read row whose port is not excited,
+            or is a lossy wave port, uses that port's adjoint dual, as for
+            ``s``, and a read energy or potential mean its own dual; in
+            `refine_mesh` each is solved once more on the first mesh and
             rides on the solves after it.
 
     Raises:
@@ -325,6 +328,9 @@ EMITTED_KINDS = (
     "cluster mean",
     "objective of s",
     "objective of s, lossless rewrite",
+    "objective of capacitance",
+    "objective of electrostatic energy",
+    "objective of potential means",
 )
 
 
@@ -377,6 +383,9 @@ class ErrorEstimate:
     #: A lossless rewrite's computed defect term lam . D, signed (ADR 0135):
     #: ``value - abs(_defect)`` is the rewritten objective's own estimate.
     _defect: float = dataclasses.field(default=0.0, repr=False)
+    #: The electrostatic dual loads an objective's estimate reads, by key
+    #: (`gfem._engine.electrostatic.objective_loads`).
+    _dual_keys: tuple[tuple[Any, ...], ...] = dataclasses.field(default=(), repr=False)
 
     @property
     def value(self) -> float:
@@ -495,7 +504,9 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     row of S, whose port ``to`` is not excited, or is a wave port with a
     lossy mode not parallel to its excitation: its adjoint dual factorizes
     the system once more per frequency, with the direct solver at the
-    result's order (the result does not record its solve options). On a
+    result's order (the result does not record its solve options). An
+    objective reading an electrostatic energy or a potential mean
+    factorizes once more the same way, for all its duals at once. On a
     large model, estimate through `refine_mesh` with ``max_cycles=0``,
     whose adjoint rides on its own solve with your options (from its second
     mesh on, for an objective).
@@ -904,7 +915,7 @@ def _loop(
         problem = dataclasses.replace(problem, keep_fields=True)
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
-    duals = _Duals(_adjoint_port_union(estimators, model, problem))
+    duals = _Duals(_adjoint_port_union(estimators, model, problem), problem)
     with driven.low_frequency_deferred(), warnings.catch_warnings():
         warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
         result, adjoints = _solve(
@@ -925,7 +936,7 @@ def _loop(
                 threads=options.threads,
                 mode=_followed(modes, each),
                 adjoints=adjoints,
-                ridden=duals.ports,
+                ridden=duals.ridden,
                 cache=cache,
             )
             for each in estimators
@@ -1255,8 +1266,8 @@ def _estimate(
     *,
     threads: int | None,
     mode: int | tuple[int, ...] | None = None,
-    adjoints: dict[tuple[float, Hashable], np.ndarray] | None = None,
-    ridden: tuple[str, ...] = (),
+    adjoints: Mapping[Any, np.ndarray] | None = None,
+    ridden: tuple[Any, ...] = (),
     cache: RecoveryCache | None = None,
 ) -> ErrorEstimate:
     """The estimate of ``result``: dispatch on the estimator and result type.
@@ -1326,7 +1337,7 @@ def _estimate(
 
 
 def _dual_fields(
-    result: DrivenResult, adjoints: Mapping[tuple[float, Hashable], np.ndarray]
+    result: DrivenResult, adjoints: Mapping[Any, np.ndarray]
 ) -> dict[tuple[float, Hashable], Any]:
     """The adjoints as fields, each on its frequency's kept field's space.
 
@@ -1348,8 +1359,8 @@ def _estimate_objective(
     estimator: QuantityEstimator,
     *,
     threads: int | None,
-    adjoints: Mapping[tuple[float, Hashable], np.ndarray],
-    ridden: tuple[str, ...],
+    adjoints: Mapping[Any, np.ndarray],
+    ridden: tuple[Any, ...],
     cache: RecoveryCache,
 ) -> ErrorEstimate:
     """An objective's estimate: classify it, then its kind's kernel (ADR 0143).
@@ -1366,6 +1377,17 @@ def _estimate_objective(
     from gfem._engine import estimate as kernels
 
     objective = _objective.classify(estimator.objective, result, model)  # ty: ignore[invalid-argument-type]
+    if objective.kind in _POTENTIAL_KINDS:
+        return _estimate_potential_objective(
+            model,
+            result,
+            estimator,
+            objective,
+            threads=threads,
+            adjoints=adjoints,
+            ridden=ridden,
+            cache=cache,
+        )
     if objective.kind != "objective of s":
         raise MeshRefinementUnsupportedError(
             objective.kind,
@@ -1389,7 +1411,7 @@ def _estimate_objective(
         dict.fromkeys(to for to in rows if _needs_adjoint(to, model, excited))
     )
     missing = tuple(p for p in ports if p not in ridden)
-    solved = dict(adjoints)
+    solved: dict[Any, np.ndarray] = dict(adjoints)
     if missing:
         solved.update(_adjoints(model, result, missing, threads))
     duals = _dual_fields(result, solved)
@@ -1441,6 +1463,81 @@ def _conserves_power(model: Model) -> bool:
         all(isinstance(p, LumpedPort) for p in model.ports)
         and all(isinstance(b, PEC | PMC) for b in model.boundaries)
         and not _lossy_elements(model).any()
+    )
+
+
+#: The estimate kinds of an objective of an electrostatic result (ADR 0141).
+_POTENTIAL_KINDS = (
+    "objective of capacitance",
+    "objective of electrostatic energy",
+    "objective of potential means",
+)
+
+
+def _estimate_potential_objective(
+    model: Model,
+    result: ElectrostaticResult,
+    estimator: QuantityEstimator,
+    objective: Any,
+    *,
+    threads: int | None,
+    adjoints: Mapping[Any, np.ndarray],
+    ridden: tuple[Any, ...],
+    cache: RecoveryCache,
+) -> ErrorEstimate:
+    """An electrostatic objective's estimate (ADR 0141).
+
+    J(C) reads the potentials' free duals. An energy or potential mean reads
+    one dual per read energy and per averaged region set: those that did not
+    ride on the solve (``ridden``) are solved here, one more factorization
+    (`gfem._engine.electrostatic.solve_duals`).
+    """
+    from gfem._engine import electrostatic
+    from gfem._engine import estimate as kernels
+
+    terminals = list(result.terminals)
+    reads, keys = [], []
+    for r in objective.reads:
+        ct = float(np.real(r.cotangent))
+        if r.leaf == ".capacitance":
+            i, j = r.index
+            reads.append((("capacitance", terminals[j], terminals[i]), ct))
+        elif r.leaf.startswith(".energy["):
+            region = r.leaf.removeprefix(".energy[").removesuffix("]").strip("'\"")
+            key = ("energy", region, terminals[r.index[0]])
+            reads.append((key, ct))
+            keys.append(key)
+        else:
+            spec = objective.measurements[r.leaf]
+            terminal = spec["label"].removeprefix(".potential[").removesuffix("]")
+            key = ("mean", tuple(spec["regions"]))
+            reads.append((("mean", key[1], terminal.strip("'\"")), ct))
+            keys.append(key)
+    keys = list(dict.fromkeys(keys))
+    solved: dict[Any, np.ndarray] = {
+        k: adjoints[k] for k in keys if k in ridden and k in adjoints
+    }
+    missing = [k for k in keys if k not in solved]
+    if missing:
+        loads = electrostatic.objective_loads(missing)
+        solved.update(electrostatic.solve_duals(model, result, loads, threads))
+    terms = kernels.objective_of_potentials(
+        model,
+        result,
+        reads,
+        objective.curvature,
+        threads,
+        duals=solved,
+        cache=cache,
+    )
+    return ErrorEstimate(
+        estimator=estimator,
+        kind=objective.kind,
+        values=(terms.value,),
+        indicators=readonly(np.sqrt(terms.weights)),
+        _quantity=objective.value,
+        _dual_keys=tuple(keys),
+        _sensitivity=objective.sensitivity,
     )
 
 
@@ -2037,26 +2134,42 @@ def _adjoint_port_union(
 
 
 class _Duals:
-    """The ports whose S-functional adjoints ride on `refine_mesh`'s solves.
+    """The duals that ride on `refine_mesh`'s solves.
 
-    An S entry's from the first solve; an objective's once its estimate has
-    read them (`add`), from the next solve on (ADR 0089 amendment, ADR 0143).
+    On a driven problem, the ports whose S-functional adjoints ride: an S
+    entry's from the first solve; an objective's once its estimate has read
+    them (`add`), from the next solve on (ADR 0089 amendment, ADR 0143). On
+    an electrostatic problem, an objective's energy and potential-mean
+    duals, the same way (ADR 0141).
     """
 
-    def __init__(self, ports: tuple[str, ...]) -> None:
+    def __init__(self, ports: tuple[str, ...], problem: Any = None) -> None:
         self.ports = ports
+        self.keys: tuple[tuple[Any, ...], ...] = ()
+        self._electrostatic = isinstance(problem, Electrostatic)
 
     @property
-    def loads(self) -> AdjointLoads | None:
-        """The ports' adjoint loads; ``None`` for free duals only."""
+    def loads(self) -> Any:
+        """The solves' adjoint loads; ``None`` for free duals only."""
+        if self._electrostatic:
+            from gfem._engine.electrostatic import objective_loads
+
+            return objective_loads(self.keys) if self.keys else None
         from gfem._engine.driven import port_loads
 
         return port_loads(self.ports) if self.ports else None
 
+    @property
+    def ridden(self) -> tuple[Any, ...]:
+        """What rides on the solves: the ports, or the electrostatic keys."""
+        return self.keys if self._electrostatic else self.ports
+
     def add(self, estimates: tuple[ErrorEstimate, ...]) -> None:
-        """Add the ports whose adjoints the estimates' objectives read."""
+        """Add the duals the estimates' objectives read."""
         read = (p for e in estimates for p in e._dual_ports)  # noqa: SLF001
         self.ports = tuple(dict.fromkeys([*self.ports, *read]))
+        keys = (k for e in estimates for k in e._dual_keys)  # noqa: SLF001
+        self.keys = tuple(dict.fromkeys([*self.keys, *keys]))
 
 
 def _check_adjoint_workers(

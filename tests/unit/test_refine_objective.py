@@ -356,6 +356,12 @@ CLASSIFICATION_TABLE = [
         {(".energy['dielectric']", (0,))},
     ),
     (
+        "bars",
+        lambda r, _: gfem.region_mean(r.potential["a"], "dielectric"),
+        "objective of potential means",
+        {("region_mean|.potential['a']|dielectric", (0,))},
+    ),
+    (
         "cavity",
         lambda r, _: r.frequency[0] * 1e-9,
         "objective of omega",
@@ -431,12 +437,15 @@ def test_error_estimate_of_an_objective_of_s(step, step_result):
     assert estimate.value <= chain + remainder * (1 + 1e-9)
 
 
-def test_an_objective_of_another_kind_raises_by_its_kind(bars):
-    model, result = bars
-    estimator = gfem.QuantityEstimator(objective=lambda r, _: r.mutual[0, 1])
+def test_an_objective_of_another_kind_raises_by_its_kind(step, step_result):
+    def field_mean(result, _model):
+        mean = gfem.region_mean(result.e_field(STEP_F[0], "p1"), "dielectric")
+        return jnp.abs(mean[2]) ** 2
+
+    estimator = gfem.QuantityEstimator(objective=field_mean)
     with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.error_estimate(result, estimator, model=model)
-    assert caught.value.feature == "objective of capacitance"
+        gfem.error_estimate(step_result, estimator, model=step)
+    assert caught.value.feature == "objective of field means"
 
 
 def test_an_unexcited_read_row_gives_the_all_excited_estimate(step):
@@ -672,3 +681,112 @@ def test_no_lossless_rewrite_where_power_may_not_be_conserved(variant, step, tmp
     assert estimate.kind == "objective of s"
     _, _, c = _c_form(model, result, _s21_band)
     assert estimate.value == pytest.approx(c.value, rel=1e-12)
+
+
+# --- electrostatic objectives (ADR 0141) ---------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("objective", "feature"),
+    [
+        (
+            lambda r, _: r.potential["a"].at(np.array([2e-6, 1e-6, 0.25e-6])) ** 2,
+            "point value",
+        ),
+        (
+            lambda r, _: r.capacitance[0, 1] + r.energy["dielectric"][0],
+            "mixed objective",
+        ),
+        (
+            lambda r, _: (
+                gfem.region_mean(r.potential["a"], "dielectric")
+                + r.energy["dielectric"][0] * 1e17
+            ),
+            "mixed objective",
+        ),
+    ],
+)
+def test_an_electrostatic_objective_reading_what_has_no_estimate_raises(
+    bars, objective, feature
+):
+    model, result = bars
+    _raises(feature, objective, result, model)
+
+
+@pytest.fixture(scope="module")
+def split_bars(tmp_path_factory):
+    model = rc.bars_split_model(tmp_path_factory.mktemp("split"), "near", 2)
+    return model, gfem.solve(model, rc.BARS_PROBLEM, options=OPTIONS)
+
+
+@pytest.mark.parametrize(
+    ("objective", "kind"),
+    [
+        (lambda r, _: r.inverse[0, 1], "objective of capacitance"),
+        (lambda r, _: r.energy["left"][1] * 1e18, "objective of electrostatic energy"),
+        (
+            lambda r, _: (
+                gfem.region_mean(r.potential["a"], "left")
+                - gfem.region_mean(r.potential["a"], ["right"])
+            ),
+            "objective of potential means",
+        ),
+    ],
+)
+def test_error_estimate_of_an_electrostatic_objective(split_bars, objective, kind):
+    model, result = split_bars
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(objective=objective), model=model
+    )
+    assert estimate.kind == kind
+    assert len(estimate.values) == 1
+    assert estimate.value > 0
+    assert estimate.indicators.shape == (len(model.mesh.tetrahedra),)
+
+
+def test_a_capacitance_entry_objective_is_the_entry_estimate_in_farads(split_bars):
+    # J = C_ab: the combined form is the entry's own, scaled by |C_ab|
+    model, result = split_bars
+    objective = gfem.error_estimate(
+        result,
+        gfem.QuantityEstimator(objective=lambda r, _: r.capacitance[0, 1]),
+        model=model,
+    )
+    entry = gfem.error_estimate(
+        result, gfem.QuantityEstimator(capacitance=("a", "b")), model=model
+    )
+    c_ab = abs(float(result.capacitance[0, 1]))
+    assert objective.value == pytest.approx(entry.value * c_ab, rel=1e-10)
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_the_electrostatic_dual_factorizes_once_then_rides_on_the_solves(
+    split_bars, monkeypatch
+):
+    from gfem._engine import electrostatic
+
+    calls = []
+    solve_duals = electrostatic.solve_duals
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return solve_duals(*args, **kwargs)
+
+    monkeypatch.setattr(electrostatic, "solve_duals", counted)
+    model, _ = split_bars
+
+    estimator = gfem.QuantityEstimator(
+        objective=lambda r, _: r.energy["left"][0] * 1e17
+    )
+    refinement_ = gfem.refine_mesh(
+        model,
+        rc.BARS_PROBLEM,
+        estimator=estimator,
+        tolerance=1e-6,
+        options=gfem.SolverOptions(order=2, linear_solver="direct", tolerance=1e-10),
+        max_cycles=2,
+    )
+    assert len(calls) == 1  # cycle 0 only
+    assert len(refinement_.cycles) == 3
+    again = gfem.error_estimate(refinement_.result, estimator, model=refinement_.model)
+    assert again.value == pytest.approx(refinement_.estimate.value, rel=1e-8)

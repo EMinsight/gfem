@@ -820,6 +820,7 @@ REFUSAL_LABELS = {
     "field_export": "`Field.to_meshio`, `Field.to_pyvista`",
     "load_result_fields": "`load_result` of a bundle with fields",
     "power_flow": "`power_flow`",
+    "region_mean": "`region_mean`",
     "electric_energy": "`electric_energy`",
     "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
