@@ -42,8 +42,9 @@ its value and its weights.
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Callable, Hashable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import ngsolve as ngs
 import numpy as np
@@ -67,6 +68,9 @@ from gfem._engine.runtime import task_manager
 from gfem._field import Field
 from gfem.model import PEC, PMC, Conductor, Model
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
+
+if TYPE_CHECKING:
+    from gfem._eigen.rule import ParticipationDual
 
 __all__ = [
     "FluxRecovery",
@@ -1054,28 +1058,246 @@ def objective_of_omega(
         curvature: ``||H_mn||_2`` over the omega read, in (rad/s)^-2.
     """
     cache = cache or RecoveryCache()
-    n_tet = len(model.mesh.tetrahedra)
-    linear = 0.0
+    parts = [
+        _omega_read(model, result, mode, ct, threads=threads, cache=cache)
+        for mode, ct in reads
+    ]
+    return _combined(parts, curvature, len(model.mesh.tetrahedra))
+
+
+@dataclasses.dataclass(frozen=True)
+class _Read:
+    """One read scalar's part of an objective's estimate.
+
+    Attributes:
+        linear: Its linear term, cotangent included.
+        weights: Its per-tetrahedron linear (and own remainder) term.
+        remainder: Its own remainder term, cotangent included (R2 of a
+            participation; 0 for omega).
+        eta: Its own estimate at a unit cotangent, in its units.
+        own: Its per-tetrahedron estimate at a unit cotangent.
+    """
+
+    linear: float
+    weights: np.ndarray
+    remainder: float
+    eta: float
+    own: np.ndarray
+
+
+def _combined(
+    parts: Sequence[_Read], curvature: np.ndarray, n_tet: int
+) -> ObjectiveTerms:
+    """The reads' parts and the Hessian remainder 1/2 sum_ab ||H_ab|| eta_a eta_b."""
+    eta = np.array([p.eta for p in parts], float)
+    hessian = float(0.5 * eta @ curvature @ eta) if len(eta) else 0.0
+    share = 0.5 * curvature @ eta if len(eta) else eta
     weights = np.zeros(n_tet)
-    etas, own = [], []
-    for mode, ct in reads:
-        curl, mass, k, slope = _mode_terms(model, result, mode, threads, cache)
-        order = result.e_fields[mode].order
-        scale = cache.recovery(model, order, cracks=True).built.scale
-        g = ct * scipy.constants.c / scale
-        a1, a2 = complex(curl.sum()) / slope, k * k * complex(mass.sum()) / slope
-        linear += abs((g * a1).real) + abs((g * a2).real)
-        terms = curl - k * k * mass
-        weights = weights + np.abs((g * terms / slope).real)
-        per_k = scipy.constants.c / scale
-        etas.append(per_k * (abs(a1) + abs(a2)))
-        own.append(per_k * np.abs(terms) / abs(slope))
-    eta = np.asarray(etas, float)
-    remainder = float(0.5 * eta @ curvature @ eta) if len(eta) else 0.0
-    share = 0.5 * curvature @ eta
-    for a, w in enumerate(own):
-        weights = weights + share[a] * w
-    return ObjectiveTerms(linear=float(linear), remainder=remainder, weights=weights)
+    for a, part in enumerate(parts):
+        weights = weights + part.weights + share[a] * part.own
+    return ObjectiveTerms(
+        linear=float(sum(p.linear for p in parts)),
+        remainder=hessian + float(sum(p.remainder for p in parts)),
+        weights=weights,
+    )
+
+
+def _omega_read(
+    model: Model,
+    result: EigenmodeResult,
+    mode: int,
+    ct: complex,
+    *,
+    threads: int | None,
+    cache: RecoveryCache,
+) -> _Read:
+    """An omega read's part (`objective_of_omega`), eta in rad/s."""
+    curl, mass, k, slope = _mode_terms(model, result, mode, threads, cache)
+    order = result.e_fields[mode].order
+    per_k = scipy.constants.c / cache.recovery(model, order, cracks=True).built.scale
+    g = ct * per_k
+    a1, a2 = complex(curl.sum()) / slope, k * k * complex(mass.sum()) / slope
+    terms = curl - k * k * mass
+    return _Read(
+        linear=abs((g * a1).real) + abs((g * a2).real),
+        weights=np.abs((g * terms / slope).real),
+        remainder=0.0,
+        eta=per_k * (abs(a1) + abs(a2)),
+        own=per_k * np.abs(terms) / abs(slope),
+    )
+
+
+def objective_of_participation(
+    model: Model,
+    result: EigenmodeResult,
+    reads: Sequence[tuple],
+    curvature: np.ndarray,
+    threads: int | None = None,
+    *,
+    duals: Mapping[tuple[int, str], ParticipationDual],
+    cache: RecoveryCache | None = None,
+) -> ObjectiveTerms:
+    """An objective of bulk participations (and omega), ADR 0142.
+
+    A mode's participation p = N_r / D has the mode-field dual lam of the
+    gradient (`gfem._eigen.rule.EigenmodeRule.participation_duals`), and
+    G_h - G ~= -2 Re R(lam - lam_h), recovered as 2 (c(e_u, e_lam) - k^2
+    m(e_u, e_lam)) from the recovered errors of the mode u and of lam. The
+    dual solves T(k) lam0 = b with the volume load b = -w, so its continuous
+    flux is eps_eff lam + b / k^2, not eps_eff lam: lam's flux is recovered
+    equilibrated with the whole load (ADR 0142; the plain one reads b's
+    jumps as error). Per mode, the reads' cotangents combine the c_K, m_K
+    of their duals before magnitudes are taken: 2 (|sum C| + |k^2| |sum
+    M|), a tetrahedron's 2 |C_K - k^2 M_K|.
+
+    Each participation adds its remainder R2 times |ct|: ((1 - p) N_r(e) +
+    p (D(e) - N_r(e))) / D + 2 eta_lin sqrt(D(e) / D), with D(e) = int
+    eps^-1 |e_D|^2 of the mode's recovered flux error, N_r(e) its part in
+    the region, D = int eps |u|^2 and eta_lin the participation's own
+    linear term. An omega read is `objective_of_omega`'s; the Hessian
+    remainder spans every read.
+
+    Args:
+        reads: In the order of ``curvature``'s rows: ``("omega", mode,
+            ct)`` or ``("bulk", mode, region, ct)``, mode an index of
+            ``result``.
+        duals: Per (mode, region) read, its dual.
+    """
+    cache = cache or RecoveryCache()
+    n_tet = len(model.mesh.tetrahedra)
+    parts: list[_Read] = []
+    # per mode: its reads' cotangent-combined c_K, m_K, and its k
+    pairs: dict[int, list] = {}
+    for read in reads:
+        if read[0] == "omega":
+            parts.append(
+                _omega_read(
+                    model, result, read[1], read[2], threads=threads, cache=cache
+                )
+            )
+            continue
+        _, mode, region, ct = read
+        part, curl, mass, k = _participation_read(
+            model,
+            result,
+            mode,
+            region,
+            dual=duals[mode, region],
+            size=abs(ct),
+            threads=threads,
+            cache=cache,
+        )
+        parts.append(part)
+        combined = pairs.setdefault(mode, [0j, 0j, k])
+        combined[0] = combined[0] + ct * curl
+        combined[1] = combined[1] + ct * mass
+    terms = _combined(parts, curvature, n_tet)
+    linear, weights = terms.linear, terms.weights
+    for curl, mass, k in pairs.values():
+        linear += 2 * (abs(curl.sum()) + abs(k * k) * abs(mass.sum()))
+        weights = weights + 2 * np.abs(curl - k * k * mass)
+    return ObjectiveTerms(linear=linear, remainder=terms.remainder, weights=weights)
+
+
+def _participation_read(
+    model: Model,
+    result: EigenmodeResult,
+    mode: int,
+    region: str,
+    *,
+    dual: ParticipationDual,
+    size: float,
+    threads: int | None,
+    cache: RecoveryCache,
+) -> tuple[_Read, np.ndarray, np.ndarray, complex]:
+    """A participation read's part and its unit dual's c_K, m_K and k.
+
+    The part holds the remainder R2 times ``size`` (|ct|); its linear term
+    is left to the mode's combined pair (`objective_of_participation`).
+    """
+    field = result.e_fields[mode]
+    with task_manager(threads):
+        recovery = cache.recovery(model, field.order, cracks=True)
+        built = recovery.built
+        k = complex(np.asarray(field.omega)) / scipy.constants.c * built.scale
+        eps, eps_inverse = cache.effective_eps(recovery, k)
+        errors = cache.wave_residuals(recovery, field, k)
+        u = cache.parts(field)
+        lam = _parts(dataclasses.replace(field, coefficients=dual.lam))
+        curl, mass = _pair(
+            recovery,
+            errors,
+            _dual_residuals(recovery, u, lam, dual, eps=eps, k=k),
+            eps_inverse,
+        )
+        # R2: the denominator, and the mode's recovered flux error inside
+        # and outside the region (Hermitian)
+        denominator = sum(
+            float(recovery.element_integrals(g * (recovery.eps * g)).sum()) for g in u
+        )
+        flux_error = sum(
+            (recovery.element_integrals(r * (eps_inverse[0] * r)) for r in errors[1]),
+            np.zeros(len(model.mesh.tetrahedra)),
+        )
+    inside = np.zeros(len(model.mesh.tetrahedra))
+    inside[model.mesh.elements(region)] = 1.0
+    p = float(np.asarray(result.bulk_participation[region])[mode])
+    own_linear = 2 * np.abs(curl - k * k * mass)
+    eta_linear = 2 * (abs(complex(curl.sum())) + abs(k * k) * abs(complex(mass.sum())))
+    total = float(flux_error.sum())
+    cross = 2 * eta_linear * math.sqrt(max(total, 0.0) / denominator)
+    r2 = (
+        (1 - p) * inside * flux_error + p * (1 - inside) * flux_error
+    ) / denominator + (cross * flux_error / total if total > 0 else 0.0)
+    part = _Read(
+        linear=0.0,
+        weights=size * r2,
+        remainder=size * float(r2.sum()),
+        eta=eta_linear + float(r2.sum()),
+        own=own_linear + r2,
+    )
+    return part, curl, mass, k
+
+
+def _dual_residuals(
+    recovery: FluxRecovery,
+    u: Sequence[ngs.GridFunction],
+    lam: Sequence[ngs.GridFunction],
+    dual: ParticipationDual,
+    *,
+    eps: Sequence[ngs.CoefficientFunction],
+    k: complex,
+) -> tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]]:
+    """The recovered errors of the dual's mu^-1 curl and equilibrated flux.
+
+    The dual solves T(k) lam0 = b, b = -w = -sum_r weights_r conj(A_r u),
+    A_r the region's Re eps_r mass form, so div(k^2 eps_eff lam + b) = 0:
+    the flux recovered is eps_eff lam + b / k^2 (ADR 0142).
+    """
+    model, built = recovery.model, recovery.built
+    n_tet = len(model.mesh.tetrahedra)
+    weight = np.zeros(n_tet)
+    for region, w in dual.weights.items():
+        weight[model.mesh.elements(region)] = -w
+    conj_u = [u[0]] if len(u) == 1 else [u[0], -u[1]]
+    load = [coefficient(built, weight) * (recovery.eps * part) for part in conj_u]
+    inverse = 1 / (k * k)
+    shift = _times(
+        [ngs.CoefficientFunction(inverse.real), ngs.CoefficientFunction(inverse.imag)],
+        load,
+    )
+    flux = _plus(_times(eps, lam), shift)
+    curl = recovery.curl_residuals([ngs.curl(g) for g in lam])
+    return curl, [recovery.flux_residual(f) for f in flux]
+
+
+def _plus(
+    a: Sequence[ngs.CoefficientFunction], b: Sequence[ngs.CoefficientFunction]
+) -> list[ngs.CoefficientFunction]:
+    """The sum of two complex coefficients given as real (and imaginary) parts."""
+    if len(a) < len(b):
+        a, b = b, a
+    return [x + y for x, y in zip(a, b, strict=False)] + list(a[len(b) :])
 
 
 def _deembedding(result: DrivenResult) -> dict[str, np.ndarray]:

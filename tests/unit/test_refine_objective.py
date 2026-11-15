@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import refinement_cases as rc
+import structured_meshes as sm
 
 import gfem
 from gfem import _objective
@@ -656,3 +657,128 @@ def test_an_eigen_objective_follows_each_mode_it_reads(cavity):
     last = refined.cycles[-1]
     omega = np.asarray(refined.result.omega)[last.modes[1]]
     assert last.value == pytest.approx(omega.real / (2 * np.pi) * 1e-9, rel=1e-12)
+
+
+# --- objectives of participation ---------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def slab(tmp_path_factory):
+    """A 1 x 0.7 x 0.2 mm PEC box, eps_r 4 slab at 0.3 < x < 0.6: two modes."""
+    edges = tuple(np.linspace(0, a, round(a * 10) + 1) for a in (1.0, 0.7, 0.2))
+
+    def volume(c):
+        return "block" if 0.3 < c[0] < 0.6 else "air"
+
+    edges_end = [e[-1] for e in edges]
+
+    def surface_of(c):
+        on = [abs(c[a]) < 1e-9 or abs(c[a] - edges_end[a]) < 1e-9 for a in range(3)]
+        return "walls" if any(on) else ""
+
+    path = sm.write_msh22(
+        tmp_path_factory.mktemp("slab") / "slab.msh",
+        sm.structured(edges, volume, surface_of),
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"air": gfem.Material(), "block": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("walls")],
+    )
+    problem = gfem.Eigenmode(target=140e9, n_modes=2)
+    return model, problem, gfem.solve(model, problem, options=OPTIONS)
+
+
+def _block_share(result, _model):
+    return result.bulk_participation["block"][0]
+
+
+def test_error_estimate_of_a_participation(slab):
+    model, _, result = slab
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(objective=_block_share), model=model
+    )
+    assert estimate.kind == "objective of participation"
+    assert estimate.value > 0
+    assert estimate.indicators.shape == (len(model.mesh.tetrahedra),)
+    assert estimate._dual_modes == ((0, "block"),)
+
+
+def test_a_participation_times_its_frequency_is_one_participation_objective(slab):
+    model, _, result = slab
+
+    def objective(r, _model):
+        return r.bulk_participation["block"][0] * r.frequency[0].real * 1e-11
+
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(objective=objective), model=model
+    )
+    assert estimate.kind == "objective of participation"
+    assert estimate._modes == (0,)
+
+
+def test_a_participation_of_a_mode_near_another_raises(slab):
+    model, _, result = slab
+    w = complex(np.asarray(result.omega)[0])
+    crowded = dataclasses.replace(
+        result, omega=jnp.asarray([w, w * (1 + 1e-5)]), cluster=jnp.arange(2)
+    )
+    with pytest.raises(gfem.DegenerateModeError, match="mode 1"):
+        gfem.error_estimate(
+            crowded, gfem.QuantityEstimator(objective=_block_share), model=model
+        )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        gfem.SolverOptions(order=2, linear_solver="bddc_gmres"),
+        gfem.SolverOptions(order=2, linear_solver="direct", eigen_tolerance=1e-8),
+    ],
+)
+def test_a_participation_out_of_mode_field_reach_raises(slab, options):
+    model, problem, _ = slab
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(
+            model,
+            problem,
+            estimator=gfem.QuantityEstimator(objective=_block_share),
+            tolerance=1e-3,
+            options=options,
+            max_cycles=0,
+        )
+    assert caught.value.feature == "mode-field dual"
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_the_participation_dual_is_solved_once_then_rides_on_the_forward(
+    slab, monkeypatch
+):
+    from gfem import refinement
+
+    calls = []
+    solve = refinement._participation_duals
+
+    def counted(*args, **kwargs):
+        calls.append(args[2])
+        return solve(*args, **kwargs)
+
+    monkeypatch.setattr(refinement, "_participation_duals", counted)
+    model, problem, _ = slab
+    estimator = gfem.QuantityEstimator(objective=_block_share)
+    refined = gfem.refine_mesh(
+        model,
+        problem,
+        estimator=estimator,
+        tolerance=1e-9,
+        options=OPTIONS,
+        max_cycles=2,
+    )
+    assert calls == [0]  # the first mesh only
+    assert len(refined.cycles) == 3
+    for cycle in refined.cycles:
+        assert 0 in cycle.modes
+    # the ridden dual gives the estimate error_estimate gives on the last mesh
+    view = _objective.aligned(refined.result, refined.cycles[-1].modes)
+    again = gfem.error_estimate(view, estimator, model=refined.model)
+    assert again.value == pytest.approx(refined.estimate.value, rel=1e-6)

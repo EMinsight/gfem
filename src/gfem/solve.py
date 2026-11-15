@@ -17,8 +17,9 @@ from gfem.options import SolverOptions
 from gfem.shape import _check_quality
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable
+    from collections.abc import Sequence
 
+    from gfem._eigen.rule import DualRequest
     from gfem._engine.driven import AdjointLoads
     from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
     from gfem.results import (
@@ -135,14 +136,16 @@ def _solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
-    adjoint_loads: AdjointLoads | None = None,
-) -> tuple[Any, dict[tuple[float, Hashable], Any] | None]:
+    adjoint_loads: AdjointLoads | Sequence[DualRequest] | None = None,
+) -> tuple[Any, dict[Any, Any] | None]:
     """`solve`, and the adjoints of the per-frequency ``adjoint_loads`` with it.
 
     ``gfem.refine_mesh`` asks for an estimate's solved duals (ADR 0089
     amendment, ADR 0132): extra right-hand sides on the forward's
     factorization, formed per frequency from that frequency's solution
-    (`gfem._engine.driven.AdjointLoads`), a driven problem only. Returns
+    (`gfem._engine.driven.AdjointLoads`); for an eigenmode problem, the
+    participation duals of its `gfem._eigen.rule.DualRequest`s, on the
+    forward's live factors (ADR 0142). Returns
     the result, and those adjoints per (frequency, key), or ``None``
     without ``adjoint_loads``. Warnings point at the caller of `solve`,
     one frame above this one.

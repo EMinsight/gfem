@@ -47,11 +47,23 @@ exact omegas:
 - two-mode box (eps_r 4, 0.5 S/m, modes 110 and 210, m = 1, 2): the ratio
   f2/f1 off target, the split in GHz and the sum of 1/q.
 
+Objectives of participation (kind ``objective of participation``, ADR
+0142): the mode-field dual with its flux equilibrated, plus the remainder
+R2, on a 1 x 0.7 x 0.2 mm box at 140 GHz with eps_r 4 in a region:
+
+- slab (0.3 < x < 0.6 across the section, m = 1, 2): PEC, tan_delta 0.05,
+  and an `Impedance` end wall of 50 and 377 ohm/sq, against the exact E_z
+  modes (a transcendental equation);
+- block (0.3-0.6 x 0.2-0.5 x 0-0.1 mm, 3D corners, m = 2, 3): PEC and a
+  377 ohm/sq `Impedance` top, against `BLOCK_PARTICIPATION` (Richardson;
+  rows within 5 times its uncertainty are not asserted).
+
 Overestimates (`OVERESTIMATES`), asserted >= 0.9 and quoted on their own:
 an objective at its target, (|S|^2 - |S_h|^2)^2 and |S - S_h|^2 on the
 first entry of the lossy line and of the block guide, whose cotangent is
 zero, so that only the Hessian remainder is left; several modes at their
-target, (f2/f1 - its solved value)^2 on the two-mode box.
+target, (f2/f1 - its solved value)^2 on the two-mode box; participation
+times frequency, p f on the slab, whose two errors cancel in J.
 
 A robust max over frequencies or entries is not estimated: it branches on
 what it reads and raises ``"non-smooth objective"``
@@ -109,6 +121,10 @@ EFFECTIVITY_BY_KIND = {
         "lumped-R line": (0.9, 40.0),
         "two-mode box": (0.9, 40.0),
     },
+    "objective of participation": {
+        "slab": (0.9, 6.0),
+        "block": (0.9, 6.0),
+    },
 }
 
 #: Cases asserted >= 0.9 whose high end the docs quote on its own (Limits)
@@ -116,6 +132,7 @@ EFFECTIVITY_BY_KIND = {
 OVERESTIMATES = {
     "objective at its target": ("objective of s", (0.9, 2e5)),
     "several modes at their target": ("objective of omega", (0.9, 200.0)),
+    "participation times frequency": ("objective of participation", (0.9, 1.5e3)),
 }
 
 #: Configurations that are not claimed: name -> (kind, (low, high)).
@@ -579,3 +596,223 @@ def test_objective_of_omega_with_two_modes_at_their_target(tmp_path, m):
     ratio_h = float(_ratio(result))
     rows = _omega_rows(model, result, exact, [lambda r, _m: (_ratio(r) - ratio_h) ** 2])
     _assert_overestimate("several modes at their target", rows)
+
+
+# --- objectives of participation -----------------------------------------------------
+
+#: The participation boxes (mm): 1 x 0.7 x 0.2, eps_r 4 in "block".
+_PBOX = (1.0, 0.7, 0.2)
+_PEPS = 4.0
+_PTARGET = 140e9
+#: The block's extent per axis, mm: the slab spans the section.
+_SLAB = ((0.3, 0.6), (-1.0, 2.0), (-1.0, 2.0))
+_BLOCK = ((0.3, 0.6), (0.2, 0.5), (0.0, 0.1))
+#: The block's participation of its two modes by Richardson extrapolation
+#: of order-2 solves on m = 2, 3, 4 (fitted rate 1.58 to 1.65), with its
+#: uncertainty (the larger difference to the rate-4/3 extrapolation and to
+#: the m = 1, 2, 3 fit), by variant and mode: (p, uncertainty).
+BLOCK_PARTICIPATION = {
+    ("pec", 0): (0.19092525691418702, 1.7021294958671773e-4),
+    ("pec", 1): (0.1612304796735319, 1.0444788009938977e-4),
+    ("impedance", 0): (0.10020139077778502, 1.1157790198222661e-4),
+}
+
+
+def _participation_box(directory, m, block, *, top=None, end=None, tan_delta=0.0):
+    """The box with eps_r 4 in ``block``, 0.1 / m mm cells, PEC but ``top``/``end``."""
+    edges = tuple(np.linspace(0, a, round(a * 10 * m) + 1) for a in _PBOX)
+
+    def volume(c):
+        inside = all(lo < v < hi for v, (lo, hi) in zip(c, block, strict=True))
+        return "block" if inside else "air"
+
+    def surface(c):
+        tol = 1e-9
+        if abs(c[2] - _PBOX[2]) < tol:
+            return "top"
+        if abs(c[0] - _PBOX[0]) < tol:
+            return "end"
+        on = (
+            abs(c[0]) < tol,
+            abs(c[1]) < tol,
+            abs(c[1] - _PBOX[1]) < tol,
+            abs(c[2]) < tol,
+        )
+        return "walls" if any(on) else ""
+
+    path = sm.write_msh22(directory / "pbox.msh", sm.structured(edges, volume, surface))
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={
+            "air": gfem.Material(),
+            "block": gfem.Material(eps_r=_PEPS, tan_delta=tan_delta),
+        },
+        boundaries=[gfem.PEC("walls"), top or gfem.PEC("top"), end or gfem.PEC("end")],
+    )
+
+
+def _slab_exact(k_h, eps_c, resistance=None):
+    """The slab box's E_z mode nearest ``k_h`` (mm^-1): (k, participation).
+
+    E_z = X(x) sin(beta y), beta = n pi / 0.7; X is sin(q1 x) in the air
+    before the slab, a cosine-sine pair in it, and closes at x = 1 on PEC or
+    on the Robin condition of an `Impedance` of ``resistance`` ohm/sq.
+    """
+    from scipy import integrate, optimize
+
+    a, b, _ = _PBOX
+    x1, x2 = _SLAB[0]
+
+    def solve(n):
+        beta = n * math.pi / b
+
+        def delta(k):
+            if resistance is None:
+                return 0.0
+            omega = k * const.c / 1e-3
+            return -resistance / (1j * omega * const.mu_0) / 1e-3
+
+        def right(k, q1, x):
+            s, d = a - x, delta(k)
+            return (
+                np.sin(q1 * s) - d * q1 * np.cos(q1 * s),
+                -q1 * (np.cos(q1 * s) + d * q1 * np.sin(q1 * s)),
+            )
+
+        def parts(k):
+            q1 = np.sqrt(complex(k * k - beta * beta))
+            q2 = np.sqrt(complex(eps_c * k * k - beta * beta))
+            c1, c2 = np.sin(q1 * x1), q1 * np.cos(q1 * x1) / q2
+            w = x2 - x1
+            x_2 = c1 * np.cos(q2 * w) + c2 * np.sin(q2 * w)
+            dx_2 = -c1 * q2 * np.sin(q2 * w) + c2 * q2 * np.cos(q2 * w)
+            return q1, q2, c1, c2, x_2, dx_2
+
+        def f(k):
+            q1, _, _, _, x_2, dx_2 = parts(k)
+            xr, dxr = right(k, q1, x2)
+            return x_2 * dxr - dx_2 * xr
+
+        start = complex(k_h) * (1 if complex(k_h).imag else 1 + 1e-6j)
+        k = complex(optimize.newton(f, start, tol=1e-15, maxiter=200))
+        q1, q2, c1, c2, x_2, _ = (complex(v) for v in parts(k))
+        closing = x_2 / right(k, q1, x2)[0]
+
+        def x_of(x):
+            if x <= x1:
+                return np.sin(q1 * x)
+            if x <= x2:
+                return c1 * np.cos(q2 * (x - x1)) + c2 * np.sin(q2 * (x - x1))
+            return closing * right(k, q1, x)[0]
+
+        def energy(lo, hi):
+            return integrate.quad(
+                lambda x: abs(x_of(x)) ** 2, lo, hi, limit=200, epsrel=1e-13
+            )[0]
+
+        inside = energy(x1, x2) * _PEPS
+        outside = energy(0, x1) + energy(x2, a)
+        return k, inside / (inside + outside), abs(abs(k) - beta) < 1e-6
+
+    best = None
+    for n in (1, 2, 3):
+        try:
+            k, p, spurious = solve(n)
+        except (RuntimeError, ZeroDivisionError):
+            continue
+        if not spurious and (best is None or abs(k - k_h) < abs(best[0] - k_h)):
+            best = (k, p)
+    return best
+
+
+def _participation(mode):
+    def objective(r, _model):
+        return r.bulk_participation["block"][mode]
+
+    return objective
+
+
+def _participation_row(model, result, objective, reference, uncertainty):
+    """An estimate and its effectivity, ``None`` past the 20 % rule."""
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(objective=objective), model=model
+    )
+    error = float(objective(result, model)) - reference
+    if uncertainty > 0.2 * abs(error):
+        return estimate, None
+    return estimate, estimate.value / abs(error)
+
+
+_SLAB_WALLS = {
+    "pec": {},
+    "tan_delta": {"tan_delta": 0.05},
+    "impedance 50": {"end": gfem.Impedance("end", resistance=50.0)},
+    "impedance 377": {"end": gfem.Impedance("end", resistance=377.0)},
+}
+
+
+def _slab(directory, m, variant):
+    model = _participation_box(directory, m, _SLAB, **_SLAB_WALLS[variant])
+    problem = gfem.Eigenmode(target=_PTARGET, n_modes=2)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    end = _SLAB_WALLS[variant].get("end")
+    eps_c = _PEPS * (1 - 1j * _SLAB_WALLS[variant].get("tan_delta", 0.0))
+    scale = 1e-3 / const.c
+    exact = [
+        _slab_exact(w * scale, eps_c, None if end is None else end.resistance)
+        for w in np.asarray(result.omega)
+    ]
+    return model, result, exact
+
+
+def _participation_times_frequency(mode):
+    def objective(r, _model):
+        return r.bulk_participation["block"][mode] * _hz(r.omega[mode]) * 1e-11
+
+    return objective
+
+
+@pytest.mark.parametrize("variant", list(_SLAB_WALLS))
+@pytest.mark.parametrize("m", [1, 2])
+def test_objective_of_participation_on_the_slab(tmp_path, m, variant):
+    # The slab spans the box's section: exact E_z modes (tan_delta and the
+    # Robin condition of an Impedance end wall included). Both modes'
+    # participation; no interior face crosses E's normal component.
+    model, result, exact = _slab(tmp_path, m, variant)
+    rows = [
+        _participation_row(model, result, _participation(j), exact[j][1], 0.0)
+        for j in range(2)
+    ]
+    _assert_rows("objective of participation", "slab", rows)
+
+
+@pytest.mark.parametrize("m", [1, 2])
+def test_objective_of_participation_times_frequency_on_the_slab(tmp_path, m):
+    # p f mixes the two kinds: their errors cancel in J, which the magnitude
+    # form cannot see (ADR 0142), so it is quoted on its own
+    model, result, exact = _slab(tmp_path, m, "pec")
+    rows = []
+    for j in range(2):
+        k, p = exact[j]
+        f = (k * const.c / 1e-3).real / (2 * math.pi) * 1e-11
+        objective = _participation_times_frequency(j)
+        rows.append(_participation_row(model, result, objective, p * f, 0.0))
+    _assert_overestimate("participation times frequency", rows)
+
+
+@pytest.mark.parametrize("variant", ["pec", "impedance"])
+@pytest.mark.parametrize("m", [2, 3])
+def test_objective_of_participation_on_the_block(tmp_path, m, variant):
+    # A block with 3D corners whose top face crosses E's normal component:
+    # the dual flux must be equilibrated with its load (ADR 0142). The
+    # Impedance variant holds a 377 ohm/sq top (a very lossy mode).
+    top = gfem.Impedance("top", resistance=377.0) if variant == "impedance" else None
+    model = _participation_box(tmp_path, m, _BLOCK, top=top)
+    problem = gfem.Eigenmode(target=_PTARGET, n_modes=2)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    rows = [
+        _participation_row(model, result, _participation(j), *BLOCK_PARTICIPATION[key])
+        for j in range(2)
+        if (key := (variant, j)) in BLOCK_PARTICIPATION
+    ]
+    _assert_rows("objective of participation", "block", rows)

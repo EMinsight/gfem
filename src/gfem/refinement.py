@@ -46,6 +46,7 @@ from gfem.solve import _solve
 if TYPE_CHECKING:
     from collections.abc import Hashable, Mapping
 
+    from gfem._eigen.rule import DualRequest
     from gfem._engine.driven import AdjointLoads
     from gfem._engine.estimate import RecoveryCache
 
@@ -153,10 +154,14 @@ class QuantityEstimator:
             or a custom derivative of its own. In this version an objective
             of S is estimated (S and its networks: ``db``, ``y()``, ``z()``,
             ``renormalize``, ``with_offsets``), and an objective of an
-            eigenmode result's ``omega`` (``frequency``, ``q``), each mode
-            it reads followed as a mode of its own; ``q_port``,
-            ``participation``, ``sheet_participation``,
-            ``principal_participation`` and the mode fields raise. The
+            eigenmode result's ``omega`` (``frequency``, ``q``) and
+            ``bulk_participation``, each mode it reads followed as a mode of
+            its own; ``q_port``, ``participation``, ``sheet_participation``,
+            ``principal_participation`` and the mode fields raise. A
+            participation needs its mode-field dual: an isolated mode, the
+            direct solver on the CPU and ``eigen_tolerance`` at most 1e-10
+            (in `refine_mesh` it rides on the eigen solves from the second
+            mesh on; `error_estimate` factorizes once more per mode). The
             estimate is absolute, in
             the objective's units, and `refine_mesh` needs its
             ``tolerance`` given. A read row whose port is not excited, or is
@@ -321,6 +326,7 @@ EMITTED_KINDS = (
     "cluster mean",
     "objective of s",
     "objective of omega",
+    "objective of participation",
 )
 
 
@@ -369,6 +375,8 @@ class ErrorEstimate:
     _sensitivity: float = dataclasses.field(default=0.0, repr=False)
     #: The modes an objective reads, by index on its result: each is followed.
     _modes: tuple[int, ...] = dataclasses.field(default=(), repr=False)
+    #: The (mode, region) participations whose mode-field duals it reads.
+    _dual_modes: tuple[tuple[int, str], ...] = dataclasses.field(default=(), repr=False)
 
     @property
     def value(self) -> float:
@@ -897,15 +905,19 @@ def _loop(
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
     duals = _Duals(_adjoint_port_union(estimators, model, problem))
+    tracks = _Tracks(estimators)
     with driven.low_frequency_deferred(), warnings.catch_warnings():
         warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
         result, adjoints = _solve(
-            model, problem, options=options, comm=comm, adjoint_loads=duals.loads
+            model,
+            problem,
+            options=options,
+            comm=comm,
+            adjoint_loads=duals.loads(tracks),
         )
     current = model
     cycles: list[RefinementCycle] = []
     failure: Exception | None = None
-    tracks = _Tracks(estimators)
     while True:
         cache = _recovery_cache()  # this mesh's, dropped before the next solve
         estimates, modes = _estimates(
@@ -971,7 +983,7 @@ def _loop(
                     problem,
                     options=options,
                     comm=comm,
-                    adjoint_loads=duals.loads,
+                    adjoint_loads=duals.loads(tracks),
                 )
         except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
             stop, failure = "solve failed", err
@@ -1063,6 +1075,7 @@ def _estimates(
             ridden=ridden,
             cache=cache,
             rtol=options.cluster_rtol,
+            reach=_mode_field_reach(options),
         )
         for each in estimators
     )
@@ -1148,6 +1161,11 @@ class _Tracks:
             self._state[(m,)] = ((m,), None, None)
             self._reached[(m,)] = (m,)
         return {**modes, **{m: m for m in new}}
+
+    def omega(self, start: int) -> complex | None:
+        """The omega of mode ``start``'s track on the last mesh, if followed."""
+        state = self._state.get((start,))
+        return None if state is None else state[1]
 
     def follow(self, result: Any, rtol: float) -> dict[int, int]:
         """Each named mode's index on ``result``: index on the first mesh -> there."""
@@ -1317,6 +1335,7 @@ def _estimate(
     ridden: tuple[str, ...] = (),
     cache: RecoveryCache | None = None,
     rtol: float | None = None,
+    reach: str | None = None,
 ) -> ErrorEstimate:
     """The estimate of ``result``: dispatch on the estimator and result type.
 
@@ -1330,6 +1349,8 @@ def _estimate(
     every estimate of ``result``'s mesh; ``None`` makes one for this call.
     ``rtol`` is the solve's ``cluster_rtol`` (`SolverOptions`' default for
     ``None``): an objective's modes are checked for degeneracy with it.
+    ``reach`` is why the solve's options leave a participation's mode-field
+    dual out of reach (`_mode_field_reach`), else ``None``.
     """
     from gfem._engine import estimate as kernels
 
@@ -1345,6 +1366,7 @@ def _estimate(
             ridden=ridden if adjoints is not None else (),
             cache=cache,
             rtol=SolverOptions().cluster_rtol if rtol is None else rtol,
+            reach=reach,
         )
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
@@ -1414,6 +1436,7 @@ def _estimate_objective(
     ridden: tuple[str, ...],
     cache: RecoveryCache,
     rtol: float,
+    reach: str | None = None,
 ) -> ErrorEstimate:
     """An objective's estimate: classify it, then its kind's kernel (ADR 0143).
 
@@ -1429,6 +1452,18 @@ def _estimate_objective(
     if objective.kind == "objective of omega":
         return _estimate_objective_of_omega(
             model, result, estimator, objective, threads=threads, rtol=rtol, cache=cache
+        )
+    if objective.kind == "objective of participation":
+        return _estimate_objective_of_participation(
+            model,
+            result,
+            estimator,
+            objective,
+            threads=threads,
+            rtol=rtol,
+            reach=reach,
+            duals=adjoints,
+            cache=cache,
         )
     if objective.kind != "objective of s":
         raise MeshRefinementUnsupportedError(
@@ -1506,6 +1541,193 @@ def _estimate_objective_of_omega(
         _sensitivity=objective.sensitivity,
         _modes=tuple(mode for mode, _ in reads),
     )
+
+
+def _estimate_objective_of_participation(
+    model: Model,
+    result: EigenmodeResult,
+    estimator: QuantityEstimator,
+    objective: Any,
+    *,
+    threads: int | None,
+    rtol: float,
+    reach: str | None,
+    duals: Mapping[Any, Any],
+    cache: RecoveryCache,
+) -> ErrorEstimate:
+    """An objective of bulk participations, and omega (ADR 0142).
+
+    Each participation read needs its mode-field dual: ridden on the
+    forward (``duals``, by mode and region, when it was solved for the same
+    mode), else solved here on an operator prepared at the mode
+    (`_participation_duals`). Raises for a mode out of mode-field reach,
+    for the mode Q's refusals, and for a mode energy holding a surface
+    term, which the equilibrated dual flux has no volume load for.
+    """
+    from gfem._engine import estimate as kernels
+
+    _check_lossy_mode(model, "objective")
+    _check_mode_field_reach(model, reach)
+    reads, regions = [], {}
+    omega = np.asarray(result.omega)
+    for r in objective.reads:
+        mode = r.index[0]
+        if r.leaf == ".omega":
+            reads.append(("omega", mode, r.cotangent))
+            continue
+        region = r.leaf.removeprefix(".bulk_participation[").rstrip("]").strip("'\"")
+        reads.append(("bulk", mode, region, r.cotangent.real))
+        regions.setdefault(mode, []).append(region)
+    modes = sorted({read[1] for read in reads})
+    for mode in modes:
+        _track_mode(result, mode, None, rtol, None)
+    solved: dict[tuple[int, str], Any] = {}
+    for mode, names in regions.items():
+        _check_isolated(omega, mode, rtol)
+        ridden = {
+            name: duals.get((mode, name))
+            for name in names
+            if _rides(duals.get((mode, name)), omega[mode])
+        }
+        missing = [name for name in names if name not in ridden]
+        if missing:
+            ridden |= _participation_duals(model, result, mode, missing, threads)
+        solved |= {(mode, name): dual for name, dual in ridden.items()}
+    terms = kernels.objective_of_participation(
+        model, result, reads, objective.curvature, threads, duals=solved, cache=cache
+    )
+    return ErrorEstimate(
+        estimator=estimator,
+        kind=objective.kind,
+        values=(terms.value,),
+        indicators=readonly(np.sqrt(terms.weights)),
+        _quantity=objective.value,
+        _sensitivity=objective.sensitivity,
+        _modes=tuple(modes),
+        _dual_modes=tuple(solved),
+    )
+
+
+def _rides(dual: Any, omega: complex) -> bool:
+    """Whether a ridden ``dual`` was solved for the mode at ``omega``."""
+    return dual is not None and abs(dual.omega - omega) <= 1e-12 * abs(omega)
+
+
+def _mode_field_reach(options: SolverOptions) -> str | None:
+    """Why a solve with ``options`` leaves mode-field duals out of reach (ADR 0102)."""
+    from gfem._eigen.rule import _FIELD_TOLERANCE
+    from gfem._linalg import ResolvedLinearSolver
+
+    linear = ResolvedLinearSolver.resolve(
+        options, default="direct", problem="eigenmode"
+    ).kind
+    if options.device != "cpu":
+        return f'device="{options.device}": it runs on the CPU only'
+    if linear != "direct":
+        return f'linear_solver="{linear}": it runs on linear_solver="direct" only'
+    if options.eigen_tolerance > _FIELD_TOLERANCE:
+        return (
+            f"SolverOptions.eigen_tolerance = {options.eigen_tolerance:g}: it "
+            f"needs eigen_tolerance <= {_FIELD_TOLERANCE:g} (the default), at "
+            "which the forward polishes the modes"
+        )
+    return None
+
+
+def _check_mode_field_reach(model: Model, reach: str | None) -> None:
+    """Raise for a participation dual out of reach, or a surface energy term."""
+    if reach is not None:
+        raise MeshRefinementUnsupportedError(
+            "mode-field dual",
+            "An objective of a participation is estimated with its mode-field "
+            f"dual, which is out of reach with {reach} (ADR 0102). Solve with "
+            "those options, or use gfem.FieldEstimator().",
+        )
+    surface = [
+        f"lumped port {p.name!r}"
+        for p in model.ports
+        if isinstance(p, LumpedPort) and p.rlc[2] is not None
+    ] + [
+        f"capacitive Impedance {b.surface!r}"
+        for b in model.boundaries
+        if isinstance(b, Impedance) and b.capacitance is not None
+    ]
+    if surface:
+        raise MeshRefinementUnsupportedError(
+            "mode-field dual",
+            "An objective of a participation is estimated with an equilibrated "
+            "mode-field dual, whose flux takes volume loads only; the mode "
+            f"energy here holds the surface energy of the {surface[0]}, which "
+            "no verified estimate covers. Use gfem.FieldEstimator().",
+        )
+
+
+def _check_isolated(omega: np.ndarray, mode: int, rtol: float) -> None:
+    """Raise unless ``mode`` is apart from every other mode (ADR 0102 reach)."""
+    from gfem._eigen.rule import _ISOLATED
+
+    others = [i for i in range(len(omega)) if i != mode]
+    if not others:
+        return
+    gaps = np.abs(omega[others] - omega[mode]) / abs(omega[mode])
+    near = others[int(np.argmin(gaps))]
+    threshold = max(_ISOLATED, rtol)
+    if gaps.min() < threshold:
+        raise DegenerateModeError(
+            f"An objective of the participation of mode {mode} at "
+            f"{_frequency(omega, mode)} needs the mode isolated, but mode "
+            f"{near} at {_frequency(omega, near)} lies within a relative gap "
+            f"of {gaps.min():.3g}, below {threshold:g} (ADR 0102): near another "
+            "mode the field is a mix of the two. Separate the modes, or use "
+            "gfem.FieldEstimator()."
+        )
+
+
+def _participation_duals(
+    model: Model,
+    result: EigenmodeResult,
+    mode: int,
+    regions: list[str],
+    threads: int | None,
+) -> dict[str, Any]:
+    """The participation duals of ``mode`` on a finished result: one factorization.
+
+    The operator is prepared at k (1 + d) next to the mode, as a backward
+    without its forward's operator does (`EigenmodeRule._field_pairs`),
+    with the direct solver: the result does not record its options.
+    """
+    import scipy.constants
+
+    from gfem._eigen.adjoint import reshift_offset
+    from gfem._eigen.rule import EigenmodeRule
+
+    omega = np.asarray(result.omega)
+    field = result.e_fields[mode]
+    problem = Eigenmode(target=omega[mode].real / (2 * np.pi), n_modes=len(omega))
+    options = SolverOptions(order=field.order, linear_solver="direct", threads=threads)
+    rule = EigenmodeRule(model, problem, options)
+    op = rule.driven(model)
+    k = complex(omega[mode]) * op.built.scale / scipy.constants.c
+    others = np.delete(omega, mode)
+    gap = (
+        float(np.min(np.abs(others - omega[mode])) / abs(omega[mode]))
+        if len(others)
+        else math.inf
+    )
+    eop = rule.operator(op, k * (1 + reshift_offset(gap)))
+    try:
+        return rule.participation_duals(
+            model,
+            op,
+            eop,
+            u=np.asarray(field.coefficients, complex),
+            k=k,
+            gap=gap,
+            mode=mode,
+            regions=tuple(regions),
+        )
+    finally:
+        eop.free_handle()
 
 
 def _check_first_estimates(
@@ -2109,18 +2331,36 @@ class _Duals:
 
     def __init__(self, ports: tuple[str, ...]) -> None:
         self.ports = ports
+        #: The participations whose mode-field duals ride on the eigen
+        #: forward: (mode on the first mesh, region).
+        self.modes: tuple[tuple[int, str], ...] = ()
 
-    @property
-    def loads(self) -> AdjointLoads | None:
-        """The ports' adjoint loads; ``None`` for free duals only."""
+    def loads(self, tracks: _Tracks) -> AdjointLoads | list[DualRequest] | None:
+        """The ports' adjoint loads, or the participations' dual requests.
+
+        A request asks for the mode nearest its track's omega on the last
+        mesh (`_Tracks.omega`). ``None`` for free duals only.
+        """
+        from gfem._eigen.rule import DualRequest
         from gfem._engine.driven import port_loads
 
+        if self.modes:
+            regions: dict[int, list[str]] = {}
+            for start, region in self.modes:
+                regions.setdefault(start, []).append(region)
+            return [
+                DualRequest(start, omega, tuple(names))
+                for start, names in regions.items()
+                if (omega := tracks.omega(start)) is not None
+            ]
         return port_loads(self.ports) if self.ports else None
 
     def add(self, estimates: tuple[ErrorEstimate, ...]) -> None:
-        """Add the ports whose adjoints the estimates' objectives read."""
+        """Add the ports and participations whose duals the objectives read."""
         read = (p for e in estimates for p in e._dual_ports)  # noqa: SLF001
         self.ports = tuple(dict.fromkeys([*self.ports, *read]))
+        modes = (m for e in estimates for m in e._dual_modes)  # noqa: SLF001
+        self.modes = tuple(dict.fromkeys([*self.modes, *modes]))
 
 
 def _check_adjoint_workers(
