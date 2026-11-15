@@ -77,6 +77,38 @@ Cases and references (none recomputed by the tests but the closed forms):
   lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32,
   against its transmission-line closed form.
 
+The eigen terms ADR 0138 lifted, and the lossy magnetic and anisotropic
+fills of the line:
+
+- dispersive box: the rectangular box filled with a Drude (lossy and
+  lossless) or Lorentz law at Re eps > 0, modes 110 and 101 on m = 2,
+  against the root of f^2 eps(f) = K^2;
+- layered box: a 0.2 mm Drude dielectric layer, or that law frozen at
+  217.4 GHz, under air, three modes on m = 2, against
+  `refinement_cases.LAYERED_BOX_OMEGA` (order 4, same mesh);
+- second-order absorbing walls: the air box with `Absorbing(order=2)` side
+  walls, the modes continuing 110, 210 and 120 on m = 1, 2, against
+  `refinement_cases.ABSORBING_BOX_OMEGA` (order 4, same mesh; six modes
+  solved, the nearest the reference estimated);
+- lossy permeability box: eps_r 2, mu_r 2 (1 - 0.1i), modes 110 and 101 on
+  m = 2, against omega = c k0 / sqrt(eps mu); lossy permeability layers:
+  eps_r 3 under mu_r 2.5 (1 - 0.2i), three modes on m = 2, against
+  `refinement_cases.LOSSY_BOX_OMEGA`;
+- lossy anisotropic box ("anisotropic box"): the diagonal fill with
+  tan_delta 0.1, conductivity (5, 10, 20) S/m or per-axis complex eps_r,
+  against the closed form of the nearest mode with one zero index, on m = 1
+  (110, 101) and m = 2 (all four targets); the per-axis loss along `ROT3`
+  against `refinement_cases.LOSSY_BOX_OMEGA`;
+- lossy permeability line and lossy anisotropic line: the parallel-plate
+  line filled with eps_r 2 and mu_r 2 (1 - 0.1i), the diagonal fill with
+  tan_delta 0.1, or per-axis complex eps_r turned about z, against the TEM
+  closed form on n = 4 and 16; the per-axis loss turned about all three
+  axes against order 4 on the same mesh (rows whose order-3 to order-4 gap
+  exceeds 20 % of their error left out);
+- not claimed: the plasmon-bound mode of a Drude floor (Re eps -1.73), which
+  raises, measured by the private kernel against its LSM closed form
+  (`PLASMON_WITNESS`).
+
 Measured (ostau, 1 thread):
 
     square coax           1.17 - 1.57
@@ -104,6 +136,14 @@ Measured (ostau, 1 thread):
     lossy L cavity        2.87 - 4.08
     lossy walls           4.34 - 9.17
     resistive line        1.47 - 7.44
+    dispersive box        7.18 - 8.63
+    layered box           6.14 - 21.2   (law 7.50 - 20.5, constant 6.14 - 21.2)
+    second-order absorbing walls  1.17 - 4.18
+    lossy permeability box  7.18 - 8.63  (layers: 7.25 - 8.39)
+    lossy anisotropic box 4.73 - 13.9   (rotated about x, y, z: 5.85 - 8.36)
+    lossy permeability line  1.46 - 4.56
+    lossy anisotropic line   1.39 - 7.03  (rotated about x, y, z: 2.23 - 3.14)
+    plasmon-bound mode (refused)  0.96
     order 3: line 3.10 - 19.6, box (m = 1) 4.69 - 5.39
     order 4: L cavity (n = 2, 4) 1.80, 1.73
 
@@ -152,6 +192,8 @@ EFFECTIVITY_BY_KIND = {
         "lossy uniform guide": (0.9, 20.0),
         "lossy slab guide": (0.9, 20.0),
         "lossy step guide": (0.9, 20.0),
+        "lossy permeability line": (0.9, 6.0),
+        "lossy anisotropic line": (0.9, 9.0),
     },
     "omega": {
         "L cavity": (0.9, 5.0),
@@ -693,6 +735,93 @@ def test_the_rotated_anisotropic_line_s_against_order_4(tmp_path, n):
         _assert_in("s", "anisotropic line", estimate, error, value)
 
 
+# --- lossy magnetic and anisotropic lines: S (ADR 0138) ----------------------
+
+_LOSSY_AXES = np.array([3.0, 5.0, 2.0]) * (1 - 1j * np.array([0.05, 0.1, 0.3]))
+#: The line's lossy magnetic and anisotropic fills: (material, eps_zz, mu_yy),
+#: the entries its TEM wave sees, or None where the fill has no closed form.
+#: "mu": a complex mu_r; "diag": diagonal eps_r and mu_r with tan_delta 0.1;
+#: "rotz": per-axis complex eps_r (tan_delta 0.05, 0.1, 0.3) turned about z;
+#: "rot3": that loss with mu_r turned about all three axes.
+LOSSY_LINE_TENSORS = {
+    "mu": (gfem.MaterialField(eps_r=2.0, mu_r=2.0 * (1 - 0.1j)), 2.0, 2.0 * (1 - 0.1j)),
+    "diag": (
+        gfem.Material(eps_r=(3.0, 5.0, 2.0), mu_r=(1.5, 2.0, 2.5), tan_delta=0.1),
+        2.0 * (1 - 0.1j),
+        2.0,
+    ),
+    "rotz": (
+        gfem.MaterialField(
+            eps_r=_LOSSY_AXES,
+            mu_r=(2.0, 2.0, 2.5),
+            axes=tuple(map(tuple, rc.rotation("z", 30).T)),
+        ),
+        2.0 * (1 - 0.3j),
+        2.0,
+    ),
+    "rot3": (
+        gfem.MaterialField(
+            eps_r=_LOSSY_AXES, mu_r=(1.5, 2.5, 2.0), axes=tuple(map(tuple, rc.ROT3.T))
+        ),
+        None,
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize("n", [4, 16])
+def test_the_lossy_permeability_line_s(tmp_path, n):
+    # The recovered H is mu^-1 curl E with the complex mu (ADR 0138).
+    material, eps, mu = LOSSY_LINE_TENSORS["mu"]
+    exact = np.array([_line_s(f, eps, mu) for f in LINE_FREQUENCIES])
+    model, result = _line(tmp_path, n, material=material)
+    for estimate, value, error in _line_effectivities(model, result, exact):
+        _assert_in("s", "lossy permeability line", estimate, error, value)
+
+
+@pytest.mark.parametrize("fill", ["diag", "rotz"])
+@pytest.mark.parametrize("n", [4, 16])
+def test_the_lossy_anisotropic_line_s(tmp_path, n, fill):
+    material, eps, mu = LOSSY_LINE_TENSORS[fill]
+    exact = np.array([_line_s(f, eps, mu) for f in LINE_FREQUENCIES])
+    model, result = _line(tmp_path, n, material=material)
+    for estimate, value, error in _line_effectivities(model, result, exact):
+        _assert_in("s", "lossy anisotropic line", estimate, error, value)
+
+
+@pytest.mark.parametrize("n", [4, 16])
+def test_the_rotated_lossy_anisotropic_line_s_against_order_4(tmp_path, n):
+    # No closed form: order 4 on the same mesh. Rows whose reference is not
+    # within 20 % of their error (|S3 - S4| against |S2 - S4|) are left out.
+    material, _, _ = LOSSY_LINE_TENSORS["rot3"]
+    model, result = _line(tmp_path, n, material=material)
+    exact, middle = (
+        np.asarray(
+            gfem.solve(
+                model,
+                gfem.Driven(list(LINE_FREQUENCIES)),
+                options=gfem.SolverOptions(order=order, linear_solver="direct"),
+            ).s.values
+        )
+        for order in (4, 3)
+    )
+    uncertainty = np.abs(middle - exact)
+    ports = ("p1", "p2")
+    kept = 0
+    for to, source in (("p1", "p1"), ("p2", "p1"), ("p2", "p2")):
+        estimator = gfem.QuantityEstimator(s=(to, source))
+        estimate = gfem.error_estimate(result, estimator, model=model)
+        i, j = ports.index(to), ports.index(source)
+        error = np.asarray(result.s[to, source]) - exact[:, i, j]
+        for value, e, u in zip(
+            estimate.values, error, uncertainty[:, i, j], strict=True
+        ):
+            if u <= 0.2 * abs(e):
+                kept += 1
+                _assert_in("s", "lossy anisotropic line", estimate, e, value)
+    assert kept >= 3
+
+
 # --- L cavity: omega, singular -----------------------------------------------
 
 
@@ -1178,22 +1307,32 @@ LOSSY_DIAGONAL = {
 }
 
 
-def _lossy_diagonal_case(fill, mode):
-    """(target Hz, the closed form's roots in rad/s) of a mode with a zero index.
-
-    With E along axis d, k^2 eps_eff,dd = sum over i != d of
-    (n_i pi / L_i)^2 / mu_jj, eps_eff = eps_c - i eta0 sigma / k.
-    """
-    eps_c, sigma = LOSSY_DIAGONAL[fill]
+def _diagonal_k2(mode):
+    """sum over i != d of (n_i pi / L_i)^2 / mu_jj, d the axis of the zero index."""
     d = mode.index(0)
-    k2 = sum(
+    return sum(
         (mode[i] * math.pi / BOX[i]) ** 2 / _DIAG_MU[3 - i - d]
         for i in range(3)
         if i != d
     )
-    target = const.c * math.sqrt(k2 / _DIAG_EPS[d]) / (2 * math.pi)
-    roots = np.roots([eps_c[d], -1j * _ETA0 * sigma[d], -k2]) * const.c
-    return target, roots
+
+
+def _lossy_diagonal_roots(fill):
+    """The closed-form omegas (rad/s) of every box mode with one zero index.
+
+    With E along the axis d of the zero index, k^2 eps_eff,dd = `_diagonal_k2`,
+    eps_eff = eps_c - i eta0 sigma / k. A target can return a neighbouring
+    mode, so the solved mode is matched to the nearest root of them all.
+    """
+    eps_c, sigma = LOSSY_DIAGONAL[fill]
+    out = []
+    for mode in _ALL_MODES:
+        if mode.count(0) != 1:
+            continue
+        d = mode.index(0)
+        roots = np.roots([eps_c[d], -1j * _ETA0 * sigma[d], -_diagonal_k2(mode)])
+        out += list(roots * const.c)
+    return out
 
 
 @pytest.mark.parametrize(
@@ -1204,11 +1343,14 @@ def test_the_lossy_anisotropic_box_frequencies(tmp_path, fill, m, modes):
     # Loss inside a diagonal tensor fill, Q 1.1 to 10: the modulus weights of
     # the complex tensor eps_eff are exact (ADR 0138).
     model = rc.anisotropic_box_model(tmp_path, m, fill)
+    roots = _lossy_diagonal_roots(fill)
     for mode in modes:
-        target, roots = _lossy_diagonal_case(fill, mode)
+        d = mode.index(0)
+        target = const.c * math.sqrt(_diagonal_k2(mode) / _DIAG_EPS[d]) / (2 * math.pi)
         omega, estimate = _nearest_mode(model, target, 2 * math.pi * target)
         exact = _nearest_root(roots, omega)
         error = abs(omega - exact) / abs(exact)
+        assert error < 1e-3  # a mode with one zero index
         _assert_in("omega", "anisotropic box", estimate, error)
 
 

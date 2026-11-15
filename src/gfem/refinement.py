@@ -80,8 +80,7 @@ class FieldEstimator:
     `refine_mesh` and `error_estimate` raise `ValueError`.
 
     `refine_mesh` and `error_estimate` raise
-    `gfem.MeshRefinementUnsupportedError` for a driven or eigenmode field
-    with loss inside an anisotropic material, and at order 1.
+    `gfem.MeshRefinementUnsupportedError` at order 1.
     """
 
 
@@ -131,10 +130,9 @@ class QuantityEstimator:
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
-    estimate: a mode with a second-order absorbing boundary, a complex
-    ``mu_r`` or a permittivity law, and an S entry or a mode with loss
-    inside an anisotropic material (as `FieldEstimator`). Both estimators
-    also raise it at order 1. For a lossy mode the estimate covers the
+    estimate: the ``omega`` of a mode bound to a permittivity law region
+    where Re eps < 0 at the mode, raised when it is estimated. Both
+    estimators also raise it at order 1. For a lossy mode the estimate covers the
     complex ``omega``; Q's relative error is not estimated. An S entry ``(to, from)``
     whose port ``to`` is a wave port with a lossy mode not parallel to its
     excitation needs that port's adjoint dual: `refine_mesh` adds it to each
@@ -395,9 +393,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
             adaptive sweep, a periodic model, another result type, a result
-            solved at order 1, a driven or eigenmode field with loss inside
-            an anisotropic material (see `FieldEstimator`), or a quantity
-            entry with no verified estimate (see `QuantityEstimator`).
+            solved at order 1, or a quantity entry with no verified
+            estimate (see `QuantityEstimator`).
         DegenerateModeError: A `QuantityEstimator` names a mode of a
             degenerate cluster, or one within the default
             `SolverOptions.cluster_rtol` of another mode.
@@ -505,10 +502,10 @@ def refine_mesh(
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
             port mode problem, a periodic model or a Bloch wave vector,
-            ``options.order=1`` (the ``"fast"`` preset), a driven or
-            eigenmode field with loss inside an anisotropic material (see
-            `FieldEstimator`), a quantity entry with no verified estimate
-            (see `QuantityEstimator`), or ``frequency_workers`` above 1 for
+            ``options.order=1`` (the ``"fast"`` preset), a quantity entry
+            with no verified estimate (see `QuantityEstimator`; a
+            plasmon-bound mode raises on the first estimate, after the first
+            solve), or ``frequency_workers`` above 1 for
             an S estimate on a lossy wave port, whose adjoint rides on the
             forward solve.
         DegenerateModeError: The mode a `QuantityEstimator` follows is not

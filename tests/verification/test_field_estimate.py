@@ -52,6 +52,15 @@ with a damped Drude law at Re eps < 0 at both frequencies, where the flux
 and energy weights are |eps(omega)|, against the closed-form cascade of
 three TEM sections.
 
+The eigen terms ADR 0138 lifted, in the norm || curl e ||^2_{|mu|^-1} +
+|k|^2 || e ||^2_{|eps_eff|}: the box filled with eps_r 2 and mu_r
+2 (1 - 0.1i), or with diagonal eps_r and mu_r carrying tan_delta 0.1,
+(5, 10, 20) S/m or per-axis complex eps_r, modes 110 and 101 on m = 1
+against the exact mode field; the parallel-plate line filled with eps_r 2
+and mu_r 2 (1 - 0.1i) on n = 4 against its TEM wave; the air box with
+second-order absorbing side walls on m = 1, the modes continuing 110 and
+210, against order 4 on the same mesh. These run at order 2 only.
+
 Each case's effectivity must lie in its range of
 `EFFECTIVITY_BY_KIND["field"]` at order 2, and of
 `ORDER_3_EFFECTIVITY_BY_KIND["field"]` at order 3 (the circular coax against
@@ -86,6 +95,10 @@ Measured (order 2, direct, ostau, 1 thread):
     order-4 reference, n = 4, 8, 12     0.93, 0.95, 0.96 (1 S/m, 3 GHz)
     metal block line, n = 5, 10, 20     1.65, 1.43, 1.18; 1.63, 1.38, 1.14
                                         (3, 8 GHz)
+    lossy-mu box, m = 1                 1.20, 1.23 (110, 101)
+    lossy anisotropic box, m = 1        1.23 - 1.26 (three fills)
+    lossy-mu line, n = 4                1.17, 1.24 (3, 8 GHz)
+    second-order absorbing box, m = 1   1.06, 1.14 (110, 210)
 
 Measured (order 3, direct, ostau, 1 thread):
 
@@ -140,6 +153,10 @@ EFFECTIVITY_BY_KIND = {
         "two-layer box": (0.9, 1.6),
         "lossy-wall box": (0.9, 1.6),
         "metal block": (0.9, 1.8),
+        "second-order absorbing walls": (0.9, 1.6),
+        "lossy permeability box": (0.9, 1.6),
+        "lossy permeability line": (0.9, 1.6),
+        "lossy anisotropic box": (0.9, 1.6),
     },
 }
 
@@ -404,14 +421,15 @@ def _eps_eff(eps_r, tan_delta, sigma, k):
     return eps_r * (1 - 1j * tan_delta) - 1j * eta0 * sigma / k
 
 
-def _line_wave(f, eps=_LINE["eps_r"]):
+def _line_wave(f, eps=_LINE["eps_r"], mu=1.0):
     """The line's exact E_z and (curl E)_y for 1 W incident at p1, functions of x.
 
-    ``eps`` is the filling's eps_eff at f; complex beta and Z0 when lossy.
+    ``eps`` is the filling's eps_eff at f, ``mu`` its mu_r; complex beta and
+    Z0 when lossy.
     """
-    beta = 2 * math.pi * f / const.c * cmath.sqrt(eps)
+    beta = 2 * math.pi * f / const.c * cmath.sqrt(eps * mu)
     eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
-    z0 = eta0 * _LINE["height"] / (_LINE["width"] * cmath.sqrt(eps))
+    z0 = eta0 * cmath.sqrt(mu / eps) * _LINE["height"] / _LINE["width"]
     c, s = cmath.cos(beta * _LINE["length"]), cmath.sin(beta * _LINE["length"])
     a, b, cc = c, 1j * z0 * s, 1j * s / z0  # ABCD of the line, D = A
     s11 = (a * _R2 + b - cc * _R1 * _R2 - a * _R1) / (
@@ -817,6 +835,180 @@ def test_the_field_effectivity_on_a_line_through_a_metal_block(tmp_path, n):
     # measured 1.05, 1.03; a dielectric core of eps_r 4 gives 1.20 to 1.05
     # over n = 5 to 40 on the same line.
     _metal_line(tmp_path, n, OPTIONS)
+
+
+# --- lifted eigen terms (ADR 0138): second-order walls, lossy mu, loss ---------
+# --- inside an anisotropic material --------------------------------------------
+
+
+def _weighted_energy_error(field, exact, exact_curl, curl_weight, mass_weight):
+    """|| E_h - E ||_energy / || E_h ||_energy, E scaled to E_h first.
+
+    The energy norm is || curl e ||^2_C + |k|^2 || e ||^2_M with constant
+    3 x 3 weights C = (mu mu^H)^{-1/2} and M = (eps_eff^H eps_eff)^{1/2} of a
+    uniform fill (diagonal here: 1 / |mu_dd| and |eps_eff,dd|).
+    """
+    x, w = _gauss_points(field.mesh)
+    omega = complex(np.asarray(field.omega))
+    k2 = abs(omega / const.c) ** 2
+    e, curl = np.asarray(field.at(x)), -1j * omega * np.asarray(field.b().at(x))
+    e0, curl0 = exact(x), exact_curl(x)
+
+    def inner(a, ca, b, cb):
+        dot = np.einsum("pi,ij,pj->p", cb.conj(), curl_weight, ca)
+        dot += k2 * np.einsum("pi,ij,pj->p", b.conj(), mass_weight, a)
+        return np.sum(w * dot)
+
+    alpha = inner(e, curl, e0, curl0) / inner(e0, curl0, e0, curl0)
+    e0, curl0 = alpha * e0, alpha * curl0
+    error = inner(e - e0, curl - curl0, e - e0, curl - curl0).real
+    return math.sqrt(error / inner(e, curl, e, curl).real)
+
+
+_BOX = (1e-3, 0.7e-3, 0.4e-3)
+
+
+def _box_mode_field(mode):
+    """The exact E of a PEC box mode with one zero index d (E along d), and curl E."""
+    d = mode.index(0)
+    i, j = (a for a in range(3) if a != d)
+    ki, kj = mode[i] * math.pi / _BOX[i], mode[j] * math.pi / _BOX[j]
+    axis = np.zeros(3)
+    axis[d] = 1.0
+
+    def exact(x):
+        out = np.zeros((len(x), 3), complex)
+        out[:, d] = np.sin(ki * x[:, i]) * np.sin(kj * x[:, j])
+        return out
+
+    def exact_curl(x):
+        grad = np.zeros((len(x), 3), complex)
+        grad[:, i] = ki * np.cos(ki * x[:, i]) * np.sin(kj * x[:, j])
+        grad[:, j] = kj * np.sin(ki * x[:, i]) * np.cos(kj * x[:, j])
+        return np.cross(grad, axis)  # curl (f e_d) = grad f x e_d
+
+    return exact, exact_curl
+
+
+_LOSSY_MU = 2.0 * (1 - 0.1j)
+_DIAG_EPS = np.array([2.0, 3.0, 4.0])
+_DIAG_MU = np.array([1.5, 2.0, 2.5])
+#: The lossy box fills (`refinement_cases.LOSSY_BOX`): (eps_r, conductivity and
+#: mu_r per axis), complex where lossy.
+FILLED_BOXES = {
+    "lossy_mu": (np.full(3, 2.0 + 0j), np.zeros(3), np.full(3, _LOSSY_MU)),
+    "lossy_diag_tan": (_DIAG_EPS * (1 - 0.1j), np.zeros(3), _DIAG_MU + 0j),
+    "lossy_diag_sigma": (_DIAG_EPS + 0j, np.array([5.0, 10.0, 20.0]), _DIAG_MU + 0j),
+    "lossy_diag_complex": (rc.LOSSY_EPS_DIAG, np.zeros(3), _DIAG_MU + 0j),
+}
+
+
+@pytest.mark.parametrize(
+    ("fill", "case"),
+    [
+        ("lossy_mu", "lossy permeability box"),
+        ("lossy_diag_tan", "lossy anisotropic box"),
+        ("lossy_diag_sigma", "lossy anisotropic box"),
+        ("lossy_diag_complex", "lossy anisotropic box"),
+    ],
+)
+def test_the_field_effectivity_on_a_lossy_filled_box(tmp_path, fill, case):
+    # A uniform fill keeps the empty box's mode shapes: E along the axis of
+    # the zero index. The norm weighs curl e by 1 / |mu| and e by |eps_eff|.
+    eps, sigma, mu = FILLED_BOXES[fill]
+    model = rc.anisotropic_box_model(tmp_path, 1, fill)
+    eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
+    for mode in ((1, 1, 0), (1, 0, 1)):
+        d = mode.index(0)
+        k2 = sum(
+            (mode[i] * math.pi / _BOX[i]) ** 2 / mu[3 - i - d].real
+            for i in range(3)
+            if i != d
+        )
+        target = const.c * math.sqrt(k2 / eps[d].real) / (2 * math.pi)
+        result = gfem.solve(
+            model, gfem.Eigenmode(target=target, n_modes=1), options=OPTIONS
+        )
+        estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+        k = complex(np.asarray(result.omega)[0]) / const.c
+        eps_eff = eps - 1j * eta0 * sigma / k
+        true = _weighted_energy_error(
+            result.e_fields[0],
+            *_box_mode_field(mode),
+            np.diag(1 / np.abs(mu)),
+            np.diag(np.abs(eps_eff)),
+        )
+        _assert_in("field", case, estimate, true)
+
+
+def test_the_field_effectivity_on_a_lossy_permeability_line(tmp_path):
+    # eps_r 2, mu_r 2 (1 - 0.1i): the TEM wave with complex beta and Z0.
+    eps, mu = 2.0, _LOSSY_MU
+    cells = sm.strip_line(10.0, 2.0, 1.0, (4, 1, 1))
+    material = gfem.MaterialField(eps_r=eps, mu_r=mu)
+    model = _line_model(tmp_path, cells, {"dielectric": material})
+    result, estimate = _line_estimate(model, OPTIONS)
+    for f, value in zip(_LINE_FREQUENCIES, estimate.values, strict=True):
+        exact, exact_curl = _line_wave(f, eps, mu)
+        true = _weighted_energy_error(
+            result.e_field(f, "p1"),
+            exact,
+            exact_curl,
+            np.eye(3) / abs(mu),
+            abs(eps) * np.eye(3),
+        )
+        _assert_in("field", "lossy permeability line", estimate, true, value)
+
+
+#: The second-order absorbing box's modes (`refinement_cases.ABSORBING_BOX_OMEGA`).
+_ABSORBING_MODES = ((1, 1, 0), (2, 1, 0))
+
+
+def test_the_field_effectivity_on_a_box_with_second_order_absorbing_walls(tmp_path):
+    # Air box, PEC top and bottom, second-order absorbing side walls, m = 1:
+    # against order 4 on the same mesh, each the mode of six nearest the
+    # stored reference (a single-mode seed can return a spurious mode).
+    model = _model(
+        tmp_path,
+        sm.plate(1.0, 0.7, (("air", 0.4),), (5, 4, 2)),
+        "mm",
+        materials={"air": gfem.Material()},
+        boundaries=[
+            gfem.PEC("bottom"),
+            gfem.PEC("top"),
+            gfem.Absorbing("side", order=2),
+        ],
+    )
+    for mode in _ABSORBING_MODES:
+        target = (
+            const.c
+            / 2
+            * math.sqrt(sum((n / a) ** 2 for n, a in zip(mode, _BOX, strict=True)))
+        )
+        reference = rc.ABSORBING_BOX_OMEGA[1, mode]
+        fields = []
+        for options in (OPTIONS, ORDER_4):
+            problem = gfem.Eigenmode(target=target, n_modes=6)
+            result = gfem.solve(model, problem, options=options)
+            omegas = np.asarray(result.omega, complex)
+            i = int(np.argmin(abs(omegas - reference)))
+            assert abs(omegas[i] - reference) < 0.05 * abs(reference)
+            fields.append((result, i))
+        (result, i), (fine, j) = fields
+        estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+        exact = fine.e_fields[j]
+        omega = complex(np.asarray(exact.omega))
+        true = _weighted_energy_error(
+            result.e_fields[i],
+            lambda x, exact=exact: np.asarray(exact.at(x)),
+            lambda x, exact=exact, omega=omega: (
+                -1j * omega * np.asarray(exact.b().at(x))
+            ),
+            np.eye(3),
+            np.eye(3),
+        )
+        value = estimate.values[i]
+        _assert_in("field", "second-order absorbing walls", estimate, true, value)
 
 
 ORDER_5 = gfem.SolverOptions(order=5, linear_solver="direct")

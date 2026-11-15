@@ -16,7 +16,7 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
-import gfem.refinement as refinement
+from gfem import refinement
 from gfem._engine import estimate as kernels
 from gfem.refinement import _dorfler
 
@@ -719,9 +719,7 @@ def _lifted_box(directory, name):
     material, boundary = LIFTED[name]
     model = _box(directory, material)
     if boundary is not None:
-        model = _with(
-            model, boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), boundary]
-        )
+        model = _with(model, boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), boundary])
     return model
 
 
@@ -790,7 +788,7 @@ def test_loss_in_an_anisotropic_material_is_estimated(
     assert ref.stop == "tolerance"
     assert np.all(np.isfinite(ref.estimate.values))
     assert np.all(np.isfinite(ref.estimate.indicators))
-    assert 0 < ref.estimate.value
+    assert ref.estimate.value > 0
 
 
 # --- electrostatic sheets ----------------------------------------------------

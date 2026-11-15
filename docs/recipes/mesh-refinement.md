@@ -263,15 +263,12 @@ How gfem itself checks the estimates against known answers:
 - `refine_mesh` raises {py:obj}`gfem.MeshRefinementUnsupportedError`, before
   any solve, on an adaptive sweep, a port mode problem, a periodic model, a
   Bloch wave vector and `SolverOptions(order=1)` (the `"fast"` preset); both
-  estimators refuse order 1. A `QuantityEstimator` also raises it on a
-  mode of a model with a second-order absorbing boundary, a complex
-  `mu_r` or a permittivity law: refine those models with the
-  `FieldEstimator`. On a driven or
-  eigenmode model with loss inside an anisotropic material, both the
-  `FieldEstimator` and a `QuantityEstimator` on a mode or an S entry raise
-  it: refine a
-  copy of the model with that material lossless, then solve the lossy model
-  on the refined mesh.
+  estimators refuse order 1. The estimate of a mode's `omega` raises it,
+  when it estimates, on a mode bound to a permittivity law region where
+  Re ε < 0 at the mode (a mode guided along a metal surface): refine such a
+  model with the `FieldEstimator`. Permittivity laws where Re ε > 0,
+  second-order absorbing boundaries, a complex `mu_r` and loss inside an
+  anisotropic material are estimated.
 - Mesh refinement runs on one process. Above one rank it raises
   {py:obj}`gfem.DistributedUnsupportedError`: refine on one process, then
   solve `ref.model` on ranks ({doc}`distributed-solve`).

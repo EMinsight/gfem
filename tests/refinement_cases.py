@@ -208,9 +208,7 @@ LOSSY_BOX = {
         "b": gfem.MaterialField(mu_r=2.5 * (1 - 0.2j)),
     },
     "lossy_diag_tan": {
-        "air": gfem.Material(
-            eps_r=(2.0, 3.0, 4.0), mu_r=(1.5, 2.0, 2.5), tan_delta=0.1
-        )
+        "air": gfem.Material(eps_r=(2.0, 3.0, 4.0), mu_r=(1.5, 2.0, 2.5), tan_delta=0.1)
     },
     "lossy_diag_sigma": {
         "air": gfem.Material(
@@ -254,7 +252,11 @@ LOSSY_BOX_OMEGA = {
 }
 #: Relative bound of each `LOSSY_BOX_OMEGA`, same keys.
 LOSSY_BOX_BOUND = {
-    "lossy_layer_mu": {161.103601495e9: 4.1e-8, 226.726156671e9: 3.9e-7, 238.567948030e9: 7.8e-7},
+    "lossy_layer_mu": {
+        161.103601495e9: 4.1e-8,
+        226.726156671e9: 3.9e-7,
+        238.567948030e9: 7.8e-7,
+    },
     "lossy_rot3": {
         106.357683863e9: 3.1e-7,
         146.424985394e9: 1.1e-6,

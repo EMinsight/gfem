@@ -5,8 +5,8 @@ field and S estimates of a law region equal those of the constant material
 holding the law's value there. The eigen omega estimate admits a law
 where Re eps > 0 at the mode, and refuses a mode bound to a law region at
 Re eps < 0 when it estimates (ADR 0138); every estimator refuses where
-eps(omega) = 0 (the flux recovery has no weight there). The metal case's effectivity is verified in
-`tests/verification/test_field_estimate.py`.
+eps(omega) = 0 (the flux recovery has no weight there). The metal case's
+effectivity is verified in `tests/verification/test_field_estimate.py`.
 
 The line is a 10 x 2 x 1 mm parallel-plate line with lumped ports at both
 ends; its 2 mm "core" (x in [4, 6]) holds the law.

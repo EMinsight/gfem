@@ -377,10 +377,11 @@ class FluxRecovery:
         """
         if self._hcurl is None:
             self._hcurl = self._projection(ngs.HCurl, type1=False)
-        out = []
-        for field in _times(self.mu_inverse_parts, curls):
-            out.append(self._hcurl.project(field) - field)
-        return out
+        hcurl = self._hcurl
+        return [
+            hcurl.project(field) - field
+            for field in _times(self.mu_inverse_parts, curls)
+        ]
 
     def flux_error(self, flux: ngs.CoefficientFunction) -> np.ndarray:
         """``|| R(flux) - flux ||^2_{eps^-1, K}`` per tetrahedron."""
