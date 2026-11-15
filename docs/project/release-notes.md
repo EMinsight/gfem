@@ -395,6 +395,41 @@ Mesh refinement:
   `error_estimate`) for a result solved across ranks, instead of a NumPy broadcast
   error or a wrong value. `refine_mesh` across ranks raises with feature
   `mesh_refinement`.
+- **Refine for your objective.** `gfem.QuantityEstimator(objective=J)` estimates
+  the error of `J(result, model)`, the function you differentiate, and
+  `refine_mesh` refines for it with `tolerance` in J's units. J may read S,
+  capacitance and electrostatic energy, frequencies, Q, bulk participations,
+  and fields through `gfem.power_flow` (absorbed power) and the new
+  `gfem.region_mean`. Anything else raises `gfem.MeshRefinementUnsupportedError`
+  by name. See {doc}`../recipes/mesh-refinement`.
+- **Mean of a field over a region.** `gfem.region_mean(field, region)` is the
+  mean of a field or a potential over named volume regions, differentiable,
+  the same quantity on every refined mesh. See {doc}`../recipes/measurements`.
+- **Q, degenerate modes and several quantities.** `QuantityEstimator(q=i)`
+  estimates a mode's Q. `omega=(i, j)` estimates the mean frequency of a
+  degenerate cluster. `refine_mesh(estimator=(e1, e2), tolerance=(t1, t2))`
+  refines until every quantity meets its tolerance. `ErrorEstimate.kind` says
+  what was estimated, and `RefinementCycle.modes` which mode was followed.
+- **An S entry's read port no longer needs to be excited**; its adjoint is
+  solved with the forward.
+- **Now estimated:** frequencies of modes in permittivity laws where Re ε > 0,
+  behind second-order absorbing boundaries, with complex `mu_r`, and with loss
+  in anisotropic materials; S and the field with loss in anisotropic materials.
+  Complex `mu_r` is now weighed exactly, so its S and field estimates are
+  tighter.
+- **Behaviour changes (now raise `gfem.MeshRefinementUnsupportedError`):**
+  - S estimates and objectives on a driven model with an `Impedance` or
+    `Absorbing` surface (they underestimated);
+  - S estimates and objectives on a model with a lumped port spanning a
+    permeability contrast;
+  - S estimates and objectives on a permittivity law with -20 < Re ε < 0 at
+    a solve frequency;
+  - an `omega` estimate of a mode bound to a region where Re ε < 0.
+
+  Refine those models with `gfem.FieldEstimator()`.
+- `refine_mesh`'s `tolerance` default is now `None`: 1e-2, except for an
+  objective, which needs its own.
+- {doc}`../verification` lists each estimate kind's measured range.
 
 Solvers, memory and ranks:
 

@@ -76,7 +76,7 @@ import cmath
 import dataclasses
 import math
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Literal, cast
 
 import jax
@@ -91,7 +91,12 @@ from gfem._eigen.adjoint import deflated_solve, polish, reshift_offset
 from gfem._eigen.arpack import shift_invert
 from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
-from gfem._eigen.ratios import Ratios, sheet_capacitors, sheet_inductors
+from gfem._eigen.ratios import (
+    Ratios,
+    energy_name,
+    sheet_capacitors,
+    sheet_inductors,
+)
 from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
 from gfem._engine import dispersion, terms
@@ -294,6 +299,43 @@ def _others(values: np.ndarray, k: complex) -> np.ndarray:
     return np.delete(values, int(np.argmin(np.abs(values - k))))
 
 
+@dataclasses.dataclass(frozen=True)
+class DualRequest:
+    """A participation dual `gfem.refine_mesh` asks the forward to solve.
+
+    Attributes:
+        start: The mode's index on the first mesh (the key it is kept by).
+        omega: Its omega on the previous mesh, rad/s: the forward takes the
+            mode nearest it.
+        regions: The regions whose bulk participation the objective reads.
+    """
+
+    start: int
+    omega: complex
+    regions: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class ParticipationDual:
+    """The mode-field dual of one region's bulk participation (ADR 0142).
+
+    Attributes:
+        mode: The mode's index on the result it was solved for.
+        omega: The mode's omega, rad/s.
+        lam: ``lam = lam0 - kappa u / (u^T t)`` on the solve space, for the
+            result's normalized mode ``u``.
+        weights: The load ``w = sum_r weights[r] conj(A_r u)``, ``A_r`` the
+            region's ``Re eps_r`` mass form (`energy_parts`), by region.
+        applies: The deflated solve's operator applies.
+    """
+
+    mode: int
+    omega: complex
+    lam: np.ndarray
+    weights: dict[str, float]
+    applies: int
+
+
 class EigenmodeRule:
     """Host-side forward of an `Eigenmode` problem on a `Model`."""
 
@@ -377,6 +419,10 @@ class EigenmodeRule:
         #: Whether a region holds a permittivity law: only then can a
         #: converged pair be a longitudinal mode (`_longitudinal`).
         self._laws = bool(dispersion.law_regions(model))
+        #: Participation duals for `gfem.refine_mesh` to solve on the
+        #: forward's live factors (ADR 0142), and the duals solved.
+        self.adjoint_loads: Sequence[DualRequest] | None = None
+        self.adjoints: dict[tuple[int, str], ParticipationDual] = {}
 
     # --- forward -----------------------------------------------------------------
 
@@ -440,6 +486,15 @@ class EigenmodeRule:
                     model, self.problem.target, lowest / (2 * math.pi), stacklevel=2
                 )
                 outputs["cluster"] = clusters(ks, opts.cluster_rtol)
+                if self.adjoint_loads:
+                    self._ride_duals(
+                        model,
+                        op,
+                        eop,
+                        x=x,
+                        ks=ks,
+                        found=(outputs["cluster"], guard, gaps, unpolished),
+                    )
                 if keep:
                     y = None
                     if eop.general:
@@ -468,6 +523,103 @@ class EigenmodeRule:
                 if divfree is not None:
                     divfree.free()
         return outputs, entry
+
+    def _ride_duals(
+        self,
+        model: Model,
+        op: DrivenOperator,
+        eop: EigenOperator,
+        *,
+        x: np.ndarray,
+        ks: list[complex],
+        found: tuple[np.ndarray, Refined | None, GapSet, np.ndarray],
+    ) -> None:
+        """Solve `adjoint_loads`' participation duals on the live factors.
+
+        Each request takes the mode nearest its previous omega, as
+        `gfem.refine_mesh` follows it; a mode out of mode-field reach
+        (`isolated`) gets none, and the estimate raises for it. ``found``
+        holds the modes' cluster labels, the guard mode, the gap set and
+        the failed polishes (`_find`).
+        """
+        labels, guard, gaps, unpolished = found
+        rtol = self.options.cluster_rtol
+        guard_k = None if guard is None else guard.k
+        gap = np.array(
+            [0.0 if f else gaps.gap(z) for z, f in zip(ks, unpolished, strict=True)]
+        )
+        reach = isolated(labels, _incomplete(ks, labels, guard_k, rtol), gap, rtol)
+        per_k = const.c / op.built.scale
+        omegas = np.array(ks, dtype=complex) * per_k
+        self.adjoints = {}
+        for request in self.adjoint_loads or ():
+            j = int(np.argmin(np.abs(omegas - request.omega)))
+            if not reach[j]:
+                continue
+            duals = self.participation_duals(
+                model,
+                op,
+                eop,
+                u=x[:, j],
+                k=ks[j],
+                gap=gaps.gap(ks[j]),
+                mode=j,
+                regions=request.regions,
+            )
+            for region, dual in duals.items():
+                self.adjoints[request.start, region] = dual
+
+    def participation_duals(
+        self,
+        model: Model,
+        op: DrivenOperator,
+        eop: EigenOperator,
+        *,
+        u: np.ndarray,
+        k: complex,
+        gap: float,
+        mode: int,
+        regions: Sequence[str],
+    ) -> dict[str, ParticipationDual]:
+        """The dual of each region's bulk participation of mode ``(k, u)`` (ADR 0142).
+
+        Per region, the load of a unit cotangent on its participation
+        (`Ratios.load`), the deflated solve ``T(k) lam0 = -w``, ``t^T lam0 =
+        0`` on ``eop``'s factors (`deflated_solve`), and ``lam = lam0 - kappa
+        u / (u^T t)``: the backward's own adjoint. ``u`` is the mode on the
+        solve space at any scale (the ratios are invariant). The load's
+        volume weights go with it, for the dual flux's equilibration.
+        """
+        ratios = Ratios(
+            model,
+            op,
+            regions=self.regions,
+            anisotropic=self.anisotropic,
+            resistive=self.resistive,
+            inductive=self.inductive,
+            kinetic=self.kinetic,
+        )
+        ut = u @ eop.derivative(k, u)
+        omega = complex(k * const.c / op.built.scale)
+        out = {}
+        for region in regions:
+            unit = np.zeros(len(self.regions))
+            unit[self.regions.index(region)] = 1.0
+            load = ratios.load(u, k, {"bulk": unit}, mode=mode)
+            solved = deflated_solve(eop, u, None, -load.w, k=k, gap=gap, mode=mode)
+            weights = {
+                r: load.energy[energy_name(r)]
+                for r in self.regions
+                if energy_name(r) in load.energy
+            }
+            out[region] = ParticipationDual(
+                mode=mode,
+                omega=omega,
+                lam=solved.z - load.kappa * u / ut,
+                weights=weights,
+                applies=solved.applies,
+            )
+        return out
 
     def _inner_failure(
         self, err: LinearSolverConvergenceError

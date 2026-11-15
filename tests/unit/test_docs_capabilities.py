@@ -498,15 +498,55 @@ def field_estimate_test():
     return caps._import(REPO / caps.FIELD_ESTIMATE_TEST)
 
 
-def test_the_quoted_quantity_effectivity_is_the_quantity_estimate_tests_range(
-    derived, estimate_test
+@pytest.fixture(scope="module")
+def objective_estimate_test():
+    return caps._import(REPO / caps.OBJECTIVE_ESTIMATE_TEST)
+
+
+def _cases(*modules, kind):
+    """The case names of ``kind`` over ``modules``, order 3 after order 2."""
+    names = []
+    for module in modules:
+        names += list(getattr(module, "EFFECTIVITY_BY_KIND", {}).get(kind, {}))
+    for module in modules:
+        order_3 = getattr(module, "ORDER_3_EFFECTIVITY_BY_KIND", {}).get(kind, {})
+        names += [f"{case}, order 3" for case in order_3]
+    return names
+
+
+def _span(module, kind):
+    ranges = list(module.EFFECTIVITY_BY_KIND[kind].values())
+    ranges += list(
+        getattr(module, "ORDER_3_EFFECTIVITY_BY_KIND", {}).get(kind, {}).values()
+    )
+    return min(r[0] for r in ranges), max(r[1] for r in ranges)
+
+
+def test_each_emitted_kind_is_quoted_as_its_cases_span(
+    derived, estimate_test, objective_estimate_test, field_estimate_test
 ):
-    low, high = estimate_test.EFFECTIVITY
-    assert derived["effectivity"]["quantity"] == {
-        "low": f"{low:g}",
-        "high": f"{high:g}",
-        "cases": list(estimate_test.EFFECTIVITY_BY_CASE),
-    }
+    from gfem.refinement import EMITTED_KINDS
+
+    modules = (estimate_test, objective_estimate_test, field_estimate_test)
+    for kind in EMITTED_KINDS:
+        module = next(m for m in modules if kind in m.EFFECTIVITY_BY_KIND)
+        low, high = _span(module, kind)
+        assert derived["effectivity"][kind] == {
+            "low": f"{low:g}",
+            "high": f"{high:g}",
+            "cases": _cases(*modules, kind=kind),
+        }
+
+
+def test_the_quoted_quantity_effectivity_spans_the_entry_kinds(derived, estimate_test):
+    entries = ("capacitance", "s", "omega")
+    spans = [_span(estimate_test, kind) for kind in entries]
+    quoted = derived["effectivity"]["quantity"]
+    assert quoted["low"] == f"{min(s[0] for s in spans):g}"
+    assert quoted["high"] == f"{max(s[1] for s in spans):g}"
+    assert quoted["cases"] == [
+        case for kind in entries for case in estimate_test.EFFECTIVITY_BY_KIND[kind]
+    ]
 
 
 def test_the_quoted_field_effectivity_spans_both_orders_of_the_field_test(
@@ -516,20 +556,81 @@ def test_the_quoted_field_effectivity_spans_both_orders_of_the_field_test(
     # covers both dicts, the order-3 cases named as such.
     quoted = derived["effectivity"]["field"]
     assert (quoted["low"], quoted["high"]) == ("0.9", "2")
-    order_2 = list(field_estimate_test.FIELD_EFFECTIVITY_BY_CASE)
-    order_3 = list(field_estimate_test.FIELD_EFFECTIVITY_ORDER_3_BY_CASE)
+    order_2 = list(field_estimate_test.EFFECTIVITY_BY_KIND["field"])
+    order_3 = list(field_estimate_test.ORDER_3_EFFECTIVITY_BY_KIND["field"])
     assert quoted["cases"] == order_2 + [f"{c}, order 3" for c in order_3]
 
 
 def test_the_loss_jump_witness_is_the_field_tests_measured_band(derived):
     # A lumped port across a loss jump: a measured band below the field
     # range, quoted so the recipe's Limits says how far below.
-    assert derived["effectivity"]["loss jump"] == {"low": "0.84", "high": "0.9"}
+    assert derived["effectivity"]["lumped port across a loss jump"] == {
+        "low": "0.84",
+        "high": "0.9",
+    }
+
+
+def test_every_estimate_test_module_holds_the_three_dicts(
+    estimate_test, field_estimate_test
+):
+    for module in (estimate_test, field_estimate_test):
+        assert isinstance(module.EFFECTIVITY_BY_KIND, dict)
+        assert isinstance(module.OVERESTIMATES, dict)
+        assert isinstance(module.WITNESSES, dict)
+        assert not hasattr(module, "EFFECTIVITY_BY_CASE")
+        assert not hasattr(module, "EFFECTIVITY")
+
+
+_KINDS = ("field", "s", "omega")
+
+
+def test_a_kind_the_code_does_not_know_fails_the_build():
+    by_kind = {"field": {"a": (0.9, 2.0)}, "flux": {"b": (0.9, 2.0)}}
+    with pytest.raises(caps.CapabilitiesError, match="flux"):
+        caps.effectivity_by_kind(by_kind, _KINDS, ("field",))
+
+
+def test_a_kind_the_code_does_not_emit_yet_fails_the_build():
+    by_kind = {"field": {"a": (0.9, 2.0)}, "s": {"b": (0.9, 2.0)}}
+    with pytest.raises(caps.CapabilitiesError, match="'s'"):
+        caps.effectivity_by_kind(by_kind, _KINDS, ("field",))
+
+
+def test_an_emitted_kind_without_a_case_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="'omega'"):
+        caps.effectivity_by_kind(
+            {"field": {"a": (0.9, 2.0)}}, _KINDS, ("field", "omega")
+        )
+
+
+def test_a_case_below_the_claims_floor_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="claims floor"):
+        caps.effectivity_by_kind({"field": {"a": (0.85, 2.0)}}, _KINDS, ("field",))
+
+
+def test_an_unordered_case_range_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="bad case ranges"):
+        caps.effectivity_by_kind({"field": {"a": (2.0, 0.9)}}, _KINDS, ("field",))
+
+
+def test_a_kind_quotes_its_cases_span():
+    by_kind = {"field": {"a": (0.9, 2.0), "b": (1.0, 15.0)}}
+    assert caps.effectivity_by_kind(by_kind, _KINDS, ("field",)) == {
+        "field": {"low": "0.9", "high": "15", "cases": ["a", "b"]}
+    }
 
 
 def test_a_witness_inside_the_quoted_range_fails_the_build():
     with pytest.raises(caps.CapabilitiesError, match="below"):
-        caps.witness((0.85, 0.95), {"low": "0.9", "high": "2"})
+        caps.witness((0.95, 1.2), {"low": "0.9", "high": "2"})
+
+
+def test_a_witness_reaching_below_the_quoted_range_is_quoted():
+    # The rule is the band's low end: a band straddling the floor is unclaimed.
+    assert caps.witness((0.87, 0.97), {"low": "0.9", "high": "2"}) == {
+        "low": "0.87",
+        "high": "0.97",
+    }
 
 
 def test_an_unordered_witness_fails_the_build():
@@ -537,14 +638,76 @@ def test_an_unordered_witness_fails_the_build():
         caps.witness((0.9, 0.84), {"low": "0.9", "high": "2"})
 
 
-def test_an_effectivity_off_the_cases_span_fails_the_build():
-    with pytest.raises(caps.CapabilitiesError, match="span"):
-        caps.effectivity((0.9, 10.0), {"a": (0.9, 2.0), "b": (1.0, 15.0)})
+def test_an_overestimate_inside_its_kinds_range_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="inside"):
+        caps.overestimate((1.0, 1.5), {"low": "0.9", "high": "2"})
 
 
-def test_an_unordered_case_range_fails_the_build():
-    with pytest.raises(caps.CapabilitiesError, match="bad case ranges"):
-        caps.effectivity((0.9, 2.0), {"a": (2.0, 0.9)})
+def test_an_overestimate_below_the_claims_floor_fails_the_build():
+    with pytest.raises(caps.CapabilitiesError, match="below"):
+        caps.overestimate((0.5, 50.0), {"low": "0.9", "high": "2"})
+
+
+def test_an_overestimate_above_its_kinds_range_is_quoted():
+    assert caps.overestimate((10.0, 70.0), {"low": "0.9", "high": "20"}) == {
+        "low": "10",
+        "high": "70",
+    }
+
+
+def test_the_kind_words_cover_exactly_the_estimate_kinds():
+    from gfem.refinement import ESTIMATE_KINDS
+
+    assert set(caps.KIND_WORDS) == set(ESTIMATE_KINDS)
+    with pytest.raises(caps.CapabilitiesError, match="words"):
+        caps.effectivity_table({}, ESTIMATE_KINDS, (), words={"field": "the field"})
+
+
+def test_the_effectivity_table_has_a_row_per_emitted_kind(derived):
+    from gfem.refinement import EMITTED_KINDS
+
+    rows = derived["effectivity_table"]
+    assert [row["kind"] for row in rows] == list(EMITTED_KINDS)
+    for row in rows:
+        quoted = derived["effectivity"][row["kind"]]
+        assert (row["low"], row["high"]) == (quoted["low"], quoted["high"])
+        assert row["cases"] == len(quoted["cases"])
+        assert row["words"] == caps.KIND_WORDS[row["kind"]]
+
+
+def test_every_estimate_kind_is_emitted():
+    # Every kind the code knows is emitted, so every one is in the table.
+    from gfem.refinement import EMITTED_KINDS, ESTIMATE_KINDS
+
+    assert EMITTED_KINDS == ESTIMATE_KINDS
+    assert caps._estimate_kinds() == (ESTIMATE_KINDS, ESTIMATE_KINDS)
+
+
+def test_a_kind_the_estimators_do_not_emit_fails_the_build(monkeypatch):
+    from gfem import refinement
+
+    monkeypatch.setattr(refinement, "EMITTED_KINDS", refinement.ESTIMATE_KINDS[:-1])
+    with pytest.raises(caps.CapabilitiesError, match="objective of participation"):
+        caps._estimate_kinds()
+
+
+def test_the_effectivity_table_lists_every_estimate_kind(derived):
+    from gfem.refinement import ESTIMATE_KINDS
+
+    rows = derived["effectivity_table"]
+    assert [row["kind"] for row in rows] == list(ESTIMATE_KINDS)
+
+
+def test_the_port_mode_share_is_the_estimate_tests_bound(derived, estimate_test):
+    # ADR 0137: the Limits sentence quotes the bound the hybrid strip test holds.
+    share = estimate_test.PORT_MODE_SHARE
+    assert derived["effectivity"]["port mode share"] == {"high": f"{share:g}"}
+
+
+@pytest.mark.parametrize("share", [0.0, -0.1, 1.0, 2.0, "x", None])
+def test_a_port_mode_share_outside_zero_and_one_fails_the_build(share):
+    with pytest.raises(caps.CapabilitiesError, match="port mode share"):
+        caps.port_mode_share(share)
 
 
 def _build_role_page(tmp_path, body):
@@ -562,31 +725,60 @@ def _build_role_page(tmp_path, body):
     return status, out / "index.html"
 
 
-def test_the_effectivity_role_renders_both_ranges(
-    tmp_path, estimate_test, field_estimate_test
-):
+def test_the_effectivity_role_renders_both_ranges(tmp_path, derived):
     status, page = _build_role_page(
         tmp_path,
         "Field :gfem-effectivity:`field low` to :gfem-effectivity:`field high`, "
         "quantity :gfem-effectivity:`quantity low` to "
-        ":gfem-effectivity:`quantity high`, loss jump "
-        ":gfem-effectivity:`loss jump low` to :gfem-effectivity:`loss jump high`.",
+        ":gfem-effectivity:`quantity high`, s :gfem-effectivity:`s high`, loss jump "
+        ":gfem-effectivity:`lumped port across a loss jump low` to "
+        ":gfem-effectivity:`lumped port across a loss jump high`.",
     )
     assert status == 0
-    q_low, q_high = estimate_test.EFFECTIVITY
-    f_low, f_high = field_estimate_test.FIELD_EFFECTIVITY
-    w_low, w_high = field_estimate_test.LOSS_JUMP_WITNESS
+    ranges = derived["effectivity"]
+    field, quantity, s = ranges["field"], ranges["quantity"], ranges["s"]
+    jump = ranges["lumped port across a loss jump"]
     text = page.read_text(encoding="utf-8")
     assert (
-        f"Field {f_low:g} to {f_high:g}, quantity {q_low:g} to {q_high:g}, "
-        f"loss jump {w_low:g} to {w_high:g}." in text
+        f"Field {field['low']} to {field['high']}, quantity {quantity['low']} to "
+        f"{quantity['high']}, s {s['high']}, loss jump {jump['low']} to "
+        f"{jump['high']}." in text
     )
+
+
+def test_the_effectivity_role_renders_the_port_mode_share(tmp_path, derived):
+    status, page = _build_role_page(
+        tmp_path, "Below :gfem-effectivity:`port mode share high`."
+    )
+    assert status == 0
+    share = derived["effectivity"]["port mode share"]["high"]
+    assert f"Below {share}." in page.read_text(encoding="utf-8")
+
+
+def test_the_effectivity_table_directive_renders_every_emitted_kind(tmp_path):
+    from gfem.refinement import EMITTED_KINDS
+
+    status, page = _build_role_page(tmp_path, ".. gfem-effectivity-table::")
+    assert status == 0
+    text = page.read_text(encoding="utf-8")
+    for kind in EMITTED_KINDS:
+        assert caps.KIND_WORDS[kind] in text
 
 
 @pytest.mark.parametrize(
-    "text", ["low", "high", "field", "quantity middle", "loss low", "jump high"]
+    "text",
+    [
+        "low",
+        "high",
+        "field",
+        "quantity middle",
+        "loss low",
+        "jump high",
+        "loss jump low",
+        "port mode share low",
+    ],
 )
-def test_an_effectivity_role_with_no_estimator_fails_the_build(tmp_path, text):
-    # Two estimators have ranges: a bare end is ambiguous, so it is an error.
+def test_an_effectivity_role_with_no_range_name_fails_the_build(tmp_path, text):
+    # Several ranges exist: a bare end is ambiguous, so it is an error.
     status, _ = _build_role_page(tmp_path, f"From :gfem-effectivity:`{text}`.")
     assert status != 0

@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants
 
+from gfem import _objective
 from gfem._checks import is_traced, static_float
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
@@ -1044,7 +1045,10 @@ class DrivenResult:
             new[name] = distance
         factor = jnp.stack(
             [
-                jnp.exp(jnp.asarray(self.port_modes[p].gamma) * (new[p] - old[p]))
+                jnp.exp(
+                    jnp.asarray(_objective.constant(self.port_modes[p].gamma))
+                    * (new[p] - old[p])
+                )
                 if p in new and new[p] != old[p]
                 else jnp.ones(len(self.s.frequency), dtype=complex)
                 for p in ports

@@ -155,22 +155,15 @@ LOSSY_ANISOTROPIC = {
 }
 
 
-def test_the_field_estimator_refuses_loss_in_an_anisotropic_material(
-    tmp_path, monkeypatch
-):
-    def solve(*_args, **_kwargs):
-        raise AssertionError("refine_mesh solved before refusing")
-
+def test_the_field_estimator_estimates_loss_in_an_anisotropic_material(tmp_path):
+    # ADR 0138: the modulus weights of a complex tensor eps_eff are exact
+    # (real axes), so the field estimate admits anisotropic loss.
     model = _box(tmp_path, LOSSY_ANISOTROPIC)
     problem = gfem.Eigenmode(target=F_BOX / 1.3, n_modes=1)
     result = gfem.solve(model, problem, options=OPTIONS)
-    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
-    assert caught.value.feature == "lossy anisotropic material"
-    assert "loss in the anisotropic material of 'a'" in str(caught.value)
-    monkeypatch.setattr("gfem.refinement._solve", solve)
-    with pytest.raises(gfem.MeshRefinementUnsupportedError, match="FieldEstimator"):
-        gfem.refine_mesh(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    assert 1e-3 < estimate.value < 1
+    assert np.all(np.isfinite(estimate.indicators))
 
 
 def test_recovery_is_broken_across_an_interior_pec_sheet(tmp_path):

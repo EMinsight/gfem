@@ -12,7 +12,7 @@ refactorized``, ``held``: a direct step on the values it holds),
 ``reason`` (why a step set up or refactorized, else ``None``), ``guess``
 (``"previous design"`` for a solve that started from the previous design's
 solution (ADR 0126), else ``None``) and ``columns``
-(``"adjoint port"`` for a uniform sweep's adjoint port columns, else
+(``"adjoint load"`` for a uniform sweep's adjoint load columns, else
 ``None``), plus the reason's numbers where it has some.
 
 Resolving ``linear_solver="auto"`` logs one record of the choice
@@ -52,7 +52,7 @@ def solve_step(
     backend that tracks none), or with ``reused`` the action ``"reused"``:
     the step solved on a handle an earlier step prepared and left as it was.
     ``guess`` names the initial guess's source; ``columns`` what the
-    columns are when not the excitations' (``"adjoint port"``).
+    columns are when not the excitations' (``"adjoint load"``).
     """
     if not LOGGER.isEnabledFor(logging.INFO):
         return

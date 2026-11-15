@@ -535,31 +535,62 @@ Flux recovery
 
 Quantity estimator
   The {term}`error estimator` of one quantity: a capacitance entry, an S
-  entry between excited ports, or one mode's `omega`
-  (`gfem.QuantityEstimator`). It weights each tetrahedron's field error by
-  its effect on that quantity, using fields already solved, except for an
-  S entry on a wave port whose read-out is not parallel to its excitation,
-  which takes one {term}`adjoint dual` per such port.
+  entry, one mode's `omega` or Q, the mean `omega` of a degenerate cluster,
+  or an {term}`objective` of the result (`gfem.QuantityEstimator`). It
+  weights each tetrahedron's field error by its effect on that quantity,
+  using fields already solved, except for an S entry or objective whose
+  dual is not a solved field, which takes one {term}`adjoint dual` each.
+
+Objective estimate
+  The {term}`error estimate` of an optimization {term}`objective`, a
+  function of one result, in the objective's units
+  (`gfem.QuantityEstimator(objective=...)`).
+
+Estimate kind
+  What an {term}`error estimate` is of: the field, an entry, Q, a
+  {term}`cluster mean`, or one kind of objective (`ErrorEstimate.kind`).
+  Each kind has its own measured range ({doc}`verification`).
+
+Cluster mean
+  The mean complex `omega` of the modes of a degenerate cluster
+  (`gfem.QuantityEstimator(omega=(i, j))`). It does not depend on which
+  basis of the cluster the solver returns, so it can be followed and
+  estimated where each member cannot.
+
+Region mean
+  A field's or a potential's mean over named volume regions
+  (`gfem.region_mean`): the quantity an objective reads in place of a point
+  value, which has no estimate.
+
+Lossless rewrite
+  On a lossless model with lumped ports, estimating an objective of S
+  together with the power each port's column must carry, which makes its
+  estimate tighter (`ErrorEstimate.kind` names it).
 
 Adjoint dual
-  The field solved with a port's S read-out as the source instead of its
-  excitation, at the same order. The {term}`quantity estimator` weights an
-  S entry's field errors with it when the port's read-out is not parallel
-  to its excitation: a hybrid mode on a wave port in a lossy cross-section.
-  Otherwise it is that port's own field, scaled, and needs no solve.
+  The field solved with a port's S read-out, or an objective's
+  measurement, as the source instead of the excitation, at the same order.
+  The {term}`quantity estimator` weights field errors with it when no
+  solved field can stand in: an S entry whose read port is not excited, or
+  is a wave port with a hybrid mode in a lossy cross-section, and an
+  objective of a field measurement, of electrostatic energy or a potential
+  mean, or of a participation. Otherwise the dual is a port's own field,
+  scaled, and needs no solve.
 
 Error estimate
   The number an {term}`error estimator` gives for a result, compared with
   the tolerance of {term}`mesh refinement`. It has no sign or phase and is
   an estimate, not a bound. For a {term}`quantity estimator` it is relative
-  to a capacitance entry or to `omega`, absolute for an S entry, and gfem
+  to a capacitance entry, `omega`, a cluster's mean `omega` or Q; absolute
+  for an S entry; and in the objective's units for an objective. gfem
   never adds it to the quantity. On gfem's verification cases, against
   errors on the mesh's own facets, the field estimator's estimate was
   between {gfem-effectivity}`field low` and {gfem-effectivity}`field high`
-  times the true error (orders 2 and 3) and the quantity estimator's
-  between {gfem-effectivity}`quantity low` and
-  {gfem-effectivity}`quantity high` times (order 2). Neither sees the
-  faceting of curved surfaces.
+  times the true error (orders 2 and 3) and the quantity estimator's on
+  entries between {gfem-effectivity}`quantity low` and
+  {gfem-effectivity}`quantity high` times (order 2); each other
+  {term}`estimate kind` has its own range ({doc}`verification`). Neither
+  sees the faceting of curved surfaces.
 ```
 
 ## Distributed runs

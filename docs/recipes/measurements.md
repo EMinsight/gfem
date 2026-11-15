@@ -1,8 +1,8 @@
 # Measure fields after the solve
 
-Get a resonator's surface-loss Q, field values at points, a line's
-characteristic impedance or the power through a surface from a solved
-result. A result already carries every quantity that needs no extra input.
+Get a resonator's surface-loss Q, field values at points or their mean over
+a region, a line's characteristic impedance or the power through a surface
+from a solved result. A result already carries every quantity that needs no extra input.
 Anything that needs more input (a probe point, a thin interface layer, a
 voltage path) is a measurement: a function you call on the result, also on a
 result reloaded with {py:obj}`gfem.load_result`.
@@ -66,6 +66,28 @@ e = result.e_field(28e9, excite="p1").at([[0.0, 0.0, 5e-6], [1e-4, 0.0, 5e-6]])
   raises `ValueError`: move it into the solved region.
 - A point outside the mesh by less than 1e-4 of an element's size reads the
   nearest element. Farther out raises `ValueError`: move the point inside.
+
+## Mean of a field over a region
+
+`gfem.region_mean(field, region)` is the field's mean over named volume
+regions, the integral of the solved field divided by the regions' volume:
+
+```python
+result = gfem.solve(model, gfem.Driven(frequency=28e9, keep_fields=True))
+e_core = gfem.region_mean(result.e_field(28e9, excite="p1"), "core")  # (3,), V/m
+static = gfem.solve(model, gfem.Electrostatic(terminals=["t1"]))
+v_gap = gfem.region_mean(static.potential["t1"], ["gap", "gap_top"])  # (), V
+```
+
+- It returns shape `(3,)` for an electric field and `()` for a potential,
+  complex for a phasor. A sequence of names takes the mean over their
+  union.
+- It is differentiable: `jax.grad` of an objective that reads it flows
+  back into the solve.
+- Regions are named, never selected by coordinates, so the mean is the
+  same quantity on every mesh {doc}`mesh-refinement` produces.
+- Prefer it to `Field.at` in an objective you refine for: a mean over a
+  small region has an error estimate, a point value has none.
 
 ## Characteristic impedance
 
@@ -247,6 +269,7 @@ How gfem itself is checked: {doc}`../verification`.
 ## Next
 
 {py:obj}`gfem.interface_participation`, {py:obj}`gfem.characteristic_impedance`,
-{py:obj}`gfem.power_flow`, {py:obj}`gfem.electric_energy`, {py:obj}`gfem.Field`, {doc}`shared-port-surface`,
+{py:obj}`gfem.power_flow`, {py:obj}`gfem.electric_energy`, {py:obj}`gfem.region_mean`,
+{py:obj}`gfem.Field`, {doc}`shared-port-surface`, {doc}`mesh-refinement`,
 {doc}`s-parameter-gradient`, {doc}`eigenmode-gradient`, {doc}`loss-budget`.
 

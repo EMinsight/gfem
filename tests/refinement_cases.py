@@ -35,6 +35,14 @@ Two more cases, not singular at a re-entrant corner:
   Richardson extrapolations (alpha = 4/3) of uniform order-2 n = 32 and 64
   (fitted alpha 1.334 and 1.318), within `BARS_C_AB_BOUND` (relative) of
   the n = 16, 32 pair and of a mesh graded 3 towards the corners.
+- Split two bars, `bars_split_model`: the same meshes with the dielectric
+  split by element centroid at x = `BARS_SPLIT` um into volumes "left" and
+  "right" (vacuum both), for the objectives that read region energies and
+  potential means. References `BARS_SPLIT_REFERENCE`: C, the energy of
+  each excitation in each region (J) and the mean potential of each
+  excitation over each region (V), Richardson extrapolations of uniform
+  order-2 n = 16, 32, 64 with the rate fitted per quantity (1.31-1.34),
+  within `BARS_SPLIT_BOUND` (relative) of the 4/3-rate extrapolations.
 - Anisotropic coax, `anisotropic_coax_model`: the circular coax quarter
   (`structured_meshes.coax_quarter`, radii 1 and 2 um, extruded 0.5 um)
   filled with eps_r (2, 5, 3) along rotated axes, `ANISOTROPIC_COAX`; its
@@ -50,6 +58,10 @@ Two more cases, not singular at a re-entrant corner:
   its length (a hybrid lossy port mode, not parallel); "step" widens that
   slab to y < 1.5 mm from x = 2 mm on. References `LOSSY_GUIDE_S`, order 4
   on the n = 4 mesh with the same offsets.
+- Hybrid strip guide, `hybrid_strip_model`: the same PEC guide with an
+  eps_r 4 strip at y 0.5-1.5, z 0-0.4 mm along its length, so both wave
+  ports carry one hybrid mode, at `HYBRID_STRIP_FREQUENCY`. Lossless, its S
+  has a closed form in `HYBRID_STRIP_GAMMA`.
 
 Tests never recompute the references. Provenance: the coax and step values
 are Richardson extrapolations (alpha = 4/3) of uniform order-2 runs, coax
@@ -129,9 +141,33 @@ LOSSY_WALL_OMEGA = {
     "impedance": 1888057987875.6094 + 236196247959.60132j,  # 377 ohm/sq
     "absorbing": 1887838945992.7559 + 236275835911.12192j,  # first order
     "conductor": 1639154393785.1357 + 3222701363.0419827j,  # 1e5 S/m
+    # 50 ohm/sq (Q 16.6): Richardson with alpha = 4 on m = 4, 5; the (3, 5)
+    # extrapolation lies within 1.2e-10 (relative), its Q within 2.4e-8.
+    # Provenance: .scratch/quantity-estimates/probes/06 (wall.jsonl).
+    "impedance 50": 1646446067072.405 + 49650544763.42546j,
 }
 #: Relative bound of each `LOSSY_WALL_OMEGA`.
 LOSSY_WALL_BOUND = 2e-8
+
+#: The L cavity (`cavity_model`) filled with eps_r 4 inside `gfem.Conductor`
+#: walls of 1e5 S/m: its first mode's omega, rad/s (Q 45.35). Richardson of
+#: uniform order-2 direct solves on n = 16, 32, 64 with the complex rate
+#: fitted on them (alpha 1.33, the corner's 4/3). Against the alpha = 4/3
+#: extrapolation its Q moves by `CONDUCTOR_CAVITY_Q_BOUND` (relative), 16 %
+#: of the n = 16 Q error and 25 % of the n = 32 one, which is not asserted.
+#: Provenance: .scratch/quantity-estimates/probes/06 (lwall.jsonl).
+CONDUCTOR_CAVITY_OMEGA = 460170192679.7072 + 5074129465.918461j
+#: Relative bound of the Q of `CONDUCTOR_CAVITY_OMEGA`.
+CONDUCTOR_CAVITY_Q_BOUND = 8.3e-4
+#: The 1 x 1 x 1.5 mm box of `cluster_box_model` inside `gfem.Conductor`
+#: walls of 1e4 S/m: the mean complex frequency (Hz) of its TE101/TE011 pair
+#: (Q about 30), exactly degenerate on the mirrored mesh. Adaptive order-4
+#: refinement on the cluster indicators to 139,848 DOF; its last estimate,
+#: `CONDUCTOR_PAIR_BOUND` (relative), bounds the change between the last
+#: cycles. Provenance: .scratch/quantity-estimates/probes/09 (ref.jsonl).
+CONDUCTOR_PAIR_F = 177166666304.92017 + 2933904245.038058j
+#: Relative bound of `CONDUCTOR_PAIR_F`.
+CONDUCTOR_PAIR_BOUND = 2e-9
 
 #: The sheet case's capacitance matrix, F, terminals in order a, b.
 SHEET_C = ((4.08621e-17, -1.39274e-19), (-1.39274e-19, 4.19939e-17))
@@ -142,6 +178,38 @@ SHEET_C_BOUND = ((6e-6, 1.5e-4), (1.5e-4, 6e-6))
 BARS_C_AB = {"near": -3.760064826e-18, "screen": -5.618272068e-20}
 #: Relative bound of each `BARS_C_AB` entry.
 BARS_C_AB_BOUND = {"near": 2e-6, "screen": 2e-5}
+
+#: Where `bars_split_model` splits the dielectric into "left" and "right", um.
+BARS_SPLIT = {"near": 2.0, "screen": 2.75}
+#: The split bars' references per case: ``"C"`` (F, terminals a, b),
+#: ``"energy"`` and ``"mean"`` by region, one entry per excitation (a, b),
+#: in J and V.
+BARS_SPLIT_REFERENCE = {
+    "near": {
+        "C": ((4.154721122e-17, -3.760064826e-18), (-3.760064826e-18, 4.154721122e-17)),
+        "energy": {
+            "left": (1.983358940e-17, 9.400162066e-19),
+            "right": (9.400162066e-19, 1.983358940e-17),
+        },
+        "mean": {
+            "left": (4.272181115e-01, 4.561844461e-02),
+            "right": (4.561844461e-02, 4.272181115e-01),
+        },
+    },
+    "screen": {
+        "C": ((4.087311572e-17, -5.618272068e-20), (-5.618272068e-20, 4.583589877e-17)),
+        "energy": {
+            "left": (2.043639443e-17, 2.712770993e-18),
+            "right": (1.634315616e-22, 2.020517839e-17),
+        },
+        "mean": {
+            "left": (2.561508238e-01, 3.142496101e-02),
+            "right": (1.224361763e-04, 3.743286185e-01),
+        },
+    },
+}
+#: Relative bound of every `BARS_SPLIT_REFERENCE` value.
+BARS_SPLIT_BOUND = 2e-5
 
 
 def rotation(axis: str, degrees: float) -> np.ndarray:
@@ -192,6 +260,139 @@ ANISOTROPIC_BOX_F = {
     "rot3": (106.357683863e9, 146.424985394e9, 173.585662901e9, 186.214213145e9),
     "layer_mu": (161.103601495e9, 226.726156671e9, 238.567948030e9, 255.087323796e9),
 }
+
+#: The lossy fills of the PEC box (ADR 0138), per region: eps_r 2 with a
+#: complex mu_r 2 (1 - 0.1i) ("lossy_mu"); "a" (eps_r 3) under "b" (mu_r
+#: 2.5 (1 - 0.2i)) ("lossy_layer_mu"); `ANISOTROPIC_BOX`'s "diag" fill with
+#: tan_delta 0.1 ("lossy_diag_tan"), conductivity (5, 10, 20) S/m
+#: ("lossy_diag_sigma") or per-axis complex eps_r, tan_delta (0.05, 0.1, 0.3)
+#: ("lossy_diag_complex"); that per-axis loss along `ROT3`'s columns
+#: ("lossy_rot3").
+LOSSY_EPS_DIAG = np.array([2.0, 3.0, 4.0]) * (1 - 1j * np.array([0.05, 0.1, 0.3]))
+LOSSY_BOX = {
+    "lossy_mu": {"air": gfem.MaterialField(eps_r=2.0, mu_r=2.0 * (1 - 0.1j))},
+    "lossy_layer_mu": {
+        "a": gfem.Material(eps_r=3.0),
+        "b": gfem.MaterialField(mu_r=2.5 * (1 - 0.2j)),
+    },
+    "lossy_diag_tan": {
+        "air": gfem.Material(eps_r=(2.0, 3.0, 4.0), mu_r=(1.5, 2.0, 2.5), tan_delta=0.1)
+    },
+    "lossy_diag_sigma": {
+        "air": gfem.Material(
+            eps_r=(2.0, 3.0, 4.0), mu_r=(1.5, 2.0, 2.5), conductivity=(5.0, 10.0, 20.0)
+        )
+    },
+    "lossy_diag_complex": {
+        "air": gfem.MaterialField(
+            eps_r=LOSSY_EPS_DIAG,
+            mu_r=(1.5, 2.0, 2.5),
+            axes=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        )
+    },
+    "lossy_rot3": {
+        "air": gfem.MaterialField(
+            eps_r=LOSSY_EPS_DIAG,
+            mu_r=(1.5, 2.0, 2.5),
+            axes=tuple(map(tuple, ROT3.T)),
+        )
+    },
+}
+
+#: Modes of the "lossy_layer_mu" and "lossy_rot3" boxes, omega in rad/s:
+#: order 4 on the m = 2 mesh, direct, each the mode nearest the lossless
+#: box's `ANISOTROPIC_BOX_F` frequency (its key here, Hz) (ostau,
+#: 2026-11-14). `LOSSY_BOX_BOUND` (relative) bounds each by |order 3 -
+#: order 4|, under 2 % of the order-2 error it checks.
+#: Provenance: .scratch/quantity-estimates/probes/10 (cmu.jsonl, aniso.jsonl).
+LOSSY_BOX_OMEGA = {
+    "lossy_layer_mu": {
+        161.103601495e9: 1007119253424.7919 + 68907669884.89853j,
+        226.726156671e9: 1421434413657.8762 + 93317793057.87018j,
+        238.567948030e9: 1493088982074.622 + 38904586117.109695j,
+    },
+    "lossy_rot3": {
+        106.357683863e9: 657737744736.5281 + 70972525364.01263j,
+        146.424985394e9: 904878485590.797 + 102641036684.74458j,
+        173.585662901e9: 1080416508990.5245 + 82256927116.25586j,
+        186.214213145e9: 1215771515468.8926 + 84519811757.66254j,
+    },
+}
+#: Relative bound of each `LOSSY_BOX_OMEGA`, same keys.
+LOSSY_BOX_BOUND = {
+    "lossy_layer_mu": {
+        161.103601495e9: 4.1e-8,
+        226.726156671e9: 3.9e-7,
+        238.567948030e9: 7.8e-7,
+    },
+    "lossy_rot3": {
+        106.357683863e9: 3.1e-7,
+        146.424985394e9: 1.1e-6,
+        173.585662901e9: 9.0e-7,
+        186.214213145e9: 3.1e-6,
+    },
+}
+
+#: The layered boxes' modes, omega in rad/s, keyed by the target (Hz) each was
+#: the mode nearest to: the PEC box 1 x 0.7 x 0.4 mm on the m = 2 mesh with a
+#: 0.2 mm "lower" layer under 0.2 mm of air, the lower one a Drude law
+#: (eps_inf 4, plasma 300 GHz, damping 30 GHz; "law") or that law frozen at
+#: 217.4 GHz ("constant"). Order 4 on the same mesh, direct (ostau,
+#: 2026-11-14); `LAYERED_BOX_BOUND` (relative) bounds each by |order 3 -
+#: order 4|, at most 3 % of the order-2 error it checks.
+#: Provenance: .scratch/quantity-estimates/probes/10 (law.jsonl).
+LAYERED_BOX_OMEGA = {
+    "law": {
+        200e9: 1365886721224.771 + 28583488045.186317j,
+        300e9: 1855493638560.5923 + 21210889092.263752j,
+        380e9: 2396599931171.4844 + 13611651521.137688j,
+    },
+    "constant": {
+        200e9: 1362352081374.5503 + 40387269805.226944j,
+        300e9: 1866221045627.128 + 72030402229.23325j,
+        380e9: 2344744872972.081 + 111638577282.47076j,
+    },
+}
+#: Relative bound of each `LAYERED_BOX_OMEGA`, same keys.
+LAYERED_BOX_BOUND = {
+    "law": {200e9: 4.8e-8, 300e9: 1.5e-6, 380e9: 2.0e-5},
+    "constant": {200e9: 6.9e-8, 300e9: 8.0e-7, 380e9: 4.7e-6},
+}
+
+#: The air box 1 x 0.7 x 0.4 mm with second-order `Absorbing` side walls, PEC
+#: top and bottom: the modes continuing its PEC 110, 210 and 120 modes, omega
+#: in rad/s, keyed (m, mode). Order 4 on the same h = 0.2 / m mm mesh,
+#: direct, the mode of six nearest the PEC frequency (ostau, 2026-11-14);
+#: `ABSORBING_BOX_BOUND` (relative) bounds each by |order 3 - order 4|, at
+#: most 9.4 % of the order-2 error it checks.
+#: Provenance: .scratch/quantity-estimates/probes/10 (abc2.jsonl).
+ABSORBING_BOX_OMEGA = {
+    (1, (1, 1, 0)): 1427348796225.951 + 451233361025.6063j,
+    (2, (1, 1, 0)): 1427390703452.3496 + 451169484224.0431j,
+    (1, (2, 1, 0)): 2578944193656.4575 + 335038120087.43616j,
+    (2, (2, 1, 0)): 2578933663570.1753 + 335101659007.0283j,
+    (1, (1, 2, 0)): 2700555782230.8823 + 341180615784.23846j,
+    (2, (1, 2, 0)): 2700605224545.1787 + 341260372951.9436j,
+}
+#: Relative bound of each `ABSORBING_BOX_OMEGA`, same keys.
+ABSORBING_BOX_BOUND = {
+    (1, (1, 1, 0)): 3.4e-4,
+    (2, (1, 1, 0)): 2.5e-5,
+    (1, (2, 1, 0)): 1.5e-4,
+    (2, (2, 1, 0)): 1.1e-5,
+    (1, (1, 2, 0)): 2.3e-4,
+    (2, (1, 2, 0)): 1.6e-5,
+}
+
+#: The plasmon box's LSM (2, 1) mode, rad/s: the 1 x 0.7 x 0.4 mm PEC box with
+#: a 0.2 mm Drude floor (plasma 350 GHz, damping 5 GHz; Re eps -1.73 at the
+#: mode) under 0.2 mm of air, the root of the LSM^z dispersion relation
+#: (kz1 / e1) tan(kz1 d1) + (kz2 / e2) tan(kz2 d2) = 0, solved by Newton's
+#: method to `PLASMON_BOUND` (relative); order-4 solves agree with it to
+#: 5e-9 to 1e-5. Provenance: .scratch/quantity-estimates/probes/10 (lsm.py).
+PLASMON_OMEGA = 1331954822019.4377 + 10841584018.340836j
+#: Relative bound of `PLASMON_OMEGA`.
+PLASMON_BOUND = 1e-12
 
 #: The block guide's frequency, Hz: TE10 and TE20 propagate in the air guide.
 BLOCK_GUIDE_FREQUENCY = 170e9
@@ -290,6 +491,15 @@ LOSSY_GUIDE_S = {
     },
 }
 
+#: The hybrid strip guide's frequency, Hz (ADR 0137).
+HYBRID_STRIP_FREQUENCY = 170e9
+#: The hybrid strip guide's propagation constant (1/m) at
+#: `HYBRID_STRIP_FREQUENCY`: Richardson (fitted rate h^1.5, the strip's
+#: corners) of port-only order-4 2D solves on n = 16, 24, 32, within
+#: `HYBRID_STRIP_GAMMA_BOUND` (relative) of the n = 32 solve.
+HYBRID_STRIP_GAMMA = 5748.3589j
+HYBRID_STRIP_GAMMA_BOUND = 6e-7
+
 _EPS_R = 4.0
 _QUARTER = 0.5e-6 / 4  # the coax model's extrusion over the full coax's 4 quarters
 
@@ -337,6 +547,16 @@ def bars_model(directory: Path, case: str, n: int) -> gfem.Model:
     return gfem.Model(mesh, materials={"dielectric": gfem.Material()})
 
 
+def bars_split_model(directory: Path, case: str, n: int) -> gfem.Model:
+    """A two-bars case with its dielectric split into "left" and "right", vacuum."""
+    nodes, tets, _, tris, tnames = sm.two_bars(case, n)
+    x = nodes[tets].mean(axis=1)[:, 0]
+    names = ["left" if c < BARS_SPLIT[case] else "right" for c in x]
+    mesh = _mesh(directory, "bars_split", (nodes, tets, names, tris, tnames), "um")
+    vacuum = gfem.Material()
+    return gfem.Model(mesh, materials={"left": vacuum, "right": vacuum})
+
+
 def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:
     """The circular coax quarter, 2k cells across, 4k around, filled with ``fill``."""
     cells = sm.coax_quarter(1.0, 2.0, 0.5, n_r=2 * k, n_theta=4 * k)
@@ -345,8 +565,11 @@ def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:
 
 
 def anisotropic_box_model(directory: Path, m: int, fill: str) -> gfem.Model:
-    """The PEC box 1 x 0.7 x 0.4 mm, h = 0.2 / m mm, filled with ``fill``."""
-    regions = ANISOTROPIC_BOX[fill]
+    """The PEC box 1 x 0.7 x 0.4 mm, h = 0.2 / m mm, filled with ``fill``.
+
+    ``fill`` is a key of `ANISOTROPIC_BOX` or `LOSSY_BOX`.
+    """
+    regions = {**ANISOTROPIC_BOX, **LOSSY_BOX}[fill]
     layers = tuple((name, 0.4 / len(regions)) for name in regions)
     cells = sm.plate(1.0, 0.7, layers, (5 * m, 4 * m, 2 * m // len(regions)))
     mesh = _mesh(directory, "box", cells, "mm")
@@ -444,6 +667,50 @@ def lossy_guide_model(
     )
 
 
+def hybrid_strip_model(
+    directory: Path, n: int, offsets: tuple[float, float] = (0.0, 0.0)
+) -> gfem.Model:
+    """The hybrid strip guide, in mm, ``n`` cells per mm (ADR 0137).
+
+    A PEC guide 4 mm long (x), 2 x 0.8 mm (y, z), with an eps_r 4 strip at
+    y 0.5-1.5 and z 0-0.4 mm along its whole length, so both port faces carry
+    the same hybrid, inhomogeneous mode; wave ports "p1" and "p2" at its
+    ends, de-embedded by ``offsets`` (m). Lossless, it has the closed form
+    S21 = exp(-gamma (L - sum(offsets))), S11 = 0, with gamma
+    `HYBRID_STRIP_GAMMA`.
+    """
+    length, width, height = 4.0, 2.0, 0.8
+    edges = (
+        np.linspace(0, length, int(length * n) + 1),
+        np.linspace(0, width, int(width * n) + 1),
+        np.linspace(0, height, 2 * int(np.ceil(0.4 * n)) + 1),
+    )
+
+    def volume(c: np.ndarray) -> str:
+        return "strip" if 0.5 < c[1] < 1.5 and c[2] < 0.4 else "air"
+
+    def surface(c: np.ndarray) -> str:
+        if abs(c[0]) < 1e-9:
+            return "port1"
+        if abs(c[0] - length) < 1e-9:
+            return "port2"
+        walls = (abs(c[1]) < 1e-9, abs(c[1] - width) < 1e-9)
+        walls += (abs(c[2]) < 1e-9, abs(c[2] - height) < 1e-9)
+        return "wall" if any(walls) else ""
+
+    cells = sm.structured(edges, volume, surface)
+    mesh = _mesh(directory, f"hybrid_strip{n}", cells, "mm")
+    return gfem.Model(
+        mesh,
+        materials={"air": gfem.Material(), "strip": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("wall")],
+        ports=[
+            gfem.WavePort("p1", "port1", offset=offsets[0]),
+            gfem.WavePort("p2", "port2", offset=offsets[1]),
+        ],
+    )
+
+
 def step_model(
     directory: Path, n: int, *, grade: float = 1.0, unit: str = "mm"
 ) -> gfem.Model:
@@ -469,6 +736,48 @@ def cavity_model(directory: Path, n: int, *, grade: float = 1.0) -> gfem.Model:
     mesh = _mesh(directory, "cavity", sm.l_cavity(n, grade=grade), "mm")
     return gfem.Model(
         mesh, materials={"air": gfem.Material()}, boundaries=[gfem.PEC("wall")]
+    )
+
+
+def cluster_box_model(
+    directory: Path,
+    size: tuple[float, float, float],
+    n: int,
+    *,
+    conductivity: float | None = None,
+) -> gfem.Model:
+    """A box of ``size`` mm, air, PEC (or `gfem.Conductor`) walls "wall".
+
+    About ``n`` cells per mm on each axis, Kuhn-split and mirrored about the
+    midplanes of x and y, and of z for a cube: a degenerate pair or triple
+    stays exactly degenerate on this mesh (the Kuhn split alone would split
+    it by about the discretization error, ADR 0136).
+    """
+    lx, ly, lz = size
+    counts = [max(1, round(n * side)) for side in size]
+    edges = tuple(
+        np.linspace(0.0, side, count + 1)
+        for side, count in zip(size, counts, strict=True)
+    )
+    tol = 1e-9
+
+    def surface(c: np.ndarray) -> str:
+        on = any(abs(c[a]) < tol or abs(c[a] - size[a]) < tol for a in range(3))
+        return "wall" if on else ""
+
+    cube = abs(lz - lx) < tol and abs(ly - lx) < tol
+    mirror = (counts[0] % 2 == 0, counts[1] % 2 == 0, counts[2] % 2 == 0 and cube)
+    mesh = sm.structured(edges, lambda _c: "air", surface, mirror=mirror)
+    name = f"cluster_{lx:g}_{ly:g}_{lz:g}_{n}"
+    wall = (
+        gfem.PEC("wall")
+        if conductivity is None
+        else gfem.Conductor("wall", conductivity=conductivity)
+    )
+    return gfem.Model(
+        _mesh(directory, name, mesh, "mm"),
+        materials={"air": gfem.Material()},
+        boundaries=[wall],
     )
 
 

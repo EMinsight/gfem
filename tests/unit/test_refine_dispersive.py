@@ -2,10 +2,11 @@
 
 The estimators read a law region at the solve frequency (ADR 0111): the
 field and S estimates of a law region equal those of the constant material
-holding the law's value there. The eigen omega estimate refuses a law, and
-so does every estimator where eps(omega) = 0 (the flux recovery has no
-weight there). The metal case's effectivity is verified in
-`tests/verification/test_field_estimate.py`.
+holding the law's value there. The eigen omega estimate admits a law
+where Re eps > 0 at the mode, and refuses a mode bound to a law region at
+Re eps < 0 when it estimates (ADR 0138); every estimator refuses where
+eps(omega) = 0 (the flux recovery has no weight there). The metal case's
+effectivity is verified in `tests/verification/test_field_estimate.py`.
 
 The line is a 10 x 2 x 1 mm parallel-plate line with lumped ports at both
 ends; its 2 mm "core" (x in [4, 6]) holds the law.
@@ -95,20 +96,73 @@ def test_a_law_region_is_estimated_at_its_value_at_the_solve_frequency(
     )
 
 
-@pytest.mark.usefixtures("no_solve")
-def test_the_omega_estimator_refuses_a_law(tmp_path):
+def test_the_omega_estimator_admits_a_law_at_positive_re_eps(tmp_path):
+    # ADR 0138: a mode where every law region has Re eps > 0 is estimated.
     cavity = rc.cavity_model(tmp_path, 2)
     model = gfem.Model(
         cavity.mesh,
         materials={"air": gfem.Material(eps_r=LOSSY)},
         boundaries=cavity.boundaries,
     )
+    ref = gfem.refine_mesh(
+        model,
+        gfem.Eigenmode(target=rc.CAVITY_F1 / 2, n_modes=1),
+        estimator=gfem.QuantityEstimator(omega=0),
+        tolerance=1.0,
+        options=OPTIONS,
+    )
+    assert ref.stop == "tolerance"
+    assert ref.estimate.kind == "omega"
+    assert 0 < ref.estimate.value < 1e-1
+
+
+#: The plasmon box: a 0.2 mm Drude floor (Re eps about -1.7 at the mode)
+#: under 0.2 mm of air, 1 x 0.7 x 0.4 mm, PEC walls; its LSM (2, 1) mode
+#: lies near 212 GHz (ADR 0138).
+FLOOR = gfem.PermittivityLaw(
+    terms=[gfem.Drude(plasma_frequency=350 * GHZ, damping=5 * GHZ)]
+)
+
+
+def _plasmon_box(directory):
+    cells = sm.plate(1.0, 0.7, (("metal", 0.2), ("air", 0.2)), (5, 4, 1))
+    path = sm.write_msh22(directory / "box.msh", cells)
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"metal": gfem.Material(eps_r=FLOOR), "air": gfem.Material()},
+        boundaries=[gfem.PEC(s) for s in ("bottom", "top", "side")],
+    )
+
+
+PLASMON_PROBLEM = gfem.Eigenmode(target=200 * GHZ, n_modes=1)
+
+
+def test_the_omega_estimator_refuses_a_plasmon_bound_mode(tmp_path):
+    # Bound to a region at Re eps < 0, the omega estimate measured 0.81 to
+    # 1.02 times the error: the mode raises at estimate time (ADR 0138).
+    model = _plasmon_box(tmp_path)
+    result = gfem.solve(model, PLASMON_PROBLEM, options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    message = str(caught.value)
+    assert caught.value.feature == "dispersive eigenmode"
+    assert "'metal'" in message
+    assert "Re eps" in message
+    assert "FieldEstimator()" in message
+    # the field estimate of the same mode stays admitted
+    field = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    assert np.all(np.isfinite(field.values))
+
+
+def test_refinement_refuses_a_plasmon_bound_mode_on_its_first_estimate(tmp_path):
     with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
         gfem.refine_mesh(
-            model, rc.CAVITY_PROBLEM, estimator=gfem.QuantityEstimator(omega=0)
+            _plasmon_box(tmp_path),
+            PLASMON_PROBLEM,
+            estimator=gfem.QuantityEstimator(omega=0),
+            options=OPTIONS,
         )
     assert caught.value.feature == "dispersive eigenmode"
-    assert "FieldEstimator()" in str(caught.value)
 
 
 @pytest.mark.parametrize(
