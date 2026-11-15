@@ -14,7 +14,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -39,6 +39,9 @@ from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
 from gfem.shape import _check_quality
 from gfem.solve import _solve
+
+if TYPE_CHECKING:
+    from gfem._engine.estimate import RecoveryCache
 
 __all__ = [
     "ErrorEstimate",
@@ -187,6 +190,36 @@ class QuantityEstimator:
 
 Estimator = FieldEstimator | QuantityEstimator
 
+#: What an `ErrorEstimate` can be of (its ``kind``): a closed set (ADR 0143).
+#: ``"field"`` is the `FieldEstimator`'s; ``"capacitance"``, ``"s"`` and
+#: ``"omega"`` a `QuantityEstimator`'s entries; ``"q"`` and ``"cluster mean"``
+#: a mode's Q and a degenerate cluster's mean omega; every ``"objective of
+#: ..."`` an objective's, by what it reads. Each kind has its own verified
+#: effectivity range (``EFFECTIVITY_BY_KIND`` in the estimate tests), which
+#: the docs generate per kind. Private: not in ``gfem.__all__``.
+ESTIMATE_KINDS = (
+    "field",
+    "capacitance",
+    "s",
+    "omega",
+    "q",
+    "cluster mean",
+    "objective of s",
+    "objective of s, lossless rewrite",
+    "objective of omega",
+    "objective of capacitance",
+    "objective of electrostatic energy",
+    "objective of potential means",
+    "objective of absorbed power",
+    "objective of field means",
+    "objective of participation",
+)
+
+#: The kinds of `ESTIMATE_KINDS` the estimators emit today, in that order. A
+#: kind joins when its estimate lands; the docs build requires verification
+#: cases for exactly these. Equal to `ESTIMATE_KINDS` once every kind has.
+EMITTED_KINDS = ("field", "capacitance", "s", "omega")
+
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class ErrorEstimate:
@@ -194,6 +227,10 @@ class ErrorEstimate:
 
     Attributes:
         estimator: The estimator that made it.
+        kind: What was estimated: ``"field"`` for a `FieldEstimator`;
+            ``"capacitance"``, ``"s"`` or ``"omega"`` for a
+            `QuantityEstimator`, after its keyword. Each kind has its own
+            measured effectivity range (verification page).
         values: Estimated size of the error per frequency (a driven result),
             per mode (an eigenmode result under a `FieldEstimator`), or one
             entry, in the units of ``tolerance``. For a `FieldEstimator`
@@ -215,6 +252,7 @@ class ErrorEstimate:
     """
 
     estimator: Estimator
+    kind: str
     values: tuple[float, ...]
     indicators: np.ndarray
 
@@ -553,7 +591,11 @@ def _loop(
     options: SolverOptions,
     comm: Any,
 ) -> MeshRefinement:
-    """Solve, estimate, stop, mark, bisect, cap, transfer; see `refine_mesh`."""
+    """Solve, estimate, stop, mark, bisect, cap, transfer; see `refine_mesh`.
+
+    Each solved mesh gets one `RecoveryCache`, shared by its estimates and
+    dropped with the mesh.
+    """
     from gfem._engine import driven
 
     if isinstance(problem, Driven):
@@ -584,6 +626,7 @@ def _loop(
             threads=options.threads,
             mode=mode,
             adjoints=adjoints,
+            cache=_recovery_cache(),  # this mesh's, dropped before the next solve
         )
         cycle = RefinementCycle(
             tetrahedra=len(current.mesh.tetrahedra),
@@ -714,6 +757,7 @@ def _estimate(
     threads: int | None,
     mode: int | None = None,
     adjoints: dict[tuple[float, str], np.ndarray] | None = None,
+    cache: RecoveryCache | None = None,
 ) -> ErrorEstimate:
     """The estimate of ``result``: dispatch on the estimator and result type.
 
@@ -721,13 +765,19 @@ def _estimate(
     ``adjoints`` are an S entry's adjoints solved with ``result``
     (`gfem.solve._solve`);
     ``None`` solves them here if the entry needs them (`_adjoint_ports`).
+    ``cache`` is the mesh's `gfem._engine.estimate.RecoveryCache`, shared by
+    every estimate of ``result``'s mesh; ``None`` makes one for this call.
     """
     from gfem._engine import estimate as kernels
 
+    cache = cache or kernels.RecoveryCache()
+    kind = _kind(estimator)
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
             parts = [
-                kernels.capacitance(model, result, *estimator.capacitance, threads)
+                kernels.capacitance(
+                    model, result, *estimator.capacitance, threads, cache=cache
+                )
             ]
         elif estimator.s is not None:
             if adjoints is None:
@@ -739,25 +789,45 @@ def _estimate(
                 for key, z in adjoints.items()
             }
             parts = kernels.s_entry(
-                model, result, *estimator.s, threads, adjoints=duals
+                model, result, *estimator.s, threads, adjoints=duals, cache=cache
             )
         else:
-            parts = [kernels.omega(model, result, int(mode or 0), threads)]
-        values = tuple(value for value, _ in parts)
-        _, indicators = kernels.combine([[weights] for _, weights in parts])
+            parts = [kernels.omega(model, result, int(mode or 0), threads, cache=cache)]
+        values = tuple(terms.value for terms in parts)
+        _, indicators = kernels.combine([[terms.weights] for terms in parts])
     else:
         if isinstance(result, ElectrostaticResult):
-            solves = kernels.electrostatic(model, result, threads)
+            solves = kernels.electrostatic(model, result, threads, cache=cache)
         elif isinstance(result, DrivenResult):
-            solves = kernels.driven(model, result, threads)
+            solves = kernels.driven(model, result, threads, cache=cache)
         elif isinstance(result, EigenmodeResult):
-            solves = kernels.eigenmode(model, result, threads)
+            solves = kernels.eigenmode(model, result, threads, cache=cache)
         else:  # pragma: no cover - `_check_estimable` refuses the rest first
             raise _unsupported_result(result, estimator)
         values, indicators = kernels.combine(solves)
     return ErrorEstimate(
-        estimator=estimator, values=values, indicators=readonly(indicators)
+        estimator=estimator,
+        kind=kind,
+        values=values,
+        indicators=readonly(indicators),
     )
+
+
+def _kind(estimator: Estimator) -> str:
+    """The `ESTIMATE_KINDS` entry an estimator's estimate is of."""
+    if isinstance(estimator, FieldEstimator):
+        return "field"
+    for kind in ("capacitance", "s", "omega"):
+        if getattr(estimator, kind) is not None:
+            return kind
+    raise AssertionError(estimator)  # pragma: no cover - checked on construction
+
+
+def _recovery_cache() -> RecoveryCache:
+    """A new `gfem._engine.estimate.RecoveryCache`: one per solved mesh."""
+    from gfem._engine import estimate as kernels
+
+    return kernels.RecoveryCache()
 
 
 def _estimator_mode(estimator: Estimator) -> int | None:

@@ -181,8 +181,8 @@ def test_a_parallel_port_s_estimate_is_its_adjoint_estimate(tmp_path, tan_delta)
     adjoint = kernels.s_entry(
         model, result, "p2", "p1", adjoints={(rc.LOSSY_GUIDE_FREQUENCY, "p2"): z}
     )
-    assert adjoint[0][0] == pytest.approx(free[0][0], rel=1e-12)
-    np.testing.assert_allclose(adjoint[0][1], free[0][1], rtol=1e-10)
+    assert adjoint[0].value == pytest.approx(free[0].value, rel=1e-12)
+    np.testing.assert_allclose(adjoint[0].weights, free[0].weights, rtol=1e-10)
 
 
 @pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
@@ -203,7 +203,7 @@ def test_refine_mesh_solves_the_adjoint_with_the_forward(tmp_path, prepares):
     assert again.value == pytest.approx(refined.estimate.value, rel=1e-8)
     _, own = _forced_adjoint(model, refined.result, "p2")
     assert own is None
-    free = kernels.s_entry(model, refined.result, "p2", "p1")[0][0]
+    free = kernels.s_entry(model, refined.result, "p2", "p1")[0].value
     assert abs(free / refined.estimate.value - 1) > 1e-6
 
 
@@ -407,9 +407,9 @@ def test_the_diagonal_capacitance_kernel_is_the_field_kernel(coax):
     result = gfem.solve(coax, problem, options=OPTIONS)
     (group,) = kernels.electrostatic(coax, result)
     for index, terminal in enumerate(("inner", "outer")):
-        value, weights = kernels.capacitance(coax, result, terminal, terminal)
-        assert value == pytest.approx(float(group[index].sum()), rel=1e-13)
-        np.testing.assert_allclose(weights, group[index], rtol=1e-13, atol=0)
+        terms = kernels.capacitance(coax, result, terminal, terminal)
+        assert terms.value == pytest.approx(float(group[index].sum()), rel=1e-13)
+        np.testing.assert_allclose(terms.weights, group[index], rtol=1e-13, atol=0)
 
 
 def test_an_off_diagonal_capacitance_is_estimated(tmp_path):
@@ -484,6 +484,118 @@ def test_cycles_record_the_quantity(coax, step, cavity):
         options=OPTIONS,
     )
     assert ref.cycles[0].value == complex(ref.result.omega[0])
+
+
+def test_each_quantity_estimate_names_its_kind(coax, step, cavity):
+    cases = [
+        (coax, rc.COAX_PROBLEM, {"capacitance": ("inner", "inner")}, "capacitance"),
+        (step, rc.step_problem(), {"s": ("p2", "p1")}, "s"),
+        (cavity, rc.CAVITY_PROBLEM, {"omega": 0}, "omega"),
+    ]
+    for model, problem, key, kind in cases:
+        if isinstance(problem, gfem.Driven):
+            kept = dataclasses.replace(problem, keep_fields=True)
+        else:
+            kept = problem
+        result = gfem.solve(model, kept, options=OPTIONS)
+        estimator = gfem.QuantityEstimator(**key)
+        assert gfem.error_estimate(result, estimator, model=model).kind == kind
+
+
+# --- the kernels: complex sums, per-tetrahedron terms, one recovery ------------
+
+#: Each kernel's value before its terms were exposed (b5ca8d5, order 2,
+#: direct, n = 2): the coax's C_inner,inner, the step line's S21 and S11 at 3
+#: and 8 GHz, the L cavity's first omega.
+KERNEL_VALUES = {
+    "capacitance": (0.013389066116039919,),
+    ("p2", "p1"): (0.001994273976810584, 0.005197056917579232),
+    ("p1", "p1"): (0.0014252233956337092, 0.002609020921160659),
+    "omega": (0.021384095777234734,),
+}
+
+
+def test_the_kernels_keep_their_values(coax, step, cavity):
+    result = gfem.solve(coax, rc.COAX_PROBLEM, options=OPTIONS)
+    terms = kernels.capacitance(coax, result, "inner", "inner")
+    assert (terms.value,) == pytest.approx(KERNEL_VALUES["capacitance"], rel=1e-12)
+    problem = dataclasses.replace(rc.step_problem(), keep_fields=True)
+    result = gfem.solve(step, problem, options=OPTIONS)
+    for entry in (("p2", "p1"), ("p1", "p1")):
+        values = tuple(t.value for t in kernels.s_entry(step, result, *entry))
+        assert values == pytest.approx(KERNEL_VALUES[entry], rel=1e-12)
+    result = gfem.solve(cavity, rc.CAVITY_PROBLEM, options=OPTIONS)
+    terms = kernels.omega(cavity, result, 0)
+    assert (terms.value,) == pytest.approx(KERNEL_VALUES["omega"], rel=1e-12)
+
+
+def test_a_kernel_returns_its_complex_sums_and_terms(step, cavity):
+    problem = gfem.Driven([3e9], keep_fields=True)
+    result = gfem.solve(step, problem, options=OPTIONS)
+    (terms,) = kernels.s_entry(step, result, "p2", "p1")
+    n = len(step.mesh.tetrahedra)
+    assert terms.curl.shape == terms.mass.shape == (n,)
+    assert np.iscomplexobj(terms.curl)
+    assert np.iscomplexobj(terms.mass)
+    assert terms.curl_sum == pytest.approx(terms.curl.sum(), rel=1e-12)
+    assert terms.mass_sum == pytest.approx(terms.mass.sum(), rel=1e-12)
+    lam = abs(terms.lam)
+    assert terms.value == pytest.approx(
+        terms.scale * (abs(terms.curl_sum) + lam * abs(terms.mass_sum)), rel=1e-14
+    )
+    np.testing.assert_allclose(
+        terms.weights, terms.scale * np.abs(terms.curl - terms.lam * terms.mass)
+    )
+    result = gfem.solve(cavity, rc.CAVITY_PROBLEM, options=OPTIONS)
+    terms = kernels.omega(cavity, result, 0)
+    assert isinstance(terms.lam, complex)
+
+
+@pytest.fixture
+def recoveries(monkeypatch):
+    """The `FluxRecovery` objects built."""
+    built = []
+    original = kernels.FluxRecovery.__init__
+
+    def counting(self, *args, **kwargs):
+        built.append(self)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(kernels.FluxRecovery, "__init__", counting)
+    return built
+
+
+def test_two_quantities_on_one_mesh_build_one_recovery(step, recoveries):
+    # One cycle's estimates share one recovery and one set of recovered
+    # errors per field: S21 and S11 at two frequencies read the fields of p1
+    # and p2 at each, through one `RecoveryCache`.
+    from gfem.refinement import _estimate
+
+    problem = dataclasses.replace(rc.step_problem(), keep_fields=True)
+    result = gfem.solve(step, problem, options=OPTIONS)
+    cache = kernels.RecoveryCache()
+    s21 = _estimate(
+        step, result, gfem.QuantityEstimator(s=("p2", "p1")), threads=None, cache=cache
+    )
+    s11 = _estimate(
+        step, result, gfem.QuantityEstimator(s=("p1", "p1")), threads=None, cache=cache
+    )
+    assert len(recoveries) == 1
+    assert s21.values == pytest.approx(KERNEL_VALUES["p2", "p1"], rel=1e-12)
+    assert s11.values == pytest.approx(KERNEL_VALUES["p1", "p1"], rel=1e-12)
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_one_refine_mesh_cycle_builds_one_recovery(step, recoveries):
+    gfem.refine_mesh(
+        step,
+        rc.step_problem(),
+        estimator=gfem.QuantityEstimator(s=("p2", "p1")),
+        tolerance=1e-5,
+        max_cycles=1,
+        options=OPTIONS,
+    )
+    assert len(recoveries) == 2  # one per solved mesh, for both frequencies
 
 
 # --- eigenmode tracking ------------------------------------------------------

@@ -31,10 +31,17 @@ does not converge at a corner singularity.
 Each field's indicators are divided by its energy norm squared; `combine`
 merges the normalized indicators of several fields. Element arrays are in
 gfem tetrahedron order.
+
+Every kernel takes an optional `RecoveryCache`: the recoveries and recovered
+errors of one mesh's solves, shared by every estimate on that mesh (one
+`FluxRecovery` per mesh, one projection per field). The quantity kernels
+return their identity's complex `Terms`, from which an estimate kind builds
+its value and its weights.
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -63,6 +70,8 @@ from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
 
 __all__ = [
     "FluxRecovery",
+    "RecoveryCache",
+    "Terms",
     "capacitance",
     "combine",
     "driven",
@@ -392,6 +401,160 @@ def _sheet_faces(model: Model, built: EngineMesh, names: set[str]) -> frozenset[
     )
 
 
+class RecoveryCache:
+    """The recoveries and recovered errors of one mesh's solves.
+
+    Every estimate made on one mesh (one `refine_mesh` cycle, or one
+    `error_estimate` call) shares one cache, so that several quantities
+    reading the same solved fields pay for each recovery once:
+
+    - one `FluxRecovery` per (model, order, recovery flavour: ``cracks``,
+      ``sheets``, ``static``);
+    - one NGSolve view of each field (`_parts`);
+    - one eps_eff per (recovery, k) (`_effective_eps`);
+    - one projection of each field's mu^-1 curl E and eps_eff E per
+      (recovery, field, k) (`wave_residuals`), or of its eps grad V
+      (`potential_residual`).
+
+    Keys hold object identities, and the cache holds the keyed objects, so
+    an id is never reused while it lives. Make one per mesh and drop it with
+    the mesh: it keeps every recovered error alive.
+    """
+
+    def __init__(self) -> None:
+        self._recoveries: dict[tuple, FluxRecovery] = {}
+        self._entries: dict[tuple, Any] = {}
+        self._held: list[Any] = []
+
+    def recovery(
+        self,
+        model: Model,
+        order: int,
+        *,
+        cracks: bool = False,
+        sheets: Sequence[str] = (),
+        static: bool = False,
+    ) -> FluxRecovery:
+        """The `FluxRecovery` of ``model`` at ``order``, built on first use."""
+        key = (id(model), order, cracks, tuple(sorted(sheets)), static)
+        if key not in self._recoveries:
+            self._held.append(model)
+            self._recoveries[key] = FluxRecovery(
+                model, order, cracks=cracks, sheets=sheets, static=static
+            )
+        return self._recoveries[key]
+
+    def _memo(self, key: tuple, held: Sequence[Any], make: Callable[[], Any]) -> Any:
+        if key not in self._entries:
+            self._held.extend(held)
+            self._entries[key] = make()
+        return self._entries[key]
+
+    def parts(self, field: Field) -> list[ngs.GridFunction]:
+        """`_parts` of ``field``: its real part, and its imaginary part if any."""
+        return self._memo(("parts", id(field)), (field,), lambda: _parts(field))
+
+    def effective_eps(
+        self, recovery: FluxRecovery, k: complex
+    ) -> tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]]:
+        """`_effective_eps` of ``recovery`` at ``k``."""
+        return self._memo(
+            ("eps", id(recovery), complex(k)),
+            (),
+            lambda: _effective_eps(recovery, k),
+        )
+
+    def wave_residuals(
+        self, recovery: FluxRecovery, field: Field, k: complex
+    ) -> tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]]:
+        """The recovered errors of a wave field at ``k`` (`_residuals`).
+
+        mu^-1 curl E and eps_eff E, each as its real (and imaginary) part;
+        eps_eff at ``k`` in the mesh's length unit.
+        """
+
+        def make() -> Any:
+            eps, _ = self.effective_eps(recovery, k)
+            return _residuals(recovery, self.parts(field), eps)
+
+        return self._memo(("wave", id(recovery), id(field), complex(k)), (field,), make)
+
+    def potential_residual(
+        self, recovery: FluxRecovery, field: Field
+    ) -> tuple[ngs.GridFunction, ngs.CoefficientFunction, ngs.CoefficientFunction]:
+        """A potential's view, its flux eps grad V, and ``R(flux) - flux``."""
+
+        def make() -> Any:
+            (gf,) = self.parts(field)
+            flux = recovery.eps * ngs.grad(gf)
+            return gf, flux, recovery.flux_residual(flux)
+
+        return self._memo(("potential", id(recovery), id(field)), (field,), make)
+
+
+@dataclasses.dataclass(frozen=True)
+class Terms:
+    """One quantity's error identity on one solve, tetrahedron by tetrahedron.
+
+    The identity's volume part (ADR 0089) is sum_K a_K, with
+    a_K = c_K - lam m_K of the recovered errors of the quantity's field and
+    of its dual, complex bilinear (not Hermitian):
+
+        c_K = int_K (R(mu^-1 curl E_i) - mu^-1 curl E_i) . mu (...)_j
+        m_K = int_K (R(eps E_i) - eps E_i) . eps^-1 (...)_j
+
+    An estimate kind builds its value from these: an entry keeps the curl
+    and mass sums apart (`value`); a later kind may combine several entries'
+    complex sums (``curl_sum``, ``mass_sum``) or per-tetrahedron terms before
+    taking magnitudes.
+
+    Attributes:
+        curl: c_K per tetrahedron, complex, gfem tetrahedron order; zero for
+            a potential.
+        mass: m_K per tetrahedron, complex.
+        lam: The factor of m_K in a_K: k0^2 for an S entry, k^2 (complex on
+            a lossy mode) for omega, -1 for a capacitance (a_K = m_K).
+        scale: The positive factor carrying a_K into the quantity's units.
+        elementwise: Whether `value` sums |a_K| over the tetrahedra (a
+            capacitance entry, whose off-diagonal terms have no sign)
+            instead of keeping the curl and mass sums whole.
+    """
+
+    curl: np.ndarray
+    mass: np.ndarray
+    lam: complex
+    scale: float
+    elementwise: bool = False
+
+    @property
+    def curl_sum(self) -> complex:
+        """sum_K c_K."""
+        return complex(self.curl.sum())
+
+    @property
+    def mass_sum(self) -> complex:
+        """sum_K m_K."""
+        return complex(self.mass.sum())
+
+    @property
+    def weights(self) -> np.ndarray:
+        """Each tetrahedron's |a_K| in the quantity's units (ticket 08's indicator)."""
+        return self.scale * np.abs(self.curl - self.lam * self.mass)
+
+    @property
+    def value(self) -> float:
+        """The entry's estimate: ``scale (|sum c_K| + |lam| |sum m_K|)``.
+
+        The two sums are never let cancel over the mesh. With
+        ``elementwise``, ``sum_K |a_K| scale`` (the sum of `weights`).
+        """
+        if self.elementwise:
+            return float(self.weights.sum())
+        return float(
+            self.scale * (abs(self.curl_sum) + abs(self.lam) * abs(self.mass_sum))
+        )
+
+
 def _grid_function(field: Field, real_part: bool = True) -> ngs.GridFunction:
     """A real NGSolve view of a field (its real or imaginary part)."""
     excluded = field._excluded  # noqa: SLF001
@@ -405,26 +568,33 @@ def _grid_function(field: Field, real_part: bool = True) -> ngs.GridFunction:
 
 
 def electrostatic(
-    model: Model, result: ElectrostaticResult, threads: int | None = None
+    model: Model,
+    result: ElectrostaticResult,
+    threads: int | None = None,
+    *,
+    cache: RecoveryCache | None = None,
 ) -> list[list[np.ndarray]]:
     """Normalized squared indicators of each terminal's potential.
 
     One solve (the whole capacitance matrix), holding one field per
-    terminal: eta_K^2 / || grad V ||^2_eps per tetrahedron.
+    terminal: eta_K^2 / || grad V ||^2_eps per tetrahedron. ``cache`` shares
+    the recovery and the recovered errors with the mesh's other estimates.
     """
-    fields = list(result.potential.values())
+    cache = cache or RecoveryCache()
     with task_manager(threads):
-        gfs = [_grid_function(field) for field in fields]
-        recovery = _potential_recovery(model, result)
+        recovery = _potential_recovery(model, result, cache)
         group = []
-        for gf in gfs:
-            flux = recovery.eps * ngs.grad(gf)
+        for field in result.potential.values():
+            gf, flux, diff = cache.potential_residual(recovery, field)
             energy = recovery.element_integrals(ngs.grad(gf) * flux).sum()
-            group.append(recovery.flux_error(flux) / energy)
+            error = recovery.element_integrals(diff * (recovery.eps_inverse * diff))
+            group.append(error / energy)
     return [group]
 
 
-def _potential_recovery(model: Model, result: ElectrostaticResult) -> FluxRecovery:
+def _potential_recovery(
+    model: Model, result: ElectrostaticResult, cache: RecoveryCache
+) -> FluxRecovery:
     """The flux recovery of an electrostatic solve's potentials.
 
     Cut along the interior surfaces the problem holds at a fixed potential
@@ -435,38 +605,46 @@ def _potential_recovery(model: Model, result: ElectrostaticResult) -> FluxRecove
         b.surface for b in model.boundaries if isinstance(b, (PEC, Conductor))
     }
     order = next(iter(result.potential.values())).order
-    return FluxRecovery(model, order, sheets=sorted(sheets), static=True)
+    return cache.recovery(model, order, sheets=sorted(sheets), static=True)
 
 
 def driven(
-    model: Model, result: DrivenResult, threads: int | None = None
+    model: Model,
+    result: DrivenResult,
+    threads: int | None = None,
+    *,
+    cache: RecoveryCache | None = None,
 ) -> list[list[np.ndarray]]:
     """Normalized squared indicators of each kept field, grouped by frequency.
 
     One group per frequency, holding one field per excited port, estimated
     one at a time.
     """
+    cache = cache or RecoveryCache()
     groups: dict[float, list[np.ndarray]] = {}
     with task_manager(threads):
-        recovery = None
         for (frequency, _), field in zip(result.kept, result.e_fields, strict=True):
-            if recovery is None:
-                recovery = FluxRecovery(model, field.order, cracks=True)
-            groups.setdefault(frequency, []).append(_wave(recovery, field))
+            recovery = cache.recovery(model, field.order, cracks=True)
+            groups.setdefault(frequency, []).append(_wave(recovery, field, cache))
     return list(groups.values())
 
 
 def eigenmode(
-    model: Model, result: EigenmodeResult, threads: int | None = None
+    model: Model,
+    result: EigenmodeResult,
+    threads: int | None = None,
+    *,
+    cache: RecoveryCache | None = None,
 ) -> list[list[np.ndarray]]:
     """Normalized squared indicators of each mode, one group per mode."""
+    cache = cache or RecoveryCache()
     fields = list(result.e_fields)
     with task_manager(threads):
-        recovery = FluxRecovery(model, fields[0].order, cracks=True)
-        return [[_wave(recovery, field)] for field in fields]
+        recovery = cache.recovery(model, fields[0].order, cracks=True)
+        return [[_wave(recovery, field, cache)] for field in fields]
 
 
-def _wave(recovery: FluxRecovery, field: Field) -> np.ndarray:
+def _wave(recovery: FluxRecovery, field: Field, cache: RecoveryCache) -> np.ndarray:
     """eta_K^2 / energy of one time-harmonic electric field.
 
     eta_K^2 = || R(mu^-1 curl E) - mu^-1 curl E ||^2_{mu,K}
@@ -483,22 +661,20 @@ def _wave(recovery: FluxRecovery, field: Field) -> np.ndarray:
     k2 = abs(k) ** 2
     values = _lossy_eps_eff(recovery, k)
     if values is None:
-        eps = [recovery.eps]
         flux_weight, mass_weight = recovery.eps_inverse, recovery.eps
     else:
-        eps = _split(built, values)
         flux_weight, mass_weight = (
             coefficient(built, w) for w in _modulus_weights(values)
         )
-    parts = _parts(field)
+    parts = cache.parts(field)
+    curls, fluxes = cache.wave_residuals(recovery, field, k)
     eta2 = np.zeros(len(recovery.model.mesh.tetrahedra))
     energy = 0.0
-    for gf, flux in zip(parts, _times(eps, parts), strict=True):
+    for gf, rc, rf in zip(parts, curls, fluxes, strict=True):
         curl = ngs.curl(gf)
-        diff = recovery.flux_residual(flux)
-        eta2 += recovery.curl_error(curl) + k2 * recovery.element_integrals(
-            diff * (flux_weight * diff)
-        )
+        eta2 += recovery.element_integrals(
+            rc * (recovery.mu * rc)
+        ) + k2 * recovery.element_integrals(rf * (flux_weight * rf))
         energy += recovery.element_integrals(
             curl * (recovery.mu_inverse * curl) + k2 * (gf * (mass_weight * gf))
         ).sum()
@@ -553,12 +729,14 @@ def combine(
 #   c_K(e_i, e_j) = int_K (R(mu^-1 curl E_i) - mu^-1 curl E_i) . mu (...)_j
 #   m_K(e_i, e_j) = int_K (R(eps E_i) - eps E_i) . eps^-1 (...)_j
 #
-# complex bilinear (not Hermitian). The reported estimate is the magnitude
-# |sum c_K| + k^2 |sum m_K| (the two terms are never let cancel over the
-# mesh), scaled to the quantity's units. A tetrahedron's weight is the
-# magnitude of its term of the identity, |a_K| = |c_K - k^2 m_K| with the same
-# scale (ticket 08's indicator): marking is unchanged by the reported sum, and
-# the weights add up to neither that sum nor |sum a_K| in general.
+# complex bilinear (not Hermitian). Each kernel returns these terms whole
+# (`Terms`): the complex c_K and m_K, their sums, lam and the scale. An entry's
+# reported estimate is the magnitude |sum c_K| + |lam| |sum m_K| (the two terms
+# are never let cancel over the mesh), scaled to the quantity's units. A
+# tetrahedron's weight is the magnitude of its term of the identity,
+# |a_K| = |c_K - lam m_K| with the same scale (ticket 08's indicator): marking
+# is unchanged by the reported sum, and the weights add up to neither that sum
+# nor |sum a_K| in general.
 
 
 def capacitance(
@@ -567,31 +745,35 @@ def capacitance(
     i: str,
     j: str,
     threads: int | None = None,
-) -> tuple[float, np.ndarray]:
-    """The relative error estimate of ``capacitance[i, j]`` and each tetrahedron's.
+    *,
+    cache: RecoveryCache | None = None,
+) -> Terms:
+    """The terms of ``capacitance[i, j]``'s relative error identity.
 
     C_ij,h - C_ij = a(e_i, e_j) for the potentials of terminals i and j at
     1 V, each the other's free dual. A tetrahedron's term is m_K(i, j), the
-    recovered flux errors of the two potentials in the eps^-1 product; the
-    estimate is sum_K |m_K(i, j)| over |a_h(u_i, u_j)|, never letting the
-    terms of an off-diagonal entry (which have no sign) cancel. At i = j it
-    is the square of the field estimate of that terminal's potential, the
-    weights `electrostatic` gives it.
+    recovered flux errors of the two potentials in the eps^-1 product (real;
+    `Terms.curl` is zero and ``lam`` -1). The scale is 1 / |a_h(u_i, u_j)|
+    and the terms are ``elementwise``: the estimate is sum_K |m_K(i, j)|
+    over |a_h(u_i, u_j)|, never letting the terms of an off-diagonal entry
+    (which have no sign) cancel. At i = j it is the square of the field
+    estimate of that terminal's potential, the weights `electrostatic` gives
+    it.
     """
-    names = list(result.potential)
-    fields = list(result.potential.values())
+    cache = cache or RecoveryCache()
     with task_manager(threads):
-        gi = _grid_function(fields[names.index(i)])
-        gj = gi if i == j else _grid_function(fields[names.index(j)])
-        recovery = _potential_recovery(model, result)
-        flux_i = recovery.eps * ngs.grad(gi)
-        flux_j = flux_i if i == j else recovery.eps * ngs.grad(gj)
+        recovery = _potential_recovery(model, result, cache)
+        gi, _, ri = cache.potential_residual(recovery, result.potential[i])
+        _, flux_j, rj = cache.potential_residual(recovery, result.potential[j])
         energy = recovery.element_integrals(ngs.grad(gi) * flux_j).sum()
-        ri = recovery.flux_residual(flux_i)
-        rj = ri if i == j else recovery.flux_residual(flux_j)
-        terms = recovery.element_integrals(ri * (recovery.eps_inverse * rj))
-    weights = np.abs(terms) / abs(energy)
-    return float(weights.sum()), weights
+        mass = recovery.element_integrals(ri * (recovery.eps_inverse * rj))
+    return Terms(
+        curl=np.zeros(len(mass), complex),
+        mass=mass.astype(complex),
+        lam=-1.0,
+        scale=1.0 / abs(energy),
+        elementwise=True,
+    )
 
 
 def s_entry(
@@ -602,48 +784,49 @@ def s_entry(
     threads: int | None = None,
     *,
     adjoints: Mapping[tuple[float, str], Field] | None = None,
-) -> list[tuple[float, np.ndarray]]:
-    """The absolute error estimate of ``s[to, source]``, per frequency and tetrahedron.
+    cache: RecoveryCache | None = None,
+) -> list[Terms]:
+    """The terms of ``s[to, source]``'s absolute error identity, per frequency.
 
     With port i = ``to``, j = ``source``, e = u_h - u, and z_i the adjoint
     of port i's S functional f_i (A z_i = f_i, A complex symmetric):
     O_ij,h - O_ij = f_i(e_j) = -a(e_j, z_i,h - z_i) for the raw outgoing
     wave O, and S_ij = (O_ij - delta_ij) d_i d_j with the de-embedding d
     (``exp(gamma offset)``, 1 for a lumped port). a = c - k0^2 m with k0 in
-    the mesh's length unit; m recovers eps_eff E (`_effective_eps`). The
-    estimate is |d_i d_j| (|sum c_K| + k0^2 |sum m_K|) of the recovered
-    errors of x_j and z_i, a tetrahedron's |d_i d_j| |c_K - k0^2 m_K|.
+    the mesh's length unit (``lam``); m recovers eps_eff E
+    (`_effective_eps`). The terms are those of the recovered errors of x_j
+    and z_i, scaled by |d_i d_j| (and the free dual's |c_i|): the estimate
+    is |d_i d_j| (|sum c_K| + k0^2 |sum m_K|), a tetrahedron's
+    |d_i d_j| |c_K - k0^2 m_K|.
 
     ``adjoints`` holds z_i per (frequency, port) where port i's functional
     is not parallel to its excitation (a hybrid lossy wave port mode).
     Elsewhere z_i = c_i x_i with |c_i| = 1 / (4 k0 eta0) for fields of 1 W
     incident (ADR 0089): the free dual, x_i itself on that scale.
     """
+    cache = cache or RecoveryCache()
     fields = dict(zip(result.kept, result.e_fields, strict=True))
     adjoints = adjoints or {}
     d = _deembedding(result)  # `PortNetwork.deembedding` of the result
     eta0 = scipy.constants.mu_0 * scipy.constants.c
     out = []
     with task_manager(threads):
-        recovery = None
         for n, frequency in enumerate(result.s.frequency):
             f = float(frequency)
             f_to, f_source = fields[f, to], fields[f, source]
-            if recovery is None:
-                recovery = FluxRecovery(model, f_to.order, cracks=True)
+            recovery = cache.recovery(model, f_to.order, cracks=True)
             k = 2 * np.pi * f / scipy.constants.c * recovery.built.scale
-            eps, eps_inverse = _effective_eps(recovery, k)
-            ri = _residuals(recovery, f_source, eps)
+            _, eps_inverse = cache.effective_eps(recovery, k)
+            ri = cache.wave_residuals(recovery, f_source, k)
             adjoint = adjoints.get((f, to))
             if adjoint is not None:
-                rj, scale = _residuals(recovery, adjoint, eps), 1.0
+                rj, scale = cache.wave_residuals(recovery, adjoint, k), 1.0
             else:
-                rj = ri if source == to else _residuals(recovery, f_to, eps)
+                rj = cache.wave_residuals(recovery, f_to, k)
                 scale = 1.0 / (4 * k * eta0)
             curl, mass = _pair(recovery, ri, rj, eps_inverse)
             scale *= abs(d[to][n] * d[source][n])
-            value = scale * (abs(curl.sum()) + k**2 * abs(mass.sum()))
-            out.append((float(value), scale * np.abs(curl - k**2 * mass)))
+            out.append(Terms(curl=curl, mass=mass, lam=k**2, scale=float(scale)))
     return out
 
 
@@ -667,8 +850,10 @@ def omega(
     result: EigenmodeResult,
     mode: int,
     threads: int | None = None,
-) -> tuple[float, np.ndarray]:
-    """The relative error estimate of ``omega[mode]`` and each tetrahedron's.
+    *,
+    cache: RecoveryCache | None = None,
+) -> Terms:
+    """The terms of ``omega[mode]``'s relative error identity.
 
     A mode of the complex-symmetric T(k) is its own dual, and k_h - k ~=
     -e^T T(k) e / (x_h^T T'(k_h) x_h), k = omega scale / c complex. The
@@ -679,22 +864,23 @@ def omega(
     products are complex bilinear. T'(k_h) is the eigen operator's own
     (`gfem._eigen.operator.EigenOperator.derivative`), so it holds the
     damping of lumped resistors, impedance, absorbing and conductor surfaces.
-    The estimate is (|sum c_K| + |k^2| |sum m_K|) / (|k| |x_h^T T' x_h|), a
-    tetrahedron's |c_K - k^2 m_K| on the same scale. On a lossless mode
-    T' = -2k M and this is (|sum c_K| + k^2 |sum m_K|) / (2 k^2 |b(E, E)|).
+    ``lam`` is k^2 (complex on a lossy mode) and the scale
+    1 / (|k| |x_h^T T' x_h|): the estimate is (|sum c_K| + |k^2| |sum m_K|)
+    / (|k| |x_h^T T' x_h|), a tetrahedron's |c_K - k^2 m_K| on the same
+    scale. On a lossless mode T' = -2k M and this is (|sum c_K| + k^2
+    |sum m_K|) / (2 k^2 |b(E, E)|).
     """
+    cache = cache or RecoveryCache()
     field = result.e_fields[mode]
     with task_manager(threads):
-        recovery = FluxRecovery(model, field.order, cracks=True)
+        recovery = cache.recovery(model, field.order, cracks=True)
         k = complex(np.asarray(field.omega)) / scipy.constants.c * recovery.built.scale
-        lam = k * k
-        eps, eps_inverse = _effective_eps(recovery, k)
-        errors = _residuals(recovery, field, eps)
+        _, eps_inverse = cache.effective_eps(recovery, k)
+        errors = cache.wave_residuals(recovery, field, k)
         curl, mass = _pair(recovery, errors, errors, eps_inverse)
         slope = _slope(model, field, k)
     scale = 1.0 / (abs(k) * abs(slope))
-    value = scale * (abs(curl.sum()) + abs(lam) * abs(mass.sum()))
-    return float(value), scale * np.abs(curl - lam * mass)
+    return Terms(curl=curl, mass=mass, lam=k * k, scale=scale)
 
 
 def _effective_eps(
@@ -804,15 +990,14 @@ def _parts(field: Field) -> list[ngs.GridFunction]:
 
 def _residuals(
     recovery: FluxRecovery,
-    field: Field,
+    parts: Sequence[ngs.GridFunction],
     eps: Sequence[ngs.CoefficientFunction],
 ) -> tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]]:
     """The recovered errors of mu^-1 curl E and of eps E, as real parts.
 
-    ``eps`` is real, or complex as its real and imaginary parts
-    (`_effective_eps`).
+    ``parts`` is the field's view (`_parts`). ``eps`` is real, or complex as
+    its real and imaginary parts (`_effective_eps`).
     """
-    parts = _parts(field)
     curl = [recovery.curl_residual(ngs.curl(gf)) for gf in parts]
     flux = [recovery.flux_residual(v) for v in _times(eps, parts)]
     return curl, flux

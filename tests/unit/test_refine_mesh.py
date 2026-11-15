@@ -130,6 +130,26 @@ def test_terminals_are_combined_by_root_mean_square(coax):
     np.testing.assert_allclose(two.indicators, one.indicators, rtol=1e-8, atol=0)
 
 
+def test_a_field_estimate_is_of_kind_field(coax):
+    result = gfem.solve(coax, rc.COAX_PROBLEM, options=OPTIONS)
+    assert gfem.error_estimate(result, gfem.FieldEstimator(), model=coax).kind == (
+        "field"
+    )
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = _refine(coax, max_cycles=0)
+    assert ref.estimate.kind == "field"
+
+
+def test_the_estimate_kinds_are_a_closed_set_of_fifteen():
+    from gfem import refinement
+
+    kinds = refinement.ESTIMATE_KINDS
+    assert len(kinds) == len(set(kinds)) == 15
+    assert {"field", "capacitance", "s", "omega"} <= set(kinds)
+    assert "ESTIMATE_KINDS" not in gfem.__all__
+    assert set(refinement.EMITTED_KINDS) <= set(kinds)
+
+
 def test_an_estimate_needs_the_model_of_its_result(coax, tmp_path):
     result = gfem.solve(coax, rc.COAX_PROBLEM, options=OPTIONS)
     other = rc.coax_model(tmp_path, 4)
