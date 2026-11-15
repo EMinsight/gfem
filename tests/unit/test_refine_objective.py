@@ -1028,7 +1028,11 @@ def test_the_lossless_rewrite_at_lam_zero_is_the_c_form(step, step_result):
     )
     assert at_zero.linear == pytest.approx(c.linear, rel=1e-12)
     assert at_zero.remainder == pytest.approx(c.remainder, rel=1e-12)
-    np.testing.assert_allclose(at_zero.weights, c.weights, rtol=1e-12, atol=0)
+    # the rewrite adds zero-cotangent rows to each read column, so tiny
+    # per-tetrahedron weights move by round-off: compare to the largest
+    np.testing.assert_allclose(
+        at_zero.weights, c.weights, rtol=1e-12, atol=1e-12 * np.max(c.weights)
+    )
     # the minimum is at most the value at lam = 0, and adds |lam . D|
     best = kernels.lossless_rewrite(
         step, step_result, reads, classified.curvature, classified.diagonal

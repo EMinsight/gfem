@@ -1393,7 +1393,7 @@ def test_objective_of_participation_times_frequency_on_the_slab(tmp_path, m):
 
 
 @pytest.mark.parametrize("variant", ["pec", "impedance"])
-@pytest.mark.parametrize("m", [2, 3])
+@pytest.mark.parametrize("m", [2, pytest.param(3, marks=pytest.mark.reference)])
 def test_objective_of_participation_on_the_block(tmp_path, m, variant):
     # A block with 3D corners whose top face crosses E's normal component:
     # the dual flux must be equilibrated with its load (ADR 0142). The
