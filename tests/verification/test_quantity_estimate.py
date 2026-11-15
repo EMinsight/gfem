@@ -996,7 +996,9 @@ def _driven(model, frequencies):
     return gfem.solve(model, problem, options=options)
 
 
-@pytest.mark.parametrize("n", [1, 2, 3])
+# The six rows peak at 2.5 GB in one process at one thread, n = 3 at 1.45 GB
+# alone: n = 3 is reference tier; n = 1, 2 keep both conductivities gated.
+@pytest.mark.parametrize("n", [1, 2, pytest.param(3, marks=pytest.mark.reference)])
 @pytest.mark.parametrize("sigma", [1e3, 1e5])
 def test_the_conductor_plate_line_s(tmp_path, sigma, n):
     # Conductor plates on a propagating line keep the S estimate (ADR 0134):

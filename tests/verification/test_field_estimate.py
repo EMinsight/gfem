@@ -914,7 +914,9 @@ def test_the_field_effectivity_on_a_conductor_plate_line(tmp_path, sigma, n):
     _assert_ratios("conductor plate line", ratios)
 
 
-@pytest.mark.parametrize("n", [1, 2])
+# n = 2 peaks near 2.2 GB alone at one thread (its order-4 reference): the
+# reference tier; n = 1 keeps both geometries gated in the default tier.
+@pytest.mark.parametrize("n", [1, pytest.param(2, marks=pytest.mark.reference)])
 @pytest.mark.parametrize("geometry", ["wedge", "flat"])
 def test_the_field_effectivity_on_a_deep_metal(tmp_path, geometry, n):
     # Re eps -29.7 and -19.9: the S estimate refuses the second (ADR 0140),
