@@ -111,9 +111,10 @@ gfem.QuantityEstimator(omega=0)  # result.omega[0], an eigenmode problem
   the meshed geometry, `C_h >= C`: the difference is the energy of the
   potential's error, which is never negative, so mesh refinement lowers it.
   An off-diagonal entry may lie on either side.
-- **S entry**: both ports must be excited (`gfem.Driven(excite=...)`), since
-  the estimate uses the second port's field as the weight. The estimate is
-  absolute.
+- **S entry**: the source port must be excited (`gfem.Driven(excite=...)`);
+  the other may be any port: when it is not excited, its {term}`adjoint dual`
+  is solved, one more right-hand side on each of `refine_mesh`'s solves. The
+  estimate is absolute.
 - **Mode**: `omega=0` names the first mode of the input mesh's solve; on
   each refined mesh the estimate follows the mode whose `omega` is nearest
   the previous one. A mode with another within `SolverOptions.cluster_rtol`
@@ -249,12 +250,12 @@ How gfem itself checks the estimates against known answers:
   port mesh. A wave port in a lossy medium also leaves the attenuation
   along the port out of its boundary condition, so even a matched lossy
   port reflects a little; the estimate does not see that reflection.
-- An S entry whose first port is a wave port in a lossy cross-section with
-  a hybrid mode (a lossy dielectric slab, say) needs one more solve, of
-  that port's {term}`adjoint dual`. `refine_mesh` adds it to each of its
-  own solves, with your solver options. `error_estimate` on a finished
-  result factorizes the system once more, with the direct solver at the
-  result's order, which on a large model may not fit in memory: estimate
+- An S entry whose read port is not excited, or is a wave port in a lossy
+  cross-section with a hybrid mode (a lossy dielectric slab, say), needs one
+  more solve, of that port's {term}`adjoint dual`. `refine_mesh` adds it to
+  each of its own solves, with your solver options. `error_estimate` on a
+  finished result factorizes the system once more per frequency, with the
+  direct solver at the result's order, which on a large model may not fit in memory: estimate
   such a model through `refine_mesh` (`max_cycles=0` estimates without
   refining).
 - It does not include the linear solver's error. `refine_mesh` requires

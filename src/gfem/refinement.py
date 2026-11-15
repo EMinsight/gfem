@@ -41,6 +41,9 @@ from gfem.shape import _check_quality
 from gfem.solve import _solve
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable
+
+    from gfem._engine.driven import AdjointLoads
     from gfem._engine.estimate import RecoveryCache
 
 __all__ = [
@@ -90,9 +93,10 @@ class QuantityEstimator:
     """Estimates the error of one quantity of a solved result.
 
     Estimates how far one quantity of a solved result (a capacitance entry,
-    an S entry between excited ports, or one mode's ``omega``) is from its
-    value on the same geometry with an infinitely fine mesh. The estimate
-    uses the fields already solved, with no extra solve. It does not include
+    an S entry whose source port is excited, or one mode's ``omega``) is
+    from its value on the same geometry with an infinitely fine mesh. The
+    estimate uses the fields already solved, with no extra solve, except for
+    the adjoint duals below. It does not include
     the faceting of curved surfaces or the error left by the linear solve.
 
     The estimate is a magnitude in the units of ``tolerance``: relative to
@@ -116,8 +120,9 @@ class QuantityEstimator:
         capacitance: Two terminal names ``(i, j)``, the entry
             ``ElectrostaticResult.capacitance[i, j]``; the same name twice
             for a diagonal entry.
-        s: ``(to, from)`` port names, the entry ``result.s[to, from]``; both
-            ports must be excited (`Driven.excite`).
+        s: ``(to, from)`` port names, the entry ``result.s[to, from]``; the
+            source port ``from`` must be excited (`Driven.excite`), ``to``
+            may be any port.
         omega: An index into ``EigenmodeResult.omega`` on the first mesh;
             on each refined mesh the estimate follows the mode whose omega
             is nearest the previous mesh's, and `refine_mesh` raises
@@ -136,11 +141,12 @@ class QuantityEstimator:
     inside an anisotropic material (as `FieldEstimator`). Both estimators
     also raise it at order 1. For a lossy mode the estimate covers the
     complex ``omega``; Q's relative error is not estimated. An S entry ``(to, from)``
-    whose port ``to`` is a wave port with a lossy mode not parallel to its
-    excitation needs that port's adjoint dual: `refine_mesh` adds it to each
-    of its solves, with its options; `error_estimate` on a finished result
-    factorizes once more, with the direct solver at the result's order, so
-    estimate a large model through `refine_mesh` (``max_cycles=0``).
+    whose port ``to`` is not excited, or is a wave port with a lossy mode not
+    parallel to its excitation, needs that port's adjoint dual: `refine_mesh`
+    adds it to each of its solves, one more right-hand side with its
+    options; `error_estimate` on a finished result factorizes once more per
+    frequency, with the direct solver at the result's order, so estimate a
+    large model through `refine_mesh` (``max_cycles=0``).
     """
 
     capacitance: tuple[str, str] | None = None
@@ -355,10 +361,11 @@ _ESTIMATE_FLOOR = 0.9
 def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorEstimate:
     """Estimate the error of a solved result, without refining.
 
-    No solve is needed, except for an S entry whose port ``to`` is a wave
-    port with a lossy mode not parallel to its excitation: its adjoint dual
-    factorizes the system once more, with the direct solver at the result's
-    order (the result does not record its solve options). On a large model,
+    No solve is needed, except for an S entry whose port ``to`` is not
+    excited, or is a wave port with a lossy mode not parallel to its
+    excitation: its adjoint dual factorizes the system once more per
+    frequency, with the direct solver at the result's order (the result does
+    not record its solve options). On a large model,
     estimate through `refine_mesh` with ``max_cycles=0``, whose adjoint rides
     on its own solve with your options.
 
@@ -389,8 +396,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             result.
         ValueError: The result was not solved on ``model``'s mesh, or is a
             driven result without the fields of every frequency (solve with
-            ``keep_fields=True``); a `QuantityEstimator` names a port that
-            was not excited or a mode the result does not hold; a
+            ``keep_fields=True``); a `QuantityEstimator` names a source port
+            that was not excited or a mode the result does not hold; a
             permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
@@ -499,8 +506,9 @@ def refine_mesh(
         KeyError: A `QuantityEstimator` names no terminal or port of the
             problem.
         ValueError: A parameter is out of range, or ``tolerance`` is below 10
-            times the solve tolerance; a `QuantityEstimator` names a port
-            that is not excited or a mode index at or above ``n_modes``; a
+            times the solve tolerance; a `QuantityEstimator` names a source
+            port that is not excited or a mode index at or above
+            ``n_modes``; a
             permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
@@ -509,8 +517,8 @@ def refine_mesh(
             eigenmode field with loss inside an anisotropic material (see
             `FieldEstimator`), a quantity entry with no verified estimate
             (see `QuantityEstimator`), or ``frequency_workers`` above 1 for
-            an S estimate on a lossy wave port, whose adjoint rides on the
-            forward solve.
+            an S estimate that solves its adjoint dual (an unexcited ``to``
+            or a lossy wave port), which rides on the forward solve.
         DegenerateModeError: The mode a `QuantityEstimator` follows is not
             alone: another mode lies within ``options.cluster_rtol`` of it.
             Or, on a refined mesh, the nearest mode is not clearly the
@@ -602,11 +610,11 @@ def _loop(
         problem = dataclasses.replace(problem, keep_fields=True)
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
-    adjoint_ports = _adjoint_ports(estimator, model)
+    adjoint_loads = _adjoint_loads(estimator, model, problem)
     with driven.low_frequency_deferred(), warnings.catch_warnings():
         warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
         result, adjoints = _solve(
-            model, problem, options=options, comm=comm, adjoint_ports=adjoint_ports
+            model, problem, options=options, comm=comm, adjoint_loads=adjoint_loads
         )
     current = model
     cycles: list[RefinementCycle] = []
@@ -656,7 +664,7 @@ def _loop(
                     problem,
                     options=options,
                     comm=comm,
-                    adjoint_ports=adjoint_ports,
+                    adjoint_loads=adjoint_loads,
                 )
         except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
             stop, failure = "solve failed", err
@@ -756,7 +764,7 @@ def _estimate(
     *,
     threads: int | None,
     mode: int | None = None,
-    adjoints: dict[tuple[float, str], np.ndarray] | None = None,
+    adjoints: dict[tuple[float, Hashable], np.ndarray] | None = None,
     cache: RecoveryCache | None = None,
 ) -> ErrorEstimate:
     """The estimate of ``result``: dispatch on the estimator and result type.
@@ -781,12 +789,15 @@ def _estimate(
             ]
         elif estimator.s is not None:
             if adjoints is None:
-                ports = _adjoint_ports(estimator, model)
+                ports = _adjoint_ports(estimator, model, list(result.s.excited))
                 adjoints = _adjoints(model, result, ports, threads) if ports else {}
             fields = dict(zip(result.kept, result.e_fields, strict=True))
+            source = estimator.s[1]
+            # a dual lives on the source field's space (an unexcited port has
+            # no field of its own)
             duals = {
-                key: dataclasses.replace(fields[key], coefficients=z)
-                for key, z in adjoints.items()
+                (f, key): dataclasses.replace(fields[f, source], coefficients=z)
+                for (f, key), z in adjoints.items()
             }
             parts = kernels.s_entry(
                 model, result, *estimator.s, threads, adjoints=duals, cache=cache
@@ -1044,17 +1055,22 @@ def _check_terminals(names: tuple[str, str], terminals: list[str]) -> None:
 
 
 def _check_ports(names: tuple[str, str], ports: list[str], excited: list[str]) -> None:
+    """Raise unless both ports exist and the source port (the column) is excited.
+
+    The read port ``to`` may be any port: when it is not excited, its
+    S-functional adjoint is solved (`_adjoint_ports`).
+    """
     for name in names:
         if name not in ports:
             raise KeyError(
                 f"No port {name!r}; the ports are {', '.join(map(repr, ports))}."
             )
-    for name in names:
-        if name not in excited:
-            raise ValueError(
-                f"QuantityEstimator(s=...) reads the field of both ports, and port "
-                f"{name!r} is not excited: add it to Driven.excite."
-            )
+    source = names[1]
+    if source not in excited:
+        raise ValueError(
+            f"QuantityEstimator(s=...) reads the field of its source port, and "
+            f"port {source!r} is not excited: add it to Driven.excite."
+        )
 
 
 def _check_mode(mode: int | None, n_modes: int) -> None:
@@ -1074,48 +1090,76 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
         _check_lossy_mode(model)
 
 
-def _adjoint_ports(estimator: Estimator, model: Model) -> tuple[str, ...]:
+def _adjoint_ports(
+    estimator: Estimator, model: Model, excited: list[str]
+) -> tuple[str, ...]:
     """The port whose S-functional adjoint an S estimate may need (ADR 0089).
 
-    ``to`` of ``QuantityEstimator(s=(to, source))`` when it is a wave port
+    ``to`` of ``QuantityEstimator(s=(to, source))`` when it is not among
+    ``excited`` (it has no field of its own), or when it is a wave port
     touching a lossy element: its mode may then not be parallel to its
     excitation (the solve checks), and its adjoint is not its own field.
     """
     if not isinstance(estimator, QuantityEstimator) or estimator.s is None:
         return ()
     to = estimator.s[0]
+    if to not in excited:
+        return (to,)
     port = next((p for p in model.ports if p.name == to), None)
     if not isinstance(port, WavePort):
         return ()
     return (to,) if _lossy_elements(model)[_touching(model, port.surface)].any() else ()
 
 
+def _excited(problem: Driven, model: Model) -> list[str]:
+    """The ports ``problem`` excites on ``model``."""
+    if problem.excite is None:
+        return [p.name for p in model.ports]
+    return list(problem.excite)
+
+
+def _adjoint_loads(
+    estimator: Estimator, model: Model, problem: Any
+) -> AdjointLoads | None:
+    """The per-frequency adjoint loads ``estimator``'s duals solve, or ``None``.
+
+    They ride on each of `refine_mesh`'s forward solves (ADR 0089
+    amendment); ``None`` for an estimate with a free dual only.
+    """
+    from gfem._engine.driven import port_loads
+
+    if not isinstance(problem, Driven):
+        return None
+    ports = _adjoint_ports(estimator, model, _excited(problem, model))
+    return port_loads(ports) if ports else None
+
+
 def _check_adjoint_workers(
     estimator: Estimator, model: Model, problem: Any, options: SolverOptions
 ) -> None:
-    """Refuse frequency workers for an S estimate that solves its adjoint.
+    """Refuse frequency workers for an estimate that solves a dual.
 
-    The adjoint of `_adjoint_ports` rides on the forward's factorization
-    (ADR 0089), which a frequency worker does not hand back: frequency
-    workers take wave ports (ADR 0099) but spread no adjoint solve.
+    Its adjoint loads (`_adjoint_loads`) ride on the forward's
+    factorization (ADR 0089), which a frequency worker does not hand back:
+    frequency workers take wave ports (ADR 0099) but spread no adjoint
+    solve.
     """
     if not isinstance(problem, Driven):
         return
-    ports = _adjoint_ports(estimator, model)
     workers = min(options.frequency_workers, len(problem.frequency))
-    if ports and workers > 1:
+    if workers > 1 and _adjoint_loads(estimator, model, problem) is not None:
         raise MeshRefinementUnsupportedError(
             "frequency workers",
-            f"QuantityEstimator(s={getattr(estimator, 's', None)!r}) on the lossy "
-            f"wave port {ports[0]!r} solves its adjoint with the forward, which "
-            "frequency workers do not do in this version of gfem: it needs "
-            f"frequency_workers=1, got {options.frequency_workers}.",
+            f"QuantityEstimator(s={getattr(estimator, 's', None)!r}) solves its "
+            "adjoint dual with the forward, which frequency workers do not do "
+            "in this version of gfem: it needs frequency_workers=1, got "
+            f"{options.frequency_workers}.",
         )
 
 
 def _adjoints(
     model: Model, result: DrivenResult, ports: tuple[str, ...], threads: int | None
-) -> dict[tuple[float, str], np.ndarray]:
+) -> dict[tuple[float, Hashable], np.ndarray]:
     """The adjoints of ``ports`` on a finished result: one more factorization.
 
     Only at the frequencies where one is not its port's own field scaled.
@@ -1131,7 +1175,7 @@ def _adjoints(
         for category in driven.FORWARD_WARNINGS:  # the solve of ``result`` warned
             warnings.simplefilter("ignore", category)
         rule = driven.DrivenRule(model, problem, options)
-        rule.adjoint_ports = ports
+        rule.adjoint_loads = driven.port_loads(ports)
         return rule.solve_adjoints(model)
 
 

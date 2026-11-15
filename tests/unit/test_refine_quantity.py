@@ -7,6 +7,7 @@ asked of it before any solve, and how it reads a result.
 
 import dataclasses
 import itertools
+import logging
 import math
 
 import jax.numpy as jnp
@@ -82,11 +83,12 @@ def test_an_unknown_terminal_or_port_raises_key_error(coax, step):
 
 
 @pytest.mark.usefixtures("no_solve")
-def test_an_unexcited_port_raises_with_the_remedy(step):
+def test_an_unexcited_source_port_raises_with_the_remedy(step):
+    # The entry's column is the source port's field: it must be excited.
     problem = gfem.Driven([3e9], excite="p1")
     with pytest.raises(ValueError, match=r"Driven\.excite"):
         gfem.refine_mesh(
-            step, problem, estimator=gfem.QuantityEstimator(s=("p2", "p1"))
+            step, problem, estimator=gfem.QuantityEstimator(s=("p1", "p2"))
         )
 
 
@@ -140,16 +142,35 @@ def prepares(monkeypatch):
     return prepared
 
 
-def _forced_adjoint(model, result, port):
+@pytest.fixture
+def factorizations(caplog):
+    """The solve steps that factorize (or refactorize) a matrix, so far."""
+    gfem.release_memory()
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+
+    def count():
+        return sum(
+            r.name == "gfem.solver"
+            and getattr(r, "action", None) in {"factorized", "refactorized"}
+            for r in caplog.records
+        )
+
+    yield count
+    gfem.release_memory()
+
+
+def _forced_adjoint(model, result, port, frequency=None):
     """Port ``port``'s S-functional adjoint, solved whether parallel or not.
 
-    Returns ``(z, c x)``: the adjoint field, and the port's own field times
-    `parallel_scale` (``None`` where the functional is not parallel).
+    Returns ``(z, c x)``: the adjoint field at ``frequency`` (the result's
+    first by default), and the port's own field times `parallel_scale`
+    (``None`` where the functional is not parallel).
     """
     from gfem._engine.driven import DrivenRule
     from gfem._engine.port_network import parallel_scale
 
-    frequency = float(result.s.frequency[0])
+    if frequency is None:
+        frequency = float(result.s.frequency[0])
     omega = 2 * math.pi * frequency
     rule = DrivenRule(model, gfem.Driven([frequency]), OPTIONS)
     system, ports = rule._ports(model, warn=False)
@@ -223,6 +244,87 @@ def test_a_parallel_lossy_port_takes_no_adjoint_solve(tmp_path, prepares):
     assert len(prepares) == 1
 
 
+# --- an unexcited read port: its solved adjoint --------------------------------
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_an_unexcited_read_port_is_estimated_through_its_solved_adjoint(
+    step, factorizations
+):
+    # A lumped functional is parallel to its excitation, so the solved
+    # adjoint of an unexcited p2 is p2's own field scaled: the estimate is
+    # the all-excited one. It rides on the forward's factorization in
+    # refine_mesh; error_estimate factorizes once more per frequency.
+    estimator = gfem.QuantityEstimator(s=("p2", "p1"))
+    every = gfem.refine_mesh(
+        step, rc.step_problem(), estimator=estimator, max_cycles=0, options=OPTIONS
+    )
+    forward = factorizations()
+    assert forward == len(rc.STEP_S)
+    gfem.release_memory()  # no handle carries over to the next solve
+    one = gfem.refine_mesh(
+        step,
+        gfem.Driven(list(rc.STEP_S), excite="p1"),
+        estimator=estimator,
+        max_cycles=0,
+        options=OPTIONS,
+    )
+    assert factorizations() == 2 * forward
+    assert one.estimate.value == pytest.approx(every.estimate.value, rel=1e-12)
+    np.testing.assert_allclose(
+        one.estimate.indicators, every.estimate.indicators, rtol=1e-10
+    )
+    gfem.release_memory()
+    again = gfem.error_estimate(one.result, estimator, model=one.model)
+    assert factorizations() == 3 * forward
+    assert again.value == pytest.approx(one.estimate.value, rel=1e-12)
+
+
+def test_an_adjoint_load_callback_sees_each_frequency_expanded_solution(step):
+    # The callback is called per frequency with that frequency's solution on
+    # the fields' space and returns keyed loads; each key's adjoint comes
+    # back per (frequency, key). Truth: p2's S-functional adjoint is p2's
+    # own field times its parallel scale (a lumped port).
+    from gfem.solve import _solve
+
+    seen = {}
+
+    def loads(context):
+        seen[context.frequency] = np.array(context.solution)
+        assert context.excite == ("p1",)
+        return {("dual", "p2"): context.s_functional("p2")}
+
+    frequencies = list(rc.STEP_S)
+    result, adjoints = _solve(
+        step,
+        gfem.Driven(frequencies, excite="p1", keep_fields=True),
+        options=OPTIONS,
+        adjoint_loads=loads,
+    )
+    full = gfem.solve(step, gfem.Driven(frequencies, keep_fields=True), options=OPTIONS)
+    fields = dict(zip(result.kept, result.e_fields, strict=True))
+    assert sorted(adjoints) == [(f, ("dual", "p2")) for f in frequencies]
+    for f in frequencies:
+        x = np.asarray(fields[f, "p1"].coefficients)
+        np.testing.assert_allclose(seen[f][:, 0], x, rtol=0, atol=1e-14 * abs(x).max())
+        _, own = _forced_adjoint(step, full, "p2", f)
+        z = adjoints[f, ("dual", "p2")]
+        np.testing.assert_allclose(z, own, rtol=0, atol=1e-10 * abs(own).max())
+
+
+def test_an_empty_adjoint_load_solves_nothing_more(step, factorizations):
+    from gfem.solve import _solve
+
+    _, adjoints = _solve(
+        step,
+        gfem.Driven([3e9], excite="p1"),
+        options=OPTIONS,
+        adjoint_loads=lambda _context: {},
+    )
+    assert adjoints == {}
+    assert factorizations() == 1
+
+
 class _Unconverged:
     """A handle whose solve stops above its tolerance."""
 
@@ -259,10 +361,10 @@ def test_an_unconverged_adjoint_is_not_reported_as_a_forward_miss(
 
 
 def _adjoint_rule(model, problem):
-    from gfem._engine.driven import DrivenRule
+    from gfem._engine.driven import DrivenRule, port_loads
 
     rule = DrivenRule(model, problem, OPTIONS)
-    rule.adjoint_ports = ("p2",)
+    rule.adjoint_loads = port_loads(("p2",))
     return rule
 
 

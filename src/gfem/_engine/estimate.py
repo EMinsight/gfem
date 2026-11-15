@@ -42,7 +42,7 @@ its value and its weights.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import Any
 
 import ngsolve as ngs
@@ -783,7 +783,7 @@ def s_entry(
     source: str,
     threads: int | None = None,
     *,
-    adjoints: Mapping[tuple[float, str], Field] | None = None,
+    adjoints: Mapping[tuple[float, Hashable], Field] | None = None,
     cache: RecoveryCache | None = None,
 ) -> list[Terms]:
     """The terms of ``s[to, source]``'s absolute error identity, per frequency.
@@ -799,8 +799,9 @@ def s_entry(
     is |d_i d_j| (|sum c_K| + k0^2 |sum m_K|), a tetrahedron's
     |d_i d_j| |c_K - k0^2 m_K|.
 
-    ``adjoints`` holds z_i per (frequency, port) where port i's functional
-    is not parallel to its excitation (a hybrid lossy wave port mode).
+    ``adjoints`` holds z_i per (frequency, port) where port i is not
+    excited or its functional is not parallel to its excitation (a hybrid
+    lossy wave port mode).
     Elsewhere z_i = c_i x_i with |c_i| = 1 / (4 k0 eta0) for fields of 1 W
     incident (ADR 0089): the free dual, x_i itself on that scale.
     """
@@ -813,8 +814,8 @@ def s_entry(
     with task_manager(threads):
         for n, frequency in enumerate(result.s.frequency):
             f = float(frequency)
-            f_to, f_source = fields[f, to], fields[f, source]
-            recovery = cache.recovery(model, f_to.order, cracks=True)
+            f_source = fields[f, source]
+            recovery = cache.recovery(model, f_source.order, cracks=True)
             k = 2 * np.pi * f / scipy.constants.c * recovery.built.scale
             _, eps_inverse = cache.effective_eps(recovery, k)
             ri = cache.wave_residuals(recovery, f_source, k)
@@ -822,7 +823,7 @@ def s_entry(
             if adjoint is not None:
                 rj, scale = cache.wave_residuals(recovery, adjoint, k), 1.0
             else:
-                rj = cache.wave_residuals(recovery, f_to, k)
+                rj = cache.wave_residuals(recovery, fields[f, to], k)
                 scale = 1.0 / (4 * k * eta0)
             curl, mass = _pair(recovery, ri, rj, eps_inverse)
             scale *= abs(d[to][n] * d[source][n])

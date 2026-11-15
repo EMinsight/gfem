@@ -17,6 +17,9 @@ from gfem.options import SolverOptions
 from gfem.shape import _check_quality
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable
+
+    from gfem._engine.driven import AdjointLoads
     from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
     from gfem.results import (
         DrivenResult,
@@ -132,16 +135,17 @@ def _solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
-    adjoint_ports: tuple[str, ...] = (),
-) -> tuple[Any, dict[tuple[float, str], Any] | None]:
-    """`solve`, and the S-functional adjoints of ``adjoint_ports`` with it.
+    adjoint_loads: AdjointLoads | None = None,
+) -> tuple[Any, dict[tuple[float, Hashable], Any] | None]:
+    """`solve`, and the adjoints of the per-frequency ``adjoint_loads`` with it.
 
-    ``gfem.refine_mesh`` asks for the adjoints of an S estimate's port
-    (ADR 0089): extra right-hand sides on the forward's factorization
-    (`gfem._engine.driven.DrivenRule.adjoint_ports`), a driven problem
-    only. Returns the result, and those adjoints per (frequency, port), or
-    ``None`` without ``adjoint_ports``. Warnings point at the caller of
-    `solve`, one frame above this one.
+    ``gfem.refine_mesh`` asks for an estimate's solved duals (ADR 0089
+    amendment, ADR 0132): extra right-hand sides on the forward's
+    factorization, formed per frequency from that frequency's solution
+    (`gfem._engine.driven.AdjointLoads`), a driven problem only. Returns
+    the result, and those adjoints per (frequency, key), or ``None``
+    without ``adjoint_loads``. Warnings point at the caller of `solve`,
+    one frame above this one.
     """
     if not isinstance(model, Model):
         raise TypeError(f"solve needs a gfem.Model, got {type(model).__name__}.")
@@ -166,8 +170,8 @@ def _solve(
             # the rule reads inputs the entry check has just found equal
             _mpi.agreed(err)
             raise
-    if adjoint_ports:
-        rule.adjoint_ports = adjoint_ports
+    if adjoint_loads is not None:
+        rule.adjoint_loads = adjoint_loads
     if is_traced((model, problem)):
         return rule.result(solve_vjp(rule, model, problem)), None
     # A moved mesh must keep its periodic pairs and stay valid on the solve
@@ -190,7 +194,7 @@ def _solve(
         if partial_result is not None:
             err.result = partial_result(err)
         raise
-    adjoints = rule.adjoints if adjoint_ports else None
+    adjoints = rule.adjoints if adjoint_loads is not None else None
     return rule.result(outputs), adjoints
 
 
