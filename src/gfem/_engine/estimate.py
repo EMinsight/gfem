@@ -998,26 +998,48 @@ def objective_of_s(
             for a read row whose port is not excited or not parallel.
     """
     cache = cache or RecoveryCache()
-    adjoints = adjoints or {}
-    n_tet = len(model.mesh.tetrahedra)
+    rows = [(f, to, source) for f, to, source, _ in reads]
+    pairs = _s_pairs(
+        model, result, rows, adjoints=adjoints or {}, cache=cache, threads=threads
+    )
+    cotangents = np.array([ct for *_, ct in reads], complex)
+    return _combined(pairs, cotangents, curvature, len(model.mesh.tetrahedra))
+
+
+def _s_pairs(
+    model: Model,
+    result: DrivenResult,
+    rows: Sequence[tuple[float, str, str]],
+    *,
+    adjoints: Mapping[tuple[float, Hashable], Field],
+    cache: RecoveryCache,
+    threads: int | None,
+) -> list[tuple[float, _SPair]]:
+    """Each row (frequency, to, from)'s `_SPair`, with its frequency."""
+    with task_manager(threads):
+        return [
+            (f, _s_pair(model, result, f, (to, source), adjoints=adjoints, cache=cache))
+            for f, to, source in rows
+        ]
+
+
+def _combined(
+    pairs: Sequence[tuple[float, _SPair]],
+    cotangents: np.ndarray,
+    curvature: np.ndarray,
+    n_tet: int,
+) -> ObjectiveTerms:
+    """The C form's terms of ``cotangents`` over the entries ``pairs``."""
     curl: dict[float, np.ndarray] = {}
     mass: dict[float, np.ndarray] = {}
     lam: dict[float, complex] = {}
     etas, entry_weights = [], []
-    with task_manager(threads):
-        for f, to, source, ct in reads:
-            pair = _s_pair(
-                model, result, f, (to, source), adjoints=adjoints, cache=cache
-            )
-            curl[f] = (
-                curl.get(f, np.zeros(n_tet, complex)) + ct * pair.factor * pair.curl
-            )
-            mass[f] = (
-                mass.get(f, np.zeros(n_tet, complex)) + ct * pair.factor * pair.mass
-            )
-            lam[f] = pair.lam
-            etas.append(pair.value)
-            entry_weights.append(np.abs(pair.weights))
+    for (f, pair), ct in zip(pairs, cotangents, strict=True):
+        curl[f] = curl.get(f, np.zeros(n_tet, complex)) + ct * pair.factor * pair.curl
+        mass[f] = mass.get(f, np.zeros(n_tet, complex)) + ct * pair.factor * pair.mass
+        lam[f] = pair.lam
+        etas.append(pair.value)
+        entry_weights.append(np.abs(pair.weights))
     linear = sum(abs(curl[f].sum()) + abs(lam[f]) * abs(mass[f].sum()) for f in curl)
     weights = sum((np.abs(curl[f] - lam[f] * mass[f]) for f in curl), np.zeros(n_tet))
     eta = np.asarray(etas, float)
@@ -1186,6 +1208,155 @@ class _FieldGroup:
         q = q * self.built.scale ** (2 * LENGTH_POWER["hcurl"]) / volume
         bound = float(np.sqrt(q.sum()))
         return bound, q / max(bound, 1e-300)
+
+
+@dataclasses.dataclass(frozen=True)
+class RewriteTerms(ObjectiveTerms):
+    """An objective's lossless rewrite on one result (ADR 0135).
+
+    ``linear``, ``remainder`` and ``weights`` are the C form's of J_lam
+    (`objective_of_s`); the global defect term is not in ``weights``.
+
+    Attributes:
+        lam: The multiplier per read column, in the order of ``columns``.
+        defect: D_c = 1 - sum_i |S_ic,h|^2 per read column.
+        columns: The read columns, (frequency, source port).
+    """
+
+    lam: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(0))
+    defect: np.ndarray = dataclasses.field(default_factory=lambda: np.zeros(0))
+    columns: tuple[tuple[float, str], ...] = ()
+
+    @property
+    def inner(self) -> float:
+        """C(J_lam): the estimate of the rewritten objective's own error."""
+        return self.linear + self.remainder
+
+    @property
+    def value(self) -> float:
+        """The estimate: ``C(J_lam) + |lam . D|``."""
+        return self.inner + abs(float(self.lam @ self.defect))
+
+
+def lossless_rewrite(
+    model: Model,
+    result: DrivenResult,
+    reads: Sequence[tuple[float, str, str, complex]],
+    curvature: np.ndarray,
+    diagonal: Sequence[np.ndarray],
+    *,
+    threads: int | None = None,
+    adjoints: Mapping[tuple[float, Hashable], Field] | None = None,
+    cache: RecoveryCache | None = None,
+    lam: np.ndarray | None = None,
+) -> RewriteTerms:
+    """An objective of S's estimate through its lossless rewrite (ADR 0135).
+
+    On a network that conserves power, sum_i |S_ic|^2 = 1 for every column
+    c = (frequency, source), so J_lam = J + sum_c lam_c (sum_i |S_ic|^2 - 1)
+    equals J at the true S and err(J) = err(J_lam) + lam . D exactly, D_c =
+    1 - sum_i |S_ic,h|^2 computed from S_h. The estimate is C(J_lam) +
+    |lam . D|, C the form of `objective_of_s` over every row of the read
+    columns: J_lam's cotangent is ct + 2 lam_c conj(S_h), and its Hessian
+    adds 2 lam_c to each (Re, Im) diagonal block of the column. lam minimizes
+    the estimate (convex in lam, one real variable per column), started at
+    lam = 0, which gives back C; never above it.
+
+    Args:
+        reads: Per read entry, (frequency, to, from, cotangent), in the
+            order of ``curvature``'s rows.
+        curvature: ``||H_ab||_2`` over the read entries.
+        diagonal: Each read entry's (Re, Im) Hessian block ``H_aa``, 2 x 2.
+        adjoints: The solved S-functional adjoints per (frequency, port),
+            for a row whose port is not excited.
+        lam: Evaluate at this multiplier instead of minimizing.
+    """
+    import scipy.optimize
+
+    cache = cache or RecoveryCache()
+    s = result.s
+    values = np.asarray(s.values)
+    frequencies = [float(f) for f in s.frequency]
+    columns = tuple(dict.fromkeys((f, source) for f, _, source, _ in reads))
+    rows = [(f, to, source) for f, to, source, _ in reads]
+    rows += [
+        (f, to, source)
+        for f, source in columns
+        for to in s.ports
+        if (f, to, source) not in rows
+    ]
+    n_read, n = len(reads), len(rows)
+    column = np.array([columns.index((f, source)) for f, _, source in rows])
+    s_h = np.array(
+        [
+            values[frequencies.index(f), s.ports.index(to), s.excited.index(source)]
+            for f, to, source in rows
+        ]
+    )
+    defect = np.array(
+        [
+            1.0
+            - float(
+                np.sum(np.abs(values[frequencies.index(f), :, s.excited.index(c)]) ** 2)
+            )
+            for f, c in columns
+        ]
+    )
+    pairs = _s_pairs(
+        model, result, rows, adjoints=adjoints or {}, cache=cache, threads=threads
+    )
+    cotangents = np.zeros(n, complex)
+    cotangents[:n_read] = [ct for *_, ct in reads]
+    base = np.zeros((n, n))
+    base[:n_read, :n_read] = curvature
+    blocks = np.zeros((n, 2, 2))
+    blocks[:n_read] = np.asarray(diagonal, float).reshape(n_read, 2, 2)
+    # the scalar sums the minimization moves: per entry, per frequency
+    curl_sums = np.array([p.factor * p.curl.sum() for _, p in pairs])
+    mass_sums = np.array([p.factor * p.mass.sum() for _, p in pairs])
+    eta = np.array([p.value for _, p in pairs])
+    groups = list(dict.fromkeys(f for f, _ in pairs))
+    group = np.zeros((len(groups), n))
+    for e, (f, _) in enumerate(pairs):
+        group[groups.index(f), e] = 1.0
+    k2 = np.array([abs(next(p.lam for g, p in pairs if g == f)) for f in groups])
+
+    def shifted(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        lam_e = x[column]
+        cts = cotangents + 2 * lam_e * np.conj(s_h)
+        norms = base.copy()
+        norms[np.diag_indices(n)] = np.linalg.norm(
+            blocks + 2 * lam_e[:, None, None] * np.eye(2), 2, axis=(1, 2)
+        )
+        return cts, norms
+
+    def estimate(x: np.ndarray) -> float:
+        cts, norms = shifted(x)
+        linear = np.abs(group @ (cts * curl_sums)) + k2 * np.abs(
+            group @ (cts * mass_sums)
+        )
+        return float(linear.sum() + 0.5 * eta @ norms @ eta + abs(x @ defect))
+
+    if lam is None:
+        zero = np.zeros(len(columns))
+        found = scipy.optimize.minimize(
+            estimate,
+            zero,
+            method="Nelder-Mead",
+            options={"xatol": 1e-10, "fatol": 1e-16, "maxiter": 4000},
+        )
+        lam = found.x if found.fun < estimate(zero) else zero
+    lam = np.asarray(lam, float)
+    cts, norms = shifted(lam)
+    terms = _combined(pairs, cts, norms, len(model.mesh.tetrahedra))
+    return RewriteTerms(
+        linear=terms.linear,
+        remainder=terms.remainder,
+        weights=terms.weights,
+        lam=lam,
+        defect=defect,
+        columns=columns,
+    )
 
 
 #: A read of an electrostatic objective (`objective_of_potentials`): a

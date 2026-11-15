@@ -162,6 +162,9 @@ class Objective:
         curvature: ``(n, n)``, ``||H_ab||_2`` of the (Re, Im) blocks of the
             objective's Hessian over the read scalars ``a``, ``b`` (a real
             scalar has a one-row block).
+        diagonal: Per read scalar, its own (Re, Im) block ``H_aa`` of the
+            Hessian (2 x 2 for a complex entry, 1 x 1 for a real one): the
+            blocks a rewrite of the objective shifts (ADR 0135).
         floor_scales: Per read, its scale in the tolerance floor: 1 for an
             absolute entry (S), its magnitude otherwise.
         measurements: Per measurement key the objective reads, its record
@@ -174,6 +177,7 @@ class Objective:
     curvature: np.ndarray
     floor_scales: tuple[float, ...]
     measurements: Mapping[str, Mapping[str, Any]]
+    diagonal: tuple[np.ndarray, ...] = ()
 
     @property
     def sensitivity(self) -> float:
@@ -454,6 +458,7 @@ def classify(
     zero = [i for i in scalars if cotangents[i] == 0]
     read = sorted({*read, *_nan_reads(trace, flat, zero)})
     reads, scales = [], []
+    curvature, diagonal = _curvature(stripped, flat, read)
     for i in read:
         leaf, index, absolute = trace.name(i)
         x = complex(np.asarray(flat[i]))
@@ -464,7 +469,8 @@ def classify(
         kind=kind,
         value=value,
         reads=tuple(reads),
-        curvature=_curvature(stripped, flat, read),
+        curvature=curvature,
+        diagonal=diagonal,
         floor_scales=tuple(scales),
         measurements={
             key: {k: v for k, v in spec.items() if k != "evaluate"}
@@ -878,10 +884,15 @@ def _nan_reads(trace: _Trace, flat: list[Any], candidates: list[int]) -> list[in
     ]
 
 
-def _curvature(closed: Any, flat: list[Any], read: list[int]) -> np.ndarray:
-    """``||H_ab||_2`` over the (Re, Im) blocks of the read scalars ``read``."""
+def _curvature(
+    closed: Any, flat: list[Any], read: list[int]
+) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:
+    """``||H_ab||_2`` over the (Re, Im) blocks of the read scalars ``read``.
+
+    Also each read's own block ``H_aa`` (`Objective.diagonal`).
+    """
     if not read:
-        return np.zeros((0, 0))
+        return np.zeros((0, 0)), ()
     is_complex = [bool(jnp.iscomplexobj(flat[i])) for i in read]
     widths = [2 if c else 1 for c in is_complex]
     starts = np.concatenate([[0], np.cumsum(widths)])
@@ -909,7 +920,11 @@ def _curvature(closed: Any, flat: list[Any], read: list[int]) -> np.ndarray:
         for b in range(n):
             block = hessian[starts[a] : starts[a + 1], starts[b] : starts[b + 1]]
             out[a, b] = np.linalg.norm(block, 2)
-    return np.nan_to_num(out)
+    diagonal = tuple(
+        np.nan_to_num(hessian[starts[a] : starts[a + 1], starts[a] : starts[a + 1]])
+        for a in range(n)
+    )
+    return np.nan_to_num(out), diagonal
 
 
 # --- the mode-aligned view ------------------------------------------------------------
