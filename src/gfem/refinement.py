@@ -403,8 +403,12 @@ class ErrorEstimate:
 
     @property
     def value(self) -> float:
-        """The largest of `values`: what `refine_mesh` compares to ``tolerance``."""
-        return max(self.values)
+        """The largest of `values`: what `refine_mesh` compares to ``tolerance``.
+
+        NaN when any of `values` is NaN.
+        """
+        values = np.asarray(self.values, float)
+        return float(np.nan) if np.isnan(values).any() else float(values.max())
 
 
 @dataclasses.dataclass(frozen=True)
@@ -456,7 +460,9 @@ class MeshRefinement:
         cycles: One `RefinementCycle` per solved mesh; ``cycles[0]`` is the
             input mesh.
         stop: Why the loop stopped: ``"tolerance"``, ``"max_cycles"``,
-            ``"max_tetrahedra"`` or ``"solve failed"``.
+            ``"max_tetrahedra"``, ``"solve failed"`` or ``"non-finite
+            estimate"`` (an estimate is NaN or infinite: it counts as above
+            its tolerance, and the loop warns).
         converged: Whether ``estimate.value`` is at or below the tolerance;
             with a tuple of estimators, whether every one is at or below its
             own.
@@ -563,7 +569,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             estimate in this version of gfem (``feature`` names what): an
             adaptive sweep, a periodic model, another result type, a result
             solved at order 1, a quantity entry with no verified estimate
-            (an S entry or a driven objective beside an impedance or
+            (an S entry read at a lumped port with no resistance, whose row
+            is undefined; an S entry or a driven objective beside an impedance or
             absorbing surface, a lumped port across a permeability contrast
             or a permittivity law at -20 < Re eps < 0; a plasmon-bound mode;
             see `QuantityEstimator`), or an objective reading what it may
@@ -720,9 +727,10 @@ def refine_mesh(
             mesh refinement (``feature`` names what): an adaptive sweep, a
             port mode problem, a periodic model or a Bloch wave vector,
             ``options.order=1`` (the ``"fast"`` preset), a quantity entry
-            with no verified estimate (an S entry or a driven objective
-            beside an impedance or absorbing surface, a lumped port across a
-            permeability contrast or a permittivity law at
+            with no verified estimate (an S entry read at a lumped port
+            with no resistance, whose row is undefined; an S entry or a
+            driven objective beside an impedance or absorbing surface, a
+            lumped port across a permeability contrast or a permittivity law at
             -20 < Re eps < 0, all before any solve; a plasmon-bound mode on
             the first estimate, after the first solve; see
             `QuantityEstimator`), an objective reading what it may not (on
@@ -981,7 +989,7 @@ def _loop(
             for i, (estimate, tolerance) in enumerate(
                 zip(estimates, tolerances, strict=True)
             )
-            if estimate.value > tolerance
+            if not estimate.value <= tolerance  # a NaN is above
         ]
         cycle = RefinementCycle(
             tetrahedra=len(current.mesh.tetrahedra),
@@ -998,8 +1006,8 @@ def _loop(
             modes=types.MappingProxyType(modes),
         )
         cycles.append(cycle)
-        if not above:
-            stop = "tolerance"
+        stop = _settled(estimates, above)
+        if stop is not None:
             break
         if len(cycles) > max_cycles:
             stop = "max_cycles"
@@ -1049,6 +1057,15 @@ def _loop(
         triangle_parents=readonly(tri_parents),
         _input_mesh=model.mesh,
     )
+
+
+def _settled(estimates: tuple[ErrorEstimate, ...], above: list[int]) -> str | None:
+    """Why the loop stops before marking: none above, or one not finite."""
+    if not above:
+        return "tolerance"
+    if not all(np.isfinite(estimates[i].value) for i in above):
+        return "non-finite estimate"
+    return None
 
 
 def _check_q_floors(
@@ -1291,6 +1308,9 @@ def _warn_not_converged(
             f"because the next mesh would exceed max_tetrahedra={max_tetrahedra}"
         ),
         "solve failed": f"because the solve on the next mesh failed: {failure}",
+        "non-finite estimate": (
+            "because an error estimate is not finite, so it has nothing to mark on"
+        ),
     }[stop]
     if joint:
         what = "; ".join(
@@ -1415,7 +1435,7 @@ def _estimate(
             if adjoints is None:
                 ports = _adjoint_ports(estimator, model, list(result.s.excited))
                 adjoints = _adjoints(model, result, ports, threads) if ports else {}
-            duals = _dual_fields(result, adjoints)
+            duals = _dual_fields(result, adjoints, cache)
             parts = kernels.s_entry(
                 model, result, *estimator.s, threads, adjoints=duals, cache=cache
             )
@@ -1446,19 +1466,19 @@ def _estimate(
 
 
 def _dual_fields(
-    result: DrivenResult, adjoints: Mapping[Any, np.ndarray]
+    result: DrivenResult, adjoints: Mapping[Any, np.ndarray], cache: RecoveryCache
 ) -> dict[tuple[float, Hashable], Any]:
     """The adjoints as fields, each on its frequency's kept field's space.
 
     An unexcited port has no field of its own; every kept field of a
-    frequency shares one space.
+    frequency shares one space. Each is made once per mesh (``cache``, the
+    mesh's), so the estimates reading it share its recovered errors.
     """
     fields = {
         f: field for (f, _), field in zip(result.kept, result.e_fields, strict=True)
     }
     return {
-        (f, key): dataclasses.replace(fields[f], coefficients=z)
-        for (f, key), z in adjoints.items()
+        (f, key): cache.dual_field(fields[f], z) for (f, key), z in adjoints.items()
     }
 
 
@@ -1552,7 +1572,7 @@ def _estimate_objective(
     solved: dict[Any, np.ndarray] = dict(adjoints)
     if missing:
         solved.update(_adjoints(model, result, missing, threads))
-    duals = _dual_fields(result, solved)
+    duals = _dual_fields(result, solved, cache)
     if rewrite:
         terms = kernels.lossless_rewrite(
             model,
@@ -1595,10 +1615,13 @@ def _conserves_power(model: Model) -> bool:
     A conservative whitelist (ADR 0135): every material lossless (real
     eps_r and mu_r, no tan_delta, conductivity or lossy law), every surface
     PEC or PMC, and every port lumped, whose resistance is the reference.
-    A wave port is left out: its kept modes need not carry all the power.
+    A wave port is left out: its kept modes need not carry all the power;
+    so is a lumped port with no resistance, whose row of S is undefined
+    (NaN): the rewrite sums every row.
     """
     return (
         all(isinstance(p, LumpedPort) for p in model.ports)
+        and not _undefined_rows(model)
         and all(isinstance(b, PEC | PMC) for b in model.boundaries)
         and not _lossy_elements(model).any()
     )
@@ -2471,7 +2494,8 @@ def _check_terminals(names: tuple[str, str], terminals: list[str]) -> None:
 def _check_ports(names: tuple[str, str], ports: list[str], excited: list[str]) -> None:
     """Raise unless both ports exist and the source port (the column) is excited.
 
-    The read port ``to`` may be any port: when it is not excited, its
+    The read port ``to`` may be any port with a resistance
+    (`_check_defined_row`, with the model): when it is not excited, its
     S-functional adjoint is solved (`_adjoint_ports`).
     """
     for name in names:
@@ -2525,6 +2549,31 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
     """
     if estimator.q is not None:
         _check_lossy_mode(model, "q")
+    if estimator.s is not None:
+        _check_defined_row(estimator.s[0], model)
+
+
+def _undefined_rows(model: Model) -> tuple[str, ...]:
+    """The lumped ports with no resistance: their rows of S are undefined (NaN)."""
+    from gfem._engine.port_network import resistance
+
+    return tuple(
+        p.name
+        for p in model.ports
+        if isinstance(p, LumpedPort) and math.isnan(resistance(p))
+    )
+
+
+def _check_defined_row(to: str, model: Model) -> None:
+    """Raise when the read port ``to`` has no resistance (an undefined S row)."""
+    if to in _undefined_rows(model):
+        raise MeshRefinementUnsupportedError(
+            "undefined S row",
+            f"QuantityEstimator(s=({to!r}, ...)) reads the row of port {to!r}, "
+            "which has no resistance: its row of S is undefined (NaN), so "
+            "there is no error to estimate. Give the port a resistance, or "
+            "read another row.",
+        )
 
 
 def _adjoint_ports(

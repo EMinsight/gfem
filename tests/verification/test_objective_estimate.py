@@ -1186,7 +1186,9 @@ def test_objective_of_omega_with_two_modes_at_their_target(tmp_path, m):
     # (f2/f1 - its solved value)^2: zero cotangent, the remainder alone
     model, result, exact = _two_mode_box(tmp_path, m)
     ratio_h = float(_omega_ratio(result))
-    rows = _omega_rows(model, result, exact, [lambda r, _m: (_omega_ratio(r) - ratio_h) ** 2])
+    rows = _omega_rows(
+        model, result, exact, [lambda r, _m: (_omega_ratio(r) - ratio_h) ** 2]
+    )
     _assert_overestimate("several modes at their target", rows)
 
 

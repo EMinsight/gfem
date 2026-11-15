@@ -34,8 +34,11 @@ JAX upgrade that changes them fails loudly.
 
 from __future__ import annotations
 
+import collections
 import contextvars
 import dataclasses
+import os
+import pathlib
 import types
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
@@ -446,24 +449,36 @@ def classify(
     """
     trace = _Trace(objective, result, model)
     kind = trace.kind()
-    _walk(trace.pruned, [True] * len(trace.pruned.invars))
-    value = _value(objective, result, model)
+    compiled = _compiled(trace.pruned)
+    if not compiled.walked:
+        _walk(trace.pruned, [True] * len(trace.pruned.invars))
+        compiled.walked = True
+    consts, xs = trace.closed.consts, trace.inputs()
+    value_array, cts = compiled.value_and_cotangents(consts, xs)
+    _check_untraced(value_array)
+    value = float(value_array)
     if not np.isfinite(value):
         _refuse_not_finite(result, kind, value)
-    flat = trace.inputs()
-    stripped = _identity_stop_gradient(trace.closed)
-    scalars = trace.scalars()
-    cotangents = _cotangents(stripped, flat, scalars)
-    read = [i for i in scalars if cotangents[i] != 0]
-    zero = [i for i in scalars if cotangents[i] == 0]
-    read = sorted({*read, *_nan_reads(trace, flat, zero)})
+    # positions in the live inputs ``xs`` of the scalars: entries and outputs
+    scalars = [p for p, i in enumerate(trace.live) if trace.is_scalar(i)]
+    cotangents = {}
+    for p in scalars:
+        ct = complex(np.asarray(cts[p]))
+        cotangents[p] = ct if np.isfinite(ct) else 0j
+    zero = [p for p in scalars if cotangents[p] == 0]
+    read = sorted(
+        {
+            *(p for p in scalars if cotangents[p] != 0),
+            *_nan_reads(compiled, consts, xs, zero),
+        }
+    )
     reads, scales = [], []
-    curvature, diagonal = _curvature(stripped, flat, read)
-    for i in read:
-        leaf, index, absolute = trace.name(i)
-        x = complex(np.asarray(flat[i]))
-        is_complex = bool(jnp.iscomplexobj(flat[i]))
-        reads.append(Read(leaf, index, x, cotangents[i], is_complex))
+    curvature, diagonal = _curvature(compiled, consts, xs, read)
+    for p in read:
+        leaf, index, absolute = trace.name(trace.live[p])
+        x = complex(np.asarray(xs[p]))
+        is_complex = bool(jnp.iscomplexobj(xs[p]))
+        reads.append(Read(leaf, index, x, cotangents[p], is_complex))
         scales.append(1.0 if absolute else abs(x))
     return Objective(
         kind=kind,
@@ -587,9 +602,9 @@ class _Trace:
             )
         return _kind(kinds)
 
-    def scalars(self) -> list[int]:
-        """The live scalar inputs: entries and measurement outputs."""
-        return [i for i in self.live if self._is_entry(i) or self._is_output(i)]
+    def is_scalar(self, i: int) -> bool:
+        """Whether input ``i`` is a scalar: an entry or a measurement output."""
+        return self._is_entry(i) or self._is_output(i)
 
     def name(self, i: int) -> tuple[str, tuple[int, ...], bool]:
         """A scalar input's leaf (or output key), index, and floor absoluteness."""
@@ -602,41 +617,34 @@ class _Trace:
         return key, (int(component),), False
 
     def inputs(self) -> list[Any]:
-        """The concrete inputs: the result's, and each measurement run once."""
-        measured = {
-            n: jnp.asarray(v)
-            for spec in self.specs.values()
-            for n, v in zip(
-                spec["names"], np.ravel(np.asarray(spec["evaluate"]())), strict=True
-            )
-        }
-        return [
-            *self.split.entry_values,
-            *self.split.array_values,
-            *(measured[n] for n in self.names),
-        ]
+        """The live inputs' concrete values; each live measurement run once.
+
+        A measurement the pruned objective does not read is not run.
+        """
+        offset = self.n_entries + self.n_arrays
+        wanted = {self.names[i - offset] for i in self.live if self._is_output(i)}
+        measured: dict[str, jax.Array] = {}
+        for spec in self.specs.values():
+            if wanted.isdisjoint(spec["names"]):
+                continue
+            values = np.ravel(np.asarray(spec["evaluate"]()))
+            for n, v in zip(spec["names"], values, strict=True):
+                measured[n] = jnp.asarray(v)
+        out = []
+        for i in self.live:
+            if self._is_entry(i):
+                out.append(self.split.entry_values[i])
+            elif self._is_output(i):
+                out.append(measured[self.names[i - offset]])
+            else:  # pragma: no cover - a live array raised in `kind`
+                out.append(self.split.array_values[i - self.n_entries])
+        return out
 
 
 _REAL_ADVICE = (
     "An objective is one real number: return a real 0-d value, for example "
     "its .real, jnp.abs(...) or jnp.abs(...) ** 2."
 )
-
-
-def _value(objective: Callable[[Any, Any], Any], result: Any, model: Any) -> float:
-    """The objective's value, eagerly; its type and outer tracers checked."""
-    out = objective(result, model)
-    if is_traced(out) or is_staging():
-        raise NonDifferentiableError(
-            "The objective's value carries a tracer of an enclosing jax.grad, "
-            "jax.jit or jax.vmap: mesh refinement estimates a fixed design, "
-            "which has no derivative. Estimate outside the transformed "
-            "function, with concrete values."
-        )
-    a = np.asarray(out)
-    if a.shape != () or np.iscomplexobj(a) or not np.issubdtype(a.dtype, np.number):
-        raise TypeError(f"{_REAL_ADVICE} Got a {a.dtype} value of shape {a.shape}.")
-    return float(a)
 
 
 class _Unsupported(Exception):  # noqa: N818 - carries an error out of a JAX trace
@@ -746,22 +754,88 @@ def _refuse_not_finite(result: Any, kind: str, value: float) -> None:
 
 # --- jaxpr structure: branches and custom derivatives ------------------------------
 
+#: Call-like primitives: their one sub-jaxpr runs on their operands, one to one.
+_CALLS = frozenset({"pjit", "jit", "closed_call", "core_call", "remat", "checkpoint"})
 
-def _sub_jaxprs(eqn: Any) -> list[Any]:
-    """The closed jaxprs a call-like equation runs on its own operands."""
-    name = eqn.primitive.name
-    if name in ("pjit", "jit", "closed_call", "core_call", "remat", "checkpoint"):
-        sub = eqn.params.get("jaxpr", eqn.params.get("call_jaxpr"))
-        return [sub] if sub is not None else []
-    return []
+#: JAX's own custom-derivative rules that are smooth although their primal
+#: branches (a ``max`` that only stabilizes the evaluation): admitted whole.
+#: Any other rule JAX defines is walked like the objective (``relu`` is a
+#: branch); a rule defined outside JAX is the user's own, and raises.
+_SMOOTH_JAX_RULES = frozenset({"logaddexp", "logaddexp2"})
+
+_JAX_DIR = str(pathlib.Path(jax.__file__).parent) + os.sep
+
+#: Higher-order primitives smooth in their operands, admitted whole: a
+#: linear solve (``jnp.linalg.solve``, ``inv``; ``S.y()``, ``inverse``).
+_SMOOTH_HIGHER_ORDER = frozenset({"custom_linear_solve"})
 
 
-def _walk(jaxpr: Any, dependent: list[bool]) -> list[bool]:
+def _jaxprs(params: Mapping[str, Any]) -> Iterator[tuple[str, int | None, Any]]:
+    """Each jaxpr held in an equation's ``params``: (key, tuple index, jaxpr)."""
+    for key, value in params.items():
+        if isinstance(value, jcore.Jaxpr):
+            yield key, None, value
+        elif isinstance(value, tuple):
+            for i, item in enumerate(value):
+                if isinstance(item, jcore.Jaxpr):
+                    yield key, i, item
+
+
+def _rule(eqn: Any) -> tuple[str, bool]:
+    """A custom-derivative equation's function name, and whether JAX defines it."""
+    info = getattr(eqn.params["call_jaxpr"], "debug_info", None)
+    where = getattr(info, "func_src_info", None) or ""
+    name, _, path = where.partition(" at ")
+    return name, path.startswith(_JAX_DIR)
+
+
+def _live(jaxpr: Any, live_out: Sequence[bool]) -> set[Any]:
+    """The variables whose value reaches a live output past no ``stop_gradient``.
+
+    A branch whose outputs reach the objective only through
+    ``stop_gradient`` does not change its value (``logsumexp``'s max).
+    Through an equation with sub-jaxprs, every operand of a live output is
+    live.
+    """
+    live = {
+        v
+        for v, keep in zip(jaxpr.outvars, live_out, strict=True)
+        if keep and not isinstance(v, jcore.Literal)
+    }
+    for eqn in reversed(jaxpr.eqns):
+        if eqn.primitive.name == "stop_gradient":
+            continue
+        if any(v in live for v in eqn.outvars):
+            live.update(v for v in eqn.invars if not isinstance(v, jcore.Literal))
+    return live
+
+
+def _refuse_branch(name: str) -> MeshRefinementUnsupportedError:
+    return MeshRefinementUnsupportedError(
+        "non-smooth objective",
+        f"The objective branches on a value it reads ({name}: max, min, sort, "
+        "where/cond on a predicate of the result, or a loop whose stop or "
+        "body depends on it). At a near-tie its derivative follows one branch "
+        "only, and the other's error is missed: no estimate is verified for "
+        "that. Estimate each branch as its own objective.",
+    )
+
+
+def _walk(
+    jaxpr: Any, dependent: Sequence[bool], live_out: Sequence[bool] | None = None
+) -> list[bool]:
     """Forward dependence on read values through ``jaxpr``, raising on the way.
 
-    Raises for a branch on a read value or a custom derivative (ADR 0143
-    amendment). On the objective's pruned jaxpr every input is read.
+    Raises for a branch on a read value that reaches a live output
+    (``live_out``, every output by default; `_live`), a user's custom
+    derivative, or a higher-order primitive this walk does not know (ADR
+    0143 amendment). Recurses into every sub-jaxpr: calls, ``cond``,
+    ``scan``, ``while`` and JAX's own custom rules. On the objective's
+    pruned jaxpr every input is read.
     """
+    if live_out is None:
+        live_out = [True] * len(jaxpr.outvars)
+    live = _live(jaxpr, live_out)
     dep: dict[Any, bool] = {}
 
     def read(v: Any) -> bool:
@@ -769,150 +843,306 @@ def _walk(jaxpr: Any, dependent: list[bool]) -> list[bool]:
 
     dep.update(zip(jaxpr.invars, dependent, strict=True))
     for eqn in jaxpr.eqns:
-        name = eqn.primitive.name
         ins = [read(v) for v in eqn.invars]
-        if name.startswith(("custom_jvp_call", "custom_vjp_call")) and any(ins):
-            raise MeshRefinementUnsupportedError(
-                "custom derivative in objective",
-                "The objective holds a jax.custom_jvp or jax.custom_vjp rule "
-                "of its own on what it reads. The estimate needs the true "
-                "derivative of the objective's value, and a user rule was not "
-                "verified: write the objective without it.",
-            )
-        branching = (
-            (name in _BRANCHING and any(ins))
-            or (name == "select_n" and ins[0])
-            or (name == "cond" and ins[0])
-            or (name == "while" and any(ins))
-        )
-        if branching:
-            raise MeshRefinementUnsupportedError(
-                "non-smooth objective",
-                f"The objective branches on a value it reads ({name}: max, "
-                "min, sort, or where/cond on a predicate of the result). At a "
-                "near-tie its derivative follows one branch only, and the "
-                "other's error is missed: no estimate is verified for that. "
-                "Estimate each branch as its own objective.",
-            )
-        subs = _sub_jaxprs(eqn)
-        if subs:
-            outs = _walk(subs[0].jaxpr, ins)
-        elif name == "cond":
-            outs = [any(ins)] * len(eqn.outvars)
-            for branch in eqn.params["branches"]:
-                _walk(branch.jaxpr, ins[1:])
-        else:
-            outs = [any(ins)] * len(eqn.outvars)
+        reaches = [v in live for v in eqn.outvars]
+        outs = _walk_eqn(eqn, ins, reaches)
         dep.update(zip(eqn.outvars, outs, strict=True))
     return [read(v) for v in jaxpr.outvars]
+
+
+def _walk_eqn(eqn: Any, ins: list[bool], reaches: list[bool]) -> list[bool]:
+    """One equation's output dependence (see `_walk`)."""
+    name = eqn.primitive.name
+    flat = [any(ins)] * len(eqn.outvars)
+    if not any(ins):
+        return flat
+    if name.startswith(("custom_jvp_call", "custom_vjp_call")):
+        return _walk_custom(eqn, ins, reaches)
+    walker = _HIGHER_ORDER.get(name)
+    if walker is not None:
+        return walker(eqn, ins, any(reaches))
+    branching = name in _BRANCHING or (name == "select_n" and ins[0])
+    unknown = name not in _SMOOTH_HIGHER_ORDER and any(
+        True for _ in _jaxprs(eqn.params)
+    )
+    if (branching or unknown) and any(reaches):
+        raise _refuse_branch(name)
+    return flat
+
+
+def _walk_custom(eqn: Any, ins: list[bool], reaches: list[bool]) -> list[bool]:
+    """A custom-derivative rule: JAX's own are walked (or admitted), a user's raises."""
+    rule, in_jax = _rule(eqn)
+    if not in_jax:
+        raise MeshRefinementUnsupportedError(
+            "custom derivative in objective",
+            "The objective holds a jax.custom_jvp or jax.custom_vjp rule of "
+            f"its own ({rule or 'unnamed'}) on what it reads. The estimate "
+            "needs the true derivative of the objective's value, and a user "
+            "rule was not verified: write the objective without it.",
+        )
+    if rule in _SMOOTH_JAX_RULES:
+        return [any(ins)] * len(eqn.outvars)
+    return _walk(eqn.params["call_jaxpr"], ins, reaches)
+
+
+def _walk_call(eqn: Any, ins: list[bool], live: bool) -> list[bool]:
+    """A call: its one sub-jaxpr, on its operands one to one."""
+    ((_, _, sub),) = list(_jaxprs(eqn.params))
+    return _walk(sub, ins, [live] * len(eqn.outvars))
+
+
+def _walk_cond(eqn: Any, ins: list[bool], live: bool) -> list[bool]:
+    """A ``cond``: a branch when its index depends on a read value."""
+    if ins[0] and live:
+        raise _refuse_branch("cond")
+    n_out = len(eqn.outvars)
+    outs = [ins[0]] * n_out
+    for branch in eqn.params["branches"]:
+        got = _walk(branch, ins[1:], [live] * n_out)
+        outs = [a or b for a, b in zip(outs, got, strict=True)]
+    return outs
+
+
+def _walk_scan(eqn: Any, ins: list[bool], live: bool) -> list[bool]:
+    """A ``scan``: its body walked to a fixed point of the carry's dependence."""
+    body = eqn.params["jaxpr"]
+    ft_in = eqn.params.get("ft_in")
+    if ft_in is None or len(ft_in) != 3:  # pragma: no cover - another JAX layout
+        n_consts, n_carry = 0, 0
+        ins = [any(ins)] * len(ins)
+    else:
+        n_consts, n_carry = len(ft_in[0]), len(ft_in[1])
+    dep = list(ins)
+    while True:
+        outs = _walk(body, dep, [live] * len(body.outvars))
+        carry = [
+            a or b
+            for a, b in zip(
+                dep[n_consts : n_consts + n_carry], outs[:n_carry], strict=True
+            )
+        ]
+        new = [*dep[:n_consts], *carry, *dep[n_consts + n_carry :]]
+        if new == dep:
+            return outs
+        dep = new
+
+
+def _walk_while(eqn: Any, ins: list[bool], live: bool) -> list[bool]:
+    """A ``while``: a branch when its stop depends on a read value."""
+    params = eqn.params
+    nc, nb = params["cond_nconsts"], params["body_nconsts"]
+    cond, body = params["cond_jaxpr"], params["body_jaxpr"]
+    carry = list(ins[nc + nb :])
+    while True:
+        outs = _walk(body, [*ins[nc : nc + nb], *carry], [live] * len(carry))
+        new = [a or b for a, b in zip(carry, outs, strict=True)]
+        if new == carry:
+            break
+        carry = new
+    if _walk(cond, [*ins[:nc], *carry])[0] and live:
+        raise _refuse_branch("while")
+    return carry
+
+
+#: The higher-order primitives `_walk` follows into, by name.
+_HIGHER_ORDER: dict[str, Callable[[Any, list[bool], bool], list[bool]]] = {
+    **dict.fromkeys(_CALLS, _walk_call),
+    "cond": _walk_cond,
+    "scan": _walk_scan,
+    "while": _walk_while,
+}
 
 
 # --- values: stop_gradient as identity, cotangents, NaN reach, curvature -----------
 
 
-def _identity_stop_gradient(closed: Any) -> Any:
-    """``closed`` with every ``stop_gradient`` (in nested calls too) the identity."""
+def _identity_stop_gradient(jaxpr: Any) -> Any:
+    """``jaxpr`` with every ``stop_gradient`` (in every sub-jaxpr too) the identity.
 
-    def run(jaxpr: Any, consts: Sequence[Any], *args: Any) -> list[Any]:
-        env: dict[Any, Any] = {}
+    A structural rewrite: each ``stop_gradient`` equation is dropped and its
+    output renamed to its operand.
+    """
+    rename: dict[Any, Any] = {}
 
-        def read(v: Any) -> Any:
-            return v.val if isinstance(v, jcore.Literal) else env[v]
+    def atom(v: Any) -> Any:
+        return v if isinstance(v, jcore.Literal) else rename.get(v, v)
 
-        env.update(
-            zip([*jaxpr.constvars, *jaxpr.invars], [*consts, *args], strict=True)
-        )
-        for eqn in jaxpr.eqns:
-            ins = [read(v) for v in eqn.invars]
-            subs = _sub_jaxprs(eqn)
-            if eqn.primitive.name == "stop_gradient":
-                outs = ins
-            elif subs:
-                outs = run(subs[0].jaxpr, subs[0].consts, *ins)
-            else:
-                params = eqn.primitive.get_bind_params(eqn.params)
-                with eqn.ctx.manager:
-                    outs = eqn.primitive.bind(*ins, **params)
-                if not eqn.primitive.multiple_results:
-                    outs = [outs]
-            env.update(zip(eqn.outvars, outs, strict=True))
-        return [read(v) for v in jaxpr.outvars]
-
-    avals = [
-        jax.ShapeDtypeStruct(v.aval.shape, v.aval.dtype) for v in closed.jaxpr.invars
-    ]
-    return jax.make_jaxpr(lambda *a: run(closed.jaxpr, closed.consts, *a)[0])(*avals)
+    eqns = []
+    for eqn in jaxpr.eqns:
+        invars = [atom(v) for v in eqn.invars]
+        if eqn.primitive.name == "stop_gradient":
+            rename.update(zip(eqn.outvars, invars, strict=True))
+            continue
+        eqns.append(eqn.replace(invars=invars, params=_stripped_params(eqn.params)))
+    return jaxpr.replace(eqns=eqns, outvars=[atom(v) for v in jaxpr.outvars])
 
 
-def _evaluate(closed: Any, *args: Any) -> jax.Array:
-    return jcore.eval_jaxpr(closed.jaxpr, closed.consts, *args)[0]
-
-
-def _cotangents(closed: Any, flat: list[Any], scalars: list[int]) -> dict[int, complex]:
-    """The cotangent of each scalar input of ``scalars`` (gfem's contract)."""
-    value, pullback = jax.vjp(lambda *xs: _evaluate(closed, *xs), *flat)
-    cts = pullback(jnp.ones((), value.dtype))
-    out = {}
-    for i in scalars:
-        ct = complex(np.asarray(cts[i]))
-        out[i] = ct if np.isfinite(ct) else 0j
+def _stripped_params(params: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(params)
+    for key, index, sub in _jaxprs(params):
+        stripped = _identity_stop_gradient(sub)
+        if index is None:
+            out[key] = stripped
+        else:
+            items = list(out[key])
+            items[index] = stripped
+            value = out[key]
+            out[key] = (
+                type(value)(*items) if hasattr(value, "_fields") else tuple(items)
+            )
     return out
 
 
-def _nan_reads(trace: _Trace, flat: list[Any], candidates: list[int]) -> list[int]:
-    """The candidate inputs whose NaN reaches the pruned objective's value.
+#: The compiled functions of recent objectives, by their pruned jaxpr's text
+#: (`_compiled`): a refinement cycle, or the next estimate of one result,
+#: reuses them.
+_COMPILED: collections.OrderedDict[str, _Compiled] = collections.OrderedDict()
+_MAX_COMPILED = 32
+
+
+class _Compiled:
+    """The stripped jaxpr of one pruned jaxpr, its jitted NaN reach and Hessian.
+
+    Every function takes the jaxpr's constants and its (live) inputs as
+    arguments, so one entry serves every result whose objective traces to
+    the same jaxpr text: the shapes and dtypes of what it reads, and its
+    operations.
+    """
+
+    def __init__(self, pruned: Any) -> None:
+        self.stripped = _identity_stop_gradient(pruned)
+        self.walked = False
+        self._nans: dict[tuple[int, ...], Callable[..., jax.Array]] = {}
+        self._hessians: dict[tuple[Any, ...], Callable[..., jax.Array]] = {}
+
+    def _evaluate(self, consts: Sequence[Any], xs: Sequence[Any]) -> jax.Array:
+        return jcore.eval_jaxpr(self.stripped, consts, *xs)[0]
+
+    def value_and_cotangents(
+        self, consts: Sequence[Any], xs: Sequence[Any]
+    ) -> tuple[jax.Array, Any]:
+        """The value and its cotangents, eagerly: as the objective computes them.
+
+        Not jitted: a fused evaluation may round a zero cotangent (an
+        objective at its target) to 1e-16.
+        """
+        value, pullback = jax.vjp(lambda *ys: self._evaluate(consts, ys), *xs)
+        return value, pullback(jnp.ones((), value.dtype))
+
+    def nan_reach(self, positions: tuple[int, ...]) -> Callable[..., jax.Array]:
+        """``f(consts, xs)``: per position, whether its NaN reaches the value.
+
+        The pruned jaxpr's own NaN propagation (`stop_gradient` is the
+        identity on values, so the stripped one's is the same).
+        """
+        found = self._nans.get(positions)
+        if found is None:
+
+            def reach(consts: Sequence[Any], xs: Sequence[Any]) -> jax.Array:
+                def one(k: jax.Array) -> jax.Array:
+                    ys = list(xs)
+                    for j, p in enumerate(positions):
+                        ys[p] = jnp.where(k == j, jnp.full_like(ys[p], jnp.nan), ys[p])
+                    return self._evaluate(consts, ys)
+
+                return jnp.isnan(jax.vmap(one)(jnp.arange(len(positions))))
+
+            found = self._nans[positions] = jax.jit(reach)
+        return found
+
+    def hessian(
+        self, positions: tuple[int, ...], is_complex: tuple[bool, ...]
+    ) -> Callable[..., jax.Array]:
+        """``f(consts, xs, v)``: the Hessian of the value over the (Re, Im) ``v``."""
+        key = (positions, is_complex)
+        found = self._hessians.get(key)
+        if found is None:
+            widths = [2 if c else 1 for c in is_complex]
+            starts = np.concatenate([[0], np.cumsum(widths)]).astype(int)
+
+            def real_function(
+                v: jax.Array, consts: Sequence[Any], xs: Sequence[Any]
+            ) -> jax.Array:
+                ys = list(xs)
+                for k, p in enumerate(positions):
+                    s = starts[k]
+                    if is_complex[k]:
+                        ys[p] = (v[s] + 1j * v[s + 1]).astype(ys[p].dtype)
+                    else:
+                        ys[p] = v[s].astype(ys[p].dtype)
+                return jnp.real(self._evaluate(consts, ys))
+
+            def hessian(
+                consts: Sequence[Any], xs: Sequence[Any], v: jax.Array
+            ) -> jax.Array:
+                return jax.hessian(real_function)(v, consts, xs)
+
+            found = self._hessians[key] = jax.jit(hessian)
+        return found
+
+
+def _compiled(pruned: Any) -> _Compiled:
+    """The cache entry of ``pruned`` (`_COMPILED`), made on first use."""
+    key = str(pruned)
+    found = _COMPILED.get(key)
+    if found is None:
+        found = _COMPILED[key] = _Compiled(pruned)
+        while len(_COMPILED) > _MAX_COMPILED:
+            _COMPILED.popitem(last=False)
+    else:
+        _COMPILED.move_to_end(key)
+    return found
+
+
+def _check_untraced(value: jax.Array) -> None:
+    """Raise when the objective's value carries a tracer of an enclosing transform."""
+    if is_traced(value) or is_staging():
+        raise NonDifferentiableError(
+            "The objective's value carries a tracer of an enclosing jax.grad, "
+            "jax.jit or jax.vmap: mesh refinement estimates a fixed design, "
+            "which has no derivative. Estimate outside the transformed "
+            "function, with concrete values."
+        )
+
+
+def _nan_reads(
+    compiled: _Compiled,
+    consts: Sequence[Any],
+    xs: list[Any],
+    candidates: list[int],
+) -> list[int]:
+    """The candidate positions (in ``xs``) whose NaN reaches the objective's value.
 
     Vectorized over the candidates and jitted: a loop over them is quadratic
     in the entries (ticket 20's scaling).
     """
     if not candidates:
         return []
-    keep = trace.live
-    position = {i: keep.index(i) for i in candidates}
-    args = [flat[i] for i in keep]
-
-    def one(k: jax.Array) -> jax.Array:
-        xs = list(args)
-        for j, i in enumerate(candidates):
-            p = position[i]
-            xs[p] = jnp.where(k == j, jnp.full_like(xs[p], jnp.nan), xs[p])
-        return jcore.eval_jaxpr(trace.pruned, trace.closed.consts, *xs)[0]
-
-    reached = jax.jit(jax.vmap(one))(jnp.arange(len(candidates)))
-    return [
-        i for i, r in zip(candidates, np.isnan(np.asarray(reached)), strict=True) if r
-    ]
+    reached = np.asarray(compiled.nan_reach(tuple(candidates))(consts, xs))
+    return [p for p, r in zip(candidates, reached, strict=True) if r]
 
 
 def _curvature(
-    closed: Any, flat: list[Any], read: list[int]
+    compiled: _Compiled, consts: Sequence[Any], xs: list[Any], read: list[int]
 ) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:
-    """``||H_ab||_2`` over the (Re, Im) blocks of the read scalars ``read``.
+    """``||H_ab||_2`` over the (Re, Im) blocks of the read positions ``read``.
 
     Also each read's own block ``H_aa`` (`Objective.diagonal`).
     """
     if not read:
         return np.zeros((0, 0)), ()
-    is_complex = [bool(jnp.iscomplexobj(flat[i])) for i in read]
+    is_complex = tuple(bool(jnp.iscomplexobj(xs[p])) for p in read)
     widths = [2 if c else 1 for c in is_complex]
     starts = np.concatenate([[0], np.cumsum(widths)])
-
-    def real_function(v: jax.Array) -> jax.Array:
-        xs = list(flat)
-        for k, i in enumerate(read):
-            s = starts[k]
-            if is_complex[k]:
-                xs[i] = (v[s] + 1j * v[s + 1]).astype(flat[i].dtype)
-            else:
-                xs[i] = v[s].astype(flat[i].dtype)
-        return jnp.real(_evaluate(closed, *xs))
-
     v0 = []
-    for k, i in enumerate(read):
-        x = jnp.asarray(flat[i])
+    for k, p in enumerate(read):
+        x = jnp.asarray(xs[p])
         v0 += [jnp.real(x), jnp.imag(x)] if is_complex[k] else [jnp.real(x)]
     hessian = np.asarray(
-        jax.jit(jax.hessian(real_function))(jnp.stack(v0).astype(float))
+        compiled.hessian(tuple(read), is_complex)(
+            consts, xs, jnp.stack(v0).astype(float)
+        )
     )
     n = len(read)
     out = np.zeros((n, n))

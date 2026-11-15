@@ -209,3 +209,52 @@ def test_region_mean_refuses_a_region_outside_the_support(potential):
 def test_region_mean_refuses_a_region_name_list_that_is_empty(potential):
     with pytest.raises(TypeError, match="region"):
         gfem.region_mean(potential, [])
+
+
+# --- the estimate's dual of a mean: the support's elements alone --------------------
+
+
+@pytest.fixture(scope="module")
+def low_only(plate_mesh):
+    """The driven plate with "high" excluded: a mean over both is the low one."""
+    model = gfem.Model(
+        plate_mesh,
+        materials={"low": gfem.Material(eps_r=2.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("low__high")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+        excluded=("high",),
+    )
+    problem = gfem.Driven(frequency=20e12, excite="p1", keep_fields=True)
+    return model, gfem.solve(model, problem, options=OPTIONS).e_field(20e12)
+
+
+def test_a_means_dual_load_and_bound_count_the_support_alone(low_only):
+    import ngsolve as ngs
+
+    from gfem._engine import field_duals
+    from gfem._engine.coefficients import coefficient
+    from gfem._engine.estimate import RecoveryCache, _FieldGroup
+
+    model, field = low_only
+    assert field.support == ("low",)
+    group = _FieldGroup(model, field, 20e12, {}, RecoveryCache())
+    low = np.zeros(len(model.mesh.tetrahedra))
+    low[model.mesh.elements("low")] = 1.0
+    chi = coefficient(group.built, low)
+
+    def load(regions):
+        key = ("mean", 20e12, "p1", regions, 2)
+        g = field_duals.load_parts(
+            model, group.built, key, 1.0 + 0j, group.primal, support=field.support
+        )
+        return ngs.Integrate(g[0][2] * chi, group.built.mesh)
+
+    # region_mean over ("low", "high") is the mean over "low": so is its load
+    assert load(("low", "high")) == pytest.approx(load(("low",)), rel=1e-12)
+    both, terms = group.mean_bound(("low", "high"), 2)
+    alone, alone_terms = group.mean_bound(("low",), 2)
+    assert both == pytest.approx(alone, rel=1e-12)
+    np.testing.assert_allclose(terms, alone_terms, rtol=1e-12, atol=0)

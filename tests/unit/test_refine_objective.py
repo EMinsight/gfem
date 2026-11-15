@@ -206,6 +206,123 @@ def test_an_objective_reading_what_has_no_estimate_raises(
     _raises(feature, objective, step_result, step)
 
 
+def _scan_max(result, _model):
+    s21 = jnp.abs(result.s["p2", "p1"]) ** 2
+
+    def body(c, x):
+        return jnp.maximum(c, x), None
+
+    return jax.lax.scan(body, 0.0, s21)[0]
+
+
+def _while_on_read(result, _model):
+    s21 = jnp.abs(result.s["p2", "p1"][0])
+    return jax.lax.while_loop(lambda x: x < 1.0, lambda x: 2 * x, s21)
+
+
+def _cond_in_scan(result, _model):
+    s21 = jnp.abs(result.s["p2", "p1"]) ** 2
+
+    def body(c, x):
+        return c + jax.lax.cond(x > 0.5, lambda y: y, lambda y: 2 * y, x), None
+
+    return jax.lax.scan(body, 0.0, s21)[0]
+
+
+def _custom_in_scan(result, _model):
+    s21 = jnp.abs(result.s["p2", "p1"])
+    return jax.lax.scan(lambda c, x: (c + _square(x), None), 0.0, s21)[0]
+
+
+def _relu(result, _model):
+    return jax.nn.relu(jnp.abs(result.s["p2", "p1"][0]) - 0.5)
+
+
+@jax.custom_batching.custom_vmap
+def _vmapped(x):
+    return x**2
+
+
+@_vmapped.def_vmap
+def _vmapped_rule(_axis_size, in_batched, x):
+    return x**2, in_batched[0]
+
+
+def _unknown(result, _model):
+    # custom_vmap_call: a higher-order primitive the classification does not know
+    return _vmapped(jnp.abs(result.s["p2", "p1"][0]))
+
+
+@pytest.mark.parametrize(
+    ("objective", "feature"),
+    [
+        (_scan_max, "non-smooth objective"),
+        (_while_on_read, "non-smooth objective"),
+        (_cond_in_scan, "non-smooth objective"),
+        (_custom_in_scan, "custom derivative in objective"),
+        (_relu, "non-smooth objective"),
+        (_unknown, "non-smooth objective"),
+    ],
+)
+def test_an_objective_branching_inside_a_higher_order_primitive_raises(
+    step, step_result, objective, feature
+):
+    _raises(feature, objective, step_result, step)
+
+
+def test_a_stop_gradient_inside_a_scan_has_the_cotangent_of_the_value(
+    step, step_result
+):
+    def scanned(result, _model):
+        s21 = jnp.abs(result.s["p2", "p1"][0])
+        body = lambda c, _: (jax.lax.stop_gradient(c) * c, None)  # noqa: E731
+        return jax.lax.scan(body, s21, None, length=1)[0]
+
+    reads = _reads(_objective.classify(scanned, step_result, step))
+    s21 = complex(np.asarray(step_result.s["p2", "p1"][0]))
+    # the cotangent of |s21|^2 (dJ/dx - i dJ/dy), not of |s21| sg(|s21|)
+    assert reads[".s.values", (0, 1, 0)].cotangent == pytest.approx(2 * np.conj(s21))
+
+
+def test_a_fixed_count_loop_over_a_read_is_admitted(step, step_result):
+    def looped(result, _model):
+        s21 = jnp.abs(result.s["p2", "p1"][0]) ** 2
+        return jax.lax.fori_loop(0, 3, lambda _i, x: x + s21, 0.0)
+
+    objective = _objective.classify(looped, step_result, step)
+    assert objective.kind == "objective of s"
+
+
+def _logsumexp(result, _model):
+    return jax.scipy.special.logsumexp(jnp.abs(result.s["p2", "p1"]) ** 2)
+
+
+def _softplus(result, _model):
+    return jnp.sum(jax.nn.softplus(jnp.abs(result.s["p2", "p1"]) ** 2))
+
+
+def _logaddexp(result, _model):
+    s21 = jnp.abs(result.s["p2", "p1"]) ** 2
+    return jnp.logaddexp(s21[0], s21[1])
+
+
+def _normalized_by_a_stopped_max(result, _model):
+    s21 = jnp.abs(result.s["p2", "p1"]) ** 2
+    return jnp.sum(s21) / jax.lax.stop_gradient(jnp.max(s21))
+
+
+@pytest.mark.parametrize(
+    "objective", [_logsumexp, _softplus, _logaddexp, _normalized_by_a_stopped_max]
+)
+def test_jax_smooth_rules_and_a_stopped_max_are_admitted(step, step_result, objective):
+    classified = _objective.classify(objective, step_result, step)
+    assert classified.kind == "objective of s"
+    assert {(r.leaf, r.index) for r in classified.reads} == {
+        (".s.values", (0, 1, 0)),
+        (".s.values", (1, 1, 0)),
+    }
+
+
 def test_a_field_from_outside_the_result_raises(step, step_result):
     foreign = step_result.e_field(STEP_F[0], "p1")
 
@@ -238,6 +355,30 @@ def test_an_undefined_s_row_raises(tmp_path):
         return jnp.abs(result.s["p2", "p1"][0]) ** 2
 
     _raises("undefined S row", s21, result, model)
+
+
+def test_an_objective_beside_an_undefined_s_row_keeps_the_c_form(tmp_path):
+    # Lossless, lumped ports only, but p2 has no resistance: its row of S is
+    # undefined, so the lossless rewrite (over every row) does not apply.
+    model = rc.step_model(tmp_path, 2)
+    model = gfem.Model(
+        model.mesh,
+        materials=model.materials,
+        boundaries=model.boundaries,
+        ports=[model.ports[0], gfem.LumpedPort("p2", "port2", "+z", inductance=1e-9)],
+    )
+    problem = gfem.Driven([3e9], excite=["p1"], keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+
+    def s11(result, _model):
+        return jnp.abs(result.s["p1", "p1"][0]) ** 2
+
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(objective=s11), model=model
+    )
+    assert estimate.kind == "objective of s"
+    assert np.isfinite(estimate.value)
+    assert estimate.value > 0
 
 
 def test_a_port_mode_output_raises_and_with_offsets_reads_s(tmp_path):
@@ -485,6 +626,41 @@ def test_the_absorbed_power_is_the_volume_form_of_power_flow(line, line_result):
     volume = float(np.real(np.vdot(x, mass @ x)))
     assert volume > 0
     assert volume == pytest.approx(float(_layer_power(line_result, line)), rel=1e-9)
+
+
+def test_a_read_measurement_runs_once_and_an_unread_one_never(
+    line, line_result, monkeypatch
+):
+    from gfem import measurements
+
+    calls = []
+    real = measurements.region_mean
+
+    def counted(field, regions):
+        if _objective.recording() is None:
+            calls.append(tuple(regions))
+        return real(field, regions)
+
+    monkeypatch.setattr(measurements, "region_mean", counted)
+
+    def objective(result, _model):
+        field = result.e_field(LINE_F, "p1")
+        measurements.region_mean(field, "lsub")  # read by nothing
+        return jnp.abs(measurements.region_mean(field, "rbox")[2]) ** 2
+
+    classified = _objective.classify(objective, line_result, line)
+    assert classified.kind == "objective of field means"
+    assert calls == [("rbox",)]
+
+
+def test_a_classification_again_is_the_same_classification(step, step_result):
+    first = _objective.classify(_s21_band, step_result, step)
+    again = _objective.classify(_s21_band, step_result, step)
+    assert again.value == first.value
+    assert again.reads == first.reads
+    np.testing.assert_array_equal(again.curvature, first.curvature)
+    for a, b in zip(again.diagonal, first.diagonal, strict=True):
+        np.testing.assert_array_equal(a, b)
 
 
 @pytest.mark.parametrize(

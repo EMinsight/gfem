@@ -5,6 +5,7 @@ tetrahedra), whose corner singularity keeps its field error estimate near
 0.1, far above any tolerance these tests ask for.
 """
 
+import dataclasses
 import sys
 import types
 import warnings
@@ -315,6 +316,40 @@ def test_a_failed_first_solve_raises(coax, monkeypatch):
     monkeypatch.setattr("gfem.refinement._solve", _Failing(error, fail_on=1))
     with pytest.raises(gfem.LinearSolverConvergenceError):
         _refine(coax)
+
+
+def test_a_nan_among_the_values_is_the_estimate_value():
+    estimate = gfem.ErrorEstimate(
+        estimator=gfem.FieldEstimator(),
+        kind="field",
+        values=(0.1, float("nan")),
+        indicators=np.zeros(3),
+    )
+    assert np.isnan(estimate.value)
+
+
+class _NonFinite:
+    """The loop's estimates, with the first estimate's value made NaN."""
+
+    def __init__(self, real):
+        self.real = real
+
+    def __call__(self, *args, **kwargs):
+        estimates, modes = self.real(*args, **kwargs)
+        first = dataclasses.replace(estimates[0], values=(float("nan"),))
+        return (first, *estimates[1:]), modes
+
+
+def test_a_non_finite_estimate_stops_the_loop_unconverged(coax, monkeypatch):
+    from gfem import refinement
+
+    monkeypatch.setattr(refinement, "_estimates", _NonFinite(refinement._estimates))
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning, match="not finite"):
+        ref = _refine(coax, tolerance=1e-3)
+    assert ref.stop == "non-finite estimate"
+    assert not ref.converged
+    assert len(ref.cycles) == 1
+    assert ref.cycles[0].marked == 0
 
 
 # --- the recovery: natural surfaces and the cut path -------------------------

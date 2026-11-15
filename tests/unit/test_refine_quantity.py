@@ -95,6 +95,36 @@ def test_an_unexcited_source_port_raises_with_the_remedy(step):
         )
 
 
+def _reactive_p2(step):
+    """``step`` with port p2 an inductance alone: its row of S is undefined."""
+    return _with(
+        step,
+        ports=[step.ports[0], gfem.LumpedPort("p2", "port2", "+z", inductance=1e-9)],
+    )
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_an_undefined_read_row_raises_before_any_solve(step):
+    # p2 has no resistance: S[p2, p1] is NaN, so it has nothing to estimate
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(
+            _reactive_p2(step),
+            gfem.Driven([3e9], excite="p1"),
+            estimator=gfem.QuantityEstimator(s=("p2", "p1")),
+        )
+    assert caught.value.feature == "undefined S row"
+    assert "resistance" in str(caught.value)
+
+
+def test_error_estimate_of_an_undefined_read_row_raises(step):
+    model = _reactive_p2(step)
+    problem = gfem.Driven([3e9], excite="p1", keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.error_estimate(result, gfem.QuantityEstimator(s=("p2", "p1")), model=model)
+    assert caught.value.feature == "undefined S row"
+
+
 @pytest.mark.usefixtures("no_solve")
 def test_a_mode_index_beyond_n_modes_raises(cavity):
     with pytest.raises(ValueError, match="n_modes=1"):

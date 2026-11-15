@@ -48,7 +48,8 @@ for cycle in ref.cycles:  # cycle 0 is the imported mesh
   {py:obj}`gfem.MeshRefinementNotConvergedWarning`, `ref.converged` is
   `False`, and `ref.stop` says which cap stopped it. A solve that fails
   after the first mesh stops the loop with `stop="solve failed"` and keeps
-  the last solved mesh.
+  the last solved mesh. An estimate that is NaN or infinite counts as above
+  `tolerance`: the loop stops with `stop="non-finite estimate"` and warns.
 - A driven problem on a uniform sweep (lumped or wave ports) and an
   eigenmode problem refine the same way. The estimate of a sweep is its
   worst frequency's, of an eigenmode solve its worst mode's.

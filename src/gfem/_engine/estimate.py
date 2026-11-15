@@ -510,6 +510,18 @@ class RecoveryCache:
         """`_parts` of ``field``: its real part, and its imaginary part if any."""
         return self._memo(("parts", id(field)), (field,), lambda: _parts(field))
 
+    def dual_field(self, field: Field, coefficients: np.ndarray) -> Field:
+        """A dual solution as a field on ``field``'s space, one per solution.
+
+        Every estimate of the mesh reading that dual shares it, and so its
+        recovered errors (`wave_residuals`).
+        """
+        return self._memo(
+            ("dual", id(field), id(coefficients)),
+            (field, coefficients),
+            lambda: dataclasses.replace(field, coefficients=coefficients),
+        )
+
     def effective_eps(
         self, recovery: FluxRecovery, k: complex
     ) -> tuple[list[ngs.CoefficientFunction], list[ngs.CoefficientFunction]]:
@@ -1175,17 +1187,29 @@ def objective_of_fields(
     with task_manager(threads):
         for (f, excitation), members in groups.items():
             group = _FieldGroup(model, fields[f, excitation], f, duals, cache)
-            c, m = group.pair([reads[a] for a in members])
+            needed = np.any(curvature[members] != 0, axis=1)
+            if all(
+                needs and reads[a][0][0] == "power"
+                for a, needs in zip(members, needed, strict=True)
+            ):
+                # every read needs its own pair: the combined one is their
+                # sum (bilinear), not one more recovery
+                c = m = np.zeros(n_tet, complex)
+                for a in members:
+                    key, ct = reads[a]
+                    ca, ma = group.unit_pair(key)
+                    c, m = c + ct * ca, m + ct * ma
+            else:
+                c, m = group.pair([reads[a] for a in members])
             curl, mass, _ = linear.get(f, (np.zeros(n_tet, complex),) * 2 + (0.0,))
             linear[f] = (curl + c, mass + m, group.k**2)
-            needed = np.any(curvature[members] != 0, axis=1)
             for a, needs in zip(members, needed, strict=True):
                 key, ct = reads[a]
                 if key[0] == "power":
                     rho = group.absorbed_remainder(key[3])
                     owned += abs(ct) * rho
                     if needs:
-                        ca, ma = group.pair([(key, 1.0 + 0j)])
+                        ca, ma = group.unit_pair(key)
                         t = np.abs(ca - group.k**2 * ma)
                         etas[a] = abs(ca.sum()) + group.k**2 * abs(ma.sum()) + rho.sum()
                         eta_terms[a] = t + rho
@@ -1225,6 +1249,25 @@ class _FieldGroup:
         # e~ = eps_eff^-1 r, the recovered error of E
         self.error = _times(self.eps_inverse, self.residuals[1])
         self._density: np.ndarray | None = None
+        self._weights: dict[tuple[str, ...], np.ndarray] = {}
+        self._units: dict[tuple[Any, ...], tuple[np.ndarray, np.ndarray]] = {}
+
+    def absorbed_weights(self, side: Sequence[str]) -> np.ndarray:
+        """`field_duals.absorbed_weights` of ``side`` at this group's frequency."""
+        from gfem._engine import field_duals
+
+        key = tuple(side)
+        if key not in self._weights:
+            self._weights[key] = field_duals.absorbed_weights(
+                self.model, self.built, key, self.f
+            )
+        return self._weights[key]
+
+    def unit_pair(self, key: tuple[Any, ...]) -> tuple[np.ndarray, np.ndarray]:
+        """`pair` of the read ``key`` alone, at a unit cotangent; made once."""
+        if key not in self._units:
+            self._units[key] = self.pair([(key, 1.0 + 0j)])
+        return self._units[key]
 
     def pair(
         self, reads: Sequence[tuple[tuple[Any, ...], complex]]
@@ -1238,7 +1281,15 @@ class _FieldGroup:
             np.zeros(len(self.field.coefficients), complex),
         )
         loads = [
-            field_duals.load_parts(self.model, self.built, key, ct, self.primal)
+            field_duals.load_parts(
+                self.model,
+                self.built,
+                key,
+                ct,
+                self.primal,
+                support=self.field.support,
+                weights=self.absorbed_weights(key[3]) if key[0] == "power" else None,
+            )
             for key, ct in reads
         ]
         g = [functools.reduce(operator.add, [p[i] for p in loads]) for i in (0, 1)]
@@ -1251,15 +1302,12 @@ class _FieldGroup:
 
     def absorbed_remainder(self, side: Sequence[str]) -> np.ndarray:
         """rho_K = w_K int_K |e~|^2 of the power absorbed in ``side``."""
-        from gfem._engine import field_duals
-
         if self._density is None:
             self._density = sum(
                 (self.recovery.element_integrals(e * e) for e in self.error),
                 np.zeros(len(self.model.mesh.tetrahedra)),
             )
-        weight = field_duals.absorbed_weights(self.model, self.built, side, self.f)
-        return weight * self._density
+        return self.absorbed_weights(side) * self._density
 
     def mean_bound(
         self, regions: Sequence[str], component: int
@@ -1269,12 +1317,11 @@ class _FieldGroup:
         The terms sum to the bound: each tetrahedron's share of the squared
         bound, over the bound.
         """
+        from gfem._engine.field_duals import mean_mask
         from gfem._engine.fields import LENGTH_POWER
 
         recovery = self.recovery
-        mask = np.zeros(len(self.model.mesh.tetrahedra))
-        for name in regions:
-            mask[self.model.mesh.elements(name)] = 1.0
+        mask = mean_mask(self.model, self.field.support, regions)
         volume = recovery.element_integrals(ngs.CF(1.0)) @ mask
         q = mask * sum(
             (

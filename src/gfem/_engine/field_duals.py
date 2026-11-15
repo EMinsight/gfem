@@ -36,7 +36,7 @@ from gfem._engine.fields import LENGTH_POWER, fe_space, mean_rows
 from gfem._engine.mesh import EngineMesh
 from gfem.model import Model
 
-__all__ = ["absorbed_weights", "field_loads", "load_parts", "power_mass"]
+__all__ = ["absorbed_weights", "field_loads", "load_parts", "mean_mask", "power_mass"]
 
 #: A dual's key (see the module docstring).
 FieldKey = tuple[Any, ...]
@@ -62,6 +62,21 @@ def absorbed_weights(model: Model, built: EngineMesh, side: Sequence[str], f: fl
         mask[model.mesh.elements(name)] = 1.0
     scale = built.scale ** (3 + 2 * LENGTH_POWER["hcurl"])
     return 0.5 * omega * scipy.constants.epsilon_0 * scale * (-eps.imag) * mask
+
+
+def mean_mask(
+    model: Model, support: Sequence[str], regions: Sequence[str]
+) -> np.ndarray:
+    """Per tetrahedron, 1 where a field's mean over ``regions`` averages, else 0.
+
+    As `gfem._engine.fields.mean_rows`: the regions' tetrahedra in the
+    field's ``support`` and in the solve domain.
+    """
+    mask = np.zeros(len(model.mesh.tetrahedra))
+    for name in regions:
+        if name in support:
+            mask[model.mesh.elements(name)] = 1.0
+    return mask * model._domain.active  # noqa: SLF001
 
 
 def power_mass(
@@ -119,23 +134,27 @@ def load_parts(
     key: FieldKey,
     ct: complex,
     field_parts: Sequence[ngs.GridFunction],
+    *,
+    support: Sequence[str],
+    weights: np.ndarray | None = None,
 ) -> list[ngs.CoefficientFunction]:
     """``ct g``, the continuous load of ``key`` times ``ct``, as (real, imaginary).
 
     ``field_parts`` is the excitation's field (real and imaginary parts) at
-    the key's frequency, which a power's load reads.
+    the key's frequency, which a power's load reads; ``support`` is its
+    support, which a mean's load averages over (`mean_mask`). ``weights``
+    are a power's `absorbed_weights`, if already made.
     """
     if key[0] == "power":
         _, f, _, side = key
-        weight = coefficient(built, absorbed_weights(model, built, side, f))
+        if weights is None:
+            weights = absorbed_weights(model, built, side, f)
+        weight = coefficient(built, weights)
         er, ei = field_parts
         # -2 ct w conj(E), ct real
         return [-2 * ct.real * weight * er, 2 * ct.real * weight * ei]
     _, _, _, regions, c = key
-    mask = np.zeros(len(model.mesh.tetrahedra))
-    for name in regions:
-        mask[model.mesh.elements(name)] = 1.0
-    chi = coefficient(built, mask)
+    chi = coefficient(built, mean_mask(model, support, regions))
     volume = ngs.Integrate(chi, built.mesh)
     unit = [0.0, 0.0, 0.0]
     unit[c] = built.scale ** LENGTH_POWER["hcurl"] / volume
