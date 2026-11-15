@@ -415,7 +415,8 @@ def test_an_objective_is_one_callable_keyword():
 def test_error_estimate_of_an_objective_of_s(step, step_result):
     estimator = gfem.QuantityEstimator(objective=_s21_band)
     estimate = gfem.error_estimate(step_result, estimator, model=step)
-    assert estimate.kind == "objective of s"
+    # the step line is lossless with lumped ports: its rewrite, never above C
+    assert estimate.kind == "objective of s, lossless rewrite"
     assert len(estimate.values) == 1
     assert estimate.value > 0
     assert estimate.indicators.shape == (len(step.mesh.tetrahedra),)
@@ -550,3 +551,124 @@ def test_the_objective_dual_factorizes_once_then_rides_on_the_solves(step, monke
     # the ridden dual gives the estimate error_estimate gives on the last mesh
     again = gfem.error_estimate(refinement_.result, estimator, model=refinement_.model)
     assert again.value == pytest.approx(refinement_.estimate.value, rel=1e-8)
+
+
+# --- the lossless rewrite (ADR 0135) --------------------------------------------
+
+
+def test_a_lossless_lumped_port_model_estimates_through_its_lossless_rewrite(
+    step, step_result
+):
+    estimator = gfem.QuantityEstimator(objective=_s21_band)
+    estimate = gfem.error_estimate(step_result, estimator, model=step)
+    assert estimate.kind == "objective of s, lossless rewrite"
+    assert estimate.indicators.shape == (len(step.mesh.tetrahedra),)
+    # lam = 0 is a choice of the rewrite, so it is never above C (ADR 0129)
+    _, _, c = _c_form(step, step_result, _s21_band)
+    assert 0 < estimate.value <= c.value * (1 + 1e-12)
+
+
+def _c_form(model, result, objective, **kwargs):
+    from gfem._engine import estimate as kernels
+
+    classified = _objective.classify(objective, result, model)
+    s = result.s
+    reads = [
+        (float(s.frequency[f]), s.ports[i], s.excited[j], r.cotangent)
+        for r in classified.reads
+        for f, i, j in [r.index]
+    ]
+    return (
+        classified,
+        reads,
+        kernels.objective_of_s(model, result, reads, classified.curvature, **kwargs),
+    )
+
+
+def test_the_lossless_rewrite_at_lam_zero_is_the_c_form(step, step_result):
+    from gfem._engine import estimate as kernels
+
+    def sheet(result, _model):
+        s21, s11 = result.s["p2", "p1"], result.s["p1", "p1"]
+        return jnp.mean((jnp.abs(s21) ** 2 - 0.5) ** 2 + jnp.abs(s11) ** 2)
+
+    classified, reads, c = _c_form(step, step_result, sheet)
+    columns = len({(f, source) for f, _, source, _ in reads})
+    at_zero = kernels.lossless_rewrite(
+        step,
+        step_result,
+        reads,
+        classified.curvature,
+        classified.diagonal,
+        lam=np.zeros(columns),
+    )
+    assert at_zero.linear == pytest.approx(c.linear, rel=1e-12)
+    assert at_zero.remainder == pytest.approx(c.remainder, rel=1e-12)
+    np.testing.assert_allclose(at_zero.weights, c.weights, rtol=1e-12, atol=0)
+    # the minimum is at most the value at lam = 0, and adds |lam . D|
+    best = kernels.lossless_rewrite(
+        step, step_result, reads, classified.curvature, classified.diagonal
+    )
+    assert best.value <= at_zero.value
+    assert best.value == pytest.approx(
+        best.linear + best.remainder + abs(best.lam @ best.defect), rel=1e-14
+    )
+
+
+def test_the_lossless_rewrite_moves_transmission_onto_reflection(step, step_result):
+    # |S21|^2 at one frequency: on a lossless two-port its error follows
+    # |S11|^2's, so the rewrite estimates it far below C
+    def s21(result, _model):
+        return jnp.abs(result.s["p2", "p1"][0]) ** 2
+
+    estimate = gfem.error_estimate(
+        step_result, gfem.QuantityEstimator(objective=s21), model=step
+    )
+    _, _, c = _c_form(step, step_result, s21)
+    assert estimate.value < 0.8 * c.value
+
+
+def _variant(model, **changes):
+    fields = {
+        "materials": model.materials,
+        "boundaries": model.boundaries,
+        "ports": model.ports,
+    }
+    return gfem.Model(model.mesh, **{**fields, **changes})
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "lossy dielectric",
+        "conductor plate",
+        "wave ports",
+    ],
+)
+def test_no_lossless_rewrite_where_power_may_not_be_conserved(variant, step, tmp_path):
+    if variant == "wave ports":
+        model = rc.lossy_guide_model(tmp_path, 2, "uniform", 0.0)
+        frequencies = [rc.LOSSY_GUIDE_FREQUENCY]
+    else:
+        changes = {
+            "lossy dielectric": {
+                "materials": {"dielectric": gfem.Material(eps_r=4.0, tan_delta=0.1)}
+            },
+            "conductor plate": {
+                "boundaries": [
+                    gfem.PEC("bottom"),
+                    gfem.Conductor("top", conductivity=5.8e7),
+                ]
+            },
+        }[variant]
+        model = _variant(step, **changes)
+        frequencies = [STEP_F[0]]
+    result = gfem.solve(
+        model, gfem.Driven(frequencies, keep_fields=True), options=OPTIONS
+    )
+    estimate = gfem.error_estimate(
+        result, gfem.QuantityEstimator(objective=_s21_band), model=model
+    )
+    assert estimate.kind == "objective of s"
+    _, _, c = _c_form(model, result, _s21_band)
+    assert estimate.value == pytest.approx(c.value, rel=1e-12)

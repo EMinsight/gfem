@@ -36,7 +36,16 @@ from gfem.errors import (
     NonDifferentiableError,
 )
 from gfem.mesh import Mesh
-from gfem.model import Absorbing, Impedance, LumpedPort, Model, WavePort, surfaces_of
+from gfem.model import (
+    PEC,
+    PMC,
+    Absorbing,
+    Impedance,
+    LumpedPort,
+    Model,
+    WavePort,
+    surfaces_of,
+)
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
@@ -315,6 +324,7 @@ EMITTED_KINDS = (
     "q",
     "cluster mean",
     "objective of s",
+    "objective of s, lossless rewrite",
 )
 
 
@@ -328,7 +338,10 @@ class ErrorEstimate:
             ``"capacitance"``, ``"s"``, ``"omega"`` or ``"q"`` for a
             `QuantityEstimator`, after its keyword, ``"cluster mean"``
             for a tuple ``omega``; for an objective, what it reads
-            (``"objective of s"``). Each kind has its own measured
+            (``"objective of s"``), or ``"objective of s, lossless
+            rewrite"`` on a lossless model with lumped ports only, whose
+            estimate also uses the power each port's column must carry
+            (tighter). Each kind has its own measured
             effectivity range (verification page).
         values: Estimated size of the error per frequency (a driven result),
             per mode (an eigenmode result under a `FieldEstimator`), or one
@@ -361,6 +374,9 @@ class ErrorEstimate:
     _dual_ports: tuple[str, ...] = dataclasses.field(default=(), repr=False)
     #: An objective's first-order sensitivity, sum_a |ct_a| s_a (its floor).
     _sensitivity: float = dataclasses.field(default=0.0, repr=False)
+    #: A lossless rewrite's computed defect term lam . D, signed (ADR 0135):
+    #: ``value - abs(_defect)`` is the rewritten objective's own estimate.
+    _defect: float = dataclasses.field(default=0.0, repr=False)
 
     @property
     def value(self) -> float:
@@ -1338,7 +1354,10 @@ def _estimate_objective(
 ) -> ErrorEstimate:
     """An objective's estimate: classify it, then its kind's kernel (ADR 0143).
 
-    The S-functional adjoints of the read rows that need one (a port not
+    An objective of S on a model that conserves power (`_conserves_power`)
+    is estimated through its lossless rewrite (ADR 0135), over every row of
+    the columns it reads; any other through the C form (ADR 0129).
+    The S-functional adjoints of the rows that need one (a port not
     excited, or a lossy wave port) and did not ride on the solve
     (``ridden``) are solved here: one more factorization per frequency
     (`_adjoints`).
@@ -1361,31 +1380,67 @@ def _estimate_objective(
         for r in objective.reads
         for f, i, j in [r.index]
     ]
+    rewrite = _conserves_power(model)
+    rows = [to for _, to, _, _ in reads]
+    if rewrite:
+        rows += list(s.ports)
     excited = list(s.excited)
     ports = tuple(
-        dict.fromkeys(to for _, to, _, _ in reads if _needs_adjoint(to, model, excited))
+        dict.fromkeys(to for to in rows if _needs_adjoint(to, model, excited))
     )
     missing = tuple(p for p in ports if p not in ridden)
     solved = dict(adjoints)
     if missing:
         solved.update(_adjoints(model, result, missing, threads))
-    terms = kernels.objective_of_s(
-        model,
-        result,
-        reads,
-        objective.curvature,
-        threads,
-        adjoints=_dual_fields(result, solved),
-        cache=cache,
-    )
+    duals = _dual_fields(result, solved)
+    if rewrite:
+        terms = kernels.lossless_rewrite(
+            model,
+            result,
+            reads,
+            objective.curvature,
+            objective.diagonal,
+            threads=threads,
+            adjoints=duals,
+            cache=cache,
+        )
+        kind = "objective of s, lossless rewrite"
+        defect = float(terms.lam @ terms.defect)
+    else:
+        terms = kernels.objective_of_s(
+            model,
+            result,
+            reads,
+            objective.curvature,
+            threads,
+            adjoints=duals,
+            cache=cache,
+        )
+        kind, defect = objective.kind, 0.0
     return ErrorEstimate(
         estimator=estimator,
-        kind=objective.kind,
+        kind=kind,
         values=(terms.value,),
         indicators=readonly(np.sqrt(terms.weights)),
         _quantity=objective.value,
         _dual_ports=ports,
         _sensitivity=objective.sensitivity,
+        _defect=defect,
+    )
+
+
+def _conserves_power(model: Model) -> bool:
+    """Whether the true S of ``model`` conserves power, sum_i |S_ic|^2 = 1.
+
+    A conservative whitelist (ADR 0135): every material lossless (real
+    eps_r and mu_r, no tan_delta, conductivity or lossy law), every surface
+    PEC or PMC, and every port lumped, whose resistance is the reference.
+    A wave port is left out: its kept modes need not carry all the power.
+    """
+    return (
+        all(isinstance(p, LumpedPort) for p in model.ports)
+        and all(isinstance(b, PEC | PMC) for b in model.boundaries)
+        and not _lossy_elements(model).any()
     )
 
 
