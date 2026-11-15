@@ -33,7 +33,7 @@ from gfem.errors import (
     NonDifferentiableError,
 )
 from gfem.mesh import Mesh
-from gfem.model import Absorbing, Model, WavePort
+from gfem.model import Absorbing, Impedance, LumpedPort, Model, WavePort, surfaces_of
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.results import DrivenResult, EigenmodeResult, ElectrostaticResult
@@ -595,6 +595,8 @@ def refine_mesh(
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)
     _check_untraced("refine_mesh", (model, problem))
+    if isinstance(problem, Driven):
+        _check_driven_estimable(estimator, model, [float(f) for f in problem.frequency])
     # a moved input mesh is checked here, so a warning names the caller's line;
     # the loop's solves and bisections skip the check
     _check_quality(model.mesh, model._domain.active, stacklevel=2)  # noqa: SLF001
@@ -1395,6 +1397,126 @@ def _check_lossy_anisotropic(estimator: Estimator, model: Model) -> None:
     )
 
 
+#: The plasmonic window of a law region's Re eps (ADR 0140), open at both ends.
+_PLASMONIC_WINDOW = (-20.0, 0.0)
+
+
+def _check_driven_estimable(
+    estimator: Estimator, model: Model, frequencies: list[float]
+) -> None:
+    """Raise for a driven quantity estimate the identity has no term for.
+
+    The S estimate's only for now; objectives of S and driven field
+    objectives call `_check_driven_quantity` too.
+    """
+    if isinstance(estimator, QuantityEstimator) and estimator.s is not None:
+        _check_driven_quantity(model, frequencies, "QuantityEstimator(s=...)")
+
+
+def _check_driven_quantity(model: Model, frequencies: list[float], what: str) -> None:
+    """Raise where a driven quantity estimate was measured underestimating.
+
+    One check for the S estimate, objectives of S and driven field
+    objectives, before any solve (ADRs 0134, 0139, 0140). It runs after
+    `dispersion.check_estimator_frequencies` has gone over every frequency,
+    whose zero-weight `ValueError` comes first. The field estimate is not
+    refused here: it is unclaimed (recipe Limits).
+
+    Args:
+        model: The driven model.
+        frequencies: The solve frequencies, Hz.
+        what: The estimate, as the message names it (for example
+            ``"QuantityEstimator(s=...)"``).
+
+    Raises:
+        MeshRefinementUnsupportedError: ``feature`` is ``"impedance or
+            absorbing surface"`` (any `Impedance` or `Absorbing` surface),
+            ``"lumped port spanning a permeability contrast"`` (the
+            tetrahedra beside a `LumpedPort`'s surface differ in mu_r,
+            tensors compared whole) or ``"plasmonic permittivity"`` (a law
+            region with Re eps in `_PLASMONIC_WINDOW` at a frequency).
+    """
+    remedy = (
+        "Refine with gfem.FieldEstimator() and check the quantity by a finer solve."
+    )
+    surface = next(
+        (b.surface for b in model.boundaries if isinstance(b, (Impedance, Absorbing))),
+        None,
+    )
+    if surface is not None:
+        raise MeshRefinementUnsupportedError(
+            "impedance or absorbing surface",
+            f"{what} has no verified estimate on a driven model with an "
+            f"impedance or absorbing surface ({surface!r}): the current on such "
+            "a surface carries a share of the error that the estimate has no "
+            f"term for. {remedy}",
+        )
+    port = _lumped_port_on_mu_contrast(model)
+    if port is not None:
+        raise MeshRefinementUnsupportedError(
+            "lumped port spanning a permeability contrast",
+            f"{what} has no verified estimate where the face of lumped port "
+            f"{port!r} borders materials of different mu_r: the estimate "
+            "misses the error at the edge where the permeability interface "
+            f"meets the port's face. {remedy}",
+        )
+    plasmonic = _plasmonic_law(model, frequencies)
+    if plasmonic is not None:
+        region, f, eps = plasmonic
+        low, high = _PLASMONIC_WINDOW
+        raise MeshRefinementUnsupportedError(
+            "plasmonic permittivity",
+            f"{what} has no verified estimate where a permittivity law has Re "
+            f"eps between {low:g} and {high:g}: region {region!r} has Re eps = "
+            f"{eps:.3g} at {hertz(f)}. There, metal edges and lumped port edges "
+            f"on the metal make the solution itself converge poorly. {remedy}",
+        )
+
+
+def _lumped_port_on_mu_contrast(model: Model) -> str | None:
+    """The first lumped port whose surface borders tetrahedra of different mu_r."""
+    from gfem._engine.coefficients import element_tensors
+
+    lumped = [p for p in model.ports if isinstance(p, LumpedPort)]
+    if not lumped:
+        return None
+    mesh = model.mesh
+    mu = np.asarray(element_tensors(model, "mu_r"))
+    mu = mu.reshape(len(mu), -1)
+    active = model._domain.active  # noqa: SLF001
+    neighbours = np.asarray(mesh.triangle_neighbours)
+    for port in lumped:
+        for surface in surfaces_of(port):
+            beside = neighbours[mesh.elements(surface)].ravel()
+            beside = beside[beside >= 0]
+            values = mu[beside[active[beside]]]
+            if len(values) and np.any(values != values[0]):
+                return port.name
+    return None
+
+
+def _plasmonic_law(
+    model: Model, frequencies: list[float]
+) -> tuple[str, float, float] | None:
+    """The first (region, frequency, Re eps) of a law in `_PLASMONIC_WINDOW`.
+
+    Re eps is the kernel's (`dispersion.eps_at`): eps_inf plus the law's
+    susceptibility; a conductivity adds to Im eps only.
+    """
+    from gfem._engine import dispersion
+
+    low, high = _PLASMONIC_WINDOW
+    regions = [lr for lr in dispersion.law_regions(model) if not is_traced(lr.law)]
+    for f in frequencies:
+        for lr in regions:
+            eps = complex(lr.law.eps_inf) + dispersion.susceptibility(
+                lr.law, 2 * math.pi * f
+            )
+            if low < eps.real < high:
+                return lr.region, f, eps.real
+    return None
+
+
 def _touching(model: Model, surface: str) -> np.ndarray:
     """Whether each tetrahedron has a node on ``surface``."""
     mesh = model.mesh
@@ -1423,9 +1545,9 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         _check_kept(result, estimator)
         from gfem._engine import dispersion
 
-        dispersion.check_estimator_frequencies(
-            model, [float(f) for f in result.s.frequency]
-        )
+        frequencies = [float(f) for f in result.s.frequency]
+        dispersion.check_estimator_frequencies(model, frequencies)
+        _check_driven_estimable(estimator, model, frequencies)
     _check_order(_fields(result)[0].order, estimator)
     mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
