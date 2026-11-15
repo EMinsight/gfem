@@ -4,8 +4,9 @@ A `gfem.QuantityEstimator` estimates how far a capacitance entry, an S entry
 or a mode's omega is from its value on the same geometry with an infinitely
 fine mesh. Its effectivity is the estimate divided by the error against a
 known answer; every listed estimate must lie in its case's range of
-`EFFECTIVITY_BY_CASE`, and `EFFECTIVITY` (the lowest low and the highest
-high) is the range the docs quote. Order 2, direct solves.
+`EFFECTIVITY_BY_KIND`, keyed by the estimate's kind (`ErrorEstimate.kind`),
+and each kind's span is the range the docs quote for it. Order 2, direct
+solves.
 
 Cases and references (none recomputed by the tests but the closed forms):
 
@@ -129,43 +130,60 @@ import gfem
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 
-#: Asserted effectivity range per case (measured, with margin).
-EFFECTIVITY_BY_CASE = {
-    "square coax": (0.9, 2.0),
-    "circular coax": (0.9, 2.0),
-    "step line, lumped ports": (0.9, 2.5),
-    "step line, wave ports": (0.9, 2.5),
-    "shared port surface": (0.9, 12.0),
-    "parallel-plate line": (0.9, 17.0),
-    "L cavity": (0.9, 5.0),
-    "rectangular box": (0.9, 12.0),
-    "anisotropic coax": (0.9, 2.5),
-    "sheet": (0.9, 2.5),
-    "permeability line": (0.9, 17.0),
-    "anisotropic line": (0.9, 17.0),
-    "permeability box": (0.9, 12.0),
-    "anisotropic box": (0.9, 12.0),
-    "screen": (0.9, 12.0),
-    "near": (0.9, 2.0),
-    "lossy box": (0.9, 12.0),
-    "lossy L cavity": (0.9, 5.0),
-    "lossy walls": (0.9, 12.0),
-    "resistive line": (0.9, 8.0),
-    "lossy uniform guide": (0.9, 20.0),
-    "lossy slab guide": (0.9, 20.0),
-    "lossy step guide": (0.9, 20.0),
+#: Asserted effectivity at order 2, per estimate kind (`ErrorEstimate.kind`),
+#: then per case (measured, with margin). The docs quote each kind's span, and
+#: the span of the three entry kinds as the quantity estimator's range.
+EFFECTIVITY_BY_KIND = {
+    "capacitance": {
+        "square coax": (0.9, 2.0),
+        "circular coax": (0.9, 2.0),
+        "anisotropic coax": (0.9, 2.5),
+        "sheet": (0.9, 2.5),
+        "screen": (0.9, 12.0),
+        "near": (0.9, 2.0),
+    },
+    "s": {
+        "step line, lumped ports": (0.9, 2.5),
+        "step line, wave ports": (0.9, 2.5),
+        "shared port surface": (0.9, 12.0),
+        "parallel-plate line": (0.9, 17.0),
+        "permeability line": (0.9, 17.0),
+        "anisotropic line": (0.9, 17.0),
+        "lossy uniform guide": (0.9, 20.0),
+        "lossy slab guide": (0.9, 20.0),
+        "lossy step guide": (0.9, 20.0),
+    },
+    "omega": {
+        "L cavity": (0.9, 5.0),
+        "rectangular box": (0.9, 12.0),
+        "permeability box": (0.9, 12.0),
+        "anisotropic box": (0.9, 12.0),
+        "lossy box": (0.9, 12.0),
+        "lossy L cavity": (0.9, 5.0),
+        "lossy walls": (0.9, 12.0),
+        "resistive line": (0.9, 8.0),
+    },
 }
 
-#: The range the docs quote: the lowest low and the highest high.
-EFFECTIVITY = (
-    min(low for low, _ in EFFECTIVITY_BY_CASE.values()),
-    max(high for _, high in EFFECTIVITY_BY_CASE.values()),
-)
+#: Cases asserted >= 0.9 whose high end the docs quote on their own (Limits)
+#: instead of widening their kind's range: name -> (kind, (low, high)).
+OVERESTIMATES: dict[str, tuple[str, tuple[float, float]]] = {}
+
+#: Configurations that are not claimed, measured bands that reach below 0.9:
+#: name -> (kind, (low, high)).
+WITNESSES: dict[str, tuple[str, tuple[float, float]]] = {}
 
 
-def _assert_in(case, estimate, error):
-    low, high = EFFECTIVITY_BY_CASE[case]
-    assert low <= estimate / abs(error) <= high, (case, estimate / abs(error))
+def _assert_in(kind, case, estimate, error, value=None):
+    """``value`` (default ``estimate.value``) over ``|error|`` in the case's range.
+
+    ``estimate`` is the `gfem.ErrorEstimate` the value comes from: its kind
+    must be ``kind``, the key of the case's range.
+    """
+    assert estimate.kind == kind, (case, estimate.kind)
+    low, high = EFFECTIVITY_BY_KIND[kind][case]
+    value = estimate.value if value is None else value
+    assert low <= value / abs(error) <= high, (case, value / abs(error))
 
 
 def test_the_estimate_leaves_out_the_linear_solve_so_a_tight_tolerance_raises(
@@ -202,7 +220,7 @@ def test_the_square_coax_capacitance(tmp_path):
     for cycle in ref.cycles:
         error = (cycle.value / scale - rc.COAX_C) / rc.COAX_C
         assert error > 0  # C_h >= C on the meshed geometry
-        _assert_in("square coax", cycle.estimate, error)
+        _assert_in("capacitance", "square coax", ref.estimate, error, cycle.estimate)
 
 
 # --- circular coax: capacitance, smooth, faceted ------------------------------
@@ -235,7 +253,7 @@ def circular_coax(tmp_path_factory):
         )
         out[k] = (
             float(result.capacitance[0, 0]),
-            estimate.value,
+            estimate,
             float(fine.capacitance[0, 0]),
         )
     return out
@@ -244,7 +262,7 @@ def circular_coax(tmp_path_factory):
 @pytest.mark.parametrize("k", [1, 2, 4, 8])
 def test_the_circular_coax_capacitance_against_its_own_facets(circular_coax, k):
     c, estimate, c5 = circular_coax[k]
-    _assert_in("circular coax", estimate, (c - c5) / c5)
+    _assert_in("capacitance", "circular coax", estimate, (c - c5) / c5)
 
 
 @pytest.mark.parametrize("k", [2, 4, 8])
@@ -252,7 +270,7 @@ def test_the_estimate_does_not_see_the_faceting(circular_coax, k):
     # Against the true circle the error includes the faceting, which mesh
     # refinement never removes; the docs say the estimate leaves it out.
     c, estimate, _ = circular_coax[k]
-    assert estimate / abs((c - CIRCULAR_C) / CIRCULAR_C) <= 0.95
+    assert estimate.value / abs((c - CIRCULAR_C) / CIRCULAR_C) <= 0.95
 
 
 # --- anisotropic coax: capacitance, a rotated tensor -------------------------
@@ -264,14 +282,14 @@ def test_the_anisotropic_coax_capacitance(tmp_path, k, fill):
     model = rc.anisotropic_coax_model(tmp_path, k, fill)
     result = gfem.solve(model, rc.COAX_PROBLEM, options=OPTIONS)
     estimator = gfem.QuantityEstimator(capacitance=("inner", "inner"))
-    estimate = gfem.error_estimate(result, estimator, model=model).value
+    estimate = gfem.error_estimate(result, estimator, model=model)
     fine = gfem.solve(
         model,
         rc.COAX_PROBLEM,
         options=gfem.SolverOptions(order=5, linear_solver="direct"),
     )
     c, c5 = float(result.capacitance[0, 0]), float(fine.capacitance[0, 0])
-    _assert_in("anisotropic coax", estimate, (c - c5) / c5)
+    _assert_in("capacitance", "anisotropic coax", estimate, (c - c5) / c5)
 
 
 # --- sheet: capacitance, cut along an interior sheet --------------------------
@@ -290,7 +308,7 @@ def test_the_sheet_capacitance_on_uniform_meshes(tmp_path, n):
         estimate = gfem.error_estimate(result, estimator, model=model)
         error = _sheet_error(result.capacitance[i, i], i)
         assert error > 0  # C_h >= C
-        _assert_in("sheet", estimate.value, error)
+        _assert_in("capacitance", "sheet", estimate, error)
 
 
 @pytest.mark.parametrize("n", [2, 4, 8, 16])
@@ -301,7 +319,7 @@ def test_the_sheet_off_diagonal_capacitance_on_uniform_meshes(tmp_path, n):
     estimate = gfem.error_estimate(result, estimator, model=model)
     reference = rc.SHEET_C[0][1]
     error = (float(np.real(result.capacitance[0, 1])) - reference) / reference
-    _assert_in("sheet", estimate.value, error)
+    _assert_in("capacitance", "sheet", estimate, error)
 
 
 def test_the_sheet_capacitance_under_mesh_refinement(tmp_path):
@@ -316,7 +334,8 @@ def test_the_sheet_capacitance_under_mesh_refinement(tmp_path):
         )
     assert len(ref.cycles) == 9
     for cycle in ref.cycles:
-        _assert_in("sheet", cycle.estimate, _sheet_error(cycle.value, 0))
+        error = _sheet_error(cycle.value, 0)
+        _assert_in("capacitance", "sheet", ref.estimate, error, cycle.estimate)
 
 
 # --- two bars: off-diagonal capacitance --------------------------------------
@@ -341,7 +360,8 @@ def test_the_screened_off_diagonal_capacitance_under_mesh_refinement(tmp_path):
         )
     assert len(ref.cycles) == 9
     for cycle in ref.cycles:
-        _assert_in("screen", cycle.estimate, _bars_error("screen", cycle.value))
+        error = _bars_error("screen", cycle.value)
+        _assert_in("capacitance", "screen", ref.estimate, error, cycle.estimate)
 
 
 @pytest.mark.parametrize("n", [2, 4, 8])
@@ -350,7 +370,8 @@ def test_the_near_off_diagonal_capacitance_on_uniform_meshes(tmp_path, n):
     result = gfem.solve(model, rc.BARS_PROBLEM, options=OPTIONS)
     estimator = gfem.QuantityEstimator(capacitance=("a", "b"))
     estimate = gfem.error_estimate(result, estimator, model=model)
-    _assert_in("near", estimate.value, _bars_error("near", result.capacitance[0, 1]))
+    error = _bars_error("near", result.capacitance[0, 1])
+    _assert_in("capacitance", "near", estimate, error)
 
 
 # --- step line: S21, singular ------------------------------------------------
@@ -358,9 +379,11 @@ def test_the_near_off_diagonal_capacitance_on_uniform_meshes(tmp_path, n):
 S21 = gfem.QuantityEstimator(s=("p2", "p1"))
 
 
-def _step_errors(s21_by_frequency, estimates):
-    for f, s21, estimate in zip(rc.STEP_S, s21_by_frequency, estimates, strict=True):
-        _assert_in("step line, lumped ports", estimate, s21 - rc.STEP_S[f]["S21"])
+def _step_errors(s21_by_frequency, estimate):
+    values = estimate.values
+    for f, s21, value in zip(rc.STEP_S, s21_by_frequency, values, strict=True):
+        error = s21 - rc.STEP_S[f]["S21"]
+        _assert_in("s", "step line, lumped ports", estimate, error, value)
 
 
 @pytest.mark.parametrize("n", [2, 4])
@@ -370,7 +393,7 @@ def test_the_step_line_s21_on_uniform_meshes(tmp_path, n):
     result = gfem.solve(model, problem, options=OPTIONS)
     estimate = gfem.error_estimate(result, S21, model=model)
     assert len(estimate.values) == len(rc.STEP_S)
-    _step_errors(np.asarray(result.s["p2", "p1"]), estimate.values)
+    _step_errors(np.asarray(result.s["p2", "p1"]), estimate)
 
 
 @pytest.mark.parametrize("frequency", list(rc.STEP_S))
@@ -388,7 +411,7 @@ def test_the_step_line_s21_under_mesh_refinement(tmp_path, frequency):
     for cycle in ref.cycles:
         (s21,) = cycle.value
         error = s21 - rc.STEP_S[frequency]["S21"]
-        _assert_in("step line, lumped ports", cycle.estimate, error)
+        _assert_in("s", "step line, lumped ports", ref.estimate, error, cycle.estimate)
 
 
 #: The step line's S21 at 3 GHz with wave ports: order 3 on the n = 16 mesh
@@ -408,7 +431,7 @@ def test_the_step_line_s21_with_wave_ports(tmp_path):
     result = gfem.solve(model, problem, options=OPTIONS)
     estimate = gfem.error_estimate(result, S21, model=model)
     error = complex(result.s["p2", "p1"][0]) - STEP_WAVE_S21
-    _assert_in("step line, wave ports", estimate.value, error)
+    _assert_in("s", "step line, wave ports", estimate, error)
 
 
 def test_the_step_line_s21_with_wave_ports_at_an_offset(tmp_path):
@@ -432,7 +455,7 @@ def test_the_step_line_s21_with_wave_ports_at_an_offset(tmp_path):
     beta = 2 * math.pi * 3e9 / const.c * math.sqrt(4.0)
     reference = STEP_WAVE_S21 * np.exp(1j * beta * sum(offsets))
     error = complex(result.s["p2", "p1"][0]) - reference
-    _assert_in("step line, wave ports", estimate.value, error)
+    _assert_in("s", "step line, wave ports", estimate, error)
 
 
 # --- block guide: S, two modes on each shared port surface -------------------
@@ -447,7 +470,7 @@ def test_the_block_guide_s_on_shared_port_surfaces(tmp_path, n):
         estimator = gfem.QuantityEstimator(s=(to, source))
         estimate = gfem.error_estimate(result, estimator, model=model)
         error = complex(result.s[to, source][0]) - reference
-        _assert_in("shared port surface", estimate.value, error)
+        _assert_in("s", "shared port surface", estimate, error)
 
 
 # --- lossy guide: S on lossy wave ports --------------------------------------
@@ -472,7 +495,7 @@ def _lossy_guide(tmp_path, kind, n, tan_delta, offset):
         estimator = gfem.QuantityEstimator(s=(to, source))
         estimate = gfem.error_estimate(result, estimator, model=model)
         error = complex(result.s[to, source][0]) - references[to, source]
-        _assert_in(f"lossy {kind} guide", estimate.value, error)
+        _assert_in("s", f"lossy {kind} guide", estimate, error)
 
 
 _LOSSY_GUIDE_CASES = pytest.mark.parametrize(
@@ -542,7 +565,10 @@ def _line(directory, n, order=2, material=None):
 
 
 def _line_effectivities(model, result, exact=None):
-    """(estimate, error) of S11, S21 and S22 at each frequency.
+    """(estimate, value, error) of S11, S21 and S22 at each frequency.
+
+    ``estimate`` is the entry's `gfem.ErrorEstimate`, ``value`` its value at
+    the frequency.
 
     ``exact``: the reference S, shape (frequencies, 2, 2); by default the
     closed form of the eps_r 4 line.
@@ -556,14 +582,17 @@ def _line_effectivities(model, result, exact=None):
         estimate = gfem.error_estimate(result, estimator, model=model)
         reference = exact[:, ports.index(to), ports.index(source)]
         error = np.asarray(result.s[to, source]) - reference
-        out += list(zip(estimate.values, error, strict=True))
+        out += [
+            (estimate, value, e)
+            for value, e in zip(estimate.values, error, strict=True)
+        ]
     return out
 
 
 @pytest.mark.parametrize("n", [4, 8, 16])
 def test_the_parallel_plate_line_s(tmp_path, n):
-    for estimate, error in _line_effectivities(*_line(tmp_path, n)):
-        _assert_in("parallel-plate line", estimate, error)
+    for estimate, value, error in _line_effectivities(*_line(tmp_path, n)):
+        _assert_in("s", "parallel-plate line", estimate, error, value)
 
 
 #: The line's lossy fills: (material, its complex eps_r at a frequency).
@@ -587,8 +616,8 @@ def test_the_lossy_line_s(tmp_path, n, fill):
     material, eps = LOSSY_LINE_FILLS[fill]
     exact = np.array([_line_s(f, eps(f)) for f in LINE_FREQUENCIES])
     model, result = _line(tmp_path, n, material=material)
-    for estimate, error in _line_effectivities(model, result, exact):
-        _assert_in("parallel-plate line", estimate, error)
+    for estimate, value, error in _line_effectivities(model, result, exact):
+        _assert_in("s", "parallel-plate line", estimate, error, value)
 
 
 # --- magnetic and anisotropic lines: S, smooth --------------------------------
@@ -629,8 +658,8 @@ def test_the_permeability_line_s(tmp_path, n):
     material, eps, mu = LINE_FILLS["mu"]
     exact = np.array([_line_s(f, eps, mu) for f in LINE_FREQUENCIES])
     model, result = _line(tmp_path, n, material=material)
-    for estimate, error in _line_effectivities(model, result, exact):
-        _assert_in("permeability line", estimate, error)
+    for estimate, value, error in _line_effectivities(model, result, exact):
+        _assert_in("s", "permeability line", estimate, error, value)
 
 
 @pytest.mark.parametrize("fill", ["diag", "rotz"])
@@ -639,8 +668,8 @@ def test_the_anisotropic_line_s(tmp_path, n, fill):
     material, eps, mu = LINE_FILLS[fill]
     exact = np.array([_line_s(f, eps, mu) for f in LINE_FREQUENCIES])
     model, result = _line(tmp_path, n, material=material)
-    for estimate, error in _line_effectivities(model, result, exact):
-        _assert_in("anisotropic line", estimate, error)
+    for estimate, value, error in _line_effectivities(model, result, exact):
+        _assert_in("s", "anisotropic line", estimate, error, value)
 
 
 @pytest.mark.parametrize("n", [4, 16])
@@ -655,8 +684,8 @@ def test_the_rotated_anisotropic_line_s_against_order_4(tmp_path, n):
         options=gfem.SolverOptions(order=4, linear_solver="direct"),
     )
     exact = np.asarray(fine.s.values)  # (frequencies, to, source), p1 then p2
-    for estimate, error in _line_effectivities(model, result, exact):
-        _assert_in("anisotropic line", estimate, error)
+    for estimate, value, error in _line_effectivities(model, result, exact):
+        _assert_in("s", "anisotropic line", estimate, error, value)
 
 
 # --- L cavity: omega, singular -----------------------------------------------
@@ -675,7 +704,8 @@ def test_the_l_cavity_frequency_under_mesh_refinement(tmp_path):
     assert len(ref.cycles) == 9
     for cycle in ref.cycles:
         f = cycle.value.real / (2 * math.pi)
-        _assert_in("L cavity", cycle.estimate, f / rc.CAVITY_F1 - 1)
+        error = f / rc.CAVITY_F1 - 1
+        _assert_in("omega", "L cavity", ref.estimate, error, cycle.estimate)
 
 
 # --- rectangular box: omega, smooth ------------------------------------------
@@ -705,14 +735,14 @@ def _box(directory, m, order=2):
         result = gfem.solve(model, problem, options=options)
         estimate = gfem.error_estimate(result, estimator, model=model)
         f = float(np.real(np.asarray(result.frequency)[0]))
-        out.append((f, estimate.value, exact))
+        out.append((f, estimate, exact))
     return out
 
 
 @pytest.mark.parametrize("m", [2, 3])
 def test_the_rectangular_box_frequencies(tmp_path, m):
     for f, estimate, exact in _box(tmp_path, m):
-        _assert_in("rectangular box", estimate, f / exact - 1)
+        _assert_in("omega", "rectangular box", estimate, f / exact - 1)
 
 
 # --- magnetic and anisotropic boxes: omega, smooth -----------------------------
@@ -735,12 +765,12 @@ def _diagonal_box_frequency(fill, mode):
 
 
 def _filled_box_mode(model, target):
-    """(frequency, its estimate) of the mode nearest ``target``, order 2."""
+    """(frequency, its `gfem.ErrorEstimate`) of the mode nearest ``target``, order 2."""
     result = gfem.solve(
         model, gfem.Eigenmode(target=target, n_modes=1), options=OPTIONS
     )
     estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
-    return float(np.real(np.asarray(result.frequency)[0])), estimate.value
+    return float(np.real(np.asarray(result.frequency)[0])), estimate
 
 
 @pytest.mark.parametrize("mode", BOX_MODES)
@@ -749,7 +779,7 @@ def test_the_permeability_box_frequency(tmp_path, m, mode):
     exact = _diagonal_box_frequency("iso_mu", mode)
     model = rc.anisotropic_box_model(tmp_path, m, "iso_mu")
     f, estimate = _filled_box_mode(model, exact)
-    _assert_in("permeability box", estimate, f / exact - 1)
+    _assert_in("omega", "permeability box", estimate, f / exact - 1)
 
 
 @pytest.mark.parametrize("mode", BOX_MODES)
@@ -758,7 +788,7 @@ def test_the_anisotropic_box_frequency(tmp_path, m, mode):
     exact = _diagonal_box_frequency("diag", mode)
     model = rc.anisotropic_box_model(tmp_path, m, "diag")
     f, estimate = _filled_box_mode(model, exact)
-    _assert_in("anisotropic box", estimate, f / exact - 1)
+    _assert_in("omega", "anisotropic box", estimate, f / exact - 1)
 
 
 # The rotated fill and the two layers have no closed form: each of their four
@@ -772,7 +802,7 @@ def test_the_rotated_anisotropic_and_layered_box_frequency(tmp_path, fill, case,
     reference = rc.ANISOTROPIC_BOX_F[fill][mode]
     model = rc.anisotropic_box_model(tmp_path, 2, fill)
     f, estimate = _filled_box_mode(model, reference)
-    _assert_in(case, estimate, f / reference - 1)
+    _assert_in("omega", case, estimate, f / reference - 1)
 
 
 # --- lossy eigenmodes: complex omega ------------------------------------------
@@ -816,7 +846,7 @@ def _omega_and_estimate(model, target):
         model, gfem.Eigenmode(target=target, n_modes=1), options=OPTIONS
     )
     estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
-    return complex(np.asarray(result.omega)[0]), estimate.value
+    return complex(np.asarray(result.omega)[0]), estimate
 
 
 @pytest.mark.parametrize("fill", list(LOSSY_FILLS))
@@ -832,7 +862,7 @@ def test_the_lossy_box_frequencies(tmp_path, fill):
         target = const.c * math.sqrt(k0_squared / _LOSSY_EPS) / (2 * math.pi)
         omega, estimate = _omega_and_estimate(model, target)
         exact = _lossy_omega(k0_squared, eps_c, _LOSSY_SIGMA, omega)
-        _assert_in("lossy box", estimate, (omega - exact) / abs(exact))
+        _assert_in("omega", "lossy box", estimate, (omega - exact) / abs(exact))
 
 
 def test_the_lossy_l_cavity_frequency_under_mesh_refinement(tmp_path):
@@ -855,7 +885,8 @@ def test_the_lossy_l_cavity_frequency_under_mesh_refinement(tmp_path):
         )
     assert len(ref.cycles) == 8
     for cycle in ref.cycles:
-        _assert_in("lossy L cavity", cycle.estimate, (cycle.value - exact) / abs(exact))
+        error = (cycle.value - exact) / abs(exact)
+        _assert_in("omega", "lossy L cavity", ref.estimate, error, cycle.estimate)
 
 
 LOSSY_WALLS = {
@@ -875,7 +906,8 @@ def test_the_box_with_a_lossy_wall(tmp_path, m, wall):
     target = const.c * math.sqrt(1 / BOX[0] ** 2 + 1 / BOX[1] ** 2) / 2
     omega, estimate = _omega_and_estimate(model, target)
     reference = rc.LOSSY_WALL_OMEGA[wall]
-    _assert_in("lossy walls", estimate, (omega - reference) / abs(reference))
+    error = (omega - reference) / abs(reference)
+    _assert_in("omega", "lossy walls", estimate, error)
 
 
 #: The parallel-plate line closed by its 50 and 30 ohm lumped ports, PEC
@@ -911,13 +943,13 @@ def test_the_resistive_line_resonances(tmp_path, n):
     for target in _RESONANCES:
         omega, estimate = _omega_and_estimate(model, target)
         exact = _line_resonance(omega)
-        _assert_in("resistive line", estimate, (omega - exact) / abs(exact))
+        _assert_in("omega", "resistive line", estimate, (omega - exact) / abs(exact))
 
 
 # --- order 3 -----------------------------------------------------------------
 
 
-# A drift fence, not a claim: the docs claim `EFFECTIVITY` at order 2 only,
+# A drift fence, not a claim: the docs claim `EFFECTIVITY_BY_KIND` at order 2 only,
 # and these ranges are not part of it. At order 3 only the parallel-plate
 # line leaves the order-2 range, at 19.6 on n = 8 (S22, 8 GHz), the mesh where
 # order 2 also peaks (15.75): the same smooth-field overestimation as at
@@ -933,20 +965,23 @@ ORDER_3_EFFECTIVITY_BY_CASE = {
 }
 
 
-def _assert_order_3(case, estimate, error):
+def _assert_order_3(kind, case, estimate, error, value=None):
+    """As `_assert_in`, against the order-3 fence."""
+    assert estimate.kind == kind, (case, estimate.kind)
     low, high = ORDER_3_EFFECTIVITY_BY_CASE[case]
-    assert low <= estimate / abs(error) <= high, (case, estimate / abs(error))
+    value = estimate.value if value is None else value
+    assert low <= value / abs(error) <= high, (case, value / abs(error))
 
 
 @pytest.mark.parametrize("n", [4, 8])
 def test_the_parallel_plate_line_s_at_order_3(tmp_path, n):
-    for estimate, error in _line_effectivities(*_line(tmp_path, n, order=3)):
-        _assert_order_3("parallel-plate line", estimate, error)
+    for estimate, value, error in _line_effectivities(*_line(tmp_path, n, order=3)):
+        _assert_order_3("s", "parallel-plate line", estimate, error, value)
 
 
 def test_the_rectangular_box_frequencies_at_order_3(tmp_path):
     for f, estimate, exact in _box(tmp_path, 1, order=3):
-        _assert_order_3("rectangular box", estimate, f / exact - 1)
+        _assert_order_3("omega", "rectangular box", estimate, f / exact - 1)
 
 
 # --- order 4 -----------------------------------------------------------------
@@ -966,4 +1001,5 @@ def test_the_l_cavity_frequency_at_order_4(tmp_path, n):
     estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
     error = abs(rc.cavity_frequency(result) / rc.CAVITY_F1 - 1)
     low, high = ORDER_4_EFFECTIVITY
+    assert estimate.kind == "omega"
     assert low < estimate.value / error < high

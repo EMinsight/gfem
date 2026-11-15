@@ -253,7 +253,13 @@ and the dispersive-shift cells of the
 The {term}`error estimate` of {doc}`recipes/mesh-refinement` is checked by
 its effectivity: the estimated error divided by the error against a known
 answer, which must stay within a range set in the test for every mesh of
-every case. The quantity estimator's cases, all at `order=2`:
+every case. Each kind of estimate (`ErrorEstimate.kind`) has its own range,
+generated from its cases:
+
+```{gfem-effectivity-table}
+```
+
+The quantity estimator's cases, all at `order=2`:
 
 - **A square coaxial line** (a square conductor in a square shield), whose
   inner corners make the field singular: its capacitance over a mesh
@@ -311,9 +317,10 @@ solve on its own facets; against the exact circle it stays below the true
 error. These cases run at `order=2`, and all but the anisotropic fill also
 at `order=3`. One configuration lies below that range and is not claimed:
 on a line in two layers, the upper one lossy, with lumped ports spanning
-both, the estimate was {gfem-effectivity}`loss jump low` to
-{gfem-effectivity}`loss jump high` times the true error on coarse meshes;
-its test holds it to that band. On the stepped line, whose field error has
+both, the estimate was
+{gfem-effectivity}`lumped port across a loss jump low` to
+{gfem-effectivity}`lumped port across a loss jump high` times the true
+error on coarse meshes; its test holds it to that band. On the stepped line, whose field error has
 no known value, the estimate is checked to keep a steady ratio to the S21
 error as the mesh is refined. On the three singular benchmark cases a mesh refinement run also
 ends with a smaller error than uniform splits at the same number of

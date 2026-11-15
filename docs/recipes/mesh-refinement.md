@@ -235,8 +235,9 @@ How gfem itself checks the estimates against known answers:
   refuse.
 - A lumped port spanning materials of different loss (a lossy substrate
   and air, say) is not covered by that range: there the field estimate
-  measured {gfem-effectivity}`loss jump low` to
-  {gfem-effectivity}`loss jump high` times the true error on coarse meshes.
+  measured {gfem-effectivity}`lumped port across a loss jump low` to
+  {gfem-effectivity}`lumped port across a loss jump high` times the true
+  error on coarse meshes.
 - It measures the error against your mesh's own facets. Mesh refinement
   subdivides the facets you imported and never moves them onto a curved
   surface, so the faceting error is neither estimated nor reduced. On a

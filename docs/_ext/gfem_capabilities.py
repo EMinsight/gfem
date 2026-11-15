@@ -7,17 +7,18 @@ data, imported by path without running a solve: ``CELLS``
 ``OUT_OF_SCOPE`` (tests/verification/test_gradient_matrix_raise_table.py).
 The table of what raises above one rank comes the same way: its rows are the
 cases of tests/mpi_cases.py, its text gfem's own refusal messages. So does
-the range of the mesh refinement error estimate over the true error that the
-mesh refinement recipe and docs/verification.md quote, one per estimator:
-``EFFECTIVITY`` and ``EFFECTIVITY_BY_CASE``
-(tests/verification/test_quantity_estimate.py) for the quantity estimator,
-``FIELD_EFFECTIVITY``, ``FIELD_EFFECTIVITY_BY_CASE`` and
-``FIELD_EFFECTIVITY_ORDER_3_BY_CASE``
-(tests/verification/test_field_estimate.py) for the field estimator,
-rendered by the ``gfem-effectivity`` role (``quantity low``, ``field high``),
-and the field estimator's measured band under a lumped port across a loss
-jump, ``LOSS_JUMP_WITNESS`` (same module), quoted as unclaimed
-(``loss jump low``).
+the ranges of the mesh refinement error estimates over the true error that
+the mesh refinement recipe and docs/verification.md quote, one per estimate
+kind (``ErrorEstimate.kind``): each module of ``ESTIMATE_TESTS``
+(tests/verification/test_quantity_estimate.py,
+tests/verification/test_field_estimate.py) holds ``EFFECTIVITY_BY_KIND``
+(per kind, per case), ``OVERESTIMATES`` and ``WITNESSES``. A kind's range is
+the span of its cases; ``quantity`` is the span of the entry kinds; a
+witness is a measured band reaching under its kind's range, quoted as
+unclaimed; an overestimate a claimed band whose high end is quoted on its
+own. The ``gfem-effectivity`` role renders one end of a range by name
+(``quantity low``, ``field high``, ``lumped port across a loss jump low``),
+and the ``gfem-effectivity-table`` directive every kind's range.
 
 A cell input with the suffix ``_axes`` (``eps_r_axes``) is the same
 property per principal value of a field with fixed axes: it folds into its
@@ -61,6 +62,10 @@ RAISE_TEST = "tests/verification/test_gradient_matrix_raise_table.py"
 REFUSAL_CASES = "tests/mpi_cases.py"
 ESTIMATE_TEST = "tests/verification/test_quantity_estimate.py"
 FIELD_ESTIMATE_TEST = "tests/verification/test_field_estimate.py"
+#: The estimate test modules, each holding ``EFFECTIVITY_BY_KIND``,
+#: ``OVERESTIMATES`` and ``WITNESSES`` (and optionally
+#: ``ORDER_3_EFFECTIVITY_BY_KIND``, claimed with order 2).
+ESTIMATE_TESTS = (ESTIMATE_TEST, FIELD_ESTIMATE_TEST)
 CAPABILITIES_DOC = "capabilities"
 VERIFICATION_DOC = "verification"  # the matrix's provenance, the effectivity range
 FRONT_DOC = "index"  # the gfem-home layout renders the compact matrix
@@ -854,68 +859,205 @@ def distributed_refusals(keys, methods, guards, feature, messages) -> list[dict]
     ]
 
 
-# --- The error estimate's effectivity -------------------------------------------
+# --- The error estimates' effectivity -------------------------------------------
+
+#: The lowest effectivity any claimed case may assert (ADR 0128): below it a
+#: band is a witness, not a claim.
+CLAIMS_FLOOR = 0.9
+
+#: The entry kinds the ``quantity`` range spans (ADR 0128's entry span).
+ENTRY_KINDS = ("capacitance", "s", "omega")
+
+#: Each estimate kind (``gfem.refinement.ESTIMATE_KINDS``) in words, for the
+#: ``gfem-effectivity-table`` directive. It must cover the kinds exactly.
+KIND_WORDS = {
+    "field": "a field, in the energy norm",
+    "capacitance": "a capacitance entry",
+    "s": "an S entry",
+    "omega": "the complex frequency of a mode",
+    "q": "the Q of a mode",
+    "cluster mean": "the mean frequency of a degenerate cluster",
+    "objective of s": "an objective of S",
+    "objective of s, lossless rewrite": "an objective of S on a lossless model",
+    "objective of omega": "an objective of mode frequencies",
+    "objective of capacitance": "an objective of capacitance",
+    "objective of electrostatic energy": "an objective of electrostatic energy",
+    "objective of potential means": "an objective of potential means",
+    "objective of absorbed power": "an objective of absorbed power",
+    "objective of field means": "an objective of field means",
+    "objective of participation": "an objective of participations",
+}
 
 
-def effectivity(overall, by_case, source: str = ESTIMATE_TEST) -> dict:
-    """The range the docs quote for an error estimate over the true error.
-
-    Args:
-        overall: ``EFFECTIVITY``, the ``(low, high)`` the docs quote.
-        by_case: ``EFFECTIVITY_BY_CASE``, one ``(low, high)`` per case.
-        source: The test module the ranges come from, for the messages.
-
-    Returns:
-        ``low`` and ``high`` as the site writes them (``"0.9"``, ``"15"``),
-        and ``cases``, the case names in the test's order.
-
-    Raises:
-        CapabilitiesError: ``overall`` is not the lowest low and the highest
-            high of ``by_case``, or a case's range is not positive and ordered.
-    """
+def _ranges(by_case, source: str) -> dict:
+    """``by_case`` as floats, each positive and ordered."""
     try:
-        low, high = (float(v) for v in overall)
         ranges = {str(k): tuple(float(v) for v in r) for k, r in by_case.items()}
     except (TypeError, ValueError, AttributeError) as exc:
         raise CapabilitiesError(f"{source}: unreadable ranges: {exc}") from exc
     if not ranges or any(len(r) != 2 or not 0 < r[0] <= r[1] for r in ranges.values()):
         raise CapabilitiesError(f"{source}: bad case ranges {ranges}")
-    span = (min(r[0] for r in ranges.values()), max(r[1] for r in ranges.values()))
-    if (low, high) != span:
-        raise CapabilitiesError(
-            f"{source}: effectivity {(low, high)} is not the cases' span {span}"
-        )
+    return ranges
+
+
+def _quoted(ranges: dict) -> dict:
+    """The span of ``ranges`` as the site writes it, with the case names."""
+    low = min(r[0] for r in ranges.values())
+    high = max(r[1] for r in ranges.values())
     return {"low": f"{low:g}", "high": f"{high:g}", "cases": list(ranges)}
 
 
-def witness(band, quoted: dict, source: str = FIELD_ESTIMATE_TEST) -> dict:
-    """A measured band the docs quote as unclaimed, below an estimator's range.
+def effectivity_by_kind(by_kind, kinds, emitted, source: str = ESTIMATE_TEST) -> dict:
+    """The range the docs quote per estimate kind: the span of its cases.
 
     Args:
-        band: ``(low, high)``, the effectivity a witness test asserts (the
-            field estimator's ``LOSS_JUMP_WITNESS``).
-        quoted: The estimator's range, as `effectivity` returns it.
+        by_kind: ``EFFECTIVITY_BY_KIND`` (merged over the estimate test
+            modules): per kind, one ``(low, high)`` per case.
+        kinds: ``gfem.refinement.ESTIMATE_KINDS``, every kind the code knows.
+        emitted: ``gfem.refinement.EMITTED_KINDS``, the kinds the
+            estimators emit today; each needs a case, and no other may have
+            one.
+        source: Where the ranges come from, for the messages.
+
+    Returns:
+        Per kind of ``emitted`` with cases, ``low`` and ``high`` as the site
+        writes them (``"0.9"``, ``"15"``) and ``cases``, the case names in
+        the tests' order.
+
+    Raises:
+        CapabilitiesError: A key of ``by_kind`` is not in ``kinds`` or not
+            emitted; an emitted kind has no case; a case's range is not
+            positive and ordered, or starts below `CLAIMS_FLOOR`.
+    """
+    unknown = [k for k in by_kind if k not in kinds]
+    if unknown:
+        raise CapabilitiesError(f"{source}: unknown estimate kinds {unknown}")
+    silent = [k for k in by_kind if k not in emitted]
+    if silent:
+        raise CapabilitiesError(
+            f"{source}: cases for kinds the estimators do not emit: {silent}"
+        )
+    missing = [k for k in emitted if not by_kind.get(k)]
+    if missing:
+        raise CapabilitiesError(
+            f"{source}: emitted kinds without a verification case: {missing}"
+        )
+    out = {}
+    for kind in emitted:
+        ranges = _ranges(by_kind[kind], f"{source} [{kind!r}]")
+        low = [case for case, r in ranges.items() if r[0] < CLAIMS_FLOOR]
+        if low:
+            raise CapabilitiesError(
+                f"{source} [{kind!r}]: cases {low} start below the claims floor "
+                f"{CLAIMS_FLOOR:g}; a band reaching under it is a witness"
+            )
+        out[kind] = _quoted(ranges)
+    return out
+
+
+def entry_span(by_kind: dict, entries=ENTRY_KINDS) -> dict:
+    """The ``quantity`` range: the span of the entry kinds' cases (ADR 0128)."""
+    ranges = {}
+    for kind in entries:
+        ranges.update(by_kind.get(kind, {}))
+    if not ranges:
+        raise CapabilitiesError(f"no cases for the entry kinds {list(entries)}")
+    return _quoted(_ranges(ranges, "the entry kinds"))
+
+
+def _band(band, what: str, source: str) -> tuple[float, float]:
+    try:
+        low, high = (float(v) for v in band)
+    except (TypeError, ValueError) as exc:
+        raise CapabilitiesError(f"{source}: unreadable {what}: {exc}") from exc
+    if not 0 < low <= high:
+        raise CapabilitiesError(f"{source}: bad {what} band {(low, high)}")
+    return low, high
+
+
+def witness(band, quoted: dict, source: str = FIELD_ESTIMATE_TEST) -> dict:
+    """A measured band the docs quote as unclaimed: it reaches under a range.
+
+    Args:
+        band: ``(low, high)``, the effectivity a witness test asserts (a
+            ``WITNESSES`` entry's band).
+        quoted: Its kind's range, as `effectivity_by_kind` returns it.
         source: The test module the band comes from, for the messages.
 
     Returns:
         ``low`` and ``high`` as the site writes them.
 
     Raises:
-        CapabilitiesError: ``band`` is not positive and ordered, or it reaches
-            above the low end of ``quoted`` (then it is no longer unclaimed).
+        CapabilitiesError: ``band`` is not positive and ordered, or its low
+            end is not below the low end of ``quoted`` (then it is a claim).
     """
-    try:
-        low, high = (float(v) for v in band)
-    except (TypeError, ValueError) as exc:
-        raise CapabilitiesError(f"{source}: unreadable witness: {exc}") from exc
-    if not 0 < low <= high:
-        raise CapabilitiesError(f"{source}: bad witness band {(low, high)}")
-    if high > float(quoted["low"]):
+    low, high = _band(band, "witness", source)
+    if low >= float(quoted["low"]):
         raise CapabilitiesError(
-            f"{source}: witness {(low, high)} is not below the quoted "
+            f"{source}: witness {(low, high)} does not reach below the quoted "
             f"range from {quoted['low']}"
         )
     return {"low": f"{low:g}", "high": f"{high:g}"}
+
+
+def overestimate(band, quoted: dict, source: str = ESTIMATE_TEST) -> dict:
+    """A claimed band whose high end the docs quote on its own (Limits).
+
+    Args:
+        band: ``(low, high)``, an ``OVERESTIMATES`` entry's band.
+        quoted: Its kind's range, as `effectivity_by_kind` returns it.
+        source: The test module the band comes from, for the messages.
+
+    Returns:
+        ``low`` and ``high`` as the site writes them.
+
+    Raises:
+        CapabilitiesError: ``band`` is not positive and ordered; its low end
+            is below the kind's (a witness); or its high end lies inside the
+            kind's range (an ordinary case of ``EFFECTIVITY_BY_KIND``).
+    """
+    low, high = _band(band, "overestimate", source)
+    if low < float(quoted["low"]):
+        raise CapabilitiesError(
+            f"{source}: overestimate {(low, high)} starts below its kind's "
+            f"range from {quoted['low']}"
+        )
+    if high <= float(quoted["high"]):
+        raise CapabilitiesError(
+            f"{source}: overestimate {(low, high)} lies inside its kind's range "
+            f"up to {quoted['high']}: make it a case of EFFECTIVITY_BY_KIND"
+        )
+    return {"low": f"{low:g}", "high": f"{high:g}"}
+
+
+def effectivity_table(ranges: dict, kinds, emitted, words=None) -> list[dict]:
+    """The rows of the ``gfem-effectivity-table`` directive, one per emitted kind.
+
+    Args:
+        ranges: The quoted ranges, as `load_effectivity` returns them.
+        kinds: ``gfem.refinement.ESTIMATE_KINDS``.
+        emitted: ``gfem.refinement.EMITTED_KINDS``, the rows in order.
+        words: Each kind in words; `KIND_WORDS` by default.
+
+    Raises:
+        CapabilitiesError: ``words`` does not cover ``kinds`` exactly.
+    """
+    words = KIND_WORDS if words is None else words
+    if set(words) != set(kinds):
+        raise CapabilitiesError(
+            f"the kind words cover {sorted(words)}, not the estimate kinds "
+            f"{sorted(kinds)}"
+        )
+    return [
+        {
+            "kind": kind,
+            "words": words[kind],
+            "low": ranges[kind]["low"],
+            "high": ranges[kind]["high"],
+            "cases": len(ranges[kind]["cases"]),
+        }
+        for kind in emitted
+    ]
 
 
 # --- Loading the verification tests --------------------------------------------
@@ -964,40 +1106,78 @@ def load_verification(repo: Path) -> tuple[list, dict, list]:
         raise CapabilitiesError(f"verification data is gone: {exc}") from exc
 
 
+def _estimate_kinds() -> tuple[tuple, tuple]:
+    """``ESTIMATE_KINDS`` and ``EMITTED_KINDS`` of ``gfem.refinement``."""
+    from gfem import refinement
+
+    try:
+        return tuple(refinement.ESTIMATE_KINDS), tuple(refinement.EMITTED_KINDS)
+    except AttributeError as exc:
+        raise CapabilitiesError(f"the estimate kinds are gone: {exc}") from exc
+
+
+def _merge(target: dict, name: str, values, source: str, owners: dict) -> None:
+    """Add ``values`` (a dict) under ``name``s; a key from two modules raises."""
+    for key, value in dict(values).items():
+        if key in owners:
+            raise CapabilitiesError(
+                f"{name} {key!r} is defined in both {owners[key]} and {source}"
+            )
+        owners[key] = source
+        target[key] = value
+
+
 def load_effectivity(repo: Path) -> dict:
-    """`effectivity` per estimator from the estimate tests under ``repo``.
+    """The quoted effectivity ranges, from the estimate tests under ``repo``.
+
+    Each module of `ESTIMATE_TESTS` holds ``EFFECTIVITY_BY_KIND``,
+    ``OVERESTIMATES`` and ``WITNESSES``; a kind or band name defined in two
+    modules raises. A module's ``ORDER_3_EFFECTIVITY_BY_KIND`` is claimed
+    with order 2, its cases named ``"<case>, order 3"``.
 
     Returns:
-        ``quantity`` and ``field``, each as `effectivity` returns it. The
-        field estimator is claimed at orders 2 and 3, so its cases are both
-        dicts, the order-3 ones named ``"<case>, order 3"``. And ``loss
-        jump``, the field estimator's witness band (see `witness`).
+        Per emitted kind, as `effectivity_by_kind` returns it; ``quantity``,
+        the span of the entry kinds (`entry_span`); and each witness (see
+        `witness`) and overestimate (see `overestimate`) by its name.
     """
     paths = [str(repo / "tests"), str(repo / "tools")]
     sys.path[:0] = paths
     try:
-        quantity = _import(repo / ESTIMATE_TEST)
-        field = _import(repo / FIELD_ESTIMATE_TEST)
+        modules = {source: _import(repo / source) for source in ESTIMATE_TESTS}
     finally:
         for p in paths:
             sys.path.remove(p)
+    by_kind: dict = {}
+    bands: dict = {"WITNESSES": {}, "OVERESTIMATES": {}}
+    kind_owners: dict = {}
+    band_owners: dict = {}
     try:
-        field_cases = dict(field.FIELD_EFFECTIVITY_BY_CASE) | {
-            f"{case}, order 3": r
-            for case, r in field.FIELD_EFFECTIVITY_ORDER_3_BY_CASE.items()
-        }
-        field_range = effectivity(
-            field.FIELD_EFFECTIVITY, field_cases, FIELD_ESTIMATE_TEST
-        )
-        return {
-            "quantity": effectivity(
-                quantity.EFFECTIVITY, quantity.EFFECTIVITY_BY_CASE, ESTIMATE_TEST
-            ),
-            "field": field_range,
-            "loss jump": witness(field.LOSS_JUMP_WITNESS, field_range),
-        }
+        for source, module in modules.items():
+            cases = {kind: dict(r) for kind, r in module.EFFECTIVITY_BY_KIND.items()}
+            for kind, r in getattr(module, "ORDER_3_EFFECTIVITY_BY_KIND", {}).items():
+                cases.setdefault(kind, {}).update(
+                    {f"{case}, order 3": v for case, v in r.items()}
+                )
+            _merge(by_kind, "estimate kind", cases, source, kind_owners)
+            for name, collected in bands.items():
+                values = {k: (source, v) for k, v in getattr(module, name).items()}
+                _merge(collected, name, values, source, band_owners)
     except AttributeError as exc:
         raise CapabilitiesError(f"the effectivity ranges are gone: {exc}") from exc
+    kinds, emitted = _estimate_kinds()
+    out = effectivity_by_kind(by_kind, kinds, emitted, " and ".join(ESTIMATE_TESTS))
+    out["quantity"] = entry_span(by_kind)
+    for name, check in (("WITNESSES", witness), ("OVERESTIMATES", overestimate)):
+        for key, (source, (kind, band)) in bands[name].items():
+            if key in out:
+                raise CapabilitiesError(f"{source}: {name} {key!r} names a range")
+            if kind not in out:
+                raise CapabilitiesError(
+                    f"{source}: {name} {key!r} is of kind {kind!r}, which has no "
+                    "quoted range"
+                )
+            out[key] = check(band, out[kind], source)
+    return out
 
 
 def _import(path: Path):
@@ -1019,12 +1199,15 @@ def derive(repo: Path = REPO) -> dict:
 
     Returns:
         ``columns``, ``rows``, ``also``, ``counts``, ``provenance`` and ``raises`` (see
-        `gradient_matrix`), ``refusals`` (see `distributed_refusals`) and
-        ``effectivity`` (see `load_effectivity`).
+        `gradient_matrix`), ``refusals`` (see `distributed_refusals`),
+        ``effectivity`` (see `load_effectivity`) and ``effectivity_table``
+        (see `effectivity_table`).
     """
+    effectivity = load_effectivity(repo)
     return gradient_matrix(*load_verification(repo)) | {
         "refusals": load_refusals(repo),
-        "effectivity": load_effectivity(repo),
+        "effectivity": effectivity,
+        "effectivity_table": effectivity_table(effectivity, *_estimate_kinds()),
     }
 
 
@@ -1072,24 +1255,26 @@ def setup(app):
 
 
 def _effectivity_role(_name, rawtext, text, lineno, inliner, *_args):
-    """``{gfem-effectivity}`field low```: one end of an estimator's range.
+    """``{gfem-effectivity}`field low```: one end of a quoted range.
 
-    The argument is the range (``quantity``, ``field``, or ``loss jump``, the
-    field estimator's unclaimed band under a lumped port across a loss jump)
-    and the end (``low`` or ``high``). A bare end is an error: several ranges
+    The argument is the range's name and the end (``low`` or ``high``). The
+    names are the estimate kinds (``field``, ``s``, ...; a name may hold
+    spaces and commas), ``quantity`` (the entry kinds' span), and the
+    ``WITNESSES`` and ``OVERESTIMATES`` keys of the estimate tests (``lumped
+    port across a loss jump``, ...). A bare end is an error: several ranges
     exist.
     """
     from docutils import nodes
 
     data = inliner.document.settings.env.gfem_capabilities["effectivity"]
-    estimator, _, end = text.rpartition(" ")
-    if estimator not in data or end not in ("low", "high"):
+    name, _, end = text.rpartition(" ")
+    if name not in data or end not in ("low", "high"):
         message = inliner.reporter.error(
-            f"gfem-effectivity takes quantity|field|loss jump low|high, not {text!r}",
+            f"gfem-effectivity takes a range name and low|high, not {text!r}",
             line=lineno,
         )
         return [inliner.problematic(rawtext, rawtext, message)], [message]
-    return [nodes.Text(data[estimator][end])], []
+    return [nodes.Text(data[name][end])], []
 
 
 def _directives() -> dict:
@@ -1252,6 +1437,34 @@ def _directives() -> dict:
             group += body
             return [table]
 
+    class EffectivityTable(_Claims):
+        """Each estimate kind's quoted effectivity range, one row per kind."""
+
+        def run(self):
+            table = nodes.table()
+            group = nodes.tgroup(cols=4)
+            table += group
+            for width in (45, 15, 15, 25):
+                group += nodes.colspec(colwidth=width)
+            head = nodes.row()
+            for title in ("Estimate of", "Lowest", "Highest", "Cases"):
+                head += _entry(nodes.Text(title))
+            group += nodes.thead("", head)
+            body = nodes.tbody()
+            for row in self.data["effectivity_table"]:
+                line = nodes.row()
+                line += _entry(
+                    nodes.Text(f"{row['words']} ("),
+                    nodes.literal(text=row["kind"]),
+                    nodes.Text(")"),
+                )
+                line += _entry(nodes.Text(row["low"]))
+                line += _entry(nodes.Text(row["high"]))
+                line += _entry(nodes.Text(str(row["cases"])))
+                body += line
+            group += body
+            return [table]
+
     def _with_code(text: str) -> list:
         """``text``'s backticked parts as literals."""
         return [
@@ -1268,4 +1481,5 @@ def _directives() -> dict:
         "gfem-gradient-checks": GradientChecks,
         "gfem-raises": Raises,
         "gfem-distributed-refusals": DistributedRefusals,
+        "gfem-effectivity-table": EffectivityTable,
     }

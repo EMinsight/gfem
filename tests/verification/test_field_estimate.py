@@ -44,17 +44,18 @@ impedance (377 ohm/sq) or first-order absorbing top wall, whose mode has a
 complex omega (|k| weighs the mass term), against an order p + 2 solve on
 the same mesh. A lumped port across a loss jump (the line in two
 layers, the upper lossy) is a witness: its effectivity is asserted in its
-measured band `LOSS_JUMP_WITNESS`, below the quoted range.
+measured band, `WITNESSES["lumped port across a loss jump"]`, below the
+quoted range.
 
 Metal block (ADR 0111): the parallel-plate line with its middle 2 mm filled
 with a damped Drude law at Re eps < 0 at both frequencies, where the flux
 and energy weights are |eps(omega)|, against the closed-form cascade of
 three TEM sections.
 
-Each case's effectivity must lie in its range of `FIELD_EFFECTIVITY_BY_CASE`
-at order 2, and of `FIELD_EFFECTIVITY_ORDER_3_BY_CASE` at order 3 (the
-circular coax against an order-6 solve there); `FIELD_EFFECTIVITY` (the
-lowest low and the highest high over both) is the range the docs quote. The
+Each case's effectivity must lie in its range of
+`EFFECTIVITY_BY_KIND["field"]` at order 2, and of
+`ORDER_3_EFFECTIVITY_BY_KIND["field"]` at order 3 (the circular coax against
+an order-6 solve there); the span over both is the range the docs quote. The
 step line's proxy ratio is not an effectivity and is asserted on its own.
 At order 1 both estimators refuse: there the L cavity's frequency, on its one
 cell across the thickness, moved away from the exact one under refinement,
@@ -125,56 +126,63 @@ OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 ORDER_3 = gfem.SolverOptions(order=3, linear_solver="direct")
 ORDER_4 = gfem.SolverOptions(order=4, linear_solver="direct")
 
-#: Asserted field effectivity range per case (measured, with margin).
-FIELD_EFFECTIVITY_BY_CASE = {
-    "square coax": (0.9, 1.6),
-    "circular coax": (0.9, 1.6),
-    "L cavity": (0.9, 1.5),
-    "parallel-plate line": (0.9, 1.6),
-    "rectangular box": (0.9, 1.6),
-    "anisotropic coax": (0.9, 1.8),
-    "lossy parallel-plate line": (0.9, 1.6),
-    "two-layer box": (0.9, 1.6),
-    "lossy-wall box": (0.9, 1.6),
-    "metal block": (0.9, 1.8),
+#: Asserted effectivity at order 2, per estimate kind (`ErrorEstimate.kind`),
+#: then per case (measured, with margin).
+EFFECTIVITY_BY_KIND = {
+    "field": {
+        "square coax": (0.9, 1.6),
+        "circular coax": (0.9, 1.6),
+        "L cavity": (0.9, 1.5),
+        "parallel-plate line": (0.9, 1.6),
+        "rectangular box": (0.9, 1.6),
+        "anisotropic coax": (0.9, 1.8),
+        "lossy parallel-plate line": (0.9, 1.6),
+        "two-layer box": (0.9, 1.6),
+        "lossy-wall box": (0.9, 1.6),
+        "metal block": (0.9, 1.8),
+    },
 }
 
-#: Asserted field effectivity range per case at order 3 (measured, with margin).
-FIELD_EFFECTIVITY_ORDER_3_BY_CASE = {
-    "square coax": (0.9, 1.6),
-    "circular coax": (0.9, 1.6),
-    "L cavity": (0.9, 1.5),
-    "parallel-plate line": (0.9, 2.0),
-    "rectangular box": (0.9, 2.0),
-    "lossy parallel-plate line": (0.9, 2.0),
-    "two-layer box": (0.9, 1.6),
-    "lossy-wall box": (0.9, 1.6),
+#: Asserted effectivity at order 3, claimed with order 2 (measured, with margin).
+ORDER_3_EFFECTIVITY_BY_KIND = {
+    "field": {
+        "square coax": (0.9, 1.6),
+        "circular coax": (0.9, 1.6),
+        "L cavity": (0.9, 1.5),
+        "parallel-plate line": (0.9, 2.0),
+        "rectangular box": (0.9, 2.0),
+        "lossy parallel-plate line": (0.9, 2.0),
+        "two-layer box": (0.9, 1.6),
+        "lossy-wall box": (0.9, 1.6),
+    },
 }
 
 #: The order-4 drift fence on the L cavity (measured 0.947, 0.929); not claimed.
 FIELD_EFFECTIVITY_ORDER_4 = (0.9, 2.0)
 
-#: The range the docs quote: the lowest low and the highest high, both orders.
-FIELD_EFFECTIVITY = (
-    min(
-        low
-        for ranges in (FIELD_EFFECTIVITY_BY_CASE, FIELD_EFFECTIVITY_ORDER_3_BY_CASE)
-        for low, _ in ranges.values()
-    ),
-    max(
-        high
-        for ranges in (FIELD_EFFECTIVITY_BY_CASE, FIELD_EFFECTIVITY_ORDER_3_BY_CASE)
-        for _, high in ranges.values()
-    ),
-)
+#: Cases asserted >= 0.9 whose high end the docs quote on their own (Limits)
+#: instead of widening their kind's range: name -> (kind, (low, high)).
+OVERESTIMATES: dict[str, tuple[str, tuple[float, float]]] = {}
+
+#: Configurations that are not claimed, measured bands that reach below 0.9:
+#: name -> (kind, (low, high)). A lumped port across a loss jump: the
+#: estimate stays below the error on coarse meshes (recipe Limits).
+WITNESSES = {
+    "lumped port across a loss jump": ("field", (0.84, 0.90)),
+}
 
 
-def _assert_in(case, estimate, error, order=2):
-    ranges = (
-        FIELD_EFFECTIVITY_BY_CASE if order == 2 else FIELD_EFFECTIVITY_ORDER_3_BY_CASE
-    )
-    low, high = ranges[case]
-    assert low <= estimate / error <= high, (case, order, estimate / error)
+def _assert_in(kind, case, estimate, error, value=None, *, order=2):
+    """``value`` (default ``estimate.value``) over ``error`` in the case's range.
+
+    ``estimate`` is the `gfem.ErrorEstimate` the value comes from: its kind
+    must be ``kind``, the key of the case's range at ``order``.
+    """
+    assert estimate.kind == kind, (case, estimate.kind)
+    ranges = EFFECTIVITY_BY_KIND if order == 2 else ORDER_3_EFFECTIVITY_BY_KIND
+    low, high = ranges[kind][case]
+    value = estimate.value if value is None else value
+    assert low <= value / error <= high, (case, order, value / error)
 
 
 def _energy_error(result: gfem.ElectrostaticResult) -> float:
@@ -200,7 +208,7 @@ def uniform(tmp_path_factory):
 @pytest.mark.parametrize("n", [2, 4, 8, 16])
 def test_field_estimator_effectivity_is_near_one_on_uniform_meshes(uniform, n):
     _, result, estimate = uniform[n]
-    _assert_in("square coax", estimate.value, _energy_error(result))
+    _assert_in("field", "square coax", estimate, _energy_error(result))
 
 
 @pytest.mark.parametrize("n", [2, 4, 8])
@@ -208,7 +216,7 @@ def test_the_square_coax_effectivity_at_order_3(tmp_path, n):
     model = rc.coax_model(tmp_path, n)
     result = gfem.solve(model, rc.COAX_PROBLEM, options=ORDER_3)
     estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
-    _assert_in("square coax", estimate.value, _energy_error(result), order=3)
+    _assert_in("field", "square coax", estimate, _energy_error(result), order=3)
 
 
 def test_mesh_refinement_reaches_the_uniform_error_with_a_fifth_of_its_dofs(uniform):
@@ -284,7 +292,7 @@ def test_the_step_line_effectivity_is_flat(step_uniform, n):
 @pytest.mark.parametrize("n", [4, 8, 16])
 def test_the_cavity_effectivity_is_near_one(cavity_uniform, n):
     result, estimate = cavity_uniform[n]
-    _assert_in("L cavity", estimate.value, _cavity_error(result))
+    _assert_in("field", "L cavity", estimate, _cavity_error(result))
 
 
 @pytest.mark.parametrize("n", [2, 4, 8])
@@ -301,10 +309,10 @@ def test_the_cavity_effectivity_at_order_3(tmp_path, n):
     model = rc.cavity_model(tmp_path, n)
     result = gfem.solve(model, rc.CAVITY_PROBLEM, options=ORDER_3)
     estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
-    _assert_in("L cavity", estimate.value, _cavity_error(result), order=3)
+    _assert_in("field", "L cavity", estimate, _cavity_error(result), order=3)
 
 
-# A drift fence, not a claim: the docs claim `FIELD_EFFECTIVITY` at orders 2
+# A drift fence, not a claim: the docs claim `EFFECTIVITY_BY_KIND` at orders 2
 # and 3 only. Order 4 and above run, unverified beyond this one case.
 @pytest.mark.parametrize("n", [2, 4])
 def test_the_cavity_effectivity_at_order_4(tmp_path, n):
@@ -471,7 +479,7 @@ def _parallel_plate_line(
         eps = _eps_eff(_LINE["eps_r"], tan_delta, sigma, 2 * math.pi * f / const.c)
         field = result.e_field(f, "p1")
         true = _relative_energy_error(field, *_line_wave(f, eps), eps)
-        _assert_in(case, value, true, order=options.order)
+        _assert_in("field", case, estimate, true, value, order=options.order)
 
 
 @pytest.mark.parametrize("n", [4, 8, 16])
@@ -550,7 +558,7 @@ def _pec_box_mode(tmp_path, m, options):
         return out
 
     true = _relative_energy_error(result.e_fields[0], exact, exact_curl, 1.0, fit=True)
-    _assert_in("rectangular box", estimate.value, true, order=options.order)
+    _assert_in("field", "rectangular box", estimate, true, order=options.order)
 
 
 @pytest.mark.parametrize("m", [1, 2, 3])
@@ -611,7 +619,7 @@ def _two_layer_box(tmp_path, m, options, loss):
         _layers_eps(lower, upper, 0.2e-3),
         fit=True,
     )
-    _assert_in("two-layer box", estimate.value, true, order=options.order)
+    _assert_in("field", "two-layer box", estimate, true, order=options.order)
 
 
 @pytest.mark.parametrize("m", [1, 2])
@@ -662,7 +670,7 @@ def _lossy_wall_box(tmp_path, m, options, wall):
         1.0,
         fit=True,
     )
-    _assert_in("lossy-wall box", estimate.value, true, order=options.order)
+    _assert_in("field", "lossy-wall box", estimate, true, order=options.order)
 
 
 @pytest.mark.parametrize("m", [1, 2])
@@ -674,11 +682,6 @@ def test_the_field_effectivity_on_a_lossy_wall_box(tmp_path, wall, m):
 @pytest.mark.parametrize("wall", list(LOSSY_WALLS))
 def test_the_field_effectivity_on_a_lossy_wall_box_at_order_3(tmp_path, wall):
     _lossy_wall_box(tmp_path, 1, ORDER_3, wall)
-
-
-#: The measured field effectivity of a lumped port across a loss jump: below
-#: the quoted range, so that configuration is not claimed (recipe Limits).
-LOSS_JUMP_WITNESS = (0.84, 0.90)
 
 
 @pytest.mark.parametrize(
@@ -702,7 +705,8 @@ def test_the_field_estimate_under_a_lumped_port_across_a_loss_jump(tmp_path, los
         gfem.Driven(list(_LINE_FREQUENCIES), excite="p1", keep_fields=True),
         options=gfem.SolverOptions(order=7, linear_solver="direct"),
     )
-    low, high = LOSS_JUMP_WITNESS
+    kind, (low, high) = WITNESSES["lumped port across a loss jump"]
+    assert estimate.kind == kind
     for f, value in zip(_LINE_FREQUENCIES, estimate.values, strict=True):
         exact = reference.e_field(f, "p1")
         omega = complex(np.asarray(exact.omega))
@@ -803,7 +807,7 @@ def _metal_line(tmp_path, n, options):
 
         field = result.e_field(f, "p1")
         true = _relative_energy_error(field, *_section_wave(f, eps_core), eps)
-        _assert_in("metal block", value, true, order=options.order)
+        _assert_in("field", "metal block", estimate, true, value, order=options.order)
 
 
 @pytest.mark.parametrize("n", [5, 10, 20])
@@ -821,12 +825,12 @@ _CIRCLE_C = math.pi * const.epsilon_0 * 0.5e-6 / (2 * math.log(2.0))  # a quarte
 
 
 def _coax_case(model, options=OPTIONS, reference=ORDER_5):
-    """(C, its field estimate, C of a higher-order solve on the same mesh)."""
+    """(C, its field `gfem.ErrorEstimate`, C of a higher-order solve on its mesh)."""
     result = gfem.solve(model, rc.COAX_PROBLEM, options=options)
     estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
     fine = gfem.solve(model, rc.COAX_PROBLEM, options=reference)
     c, c5 = float(result.capacitance[0, 0]), float(fine.capacitance[0, 0])
-    return c, estimate.value, c5
+    return c, estimate, c5
 
 
 def _circular_coax_model(directory, k):
@@ -860,7 +864,7 @@ def circular_coax_order_3(tmp_path_factory):
 @pytest.mark.parametrize("k", [2, 4, 8])
 def test_the_field_effectivity_on_a_circular_coax(circular_coax, k):
     c, estimate, c5 = circular_coax[k]
-    _assert_in("circular coax", estimate, math.sqrt((c - c5) / c5))
+    _assert_in("field", "circular coax", estimate, math.sqrt((c - c5) / c5))
 
 
 @pytest.mark.parametrize("k", [2, 4, 8])
@@ -868,13 +872,13 @@ def test_the_field_estimate_does_not_see_the_faceting(circular_coax, k):
     # Against the true circle the error includes the faceting, which mesh
     # refinement never removes: the estimate stays below that error.
     c, estimate, _ = circular_coax[k]
-    assert estimate / math.sqrt((c - _CIRCLE_C) / _CIRCLE_C) < 1.0
+    assert estimate.value / math.sqrt((c - _CIRCLE_C) / _CIRCLE_C) < 1.0
 
 
 @pytest.mark.parametrize("k", [2, 4])
 def test_the_field_effectivity_on_a_circular_coax_at_order_3(circular_coax_order_3, k):
     c, estimate, c6 = circular_coax_order_3[k]
-    _assert_in("circular coax", estimate, math.sqrt((c - c6) / c6), order=3)
+    _assert_in("field", "circular coax", estimate, math.sqrt((c - c6) / c6), order=3)
 
 
 @pytest.mark.parametrize("k", [2, 4])
@@ -882,11 +886,11 @@ def test_the_field_estimate_does_not_see_the_faceting_at_order_3(
     circular_coax_order_3, k
 ):
     c, estimate, _ = circular_coax_order_3[k]
-    assert estimate / math.sqrt((c - _CIRCLE_C) / _CIRCLE_C) < 1.0
+    assert estimate.value / math.sqrt((c - _CIRCLE_C) / _CIRCLE_C) < 1.0
 
 
 @pytest.mark.parametrize("fill", list(rc.ANISOTROPIC_COAX))
 @pytest.mark.parametrize("k", [1, 2, 4, 8])
 def test_the_field_effectivity_on_an_anisotropic_coax(tmp_path, k, fill):
     c, estimate, c5 = _coax_case(rc.anisotropic_coax_model(tmp_path, k, fill))
-    _assert_in("anisotropic coax", estimate, math.sqrt(abs(c - c5) / c5))
+    _assert_in("field", "anisotropic coax", estimate, math.sqrt(abs(c - c5) / c5))
