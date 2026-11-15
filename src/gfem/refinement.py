@@ -1121,21 +1121,41 @@ def _free_consumed(options: SolverOptions) -> None:
     ENTRIES.free_consumed(None, retain_budget(options.retain_memory))
 
 
+#: Squared indicators within this share of the largest are one tie group
+#: in Dörfler marking (`_dorfler`).
+_TIE_RTOL = 1e-9
+
+
 def _dorfler(indicators: np.ndarray, error_fraction: float) -> np.ndarray:
     """Dörfler marking: the fewest tetrahedra holding a share of the squared error.
 
     Marks the tetrahedra with the largest indicators until their squared
-    indicators add up to at least ``error_fraction`` of the total.
+    indicators add up to at least ``error_fraction`` of the total. Squared
+    indicators equal to `_TIE_RTOL` of the largest are ties: they are sorted
+    by tetrahedron index, and the tie group at the cut is marked whole, so
+    round-off never picks among the equal indicators of a symmetric mesh,
+    which refines symmetrically.
 
     Returns:
         A boolean mask over the tetrahedra; at least one is marked.
     """
     squared = np.asarray(indicators, float) ** 2
-    order = np.argsort(-squared, kind="stable")
+    largest = float(squared.max(initial=0.0))
+    keys = (
+        np.rint(squared / (_TIE_RTOL * largest)).astype(np.int64)
+        if largest > 0
+        else np.zeros(len(squared), np.int64)
+    )
+    order = np.argsort(-keys, kind="stable")
     cumulative = np.cumsum(squared[order])
     count = int(np.searchsorted(cumulative, error_fraction * cumulative[-1])) + 1
+    count = min(count, len(squared))
+    if largest > 0:
+        sorted_keys = keys[order]
+        # the whole tie group of the last marked tetrahedron
+        count = int(np.searchsorted(-sorted_keys, -sorted_keys[count - 1], "right"))
     marked = np.zeros(len(squared), bool)
-    marked[order[: min(count, len(squared))]] = True
+    marked[order[:count]] = True
     return marked
 
 

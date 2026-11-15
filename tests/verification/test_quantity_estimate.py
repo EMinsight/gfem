@@ -203,18 +203,18 @@ Measured (ostau, 1 thread):
     plasmon-bound mode (refused)  0.96
     order 3: line 3.10 - 19.6, box (m = 1) 4.69 - 5.39
     order 4: L cavity (n = 2, 4) 1.80, 1.73
-    cluster: pair         7.13 - 7.59   (refine_mesh from n = 2: 5.79 - 23.5)
+    cluster: pair         7.13 - 7.59   (refine_mesh from n = 2: 5.49 - 10.5)
     cluster: triple       2.88 - 2.98
     cluster: split pair   7.14
     cluster: conductor    8.35 - 8.92
     cluster: gap stress   6.50 - 7.45
-    cluster, reference tier: pair from n = 2 4.93 - 14.3, from n = 4
-             4.54 - 7.13, triple 2.98 - 7.38 (8 cycles each)
+    cluster, reference tier: pair from n = 2 5.49 - 10.5, from n = 4
+             4.54 - 7.13, triple 2.98 - 7.60 (8 cycles each)
 
-Bisection breaks a cluster's mesh symmetry and Dörfler marking meets ties
-among its indicators, so the cluster's refined meshes vary with round-off
-between runs; the pair's first refined mesh from n = 2 measured 11.4 and
-23.5 in two runs.
+Bisection keeps a cluster's mesh symmetric only as far as marking does:
+Dörfler marking takes indicators equal to round-off as ties and marks a tie
+group whole (`gfem.refinement._dorfler`), so the refined meshes, and these
+numbers, repeat from run to run.
 
 The higher ratios come from the fields with no sharp metal edge (the uniform
 line and the empty box), where the curl and mass terms of the error identity
