@@ -9,12 +9,14 @@ import dataclasses
 import itertools
 import logging
 import math
+import types
 
 import contrast_cases as cc
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import refinement_cases as rc
+import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
@@ -751,6 +753,195 @@ def test_the_mode_is_followed_by_nearest_omega(cavity):
     assert omegas[0] == complex(first[1])
     for before, after in itertools.pairwise(omegas):
         assert abs(after - before) < abs(first[1] - first[0]) / 2
+
+
+# --- cluster means (ADR 0136) ------------------------------------------------
+
+#: The 1 x 1 x 1.5 mm box's TE101/TE011 pair, exactly degenerate (Hz).
+PAIR_F = const.c * 1e3 * math.sqrt(1 + 1 / 2.25) / 2
+
+
+@pytest.fixture(scope="module")
+def pair(tmp_path_factory):
+    """The pair box at n = 2, its three lowest modes: the pair, then TM110."""
+    model = rc.cluster_box_model(tmp_path_factory.mktemp("pair"), (1.0, 1.0, 1.5), 2)
+    result = gfem.solve(
+        model, gfem.Eigenmode(target=PAIR_F, n_modes=3), options=OPTIONS
+    )
+    return model, result
+
+
+def _fake_modes(*omegas, cluster=None):
+    """A stand-in eigenmode result: its omegas, each mode its own cluster."""
+    labels = np.arange(len(omegas)) if cluster is None else np.asarray(cluster)
+    return types.SimpleNamespace(omega=np.asarray(omegas, complex), cluster=labels)
+
+
+def test_a_cluster_names_two_or_more_distinct_modes():
+    assert gfem.QuantityEstimator(omega=(1, 0)).omega == (0, 1)
+    assert gfem.QuantityEstimator(omega=[2, 0, 1]) == gfem.QuantityEstimator(
+        omega=(0, 1, 2)
+    )
+    with pytest.raises(ValueError, match="at least two modes"):
+        gfem.QuantityEstimator(omega=(0,))
+    with pytest.raises(ValueError, match="names a mode twice"):
+        gfem.QuantityEstimator(omega=(0, 0))
+    with pytest.raises(ValueError, match=">= 0"):
+        gfem.QuantityEstimator(omega=(0, -1))
+    with pytest.raises(TypeError, match="mode indices"):
+        gfem.QuantityEstimator(omega=(0, 1.0))
+    with pytest.raises(TypeError, match="Q of a cluster"):
+        gfem.QuantityEstimator(q=(0, 1))
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_cluster_without_a_guard_mode_raises(cavity):
+    for n_modes, match in ((2, r"gfem\.Eigenmode\(n_modes=3\)"), (1, "at or above")):
+        with pytest.raises(ValueError, match=match):
+            gfem.refine_mesh(
+                cavity,
+                gfem.Eigenmode(target=rc.CAVITY_F1, n_modes=n_modes),
+                estimator=gfem.QuantityEstimator(omega=(0, 1)),
+            )
+
+
+@pytest.mark.usefixtures("no_solve")
+@pytest.mark.parametrize("other", [{"omega": 1}, {"q": 0}, {"omega": (1, 2)}])
+def test_a_mode_of_a_cluster_cannot_be_named_again(cavity, other):
+    with pytest.raises(ValueError, match="followed as a whole"):
+        gfem.refine_mesh(
+            cavity,
+            gfem.Eigenmode(target=rc.CAVITY_F1, n_modes=4),
+            estimator=(
+                gfem.QuantityEstimator(omega=(0, 1)),
+                gfem.QuantityEstimator(**other),
+            ),
+            tolerance=1e-3,
+        )
+
+
+def test_an_error_estimate_of_a_cluster_needs_its_guard_mode(pair):
+    model, result = pair
+    with pytest.raises(ValueError, match=r"n_modes=4"):
+        gfem.error_estimate(
+            result, gfem.QuantityEstimator(omega=(0, 1, 2)), model=model
+        )
+
+
+def test_a_single_mode_in_a_degenerate_cluster_names_its_members(pair):
+    model, result = pair
+    assert np.asarray(result.cluster)[0] == np.asarray(result.cluster)[1]
+    with pytest.raises(
+        gfem.DegenerateModeError,
+        match=r"mode 0 at .* GHz is in a degenerate cluster with mode 1 \(.* GHz\).*"
+        r"QuantityEstimator\(omega=\(0, 1\)\), or use gfem\.FieldEstimator\(\)",
+    ):
+        gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+
+
+def test_a_cluster_naming_part_of_a_degenerate_cluster_raises(pair):
+    model, result = pair
+    triple = dataclasses.replace(result, cluster=jnp.zeros(3, int))
+    with pytest.raises(
+        gfem.DegenerateModeError,
+        match=r"mode 0 at .* is in a degenerate cluster with modes 1 \(.*\) and "
+        r"2 \(.*\).*name all of them, QuantityEstimator\(omega=\(0, 1, 2\)\)",
+    ):
+        gfem.error_estimate(triple, gfem.QuantityEstimator(omega=(0, 1)), model=model)
+
+
+def test_a_cluster_too_near_another_mode_raises_on_the_first_mesh(pair):
+    model, result = pair
+    w = complex(np.asarray(result.omega)[:2].mean())
+    near = [w * (1 - 1e-3), w * (1 + 1e-3), w * (1 + 1.5e-3)]
+    crowded = dataclasses.replace(
+        result, omega=jnp.asarray(near), cluster=jnp.arange(3)
+    )
+    with pytest.raises(gfem.DegenerateModeError, match="not clearly apart from mode 2"):
+        gfem.error_estimate(crowded, gfem.QuantityEstimator(omega=(0, 1)), model=model)
+
+
+def test_a_cluster_mean_is_estimated_and_followed(pair):
+    model, result = pair
+    estimator = gfem.QuantityEstimator(omega=(0, 1))
+    estimate = gfem.error_estimate(result, estimator, model=model)
+    assert estimate.kind == "cluster mean"
+    assert len(estimate.values) == 1
+    assert estimate.indicators.shape == (len(model.mesh.tetrahedra),)
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            model,
+            gfem.Eigenmode(target=PAIR_F, n_modes=3),
+            estimator=estimator,
+            tolerance=1e-9,
+            max_cycles=2,
+            options=OPTIONS,
+        )
+    assert ref.estimate.kind == "cluster mean"
+    assert ref.cycles[0].estimate == pytest.approx(estimate.value, rel=1e-9)
+    omegas = np.asarray(ref.result.omega)
+    last = ref.cycles[-1]
+    assert sorted(last.modes) == [0, 1]
+    assert last.value == pytest.approx(omegas[[last.modes[0], last.modes[1]]].mean())
+    exact = 2 * math.pi * PAIR_F
+    errors = [abs(cycle.value / exact - 1) for cycle in ref.cycles]
+    assert errors[-1] < errors[0]
+
+
+def test_the_cluster_kernel_of_one_mode_is_the_omega_kernel(cavity):
+    result = gfem.solve(
+        cavity, gfem.Eigenmode(target=rc.CAVITY_F1, n_modes=2), options=OPTIONS
+    )
+    for mode in (0, 1):
+        single = kernels.omega(cavity, result, mode)
+        cluster = kernels.omega_cluster(cavity, result, (mode,))
+        assert cluster.value == pytest.approx(single.value, rel=1e-12)
+        np.testing.assert_allclose(cluster.weights, single.weights, rtol=1e-10)
+
+
+def test_the_cluster_estimate_is_unchanged_by_a_basis_of_the_cluster(pair):
+    # Any invertible mix of the pair's fields spans the same cluster: the trace
+    # form, its value and its indicators, does not see the basis.
+    model, result = pair
+    fields = list(result.e_fields)
+    x = np.stack([np.asarray(f.coefficients) for f in fields[:2]], axis=1)
+    mix = np.array([[0.8, -0.9], [0.6, 1.7]])
+    mixed = x @ mix
+    rebased = dataclasses.replace(
+        result,
+        e_fields=[
+            dataclasses.replace(fields[0], coefficients=jnp.asarray(mixed[:, 0])),
+            dataclasses.replace(fields[1], coefficients=jnp.asarray(mixed[:, 1])),
+            fields[2],
+        ],
+    )
+    before = kernels.omega_cluster(model, result, (0, 1))
+    after = kernels.omega_cluster(model, rebased, (0, 1))
+    assert after.value == pytest.approx(before.value, rel=1e-9)
+    np.testing.assert_allclose(after.weights, before.weights, rtol=1e-7, atol=0)
+
+
+def test_a_cluster_follows_the_modes_nearest_its_previous_mean():
+    from gfem.refinement import _track_cluster
+
+    # the pair split apart and swapped order with a far mode below
+    result = _fake_modes(10.002, 7.0, 9.999, 13.0)
+    assert _track_cluster(result, (0, 1), 10.0, 1e-3) == (0, 2)
+
+
+def test_a_cluster_whose_mean_moved_too_far_raises():
+    from gfem.refinement import _track_cluster
+
+    with pytest.raises(gfem.DegenerateModeError, match=r"moved their mean.*more modes"):
+        _track_cluster(_fake_modes(10.5, 10.6, 14.0), (0, 1), 10.0, 1e-3)
+
+
+def test_a_cluster_too_near_another_mode_raises_on_a_refined_mesh():
+    from gfem.refinement import _track_cluster
+
+    # a member 0.01 from the previous mean, the third mode 0.015 from it
+    with pytest.raises(gfem.DegenerateModeError, match="not clearly apart from mode 2"):
+        _track_cluster(_fake_modes(9.99, 10.01, 10.015), (0, 1), 10.0, 1.0)
 
 
 # --- lossy eigenmodes --------------------------------------------------------

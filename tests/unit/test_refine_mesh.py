@@ -709,7 +709,9 @@ def test_mode_following_errors_give_frequencies_in_their_unit():
         _track_mode(_modes(10.4 * ghz, 9.5 * ghz), 0, 10 * ghz, 1e-6, 1.0)
     with pytest.raises(gfem.DegenerateModeError, match="mode 0 at 11 GHz, moved"):
         _track_mode(_modes(11 * ghz, 14 * ghz), 0, 10 * ghz, 1e-6, 1e-3)
-    with pytest.raises(gfem.DegenerateModeError, match="mode 0 at 10 GHz is not alone"):
+    with pytest.raises(
+        gfem.DegenerateModeError, match="mode 0 at 10 GHz is in a degenerate cluster"
+    ):
         _track_mode(_modes(10 * ghz, 10 * ghz * (1 + 1e-9)), 0, None, 1e-6, None)
 
 

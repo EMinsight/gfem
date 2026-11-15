@@ -926,6 +926,50 @@ def omega(
     return Terms(curl=curl, mass=mass, lam=k * k, scale=scale)
 
 
+def omega_cluster(
+    model: Model,
+    result: EigenmodeResult,
+    modes: Sequence[int],
+    threads: int | None = None,
+    *,
+    cache: RecoveryCache | None = None,
+) -> Terms:
+    """The terms of the relative error of the mean ``omega`` of ``modes`` (ADR 0136).
+
+    The cluster's members X = [x_1 .. x_m] span what the single-mode identity
+    (`omega`) reads off one mode: the mean k's error is ~= -tr(G^-1 E^T T E)
+    / m, G = X^T T'(k) X, at the members' mean k. Its volume terms are the
+    trace tr(G^-1 C_K) and tr(G^-1 M_K) of the members' pair integrals C_K =
+    [c_K(e_i, e_j)] and M_K = [m_K(e_i, e_j)] of their recovered errors at
+    the mean k (`_pair`), so ``curl`` and ``mass`` hold these traces, ``lam``
+    is the mean k squared and the scale 1 / (m |k|): the estimate is
+    (|tr(G^-1 C)| + |k^2| |tr(G^-1 M)|) / (m |k|), a tetrahedron's |tr(G^-1
+    (C_K - k^2 M_K))| / (m |k|). Value and weights are unchanged under any
+    basis of the members' span, so a degenerate cluster's arbitrary basis
+    does not enter. One member is `omega`'s identity.
+    """
+    cache = cache or RecoveryCache()
+    fields = [result.e_fields[mode] for mode in modes]
+    count = len(fields)
+    with task_manager(threads):
+        recovery = cache.recovery(model, fields[0].order, cracks=True)
+        omegas = [complex(np.asarray(field.omega)) for field in fields]
+        k = sum(omegas) / count / scipy.constants.c * recovery.built.scale
+        _, eps_inverse = cache.effective_eps(recovery, k)
+        errors = [cache.wave_residuals(recovery, field, k) for field in fields]
+        inverse = np.linalg.inv(_slopes(model, fields, k))
+        curl: Any = 0j
+        mass: Any = 0j
+        for i in range(count):
+            for j in range(i, count):
+                c_ij, m_ij = _pair(recovery, errors[i], errors[j], eps_inverse)
+                # C and M are symmetric: tr(G^-1 C) = sum_ij (G^-1)_ji C_ij
+                weight = inverse[j, i] + (inverse[i, j] if i != j else 0)
+                curl = curl + weight * c_ij
+                mass = mass + weight * m_ij
+    return Terms(curl=curl, mass=mass, lam=k * k, scale=1.0 / (count * abs(k)))
+
+
 def _mode_terms(
     model: Model,
     result: EigenmodeResult,
@@ -1082,12 +1126,17 @@ def _bilinear(
 
 def _slope(model: Model, field: Field, k: complex) -> complex:
     """``x^T T'(k) x``, T the eigen operator of the field's model (``x``: its DOFs)."""
+    return complex(_slopes(model, [field], k)[0, 0])
+
+
+def _slopes(model: Model, fields: Sequence[Field], k: complex) -> np.ndarray:
+    """``G = X^T T'(k) X``, X the fields' DOFs as columns, T the eigen operator."""
     from gfem._engine.driven import driven_operator
     from gfem._engine.eigen import eigen_operator
     from gfem._linalg import ResolvedLinearSolver
     from gfem.options import SolverOptions
 
-    op = driven_operator(model, field.order)
+    op = driven_operator(model, fields[0].order)
     # T'(k) x only multiplies assembled matrices: nothing is factorized, so
     # the linear solver and its tolerance are placeholders the constructor
     # requires. The shift k.real is only where the polynomial pieces' theta
@@ -1096,8 +1145,9 @@ def _slope(model: Model, field: Field, k: complex) -> complex:
         SolverOptions(linear_solver="direct"), default="direct", problem="eigenmode"
     )
     t = eigen_operator(op, k.real, linear=linear, tolerance=1e-10)
-    x = np.asarray(field.coefficients, complex)
-    return complex(x @ t.derivative(k, x))
+    xs = [np.asarray(field.coefficients, complex) for field in fields]
+    slopes = [t.derivative(k, x) for x in xs]
+    return np.array([[x @ slope for slope in slopes] for x in xs], complex)
 
 
 def _parts(field: Field) -> list[ngs.GridFunction]:
