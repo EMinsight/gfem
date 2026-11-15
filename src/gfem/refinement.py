@@ -90,13 +90,13 @@ class QuantityEstimator:
     """Estimates the error of one quantity of a solved result.
 
     Estimates how far one quantity of a solved result (a capacitance entry,
-    an S entry between excited ports, or one mode's ``omega``) is from its
-    value on the same geometry with an infinitely fine mesh. The estimate
+    an S entry between excited ports, one mode's ``omega`` or its Q) is from
+    its value on the same geometry with an infinitely fine mesh. The estimate
     uses the fields already solved, with no extra solve. It does not include
     the faceting of curved surfaces or the error left by the linear solve.
 
     The estimate is a magnitude in the units of ``tolerance``: relative to
-    the capacitance entry or to ``omega``, absolute for an S entry. It has
+    the capacitance entry, to ``omega`` or to Q, absolute for an S entry. It has
     no sign or phase, and gfem never adds it to the quantity. It is an
     estimate, not a bound. A diagonal capacitance entry never lies below
     its value on the meshed geometry: ``C_h >= C``; an off-diagonal entry
@@ -123,19 +123,27 @@ class QuantityEstimator:
             is nearest the previous mesh's, and `refine_mesh` raises
             `gfem.DegenerateModeError` when that mode is not clearly the
             same one.
+        q: An index into ``EigenmodeResult.q``, followed as ``omega``; the
+            estimate is relative to Q. Q's relative error is cot(arg omega)
+            times the imaginary part of omega's relative error, estimated on
+            the same terms, with no extra solve. A lossless mode (infinite Q)
+            raises `ValueError`.
 
     Raises:
         TypeError: Not exactly one keyword is given, or a value has the
-            wrong type.
-        ValueError: ``omega`` is negative.
+            wrong type (a tuple for ``q``: the Q of a cluster is not
+            estimated).
+        ValueError: ``omega`` or ``q`` is negative.
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` for entries with no verified
     estimate: a mode with a second-order absorbing boundary, a complex
     ``mu_r`` or a permittivity law, and an S entry or a mode with loss
     inside an anisotropic material (as `FieldEstimator`). Both estimators
-    also raise it at order 1. For a lossy mode the estimate covers the
-    complex ``omega``; Q's relative error is not estimated. An S entry ``(to, from)``
+    also raise it at order 1. For a lossy mode the ``omega`` estimate covers
+    the complex ``omega``; ``q`` estimates Q, and raises as ``omega`` does
+    above, and for a mode with loss inside an anisotropic material
+    (``feature`` ``"lossy eigenmode"``). An S entry ``(to, from)``
     whose port ``to`` is a wave port with a lossy mode not parallel to its
     excitation needs that port's adjoint dual: `refine_mesh` adds it to each
     of its solves, with its options; `error_estimate` on a finished result
@@ -146,18 +154,19 @@ class QuantityEstimator:
     capacitance: tuple[str, str] | None = None
     s: tuple[str, str] | None = None
     omega: int | None = None
+    q: int | None = None
 
     def __post_init__(self) -> None:
         """Check that exactly one quantity is named, with valid keys."""
         given = [
             name
-            for name in ("capacitance", "s", "omega")
+            for name in ("capacitance", "s", "omega", "q")
             if getattr(self, name) is not None
         ]
         if len(given) != 1:
             raise TypeError(
                 "QuantityEstimator takes exactly one of capacitance=(t1, t2), "
-                f"s=(to, from) or omega=index; got {given or 'none'}."
+                f"s=(to, from), omega=index or q=index; got {given or 'none'}."
             )
         for name in ("capacitance", "s"):
             value = getattr(self, name)
@@ -172,20 +181,31 @@ class QuantityEstimator:
                     f"QuantityEstimator({name}=...) takes two names, got {value!r}."
                 )
             object.__setattr__(self, name, tuple(value))
-        if self.omega is not None:
-            if isinstance(self.omega, bool) or not isinstance(
-                self.omega, (int, np.integer)
-            ):
+        for name in ("omega", "q"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if name == "q" and isinstance(value, (tuple, list)):
                 raise TypeError(
-                    "QuantityEstimator(omega=...) takes a mode index, got "
-                    f"{self.omega!r}."
+                    f"QuantityEstimator(q=...) takes one mode index, got {value!r}: "
+                    "the Q of a cluster is not estimated."
                 )
-            if self.omega < 0:
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+                raise TypeError(
+                    f"QuantityEstimator({name}=...) takes a mode index, got {value!r}."
+                )
+            if value < 0:
                 raise ValueError(
-                    "QuantityEstimator(omega=...) takes an index >= 0, got "
-                    f"{self.omega}."
+                    f"QuantityEstimator({name}=...) takes an index >= 0, got {value}."
                 )
-            object.__setattr__(self, "omega", int(self.omega))
+            object.__setattr__(self, name, int(value))
+
+    @property
+    def _mode_keyword(self) -> str | None:
+        """``"omega"`` or ``"q"`` when the quantity is of one mode, else ``None``."""
+        if self.omega is not None:
+            return "omega"
+        return "q" if self.q is not None else None
 
 
 Estimator = FieldEstimator | QuantityEstimator
@@ -218,7 +238,7 @@ ESTIMATE_KINDS = (
 #: The kinds of `ESTIMATE_KINDS` the estimators emit today, in that order. A
 #: kind joins when its estimate lands; the docs build requires verification
 #: cases for exactly these. Equal to `ESTIMATE_KINDS` once every kind has.
-EMITTED_KINDS = ("field", "capacitance", "s", "omega")
+EMITTED_KINDS = ("field", "capacitance", "s", "omega", "q")
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -228,7 +248,7 @@ class ErrorEstimate:
     Attributes:
         estimator: The estimator that made it.
         kind: What was estimated: ``"field"`` for a `FieldEstimator`;
-            ``"capacitance"``, ``"s"`` or ``"omega"`` for a
+            ``"capacitance"``, ``"s"``, ``"omega"`` or ``"q"`` for a
             `QuantityEstimator`, after its keyword. Each kind has its own
             measured effectivity range (verification page).
         values: Estimated size of the error per frequency (a driven result),
@@ -236,7 +256,8 @@ class ErrorEstimate:
             entry, in the units of ``tolerance``. For a `FieldEstimator`
             this is relative to the field's energy norm. For a
             `QuantityEstimator` this is the quantity's error: relative to
-            the capacitance entry or to ``omega``, absolute for an S entry.
+            the capacitance entry, to ``omega`` or to Q, absolute for an S
+            entry.
             It is never negative and carries no sign or phase. It is an
             estimate, not a bound.
         indicators: Each tetrahedron's share of the estimated error, shape
@@ -255,6 +276,9 @@ class ErrorEstimate:
     kind: str
     values: tuple[float, ...]
     indicators: np.ndarray
+    #: The followed mode's omega estimate (relative), which bounds its shift
+    #: on the next mesh; ``None`` unless a mode is followed.
+    _shift: float | None = dataclasses.field(default=None, repr=False)
 
     @property
     def value(self) -> float:
@@ -272,8 +296,8 @@ class RefinementCycle:
         estimate: The error estimate's ``value`` on this mesh.
         value: The quantity of a `QuantityEstimator` on this mesh: the
             capacitance entry in farads, a tuple of the S entry per
-            frequency, or the followed mode's complex ``omega`` in rad/s;
-            ``None`` for a `FieldEstimator`.
+            frequency, the followed mode's complex ``omega`` in rad/s, or its
+            Q; ``None`` for a `FieldEstimator`.
         marked: How many tetrahedra Dörfler marking picked on this mesh; 0
             when the loop stopped on it before marking.
     """
@@ -390,8 +414,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         ValueError: The result was not solved on ``model``'s mesh, or is a
             driven result without the fields of every frequency (solve with
             ``keep_fields=True``); a `QuantityEstimator` names a port that
-            was not excited or a mode the result does not hold; a
-            permittivity law is zero at a driven frequency.
+            was not excited, a mode the result does not hold, or the Q of a
+            lossless mode; a permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
             adaptive sweep, a periodic model, another result type, a result
@@ -465,10 +489,11 @@ def refine_mesh(
             quantity of ``problem``.
         tolerance: The error estimate to reach: relative to the field's energy
             norm for a `FieldEstimator`; for a `QuantityEstimator` relative
-            to the capacitance entry or to ``omega``, absolute for an S
+            to the capacitance entry, to ``omega`` or to Q, absolute for an S
             entry. At least 10 times
             ``options.tolerance`` (``options.eigen_tolerance`` for an
-            `Eigenmode`), since the estimate does not include the linear
+            `Eigenmode`; for Q times cot(arg omega), about 2Q, checked on
+            the first solve), since the estimate does not include the linear
             solve's error.
         error_fraction: Dörfler's fraction, in (0, 1]: the share of the summed
             squared error indicators the marked tetrahedra hold.
@@ -499,8 +524,9 @@ def refine_mesh(
         KeyError: A `QuantityEstimator` names no terminal or port of the
             problem.
         ValueError: A parameter is out of range, or ``tolerance`` is below 10
-            times the solve tolerance; a `QuantityEstimator` names a port
-            that is not excited or a mode index at or above ``n_modes``; a
+            times the solve tolerance (for Q, times cot(arg omega)); a
+            `QuantityEstimator` names a port that is not excited or a mode
+            index at or above ``n_modes``, or the Q of a lossless mode; a
             permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a
@@ -613,12 +639,18 @@ def _loop(
     failure: Exception | None = None
     mode = _estimator_mode(estimator)
     previous: complex | None = None
+    shift: float | None = None
     while True:
         if isinstance(result, EigenmodeResult) and mode is not None:
-            # the omega estimate of the previous mesh bounds the mode's shift
-            estimated = cycles[-1].estimate if cycles else None
-            mode = _track_mode(result, mode, previous, options.cluster_rtol, estimated)
-            previous = complex(np.asarray(result.omega)[mode])
+            mode, previous = _follow(
+                result,
+                estimator,
+                mode,
+                previous=previous,
+                shift=shift,
+                tolerance=tolerance,
+                options=options,
+            )
         estimate = _estimate(
             current,
             result,
@@ -628,6 +660,7 @@ def _loop(
             adjoints=adjoints,
             cache=_recovery_cache(),  # this mesh's, dropped before the next solve
         )
+        shift = estimate._shift  # noqa: SLF001
         cycle = RefinementCycle(
             tetrahedra=len(current.mesh.tetrahedra),
             dofs=_dofs(result),
@@ -687,6 +720,28 @@ def _loop(
         triangle_parents=readonly(tri_parents),
         _input_mesh=model.mesh,
     )
+
+
+def _follow(
+    result: EigenmodeResult,
+    estimator: Estimator,
+    mode: int,
+    *,
+    previous: complex | None,
+    shift: float | None,
+    tolerance: float,
+    options: SolverOptions,
+) -> tuple[int, complex]:
+    """The followed mode on ``result`` and its omega (`_track_mode`).
+
+    ``shift`` is the omega estimate of the previous mesh, which bounds the
+    mode's shift. On the first result, a Q's tolerance is checked against
+    its floor (`_check_q_floor`), which needs omega.
+    """
+    mode = _track_mode(result, mode, previous, options.cluster_rtol, shift)
+    if previous is None and getattr(estimator, "q", None) is not None:
+        _check_q_floor(result, mode, tolerance, options)
+    return mode, complex(np.asarray(result.omega)[mode])
 
 
 def _warn_not_converged(
@@ -772,6 +827,7 @@ def _estimate(
 
     cache = cache or kernels.RecoveryCache()
     kind = _kind(estimator)
+    shift = None
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
             parts = [
@@ -791,8 +847,13 @@ def _estimate(
             parts = kernels.s_entry(
                 model, result, *estimator.s, threads, adjoints=duals, cache=cache
             )
+        elif estimator.q is not None:
+            _check_lossy_q(result, int(mode or 0))
+            parts = [kernels.q(model, result, int(mode or 0), threads, cache=cache)]
+            shift = parts[0].omega_value
         else:
             parts = [kernels.omega(model, result, int(mode or 0), threads, cache=cache)]
+            shift = parts[0].value
         values = tuple(terms.value for terms in parts)
         _, indicators = kernels.combine([[terms.weights] for terms in parts])
     else:
@@ -810,6 +871,7 @@ def _estimate(
         kind=kind,
         values=values,
         indicators=readonly(indicators),
+        _shift=shift,
     )
 
 
@@ -817,7 +879,7 @@ def _kind(estimator: Estimator) -> str:
     """The `ESTIMATE_KINDS` entry an estimator's estimate is of."""
     if isinstance(estimator, FieldEstimator):
         return "field"
-    for kind in ("capacitance", "s", "omega"):
+    for kind in ("capacitance", "s", "omega", "q"):
         if getattr(estimator, kind) is not None:
             return kind
     raise AssertionError(estimator)  # pragma: no cover - checked on construction
@@ -831,8 +893,44 @@ def _recovery_cache() -> RecoveryCache:
 
 
 def _estimator_mode(estimator: Estimator) -> int | None:
-    """The mode index a `QuantityEstimator(omega=...)` names, else ``None``."""
-    return estimator.omega if isinstance(estimator, QuantityEstimator) else None
+    """The mode index of a `QuantityEstimator` (``omega=``, ``q=``), else ``None``."""
+    if not isinstance(estimator, QuantityEstimator):
+        return None
+    return estimator.omega if estimator.omega is not None else estimator.q
+
+
+def _check_lossy_q(result: EigenmodeResult, mode: int) -> None:
+    """Raise for the Q of a lossless mode: infinite, with no error to estimate."""
+    if complex(np.asarray(result.omega)[mode]).imag == 0:
+        raise ValueError(
+            f"QuantityEstimator(q={mode}): mode {mode} is lossless, so its Q is "
+            "infinite and has no error to estimate; estimate "
+            f"QuantityEstimator(omega={mode})."
+        )
+
+
+def _check_q_floor(
+    result: EigenmodeResult, mode: int, tolerance: float, options: SolverOptions
+) -> None:
+    """Raise for a Q tolerance below the eigen solve's error carried into Q.
+
+    Q's relative error is cot(arg omega) times omega's relative error (ADR
+    0131), so the solve's ``eigen_tolerance`` reaches Q multiplied by it.
+    """
+    _check_lossy_q(result, mode)
+    omega = complex(np.asarray(result.omega)[mode])
+    cot = abs(omega.real / omega.imag)
+    floor = 10 * options.eigen_tolerance * cot
+    if tolerance < floor:
+        raise ValueError(
+            f"refine_mesh tolerance={tolerance:g} for QuantityEstimator(q={mode}) "
+            f"must be at least 10 x SolverOptions.eigen_tolerance="
+            f"{options.eigen_tolerance:g} x cot(arg omega)={cot:.4g}, that is "
+            f"{floor:.3g}: Q's relative error is cot(arg omega) times omega's, "
+            "and the error estimate does not include the eigen solve's error. "
+            "Lower SolverOptions.eigen_tolerance to at most "
+            f"{tolerance / (10 * cot):.2g}, or raise tolerance."
+        )
 
 
 def _quantity(
@@ -846,6 +944,8 @@ def _quantity(
         return float(np.asarray(result.capacitance)[i, j])
     if estimator.s is not None:
         return tuple(complex(v) for v in np.asarray(result.s[estimator.s]))
+    if estimator.q is not None:
+        return float(np.asarray(result.q)[mode])
     return complex(np.asarray(result.omega)[mode])
 
 
@@ -1007,8 +1107,9 @@ def _check_quantity_keys(
         excited = ports if problem.excite is None else list(problem.excite)
         _check_ports(estimator.s, ports, excited)
     else:
-        _check_kind("omega", problem, Eigenmode)
-        _check_mode(estimator.omega, problem.n_modes)
+        keyword = estimator._mode_keyword or "omega"  # noqa: SLF001
+        _check_kind(keyword, problem, Eigenmode)
+        _check_mode(_estimator_mode(estimator), problem.n_modes, keyword)
 
 
 def _check_quantity_result(estimator: QuantityEstimator, result: Any) -> None:
@@ -1020,8 +1121,9 @@ def _check_quantity_result(estimator: QuantityEstimator, result: Any) -> None:
         _check_kind("s", result, DrivenResult)
         _check_ports(estimator.s, list(result.s.ports), list(result.s.excited))
     else:
-        _check_kind("omega", result, EigenmodeResult)
-        _check_mode(estimator.omega, len(np.asarray(result.omega)))
+        keyword = estimator._mode_keyword or "omega"  # noqa: SLF001
+        _check_kind(keyword, result, EigenmodeResult)
+        _check_mode(_estimator_mode(estimator), len(np.asarray(result.omega)), keyword)
 
 
 def _check_kind(keyword: str, given: Any, expected: type) -> None:
@@ -1029,7 +1131,7 @@ def _check_kind(keyword: str, given: Any, expected: type) -> None:
         raise TypeError(
             f"QuantityEstimator({keyword}=...) needs a gfem.{expected.__name__}, "
             f"got {type(given).__name__}: name a quantity of this problem "
-            "(capacitance= for Electrostatic, s= for Driven, omega= for "
+            "(capacitance= for Electrostatic, s= for Driven, omega= or q= for "
             "Eigenmode)."
         )
 
@@ -1057,10 +1159,10 @@ def _check_ports(names: tuple[str, str], ports: list[str], excited: list[str]) -
             )
 
 
-def _check_mode(mode: int | None, n_modes: int) -> None:
+def _check_mode(mode: int | None, n_modes: int, keyword: str = "omega") -> None:
     if mode is not None and mode >= n_modes:
         raise ValueError(
-            f"QuantityEstimator(omega={mode}) names a mode index at or above "
+            f"QuantityEstimator({keyword}={mode}) names a mode index at or above "
             f"n_modes={n_modes}: ask for more modes, or name one of 0 to "
             f"{n_modes - 1}."
         )
@@ -1072,6 +1174,16 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
         _check_lossy_anisotropic(estimator, model)
     if estimator.omega is not None:
         _check_lossy_mode(model)
+    if estimator.q is not None:
+        _check_lossy_mode(model, "q")
+        region = _lossy_anisotropic_region(model)
+        if region is not None:
+            raise MeshRefinementUnsupportedError(
+                "lossy eigenmode",
+                "QuantityEstimator(q=...) has no verified estimate for a mode "
+                f"with loss inside an anisotropic material (region {region!r}): "
+                "use gfem.FieldEstimator().",
+            )
 
 
 def _adjoint_ports(estimator: Estimator, model: Model) -> tuple[str, ...]:
@@ -1162,7 +1274,7 @@ def _lossy_elements(model: Model) -> np.ndarray:
     return out
 
 
-def _check_lossy_mode(model: Model) -> None:
+def _check_lossy_mode(model: Model, keyword: str = "omega") -> None:
     """Raise for a mode whose loss no verification case covers (ADR 0089).
 
     Covered: tan_delta, conductivity and complex eps_r of an isotropic
@@ -1179,7 +1291,7 @@ def _check_lossy_mode(model: Model) -> None:
     if laws:
         raise MeshRefinementUnsupportedError(
             "dispersive eigenmode",
-            "QuantityEstimator(omega=...) has no verified estimate for a mode "
+            f"QuantityEstimator({keyword}=...) has no verified estimate for a mode "
             f"of a model with a permittivity law (region {laws[0].region!r}): "
             "use gfem.FieldEstimator().",
         )
@@ -1191,7 +1303,7 @@ def _check_lossy_mode(model: Model) -> None:
     if what is not None:
         raise MeshRefinementUnsupportedError(
             "lossy eigenmode",
-            f"QuantityEstimator(omega=...) has no verified estimate for a mode "
+            f"QuantityEstimator({keyword}=...) has no verified estimate for a mode "
             f"with {what}: use gfem.FieldEstimator().",
         )
 

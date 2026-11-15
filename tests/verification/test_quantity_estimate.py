@@ -1,7 +1,7 @@
 """The quantity estimator's effectivity, on singular and smooth known answers.
 
-A `gfem.QuantityEstimator` estimates how far a capacitance entry, an S entry
-or a mode's omega is from its value on the same geometry with an infinitely
+A `gfem.QuantityEstimator` estimates how far a capacitance entry, an S entry,
+a mode's omega or its Q is from its value on the same geometry with an infinitely
 fine mesh. Its effectivity is the estimate divided by the error against a
 known answer; every listed estimate must lie in its case's range of
 `EFFECTIVITY_BY_KIND`, keyed by the estimate's kind (`ErrorEstimate.kind`),
@@ -74,8 +74,18 @@ Cases and references (none recomputed by the tests but the closed forms):
   absorbing or conductor (1e5 S/m) top wall, mode 110 on m = 2, 3, against
   `refinement_cases.LOSSY_WALL_OMEGA` (Richardson);
 - resistive line: the parallel-plate line closed by its 50 and 30 ohm
-  lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32,
-  against its transmission-line closed form.
+  lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32, 64,
+  256, against its transmission-line closed form.
+
+Q (kind ``q``, ADR 0131), relative to Q, on the solves of the omega cases:
+the resistive line; the lossy walls, plus an impedance wall of 50 ohm/sq
+(`refinement_cases.LOSSY_WALL_OMEGA`, Richardson); the lossy box (exact);
+the L cavity filled with eps_r 4 and 5 S/m, with and without tan_delta 0.05,
+on n = 2, 4, 8 and over `refine_mesh(q=0)` cycles 0-8 (exact); the L cavity
+with conductor walls of 1e5 S/m on n = 4, 8, 16 against
+`refinement_cases.CONDUCTOR_CAVITY_OMEGA` (Richardson). Under a uniform
+tan_delta Q is exact on any mesh, and its estimate is asserted below 1e-10
+of omega's on the box and the L cavity.
 
 Measured (ostau, 1 thread):
 
@@ -103,7 +113,12 @@ Measured (ostau, 1 thread):
     lossy box             7.18 - 10.6   (both fills)
     lossy L cavity        2.87 - 4.08
     lossy walls           4.34 - 9.17
-    resistive line        1.47 - 7.44
+    resistive line        1.01 - 7.44
+    Q: resistive line     1.01 - 11.7
+    Q: lossy walls        1.13 - 4.73
+    Q: lossy box          7.18 - 10.6
+    Q: lossy L cavity     2.15 - 4.08   (uniform and refine_mesh)
+    Q: conductor walls    2.39 - 3.04   (L cavity)
     order 3: line 3.10 - 19.6, box (m = 1) 4.69 - 5.39
     order 4: L cavity (n = 2, 4) 1.80, 1.73
 
@@ -162,6 +177,13 @@ EFFECTIVITY_BY_KIND = {
         "lossy L cavity": (0.9, 5.0),
         "lossy walls": (0.9, 12.0),
         "resistive line": (0.9, 8.0),
+    },
+    "q": {
+        "resistive line": (0.9, 15.0),
+        "lossy walls": (0.9, 6.0),
+        "lossy box": (0.9, 12.0),
+        "lossy L cavity": (0.9, 5.0),
+        "L cavity, conductor walls": (0.9, 4.0),
     },
 }
 
@@ -842,11 +864,28 @@ def _box_model(directory, m, material, top=None):
 
 
 def _omega_and_estimate(model, target):
+    omega, estimate, _ = _omega_and_estimates(model, target)
+    return omega, estimate
+
+
+def _omega_and_estimates(model, target):
+    """omega of the mode nearest ``target``, its omega and Q estimates, one solve."""
     result = gfem.solve(
         model, gfem.Eigenmode(target=target, n_modes=1), options=OPTIONS
     )
-    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
-    return complex(np.asarray(result.omega)[0]), estimate
+    omega = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    q = gfem.error_estimate(result, gfem.QuantityEstimator(q=0), model=model)
+    return complex(np.asarray(result.omega)[0]), omega, q
+
+
+def _q(omega):
+    """Q = |omega| / (2 |Im omega|)."""
+    return abs(omega) / (2 * abs(omega.imag))
+
+
+def _q_error(omega, reference):
+    """The relative error of the Q of ``omega`` against that of ``reference``."""
+    return _q(omega) / _q(reference) - 1
 
 
 @pytest.mark.parametrize("fill", list(LOSSY_FILLS))
@@ -860,9 +899,10 @@ def test_the_lossy_box_frequencies(tmp_path, fill):
             (i / a) ** 2 for i, a in zip(mode, BOX, strict=True)
         )
         target = const.c * math.sqrt(k0_squared / _LOSSY_EPS) / (2 * math.pi)
-        omega, estimate = _omega_and_estimate(model, target)
+        omega, estimate, q = _omega_and_estimates(model, target)
         exact = _lossy_omega(k0_squared, eps_c, _LOSSY_SIGMA, omega)
         _assert_in("omega", "lossy box", estimate, (omega - exact) / abs(exact))
+        _assert_in("q", "lossy box", q, _q_error(omega, exact))
 
 
 def test_the_lossy_l_cavity_frequency_under_mesh_refinement(tmp_path):
@@ -893,6 +933,7 @@ LOSSY_WALLS = {
     "impedance": gfem.Impedance("top", resistance=377.0),
     "absorbing": gfem.Absorbing("top"),
     "conductor": gfem.Conductor("top", conductivity=1e5),
+    "impedance 50": gfem.Impedance("top", resistance=50.0),
 }
 
 
@@ -900,14 +941,16 @@ LOSSY_WALLS = {
 @pytest.mark.parametrize("m", [2, 3])
 def test_the_box_with_a_lossy_wall(tmp_path, m, wall):
     # Air box, PEC but for its top wall; mode 110, Q 4.0 (impedance,
-    # absorbing) and 254 (conductor). The loss is on the boundary only, where
-    # the estimate has no term: it enters through T'(k) alone.
+    # absorbing), 16.6 (impedance 50) and 254 (conductor). The loss is on the
+    # boundary only, where the estimate has no term: it enters through T'(k)
+    # alone. Q is estimated on the same solve.
     model = _box_model(tmp_path, m, gfem.Material(), LOSSY_WALLS[wall])
     target = const.c * math.sqrt(1 / BOX[0] ** 2 + 1 / BOX[1] ** 2) / 2
-    omega, estimate = _omega_and_estimate(model, target)
+    omega, estimate, q = _omega_and_estimates(model, target)
     reference = rc.LOSSY_WALL_OMEGA[wall]
     error = (omega - reference) / abs(reference)
     _assert_in("omega", "lossy walls", estimate, error)
+    _assert_in("q", "lossy walls", q, _q_error(omega, reference))
 
 
 #: The parallel-plate line closed by its 50 and 30 ohm lumped ports, PEC
@@ -926,7 +969,7 @@ def _line_resonance(near):
     return complex((math.pi * n - 0.5j * np.log(gammas)) * speed / _LINE["length"])
 
 
-@pytest.mark.parametrize("n", [4, 8, 16, 32])
+@pytest.mark.parametrize("n", [4, 8, 16, 32, 64, 256])
 def test_the_resistive_line_resonances(tmp_path, n):
     path = sm.write_msh22(
         tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1))
@@ -941,9 +984,94 @@ def test_the_resistive_line_resonances(tmp_path, n):
         ],
     )
     for target in _RESONANCES:
-        omega, estimate = _omega_and_estimate(model, target)
+        omega, estimate, q = _omega_and_estimates(model, target)
         exact = _line_resonance(omega)
         _assert_in("omega", "resistive line", estimate, (omega - exact) / abs(exact))
+        _assert_in("q", "resistive line", q, _q_error(omega, exact))
+
+
+# --- Q of lossy L cavities ----------------------------------------------------
+
+#: The L cavity's fills for Q: eps_r 4 with 5 S/m, and with tan_delta 0.05 too.
+LOSSY_CAVITY_FILLS = {"conductivity": 0.0, "conductivity and tan_delta": 0.05}
+
+
+def _lossy_cavity(directory, n, tan_delta):
+    """The L cavity (`refinement_cases.cavity_model`) filled with eps_r 4, 5 S/m."""
+    lossless = rc.cavity_model(directory, n)
+    fill = gfem.Material(eps_r=_LOSSY_EPS, tan_delta=tan_delta, conductivity=5.0)
+    model = gfem.Model(
+        lossless.mesh, materials={"air": fill}, boundaries=lossless.boundaries
+    )
+    eps_c = _LOSSY_EPS * (1 - 1j * tan_delta)
+    k0_squared = rc.CAVITY_LAMBDA1 * 1e6  # mm^-2 to m^-2
+    near = 2 * math.pi * rc.CAVITY_F1 / math.sqrt(_LOSSY_EPS)
+    return model, _lossy_omega(k0_squared, eps_c, 5.0, near)
+
+
+@pytest.mark.parametrize("fill", list(LOSSY_CAVITY_FILLS))
+@pytest.mark.parametrize("n", [2, 4, 8])
+def test_the_lossy_l_cavity_q(tmp_path, n, fill):
+    # Singular corner, loss in the volume; Q 3.30 and 2.84, exact.
+    model, exact = _lossy_cavity(tmp_path, n, LOSSY_CAVITY_FILLS[fill])
+    omega, _, q = _omega_and_estimates(model, exact.real / (2 * math.pi))
+    _assert_in("q", "lossy L cavity", q, _q_error(omega, exact))
+
+
+@pytest.mark.parametrize("fill", list(LOSSY_CAVITY_FILLS))
+def test_the_lossy_l_cavity_q_under_mesh_refinement(tmp_path, fill):
+    model, exact = _lossy_cavity(tmp_path, 2, LOSSY_CAVITY_FILLS[fill])
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning):
+        ref = gfem.refine_mesh(
+            model,
+            gfem.Eigenmode(target=exact.real / (2 * math.pi), n_modes=1),
+            estimator=gfem.QuantityEstimator(q=0),
+            tolerance=1e-6,
+            max_cycles=8,
+            options=OPTIONS,
+        )
+    assert len(ref.cycles) == 9
+    for cycle in ref.cycles:
+        error = cycle.value / _q(exact) - 1
+        _assert_in("q", "lossy L cavity", ref.estimate, error, cycle.estimate)
+
+
+@pytest.mark.parametrize("n", [4, 8, 16])
+def test_the_l_cavity_q_with_conductor_walls(tmp_path, n):
+    # Loss on the walls only, Q 45.3: the curl term carries Im here, at the
+    # singular corner. n = 32 is left out: its error is within 4 times the
+    # reference's bound.
+    lossless = rc.cavity_model(tmp_path, n)
+    model = gfem.Model(
+        lossless.mesh,
+        materials={"air": gfem.Material(eps_r=_LOSSY_EPS)},
+        boundaries=[gfem.Conductor("wall", conductivity=1e5)],
+    )
+    reference = rc.CONDUCTOR_CAVITY_OMEGA
+    omega, _, q = _omega_and_estimates(model, reference.real / (2 * math.pi))
+    error = _q_error(omega, reference)
+    assert abs(error) > 5 * rc.CONDUCTOR_CAVITY_Q_BOUND
+    _assert_in("q", "L cavity, conductor walls", q, error)
+
+
+def test_an_exact_q_has_a_vanishing_estimate(tmp_path):
+    # Under a uniform tan_delta every mode's k^2 has the phase of 1 /
+    # (1 - i tan_delta), so its Q is 1 / (2 sin(atan(tan_delta) / 2)) exactly,
+    # on any mesh: Q's estimate is round-off next to omega's (not an
+    # effectivity: there is no error to divide by).
+    fill = gfem.Material(eps_r=_LOSSY_EPS, tan_delta=0.1)
+    box = _box_model(tmp_path, 2, fill)
+    target = const.c * math.sqrt(1 / BOX[0] ** 2 + 1 / BOX[1] ** 2) / 4
+    lossless = rc.cavity_model(tmp_path, 4)
+    cavity = gfem.Model(
+        lossless.mesh, materials={"air": fill}, boundaries=lossless.boundaries
+    )
+    for model, f in ((box, target), (cavity, rc.CAVITY_F1 / 2)):
+        omega, estimate, q = _omega_and_estimates(model, f)
+        exact = 1 / (2 * math.sin(math.atan(0.1) / 2))
+        assert _q(omega) == pytest.approx(exact, rel=1e-12)
+        assert q.kind == "q"
+        assert q.value < 1e-10 * estimate.value
 
 
 # --- order 3 -----------------------------------------------------------------

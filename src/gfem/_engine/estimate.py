@@ -870,6 +870,19 @@ def omega(
     scale. On a lossless mode T' = -2k M and this is (|sum c_K| + k^2
     |sum m_K|) / (2 k^2 |b(E, E)|).
     """
+    curl, mass, k, slope = _mode_terms(model, result, mode, threads, cache)
+    scale = 1.0 / (abs(k) * abs(slope))
+    return Terms(curl=curl, mass=mass, lam=k * k, scale=scale)
+
+
+def _mode_terms(
+    model: Model,
+    result: EigenmodeResult,
+    mode: int,
+    threads: int | None,
+    cache: RecoveryCache | None,
+) -> tuple[np.ndarray, np.ndarray, complex, complex]:
+    """c_K, m_K, k and x_h^T T'(k_h) x_h of ``omega[mode]``'s identity (`omega`)."""
     cache = cache or RecoveryCache()
     field = result.e_fields[mode]
     with task_manager(threads):
@@ -879,8 +892,70 @@ def omega(
         errors = cache.wave_residuals(recovery, field, k)
         curl, mass = _pair(recovery, errors, errors, eps_inverse)
         slope = _slope(model, field, k)
-    scale = 1.0 / (abs(k) * abs(slope))
-    return Terms(curl=curl, mass=mass, lam=k * k, scale=scale)
+    return curl, mass, k, slope
+
+
+@dataclasses.dataclass(frozen=True)
+class QTerms(Terms):
+    """The terms of a mode's Q relative error (ADR 0131), from omega's identity.
+
+    Q = |k| / (2 Im k) = 1 / (2 sin phi), phi = arg k_h, so dQ/Q = -cot phi
+    Im(delta k / k): the real part of omega's relative error drops out. With
+    omega's identity delta k / k ~= -(P1 - P2), P1 = sum c_K / (s k), P2 =
+    lam sum m_K / (s k), the value is cot phi (|Im P1| + |Im P2|), the two
+    terms never let cancel, and a tetrahedron's weight cot phi |Im((c_K - lam
+    m_K) / (s k))|.
+
+    Attributes:
+        phase: 1 / (s k), s = x_h^T T'(k_h) x_h.
+        scale: cot phi (positive: a decaying mode has 0 < phi < pi / 2).
+        omega_value: Omega's own estimate on the same sums (`Terms.value`
+            of `omega`), which bounds the mode's shift between meshes.
+    """
+
+    phase: complex = 0j
+    omega_value: float = 0.0
+
+    @property
+    def weights(self) -> np.ndarray:
+        """Each tetrahedron's weight, cot phi |Im((c_K - lam m_K) / (s k))|."""
+        return self.scale * np.abs(
+            (self.phase * (self.curl - self.lam * self.mass)).imag
+        )
+
+    @property
+    def value(self) -> float:
+        """Q's estimate, cot phi (|Im P1| + |Im P2|), relative to Q."""
+        p1 = self.phase * self.curl_sum
+        p2 = self.phase * self.lam * self.mass_sum
+        return float(self.scale * (abs(p1.imag) + abs(p2.imag)))
+
+
+def q(
+    model: Model,
+    result: EigenmodeResult,
+    mode: int,
+    threads: int | None = None,
+    *,
+    cache: RecoveryCache | None = None,
+) -> QTerms:
+    """The terms of ``q[mode]``'s relative error (ADR 0131); see `QTerms`.
+
+    The mode must be lossy (Im omega > 0): Q is infinite otherwise.
+    """
+    curl, mass, k, slope = _mode_terms(model, result, mode, threads, cache)
+    cot = k.real / k.imag
+    lam = k * k
+    omega_scale = 1.0 / (abs(k) * abs(slope))
+    omega_value = omega_scale * (abs(curl.sum()) + abs(lam) * abs(mass.sum()))
+    return QTerms(
+        curl=curl,
+        mass=mass,
+        lam=lam,
+        scale=abs(cot),
+        phase=1.0 / (slope * k),
+        omega_value=float(omega_value),
+    )
 
 
 def _effective_eps(
