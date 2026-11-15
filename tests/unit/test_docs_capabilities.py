@@ -498,6 +498,11 @@ def field_estimate_test():
     return caps._import(REPO / caps.FIELD_ESTIMATE_TEST)
 
 
+@pytest.fixture(scope="module")
+def objective_estimate_test():
+    return caps._import(REPO / caps.OBJECTIVE_ESTIMATE_TEST)
+
+
 def _cases(*modules, kind):
     """The case names of ``kind`` over ``modules``, order 3 after order 2."""
     names = []
@@ -518,11 +523,11 @@ def _span(module, kind):
 
 
 def test_each_emitted_kind_is_quoted_as_its_cases_span(
-    derived, estimate_test, field_estimate_test
+    derived, estimate_test, objective_estimate_test, field_estimate_test
 ):
     from gfem.refinement import EMITTED_KINDS
 
-    modules = (estimate_test, field_estimate_test)
+    modules = (estimate_test, objective_estimate_test, field_estimate_test)
     for kind in EMITTED_KINDS:
         module = next(m for m in modules if kind in m.EFFECTIVITY_BY_KIND)
         low, high = _span(module, kind)

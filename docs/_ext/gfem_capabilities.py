@@ -11,6 +11,7 @@ the ranges of the mesh refinement error estimates over the true error that
 the mesh refinement recipe and docs/verification.md quote, one per estimate
 kind (``ErrorEstimate.kind``): each module of ``ESTIMATE_TESTS``
 (tests/verification/test_quantity_estimate.py,
+tests/verification/test_objective_estimate.py,
 tests/verification/test_field_estimate.py) holds ``EFFECTIVITY_BY_KIND``
 (per kind, per case), ``OVERESTIMATES`` and ``WITNESSES``. A kind's range is
 the span of its cases; ``quantity`` is the span of the entry kinds; a
@@ -62,10 +63,11 @@ RAISE_TEST = "tests/verification/test_gradient_matrix_raise_table.py"
 REFUSAL_CASES = "tests/mpi_cases.py"
 ESTIMATE_TEST = "tests/verification/test_quantity_estimate.py"
 FIELD_ESTIMATE_TEST = "tests/verification/test_field_estimate.py"
+OBJECTIVE_ESTIMATE_TEST = "tests/verification/test_objective_estimate.py"
 #: The estimate test modules, each holding ``EFFECTIVITY_BY_KIND``,
 #: ``OVERESTIMATES`` and ``WITNESSES`` (and optionally
 #: ``ORDER_3_EFFECTIVITY_BY_KIND``, claimed with order 2).
-ESTIMATE_TESTS = (ESTIMATE_TEST, FIELD_ESTIMATE_TEST)
+ESTIMATE_TESTS = (ESTIMATE_TEST, OBJECTIVE_ESTIMATE_TEST, FIELD_ESTIMATE_TEST)
 CAPABILITIES_DOC = "capabilities"
 VERIFICATION_DOC = "verification"  # the matrix's provenance, the effectivity range
 FRONT_DOC = "index"  # the gfem-home layout renders the compact matrix

@@ -96,7 +96,8 @@ class QuantityEstimator:
 
     Estimates how far one quantity of a solved result (a capacitance entry,
     an S entry whose source port is excited, one mode's ``omega`` or its
-    Q) is from its value on the same geometry with an infinitely fine mesh.
+    Q, or an objective of the result) is from its value on the same geometry
+    with an infinitely fine mesh.
     The estimate uses the fields already solved, with no extra solve, except
     for the adjoint duals below. It does not include
     the faceting of curved surfaces or the error left by the linear solve.
@@ -135,11 +136,26 @@ class QuantityEstimator:
             times the imaginary part of omega's relative error, estimated on
             the same terms, with no extra solve. A lossless mode (infinite Q)
             raises `ValueError`.
+        objective: ``objective(result, model)``, a real 0-d JAX value: the
+            same function you differentiate. gfem traces it to find what it
+            reads (``ErrorEstimate.kind``) and raises
+            `gfem.MeshRefinementUnsupportedError` for anything it does not
+            estimate (``feature`` names it): a field read other than through
+            `gfem.power_flow`, a point value, a port mode output, a mixture
+            of kinds, a branch on a value it reads (max, min, sort, where)
+            or a custom derivative of its own. In this version an objective
+            of S is estimated (S and its networks: ``db``, ``y()``, ``z()``,
+            ``renormalize``, ``with_offsets``). The estimate is absolute, in
+            the objective's units, and `refine_mesh` needs its
+            ``tolerance`` given. A read row whose port is not excited, or is
+            a lossy wave port, uses that port's adjoint dual, as for ``s``;
+            in `refine_mesh` it is solved once more on the first mesh and
+            rides on the solves after it.
 
     Raises:
         TypeError: Not exactly one keyword is given, or a value has the
             wrong type (a tuple for ``q``: the Q of a cluster is not
-            estimated).
+            estimated; an ``objective`` that is not callable).
         ValueError: ``omega`` or ``q`` is negative.
 
     `refine_mesh` and `error_estimate` raise
@@ -253,7 +269,7 @@ ESTIMATE_KINDS = (
 #: The kinds of `ESTIMATE_KINDS` the estimators emit today, in that order. A
 #: kind joins when its estimate lands; the docs build requires verification
 #: cases for exactly these. Equal to `ESTIMATE_KINDS` once every kind has.
-EMITTED_KINDS = ("field", "capacitance", "s", "omega", "q")
+EMITTED_KINDS = ("field", "capacitance", "s", "omega", "q", "objective of s")
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -264,8 +280,9 @@ class ErrorEstimate:
         estimator: The estimator that made it.
         kind: What was estimated: ``"field"`` for a `FieldEstimator`;
             ``"capacitance"``, ``"s"``, ``"omega"`` or ``"q"`` for a
-            `QuantityEstimator`, after its keyword. Each kind has its own
-            measured effectivity range (verification page).
+            `QuantityEstimator`, after its keyword; for an objective, what it
+            reads (``"objective of s"``). Each kind has its own measured
+            effectivity range (verification page).
         values: Estimated size of the error per frequency (a driven result),
             per mode (an eigenmode result under a `FieldEstimator`), or one
             entry, in the units of ``tolerance``. For a `FieldEstimator`
@@ -317,8 +334,8 @@ class RefinementCycle:
         estimate: The error estimate's ``value`` on this mesh.
         value: The quantity of a `QuantityEstimator` on this mesh: the
             capacitance entry in farads, a tuple of the S entry per
-            frequency, the followed mode's complex ``omega`` in rad/s, or its
-            Q; ``None`` for a `FieldEstimator`.
+            frequency, the followed mode's complex ``omega`` in rad/s, its
+            Q, or an objective's value; ``None`` for a `FieldEstimator`.
         marked: How many tetrahedra Dörfler marking picked on this mesh; 0
             when the loop stopped on it before marking.
         modes: For an eigenmode quantity, each mode index the estimators
@@ -409,13 +426,14 @@ _ESTIMATE_FLOOR = 0.9
 def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorEstimate:
     """Estimate the error of a solved result, without refining.
 
-    No solve is needed, except for an S entry whose port ``to`` is not
-    excited, or is a wave port with a lossy mode not parallel to its
-    excitation: its adjoint dual factorizes the system once more per
-    frequency, with the direct solver at the result's order (the result does
-    not record its solve options). On a large model,
-    estimate through `refine_mesh` with ``max_cycles=0``, whose adjoint rides
-    on its own solve with your options.
+    No solve is needed, except for an S entry, or an objective reading a
+    row of S, whose port ``to`` is not excited, or is a wave port with a
+    lossy mode not parallel to its excitation: its adjoint dual factorizes
+    the system once more per frequency, with the direct solver at the
+    result's order (the result does not record its solve options). On a
+    large model, estimate through `refine_mesh` with ``max_cycles=0``,
+    whose adjoint rides on its own solve with your options (from its second
+    mesh on, for an objective).
 
     Example:
         The field error of a capacitance solve::
@@ -543,7 +561,11 @@ def refine_mesh(
             `QuantityEstimator`s; the record then holds tuples, one entry per
             estimator in this order.
         tolerance: The error estimate to reach, one float for every
-            estimator or a tuple with one per estimator; ``None`` is 1e-2.
+            estimator or a tuple with one per estimator; ``None`` is 1e-2,
+            except for an objective, whose tolerance is in its own units and
+            must be given (at least 10 x the solve tolerance times the
+            objective's first-order sensitivity, checked on the first
+            estimate).
             Relative to the field's energy
             norm for a `FieldEstimator`; for a `QuantityEstimator` relative
             to the capacitance entry, to ``omega`` or to Q, absolute for an S
