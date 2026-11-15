@@ -960,12 +960,9 @@ class QTerms(Terms):
     Attributes:
         phase: 1 / (s k), s = x_h^T T'(k_h) x_h.
         scale: cot phi (positive: a decaying mode has 0 < phi < pi / 2).
-        omega_value: Omega's own estimate on the same sums (`Terms.value`
-            of `omega`), which bounds the mode's shift between meshes.
     """
 
     phase: complex = 0j
-    omega_value: float = 0.0
 
     @property
     def weights(self) -> np.ndarray:
@@ -996,16 +993,12 @@ def q(
     """
     curl, mass, k, slope = _mode_terms(model, result, mode, threads, cache)
     cot = k.real / k.imag
-    lam = k * k
-    omega_scale = 1.0 / (abs(k) * abs(slope))
-    omega_value = omega_scale * (abs(curl.sum()) + abs(lam) * abs(mass.sum()))
     return QTerms(
         curl=curl,
         mass=mass,
-        lam=lam,
+        lam=k * k,
         scale=abs(cot),
         phase=1.0 / (slope * k),
-        omega_value=float(omega_value),
     )
 
 

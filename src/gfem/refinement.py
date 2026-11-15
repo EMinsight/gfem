@@ -12,7 +12,9 @@ recovery (ADR 0087); the `QuantityEstimator` names one quantity of interest.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
+import types
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -41,7 +43,7 @@ from gfem.shape import _check_quality
 from gfem.solve import _solve
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable
+    from collections.abc import Hashable, Mapping
 
     from gfem._engine.driven import AdjointLoads
     from gfem._engine.estimate import RecoveryCache
@@ -281,9 +283,6 @@ class ErrorEstimate:
     kind: str
     values: tuple[float, ...]
     indicators: np.ndarray
-    #: The followed mode's omega estimate (relative), which bounds its shift
-    #: on the next mesh; ``None`` unless a mode is followed.
-    _shift: float | None = dataclasses.field(default=None, repr=False)
 
     @property
     def value(self) -> float:
@@ -295,6 +294,9 @@ class ErrorEstimate:
 class RefinementCycle:
     """The numbers of one solved mesh of a `MeshRefinement`.
 
+    With a tuple of estimators, ``estimate`` and ``value`` are tuples, one
+    entry per estimator in the given order.
+
     Attributes:
         tetrahedra: The mesh's tetrahedron count.
         dofs: The field's coefficient count (one solve's unknowns).
@@ -305,13 +307,19 @@ class RefinementCycle:
             Q; ``None`` for a `FieldEstimator`.
         marked: How many tetrahedra Dörfler marking picked on this mesh; 0
             when the loop stopped on it before marking.
+        modes: For an eigenmode quantity, each mode index the estimators
+            name on the first mesh, mapped to the index of the mode followed
+            to this mesh (read-only); empty otherwise.
     """
 
     tetrahedra: int
     dofs: int
-    estimate: float
-    value: float | complex | tuple[complex, ...] | None
+    estimate: float | tuple[float, ...]
+    value: Any
     marked: int
+    modes: Mapping[int, int] = dataclasses.field(
+        default_factory=lambda: types.MappingProxyType({}), hash=False
+    )
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -324,12 +332,15 @@ class MeshRefinement:
     Attributes:
         model: The last solved model (its mesh refined, its design carried).
         result: That model's solve result.
-        estimate: That result's `ErrorEstimate`.
+        estimate: That result's `ErrorEstimate`; with a tuple of estimators,
+            a tuple of them in the estimators' order.
         cycles: One `RefinementCycle` per solved mesh; ``cycles[0]`` is the
             input mesh.
         stop: Why the loop stopped: ``"tolerance"``, ``"max_cycles"``,
             ``"max_tetrahedra"`` or ``"solve failed"``.
-        converged: Whether ``estimate.value`` is at or below the tolerance.
+        converged: Whether ``estimate.value`` is at or below the tolerance;
+            with a tuple of estimators, whether every one is at or below its
+            own.
         tetrahedron_parents: For each tetrahedron of ``model.mesh``, the row
             of the input mesh's ``tetrahedra`` it lies in.
         triangle_parents: For each triangle of ``model.mesh``, the row of the
@@ -338,7 +349,7 @@ class MeshRefinement:
 
     model: Model
     result: Any
-    estimate: ErrorEstimate
+    estimate: ErrorEstimate | tuple[ErrorEstimate, ...]
     cycles: tuple[RefinementCycle, ...]
     stop: str
     converged: bool
@@ -413,8 +424,9 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         The estimate, with NumPy values.
 
     Raises:
-        TypeError: An argument has the wrong type, or a `QuantityEstimator`
-            names a quantity of another result type.
+        TypeError: An argument has the wrong type (a tuple of estimators
+            too: call it once per quantity), or a `QuantityEstimator` names a
+            quantity of another result type.
         KeyError: A `QuantityEstimator` names no terminal or port of the
             result.
         ValueError: The result was not solved on ``model``'s mesh, or is a
@@ -439,6 +451,11 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     """
     if not isinstance(model, Model):
         raise TypeError(f"model must be a gfem.Model, got {type(model).__name__}.")
+    if isinstance(estimator, (tuple, list)):
+        raise TypeError(
+            "error_estimate takes one estimator, got a "
+            f"{type(estimator).__name__}: call it once per quantity."
+        )
     _check_estimator(estimator)
     _refuse_blends(model, "error_estimate")
     _check_untraced("error_estimate", (model, result))
@@ -455,8 +472,8 @@ def refine_mesh(
     model: Model,
     problem: Electrostatic | Driven | Eigenmode,
     *,
-    estimator: Estimator = FieldEstimator(),  # noqa: B008 - frozen value object
-    tolerance: float = 1e-2,
+    estimator: Estimator | tuple[QuantityEstimator, ...] = FieldEstimator(),  # noqa: B008 - frozen value object
+    tolerance: float | tuple[float, ...] | None = None,
     error_fraction: float = 0.5,
     max_cycles: int = 10,
     max_tetrahedra: int | None = None,
@@ -473,6 +490,12 @@ def refine_mesh(
     the model's per-element design (`MaterialField` values, sheet fills) to
     the children. Cycle 0 solves the input mesh.
 
+    With a tuple of estimators, several quantities refine one mesh: every
+    one is estimated on every mesh, the marking sums each quantity's
+    ``indicators**2`` divided by its tolerance over the quantities still
+    above it, and the loop stops when every one meets its tolerance. Modes
+    named by several estimators are followed once each.
+
     A driven problem is solved with ``keep_fields=True`` whatever it asks:
     the estimate reads every frequency's field of every excited port, and
     ``result`` keeps them. Its low-frequency floor is checked once, on the
@@ -484,22 +507,37 @@ def refine_mesh(
             ref = gfem.refine_mesh(model, gfem.Electrostatic(terminals=["t1"]))
             ref.model, ref.result, ref.estimate.value, ref.stop
 
+        Refine for S21 and S11 at once, each to its own tolerance::
+
+            estimators = (
+                gfem.QuantityEstimator(s=("p2", "p1")),
+                gfem.QuantityEstimator(s=("p1", "p1")),
+            )
+            ref = gfem.refine_mesh(
+                model, gfem.Driven([5e9]), estimator=estimators, tolerance=(1e-4, 1e-3)
+            )
+            s21_estimate, s11_estimate = ref.estimate
+
     Args:
         model: The device, with concrete values.
         problem: An `Electrostatic` problem, a `Driven` problem on a uniform
             sweep (lumped or wave ports), or an `Eigenmode` problem. The
             estimate of a driven run is the worst frequency's, of an
             eigenmode run the worst mode's.
-        estimator: `FieldEstimator()`, or a `QuantityEstimator` naming a
-            quantity of ``problem``.
-        tolerance: The error estimate to reach: relative to the field's energy
+        estimator: `FieldEstimator()`, a `QuantityEstimator` naming a
+            quantity of ``problem``, or a tuple of distinct
+            `QuantityEstimator`s; the record then holds tuples, one entry per
+            estimator in this order.
+        tolerance: The error estimate to reach, one float for every
+            estimator or a tuple with one per estimator; ``None`` is 1e-2.
+            Relative to the field's energy
             norm for a `FieldEstimator`; for a `QuantityEstimator` relative
             to the capacitance entry, to ``omega`` or to Q, absolute for an S
             entry. At least 10 times
             ``options.tolerance`` (``options.eigen_tolerance`` for an
             `Eigenmode`; for Q times cot(arg omega), about 2Q, checked on
             the first solve), since the estimate does not include the linear
-            solve's error.
+            solve's error. Each tolerance is checked on its own.
         error_fraction: Dörfler's fraction, in (0, 1]: the share of the summed
             squared error indicators the marked tetrahedra hold.
         max_cycles: How many times the mesh may be refined; 0 solves and
@@ -512,23 +550,27 @@ def refine_mesh(
         comm: As for `gfem.solve`; mesh refinement runs on one process.
 
     Returns:
-        The last solved model, its result and estimate, and one
-        `RefinementCycle` per solved mesh.
+        The last solved model, its result and estimate (a tuple with a tuple
+        of estimators), and one `RefinementCycle` per solved mesh.
 
     Warns:
         MeshRefinementNotConvergedWarning: The loop stopped on a cap or a
-            failed solve with the estimate above ``tolerance``.
+            failed solve with an estimate above its tolerance; it names each
+            such quantity.
         LowFrequencyWarning: A frequency of a driven problem is below the
             returned mesh's low-frequency floor.
         MeshQualityWarning: The input mesh's nodes have moved and an element
             fell far below its imported quality.
 
     Raises:
-        TypeError: An argument has the wrong type, or a `QuantityEstimator`
-            names a quantity of another problem type.
+        TypeError: An argument has the wrong type, a `QuantityEstimator`
+            names a quantity of another problem type, or a tuple of
+            estimators holds a `FieldEstimator`.
         KeyError: A `QuantityEstimator` names no terminal or port of the
             problem.
-        ValueError: A parameter is out of range, or ``tolerance`` is below 10
+        ValueError: A parameter is out of range; a tuple of estimators is
+            empty or names a quantity twice, or the tolerances do not match
+            the estimators one to one; a tolerance is below 10
             times the solve tolerance (for Q, times cot(arg omega)); a
             `QuantityEstimator` names a source port that is not excited, a
             mode index at or above ``n_modes``, or the Q of a lossless mode; a
@@ -548,7 +590,8 @@ def refine_mesh(
             followed one: a second mode is less than twice as far from the
             previous frequency, or the nearest moved further than the
             previous estimate allows (the mode probably left the solved
-            modes: ask for more modes or start from a finer mesh).
+            modes: ask for more modes or start from a finer mesh). Or two
+            modes named on the first mesh reached one mode.
         NotImplementedError: ``model`` holds a metal-dielectric blend
             (`MaterialField.interpolate` with a permittivity law), which is
             supported on the driven uniform sweep only.
@@ -571,28 +614,32 @@ def refine_mesh(
         raise TypeError(
             f"options must be a gfem.SolverOptions, got {type(options).__name__}."
         )
-    _check_estimator(estimator)
+    estimators, tolerances = _quantities(estimator, tolerance)
     _check_problem(model, problem)
     _refuse_blends(model, "refine_mesh")
-    if isinstance(estimator, QuantityEstimator):
-        _check_quantity_keys(estimator, problem, model)
-        _check_quantity_model(estimator, model)
+    for each in estimators:
+        if isinstance(each, QuantityEstimator):
+            _check_quantity_keys(each, problem, model)
+            _check_quantity_model(each, model)
     if isinstance(problem, Driven):
         from gfem._engine import dispersion
 
         dispersion.check_estimator_frequencies(
             model, [float(f) for f in problem.frequency]
         )
-    _check_order(options.order, estimator)
+    for each in estimators:
+        _check_order(options.order, each)
     if _mpi.resolve_comm(comm) is not None:
         _mpi.refuse_feature("mesh_refinement")
-    _check_adjoint_workers(estimator, model, problem, options)
-    _check_parameters(problem, options, tolerance, error_fraction, max_cycles)
+    _check_adjoint_workers(estimators, model, problem, options)
+    for each in tolerances:
+        _check_parameters(problem, options, each, error_fraction, max_cycles)
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)
     _check_untraced("refine_mesh", (model, problem))
     if isinstance(problem, Driven):
-        _check_driven_estimable(estimator, model, [float(f) for f in problem.frequency])
+        frequencies = [float(f) for f in problem.frequency]
+        _check_driven_estimable(estimators, model, frequencies)
     # a moved input mesh is checked here, so a warning names the caller's line;
     # the loop's solves and bisections skip the check
     _check_quality(model.mesh, model._domain.active, stacklevel=2)  # noqa: SLF001
@@ -600,8 +647,9 @@ def refine_mesh(
     return _loop(
         model,
         problem,
-        estimator=estimator,
-        tolerance=float(tolerance),
+        estimators=estimators,
+        tolerances=tuple(float(t) for t in tolerances),
+        joint=isinstance(estimator, tuple),
         error_fraction=float(error_fraction),
         max_cycles=int(max_cycles),
         max_tetrahedra=max_tetrahedra,
@@ -610,12 +658,75 @@ def refine_mesh(
     )
 
 
+#: `refine_mesh`'s tolerance when none is given.
+_DEFAULT_TOLERANCE = 1e-2
+
+
+def _quantities(
+    estimator: Any, tolerance: Any
+) -> tuple[tuple[Estimator, ...], tuple[Any, ...]]:
+    """The estimators of `refine_mesh` and one tolerance each (ADR 0130).
+
+    A tuple of estimators holds `QuantityEstimator`s, at least one, none
+    twice; a tuple of tolerances needs a tuple of estimators of its length.
+    The tolerances' values are checked by `_check_parameters`.
+    """
+    if isinstance(estimator, tuple):
+        if not estimator:
+            raise ValueError(
+                "refine_mesh needs at least one estimator in a tuple of estimators."
+            )
+        for each in estimator:
+            if isinstance(each, FieldEstimator):
+                raise TypeError(
+                    "A tuple of estimators takes gfem.QuantityEstimator(...)s only: "
+                    "gfem.FieldEstimator() already estimates every field of the "
+                    "result, in units no quantity has. Refine for it on its own."
+                )
+            _check_estimator(each)
+        for first, second in itertools.combinations(estimator, 2):
+            if first == second:
+                raise ValueError(
+                    f"The tuple of estimators names {_describe(first)} twice: "
+                    "give each quantity once."
+                )
+        estimators: tuple[Estimator, ...] = estimator
+    else:
+        _check_estimator(estimator)
+        estimators = (estimator,)
+    if tolerance is None:
+        return estimators, (_DEFAULT_TOLERANCE,) * len(estimators)
+    if not isinstance(tolerance, tuple):
+        return estimators, (tolerance,) * len(estimators)
+    if not isinstance(estimator, tuple):
+        raise TypeError(
+            "A tuple of tolerances needs a tuple of estimators, one tolerance "
+            "each: give tolerance as a float."
+        )
+    if len(tolerance) != len(estimators):
+        raise ValueError(
+            f"tolerance gives {len(tolerance)} values for {len(estimators)} "
+            "estimators: give one per estimator, in their order, or one float "
+            "for all."
+        )
+    return estimators, tolerance
+
+
+def _describe(estimator: Estimator) -> str:
+    """``QuantityEstimator(s=('p2', 'p1'))``: an estimator by its one keyword."""
+    if isinstance(estimator, FieldEstimator):
+        return "FieldEstimator()"
+    kind = _kind(estimator)
+    return f"QuantityEstimator({kind}={getattr(estimator, kind)!r})"
+
+
 def _loop(
     model: Model,
     problem: Any,
     *,
-    estimator: Estimator,
-    tolerance: float,
+    estimators: tuple[Estimator, ...],
+    tolerances: tuple[float, ...],
+    joint: bool,
     error_fraction: float,
     max_cycles: int,
     max_tetrahedra: int | None,
@@ -624,8 +735,11 @@ def _loop(
 ) -> MeshRefinement:
     """Solve, estimate, stop, mark, bisect, cap, transfer; see `refine_mesh`.
 
-    Each solved mesh gets one `RecoveryCache`, shared by its estimates and
-    dropped with the mesh.
+    Every estimator is estimated on every mesh; marking sums the
+    tolerance-normalized weights of those still above their tolerance
+    (`_marking`), and the loop stops when none is (ADR 0130). ``joint``
+    (a tuple was given) makes the records tuples. Each solved mesh gets one
+    `RecoveryCache`, shared by its estimates and dropped with the mesh.
     """
     from gfem._engine import driven
 
@@ -633,7 +747,7 @@ def _loop(
         problem = dataclasses.replace(problem, keep_fields=True)
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
-    adjoint_loads = _adjoint_loads(estimator, model, problem)
+    adjoint_loads = _adjoint_loads(estimators, model, problem)
     with driven.low_frequency_deferred(), warnings.catch_warnings():
         warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
         result, adjoints = _solve(
@@ -642,50 +756,56 @@ def _loop(
     current = model
     cycles: list[RefinementCycle] = []
     failure: Exception | None = None
-    mode = _estimator_mode(estimator)
-    previous: complex | None = None
-    shift: float | None = None
+    tracks = _Tracks(estimators)
     while True:
-        if isinstance(result, EigenmodeResult) and mode is not None:
-            mode, previous = _follow(
+        cache = _recovery_cache()  # this mesh's, dropped before the next solve
+        modes = tracks.follow(result, options.cluster_rtol)
+        if not cycles:
+            _check_q_floors(result, estimators, tolerances, modes, options)
+        estimates = tuple(
+            _estimate(
+                current,
                 result,
-                estimator,
-                mode,
-                previous=previous,
-                shift=shift,
-                tolerance=tolerance,
-                options=options,
+                each,
+                threads=options.threads,
+                mode=_followed(modes, each),
+                adjoints=adjoints,
+                cache=cache,
             )
-        estimate = _estimate(
-            current,
-            result,
-            estimator,
-            threads=options.threads,
-            mode=mode,
-            adjoints=adjoints,
-            cache=_recovery_cache(),  # this mesh's, dropped before the next solve
+            for each in estimators
         )
-        shift = estimate._shift  # noqa: SLF001
+        above = [
+            i
+            for i, (estimate, tolerance) in enumerate(
+                zip(estimates, tolerances, strict=True)
+            )
+            if estimate.value > tolerance
+        ]
         cycle = RefinementCycle(
             tetrahedra=len(current.mesh.tetrahedra),
             dofs=_dofs(result),
-            estimate=estimate.value,
-            value=_quantity(result, estimator, mode),
+            estimate=_shaped([e.value for e in estimates], joint),
+            value=_shaped(
+                [_quantity(result, e, _followed(modes, e)) for e in estimators],
+                joint,
+            ),
             marked=0,
+            modes=types.MappingProxyType(modes),
         )
         cycles.append(cycle)
-        if estimate.value <= tolerance:
+        if not above:
             stop = "tolerance"
             break
         if len(cycles) > max_cycles:
             stop = "max_cycles"
             break
-        marked = _dorfler(estimate.indicators, error_fraction)
+        marked = _dorfler(_marking(estimates, tolerances, above), error_fraction)
         cycles[-1] = dataclasses.replace(cycle, marked=int(marked.sum()))
         fine, refinement = bisect(current.mesh, marked)
         if max_tetrahedra is not None and len(fine.tetrahedra) > max_tetrahedra:
             stop = "max_tetrahedra"
             break
+        tracks.bound(current, result, estimates, threads=options.threads, cache=cache)
         refined = transfer_design(current, fine, refinement)
         try:
             with driven.low_frequency_deferred():
@@ -704,63 +824,158 @@ def _loop(
         tri_parents = tri_parents[refinement.triangle_parents]
     if isinstance(problem, Driven):
         driven.check_low_frequency(current, problem.frequency, stacklevel=3)
-    converged = estimate.value <= tolerance
-    if not converged:
+    if above:
         _warn_not_converged(
             stop,
             failure,
-            estimate.value,
-            tolerance=tolerance,
+            [(estimators[i], estimates[i].value, tolerances[i]) for i in above],
+            joint=joint,
             max_cycles=max_cycles,
             max_tetrahedra=max_tetrahedra,
         )
     return MeshRefinement(
         model=current,
         result=result,
-        estimate=estimate,
+        estimate=_shaped(list(estimates), joint),
         cycles=tuple(cycles),
         stop=stop,
-        converged=converged,
+        converged=not above,
         tetrahedron_parents=readonly(tet_parents),
         triangle_parents=readonly(tri_parents),
         _input_mesh=model.mesh,
     )
 
 
-def _follow(
-    result: EigenmodeResult,
-    estimator: Estimator,
-    mode: int,
-    *,
-    previous: complex | None,
-    shift: float | None,
-    tolerance: float,
+def _check_q_floors(
+    result: Any,
+    estimators: tuple[Estimator, ...],
+    tolerances: tuple[float, ...],
+    modes: dict[int, int],
     options: SolverOptions,
-) -> tuple[int, complex]:
-    """The followed mode on ``result`` and its omega (`_track_mode`).
+) -> None:
+    """`_check_q_floor` of each ``q=`` estimator, on the first result."""
+    for each, tolerance in zip(estimators, tolerances, strict=True):
+        if isinstance(each, QuantityEstimator) and each.q is not None:
+            _check_q_floor(result, modes[each.q], tolerance, options)
 
-    ``shift`` is the omega estimate of the previous mesh, which bounds the
-    mode's shift. On the first result, a Q's tolerance is checked against
-    its floor (`_check_q_floor`), which needs omega.
+
+def _followed(modes: dict[int, int], estimator: Estimator) -> int | None:
+    """The index on this mesh of the mode ``estimator`` names, else ``None``."""
+    mode = _estimator_mode(estimator)
+    return None if mode is None else modes[mode]
+
+
+def _shaped(items: list, joint: bool) -> Any:
+    """``items`` as a tuple for a tuple of estimators, else its one item."""
+    return tuple(items) if joint else items[0]
+
+
+def _marking(
+    estimates: tuple[ErrorEstimate, ...],
+    tolerances: tuple[float, ...],
+    above: list[int],
+) -> np.ndarray:
+    """The indicators Dörfler marks on: those of the quantities above tolerance.
+
+    Each quantity's ``indicators**2`` is in its own units; divided by its
+    tolerance they add up across quantities (ADR 0130). A lone quantity's
+    indicators are marked on as they are.
     """
-    mode = _track_mode(result, mode, previous, options.cluster_rtol, shift)
-    if previous is None and getattr(estimator, "q", None) is not None:
-        _check_q_floor(result, mode, tolerance, options)
-    return mode, complex(np.asarray(result.omega)[mode])
+    if len(above) == 1:
+        return estimates[above[0]].indicators
+    squared = sum(
+        np.asarray(estimates[i].indicators, float) ** 2 / tolerances[i] for i in above
+    )
+    return np.sqrt(squared)
+
+
+class _Tracks:
+    """The modes the estimators follow: one track per distinct starting index.
+
+    Estimators naming the same mode on the first mesh share its track
+    (ADR 0130). On each mesh every track follows the mode nearest its
+    previous omega (`_track_mode`), its shift bounded by the omega estimate
+    of the mode on its own sums on the previous mesh (`bound`); two tracks
+    landing on one mode raise `DegenerateModeError`.
+    """
+
+    def __init__(self, estimators: tuple[Estimator, ...]) -> None:
+        starts = sorted(
+            {m for e in estimators if (m := _estimator_mode(e)) is not None}
+        )
+        #: Per starting index: the followed index, its omega and its omega
+        #: estimate on the last mesh (``None`` before the first).
+        self._state: dict[int, tuple[int, complex | None, float | None]] = {
+            start: (start, None, None) for start in starts
+        }
+        self._omega = {
+            e.omega: i
+            for i, e in enumerate(estimators)
+            if isinstance(e, QuantityEstimator) and e.omega is not None
+        }
+
+    def follow(self, result: Any, rtol: float) -> dict[int, int]:
+        """Each track's mode on ``result``: starting index -> its index there."""
+        if not isinstance(result, EigenmodeResult) or not self._state:
+            return {}
+        modes = {
+            start: _track_mode(result, index, previous, rtol, bound)
+            for start, (index, previous, bound) in self._state.items()
+        }
+        for (a, ma), (b, mb) in itertools.combinations(modes.items(), 2):
+            if ma == mb:
+                omega = complex(np.asarray(result.omega)[ma])
+                raise DegenerateModeError(
+                    f"Two followed modes reached one mode: the modes named {a} "
+                    f"and {b} on the first mesh both followed mode {ma} at "
+                    f"{hertz(omega.real / (2 * np.pi))} on a refined mesh. Start "
+                    "from a finer mesh, on which the modes are apart, or ask "
+                    "for more modes (gfem.Eigenmode(n_modes=...))."
+                )
+        self._modes = modes
+        self._omegas = np.asarray(result.omega)
+        return modes
+
+    def bound(
+        self,
+        model: Model,
+        result: Any,
+        estimates: tuple[ErrorEstimate, ...],
+        *,
+        threads: int | None,
+        cache: RecoveryCache,
+    ) -> None:
+        """Keep each track's omega and omega estimate on ``result`` for the next mesh.
+
+        An ``omega=`` estimate of the track's mode is its bound; any other
+        track computes the omega kernel of its mode on the mesh's cache.
+        """
+        if not self._state:
+            return
+        from gfem._engine import estimate as kernels
+
+        for start, index in self._modes.items():
+            if start in self._omega:
+                bound = estimates[self._omega[start]].value
+            else:
+                bound = kernels.omega(model, result, index, threads, cache=cache).value
+            self._state[start] = (index, complex(self._omegas[index]), bound)
 
 
 def _warn_not_converged(
     stop: str,
     failure: Exception | None,
-    value: float,
+    above: list[tuple[Estimator, float, float]],
     *,
-    tolerance: float,
+    joint: bool,
     max_cycles: int,
     max_tetrahedra: int | None,
 ) -> None:
-    """Warn that `refine_mesh` stopped on ``stop`` above ``tolerance``.
+    """Warn that `refine_mesh` stopped on ``stop`` with quantities above tolerance.
 
-    The warning points at the caller of `refine_mesh`, three frames up.
+    ``above`` holds each such estimator, its estimate and its tolerance; with
+    a tuple of estimators (``joint``) the warning names each. The warning
+    points at the caller of `refine_mesh`, three frames up.
     """
     reason = {
         "max_cycles": f"after max_cycles={max_cycles} refinements",
@@ -769,9 +984,17 @@ def _warn_not_converged(
         ),
         "solve failed": f"because the solve on the next mesh failed: {failure}",
     }[stop]
+    if joint:
+        what = "; ".join(
+            f"{_describe(e)} at {value:.3g} above its tolerance={tolerance:g}"
+            for e, value, tolerance in above
+        )
+        estimates = f"with the error estimate of {what}"
+    else:
+        ((_, value, tolerance),) = above
+        estimates = f"with the error estimate {value:.3g} above tolerance={tolerance:g}"
     warnings.warn(
-        f"Mesh refinement stopped {reason}, with the error estimate "
-        f"{value:.3g} above tolerance={tolerance:g}. The record "
+        f"Mesh refinement stopped {reason}, {estimates}. The record "
         "holds the last solved mesh. Raise the cap, loosen tolerance, or "
         "start from a finer mesh.",
         MeshRefinementNotConvergedWarning,
@@ -832,7 +1055,6 @@ def _estimate(
 
     cache = cache or kernels.RecoveryCache()
     kind = _kind(estimator)
-    shift = None
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
             parts = [
@@ -858,11 +1080,9 @@ def _estimate(
         elif estimator.q is not None:
             _check_lossy_q(result, int(mode or 0))
             parts = [kernels.q(model, result, int(mode or 0), threads, cache=cache)]
-            shift = parts[0].omega_value
         else:
             _check_mode_eps(model, result, int(mode or 0))
             parts = [kernels.omega(model, result, int(mode or 0), threads, cache=cache)]
-            shift = parts[0].value
         values = tuple(terms.value for terms in parts)
         _, indicators = kernels.combine([[terms.weights] for terms in parts])
     else:
@@ -880,7 +1100,6 @@ def _estimate(
         kind=kind,
         values=values,
         indicators=readonly(indicators),
-        _shift=shift,
     )
 
 
@@ -1061,8 +1280,9 @@ def _refuse_blends(model: Model, where: str) -> None:
 def _check_estimator(estimator: Any) -> None:
     if not isinstance(estimator, (FieldEstimator, QuantityEstimator)):
         raise TypeError(
-            "estimator must be gfem.FieldEstimator() or gfem.QuantityEstimator(...), "
-            f"got {type(estimator).__name__}."
+            "estimator must be gfem.FieldEstimator(), gfem.QuantityEstimator(...) "
+            "or a tuple of gfem.QuantityEstimator(...)s, got "
+            f"{type(estimator).__name__}."
         )
 
 
@@ -1222,23 +1442,32 @@ def _excited(problem: Driven, model: Model) -> list[str]:
 
 
 def _adjoint_loads(
-    estimator: Estimator, model: Model, problem: Any
+    estimators: tuple[Estimator, ...], model: Model, problem: Any
 ) -> AdjointLoads | None:
-    """The per-frequency adjoint loads ``estimator``'s duals solve, or ``None``.
+    """The per-frequency adjoint loads the estimators' duals solve, or ``None``.
 
-    They ride on each of `refine_mesh`'s forward solves (ADR 0089
-    amendment); ``None`` for an estimate with a free dual only.
+    The union over the estimators (ADR 0130), each port once: two S entries
+    reading one port share its adjoint. They ride on each of `refine_mesh`'s
+    forward solves (ADR 0089 amendment); ``None`` for free duals only.
     """
     from gfem._engine.driven import port_loads
 
     if not isinstance(problem, Driven):
         return None
-    ports = _adjoint_ports(estimator, model, _excited(problem, model))
+    excited = _excited(problem, model)
+    ports = tuple(
+        dict.fromkeys(
+            port for each in estimators for port in _adjoint_ports(each, model, excited)
+        )
+    )
     return port_loads(ports) if ports else None
 
 
 def _check_adjoint_workers(
-    estimator: Estimator, model: Model, problem: Any, options: SolverOptions
+    estimators: tuple[Estimator, ...],
+    model: Model,
+    problem: Any,
+    options: SolverOptions,
 ) -> None:
     """Refuse frequency workers for an estimate that solves a dual.
 
@@ -1250,10 +1479,12 @@ def _check_adjoint_workers(
     if not isinstance(problem, Driven):
         return
     workers = min(options.frequency_workers, len(problem.frequency))
-    if workers > 1 and _adjoint_loads(estimator, model, problem) is not None:
+    excited = _excited(problem, model)
+    solving = [e for e in estimators if _adjoint_ports(e, model, excited)]
+    if workers > 1 and solving:
         raise MeshRefinementUnsupportedError(
             "frequency workers",
-            f"QuantityEstimator(s={getattr(estimator, 's', None)!r}) solves its "
+            f"{_describe(solving[0])} solves its "
             "adjoint dual with the forward, which frequency workers do not do "
             "in this version of gfem: it needs frequency_workers=1, got "
             f"{options.frequency_workers}.",
@@ -1384,15 +1615,16 @@ _PLASMONIC_WINDOW = (-20.0, 0.0)
 
 
 def _check_driven_estimable(
-    estimator: Estimator, model: Model, frequencies: list[float]
+    estimators: tuple[Estimator, ...], model: Model, frequencies: list[float]
 ) -> None:
     """Raise for a driven quantity estimate the identity has no term for.
 
     The S estimate's only for now; objectives of S and driven field
     objectives call `_check_driven_quantity` too.
     """
-    if isinstance(estimator, QuantityEstimator) and estimator.s is not None:
-        _check_driven_quantity(model, frequencies, "QuantityEstimator(s=...)")
+    for estimator in estimators:
+        if isinstance(estimator, QuantityEstimator) and estimator.s is not None:
+            _check_driven_quantity(model, frequencies, "QuantityEstimator(s=...)")
 
 
 def _check_driven_quantity(model: Model, frequencies: list[float], what: str) -> None:
@@ -1527,7 +1759,7 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
 
         frequencies = [float(f) for f in result.s.frequency]
         dispersion.check_estimator_frequencies(model, frequencies)
-        _check_driven_estimable(estimator, model, frequencies)
+        _check_driven_estimable((estimator,), model, frequencies)
     _check_order(_fields(result)[0].order, estimator)
     mesh = _fields(result)[0].mesh
     if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001

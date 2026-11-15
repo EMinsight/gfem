@@ -1246,3 +1246,238 @@ def test_q_keeps_the_lossy_eigenmode_refusals(
     assert caught.value.feature == feature
     assert cause in str(caught.value)
     assert "q=" in str(caught.value)
+
+
+# --- several quantities (ADR 0130) ---------------------------------------------
+
+S11 = gfem.QuantityEstimator(s=("p1", "p1"))
+
+
+@pytest.mark.parametrize(
+    ("estimator", "tolerance", "error", "match"),
+    [
+        ((), None, ValueError, "at least one"),
+        ((S21, S21), None, ValueError, "twice"),
+        ((S21, gfem.FieldEstimator()), None, TypeError, "FieldEstimator"),
+        ([S21, S11], None, TypeError, "tuple"),
+        ((S21, S11), (1e-3,), ValueError, "2 estimators"),
+        ((S21, S11), (1e-3, 1e-3, 1e-3), ValueError, "2 estimators"),
+        (S21, (1e-3,), TypeError, "tuple of estimators"),
+        ((S21, S11), (1e-3, "1e-3"), TypeError, "number"),
+        ((S21, S11), (1e-3, 1e-9), ValueError, "at least 10"),
+    ],
+    ids=[
+        "empty",
+        "duplicate",
+        "field-estimator",
+        "list",
+        "short",
+        "long",
+        "tuple-tolerance-single",
+        "string",
+        "floor",
+    ],
+)
+@pytest.mark.usefixtures("no_solve")
+def test_a_bad_tuple_of_estimators_raises_before_any_solve(
+    step, estimator, tolerance, error, match
+):
+    with pytest.raises(error, match=match):
+        gfem.refine_mesh(
+            step,
+            rc.step_problem(),
+            estimator=estimator,
+            tolerance=tolerance,
+            options=OPTIONS,
+        )
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_each_estimator_of_a_tuple_is_checked(step):
+    with pytest.raises(KeyError, match="p9"):
+        gfem.refine_mesh(
+            step,
+            rc.step_problem(),
+            estimator=(S21, gfem.QuantityEstimator(s=("p9", "p1"))),
+            options=OPTIONS,
+        )
+    with pytest.raises(TypeError, match="Eigenmode"):
+        gfem.refine_mesh(
+            step,
+            rc.step_problem(),
+            estimator=(S21, gfem.QuantityEstimator(omega=0)),
+            options=OPTIONS,
+        )
+
+
+def test_error_estimate_takes_one_estimator(step):
+    with pytest.raises(TypeError, match="one estimator"):
+        gfem.error_estimate(object(), (S21, S11), model=step)
+
+
+def _refine_step(step, estimator, tolerance, max_cycles, problem=None):
+    return gfem.refine_mesh(
+        step,
+        problem or rc.step_problem([3e9]),
+        estimator=estimator,
+        tolerance=tolerance,
+        max_cycles=max_cycles,
+        options=OPTIONS,
+    )
+
+
+def test_a_tuple_of_estimators_records_tuples(step):
+    with pytest.warns(gfem.MeshRefinementNotConvergedWarning) as caught:
+        ref = _refine_step(step, (S21, S11), (1e-5, 2e-5), 1)
+    message = str(caught[0].message)
+    assert "s=('p2', 'p1')" in message
+    assert "s=('p1', 'p1')" in message
+    assert "tolerance=2e-05" in message
+    assert not ref.converged
+    assert ref.stop == "max_cycles"
+    first, second = ref.estimate
+    assert (first.estimator, second.estimator) == (S21, S11)
+    assert ref.cycles[-1].estimate == (first.value, second.value)
+    for cycle in ref.cycles:
+        assert len(cycle.estimate) == 2
+        s21, s11 = cycle.value
+        assert len(s21) == len(s11) == 1
+        assert cycle.modes == {}
+    assert ref.cycles[-1].value == (
+        tuple(complex(v) for v in ref.result.s["p2", "p1"]),
+        tuple(complex(v) for v in ref.result.s["p1", "p1"]),
+    )
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_a_one_tuple_refines_as_its_estimator(step):
+    one = _refine_step(step, (S21,), (1e-5,), 1)
+    alone = _refine_step(step, S21, 1e-5, 1)
+    assert [c.tetrahedra for c in one.cycles] == [c.tetrahedra for c in alone.cycles]
+    for joint, single in zip(one.cycles, alone.cycles, strict=True):
+        assert joint.estimate == pytest.approx((single.estimate,), rel=1e-10)
+    (estimate,) = one.estimate
+    assert estimate.values == pytest.approx(alone.estimate.values, rel=1e-12)
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_a_quantity_at_its_tolerance_leaves_the_marking(step):
+    # S11 meets its loose tolerance on the first mesh: the marking is S21's.
+    joint = _refine_step(step, (S21, S11), (1e-5, 1.0), 1)
+    alone = _refine_step(step, S21, 1e-5, 1)
+    assert [c.marked for c in joint.cycles] == [c.marked for c in alone.cycles]
+    assert [c.tetrahedra for c in joint.cycles] == [c.tetrahedra for c in alone.cycles]
+
+
+def test_the_loop_stops_when_every_quantity_meets_its_tolerance(step, recwarn):
+    ref = _refine_step(step, (S21, S11), 1.0, 3)
+    assert ref.stop == "tolerance"
+    assert ref.converged
+    assert len(ref.cycles) == 1
+    assert not [w for w in recwarn if issubclass(w.category, UserWarning)]
+
+
+def test_a_tuple_takes_the_union_of_the_adjoints(step, prepares):
+    # S21 with p2 unexcited solves p2's adjoint with the forward; S11 needs
+    # none. Together they solve the same, once.
+    problem = gfem.Driven([3e9], excite=["p1"])
+    joint = _refine_step(step, (S21, S11), 1.0, 0, problem)
+    count = len(prepares)
+    single = [_refine_step(step, e, 1.0, 0, problem) for e in (S21, S11)]
+    assert count == len(prepares) - count
+    for estimate, alone in zip(joint.estimate, single, strict=True):
+        assert estimate.values == pytest.approx(alone.estimate.values, rel=1e-12)
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_frequency_workers_refuse_a_tuple_with_a_solved_dual(step):
+    options = dataclasses.replace(OPTIONS, frequency_workers=2)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(
+            step,
+            gfem.Driven([3e9, 8e9], excite=["p1"]),
+            estimator=(S11, S21),
+            options=options,
+        )
+    assert caught.value.feature == "frequency workers"
+    assert "s=('p2', 'p1')" in str(caught.value)
+
+
+# --- mode tracks ---------------------------------------------------------------
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_estimators_of_one_mode_share_its_track(cavity):
+    ref = gfem.refine_mesh(
+        _lossy_cavity(cavity),
+        gfem.Eigenmode(target=LOSSY_CAVITY_F, n_modes=2),
+        estimator=(gfem.QuantityEstimator(omega=0), gfem.QuantityEstimator(q=0)),
+        tolerance=1e-5,
+        max_cycles=1,
+        options=OPTIONS,
+    )
+    for cycle in ref.cycles:
+        assert dict(cycle.modes) == {0: 0}
+        omega, q = cycle.value
+        assert q == pytest.approx(abs(omega) / (2 * omega.imag), rel=1e-9)
+    assert [e.kind for e in ref.estimate] == ["omega", "q"]
+
+
+def test_two_tracks_landing_on_one_mode_raise(cavity, monkeypatch):
+    # The second mesh's modes are made to sit nearest one mode for both
+    # tracks: 0.5 % from the first mesh's two, the other far.
+    from gfem.solve import _solve
+
+    calls = []
+
+    def solve(*args, **kwargs):
+        result, adjoints = _solve(*args, **kwargs)
+        w = complex(np.asarray(result.omega)[0])
+        omegas = [w, 1.01 * w] if not calls else [1.005 * w, 3 * w]
+        calls.append(1)
+        return dataclasses.replace(result, omega=jnp.asarray(omegas)), adjoints
+
+    monkeypatch.setattr("gfem.refinement._solve", solve)
+    with pytest.raises(gfem.DegenerateModeError, match=r"named 0 and 1.*mode 0"):
+        gfem.refine_mesh(
+            cavity,
+            gfem.Eigenmode(target=rc.CAVITY_F1, n_modes=2),
+            estimator=(
+                gfem.QuantityEstimator(omega=0),
+                gfem.QuantityEstimator(omega=1),
+            ),
+            tolerance=1e-5,
+            max_cycles=1,
+            options=OPTIONS,
+        )
+    assert len(calls) == 2
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_each_track_records_its_mode(cavity):
+    problem = gfem.Eigenmode(target=rc.CAVITY_F1, n_modes=3)
+    ref = gfem.refine_mesh(
+        cavity,
+        problem,
+        estimator=(gfem.QuantityEstimator(omega=2), gfem.QuantityEstimator(omega=0)),
+        tolerance=1e-9,
+        max_cycles=1,
+        options=OPTIONS,
+    )
+    assert dict(ref.cycles[0].modes) == {0: 0, 2: 2}
+    last = ref.cycles[-1]
+    omegas = np.asarray(ref.result.omega)
+    assert last.value == (
+        complex(omegas[last.modes[2]]),
+        complex(omegas[last.modes[0]]),
+    )
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_a_tuple_keeps_each_estimators_driven_refusal(step):
+    model = _with(step, boundaries=[*step.boundaries, gfem.Absorbing("side")])
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(
+            model, gfem.Driven([5e9]), estimator=(S11, S21), options=OPTIONS
+        )
+    assert caught.value.feature == "impedance or absorbing surface"

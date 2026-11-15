@@ -73,6 +73,12 @@ Cases and references (none recomputed by the tests but the closed forms):
 - lossy walls: the air box with an impedance (377 ohm/sq), first-order
   absorbing or conductor (1e5 S/m) top wall, mode 110 on m = 2, 3, against
   `refinement_cases.LOSSY_WALL_OMEGA` (Richardson);
+- several quantities refining one mesh (ADR 0130), each against its own
+  reference on every cycle: the step line's S21 and S11 at 3 or 8 GHz,
+  tolerance 2e-4 each, until both meet it; the two bars "screen" C_aa and
+  C_ab, tolerances 1e-3 and 5e-3, until both meet them (18 668 DOF, where
+  refining for either alone left the other above its tolerance at 65 to 72k
+  DOF), C_ab against `refinement_cases.BARS_C_AB` (C_aa has no reference);
 - resistive line: the parallel-plate line closed by its 50 and 30 ohm
   lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32, 64,
   256, against its transmission-line closed form.
@@ -152,6 +158,8 @@ Measured (ostau, 1 thread):
     sheet, C_ab           1.79 - 2.26
     two bars, screen      3.70 - 9.55
     two bars, near        1.66 - 1.71
+    joint step S21 + S11  1.45 - 1.81
+    joint bars, C_ab      3.70 - 7.27
     lossy box             7.18 - 10.6   (both fills)
     lossy L cavity        2.87 - 4.08
     lossy walls           4.34 - 9.17
@@ -521,6 +529,55 @@ def test_the_step_line_s21_under_mesh_refinement(tmp_path, frequency):
         (s21,) = cycle.value
         error = s21 - rc.STEP_S[frequency]["S21"]
         _assert_in("s", "step line, lumped ports", ref.estimate, error, cycle.estimate)
+
+
+# --- several quantities on one mesh (ADR 0130) ---------------------------------
+
+
+@pytest.mark.parametrize("frequency", list(rc.STEP_S))
+def test_the_step_line_s21_and_s11_refined_together(tmp_path, frequency):
+    # Both entries' error sits at the same edges: the joint run refines as
+    # either alone would, and each estimate stays in range on every cycle.
+    ref = gfem.refine_mesh(
+        rc.step_model(tmp_path, 2),
+        rc.step_problem([frequency]),
+        estimator=(S21, gfem.QuantityEstimator(s=("p1", "p1"))),
+        tolerance=(2e-4, 2e-4),
+        max_cycles=16,
+        options=OPTIONS,
+    )
+    assert ref.stop == "tolerance"
+    assert ref.converged
+    for cycle in ref.cycles:
+        for name, value, estimate, final in zip(
+            ("S21", "S11"), cycle.value, cycle.estimate, ref.estimate, strict=True
+        ):
+            (entry,) = value
+            error = entry - rc.STEP_S[frequency][name]
+            _assert_in("s", "step line, lumped ports", final, error, estimate)
+
+
+def test_the_screened_bars_c_aa_and_c_ab_refined_together(tmp_path):
+    # C_aa's error sits at the bar edges, C_ab's around the fin: refining for
+    # either alone left the other above its tolerance at 65 to 72k DOF; the
+    # joint run meets both.
+    ref = gfem.refine_mesh(
+        rc.bars_model(tmp_path, "screen", 2),
+        rc.BARS_PROBLEM,
+        estimator=(
+            gfem.QuantityEstimator(capacitance=("a", "a")),
+            gfem.QuantityEstimator(capacitance=("a", "b")),
+        ),
+        tolerance=(1e-3, 5e-3),
+        max_cycles=20,
+        options=OPTIONS,
+    )
+    assert ref.stop == "tolerance"
+    assert ref.converged
+    _, c_ab = ref.estimate
+    for cycle in ref.cycles:
+        error = _bars_error("screen", cycle.value[1])
+        _assert_in("capacitance", "screen", c_ab, error, cycle.estimate[1])
 
 
 #: The step line's S21 at 3 GHz with wave ports: order 3 on the n = 16 mesh
