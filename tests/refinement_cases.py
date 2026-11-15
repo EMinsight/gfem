@@ -129,9 +129,24 @@ LOSSY_WALL_OMEGA = {
     "impedance": 1888057987875.6094 + 236196247959.60132j,  # 377 ohm/sq
     "absorbing": 1887838945992.7559 + 236275835911.12192j,  # first order
     "conductor": 1639154393785.1357 + 3222701363.0419827j,  # 1e5 S/m
+    # 50 ohm/sq (Q 16.6): Richardson with alpha = 4 on m = 4, 5; the (3, 5)
+    # extrapolation lies within 1.2e-10 (relative), its Q within 2.4e-8.
+    # Provenance: .scratch/quantity-estimates/probes/06 (wall.jsonl).
+    "impedance 50": 1646446067072.405 + 49650544763.42546j,
 }
 #: Relative bound of each `LOSSY_WALL_OMEGA`.
 LOSSY_WALL_BOUND = 2e-8
+
+#: The L cavity (`cavity_model`) filled with eps_r 4 inside `gfem.Conductor`
+#: walls of 1e5 S/m: its first mode's omega, rad/s (Q 45.35). Richardson of
+#: uniform order-2 direct solves on n = 16, 32, 64 with the complex rate
+#: fitted on them (alpha 1.33, the corner's 4/3). Against the alpha = 4/3
+#: extrapolation its Q moves by `CONDUCTOR_CAVITY_Q_BOUND` (relative), 16 %
+#: of the n = 16 Q error and 25 % of the n = 32 one, which is not asserted.
+#: Provenance: .scratch/quantity-estimates/probes/06 (lwall.jsonl).
+CONDUCTOR_CAVITY_OMEGA = 460170192679.7072 + 5074129465.918461j
+#: Relative bound of the Q of `CONDUCTOR_CAVITY_OMEGA`.
+CONDUCTOR_CAVITY_Q_BOUND = 8.3e-4
 
 #: The sheet case's capacitance matrix, F, terminals in order a, b.
 SHEET_C = ((4.08621e-17, -1.39274e-19), (-1.39274e-19, 4.19939e-17))

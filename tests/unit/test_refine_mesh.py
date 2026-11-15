@@ -592,7 +592,14 @@ def test_bad_parameters_raise_before_any_solve(coax, kwargs, error):
 
 @pytest.mark.parametrize(
     "kwargs",
-    [{}, {"capacitance": ("a", "b"), "omega": 0}, {"s": "p2"}, {"omega": True}],
+    [
+        {},
+        {"capacitance": ("a", "b"), "omega": 0},
+        {"s": "p2"},
+        {"omega": True},
+        {"omega": 0, "q": 0},
+        {"q": (0, 1)},
+    ],
 )
 def test_a_quantity_estimator_names_exactly_one_quantity(kwargs):
     with pytest.raises(TypeError):
@@ -602,8 +609,11 @@ def test_a_quantity_estimator_names_exactly_one_quantity(kwargs):
 def test_a_quantity_estimator_holds_its_key():
     assert gfem.QuantityEstimator(s=["p2", "p1"]).s == ("p2", "p1")
     assert gfem.QuantityEstimator(omega=np.int64(1)).omega == 1
+    assert gfem.QuantityEstimator(q=np.int64(1)).q == 1
     with pytest.raises(ValueError):
         gfem.QuantityEstimator(omega=-1)
+    with pytest.raises(ValueError):
+        gfem.QuantityEstimator(q=-1)
 
 
 # --- JAX ---------------------------------------------------------------------

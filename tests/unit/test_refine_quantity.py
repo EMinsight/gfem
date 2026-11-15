@@ -883,3 +883,152 @@ def test_an_interior_sheet_terminal_does_not_smear_the_estimate(tmp_path):
     quantity = gfem.error_estimate(result, estimator, model=model)
     assert field.value < 1e-6
     assert quantity.value < 1e-12
+
+
+# --- Q (ADR 0131) --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error"),
+    [
+        ({"q": (0, 1)}, TypeError),
+        ({"q": True}, TypeError),
+        ({"q": 0, "omega": 0}, TypeError),
+        ({"q": -1}, ValueError),
+    ],
+    ids=["cluster", "bool", "two-keywords", "negative"],
+)
+def test_q_takes_one_mode_index(kwargs, error):
+    with pytest.raises(error) as caught:
+        gfem.QuantityEstimator(**kwargs)
+    if kwargs == {"q": (0, 1)}:
+        assert "cluster" in str(caught.value)
+    assert gfem.QuantityEstimator(q=np.int64(1)).q == 1
+
+
+@pytest.mark.usefixtures("no_solve")
+def test_q_names_a_mode_of_an_eigenmode_problem(coax, cavity):
+    with pytest.raises(TypeError, match="Eigenmode"):
+        gfem.refine_mesh(coax, rc.COAX_PROBLEM, estimator=gfem.QuantityEstimator(q=0))
+    with pytest.raises(ValueError, match=r"q=1.*n_modes=1"):
+        gfem.refine_mesh(
+            cavity, rc.CAVITY_PROBLEM, estimator=gfem.QuantityEstimator(q=1)
+        )
+
+
+def _resistive_line(directory, n):
+    """The 10 mm parallel-plate line, eps_r 4, closed by 50 and 30 ohm ports."""
+    path = sm.write_msh22(
+        directory / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1))
+    )
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"dielectric": gfem.Material(eps_r=4.0)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z", resistance=50.0),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=30.0),
+        ],
+    )
+
+
+def test_q_estimate_of_the_resistive_line(tmp_path):
+    # Its value and indicators as measured by the ticket-06 probe's own
+    # implementation of ADR 0131 (line, n = 4, first resonance, Q 1.78).
+    model = _resistive_line(tmp_path, 4)
+    problem = gfem.Eigenmode(target=7.5e9, n_modes=1)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(q=0), model=model)
+    assert estimate.kind == "q"
+    assert estimate.value == pytest.approx(0.0010167422563164418, rel=1e-8)
+    assert np.sum(estimate.indicators**2) == pytest.approx(
+        0.0007770395510489388, rel=1e-8
+    )
+
+
+def test_q_of_a_lossless_mode_raises(cavity):
+    result = gfem.solve(cavity, rc.CAVITY_PROBLEM, options=OPTIONS)
+    with pytest.raises(ValueError, match=r"lossless.*omega=0"):
+        gfem.error_estimate(result, gfem.QuantityEstimator(q=0), model=cavity)
+
+
+def _lossy_cavity(cavity):
+    return _with(cavity, materials={"air": gfem.Material(eps_r=4.0, conductivity=5.0)})
+
+
+#: The lossy cavity's first mode, Hz.
+LOSSY_CAVITY_F = rc.CAVITY_F1 / 2
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_q_cycles_record_the_followed_mode_q(cavity):
+    ref = gfem.refine_mesh(
+        _lossy_cavity(cavity),
+        gfem.Eigenmode(target=LOSSY_CAVITY_F, n_modes=1),
+        estimator=gfem.QuantityEstimator(q=0),
+        tolerance=1e-5,
+        max_cycles=1,
+        options=OPTIONS,
+    )
+    assert ref.estimate.kind == "q"
+    assert len(ref.cycles) == 2
+    assert ref.cycles[-1].value == float(ref.result.q[0])
+    assert 3.2 < ref.cycles[0].value < 3.4  # Q 3.30 (sigma 5 S/m, eps_r 4)
+
+
+def test_q_tolerance_below_its_floor_raises(cavity):
+    # Q's relative error is cot(arg omega) times omega's (about 2Q): the
+    # floor is 10 x eigen_tolerance x cot(arg omega_h), here about 6.3e-7.
+    options = dataclasses.replace(OPTIONS, eigen_tolerance=1e-8)
+    with pytest.raises(ValueError, match=r"eigen_tolerance") as caught:
+        gfem.refine_mesh(
+            _lossy_cavity(cavity),
+            gfem.Eigenmode(target=LOSSY_CAVITY_F, n_modes=1),
+            estimator=gfem.QuantityEstimator(q=0),
+            tolerance=5e-7,
+            max_cycles=0,
+            options=options,
+        )
+    assert "cot" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("material", "boundary", "feature", "cause"),
+    [
+        (None, gfem.Absorbing("wall", order=2), "lossy eigenmode", "second-order"),
+        (gfem.MaterialField(mu_r=1 - 0.01j), None, "lossy eigenmode", "complex mu_r"),
+        (LOSSY_TENSOR, None, "lossy eigenmode", "anisotropic"),
+        (
+            gfem.Material(
+                eps_r=gfem.PermittivityLaw(
+                    eps_inf=2.0,
+                    terms=[gfem.Debye(delta_eps=1.0, relaxation_frequency=1e11)],
+                )
+            ),
+            None,
+            "dispersive eigenmode",
+            "permittivity law",
+        ),
+    ],
+    ids=["second-order-absorbing", "lossy-mu", "anisotropic-loss", "law"],
+)
+@pytest.mark.usefixtures("no_solve")
+def test_q_keeps_the_lossy_eigenmode_refusals(
+    cavity, material, boundary, feature, cause
+):
+    # ADR 0138 lifts these for omega= only: Q has no case for them.
+    changes = {}
+    if material is not None:
+        changes["materials"] = {"air": material}
+    if boundary is not None:
+        changes["boundaries"] = [boundary]
+    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
+        gfem.refine_mesh(
+            _with(cavity, **changes),
+            rc.CAVITY_PROBLEM,
+            estimator=gfem.QuantityEstimator(q=0),
+            options=OPTIONS,
+        )
+    assert caught.value.feature == feature
+    assert cause in str(caught.value)
+    assert "q=" in str(caught.value)
