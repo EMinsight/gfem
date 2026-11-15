@@ -7,6 +7,8 @@ The effectivity of the objective estimates is verified in
 `tests/verification/test_objective_estimate.py`.
 """
 
+import contrast_cases as cc
+import field_objective_cases as foc
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -436,15 +438,196 @@ def test_error_estimate_of_an_objective_of_s(step, step_result):
     assert estimate.value <= chain + remainder * (1 + 1e-9)
 
 
-def test_an_objective_of_another_kind_raises_by_its_kind(step, step_result):
-    def field_mean(result, _model):
-        mean = gfem.region_mean(result.e_field(STEP_F[0], "p1"), "dielectric")
-        return jnp.abs(mean[2]) ** 2
+# --- objectives of driven fields (ADRs 0132, 0133, 0144) ---------------------------
 
-    estimator = gfem.QuantityEstimator(objective=field_mean)
+LINE_F = foc.STEPPED_LINE_F
+
+
+@pytest.fixture(scope="module")
+def line(tmp_path_factory):
+    return foc.stepped_line_model(tmp_path_factory.mktemp("line"), 2)
+
+
+@pytest.fixture(scope="module")
+def line_result(line):
+    problem = gfem.Driven([LINE_F, 1.25 * LINE_F], keep_fields=True)
+    return gfem.solve(line, problem, options=OPTIONS)
+
+
+def _layer_power(result, model, f=LINE_F, port="p1"):
+    return -gfem.power_flow(result.e_field(f, port), ["lsub", "lossy"], model=model)
+
+
+def _box_mean(result, _model, f=LINE_F, port="p1"):
+    return gfem.region_mean(result.e_field(f, port), "rbox")
+
+
+def _with(model, **changes):
+    fields = {
+        "materials": model.materials,
+        "boundaries": model.boundaries,
+        "ports": model.ports,
+    }
+    return gfem.Model(model.mesh, **(fields | changes))
+
+
+def test_the_absorbed_power_is_the_volume_form_of_power_flow(line, line_result):
+    from gfem._engine import field_duals
+
+    field = line_result.e_field(LINE_F, "p1")
+    layout = (field.support, tuple(field._excluded), field.order)
+    mass = field_duals.power_mass(line, layout, ("lsub", "lossy"), LINE_F)
+    x = np.asarray(field.coefficients)
+    volume = float(np.real(np.vdot(x, mass @ x)))
+    assert volume > 0
+    assert volume == pytest.approx(float(_layer_power(line_result, line)), rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("objective", "kind"),
+    [
+        (_layer_power, "objective of absorbed power"),
+        (lambda r, m: jnp.real(_box_mean(r, m)[2]), "objective of field means"),
+        (
+            lambda r, m: jnp.sum(jnp.abs(_box_mean(r, m)) ** 2),
+            "objective of field means",
+        ),
+    ],
+)
+def test_error_estimate_of_an_objective_of_fields(line, line_result, objective, kind):
+    estimate = gfem.error_estimate(
+        line_result, gfem.QuantityEstimator(objective=objective), model=line
+    )
+    assert estimate.kind == kind
+    assert estimate.value > 0
+    assert estimate.indicators.shape == (len(line.mesh.tetrahedra),)
+    assert np.sum(estimate.indicators**2) >= estimate.value * (1 - 1e-9)
+
+
+def test_a_square_of_absorbed_power_adds_its_curvature_to_the_chain_rule(
+    line, line_result
+):
+    # J = P^2: its linear term is 2 |P| eta_P, its remainder 1/2 ||H|| eta_P^2
+    # with H = 2, where eta_P is P's own estimate (linear term and remainder)
+    power = float(_layer_power(line_result, line))
+    eta = gfem.error_estimate(
+        line_result, gfem.QuantityEstimator(objective=_layer_power), model=line
+    ).value
+    squared = gfem.error_estimate(
+        line_result,
+        gfem.QuantityEstimator(objective=lambda r, m: _layer_power(r, m) ** 2),
+        model=line,
+    ).value
+    assert squared == pytest.approx(2 * power * eta + eta**2, rel=1e-9)
+
+
+def test_a_field_objective_over_frequencies_and_excitations_sums_its_reads(
+    line, line_result
+):
+    # each read's combined dual is its own: a sum of reads at different
+    # frequencies is estimated as the sum of their estimates
+    def at(f, port):
+        return lambda r, m: jnp.real(_box_mean(r, m, f, port)[2])
+
+    reads = [at(LINE_F, "p1"), at(1.25 * LINE_F, "p2")]
+    parts = [
+        gfem.error_estimate(
+            line_result, gfem.QuantityEstimator(objective=j), model=line
+        ).value
+        for j in reads
+    ]
+    total = gfem.error_estimate(
+        line_result,
+        gfem.QuantityEstimator(objective=lambda r, m: reads[0](r, m) + reads[1](r, m)),
+        model=line,
+    )
+    assert total.kind == "objective of field means"
+    assert total.value == pytest.approx(sum(parts), rel=1e-9)
+
+
+@pytest.mark.parametrize(
+    ("change", "feature"),
+    [
+        (
+            lambda m: {
+                "boundaries": [gfem.Conductor("bottom", 5.8e7), m.boundaries[1]]
+            },
+            "surface loss in power_flow",
+        ),
+        (
+            lambda m: {
+                "materials": m.materials
+                | {"lsub": gfem.Material(eps_r=(4.0, 4.0, 5.0), tan_delta=0.05)}
+            },
+            "anisotropic or dispersive power_flow",
+        ),
+        (
+            lambda m: {
+                "materials": m.materials | {"lsub": gfem.Material(eps_r=cc.DRUDE_METAL)}
+            },
+            "anisotropic or dispersive power_flow",
+        ),
+    ],
+    ids=["conductor", "anisotropic", "law"],
+)
+def test_a_power_flow_side_the_estimate_has_no_case_for_raises(
+    line, line_result, change, feature
+):
+    # the side's checks read the model only: the result's mesh is the same
+    error = _raises(feature, _layer_power, line_result, _with(line, **change(line)))
+    assert "FieldEstimator()" in str(error)
+
+
+def test_a_power_flow_side_touching_a_port_raises(line, line_result):
+    def through(result, model):
+        return -gfem.power_flow(result.e_field(LINE_F, "p1"), "diel", model=model)
+
+    error = _raises("power through a port", through, line_result, line)
+    assert "result.s" in str(error)
+
+
+@pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
+def test_the_field_dual_factorizes_once_then_rides_on_the_solves(line, monkeypatch):
+    from gfem import refinement
+
+    calls = []
+    duals = refinement._field_duals
+
+    def counted(*args, **kwargs):
+        calls.append(args[2])
+        return duals(*args, **kwargs)
+
+    monkeypatch.setattr(refinement, "_field_duals", counted)
+    estimator = gfem.QuantityEstimator(objective=_layer_power)
+    refinement_ = gfem.refine_mesh(
+        line,
+        gfem.Driven([LINE_F]),
+        estimator=estimator,
+        tolerance=1e-7,
+        options=OPTIONS,
+        max_cycles=2,
+    )
+    assert calls == [[("power", LINE_F, "p1", ("lsub", "lossy"))]]  # cycle 0 only
+    assert len(refinement_.cycles) == 3
+    assert refinement_.estimate.kind == "objective of absorbed power"
+    # the ridden dual gives the estimate error_estimate gives on the last mesh
+    again = gfem.error_estimate(refinement_.result, estimator, model=refinement_.model)
+    assert again.value == pytest.approx(refinement_.estimate.value, rel=1e-8)
+
+
+def test_a_field_objective_refuses_frequency_workers(line):
     with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.error_estimate(step_result, estimator, model=step)
-    assert caught.value.feature == "objective of field means"
+        gfem.refine_mesh(
+            line,
+            gfem.Driven([LINE_F, 1.25 * LINE_F]),
+            estimator=gfem.QuantityEstimator(objective=_layer_power),
+            tolerance=1e-4,
+            options=gfem.SolverOptions(
+                order=2, linear_solver="direct", frequency_workers=2
+            ),
+            max_cycles=0,
+        )
+    assert caught.value.feature == "frequency workers"
 
 
 def test_an_unexcited_read_row_gives_the_all_excited_estimate(step):

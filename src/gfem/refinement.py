@@ -154,11 +154,16 @@ class QuantityEstimator:
             ``db``, ``y()``, ``z()``, ``renormalize``, ``with_offsets``),
             and of an electrostatic result: of its capacitance (``mutual``
             and ``inverse`` too), of its region energies, or of potential
-            means (`gfem.region_mean` of ``result.potential``). The estimate
+            means (`gfem.region_mean` of ``result.potential``), and of a
+            driven result's fields: the power absorbed in a side without
+            ports and with only volume losses of isotropic materials without
+            a permittivity law (``-gfem.power_flow``), or the means of
+            `gfem.region_mean` over named regions. The estimate
             is absolute, in the objective's units, and `refine_mesh` needs
             its ``tolerance`` given. A read row whose port is not excited,
             or is a lossy wave port, uses that port's adjoint dual, as for
-            ``s``, and a read energy or potential mean its own dual; in
+            ``s``, and a read energy, potential mean, absorbed power or
+            field mean its own dual; in
             `refine_mesh` each is solved once more on the first mesh and
             rides on the solves after it.
 
@@ -321,6 +326,8 @@ EMITTED_KINDS = (
     "objective of capacitance",
     "objective of electrostatic energy",
     "objective of potential means",
+    "objective of absorbed power",
+    "objective of field means",
 )
 
 
@@ -490,7 +497,9 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     the system once more per frequency, with the direct solver at the
     result's order (the result does not record its solve options). An
     objective reading an electrostatic energy or a potential mean
-    factorizes once more the same way, for all its duals at once. On a
+    factorizes once more the same way, for all its duals at once, and one
+    reading a driven field through `gfem.power_flow` or `gfem.region_mean`
+    once more per frequency it reads. On a
     large model, estimate through `refine_mesh` with ``max_cycles=0``,
     whose adjoint rides on its own solve with your options (from its second
     mesh on, for an objective).
@@ -1369,6 +1378,17 @@ def _estimate_objective(
             ridden=ridden,
             cache=cache,
         )
+    if objective.kind in _FIELD_KINDS:
+        return _estimate_field_objective(
+            model,
+            result,
+            estimator,
+            objective,
+            threads=threads,
+            adjoints=adjoints,
+            ridden=ridden,
+            cache=cache,
+        )
     if objective.kind != "objective of s":
         raise MeshRefinementUnsupportedError(
             objective.kind,
@@ -1409,6 +1429,97 @@ def _estimate_objective(
         _dual_ports=ports,
         _sensitivity=objective.sensitivity,
     )
+
+
+#: The estimate kinds of an objective of driven fields (ADRs 0132, 0133).
+_FIELD_KINDS = ("objective of absorbed power", "objective of field means")
+
+
+def _estimate_field_objective(
+    model: Model,
+    result: DrivenResult,
+    estimator: QuantityEstimator,
+    objective: Any,
+    *,
+    threads: int | None,
+    adjoints: Mapping[Any, np.ndarray],
+    ridden: tuple[Any, ...],
+    cache: RecoveryCache,
+) -> ErrorEstimate:
+    """An objective of driven fields' estimate (ADRs 0132, 0133, 0144).
+
+    One dual per measurement output read (`gfem._engine.field_duals`):
+    those that did not ride on the solve (``ridden``) are solved here, one
+    more factorization per frequency read (`_field_duals`).
+    """
+    from gfem._engine import estimate as kernels
+
+    reads = []
+    for r in objective.reads:
+        spec = objective.measurements[r.leaf]
+        index = int(spec["label"].removeprefix(".e_fields[").removesuffix("]"))
+        f, excitation = result.kept[index]
+        if spec["measurement"] == "power_flow":
+            key = ("power", float(f), excitation, tuple(spec["side"]))
+            reads.append((key, complex(np.real(r.cotangent))))
+        else:
+            key = ("mean", float(f), excitation, tuple(spec["regions"]), r.index[0])
+            reads.append((key, complex(r.cotangent)))
+    keys = list(dict.fromkeys(key for key, _ in reads))
+    solved: dict[Any, np.ndarray] = {
+        (k[1], k): adjoints[k[1], k]
+        for k in keys
+        if k in ridden and (k[1], k) in adjoints
+    }
+    missing = [k for k in keys if (k[1], k) not in solved]
+    if missing:
+        solved.update(_field_duals(model, result, missing, threads))
+    terms = kernels.objective_of_fields(
+        model,
+        result,
+        reads,
+        objective.curvature,
+        threads,
+        duals=solved,
+        cache=cache,
+    )
+    return ErrorEstimate(
+        estimator=estimator,
+        kind=objective.kind,
+        values=(terms.value,),
+        indicators=readonly(np.sqrt(terms.weights)),
+        _quantity=objective.value,
+        _dual_keys=tuple(keys),
+        _sensitivity=objective.sensitivity,
+    )
+
+
+def _field_duals(
+    model: Model, result: DrivenResult, keys: list[Any], threads: int | None
+) -> dict[tuple[float, Hashable], np.ndarray]:
+    """The duals of field measurement outputs on a finished result.
+
+    One more factorization per frequency read, with the direct solver at the
+    result's order, the loads formed from the result's fields there.
+    """
+    from gfem._engine import driven, field_duals
+
+    frequencies = sorted({k[1] for k in keys})
+    excite = list(result.s.excited)
+    fields = dict(zip(result.kept, result.e_fields, strict=True))
+    solutions = {
+        f: np.stack([np.asarray(fields[f, p].coefficients) for p in excite], axis=1)
+        for f in frequencies
+    }
+    problem = Driven(frequencies, excite=excite)
+    order = _fields(result)[0].order
+    options = SolverOptions(order=order, linear_solver="direct", threads=threads)
+    with driven.low_frequency_deferred(), warnings.catch_warnings():
+        for category in driven.FORWARD_WARNINGS:  # the solve of ``result`` warned
+            warnings.simplefilter("ignore", category)
+        rule = driven.DrivenRule(model, problem, options)
+        rule.adjoint_loads = field_duals.field_loads(keys)
+        return rule.solve_adjoints(model, solutions)
 
 
 #: The estimate kinds of an objective of an electrostatic result (ADR 0141).
@@ -1531,13 +1642,13 @@ def _check_first_estimates(
                 f"solve's error. Lower SolverOptions.{name} to at most "
                 f"{tolerance / (10 * sensitivity):.2g}, or raise tolerance."
             )
-        if workers > 1 and estimate._dual_ports:  # noqa: SLF001
+        if workers > 1 and (estimate._dual_ports or estimate._dual_keys):  # noqa: SLF001
             raise MeshRefinementUnsupportedError(
                 "frequency workers",
-                f"{_describe(estimator)} solves the adjoint dual of ports "
-                f"{', '.join(map(repr, estimate._dual_ports))} with the forward, "  # noqa: SLF001
-                "which frequency workers do not do in this version of gfem: it "
-                f"needs frequency_workers=1, got {options.frequency_workers}.",
+                f"{_describe(estimator)} solves its adjoint duals with the "
+                "forward, which frequency workers do not do in this version of "
+                "gfem: it needs frequency_workers=1, got "
+                f"{options.frequency_workers}.",
             )
 
 
@@ -2101,13 +2212,25 @@ class _Duals:
 
             return objective_loads(self.keys) if self.keys else None
         from gfem._engine.driven import port_loads
+        from gfem._engine.field_duals import field_loads
 
-        return port_loads(self.ports) if self.ports else None
+        parts = []
+        if self.ports:
+            parts.append(port_loads(self.ports))
+        if self.keys:
+            parts.append(field_loads(self.keys))
+        if len(parts) < 2:
+            return parts[0] if parts else None
+
+        def loads(context: Any) -> dict[Hashable, np.ndarray]:
+            return {k: v for part in parts for k, v in part(context).items()}
+
+        return loads
 
     @property
     def ridden(self) -> tuple[Any, ...]:
-        """What rides on the solves: the ports, or the electrostatic keys."""
-        return self.keys if self._electrostatic else self.ports
+        """What rides: the ports and field-dual keys, or the electrostatic keys."""
+        return self.keys if self._electrostatic else (*self.ports, *self.keys)
 
     def add(self, estimates: tuple[ErrorEstimate, ...]) -> None:
         """Add the duals the estimates' objectives read."""

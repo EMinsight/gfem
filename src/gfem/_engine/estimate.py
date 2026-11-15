@@ -42,6 +42,8 @@ its value and its weights.
 from __future__ import annotations
 
 import dataclasses
+import functools
+import operator
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from typing import Any
 
@@ -77,6 +79,7 @@ __all__ = [
     "driven",
     "eigenmode",
     "electrostatic",
+    "objective_of_fields",
     "objective_of_potentials",
     "objective_of_s",
     "omega",
@@ -1023,6 +1026,166 @@ def objective_of_s(
     for a, w in enumerate(entry_weights):
         weights = weights + share[a] * w
     return ObjectiveTerms(linear=float(linear), remainder=remainder, weights=weights)
+
+
+def objective_of_fields(
+    model: Model,
+    result: DrivenResult,
+    reads: Sequence[tuple[tuple[Any, ...], complex]],
+    curvature: np.ndarray,
+    threads: int | None = None,
+    *,
+    duals: Mapping[Hashable, np.ndarray],
+    cache: RecoveryCache | None = None,
+) -> ObjectiveTerms:
+    """An objective of driven fields' estimate (ADRs 0132, 0133, 0144).
+
+    Each read ``a`` is a measurement output (`gfem._engine.field_duals`
+    key), with the objective's cotangent ct_a and its solved dual z_a
+    (``duals``, per (frequency, key), on the fields' space). At each
+    frequency, the outputs' duals of one excitation combine into z = sum_a
+    ct_a z_a, whose flux is recovered equilibrated with its load: eps_eff z
+    + g / k^2, g = sum_a ct_a g_a (`field_duals.load_parts`). The pairs of
+    the excitations' fields with their combined duals sum per frequency into
+    c_K, m_K (`_pair`), and the linear term is sum_f |sum_K c_K| + k^2
+    |sum_K m_K|, as for an objective of S.
+
+    Remainders, never signed:
+
+    - an absorbed power's own, rho_K = w_K int_K |e~|^2
+      (`field_duals.absorbed_weights`), e~ = eps_eff^-1 r the recovered error
+      of E, weighed by |ct_a|;
+    - the objective's, 1/2 sum_ab ||H_ab|| eta_a eta_b, with eta_a an
+      absorbed power's own estimate (its dual's terms plus rho), or a mean
+      component's Cauchy-Schwarz bound (|R|^-1 int_R |e~_c|^2)^(1/2).
+
+    A tetrahedron's weight is its |c_K - k^2 m_K| summed over frequencies,
+    plus |ct_a| rho_K,a, plus its share of the objective's remainder.
+    """
+    cache = cache or RecoveryCache()
+    n_tet = len(model.mesh.tetrahedra)
+    fields = dict(zip(result.kept, result.e_fields, strict=True))
+    groups: dict[tuple[float, str], list[int]] = {}
+    for a, (key, _) in enumerate(reads):
+        groups.setdefault((key[1], key[2]), []).append(a)
+    linear: dict[float, tuple[np.ndarray, np.ndarray, float]] = {}
+    owned = np.zeros(n_tet)
+    etas = np.zeros(len(reads))
+    eta_terms: list[np.ndarray] = [np.zeros(n_tet) for _ in reads]
+    with task_manager(threads):
+        for (f, excitation), members in groups.items():
+            group = _FieldGroup(model, fields[f, excitation], f, duals, cache)
+            c, m = group.pair([reads[a] for a in members])
+            curl, mass, _ = linear.get(f, (np.zeros(n_tet, complex),) * 2 + (0.0,))
+            linear[f] = (curl + c, mass + m, group.k**2)
+            needed = np.any(curvature[members] != 0, axis=1)
+            for a, needs in zip(members, needed, strict=True):
+                key, ct = reads[a]
+                if key[0] == "power":
+                    rho = group.absorbed_remainder(key[3])
+                    owned += abs(ct) * rho
+                    if needs:
+                        ca, ma = group.pair([(key, 1.0 + 0j)])
+                        t = np.abs(ca - group.k**2 * ma)
+                        etas[a] = abs(ca.sum()) + group.k**2 * abs(ma.sum()) + rho.sum()
+                        eta_terms[a] = t + rho
+                elif needs:
+                    etas[a], eta_terms[a] = group.mean_bound(key[3], key[4])
+    total = sum(abs(c.sum()) + lam * abs(m.sum()) for c, m, lam in linear.values())
+    weights = owned + sum(
+        (np.abs(c - lam * m) for c, m, lam in linear.values()), np.zeros(n_tet)
+    )
+    remainder = float(0.5 * etas @ curvature @ etas)
+    share = 0.5 * curvature @ etas
+    for a, t in enumerate(eta_terms):
+        weights = weights + share[a] * t
+    return ObjectiveTerms(
+        linear=float(total + owned.sum()), remainder=remainder, weights=weights
+    )
+
+
+class _FieldGroup:
+    """One excitation's field at one frequency and its recovered errors."""
+
+    def __init__(
+        self,
+        model: Model,
+        field: Field,
+        f: float,
+        duals: Mapping[Hashable, np.ndarray],
+        cache: RecoveryCache,
+    ) -> None:
+        self.model, self.field, self.f, self.duals = model, field, f, duals
+        self.recovery = recovery = cache.recovery(model, field.order, cracks=True)
+        self.built = recovery.built
+        self.k = 2 * np.pi * f / scipy.constants.c * self.built.scale
+        self.eps, self.eps_inverse = cache.effective_eps(recovery, self.k)
+        self.residuals = cache.wave_residuals(recovery, field, self.k)
+        self.primal = cache.parts(field)
+        # e~ = eps_eff^-1 r, the recovered error of E
+        self.error = _times(self.eps_inverse, self.residuals[1])
+        self._density: np.ndarray | None = None
+
+    def pair(
+        self, reads: Sequence[tuple[tuple[Any, ...], complex]]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """c_K, m_K of the field and the reads' combined dual, equilibrated."""
+        from gfem._engine import field_duals
+
+        recovery = self.recovery
+        z = sum(
+            (ct * np.asarray(self.duals[self.f, key]) for key, ct in reads),
+            np.zeros(len(self.field.coefficients), complex),
+        )
+        loads = [
+            field_duals.load_parts(self.model, self.built, key, ct, self.primal)
+            for key, ct in reads
+        ]
+        g = [functools.reduce(operator.add, [p[i] for p in loads]) for i in (0, 1)]
+        parts = _parts(dataclasses.replace(self.field, coefficients=z))
+        curls = recovery.curl_residuals([ngs.curl(gf) for gf in parts])
+        flux = _times(self.eps, parts)
+        flux = [v + gi / self.k**2 for v, gi in zip(flux, g, strict=True)]
+        dual = (curls, [recovery.flux_residual(v) for v in flux])
+        return _pair(recovery, self.residuals, dual, self.eps_inverse)
+
+    def absorbed_remainder(self, side: Sequence[str]) -> np.ndarray:
+        """rho_K = w_K int_K |e~|^2 of the power absorbed in ``side``."""
+        from gfem._engine import field_duals
+
+        if self._density is None:
+            self._density = sum(
+                (self.recovery.element_integrals(e * e) for e in self.error),
+                np.zeros(len(self.model.mesh.tetrahedra)),
+            )
+        weight = field_duals.absorbed_weights(self.model, self.built, side, self.f)
+        return weight * self._density
+
+    def mean_bound(
+        self, regions: Sequence[str], component: int
+    ) -> tuple[float, np.ndarray]:
+        """(|R|^-1 int_R |e~_c|^2)^(1/2) in V/m, and its terms per tetrahedron.
+
+        The terms sum to the bound: each tetrahedron's share of the squared
+        bound, over the bound.
+        """
+        from gfem._engine.fields import LENGTH_POWER
+
+        recovery = self.recovery
+        mask = np.zeros(len(self.model.mesh.tetrahedra))
+        for name in regions:
+            mask[self.model.mesh.elements(name)] = 1.0
+        volume = recovery.element_integrals(ngs.CF(1.0)) @ mask
+        q = mask * sum(
+            (
+                recovery.element_integrals(e[component] * e[component])
+                for e in self.error
+            ),
+            np.zeros(len(mask)),
+        )
+        q = q * self.built.scale ** (2 * LENGTH_POWER["hcurl"]) / volume
+        bound = float(np.sqrt(q.sum()))
+        return bound, q / max(bound, 1e-300)
 
 
 #: A read of an electrostatic objective (`objective_of_potentials`): a

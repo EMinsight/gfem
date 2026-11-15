@@ -84,6 +84,38 @@ Measured (ostau, 2 threads):
     energy, bars          2.28 - 5.52
     means, bars           1.71 - 15.3
     means, two regions    1.65 - 2.18
+
+Objectives of driven fields (ADRs 0132, 0133, 0144), each reading port
+p1's excitation through ``-gfem.power_flow`` over a lossy side (kind
+``objective of absorbed power``) or ``gfem.region_mean`` (Re of its E_z
+and |mean E|^2: ``objective of field means``), against the stored
+references of `field_objective_cases`; the dual's flux is recovered
+equilibrated with its load:
+
+- block guide (n = 2, 3, 4): the power absorbed in the lossy block and in
+  its corner octant, which touch no wall (3D dielectric corners); means
+  over the octant and the block, and over two air regions, one sharing the
+  block's edge;
+- stepped line (n = 4, 6, 8): the power absorbed in a lossy layer and in its
+  middle; means over a box touching the re-entrant edge, whose top face
+  crosses E_z inside the domain (the case the plain recovered dual flux
+  underestimates);
+- half-width guide (n = 2, 4) and edge-box line (n = 4, 8): full-height
+  regions, the absorbed power and the means over air regions and over a box
+  at the edge.
+
+Measured (ostau, 2 threads):
+
+    absorbed, block guide        3.63 - 8.51
+    absorbed, stepped line       1.45 - 1.54
+    absorbed, half-width guide   20.0 - 24.7   (|sum c| and k0^2 |sum m|
+                                                cancel in the signed sum)
+    absorbed, edge-box line      4.77 - 5.88
+    means, block guide           2.49 - 4.28
+    means, block guide, air      5.77 - 55.9   (the same cancellation)
+    means, stepped line          1.55 - 2.11
+    means, half-width guide      5.24 - 8.01
+    means, edge-box line         2.64 - 10.7
 """
 
 import cmath
@@ -91,6 +123,7 @@ import dataclasses
 import math
 
 import contrast_cases as cc
+import field_objective_cases as foc
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -117,6 +150,19 @@ EFFECTIVITY_BY_KIND = {
     "objective of potential means": {
         "bars": (0.9, 18.0),
         "bars, two regions": (0.9, 18.0),
+    },
+    "objective of absorbed power": {
+        "block guide": (0.9, 10.0),
+        "stepped line": (0.9, 10.0),
+        "half-width guide": (0.9, 30.0),
+        "edge-box line": (0.9, 10.0),
+    },
+    "objective of field means": {
+        "block guide": (0.9, 60.0),
+        "block guide, air": (0.9, 60.0),
+        "stepped line": (0.9, 60.0),
+        "half-width guide": (0.9, 60.0),
+        "edge-box line": (0.9, 60.0),
     },
 }
 
@@ -572,3 +618,143 @@ def test_objective_of_potential_means_over_two_regions(split_bars):
         ],
     )
     _assert_rows("objective of potential means", "bars, two regions", rows)
+
+
+# --- objectives of driven fields (ADRs 0132, 0133, 0144) ---------------------------
+#
+# Each objective reads the excitation of port p1 at the case's frequency,
+# through gfem.power_flow (absorbed power: minus the power leaving a lossy
+# side) or gfem.region_mean; the effectivity is the estimate over
+# |J(result) - J_ref|, J_ref a stored reference (`field_objective_cases`).
+
+
+def _field(result):
+    return result.e_fields[0]
+
+
+def _absorbed(regions):
+    return lambda r, m: -gfem.power_flow(_field(r), list(regions), model=m)
+
+
+def _mean_z(regions):
+    return lambda r, _m: jnp.real(gfem.region_mean(_field(r), list(regions))[2])
+
+
+def _mean_squared(regions):
+    return lambda r, _m: jnp.sum(_a2(gfem.region_mean(_field(r), list(regions))))
+
+
+_FIELD_OBJECTIVES = {"abs": _absorbed, "mz": _mean_z, "m2": _mean_squared}
+
+
+def _field_rows(model, result, references, objectives):
+    """Per objective name: its estimate and effectivity (``None``: not asserted).
+
+    ``objectives[name]`` is the objective; ``references[name]`` its
+    reference value and uncertainty.
+    """
+    rows = {}
+    for name, objective in objectives.items():
+        estimate = gfem.error_estimate(
+            result, gfem.QuantityEstimator(objective=objective), model=model
+        )
+        reference, uncertainty = references[name]
+        error = float(objective(result, model)) - reference
+        ratio = None if uncertainty > 0.2 * abs(error) else estimate.value / abs(error)
+        rows[name] = (estimate, ratio)
+    return rows
+
+
+def _named_objectives(names, regions):
+    return {
+        name: _FIELD_OBJECTIVES[name.split("_")[0]](regions[name.split("_", 1)[1]])
+        for name in names
+    }
+
+
+def _solve_field_case(model, frequency):
+    problem = gfem.Driven([frequency], excite=["p1"], keep_fields=True)
+    return gfem.solve(model, problem, options=OPTIONS)
+
+
+@pytest.fixture(scope="module", params=[2, 3, 4])
+def block_guide_fields(request, tmp_path_factory):
+    model = foc.block_guide_model(tmp_path_factory.mktemp("bguide"), request.param)
+    result = _solve_field_case(model, foc.BLOCK_GUIDE_F)
+    objectives = _named_objectives(foc.BLOCK_GUIDE_J, foc.BLOCK_GUIDE_REGIONS)
+    return _field_rows(model, result, foc.BLOCK_GUIDE_J, objectives)
+
+
+@pytest.fixture(scope="module", params=[4, 6, 8])
+def stepped_line_fields(request, tmp_path_factory):
+    model = foc.stepped_line_model(tmp_path_factory.mktemp("sline"), request.param)
+    result = _solve_field_case(model, foc.STEPPED_LINE_F)
+    objectives = _named_objectives(foc.STEPPED_LINE_J, foc.STEPPED_LINE_REGIONS)
+    return _field_rows(model, result, foc.STEPPED_LINE_J, objectives)
+
+
+def _pick(rows, prefixes, names=None):
+    return [
+        row
+        for name, row in rows.items()
+        if name.split("_")[0] in prefixes and (names is None or name in names)
+    ]
+
+
+def test_objective_of_absorbed_power_on_the_block_guide(block_guide_fields):
+    rows = _pick(block_guide_fields, ("abs",))
+    _assert_rows("objective of absorbed power", "block guide", rows)
+
+
+def test_objective_of_absorbed_power_on_the_stepped_line(stepped_line_fields):
+    rows = _pick(stepped_line_fields, ("abs",))
+    _assert_rows("objective of absorbed power", "stepped line", rows)
+
+
+def test_objective_of_field_means_in_the_block_on_the_block_guide(
+    block_guide_fields,
+):
+    rows = _pick(block_guide_fields, ("mz", "m2"), ("mz_sub", "m2_sub", "mz_blk"))
+    _assert_rows("objective of field means", "block guide", rows)
+
+
+def test_objective_of_field_means_in_air_on_the_block_guide(block_guide_fields):
+    names = ("mz_far", "m2_far", "mz_edge", "m2_edge")
+    rows = _pick(block_guide_fields, ("mz", "m2"), names)
+    _assert_rows("objective of field means", "block guide, air", rows)
+
+
+def test_objective_of_field_means_at_the_edge_of_the_stepped_line(
+    stepped_line_fields,
+):
+    rows = _pick(stepped_line_fields, ("mz", "m2"))
+    _assert_rows("objective of field means", "stepped line", rows)
+
+
+@pytest.mark.parametrize("n", [2, 4])
+def test_absorbed_power_and_field_means_on_the_half_width_guide(tmp_path, n):
+    model = foc.half_width_guide_model(tmp_path, n)
+    result = _solve_field_case(model, foc.HALF_WIDTH_GUIDE_F)
+    regions = {"far": ("rfar",), "edge": ("redge",)}
+    objectives = {"absorbed": _absorbed(("block",))} | _named_objectives(
+        ("mz_far", "m2_far", "mz_edge", "m2_edge"), regions
+    )
+    rows = _field_rows(model, result, foc.HALF_WIDTH_GUIDE_J[n], objectives)
+    absorbed = rows.pop("absorbed")
+    _assert_rows("objective of absorbed power", "half-width guide", [absorbed])
+    _assert_rows("objective of field means", "half-width guide", list(rows.values()))
+
+
+@pytest.mark.parametrize("n", [4, 8])
+def test_absorbed_power_and_field_means_on_the_edge_box_line(tmp_path, n):
+    model = foc.edge_box_line_model(tmp_path, n)
+    result = _solve_field_case(model, foc.EDGE_BOX_LINE_F)
+    objectives = {
+        "absorbed": _absorbed(("lossy",)),
+        "mz": _mean_z(("rbox",)),
+        "m2": _mean_squared(("rbox",)),
+    }
+    rows = _field_rows(model, result, foc.EDGE_BOX_LINE_J, objectives)
+    absorbed = rows.pop("absorbed")
+    _assert_rows("objective of absorbed power", "edge-box line", [absorbed])
+    _assert_rows("objective of field means", "edge-box line", list(rows.values()))

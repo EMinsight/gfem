@@ -506,11 +506,16 @@ class AdjointContext:
             ``excite`` order; ``None`` where the caller has no forward
             solution (`DrivenRule.solve_adjoints` without ``solutions``).
         excite: The excited ports' names.
+        model: The model solved.
+        layout: The fields' (support, excluded entities, order): with
+            ``model.mesh``, their space (`gfem._engine.fields.fe_space`).
     """
 
     frequency: float
     solution: np.ndarray | None
     excite: tuple[str, ...]
+    model: Model
+    layout: tuple[tuple[str, ...], tuple[tuple[int, int], ...], int]
     _operator: DrivenOperator
     _ports: PortNetwork
     _port_names: tuple[str, ...]
@@ -821,6 +826,7 @@ class DrivenRule:
                                 ports,
                                 f,
                                 rhs,
+                                model=model,
                                 solution=system.operator.expand(x),
                             )
                         except LinearSolverConvergenceError:
@@ -883,7 +889,9 @@ class DrivenRule:
                     for f in self.problem.frequency:
                         rhs = ports.rhs(2 * math.pi * f)
                         x = None if solutions is None else solutions[f]
-                        self._solve_adjoints(sweep, system, ports, f, rhs, solution=x)
+                        self._solve_adjoints(
+                            sweep, system, ports, f, rhs, model=model, solution=x
+                        )
             finally:
                 system.free()
         return self.adjoints
@@ -918,6 +926,7 @@ class DrivenRule:
         f: float,
         rhs: np.ndarray,
         *,
+        model: Model,
         solution: np.ndarray | None,
     ) -> None:
         """Solve `adjoint_loads` at ``f`` on the sweep's handle.
@@ -934,6 +943,8 @@ class DrivenRule:
             frequency=f,
             solution=solution,
             excite=tuple(self.excite),
+            model=model,
+            layout=(self.regions, tuple(self._excluded), self.options.order),
             _operator=system.operator,
             _ports=ports,
             _port_names=self.port_names,
