@@ -14,13 +14,17 @@ level; every mesh is structured (`structured_meshes`, no gmsh), in mm.
   (50 ohm) and p2 (30 ohm) along +z, or wave ports. "beside" splits it at
   y = 1 (the interface parallel to E and meeting each port face), "across"
   at z = 0.5 (the interface crossing E). n cells along x and c across
-  (2c in y and z for "beside", c in y and per layer for "across").
+  (2c in y and z for "beside", c in y and per layer for "across"). The y
+  walls "side" are natural (PMC). References `SPLIT_LINE_S`: order 4 on the
+  (2n, 2c) mesh.
 - Contrast line, `contrast_line_model`: a line 3 x 0.5 x 1 mm (PEC plates
   z = 0, 1) split "beside" at y = 0.25 into "a" and "b", with a "core"
   block (1 < x < 2, z < 0.5) that makes S11 nonzero; cells 6k x 2k x 2k,
   isotropic (h = 0.5 / k mm). Wave ports, or lumped ports p1 (50 ohm) and
-  p2 (30 ohm) along +z. References `CONTRAST_LINE_S`: order 4 on the k = 2
-  mesh, for the k = 1 mesh.
+  p2 (30 ohm) along +z. Its y walls are left unnamed, as measured (ticket
+  18): the recovery does not constrain them. References `CONTRAST_LINE_S`:
+  order 4 on the k = 2 mesh, for the k = 1 mesh; |S4(1) - S4(2)| is at most
+  0.09 of the k = 1 error.
 - Metal floor, `metal_floor_model`: a parallel-plate guide 1 x 0.3 x 0.6 mm
   (PEC plates z = 0, 0.6) whose lower 0.3 mm hold `DRUDE_METAL` under air,
   200 ohm lumped ports along +z; (10n, 1, 6n) cells. "wedge" puts the metal
@@ -47,31 +51,37 @@ DRUDE_METAL = gfem.PermittivityLaw(
 #: Frequencies where `DRUDE_METAL` has Re eps -29.7, -19.9 and -1.5.
 METAL_DEEP = 53881590608.03247
 METAL_EDGE = 65465367070.797714
-METAL_PLASMONIC = 300e9 / np.sqrt(2.5)
+METAL_PLASMONIC = 189736659610.10275  # 300 GHz / sqrt(2.5)
 
-#: S of the metal floor at `METAL_DEEP`, (geometry, n) -> {(to, from): S},
-#: order 4 on the same mesh (direct). Its own error, |S3 - S4|, is 0.24 to
-#: 0.28 of |S2 - S4| (the lumped port edges; an eps_r 2 floor shows the same).
+#: S of the metal floor, (geometry, n, frequency) -> {(to, from): S}, order 4
+#: on the same mesh (direct). At `METAL_DEEP` its own error, |S3 - S4|, is
+#: 0.24 to 0.28 of |S2 - S4| (the lumped port edges; an eps_r 2 floor shows
+#: the same); at `METAL_PLASMONIC` the wedge does not converge (ADR 0140).
 METAL_FLOOR_S = {
-    ("flat", 1): {
+    ("flat", 1, METAL_DEEP): {
         ("p1", "p1"): 0.9266001034516802 - 0.35557391764073437j,
         ("p2", "p1"): 0.026107458871137745 + 0.06171008064900523j,
         ("p2", "p2"): 0.9267226174737748 - 0.35522285771355794j,
     },
-    ("flat", 2): {
+    ("flat", 2, METAL_DEEP): {
         ("p1", "p1"): 0.9290473304245812 - 0.348894765893061j,
         ("p2", "p1"): 0.024832692521190188 + 0.05955488226714988j,
         ("p2", "p2"): 0.929118013557952 - 0.34868469719989315j,
     },
-    ("wedge", 1): {
+    ("wedge", 1, METAL_DEEP): {
         ("p1", "p1"): 0.700820192383554 + 0.03136016652949589j,
         ("p2", "p1"): 0.026684880675584374 - 0.7035456191620519j,
         ("p2", "p2"): 0.7008198269579506 + 0.03136011400682114j,
     },
-    ("wedge", 2): {
+    ("wedge", 2, METAL_DEEP): {
         ("p1", "p1"): 0.7011469981727683 + 0.03168759910542668j,
         ("p2", "p1"): 0.02702772487681145 - 0.7032339177628041j,
         ("p2", "p2"): 0.7011468409950194 + 0.03168767326912959j,
+    },
+    ("wedge", 2, METAL_PLASMONIC): {
+        ("p1", "p1"): 0.8065231757869953 - 0.12172362966352918j,
+        ("p2", "p1"): -0.16353330692936133 + 0.01607703368872895j,
+        ("p2", "p2"): 0.821387722029856 - 0.11759759997426214j,
     },
 }
 
@@ -136,9 +146,33 @@ def _split_cells(geometry: str, n: int, c: int) -> tuple:
             return "bottom"
         if abs(p[2] - height) < _TOL:
             return "top"
-        return ""
+        if abs(p[1] - width / 2) < _TOL:
+            return "a__b"
+        return "side"
 
     return sm.structured(edges, volume, surface)
+
+
+#: S of the split line, (geometry, contrast, n, c, frequency) -> {(to, from):
+#: S}: order 4 on the (2n, 2c) mesh (direct). "eps" is eps_r 3 under air,
+#: "mu" mu_r 1 beside mu_r 2.5.
+SPLIT_LINE_S = {
+    ("across", "eps", 4, 2, 3e9): {
+        ("p1", "p1"): 0.652828978989151 + 0.45189462783745926j,
+        ("p2", "p1"): 0.2720854710527987 - 0.5436035487143068j,
+        ("p2", "p2"): 0.7530176122902357 + 0.2517823043821935j,
+    },
+    ("beside", "mu", 16, 1, 15e9): {
+        ("p1", "p1"): 0.7268955786707814 + 0.42223818254558315j,
+        ("p2", "p1"): -0.2163215231862367 + 0.433800316564328j,
+        ("p2", "p2"): 0.8185961506078079 + 0.24391921819533885j,
+    },
+}
+#: The split line's contrasts, name -> its halves "a" and "b".
+SPLIT_LINE_HALVES = {
+    "eps": (gfem.Material(eps_r=3.0), gfem.Material()),
+    "mu": (gfem.Material(), gfem.Material(mu_r=2.5)),
+}
 
 
 def split_line_model(
@@ -179,6 +213,39 @@ CONTRAST_LINE_MATERIALS = {
 }
 #: The contrast line's frequencies, Hz.
 CONTRAST_LINE_FREQUENCIES = (10e9, 30e9)
+
+#: S of the contrast line, (contrast, ports) -> {(to, from): S at each of
+#: `CONTRAST_LINE_FREQUENCIES`}: order 4 on the k = 2 mesh (direct).
+CONTRAST_LINE_S = {
+    ("mu", "wave"): {
+        ("p1", "p1"): (
+            -0.01665794169551882 - 0.01385618609280437j,
+            -0.02175857215718524 + 0.04064090887948474j,
+        ),
+        ("p2", "p1"): (
+            0.639482222979153 - 0.7684951754246864j,
+            -0.8801958499699809 - 0.47227699604203033j,
+        ),
+        ("p2", "p2"): (
+            -0.016657989513285676 - 0.013856128617426867j,
+            -0.02175811850684528 + 0.04064115210264601j,
+        ),
+    },
+    ("sigma", "lumped"): {
+        ("p1", "p1"): (
+            0.9586828985587541 + 0.1054721611772817j,
+            0.8019349297480147 + 0.37620687412510545j,
+        ),
+        ("p2", "p1"): (
+            0.011493215414500295 - 0.2037593473320894j,
+            -0.14717350929785367 + 0.30646872532831676j,
+        ),
+        ("p2", "p2"): (
+            0.9680087573071381 + 0.06354641923929398j,
+            0.8788955045999034 + 0.22573650319897975j,
+        ),
+    },
+}
 
 
 def contrast_line_model(
@@ -248,6 +315,8 @@ def metal_floor_model(
             return "bottom"
         if abs(p[2] - metal - air) < _TOL:
             return "top"
+        if abs(p[1]) < _TOL or abs(p[1] - width) < _TOL:
+            return "side"
         return ""
 
     return _model(

@@ -120,6 +120,7 @@ and a degree-p recovery.
 import cmath
 import math
 
+import contrast_cases as cc
 import numpy as np
 import pytest
 import refinement_cases as rc
@@ -127,6 +128,7 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
+from gfem.refinement import _estimate
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 
@@ -152,6 +154,12 @@ EFFECTIVITY_BY_KIND = {
         "lossy uniform guide": (0.9, 20.0),
         "lossy slab guide": (0.9, 20.0),
         "lossy step guide": (0.9, 20.0),
+        "conductor plate line": (0.9, 4.0),
+        "deep-metal wedge": (0.9, 4.0),
+        "deep-metal flat": (0.9, 3.0),
+        "deep-metal block line": (0.9, 10.0),
+        "wave port beside a permeability contrast": (0.9, 10.0),
+        "lumped port beside a loss contrast": (0.9, 2.5),
     },
     "omega": {
         "L cavity": (0.9, 5.0),
@@ -170,8 +178,22 @@ EFFECTIVITY_BY_KIND = {
 OVERESTIMATES: dict[str, tuple[str, tuple[float, float]]] = {}
 
 #: Configurations that are not claimed, measured bands that reach below 0.9:
-#: name -> (kind, (low, high)).
-WITNESSES: dict[str, tuple[str, tuple[float, float]]] = {}
+#: name -> (kind, (low, high)). Stretched cells: a lumped port whose face
+#: crosses a permittivity interface, on cells 10:1 along the line (ADR 0139).
+WITNESSES: dict[str, tuple[str, tuple[float, float]]] = {
+    "stretched cells at a lumped port across a permittivity contrast": (
+        "s",
+        (0.65, 0.85),
+    ),
+}
+
+#: Refused configurations, measured past the refusal through the private
+#: kernel (not quoted: the docs only say these raise): name -> (low, high).
+REFUSED_S = {
+    "impedance surface": (0.3, 0.6),
+    "lumped port spanning a permeability contrast": (0.5, 0.7),
+    "plasmonic permittivity": (0.55, 0.7),
+}
 
 
 def _assert_in(kind, case, estimate, error, value=None):
@@ -686,6 +708,210 @@ def test_the_rotated_anisotropic_line_s_against_order_4(tmp_path, n):
     exact = np.asarray(fine.s.values)  # (frequencies, to, source), p1 then p2
     for estimate, value, error in _line_effectivities(model, result, exact):
         _assert_in("s", "anisotropic line", estimate, error, value)
+
+
+# --- next to the driven refusals (ADRs 0134, 0139, 0140) ----------------------
+
+_ENTRIES = (("p1", "p1"), ("p2", "p1"), ("p2", "p2"))
+
+
+def _entry_ratios(model, result, reference, *, refused=False):
+    """(estimate, estimate value / |error|) per entry of `_ENTRIES` and frequency.
+
+    ``reference[(to, from)]``: the entry's reference S at each frequency.
+    ``refused``: the model is one the S estimate refuses; it is estimated
+    past the refusal, by the private kernel.
+    """
+    out = []
+    for to, source in _ENTRIES:
+        estimator = gfem.QuantityEstimator(s=(to, source))
+        if refused:
+            estimate = _estimate(model, result, estimator, threads=None, mode=None)
+        else:
+            estimate = gfem.error_estimate(result, estimator, model=model)
+        values = np.asarray(result.s[to, source])
+        exact = np.broadcast_to(reference[to, source], values.shape)
+        out += [
+            (estimate, value / abs(s - r))
+            for value, s, r in zip(estimate.values, values, exact, strict=True)
+        ]
+    return out
+
+
+def _same_mesh_order_4(model, frequencies):
+    """The S entries of an order-4 solve on the model's own mesh."""
+    fine = gfem.solve(
+        model,
+        gfem.Driven(list(frequencies)),
+        options=gfem.SolverOptions(order=4, linear_solver="direct"),
+    )
+    return {e: np.asarray(fine.s[e]) for e in _ENTRIES}
+
+
+def _assert_ratios(kind, case, ratios):
+    for estimate, ratio in ratios:
+        assert estimate.kind == kind, (case, estimate.kind)
+        low, high = EFFECTIVITY_BY_KIND[kind][case]
+        assert low <= ratio <= high, (case, ratio)
+
+
+def _driven(model, frequencies):
+    problem = gfem.Driven(list(frequencies), keep_fields=True)
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    return gfem.solve(model, problem, options=options)
+
+
+@pytest.mark.parametrize("n", [1, 2, 3])
+@pytest.mark.parametrize("sigma", [1e3, 1e5])
+def test_the_conductor_plate_line_s(tmp_path, sigma, n):
+    # Conductor plates on a propagating line keep the S estimate (ADR 0134):
+    # their surface share of the error is at most 0.07.
+    plates = tuple(gfem.Conductor(p, conductivity=sigma) for p in ("plate1", "plate2"))
+    model = cc.plate_line_model(tmp_path, n, plates=plates)
+    f = (cc.PLATE_LINE_FREQUENCY,)
+    ratios = _entry_ratios(model, _driven(model, f), _same_mesh_order_4(model, f))
+    _assert_ratios("s", "conductor plate line", ratios)
+
+
+@pytest.mark.parametrize("n", [1, 2])
+@pytest.mark.parametrize("geometry", ["wedge", "flat"])
+def test_the_deep_metal_s(tmp_path, geometry, n):
+    # Re eps -29.7: past the plasmonic window (ADR 0140). Its edge at -19.9,
+    # also measured (wedge 3.12 to 3.17, flat 2.07 to 2.29), lies inside the
+    # window, so the public estimate refuses it.
+    model = cc.metal_floor_model(tmp_path, geometry, n)
+    reference = cc.METAL_FLOOR_S[geometry, n, cc.METAL_DEEP]
+    ratios = _entry_ratios(model, _driven(model, [cc.METAL_DEEP]), reference)
+    _assert_ratios("s", f"deep-metal {geometry}", ratios)
+
+
+#: The metal block of `_metal_block_line`: Re eps -29.8 at 3 GHz.
+_METAL_BLOCK = gfem.PermittivityLaw(
+    terms=[gfem.Drude(plasma_frequency=20e9, damping=2e9)]
+)
+
+
+def _metal_block_s(f):
+    """The S matrix of `_LINE` (eps_r 4) with the metal at 4 < x < 6 mm.
+
+    Three TEM sections in cascade, each of its own complex beta and Z0.
+    """
+    k0 = 2 * math.pi * f / const.c
+    eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
+    bounds = (0.0, 4e-3, 6e-3, _LINE["length"])
+    abcd = np.eye(2, dtype=complex)
+    sections = (_LINE["eps_r"], complex(_METAL_BLOCK(f)), _LINE["eps_r"])
+    for eps, x0, x1 in zip(sections, bounds, bounds[1:], strict=False):
+        root = cmath.sqrt(eps)
+        z0 = eta0 * _LINE["height"] / (_LINE["width"] * root)
+        c, s = cmath.cos(k0 * root * (x1 - x0)), cmath.sin(k0 * root * (x1 - x0))
+        abcd = abcd @ np.array([[c, 1j * z0 * s], [1j * s / z0, c]])
+    (a, b), (cc_, d) = abcd
+    den = a * _R2 + b + cc_ * _R1 * _R2 + d * _R1
+    k = math.sqrt(_R1 * _R2)
+    s11 = (a * _R2 + b - cc_ * _R1 * _R2 - d * _R1) / den
+    s22 = (-a * _R2 + b - cc_ * _R1 * _R2 + d * _R1) / den
+    return np.array([[s11, 2 * k * (a * d - b * cc_) / den], [2 * k / den, s22]])
+
+
+@pytest.mark.parametrize("n", [5, 10, 20])
+def test_the_metal_block_line_s(tmp_path, n):
+    # The field case's metal block at 3 GHz (Re eps -29.8): a full cross-
+    # section, so its TEM cascade is exact. At 8 GHz (-4.9) S refuses.
+    path = sm.write_msh22(
+        tmp_path / "line.msh", sm.strip_line(10.0, 2.0, 1.0, (n, 1, 1), core=(4.0, 6.0))
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={
+            "dielectric": gfem.Material(eps_r=_LINE["eps_r"]),
+            "core": gfem.Material(eps_r=_METAL_BLOCK),
+        },
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z", resistance=_R2),
+        ],
+    )
+    exact = _metal_block_s(3e9)
+    ports = ("p1", "p2")
+    reference = {
+        (to, source): exact[ports.index(to), ports.index(source)]
+        for to, source in _ENTRIES
+    }
+    ratios = _entry_ratios(model, _driven(model, [3e9]), reference)
+    _assert_ratios("s", "deep-metal block line", ratios)
+
+
+@pytest.mark.parametrize(
+    ("contrast", "ports", "case"),
+    [
+        ("mu", "wave", "wave port beside a permeability contrast"),
+        ("sigma", "lumped", "lumped port beside a loss contrast"),
+    ],
+)
+def test_a_port_beside_a_contrast_keeps_the_s_estimate(tmp_path, contrast, ports, case):
+    # The lumped-port refusal (ADR 0139) is not needed for a wave port on a
+    # permeability contrast, nor for a lumped port on a loss contrast.
+    model = cc.contrast_line_model(tmp_path, contrast, 1, ports=ports)
+    reference = cc.CONTRAST_LINE_S[contrast, ports]
+    ratios = _entry_ratios(
+        model, _driven(model, cc.CONTRAST_LINE_FREQUENCIES), reference
+    )
+    _assert_ratios("s", case, ratios)
+
+
+def test_stretched_cells_at_a_lumped_port_across_a_permittivity_contrast(tmp_path):
+    # Cells 10:1 along the line next to the port: an end layer they do not
+    # resolve (ADR 0139). It vanishes on cells of 5:1 or less.
+    model = cc.split_line_model(tmp_path, "across", cc.SPLIT_LINE_HALVES["eps"], 4, 2)
+    reference = cc.SPLIT_LINE_S["across", "eps", 4, 2, 3e9]
+    kind, (low, high) = WITNESSES[
+        "stretched cells at a lumped port across a permittivity contrast"
+    ]
+    for estimate, ratio in _entry_ratios(model, _driven(model, [3e9]), reference):
+        assert estimate.kind == kind
+        assert low <= ratio <= high, ratio
+
+
+def _refused_band(name, ratios):
+    low, high = REFUSED_S[name]
+    for _, ratio in ratios:
+        assert low <= ratio <= high, (name, ratio)
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_the_s_estimate_misses_the_current_on_an_impedance_surface(tmp_path, n):
+    # Why the S estimate refuses it (ADR 0134): S11's error share on the
+    # resistive walls is not in the volume identity.
+    side = gfem.Impedance("side", resistance=100.0)
+    model = cc.plate_line_model(tmp_path, n, side=side)
+    f = (cc.PLATE_LINE_FREQUENCY,)
+    ratios = _entry_ratios(
+        model, _driven(model, f), _same_mesh_order_4(model, f), refused=True
+    )
+    _refused_band("impedance surface", ratios[:1])  # S11
+
+
+def test_the_s_estimate_misses_the_edge_of_a_permeability_contrast_at_a_port(
+    tmp_path,
+):
+    # Why the S estimate refuses it (ADR 0139): it falls under refinement.
+    model = cc.split_line_model(tmp_path, "beside", cc.SPLIT_LINE_HALVES["mu"], 16)
+    reference = cc.SPLIT_LINE_S["beside", "mu", 16, 1, 15e9]
+    ratios = _entry_ratios(model, _driven(model, [15e9]), reference, refused=True)
+    _refused_band("lumped port spanning a permeability contrast", ratios)
+
+
+def test_the_s_estimate_misses_a_metal_wedge_in_the_plasmonic_window(tmp_path):
+    # Why the S estimate refuses it (ADR 0140): Re eps -1.5, where the
+    # solution itself does not converge at the wedge.
+    model = cc.metal_floor_model(tmp_path, "wedge", 2)
+    reference = cc.METAL_FLOOR_S["wedge", 2, cc.METAL_PLASMONIC]
+    ratios = _entry_ratios(
+        model, _driven(model, [cc.METAL_PLASMONIC]), reference, refused=True
+    )
+    _refused_band("plasmonic permittivity", ratios)
 
 
 # --- L cavity: omega, singular -----------------------------------------------
