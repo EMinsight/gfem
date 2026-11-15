@@ -76,6 +76,16 @@ Cases and references (none recomputed by the tests but the closed forms):
 - resistive line: the parallel-plate line closed by its 50 and 30 ohm
   lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32,
   against its transmission-line closed form.
+- beside the driven refusals (ADRs 0134, 0139, 0140; `contrast_cases`):
+  the conductor plate line (1e3 and 1e5 S/m, n = 1, 2, 3) against order 4
+  on the same mesh; the deep-metal wedge and flat floor (Re eps -29.7,
+  n = 1, 2) against `contrast_cases.METAL_FLOOR_S`; the metal-block line at
+  3 GHz (Re eps -29.8, n = 5, 10, 20) against its TEM cascade; a wave port
+  beside a permeability contrast and a lumped port beside a conductivity
+  contrast (k = 1) against `contrast_cases.CONTRAST_LINE_S`. Witness:
+  stretched cells at a lumped port across a permittivity contrast. The
+  refused impedance wall, permeability contrast at a lumped port and metal
+  wedge at Re eps -1.5 are measured past the refusal (`REFUSED_S`).
 
 Measured (ostau, 1 thread):
 
@@ -104,6 +114,14 @@ Measured (ostau, 1 thread):
     lossy L cavity        2.87 - 4.08
     lossy walls           4.34 - 9.17
     resistive line        1.47 - 7.44
+    conductor plate line  1.42 - 3.23
+    deep-metal wedge      3.01 - 3.09   (flat: 2.05 - 2.27)
+    deep-metal block line 1.33 - 8.48
+    wave port, mu beside  1.83 - 8.16
+    lumped port, sigma    1.39 - 1.78
+    witness, stretched    0.68 - 0.82
+    refused: impedance wall S11 0.37 - 0.39, mu at a lumped port 0.57 - 0.61,
+             wedge at Re eps -1.5 0.62 - 0.64
     order 3: line 3.10 - 19.6, box (m = 1) 4.69 - 5.39
     order 4: L cavity (n = 2, 4) 1.80, 1.73
 

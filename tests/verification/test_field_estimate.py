@@ -86,6 +86,12 @@ Measured (order 2, direct, ostau, 1 thread):
     order-4 reference, n = 4, 8, 12     0.93, 0.95, 0.96 (1 S/m, 3 GHz)
     metal block line, n = 5, 10, 20     1.65, 1.43, 1.18; 1.63, 1.38, 1.14
                                         (3, 8 GHz)
+    conductor plate line, n = 1, 2      0.99 to 1.04 (1e3, 1e5 S/m; order 4,
+                                        same mesh)
+    deep metal, n = 1, 2                1.43 to 1.72 (wedge and flat floor,
+                                        Re eps -29.7, -19.9; order 4)
+    witnesses (order 4, same mesh): impedance walls 0.80 to 0.83, metal
+    wedge at Re eps -1.5 0.50, lumped port across mu_r 1 / 2.5 0.91
 
 Measured (order 3, direct, ostau, 1 thread):
 
@@ -113,6 +119,7 @@ claimed orders:
 import cmath
 import math
 
+import contrast_cases as cc
 import numpy as np
 import pytest
 import refinement_cases as rc
@@ -121,6 +128,8 @@ import structured_meshes as sm
 from scipy.special import roots_jacobi
 
 import gfem
+from gfem._engine import dispersion
+from gfem._engine.coefficients import element_values
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 ORDER_3 = gfem.SolverOptions(order=3, linear_solver="direct")
@@ -140,6 +149,8 @@ EFFECTIVITY_BY_KIND = {
         "two-layer box": (0.9, 1.6),
         "lossy-wall box": (0.9, 1.6),
         "metal block": (0.9, 1.8),
+        "conductor plate line": (0.9, 1.6),
+        "deep metal": (0.9, 2.0),
     },
 }
 
@@ -169,6 +180,9 @@ OVERESTIMATES: dict[str, tuple[str, tuple[float, float]]] = {}
 #: estimate stays below the error on coarse meshes (recipe Limits).
 WITNESSES = {
     "lumped port across a loss jump": ("field", (0.84, 0.90)),
+    "impedance surface": ("field", (0.70, 0.92)),
+    "plasmonic window": ("field", (0.40, 0.65)),
+    "lumped port across a permeability contrast": ("field", (0.85, 1.0)),
 }
 
 
@@ -817,6 +831,107 @@ def test_the_field_effectivity_on_a_line_through_a_metal_block(tmp_path, n):
     # measured 1.05, 1.03; a dielectric core of eps_r 4 gives 1.20 to 1.05
     # over n = 5 to 40 on the same line.
     _metal_line(tmp_path, n, OPTIONS)
+
+
+# --- next to the driven refusals (ADRs 0134, 0139, 0140) ----------------------
+
+
+def _order_4_ratios(model, frequencies):
+    """The field estimate of p1's field over its error against order 4.
+
+    Order 2 and order 4 on the same mesh, exciting p1. The error is in the
+    norm || curl e ||^2_{|mu|^-1} + |k|^2 || e ||^2_{|eps_eff|}, relative to
+    the order-2 field, with each tetrahedron's mu_r and eps_eff (a law at
+    the frequency; no surface term).
+    """
+    problem = gfem.Driven(list(frequencies), excite="p1", keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    reference = gfem.solve(model, problem, options=ORDER_4)
+    x, w = _gauss_points(model.mesh)
+    per = len(w) // len(model.mesh.tetrahedra)
+    mu = np.repeat(np.abs(np.asarray(element_values(model, "mu_r"))), per)
+    sigma = np.repeat(np.asarray(element_values(model, "conductivity")), per)
+    out = []
+    for f, value in zip(frequencies, estimate.values, strict=True):
+        omega = 2 * math.pi * f
+        eps = np.repeat(dispersion.eps_at(model, omega), per)
+        eps = np.abs(eps - 1j * sigma / (omega * const.epsilon_0))
+        k = omega / const.c
+
+        def fields(field, omega=omega):
+            return np.asarray(field.at(x)), -1j * omega * np.asarray(field.b().at(x))
+
+        e, curl = fields(result.e_field(f, "p1"))
+        e4, curl4 = fields(reference.e_field(f, "p1"))
+
+        def norm(a, ca, eps=eps, k=k):
+            dot = np.sum(np.abs(ca) ** 2, axis=1) / mu
+            return np.sum(w * (dot + k**2 * eps * np.sum(np.abs(a) ** 2, axis=1)))
+
+        out.append(
+            (estimate, value / math.sqrt(norm(e - e4, curl - curl4) / norm(e, curl)))
+        )
+    return out
+
+
+def _assert_ratios(case, ratios):
+    for estimate, ratio in ratios:
+        _assert_in("field", case, estimate, 1.0, ratio)
+
+
+def _assert_witness(name, ratios):
+    kind, (low, high) = WITNESSES[name]
+    for estimate, ratio in ratios:
+        assert estimate.kind == kind
+        assert low <= ratio <= high, (name, ratio)
+
+
+@pytest.mark.parametrize("n", [1, 2])
+@pytest.mark.parametrize("sigma", [1e3, 1e5])
+def test_the_field_effectivity_on_a_conductor_plate_line(tmp_path, sigma, n):
+    plates = tuple(gfem.Conductor(p, conductivity=sigma) for p in ("plate1", "plate2"))
+    model = cc.plate_line_model(tmp_path, n, plates=plates)
+    ratios = _order_4_ratios(model, [cc.PLATE_LINE_FREQUENCY])
+    _assert_ratios("conductor plate line", ratios)
+
+
+@pytest.mark.parametrize("n", [1, 2])
+@pytest.mark.parametrize("geometry", ["wedge", "flat"])
+def test_the_field_effectivity_on_a_deep_metal(tmp_path, geometry, n):
+    # Re eps -29.7 and -19.9: the S estimate refuses the second (ADR 0140),
+    # the field estimate refuses neither.
+    model = cc.metal_floor_model(tmp_path, geometry, n)
+    ratios = _order_4_ratios(model, [cc.METAL_DEEP, cc.METAL_EDGE])
+    _assert_ratios("deep metal", ratios)
+
+
+@pytest.mark.parametrize("n", [1, 2])
+def test_the_field_estimate_next_to_an_impedance_surface(tmp_path, n):
+    # Unclaimed (ADR 0134): the recovery copies the discrete field's wrong
+    # trace on the resistive walls, and reads 0.65 to 0.70 of the volume
+    # error next to them.
+    side = gfem.Impedance("side", resistance=100.0)
+    model = cc.plate_line_model(tmp_path, n, side=side)
+    ratios = _order_4_ratios(model, [cc.PLATE_LINE_FREQUENCY])
+    _assert_witness("impedance surface", ratios)
+
+
+def test_the_field_estimate_on_a_metal_wedge_in_the_plasmonic_window(tmp_path):
+    # Unclaimed (ADR 0140): at Re eps -1.5 the solution itself does not
+    # converge at the wedge, against which the order-4 reference is no
+    # better.
+    model = cc.metal_floor_model(tmp_path, "wedge", 2)
+    ratios = _order_4_ratios(model, [cc.METAL_PLASMONIC])
+    _assert_witness("plasmonic window", ratios)
+
+
+def test_the_field_estimate_at_a_lumped_port_across_a_permeability_contrast(tmp_path):
+    # Unclaimed (ADR 0139): the S estimate refuses it; the field estimate
+    # stays flat under refinement.
+    model = cc.split_line_model(tmp_path, "beside", cc.SPLIT_LINE_HALVES["mu"], 16)
+    ratios = _order_4_ratios(model, [15e9])
+    _assert_witness("lumped port across a permeability contrast", ratios)
 
 
 ORDER_5 = gfem.SolverOptions(order=5, linear_solver="direct")
