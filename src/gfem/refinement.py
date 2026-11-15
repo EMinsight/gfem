@@ -545,9 +545,6 @@ def refine_mesh(
     _refuse_blends(model, "refine_mesh")
     if isinstance(estimator, QuantityEstimator):
         _check_quantity_keys(estimator, problem, model)
-        _check_quantity_model(estimator, model)
-    if isinstance(problem, (Driven, Eigenmode)):
-        _check_field_model(estimator, model)
     if isinstance(problem, Driven):
         from gfem._engine import dispersion
 
@@ -792,6 +789,7 @@ def _estimate(
                 model, result, *estimator.s, threads, adjoints=duals, cache=cache
             )
         else:
+            _check_mode_eps(model, result, int(mode or 0))
             parts = [kernels.omega(model, result, int(mode or 0), threads, cache=cache)]
         values = tuple(terms.value for terms in parts)
         _, indicators = kernels.combine([[terms.weights] for terms in parts])
@@ -1066,14 +1064,6 @@ def _check_mode(mode: int | None, n_modes: int) -> None:
         )
 
 
-def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
-    """Raise for a quantity entry the verification tier has no case for (ADR 0089)."""
-    if estimator.omega is not None or estimator.s is not None:
-        _check_lossy_anisotropic(estimator, model)
-    if estimator.omega is not None:
-        _check_lossy_mode(model)
-
-
 def _adjoint_ports(estimator: Estimator, model: Model) -> tuple[str, ...]:
     """The port whose S-functional adjoint an S estimate may need (ADR 0089).
 
@@ -1162,15 +1152,14 @@ def _lossy_elements(model: Model) -> np.ndarray:
     return out
 
 
-def _check_lossy_mode(model: Model) -> None:
-    """Raise for a mode whose loss no verification case covers (ADR 0089).
+def _check_lossy_mode(model: Model, estimate: str) -> None:
+    """Raise for a mode term an estimate built on the mode has no case for.
 
-    Covered: tan_delta, conductivity and complex eps_r of an isotropic
-    material, impedance, first-order absorbing and conductor surfaces, and
-    resistive lumped ports. A permittivity law is refused until a case
-    covers it (ADR 0111). (A wave port on an eigenmode is refused by the
-    eigen solver; loss inside an anisotropic material by
-    `_check_lossy_anisotropic`.)
+    The terms ADR 0138 lifted for omega alone: a permittivity law
+    ("dispersive eigenmode"), and a second-order absorbing boundary, a
+    complex mu_r or loss inside an anisotropic material ("lossy
+    eigenmode"). Q and the objectives of a mode keep refusing them (ADR 0143
+    Assumptions); ``estimate`` names the refused estimator in the message.
     """
     from gfem._engine import dispersion
     from gfem._engine.coefficients import element_tensors
@@ -1179,21 +1168,47 @@ def _check_lossy_mode(model: Model) -> None:
     if laws:
         raise MeshRefinementUnsupportedError(
             "dispersive eigenmode",
-            "QuantityEstimator(omega=...) has no verified estimate for a mode "
-            f"of a model with a permittivity law (region {laws[0].region!r}): "
-            "use gfem.FieldEstimator().",
+            f"{estimate} has no verified estimate for a mode of a model with a "
+            f"permittivity law (region {laws[0].region!r}): use "
+            "gfem.FieldEstimator().",
         )
     what = None
     if any(isinstance(b, Absorbing) and b.order == 2 for b in model.boundaries):
         what = "a second-order absorbing boundary"
     elif np.any(np.asarray(element_tensors(model, "mu_r")).imag):
         what = "a complex mu_r"
+    elif (region := _lossy_anisotropic_region(model)) is not None:
+        what = f"loss inside the anisotropic material of {region!r}"
     if what is not None:
         raise MeshRefinementUnsupportedError(
             "lossy eigenmode",
-            f"QuantityEstimator(omega=...) has no verified estimate for a mode "
-            f"with {what}: use gfem.FieldEstimator().",
+            f"{estimate} has no verified estimate for a mode with {what}: use "
+            "gfem.FieldEstimator().",
         )
+
+
+def _check_mode_eps(model: Model, result: EigenmodeResult, mode: int) -> None:
+    """Raise for a mode bound to a law region at Re eps < 0 (ADR 0138).
+
+    The omega estimate of such a mode (a plasmon) measured below the error,
+    0.81 to 1.02, falling as Re eps approaches -1. Each law region's eps is
+    read at the mode's complex omega, the value the estimate weighs with
+    (`gfem._engine.dispersion.eps_at`).
+    """
+    from gfem._engine import dispersion
+
+    omega = complex(np.asarray(result.omega)[mode])
+    for lr in dispersion.law_regions(model):
+        eps = complex(lr.law.eps_inf) + dispersion.susceptibility(lr.law, omega)
+        if eps.real < 0:
+            raise MeshRefinementUnsupportedError(
+                "dispersive eigenmode",
+                f"QuantityEstimator(omega={mode}) has no verified estimate for a "
+                f"mode at {omega.real / (2 * np.pi) / 1e9:.6g} GHz, where the "
+                f"permittivity law of region {lr.region!r} gives Re eps = "
+                f"{eps.real:.3g} < 0 (a mode bound to a metal surface): use "
+                "gfem.FieldEstimator().",
+            )
 
 
 def _lossy_anisotropic_region(model: Model) -> str | None:
@@ -1207,39 +1222,6 @@ def _lossy_anisotropic_region(model: Model) -> str | None:
     return None
 
 
-def _check_field_model(estimator: Estimator, model: Model) -> None:
-    """Raise for a wave field whose loss no field case covers (ADR 0087)."""
-    if isinstance(estimator, FieldEstimator):
-        _check_lossy_anisotropic(estimator, model)
-
-
-def _check_lossy_anisotropic(estimator: Estimator, model: Model) -> None:
-    """Raise for loss inside an anisotropic material (ADRs 0087, 0089).
-
-    One refusal for the field, S and omega estimates: the complex tensor
-    eps_eff, which weights the recovered flux error of each, has no
-    verification case.
-    """
-    region = _lossy_anisotropic_region(model)
-    if region is None:
-        return
-    if isinstance(estimator, FieldEstimator):
-        name = "FieldEstimator()"
-    else:
-        name = (
-            "QuantityEstimator(s=...)"
-            if estimator.s
-            else "QuantityEstimator(omega=...)"
-        )
-    raise MeshRefinementUnsupportedError(
-        "lossy anisotropic material",
-        f"{name} has no verified estimate with loss in the anisotropic material "
-        f"of {region!r}, and no estimator has one. Refine a copy of the model "
-        "with that material lossless, then solve the lossy model on the "
-        "refined mesh.",
-    )
-
-
 def _touching(model: Model, surface: str) -> np.ndarray:
     """Whether each tetrahedron has a node on ``surface``."""
     mesh = model.mesh
@@ -1251,13 +1233,10 @@ def _touching(model: Model, surface: str) -> np.ndarray:
 def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
     if isinstance(estimator, QuantityEstimator):
         _check_quantity_result(estimator, result)
-        _check_quantity_model(estimator, model)
     if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
         raise _unsupported_result(result, estimator)
     if any(field._comm is not None for field in _fields(result)):  # noqa: SLF001
         _mpi.refuse_feature("error_estimate")
-    if not isinstance(result, ElectrostaticResult):
-        _check_field_model(estimator, model)
     if model._periodic:  # noqa: SLF001
         raise MeshRefinementUnsupportedError(
             "periodic",

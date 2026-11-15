@@ -270,7 +270,9 @@ class FluxRecovery:
         self._hdiv = self._projection(ngs.HDiv)
         self._hcurl: _Projection | None = None
         self.eps, self.eps_inverse = self._eps_weights(static)
-        self.mu, self.mu_inverse = self._weights("mu_r")
+        self.mu, self.mu_inverse, self.mu_parts, self.mu_inverse_parts = (
+            self._mu_weights()
+        )
         self._p0 = ngs.L2(self.built.mesh, order=0)
 
     def _projection(
@@ -310,6 +312,37 @@ class FluxRecovery:
         """A real material property and its inverse, scalar or tensor, per element."""
         return self._real_weights(element_tensors(self.model, name).real)
 
+    def _mu_weights(
+        self,
+    ) -> tuple[
+        ngs.CoefficientFunction,
+        ngs.CoefficientFunction,
+        list[ngs.CoefficientFunction],
+        list[ngs.CoefficientFunction],
+    ]:
+        """mu_r's norm weights and its complex parts, and those of its inverse.
+
+        Returns (the weight of the recovered H error, the weight of the curl
+        energy, mu as parts, mu^-1 as parts). For a real mu the weights are mu
+        and mu^-1 and each is its own one part. For a complex mu (ADR 0138)
+        the weights are the moduli (mu^H mu)^{1/2} and (mu mu^H)^{-1/2}
+        (`_modulus_weights`), and mu^-1 curl E and the curl term c_K use the
+        complex mu, as real and imaginary parts.
+        """
+        mu = np.asarray(element_tensors(self.model, "mu_r"))
+        if not np.any(mu.imag):
+            weight, inverse = self._real_weights(mu.real)
+            return weight, inverse, [weight], [inverse]
+        mu = mu.astype(complex)
+        inverse = 1.0 / mu if mu.ndim == 1 else np.linalg.inv(mu)
+        curl_weight, h_weight = _modulus_weights(mu)
+        return (
+            coefficient(self.built, h_weight),
+            coefficient(self.built, curl_weight),
+            _split(self.built, mu),
+            _split(self.built, inverse),
+        )
+
     def _real_weights(
         self, values: np.ndarray
     ) -> tuple[ngs.CoefficientFunction, ngs.CoefficientFunction]:
@@ -334,12 +367,20 @@ class FluxRecovery:
         """The recovered error of a flux, ``R(flux) - flux`` (eps E, eps grad V)."""
         return self.recover(flux) - flux
 
-    def curl_residual(self, curl: ngs.CoefficientFunction) -> ngs.CoefficientFunction:
-        """The recovered error of mu^-1 curl E, ``R(mu^-1 curl) - mu^-1 curl``."""
+    def curl_residuals(
+        self, curls: Sequence[ngs.CoefficientFunction]
+    ) -> list[ngs.CoefficientFunction]:
+        """The recovered error of mu^-1 curl E, ``R(mu^-1 curl) - mu^-1 curl``.
+
+        ``curls`` is curl E as its real (and imaginary) part; so is the
+        result, which has two parts when mu or the field is complex.
+        """
         if self._hcurl is None:
             self._hcurl = self._projection(ngs.HCurl, type1=False)
-        field = self.mu_inverse * curl
-        return self._hcurl.project(field) - field
+        out = []
+        for field in _times(self.mu_inverse_parts, curls):
+            out.append(self._hcurl.project(field) - field)
+        return out
 
     def flux_error(self, flux: ngs.CoefficientFunction) -> np.ndarray:
         """``|| R(flux) - flux ||^2_{eps^-1, K}`` per tetrahedron."""
@@ -347,9 +388,14 @@ class FluxRecovery:
         return self.element_integrals(diff * (self.eps_inverse * diff))
 
     def curl_error(self, curl: ngs.CoefficientFunction) -> np.ndarray:
-        """``|| R(mu^-1 curl) - mu^-1 curl ||^2_{mu, K}`` per tetrahedron."""
-        diff = self.curl_residual(curl)
-        return self.element_integrals(diff * (self.mu * diff))
+        """``|| R(mu^-1 curl) - mu^-1 curl ||^2_{|mu|, K}`` per tetrahedron."""
+        return sum(
+            (
+                self.element_integrals(diff * (self.mu * diff))
+                for diff in self.curl_residuals([curl])
+            ),
+            np.zeros(len(self.model.mesh.tetrahedra)),
+        )
 
 
 def _natural_surfaces(
@@ -647,14 +693,16 @@ def eigenmode(
 def _wave(recovery: FluxRecovery, field: Field, cache: RecoveryCache) -> np.ndarray:
     """eta_K^2 / energy of one time-harmonic electric field.
 
-    eta_K^2 = || R(mu^-1 curl E) - mu^-1 curl E ||^2_{mu,K}
+    eta_K^2 = || R(mu^-1 curl E) - mu^-1 curl E ||^2_{|mu|,K}
     + |k|^2 || R(eps_eff E) - eps_eff E ||^2_{|eps_eff|^-1,K}, with k =
     omega / c in the mesh's length unit (complex for a lossy mode) and
     eps_eff = eps_r (1 - i tan_delta) - i eta0 sigma scale / k, the total
     current whose normal component is continuous; |.|^2 of a complex
     residual sums its real and imaginary parts. The energy is
-    || curl E ||^2_{mu^-1} + |k|^2 int |eps_eff| |E|^2 over the solve domain.
-    Without loss eps_eff = eps_r and this is the lossless estimate.
+    || curl E ||^2_{|mu|^-1} + |k|^2 int |eps_eff| |E|^2 over the solve
+    domain. A complex mu_r enters mu^-1 curl E whole and the norms through
+    its modulus (`FluxRecovery`, ADR 0138). Without loss eps_eff = eps_r,
+    |mu| = mu, and this is the lossless estimate.
     """
     built = recovery.built
     k = complex(np.asarray(field.omega)) / scipy.constants.c * built.scale
@@ -682,12 +730,13 @@ def _wave(recovery: FluxRecovery, field: Field, cache: RecoveryCache) -> np.ndar
 
 
 def _modulus_weights(eps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The flux and energy weights of a complex eps_eff per tetrahedron.
+    """The flux and energy weights of a complex eps_eff (or mu_r) per tetrahedron.
 
     |eps|^-1 and |eps| for a scalar; for a tensor A, (A A^H)^{-1/2} and
-    (A^H A)^{1/2}, A^-1 and A for a real symmetric A. Real for the tensors
-    the field estimator accepts (lossless, or a lossy multiple of the
-    identity): loss inside an anisotropic material is refused before.
+    (A^H A)^{1/2}, A^-1 and A for a real symmetric A. Real for every tensor
+    gfem represents: A = R D R^T with real orthonormal axes R shared by
+    eps_r, tan_delta and conductivity (and by mu_r), so A A^H = R |D|^2 R^T
+    is real and ``.real`` drops only rounding (ADR 0138).
     """
     if eps.ndim == 1:
         return 1.0 / np.abs(eps), np.abs(eps)
@@ -998,7 +1047,7 @@ def _residuals(
     ``parts`` is the field's view (`_parts`). ``eps`` is real, or complex as
     its real and imaginary parts (`_effective_eps`).
     """
-    curl = [recovery.curl_residual(ngs.curl(gf)) for gf in parts]
+    curl = recovery.curl_residuals([ngs.curl(gf) for gf in parts])
     flux = [recovery.flux_residual(v) for v in _times(eps, parts)]
     return curl, flux
 
@@ -1010,7 +1059,7 @@ def _pair(
     eps_inverse: Sequence[ngs.CoefficientFunction],
 ) -> tuple[np.ndarray, np.ndarray]:
     """c_K and m_K of two fields' recovered errors (`_residuals`), bilinear."""
-    curl = _bilinear(recovery, ri[0], _times([recovery.mu], rj[0]))
+    curl = _bilinear(recovery, ri[0], _times(recovery.mu_parts, rj[0]))
     mass = _bilinear(recovery, ri[1], _times(eps_inverse, rj[1]))
     return curl, mass
 

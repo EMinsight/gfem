@@ -193,6 +193,137 @@ ANISOTROPIC_BOX_F = {
     "layer_mu": (161.103601495e9, 226.726156671e9, 238.567948030e9, 255.087323796e9),
 }
 
+#: The lossy fills of the PEC box (ADR 0138), per region: eps_r 2 with a
+#: complex mu_r 2 (1 - 0.1i) ("lossy_mu"); "a" (eps_r 3) under "b" (mu_r
+#: 2.5 (1 - 0.2i)) ("lossy_layer_mu"); `ANISOTROPIC_BOX`'s "diag" fill with
+#: tan_delta 0.1 ("lossy_diag_tan"), conductivity (5, 10, 20) S/m
+#: ("lossy_diag_sigma") or per-axis complex eps_r, tan_delta (0.05, 0.1, 0.3)
+#: ("lossy_diag_complex"); that per-axis loss along `ROT3`'s columns
+#: ("lossy_rot3").
+LOSSY_EPS_DIAG = np.array([2.0, 3.0, 4.0]) * (1 - 1j * np.array([0.05, 0.1, 0.3]))
+LOSSY_BOX = {
+    "lossy_mu": {"air": gfem.MaterialField(eps_r=2.0, mu_r=2.0 * (1 - 0.1j))},
+    "lossy_layer_mu": {
+        "a": gfem.Material(eps_r=3.0),
+        "b": gfem.MaterialField(mu_r=2.5 * (1 - 0.2j)),
+    },
+    "lossy_diag_tan": {
+        "air": gfem.Material(
+            eps_r=(2.0, 3.0, 4.0), mu_r=(1.5, 2.0, 2.5), tan_delta=0.1
+        )
+    },
+    "lossy_diag_sigma": {
+        "air": gfem.Material(
+            eps_r=(2.0, 3.0, 4.0), mu_r=(1.5, 2.0, 2.5), conductivity=(5.0, 10.0, 20.0)
+        )
+    },
+    "lossy_diag_complex": {
+        "air": gfem.MaterialField(
+            eps_r=LOSSY_EPS_DIAG,
+            mu_r=(1.5, 2.0, 2.5),
+            axes=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        )
+    },
+    "lossy_rot3": {
+        "air": gfem.MaterialField(
+            eps_r=LOSSY_EPS_DIAG,
+            mu_r=(1.5, 2.0, 2.5),
+            axes=tuple(map(tuple, ROT3.T)),
+        )
+    },
+}
+
+#: Modes of the "lossy_layer_mu" and "lossy_rot3" boxes, omega in rad/s:
+#: order 4 on the m = 2 mesh, direct, each the mode nearest the lossless
+#: box's `ANISOTROPIC_BOX_F` frequency (its key here, Hz) (ostau,
+#: 2026-11-14). `LOSSY_BOX_BOUND` (relative) bounds each by |order 3 -
+#: order 4|, under 2 % of the order-2 error it checks.
+#: Provenance: .scratch/quantity-estimates/probes/10 (cmu.jsonl, aniso.jsonl).
+LOSSY_BOX_OMEGA = {
+    "lossy_layer_mu": {
+        161.103601495e9: 1007119253424.7919 + 68907669884.89853j,
+        226.726156671e9: 1421434413657.8762 + 93317793057.87018j,
+        238.567948030e9: 1493088982074.622 + 38904586117.109695j,
+    },
+    "lossy_rot3": {
+        106.357683863e9: 657737744736.5281 + 70972525364.01263j,
+        146.424985394e9: 904878485590.797 + 102641036684.74458j,
+        173.585662901e9: 1080416508990.5245 + 82256927116.25586j,
+        186.214213145e9: 1215771515468.8926 + 84519811757.66254j,
+    },
+}
+#: Relative bound of each `LOSSY_BOX_OMEGA`, same keys.
+LOSSY_BOX_BOUND = {
+    "lossy_layer_mu": {161.103601495e9: 4.1e-8, 226.726156671e9: 3.9e-7, 238.567948030e9: 7.8e-7},
+    "lossy_rot3": {
+        106.357683863e9: 3.1e-7,
+        146.424985394e9: 1.1e-6,
+        173.585662901e9: 9.0e-7,
+        186.214213145e9: 3.1e-6,
+    },
+}
+
+#: The layered boxes' modes, omega in rad/s, keyed by the target (Hz) each was
+#: the mode nearest to: the PEC box 1 x 0.7 x 0.4 mm on the m = 2 mesh with a
+#: 0.2 mm "lower" layer under 0.2 mm of air, the lower one a Drude law
+#: (eps_inf 4, plasma 300 GHz, damping 30 GHz; "law") or that law frozen at
+#: 217.4 GHz ("constant"). Order 4 on the same mesh, direct (ostau,
+#: 2026-11-14); `LAYERED_BOX_BOUND` (relative) bounds each by |order 3 -
+#: order 4|, at most 3 % of the order-2 error it checks.
+#: Provenance: .scratch/quantity-estimates/probes/10 (law.jsonl).
+LAYERED_BOX_OMEGA = {
+    "law": {
+        200e9: 1365886721224.771 + 28583488045.186317j,
+        300e9: 1855493638560.5923 + 21210889092.263752j,
+        380e9: 2396599931171.4844 + 13611651521.137688j,
+    },
+    "constant": {
+        200e9: 1362352081374.5503 + 40387269805.226944j,
+        300e9: 1866221045627.128 + 72030402229.23325j,
+        380e9: 2344744872972.081 + 111638577282.47076j,
+    },
+}
+#: Relative bound of each `LAYERED_BOX_OMEGA`, same keys.
+LAYERED_BOX_BOUND = {
+    "law": {200e9: 4.8e-8, 300e9: 1.5e-6, 380e9: 2.0e-5},
+    "constant": {200e9: 6.9e-8, 300e9: 8.0e-7, 380e9: 4.7e-6},
+}
+
+#: The air box 1 x 0.7 x 0.4 mm with second-order `Absorbing` side walls, PEC
+#: top and bottom: the modes continuing its PEC 110, 210 and 120 modes, omega
+#: in rad/s, keyed (m, mode). Order 4 on the same h = 0.2 / m mm mesh,
+#: direct, the mode of six nearest the PEC frequency (ostau, 2026-11-14);
+#: `ABSORBING_BOX_BOUND` (relative) bounds each by |order 3 - order 4|, at
+#: most 9.4 % of the order-2 error it checks.
+#: Provenance: .scratch/quantity-estimates/probes/10 (abc2.jsonl).
+ABSORBING_BOX_OMEGA = {
+    (1, (1, 1, 0)): 1427348796225.951 + 451233361025.6063j,
+    (2, (1, 1, 0)): 1427390703452.3496 + 451169484224.0431j,
+    (1, (2, 1, 0)): 2578944193656.4575 + 335038120087.43616j,
+    (2, (2, 1, 0)): 2578933663570.1753 + 335101659007.0283j,
+    (1, (1, 2, 0)): 2700555782230.8823 + 341180615784.23846j,
+    (2, (1, 2, 0)): 2700605224545.1787 + 341260372951.9436j,
+}
+#: Relative bound of each `ABSORBING_BOX_OMEGA`, same keys.
+ABSORBING_BOX_BOUND = {
+    (1, (1, 1, 0)): 3.4e-4,
+    (2, (1, 1, 0)): 2.5e-5,
+    (1, (2, 1, 0)): 1.5e-4,
+    (2, (2, 1, 0)): 1.1e-5,
+    (1, (1, 2, 0)): 2.3e-4,
+    (2, (1, 2, 0)): 1.6e-5,
+}
+
+#: The plasmon box's LSM (2, 1) mode, rad/s: the 1 x 0.7 x 0.4 mm PEC box with
+#: a 0.2 mm Drude floor (plasma 350 GHz, damping 5 GHz; Re eps -1.73 at the
+#: mode) under 0.2 mm of air, the root of the LSM^z dispersion relation
+#: (kz1 / e1) tan(kz1 d1) + (kz2 / e2) tan(kz2 d2) = 0, solved by Newton's
+#: method to `PLASMON_BOUND` (relative); order-4 solves agree with it to
+#: 5e-9 to 1e-5. Provenance: .scratch/quantity-estimates/probes/10 (lsm.py).
+PLASMON_OMEGA = 1331954822019.4377 + 10841584018.340836j
+#: Relative bound of `PLASMON_OMEGA`.
+PLASMON_BOUND = 1e-12
+
 #: The block guide's frequency, Hz: TE10 and TE20 propagate in the air guide.
 BLOCK_GUIDE_FREQUENCY = 170e9
 #: The block guide's S entries (to, from) at `BLOCK_GUIDE_FREQUENCY`: order 4
@@ -345,8 +476,11 @@ def anisotropic_coax_model(directory: Path, k: int, fill: str) -> gfem.Model:
 
 
 def anisotropic_box_model(directory: Path, m: int, fill: str) -> gfem.Model:
-    """The PEC box 1 x 0.7 x 0.4 mm, h = 0.2 / m mm, filled with ``fill``."""
-    regions = ANISOTROPIC_BOX[fill]
+    """The PEC box 1 x 0.7 x 0.4 mm, h = 0.2 / m mm, filled with ``fill``.
+
+    ``fill`` is a key of `ANISOTROPIC_BOX` or `LOSSY_BOX`.
+    """
+    regions = {**ANISOTROPIC_BOX, **LOSSY_BOX}[fill]
     layers = tuple((name, 0.4 / len(regions)) for name in regions)
     cells = sm.plate(1.0, 0.7, layers, (5 * m, 4 * m, 2 * m // len(regions)))
     mesh = _mesh(directory, "box", cells, "mm")

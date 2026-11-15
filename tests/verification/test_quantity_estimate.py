@@ -157,11 +157,16 @@ EFFECTIVITY_BY_KIND = {
         "L cavity": (0.9, 5.0),
         "rectangular box": (0.9, 12.0),
         "permeability box": (0.9, 12.0),
-        "anisotropic box": (0.9, 12.0),
+        "anisotropic box": (0.9, 15.0),
         "lossy box": (0.9, 12.0),
         "lossy L cavity": (0.9, 5.0),
         "lossy walls": (0.9, 12.0),
         "resistive line": (0.9, 8.0),
+        "dispersive box": (0.9, 12.0),
+        "layered box": (0.9, 24.0),
+        "second-order absorbing walls": (0.9, 5.0),
+        "lossy permeability box": (0.9, 12.0),
+        "lossy permeability layers": (0.9, 12.0),
     },
 }
 
@@ -944,6 +949,300 @@ def test_the_resistive_line_resonances(tmp_path, n):
         omega, estimate = _omega_and_estimate(model, target)
         exact = _line_resonance(omega)
         _assert_in("omega", "resistive line", estimate, (omega - exact) / abs(exact))
+
+
+# --- lifted eigen terms (ADR 0138): laws, second-order walls, lossy mu, loss --
+# --- inside an anisotropic material --------------------------------------------
+
+
+def _nearest_mode(model, target, near, n_modes=1):
+    """(omega, its omega `gfem.ErrorEstimate`) of the solved mode nearest ``near``.
+
+    ``target`` (Hz) seeds the solve; ``near`` (rad/s) picks among its modes.
+    """
+    problem = gfem.Eigenmode(target=target, n_modes=n_modes)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    omegas = np.asarray(result.omega, complex)
+    i = int(np.argmin(abs(omegas - near)))
+    estimator = gfem.QuantityEstimator(omega=i)
+    return complex(omegas[i]), gfem.error_estimate(result, estimator, model=model)
+
+
+def _nearest_root(roots, near):
+    roots = np.asarray(roots, complex)
+    return complex(roots[np.argmin(abs(roots - near))])
+
+
+def _k0_squared(mode):
+    """The empty PEC box's k0^2 of ``mode``, 1/m^2."""
+    return sum((n * math.pi / a) ** 2 for n, a in zip(mode, BOX, strict=True))
+
+
+#: Every mode index of the box up to (4, 4, 3) with at most one zero: the
+#: closed forms of a filled box match the solved mode to the nearest root
+#: over all of them, so a mode found in place of the targeted one is still
+#: checked against its own root.
+_ALL_MODES = [
+    (a, b, c)
+    for a in range(5)
+    for b in range(5)
+    for c in range(4)
+    if sum(x == 0 for x in (a, b, c)) <= 1
+]
+
+
+def _drude_roots(eps_inf, fp, gamma):
+    """f^2 eps(f) = K^2 for a Drude fill, every box mode's roots in rad/s."""
+    out = []
+    for mode in _ALL_MODES:
+        kk = (const.c * math.sqrt(_k0_squared(mode)) / (2 * math.pi)) ** 2
+        coefficients = [eps_inf, -1j * gamma * eps_inf, -(kk + fp**2), 1j * gamma * kk]
+        out += list(2 * math.pi * np.roots(coefficients))
+    return out
+
+
+def _lorentz_roots(eps_inf, delta, f0, gamma):
+    """f^2 eps(f) = K^2 for a Lorentz fill, every box mode's roots in rad/s."""
+    out = []
+    for mode in _ALL_MODES:
+        kk = (const.c * math.sqrt(_k0_squared(mode)) / (2 * math.pi)) ** 2
+        coefficients = [
+            -eps_inf,
+            1j * gamma * eps_inf,
+            (eps_inf + delta) * f0**2 + kk,
+            -1j * gamma * kk,
+            -kk * f0**2,
+        ]
+        out += list(2 * math.pi * np.roots(coefficients))
+    return out
+
+
+#: The dispersive fills of the box: (law, its closed-form roots, the static
+#: eps_r that seeds each mode's target).
+DISPERSIVE_FILLS = {
+    "drude, lossy": (
+        gfem.PermittivityLaw(
+            eps_inf=4.0, terms=[gfem.Drude(plasma_frequency=300e9, damping=30e9)]
+        ),
+        lambda: _drude_roots(4.0, 300e9, 30e9),
+    ),
+    "drude, lossless": (
+        gfem.PermittivityLaw(
+            eps_inf=4.0, terms=[gfem.Drude(plasma_frequency=300e9, damping=0.0)]
+        ),
+        lambda: _drude_roots(4.0, 300e9, 0.0),
+    ),
+    "lorentz": (
+        gfem.PermittivityLaw(
+            eps_inf=2.0,
+            terms=[
+                gfem.Lorentz(delta_eps=2.0, resonance_frequency=600e9, damping=50e9)
+            ],
+        ),
+        lambda: _lorentz_roots(2.0, 2.0, 600e9, 50e9),
+    ),
+}
+
+
+def _dispersive_target(fill, mode):
+    """The undamped estimate of ``mode``'s frequency in ``fill``, Hz."""
+    kk = (const.c * math.sqrt(_k0_squared(mode)) / (2 * math.pi)) ** 2
+    if fill == "lorentz":
+        return math.sqrt(kk / 4.0)
+    return math.sqrt((kk + 300e9**2) / 4.0)
+
+
+@pytest.mark.parametrize("fill", list(DISPERSIVE_FILLS))
+def test_the_dispersive_box_frequencies(tmp_path, fill):
+    # The box filled with a law at Re eps > 0: its omega solves
+    # f^2 eps(f) = K^2 (Q 12 to 106 on the lossy fills).
+    law, roots = DISPERSIVE_FILLS[fill]
+    model = _box_model(tmp_path, 2, gfem.Material(eps_r=law))
+    for mode in ((1, 1, 0), (1, 0, 1)):
+        target = _dispersive_target(fill, mode)
+        omega, estimate = _nearest_mode(model, target, 2 * math.pi * target)
+        exact = _nearest_root(roots(), omega)
+        _assert_in("omega", "dispersive box", estimate, abs(omega - exact) / abs(exact))
+
+
+#: The layered boxes' lower layer: a Drude law at Re eps > 0, and that law
+#: frozen at 217.4 GHz (`refinement_cases.LAYERED_BOX_OMEGA`).
+_LAYER_LAW = gfem.PermittivityLaw(
+    eps_inf=4.0, terms=[gfem.Drude(plasma_frequency=300e9, damping=30e9)]
+)
+LAYERED_FILLS = {
+    "law": gfem.Material(eps_r=_LAYER_LAW),
+    "constant": gfem.MaterialField(
+        eps_r=4.0 - 300e9**2 / (217.4e9 * (217.4e9 - 30e9j))
+    ),
+}
+
+
+def _layered_box(directory, lower):
+    cells = sm.plate(1.0, 0.7, (("lower", 0.2), ("air", 0.2)), (10, 8, 2))
+    path = sm.write_msh22(directory / "box.msh", cells)
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"lower": lower, "air": gfem.Material()},
+        boundaries=[gfem.PEC(s) for s in ("bottom", "top", "side")],
+    )
+
+
+@pytest.mark.parametrize("fill", list(LAYERED_FILLS))
+def test_the_layered_box_frequencies(tmp_path, fill):
+    # A lossy layer under air, against order 4 on the same mesh. The omega
+    # estimate reaches about 21 here with or without the law: the layered
+    # cavity's own overestimate.
+    model = _layered_box(tmp_path, LAYERED_FILLS[fill])
+    for target, reference in rc.LAYERED_BOX_OMEGA[fill].items():
+        omega, estimate = _nearest_mode(model, target, reference)
+        error = abs(omega - reference) / abs(reference)
+        assert error > 5 * rc.LAYERED_BOX_BOUND[fill][target]
+        _assert_in("omega", "layered box", estimate, error)
+
+
+_BOX_PEC_MODES = ((1, 1, 0), (2, 1, 0), (1, 2, 0))
+
+
+def _absorbing_box(directory, m):
+    cells = sm.plate(1.0, 0.7, (("air", 0.4),), (5 * m, 4 * m, 2 * m))
+    path = sm.write_msh22(directory / "box.msh", cells)
+    return gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"air": gfem.Material()},
+        boundaries=[
+            gfem.PEC("bottom"),
+            gfem.PEC("top"),
+            gfem.Absorbing("side", order=2),
+        ],
+    )
+
+
+@pytest.mark.parametrize("m", [1, 2])
+def test_the_box_with_second_order_absorbing_walls(tmp_path, m):
+    # Q 1.7 to 4. Six modes are solved and the one nearest the stored order-4
+    # reference is estimated: a single-mode seed can return a spurious mode.
+    # (On the top wall, the second-order term is inert for E normal to it.)
+    model = _absorbing_box(tmp_path, m)
+    for mode in _BOX_PEC_MODES:
+        target = const.c * math.sqrt(_k0_squared(mode)) / (2 * math.pi)
+        reference = rc.ABSORBING_BOX_OMEGA[m, mode]
+        omega, estimate = _nearest_mode(model, target, reference, n_modes=6)
+        error = abs(omega - reference) / abs(reference)
+        assert abs(omega - reference) < 0.05 * abs(reference)  # the same mode
+        assert error > 5 * rc.ABSORBING_BOX_BOUND[m, mode]
+        _assert_in("omega", "second-order absorbing walls", estimate, error)
+
+
+_LOSSY_MU = 2.0 * (1 - 0.1j)
+
+
+@pytest.mark.parametrize("m", [2])
+def test_the_lossy_permeability_box_frequencies(tmp_path, m):
+    # eps_r 2, mu_r 2 (1 - 0.1i): omega = c k0 / sqrt(eps mu), Q 10. The
+    # recovered H is mu^-1 curl E with the complex mu.
+    model = rc.anisotropic_box_model(tmp_path, m, "lossy_mu")
+    for mode in ((1, 1, 0), (1, 0, 1)):
+        k0 = math.sqrt(_k0_squared(mode))
+        target = const.c * k0 / math.sqrt(2.0 * _LOSSY_MU.real) / (2 * math.pi)
+        omega, estimate = _nearest_mode(model, target, 2 * math.pi * target)
+        w = const.c * k0 / cmath.sqrt(2.0 * _LOSSY_MU)
+        exact = _nearest_root([w, -w, w.conjugate(), -w.conjugate()], omega)
+        error = abs(omega - exact) / abs(exact)
+        _assert_in("omega", "lossy permeability box", estimate, error)
+
+
+@pytest.mark.parametrize("fill", ["lossy_layer_mu", "lossy_rot3"])
+def test_the_lossy_layered_and_rotated_box_frequencies(tmp_path, fill):
+    # No closed form: against order 4 on the same mesh. A real-mu recovery
+    # measured up to 40.9 on the layers.
+    case = {
+        "lossy_layer_mu": "lossy permeability layers",
+        "lossy_rot3": "anisotropic box",
+    }
+    model = rc.anisotropic_box_model(tmp_path, 2, fill)
+    for target, reference in rc.LOSSY_BOX_OMEGA[fill].items():
+        omega, estimate = _nearest_mode(model, target, reference)
+        error = abs(omega - reference) / abs(reference)
+        assert error > 5 * rc.LOSSY_BOX_BOUND[fill][target]
+        _assert_in("omega", case[fill], estimate, error)
+
+
+_DIAG_EPS = np.array([2.0, 3.0, 4.0])
+_DIAG_MU = np.array([1.5, 2.0, 2.5])
+#: The lossy diagonal fills: (complex eps_r, conductivity) per axis.
+LOSSY_DIAGONAL = {
+    "lossy_diag_tan": (_DIAG_EPS * (1 - 0.1j), np.zeros(3)),
+    "lossy_diag_sigma": (_DIAG_EPS.astype(complex), np.array([5.0, 10.0, 20.0])),
+    "lossy_diag_complex": (rc.LOSSY_EPS_DIAG, np.zeros(3)),
+}
+
+
+def _lossy_diagonal_case(fill, mode):
+    """(target Hz, the closed form's roots in rad/s) of a mode with a zero index.
+
+    With E along axis d, k^2 eps_eff,dd = sum over i != d of
+    (n_i pi / L_i)^2 / mu_jj, eps_eff = eps_c - i eta0 sigma / k.
+    """
+    eps_c, sigma = LOSSY_DIAGONAL[fill]
+    d = mode.index(0)
+    k2 = sum(
+        (mode[i] * math.pi / BOX[i]) ** 2 / _DIAG_MU[3 - i - d]
+        for i in range(3)
+        if i != d
+    )
+    target = const.c * math.sqrt(k2 / _DIAG_EPS[d]) / (2 * math.pi)
+    roots = np.roots([eps_c[d], -1j * _ETA0 * sigma[d], -k2]) * const.c
+    return target, roots
+
+
+@pytest.mark.parametrize(
+    ("m", "modes"), [(1, ((1, 1, 0), (1, 0, 1))), (2, BOX_MODES)], ids=["m1", "m2"]
+)
+@pytest.mark.parametrize("fill", list(LOSSY_DIAGONAL))
+def test_the_lossy_anisotropic_box_frequencies(tmp_path, fill, m, modes):
+    # Loss inside a diagonal tensor fill, Q 1.1 to 10: the modulus weights of
+    # the complex tensor eps_eff are exact (ADR 0138).
+    model = rc.anisotropic_box_model(tmp_path, m, fill)
+    for mode in modes:
+        target, roots = _lossy_diagonal_case(fill, mode)
+        omega, estimate = _nearest_mode(model, target, 2 * math.pi * target)
+        exact = _nearest_root(roots, omega)
+        error = abs(omega - exact) / abs(exact)
+        _assert_in("omega", "anisotropic box", estimate, error)
+
+
+def test_the_plasmon_bound_mode_measures_below_the_floor(tmp_path):
+    # Not claimed: why a mode bound to a law region at Re eps < 0 raises
+    # (ADR 0138). The private kernel, past the refusal, estimates the LSM
+    # (2, 1) mode of the Drude floor at about 0.96 of its error on m = 2,
+    # falling towards 0.81 as Re eps approaches -1 and the mesh coarsens.
+    from gfem._engine import estimate as kernels
+
+    floor = gfem.PermittivityLaw(
+        terms=[gfem.Drude(plasma_frequency=350e9, damping=5e9)]
+    )
+    cells = sm.plate(1.0, 0.7, (("metal", 0.2), ("air", 0.2)), (10, 8, 2))
+    path = sm.write_msh22(tmp_path / "box.msh", cells)
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="mm"),
+        materials={"metal": gfem.Material(eps_r=floor), "air": gfem.Material()},
+        boundaries=[gfem.PEC(s) for s in ("bottom", "top", "side")],
+    )
+    problem = gfem.Eigenmode(target=200e9, n_modes=1)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    with pytest.raises(gfem.MeshRefinementUnsupportedError):
+        gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    omega = complex(np.asarray(result.omega)[0])
+    error = abs(omega - rc.PLASMON_OMEGA) / abs(rc.PLASMON_OMEGA)
+    assert error < 1e-2  # the LSM (2, 1) mode
+    value = kernels.omega(model, result, 0).value
+    assert PLASMON_WITNESS[0] <= value / error <= PLASMON_WITNESS[1]
+
+
+#: The refused plasmon-bound mode's omega effectivity (measured 0.959 on
+#: m = 2): a band below the floor's reach, not a claim.
+PLASMON_WITNESS = (0.93, 0.99)
 
 
 # --- order 3 -----------------------------------------------------------------

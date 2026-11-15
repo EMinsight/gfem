@@ -16,6 +16,7 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
+import gfem.refinement as refinement
 from gfem._engine import estimate as kernels
 from gfem.refinement import _dorfler
 
@@ -703,31 +704,60 @@ def test_a_lossy_mode_is_estimated(tmp_path, material, top):
     assert np.all(np.isfinite(estimate.indicators))
 
 
-@pytest.mark.parametrize(
-    ("material", "boundary", "cause"),
-    [
-        (None, gfem.Absorbing("wall", order=2), "second-order absorbing"),
-        (gfem.MaterialField(mu_r=1 - 0.01j), None, "complex mu_r"),
-    ],
-    ids=["second-order-absorbing", "lossy-mu"],
-)
-@pytest.mark.usefixtures("no_solve")
-def test_the_lossy_eigenmode_refusal_names_its_cause(cavity, material, boundary, cause):
-    changes = {}
-    if material is not None:
-        changes["materials"] = {"air": material}
+#: Each eigen term ADR 0138 lifted for omega: (material, boundary).
+LIFTED = {
+    "second-order-absorbing": (None, gfem.Absorbing("side", order=2)),
+    "lossy-mu": (gfem.MaterialField(eps_r=2.0, mu_r=2 * (1 - 0.1j)), None),
+    "lossy-anisotropic": (
+        gfem.Material(eps_r=(2.0, 3.0, 4.0), mu_r=(1.5, 2.0, 2.5), tan_delta=0.1),
+        None,
+    ),
+}
+
+
+def _lifted_box(directory, name):
+    material, boundary = LIFTED[name]
+    model = _box(directory, material)
     if boundary is not None:
-        changes["boundaries"] = [boundary]
+        model = _with(
+            model, boundaries=[gfem.PEC("bottom"), gfem.PEC("top"), boundary]
+        )
+    return model
+
+
+@pytest.mark.parametrize("name", list(LIFTED))
+def test_a_lifted_lossy_mode_is_estimated(tmp_path, name):
+    # ADR 0138: second-order absorbing walls, a complex mu_r and loss inside
+    # an anisotropic material no longer refuse the omega estimate.
+    model = _lifted_box(tmp_path, name)
+    problem = gfem.Eigenmode(target=BOX_110, n_modes=2)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    assert abs(complex(result.omega[0]).imag) > 0
+    estimate = gfem.error_estimate(result, gfem.QuantityEstimator(omega=0), model=model)
+    assert estimate.kind == "omega"
+    assert 0 < estimate.value < 1e-1
+    assert np.all(np.isfinite(estimate.indicators))
+
+
+@pytest.mark.parametrize(
+    ("name", "cause"),
+    [
+        ("second-order-absorbing", "second-order absorbing"),
+        ("lossy-mu", "complex mu_r"),
+        ("lossy-anisotropic", "loss inside the anisotropic material of 'air'"),
+    ],
+)
+def test_the_lossy_eigenmode_check_still_names_its_cause(tmp_path, name, cause):
+    # What omega lifted, the estimates of a mode built on it (Q, objectives
+    # of omega) keep refusing (ADR 0138, ADR 0143 Assumptions).
     with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.refine_mesh(
-            _with(cavity, **changes),
-            rc.CAVITY_PROBLEM,
-            estimator=gfem.QuantityEstimator(omega=0),
+        refinement._check_lossy_mode(
+            _lifted_box(tmp_path, name), "QuantityEstimator(q=...)"
         )
     message = str(caught.value)
     assert caught.value.feature == "lossy eigenmode"
     assert cause in message
-    assert "wave port" not in message
+    assert "FieldEstimator()" in message
 
 
 LOSSY_TENSOR = gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01)
@@ -746,19 +776,21 @@ LOSSY_TENSOR = gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01)
     ],
     ids=["omega", "field", "s"],
 )
-@pytest.mark.usefixtures("no_solve")
-def test_loss_in_an_anisotropic_material_is_one_refusal(
+def test_loss_in_an_anisotropic_material_is_estimated(
     request, fixture, problem, estimator
 ):
-    # No estimator has a case for the complex tensor eps_eff: S, omega and
-    # the field refuse it under one feature name (spec 5.5).
+    # ADR 0138: every tensor gfem represents is R D R^T with real axes, so
+    # the modulus weights of the complex eps_eff are exact; S, omega and the
+    # field estimate it.
     model = request.getfixturevalue(fixture)
     lossy = _with(model, materials=dict.fromkeys(model.materials, LOSSY_TENSOR))
-    with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:
-        gfem.refine_mesh(lossy, problem, estimator=estimator, options=OPTIONS)
-    assert caught.value.feature == "lossy anisotropic material"
-    assert "loss in the anisotropic material of" in str(caught.value)
-    assert "lossless" in str(caught.value)  # the remedy
+    ref = gfem.refine_mesh(
+        lossy, problem, estimator=estimator, tolerance=10.0, options=OPTIONS
+    )
+    assert ref.stop == "tolerance"
+    assert np.all(np.isfinite(ref.estimate.values))
+    assert np.all(np.isfinite(ref.estimate.indicators))
+    assert 0 < ref.estimate.value
 
 
 # --- electrostatic sheets ----------------------------------------------------
