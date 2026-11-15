@@ -42,12 +42,12 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
-from gfem import _mpi, _probe
+from gfem import _mpi, _objective, _probe
 from gfem._checks import check_fixed, is_traced
 from gfem._materials import Material, _is_law, field_principal_values
 from gfem._pytree import register_fields
 from gfem.conventions import MODE_ENERGY
-from gfem.errors import NonDifferentiableError
+from gfem.errors import MeshRefinementUnsupportedError, NonDifferentiableError
 from gfem.mesh import Mesh
 
 if TYPE_CHECKING:
@@ -635,6 +635,9 @@ def power_flow(
         )
     names = _side_names(side)
     _check_driven(field)
+    recorder = _objective.recording()
+    if recorder is not None:
+        return _recorded_power_flow(recorder, field, names, model)
     if not (is_traced(field) or is_traced(model)):
         engine = importlib.import_module("gfem._engine.power_flow")
         return jnp.asarray(engine.power_flow(field, names, model), dtype=float)
@@ -648,6 +651,84 @@ def power_flow(
     from gfem._power_flow import power_flow as traced_power_flow
 
     return traced_power_flow(field, names, model)
+
+
+def _recorded_power_flow(
+    recorder: _objective.Recorder,
+    field: Field,
+    names: tuple[str, ...] | Callable[[np.ndarray], np.ndarray],
+    model: Model,
+) -> jax.Array:
+    """`power_flow` while an objective is classified: one recorded output.
+
+    Its side is checked as the absorbed-power estimate needs it (ADR 0143,
+    ticket 11's raise table): named regions, no port surface in or on it,
+    only volume losses, isotropic non-law materials.
+    """
+    label = recorder.label(field, "power_flow")
+    if callable(names):
+        raise MeshRefinementUnsupportedError(
+            "power_flow side predicate",
+            "The objective calls power_flow on a centroid predicate: its "
+            "staircase surface changes as the mesh is refined, so the power "
+            "it selects drifts with the mesh, an error the estimate does not "
+            "describe. Name the side's volume regions.",
+        )
+    if recorder.discover:
+        _check_estimated_side(names, model)
+    concrete = recorder.field(label)
+    return recorder.output(
+        f"power_flow|{label}|{'+'.join(names)}",
+        (),
+        jnp.float64,
+        lambda: power_flow(concrete, list(names), model=model),
+        measurement="power_flow",
+        label=label,
+        side=names,
+    )
+
+
+def _check_estimated_side(names: tuple[str, ...], model: Model) -> None:
+    """Raise for a `power_flow` side the absorbed-power estimate has no case for."""
+    from gfem._engine import dispersion
+    from gfem._engine.coefficients import anisotropic_regions
+    from gfem.model import Absorbing, Conductor, Impedance, surfaces_of
+
+    mesh = model.mesh
+    tetrahedra = np.concatenate([mesh.elements(n) for n in names])
+    nodes = np.unique(np.asarray(mesh.tetrahedra)[tetrahedra])
+
+    def touches(surface: str) -> bool:
+        triangles = np.asarray(mesh.triangles)[mesh.elements(surface)]
+        return bool(np.isin(triangles, nodes).any())
+
+    for port in model.ports:
+        if any(touches(s) for s in surfaces_of(port)):
+            raise MeshRefinementUnsupportedError(
+                "power through a port",
+                f"The objective's power_flow side touches port {port.name!r}: "
+                "the power through a port is |S|^2, so write the objective on "
+                "result.s.",
+            )
+    for boundary in model.boundaries:
+        if isinstance(boundary, (Impedance, Conductor, Absorbing)) and any(
+            touches(s) for s in surfaces_of(boundary)
+        ):
+            raise MeshRefinementUnsupportedError(
+                "surface loss in power_flow",
+                "The objective's power_flow side holds the lossy surface "
+                f"{boundary.surface!r}, whose absorbed power has no estimate: "
+                "use gfem.FieldEstimator().",
+            )
+    laws = {lr.region for lr in dispersion.law_regions(model)}
+    odd = [n for n in names if n in laws] + list(anisotropic_regions(model, names))
+    if odd:
+        raise MeshRefinementUnsupportedError(
+            "anisotropic or dispersive power_flow",
+            "The objective's power_flow side holds the anisotropic or "
+            f"dispersive region {odd[0]!r}, where the absorbed-power estimate "
+            "was not verified: use gfem.FieldEstimator().",
+        )
 
 
 # --- electric energy ---------------------------------------------------------------
@@ -723,6 +804,13 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
         )
     from gfem._engine.dispersion import refuse_blends
 
+    if _objective.recording() is not None:
+        raise MeshRefinementUnsupportedError(
+            "electric_energy",
+            "The objective reads gfem.electric_energy, which has no field "
+            "cotangent, so its error is not estimated. Read the energy of an "
+            "electrostatic result from result.energy.",
+        )
     refuse_blends(model, "electric_energy")
     if is_traced(field) or is_traced(model):
         raise NonDifferentiableError(

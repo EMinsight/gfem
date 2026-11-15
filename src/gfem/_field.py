@@ -210,6 +210,11 @@ class Field:
                 from a jitted function that has already succeeded, with the
                 same message.
         """
+        from gfem import _objective
+
+        recorder = _objective.recording()
+        if recorder is not None:
+            recorder.point(self)
         return field_at(self, points)
 
     def to_meshio(self) -> meshio.Mesh:

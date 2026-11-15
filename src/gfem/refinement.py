@@ -16,6 +16,7 @@ import itertools
 import math
 import types
 import warnings
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -162,18 +163,25 @@ class QuantityEstimator:
     s: tuple[str, str] | None = None
     omega: int | None = None
     q: int | None = None
+    objective: Callable[[Any, Model], Any] | None = None
 
     def __post_init__(self) -> None:
         """Check that exactly one quantity is named, with valid keys."""
         given = [
             name
-            for name in ("capacitance", "s", "omega", "q")
+            for name in ("capacitance", "s", "omega", "q", "objective")
             if getattr(self, name) is not None
         ]
         if len(given) != 1:
             raise TypeError(
                 "QuantityEstimator takes exactly one of capacitance=(t1, t2), "
-                f"s=(to, from), omega=index or q=index; got {given or 'none'}."
+                "s=(to, from), omega=index, q=index or objective=J; got "
+                f"{given or 'none'}."
+            )
+        if self.objective is not None and not callable(self.objective):
+            raise TypeError(
+                "QuantityEstimator(objective=...) takes a function "
+                f"objective(result, model), got {self.objective!r}."
             )
         for name in ("capacitance", "s"):
             value = getattr(self, name)
@@ -283,6 +291,12 @@ class ErrorEstimate:
     kind: str
     values: tuple[float, ...]
     indicators: np.ndarray
+    #: An objective's value on the result it estimated (`RefinementCycle.value`).
+    _quantity: float | None = dataclasses.field(default=None, repr=False)
+    #: The ports whose S-functional adjoints an objective's dual reads.
+    _dual_ports: tuple[str, ...] = dataclasses.field(default=(), repr=False)
+    #: An objective's first-order sensitivity, sum_a |ct_a| s_a (its floor).
+    _sensitivity: float = dataclasses.field(default=0.0, repr=False)
 
     @property
     def value(self) -> float:
@@ -618,7 +632,7 @@ def refine_mesh(
     _check_problem(model, problem)
     _refuse_blends(model, "refine_mesh")
     for each in estimators:
-        if isinstance(each, QuantityEstimator):
+        if isinstance(each, QuantityEstimator) and each.objective is None:
             _check_quantity_keys(each, problem, model)
             _check_quantity_model(each, model)
     if isinstance(problem, Driven):
@@ -632,8 +646,15 @@ def refine_mesh(
     if _mpi.resolve_comm(comm) is not None:
         _mpi.refuse_feature("mesh_refinement")
     _check_adjoint_workers(estimators, model, problem, options)
-    for each in tolerances:
-        _check_parameters(problem, options, each, error_fraction, max_cycles)
+    for each, limit in zip(estimators, tolerances, strict=True):
+        _check_parameters(
+            problem,
+            options,
+            limit,
+            error_fraction,
+            max_cycles,
+            floor=not _is_objective(each),
+        )
     if max_tetrahedra is not None:
         _check_int(max_tetrahedra, "max_tetrahedra", 1)
     _check_untraced("refine_mesh", (model, problem))
@@ -695,6 +716,12 @@ def _quantities(
         _check_estimator(estimator)
         estimators = (estimator,)
     if tolerance is None:
+        if any(_is_objective(e) for e in estimators):
+            raise TypeError(
+                "An objective's estimate is in the objective's own units, so it "
+                "has no default tolerance: pass refine_mesh(tolerance=...) in "
+                "those units."
+            )
         return estimators, (_DEFAULT_TOLERANCE,) * len(estimators)
     if not isinstance(tolerance, tuple):
         return estimators, (tolerance,) * len(estimators)
@@ -716,6 +743,11 @@ def _describe(estimator: Estimator) -> str:
     """``QuantityEstimator(s=('p2', 'p1'))``: an estimator by its one keyword."""
     if isinstance(estimator, FieldEstimator):
         return "FieldEstimator()"
+    if estimator.objective is not None:
+        name = getattr(
+            estimator.objective, "__name__", type(estimator.objective).__name__
+        )
+        return f"QuantityEstimator(objective={name})"
     kind = _kind(estimator)
     return f"QuantityEstimator({kind}={getattr(estimator, kind)!r})"
 
@@ -747,11 +779,11 @@ def _loop(
         problem = dataclasses.replace(problem, keep_fields=True)
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
-    adjoint_loads = _adjoint_loads(estimators, model, problem)
+    duals = _Duals(_adjoint_port_union(estimators, model, problem))
     with driven.low_frequency_deferred(), warnings.catch_warnings():
         warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
         result, adjoints = _solve(
-            model, problem, options=options, comm=comm, adjoint_loads=adjoint_loads
+            model, problem, options=options, comm=comm, adjoint_loads=duals.loads
         )
     current = model
     cycles: list[RefinementCycle] = []
@@ -760,8 +792,6 @@ def _loop(
     while True:
         cache = _recovery_cache()  # this mesh's, dropped before the next solve
         modes = tracks.follow(result, options.cluster_rtol)
-        if not cycles:
-            _check_q_floors(result, estimators, tolerances, modes, options)
         estimates = tuple(
             _estimate(
                 current,
@@ -770,10 +800,20 @@ def _loop(
                 threads=options.threads,
                 mode=_followed(modes, each),
                 adjoints=adjoints,
+                ridden=duals.ports,
                 cache=cache,
             )
             for each in estimators
         )
+        _check_first_estimates(
+            problem,
+            result,
+            (estimators, estimates, tolerances),
+            modes,
+            options,
+            first=not cycles,
+        )
+        duals.add(estimates)
         above = [
             i
             for i, (estimate, tolerance) in enumerate(
@@ -786,7 +826,10 @@ def _loop(
             dofs=_dofs(result),
             estimate=_shaped([e.value for e in estimates], joint),
             value=_shaped(
-                [_quantity(result, e, _followed(modes, e)) for e in estimators],
+                [
+                    _quantity(result, e, _followed(modes, e), estimate)
+                    for e, estimate in zip(estimators, estimates, strict=True)
+                ],
                 joint,
             ),
             marked=0,
@@ -814,7 +857,7 @@ def _loop(
                     problem,
                     options=options,
                     comm=comm,
-                    adjoint_loads=adjoint_loads,
+                    adjoint_loads=duals.loads,
                 )
         except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
             stop, failure = "solve failed", err
@@ -1040,14 +1083,16 @@ def _estimate(
     threads: int | None,
     mode: int | None = None,
     adjoints: dict[tuple[float, Hashable], np.ndarray] | None = None,
+    ridden: tuple[str, ...] = (),
     cache: RecoveryCache | None = None,
 ) -> ErrorEstimate:
     """The estimate of ``result``: dispatch on the estimator and result type.
 
     ``mode`` is the eigenmode a `QuantityEstimator` follows on this result.
-    ``adjoints`` are an S entry's adjoints solved with ``result``
-    (`gfem.solve._solve`);
-    ``None`` solves them here if the entry needs them (`_adjoint_ports`).
+    ``adjoints`` are the S-functional adjoints solved with ``result``
+    (`gfem.solve._solve`) for the ports ``ridden``;
+    ``None`` solves them here if the entry needs them (`_adjoint_ports`). An
+    objective solves here those of its dual's ports not ``ridden``.
     ``cache`` is the mesh's `gfem._engine.estimate.RecoveryCache`, shared by
     every estimate of ``result``'s mesh; ``None`` makes one for this call.
     """
@@ -1055,6 +1100,16 @@ def _estimate(
 
     cache = cache or kernels.RecoveryCache()
     kind = _kind(estimator)
+    if isinstance(estimator, QuantityEstimator) and estimator.objective is not None:
+        return _estimate_objective(
+            model,
+            result,
+            estimator,
+            threads=threads,
+            adjoints=adjoints or {},
+            ridden=ridden if adjoints is not None else (),
+            cache=cache,
+        )
     if isinstance(estimator, QuantityEstimator):
         if estimator.capacitance is not None:
             parts = [
@@ -1066,14 +1121,7 @@ def _estimate(
             if adjoints is None:
                 ports = _adjoint_ports(estimator, model, list(result.s.excited))
                 adjoints = _adjoints(model, result, ports, threads) if ports else {}
-            fields = dict(zip(result.kept, result.e_fields, strict=True))
-            source = estimator.s[1]
-            # a dual lives on the source field's space (an unexcited port has
-            # no field of its own)
-            duals = {
-                (f, key): dataclasses.replace(fields[f, source], coefficients=z)
-                for (f, key), z in adjoints.items()
-            }
+            duals = _dual_fields(result, adjoints)
             parts = kernels.s_entry(
                 model, result, *estimator.s, threads, adjoints=duals, cache=cache
             )
@@ -1103,11 +1151,150 @@ def _estimate(
     )
 
 
+def _dual_fields(
+    result: DrivenResult, adjoints: Mapping[tuple[float, Hashable], np.ndarray]
+) -> dict[tuple[float, Hashable], Any]:
+    """The adjoints as fields, each on its frequency's kept field's space.
+
+    An unexcited port has no field of its own; every kept field of a
+    frequency shares one space.
+    """
+    fields = {
+        f: field for (f, _), field in zip(result.kept, result.e_fields, strict=True)
+    }
+    return {
+        (f, key): dataclasses.replace(fields[f], coefficients=z)
+        for (f, key), z in adjoints.items()
+    }
+
+
+def _estimate_objective(
+    model: Model,
+    result: Any,
+    estimator: QuantityEstimator,
+    *,
+    threads: int | None,
+    adjoints: Mapping[tuple[float, Hashable], np.ndarray],
+    ridden: tuple[str, ...],
+    cache: RecoveryCache,
+) -> ErrorEstimate:
+    """An objective's estimate: classify it, then its kind's kernel (ADR 0143).
+
+    The S-functional adjoints of the read rows that need one (a port not
+    excited, or a lossy wave port) and did not ride on the solve
+    (``ridden``) are solved here: one more factorization per frequency
+    (`_adjoints`).
+    """
+    from gfem import _objective
+    from gfem._engine import estimate as kernels
+
+    objective = _objective.classify(estimator.objective, result, model)  # ty: ignore[invalid-argument-type]
+    if objective.kind != "objective of s":
+        raise MeshRefinementUnsupportedError(
+            objective.kind,
+            f"{_describe(estimator)} is an {objective.kind}, which has no "
+            "verified estimate in this version of gfem: use "
+            "gfem.FieldEstimator(), or estimate the quantities it reads one "
+            "by one.",
+        )
+    s = result.s
+    reads = [
+        (float(s.frequency[f]), s.ports[i], s.excited[j], r.cotangent)
+        for r in objective.reads
+        for f, i, j in [r.index]
+    ]
+    excited = list(s.excited)
+    ports = tuple(
+        dict.fromkeys(to for _, to, _, _ in reads if _needs_adjoint(to, model, excited))
+    )
+    missing = tuple(p for p in ports if p not in ridden)
+    solved = dict(adjoints)
+    if missing:
+        solved.update(_adjoints(model, result, missing, threads))
+    terms = kernels.objective_of_s(
+        model,
+        result,
+        reads,
+        objective.curvature,
+        threads,
+        adjoints=_dual_fields(result, solved),
+        cache=cache,
+    )
+    return ErrorEstimate(
+        estimator=estimator,
+        kind=objective.kind,
+        values=(terms.value,),
+        indicators=readonly(np.sqrt(terms.weights)),
+        _quantity=objective.value,
+        _dual_ports=ports,
+        _sensitivity=objective.sensitivity,
+    )
+
+
+def _check_first_estimates(
+    problem: Any,
+    result: Any,
+    quantities: tuple[
+        tuple[Estimator, ...], tuple[ErrorEstimate, ...], tuple[float, ...]
+    ],
+    modes: dict[int, int],
+    options: SolverOptions,
+    *,
+    first: bool,
+) -> None:
+    """On the first mesh, raise for a Q or objective floor, or for workers.
+
+    ``quantities`` holds the estimators, their estimates and tolerances.
+    Q's floor is `_check_q_floors`. An objective's is the solve tolerance
+    carried through the objective's first-order sensitivity, 10 x
+    tolerance x sum_a |ct_a| s_a (ADR 0143),
+    since the estimate does not include the solve's error. A dual that
+    rides on the forward solve needs one worker.
+    """
+    if not first:
+        return
+    estimators, estimates, tolerances = quantities
+    _check_q_floors(result, estimators, tolerances, modes, options)
+    solve_tolerance, name = _solve_tolerance(problem, options)
+    workers = 1
+    if isinstance(problem, Driven):
+        workers = min(options.frequency_workers, len(problem.frequency))
+    for estimator, estimate, tolerance in zip(
+        estimators, estimates, tolerances, strict=True
+    ):
+        if not _is_objective(estimator):
+            continue
+        sensitivity = estimate._sensitivity  # noqa: SLF001
+        floor = 10 * solve_tolerance * sensitivity
+        if tolerance < floor:
+            raise ValueError(
+                f"refine_mesh tolerance={tolerance:g} for {_describe(estimator)} "
+                f"must be at least {floor:.3g}: 10 x SolverOptions.{name}="
+                f"{solve_tolerance:g} x the objective's first-order sensitivity "
+                f"{sensitivity:.3g} (the sum of |dJ/dy| |y| over what it reads, "
+                "|y| = 1 for S). The error estimate does not include the "
+                f"solve's error. Lower SolverOptions.{name} to at most "
+                f"{tolerance / (10 * sensitivity):.2g}, or raise tolerance."
+            )
+        if workers > 1 and estimate._dual_ports:  # noqa: SLF001
+            raise MeshRefinementUnsupportedError(
+                "frequency workers",
+                f"{_describe(estimator)} solves the adjoint dual of ports "
+                f"{', '.join(map(repr, estimate._dual_ports))} with the forward, "  # noqa: SLF001
+                "which frequency workers do not do in this version of gfem: it "
+                f"needs frequency_workers=1, got {options.frequency_workers}.",
+            )
+
+
+def _is_objective(estimator: Any) -> bool:
+    return isinstance(estimator, QuantityEstimator) and estimator.objective is not None
+
+
 def _kind(estimator: Estimator) -> str:
     """The `ESTIMATE_KINDS` entry an estimator's estimate is of."""
     if isinstance(estimator, FieldEstimator):
         return "field"
-    for kind in ("capacitance", "s", "omega", "q"):
+    for kind in ("capacitance", "s", "omega", "q", "objective"):
         if getattr(estimator, kind) is not None:
             return kind
     raise AssertionError(estimator)  # pragma: no cover - checked on construction
@@ -1162,11 +1349,19 @@ def _check_q_floor(
 
 
 def _quantity(
-    result: Any, estimator: Estimator, mode: int | None
+    result: Any,
+    estimator: Estimator,
+    mode: int | None,
+    estimate: ErrorEstimate | None = None,
 ) -> float | complex | tuple[complex, ...] | None:
-    """The quantity a `QuantityEstimator` names, read off ``result``."""
+    """The quantity a `QuantityEstimator` names, read off ``result``.
+
+    An objective's is its value, which its ``estimate`` holds.
+    """
     if not isinstance(estimator, QuantityEstimator):
         return None
+    if estimator.objective is not None:
+        return None if estimate is None else estimate._quantity  # noqa: SLF001
     if estimator.capacitance is not None:
         i, j = (result.terminals.index(t) for t in estimator.capacitance)
         return float(np.asarray(result.capacitance)[i, j])
@@ -1426,12 +1621,23 @@ def _adjoint_ports(
     if not isinstance(estimator, QuantityEstimator) or estimator.s is None:
         return ()
     to = estimator.s[0]
+    return (to,) if _needs_adjoint(to, model, excited) else ()
+
+
+def _needs_adjoint(to: str, model: Model, excited: list[str]) -> bool:
+    """Whether the row of port ``to`` may need its solved S-functional adjoint.
+
+    When it is not among ``excited`` (it has no field of its own), or is a
+    wave port touching a lossy element: its mode may then not be parallel
+    to its excitation (the solve checks), and its adjoint is not its own
+    field.
+    """
     if to not in excited:
-        return (to,)
+        return True
     port = next((p for p in model.ports if p.name == to), None)
     if not isinstance(port, WavePort):
-        return ()
-    return (to,) if _lossy_elements(model)[_touching(model, port.surface)].any() else ()
+        return False
+    return bool(_lossy_elements(model)[_touching(model, port.surface)].any())
 
 
 def _excited(problem: Driven, model: Model) -> list[str]:
@@ -1441,26 +1647,46 @@ def _excited(problem: Driven, model: Model) -> list[str]:
     return list(problem.excite)
 
 
-def _adjoint_loads(
+def _adjoint_port_union(
     estimators: tuple[Estimator, ...], model: Model, problem: Any
-) -> AdjointLoads | None:
-    """The per-frequency adjoint loads the estimators' duals solve, or ``None``.
+) -> tuple[str, ...]:
+    """The ports whose S-functional adjoints the S entries' duals solve.
 
     The union over the estimators (ADR 0130), each port once: two S entries
-    reading one port share its adjoint. They ride on each of `refine_mesh`'s
-    forward solves (ADR 0089 amendment); ``None`` for free duals only.
+    reading one port share its adjoint. An objective's ports are known once
+    it has been classified, on the first result (`ErrorEstimate`).
     """
-    from gfem._engine.driven import port_loads
-
     if not isinstance(problem, Driven):
-        return None
+        return ()
     excited = _excited(problem, model)
-    ports = tuple(
+    return tuple(
         dict.fromkeys(
             port for each in estimators for port in _adjoint_ports(each, model, excited)
         )
     )
-    return port_loads(ports) if ports else None
+
+
+class _Duals:
+    """The ports whose S-functional adjoints ride on `refine_mesh`'s solves.
+
+    An S entry's from the first solve; an objective's once its estimate has
+    read them (`add`), from the next solve on (ADR 0089 amendment, ADR 0143).
+    """
+
+    def __init__(self, ports: tuple[str, ...]) -> None:
+        self.ports = ports
+
+    @property
+    def loads(self) -> AdjointLoads | None:
+        """The ports' adjoint loads; ``None`` for free duals only."""
+        from gfem._engine.driven import port_loads
+
+        return port_loads(self.ports) if self.ports else None
+
+    def add(self, estimates: tuple[ErrorEstimate, ...]) -> None:
+        """Add the ports whose adjoints the estimates' objectives read."""
+        read = (p for e in estimates for p in e._dual_ports)  # noqa: SLF001
+        self.ports = tuple(dict.fromkeys([*self.ports, *read]))
 
 
 def _check_adjoint_workers(
@@ -1471,7 +1697,7 @@ def _check_adjoint_workers(
 ) -> None:
     """Refuse frequency workers for an estimate that solves a dual.
 
-    Its adjoint loads (`_adjoint_loads`) ride on the forward's
+    Its adjoint loads (`_loads`) ride on the forward's
     factorization (ADR 0089), which a frequency worker does not hand back:
     frequency workers take wave ports (ADR 0099) but spread no adjoint
     solve.
@@ -1619,12 +1845,14 @@ def _check_driven_estimable(
 ) -> None:
     """Raise for a driven quantity estimate the identity has no term for.
 
-    The S estimate's only for now; objectives of S and driven field
-    objectives call `_check_driven_quantity` too.
+    The S estimate's and every objective's on a driven result (objectives
+    of S and driven field objectives alike).
     """
     for estimator in estimators:
         if isinstance(estimator, QuantityEstimator) and estimator.s is not None:
             _check_driven_quantity(model, frequencies, "QuantityEstimator(s=...)")
+        elif _is_objective(estimator):
+            _check_driven_quantity(model, frequencies, _describe(estimator))
 
 
 def _check_driven_quantity(model: Model, frequencies: list[float], what: str) -> None:
@@ -1740,7 +1968,7 @@ def _touching(model: Model, surface: str) -> np.ndarray:
 
 
 def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
-    if isinstance(estimator, QuantityEstimator):
+    if isinstance(estimator, QuantityEstimator) and estimator.objective is None:
         _check_quantity_result(estimator, result)
         _check_quantity_model(estimator, model)
     if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
@@ -1831,7 +2059,14 @@ def _check_parameters(
     tolerance: Any,
     error_fraction: Any,
     max_cycles: Any,
+    *,
+    floor: bool = True,
 ) -> None:
+    """Check the loop's parameters; ``floor``: the solve tolerance's floor too.
+
+    An objective's floor is its sensitivity's (`_check_objective_floors`),
+    checked on the first estimate.
+    """
     for value, name in ((tolerance, "tolerance"), (error_fraction, "error_fraction")):
         if isinstance(value, bool) or not isinstance(value, (int, float, np.floating)):
             raise TypeError(f"{name} must be a number, got {value!r}.")
@@ -1840,17 +2075,23 @@ def _check_parameters(
     if not 0 < error_fraction <= 1:
         raise ValueError(f"error_fraction must be in (0, 1], got {error_fraction!r}.")
     _check_int(max_cycles, "max_cycles", 0)
-    if isinstance(problem, Eigenmode):
-        floor, floor_name = options.eigen_tolerance, "eigen_tolerance"
-    else:
-        floor, floor_name = options.tolerance, "tolerance"
-    if tolerance < 10 * floor:
+    if not floor:
+        return
+    solve_tolerance, floor_name = _solve_tolerance(problem, options)
+    if tolerance < 10 * solve_tolerance:
         raise ValueError(
             f"refine_mesh tolerance={tolerance:g} must be at least 10 x "
-            f"SolverOptions.{floor_name}={floor:g}: the error estimate does not "
-            "include the linear solve's error. Lower "
+            f"SolverOptions.{floor_name}={solve_tolerance:g}: the error estimate "
+            "does not include the linear solve's error. Lower "
             f"SolverOptions.{floor_name}, or raise tolerance."
         )
+
+
+def _solve_tolerance(problem: Any, options: SolverOptions) -> tuple[float, str]:
+    """The solve's tolerance the estimate does not include, and its option name."""
+    if isinstance(problem, Eigenmode):
+        return options.eigen_tolerance, "eigen_tolerance"
+    return options.tolerance, "tolerance"
 
 
 def _check_int(value: Any, name: str, low: int) -> None:

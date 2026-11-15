@@ -77,6 +77,7 @@ __all__ = [
     "driven",
     "eigenmode",
     "electrostatic",
+    "objective_of_s",
     "omega",
     "s_entry",
 ]
@@ -856,29 +857,171 @@ def s_entry(
     incident (ADR 0089): the free dual, x_i itself on that scale.
     """
     cache = cache or RecoveryCache()
-    fields = dict(zip(result.kept, result.e_fields, strict=True))
     adjoints = adjoints or {}
-    d = _deembedding(result)  # `PortNetwork.deembedding` of the result
-    eta0 = scipy.constants.mu_0 * scipy.constants.c
     out = []
     with task_manager(threads):
-        for n, frequency in enumerate(result.s.frequency):
-            f = float(frequency)
-            f_source = fields[f, source]
-            recovery = cache.recovery(model, f_source.order, cracks=True)
-            k = 2 * np.pi * f / scipy.constants.c * recovery.built.scale
-            _, eps_inverse = cache.effective_eps(recovery, k)
-            ri = cache.wave_residuals(recovery, f_source, k)
-            adjoint = adjoints.get((f, to))
-            if adjoint is not None:
-                rj, scale = cache.wave_residuals(recovery, adjoint, k), 1.0
-            else:
-                rj = cache.wave_residuals(recovery, fields[f, to], k)
-                scale = 1.0 / (4 * k * eta0)
-            curl, mass = _pair(recovery, ri, rj, eps_inverse)
-            scale *= abs(d[to][n] * d[source][n])
-            out.append(Terms(curl=curl, mass=mass, lam=k**2, scale=float(scale)))
+        for frequency in result.s.frequency:
+            pair = _s_pair(
+                model,
+                result,
+                float(frequency),
+                (to, source),
+                adjoints=adjoints,
+                cache=cache,
+            )
+            out.append(
+                Terms(
+                    curl=pair.curl,
+                    mass=pair.mass,
+                    lam=pair.lam,
+                    scale=float(abs(pair.factor)),
+                )
+            )
     return out
+
+
+@dataclasses.dataclass(frozen=True)
+class _SPair:
+    """One S entry's identity terms at one frequency, with its complex factor.
+
+    S_ij,h - S_ij ~= -factor sum_K (curl_K - lam mass_K), factor =
+    d_i d_j times the free dual's scale ``-i / (4 k0 eta0)`` (the S
+    functional of every excited port, lumped or wave, parallel to its
+    excitation), or 1 for a solved adjoint.
+    """
+
+    curl: np.ndarray
+    mass: np.ndarray
+    lam: complex
+    factor: complex
+
+    @property
+    def value(self) -> float:
+        """The entry's estimate: |factor| (|sum c_K| + |lam| |sum m_K|)."""
+        return float(
+            abs(self.factor)
+            * (abs(self.curl.sum()) + abs(self.lam) * abs(self.mass.sum()))
+        )
+
+    @property
+    def weights(self) -> np.ndarray:
+        """The complex terms ``factor (c_K - lam m_K)`` per tetrahedron."""
+        return self.factor * (self.curl - self.lam * self.mass)
+
+
+def _s_pair(
+    model: Model,
+    result: DrivenResult,
+    f: float,
+    entry: tuple[str, str],
+    *,
+    adjoints: Mapping[tuple[float, Hashable], Field],
+    cache: RecoveryCache,
+) -> _SPair:
+    """`_SPair` of ``s[to, source]`` at frequency ``f`` (see `s_entry`)."""
+    to, source = entry
+    fields = dict(zip(result.kept, result.e_fields, strict=True))
+    n = list(result.s.frequency).index(f)
+    d = _deembedding(result)
+    eta0 = scipy.constants.mu_0 * scipy.constants.c
+    f_source = fields[f, source]
+    recovery = cache.recovery(model, f_source.order, cracks=True)
+    k = 2 * np.pi * f / scipy.constants.c * recovery.built.scale
+    _, eps_inverse = cache.effective_eps(recovery, k)
+    ri = cache.wave_residuals(recovery, f_source, k)
+    adjoint = adjoints.get((f, to))
+    if adjoint is not None:
+        rj, scale = cache.wave_residuals(recovery, adjoint, k), 1.0 + 0j
+    else:
+        rj = cache.wave_residuals(recovery, fields[f, to], k)
+        scale = -1j / (4 * k * eta0)
+    curl, mass = _pair(recovery, ri, rj, eps_inverse)
+    return _SPair(
+        curl=curl,
+        mass=mass,
+        lam=k**2,
+        factor=complex(scale * d[to][n] * d[source][n]),
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class ObjectiveTerms:
+    """An objective's estimate on one result: its value and tetrahedron weights.
+
+    Attributes:
+        linear: The combined-dual term, summed over frequencies as magnitudes.
+        remainder: The Hessian remainder 1/2 sum_ab ||H_ab|| eta_a eta_b.
+        weights: Each tetrahedron's term in the objective's units (its
+            ``indicators**2``).
+    """
+
+    linear: float
+    remainder: float
+    weights: np.ndarray
+
+    @property
+    def value(self) -> float:
+        """The estimate: ``linear + remainder``."""
+        return self.linear + self.remainder
+
+
+def objective_of_s(
+    model: Model,
+    result: DrivenResult,
+    reads: Sequence[tuple[float, str, str, complex]],
+    curvature: np.ndarray,
+    threads: int | None = None,
+    *,
+    adjoints: Mapping[tuple[float, Hashable], Field] | None = None,
+    cache: RecoveryCache | None = None,
+) -> ObjectiveTerms:
+    """An objective of S's estimate, the C form of ADR 0129.
+
+    eta_J = sum_f (|sum_K X_c,K| + k_f^2 |sum_K X_m,K|) + 1/2 sum_ab
+    ||H_ab|| eta_a eta_b, with X_.,K = sum_e ct_e factor_e (.)_K,e over the
+    entries e = (f, to, from) read at f: the combined dual of the entries'
+    identities (`_SPair`), whose pair sums are combined before taking
+    magnitudes. eta_a is entry a's own S estimate.
+
+    A tetrahedron's weight is sum_f |sum_e ct_e factor_e (c_K - k^2 m_K)|,
+    plus its share of the remainder, 1/2 sum_ab ||H_ab|| eta_b |a_K,a|.
+
+    Args:
+        reads: Per read entry, (frequency, to, from, cotangent), in the
+            order of ``curvature``'s rows.
+        curvature: ``||H_ab||_2`` over the read entries.
+        adjoints: The solved S-functional adjoints per (frequency, port),
+            for a read row whose port is not excited or not parallel.
+    """
+    cache = cache or RecoveryCache()
+    adjoints = adjoints or {}
+    n_tet = len(model.mesh.tetrahedra)
+    curl: dict[float, np.ndarray] = {}
+    mass: dict[float, np.ndarray] = {}
+    lam: dict[float, complex] = {}
+    etas, entry_weights = [], []
+    with task_manager(threads):
+        for f, to, source, ct in reads:
+            pair = _s_pair(
+                model, result, f, (to, source), adjoints=adjoints, cache=cache
+            )
+            curl[f] = (
+                curl.get(f, np.zeros(n_tet, complex)) + ct * pair.factor * pair.curl
+            )
+            mass[f] = (
+                mass.get(f, np.zeros(n_tet, complex)) + ct * pair.factor * pair.mass
+            )
+            lam[f] = pair.lam
+            etas.append(pair.value)
+            entry_weights.append(np.abs(pair.weights))
+    linear = sum(abs(curl[f].sum()) + abs(lam[f]) * abs(mass[f].sum()) for f in curl)
+    weights = sum((np.abs(curl[f] - lam[f] * mass[f]) for f in curl), np.zeros(n_tet))
+    eta = np.asarray(etas, float)
+    remainder = float(0.5 * eta @ curvature @ eta) if len(eta) else 0.0
+    share = 0.5 * curvature @ eta
+    for a, w in enumerate(entry_weights):
+        weights = weights + share[a] * w
+    return ObjectiveTerms(linear=float(linear), remainder=remainder, weights=weights)
 
 
 def _deembedding(result: DrivenResult) -> dict[str, np.ndarray]:
