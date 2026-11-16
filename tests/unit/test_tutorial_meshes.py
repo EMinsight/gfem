@@ -4,18 +4,22 @@ docs/tutorials/data/*.msh are read by the tutorials, the get-started page and
 several drift tests, and tools/make_tutorial_meshes.py is the only description
 of how they were built. This regenerates them (no gmsh, about two seconds) and
 compares bytes, so neither can change without the other. The transmon meshes
-are gmsh-built by tools/transmon_mesh.py and pinned by test_transmon_mesh.py.
+are gmsh-built by tools/transmon_mesh.py and pinned by test_transmon_mesh.py;
+the metagrating meshes are gmsh-built by tools/metagrating_mesh.py
+(`just metagrating-mesh`).
 """
 
 from pathlib import Path
 
 import make_tutorial_meshes
+import metagrating_mesh
 import pytest
 import transmon_mesh
 
 DATA = Path(__file__).parents[2] / "docs" / "tutorials" / "data"
+GMSH_BUILT = transmon_mesh.MESHES | metagrating_mesh.MESHES
 COMMITTED = sorted(
-    path.name for path in DATA.glob("*.msh") if path.name not in transmon_mesh.MESHES
+    path.name for path in DATA.glob("*.msh") if path.name not in GMSH_BUILT
 )
 
 
