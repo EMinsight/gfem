@@ -34,6 +34,7 @@ from gfem._floquet import (
     floquet_face,
     floquet_surfaces,
     sort_orders,
+    surface_lead,
     wavenumber,
 )
 from gfem._materials import (
@@ -409,8 +410,7 @@ class Model:
                 `gfem._floquet.floquet_face`, naming the surface's first port.
         """
         for surface, ports in floquet_surfaces(self.ports).items():
-            lead = f"FloquetPort {ports[0].name!r} on surface {surface!r}"
-            floquet_face(self, surface, lead, pairs)
+            floquet_face(self, surface, surface_lead(surface, ports), pairs)
 
     def _check_sheet(self, what: str, surface: str, field: SheetField) -> None:
         """A sheet field: on an interior surface, one fill value per face."""

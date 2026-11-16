@@ -62,6 +62,7 @@ __all__ = [
     "Truncation",
     "dtn",
     "floquet_face",
+    "floquet_ports",
     "floquet_surfaces",
     "lattice_frame",
     "modelled_orders",
@@ -70,6 +71,7 @@ __all__ = [
     "order_table",
     "reciprocal_lattice",
     "sort_orders",
+    "surface_lead",
     "warn_oblique_absorbers",
     "warn_order_cap",
     "warn_unrequested",
@@ -471,13 +473,22 @@ class FloquetFace:
         )
 
 
+def floquet_ports(ports: Iterable[Any]) -> tuple[FloquetPort, ...]:
+    """The Floquet ports among ``ports``, in model order (empty: none)."""
+    return tuple(p for p in ports if isinstance(p, FloquetPort))
+
+
 def floquet_surfaces(ports: Iterable[Any]) -> dict[str, tuple[FloquetPort, ...]]:
     """The Floquet ports among ``ports`` by surface, in model order."""
     out: dict[str, list[FloquetPort]] = {}
-    for port in ports:
-        if isinstance(port, FloquetPort):
-            out.setdefault(port.surface, []).append(port)
+    for port in floquet_ports(ports):
+        out.setdefault(port.surface, []).append(port)
     return {s: tuple(group) for s, group in out.items()}
+
+
+def surface_lead(surface: str, ports: Sequence[FloquetPort]) -> str:
+    """What opens a message about Floquet surface ``surface``: its first port."""
+    return f"FloquetPort {ports[0].name!r} on surface {surface!r}"
 
 
 def _edges(triangles: np.ndarray) -> np.ndarray:
@@ -768,7 +779,7 @@ def _distance(
     other = active & (mesh.tetrahedron_tags != tag)
     nodes = [mesh.tetrahedra[other].ravel()]
     skip = {s for b in model.boundaries if isinstance(b, Periodic) for s in b.surfaces}
-    skip |= {p.surface for p in model.ports if isinstance(p, FloquetPort)}
+    skip |= {p.surface for p in floquet_ports(model.ports)}
     named = [
         s
         for item in (*model.boundaries, *model.ports)
@@ -835,9 +846,7 @@ def order_table(
     f = np.atleast_1d(np.asarray(frequency, float))
     out: dict[str, SurfaceOrders] = {}
     for surface, ports in floquet_surfaces(model.ports).items():
-        face = floquet_face(
-            model, surface, f"FloquetPort {ports[0].name!r} on surface {surface!r}"
-        )
+        face = floquet_face(model, surface, surface_lead(surface, ports))
         truncation = modelled_orders(
             f,
             wave_vector,

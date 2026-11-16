@@ -674,7 +674,7 @@ class DrivenRule:
             )
         check_floquet(
             "Driven",
-            [p.name for p in model.ports if isinstance(p, FloquetPort)],
+            [p.name for p in _floquet.floquet_ports(model.ports)],
             device=options.device,
             linear_solver=options.linear_solver,
             sweep=problem.sweep,

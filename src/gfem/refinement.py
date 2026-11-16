@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from gfem import _mpi
-from gfem._boundaries import FloquetPort
 from gfem._checks import is_staging, is_traced
+from gfem._floquet import floquet_ports
 from gfem._pytree import readonly
 from gfem._refine import Refinement, bisect, transfer, transfer_design
 from gfem._text import hertz
@@ -2425,7 +2425,7 @@ def _check_problem(model: Model, problem: Any) -> None:
             "uniform sweep at a few frequencies of the band, then sweep "
             "adaptively on refinement.model.",
         )
-    if any(isinstance(p, FloquetPort) for p in model.ports):
+    if floquet_ports(model.ports):
         raise MeshRefinementUnsupportedError(
             "floquet port",
             "Mesh refinement has no path for a Floquet port: refining one side "
@@ -2999,7 +2999,7 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         raise _unsupported_result(result, estimator)
     if any(field._comm is not None for field in _fields(result)):  # noqa: SLF001
         _mpi.refuse_feature("error_estimate")
-    if any(isinstance(p, FloquetPort) for p in model.ports):
+    if floquet_ports(model.ports):
         raise MeshRefinementUnsupportedError(
             "floquet port",
             f"gfem.{type(estimator).__name__} has no path for a Floquet port: its "

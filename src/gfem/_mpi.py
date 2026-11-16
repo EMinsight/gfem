@@ -286,7 +286,7 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
     Raises:
         DistributedUnsupportedError: Its ``feature`` names what has no path.
     """
-    from gfem._boundaries import FloquetPort
+    from gfem._floquet import floquet_ports
     from gfem.problems import Driven, Eigenmode, Electrostatic
 
     if isinstance(problem, Eigenmode):
@@ -296,7 +296,7 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
     if isinstance(problem, Driven):
         if problem.sweep == "adaptive":
             refuse_feature("adaptive_sweep")
-        if any(isinstance(p, FloquetPort) for p in model.ports):
+        if floquet_ports(model.ports):
             refuse_feature("floquet_port")
         if problem.wave_vector is not None:
             refuse_feature("bloch")
