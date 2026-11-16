@@ -718,6 +718,14 @@ class DrivenRule:
         self.order_frequency = tuple(
             problem.frequency if order_frequency is None else order_frequency
         )
+        #: Whether this rule's Bloch spaces sit in the discretization's
+        #: swept group (`gfem._engine.cache.Discretization.space`): a
+        #: fixed-angle sweep of several frequencies, read on the whole grid
+        #: so that each frequency's single-frequency rule (`_at_frequency`)
+        #: and each frequency worker of it agree with `swept`.
+        self.swept_spaces = (
+            problem.wave_vector_frequency is not None and len(self.order_frequency) > 1
+        )
         #: Per Floquet surface, its order table over the whole grid
         #: (`gfem._floquet.order_table`): the parent's pre-pass, before any
         #: assembly (ADR 0149); empty without Floquet ports.
@@ -809,7 +817,7 @@ class DrivenRule:
             self.options.order,
             wave_vector=self.wave_vector,
             comm=self.comm,
-            swept=self.problem.wave_vector_frequency is not None,
+            swept=self.swept_spaces,
         )
         self._last_operator = (model, op)
         return op
@@ -1448,7 +1456,7 @@ class DrivenRule:
                 model,
                 op.order,
                 wave_vector=minus_k,
-                swept=self.problem.wave_vector_frequency is not None,
+                swept=self.swept_spaces,
             )
         system = SystemOperator(
             op,

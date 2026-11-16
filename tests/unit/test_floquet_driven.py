@@ -617,6 +617,31 @@ def test_a_long_fixed_angle_sweep_keeps_a_fixed_wave_vector_cached(f1_mesh):
     assert driven_operator(model, 2, wave_vector=k_ref).space is fixed
 
 
+def test_a_one_frequency_fixed_angle_solve_keeps_its_wave_vector_with_the_fixed_ones(
+    f1_mesh,
+):
+    # one frequency sweeps nothing: its spaces sit with the fixed wave
+    # vectors', not in the two-set group a long sweep cycles through
+    from gfem._engine import cache
+    from gfem._periodic import bloch_phases
+
+    model = pc.f1(f1_mesh)
+    k = _oblique(model, 25.0, 15.0)
+    problem = gfem.Driven(
+        [pc.F1_FREQUENCY],
+        excite=["R_TE"],
+        wave_vector=k,
+        wave_vector_frequency=pc.F1_FREQUENCY,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", gfem.UnrequestedOrderWarning)
+        gfem.solve(model, problem, options=P2)
+    disc = cache.discretization(model.mesh, model._periodic)
+    phases = bloch_phases(model, k)
+    assert phases in disc._groups
+    assert phases not in disc._swept
+
+
 # --- circular polarization ----------------------------------------------------------
 
 
