@@ -507,11 +507,14 @@ F1_COARSE_TOL = 2e-2
 #: for the gates below.
 F1_FINE_CELLS = (4, 4, 6, 3)
 #: |S - Airy| on F1 at p = 3, `F1_FINE_CELLS` (7.1e-7 measured at normal
-#: incidence).
+#: incidence, 1.3e-6 at `F1_THETA`, 1.8e-6 on the Brewster cell).
 F1_S_TOL = 3e-4
-#: |S| of the cross-polarized entries there (9.7e-7 measured).
+#: |S| of the cross-polarized entries there (9.7e-7 measured at normal
+#: incidence, 6.4e-7 at `F1_THETA`, 1.8e-6 on the Brewster cell).
 F1_CROSS_TOL = 1e-5
-#: The power defect 1 - sum |S|^2 of a column there (2.1e-9 measured).
+#: The power defect 1 - sum |S|^2 of a column there (2.1e-9 measured at
+#: normal incidence, 1.1e-7 at `F1_THETA`, 5.6e-7 on the Brewster cell on
+#: `F1_FINE_CELLS`).
 F1_POWER_TOL = 1e-4
 #: F1's oblique (conical) incidence from the air: theta from the top face's
 #: inward normal, phi from ê1 = +x toward ê2 = +y (`gfem.Model.bloch_wave_vector`).
@@ -522,7 +525,11 @@ F1_PHI = math.radians(30.0)
 #: interface.
 BREWSTER_EPS_SUB = 1.0
 BREWSTER_THETA = math.atan(2.0)
-#: |S11_TM| of the Brewster cell at p = 3, `F1_FINE_CELLS`.
+#: The Brewster cell's cells: one lateral cell more than `F1_FINE_CELLS`
+#: and four in the air, for the steeper in-plane phase (cross-polarization
+#: 4.2e-6 on `F1_FINE_CELLS`, 1.8e-6 here).
+BREWSTER_CELLS = (5, 4, 6, 4)
+#: |S11_TM| of the Brewster cell at p = 3, `BREWSTER_CELLS` (1.5e-6 measured).
 BREWSTER_TOL = 3e-5
 
 
@@ -566,7 +573,7 @@ def f1_ports(top: str = "z_max", bottom: str = "z_min") -> list[gfem.FloquetPort
 def f1(
     mesh: gfem.Mesh, ports: list | None = None, eps_sub: float = F1_EPS_SUB
 ) -> gfem.Model:
-    """F1: an eps 4 slab on an eps ``eps_sub`` substrate under air, Floquet ports on both.
+    """F1: an eps 4 slab on an ``eps_sub`` substrate under air, Floquet ports on both.
 
     ``eps_sub = BREWSTER_EPS_SUB`` gives the Brewster cell.
     """
@@ -692,7 +699,7 @@ def f2_mesh(
 def f2_ports(
     orders: tuple[tuple[int, int], ...] = ((0, 0), (-1, 0), (1, 0)),
 ) -> list[gfem.FloquetPort]:
-    """TE and TM ports of ``orders`` on both faces: "R{m},{n}_TE" (top), "T..." (bottom)."""
+    """TE and TM ports of ``orders`` on both faces: "R{m},{n}_TE" (top), "T..."."""
     return [
         gfem.FloquetPort(
             f"{side}{m},{n}_{pol}", surface, order=(m, n), polarization=pol
