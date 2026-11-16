@@ -406,7 +406,7 @@ class DiffractionOrderResult:
     """The diffraction order of a Floquet port over frequency.
 
     Constants of the solve, read off the lattice and the medium behind the
-    port's face: not differentiable. Plane waves follow e^{+iωt}; the order
+    Floquet surface: not differentiable. Plane waves follow e^{+iωt}; the order
     leaves the cell into the half-space as ``exp(-gamma s)``, ``s`` the
     distance from the face (see `gfem.conventions`).
 

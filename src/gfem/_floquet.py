@@ -609,8 +609,8 @@ def _plane(
     if off > PLANE_RTOL * size:
         raise PortGeometryError(
             f"{lead}: the surface is not planar (its nodes are up to {off:.3g} m "
-            "off their best-fit plane). A Floquet port face is one flat face "
-            "across the cell."
+            "off their best-fit plane). A Floquet surface is one flat face across "
+            "the cell."
         )
     active = model._domain.active  # noqa: SLF001
     nb = mesh.triangle_neighbours[sel]
@@ -618,7 +618,7 @@ def _plane(
     if (side_ok.sum(axis=1) != 1).any():
         raise PortGeometryError(
             f"{lead}: the solve domain lies on both sides of {surface!r} (or on "
-            "neither); a Floquet port faces the domain from one side."
+            "neither); a Floquet surface has the domain on one side only."
         )
     tets = np.where(side_ok[:, 0], nb[:, 0], nb[:, 1])
     centroid = x[mesh.tetrahedra[tets]].mean(axis=1)
@@ -683,7 +683,7 @@ def _rim_pairs(
         where = mesh.imported_nodes[list(lone[0])].mean(axis=0)
         raise PortGeometryError(
             f"{lead}: {len(lone)} edges of its rim lie on no periodic pair's "
-            f"surface (one at {_vec(where)} m). A Floquet port face spans the "
+            f"surface (one at {_vec(where)} m). A Floquet surface spans the "
             "whole cell, its rim on the surfaces of two gfem.Periodic pairs: make "
             f"{surface!r} one planar face across the cell, with no other boundary "
             "or structure on it."

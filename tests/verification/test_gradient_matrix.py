@@ -1757,8 +1757,8 @@ def _floquet_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
     """F2's objective in the nodes of its ridge layer (interfaces included).
 
     The raw node gradient, along directions on the nodes of the ridge layer
-    off the seams: the ridge's walls, top and bottom move, the port faces
-    and the pairs do not.
+    off the seams: the ridge's walls, top and bottom move, the Floquet
+    surfaces and the pairs do not.
     """
     mesh = d.floquet
     model = _floquet_model(mesh, _floquet_design(mesh, np.random.default_rng(30)))

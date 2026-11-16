@@ -13,9 +13,9 @@ A's boundary exactly for the discrete field, with no point evaluation:
 (the forms are scaled by ``mu0 * scale``, see `terms`). A face term belongs
 to A only when every solve-domain element beside it is in A. A port's
 term needs its excitation, which a field does not record, so an outside
-port face that shares an edge with A raises. A Floquet port face is no
+port face that shares an edge with A raises. A Floquet surface is no
 exception: inside A its terms (the absorbing term and the rank-one
-corrections, which couple that face's DOFs only) belong to A, and outside
+corrections, which couple that surface's DOFs only) belong to A, and outside
 A it raises when it shares an edge with A, as other ports do.
 
 On a model with `gfem.Periodic` pairs the field holds e = P x on the

@@ -133,7 +133,7 @@ returning a wrong value:
   uniform driven sweep on the direct or BDDC + GMRES solver; every other
   path raises. Only orders that propagate over the whole sweep can be
   excited. No gradient with respect to the incidence, the half-space or the
-  port face. In the gradient matrix, a model with Floquet ports takes the
+  nodes of a Floquet surface. In the gradient matrix, a model with Floquet ports takes the
   rows of the periodic driven problems (plain and Bloch), with S read from
   its Floquet ports. Details: {doc}`recipes/floquet-ports`.
 - **Unrequested port modes**: a propagating mode that no wave port on its

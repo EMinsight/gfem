@@ -319,7 +319,7 @@ EXPECTED |= {
 # S differentiates like the periodic line's, in the materials and the node
 # coordinates; z_ref (the orders' wave impedances) and every leaf of the
 # diffraction orders are constants of the solve (ADR 0155). The half-space's
-# medium, the incidence and the port faces' nodes raise (`OUT_OF_SCOPE`).
+# medium, the incidence and the Floquet surfaces' nodes raise (`OUT_OF_SCOPE`).
 FLOQUET_PORTS = ("R_TE", "R_TM", "T_TE", "T_TM")
 DIFFRACTION_ORDER_OUTPUTS = (
     "frequency",

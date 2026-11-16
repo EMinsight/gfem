@@ -507,7 +507,7 @@ def test_rim_edges_off_the_pairs_are_refused(tmp_path):
         gfem.PortGeometryError,
         match=r"FloquetPort 'R' on surface 'top': 2 edges of its rim lie on no "
         r"periodic pair's surface \(one at \(6e-07, [0-9.e-]+, 1e-06\) m\)\. A Floquet "
-        r"port face spans the whole cell, its rim on the surfaces of two "
+        r"surface spans the whole cell, its rim on the surfaces of two "
         r"gfem\.Periodic pairs: make 'top' one planar face across the cell, with no "
         r"other boundary or structure on it\.",
     ):

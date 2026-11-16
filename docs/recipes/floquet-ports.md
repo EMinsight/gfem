@@ -85,8 +85,8 @@ for pol in ("TE", "TM"):
 - At normal incidence a flat interface reflects (n1 − n2) / (n1 + n2) in
   both polarizations: the tangential-E sign. The Fresnel r_p of many optics
   texts has the opposite sign.
-- Without `offset`, S is referred to the port faces: S11 picks up the round
-  trip exp(−2iβd) through the air between face and slab.
+- Without `offset`, S is referred to the Floquet surfaces: S11 picks up the
+  round trip exp(−2iβd) through the air between face and slab.
 
 ## Name the orders
 

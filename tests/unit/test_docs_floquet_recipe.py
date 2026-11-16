@@ -92,3 +92,17 @@ def test_the_page_states_the_option_default_it_quotes(page):
 def test_the_page_carries(page, text):
     flat = " ".join(page.split())
     assert text in flat or text in page, text
+
+
+def test_floquet_text_names_the_floquet_surface_never_a_port_face(page):
+    # GLOSSARY: a Floquet port's face is its Floquet surface ("port face" is
+    # the term to avoid), in the recipe, the capabilities limit and the result
+    capabilities = (dp.DOCS / "capabilities.md").read_text(encoding="utf-8")
+    (limit,) = [b for b in capabilities.split("\n- ") if b.startswith("**Floquet")]
+    texts = {
+        "recipe": page,
+        "capabilities": limit,
+        "DiffractionOrderResult": gfem.DiffractionOrderResult.__doc__ or "",
+    }
+    for where, text in texts.items():
+        assert "port face" not in " ".join(text.split()), where
