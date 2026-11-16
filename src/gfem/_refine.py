@@ -117,6 +117,8 @@ def bisect(mesh: Mesh, marked) -> tuple[Mesh, Refinement]:
             _triangle_neighbours(x, tets, tris, Path("refined mesh"))
         ),
         source=None,
+        # bisection keeps the extrusion length of a cross-section
+        section_thickness=old.section_thickness,
     )
     refinement = Refinement(
         tetrahedron_parents=readonly(tet_parents),
