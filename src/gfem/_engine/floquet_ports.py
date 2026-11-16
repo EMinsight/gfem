@@ -172,9 +172,11 @@ class FloquetSurfaceCoupling:
         return dataclasses.replace(self, transpose=not self.transpose)
 
 
-def floquet_piece(built: EngineMesh, order: int, rows: SurfaceOrders) -> terms.Piece:
+def floquet_piece(
+    built: EngineMesh, order: int, surface_orders: SurfaceOrders
+) -> terms.Piece:
     """The Robin term of a Floquet surface: ``i k0 ∫ (n / mu) E_t · v_t``."""
-    face = rows.face
+    face = surface_orders.face
     region = boundary_region(built, (face.surface,))
     weight = math.sqrt(face.eps_r / face.mu_r)
     scale = built.scale
@@ -195,7 +197,7 @@ def _projections(
     built: EngineMesh,
     unpaired: ngs.FESpace,
     order: int,
-    rows: SurfaceOrders,
+    surface_orders: SurfaceOrders,
     row: int = 0,
 ) -> np.ndarray:
     """``(unpaired ndof, 2 n_o)``: ``v = ∫ N · ψ dS`` per (order, polarization).
@@ -205,15 +207,15 @@ def _projections(
     solve (a fixed-angle sweep solves each frequency on its own, ADR 0151).
     Zero on the unpaired space's fixed DOFs.
     """
-    region = boundary_region(built, (rows.face.surface,))
+    region = boundary_region(built, (surface_orders.face.surface,))
     # ψ oscillates across the face: integrate it above the pinned rule
     rule = ngs.IntegrationRule(ngs.ET.TRIG, 2 * order + 6)
     ds = ngs.ds(definedon=region, intrules={ngs.ET.TRIG: rule})
     v = unpaired.TestFunction()
     free = free_mask(unpaired.FreeDofs(), unpaired.ndof)
-    kappa = rows.rows.wave_vector[row] * built.scale  # rad per file unit
-    references = (rows.rows.te[row], rows.rows.tm[row])
-    out = np.zeros((unpaired.ndof, 2 * len(rows.orders)), complex)
+    kappa = surface_orders.rows.wave_vector[row] * built.scale  # rad per file unit
+    references = (surface_orders.rows.te[row], surface_orders.rows.tm[row])
+    out = np.zeros((unpaired.ndof, 2 * len(surface_orders.orders)), complex)
     for o, k in enumerate(kappa):
         phase = ngs.exp(-1j * (k[0] * ngs.x + k[1] * ngs.y + k[2] * ngs.z))
         for p, reference in enumerate(references):
@@ -261,25 +263,27 @@ def floquet_couplings(
     expansion = op.expansion.matrix
     free = free_mask(op.space.FreeDofs(), op.space.ndof)
     out = []
-    for surface, rows in table.items():
-        face = rows.face
+    for surface, surface_orders in table.items():
+        face = surface_orders.face
         area = face.area / scale**2
-        v = _projections(built, op.expansion.space, op.order, rows, at[0])
+        v = _projections(built, op.expansion.space, op.order, surface_orders, at[0])
         vectors = (expansion.conj().T @ v) * free[:, None]
-        n_o = len(rows.orders)
-        infinite = rows.infinite[at].reshape(len(omegas), 2 * n_o)
+        n_o = len(surface_orders.orders)
+        infinite = surface_orders.infinite[at].reshape(len(omegas), 2 * n_o)
         # an infinite λ stays a flag (scaling inf+0j would make it inf+nanj)
-        lam = np.where(infinite, 0, rows.lam[at].reshape(len(omegas), 2 * n_o))
+        lam = np.where(
+            infinite, 0, surface_orders.lam[at].reshape(len(omegas), 2 * n_o)
+        )
         lam = lam * scale
-        modelled = np.repeat(rows.modelled, 2)[None, :] & ~infinite
+        modelled = np.repeat(surface_orders.modelled, 2)[None, :] & ~infinite
         robin = 1j * k0 * math.sqrt(face.eps_r / face.mu_r)
         safe = np.where(modelled, lam, 0.0)
         shift = np.where(modelled, (safe - robin[:, None]) / area, 0.0)
-        infinite = infinite & np.repeat(rows.modelled, 2)[None, :]
-        z = rows.impedance[at].reshape(len(omegas), 2 * n_o)
+        infinite = infinite & np.repeat(surface_orders.modelled, 2)[None, :]
+        z = surface_orders.impedance[at].reshape(len(omegas), 2 * n_o)
         ports = []
-        for port in rows.ports:
-            o = rows.orders.index(port.order)
+        for port in surface_orders.ports:
+            o = surface_orders.orders.index(port.order)
             p = POLARIZATIONS.index(port.polarization)
             column = 2 * o + p
             ports.append(
@@ -290,15 +294,15 @@ def floquet_couplings(
                     omegas=omegas,
                     lam=lam[:, column],
                     impedance=z[:, column],
-                    gamma=rows.rows.gamma[at, o],
-                    propagating=rows.rows.propagating[at, o],
+                    gamma=surface_orders.rows.gamma[at, o],
+                    propagating=surface_orders.rows.propagating[at, o],
                     area=area,
                 )
             )
         out.append(
             FloquetSurfaceCoupling(
                 surface=surface,
-                piece=floquet_piece(built, op.order, rows),
+                piece=floquet_piece(built, op.order, surface_orders),
                 vectors=vectors,
                 shift=shift,
                 infinite=infinite,
@@ -320,13 +324,13 @@ def check_excitable(
             0153). Raised for the whole sweep, before any factorization.
     """
     propagating = {}
-    for rows in table.values():
-        for port in rows.ports:
-            o = rows.orders.index(port.order)
+    for surface_orders in table.values():
+        for port in surface_orders.ports:
+            o = surface_orders.orders.index(port.order)
             propagating[port.name] = (
                 port,
-                rows.face.surface,
-                rows.rows.propagating[:, o],
+                surface_orders.face.surface,
+                surface_orders.rows.propagating[:, o],
             )
     always = [n for n, (_, _, ok) in propagating.items() if ok.all()]
     for name in excite:

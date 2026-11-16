@@ -880,8 +880,8 @@ def warn_order_cap(table: dict[str, SurfaceOrders], tolerance: float) -> None:
 
     Called by the parent only (a worker's warnings never reach the user).
     """
-    for surface, rows in table.items():
-        t = rows.truncation
+    for surface, surface_orders in table.items():
+        t, distance = surface_orders.truncation, surface_orders.face.distance
         if not t.cut:
             continue
         shown = ", ".join(str(o) for o in t.cut[:4]) + (
@@ -902,7 +902,7 @@ def warn_order_cap(table: dict[str, SurfaceOrders], tolerance: float) -> None:
                 f"Floquet surface {surface!r}: its face mesh resolves diffraction "
                 f"orders up to |m| <= {t.cap[0]}, |n| <= {t.cap[1]} (the order cap), "
                 f"but orders beyond it ({shown}) are not negligible "
-                f"{rows.face.distance:.3g} m from the nearest structure (their round "
+                f"{distance:.3g} m from the nearest structure (their round "
                 f"trip decays by less than floquet_order_tolerance={tolerance:g}). "
                 + remedy
             ),
@@ -930,19 +930,19 @@ def warn_unrequested(table: dict[str, SurfaceOrders]) -> None:
     its surface in either polarization: the surface absorbs it, so its
     power is missing from S. Called by the parent only.
     """
-    for surface, rows in table.items():
-        declared = {p.order for p in rows.ports}
-        propagating = rows.rows.propagating
+    for surface, surface_orders in table.items():
+        declared = {p.order for p in surface_orders.ports}
+        propagating = surface_orders.rows.propagating
         missing = [
             o
-            for k, o in enumerate(rows.orders)
+            for k, o in enumerate(surface_orders.orders)
             if o not in declared and propagating[:, k].any()
         ]
         if not missing:
             continue
-        columns = [rows.orders.index(o) for o in missing]
+        columns = [surface_orders.orders.index(o) for o in missing]
         where = propagating[:, columns].any(axis=1)
-        freqs = _frequencies(rows.rows.frequency, where)
+        freqs = _frequencies(surface_orders.rows.frequency, where)
         shown = ", ".join(f"({m}, {n})" for m, n in missing)
         warnings.warn(
             UnrequestedOrderWarning(
