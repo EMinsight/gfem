@@ -1,13 +1,18 @@
 """The system operator of a driven solve: ``A(ω) + W(ω)`` and every handle of it.
 
-``A(ω) = Σ θ_k(ω) A_k`` is the driven operator with the wave ports' Robin
-pieces, and ``W(ω) = U C Uᵀ`` the wave ports' rank-two modal corrections
-(`gfem._engine.wave_ports`), never assembled: a handle of ``A + W`` is a
+``A(ω) = Σ θ_k(ω) A_k`` is the driven operator with the port surfaces' Robin
+pieces, and ``W(ω) = U C Vᵀ`` the port surfaces' low-rank corrections, one
+`LowRankTerm` per surface coupling, never assembled: a handle of ``A + W`` is a
 Woodbury update of a handle of ``A`` (`gfem._linalg.low_rank_update`), for
 forward and adjoint solves alike (``A + W`` is complex symmetric without a
-Bloch wave vector; with one, the operator's symmetry is ``"general"``). The
-``direct`` and ``petsc`` linear solvers sum ``A(ω)`` from the pieces ``A_k``
-assembled once (the piece sum, `gfem._linalg.pieces`), kept until `free`.
+Bloch wave vector; with one, the operator's symmetry is ``"general"``). A wave
+port surface's rank-two modal correction (`gfem._engine.wave_ports`) is ``U C
+Uᵀ`` with ``C`` complex symmetric (``V = U``); a coupling may instead give its
+own term with a right factor ``V`` (a Floquet surface's ``U C Uᴴ``, ``V =
+conj(U)``), infinite diagonal shifts and a row-scaled capacitance
+(`gfem._linalg.lowrank`). The ``direct`` and ``petsc`` linear solvers sum
+``A(ω)`` from the pieces ``A_k`` assembled once (the piece sum,
+`gfem._linalg.pieces`), kept until `free`.
 
 A `SystemOperator` answers two questions: a forward sweep's right-hand
 sides at each ω, warm-started, through one base handle (`SystemSweep`), and
@@ -15,8 +20,12 @@ a backward pass's adjoint loads at frequency ``n`` (`solve_adjoint`), at the
 adjoint tolerance. The adjoint solve is a solve with ``(A + W)^T``: the
 operator itself when it is complex symmetric, and under a Bloch wave vector
 k the transposed system, the system operator at -k (``A(k)^T = A(-k)`` on
-the same DOFs, and ``W`` is symmetric and off every pair), built on the
-first adjoint solve. Adjoint solves refactorize one base handle at each
+the same DOFs), built on the first adjoint solve. Its corrections are the
+transposes of the forward's: a wave port's ``W`` is symmetric and off every
+pair, so its coupling serves both systems; a coupling that is not symmetric
+gives its transposed form (``transposed()``, a Floquet surface's ``conj(U)
+Cᵀ Uᵀ``, read off the forward vectors), which the transposed system takes in
+its place. Adjoint solves refactorize one base handle at each
 frequency, so memory holds one factorization whatever the number of
 frequencies: on a GPU, and, starting from the forward's base handle
 (`keep_base`, ADR 0065), under ranks and on one process with the CPU
@@ -91,7 +100,7 @@ if TYPE_CHECKING:
     from gfem._engine.driven import DrivenOperator
     from gfem._engine.terms import Piece
 
-__all__ = ["FixedPieces", "PlanSlot", "SystemOperator", "SystemSweep"]
+__all__ = ["FixedPieces", "LowRankTerm", "PlanSlot", "SystemOperator", "SystemSweep"]
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -142,6 +151,85 @@ class FixedPieces:
         return integrands, fixed
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
+class LowRankTerm:
+    """A low-rank correction ``U C Vᵀ`` and how its Woodbury solve treats it.
+
+    Attributes:
+        left: ``U``, ``(ndof, p)``, zero on the fixed DOFs.
+        coefficients: ``C``, ``(p, p)``.
+        right: ``V``, as ``U``; ``None`` for ``U``.
+        infinite: ``(p,)`` bools: the rows whose diagonal shift is infinite
+            (their row and column of ``C`` zero); ``None`` for none.
+        row_scaled: Whether the capacitance is row-scaled.
+    """
+
+    left: np.ndarray
+    coefficients: np.ndarray
+    right: np.ndarray | None = None
+    infinite: np.ndarray | None = None
+    row_scaled: bool = False
+
+    def transposed(self) -> LowRankTerm:
+        """``(U C Vᵀ)ᵀ = V Cᵀ Uᵀ``, with the same flags."""
+        if self.right is None:
+            return dataclasses.replace(self, coefficients=self.coefficients.T)
+        return dataclasses.replace(
+            self, left=self.right, coefficients=self.coefficients.T, right=self.left
+        )
+
+    @classmethod
+    def concatenate(cls, terms: Sequence[LowRankTerm]) -> LowRankTerm:
+        """The block-diagonal sum of ``terms``: columns side by side, ``C`` blocks.
+
+        ``right`` is ``None`` when every term's is; ``infinite`` likewise;
+        the capacitance is row-scaled when any term's is.
+        """
+        left = np.concatenate([t.left for t in terms], axis=1)
+        coefficients = scipy.linalg.block_diag(*(t.coefficients for t in terms))
+        right = None
+        if any(t.right is not None for t in terms):
+            right = np.concatenate(
+                [t.left if t.right is None else t.right for t in terms], axis=1
+            )
+        infinite = None
+        if any(t.infinite is not None for t in terms):
+            infinite = np.concatenate(
+                [
+                    np.zeros(t.left.shape[1], bool)
+                    if t.infinite is None
+                    else t.infinite
+                    for t in terms
+                ]
+            )
+        return cls(
+            left,
+            coefficients,
+            right=right,
+            infinite=infinite,
+            row_scaled=any(t.row_scaled for t in terms),
+        )
+
+
+def _term(coupling: Any, omega: float) -> LowRankTerm:
+    """A surface coupling's correction at ω.
+
+    Its own `LowRankTerm` (``term``), else a wave port's ``W = vectors P D
+    Pᵀ vectorsᵀ`` (`PortSurfaceCoupling.correction`).
+    """
+    term = getattr(coupling, "term", None)
+    if term is not None:
+        return term(omega)
+    p, d = coupling.correction(omega)
+    return LowRankTerm(coupling.vectors @ p, d)
+
+
+def _transposed(coupling: Any) -> Any:
+    """A coupling for the transposed system: its ``transposed()``, else itself."""
+    transposed = getattr(coupling, "transposed", None)
+    return coupling if transposed is None else transposed()
+
+
 class SystemOperator:
     """The system operator ``A(ω) + W(ω)`` of one driven solve, and every handle of it.
 
@@ -152,8 +240,11 @@ class SystemOperator:
     `SystemSweep`.
 
     Attributes:
-        operator: The driven operator, wave-port Robin pieces included.
-        surfaces: The wave port surfaces' couplings.
+        operator: The driven operator, port surfaces' Robin pieces included.
+        surfaces: The port surfaces' couplings: each has a Robin ``piece``,
+            its ``vectors`` and either a wave port's ``correction(ω)`` or its
+            own ``term(ω)`` (a `LowRankTerm`), and may give a
+            ``transposed()`` coupling for the transposed system.
     """
 
     def __init__(
@@ -167,11 +258,11 @@ class SystemOperator:
         transposed: Callable[[], DrivenOperator] | None = None,
         pool_budget: int | None = None,
     ) -> None:
-        """Add each wave port surface's Robin piece to ``operator``.
+        """Add each port surface's Robin piece to ``operator``.
 
         Args:
             operator: The driven operator.
-            surfaces: The wave port surfaces' couplings.
+            surfaces: The port surfaces' couplings (see ``surfaces``).
             linear: The rule's linear solver.
             width: The right-hand sides per solve (the excited ports).
             adjoint_tolerance: The relative residual of adjoint solves.
@@ -441,17 +532,19 @@ class SystemOperator:
         """The system whose handles solve with ``(A + W)^T``.
 
         ``self`` without a transposed operator; otherwise the transposed
-        system, built on first use with the same wave ports, solver and
-        tolerances. With a pool budget, where the plan pool serves (one
-        process, CPU ``direct``), its adjoint solves run one sweep whose base
-        comes from the pool under the -k key and returns there with the entry.
+        system, built on first use with the same solver and tolerances and
+        each surface coupling's transposed form where it gives one (a wave
+        port's coupling serves both). With a pool budget, where the plan pool
+        serves (one process, CPU ``direct``), its adjoint solves run one sweep
+        whose base comes from the pool under the -k key and returns there with
+        the entry.
         """
         if self._transposed is None:
             return self
         if self._transposed_system is None:
             system = SystemOperator(
                 self._transposed(),
-                self.surfaces,
+                [_transposed(c) for c in self.surfaces],
                 self._linear,
                 width=self._width,
                 adjoint_tolerance=self._adjoint_tolerance,
@@ -483,28 +576,33 @@ class SystemOperator:
             layout=op.layout,
         )
 
-    def corrections(self, omega: float) -> tuple[np.ndarray, np.ndarray]:
-        """``W(ω) = U C Uᵀ``: ``U`` ``(ndof, 2 n_wave)``, ``C`` block diagonal.
+    def corrections(self, omega: float) -> LowRankTerm:
+        """``W(ω) = U C Vᵀ``, block diagonal over the surface couplings.
 
-        One block per wave port surface, two columns per wave port on it
-        (see `PortSurfaceCoupling.correction`).
+        A wave port surface gives two columns per wave port on it (see
+        `PortSurfaceCoupling.correction`), with ``V = U``; a coupling with its
+        own ``term`` gives that.
         """
-        columns, blocks = [], []
-        for c in self.surfaces:
-            p, d = c.correction(omega)
-            columns.append(c.vectors @ p)
-            blocks.append(d)
-        return np.concatenate(columns, axis=1), scipy.linalg.block_diag(*blocks)
+        return LowRankTerm.concatenate([_term(c, omega) for c in self.surfaces])
 
     def _system_handle(self, base: Handle, omega: float, *, borrow: bool) -> Handle:
         """A handle of ``A(ω) + W(ω)`` from a handle ``base`` of ``A(ω)``.
 
-        ``base`` itself without wave ports; otherwise a Woodbury update that
+        ``base`` itself without port surfaces; otherwise a Woodbury update that
         owns ``base`` or ``borrow``s it.
         """
         if not self.surfaces:
             return base
-        return low_rank_update(base, *self.corrections(omega), borrow=borrow)
+        term = self.corrections(omega)
+        return low_rank_update(
+            base,
+            term.left,
+            term.coefficients,
+            right=term.right,
+            infinite=term.infinite,
+            row_scaled=term.row_scaled,
+            borrow=borrow,
+        )
 
     def _adjoint_handle(self, n: int, omega: float) -> Handle:
         """The adjoint handle of ``A(ω) + W(ω)`` of frequency ``n``.
