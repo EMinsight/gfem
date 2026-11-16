@@ -500,8 +500,8 @@ class Model:
             surface: An open face of the cell (a Floquet surface, with or
                 without ports yet).
             frequency: Hz.
-            theta: The angle from the face's inward normal, rad, |theta| <=
-                pi/2.
+            theta: The angle from the face's inward normal, rad, ``|theta| <=
+                pi/2``.
             phi: The azimuth from ê1 toward ê2, rad.
 
         Returns:
@@ -548,7 +548,7 @@ class Model:
                 (normal incidence).
 
         Returns:
-            The orders, sorted by |m| + |n|, then m, then n.
+            The orders, sorted by ``|m| + |n|``, then m, then n.
 
         Raises:
             NonDifferentiableError: An argument is traced by JAX.

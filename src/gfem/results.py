@@ -423,7 +423,7 @@ class DiffractionOrderResult:
         propagating: ``(n_freq,)`` bool, gamma² < 0 strictly (False at
             grazing).
         theta: ``(n_freq,)`` rad, the angle from the face's inward normal,
-            arcsin(|κ| / k); π/2 at grazing, NaN where evanescent.
+            ``arcsin(|κ| / k)``; π/2 at grazing, NaN where evanescent.
         phi: ``(n_freq,)`` rad, the azimuth of κ from ê1 toward ê2 in the
             lattice frame; NaN where evanescent.
     """
