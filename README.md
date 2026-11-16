@@ -74,8 +74,8 @@ result.
 The documentation is at <https://bvial.info/gfem/>. Good places to start:
 
 - [Get started](https://bvial.info/gfem/get-started.html): install, a first solve and its gradient.
-- [Tutorials](https://bvial.info/gfem/tutorials/topology.html): a band-stop filter, a coplanar line matched to 50 Ω and photonic
-  waveguide bends, each designed with gradients.
+- [Tutorials](https://bvial.info/gfem/tutorials/topology.html): a band-stop filter, a coplanar line matched to 50 Ω, photonic
+  waveguide bends and a metagrating, each designed with gradients.
 - [PETSc and SLEPc](https://bvial.info/gfem/recipes/petsc-slepc.html): the PETSc and SLEPc solvers, which need a source build.
 - [Distributed solve](https://bvial.info/gfem/recipes/distributed-solve.html): one driven solve across the ranks of an MPI job.
 

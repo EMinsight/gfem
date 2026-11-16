@@ -25,6 +25,7 @@ tutorials/transmon
 tutorials/bend
 tutorials/bend3d
 tutorials/metal-bend
+tutorials/metagrating
 ```
 
 ```{toctree}
@@ -59,6 +60,7 @@ recipes/mesh-refinement
 recipes/anisotropic-materials
 recipes/dispersive-materials
 recipes/periodic-cell
+recipes/floquet-ports
 recipes/shared-port-surface
 recipes/measurements
 recipes/loss-budget

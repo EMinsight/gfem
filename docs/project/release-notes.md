@@ -12,6 +12,52 @@
   degenerate pair, depending on the number of threads; the second mode is now
   recovered when the solve comes close to it.
 
+Floquet ports:
+
+- **Floquet ports.** `gfem.FloquetPort` lights a periodic cell with a plane
+  wave and reads its diffraction orders. Each port is one order in one
+  polarization (TE or TM) on an open face of the cell, with its own row and
+  column of S; |S|² is the order's diffraction efficiency, and the row of an
+  order that does not propagate reads exactly 0. The ports of a face absorb
+  every order at any angle. See {doc}`../recipes/floquet-ports`.
+- **Incidence.** `Model.bloch_wave_vector` turns incidence angles into a
+  wave vector, `Model.propagating_orders` lists the orders that propagate
+  behind a face, and `DrivenResult.diffraction_orders` gives each port's
+  order, angles and propagation constant (`gfem.DiffractionOrderResult`).
+  `gfem.Driven(..., wave_vector_frequency=)` keeps the incidence angle fixed
+  across a sweep.
+- **Gradients.** Design gradients (materials and nodes inside the cell)
+  through Floquet S, on the direct and BDDC + GMRES solvers, with plain
+  periodicity and under a Bloch wave vector. A gradient with respect to the
+  angle, `wave_vector_frequency`, the half-space's material, a Floquet
+  face's nodes or a port's `offset` raises.
+- **Which problems.** The uniform driven sweep, frequency workers included.
+  The adaptive sweep, `linear_solver="petsc"`, the GPU solver, MPI ranks,
+  mesh refinement, error and quantity estimates, eigenmode solves and the
+  port mode problem raise on a model with Floquet ports, as do a lossy,
+  dispersive, anisotropic or inhomogeneous half-space and a face on one
+  periodic pair with side walls.
+- **New warnings.**
+  - `gfem.ObliqueAbsorberWarning`, a change of behaviour: a driven solve of
+    a periodic model now warns when a propagating wave meets a
+    `gfem.Absorbing` face with a reflection of at least 1 %. Existing
+    scripts with oblique absorbing faces in periodic cells now warn; filter
+    the warning by class to silence it.
+  - `gfem.UnrequestedOrderWarning`: a propagating order has no port, so its
+    power is missing from S.
+  - `gfem.FloquetOrderCapWarning`: the face mesh is too coarse to carry the
+    evanescent orders the structure excites.
+- **Changed message.** A `gfem.WavePort` touching a periodic pair now points
+  to `gfem.FloquetPort`.
+- **Periodic design grids.** `design.LayerGrid(..., periodic=(True, False))`
+  filters across the seam of a periodic cell and wraps its element map.
+- Job files carry Floquet ports and `wave_vector_frequency`; older files read
+  unchanged, and an older gfem refuses a newer file by name.
+- New pages: the tutorial {doc}`../tutorials/metagrating` and the recipe
+  {doc}`../recipes/floquet-ports`. The conventions page gains a "Floquet
+  ports" section, {doc}`../verification` a "Floquet ports" section, and the
+  glossary the Floquet terms.
+
 Dispersive materials:
 
 - **Permittivity laws.** A `gfem.Material`'s `eps_r` may now be a

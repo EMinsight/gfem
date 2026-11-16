@@ -13,11 +13,16 @@ v0.1.
   Maxwell capacitance matrix between named terminals) and {py:obj}`gfem.PortMode`
   (the 2D mode of a wave port; a permittivity law in its cross-section where
   Re ε > 0). Eigenmode and uniform driven problems take a
-  Bloch wave vector (`wave_vector=`, rad/m) on a periodic model.
+  Bloch wave vector (`wave_vector=`, rad/m) on a periodic model; a uniform
+  driven sweep may keep the incidence angle fixed (`wave_vector_frequency`).
 - **Ports**: {py:obj}`gfem.LumpedPort` on one or several surfaces driven together,
   and {py:obj}`gfem.WavePort` on an exterior surface, fed by its port mode;
   several wave ports on one surface each request a different mode of it,
-  each its own row and column of S ({doc}`recipes/shared-port-surface`).
+  each its own row and column of S ({doc}`recipes/shared-port-surface`);
+  {py:obj}`gfem.FloquetPort` on the open face of a periodic cell: one
+  diffraction order in one polarization (TE or TM) of a plane wave, each its
+  own row and column of S, |S|² the diffraction efficiency
+  ({doc}`recipes/floquet-ports`).
 - **Boundaries**: {py:obj}`gfem.PEC`, {py:obj}`gfem.PMC` (symmetry planes), {py:obj}`gfem.Absorbing`
   (first or second order), {py:obj}`gfem.Conductor` (a finite-conductivity metal, by
   its surface impedance), {py:obj}`gfem.Impedance` (per-square R, L and C),
@@ -120,9 +125,17 @@ returning a wrong value:
   eigenmode problems, and the direct or BDDC + GMRES solver for driven
   problems. PETSc and cuDSS refuse it, as does an adaptive sweep.
   Electrostatic problems refuse any periodic pair, and a wave port may not
-  touch one. There are no Floquet ports, so an absorbing boundary reflects
-  the waves a Bloch cell radiates onto it obliquely. Details:
-  {doc}`recipes/periodic-cell`.
+  touch one. An absorbing boundary reflects waves that meet it obliquely,
+  and a driven solve warns ({py:obj}`gfem.ObliqueAbsorberWarning`); a
+  Floquet port absorbs them. Details: {doc}`recipes/periodic-cell`.
+- **Floquet ports**: the half-space behind the face is homogeneous,
+  isotropic and lossless, and the face needs two periodic pairs. Only the
+  uniform driven sweep on the direct or BDDC + GMRES solver; every other
+  path raises. Only orders that propagate over the whole sweep can be
+  excited. No gradient with respect to the incidence, the half-space or the
+  port face. In the gradient matrix, a model with Floquet ports takes the
+  rows of the periodic driven problems (plain and Bloch), with S read from
+  its Floquet ports. Details: {doc}`recipes/floquet-ports`.
 - **Unrequested port modes**: a propagating mode that no wave port on its
   surface requests is partly reflected at the port, not converted; request
   it to see where its power goes ({py:obj}`gfem.SkippedPortModeWarning`

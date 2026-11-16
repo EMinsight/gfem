@@ -104,6 +104,48 @@ Tests: [driven](https://github.com/benvial/gfem/blob/main/tests/verification/tes
 [identities, eigenmode](https://github.com/benvial/gfem/blob/main/tests/unit/test_periodic_eigen.py),
 [PETSc](https://github.com/benvial/gfem/blob/main/tests/verification/test_periodic_petsc.py).
 
+## Floquet ports
+
+Two cells with Floquet ports on both open faces, solved against references
+that do not use gfem:
+
+- **A dielectric slab on a substrate, under air.** Its reflection and
+  transmission, complex, match the tangential-E transfer-matrix (Airy) form
+  for TE and TM: at normal incidence, at conical incidence (40° from the
+  normal, azimuth 30°) under a Bloch wave vector, and at a fixed angle over a
+  band of three frequencies. The cross-polarized entries vanish, and each
+  column's efficiencies add up to 1.
+- **The same slab between air on both sides, at Brewster's angle.** Its TM
+  reflection vanishes.
+- **A lamellar grating.** The diffraction efficiency of every propagating
+  order, reflected and transmitted, in both polarizations, matches a
+  rigorous coupled-wave (RCWA) solution computed with many harmonics: at
+  normal incidence, at 20°, at conical incidence (20°, azimuth 30°) and with
+  a lossy ridge, whose missing power matches the RCWA absorption. In the
+  lossless cases the efficiencies add up to 1, and the power flowing into
+  the substrate, measured on the field, equals the transmitted efficiencies.
+- **Reference planes.** Moving the open faces away from the slab, with the
+  ports' offsets grown by the same distance, leaves S unchanged.
+
+Identities checked on coarse cells: a flat glass-air interface reflects
+(n − 1)/(n + 1) in both polarizations; a cell closed by a PEC wall reflects
+all power; the full S of the grating obeys {term}`Bloch reciprocity` in its
+Floquet form, with the order relabelling and the signs σ, at normal and
+conical incidence, and fails it without the signs; a zero wave vector gives
+the plain periodic S; a fixed-angle sweep gives the S of solves at each
+frequency's own wave vector; S is continuous through a
+{term}`Rayleigh anomaly`; the combination (S[:, TM] + i S[:, TE]) / √2
+turns right-handed for incidence from the top face and left-handed from the
+bottom one; and the BDDC + GMRES solver and frequency workers agree with the
+serial direct solve. Gradients of the efficiencies through Floquet ports,
+plain and Bloch, with respect to the permittivity and the node coordinates,
+are in the gradient matrix ({doc}`capabilities`). All of these run on every
+change to gfem.
+
+Tests: [Floquet ports](https://github.com/benvial/gfem/blob/main/tests/verification/test_floquet_driven.py),
+[identities](https://github.com/benvial/gfem/blob/main/tests/unit/test_floquet_driven.py),
+[orders](https://github.com/benvial/gfem/blob/main/tests/unit/test_floquet_orders.py).
+
 ## Anisotropic materials
 
 - An absorbing boundary ending a biaxial, magnetic slab reflects as the
