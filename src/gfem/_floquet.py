@@ -602,9 +602,12 @@ def _rim_pairs(
     rim = [tuple(r) for r in keys[counts == 1].tolist()]
     names = {r.tag: r.name for r in mesh.regions if r.dim == 2}
     on: dict[tuple[int, int], set[str]] = {r: set() for r in rim}
-    all_e = _edges(mesh.triangles).tolist()
-    for (i, j), t in zip(all_e, np.repeat(mesh.triangle_tags, 3).tolist(), strict=True):
-        if (i, j) in on and t != tag:
+    all_e = _edges(mesh.triangles)
+    n = len(mesh.imported_nodes)
+    near = np.isin(all_e[:, 0] * n + all_e[:, 1], [i * n + j for i, j in rim])
+    tags = np.repeat(mesh.triangle_tags, 3)[near]
+    for (i, j), t in zip(all_e[near].tolist(), tags.tolist(), strict=True):
+        if t != tag:
             on[i, j].add(names.get(t, str(t)))
     pair_of = {s: k for k, p in enumerate(pairs) for s in (p.first, p.second)}
     met: set[int] = set()
