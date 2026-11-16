@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from gfem import _mpi
-from gfem._boundaries import LumpedPort, WavePort
+from gfem._boundaries import LumpedPort, Port
 from gfem._engine import terms
 from gfem._engine.wave_ports import PortSurfaceCoupling, WavePortCoupling
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
@@ -69,7 +69,7 @@ __all__ = [
 PARALLEL_RTOL = 1e-10
 
 
-def resistance(port: LumpedPort | WavePort) -> float:
+def resistance(port: Port) -> float:
     """A lumped port's resistance in ohm, NaN without one (an undefined S row)."""
     if not isinstance(port, LumpedPort):  # pragma: no cover - refused earlier
         return math.nan
