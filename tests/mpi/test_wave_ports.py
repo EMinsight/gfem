@@ -169,7 +169,9 @@ def _update_residual(case, directory):
                 kind="bddc_gmres",
                 tolerance=1e-12,
             ),
-            *system.corrections(omega),
+            (term := system.corrections(omega)).left,
+            term.coefficients,
+            right=term.right,
         )
         layout = network.layout
         free = free_mask(system.operator.space.FreeDofs(), system.operator.space.ndof)
