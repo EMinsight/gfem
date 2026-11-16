@@ -84,9 +84,10 @@ import numpy as np
 import scipy.constants
 import scipy.sparse
 
-from gfem import _mpi
+from gfem import _floquet, _mpi
 from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import (
+    FloquetPort,
     Impedance,
     LumpedPort,
     WavePort,
@@ -109,6 +110,11 @@ from gfem._engine.cache import (
 )
 from gfem._engine.domain import em_region, hcurl_space, pec_surfaces, space_key
 from gfem._engine.fields import dof_shape
+from gfem._engine.floquet_ports import (
+    FloquetSurfaceCoupling,
+    check_excitable,
+    floquet_couplings,
+)
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import PortNetwork, resistance, split_cotangent
 from gfem._engine.runtime import task_manager
@@ -130,6 +136,7 @@ from gfem._port_section import port_section_key
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
 from gfem._text import hertz
 from gfem.errors import (
+    FloquetOrderCapWarning,
     LinearSolverConvergenceError,
     LowFrequencyWarning,
     PortGeometryError,
@@ -141,6 +148,7 @@ from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Driven
 from gfem.results import (
+    DiffractionOrderResult,
     DrivenResult,
     Field,
     NetworkParameters,
@@ -663,6 +671,15 @@ class DrivenRule:
                     "impedance to feed 1 W through. Give it a resistance, or leave "
                     "it out of Driven.excite."
                 )
+        #: Per Floquet surface, its order table over the whole grid
+        #: (`gfem._floquet.order_table`): the parent's pre-pass, before any
+        #: assembly (ADR 0149); empty without Floquet ports.
+        self.orders = _floquet.order_table(
+            model, problem.frequency, problem.wave_vector, options
+        )
+        if self.orders:
+            _floquet.warn_order_cap(self.orders, options.floquet_order_tolerance)
+            check_excitable(self.orders, self.excite, problem.frequency)
         #: Indices of the frequencies whose fields are kept.
         self.kept = tuple(problem.frequency.index(f) for f in problem.kept_frequencies)
         #: Whether the sweep is adaptive (a reduced model).
@@ -1152,7 +1169,9 @@ class DrivenRule:
         frequency = self.problem.frequency
         tolerance = self.options.port_mode_tolerance
         disc = cached(op.built)
-        key = _KeptPorts.key_of(model, op, frequency, tolerance)
+        key = _KeptPorts.key_of(
+            model, op, frequency, tolerance, self.options.floquet_order_tolerance
+        )
         kept = disc.ports if disc is not None else None
         if not isinstance(kept, _KeptPorts) or kept.key != key:
             couplings = wave_port_couplings(
@@ -1165,7 +1184,8 @@ class DrivenRule:
                 layout=op.layout or ONE_PROCESS,
                 swept=self.handed_port_modes,
             )
-            kept = _KeptPorts(key, couplings)
+            floquet = floquet_couplings(model, op, self.orders, frequency)
+            kept = _KeptPorts(key, couplings, floquet)
             if disc is not None:
                 disc.ports = kept
         couplings = kept.couplings
@@ -1193,7 +1213,7 @@ class DrivenRule:
             )
         system = SystemOperator(
             op,
-            couplings,
+            [*couplings, *kept.floquet],
             self.linear,
             width=len(columns),
             adjoint_tolerance=adjoint_tolerance(self.options),
@@ -1209,6 +1229,7 @@ class DrivenRule:
                 couplings,
                 columns=columns,
                 n_freq=len(frequency),
+                floquet=kept.floquet,
             )
             kept.keep(network_key, ports)
         return system, ports
@@ -1268,6 +1289,7 @@ class DrivenRule:
                     corrections=[
                         AffineTerm(c.vectors, c.correction_coefficients)
                         for c in system.surfaces
+                        if isinstance(c, PortSurfaceCoupling)
                     ],
                     adjoint_loads=ports.adjoint_loads,
                 )
@@ -1718,7 +1740,34 @@ class DrivenRule:
             ),
             port_modes=self._port_modes(out),
             offsets=self.offsets,
+            diffraction_orders=self._diffraction_orders(out.rows),
         )
+
+    def _diffraction_orders(
+        self, rows: Sequence[int]
+    ) -> dict[str, DiffractionOrderResult]:
+        """Each Floquet port's `DiffractionOrderResult` at the grid indices ``rows``."""
+        rows = list(rows)
+        frequency = jnp.asarray([self.problem.frequency[i] for i in rows])
+        out = {}
+        for surface, table in self.orders.items():
+            r = table.rows
+            for port in table.ports:
+                o = table.orders.index(port.order)
+                out[port.name] = DiffractionOrderResult(
+                    port=port.name,
+                    frequency=frequency,
+                    order=port.order,
+                    polarization=port.polarization,
+                    surface=surface,
+                    index=table.face.index,
+                    wave_vector=jnp.asarray(r.wave_vector[rows, o]),
+                    gamma=jnp.asarray(r.gamma[rows, o]),
+                    propagating=jnp.asarray(r.propagating[rows, o]),
+                    theta=jnp.asarray(r.theta[rows, o]),
+                    phi=jnp.asarray(r.phi[rows, o]),
+                )
+        return out
 
     def _port_modes(self, out: SweepOutputs) -> dict[str, PortModeResult]:
         """The wave ports' `PortModeResult` at the grid indices ``out.rows``.
@@ -2184,6 +2233,7 @@ def _attenuation_message(
 #: it solves: a second solve of the same sweep (a frequency worker, an
 #: estimate's adjoint) ignores them, since the first already gave them.
 FORWARD_WARNINGS = (
+    FloquetOrderCapWarning,
     LowFrequencyWarning,
     SkippedPortModeWarning,
     PortModeProjectionWarning,
@@ -2500,12 +2550,14 @@ class _KeptPorts:
     Attributes:
         key: `key_of` the solve that built them.
         couplings: The wave port surfaces' couplings.
+        floquet: The Floquet surfaces' couplings.
         networks: Port networks on them by ``(excited columns, number of
             frequencies, Bloch wave vector)``.
     """
 
     key: tuple
     couplings: list[PortSurfaceCoupling]
+    floquet: list[FloquetSurfaceCoupling] = dataclasses.field(default_factory=list)
     networks: dict[tuple, PortNetwork] = dataclasses.field(default_factory=dict)
 
     @staticmethod
@@ -2514,13 +2566,15 @@ class _KeptPorts:
         op: DrivenOperator,
         frequency: tuple[float, ...],
         tolerance: float,
+        order_tolerance: float = 0.0,
     ) -> tuple:
         """What the couplings of ``model`` on ``op``'s discretization depend on.
 
         The space (a discretization keeps its spaces, so its identity is
-        stable), the order, the output grid, the port mode tolerance, the
-        ports, and per wave port surface `port_section_key`: never the port
-        section itself.
+        stable, and a Bloch-phased space is its wave vector's), the order,
+        the output grid, the port mode tolerance, the Floquet order
+        tolerance, the ports, and per wave port surface `port_section_key`:
+        never the port section itself.
         """
         sections = tuple(
             port_section_key(model, lead_port(group))
@@ -2531,13 +2585,17 @@ class _KeptPorts:
             op.order,
             tuple(frequency),
             tolerance,
+            order_tolerance,
             repr(model.ports),
             sections,
         )
 
     def shared(self) -> dict[int, int]:
         """The couplings' and the networks' arrays' bytes, by identity."""
-        held = {id(c.vectors): int(c.vectors.nbytes) for c in self.couplings}
+        held = {
+            id(c.vectors): int(c.vectors.nbytes)
+            for c in (*self.couplings, *self.floquet)
+        }
         for network in self.networks.values():
             held.update(network.shared())
         return held
@@ -2597,7 +2655,7 @@ def _port_regions(model: Model) -> dict[str, tuple[str, ...]]:
 def _check_supported(model: Model) -> None:
     """Raise for ports and absorbing boundaries this version cannot solve."""
     for port in model.ports:
-        if not isinstance(port, (LumpedPort, WavePort)):  # pragma: no cover
-            raise TypeError(f"Unknown port {port!r}.")
+        if not isinstance(port, (LumpedPort, WavePort, FloquetPort)):
+            raise TypeError(f"Unknown port {port!r}.")  # pragma: no cover
     # a law region behind an absorbing face takes its face pieces (ADR 0110)
     terms.check_absorbing(model, dispersive=True)

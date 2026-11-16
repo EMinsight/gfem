@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from gfem._port_section import PortSection
 
 __all__ = [
+    "DiffractionOrderResult",
     "DrivenResult",
     "EigenmodeResult",
     "ElectrostaticResult",
@@ -398,6 +399,67 @@ class PortModeResult:
 
 
 register_fields(PortModeResult, ("frequency", "gamma", "Z_PV", "residual", "solved"))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class DiffractionOrderResult:
+    """The diffraction order of a Floquet port over frequency.
+
+    Constants of the solve, read off the lattice and the medium behind the
+    port's face: not differentiable. Plane waves follow e^{+iωt}; the order
+    leaves the cell into the half-space as ``exp(-gamma s)``, ``s`` the
+    distance from the face (see `gfem.conventions`).
+
+    Attributes:
+        port: The Floquet port's name.
+        frequency: ``(n_freq,)`` Hz.
+        order: The diffraction order (m, n).
+        polarization: ``"TE"`` or ``"TM"``.
+        surface: The Floquet surface.
+        index: The refractive index sqrt(eps_r mu_r) of the medium behind it.
+        wave_vector: ``(n_freq, 3)`` the order's in-plane wave vector κ, rad/m.
+        gamma: ``(n_freq,)`` complex, 1/m: ``i beta`` where the order
+            propagates, ``alpha > 0`` where it is evanescent, 0 at grazing.
+        propagating: ``(n_freq,)`` bool, gamma² < 0 strictly (False at
+            grazing).
+        theta: ``(n_freq,)`` rad, the angle from the face's inward normal,
+            arcsin(|κ| / k); π/2 at grazing, NaN where evanescent.
+        phi: ``(n_freq,)`` rad, the azimuth of κ from ê1 toward ê2 in the
+            lattice frame; NaN where evanescent.
+    """
+
+    port: str
+    frequency: jax.Array
+    order: tuple[int, int]
+    polarization: str
+    surface: str
+    index: float
+    wave_vector: jax.Array
+    gamma: jax.Array
+    propagating: jax.Array
+    theta: jax.Array
+    phi: jax.Array
+
+    def __post_init__(self) -> None:
+        """Hold the order as two ints."""
+        object.__setattr__(self, "order", tuple(int(i) for i in self.order))
+        object.__setattr__(self, "index", float(self.index))
+
+    def __repr__(self) -> str:
+        f = np.asarray(self.frequency)
+        span = hertz_band(f.min(), f.max(), 4)
+        n = int(np.asarray(self.propagating).sum())
+        return (
+            f"DiffractionOrderResult(port {self.port!r}, order {self.order}, "
+            f"{self.polarization}, surface {self.surface!r}, {len(f)} frequencies "
+            f"{span}, propagating at {n})"
+        )
+
+
+register_fields(
+    DiffractionOrderResult,
+    ("frequency", "wave_vector", "gamma", "propagating", "theta", "phi"),
+)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -912,6 +974,10 @@ class DrivenResult:
             a plane that far inside the domain, ``S_ij`` multiplied by
             ``exp(gamma_i d_i) exp(gamma_j d_j)``. `with_offsets` moves the
             planes after the solve.
+        diffraction_orders: The diffraction order of each Floquet port over
+            the frequencies (`DiffractionOrderResult`, by port name); empty
+            without Floquet ports. Constants of the solve: not
+            differentiable.
     """
 
     s: NetworkParameters
@@ -920,6 +986,9 @@ class DrivenResult:
     sweep: SweepInfo | None = None
     port_modes: Mapping[str, PortModeResult] = dataclasses.field(default_factory=dict)
     offsets: tuple[tuple[str, float], ...] = ()
+    diffraction_orders: Mapping[str, DiffractionOrderResult] = dataclasses.field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         """Hold the fields as a sequence matching their labels."""
@@ -931,6 +1000,7 @@ class DrivenResult:
             self, "kept", tuple((float(f), str(p)) for f, p in self.kept)
         )
         object.__setattr__(self, "port_modes", dict(self.port_modes))
+        object.__setattr__(self, "diffraction_orders", dict(self.diffraction_orders))
         object.__setattr__(
             self,
             "offsets",
@@ -1074,7 +1144,7 @@ class DrivenResult:
         )
 
 
-register_fields(DrivenResult, ("s", "e_fields", "port_modes"))
+register_fields(DrivenResult, ("s", "e_fields", "port_modes", "diffraction_orders"))
 
 
 @dataclasses.dataclass(frozen=True, eq=False)

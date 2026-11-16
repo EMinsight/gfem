@@ -485,3 +485,129 @@ def coordinate_classes(
     scale = 1e-6 * float(np.ptp(nodes, axis=0).max())
     _, labels = np.unique(np.round(keys / scale), axis=0, return_inverse=True)
     return labels.reshape(-1)
+
+
+# --- F1: Fresnel slab between Floquet ports -----------------------------------------
+
+UM = 1e-6
+#: lambda0 = 1 um; F1's mesh is in um.
+F1_FREQUENCY = C0 / UM
+F1_A = 0.4  # lateral period along x and y, um
+F1_EPS_SLAB = 4.0
+F1_EPS_SUB = 2.25
+F1_H = 0.3  # slab thickness, um
+F1_D = 0.25  # distance from each Floquet face to the slab, um
+#: |S - Airy| on F1 at p = 2 on the coarse mesh `f1_mesh` (sign pin; 2.6e-3
+#: measured, a wrong sign is off by about 0.6).
+F1_COARSE_TOL = 2e-2
+#: F1's cells at h about lambda/10 in each medium (`f1_mesh`), solved at p = 3
+#: for the gates below.
+F1_FINE_CELLS = (4, 4, 6, 3)
+#: |S - Airy| on F1 at p = 3, `F1_FINE_CELLS` (7.1e-7 measured at normal
+#: incidence).
+F1_S_TOL = 3e-4
+#: |S| of the cross-polarized entries there (9.7e-7 measured).
+F1_CROSS_TOL = 1e-5
+#: The power defect 1 - sum |S|^2 of a column there (2.1e-9 measured).
+F1_POWER_TOL = 1e-4
+
+
+def f1_mesh(
+    directory: Path, cells: tuple[int, int, int, int] = (3, 3, 3, 3)
+) -> gfem.Mesh:
+    """F1's mesh, um: ``cells`` = (lateral, substrate, slab, air) cells per side.
+
+    Substrate z in [0, D], slab [D, D + H], air [D + H, 2 D + H]; the open
+    faces are "z_min" (substrate) and "z_max" (air).
+    """
+    n, ns, nh, na = cells
+    lateral = np.linspace(0.0, F1_A, n + 1)
+    z = np.concatenate(
+        [
+            np.linspace(0.0, F1_D, ns + 1),
+            np.linspace(F1_D, F1_D + F1_H, nh + 1)[1:],
+            np.linspace(F1_D + F1_H, 2 * F1_D + F1_H, na + 1)[1:],
+        ]
+    )
+
+    def volume(c):
+        if c[2] < F1_D:
+            return "sub"
+        return "slab" if c[2] < F1_D + F1_H else "air"
+
+    cell = sm.periodic_cell((lateral, lateral, z), volume, paired="xy")
+    path = sm.write_msh22(Path(directory) / "f1.msh", cell)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def f1_ports(top: str = "z_max", bottom: str = "z_min") -> list[gfem.FloquetPort]:
+    """The specular TE and TM ports of both faces: R_TE, R_TM (top), T_TE, T_TM."""
+    return [
+        gfem.FloquetPort(f"{side}_{pol}", surface, polarization=pol)
+        for side, surface in (("R", top), ("T", bottom))
+        for pol in ("TE", "TM")
+    ]
+
+
+def f1(mesh: gfem.Mesh, ports: list | None = None) -> gfem.Model:
+    """F1: an eps 4 slab on an eps 2.25 substrate under air, Floquet ports on both."""
+    return gfem.Model(
+        mesh,
+        materials={
+            "sub": gfem.Material(eps_r=F1_EPS_SUB),
+            "slab": gfem.Material(eps_r=F1_EPS_SLAB),
+            "air": gfem.Material(),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+        ports=f1_ports() if ports is None else ports,
+    )
+
+
+def airy(
+    frequency: float,
+    kt: float,
+    layers: list[tuple[float, float]],
+    polarization: str,
+) -> tuple[complex, complex]:
+    """S11 and S21 of a planar stack between two port planes (tangential-E Airy form).
+
+    ``layers`` lists ``(eps_r, thickness in m)`` from the top port plane down
+    to the bottom port plane (the first and last are the port media, their
+    thicknesses the port distances; mu_r = 1). The wave comes from the top
+    with tangential wave number ``kt`` (rad/m). S11 is the tangential-E
+    reflection coefficient at the top plane; S21 the tangential-E
+    transmission at the bottom plane times sqrt(Z_top / Z_bottom), the
+    power-normalized entry of `gfem.conventions` (e^{+iωt}).
+    """
+    k0 = 2 * math.pi * frequency / C0
+
+    def admittance(eps):
+        kz = np.sqrt(complex(k0**2 * eps - kt**2))
+        return kz, (kz if polarization == "TE" else k0**2 * eps / kz)
+
+    # (E, H) at the bottom plane for a unit transmitted wave, carried up
+    e, h = 1.0 + 0j, admittance(layers[-1][0])[1]
+    for eps, d in reversed(layers):
+        kz, y = admittance(eps)
+        c, s = np.cos(kz * d), np.sin(kz * d)
+        e, h = c * e + 1j * s * h / y, 1j * y * s * e + c * h
+    y_top, y_bottom = admittance(layers[0][0])[1], admittance(layers[-1][0])[1]
+    t = 2 * y_top / (h + y_top * e)
+    return complex(t * e - 1), complex(t * np.sqrt(y_bottom / y_top))
+
+
+def f1_airy(polarization: str, frequency: float = F1_FREQUENCY, kt: float = 0.0):
+    """F1's (S11, S21) from the top, `airy`."""
+    return airy(
+        frequency,
+        kt,
+        [
+            (1.0, F1_D * UM),
+            (F1_EPS_SLAB, F1_H * UM),
+            (F1_EPS_SUB, F1_D * UM),
+        ],
+        polarization,
+    )

@@ -87,6 +87,7 @@ from gfem.refinement import (  # noqa: E402
     refine_mesh,
 )
 from gfem.results import (  # noqa: E402
+    DiffractionOrderResult,
     DrivenResult,
     EigenmodeResult,
     ElectrostaticResult,
@@ -109,6 +110,7 @@ __all__ = [
     "DegenerateModeError",
     "DeviceMemoryWarning",
     "DeviceUnavailableError",
+    "DiffractionOrderResult",
     "DistributedUnsupportedError",
     "DjordjevicSarkar",
     "Driven",

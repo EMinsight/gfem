@@ -98,6 +98,7 @@ from gfem._linalg.pieces import (
 
 if TYPE_CHECKING:
     from gfem._engine.driven import DrivenOperator
+    from gfem._engine.floquet_ports import FloquetSurfaceCoupling
     from gfem._engine.terms import Piece
 
 __all__ = ["FixedPieces", "LowRankTerm", "PlanSlot", "SystemOperator", "SystemSweep"]
@@ -250,7 +251,7 @@ class SystemOperator:
     def __init__(
         self,
         operator: DrivenOperator,
-        surfaces: Sequence[PortSurfaceCoupling],
+        surfaces: Sequence[PortSurfaceCoupling | FloquetSurfaceCoupling],
         linear: ResolvedLinearSolver,
         *,
         width: int,
