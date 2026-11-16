@@ -10,6 +10,7 @@ against `direct`.
 
 import dataclasses
 import math
+import warnings
 
 import numpy as np
 import periodic_cases as pc
@@ -441,3 +442,154 @@ def test_s_is_continuous_through_a_rayleigh_anomaly(f2_mesh):
     np.testing.assert_array_equal(s[0, rows], 0)
     assert np.abs(s[1, rows]).max() <= 1e-3
     np.testing.assert_allclose(s[0, others], s[1, others], rtol=0, atol=1e-5)
+
+
+# --- fixed-angle sweeps ---------------------------------------------------------------
+
+
+def test_a_fixed_angle_needs_a_wave_vector():
+    with pytest.raises(
+        ValueError,
+        match=r"Driven\.wave_vector_frequency scales Driven\.wave_vector with "
+        r"frequency, but wave_vector is None",
+    ):
+        gfem.Driven([1e14], wave_vector_frequency=1e14)
+
+
+@pytest.mark.parametrize("value", [0.0, -1e14, math.inf, math.nan, "1e14", True])
+def test_the_reference_frequency_is_a_positive_finite_number(value):
+    with pytest.raises(
+        ValueError,
+        match=r"Driven\.wave_vector_frequency must be a positive finite frequency "
+        r"in Hz",
+    ):
+        gfem.Driven([1e14], wave_vector=(1e6, 0, 0), wave_vector_frequency=value)
+
+
+def test_a_traced_reference_frequency_raises():
+    import jax
+
+    def build(f):
+        gfem.Driven([1e14], wave_vector=(1e6, 0, 0), wave_vector_frequency=f)
+        return f
+
+    with pytest.raises(
+        gfem.NonDifferentiableError,
+        match=r"Driven\.wave_vector_frequency must be a fixed number",
+    ):
+        jax.grad(build)(1e14)
+
+
+def test_the_reference_frequency_defaults_to_none_and_is_a_float():
+    assert gfem.Driven([1e14]).wave_vector_frequency is None
+    problem = gfem.Driven([1e14], wave_vector=(1e6, 0, 0), wave_vector_frequency=2)
+    assert problem.wave_vector_frequency == 2.0
+    assert isinstance(problem.wave_vector_frequency, float)
+
+
+def test_a_fixed_angle_sweep_round_trips_through_a_job_file(f1_mesh, tmp_path):
+    import json
+
+    model = pc.f1(f1_mesh)
+    k = _oblique(model, 40.0, 30.0)
+    problem = gfem.Driven(
+        [pc.F1_FREQUENCY], wave_vector=k, wave_vector_frequency=pc.F1_FREQUENCY
+    )
+    path = gfem.Job(model, problem, P2).to_json(tmp_path / "job.json")
+    assert gfem.Job.from_json(path).problem == problem
+    # a job written before the field reads None
+    doc = json.loads(path.read_text())
+    del doc["job"]["problem"]["wave_vector_frequency"]
+    path.write_text(json.dumps(doc))
+    back = gfem.Job.from_json(path).problem
+    assert back.wave_vector_frequency is None
+    assert back.wave_vector == problem.wave_vector
+
+
+FIXED_ANGLE = [pc.F1_FREQUENCY, 1.1 * pc.F1_FREQUENCY]
+
+
+def _at_explicit_k(model, k_ref, options):
+    """S of single-frequency solves at k(f) = k_ref f / f0, stacked over FIXED_ANGLE."""
+    rows = []
+    for f in FIXED_ANGLE:
+        k = tuple(c * f / pc.F1_FREQUENCY for c in k_ref)
+        problem = gfem.Driven([f], excite=["R_TE", "R_TM"], wave_vector=k)
+        rows.append(np.asarray(gfem.solve(model, problem, options=options).s.values))
+    return np.concatenate(rows)
+
+
+@pytest.fixture(scope="module")
+def fixed_angle(f1_mesh):
+    model = pc.f1(f1_mesh)
+    k_ref = _oblique(model, 40.0, 30.0)
+    problem = gfem.Driven(
+        FIXED_ANGLE,
+        excite=["R_TE", "R_TM"],
+        wave_vector=k_ref,
+        wave_vector_frequency=pc.F1_FREQUENCY,
+    )
+    return model, k_ref, problem, gfem.solve(model, problem, options=P2)
+
+
+def test_a_fixed_angle_sweep_solves_each_frequency_at_its_own_wave_vector(fixed_angle):
+    model, k_ref, _, result = fixed_angle
+    swept = np.asarray(result.s.values)
+    explicit = _at_explicit_k(model, k_ref, P2)
+    assert np.abs(swept[0] - swept[1]).max() > 1e-2  # two different solves
+    np.testing.assert_allclose(swept, explicit, rtol=0, atol=1e-12)
+    # the specular order's in-plane wave vector is k(f)
+    expected = [np.asarray(k_ref) * f / pc.F1_FREQUENCY for f in FIXED_ANGLE]
+    np.testing.assert_allclose(
+        result.diffraction_orders["R_TE"].wave_vector, expected, rtol=1e-14
+    )
+
+
+def test_a_fixed_angle_sweep_on_bddc_gmres_agrees_with_explicit_k(fixed_angle):
+    model, k_ref, problem, _ = fixed_angle
+    options = gfem.SolverOptions(order=2, threads=2, linear_solver="bddc_gmres")
+    swept = np.asarray(gfem.solve(model, problem, options=options).s.values)
+    error = np.abs(swept - _at_explicit_k(model, k_ref, P2))
+    assert error.max() <= 10 * options.tolerance
+
+
+def test_a_fixed_angle_sweep_on_frequency_workers_equals_the_serial_one(fixed_angle):
+    model, _, problem, result = fixed_angle
+    options = gfem.SolverOptions(order=2, threads=2, frequency_workers=2)
+    parallel = np.asarray(gfem.solve(model, problem, options=options).s.values)
+    np.testing.assert_allclose(
+        parallel, np.asarray(result.s.values), rtol=0, atol=1e-12
+    )
+
+
+def test_a_fixed_angle_sweep_raises_on_the_adaptive_sweep(fixed_angle):
+    model, k_ref, _, _ = fixed_angle
+    problem = gfem.Driven(
+        FIXED_ANGLE,
+        sweep="adaptive",
+        wave_vector=k_ref,
+        wave_vector_frequency=pc.F1_FREQUENCY,
+    )
+    with pytest.raises(NotImplementedError, match="adaptive sweep cannot solve it"):
+        gfem.solve(model, problem, options=P2)
+
+
+def test_a_long_fixed_angle_sweep_keeps_a_fixed_wave_vector_cached(f1_mesh):
+    from gfem._engine.driven import driven_operator
+
+    model = pc.f1(f1_mesh)
+    k_ref = _oblique(model, 40.0, 30.0)
+    fixed = driven_operator(model, 2, wave_vector=k_ref).space
+    # f0 first: its k(f) is the fixed wave vector's, nine others follow
+    frequencies = [pc.F1_FREQUENCY * (1.0 + 0.01 * n) for n in range(10)]
+    problem = gfem.Driven(
+        frequencies,
+        excite=["R_TE"],
+        wave_vector=k_ref,
+        wave_vector_frequency=pc.F1_FREQUENCY,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", gfem.UnrequestedOrderWarning)
+        gfem.solve(model, problem, options=P2)
+    # ten wave vectors, more than the eight phase sets of fixed ones
+    assert driven_operator(model, 2, wave_vector=k_ref).space is fixed

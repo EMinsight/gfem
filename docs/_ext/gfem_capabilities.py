@@ -386,6 +386,10 @@ RAISES_LABELS = {
     "driven x wave_vector": (
         "Driven S-parameters, with respect to the Bloch wave vector"
     ),
+    "driven x traced wave_vector_frequency": (
+        "Driven S-parameters of a fixed-angle sweep, with respect to the "
+        "reference frequency of its wave vector (`wave_vector_frequency`)"
+    ),
     "periodic model x node move that breaks a pair": (
         "A node move that breaks a `Periodic` pair (the two surfaces no longer match)"
     ),

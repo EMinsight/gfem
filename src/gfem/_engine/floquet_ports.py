@@ -192,13 +192,18 @@ def floquet_piece(built: EngineMesh, order: int, rows: SurfaceOrders) -> terms.P
 
 
 def _projections(
-    built: EngineMesh, unpaired: ngs.FESpace, order: int, rows: SurfaceOrders
+    built: EngineMesh,
+    unpaired: ngs.FESpace,
+    order: int,
+    rows: SurfaceOrders,
+    row: int = 0,
 ) -> np.ndarray:
     """``(unpaired ndof, 2 n_o)``: ``v = ∫ N · ψ dS`` per (order, polarization).
 
-    κ and the reference vectors at the first frequency (a fixed wave vector
-    gives the same at every frequency). Zero on the unpaired space's fixed
-    DOFs.
+    κ and the reference vectors at the table's row ``row``, the output
+    grid's first frequency: one wave vector holds at every frequency of a
+    solve (a fixed-angle sweep solves each frequency on its own, ADR 0151).
+    Zero on the unpaired space's fixed DOFs.
     """
     region = boundary_region(built, (rows.face.surface,))
     # ψ oscillates across the face: integrate it above the pinned rule
@@ -206,8 +211,8 @@ def _projections(
     ds = ngs.ds(definedon=region, intrules={ngs.ET.TRIG: rule})
     v = unpaired.TestFunction()
     free = free_mask(unpaired.FreeDofs(), unpaired.ndof)
-    kappa = rows.rows.wave_vector[0] * built.scale  # rad per file unit
-    references = (rows.rows.te[0], rows.rows.tm[0])
+    kappa = rows.rows.wave_vector[row] * built.scale  # rad per file unit
+    references = (rows.rows.te[row], rows.rows.tm[row])
     out = np.zeros((unpaired.ndof, 2 * len(rows.orders)), complex)
     for o, k in enumerate(kappa):
         phase = ngs.exp(-1j * (k[0] * ngs.x + k[1] * ngs.y + k[2] * ngs.z))
@@ -259,7 +264,7 @@ def floquet_couplings(
     for surface, rows in table.items():
         face = rows.face
         area = face.area / scale**2
-        v = _projections(built, op.expansion.space, op.order, rows)
+        v = _projections(built, op.expansion.space, op.order, rows, at[0])
         vectors = (expansion.conj().T @ v) * free[:, None]
         n_o = len(rows.orders)
         infinite = rows.infinite[at].reshape(len(omegas), 2 * n_o)

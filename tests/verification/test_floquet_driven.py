@@ -69,15 +69,15 @@ def brewster(tmp_path_factory):
     )
 
 
-def _check_fresnel(result, kt, pol, eps_sub):
+def _check_fresnel(result, kt, pol, eps_sub, row=0):
     other = "TM" if pol == "TE" else "TE"
-    r, t = pc.f1_airy(pol, kt=kt, eps_sub=eps_sub)
     s = result.s
-    assert abs(complex(s[f"R_{pol}", f"R_{pol}"][0]) - r) <= pc.F1_S_TOL
-    assert abs(complex(s[f"T_{pol}", f"R_{pol}"][0]) - t) <= pc.F1_S_TOL
+    r, t = pc.f1_airy(pol, frequency=s.frequency[row], kt=kt, eps_sub=eps_sub)
+    assert abs(complex(s[f"R_{pol}", f"R_{pol}"][row]) - r) <= pc.F1_S_TOL
+    assert abs(complex(s[f"T_{pol}", f"R_{pol}"][row]) - t) <= pc.F1_S_TOL
     for side in ("R", "T"):
-        assert abs(complex(s[f"{side}_{other}", f"R_{pol}"][0])) <= pc.F1_CROSS_TOL
-    column = np.asarray(s.values)[0, :, s.excited.index(f"R_{pol}")]
+        assert abs(complex(s[f"{side}_{other}", f"R_{pol}"][row])) <= pc.F1_CROSS_TOL
+    column = np.asarray(s.values)[row, :, s.excited.index(f"R_{pol}")]
     assert abs(1 - np.sum(np.abs(column) ** 2)) <= pc.F1_POWER_TOL
 
 
@@ -98,6 +98,40 @@ def test_the_brewster_cell_reflects_no_tm(brewster):
     assert abs(complex(result.s["R_TM", "R_TM"][0])) <= pc.BREWSTER_TOL
     # TE does reflect there: |r|^2 = 0.155 (Airy)
     assert abs(complex(result.s["R_TE", "R_TE"][0])) > 0.3
+
+
+# --- a fixed-angle sweep -----------------------------------------------------------
+
+#: The fixed-angle sweep's frequencies, in units of f0: the conical angle of
+#: `pc.F1_THETA`, `pc.F1_PHI` held from the air at each.
+#: Under F1's gates: |S - Airy| 2.0e-7 - 1.8e-6, cross-polarization up to
+#: 6.8e-7, power defect up to 4.6e-7 (measured).
+FIXED_ANGLE = (0.9, 1.0, 1.1)
+
+
+@pytest.fixture(scope="module")
+def f1_fixed_angle(tmp_path_factory):
+    mesh = pc.f1_mesh(tmp_path_factory.mktemp("f1"), pc.F1_FINE_CELLS)
+    model = pc.f1(mesh)
+    k = model.bloch_wave_vector(
+        "z_max", pc.F1_FREQUENCY, theta=pc.F1_THETA, phi=pc.F1_PHI
+    )
+    problem = gfem.Driven(
+        [x * pc.F1_FREQUENCY for x in FIXED_ANGLE],
+        excite=["R_TE", "R_TM"],
+        wave_vector=k,
+        wave_vector_frequency=pc.F1_FREQUENCY,
+    )
+    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=3))
+    return result, float(np.linalg.norm(k))
+
+
+@pytest.mark.parametrize("pol", ["TE", "TM"])
+@pytest.mark.parametrize("row", range(len(FIXED_ANGLE)))
+def test_a_fixed_angle_sweep_matches_airy_at_each_frequency(f1_fixed_angle, pol, row):
+    # the in-plane wave number scales with frequency: the angle stays put
+    result, kt = f1_fixed_angle
+    _check_fresnel(result, kt * FIXED_ANGLE[row], pol, pc.F1_EPS_SUB, row)
 
 
 # --- reference-plane offsets ------------------------------------------------------

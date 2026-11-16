@@ -297,9 +297,12 @@ def _driven_floquet_cells() -> list[Cell]:
     direct solver, and in the permittivity on BDDC + GMRES (the transposed
     system's Floquet term under Bloch). The objective (`_floquet_value`)
     reads a ±1 order's efficiency, a cross-polarized entry and a row that
-    does not propagate at one frequency at least.
+    does not propagate at one frequency at least. One more Bloch cell keeps
+    the angle fixed over its two frequencies (``fixed_angle``: ±k(f) per
+    frequency, ADR 0151), in the permittivity on the direct solver.
     """
     return [
+        Cell("driven_floquet_bloch", "eps_r", "direct", "uniform", "fixed_angle"),
         *(
             Cell(problem, name, "direct", "uniform")
             for problem in FLOQUET_PROBLEMS
@@ -1671,30 +1674,42 @@ def _floquet_problem(model: gfem.Model, cell: Cell) -> gfem.Driven:
     Every order that propagates on either face at either frequency has a
     port, at ``|gamma| / k >= FLOQUET_GRAZING`` (cos theta, ``k`` in the
     face's medium); the zero row ``R1,0`` does not propagate at 0.8 f0
-    (plain) or at either frequency (Bloch).
+    (plain) or at either frequency (Bloch). The ``fixed_angle`` variant
+    scales the Bloch wave vector with frequency from f0.
     """
     k = None
     if cell.problem == "driven_floquet_bloch":
         k = model.bloch_wave_vector(
             "z_max", FLOQUET_FREQUENCIES[0], theta=FLOQUET_THETA, phi=FLOQUET_PHI
         )
+    fixed_angle = cell.variant == "fixed_angle"
+
+    def k_at(f):
+        if k is None or not fixed_angle:
+            return k
+        return tuple(c * f / FLOQUET_FREQUENCIES[0] for c in k)
+
     declared = {(p.surface, p.order) for p in model.ports}
     eps = {"z_max": 1.0, "z_min": pc.F1_EPS_SUB}
     a1, a2 = (a * pc.UM for a in pc.F2_A)
-    kt = np.zeros(2) if k is None else np.asarray(k)[:2]
     for surface, n2 in eps.items():
-        orders = model.propagating_orders(surface, FLOQUET_FREQUENCIES, wave_vector=k)
-        assert {(surface, o) for o in orders} <= declared, (surface, orders)
         for f in FLOQUET_FREQUENCIES:
+            orders = model.propagating_orders(surface, [f], wave_vector=k_at(f))
+            assert {(surface, o) for o in orders} <= declared, (surface, orders)
+            kt = np.zeros(2) if k is None else np.asarray(k_at(f))[:2]
             k2 = (2 * np.pi * f / pc.C0) ** 2 * n2
             for m, n in orders:
                 kappa = kt + 2 * np.pi * np.array([m / a1, n / a2])
                 ratio = 1 - kappa @ kappa / k2
                 assert ratio < 0 or ratio >= FLOQUET_GRAZING**2, (surface, f, m, n)
-    zero = model.propagating_orders("z_max", FLOQUET_FREQUENCIES[1:], wave_vector=k)
+    low = FLOQUET_FREQUENCIES[1]
+    zero = model.propagating_orders("z_max", [low], wave_vector=k_at(low))
     assert (1, 0) not in zero
     return gfem.Driven(
-        frequency=FLOQUET_FREQUENCIES, wave_vector=k, excite=FLOQUET_EXCITE
+        frequency=FLOQUET_FREQUENCIES,
+        wave_vector=k,
+        wave_vector_frequency=FLOQUET_FREQUENCIES[0] if fixed_angle else None,
+        excite=FLOQUET_EXCITE,
     )
 
 
