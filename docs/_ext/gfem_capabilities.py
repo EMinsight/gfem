@@ -291,6 +291,13 @@ RAISES_LABELS = {
         "Any result, with respect to a lumped port's resistance (its reference "
         "impedance)"
     ),
+    "FloquetPort offset": (
+        "Any result, with respect to a Floquet port's de-embedding offset"
+    ),
+    "Model.bloch_wave_vector under a traced angle": (
+        "`Model.bloch_wave_vector`, with respect to the incidence angles (the "
+        "incidence of a Floquet port is a constant of the solve)"
+    ),
     "driven x material on a wave port face": (
         "Driven S-parameters, with respect to the material of a region with "
         "elements on a wave port's face"
