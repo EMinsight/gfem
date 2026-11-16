@@ -19,6 +19,9 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
   ports, a PEC ground, an absorbing top, a resistive `gfem.Impedance` sheet
   touching both pairs and a sidewall "wall" crossing the x seam (the
   periodic cells of the gradient verification matrix).
+- F1, `f1`: a Fresnel slab between Floquet ports (meshes in um), its S the
+  tangential-E Airy form `f1_airy`; with an air substrate, the Brewster
+  cell. F2, `f2`: a lamellar grating between Floquet ports.
 
 C1 loaded by its two 50 ohm ports is also a damped Bloch eigen case: its
 complex resonances are the roots of det(Z(f, k) + R) = 0,
@@ -510,6 +513,17 @@ F1_S_TOL = 3e-4
 F1_CROSS_TOL = 1e-5
 #: The power defect 1 - sum |S|^2 of a column there (2.1e-9 measured).
 F1_POWER_TOL = 1e-4
+#: F1's oblique (conical) incidence from the air: theta from the top face's
+#: inward normal, phi from ê1 = +x toward ê2 = +y (`gfem.Model.bloch_wave_vector`).
+F1_THETA = math.radians(40.0)
+F1_PHI = math.radians(30.0)
+#: The Brewster cell (`f1` with ``eps_sub = 1``: air / eps 4 slab / air) at
+#: Brewster's angle atan 2 from the air: TM reflects nothing at either
+#: interface.
+BREWSTER_EPS_SUB = 1.0
+BREWSTER_THETA = math.atan(2.0)
+#: |S11_TM| of the Brewster cell at p = 3, `F1_FINE_CELLS`.
+BREWSTER_TOL = 3e-5
 
 
 def f1_mesh(
@@ -549,12 +563,17 @@ def f1_ports(top: str = "z_max", bottom: str = "z_min") -> list[gfem.FloquetPort
     ]
 
 
-def f1(mesh: gfem.Mesh, ports: list | None = None) -> gfem.Model:
-    """F1: an eps 4 slab on an eps 2.25 substrate under air, Floquet ports on both."""
+def f1(
+    mesh: gfem.Mesh, ports: list | None = None, eps_sub: float = F1_EPS_SUB
+) -> gfem.Model:
+    """F1: an eps 4 slab on an eps ``eps_sub`` substrate under air, Floquet ports on both.
+
+    ``eps_sub = BREWSTER_EPS_SUB`` gives the Brewster cell.
+    """
     return gfem.Model(
         mesh,
         materials={
-            "sub": gfem.Material(eps_r=F1_EPS_SUB),
+            "sub": gfem.Material(eps_r=eps_sub),
             "slab": gfem.Material(eps_r=F1_EPS_SLAB),
             "air": gfem.Material(),
         },
@@ -599,15 +618,110 @@ def airy(
     return complex(t * e - 1), complex(t * np.sqrt(y_bottom / y_top))
 
 
-def f1_airy(polarization: str, frequency: float = F1_FREQUENCY, kt: float = 0.0):
-    """F1's (S11, S21) from the top, `airy`."""
+def f1_airy(
+    polarization: str,
+    frequency: float = F1_FREQUENCY,
+    kt: float = 0.0,
+    eps_sub: float = F1_EPS_SUB,
+):
+    """F1's (S11, S21) from the top, `airy`; ``kt`` the in-plane wave number, rad/m."""
     return airy(
         frequency,
         kt,
         [
             (1.0, F1_D * UM),
             (F1_EPS_SLAB, F1_H * UM),
-            (F1_EPS_SUB, F1_D * UM),
+            (eps_sub, F1_D * UM),
         ],
         polarization,
+    )
+
+
+# --- F2: lamellar grating between Floquet ports ------------------------------------
+
+#: F2's periods, um: 1.2 lambda0 along x (the grating), 0.4 lambda0 along y.
+F2_A = (1.2, 0.4)
+F2_RIDGE = (0.3, 0.9)  # the ridge's x extent, um
+F2_EPS_RIDGE = 4.0
+F2_H = 0.3  # ridge height, um
+F2_D = 0.3  # distance from each Floquet face to the ridge layer, um
+
+
+def f2_mesh(
+    directory: Path, cells: tuple[int, int, int, int, int] = (4, 2, 2, 2, 2)
+) -> gfem.Mesh:
+    """F2's mesh, um: ``cells`` = (x, y, substrate, ridge, air) cells.
+
+    ``x`` cells per ridge or groove width (0.6 um each, grid lines on the
+    ridge edges). Substrate z in [0, D], ridge layer [D, D + H] (regions
+    "ridge" and "groove"), air [D + H, 2 D + H]; open faces "z_min"
+    (substrate) and "z_max" (air).
+    """
+    nx, ny, ns, nh, na = cells
+    x0, x1 = F2_RIDGE
+    x = np.unique(
+        np.concatenate(
+            [
+                np.linspace(0.0, x0, max(nx // 2, 1) + 1),
+                np.linspace(x0, x1, nx + 1),
+                np.linspace(x1, F2_A[0], max(nx // 2, 1) + 1),
+            ]
+        )
+    )
+    y = np.linspace(0.0, F2_A[1], ny + 1)
+    z = np.concatenate(
+        [
+            np.linspace(0.0, F2_D, ns + 1),
+            np.linspace(F2_D, F2_D + F2_H, nh + 1)[1:],
+            np.linspace(F2_D + F2_H, 2 * F2_D + F2_H, na + 1)[1:],
+        ]
+    )
+
+    def volume(c):
+        if c[2] < F2_D:
+            return "sub"
+        if c[2] < F2_D + F2_H:
+            return "ridge" if x0 < c[0] < x1 else "groove"
+        return "air"
+
+    cell = sm.periodic_cell((x, y, z), volume, paired="xy")
+    path = sm.write_msh22(Path(directory) / "f2.msh", cell)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def f2_ports(
+    orders: tuple[tuple[int, int], ...] = ((0, 0), (-1, 0), (1, 0)),
+) -> list[gfem.FloquetPort]:
+    """TE and TM ports of ``orders`` on both faces: "R{m},{n}_TE" (top), "T..." (bottom)."""
+    return [
+        gfem.FloquetPort(
+            f"{side}{m},{n}_{pol}", surface, order=(m, n), polarization=pol
+        )
+        for side, surface in (("R", "z_max"), ("T", "z_min"))
+        for m, n in orders
+        for pol in ("TE", "TM")
+    ]
+
+
+def f2(
+    mesh: gfem.Mesh, ports: list | None = None, eps_ridge: complex = F2_EPS_RIDGE
+) -> gfem.Model:
+    """F2: an eps 4 lamellar grating on an eps 2.25 substrate under air.
+
+    ``eps_ridge`` lossy (``4 * (1 - 0.05j)``) for G20L. The default ports
+    are every order propagating at normal incidence (`f2_ports`).
+    """
+    return gfem.Model(
+        mesh,
+        materials={
+            "sub": gfem.Material(eps_r=F1_EPS_SUB),
+            "ridge": gfem.Material(eps_r=eps_ridge),
+            "groove": gfem.Material(),
+            "air": gfem.Material(),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+        ports=f2_ports() if ports is None else ports,
     )

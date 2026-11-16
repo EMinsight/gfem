@@ -155,3 +155,82 @@ def test_exciting_an_evanescent_order_raises_before_any_solve(f1_mesh):
         r".*excite=\['R_TE', 'R_TM', 'T_TE', 'T_TM'\]",
     ):
         gfem.solve(pc.f1(f1_mesh, ports), gfem.Driven([pc.F1_FREQUENCY]), options=P2)
+
+
+# --- Bloch (oblique) incidence -------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def f2_mesh(tmp_path_factory):
+    return pc.f2_mesh(tmp_path_factory.mktemp("f2"))
+
+
+def test_a_zero_wave_vector_is_plain_periodicity_over_the_full_s(f2_mesh):
+    # the general (LU) Bloch path against the symmetric plain one: every
+    # propagating order of the grating, both faces, both polarizations
+    model = pc.f2(f2_mesh)
+
+    def s(wave_vector):
+        problem = gfem.Driven([pc.F1_FREQUENCY], wave_vector=wave_vector)
+        return np.asarray(gfem.solve(model, problem, options=P2).s.values)[0]
+
+    plain, zero = s(None), s((0.0, 0.0, 0.0))
+    assert plain.shape == (12, 12)
+    assert np.abs(plain).max() > 0.1  # a non-trivial S
+    np.testing.assert_allclose(zero, plain, rtol=0, atol=1e-12)
+
+
+def _oblique(model, theta, phi=0.0):
+    return model.bloch_wave_vector(
+        "z_max", pc.F1_FREQUENCY, theta=math.radians(theta), phi=math.radians(phi)
+    )
+
+
+def test_bddc_gmres_agrees_with_direct_at_oblique_incidence(f1_mesh):
+    model = pc.f1(f1_mesh)
+    problem = gfem.Driven(
+        [pc.F1_FREQUENCY], excite=["R_TE", "R_TM"], wave_vector=_oblique(model, 20.0)
+    )
+    direct = gfem.solve(model, problem, options=P2)
+    options = gfem.SolverOptions(order=2, threads=2, linear_solver="bddc_gmres")
+    iterative = gfem.solve(model, problem, options=options)
+    s = np.asarray(direct.s.values)
+    assert abs(s[0, 0, 0]) > 0.1  # oblique S of the slab, not a blank
+    error = np.abs(np.asarray(iterative.s.values) - s)
+    assert error.max() <= 10 * options.tolerance
+
+
+def test_the_transposed_system_is_the_system_at_minus_k(f1_mesh):
+    # the adjoint solve under k (the transposed system, its Floquet couplings
+    # conj(U) C^T U^T read off the forward vectors) against a forward solve of
+    # the model at -k, whose couplings are built from the mirrored orders
+    from gfem._engine.driven import DrivenRule
+
+    model = pc.f1(f1_mesh)
+    k = _oblique(model, 40.0, 30.0)
+    omega = 2 * math.pi * pc.F1_FREQUENCY
+
+    def system(wave_vector):
+        problem = gfem.Driven([pc.F1_FREQUENCY], wave_vector=wave_vector)
+        rule = DrivenRule(model, problem, P2)
+        return rule._ports(model)[0]
+
+    plus, minus = system(k), system(tuple(-c for c in k))
+    try:
+        free = np.array(list(minus.operator.space.FreeDofs()))
+        rng = np.random.default_rng(0)
+        loads = rng.standard_normal((free.size, 2)) + 1j * rng.standard_normal(
+            (free.size, 2)
+        )
+        loads[~free] = 0
+        adjoint = plus.solve_adjoint(0, omega, loads)
+        with minus.sweep() as sweep:
+            forward, _ = sweep.solve(omega, loads)
+        scale = np.abs(forward[free]).max()
+        # (the forward Floquet term in place of its transpose is off by 11x scale)
+        np.testing.assert_allclose(
+            adjoint[free], forward[free], rtol=0, atol=1e-12 * scale
+        )
+    finally:
+        plus.free()
+        minus.free()
