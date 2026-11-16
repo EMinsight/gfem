@@ -713,18 +713,19 @@ def f2_ports(
 
 
 def f2(
-    mesh: gfem.Mesh, ports: list | None = None, eps_ridge: complex = F2_EPS_RIDGE
+    mesh: gfem.Mesh, ports: list | None = None, tan_delta: float = 0.0
 ) -> gfem.Model:
     """F2: an eps 4 lamellar grating on an eps 2.25 substrate under air.
 
-    ``eps_ridge`` lossy (``4 * (1 - 0.05j)``) for G20L. The default ports
+    ``tan_delta`` the ridge's loss tangent: 0.05 for G20L, eps 4 (1 - 0.05 i)
+    under e^{+iωt}. The default ports
     are every order propagating at normal incidence (`f2_ports`).
     """
     return gfem.Model(
         mesh,
         materials={
             "sub": gfem.Material(eps_r=F1_EPS_SUB),
-            "ridge": gfem.Material(eps_r=eps_ridge),
+            "ridge": gfem.Material(eps_r=F2_EPS_RIDGE, tan_delta=tan_delta),
             "groove": gfem.Material(),
             "air": gfem.Material(),
         },
@@ -741,12 +742,13 @@ def f2(
 #: F2's cells at h about lambda0 / 10 with grid lines on the ridge edges
 #: (`f2_mesh`), solved at p = 3 for the grating gates below.
 F2_FINE_CELLS = (6, 4, 3, 3, 3)
-#: F2's cases: (incidence theta, phi from the air in degrees, ridge eps).
+#: F2's cases: (incidence theta, phi from the air in degrees, the ridge's
+#: loss tangent).
 F2_CASES = {
-    "G0": (0.0, 0.0, F2_EPS_RIDGE),
-    "G20": (20.0, 0.0, F2_EPS_RIDGE),
-    "G20c": (20.0, 30.0, F2_EPS_RIDGE),
-    "G20L": (20.0, 0.0, F2_EPS_RIDGE * (1 - 0.05j)),
+    "G0": (0.0, 0.0, 0.0),
+    "G20": (20.0, 0.0, 0.0),
+    "G20c": (20.0, 30.0, 0.0),
+    "G20L": (20.0, 0.0, 0.05),
 }
 #: Diffraction efficiencies of F2 by case, incident polarization (from the
 #: air, the specular order) and (face, m): "R" the air side, "T" the

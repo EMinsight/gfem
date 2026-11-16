@@ -103,7 +103,8 @@ def test_the_brewster_cell_reflects_no_tm(brewster):
 # --- reference-plane offsets ------------------------------------------------------
 
 #: F1 with its faces 0.40 um from the slab (model B), its ports offset 0.15
-#: um back to the planes of the 0.25 um cell (model A); cells keep h.
+#: um back to the planes of the 0.25 um cell (model A); cells keep h. Their
+#: S agree to 1.4e-6 (measured) under `pc.F1_S_TOL`.
 F1_FAR_D = 0.40
 F1_FAR_CELLS = (4, 6, 6, 5)
 
@@ -132,11 +133,14 @@ def test_offsets_move_the_reference_planes_as_the_geometry_does(
 #: polarizations (rows of orders evanescent on a face read 0).
 F2_ORDERS = tuple((m, 0) for m in (-2, -1, 0, 1, 2))
 #: max |eta - eta_ref| over every propagating order and incident
-#: polarization, p = 3 on `pc.F2_FINE_CELLS`.
+#: polarization, p = 3 on `pc.F2_FINE_CELLS` (TE 9e-6 - 8e-5, TM 1.3e-4
+#: normal - 5.8e-4 oblique measured: TM is held by the field singularity at
+#: the ridge edges, 4.3e-4 at G20 with 8 x cells and 4 in the ridge).
 F2_EFFICIENCY_TOL = 1e-3
-#: 1 - sum |S|^2 of each column on the lossless cases.
+#: 1 - sum |S|^2 of each column on the lossless cases (2.8e-7 - 1.7e-6
+#: measured).
 F2_POWER_TOL = 1e-4
-#: |(1 - sum |S|^2) - A_ref| on G20L.
+#: |(1 - sum |S|^2) - A_ref| on G20L (9e-6 TE, 1.6e-4 TM measured).
 F2_ABSORPTION_TOL = 1e-3
 
 
@@ -147,8 +151,8 @@ def f2_fine(tmp_path_factory):
 
 @pytest.fixture(scope="module", params=list(pc.F2_CASES))
 def grating(request, f2_fine):
-    theta, phi, eps_ridge = pc.F2_CASES[request.param]
-    model = pc.f2(f2_fine, pc.f2_ports(F2_ORDERS), eps_ridge=eps_ridge)
+    theta, phi, tan_delta = pc.F2_CASES[request.param]
+    model = pc.f2(f2_fine, pc.f2_ports(F2_ORDERS), tan_delta=tan_delta)
     k = model.bloch_wave_vector(
         "z_max", pc.F1_FREQUENCY, theta=math.radians(theta), phi=math.radians(phi)
     )
