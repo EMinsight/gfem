@@ -104,6 +104,8 @@ def test_the_brewster_cell_reflects_no_tm(brewster):
 
 #: The fixed-angle sweep's frequencies, in units of f0: the conical angle of
 #: `pc.F1_THETA`, `pc.F1_PHI` held from the air at each.
+#: Under F1's gates: |S - Airy| 2.0e-7 - 1.8e-6, cross-polarization up to
+#: 6.8e-7, power defect up to 4.6e-7 (measured).
 FIXED_ANGLE = (0.9, 1.0, 1.1)
 
 
