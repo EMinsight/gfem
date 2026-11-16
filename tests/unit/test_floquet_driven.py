@@ -593,3 +593,50 @@ def test_a_long_fixed_angle_sweep_keeps_a_fixed_wave_vector_cached(f1_mesh):
         gfem.solve(model, problem, options=P2)
     # ten wave vectors, more than the eight phase sets of fixed ones
     assert driven_operator(model, 2, wave_vector=k_ref).space is fixed
+
+
+# --- circular polarization ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("surface", "travel", "handedness"),
+    [("z_max", -1.0, "right"), ("z_min", +1.0, "left")],
+)
+def test_tm_plus_i_te_is_right_handed_from_the_top_and_left_from_the_bottom(
+    tmp_path, surface, travel, handedness
+):
+    # The column combination (S[:, TM] + i S[:, TE]) / sqrt 2 is the response to
+    # the incident field E_TM + i E_TE. In an empty cell, read that field at a
+    # point and watch Re(E exp(+i w t)) turn: from w t = 0 to a quarter period
+    # it turns about E(0) x E(T/4), which is along the travel direction for a
+    # right-handed wave (IEEE: thumb along the propagation).
+    ports = [
+        gfem.FloquetPort(f"{side}_{pol}", face, polarization=pol)
+        for side, face in (("top", "z_max"), ("bottom", "z_min"))
+        for pol in ("TE", "TM")
+    ]
+    mesh = _interface_mesh(tmp_path)
+    empty = gfem.Model(
+        mesh,
+        materials={"glass": gfem.Material(), "air": gfem.Material()},
+        boundaries=[gfem.Periodic(("x_min", "x_max")), gfem.Periodic(("y_min", "y_max"))],
+        ports=ports,
+    )
+    side = "top" if surface == "z_max" else "bottom"
+    f = pc.F1_FREQUENCY
+    problem = gfem.Driven([f], excite=[f"{side}_TE", f"{side}_TM"], keep_fields=f)
+    result = gfem.solve(empty, problem, options=gfem.SolverOptions(order=3, threads=2))
+    point = np.array([[0.5 * pc.F1_A, 0.5 * pc.F1_A, D]]) * 1e-6
+
+    def incident(pol):
+        return np.asarray(result.e_field(f, excite=f"{side}_{pol}").at(point))[0]
+
+    e = incident("TM") + 1j * incident("TE")
+    now, quarter = np.real(e), np.real(1j * e)  # Re(E exp(i w t)) at w t = 0, pi/2
+    turn = np.cross(now, quarter)
+    # circular: two equal, orthogonal, transverse components (to the mesh:
+    # |E_z| / |E| 1.1e-3 measured)
+    assert abs(e[2]) <= 1e-2 * np.linalg.norm(e)
+    np.testing.assert_allclose(abs(turn[2]), np.vdot(e, e).real / 2, rtol=1e-2)
+    sense = np.sign(turn[2] * travel)
+    assert sense == (1.0 if handedness == "right" else -1.0)
