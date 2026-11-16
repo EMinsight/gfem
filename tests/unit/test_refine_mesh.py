@@ -513,6 +513,7 @@ def no_solve(monkeypatch):
         ("adaptive_sweep", "adaptive sweep"),
         ("periodic", "periodic"),
         ("bloch", "bloch"),
+        ("floquet_port", "floquet port"),
     ],
 )
 @pytest.mark.usefixtures("no_solve")

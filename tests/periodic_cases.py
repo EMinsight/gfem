@@ -326,6 +326,12 @@ G_WALL_Y = 2.0  # the sidewall between "core" and "sub", mm
 G_FREQUENCIES = (20e9, 28e9)
 #: The Bloch wave vector of G, rad/m.
 G_K = (0.3 * math.pi / (G_A * MM), -0.2 * math.pi / (G_B * MM), 0.0)
+#: The warning filter of G's solves under `G_K`: its Bloch wave meets the
+#: first-order `Absorbing` top at 39.6° at 20 GHz (r = 0.13), so a solve with
+#: concrete "cover" values warns `gfem.ObliqueAbsorberWarning` (ADR 0150); the
+#: checks on G compare gfem with itself (gradients, solvers), not with a
+#: perfect absorber.
+G_OBLIQUE = "ignore::gfem.ObliqueAbsorberWarning"
 
 
 def g_mesh(directory: Path) -> gfem.Mesh:

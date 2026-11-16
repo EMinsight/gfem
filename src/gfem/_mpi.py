@@ -121,6 +121,7 @@ _REFUSALS = {
     "eigenmode": f"An eigenmode solve has no distributed path: {_RUN_COPIES}.",
     "electrostatic": f"An electrostatic solve has no distributed path: {_RUN_COPIES}.",
     "periodic": f"A periodic model has no distributed path: {_RUN_COPIES}.",
+    "floquet_port": f"A Floquet port has no distributed path: {_RUN_COPIES}.",
     "bloch": f"A Bloch wave vector has no distributed path: {_RUN_COPIES}.",
     "frequency_workers": (
         "Frequency workers have no distributed path: use frequency_workers=1, "
@@ -285,6 +286,7 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
     Raises:
         DistributedUnsupportedError: Its ``feature`` names what has no path.
     """
+    from gfem._boundaries import FloquetPort
     from gfem.problems import Driven, Eigenmode, Electrostatic
 
     if isinstance(problem, Eigenmode):
@@ -294,6 +296,8 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
     if isinstance(problem, Driven):
         if problem.sweep == "adaptive":
             refuse_feature("adaptive_sweep")
+        if any(isinstance(p, FloquetPort) for p in model.ports):
+            refuse_feature("floquet_port")
         if problem.wave_vector is not None:
             refuse_feature("bloch")
         if model._periodic:  # noqa: SLF001

@@ -1552,6 +1552,56 @@ def _out_bloch_adaptive_sweep(request):
     jax.grad(objective)(eps)
 
 
+# --- Floquet path rows (ADR 0149) ------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def floquet_cell(tmp_path_factory):
+    """F1 (tests/periodic_cases.py): a slab with Floquet ports on both faces."""
+    return pc.f1(pc.f1_mesh(tmp_path_factory.mktemp("f1")))
+
+
+def _slab(model, e):
+    """``model`` with the slab's eps_r ``e`` on every element, traceable."""
+    n = len(model.mesh.elements("slab"))
+    return model.with_material("slab", gfem.MaterialField(eps_r=jnp.full(n, e)))
+
+
+def _floquet_slab_objective(model, problem, options=None):
+    def objective(e):
+        m = _slab(model, e)
+        return jnp.sum(jnp.abs(gfem.solve(m, problem, options=options).s.values) ** 2)
+
+    return objective
+
+
+def _out_floquet_adaptive_sweep(request):
+    # the adaptive sweep has no Floquet port path: refused before assembly
+    model = request.getfixturevalue("floquet_cell")
+    f = (0.9 * pc.F1_FREQUENCY, pc.F1_FREQUENCY, 1.1 * pc.F1_FREQUENCY)
+    problem = gfem.Driven(frequency=f, sweep="adaptive", samples=(f[0], f[2]))
+    jax.grad(_floquet_slab_objective(model, problem))(pc.F1_EPS_SLAB)
+
+
+def _out_floquet_petsc(request):
+    # nor has PETSc: refused before the linear solver is resolved
+    model = request.getfixturevalue("floquet_cell")
+    options = gfem.SolverOptions(linear_solver="petsc")
+    problem = gfem.Driven(frequency=pc.F1_FREQUENCY)
+    jax.grad(_floquet_slab_objective(model, problem, options))(pc.F1_EPS_SLAB)
+
+
+def _out_eigenmode_floquet_port(request):
+    # an order's propagation constant at a complex frequency: refused
+    model = request.getfixturevalue("floquet_cell")
+    problem = gfem.Eigenmode(target=pc.F1_FREQUENCY, n_modes=1)
+
+    def objective(e):
+        return jnp.real(gfem.solve(_slab(model, e), problem).omega[0])
+
+    jax.grad(objective)(pc.F1_EPS_SLAB)
+
+
 # --- periodic eigenmode rows ----------------------------------------------------------
 
 
@@ -1978,6 +2028,25 @@ OUT_OF_SCOPE = [
         _out_bloch_adaptive_sweep,
         NotImplementedError,
         "sweep='uniform'",
+    ),
+    # Floquet path rows
+    (
+        "Floquet driven x adaptive sweep",
+        _out_floquet_adaptive_sweep,
+        NotImplementedError,
+        r"Floquet ports \('R_TE'.*the adaptive sweep cannot solve them",
+    ),
+    (
+        "Floquet driven x petsc",
+        _out_floquet_petsc,
+        NotImplementedError,
+        r"linear_solver='petsc' has no Floquet port path",
+    ),
+    (
+        "eigenmode x Floquet port",
+        _out_eigenmode_floquet_port,
+        NotImplementedError,
+        r"Eigenmode does not support Floquet port 'R_TE'",
     ),
     # periodic eigenmode rows
     (

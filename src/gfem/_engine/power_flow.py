@@ -13,7 +13,10 @@ A's boundary exactly for the discrete field, with no point evaluation:
 (the forms are scaled by ``mu0 * scale``, see `terms`). A face term belongs
 to A only when every solve-domain element beside it is in A. A port's
 term needs its excitation, which a field does not record, so an outside
-port face that shares an edge with A raises.
+port face that shares an edge with A raises. A Floquet port face is no
+exception: inside A its terms (the absorbing term and the rank-one
+corrections, which couple that face's DOFs only) belong to A, and outside
+A it raises when it shares an edge with A, as other ports do.
 
 On a model with `gfem.Periodic` pairs the field holds e = P x on the
 unpaired space, Bloch phases included, and the identity holds there with
@@ -34,7 +37,7 @@ import ngsolve as ngs
 import numpy as np
 import scipy.constants as const
 
-from gfem._boundaries import surfaces_of
+from gfem._boundaries import FloquetPort, surfaces_of
 from gfem._engine import probe
 from gfem._engine.driven import DrivenOperator, driven_operator
 from gfem._engine.mesh import inverse_order
@@ -195,10 +198,11 @@ def surface(
     rim = inside & np.isin(tet_edges, np.unique(tet_edges[outside])).any(axis=1)
     faces = _outside_faces(mesh, tie, inside, support, closure)
     for port in model.ports:
+        kind = "FloquetPort" if isinstance(port, FloquetPort) else "port"
         for name in surfaces_of(port):
             if faces[mesh.elements(name)].any():
                 raise ValueError(
-                    f"The surface of this side is within one element of port "
+                    f"The surface of this side is within one element of {kind} "
                     f"{port.name!r}'s surface {name!r}: power_flow cannot "
                     "count a port's excitation. Move the surface at least one "
                     "element away from the port, or put the port's elements "

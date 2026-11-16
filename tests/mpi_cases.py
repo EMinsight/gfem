@@ -56,6 +56,9 @@ def refused(key: str, directory: Path):  # noqa: PLR0911
         case "bloch":
             problem = gfem.Driven(FREQUENCY, wave_vector=pc.C1_K)
             return _cell(directory), problem, direct
+        case "floquet_port":
+            model = pc.f1(pc.f1_mesh(directory))
+            return model, gfem.Driven(pc.F1_FREQUENCY), direct
         case "frequency_workers":
             options = gfem.SolverOptions(linear_solver="direct", frequency_workers=2)
             return _line(directory), gfem.Driven([1e9, 5e9]), options
@@ -83,6 +86,7 @@ KEYS = (
     "electrostatic",
     "periodic",
     "bloch",
+    "floquet_port",
     "frequency_workers",
     "device",
     "bddc_order_1",

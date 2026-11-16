@@ -294,6 +294,13 @@ RAISES_LABELS = {
     "FloquetPort offset": (
         "Any result, with respect to a Floquet port's de-embedding offset"
     ),
+    "Floquet driven x adaptive sweep": (
+        '`Driven(sweep="adaptive")` on a model with Floquet ports'
+    ),
+    "Floquet driven x petsc": (
+        '`Driven` with Floquet ports on `linear_solver="petsc"`'
+    ),
+    "eigenmode x Floquet port": "`Eigenmode` on a model with Floquet ports",
     "Model.bloch_wave_vector under a traced angle": (
         "`Model.bloch_wave_vector`, with respect to the incidence angles (the "
         "incidence of a Floquet port is a constant of the solve)"
@@ -820,6 +827,7 @@ REFUSAL_LABELS = {
     "electrostatic": "`Electrostatic`",
     "periodic": "A `Periodic` boundary on a `Driven` problem, on any number of axes",
     "bloch": "`Driven(wave_vector=...)`",
+    "floquet_port": "A `FloquetPort` on a `Driven` problem",
     "frequency_workers": "`frequency_workers` above 1, on more than one frequency",
     "device": '`device="cuda"`',
     "bddc_order_1": '`linear_solver="bddc_gmres"` at `order=1`',
