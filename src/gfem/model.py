@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import math
 import types
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -17,6 +18,7 @@ from gfem._boundaries import (
     Absorbing,
     Boundary,
     Conductor,
+    FloquetPort,
     Impedance,
     LumpedPort,
     Periodic,
@@ -25,8 +27,15 @@ from gfem._boundaries import (
     sheet_of,
     surfaces_of,
 )
-from gfem._checks import is_traced
+from gfem._checks import check_fixed, is_traced
 from gfem._domain import EMDomain, em_domain, enclosed_entities
+from gfem._floquet import (
+    FloquetFace,
+    floquet_face,
+    floquet_surfaces,
+    sort_orders,
+    wavenumber,
+)
 from gfem._materials import (
     Debye,
     DjordjevicSarkar,
@@ -36,7 +45,14 @@ from gfem._materials import (
     MaterialField,
     PermittivityLaw,
 )
-from gfem._periodic import Pairing, check_domain, check_nodes, check_pec, pairing
+from gfem._periodic import (
+    Pairing,
+    check_domain,
+    check_nodes,
+    check_pec,
+    check_wave_vector,
+    pairing,
+)
 from gfem._sheet import SheetField
 from gfem.errors import RegionNotFoundError
 from gfem.mesh import Mesh
@@ -51,6 +67,7 @@ __all__ = [
     "DjordjevicSarkar",
     "Drude",
     "EnclosedBy",
+    "FloquetPort",
     "Impedance",
     "Lorentz",
     "LumpedPort",
@@ -70,7 +87,11 @@ _BOUNDARY_TYPES = (PEC, PMC, Absorbing, Conductor, Impedance, Periodic)
 _MAX_PERIODIC_PAIRS = 3
 #: Sine of the angle below which two translations count as parallel.
 _PARALLEL_SINE = 1e-6
-_PORT_TYPES = (LumpedPort, WavePort)
+_PORT_TYPES = (LumpedPort, WavePort, FloquetPort)
+_BLOCH_ANGLES = (
+    "Model.bloch_wave_vector: theta and phi must be fixed numbers: the incidence "
+    "of a Floquet port is a constant of the solve, not a design variable"
+)
 _PHYSICS_NAMES = {"em": "electromagnetic"}
 
 
@@ -197,8 +218,9 @@ class Model:
             three). At most one electromagnetic condition or port per surface,
             except several wave ports (`WavePort`), one mode each (a shared port
             surface).
-        ports: `LumpedPort` and `WavePort` values; their order is the order
-            of the network parameters.
+        ports: `LumpedPort`, `WavePort` and `FloquetPort` values; their
+            order is the order of the network parameters. Several Floquet
+            ports share a Floquet surface, one (order, polarization) each.
         excluded: Volumes removed from the solve domain of electromagnetic
             problems, typically meshed conductors whose shell carries a
             `Conductor` or `PEC`: volume region names, or
@@ -215,7 +237,12 @@ class Model:
             translations are parallel; the message gives the remedy.
         TypeError: An argument has the wrong type.
         NotImplementedError: A `WavePort` shares a mesh node with a surface
-            of a `Periodic` pair.
+            of a `Periodic` pair (for plane-wave incidence on a periodic
+            cell, use `FloquetPort`); a `FloquetPort` surface whose rim lies
+            on one pair only, with several regions behind it, or with a
+            medium that is not lossless, isotropic and constant.
+        PortGeometryError: A `FloquetPort` surface that is not planar, or
+            whose rim is not on the seams of two pairs over whole periods.
     """
 
     mesh: Mesh
@@ -300,14 +327,14 @@ class Model:
                         "volumes). Remove it, or exclude fewer volumes."
                     )
                 taken.setdefault((item._physics, surface), []).append(item)  # noqa: SLF001
-            if isinstance(item, (Absorbing, WavePort)) and domain.interior(
-                item.surface
+            if isinstance(item, (Absorbing, WavePort, FloquetPort)) and (
+                domain.interior(item.surface)
             ):
                 raise ValueError(
                     f"{what} on {item.surface!r}: this surface is interior (it has "
-                    "the solve domain on both sides), but an absorbing boundary or "
-                    "a wave port must be an exterior surface of the "
-                    "electromagnetic solve domain."
+                    "the solve domain on both sides), but an absorbing boundary, "
+                    "a wave port or a Floquet port must be an exterior surface of "
+                    "the electromagnetic solve domain."
                 )
             sheet = sheet_of(item)
             if sheet is not None:
@@ -346,6 +373,7 @@ class Model:
             out.append(p)
         _check_independent(out)
         self._check_wave_ports(out)
+        self._check_floquet_ports(out)
         if out and not is_traced(self.mesh.nodes):
             check_nodes(self.mesh.nodes, out)
         return tuple(out)
@@ -369,9 +397,20 @@ class Model:
                     raise NotImplementedError(
                         f"WavePort {port.name!r} touches {p.label} at {shared.size} "
                         "nodes: a wave port's mode solve cannot be periodic. Move "
-                        "the port off the pair's surfaces (Floquet ports are not "
-                        "supported)."
+                        "the port off the pair's surfaces; for plane-wave incidence "
+                        "on the open face of a periodic cell, use gfem.FloquetPort."
                     )
+
+    def _check_floquet_ports(self, pairs: list[Pairing]) -> None:
+        """Each Floquet surface is an open face of the cell (`floquet_face`).
+
+        Raises:
+            ValueError, PortGeometryError, NotImplementedError: As
+                `gfem._floquet.floquet_face`, naming the surface's first port.
+        """
+        for surface, ports in floquet_surfaces(self.ports).items():
+            lead = f"FloquetPort {ports[0].name!r} on surface {surface!r}"
+            floquet_face(self, surface, lead, pairs)
 
     def _check_sheet(self, what: str, surface: str, field: SheetField) -> None:
         """A sheet field: on an interior surface, one fill value per face."""
@@ -436,6 +475,114 @@ class Model:
         return tuple(
             s for s in self.mesh.surfaces if s not in named and self._domain.exterior(s)
         )
+
+    def _face(self, surface: Any, owner: str) -> FloquetFace:
+        check_surface(self.mesh, surface, owner)
+        if not self._domain.exterior(surface):
+            raise ValueError(
+                f"{owner}: {surface!r} is not an exterior surface of the "
+                "electromagnetic solve domain; name an open face of the cell."
+            )
+        return floquet_face(self, surface, f"{owner}: surface {surface!r}")
+
+    def bloch_wave_vector(
+        self, surface: str, frequency: float, *, theta: float, phi: float = 0.0
+    ) -> tuple[float, float, float]:
+        """The Bloch wave vector of a plane wave incident through a face, rad/m.
+
+        k0 n sin(theta) (cos(phi) ê1 + sin(phi) ê2), with n = sqrt(eps_r
+        mu_r) of the medium behind ``surface`` and (ê1, ê2) its lattice
+        frame (`gfem.conventions`). Pass it as ``wave_vector`` of
+        `gfem.Driven`: it is the specular order's in-plane wave vector, the
+        same on every face of the cell.
+
+        Args:
+            surface: An open face of the cell (a Floquet surface, with or
+                without ports yet).
+            frequency: Hz.
+            theta: The angle from the face's inward normal, rad, |theta| <=
+                pi/2.
+            phi: The azimuth from ê1 toward ê2, rad.
+
+        Returns:
+            ``(kx, ky, kz)`` in rad/m, in model coordinates.
+
+        Raises:
+            NonDifferentiableError: An argument is traced by JAX.
+            ValueError: A non-positive frequency, an angle out of range, or
+                ``surface`` is not an open face of the cell.
+            PortGeometryError, NotImplementedError: As for a `FloquetPort`
+                on ``surface``.
+        """
+        owner = "Model.bloch_wave_vector"
+        check_fixed(frequency, f"{owner}: frequency must be a fixed number")
+        check_fixed((theta, phi), _BLOCH_ANGLES)
+        f, th, ph = (float(v) for v in (frequency, theta, phi))
+        if not (math.isfinite(f) and f > 0):
+            raise ValueError(f"{owner}: frequency must be > 0 Hz, got {frequency!r}.")
+        if not (math.isfinite(th) and abs(th) <= math.pi / 2 and math.isfinite(ph)):
+            raise ValueError(
+                f"{owner}: theta must be in [-pi/2, pi/2] rad and phi finite, got "
+                f"theta={theta!r}, phi={phi!r} (angles are in radians)."
+            )
+        face = self._face(surface, owner)
+        e1, e2, _ = face.frame
+        k = float(wavenumber(f, face.eps_r, face.mu_r)) * math.sin(th)
+        v = k * (math.cos(ph) * e1 + math.sin(ph) * e2)
+        return (float(v[0]), float(v[1]), float(v[2]))
+
+    def propagating_orders(
+        self, surface: str, frequency: Any, *, wave_vector: Any = None
+    ) -> tuple[tuple[int, int], ...]:
+        """The diffraction orders that propagate behind a face.
+
+        Orders (m, n) on the reciprocal lattice of the face's two pairs
+        (`gfem.FloquetPort`) whose in-plane wave vector is shorter than the
+        medium's wavenumber at some of the frequencies (strictly: a grazing
+        order is not listed).
+
+        Args:
+            surface: An open face of the cell.
+            frequency: One frequency or several, Hz.
+            wave_vector: The problem's Bloch wave vector, rad/m, or ``None``
+                (normal incidence).
+
+        Returns:
+            The orders, sorted by |m| + |n|, then m, then n.
+
+        Raises:
+            NonDifferentiableError: An argument is traced by JAX.
+            ValueError: A non-positive frequency, a wave vector off the
+                pairs' span, or ``surface`` is not an open face of the cell.
+        """
+        owner = "Model.propagating_orders"
+        check_fixed(frequency, f"{owner}: frequency must be fixed numbers")
+        check_fixed(wave_vector, f"{owner}: wave_vector must be fixed numbers")
+        f = np.atleast_1d(np.asarray(frequency, float)).ravel()
+        if not (np.isfinite(f).all() and (f > 0).all()) or not f.size:
+            raise ValueError(f"{owner}: frequencies must be > 0 Hz, got {frequency!r}.")
+        if wave_vector is not None:
+            wave_vector = tuple(float(v) for v in np.asarray(wave_vector, float))
+            check_wave_vector(self, wave_vector, owner)  # ty: ignore[invalid-argument-type]
+        face = self._face(surface, owner)
+        a = np.stack([face.a1, face.a2])
+        kt = np.zeros(3) if wave_vector is None else np.asarray(wave_vector)
+        found: set[tuple[int, int]] = set()
+        for fk, k in zip(
+            f, np.atleast_1d(wavenumber(f, face.eps_r, face.mu_r)), strict=True
+        ):
+            centre = a @ kt / (2 * np.pi)
+            reach = k * np.linalg.norm(a, axis=1) / (2 * np.pi)
+            ms = range(
+                math.floor(-reach[0] - centre[0]), math.ceil(reach[0] - centre[0]) + 1
+            )
+            ns = range(
+                math.floor(-reach[1] - centre[1]), math.ceil(reach[1] - centre[1]) + 1
+            )
+            grid = [(m, n) for m in ms for n in ns]
+            rows = face.rows(grid, fk, kt)
+            found |= {o for o, p in zip(grid, rows.propagating[0], strict=True) if p}
+        return sort_orders(found)
 
     # --- derived models -------------------------------------------------------
 
@@ -655,21 +802,39 @@ def _items(values: Any, kinds: tuple[type, ...], what: str) -> tuple:
 
 
 def _check_one_per_surface(taken: dict[tuple[str, str], list]) -> None:
-    """One condition or port per surface, or only wave ports (a shared surface).
+    """One condition or port per surface, or only wave or only Floquet ports.
 
-    The mixed-kinds error comes first on every surface, then each shared
-    port surface's rules.
+    Several wave ports share a port surface; several Floquet ports share a
+    Floquet surface. The mixed-kinds error comes first on every surface,
+    then each shared surface's rules.
     """
     for (physics, surface), items in taken.items():
-        if len(items) > 1 and not all(isinstance(i, WavePort) for i in items):
+        shared = all(isinstance(i, WavePort) for i in items) or all(
+            isinstance(i, FloquetPort) for i in items
+        )
+        if len(items) > 1 and not shared:
             raise ValueError(
                 f"Surface {surface!r} has more than one "
                 f"{_PHYSICS_NAMES[physics]} boundary condition or port: "
                 f"{', '.join(repr(i) for i in items)}. Keep one."
             )
     for (_, surface), items in taken.items():
-        if len(items) > 1:
+        if len(items) > 1 and isinstance(items[0], FloquetPort):
+            _check_floquet_surface(surface, items)
+        elif len(items) > 1:
             _check_shared_port_surface(surface, items)
+
+
+def _check_floquet_surface(surface: str, ports: list) -> None:
+    """Several Floquet ports on one surface: distinct (order, polarization)."""
+    for k, b in enumerate(ports):
+        for a in ports[:k]:
+            if (a.order, a.polarization) == (b.order, b.polarization):
+                raise ValueError(
+                    f"FloquetPorts {a.name!r} and {b.name!r} on surface {surface!r} "
+                    f"both request order {a.order} in {a.polarization}; give each "
+                    "Floquet port on a surface a different (order, polarization)."
+                )
 
 
 def _check_shared_port_surface(surface: str, ports: list) -> None:

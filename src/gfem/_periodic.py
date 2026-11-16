@@ -238,6 +238,33 @@ def check_domain(mesh: Mesh, p: Pairing, domain: EMDomain) -> None:
     )
 
 
+def side_edges(
+    mesh: Mesh, p: Pairing, triangles: np.ndarray
+) -> dict[int, set[tuple[int, int]]]:
+    """The edges of ``triangles`` on each side of a pair, keyed by their twins.
+
+    Args:
+        mesh: The mesh.
+        p: The pair.
+        triangles: ``(t, 3)`` node indices.
+
+    Returns:
+        ``{1: edges on p.first, 2: edges on p.second}``, each edge as its
+        sorted node pair mapped to ``p.first`` (`Pairing.to_first`), so an
+        edge and its twin have the same key.
+    """
+    n = len(mesh.imported_nodes)
+    side = np.zeros(n, dtype=np.int8)
+    side[p.first_nodes], side[p.second_nodes] = 1, 2
+    to_first = p.to_first(n)
+    e = np.sort(triangles[:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2), axis=1)
+    out: dict[int, set[tuple[int, int]]] = {}
+    for k in (1, 2):
+        on = e[(side[e[:, 0]] == k) & (side[e[:, 1]] == k)]
+        out[k] = {tuple(v) for v in np.sort(to_first[on], axis=1).tolist()}
+    return out
+
+
 def check_pec(mesh: Mesh, p: Pairing, pec: Iterable[str]) -> None:
     """PEC surfaces meet the two surfaces of the pair along twin edges.
 
@@ -248,19 +275,7 @@ def check_pec(mesh: Mesh, p: Pairing, pec: Iterable[str]) -> None:
         ValueError: A PEC surface meets one side along an edge whose twin is
             not PEC.
     """
-    n = len(mesh.imported_nodes)
-    side = np.zeros(n, dtype=np.int8)
-    side[p.first_nodes], side[p.second_nodes] = 1, 2
-    to_first = p.to_first(n)
-    edges: dict[str, dict[int, set[tuple[int, int]]]] = {}
-    for name in pec:
-        tris = _surface_triangles(mesh, name)
-        e = np.sort(tris[:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2), axis=1)
-        out: dict[int, set[tuple[int, int]]] = {1: set(), 2: set()}
-        for k in (1, 2):
-            on = e[(side[e[:, 0]] == k) & (side[e[:, 1]] == k)]
-            out[k] = {tuple(v) for v in np.sort(to_first[on], axis=1).tolist()}
-        edges[name] = out
+    edges = {name: side_edges(mesh, p, _surface_triangles(mesh, name)) for name in pec}
     every = {k: set().union(*(o[k] for o in edges.values())) for k in (1, 2)}
     for name, out in edges.items():
         for k, other in ((2, 1), (1, 2)):

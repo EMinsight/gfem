@@ -1189,6 +1189,36 @@ def _out_lumped_port_resistance(request):
     jax.grad(objective)(50.0)
 
 
+def _out_floquet_port_offset(_request):
+    # a Floquet port's de-embedding offset is static (raised by the constructor)
+    def objective(offset):
+        gfem.FloquetPort("R", "z_max", polarization="TE", offset=offset)
+        return offset
+
+    jax.grad(objective)(1e-7)
+
+
+def _out_bloch_wave_vector_angle(request):
+    # the incidence of a Floquet port is a constant of the solve
+    edges = (np.linspace(0, 1, 3), np.linspace(0, 1, 3), np.linspace(0, 1, 3))
+    path = sm.write_msh22(
+        request.getfixturevalue("tmp_path") / "cell.msh", sm.periodic_cell(edges)
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path),
+        materials={"cell": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+    )
+
+    def objective(theta):
+        return model.bloch_wave_vector("z_max", 2e14, theta=theta)[0]
+
+    jax.grad(objective)(0.3)
+
+
 def _out_material_on_a_wave_port_face(request):
     # likewise for a material of a region with elements on a port face
     model = request.getfixturevalue("wave_model")
@@ -1811,6 +1841,18 @@ OUT_OF_SCOPE = [
         _out_lumped_port_resistance,
         gfem.NonDifferentiableError,
         r"LumpedPort\.resistance is a fixed value.*inductance and capacitance",
+    ),
+    (
+        "FloquetPort offset",
+        _out_floquet_port_offset,
+        gfem.NonDifferentiableError,
+        r"FloquetPort\.offset is a fixed value",
+    ),
+    (
+        "Model.bloch_wave_vector under a traced angle",
+        _out_bloch_wave_vector_angle,
+        gfem.NonDifferentiableError,
+        r"Model\.bloch_wave_vector: theta and phi must be fixed numbers",
     ),
     (
         "driven x material on a wave port face",

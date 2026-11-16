@@ -581,11 +581,86 @@ def _path(value: Any, owner: str) -> tuple[tuple[float, float, float], ...]:
     return tuple((float(r[0]), float(r[1]), float(r[2])) for r in p.reshape(-1, 3))
 
 
+@dataclasses.dataclass(frozen=True)
+class FloquetPort:
+    """A Floquet port: one diffraction order in one polarization.
+
+    It sits on an open face of a periodic cell (a Floquet surface): an
+    exterior planar face whose rim lies on the seams of two `Periodic` pairs
+    whose translations a1, a2 span the face, with one homogeneous lossless
+    isotropic medium behind it. The order (m, n) is the plane wave with
+    in-plane wave vector κ = k_t + m b1 + n b2 (b_i·a_j = 2πδ_ij, k_t the
+    problem's ``wave_vector``) in that medium. Several Floquet ports share
+    one surface, one (order, polarization) each; the surface takes no other
+    port or boundary. `Model.propagating_orders` lists the orders that
+    propagate and `Model.bloch_wave_vector` turns incidence angles into a
+    wave vector. See `gfem.conventions` for the lattice frame and the TE/TM
+    references.
+
+    Attributes:
+        name: The port's name; ports index S-parameters by name, in the
+            order of the model's ``ports``.
+        surface: The Floquet surface.
+        order: The diffraction order (m, n), two integers; (0, 0) is the
+            specular order.
+        polarization: ``"TE"`` (s: E along ê3 x κ̂) or ``"TM"`` (p: E
+            tangential along κ̂), relative to the order's plane of incidence.
+        offset: De-embedding distance in m, >= 0, along the face normal.
+
+    Raises:
+        TypeError: ``name`` or ``surface`` is not a string, or ``order`` is
+            not two integers.
+        ValueError: An empty name, an unknown polarization or a negative or
+            non-finite offset.
+        NonDifferentiableError: ``offset`` is traced by JAX.
+
+    Example:
+        ``gfem.FloquetPort("T-1_TE", "bottom", order=(-1, 0), polarization="TE")``
+    """
+
+    name: str
+    surface: str
+    _: dataclasses.KW_ONLY
+    order: tuple[int, int] = (0, 0)
+    polarization: Literal["TE", "TM"]
+    offset: float = 0.0
+    _physics: ClassVar[str] = "em"
+
+    def __post_init__(self) -> None:
+        owner = f"FloquetPort {self.name!r}"
+        _port_name(self.name, "FloquetPort")
+        _surface_name(self.surface, owner)
+        order = self.order
+        if (
+            isinstance(order, str)
+            or not isinstance(order, (list, tuple))
+            or len(order) != 2
+            or not all(
+                isinstance(i, (int, np.integer)) and not isinstance(i, (bool, np.bool_))
+                for i in order
+            )
+        ):
+            raise TypeError(
+                f"{owner}: order must be two integers (m, n), got {order!r}."
+            )
+        object.__setattr__(self, "order", (int(order[0]), int(order[1])))
+        if self.polarization not in ("TE", "TM"):
+            raise ValueError(
+                f"{owner}: polarization must be 'TE' or 'TM', got "
+                f"{self.polarization!r}."
+            )
+        offset = static_float(self.offset, "FloquetPort.offset", _FIXED)
+        if offset < 0:
+            raise ValueError(f"{owner}: offset must be >= 0 m, got {offset}.")
+        object.__setattr__(self, "offset", offset)
+
+
 jax.tree_util.register_static(WavePort)
+jax.tree_util.register_static(FloquetPort)
 register_fields(LumpedPort, ("inductance", "capacitance"))
 
-#: A port of a model: a lumped port or a wave port.
-Port = LumpedPort | WavePort
+#: A port of a model: a lumped port, a wave port or a Floquet port.
+Port = LumpedPort | WavePort | FloquetPort
 
 
 def sheet_of(item: Boundary | Port) -> SheetField | None:
