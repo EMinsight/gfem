@@ -68,7 +68,7 @@ on the MPI PETSc stack, whose absence raises `gfem.SolverUnavailableError`.
 ``"bddc_gmres"`` needs no PETSc: with the MPI stack its coarse problem moves off rank
 0 (`gfem._linalg.coarse`).
 
-`low_rank_update` wraps a handle of ``A`` into one of ``A + U C Uᵀ``
+`low_rank_update` wraps a handle of ``A`` into one of ``A + U C Vᵀ``
 (Woodbury, the update never assembled): wave ports' modal corrections.
 
 `factorize` gives a ``direct`` handle on a real symmetric SciPy matrix, for
@@ -662,9 +662,16 @@ def factorize(matrix) -> Handle:
 
 
 def low_rank_update(
-    handle: Handle, vectors: np.ndarray, coefficients, *, borrow: bool = False
+    handle: Handle,
+    vectors: np.ndarray,
+    coefficients,
+    *,
+    right: np.ndarray | None = None,
+    infinite: np.ndarray | None = None,
+    row_scaled: bool = False,
+    borrow: bool = False,
 ) -> Handle:
-    """A handle of ``A + U C Uᵀ`` from a handle of ``A`` (Woodbury).
+    """A handle of ``A + U C Vᵀ`` from a handle of ``A`` (Woodbury).
 
     See `gfem._linalg.lowrank`. The result owns ``handle`` unless it borrows
     it.
@@ -673,9 +680,22 @@ def low_rank_update(
         handle: The prepared base operator ``A``.
         vectors: ``U``, ``(ndof, p)``, zero on the fixed DOFs.
         coefficients: ``C``, ``(p, p)``.
+        right: ``V``, as ``U``; ``None`` for ``U`` (``A + U C Uᵀ``).
+        infinite: ``(p,)`` bools: the rows whose diagonal shift is
+            infinite, each an exact constraint row (their row and column of
+            ``C`` zero); ``None`` for none.
+        row_scaled: Divide each capacitance row with a large shift by it.
         borrow: Leave ``handle`` to its owner: freeing the result releases
             only the update's own columns.
     """
     from gfem._linalg.lowrank import LowRankUpdate
 
-    return LowRankUpdate(handle, vectors, coefficients, borrow=borrow)
+    return LowRankUpdate(
+        handle,
+        vectors,
+        coefficients,
+        right=right,
+        infinite=infinite,
+        row_scaled=row_scaled,
+        borrow=borrow,
+    )
