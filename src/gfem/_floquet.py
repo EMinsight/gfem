@@ -37,16 +37,22 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import scipy.constants as const
 
-from gfem._boundaries import FloquetPort, Periodic, surfaces_of
+from gfem._boundaries import Absorbing, FloquetPort, Periodic, surfaces_of
 from gfem._materials import Material, MaterialField, PermittivityLaw
 from gfem._periodic import Pairing, side_edges
-from gfem.errors import FloquetOrderCapWarning, PortGeometryError
+from gfem._text import hertz
+from gfem.errors import (
+    FloquetOrderCapWarning,
+    ObliqueAbsorberWarning,
+    PortGeometryError,
+)
 
 if TYPE_CHECKING:
     from gfem.model import Model
     from gfem.options import SolverOptions
 
 __all__ = [
+    "OBLIQUE_REFLECTION",
     "POLARIZATIONS",
     "FloquetFace",
     "OrderRows",
@@ -62,6 +68,7 @@ __all__ = [
     "order_table",
     "reciprocal_lattice",
     "sort_orders",
+    "warn_oblique_absorbers",
     "warn_order_cap",
     "wave_impedance",
     "wavenumber",
@@ -587,15 +594,10 @@ def _plane(
     return tris, tets, origin, normal * inward[0]
 
 
-def _rim_pairs(
-    model: Model, surface: str, lead: str, tris: np.ndarray, pairs: list[Pairing]
-) -> tuple[Pairing, Pairing]:
-    """The two pairs the face's rim lies on, in ``boundaries`` order.
-
-    Raises:
-        NotImplementedError: The rim lies on one pair, the rest on walls.
-        PortGeometryError: Rim edges lie on no pair.
-    """
+def _rim_surfaces(
+    model: Model, surface: str, tris: np.ndarray
+) -> dict[tuple[int, int], set[str]]:
+    """Per rim edge of the face (node pair), the other surfaces that hold it."""
     mesh = model.mesh
     tag = mesh.region(surface).tag
     keys, counts = np.unique(_edges(tris), axis=0, return_counts=True)
@@ -609,6 +611,21 @@ def _rim_pairs(
     for (i, j), t in zip(all_e[near].tolist(), tags.tolist(), strict=True):
         if t != tag:
             on[i, j].add(names.get(t, str(t)))
+    return on
+
+
+def _rim_pairs(
+    model: Model, surface: str, lead: str, tris: np.ndarray, pairs: list[Pairing]
+) -> tuple[Pairing, Pairing]:
+    """The two pairs the face's rim lies on, in ``boundaries`` order.
+
+    Raises:
+        NotImplementedError: The rim lies on one pair, the rest on walls.
+        PortGeometryError: Rim edges lie on no pair.
+    """
+    mesh = model.mesh
+    on = _rim_surfaces(model, surface, tris)
+    rim = list(on)
     pair_of = {s: k for k, p in enumerate(pairs) for s in (p.first, p.second)}
     met: set[int] = set()
     lone: list[tuple[int, int]] = []
@@ -863,3 +880,208 @@ def warn_order_cap(table: dict[str, SurfaceOrders], tolerance: float) -> None:
             ),
             stacklevel=3,
         )
+
+
+# --- the oblique-absorber warning ---------------------------------------------------
+
+#: The amplitude reflection (1 - cos θ)/(1 + cos θ) of a first-order absorbing
+#: face from which `warn_oblique_absorbers` warns (ADR 0150).
+OBLIQUE_REFLECTION = 0.01
+
+
+def warn_oblique_absorbers(
+    model: Model, frequency: Any, wave_vector: Any, *, stacklevel: int
+) -> None:
+    """Warn `ObliqueAbsorberWarning` once per `Absorbing` face of a periodic model.
+
+    Each face takes the propagating plane waves that meet it (ADR 0150):
+    every propagating diffraction order of its two in-plane pairs when its
+    rim lies on them, else the wave vector's component in its plane, in the
+    real index of each material behind it. It warns when one of them has
+    an amplitude reflection (1 - cos θ)/(1 + cos θ) >= `OBLIQUE_REFLECTION`
+    at some frequency, naming the worst. A face that is not planar has no
+    one angle and is skipped, as are material values traced by JAX.
+    Called by the parent only (a worker's warnings never reach the user).
+
+    Args:
+        model: The model.
+        frequency: The sweep's frequencies, Hz.
+        wave_vector: ``None``, one 3-vector or one per frequency, rad/m.
+        stacklevel: Passed on to `warnings.warn`, counted from the caller.
+    """
+    pairs = list(model._periodic)  # noqa: SLF001
+    if not pairs:
+        return
+    f = np.atleast_1d(np.asarray(frequency, float))
+    kt = _wave_vectors(wave_vector, len(f))
+    surfaces = [b.surface for b in model.boundaries if isinstance(b, Absorbing)]
+    for surface in dict.fromkeys(surfaces):
+        worst = _worst_incidence(model, surface, pairs, f, kt)
+        if worst is None:
+            continue
+        theta, order, fw = worst
+        r = (1 - math.cos(theta)) / (1 + math.cos(theta))
+        if r < OBLIQUE_REFLECTION:
+            continue
+        warnings.warn(
+            ObliqueAbsorberWarning(
+                f"Absorbing {surface!r} meets a plane wave at "
+                f"{math.degrees(theta):.1f}° (order {order} at {hertz(fw)}), and "
+                f"its first-order condition reflects about {r:.1%} of the "
+                "amplitude of such a wave; a gfem.FloquetPort on "
+                f"{surface!r} absorbs every order at any angle."
+            ),
+            stacklevel=stacklevel + 1,
+        )
+
+
+def _worst_incidence(
+    model: Model,
+    surface: str,
+    pairs: list[Pairing],
+    f: np.ndarray,
+    kt: np.ndarray,
+) -> tuple[float, Order, float] | None:
+    """The largest angle of a propagating wave on a face: (θ, order, frequency).
+
+    Ties go to the first frequency, then the first order (`sort_orders`).
+    ``None`` when the face is not planar or no wave propagates.
+    """
+    mesh = model.mesh
+    x = mesh.imported_nodes
+    sel = np.flatnonzero(mesh.triangle_tags == mesh.region(surface).tag)
+    tris = mesh.triangles[sel]
+    used = np.unique(tris)
+    centred = x[used] - x[used].mean(axis=0)
+    *_, vt = np.linalg.svd(centred, full_matrices=False)
+    normal = vt[2]
+    if np.abs(centred @ normal).max() > PLANE_RTOL * float(
+        np.ptp(x[used], axis=0).max()
+    ):
+        return None
+    lattice = _in_plane_pairs(model, surface, tris, pairs, normal)
+    indices = _indices(model, surface, f)
+    best: tuple[float, Order, float] | None = None
+    for i, fi in enumerate(f):
+        for n in indices[i]:
+            k = float(wavenumber(fi, 1.0, 1.0)) * n
+            if lattice is None:
+                kappa = kt[i] - (kt[i] @ normal) * normal
+                s = float(np.linalg.norm(kappa)) / k
+                found = [((0, 0), math.asin(s))] if s < 1 else []
+            else:
+                found = _propagating(lattice, k, kt[i])
+            for order, theta in found:
+                if best is None or theta > best[0]:
+                    best = (theta, order, float(fi))
+    return best
+
+
+def _in_plane_pairs(
+    model: Model,
+    surface: str,
+    tris: np.ndarray,
+    pairs: list[Pairing],
+    normal: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """(a1, a2) when the face's rim lies on two pairs in its plane, else ``None``."""
+    pair_of = {s: k for k, p in enumerate(pairs) for s in (p.first, p.second)}
+    met: set[int] = set()
+    for others in _rim_surfaces(model, surface, tris).values():
+        found = {pair_of[s] for s in others if s in pair_of}
+        if not found:
+            return None
+        met |= found
+    a = [np.asarray(pairs[k].translation, float) for k in sorted(met)]
+    if len(a) != 2 or any(
+        abs(float(t @ normal)) > IN_PLANE_SINE * float(np.linalg.norm(t)) for t in a
+    ):
+        return None
+    return a[0], a[1]
+
+
+def _propagating(
+    lattice: tuple[np.ndarray, np.ndarray], k: float, kt: np.ndarray
+) -> list[tuple[Order, float]]:
+    """The propagating orders of a lattice at wavenumber k and their angles θ."""
+    a = np.stack(lattice)
+    centre = a @ kt / (2 * np.pi)
+    reach = k * np.linalg.norm(a, axis=1) / (2 * np.pi)
+    grid = [
+        (m, n)
+        for m in range(
+            math.floor(-reach[0] - centre[0]), math.ceil(reach[0] - centre[0]) + 1
+        )
+        for n in range(
+            math.floor(-reach[1] - centre[1]), math.ceil(reach[1] - centre[1]) + 1
+        )
+    ]
+    grid = list(sort_orders(grid))
+    rows = _rows(grid, np.ones(1), np.array([k]), kt[None], a1=a[0], a2=a[1])
+    return [
+        (o, float(t))
+        for o, p, t in zip(grid, rows.propagating[0], rows.theta[0], strict=True)
+        if p
+    ]
+
+
+def _indices(model: Model, surface: str, f: np.ndarray) -> list[np.ndarray]:
+    """Per frequency, the distinct real indices of the elements behind a face.
+
+    sqrt(Re[eps_r (1 - i tan_delta)] Re[mu_r]) per principal axis, a
+    permittivity law at each frequency; materials traced by JAX, law
+    blends and non-positive values are left out.
+    """
+    from gfem._checks import is_traced
+    from gfem._engine import dispersion
+    from gfem._engine.terms import face_owner
+
+    mesh = model.mesh
+    owner = face_owner(model)[mesh.triangle_tags == mesh.region(surface).tag]
+    behind = np.unique(owner[owner >= 0])
+    volumes = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    columns = [np.zeros((len(f), 0))]
+    for tag in np.unique(mesh.tetrahedron_tags[behind]).tolist():
+        region = volumes[tag]
+        material = model.materials.get(region)
+        if material is None or is_traced(material):
+            continue
+        if isinstance(material, MaterialField):
+            if material.blend_ends is not None:
+                continue
+            at = np.isin(mesh.elements(region), behind)
+            eps, tan, mu = (
+                default if value is None else np.asarray(value)[at]
+                for value, default in (
+                    (material.eps_r, 1.0),
+                    (material.tan_delta, 0.0),
+                    (material.mu_r, 1.0),
+                )
+            )
+            n = _real_index(eps, tan, mu).ravel()
+            columns.append(np.broadcast_to(n, (len(f), n.size)))
+            continue
+        eps = material.eps_r
+        if isinstance(eps, PermittivityLaw):
+            values = np.array(
+                [
+                    complex(eps.eps_inf)
+                    + dispersion.susceptibility(eps, 2 * np.pi * fi)
+                    for fi in f
+                ]
+            )[:, None]
+        else:
+            values = np.atleast_1d(np.asarray(eps))[None]
+        tan = np.atleast_1d(np.asarray(material.tan_delta, float))
+        mu = np.atleast_1d(np.asarray(material.mu_r, float))
+        n = _real_index(values, tan, mu)
+        columns.append(np.broadcast_to(n, (len(f), n.shape[-1])))
+    rows = np.concatenate(columns, axis=1)
+    return [np.unique(r[np.isfinite(r) & (r > 0)]) for r in rows]
+
+
+def _real_index(eps: Any, tan_delta: Any, mu_r: Any) -> np.ndarray:
+    """sqrt(Re[eps (1 - i tan_delta)] Re[mu]), NaN where the product is negative."""
+    product = np.real(np.asarray(eps) * (1 - 1j * np.asarray(tan_delta)))
+    product = product * np.real(np.asarray(mu_r))
+    return np.sqrt(np.where(product > 0, product, np.nan))

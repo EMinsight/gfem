@@ -437,3 +437,52 @@ def check_bloch(
             f"{lead}, and linear_solver={linear_solver!r} {reason}: use "
             f"linear_solver={' or '.join(map(repr, solvers))}."
         )
+
+
+def check_floquet(
+    owner: str,
+    ports: Iterable[str],
+    *,
+    device: str,
+    linear_solver: str,
+    sweep: str = "uniform",
+) -> None:
+    """Raise for what a solve with Floquet ports cannot use, before any assembly.
+
+    The sibling of `check_bloch`, called after it: only the uniform sweep
+    on the CPU with ``direct`` or ``bddc_gmres`` (or ``"auto"``, which picks
+    one of them on one process) has a Floquet port path (ADR 0149).
+    Checked before the linear solver is resolved, so the refusal does not
+    depend on what is installed. Nothing happens without ``ports``.
+
+    Args:
+        owner: What opens every message, e.g. ``"Driven"``.
+        ports: The names of the model's Floquet ports.
+        device: `gfem.SolverOptions.device`.
+        linear_solver: `gfem.SolverOptions.linear_solver`.
+        sweep: The sweep, ``"uniform"`` or ``"adaptive"``.
+
+    Raises:
+        NotImplementedError: ``sweep`` is ``"adaptive"``, ``device`` is not
+            ``"cpu"``, or ``linear_solver`` is ``"petsc"``.
+    """
+    names = ", ".join(repr(p) for p in ports)
+    if not names:
+        return
+    lead = f"{owner}: the model has Floquet ports ({names}), and"
+    if sweep == "adaptive":
+        raise NotImplementedError(
+            f"{lead} the adaptive sweep cannot solve them in this version of gfem: "
+            "use sweep='uniform' (SolverOptions.frequency_workers spreads its "
+            "frequencies over processes)."
+        )
+    if device != "cpu":
+        raise NotImplementedError(
+            f"{lead} the GPU solver (device={device!r}, cuDSS) has no Floquet port "
+            "path in this version of gfem: use device='cpu'."
+        )
+    if linear_solver == "petsc":
+        raise NotImplementedError(
+            f"{lead} linear_solver='petsc' has no Floquet port path in this "
+            "version of gfem: use linear_solver='direct' or 'bddc_gmres'."
+        )

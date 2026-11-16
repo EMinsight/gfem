@@ -159,6 +159,9 @@ from periodic_cases import (
 import gfem
 from gfem.shape import boundary_morph
 
+#: G's Bloch cells meet its absorbing top obliquely (`pc.G_OBLIQUE`).
+pytestmark = pytest.mark.filterwarnings(pc.G_OBLIQUE)
+
 SOLVERS = ("direct", "bddc_gmres")
 
 

@@ -131,7 +131,12 @@ from gfem._linalg import Kind, ResolvedLinearSolver, report
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
 from gfem._materials import MaterialField
-from gfem._periodic import bloch_phases, check_bloch, check_wave_vector
+from gfem._periodic import (
+    bloch_phases,
+    check_bloch,
+    check_floquet,
+    check_wave_vector,
+)
 from gfem._port_section import port_section_key
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
 from gfem._text import hertz
@@ -139,6 +144,7 @@ from gfem.errors import (
     FloquetOrderCapWarning,
     LinearSolverConvergenceError,
     LowFrequencyWarning,
+    ObliqueAbsorberWarning,
     PortGeometryError,
     PortModeProjectionWarning,
     SkippedPortModeWarning,
@@ -637,6 +643,13 @@ class DrivenRule:
                 reason="factors symmetric operators only",
                 sweep=problem.sweep,
             )
+        check_floquet(
+            "Driven",
+            [p.name for p in model.ports if isinstance(p, FloquetPort)],
+            device=options.device,
+            linear_solver=options.linear_solver,
+            sweep=problem.sweep,
+        )
         # before any assembly, and before any worker
         self.linear = ResolvedLinearSolver.resolve(
             options,
@@ -680,6 +693,10 @@ class DrivenRule:
         if self.orders:
             _floquet.warn_order_cap(self.orders, options.floquet_order_tolerance)
             check_excitable(self.orders, self.excite, problem.frequency)
+        # the parent's warning, from the same grid (ADR 0150)
+        _floquet.warn_oblique_absorbers(
+            model, problem.frequency, problem.wave_vector, stacklevel=4
+        )
         #: Indices of the frequencies whose fields are kept.
         self.kept = tuple(problem.frequency.index(f) for f in problem.kept_frequencies)
         #: Whether the sweep is adaptive (a reduced model).
@@ -2234,6 +2251,7 @@ def _attenuation_message(
 #: estimate's adjoint) ignores them, since the first already gave them.
 FORWARD_WARNINGS = (
     FloquetOrderCapWarning,
+    ObliqueAbsorberWarning,
     LowFrequencyWarning,
     SkippedPortModeWarning,
     PortModeProjectionWarning,

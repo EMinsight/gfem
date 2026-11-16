@@ -215,8 +215,8 @@ class MeshRefinementUnsupportedError(NotImplementedError):
 
     Attributes:
         feature: What has no path: ``"adaptive sweep"``, ``"port mode"``,
-            ``"periodic"``, ``"bloch"``, or an estimator or problem type that
-            this version of gfem cannot estimate yet.
+            ``"periodic"``, ``"bloch"``, ``"floquet port"``, or an estimator
+            or problem type that this version of gfem cannot estimate yet.
     """
 
     def __init__(self, feature: str, message: str) -> None:

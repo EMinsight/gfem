@@ -368,6 +368,7 @@ AXES = ((0.8, 0.6, 0), (-0.6, 0.8, 0), (0, 0, 1))
 AXES_GRAD_TOL = 1e-6
 
 
+@pytest.mark.filterwarnings(pc.G_OBLIQUE)
 @pytest.mark.parametrize("bloch", [False, True], ids=["plain", "bloch"])
 @pytest.mark.parametrize("leaf", ["eps_r", "mu_r"])
 def test_per_axis_gradient_on_a_periodic_cell_with_an_absorbing_face(
@@ -449,6 +450,8 @@ def _sheet_s11(wave_impedance, kx, r):
 def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
     """A Bloch cell radiating at 30° onto `Absorbing` faces: r = (1 - cos)/(1 + cos).
 
+    The solve warns `gfem.ObliqueAbsorberWarning` for each face (ADR 0150).
+
     The cell is periodic along y and z; a wave vector k_t along z makes the
     port sheet radiate at sin θ = k_t / (k0 n), with E in the plane of
     incidence (wave impedance η cos θ). The first-order boundary has the
@@ -476,11 +479,15 @@ def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
     )
     k = 2 * math.pi * OBLIQUE_F / const.c * math.sqrt(OBLIQUE_EPS)
     kt, kx = k * math.sin(OBLIQUE_ANGLE), k * math.cos(OBLIQUE_ANGLE)
-    result = gfem.solve(
-        model,
-        gfem.Driven(frequency=OBLIQUE_F, wave_vector=(0.0, 0.0, kt)),
-        options=gfem.SolverOptions(order=2, linear_solver="direct"),
-    )
+    with pytest.warns(gfem.ObliqueAbsorberWarning) as caught:
+        result = gfem.solve(
+            model,
+            gfem.Driven(frequency=OBLIQUE_F, wave_vector=(0.0, 0.0, kt)),
+            options=gfem.SolverOptions(order=2, linear_solver="direct"),
+        )
+    assert [str(w.message).split(" (")[0] for w in caught] == [
+        f"Absorbing {face!r} meets a plane wave at 30.0°" for face in ("x_min", "x_max")
+    ]
     s11 = complex(np.asarray(result.s.values).ravel()[0])
 
     cos = math.cos(OBLIQUE_ANGLE)
