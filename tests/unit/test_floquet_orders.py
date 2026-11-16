@@ -202,16 +202,22 @@ def test_wave_impedances_are_eta_over_cos_and_eta_cos_and_nan_off_propagation():
 
 
 def _modelled(f, kt, distance=0.2 * UM, tol=1e-4, cap=(20, 20)):
-    return fl.modelled_orders(
-        f,
-        kt,
-        a1=(AX, 0, 0),
-        a2=(0, AY, 0),
+    """The modelled set of an air face on the AX x AY lattice, d from a scatterer."""
+    face = fl.FloquetFace(
+        surface="top",
+        region="air",
         eps_r=1.0,
+        mu_r=1.0,
+        normal=np.array([0.0, 0.0, 1.0]),
+        origin=np.zeros(3),
+        a1=np.array([AX, 0.0, 0.0]),
+        a2=np.array([0.0, AY, 0.0]),
+        pairs=(),  # ty: ignore[invalid-argument-type]
+        area=AX * AY,
+        h_face=0.1 * UM,
         distance=distance,
-        tolerance=tol,
-        cap=cap,
     )
+    return fl.modelled_orders(face, f, kt, tolerance=tol, cap=cap)
 
 
 def _rule(f, kt, distance, tol):

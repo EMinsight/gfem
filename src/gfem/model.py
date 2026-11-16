@@ -33,7 +33,7 @@ from gfem._floquet import (
     FloquetFace,
     floquet_face,
     floquet_surfaces,
-    sort_orders,
+    propagating_orders,
     surface_lead,
     wavenumber,
 )
@@ -564,25 +564,7 @@ class Model:
         if wave_vector is not None:
             wave_vector = tuple(float(v) for v in np.asarray(wave_vector, float))
             check_wave_vector(self, wave_vector, owner)  # ty: ignore[invalid-argument-type]
-        face = self._face(surface, owner)
-        a = np.stack([face.a1, face.a2])
-        kt = np.zeros(3) if wave_vector is None else np.asarray(wave_vector)
-        found: set[tuple[int, int]] = set()
-        for fk, k in zip(
-            f, np.atleast_1d(wavenumber(f, face.eps_r, face.mu_r)), strict=True
-        ):
-            centre = a @ kt / (2 * np.pi)
-            reach = k * np.linalg.norm(a, axis=1) / (2 * np.pi)
-            ms = range(
-                math.floor(-reach[0] - centre[0]), math.ceil(reach[0] - centre[0]) + 1
-            )
-            ns = range(
-                math.floor(-reach[1] - centre[1]), math.ceil(reach[1] - centre[1]) + 1
-            )
-            grid = [(m, n) for m in ms for n in ns]
-            rows = face.rows(grid, fk, kt)
-            found |= {o for o, p in zip(grid, rows.propagating[0], strict=True) if p}
-        return sort_orders(found)
+        return propagating_orders(self._face(surface, owner), f, wave_vector)
 
     # --- derived models -------------------------------------------------------
 

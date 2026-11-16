@@ -69,6 +69,7 @@ __all__ = [
     "order_cap",
     "order_rows",
     "order_table",
+    "propagating_orders",
     "reciprocal_lattice",
     "sort_orders",
     "surface_lead",
@@ -318,15 +319,23 @@ class Truncation:
     alpha_cap: float
 
 
+def _orders_within(a: np.ndarray, kt: np.ndarray, radius: float) -> list[Order]:
+    """The orders whose |κ| may be below ``radius``, rad/m: a box around the disc.
+
+    ``a`` holds the pairs' translations as rows, ``kt`` the Bloch wave vector.
+    """
+    centre = a @ kt / (2 * np.pi)
+    reach = radius * np.linalg.norm(a, axis=1) / (2 * np.pi)
+    ms = range(math.floor(-reach[0] - centre[0]), math.ceil(reach[0] - centre[0]) + 1)
+    ns = range(math.floor(-reach[1] - centre[1]), math.ceil(reach[1] - centre[1]) + 1)
+    return [(m, n) for m in ms for n in ns]
+
+
 def modelled_orders(
+    face: FloquetFace,
     frequency: Any,
     wave_vector: Any,
     *,
-    a1: Iterable[float],
-    a2: Iterable[float],
-    eps_r: float,
-    mu_r: float = 1.0,
-    distance: float,
     tolerance: float,
     cap: tuple[int, int],
 ) -> Truncation:
@@ -337,37 +346,25 @@ def modelled_orders(
     |m| <= cap[0], |n| <= cap[1]: the union over the grid.
 
     Args:
+        face: The face: its lattice, medium and distance d to the nearest
+            scatterer (`FloquetFace.distance`).
         frequency: The sweep's frequencies, Hz.
         wave_vector: ``None``, one 3-vector or one per frequency, rad/m.
-        a1: The first pair's translation, m.
-        a2: The second pair's translation, m.
-        eps_r: The face medium's relative permittivity.
-        mu_r: The face medium's relative permeability.
-        distance: d, m, from the face to the nearest scatterer (``inf``
-            when there is none).
         tolerance: The round-trip tolerance (``floquet_order_tolerance``).
         cap: The order cap (`order_cap`).
     """
     f = np.atleast_1d(np.asarray(frequency, float))
-    k = wavenumber(f, eps_r, mu_r)
+    k = wavenumber(f, face.eps_r, face.mu_r)
     kt = _wave_vectors(wave_vector, len(f))
-    a = np.stack([np.asarray(tuple(a1), float), np.asarray(tuple(a2), float)])
+    a = np.stack([np.asarray(face.a1, float), np.asarray(face.a2, float)])
+    distance = face.distance
     # keep alpha < alpha_max, i.e. |κ|² < k² + alpha_max²
     alpha_max = math.log(1 / tolerance) / (2 * distance) if distance > 0 else math.inf
     kept: set[Order] = set()
     cut: set[Order] = set()
     if math.isfinite(alpha_max):
         for kf, ktf in zip(k, kt, strict=True):
-            radius = math.sqrt(kf**2 + alpha_max**2)
-            centre = a @ ktf / (2 * np.pi)
-            reach = radius * np.linalg.norm(a, axis=1) / (2 * np.pi)
-            ms = range(
-                math.floor(-reach[0] - centre[0]), math.ceil(reach[0] - centre[0]) + 1
-            )
-            ns = range(
-                math.floor(-reach[1] - centre[1]), math.ceil(reach[1] - centre[1]) + 1
-            )
-            grid = [(m, n) for m in ms for n in ns]
+            grid = _orders_within(a, ktf, math.sqrt(kf**2 + alpha_max**2))
             rows = _rows(grid, f[:1], np.array([kf]), ktf[None], a1=a[0], a2=a[1])
             alpha = rows.gamma[0].real
             for o, al in zip(grid, alpha, strict=True):
@@ -387,6 +384,27 @@ def modelled_orders(
         rows = _rows(ring, f, k, kt, a1=a[0], a2=a[1])
         alpha_cap = float(rows.gamma.real.min())
     return Truncation(sort_orders(kept), cap, sort_orders(cut), alpha_cap)
+
+
+def propagating_orders(
+    face: FloquetFace, frequency: Any, wave_vector: Any = None
+) -> tuple[Order, ...]:
+    """The orders that propagate behind ``face`` at some of ``frequency``.
+
+    Strictly: a grazing order is not listed. ``wave_vector`` is one
+    3-vector, rad/m, or ``None`` (normal incidence). Sorted (`sort_orders`).
+    """
+    f = np.atleast_1d(np.asarray(frequency, float)).ravel()
+    a = np.stack([np.asarray(face.a1, float), np.asarray(face.a2, float)])
+    kt = np.zeros(3) if wave_vector is None else np.asarray(wave_vector, float)
+    found: set[Order] = set()
+    for fk, k in zip(
+        f, np.atleast_1d(wavenumber(f, face.eps_r, face.mu_r)), strict=True
+    ):
+        grid = _orders_within(a, kt, float(k))
+        rows = face.rows(grid, fk, kt)
+        found |= {o for o, p in zip(grid, rows.propagating[0], strict=True) if p}
+    return sort_orders(found)
 
 
 def _ring(cap: tuple[int, int]) -> list[Order]:
@@ -848,13 +866,9 @@ def order_table(
     for surface, ports in floquet_surfaces(model.ports).items():
         face = floquet_face(model, surface, surface_lead(surface, ports))
         truncation = modelled_orders(
+            face,
             f,
             wave_vector,
-            a1=face.a1,
-            a2=face.a2,
-            eps_r=face.eps_r,
-            mu_r=face.mu_r,
-            distance=face.distance,
             tolerance=options.floquet_order_tolerance,
             cap=face.cap(options.order),
         )
