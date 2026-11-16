@@ -23,8 +23,9 @@ def test_material_defaults_are_vacuum_and_thermal_properties_are_reserved():
     assert (m.eps_r, m.mu_r, m.tan_delta, m.conductivity) == (1.0, 1.0, 0.0, 0.0)
     assert m.axes is None
     assert m.thermal_conductivity is None
-    assert m.density is None
+    assert m.mass_density is None
     assert m.specific_heat is None
+    assert m.thermo_optic_coefficient is None
 
 
 @pytest.mark.parametrize(
@@ -53,7 +54,115 @@ def test_material_rejects_non_finite_values(bad):
 def test_material_rejects_non_positive_thermal_values():
     with pytest.raises(ValueError, match="thermal_conductivity"):
         gfem.Material(thermal_conductivity=0.0)
-    assert gfem.Material(density=2330.0, specific_heat=700.0).density == 2330.0
+    m = gfem.Material(mass_density=2330.0, specific_heat=700.0)
+    assert m.mass_density == 2330.0
+    with pytest.raises(ValueError, match="mass_density must be > 0 kg/m"):
+        gfem.Material(mass_density=0.0)
+
+
+def test_mass_density_has_no_density_attribute():
+    m = gfem.Material(mass_density=2330.0)
+    with pytest.raises(AttributeError, match="mass_density"):
+        m.density  # noqa: B018
+    f = gfem.MaterialField(mass_density=jnp.array([2330.0, 2200.0]))
+    with pytest.raises(AttributeError, match="mass_density"):
+        f.density  # noqa: B018
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda v: gfem.Material(density=v),  # ty: ignore[unknown-argument]
+        lambda v: gfem.MaterialField(density=jnp.asarray(v)),  # ty: ignore[unknown-argument]
+    ],
+    ids=["Material", "MaterialField"],
+)
+def test_deprecated_density_keyword_warns_and_maps_to_mass_density(build):
+    with pytest.warns(DeprecationWarning, match="mass_density") as record:
+        m = build(2330.0)
+    assert record[0].filename == __file__  # stacklevel 2: the caller's line
+    np.testing.assert_allclose(m.mass_density, 2330.0)
+
+
+def test_deprecated_density_keyword_beside_mass_density_raises():
+    with pytest.raises(TypeError, match="mass_density"):
+        gfem.Material(density=1.0, mass_density=2.0)  # ty: ignore[unknown-argument]
+
+
+@pytest.mark.parametrize("value", [1.8e-4, -1.0e-4, 0.0])
+def test_thermo_optic_coefficient_is_a_real_scalar_of_any_sign(value):
+    assert gfem.Material(thermo_optic_coefficient=value).thermo_optic_coefficient == (
+        value
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [1e-4 + 1e-6j, (1e-4, 1e-4, 2e-4), np.eye(3) * 1e-4, float("nan")],
+    ids=["complex", "principal", "matrix", "nan"],
+)
+def test_thermo_optic_coefficient_rejects_complex_tensor_and_non_finite(bad):
+    with pytest.raises(ValueError, match="thermo_optic_coefficient"):
+        gfem.Material(thermo_optic_coefficient=bad)
+
+
+def test_thermo_optic_coefficient_per_element_field():
+    values = jnp.array([1.8e-4, -2.0e-5, 0.0])
+    f = gfem.MaterialField(thermo_optic_coefficient=values)
+    np.testing.assert_array_equal(f.thermo_optic_coefficient, values)
+    assert f.n_elements == 3
+    assert "thermo_optic_coefficient" in f.properties
+    # one value per element even beside principal values
+    g = gfem.MaterialField(
+        eps_r=jnp.ones((3, 3)) * 2.0, thermo_optic_coefficient=values, axes=np.eye(3)
+    )
+    assert g.thermo_optic_coefficient.shape == (3,)
+    with pytest.raises(ValueError, match="thermo_optic_coefficient must be real"):
+        gfem.MaterialField(thermo_optic_coefficient=values * (1 + 1j))
+    with pytest.raises(ValueError, match="thermo_optic_coefficient has shape"):
+        gfem.MaterialField(thermo_optic_coefficient=jnp.ones((3, 3)))
+    grad = jax.grad(
+        lambda v: jnp.sum(
+            gfem.MaterialField(thermo_optic_coefficient=v).thermo_optic_coefficient
+        )
+    )(values)
+    np.testing.assert_array_equal(grad, 1.0)
+
+
+def test_uniform_field_carries_mass_density_and_thermo_optic_coefficient():
+    m = gfem.Material(mass_density=2330.0, thermo_optic_coefficient=-1e-4)
+    f = gfem.MaterialField.uniform("core", m)
+    assert float(f.mass_density) == 2330.0
+    assert float(f.thermo_optic_coefficient) == -1e-4
+
+
+def test_interpolate_blends_mass_density_and_thermo_optic_coefficient():
+    void = gfem.Material(mass_density=1000.0, thermo_optic_coefficient=1e-5)
+    solid = gfem.Material(mass_density=3000.0, thermo_optic_coefficient=-1e-5)
+    f = gfem.MaterialField.interpolate(jnp.array([0.0, 0.5, 1.0]), void, solid)
+    np.testing.assert_allclose(f.mass_density, [1000.0, 2000.0, 3000.0])
+    np.testing.assert_allclose(f.thermo_optic_coefficient, [1e-5, 0.0, -1e-5])
+
+
+def test_missing_material_property_error_lists_mass_density_and_remedies():
+    err = gfem.errors.MissingMaterialPropertyError(
+        [
+            ("heater", "thermal_conductivity"),
+            ("heater", "mass_density"),
+            ("box", "specific_heat"),
+        ]
+    )
+    assert isinstance(err, ValueError)
+    assert gfem.MissingMaterialPropertyError is gfem.errors.MissingMaterialPropertyError
+    assert err.missing == (
+        ("heater", "thermal_conductivity"),
+        ("heater", "mass_density"),
+        ("box", "specific_heat"),
+    )
+    text = str(err)
+    for word in ("'heater'", "'box'", "W/(m K)", "kg/m^3", "J/(kg K)", "excluded="):
+        assert word in text
+    assert re.search(r"mass_density \(kg/m\^3, e\.g\. [0-9.]+\)", text)
 
 
 def test_anisotropic_material_takes_three_principal_values_and_orthonormal_axes():

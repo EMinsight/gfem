@@ -50,8 +50,9 @@ ALL_PROPERTIES = {
     "tan_delta": 0.01,
     "conductivity": 2.0,
     "thermal_conductivity": 1.4,
-    "density": 2200.0,
+    "mass_density": 2200.0,
     "specific_heat": 700.0,
+    "thermo_optic_coefficient": 1.0e-5,
 }
 
 # (problem name, result leaf, input kind) -> outcome. Input kinds name the
@@ -67,8 +68,13 @@ EXPECTED = {
         "capacitance",
         ("material", "oxide", "thermal_conductivity"),
     ): ZERO,
-    ("electrostatic", "capacitance", ("material", "oxide", "density")): ZERO,
+    ("electrostatic", "capacitance", ("material", "oxide", "mass_density")): ZERO,
     ("electrostatic", "capacitance", ("material", "oxide", "specific_heat")): ZERO,
+    (
+        "electrostatic",
+        "capacitance",
+        ("material", "oxide", "thermo_optic_coefficient"),
+    ): ZERO,
 }
 # Terminal potentials: their coefficients differentiate like the capacitance;
 # their mesh is the input mesh passed through (identity in the nodes).

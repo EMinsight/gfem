@@ -257,8 +257,9 @@ MATERIAL_PROPERTIES = {
     "mu_r": None,
     "tan_delta": None,
     "thermal_conductivity": None,
-    "density": None,
+    "mass_density": None,
     "specific_heat": None,
+    "thermo_optic_coefficient": None,
 }
 SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 # OUT_OF_SCOPE rows the grid needs (by their label): the row's cell raises.

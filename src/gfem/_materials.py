@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import itertools
+import warnings
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
@@ -29,6 +31,7 @@ class _Property:
     physics: Literal["em", "thermal"]
     default: float | None
     strict: bool  # value > 0 (else >= 0)
+    bounded: bool = True  # False: any finite real value (``strict`` unread)
     may_be_complex: bool = False  # in a MaterialField: lossy eps_r, mu_r
     may_be_tensor: bool = False  # in a Material: principal values or a matrix
 
@@ -43,8 +46,11 @@ PROPERTIES: tuple[_Property, ...] = (
     _Property("tan_delta", "1", "em", 0.0, strict=False, may_be_tensor=True),
     _Property("conductivity", "S/m", "em", 0.0, strict=False, may_be_tensor=True),
     _Property("thermal_conductivity", "W/(m K)", "thermal", None, strict=True),
-    _Property("density", "kg/m^3", "thermal", None, strict=True),
+    _Property("mass_density", "kg/m^3", "thermal", None, strict=True),
     _Property("specific_heat", "J/(kg K)", "thermal", None, strict=True),
+    _Property(
+        "thermo_optic_coefficient", "1/K", "thermal", None, strict=False, bounded=False
+    ),
 )
 PROPERTY_NAMES = tuple(p.name for p in PROPERTIES)
 _BY_NAME = {p.name: p for p in PROPERTIES}
@@ -95,6 +101,8 @@ def _check_passive(
     prop: _Property, values: np.ndarray, owner: str, axes: np.ndarray | None
 ) -> None:
     """Every principal value meets the bound; the first that does not raises."""
+    if not prop.bounded:
+        return
     bad = (values <= 0) if prop.strict else (values < 0)
     if not bad.any():
         return
@@ -180,7 +188,7 @@ def _material_value(prop: _Property, value: Any, owner: str) -> Any:
             )
         return (arr + arr.T) / 2
     if arr.ndim == 0:
-        if (arr <= 0) if prop.strict else (arr < 0):
+        if prop.bounded and ((arr <= 0) if prop.strict else (arr < 0)):
             raise _bound_error(prop, owner, value)
         return float(arr)
     _check_passive(prop, arr, owner, None)
@@ -701,6 +709,44 @@ _ANISOTROPIC_LAW = (
 )
 
 
+def _renamed_density[T: type](cls: T) -> T:
+    """Map the deprecated keyword ``density=`` to ``mass_density=`` (ADR 0171).
+
+    The keyword warns for one release; the attribute ``.density`` is gone
+    (reading it raises `AttributeError` naming `mass_density`), because a
+    read alias would keep the clash with `MaterialField.interpolate`'s
+    design density.
+    """
+    init = cls.__init__
+    name = cls.__name__
+
+    @functools.wraps(init)
+    def init_with_alias(self: Any, *args: Any, **kwargs: Any) -> None:
+        if "density" in kwargs:
+            if "mass_density" in kwargs:
+                raise TypeError(
+                    f"{name}: give mass_density only; density= is its deprecated name."
+                )
+            warnings.warn(
+                f"{name}(density=...) is deprecated: the mass density is now "
+                "mass_density=..., in kg/m^3 (density= will be removed).",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            kwargs["mass_density"] = kwargs.pop("density")
+        init(self, *args, **kwargs)
+
+    cls.__init__ = init_with_alias  # ty: ignore[invalid-assignment]
+    return cls
+
+
+def _no_density_attribute(self: Any) -> Any:
+    raise AttributeError(
+        f"{type(self).__name__} has no attribute 'density': the mass density "
+        "is 'mass_density' (kg/m^3)."
+    )
+
+
 def _is_law(value: Any) -> bool:
     """Whether ``value`` is a law or a term, or a sequence holding one."""
     if isinstance(value, (PermittivityLaw, _DispersionTerm)):
@@ -729,6 +775,7 @@ def _law_material_values(material: Material, owner: str) -> dict[str, Any]:
     return values
 
 
+@_renamed_density
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Material:
     """A linear medium, constant over the region it is assigned to.
@@ -769,10 +816,17 @@ class Material:
             coordinate axis k, its dominant component positive; ``None`` if
             every matrix is diagonal). Equal principal values are stored as
             one value.
-        thermal_conductivity: Reserved for thermal problems, W/(m K).
-            ``None`` means not given.
-        density: Reserved for thermal problems, kg/m^3.
-        specific_heat: Reserved for thermal problems, J/(kg K).
+        thermal_conductivity: The thermal conductivity in W/(m K), > 0,
+            read by thermal problems. ``None`` means not given.
+        mass_density: The mass density in kg/m^3, > 0, read by transient
+            thermal problems (``density=`` is its deprecated name, kept for
+            one release with a `DeprecationWarning`). ``None`` means not
+            given.
+        specific_heat: The specific heat capacity in J/(kg K), > 0, read
+            by transient thermal problems. ``None`` means not given.
+        thermo_optic_coefficient: dn/dT, the change of the refractive index
+            with temperature, in 1/K: one real number of any sign.
+            ``None`` means the index does not change with temperature.
         name: A free-form label (for example ``"silicon"``), shown in reprs.
 
     Raises:
@@ -783,9 +837,11 @@ class Material:
             principal values, or the matrices do not share principal axes;
             beside a `PermittivityLaw`, a nonzero `tan_delta`, `axes`, or a
             tensor `mu_r` or `conductivity`; a law or term as `mu_r` (only
-            eps_r depends on frequency).
+            eps_r depends on frequency); a thermal property <= 0; a
+            thermal property or `thermo_optic_coefficient` that is not one
+            real number.
         TypeError: `eps_r` is a bare dispersion term such as `Drude`; wrap
-            it in a `PermittivityLaw`.
+            it in a `PermittivityLaw`; ``density=`` beside ``mass_density=``.
         NonDifferentiableError: A constant value is computed inside
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
             fixed value, or use `MaterialField.uniform` to differentiate with
@@ -799,9 +855,12 @@ class Material:
     conductivity: float | tuple[float, float, float] = 0.0
     axes: tuple[tuple[float, float, float], ...] | None = None
     thermal_conductivity: float | None = None
-    density: float | None = None
+    mass_density: float | None = None
     specific_heat: float | None = None
+    thermo_optic_coefficient: float | None = None
     name: str | None = None
+
+    density = property(_no_density_attribute)
 
     def __post_init__(self) -> None:
         owner = f"Material {self.name!r}" if self.name else "Material"
@@ -962,6 +1021,8 @@ def _field_value(prop: _Property, value: Any, principal: bool) -> jax.Array | No
 def _check_field_values(prop: _Property, arr: np.ndarray) -> None:
     if not np.isfinite(arr).all():
         raise ValueError(f"MaterialField: {prop.name} must be finite.")
+    if not prop.bounded:
+        return
     real = arr.real
     bad = (real <= 0) if prop.strict else (real < 0)
     if np.iscomplexobj(arr):
@@ -1210,6 +1271,7 @@ def _common_axes(
     return _axes(a, "MaterialField.interpolate"), (ends[0], ends[1])
 
 
+@_renamed_density
 @dataclasses.dataclass(frozen=True, kw_only=True, eq=False)
 class MaterialField:
     """Material properties that vary over one volume region, per element (P0).
@@ -1222,7 +1284,10 @@ class MaterialField:
 
     `jax.grad` of any objective reaches the values.
     `eps_r` and `mu_r` may be complex (lossy, negative imaginary part under
-    e^{+iωt}); `conductivity` is electrical, S/m.
+    e^{+iωt}); `conductivity` is electrical, S/m. The thermal properties
+    (`thermal_conductivity`, `mass_density`, `specific_heat`) and
+    `thermo_optic_coefficient` (dn/dT, 1/K, any sign) are real, in the units
+    of `Material`; ``density=`` is the deprecated name of `mass_density`.
 
     With `axes`, the field is an anisotropic material field: each of
     `eps_r`, `mu_r`, `tan_delta` and `conductivity` holds three principal
@@ -1264,12 +1329,15 @@ class MaterialField:
     tan_delta: jax.Array | None = None
     conductivity: jax.Array | None = None
     thermal_conductivity: jax.Array | None = None
-    density: jax.Array | None = None
+    mass_density: jax.Array | None = None
     specific_heat: jax.Array | None = None
+    thermo_optic_coefficient: jax.Array | None = None
     region: str | None = None
     axes: tuple[tuple[float, float, float], ...] | None = None
     blend: jax.Array | None = None
     blend_ends: Blend | None = None
+
+    density = property(_no_density_attribute)
 
     def __post_init__(self) -> None:
         if self.axes is not None:

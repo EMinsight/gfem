@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import warnings
 from pathlib import Path
 
 import jax
@@ -348,6 +349,29 @@ def test_an_old_job_with_equal_principal_values_reads_them_as_one(model, tmp_pat
     back = gfem.Job.from_json(path).model.materials["oxide"]
     assert back == gfem.Material(eps_r=2.0)
     assert back.isotropic
+
+
+def test_an_old_density_key_reads_as_mass_density_density_alias(model, tmp_path):
+    n = len(model.mesh.elements("oxide"))
+    field = gfem.MaterialField(mass_density=jnp.linspace(2000.0, 2400.0, n))
+    nitride = gfem.Material(
+        eps_r=7.5, mass_density=3100.0, thermo_optic_coefficient=4e-5
+    )
+    changed = model.replace(materials={"oxide": field, "nitride": nitride})
+    path = gfem.Job(changed, PROBLEM).to_json(tmp_path / "job.json")
+    doc = json.loads(path.read_text())
+    for tag in ("Material", "MaterialField"):
+        nodes = list(_typed_in(doc, tag))
+        assert nodes
+        for node in nodes:  # as a gfem before the rename wrote it
+            node["density"] = node.pop("mass_density")
+            node.pop("thermo_optic_coefficient")
+    path.write_text(json.dumps(doc))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)  # a read is silent
+        back = gfem.Job.from_json(path).model.materials
+    np.testing.assert_array_equal(back["oxide"].mass_density, field.mass_density)
+    assert back["nitride"] == gfem.Material(eps_r=7.5, mass_density=3100.0)
 
 
 def test_sheet_fields_round_trip(tmp_path):

@@ -673,15 +673,34 @@ _codec.register(
     from_args=lambda a, _: EnclosedBy(tuple(a["surfaces"])),
     names=("surfaces",),
 )
+
+
+def _renamed_density_from_args(cls: type) -> _codec.FromArgs:
+    """Read an older file's ``density`` key as ``mass_density`` (ADR 0171)."""
+
+    def from_args(args: dict[str, Any], _: _codec.Context) -> Any:
+        if "density" in args:
+            old = args.pop("density")
+            args.setdefault("mass_density", old)
+        return cls(**args)
+
+    return from_args
+
+
+for _cls in (Material, MaterialField):
+    _codec.register(
+        _cls,
+        from_args=_renamed_density_from_args(_cls),
+        # "density": the mass density as gfem 0.1 wrote it (a read alias)
+        names=[f.name for f in dataclasses.fields(_cls) if f.init] + ["density"],
+    )
 for _cls in (
-    Material,
     # a Material's eps_r may hold a law: tags of their own, no Material key
     PermittivityLaw,
     Drude,
     Lorentz,
     Debye,
     DjordjevicSarkar,
-    MaterialField,
     # a law blend's fixed ends (MaterialField.blend_ends, ADR 0113)
     Blend,
     SheetField,
