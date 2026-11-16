@@ -38,11 +38,12 @@ import numpy as np
 import scipy.constants as const
 
 from gfem._boundaries import Absorbing, FloquetPort, Periodic, surfaces_of
-from gfem._materials import Material, MaterialField, PermittivityLaw
+from gfem._materials import PROPERTIES, Material, MaterialField, PermittivityLaw
 from gfem._periodic import Pairing, side_edges
 from gfem._text import hertz, hertz_band
 from gfem.errors import (
     FloquetOrderCapWarning,
+    NonDifferentiableError,
     ObliqueAbsorberWarning,
     PortGeometryError,
     UnrequestedOrderWarning,
@@ -706,6 +707,7 @@ def _medium(
         )
     region = regions[0]
     material = model.materials[region]
+    _check_fixed_medium(material, region, lead)
     what = _unsupported_medium(material)
     if what or not isinstance(material, Material):
         raise NotImplementedError(
@@ -715,6 +717,30 @@ def _medium(
             "face and that material."
         )
     return region, material
+
+
+def _check_fixed_medium(material: Any, region: str, lead: str) -> None:
+    """Raise if an electromagnetic property of the half-space is traced (ADR 0155).
+
+    The medium fixes the orders, so it is a constant of the solve, like the
+    incidence; checked before the medium's own checks, which cannot read a
+    tracer. A traced thermal property is left to them (the solve never reads
+    it).
+
+    Raises:
+        NonDifferentiableError: An electromagnetic property is traced by JAX.
+    """
+    from gfem._checks import is_traced
+
+    for prop in PROPERTIES:
+        if prop.physics == "em" and is_traced(getattr(material, prop.name, None)):
+            raise NonDifferentiableError(
+                f"{lead}: region {region!r} is the half-space behind it, and its "
+                f"{prop.name} fixes the diffraction orders (their wave numbers, "
+                "impedances and the face's absorbing term); it is not "
+                "differentiable. Hold it fixed with jax.lax.stop_gradient, or "
+                "design a layer of another region inside the cell."
+            )
 
 
 def _unsupported_medium(material: Material | MaterialField) -> str:

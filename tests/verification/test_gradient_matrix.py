@@ -7,6 +7,8 @@ One cell per problem type x input kind x linear solver x frequency sweep:
   S on lumped ports and on wave ports (lossless, lossy, and two modes per
   shared port surface, read through cross-mode entries), driven S (and
   probed fields) on a periodic cell with plain and Bloch periodicity,
+  driven S through Floquet ports (diffraction efficiencies, cross-polarized
+  entries and rows that read 0, plain and at a conical Bloch wave vector),
   eigenfrequency (frequency and loss of a simple mode);
 - inputs: per-element permittivity ``eps_r`` and conductivity, the same per
   principal value of a field with axes (``eps_r_axes``,
@@ -284,6 +286,32 @@ def _driven_periodic_cells() -> list[Cell]:
     ]
 
 
+FLOQUET_PROBLEMS = ("driven_floquet_plain", "driven_floquet_bloch")
+
+
+def _driven_floquet_cells() -> list[Cell]:
+    """The driven cells of a cell with Floquet ports (coarse F2, ADR 0155).
+
+    Plain periodicity and a conical Bloch wave vector (20°, 30° from the
+    air) on the uniform sweep, in the permittivity and the nodes on the
+    direct solver, and in the permittivity on BDDC + GMRES (the transposed
+    system's Floquet term under Bloch). The objective (`_floquet_value`)
+    reads a ±1 order's efficiency, a cross-polarized entry and a row that
+    does not propagate at one frequency at least.
+    """
+    return [
+        *(
+            Cell(problem, name, "direct", "uniform")
+            for problem in FLOQUET_PROBLEMS
+            for name in ("eps_r", "nodes")
+        ),
+        *(
+            Cell(problem, "eps_r", "bddc_gmres", "uniform")
+            for problem in FLOQUET_PROBLEMS
+        ),
+    ]
+
+
 # --- periodic eigenmode cells ------------------------------------------------------
 
 
@@ -470,6 +498,7 @@ def _electrostatic_law_cells() -> list[Cell]:
 CELLS = [
     *_cells(),
     *_driven_periodic_cells(),
+    *_driven_floquet_cells(),
     *_eigen_periodic_cells(),
     *_participation_cells(),
     *_field_cells(),
@@ -626,6 +655,10 @@ class Designs:
     @functools.cached_property
     def periodic(self):
         return pc.g_mesh(self._dir("periodic"))
+
+    @functools.cached_property
+    def floquet(self):
+        return pc.f2_mesh(self._dir("floquet"))
 
     @functools.cached_property
     def eigen_cell(self):
@@ -1614,6 +1647,136 @@ def _periodic_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
     )
 
 
+# --- driven with Floquet ports (coarse F2) ----------------------------------------
+
+#: F2's orders with ports on both faces: every order that propagates at
+#: either frequency, in either problem, on either side (the -2 order in the
+#: substrate under Bloch at f0), so no order is unrequested.
+FLOQUET_ORDERS = ((0, 0), (-1, 0), (1, 0), (-2, 0))
+#: f0 and 0.8 f0: at 0.8 f0 the ±1 orders are evanescent in the air (rows
+#: that read 0), and propagate in the substrate.
+FLOQUET_FREQUENCIES = (pc.F1_FREQUENCY, 0.8 * pc.F1_FREQUENCY)
+#: The conical Bloch incidence from the air, rad.
+FLOQUET_THETA, FLOQUET_PHI = np.radians(20.0), np.radians(30.0)
+#: The smallest |gamma| / k of a propagating order (ADR 0155: nearer
+#: grazing the differences carry the forward's noise divided by the step).
+FLOQUET_GRAZING = 1e-2
+#: The excited ports: the specular order from the air in both polarizations.
+FLOQUET_EXCITE = ("R0,0_TE", "R0,0_TM")
+
+
+def _floquet_problem(model: gfem.Model, cell: Cell) -> gfem.Driven:
+    """The cell's problem, checked away from grazing.
+
+    Every order that propagates on either face at either frequency has a
+    port, at ``|gamma| / k >= FLOQUET_GRAZING`` (cos theta, ``k`` in the
+    face's medium); the zero row ``R1,0`` does not propagate at 0.8 f0
+    (plain) or at either frequency (Bloch).
+    """
+    k = None
+    if cell.problem == "driven_floquet_bloch":
+        k = model.bloch_wave_vector(
+            "z_max", FLOQUET_FREQUENCIES[0], theta=FLOQUET_THETA, phi=FLOQUET_PHI
+        )
+    declared = {(p.surface, p.order) for p in model.ports}
+    eps = {"z_max": 1.0, "z_min": pc.F1_EPS_SUB}
+    a1, a2 = (a * pc.UM for a in pc.F2_A)
+    kt = np.zeros(2) if k is None else np.asarray(k)[:2]
+    for surface, n2 in eps.items():
+        orders = model.propagating_orders(surface, FLOQUET_FREQUENCIES, wave_vector=k)
+        assert {(surface, o) for o in orders} <= declared, (surface, orders)
+        for f in FLOQUET_FREQUENCIES:
+            k2 = (2 * np.pi * f / pc.C0) ** 2 * n2
+            for m, n in orders:
+                kappa = kt + 2 * np.pi * np.array([m / a1, n / a2])
+                ratio = 1 - kappa @ kappa / k2
+                assert ratio < 0 or ratio >= FLOQUET_GRAZING**2, (surface, f, m, n)
+    zero = model.propagating_orders("z_max", FLOQUET_FREQUENCIES[1:], wave_vector=k)
+    assert (1, 0) not in zero
+    return gfem.Driven(
+        frequency=FLOQUET_FREQUENCIES, wave_vector=k, excite=FLOQUET_EXCITE
+    )
+
+
+def _floquet_value(result) -> jax.Array:
+    """|S|^2 of the -1 transmitted order, a cross-polarized entry, a zero row."""
+    s = result.s
+    efficiency = jnp.sum(jnp.abs(s["T-1,0_TE", "R0,0_TE"]) ** 2)
+    cross = jnp.sum(jnp.real((0.7 - 0.3j) * s["R0,0_TM", "R0,0_TE"]))
+    zero = jnp.sum(jnp.abs(s["R1,0_TE", "R0,0_TM"]) ** 2)
+    return efficiency + cross + zero
+
+
+def _floquet_model(mesh: gfem.Mesh, eps: jax.Array) -> gfem.Model:
+    """F2 with ``FLOQUET_ORDERS``, ``eps`` per element over ridge then groove."""
+    n = len(mesh.elements("ridge"))
+    return (
+        pc.f2(mesh, ports=pc.f2_ports(FLOQUET_ORDERS))
+        .with_material("ridge", gfem.MaterialField(eps_r=eps[:n]))
+        .with_material("groove", gfem.MaterialField(eps_r=eps[n:]))
+    )
+
+
+def _floquet_design(mesh: gfem.Mesh, rng: np.random.Generator) -> jax.Array:
+    """A lossy per-element permittivity of the ridge layer, symmetry broken."""
+    ridge = rng.uniform(3.5, 4.5, len(mesh.elements("ridge")))
+    groove = rng.uniform(1.0, 1.5, len(mesh.elements("groove")))
+    return jnp.asarray(np.concatenate([ridge, groove]) * (1 - 0.02j))
+
+
+def _floquet_material(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """F2's objective in the per-element eps_r of its ridge layer."""
+    mesh = d.floquet
+    rng = np.random.default_rng(30 + seed)
+    eps = _floquet_design(mesh, rng)
+    problem = _floquet_problem(_floquet_model(mesh, eps), cell)
+
+    def objective(p):
+        result = gfem.solve(_floquet_model(mesh, p), problem, options=options)
+        return _floquet_value(result)
+
+    return Case(objective, eps, rng, step=STEPS["eps_r"], taylor=3e-1, imaginary=True)
+
+
+def _floquet_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """F2's objective in the nodes of its ridge layer (interfaces included).
+
+    The raw node gradient, along directions on the nodes of the ridge layer
+    off the seams: the ridge's walls, top and bottom move, the port faces
+    and the pairs do not.
+    """
+    mesh = d.floquet
+    model = _floquet_model(mesh, _floquet_design(mesh, np.random.default_rng(30)))
+    problem = _floquet_problem(model, cell)
+    x = np.asarray(mesh.imported_nodes)
+    lo, hi = pc.F2_D * pc.UM, (pc.F2_D + pc.F2_H) * pc.UM
+    a = np.array(pc.F2_A) * pc.UM
+    tol = 1e-3 * pc.UM
+    layer = (x[:, 2] > lo - tol) & (x[:, 2] < hi + tol)
+    inside = layer & (x[:, :2] > tol).all(axis=1) & (x[:, :2] < a - tol).all(axis=1)
+    weight = inside[:, None].astype(float)
+
+    def mask(directions):
+        return [w / np.linalg.norm(w) for w in (dd * weight for dd in directions)]
+
+    def objective(nodes):
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(mesh), [nodes]
+        )
+        result = gfem.solve(model.replace(mesh=moved), problem, options=options)
+        return _floquet_value(result)
+
+    # elements are 0.1 um: the remainder is second order below 3e-9 m
+    return Case(
+        objective,
+        jnp.asarray(x),
+        np.random.default_rng(seed),
+        step=2e-9,
+        taylor=1e-9,
+        mask=mask,
+    )
+
+
 # --- the law cells' objectives --------------------------------------------------------
 
 #: The smallest normalized law-gradient component a law cell admits, relative
@@ -2090,6 +2253,11 @@ BUILDERS = {
             ("fill", _periodic_fill),
             ("nodes", _periodic_nodes),
         )
+    },
+    **{
+        (problem, name): builder
+        for problem in FLOQUET_PROBLEMS
+        for name, builder in (("eps_r", _floquet_material), ("nodes", _floquet_nodes))
     },
     **{
         (problem, name): _eigen_periodic

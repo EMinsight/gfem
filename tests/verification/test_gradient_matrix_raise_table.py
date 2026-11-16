@@ -314,6 +314,42 @@ EXPECTED |= {
     for kind in [("nodes",)] + [("material", "core", p) for p in ALL_PROPERTIES]
 }
 
+# Floquet ports (F1's slab between Floquet ports on both faces, the design
+# the slab, away from both faces; plain and at a conical Bloch wave vector):
+# S differentiates like the periodic line's, in the materials and the node
+# coordinates; z_ref (the orders' wave impedances) and every leaf of the
+# diffraction orders are constants of the solve (ADR 0155). The half-space's
+# medium, the incidence and the port faces' nodes raise (`OUT_OF_SCOPE`).
+FLOQUET_PORTS = ("R_TE", "R_TM", "T_TE", "T_TM")
+DIFFRACTION_ORDER_OUTPUTS = (
+    "frequency",
+    "wave_vector",
+    "gamma",
+    "propagating",
+    "theta",
+    "phi",
+)
+EXPECTED |= {
+    (problem, out, kind): (
+        (GRADIENT if out == "s.values" else ZERO)
+        if kind == ("nodes",)
+        else GRADIENT
+        if out == "s.values" and kind[2] in EM_PROPERTIES
+        else ZERO
+    )
+    for problem in ("driven_floquet_plain", "driven_floquet_bloch")
+    for out in (
+        "s.values",
+        "s.z_ref",
+        *(
+            f"diffraction_orders.{p}.{leaf}"
+            for p in FLOQUET_PORTS
+            for leaf in DIFFRACTION_ORDER_OUTPUTS
+        ),
+    )
+    for kind in [("nodes",)] + [("material", "slab", p) for p in ALL_PROPERTIES]
+}
+
 # A shared port surface (two requested modes at each end of a hybrid line):
 # S, cross-mode entries included, differentiates like a lone wave port's;
 # every port's mode is a constant of the solve. The core carries only a
@@ -976,6 +1012,24 @@ def driven_periodic_cases(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def driven_floquet_cases(tmp_path_factory):
+    # F1 (coarse): a material field over its slab, plain and at F1's conical
+    # incidence from the air
+    mesh = pc.f1_mesh(tmp_path_factory.mktemp("f1_table"))
+    model = pc.f1(mesh).with_material("slab", _field(mesh, "slab"))
+    k = model.bloch_wave_vector(
+        "z_max", pc.F1_FREQUENCY, theta=pc.F1_THETA, phi=pc.F1_PHI
+    )
+    return {
+        "driven_floquet_plain": (model, gfem.Driven(frequency=pc.F1_FREQUENCY)),
+        "driven_floquet_bloch": (
+            model,
+            gfem.Driven(frequency=pc.F1_FREQUENCY, wave_vector=k),
+        ),
+    }
+
+
+@pytest.fixture(scope="module")
 def eigen_periodic_cases(tmp_path_factory):
     # the C3 Bragg line (periodic along x), weakly lossy: a material field
     # over its low layer, the high layer a constant material
@@ -1025,6 +1079,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
         **request.getfixturevalue("sheet_cases"),
         **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
+        **request.getfixturevalue("driven_floquet_cases"),
         **request.getfixturevalue("eigen_periodic_cases"),
         **request.getfixturevalue("law_cases"),
         "eigenmode_law": (
@@ -1575,6 +1630,41 @@ def _floquet_slab_objective(model, problem, options=None):
     return objective
 
 
+def _out_material_of_a_floquet_half_space(request):
+    # the medium behind a Floquet surface fixes its orders: raised while tracing
+    model = request.getfixturevalue("floquet_cell")
+    n = len(model.mesh.elements("air"))
+    problem = gfem.Driven(frequency=pc.F1_FREQUENCY)
+
+    def objective(e):
+        m = model.with_material("air", gfem.MaterialField(eps_r=jnp.full(n, e)))
+        return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(1.0)
+
+
+def _out_floquet_port_nodes_moved(request):
+    # shape gradients hold a Floquet surface too: raised on the host
+    model = request.getfixturevalue("floquet_cell")
+    mesh = model.mesh
+    face = np.unique(mesh.triangles[mesh.triangle_tags == mesh.region("z_max").tag])
+    x = np.asarray(mesh.imported_nodes)[face, :2]
+    a = pc.F1_A * pc.UM
+    (inside,) = np.nonzero(((x > 1e-3 * a) & (x < (1 - 1e-3) * a)).all(axis=1))
+    node = int(face[inside[0]])
+    problem = gfem.Driven(frequency=pc.F1_FREQUENCY)
+
+    def objective(dx):
+        nodes = jnp.asarray(mesh.nodes).at[node, 0].add(dx)
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(mesh), [nodes]
+        )
+        s = gfem.solve(model.replace(mesh=moved), problem).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    jax.grad(objective)(1e-9)
+
+
 def _out_floquet_adaptive_sweep(request):
     # the adaptive sweep has no Floquet port path: refused before assembly
     model = request.getfixturevalue("floquet_cell")
@@ -2028,6 +2118,22 @@ OUT_OF_SCOPE = [
         _out_bloch_adaptive_sweep,
         NotImplementedError,
         "sweep='uniform'",
+    ),
+    # Floquet gradient rows (ADR 0155)
+    (
+        "driven x material of a Floquet port's half-space",
+        _out_material_of_a_floquet_half_space,
+        gfem.NonDifferentiableError,
+        (
+            r"FloquetPort 'R_TE' on surface 'z_max': region 'air' is the half-space "
+            r"behind it, and its eps_r fixes the diffraction orders"
+        ),
+    ),
+    (
+        "driven x nodes of a Floquet port surface",
+        _out_floquet_port_nodes_moved,
+        HOST,
+        r"PortGeometryError: FloquetPort 'R_TE': 1 node\(s\) of its surface 'z_max'",
     ),
     # Floquet path rows
     (
