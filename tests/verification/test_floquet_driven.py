@@ -6,8 +6,15 @@ medium, TE and TM, against the tangential-E Airy form in ADR 0147's lattice
 frame: the complex S entries, the cross-polarized entries and the power
 defect of each excited column. At normal incidence, at conical incidence
 (40 degrees, azimuth 30) under the Bloch wave vector, and on the Brewster
-cell (air / eps 4 / air at atan 2), whose TM reflection vanishes.
+cell (air / eps 4 / air at atan 2), whose TM reflection vanishes; the
+reference-plane offset against moving the faces. The lamellar grating F2
+(`periodic_cases.f2`) at normal, oblique, conical and lossy incidence
+against the frozen RCWA efficiencies, with its power balance and absorption.
 """
+
+import dataclasses
+import math
+import warnings
 
 import numpy as np
 import periodic_cases as pc
@@ -91,3 +98,97 @@ def test_the_brewster_cell_reflects_no_tm(brewster):
     assert abs(complex(result.s["R_TM", "R_TM"][0])) <= pc.BREWSTER_TOL
     # TE does reflect there: |r|^2 = 0.155 (Airy)
     assert abs(complex(result.s["R_TE", "R_TE"][0])) > 0.3
+
+
+# --- reference-plane offsets ------------------------------------------------------
+
+#: F1 with its faces 0.40 um from the slab (model B), its ports offset 0.15
+#: um back to the planes of the 0.25 um cell (model A); cells keep h.
+F1_FAR_D = 0.40
+F1_FAR_CELLS = (4, 6, 6, 5)
+
+
+def test_offsets_move_the_reference_planes_as_the_geometry_does(
+    f1_conical, tmp_path_factory
+):
+    near, _ = f1_conical
+    mesh = pc.f1_mesh(tmp_path_factory.mktemp("f1far"), F1_FAR_CELLS, d=F1_FAR_D)
+    offset = (F1_FAR_D - pc.F1_D) * pc.UM
+    ports = [dataclasses.replace(p, offset=offset) for p in pc.f1_ports()]
+    model = pc.f1(mesh, ports)
+    k = model.bloch_wave_vector(
+        "z_max", pc.F1_FREQUENCY, theta=pc.F1_THETA, phi=pc.F1_PHI
+    )
+    problem = gfem.Driven([pc.F1_FREQUENCY], excite=["R_TE", "R_TM"], wave_vector=k)
+    far = gfem.solve(model, problem, options=gfem.SolverOptions(order=3))
+    assert far.s.ports == near.s.ports
+    error = np.abs(np.asarray(far.s.values) - np.asarray(near.s.values))
+    assert error.max() <= pc.F1_S_TOL
+
+
+# --- F2: the lamellar grating against RCWA ----------------------------------------
+
+#: Every order propagating in some F2 case, declared on both faces in both
+#: polarizations (rows of orders evanescent on a face read 0).
+F2_ORDERS = tuple((m, 0) for m in (-2, -1, 0, 1, 2))
+#: max |eta - eta_ref| over every propagating order and incident
+#: polarization, p = 3 on `pc.F2_FINE_CELLS`.
+F2_EFFICIENCY_TOL = 1e-3
+#: 1 - sum |S|^2 of each column on the lossless cases.
+F2_POWER_TOL = 1e-4
+#: |(1 - sum |S|^2) - A_ref| on G20L.
+F2_ABSORPTION_TOL = 1e-3
+
+
+@pytest.fixture(scope="module")
+def f2_fine(tmp_path_factory):
+    return pc.f2_mesh(tmp_path_factory.mktemp("f2"), pc.F2_FINE_CELLS)
+
+
+@pytest.fixture(scope="module", params=list(pc.F2_CASES))
+def grating(request, f2_fine):
+    theta, phi, eps_ridge = pc.F2_CASES[request.param]
+    model = pc.f2(f2_fine, pc.f2_ports(F2_ORDERS), eps_ridge=eps_ridge)
+    k = model.bloch_wave_vector(
+        "z_max", pc.F1_FREQUENCY, theta=math.radians(theta), phi=math.radians(phi)
+    )
+    problem = gfem.Driven(
+        [pc.F1_FREQUENCY], excite=["R0,0_TE", "R0,0_TM"], wave_vector=k
+    )
+    with warnings.catch_warnings():
+        # every propagating order is declared: the sums are complete
+        warnings.simplefilter("error", gfem.UnrequestedOrderWarning)
+        result = gfem.solve(model, problem, options=gfem.SolverOptions(order=3))
+    return request.param, result
+
+
+def _efficiencies(result, pol):
+    """|S|^2 of column R0,0_{pol}, summed over output polarizations, by (face, m)."""
+    s = result.s
+    column = np.abs(np.asarray(s.values)[0, :, s.excited.index(f"R0,0_{pol}")]) ** 2
+    out = {}
+    for name, value in zip(s.ports, column, strict=True):
+        m = int(name[1:].split(",")[0])
+        out[name[0], m] = out.get((name[0], m), 0.0) + float(value)
+    return out
+
+
+@pytest.mark.parametrize("pol", ["TE", "TM"])
+def test_the_grating_matches_rcwa(grating, pol):
+    case, result = grating
+    eta = _efficiencies(result, pol)
+    reference = pc.F2_RCWA[case][pol]
+    # the RCWA table lists every propagating order: the others read 0
+    propagating = {
+        (name[0], order.order[0])
+        for name, order in result.diffraction_orders.items()
+        if bool(np.asarray(order.propagating)[0])
+    }
+    assert propagating == set(reference)
+    error = max(abs(eta[key] - value) for key, value in reference.items())
+    assert error <= F2_EFFICIENCY_TOL
+    defect = 1 - sum(eta.values())
+    if case == "G20L":
+        assert abs(defect - pc.F2_ABSORPTION[pol]) <= F2_ABSORPTION_TOL
+    else:
+        assert abs(defect) <= F2_POWER_TOL

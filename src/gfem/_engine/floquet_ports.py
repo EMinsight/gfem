@@ -77,7 +77,8 @@ class FloquetPortCoupling:
         port: The Floquet port.
         column: Its (order, polarization) column in its surface's vectors.
         omegas: ``(n_freq,)`` the output grid, rad/s.
-        lam: ``(n_freq,)`` λ of its order, per mesh file unit.
+        lam: ``(n_freq,)`` λ of its order, per mesh file unit; 0 where it is
+            infinite (TM at grazing, never excited).
         impedance: ``(n_freq,)`` Z_o, ohm; NaN where not propagating.
         gamma: ``(n_freq,)`` gamma of its order, 1/m.
         propagating: ``(n_freq,)`` whether its order propagates.
@@ -224,6 +225,8 @@ def floquet_couplings(
     op: Any,
     table: dict[str, SurfaceOrders],
     frequency: Sequence[float],
+    *,
+    grid: Sequence[float] | None = None,
 ) -> list[FloquetSurfaceCoupling]:
     """Each Floquet surface's coupling on the driven operator ``op``.
 
@@ -231,8 +234,11 @@ def floquet_couplings(
         model: The model.
         op: The driven operator (`gfem._engine.driven.DrivenOperator`) of a
             periodic model: its space, expansion and mesh.
-        table: The order table over ``frequency`` (`gfem._floquet.order_table`).
-        frequency: The output grid, Hz.
+        table: The order table over ``grid`` (`gfem._floquet.order_table`):
+            its modelled orders are the whole sweep's.
+        frequency: The output grid, Hz: a subset of ``grid`` (a frequency
+            worker's block).
+        grid: The table's grid, Hz; ``frequency`` by default.
 
     Returns:
         One coupling per Floquet surface, in the order of the table.
@@ -242,6 +248,8 @@ def floquet_couplings(
     if op.expansion is None:  # pragma: no cover - a Floquet model is periodic
         raise ValueError("A Floquet port needs the periodic space's expansion.")
     built, scale = op.built, op.built.scale
+    grid = list(frequency if grid is None else grid)
+    at = [grid.index(f) for f in frequency]  # the table's rows of the output grid
     omegas = 2 * np.pi * np.asarray(frequency, float)
     k0 = omegas * scale / const.c
     index = {p.name: i for i, p in enumerate(model.ports)}
@@ -254,14 +262,16 @@ def floquet_couplings(
         v = _projections(built, op.expansion.space, op.order, rows)
         vectors = (expansion.conj().T @ v) * free[:, None]
         n_o = len(rows.orders)
-        lam = rows.lam.reshape(len(omegas), 2 * n_o) * scale
-        infinite = rows.infinite.reshape(len(omegas), 2 * n_o)
+        infinite = rows.infinite[at].reshape(len(omegas), 2 * n_o)
+        # an infinite λ stays a flag (scaling inf+0j would make it inf+nanj)
+        lam = np.where(infinite, 0, rows.lam[at].reshape(len(omegas), 2 * n_o))
+        lam = lam * scale
         modelled = np.repeat(rows.modelled, 2)[None, :] & ~infinite
         robin = 1j * k0 * math.sqrt(face.eps_r / face.mu_r)
         safe = np.where(modelled, lam, 0.0)
         shift = np.where(modelled, (safe - robin[:, None]) / area, 0.0)
         infinite = infinite & np.repeat(rows.modelled, 2)[None, :]
-        z = rows.impedance.reshape(len(omegas), 2 * n_o)
+        z = rows.impedance[at].reshape(len(omegas), 2 * n_o)
         ports = []
         for port in rows.ports:
             o = rows.orders.index(port.order)
@@ -275,8 +285,8 @@ def floquet_couplings(
                     omegas=omegas,
                     lam=lam[:, column],
                     impedance=z[:, column],
-                    gamma=rows.rows.gamma[:, o],
-                    propagating=rows.rows.propagating[:, o],
+                    gamma=rows.rows.gamma[at, o],
+                    propagating=rows.rows.propagating[at, o],
                     area=area,
                 )
             )

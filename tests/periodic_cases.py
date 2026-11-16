@@ -534,27 +534,29 @@ BREWSTER_TOL = 3e-5
 
 
 def f1_mesh(
-    directory: Path, cells: tuple[int, int, int, int] = (3, 3, 3, 3)
+    directory: Path,
+    cells: tuple[int, int, int, int] = (3, 3, 3, 3),
+    d: float = F1_D,
 ) -> gfem.Mesh:
     """F1's mesh, um: ``cells`` = (lateral, substrate, slab, air) cells per side.
 
-    Substrate z in [0, D], slab [D, D + H], air [D + H, 2 D + H]; the open
-    faces are "z_min" (substrate) and "z_max" (air).
+    Substrate z in [0, d], slab [d, d + H], air [d + H, 2 d + H]; the open
+    faces are "z_min" (substrate) and "z_max" (air), ``d`` um from the slab.
     """
     n, ns, nh, na = cells
     lateral = np.linspace(0.0, F1_A, n + 1)
     z = np.concatenate(
         [
-            np.linspace(0.0, F1_D, ns + 1),
-            np.linspace(F1_D, F1_D + F1_H, nh + 1)[1:],
-            np.linspace(F1_D + F1_H, 2 * F1_D + F1_H, na + 1)[1:],
+            np.linspace(0.0, d, ns + 1),
+            np.linspace(d, d + F1_H, nh + 1)[1:],
+            np.linspace(d + F1_H, 2 * d + F1_H, na + 1)[1:],
         ]
     )
 
     def volume(c):
-        if c[2] < F1_D:
+        if c[2] < d:
             return "sub"
-        return "slab" if c[2] < F1_D + F1_H else "air"
+        return "slab" if c[2] < d + F1_H else "air"
 
     cell = sm.periodic_cell((lateral, lateral, z), volume, paired="xy")
     path = sm.write_msh22(Path(directory) / "f1.msh", cell)
@@ -732,3 +734,107 @@ def f2(
         ],
         ports=f2_ports() if ports is None else ports,
     )
+
+
+# --- F2's frozen RCWA references (ticket 09 Q3) ------------------------------------
+
+#: F2's cells at h about lambda0 / 10 with grid lines on the ridge edges
+#: (`f2_mesh`), solved at p = 3 for the grating gates below.
+F2_FINE_CELLS = (6, 4, 3, 3, 3)
+#: F2's cases: (incidence theta, phi from the air in degrees, ridge eps).
+F2_CASES = {
+    "G0": (0.0, 0.0, F2_EPS_RIDGE),
+    "G20": (20.0, 0.0, F2_EPS_RIDGE),
+    "G20c": (20.0, 30.0, F2_EPS_RIDGE),
+    "G20L": (20.0, 0.0, F2_EPS_RIDGE * (1 - 0.05j)),
+}
+#: Diffraction efficiencies of F2 by case, incident polarization (from the
+#: air, the specular order) and (face, m): "R" the air side, "T" the
+#: substrate; the sum over both output polarizations of |S|^2. Every
+#: propagating order of each case is listed; order labels follow ADR 0147
+#: (b1 along +x).
+#:
+#: Method: the planar cases (G0, G20, G20L) from a Li-rule (inverse rule)
+#: 1D RCWA at N = 640 harmonics, the conical G20c from nannos 2.6.5
+#: ("tangent" formulation) at nh = 321. The two codes agree to 1e-8 at
+#: equal truncation; the values move by at most 4e-7 (planar) and 3e-6
+#: (conical) from half the truncation, power balance closes to 1e-11 in the
+#: lossless cases: the values are good to about 1e-6. The generation
+#: scripts stay with the effort's notes; no RCWA package is a test
+#: dependency.
+F2_RCWA = {
+    "G0": {
+        "TE": {
+            ("R", -1): 0.00347658,
+            ("R", 0): 0.04656300,
+            ("R", 1): 0.00347658,
+            ("T", -1): 0.25787622,
+            ("T", 0): 0.43073139,
+            ("T", 1): 0.25787622,
+        },
+        "TM": {
+            ("R", -1): 0.02413918,
+            ("R", 0): 0.01169126,
+            ("R", 1): 0.02413918,
+            ("T", -1): 0.24120150,
+            ("T", 0): 0.45762738,
+            ("T", 1): 0.24120150,
+        },
+    },
+    "G20": {
+        "TE": {
+            ("R", -1): 0.06556192,
+            ("R", 0): 0.00532756,
+            ("T", -2): 0.07640159,
+            ("T", -1): 0.18441132,
+            ("T", 0): 0.27416941,
+            ("T", 1): 0.39412820,
+        },
+        "TM": {
+            ("R", -1): 0.01563704,
+            ("R", 0): 0.00842941,
+            ("T", -2): 0.01767815,
+            ("T", -1): 0.21207643,
+            ("T", 0): 0.49783872,
+            ("T", 1): 0.24834025,
+        },
+    },
+    "G20c": {
+        "TE": {
+            ("R", -1): 0.05060379,
+            ("R", 0): 0.00911272,
+            ("T", -2): 0.06267673,
+            ("T", -1): 0.17843395,
+            ("T", 0): 0.33630617,
+            ("T", 1): 0.36286663,
+        },
+        "TM": {
+            ("R", -1): 0.03154545,
+            ("R", 0): 0.00727369,
+            ("T", -2): 0.04835677,
+            ("T", -1): 0.20106154,
+            ("T", 0): 0.46709015,
+            ("T", 1): 0.24467240,
+        },
+    },
+    "G20L": {
+        "TE": {
+            ("R", -1): 0.05873477,
+            ("R", 0): 0.00533568,
+            ("T", -2): 0.05637469,
+            ("T", -1): 0.17072437,
+            ("T", 0): 0.22627813,
+            ("T", 1): 0.34492168,
+        },
+        "TM": {
+            ("R", -1): 0.01774115,
+            ("R", 0): 0.00870128,
+            ("T", -2): 0.01501870,
+            ("T", -1): 0.19253965,
+            ("T", 0): 0.46512389,
+            ("T", 1): 0.21423294,
+        },
+    },
+}
+#: G20L's absorption 1 - sum of the efficiencies, by incident polarization.
+F2_ABSORPTION = {"TE": 0.13763068, "TM": 0.08664219}

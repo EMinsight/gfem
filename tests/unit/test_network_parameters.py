@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 import gfem
+from gfem._text import hertz
 
 F = (1e9, 2e9, 3e9)
 
@@ -273,6 +274,27 @@ def test_touchstone_refuses_a_modal_network_with_a_nan_row(line, tmp_path):
     net = _net(values, [np.nan, np.nan])
     with pytest.raises(ValueError, match="no reference impedance"):
         net.to_touchstone(tmp_path / "x.s2p", z0=50.0)
+    assert not (tmp_path / "x.s2p").exists()
+
+
+def test_touchstone_refuses_a_floquet_port_evanescent_at_some_frequencies(
+    line, tmp_path
+):
+    # Floquet ports whose orders do not propagate at the last frequency: their
+    # z_ref is NaN there only, and their rows read 0 (not a modal network)
+    values = np.asarray(line.values).copy()
+    values[-1] = 0
+    z_ref = np.full((3, 2), 377.0)
+    z_ref[-1] = np.nan
+    net = _net(values, z_ref)
+    message = (
+        r"Port 'p1', 'p2' has no reference impedance.*or a FloquetPort whose "
+        rf"order is evanescent at {re.escape(hertz(F[-1]))}.*drop the "
+        r"port or narrow the grid"
+    )
+    for z0 in (None, 50.0):
+        with pytest.raises(ValueError, match=message):
+            net.to_touchstone(tmp_path / "x.s2p", z0=z0)
     assert not (tmp_path / "x.s2p").exists()
 
 

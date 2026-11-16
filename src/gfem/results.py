@@ -660,7 +660,8 @@ class NetworkParameters:
         Raises:
             ValueError: The file name does not match the port count, not
                 every port was excited, some but not all ports have no
-                reference impedance (or a row of S is NaN), or ``z0`` is not
+                reference impedance (or a row of S is NaN; a `FloquetPort`
+                has none where its order does not propagate), or ``z0`` is not
                 given and `z_ref` is not one real value or no port has one.
             TypeError: The values are computed inside `jax.grad`, `jax.jit`
                 or `jax.vmap`; write the file from a result outside them.
@@ -682,7 +683,9 @@ class NetworkParameters:
         z_ref = np.asarray(self.z_ref)
         nan = np.isnan(z_ref).any(axis=0)
         missing = [p for p, bad in zip(self.ports, nan, strict=True) if bad]
-        if nan.all() and np.isfinite(s).all():
+        # a modal network: every port without a reference at every frequency
+        # (a Floquet port's is NaN only where its order does not propagate)
+        if np.isnan(z_ref).all() and np.isfinite(s).all():
             if z0 is None:
                 raise ValueError(
                     "No port has a reference impedance (z_ref is NaN: wave ports "
@@ -694,11 +697,19 @@ class NetworkParameters:
             path.write_text(_touchstone(self, s, _touchstone_z0(z0), modal=True))
             return path
         if missing:
+            where = np.isnan(z_ref[:, nan]).any(axis=1)
+            freqs = ", ".join(
+                hertz(float(f))
+                for f, bad in zip(np.asarray(self.frequency), where, strict=True)
+                if bad
+            )
             raise ValueError(
                 f"Port {', '.join(map(repr, missing))} has no reference impedance "
-                "(z_ref is NaN): a LumpedPort without a resistance, or a WavePort "
-                "without a voltage_path. S cannot be labelled or renormalized "
-                "without one; give the port a resistance or a voltage_path."
+                "(z_ref is NaN): a LumpedPort without a resistance, a WavePort "
+                "without a voltage_path, or a FloquetPort whose order is "
+                f"evanescent at {freqs}. S cannot be labelled or renormalized "
+                "without one; give the port a resistance or a voltage_path, or "
+                "for a FloquetPort drop the port or narrow the grid."
             )
         if z0 is None:
             first = z_ref.flat[0]
@@ -968,12 +979,13 @@ class DrivenResult:
             its mode field, with or without ``Driven(keep_fields=...)``,
             except inside `jax.jit`, `jax.grad` or `jax.vmap`, where it is
             ``None``. Constants of the solve: not differentiable.
-        offsets: ``(port name, distance in m)`` of each wave port (static
-            labels; ``dict(result.offsets)``), from ``WavePort(offset=...)``:
-            S of a wave port is referred to
-            a plane that far inside the domain, ``S_ij`` multiplied by
-            ``exp(gamma_i d_i) exp(gamma_j d_j)``. `with_offsets` moves the
-            planes after the solve.
+        offsets: ``(port name, distance in m)`` of each wave and Floquet
+            port (static labels; ``dict(result.offsets)``), from
+            ``WavePort(offset=...)`` or ``FloquetPort(offset=...)``: S of
+            such a port is referred to a plane that far inside the domain,
+            ``S_ij`` multiplied by ``exp(gamma_i d_i) exp(gamma_j d_j)`` (a
+            Floquet port's factor is 1 where its order does not propagate).
+            `with_offsets` moves the planes after the solve.
         diffraction_orders: The diffraction order of each Floquet port over
             the frequencies (`DiffractionOrderResult`, by port name); empty
             without Floquet ports. Constants of the solve: not
@@ -1056,16 +1068,19 @@ class DrivenResult:
         )
 
     def with_offsets(self, offsets: Mapping[str, float]) -> DrivenResult:
-        """This result with S referred to other wave-port reference planes.
+        """This result with S referred to other wave or Floquet port planes.
 
         ``offsets`` gives, by port name, the distance in m of the new plane
-        inside the domain, as ``WavePort(offset=...)`` does: absolute, not
+        inside the domain, as ``WavePort(offset=...)`` and
+        ``FloquetPort(offset=...)`` do: absolute, not
         an increment, so a result of a solve without offsets shifted to
         ``d`` equals the result of a solve with ``WavePort(offset=d)``, and
         shifting twice to the same planes changes nothing. ``S_ij`` is
         multiplied by ``exp(gamma_i (d_i - d_i_old)) exp(gamma_j (d_j -
         d_j_old))`` at each frequency, ``gamma`` the ports' propagation
-        constants in `port_modes`, and `offsets` records the new distances.
+        constants in `port_modes` (a Floquet port's order's in
+        `diffraction_orders`, the factor 1 where the order does not
+        propagate), and `offsets` records the new distances.
         A port not named keeps its plane. ``z_ref``, the kept fields,
         `port_modes` and `sweep` are unchanged.
 
@@ -1073,14 +1088,15 @@ class DrivenResult:
         (``gamma`` is a constant of the solve).
 
         Args:
-            offsets: The new distance of each named wave port, m, >= 0.
+            offsets: The new distance of each named wave or Floquet port, m,
+                >= 0.
 
         Returns:
             A new result; this one is not modified.
 
         Raises:
             KeyError: A name is not a port of this result.
-            ValueError: A named port is not a wave port (it has no
+            ValueError: A named port is not a wave or Floquet port (it has no
                 propagation constant), or a distance is negative or not
                 finite.
             NonDifferentiableError: A distance is computed inside
@@ -1095,11 +1111,13 @@ class DrivenResult:
                 raise KeyError(
                     f"No port {name!r}; the ports are {', '.join(map(repr, ports))}."
                 )
-            if name not in old or name not in self.port_modes:
+            if name not in old or (
+                name not in self.port_modes and name not in self.diffraction_orders
+            ):
                 raise ValueError(
-                    f"Port {name!r} is not a wave port: it has no propagation "
-                    "constant to move a reference plane with. The wave ports are "
-                    f"{', '.join(map(repr, old)) or 'none'}."
+                    f"Port {name!r} is not a wave or Floquet port: it has no "
+                    "propagation constant to move a reference plane with. The wave "
+                    f"and Floquet ports are {', '.join(map(repr, old)) or 'none'}."
                 )
             distance = static_float(
                 value,
@@ -1115,10 +1133,7 @@ class DrivenResult:
             new[name] = distance
         factor = jnp.stack(
             [
-                jnp.exp(
-                    jnp.asarray(_objective.constant(self.port_modes[p].gamma))
-                    * (new[p] - old[p])
-                )
+                self._plane_shift(p, new[p] - old[p])
                 if p in new and new[p] != old[p]
                 else jnp.ones(len(self.s.frequency), dtype=complex)
                 for p in ports
@@ -1132,6 +1147,20 @@ class DrivenResult:
             s=dataclasses.replace(self.s, values=values),
             offsets=tuple(new.items()),
         )
+
+    def _plane_shift(self, port: str, distance: float) -> jax.Array:
+        """``(n_freq,)``: ``exp(gamma distance)`` of a wave or Floquet port.
+
+        A Floquet port's factor is 1 where its order does not propagate (its
+        row reads 0 there, and ``exp(|gamma| d)`` would overflow).
+        """
+        if port in self.port_modes:
+            gamma = jnp.asarray(_objective.constant(self.port_modes[port].gamma))
+            return jnp.exp(gamma * distance)
+        order = self.diffraction_orders[port]
+        propagating = jnp.asarray(_objective.constant(order.propagating))
+        gamma = jnp.asarray(_objective.constant(order.gamma))
+        return jnp.exp(jnp.where(propagating, gamma, 0.0) * distance)
 
     def __repr__(self) -> str:
         f = self.frequency

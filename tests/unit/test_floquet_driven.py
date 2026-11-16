@@ -8,6 +8,7 @@ glass/air interface; a cell closed by PEC behind one Floquet face; the
 against `direct`.
 """
 
+import dataclasses
 import math
 
 import numpy as np
@@ -234,3 +235,209 @@ def test_the_transposed_system_is_the_system_at_minus_k(f1_mesh):
     finally:
         plus.free()
         minus.free()
+
+
+# --- higher orders: the full S and its readers ----------------------------------------
+
+
+def test_a_propagating_order_without_a_port_warns_per_surface(f2_mesh):
+    # only the specular ports: the +-1 orders propagate on both faces
+    model = pc.f2(f2_mesh, pc.f2_ports(((0, 0),)))
+    problem = gfem.Driven([pc.F1_FREQUENCY], excite=["R0,0_TE"])
+    with pytest.warns(gfem.UnrequestedOrderWarning) as caught:
+        gfem.solve(model, problem, options=P2)
+    messages = sorted(
+        str(w.message) for w in caught if w.category is gfem.UnrequestedOrderWarning
+    )
+    assert len(messages) == 2
+    for message, surface in zip(messages, ("z_max", "z_min"), strict=True):
+        assert message == (
+            f"Propagating order(s) (-1, 0), (1, 0) on {surface!r} at 299.792 THz "
+            "carry power that S does not report (they are absorbed, not "
+            "reflected); add gfem.FloquetPort(..., order=..., polarization=...) "
+            "to read them, or filter UnrequestedOrderWarning."
+        )
+
+
+def test_declaring_every_propagating_order_does_not_warn(f2_mesh, recwarn):
+    problem = gfem.Driven([pc.F1_FREQUENCY], excite=["R0,0_TE"])
+    gfem.solve(pc.f2(f2_mesh), problem, options=P2)
+    assert not [w for w in recwarn if w.category is gfem.UnrequestedOrderWarning]
+
+
+#: A reference-plane offset far beyond the decay length of F2's evanescent
+#: orders: exp(|gamma| d) overflows (|gamma| d about 8e3 for (2, 0) on top).
+FAR = 1e-3
+
+
+def _with_order(ports, name, surface, order, offset=0.0):
+    return [
+        *ports,
+        gfem.FloquetPort(name, surface, order=order, polarization="TE", offset=offset),
+    ]
+
+
+def test_an_evanescent_row_reads_exactly_zero_even_far_off_its_plane(f2_mesh):
+    ports = _with_order(pc.f2_ports(), "R2", "z_max", (2, 0), offset=FAR)
+    problem = gfem.Driven([pc.F1_FREQUENCY], excite=["R0,0_TE"])
+    result = gfem.solve(pc.f2(f2_mesh, ports), problem, options=P2)
+    s = result.s
+    assert not bool(np.asarray(result.diffraction_orders["R2"].propagating)[0])
+    assert complex(s["R2", "R0,0_TE"][0]) == 0
+    assert np.isfinite(np.asarray(s.values)).all()
+    assert np.isnan(np.asarray(s.z_ref)[0, s.ports.index("R2")])
+    shifted = result.with_offsets({"R2": 2 * FAR})
+    assert complex(shifted.s["R2", "R0,0_TE"][0]) == 0
+    assert np.isfinite(np.asarray(shifted.s.values)).all()
+
+
+def test_floquet_offsets_are_listed_and_moved_by_with_offsets(f2_mesh):
+    d = 0.15e-6
+    problem = gfem.Driven([pc.F1_FREQUENCY], excite=["R0,0_TE", "R0,0_TM"])
+    base = pc.f2_ports()
+    plain = gfem.solve(pc.f2(f2_mesh, base), problem, options=P2)
+    moved = [
+        dataclasses.replace(p, offset=d) if p.name in ("R1,0_TE", "T-1,0_TM") else p
+        for p in base
+    ]
+    solved = gfem.solve(pc.f2(f2_mesh, moved), problem, options=P2)
+    assert dict(plain.offsets) == {p.name: 0.0 for p in base}
+    assert dict(solved.offsets)["R1,0_TE"] == d
+    shifted = plain.with_offsets({"R1,0_TE": d, "T-1,0_TM": d})
+    assert dict(shifted.offsets) == dict(solved.offsets)
+    expected = np.asarray(solved.s.values)
+    row = plain.s.ports.index("R1,0_TE")
+    # the offset moved a phase (beta d about 0.6 rad for the top +1 order)
+    assert abs(expected[0, row, 0] - np.asarray(plain.s.values)[0, row, 0]) > 1e-2
+    np.testing.assert_allclose(
+        np.asarray(shifted.s.values), expected, rtol=0, atol=1e-12
+    )
+
+
+def test_frequency_workers_model_the_orders_of_the_whole_grid(f2_mesh):
+    # with floquet_order_tolerance 1e-2 the top face models (+-2, 0) for
+    # 1.6 f0 (evanescent, close to cutoff) but not for f0 alone
+    # (exp(-2 |gamma| d) = 6.5e-3 there): a worker's block on its own would
+    # model fewer orders than the sweep
+    frequency = [pc.F1_FREQUENCY, 1.6 * pc.F1_FREQUENCY]
+    ports = pc.f2_ports(((0, 0), (-1, 0), (1, 0), (-2, 0), (2, 0)))
+    model = pc.f2(f2_mesh, ports)
+    problem = gfem.Driven(frequency, excite=["R0,0_TE", "R0,0_TM"])
+
+    def s(workers):
+        options = gfem.SolverOptions(
+            order=2, threads=2, frequency_workers=workers, floquet_order_tolerance=1e-2
+        )
+        return np.asarray(gfem.solve(model, problem, options=options).s.values)
+
+    serial, parallel = s(1), s(2)
+    assert np.abs(serial).max() > 0.1
+    np.testing.assert_allclose(parallel, serial, rtol=0, atol=1e-12)
+
+
+#: The Bloch reciprocity gate on `direct` (`test_periodic_driven.SYMMETRY_TOL`).
+SYMMETRY_TOL = 1e-12
+
+
+def _mirror(name):
+    """The port of the opposite order: same face and polarization, (-m, -n)."""
+    side, rest = name[0], name[1:]
+    orders, pol = rest.split("_")
+    m, n = (int(i) for i in orders.split(","))
+    return f"{side}{-m},{-n}_{pol}"
+
+
+def _full_s(mesh, top, bottom, wave_vector):
+    """F2 solved with every port excited: ports "R{m},0_{pol}" and "T..."."""
+    ports = [
+        gfem.FloquetPort(f"{side}{m},0_{pol}", surface, order=(m, 0), polarization=pol)
+        for side, surface, orders in (("R", "z_max", top), ("T", "z_min", bottom))
+        for m in orders
+        for pol in ("TE", "TM")
+    ]
+    problem = gfem.Driven([pc.F1_FREQUENCY], wave_vector=wave_vector)
+    result = gfem.solve(pc.f2(mesh, ports), problem, options=P2)
+    return result
+
+
+#: (theta, phi in degrees from the air, top orders m, bottom orders m): every
+#: propagating order of F2 at that incidence.
+RECIPROCITY_CASES = {
+    # normal incidence: +-1 propagate on both faces
+    "normal": (0.0, 0.0, (-1, 0, 1), (-1, 0, 1)),
+    # conical 20/30 degrees: top (-1, 0), bottom (-2..1)
+    "conical": (20.0, 30.0, (-1, 0), (-2, -1, 0, 1)),
+}
+
+
+@pytest.mark.parametrize("case", list(RECIPROCITY_CASES))
+def test_the_full_s_obeys_bloch_reciprocity_with_the_order_signs(
+    f2_mesh, recwarn, case
+):
+    # S_{p<-q}(k) = sigma_p sigma_q S_{-q<--p}(-k), sigma = -1 off kappa = 0
+    theta, phi, top, bottom = RECIPROCITY_CASES[case]
+    model = pc.f2(f2_mesh)
+    k = _oblique(model, theta, phi) if theta else (0.0, 0.0, 0.0)
+    plus = _full_s(f2_mesh, top, bottom, k)
+    minus = _full_s(
+        f2_mesh,
+        tuple(-m for m in top),
+        tuple(-m for m in bottom),
+        tuple(-c for c in k),
+    )
+    assert not [w for w in recwarn if w.category is gfem.UnrequestedOrderWarning]
+    names = plus.s.ports
+    s_plus = np.asarray(plus.s.values)[0]
+    s_minus = np.asarray(minus.s.values)[0]
+    at = {name: i for i, name in enumerate(minus.s.ports)}
+
+    def zero(name):
+        return not np.any(np.asarray(plus.diffraction_orders[name].wave_vector))
+
+    sigma = np.array([1.0 if zero(name) else -1.0 for name in names])
+    mirrored = np.array(
+        [[s_minus[at[_mirror(q)], at[_mirror(p)]] for q in names] for p in names]
+    )
+    assert np.abs(s_plus).max() > 0.1
+    np.testing.assert_allclose(
+        s_plus, sigma[:, None] * sigma[None, :] * mirrored, rtol=0, atol=SYMMETRY_TOL
+    )
+    if theta == 0:
+        # the sign is pinned: without sigma the specular-to-(+-1) entries flip
+        assert np.abs(s_plus - mirrored).max() > 0.1
+
+
+def _grazing_frequency(model):
+    """The float frequency at which F2's top (1, 0) order grazes: gamma == 0."""
+    from gfem import _floquet
+
+    f = pc.C0 / (pc.F2_A[0] * pc.UM)  # k0 = |b1| in the air, up to rounding
+    for step in range(64):
+        for g in (f, -f):
+            trial = abs(g)
+            for _ in range(step):
+                trial = np.nextafter(trial, math.copysign(np.inf, g))
+            table = _floquet.order_table(model, [trial], None, P2)["z_max"]
+            if table.rows.gamma[0, table.orders.index((1, 0))] == 0:
+                return float(trial)
+    raise AssertionError("no float frequency grazes")  # pragma: no cover
+
+
+def test_s_is_continuous_through_a_rayleigh_anomaly(f2_mesh):
+    # the top +-1 orders at |gamma|/k = 1e-6 (propagating) and at gamma = 0
+    # exactly (rows 0, the TM shift an exact constraint row): S stays finite,
+    # the grazing rows fall as 0.5 sqrt(|gamma|/k), the rest barely moves
+    model = pc.f2(f2_mesh)
+    grazing = _grazing_frequency(model)
+    near = grazing * (1 + 0.5e-12)  # |gamma|/k = 1e-6
+    problem = gfem.Driven([grazing, near], excite=["R0,0_TE", "R0,0_TM"])
+    result = gfem.solve(model, problem, options=P2)
+    propagating = np.asarray(result.diffraction_orders["R1,0_TM"].propagating)
+    np.testing.assert_array_equal(propagating, [False, True])
+    s = np.asarray(result.s.values)
+    assert np.isfinite(s).all()
+    rows = [result.s.ports.index(f"R{m},0_{p}") for m in (-1, 1) for p in ("TE", "TM")]
+    others = [i for i in range(len(result.s.ports)) if i not in rows]
+    np.testing.assert_array_equal(s[0, rows], 0)
+    assert np.abs(s[1, rows]).max() <= 1e-3
+    np.testing.assert_allclose(s[0, others], s[1, others], rtol=0, atol=1e-5)

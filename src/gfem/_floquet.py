@@ -40,7 +40,12 @@ import scipy.constants as const
 from gfem._boundaries import FloquetPort, Periodic, surfaces_of
 from gfem._materials import Material, MaterialField, PermittivityLaw
 from gfem._periodic import Pairing, side_edges
-from gfem.errors import FloquetOrderCapWarning, PortGeometryError
+from gfem._text import hertz, hertz_band
+from gfem.errors import (
+    FloquetOrderCapWarning,
+    PortGeometryError,
+    UnrequestedOrderWarning,
+)
 
 if TYPE_CHECKING:
     from gfem.model import Model
@@ -63,6 +68,7 @@ __all__ = [
     "reciprocal_lattice",
     "sort_orders",
     "warn_order_cap",
+    "warn_unrequested",
     "wave_impedance",
     "wavenumber",
 ]
@@ -860,6 +866,51 @@ def warn_order_cap(table: dict[str, SurfaceOrders], tolerance: float) -> None:
                 f"{rows.face.distance:.3g} m from the nearest structure (their round "
                 f"trip decays by less than floquet_order_tolerance={tolerance:g}). "
                 + remedy
+            ),
+            stacklevel=3,
+        )
+
+
+def _frequencies(frequency: np.ndarray, where: np.ndarray) -> str:
+    """The grid frequencies where ``where`` holds, for a message.
+
+    The band when it holds at every frequency of a grid of several; else
+    the first four, then "...".
+    """
+    f = frequency[where]
+    if len(f) == len(frequency) and len(f) > 1:
+        return hertz_band(float(f.min()), float(f.max()))
+    shown = ", ".join(hertz(float(x)) for x in f[:4])
+    return shown + (", ..." if len(f) > 4 else "")
+
+
+def warn_unrequested(table: dict[str, SurfaceOrders]) -> None:
+    """Warn `UnrequestedOrderWarning` for each surface with unread propagating orders.
+
+    An order that propagates at some frequency and has no Floquet port on
+    its surface in either polarization: the surface absorbs it, so its
+    power is missing from S. Called by the parent only.
+    """
+    for surface, rows in table.items():
+        declared = {p.order for p in rows.ports}
+        propagating = rows.rows.propagating
+        missing = [
+            o
+            for k, o in enumerate(rows.orders)
+            if o not in declared and propagating[:, k].any()
+        ]
+        if not missing:
+            continue
+        columns = [rows.orders.index(o) for o in missing]
+        where = propagating[:, columns].any(axis=1)
+        freqs = _frequencies(rows.rows.frequency, where)
+        shown = ", ".join(f"({m}, {n})" for m, n in missing)
+        warnings.warn(
+            UnrequestedOrderWarning(
+                f"Propagating order(s) {shown} on {surface!r} at {freqs} carry "
+                "power that S does not report (they are absorbed, not reflected); "
+                "add gfem.FloquetPort(..., order=..., polarization=...) to read "
+                "them, or filter UnrequestedOrderWarning."
             ),
             stacklevel=3,
         )

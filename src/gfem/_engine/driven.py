@@ -142,6 +142,7 @@ from gfem.errors import (
     PortGeometryError,
     PortModeProjectionWarning,
     SkippedPortModeWarning,
+    UnrequestedOrderWarning,
 )
 from gfem.mesh import _shortest_edges
 from gfem.model import Model
@@ -606,10 +607,14 @@ class DrivenRule:
         options: SolverOptions,
         *,
         comm: Any = None,
+        order_frequency: Sequence[float] | None = None,
     ) -> None:
         """Check that the problem fits the model (see `gfem.Driven`).
 
         ``comm`` is the resolved communicator of a distributed solve.
+        ``order_frequency`` is the grid the Floquet order table is computed
+        over: a frequency worker's whole sweep, so that its block models the
+        sweep's orders (ADR 0149, ADR 0152); the problem's by default.
 
         Raises:
             NotImplementedError: A feature this version cannot solve.
@@ -671,15 +676,21 @@ class DrivenRule:
                     "impedance to feed 1 W through. Give it a resistance, or leave "
                     "it out of Driven.excite."
                 )
+        #: The grid of the Floquet order table: the whole sweep's, in a
+        #: frequency worker too.
+        self.order_frequency = tuple(
+            problem.frequency if order_frequency is None else order_frequency
+        )
         #: Per Floquet surface, its order table over the whole grid
         #: (`gfem._floquet.order_table`): the parent's pre-pass, before any
         #: assembly (ADR 0149); empty without Floquet ports.
         self.orders = _floquet.order_table(
-            model, problem.frequency, problem.wave_vector, options
+            model, self.order_frequency, problem.wave_vector, options
         )
         if self.orders:
             _floquet.warn_order_cap(self.orders, options.floquet_order_tolerance)
-            check_excitable(self.orders, self.excite, problem.frequency)
+            _floquet.warn_unrequested(self.orders)
+            check_excitable(self.orders, self.excite, self.order_frequency)
         #: Indices of the frequencies whose fields are kept.
         self.kept = tuple(problem.frequency.index(f) for f in problem.kept_frequencies)
         #: Whether the sweep is adaptive (a reduced model).
@@ -700,9 +711,11 @@ class DrivenRule:
         )
         #: The wave ports' modes.
         self.modes = {p.name: p.mode for p in model.ports if isinstance(p, WavePort)}
-        #: The wave ports' de-embedding offsets, m.
+        #: The wave and Floquet ports' de-embedding offsets, m.
         self.offsets = tuple(
-            (p.name, p.offset) for p in model.ports if isinstance(p, WavePort)
+            (p.name, p.offset)
+            for p in model.ports
+            if isinstance(p, (WavePort, FloquetPort))
         )
         #: Per wave port, the volume regions with an element on its face:
         #: the port mode reads their materials.
@@ -1061,6 +1074,7 @@ class DrivenRule:
             keywords=[
                 {
                     "port_modes": [s.rows(block) for s in swept] if swept else None,
+                    "order_frequency": tuple(frequencies),
                     "log": report.LOGGER.isEnabledFor(logging.INFO),
                 }
                 for block in indices
@@ -1170,7 +1184,11 @@ class DrivenRule:
         tolerance = self.options.port_mode_tolerance
         disc = cached(op.built)
         key = _KeptPorts.key_of(
-            model, op, frequency, tolerance, self.options.floquet_order_tolerance
+            model,
+            op,
+            frequency,
+            tolerance,
+            (self.options.floquet_order_tolerance, self.order_frequency),
         )
         kept = disc.ports if disc is not None else None
         if not isinstance(kept, _KeptPorts) or kept.key != key:
@@ -1184,7 +1202,9 @@ class DrivenRule:
                 layout=op.layout or ONE_PROCESS,
                 swept=self.handed_port_modes,
             )
-            floquet = floquet_couplings(model, op, self.orders, frequency)
+            floquet = floquet_couplings(
+                model, op, self.orders, frequency, grid=self.order_frequency
+            )
             kept = _KeptPorts(key, couplings, floquet)
             if disc is not None:
                 disc.ports = kept
@@ -1747,8 +1767,9 @@ class DrivenRule:
         self, rows: Sequence[int]
     ) -> dict[str, DiffractionOrderResult]:
         """Each Floquet port's `DiffractionOrderResult` at the grid indices ``rows``."""
-        rows = list(rows)
-        frequency = jnp.asarray([self.problem.frequency[i] for i in rows])
+        grid = [self.problem.frequency[i] for i in rows]
+        frequency = jnp.asarray(grid)
+        rows = [self.order_frequency.index(f) for f in grid]  # the table's rows
         out = {}
         for surface, table in self.orders.items():
             r = table.rows
@@ -2234,6 +2255,7 @@ def _attenuation_message(
 #: estimate's adjoint) ignores them, since the first already gave them.
 FORWARD_WARNINGS = (
     FloquetOrderCapWarning,
+    UnrequestedOrderWarning,
     LowFrequencyWarning,
     SkippedPortModeWarning,
     PortModeProjectionWarning,
@@ -2268,13 +2290,16 @@ def _solve_block(
     keep: bool,
     *,
     port_modes: list[dict[str, np.ndarray]] | None = None,
+    order_frequency: Sequence[float] | None = None,
     log: bool = False,
 ) -> tuple[SweepOutputs, np.ndarray | None, str | None, list[logging.LogRecord]]:
     """A frequency worker's `DrivenRule.forward` of its block.
 
     ``aux`` and ``children`` are the model's parts (`gfem._engine.workers`),
     ``port_modes`` the block's rows of the parent's port mode sweeps, per
-    wave port surface (`DrivenRule.handed_port_modes`).
+    wave port surface (`DrivenRule.handed_port_modes`), ``order_frequency``
+    the whole sweep's grid, over which the block computes its Floquet order
+    table (`DrivenRule.order_frequency`).
     Returns the block's outputs (rows: indices into the block; without the
     wave ports' modes, which are the parent's), its
     solutions (``keep``; else ``None``), ``None`` and, with ``log``, its
@@ -2289,7 +2314,7 @@ def _solve_block(
         # the parent's rule already warned for the whole sweep
         for category in FORWARD_WARNINGS:
             warnings.simplefilter("ignore", category)
-        rule = DrivenRule(model, problem, options)
+        rule = DrivenRule(model, problem, options, order_frequency=order_frequency)
         rule.keeps_partial = True
         rule.handed_port_modes = port_modes
         with report.collected(log) as records:
@@ -2566,14 +2591,15 @@ class _KeptPorts:
         op: DrivenOperator,
         frequency: tuple[float, ...],
         tolerance: float,
-        order_tolerance: float = 0.0,
+        orders: tuple = (),
     ) -> tuple:
         """What the couplings of ``model`` on ``op``'s discretization depend on.
 
         The space (a discretization keeps its spaces, so its identity is
         stable, and a Bloch-phased space is its wave vector's), the order,
-        the output grid, the port mode tolerance, the Floquet order
-        tolerance, the ports, and per wave port surface `port_section_key`:
+        the output grid, the port mode tolerance, the Floquet order table's
+        tolerance and grid, the ports, and per wave port surface
+        `port_section_key`:
         never the port section itself.
         """
         sections = tuple(
@@ -2585,7 +2611,7 @@ class _KeptPorts:
             op.order,
             tuple(frequency),
             tolerance,
-            order_tolerance,
+            orders,
             repr(model.ports),
             sections,
         )
