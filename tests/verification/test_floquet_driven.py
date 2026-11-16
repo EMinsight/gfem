@@ -142,6 +142,9 @@ F2_EFFICIENCY_TOL = 1e-3
 F2_POWER_TOL = 1e-4
 #: |(1 - sum |S|^2) - A_ref| on G20L (9e-6 TE, 1.6e-4 TM measured).
 F2_ABSORPTION_TOL = 1e-3
+#: |power_flow + sum_T |S|^2| through the substrate (4e-7 - 1.3e-6
+#: measured on G0 and G20).
+F2_POWER_FLOW_TOL = 1e-3
 
 
 @pytest.fixture(scope="module")
@@ -157,13 +160,16 @@ def grating(request, f2_fine):
         "z_max", pc.F1_FREQUENCY, theta=math.radians(theta), phi=math.radians(phi)
     )
     problem = gfem.Driven(
-        [pc.F1_FREQUENCY], excite=["R0,0_TE", "R0,0_TM"], wave_vector=k
+        [pc.F1_FREQUENCY],
+        excite=["R0,0_TE", "R0,0_TM"],
+        wave_vector=k,
+        keep_fields=[pc.F1_FREQUENCY],
     )
     with warnings.catch_warnings():
         # every propagating order is declared: the sums are complete
         warnings.simplefilter("error", gfem.UnrequestedOrderWarning)
         result = gfem.solve(model, problem, options=gfem.SolverOptions(order=3))
-    return request.param, result
+    return request.param, result, model
 
 
 def _efficiencies(result, pol):
@@ -179,7 +185,7 @@ def _efficiencies(result, pol):
 
 @pytest.mark.parametrize("pol", ["TE", "TM"])
 def test_the_grating_matches_rcwa(grating, pol):
-    case, result = grating
+    case, result, _ = grating
     eta = _efficiencies(result, pol)
     reference = pc.F2_RCWA[case][pol]
     # the RCWA table lists every propagating order: the others read 0
@@ -196,3 +202,15 @@ def test_the_grating_matches_rcwa(grating, pol):
         assert abs(defect - pc.F2_ABSORPTION[pol]) <= F2_ABSORPTION_TOL
     else:
         assert abs(defect) <= F2_POWER_TOL
+
+
+@pytest.mark.parametrize("pol", ["TE", "TM"])
+def test_the_power_into_the_substrate_is_the_transmitted_efficiency(grating, pol):
+    # the substrate holds the T face: the power leaving it is minus every
+    # transmitted order's |S|^2 of the 1 W incident wave
+    _, result, model = grating
+    eta = _efficiencies(result, pol)
+    transmitted = sum(v for (side, _), v in eta.items() if side == "T")
+    field = result.e_field(pc.F1_FREQUENCY, f"R0,0_{pol}")
+    power = float(gfem.power_flow(field, ("sub",), model=model))
+    assert abs(power + transmitted) <= F2_POWER_FLOW_TOL
