@@ -1568,6 +1568,24 @@ def _out_driven_traced_wave_vector(request):
     jax.grad(objective)(pc.C1_K[0])
 
 
+def _out_driven_traced_wave_vector_frequency(request):
+    # a fixed-angle sweep's reference frequency is static, as the wave vector
+    model = request.getfixturevalue("floquet_cell")
+    k = model.bloch_wave_vector(
+        "z_max", pc.F1_FREQUENCY, theta=pc.F1_THETA, phi=pc.F1_PHI
+    )
+
+    def objective(f_ref):
+        problem = gfem.Driven(
+            frequency=[pc.F1_FREQUENCY, 1.1 * pc.F1_FREQUENCY],
+            wave_vector=k,
+            wave_vector_frequency=f_ref,
+        )
+        return jnp.sum(jnp.abs(gfem.solve(model, problem).s.values) ** 2)
+
+    jax.grad(objective)(pc.F1_FREQUENCY)
+
+
 def _out_periodic_pair_broken(request):
     # a node move that breaks a pair has no forward: raised on the host
     model, problem = request.getfixturevalue("driven_periodic_cases")[
@@ -2100,6 +2118,12 @@ OUT_OF_SCOPE = [
         _out_driven_traced_wave_vector,
         gfem.NonDifferentiableError,
         "wave_vector must be fixed",
+    ),
+    (
+        "driven x traced wave_vector_frequency",
+        _out_driven_traced_wave_vector_frequency,
+        gfem.NonDifferentiableError,
+        r"Driven\.wave_vector_frequency must be a fixed number",
     ),
     (
         "periodic model x node move that breaks a pair",

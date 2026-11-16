@@ -447,6 +447,29 @@ def _sheet_s11(wave_impedance, kx, r):
     return (z - OBLIQUE_R) / (z + OBLIQUE_R)
 
 
+def _oblique_cell(directory, cells=(24, 2, 2)):
+    """A sheet port between `Absorbing` faces along x, periodic along y and z."""
+    edges = tuple(
+        np.linspace(0.0, s, n + 1)
+        for s, n in zip((OBLIQUE_L, OBLIQUE_A, OBLIQUE_A), cells, strict=True)
+    )
+    raw = sm.periodic_cell(edges, sheets=(("sheet", OBLIQUE_SHEET),), paired="yz")
+    mesh = gfem.Mesh.from_gmsh(
+        sm.write_msh22(directory / "cell.msh", raw), length_unit="mm"
+    )
+    return gfem.Model(
+        mesh,
+        materials={"cell": gfem.Material(eps_r=OBLIQUE_EPS)},
+        boundaries=[
+            gfem.Periodic(("y_min", "y_max")),
+            gfem.Periodic(("z_min", "z_max")),
+            gfem.Absorbing("x_min"),
+            gfem.Absorbing("x_max"),
+        ],
+        ports=[gfem.LumpedPort("p1", "sheet", "+z", impedance=OBLIQUE_R)],
+    )
+
+
 def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
     """A Bloch cell radiating at 30° onto `Absorbing` faces: r = (1 - cos)/(1 + cos).
 
@@ -458,25 +481,7 @@ def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
     admittance of normal incidence, so each face reflects (1 - cos θ) /
     (1 + cos θ) = 0.072, and S11 follows the two unequal lines ended by it.
     """
-    edges = tuple(
-        np.linspace(0.0, s, n + 1)
-        for s, n in zip((OBLIQUE_L, OBLIQUE_A, OBLIQUE_A), (24, 2, 2), strict=True)
-    )
-    raw = sm.periodic_cell(edges, sheets=(("sheet", OBLIQUE_SHEET),), paired="yz")
-    mesh = gfem.Mesh.from_gmsh(
-        sm.write_msh22(tmp_path / "cell.msh", raw), length_unit="mm"
-    )
-    model = gfem.Model(
-        mesh,
-        materials={"cell": gfem.Material(eps_r=OBLIQUE_EPS)},
-        boundaries=[
-            gfem.Periodic(("y_min", "y_max")),
-            gfem.Periodic(("z_min", "z_max")),
-            gfem.Absorbing("x_min"),
-            gfem.Absorbing("x_max"),
-        ],
-        ports=[gfem.LumpedPort("p1", "sheet", "+z", impedance=OBLIQUE_R)],
-    )
+    model = _oblique_cell(tmp_path)
     k = 2 * math.pi * OBLIQUE_F / const.c * math.sqrt(OBLIQUE_EPS)
     kt, kx = k * math.sin(OBLIQUE_ANGLE), k * math.cos(OBLIQUE_ANGLE)
     with pytest.warns(gfem.ObliqueAbsorberWarning) as caught:
@@ -496,6 +501,25 @@ def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
     wave_impedance = const.mu_0 * const.c / math.sqrt(OBLIQUE_EPS) * cos
     assert abs(s11 - _sheet_s11(wave_impedance, kx, r)) <= OBLIQUE_MODEL_TOL
     assert abs(s11 - _sheet_s11(wave_impedance, kx, 0.0)) >= OBLIQUE_REFLECTED
+
+
+def test_the_oblique_absorber_warning_reads_a_fixed_angle_sweeps_wave_vector(
+    tmp_path, recwarn
+):
+    # 10° at every frequency reflects 0.008, under the warning's 0.01; the
+    # reference wave vector held at half the frequency would meet the faces
+    # at 20° (0.032)
+    from gfem._engine.driven import DrivenRule
+
+    model = _oblique_cell(tmp_path, cells=(4, 2, 2))
+    k = 2 * math.pi * OBLIQUE_F / const.c * math.sqrt(OBLIQUE_EPS)
+    problem = gfem.Driven(
+        frequency=[OBLIQUE_F, OBLIQUE_F / 2],
+        wave_vector=(0.0, 0.0, k * math.sin(math.radians(10.0))),
+        wave_vector_frequency=OBLIQUE_F,
+    )
+    DrivenRule(model, problem, gfem.SolverOptions(order=2, linear_solver="direct"))
+    assert not [w for w in recwarn if w.category is gfem.ObliqueAbsorberWarning]
 
 
 @pytest.mark.parametrize("wave_vector", [None, pc.C1_K], ids=["plain", "bloch"])

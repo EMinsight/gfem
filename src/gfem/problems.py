@@ -48,6 +48,28 @@ def _wave_vector(value: Any, owner: str) -> tuple[float, float, float] | None:
     return (float(k[0]), float(k[1]), float(k[2]))
 
 
+def _reference_frequency(value: Any, wave_vector: Any) -> float | None:
+    """``None``, or the frequency (Hz) at which ``wave_vector`` holds (ADR 0151)."""
+    if value is None:
+        return None
+    check_fixed(value, "Driven.wave_vector_frequency must be a fixed number")
+    if wave_vector is None:
+        raise ValueError(
+            "Driven.wave_vector_frequency scales Driven.wave_vector with "
+            "frequency, but wave_vector is None. Give the Bloch wave vector at "
+            "that frequency, e.g. Model.bloch_wave_vector(surface, f, theta=...)."
+        )
+    ok = isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(
+        value, (bool, np.bool_)
+    )
+    if not ok or not math.isfinite(value) or value <= 0:
+        raise ValueError(
+            "Driven.wave_vector_frequency must be a positive finite frequency in "
+            f"Hz, or None for the same wave vector at every frequency; got {value!r}."
+        )
+    return float(value)
+
+
 @dataclasses.dataclass(frozen=True, init=False)
 class Electrostatic:
     """The Maxwell capacitance matrix between named terminals.
@@ -352,6 +374,13 @@ class Driven:
             ``linear_solver`` ``"direct"`` or ``"bddc_gmres"``, whose S is
             not symmetric (S(k)ᵀ = S(-k)) and is referenced to the field E,
             not to its periodic envelope (`gfem.conventions`).
+        wave_vector_frequency: The frequency, Hz, at which ``wave_vector``
+            holds, for a fixed-angle sweep: the solve at frequency f uses the
+            wave vector ``wave_vector * f / wave_vector_frequency``. A Floquet
+            port's half-space has a real constant index, so this keeps the
+            incidence angle fixed in every port medium at once. Build
+            ``wave_vector`` with `gfem.Model.bloch_wave_vector` at this
+            frequency. ``None``: the same wave vector at every frequency.
 
     Raises:
         TypeError: ``excite`` is not port names, or ``keep_fields`` is not a
@@ -360,17 +389,20 @@ class Driven:
             empty or repeats a port, ``sweep`` is unknown, ``samples`` is
             given without ``sweep="adaptive"``, is empty or repeats a
             frequency, a ``samples`` or ``keep_fields`` frequency is not one
-            of ``frequency``, or ``wave_vector`` is not a finite 3-vector.
-            With ``wave_vector``, `gfem.solve` also raises it on a model
-            without a `gfem.Periodic` pair, for a k with a component outside
-            the span of the pairs' translations, and with
+            of ``frequency``, ``wave_vector`` is not a finite 3-vector, or
+            ``wave_vector_frequency`` is not a positive finite frequency or
+            is given without ``wave_vector``. With ``wave_vector``,
+            `gfem.solve` also raises it on a model without a `gfem.Periodic`
+            pair, for a k with a component outside the span of the pairs'
+            translations, and with
             ``linear_solver="petsc"``; use ``"direct"`` or ``"bddc_gmres"``.
         NotImplementedError: `gfem.solve` raises it for ``wave_vector`` with
             ``sweep="adaptive"`` or a GPU ``device``; solve a uniform sweep
             on the CPU.
-        NonDifferentiableError: ``frequency``, ``samples``, ``keep_fields``
-            or ``wave_vector`` is computed inside `jax.grad`, `jax.jit` or
-            `jax.vmap` from their arguments; pass a fixed value.
+        NonDifferentiableError: ``frequency``, ``samples``, ``keep_fields``,
+            ``wave_vector`` or ``wave_vector_frequency`` is computed inside
+            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
+            fixed value.
         LinearSolverConvergenceError: `gfem.solve` raises it when an
             iterative linear solve (``linear_solver="bddc_gmres"``, or
             ``"petsc"`` with a Krylov ``ksp_type``) does not converge at some
@@ -408,6 +440,7 @@ class Driven:
     keep_fields: bool | tuple[float, ...]
     samples: tuple[float, ...] | None = None
     wave_vector: tuple[float, float, float] | None = None
+    wave_vector_frequency: float | None = None
     _rule: ClassVar[str] = "gfem._engine.driven:DrivenRule"
 
     def __init__(
@@ -419,6 +452,7 @@ class Driven:
         samples: Sequence[float] | None = None,
         keep_fields: bool | float | Sequence[float] = False,
         wave_vector: Sequence[float] | None = None,
+        wave_vector_frequency: float | None = None,
     ) -> None:
         """Validate and normalize (see the class docstring)."""
         if sweep not in _SWEEPS:
@@ -432,6 +466,11 @@ class Driven:
         object.__setattr__(self, "keep_fields", _kept(keep_fields, frequencies))
         object.__setattr__(self, "samples", _samples(samples, sweep, frequencies))
         object.__setattr__(self, "wave_vector", _wave_vector(wave_vector, "Driven"))
+        object.__setattr__(
+            self,
+            "wave_vector_frequency",
+            _reference_frequency(wave_vector_frequency, self.wave_vector),
+        )
 
     @property
     def kept_frequencies(self) -> tuple[float, ...]:
