@@ -15,6 +15,7 @@ import warnings
 import numpy as np
 import periodic_cases as pc
 import pytest
+import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
@@ -131,6 +132,27 @@ def test_a_bare_glass_air_interface_reflects_n_minus_1_over_n_plus_1(tmp_path, p
     r = (N_GLASS - 1) / (N_GLASS + 1)
     assert abs(complex(s["glass", "glass"][0]) - r) <= 1e-3
     assert abs(complex(s["air", "glass"][0]) - (1 + r) / math.sqrt(N_GLASS)) <= 1e-3
+
+
+def test_a_new_half_space_medium_on_the_same_mesh_rebuilds_the_floquet_ports(
+    tmp_path,
+):
+    # one discretization keeps the port couplings across solves: the second
+    # solve must read the air below, not the glass the first one kept
+    ports = [
+        gfem.FloquetPort("glass", "z_min", polarization="TE", offset=D * 1e-6),
+        gfem.FloquetPort("air", "z_max", polarization="TE", offset=D * 1e-6),
+    ]
+    glassy = _interface_model(_interface_mesh(tmp_path), ports)
+    problem = gfem.Driven([pc.F1_FREQUENCY], excite=["glass"])
+    gfem.solve(glassy, problem, options=P2)
+    result = gfem.solve(
+        glassy.with_material("glass", gfem.Material()), problem, options=P2
+    )
+    eta0 = math.sqrt(const.mu_0 / const.epsilon_0)
+    np.testing.assert_allclose(np.asarray(result.s.z_ref)[0], [eta0, eta0], rtol=1e-6)
+    assert result.diffraction_orders["glass"].index == pytest.approx(1.0)
+    assert abs(complex(result.s["glass", "glass"][0])) <= 1e-2
 
 
 def test_a_cell_closed_by_pec_reflects_all_power(tmp_path):

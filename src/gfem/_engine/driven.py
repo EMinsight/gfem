@@ -79,7 +79,7 @@ import logging
 import math
 import warnings
 from collections.abc import Callable, Generator, Hashable, Mapping, Sequence
-from typing import Any, Literal, NoReturn
+from typing import Any, Literal, NamedTuple, NoReturn
 
 import jax
 import jax.numpy as jnp
@@ -1397,11 +1397,12 @@ class DrivenRule:
             op,
             frequency,
             tolerance,
-            (
-                self.options.floquet_order_tolerance,
-                self.order_frequency,
-                self.wave_vector,
-                self.problem.wave_vector_frequency,
+            _FloquetKey.of(
+                self.orders,
+                tolerance=self.options.floquet_order_tolerance,
+                grid=self.order_frequency,
+                wave_vector=self.wave_vector,
+                wave_vector_frequency=self.problem.wave_vector_frequency,
             ),
         )
         kept = disc.ports if disc is not None else None
@@ -2846,6 +2847,44 @@ class _Partial:
 _MAX_NETWORKS = 4
 
 
+class _FloquetKey(NamedTuple):
+    """What the Floquet surfaces' couplings depend on beyond the discretization.
+
+    Attributes:
+        tolerance: The order table's tolerance (``floquet_order_tolerance``).
+        grid: The order table's grid, Hz.
+        wave_vector: The operator's Bloch wave vector, rad/m, or ``None``.
+        wave_vector_frequency: A fixed-angle sweep's reference frequency,
+            Hz, or ``None``.
+        media: Per Floquet surface, its half-space medium
+            ``(surface, eps_r, mu_r)``: a new medium on the same mesh
+            (`gfem.Model.with_material`) gives new orders and impedances.
+    """
+
+    tolerance: float
+    grid: tuple[float, ...]
+    wave_vector: tuple[float, float, float] | None
+    wave_vector_frequency: float | None
+    media: tuple[tuple[str, float, float], ...]
+
+    @classmethod
+    def of(
+        cls,
+        table: dict[str, _floquet.SurfaceOrders],
+        *,
+        tolerance: float,
+        grid: tuple[float, ...],
+        wave_vector: tuple[float, float, float] | None,
+        wave_vector_frequency: float | None,
+    ) -> _FloquetKey:
+        """The key of the order table ``table`` and its solve's settings."""
+        media = tuple(
+            (surface, orders.face.eps_r, orders.face.mu_r)
+            for surface, orders in table.items()
+        )
+        return cls(tolerance, grid, wave_vector, wave_vector_frequency, media)
+
+
 @dataclasses.dataclass(eq=False)
 class _KeptPorts:
     """Wave port couplings kept across driven solves, and their port networks.
@@ -2874,14 +2913,15 @@ class _KeptPorts:
         op: DrivenOperator,
         frequency: tuple[float, ...],
         tolerance: float,
-        orders: tuple = (),
+        floquet: _FloquetKey | None = None,
     ) -> tuple:
         """What the couplings of ``model`` on ``op``'s discretization depend on.
 
         The space (a discretization keeps its spaces, so its identity is
         stable, and a Bloch-phased space is its wave vector's), the order,
-        the output grid, the port mode tolerance, the Floquet order table's
-        tolerance and grid, the ports, and per wave port surface
+        the output grid, the port mode tolerance, the Floquet surfaces'
+        `_FloquetKey` (order table settings and half-space media), the
+        ports, and per wave port surface
         `port_section_key`:
         never the port section itself.
         """
@@ -2894,7 +2934,7 @@ class _KeptPorts:
             op.order,
             tuple(frequency),
             tolerance,
-            orders,
+            floquet,
             repr(model.ports),
             sections,
         )
