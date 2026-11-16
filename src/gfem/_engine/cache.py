@@ -112,6 +112,10 @@ _MAX_DISCRETIZATIONS = 4
 #: Bloch phase sets a discretization keeps the spaces of: +k and -k of four
 #: wave vectors.
 _MAX_PHASE_SETS = 8
+#: Bloch phase sets of a swept wave vector (a fixed-angle sweep's k(f) and
+#: -k(f), ADR 0151) a discretization keeps, apart from the others: a long
+#: sweep does not evict the spaces of fixed wave vectors.
+_MAX_SWEPT_SETS = 2
 #: Design initial guesses a discretization keeps, least recently kept out first.
 _MAX_GUESSES = 4
 
@@ -124,8 +128,9 @@ class Discretization:
         built: The NGSolve mesh and its element maps.
         spaces: Finite-element spaces by ``(physics domain, space, order)``,
             and what is kept with them (expansion matrices, kept fixed part
-            stores). Those of at most `_MAX_PHASE_SETS` Bloch phase sets,
-            least recently used out first (`space`); the others stay.
+            stores). Those of at most `_MAX_PHASE_SETS` Bloch phase sets
+            and `_MAX_SWEPT_SETS` swept ones, least recently used out first
+            (`space`); the others stay.
         ports: The wave port couplings and port networks the last driven
             solve on it built, behind their key (`gfem._engine.driven`), or
             ``None``. Anything with a ``shared()`` of its bytes by identity.
@@ -144,9 +149,17 @@ class Discretization:
     _groups: collections.OrderedDict[Hashable, set[Hashable]] = dataclasses.field(
         default_factory=collections.OrderedDict, repr=False
     )
+    _swept: collections.OrderedDict[Hashable, set[Hashable]] = dataclasses.field(
+        default_factory=collections.OrderedDict, repr=False
+    )
 
     def space(
-        self, key: Hashable, build: Callable[[], Any], *, group: Hashable = None
+        self,
+        key: Hashable,
+        build: Callable[[], Any],
+        *,
+        group: Hashable = None,
+        swept: bool = False,
     ) -> Any:
         """The cached space ``key``, built by ``build()`` on first use.
 
@@ -159,22 +172,35 @@ class Discretization:
         on by reference, and a later solve at that wave vector builds them
         again (a pooled solver plan is still found: its key holds the space
         key by value).
+
+        With ``swept`` (a fixed-angle sweep's wave vector, one per frequency)
+        the phase set joins a group of its own, of at most `_MAX_SWEPT_SETS`
+        sets, so that a long sweep does not cycle the others out. A key held
+        by a phase set of the other group stays when its swept set leaves,
+        and the other way round.
         """
         if key not in self.spaces:
             self.spaces[key] = build()
         if group is not None:
-            self._groups.setdefault(group, set()).add(key)
-            self._groups.move_to_end(group)
-            while len(self._groups) > _MAX_PHASE_SETS:
-                _, keys = self._groups.popitem(last=False)
+            groups, cap = (
+                (self._swept, _MAX_SWEPT_SETS)
+                if swept
+                else (self._groups, _MAX_PHASE_SETS)
+            )
+            other = self._groups if swept else self._swept
+            groups.setdefault(group, set()).add(key)
+            groups.move_to_end(group)
+            while len(groups) > cap:
+                _, keys = groups.popitem(last=False)
                 for old in keys:
-                    self.spaces.pop(old, None)
+                    if not any(old in held for held in other.values()):
+                        self.spaces.pop(old, None)
         return self.spaces[key]
 
     @property
     def phase_sets(self) -> int:
-        """The Bloch phase sets whose spaces are held."""
-        return len(self._groups)
+        """The Bloch phase sets whose spaces are held, swept ones included."""
+        return len(self._groups) + len(self._swept)
 
     @property
     def comm_key(self) -> int | None:

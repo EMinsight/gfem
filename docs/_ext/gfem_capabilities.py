@@ -174,6 +174,9 @@ PROBLEMS = {
     "driven_adaptive": Problem("driven", "s.values", "lumped"),
     "driven_periodic_plain": Problem("driven_periodic_plain", "s.values", "lumped"),
     "driven_periodic_bloch": Problem("driven_periodic_bloch", "s.values", "lumped"),
+    # Floquet ports on a periodic cell (ADR 0155): S on the periodic rows
+    "driven_floquet_plain": Problem("driven_periodic_plain", "s.values", "floquet"),
+    "driven_floquet_bloch": Problem("driven_periodic_bloch", "s.values", "floquet"),
     "eigenmode": Problem("eigenmode", "omega"),
     "eigenmode_sheet": Problem("eigenmode", "omega"),
     "eigenmode_periodic_plain": Problem("eigenmode_periodic_plain", "omega"),
@@ -291,6 +294,28 @@ RAISES_LABELS = {
         "Any result, with respect to a lumped port's resistance (its reference "
         "impedance)"
     ),
+    "FloquetPort offset": (
+        "Any result, with respect to a Floquet port's de-embedding offset"
+    ),
+    "Floquet driven x adaptive sweep": (
+        '`Driven(sweep="adaptive")` on a model with Floquet ports'
+    ),
+    "Floquet driven x petsc": (
+        '`Driven` with Floquet ports on `linear_solver="petsc"`'
+    ),
+    "eigenmode x Floquet port": "`Eigenmode` on a model with Floquet ports",
+    "driven x material of a Floquet port's half-space": (
+        "Driven S-parameters, with respect to the material of the half-space "
+        "behind a Floquet port (it fixes the diffraction orders)"
+    ),
+    "driven x nodes of a Floquet port surface": (
+        "Driven S-parameters, with respect to node coordinates on a Floquet "
+        "port's surface"
+    ),
+    "Model.bloch_wave_vector under a traced angle": (
+        "`Model.bloch_wave_vector`, with respect to the incidence angles (the "
+        "incidence of a Floquet port is a constant of the solve)"
+    ),
     "driven x material on a wave port face": (
         "Driven S-parameters, with respect to the material of a region with "
         "elements on a wave port's face"
@@ -360,6 +385,10 @@ RAISES_LABELS = {
     ),
     "driven x wave_vector": (
         "Driven S-parameters, with respect to the Bloch wave vector"
+    ),
+    "driven x traced wave_vector_frequency": (
+        "Driven S-parameters of a fixed-angle sweep, with respect to the "
+        "reference frequency of its wave vector (`wave_vector_frequency`)"
     ),
     "periodic model x node move that breaks a pair": (
         "A node move that breaks a `Periodic` pair (the two surfaces no longer match)"
@@ -813,6 +842,7 @@ REFUSAL_LABELS = {
     "electrostatic": "`Electrostatic`",
     "periodic": "A `Periodic` boundary on a `Driven` problem, on any number of axes",
     "bloch": "`Driven(wave_vector=...)`",
+    "floquet_port": "A `FloquetPort` on a `Driven` problem",
     "frequency_workers": "`frequency_workers` above 1, on more than one frequency",
     "device": '`device="cuda"`',
     "bddc_order_1": '`linear_solver="bddc_gmres"` at `order=1`',

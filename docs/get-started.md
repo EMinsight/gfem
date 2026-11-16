@@ -144,14 +144,17 @@ program, because every gfem solve needs it.
   photonic waveguide bend on a slab model, and the
   {doc}`3D bend <tutorials/bend3d>` tutorial designs it again on the real stack,
   a 220 nm silicon guide in oxide. The {doc}`metal bend <tutorials/metal-bend>`
-  tutorial places gold in the same bend, over a band of wavelengths.
+  tutorial places gold in the same bend, over a band of wavelengths, and the
+  {doc}`metagrating <tutorials/metagrating>` tutorial designs a silicon
+  grating on glass that sends a plane wave into the air at 50°.
 - {doc}`recipes/solve-a-device` takes this line further: a band of
   frequencies, real metals, its resonances and their Q, its capacitance.
 - {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.
 - {doc}`recipes/save-and-export` writes S to a Touchstone file, a field to
   ParaView, and the run to a job file that solves again on another machine.
 - The {doc}`recipes <recipes/index>` start from a task: a gradient of S-parameters,
-  eigenmodes or capacitance, a periodic cell, a measurement on the fields.
+  eigenmodes or capacitance, a periodic cell and the plane waves it diffracts,
+  a measurement on the fields.
 - {doc}`capabilities` lists what gfem solves and differentiates;
   {doc}`project/scaling` shows how large a model runs, and how fast.
 - {doc}`conventions` shows the units, signs and normalizations on a solve, and

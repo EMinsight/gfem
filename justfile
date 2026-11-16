@@ -28,6 +28,10 @@ notebooks *names:
 transmon-mesh:
     uv run --with gmsh==4.15.2 --no-project python tools/transmon_mesh.py docs/tutorials/data
 
+# Rebuild the metagrating tutorial's meshes, docs/tutorials/data/metagrating{,_fine}.msh (tools/metagrating_mesh.py, gmsh pinned; a new mesh means re-measuring the tutorial's values).
+metagrating-mesh:
+    uv run --with gmsh==4.15.2 --with numpy --no-project python tools/metagrating_mesh.py docs/tutorials/data
+
 # Regenerate the front page's hero data, docs/_data/front-page.json, from the 3D bend's run record (solves nothing).
 front-page-data:
     {{ docs_env }} python tools/front_page_data.py

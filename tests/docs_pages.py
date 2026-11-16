@@ -28,6 +28,11 @@ MESH = DOCS / "tutorials" / "data" / "line.msh"
 MESH_URL = (
     "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/data/line.msh"
 )
+#: Every mesh an executed page may download: its address -> the repository's copy.
+MESHES = {
+    MESH_URL: MESH,
+    MESH_URL.replace("line.msh", "metagrating.msh"): MESH.with_name("metagrating.msh"),
+}
 
 _FENCE = re.compile(
     r"^(?P<indent>[ \t]*)```(?P<lang>[^\n`]*)\n(?P<body>.*?)^(?P=indent)```[ \t]*$",
@@ -153,16 +158,16 @@ def run_page(
 ) -> list[Example]:
     """Run a page's Python blocks as a reader does, and record what each prints.
 
-    The blocks run in order in one namespace, in ``workdir``, with the mesh
-    download swapped for the repository's own copy. The blocks of the
+    The blocks run in order in one namespace, in ``workdir``, with each mesh
+    download swapped for the repository's own copy (`MESHES`). The blocks of the
     sections named in ``skip`` are left out (code the test cannot run, such
     as a gmsh script). With ``shell``, each ``bash`` block is passed to it in
     its place among the Python blocks, in ``workdir``.
     """
 
     def urlretrieve(url, filename):
-        assert url == MESH_URL, url
-        shutil.copy(MESH, Path(workdir) / filename)
+        assert url in MESHES, url
+        shutil.copy(MESHES[url], Path(workdir) / filename)
 
     namespace = {"__name__": path.stem}
     found = [

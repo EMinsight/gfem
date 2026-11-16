@@ -85,7 +85,13 @@ import numpy as np
 import scipy.constants as const
 
 from gfem import _petsc
-from gfem._boundaries import Impedance, LumpedPort, WavePort, wave_port_surfaces
+from gfem._boundaries import (
+    FloquetPort,
+    Impedance,
+    LumpedPort,
+    WavePort,
+    wave_port_surfaces,
+)
 from gfem._eigen import slepc
 from gfem._eigen.adjoint import deflated_solve, polish, reshift_offset
 from gfem._eigen.arpack import shift_invert
@@ -2175,10 +2181,19 @@ def _is_hermitian(op: EigenOperator) -> bool:
 def _check_supported(model: Model) -> None:
     """Raise for model terms this version cannot solve as eigenmodes.
 
-    The first wave port in model order is reported; when its surface is
-    shared, the message names the surface and all its wave ports.
+    The first Floquet or wave port in model order is reported; when a
+    wave port's surface is shared, the message names the surface and all
+    its wave ports.
     """
     for port in model.ports:
+        if isinstance(port, FloquetPort):
+            raise NotImplementedError(
+                f"Eigenmode does not support Floquet port {port.name!r} in this "
+                "version of gfem: its orders' propagation constants must be "
+                "evaluated at the complex eigenfrequency. Find the resonances and "
+                "Q from a gfem.Driven sweep, or end the cell with gfem.Absorbing "
+                f"on {port.surface!r} (first order: it reflects oblique waves)."
+            )
         if isinstance(port, WavePort):
             shared = [p.name for p in wave_port_surfaces(model.ports)[port.surface]]
             if len(shared) > 1:

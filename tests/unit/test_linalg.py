@@ -1024,3 +1024,122 @@ def test_a_borrowing_low_rank_update_frees_only_its_own_columns(built):
     with pytest.raises(RuntimeError, match="freed"):
         handle.solve(b)
     np.testing.assert_array_equal(base.solve(b), x)  # the base is still usable
+
+
+def _free_block(handle, free):
+    """The dense operator of ``handle`` on the free DOFs (the update included)."""
+    n = handle.ndof
+    return handle.apply(np.eye(n))[np.ix_(free, free)]
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_a_low_rank_update_with_a_right_factor_solves_a_plus_u_c_vt(built, transpose):
+    op, space = _laplace(built, complex_valued=True, shift=1 - 2j)
+    rng = np.random.default_rng(31)
+    U, C, free = _update(space, rng, p=3)
+    V, _, _ = _update(space, rng, p=3)
+    # unit-sized columns: an update of A's size, A + W well conditioned
+    U, V = U / np.sqrt(space.ndof), V / np.sqrt(space.ndof)
+    base = prepare(op, symmetry="complex_symmetric", kind="direct")
+    A = _free_block(base, free)
+    handle = low_rank_update(base, U, C, right=V)
+    W = U[free] @ C @ V[free].T
+    dense = (A + W).T if transpose else A + W
+    applied = handle.apply(np.eye(space.ndof), transpose=transpose)
+    np.testing.assert_allclose(
+        applied[np.ix_(free, free)], dense, rtol=0, atol=1e-12 * np.abs(dense).max()
+    )
+    B = rng.standard_normal((space.ndof, 2)) + 1j * rng.standard_normal((space.ndof, 2))
+    X = handle.solve(B, transpose=transpose)
+    want = np.linalg.solve(dense, B[free])
+    np.testing.assert_allclose(X[free], want, rtol=0, atol=1e-12 * np.abs(want).max())
+    np.testing.assert_array_equal(X[~free], 0)
+
+
+def test_a_low_rank_update_without_a_right_factor_uses_u_on_both_sides(built):
+    op, space = _laplace(built, complex_valued=True, shift=1 - 2j)
+    rng = np.random.default_rng(32)
+    U, C, _ = _update(space, rng, p=3)
+    B = rng.standard_normal((space.ndof, 2)) + 0j
+    base = prepare(op, symmetry="complex_symmetric", kind="direct")
+    for transpose in (False, True):
+        plain = low_rank_update(base, U, C, borrow=True)
+        right = low_rank_update(base, U, C, right=U, borrow=True)
+        # the same arithmetic, bit for bit
+        np.testing.assert_array_equal(
+            plain.solve(B, transpose=transpose), right.solve(B, transpose=transpose)
+        )
+        np.testing.assert_array_equal(
+            plain.apply(B, transpose=transpose), right.apply(B, transpose=transpose)
+        )
+
+
+def _shifted(space, rng, shifts):
+    """``U``, ``V`` and the diagonal ``C`` of ``shifts`` (the Floquet form)."""
+    U, _, free = _update(space, rng, p=len(shifts))
+    return U, np.conj(U), np.diag(np.asarray(shifts, complex)), free
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_a_row_scaled_capacitance_solves_like_the_plain_one(built, transpose):
+    op, space = _laplace(built, complex_valued=True, shift=1 - 2j)
+    rng = np.random.default_rng(33)
+    # small, order-one and very large shifts: some rows are scaled, some not
+    U, V, C, free = _shifted(space, rng, [1e-3 + 2e-3j, 0.7 - 0.2j, 3e7j, -5e9])
+    base = prepare(op, symmetry="complex_symmetric", kind="direct")
+    B = rng.standard_normal((space.ndof, 2)) + 1j * rng.standard_normal((space.ndof, 2))
+    plain = low_rank_update(base, U, C, right=V, borrow=True)
+    scaled = low_rank_update(base, U, C, right=V, row_scaled=True, borrow=True)
+    want = plain.solve(B, transpose=transpose)
+    got = scaled.solve(B, transpose=transpose)
+    np.testing.assert_allclose(got, want, rtol=0, atol=1e-12 * np.abs(want).max())
+    # and both solve the updated operator
+    A = _free_block(base, free) + U[free] @ C @ V[free].T
+    dense = A.T if transpose else A
+    np.testing.assert_allclose(
+        dense @ got[free],
+        B[free],
+        rtol=0,
+        atol=1e-9 * np.abs(B).max() * np.abs(C).max(),
+    )
+
+
+@pytest.mark.parametrize("transpose", [False, True])
+def test_an_infinite_shift_is_an_exact_constraint_row(built, transpose):
+    op, space = _laplace(built, complex_valued=True, shift=1 - 2j)
+    rng = np.random.default_rng(34)
+    U, V, C, _ = _shifted(space, rng, [0.3 + 0.1j, 0.0, 2.0 - 1j])
+    infinite = np.array([False, True, False])
+    base = prepare(op, symmetry="complex_symmetric", kind="direct")
+    B = rng.standard_normal((space.ndof, 2)) + 1j * rng.standard_normal((space.ndof, 2))
+    handle = low_rank_update(
+        base, U, C, right=V, infinite=infinite, row_scaled=True, borrow=True
+    )
+    X = handle.solve(B, transpose=transpose)
+    assert np.all(np.isfinite(X))
+    # the constrained row's projection (V^T x forward, U^T x transposed) is
+    # zero, to the round-off of its products
+    row = (U if transpose else V)[:, 1]
+    scale = np.linalg.norm(row) * np.linalg.norm(X, axis=0)
+    assert np.all(np.abs(row @ X) <= 1e-14 * scale)
+    # the limit of a growing finite shift
+    big = C.copy()
+    big[1, 1] = 1e13
+    near = low_rank_update(base, U, big, right=V, row_scaled=True, borrow=True)
+    want = near.solve(B, transpose=transpose)
+    np.testing.assert_allclose(X, want, rtol=0, atol=1e-10 * np.abs(want).max())
+
+
+def test_an_infinite_shift_has_no_product(built):
+    op, space = _laplace(built, complex_valued=True, shift=1 - 2j)
+    rng = np.random.default_rng(35)
+    U, V, C, _ = _shifted(space, rng, [1.0, 0.0])
+    handle = low_rank_update(
+        prepare(op, symmetry="complex_symmetric", kind="direct"),
+        U,
+        C,
+        right=V,
+        infinite=np.array([False, True]),
+    )
+    with pytest.raises(ValueError, match="infinite"):
+        handle.apply(np.ones(space.ndof, complex))

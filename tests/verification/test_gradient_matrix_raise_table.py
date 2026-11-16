@@ -314,6 +314,42 @@ EXPECTED |= {
     for kind in [("nodes",)] + [("material", "core", p) for p in ALL_PROPERTIES]
 }
 
+# Floquet ports (F1's slab between Floquet ports on both faces, the design
+# the slab, away from both faces; plain and at a conical Bloch wave vector):
+# S differentiates like the periodic line's, in the materials and the node
+# coordinates; z_ref (the orders' wave impedances) and every leaf of the
+# diffraction orders are constants of the solve (ADR 0155). The half-space's
+# medium, the incidence and the Floquet surfaces' nodes raise (`OUT_OF_SCOPE`).
+FLOQUET_PORTS = ("R_TE", "R_TM", "T_TE", "T_TM")
+DIFFRACTION_ORDER_OUTPUTS = (
+    "frequency",
+    "wave_vector",
+    "gamma",
+    "propagating",
+    "theta",
+    "phi",
+)
+EXPECTED |= {
+    (problem, out, kind): (
+        (GRADIENT if out == "s.values" else ZERO)
+        if kind == ("nodes",)
+        else GRADIENT
+        if out == "s.values" and kind[2] in EM_PROPERTIES
+        else ZERO
+    )
+    for problem in ("driven_floquet_plain", "driven_floquet_bloch")
+    for out in (
+        "s.values",
+        "s.z_ref",
+        *(
+            f"diffraction_orders.{p}.{leaf}"
+            for p in FLOQUET_PORTS
+            for leaf in DIFFRACTION_ORDER_OUTPUTS
+        ),
+    )
+    for kind in [("nodes",)] + [("material", "slab", p) for p in ALL_PROPERTIES]
+}
+
 # A shared port surface (two requested modes at each end of a hybrid line):
 # S, cross-mode entries included, differentiates like a lone wave port's;
 # every port's mode is a constant of the solve. The core carries only a
@@ -976,6 +1012,24 @@ def driven_periodic_cases(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def driven_floquet_cases(tmp_path_factory):
+    # F1 (coarse): a material field over its slab, plain and at F1's conical
+    # incidence from the air
+    mesh = pc.f1_mesh(tmp_path_factory.mktemp("f1_table"))
+    model = pc.f1(mesh).with_material("slab", _field(mesh, "slab"))
+    k = model.bloch_wave_vector(
+        "z_max", pc.F1_FREQUENCY, theta=pc.F1_THETA, phi=pc.F1_PHI
+    )
+    return {
+        "driven_floquet_plain": (model, gfem.Driven(frequency=pc.F1_FREQUENCY)),
+        "driven_floquet_bloch": (
+            model,
+            gfem.Driven(frequency=pc.F1_FREQUENCY, wave_vector=k),
+        ),
+    }
+
+
+@pytest.fixture(scope="module")
 def eigen_periodic_cases(tmp_path_factory):
     # the C3 Bragg line (periodic along x), weakly lossy: a material field
     # over its low layer, the high layer a constant material
@@ -1025,6 +1079,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
         **request.getfixturevalue("sheet_cases"),
         **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
+        **request.getfixturevalue("driven_floquet_cases"),
         **request.getfixturevalue("eigen_periodic_cases"),
         **request.getfixturevalue("law_cases"),
         "eigenmode_law": (
@@ -1187,6 +1242,36 @@ def _out_lumped_port_resistance(request):
         return jnp.sum(jnp.abs(s) ** 2)
 
     jax.grad(objective)(50.0)
+
+
+def _out_floquet_port_offset(_request):
+    # a Floquet port's de-embedding offset is static (raised by the constructor)
+    def objective(offset):
+        gfem.FloquetPort("R", "z_max", polarization="TE", offset=offset)
+        return offset
+
+    jax.grad(objective)(1e-7)
+
+
+def _out_bloch_wave_vector_angle(request):
+    # the incidence of a Floquet port is a constant of the solve
+    edges = (np.linspace(0, 1, 3), np.linspace(0, 1, 3), np.linspace(0, 1, 3))
+    path = sm.write_msh22(
+        request.getfixturevalue("tmp_path") / "cell.msh", sm.periodic_cell(edges)
+    )
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path),
+        materials={"cell": gfem.Material()},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+    )
+
+    def objective(theta):
+        return model.bloch_wave_vector("z_max", 2e14, theta=theta)[0]
+
+    jax.grad(objective)(0.3)
 
 
 def _out_material_on_a_wave_port_face(request):
@@ -1483,6 +1568,24 @@ def _out_driven_traced_wave_vector(request):
     jax.grad(objective)(pc.C1_K[0])
 
 
+def _out_driven_traced_wave_vector_frequency(request):
+    # a fixed-angle sweep's reference frequency is static, as the wave vector
+    model = request.getfixturevalue("floquet_cell")
+    k = model.bloch_wave_vector(
+        "z_max", pc.F1_FREQUENCY, theta=pc.F1_THETA, phi=pc.F1_PHI
+    )
+
+    def objective(f_ref):
+        problem = gfem.Driven(
+            frequency=[pc.F1_FREQUENCY, 1.1 * pc.F1_FREQUENCY],
+            wave_vector=k,
+            wave_vector_frequency=f_ref,
+        )
+        return jnp.sum(jnp.abs(gfem.solve(model, problem).s.values) ** 2)
+
+    jax.grad(objective)(pc.F1_FREQUENCY)
+
+
 def _out_periodic_pair_broken(request):
     # a node move that breaks a pair has no forward: raised on the host
     model, problem = request.getfixturevalue("driven_periodic_cases")[
@@ -1520,6 +1623,91 @@ def _out_bloch_adaptive_sweep(request):
         return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
 
     jax.grad(objective)(eps)
+
+
+# --- Floquet path rows (ADR 0149) ------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def floquet_cell(tmp_path_factory):
+    """F1 (tests/periodic_cases.py): a slab with Floquet ports on both faces."""
+    return pc.f1(pc.f1_mesh(tmp_path_factory.mktemp("f1")))
+
+
+def _slab(model, e):
+    """``model`` with the slab's eps_r ``e`` on every element, traceable."""
+    n = len(model.mesh.elements("slab"))
+    return model.with_material("slab", gfem.MaterialField(eps_r=jnp.full(n, e)))
+
+
+def _floquet_slab_objective(model, problem, options=None):
+    def objective(e):
+        m = _slab(model, e)
+        return jnp.sum(jnp.abs(gfem.solve(m, problem, options=options).s.values) ** 2)
+
+    return objective
+
+
+def _out_material_of_a_floquet_half_space(request):
+    # the medium behind a Floquet surface fixes its orders: raised while tracing
+    model = request.getfixturevalue("floquet_cell")
+    n = len(model.mesh.elements("air"))
+    problem = gfem.Driven(frequency=pc.F1_FREQUENCY)
+
+    def objective(e):
+        m = model.with_material("air", gfem.MaterialField(eps_r=jnp.full(n, e)))
+        return jnp.sum(jnp.abs(gfem.solve(m, problem).s.values) ** 2)
+
+    jax.make_jaxpr(jax.grad(objective))(1.0)
+
+
+def _out_floquet_port_nodes_moved(request):
+    # shape gradients hold a Floquet surface too: raised on the host
+    model = request.getfixturevalue("floquet_cell")
+    mesh = model.mesh
+    face = np.unique(mesh.triangles[mesh.triangle_tags == mesh.region("z_max").tag])
+    x = np.asarray(mesh.imported_nodes)[face, :2]
+    a = pc.F1_A * pc.UM
+    (inside,) = np.nonzero(((x > 1e-3 * a) & (x < (1 - 1e-3) * a)).all(axis=1))
+    node = int(face[inside[0]])
+    problem = gfem.Driven(frequency=pc.F1_FREQUENCY)
+
+    def objective(dx):
+        nodes = jnp.asarray(mesh.nodes).at[node, 0].add(dx)
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(mesh), [nodes]
+        )
+        s = gfem.solve(model.replace(mesh=moved), problem).s.values
+        return jnp.sum(jnp.abs(s) ** 2)
+
+    jax.grad(objective)(1e-9)
+
+
+def _out_floquet_adaptive_sweep(request):
+    # the adaptive sweep has no Floquet port path: refused before assembly
+    model = request.getfixturevalue("floquet_cell")
+    f = (0.9 * pc.F1_FREQUENCY, pc.F1_FREQUENCY, 1.1 * pc.F1_FREQUENCY)
+    problem = gfem.Driven(frequency=f, sweep="adaptive", samples=(f[0], f[2]))
+    jax.grad(_floquet_slab_objective(model, problem))(pc.F1_EPS_SLAB)
+
+
+def _out_floquet_petsc(request):
+    # nor has PETSc: refused before the linear solver is resolved
+    model = request.getfixturevalue("floquet_cell")
+    options = gfem.SolverOptions(linear_solver="petsc")
+    problem = gfem.Driven(frequency=pc.F1_FREQUENCY)
+    jax.grad(_floquet_slab_objective(model, problem, options))(pc.F1_EPS_SLAB)
+
+
+def _out_eigenmode_floquet_port(request):
+    # an order's propagation constant at a complex frequency: refused
+    model = request.getfixturevalue("floquet_cell")
+    problem = gfem.Eigenmode(target=pc.F1_FREQUENCY, n_modes=1)
+
+    def objective(e):
+        return jnp.real(gfem.solve(_slab(model, e), problem).omega[0])
+
+    jax.grad(objective)(pc.F1_EPS_SLAB)
 
 
 # --- periodic eigenmode rows ----------------------------------------------------------
@@ -1813,6 +2001,18 @@ OUT_OF_SCOPE = [
         r"LumpedPort\.resistance is a fixed value.*inductance and capacitance",
     ),
     (
+        "FloquetPort offset",
+        _out_floquet_port_offset,
+        gfem.NonDifferentiableError,
+        r"FloquetPort\.offset is a fixed value",
+    ),
+    (
+        "Model.bloch_wave_vector under a traced angle",
+        _out_bloch_wave_vector_angle,
+        gfem.NonDifferentiableError,
+        r"Model\.bloch_wave_vector: theta and phi must be fixed numbers",
+    ),
+    (
         "driven x material on a wave port face",
         _out_material_on_a_wave_port_face,
         gfem.PortGeometryError,
@@ -1920,6 +2120,12 @@ OUT_OF_SCOPE = [
         "wave_vector must be fixed",
     ),
     (
+        "driven x traced wave_vector_frequency",
+        _out_driven_traced_wave_vector_frequency,
+        gfem.NonDifferentiableError,
+        r"Driven\.wave_vector_frequency must be a fixed number",
+    ),
+    (
         "periodic model x node move that breaks a pair",
         _out_periodic_pair_broken,
         HOST,
@@ -1936,6 +2142,41 @@ OUT_OF_SCOPE = [
         _out_bloch_adaptive_sweep,
         NotImplementedError,
         "sweep='uniform'",
+    ),
+    # Floquet gradient rows (ADR 0155)
+    (
+        "driven x material of a Floquet port's half-space",
+        _out_material_of_a_floquet_half_space,
+        gfem.NonDifferentiableError,
+        (
+            r"FloquetPort 'R_TE' on surface 'z_max': region 'air' is the half-space "
+            r"behind it, and its eps_r fixes the diffraction orders"
+        ),
+    ),
+    (
+        "driven x nodes of a Floquet port surface",
+        _out_floquet_port_nodes_moved,
+        HOST,
+        r"PortGeometryError: FloquetPort 'R_TE': 1 node\(s\) of its surface 'z_max'",
+    ),
+    # Floquet path rows
+    (
+        "Floquet driven x adaptive sweep",
+        _out_floquet_adaptive_sweep,
+        NotImplementedError,
+        r"Floquet ports \('R_TE'.*the adaptive sweep cannot solve them",
+    ),
+    (
+        "Floquet driven x petsc",
+        _out_floquet_petsc,
+        NotImplementedError,
+        r"linear_solver='petsc' has no Floquet port path",
+    ),
+    (
+        "eigenmode x Floquet port",
+        _out_eigenmode_floquet_port,
+        NotImplementedError,
+        r"Eigenmode does not support Floquet port 'R_TE'",
     ),
     # periodic eigenmode rows
     (

@@ -297,6 +297,11 @@ class SolverOptions:
         port_mode_tolerance: Accuracy of each wave port's mode across the
             sweep: the backward error each mode reaches at every frequency
             (``PortModeResult.residual``).
+        floquet_order_tolerance: Which evanescent diffraction orders a
+            Floquet surface models: those whose round trip to the nearest
+            structure decays by less than this (e^{-2|gamma| d} above it),
+            besides every propagating order, up to what the face mesh
+            resolves.
         retain_memory: Bytes gfem keeps between solves in one process: each
             differentiated solve's fields and solver for its gradients (its
             solution fields and, for a uniform driven sweep, its assembled
@@ -403,6 +408,7 @@ class SolverOptions:
     adaptive_max_samples: int = 20
     adaptive_memory: int = 2
     port_mode_tolerance: float = 1e-6
+    floquet_order_tolerance: float = 1e-4
     retain_memory: int | None = None
     adjoint_tolerance: float | None = None
     eigen_tolerance: float = 1e-10
@@ -440,6 +446,7 @@ class SolverOptions:
             "tolerance",
             "adaptive_tolerance",
             "port_mode_tolerance",
+            "floquet_order_tolerance",
             "eigen_tolerance",
         ):
             set_(self, name, _tol(getattr(self, name), name))

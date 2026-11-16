@@ -473,11 +473,13 @@ def test_wave_port_low_frequency_backward_errors(reference):
             b = ports.rhs(omega)
             with system.sweep() as sweep:
                 x, _ = sweep.solve(omega, b)
-            u, c = system.corrections(omega)
+            term = system.corrections(omega)
+            u, c = term.left, term.coefficients
+            v = u if term.right is None else term.right
             parts = [
                 complex(piece.theta(omega)) * op.apply(j, x)
                 for j, piece in enumerate(op.pieces)
-            ] + [u @ (c @ (u.T @ x))]  # the modal correction
+            ] + [u @ (c @ (v.T @ x))]  # the modal correction
             r = (sum(parts) - b)[free]
             scale = sum(np.linalg.norm(p[free]) for p in parts) + np.linalg.norm(
                 b[free]

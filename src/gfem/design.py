@@ -171,9 +171,19 @@ class LayerGrid:
     no gradient: the constructor warns with their count. Pixels outside a
     non-rectangular footprint are such pixels; `sampled` masks them.
 
+    On a periodic cell, pass ``periodic`` for the axes along which the
+    region spans one period: the grid's edges there are one seam, so
+    `helmholtz_filter` smooths across it and the bilinear map wraps around
+    it, and the design keeps its length scale across the seam::
+
+        grid = gfem.design.LayerGrid(
+            mesh, "design", pitch=25e-9, periodic=(True, False)
+        )
+
     Attributes:
         region: The volume or surface region.
         pitch: Pixel side (m).
+        periodic: Per axis ``(x, y)``, whether the grid wraps around a seam.
         shape: ``(ny, nx)``.
         origin: Lower-left corner of the grid ``(x, y)`` (m).
         x: Pixel-centre x coordinates, ``(nx,)`` (m).
@@ -189,7 +199,13 @@ class LayerGrid:
     """
 
     def __init__(
-        self, mesh: Mesh, region: str, *, pitch: float, comm: Any = None
+        self,
+        mesh: Mesh,
+        region: str,
+        *,
+        pitch: float,
+        periodic: tuple[bool, bool] = (False, False),
+        comm: Any = None,
     ) -> None:
         """Lay a pixel grid over a volume or horizontal surface's footprint.
 
@@ -198,12 +214,18 @@ class LayerGrid:
             region: A volume region, or a surface whose faces are all
                 horizontal (normal along mesh z).
             pitch: Pixel side (m), > 0.
+            periodic: Per axis ``(x, y)``, whether the footprint spans one
+                period of a periodic cell along it, so its two edges are one
+                seam. On a periodic axis `helmholtz_filter` smooths across the
+                seam and the bilinear map wraps around it, and `pitch` must
+                divide the footprint's length.
             comm: The communicator, as for `gfem.solve`: only rank 0 shows the
                 warning. ``MPI.COMM_SELF`` under a launcher shows it on each rank.
 
         Raises:
             RegionNotFoundError: The mesh has no such region.
-            ValueError: ``pitch <= 0``, the mesh nodes are computed inside
+            ValueError: ``pitch <= 0``, ``pitch`` does not divide the
+                footprint along a periodic axis, the mesh nodes are computed inside
                 `jax.grad`, `jax.jit` or `jax.vmap` (build the grid from the
                 fixed mesh), or a face of the surface is not horizontal.
 
@@ -216,6 +238,7 @@ class LayerGrid:
         pitch = static_float(pitch, "LayerGrid.pitch", "The pixel grid is fixed.")
         if pitch <= 0:
             raise ValueError(f"LayerGrid: pitch must be > 0 m, got {pitch}.")
+        periodic = _check_periodic(periodic)
         if is_traced(mesh.nodes):
             raise ValueError(
                 "LayerGrid: the mesh nodes are computed inside jax.grad, jax.jit "
@@ -235,10 +258,21 @@ class LayerGrid:
             max(1, math.ceil((h - l) / pitch - 1e-9))
             for l, h in zip(lo, hi, strict=True)
         ]
+        for axis, name in enumerate("xy"):
+            length = hi[axis] - lo[axis]
+            if periodic[axis] and abs(length / pitch - n[axis]) > _PERIOD_FIT:
+                fit = length / max(1, round(length / pitch))
+                raise ValueError(
+                    f"LayerGrid on {region!r}: the footprint is periodic along "
+                    f"{name}, so the pitch must divide its length {length:g} m "
+                    f"into whole pixels, got pitch={pitch:g} m "
+                    f"({length / pitch:.4g} pixels). Use pitch={fit:.6g} m."
+                )
         origin = (lo + hi) / 2 - np.array(n) * pitch / 2
 
         self.region = region
         self.pitch = pitch
+        self.periodic = periodic
         self.shape = (n[1], n[0])
         self.origin = origin
         self.x = origin[0] + (np.arange(n[0]) + 0.5) * pitch
@@ -246,7 +280,9 @@ class LayerGrid:
         self.n_elements = len(cells) if r.dim == 3 else None
         self.n_faces = len(cells) if r.dim == 2 else None
         self._what = "element" if r.dim == 3 else "face"
-        self._index, self._weight = _bilinear(points, origin, pitch, self.shape)
+        self._index, self._weight = _bilinear(
+            points, origin, pitch, self.shape, periodic
+        )
         weight = np.bincount(
             self._index.ravel(), self._weight.ravel(), minlength=n[0] * n[1]
         )
@@ -319,13 +355,35 @@ class LayerGrid:
 
     def __repr__(self) -> str:
         n = self.n_elements if self.n_faces is None else self.n_faces
+        wrap = f", periodic={self.periodic}" if any(self.periodic) else ""
         return (
-            f"LayerGrid({self.region!r}, pitch={self.pitch:g} m, shape={self.shape}, "
-            f"{n} {self._what}s)"
+            f"LayerGrid({self.region!r}, pitch={self.pitch:g} m, shape={self.shape}"
+            f"{wrap}, {n} {self._what}s)"
         )
 
 
 jax.tree_util.register_static(LayerGrid)
+
+
+#: Pixels a periodic footprint's length may miss a whole number by (round-off of
+#: mesh coordinates).
+_PERIOD_FIT = 1e-6
+
+
+def _check_periodic(periodic: Any) -> tuple[bool, bool]:
+    """``periodic`` as a pair of bools, or raise."""
+    try:
+        ok = len(periodic) == 2 and all(
+            isinstance(p, bool | np.bool_) for p in periodic
+        )
+    except TypeError:
+        ok = False
+    if not ok:
+        raise ValueError(
+            "LayerGrid: periodic takes one bool per axis (x, y), e.g. "
+            f"periodic=(True, False), got {periodic!r}."
+        )
+    return (bool(periodic[0]), bool(periodic[1]))
 
 
 #: |n_z| below 1 - this of a face's unit normal: not horizontal.
@@ -352,15 +410,27 @@ def _check_horizontal(nodes: np.ndarray, triangles: np.ndarray, region: str) -> 
 
 
 def _bilinear(
-    points: np.ndarray, origin: np.ndarray, pitch: float, shape: tuple[int, int]
+    points: np.ndarray,
+    origin: np.ndarray,
+    pitch: float,
+    shape: tuple[int, int],
+    periodic: tuple[bool, bool] = (False, False),
 ) -> tuple[np.ndarray, np.ndarray]:
     """Flat pixel indices and weights ``(n, 4)`` of bilinear interpolation.
 
-    Points beyond the outermost pixel centres take the edge pixels' values.
+    Points beyond the outermost pixel centres take the edge pixels' values,
+    except along a periodic axis, where they interpolate between the last
+    and the first pixel (across the seam).
     """
     corners = []
     for axis, size in ((0, shape[1]), (1, shape[0])):
-        f = np.clip((points[:, axis] - origin[axis]) / pitch - 0.5, 0, size - 1)
+        f = (points[:, axis] - origin[axis]) / pitch - 0.5
+        if periodic[axis]:
+            i0 = np.floor(f).astype(np.int64)
+            t = f - i0
+            corners.append((i0 % size, (i0 + 1) % size, t))
+            continue
+        f = np.clip(f, 0, size - 1)
         i0 = np.minimum(np.floor(f).astype(np.int64), max(size - 2, 0))
         t = f - i0
         i1 = np.minimum(i0 + 1, size - 1)
@@ -437,7 +507,10 @@ def helmholtz_filter(
     and the (volume-weighted) total density is kept.
 
     - On a `LayerGrid`, the filter acts on the pixel array (a 2D screened
-      Poisson solve with second differences, by cosine transforms).
+      Poisson solve with second differences, by cosine transforms). Along a
+      periodic axis of the grid (``LayerGrid(..., periodic=...)``) the edges
+      are one seam instead of walls: the solve wraps around it (by a Fourier
+      transform), so the length scale holds across the seam.
     - On ``(mesh, region)``, it acts on one density per element of the
       volume region (free-form 3D designs): P1 finite elements on the
       region, a P0 load, and element averages back.
@@ -484,15 +557,35 @@ def helmholtz_filter(
 
 def _grid_filter(grid: LayerGrid, length: float) -> Callable:
     # The second-difference Laplacian with reflecting (Neumann) edges is
-    # diagonal in the orthonormal type-II cosine transform.
+    # diagonal in the orthonormal type-II cosine transform; with periodic
+    # (wrapped) edges, in the discrete Fourier transform. The transforms act on
+    # separate axes, so they commute.
     h = grid.pitch
-    ky, kx = ((2 / h * np.sin(np.pi * np.arange(n) / (2 * n))) ** 2 for n in grid.shape)
+    wrap = (grid.periodic[1], grid.periodic[0])  # array axes (y, x)
+    ky, kx = (
+        (2 / h * np.sin(np.pi * np.arange(n) / (n if w else 2 * n))) ** 2
+        for n, w in zip(grid.shape, wrap, strict=True)
+    )
     gain = jnp.asarray(1 / (1 + length**2 * (ky[:, None] + kx[None, :])))
+    if not any(wrap):
 
-    def apply(rho: jax.Array) -> jax.Array:
-        return fft.idctn(gain * fft.dctn(rho, type=2, norm="ortho"), norm="ortho")
+        def apply(rho: jax.Array) -> jax.Array:
+            return fft.idctn(gain * fft.dctn(rho, type=2, norm="ortho"), norm="ortho")
 
-    return apply
+        return apply
+    cosine = tuple(a for a in (0, 1) if not wrap[a])
+    fourier = tuple(a for a in (0, 1) if wrap[a])
+
+    def apply_wrapped(rho: jax.Array) -> jax.Array:
+        if cosine:
+            rho = fft.dctn(rho, type=2, norm="ortho", axes=cosine)
+        # The gain is even in the wavenumber, so the result is real.
+        rho = jnp.fft.ifftn(gain * jnp.fft.fftn(rho, axes=fourier), axes=fourier).real
+        if cosine:
+            rho = fft.idctn(rho, type=2, norm="ortho", axes=cosine)
+        return rho
+
+    return apply_wrapped
 
 
 def _mesh_filter(mesh: Mesh, region: str, length: float) -> tuple[Callable, int]:

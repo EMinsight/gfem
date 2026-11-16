@@ -116,3 +116,65 @@ def test_the_dispersive_section_names_the_two_derived_permittivities(page):
     assert "{term}`static permittivity`" in section
     assert "{term}`energy permittivity`" in section
     assert "{doc}`recipes/dispersive-materials`" in section
+
+
+# -- Floquet ports: a flat glass/air interface in one period of the metagrating cell
+
+
+def _floquet(ran, block: int) -> np.ndarray:
+    found = [example for example in ran if example.section == "Floquet ports"]
+    return dp.numbers(found[block].printed)
+
+
+def test_the_cell_lists_its_orders_on_the_lattice_of_its_pairs(ran):
+    numbers = _floquet(ran, 0)
+    # a1 along x (2.023 um), a2 along y (0.08 um); (0,0), (-1,0), (1,0) at
+    # 1.55 um, only (0, 0) at 3.1 um
+    translations = [2.0234e-6, 0, 0, 0, 0.08e-6, 0]
+    np.testing.assert_allclose(numbers[:6], translations, atol=1e-10)
+    assert list(numbers[6:]) == [0, 0, -1, 0, 1, 0, 0, 0]
+
+
+def test_a_flat_interface_reflects_n1_minus_n2_over_their_sum_in_both_polarizations(
+    ran,
+):
+    te_re, te_im, tm_re, tm_im, closed, balance = _floquet(ran, 1)
+    assert closed == pytest.approx((1.444 - 1) / (1.444 + 1), rel=1e-12)
+    assert complex(te_re, te_im) == pytest.approx(closed, abs=1e-3)
+    assert complex(tm_re, tm_im) == pytest.approx(closed, abs=1e-3)
+    assert balance == pytest.approx(1.0, abs=1e-4)
+
+
+def test_an_order_that_does_not_propagate_reads_zero_and_has_no_reference_impedance(
+    ran,
+):
+    (example,) = [e for e in ran if e.section == "Floquet ports"][2:3]
+    lines = example.printed.splitlines()
+    kx, ky, kz = dp.numbers(lines[0])
+    assert (kx, ky, kz) == pytest.approx((-2 * np.pi / 2.0234e-6, 0, 0), rel=1e-4)
+    assert "False" in lines[0]
+    assert lines[1] == "0j"  # exactly zero
+    z_glass, z_air = dp.numbers(lines[2])
+    assert z_air == pytest.approx(376.73, rel=1e-4)
+    assert z_glass == pytest.approx(z_air / 1.444, rel=1e-6)
+    assert lines[2].split()[-1] == "nan]"
+
+
+def test_an_empty_cell_delays_the_phase_by_its_thickness(ran):
+    s_re, s_im, airy_re, airy_im = _floquet(ran, 3)
+    assert complex(airy_re, airy_im) == pytest.approx(
+        np.exp(-2j * np.pi * 1.7 / 3.1), rel=1e-12
+    )
+    assert complex(s_re, s_im) == pytest.approx(complex(airy_re, airy_im), abs=1e-3)
+
+
+def test_the_floquet_section_states_the_frame_sigma_and_circular_handedness(page):
+    section = dp._prose(dp.section(page, "Floquet ports"))
+    for text in (
+        "ê3 × κ̂",  # the TE reference  # noqa: RUF001
+        "σ_p σ_q",  # Bloch reciprocity with Floquet ports  # noqa: RUF001
+        "(S[:, TM] + i S[:, TE]) / √2",  # IEEE right-handed circular from the top
+        "left-handed",  # the same combination from the bottom
+        "{doc}`recipes/floquet-ports`",
+    ):
+        assert text in section, text

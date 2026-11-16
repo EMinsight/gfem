@@ -28,6 +28,7 @@ orphan: true
 - {doc}`anisotropic-materials`
 - {doc}`dispersive-materials`
 - {doc}`periodic-cell`
+- {doc}`floquet-ports`
 - {doc}`shared-port-surface`
 - {doc}`measurements`
 - {doc}`loss-budget`

@@ -190,6 +190,17 @@ def test_periodic_rows_carry_their_own_solvers_and_sweeps(derived):
     }
 
 
+def test_floquet_cells_join_the_periodic_driven_rows(derived):
+    # the Floquet keys verify the permittivity and the nodes on F2: those
+    # cells list both port kinds, the others stay on the lumped-port cell G
+    for row in ("driven_periodic_plain", "driven_periodic_bloch"):
+        for column in ("eps_r", "nodes"):
+            assert _cell(derived, row, column)["ports"] == ["lumped", "floquet"]
+            assert _cell(derived, row, column)["label"] == "FD-verified"
+        for column in ("conductivity", "fill"):
+            assert _cell(derived, row, column)["label"] == "FD-verified, lumped ports"
+
+
 def test_the_mode_field_rows_link_the_recipe_of_their_outputs(derived):
     # participations and port Q are eigenmode outputs; the field is read by
     # the measurements (probes and interface participation)
@@ -213,7 +224,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 43
+    assert len(rows) == 51
     assert "electrostatic x sheet fill" not in rows
     assert rows["law parameter of a blend's end"]["error"] == "NonDifferentiableError"
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"

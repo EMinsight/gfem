@@ -87,7 +87,7 @@ def test_a_loaded_result_shifts_the_same(mesh, zero, tmp_path):
 def test_with_offsets_names_what_it_refuses(mesh, zero):
     mixed = _solve(wave_line(mesh, "mixed"))
     assert mixed.with_offsets({"p1": 0.0}).offsets == (("p1", 0.0),)
-    with pytest.raises(ValueError, match="'p2' is not a wave port"):
+    with pytest.raises(ValueError, match="'p2' is not a wave or Floquet port"):
         mixed.with_offsets({"p2": 1e-4})
     with pytest.raises(KeyError, match="No port 'p3'"):
         zero.with_offsets({"p3": 1e-4})

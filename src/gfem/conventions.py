@@ -202,6 +202,49 @@ Under a Bloch wave vector, ``∫ D · E dV`` over the cell can vanish, so an
 eigenmode field is phased to make its largest coefficient real and positive
 instead (still scaled to `MODE_ENERGY`).
 
+Floquet ports
+-------------
+A `gfem.FloquetPort` is one diffraction order in one polarization of a plane
+wave on an open face of a periodic cell (a Floquet surface).
+
+- Lattice frame: a1 and a2 are the translations of the face's two pairs, in
+  ``boundaries`` order; ``ê1 = a1 / |a1|``, ``ê3 = a1 x a2 / |a1 x a2|``,
+  ``ê2 = ê3 x ê1``. Order (m, n) has the in-plane wave vector
+  ``κ = k_t + m b1 + n b2`` with ``b_i · a_j = 2π δ_ij`` and ``k_t`` the
+  problem's ``wave_vector`` (the specular order's). Its field on the face
+  is ``c ê exp(-i κ·r)``, with ``r`` the model coordinates: the in-plane
+  phase is referred to the model origin, and translating the model in-plane
+  by ``r0`` multiplies ``S_pq`` by ``exp(-i (κ_p - κ_q)·r0)``.
+- References: TE ``ê = ê3 x κ̂`` (s), TM ``ê = κ̂`` (p), the same on both
+  faces of a cell, with ``κ̂ = ê1`` at ``κ = 0`` (at normal incidence TE is
+  E along ê2, TM along ê1).
+- Normalization: ``S_pq = (c_p / c_q) sqrt(Z_q / Z_p)``, ``c`` the
+  tangential-E coefficients at the face plane and ``Z`` the order's wave
+  impedance in the homogeneous medium behind its own face, ``η / cos θ``
+  (TE) or ``η cos θ`` (TM), ``η = η0 sqrt(mu_r / eps_r)`` and θ the order's
+  angle from the face normal. The incident wave carries `INCIDENT_POWER` per
+  cell, ``|S|²`` is the diffraction efficiency, and for a lossless cell the
+  efficiencies of every propagating order on both faces, both
+  polarizations, add up to 1. ``z_ref`` is ``Z``.
+- Signs: tangential-E coefficients, so a flat interface reflects
+  ``(Z2 - Z1) / (Z2 + Z1)``, ``(n1 - n2) / (n1 + n2)`` in both polarizations
+  at normal incidence from medium 1 (the Fresnel ``r_p`` of many optics
+  texts has the opposite sign), and an empty cell of thickness L transmits
+  ``exp(-i beta L)``.
+- Orders that do not propagate: where an order is evanescent or grazing
+  (``gamma² >= 0``), its row of S is exactly 0 and its ``z_ref`` is NaN, and
+  it cannot be excited. ``FloquetPort(offset=d)`` multiplies the row and
+  column by ``exp(gamma d)`` where the order propagates, 1 elsewhere.
+- Bloch reciprocity: ``S_pq(k) = sigma_p sigma_q S_{-q,-p}(-k)``, where
+  ``-p`` is port p's face and polarization with order ``(-m, -n)`` and
+  ``sigma = -1`` for an order with ``κ ≠ 0``, ``+1`` for ``κ = 0`` (the
+  references are odd in κ̂). The plain transpose does not hold as it stands.
+- Circular polarization: with the TE and TM ports of one order on a face
+  whose outward normal is ``+ê3`` (incidence along ``-ê3``),
+  ``(S[:, TM] + i S[:, TE]) / sqrt(2)`` is the response to IEEE
+  right-handed circular incidence; on a face whose outward normal is
+  ``-ê3`` the same combination is left-handed.
+
 Quantum metrics
 ---------------
 `gfem.quantum.dressed_modes` puts one junction's cosine on the solved

@@ -49,6 +49,7 @@ import scipy.linalg
 
 from gfem import _mpi
 from gfem._boundaries import (
+    FloquetPort,
     WavePort,
     lead_port,
     wave_port_label,
@@ -322,9 +323,17 @@ def _wave_port(model: Model, name: str) -> WavePort:
     for p in model.ports:
         if p.name == name:
             if not isinstance(p, WavePort):
+                remedy = (
+                    " A Floquet port's orders are plane waves with no mode solve: "
+                    "Model.propagating_orders lists them, and "
+                    "DrivenResult.diffraction_orders gives each order's gamma and "
+                    "angles."
+                    if isinstance(p, FloquetPort)
+                    else ""
+                )
                 raise ValueError(
                     f"PortMode(port={name!r}): {name!r} is a {type(p).__name__}; the "
-                    "port mode problem needs a WavePort."
+                    f"port mode problem needs a WavePort.{remedy}"
                 )
             return p
     waves = [p.name for p in model.ports if isinstance(p, WavePort)]

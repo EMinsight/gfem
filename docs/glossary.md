@@ -97,7 +97,9 @@ Excluded region
 
 Absorbing boundary
   A boundary condition on a truncating surface that approximates an open,
-  non-reflecting exterior, of first or second order.
+  non-reflecting exterior, of first or second order. It reflects a wave that
+  meets it obliquely; on a periodic cell a driven solve warns
+  (`gfem.ObliqueAbsorberWarning`) when that reflection reaches 1 %.
 
 Transverse-anisotropic
   An {term}`anisotropic material` with one of its {term}`principal axes`
@@ -167,6 +169,35 @@ Skipped port mode
   A propagating mode of a surface's {term}`port mode problem`, ranked below the
   highest mode requested on that surface, that no wave port on the surface
   requests.
+
+Floquet port
+  A {term}`port` on a {term}`Floquet surface` that is one
+  {term}`diffraction order` in one polarization (TE or TM), with its own row
+  and column of the S-parameters (`gfem.FloquetPort`).
+
+Floquet surface
+  An open face of a periodic cell, closed by
+  {term}`Floquet ports <Floquet port>`: a planar exterior face whose rim lies on the seams of two
+  {term}`periodic pairs <Periodic pair>` spanning it, with one homogeneous,
+  lossless, isotropic medium behind it. Its ports together absorb every
+  diffraction order at any angle.
+
+Diffraction order
+  One of the plane waves a periodic cell sends into the medium behind a face:
+  order (m, n) has the in-plane wave vector κ = k_t + m b1 + n b2, with b1, b2
+  the reciprocal vectors of the face's two pairs and k_t the
+  {term}`Bloch wave vector`. It propagates when |κ| is below the medium's
+  wavenumber, and decays away from the face otherwise.
+
+Diffraction efficiency
+  The fraction of the incident power per cell that leaves in one
+  {term}`diffraction order` and polarization: |S|² of its
+  {term}`Floquet port`'s row.
+
+Rayleigh anomaly
+  The frequency or angle at which a {term}`diffraction order` grazes its face
+  (|κ| equal to the medium's wavenumber), changing from evanescent to
+  propagating. Efficiencies change steeply there.
 
 Mode cross-projection
   The conjugated S functional of one {term}`requested mode` applied to another
@@ -289,7 +320,9 @@ Power waves
 Reference impedance
   The impedance per {term}`port` that S-parameters are normalized to: the port
   resistance for a lumped port, the power-voltage impedance for a wave port with
-  a voltage path.
+  a voltage path, and for a {term}`Floquet port` the wave impedance of its
+  order in the medium behind the face (η / cos θ for TE, η cos θ for TM; none
+  where the order does not propagate).
 
 Participation ratio
   The fraction of a mode's electric or inductive energy stored in one region,
@@ -345,7 +378,10 @@ Power flow
 
 Bloch reciprocity
   S(k)ᵀ = S(−k): a Bloch cell's S matrix is not symmetric, but swapping two
-  ports is the same as reversing the {term}`Bloch wave vector`.
+  ports is the same as reversing the {term}`Bloch wave vector`. With
+  {term}`Floquet ports <Floquet port>` the orders relabel and take a sign:
+  S_{p←q}(k) = σ_p σ_q S_{−q←−p}(−k), with −p the port of the opposite order
+  and σ = −1 for an order with a nonzero in-plane wave vector, +1 otherwise.
 ```
 
 ## Materials and optimization

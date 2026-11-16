@@ -83,6 +83,7 @@ REFUSED_LEAVES: dict[str, str] = {
     ".sheet_participation[": "sheet_participation",
     ".error": "eigen error",
     ".port_modes[": "port mode output",
+    ".diffraction_orders[": "diffraction order output",
 }
 
 #: A recognized measurement's estimate kind, by (measurement, field kind).
@@ -309,9 +310,10 @@ class Recorder:
     def constant(self, x: Any) -> Any:
         """``x`` as the concrete value, if it is a traced leaf held constant.
 
-        A wave port's ``gamma`` is a constant of the solve when it moves a
-        reference plane (`gfem.DrivenResult.with_offsets`): the objective is
-        then still one of S.
+        A wave port's or a Floquet port's ``gamma`` is a constant of the
+        solve when it moves a reference plane
+        (`gfem.DrivenResult.with_offsets`): the objective is then still one
+        of S.
         """
         return self._constants.get(id(x), x)
 
@@ -375,7 +377,7 @@ class _Split:
             elif any(p.startswith(prefix) for prefix in REFUSED_LEAVES) and _is_array(
                 leaf
             ):
-                if p.startswith(".port_modes["):
+                if p.startswith((".port_modes[", ".diffraction_orders[")):
                     self.port_mode_leaves.append(len(self.arrays))
                 self._array(p, leaf)
             else:

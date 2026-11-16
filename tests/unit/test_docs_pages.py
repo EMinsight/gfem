@@ -195,6 +195,11 @@ USER_TERMS = (
     "Dispersive cross-section",
     "Unresolved band",
     "Modal overlap",
+    "Floquet port",
+    "Floquet surface",
+    "Diffraction order",
+    "Diffraction efficiency",
+    "Rayleigh anomaly",
 )
 
 

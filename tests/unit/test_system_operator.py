@@ -17,7 +17,7 @@ from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._engine import driven
-from gfem._engine.system_operator import SystemOperator, SystemSweep
+from gfem._engine.system_operator import LowRankTerm, SystemOperator, SystemSweep
 from gfem._linalg import ResolvedLinearSolver, prepare
 from gfem._linalg.bddc import BddcHandle
 
@@ -174,9 +174,132 @@ def test_corrections_are_block_diagonal_over_wave_port_surfaces(line):
     system = SystemOperator(
         op, surfaces, linear, width=1, adjoint_tolerance=ADJOINT_TOLERANCE
     )
-    u, c = system.corrections(OMEGAS[0])
-    np.testing.assert_array_equal(u, np.concatenate([v @ p for v, p in pairs], 1))
-    np.testing.assert_array_equal(c, scipy.linalg.block_diag(*blocks))
+    term = system.corrections(OMEGAS[0])
+    np.testing.assert_array_equal(
+        term.left, np.concatenate([v @ p for v, p in pairs], 1)
+    )
+    np.testing.assert_array_equal(term.coefficients, scipy.linalg.block_diag(*blocks))
+    # wave ports alone: U C Uᵀ, no flags, the plain capacitance
+    assert term.right is None
+    assert term.infinite is None
+    assert not term.row_scaled
+
+
+def _wave_port(op, rng, name):
+    """A wave-port-like coupling: ``U C Uᵀ`` with ``C`` complex symmetric."""
+    ndof = op.space.ndof
+    free = np.array(list(op.space.FreeDofs()))
+    vectors = rng.standard_normal((ndof, 2)) * free[:, None] / np.sqrt(ndof)
+    d = rng.standard_normal((2, 2)) + 1j * rng.standard_normal((2, 2))
+    return SimpleNamespace(
+        piece=dataclasses.replace(op.pieces[0], name=name),
+        vectors=vectors,
+        correction=lambda _: (np.eye(2), d + d.T),
+    )
+
+
+def _floquet_like(op, rng, name, shifts, infinite=None):
+    """A coupling of ``U C Vᵀ``, ``V = conj(U)``, ``C`` diagonal, row-scaled.
+
+    Its transposed form is ``conj(U) Cᵀ Uᵀ``.
+    """
+    ndof = op.space.ndof
+    free = np.array(list(op.space.FreeDofs()))
+    p = len(shifts)
+    u = rng.standard_normal((ndof, p)) + 1j * rng.standard_normal((ndof, p))
+    u = u * free[:, None] / np.sqrt(ndof)
+    flags = None if infinite is None else np.asarray(infinite, bool)
+
+    def term(_):
+        return LowRankTerm(
+            u, np.diag(shifts), right=np.conj(u), infinite=flags, row_scaled=True
+        )
+
+    piece = dataclasses.replace(op.pieces[0], name=name)
+    coupling = SimpleNamespace(piece=piece, vectors=u, term=term)
+    coupling.transposed = lambda: SimpleNamespace(
+        piece=piece, vectors=u, term=lambda omega: term(omega).transposed()
+    )
+    return coupling, u
+
+
+def _dense_free(system, omega):
+    """``A(ω)`` of ``system`` on its free DOFs, densely."""
+    op = system.operator
+    free = np.array(list(op.space.FreeDofs()))
+    handle = prepare(system.operator_at(omega), symmetry="general", kind="direct")
+    dense = handle.apply(np.eye(op.space.ndof))[np.ix_(free, free)]
+    handle.free()
+    return dense, free
+
+
+def test_corrections_concatenate_right_factors_and_flags(line):
+    linear = ResolvedLinearSolver.resolve(
+        gfem.SolverOptions(), default="direct", problem="driven"
+    )
+    op = driven.driven_operator(line, 1)
+    rng = np.random.default_rng(2)
+    wave = _wave_port(op, rng, "waveport s0")
+    floquet, u = _floquet_like(op, rng, "floquet s1", [0.5j, 0.0], [False, True])
+    system = SystemOperator(
+        op, [wave, floquet], linear, width=1, adjoint_tolerance=ADJOINT_TOLERANCE
+    )
+    term = system.corrections(OMEGAS[0])
+    np.testing.assert_array_equal(term.left, np.concatenate([wave.vectors, u], 1))
+    # a wave port's right factor is its left one
+    np.testing.assert_array_equal(
+        term.right, np.concatenate([wave.vectors, np.conj(u)], 1)
+    )
+    np.testing.assert_array_equal(term.infinite, [False, False, False, True])
+    assert term.row_scaled
+
+
+def test_the_transposed_system_takes_each_couplings_transposed_form(line):
+    linear = ResolvedLinearSolver.resolve(
+        gfem.SolverOptions(linear_solver="direct"), default="direct", problem="driven"
+    )
+    op = driven.driven_operator(line, 1)
+    rng = np.random.default_rng(3)
+    wave = _wave_port(op, rng, "waveport s0")
+    shifts = np.array([0.3 + 0.2j, -0.4 + 1.1j, 2.0 - 0.5j])
+    floquet, u = _floquet_like(op, rng, "floquet s1", shifts)
+    # the line is symmetric: its operator stands for the one at -k
+    system = SystemOperator(
+        op,
+        [wave, floquet],
+        linear,
+        width=1,
+        adjoint_tolerance=ADJOINT_TOLERANCE,
+        transposed=lambda: op,
+    )
+    omega = OMEGAS[0]
+    A, free = _dense_free(system, omega)
+    vw = wave.vectors[free]
+    _, d = wave.correction(omega)
+    wave_term = vw @ d @ vw.T
+    forward = A + wave_term + u[free] @ np.diag(shifts) @ np.conj(u[free]).T
+    adjoint = A + wave_term + np.conj(u[free]) @ np.diag(shifts) @ u[free].T
+    loads = _loads(system, width=1)
+    try:
+        with system.sweep() as sweep:
+            x, _ = sweep.solve(omega, loads)
+        want = np.linalg.solve(forward, loads[free])
+        np.testing.assert_allclose(
+            x[free], want, rtol=0, atol=1e-10 * np.abs(want).max()
+        )
+        x = system.solve_adjoint(0, omega, loads)
+        want = np.linalg.solve(adjoint, loads[free])
+        np.testing.assert_allclose(
+            x[free], want, rtol=0, atol=1e-10 * np.abs(want).max()
+        )
+        # the forward's term is not the adjoint's: the transposed form matters
+        assert (
+            np.abs(np.linalg.solve(forward, loads[free]) - want).max()
+            > 1e-3 * np.abs(want).max()
+        )
+        assert system._adjoint_system().surfaces[0] is wave
+    finally:
+        system.free()
 
 
 def test_a_backward_starts_at_the_kept_base_frequency_up_to_round_off(line):

@@ -201,7 +201,8 @@ def test_a_wave_port_may_not_share_a_node_with_a_pair(tmp_path):
         NotImplementedError,
         match=r"WavePort 'w' touches Periodic\(\('x_min', 'x_max'\)\) at 4 nodes: "
         r"a wave port's mode solve cannot be periodic\. Move the port off the "
-        r"pair's surfaces \(Floquet ports are not supported\)\.",
+        r"pair's surfaces; for plane-wave incidence on the open face of a periodic "
+        r"cell, use gfem\.FloquetPort\.",
     ):
         _model(mesh, [_x_pair()], ports=[gfem.WavePort("w", "port")])
 

@@ -40,6 +40,7 @@ from gfem._boundaries import (
     PMC,
     Absorbing,
     Conductor,
+    FloquetPort,
     Impedance,
     LumpedPort,
     Periodic,
@@ -66,6 +67,7 @@ from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.results import (
+    DiffractionOrderResult,
     DrivenResult,
     EigenmodeResult,
     ElectrostaticResult,
@@ -691,9 +693,11 @@ for _cls in (
     Periodic,
     LumpedPort,
     WavePort,
+    FloquetPort,
     PortMode,
     ElectrostaticResult,
     PortModeResult,
+    DiffractionOrderResult,
     Driven,
     DrivenResult,
     NetworkParameters,

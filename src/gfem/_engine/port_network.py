@@ -45,8 +45,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from gfem import _mpi
-from gfem._boundaries import LumpedPort, WavePort
+from gfem._boundaries import LumpedPort, Port
 from gfem._engine import terms
+from gfem._engine.floquet_ports import FloquetPortCoupling, FloquetSurfaceCoupling
 from gfem._engine.wave_ports import PortSurfaceCoupling, WavePortCoupling
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._sweep.adaptive import AffineTerm
@@ -69,7 +70,7 @@ __all__ = [
 PARALLEL_RTOL = 1e-10
 
 
-def resistance(port: LumpedPort | WavePort) -> float:
+def resistance(port: Port) -> float:
     """A lumped port's resistance in ohm, NaN without one (an undefined S row)."""
     if not isinstance(port, LumpedPort):  # pragma: no cover - refused earlier
         return math.nan
@@ -204,9 +205,11 @@ class PortNetwork:
             solutions by reciprocity.
         layout: The DOF layout of the excitation and output vectors, load columns
             under ranks; S is their pairing with state columns.
+        floquet: The Floquet ports' couplings, in model port order.
         deembedding: ``(n_freq, n_ports)``: S_ij is scaled by ``d_i d_j``
-            (1 for lumped; a wave port's ``exp(gamma offset)`` moves its
-            reference plane).
+            (1 for lumped; a wave or Floquet port's ``exp(gamma offset)``
+            moves its reference plane, 1 where a Floquet order does not
+            propagate).
     """
 
     excitation: list[AffineTerm]
@@ -216,12 +219,13 @@ class PortNetwork:
     z_ref: np.ndarray
     reciprocal: bool = True
     layout: DofLayout = ONE_PROCESS
+    floquet: list[FloquetPortCoupling] = dataclasses.field(default_factory=list)
     deembedding: np.ndarray = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
         n_ports = self.z_ref.shape[1]
         d = np.ones((len(self.z_ref), n_ports), complex)
-        for c in self.waves:
+        for c in (*self.waves, *self.floquet):
             d[:, c.index] = [c.deembedding(w) for w in c.omegas]
         self.deembedding = d
 
@@ -234,6 +238,7 @@ class PortNetwork:
         *,
         columns: Sequence[int],
         n_freq: int,
+        floquet: Sequence[FloquetSurfaceCoupling] = (),
     ) -> PortNetwork:
         """The network of ``model``'s ports on ``operator``'s space.
 
@@ -245,6 +250,10 @@ class PortNetwork:
                 each.
             columns: The excited ports' indices.
             n_freq: The output grid's size.
+            floquet: The Floquet surfaces' couplings: their vectors carry
+                every port of the surface, the load ``2 λ sqrt(2 Z / A)`` on
+                an excited port's column and the row ``sqrt(A / (2 Z)) / A``
+                on its conjugate (`gfem._engine.floquet_ports`).
         """
         names = model.port_names
         columns = list(columns)
@@ -298,11 +307,34 @@ class PortNetwork:
                 return out
 
             outputs.append(AffineTerm(surface.vectors, wave_rows, conjugate=True))
+        for surface in floquet:
+            m2 = surface.vectors.shape[1]
+            fed = [
+                (c, columns.index(c.index)) for c in surface.ports if c.index in columns
+            ]
+            if fed:
+
+                def floquet_rhs(w: float, fed=fed, m2=m2) -> np.ndarray:
+                    out = np.zeros((m2, width), complex)
+                    for c, pos in fed:
+                        out[c.column, pos] = c.excitation(w)
+                    return out
+
+                excitation.append(AffineTerm(surface.vectors, floquet_rhs))
+
+            def floquet_rows(w: float, ports=surface.ports, m2=m2) -> np.ndarray:
+                out = np.zeros((n_ports, m2), complex)
+                for c in ports:
+                    out[c.index, c.column] = c.functional(w)
+                return out
+
+            outputs.append(AffineTerm(surface.vectors, floquet_rows, conjugate=True))
         waves = sorted((c for s in surfaces for c in s.ports), key=lambda c: c.index)
+        orders = sorted((c for s in floquet for c in s.ports), key=lambda c: c.index)
         z_ref = np.zeros((n_freq, n_ports))
         for i in lumped:
             z_ref[:, i] = resistance(model.ports[i])
-        for c in waves:
+        for c in (*waves, *orders):
             z_ref[:, c.index] = c.z_ref
         return cls(
             excitation,
@@ -312,6 +344,7 @@ class PortNetwork:
             z_ref,
             reciprocal=operator.symmetric,
             layout=operator.layout or ONE_PROCESS,
+            floquet=orders,
         )
 
     def rhs(self, omega: float) -> np.ndarray:

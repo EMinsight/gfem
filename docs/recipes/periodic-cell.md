@@ -5,7 +5,8 @@ directions, or the S-parameters of one phased unit cell, by solving a single
 cell. You mesh one cell and pair its opposite faces with {py:obj}`gfem.Periodic`.
 With no wave vector the fields repeat unchanged from cell to cell
 ({term}`plain periodicity`). With `wave_vector=k` they pick up a
-{term}`Bloch phase` from cell to cell.
+{term}`Bloch phase` from cell to cell. To light the cell with a plane wave and
+read its diffraction orders, see {doc}`floquet-ports`.
 
 ## Band frequencies of a layered cell
 
@@ -72,7 +73,9 @@ order. The order of the two faces in a pair does not change the field.
   with matching faces under a translation, at most one pair per direction.
 - A paired face takes no other boundary condition and no port; the default PMC
   skips it. A wave port that touches a paired face raises
-  `NotImplementedError`: place the port's face away from the pair.
+  `NotImplementedError`: place the port's face away from the pair; for
+  plane-wave incidence on an open face of the cell, use
+  {py:obj}`gfem.FloquetPort`.
 
 ## Drive a cell at a Bloch wave vector
 
@@ -101,7 +104,9 @@ s = gfem.solve(line, gfem.Driven(5e9, wave_vector=k)).s.values[0]
 - S is referenced to the field E, not to a periodic envelope;
   {py:obj}`gfem.conventions` gives the factor between the two. S is not
   symmetric under a wave vector: S(k)ᵀ = S(−k) ({term}`Bloch reciprocity`).
-- The same k holds at every frequency of the sweep.
+- By default the same k holds at every frequency;
+  `wave_vector_frequency=f_ref` scales it with frequency, which keeps an
+  incidence angle fixed ({doc}`floquet-ports`).
 - Only the uniform sweep takes a wave vector. `sweep="adaptive"` with a wave
   vector raises `NotImplementedError`: use `sweep="uniform"`. Plain
   periodicity takes both sweeps.
@@ -135,6 +140,10 @@ grad = jax.grad(lowest_band)(jnp.full(n, 9.0))  # Hz per unit eps_r
 - `wave_vector` is not differentiable: a value inside `jax.grad` raises
   `gfem.NonDifferentiableError`. For a group velocity, difference two band
   solves at nearby k.
+- A pixel design on a cell takes {py:obj}`gfem.design.LayerGrid` with
+  `periodic=(True, False)`, one bool per grid axis (x, y): along a periodic
+  axis the pitch must divide the period, the filter smooths across the seam
+  and the element map wraps around it.
 - {doc}`../capabilities` lists which periodic gradients each solver supports.
 
 ## Choose a solver
@@ -146,13 +155,16 @@ grad = jax.grad(lowest_band)(jnp.full(n, 9.0))  # Hz per unit eps_r
 | `petsc` | driven | raises `ValueError`: use `direct` |
 | `device="cuda"` | untested: compare with `direct` once on your cell | raises `NotImplementedError`: use `direct` on the CPU |
 | eigen solver | ARPACK or SLEPc | ARPACK or SLEPc |
+| Floquet ports | `direct` and `bddc_gmres`, driven uniform sweep only; every other entry raises | the same |
 
 ## Check your results
 
 Four checks you can run on your own cell:
 
-- **Transpose.** Solve the driven cell at k and at −k. `S(k).T` should equal
-  `S(−k)` to the solver tolerance.
+- **Transpose.** Solve the driven cell at k and at −k. With lumped and wave
+  ports, `S(k).T` should equal `S(−k)` to the solver tolerance. With Floquet
+  ports, the orders relabel and take a sign:
+  S_{p←q}(k) = σ_p σ_q S_{−q←−p}(−k), see {doc}`floquet-ports`.
 - **Zero wave vector.** `wave_vector=(0, 0, 0)` should give the same result as
   no wave vector: a cheap check of the pairing and the ports. It is a check
   only: the zero wave vector still takes the general Bloch solve, so run plain
@@ -167,8 +179,6 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
 
 ## Limits
 
-- No Floquet ports, so no plane-wave incidence and no diffraction orders.
-  Drive the cell with lumped or wave ports inside it.
 - A {py:obj}`gfem.Absorbing` face reflects a wave that meets it obliquely.
   With a wave vector that has a component k_t along the face, the cell
   radiates at the angle θ from the face normal given by sin θ = |k_t| / (k0 n), with n the
@@ -176,9 +186,15 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
   (1 − cos θ) / (1 + cos θ) in amplitude: 1.7 % at 15°, 7 % at 30°, 17 % at
   45°. `order=2` lowers this about tenfold up to 30°, but only for the
   polarization with E parallel to the face and normal to k_t; for the other
-  polarization it changes nothing. No Floquet port exists to absorb an oblique
-  wave exactly, so keep |k_t| small against k0 n, or read the reflection off
-  the formula.
+  polarization it changes nothing. A driven solve warns with
+  {py:obj}`gfem.ObliqueAbsorberWarning` when some propagating wave meets the
+  face with a reflection of at least 1 %; a {py:obj}`gfem.FloquetPort` on
+  that face absorbs every order at any angle.
+- A Bloch eigenmode solve with `gfem.Absorbing` faces meets the same oblique
+  reflection, and gives no warning: the Q of a mode that radiates at the
+  angle θ includes it. Floquet ports do not take eigenmode solves; for the
+  resonances and Q of a radiating cell, sweep a driven problem with Floquet
+  ports and read them off S.
 - Translations only, one to three pairs. For a rotational symmetry, mesh the
   whole structure.
 - `gfem.Electrostatic` on a periodic model raises `NotImplementedError`. Mesh
@@ -196,5 +212,6 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
 
 ## Next
 
-{py:obj}`gfem.Periodic`, {py:obj}`gfem.conventions`, {doc}`eigenmode-gradient`,
+{doc}`floquet-ports`, {py:obj}`gfem.Periodic`, {py:obj}`gfem.conventions`,
+{doc}`eigenmode-gradient`,
 {doc}`shape-gradient`, {doc}`measurements`, {doc}`../capabilities`.

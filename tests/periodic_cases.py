@@ -19,6 +19,9 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
   ports, a PEC ground, an absorbing top, a resistive `gfem.Impedance` sheet
   touching both pairs and a sidewall "wall" crossing the x seam (the
   periodic cells of the gradient verification matrix).
+- F1, `f1`: a Fresnel slab between Floquet ports (meshes in um), its S the
+  tangential-E Airy form `f1_airy`; with an air substrate, the Brewster
+  cell. F2, `f2`: a lamellar grating between Floquet ports.
 
 C1 loaded by its two 50 ohm ports is also a damped Bloch eigen case: its
 complex resonances are the roots of det(Z(f, k) + R) = 0,
@@ -323,6 +326,12 @@ G_WALL_Y = 2.0  # the sidewall between "core" and "sub", mm
 G_FREQUENCIES = (20e9, 28e9)
 #: The Bloch wave vector of G, rad/m.
 G_K = (0.3 * math.pi / (G_A * MM), -0.2 * math.pi / (G_B * MM), 0.0)
+#: The warning filter of G's solves under `G_K`: its Bloch wave meets the
+#: first-order `Absorbing` top at 39.6° at 20 GHz (r = 0.13), so a solve with
+#: concrete "cover" values warns `gfem.ObliqueAbsorberWarning` (ADR 0150); the
+#: checks on G compare gfem with itself (gradients, solvers), not with a
+#: perfect absorber.
+G_OBLIQUE = "ignore::gfem.ObliqueAbsorberWarning"
 
 
 def g_mesh(directory: Path) -> gfem.Mesh:
@@ -485,3 +494,355 @@ def coordinate_classes(
     scale = 1e-6 * float(np.ptp(nodes, axis=0).max())
     _, labels = np.unique(np.round(keys / scale), axis=0, return_inverse=True)
     return labels.reshape(-1)
+
+
+# --- F1: Fresnel slab between Floquet ports -----------------------------------------
+
+UM = 1e-6
+#: lambda0 = 1 um; F1's mesh is in um.
+F1_FREQUENCY = C0 / UM
+F1_A = 0.4  # lateral period along x and y, um
+F1_EPS_SLAB = 4.0
+F1_EPS_SUB = 2.25
+F1_H = 0.3  # slab thickness, um
+F1_D = 0.25  # distance from each Floquet face to the slab, um
+#: |S - Airy| on F1 at p = 2 on the coarse mesh `f1_mesh` (sign pin; 2.6e-3
+#: measured, a wrong sign is off by about 0.6).
+F1_COARSE_TOL = 2e-2
+#: F1's cells at h about lambda/10 in each medium (`f1_mesh`), solved at p = 3
+#: for the gates below.
+F1_FINE_CELLS = (4, 4, 6, 3)
+#: |S - Airy| on F1 at p = 3, `F1_FINE_CELLS` (7.1e-7 measured at normal
+#: incidence, 1.3e-6 at `F1_THETA`, 1.8e-6 on the Brewster cell).
+F1_S_TOL = 3e-4
+#: |S| of the cross-polarized entries there (9.7e-7 measured at normal
+#: incidence, 6.4e-7 at `F1_THETA`, 1.8e-6 on the Brewster cell).
+F1_CROSS_TOL = 1e-5
+#: The power defect 1 - sum |S|^2 of a column there (2.1e-9 measured at
+#: normal incidence, 1.1e-7 at `F1_THETA`, 5.6e-7 on the Brewster cell on
+#: `F1_FINE_CELLS`).
+F1_POWER_TOL = 1e-4
+#: F1's oblique (conical) incidence from the air: theta from the top face's
+#: inward normal, phi from ê1 = +x toward ê2 = +y (`gfem.Model.bloch_wave_vector`).
+F1_THETA = math.radians(40.0)
+F1_PHI = math.radians(30.0)
+#: The Brewster cell (`f1` with ``eps_sub = 1``: air / eps 4 slab / air) at
+#: Brewster's angle atan 2 from the air: TM reflects nothing at either
+#: interface.
+BREWSTER_EPS_SUB = 1.0
+BREWSTER_THETA = math.atan(2.0)
+#: The Brewster cell's cells: one lateral cell more than `F1_FINE_CELLS`
+#: and four in the air, for the steeper in-plane phase (cross-polarization
+#: 4.2e-6 on `F1_FINE_CELLS`, 1.8e-6 here).
+BREWSTER_CELLS = (5, 4, 6, 4)
+#: |S11_TM| of the Brewster cell at p = 3, `BREWSTER_CELLS` (1.5e-6 measured).
+BREWSTER_TOL = 3e-5
+
+
+def f1_mesh(
+    directory: Path,
+    cells: tuple[int, int, int, int] = (3, 3, 3, 3),
+    d: float = F1_D,
+) -> gfem.Mesh:
+    """F1's mesh, um: ``cells`` = (lateral, substrate, slab, air) cells per side.
+
+    Substrate z in [0, d], slab [d, d + H], air [d + H, 2 d + H]; the open
+    faces are "z_min" (substrate) and "z_max" (air), ``d`` um from the slab.
+    """
+    n, ns, nh, na = cells
+    lateral = np.linspace(0.0, F1_A, n + 1)
+    z = np.concatenate(
+        [
+            np.linspace(0.0, d, ns + 1),
+            np.linspace(d, d + F1_H, nh + 1)[1:],
+            np.linspace(d + F1_H, 2 * d + F1_H, na + 1)[1:],
+        ]
+    )
+
+    def volume(c):
+        if c[2] < d:
+            return "sub"
+        return "slab" if c[2] < d + F1_H else "air"
+
+    cell = sm.periodic_cell((lateral, lateral, z), volume, paired="xy")
+    path = sm.write_msh22(Path(directory) / "f1.msh", cell)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def f1_ports(top: str = "z_max", bottom: str = "z_min") -> list[gfem.FloquetPort]:
+    """The specular TE and TM ports of both faces: R_TE, R_TM (top), T_TE, T_TM."""
+    return [
+        gfem.FloquetPort(f"{side}_{pol}", surface, polarization=pol)
+        for side, surface in (("R", top), ("T", bottom))
+        for pol in ("TE", "TM")
+    ]
+
+
+def f1(
+    mesh: gfem.Mesh, ports: list | None = None, eps_sub: float = F1_EPS_SUB
+) -> gfem.Model:
+    """F1: an eps 4 slab on an ``eps_sub`` substrate under air, Floquet ports on both.
+
+    ``eps_sub = BREWSTER_EPS_SUB`` gives the Brewster cell.
+    """
+    return gfem.Model(
+        mesh,
+        materials={
+            "sub": gfem.Material(eps_r=eps_sub),
+            "slab": gfem.Material(eps_r=F1_EPS_SLAB),
+            "air": gfem.Material(),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+        ports=f1_ports() if ports is None else ports,
+    )
+
+
+def airy(
+    frequency: float,
+    kt: float,
+    layers: list[tuple[float, float]],
+    polarization: str,
+) -> tuple[complex, complex]:
+    """S11 and S21 of a planar stack between two port planes (tangential-E Airy form).
+
+    ``layers`` lists ``(eps_r, thickness in m)`` from the top port plane down
+    to the bottom port plane (the first and last are the port media, their
+    thicknesses the port distances; mu_r = 1). The wave comes from the top
+    with tangential wave number ``kt`` (rad/m). S11 is the tangential-E
+    reflection coefficient at the top plane; S21 the tangential-E
+    transmission at the bottom plane times sqrt(Z_top / Z_bottom), the
+    power-normalized entry of `gfem.conventions` (e^{+iωt}).
+    """
+    k0 = 2 * math.pi * frequency / C0
+
+    def admittance(eps):
+        kz = np.sqrt(complex(k0**2 * eps - kt**2))
+        return kz, (kz if polarization == "TE" else k0**2 * eps / kz)
+
+    # (E, H) at the bottom plane for a unit transmitted wave, carried up
+    e, h = 1.0 + 0j, admittance(layers[-1][0])[1]
+    for eps, d in reversed(layers):
+        kz, y = admittance(eps)
+        c, s = np.cos(kz * d), np.sin(kz * d)
+        e, h = c * e + 1j * s * h / y, 1j * y * s * e + c * h
+    y_top, y_bottom = admittance(layers[0][0])[1], admittance(layers[-1][0])[1]
+    t = 2 * y_top / (h + y_top * e)
+    return complex(t * e - 1), complex(t * np.sqrt(y_bottom / y_top))
+
+
+def f1_airy(
+    polarization: str,
+    frequency: float = F1_FREQUENCY,
+    kt: float = 0.0,
+    eps_sub: float = F1_EPS_SUB,
+):
+    """F1's (S11, S21) from the top, `airy`; ``kt`` the in-plane wave number, rad/m."""
+    return airy(
+        frequency,
+        kt,
+        [
+            (1.0, F1_D * UM),
+            (F1_EPS_SLAB, F1_H * UM),
+            (eps_sub, F1_D * UM),
+        ],
+        polarization,
+    )
+
+
+# --- F2: lamellar grating between Floquet ports ------------------------------------
+
+#: F2's periods, um: 1.2 lambda0 along x (the grating), 0.4 lambda0 along y.
+F2_A = (1.2, 0.4)
+F2_RIDGE = (0.3, 0.9)  # the ridge's x extent, um
+F2_EPS_RIDGE = 4.0
+F2_H = 0.3  # ridge height, um
+F2_D = 0.3  # distance from each Floquet face to the ridge layer, um
+
+
+def f2_mesh(
+    directory: Path, cells: tuple[int, int, int, int, int] = (4, 2, 2, 2, 2)
+) -> gfem.Mesh:
+    """F2's mesh, um: ``cells`` = (x, y, substrate, ridge, air) cells.
+
+    ``x`` cells per ridge or groove width (0.6 um each, grid lines on the
+    ridge edges). Substrate z in [0, D], ridge layer [D, D + H] (regions
+    "ridge" and "groove"), air [D + H, 2 D + H]; open faces "z_min"
+    (substrate) and "z_max" (air).
+    """
+    nx, ny, ns, nh, na = cells
+    x0, x1 = F2_RIDGE
+    x = np.unique(
+        np.concatenate(
+            [
+                np.linspace(0.0, x0, max(nx // 2, 1) + 1),
+                np.linspace(x0, x1, nx + 1),
+                np.linspace(x1, F2_A[0], max(nx // 2, 1) + 1),
+            ]
+        )
+    )
+    y = np.linspace(0.0, F2_A[1], ny + 1)
+    z = np.concatenate(
+        [
+            np.linspace(0.0, F2_D, ns + 1),
+            np.linspace(F2_D, F2_D + F2_H, nh + 1)[1:],
+            np.linspace(F2_D + F2_H, 2 * F2_D + F2_H, na + 1)[1:],
+        ]
+    )
+
+    def volume(c):
+        if c[2] < F2_D:
+            return "sub"
+        if c[2] < F2_D + F2_H:
+            return "ridge" if x0 < c[0] < x1 else "groove"
+        return "air"
+
+    cell = sm.periodic_cell((x, y, z), volume, paired="xy")
+    path = sm.write_msh22(Path(directory) / "f2.msh", cell)
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
+
+
+def f2_ports(
+    orders: tuple[tuple[int, int], ...] = ((0, 0), (-1, 0), (1, 0)),
+) -> list[gfem.FloquetPort]:
+    """TE and TM ports of ``orders`` on both faces: "R{m},{n}_TE" (top), "T..."."""
+    return [
+        gfem.FloquetPort(
+            f"{side}{m},{n}_{pol}", surface, order=(m, n), polarization=pol
+        )
+        for side, surface in (("R", "z_max"), ("T", "z_min"))
+        for m, n in orders
+        for pol in ("TE", "TM")
+    ]
+
+
+def f2(
+    mesh: gfem.Mesh, ports: list | None = None, tan_delta: float = 0.0
+) -> gfem.Model:
+    """F2: an eps 4 lamellar grating on an eps 2.25 substrate under air.
+
+    ``tan_delta`` the ridge's loss tangent: 0.05 for G20L, eps 4 (1 - 0.05 i)
+    under e^{+iωt}. The default ports
+    are every order propagating at normal incidence (`f2_ports`).
+    """
+    return gfem.Model(
+        mesh,
+        materials={
+            "sub": gfem.Material(eps_r=F1_EPS_SUB),
+            "ridge": gfem.Material(eps_r=F2_EPS_RIDGE, tan_delta=tan_delta),
+            "groove": gfem.Material(),
+            "air": gfem.Material(),
+        },
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
+        ports=f2_ports() if ports is None else ports,
+    )
+
+
+# --- F2's frozen RCWA references (ticket 09 Q3) ------------------------------------
+
+#: F2's cells at h about lambda0 / 10 with grid lines on the ridge edges
+#: (`f2_mesh`), solved at p = 3 for the grating gates below.
+F2_FINE_CELLS = (6, 4, 3, 3, 3)
+#: F2's cases: (incidence theta, phi from the air in degrees, the ridge's
+#: loss tangent).
+F2_CASES = {
+    "G0": (0.0, 0.0, 0.0),
+    "G20": (20.0, 0.0, 0.0),
+    "G20c": (20.0, 30.0, 0.0),
+    "G20L": (20.0, 0.0, 0.05),
+}
+#: Diffraction efficiencies of F2 by case, incident polarization (from the
+#: air, the specular order) and (face, m): "R" the air side, "T" the
+#: substrate; the sum over both output polarizations of |S|^2. Every
+#: propagating order of each case is listed; order labels follow ADR 0147
+#: (b1 along +x).
+#:
+#: Method: the planar cases (G0, G20, G20L) from a Li-rule (inverse rule)
+#: 1D RCWA at N = 640 harmonics, the conical G20c from nannos 2.6.5
+#: ("tangent" formulation) at nh = 321. The two codes agree to 1e-8 at
+#: equal truncation; the values move by at most 4e-7 (planar) and 3e-6
+#: (conical) from half the truncation, power balance closes to 1e-11 in the
+#: lossless cases: the values are good to about 1e-6. The generation
+#: scripts stay with the effort's notes; no RCWA package is a test
+#: dependency.
+F2_RCWA = {
+    "G0": {
+        "TE": {
+            ("R", -1): 0.00347658,
+            ("R", 0): 0.04656300,
+            ("R", 1): 0.00347658,
+            ("T", -1): 0.25787622,
+            ("T", 0): 0.43073139,
+            ("T", 1): 0.25787622,
+        },
+        "TM": {
+            ("R", -1): 0.02413918,
+            ("R", 0): 0.01169126,
+            ("R", 1): 0.02413918,
+            ("T", -1): 0.24120150,
+            ("T", 0): 0.45762738,
+            ("T", 1): 0.24120150,
+        },
+    },
+    "G20": {
+        "TE": {
+            ("R", -1): 0.06556192,
+            ("R", 0): 0.00532756,
+            ("T", -2): 0.07640159,
+            ("T", -1): 0.18441132,
+            ("T", 0): 0.27416941,
+            ("T", 1): 0.39412820,
+        },
+        "TM": {
+            ("R", -1): 0.01563704,
+            ("R", 0): 0.00842941,
+            ("T", -2): 0.01767815,
+            ("T", -1): 0.21207643,
+            ("T", 0): 0.49783872,
+            ("T", 1): 0.24834025,
+        },
+    },
+    "G20c": {
+        "TE": {
+            ("R", -1): 0.05060379,
+            ("R", 0): 0.00911272,
+            ("T", -2): 0.06267673,
+            ("T", -1): 0.17843395,
+            ("T", 0): 0.33630617,
+            ("T", 1): 0.36286663,
+        },
+        "TM": {
+            ("R", -1): 0.03154545,
+            ("R", 0): 0.00727369,
+            ("T", -2): 0.04835677,
+            ("T", -1): 0.20106154,
+            ("T", 0): 0.46709015,
+            ("T", 1): 0.24467240,
+        },
+    },
+    "G20L": {
+        "TE": {
+            ("R", -1): 0.05873477,
+            ("R", 0): 0.00533568,
+            ("T", -2): 0.05637469,
+            ("T", -1): 0.17072437,
+            ("T", 0): 0.22627813,
+            ("T", 1): 0.34492168,
+        },
+        "TM": {
+            ("R", -1): 0.01774115,
+            ("R", 0): 0.00870128,
+            ("T", -2): 0.01501870,
+            ("T", -1): 0.19253965,
+            ("T", 0): 0.46512389,
+            ("T", 1): 0.21423294,
+        },
+    },
+}
+#: G20L's absorption 1 - sum of the efficiencies, by incident polarization.
+F2_ABSORPTION = {"TE": 0.13763068, "TM": 0.08664219}
