@@ -235,10 +235,10 @@ wave on an open face of a periodic cell (a Floquet surface).
   (``gamma² >= 0``), its row of S is exactly 0 and its ``z_ref`` is NaN, and
   it cannot be excited. ``FloquetPort(offset=d)`` multiplies the row and
   column by ``exp(gamma d)`` where the order propagates, 1 elsewhere.
-- Bloch reciprocity: ``S_pq(k) = σ_p σ_q S_{-q,-p}(-k)``, where ``-p`` is
-  port p's face and polarization with order ``(-m, -n)`` and ``σ = -1`` for
-  an order with ``κ ≠ 0``, ``+1`` for ``κ = 0`` (the references are odd in
-  κ̂). The plain transpose does not hold as it stands.
+- Bloch reciprocity: ``S_pq(k) = sigma_p sigma_q S_{-q,-p}(-k)``, where
+  ``-p`` is port p's face and polarization with order ``(-m, -n)`` and
+  ``sigma = -1`` for an order with ``κ ≠ 0``, ``+1`` for ``κ = 0`` (the
+  references are odd in κ̂). The plain transpose does not hold as it stands.
 - Circular polarization: with the TE and TM ports of one order on a face
   whose outward normal is ``+ê3`` (incidence along ``-ê3``),
   ``(S[:, TM] + i S[:, TE]) / sqrt(2)`` is the response to IEEE

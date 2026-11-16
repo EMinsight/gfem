@@ -220,7 +220,8 @@ urllib.request.urlretrieve(url, "metagrating.msh")
 cell_mesh = gfem.Mesh.from_gmsh("metagrating.msh", length_unit="um")
 n_glass = 1.444
 air = gfem.Material()
-flat = {"glass": gfem.Material(eps_r=n_glass**2), "lower": air, "upper": air, "air": air}
+glass = gfem.Material(eps_r=n_glass**2)
+flat = {"glass": glass, "lower": air, "upper": air, "air": air}
 pairs = [gfem.Periodic(("x_min", "x_max")), gfem.Periodic(("y_min", "y_max"))]
 cell = gfem.Model(cell_mesh, materials=flat, boundaries=pairs)
 print(np.asarray(cell.periodic_translations))  # a1, a2, m

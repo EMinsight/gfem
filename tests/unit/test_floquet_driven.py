@@ -619,7 +619,10 @@ def test_tm_plus_i_te_is_right_handed_from_the_top_and_left_from_the_bottom(
     empty = gfem.Model(
         mesh,
         materials={"glass": gfem.Material(), "air": gfem.Material()},
-        boundaries=[gfem.Periodic(("x_min", "x_max")), gfem.Periodic(("y_min", "y_max"))],
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+        ],
         ports=ports,
     )
     side = "top" if surface == "z_max" else "bottom"

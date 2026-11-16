@@ -3,10 +3,11 @@
 Light a periodic structure (a grating, a metasurface, a frequency-selective
 surface, an antireflection stack) with a plane wave, and read how much power
 leaves in each diffraction order. You mesh one cell, pair its side faces with
-{py:obj}`gfem.Periodic` ({doc}`periodic-cell`), and close each open face, a {term}`Floquet surface`, with
-{py:obj}`gfem.FloquetPort`s. A {term}`Floquet port` is one
-{term}`diffraction order` in one polarization: its row and column of S are
-that order's, and |S|² is its {term}`diffraction efficiency`. The ports of a
+{py:obj}`gfem.Periodic` ({doc}`periodic-cell`), and close each open face (a
+{term}`Floquet surface`) with ports ({py:obj}`gfem.FloquetPort`). A
+{term}`Floquet port` is one {term}`diffraction order` in one polarization:
+its row and column of S are that order's, and |S|² is its
+{term}`diffraction efficiency`. The ports of a
 face absorb every order at any angle, so the cell needs no absorber or PML.
 
 The {doc}`metagrating tutorial <../tutorials/metagrating>` designs a grating
@@ -107,7 +108,7 @@ grating = gfem.Model(
     boundaries=pairs,
 )
 for face in ("top", "bottom"):
-    print(face, grating.propagating_orders(face, f))  # e.g. ((0, 0), (-1, 0), (1, 0))
+    print(face, grating.propagating_orders(face, f))  # ((0, 0), (-1, 0), ...)
 
 ports = [
     gfem.FloquetPort(f"{side}{m:+d},{n:+d} {pol}", face, order=(m, n), polarization=pol)
@@ -161,15 +162,23 @@ changes with frequency. To keep the angle, give the frequency at which the
 wave vector holds: the solve at f then uses k f / f_ref, which keeps the angle
 in every port medium at once.
 
+On the grating, more orders open as the frequency rises at a fixed angle, so
+list the orders to declare at the highest frequency's wave vector:
+
 ```python
 band = np.linspace(0.9, 1.1, 5) * f
-k_ref = slab.bloch_wave_vector("top", f, theta=np.radians(30.0))
-fixed = gfem.Driven(band, excite="R TE", wave_vector=k_ref, wave_vector_frequency=f)
-sweep = gfem.solve(slab, fixed, options=options)
-
-# the orders to declare: list them at the highest frequency's wave vector
-k_max = np.asarray(k_ref) * band.max() / f
-print(grating.propagating_orders("top", band.max(), wave_vector=k_max))
+k_ref = grating.bloch_wave_vector("top", f, theta=np.radians(30.0))
+k_max = np.asarray(k_ref) * band.max() / f  # rad/m, at the highest frequency
+ports = [
+    gfem.FloquetPort(f"{side}{m:+d},{n:+d} {pol}", face, order=(m, n), polarization=pol)
+    for side, face in (("R", "top"), ("T", "bottom"))
+    for m, n in grating.propagating_orders(face, band.max(), wave_vector=k_max)
+    for pol in ("TE", "TM")
+]
+fixed = gfem.Driven(
+    band, excite="R+0,+0 TE", wave_vector=k_ref, wave_vector_frequency=f
+)
+sweep = gfem.solve(grating.replace(ports=ports), fixed, options=options)
 ```
 
 - Each frequency of a fixed-angle sweep builds its own Bloch space and
@@ -194,9 +203,9 @@ te, tm = pair.excited.index("R+0,+0 TE"), pair.excited.index("R+0,+0 TM")
 rhcp = (pair.values[:, :, tm] + 1j * pair.values[:, :, te]) / np.sqrt(2)
 ```
 
-`rhcp[f, i]` is row i's response, frequency by frequency. From the bottom
-face, incidence along +ê3, the same combination is
-left-handed, and `tm` minus `1j * te` is right-handed. The convention is in
+`rhcp[:, i]` is row i's response over frequency. From the bottom face,
+incidence along +ê3, the same combination is left-handed, and `tm` minus
+`1j * te` is right-handed. The convention is in
 {py:obj}`gfem.conventions`.
 
 ## Differentiate an efficiency
