@@ -502,7 +502,13 @@ def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
         "sha256": _sha256(source),
         "length_unit": mesh.length_unit,
     }
-    return args | _moved_nodes(mesh)
+    return args | _section(mesh) | _moved_nodes(mesh)
+
+
+def _section(mesh: Mesh) -> dict[str, Any]:
+    """A cross-section's thickness; no key for any other mesh (ADR 0096)."""
+    thickness = mesh.section_thickness
+    return {} if thickness is None else {"section_thickness": thickness}
 
 
 def _moved_nodes(mesh: Mesh) -> dict[str, Any]:
@@ -521,6 +527,7 @@ def _in_memory_mesh_args(mesh: Mesh) -> dict[str, Any]:
             "length_unit": mesh.length_unit,
             "regions": mesh.regions,
         }
+        | _section(mesh)
         | {name: np.asarray(getattr(topology, name)) for name in _TOPOLOGY_ARRAYS}
         | _moved_nodes(mesh)
     )
@@ -536,6 +543,7 @@ def _in_memory_mesh_from_args(args: dict[str, Any]) -> Mesh:
         length_unit=args["length_unit"],
         regions=tuple(args["regions"]),
         source=None,
+        section_thickness=args.get("section_thickness"),
         **arrays,
     )
     return _with_nodes(Mesh(jnp.asarray(topology.imported_nodes), topology), args)
@@ -576,7 +584,15 @@ def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
         return {}
 
     _mpi.on_root(_mpi.resolve_comm(context.comm), check, results=(OSError, ValueError))
-    mesh = Mesh.from_gmsh(path, length_unit=args["length_unit"], comm=context.comm)
+    if "section_thickness" in args:
+        mesh = Mesh.from_gmsh_cross_section(
+            path,
+            length_unit=args["length_unit"],
+            thickness=args["section_thickness"],
+            comm=context.comm,
+        )
+    else:
+        mesh = Mesh.from_gmsh(path, length_unit=args["length_unit"], comm=context.comm)
     return _with_nodes(mesh, args)
 
 
@@ -657,6 +673,7 @@ _MESH_NAMES = (
     "nodes",
     "source",
     "regions",
+    "section_thickness",
     *_TOPOLOGY_ARRAYS,
 )
 

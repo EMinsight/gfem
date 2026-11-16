@@ -96,6 +96,46 @@ def test_rank_0_reads_the_file_once_and_every_rank_holds_the_same_mesh(tmp_path)
     assert value["source"] == str(path.resolve())
 
 
+def _write_section(directory):
+    """A 2 x 1 square section of two triangles, "area", with a "bottom" line."""
+    import meshio
+
+    nodes = np.array([[0.0, 0, 0], [2, 0, 0], [2, 1, 0], [0, 1, 0]])
+    raw = meshio.Mesh(
+        nodes,
+        [("triangle", np.array([[0, 1, 2], [0, 2, 3]])), ("line", np.array([[0, 1]]))],
+        cell_data={
+            "gmsh:physical": [np.array([1, 1]), np.array([2])],
+            "gmsh:geometrical": [np.array([1, 1]), np.array([2])],
+        },
+        field_data={"area": np.array([1, 2]), "bottom": np.array([2, 1])},
+    )
+    path = directory / "section.msh"
+    meshio.write(path, raw, file_format="gmsh22", binary=False)
+    return path
+
+
+def _read_section(path):
+    mesh = gfem.Mesh.from_gmsh_cross_section(path)
+    topology = mesh._topology
+    arrays = {name: getattr(topology, name) for name in TOPOLOGY_ARRAYS}
+    return {
+        "arrays": arrays,
+        "regions": topology.regions,
+        "thickness": mesh.section_thickness,
+    }
+
+
+def test_every_rank_holds_the_same_cross_section(tmp_path):
+    path = _write_section(tmp_path)
+    expected = gfem.Mesh.from_gmsh_cross_section(path)
+    for value in on_ranks(_read_section, path, ranks=3, limit=120):
+        assert value["thickness"] == expected.section_thickness
+        assert value["regions"] == expected._topology.regions
+        for name, array in value["arrays"].items():
+            assert np.array_equal(array, getattr(expected._topology, name)), name
+
+
 def _read_own_path_then_a_collective(directory):
     world = _world()
     try:
