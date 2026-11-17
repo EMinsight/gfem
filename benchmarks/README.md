@@ -206,7 +206,7 @@ left out of medians, best-layout choice and comparisons.
 | `complete` | record, campaign | outputs missing, Palace `ElapsedTime` missing, a planned row without a final status |
 | `reference_matches` | record | the reference file does not match the case, the mesh, or the file the run named |
 | `accuracy_plausible` | record | error above the plausibility ceiling of the run's order |
-| `dof_equal` | campaign | the codes' DOF counts differ on a case (gates the "same-mesh comparison" label) |
+| `dof_equal` | campaign | any two DOF counts observed on a case differ, `dof_mismatch` runs included (gates the "same-mesh comparison" label) |
 
 The DOF guard stops a run on a mismatch: Palace from its `Level k (p = n): N
 unknowns` stdout line, one-process gfem from its `discretize` record, multi-rank gfem

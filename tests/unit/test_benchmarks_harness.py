@@ -539,6 +539,51 @@ def test_close_fails_on_a_dof_mismatch_between_codes(site, tmp_path):
     assert checks["complete"] == "pass"
 
 
+def test_dof_equal_counts_a_run_failed_on_its_dof_count(site, tmp_path):
+    rd, rows = _two_codes(site, tmp_path)
+    _record(rd, rows[0], "ok", ndof=938)
+    _record(
+        rd,
+        rows[1],
+        "failed",
+        ndof=940,
+        failure_class="solver",
+        reason="dof_mismatch: palace 0.19.0 940 != pinned 938",
+    )
+    slurm.close(rd, environ={})
+    checks = records.load_campaign(rd.path / "campaign.json").checks
+    assert checks["dof_equal"] == "fail"
+    assert checks["dof_equal_detail"]["tiny"]["ndof"] == {
+        "gfem": [938],
+        "palace": [940],
+    }
+
+
+def test_dof_equal_counts_the_dof_the_guard_saw_in_stdout(site, tmp_path):
+    rd, rows = _two_codes(site, tmp_path)
+    _record(rd, rows[0], "ok", ndof=938)
+    _record(
+        rd,
+        rows[1],
+        "failed",
+        failure_class="solver",
+        extra={"observations": {"dof_seen_in_stdout": 940}},
+    )
+    slurm.close(rd, environ={})
+    checks = records.load_campaign(rd.path / "campaign.json").checks
+    assert checks["dof_equal"] == "fail"
+
+
+def test_dof_equal_fails_on_a_dof_mismatch_even_within_one_code(site, tmp_path):
+    rd = _plan(site, tmp_path, solvers=["gfem:direct", "gfem:bddc"], repeats=1)
+    rows = rd.steps("tiny-wheels")
+    _record(rd, rows[0], "ok", ndof=938)
+    _record(rd, rows[1], "failed", ndof=940, failure_class="solver")
+    slurm.close(rd, environ={})
+    checks = records.load_campaign(rd.path / "campaign.json").checks
+    assert checks["dof_equal"] == "fail"
+
+
 def test_close_fails_on_a_missing_row_but_not_on_a_solver_failure(site, tmp_path):
     rd, rows = _two_codes(site, tmp_path)
     _record(rd, rows[0], "failed", failure_class="solver")

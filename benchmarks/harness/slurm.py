@@ -1276,21 +1276,36 @@ def status(rd: RunDir, run: Runner = subprocess.run) -> int:
     return 0
 
 
+def _observed_ndof(r: records.SuiteRecord) -> int | None:
+    """The DOF count a run reported, else the one the DOF guard read in stdout."""
+    if r.case.ndof is not None:
+        return r.case.ndof
+    seen = (r.extra.get("observations") or {}).get("dof_seen_in_stdout")
+    return seen if isinstance(seen, int) else None
+
+
 def _dof_equal(rows: Sequence[records.SuiteRecord]) -> tuple[str, dict[str, Any]]:
+    """Per case, every DOF count a run observed, whatever its status.
+
+    Any two counts that differ on a case fail it, a ``dof_mismatch`` run included;
+    a case passes once two codes observed the same count, else it is skipped.
+    """
     per_case: dict[str, dict[str, set[int]]] = {}
     for r in rows:
-        if r.status == "ok" and r.case.ndof is not None:
+        ndof = _observed_ndof(r)
+        if ndof is not None:
             code = r.run.solver.partition(":")[0]
-            per_case.setdefault(r.run.case, {}).setdefault(code, set()).add(r.case.ndof)
+            per_case.setdefault(r.run.case, {}).setdefault(code, set()).add(ndof)
     detail: dict[str, Any] = {}
-    verdict = "skipped"
+    verdicts = []
     for case, codes in sorted(per_case.items()):
-        if len(codes) < 2:
+        same = len({n for v in codes.values() for n in v}) == 1
+        if same and len(codes) < 2:
             continue
         counts = {c: sorted(v) for c, v in codes.items()}
-        same = len({n for v in codes.values() for n in v}) == 1
         detail[case] = {"result": "pass" if same else "fail", "ndof": counts}
-        verdict = "fail" if not same or verdict == "fail" else "pass"
+        verdicts.append(detail[case]["result"])
+    verdict = "fail" if "fail" in verdicts else "pass" if verdicts else "skipped"
     return verdict, detail
 
 
