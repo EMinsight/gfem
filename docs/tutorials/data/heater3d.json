@@ -1,0 +1,257 @@
+{
+ "profile": "full",
+ "provenance": {
+  "commit": "c0ee38d37d599be8e3210cb0f33dd523d439e31f",
+  "sha256": {
+   "tools/heater3d_run.py": "dbd8d9c67b0a0285b29a2c90c964823a9524e454409a7b15775e0df162e3ccc4",
+   "tools/heater_geometry.py": "2a3b1a2bdecf50a41d08f18401eefd942d8997cb6c77aba6fe1b71fac96248f0"
+  },
+  "stages": {
+   "main": {
+    "start_utc": "2026-11-17T04:52:09+00:00",
+    "end_utc": "2026-11-17T05:01:09+00:00",
+    "command": "python tools/heater3d_run.py main --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-c0ee38d-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/c0ee38d-49140659",
+    "environment": {
+     "versions": {
+      "gfem": "0.1.0",
+      "python": "3.12.12",
+      "ngsolve": "6.2.2608",
+      "jax": "0.12.0",
+      "jaxlib": "0.12.0",
+      "numpy": "2.5.4",
+      "optax": null,
+      "mkl": "2026.2.0"
+     },
+     "pardiso_available": true,
+     "os": "Red Hat Enterprise Linux 9.6 (Plow)",
+     "kernel": "5.14.0-687.25.1.el9_8.x86_64",
+     "cpu_model": "Intel(R) Xeon(R) Platinum 8480+",
+     "physical_cores": 112,
+     "threads": 32,
+     "memory_limit_bytes": 270105440256,
+     "host": "MN5 GPP"
+    }
+   },
+   "medium": {
+    "start_utc": "2026-11-17T05:01:15+00:00",
+    "end_utc": "2026-11-17T05:11:47+00:00",
+    "command": "python tools/heater3d_run.py medium --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-c0ee38d-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/c0ee38d-49140659",
+    "environment": {
+     "versions": {
+      "gfem": "0.1.0",
+      "python": "3.12.12",
+      "ngsolve": "6.2.2608",
+      "jax": "0.12.0",
+      "jaxlib": "0.12.0",
+      "numpy": "2.5.4",
+      "optax": null,
+      "mkl": "2026.2.0"
+     },
+     "pardiso_available": true,
+     "os": "Red Hat Enterprise Linux 9.6 (Plow)",
+     "kernel": "5.14.0-687.25.1.el9_8.x86_64",
+     "cpu_model": "Intel(R) Xeon(R) Platinum 8480+",
+     "physical_cores": 112,
+     "threads": 32,
+     "memory_limit_bytes": 270105440256,
+     "host": "MN5 GPP"
+    }
+   },
+   "fine": {
+    "start_utc": "2026-11-17T05:11:59+00:00",
+    "end_utc": "2026-11-17T05:21:56+00:00",
+    "command": "python tools/heater3d_run.py fine --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-c0ee38d-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/c0ee38d-49140659",
+    "environment": {
+     "versions": {
+      "gfem": "0.1.0",
+      "python": "3.12.12",
+      "ngsolve": "6.2.2608",
+      "jax": "0.12.0",
+      "jaxlib": "0.12.0",
+      "numpy": "2.5.4",
+      "optax": null,
+      "mkl": "2026.2.0"
+     },
+     "pardiso_available": true,
+     "os": "Red Hat Enterprise Linux 9.6 (Plow)",
+     "kernel": "5.14.0-687.25.1.el9_8.x86_64",
+     "cpu_model": "Intel(R) Xeon(R) Platinum 8480+",
+     "physical_cores": 112,
+     "threads": 32,
+     "memory_limit_bytes": 270105440256,
+     "host": "MN5 GPP"
+    }
+   }
+  }
+ },
+ "settings": {
+  "wavelength_um": 1.55,
+  "sink_temperature_k": 293.15,
+  "geometry": {
+   "inner_radius": 10.0,
+   "straight": 30.0,
+   "pitch": 2.0,
+   "straights_per_side": 8,
+   "core_width": 0.5,
+   "core_thickness": 0.22,
+   "heater_width": 5.0,
+   "heater_thickness": 0.1,
+   "heater_z": 2.2,
+   "heater_pass": 1,
+   "heater_start": -10.0,
+   "pad": 11.0,
+   "route_length_um": 1241.9910882864217,
+   "heater_straights_y_um": [
+    12.0,
+    -10.0
+   ],
+   "footprint_um": [
+    -22.24857928962699,
+    -22.25,
+    52.248579289627,
+    24.25
+   ],
+   "margin_um": 15.0
+  },
+  "stack_um": {
+   "substrate": [
+    -13.0,
+    -3.0
+   ],
+   "box": [
+    -3.0,
+    0.0
+   ],
+   "cladding": [
+    0.0,
+    3.0
+   ]
+  },
+  "materials": {
+   "silicon substrate": {
+    "thermal_conductivity": 148.0,
+    "specific_heat": 711.0,
+    "mass_density": 2330.0
+   },
+   "silicon core": {
+    "thermal_conductivity": 90.0,
+    "specific_heat": 711.0,
+    "mass_density": 2330.0,
+    "thermo_optic_coefficient": 0.000186,
+    "n": 3.4777
+   },
+   "oxide": {
+    "thermal_conductivity": 1.38,
+    "specific_heat": 709.0,
+    "mass_density": 2203.0,
+    "thermo_optic_coefficient": 1e-05,
+    "n": 1.444
+   },
+   "TiN heater and pads": {
+    "thermal_conductivity": 28.0,
+    "specific_heat": 598.0,
+    "mass_density": 5240.0,
+    "conductivity": 2300000.0
+   }
+  },
+  "window": {
+   "half_width_um": 1.75,
+   "below_um": 1.0,
+   "above_um": 1.22,
+   "station_spacing_um": 0.5
+  },
+  "meshes": {
+   "main": {
+    "heater_um": 0.2,
+    "core_um": 0.3,
+    "far_um": 4.0,
+    "tets": 390418,
+    "dof": 544302,
+    "dc_dof": 105148,
+    "window_triangles": 674,
+    "stage": "main"
+   },
+   "medium": {
+    "heater_um": 0.15,
+    "core_um": 0.2,
+    "far_um": 4.0,
+    "tets": 606465,
+    "dof": 840018,
+    "dc_dof": 147332,
+    "window_triangles": 674,
+    "stage": "medium"
+   },
+   "fine": {
+    "heater_um": 0.1,
+    "core_um": 0.15,
+    "far_um": 4.0,
+    "tets": 875890,
+    "dof": 1207752,
+    "dc_dof": 236004,
+    "window_triangles": 674,
+    "stage": "fine"
+   }
+  },
+  "order": 2,
+  "linear_solver": "direct",
+  "step_response": {
+   "on_s": 0.0001,
+   "off_s": 0.0001,
+   "steps": 400,
+   "drive": "joule heating at P_pi from t = 0 to on, then off"
+  },
+  "maps": {
+   "step_um": 0.2,
+   "core_z_um": 0.11,
+   "heater_z_um": 2.25,
+   "cut_x_um": 15.0,
+   "quantity": "temperature rise per watt (K/W)"
+  },
+  "section": {
+   "x_um": 15.0,
+   "pass": "top_1",
+   "heaters": [
+    12.0,
+    -10.0
+   ]
+  }
+ },
+ "observations": {
+  "main": {
+   "wall_s": 539.7,
+   "peak_rss_bytes": 4876333056,
+   "steps_s": {
+    "mesh_s": 40.77,
+    "read_s": 11.38,
+    "dc_s": 2.25,
+    "steady_s": 4.88,
+    "route_s": 390.37,
+    "maps_s": 2.4,
+    "section_s": 4.95,
+    "transient_s": 77.08
+   }
+  },
+  "medium": {
+   "wall_s": 632.0,
+   "peak_rss_bytes": 5141549056,
+   "steps_s": {
+    "mesh_s": 61.42,
+    "read_s": 20.15,
+    "dc_s": 4.41,
+    "steady_s": 8.2,
+    "route_s": 536.77
+   }
+  },
+  "fine": {
+   "wall_s": 596.9,
+   "peak_rss_bytes": 6979842048,
+   "steps_s": {
+    "mesh_s": 66.14,
+    "read_s": 26.94,
+    "dc_s": 3.75,
+    "steady_s": 11.53,
+    "route_s": 487.44
+   }
+  }
+ }
+}
