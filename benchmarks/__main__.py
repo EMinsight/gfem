@@ -7,11 +7,12 @@ not built yet exit with status 2 and say so.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from benchmarks.harness import config
+from benchmarks.harness import case, config
 
 NOT_YET = 2
 
@@ -109,19 +110,77 @@ def _add_data(add: Adder) -> None:
     p.add_argument("--check", type=Path, metavar="DIR")
 
 
+def _stores(args: argparse.Namespace) -> tuple[Path, ...]:
+    """Mesh stores of the site file, when one is given or set in the environment."""
+    if args.site is None and not os.environ.get(config.SITE_ENV):
+        return ()
+    return tuple(Path(s) for s in config.load_site(args.site).data_stores)
+
+
+def _report(pinned: case.Pinned, case_dir: Path) -> None:
+    where = "committed" if pinned.committed else "external"
+    print(f"{case_dir.name}: sha256 {pinned.sha256}, {pinned.bytes} bytes")
+    print(f"mesh {where}: {pinned.path}")
+
+
+def _case_pin(args: argparse.Namespace) -> int:
+    case_dir = args.cases / args.name
+    try:
+        pinned = case.pin(case_dir, args.mesh, args.unit, _stores(args))
+    except (case.CaseError, config.ConfigError) as error:
+        print(f"benchmarks case pin: {error}", file=sys.stderr)
+        return NOT_YET
+    _report(pinned, case_dir)
+    return 0
+
+
+def _case_import(args: argparse.Namespace) -> int:
+    case_dir = args.cases / args.name
+    frequencies = None
+    if args.frequencies_ghz is not None:
+        frequencies = [float(f) * 1e9 for f in args.frequencies_ghz.split(",")]
+    try:
+        pinned = case.import_case(
+            args.config, args.mesh, case_dir, _stores(args), frequencies
+        )
+    except (case.CaseError, config.ConfigError) as error:
+        print(f"benchmarks case import: {error}", file=sys.stderr)
+        return NOT_YET
+    _report(pinned, case_dir)
+    return 0
+
+
 def _add_case(sub: argparse._SubParsersAction) -> None:
-    case = sub.add_parser("case", help="import or pin suite cases")
-    case_sub = case.add_subparsers(dest="case_command", required=True)
+    group = sub.add_parser("case", help="import or pin suite cases")
+    case_sub = group.add_subparsers(dest="case_command", required=True)
     p = case_sub.add_parser("import", help="import a solver config as a case file")
-    p.set_defaults(run=_not_yet, parser=p, command="case import")
+    p.set_defaults(run=_case_import, parser=p, command="case import")
     p.add_argument("config", type=Path, metavar="CONFIG.json")
     p.add_argument("mesh", type=Path, metavar="MESH")
     p.add_argument("--name", required=True)
+    p.add_argument(
+        "--frequencies-ghz",
+        metavar="F1,F2,..",
+        help="driven frequencies (replace the config's)",
+    )
+    _case_paths(p)
     p = case_sub.add_parser("pin", help="pin a case's mesh")
-    p.set_defaults(run=_not_yet, parser=p, command="case pin")
+    p.set_defaults(run=_case_pin, parser=p, command="case pin")
     p.add_argument("name", metavar="NAME")
     p.add_argument("mesh", type=Path, metavar="MESH")
-    p.add_argument("--unit", required=True, metavar="U")
+    p.add_argument("--unit", required=True, choices=tuple(case.UNITS), metavar="U")
+    _case_paths(p)
+
+
+def _case_paths(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--cases",
+        type=Path,
+        default=config.CASES_DIR,
+        metavar="DIR",
+        help="directory of case directories (default: benchmarks/cases)",
+    )
+    p.add_argument("--site", type=Path, help="site file naming the mesh stores")
 
 
 def _parser() -> argparse.ArgumentParser:

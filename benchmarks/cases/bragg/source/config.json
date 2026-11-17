@@ -1,0 +1,75 @@
+{
+  "Problem": {
+    "Type": "Eigenmode",
+    "Verbose": 2,
+    "Output": "output"
+  },
+  "Model": {
+    "Mesh": "c3.msh",
+    "L0": 0.001
+  },
+  "Domains": {
+    "Materials": [
+      {
+        "Attributes": [
+          1
+        ],
+        "Permittivity": 2.0,
+        "LossTan": 0.0
+      },
+      {
+        "Attributes": [
+          2
+        ],
+        "Permittivity": 9.0,
+        "LossTan": 0.0
+      }
+    ]
+  },
+  "Boundaries": {
+    "PEC": {
+      "Attributes": [
+        5,
+        6
+      ]
+    },
+    "Periodic": {
+      "BoundaryPairs": [
+        {
+          "DonorAttributes": [
+            3
+          ],
+          "ReceiverAttributes": [
+            8
+          ],
+          "Translation": [
+            10.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "FloquetWaveVector": [
+        0.3141592653589793,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "Solver": {
+    "Order": 3,
+    "Device": "CPU",
+    "Eigenmode": {
+      "N": 3,
+      "Tol": 1e-12,
+      "Target": 4.49688687,
+      "Save": 0
+    },
+    "Linear": {
+      "Type": "Default",
+      "KSPType": "GMRES",
+      "Tol": 1e-14,
+      "MaxIts": 1000
+    }
+  }
+}
