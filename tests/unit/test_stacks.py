@@ -653,6 +653,50 @@ def test_git_dependencies_hard_coded_in_cmake_are_read_from_the_tag():
     ]
 
 
+#: scnlib v4.0.1's ``cmake/dependencies.cmake``: fast_float is cloned when scn
+#: configures, inside Palace's superbuild.
+SCNLIB_DEPENDENCIES = """
+    FetchContent_Declare(
+            fast_float
+            GIT_REPOSITORY https://github.com/fastfloat/fast_float.git
+            GIT_TAG v6.1.6
+            GIT_SHALLOW TRUE
+    )
+"""
+
+
+@pytest.mark.parametrize("kind", ["zip", "tar.gz"])
+def test_git_dependencies_inside_a_tarball_are_read_from_its_cmake_files(
+    tmp_path, kind
+):
+    import tarfile
+    import zipfile
+
+    tree = {
+        "scnlib-4.0.1/cmake/dependencies.cmake": SCNLIB_DEPENDENCIES,
+        "scnlib-4.0.1/README.md": "GIT_REPOSITORY https://x/y.git GIT_TAG v1\n",
+        "scnlib-4.0.1/CMakeLists.txt": (
+            "FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json"
+            " GIT_TAG ${JSON_FETCH_VERSION})\n"
+        ),
+    }
+    archive = tmp_path / f"scnlib-v4.0.1.{kind}"
+    if kind == "zip":
+        with zipfile.ZipFile(archive, "w") as zipped:
+            for name, text in tree.items():
+                zipped.writestr(name, text)
+    else:
+        for name, text in tree.items():
+            (tmp_path / "t" / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / "t" / name).write_text(text)
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(tmp_path / "t" / "scnlib-4.0.1", arcname="scnlib-4.0.1")
+
+    assert sources.archive_git_repositories(archive) == [
+        ("https://github.com/fastfloat/fast_float.git", "v6.1.6")
+    ]
+
+
 def test_submodules_are_read_as_spelled_in_gitmodules():
     text = """[submodule "external_dependencies/pybind11"]
 \tpath = external_dependencies/pybind11

@@ -14,6 +14,7 @@ Command line (``python3 sources.py COMMAND ...``)::
     palace-tarballs            NAME FILE URL of each URL (tarball) dependency
     patches                    DIR FILE URL SHA256 of each download_patch call
     git-repositories           URL TAG of each GIT_REPOSITORY/GIT_TAG pair
+    archive-git ARCHIVE        URL TAG of each pair in the CMake files of a tarball
     gitmodules                 PATH URL of each submodule
     mumps-tarball TAG          FILE URL SHA256 of the MUMPS release of a scivision tag
     tarball-name URL           the mirror file name of a tarball URL
@@ -24,6 +25,8 @@ from __future__ import annotations
 import json
 import re
 import sys
+import tarfile
+import zipfile
 
 _SET = re.compile(r"set\(\s*(\w+)\s+\"([^\"]*)\"", re.MULTILINE)
 
@@ -151,6 +154,46 @@ def git_repositories(text: str) -> list[tuple[str, str]]:
     ]
 
 
+def _is_cmake(name: str) -> bool:
+    base = name.rsplit("/", 1)[-1]
+    return base == "CMakeLists.txt" or base.endswith(".cmake")
+
+
+def archive_git_repositories(path: str) -> list[tuple[str, str]]:
+    """The git dependencies a tarball's own CMake files clone when it configures.
+
+    A URL dependency of a superbuild can fetch further sources itself
+    (scnlib clones fast_float at configure time); the fetch mirrors them so
+    the job-local ``insteadOf`` finds them.
+
+    Returns:
+        ``(URL, TAG)`` of each ``GIT_REPOSITORY``/``GIT_TAG`` pair in the
+        archive's ``CMakeLists.txt`` and ``*.cmake`` files whose tag is
+        literal (a ``${...}`` tag names a package found instead), in archive
+        order, without repeats.
+    """
+    texts = []
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as zipped:
+            texts = [
+                zipped.read(name).decode(errors="replace")
+                for name in zipped.namelist()
+                if _is_cmake(name)
+            ]
+    else:
+        with tarfile.open(path) as tar:
+            for member in tar:
+                handle = tar.extractfile(member) if _is_cmake(member.name) else None
+                if handle is not None:
+                    texts.append(handle.read().decode(errors="replace"))
+    found = []
+    for text in texts:
+        for pair in git_repositories(text):
+            if "${" not in pair[1] and pair not in found:
+                found.append(pair)
+    return found
+
+
 def gitmodules(text: str) -> list[tuple[str, str]]:
     """``(PATH, URL)`` of each submodule of a ``.gitmodules`` file, as spelled."""
     found = []
@@ -207,6 +250,10 @@ def main(argv: list[str]) -> int:
     """Run one command of the command line."""
     if len(argv) == 2 and argv[0] == "tarball-name":
         print(tarball_name(argv[1]))
+        return 0
+    if len(argv) == 2 and argv[0] == "archive-git":
+        for record in archive_git_repositories(argv[1]):
+            print(" ".join(record))
         return 0
     if not argv or argv[0] not in COMMANDS:
         print(__doc__, file=sys.stderr)

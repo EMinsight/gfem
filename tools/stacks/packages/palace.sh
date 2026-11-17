@@ -56,6 +56,16 @@ fetch_palace() {
   for line in "${lines[@]}"; do
     read -r name file url <<<"$line"
     stack_tarball tarballs "$file" "$url"
+    # What the tarball's own CMake files clone when it configures (scnlib:
+    # fast_float), mirrored for the job's insteadOf.
+    local nested nested_lines=() nested_line
+    nested=$(stack_sources archive-git "$STACK_SRC/tarballs/$file")
+    mapfile -t nested_lines <<<"$nested"
+    for nested_line in "${nested_lines[@]}"; do
+      [[ -n $nested_line ]] || continue
+      read -r url ref <<<"$nested_line"
+      stack_mirror "$url" "$ref"
+    done
   done
 
   read -r file url pin < <(
