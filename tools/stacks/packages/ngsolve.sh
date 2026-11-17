@@ -12,9 +12,32 @@ native-intel) DEPENDS=() ;;
 *) DEPENDS=() ;;
 esac
 
+NGSOLVE_URL=https://github.com/NGSolve/ngsolve.git
+
 # fetch_ngsolve VERSION: login node, network only, into $STACK_SRC.
+# Read from tag vVERSION: mirrors of NGSolve and its submodules at the commits
+# the tag records (netgen, then netgen's pybind11), the UMFPACK source of
+# cmake/SuperBuild.cmake (BUILD_UMFPACK), and the OCCT wheels its
+# pyproject.toml pins (netgen-occt, netgen-occt-devel: ticket 07 Q1).
 fetch_ngsolve() {
-  stack_die "ngsolve $1: fetch not written yet (native-builds ticket 03)"
+  local tag=v$1 line url ref occt umfpack=
+  local lines=()
+  stack_mirror "$NGSOLVE_URL" "$tag"
+  stack_mirror_submodules "$NGSOLVE_URL" "$tag"
+  local repos
+  repos=$(stack_show "$NGSOLVE_URL" "$tag" cmake/SuperBuild.cmake | stack_sources git-repositories)
+  mapfile -t lines <<<"$repos"
+  for line in "${lines[@]}"; do
+    read -r url ref <<<"$line"
+    [[ $url == */suitesparse-metis-for-windows.git ]] || continue
+    stack_mirror "$url" "$ref"
+    umfpack=$url
+  done
+  [[ -n $umfpack ]] || stack_die "ngsolve $tag: no suitesparse repository in cmake/SuperBuild.cmake"
+  occt=$(stack_show "$NGSOLVE_URL" "$tag" pyproject.toml |
+    grep -oE 'netgen-occt-devel==[0-9][0-9.]*' | head -n 1) ||
+    stack_die "ngsolve $tag: pyproject.toml pins no netgen-occt-devel"
+  stack_pip wheels "netgen-occt==${occt#*==}" "$occt"
 }
 
 # build_ngsolve VERSION PREFIX BUILD_DIR: in the job, offline; installs into PREFIX

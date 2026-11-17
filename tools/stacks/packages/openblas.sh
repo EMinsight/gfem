@@ -13,8 +13,16 @@ native-intel) DEPENDS=() ;;
 esac
 
 # fetch_openblas VERSION: login node, network only, into $STACK_SRC.
+# The release tarball; 0.3.34 is pinned by gfem's PETSc contract
+# (tools/petsc_wheelhouse.sh TARBALLS), any other version is trusted on first
+# fetch.
 fetch_openblas() {
-  stack_die "openblas $1: fetch not written yet (native-builds ticket 03)"
+  local pin=
+  case $1 in
+  0.3.34) pin=cd7e129868320cc2d033afa920e31202dfe0b8066a5b66661900ccc0f197dfed ;;
+  esac
+  stack_tarball tarballs "OpenBLAS-$1.tar.gz" \
+    "https://github.com/xianyi/OpenBLAS/archive/v$1.tar.gz" $pin
 }
 
 # build_openblas VERSION PREFIX BUILD_DIR: in the job, offline; installs into PREFIX

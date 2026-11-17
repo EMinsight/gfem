@@ -454,3 +454,367 @@ def test_the_recipe_hash_follows_content_not_location(tmp_path):
     one, two = _recipes(tmp_path / "one"), _recipes(tmp_path / "two")
 
     assert provenance.recipe_sha256(one, "a") == provenance.recipe_sha256(two, "a")
+
+
+# --- source mirror: what `stack.sh fetch` reads from a fetched tag ------------
+
+_sources_spec = importlib.util.spec_from_file_location("sources", STACKS / "sources.py")
+assert _sources_spec is not None
+assert _sources_spec.loader is not None
+sources = importlib.util.module_from_spec(_sources_spec)
+_sources_spec.loader.exec_module(sources)
+
+#: An excerpt of Palace v0.19.0's ``cmake/ExternalGitTags.cmake``.
+PALACE_GIT_TAGS = """
+# ARPACK-NG
+set(EXTERN_ARPACK_URL
+  "https://github.com/opencollab/arpack-ng.git" CACHE STRING
+  "URL for external ARPACK-NG build"
+)
+set(EXTERN_ARPACK_GIT_BRANCH
+  "master" CACHE STRING
+  "Git branch for external ARPACK-NG build"
+)
+set(EXTERN_ARPACK_GIT_TAG
+  "3.9.1" CACHE STRING
+  "Git tag for external ARPACK-NG build"
+)
+
+# METIS
+set(EXTERN_METIS_URL
+  "https://bitbucket.org/petsc/pkg-metis.git" CACHE STRING
+  "URL for external METIS build"
+)
+set(EXTERN_METIS_GIT_TAG
+  "v5.1.0-p13" CACHE STRING
+  "Git tag for external METIS build"
+)
+
+# nlohmann/json
+set(EXTERN_JSON_URL
+  "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz" CACHE STRING
+  "URL for external nlohmann/json build"
+)
+
+# nlohmann/json-schema-validator
+set(EXTERN_JSON_SCHEMA_VALIDATOR_URL
+  "https://github.com/pboettch/json-schema-validator/archive/refs/tags/2.4.1.tar.gz"
+  CACHE STRING
+  "URL for external nlohmann/json-schema-validator build"
+)
+
+# fmt
+set(EXTERN_FMT_URL
+  "https://github.com/fmtlib/fmt/releases/download/12.2.0/fmt-12.2.0.zip" CACHE STRING
+  "URL for external fmt build"
+)
+
+# scn
+set(EXTERN_SCN_URL
+  "https://github.com/eliaskosunen/scnlib/archive/refs/tags/v4.0.1.zip" CACHE STRING
+  "URL for external scn build"
+)
+
+# Eigen
+set(EXTERN_EIGEN_URL
+  "https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz" CACHE STRING
+  "URL for external Eigen build"
+)
+
+# PETSc (for SLEPc)
+set(EXTERN_PETSC_URL
+  "https://gitlab.com/petsc/petsc.git" CACHE STRING
+  "URL for external PETSc build"
+)
+set(EXTERN_PETSC_GIT_TAG
+  "v3.26.0" CACHE STRING
+  "Git tag for external PETSc build"
+)
+"""
+
+
+def test_palaces_git_dependencies_are_read_from_its_tag():
+    deps = sources.palace_git(PALACE_GIT_TAGS)
+
+    assert deps == [
+        ("ARPACK", "https://github.com/opencollab/arpack-ng.git", "3.9.1"),
+        ("METIS", "https://bitbucket.org/petsc/pkg-metis.git", "v5.1.0-p13"),
+        ("PETSC", "https://gitlab.com/petsc/petsc.git", "v3.26.0"),
+    ]
+
+
+def test_palaces_url_tarballs_keep_the_names_of_the_source_mirror():
+    tarballs = sources.palace_tarballs(PALACE_GIT_TAGS)
+
+    assert [(name, file) for name, file, _ in tarballs] == [
+        ("JSON", "json-3.12.0.tar.xz"),
+        ("JSON_SCHEMA_VALIDATOR", "json-schema-validator-2.4.1.tar.gz"),
+        ("FMT", "fmt-12.2.0.zip"),
+        ("SCN", "scnlib-v4.0.1.zip"),
+        ("EIGEN", "eigen-5.0.1.tar.gz"),
+    ]
+    assert tarballs[0][2] == (
+        "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz"
+    )
+
+
+@pytest.mark.parametrize(
+    ("url", "name"),
+    [
+        (
+            "https://bitbucket.org/petsc/pkg-parmetis/get/v4.0.3-p9.tar.gz",
+            "petsc-pkg-parmetis-v4.0.3-p9.tar.gz",
+        ),
+        (
+            "https://github.com/Reference-ScaLAPACK/scalapack/archive/v2.2.3.tar.gz",
+            "scalapack-v2.2.3.tar.gz",
+        ),
+        ("https://mumps-solver.org/MUMPS_5.9.1.tar.gz", "MUMPS_5.9.1.tar.gz"),
+    ],
+)
+def test_a_tarball_is_named_after_its_project_and_version(url, name):
+    assert sources.tarball_name(url) == name
+
+
+#: Excerpts of Palace v0.19.0's ``ExternalMFEM.cmake`` and ``ExternalSTRUMPACK.cmake``.
+PALACE_PATCH_CALLS = """
+set(MFEM_PATCH_DIR "${CMAKE_BINARY_DIR}/extern/mfem-patches")
+set(MFEM_PATCH_FILES)
+download_patch(MFEM_PATCH_FILES "${MFEM_PATCH_DIR}"
+  mfem_pr3847.diff
+  "https://github.com/mfem/mfem/compare/2d574015756711029556c14d096ca52c15d5b663...50ead1a9a785e3273b2a72ff59ac8ed8a496b498.diff"
+  e9be1a0d4b2642ed1b72f31c36065cf0aacbe342b6594d5d943782c73a6177f4
+)
+if(PALACE_WITH_STRUMPACK)
+  download_patch(ZFP_PATCH_FILES "${CMAKE_BINARY_DIR}/extern/zfp-patches"
+    stream-maximum-size-overflow.patch
+    "https://raw.githubusercontent.com/spack/spack-packages/94ba1d9eb8e89a4e01919a9f41b8c857b5fbe5cc/repos/spack_repo/builtin/packages/zfp/stream-maximum-size-overflow.patch"
+    7ed755650fdcd79208ab165b42c902d64a916187be6dade4643814c09ba6d894
+  )
+endif()
+"""
+
+
+def test_palaces_patches_land_where_its_build_tree_looks_for_them():
+    patches = sources.patches(PALACE_PATCH_CALLS)
+
+    assert patches == [
+        (
+            "extern/mfem-patches",
+            "mfem_pr3847.diff",
+            "https://github.com/mfem/mfem/compare/2d574015756711029556c14d096ca52c15d5b663...50ead1a9a785e3273b2a72ff59ac8ed8a496b498.diff",
+            "e9be1a0d4b2642ed1b72f31c36065cf0aacbe342b6594d5d943782c73a6177f4",
+        ),
+        (
+            "extern/zfp-patches",
+            "stream-maximum-size-overflow.patch",
+            "https://raw.githubusercontent.com/spack/spack-packages/94ba1d9eb8e89a4e01919a9f41b8c857b5fbe5cc/repos/spack_repo/builtin/packages/zfp/stream-maximum-size-overflow.patch",
+            "7ed755650fdcd79208ab165b42c902d64a916187be6dade4643814c09ba6d894",
+        ),
+    ]
+
+
+def test_git_dependencies_hard_coded_in_cmake_are_read_from_the_tag():
+    catch2 = """
+  FetchContent_Declare(Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG        v3.8.1
+  )
+"""
+    suitesparse = """
+    ExternalProject_Add(
+      suitesparse
+      DEPENDS ${LAPACK_PROJECTS}
+      GIT_REPOSITORY https://github.com/jlblancoc/suitesparse-metis-for-windows.git
+      GIT_TAG 1618fd16ea34be287c0fbc32789ca280012a9280
+      LIST_SEPARATOR |
+"""
+
+    assert sources.git_repositories(catch2) == [
+        ("https://github.com/catchorg/Catch2.git", "v3.8.1")
+    ]
+    assert sources.git_repositories(suitesparse) == [
+        (
+            "https://github.com/jlblancoc/suitesparse-metis-for-windows.git",
+            "1618fd16ea34be287c0fbc32789ca280012a9280",
+        )
+    ]
+
+
+def test_submodules_are_read_as_spelled_in_gitmodules():
+    text = """[submodule "external_dependencies/pybind11"]
+\tpath = external_dependencies/pybind11
+\turl = https://github.com/ngsolve/pybind11.git
+"""
+
+    assert sources.gitmodules(text) == [
+        ("external_dependencies/pybind11", "https://github.com/ngsolve/pybind11.git")
+    ]
+
+
+def test_palaces_mumps_tarball_is_the_release_its_scivision_tag_names():
+    source_json = """{
+  "mumps_sha256": {
+    "5.9.0": "02c6efdb91749ec0f82351d40f3f860547272a1eb1d899126a4265b4d6bcc4ca",
+    "5.9.1": "659c9b57646b5a003ac618baa1faf9dd2044e46c732b3daaccbc7158003e1b46"
+  },
+  "mumps_sources": {}
+}"""
+
+    assert sources.mumps_tarball(source_json, "v5.9.1.2") == [
+        (
+            "MUMPS_5.9.1.tar.gz",
+            "https://mumps-solver.org/MUMPS_5.9.1.tar.gz",
+            "659c9b57646b5a003ac618baa1faf9dd2044e46c732b3daaccbc7158003e1b46",
+        )
+    ]
+
+
+# --- `stack.sh fetch`: the source mirror helpers, through a fake recipe -------
+
+FAKE_RECIPE = """VERSION=1.0
+CPUS=1
+TIME=00:10:00
+STACKS=(native-oss)
+fetch_fake() {
+  local up=file://$FAKE_UPSTREAM
+  stack_tarball tarballs pinned-1.0.tar.gz "$up/pinned.tar.gz" "$FAKE_PIN"
+  stack_tarball tarballs unpinned-1.0.tar.gz "$up/unpinned.tar.gz"
+  stack_mirror https://example.invalid/owner/repo.git v1.0
+}
+build_fake() { :; }
+smoke_fake() { :; }
+"""
+
+
+def _fake_fetch(tmp_path: Path, pin: str | None = None):
+    """A recipe tree with package ``fake`` and its upstream, ready to fetch."""
+    import hashlib
+    import shutil
+
+    recipes = tmp_path / "recipes"
+    shutil.copytree(STACKS, recipes, ignore=shutil.ignore_patterns("__pycache__"))
+    (recipes / "packages" / "fake.sh").write_text(FAKE_RECIPE)
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    (upstream / "pinned.tar.gz").write_bytes(b"pinned tarball")
+    (upstream / "unpinned.tar.gz").write_bytes(b"unpinned tarball")
+    repo = upstream / "owner" / "repo.git"
+    for command in (
+        ["git", "init", "-q", "-b", "main", str(repo)],
+        ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "one"],
+        ["git", "-C", str(repo), "tag", "v1.0"],
+    ):
+        subprocess.run(command, check=True, capture_output=True)
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text(
+        f'[url "file://{upstream}/"]\n\tinsteadOf = https://example.invalid/\n'
+        "[user]\n\tname = t\n\temail = t@t\n"
+    )
+    env = {
+        **os.environ,
+        "STACKS_ROOT": str(tmp_path / "root"),
+        "FAKE_UPSTREAM": str(upstream),
+        "FAKE_PIN": pin or hashlib.sha256(b"pinned tarball").hexdigest(),
+        "GIT_CONFIG_GLOBAL": str(gitconfig),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    env.pop("SLURM_JOB_ID", None)
+
+    def fetch() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(recipes / "stack.sh"), "fetch", "fake"],  # noqa: S607
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    return fetch, tmp_path / "root" / "src"
+
+
+def test_a_fetch_fills_the_mirror_and_a_second_one_finds_nothing_new(tmp_path):
+    fetch, src = _fake_fetch(tmp_path)
+
+    first = fetch()
+    second = fetch()
+
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert (src / "tarballs" / "pinned-1.0.tar.gz").read_bytes() == b"pinned tarball"
+    assert (src / "mirrors" / "example.invalid" / "owner" / "repo.git").is_dir()
+    assert "3 new" in first.stdout
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "nothing new" in second.stdout
+
+
+def test_only_unpinned_tarballs_are_recorded_on_first_fetch(tmp_path):
+    fetch, src = _fake_fetch(tmp_path)
+
+    fetch()
+
+    names = [
+        line.split()[1]
+        for line in (src / "tarballs" / "SHA256SUMS").read_text().splitlines()
+    ]
+    assert names == ["unpinned-1.0.tar.gz"]
+
+
+def test_an_unpinned_tarball_changed_since_its_first_fetch_fails_the_fetch(tmp_path):
+    fetch, src = _fake_fetch(tmp_path)
+    fetch()
+
+    (src / "tarballs" / "unpinned-1.0.tar.gz").write_bytes(b"tampered")
+    result = fetch()
+
+    assert result.returncode != 0
+    assert "unpinned-1.0.tar.gz" in result.stderr
+
+
+def test_a_tarball_that_does_not_match_its_pin_is_not_kept(tmp_path):
+    fetch, src = _fake_fetch(tmp_path, pin="0" * 64)
+
+    result = fetch()
+
+    assert result.returncode != 0
+    assert "pinned-1.0.tar.gz" in result.stderr
+    assert not (src / "tarballs" / "pinned-1.0.tar.gz").exists()
+
+
+def _recipe_array(package: str, name: str) -> list[str]:
+    result = subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            f'source "$1"; printf "%s\\n" "${{{name}[@]}}"',
+            "-",
+            str(STACKS / "packages" / f"{package}.sh"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.split()
+
+
+def test_the_stack_venvs_runtime_pins_are_gfems_lock():
+    import tomllib
+
+    lock = tomllib.loads((STACKS.parents[1] / "uv.lock").read_text())
+    packages = {package["name"]: package for package in lock["package"]}
+    # Ticket 07: never the PyPI NGSolve, netgen or their OpenBLAS in a stack venv.
+    native = {"ngsolve", "netgen-mesher", "ngsolve-openblas"}
+    closure, todo = set(), [d["name"] for d in packages["gfem"]["dependencies"]]
+    while todo:
+        name = todo.pop()
+        if name not in closure:
+            closure.add(name)
+            todo += [d["name"] for d in packages[name].get("dependencies", [])]
+    expected = sorted(
+        f"{name}=={packages[name]['version']}" for name in closure - native
+    )
+
+    assert sorted(_recipe_array("pyenv", "PIP_RUNTIME")) == expected
+    # mpi4py is built from its sdist against the stack MPI, at the lock's pin.
+    assert _recipe_array("pyenv", "PIP_SDISTS") == [
+        f"mpi4py=={packages['mpi4py']['version']}"
+    ]

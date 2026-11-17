@@ -99,6 +99,193 @@ stack_tofu() {
   prov tofu "$STACKS_ROOT/src/tarballs/SHA256SUMS" "$1"
 }
 
+# --- helpers for fetch_<pkg> (login node, network) ---------------------------
+# Each reports one line, "new" or "present"; fetch counts them, so a rerun on
+# a complete mirror says "nothing new".
+
+FETCH_NEW=0
+FETCH_PRESENT=0
+
+fetch_report() {
+  if [[ $1 == new ]]; then
+    FETCH_NEW=$((FETCH_NEW + 1))
+  else
+    FETCH_PRESENT=$((FETCH_PRESENT + 1))
+  fi
+  echo "  $1: $2"
+}
+
+# stack_mirror_dir URL: the bare mirror of URL, at mirrors/<host>/<path>.git
+# with the URL spelled as upstream spells it (job-local insteadOf maps it back).
+stack_mirror_dir() {
+  local rel=${1#*://}
+  echo "$STACK_SRC/mirrors/${rel%.git}.git"
+}
+
+# stack_mirror URL REF...: a full bare mirror of URL (git clone --mirror) that
+# holds every REF (tag, branch or commit). A mirror that already holds them is
+# left alone; one that lacks one is updated (git remote update --prune).
+stack_mirror() {
+  local url=$1 ref missing=()
+  shift
+  local dst
+  dst=$(stack_mirror_dir "$url")
+  local rel=${dst#"$STACK_SRC"/}
+  if [[ -d $dst ]]; then
+    for ref in "$@"; do
+      git --git-dir="$dst" rev-parse -q --verify "$ref^{commit}" >/dev/null || missing+=("$ref")
+    done
+    if [[ ${#missing[@]} -eq 0 ]]; then
+      fetch_report present "$rel"
+      return 0
+    fi
+    git --git-dir="$dst" remote update --prune >/dev/null ||
+      die "git remote update of $rel failed"
+  else
+    mkdir -p "$(dirname "$dst")"
+    rm -rf "$dst.part"
+    git clone -q --mirror "$url" "$dst.part" || die "git clone --mirror $url failed"
+    mv "$dst.part" "$dst"
+  fi
+  for ref in "$@"; do
+    git --git-dir="$dst" rev-parse -q --verify "$ref^{commit}" >/dev/null ||
+      die "$url has no $ref"
+  done
+  fetch_report new "$rel${missing[*]:+ (updated for ${missing[*]})}"
+}
+
+# stack_show URL REF FILE: FILE at REF in the mirror of URL.
+stack_show() {
+  git --git-dir="$(stack_mirror_dir "$1")" show "$2:$3"
+}
+
+# stack_sources COMMAND...: sources.py, which reads pins from a fetched tag.
+stack_sources() {
+  "$STACK_PYTHON" -B "$STACK_HOME/sources.py" "$@"
+}
+
+# stack_mirror_submodules URL REF: mirror each submodule of URL at REF, at the
+# commit REF records, recursively (.gitmodules spelling, as git will ask).
+stack_mirror_submodules() {
+  local url=$1 ref=$2 dir modules line path suburl commit
+  dir=$(stack_mirror_dir "$url")
+  git --git-dir="$dir" cat-file -e "$ref:.gitmodules" 2>/dev/null || return 0
+  modules=$(stack_show "$url" "$ref" .gitmodules | stack_sources gitmodules)
+  local lines=()
+  mapfile -t lines <<<"$modules"
+  for line in "${lines[@]}"; do
+    [[ -n $line ]] || continue
+    read -r path suburl <<<"$line"
+    [[ $suburl == *://* ]] || die "$url: relative submodule URL $suburl is not supported"
+    commit=$(git --git-dir="$dir" rev-parse "$ref:$path")
+    stack_mirror "$suburl" "$commit"
+    stack_mirror_submodules "$suburl" "$commit"
+  done
+}
+
+# stack_download DIR NAME URL: download URL as $STACK_SRC/DIR/NAME once, with
+# no hash: only for a file that is itself the pin of others (a SHA256SUMS).
+stack_download() {
+  local file=$STACK_SRC/$1/$2
+  if [[ -f $file ]]; then
+    fetch_report present "$1/$2"
+    return 0
+  fi
+  mkdir -p "$STACK_SRC/$1"
+  curl -fsSL --retry 3 -o "$file.part" "$3" || {
+    rm -f "$file.part"
+    die "download of $3 failed"
+  }
+  mv "$file.part" "$file"
+  fetch_report new "$1/$2"
+}
+
+# stack_pip wheels|nodeps|sdists REQ...: pip download NAME==VERSION requirements
+# into $STACK_SRC/pip/wheels (cp312 manylinux wheels and their dependencies;
+# nodeps: without them) or pip/sdists (source only, no dependencies), with the
+# cluster's own pip (pip honours the tunnel; uv's module is offline). Nothing
+# is downloaded when every requirement already has its file.
+stack_pip() {
+  local kind=$1 req name version file have missing=()
+  shift
+  local dir=$STACK_SRC/pip/wheels args=()
+  case $kind in
+  wheels | nodeps)
+    args=(--only-binary=:all: --python-version 3.12 --implementation cp
+      --platform manylinux_2_28_x86_64 --platform manylinux_2_27_x86_64
+      --platform manylinux_2_17_x86_64 --platform manylinux2014_x86_64
+      --platform manylinux_2_5_x86_64 --platform manylinux1_x86_64 --platform any)
+    [[ $kind == wheels ]] || args+=(--no-deps)
+    ;;
+  sdists)
+    dir=$STACK_SRC/pip/sdists
+    args=(--no-binary=:all: --no-deps)
+    ;;
+  *) die "stack_pip: unknown kind $kind" ;;
+  esac
+  mkdir -p "$dir"
+  for req in "$@"; do
+    name=${req%%==*} version=${req#*==}
+    [[ $req == *==* && -n $version ]] || die "stack_pip: $req is not NAME==VERSION"
+    name=$(tr 'A-Z.-' 'a-z__' <<<"$name")
+    have=false
+    for file in "$dir"/*; do
+      file=$(tr 'A-Z.-' 'a-z__' <<<"${file##*/}")
+      if [[ $file == "${name}_$(tr '.-' '__' <<<"$version")_"* ]]; then
+        have=true
+        break
+      fi
+    done
+    $have || missing+=("$req")
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    fetch_report present "pip/${dir##*/}: $*"
+    return 0
+  fi
+  local before after
+  before=$(ls "$dir")
+  "$STACK_PYTHON" -m pip download -q --disable-pip-version-check -d "$dir" "${args[@]}" "$@" ||
+    die "pip download of $* failed"
+  after=$(ls "$dir")
+  fetch_report new "pip/${dir##*/}: $(comm -13 <(echo "$before") <(echo "$after") | tr '\n' ' ')"
+}
+
+# stack_tarball DIR NAME URL [SHA256]: download URL as $STACK_SRC/DIR/NAME. With
+# SHA256 (a pin from an upstream file) the file must match it; without, its
+# hash is trusted on first fetch and checked after (stack_tofu). A file that
+# fails its check is refused; a new one is not kept.
+stack_tarball() {
+  local dir=$STACK_SRC/$1 name=$2 url=$3 pin=${4:-}
+  local file=$dir/$name state=present
+  mkdir -p "$dir"
+  if [[ ! -f $file ]]; then
+    rm -f "$file.part"
+    curl -fsSL --retry 3 -o "$file.part" "$url" || {
+      rm -f "$file.part"
+      die "download of $url failed"
+    }
+    mv "$file.part" "$file"
+    state=new
+  fi
+  if [[ -n $pin ]]; then
+    local got
+    got=$(prov sha256 "$file")
+    if [[ $got != "$pin" ]]; then
+      [[ $state == present ]] || rm -f "$file"
+      die "$name: sha256 $got differs from the pin $pin ($url)"
+    fi
+    fetch_report "$state" "$1/$name (sha256 pinned)"
+  else
+    local outcome
+    outcome=$(stack_tofu "$file") || {
+      [[ $state == present ]] || rm -f "$file"
+      die "$name: refused (sha256 differs from the one recorded on first fetch)"
+    }
+    [[ $outcome != *recorded ]] || state=new
+    fetch_report "$state" "$1/$name (sha256 ${outcome##* })"
+  fi
+}
+
 # --- recipes and stacks ------------------------------------------------------
 
 require_root() {
@@ -203,7 +390,13 @@ cmd_fetch() {
   local version=${2:-$VERSION}
   export STACK_SRC=$STACKS_ROOT/src
   mkdir -p "$STACK_SRC"/{mirrors,tarballs,patches,pip,python}
+  stack_log "fetch $pkg $version into $STACK_SRC"
   "fetch_$pkg" "$version"
+  if [[ $FETCH_NEW -eq 0 ]]; then
+    stack_log "fetch $pkg $version: nothing new ($FETCH_PRESENT present)"
+  else
+    stack_log "fetch $pkg $version: $FETCH_NEW new, $FETCH_PRESENT present"
+  fi
 }
 
 cmd_submit() {

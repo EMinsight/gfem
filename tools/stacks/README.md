@@ -26,7 +26,10 @@ stack.sh check  [STACK [PKG [VERSION]]]    # read-only
 
 - `VERSION` defaults to the recipe's `VERSION`. `<DEP>_VERSION` in the
   environment (`OPENBLAS_VERSION=0.3.35`) picks a dependency's version.
-- `fetch` is shared by every software stack and rerunnable.
+- `fetch` is shared by every software stack and rerunnable. Each source it
+  touches prints `new` or `present`; a rerun on a complete mirror ends with
+  `nothing new`. A mirror that already holds the pinned refs is not updated, a
+  tarball that is there is not downloaded again (its hash is still checked).
 - `submit` names the job `stack-<stack>-<pkg>-<version>`, uses the recipe's
   `CPUS` and `TIME`, QOS `$STACK_QOS` (default `gp_ehpc`) and
   `--hint=nomultithread`, writes the log to
@@ -56,6 +59,7 @@ tools/stacks/
   stack.sh                  the one entry point
   build.sbatch              the Slurm job: runs `stack.sh build`
   provenance.py             writes, reads and compares provenance files
+  sources.py                reads the pins of a fetched tag (for fetch)
   toolchains/<stack>.sh     one per native software stack: the only place a toolchain lives
   packages/<pkg>.sh         one recipe per package
 
@@ -172,6 +176,13 @@ activate_palace() {         # PREFIX (optional): extra lines for activate.sh
 | `stack_json FILE key=string key:=json ...` | write any JSON object |
 | `stack_smoke COMMAND...` | run the smoke command; record it and its first output line |
 | `stack_tofu FILE` | sha256 of an unpinned tarball: recorded on first fetch, checked after |
+| `stack_mirror URL REF...` | fetch: bare full mirror `mirrors/<host>/<path>.git` (URL as upstream spells it) holding every REF |
+| `stack_mirror_submodules URL REF` | fetch: mirror the submodules of URL at REF, at their recorded commits, recursively |
+| `stack_mirror_dir URL`, `stack_show URL REF FILE` | fetch: a mirror's path; a file of a tag in it (no checkout) |
+| `stack_tarball DIR NAME URL [SHA256]` | fetch: `$STACK_SRC/DIR/NAME`, checked against SHA256 (an upstream pin) or by `stack_tofu` |
+| `stack_download DIR NAME URL` | fetch: a file that is itself a pin (a `SHA256SUMS`), not checked |
+| `stack_pip wheels\|nodeps\|sdists NAME==VER...` | fetch: cp312 manylinux wheels (with or without dependencies) or sdists into `src/pip/` |
+| `stack_sources COMMAND...` | `sources.py`: pins read from a fetched file (Palace's `ExternalGitTags.cmake`, `download_patch` calls, `.gitmodules`, ...) |
 | `stack_die MESSAGE` | fail |
 
 ## Provenance file (schema 1)
