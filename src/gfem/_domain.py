@@ -1,16 +1,28 @@
-"""The electromagnetic solve domain of a mesh: which elements are excluded.
+"""The solve domain of a mesh for one physics: which elements are excluded.
 
-Pure NumPy on the `gfem.Mesh` arrays; the engine maps the result to NGSolve.
+Each physics (electromagnetic, thermal, DC conduction) has its own domain,
+built by `em_domain` from that physics' excluded entities. Pure NumPy on
+the `gfem.Mesh` arrays; the engine maps the result to NGSolve.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import weakref
+from typing import Any
 
 import numpy as np
 
 from gfem.mesh import _TET_EDGES, _TET_FACES, Mesh
+
+
+def physics_of(item: Any) -> str:
+    """The physics key of a boundary, port or problem (``"em"`` by default).
+
+    Each of their classes names its physics as ``_physics``: ``"em"``,
+    ``"thermal"`` or ``"dc_conduction"``, the keys of ``excluded=``.
+    """
+    return getattr(type(item), "_physics", "em")
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -109,8 +121,26 @@ def enclosed_entities(mesh: Mesh, surfaces: tuple[str, ...]) -> set[tuple[int, i
     return {(int(keys[d][0]), int(keys[d][1])) for d in bounded - leaky}
 
 
+#: The domain with nothing excluded, per mesh topology: every physics with no
+#: exclusion shares it.
+_WHOLE: weakref.WeakKeyDictionary[object, EMDomain] = weakref.WeakKeyDictionary()
+
+
 def em_domain(mesh: Mesh, excluded: set[tuple[int, int]]) -> EMDomain:
-    """The domain left once the ``excluded`` entities are removed."""
+    """The domain left once the ``excluded`` entities are removed.
+
+    The name is historical: it builds the domain of any physics. The domain
+    with nothing excluded is built once per mesh topology.
+    """
+    if not excluded:
+        whole = _WHOLE.get(mesh._topology)  # noqa: SLF001
+        if whole is None:
+            whole = _WHOLE[mesh._topology] = _domain(mesh, excluded)  # noqa: SLF001
+        return whole
+    return _domain(mesh, excluded)
+
+
+def _domain(mesh: Mesh, excluded: set[tuple[int, int]]) -> EMDomain:
     keys = np.stack([mesh.tetrahedron_tags, mesh.tetrahedron_entities], axis=1)
     out = np.zeros(len(keys), dtype=bool)
     for tag, ent in excluded:

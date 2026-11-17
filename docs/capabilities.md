@@ -46,6 +46,25 @@ v0.1.
   (the kinetic inductance fraction of a film), with their gradients
   ({doc}`recipes/quantum-metrics`). A mode's loss splits into a 1/Q budget
   and T1 limits ({doc}`recipes/loss-budget`).
+- **Thermal problems**: {py:obj}`gfem.SteadyThermal` (the temperature under
+  heat sources), {py:obj}`gfem.TransientThermal` (the temperature over time
+  under switched sources, with traces recorded at every step) and
+  {py:obj}`gfem.DCConduction` (the current through conductors between
+  terminals: their conductance and Joule heat), on 3D meshes and on 2D
+  cross-sections read with {py:meth}`gfem.Mesh.from_gmsh_cross_section`.
+  Boundaries {py:obj}`gfem.FixedTemperature`, {py:obj}`gfem.Convection` and
+  {py:obj}`gfem.HeatFlux`; a surface no thermal boundary names is insulated.
+  Materials take `thermal_conductivity`, `mass_density`, `specific_heat`,
+  an electrical `conductivity` and a `thermo_optic_coefficient`, and
+  `excluded=` leaves regions out of one physics at a time
+  ({doc}`recipes/heater-temperature`).
+- **Heat and phase**: {py:obj}`gfem.joule_heating` and
+  {py:meth}`gfem.HeatSource.uniform` (heat sources),
+  {py:obj}`gfem.thermo_optic_shift` (a guided mode's phase per length under
+  a rise, on a cross-section) and {py:obj}`gfem.route_phase` (the phase
+  along routes through a 3D rise) ({doc}`recipes/thermo-optic-phase`);
+  {py:obj}`gfem.rise_time` and {py:obj}`gfem.time_constant` of a step
+  response ({doc}`recipes/thermal-step-response`); {py:obj}`gfem.element_mean`.
 
 ## Solvers
 
@@ -67,6 +86,10 @@ v0.1.
   source ({doc}`recipes/petsc-slepc`).
 - **`device="cuda"`**: the direct solver on one NVIDIA GPU through cuDSS,
   experimental ({doc}`recipes/gpu-direct-solver`).
+- **Thermal and DC conduction problems** solve on `"direct"` by default and
+  accept `"bddc_gmres"` and `"petsc"`. One factorization serves a whole
+  transient run. They do not run on the GPU solver or across MPI ranks: both
+  raise.
 - **Across MPI ranks**: a driven uniform sweep and its gradients run split
   across the ranks of one job, on Open MPI and Linux x86_64. Everything else
   raises {py:obj}`gfem.DistributedUnsupportedError` there; the full table is
@@ -87,6 +110,12 @@ How large a model each solver has finished, and in what time:
 - **Raises**: asking for this gradient raises
   {py:obj}`gfem.NonDifferentiableError` (or the error named) instead of
   returning a wrong value.
+
+The thermal rows differentiate the temperature, the traces, the conductance
+and the phase with respect to per-element thermal and electrical
+conductivity, the thermo-optic coefficient, a transient's mass density and
+specific heat, the heat sources and the drive
+({doc}`recipes/thermal-gradient`).
 
 How each mark is checked: {doc}`verification`.
 
@@ -161,6 +190,17 @@ returning a wrong value:
   solved linear modes, in the transmon regime. They are checked against
   identities, finite differences and published outputs, not against a
   measured device.
+- **Thermal problems**: linear heat conduction with constant, isotropic
+  properties: no temperature-dependent conductivity, no radiation, no
+  thermal contact resistance, and the heat does not change the current. A
+  transient runs on a uniform time grid with sources switched at grid
+  times. A cross-section is a slice of an infinitely long device. The
+  thermo-optic shift and the route phase are first order in the rise, with
+  the mode held constant, and refuse a lossy optical section. Mesh
+  refinement and error estimates do not run on thermal problems, and the
+  rise time and time constant have no gradient. Details:
+  {doc}`recipes/heater-temperature`, {doc}`recipes/thermo-optic-phase`,
+  {doc}`recipes/thermal-step-response`, {doc}`recipes/thermal-gradient`.
 
 ## Platforms
 

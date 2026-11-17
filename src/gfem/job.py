@@ -40,7 +40,10 @@ from gfem._boundaries import (
     PMC,
     Absorbing,
     Conductor,
+    Convection,
+    FixedTemperature,
     FloquetPort,
+    HeatFlux,
     Impedance,
     LumpedPort,
     Periodic,
@@ -65,8 +68,17 @@ from gfem.measurements import InterfaceParticipation
 from gfem.mesh import _TOPOLOGY_ARRAYS, Mesh, Region, _Topology
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
-from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
+from gfem.problems import (
+    DCConduction,
+    Driven,
+    Eigenmode,
+    Electrostatic,
+    PortMode,
+    SteadyThermal,
+    TransientThermal,
+)
 from gfem.results import (
+    DCConductionResult,
     DiffractionOrderResult,
     DrivenResult,
     EigenmodeResult,
@@ -76,9 +88,13 @@ from gfem.results import (
     PortModeField,
     PortModeResult,
     ReducedFields,
+    SteadyThermalResult,
     SweepInfo,
+    TransientThermalResult,
 )
 from gfem.solve import solve
+from gfem.thermal import HeatSource, _FieldTrace
+from gfem.thermo_optic import _RouteSampler, _RouteTrace, _Sampling, _ShiftTrace
 
 __all__ = ["Job", "load_result"]
 
@@ -502,7 +518,13 @@ def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
         "sha256": _sha256(source),
         "length_unit": mesh.length_unit,
     }
-    return args | _moved_nodes(mesh)
+    return args | _section(mesh) | _moved_nodes(mesh)
+
+
+def _section(mesh: Mesh) -> dict[str, Any]:
+    """A cross-section's thickness; no key for any other mesh (ADR 0096)."""
+    thickness = mesh.section_thickness
+    return {} if thickness is None else {"section_thickness": thickness}
 
 
 def _moved_nodes(mesh: Mesh) -> dict[str, Any]:
@@ -521,6 +543,7 @@ def _in_memory_mesh_args(mesh: Mesh) -> dict[str, Any]:
             "length_unit": mesh.length_unit,
             "regions": mesh.regions,
         }
+        | _section(mesh)
         | {name: np.asarray(getattr(topology, name)) for name in _TOPOLOGY_ARRAYS}
         | _moved_nodes(mesh)
     )
@@ -536,6 +559,7 @@ def _in_memory_mesh_from_args(args: dict[str, Any]) -> Mesh:
         length_unit=args["length_unit"],
         regions=tuple(args["regions"]),
         source=None,
+        section_thickness=args.get("section_thickness"),
         **arrays,
     )
     return _with_nodes(Mesh(jnp.asarray(topology.imported_nodes), topology), args)
@@ -576,8 +600,37 @@ def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
         return {}
 
     _mpi.on_root(_mpi.resolve_comm(context.comm), check, results=(OSError, ValueError))
-    mesh = Mesh.from_gmsh(path, length_unit=args["length_unit"], comm=context.comm)
+    if "section_thickness" in args:
+        mesh = Mesh.from_gmsh_cross_section(
+            path,
+            length_unit=args["length_unit"],
+            thickness=args["section_thickness"],
+            comm=context.comm,
+        )
+    else:
+        mesh = Mesh.from_gmsh(path, length_unit=args["length_unit"], comm=context.comm)
     return _with_nodes(mesh, args)
+
+
+@dataclasses.dataclass(frozen=True)
+class _Excluded:
+    """A model's ``excluded=`` mapping as written (tag ``Excluded``).
+
+    Only a model that excludes volumes from thermal or DC conduction problems
+    writes it; an electromagnetic-only model writes its list, as before. Being
+    a tagged object, it stops an older gfem at the unknown type by name.
+    """
+
+    em: tuple
+    thermal: tuple
+    dc_conduction: tuple
+
+
+def _excluded_args(model: Model) -> tuple | _Excluded:
+    em, thermal, dc = (model.excluded_from(k) for k in _Excluded.__dataclass_fields__)
+    if not thermal and not dc:
+        return em
+    return _Excluded(em, thermal, dc)
 
 
 def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
@@ -586,7 +639,7 @@ def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
         "materials": dict(model.materials),
         "boundaries": model.boundaries,
         "ports": model.ports,
-        "excluded": model.excluded,
+        "excluded": _excluded_args(model),
     }
 
 
@@ -595,8 +648,33 @@ def _model_from_args(args: dict[str, Any], _: _codec.Context) -> Model:
     return Model(mesh, **args)
 
 
-def _electrostatic_args(problem: Electrostatic, _: _codec.Context) -> dict[str, Any]:
+def _terminal_args(
+    problem: Electrostatic | DCConduction, _: _codec.Context
+) -> dict[str, Any]:
     return {"terminals": dict(problem.terminals), "ground": problem.ground}
+
+
+#: A transient's arguments: its waveform is written as the pytree holds it,
+#: start times and scales apart, so the scales' sidecar key is their leaf path.
+_TRANSIENT_NAMES = (
+    "heat",
+    "duration",
+    "steps",
+    "initial_temperature",
+    "traces",
+    "keep_fields",
+    "_switches",
+    "_scales",
+)
+
+
+def _transient_args(problem: TransientThermal, _: _codec.Context) -> dict[str, Any]:
+    return {name: getattr(problem, name) for name in _TRANSIENT_NAMES}
+
+
+def _transient_from_args(args: dict[str, Any], _: _codec.Context) -> TransientThermal:
+    switches, scales = args.pop("_switches"), args.pop("_scales")
+    return TransientThermal(**args, waveform=tuple(zip(switches, scales, strict=True)))
 
 
 def _field_args(field: Field, _: _codec.Context) -> dict[str, Any]:
@@ -642,6 +720,11 @@ def _options_args(options: SolverOptions, _: _codec.Context) -> dict[str, Any]:
     args = {f.name: getattr(options, f.name) for f in dataclasses.fields(options)}
     # a JSON object, as a user writes it; the constructor sorts it back
     args["petsc_options"] = dict(options.petsc_options)
+    # the time-stepping options are written only when set, so a job that
+    # does not step in time reads in a gfem that predates them
+    for name, default in (("time_scheme", "tr_bdf2"), ("theta", 1.0)):
+        if args[name] == default:
+            del args[name]
     return args
 
 
@@ -657,6 +740,7 @@ _MESH_NAMES = (
     "nodes",
     "source",
     "regions",
+    "section_thickness",
     *_TOPOLOGY_ARRAYS,
 )
 
@@ -669,19 +753,44 @@ _codec.register(
     names=("mesh", "materials", "boundaries", "ports", "excluded"),
 )
 _codec.register(
+    _Excluded,
+    tag="Excluded",
+    from_args=lambda a, _: dict(a),
+    names=("em", "thermal", "dc_conduction"),
+)
+_codec.register(
     EnclosedBy,
     from_args=lambda a, _: EnclosedBy(tuple(a["surfaces"])),
     names=("surfaces",),
 )
+
+
+def _renamed_density_from_args(cls: type) -> _codec.FromArgs:
+    """Read an older file's ``density`` key as ``mass_density`` (ADR 0171)."""
+
+    def from_args(args: dict[str, Any], _: _codec.Context) -> Any:
+        if "density" in args:
+            old = args.pop("density")
+            args.setdefault("mass_density", old)
+        return cls(**args)
+
+    return from_args
+
+
+for _cls in (Material, MaterialField):
+    _codec.register(
+        _cls,
+        from_args=_renamed_density_from_args(_cls),
+        # "density": the mass density as gfem 0.1 wrote it (a read alias)
+        names=[f.name for f in dataclasses.fields(_cls) if f.init] + ["density"],
+    )
 for _cls in (
-    Material,
     # a Material's eps_r may hold a law: tags of their own, no Material key
     PermittivityLaw,
     Drude,
     Lorentz,
     Debye,
     DjordjevicSarkar,
-    MaterialField,
     # a law blend's fixed ends (MaterialField.blend_ends, ADR 0113)
     Blend,
     SheetField,
@@ -691,6 +800,12 @@ for _cls in (
     Conductor,
     Impedance,
     Periodic,
+    FixedTemperature,
+    Convection,
+    HeatFlux,
+    # a joule source's power density goes to the sidecar by its leaf path
+    HeatSource,
+    SteadyThermal,
     LumpedPort,
     WavePort,
     FloquetPort,
@@ -706,6 +821,9 @@ for _cls in (
     Eigenmode,
     EigenmodeResult,
     InterfaceParticipation,
+    DCConductionResult,
+    SteadyThermalResult,
+    TransientThermalResult,
 ):
     _codec.register(_cls)
 _codec.register(
@@ -720,7 +838,33 @@ _codec.register(
     # "sigma": the scalar conductivity of sections saved by 0.1.0
     names=[f.name for f in dataclasses.fields(PortSection) if f.init] + ["sigma"],
 )
-_codec.register(Electrostatic, to_args=_electrostatic_args)
+_codec.register(Electrostatic, to_args=_terminal_args)
+_codec.register(DCConduction, to_args=_terminal_args)
+_codec.register(
+    TransientThermal,
+    to_args=_transient_args,
+    from_args=_transient_from_args,
+    names=_TRANSIENT_NAMES,
+)
+# a Trace.point or Trace.mean
+_codec.register(_FieldTrace, tag="Trace")
+# ThermoOpticShift.trace(): its weights, and the optical mesh's tetrahedra
+# that sample the rise
+_codec.register(_ShiftTrace, tag="ShiftTrace")
+_codec.register(_Sampling, tag="ShiftSampling")
+# RoutePhase.trace(name): its weights, and the window placed along the route
+_codec.register(_RouteTrace, tag="RouteTrace")
+_ROUTE_SAMPLER_NAMES = tuple(
+    f.name for f in dataclasses.fields(_RouteSampler) if f.name != "_cache"
+)
+_codec.register(
+    _RouteSampler,
+    tag="RouteSampler",
+    # the located matrices are a cache, rebuilt on the first sample
+    to_args=lambda r, _: {n: getattr(r, n) for n in _ROUTE_SAMPLER_NAMES},
+    from_args=lambda a, _: _RouteSampler(**a),
+    names=_ROUTE_SAMPLER_NAMES,
+)
 _codec.register(
     PortModeField,
     to_args=_port_mode_field_args,

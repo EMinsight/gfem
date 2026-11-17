@@ -23,6 +23,7 @@ from gfem._boundaries import (
     sheet_of,
     surfaces_of,
 )
+from gfem._domain import physics_of
 from gfem._engine.anisotropy import CROSS_N, edge_admittance
 from gfem._materials import (
     PROPERTIES,
@@ -368,6 +369,7 @@ def port_section_key(model: Model, port: WavePort) -> str:
         tuple(
             dataclasses.replace(b, fill=None) if sheet_of(b) is not None else b
             for b in model.boundaries
+            if physics_of(b) == "em"
         )
     )
     faces = mesh.elements(port.surface)

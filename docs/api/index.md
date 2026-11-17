@@ -15,6 +15,8 @@ gfem/solve/index
 gfem/results/index
 gfem/refinement/index
 gfem/measurements/index
+gfem/thermal/index
+gfem/thermo_optic/index
 gfem/quantum/index
 gfem/design/index
 gfem/shape/index

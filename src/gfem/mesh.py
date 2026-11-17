@@ -21,7 +21,7 @@ LENGTH_UNITS = {"m": 1.0, "cm": 1e-2, "mm": 1e-3, "um": 1e-6, "nm": 1e-9}
 #: What a failed read raises on one process, so on every rank above one.
 _READ_ERRORS = (ValueError, OSError, meshio.ReadError)
 
-_TOPOLOGY_STATICS = ("length_unit", "regions", "source")
+_TOPOLOGY_STATICS = ("length_unit", "regions", "source", "section_thickness")
 _TOPOLOGY_ARRAYS = (
     "imported_nodes",
     "tetrahedra",
@@ -37,6 +37,10 @@ _TOPOLOGY_ARRAYS = (
 _TET_FACES = np.array([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]])
 # Local vertex pairs of a tetrahedron's six edges.
 _TET_EDGES = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+
+#: The end faces a cross-section's slab gains, at the section's plane and one
+#: thickness along +z.
+END_FACES = ("front", "back")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -73,15 +77,12 @@ class _Topology:
     tri_entities: np.ndarray
     tri_neighbours: np.ndarray
     source: Path | None = None
+    section_thickness: float | None = None
 
 
 def _read_gmsh(path: Path, length_unit: str) -> _Topology:
     """Parse the file: what `Mesh.from_gmsh` does on one process."""
-    if length_unit not in LENGTH_UNITS:
-        raise ValueError(
-            f"Unknown length_unit {length_unit!r}; use one of "
-            f"{', '.join(repr(u) for u in LENGTH_UNITS)}."
-        )
+    _check_unit(length_unit)
     raw = meshio.read(path, file_format="gmsh")
     regions = _regions(raw)
     cells = _cells(raw, path)
@@ -106,17 +107,190 @@ def _read_gmsh(path: Path, length_unit: str) -> _Topology:
     return topology
 
 
-def _read_on_rank_0(path: Path, length_unit: str, comm) -> _Topology:
+def _check_unit(length_unit: str) -> None:
+    if length_unit not in LENGTH_UNITS:
+        raise ValueError(
+            f"Unknown length_unit {length_unit!r}; use one of "
+            f"{', '.join(repr(u) for u in LENGTH_UNITS)}."
+        )
+
+
+def _check_thickness(thickness) -> float:
+    try:
+        value = float(thickness)
+    except (TypeError, ValueError):
+        value = float("nan")
+    if not (np.isfinite(value) and value > 0):
+        raise ValueError(
+            f"thickness must be a positive length in metres, got {thickness!r}; "
+            "leave it None to let gfem pick one."
+        )
+    return value
+
+
+def _check_section_plane(points: np.ndarray, path: Path) -> None:
+    """The section must lie in a plane z = constant."""
+    extent = np.ptp(points[:, :2], axis=0).max()
+    if np.ptp(points[:, 2]) > 1e-9 * extent:
+        raise ValueError(
+            f"{path.name}: the cross-section's nodes do not lie in one plane "
+            "z = constant. Mesh the section in the xy plane in gmsh."
+        )
+
+
+def _check_lines_on_edges(
+    lines: np.ndarray,
+    tags: np.ndarray,
+    edges: np.ndarray,
+    regions: tuple[Region, ...],
+    path: Path,
+) -> None:
+    """Every grouped line must be an edge of the section's triangles."""
+    off = (lines < 0).any(axis=1)
+    known = {tuple(e) for e in edges.tolist()}
+    off |= np.array([tuple(sorted(e)) not in known for e in lines.tolist()], bool)
+    if off.any():
+        name = {r.tag: r.name for r in regions if r.dim == 2}
+        group = name.get(int(tags[np.flatnonzero(off)[0]]))
+        raise ValueError(
+            f"{path.name}: a line of the 1D physical group {group!r} is not an edge "
+            "of the section's triangles, so the lines and the triangles do not "
+            "conform. Mesh the lines as part of the 2D mesh in gmsh."
+        )
+
+
+def _default_thickness(points: np.ndarray, edges: np.ndarray) -> float:
+    """The mean in-plane edge length: well-shaped tetrahedra (ADR 0170)."""
+    return float(
+        np.linalg.norm(points[edges[:, 0]] - points[edges[:, 1]], axis=1).mean()
+    )
+
+
+def _split_prisms(tris: np.ndarray, n: int, nodes: np.ndarray) -> np.ndarray:
+    """Three positive tetrahedra per prism over each triangle, rows per triangle.
+
+    Each quadrilateral side is cut along the diagonal from its lowest-index node
+    (the lowest-index rule), so two prisms that share a side cut it alike and the
+    tetrahedra conform.
+    """
+    a, b, c = np.sort(tris, axis=1).T
+    tets = np.stack(
+        [
+            np.stack([a, b, c, c + n], axis=1),
+            np.stack([a, b, b + n, c + n], axis=1),
+            np.stack([a, a + n, b + n, c + n], axis=1),
+        ],
+        axis=1,
+    ).reshape(-1, 4)
+    x = nodes[tets]
+    e = x[:, 1:] - x[:, :1]
+    negative = np.linalg.det(e) < 0
+    tets[negative] = tets[negative][:, [0, 2, 1, 3]]
+    return tets
+
+
+def _split_quads(lines: np.ndarray, n: int) -> np.ndarray:
+    """Two triangles per extruded line, cut as `_split_prisms` cuts the sides.
+
+    Each triangle's normal is the line's direction crossed with +z, so a
+    consistently oriented 1D group gives a consistently oriented surface.
+    """
+    p, q = lines.T
+    low = p < q
+    first = np.where(
+        low[:, None], np.stack([p, q, q + n], 1), np.stack([p, q, p + n], 1)
+    )
+    second = np.where(
+        low[:, None], np.stack([p, q + n, p + n], 1), np.stack([q, q + n, p + n], 1)
+    )
+    return np.stack([first, second], axis=1).reshape(-1, 3)
+
+
+def _read_cross_section(
+    path: Path, length_unit: str, thickness: float | None
+) -> _Topology:
+    """Parse a triangle section and extrude it (`Mesh.from_gmsh_cross_section`)."""
+    _check_unit(length_unit)
+    if thickness is not None:
+        thickness = _check_thickness(thickness)
+    raw = meshio.read(path, file_format="gmsh")
+    regions = _regions(raw, section=True)
+    taken = [r.name for r in regions if r.name in END_FACES]
+    if taken:
+        raise ValueError(
+            f"{path.name} names a physical group {taken[0]!r}, but a cross-section's "
+            f"end faces are named {END_FACES[0]!r} and {END_FACES[1]!r}. Rename the "
+            "group in gmsh and export the mesh again."
+        )
+    cells = _cells(raw, path, section=True)
+    tris, area_tags, area_entities = cells["triangle"]
+    lines, line_tags, line_entities = cells["line"]
+    if len(tris) == 0:
+        raise ValueError(
+            f"{path.name} has no triangle in a 2D physical group: a cross-section "
+            "needs its areas meshed and named as gmsh physical groups."
+        )
+    # keep the section's nodes, in file order
+    used = np.unique(tris)
+    index = np.full(len(raw.points), -1, dtype=np.int64)
+    index[used] = np.arange(len(used))
+    points = np.asarray(raw.points, dtype=float)[used] * LENGTH_UNITS[length_unit]
+    tris, lines = index[tris], index[lines]
+    edges = np.unique(np.sort(tris[:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2)), axis=0)
+    _check_section_plane(points, path)
+    _check_lines_on_edges(lines, line_tags, edges, regions, path)
+    if thickness is None:
+        thickness = _default_thickness(points, edges)
+    n = len(points)
+    nodes = np.concatenate([points, points + np.array([0.0, 0.0, thickness])])
+    tets = _split_prisms(tris, n, nodes)
+    sides = _split_quads(lines, n)
+    tag = max((r.tag for r in regions if r.dim == 2), default=0)
+    front, back = Region(END_FACES[0], tag + 1, 2), Region(END_FACES[1], tag + 2, 2)
+    ends = np.full(len(tris), 1, dtype=np.int64)
+    triangles = np.concatenate([sides, tris, tris + n])
+    tri_tags = np.concatenate(
+        [np.repeat(line_tags, 2), ends * front.tag, ends * back.tag]
+    )
+    tri_entities = np.concatenate(
+        [np.repeat(line_entities, 2), ends * front.tag, ends * back.tag]
+    )
+    neighbours = _triangle_neighbours(nodes, tets, triangles, path)
+    topology = _Topology(
+        length_unit=length_unit,
+        imported_nodes=readonly(nodes),
+        regions=(*regions, front, back),
+        tetrahedra=readonly(tets),
+        tet_tags=readonly(np.repeat(area_tags, 3)),
+        tet_entities=readonly(np.repeat(area_entities, 3)),
+        triangles=readonly(triangles),
+        tri_tags=readonly(tri_tags),
+        tri_entities=readonly(tri_entities),
+        tri_neighbours=readonly(neighbours),
+        source=path.resolve(),
+        section_thickness=float(thickness),
+    )
+    _check_tags(topology, path, section=True)
+    return topology
+
+
+def _read_on_rank_0(
+    path: Path, length_unit: str, comm, *, section: bool = False, thickness=None
+) -> _Topology:
     """Parse on rank 0 and broadcast (ADR 0060); a failed read raises on every rank.
+
+    With ``section``, read a cross-section (`Mesh.from_gmsh_cross_section`,
+    whose ``thickness`` argument this is).
 
     Raises:
         _mpi.AgreedError: Ranks asked for different paths or units.
     """
-    _mpi.meet(comm, "Mesh.from_gmsh")
-    asked = comm.allgather((str(path.resolve()), length_unit))
+    name = "Mesh.from_gmsh_cross_section" if section else "Mesh.from_gmsh"
+    _mpi.meet(comm, name)
+    asked = comm.allgather((str(path.resolve()), length_unit, section, thickness))
     if len(set(asked)) > 1:
         raise _mpi.AgreedError(
-            f"Mesh.from_gmsh is collective, but ranks asked for {sorted(set(asked))}. "
+            f"{name} is collective, but ranks asked for {sorted(set(asked), key=str)}. "
             "Ranks reading files of their own pass comm=MPI.COMM_SELF."
         )
     topology, error = None, None
@@ -124,7 +298,11 @@ def _read_on_rank_0(path: Path, length_unit: str, comm) -> _Topology:
     with _mpi.section(comm, agreed=()):
         if comm.rank == 0:
             try:
-                topology = _read_gmsh(path, length_unit)
+                topology = (
+                    _read_cross_section(path, length_unit, thickness)
+                    if section
+                    else _read_gmsh(path, length_unit)
+                )
             except _READ_ERRORS as err:
                 error = err
         error = comm.bcast(error, root=0)
@@ -149,9 +327,10 @@ class Mesh:
     """A straight-sided tetrahedral mesh with named regions.
 
     Build one with `Mesh.from_gmsh` from a gmsh ``.msh`` file (format 2.2
-    ASCII or 4.1); ``length_unit`` names the unit of the file's coordinates,
-    and `nodes` are in metres. Regions are the gmsh physical groups, by name
-    and number.
+    ASCII or 4.1), or with `Mesh.from_gmsh_cross_section` from a 2D triangle
+    section, read as a one-element-thick slab; ``length_unit`` names the unit
+    of the file's coordinates, and `nodes` are in metres. Regions are the
+    gmsh physical groups, by name and number.
 
     A `Mesh` is a JAX
     `pytree <https://docs.jax.dev/en/latest/pytrees.html>`__:
@@ -166,7 +345,7 @@ class Mesh:
     """
 
     def __init__(self, nodes, topology: _Topology) -> None:
-        """Internal: use `Mesh.from_gmsh`."""
+        """Internal: use `Mesh.from_gmsh` or `Mesh.from_gmsh_cross_section`."""
         self.nodes = nodes
         self._topology = topology
 
@@ -218,11 +397,76 @@ class Mesh:
             topology = _read_on_rank_0(path, length_unit, comm)
         return cls(jnp.asarray(topology.imported_nodes), topology)
 
+    @classmethod
+    def from_gmsh_cross_section(
+        cls,
+        path: str | Path,
+        length_unit: str = "um",
+        *,
+        thickness: float | None = None,
+        comm=None,
+    ) -> Mesh:
+        """Read a 2D gmsh cross-section as a one-element-thick slab.
+
+        The file holds triangles only (format 2.2 ASCII or 4.1), in the xy
+        plane. gfem extrudes the section one element thick along +z and
+        splits each prism into three tetrahedra, so neighbouring prisms share
+        faces. Every 2D physical group becomes a volume and every 1D physical
+        group a surface, with its gmsh name and number; the end faces are the
+        surfaces ``front`` (the section's plane) and ``back`` (one thickness
+        along +z). Elements outside any physical group, points and other
+        lines are ignored.
+
+        The thickness is a numerical choice: a z-invariant problem's solution
+        does not depend on it, and quantities per unit length divide the slab's
+        totals by `section_thickness`.
+
+        Above one rank this is collective, as `from_gmsh` is.
+
+        Args:
+            path: The ``.msh`` file of the section.
+            length_unit: The length unit of the file's coordinates, one of
+                `LENGTH_UNITS`.
+            thickness: The slab thickness in metres. ``None`` picks the mean
+                in-plane edge length, which keeps the tetrahedra well shaped.
+            comm: The mpi4py communicator, as for `from_gmsh`.
+
+        Returns:
+            The slab mesh, with node coordinates in metres.
+
+        Raises:
+            ValueError: The unit is unknown, the thickness is not a positive
+                length, the file holds 3D elements (read it with
+                `from_gmsh`), the section is curved or not in one plane z =
+                constant, a 1D group is not on the triangles' edges, a group is
+                named ``front`` or ``back``, or the groups cannot be addressed
+                by name.
+            RuntimeError: Ranks asked for different paths, units or thicknesses.
+
+        Example:
+            A heater cross-section written in micrometres::
+
+                mesh = gfem.Mesh.from_gmsh_cross_section("heater.msh")
+                mesh.section_thickness  # m
+        """
+        comm = _mpi.resolve_comm(comm)
+        path = Path(path)
+        if comm is None:
+            topology = _read_cross_section(path, length_unit, thickness)
+        else:
+            topology = _read_on_rank_0(
+                path, length_unit, comm, section=True, thickness=thickness
+            )
+        return cls(jnp.asarray(topology.imported_nodes), topology)
+
     def __repr__(self) -> str:
+        section = self.section_thickness
         return (
             f"Mesh({len(self.imported_nodes)} nodes, {len(self.tetrahedra)} "
             f"tetrahedra, volumes={list(self.volumes)}, "
-            f"surfaces={list(self.surfaces)}, length_unit={self.length_unit!r})"
+            f"surfaces={list(self.surfaces)}, length_unit={self.length_unit!r}"
+            + ("" if section is None else f", section_thickness={section:.4g} m")
+            + ")"
         )
 
     # --- regions -------------------------------------------------------------
@@ -333,6 +577,15 @@ class Mesh:
         return self._topology.length_unit
 
     @property
+    def section_thickness(self) -> float | None:
+        """The slab thickness (m) of a cross-section, ``None`` for any other mesh.
+
+        Set by `from_gmsh_cross_section`; a quantity per unit length is the
+        slab's total divided by it.
+        """
+        return self._topology.section_thickness
+
+    @property
     def source(self) -> Path | None:
         """The absolute path of the imported file."""
         return self._topology.source
@@ -409,23 +662,39 @@ def _shortest_edges(mesh: Mesh) -> np.ndarray:
     return h
 
 
-def _regions(raw: meshio.Mesh) -> tuple[Region, ...]:
+def _regions(raw: meshio.Mesh, *, section: bool = False) -> tuple[Region, ...]:
+    """The physical groups; on a cross-section 2D groups are volumes, 1D surfaces."""
+    lift = 1 if section else 0
     regions = (
-        Region(name=name, tag=int(tag), dim=int(dim))
+        Region(name=name, tag=int(tag), dim=int(dim) + lift)
         for name, (tag, dim) in raw.field_data.items()
-        if int(dim) in (2, 3)
+        if int(dim) + lift in (2, 3)
     )
     return tuple(sorted(regions, key=lambda r: (-r.dim, r.tag)))
 
 
-def _cells(raw: meshio.Mesh, path: Path) -> dict[str, tuple[np.ndarray, ...]]:
-    """Tetrahedra and triangles with their physical and entity tags."""
+# meshio cell types with a 3D (volume) element
+_VOLUME_TYPES = ("tetra", "hexahedron", "wedge", "pyramid")
+# the dimension of each cell type a reader keeps
+_CELL_DIM = {"tetra": 3, "triangle": 2, "line": 1}
+
+
+def _cells(
+    raw: meshio.Mesh, path: Path, *, section: bool = False
+) -> dict[str, tuple[np.ndarray, ...]]:
+    """Volume and surface cells with their physical and entity tags.
+
+    For `Mesh.from_gmsh` tetrahedra and triangles; for a cross-section
+    (``section``) triangles and lines.
+    """
     if "gmsh:physical" not in raw.cell_data:
+        dims = "areas and lines" if section else "volumes and surfaces"
         raise ValueError(
-            f"{path.name} defines no physical groups. Name the volumes and "
-            "surfaces as gmsh physical groups and export the mesh again."
+            f"{path.name} defines no physical groups. Name the {dims} as gmsh "
+            "physical groups and export the mesh again."
         )
-    width = {"tetra": 4, "triangle": 3}
+    width = {"triangle": 3, "line": 2} if section else {"tetra": 4, "triangle": 3}
+    volume = "triangle" if section else "tetra"
     types = sorted({block.type for block in raw.cells})
     # meshio names higher-order cells by their node count (tetra10, line3, ...).
     curved = [t for t in types if t[-1].isdigit()]
@@ -437,11 +706,28 @@ def _cells(raw: meshio.Mesh, path: Path) -> dict[str, tuple[np.ndarray, ...]]:
             'gmsh.option.setNumber("Mesh.ElementOrder", 1); command line: '
             "gmsh -order 1)."
         )
+    solid = [t for t in types if t in _VOLUME_TYPES]
+    if section and solid:
+        raise ValueError(
+            f"{path.name} has {' / '.join(solid)} elements: it is a 3D mesh. Read "
+            "it with gfem.Mesh.from_gmsh; Mesh.from_gmsh_cross_section reads a 2D "
+            "section of triangles only."
+        )
+    if not section and not solid and "triangle" in types:
+        raise ValueError(
+            f"{path.name} has triangles and no tetrahedra: it is a 2D mesh. Read a "
+            "2D cross-section with gfem.Mesh.from_gmsh_cross_section, which "
+            "extrudes it into a one-element-thick slab."
+        )
     other = [t for t in types if t not in (*width, "line", "vertex")]
     if other:
+        supported = (
+            "cross-sections of triangles only (lines on boundaries)"
+            if section
+            else "tetrahedral meshes only (triangles on surfaces)"
+        )
         raise ValueError(
-            f"{path.name} has {' / '.join(other)} elements. gfem supports "
-            "tetrahedral meshes only (triangles on surfaces)."
+            f"{path.name} has {' / '.join(other)} elements. gfem supports {supported}."
         )
     parts: dict[str, list[tuple]] = {k: [] for k in width}
     for block, phys, geom in zip(
@@ -452,7 +738,7 @@ def _cells(raw: meshio.Mesh, path: Path) -> dict[str, tuple[np.ndarray, ...]]:
     ):
         if block.type in width:
             parts[block.type].append((block.data, phys, geom))
-    _check_overlaps_in_cell_sets(raw, path)
+    _check_overlaps_in_cell_sets(raw, path, section=section)
     out = {}
     for kind, items in parts.items():
         if items:
@@ -460,11 +746,16 @@ def _cells(raw: meshio.Mesh, path: Path) -> dict[str, tuple[np.ndarray, ...]]:
         else:
             data, phys, geom = np.empty((0, width[kind])), np.empty(0), np.empty(0)
         grouped = phys != 0  # gmsh writes group 0 for elements outside any group
-        if kind == "tetra" and not grouped.all():
+        if kind == volume and not grouped.all():
+            what = (
+                ("triangles", "2D", "area", "surfaces")
+                if section
+                else ("tetrahedra", "volume", "volume", "volumes")
+            )
             raise ValueError(
-                f"{path.name}: {int((~grouped).sum())} tetrahedra lie outside any "
-                "volume physical group. Every volume needs a named region: add "
-                "the missing volumes to a physical group in gmsh."
+                f"{path.name}: {int((~grouped).sum())} {what[0]} lie outside any "
+                f"{what[1]} physical group. Every {what[2]} needs a named region: "
+                f"add the missing {what[3]} to a physical group in gmsh."
             )
         out[kind] = (
             data[grouped].astype(np.int64),
@@ -485,9 +776,12 @@ def _overlap_error(path: Path, names: set[str]) -> ValueError:
     )
 
 
-def _check_overlaps_in_cell_sets(raw: meshio.Mesh, path: Path) -> None:
+def _check_overlaps_in_cell_sets(
+    raw: meshio.Mesh, path: Path, *, section: bool = False
+) -> None:
     """Msh 4.1: meshio keeps the first physical tag; its cell sets keep all."""
-    names = [n for n, (_, dim) in raw.field_data.items() if int(dim) in (2, 3)]
+    dims = (1, 2) if section else (2, 3)
+    names = [n for n, (_, dim) in raw.field_data.items() if int(dim) in dims]
     sets = {n: raw.cell_sets[n] for n in names if n in (raw.cell_sets or {})}
     for i, block in enumerate(raw.cells):
         members = np.zeros(len(block.data), dtype=np.int64)
@@ -510,7 +804,7 @@ def _check_duplicates(
     hit = counts[inverse.ravel()] > 1
     if not hit.any():
         return
-    dim = 3 if kind == "tetra" else 2
+    dim = _CELL_DIM[kind]
     name = {int(t): n for n, (t, d) in raw.field_data.items() if int(d) == dim}
     raise _overlap_error(path, {name.get(int(t), str(t)) for t in tags[hit]})
 
@@ -558,7 +852,7 @@ def _triangle_neighbours(
     return neighbours
 
 
-def _check_tags(topology: _Topology, path: Path) -> None:
+def _check_tags(topology: _Topology, path: Path, *, section: bool = False) -> None:
     """Every element's physical group must exist and be named."""
     for dim, tags, kind in (
         (3, topology.tet_tags, "tetrahedra"),
@@ -567,8 +861,14 @@ def _check_tags(topology: _Topology, path: Path) -> None:
         named = {r.tag for r in topology.regions if r.dim == dim}
         missing = sorted(set(np.unique(tags).tolist()) - named)
         if missing:
+            # a cross-section's message names the file's elements and groups
+            in_file = (
+                (dim - 1, "triangles" if dim == 3 else "lines")
+                if section
+                else (dim, kind)
+            )
             raise ValueError(
-                f"{path.name}: {kind} belong to {dim}D physical group(s) "
+                f"{path.name}: {in_file[1]} belong to {in_file[0]}D physical group(s) "
                 f"{missing} that have no name of their own in $PhysicalNames. "
                 "gfem addresses regions by name: give every physical group a "
                 "unique name in gmsh and export the mesh again."

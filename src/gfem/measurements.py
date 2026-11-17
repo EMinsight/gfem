@@ -63,6 +63,7 @@ __all__ = [
     "InterfaceParticipation",
     "characteristic_impedance",
     "electric_energy",
+    "element_mean",
     "interface_participation",
     "power_flow",
     "region_mean",
@@ -883,6 +884,125 @@ class _MeanKernel:
         rows = self._rows(values["nodes"])
         ct = np.reshape(cotangents["mean"], (len(rows),))
         return {"coefficients": rows.T @ ct}
+
+
+def element_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
+    """Mean of a scalar field over each tetrahedron of volume regions.
+
+    Each value is ``int_e f dV / |e|``, exact for the solved field (the
+    integral of its finite-element polynomial), in ``mesh.elements(region)``
+    order, the order a `gfem.MaterialField` on that region takes: a
+    temperature rise per element gives a per-element permittivity, for
+    example. It is `region_mean` without the sum: linear in the field's
+    coefficients, so differentiable like it, and the volume-weighted
+    average of the element means is the region mean.
+
+    Example:
+        A permittivity that follows the temperature rise in the core::
+
+            rise = gfem.element_mean(thermal.rise, "core")
+            eps = (n0 + dn_dt * rise) ** 2
+            core = gfem.MaterialField(eps_r=eps, region="core")
+
+    Args:
+        field: A scalar field of a result (H1 or L2), e.g.
+            ``result.rise`` or ``result.potential["t1"]``.
+        region: A volume region name, or a sequence of names (their
+            elements in turn).
+
+    Returns:
+        ``(n_elements,)``, one mean per tetrahedron of the region(s).
+
+    Raises:
+        TypeError: ``field`` is not a scalar `gfem.Field`, or ``region``
+            is neither a name nor a non-empty sequence of names.
+        RegionNotFoundError: A named region does not exist.
+        ValueError: A name is a surface region, or the region holds an
+            element outside the field's support.
+        gfem.DistributedUnsupportedError: The field is a piece across ranks.
+        NonDifferentiableError: The mesh node coordinates are differentiated.
+    """
+    from gfem._field import Field
+
+    if not isinstance(field, Field):
+        raise TypeError(f"element_mean needs a gfem.Field, got {type(field).__name__}.")
+    if _probe.COMPONENTS[field.space] != 1:
+        raise TypeError(
+            f"element_mean averages a scalar field, but this {field.quantity!r} "
+            f"field is a vector ({field.space}); average a vector field over a "
+            "region with region_mean."
+        )
+    if field._communicator is not None:  # noqa: SLF001
+        _mpi.refuse_feature("element_mean")
+    names = _region_names(region)
+    _check_mean_regions(field, names)
+    tets = np.concatenate([field.mesh.elements(n) for n in names])
+    return _element_means(
+        field,
+        tets,
+        f"element_mean over {list(names)}: {{n}} of their elements are outside "
+        "the field's support (excluded from its solve), where it has no value. "
+        "Average over regions the field is defined on.",
+    )
+
+
+def _element_means(field: Field, tetrahedra: np.ndarray, outside: str) -> jax.Array:
+    """The exact mean of a scalar ``field`` over each of ``tetrahedra``.
+
+    `element_mean`'s kernel on given tetrahedra of the field's own mesh,
+    differentiable in the field's coefficients.
+
+    Raises:
+        ValueError: Some tetrahedra are outside the field's support;
+            ``outside`` is the message, ``{n}`` their count.
+    """
+    mesh = field.mesh
+    tets = np.asarray(tetrahedra)
+    inside = np.isin(
+        mesh.tetrahedron_tags[tets], [mesh.region(n).tag for n in field.support]
+    )
+    if field._excluded:  # noqa: SLF001
+        entities = np.asarray(mesh.tetrahedron_entities)[tets]
+        tags = np.asarray(mesh.tetrahedron_tags)[tets]
+        for tag, entity in field._excluded:  # noqa: SLF001
+            inside &= ~((tags == tag) & (entities == entity))
+    if not inside.all():
+        raise ValueError(outside.format(n=int((~inside).sum())))
+    kernel = _ElementMeanKernel(field, tets)
+    return measure(
+        kernel, {"coefficients": field.coefficients, "nodes": field.mesh.nodes}
+    )["mean"]
+
+
+class _ElementMeanKernel(_MeanKernel):
+    """A scalar field's element means: ``R c`` and its transpose."""
+
+    name = "an element mean"
+
+    def __init__(self, field: Field, tetrahedra: np.ndarray) -> None:
+        super().__init__(field, ())
+        self.tetrahedra = tetrahedra
+        dtype = field.coefficients.dtype
+        self.output_specs = {"mean": jax.ShapeDtypeStruct((len(tetrahedra),), dtype)}
+
+    def _rows(self, nodes: np.ndarray) -> Any:
+        from gfem._engine.fields import element_rows
+
+        return element_rows(Mesh(nodes, self.topology), self.layout, self.tetrahedra)
+
+    def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        return {"mean": self._rows(values["nodes"]) @ values["coefficients"]}
+
+    def backward(
+        self,
+        values: dict[str, np.ndarray],
+        cotangents: dict[str, np.ndarray],
+        wanted: tuple[str, ...],
+    ) -> dict[str, np.ndarray]:
+        if wanted != ("coefficients",):  # the measure wrapper raised for others
+            raise NotImplementedError(f"no element mean gradient for {wanted}")
+        rows = self._rows(values["nodes"])
+        return {"coefficients": rows.T @ np.asarray(cotangents["mean"])}
 
 
 def _recorded_region_mean(

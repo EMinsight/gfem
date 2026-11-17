@@ -23,6 +23,7 @@ import numpy as np
 
 from gfem import _mpi
 from gfem._checks import is_staging, is_traced
+from gfem._domain import physics_of
 from gfem._floquet import floquet_ports
 from gfem._pytree import readonly
 from gfem._refine import Refinement, bisect, transfer, transfer_design
@@ -1623,7 +1624,9 @@ def _conserves_power(model: Model) -> bool:
     return (
         all(isinstance(p, LumpedPort) for p in model.ports)
         and not _undefined_rows(model)
-        and all(isinstance(b, PEC | PMC) for b in model.boundaries)
+        and all(
+            isinstance(b, PEC | PMC) for b in model.boundaries if physics_of(b) == "em"
+        )
         and not _lossy_elements(model).any()
     )
 
@@ -2412,6 +2415,15 @@ def _check_problem(model: Model, problem: Any) -> None:
             "Mesh refinement has no path for a gfem.PortMode problem: refine "
             "the device with a gfem.Driven problem on its wave ports, whose "
             "mode solve runs on the refined port faces.",
+        )
+    # "thermal" or "dc_conduction": the estimators are electromagnetic
+    feature = physics_of(problem)
+    if feature != "em":
+        raise MeshRefinementUnsupportedError(
+            feature,
+            f"Mesh refinement has no path for a gfem.{type(problem).__name__} "
+            "problem: its error estimators are electromagnetic. Refine the mesh "
+            "in your mesher.",
         )
     if not isinstance(problem, (Electrostatic, Driven, Eigenmode)):
         raise TypeError(

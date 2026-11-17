@@ -289,6 +289,64 @@ Tests: [dressed modes](https://github.com/benvial/gfem/blob/main/tests/unit/test
 and the dispersive-shift cells of the
 [gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py).
 
+## Thermal
+
+Thermal and DC conduction solves are checked against closed forms, against
+each other, and against two independent codes, gsim and femwell, on the same
+heater. Each check runs on every change to gfem.
+
+- **Exact in the discrete space.** Layered slabs, in series, under
+  convection and with a convection-only bottom, give their hand temperatures,
+  on a cross-section and on unstructured 3D tetrahedra. A bar gives
+  R = L/(σA), a two-conductor slab the hand formula for its resistance per
+  length, heat and power, and the power a conductor dissipates equals the
+  power its terminals deliver. Switching a source on and off equals two
+  superposed steps, and twice the power gives twice the rise.
+- **Closed forms.** A strip heater on a substrate follows the ln coth profile
+  of its temperature, and its far field decays over 2H/π. A slab's slowest
+  thermal mode gives its time constant. The late decay of a step response
+  matches it, with TR-BDF2 and with the θ schemes, and the 10–90 % and 1/e
+  times match the analytic trace normalised over the same window. After ten
+  time constants a run reaches the steady temperature. The resistance of an
+  annular bend matches its closed form, and the Joule heat of each element is
+  the exact mean of σ|∇V|² over it.
+- **The thermo-optic shift.** The first-order shift agrees with a mode
+  re-solved on the heated permittivity at the drive that gives π. An optical
+  window around the core gives the same shift as the whole section with the
+  other regions excluded. A route through a z-invariant 3D rise gives the
+  section's phase per length times its length, and the first order agrees
+  with a re-solved mode at a station in a 3D heater.
+- **3D against the cross-section.** A heater section extruded in layers of
+  tetrahedra gives the slab's resistance per length and its core rise per
+  watt per metre.
+- **Two independent codes.** On the femwell TiN heater section, meshed by
+  gsim and read by gfem from gsim's own file, gfem's P_π matches gsim's
+  (22.39 mW) and femwell's published 22.6 mW, and the heater's resistance
+  matches gsim's. Driven at P_π with the backward Euler scheme on gsim's time
+  grid, the rise time and the time constant match gsim's.
+- **Gradients.** Every thermal gradient of the matrix on
+  {doc}`capabilities`, and one chain from the heater's conductivity, every
+  element's thermal conductivity, the core's thermo-optic coefficient and
+  the drive current through DC conduction, Joule heating, the steady and the
+  transient temperature to the phase, matches fourth-order central
+  differences, on the direct and BDDC + GMRES solvers.
+
+Two comparisons are observations, not checks, and live on the tutorials. The
+TiN heater of Jacques et al. (2019): gfem's P_π falls inside the published
+bands at both heater widths ({doc}`tutorials/heater`). The 3D spiral heater:
+its P_π, resistance and per-pass phases on three meshes
+({doc}`tutorials/heater3d`).
+
+Tests: [closed forms](https://github.com/benvial/gfem/blob/main/tests/verification/test_thermal_closed_forms.py),
+[gsim and femwell](https://github.com/benvial/gfem/blob/main/tests/verification/test_thermal_parity.py),
+[extrusion](https://github.com/benvial/gfem/blob/main/tests/verification/test_thermal_extrusion.py),
+[DC conduction](https://github.com/benvial/gfem/blob/main/tests/verification/test_dc_conduction.py),
+[thermo-optic shift](https://github.com/benvial/gfem/blob/main/tests/verification/test_thermo_optic.py),
+[route phase](https://github.com/benvial/gfem/blob/main/tests/verification/test_route_phase.py),
+[steady](https://github.com/benvial/gfem/blob/main/tests/unit/test_steady_thermal.py),
+[transient](https://github.com/benvial/gfem/blob/main/tests/unit/test_transient_thermal.py),
+[gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py).
+
 (verification-mesh-refinement)=
 ## Mesh refinement error estimates
 

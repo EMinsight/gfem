@@ -32,6 +32,10 @@ transmon-mesh:
 metagrating-mesh:
     uv run --with gmsh==4.15.2 --with numpy --no-project python tools/metagrating_mesh.py docs/tutorials/data
 
+# Rebuild the heater tutorial's cross-sections, docs/tutorials/data/heater_w{2,7p5}.msh, and the thermo-optic recipe's extruded heater_straight.msh (tools/heater_section_mesh.py, gmsh pinned; a new mesh means re-measuring the tutorial's and the recipes' values).
+heater-section-mesh:
+    uv run --with gmsh==4.15.2 --no-project python tools/heater_section_mesh.py docs/tutorials/data
+
 # Regenerate the front page's hero data, docs/_data/front-page.json, from the 3D bend's run record (solves nothing).
 front-page-data:
     {{ docs_env }} python tools/front_page_data.py
@@ -40,6 +44,11 @@ front-page-data:
 bend3d-data work="/tmp/bend3d-run":
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_run.py all --out "{{ work }}"
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_run.py merge --out "{{ work }}" --record docs/tutorials/data
+
+# Rerun the 3D spiral heater and rewrite its run record, docs/tutorials/data/heater3d.{json,npz} (tools/heater3d_run.py, gmsh pinned): about 30 min on 16 cores; the ladder's finest mesh needs about 14 GiB.
+heater3d-data work="/tmp/heater3d-run":
+    JAX_PLATFORMS=cpu uv run --with gmsh==4.15.2 --group docs python tools/heater3d_run.py all --out "{{ work }}"
+    JAX_PLATFORMS=cpu uv run --with gmsh==4.15.2 --group docs python tools/heater3d_run.py merge --out "{{ work }}" --record docs/tutorials/data
 
 # Rerun the arc design's spectrum beside the 3D bend's run record, docs/tutorials/data/bend3d_arc.{json,npz} (tools/bend3d_arc_spectrum.py): about 20 min on 16 cores / 96 GiB with the mkl extra.
 bend3d-arc-data work="/tmp/bend3d-arc":

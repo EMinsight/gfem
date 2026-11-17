@@ -9,10 +9,11 @@ from typing import TYPE_CHECKING, Any, overload
 from gfem import _mpi
 from gfem._adjoint import solve_vjp
 from gfem._checks import is_traced
+from gfem._domain import physics_of
 from gfem._materials import MaterialField
 from gfem._periodic import check_nodes
 from gfem.errors import LinearSolverConvergenceError
-from gfem.model import Model
+from gfem.model import _PHYSICS_NAMES, Model
 from gfem.options import SolverOptions
 from gfem.shape import _check_quality
 
@@ -21,12 +22,23 @@ if TYPE_CHECKING:
 
     from gfem._eigen.rule import DualRequest
     from gfem._engine.driven import AdjointLoads
-    from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
+    from gfem.problems import (
+        DCConduction,
+        Driven,
+        Eigenmode,
+        Electrostatic,
+        PortMode,
+        SteadyThermal,
+        TransientThermal,
+    )
     from gfem.results import (
+        DCConductionResult,
         DrivenResult,
         EigenmodeResult,
         ElectrostaticResult,
         PortModeResult,
+        SteadyThermalResult,
+        TransientThermalResult,
     )
 
 __all__ = ["release_memory", "solve"]
@@ -40,6 +52,30 @@ def solve(
     options: SolverOptions | None = None,
     comm: Any = None,
 ) -> ElectrostaticResult: ...
+@overload
+def solve(
+    model: Model,
+    problem: DCConduction,
+    *,
+    options: SolverOptions | None = None,
+    comm: Any = None,
+) -> DCConductionResult: ...
+@overload
+def solve(
+    model: Model,
+    problem: SteadyThermal,
+    *,
+    options: SolverOptions | None = None,
+    comm: Any = None,
+) -> SteadyThermalResult: ...
+@overload
+def solve(
+    model: Model,
+    problem: TransientThermal,
+    *,
+    options: SolverOptions | None = None,
+    comm: Any = None,
+) -> TransientThermalResult: ...
 @overload
 def solve(
     model: Model,
@@ -162,6 +198,7 @@ def _solve(
     if resolved is not None:
         _mpi.refuse(model, problem, options)
     rule_class = _rule_class(problem)
+    _check_domain(model, problem)
     _check_blends(model, problem)
     if resolved is None:
         rule = rule_class(model, problem, options)
@@ -176,13 +213,18 @@ def _solve(
     if adjoint_loads is not None:
         rule.adjoint_loads = adjoint_loads
     if is_traced((model, problem)):
-        return rule.result(solve_vjp(rule, model, problem)), None
+        # a rule may differentiate a problem through its own leaves (a thermal
+        # problem's summed heat density, ADR 0178)
+        inputs = getattr(rule, "vjp_problem", None)
+        leaves = problem if inputs is None else inputs(problem)
+        return rule.result(solve_vjp(rule, model, leaves)), None
     # A moved mesh must keep its periodic pairs and stay valid on the solve
     # domain.
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
+    physics = physics_of(problem)
     _check_quality(
         model.mesh,
-        model._domain.active,  # noqa: SLF001
+        model._domain_of(physics).active,  # noqa: SLF001
         stacklevel=4,
         comm=resolved,
     )
@@ -199,6 +241,27 @@ def _solve(
         raise
     adjoints = rule.adjoints if adjoint_loads is not None else None
     return rule.result(outputs), adjoints
+
+
+def _check_domain(model: Model, problem: Any) -> None:
+    """Raise when the problem's physics has nothing left to solve on.
+
+    A model needs some volume in some physics' domain (ADR 0167); an empty
+    domain for one physics raises when a problem of that physics is solved.
+    A problem names its physics as ``_physics`` (`physics_of`).
+
+    Raises:
+        ValueError: Every volume is excluded from the problem's physics.
+    """
+    physics = physics_of(problem)
+    if model._domain_of(physics).active.any():  # noqa: SLF001
+        return
+    name = _PHYSICS_NAMES[physics]
+    raise ValueError(
+        f"Every volume is excluded from {name} problems, so the "
+        f"{type(problem).__name__} problem has nothing to solve on. Exclude "
+        f"fewer volumes for {name} problems (excluded=)."
+    )
 
 
 def _check_blends(model: Model, problem: Any) -> None:

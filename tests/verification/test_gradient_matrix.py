@@ -9,7 +9,10 @@ One cell per problem type x input kind x linear solver x frequency sweep:
   probed fields) on a periodic cell with plain and Bloch periodicity,
   driven S through Floquet ports (diffraction efficiencies, cross-polarized
   entries and rows that read 0, plain and at a conical Bloch wave vector),
-  eigenfrequency (frequency and loss of a simple mode);
+  eigenfrequency (frequency and loss of a simple mode); steady and
+  transient heat conduction (TR-BDF2 and theta, on a kept trajectory and
+  from checkpoints) and DC conduction (its conductance, and its
+  dissipation through a Joule heat source);
 - inputs: per-element permittivity ``eps_r`` and conductivity, the same per
   principal value of a field with axes (``eps_r_axes``,
   ``conductivity_axes``: biaxial values on the `TILTED` axes, so every
@@ -17,7 +20,9 @@ One cell per problem type x input kind x linear solver x frequency sweep:
   loss tangent ``tan_delta`` (driven and eigenmode, on the direct solver:
   the solver and sweep paths are the permittivity's), the fill of a
   `gfem.SheetField`,
-  and the mesh node coordinates (through `gfem.shape.boundary_morph`);
+  and the mesh node coordinates (through `gfem.shape.boundary_morph`); the
+  thermal conductivity, mass density and specific heat, and a heat
+  source's amount and a waveform's scales (input ``heat``);
 - solvers: ``direct`` and ``bddc_gmres``; sweeps: uniform and adaptive (with
   frozen samples; the objective reads S at the samples, where the reduced
   model reproduces the full solve of the perturbed design too, so the
@@ -45,6 +50,15 @@ Bloch eigenmode solve), where the left eigenvectors carry the gradient. Its
 node direction moves the twins of every pair together (a periodic
 direction, the raw node gradient).
 
+The chain gate (``-k chain``, ADR 0177) differentiates the whole thermal
+chain on a heater slab: DC conduction -> Joule heating at a current ->
+steady thermal -> thermo-optic shift (phase per length plus the core's mean
+temperature), in the heater's per-element conductivity, every element's
+thermal conductivity, the core's per-element thermo-optic coefficient and
+the current at once, with unequal boundary temperatures (so the
+source-free temperature enters), on both solvers; and its transient twin (a
+phase trace and a mean-temperature trace from a uniform start).
+
 Then the consistency checks (JAX transformations and evicted cache entries
 per input kind, reciprocity against an explicit adjoint, adaptive against
 uniform at the samples) and the degenerate eigenmode clusters. Pairs this
@@ -68,6 +82,7 @@ import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
 import pytest
+import thermal_cases as tc
 from anisotropy import TILTED
 from finite_differences import (
     assert_gradient_matches,
@@ -160,6 +175,7 @@ from periodic_cases import (
 
 import gfem
 from gfem.shape import boundary_morph
+from gfem.thermal import _tet_volumes
 
 #: G's Bloch cells meet its absorbing top obliquely (`pc.G_OBLIQUE`).
 pytestmark = pytest.mark.filterwarnings(pc.G_OBLIQUE)
@@ -498,6 +514,40 @@ def _electrostatic_law_cells() -> list[Cell]:
     return [Cell("electrostatic", "law", "direct", variant="static")]
 
 
+def _thermal_cells() -> list[Cell]:
+    """Steady and transient heat conduction, and DC conduction (ADR 0177).
+
+    Each transient input on both schemes, on a kept trajectory (``full``)
+    and from checkpoints (``checkpoints``: ``retain_memory=0`` keeps no
+    entry, so the backward reruns its forward with checkpoints, ADR 0179).
+    """
+    cells = []
+    for solver in SOLVERS:
+        cells.append(Cell("steady_thermal", "thermal_conductivity", solver))
+        for scheme in ("tr_bdf2", "theta"):
+            for layout in ("full", "checkpoints"):
+                variant = f"{scheme}-{layout}"
+                cells += [
+                    Cell("transient_thermal", name, solver, variant=variant)
+                    for name in (
+                        "thermal_conductivity",
+                        "mass_density",
+                        "specific_heat",
+                    )
+                ]
+                cells += [
+                    Cell(
+                        "transient_thermal", "heat", solver, variant=f"{variant}-{what}"
+                    )
+                    for what in ("amount", "waveform")
+                ]
+        cells += [
+            Cell("dc_conduction", "conductivity", solver, variant=v)
+            for v in ("resistance", "dissipation")
+        ]
+    return cells
+
+
 CELLS = [
     *_cells(),
     *_driven_periodic_cells(),
@@ -508,6 +558,7 @@ CELLS = [
     *_law_cells(),
     *_blend_cells(),
     *_electrostatic_law_cells(),
+    *_thermal_cells(),
 ]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
@@ -672,6 +723,44 @@ class Designs:
         return dispersive_mesh(self._dir("dispersive"))
 
     @functools.cached_property
+    def thermal_slab(self):
+        # a heater on a block of cladding, sunk below, cooled above (um)
+        rects = [
+            (0.0, 0.0, 3.0, 3.0, "clad", None),
+            (1.0, 3.0, 2.0, 4.0, "heater", None),
+        ]
+        edges = [
+            (lambda p: abs(p[1]) < 1e-9, "bottom"),
+            (lambda p: abs(p[1] - 4.0) < 1e-9, "top"),
+        ]
+        return tc.section(self._dir("thermal_slab") / "slab.msh", rects, 0.6, edges)
+
+    @functools.cached_property
+    def dc_bar(self):
+        # a conducting bar between two terminals, oxide above it (um)
+        rects = [(0.0, 0.0, 3.0, 1.0, "bar", None), (0.0, 1.0, 3.0, 2.0, "ox", None)]
+        edges = [
+            (lambda p: abs(p[0]) < 1e-9 and p[1] < 1.0, "left"),
+            (lambda p: abs(p[0] - 3.0) < 1e-9 and p[1] < 1.0, "right"),
+        ]
+        return tc.section(self._dir("dc_bar") / "bar.msh", rects, 0.4, edges)
+
+    @functools.cached_property
+    def chain_slab(self):
+        # a TiN-like heater 1.5 um above a silicon core in oxide, sunk below
+        # and cooled above (um); the heater's terminals on the end faces
+        rects = [
+            (-1.75, -1.0, 1.75, 1.8, "clad", None),
+            (-0.25, 0.0, 0.25, 0.22, "core", 0.05),
+            (-0.5, 1.5, 0.5, 1.65, "heater", 0.1),
+        ]
+        edges = [
+            (lambda p: abs(p[1] + 1.0) < 1e-9, "bottom"),
+            (lambda p: abs(p[1] - 1.8) < 1e-9, "top"),
+        ]
+        return tc.section(self._dir("chain_slab") / "slab.msh", rects, 0.3, edges)
+
+    @functools.cached_property
     def law_shape_line(self):
         # the shape line's magnetic cover as a Lorentz medium (mu_r kept)
         line = shape_line(self._dir("law_shape_line"))
@@ -718,6 +807,12 @@ STEPS = {
     # a blend's density, in [0.2, 0.8] (the linear blend's S is strongly
     # curved: 1e-2 leaves 6e-7 of truncation, 5e-3 4e-8)
     "blend": 5e-3,
+    # thermal: k in [1, 2] W/(m K), rho in [2000, 2400] kg/m^3, c_p in
+    # [600, 800] J/(kg K); the amount and the scales are O(1)
+    "thermal_conductivity": 1e-2,
+    "mass_density": 2.0,
+    "specific_heat": 1.0,
+    "heat": 1e-2,
 }
 #: Ranges a cell draws its own ``mu_r`` or ``tan_delta`` from (the other
 #: cells' designs carry neither).
@@ -2230,7 +2325,165 @@ def _eigen_periodic(
     )
 
 
+THERMAL_RANGES = {
+    "thermal_conductivity": (1.0, 2.0),
+    "mass_density": (2000.0, 2400.0),
+    "specific_heat": (600.0, 800.0),
+}
+#: The transient cells' time grid: 9 steps over about one diffusion time
+#: of the slab, the waveform switching down after 5.
+TRANSIENT_DURATION, TRANSIENT_STEPS = 2e-6, 9
+TRANSIENT_SWITCH = TRANSIENT_DURATION * 5 / TRANSIENT_STEPS
+
+
+def _thermal_model(mesh, values):
+    """The slab with per-element thermal properties (missing: their midrange)."""
+    fields = {}
+    for region in ("clad", "heater"):
+        tets = mesh.elements(region)
+        fields[region] = gfem.MaterialField(
+            **{
+                name: values[name][tets]
+                if name in values
+                else jnp.full(len(tets), sum(THERMAL_RANGES[name]) / 2)
+                for name in THERMAL_RANGES
+            }
+        )
+    return gfem.Model(
+        mesh,
+        materials=fields,
+        boundaries=[
+            gfem.FixedTemperature("bottom", temperature=300.0),
+            # another ambient: the source-free temperature is not uniform,
+            # so its own adjoint pair enters (ADR 0172)
+            gfem.Convection("top", coefficient=1e4, ambient=290.0),
+        ],
+    )
+
+
+def _thermal_options(cell: Cell, options):
+    scheme, layout = cell.variant.split("-")[:2]
+    return dataclasses.replace(
+        options,
+        time_scheme=scheme,
+        theta=0.5 if scheme == "theta" else 1.0,
+        retain_memory=0 if layout == "checkpoints" else options.retain_memory,
+    )
+
+
+def _steady_thermal(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """<w, T - 300> plus the heater's mean rise, in the per-element k."""
+    mesh = d.thermal_slab
+    heat = gfem.HeatSource.uniform("heater", power_per_length=1.0)
+    rng = np.random.default_rng(11 + seed)
+
+    def objective(k):
+        model = _thermal_model(mesh, {"thermal_conductivity": k})
+        result = gfem.solve(model, gfem.SteadyThermal(heat), options=options)
+        t = result.temperature.coefficients
+        weights = np.linspace(0.5, 1.5, t.shape[0])
+        return jnp.sum(weights * (t - 300.0)) / t.shape[0] + gfem.region_mean(
+            result.rise, "heater"
+        )
+
+    k = jnp.asarray(
+        rng.uniform(*THERMAL_RANGES["thermal_conductivity"], len(mesh.tetrahedra))
+    )
+    return Case(objective, k, rng, step=STEPS["thermal_conductivity"], taylor=1e-1)
+
+
+def _transient_thermal(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """Traces and a kept field of a switched heater, in one input.
+
+    A material property per element, or (input ``heat``) the source's
+    amount (``amount``) or the waveform's two scales (``waveform``); from a
+    uniform start, so T0 enters through the start too.
+    """
+    mesh = d.thermal_slab
+    options = _thermal_options(cell, options)
+    rng = np.random.default_rng(13 + seed)
+    weights = np.linspace(1.0, 2.0, TRANSIENT_STEPS + 1)
+    what = cell.variant.split("-")[2] if cell.input == "heat" else None
+
+    def objective(p):
+        values, amount, scales = {}, 1.0, (1.0, 0.3)
+        if what == "amount":
+            amount = p[0]
+        elif what == "waveform":
+            scales = (p[0], p[1])
+        else:
+            values = {cell.input: p}
+        problem = gfem.TransientThermal(
+            gfem.HeatSource.uniform("heater", power_per_length=amount),
+            duration=TRANSIENT_DURATION,
+            steps=TRANSIENT_STEPS,
+            waveform=[(0.0, scales[0]), (TRANSIENT_SWITCH, scales[1])],
+            initial_temperature=295.0,
+            traces={
+                "heater": gfem.Trace.mean("heater"),
+                "clad": gfem.Trace.point((1.5e-6, 1.0e-6, mesh.section_thickness / 2)),
+            },
+            keep_fields=[TRANSIENT_DURATION * 3 / TRANSIENT_STEPS],
+        )
+        result = gfem.solve(_thermal_model(mesh, values), problem, options=options)
+        kept = result.temperature(TRANSIENT_DURATION * 3 / TRANSIENT_STEPS)
+        value = (
+            jnp.sum(weights * (result.traces["heater"] - 295.0))
+            + jnp.sum(result.traces["clad"] - 295.0)
+            + gfem.region_mean(kept, "clad")
+        )
+        # curved, so the Taylor test sees a second-order remainder in the
+        # amount and the scales too (the solve is linear in them)
+        return value + 1e-2 * value**2
+
+    if what == "amount":
+        p = jnp.asarray([1.0])
+    elif what == "waveform":
+        p = jnp.asarray([1.0, 0.3])
+    else:
+        p = jnp.asarray(rng.uniform(*THERMAL_RANGES[cell.input], len(mesh.tetrahedra)))
+    step = STEPS[cell.input]
+    return Case(objective, p, rng, step=step, taylor=10 * step)
+
+
+def _dc_conduction(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The bar's resistance, or (``dissipation``) its weighted Joule heat at 1 mA.
+
+    In the bar's per-element conductivity, scaled by 1e5 S/m.
+    """
+    mesh = d.dc_bar
+    rng = np.random.default_rng(17 + seed)
+    tets = mesh.elements("bar")
+    oxide = gfem.Material(thermal_conductivity=1.4)
+    weights = np.linspace(1.0, 2.0, len(mesh.tetrahedra))
+
+    def objective(x):
+        model = gfem.Model(
+            mesh,
+            materials={"bar": gfem.MaterialField(conductivity=1e5 * x), "ox": oxide},
+            excluded={"dc_conduction": ("ox",)},
+        )
+        result = gfem.solve(
+            model, gfem.DCConduction({"t": "left"}, "right"), options=options
+        )
+        if cell.variant == "resistance":
+            return 1.0 / result.conductance[0, 0]
+        heat = gfem.joule_heating(result, current=1e-3)
+        density = heat._density_on(mesh)
+        volumes = jnp.asarray(_tet_volumes(mesh))
+        return 1e3 * jnp.sum(weights * density * volumes)
+
+    x = jnp.asarray(rng.uniform(1.0, 2.0, len(tets)))
+    return Case(objective, x, rng, step=STEPS["heat"], taylor=1e-1)
+
+
 BUILDERS = {
+    ("steady_thermal", "thermal_conductivity"): _steady_thermal,
+    **{
+        ("transient_thermal", name): _transient_thermal
+        for name in (*THERMAL_RANGES, "heat")
+    },
+    ("dc_conduction", "conductivity"): _dc_conduction,
     ("electrostatic", "eps_r"): _electrostatic_eps,
     ("electrostatic", "eps_r_axes"): _electrostatic_eps,
     ("electrostatic", "nodes"): _electrostatic_nodes,
@@ -2378,6 +2631,12 @@ FAMILIES = [
     # a permittivity law as a pytree inside `gfem.Material` (cells D1 and E1)
     Cell("driven", "law", "direct", "uniform", "poles"),
     Cell("eigenmode", "law", "direct", variant="lorentz"),
+    # thermal and DC conduction (ADR 0177): the reverse sweep's kept
+    # trajectory, and the dissipation's adjoint
+    Cell("steady_thermal", "thermal_conductivity", "direct"),
+    Cell("transient_thermal", "thermal_conductivity", "direct", variant="tr_bdf2-full"),
+    Cell("transient_thermal", "heat", "direct", variant="theta-full-waveform"),
+    Cell("dc_conduction", "conductivity", "direct", variant="dissipation"),
 ]
 #: Two solves of one design agree to about 1 ulp (threaded assembly), so do
 #: their gradients. An eigenmode gradient is only as reproducible as the
@@ -2829,3 +3088,136 @@ def test_gradient_matrix_bloch_eigen_at_k_zero_equals_plain(designs, name):
     want = jax.grad(plain.objective)(plain.p)
     assert np.abs(np.asarray(want)).max() > 0
     _assert_same(jax.grad(at_zero.objective)(plain.p), want, cell)
+
+
+# --- the chain: DC conduction -> Joule heating -> thermal -> thermo-optic shift ------
+
+FREQUENCY_OPTICAL = 299792458.0 / 1.55e-6
+#: The chain's inputs, normalised to O(1): sigma = 1e6 s S/m (heater), k =
+#: base k times a factor (every element), dn/dT = 1e-4 d /K (core), I = 4e-4 i
+#: A (about 1 W/m in the heater).
+CHAIN_K = {"clad": 1.38, "core": 90.0, "heater": 28.0}
+CHAIN_TRANSIENT_DURATION, CHAIN_TRANSIENT_STEPS = 1e-6, 6
+#: The difference step on the normalised inputs. The start's offset from the
+#: source-free temperature (a few K, in the phase trace's rise and the
+#: core's temperature) carries the solves' round-off, about 1e-11 relative:
+#: at 1e-2 it leaves 3e-6 in the k differences, at 3e-2 1e-7 (fourth-order
+#: truncation 4e-8).
+CHAIN_STEP = 3e-2
+
+
+def _chain(d: Designs, solver: str, transient: bool):
+    """The chain's objective of the normalised inputs, and a random design."""
+    mesh = d.chain_slab
+    options = tight(solver)
+    tets = {r: mesh.elements(r) for r in CHAIN_K}
+    sizes = [len(tets["heater"]), len(mesh.tetrahedra), len(tets["core"]), 1]
+    cuts = np.cumsum(sizes)[:-1]
+
+    def thermal(s, kk):
+        def k(region):
+            return CHAIN_K[region] * kk[tets[region]]
+
+        def material(region, rho, cp, **extra):
+            n = len(tets[region])
+            return gfem.MaterialField(
+                thermal_conductivity=k(region),
+                mass_density=jnp.full(n, rho),
+                specific_heat=jnp.full(n, cp),
+                **extra,
+            )
+
+        return gfem.Model(
+            mesh,
+            materials={
+                "clad": material("clad", 2203.0, 709.0),
+                "core": material("core", 2330.0, 711.0),
+                "heater": material("heater", 5240.0, 598.0, conductivity=1e6 * s),
+            },
+            boundaries=[
+                gfem.FixedTemperature("bottom", temperature=300.0),
+                # another ambient: the source-free temperature is not uniform
+                gfem.Convection("top", coefficient=1e4, ambient=290.0),
+            ],
+        )
+
+    def optical(dn):
+        # the same slab with the heater out of the mode solve (a traced
+        # conductivity on the model the shift reads raises, ADR 0175)
+        n_clad = len(tets["clad"])
+        materials = {
+            "clad": gfem.MaterialField(
+                eps_r=jnp.full(n_clad, 1.444**2),
+                thermo_optic_coefficient=jnp.full(n_clad, 1e-5),
+            ),
+            "core": gfem.MaterialField(
+                eps_r=jnp.full(len(tets["core"]), 3.4777**2),
+                thermo_optic_coefficient=1e-4 * dn,
+            ),
+        }
+        return gfem.Model(
+            mesh,
+            materials=materials,
+            ports=[gfem.WavePort("p", "front")],
+            excluded={"em": ["heater"]},
+        )
+
+    def objective(p):
+        s, kk, dn, i = jnp.split(p, cuts)
+        m, o = thermal(s, kk), optical(dn)
+        dc = gfem.solve(
+            m, gfem.DCConduction({"h": "front"}, ground="back"), options=options
+        )
+        heat = gfem.joule_heating(dc, current=4e-4 * i[0])
+        if not transient:
+            steady = gfem.solve(m, gfem.SteadyThermal(heat), options=options)
+            shift = gfem.thermo_optic_shift(
+                o, steady.rise, port="p", frequency=FREQUENCY_OPTICAL
+            )
+            core = gfem.region_mean(steady.temperature, "core")
+            return 1e-2 * shift.phase_per_length + core - 295.0
+        shift = gfem.thermo_optic_shift(o, None, port="p", frequency=FREQUENCY_OPTICAL)
+        problem = gfem.TransientThermal(
+            heat,
+            duration=CHAIN_TRANSIENT_DURATION,
+            steps=CHAIN_TRANSIENT_STEPS,
+            initial_temperature=295.0,
+            traces={"phase": shift.trace(), "core": gfem.Trace.mean("core")},
+        )
+        result = gfem.solve(m, problem, options=options)
+        weights = np.linspace(1.0, 2.0, CHAIN_TRANSIENT_STEPS + 1)
+        return 1e-2 * jnp.sum(weights * result.traces["phase"]) + jnp.sum(
+            result.traces["core"] - 295.0
+        )
+
+    rng = np.random.default_rng(23)
+    p = jnp.asarray(
+        np.concatenate(
+            [
+                rng.uniform(0.8, 1.2, sizes[0]),
+                rng.uniform(0.8, 1.2, sizes[1]),
+                rng.uniform(1.5, 2.0, sizes[2]),
+                [1.0],
+            ]
+        )
+    )
+    return objective, p, rng, cuts
+
+
+@pytest.mark.parametrize("variant", ["steady", "transient"])
+@pytest.mark.parametrize("solver", SOLVERS)
+def test_gradient_matrix_chain_matches_central_differences(designs, solver, variant):
+    objective, p, rng, cuts = _chain(designs, solver, variant == "transient")
+    grad = np.asarray(jax.grad(objective)(p))
+    # every input kind moves it: the conductivity through the heat, k through
+    # the rise and the source-free temperature, dn/dT through the shift (on
+    # the core's tetrahedra behind the port's triangles, which the mode reads)
+    sigma, k, dn, current = np.split(grad, cuts)
+    assert np.all(sigma != 0.0)
+    assert np.all(k != 0.0)
+    assert np.count_nonzero(dn) >= len(dn) // 3
+    assert current[0] != 0.0
+    # worst of 3 directions on ostau: steady 5e-9, transient 7e-8
+    assert_gradient_matches(
+        objective, p, unit_directions(rng, p.shape, 3), step=CHAIN_STEP, grad=grad
+    )

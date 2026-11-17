@@ -59,12 +59,86 @@ class MeshQualityError(ValueError):
     """
 
 
+#: An example value per thermal property, for `MissingMaterialPropertyError`.
+_EXAMPLES = {
+    "thermal_conductivity": "1.4",  # silica
+    "mass_density": "2200",
+    "specific_heat": "700",
+}
+
+
+class MissingMaterialPropertyError(ValueError):
+    """A thermal problem reads a material property that a region does not give.
+
+    Steady thermal problems read ``thermal_conductivity``; transient ones also
+    read ``mass_density`` and ``specific_heat``. Every volume of the thermal
+    domain needs them; a region with no material lacks them all. The message
+    lists every missing (region, property) pair at once, with each
+    property's unit and an example value, and both remedies: give the
+    property on the region's material, or exclude the region from thermal
+    problems with ``Model(excluded={"thermal": (...)})``.
+
+    Attributes:
+        missing: The (region, property) pairs, in the order given.
+    """
+
+    def __init__(self, missing: Iterable[tuple[str, str]]) -> None:
+        """Build the message from the missing (region, property) pairs.
+
+        Args:
+            missing: Each region and the property it does not give; repeats
+                are dropped.
+        """
+        from gfem._materials import PROPERTIES
+
+        units = {p.name: p.unit for p in PROPERTIES}
+        self.missing: tuple[tuple[str, str], ...] = tuple(
+            dict.fromkeys((str(r), str(p)) for r, p in missing)
+        )
+        by_region: dict[str, list[str]] = {}
+        for region, prop in self.missing:
+            unit = units.get(prop)
+            example = _EXAMPLES.get(prop)
+            detail = ", ".join(
+                x for x in (unit, None if example is None else f"e.g. {example}") if x
+            )
+            by_region.setdefault(region, []).append(
+                f"{prop} ({detail})" if detail else prop
+            )
+        listed = "; ".join(
+            f"region {region!r}: {', '.join(props)}"
+            for region, props in by_region.items()
+        )
+        regions = tuple(by_region)
+        super().__init__(
+            f"A thermal problem needs material properties that are not given: "
+            f"{listed}. Give each on the region's material (for example "
+            "gfem.Material(thermal_conductivity=1.4, mass_density=2200, "
+            "specific_heat=700) for silica), or leave the region out of "
+            f"thermal problems with Model(excluded={{'thermal': {regions!r}}})."
+        )
+
+
 class MeshQualityWarning(UserWarning):
     """A moved mesh has elements that lost most of their imported quality.
 
     It fires when an element's scaled Jacobian falls below a quarter of its
     value on the imported mesh. The solve still runs, but its accuracy
     degrades and the next steps may invert elements. Filter it with Python's
+    `warnings` module.
+    """
+
+
+class UnsettledTraceWarning(UserWarning):
+    """A trace had not settled when its rise time or time constant was measured.
+
+    `gfem.rise_time` and `gfem.time_constant` normalise a trace to its last
+    sample, so a run that ends before the trace settles biases both times
+    (short). The warning fires when the change still to come after the last
+    sample, estimated from the geometric tail of the last increments after
+    the last waveform switch, exceeds 1 % of the measured swing, or when
+    fewer than three samples follow that switch. Run longer (a larger
+    ``duration`` with the same time step), or filter it with Python's
     `warnings` module.
     """
 

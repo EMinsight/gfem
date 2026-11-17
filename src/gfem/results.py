@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from gfem._port_section import PortSection
 
 __all__ = [
+    "DCConductionResult",
     "DiffractionOrderResult",
     "DrivenResult",
     "EigenmodeResult",
@@ -37,7 +38,9 @@ __all__ = [
     "PortModeField",
     "PortModeResult",
     "ReducedFields",
+    "SteadyThermalResult",
     "SweepInfo",
+    "TransientThermalResult",
 ]
 
 
@@ -191,6 +194,350 @@ class ElectrostaticResult:
 
 
 register_fields(ElectrostaticResult, ("capacitance", "energy", "potential"))
+
+
+def _not_a_section(owner: str, name: str, total: str) -> ValueError:
+    """The error of a per-length property read on a mesh that is no cross-section."""
+    return ValueError(
+        f"{owner}.{name} is defined on a cross-section mesh only "
+        "(gfem.Mesh.from_gmsh_cross_section), and this result was solved on a "
+        f"3D mesh: read {owner}.{total} instead."
+    )
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class DCConductionResult:
+    """The result of a `gfem.DCConduction` problem.
+
+    Excitation ``i`` puts terminal ``i`` at 1 V and every other terminal
+    and the ground at 0 V. `gfem.joule_heating` turns it into a heat
+    source for any voltage, current or power drive, with no new solve.
+
+    On a cross-section mesh the values are those of the slab the mesh
+    stands for (`gfem.Mesh.section_thickness`): read `resistance_per_length`
+    rather than `resistance`.
+
+    Attributes:
+        conductance: The conductance matrix in siemens, shape
+            ``(n_terminals, n_terminals)``, rows and columns in `terminals`
+            order: ``conductance[i, j]`` is the current into terminal ``i``
+            in excitation ``j``. Symmetric; the diagonal is positive.
+            Differentiable with respect to ``conductivity`` (no adjoint
+            solve).
+        terminals: The terminal names (static labels).
+        potential: The potential of each terminal's solve, a `Field` by
+            terminal name (in `terminals` order), in volts, on H1 of the
+            solve order over the conductors that carry current.
+        dissipation: The power density per tetrahedron at unit voltages,
+            shape ``(n_tetrahedra, n_terminals, n_terminals)`` in W/m^3 per
+            V^2, in `gfem.Mesh.tetrahedra` order and zero off the
+            conductors: with terminal voltages ``V``, element ``e``
+            dissipates ``V @ dissipation[e] @ V`` (the exact element mean).
+            An internal layout, read through `gfem.joule_heating`.
+    """
+
+    conductance: jax.Array
+    terminals: tuple[str, ...]
+    potential: Mapping[str, Field] = dataclasses.field(default_factory=dict)
+    dissipation: jax.Array | None = None
+    #: The surfaces held at a fixed potential (terminals and ground).
+    _fixed: tuple[str, ...] = ()
+    #: The conducting volume regions that carry current, mesh order.
+    _regions: tuple[str, ...] = ()
+    #: The slab thickness in m of a cross-section mesh, else ``None``.
+    _thickness: float | None = None
+    #: Whether some terminal or the ground holds 0 V (a power drive needs it).
+    _grounded: bool = False
+
+    def __post_init__(self) -> None:
+        """Hold the potentials as a read-only, ordered mapping."""
+        if not isinstance(self.potential, FieldMap):
+            fields = FieldMap(self.potential, label="terminal")
+            object.__setattr__(self, "potential", fields)
+
+    @property
+    def resistance(self) -> jax.Array:
+        """The inverse of `conductance` in ohms; ``1 / G`` for one terminal.
+
+        Entry ``[i, j]`` is the voltage of terminal ``i`` per ampere into
+        terminal ``j``, no current into the others. Without a ground the
+        rows of `conductance` sum to zero and it has no inverse.
+        """
+        return jnp.linalg.inv(self.conductance)
+
+    @property
+    def resistance_per_length(self) -> jax.Array:
+        """`resistance` per unit length along a cross-section, in ohm/m.
+
+        A heater of length L between the two end faces has resistance
+        ``resistance_per_length * L``.
+
+        Raises:
+            ValueError: The result was not solved on a cross-section mesh.
+        """
+        if self._thickness is None:
+            raise _not_a_section(
+                "DCConductionResult", "resistance_per_length", "resistance"
+            )
+        return self.resistance / self._thickness
+
+    def index(self, terminal: str) -> int:
+        """Row / column of ``terminal`` in `conductance`.
+
+        Raises:
+            KeyError: ``terminal`` is not a terminal of this result.
+        """
+        try:
+            return self.terminals.index(terminal)
+        except ValueError:
+            raise KeyError(
+                f"No terminal {terminal!r}; the terminals are "
+                f"{', '.join(repr(t) for t in self.terminals)}."
+            ) from None
+
+    def to_xarray(self) -> xarray.Dataset:
+        """The conductance matrix as an `xarray.Dataset`.
+
+        ``conductance`` (S) has dimensions ``("terminal", "excitation")``,
+        both labelled by `terminals`. Needs the ``xarray`` extra: ``pip
+        install "gfem[xarray]"``.
+
+        Raises:
+            ImportError: xarray is not installed.
+            TypeError: The result holds JAX tracers.
+        """
+        xr = _xarray(self)
+        data = {
+            "conductance": _variable(("terminal", "excitation"), self.conductance, "S")
+        }
+        coords = {"terminal": list(self.terminals), "excitation": list(self.terminals)}
+        return xr.Dataset(data, coords=coords)
+
+    def __repr__(self) -> str:
+        head = f"DCConductionResult(terminals={list(self.terminals)}"
+        try:
+            g = np.asarray(self.conductance)
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return head + ")"
+        if g.shape == (1, 1) and self._grounded:
+            if self._thickness is None:
+                return f"{head}, resistance {1 / g[0, 0]:.6g} ohm)"
+            per_length = 1 / (g[0, 0] * self._thickness)
+            return f"{head}, resistance per length {per_length:.6g} ohm/m)"
+        width = max(len(t) for t in self.terminals)
+        rows = [
+            f"  {t:>{width}}: " + "  ".join(f"{v:10.4g}" for v in row)
+            for t, row in zip(self.terminals, g, strict=True)
+        ]
+        what = (
+            "conductance in S" if self._thickness is None else "slab conductance in S"
+        )
+        return f"{head}, {what}:\n" + "\n".join(rows) + ")"
+
+
+register_fields(DCConductionResult, ("conductance", "potential", "dissipation"))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class SteadyThermalResult:
+    """The result of a `gfem.SteadyThermal` problem.
+
+    On a cross-section mesh the totals are those of the slab the mesh
+    stands for (`gfem.Mesh.section_thickness`): read `power_per_length`
+    rather than `power`.
+
+    Attributes:
+        temperature: The absolute temperature, a `Field` (quantity ``"T"``,
+            in K) on H1 of the solve order over the thermal domain.
+        rise: The temperature rise, a `Field` (quantity ``"dT"``, in K):
+            `temperature` minus the source-free temperature (the solve with
+            the problem's heat sources off and the model's boundary data
+            kept). It is linear in the heat sources and scales with their
+            power; when every fixed temperature and ambient share one value
+            and no `gfem.HeatFlux` is given, it is the temperature minus
+            that value.
+        heat: The summed power density of the problem's heat sources as
+            solved, a `Field` (quantity ``"q"``, in W/m^3) constant on each
+            tetrahedron (L2 of order 0) over the thermal domain.
+        power: The total power of the heat sources in W (on a cross-section,
+            the slab's). A `gfem.HeatFlux` is boundary data, not counted.
+    """
+
+    temperature: Field
+    rise: Field
+    heat: Field
+    power: jax.Array
+    #: The slab thickness in m of a cross-section mesh, else ``None``.
+    _thickness: float | None = None
+
+    @property
+    def power_per_length(self) -> jax.Array:
+        """`power` per unit length along a cross-section, in W/m.
+
+        Raises:
+            ValueError: The result was not solved on a cross-section mesh.
+        """
+        if self._thickness is None:
+            raise _not_a_section("SteadyThermalResult", "power_per_length", "power")
+        return self.power / self._thickness
+
+    def to_xarray(self) -> xarray.Dataset:
+        """The heat sources' total power as an `xarray.Dataset`.
+
+        ``power`` (W, the slab's on a cross-section) is a scalar; on a
+        cross-section ``power_per_length`` (W/m) too. The fields are
+        `Field` objects: export them with `gfem.Field.to_vtu`. Needs the
+        ``xarray`` extra: ``pip install "gfem[xarray]"``.
+
+        Raises:
+            ImportError: xarray is not installed.
+            TypeError: The result holds JAX tracers.
+        """
+        xr = _xarray(self)
+        data = {"power": _variable((), self.power, "W")}
+        if self._thickness is not None:
+            data["power_per_length"] = _variable((), self.power_per_length, "W/m")
+        return xr.Dataset(data)
+
+    def __repr__(self) -> str:
+        regions = list(self.temperature.support)
+        try:
+            power = float(np.asarray(self.power))
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return f"SteadyThermalResult(regions={regions})"
+        if self._thickness is None:
+            total = f"power {power:.6g} W"
+        else:
+            total = f"power per length {power / self._thickness:.6g} W/m"
+        return f"SteadyThermalResult(regions={regions}, {total})"
+
+
+register_fields(SteadyThermalResult, ("temperature", "rise", "heat", "power"))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class TransientThermalResult:
+    """The result of a `gfem.TransientThermal` problem.
+
+    On a cross-section mesh the totals are those of the slab the mesh
+    stands for (`gfem.Mesh.section_thickness`): read `power_per_length`
+    rather than `power`.
+
+    Attributes:
+        time: The grid times in s, ``(steps + 1,)`` from 0 to the duration.
+        traces: Each trace of the problem by name, ``(steps + 1,)`` at
+            `time` (a temperature trace in K).
+        kept_times: The grid times in s whose fields `temperature` and
+            `rise` give, increasing; the final time is always one.
+        switch_times: The waveform's start times in s, for the settling
+            check of `gfem.rise_time` and `gfem.time_constant`.
+        power: The heat sources' total power in W at waveform scale 1 (on
+            a cross-section, the slab's).
+    """
+
+    time: jax.Array
+    traces: dict[str, jax.Array]
+    #: The kept rises, ``(len(kept_times), ndof)`` coefficients in K.
+    _rises: jax.Array
+    #: The source-free temperature, a `Field` (quantity "T", in K).
+    _source_free: Field
+    power: jax.Array
+    kept_times: tuple[float, ...] = ()
+    switch_times: tuple[float, ...] = ()
+    #: The slab thickness in m of a cross-section mesh, else ``None``.
+    _thickness: float | None = None
+
+    def _index(self, time: Any, name: str) -> int:
+        what = f"TransientThermalResult.{name}"
+        t = static_float(
+            time, f"{what} time", "Read a kept time given as a plain number."
+        )
+        kept = np.asarray(self.kept_times)
+        step = float(self.time[1] - self.time[0]) if len(self.time) > 1 else 1.0
+        close = np.flatnonzero(np.abs(kept - t) <= 1e-9 * step)
+        if not close.size:
+            listed = ", ".join(f"{k:g}" for k in self.kept_times)
+            raise ValueError(
+                f"{what}({t:g}): the result keeps the temperature at {listed} s "
+                "only. Read one of those, or solve again with that grid time in "
+                "keep_fields (traces record every step)."
+            )
+        return int(close[0])
+
+    def rise(self, time: float) -> Field:
+        """The temperature rise at a kept time, a `Field` (quantity "dT", in K).
+
+        The temperature minus the source-free temperature.
+
+        Raises:
+            ValueError: ``time`` is not one of `kept_times`; the message
+                lists them.
+        """
+        k = self._index(time, "rise")
+        return dataclasses.replace(
+            self._source_free, coefficients=self._rises[k], quantity="dT"
+        )
+
+    def temperature(self, time: float) -> Field:
+        """The absolute temperature at a kept time, a `Field` (quantity "T", in K).
+
+        Raises:
+            ValueError: ``time`` is not one of `kept_times`; the message
+                lists them.
+        """
+        k = self._index(time, "temperature")
+        free = self._source_free
+        return dataclasses.replace(
+            free, coefficients=free.coefficients + self._rises[k]
+        )
+
+    @property
+    def power_per_length(self) -> jax.Array:
+        """`power` per unit length along a cross-section, in W/m.
+
+        Raises:
+            ValueError: The result was not solved on a cross-section mesh.
+        """
+        if self._thickness is None:
+            raise _not_a_section("TransientThermalResult", "power_per_length", "power")
+        return self.power / self._thickness
+
+    def to_xarray(self) -> xarray.Dataset:
+        """The traces over ``time`` (s) as an `xarray.Dataset`.
+
+        One variable per trace, and the scalar ``power`` (W; on a
+        cross-section ``power_per_length`` in W/m too). Needs the
+        ``xarray`` extra: ``pip install "gfem[xarray]"``.
+
+        Raises:
+            ImportError: xarray is not installed.
+            TypeError: The result holds JAX tracers.
+        """
+        xr = _xarray(self)
+        data = {name: _variable(("time",), y) for name, y in self.traces.items()}
+        data["power"] = _variable((), self.power, "W")
+        if self._thickness is not None:
+            data["power_per_length"] = _variable((), self.power_per_length, "W/m")
+        return xr.Dataset(data, coords={"time": _variable(("time",), self.time, "s")})
+
+    def __repr__(self) -> str:
+        steps = len(self.time) - 1
+        head = (
+            f"TransientThermalResult({steps} steps to {float(self.time[-1]):.6g} s, "
+            f"traces={list(self.traces)}"
+        )
+        try:
+            power = float(np.asarray(self.power))
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return head + ")"
+        if self._thickness is None:
+            return f"{head}, power {power:.6g} W)"
+        return f"{head}, power per length {power / self._thickness:.6g} W/m)"
+
+
+register_fields(
+    TransientThermalResult, ("time", "traces", "_rises", "_source_free", "power")
+)
 
 
 class PortModeField:

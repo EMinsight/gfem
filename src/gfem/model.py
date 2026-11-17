@@ -7,7 +7,7 @@ import itertools
 import math
 import types
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import numpy as np
@@ -18,7 +18,10 @@ from gfem._boundaries import (
     Absorbing,
     Boundary,
     Conductor,
+    Convection,
+    FixedTemperature,
     FloquetPort,
+    HeatFlux,
     Impedance,
     LumpedPort,
     Periodic,
@@ -28,7 +31,7 @@ from gfem._boundaries import (
     surfaces_of,
 )
 from gfem._checks import check_fixed, is_traced
-from gfem._domain import EMDomain, em_domain, enclosed_entities
+from gfem._domain import EMDomain, em_domain, enclosed_entities, physics_of
 from gfem._floquet import (
     FloquetFace,
     floquet_face,
@@ -58,17 +61,23 @@ from gfem._sheet import SheetField
 from gfem.errors import RegionNotFoundError
 from gfem.mesh import Mesh
 
+if TYPE_CHECKING:
+    from gfem._field import Field
+
 __all__ = [
     "PEC",
     "PMC",
     "Absorbing",
     "Boundary",
     "Conductor",
+    "Convection",
     "Debye",
     "DjordjevicSarkar",
     "Drude",
     "EnclosedBy",
+    "FixedTemperature",
     "FloquetPort",
+    "HeatFlux",
     "Impedance",
     "Lorentz",
     "LumpedPort",
@@ -83,7 +92,17 @@ __all__ = [
     "enclosed_by",
 ]
 
-_BOUNDARY_TYPES = (PEC, PMC, Absorbing, Conductor, Impedance, Periodic)
+_BOUNDARY_TYPES = (
+    PEC,
+    PMC,
+    Absorbing,
+    Conductor,
+    Impedance,
+    Periodic,
+    FixedTemperature,
+    Convection,
+    HeatFlux,
+)
 #: The most periodic pairs a model takes (a 3D cell).
 _MAX_PERIODIC_PAIRS = 3
 #: Sine of the angle below which two translations count as parallel.
@@ -93,7 +112,14 @@ _BLOCH_ANGLES = (
     "Model.bloch_wave_vector: theta and phi must be fixed numbers: the incidence "
     "of a Floquet port is a constant of the solve, not a design variable"
 )
-_PHYSICS_NAMES = {"em": "electromagnetic"}
+#: Each physics' key in ``excluded=`` and its name in messages, in order.
+_PHYSICS_NAMES = {
+    "em": "electromagnetic",
+    "thermal": "thermal",
+    "dc_conduction": "DC conduction",
+}
+_PHYSICS = tuple(_PHYSICS_NAMES)
+_KEYS = ", ".join(repr(k) for k in _PHYSICS)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -180,6 +206,31 @@ def _as_tuple(value: Any, what: str) -> tuple:
     raise TypeError(f"{what} must be a list or tuple, got {type(value).__name__}.")
 
 
+def _check_physics(physics: Any, what: str) -> str:
+    if physics not in _PHYSICS_NAMES:
+        raise ValueError(
+            f"{what}: unknown physics {physics!r}; the physics keys are {_KEYS}."
+        )
+    return physics
+
+
+def _excluded_by_physics(excluded: Any) -> tuple[tuple, ...]:
+    """``excluded=`` as one tuple per physics, in `_PHYSICS` order.
+
+    A list or tuple excludes for electromagnetic problems only (ADR 0167).
+    """
+    if not isinstance(excluded, Mapping):
+        return (_as_tuple(excluded, "excluded"), (), ())
+    for key in excluded:
+        if key not in _PHYSICS_NAMES:
+            raise ValueError(
+                f"excluded= has the unknown physics key {key!r}; the keys are "
+                f"{_KEYS}. A list or tuple excludes for electromagnetic problems "
+                "only."
+            )
+    return tuple(_as_tuple(excluded.get(k, ()), f"excluded[{k!r}]") for k in _PHYSICS)
+
+
 @jax.tree_util.register_pytree_with_keys_class
 class Model:
     """Everything physical about a device: mesh, materials, boundaries, ports.
@@ -193,10 +244,14 @@ class Model:
     `MaterialField` array; everything else is fixed.
 
     Regions are addressed by gmsh physical-group name. Every volume region
-    gets a material or is excluded. Exterior surfaces of the
-    electromagnetic solve domain that no boundary condition or port names
+    of the electromagnetic solve domain gets a material. Exterior surfaces of
+    the electromagnetic solve domain that no boundary condition or port names
     are PMC (n x H = 0) for electromagnetic problems; `default_pmc` lists
-    them.
+    them. Each physics solves on its own domain (``excluded=``), and each
+    boundary condition is checked against its own physics' domain: thermal
+    conditions (`FixedTemperature`, `Convection`, `HeatFlux`) against the
+    thermal domain. Exterior surfaces of the thermal domain that no thermal
+    condition names are insulated; `default_insulated` lists them.
 
     Example:
         A two-port microstrip on a substrate::
@@ -215,27 +270,36 @@ class Model:
         mesh: The mesh.
         materials: A `Material` or `MaterialField` per volume region name.
         boundaries: Boundary conditions (`PEC`, `PMC`, `Absorbing`,
-            `Conductor`, `Impedance`) and periodic pairs (`Periodic`, one to
-            three). At most one electromagnetic condition or port per surface,
-            except several wave ports (`WavePort`), one mode each (a shared port
-            surface).
+            `Conductor`, `Impedance`), periodic pairs (`Periodic`, one to
+            three) and thermal conditions (`FixedTemperature`, `Convection`,
+            `HeatFlux`). At most one condition or port per physics and
+            surface, except several wave ports (`WavePort`), one mode each (a
+            shared port surface); an electromagnetic and a thermal condition
+            may share a surface.
         ports: `LumpedPort`, `WavePort` and `FloquetPort` values; their
             order is the order of the network parameters. Several Floquet
             ports share a Floquet surface, one (order, polarization) each.
         excluded: Volumes removed from the solve domain of electromagnetic
             problems, typically meshed conductors whose shell carries a
             `Conductor` or `PEC`: volume region names, or
-            ``enclosed_by(*surfaces)`` (see `enclosed_by`). An excluded region
-            has no material.
+            ``enclosed_by(*surfaces)`` (see `enclosed_by`). A mapping with
+            the keys ``"em"``, ``"thermal"`` and ``"dc_conduction"`` sets the
+            volumes removed for each physics (a missing key removes
+            nothing); a list or tuple is the ``"em"`` entry. A meshed
+            conductor excluded from electromagnetic problems stays in the
+            thermal domain (it is often the heater) and may carry a
+            material; a region excluded from every physics has none.
 
     Raises:
         RegionNotFoundError: A name is not a region of the mesh.
         ValueError: The model is physically inconsistent (a volume without a
-            material, two conditions on one surface (except several wave
-            ports, one mode each), an absorbing boundary on an interior
-            surface, ...), or a `Periodic` pair's two meshes do not match
-            under a translation, there are more than three pairs, or two
-            translations are parallel; the message gives the remedy.
+            material, two conditions of one physics on one surface (except
+            several wave ports, one mode each), an absorbing boundary or a
+            `Convection` on an interior surface, two touching
+            `FixedTemperature` surfaces with different values, ...), an
+            unknown physics key in ``excluded=``, or a `Periodic` pair's
+            two meshes do not match under a translation, there are more than
+            three pairs, or two translations are parallel; the message gives the remedy.
         TypeError: An argument has the wrong type.
         NotImplementedError: A `WavePort` shares a mesh node with a surface
             of a `Periodic` pair (for plane-wave incidence on a periodic
@@ -251,6 +315,8 @@ class Model:
     boundaries: tuple[Boundary, ...]
     ports: tuple[Port, ...]
     excluded: tuple[Excluded, ...]
+    _excluded_by: tuple[tuple[Excluded, ...], ...]
+    _domains: tuple[EMDomain, ...]
     _domain: EMDomain
     _periodic: tuple[Pairing, ...]
 
@@ -261,7 +327,7 @@ class Model:
         materials: Mapping[str, Material | MaterialField],
         boundaries: Iterable[Boundary] = (),
         ports: Iterable[Port] = (),
-        excluded: Iterable[Excluded] = (),
+        excluded: Iterable[Excluded] | Mapping[str, Iterable[Excluded]] = (),
     ) -> None:
         """Validate and build the model (see the class docstring)."""
         self._build(
@@ -270,28 +336,39 @@ class Model:
             boundaries=boundaries,
             ports=ports,
             excluded=excluded,
-            domain=None,
+            domains=None,
         )
 
-    def _build(self, *, mesh, materials, boundaries, ports, excluded, domain) -> None:
+    def _build(self, *, mesh, materials, boundaries, ports, excluded, domains) -> None:
         if not isinstance(mesh, Mesh):
             raise TypeError(
                 f"Model needs a gfem.Mesh, got {type(mesh).__name__}; read one "
                 "with gfem.Mesh.from_gmsh(path)."
             )
-        excluded = _as_tuple(excluded, "excluded")
-        if domain is None:
-            domain = em_domain(mesh, _excluded_entities(mesh, excluded))
-            if not domain.active.any():
+        by = _excluded_by_physics(excluded)
+        if domains is None:
+            # physics with the same exclusions share one domain
+            keys = [frozenset(_excluded_entities(mesh, e)) for e in by]
+            built = {k: em_domain(mesh, set(k)) for k in dict.fromkeys(keys)}
+            domains = tuple(built[k] for k in keys)
+            if not any(d.active.any() for d in domains):
                 raise ValueError(
-                    "Every volume is excluded, so there is nothing left to solve "
-                    "on. Exclude only the meshed conductors."
+                    "Every volume is excluded from every physics, so there is "
+                    "nothing left to solve on. Exclude only the meshed "
+                    "conductors."
                 )
         set_ = object.__setattr__
         set_(self, "mesh", mesh)
-        set_(self, "excluded", excluded)
-        set_(self, "_domain", domain)
-        set_(self, "materials", _materials(mesh, materials, self._fully_excluded()))
+        set_(self, "excluded", by[0])
+        set_(self, "_excluded_by", by)
+        set_(self, "_domains", domains)
+        set_(self, "_domain", domains[0])
+        everywhere = set.intersection(*(self._fully_excluded(p) for p in _PHYSICS))
+        set_(
+            self,
+            "materials",
+            _materials(mesh, materials, everywhere, self._fully_excluded("em")),
+        )
         set_(self, "boundaries", _items(boundaries, _BOUNDARY_TYPES, "boundaries"))
         set_(self, "ports", _items(ports, _PORT_TYPES, "ports"))
         self._check_surfaces()
@@ -299,9 +376,13 @@ class Model:
 
     # --- validation -----------------------------------------------------------
 
-    def _fully_excluded(self) -> set[str]:
-        """Volume regions with no element left in the solve domain."""
-        active = self._domain.active
+    def _domain_of(self, physics: str) -> EMDomain:
+        """The solve domain of ``physics`` (a key of `_PHYSICS_NAMES`)."""
+        return self._domains[_PHYSICS.index(physics)]
+
+    def _fully_excluded(self, physics: str) -> set[str]:
+        """Volume regions with no element left in the solve domain of ``physics``."""
+        active = self._domain_of(physics).active
         return {
             name
             for name in self.mesh.volumes
@@ -309,7 +390,7 @@ class Model:
         }
 
     def _check_surfaces(self) -> None:
-        mesh, domain = self.mesh, self._domain
+        mesh = self.mesh
         names = [p.name for p in self.ports]
         for name in names:
             if names.count(name) > 1:
@@ -319,15 +400,22 @@ class Model:
         taken: dict[tuple[str, str], list[Boundary | Port]] = {}
         for item in (*self.boundaries, *self.ports):
             what = type(item).__name__
+            physics = physics_of(item)
+            domain = self._domain_of(physics)
             for surface in surfaces_of(item):
                 check_surface(mesh, surface, what)
                 if not domain.touches(surface):
-                    raise ValueError(
-                        f"{what} on {surface!r}: the surface does not border the "
-                        "electromagnetic solve domain (it lies inside excluded "
-                        "volumes). Remove it, or exclude fewer volumes."
-                    )
-                taken.setdefault((item._physics, surface), []).append(item)  # noqa: SLF001
+                    raise ValueError(_off_domain(what, surface, physics))
+                taken.setdefault((physics, surface), []).append(item)
+            if isinstance(item, Convection) and domain.interior(item.surface):
+                raise ValueError(
+                    f"Convection on {item.surface!r}: this surface is interior (it "
+                    "has the thermal solve domain on both sides), but a "
+                    "convection boundary must be an exterior surface of the "
+                    "thermal solve domain: an interior face has no ambient. Use "
+                    "a HeatFlux or a FixedTemperature there, or exclude the "
+                    'volume on one side with excluded={"thermal": (...)}.'
+                )
             if isinstance(item, (Absorbing, WavePort, FloquetPort)) and (
                 domain.interior(item.surface)
             ):
@@ -345,6 +433,28 @@ class Model:
                 for edge in item.pec_edges:
                     check_surface(mesh, edge, f"WavePort {item.name!r} pec_edges")
         _check_one_per_surface(taken)
+        self._check_fixed_temperatures()
+
+    def _check_fixed_temperatures(self) -> None:
+        """Two `FixedTemperature` surfaces with different values share no node."""
+        fixed = [b for b in self.boundaries if isinstance(b, FixedTemperature)]
+        mesh = self.mesh
+        nodes = {
+            b.surface: np.unique(mesh.triangles[mesh.elements(b.surface)])
+            for b in fixed
+        }
+        for i, b in enumerate(fixed):
+            for a in fixed[:i]:
+                if a.temperature == b.temperature:
+                    continue
+                shared = np.intersect1d(nodes[a.surface], nodes[b.surface]).size
+                if shared:
+                    raise ValueError(
+                        f"FixedTemperature on {a.surface!r} ({a.temperature} K) "
+                        f"and on {b.surface!r} ({b.temperature} K) share {shared} "
+                        "mesh nodes, where the temperature would have two values: "
+                        "merge them, or separate them in the geometry."
+                    )
 
     def _check_periodic(self) -> tuple[Pairing, ...]:
         """Pair the nodes of every `Periodic` and check the pairs (ADR 0041)."""
@@ -457,9 +567,43 @@ class Model:
 
     @property
     def excluded_entities(self) -> tuple[tuple[str, int], ...]:
-        """``(region name, gmsh entity number)`` of each excluded volume entity."""
+        """``(region name, gmsh entity number)`` of each EM-excluded volume entity.
+
+        These are the entities excluded from electromagnetic problems; see
+        `excluded_from` for the other physics.
+        """
+        return self._excluded_entities_of("em")
+
+    def excluded_from(self, physics: str) -> tuple[Excluded, ...]:
+        """The ``excluded=`` entries of one physics.
+
+        Args:
+            physics: ``"em"``, ``"thermal"`` or ``"dc_conduction"``.
+
+        Raises:
+            ValueError: An unknown physics.
+        """
+        _check_physics(physics, "Model.excluded_from")
+        return self._excluded_by[_PHYSICS.index(physics)]
+
+    def _excluded_entities_of(self, physics: str) -> tuple[tuple[str, int], ...]:
+        """``(region name, gmsh entity number)`` excluded from ``physics``."""
         names = {r.tag: r.name for r in self.mesh.regions if r.dim == 3}
-        return tuple((names[tag], ent) for tag, ent in self._domain.excluded)
+        domain = self._domain_of(physics)
+        return tuple((names[tag], ent) for tag, ent in domain.excluded)
+
+    def _default(self, physics: str) -> tuple[str, ...]:
+        """Exterior surfaces of the ``physics`` domain no item of it names."""
+        named = {
+            s
+            for item in (*self.boundaries, *self.ports)
+            if physics_of(item) == physics
+            for s in surfaces_of(item)
+        }
+        domain = self._domain_of(physics)
+        return tuple(
+            s for s in self.mesh.surfaces if s not in named and domain.exterior(s)
+        )
 
     @property
     def default_pmc(self) -> tuple[str, ...]:
@@ -467,14 +611,20 @@ class Model:
 
         These are the surfaces of the electromagnetic solve domain's exterior
         (the mesh boundary and the shells of excluded volumes) that no
-        boundary condition or port names.
+        electromagnetic boundary condition or port names.
         """
-        named = {
-            s for item in (*self.boundaries, *self.ports) for s in surfaces_of(item)
-        }
-        return tuple(
-            s for s in self.mesh.surfaces if s not in named and self._domain.exterior(s)
-        )
+        return self._default("em")
+
+    @property
+    def default_insulated(self) -> tuple[str, ...]:
+        """Exterior surfaces that are insulated by default in thermal problems.
+
+        These are the surfaces of the thermal domain's exterior (the mesh
+        boundary, the end faces ``front`` and ``back`` of a slab
+        cross-section, and the shells of volumes excluded from thermal
+        problems) that no thermal condition names: no heat crosses them.
+        """
+        return self._default("thermal")
 
     def _face(self, surface: Any, owner: str) -> FloquetFace:
         check_surface(self.mesh, surface, owner)
@@ -572,7 +722,10 @@ class Model:
         """A new model with some fields changed, validated again.
 
         The fields are ``mesh``, ``materials``, ``boundaries``, ``ports`` and
-        ``excluded``. Shape optimization passes ``mesh=moved_mesh``.
+        ``excluded``. Shape optimization passes ``mesh=moved_mesh``. A new
+        ``excluded`` replaces every physics' entries (a list or tuple: the
+        electromagnetic ones, nothing excluded for the others); without it,
+        each physics keeps its entries.
 
         Raises:
             TypeError: An unknown field name.
@@ -585,13 +738,15 @@ class Model:
                 f"use {', '.join(fields)}."
             )
         args = {f: changes.get(f, getattr(self, f)) for f in fields}
+        if "excluded" not in changes:
+            args["excluded"] = dict(zip(_PHYSICS, self._excluded_by, strict=True))
         same_domain = (
             isinstance(args["mesh"], Mesh)
             and args["mesh"]._topology is self.mesh._topology  # noqa: SLF001
             and "excluded" not in changes
         )
         new = object.__new__(Model)
-        new._build(**args, domain=self._domain if same_domain else None)
+        new._build(**args, domains=self._domains if same_domain else None)
         return new
 
     def with_material(self, region: str, material: Material | MaterialField) -> Model:
@@ -602,6 +757,36 @@ class Model:
         """
         _check_volume(self.mesh, region, "Materials are assigned to volumes.")
         return self.replace(materials={**self.materials, region: material})
+
+    def with_temperature_rise(self, rise: Field) -> Model:
+        """A new model whose permittivity follows a temperature rise.
+
+        Each region with a ``thermo_optic_coefficient`` gets a
+        `MaterialField` with, per element, ``eps_r = (n0 + dn/dT *
+        rise_e)^2``: ``n0 = sqrt(eps_r)`` of its material (the index at the
+        source-free temperature) and ``rise_e`` the mean rise over the
+        element (the exact element mean on the rise's own mesh, else the
+        quadrature mean of the rise at points located in its mesh). Its
+        other properties are kept; regions without a coefficient, and
+        elements excluded from electromagnetic solves, keep their index.
+        Any optical solve then reads the heated index: a `PortMode`
+        re-solve checks `gfem.thermo_optic_shift`'s first order.
+        Differentiable with respect to the rise and the coefficient.
+
+        Args:
+            rise: The temperature rise, a scalar `Field` on any mesh that
+                holds the heated elements (``SteadyThermalResult.rise``).
+
+        Raises:
+            TypeError: ``rise`` is not a scalar `Field`.
+            ValueError: An element lies outside the rise's mesh or support
+                (the message names the point).
+            NotImplementedError: A region with a coefficient has a
+                permittivity law or an anisotropic material.
+        """
+        from gfem.thermo_optic import with_temperature_rise
+
+        return with_temperature_rise(self, rise)
 
     # --- pytree ---------------------------------------------------------------
 
@@ -614,7 +799,7 @@ class Model:
             (key("boundaries"), self.boundaries),
             (key("ports"), self.ports),
         )
-        aux = (tuple(self.materials), self.excluded, self._domain, self._periodic)
+        aux = (tuple(self.materials), self._excluded_by, self._domains, self._periodic)
         return children, aux
 
     def tree_flatten(self):
@@ -625,7 +810,7 @@ class Model:
     @classmethod
     def tree_unflatten(cls, aux, children) -> Model:
         """JAX pytree protocol (no validation: the structure is unchanged)."""
-        order, excluded, domain, periodic = aux
+        order, excluded_by, domains, periodic = aux
         mesh, materials, boundaries, ports = children
         new = object.__new__(cls)
         set_ = object.__setattr__
@@ -633,8 +818,10 @@ class Model:
         set_(new, "materials", types.MappingProxyType({k: materials[k] for k in order}))
         set_(new, "boundaries", boundaries)
         set_(new, "ports", ports)
-        set_(new, "excluded", excluded)
-        set_(new, "_domain", domain)
+        set_(new, "excluded", excluded_by[0])
+        set_(new, "_excluded_by", excluded_by)
+        set_(new, "_domains", domains)
+        set_(new, "_domain", domains[0])
         set_(new, "_periodic", periodic)
         return new
 
@@ -647,10 +834,15 @@ class Model:
     def __repr__(self) -> str:
         lines = [f"Model({self.mesh!r}", "  materials:"]
         lines += [f"    {r}: {m!r}" for r, m in self.materials.items()]
-        if self.excluded:
-            ents = ", ".join(f"{r} entity {e}" for r, e in self.excluded_entities)
-            spec = ", ".join(repr(x) for x in self.excluded)
-            lines.append(f"  excluded (electromagnetic): {ents} (from {spec})")
+        for physics, entries in zip(_PHYSICS, self._excluded_by, strict=True):
+            if not entries:
+                continue
+            ents = ", ".join(
+                f"{r} entity {e}" for r, e in self._excluded_entities_of(physics)
+            )
+            spec = ", ".join(repr(x) for x in entries)
+            name = _PHYSICS_NAMES[physics]
+            lines.append(f"  excluded ({name}): {ents} (from {spec})")
         if self.boundaries:
             lines.append("  boundaries:")
             lines += [f"    {b!r}" for b in self.boundaries]
@@ -661,6 +853,13 @@ class Model:
             lines.append(
                 "  default PMC (electromagnetic problems): "
                 + ", ".join(self.default_pmc)
+            )
+        thermal = self._excluded_by[_PHYSICS.index("thermal")] or any(
+            physics_of(b) == "thermal" for b in self.boundaries
+        )
+        if thermal and self.default_insulated:
+            lines.append(
+                "  insulated by default (thermal): " + ", ".join(self.default_insulated)
             )
         return "\n".join(lines) + ")"
 
@@ -721,9 +920,32 @@ def _excluded_entities(mesh: Mesh, excluded: tuple) -> set[tuple[int, int]]:
     return out
 
 
+def _off_domain(what: str, surface: str, physics: str) -> str:
+    """The refusal of an item on a surface its physics' domain does not reach."""
+    if physics == "em":
+        return (
+            f"{what} on {surface!r}: the surface does not border the "
+            "electromagnetic solve domain (it lies inside excluded volumes). "
+            "Remove it, or exclude fewer volumes."
+        )
+    name = _PHYSICS_NAMES[physics]
+    return (
+        f"{what} on {surface!r}: the surface does not border the {name} solve "
+        f"domain (it lies inside volumes excluded from {name} problems). Remove "
+        f'it, or exclude fewer volumes with excluded={{"{physics}": (...)}}.'
+    )
+
+
 def _materials(
-    mesh: Mesh, materials: Any, fully_excluded: set[str]
+    mesh: Mesh, materials: Any, everywhere: set[str], em_excluded: set[str]
 ) -> Mapping[str, Material | MaterialField]:
+    """Check ``materials``: none on ``everywhere``, all on EM-active volumes.
+
+    ``everywhere`` holds the regions excluded from every physics,
+    ``em_excluded`` those excluded from electromagnetic problems: a region
+    only some physics solves on may go without a material (a thermal problem
+    raises `MissingMaterialPropertyError` there).
+    """
     if not isinstance(materials, Mapping):
         raise TypeError(
             "materials must map volume region names to gfem.Material or "
@@ -736,16 +958,15 @@ def _materials(
                 f"materials[{region!r}] must be a gfem.Material or MaterialField, "
                 f"got {type(value).__name__}."
             )
-        if region in fully_excluded:
+        if region in everywhere:
             raise ValueError(
-                f"Region {region!r} is excluded from the electromagnetic solve "
-                "domain, so it cannot also have a material. Remove one of the two."
+                f"Region {region!r} is excluded from every physics "
+                "(electromagnetic, thermal and DC conduction), so it cannot also "
+                "have a material. Remove one of the two."
             )
         if isinstance(value, MaterialField):
             _check_field(mesh, region, value)
-    missing = [
-        v for v in mesh.volumes if v not in materials and v not in fully_excluded
-    ]
+    missing = [v for v in mesh.volumes if v not in materials and v not in em_excluded]
     if missing:
         raise ValueError(
             f"No material for volume(s) {', '.join(repr(v) for v in missing)}. "

@@ -207,6 +207,7 @@ nitpick_ignore = [
             "InterfaceKind",
             "LinearSolver",
             "EigenSolver",
+            "TimeScheme",
             "Device",
             "Estimator",  # FieldEstimator | QuantityEstimator
             # SolverOptions.petsc_options' types, which its Attributes text describes

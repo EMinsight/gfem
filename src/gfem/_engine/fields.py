@@ -31,13 +31,18 @@ if TYPE_CHECKING:
 __all__ = [
     "LENGTH_POWER",
     "curl_matrix",
+    "dirichlet_h1",
     "dof_shape",
+    "element_rows",
+    "face_keys",
     "fe_space",
     "mean_rows",
     "one_process_column",
     "one_process_dofs",
     "sample",
     "support_region",
+    "surface_triangles",
+    "tetrahedron_face_keys",
 ]
 
 LENGTH_POWER = {"h1": 0, "l2": 0, "hcurl": -1, "hdiv": -2}
@@ -100,6 +105,58 @@ def fe_space(
 
     fes, region = disc.space(key, build)
     return built, fes, region
+
+
+def dirichlet_h1(
+    mesh: Mesh,
+    physics: str,
+    regions: tuple[str, ...],
+    excluded: tuple[tuple[int, int], ...],
+    *,
+    order: int,
+    fixed: tuple[str, ...],
+) -> tuple[ngs.FESpace, EngineMesh]:
+    """The compressed H1 space of a scalar physics, fixed on ``fixed`` surfaces.
+
+    It is defined on ``regions`` minus the ``excluded`` volume entities and
+    cached on the mesh's discretization under ``physics``.
+    """
+    disc = discretization(mesh)
+    built = disc.built
+
+    def build() -> ngs.FESpace:
+        names = built.mesh.GetBoundaries()
+        space = ngs.H1(
+            built.mesh,
+            order=order,
+            definedon=support_region(built, mesh, regions, excluded),
+            dirichlet=[j + 1 for j, n in enumerate(names) if n in fixed],
+        )
+        return ngs.Compress(space)
+
+    key = ((physics, regions, excluded), "h1", order, fixed)
+    return disc.space(key, build), built
+
+
+def face_keys(faces: np.ndarray, n: int) -> np.ndarray:
+    """One integer per triangle ``(k, 3)`` of ``n`` nodes, whatever its node order."""
+    f = np.sort(faces, axis=1).astype(np.int64)
+    return (f[:, 0] * n + f[:, 1]) * n + f[:, 2]
+
+
+def tetrahedron_face_keys(mesh: Mesh, tets: np.ndarray) -> np.ndarray:
+    """The `face_keys` of the four faces of each of ``tets``, ``(4 k,)``.
+
+    ``tets`` indexes ``mesh.tetrahedra`` (indices or a boolean mask).
+    """
+    faces = mesh.tetrahedra[tets][:, _TET_FACES].reshape(-1, 3)
+    return face_keys(faces, len(mesh.imported_nodes))
+
+
+def surface_triangles(mesh: Mesh, surfaces: tuple[str, ...]) -> np.ndarray:
+    """The triangles (node triples) of the named surfaces."""
+    tags = [mesh.region(s).tag for s in surfaces]
+    return mesh.triangles[np.isin(mesh.triangle_tags, tags)]
 
 
 _SHAPES: weakref.WeakKeyDictionary[Any, dict[tuple, tuple[int, int]]] = (
@@ -578,3 +635,64 @@ def mean_rows(
     while len(_MEANS) > _MAX_MEANS:
         _MEANS.popitem(last=False)
     return rows
+
+
+_ELEMENT_ROWS: collections.OrderedDict[tuple, tuple] = collections.OrderedDict()
+
+
+def element_rows(
+    mesh: Mesh,
+    layout: tuple[tuple[str, ...], tuple[tuple[int, int], ...], str, int],
+    tetrahedra: np.ndarray,
+) -> Any:
+    """``(len(tetrahedra), ndof)`` sparse rows: the element means are ``rows @ c``.
+
+    Row ``i`` is |e|^-1 int_e phi_j over tetrahedron ``tetrahedra[i]`` (gfem
+    order): exact for the discrete field, on the pinned rule of its order.
+    Every listed tetrahedron must lie in the field's support. ``layout`` is
+    the field's (support, excluded entities, space, order); a scalar space
+    (h1, l2). One process only.
+    """
+    import scipy.sparse
+
+    support, excluded, space, order = layout
+    topology = mesh._topology  # noqa: SLF001
+    nodes = np.ascontiguousarray(mesh.nodes)
+    tetrahedra = np.asarray(tetrahedra, np.int64)
+    key = (
+        id(topology),
+        support,
+        excluded,
+        space,
+        order,
+        hash(tetrahedra.tobytes()),
+        hash(nodes.tobytes()),
+    )
+    found = _ELEMENT_ROWS.get(key)
+    if found is not None and found[0] is topology:
+        _ELEMENT_ROWS.move_to_end(key)
+        return found[1]
+    built, fes, _ = fe_space(mesh, support, excluded, space, order)
+    l2 = ngs.L2(built.mesh, order=0)
+    dx = quadrature.dx(order)
+    q = l2.TestFunction()
+    form = ngs.BilinearForm(trialspace=fes, testspace=l2)
+    form += fes.TrialFunction() * q * dx
+    form.Assemble()
+    volume = ngs.LinearForm(l2)
+    volume += q * dx
+    volume.Assemble()
+    rows, cols, values = form.mat.COO()
+    element = np.asarray(rows, np.int64)
+    matrix = scipy.sparse.csr_matrix(
+        (np.asarray(values) / volume.vec.FV().NumPy()[element], (element, cols)),
+        shape=(l2.ndof, fes.ndof),
+    )
+    # NGSolve element i is gfem tetrahedron tetrahedron_order[i]
+    of_tet = np.empty(len(built.tetrahedron_order), np.int64)
+    of_tet[built.tetrahedron_order] = np.arange(len(built.tetrahedron_order))
+    out = matrix[of_tet[tetrahedra]]
+    _ELEMENT_ROWS[key] = (topology, out)
+    while len(_ELEMENT_ROWS) > _MAX_MEANS:
+        _ELEMENT_ROWS.popitem(last=False)
+    return out

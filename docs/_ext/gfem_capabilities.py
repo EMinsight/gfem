@@ -159,6 +159,26 @@ ROWS = {
         recipe="recipes/measurements",
         front=False,
     ),
+    # thermal and DC conduction (ADR 0177): Capabilities page only
+    "steady_thermal": Row(
+        "Steady thermal", "temperature, rise, heat and power", front=False
+    ),
+    "transient_thermal": Row(
+        "Transient thermal",
+        "traces and kept temperatures, TR-BDF2 and theta",
+        front=False,
+    ),
+    "dc_conduction": Row(
+        "DC conduction", "conductance, dissipation and potentials", front=False
+    ),
+    # measurements of a rise on a held mode (ADRs 0175, 0183): the mode's
+    # inputs raise, the rise and the thermo-optic coefficient differentiate
+    "thermo_optic_shift": Row(
+        "Thermo-optic shift", "phase per length of a section", front=False
+    ),
+    "route_phase": Row(
+        "Route phase", "phase along routes through a 3D rise", front=False
+    ),
 }
 COLUMNS = {
     "eps_r": Row("Permittivity", ""),
@@ -203,6 +223,12 @@ PROBLEMS = {
     "driven_blend": Problem("driven", "s.values", "lumped"),
     # the static permittivity of a law (ADR 0111)
     "electrostatic_law": Problem("electrostatic", "capacitance"),
+    # thermal and DC conduction (ADR 0177)
+    "steady_thermal": Problem("steady_thermal", "temperature.coefficients"),
+    "transient_thermal": Problem("transient_thermal", "traces.upper"),
+    "dc_conduction": Problem("dc_conduction", "conductance"),
+    "thermo_optic_shift": Problem("thermo_optic_shift", "phase_per_length"),
+    "route_phase": Problem("route_phase", "phase.r"),
 }
 #: The rows whose cell-only keys have no ``EXPECTED`` entries of their own:
 #: the raise table's leaves of their row's keys answer for them, by prefix
@@ -234,9 +260,24 @@ OFF_GRID = {
     "law": "permittivity-law parameters",
     # the density leaf of a law blend, ("material", region, "blend") (ADR 0113)
     "blend": "density of a metal-dielectric blend",
+    # thermal problems (ADR 0177): their properties, and the problem leaves
+    # ("problem", ...): a heat source's amount, the waveform's scales
+    "thermal_conductivity": "thermal conductivity",
+    "mass_density": "mass density",
+    "specific_heat": "specific heat",
+    "thermo_optic_coefficient": "thermo-optic coefficient",
+    "heat": "heat-source amount and waveform scales",
 }
 #: The off-grid inputs listed together, one phrase per group and row.
-OFF_GRID_GROUPS = (("mu_r", "tan_delta"), ("lumped",), ("law",), ("blend",))
+OFF_GRID_GROUPS = (
+    ("mu_r", "tan_delta"),
+    ("lumped",),
+    ("law",),
+    ("blend",),
+    ("thermal_conductivity", "mass_density", "specific_heat"),
+    ("thermo_optic_coefficient",),
+    ("heat",),
+)
 #: The material properties among them (the others have no value forms).
 OFF_GRID_PROPERTIES = ("mu_r", "tan_delta")
 OFF_GRID_INPUTS = {name: name for name in OFF_GRID} | {
@@ -257,14 +298,19 @@ MATERIAL_PROPERTIES = {
     "mu_r": None,
     "tan_delta": None,
     "thermal_conductivity": None,
-    "density": None,
+    "mass_density": None,
     "specific_heat": None,
+    "thermo_optic_coefficient": None,
 }
 SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 # OUT_OF_SCOPE rows the grid needs (by their label): the row's cell raises.
 GRID_LABELS = {
     "electrostatic x sheet fill": ("electrostatic", "fill"),
     "eigenmode mode field x node coordinates": ("eigenmode_field", "nodes"),
+    # the shape-gradient refusal of the thermal and conduction forms (ADR 0177)
+    "steady_thermal x node coordinates": ("steady_thermal", "nodes"),
+    "transient_thermal x node coordinates": ("transient_thermal", "nodes"),
+    "dc_conduction x node coordinates": ("dc_conduction", "nodes"),
 }
 #: What each raises row asks for, in the site's words, by the test's label (the
 #: match key). A row off the grid with no label here, or a label with no row,
@@ -448,6 +494,53 @@ RAISES_LABELS = {
         "Eigenmode principal participation, with respect to a lumped port's or "
         "an `Impedance`'s values"
     ),
+    **{
+        f"thermal boundary {what}": (
+            f"Thermal problems, with respect to `{what}` (a fixed value; "
+            "raised when the boundary is built)"
+        )
+        for what in (
+            "FixedTemperature.temperature",
+            "Convection.coefficient",
+            "Convection.ambient",
+            "HeatFlux.flux",
+        )
+    },
+    **{
+        f"TransientThermal {what}": (
+            f"`TransientThermal`, with respect to its {words} (a fixed value of "
+            "the time grid; raised when the problem is built)"
+        )
+        for what, words in (
+            ("duration", "`duration`"),
+            ("steps", "`steps`"),
+            ("waveform start time", "waveform start times"),
+            ("initial_temperature", "`initial_temperature`"),
+        )
+    },
+    **{
+        f"{name} under jax.grad": (
+            f"`{name}` of a trace (a crossing time found by search; "
+            "differentiate the trace's values)"
+        )
+        for name in ("rise_time", "time_constant")
+    },
+    "thermo-optic shift x optical permittivity": (
+        "`thermo_optic_shift`, with respect to the optical model's permittivity, "
+        "loss tangent, permeability or conductivity (the mode is held constant; "
+        "the rise and the thermo-optic coefficient differentiate)"
+    ),
+    "thermo-optic shift x optical node coordinates": (
+        "`thermo_optic_shift`, with respect to the optical model's node coordinates"
+    ),
+    "route phase x window permittivity": (
+        "`route_phase`, with respect to the window's permittivity, loss tangent, "
+        "permeability or conductivity (the mode is held constant; the rise and "
+        "the thermo-optic coefficient differentiate)"
+    ),
+    "route phase x window node coordinates": (
+        "`route_phase`, with respect to the window's node coordinates"
+    ),
 }
 STATUS_TEXT = {"verified": "FD-verified", "zero": "exact zero", "raises": "raises"}
 OUTCOMES = {"gradient", "zero", "raises"}
@@ -479,7 +572,7 @@ def _input_column(kind) -> str | None:
         return MATERIAL_PROPERTIES[kind[2]]
     if len(kind) == 4 and kind[0] == "boundary" and kind[2:] == ("fill", "fill"):
         return "fill"
-    if _off_grid_input(kind) in ("lumped", "law", "blend"):
+    if _off_grid_input(kind) in ("lumped", "law", "blend", "heat", "rise"):
         return None
     raise CapabilitiesError(
         f"{RAISE_TEST}: input kind {kind!r} is not in the Capabilities mapping "
@@ -492,6 +585,12 @@ def _off_grid_input(kind: tuple) -> str | None:
     # a law's ("law", region, "eps_inf") or ("law", region, term, parameter)
     if kind[0] == "law" and len(kind) in (3, 4):
         return "law"
+    # a thermal problem's leaves: a heat source's amount, the waveform's scales
+    if kind[0] == "problem":
+        return "heat"
+    # the rise a thermo-optic measurement reads (no cell, no group)
+    if kind == ("rise",):
+        return "rise"
     if len(kind) == 3 and kind[2] in LUMPED_VALUES.get(kind[0], ()):
         return "lumped"
     if len(kind) == 3 and kind[0] == "material" and kind[2] in OFF_GRID:
@@ -840,6 +939,9 @@ REFUSAL_LABELS = {
     "adaptive_sweep": '`Driven(sweep="adaptive")`, with or without `samples`',
     "eigenmode": "`Eigenmode`, nonlinear ones included",
     "electrostatic": "`Electrostatic`",
+    "thermal": "`SteadyThermal`",
+    "thermal_transient": "`TransientThermal`",
+    "dc_conduction": "`DCConduction`",
     "periodic": "A `Periodic` boundary on a `Driven` problem, on any number of axes",
     "bloch": "`Driven(wave_vector=...)`",
     "floquet_port": "A `FloquetPort` on a `Driven` problem",

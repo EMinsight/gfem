@@ -34,6 +34,7 @@ from gfem.errors import (  # noqa: E402
     MeshQualityWarning,
     MeshRefinementNotConvergedWarning,
     MeshRefinementUnsupportedError,
+    MissingMaterialPropertyError,
     ModeLabelError,
     NonDifferentiableError,
     ObliqueAbsorberWarning,
@@ -48,12 +49,14 @@ from gfem.errors import (  # noqa: E402
     SweepRankDeficientWarning,
     UnrequestedOrderWarning,
     UnsampledPixelsWarning,
+    UnsettledTraceWarning,
 )
 from gfem.job import Job, load_result  # noqa: E402
 from gfem.measurements import (  # noqa: E402
     InterfaceParticipation,
     characteristic_impedance,
     electric_energy,
+    element_mean,
     interface_participation,
     power_flow,
     region_mean,
@@ -64,7 +67,10 @@ from gfem.model import (  # noqa: E402
     PMC,
     Absorbing,
     Conductor,
+    Convection,
+    FixedTemperature,
     FloquetPort,
+    HeatFlux,
     Impedance,
     LumpedPort,
     Material,
@@ -76,7 +82,15 @@ from gfem.model import (  # noqa: E402
     enclosed_by,
 )
 from gfem.options import SolverOptions  # noqa: E402
-from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode  # noqa: E402
+from gfem.problems import (  # noqa: E402
+    DCConduction,
+    Driven,
+    Eigenmode,
+    Electrostatic,
+    PortMode,
+    SteadyThermal,
+    TransientThermal,
+)
 from gfem.refinement import (  # noqa: E402
     ErrorEstimate,
     FieldEstimator,
@@ -87,6 +101,7 @@ from gfem.refinement import (  # noqa: E402
     refine_mesh,
 )
 from gfem.results import (  # noqa: E402
+    DCConductionResult,
     DiffractionOrderResult,
     DrivenResult,
     EigenmodeResult,
@@ -95,9 +110,24 @@ from gfem.results import (  # noqa: E402
     NetworkParameters,
     PortModeField,
     PortModeResult,
+    SteadyThermalResult,
     SweepInfo,
+    TransientThermalResult,
 )
 from gfem.solve import release_memory, solve  # noqa: E402
+from gfem.thermal import (  # noqa: E402
+    HeatSource,
+    Trace,
+    joule_heating,
+    rise_time,
+    time_constant,
+)
+from gfem.thermo_optic import (  # noqa: E402
+    RoutePhase,
+    ThermoOpticShift,
+    route_phase,
+    thermo_optic_shift,
+)
 
 __version__ = _version("gfem")
 
@@ -106,6 +136,9 @@ __all__ = [
     "PMC",
     "Absorbing",
     "Conductor",
+    "Convection",
+    "DCConduction",
+    "DCConductionResult",
     "Debye",
     "DegenerateModeError",
     "DeviceMemoryWarning",
@@ -124,8 +157,11 @@ __all__ = [
     "ErrorEstimate",
     "Field",
     "FieldEstimator",
+    "FixedTemperature",
     "FloquetOrderCapWarning",
     "FloquetPort",
+    "HeatFlux",
+    "HeatSource",
     "Impedance",
     "InterfaceParticipation",
     "Job",
@@ -141,6 +177,7 @@ __all__ = [
     "MeshRefinement",
     "MeshRefinementNotConvergedWarning",
     "MeshRefinementUnsupportedError",
+    "MissingMaterialPropertyError",
     "ModeLabelError",
     "Model",
     "NetworkParameters",
@@ -159,15 +196,23 @@ __all__ = [
     "RefinementCycle",
     "Region",
     "RegionNotFoundError",
+    "RoutePhase",
     "SheetField",
     "SkippedPortModeWarning",
     "SolverOptions",
     "SolverUnavailableError",
+    "SteadyThermal",
+    "SteadyThermalResult",
     "SweepInfo",
     "SweepNotConvergedWarning",
     "SweepRankDeficientWarning",
+    "ThermoOpticShift",
+    "Trace",
+    "TransientThermal",
+    "TransientThermalResult",
     "UnrequestedOrderWarning",
     "UnsampledPixelsWarning",
+    "UnsettledTraceWarning",
     "WavePort",
     "__version__",
     "characteristic_impedance",
@@ -175,15 +220,21 @@ __all__ = [
     "cuda_available",
     "design",
     "electric_energy",
+    "element_mean",
     "enclosed_by",
     "error_estimate",
     "interface_participation",
+    "joule_heating",
     "load_result",
     "power_flow",
     "quantum",
     "refine_mesh",
     "region_mean",
     "release_memory",
+    "rise_time",
+    "route_phase",
     "shape",
     "solve",
+    "thermo_optic_shift",
+    "time_constant",
 ]

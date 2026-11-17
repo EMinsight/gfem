@@ -38,6 +38,7 @@ import numpy as np
 import scipy.constants as const
 
 from gfem._boundaries import Absorbing, FloquetPort, Periodic, surfaces_of
+from gfem._domain import physics_of
 from gfem._materials import PROPERTIES, Material, MaterialField, PermittivityLaw
 from gfem._periodic import Pairing, side_edges
 from gfem._text import hertz, hertz_band
@@ -801,6 +802,7 @@ def _distance(
     named = [
         s
         for item in (*model.boundaries, *model.ports)
+        if physics_of(item) == "em"
         for s in surfaces_of(item)
         if s not in skip
     ]
