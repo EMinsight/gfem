@@ -344,6 +344,32 @@ def _choice(value: object, choices: Sequence[str], where: str) -> str:
     return text
 
 
+PLANNING_KEYS = ("est_s",)
+"""Case-file tables that are planning hints, outside every case hash."""
+SIBLING_KEYS = ("name", "size", "order", "mesh")
+"""What may differ between siblings of one physics (order, ladder level)."""
+
+
+def _digest_of(raw: Mapping[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
+
+
+def definition_sha256(case: Case) -> str:
+    """sha256 of the case definition, ``est_s`` hints left out (records' pin)."""
+    raw = {k: v for k, v in case.to_dict().items() if k not in PLANNING_KEYS}
+    return _digest_of(raw)
+
+
+def physics_sha256(case: Case) -> str:
+    """sha256 of the physics: the definition minus mesh, order, name and size.
+
+    Siblings of one family (orders, split levels) share it; a converged reference
+    is matched by it plus the run's mesh sha256 (ADR 0408).
+    """
+    left_out = (*PLANNING_KEYS, *SIBLING_KEYS)
+    return _digest_of({k: v for k, v in case.to_dict().items() if k not in left_out})
+
+
 def load_case(path: Path) -> Case:
     """Load and validate a case file (a ``case.toml`` or its directory).
 

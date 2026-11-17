@@ -31,6 +31,8 @@ from typing import Any
 
 PACKAGE = Path(__file__).resolve().parents[1]
 CASES_DIR = PACKAGE / "cases"
+REFERENCES_DIR = PACKAGE / "references"
+"""Reference-only sibling cases: ``references/<family>/<rung>/case.toml``."""
 SITE_ENV = "GFEM_BENCH_SITE"
 
 SOLVERS = ("gfem:direct", "gfem:petsc-mumps", "gfem:bddc", "palace:mumps", "palace:pmg")
@@ -282,6 +284,7 @@ _CAMPAIGN_KEYS = (
     "jobs",
     "ladder",
     "cases_dir",
+    "same_code_direct",
 )
 _LADDER_KEYS = ("cases", "solvers", "tolerances", "layout")
 _STACK_OVERRIDE_KEYS = ("versions", "env")
@@ -321,8 +324,12 @@ class Campaign:
     cases_dir: Path | None = None
     """Where the campaign's case directories are; ``None`` = ``benchmarks/cases``.
 
-    Set by ``cases_dir`` in the file (relative to it), for harness fixtures only.
+    Set by ``cases_dir`` in the file (relative to it): harness fixtures and the
+    reference campaigns (``benchmarks/references/<family>/``).
     """
+    same_code_direct: bool = True
+    """Add the same-code direct runs (ADR 0409); off only for reference campaigns
+    whose finest rung no direct solver can take."""
 
 
 def known_cases(cases_dir: Path = CASES_DIR) -> tuple[str, ...]:
@@ -465,7 +472,14 @@ def load_campaign(path: Path, *, cases: tuple[str, ...] | None = None) -> Campai
         stack_versions=versions,
         stack_env=env,
         cases_dir=cases_dir,
+        same_code_direct=_bool(raw.get("same_code_direct", True), "same_code_direct"),
     )
+
+
+def _bool(value: object, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigError(f"{where}: expected true or false, got {value!r}")
+    return value
 
 
 def _cases_dir(raw: Mapping[str, Any], path: Path) -> Path | None:

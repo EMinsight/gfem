@@ -1,0 +1,23 @@
+# Microstrip reference, L2 stage (ticket 08 Q3, ADR 0408): gfem BDDC at 1e-11 on
+# L2 p2 (about 19.3 M DOF) and on L1 p2 (the algebraic check against the pilot's
+# direct solve). Run only when the pilot's rate is at least 1. No same-code direct
+# run is added: no direct solver takes L2 on one node.
+schema = 1
+cases_dir = "../references/microstrip"
+cases = ["microstrip_L1_p2", "microstrip_L2_p2"]
+solvers = ["gfem:bddc"]
+layouts = ["default"]
+core_budget = 112
+repeats = 1
+node_class = "standard"
+anchor_tolerance = 1e-11
+same_code_direct = false
+
+[jobs]
+group = "stack"
+
+[wall_cap_s]
+microstrip_L1_p2 = 1200
+microstrip_L2_p2 = 5400
+
+[stacks.wheels]

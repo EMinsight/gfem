@@ -500,6 +500,35 @@ def test_close_passes_a_complete_campaign_and_fills_the_manifest(site, tmp_path)
     assert manifest.closed_utc
 
 
+def test_close_scores_ok_records_once(site, tmp_path):
+    rd = _plan(site, tmp_path, solvers=["gfem:direct", "gfem:bddc"], repeats=1)
+    rows = rd.steps("tiny-wheels")
+    tiny = rd.case("tiny")
+    freqs = list(tiny.problem.frequencies())
+    keys = [f"{t},{f}" for t, f in tiny.quantities.s]
+    for row in rows:
+        shift = 1e-9 if row["solver"] == "gfem:bddc" else 0.0
+        outputs = {
+            "frequencies_hz": freqs,
+            "s": {k: [[0.5 + shift, 0.0] for _ in freqs] for k in keys},
+        }
+        _record(rd, row, "ok", ndof=938, outputs=outputs)
+    assert slurm.close(rd, environ={}) == 0
+    found = {r["solver"]: _status(rd, r["name"]) for r in rows}
+    bddc = found["gfem:bddc"]
+    assert bddc.accuracy is None
+    assert bddc.extra["accuracy_reason"] == "no_reference"
+    assert bddc.checks["reference_matches"] == "skipped"
+    assert bddc.same_code_error["value"] == pytest.approx(1e-9)
+    assert bddc.same_code_error["against"] == found["gfem:direct"].name
+    manifest = records.load_campaign(rd.path / "campaign.json")
+    path = rd.path / "records" / f"{bddc.name}.json"
+    assert manifest.records[f"records/{bddc.name}.json"] == records.file_sha256(path)
+    before = path.read_bytes()
+    assert slurm.close(rd, environ={}) == 0
+    assert path.read_bytes() == before
+
+
 def test_close_fails_on_a_dof_mismatch_between_codes(site, tmp_path):
     rd, rows = _two_codes(site, tmp_path)
     _record(rd, rows[0], "ok", ndof=938)
