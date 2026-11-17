@@ -94,6 +94,7 @@ from gfem.results import (
 )
 from gfem.solve import solve
 from gfem.thermal import HeatSource, _FieldTrace
+from gfem.thermo_optic import _RouteSampler, _RouteTrace, _Sampling, _ShiftTrace
 
 __all__ = ["Job", "load_result"]
 
@@ -845,9 +846,25 @@ _codec.register(
     from_args=_transient_from_args,
     names=_TRANSIENT_NAMES,
 )
-# a Trace.point or Trace.mean; a thermo-optic shift's trace holds an optical
-# mesh and section, and stays in Python like the chain that makes it
+# a Trace.point or Trace.mean
 _codec.register(_FieldTrace, tag="Trace")
+# ThermoOpticShift.trace(): its weights, and the optical mesh's tetrahedra
+# that sample the rise
+_codec.register(_ShiftTrace, tag="ShiftTrace")
+_codec.register(_Sampling, tag="ShiftSampling")
+# RoutePhase.trace(name): its weights, and the window placed along the route
+_codec.register(_RouteTrace, tag="RouteTrace")
+_ROUTE_SAMPLER_NAMES = tuple(
+    f.name for f in dataclasses.fields(_RouteSampler) if f.name != "_cache"
+)
+_codec.register(
+    _RouteSampler,
+    tag="RouteSampler",
+    # the located matrices are a cache, rebuilt on the first sample
+    to_args=lambda r, _: {n: getattr(r, n) for n in _ROUTE_SAMPLER_NAMES},
+    from_args=lambda a, _: _RouteSampler(**a),
+    names=_ROUTE_SAMPLER_NAMES,
+)
 _codec.register(
     PortModeField,
     to_args=_port_mode_field_args,

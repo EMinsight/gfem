@@ -1215,3 +1215,69 @@ def test_thermal_and_dc_conduction_results_round_trip(slab_model, name, tmp_path
             np.testing.assert_array_equal(
                 loaded.temperature(t).coefficients, result.temperature(t).coefficients
             )
+
+
+def test_thermo_optic_shift_and_route_traces_round_trip_in_a_thermal_job(tmp_path):
+    import scipy.constants
+    import thermal_cases as tc
+
+    n_si, n_ox = 3.4777, 1.444
+    rects = [
+        (-1.75, -1.0, 1.75, 1.8, "clad", None),
+        (-0.25, 0.0, 0.25, 0.22, "core", 0.05),
+    ]
+    bottom = [(lambda p: abs(p[1] + 1.0) < 1e-9, "bottom")]
+    mesh = tc.section(tmp_path / "section.msh", rects, 0.4, bottom)
+    thermal = {"mass_density": 2200.0, "specific_heat": 700.0}
+    model = gfem.Model(
+        mesh,
+        materials={
+            "clad": gfem.Material(
+                eps_r=n_ox**2,
+                thermal_conductivity=1.38,
+                thermo_optic_coefficient=1e-5,
+                **thermal,
+            ),
+            "core": gfem.Material(
+                eps_r=n_si**2,
+                thermal_conductivity=90.0,
+                thermo_optic_coefficient=1.86e-4,
+                **thermal,
+            ),
+        },
+        boundaries=[gfem.FixedTemperature("bottom", temperature=300.0)],
+        ports=[gfem.WavePort("p", "front")],
+    )
+    frequency = scipy.constants.c / 1.55e-6
+    shift = gfem.thermo_optic_shift(model, None, port="p", frequency=frequency)
+    line = np.array([(4.0, 0.5, 1.5), (4.0, 3.5, 1.5)]) * 1e-6
+    route = gfem.route_phase(
+        model, None, routes={"line": line}, port="p", frequency=frequency
+    )
+    heat = gfem.HeatSource.uniform("core", power_per_length=1.0)
+    problem = gfem.TransientThermal(
+        heat,
+        duration=1e-6,
+        steps=2,
+        traces={"shift": shift.trace(), "route": route.trace("line")},
+    )
+    job = _round_trip(gfem.Job(model, problem), tmp_path)
+    _assert_same_problem(problem, job.problem)
+    a, b = problem.traces["route"]._sampler, job.problem.traces["route"]._sampler
+    assert b.name == a.name
+    for name in ("arc_length", "points", "left", "up", "trapezoid", "corners"):
+        np.testing.assert_array_equal(getattr(b, name), getattr(a, name))
+    for key in ("shift", "route"):
+        np.testing.assert_array_equal(
+            job.problem.traces[key]._weights, problem.traces[key]._weights
+        )
+    with np.load(tmp_path / "job.npz") as npz:
+        assert ".problem.traces['shift']._weights" in npz.files
+        assert ".problem.traces['route']._weights" in npz.files
+    # the read shift trace samples a rise as the written one does
+    steady = gfem.solve(model, gfem.SteadyThermal(heat))
+    np.testing.assert_allclose(
+        job.problem.traces["shift"]._sample(None, steady.rise),
+        problem.traces["shift"]._sample(None, steady.rise),
+        rtol=1e-13,  # the same weights; the sum's order is not fixed
+    )
