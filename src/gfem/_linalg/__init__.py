@@ -78,6 +78,7 @@ auxiliary systems assembled outside NGSolve.
 from __future__ import annotations
 
 import dataclasses
+import functools
 from collections.abc import Callable, Mapping
 from typing import (
     TYPE_CHECKING,
@@ -91,6 +92,8 @@ from typing import (
 
 import ngsolve as ngs
 import numpy as np
+
+from gfem import _timing
 
 if TYPE_CHECKING:
     from gfem._linalg.layout import DofLayout
@@ -285,6 +288,28 @@ class Refactorable(Handle, Protocol):
         ...
 
 
+def _timed_setup[**P](function: Callable[P, Handle]) -> Callable[P, Handle]:
+    """``function`` timed as a ``"setup"`` phase on ``gfem.timing``.
+
+    The record names the handle's solver, what it did and its bytes.
+    """
+
+    @functools.wraps(function)
+    def timed(*args: P.args, **kwargs: P.kwargs) -> Handle:
+        with _timing.phase("setup") as span:
+            handle = function(*args, **kwargs)
+            if span.enabled:
+                span.set(
+                    solver=getattr(handle, "kind", None),
+                    action=getattr(handle, "last_action", None) or "factorized",
+                    nbytes=int(handle.nbytes),
+                )
+        return handle
+
+    return timed
+
+
+@_timed_setup
 def refactorize_or_prepare(
     handle: Handle | None,
     operator: Operator,
@@ -324,6 +349,7 @@ def refactorize_or_prepare(
     return prepare_operator(operator)
 
 
+@_timed_setup
 def prepare(
     operator: Operator,
     *,

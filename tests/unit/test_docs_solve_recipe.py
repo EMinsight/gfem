@@ -80,6 +80,7 @@ def test_every_section_with_a_number_prints_it(ran):
         "Resonances and Q",
         "Coupling Q of a port",
         "Capacitance",
+        "Time each phase",
         "Check your results",
     }
 
