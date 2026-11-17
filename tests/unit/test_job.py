@@ -1008,3 +1008,210 @@ def test_a_shared_port_surface_round_trips_through_a_bundle(tmp_path):
             np.testing.assert_array_equal(
                 getattr(loaded.port_modes[name], field), getattr(mode, field)
             )
+
+
+# --- thermal and DC conduction ------------------------------------------------------
+
+#: The slab section's layers (name, thickness in um), up y.
+SLAB = (("si", 1.0), ("oxide", 1.0), ("metal", 0.2))
+SLAB_MATERIALS = {
+    "si": gfem.Material(
+        eps_r=11.7, thermal_conductivity=148.0, mass_density=2330.0, specific_heat=711.0
+    ),
+    "oxide": gfem.Material(
+        eps_r=2.1,
+        thermal_conductivity=1.4,
+        mass_density=2203.0,
+        specific_heat=709.0,
+        thermo_optic_coefficient=1e-5,
+    ),
+    "metal": gfem.Material(
+        conductivity=1e6,
+        thermal_conductivity=28.0,
+        mass_density=5240.0,
+        specific_heat=598.0,
+    ),
+}
+SLAB_OPTIONS = gfem.SolverOptions(order=1, linear_solver="direct")
+
+
+@pytest.fixture(scope="module")
+def slab_model(tmp_path_factory):
+    """A 4 um wide cross-section of SLAB with every thermal boundary type."""
+    import thermal_cases as tc
+
+    rects, y = [], 0.0
+    for name, t in SLAB:
+        rects.append((0.0, y, 4.0, y + t, name, None))
+        y += t
+    top = y
+    edges = [
+        (lambda p: abs(p[1]) < 1e-9, "bottom"),
+        (lambda p: abs(p[1] - top) < 1e-9, "top"),
+        (lambda p: abs(p[0]) < 1e-9 and p[1] < 1.0, "left"),
+    ]
+    path = tmp_path_factory.mktemp("slab") / "slab.msh"
+    mesh = tc.section(path, rects, 0.6, edges, thickness=3e-7)
+    return gfem.Model(
+        mesh,
+        materials=SLAB_MATERIALS,
+        boundaries=[
+            gfem.FixedTemperature("bottom", temperature=293.15),
+            gfem.Convection("top", coefficient=10.0, ambient=300.0),
+            gfem.HeatFlux("left", flux=50.0),
+        ],
+        excluded={"em": ("metal",), "dc_conduction": ("si",)},
+    )
+
+
+def _thermal_problems():
+    heat = gfem.HeatSource.uniform("metal", power_per_length=2.0)
+    return {
+        "steady_thermal": gfem.SteadyThermal(heat),
+        "transient_thermal": gfem.TransientThermal(
+            [heat, gfem.HeatSource.uniform(("si", "oxide"), power_density=1e9)],
+            duration=4e-6,
+            steps=4,
+            waveform=[(0.0, 1.0), (2e-6, 0.5)],
+            initial_temperature=295.0,
+            traces={
+                "core": gfem.Trace.mean("oxide"),
+                "spot": gfem.Trace.point((2e-6, 1.5e-6, 1.5e-7)),
+            },
+            keep_fields=[1e-6, 3e-6],
+        ),
+        "dc_conduction": gfem.DCConduction(terminals={"a": "front"}, ground="back"),
+    }
+
+
+def _assert_same_heat(a, b):
+    assert len(a) == len(b)
+    for x, y in zip(a, b, strict=True):
+        assert type(y) is gfem.HeatSource
+        assert repr(x) == repr(y)
+        for name in ("regions", "_kind", "_quantity", "_total", "_thickness"):
+            assert getattr(x, name) == getattr(y, name)
+        for name in ("_amount", "_density"):
+            u, v = getattr(x, name), getattr(y, name)
+            assert (u is None) == (v is None)
+            if u is not None:
+                np.testing.assert_array_equal(u, v)
+
+
+def _assert_same_problem(a, b):
+    assert type(a) is type(b)
+    assert repr(a) == repr(b)
+    if isinstance(a, gfem.DCConduction):
+        assert a == b
+        return
+    _assert_same_heat(a.heat, b.heat)
+    if isinstance(a, gfem.TransientThermal):
+        for name in (
+            "duration",
+            "steps",
+            "initial_temperature",
+            "keep_fields",
+            "_switches",
+        ):
+            assert getattr(a, name) == getattr(b, name)
+        np.testing.assert_array_equal(a._scales, b._scales)
+        assert {k: repr(t) for k, t in a.traces.items()} == {
+            k: repr(t) for k, t in b.traces.items()
+        }
+
+
+@pytest.mark.parametrize("name", list(_thermal_problems()))
+def test_thermal_and_dc_conduction_jobs_round_trip_with_section_thickness_and_mapping(
+    slab_model, name, tmp_path
+):
+    problem = _thermal_problems()[name]
+    options = gfem.SolverOptions(order=1, time_scheme="theta", theta=0.5)
+    job = _round_trip(gfem.Job(slab_model, problem, options), tmp_path)
+    _assert_same_problem(problem, job.problem)
+    assert job.options == options
+    assert job.model.mesh.section_thickness == 3e-7
+    assert job.model.boundaries == slab_model.boundaries
+    for physics in ("em", "thermal", "dc_conduction"):
+        assert job.model.excluded_from(physics) == slab_model.excluded_from(physics)
+    doc = json.loads((tmp_path / "job.json").read_text())
+    assert doc["job"]["model"]["excluded"]["$type"] == "Excluded"
+
+
+def test_a_thermal_job_refuses_an_unknown_key_on_every_new_class(slab_model, tmp_path):
+    seen = set()
+    for name, problem in _thermal_problems().items():
+        source = gfem.Job(slab_model, problem).to_json(tmp_path / f"{name}.json")
+        for tag in _tagged(json.loads(source.read_text())):
+            seen.add(tag)
+            path = _with_an_unknown_key(source, tag, source.with_stem("changed"))
+            with pytest.raises(ValueError, match=f"{tag} has no 'field_of_a_newer"):
+                gfem.Job.from_json(path)
+    assert seen >= {
+        "SteadyThermal",
+        "TransientThermal",
+        "DCConduction",
+        "HeatSource",
+        "Trace",
+        "FixedTemperature",
+        "Convection",
+        "HeatFlux",
+        "Excluded",
+    }
+
+
+def test_a_joule_heat_source_stores_its_array_by_leaf_path(slab_model, tmp_path):
+    dc = gfem.solve(
+        slab_model, _thermal_problems()["dc_conduction"], options=SLAB_OPTIONS
+    )
+    joule = gfem.joule_heating(dc, power_per_length=2.0)
+    uniform = gfem.HeatSource.uniform("si", power_density=1e8)
+    problem = gfem.SteadyThermal([joule, uniform])
+    job = gfem.Job(slab_model, problem, SLAB_OPTIONS)
+    path = job.to_json(tmp_path / "job.json")
+    with np.load(path.with_suffix(".npz")) as npz:
+        stored = dict(npz)
+    leaves = {
+        jax.tree_util.keystr(p): leaf
+        for p, leaf in jax.tree_util.tree_flatten_with_path(job)[0]
+    }
+    key = ".problem.heat[0]._density"
+    assert key in leaves
+    np.testing.assert_array_equal(stored[key], joule._density)
+    back = gfem.Job.from_json(path)
+    _assert_same_problem(problem, back.problem)
+    # the stored source heats as the original does
+    expected = gfem.solve(slab_model, problem, options=SLAB_OPTIONS)
+    result = back.run(out=tmp_path / "out")
+    np.testing.assert_allclose(result.power, expected.power, rtol=1e-12)
+
+
+@pytest.mark.parametrize("name", list(_thermal_problems()))
+def test_thermal_and_dc_conduction_results_round_trip(slab_model, name, tmp_path):
+    problem = _thermal_problems()[name]
+    result = gfem.Job(slab_model, problem, SLAB_OPTIONS).run(out=tmp_path / "out")
+    loaded = gfem.load_result(tmp_path / "out")
+    assert type(loaded) is type(result)
+    assert repr(loaded) == repr(result)
+    # the result's leaves and their paths are those of the solve
+    a, _ = jax.tree_util.tree_flatten_with_path(result)
+    b, _ = jax.tree_util.tree_flatten_with_path(loaded)
+    assert [p for p, _ in a] == [p for p, _ in b]
+    for (_, x), (_, y) in zip(a, b, strict=True):
+        np.testing.assert_array_equal(x, y)
+    if name == "dc_conduction":
+        assert loaded.terminals == result.terminals
+        np.testing.assert_array_equal(
+            loaded.resistance_per_length, result.resistance_per_length
+        )
+        assert loaded.potential["a"].mesh.section_thickness == 3e-7
+    elif name == "steady_thermal":
+        np.testing.assert_array_equal(loaded.power_per_length, result.power_per_length)
+        assert loaded.temperature.mesh.section_thickness == 3e-7
+    else:
+        assert loaded.kept_times == result.kept_times
+        assert loaded.switch_times == result.switch_times
+        assert list(loaded.traces) == ["core", "spot"]
+        for t in loaded.kept_times:
+            np.testing.assert_array_equal(
+                loaded.temperature(t).coefficients, result.temperature(t).coefficients
+            )

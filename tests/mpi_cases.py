@@ -40,7 +40,7 @@ def _cell(directory: Path) -> gfem.Model:
     return pc.c1(pc.c1_mesh(directory))
 
 
-def refused(key: str, directory: Path):  # noqa: PLR0911
+def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
     """``(model, problem, options)`` of a solve refused under ``key``."""
     direct = gfem.SolverOptions(linear_solver="direct")
     match key:
@@ -51,6 +51,14 @@ def refused(key: str, directory: Path):  # noqa: PLR0911
             return _line(directory), gfem.Eigenmode(target=FREQUENCY, n_modes=1), direct
         case "electrostatic":
             return _line(directory), gfem.Electrostatic(terminals=TERMINALS), direct
+        case "thermal":
+            return stack(directory), gfem.SteadyThermal(), direct
+        case "thermal_transient":
+            problem = gfem.TransientThermal(duration=1e-6, steps=2)
+            return stack(directory), problem, direct
+        case "dc_conduction":
+            problem = gfem.DCConduction(terminals=TERMINALS)
+            return stack(directory), problem, direct
         case "periodic":
             return _cell(directory), gfem.Driven(FREQUENCY), direct
         case "bloch":
@@ -84,6 +92,9 @@ KEYS = (
     "adaptive_sweep",
     "eigenmode",
     "electrostatic",
+    "thermal",
+    "thermal_transient",
+    "dc_conduction",
     "periodic",
     "bloch",
     "floquet_port",
@@ -113,7 +124,7 @@ GUARD_KEYS = ("general_operator",)
 
 def feature(key: str) -> str:
     """The ``feature`` a case raises."""
-    return key.removesuffix("_auto")
+    return key.removesuffix("_auto").removesuffix("_transient")
 
 
 def permuted(mesh: gfem.Mesh, seed: int = 7) -> gfem.Mesh:

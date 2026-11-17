@@ -252,7 +252,8 @@ class DCConductionRule:
         """Check that the problem fits the model (see `gfem.DCConduction`).
 
         Raises:
-            NotImplementedError: The model has a periodic pair.
+            NotImplementedError: The model has a periodic pair, or the
+                device is a GPU.
             ValueError: No volume conducts; a terminal or the ground touches
                 no conductor; terminals touch.
             gfem.SolverUnavailableError: ``linear_solver="petsc"`` and PETSc
@@ -260,6 +261,12 @@ class DCConductionRule:
         """
         if not isinstance(problem, DCConduction):
             raise TypeError(f"Expected gfem.DCConduction, got {problem!r}.")
+        if options.device != "cpu":
+            # no GPU smoke test has run for DC conduction (ADR 0184)
+            raise NotImplementedError(
+                "DCConduction has no GPU path in this version of gfem "
+                f"(device={options.device!r}): solve with device='cpu'."
+            )
         self.problem = problem
         self.options = options
         self.linear = ResolvedLinearSolver.resolve(

@@ -261,11 +261,18 @@ class ThermalRule:
         """Check the model and problem (see the problem's docstring).
 
         Raises:
-            NotImplementedError: The model has a periodic pair.
+            NotImplementedError: The model has a periodic pair, or the
+                device is a GPU.
             MissingMaterialPropertyError: A region of the thermal domain
                 lacks a property the problem reads.
             ValueError: A heat source heats an excluded region.
         """
+        if options.device != "cpu":
+            # no GPU smoke test has run for thermal problems (ADR 0184)
+            raise NotImplementedError(
+                f"{type(problem).__name__} has no GPU path in this version of "
+                f"gfem (device={options.device!r}): solve with device='cpu'."
+            )
         self.problem = problem
         self.options = options
         self.linear = ResolvedLinearSolver.resolve(
@@ -541,7 +548,8 @@ class SteadyThermalRule(ThermalRule):
         """Check that the problem fits the model (see `gfem.SteadyThermal`).
 
         Raises:
-            NotImplementedError: The model has a periodic pair.
+            NotImplementedError: The model has a periodic pair, or the
+                device is a GPU.
             MissingMaterialPropertyError: A region of the thermal domain has
                 no ``thermal_conductivity``.
             ValueError: A piece of the thermal domain has no heat sink; a
@@ -703,7 +711,8 @@ class TransientThermalRule(ThermalRule):
         """Check that the problem fits the model (see `gfem.TransientThermal`).
 
         Raises:
-            NotImplementedError: The model has a periodic pair.
+            NotImplementedError: The model has a periodic pair, or the
+                device is a GPU.
             MissingMaterialPropertyError: A region of the thermal domain
                 lacks ``thermal_conductivity``, ``mass_density`` or
                 ``specific_heat``.
