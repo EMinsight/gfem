@@ -162,8 +162,10 @@ build_ngsolve() {
   # and library too.
   local pyroot pyinclude pylibrary
   pyroot=$(dirname "$(dirname "$python")")
-  pyinclude=$("$python" -c 'import sysconfig; print(sysconfig.get_config_var("INCLUDEPY"))')
-  pylibrary=$("$python" -c 'import os, sysconfig as s; print(os.path.join(s.get_config_var("LIBDIR"), s.get_config_var("LDLIBRARY")))')
+  # python-build-standalone's INCLUDEPY and LIBDIR name its build-time
+  # /install prefix (job 49172844): ask for the relocated paths.
+  pyinclude=$("$python" -c 'import sysconfig; print(sysconfig.get_paths()["include"])')
+  pylibrary=$("$python" -c 'import sys, sysconfig; print(sys.base_prefix + "/lib/" + sysconfig.get_config_var("LDLIBRARY"))')
   [[ -f $pyinclude/Python.h && -f $pylibrary ]] ||
     stack_die "ngsolve: no Python.h in $pyinclude or no $pylibrary"
   case ${STACK_BLAS_VENDOR:-} in
