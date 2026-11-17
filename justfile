@@ -32,6 +32,10 @@ transmon-mesh:
 metagrating-mesh:
     uv run --with gmsh==4.15.2 --with numpy --no-project python tools/metagrating_mesh.py docs/tutorials/data
 
+# Rebuild the heater tutorial's cross-sections, docs/tutorials/data/heater_w{2,7p5}.msh (tools/heater_section_mesh.py, gmsh pinned; a new mesh means re-measuring the tutorial's values).
+heater-section-mesh:
+    uv run --with gmsh==4.15.2 --no-project python tools/heater_section_mesh.py docs/tutorials/data
+
 # Regenerate the front page's hero data, docs/_data/front-page.json, from the 3D bend's run record (solves nothing).
 front-page-data:
     {{ docs_env }} python tools/front_page_data.py

@@ -6,18 +6,20 @@ of how they were built. This regenerates them (no gmsh, about two seconds) and
 compares bytes, so neither can change without the other. The transmon meshes
 are gmsh-built by tools/transmon_mesh.py and pinned by test_transmon_mesh.py;
 the metagrating meshes are gmsh-built by tools/metagrating_mesh.py
-(`just metagrating-mesh`).
+(`just metagrating-mesh`); the heater meshes are gmsh-built by
+tools/heater_section_mesh.py (`just heater-section-mesh`).
 """
 
 from pathlib import Path
 
+import heater_section_mesh
 import make_tutorial_meshes
 import metagrating_mesh
 import pytest
 import transmon_mesh
 
 DATA = Path(__file__).parents[2] / "docs" / "tutorials" / "data"
-GMSH_BUILT = transmon_mesh.MESHES | metagrating_mesh.MESHES
+GMSH_BUILT = transmon_mesh.MESHES | metagrating_mesh.MESHES | heater_section_mesh.MESHES
 COMMITTED = sorted(
     path.name for path in DATA.glob("*.msh") if path.name not in GMSH_BUILT
 )
