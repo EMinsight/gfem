@@ -373,6 +373,10 @@ html:is(.light,.dark) .highlight span[class^="c"][class] { color: var(--syn-comm
 .yue div.cell div.cell_input .highlight > pre { border: 0; }
 .yue div.cell_output .output.stream, .yue div.cell_output .output.text_plain { border: 0; border-left: 1px solid var(--mesh); padding-left: var(--s-4); }
 .yue div.cell_output pre { font: var(--t-code); color: var(--ink-2); background: none; }
+/* PyVista scenes (docs/_ext/gfem_scenes.py): framed as the code panel, on the scene's own ground,
+   top-aligned (no baseline gap) and spaced apart; !important beats the iframe's inline border: 0 */
+.yue div.cell_output iframe.gfem-scene { box-sizing: border-box; vertical-align: top; border: 1px solid var(--code-edge) !important;
+  background: var(--ground); margin: 0 0 var(--s-5); }
 
 /* ------------------------------------------------------------ 3k. API (autoapi) */
 dt.sig { font: var(--t-code); border-radius: 0; border-top: 1px solid var(--ink); background: var(--panel); }

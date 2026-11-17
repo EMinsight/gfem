@@ -9,7 +9,6 @@ tutorials' outputs and the front page's hero data are committed, and
 import ast
 import json
 import os
-import shutil
 import sys
 import tomllib
 from pathlib import Path
@@ -437,6 +436,18 @@ def setup(app):
             return
         from trame_vtk.tools.vtksz2html import HTML_VIEWER_PATH
 
-        shutil.copy(HTML_VIEWER_PATH, Path(app.outdir) / "_static")
+        # The viewer paints its body black, and a canvas a pixel short of the
+        # frame (fractional zoom) shows it as a dark line at the bottom: clear
+        # it so the frame's ground (gfem.css) shows instead. "light dark" keeps
+        # the frame transparent under either page theme.
+        html = Path(HTML_VIEWER_PATH).read_text(encoding="utf-8")
+        style = (
+            "<style>html, body { background: transparent !important; "
+            "color-scheme: light dark; }</style>"
+        )
+        html = html.replace("</head>", f"{style}</head>", 1)
+        (Path(app.outdir) / "_static" / Path(HTML_VIEWER_PATH).name).write_text(
+            html, encoding="utf-8"
+        )
 
     app.connect("build-finished", copy_scene_viewer)
