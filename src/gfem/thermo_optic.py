@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import jax
@@ -34,6 +35,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants
 
+from gfem._adjoint.measure import measure
 from gfem._checks import is_traced
 from gfem._field import Field
 from gfem._materials import Material, MaterialField, PermittivityLaw
@@ -44,7 +46,7 @@ if TYPE_CHECKING:
     from gfem.mesh import Mesh
     from gfem.model import Model
 
-__all__ = ["ThermoOpticShift", "thermo_optic_shift"]
+__all__ = ["RoutePhase", "ThermoOpticShift", "route_phase", "thermo_optic_shift"]
 
 
 def _section(model: Model, port: Any) -> tuple[np.ndarray, np.ndarray]:
@@ -104,7 +106,9 @@ def _lossy(material: Material | MaterialField, pos: np.ndarray) -> str | None:
     return None
 
 
-def _coefficients(model: Model, port: str, tets: np.ndarray) -> jax.Array:
+def _coefficients(
+    model: Model, port: str, tets: np.ndarray, owner: str = "thermo_optic_shift"
+) -> jax.Array:
     """dn/dT of each tetrahedron behind the section (0 where none is given).
 
     Raises:
@@ -121,7 +125,7 @@ def _coefficients(model: Model, port: str, tets: np.ndarray) -> jax.Array:
         loss = _lossy(material, pos)
         if loss is not None:
             raise NotImplementedError(
-                f"thermo_optic_shift: region {region!r} of wave port {port!r}'s "
+                f"{owner}: region {region!r} of wave port {port!r}'s "
                 f"section has {loss}. The first-order shift reads |E|^2, which "
                 "holds for a lossless section only: give the section's regions a "
                 "real eps_r with no tan_delta or conductivity (an optical window "
@@ -137,7 +141,7 @@ def _coefficients(model: Model, port: str, tets: np.ndarray) -> jax.Array:
         )
         if anisotropic:
             raise NotImplementedError(
-                f"thermo_optic_shift: region {region!r} of wave port {port!r}'s "
+                f"{owner}: region {region!r} of wave port {port!r}'s "
                 "section is anisotropic and has a thermo_optic_coefficient: a "
                 "scalar dn/dT on a permittivity tensor is not defined in this "
                 "version. Give the region an isotropic eps_r."
@@ -147,7 +151,7 @@ def _coefficients(model: Model, port: str, tets: np.ndarray) -> jax.Array:
     if not given:
         regions = ", ".join(repr(r) for r in _region_rows(mesh, tets))
         raise ValueError(
-            f"thermo_optic_shift: no element of wave port {port!r}'s section has a "
+            f"{owner}: no element of wave port {port!r}'s section has a "
             f"thermo_optic_coefficient (its regions are {regions}), so the shift "
             "is zero. Set thermo_optic_coefficient on the core's material."
         )
@@ -291,21 +295,60 @@ register_fields(
 )
 
 
-def _frequency(frequency: Any) -> float:
+def _frequency(frequency: Any, owner: str = "thermo_optic_shift") -> float:
     if np.ndim(frequency) != 0:
         raise ValueError(
-            "thermo_optic_shift takes one frequency, got "
+            f"{owner} takes one frequency, got "
             f"{np.size(frequency)} values: call it once per frequency in a loop."
         )
     if is_traced(frequency):
         raise TypeError(
-            "thermo_optic_shift: the frequency is a fixed number, not a "
-            "differentiable input."
+            f"{owner}: the frequency is a fixed number, not a differentiable input."
         )
     f = float(frequency)
     if not (math.isfinite(f) and f > 0):
-        raise ValueError(f"thermo_optic_shift: frequency must be > 0 Hz, got {f}.")
+        raise ValueError(f"{owner}: frequency must be > 0 Hz, got {f}.")
     return f
+
+
+def _wave_port(model: Model, port: str) -> Any:
+    from gfem._sweep.port_mode import _wave_port as find
+
+    return find(model, port)
+
+
+def _check_model(model: Any, owner: str) -> None:
+    from gfem.model import Model
+
+    if not isinstance(model, Model):
+        raise TypeError(f"{owner} needs a gfem.Model, got {type(model).__name__}.")
+
+
+def _mode_weights(
+    model: Model, port: str, frequency: float, mode: int | None, faces: np.ndarray
+) -> tuple[int, jax.Array, jax.Array, float]:
+    """The port's mode on ``model`` and its first-order weight per section triangle.
+
+    Returns:
+        The mode number, ``n_eff`` (a constant), the weights ``w_t`` (``(n_tri,)``,
+        in the order of ``faces``; ``delta_n_eff = sum_t w_t (dn/dT)_t rise_t``)
+        and ``k0`` (1/m).
+    """
+    from gfem._adjoint import solve_vjp
+    from gfem._engine.thermo_optic import ShiftWeightsRule
+    from gfem.options import SolverOptions
+    from gfem.problems import PortMode
+
+    problem = PortMode(port, frequency, mode=mode)
+    rule = ShiftWeightsRule(model, problem, SolverOptions(), faces)
+    if is_traced(model):
+        outputs = solve_vjp(rule, model, problem)
+    else:
+        outputs, _ = rule.forward(model, keep=False)
+    k0 = 2 * math.pi * frequency / scipy.constants.c
+    gamma = jnp.asarray(outputs["gamma"])[0]
+    n_eff = jnp.real(gamma / (1j * k0))
+    return rule.mode, n_eff, jnp.asarray(outputs["weights"]), k0
 
 
 def thermo_optic_shift(
@@ -375,34 +418,15 @@ def thermo_optic_shift(
             law), or a region with a coefficient is anisotropic.
         TypeError: ``rise`` is not a scalar `gfem.Field`.
     """
-    from gfem._adjoint import solve_vjp
-    from gfem._engine.thermo_optic import ShiftWeightsRule
-    from gfem._sweep.port_mode import _wave_port
-    from gfem.model import Model
-    from gfem.options import SolverOptions
-    from gfem.problems import PortMode
-
-    if not isinstance(model, Model):
-        raise TypeError(
-            f"thermo_optic_shift needs a gfem.Model, got {type(model).__name__}."
-        )
+    _check_model(model, "thermo_optic_shift")
     f = _frequency(frequency)
-    wave_port = _wave_port(model, port)
-    faces, tets = _section(model, wave_port)
+    faces, tets = _section(model, _wave_port(model, port))
     coefficients = _coefficients(model, port, tets)
     owner = f"thermo_optic_shift (wave port {port!r})"
     if rise is not None:
         rise_e = _element_rise(rise, model.mesh, tets, owner)
-    problem = PortMode(port, f, mode=mode)
-    rule = ShiftWeightsRule(model, problem, SolverOptions(), faces)
-    if is_traced(model):
-        outputs = solve_vjp(rule, model, problem)
-    else:
-        outputs, _ = rule.forward(model, keep=False)
-    k0 = 2 * math.pi * f / scipy.constants.c
-    gamma = jnp.asarray(outputs["gamma"])[0]
-    n_eff = jnp.real(gamma / (1j * k0))
-    weights = jnp.asarray(outputs["weights"]) * coefficients
+    found, n_eff, weights, k0 = _mode_weights(model, port, f, mode, faces)
+    weights = weights * coefficients
     trace = _ShiftTrace(
         _weights=k0 * weights,
         _sampling=_Sampling(model.mesh, tets, port),
@@ -413,7 +437,7 @@ def thermo_optic_shift(
         phase = k0 * delta
     return ThermoOpticShift(
         port=port,
-        mode=rule.mode,
+        mode=found,
         frequency=f,
         n_eff=n_eff,
         delta_n_eff=delta,
@@ -468,3 +492,521 @@ def with_temperature_rise(model: Model, rise: Field) -> Model:
         eps_r = (n0 + jnp.asarray(coefficient) * rise_e) ** 2
         materials[region] = dataclasses.replace(field, eps_r=eps_r, region=region)
     return model.replace(materials=materials)
+
+
+# --- route phase (ADR 0183) -------------------------------------------------
+
+#: Window points located per block of stations: bounds the location's memory.
+_POINTS_PER_BLOCK = 2_000_000
+
+
+def _stations(
+    name: str, route: np.ndarray, spacing: float, up: Any
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The stations of one route: evenly spaced in arc length, ends included.
+
+    The tangent is the segment's direction (at a vertex a station falls on,
+    the mean of its two segments'); left is ``up x tangent`` and the
+    section's y the unit vector of ``up`` square to the tangent.
+
+    Returns:
+        Arc lengths ``(n,)`` (m), points, tangents, lefts and ups ``(n, 3)``.
+
+    Raises:
+        ValueError: Fewer than two distinct points, or a segment parallel to
+            ``up`` (the message names the route and the segment).
+    """
+    route = np.asarray(route, float)
+    up = np.asarray(up, float)
+    up = up / np.linalg.norm(up)
+    d = np.diff(route, axis=0)
+    lengths = np.linalg.norm(d, axis=1)
+    keep = lengths > 1e-12 * lengths.sum()
+    if not keep.any():
+        raise ValueError(
+            f"route_phase: route {name!r} needs at least two distinct points."
+        )
+    segments = np.flatnonzero(keep)
+    starts, lengths = route[segments], lengths[keep]
+    dirs = d[keep] / lengths[:, None]
+    sideways = np.linalg.norm(np.cross(up, dirs), axis=1)
+    if (sideways < 1e-9).any():
+        k = int(segments[np.flatnonzero(sideways < 1e-9)[0]])
+        raise ValueError(
+            f"route_phase: route {name!r}: segment {k} (points {k} to {k + 1}) is "
+            f"parallel to up {tuple(up.tolist())}, so the window's left (up x "
+            "tangent) is not defined there. Give a route that never runs along "
+            "up, or another up."
+        )
+    s_v = np.concatenate(([0.0], np.cumsum(lengths)))
+    total = s_v[-1]
+    n = max(2, int(np.ceil(total / spacing - 1e-9)) + 1)
+    s = np.linspace(0.0, total, n)
+    k = np.clip(np.searchsorted(s_v, s, side="right") - 1, 0, len(dirs) - 1)
+    points = starts[k] + (s - s_v[k])[:, None] * dirs[k]
+    points[-1] = starts[-1] + lengths[-1] * dirs[-1]
+    tangent = dirs[k].copy()
+    if len(dirs) > 1:  # stations on an interior vertex
+        inner = s_v[1:-1]
+        near = np.clip(np.searchsorted(inner, s), 0, len(inner) - 1)
+        for cand in (near, np.maximum(near - 1, 0)):
+            hit = np.abs(s - inner[cand]) <= 1e-12 * total
+            m = cand[hit] + 1  # the vertex between segments m - 1 and m
+            mean = dirs[m - 1] + dirs[m]
+            size = np.linalg.norm(mean, axis=1)
+            ok = size > 1e-12
+            rows = np.flatnonzero(hit)
+            tangent[rows[ok]] = mean[ok] / size[ok, None]
+            points[rows] = starts[m]
+    left = np.cross(up, tangent)
+    size = np.linalg.norm(left, axis=1)
+    if (size < 1e-9).any():  # pragma: no cover - a vertex mean along up
+        j = int(np.flatnonzero(size < 1e-9)[0])
+        raise ValueError(
+            f"route_phase: route {name!r}: at arc length {s[j]:.6g} m the route "
+            f"runs parallel to up {tuple(up.tolist())}."
+        )
+    left /= size[:, None]
+    return s, points, tangent, left, np.cross(tangent, left)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _RouteSampler:
+    """Where a route phase reads the rise: the window placed at each station.
+
+    The window's section triangles (``corners``, section x and y in m) sit at
+    every station with x along ``left`` and y along ``up``. The rise's mean
+    over each placed triangle, a fixed linear map of the rise coefficients,
+    is located once per rise mesh and layout and kept as a sparse matrix.
+    """
+
+    name: str
+    arc_length: np.ndarray
+    points: np.ndarray
+    left: np.ndarray
+    up: np.ndarray
+    trapezoid: np.ndarray
+    corners: np.ndarray
+    _cache: dict = dataclasses.field(default_factory=dict)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        """``(stations, window triangles)``."""
+        return len(self.arc_length), len(self.corners)
+
+    def _placed(self, xy: np.ndarray, j0: int, j1: int) -> np.ndarray:
+        """``(points, 3)`` m: section points ``xy`` placed at stations j0..j1."""
+        p, l, u = self.points[j0:j1], self.left[j0:j1], self.up[j0:j1]
+        x, y = xy[..., 0], xy[..., 1]
+        out = (
+            p[:, None, None, :]
+            + x[None, ..., None] * l[:, None, None, :]
+            + y[None, ..., None] * u[:, None, None, :]
+        )
+        return out.reshape(-1, 3)
+
+    def _outside(self, mesh: Mesh, layout: Any, xy: np.ndarray, j0: int, j1: int):
+        """Raise for the first station in j0..j1 whose window leaves the rise."""
+        from gfem._engine import probe
+
+        lo, hi = j0, j1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            try:
+                probe.locate(mesh, layout, self._placed(xy, lo, mid))
+            except ValueError:
+                hi = mid
+            else:
+                lo = mid
+        try:
+            probe.locate(mesh, layout, self._placed(xy, lo, lo + 1))
+        except ValueError as err:
+            raise ValueError(
+                f"route_phase: route {self.name!r}: the window at the station at "
+                f"arc length {self.arc_length[lo]:.6g} m samples outside the rise: "
+                f"{err}"
+            ) from err
+        raise RuntimeError("a window point failed to locate")  # pragma: no cover
+
+    def matrices(self, mesh: Mesh, layout: Any) -> tuple[Any, Any]:
+        """``(M, total)``: per station and triangle, and trapezoid-summed.
+
+        ``M @ c`` is the rise's mean over each placed triangle, ``(stations *
+        triangles,)`` station-major; ``total @ c`` its trapezoid integral over
+        the arc length, per triangle (m K).
+        """
+        import scipy.sparse
+
+        from gfem._engine import probe
+
+        nodes = np.ascontiguousarray(mesh.nodes)
+        key = (id(mesh._topology), hash(nodes.tobytes()), layout)  # noqa: SLF001
+        found = self._cache.get(key)
+        if found is not None and found[0] is mesh._topology:  # noqa: SLF001
+            return found[1]
+        bary, wq = probe.triangle_rule(2 * max(layout.order, 1))
+        xy = np.einsum("qk,tkd->tqd", bary, self.corners)
+        n_st, n_tri = self.shape
+        q = len(wq)
+        block = max(1, _POINTS_PER_BLOCK // (n_tri * q))
+        blocks = []
+        for j0 in range(0, n_st, block):
+            j1 = min(n_st, j0 + block)
+            try:
+                located = probe.locate(mesh, layout, self._placed(xy, j0, j1))
+            except ValueError:
+                self._outside(mesh, layout, xy, j0, j1)
+                raise  # pragma: no cover
+            rows = np.repeat(np.arange((j1 - j0) * n_tri), q)
+            weights = np.tile(wq, (j1 - j0) * n_tri)
+            p = probe.Probe(mesh, layout, located)
+            blocks.append(p.rows(weights, rows, (j1 - j0) * n_tri))
+        full = scipy.sparse.vstack(blocks).tocsr()
+        summing = scipy.sparse.kron(
+            self.trapezoid[None, :], scipy.sparse.identity(n_tri), format="csr"
+        )
+        made = (full, (summing @ full).tocsr())
+        self._cache.clear()  # one rise mesh at a time
+        self._cache[key] = (mesh._topology, made)  # noqa: SLF001
+        return made
+
+    def sample(self, rise: Any, *, total: bool) -> jax.Array:
+        """The placed-triangle means of ``rise`` (``total``: route-integrated)."""
+        _check_rise(rise)
+        kernel = _RouteKernel(self, rise, total=total)
+        inputs = {"coefficients": rise.coefficients, "nodes": rise.mesh.nodes}
+        return measure(kernel, inputs)["values"]
+
+
+def _check_rise(rise: Any) -> None:
+    from gfem import _probe
+
+    if not isinstance(rise, Field) or _probe.COMPONENTS[rise.space] != 1:
+        raise TypeError(
+            "route_phase: the rise must be a scalar gfem.Field (a thermal result's "
+            f"rise), got {type(rise).__name__}."
+        )
+    if rise._communicator is not None:  # noqa: SLF001
+        raise NotImplementedError(
+            "route_phase: the rise is split across ranks; a route phase reads a "
+            "rise solved on one process in this version."
+        )
+
+
+class _RouteKernel:
+    """A route's placed-triangle rise means: ``M c`` and its transpose."""
+
+    name = "a route phase"
+    pieces = frozenset({"coefficients"})
+    comm = None
+
+    def __init__(self, sampler: _RouteSampler, rise: Field, *, total: bool) -> None:
+        from gfem import _probe
+
+        self.sampler = sampler
+        self.topology = rise.mesh._topology  # noqa: SLF001
+        self.layout = _probe.layout(rise)
+        self.total = total
+        n_st, n_tri = sampler.shape
+        n = n_tri if total else n_st * n_tri
+        dtype = rise.coefficients.dtype
+        self.output_specs = {"values": jax.ShapeDtypeStruct((n,), dtype)}
+
+    def role(self, name: str) -> str:
+        del name
+        return "read"
+
+    def unsupported(self, name: str) -> str | None:
+        from gfem import _probe
+
+        return _probe.NODES_REASON if name == "nodes" else None
+
+    def describe(self, name: str) -> str:
+        return {"nodes": "the mesh node coordinates (field.mesh.nodes)"}.get(
+            name, f"the field {name}"
+        )
+
+    def _matrix(self, nodes: np.ndarray) -> Any:
+        from gfem.mesh import Mesh
+
+        full, total = self.sampler.matrices(Mesh(nodes, self.topology), self.layout)
+        return total if self.total else full
+
+    def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        return {"values": self._matrix(values["nodes"]) @ values["coefficients"]}
+
+    def backward(
+        self,
+        values: dict[str, np.ndarray],
+        cotangents: dict[str, np.ndarray],
+        wanted: tuple[str, ...],
+    ) -> dict[str, np.ndarray]:
+        if wanted != ("coefficients",):  # the measure wrapper raised for others
+            raise NotImplementedError(f"no route phase gradient for {wanted}")
+        matrix = self._matrix(values["nodes"])
+        return {"coefficients": matrix.T @ np.asarray(cotangents["values"])}
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _RouteTrace(Trace):
+    """The thermo-optic phase of one route, rad, on the rise."""
+
+    _weights: jax.Array
+    _sampler: _RouteSampler
+    unit: str = "rad"
+
+    def _sample(self, temperature: Field | None, rise: Field) -> jax.Array:
+        """``sum_t (k0 w_t (dn/dT)_t) int rise_t ds``, the route's phase."""
+        del temperature
+        return jnp.sum(self._weights * self._sampler.sample(rise, total=True))
+
+    def __repr__(self) -> str:
+        return f"Trace(thermo-optic phase of route {self._sampler.name!r}, rad)"
+
+
+register_fields(_RouteTrace, ("_weights",))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class RoutePhase:
+    """The thermo-optic phase along named routes through a 3D rise.
+
+    One optical window's first-order weights (its mode held constant, ADR
+    0174) swept along each route: exactly linear in the rise and in the
+    window's thermo-optic coefficient, and differentiable with respect to
+    both (ADR 0183).
+
+    Attributes:
+        port: The window's wave port.
+        mode: Which mode (1 = the most propagating).
+        frequency: The frequency, Hz.
+        n_eff: The window's unperturbed effective index, a constant.
+        phase: Per route name, the extra phase delay along the route, rad
+            (positive for a positive coefficient and rise); ``None`` without
+            a rise. ``P_pi = pi * steady.power / phase[name]``.
+        phase_per_length: Per route name, the phase per length at each
+            station, rad/m (``None`` without a rise).
+        arc_length: Per route name, the stations' arc lengths, m (constants).
+        length: Per route name, the route's length, m.
+    """
+
+    port: str
+    mode: int
+    frequency: float
+    n_eff: jax.Array
+    phase: dict[str, jax.Array] | None
+    phase_per_length: dict[str, jax.Array] | None
+    arc_length: dict[str, np.ndarray]
+    length: dict[str, float]
+    _traces: dict[str, _RouteTrace]
+
+    def trace(self, name: str) -> Trace:
+        """Route ``name``'s phase as a trace of a `gfem.TransientThermal` solve.
+
+        A linear functional of the rise in rad (``phase[name]`` at each step);
+        its weights depend on the mode, dn/dT and the route only.
+
+        Raises:
+            KeyError: No route of that name.
+        """
+        if name not in self._traces:
+            raise KeyError(
+                f"route_phase has no route {name!r}: its routes are "
+                f"{list(self._traces)}."
+            )
+        return self._traces[name]
+
+    def __repr__(self) -> str:
+        names = ", ".join(repr(n) for n in self._traces)
+        return (
+            f"RoutePhase(port {self.port!r}, mode {self.mode}, "
+            f"{self.frequency:.6g} Hz, routes {names})"
+        )
+
+
+register_fields(
+    RoutePhase,
+    ("n_eff", "phase", "phase_per_length", "arc_length", "length", "_traces"),
+)
+
+
+def _fixed(value: Any, what: str) -> np.ndarray:
+    if is_traced(value):
+        raise TypeError(
+            f"route_phase: {what} is traced: route points, up and spacing are fixed "
+            "numbers, not differentiable inputs."
+        )
+    return np.asarray(value, float)
+
+
+def _routes(routes: Any) -> dict[str, np.ndarray]:
+    if not isinstance(routes, Mapping) or not routes:
+        raise TypeError(
+            "route_phase: routes must be a non-empty mapping of name to an (N, 3) "
+            f"polyline in m, got {type(routes).__name__}."
+        )
+    out = {}
+    for name, points in routes.items():
+        if not isinstance(name, str):
+            raise TypeError(f"route_phase: routes names must be str, got {name!r}.")
+        p = _fixed(points, f"routes[{name!r}]")
+        if p.ndim != 2 or p.shape[1] != 3 or len(p) < 2:
+            raise ValueError(
+                f"route_phase: routes[{name!r}] must be an (N, 3) polyline in m with "
+                f"N >= 2, got shape {p.shape}."
+            )
+        if not np.isfinite(p).all():
+            raise ValueError(f"route_phase: routes[{name!r}] has non-finite points.")
+        out[name] = p
+    return out
+
+
+def _window_corners(model: Model, faces: np.ndarray, port: str) -> np.ndarray:
+    """``(n_tri, 3, 2)`` section x, y (m) of the window's section triangles.
+
+    Raises:
+        ValueError: The port's surface is not in a plane z = constant.
+    """
+    mesh = model.mesh
+    if is_traced(mesh.nodes):
+        raise TypeError(
+            "route_phase: the window's node coordinates are traced; they place "
+            "the window along the routes and must be fixed numbers."
+        )
+    xyz = np.asarray(mesh.nodes, float)[np.asarray(mesh.triangles)[faces]]
+    extent = np.ptp(xyz.reshape(-1, 3), axis=0)
+    if extent[2] > 1e-9 * max(extent[0], extent[1]):
+        raise ValueError(
+            f"route_phase reads wave port {port!r}'s section in the window's own "
+            "x and y (x to the left of travel, y along up, the station at the "
+            "origin): its surface must lie in a plane z = constant, as a "
+            "cross-section slab's front does."
+        )
+    return xyz[..., :2]
+
+
+def route_phase(
+    window: Model,
+    rise: Field | None,
+    *,
+    routes: Mapping[str, Any],
+    port: str,
+    frequency: float,
+    up: Any = (0.0, 0.0, 1.0),
+    spacing: float = 0.5e-6,
+    mode: int | None = None,
+) -> RoutePhase:
+    """The thermo-optic phase along routes through a 3D temperature rise.
+
+    Solves the mode of an optical window (a model of one isolated guide's
+    cross-section with a wave port, ``port``) once, and sweeps its first-order
+    weights along each route (ADR 0183)::
+
+        phase = int sum_t k0 w_t (dn/dT)_t rise_t(s) ds
+
+    ``w_t`` are `thermo_optic_shift`'s weights on the window's section
+    triangles, the same everywhere (straight-guide weights, also in bends),
+    and ``rise_t(s)`` is the quadrature mean of ``rise`` over triangle ``t``
+    placed at the station at arc length ``s``. Stations are spaced evenly
+    along each polyline, ends included, at most ``spacing`` apart, and the
+    integral is the trapezoid rule.
+
+    The window lives in route-local coordinates: its section is its port's
+    surface in a plane z = constant, read in its own x and y; at each station
+    the section's origin sits on the route, x points to the left of travel
+    (``up x tangent``) and y along ``up`` (made square to the route). The
+    thermo-optic coefficient is the window's; the 3D model's is not read.
+
+    Under `jax.grad` the phase differentiates with respect to the rise (the
+    thermal inputs behind it) and the window's thermo-optic coefficient;
+    the window's permittivity, losses, permeability and node coordinates
+    raise `gfem.NonDifferentiableError` (the mode is held constant).
+
+    Example:
+        P_pi of a spiral and the phase of one pass::
+
+            steady = gfem.solve(thermal, gfem.SteadyThermal(heat))
+            route = gfem.route_phase(
+                window,
+                steady.rise,
+                routes={"spiral": centreline, "pass": cut},
+                port="core",
+                frequency=gfem.c / 1.55e-6,
+            )
+            p_pi = np.pi * steady.power / route.phase["spiral"]
+
+    Args:
+        window: The optical window model.
+        rise: The temperature rise, a scalar `gfem.Field` on the 3D thermal
+            mesh (``SteadyThermalResult.rise``), or ``None`` for the mode, the
+            stations and `RoutePhase.trace` only.
+        routes: Name to an ``(N, 3)`` polyline in m (the guide's reference
+            line, at least two distinct points). Fixed numbers.
+        port: The window's wave port.
+        frequency: One frequency, Hz.
+        up: The wafer normal (any length), a fixed vector.
+        spacing: The largest station spacing, m.
+        mode: Which mode (1 = the most propagating), or ``None`` for the
+            wave port's own.
+
+    Returns:
+        The phase per route: ``phase``, ``phase_per_length``,
+        ``arc_length``, ``length``, ``n_eff`` and ``trace(name)``.
+
+    Raises:
+        TypeError: ``routes``, ``up`` or ``spacing`` is traced or malformed,
+            or ``rise`` is not a scalar `gfem.Field`.
+        ValueError: A route has fewer than two distinct points or a segment
+            parallel to ``up`` (named), a placed window samples outside the
+            rise's mesh or support (the route and the station's arc length
+            named), the port's surface is not in a plane z = constant, no
+            section element has a thermo_optic_coefficient, or a sequence of
+            frequencies is given.
+        NotImplementedError: The window's section is lossy, a region with a
+            coefficient is anisotropic, or the rise is split across ranks.
+    """
+    _check_model(window, "route_phase")
+    f = _frequency(frequency, "route_phase")
+    paths = _routes(routes)
+    up_v = _fixed(up, "up")
+    if up_v.shape != (3,) or not np.isfinite(up_v).all() or not up_v.any():
+        raise ValueError(f"route_phase: up must be a nonzero 3-vector, got {up!r}.")
+    step = float(_fixed(spacing, "spacing"))
+    if not (math.isfinite(step) and step > 0):
+        raise ValueError(f"route_phase: spacing must be > 0 m, got {spacing!r}.")
+    if rise is not None:
+        _check_rise(rise)
+    faces, tets = _section(window, _wave_port(window, port))
+    coefficients = _coefficients(window, port, tets, "route_phase")
+    # first: a perturbed window input raises by name before its nodes are read
+    found, n_eff, weights, k0 = _mode_weights(window, port, f, mode, faces)
+    corners = _window_corners(window, faces, port)
+    samplers = {}
+    for name, points in paths.items():
+        s, p, _, left, upward = _stations(name, points, step, up_v)
+        h = np.diff(s)
+        trapezoid = np.zeros(len(s))
+        trapezoid[:-1] += h / 2
+        trapezoid[1:] += h / 2
+        samplers[name] = _RouteSampler(name, s, p, left, upward, trapezoid, corners)
+    weights = k0 * weights * coefficients
+    phase = per_length = None
+    if rise is not None:
+        phase, per_length = {}, {}
+        for name, sampler in samplers.items():
+            rho = jnp.reshape(sampler.sample(rise, total=False), sampler.shape)
+            per_length[name] = rho @ weights
+            phase[name] = jnp.sum(jnp.asarray(sampler.trapezoid) * per_length[name])
+    return RoutePhase(
+        port=port,
+        mode=found,
+        frequency=f,
+        n_eff=n_eff,
+        phase=phase,
+        phase_per_length=per_length,
+        arc_length={n: sp.arc_length for n, sp in samplers.items()},
+        length={n: float(sp.arc_length[-1]) for n, sp in samplers.items()},
+        _traces={
+            n: _RouteTrace(_weights=weights, _sampler=sp) for n, sp in samplers.items()
+        },
+    )

@@ -10,6 +10,9 @@ Lengths are in micrometres.
   edges, read by `gfem.Mesh.from_gmsh_cross_section`.
 - `brick`: a 3D box of stacked layers, tetrahedra and named faces, read by
   `gfem.Mesh.from_gmsh`.
+- `extruded`: a cross-section extruded along z in prism layers split into
+  tetrahedra (a z-invariant 3D twin of `section`), read by
+  `gfem.Mesh.from_gmsh`.
 """
 
 from __future__ import annotations
@@ -35,15 +38,8 @@ def _named(item: object, namers: Sequence[Namer]) -> str | None:
     return next((name for test, name in namers if test(point)), None)
 
 
-def section(
-    path: Path,
-    rects: Sequence[Rect],
-    maxh: float,
-    edges: Sequence[Namer],
-    *,
-    thickness: float | None = None,
-) -> gfem.Mesh:
-    """A cross-section of glued rectangles, named edges only, as a slab mesh."""
+def _mesh2d(rects: Sequence[Rect], maxh: float, edges: Sequence[Namer]):
+    """Netgen's triangles of glued rectangles: nodes, (name, vertices) tris, lines."""
     from netgen.occ import Glue, OCCGeometry, Rectangle
 
     faces = []
@@ -67,8 +63,68 @@ def section(
         for el in mesh.Elements(ngs.BND)
         if el.mat in names
     ]
+    return nodes, tris, lines
+
+
+def section(
+    path: Path,
+    rects: Sequence[Rect],
+    maxh: float,
+    edges: Sequence[Namer],
+    *,
+    thickness: float | None = None,
+) -> gfem.Mesh:
+    """A cross-section of glued rectangles, named edges only, as a slab mesh."""
+    nodes, tris, lines = _mesh2d(rects, maxh, edges)
     _write_section(path, nodes, tris, lines)
     return gfem.Mesh.from_gmsh_cross_section(path, thickness=thickness)
+
+
+def extruded(
+    path: Path,
+    rects: Sequence[Rect],
+    maxh: float,
+    edges: Sequence[Namer],
+    *,
+    length: float,
+    layers: int,
+    region: Callable[[int, str], str] | None = None,
+) -> gfem.Mesh:
+    """A cross-section extruded along z over ``length`` in ``layers`` prism layers.
+
+    Each prism splits into three tetrahedra by the smallest-index rule, so
+    the layers conform; a named edge becomes a named face along the
+    extrusion. ``region(layer, name)`` renames a triangle's region in a layer
+    (a heater in some layers only). Read by `gfem.Mesh.from_gmsh`.
+    """
+    xy, tris, lines = _mesh2d(rects, maxh, edges)
+    n = len(xy)
+    nodes = np.zeros(((layers + 1) * n, 3))
+    for i in range(layers + 1):
+        nodes[i * n : (i + 1) * n, :2] = xy[:, :2]
+        nodes[i * n : (i + 1) * n, 2] = length * i / layers
+    tets, tet_names, faces, face_names = [], [], [], []
+    for i in range(layers):
+        o = i * n
+        for name, tri in tris:
+            a, b, c = sorted(tri)
+            a, b, c = a + o, b + o, c + o
+            big_a, big_b, big_c = a + n, b + n, c + n
+            for q in ((a, b, c, big_c), (a, b, big_b, big_c), (a, big_a, big_b, big_c)):
+                tets.append(q)
+                tet_names.append(name if region is None else region(i, name))
+        for name, ends in lines:
+            p, q = (v + o for v in sorted(ends))
+            faces += [(p, q, q + n), (p, p + n, q + n)]
+            face_names += [name, name]
+    tets = np.array(tets)
+    v = nodes[tets]
+    det = np.einsum(
+        "ij,ij->i", np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0]), v[:, 3] - v[:, 0]
+    )
+    tets[det < 0] = tets[det < 0][:, [0, 2, 1, 3]]
+    sm.write_msh22(path, (nodes, tets, tet_names, np.array(faces), face_names))
+    return gfem.Mesh.from_gmsh(path, length_unit="um")
 
 
 def _write_section(path: Path, nodes: np.ndarray, tris: list, lines: list) -> None:

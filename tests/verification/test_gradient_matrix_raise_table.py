@@ -2028,6 +2028,48 @@ def _out_thermo_optic_shift_by_the_optical_nodes(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(mesh.nodes))
 
 
+def _route_objective(mesh, core):
+    route = {"r": np.array([[0.0, 0.0, 0.0], [0.0, 2e-6, 0.0]])}
+
+    def objective(x):
+        materials = {
+            "clad": gfem.Material(eps_r=2.085, thermo_optic_coefficient=1e-5),
+            "core": core(x),
+        }
+        window = gfem.Model(
+            mesh, materials=materials, ports=[gfem.WavePort("p", "front")]
+        )
+        phase = gfem.route_phase(
+            window, None, routes=route, port="p", frequency=1.934e14
+        )
+        return jnp.sum(phase.trace("r")._weights) + phase.n_eff
+
+    return objective
+
+
+def _out_route_phase_by_the_window_eps(request):
+    # the window's mode is a constant of the route phase, as of the shift
+    mesh = request.getfixturevalue("thermo_optic_section")
+    objective = _route_objective(
+        mesh,
+        lambda eps: gfem.MaterialField(eps_r=eps, thermo_optic_coefficient=1.86e-4),
+    )
+    jax.make_jaxpr(jax.grad(objective))(12.1)
+
+
+def _out_route_phase_by_the_window_nodes(request):
+    mesh = request.getfixturevalue("thermo_optic_section")
+    core = gfem.Material(eps_r=12.1, thermo_optic_coefficient=1.86e-4)
+
+    def objective(nodes):
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(mesh), [nodes]
+        )
+        return _route_objective(moved, lambda _: core)(None)
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(mesh.nodes))
+
+
 # (row, raising call, error, message): DegenerateModeError on one mode of a
 # degenerate eigenmode cluster is in tests/verification/test_gradient_matrix.py.
 HOST = jax.errors.JaxRuntimeError  # a gfem error raised in the backward pass
@@ -2365,6 +2407,18 @@ OUT_OF_SCOPE = [
     (
         "thermo-optic shift x optical node coordinates",
         _out_thermo_optic_shift_by_the_optical_nodes,
+        gfem.NonDifferentiableError,
+        r"mesh\.nodes.*thermo-optic shift holds the port mode",
+    ),
+    (
+        "route phase x window permittivity",
+        _out_route_phase_by_the_window_eps,
+        gfem.NonDifferentiableError,
+        r"model\.materials\['core'\]\.eps_r.*thermo-optic shift holds the port mode",
+    ),
+    (
+        "route phase x window node coordinates",
+        _out_route_phase_by_the_window_nodes,
         gfem.NonDifferentiableError,
         r"mesh\.nodes.*thermo-optic shift holds the port mode",
     ),

@@ -299,6 +299,13 @@ transmission's argument moves by minus ``phase_per_length * L``. The
 power that gives a pi shift is ``P_pi = pi * P' / phase_per_length`` for
 a heater dissipating ``P'`` per unit length (``power_per_length``), which
 equals ``lambda / (2 s)`` with ``s = delta_n_eff / P'``.
+
+`gfem.route_phase` integrates the same first-order phase per length along
+a route through a 3D rise (rad, a phase delay, positive for a positive
+coefficient and rise; ``P_pi = pi * P / phase`` for a heater dissipating
+``P``). Its window is in route-local coordinates: the section's x points
+to the left of travel (``up x tangent``), its y along ``up``, and the
+station sits at the section's origin.
 """
 
 from __future__ import annotations
