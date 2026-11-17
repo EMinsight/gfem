@@ -1,0 +1,42 @@
+{
+ "case": {
+  "definition_sha256": "def-lcavity",
+  "mesh_sha256": "mesh-lcavity",
+  "name": "lcavity"
+ },
+ "ceiling": {
+  "2": 0.0038907
+ },
+ "computed_utc": "2026-11-17T18:55:07Z",
+ "cost_core_h": 0.0,
+ "cross_checks": [],
+ "family": "lcavity",
+ "format": "suite-reference/1",
+ "id": "lcavity-20261117-058b2f5",
+ "inputs": {},
+ "meshes": {
+  "mesh-lcavity": {
+   "dof": {
+    "2": 1
+   },
+   "level": 0
+  }
+ },
+ "method": "closed_form",
+ "physics_sha256": "phys-lcavity",
+ "provenance": {},
+ "quantities": {
+  "f_hz": {
+   "bound": 1e-12,
+   "bound_kind": "relative",
+   "metric": "max_rel_dRe_f",
+   "values": [
+    148140269652.022
+   ]
+  }
+ },
+ "runs": null,
+ "same_mesh_error": {
+  "2": 0.00038907
+ }
+}

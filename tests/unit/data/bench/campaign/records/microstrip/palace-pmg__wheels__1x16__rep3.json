@@ -1,0 +1,23 @@
+{
+ "campaign": "20261120-858bc66-smoke",
+ "failure_class": null,
+ "name": "microstrip/palace-pmg__wheels__1x16__rep3",
+ "reason": "earlier_repeat_timeout",
+ "run": {
+  "case": "microstrip",
+  "core_budget": 16,
+  "job": "41000002",
+  "launch": "srun",
+  "layout": {
+   "asked": "grid",
+   "ranks": 1,
+   "threads": 16
+  },
+  "repeat": 3,
+  "solver": "palace:pmg",
+  "stack": "wheels",
+  "tolerance": 1e-08
+ },
+ "schema": "suite-record/1",
+ "status": "not_started"
+}

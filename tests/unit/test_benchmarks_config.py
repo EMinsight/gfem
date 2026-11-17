@@ -305,17 +305,6 @@ def test_plan_list_prints_axis_values(capsys):
         assert value in out
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
-        ["report", "a", "b", "--out", "dir"],
-    ],
-)
-def test_unimplemented_subcommands_exit_2(argv, capsys):
-    assert main(argv) == 2
-    assert "not yet" in capsys.readouterr().err
-
-
 def test_plan_refuses_a_bad_campaign_with_status_2(tmp_path, capsys):
     campaign = _write(tmp_path, "smoke.toml", CAMPAIGN.replace("schema = 1", "x = 1"))
     site = _write(tmp_path, "site.toml", SITE)
