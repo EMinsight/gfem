@@ -832,7 +832,7 @@ prefix= suffix= openmp=0
 for arg in "$@"; do
   case $arg in
   PREFIX=*) prefix=${arg#*=} ;;
-  LIBNAMESUFFIX=*) suffix=_${arg#*=} ;;
+  LIBNAMESUFFIX=*) suffix=${arg#*=} ;;
   USE_OPENMP=1) openmp=1 ;;
   esac
 done
@@ -946,7 +946,7 @@ def test_openblas_builds_a_pthreads_and_an_openmp_library_into_one_prefix(tmp_pa
     assert len(builds) == 2
     pthreads, openmp = sorted(builds, key=lambda args: "USE_OPENMP=1" in args)
     assert common | {"USE_THREAD=1", "USE_OPENMP=0"} <= pthreads
-    assert common | {"USE_OPENMP=1", "LIBNAMESUFFIX=omp"} <= openmp
+    assert common | {"USE_OPENMP=1", "LIBNAMESUFFIX=_omp"} <= openmp
     assert all("COMMON_OPT=-O3 -march=sapphirerapids" in call for call in calls)
     record = json.loads((prefix / "provenance.json").read_text())
     assert set(record["smoke"]["libraries"]) == {"openblas", "openblas_omp"}

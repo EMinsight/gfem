@@ -31,8 +31,9 @@ OPENBLAS_OPTIONS=(TARGET=SAPPHIRERAPIDS DYNAMIC_ARCH=0 NUM_THREADS=256 NO_AFFINI
 # Threading builds, as "library|make options": pthreads libopenblas for gfem's
 # NGSolve and PETSc, OpenMP libopenblas_omp for Palace. The pthreads build is
 # installed last, so the shared headers, openblas.pc and cmake/openblas are its.
+# OpenBLAS appends LIBNAMESUFFIX as is: `_omp` gives libopenblas_omp.so.
 OPENBLAS_BUILDS=(
-  "openblas_omp|USE_OPENMP=1 LIBNAMESUFFIX=omp"
+  "openblas_omp|USE_OPENMP=1 LIBNAMESUFFIX=_omp"
   "openblas|USE_THREAD=1 USE_OPENMP=0"
 )
 
