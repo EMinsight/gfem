@@ -181,9 +181,9 @@ records.
   so it is an upper bound on the simultaneous footprint. Beside it,
   `peak_rss_rank_max_gib` (largest rank; Palace `PeakMemoryMegabytes.Max`) and
   `peak_rss_largest_node_gib` (largest per-node sum; Palace
-  `PeakNodeMemoryMegabytes.Max`). A node sampler sums `Pss`
-  over the step's pids every second (every 0.1 s over the first 5 s) (`pss_peak_sum_gib`); sacct `MaxRSS` is kept for
-  runs over 60 s; the codes' self-reports are kept beside. None of them gates.
+  `PeakNodeMemoryMegabytes.Max`). A node sampler sums `Pss` over the step's pids
+  every second, every 0.1 s over the first 5 s (`pss_peak_sum_gib`); sacct `MaxRSS`
+  is kept for runs over 60 s; the codes' self-reports are kept beside. None of them gates.
 - 3 repeats in rounds, round r rotated by r * ceil(cells / repeats), so repeats of a
   cell never run back to back. Medians per figure over passing repeats; a spread over
   10 % is flagged "noisy".
