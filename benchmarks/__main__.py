@@ -11,7 +11,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from benchmarks.harness import config
+from benchmarks.harness import config, records
 
 NOT_YET = 2
 
@@ -42,6 +42,10 @@ def _plan(args: argparse.Namespace) -> int:
         print(f"benchmarks plan: {error}", file=sys.stderr)
         return NOT_YET
     return _not_yet(args)
+
+
+def _fetch(args: argparse.Namespace) -> int:
+    return records.fetch(args.source, args.to, records_only=args.records_only)
 
 
 Handler = Callable[[argparse.Namespace], int]
@@ -95,10 +99,14 @@ def _add_data(add: Adder) -> None:
     p.add_argument("rev", metavar="REV")
     p.add_argument("--to", required=True, metavar="HOST:ROOT")
 
-    p = add("fetch", "fetch a run directory from the cluster", _not_yet)
+    p = add("fetch", "fetch a run directory from the cluster", _fetch)
     p.add_argument("--from", dest="source", required=True, metavar="HOST:ROOT/RUNDIR")
     p.add_argument("--to", required=True, type=Path, metavar="DIR")
-    p.add_argument("--records-only", action="store_true")
+    p.add_argument(
+        "--records-only",
+        action="store_true",
+        help="only the records-store set (manifest, records, per-job files)",
+    )
 
     p = add("report", "write a campaign report from records", _not_yet)
     p.add_argument("inputs", nargs="+", metavar="RECORDS")

@@ -31,6 +31,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from benchmarks.harness import records
 from benchmarks.harness.config import (
     AFFINITY_VARIABLES,
     VERSIONED,
@@ -396,14 +397,10 @@ def scrub(text: str, resolved: Resolved) -> str:
 
     Longer roots go first, so ``{stacks.wheels.base_venv}`` wins over
     ``{cluster.root}`` for a path under both. Paths outside the roots are left for
-    the record scrub to refuse.
+    the record scrub to refuse (one implementation:
+    :func:`benchmarks.harness.records.replace_roots`).
     """
-    for placeholder, root in sorted(
-        resolved.roots.items(), key=lambda item: len(item[1]), reverse=True
-    ):
-        if root:
-            text = text.replace(root, placeholder)
-    return text
+    return records.replace_roots(text, resolved.roots)
 
 
 def description_json(resolved: Resolved) -> dict[str, Any]:
