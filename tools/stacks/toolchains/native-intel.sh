@@ -24,10 +24,12 @@ export I_MPI_CC=gcc I_MPI_CXX=g++ I_MPI_FC=gfortran I_MPI_F90=gfortran I_MPI_F77
 export MPICC=mpicc MPICXX=mpicxx MPIFC=mpif90
 
 # Flags: no fast-math, no LTO, no PGO, no -mprefer-vector-width=512.
-export CFLAGS="-O3 -march=sapphirerapids"
-export CXXFLAGS="-O3 -march=sapphirerapids"
-export FFLAGS="-O3 -march=sapphirerapids"
-export FCFLAGS="-O3 -march=sapphirerapids"
+# -mno-avx512fp16: MN5's binutils 2.35 cannot assemble the AVX512-FP16 (vmovw)
+# that GCC 12.3 emits for sapphirerapids; double-precision codes lose nothing.
+export CFLAGS="-O3 -march=sapphirerapids -mno-avx512fp16"
+export CXXFLAGS="-O3 -march=sapphirerapids -mno-avx512fp16"
+export FFLAGS="-O3 -march=sapphirerapids -mno-avx512fp16"
+export FCFLAGS="-O3 -march=sapphirerapids -mno-avx512fp16"
 # Recipes add this for Fortran packages that need it (MUMPS, ScaLAPACK).
 export STACK_FORTRAN_COMPAT_FLAGS="-fallow-argument-mismatch"
 # The system libstdc++ is GCC 11.5's: every shared library finds GCC 12.3's
