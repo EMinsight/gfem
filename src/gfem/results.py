@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from gfem._port_section import PortSection
 
 __all__ = [
+    "DCConductionResult",
     "DiffractionOrderResult",
     "DrivenResult",
     "EigenmodeResult",
@@ -191,6 +192,148 @@ class ElectrostaticResult:
 
 
 register_fields(ElectrostaticResult, ("capacitance", "energy", "potential"))
+
+
+def _not_a_section(owner: str, name: str, total: str) -> ValueError:
+    """The error of a per-length property read on a mesh that is no cross-section."""
+    return ValueError(
+        f"{owner}.{name} is defined on a cross-section mesh only "
+        "(gfem.Mesh.from_gmsh_cross_section), and this result was solved on a "
+        f"3D mesh: read {owner}.{total} instead."
+    )
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class DCConductionResult:
+    """The result of a `gfem.DCConduction` problem.
+
+    Excitation ``i`` puts terminal ``i`` at 1 V and every other terminal
+    and the ground at 0 V. `gfem.joule_heating` turns it into a heat
+    source for any voltage, current or power drive, with no new solve.
+
+    On a cross-section mesh the values are those of the slab the mesh
+    stands for (`gfem.Mesh.section_thickness`): read `resistance_per_length`
+    rather than `resistance`.
+
+    Attributes:
+        conductance: The conductance matrix in siemens, shape
+            ``(n_terminals, n_terminals)``, rows and columns in `terminals`
+            order: ``conductance[i, j]`` is the current into terminal ``i``
+            in excitation ``j``. Symmetric; the diagonal is positive.
+            Differentiable with respect to ``conductivity`` (no adjoint
+            solve).
+        terminals: The terminal names (static labels).
+        potential: The potential of each terminal's solve, a `Field` by
+            terminal name (in `terminals` order), in volts, on H1 of the
+            solve order over the conductors that carry current.
+        dissipation: The power density per tetrahedron at unit voltages,
+            shape ``(n_tetrahedra, n_terminals, n_terminals)`` in W/m^3 per
+            V^2, in `gfem.Mesh.tetrahedra` order and zero off the
+            conductors: with terminal voltages ``V``, element ``e``
+            dissipates ``V @ dissipation[e] @ V`` (the exact element mean).
+            An internal layout, read through `gfem.joule_heating`.
+    """
+
+    conductance: jax.Array
+    terminals: tuple[str, ...]
+    potential: Mapping[str, Field] = dataclasses.field(default_factory=dict)
+    dissipation: jax.Array | None = None
+    #: The surfaces held at a fixed potential (terminals and ground).
+    _fixed: tuple[str, ...] = ()
+    #: The conducting volume regions that carry current, mesh order.
+    _regions: tuple[str, ...] = ()
+    #: The slab thickness in m of a cross-section mesh, else ``None``.
+    _thickness: float | None = None
+    #: Whether some terminal or the ground holds 0 V (a power drive needs it).
+    _grounded: bool = False
+
+    def __post_init__(self) -> None:
+        """Hold the potentials as a read-only, ordered mapping."""
+        if not isinstance(self.potential, FieldMap):
+            fields = FieldMap(self.potential, label="terminal")
+            object.__setattr__(self, "potential", fields)
+
+    @property
+    def resistance(self) -> jax.Array:
+        """The inverse of `conductance` in ohms; ``1 / G`` for one terminal.
+
+        Entry ``[i, j]`` is the voltage of terminal ``i`` per ampere into
+        terminal ``j``, no current into the others. Without a ground the
+        rows of `conductance` sum to zero and it has no inverse.
+        """
+        return jnp.linalg.inv(self.conductance)
+
+    @property
+    def resistance_per_length(self) -> jax.Array:
+        """`resistance` per unit length along a cross-section, in ohm/m.
+
+        A heater of length L between the two end faces has resistance
+        ``resistance_per_length * L``.
+
+        Raises:
+            ValueError: The result was not solved on a cross-section mesh.
+        """
+        if self._thickness is None:
+            raise _not_a_section(
+                "DCConductionResult", "resistance_per_length", "resistance"
+            )
+        return self.resistance / self._thickness
+
+    def index(self, terminal: str) -> int:
+        """Row / column of ``terminal`` in `conductance`.
+
+        Raises:
+            KeyError: ``terminal`` is not a terminal of this result.
+        """
+        try:
+            return self.terminals.index(terminal)
+        except ValueError:
+            raise KeyError(
+                f"No terminal {terminal!r}; the terminals are "
+                f"{', '.join(repr(t) for t in self.terminals)}."
+            ) from None
+
+    def to_xarray(self) -> xarray.Dataset:
+        """The conductance matrix as an `xarray.Dataset`.
+
+        ``conductance`` (S) has dimensions ``("terminal", "excitation")``,
+        both labelled by `terminals`. Needs the ``xarray`` extra: ``pip
+        install "gfem[xarray]"``.
+
+        Raises:
+            ImportError: xarray is not installed.
+            TypeError: The result holds JAX tracers.
+        """
+        xr = _xarray(self)
+        data = {
+            "conductance": _variable(("terminal", "excitation"), self.conductance, "S")
+        }
+        coords = {"terminal": list(self.terminals), "excitation": list(self.terminals)}
+        return xr.Dataset(data, coords=coords)
+
+    def __repr__(self) -> str:
+        head = f"DCConductionResult(terminals={list(self.terminals)}"
+        try:
+            g = np.asarray(self.conductance)
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return head + ")"
+        if g.shape == (1, 1) and self._grounded:
+            if self._thickness is None:
+                return f"{head}, resistance {1 / g[0, 0]:.6g} ohm)"
+            per_length = 1 / (g[0, 0] * self._thickness)
+            return f"{head}, resistance per length {per_length:.6g} ohm/m)"
+        width = max(len(t) for t in self.terminals)
+        rows = [
+            f"  {t:>{width}}: " + "  ".join(f"{v:10.4g}" for v in row)
+            for t, row in zip(self.terminals, g, strict=True)
+        ]
+        what = (
+            "conductance in S" if self._thickness is None else "slab conductance in S"
+        )
+        return f"{head}, {what}:\n" + "\n".join(rows) + ")"
+
+
+register_fields(DCConductionResult, ("conductance", "potential", "dissipation"))
 
 
 class PortModeField:

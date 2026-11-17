@@ -21,8 +21,9 @@ if TYPE_CHECKING:
 
     from gfem._eigen.rule import DualRequest
     from gfem._engine.driven import AdjointLoads
-    from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
+    from gfem.problems import DCConduction, Driven, Eigenmode, Electrostatic, PortMode
     from gfem.results import (
+        DCConductionResult,
         DrivenResult,
         EigenmodeResult,
         ElectrostaticResult,
@@ -40,6 +41,14 @@ def solve(
     options: SolverOptions | None = None,
     comm: Any = None,
 ) -> ElectrostaticResult: ...
+@overload
+def solve(
+    model: Model,
+    problem: DCConduction,
+    *,
+    options: SolverOptions | None = None,
+    comm: Any = None,
+) -> DCConductionResult: ...
 @overload
 def solve(
     model: Model,
@@ -181,9 +190,10 @@ def _solve(
     # A moved mesh must keep its periodic pairs and stay valid on the solve
     # domain.
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
+    physics = getattr(type(problem), "_physics", "em")
     _check_quality(
         model.mesh,
-        model._domain.active,  # noqa: SLF001
+        model._domain_of(physics).active,  # noqa: SLF001
         stacklevel=4,
         comm=resolved,
     )

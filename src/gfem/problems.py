@@ -18,7 +18,7 @@ import numpy as np
 
 from gfem._checks import check_fixed
 
-__all__ = ["Driven", "Eigenmode", "Electrostatic", "PortMode"]
+__all__ = ["DCConduction", "Driven", "Eigenmode", "Electrostatic", "PortMode"]
 
 
 def _surfaces(value: Any, what: str) -> tuple[str, ...]:
@@ -29,6 +29,51 @@ def _surfaces(value: Any, what: str) -> tuple[str, ...]:
     raise TypeError(
         f"{what} must be a surface name or a list of surface names, got {value!r}."
     )
+
+
+def _terminals(
+    terminals: Any, ground: Any, owner: str
+) -> tuple[list[tuple[str, tuple[str, ...]]], tuple[str, ...]]:
+    """``terminals`` and ``ground`` normalized: ``(name, surfaces)`` pairs, surfaces.
+
+    Raises:
+        TypeError: A name is not a string.
+        ValueError: No terminal, or a surface in two terminals or in a
+            terminal and the ground.
+    """
+    items: list[tuple[str, tuple[str, ...]]]
+    if isinstance(terminals, Mapping):
+        items = []
+        for name, surfaces in terminals.items():
+            if not isinstance(name, str):
+                raise TypeError(f"Terminal names must be strings, got {name!r}.")
+            items.append((name, _surfaces(surfaces, f"terminals[{name!r}]")))
+    else:
+        items = [(s, (s,)) for s in _surfaces(terminals, "terminals")]
+    if not items:
+        raise ValueError(
+            f"{owner} needs at least one terminal, e.g. "
+            "terminals={'trace': 'trace_surface'}."
+        )
+    ground = _surfaces(ground, "ground") if ground else ()
+    owners: dict[str, str] = {}
+    for name, surfaces in items:
+        if len(set(surfaces)) != len(surfaces):
+            raise ValueError(f"Terminal {name!r} lists a surface twice.")
+        for s in surfaces:
+            if s in owners:
+                raise ValueError(
+                    f"Surface {s!r} is in terminals {owners[s]!r} and {name!r}; "
+                    "a surface belongs to one terminal."
+                )
+            owners[s] = name
+    for s in ground:
+        if s in owners:
+            raise ValueError(
+                f"Surface {s!r} is both in terminal {owners[s]!r} and in the "
+                "ground; remove it from one of them."
+            )
+    return items, tuple(dict.fromkeys(ground))
 
 
 def _wave_vector(value: Any, owner: str) -> tuple[float, float, float] | None:
@@ -122,37 +167,7 @@ class Electrostatic:
         ground: str | list[str] | tuple[str, ...] = (),
     ) -> None:
         """Validate and normalize (see the class docstring)."""
-        if isinstance(terminals, Mapping):
-            items = []
-            for name, surfaces in terminals.items():
-                if not isinstance(name, str):
-                    raise TypeError(f"Terminal names must be strings, got {name!r}.")
-                items.append((name, _surfaces(surfaces, f"terminals[{name!r}]")))
-        else:
-            items = [(s, (s,)) for s in _surfaces(terminals, "terminals")]
-        if not items:
-            raise ValueError(
-                "Electrostatic needs at least one terminal, e.g. "
-                "terminals={'trace': 'trace_surface'}."
-            )
-        ground = _surfaces(ground, "ground") if ground else ()
-        owner: dict[str, str] = {}
-        for name, surfaces in items:
-            if len(set(surfaces)) != len(surfaces):
-                raise ValueError(f"Terminal {name!r} lists a surface twice.")
-            for s in surfaces:
-                if s in owner:
-                    raise ValueError(
-                        f"Surface {s!r} is in terminals {owner[s]!r} and {name!r}; "
-                        "a surface belongs to one terminal."
-                    )
-                owner[s] = name
-        for s in ground:
-            if s in owner:
-                raise ValueError(
-                    f"Surface {s!r} is both in terminal {owner[s]!r} and in the "
-                    "ground; remove it from one of them."
-                )
+        items, ground = _terminals(terminals, ground, "Electrostatic")
         object.__setattr__(self, "terminals", tuple(items))
         object.__setattr__(self, "ground", tuple(dict.fromkeys(ground)))
 
@@ -168,6 +183,90 @@ class Electrostatic:
 
 
 jax.tree_util.register_static(Electrostatic)
+
+
+@dataclasses.dataclass(frozen=True, init=False)
+class DCConduction:
+    """The DC conductance matrix between named terminals of conductors.
+
+    For each terminal in turn, the potential is 1 V on that terminal and
+    0 V on every other terminal and on the ground, and the steady current
+    equation div(sigma grad V) = 0 is solved in the conductors. Every
+    other surface of a conductor is insulated (no current crosses it).
+
+    The conductors are not named: they are every volume whose material
+    has ``conductivity`` > 0, minus the volumes excluded from DC conduction
+    (``Model(excluded={"dc_conduction": (...)})``). A conducting piece
+    that touches no terminal and no ground carries no current: it is left
+    out, and its heat is exactly zero. A tensor ``conductivity`` is read as
+    a tensor.
+
+    The result (`gfem.DCConductionResult`) holds the conductance and the
+    dissipation per element at unit voltages; `gfem.joule_heating` applies
+    a voltage, current or power drive to it and gives the heat source of a
+    thermal problem, with no new solve.
+
+    On a cross-section mesh (`gfem.Mesh.from_gmsh_cross_section`), put the
+    terminals on its end faces ``"front"`` and ``"back"``: the current runs
+    along the waveguide. A conducting volume that touches both end faces
+    (a doped substrate, say) then joins the circuit; exclude it from DC
+    conduction if no current flows in it.
+
+    Example:
+        A heater between two pads::
+
+            dc = gfem.solve(
+                model,
+                gfem.DCConduction(terminals={"pad_a": "pad_a_top"}, ground="pad_b_top"),
+            )
+            dc.resistance  # ohm
+
+    Args:
+        terminals: Terminal name -> its surface name or names, in
+            conductance-matrix order. A list of surface names makes one
+            terminal per surface, named after it.
+        ground: The surface name or names held at 0 V. Empty: no ground
+            (then each row of the conductance matrix sums to zero).
+
+    Raises:
+        TypeError: A name is not a string.
+        ValueError: No terminal, or a surface in two terminals or in a
+            terminal and the ground.
+
+    `gfem.solve` raises ValueError when no volume conducts, when a
+    terminal or the ground touches no conducting volume, or when an
+    element of a conducting volume has zero conductivity (a
+    `gfem.MaterialField` with exact zeros: give its void a small positive
+    value).
+    """
+
+    terminals: tuple[tuple[str, tuple[str, ...]], ...]
+    ground: tuple[str, ...]
+    _rule: ClassVar[str] = "gfem._engine.dc_conduction:DCConductionRule"
+    _physics: ClassVar[str] = "dc_conduction"
+
+    def __init__(
+        self,
+        terminals: Mapping[str, str | list[str] | tuple[str, ...]] | list[str],
+        ground: str | list[str] | tuple[str, ...] = (),
+    ) -> None:
+        """Validate and normalize (see the class docstring)."""
+        items, ground = _terminals(terminals, ground, "DCConduction")
+        object.__setattr__(self, "terminals", tuple(items))
+        object.__setattr__(self, "ground", ground)
+
+    @property
+    def terminal_names(self) -> tuple[str, ...]:
+        """Terminal names, in conductance-matrix order."""
+        return tuple(name for name, _ in self.terminals)
+
+    def __repr__(self) -> str:
+        terms = ", ".join(f"{n!r}: {list(s)}" for n, s in self.terminals)
+        ground = f", ground={list(self.ground)}" if self.ground else ""
+        return f"DCConduction(terminals={{{terms}}}{ground})"
+
+
+jax.tree_util.register_static(DCConduction)
 
 
 def _frequencies(value: Any, owner: str = "PortMode") -> tuple[float, ...]:

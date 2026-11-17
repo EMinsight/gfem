@@ -308,6 +308,8 @@ PROPERTIES: dict[str, frozenset[str]] = {
     # the driven pieces (`gfem._eigen.operator`), weighted at the complex
     # eigenvalue
     "eigenmode": frozenset({"eps_r", "tan_delta", "mu_r", "conductivity"}),
+    # a(u, v) = int sigma grad u . grad v on the conductors
+    "dc_conduction": frozenset({"conductivity"}),
 }
 
 

@@ -80,7 +80,13 @@ from gfem.model import (  # noqa: E402
     enclosed_by,
 )
 from gfem.options import SolverOptions  # noqa: E402
-from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode  # noqa: E402
+from gfem.problems import (  # noqa: E402
+    DCConduction,
+    Driven,
+    Eigenmode,
+    Electrostatic,
+    PortMode,
+)
 from gfem.refinement import (  # noqa: E402
     ErrorEstimate,
     FieldEstimator,
@@ -91,6 +97,7 @@ from gfem.refinement import (  # noqa: E402
     refine_mesh,
 )
 from gfem.results import (  # noqa: E402
+    DCConductionResult,
     DiffractionOrderResult,
     DrivenResult,
     EigenmodeResult,
@@ -102,6 +109,7 @@ from gfem.results import (  # noqa: E402
     SweepInfo,
 )
 from gfem.solve import release_memory, solve  # noqa: E402
+from gfem.thermal import HeatSource, joule_heating  # noqa: E402
 
 __version__ = _version("gfem")
 
@@ -111,6 +119,8 @@ __all__ = [
     "Absorbing",
     "Conductor",
     "Convection",
+    "DCConduction",
+    "DCConductionResult",
     "Debye",
     "DegenerateModeError",
     "DeviceMemoryWarning",
@@ -133,6 +143,7 @@ __all__ = [
     "FloquetOrderCapWarning",
     "FloquetPort",
     "HeatFlux",
+    "HeatSource",
     "Impedance",
     "InterfaceParticipation",
     "Job",
@@ -186,6 +197,7 @@ __all__ = [
     "enclosed_by",
     "error_estimate",
     "interface_participation",
+    "joule_heating",
     "load_result",
     "power_flow",
     "quantum",
