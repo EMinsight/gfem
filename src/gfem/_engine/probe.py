@@ -403,6 +403,34 @@ class Probe:
             self._local = (dfes, cont[position.ravel()], disc)
         return self._local
 
+    def rows(self, weights: np.ndarray, rows: np.ndarray, n_rows: int) -> Any:
+        """``(n_rows, ndof)`` sparse: row ``r`` sums ``weights[p] Phi_p`` of its points.
+
+        A scalar field's weighted point sums as one matrix (``rows[p]`` is
+        point ``p``'s row), SI scaling included. One process only.
+        """
+        import scipy.sparse
+
+        if self.comm is not None:  # pragma: no cover - callers refuse ranks
+            raise NotImplementedError("Probe.rows runs on one process")
+        own = self._own
+        data, r, c = [np.zeros(0)], [np.zeros(0, np.int64)], [np.zeros(0, np.int64)]
+        if own.size:
+            with self._lock:
+                dfes, cont, disc = self._local_dofs()
+                for k in range(cont.shape[1]):
+                    unit = np.zeros(dfes.ndof)
+                    unit[disc[:, k]] = 1.0
+                    shape = self._evaluate(dfes, unit)[:, 0] * self.factor
+                    data.append(shape * weights[own])
+                    r.append(np.asarray(rows)[own])
+                    c.append(cont[:, k])
+        matrix = scipy.sparse.coo_matrix(
+            (np.concatenate(data), (np.concatenate(r), np.concatenate(c))),
+            shape=(n_rows, self.ndof),
+        )
+        return matrix.tocsr()
+
     def transpose(self, cotangent: np.ndarray) -> np.ndarray:
         """``Phi^T g`` (SI scaling included), ``(m, width)`` for ``(m, n, dim)``.
 

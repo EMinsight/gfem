@@ -457,6 +457,14 @@ RAISES_LABELS = {
     "thermo-optic shift x optical node coordinates": (
         "`thermo_optic_shift`, with respect to the optical model's node coordinates"
     ),
+    "route phase x window permittivity": (
+        "`route_phase`, with respect to the window's permittivity, loss tangent, "
+        "permeability or conductivity (the mode is held constant; the rise and "
+        "the thermo-optic coefficient differentiate)"
+    ),
+    "route phase x window node coordinates": (
+        "`route_phase`, with respect to the window's node coordinates"
+    ),
 }
 STATUS_TEXT = {"verified": "FD-verified", "zero": "exact zero", "raises": "raises"}
 OUTCOMES = {"gradient", "zero", "raises"}
