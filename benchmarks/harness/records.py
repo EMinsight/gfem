@@ -646,12 +646,23 @@ def allowed_env(environ: Mapping[str, str]) -> dict[str, str]:
 # --- names ------------------------------------------------------------------------
 
 
-def record_name(case: str, solver: str, stack: str, layout: str, repeat: int) -> str:
-    """``<case>/<code>-<kind>__<stack>__<layout>__rep<n>``.
+def record_name(
+    case: str,
+    solver: str,
+    stack: str,
+    layout: str,
+    repeat: int,
+    *,
+    rung: float | None = None,
+) -> str:
+    """``<case>/<code>-<kind>__<stack>__<layout>[__tol<t>]__rep<n>``.
 
     ``layout`` is ``default`` or the resolved ``RxT`` (a grid run names its ``RxT``).
+    ``rung`` is the tolerance of an off-anchor ladder rung (``tol1e-06``), which
+    would otherwise share its name with the anchor run at the same layout.
     """
-    return f"{case}/{solver.replace(':', '-')}__{stack}__{layout}__rep{repeat}"
+    tol = "" if rung is None else f"__tol{rung:g}"
+    return f"{case}/{solver.replace(':', '-')}__{stack}__{layout}{tol}__rep{repeat}"
 
 
 def is_superseded(path: Path) -> bool:

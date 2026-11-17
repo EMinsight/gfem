@@ -177,6 +177,15 @@ def test_record_name_joins_the_axes():
     )
 
 
+def test_record_name_of_an_off_anchor_rung_names_its_tolerance():
+    assert (
+        records.record_name(
+            "microstrip", "gfem:bddc", "wheels", "default", 1, rung=1e-6
+        )
+        == "microstrip/gfem-bddc__wheels__default__tol1e-06__rep1"
+    )
+
+
 def test_supersede_moves_a_record_to_the_first_free_number(tmp_path):
     path = tmp_path / "gfem-direct__wheels__default__rep1.json"
     assert records.supersede(path) is None

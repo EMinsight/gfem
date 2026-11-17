@@ -12,7 +12,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from benchmarks.harness import case, config, records
+from benchmarks.harness import case, config, matrix, records
 
 NOT_YET = 2
 
@@ -37,12 +37,28 @@ def _plan(args: argparse.Namespace) -> int:
     if args.campaign is None or args.out is None:
         args.parser.error("plan needs CAMPAIGN and --out RUNDIR (or --list)")
     try:
-        config.load_campaign(args.campaign)
-        config.load_site(args.site)
-    except config.ConfigError as error:
+        campaign = matrix.override(
+            config.load_campaign(args.campaign),
+            cases=_axis(args.case),
+            solvers=_axis(args.solver),
+            stacks=_axis(args.stack),
+            layouts=_axis(args.layout),
+            repeats=args.repeats,
+        )
+        site = config.load_site(args.site)
+        commit, commit_utc = matrix.source_commit()
+        plan = matrix.expand(campaign, site, commit=commit)
+        manifest = matrix.write(plan, args.out, site=site, commit_utc=commit_utc)
+    except (config.ConfigError, records.RecordError) as error:
         print(f"benchmarks plan: {error}", file=sys.stderr)
         return NOT_YET
-    return _not_yet(args)
+    print(matrix.summary(plan, site, manifest))
+    print(f"run directory: {args.out}")
+    return 0
+
+
+def _axis(value: str | None) -> tuple[str, ...] | None:
+    return None if value is None else tuple(v for v in value.split(",") if v)
 
 
 def _fetch(args: argparse.Namespace) -> int:

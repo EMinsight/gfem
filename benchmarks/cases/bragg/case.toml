@@ -33,6 +33,14 @@ wave_vector = [314.1592653589793, 0.0, 0.0]
 [quantities]
 modes = 2
 
+# Plan estimate hints, seconds per run (probes/12/plan.py): startup dominated.
+[est_s]
+"gfem:direct" = 15
+"gfem:petsc-mumps" = 15
+"gfem:bddc" = 15
+"palace:mumps" = 8
+"palace:pmg" = 8
+
 [[materials]]
 region = "low"
 eps_r = 2.0

@@ -39,6 +39,23 @@ excite = ["p1", "p2"]
 [quantities]
 s = [["p1", "p1"], ["p2", "p1"], ["p1", "p2"], ["p2", "p2"]]
 
+# Plan estimate hints, seconds per run at budget 16 (probes/12/plan.py); 600 = wall cap (Palace MUMPS 1x16 times out).
+[est_s]
+"gfem:direct" = 40
+"gfem:petsc-mumps" = 45
+"gfem:petsc-mumps@1x16" = 60
+"gfem:bddc" = 50
+"palace:mumps@16x1" = 150
+"palace:mumps@8x2" = 170
+"palace:mumps@4x4" = 220
+"palace:mumps@2x8" = 350
+"palace:mumps@1x16" = 600
+"palace:pmg@16x1" = 80
+"palace:pmg@8x2" = 90
+"palace:pmg@4x4" = 110
+"palace:pmg@2x8" = 150
+"palace:pmg@1x16" = 250
+
 [[materials]]
 region = "sio2"
 eps_r = 4.1
