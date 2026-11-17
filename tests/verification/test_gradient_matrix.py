@@ -50,6 +50,15 @@ Bloch eigenmode solve), where the left eigenvectors carry the gradient. Its
 node direction moves the twins of every pair together (a periodic
 direction, the raw node gradient).
 
+The chain gate (``-k chain``, ADR 0177) differentiates the whole thermal
+chain on a heater slab: DC conduction -> Joule heating at a current ->
+steady thermal -> thermo-optic shift (phase per length plus the core's mean
+temperature), in the heater's per-element conductivity, every element's
+thermal conductivity, the core's per-element thermo-optic coefficient and
+the current at once, with unequal boundary temperatures (so the
+source-free temperature enters), on both solvers; and its transient twin (a
+phase trace and a mean-temperature trace from a uniform start).
+
 Then the consistency checks (JAX transformations and evicted cache entries
 per input kind, reciprocity against an explicit adjoint, adaptive against
 uniform at the samples) and the degenerate eigenmode clusters. Pairs this
@@ -735,6 +744,21 @@ class Designs:
             (lambda p: abs(p[0] - 3.0) < 1e-9 and p[1] < 1.0, "right"),
         ]
         return tc.section(self._dir("dc_bar") / "bar.msh", rects, 0.4, edges)
+
+    @functools.cached_property
+    def chain_slab(self):
+        # a TiN-like heater 1.5 um above a silicon core in oxide, sunk below
+        # and cooled above (um); the heater's terminals on the end faces
+        rects = [
+            (-1.75, -1.0, 1.75, 1.8, "clad", None),
+            (-0.25, 0.0, 0.25, 0.22, "core", 0.05),
+            (-0.5, 1.5, 0.5, 1.65, "heater", 0.1),
+        ]
+        edges = [
+            (lambda p: abs(p[1] + 1.0) < 1e-9, "bottom"),
+            (lambda p: abs(p[1] - 1.8) < 1e-9, "top"),
+        ]
+        return tc.section(self._dir("chain_slab") / "slab.msh", rects, 0.3, edges)
 
     @functools.cached_property
     def law_shape_line(self):
@@ -3064,3 +3088,136 @@ def test_gradient_matrix_bloch_eigen_at_k_zero_equals_plain(designs, name):
     want = jax.grad(plain.objective)(plain.p)
     assert np.abs(np.asarray(want)).max() > 0
     _assert_same(jax.grad(at_zero.objective)(plain.p), want, cell)
+
+
+# --- the chain: DC conduction -> Joule heating -> thermal -> thermo-optic shift ------
+
+FREQUENCY_OPTICAL = 299792458.0 / 1.55e-6
+#: The chain's inputs, normalised to O(1): sigma = 1e6 s S/m (heater), k =
+#: base k times a factor (every element), dn/dT = 1e-4 d /K (core), I = 4e-4 i
+#: A (about 1 W/m in the heater).
+CHAIN_K = {"clad": 1.38, "core": 90.0, "heater": 28.0}
+CHAIN_TRANSIENT_DURATION, CHAIN_TRANSIENT_STEPS = 1e-6, 6
+#: The difference step on the normalised inputs. The start's offset from the
+#: source-free temperature (a few K, in the phase trace's rise and the
+#: core's temperature) carries the solves' round-off, about 1e-11 relative:
+#: at 1e-2 it leaves 3e-6 in the k differences, at 3e-2 1e-7 (fourth-order
+#: truncation 4e-8).
+CHAIN_STEP = 3e-2
+
+
+def _chain(d: Designs, solver: str, transient: bool):
+    """The chain's objective of the normalised inputs, and a random design."""
+    mesh = d.chain_slab
+    options = tight(solver)
+    tets = {r: mesh.elements(r) for r in CHAIN_K}
+    sizes = [len(tets["heater"]), len(mesh.tetrahedra), len(tets["core"]), 1]
+    cuts = np.cumsum(sizes)[:-1]
+
+    def thermal(s, kk):
+        def k(region):
+            return CHAIN_K[region] * kk[tets[region]]
+
+        def material(region, rho, cp, **extra):
+            n = len(tets[region])
+            return gfem.MaterialField(
+                thermal_conductivity=k(region),
+                mass_density=jnp.full(n, rho),
+                specific_heat=jnp.full(n, cp),
+                **extra,
+            )
+
+        return gfem.Model(
+            mesh,
+            materials={
+                "clad": material("clad", 2203.0, 709.0),
+                "core": material("core", 2330.0, 711.0),
+                "heater": material("heater", 5240.0, 598.0, conductivity=1e6 * s),
+            },
+            boundaries=[
+                gfem.FixedTemperature("bottom", temperature=300.0),
+                # another ambient: the source-free temperature is not uniform
+                gfem.Convection("top", coefficient=1e4, ambient=290.0),
+            ],
+        )
+
+    def optical(dn):
+        # the same slab with the heater out of the mode solve (a traced
+        # conductivity on the model the shift reads raises, ADR 0175)
+        n_clad = len(tets["clad"])
+        materials = {
+            "clad": gfem.MaterialField(
+                eps_r=jnp.full(n_clad, 1.444**2),
+                thermo_optic_coefficient=jnp.full(n_clad, 1e-5),
+            ),
+            "core": gfem.MaterialField(
+                eps_r=jnp.full(len(tets["core"]), 3.4777**2),
+                thermo_optic_coefficient=1e-4 * dn,
+            ),
+        }
+        return gfem.Model(
+            mesh,
+            materials=materials,
+            ports=[gfem.WavePort("p", "front")],
+            excluded={"em": ["heater"]},
+        )
+
+    def objective(p):
+        s, kk, dn, i = jnp.split(p, cuts)
+        m, o = thermal(s, kk), optical(dn)
+        dc = gfem.solve(
+            m, gfem.DCConduction({"h": "front"}, ground="back"), options=options
+        )
+        heat = gfem.joule_heating(dc, current=4e-4 * i[0])
+        if not transient:
+            steady = gfem.solve(m, gfem.SteadyThermal(heat), options=options)
+            shift = gfem.thermo_optic_shift(
+                o, steady.rise, port="p", frequency=FREQUENCY_OPTICAL
+            )
+            core = gfem.region_mean(steady.temperature, "core")
+            return 1e-2 * shift.phase_per_length + core - 295.0
+        shift = gfem.thermo_optic_shift(o, None, port="p", frequency=FREQUENCY_OPTICAL)
+        problem = gfem.TransientThermal(
+            heat,
+            duration=CHAIN_TRANSIENT_DURATION,
+            steps=CHAIN_TRANSIENT_STEPS,
+            initial_temperature=295.0,
+            traces={"phase": shift.trace(), "core": gfem.Trace.mean("core")},
+        )
+        result = gfem.solve(m, problem, options=options)
+        weights = np.linspace(1.0, 2.0, CHAIN_TRANSIENT_STEPS + 1)
+        return 1e-2 * jnp.sum(weights * result.traces["phase"]) + jnp.sum(
+            result.traces["core"] - 295.0
+        )
+
+    rng = np.random.default_rng(23)
+    p = jnp.asarray(
+        np.concatenate(
+            [
+                rng.uniform(0.8, 1.2, sizes[0]),
+                rng.uniform(0.8, 1.2, sizes[1]),
+                rng.uniform(1.5, 2.0, sizes[2]),
+                [1.0],
+            ]
+        )
+    )
+    return objective, p, rng, cuts
+
+
+@pytest.mark.parametrize("variant", ["steady", "transient"])
+@pytest.mark.parametrize("solver", SOLVERS)
+def test_gradient_matrix_chain_matches_central_differences(designs, solver, variant):
+    objective, p, rng, cuts = _chain(designs, solver, variant == "transient")
+    grad = np.asarray(jax.grad(objective)(p))
+    # every input kind moves it: the conductivity through the heat, k through
+    # the rise and the source-free temperature, dn/dT through the shift (on
+    # the core's tetrahedra behind the port's triangles, which the mode reads)
+    sigma, k, dn, current = np.split(grad, cuts)
+    assert np.all(sigma != 0.0)
+    assert np.all(k != 0.0)
+    assert np.count_nonzero(dn) >= len(dn) // 3
+    assert current[0] != 0.0
+    # worst of 3 directions on ostau: steady 5e-9, transient 7e-8
+    assert_gradient_matches(
+        objective, p, unit_directions(rng, p.shape, 3), step=CHAIN_STEP, grad=grad
+    )
