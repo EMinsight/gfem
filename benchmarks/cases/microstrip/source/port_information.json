@@ -1,0 +1,36 @@
+{
+    "ports": [
+        {
+            "portnumber": 1,
+            "name": "e1",
+            "Z0": 50,
+            "type": "via",
+            "direction": "Z",
+            "length": 9.770000000000001,
+            "width": 14.0,
+            "xmin": 0.0,
+            "xmax": 0.0,
+            "ymin": -7.0,
+            "ymax": 7.0,
+            "zmin": 1.26,
+            "zmax": 11.030000000000001
+        },
+        {
+            "portnumber": 2,
+            "name": "e2",
+            "Z0": 50,
+            "type": "via",
+            "direction": "Z",
+            "length": 9.770000000000001,
+            "width": 14.0,
+            "xmin": 1000.0,
+            "xmax": 1000.0,
+            "ymin": -7.0,
+            "ymax": 7.0,
+            "zmin": 1.26,
+            "zmax": 11.030000000000001
+        }
+    ],
+    "unit": 1e-06,
+    "name": "palace"
+}

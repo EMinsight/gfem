@@ -316,8 +316,6 @@ def test_plan_list_prints_axis_values(capsys):
         ["reference", "bragg"],
         ["ship", "HEAD", "--to", "host:/root"],
         ["report", "a", "b", "--out", "dir"],
-        ["case", "import", "config.json", "mesh.msh", "--name", "x"],
-        ["case", "pin", "x", "mesh.msh", "--unit", "um"],
     ],
 )
 def test_unimplemented_subcommands_exit_2(argv, capsys):

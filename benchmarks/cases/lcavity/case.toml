@@ -1,0 +1,36 @@
+format = 1
+name = "lcavity"
+size = "small"
+family = "lcavity"
+order = 2
+
+[mesh]
+sha256 = "11ac5172e1a64f60e7c7e7c2846defa24cbb990a076f96d2e8578bf4a86390e6"
+bytes = 1542319
+length_unit = "mm"
+file = "mesh.msh.xz"
+
+[mesh.source]
+recipe = "tools/bench_meshes.py lcavity"
+commit = "858bc66"
+note = "L section [-1, 1]^2 minus [0, 1] x [-1, 0] mm, height 0.5 mm, 16 cubic cells per mm: l_cavity(2) split three times, 246 416 DOF at order 2. Regenerates byte-identical at the commit; provenance only."
+
+[regions]
+air = [3, 1]
+wall = [2, 2]
+
+[problem]
+kind = "eigen"
+target_hz = 100000000000.0
+n_modes = 1
+
+[quantities]
+modes = 1
+
+[[materials]]
+region = "air"
+eps_r = 1.0
+
+[[boundaries]]
+kind = "pec"
+region = "wall"

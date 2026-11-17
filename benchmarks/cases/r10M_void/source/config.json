@@ -1,0 +1,135 @@
+{
+    "Problem": {
+        "Type": "Driven",
+        "Verbose": 3,
+        "Output": "output/palace"
+    },
+    "Model": {
+        "Mesh": "palace.msh",
+        "L0": 1e-06,
+        "Refinement": {
+            "UniformLevels": 0,
+            "Tol": 0.01,
+            "MaxIts": 0
+        }
+    },
+    "Solver": {
+        "Linear": {
+            "Type": "Default",
+            "KSPType": "GMRES",
+            "Tol": 1e-06,
+            "MaxIts": 400
+        },
+        "Order": 2,
+        "Device": "CPU",
+        "Driven": {
+            "Samples": [
+                {
+                    "Type": "Linear",
+                    "MinFreq": 1.0,
+                    "MaxFreq": 100.0,
+                    "SaveStep": 0,
+                    "FreqStep": 0.3311036789297659
+                }
+            ],
+            "AdaptiveTol": 0.02,
+            "AdaptiveMaxSamples": 20
+        }
+    },
+    "Domains": {
+        "Materials": [
+            {
+                "Attributes": [
+                    1
+                ],
+                "Permittivity": 4.1,
+                "LossTan": 0.0
+            },
+            {
+                "Attributes": [
+                    2
+                ],
+                "Permittivity": 7.5,
+                "LossTan": 0.001
+            },
+            {
+                "Attributes": [
+                    3
+                ],
+                "Permittivity": 1.0,
+                "LossTan": 0.0
+            }
+        ],
+        "Postprocessing": {
+            "Energy": [],
+            "Probe": []
+        }
+    },
+    "Boundaries": {
+        "Conductivity": [
+            {
+                "Attributes": [
+                    4
+                ],
+                "Conductivity": 37700000.0,
+                "Thickness": 3.0
+            },
+            {
+                "Attributes": [
+                    5
+                ],
+                "Conductivity": 37700000.0,
+                "Thickness": 3.0
+            }
+        ],
+        "LumpedPort": [
+            {
+                "Index": 1,
+                "R": 50.0,
+                "Excitation": 1,
+                "Elements": [
+                    {
+                        "Attributes": [
+                            6
+                        ],
+                        "Direction": "+Y"
+                    },
+                    {
+                        "Attributes": [
+                            7
+                        ],
+                        "Direction": "-Y"
+                    }
+                ]
+            },
+            {
+                "Index": 2,
+                "R": 50.0,
+                "Excitation": 2,
+                "Elements": [
+                    {
+                        "Attributes": [
+                            8
+                        ],
+                        "Direction": "-Y"
+                    },
+                    {
+                        "Attributes": [
+                            9
+                        ],
+                        "Direction": "+Y"
+                    }
+                ]
+            }
+        ],
+        "WavePort": [],
+        "Absorbing": {
+            "Attributes": [
+                11,
+                14,
+                15
+            ],
+            "Order": 2
+        }
+    }
+}

@@ -1,0 +1,234 @@
+{
+ "schema_version": 1,
+ "solver": "palace",
+ "simulation": {
+  "problem_type": "Driven",
+  "field_order": 2,
+  "device": "CPU",
+  "linear_solver": {
+   "Type": "MUMPS",
+   "KSPType": "GMRES",
+   "Tol": 1e-06,
+   "MaxIts": 400,
+   "MGMaxLevels": 100,
+   "PCMatReal": false,
+   "ComplexCoarseSolve": true
+  },
+  "refinement": {
+   "UniformLevels": 0,
+   "Tol": 0.01,
+   "MaxIts": 0
+  }
+ },
+ "mesh": {
+  "bbox": {
+   "xmin": -70.0000001,
+   "ymin": -77.0000001,
+   "zmin": -102.0000001,
+   "xmax": 1070.0000001,
+   "ymax": 77.0000001,
+   "zmax": 115.9300001
+  },
+  "nodes": 9602,
+  "elements": 64462,
+  "element_type": 4,
+  "dimension": 3,
+  "geometry_orders": [
+   1
+  ],
+  "elements_by_type": {
+   "Triangle 3": 17466,
+   "Tetrahedron 4": 46996
+  },
+  "tetrahedra": 46996,
+  "topology": {
+   "edges": 60269,
+   "triangular_faces": 97666
+  },
+  "field_dofs": {
+   "estimated_field_dofs": 315870,
+   "field_order": 2,
+   "problem_type": "Driven",
+   "method": "tetrahedral_nd_topology_v1",
+   "scope": "before_palace_preprocessing"
+  },
+  "kappa": {
+   "max": 315.7737665041827,
+   "worst_element_tag": 51929,
+   "singular_elements": 0,
+   "sample_location": "tetrahedron center"
+  },
+  "quality": {
+   "min": 0.001,
+   "max": 0.994,
+   "mean": 0.515
+  },
+  "sicn": {
+   "min": 0.009,
+   "mean": 0.548,
+   "invalid": 0
+  },
+  "edge_length": {
+   "min": 0.42,
+   "max": 115.172
+  },
+  "groups": {
+   "volumes": [
+    {
+     "name": "sio2",
+     "tag": 1,
+     "elements": 16440,
+     "edge_length": {
+      "min": 0.41999999999999993,
+      "max": 22.914925697063786
+     }
+    },
+    {
+     "name": "sin",
+     "tag": 2,
+     "elements": 7972,
+     "edge_length": {
+      "min": 1.9000000000000004,
+      "max": 15.714062855113003
+     }
+    },
+    {
+     "name": "air",
+     "tag": 3,
+     "elements": 22584,
+     "edge_length": {
+      "min": 0.41999999999999993,
+      "max": 115.17175680093774
+     }
+    }
+   ],
+   "surfaces": [
+    {
+     "name": "metal1_xy",
+     "tag": 4,
+     "elements": 3180,
+     "edge_length": {
+      "min": 3.650163663000123,
+      "max": 19.970601046900455
+     }
+    },
+    {
+     "name": "metal1_z",
+     "tag": 5,
+     "elements": 812,
+     "edge_length": {
+      "min": 0.41999999999999993,
+      "max": 5.448337796558115
+     }
+    },
+    {
+     "name": "topmetal2_xy",
+     "tag": 6,
+     "elements": 1456,
+     "edge_length": {
+      "min": 3.5633621694852593,
+      "max": 8.880892209098793
+     }
+    },
+    {
+     "name": "topmetal2_z",
+     "tag": 7,
+     "elements": 1504,
+     "edge_length": {
+      "min": 2.773872520113437,
+      "max": 5.433769469825393
+     }
+    },
+    {
+     "name": "P1",
+     "tag": 8,
+     "elements": 18,
+     "edge_length": {
+      "min": 3.223591554418112,
+      "max": 5.4136477829367955
+     }
+    },
+    {
+     "name": "P2",
+     "tag": 9,
+     "elements": 18,
+     "edge_length": {
+      "min": 3.223591554418112,
+      "max": 5.4136477829367955
+     }
+    },
+    {
+     "name": "air__sio2",
+     "tag": 10,
+     "elements": 4818,
+     "edge_length": {
+      "min": 2.8355616657899128,
+      "max": 22.914925697063786
+     }
+    },
+    {
+     "name": "sin__sio2",
+     "tag": 11,
+     "elements": 2342,
+     "edge_length": {
+      "min": 3.651333797898682,
+      "max": 10.313732845715213
+     }
+    },
+    {
+     "name": "air__sin",
+     "tag": 12,
+     "elements": 2922,
+     "edge_length": {
+      "min": 1.9000000000000004,
+      "max": 15.714062855113003
+     }
+    },
+    {
+     "name": "air__None",
+     "tag": 13,
+     "elements": 396,
+     "edge_length": {
+      "min": 42.829863250139546,
+      "max": 115.17175680093774
+     }
+    }
+   ]
+  },
+  "versions": {
+   "gsim": "0.7.0",
+   "gmsh": "4.15.2"
+  },
+  "gmsh_options": {
+   "General.NumThreads": 1.0,
+   "Mesh.MaxNumThreads1D": 1.0,
+   "Mesh.MaxNumThreads2D": 1.0,
+   "Mesh.MaxNumThreads3D": 1.0,
+   "Mesh.Algorithm": 5.0,
+   "Mesh.Algorithm3D": 1.0,
+   "Mesh.Reproducible": 0.0,
+   "Mesh.RandomSeed": 1.0,
+   "Mesh.RandomFactor": 1e-09,
+   "Mesh.MeshSizeMin": 0.0,
+   "Mesh.MeshSizeMax": 1e+22,
+   "Mesh.MeshSizeFactor": 1.0,
+   "Mesh.MeshSizeFromPoints": 0.0,
+   "Mesh.MeshSizeFromCurvature": 0.0,
+   "Mesh.MeshSizeExtendFromBoundary": 0.0,
+   "Mesh.ElementOrder": 1.0,
+   "Mesh.SecondOrderLinear": 0.0,
+   "Mesh.Optimize": 1.0
+  },
+  "voided_from": {
+   "case": "ms_a",
+   "mesh_hash": "sha256:334bbf5fbfa12033ae9a1b48ca21480225fab591dd5908ca4043e1c49a9e384c",
+   "stale": [
+    "kappa",
+    "quality",
+    "sicn",
+    "edge_length",
+    "groups.*.edge_length"
+   ]
+  }
+ }
+}
