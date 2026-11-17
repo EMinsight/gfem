@@ -326,6 +326,17 @@ def test_pss_and_masks_come_from_proc(tmp_path):
     assert measure.pss_kib(43, tmp_path / "proc") == 0
 
 
+def test_a_rank_mask_is_the_union_of_its_threads_masks(tmp_path):
+    # OMP_PROC_BIND=close binds the main thread to the first core of the rank's
+    # cores: the rank's allotment is what its threads together may use
+    pid = tmp_path / "proc" / "42"
+    for tid, mask in (("42", "0"), ("43", "1"), ("44", "2-3,114")):
+        (pid / "task" / tid).mkdir(parents=True)
+        (pid / "task" / tid / "status").write_text(f"Cpus_allowed_list:\t{mask}\n")
+    (pid / "status").write_text("Name:\tx\nCpus_allowed_list:\t0\n")
+    assert measure.cpus_allowed(42, tmp_path / "proc") == "0-3,114"
+
+
 # --- the watchdog ---------------------------------------------------------------------
 
 
@@ -381,6 +392,23 @@ def test_a_short_run_still_has_its_placement_checked(tmp_path):
     )
     assert m.returncode == 0
     assert m.placement.status == "pass"
+
+
+def test_a_step_slurm_cancelled_after_its_task_crashed_is_a_solver_failure():
+    # srun cancels the step when a task segfaults: the run failed, nobody killed it
+    assert slurm.slurm_verdict("CANCELLED", 139, None) == (
+        "failed",
+        "solver",
+        "crashed: signal 11 (SIGSEGV); slurm step CANCELLED",
+    )
+    assert slurm.slurm_verdict("CANCELLED", None, None) == (
+        "killed",
+        None,
+        "slurm: CANCELLED",
+    )
+    assert slurm.slurm_verdict("OUT_OF_MEMORY", 137, None)[0] == "killed"
+    assert slurm.slurm_verdict("COMPLETED", 0, None) is None
+    assert slurm.slurm_verdict("CANCELLED", 139, "timeout") is None
 
 
 def test_sacct_step_facts_wait_for_a_final_state():

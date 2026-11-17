@@ -40,6 +40,7 @@ import os
 import platform
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -677,6 +678,39 @@ def _run_commands(x: _Job) -> tuple[list[_Launched], str | None]:
     return launched, version
 
 
+CRASH_SIGNALS = (
+    signal.SIGSEGV,
+    signal.SIGABRT,
+    signal.SIGBUS,
+    signal.SIGFPE,
+    signal.SIGILL,
+)
+"""Signals of a task that crashed: srun then cancels the step itself."""
+
+
+def slurm_verdict(
+    state: str | None, returncode: int | None, ended_by: str | None
+) -> tuple[str, str | None, str] | None:
+    """``(status, failure_class, reason)`` Slurm's step state imposes, if any.
+
+    A step ``CANCELLED`` because its task died of a crash signal (exit 128 + N) is a
+    ``solver`` failure, not a kill; any other killed state is ``killed``. The
+    watchdog's own ending wins.
+    """
+    if ended_by is not None or state not in measure.KILLED_STATES:
+        return None
+    if state == "CANCELLED" and returncode is not None and returncode > 128:
+        number = returncode - 128
+        crash = {int(s): s.name for s in CRASH_SIGNALS}
+        if number in crash:
+            return (
+                "failed",
+                "solver",
+                f"crashed: signal {number} ({crash[number]}); slurm step {state}",
+            )
+    return "killed", None, f"slurm: {state}"
+
+
 def _status(
     x: _Job, record: records.SuiteRecord, launched: Sequence[_Launched], wall: float
 ) -> float | None:
@@ -688,9 +722,12 @@ def _status(
         state, rss = measure.step_facts(x.ctx.job_id, m.step, x.ctx.run)
         record.slurm_state = state
         sacct_rss = rss if wall > measure.SACCT_MIN_S else None
-        if state in measure.KILLED_STATES and m.ended_by is None:
-            record.status, record.failure_class = "killed", None
-            record.reason = f"slurm: {state}"
+        verdict = slurm_verdict(state, m.returncode, m.ended_by)
+        if verdict is not None:
+            record.status, record.failure_class, reason = verdict
+            if record.status == "failed" and record.reason:
+                reason = f"{reason}; {record.reason}"
+            record.reason = reason
     if m.ended_by == "timeout":
         record.status, record.failure_class = "timeout", None
         record.reason = f"{last.cap_reason} {last.cap_s:.0f} s"
