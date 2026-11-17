@@ -5,10 +5,13 @@ Usage (gmsh is not in the lock; ``just heater-section-mesh`` runs this with
     python tools/heater_section_mesh.py docs/tutorials/data
 
 Writes ``heater_w2.msh`` and ``heater_w7p5.msh`` (gmsh 2.2, um, triangles
-only, read by `gfem.Mesh.from_gmsh_cross_section`). The committed files are
+only, read by `gfem.Mesh.from_gmsh_cross_section`), and ``heater_straight.msh``
+(the 2 um section, coarser, extruded along z over STRAIGHT_LENGTH in
+STRAIGHT_LAYERS layers of tetrahedra, read by `gfem.Mesh.from_gmsh`; the
+thermo-optic phase recipe's short straight heater). The committed files are
 this script's output with gmsh 4.15.2 on one thread; another gmsh version can
 move nodes, so the script refuses it, and a regenerated mesh means
-re-measuring the tutorial's values.
+re-measuring the tutorial's and the recipe's values.
 
 Geometry (um), the section in the (x, y) plane, y up, y = 0 at the top of the
 buried oxide; the domain is 40 x 18 um:
@@ -30,7 +33,10 @@ Surfaces (lines): "bottom" (y = -15.14) and "top" (y = 2.86); the sides are
 left unnamed (insulated).
 
 Mesh sizes: H_CORE on the cores' edges, H_HEATER on the heater's, H_WINDOW
-inside the windows, each growing by GROW per unit distance, at most H_MAX.
+inside the windows, each growing by GROW per unit distance, at most H_MAX
+(STRAIGHT_SIZES in the same order for the extruded mesh). The extruded mesh
+names the faces "bottom" and "top" as the section's lines, and its end faces
+"front" (z = 0) and "back" (z = STRAIGHT_LENGTH), as a cross-section's.
 
 =============== ===== ===== =========
 mesh            width nodes triangles
@@ -55,6 +61,10 @@ H_CORE, H_HEATER, H_WINDOW, H_MAX, GROW = 0.03, 0.035, 0.1, 2.0, 0.3  # um
 
 #: The tutorial's meshes: file name -> heater width in um.
 MESHES = {"heater_w2.msh": 2.0, "heater_w7p5.msh": 7.5}
+#: The recipe's extruded straight heater: file name -> heater width in um.
+STRAIGHT = {"heater_straight.msh": 2.0}
+STRAIGHT_LENGTH, STRAIGHT_LAYERS = 20.0, 4  # um, layers of elements along z
+STRAIGHT_SIZES = (0.08, 0.12, 0.25, 2.5, 0.4)  # H_CORE ... GROW, coarser
 
 
 def _core(x):
@@ -117,8 +127,9 @@ def _regions(gmsh, width):
     return owner
 
 
-def _sizes(gmsh, owner):
+def _sizes(gmsh, owner, sizes=(H_CORE, H_HEATER, H_WINDOW, H_MAX, GROW)):
     """Set the background mesh size: fine at the cores, the heater and the windows."""
+    h_core, h_heater, h_window, h_max, grow = sizes
 
     def edges(names):
         return sorted(
@@ -132,28 +143,28 @@ def _sizes(gmsh, owner):
 
     field = gmsh.model.mesh.field
     sizes = []
-    for names, h in ((("core", "neighbour"), H_CORE), (("heater",), H_HEATER)):
+    for names, h in ((("core", "neighbour"), h_core), (("heater",), h_heater)):
         distance = field.add("Distance")
         field.setNumbers(distance, "CurvesList", edges(names))
         field.setNumber(distance, "Sampling", 200)
         threshold = field.add("Threshold")
         field.setNumber(threshold, "InField", distance)
         field.setNumber(threshold, "SizeMin", h)
-        field.setNumber(threshold, "SizeMax", H_MAX)
+        field.setNumber(threshold, "SizeMax", h_max)
         field.setNumber(threshold, "DistMin", 0.0)
-        field.setNumber(threshold, "DistMax", (H_MAX - h) / GROW)
+        field.setNumber(threshold, "DistMax", (h_max - h) / grow)
         sizes.append(threshold)
     for x in (0.0, NEIGHBOUR):
         x0, y0, x1, y1 = _window(x)
         box = field.add("Box")
         for key, value in (
-            ("VIn", H_WINDOW),
-            ("VOut", H_MAX),
+            ("VIn", h_window),
+            ("VOut", h_max),
             ("XMin", x0),
             ("XMax", x1),
             ("YMin", y0),
             ("YMax", y1),
-            ("Thickness", (H_MAX - H_WINDOW) / GROW),
+            ("Thickness", (h_max - h_window) / grow),
         ):
             field.setNumber(box, key, value)
         sizes.append(box)
@@ -189,13 +200,91 @@ def build(out, width):
     return nodes, triangles
 
 
+def build_straight(out, width):
+    """Extrude the coarse section with a heater ``width`` um wide; write ``out``.
+
+    Every surface of the section is extruded along z over STRAIGHT_LENGTH in
+    STRAIGHT_LAYERS layers, each prism split into tetrahedra, so the layers
+    conform. Returns the node and tetrahedron counts.
+    """
+    import gmsh
+
+    if gmsh.__version__ != GMSH_VERSION:
+        raise SystemExit(f"gmsh {GMSH_VERSION} wanted, got {gmsh.__version__}")
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    gmsh.option.setNumber("General.NumThreads", 1)
+    gmsh.option.setNumber("Mesh.RandomSeed", 1)
+    owner = _regions(gmsh, width)
+    _sizes(gmsh, owner, STRAIGHT_SIZES)
+    occ = gmsh.model.occ
+    centre = {s: occ.getCenterOfMass(2, s)[:2] for s in owner}
+    occ.extrude(
+        [(2, s) for s in sorted(owner)],
+        0,
+        0,
+        STRAIGHT_LENGTH,
+        numElements=[STRAIGHT_LAYERS],
+    )
+    occ.removeAllDuplicates()  # one face between two extruded pieces
+    occ.synchronize()
+    region = {}
+    for _, volume in gmsh.model.getEntities(3):
+        x, y = occ.getCenterOfMass(3, volume)[:2]
+        (surface,) = [
+            s for s, c in centre.items() if abs(c[0] - x) + abs(c[1] - y) < 1e-6
+        ]
+        region[volume] = owner[surface]
+    # the section's groups and names: the volumes take its names
+    for dim, tag in gmsh.model.getPhysicalGroups():
+        gmsh.model.removePhysicalName(gmsh.model.getPhysicalName(dim, tag))
+    gmsh.model.removePhysicalGroups()
+    for number, name in enumerate(dict.fromkeys(owner.values()), start=1):
+        volumes = sorted(v for v, n in region.items() if n == name)
+        gmsh.model.addPhysicalGroup(3, volumes, number, name=name)
+    eps = 1e-6
+    bottom, top = -BOX - SUBSTRATE, CLADDING
+    faces = {
+        "bottom": (-HALF_WIDTH, bottom, 0.0, HALF_WIDTH, bottom, STRAIGHT_LENGTH),
+        "top": (-HALF_WIDTH, top, 0.0, HALF_WIDTH, top, STRAIGHT_LENGTH),
+        "front": (-HALF_WIDTH, bottom, 0.0, HALF_WIDTH, top, 0.0),
+        "back": (
+            -HALF_WIDTH,
+            bottom,
+            STRAIGHT_LENGTH,
+            HALF_WIDTH,
+            top,
+            STRAIGHT_LENGTH,
+        ),
+    }
+    for number, (name, (x0, y0, z0, x1, y1, z1)) in enumerate(
+        faces.items(), start=len(set(owner.values())) + 1
+    ):
+        found = gmsh.model.getEntitiesInBoundingBox(
+            x0 - eps, y0 - eps, z0 - eps, x1 + eps, y1 + eps, z1 + eps, dim=2
+        )
+        gmsh.model.addPhysicalGroup(2, sorted(t for _, t in found), number, name=name)
+    gmsh.option.setNumber("Mesh.Algorithm", 6)  # frontal-Delaunay
+    gmsh.model.mesh.generate(3)
+    nodes = len(gmsh.model.mesh.getNodes()[0])
+    tetrahedra = len(gmsh.model.mesh.getElementsByType(4)[0])
+    gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
+    gmsh.option.setNumber("Mesh.Binary", 0)
+    gmsh.write(str(out))
+    gmsh.finalize()
+    return nodes, tetrahedra
+
+
 def main(outdir):
-    """Write every mesh of ``MESHES`` into ``outdir``."""
+    """Write every mesh of ``MESHES`` and ``STRAIGHT`` into ``outdir``."""
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     for name, width in MESHES.items():
         nodes, triangles = build(outdir / name, width)
         print(f"{outdir / name}: {nodes} nodes, {triangles} triangles")
+    for name, width in STRAIGHT.items():
+        nodes, tetrahedra = build_straight(outdir / name, width)
+        print(f"{outdir / name}: {nodes} nodes, {tetrahedra} tetrahedra")
 
 
 if __name__ == "__main__":

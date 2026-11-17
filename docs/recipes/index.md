@@ -12,6 +12,7 @@ orphan: true
 - {doc}`quantum-metrics`
 - {doc}`shape-gradient`
 - {doc}`adaptive-sweep-gradient`
+- {doc}`thermal-gradient`
 
 ## Designs
 
@@ -29,6 +30,9 @@ orphan: true
 - {doc}`dispersive-materials`
 - {doc}`periodic-cell`
 - {doc}`floquet-ports`
+- {doc}`heater-temperature`
+- {doc}`thermo-optic-phase`
+- {doc}`thermal-step-response`
 - {doc}`shared-port-surface`
 - {doc}`measurements`
 - {doc}`loss-budget`

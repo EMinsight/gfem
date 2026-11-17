@@ -40,6 +40,7 @@ recipes/eigenmode-gradient
 recipes/quantum-metrics
 recipes/shape-gradient
 recipes/adaptive-sweep-gradient
+recipes/thermal-gradient
 ```
 
 ```{toctree}
@@ -63,6 +64,9 @@ recipes/anisotropic-materials
 recipes/dispersive-materials
 recipes/periodic-cell
 recipes/floquet-ports
+recipes/heater-temperature
+recipes/thermo-optic-phase
+recipes/thermal-step-response
 recipes/shared-port-surface
 recipes/measurements
 recipes/loss-budget

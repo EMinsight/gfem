@@ -70,8 +70,8 @@ _EXAMPLES = {
 class MissingMaterialPropertyError(ValueError):
     """A thermal problem reads a material property that a region does not give.
 
-    Steady thermal problems read `thermal_conductivity`; transient ones also
-    read `mass_density` and `specific_heat`. Every volume of the thermal
+    Steady thermal problems read ``thermal_conductivity``; transient ones also
+    read ``mass_density`` and ``specific_heat``. Every volume of the thermal
     domain needs them; a region with no material lacks them all. The message
     lists every missing (region, property) pair at once, with each
     property's unit and an example value, and both remedies: give the

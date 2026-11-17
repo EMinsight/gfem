@@ -562,7 +562,7 @@ class TransientThermal:
 
     @property
     def dt(self) -> float:
-        """The time step in s: ``duration / steps``."""
+        """The time step ``duration / steps``, in s."""
         return self.duration / self.steps
 
     @property

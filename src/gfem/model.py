@@ -761,7 +761,7 @@ class Model:
     def with_temperature_rise(self, rise: Field) -> Model:
         """A new model whose permittivity follows a temperature rise.
 
-        Each region with a `thermo_optic_coefficient` gets a
+        Each region with a ``thermo_optic_coefficient`` gets a
         `MaterialField` with, per element, ``eps_r = (n0 + dn/dT *
         rise_e)^2``: ``n0 = sqrt(eps_r)`` of its material (the index at the
         source-free temperature) and ``rise_e`` the mean rise over the

@@ -12,6 +12,65 @@
   degenerate pair, depending on the number of threads; the second mode is now
   recovered when the solve comes close to it.
 
+Thermal:
+
+- **Behaviour change: `density` is now `mass_density`.** The material
+  property read by transient thermal problems is named `mass_density`, in
+  kg/m³, on `gfem.Material` and `gfem.MaterialField`. The keyword
+  `density=` still works for one release: it warns with a
+  `DeprecationWarning` and sets `mass_density`. Reading `.density` now
+  raises `AttributeError`, naming `mass_density`. Job files that store
+  `density` read as `mass_density`.
+- **Problems.** `gfem.SteadyThermal` (the temperature under heat sources),
+  `gfem.TransientThermal` (the temperature over time under switched sources,
+  on a uniform time grid, recording traces at every step) and
+  `gfem.DCConduction` (the current through conductors between terminals:
+  conductance, potentials and Joule heat). Results: `SteadyThermalResult`,
+  `TransientThermalResult` and `DCConductionResult`, with absolute
+  temperatures in K and the rise above the source-free temperature.
+- **Sources.** `gfem.HeatSource.uniform` spreads a power over regions;
+  `gfem.joule_heating` turns a DC conduction result and a voltage, current
+  or power into heat, with no new solve.
+- **Boundaries.** `gfem.FixedTemperature`, `gfem.Convection` and
+  `gfem.HeatFlux`; a surface no thermal boundary names is insulated
+  (`Model.default_insulated`).
+- **Materials.** `thermal_conductivity`, `mass_density` and `specific_heat`
+  are read, and `thermo_optic_coefficient` (dn/dT, 1/K) is new. A thermal
+  solve missing a property raises `gfem.errors.MissingMaterialPropertyError`,
+  listing every region and property at once.
+- **One model, several physics.** `excluded=` takes a mapping from physics
+  (`"em"`, `"thermal"`, `"dc_conduction"`) to regions; a list keeps its
+  meaning, electromagnetic solves only. `Model.excluded_from(physics)`
+  reads it back.
+- **Cross-sections.** `gfem.Mesh.from_gmsh_cross_section` reads a 2D gmsh
+  section as a slab one element thick; on it every extensive input and
+  output is per metre (`power_per_length`, `resistance_per_length`).
+- **Measurements.** `gfem.thermo_optic_shift` (the phase per length a rise
+  adds to a guided mode, to first order), `gfem.route_phase` (the phase
+  along routes through a 3D rise), `Model.with_temperature_rise`,
+  `gfem.Trace`, `gfem.rise_time`, `gfem.time_constant` (with
+  `gfem.UnsettledTraceWarning` on a trace that has not settled) and
+  `gfem.element_mean`.
+- **Gradients.** `jax.grad` through DC conduction, Joule heating, steady and
+  transient temperatures and the thermo-optic phase, with respect to
+  per-element thermal and electrical conductivity, mass density, specific
+  heat and thermo-optic coefficient, the heat sources, the drive and the
+  waveform's scales. Node coordinates, the optical model's permittivity
+  under the shift, and the rise time and time constant raise.
+- **Solvers.** `"direct"` by default, `"bddc_gmres"` and `"petsc"` accepted;
+  `SolverOptions.time_scheme` (`"tr_bdf2"`, the default, or `"theta"` with
+  `SolverOptions.theta`). The GPU solver, MPI ranks, mesh refinement and
+  error estimates raise on thermal problems.
+- Job files carry the thermal problems, sources, boundaries and results, and
+  an `excluded=` mapping; an older gfem refuses such a file by name.
+- New pages: the tutorials {doc}`../tutorials/heater` and
+  {doc}`../tutorials/heater3d`, and the recipes
+  {doc}`../recipes/heater-temperature`, {doc}`../recipes/thermo-optic-phase`,
+  {doc}`../recipes/thermal-step-response` and
+  {doc}`../recipes/thermal-gradient`. The conventions page gains a
+  "Temperature and thermo-optic phase" section, {doc}`../verification` a
+  "Thermal" section, and the glossary the thermal terms.
+
 Floquet ports:
 
 - **Floquet ports.** `gfem.FloquetPort` lights a periodic cell with a plane

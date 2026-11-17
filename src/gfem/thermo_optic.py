@@ -1,6 +1,6 @@
 """Temperature in optics: the first-order thermo-optic shift of a wave port's mode.
 
-A material's `thermo_optic_coefficient` (dn/dT, 1/K) acts on the
+A material's ``thermo_optic_coefficient`` (dn/dT, 1/K) acts on the
 temperature rise (the temperature above the source-free temperature, a
 `gfem.SteadyThermalResult.rise`) about the index of the material's ``eps_r``
 (ADR 0160). Two ways read it:
@@ -390,7 +390,7 @@ def thermo_optic_shift(
 
             steady = gfem.solve(model, gfem.SteadyThermal(heat))
             shift = gfem.thermo_optic_shift(
-                model, steady.rise, port="p", frequency=gfem.c / 1.55e-6
+                model, steady.rise, port="p", frequency=299792458.0 / 1.55e-6
             )
             p_pi = np.pi * steady.power_per_length / shift.phase_per_length
 
@@ -931,7 +931,7 @@ def route_phase(
                 steady.rise,
                 routes={"spiral": centreline, "pass": cut},
                 port="core",
-                frequency=gfem.c / 1.55e-6,
+                frequency=299792458.0 / 1.55e-6,
             )
             p_pi = np.pi * steady.power / route.phase["spiral"]
 

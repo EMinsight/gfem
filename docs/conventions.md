@@ -42,6 +42,23 @@ mm
 [0.04  0.006 0.001]
 ```
 
+The thermal problems use the same SI units, with temperatures in kelvin
+(see "Temperature and thermo-optic phase" below):
+
+| Quantity | Unit |
+| --- | --- |
+| temperature, temperature rise, `ambient` | K |
+| `thermal_conductivity` | W/m/K |
+| `mass_density` | kg/m³ |
+| `specific_heat` | J/kg/K |
+| `Convection` `coefficient` | W/m²/K |
+| `HeatFlux` `flux` | W/m² |
+| electrical `conductivity` | S/m |
+| `thermo_optic_coefficient` | 1/K |
+| heat (`SteadyThermalResult.heat`), `power_density` | W/m³ |
+| time, `duration` | s |
+| on a cross-section: `power_per_length`, `resistance_per_length` | W/m, Ω/m |
+
 ## Time dependence
 
 The physical field is Re(E exp(+iωt)), the electrical engineering convention
@@ -340,6 +357,115 @@ and TM ports of the same order on the top face (incidence along −ê3),
 incidence in the IEEE sense (the field turns counterclockwise seen with the
 wave coming towards you). From the bottom face, incidence along +ê3, the same
 combination is left-handed, and (S[:, TM] − i S[:, TE]) / √2 is right-handed.
+
+## Temperature and thermo-optic phase
+
+A thermal solve's temperatures are absolute, in kelvin, and its rise is the
+temperature minus the {term}`source-free temperature`: the temperature with
+every heat source off, which the boundaries alone set. The device here is the
+heater section of {doc}`recipes/heater-temperature`, a TiN strip over a
+silicon waveguide, read as a {term}`slab cross-section`.
+
+**Kelvin.** A temperature at or below 0 K raises, whatever its origin:
+
+```python
+url = "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/data/heater_w2.msh"
+urllib.request.urlretrieve(url, "heater_w2.msh")
+heater_section = gfem.Mesh.from_gmsh_cross_section("heater_w2.msh", length_unit="um")
+try:
+    gfem.FixedTemperature("bottom", temperature=25.0 - 273.15)  # 25 degC as -248 K
+except ValueError as error:
+    print(type(error).__name__)
+```
+
+```text
+ValueError
+```
+
+**The rise.** With the sink at 300 K and the air above at 310 K, the
+source-free temperature is not uniform. The rise is the heater's own part,
+linear in its power, and the temperature is the rise plus the source-free
+temperature. Every extensive quantity on a cross-section is per metre of
+guide: the slab's totals are for its `section_thickness`, so read
+`power_per_length`.
+
+```python
+oxide = gfem.Material(
+    eps_r=1.444**2, thermal_conductivity=1.38, thermo_optic_coefficient=1e-5
+)
+silicon = gfem.Material(
+    eps_r=3.4777**2, thermal_conductivity=90.0, thermo_optic_coefficient=1.86e-4
+)
+stack = {
+    "substrate": gfem.Material(thermal_conductivity=148.0),
+    "box": oxide,
+    "cladding": oxide,
+    "window": oxide,
+    "neighbour_window": oxide,
+    "core": silicon,
+    "neighbour": silicon,
+    "heater": gfem.Material(thermal_conductivity=28.0, conductivity=2.3e6),
+}
+heater = gfem.Model(
+    heater_section,
+    materials=stack,
+    boundaries=[
+        gfem.FixedTemperature("bottom", temperature=300.0),
+        gfem.Convection("top", coefficient=10.0, ambient=310.0),
+    ],
+    ports=[gfem.WavePort("core", "front")],
+    excluded={"em": ["substrate", "box", "cladding", "heater", "neighbour"]},
+)
+dc = gfem.solve(heater, gfem.DCConduction({"heater": "front"}, ground="back"))
+heat = gfem.joule_heating(dc, power_per_length=10.0)  # W per metre of guide
+steady = gfem.solve(heater, gfem.SteadyThermal(heat))
+cold = gfem.solve(heater, gfem.SteadyThermal())  # no source: the source-free one
+core = {
+    name: float(gfem.region_mean(field, "core"))
+    for name, field in (
+        ("T", steady.temperature),
+        ("rise", steady.rise),
+        ("T0", cold.temperature),
+    )
+}
+print(f"T {core['T']:.4f} K = rise {core['rise']:.4f} K + T0 {core['T0']:.4f} K")
+print(float(steady.power) / heater_section.section_thickness)  # W/m, slab / thickness
+print(float(steady.power_per_length))  # W/m
+```
+
+```text
+T 301.7118 K = rise 1.7117 K + T0 300.0002 K
+9.999999999999817
+9.999999999999817
+```
+
+**Time** is in seconds: a transient's `duration`, its waveform's start times
+and the times it returns ({doc}`recipes/thermal-step-response`).
+
+**The thermo-optic phase is a delay.** A material's
+`thermo_optic_coefficient` dn/dT acts on the rise, about the index of its
+`eps_r`: that index is the one at the source-free temperature, and no
+reference temperature is stored. The phase per length a rise adds to a
+guided mode is positive for a positive dn/dT and a positive rise, like the
+phase β L that a length L of guide delays light by. Under exp(+iωt) the guide
+transmits exp(−iβL), so a transmission's argument moves by minus the phase:
+
+```python
+f_optical = 299_792_458.0 / 1.55e-6  # Hz
+shift = gfem.thermo_optic_shift(heater, steady.rise, port="core", frequency=f_optical)
+print(float(shift.phase_per_length) > 0)
+length = 320e-6  # m of heated guide
+print(np.angle(np.exp(-1j * float(shift.phase_per_length) * length)))  # rad
+```
+
+```text
+True
+-0.4458987292927867
+```
+
+The {doc}`recipes/thermo-optic-phase` recipe turns the phase into P_π, and
+the {py:obj}`gfem.conventions` module, "Temperature and thermo-optic phase",
+gives the first-order formula.
 
 ## Thin metals
 

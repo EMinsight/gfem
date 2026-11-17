@@ -629,6 +629,147 @@ Error estimate
   sees the faceting of curved surfaces.
 ```
 
+## Thermal
+
+```{glossary}
+Slab cross-section
+  A 2D cross-section read as a mesh one element thick along z
+  ({py:meth}`gfem.Mesh.from_gmsh_cross_section`), with insulated
+  {term}`end faces`, so nothing varies along the extrusion. Its extensive
+  quantities are stated per metre of extrusion ({term}`per-length quantity`).
+
+End faces
+  The two surfaces `"front"` and `"back"` of a {term}`slab cross-section`. They
+  carry the wave port of a mode solve and the terminals of a DC conduction
+  solve along the guide.
+
+Thermal domain
+  The volumes a thermal problem solves on: every volume of the mesh except
+  those excluded from thermal problems (`excluded={"thermal": [...]}`).
+  Volumes excluded only from electromagnetic problems stay in it.
+
+Modelled depth
+  The depth of substrate under the stack that the mesh includes, with the
+  {term}`heat sink` at its bottom: a choice of the model, not the wafer's
+  thickness.
+
+Heat sink
+  A surface that removes heat: a {py:obj}`gfem.FixedTemperature` or a
+  {py:obj}`gfem.Convection` boundary. Every connected piece of the
+  {term}`thermal domain` needs one in a steady solve.
+
+Insulated surface
+  An exterior surface of the {term}`thermal domain` that no thermal boundary
+  names: no heat crosses it (`Model.default_insulated` lists the named ones).
+
+Temperature
+  Absolute temperature, in kelvin: the unknown of a thermal problem.
+
+Temperature rise
+  The temperature minus the {term}`source-free temperature`, in kelvin: the
+  part of the temperature linear in the heat sources. When every boundary
+  shares one temperature, it is the temperature above that one.
+
+Source-free temperature
+  The steady temperature a thermal model reaches with every heat source off,
+  set by its boundary temperatures, ambients and heat fluxes alone; where a
+  transient starts by default.
+
+Thermo-optic coefficient
+  The rate of change of a material's refractive index with temperature,
+  dn/dT in 1/K, constant, about the index of its `eps_r`. It may be negative.
+
+DC conduction
+  The steady current through the conductors of a model between named
+  terminals ({py:obj}`gfem.DCConduction`), giving their
+  {term}`conductance matrix` and the heat they dissipate.
+
+Conductance matrix
+  The currents into a DC conduction solve's terminals per volt on each, in
+  siemens; its inverse for one terminal and a ground is the resistance.
+
+Joule heating
+  The heat a current dissipates in a conductor; {py:obj}`gfem.joule_heating`
+  turns a DC conduction result and a drive (voltage, current or power) into a
+  heat source with no new solve.
+
+Heater terminal
+  A surface where a DC conduction solve holds a potential: a pad, a contact
+  face, or an {term}`end face <End faces>` of a slab cross-section.
+
+Thermo-optic shift
+  The change of a guided mode's effective index, and of its phase per length,
+  caused by a {term}`temperature rise`, to first order in the rise
+  ({py:obj}`gfem.thermo_optic_shift`).
+
+Thermo-optic phase
+  The phase a temperature rise adds to guided light, k₀ Re Δn_eff per metre: a
+  delay, positive for a positive {term}`thermo-optic coefficient`. A
+  transmission's argument moves by minus it.
+
+Thermal crosstalk
+  The {term}`thermo-optic phase` a waveguide, or a {term}`pass`, that is not
+  under the heater gains, as a signed fraction of the heated one's phase at
+  the same drive.
+
+Optical window
+  A model of the optical neighbourhood of one waveguide core, on which a
+  thermo-optic shift or a route phase solves the mode: the thermal model with
+  the other regions excluded from electromagnetic solves, or a mesh of its
+  own.
+
+Route
+  The reference line of a waveguide core in a 3D model, a polyline in metres,
+  along which an {term}`optical window` is swept ({py:obj}`gfem.route_phase`).
+
+Station
+  A point on a {term}`route`, evenly spaced in arc length, where the optical
+  window is placed and the rise is read.
+
+Pass
+  One straight stretch of a waveguide route under or beside a heater, whose
+  phase is read on its own.
+
+Route phase
+  The {term}`thermo-optic phase` a {term}`route` gains from a 3D temperature
+  rise, to first order, summed over its {term}`stations <Station>`.
+
+Waveform
+  The piecewise-constant scale of a transient problem's heat sources, as
+  (start time, scale) pairs on its {term}`time grid`; off before the first.
+
+Time grid
+  The uniform times t_n = n dt, dt = duration / steps, on which a transient
+  thermal solve steps, records its traces and keeps fields.
+
+Trace
+  A linear functional of the temperature (a point value, a region's mean, a
+  thermo-optic phase) recorded at every time of a transient solve's
+  {term}`time grid` ({py:obj}`gfem.Trace`).
+
+Settled trace
+  A trace whose change still to come after its last sample is below 1 % of its
+  swing; the rise time and the time constant are meaningful only on one, and
+  warn ({py:obj}`gfem.UnsettledTraceWarning`) on any other.
+
+Rise time
+  The 10–90 % time of a step response, each part of the trace normalised to
+  its first and last samples ({py:func}`gfem.rise_time`).
+
+Time constant
+  The time a step response takes to reach 1 − 1/e = 63.2 % of its swing, with
+  the same normalisation as the rise time ({py:func}`gfem.time_constant`).
+
+Per-length quantity
+  On a {term}`slab cross-section`, an extensive quantity (a power, a
+  resistance) per metre of the extrusion: the only form gfem takes for
+  extensive inputs on a cross-section (`power_per_length=`).
+
+Mass density
+  A material's mass per volume, in kg/m³ (`mass_density`), read by transient
+  thermal problems.
+```
+
 ## Distributed runs
 
 ```{glossary}

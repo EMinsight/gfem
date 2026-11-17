@@ -53,3 +53,29 @@ def test_a_port_of_several_elements(tmp_path):
     assert port.surface == ("air__sub", "air__None")
     assert port.direction == ((0.0, 1.0, 0.0), (0.0, -1.0, 0.0))
     assert done["model"].ports == (port,)
+
+
+def test_the_thermal_section_reads_a_cross_section_and_links_the_recipes():
+    page = PAGE.read_text(encoding="utf-8")
+    section = dp.section(page, "5. Thermal cross-sections")
+    (block,) = dp.blocks(section, "python")
+    assert "gfem.Mesh.from_gmsh_cross_section(" in block
+    for link in ("{doc}`heater-temperature`", "{doc}`thermo-optic-phase`"):
+        assert link in section, link
+    # facts only: no claim that gsim's thermal workflow runs gfem
+    assert "backend" not in section.lower()
+
+
+def test_the_thermal_section_maps_physical_groups_as_the_reader_does(tmp_path):
+    import gfem
+
+    path = tmp_path / "thermal.msh"
+    path.write_text(
+        "$MeshFormat\n2.2 0 8\n$EndMeshFormat\n$PhysicalNames\n2\n"
+        '1 1 "bottom"\n2 2 "oxide"\n$EndPhysicalNames\n$Nodes\n3\n'
+        "1 0 0 0\n2 1 0 0\n3 0 1 0\n$EndNodes\n$Elements\n2\n"
+        "1 1 2 1 1 1 2\n2 2 2 2 2 1 2 3\n$EndElements\n"
+    )
+    section = gfem.Mesh.from_gmsh_cross_section(path, length_unit="um")
+    assert section.volumes == ("oxide",)
+    assert {"bottom", "front", "back"} <= set(section.surfaces)

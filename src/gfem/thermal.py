@@ -9,7 +9,7 @@ volume region: a uniform amount (`HeatSource.uniform`) or the Joule heat
 of a DC conduction solve (`joule_heating`). It is a frozen pytree: its
 amount (or its power density per element) is a leaf, so a temperature is
 differentiable with respect to it. A thermal solve resolves every source
-to one power density per tetrahedron (W/m^3, `HeatSource._density`).
+to one power density per tetrahedron, in W/m^3.
 
 On a cross-section mesh (`gfem.Mesh.from_gmsh_cross_section`) extensive
 amounts are given per unit length (``power_per_length``, W/m): ``power``

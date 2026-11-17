@@ -178,3 +178,54 @@ def test_the_floquet_section_states_the_frame_sigma_and_circular_handedness(page
         "{doc}`recipes/floquet-ports`",
     ):
         assert text in section, text
+
+
+# -- Temperature and thermo-optic phase: the heater section of the recipes
+
+
+def _thermal(ran) -> list:
+    return [e for e in ran if e.section == "Temperature and thermo-optic phase"]
+
+
+def test_a_temperature_at_or_below_zero_kelvin_raises(ran):
+    assert _thermal(ran)[0].printed.strip() == "ValueError"
+
+
+def test_the_temperature_is_the_rise_plus_the_source_free_temperature(ran):
+    lines = _thermal(ran)[1].printed.splitlines()
+    temperature, rise, source_free = dp.numbers(lines[0])
+    assert temperature == pytest.approx(rise + source_free, abs=2e-4)
+    assert rise > 0
+    # the air above at 310 K warms the source-free core above the 300 K sink
+    assert 300.0 < source_free < 310.0
+    # a cross-section's totals are per slab thickness: per length, the drive
+    per_slab, per_length = (dp.numbers(line)[0] for line in lines[1:])
+    assert per_slab == pytest.approx(10.0, rel=1e-12)
+    assert per_length == pytest.approx(10.0, rel=1e-12)
+
+
+def test_the_phase_is_a_delay_that_lowers_a_transmissions_argument(ran):
+    positive, angle = _thermal(ran)[2].printed.splitlines()
+    assert positive == "True"
+    assert float(angle) < 0
+
+
+def test_the_thermal_section_links_its_recipes(page):
+    section = dp.section(page, "Temperature and thermo-optic phase")
+    for link in (
+        "{doc}`recipes/heater-temperature`",
+        "{doc}`recipes/thermal-step-response`",
+        "{doc}`recipes/thermo-optic-phase`",
+        "{term}`source-free temperature`",
+    ):
+        assert link in section, link
+    assert (
+        "no\nreference temperature" in section
+        or "no reference temperature" in " ".join(section.split())
+    )
+
+
+def test_the_units_table_lists_the_thermal_units(page):
+    units = dp.section(page, "Units")
+    for unit in ("W/m/K", "kg/m³", "J/kg/K", "W/m²/K", "S/m", "1/K", "W/m³", "| K |"):
+        assert unit in units, unit

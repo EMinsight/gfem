@@ -141,3 +141,21 @@ tutorial](../tutorials/topology.ipynb) runs a whole optimization.
 gsim sets up a broadband sweep (`fmin=1e9, fmax=100e9` above). For more than
 about 20 frequencies, {doc}`frequency-sweep` reads them from a few solves or
 spreads them over many cores.
+
+## 5. Thermal cross-sections
+
+gfem reads a triangle-only gmsh cross-section, such as a heater section
+meshed for a 2D thermal model, with {py:meth}`gfem.Mesh.from_gmsh_cross_section`.
+It reads the section as a slab one element thick, with the end faces
+`"front"` and `"back"`:
+
+```python
+section = gfem.Mesh.from_gmsh_cross_section("thermal.msh", length_unit="um")
+print(section.volumes, section.surfaces)
+```
+
+- The regions and surfaces take the names of the file's physical groups:
+  each 2D group becomes a volume region, each 1D group a surface.
+- On the section, powers and resistances are per metre of guide.
+- {doc}`heater-temperature` builds a thermal model on such a section and
+  {doc}`thermo-optic-phase` reads the phase it puts on a waveguide.
