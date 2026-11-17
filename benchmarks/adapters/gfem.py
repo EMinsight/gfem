@@ -153,6 +153,20 @@ def _max(values: list[float | None]) -> float | None:
     return max(present) if present else None
 
 
+def _peaks(outcome: Outcome, ranks: list[dict[str, Any]]) -> None:
+    """Per-rank ``VmHWM``: summed, the rank max, and the largest node's sum."""
+    peaks = [r.get("vmhwm_kib") for r in ranks]
+    if not peaks or any(p is None for p in peaks):
+        return
+    nodes: dict[str, float] = {}
+    for r in ranks:
+        host = str(r.get("host") or "")
+        nodes[host] = nodes.get(host, 0.0) + r["vmhwm_kib"] / KIB_PER_GIB
+    outcome.self_peak_mem_gib = sum(peaks) / KIB_PER_GIB
+    outcome.self_peak_rank_max_gib = max(peaks) / KIB_PER_GIB
+    outcome.self_peak_largest_node_gib = max(nodes.values())
+
+
 @dataclass(frozen=True)
 class GfemAdapter:
     """The gfem solver adapter."""
@@ -284,9 +298,7 @@ class GfemAdapter:
         ]
         if any(n is not None for n in nbytes):
             outcome.solver_nbytes = sum(n for n in nbytes if n is not None)
-        peaks = [i.get("vmhwm_kib") for i in info.values()]
-        if peaks and all(p is not None for p in peaks):
-            outcome.self_peak_mem_gib = sum(peaks) / KIB_PER_GIB
+        _peaks(outcome, list(info.values()))
         outcome.ranks_seen = len(info) or len(ranks) or None
         threads = (written or {}).get("threads") or []
         outcome.threads_seen = max(threads) if threads else None

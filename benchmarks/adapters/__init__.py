@@ -189,6 +189,11 @@ class Outcome:
     setups: int | None = None
     solves: int | None = None
     self_peak_mem_gib: float | None = None
+    """The code's own peak memory: per-rank peaks summed."""
+    self_peak_rank_max_gib: float | None = None
+    """The largest per-rank peak."""
+    self_peak_largest_node_gib: float | None = None
+    """The largest sum of per-rank peaks over the ranks of one node."""
     solver_nbytes: float | None = None
     ranks_seen: int | None = None
     threads_seen: int | None = None

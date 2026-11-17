@@ -178,7 +178,10 @@ records.
   (`rank_reduction: "max-of-rows"`, an upper bound).
 - Headline memory is `peak_rss_sum_gib`, the sum of per-rank peak RSS (gfem worker
   `VmHWM`; Palace `PeakNodeMemoryMegabytes.Total`). Shared pages count once per rank,
-  so it is an upper bound on the simultaneous footprint. A node sampler sums `Pss`
+  so it is an upper bound on the simultaneous footprint. Beside it,
+  `peak_rss_rank_max_gib` (largest rank; Palace `PeakMemoryMegabytes.Max`) and
+  `peak_rss_largest_node_gib` (largest per-node sum; Palace
+  `PeakNodeMemoryMegabytes.Max`). A node sampler sums `Pss`
   over the step's pids every second (`pss_peak_sum_gib`); sacct `MaxRSS` is kept for
   runs over 60 s; the codes' self-reports are kept beside. None of them gates.
 - 3 repeats in rounds, round r rotated by r * ceil(cells / repeats), so repeats of a

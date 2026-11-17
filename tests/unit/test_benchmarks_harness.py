@@ -811,3 +811,8 @@ def test_run_local_leaves_a_record_for_every_row(tmp_path, monkeypatch):
         assert found.checks["placement"] == "pass"
         assert found.checks["layout"] == "pass"
         assert found.timings.work_s is not None
+        memory = found.memory
+        assert 0 < memory.peak_rss_rank_max_gib <= memory.peak_rss_sum_gib
+        assert memory.peak_rss_largest_node_gib == pytest.approx(
+            memory.peak_rss_sum_gib
+        )

@@ -586,6 +586,8 @@ def _memory(
 ) -> records.Memory:
     return records.Memory(
         peak_rss_sum_gib=outcome.self_peak_mem_gib,
+        peak_rss_rank_max_gib=outcome.self_peak_rank_max_gib,
+        peak_rss_largest_node_gib=outcome.self_peak_largest_node_gib,
         metric=(
             ("VmHWM_sum" if code == "gfem" else "PeakNodeMemoryMegabytes.Total")
             if outcome.self_peak_mem_gib is not None

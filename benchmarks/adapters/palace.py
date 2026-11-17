@@ -24,7 +24,8 @@ Everything that depends on the Palace version lives in :data:`DIALECTS`, keyed b
 
 Palace's timer rows are exclusive, so rank 0's buckets partition ``Total``; the
 untimed rest goes to ``other_s``. A run is complete when ``ElapsedTime`` exists.
-Peak memory is ``PeakNodeMemoryMegabytes.Total``, a sum of per-rank peaks.
+Peak memory is ``PeakNodeMemoryMegabytes.Total``, a sum of per-rank peaks; the rank
+max is ``PeakMemoryMegabytes.Max``, the largest node ``PeakNodeMemoryMegabytes.Max``.
 ``inputs_match`` reads ``config_resolved.json`` back through the case importer and
 compares it with the case. Standard library only (ADR 0400).
 """
@@ -929,6 +930,10 @@ class PalaceAdapter:
         memory = meta.get("PeakNodeMemoryMegabytes")
         if memory is not None:
             outcome.self_peak_mem_gib = memory["Total"] / MIB_PER_GIB
+            outcome.self_peak_largest_node_gib = memory["Max"] / MIB_PER_GIB
+        rank = meta.get("PeakMemoryMegabytes")
+        if rank is not None:
+            outcome.self_peak_rank_max_gib = rank["Max"] / MIB_PER_GIB
         resolved = _read_json(out / "config_resolved.json")
         if resolved is not None:
             outcome.native["config_resolved"] = resolved
