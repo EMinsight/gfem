@@ -10,7 +10,7 @@ are: the input of an optimizer that shapes a heater's materials, or of a
 tolerance study.
 
 The device is the heater section of {doc}`heater-temperature` and
-{doc}`thermo-optic-phase`, 320 µm long, driven at 6.74 mA: close to a π
+{doc}`thermo-optic-phase`, 320 µm long, driven at 6.74 mA: close to a $\pi$
 shift. The chain is linear in the rise, and the rise in the heat, so each
 input enters in a way that has a closed form to check the gradient against.
 Units are SI: the gradient of a phase in rad with respect to a current in A
@@ -116,12 +116,12 @@ phase: 3.1454 rad
 Each input enters the phase by a power law, so each gradient times its input
 is a whole multiple of the phase:
 
-- the Joule power is I² R′, so I ∂φ/∂I = 2φ;
-- at a fixed current the power is I² / (σA), so σ ∂φ/∂σ = −φ;
+- the Joule power is $I^2 R'$, so $I\, \partial\varphi/\partial I = 2\varphi$;
+- at a fixed current the power is $I^2 / (\sigma A)$, so $\sigma\, \partial\varphi/\partial\sigma = -\varphi$;
 - scaling every thermal conductivity by a factor divides the rise by it, so
-  Σ_e k_e ∂φ/∂k_e = −φ, apart from the convection on top, which does not
+  $\sum_e k_e\, \partial\varphi/\partial k_e = -\varphi$, apart from the convection on top, which does not
   scale;
-- the phase is linear in dn/dT, so its scale has ∂φ/∂c = φ.
+- the phase is linear in $\mathrm{d}n/\mathrm{d}T$, so its scale has $\partial\varphi/\partial c = \varphi$.
 
 ```python
 weighted = {r: float(jnp.sum(k0[r] * d_k[r])) for r in k0}

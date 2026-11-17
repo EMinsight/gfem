@@ -158,7 +158,7 @@ Tests: [Floquet ports](https://github.com/benvial/gfem/blob/main/tests/verificat
   between those of the two guides filled with the tensor's principal values
   across the guide.
 - The loss along each principal axis from {term}`principal participation`
-  matches 1/Q from the complex eigenfrequency, on a material whose field lies
+  matches $1/Q$ from the complex eigenfrequency, on a material whose field lies
   off every principal axis.
 - A model and its rigidly rotated copy, with the material given as rotated
   global matrices, give the same S, eigenfrequency and capacitance. A
@@ -370,11 +370,11 @@ The quantity estimator's cases, all at `order=2`:
   Against the exact formula for the circle the estimate stays below the
   true error, since it does not see the faceting.
 - **A stepped parallel-plate line**, whose top plate steps down to half its
-  height, with a singular field at the step's edge: S21 at 3 and 8 GHz on
+  height, with a singular field at the step's edge: $S_{21}$ at 3 and 8 GHz on
   uniform meshes and over a mesh refinement run with lumped ports, and at
   3 GHz with wave ports, against constants from fine uniform and graded
   meshes.
-- **A parallel-plate line** between ports of 50 and 30 Ω: S11, S21 and S22
+- **A parallel-plate line** between ports of 50 and 30 Ω: $S_{11}$, $S_{21}$ and $S_{22}$
   from 3 to 25 GHz on three meshes, against the line's closed form.
 - **An L-shaped cavity**, whose re-entrant edge makes the field singular:
   its first resonance over a mesh refinement run, against a published
@@ -402,11 +402,11 @@ is checked de-embedded over half its length against its closed form.
 
 The S estimate is also checked on a line between conducting plates of
 finite conductivity; on a line through a metal described by a permittivity
-law deep below zero (Re ε about -30), at a wedge, on a flat face and
+law deep below zero ($\mathrm{Re}\,\varepsilon$ about $-30$), at a wedge, on a flat face and
 through a metal block; on wave ports whose face crosses a permeability
 contrast and lumped ports beside a loss contrast; and on lines filled with
 lossy magnetic and lossy anisotropic materials. The resonance estimate
-covers permittivity laws with Re ε > 0 (a dispersive fill and layered
+covers permittivity laws with $\mathrm{Re}\,\varepsilon > 0$ (a dispersive fill and layered
 cavities), second-order absorbing side walls, and lossy magnetic fills in
 one and two layers.
 
@@ -450,7 +450,7 @@ the energy norm: on the square and circular coaxial lines, the coaxial
 line with an anisotropic fill, the parallel-plate line, and the L-shaped
 and rectangular cavities; and with loss, on the parallel-plate line with a
 lossy fill (dielectric loss and conductivity) and with a Drude metal block
-(Re ε < 0) against their closed forms, and against a higher-order solve on
+($\mathrm{Re}\,\varepsilon < 0$) against their closed forms, and against a higher-order solve on
 the same mesh on a cavity in two layers, the upper one lossy, and on a
 cavity whose lossy wall (impedance or absorbing) gives its resonance a
 complex frequency. It is also checked on the line between conducting
@@ -475,7 +475,7 @@ holds the estimate to its measured band:
 - next to a lumped port spanning a permeability contrast:
   {gfem-effectivity}`lumped port across a permeability contrast low` to
   {gfem-effectivity}`lumped port across a permeability contrast high`;
-- at a metal wedge with a permittivity law at Re ε = -1.5, against a
+- at a metal wedge with a permittivity law at $\mathrm{Re}\,\varepsilon = -1.5$, against a
   higher-order solve the field itself does not converge to:
   {gfem-effectivity}`plasmonic window low` to
   {gfem-effectivity}`plasmonic window high`.
@@ -489,7 +489,7 @@ to
 times the S error.
 
 On the stepped line, whose field error has
-no known value, the estimate is checked to keep a steady ratio to the S21
+no known value, the estimate is checked to keep a steady ratio to the $S_{21}$
 error as the mesh is refined. On the three singular benchmark cases a mesh refinement run also
 ends with a smaller error than uniform splits at the same number of
 unknowns. Every range is read from the tests when the docs are built, and

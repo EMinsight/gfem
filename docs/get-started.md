@@ -61,20 +61,20 @@ What each part does:
   ({py:obj}`gfem.PEC`). The surfaces left unassigned, here the side walls, are
   magnetic walls, so the empty line carries a TEM wave.
 - Each {py:obj}`gfem.LumpedPort` is a resistor across a port face (`"port1"` at
-  x = 0, `"port2"` at x = 40 mm), driven along +z. Its impedance is the empty
-  line's, η₀ h / w ≈ 62.8 Ω.
+  $x = 0$, `"port2"` at $x = 40$ mm), driven along $+z$. Its impedance is the empty
+  line's, $\eta_0 h / w \approx 62.8$ Ω.
 - {py:obj}`gfem.Driven` asks for a frequency-domain solve at three frequencies in Hz,
   with port `"p1"` excited. `result.s` holds the S-parameters as power waves
   normalized to the port impedances; see {py:obj}`gfem.conventions`.
 
 You can check the numbers by hand. The ceramic section is a line of impedance
-62.8 Ω / √10 and length 20 mm, and the textbook formula for a section between two
-matched lines gives |S21| = 0.831, 0.901 and 0.605.
+$62.8\ \Omega / \sqrt{10}$ and length 20 mm, and the textbook formula for a section between two
+matched lines gives $|S_{21}|$ = 0.831, 0.901 and 0.605.
 
 ## Differentiate it
 
 `gfem.solve` is a JAX function of the model's materials and mesh. Here `jax.grad`
-gives the derivative of the transmitted power |S21|² at 5 GHz with respect to the
+gives the derivative of the transmitted power $|S_{21}|^2$ at 5 GHz with respect to the
 ceramic's permittivity, with one extra linear solve:
 
 ```python
@@ -148,7 +148,7 @@ program, because every gfem solve needs it.
   {doc}`metagrating <tutorials/metagrating>` tutorial designs a silicon
   grating on glass that sends a plane wave into the air at 50°. The
   {doc}`heater <tutorials/heater>` tutorial heats a silicon waveguide with a
-  TiN strip: the power for a π phase shift, the crosstalk to a neighbouring
+  TiN strip: the power for a $\pi$ phase shift, the crosstalk to a neighbouring
   guide, and how fast the phase follows the current. The
   {doc}`3D heater <tutorials/heater3d>` tutorial heats a whole waveguide spiral
   in 3D and shows how its phase is shared between the passes.

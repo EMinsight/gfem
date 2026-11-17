@@ -68,7 +68,7 @@ gmsh.model.addPhysicalGroup(2, faces_in_plane(0, 0), name="port1")
 gmsh.model.addPhysicalGroup(2, faces_in_plane(0, 40), name="port2")
 ```
 
-The two side walls (y = 0 and y = 6 mm) stay unnamed. An outer surface that
+The two side walls ($y = 0$ and $y$ = 6 mm) stay unnamed. An outer surface that
 the model does not name is a magnetic wall, where the tangential magnetic
 field vanishes. That is the side condition of the get-started line, so the
 sides need no name. Name a surface when you want another condition on it.

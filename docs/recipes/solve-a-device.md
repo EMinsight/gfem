@@ -11,7 +11,7 @@ The device is the line of {doc}`../get-started`: two parallel plates 40 mm
 long, 6 mm wide and 1 mm apart, with a ceramic of relative permittivity 10
 between them over the middle 20 mm. The solves are full-wave and linear, in
 the frequency domain. Every value is in SI units and every phase follows
-exp(+iωt); {doc}`../conventions` shows each convention on this same line.
+$\exp(+i\omega t)$; {doc}`../conventions` shows each convention on this same line.
 
 ## S-parameters over a band
 
@@ -66,9 +66,9 @@ print(s.z_ref[0])  # ohm, the reference impedance of each port at 2 GHz
 - S is in {term}`power waves`, normalized to `s.z_ref`: here each port's own
   resistance, whatever it is. Nothing is referred to 50 Ω unless you ask with
   `s.renormalize(50.0)`.
-- The ceramic section is a line of impedance 62.8 Ω / √10, 20 mm long,
+- The ceramic section is a line of impedance 62.8 Ω / $\sqrt{10}$, 20 mm long,
   between two matched lines. The textbook formula for it,
-  |S21| = 2 / |2 cos θ + i (Z₁/Z₂ + Z₂/Z₁) sin θ| with θ = 2π f √10 · 20 mm / c,
+  $|S_{21}| = 2 / |2 \cos\theta + i (Z_1/Z_2 + Z_2/Z_1) \sin\theta|$ with $\theta = 2\pi f \sqrt{10} \cdot 20\,\mathrm{mm} / c$,
   agrees with every printed value within 0.00002.
 
 ## Walls and metals
@@ -77,8 +77,8 @@ A surface of the mesh that the model does not name is a magnetic wall: the
 tangential magnetic field vanishes on it, as on a symmetry plane. That is what
 closes the sides of this line, so the empty line carries a plane wave between
 its plates. {py:obj}`gfem.PMC` says the same thing in writing. With both
-volumes filled with air the line is matched end to end, and S21 is the phase
-of 40 mm of free space, exp(−i k L):
+volumes filled with air the line is matched end to end, and $S_{21}$ is the phase
+of 40 mm of free space, $\exp(-i k L)$:
 
 ```python
 air = {"feed": gfem.Material(), "design": gfem.Material()}
@@ -190,12 +190,12 @@ True
   from the complex `modes.omega` (rad/s).
 - `modes.bulk_participation` gives, per volume, the share of each mode's
   electric energy stored in it. Each lossy volume adds its share times its
-  loss tangent to 1/Q, which is the fourth printed line.
+  loss tangent to $1/Q$, which is the fourth printed line.
 - `modes.error` is each mode's residual, relative to the size of the
   equations: the modes are solved to `SolverOptions(eigen_tolerance=...)`.
-- By hand: with a = 10 mm, n = √10 and k = 2π f / c, the open-ended line
-  resonates where tan(k a) tan(n k a) = n (modes 1 and 3) or
-  tan(k a) = −n tan(n k a) (mode 2). The roots are within 5 kHz of the
+- By hand: with $a$ = 10 mm, $n = \sqrt{10}$ and $k = 2\pi f / c$, the open-ended line
+  resonates where $\tan(k a) \tan(n k a) = n$ (modes 1 and 3) or
+  $\tan(k a) = -n \tan(n k a)$ (mode 2). The roots are within 5 kHz of the
   printed frequencies.
 
 ## Coupling Q of a port
@@ -252,7 +252,7 @@ print(eps_0 * (6e-3 / 1e-3) * (20e-3 + 10.0 * 20e-3) * 1e12)  # two plate capaci
   conductor. `ground` names the conductors held at 0 V.
 - `static.capacitance` is the Maxwell capacitance matrix in F, one row and
   column per terminal in the order of `static.terminals`.
-- The hand value is ε₀ (w / h) (L_air + 10 L_ceramic): the air and ceramic
+- The hand value is $\varepsilon_0 (w / h) (L_\mathrm{air} + 10 L_\mathrm{ceramic})$: the air and ceramic
   parts are plate capacitors in parallel, and the magnetic walls on the sides
   leave no fringing field.
 
@@ -275,7 +275,7 @@ The numerical settings are apart from the model and the problem, in
 ## Check your results
 
 Three checks need no reference. A lossless reciprocal device conserves power,
-|S11|² + |S21|² = 1, and S is symmetric. And a result that the mesh resolves
+$|S_{11}|^2 + |S_{21}|^2 = 1$, and $S$ is symmetric. And a result that the mesh resolves
 does not move when the {term}`element order` goes up:
 
 ```python

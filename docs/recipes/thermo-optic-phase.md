@@ -1,7 +1,7 @@
 # Find the phase a heater puts on a waveguide
 
 Find how much a heater shifts the phase of the light in a waveguide: the
-phase per watt, the power for a π shift (P_π), how much of it a neighbouring
+phase per watt, the power for a $\pi$ shift ($P_\pi$), how much of it a neighbouring
 waveguide picks up, and the phase along a guide through a 3D temperature
 map. The temperature comes from a thermal solve ({doc}`heater-temperature`);
 {py:obj}`gfem.thermo_optic_shift` turns it into a phase on a cross-section,
@@ -9,8 +9,8 @@ and {py:obj}`gfem.route_phase` along a route through a 3D device.
 
 The device is the heater section of {doc}`heater-temperature` and of the
 {doc}`heater tutorial <../tutorials/heater>`: a TiN strip 2 µm above a
-500 × 220 nm silicon waveguide, at λ = 1.55 µm. A material's
-`thermo_optic_coefficient` (dn/dT, in 1/K) sets how its index moves with
+500 × 220 nm silicon waveguide, at $\lambda$ = 1.55 µm. A material's
+`thermo_optic_coefficient` ($\mathrm{d}n/\mathrm{d}T$, in 1/K) sets how its index moves with
 temperature. The phase is first order in the temperature rise: one mode
 solve gives the weights of every element, and the phase is their sum
 weighted by the rise, with the mode held constant. The section must be
@@ -84,12 +84,12 @@ phase per watt: 139.3 rad/W
 P_pi = 22.55 mW
 ```
 
-- A heater of length L dissipating P gives P′ = P / L per metre and the
-  phase φ = φ′ L, with φ′ = `shift.phase_per_length`. So π needs
-  P_π = π P′ / φ′, the same for every length. The rise is linear in the power,
+- A heater of length $L$ dissipating $P$ gives $P' = P / L$ per metre and the
+  phase $\varphi = \varphi' L$, with $\varphi'$ = `shift.phase_per_length`. So $\pi$ needs
+  $P_\pi = \pi P' / \varphi'$, the same for every length. The rise is linear in the power,
   and the phase in the rise, so one solve at 1 W/m serves every drive.
 - `shift.delta_n_eff` is the change of the effective index and
-  `shift.n_eff` the index without heat; φ′ = k₀ Δn_eff.
+  `shift.n_eff` the index without heat; $\varphi' = k_0 \Delta n_\mathrm{eff}$.
 - The weights need a mode at the frequency asked, and a section without loss:
   a complex `eps_r`, a `tan_delta` or a `conductivity` in the optical solve's
   regions raises. Leave the heater out of the optical solve, as here.
@@ -178,14 +178,14 @@ across the section, and the section's own.
   of a guide (a {term}`pass` under the heater, the one beside it) from the
   same rise.
 - The window lives in the route's frame. Its section is its port's surface,
-  a plane z = constant, read in its own x and y. At each {term}`station` the
-  section's origin sits on the route, its x points to the left of travel
-  (`up` × tangent) and its y along `up`, the wafer normal. Here the core's
+  a plane $z$ = constant, read in its own $x$ and $y$. At each {term}`station` the
+  section's origin sits on the route, its $x$ points to the left of travel
+  (`up` × tangent) and its $y$ along `up`, the wafer normal. Here the core's
   bottom centre is the section's origin and the route runs along it.
 - Stations are at most `spacing` apart (0.5 µm by default) and the phase is
   the trapezoid sum over them. `route.phase_per_length[name]` gives the phase
   per metre at each station, at `route.arc_length[name]`.
-- P_π = π P / φ, with P the heater's total power in W (`heated.power`).
+- $P_\pi = \pi P / \varphi$, with $P$ the heater's total power in W (`heated.power`).
 - The window's own `thermo_optic_coefficient` weighs the rise; the 3D model's
   is not read.
 - In a bend, the weights stay the straight guide's: the route phase does not
@@ -193,12 +193,12 @@ across the section, and the section's own.
 
 ## Check your results
 
-- **The sanity limit.** If only the core's index moved, a π shift over a
-  length L would need a core rise of λ / (2 L dn/dT). P_π should sit within
+- **The sanity limit.** If only the core's index moved, a $\pi$ shift over a
+  length $L$ would need a core rise of $\lambda / (2 L\, \mathrm{d}n/\mathrm{d}T)$. $P_\pi$ should sit within
   a few tens of percent of the power that gives that rise, since part of the
   mode runs in the warm oxide.
 - **First order.** {py:meth}`gfem.Model.with_temperature_rise` gives each
-  element the index n₀ + (dn/dT) ΔT. Solve a {py:obj}`gfem.PortMode` on it at
+  element the index $n_0 + (\mathrm{d}n/\mathrm{d}T)\, \Delta T$. Solve a {py:obj}`gfem.PortMode` on it at
   the drive you use, and compare the change of `n_eff` with `delta_n_eff`.
   The difference is the second-order term, small for rises of tens of
   kelvin.

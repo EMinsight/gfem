@@ -25,7 +25,7 @@ machine and must be **Open MPI**.
 ## Run the script
 
 This script solves a two-port line, keeps one field and takes the gradient of
-|S21|² with respect to the permittivity of each design element. Download
+$|S_{21}|^2$ with respect to the permittivity of each design element. Download
 {download}`the script <../../tools/distributed_line.py>` and
 {download}`its mesh <../tutorials/data/line.msh>`, then start it on every rank:
 
@@ -39,7 +39,7 @@ srun --mpi=pmix python distributed_line.py direct   # under Slurm
 :start-at: mesh = gfem.Mesh.from_gmsh
 ```
 
-- Rank 0 prints S21 at 5 GHz, |S21|² and the norm of the gradient. They are
+- Rank 0 prints $S_{21}$ at 5 GHz, $|S_{21}|^2$ and the norm of the gradient. They are
   the numbers one process prints for the same script.
 - Rank 0 writes `line-<solver>.s2p`; every rank takes part in writing the
   field to `e-<solver>.vtu`.

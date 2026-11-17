@@ -80,8 +80,9 @@ def test_the_page_states_the_option_default_it_quotes(page):
 @pytest.mark.parametrize(
     "text",
     [
-        "σ_p σ_q S_{−q←−p}(−k)",  # reciprocity, orders relabelled  # noqa: RUF001
-        "(S[:, TM] + i S[:, TE])",
+        # reciprocity, orders relabelled
+        r"\sigma_p \sigma_q S_{-q\leftarrow -p}(-\mathbf{k})",
+        r"(S_{:,\mathrm{TM}} + i S_{:,\mathrm{TE}})",
         "wave_vector_frequency=f",  # the fixed-angle sweep
         "periodic=(True, False)",  # the periodic design grid
         "{py:obj}`gfem.UnrequestedOrderWarning`",

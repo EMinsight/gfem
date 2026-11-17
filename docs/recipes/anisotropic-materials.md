@@ -26,7 +26,7 @@ ln.eps_r  # (4.889, 4.571, 4.889), along x, y, z
 ```
 
 - Per principal axis `a_k`, the complex permittivity is
-  `ε0 eps_r[k] (1 - i tan_delta[k]) - i conductivity[k] / ω` under e^{+iωt}
+  `ε0 eps_r[k] (1 - i tan_delta[k]) - i conductivity[k] / ω` under $e^{+i\omega t}$
   ({py:obj}`gfem.conventions`). The tensor is the sum of these values times
   `a_k a_kᵀ`. A single value counts for all three axes.
 - Every tensor property of one material shares the same principal axes, so
@@ -107,7 +107,7 @@ s = gfem.solve(model, problem).s
   {term}`absorbing admittance` for each face's normal. It is exact for a
   plane wave at normal incidence and, like the isotropic first order,
   reflects at oblique incidence: place it where the outgoing waves meet it
-  close to normal. It reads the real parts of ε and μ, as on
+  close to normal. It reads the real parts of $\varepsilon$ and $\mu$, as on
   isotropic faces.
 - **Second-order absorbing boundaries** raise `NotImplementedError` when an
   anisotropic material, or a material field with `axes`, touches the surface.

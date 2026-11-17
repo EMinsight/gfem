@@ -72,10 +72,10 @@ static = crystal.eps_r(0.0)  # the static permittivity, eps_inf + delta_eps
   and damping at least 0, so each term is passive alone. A negative strength
   raises `ValueError`: write a gain medium as a constant permittivity instead.
 - **A published fit.** Most optics papers write their laws under
-  e^{−iωt}. gfem uses e^{+iωt}, so its law is the complex conjugate: keep the
+  $e^{-i\omega t}$. gfem uses $e^{+i\omega t}$, so its law is the complex conjugate: keep the
   parameter values and read the paper's `−i γ` as `+i γ`
-  ({py:obj}`gfem.conventions`). A fit in eV converts as f = E / h, and a
-  relaxation time τ as f = 1 / (2π τ).
+  ({py:obj}`gfem.conventions`). A fit in eV converts as $f = E / h$, and a
+  relaxation time $\tau$ as $f = 1 / (2\pi \tau)$.
 - **Loss beside a law.** `conductivity` adds to the law. A nonzero
   `tan_delta` beside a law raises `ValueError`: give a datasheet loss tangent
   through `djordjevic_sarkar`, or add damping to a term.
@@ -141,10 +141,10 @@ blended = model.with_material("design", field)
 ```
 
 - **Why the index.** A linear blend of the permittivity between a dielectric
-  and a metal crosses Re ε ≈ −2 ε_d, with ε_d the dielectric's
+  and a metal crosses $\operatorname{Re} \varepsilon \approx -2 \varepsilon_d$, with $\varepsilon_d$ the dielectric's
   permittivity. There a grey element is a small,
   almost lossless plasmonic resonator, and an optimizer finds such
-  artificial resonances. `scheme="index"` blends n − iκ instead, so a grey
+  artificial resonances. `scheme="index"` blends $n - i\kappa$ instead, so a grey
   element absorbs.
 - **Start from a binary design.** At a density of 0.5 everywhere, the
   blended square absorbs almost everything and its gradient vanishes. Start
@@ -161,8 +161,8 @@ this way over 1.5 to 1.6 µm.
 
 - **{py:obj}`gfem.Driven`**: uniform and adaptive sweeps, on every linear
   solver, with frequency workers, across MPI ranks and on plain and Bloch
-  periodic cells. A metal (Re ε < 0) is allowed. An `Absorbing` face on a law
-  region needs Re ε > 0 at every frequency of the grid. Where it is not, the
+  periodic cells. A metal ($\operatorname{Re} \varepsilon < 0$) is allowed. An `Absorbing` face on a law
+  region needs $\operatorname{Re} \varepsilon > 0$ at every frequency of the grid. Where it is not, the
   solve raises `ValueError`: move the boundary into a dielectric.
 - **{py:obj}`gfem.Eigenmode`**: modes nearest the target, as for a constant
   material. A target or a mode in a law region's {term}`unresolved band`, where
@@ -174,14 +174,14 @@ this way over 1.5 to 1.6 µm.
   {py:obj}`gfem.PEC`. An `Absorbing` face on a law region raises
   `NotImplementedError`; put a dielectric layer between them.
 - **{py:obj}`gfem.PortMode`** and wave ports: a law may sit in a port's
-  cross-section (a {term}`dispersive cross-section`) when Re ε > 0 there at
+  cross-section (a {term}`dispersive cross-section`) when $\operatorname{Re} \varepsilon > 0$ there at
   every frequency. A metal in the cross-section raises `ValueError` before
   any solve. Keep the metal away from the port faces, or use lumped ports.
 - **{py:obj}`gfem.Electrostatic`**: the law's {term}`static permittivity`,
   `law(0)`. A Drude term has none, and a Drude law raises `ValueError`:
   give the metal as a `PEC` terminal instead.
 - **Measurements.** {py:obj}`gfem.electric_energy` weighs a law region with
-  Re d(ωε)/dω. {py:obj}`gfem.interface_participation` raises when a selected
+  $\operatorname{Re} \mathrm{d}(\omega\varepsilon)/\mathrm{d}\omega$. {py:obj}`gfem.interface_participation` raises when a selected
   side lies in a law region ({doc}`measurements`).
 
 ## Gradients
@@ -244,7 +244,7 @@ What raises, each with its remedy (the full list is on
 
 ## Check your results
 
-- **Against a constant material.** At one frequency where Re ε > 0, a law
+- **Against a constant material.** At one frequency where $\operatorname{Re} \varepsilon > 0$, a law
   region solves as a constant material set to the law's value there:
 
   ```python
@@ -258,7 +258,7 @@ What raises, each with its remedy (the full list is on
   ```
 
 - **Where the power goes.** Solve again with every damping set to 0. The drop
-  in 1 − |S11|² − |S21|² is what the law absorbed.
+  in $1 - |S_{11}|^2 - |S_{21}|^2$ is what the law absorbed.
 - **The gradient.** Compare it with a central difference along a random
   direction of the scaled inputs, with a relative step of about 0.1 %.
 

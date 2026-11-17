@@ -63,14 +63,14 @@ Port mode sweep
 Unresolved band
   The frequencies at which a region with a {term}`permittivity law` carries a
   wavelength shorter than two of its longest element edges,
-  k0 Re √ε(f) h_max > π. An eigenmode target or mode there raises
+  $k_0\, \mathrm{Re} \sqrt{\varepsilon(f)}\, h_\mathrm{max} > \pi$. An eigenmode target or mode there raises
   `ValueError`: near a Lorentz resonance the modes crowd so densely that which
   ones are nearest depends on the mesh.
 
 Modal overlap
   The number of a lossy region's cavity modes within one linewidth of a
-  frequency, about 8π (V / λ_m³) |Im ε| / Re ε, with V the region's volume and
-  λ_m the wavelength in it. Above about 10 the modes nearest a target cannot
+  frequency, about $8\pi (V / \lambda_m^3) |\mathrm{Im}\,\varepsilon| / \mathrm{Re}\,\varepsilon$, with $V$ the region's volume and
+  $\lambda_m$ the wavelength in it. Above about 10 the modes nearest a target cannot
   be told apart, and an {term}`eigenmode problem` there may stop with
   `gfem.EigenmodeConvergenceError`.
 ```
@@ -184,19 +184,19 @@ Floquet surface
 
 Diffraction order
   One of the plane waves a periodic cell sends into the medium behind a face:
-  order (m, n) has the in-plane wave vector κ = k_t + m b1 + n b2, with b1, b2
-  the reciprocal vectors of the face's two pairs and k_t the
-  {term}`Bloch wave vector`. It propagates when |κ| is below the medium's
+  order $(m, n)$ has the in-plane wave vector $\boldsymbol{\kappa} = \mathbf{k}_t + m \mathbf{b}_1 + n \mathbf{b}_2$, with $\mathbf{b}_1$, $\mathbf{b}_2$
+  the reciprocal vectors of the face's two pairs and $\mathbf{k}_t$ the
+  {term}`Bloch wave vector`. It propagates when $|\boldsymbol{\kappa}|$ is below the medium's
   wavenumber, and decays away from the face otherwise.
 
 Diffraction efficiency
   The fraction of the incident power per cell that leaves in one
-  {term}`diffraction order` and polarization: |S|² of its
+  {term}`diffraction order` and polarization: $|S|^2$ of its
   {term}`Floquet port`'s row.
 
 Rayleigh anomaly
   The frequency or angle at which a {term}`diffraction order` grazes its face
-  (|κ| equal to the medium's wavenumber), changing from evanescent to
+  ($|\boldsymbol{\kappa}|$ equal to the medium's wavenumber), changing from evanescent to
   propagating. Efficiencies change steeply there.
 
 Mode cross-projection
@@ -206,7 +206,7 @@ Mode cross-projection
 
 Dispersive cross-section
   A wave port's cross-section that contains a region with a
-  {term}`permittivity law`. It is supported where Re ε(f) > 0 throughout, at
+  {term}`permittivity law`. It is supported where $\mathrm{Re}\,\varepsilon(f) > 0$ throughout, at
   every frequency of the sweep; a metal in it raises.
 
 Terminal
@@ -265,8 +265,8 @@ Bloch wave vector
   {term}`Bloch phase`.
 
 Bloch phase
-  The factor exp(−i k·a) between the fields of a {term}`periodic pair`,
-  E(r + a) = exp(−i k·a) E(r) under e^{+iωt}, with a the translation from the
+  The factor $e^{-i \mathbf{k} \cdot \mathbf{a}}$ between the fields of a {term}`periodic pair`,
+  $\mathbf{E}(\mathbf{r} + \mathbf{a}) = e^{-i \mathbf{k} \cdot \mathbf{a}} \mathbf{E}(\mathbf{r})$ under $e^{+i\omega t}$, with $\mathbf{a}$ the translation from the
   pair's first surface to its second.
 
 Job
@@ -312,16 +312,16 @@ S-parameters
   {term}`power waves`, one matrix per frequency.
 
 Power waves
-  The incident and outgoing waves a and b of each {term}`port` (Kurokawa),
+  The incident and outgoing waves $a$ and $b$ of each {term}`port` (Kurokawa),
   defined from its peak voltage and current and its
-  {term}`reference impedance` so that abs(a)² is the time-averaged incident
-  power in W; b = S a.
+  {term}`reference impedance` so that $|a|^2$ is the time-averaged incident
+  power in W; $b = S a$.
 
 Reference impedance
   The impedance per {term}`port` that S-parameters are normalized to: the port
   resistance for a lumped port, the power-voltage impedance for a wave port with
   a voltage path, and for a {term}`Floquet port` the wave impedance of its
-  order in the medium behind the face (η / cos θ for TE, η cos θ for TM; none
+  order in the medium behind the face ($\eta / \cos\theta$ for TE, $\eta \cos\theta$ for TM; none
   where the order does not propagate).
 
 Participation ratio
@@ -359,7 +359,7 @@ Lamb shift
   solved linear mode.
 
 Loss budget
-  The split of a mode's 1/Q into the contributions of its loss channels: the
+  The split of a mode's $1/Q$ into the contributions of its loss channels: the
   loss in the model (materials, walls, sheets, resistive ports, absorbing
   boundaries), which the eigenfrequency already carries, plus each channel
   outside the model, which adds its {term}`participation ratio` times its
@@ -374,14 +374,14 @@ Power flow
   elements and the rest of the solve domain, positive when it leaves the set.
   Measured by `gfem.power_flow` from the residual of the discrete equations, so
   exact for the solved field. Poynting flux is kept for the pointwise integral
-  of ½Re(E × H*).
+  of $\tfrac{1}{2}\mathrm{Re}(\mathbf{E} \times \mathbf{H}^*)$.
 
 Bloch reciprocity
-  S(k)ᵀ = S(−k): a Bloch cell's S matrix is not symmetric, but swapping two
+  $S(\mathbf{k})^\mathsf{T} = S(-\mathbf{k})$: a Bloch cell's S matrix is not symmetric, but swapping two
   ports is the same as reversing the {term}`Bloch wave vector`. With
   {term}`Floquet ports <Floquet port>` the orders relabel and take a sign:
-  S_{p←q}(k) = σ_p σ_q S_{−q←−p}(−k), with −p the port of the opposite order
-  and σ = −1 for an order with a nonzero in-plane wave vector, +1 otherwise.
+  $S_{p\leftarrow q}(\mathbf{k}) = \sigma_p \sigma_q S_{-q\leftarrow -p}(-\mathbf{k})$, with $-p$ the port of the opposite order
+  and $\sigma = -1$ for an order with a nonzero in-plane wave vector, $+1$ otherwise.
 ```
 
 ## Materials and optimization
@@ -394,10 +394,10 @@ Material
   and the permittivity may follow a {term}`permittivity law`.
 
 Loss tangent
-  The ratio tan δ of the imaginary to the real part of a {term}`material`'s
-  permittivity, ε = ε′ (1 − i tan δ) under e^{+iωt}: the dielectric loss
-  (`Material(tan_delta=...)`). A region holding the share p of a mode's
-  electric energy adds p tan δ to the mode's 1/Q.
+  The ratio $\tan\delta$ of the imaginary to the real part of a {term}`material`'s
+  permittivity, $\varepsilon = \varepsilon' (1 - i \tan\delta)$ under $e^{+i\omega t}$: the dielectric loss
+  (`Material(tan_delta=...)`). A region holding the share $p$ of a mode's
+  electric energy adds $p \tan\delta$ to the mode's $1/Q$.
 
 Dispersive material
   A {term}`material` whose permittivity depends on frequency through a
@@ -405,7 +405,7 @@ Dispersive material
 
 Permittivity law
   A relative permittivity that depends on frequency: a high-frequency
-  permittivity ε∞ plus a sum of {term}`dispersion terms <dispersion term>`
+  permittivity $\varepsilon_\infty$ plus a sum of {term}`dispersion terms <dispersion term>`
   (`gfem.PermittivityLaw`), given as a `Material`'s `eps_r`.
 
 Dispersion term
@@ -413,15 +413,15 @@ Dispersion term
   {term}`permittivity law`, passive by its own parameter bounds.
 
 Static permittivity
-  The zero-frequency value of a {term}`permittivity law`: ε∞ plus the
+  The zero-frequency value of a {term}`permittivity law`: $\varepsilon_\infty$ plus the
   strengths of its Lorentz, Debye and Djordjevic-Sarkar terms. A Drude term
   has none, because a Drude metal conducts at zero frequency. The
   electrostatic problem reads it.
 
 Energy permittivity
-  The weight Re[ε + (ω/2) dε/dω] of |E|² in a mode's energy at its frequency,
-  for a region with a {term}`permittivity law`: Re ε_r for a constant
-  material, and ε∞ for a lossless Drude law.
+  The weight $\mathrm{Re}[\varepsilon + (\omega/2)\, d\varepsilon/d\omega]$ of $|E|^2$ in a mode's energy at its frequency,
+  for a region with a {term}`permittivity law`: $\mathrm{Re}\,\varepsilon_r$ for a constant
+  material, and $\varepsilon_\infty$ for a lossless Drude law.
 
 Anisotropic material
   A {term}`material` whose permittivity, permeability, loss tangent or
@@ -457,8 +457,8 @@ Anisotropic material field
   design inputs, the axes are not.
 
 Index interpolation
-  A density blend in which the complex refractive index n − iκ is linear in
-  the density ρ, ε = ((1 − ρ) N_a + ρ N_b)² (`scheme="index"`); the blend to
+  A density blend in which the complex refractive index $n - i\kappa$ is linear in
+  the density $\rho$, $\varepsilon = ((1 - \rho) N_a + \rho N_b)^2$ (`scheme="index"`); the blend to
   use between a metal and a dielectric.
 
 Sheet
@@ -703,7 +703,7 @@ Thermo-optic shift
   ({py:obj}`gfem.thermo_optic_shift`).
 
 Thermo-optic phase
-  The phase a temperature rise adds to guided light, k₀ Re Δn_eff per metre: a
+  The phase a temperature rise adds to guided light, $k_0\, \mathrm{Re}\, \Delta n_\mathrm{eff}$ per metre: a
   delay, positive for a positive {term}`thermo-optic coefficient`. A
   transmission's argument moves by minus it.
 
@@ -739,7 +739,7 @@ Waveform
   (start time, scale) pairs on its {term}`time grid`; off before the first.
 
 Time grid
-  The uniform times t_n = n dt, dt = duration / steps, on which a transient
+  The uniform times $t_n = n\, dt$, $dt = \mathrm{duration} / \mathrm{steps}$, on which a transient
   thermal solve steps, records its traces and keeps fields.
 
 Trace
