@@ -5,7 +5,7 @@ phase per watt, the power for a π shift (P_π), how much of it a neighbouring
 waveguide picks up, and the phase along a guide through a 3D temperature
 map. The temperature comes from a thermal solve ({doc}`heater-temperature`);
 {py:obj}`gfem.thermo_optic_shift` turns it into a phase on a cross-section,
-and {py:obj}`gfem.route_phase` along a path through a 3D device.
+and {py:obj}`gfem.route_phase` along a route through a 3D device.
 
 The device is the heater section of {doc}`heater-temperature` and of the
 {doc}`heater tutorial <../tutorials/heater>`: a TiN strip 2 µm above a

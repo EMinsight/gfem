@@ -234,7 +234,8 @@ the step roughly halves the lag.
 ## Limits
 
 - The time grid is uniform, set by `duration` and `steps`; there is no
-  adaptive stepping. A short pulse needs steps much shorter than the pulse.
+  adaptive stepping. A heater switched on for a short time needs steps much
+  shorter than that time.
 - Heat sources switch between constant levels, at grid times. A ramp is a
   staircase of switches.
 - Materials are constant and linear, as in the steady solve.
