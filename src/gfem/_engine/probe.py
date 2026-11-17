@@ -278,6 +278,20 @@ def triangle_rule(degree: int) -> tuple[np.ndarray, np.ndarray]:
     return bary, weights
 
 
+def tetrahedron_rule(degree: int) -> tuple[np.ndarray, np.ndarray]:
+    """NGSolve's tetrahedron rule exact to ``degree``.
+
+    Returns:
+        Barycentric points ``(q, 4)`` and weights ``(q,)`` summing to 1
+        (multiply by the tetrahedron's volume).
+    """
+    rule = ngs.IntegrationRule(ngs.TET, degree)
+    xi = np.array([p.point[:3] for p in rule])
+    bary = np.column_stack([xi, 1.0 - xi.sum(axis=1)])
+    weights = np.array([p.weight for p in rule])
+    return bary, weights / weights.sum()
+
+
 def _fmt(p: np.ndarray) -> str:
     return "(" + ", ".join(f"{x:.6g}" for x in p) + ")"
 

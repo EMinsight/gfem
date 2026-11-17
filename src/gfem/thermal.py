@@ -30,9 +30,10 @@ from gfem.errors import RegionNotFoundError
 if TYPE_CHECKING:
     import jax
 
+    from gfem._field import Field
     from gfem.mesh import Mesh
 
-__all__ = ["HeatSource", "joule_heating"]
+__all__ = ["HeatSource", "Trace", "joule_heating"]
 
 _UNITS: dict[str | None, str] = {
     "power": "W",
@@ -395,3 +396,31 @@ def joule_heating(
         _total=total_power,
         _thickness=thickness,
     )
+
+
+class Trace:
+    """A linear functional of the temperature, recorded at every time step.
+
+    The base of the traces a `gfem.TransientThermal` problem records (one
+    value per step, at every grid time including ``t = 0``). A trace is a
+    value object: what it reads (a point, a region, a section's
+    thermo-optic weights) is fixed when it is built, and its weights on the
+    solve's degrees of freedom are private, built at solve time.
+
+    `gfem.ThermoOpticShift.trace` gives the thermo-optic phase per length
+    of a section, a functional of the rise.
+
+    Attributes:
+        unit: The unit of the trace's values (``"K"`` for a temperature).
+    """
+
+    unit: str = "K"
+
+    def _sample(self, temperature: Field, rise: Field) -> jax.Array:
+        """The trace's value on one temperature and its rise (linear in both).
+
+        Args:
+            temperature: The absolute temperature field, K.
+            rise: The temperature rise above the source-free temperature, K.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no value.")

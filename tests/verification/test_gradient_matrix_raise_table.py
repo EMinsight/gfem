@@ -26,6 +26,7 @@ import numpy as np
 import periodic_cases as pc
 import pytest
 import structured_meshes as sm
+import thermal_cases as tc
 from gradient_cases import (
     HYBRID_PORTS,
     MIRRORED_TARGET,
@@ -1978,6 +1979,55 @@ def _out_eigenmode_principal_by_a_lumped_value(request):
     jax.make_jaxpr(jax.grad(objective))(LUMPED[0])
 
 
+@pytest.fixture(scope="module")
+def thermo_optic_section(tmp_path_factory):
+    """A silicon core in oxide on a cross-section slab, dn/dT in both."""
+    rects = [
+        (-1.5, -1.0, 1.5, 1.2, "clad", None),
+        (-0.25, 0.0, 0.25, 0.22, "core", 0.1),
+    ]
+    path = tmp_path_factory.mktemp("thermo_optic") / "section.msh"
+    return tc.section(path, rects, 0.5, [])
+
+
+def _thermo_optic_objective(mesh, core):
+    def objective(x):
+        materials = {
+            "clad": gfem.Material(eps_r=2.085, thermo_optic_coefficient=1e-5),
+            "core": core(x),
+        }
+        model = gfem.Model(
+            mesh, materials=materials, ports=[gfem.WavePort("p", "front")]
+        )
+        shift = gfem.thermo_optic_shift(model, None, port="p", frequency=1.934e14)
+        return jnp.sum(shift.trace()._weights) + shift.n_eff
+
+    return objective
+
+
+def _out_thermo_optic_shift_by_the_optical_eps(request):
+    # the mode is a constant of the shift: a frozen-mode derivative is 2x off
+    mesh = request.getfixturevalue("thermo_optic_section")
+    objective = _thermo_optic_objective(
+        mesh,
+        lambda eps: gfem.MaterialField(eps_r=eps, thermo_optic_coefficient=1.86e-4),
+    )
+    jax.make_jaxpr(jax.grad(objective))(12.1)
+
+
+def _out_thermo_optic_shift_by_the_optical_nodes(request):
+    mesh = request.getfixturevalue("thermo_optic_section")
+    core = gfem.Material(eps_r=12.1, thermo_optic_coefficient=1.86e-4)
+
+    def objective(nodes):
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(mesh), [nodes]
+        )
+        return _thermo_optic_objective(moved, lambda _: core)(None)
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(mesh.nodes))
+
+
 # (row, raising call, error, message): DegenerateModeError on one mode of a
 # degenerate eigenmode cluster is in tests/verification/test_gradient_matrix.py.
 HOST = jax.errors.JaxRuntimeError  # a gfem error raised in the backward pass
@@ -2305,6 +2355,18 @@ OUT_OF_SCOPE = [
         _out_periodic_eigenmode_by_a_law_parameter,
         gfem.NonDifferentiableError,
         r"eps_r\.eps_inf.*periodic eigenmode",
+    ),
+    (
+        "thermo-optic shift x optical permittivity",
+        _out_thermo_optic_shift_by_the_optical_eps,
+        gfem.NonDifferentiableError,
+        r"model\.materials\['core'\]\.eps_r.*thermo-optic shift holds the port mode",
+    ),
+    (
+        "thermo-optic shift x optical node coordinates",
+        _out_thermo_optic_shift_by_the_optical_nodes,
+        gfem.NonDifferentiableError,
+        r"mesh\.nodes.*thermo-optic shift holds the port mode",
     ),
 ]
 

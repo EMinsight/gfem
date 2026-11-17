@@ -113,6 +113,7 @@ from gfem.results import (  # noqa: E402
 )
 from gfem.solve import release_memory, solve  # noqa: E402
 from gfem.thermal import HeatSource, joule_heating  # noqa: E402
+from gfem.thermo_optic import ThermoOpticShift, thermo_optic_shift  # noqa: E402
 
 __version__ = _version("gfem")
 
@@ -190,6 +191,7 @@ __all__ = [
     "SweepInfo",
     "SweepNotConvergedWarning",
     "SweepRankDeficientWarning",
+    "ThermoOpticShift",
     "UnrequestedOrderWarning",
     "UnsampledPixelsWarning",
     "WavePort",
@@ -212,4 +214,5 @@ __all__ = [
     "release_memory",
     "shape",
     "solve",
+    "thermo_optic_shift",
 ]
