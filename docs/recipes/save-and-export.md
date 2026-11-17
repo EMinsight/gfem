@@ -5,7 +5,7 @@ file, label it for analysis with xarray, open a field in ParaView, and write
 the whole run as a {term}`job` file that solves again on another machine and
 leaves a {term}`result bundle` to read back. The device is the line of
 {doc}`solve-a-device`; every value is in SI units and every phase follows
-exp(+iωt) ({doc}`../conventions`).
+$\exp(+i\omega t)$ ({doc}`../conventions`).
 
 | To | Write | Read it with |
 | --- | --- | --- |
@@ -134,16 +134,16 @@ print(list(grid.point_data))
 - Coordinates are in metres and values in SI units (V/m here), whatever unit
   the mesh file was in.
 - A complex field is written as two arrays, its real and imaginary parts.
-  The phasor is the peak value: at time t the field is
-  Re(E e^{iωt}) = `E_real` cos ωt − `E_imag` sin ωt.
-- Each tetrahedron of order p is cut into p³ smaller ones for the file, so
+  The phasor is the peak value: at time $t$ the field is
+  $\operatorname{Re}(\mathbf{E} e^{i\omega t})$ = `E_real` $\cos\omega t$ − `E_imag` $\sin\omega t$.
+- Each tetrahedron of order $p$ is cut into $p^3$ smaller ones for the file, so
   the file has more cells than the mesh: 8 times more here.
 - `e.to_pyvista()` returns the same grid as a PyVista mesh, for a plot in a
   notebook (the `viz` extra, `pip install "gfem[viz]"`).
 
 Read values where you need them with `at`. Beyond the ceramic only the wave
 sent on to port 2 travels, so the field there is the transmitted voltage over
-the plate gap, |S21| √(2 P Z) / h with P = 1 W:
+the plate gap, $|S_{21}| \sqrt{2 P Z} / h$ with $P$ = 1 W:
 
 ```python
 point = [35e-3, 3e-3, 0.5e-3]  # m: in the air between the ceramic and port 2

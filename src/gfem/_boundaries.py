@@ -77,19 +77,25 @@ class PMC:
 
 @dataclasses.dataclass(frozen=True)
 class Absorbing:
-    """First- or second-order absorbing boundary on an exterior surface.
+    r"""First- or second-order absorbing boundary on an exterior surface.
 
-    Under e^{+iωt}, with k = k0 sqrt(eps_r mu_r) in the material behind the
-    surface and n its outward normal, the condition is
+    Under :math:`e^{+i\omega t}`, with
+    :math:`k = k_0 \sqrt{\varepsilon_r \mu_r}` in the material behind the
+    surface and :math:`n` its outward normal, the condition is
 
-        n x (mu_r^-1 curl E) = i (k / mu_r) E_t + β curl[n (n · mu_r^-1 curl E)]
+    .. math::
 
-    with β = 1 / (2ik) at order 2 and β = 0 at order 1: the plane-wave
-    expansion k_n ≈ k - k_t² / (2k) of an outgoing wave (Jin, *The Finite
-    Element Method in Electromagnetics*, §9.3, with the radius of curvature
-    taken infinite). Its weak form adds i (k / mu_r) ∮ E_t · v_t and, at
-    order 2, (1 / (2ik)) ∮ mu_r^-1 (n · curl E)(n · curl v). Only the curl part of the
-    second-order term is kept; the β ∇_t(∇ · E_t) part is dropped, as in
+        n \times (\mu_r^{-1} \nabla \times E) = i \frac{k}{\mu_r} E_t
+            + \beta \nabla \times [n (n \cdot \mu_r^{-1} \nabla \times E)]
+
+    with :math:`\beta = 1 / (2ik)` at order 2 and :math:`\beta = 0` at order
+    1: the plane-wave expansion :math:`k_n \approx k - k_t^2 / (2k)` of an
+    outgoing wave (Jin, *The Finite Element Method in Electromagnetics*,
+    §9.3, with the radius of curvature taken infinite). Its weak form adds
+    :math:`i (k / \mu_r) \oint E_t \cdot v_t` and, at order 2,
+    :math:`\frac{1}{2ik} \oint \mu_r^{-1} (n \cdot \nabla \times E)
+    (n \cdot \nabla \times v)`. Only the curl part of the second-order term
+    is kept; the :math:`\beta \nabla_t (\nabla \cdot E_t)` part is dropped, as in
     COMSOL, because the tangential divergence of a Nédélec trace is not
     square-integrable. gfem uses the textbook sign of the curl term only;
     the opposite sign reflects more than order 1, so on a tight air box a
@@ -97,19 +103,21 @@ class Absorbing:
     on adequately sized boxes).
 
     Both orders are exact at normal incidence only. A plane wave arriving at
-    the angle θ from the normal is reflected with amplitude (1 - cos θ) /
-    (1 + cos θ) at order 1 (0.017 at 15°, 0.072 at 30°, 0.17 at 45°), for
-    both polarizations. Order 2 lowers this about tenfold up to 30° for the
-    polarization with E parallel to the surface and normal to k_t; for the
+    the angle :math:`\theta` from the normal is reflected with amplitude
+    :math:`(1 - \cos\theta) / (1 + \cos\theta)` at order 1 (0.017 at 15°,
+    0.072 at 30°, 0.17 at 45°), for both polarizations. Order 2 lowers this
+    about tenfold up to 30° for the polarization with :math:`E` parallel to
+    the surface and normal to :math:`k_t`; for the
     other one (E in the plane of incidence, no normal magnetic field) the
     curl term vanishes and the reflection is that of order 1. In a periodic
-    cell under a Bloch wave vector with a component k_t along the surface,
-    ``sin θ = |k_t| / k``.
+    cell under a Bloch wave vector with a component :math:`k_t` along the
+    surface, :math:`\sin\theta = |k_t| / k`.
 
     Next to an anisotropic material, order 1 uses the normal-incidence
-    admittance tensor of that material for the face normal (i k0 ∮ (Y E_t)
-    · v_t, exact for a plane wave at normal incidence; real parts of ε and
-    μ, as for isotropic faces). Order 2 raises `NotImplementedError` there.
+    admittance tensor of that material for the face normal
+    (:math:`i k_0 \oint (Y E_t) \cdot v_t`, exact for a plane wave at normal
+    incidence; real parts of :math:`\varepsilon` and :math:`\mu`, as for
+    isotropic faces). Order 2 raises `NotImplementedError` there.
 
     Attributes:
         surface: The surface region's name.
@@ -133,14 +141,15 @@ class Absorbing:
 
 @dataclasses.dataclass(frozen=True)
 class Conductor:
-    """A finite-conductivity metal surface, modelled by its surface impedance.
+    r"""A finite-conductivity metal surface, modelled by its surface impedance.
 
-    Each face adds iω / Z_s(ω) ∫ E_t · v_t, with Z_s the surface impedance of
-    one face of a metal film (HFSS finite-thickness form). On an
-    interior surface it is one term for the whole sheet, so a film much
-    thinner than its skin depth is a sheet admittance of about sigma t / 2; on
-    an exterior surface the metal is one-sided and its thickness counts
-    twice (sigma t); see `gfem.conventions`.
+    Each face adds :math:`\frac{i\omega}{Z_s(\omega)} \int E_t \cdot v_t`,
+    with :math:`Z_s` the surface impedance of one face of a metal film (HFSS
+    finite-thickness form). On an interior surface it is one term for the
+    whole sheet, so a film much thinner than its skin depth is a sheet
+    admittance of about :math:`\sigma t / 2`; on an exterior surface the
+    metal is one-sided and its thickness counts twice (:math:`\sigma t`);
+    see `gfem.conventions`.
 
     Attributes:
         surface: The surface region's name.
@@ -701,16 +710,18 @@ def _path(value: Any, owner: str) -> tuple[tuple[float, float, float], ...]:
 
 @dataclasses.dataclass(frozen=True)
 class FloquetPort:
-    """A Floquet port: one diffraction order in one polarization.
+    r"""A Floquet port: one diffraction order in one polarization.
 
     It sits on an open face of a periodic cell (a Floquet surface): an
     exterior planar face whose rim lies on the seams of two `Periodic` pairs
-    whose translations a1, a2 span the face, with one homogeneous lossless
-    isotropic medium behind it. The order (m, n) is the plane wave with
-    in-plane wave vector κ = k_t + m b1 + n b2 (b_i·a_j = 2πδ_ij, k_t the
-    problem's ``wave_vector``) in that medium. Several Floquet ports share
-    one surface, one (order, polarization) each; the surface takes no other
-    port or boundary. `Model.propagating_orders` lists the orders that
+    whose translations :math:`a_1`, :math:`a_2` span the face, with one
+    homogeneous lossless isotropic medium behind it. The order :math:`(m, n)`
+    is the plane wave with in-plane wave vector
+    :math:`\kappa = k_t + m b_1 + n b_2`
+    (:math:`b_i \cdot a_j = 2\pi \delta_{ij}`, :math:`k_t` the problem's
+    ``wave_vector``) in that medium. Several Floquet ports share one surface,
+    one (order, polarization) each; the surface takes no other port or
+    boundary. `Model.propagating_orders` lists the orders that
     propagate and `Model.bloch_wave_vector` turns incidence angles into a
     wave vector. See `gfem.conventions` for the lattice frame and the TE/TM
     references.
@@ -721,8 +732,10 @@ class FloquetPort:
         surface: The Floquet surface.
         order: The diffraction order (m, n), two integers; (0, 0) is the
             specular order.
-        polarization: ``"TE"`` (s: E along ê3 x κ̂) or ``"TM"`` (p: E
-            tangential along κ̂), relative to the order's plane of incidence.
+        polarization: ``"TE"`` (s: :math:`E` along
+            :math:`\hat e_3 \times \hat\kappa`) or ``"TM"`` (p: :math:`E`
+            tangential along :math:`\hat\kappa`), relative to the order's
+            plane of incidence.
         offset: De-embedding distance in m, >= 0, along the face normal.
 
     Raises:

@@ -131,7 +131,7 @@ How gfem itself is checked on wave ports and shared port surfaces:
 
 - **Unrequested modes are reflected, not converted.** A propagating mode that
   no wave port on its surface requests is partly reflected at the port, by
-  about `(β_j − β₀)/(β_j + β₀)`. Here β_j is its propagation constant and β₀
+  about $(\beta_j - \beta_0)/(\beta_j + \beta_0)$. Here $\beta_j$ is its propagation constant and $\beta_0$
   that of the surface's lowest-ranked requested mode. It is never converted
   into a requested mode there, so S misses the power the device sends into
   it. Request it to see where that power goes. A mode ranked below the
@@ -148,7 +148,7 @@ How gfem itself is checked on wave ports and shared port surfaces:
   mode (the {term}`mode cross-projection`); above 1e-3 the solve warns with
   {py:obj}`gfem.PortModeProjectionWarning`, which states the size of that
   error in S. A lossy port line, lone or shared, also reflects its own mode at
-  the order of α/β, its attenuation per radian, and warns with the same class
+  the order of $\alpha/\beta$, its attenuation per radian, and warns with the same class
   above 1e-3. Keep the port line lossless near the port.
 - **Degenerate, crossing and cut-off modes.** The solve raises
   {py:obj}`gfem.PortModeError`, naming the port and the surface, in three
@@ -159,7 +159,7 @@ How gfem itself is checked on wave ports and shared port surfaces:
   through an unresolved crossing: narrow the band or break the symmetry. A
   requested mode below cutoff somewhere in the band: narrow the band. A lossy
   mode counts as below cutoff where its attenuation is at least its phase
-  constant, Re β ≤ |Im β|. A clean crossing is followed and warns with
+  constant, $\operatorname{Re} \beta \le |\operatorname{Im} \beta|$. A clean crossing is followed and warns with
   {py:obj}`gfem.PortModeTrackingWarning`.
 - **Eigenmodes.** {py:obj}`gfem.Eigenmode` raises `NotImplementedError` for
   any wave port, lone or shared: find resonances from a `gfem.Driven` sweep.

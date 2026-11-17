@@ -391,19 +391,23 @@ class _DispersionTerm:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Drude(_DispersionTerm):
-    """A free-electron (Drude) term of a `PermittivityLaw`.
+    r"""A free-electron (Drude) term of a `PermittivityLaw`.
 
-    Under e^{+iωt} it adds ``-ωp² / (ω (ω - i gamma))``, with ``ω = 2π f``,
-    ``ωp = 2π plasma_frequency`` and ``gamma = 2π damping``; under e^{-iωt}
-    (most optics papers) the same term is its complex conjugate, with
-    ``+i gamma``. See `gfem.conventions` (Dispersive permittivity).
+    Under :math:`e^{+i\omega t}` it adds
+    :math:`-\omega_p^2 / (\omega (\omega - i\gamma))`, with
+    :math:`\omega = 2\pi f`, :math:`\omega_p = 2\pi \cdot`
+    ``plasma_frequency`` and :math:`\gamma = 2\pi \cdot` ``damping``; under
+    :math:`e^{-i\omega t}` (most optics papers) the same term is its complex
+    conjugate, with :math:`+i\gamma`. See `gfem.conventions` (Dispersive
+    permittivity).
 
-    It has no static permittivity: it diverges as f -> 0. A fit in eV
-    converts as f = E / h (ħωp = 9.03 eV is 2.183e15 Hz).
+    It has no static permittivity: it diverges as :math:`f \to 0`. A fit in
+    eV converts as :math:`f = E / h` (:math:`\hbar\omega_p` = 9.03 eV is
+    2.183e15 Hz).
 
     Attributes:
         plasma_frequency: The plasma frequency, Hz, > 0.
-        damping: The collision frequency gamma / 2π, Hz, >= 0.
+        damping: The collision frequency :math:`\gamma / 2\pi`, Hz, >= 0.
 
     Raises:
         ValueError: A parameter is not a finite real number, or out of its
@@ -436,19 +440,23 @@ class Drude(_DispersionTerm):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Lorentz(_DispersionTerm):
-    """A bound-oscillator (Lorentz) term of a `PermittivityLaw`.
+    r"""A bound-oscillator (Lorentz) term of a `PermittivityLaw`.
 
-    Under e^{+iωt} it adds ``Δε ω0² / (ω0² - ω² + i gamma ω)``, with ``ω = 2π f``,
-    ``ω0 = 2π resonance_frequency`` and ``gamma = 2π damping``; under e^{-iωt}
-    it is the complex conjugate (``-i gamma ω``). See `gfem.conventions`
-    (Dispersive permittivity). Its static value is ``delta_eps``. A
-    Sellmeier term ``B λ² / (λ² - C)`` is a lossless Lorentz term with
+    Under :math:`e^{+i\omega t}` it adds
+    :math:`\Delta\varepsilon\, \omega_0^2 /
+    (\omega_0^2 - \omega^2 + i\gamma\omega)`, with :math:`\omega = 2\pi f`,
+    :math:`\omega_0 = 2\pi \cdot`
+    ``resonance_frequency`` and :math:`\gamma = 2\pi \cdot` ``damping``;
+    under :math:`e^{-i\omega t}` it is the complex conjugate
+    (:math:`-i\gamma\omega`). See `gfem.conventions` (Dispersive
+    permittivity). Its static value is ``delta_eps``. A Sellmeier term
+    :math:`B \lambda^2 / (\lambda^2 - C)` is a lossless Lorentz term with
     ``delta_eps = B`` and ``resonance_frequency = c / sqrt(C)``.
 
     Attributes:
         delta_eps: The strength, > 0 (dimensionless).
         resonance_frequency: The resonance frequency, Hz, > 0.
-        damping: The damping gamma / 2π, Hz, >= 0 (0: lossless).
+        damping: The damping :math:`\gamma / 2\pi`, Hz, >= 0 (0: lossless).
 
     Raises:
         ValueError: A parameter is not a finite real number, or out of its
@@ -472,17 +480,19 @@ class Lorentz(_DispersionTerm):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Debye(_DispersionTerm):
-    """A relaxation (Debye) term of a `PermittivityLaw`.
+    r"""A relaxation (Debye) term of a `PermittivityLaw`.
 
-    Under e^{+iωt} it adds ``Δε / (1 + i f / f_r)``; under e^{-iωt} it is
-    the complex conjugate. A relaxation time τ converts as
-    ``f_r = 1 / (2π τ)``. See `gfem.conventions` (Dispersive permittivity).
+    Under :math:`e^{+i\omega t}` it adds
+    :math:`\Delta\varepsilon / (1 + i f / f_r)`; under :math:`e^{-i\omega t}`
+    it is the complex conjugate. A relaxation time :math:`\tau` converts as
+    :math:`f_r = 1 / (2\pi\tau)`. See `gfem.conventions` (Dispersive
+    permittivity).
     Its static value is ``delta_eps``.
 
     Attributes:
         delta_eps: The strength (static minus high-frequency permittivity),
             > 0.
-        relaxation_frequency: The relaxation frequency f_r, Hz, > 0.
+        relaxation_frequency: The relaxation frequency :math:`f_r`, Hz, > 0.
 
     Raises:
         ValueError: A parameter is not a finite real number, or out of its
@@ -500,12 +510,13 @@ class Debye(_DispersionTerm):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class DjordjevicSarkar(_DispersionTerm):
-    """A wideband (Djordjevic-Sarkar) term of a `PermittivityLaw`.
+    r"""A wideband (Djordjevic-Sarkar) term of a `PermittivityLaw`.
 
-    Under e^{+iωt} it adds
-    ``Δε / ln(f2 / f1) · ln((f2 + i f) / (f1 + i f))``, the principal log of
-    the ratio (a continuum of Debye relaxations between the corners, with a
-    nearly constant loss tangent between them); under e^{-iωt} it is the
+    Under :math:`e^{+i\omega t}` it adds
+    :math:`\frac{\Delta\varepsilon}{\ln(f_2 / f_1)} \ln\frac{f_2 + i f}{f_1 + i f}`,
+    the principal log of the ratio (a continuum of Debye relaxations between
+    the corners, with a nearly constant loss tangent between them); under
+    :math:`e^{-i\omega t}` it is the
     complex conjugate. The corners in Hz are exact: the form depends on
     frequency ratios only. Its static value is ``delta_eps``. RF datasheets
     give a permittivity and a loss tangent at one frequency: use
@@ -514,8 +525,8 @@ class DjordjevicSarkar(_DispersionTerm):
 
     Attributes:
         delta_eps: The strength, > 0.
-        low_frequency: The lower corner f1, Hz, > 0.
-        high_frequency: The upper corner f2, Hz, > f1.
+        low_frequency: The lower corner :math:`f_1`, Hz, > 0.
+        high_frequency: The upper corner :math:`f_2`, Hz, :math:`> f_1`.
 
     Raises:
         ValueError: A parameter is not a finite real number, or out of its
@@ -553,16 +564,19 @@ _TERMS = (Drude, Lorentz, Debye, DjordjevicSarkar)
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class PermittivityLaw:
-    """A relative permittivity that depends on frequency: eps_inf plus terms.
+    r"""A relative permittivity that depends on frequency: eps_inf plus terms.
 
-    The value of `Material`'s ``eps_r`` for a dispersive material::
+    The value of `Material`'s ``eps_r`` for a dispersive material:
 
-        eps_r(f) = eps_inf + Σ term(f)
+    .. math::
 
-    with f in Hz, under e^{+iωt}, so a lossy law has Im eps_r < 0. Every
-    term is passive alone (strengths and damping >= 0), so the law is
-    passive at every real frequency. The forms, and how to convert a fit
-    written under e^{-iωt}, are in `gfem.conventions` (Dispersive
+        \varepsilon_r(f) = \varepsilon_\infty + \sum \mathrm{term}(f)
+
+    with :math:`f` in Hz, under :math:`e^{+i\omega t}`, so a lossy law has
+    :math:`\mathrm{Im}\,\varepsilon_r < 0`. Every term is passive alone
+    (strengths and damping >= 0), so the law is passive at every real
+    frequency. The forms, and how to convert a fit written under
+    :math:`e^{-i\omega t}`, are in `gfem.conventions` (Dispersive
     permittivity).
 
     A law is callable: ``law(f)`` is the complex relative permittivity at
@@ -778,16 +792,25 @@ def _law_material_values(material: Material, owner: str) -> dict[str, Any]:
 @_renamed_density
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class Material:
-    """A linear medium, constant over the region it is assigned to.
+    r"""A linear medium, constant over the region it is assigned to.
 
-    Keyword-only. Units are SI. Under e^{+iωt} the complex permittivity is,
-    per principal axis ``a_k`` (the rows of `axes`),
-    ε = ε0 Σ_k [eps_r[k] (1 - i tan_delta[k]) - i conductivity[k] / (ε0 ω)]
-    a_k a_kᵀ; a single value counts for all three axes. The two loss
+    Keyword-only. Units are SI. Under :math:`e^{+i\omega t}` the complex
+    permittivity is, per principal axis :math:`a_k` (the rows of `axes`),
+
+    .. math::
+
+        \varepsilon = \varepsilon_0 \sum_k \left[\varepsilon_{r,k}
+            (1 - i \tan\delta_k) - i \frac{\sigma_k}{\varepsilon_0 \omega}\right]
+            a_k a_k^T
+
+    with :math:`\varepsilon_{r,k}`, :math:`\tan\delta_k` and
+    :math:`\sigma_k` the k-th values of `eps_r`, `tan_delta` and
+    `conductivity`; a single value counts for all three axes. The two loss
     models, `tan_delta` and `conductivity`, add.
 
     A dispersive material's `eps_r` is a `PermittivityLaw`: then
-    ε = ε0 [eps_r(f) - i conductivity / (ε0 ω)], isotropic, with `tan_delta`
+    :math:`\varepsilon = \varepsilon_0 [\varepsilon_r(f) - i \sigma /
+    (\varepsilon_0 \omega)]`, isotropic, with `tan_delta`
     0 (the law carries the dielectric loss), one `mu_r` and one
     `conductivity`, and no `axes`.
 
@@ -1274,7 +1297,7 @@ def _common_axes(
 @_renamed_density
 @dataclasses.dataclass(frozen=True, kw_only=True, eq=False)
 class MaterialField:
-    """Material properties that vary over one volume region, per element (P0).
+    r"""Material properties that vary over one volume region, per element (P0).
 
     Keyword-only. Any `Material` property may be given; a property left out
     is ``None`` (adding a property later never changes the structure that
@@ -1284,9 +1307,9 @@ class MaterialField:
 
     `jax.grad` of any objective reaches the values.
     `eps_r` and `mu_r` may be complex (lossy, negative imaginary part under
-    e^{+iωt}); `conductivity` is electrical, S/m. The thermal properties
+    :math:`e^{+i\omega t}`); `conductivity` is electrical, S/m. The thermal properties
     (`thermal_conductivity`, `mass_density`, `specific_heat`) and
-    `thermo_optic_coefficient` (dn/dT, 1/K, any sign) are real, in the units
+    `thermo_optic_coefficient` (:math:`dn/dT`, 1/K, any sign) are real, in the units
     of `Material`; ``density=`` is the deprecated name of `mass_density`.
 
     With `axes`, the field is an anisotropic material field: each of
@@ -1423,19 +1446,24 @@ class MaterialField:
         scheme: Literal["linear", "simp", "ramp", "index"] = "linear",
         penalty: float = 3.0,
     ) -> MaterialField:
-        """Blend two materials by a density per element.
+        r"""Blend two materials by a density per element.
 
         Each property that both materials define becomes
         ``void + w(density) * (solid - void)``, with ``w`` the scheme's
-        weight: ``linear`` (w = rho), ``simp`` (w = rho^penalty) or ``ramp``
-        (w = rho / (1 + penalty (1 - rho))). Differentiable in ``density``.
+        weight: ``linear`` (:math:`w = \rho`), ``simp``
+        (:math:`w = \rho^p`, :math:`p` the ``penalty``) or ``ramp``
+        (:math:`w = \rho / (1 + p (1 - \rho))`). Differentiable in
+        ``density``.
 
-        ``index`` blends the refractive index instead: ``n - i kappa`` is
-        linear in rho, so eps = ((1 - rho) N_void + rho N_solid)^2 with N =
-        sqrt(eps_r (1 - i tan_delta)) on the branch with kappa >= 0
-        (Christiansen et al., CMAME 343, 2019); the other properties blend
-        with w = rho. Use it to blend a metal and a dielectric: a linear blend
-        of eps crosses Re eps = -2 eps_host, where an intermediate element is
+        ``index`` blends the refractive index instead: :math:`n - i\kappa` is
+        linear in :math:`\rho`, so
+        :math:`\varepsilon = ((1 - \rho) N_\mathrm{void} + \rho N_\mathrm{solid})^2`
+        with :math:`N = \sqrt{\varepsilon_r (1 - i \tan\delta)}` on the branch
+        with :math:`\kappa \ge 0` (Christiansen et al., CMAME 343, 2019); the
+        other properties blend with :math:`w = \rho`. Use it to blend a metal
+        and a dielectric: a linear blend of :math:`\varepsilon` crosses
+        :math:`\mathrm{Re}\,\varepsilon = -2 \varepsilon_\mathrm{host}`, where
+        an intermediate element is
         a small plasmonic resonator, almost lossless, and the optimizer finds
         artificial resonances there. Two constant ends give a complex
         `eps_r` per element.
@@ -1452,9 +1480,10 @@ class MaterialField:
 
         Warning:
             Under ``"index"`` an intermediate density between a dielectric
-            and a metal is a strong absorber: kappa is linear in rho, so at
-            rho = 0.5 next to gold kappa is about 5. A design of uniform rho
-            = 0.5 transmits almost nothing and its gradient vanishes; start a
+            and a metal is a strong absorber: :math:`\kappa` is linear in
+            :math:`\rho`, so at :math:`\rho = 0.5` next to gold :math:`\kappa`
+            is about 5. A design of uniform :math:`\rho = 0.5` transmits
+            almost nothing and its gradient vanishes; start a
             metal-dielectric optimization from a binary design (or one close
             to it), not from 0.5 everywhere.
 

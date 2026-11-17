@@ -12,7 +12,7 @@ v0.1.
   {term}`unresolved band`), {py:obj}`gfem.Electrostatic` (the
   Maxwell capacitance matrix between named terminals) and {py:obj}`gfem.PortMode`
   (the 2D mode of a wave port; a permittivity law in its cross-section where
-  Re ε > 0). Eigenmode and uniform driven problems take a
+  $\mathrm{Re}\,\varepsilon > 0$). Eigenmode and uniform driven problems take a
   Bloch wave vector (`wave_vector=`, rad/m) on a periodic model; a uniform
   driven sweep may keep the incidence angle fixed (`wave_vector_frequency`).
 - **Ports**: {py:obj}`gfem.LumpedPort` on one or several surfaces driven together,
@@ -21,7 +21,7 @@ v0.1.
   each its own row and column of S ({doc}`recipes/shared-port-surface`);
   {py:obj}`gfem.FloquetPort` on the open face of a periodic cell: one
   diffraction order in one polarization (TE or TM) of a plane wave, each its
-  own row and column of S, |S|² the diffraction efficiency
+  own row and column of S, $|S|^2$ the diffraction efficiency
   ({doc}`recipes/floquet-ports`).
 - **Boundaries**: {py:obj}`gfem.PEC`, {py:obj}`gfem.PMC` (symmetry planes), {py:obj}`gfem.Absorbing`
   (first or second order), {py:obj}`gfem.Conductor` (a finite-conductivity metal, by
@@ -44,8 +44,8 @@ v0.1.
   frequencies, Lamb shifts, anharmonicities and dispersive shifts of one
   junction on the solved modes) and `EigenmodeResult.sheet_participation`
   (the kinetic inductance fraction of a film), with their gradients
-  ({doc}`recipes/quantum-metrics`). A mode's loss splits into a 1/Q budget
-  and T1 limits ({doc}`recipes/loss-budget`).
+  ({doc}`recipes/quantum-metrics`). A mode's loss splits into a $1/Q$ budget
+  and $T_1$ limits ({doc}`recipes/loss-budget`).
 - **Thermal problems**: {py:obj}`gfem.SteadyThermal` (the temperature under
   heat sources), {py:obj}`gfem.TransientThermal` (the temperature over time
   under switched sources, with traces recorded at every step) and
@@ -129,8 +129,8 @@ returning a wrong value:
 
 ## Limits
 
-- **Low frequency**: below the low-frequency floor, k0·h_min = 1e-6 (f·h_min ≈
-  48 Hz·m, with h_min the shortest edge: 48 MHz with 1 µm elements, 5 GHz with
+- **Low frequency**: below the low-frequency floor, $k_0 h_\mathrm{min} = 10^{-6}$ ($f h_\mathrm{min} \approx$
+  48 Hz·m, with $h_\mathrm{min}$ the shortest edge: 48 MHz with 1 µm elements, 5 GHz with
   10 nm elements), a driven solve's fields, gradients and, with the direct
   solver or PETSc's default MUMPS factorization, the capacitive part of S
   lose digits, and it warns with {py:obj}`gfem.LowFrequencyWarning`. For

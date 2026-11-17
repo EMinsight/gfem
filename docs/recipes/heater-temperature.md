@@ -119,7 +119,7 @@ R over 320 um: 496.89 ohm
   of `dc.terminals`, and `dc.resistance` its inverse. On a cross-section the
   slab's values are for its thickness; read `resistance_per_length` instead.
 - A uniform strip carrying a current along its length has the resistance
-  1/(σA) per metre: the solve agrees to rounding.
+  $1/(\sigma A)$ per metre: the solve agrees to rounding.
 - One DC result serves every drive: the conductance is linear, so no drive
   needs a new solve.
 
@@ -218,14 +218,14 @@ core warmer by 0.32 mK
 ```
 
 The rise is the same. The core warms by a third of a millikelvin: the air's
-extra 20 K reach it only through h = 10 W/m²/K, against the 18 µm of oxide
+extra 20 K reach it only through $h$ = 10 W/m²/K, against the 18 µm of oxide
 and silicon below, which conduct the heat to the sink far better.
 
 ## Check your results
 
 - **The resistance.** For a strip, compare `resistance_per_length` with
-  1/(σA), as above. For your own heater, the number of squares between its
-  contacts times the sheet resistance 1/(σt) is a close estimate.
+  $1/(\sigma A)$, as above. For your own heater, the number of squares between its
+  contacts times the sheet resistance $1/(\sigma t)$ is a close estimate.
 - **The heat balance.** In steady state, every watt the sources put in leaves
   through the heat sinks. The {doc}`heater tutorial <../tutorials/heater>`
   reads the flux into the sink from the solved temperature and closes the
@@ -236,7 +236,7 @@ and silicon below, which conduct the heat to the sink far better.
 
 ## Limits
 
-- Conductivities are constant and isotropic: no k(T), no σ(T), no radiation,
+- Conductivities are constant and isotropic: no $k(T)$, no $\sigma(T)$, no radiation,
   no thermal contact resistance between layers. The current and the heat are
   solved one after the other; the heat does not change the current.
 - A cross-section is infinitely long: the heater's ends, its contacts and

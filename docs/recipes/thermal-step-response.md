@@ -3,7 +3,7 @@
 Find how fast a device heats up and cools down when its heater switches on
 and off: the temperature and the phase over time, the rise time and the time
 constant. {py:obj}`gfem.TransientThermal` steps the heat equation
-ρ c_p ∂T/∂t − ∇·(k ∇T) = s(t) q on a uniform time grid, and records
+$\rho c_p\, \partial T/\partial t - \nabla\cdot(k \nabla T) = s(t)\, q$ on a uniform time grid, and records
 {term}`traces <Trace>` of the temperature at every step.
 
 The device is the heater section of {doc}`heater-temperature`: a TiN strip
@@ -17,7 +17,7 @@ of guide ({doc}`../conventions`, "Temperature and thermo-optic phase").
 ## A step on and off
 
 The heater dissipates 70 W per metre of guide, about the power that turns
-the core's phase by π ({doc}`thermo-optic-phase`). It switches on at t = 0
+the core's phase by $\pi$ ({doc}`thermo-optic-phase`). It switches on at $t = 0$
 and off at 80 µs; the run lasts 160 µs, in 320 steps of 0.5 µs. Three traces
 follow it: the mean temperature of the core, the temperature at the heater's
 centre, and the core's thermo-optic phase per metre.
@@ -146,7 +146,7 @@ node's value, so keep only the times you need on a large mesh.
 ## Rise time and time constant
 
 {py:func}`gfem.rise_time` is the 10–90 % time of a trace, and
-{py:func}`gfem.time_constant` the time to 1 − 1/e = 63.2 % of its swing.
+{py:func}`gfem.time_constant` the time to $1 - 1/e$ = 63.2 % of its swing.
 Both normalise the trace between its first and last samples, so pass the
 part of the trace that goes with one switch, and that switch's time:
 
@@ -165,7 +165,7 @@ time constant: 8.56 us on, 8.56 us off
 ```
 
 - The model is linear, so the fall mirrors the rise.
-- A single exponential has rise time / time constant = ln 9 = 2.20. A ratio
+- A single exponential has rise time / time constant = $\ln 9 = 2.20$. A ratio
   near it means one slow thermal mode dominates.
 - Both take plain arrays of times and values, from gfem or anywhere else.
 

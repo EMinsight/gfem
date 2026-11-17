@@ -6,7 +6,7 @@ leaves in each diffraction order. You mesh one cell, pair its side faces with
 {py:obj}`gfem.Periodic` ({doc}`periodic-cell`), and close each open face (a
 {term}`Floquet surface`) with ports ({py:obj}`gfem.FloquetPort`). A
 {term}`Floquet port` is one {term}`diffraction order` in one polarization:
-its row and column of S are that order's, and |S|² is its
+its row and column of S are that order's, and $|S|^2$ is its
 {term}`diffraction efficiency`. The ports of a
 face absorb every order at any angle, so the cell needs no absorber or PML.
 
@@ -17,7 +17,7 @@ Floquet model.
 
 ## A slab under a plane wave
 
-A glass slab (n = 1.5, 0.3 µm thick) in air, lit from above. The mesh is one
+A glass slab ($n = 1.5$, 0.3 µm thick) in air, lit from above. The mesh is one
 cell, 0.4 µm × 0.4 µm, with the volumes `"above"`, `"slab"` and `"below"`, the
 open faces `"top"` and `"bottom"` 0.25 µm from the slab, and the side faces
 `"x_min"`, `"x_max"`, `"y_min"`, `"y_max"` meshed as translates of each other.
@@ -82,18 +82,18 @@ for pol in ("TE", "TM"):
 - Both differences should be small against |r| and |t|, and shrink as you
   refine the mesh or raise `order`. How gfem itself is checked against this
   form, at normal, oblique and Brewster incidence: {doc}`../verification`.
-- At normal incidence a flat interface reflects (n1 − n2) / (n1 + n2) in
-  both polarizations: the tangential-E sign. The Fresnel r_p of many optics
+- At normal incidence a flat interface reflects $(n_1 - n_2) / (n_1 + n_2)$ in
+  both polarizations: the tangential-E sign. The Fresnel $r_p$ of many optics
   texts has the opposite sign.
-- Without `offset`, S is referred to the Floquet surfaces: S11 picks up the
-  round trip exp(−2iβd) through the air between face and slab.
+- Without `offset`, S is referred to the Floquet surfaces: $S_{11}$ picks up the
+  round trip $\exp(-2i\beta d)$ through the air between face and slab.
 
 ## Name the orders
 
-A grating diffracts into several orders. Order (m, n) is the plane wave whose
-in-plane wave vector is κ = k_t + m b1 + n b2, with b1 and b2 the reciprocal
-vectors of the face's two pairs (b_i · a_j = 2π δ_ij, a1 and a2 the pairs'
-translations in `boundaries` order) and k_t the incident wave's.
+A grating diffracts into several orders. Order $(m, n)$ is the plane wave whose
+in-plane wave vector is $\boldsymbol{\kappa} = \mathbf{k}_t + m \mathbf{b}_1 + n \mathbf{b}_2$, with $\mathbf{b}_1$ and $\mathbf{b}_2$ the reciprocal
+vectors of the face's two pairs ($\mathbf{b}_i \cdot \mathbf{a}_j = 2\pi \delta_{ij}$, $\mathbf{a}_1$ and $\mathbf{a}_2$ the pairs'
+translations in `boundaries` order) and $\mathbf{k}_t$ the incident wave's.
 {py:meth}`gfem.Model.propagating_orders` lists the orders that propagate in
 the medium behind a face, before you declare any port:
 
@@ -122,12 +122,12 @@ incident = "R+0,+0 TE"
 efficiency = {name: abs(result.s[name, incident][0]) ** 2 for name in result.s.ports}
 ```
 
-- The sign of m follows a1: order +1 leans along +b1. Swapping the faces of
-  the first pair flips a1, and the same diffracted wave becomes order −1.
+- The sign of $m$ follows $\mathbf{a}_1$: order +1 leans along $+\mathbf{b}_1$. Swapping the faces of
+  the first pair flips $\mathbf{a}_1$, and the same diffracted wave becomes order −1.
 - `result.diffraction_orders[name]` describes each port's order at every
-  frequency: its in-plane `wave_vector` κ, `gamma` (iβ where it propagates),
+  frequency: its in-plane `wave_vector` $\boldsymbol{\kappa}$, `gamma` ($i\beta$ where it propagates),
   `propagating`, and the angles `theta` from the face normal and `phi` from
-  ê1 ({py:obj}`gfem.DiffractionOrderResult`).
+  $\hat{\mathbf{e}}_1$ ({py:obj}`gfem.DiffractionOrderResult`).
 - Port names are yours. Several Floquet ports share one face, each with its
   own (order, polarization), as the modes of a
   {doc}`shared port surface <shared-port-surface>` do; the face takes no
@@ -188,13 +188,13 @@ sweep = gfem.solve(grating.replace(ports=ports), fixed, options=options)
 ## Polarization
 
 TE (s) and TM (p) are relative to each order's own plane of incidence: TE
-along ê3 × κ̂, normal to it, and TM along κ̂, in it. At normal incidence
-κ̂ is ê1, the direction of the first pair's translation: on a cell paired
+along $\hat{\mathbf{e}}_3 \times \hat{\boldsymbol{\kappa}}$, normal to it, and TM along $\hat{\boldsymbol{\kappa}}$, in it. At normal incidence
+$\hat{\boldsymbol{\kappa}}$ is $\hat{\mathbf{e}}_1$, the direction of the first pair's translation: on a cell paired
 along x then y, TE is E along +y and TM is E along +x. gfem has no circular
 port and no helper: combine the columns of the TE and TM ports of one order.
 Excite both ports of the incident order, then, for incidence from the top
-face (the face whose outward normal is ê3, incidence along −ê3), IEEE
-right-handed circular incidence is (S[:, TM] + i S[:, TE]) / √2:
+face (the face whose outward normal is $\hat{\mathbf{e}}_3$, incidence along $-\hat{\mathbf{e}}_3$), IEEE
+right-handed circular incidence is $(S_{:,\mathrm{TM}} + i S_{:,\mathrm{TE}}) / \sqrt{2}$:
 
 ```python
 both = gfem.Driven(f, excite=["R+0,+0 TE", "R+0,+0 TM"])
@@ -232,9 +232,9 @@ n = len(lit.mesh.elements("ridge"))
 grad = jax.grad(efficiency_of)(jnp.full(n, 4.0))
 ```
 
-- Build objectives from |S|², |S| or Re S. The row of an order that does not
-  propagate reads exactly 0, so 10 log10 |S|² there is −∞ with a NaN
-  gradient: take dB after optimizing, or use log10(|S|² + ε).
+- Build objectives from $|S|^2$, $|S|$ or $\operatorname{Re} S$. The row of an order that does not
+  propagate reads exactly 0, so $10 \log_{10} |S|^2$ there is $-\infty$ with a NaN
+  gradient: take dB after optimizing, or use $\log_{10}(|S|^2 + \epsilon)$.
 - A pixel design on a periodic cell takes
   {py:obj}`gfem.design.LayerGrid` with `periodic=(True, False)` (one bool per
   grid axis, (x, y)), whose pitch must divide the period along a periodic
@@ -246,8 +246,8 @@ grad = jax.grad(efficiency_of)(jnp.full(n, 4.0))
   so its efficiency in a non-specular order and the gradient of it are 0:
   start from a design that already varies.
 - When you check a gradient by finite differences, keep every propagating
-  order away from grazing. Near a {term}`Rayleigh anomaly` |S| varies as
-  √|γ|, and a finite-difference step swamps the derivative.
+  order away from grazing. Near a {term}`Rayleigh anomaly` $|S|$ varies as
+  $\sqrt{|\gamma|}$, and a finite-difference step swamps the derivative.
 
 ## A fed cell
 
@@ -274,10 +274,10 @@ active_reflection = scan["feed", "feed"][0]
 ```
 
 - The reference impedance of a Floquet row is the order's wave impedance,
-  η / cos θ for TE and η cos θ for TM, in the medium behind the face, and
+  $\eta / \cos\theta$ for TE and $\eta \cos\theta$ for TM, in the medium behind the face, and
   NaN where the order does not propagate (`scan.z_ref`). `scan.z()` then
   gives the oblique transmission-line model: for a sheet between two
-  Floquet faces, with both reference planes on the sheet, Z₂₁ is its sheet
+  Floquet faces, with both reference planes on the sheet, $Z_{21}$ is its sheet
   impedance.
 - A Touchstone file has one real reference impedance. S writes as it is
   only at normal incidence with every port in one medium; otherwise
@@ -295,11 +295,11 @@ active_reflection = scan["feed", "feed"][0]
   each excited column. The defect counts the orders you did not declare
   (and the warning names them), the mesh and any loss together.
 - **Reciprocity with the order labels.** A reversed wave has the opposite
-  in-plane wave vector: order (m, n) maps to (−m, −n), and the TE and TM
-  references flip sign with it. With σ = −1 for an order with κ ≠ 0 and +1
-  for κ = 0, S_{p←q}(k) = σ_p σ_q S_{−q←−p}(−k), where −p is port p's face
-  and polarization with the opposite order. Solve at −k with the mirrored
-  ports and compare. The plain transpose S(k)ᵀ = S(−k) does not hold for
+  in-plane wave vector: order $(m, n)$ maps to $(-m, -n)$, and the TE and TM
+  references flip sign with it. With $\sigma = -1$ for an order with $\boldsymbol{\kappa} \neq 0$ and $+1$
+  for $\boldsymbol{\kappa} = 0$, $S_{p\leftarrow q}(\mathbf{k}) = \sigma_p \sigma_q S_{-q\leftarrow -p}(-\mathbf{k})$, where $-p$ is port $p$'s face
+  and polarization with the opposite order. Solve at $-\mathbf{k}$ with the mirrored
+  ports and compare. The plain transpose $S(\mathbf{k})^\mathsf{T} = S(-\mathbf{k})$ does not hold for
   Floquet ports. The {doc}`metagrating tutorial <../tutorials/metagrating>`
   runs this check at normal incidence.
 - **Zero wave vector.** `wave_vector=(0, 0, 0)` gives the same S as `None`;

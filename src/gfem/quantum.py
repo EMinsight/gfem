@@ -1,11 +1,11 @@
-"""Dressed modes of a junction on the solved linear modes.
+r"""Dressed modes of a junction on the solved linear modes.
 
-One junction of linear inductance ``L_J`` turns the linear modes of an
+One junction of linear inductance :math:`L_J` turns the linear modes of an
 eigenmode solve into the dressed modes of a superconducting circuit. From the
-modes' angular frequencies ``omega_m`` and their signed junction participation
-``p_m`` (`gfem.EigenmodeResult.participation` of the junction's `LumpedPort`),
-`dressed_modes` returns the dressed frequencies, Lamb shifts, anharmonicities
-and dispersive shifts::
+modes' angular frequencies :math:`\omega_m` and their signed junction
+participation :math:`p_m` (`gfem.EigenmodeResult.participation` of the
+junction's `LumpedPort`), `dressed_modes` returns the dressed frequencies, Lamb
+shifts, anharmonicities and dispersive shifts::
 
     modes = gfem.solve(model, gfem.Eigenmode(target=5e9, n_modes=2))
     dressed = gfem.quantum.dressed_modes(
@@ -74,18 +74,18 @@ class DressedModes:
     """The dressed modes of a junction on the solved linear modes.
 
     Every array is in the input mode order, in rad/s, and is a difference of
-    the levels ``E`` of the junction Hamiltonian (``E(0)`` the ground state,
-    ``E(1_m)`` one photon in mode ``m``).
+    the levels :math:`E` of the junction Hamiltonian (:math:`E(0)` the ground
+    state, :math:`E(1_m)` one photon in mode :math:`m`).
 
     Attributes:
-        omega: ``(n,)`` dressed transition frequency ``E(1_m) - E(0)``.
+        omega: ``(n,)`` dressed transition frequency :math:`E(1_m) - E(0)`.
         lamb_shift: ``(n,)`` ``omega`` minus the real part of the input
             ``omega``; negative for a transmon.
-        anharmonicity: ``(n,)`` ``E(2_m) - 2 E(1_m) + E(0)``, the second
+        anharmonicity: ``(n,)`` :math:`E(2_m) - 2 E(1_m) + E(0)`, the second
             transition frequency minus the first; negative for a transmon.
         dispersive_shift: ``(n, n)`` symmetric,
-            ``E(1_m 1_n) - E(1_m) - E(1_n) + E(0)``: the full shift of mode
-            ``n``'s frequency per photon in mode ``m``. Its diagonal is
+            :math:`E(1_m 1_n) - E(1_m) - E(1_n) + E(0)`: the full shift of
+            mode :math:`n`'s frequency per photon in mode :math:`m`. Its diagonal is
             ``anharmonicity``.
         overlap: The smallest overlap, in (1/2, 1], of a used level (the
             ground state, ``1_m``, ``2_m``, ``1_m 1_n``) with the Fock state
@@ -115,36 +115,39 @@ def dressed_modes(
     levels: int | Sequence[int] = 12,
     method: Method = "diagonalization",
 ) -> DressedModes:
-    """The dressed modes of one junction on the given linear modes.
+    r"""The dressed modes of one junction on the given linear modes.
 
-    The model is the junction's cosine potential, with ``E_J = (hbar /
-    2e)^2 / L_J``, on top of the solved linear modes; the Hamiltonian, the
-    output definitions and their signs are in `gfem.conventions`, under
-    "Quantum metrics". It is built on ``levels`` Fock states per mode. The
-    cosine is exact (not a
-    Taylor series). Each level used is labelled by its largest overlap with
-    a bare Fock state. With one junction only the product of the
-    participation signs of two modes enters, and it cancels in every
-    output: the signs are accepted so that ``participation`` can be
-    `gfem.EigenmodeResult.participation` of the junction's port as it is.
+    The model is the junction's cosine potential, with
+    :math:`E_J = (\hbar / 2e)^2 / L_J`, on top of the solved linear modes; the
+    Hamiltonian, the output definitions and their signs are in
+    `gfem.conventions`, under "Quantum metrics". It is built on ``levels`` Fock
+    states per mode. The cosine is exact (not a Taylor series). Each level used
+    is labelled by its largest overlap with a bare Fock state. With one
+    junction only the product of the participation signs of two modes enters,
+    and it cancels in every output: the signs are accepted so that
+    ``participation`` can be `gfem.EigenmodeResult.participation` of the
+    junction's port as it is.
 
     ``method="first_order"`` returns the closed forms instead, with
-    ``K_mn = hbar omega_m omega_n |p_m p_n| / (4 E_J)``: ``dispersive_shift
-    = -K`` off the diagonal, ``anharmonicity = -K_mm / 2``, ``lamb_shift =
-    -(1/2) sum_n K_mn``, ``omega = Re(omega) + lamb_shift``. It is for
+    :math:`K_{mn} = \hbar \omega_m \omega_n |p_m p_n| / (4 E_J)`:
+    ``dispersive_shift`` :math:`= -K` off the diagonal, ``anharmonicity``
+    :math:`= -K_{mm} / 2`, ``lamb_shift``
+    :math:`= -\frac{1}{2} \sum_n K_{mn}`, ``omega``
+    :math:`= \mathrm{Re}\,\omega +` ``lamb_shift``. It is for
     comparison with published first-order numbers: it overestimates or
-    underestimates the dispersive shift by about ``3 alpha / Delta`` (1.5 to
+    underestimates the dispersive shift by about :math:`3 \alpha / \Delta` (1.5 to
     1.9 times at ordinary detunings) and never changes its sign.
 
     Validity:
 
     - The model is the junction's cosine on the solved linear modes. It has
       no charge dispersion: it is for the transmon regime.
-    - It uses ``Re omega`` only, so it is meaningful for ``Q >> 1``.
+    - It uses :math:`\mathrm{Re}\,\omega` only, so it is meaningful for
+      :math:`Q \gg 1`.
     - Modes not passed in (not solved, or not selected) contribute no Lamb
       shift and no dispersive shift.
     - The solve's qubit frequency is the linearized one: the dressed
-      frequency is lower by about ``|alpha|``.
+      frequency is lower by about :math:`|\alpha|`.
     - Labels need an overlap above 1/2 (`gfem.ModeLabelError` otherwise).
     - ``inductance`` must be the value the solve used; pass the same traced
       value to the `gfem.LumpedPort` to get the derivative through the
@@ -185,7 +188,8 @@ def dressed_modes(
             ``levels`` entry is below 3 or a ``levels`` sequence has the
             wrong length; the product of ``levels`` exceeds
             `MAX_DIMENSION`; ``method`` is unknown. For concrete inputs also:
-            a non-finite value, ``Re omega <= 0``, ``inductance <= 0``, a
+            a non-finite value, :math:`\mathrm{Re}\,\omega \le 0`,
+            ``inductance <= 0``, a
             participation of magnitude above 1 or exactly zero (a traced zero
             participation is refused by the host check below).
         gfem.ModeLabelError: A used level's largest overlap with a Fock

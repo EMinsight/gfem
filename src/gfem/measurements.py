@@ -560,7 +560,7 @@ def power_flow(
     *,
     model: Model,
 ) -> jax.Array:
-    """Net time-averaged power leaving ``side`` through its boundary, W.
+    r"""Net time-averaged power leaving ``side`` through its boundary, W.
 
     ``side`` is a set of elements: a volume region, several (their union),
     or a predicate ``inside(centroids) -> bool`` on the ``(n_tetrahedra,
@@ -575,7 +575,8 @@ def power_flow(
     as a fraction of the incident power.
 
     The power comes from the residual of the discrete equations on the
-    outside element layer, not from an integral of ``1/2 Re(E x H*)``, so
+    outside element layer, not from an integral of
+    :math:`\frac{1}{2} \mathrm{Re}(E \times H^*)`, so
     it is exact for the solved field (to the solver's residual) and the
     same through every surface that encloses the same ports and losses.
     In lossy media it is the power entering ``side`` through its ports,
@@ -740,8 +741,9 @@ def _check_estimated_side(names: tuple[str, ...], model: Model) -> None:
 
 
 def region_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
-    """Mean of a field over volume regions, ``int_R E dV / |R|``, or of a potential.
+    r"""Mean of a field over volume regions, or of a potential.
 
+    The mean is :math:`\int_R E\, dV / |R|`.
     ``R`` is the union of the named regions' elements in the field's
     support. The mean is exact for the solved field (the integral of its
     finite-element polynomial, not a sample of it), and linear in its
@@ -887,9 +889,9 @@ class _MeanKernel:
 
 
 def element_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
-    """Mean of a scalar field over each tetrahedron of volume regions.
+    r"""Mean of a scalar field over each tetrahedron of volume regions.
 
-    Each value is ``int_e f dV / |e|``, exact for the solved field (the
+    Each value is :math:`\int_e f\, dV / |e|`, exact for the solved field (the
     integral of its finite-element polynomial), in ``mesh.elements(region)``
     order, the order a `gfem.MaterialField` on that region takes: a
     temperature rise per element gives a per-element permittivity, for
@@ -1027,23 +1029,26 @@ def _recorded_region_mean(
 
 
 def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
-    """Time-averaged electric energy of a field in each volume region, J.
+    r"""Time-averaged electric energy of a field in each volume region, J.
 
-    ``W_e[r] = 1/4 eps0 ∫_r E* . Re(eps_r) E dV`` over the region's elements
+    :math:`W_e[r] = \frac{1}{4} \varepsilon_0 \int_r E^* \cdot
+    \mathrm{Re}(\varepsilon_r) E\, dV` over the region's elements
     in the solve domain, with the full real permittivity tensor in an
     anisotropic medium. In a region with a `gfem.PermittivityLaw` the
-    weight is the Brillouin one, ``Re d(omega eps)/d omega`` at the field's
+    weight is the Brillouin one,
+    :math:`\mathrm{Re}\, d(\omega\varepsilon)/d\omega` at the field's
     real frequency (the time-averaged electric energy of a dispersive
     medium, exact for a lossless law and the weak-loss value otherwise).
     The field is a peak phasor, hence the 1/4. A driven field is the one for
     1 W incident at its excited port
     (`gfem.conventions`), so in a region with one loss tangent the power
-    dielectric loss absorbs is ``2 * omega * tan_delta * W_e[r]`` W, the
+    dielectric loss absorbs is :math:`2 \omega \tan\delta\, W_e[r]` W, the
     number `power_flow` gives for that region when nothing else in it
     absorbs.
 
     A mode field of an `gfem.EigenmodeResult` is accepted too. The mode
-    normalization counts ``1/2 Re ∫ D* . E``, the total energy of a lossless
+    normalization counts :math:`\frac{1}{2} \mathrm{Re} \int D^* \cdot E`,
+    the total energy of a lossless
     mode and twice this time average: ``2 * W_e[r]`` equals
     ``bulk_participation[r] * gfem.conventions.MODE_ENERGY`` in a region
     without a permittivity law (the mode energy weighs a law region with its
@@ -1069,7 +1074,8 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
             `gfem.Model`.
         ValueError: The field is not a time-harmonic electric field (another
             quantity, or static), or was not solved on ``model``; or a
-            permittivity law gives ``Re d(omega eps)/d omega <= 0`` in its
+            permittivity law gives
+            :math:`\mathrm{Re}\, d(\omega\varepsilon)/d\omega \le 0` in its
             region at the field's frequency (loss dominates there: a metal
             below its damping frequency, a Lorentz pole inside its
             linewidth).

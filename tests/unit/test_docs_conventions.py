@@ -171,9 +171,10 @@ def test_an_empty_cell_delays_the_phase_by_its_thickness(ran):
 def test_the_floquet_section_states_the_frame_sigma_and_circular_handedness(page):
     section = dp._prose(dp.section(page, "Floquet ports"))
     for text in (
-        "ê3 × κ̂",  # the TE reference  # noqa: RUF001
-        "σ_p σ_q",  # Bloch reciprocity with Floquet ports  # noqa: RUF001
-        "(S[:, TM] + i S[:, TE]) / √2",  # IEEE right-handed circular from the top
+        r"\hat{\mathbf{e}}_3 \times \hat{\boldsymbol{\kappa}}",  # the TE reference
+        r"\sigma_p \sigma_q",  # Bloch reciprocity with Floquet ports
+        # IEEE right-handed circular from the top
+        r"(S[:, \mathrm{TM}] + i\, S[:, \mathrm{TE}]) / \sqrt{2}",
         "left-handed",  # the same combination from the bottom
         "{doc}`recipes/floquet-ports`",
     ):

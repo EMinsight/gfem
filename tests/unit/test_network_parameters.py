@@ -313,7 +313,7 @@ def test_touchstone_checks_the_file_name_and_z0(line, tmp_path):
 
 def test_conventions_module_states_the_conventions():
     doc = gfem.conventions.__doc__
-    for phrase in ("e^{+iωt}", "power wave", "peak", "1 W", "z_ref", "1/2"):
+    for phrase in (r"e^{+i\omega t}", "power wave", "peak", "1 W", "z_ref", "1/2"):
         assert phrase in doc, phrase
     assert gfem.conventions.INCIDENT_POWER == 1.0
     assert gfem.conventions.TIME_DEPENDENCE == "exp(+iωt)"

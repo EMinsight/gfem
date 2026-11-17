@@ -70,7 +70,7 @@ value, grad = jax.value_and_grad(dispersive_shift)(jnp.full(n, 11.7))
 ## What you get
 
 {py:obj}`gfem.quantum.DressedModes` holds, in the input mode order, signed
-angular frequencies in rad/s; divide by 2π for Hz:
+angular frequencies in rad/s; divide by $2\pi$ for Hz:
 
 `omega`
 : The dressed transition frequency of each mode.

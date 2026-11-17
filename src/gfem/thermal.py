@@ -298,7 +298,7 @@ def joule_heating(
     The drive is applied to the unit-voltage solve with no new solve, so
     one `gfem.DCConduction` result serves every drive, and the heat is
     differentiable with respect to the drive. Each tetrahedron of a
-    conductor gets its exact mean power density ``V^T D_e V``
+    conductor gets its exact mean power density :math:`V^T D_e V`
     (`gfem.DCConductionResult.dissipation`); elsewhere it is zero.
 
     Exactly one drive is given:

@@ -380,11 +380,11 @@ How gfem itself checks the estimates against known answers:
   {gfem-effectivity}`lumped port across a permeability contrast low` to
   {gfem-effectivity}`lumped port across a permeability contrast high` and
   does not improve under refinement; S and objectives raise there.
-- On a permittivity law with -20 < Re ε < 0 at a solve frequency, metal
+- On a permittivity law with $-20 < \operatorname{Re} \varepsilon < 0$ at a solve frequency, metal
   edges and port junctions make the field itself mesh-dependent: S and
   objectives raise, and the field estimate measured as low as
   {gfem-effectivity}`plasmonic window low`. A lumped port's edge on a metal
-  interface converges slowly even at Re ε = -30. The -20 bound assumes
+  interface converges slowly even at $\operatorname{Re} \varepsilon = -30$. The -20 bound assumes
   metal wedges of 17° or more and a damping of about 2 % of the frequency.
 - Below a guide's cutoff, a mesh coarser than the field's decay length
   underestimates both S and the field: resolve the decay length.
@@ -419,7 +419,7 @@ How gfem itself checks the estimates against known answers:
   1e-10.
 - It does not include the linear solver's error. `refine_mesh` requires
   `tolerance` to be at least 10 times `SolverOptions.tolerance`
-  (`eigen_tolerance` for an eigenmode problem); for Q, times cot(arg ω);
+  (`eigen_tolerance` for an eigenmode problem); for $Q$, times $\cot(\arg \omega)$;
   for an objective, times its sensitivity.
 - `refine_mesh` raises {py:obj}`gfem.MeshRefinementUnsupportedError`, before
   any solve, on an adaptive sweep, a port mode problem, a periodic model, a
@@ -427,9 +427,9 @@ How gfem itself checks the estimates against known answers:
   `"thermal"` or `"dc_conduction"`) and `SolverOptions(order=1)` (the
   `"fast"` preset); both
   estimators refuse order 1. An estimate of a mode bound to a permittivity
-  law region where Re ε < 0 at the mode (a mode guided along a metal
+  law region where $\operatorname{Re} \varepsilon < 0$ at the mode (a mode guided along a metal
   surface) raises it when it estimates: refine such a model with the
-  `FieldEstimator`. Permittivity laws where Re ε > 0, second-order
+  `FieldEstimator`. Permittivity laws where $\operatorname{Re} \varepsilon > 0$, second-order
   absorbing boundaries, a complex `mu_r` and loss inside an anisotropic
   material are estimated for a mode's `omega`; Q and objectives of a mode
   still raise on each of them. The dispersive shifts of

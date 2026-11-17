@@ -14,7 +14,7 @@ it. The device is the parallel-plate line of {doc}`get-started`.
 | `gfem.conventions.INCIDENT_POWER` | 1 W | the incident power behind every driven field |
 | `gfem.conventions.MODE_ENERGY` | 1 J | the electric energy every mode field stores |
 | `gfem.conventions.BLOCH_PHASE` | `E(r + a) = exp(-i k·a) E(r)` | the phase across a periodic pair |
-| `gfem.conventions.INTERIOR_SHEET_ADMITTANCE` | 0.5 | a thin `Conductor` film on an interior surface, in units of σt |
+| `gfem.conventions.INTERIOR_SHEET_ADMITTANCE` | 0.5 | a thin `Conductor` film on an interior surface, in units of $\sigma t$ |
 | `gfem.conventions.EXTERIOR_THICKNESS_FACTOR` | 2 | how often a `Conductor`'s thickness counts on an exterior surface |
 
 ## Units
@@ -61,9 +61,9 @@ The thermal problems use the same SI units, with temperatures in kelvin
 
 ## Time dependence
 
-The physical field is Re(E exp(+iωt)), the electrical engineering convention
-(`TIME_DEPENDENCE`): write j for i and the formulas of a circuit textbook
-apply. A wave travelling along +x is then exp(−iβx), so the phase of a
+The physical field is $\mathrm{Re}(E\, e^{+i\omega t})$, the electrical engineering convention
+(`TIME_DEPENDENCE`): write $j$ for $i$ and the formulas of a circuit textbook
+apply. A wave travelling along $+x$ is then $e^{-i\beta x}$, so the phase of a
 transmission falls with distance, and with frequency. On the line with its
 ceramic section, from 2 to 8 GHz:
 
@@ -87,18 +87,18 @@ print(np.unwrap(np.angle(result.s["p2", "p1"])))  # the phase of S21, rad
  -7.83283125]
 ```
 
-A code that uses exp(−iωt) gives the complex conjugate of every S entry and
+A code that uses $e^{-i\omega t}$ gives the complex conjugate of every S entry and
 every field.
 
 ## S-parameters and power
 
 S relates {term}`power waves` (`WAVES`), normalized to each port's
-{term}`reference impedance`: abs(a)² is the power a wave carries, in W.
+{term}`reference impedance`: $|a|^2$ is the power a wave carries, in W.
 Phasors are peak values (`PHASOR`), so a time-averaged power carries a
-factor ½, as in abs(V)² / (2R). A kept driven field is the field for
+factor $\tfrac{1}{2}$, as in $|V|^2 / (2R)$. A kept driven field is the field for
 `INCIDENT_POWER`, 1 W, sent into the excited port, with every other port
 matched. The power that field carries through the feed line should then be
-what port 1 does not reflect, 1 − abs(S11)² W:
+what port 1 does not reflect, $1 - |S_{11}|^2$ W:
 
 ```python
 field = result.e_field(5e9, "p1")
@@ -114,9 +114,9 @@ print(1 - abs(result.s["p1", "p1"][3]) ** 2)  # what port 1 does not reflect at 
 
 ## Sign of loss
 
-Under exp(+iωt) a lossy permittivity has a negative imaginary part,
-ε = ε′ (1 − i tan δ), and a mode that decays has Im ω > 0. Its quality factor
-is abs(ω) / (2 abs(Im ω)). With the ports removed and a
+Under $e^{+i\omega t}$ a lossy permittivity has a negative imaginary part,
+$\varepsilon = \varepsilon' (1 - i \tan\delta)$, and a mode that decays has $\mathrm{Im}\,\omega > 0$. Its quality factor
+is $|\omega| / (2 |\mathrm{Im}\,\omega|)$. With the ports removed and a
 {term}`loss tangent` of 1e-3 in the ceramic, the line's first resonance:
 
 ```python
@@ -136,19 +136,19 @@ print(modes.q[0], abs(omega) / (2 * omega.imag))
 ## Dispersive materials
 
 A {term}`permittivity law` follows the same sign of loss. Its parameters are
-ordinary frequencies in hertz (ω = 2π f), and under exp(+iωt) its terms are:
+ordinary frequencies in hertz ($\omega = 2\pi f$), and under $e^{+i\omega t}$ its terms are:
 
-| Term | Adds to ε∞ |
+| Term | Adds to $\varepsilon_\infty$ |
 | --- | --- |
-| {py:obj}`gfem.Drude` | −ωp² / (ω (ω − iγ)) |
-| {py:obj}`gfem.Lorentz` | Δε ω0² / (ω0² − ω² + iγω) |
-| {py:obj}`gfem.Debye` | Δε / (1 + i f / f_r) |
-| {py:obj}`gfem.DjordjevicSarkar` | Δε ln((f2 + i f) / (f1 + i f)) / ln(f2 / f1) |
+| {py:obj}`gfem.Drude` | $-\omega_p^2 / (\omega (\omega - i\gamma))$ |
+| {py:obj}`gfem.Lorentz` | $\Delta\varepsilon\, \omega_0^2 / (\omega_0^2 - \omega^2 + i\gamma\omega)$ |
+| {py:obj}`gfem.Debye` | $\Delta\varepsilon / (1 + i f / f_r)$ |
+| {py:obj}`gfem.DjordjevicSarkar` | $\Delta\varepsilon \ln((f_2 + i f) / (f_1 + i f)) / \ln(f_2 / f_1)$ |
 
-Here ωp, ω0 and γ are 2π times the term's plasma, resonance and damping
-frequencies, and f_r, f1 and f2 are its relaxation and corner frequencies.
+Here $\omega_p$, $\omega_0$ and $\gamma$ are $2\pi$ times the term's plasma, resonance and damping
+frequencies, and $f_r$, $f_1$ and $f_2$ are its relaxation and corner frequencies.
 With every strength positive and every damping at least 0, each term is
-passive alone, so Im ε ≤ 0 at every real frequency. A Lorentz medium just
+passive alone, so $\mathrm{Im}\,\varepsilon \le 0$ at every real frequency. A Lorentz medium just
 below its resonance:
 
 ```python
@@ -166,21 +166,21 @@ print(law(0.0).real)  # the static permittivity, eps_inf + delta_eps
 3.0
 ```
 
-Most optics papers write their fits under exp(−iωt). There the same law is
-the complex conjugate: keep the parameter values, and read their −iγ as +iγ.
+Most optics papers write their fits under $e^{-i\omega t}$. There the same law is
+the complex conjugate: keep the parameter values, and read their $-i\gamma$ as $+i\gamma$.
 `law(0)` is the {term}`static permittivity`, which the electrostatic problem
 reads. A mode's energy weighs a law region with its
-{term}`energy permittivity` instead of Re ε (see below). How to write a law:
+{term}`energy permittivity` instead of $\mathrm{Re}\,\varepsilon$ (see below). How to write a law:
 {doc}`recipes/dispersive-materials`.
 
 ## Eigenmode fields
 
 A mode has no source to set its amplitude, so gfem scales every mode field to
-store `MODE_ENERGY`, 1 J, of electric energy: ½ Re ∫ D\* · E dV, plus
-C|V|²/2 in each lumped port with a capacitance C, plus ½ ∫ C_s |E_t|² dS on
-each {py:obj}`gfem.Impedance` sheet with a capacitance C_s per square. For a
+store `MODE_ENERGY`, 1 J, of electric energy: $\tfrac{1}{2} \mathrm{Re} \int \mathbf{D}^* \cdot \mathbf{E}\, dV$, plus
+$C|V|^2/2$ in each lumped port with a capacitance $C$, plus $\tfrac{1}{2} \int C_s |E_t|^2\, dS$ on
+each {py:obj}`gfem.Impedance` sheet with a capacitance $C_s$ per square. For a
 lossless mode this is its total energy. In a region with a permittivity
-law, the volume term weighs |E|² with the energy permittivity at the mode's
+law, the volume term weighs $|E|^2$ with the energy permittivity at the mode's
 real frequency, so it stays the total energy of a lossless mode. Elsewhere,
 the time-averaged electric energy `gfem.electric_energy` measures is half of
 the volume term. Participation
@@ -199,17 +199,17 @@ print(sum(modes.bulk_participation.values())[0])
 1.0000000000000002
 ```
 
-The inductive participations of a lumped port with an inductance L and of an
+The inductive participations of a lumped port with an inductance $L$ and of an
 inductive sheet are shares of the same energy too. For a lossless mode, a
-sheet's `sheet_participation` is −2 d ln ω / d ln L_s on any mesh. A port's
-`participation` is −2 d ln ω / d ln L when the field is uniform across the
+sheet's `sheet_participation` is $-2\, d\ln\omega / d\ln L_s$ on any mesh. A port's
+`participation` is $-2\, d\ln\omega / d\ln L$ when the field is uniform across the
 port; otherwise it is read from the port's mean voltage and differs slightly.
 
 ## Periodic cells
 
-Across a periodic pair of translation a, a Bloch wave vector k sets
+Across a periodic pair of translation $\mathbf{a}$, a Bloch wave vector $\mathbf{k}$ sets
 `BLOCH_PHASE`: `E(r + a) = exp(-i k·a) E(r)`, so the phase of a Bloch wave
-travels along +k. {doc}`recipes/periodic-cell` shows it on a cell, and
+travels along $+\mathbf{k}$. {doc}`recipes/periodic-cell` shows it on a cell, and
 "Floquet ports" below gives the conventions of a cell lit by a plane wave.
 
 ## Floquet ports
@@ -218,16 +218,16 @@ A {py:obj}`gfem.FloquetPort` is one diffraction order in one polarization of
 a plane wave on the open face of a periodic cell
 ({doc}`recipes/floquet-ports`). The cell here is one period of the
 {doc}`metagrating tutorial <tutorials/metagrating>`'s grating with its
-design layers left as air: a flat interface between glass (n = 1.444) below
+design layers left as air: a flat interface between glass ($n = 1.444$) below
 and air above, 2.023 µm along x and 0.08 µm along y.
 
 **The lattice frame.** The two pairs that rim a face, in `boundaries` order,
-have translations a1 and a2. The face's frame is ê1 = a1 / |a1|, ê3 along
-a1 × a2 and ê2 = ê3 × ê1; here ê1 = +x, ê2 = +y, ê3 = +z on both faces.
-Order (m, n) has the in-plane wave vector κ = k_t + m b1 + n b2, with
-b_i · a_j = 2π δ_ij and k_t the problem's `wave_vector` (zero at normal
+have translations $\mathbf{a}_1$ and $\mathbf{a}_2$. The face's frame is $\hat{\mathbf{e}}_1 = \mathbf{a}_1 / |\mathbf{a}_1|$, $\hat{\mathbf{e}}_3$ along
+$\mathbf{a}_1 \times \mathbf{a}_2$ and $\hat{\mathbf{e}}_2 = \hat{\mathbf{e}}_3 \times \hat{\mathbf{e}}_1$; here $\hat{\mathbf{e}}_1 = +x$, $\hat{\mathbf{e}}_2 = +y$, $\hat{\mathbf{e}}_3 = +z$ on both faces.
+Order $(m, n)$ has the in-plane wave vector $\boldsymbol{\kappa} = \mathbf{k}_t + m \mathbf{b}_1 + n \mathbf{b}_2$, with
+$\mathbf{b}_i \cdot \mathbf{a}_j = 2\pi \delta_{ij}$ and $\mathbf{k}_t$ the problem's `wave_vector` (zero at normal
 incidence). An order propagates in the medium behind the face when
-|κ| < k0 n; at 1.55 µm the orders −1, 0 and +1 do, at 3.1 µm only the
+$|\boldsymbol{\kappa}| < k_0 n$; at 1.55 µm the orders −1, 0 and +1 do, at 3.1 µm only the
 specular one:
 
 ```python
@@ -253,20 +253,20 @@ print(cell.propagating_orders("top", c / 3.1e-6))
 ((0, 0),)
 ```
 
-The TE reference of an order is ê3 × κ̂ (E normal to its plane of
-incidence, s) and the TM reference is κ̂ (E in it, p), both tangential to
-the face. At κ = 0, κ̂ is ê1: at normal incidence TE is E along ê2 (+y here)
-and TM is E along ê1 (+x).
+The TE reference of an order is $\hat{\mathbf{e}}_3 \times \hat{\boldsymbol{\kappa}}$ ($\mathbf{E}$ normal to its plane of
+incidence, s) and the TM reference is $\hat{\boldsymbol{\kappa}}$ ($\mathbf{E}$ in it, p), both tangential to
+the face. At $\boldsymbol{\kappa} = 0$, $\hat{\boldsymbol{\kappa}}$ is $\hat{\mathbf{e}}_1$: at normal incidence TE is $\mathbf{E}$ along $\hat{\mathbf{e}}_2$ ($+y$ here)
+and TM is $\mathbf{E}$ along $\hat{\mathbf{e}}_1$ ($+x$).
 
 **What S is.** A Floquet entry compares the tangential E of two orders at
-their face planes, scaled to power: S_{p←q} = (c_p / c_q) √(Z_q / Z_p), with
-c the order's tangential-E coefficient and Z its wave impedance in the medium
-behind its own face, η / cos θ for TE and η cos θ for TM. |S|² is therefore
+their face planes, scaled to power: $S_{p\leftarrow q} = (c_p / c_q) \sqrt{Z_q / Z_p}$, with
+$c$ the order's tangential-E coefficient and $Z$ its wave impedance in the medium
+behind its own face, $\eta / \cos\theta$ for TE and $\eta \cos\theta$ for TM. $|S|^2$ is therefore
 the {term}`diffraction efficiency`, and for a lossless cell the efficiencies
 of every propagating order on both faces, in both polarizations, add up to 1.
 The reflection of a flat interface is the tangential-E coefficient
-(n1 − n2) / (n1 + n2) in both polarizations at normal incidence. The
-Fresnel r_p of many optics texts has the opposite sign. With the ports'
+$(n_1 - n_2) / (n_1 + n_2)$ in both polarizations at normal incidence. The
+Fresnel $r_p$ of many optics texts has the opposite sign. With the ports'
 `offset` moving their reference planes to the interface, at 3.1 µm:
 
 ```python
@@ -297,9 +297,9 @@ print(abs(s["glass TE", "glass TE"][0]) ** 2 + abs(s["air TE", "glass TE"][0]) *
 
 **Rows that do not propagate.** The (−1, 0) order is evanescent at 3.1 µm. Its
 row of S reads exactly 0 at every frequency where it does not propagate, and
-its reference impedance is NaN there. `diffraction_orders` gives its κ, here
-−b1 along −x, and whether it propagates. The reference impedances of the
-propagating rows are η / n of their medium (TE and TM are equal at normal
+its reference impedance is NaN there. `diffraction_orders` gives its $\boldsymbol{\kappa}$, here
+$-\mathbf{b}_1$ along $-x$, and whether it propagates. The reference impedances of the
+propagating rows are $\eta / n$ of their medium (TE and TM are equal at normal
 incidence):
 
 ```python
@@ -316,8 +316,8 @@ print(np.asarray(s.z_ref)[0, [at["glass TE"], at["air TE"], at["air -1"]]])  # o
 [260.89356884 376.73031341          nan]
 ```
 
-**Phase.** Under exp(+iωt) a plane wave crossing an empty cell of thickness L
-comes out as exp(−iβL), a delay. With the glass made air and no offsets, the
+**Phase.** Under $e^{+i\omega t}$ a plane wave crossing an empty cell of thickness $L$
+comes out as $e^{-i\beta L}$, a delay. With the glass made air and no offsets, the
 1.7 µm cell:
 
 ```python
@@ -338,25 +338,25 @@ print(np.exp(-1j * 2 * np.pi * f / c * 1.7e-6))  # exp(-i beta L)
 ```
 
 The in-plane phase of every order is referred to the model origin.
-Translating the whole model in-plane by r0 multiplies S_{p←q} by
-exp(−i (κ_p − κ_q) · r0): entries between two specular orders do not change,
+Translating the whole model in-plane by $\mathbf{r}_0$ multiplies $S_{p\leftarrow q}$ by
+$e^{-i (\boldsymbol{\kappa}_p - \boldsymbol{\kappa}_q) \cdot \mathbf{r}_0}$: entries between two specular orders do not change,
 entries between different orders do.
 
 **Bloch reciprocity.** A reversed wave has the opposite in-plane wave vector,
-so order (m, n) maps to (−m, −n), and the TE and TM references, odd in κ̂,
-flip sign with it. With σ = −1 for an order with κ ≠ 0 and +1 for κ = 0,
-{term}`Bloch reciprocity` reads S_{p←q}(k) = σ_p σ_q S_{−q←−p}(−k), where
-−p is port p's face and polarization with the opposite order. The plain
+so order $(m, n)$ maps to $(-m, -n)$, and the TE and TM references, odd in $\hat{\boldsymbol{\kappa}}$,
+flip sign with it. With $\sigma = -1$ for an order with $\boldsymbol{\kappa} \ne 0$ and $+1$ for $\boldsymbol{\kappa} = 0$,
+{term}`Bloch reciprocity` reads $S_{p\leftarrow q}(\mathbf{k}) = \sigma_p \sigma_q S_{-q\leftarrow -p}(-\mathbf{k})$, where
+$-p$ is port $p$'s face and polarization with the opposite order. The plain
 transpose never holds as it stands; the
 {doc}`metagrating tutorial <tutorials/metagrating>` checks the signed form
 on its design.
 
 **Circular polarization.** No port is circular: combine columns. With the TE
-and TM ports of the same order on the top face (incidence along −ê3),
-(S[:, TM] + i S[:, TE]) / √2 is the response to right-handed circular
+and TM ports of the same order on the top face (incidence along $-\hat{\mathbf{e}}_3$),
+$(S[:, \mathrm{TM}] + i\, S[:, \mathrm{TE}]) / \sqrt{2}$ is the response to right-handed circular
 incidence in the IEEE sense (the field turns counterclockwise seen with the
-wave coming towards you). From the bottom face, incidence along +ê3, the same
-combination is left-handed, and (S[:, TM] − i S[:, TE]) / √2 is right-handed.
+wave coming towards you). From the bottom face, incidence along $+\hat{\mathbf{e}}_3$, the same
+combination is left-handed, and $(S[:, \mathrm{TM}] - i\, S[:, \mathrm{TE}]) / \sqrt{2}$ is right-handed.
 
 ## Temperature and thermo-optic phase
 
@@ -443,12 +443,12 @@ T 301.7118 K = rise 1.7117 K + T0 300.0002 K
 and the times it returns ({doc}`recipes/thermal-step-response`).
 
 **The thermo-optic phase is a delay.** A material's
-`thermo_optic_coefficient` dn/dT acts on the rise, about the index of its
+`thermo_optic_coefficient` $dn/dT$ acts on the rise, about the index of its
 `eps_r`: that index is the one at the source-free temperature, and no
 reference temperature is stored. The phase per length a rise adds to a
-guided mode is positive for a positive dn/dT and a positive rise, like the
-phase β L that a length L of guide delays light by. Under exp(+iωt) the guide
-transmits exp(−iβL), so a transmission's argument moves by minus the phase:
+guided mode is positive for a positive $dn/dT$ and a positive rise, like the
+phase $\beta L$ that a length $L$ of guide delays light by. Under $e^{+i\omega t}$ the guide
+transmits $e^{-i\beta L}$, so a transmission's argument moves by minus the phase:
 
 ```python
 f_optical = 299_792_458.0 / 1.55e-6  # Hz
@@ -463,7 +463,7 @@ True
 -0.4458987292927867
 ```
 
-The {doc}`recipes/thermo-optic-phase` recipe turns the phase into P_π, and
+The {doc}`recipes/thermo-optic-phase` recipe turns the phase into $P_\pi$, and
 the {py:obj}`gfem.conventions` module, "Temperature and thermo-optic phase",
 gives the first-order formula.
 
@@ -471,10 +471,10 @@ gives the first-order formula.
 
 A {py:obj}`gfem.Conductor` with a thickness describes one face of a film. On
 a surface inside the mesh a film much thinner than its skin depth is
-therefore a sheet of admittance `INTERIOR_SHEET_ADMITTANCE` times σt, half
+therefore a sheet of admittance `INTERIOR_SHEET_ADMITTANCE` times $\sigma t$, half
 the film's conductance: give `thickness=2 * t` for the whole film. On the
 outer surface of the mesh the thickness already counts
-`EXTERIOR_THICKNESS_FACTOR` times, and the film is σt. The module's "Surface
+`EXTERIOR_THICKNESS_FACTOR` times, and the film is $\sigma t$. The module's "Surface
 conductors" section has the formula.
 
 ## Next

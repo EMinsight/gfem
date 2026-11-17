@@ -10,7 +10,7 @@ read its diffraction orders, see {doc}`floquet-ports`.
 
 ## Band frequencies of a layered cell
 
-The cell below is a line of ε = 2 and ε = 9 layers that repeats every 10 mm
+The cell below is a line of $\varepsilon = 2$ and $\varepsilon = 9$ layers that repeats every 10 mm
 along x. Its mesh needs two outer faces that match node for node under a
 translation; gmsh's `setPeriodic` makes such a pair.
 
@@ -44,17 +44,17 @@ for phase in np.linspace(0.1 * np.pi, np.pi, 10):  # phase per cell, rad
 ```
 
 - `bands` holds the two lowest band frequencies, in Hz, at 10 wave vectors
-  from 0.1π/a to the zone edge π/a. `modes.frequency` is Re ω / 2π and
+  from $0.1\pi/a$ to the zone edge $\pi/a$. `modes.frequency` is $\operatorname{Re} \omega / 2\pi$ and
   `modes.q` is the Q. For a lossless cell `modes.omega` is exactly real.
-- The wave vector is Cartesian, in rad/m. For a phase φ per cell along a
-  translation a, k = φ a / |a|², as in the loop. Under e^{+iωt} the fields
+- The wave vector is Cartesian, in rad/m. For a phase $\varphi$ per cell along a
+  translation $\mathbf{a}$, $\mathbf{k} = \varphi \mathbf{a} / |\mathbf{a}|^2$, as in the loop. Under $e^{+i\omega t}$ the fields
   obey `E(r + a) = exp(-i k·a) E(r)` ({py:obj}`gfem.conventions`, Bloch
   periodicity).
-- Give k only along the translations. Any other component raises `ValueError`
+- Give $\mathbf{k}$ only along the translations. Any other component raises `ValueError`
   at the solve, and the message gives the projection to use instead.
-- Only the phase per cell enters the solve, so a k outside the first Brillouin
-  zone gives the folded band. Keep your k path inside the first zone.
-- At k = 0 the cell also has a field at zero frequency: aim the target above
+- Only the phase per cell enters the solve, so a $\mathbf{k}$ outside the first Brillouin
+  zone gives the folded band. Keep your $\mathbf{k}$ path inside the first zone.
+- At $\mathbf{k} = 0$ the cell also has a field at zero frequency: aim the target above
   it.
 - Each mode field covers the whole cell, so `Field.at` reads it at any point.
   Under a Bloch wave vector, gfem sets a mode's overall phase from its largest
@@ -79,7 +79,7 @@ order. The order of the two faces in a pair does not change the field.
 
 ## Drive a cell at a Bloch wave vector
 
-A two-port line cell, ε = 4 with tan δ = 0.02, 10 mm long, with lumped ports
+A two-port line cell, $\varepsilon = 4$ with $\tan\delta = 0.02$, 10 mm long, with lumped ports
 on two interior sheets:
 
 ```python
@@ -103,8 +103,8 @@ s = gfem.solve(line, gfem.Driven(5e9, wave_vector=k)).s.values[0]
 
 - S is referenced to the field E, not to a periodic envelope;
   {py:obj}`gfem.conventions` gives the factor between the two. S is not
-  symmetric under a wave vector: S(k)ᵀ = S(−k) ({term}`Bloch reciprocity`).
-- By default the same k holds at every frequency;
+  symmetric under a wave vector: $S(\mathbf{k})^\mathsf{T} = S(-\mathbf{k})$ ({term}`Bloch reciprocity`).
+- By default the same $\mathbf{k}$ holds at every frequency;
   `wave_vector_frequency=f_ref` scales it with frequency, which keeps an
   incidence angle fixed ({doc}`floquet-ports`).
 - Only the uniform sweep takes a wave vector. `sweep="adaptive"` with a wave
@@ -114,7 +114,7 @@ s = gfem.solve(line, gfem.Driven(5e9, wave_vector=k)).s.values[0]
 ## Differentiate a band
 
 A periodic model differentiates like any other. Here the lowest band at the
-zone edge, with respect to the permittivity of each element of the ε = 9
+zone edge, with respect to the permittivity of each element of the $\varepsilon = 9$
 layer:
 
 ```python
@@ -161,15 +161,15 @@ grad = jax.grad(lowest_band)(jnp.full(n, 9.0))  # Hz per unit eps_r
 
 Four checks you can run on your own cell:
 
-- **Transpose.** Solve the driven cell at k and at −k. With lumped and wave
+- **Transpose.** Solve the driven cell at $\mathbf{k}$ and at $-\mathbf{k}$. With lumped and wave
   ports, `S(k).T` should equal `S(−k)` to the solver tolerance. With Floquet
   ports, the orders relabel and take a sign:
-  S_{p←q}(k) = σ_p σ_q S_{−q←−p}(−k), see {doc}`floquet-ports`.
+  $S_{p\leftarrow q}(\mathbf{k}) = \sigma_p \sigma_q S_{-q\leftarrow -p}(-\mathbf{k})$, see {doc}`floquet-ports`.
 - **Zero wave vector.** `wave_vector=(0, 0, 0)` should give the same result as
   no wave vector: a cheap check of the pairing and the ports. It is a check
   only: the zero wave vector still takes the general Bloch solve, so run plain
   periodicity with `wave_vector=None`, which is cheaper.
-- **Folding.** With the same target, k and k + 2π a / |a|² should give the
+- **Folding.** With the same target, $\mathbf{k}$ and $\mathbf{k} + 2\pi \mathbf{a} / |\mathbf{a}|^2$ should give the
   same band frequencies.
 - **Lossless cell.** With no loss in the cell, `modes.omega` should be real,
   and the driven cell's S with resistive lumped ports should give `SᴴS ≈ I`:
@@ -180,19 +180,19 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
 ## Limits
 
 - A {py:obj}`gfem.Absorbing` face reflects a wave that meets it obliquely.
-  With a wave vector that has a component k_t along the face, the cell
-  radiates at the angle θ from the face normal given by sin θ = |k_t| / (k0 n), with n the
+  With a wave vector that has a component $\mathbf{k}_t$ along the face, the cell
+  radiates at the angle $\theta$ from the face normal given by $\sin\theta = |\mathbf{k}_t| / (k_0 n)$, with $n$ the
   refractive index behind the face. The first-order boundary then reflects
-  (1 − cos θ) / (1 + cos θ) in amplitude: 1.7 % at 15°, 7 % at 30°, 17 % at
+  $(1 - \cos\theta) / (1 + \cos\theta)$ in amplitude: 1.7 % at 15°, 7 % at 30°, 17 % at
   45°. `order=2` lowers this about tenfold up to 30°, but only for the
-  polarization with E parallel to the face and normal to k_t; for the other
+  polarization with E parallel to the face and normal to $\mathbf{k}_t$; for the other
   polarization it changes nothing. A driven solve warns with
   {py:obj}`gfem.ObliqueAbsorberWarning` when some propagating wave meets the
   face with a reflection of at least 1 %; a {py:obj}`gfem.FloquetPort` on
   that face absorbs every order at any angle.
 - A Bloch eigenmode solve with `gfem.Absorbing` faces meets the same oblique
   reflection, and gives no warning: the Q of a mode that radiates at the
-  angle θ includes it. Floquet ports do not take eigenmode solves; for the
+  angle $\theta$ includes it. Floquet ports do not take eigenmode solves; for the
   resonances and Q of a radiating cell, sweep a driven problem with Floquet
   ports and read them off S.
 - Translations only, one to three pairs. For a rotational symmetry, mesh the

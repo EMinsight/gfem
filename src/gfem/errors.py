@@ -187,23 +187,24 @@ class SkippedPortModeWarning(UserWarning):
 
 
 class UnrequestedOrderWarning(UserWarning):
-    """A propagating diffraction order that no Floquet port requests.
+    r"""A propagating diffraction order that no Floquet port requests.
 
     It fires at solve time, once per Floquet surface, when an order
     propagates at some frequency of the sweep and no `gfem.FloquetPort` on
     that surface requests it in either polarization. The surface still
     absorbs the order, so nothing reflects, but the power it carries is
-    missing from S (the power defect 1 - Σ|S|² shows it). Add a Floquet port
-    for the order to read it, or filter the warning with Python's
-    `warnings` module.
+    missing from S (the power defect :math:`1 - \sum |S|^2` shows it). Add a
+    Floquet port for the order to read it, or filter the warning with
+    Python's `warnings` module.
     """
 
 
 class ObliqueAbsorberWarning(UserWarning):
-    """A first-order absorbing face of a periodic cell meets a wave obliquely.
+    r"""A first-order absorbing face of a periodic cell meets a wave obliquely.
 
-    A `gfem.Absorbing` face reflects about (1 - cos θ)/(1 + cos θ) of the
-    amplitude of a plane wave meeting it at angle θ. In a periodic cell the
+    A `gfem.Absorbing` face reflects about
+    :math:`(1 - \cos\theta) / (1 + \cos\theta)` of the amplitude of a plane
+    wave meeting it at angle :math:`\theta`. In a periodic cell the
     Bloch wave vector and every propagating diffraction order meet the face
     at an angle, so the driven solve warns once per face when that
     reflection reaches 1%. A `gfem.FloquetPort` on the face absorbs every

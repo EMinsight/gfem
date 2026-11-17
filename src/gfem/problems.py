@@ -721,15 +721,15 @@ def _port_names(value: Any) -> tuple[str, ...] | None:
 
 @dataclasses.dataclass(frozen=True, init=False)
 class Driven:
-    """The frequency-domain response of a model to its ports.
+    r"""The frequency-domain response of a model to its ports.
 
     At each frequency, each excited port in turn is fed 1 W time-averaged
-    incident power while every other port is terminated in its own
-    impedance, and the electric field solves the time-harmonic Maxwell
-    equations (e^{+iωt}) in the electromagnetic solve domain. The result is
-    the scattering matrix (power waves, each lumped port's reference
-    impedance its resistance; see `gfem.NetworkParameters`) and, on request,
-    the electric fields (see `gfem.conventions` for their amplitude).
+    incident power while every other port is terminated in its own impedance,
+    and the electric field solves the time-harmonic Maxwell equations
+    (:math:`e^{+i\omega t}`) in the electromagnetic solve domain. The result is
+    the scattering matrix (power waves, each lumped port's reference impedance
+    its resistance; see `gfem.NetworkParameters`) and, on request, the electric
+    fields (see `gfem.conventions` for their amplitude).
 
     A `WavePort` is fed by its own port mode, solved before the 3D solve to
     ``SolverOptions.port_mode_tolerance``; S is the field's projection on
@@ -829,21 +829,26 @@ class Driven:
             ``linear_solver="direct"``.
 
     Notes:
-        Below the mesh's low-frequency floor, k0·h_min = 1e-6 (f·h_min ≈
-        48 Hz·m, with h_min the shortest edge, at order 2), the solve warns
+        Below the mesh's low-frequency floor,
+        :math:`k_0 h_\mathrm{min} = 10^{-6}` (:math:`f h_\mathrm{min} \approx`
+        48 Hz·m, with :math:`h_\mathrm{min}` the shortest edge, at order 2),
+        the solve warns
         with `gfem.LowFrequencyWarning`. The floor is 48 MHz with 1 µm
         elements and 5 GHz with 10 nm elements. Below it, the E-field
-        formulation's rounding error grows like 1e-16/(k0·h_min)², so the
+        formulation's rounding error grows like
+        :math:`10^{-16} / (k_0 h_\mathrm{min})^2`, so the
         fields and gradients lose digits. With an exact factorization
         (``linear_solver="direct"``, or ``"petsc"`` with its default MUMPS
         factorization) the capacitive part of S loses digits too. The
         inductance read from S and reciprocity are unaffected down to at
-        least k0·h_min = 1e-8. MKL PARDISO becomes unreliable below
-        k0·h_min ≈ 3e-8, and ``"direct"`` uses it whenever the ``mkl`` extra
+        least :math:`k_0 h_\mathrm{min} = 10^{-8}`. MKL PARDISO becomes
+        unreliable below :math:`k_0 h_\mathrm{min} \approx 3 \times 10^{-8}`,
+        and ``"direct"`` uses it whenever the ``mkl`` extra
         is installed. Below that, use ``linear_solver="petsc"`` (MUMPS), or
         ``"direct"`` in an environment without the ``mkl`` extra. With
         ``bddc_gmres``, S stays at ``SolverOptions.tolerance``, but a
-        capacitance read from S is good only to about tolerance/(ωCZ0). For
+        capacitance read from S is good only to about
+        ``tolerance`` / :math:`(\omega C Z_0)`. For
         capacitance at low frequency, solve `gfem.Electrostatic`.
 
         A driven solve ignores ``SolverOptions.eigen_solver``.
@@ -963,16 +968,18 @@ jax.tree_util.register_static(Driven)
 
 @dataclasses.dataclass(frozen=True, init=False)
 class Eigenmode:
-    """The resonant modes of a model nearest a target frequency.
+    r"""The resonant modes of a model nearest a target frequency.
 
     Finds the source-free solutions of the time-harmonic Maxwell equations
-    (e^{+iωt}) in the electromagnetic solve domain: complex angular
-    frequencies ``omega`` (``Im omega > 0`` for a decaying mode) and their
+    (:math:`e^{+i\omega t}`) in the electromagnetic solve domain: complex
+    angular frequencies ``omega`` (:math:`\mathrm{Im}\,\omega > 0` for a
+    decaying mode) and their
     electric fields. Losses (``tan_delta``, ``conductivity``), resistive
     lumped ports and `Impedance` boundaries, and first-order `Absorbing`
     boundaries make the modes decay; each mode's Q is
-    ``|omega| / (2 Im omega)``. The `n_modes` modes whose frequency
-    ``Re omega / 2 pi`` is nearest ``target`` are returned, nearest first.
+    :math:`|\omega| / (2\, \mathrm{Im}\,\omega)`. The `n_modes` modes whose
+    frequency :math:`\mathrm{Re}\,\omega / 2\pi` is nearest ``target`` are
+    returned, nearest first.
 
     A `Conductor` (its surface impedance grows as the square root of the
     frequency) or a second-order `Absorbing` boundary (a term in 1 /
@@ -1034,12 +1041,14 @@ class Eigenmode:
 
     Notes:
         When ``target`` or the lowest mode found is below the mesh's
-        low-frequency floor, k0·h_min = 1e-6 (f·h_min ≈ 48 Hz·m, with h_min
+        low-frequency floor, :math:`k_0 h_\mathrm{min} = 10^{-6}`
+        (:math:`f h_\mathrm{min} \approx` 48 Hz·m, with :math:`h_\mathrm{min}`
         the shortest edge; see `gfem.Driven`, Notes), the solve warns with
         `gfem.LowFrequencyWarning`. Below the floor the eigenfrequencies,
         the fields and the participations lose digits like
-        1e-16/(k0·h_min)², and `gfem.EigenmodeResult.error` does not show
-        it: a mode at k0·h_min = 2e-7 had a frequency off by 4e-4 with a
+        :math:`10^{-16} / (k_0 h_\mathrm{min})^2`, and
+        `gfem.EigenmodeResult.error` does not show it: a mode at
+        :math:`k_0 h_\mathrm{min} = 2 \times 10^{-7}` had a frequency off by 4e-4 with a
         reported error of 1e-16.
     """
 

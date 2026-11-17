@@ -181,11 +181,11 @@ p_box = gfem.power_flow(e, "design", model=model)
   frozen basis gives no exact gradient of the power; use `sweep="uniform"`.
 
 :::{note}
-**Why not integrate E × H\* over a plane.** On a finite-element field the
+**Why not integrate $\mathbf{E} \times \mathbf{H}^*$ over a plane.** On a finite-element field the
 pointwise Poynting flux is not conserved from plane to plane: it oscillates
 with the mesh period along the propagation direction, highest on element faces
 and lowest at mid-cell. On a 220 nm SOI strip guide it is off by about ±1.5-2 %
-at roughly ten cells per guided wavelength and falls about as h^1.8; exact
+at roughly ten cells per guided wavelength and falls about as $h^{1.8}$; exact
 face quadrature does not remove it. `gfem.power_flow` is exact for the solved
 field.
 :::
@@ -216,7 +216,7 @@ p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
   `power_flow`: a driven result does not carry its materials.
 - **Not differentiable.** `electric_energy` inside `jax.grad` raises
   `gfem.NonDifferentiableError`.
-- **A region with a permittivity law** is weighed with Re d(ωε)/dω at the
+- **A region with a permittivity law** is weighed with $\operatorname{Re} \mathrm{d}(\omega\varepsilon)/\mathrm{d}\omega$ at the
   field's frequency, the energy of a dispersive medium. Where that weight is
   not positive (loss dominates the law) it raises `ValueError`; model such a
   metal as `gfem.Conductor` or `gfem.PEC` ({doc}`dispersive-materials`).

@@ -35,7 +35,7 @@ Thermal:
   `gfem.HeatFlux`; a surface no thermal boundary names is insulated
   (`Model.default_insulated`).
 - **Materials.** `thermal_conductivity`, `mass_density` and `specific_heat`
-  are read, and `thermo_optic_coefficient` (dn/dT, 1/K) is new. A thermal
+  are read, and `thermo_optic_coefficient` ($dn/dT$, 1/K) is new. A thermal
   solve missing a property raises `gfem.errors.MissingMaterialPropertyError`,
   listing every region and property at once.
 - **One model, several physics.** `excluded=` takes a mapping from physics
@@ -76,7 +76,7 @@ Floquet ports:
 - **Floquet ports.** `gfem.FloquetPort` lights a periodic cell with a plane
   wave and reads its diffraction orders. Each port is one order in one
   polarization (TE or TM) on an open face of the cell, with its own row and
-  column of S; |S|² is the order's diffraction efficiency, and the row of an
+  column of S; $|S|^2$ is the order's diffraction efficiency, and the row of an
   order that does not propagate reads exactly 0. The ports of a face absorb
   every order at any angle. See {doc}`../recipes/floquet-ports`.
 - **Incidence.** `Model.bloch_wave_vector` turns incidence angles into a
@@ -124,14 +124,14 @@ Dispersive materials:
   `gfem.Lorentz`, `gfem.Debye` and `gfem.DjordjevicSarkar` terms, with every
   frequency in Hz. `PermittivityLaw.djordjevic_sarkar` fits a datasheet
   permittivity and loss tangent. A law is callable, `law(f)`, and each
-  term is passive alone; a negative strength raises. Metals (Re ε < 0) are
+  term is passive alone; a negative strength raises. Metals ($\mathrm{Re}\,\varepsilon < 0$) are
   allowed. See {doc}`../recipes/dispersive-materials`.
 - **Which problems.** Driven uniform and adaptive sweeps (every linear
   solver, frequency workers, MPI ranks, plain and Bloch periodic cells),
   eigenmode solves outside a law's {term}`unresolved band`, the port mode
-  problem where Re ε > 0 in the cross-section, and the electrostatic problem
+  problem where $\mathrm{Re}\,\varepsilon > 0$ in the cross-section, and the electrostatic problem
   through the {term}`static permittivity`. A law region behind an `Absorbing`
-  face needs Re ε > 0 on a driven sweep and raises on an eigenmode solve. A
+  face needs $\mathrm{Re}\,\varepsilon > 0$ on a driven sweep and raises on an eigenmode solve. A
   Drude law raises in the electrostatic problem, and a metal in a port
   cross-section raises before any solve.
 - **Gradients.** The law's numbers differentiate driven S and kept fields
@@ -149,8 +149,8 @@ Dispersive materials:
 - **The adaptive sweep** solves both grid neighbours of a Lorentz resonance
   inside the band first, so an in-band resonance costs a few more samples.
 - **Mode energy and measurements.** In a law region, the mode energy weighs
-  |E|² with the {term}`energy permittivity`, and `gfem.electric_energy` with
-  Re d(ωε)/dω; both raise where that weight is not positive.
+  $|E|^2$ with the {term}`energy permittivity`, and `gfem.electric_energy` with
+  $\mathrm{Re}\, d(\omega\varepsilon)/d\omega$; both raise where that weight is not positive.
   `gfem.interface_participation` raises when a selected side lies in a law
   region. Constant-material results are unchanged.
 - Job files and saved results carry laws; older files read unchanged.
@@ -208,7 +208,7 @@ Quantum metrics and mode-field gradients:
   `gfem.DegenerateModeError` naming it. A plain solve never raises because of
   polishing.
 - **Behaviour change: the mode energy counts capacitive sheets.** Each mode's
-  1 J of electric energy now includes ½ ∫ C_s |E_t|² dS on every `Impedance`
+  1 J of electric energy now includes $\tfrac{1}{2} \int C_s |E_t|^2\, dS$ on every `Impedance`
   sheet with a capacitance. On models with such a sheet, field amplitudes,
   participations and `q_port` change; models without one are unchanged.
 - **Behaviour change: `interface_participation` adds the two faces of a
@@ -219,7 +219,7 @@ Quantum metrics and mode-field gradients:
   `"SA"` still take the mean field of the two sides.
 - New pages: the tutorial {doc}`../tutorials/transmon`, and the recipes
   {doc}`../recipes/quantum-metrics` and {doc}`../recipes/loss-budget` (a
-  mode's 1/Q from its loss channels, and their T1 limits). The capabilities
+  mode's $1/Q$ from its loss channels, and their $T_1$ limits). The capabilities
   matrix gains the rows "Eigenmode, participations" and "Eigenmode, mode
   field", and the glossary the quantum terms.
 
@@ -240,7 +240,7 @@ Eigenmode solves:
 - A heavily inductive `Impedance` wall can now return its sheet modes near the
   target, where cavity modes farther away were returned before.
 - `gfem.Eigenmode` warns with `gfem.LowFrequencyWarning` when its target or its
-  lowest mode is below the low-frequency floor (k0·h_min = 1e-6). The reported
+  lowest mode is below the low-frequency floor ($k_0 h_\mathrm{min} = 10^{-6}$). The reported
   `error` does not show the digits lost there.
 - A linear solve that does not converge inside an eigenmode solve now names
   `SolverOptions.eigen_tolerance` as the remedy, with the inner tolerance in use.
@@ -434,8 +434,8 @@ Wave ports, S-parameters and measurements:
   conductor no longer raises a false "lies in volume region"; a point just inside one,
   which used to read the air's value, now raises. See {doc}`../recipes/measurements`.
 - A wave port whose port line is lossy now warns with
-  `gfem.PortModeProjectionWarning` when α/β exceeds 1e-3, lone ports included: its
-  reflection entries of S are off by about α/β, and transmission is right to the
+  `gfem.PortModeProjectionWarning` when $\alpha/\beta$ exceeds $10^{-3}$, lone ports included: its
+  reflection entries of S are off by about $\alpha/\beta$, and transmission is right to the
   square of it. A shared surface still warns once, for its cross-projection when
   that is above the floor. The warning is no longer hidden by an unsolved
   frequency of a partial sweep, and a mode exactly at cutoff no longer gives a
@@ -517,7 +517,7 @@ Mesh refinement:
   what was estimated, and `RefinementCycle.modes` which mode was followed.
 - **An S entry's read port no longer needs to be excited**; its adjoint is
   solved with the forward.
-- **Now estimated:** frequencies of modes in permittivity laws where Re ε > 0,
+- **Now estimated:** frequencies of modes in permittivity laws where $\mathrm{Re}\,\varepsilon > 0$,
   behind second-order absorbing boundaries, with complex `mu_r`, and with loss
   in anisotropic materials; S and the field with loss in anisotropic materials.
   Complex `mu_r` is now weighed exactly, so its S and field estimates are
@@ -527,9 +527,9 @@ Mesh refinement:
     `Absorbing` surface (they underestimated);
   - S estimates and objectives on a model with a lumped port spanning a
     permeability contrast;
-  - S estimates and objectives on a permittivity law with -20 < Re ε < 0 at
+  - S estimates and objectives on a permittivity law with $-20 < \mathrm{Re}\,\varepsilon < 0$ at
     a solve frequency;
-  - an `omega` estimate of a mode bound to a region where Re ε < 0.
+  - an `omega` estimate of a mode bound to a region where $\mathrm{Re}\,\varepsilon < 0$.
 
   Refine those models with `gfem.FieldEstimator()`.
 - `refine_mesh`'s `tolerance` default is now `None`: 1e-2, except for an
@@ -636,7 +636,7 @@ Documentation:
 - The {doc}`../recipes/gsim` recipe reads gsim's one-face lumped ports
   (microstrip), which raised `KeyError: 'Elements'`.
 - The periodic-cell recipe and `gfem.Absorbing` state the reflection of an
-  absorbing boundary under oblique incidence in a Bloch cell, (1 − cos θ)/(1 + cos θ)
+  absorbing boundary under oblique incidence in a Bloch cell, $(1 - \cos\theta)/(1 + \cos\theta)$
   at order 1, and that order 2 lowers it for one polarization only. Bloch S is now
   checked against its reference to 5e-6, and periodic pairing and Bloch bands are
   tested on an unstructured gmsh mesh.
@@ -711,7 +711,7 @@ Anisotropic materials and shared port surfaces:
 - **Behaviour change: `interface_participation`'s vacuum test.** A side is
   vacuum only when no wave in it is slower than in vacuum (largest principal
   `eps_r` × largest `mu_r` equal to 1). A side such as `eps_r = (1, 1, 4)` was
-  taken as vacuum, and `"MA"`/`"SA"` read its normal field with ε0 (a 4×
+  taken as vacuum, and `"MA"`/`"SA"` read its normal field with $\varepsilon_0$ (a 4×
   error); it no longer is. Isotropic sides are unchanged.
 - **Several modes on one wave port surface.** Several
   {py:obj}`gfem.WavePort`s on one surface, one `mode` each, form a
@@ -734,7 +734,7 @@ Anisotropic materials and shared port surfaces:
   {py:obj}`gfem.PortModeError` before the 3D solve, where 0.1.0 went on
   without warning. Lone-port S is otherwise unchanged.
 - **Behaviour change: lossy modes below cutoff.** A requested port mode whose
-  attenuation is at least its phase constant (Re β ≤ |Im β|, for example an
+  attenuation is at least its phase constant ($\mathrm{Re}\,\beta \le |\mathrm{Im}\,\beta|$, for example an
   RC-like line at low frequency) now counts as below cutoff, where 0.1.0
   accepted it as a propagating mode. The solve raises the port mode sweep's
   cutoff {py:obj}`gfem.PortModeError`, naming the port (and its surface when
@@ -745,7 +745,7 @@ Anisotropic materials and shared port surfaces:
 Periodic cells: `gfem.Periodic` pairs two surfaces of a model related by a
 translation (one to three pairs). Eigenmode and uniform driven problems take a
 Bloch wave vector, `wave_vector=(kx, ky, kz)` in rad/m, with
-E(r + a) = exp(−i k·a) E(r); without one the fields are plain periodic. See
+$\mathbf{E}(\mathbf{r} + \mathbf{a}) = e^{-i \mathbf{k} \cdot \mathbf{a}} \mathbf{E}(\mathbf{r})$; without one the fields are plain periodic. See
 {doc}`../recipes/periodic-cell`.
 
 - **Gradients.** Permittivity, conductivity, sheet fill and node coordinates
