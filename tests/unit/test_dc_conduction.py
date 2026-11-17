@@ -9,6 +9,7 @@ longitudinal model of gsim, R' = 1 / sum_i sigma_i A_i and q_i = sigma_i
 """
 
 import math
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -433,3 +434,28 @@ def test_a_slab_refuses_slab_totals_with_the_per_length_remedy(section_path):
     np.testing.assert_allclose(
         np.asarray(per_length)[mesh.elements("h1")], 2.0 / area, rtol=1e-12
     )
+
+
+# --- gsim's femwell heater ---------------------------------------------------------
+
+#: gsim's cross-section mesh of femwell's TiN heater (tests/verification/data).
+FEMWELL_MESH = (
+    Path(__file__).parents[1] / "verification" / "data" / "gsim_femwell_tin.msh"
+)
+
+
+def test_femwell_resistance_is_gsims_on_its_mesh():
+    """A 2 um x 140 nm TiN heater, sigma 2.3e6 S/m, 320 um long: 496.894 Ohm."""
+    mesh = gfem.Mesh.from_gmsh_cross_section(FEMWELL_MESH, thickness=0.5e-6)
+    model = gfem.Model(
+        mesh,
+        materials={
+            "heater": gfem.Material(conductivity=2.3e6),
+            **dict.fromkeys(("core", "oxide", "si_wafer"), OXIDE),
+        },
+    )
+    problem = gfem.DCConduction(terminals={"heater": "front"}, ground="back")
+    dc = gfem.solve(model, problem, options=DIRECT)
+    # gsim 5ecbb6a: 496.8944099378894 Ohm (thermal probes/13); 3e-14 measured
+    resistance = float(dc.resistance_per_length[0, 0]) * 320e-6
+    assert resistance == pytest.approx(496.8944099378894, rel=1e-9)

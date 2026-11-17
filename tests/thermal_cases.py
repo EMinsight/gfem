@@ -89,13 +89,16 @@ def extruded(
     length: float,
     layers: int,
     region: Callable[[int, str], str] | None = None,
+    ends: bool = False,
 ) -> gfem.Mesh:
     """A cross-section extruded along z over ``length`` in ``layers`` prism layers.
 
     Each prism splits into three tetrahedra by the smallest-index rule, so
     the layers conform; a named edge becomes a named face along the
     extrusion. ``region(layer, name)`` renames a triangle's region in a layer
-    (a heater in some layers only). Read by `gfem.Mesh.from_gmsh`.
+    (a heater in some layers only). ``ends``: name the end faces ``front``
+    (z = 0) and ``back`` (z = ``length``), as a slab's. Read by
+    `gfem.Mesh.from_gmsh`.
     """
     xy, tris, lines = _mesh2d(rects, maxh, edges)
     n = len(xy)
@@ -113,10 +116,14 @@ def extruded(
             for q in ((a, b, c, big_c), (a, b, big_b, big_c), (a, big_a, big_b, big_c)):
                 tets.append(q)
                 tet_names.append(name if region is None else region(i, name))
-        for name, ends in lines:
-            p, q = (v + o for v in sorted(ends))
+        for name, segment in lines:
+            p, q = (v + o for v in sorted(segment))
             faces += [(p, q, q + n), (p, p + n, q + n)]
             face_names += [name, name]
+    if ends:
+        for name, o in (("front", 0), ("back", layers * n)):
+            faces += [tuple(v + o for v in tri) for _, tri in tris]
+            face_names += [name] * len(tris)
     tets = np.array(tets)
     v = nodes[tets]
     det = np.einsum(
