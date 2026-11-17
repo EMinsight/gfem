@@ -1,0 +1,142 @@
+{
+ "accuracy": {
+  "bound": 1e-12,
+  "metric": "max_rel_dRe_f",
+  "per_item": [
+   0.000389
+  ],
+  "resolved": true,
+  "value": 0.000389
+ },
+ "campaign": "20261120-858bc66-smoke",
+ "case": {
+  "definition_sha256": "def-lcavity",
+  "mesh_sha256": "mesh-lcavity",
+  "ndof": 246416,
+  "order": 2,
+  "reference": {
+   "id": "lcavity-20261117-058b2f5",
+   "sha256": "x"
+  }
+ },
+ "checks": {
+  "accuracy_plausible": "pass",
+  "complete": "pass",
+  "converged": "pass",
+  "dof": "pass",
+  "layout": "pass",
+  "mesh_hash": "pass",
+  "placement": "pass",
+  "provenance": "pass",
+  "reference_matches": "pass"
+ },
+ "failure_class": null,
+ "memory": {
+  "metric": "VmHWM_sum",
+  "peak_rss_largest_node_gib": 6.1,
+  "peak_rss_rank_max_gib": 6.1,
+  "peak_rss_sum_gib": 6.1,
+  "pss_peak_sum_gib": 5.794999999999999,
+  "sacct_max_rss_gib": null,
+  "self_reports": {
+   "solver_nbytes": 3900000000.0
+  }
+ },
+ "name": "lcavity/gfem-direct__wheels__default__rep1",
+ "outputs": {
+  "f_hz": [
+   [
+    148197896216.89462,
+    0.0
+   ]
+  ],
+  "iterations": [
+   0
+  ]
+ },
+ "provenance": {
+  "gfem": {
+   "commit": "858bc66c0ffee858bc66c0ffee858bc66c0ffee8",
+   "version": "0.1.0"
+  },
+  "harness": {
+   "commit": "858bc66c0ffee858bc66c0ffee858bc66c0ffee8"
+  },
+  "machine": {
+   "name": "MareNostrum 5 GPP",
+   "node_class": "standard",
+   "nodes": [
+    "node001"
+   ]
+  },
+  "solver": {
+   "code": "gfem",
+   "version": "0.1.0"
+  },
+  "stack": {
+   "description_sha256": "cc33",
+   "env_manifest_sha256": "dd44",
+   "name": "wheels"
+  }
+ },
+ "reason": null,
+ "run": {
+  "case": "lcavity",
+  "core_budget": 16,
+  "job": "41000001",
+  "launch": "srun",
+  "layout": {
+   "asked": "default",
+   "ranks": 1,
+   "threads": 16
+  },
+  "repeat": 1,
+  "solver": "gfem:direct",
+  "stack": "wheels",
+  "tolerance": null
+ },
+ "same_code_error": {
+  "against": "lcavity/gfem-direct__wheels__default__rep1",
+  "label": "solver error",
+  "metric": "max_rel_dRe_f",
+  "per_item": [
+   0.0
+  ],
+  "value": 0.0
+ },
+ "schema": "suite-record/1",
+ "stack": {
+  "fingerprint": "0123abcd",
+  "kind": "wheels",
+  "name": "wheels",
+  "versions": {
+   "palace": "0.19.0"
+  }
+ },
+ "status": "ok",
+ "structural": {
+  "direct_arm": "PARDISO (MKL), one process",
+  "excitations": 1,
+  "setups": 3,
+  "solves": 3
+ },
+ "timings": {
+  "assemble_s": 4.0,
+  "discretize_s": 1.0,
+  "estimate_s": null,
+  "mesh_read_s": 1.0,
+  "other_s": 2.0,
+  "per_sample_s": null,
+  "postpro_s": null,
+  "rank_reduction": "max",
+  "rom_s": null,
+  "setup_s": 4.0,
+  "setup_total_s": 10.0,
+  "solve_s": 8.0,
+  "solve_total_s": 8.0,
+  "source": "gfem.timing",
+  "startup_s": 3.0,
+  "wall_s": 23.0,
+  "work_s": 20.0
+ }
+}

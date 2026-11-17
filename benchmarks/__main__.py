@@ -1,7 +1,7 @@
 """Command line of the benchmark suite: ``python -m benchmarks <subcommand>``.
 
-Dispatch only; each subcommand's work lives in ``benchmarks.harness``. Subcommands
-not built yet exit with status 2 and say so.
+Dispatch only; each subcommand's work lives in ``benchmarks.harness`` (``report`` in
+``benchmarks.report``).
 """
 
 from __future__ import annotations
@@ -12,16 +12,12 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from benchmarks import report
 from benchmarks.harness import case, config, matrix, records, ship, slurm
 from benchmarks.references import closed, microstrip
 from benchmarks.references import document as refdoc
 
 NOT_YET = 2
-
-
-def _not_yet(args: argparse.Namespace) -> int:
-    print(f"benchmarks {args.command}: not yet implemented", file=sys.stderr)
-    return NOT_YET
 
 
 def _print_axes() -> None:
@@ -258,13 +254,57 @@ def _add_data(add: Adder) -> None:
         help="only the records-store set (manifest, records, per-job files)",
     )
 
-    p = add("report", "write a campaign report from records", _not_yet)
-    p.add_argument("inputs", nargs="+", metavar="RECORDS")
-    p.add_argument("--out", required=True, type=Path, metavar="DIR")
-    p.add_argument("--allow-mixed", action="store_true")
-    p.add_argument("--rescore", action="append", default=[], metavar="CASE=ID")
-    p.add_argument("--no-figures", action="store_true")
-    p.add_argument("--check", type=Path, metavar="DIR")
+    p = add("report", "write a campaign report from records", _report_cmd)
+    p.add_argument("inputs", nargs="*", metavar="CAMPAIGN", help="campaign id or dir")
+    p.add_argument("--out", type=Path, metavar="DIR")
+    p.add_argument("--allow-mixed", action="store_true", help="read a mixed campaign")
+    p.add_argument(
+        "--rescore",
+        action="append",
+        default=[],
+        metavar="CASE=ID",
+        help="also score CASE against the archived reference ID",
+    )
+    p.add_argument("--no-figures", action="store_true", help="tables and JSON only")
+    p.add_argument(
+        "--check", type=Path, metavar="DIR", help="regenerate DIR's report and compare"
+    )
+
+
+def _report_cmd(args: argparse.Namespace) -> int:
+    if args.check is not None:
+        if args.inputs or args.out is not None:
+            args.parser.error("--check DIR takes no CAMPAIGN and no --out")
+        try:
+            same, messages = report.check(args.check)
+        except records.RecordError as error:
+            print(f"benchmarks report --check: {error}", file=sys.stderr)
+            return 1
+        for line in messages:
+            print(line)
+        print(f"{args.check}: {'unchanged' if same else 'DRIFT'}")
+        return 0 if same else 1
+    if not args.inputs or args.out is None:
+        args.parser.error("report needs CAMPAIGN.. and --out DIR (or --check DIR)")
+    rescore = {}
+    for item in args.rescore:
+        case_name, sep, rid = item.partition("=")
+        if not sep or not case_name or not rid:
+            args.parser.error(f"--rescore {item!r} is not CASE=ID")
+        rescore[case_name] = rid
+    flags = {
+        "allow_mixed": args.allow_mixed,
+        "rescore": rescore,
+        "no_figures": args.no_figures,
+    }
+    try:
+        dirs = report.load.resolve(args.inputs, args.out)
+        rid = report.generate(dirs, args.out, flags)
+    except records.RecordError as error:
+        print(f"benchmarks report: {error}", file=sys.stderr)
+        return 1
+    print(f"report {rid}: {args.out}")
+    return 0
 
 
 def _stores(args: argparse.Namespace) -> tuple[Path, ...]:

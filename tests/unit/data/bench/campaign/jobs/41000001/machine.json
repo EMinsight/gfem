@@ -1,0 +1,21 @@
+{
+ "host": "node001",
+ "job": "41000001",
+ "mode": "node",
+ "physical_cores": 16,
+ "rows": [
+  {
+   "dgemm": {
+    "gflops_median": 900.0
+   },
+   "threads": 16,
+   "triad": {
+    "gbs_median": 64.0
+   },
+   "zgemm": {
+    "gflops_median": 880.0
+   }
+  }
+ ],
+ "schema": "scale-bench/1"
+}

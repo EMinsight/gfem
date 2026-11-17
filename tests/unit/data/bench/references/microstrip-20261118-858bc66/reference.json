@@ -1,0 +1,56 @@
+{
+ "case": {
+  "definition_sha256": "def-microstrip",
+  "mesh_sha256": "mesh-microstrip",
+  "name": "microstrip"
+ },
+ "ceiling": {
+  "2": 0.01
+ },
+ "computed_utc": "2026-11-18T10:00:00Z",
+ "cost_core_h": 0.0,
+ "cross_checks": [
+  {
+   "code": "palace",
+   "delta": 0.0005,
+   "delta_per_frequency": [
+    0.0005,
+    0.0005,
+    0.0005
+   ],
+   "version": "0.19.0"
+  }
+ ],
+ "family": "microstrip",
+ "format": "suite-reference/1",
+ "id": "microstrip-20261118-858bc66",
+ "inputs": {},
+ "meshes": {
+  "mesh-microstrip": {
+   "dof": {
+    "2": 1
+   },
+   "level": 0
+  }
+ },
+ "method": "richardson",
+ "physics_sha256": "phys-microstrip",
+ "provenance": {},
+ "quantities": {
+  "s": {
+   "bound": 2e-07,
+   "bound_kind": "absolute",
+   "frequencies_hz": [
+    1000000000.0,
+    25000000000.0,
+    50000000000.0
+   ],
+   "metric": "max_abs_dS",
+   "values": {}
+  }
+ },
+ "runs": null,
+ "same_mesh_error": {
+  "2": 1.5e-06
+ }
+}
