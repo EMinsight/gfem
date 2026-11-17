@@ -801,6 +801,7 @@ def _distance(
     named = [
         s
         for item in (*model.boundaries, *model.ports)
+        if item._physics == "em"  # noqa: SLF001
         for s in surfaces_of(item)
         if s not in skip
     ]

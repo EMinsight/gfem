@@ -12,7 +12,7 @@ from gfem._checks import is_traced
 from gfem._materials import MaterialField
 from gfem._periodic import check_nodes
 from gfem.errors import LinearSolverConvergenceError
-from gfem.model import Model
+from gfem.model import _PHYSICS_NAMES, Model
 from gfem.options import SolverOptions
 from gfem.shape import _check_quality
 
@@ -162,6 +162,7 @@ def _solve(
     if resolved is not None:
         _mpi.refuse(model, problem, options)
     rule_class = _rule_class(problem)
+    _check_domain(model, problem)
     _check_blends(model, problem)
     if resolved is None:
         rule = rule_class(model, problem, options)
@@ -199,6 +200,27 @@ def _solve(
         raise
     adjoints = rule.adjoints if adjoint_loads is not None else None
     return rule.result(outputs), adjoints
+
+
+def _check_domain(model: Model, problem: Any) -> None:
+    """Raise when the problem's physics has nothing left to solve on.
+
+    A model needs some volume in some physics' domain (ADR 0167); an empty
+    domain for one physics raises when a problem of that physics is solved.
+    A problem names its physics as ``_physics`` (electromagnetic by default).
+
+    Raises:
+        ValueError: Every volume is excluded from the problem's physics.
+    """
+    physics = getattr(type(problem), "_physics", "em")
+    if model._domain_of(physics).active.any():  # noqa: SLF001
+        return
+    name = _PHYSICS_NAMES[physics]
+    raise ValueError(
+        f"Every volume is excluded from {name} problems, so the "
+        f"{type(problem).__name__} problem has nothing to solve on. Exclude "
+        f"fewer volumes for {name} problems (excluded=)."
+    )
 
 
 def _check_blends(model: Model, problem: Any) -> None:

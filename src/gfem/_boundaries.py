@@ -271,6 +271,112 @@ class Periodic:
         object.__setattr__(self, "surfaces", (value[0], value[1]))
 
 
+_THERMAL_FIXED = (
+    "Thermal boundary values (a fixed temperature, an ambient, a heat transfer "
+    "coefficient, a flux) are not design inputs: keep it a plain number, or "
+    "wrap it in jax.lax.stop_gradient."
+)
+
+
+def _temperature(value: Any, what: str) -> float:
+    """An absolute temperature: a finite host float > 0 K."""
+    out = static_float(value, what, _THERMAL_FIXED)
+    if out <= 0:
+        raise ValueError(
+            f"{what} must be > 0 K, got {out}: temperatures are absolute, in "
+            "kelvin (for example 293.15 for 20 degrees Celsius), not a rise."
+        )
+    return out
+
+
+@dataclasses.dataclass(frozen=True)
+class FixedTemperature:
+    """A fixed absolute temperature on a surface (a heat sink), for thermal problems.
+
+    It may sit on any surface that touches the thermal domain, exterior or
+    interior; on an interior surface both sides see it. Two fixed
+    temperatures with different values must not share a mesh node. Where it
+    meets a `Convection` or `HeatFlux` surface, the fixed value wins on the
+    shared nodes.
+
+    Attributes:
+        surface: The surface region's name.
+        temperature: The temperature, absolute, in K (> 0).
+    """
+
+    surface: str
+    _: dataclasses.KW_ONLY
+    temperature: float
+    _physics: ClassVar[str] = "thermal"
+
+    def __post_init__(self) -> None:
+        _surface_name(self.surface, "FixedTemperature")
+        object.__setattr__(
+            self,
+            "temperature",
+            _temperature(self.temperature, "FixedTemperature.temperature"),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class Convection:
+    """Convective cooling of an exterior surface, for thermal problems.
+
+    The heat flux out of the domain is h (T - T_ambient), with h the heat
+    transfer coefficient. The surface must be exterior to the thermal domain:
+    an interior face has no ambient.
+
+    Attributes:
+        surface: The surface region's name.
+        coefficient: The heat transfer coefficient h, W/(m^2 K), > 0.
+        ambient: The ambient temperature, absolute, in K (> 0).
+    """
+
+    surface: str
+    _: dataclasses.KW_ONLY
+    coefficient: float
+    ambient: float
+    _physics: ClassVar[str] = "thermal"
+
+    def __post_init__(self) -> None:
+        _surface_name(self.surface, "Convection")
+        h = static_float(self.coefficient, "Convection.coefficient", _THERMAL_FIXED)
+        if h <= 0:
+            raise ValueError(
+                f"Convection.coefficient must be > 0 W/(m^2 K), got {h}; leave the "
+                "surface without a thermal condition for an insulated one."
+            )
+        object.__setattr__(self, "coefficient", h)
+        object.__setattr__(
+            self, "ambient", _temperature(self.ambient, "Convection.ambient")
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class HeatFlux:
+    """A heat flux through a surface, for thermal problems.
+
+    On an exterior surface it is the flux into the thermal domain; on an
+    interior surface it is a surface heat source of ``flux`` W per m^2 of
+    surface, split between the two sides by the solve.
+
+    Attributes:
+        surface: The surface region's name.
+        flux: W/m^2, any sign, positive into the thermal domain.
+    """
+
+    surface: str
+    _: dataclasses.KW_ONLY
+    flux: float
+    _physics: ClassVar[str] = "thermal"
+
+    def __post_init__(self) -> None:
+        _surface_name(self.surface, "HeatFlux")
+        object.__setattr__(
+            self, "flux", static_float(self.flux, "HeatFlux.flux", _THERMAL_FIXED)
+        )
+
+
 def _set_rlc(obj: Any, owner: str, traced: tuple[str, ...]) -> None:
     """Check the lumped values of ``obj``; those named in ``traced`` may be traced.
 
@@ -314,13 +420,25 @@ def check_lumped_values(item: LumpedPort | Impedance) -> None:
             )
 
 
-for _cls in (PEC, PMC, Absorbing, Periodic):
+for _cls in (PEC, PMC, Absorbing, Periodic, FixedTemperature, Convection, HeatFlux):
     jax.tree_util.register_static(_cls)
 register_fields(Conductor, ("fill",))
 register_fields(Impedance, ("resistance", "inductance", "capacitance", "fill"))
 
-#: A boundary condition of a model: any one of the classes this union names.
-Boundary = PEC | PMC | Absorbing | Conductor | Impedance | Periodic
+#: A boundary condition of a model: any one of the classes this union names
+#: (electromagnetic conditions and the thermal `FixedTemperature`,
+#: `Convection` and `HeatFlux`).
+Boundary = (
+    PEC
+    | PMC
+    | Absorbing
+    | Conductor
+    | Impedance
+    | Periodic
+    | FixedTemperature
+    | Convection
+    | HeatFlux
+)
 
 
 # --- ports ----------------------------------------------------------------------

@@ -40,7 +40,10 @@ from gfem._boundaries import (
     PMC,
     Absorbing,
     Conductor,
+    Convection,
+    FixedTemperature,
     FloquetPort,
+    HeatFlux,
     Impedance,
     LumpedPort,
     Periodic,
@@ -596,13 +599,34 @@ def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
     return _with_nodes(mesh, args)
 
 
+@dataclasses.dataclass(frozen=True)
+class _Excluded:
+    """A model's ``excluded=`` mapping as written (tag ``Excluded``).
+
+    Only a model that excludes volumes from thermal or DC conduction problems
+    writes it; an electromagnetic-only model writes its list, as before. Being
+    a tagged object, it stops an older gfem at the unknown type by name.
+    """
+
+    em: tuple
+    thermal: tuple
+    dc_conduction: tuple
+
+
+def _excluded_args(model: Model) -> tuple | _Excluded:
+    em, thermal, dc = (model.excluded_from(k) for k in _Excluded.__dataclass_fields__)
+    if not thermal and not dc:
+        return em
+    return _Excluded(em, thermal, dc)
+
+
 def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
     return {
         "mesh": model.mesh,
         "materials": dict(model.materials),
         "boundaries": model.boundaries,
         "ports": model.ports,
-        "excluded": model.excluded,
+        "excluded": _excluded_args(model),
     }
 
 
@@ -686,6 +710,12 @@ _codec.register(
     names=("mesh", "materials", "boundaries", "ports", "excluded"),
 )
 _codec.register(
+    _Excluded,
+    tag="Excluded",
+    from_args=lambda a, _: dict(a),
+    names=("em", "thermal", "dc_conduction"),
+)
+_codec.register(
     EnclosedBy,
     from_args=lambda a, _: EnclosedBy(tuple(a["surfaces"])),
     names=("surfaces",),
@@ -727,6 +757,9 @@ for _cls in (
     Conductor,
     Impedance,
     Periodic,
+    FixedTemperature,
+    Convection,
+    HeatFlux,
     LumpedPort,
     WavePort,
     FloquetPort,

@@ -1623,7 +1623,11 @@ def _conserves_power(model: Model) -> bool:
     return (
         all(isinstance(p, LumpedPort) for p in model.ports)
         and not _undefined_rows(model)
-        and all(isinstance(b, PEC | PMC) for b in model.boundaries)
+        and all(
+            isinstance(b, PEC | PMC)
+            for b in model.boundaries
+            if b._physics == "em"  # noqa: SLF001
+        )
         and not _lossy_elements(model).any()
     )
 

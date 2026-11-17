@@ -1,8 +1,10 @@
-"""The electromagnetic solve domain on the NGSolve mesh.
+"""The solve domain of each physics on the NGSolve mesh.
 
-Excluded volume entities are left out of every electromagnetic space
+Excluded volume entities are left out of every space of their physics
 (``definedon`` the remaining domains, then ``Compress``), so their shells
 become exterior boundaries of the solve, as in Palace, which cracks them.
+Each function takes the physics (``"em"``, ``"thermal"``,
+``"dc_conduction"``); the electromagnetic domain is the default.
 """
 
 from __future__ import annotations
@@ -15,15 +17,16 @@ from gfem._periodic import pair_names
 from gfem.model import Model
 
 
-def em_region(model: Model, built: EngineMesh) -> ngs.Region:
-    """The NGSolve volume region of the model's electromagnetic solve domain.
+def em_region(model: Model, built: EngineMesh, physics: str = "em") -> ngs.Region:
+    """The NGSolve volume region of the model's solve domain of ``physics``.
 
     Args:
         model: The model; ``built`` must come from ``model.mesh``.
         built: The engine mesh.
+        physics: ``"em"`` (electromagnetic), ``"thermal"`` or
+            ``"dc_conduction"``.
     """
-    tags = {r.name: r.tag for r in model.mesh.regions if r.dim == 3}
-    out = {(tags[name], ent) for name, ent in model.excluded_entities}
+    out = set(model._domain_of(physics).excluded)  # noqa: SLF001
     bits = ngs.BitArray(len(built.domains))
     bits.Clear()
     for k, key in enumerate(built.domains):
@@ -32,17 +35,21 @@ def em_region(model: Model, built: EngineMesh) -> ngs.Region:
     return ngs.Region(built.mesh, ngs.VOL, bits)
 
 
-def region_domain(model: Model, built: EngineMesh, name: str) -> ngs.Region:
+def region_domain(
+    model: Model, built: EngineMesh, name: str, physics: str = "em"
+) -> ngs.Region:
     """The NGSolve volume region of region ``name`` inside the solve domain.
 
     Args:
         model: The model; ``built`` must come from ``model.mesh``.
         built: The engine mesh.
-        name: A volume region of the mesh. Its excluded entities are left
-            out, so the region holds exactly its active tetrahedra.
+        name: A volume region of the mesh. Its entities excluded from
+            ``physics`` are left out, so the region holds exactly its active
+            tetrahedra.
+        physics: As `em_region`.
     """
     tag = model.mesh.region(name).tag
-    out = {ent for region, ent in model.excluded_entities if region == name}
+    out = {e for t, e in model._domain_of(physics).excluded if t == tag}  # noqa: SLF001
     bits = ngs.BitArray(len(built.domains))
     bits.Clear()
     for k, key in enumerate(built.domains):
@@ -130,13 +137,13 @@ def potential_surfaces(model: Model) -> tuple[str, ...]:
     return tuple(sorted({*pec_surfaces(model), *lossy}))
 
 
-def domain_key(model: Model) -> tuple:
-    """The electromagnetic physics domain, as a cache key.
+def domain_key(model: Model, physics: str = "em") -> tuple:
+    """The solve domain of ``physics``, as a cache key.
 
-    Two models with the same mesh topology and excluded entities share
-    their spaces.
+    Two models with the same mesh topology and entities excluded from
+    ``physics`` share its spaces.
     """
-    return ("em", model._domain.excluded)  # noqa: SLF001
+    return (physics, model._domain_of(physics).excluded)  # noqa: SLF001
 
 
 def space_key(
@@ -148,6 +155,7 @@ def space_key(
     phases: tuple[complex, ...] | None = None,
     real: bool = False,
     fixed: tuple[str, ...] | None = None,
+    physics: str = "em",
 ) -> tuple:
     """The cache key of a ``kind`` space (``"hcurl"``, ``"h1"``) of ``order``.
 
@@ -156,11 +164,12 @@ def space_key(
     (``None``: plain periodicity); ``real`` for a real-valued space. The one
     key builder of `gfem._engine.cache.Discretization.space` for these
     spaces, so a paired and an unpaired space never share a key, nor two
-    spaces fixed on different surfaces.
+    spaces fixed on different surfaces. ``physics`` picks the solve domain
+    (`em_region`).
     """
     if fixed is None:
         fixed = pec_surfaces(model)
-    key = (domain_key(model), kind, order, fixed)
+    key = (domain_key(model, physics), kind, order, fixed)
     if periodic:
         key = (*key, pair_names(model._periodic), phases)  # noqa: SLF001
     return (*key, "real") if real else key
@@ -174,19 +183,21 @@ def h1_space(
     *,
     periodic: bool = False,
     phases: tuple[complex, ...] | None = None,
+    physics: str = "em",
 ) -> ngs.FESpace:
-    """Real H1 space of ``order`` on the electromagnetic domain, compressed.
+    """Real H1 space of ``order`` on the domain of ``physics``, compressed.
 
     The DOFs on the ``dirichlet`` surfaces (exact names) are fixed: they are
     left out of ``FreeDofs()``, which BDDC reads. With ``periodic``, periodic
     over the model's pairs as `hcurl_space`; Bloch ``phases`` make it
-    complex.
+    complex. ``physics`` picks the solve domain (`em_region`; the
+    electromagnetic one by default).
     """
     space = ngs.H1(
         built.mesh,
         order=order,
         complex=phases is not None,
-        definedon=em_region(model, built),
+        definedon=em_region(model, built, physics),
         dirichlet=_bc_numbers(built, dirichlet),
     )
     return _compressed(space, periodic=periodic, phases=phases)

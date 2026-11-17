@@ -91,9 +91,18 @@ def test_excluding_a_region_by_name_removes_all_its_entities(mesh):
     assert model.excluded_entities == tuple(("sub", e) for e in ents)
 
 
-def test_an_excluded_region_cannot_also_have_a_material(mesh):
+EVERYWHERE = ("em", "thermal", "dc_conduction")
+
+
+def test_a_region_excluded_from_every_physics_cannot_also_have_a_material(mesh):
+    # an electromagnetic exclusion keeps the region in the thermal domain
+    gfem.Model(mesh, materials={"air": AIR, "sub": SI}, excluded=("sub",))
     with pytest.raises(ValueError, match="excluded"):
-        gfem.Model(mesh, materials={"air": AIR, "sub": SI}, excluded=("sub",))
+        gfem.Model(
+            mesh,
+            materials={"air": AIR, "sub": SI},
+            excluded=dict.fromkeys(EVERYWHERE, ("sub",)),
+        )
 
 
 def test_excluded_names_must_be_volumes(mesh):
@@ -135,7 +144,9 @@ def test_enclosed_by_takes_surface_names(mesh):
 
 def test_excluding_everything_is_an_error(mesh):
     with pytest.raises(ValueError, match="nothing left"):
-        gfem.Model(mesh, materials={}, excluded=("sub", "air"))
+        gfem.Model(
+            mesh, materials={}, excluded=dict.fromkeys(EVERYWHERE, ("sub", "air"))
+        )
 
 
 # --- boundaries, ports and the PMC default --------------------------------------
@@ -356,7 +367,7 @@ def test_replace_and_with_material_return_new_validated_models(mesh):
     with pytest.raises(TypeError, match="colour"):
         model.replace(colour="red")
     with pytest.raises(ValueError, match="excluded"):
-        model.replace(excluded=("air",))
+        model.replace(excluded=dict.fromkeys(EVERYWHERE, ("air",)))
 
 
 def test_moved_mesh_keeps_the_excluded_entities(mesh):

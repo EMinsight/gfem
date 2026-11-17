@@ -368,6 +368,7 @@ def port_section_key(model: Model, port: WavePort) -> str:
         tuple(
             dataclasses.replace(b, fill=None) if sheet_of(b) is not None else b
             for b in model.boundaries
+            if b._physics == "em"  # noqa: SLF001
         )
     )
     faces = mesh.elements(port.surface)
