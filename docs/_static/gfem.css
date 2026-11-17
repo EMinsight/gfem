@@ -181,6 +181,19 @@ html[data-color-mode="light"] .gfem-theme-light, html[data-color-mode="dark"] .g
 .globaltoc a::before, .localtoc a::before { margin-left: -16px; }   /* the LED hangs in the gutter */
 .globaltoc, .localtoc > ul { padding-left: 16px; }
 .globaltoc .caption { margin-left: -16px; }
+/* collapsible groups (gfem.js 5): the caption is the toggle, its chevron at the right edge */
+.globaltoc .gfem-toc-toggle {
+  all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); width: 100%; cursor: pointer;
+  font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; }
+.globaltoc .gfem-toc-toggle::after {
+  content: ""; flex: none; width: 5px; height: 5px; margin-right: 4px;
+  border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg); transition: transform .15s; }
+.globaltoc .gfem-toc-toggle[aria-expanded="true"]::after { transform: rotate(45deg) translate(-1px, -1px); }
+.globaltoc .gfem-toc-toggle:hover { color: var(--ink); }
+.globaltoc .gfem-toc-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.globaltoc ul[hidden] { display: none; }
+.globaltoc .caption:has(+ ul[hidden]) { margin-bottom: 0; }
+.globaltoc ul[hidden] + .caption { margin-top: var(--s-4); }
 .globaltoc a:hover, .localtoc a:hover, .localtoc > ul li > a:hover { color: var(--ink); }
 .globaltoc a.current[href="#"] { color: var(--ink); font-weight: 500; }
 .globaltoc a.current[href="#"]::before { background: var(--accent); }

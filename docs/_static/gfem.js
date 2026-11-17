@@ -31,7 +31,36 @@
     if (q) e.currentTarget.search = "?q=" + encodeURIComponent(q);
   });
 
-  // 5. Drawer: focus moves to the first link on open; Escape closes and returns focus to Menu.
+  // 5. Sidebar groups: each caption toggles its list. The group holding this page opens;
+  //    the others keep the state last chosen in this browser (closed by default).
+  const store = {
+    get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+    set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+  };
+  document.querySelectorAll(".globaltoc").forEach((tree, t) => {
+    tree.querySelectorAll(":scope > p.caption").forEach((cap, i) => {
+      const list = cap.nextElementSibling;
+      if (!list || list.tagName !== "UL" || list.children.length < 2) return;
+      const label = cap.textContent.trim(), key = "gfem-toc:" + label;
+      const here = !!list.querySelector(".current");
+      const set = (open) => { b.setAttribute("aria-expanded", open); list.hidden = !open; };
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "gfem-toc-toggle";
+      list.id ||= `gfem-toc-${t}-${i}`;
+      b.setAttribute("aria-controls", list.id);
+      b.append(...cap.childNodes);
+      cap.append(b);
+      set(here || store.get(key) === "open");
+      b.addEventListener("click", () => {
+        const open = b.getAttribute("aria-expanded") !== "true";
+        set(open);
+        store.set(key, open ? "open" : "closed");
+      });
+    });
+  });
+
+  // 6. Drawer: focus moves to the first link on open; Escape closes and returns focus to Menu.
   const btn = document.querySelector(".gfem-menu"), nav = document.getElementById("head-nav");
   if (!btn || !nav) return;
   btn.addEventListener("click", () => {
