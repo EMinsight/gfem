@@ -1,0 +1,41 @@
+{
+  "Excitations": [
+    [
+      [
+        1,
+        {
+          "CurrentDipole": [],
+          "FloquetPort": [],
+          "LumpedPort": [
+            1
+          ],
+          "SurfaceCurrent": [],
+          "WavePort": []
+        }
+      ],
+      [
+        2,
+        {
+          "CurrentDipole": [],
+          "FloquetPort": [],
+          "LumpedPort": [
+            2
+          ],
+          "SurfaceCurrent": [],
+          "WavePort": []
+        }
+      ]
+    ]
+  ],
+  "GitTag": "v0.18.1",
+  "Problem": {
+    "DegreesOfFreedom": 10248856,
+    "MPISize": 4,
+    "MeshElements": 1464909,
+    "MultigridDegreesOfFreedom": [
+      2006719,
+      10248856
+    ],
+    "OpenMPThreads": 1
+  }
+}

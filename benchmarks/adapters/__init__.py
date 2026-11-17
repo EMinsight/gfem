@@ -264,5 +264,8 @@ def launched(
     return (*srun_argv(layout, mpi), *program), "srun"
 
 
-ADAPTERS: dict[str, Adapter] = {}
-"""Solver adapters by code; each adapter module adds its line (gfem, palace)."""
+# The registry imports the adapter modules, which import the names above.
+from benchmarks.adapters import palace  # noqa: E402
+
+ADAPTERS: dict[str, Adapter] = {"palace": palace.ADAPTER}
+"""Solver adapters by code; ``gfem`` joins with its adapter (ticket 06)."""

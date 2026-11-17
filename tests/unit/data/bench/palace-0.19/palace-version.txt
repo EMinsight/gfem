@@ -1,0 +1,28 @@
+
+Palace version: v0.19.0
+Schema version: 4-1-0
+
+Dependencies:
+  MPI: MPICH Version:      4.3.2
+  MFEM: MFEM v4.10.0 (release)
+  libCEED: 1.0.1
+  HYPRE: 3.2.0
+  LAPACK API: 3.12.0
+  OpenBLAS: OpenBLAS 0.3.34 NO_AFFINITY USE_OPENMP ZEN MAX_THREADS=64
+  SLEPc: 3.26.0
+  PETSc: 3.26.0
+  ARPACK-NG: 3.9.1
+  SuperLU_DIST: 9.3.0
+  STRUMPACK: 8.1.0
+  ZFP: 1.0.1
+  MUMPS: 5.9.1
+  SUNDIALS: 7.9.0
+  GSLIB: 1.0.9
+  METIS: 5.1.0
+  ParMETIS: 4.0.3
+  libxsmm: 2.1.0
+  Eigen: 5.0.1
+  fmt: 12.2.0
+  scn: 4.0.1
+  nlohmann/json-schema-validator: 2.4.1
+  nlohmann/json: 3.12.0

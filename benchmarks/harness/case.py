@@ -46,7 +46,8 @@ _CHUNK = 1 << 20
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _DIRECTION = re.compile(r"^[+-][xyz]$")
 _BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
-_FLOOR_SLACK = 1e-9
+_END_SLACK = 1e-9
+"""Palace's endpoint slack of a linear frequency range, relative to its end."""
 #: Keys of a boundary that name regions (checked against ``[regions]``).
 _REGION_KEYS = ("region", "donor", "receiver")
 
@@ -186,14 +187,22 @@ class Problem:
         """The driven frequencies in Hz.
 
         A ``{start, stop, step}`` range expands to every ``start + k step`` up to
-        ``stop`` (floor with slack, as Palace's grid).
+        ``stop`` by Palace's own rule (``GetNumSteps``, the same in 0.18.1 and
+        0.19.0): ``1 + floor((stop - start) / step)`` samples, plus one when the next
+        sample ``start + n step`` lies below ``stop (1 + 1e-9)``, so a ``stop`` that
+        round-off puts just short of a sample keeps it. The slack is relative to
+        ``stop``, not to the step.
         """
         if not isinstance(self.frequencies_hz, dict):
             return self.frequencies_hz
         start = self.frequencies_hz["start"]
         stop = self.frequencies_hz["stop"]
         step = self.frequencies_hz["step"]
-        count = math.floor((stop - start) / step + _FLOOR_SLACK) + 1
+        if step <= 0 or stop < start:
+            msg = f"frequency range {start} to {stop} in steps of {step} is empty"
+            raise CaseError(msg)
+        count = 1 + int((stop - start) / step)
+        count += start + count * step - stop < _END_SLACK * stop
         return tuple(start + k * step for k in range(count))
 
 
@@ -1115,8 +1124,10 @@ def _import_problem(
     return problem, {"s": [[to, frm] for frm in excite for to in names]}
 
 
-def _config_frequencies(driven: Mapping[str, Any]) -> dict[str, float]:
+def _config_frequencies(driven: Mapping[str, Any]) -> list[float] | dict[str, float]:
     samples = driven.get("Samples")
+    if samples and all(s.get("Type") == "Point" for s in samples):
+        return [f * 1e9 for s in samples for f in s["Freq"]]
     if samples:
         if len(samples) != 1 or samples[0].get("Type", "Linear") != "Linear":
             msg = "config Driven.Samples: only one Linear range imports"
