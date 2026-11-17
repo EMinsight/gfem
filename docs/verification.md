@@ -5,8 +5,7 @@ solves a case with a known answer. The answer is a closed form, an identity
 the physics must obey, an independent method, or finite differences for a
 gradient. This
 page lists those cases by area, in physical terms, and links the test files
-on GitHub. The tolerance each check asserts is in its test; where a section
-quotes one, it is the test's.
+on GitHub. The tolerance each check asserts is in its test, not on this page.
 
 Most checks run on every change to gfem. Cases too large for that run before
 each release, and the PETSc and SLEPc checks run twice a week; each section
@@ -290,56 +289,47 @@ Tests: [dressed modes](https://github.com/benvial/gfem/blob/main/tests/unit/test
 and the dispersive-shift cells of the
 [gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py).
 
-(verification-mesh-refinement)=
 ## Thermal
 
 Thermal and DC conduction solves are checked against closed forms, against
 each other, and against two independent codes, gsim and femwell, on the same
-heater. Each check runs on every change to gfem; the relative agreement each
-test asserts is in brackets.
+heater. Each check runs on every change to gfem.
 
 - **Exact in the discrete space.** Layered slabs, in series, under
-  convection and with a convection-only bottom, give their hand temperatures
-  (10⁻⁹ on a cross-section and on unstructured 3D tetrahedra). A bar gives
+  convection and with a convection-only bottom, give their hand temperatures,
+  on a cross-section and on unstructured 3D tetrahedra. A bar gives
   R = L/(σA), a two-conductor slab the hand formula for its resistance per
   length, heat and power, and the power a conductor dissipates equals the
-  power its terminals deliver (10⁻¹²). Switching a source on and off equals
-  two superposed steps, and twice the power gives twice the rise
-  (10⁻¹²).
+  power its terminals deliver. Switching a source on and off equals two
+  superposed steps, and twice the power gives twice the rise.
 - **Closed forms.** A strip heater on a substrate follows the ln coth profile
-  of its temperature (2 × 10⁻³), and its far field decays over 2H/π (2 %).
-  A slab's slowest thermal mode gives its time constant (10⁻⁶ from the
-  eigenvalue). The late decay of a step response matches it, with TR-BDF2
-  (10⁻³) and with the θ schemes (1 %), and the 10–90 % and 1/e times match the
-  analytic trace normalised over the same window (10⁻³). After ten time
-  constants a run reaches the steady temperature (5 × 10⁻³). The resistance
-  of an annular bend matches its closed form (5 × 10⁻⁵), and the Joule heat
-  of each element is the exact mean of σ|∇V|² over it (10⁻³).
+  of its temperature, and its far field decays over 2H/π. A slab's slowest
+  thermal mode gives its time constant. The late decay of a step response
+  matches it, with TR-BDF2 and with the θ schemes, and the 10–90 % and 1/e
+  times match the analytic trace normalised over the same window. After ten
+  time constants a run reaches the steady temperature. The resistance of an
+  annular bend matches its closed form, and the Joule heat of each element is
+  the exact mean of σ|∇V|² over it.
 - **The thermo-optic shift.** The first-order shift agrees with a mode
-  re-solved on the heated permittivity at the drive that gives π
-  (10⁻³). An optical window around the core gives the same shift as the
-  whole section with the other regions excluded (10⁻³). A route through a
-  z-invariant 3D rise gives the section's phase per length times its length,
-  and the first order agrees with a re-solved mode at a station in a 3D
-  heater (10⁻³).
+  re-solved on the heated permittivity at the drive that gives π. An optical
+  window around the core gives the same shift as the whole section with the
+  other regions excluded. A route through a z-invariant 3D rise gives the
+  section's phase per length times its length, and the first order agrees
+  with a re-solved mode at a station in a 3D heater.
 - **3D against the cross-section.** A heater section extruded in layers of
-  tetrahedra gives the slab's resistance per length (measured 7 × 10⁻¹⁴,
-  asserted 10⁻¹²) and its core rise per watt per metre (measured
-  2.4 × 10⁻⁵, asserted 10⁻³).
+  tetrahedra gives the slab's resistance per length and its core rise per
+  watt per metre.
 - **Two independent codes.** On the femwell TiN heater section, meshed by
   gsim and read by gfem from gsim's own file, gfem's P_π matches gsim's
-  22.38686 mW (measured 2.3 × 10⁻⁴, asserted 10⁻³) and femwell's published
-  22.6 mW (−0.9 %, asserted 3 %). The heater's resistance is
-  496.894409938 Ω (10⁻⁹). Driven at P_π with the backward Euler scheme on
-  gsim's time grid, the rise time (18.786 µs) and the time constant
-  (8.489 µs) match gsim's (both measured below 10⁻⁵, asserted 10⁻⁴).
+  (22.39 mW) and femwell's published 22.6 mW, and the heater's resistance
+  matches gsim's. Driven at P_π with the backward Euler scheme on gsim's time
+  grid, the rise time and the time constant match gsim's.
 - **Gradients.** Every thermal gradient of the matrix on
   {doc}`capabilities`, and one chain from the heater's conductivity, every
   element's thermal conductivity, the core's thermo-optic coefficient and
   the drive current through DC conduction, Joule heating, the steady and the
   transient temperature to the phase, matches fourth-order central
-  differences (10⁻⁶; measured 10⁻⁷ or better), on the direct and BDDC + GMRES
-  solvers.
+  differences, on the direct and BDDC + GMRES solvers.
 
 Two comparisons are observations, not checks, and live on the tutorials. The
 TiN heater of Jacques et al. (2019): gfem's P_π falls inside the published
@@ -357,6 +347,7 @@ Tests: [closed forms](https://github.com/benvial/gfem/blob/main/tests/verificati
 [transient](https://github.com/benvial/gfem/blob/main/tests/unit/test_transient_thermal.py),
 [gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix.py).
 
+(verification-mesh-refinement)=
 ## Mesh refinement error estimates
 
 The {term}`error estimate` of {doc}`recipes/mesh-refinement` is checked by
