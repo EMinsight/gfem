@@ -80,14 +80,23 @@ def files(repo: Path, sha: str) -> list[str]:
     return sorted([*listed, "COMMIT", "COMMIT_UTC"])
 
 
-def external_cases(cases_dir: Path = config.CASES_DIR) -> list[Case]:
-    """Cases whose mesh is not committed beside them (``[mesh] file`` absent)."""
-    found = []
-    for path in sorted(cases_dir.glob("*/case.toml")):
+def external_cases(
+    cases_dir: Path = config.CASES_DIR, references_dir: Path | None = None
+) -> list[Case]:
+    """Cases whose mesh is not committed beside them (``[mesh] file`` absent).
+
+    With ``references_dir``, the reference-only rungs under it too
+    (``<family>/<rung>/case.toml``); one case per mesh.
+    """
+    paths = sorted(cases_dir.glob("*/case.toml"))
+    if references_dir is not None:
+        paths += sorted(references_dir.glob("*/*/case.toml"))
+    found: dict[str, Case] = {}
+    for path in paths:
         case = load_case(path)
         if case.mesh.file is None:
-            found.append(case)
-    return found
+            found.setdefault(case.mesh.sha256, case)
+    return list(found.values())
 
 
 def _sha256_of_mesh(path: Path) -> str:
@@ -128,6 +137,7 @@ def ship(
     mesh_store: str | None = None,
     stores: Sequence[Path] = (),
     cases_dir: Path = config.CASES_DIR,
+    references_dir: Path | None = config.REFERENCES_DIR,
     dry_run: bool = False,
     run: Runner = subprocess.run,
 ) -> int:
@@ -160,7 +170,7 @@ def ship(
                 run=run,
             )
             print(f"shipped {sha7} to {target.host}:{dest}")
-    externals = external_cases(cases_dir)
+    externals = external_cases(cases_dir, references_dir)
     if not externals:
         return 0
     if mesh_store is None:

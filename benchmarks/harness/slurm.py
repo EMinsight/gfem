@@ -17,9 +17,10 @@ A planned run directory (``plan``) holds one steps file per job; each line is on
 - ``run --local`` runs the same lines without Slurm (gfem at one rank under taskset,
   Palace under Hydra), records marked ``machine: local``.
 - ``close`` turns ``started`` stubs into ``killed`` and missing rows of ended jobs
-  into ``not_started`` (from sacct), fills the manifest's jobs (billed core-h),
-  records (sha256) and campaign checks, and exits non-zero only when ``complete``,
-  ``provenance`` or ``dof_equal`` fails.
+  into ``not_started`` (from sacct), scores the ok records once against their
+  case's ``reference.json`` (:mod:`benchmarks.harness.score`), fills the manifest's
+  jobs (billed core-h), records (sha256) and campaign checks, and exits non-zero
+  only when ``complete``, ``provenance`` or ``dof_equal`` fails.
 
 Skip rules (ADR 0414): repeat 1 of a cell ending ``timeout`` makes its later repeats
 ``not_started`` (``earlier_repeat_timeout``); the default-layout cell of an
@@ -34,7 +35,6 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import datetime as dt
-import hashlib
 import json
 import os
 import platform
@@ -59,8 +59,8 @@ from benchmarks.adapters import (
     Run,
     RunRefusedError,
 )
-from benchmarks.harness import budget, config, data, matrix, measure, records
-from benchmarks.harness.case import Case, load_case
+from benchmarks.harness import budget, config, data, matrix, measure, records, score
+from benchmarks.harness.case import Case, definition_sha256, load_case
 from benchmarks.harness.config import ConfigError, Site
 
 STEP_STOP = 3
@@ -208,13 +208,6 @@ def _utc(when: float | None = None) -> str:
         else dt.datetime.fromtimestamp(when, dt.UTC)
     )
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def definition_sha256(case: Case) -> str:
-    """sha256 of the case definition, ``est_s`` hints left out."""
-    raw = case.to_dict()
-    raw.pop("est_s", None)
-    return hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest()
 
 
 def _reference(case: Case) -> tuple[dict[str, Any] | None, Path | None]:
@@ -1397,6 +1390,8 @@ def close(
     all_ids = [row["slurm_id"] for row in submitted(rd.path)]
     facts = budget.sacct_jobs(all_ids, run) if all_ids else {}
     rows, missing = _stamp(rd, ids, facts, environ)
+    for scored in score.score_campaign(rows, rd.case):
+        write(rd, scored, environ)
     checks = campaign_checks(rd, rows, missing)
     _fill_jobs(rd, ids, facts)
     rd.manifest.records = records.record_hashes(rd.path)

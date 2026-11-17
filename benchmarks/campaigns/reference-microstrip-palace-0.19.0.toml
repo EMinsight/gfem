@@ -1,0 +1,22 @@
+# Microstrip reference, Palace 0.19.0 cross-check (ticket 08 Q2): Palace direct on L0 p2
+# and L1 p2. With the pilot's gfem solves it gives the definition offset delta of
+# the lumped ports, stored in reference.json cross_checks and never averaged in.
+schema = 1
+cases_dir = "../references/microstrip"
+cases = ["microstrip_L0_p2", "microstrip_L1_p2"]
+solvers = ["palace:mumps"]
+layouts = ["default"]
+core_budget = 112
+repeats = 1
+node_class = "standard"
+anchor_tolerance = 1e-11
+
+[jobs]
+group = "stack"
+
+[wall_cap_s]
+microstrip_L0_p2 = 600
+microstrip_L1_p2 = 1800
+
+[stacks.wheels.versions]
+palace = "0.19.0"

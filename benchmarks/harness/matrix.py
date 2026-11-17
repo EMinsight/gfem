@@ -12,7 +12,9 @@ A campaign's axes (case x solver x stack x layout x tolerance x repeats) become
   carry no tolerance.
 - For each (stack, case, code) with an iterative cell and no direct one, one run of
   the code's direct kind at its default layout is added (``added_for =
-  "same_code_error"``, 1 repeat; ADR 0409).
+  "same_code_error"``, 1 repeat; ADR 0409), unless the campaign sets
+  ``same_code_direct = false`` (reference campaigns whose finest rung no direct
+  solver takes).
 - Cells are grouped into jobs (one per case x stack, or one per stack with ``[jobs]
   group = "stack"``) and run in rounds, round r rotated by r * ceil(|L| / repeats),
   so repeats of a cell never run back to back (:func:`rotate`).
@@ -388,6 +390,8 @@ def expand(
         for name in campaign.cases:
             found = _case_cells(campaign, cases[name], stack, adapters)
             cells += found
+            if not campaign.same_code_direct:
+                continue
             cells += _same_code_direct(
                 campaign,
                 cases[name],
@@ -670,6 +674,8 @@ def _campaign_toml(plan: Plan) -> dict[str, Any]:
     }
     if c.cases_dir is not None:
         raw["cases_dir"] = str(c.cases_dir)
+    if not c.same_code_direct:
+        raw["same_code_direct"] = False
     if c.ladder:
         raw["ladder"] = [
             {

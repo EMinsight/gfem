@@ -1,0 +1,100 @@
+# Microstrip ladder rung L0 p1 (ticket 08, spec G2): reference campaigns only, never a suite case.
+format = 1
+name = "microstrip_L0_p1"
+size = "small"
+family = "microstrip"
+order = 1
+
+[mesh]
+sha256 = "52caa88ac88570ddd58d1128063b60f7d925f802d3ce66c58cf562c9689e1b89"
+bytes = 2521418
+length_unit = "um"
+file = "../../../cases/microstrip/mesh.msh.xz"
+
+[mesh.source]
+recipe = "the microstrip suite case's pinned mesh (L0)"
+commit = "858bc66"
+note = "Committed beside the microstrip case; no copy."
+
+[regions]
+sio2 = [3, 1]
+sin = [3, 2]
+air = [3, 3]
+metal1_xy = [2, 4]
+metal1_z = [2, 5]
+topmetal2_xy = [2, 6]
+topmetal2_z = [2, 7]
+P1 = [2, 8]
+P2 = [2, 9]
+air__sio2 = [2, 10]
+sin__sio2 = [2, 11]
+air__sin = [2, 12]
+air__None = [2, 13]
+
+[problem]
+kind = "driven"
+frequencies_hz = [1000000000.0, 25000000000.0, 50000000000.0, 75000000000.0, 100000000000.0]
+sweep = "uniform"
+excite = ["p1", "p2"]
+
+[quantities]
+s = [["p1", "p1"], ["p2", "p1"], ["p1", "p2"], ["p2", "p2"]]
+
+[est_s]
+"gfem:direct" = 15
+
+[[materials]]
+region = "sio2"
+eps_r = 4.1
+tan_delta = 0.0
+
+[[materials]]
+region = "sin"
+eps_r = 7.5
+tan_delta = 0.001
+
+[[materials]]
+region = "air"
+eps_r = 1.0
+tan_delta = 0.0
+
+[[boundaries]]
+kind = "conductor"
+region = "metal1_xy"
+conductivity = 21640000.0
+thickness = 0.41999999999999993
+
+[[boundaries]]
+kind = "conductor"
+region = "metal1_z"
+conductivity = 21640000.0
+thickness = 0.41999999999999993
+
+[[boundaries]]
+kind = "conductor"
+region = "topmetal2_xy"
+conductivity = 30300000.0
+thickness = 3.0
+
+[[boundaries]]
+kind = "conductor"
+region = "topmetal2_z"
+conductivity = 30300000.0
+thickness = 3.0
+
+[[boundaries]]
+kind = "absorbing"
+region = "air__None"
+order = 1
+
+[[ports]]
+kind = "lumped"
+name = "p1"
+impedance_ohm = 50.0
+elements = [{region = "P1", direction = "+z"}]
+
+[[ports]]
+kind = "lumped"
+name = "p2"
+impedance_ohm = 50.0
+elements = [{region = "P2", direction = "+z"}]

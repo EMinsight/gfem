@@ -13,6 +13,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from benchmarks.harness import case, config, matrix, records, ship, slurm
+from benchmarks.references import closed, microstrip
+from benchmarks.references import document as refdoc
 
 NOT_YET = 2
 
@@ -55,6 +57,44 @@ def _plan(args: argparse.Namespace) -> int:
         return NOT_YET
     print(matrix.summary(plan, site, manifest))
     print(f"run directory: {args.out}")
+    return 0
+
+
+def _reference(args: argparse.Namespace) -> int:
+    name = args.case
+    if name == microstrip.CASE:
+        if args.plan is not None:
+            if args.out is None:
+                args.parser.error("--plan needs --out RUNDIR")
+            try:
+                args.campaign = microstrip.campaign_file(args.plan)
+            except config.ConfigError as error:
+                print(f"benchmarks reference: {error}", file=sys.stderr)
+                return NOT_YET
+            args.list = False
+            args.case = args.solver = args.stack = args.layout = args.repeats = None
+            return _plan(args)
+        if args.sources:
+            return _guarded(
+                "reference",
+                lambda: microstrip.write_from(args.sources, args.cases / name),
+            )
+        print(
+            "benchmarks reference: microstrip is a ladder: --plan STAGE --out RUNDIR, "
+            "then --from RUNDIR..",
+            file=sys.stderr,
+        )
+        return NOT_YET
+    try:
+        loaded = case.load_case(args.cases / name)
+        commit = matrix.source_commit()[0]
+        doc = closed.document(loaded, commit=commit)
+        path = args.cases / name / refdoc.FILE
+        changed = refdoc.write(path, doc)
+    except (case.CaseError, ValueError, matrix.PlanError) as error:
+        print(f"benchmarks reference: {error}", file=sys.stderr)
+        return NOT_YET
+    print(f"{path}: {'written' if changed else 'unchanged'} ({doc['id']})")
     return 0
 
 
@@ -170,9 +210,30 @@ def _add_execution(add: Adder) -> None:
 
 
 def _add_data(add: Adder) -> None:
-    p = add("reference", "compute a suite case's converged reference", _not_yet)
+    p = add("reference", "compute a suite case's converged reference", _reference)
     p.add_argument("case", metavar="CASE")
-    p.add_argument("--site", type=Path)
+    p.add_argument("--site", type=Path, help="site file (--plan only)")
+    p.add_argument(
+        "--plan",
+        metavar="STAGE",
+        help="microstrip: plan a ladder stage (pilot, l2, palace-<version>)",
+    )
+    p.add_argument("--out", type=Path, metavar="RUNDIR", help="with --plan")
+    p.add_argument(
+        "--from",
+        dest="sources",
+        nargs="+",
+        type=Path,
+        metavar="RUNDIR",
+        help="microstrip: extrapolate the fetched ladder records",
+    )
+    p.add_argument(
+        "--cases",
+        type=Path,
+        default=config.CASES_DIR,
+        metavar="DIR",
+        help="directory of case directories (default: benchmarks/cases)",
+    )
 
     p = add("ship", "ship a committed revision to the cluster", _ship)
     p.add_argument("rev", metavar="REV")

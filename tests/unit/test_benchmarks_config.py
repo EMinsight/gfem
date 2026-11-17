@@ -308,7 +308,6 @@ def test_plan_list_prints_axis_values(capsys):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["reference", "bragg"],
         ["report", "a", "b", "--out", "dir"],
     ],
 )
