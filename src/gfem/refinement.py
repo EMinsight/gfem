@@ -2417,6 +2417,15 @@ def _check_problem(model: Model, problem: Any) -> None:
             "the device with a gfem.Driven problem on its wave ports, whose "
             "mode solve runs on the refined port faces.",
         )
+    # "thermal" or "dc_conduction": the estimators are electromagnetic
+    feature = getattr(type(problem), "_physics", "em")
+    if feature != "em":
+        raise MeshRefinementUnsupportedError(
+            feature,
+            f"Mesh refinement has no path for a gfem.{type(problem).__name__} "
+            "problem: its error estimators are electromagnetic. Refine the mesh "
+            "in your mesher.",
+        )
     if not isinstance(problem, (Electrostatic, Driven, Eigenmode)):
         raise TypeError(
             "refine_mesh needs a gfem.Electrostatic, gfem.Driven or "

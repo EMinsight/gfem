@@ -120,6 +120,8 @@ _REFUSALS = {
     ),
     "eigenmode": f"An eigenmode solve has no distributed path: {_RUN_COPIES}.",
     "electrostatic": f"An electrostatic solve has no distributed path: {_RUN_COPIES}.",
+    "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
+    "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
     "periodic": f"A periodic model has no distributed path: {_RUN_COPIES}.",
     "floquet_port": f"A Floquet port has no distributed path: {_RUN_COPIES}.",
     "bloch": f"A Bloch wave vector has no distributed path: {_RUN_COPIES}.",
@@ -293,6 +295,10 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
         refuse_feature("eigenmode")
     if isinstance(problem, Electrostatic):
         refuse_feature("electrostatic")
+    physics = getattr(type(problem), "_physics", "em")
+    if physics != "em":
+        # "thermal" (steady and transient) or "dc_conduction" (ADR 0161)
+        refuse_feature(physics)
     if isinstance(problem, Driven):
         if problem.sweep == "adaptive":
             refuse_feature("adaptive_sweep")

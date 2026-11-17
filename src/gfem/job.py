@@ -68,8 +68,17 @@ from gfem.measurements import InterfaceParticipation
 from gfem.mesh import _TOPOLOGY_ARRAYS, Mesh, Region, _Topology
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
-from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
+from gfem.problems import (
+    DCConduction,
+    Driven,
+    Eigenmode,
+    Electrostatic,
+    PortMode,
+    SteadyThermal,
+    TransientThermal,
+)
 from gfem.results import (
+    DCConductionResult,
     DiffractionOrderResult,
     DrivenResult,
     EigenmodeResult,
@@ -79,9 +88,13 @@ from gfem.results import (
     PortModeField,
     PortModeResult,
     ReducedFields,
+    SteadyThermalResult,
     SweepInfo,
+    TransientThermalResult,
 )
 from gfem.solve import solve
+from gfem.thermal import HeatSource, _FieldTrace
+from gfem.thermo_optic import _RouteSampler, _RouteTrace, _Sampling, _ShiftTrace
 
 __all__ = ["Job", "load_result"]
 
@@ -635,8 +648,33 @@ def _model_from_args(args: dict[str, Any], _: _codec.Context) -> Model:
     return Model(mesh, **args)
 
 
-def _electrostatic_args(problem: Electrostatic, _: _codec.Context) -> dict[str, Any]:
+def _terminal_args(
+    problem: Electrostatic | DCConduction, _: _codec.Context
+) -> dict[str, Any]:
     return {"terminals": dict(problem.terminals), "ground": problem.ground}
+
+
+#: A transient's arguments: its waveform is written as the pytree holds it,
+#: start times and scales apart, so the scales' sidecar key is their leaf path.
+_TRANSIENT_NAMES = (
+    "heat",
+    "duration",
+    "steps",
+    "initial_temperature",
+    "traces",
+    "keep_fields",
+    "_switches",
+    "_scales",
+)
+
+
+def _transient_args(problem: TransientThermal, _: _codec.Context) -> dict[str, Any]:
+    return {name: getattr(problem, name) for name in _TRANSIENT_NAMES}
+
+
+def _transient_from_args(args: dict[str, Any], _: _codec.Context) -> TransientThermal:
+    switches, scales = args.pop("_switches"), args.pop("_scales")
+    return TransientThermal(**args, waveform=tuple(zip(switches, scales, strict=True)))
 
 
 def _field_args(field: Field, _: _codec.Context) -> dict[str, Any]:
@@ -765,6 +803,9 @@ for _cls in (
     FixedTemperature,
     Convection,
     HeatFlux,
+    # a joule source's power density goes to the sidecar by its leaf path
+    HeatSource,
+    SteadyThermal,
     LumpedPort,
     WavePort,
     FloquetPort,
@@ -780,6 +821,9 @@ for _cls in (
     Eigenmode,
     EigenmodeResult,
     InterfaceParticipation,
+    DCConductionResult,
+    SteadyThermalResult,
+    TransientThermalResult,
 ):
     _codec.register(_cls)
 _codec.register(
@@ -794,7 +838,33 @@ _codec.register(
     # "sigma": the scalar conductivity of sections saved by 0.1.0
     names=[f.name for f in dataclasses.fields(PortSection) if f.init] + ["sigma"],
 )
-_codec.register(Electrostatic, to_args=_electrostatic_args)
+_codec.register(Electrostatic, to_args=_terminal_args)
+_codec.register(DCConduction, to_args=_terminal_args)
+_codec.register(
+    TransientThermal,
+    to_args=_transient_args,
+    from_args=_transient_from_args,
+    names=_TRANSIENT_NAMES,
+)
+# a Trace.point or Trace.mean
+_codec.register(_FieldTrace, tag="Trace")
+# ThermoOpticShift.trace(): its weights, and the optical mesh's tetrahedra
+# that sample the rise
+_codec.register(_ShiftTrace, tag="ShiftTrace")
+_codec.register(_Sampling, tag="ShiftSampling")
+# RoutePhase.trace(name): its weights, and the window placed along the route
+_codec.register(_RouteTrace, tag="RouteTrace")
+_ROUTE_SAMPLER_NAMES = tuple(
+    f.name for f in dataclasses.fields(_RouteSampler) if f.name != "_cache"
+)
+_codec.register(
+    _RouteSampler,
+    tag="RouteSampler",
+    # the located matrices are a cache, rebuilt on the first sample
+    to_args=lambda r, _: {n: getattr(r, n) for n in _ROUTE_SAMPLER_NAMES},
+    from_args=lambda a, _: _RouteSampler(**a),
+    names=_ROUTE_SAMPLER_NAMES,
+)
 _codec.register(
     PortModeField,
     to_args=_port_mode_field_args,
