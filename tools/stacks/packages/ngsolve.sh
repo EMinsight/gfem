@@ -71,7 +71,9 @@ ngsolve_md5_tarball() {
 # The CMake options of the native build (ticket 07 Q1, research/upstream-recipes.md
 # §3.2): no -march=native but the toolchain's target through NG_COMPILE_FLAGS
 # (PUBLIC on ngcore), MPI linked directly (no run-time wrapper; netgen then
-# needs METIS), no NGSolve MUMPS (gfem's MUMPS is PETSc's), UMFPACK built
+# needs METIS; NG_COMPILE_FLAGS comes after CMAKE_CXX_FLAGS on the command
+# line, and GCC keeps the toolchain's explicit -mno-avx512fp16 over a later
+# -march), no NGSolve MUMPS (gfem's MUMPS is PETSc's), UMFPACK built
 # against the stack's LAPACK, OCC from pip netgen-occt, no GUI, no stubs.
 # build_ngsolve adds the compilers, flags, Python, BLAS and OCC paths.
 NGSOLVE_OPTIONS=(
