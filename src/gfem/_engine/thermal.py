@@ -348,9 +348,10 @@ class ThermalRule:
         if not is_traced(tuple(model.materials.values())):
             check_properties(model, self.active, self.reads)
         if not is_traced(problem):
-            _check_heat_inside(
-                mesh, self.active, np.asarray(source_density(problem, mesh))
-            )
+            # concrete sources: evaluated now, even inside a traced function
+            with jax.ensure_compile_time_eval():
+                density = np.asarray(source_density(problem, mesh))
+            _check_heat_inside(mesh, self.active, density)
 
     def vjp_problem(self, problem: Any) -> Loads:
         """The problem's differentiable leaves, resolved in JAX (`Loads`)."""
@@ -1313,7 +1314,7 @@ class TransientThermalRule(ThermalRule):
                 return self._adjoint(stepper.handle, rhs[:, None], reused=reused)[:, 0]
 
             states = bool(properties or trace_kinds)
-            sweep = (
+            sweep: Any = (
                 self._reverse(entry, stepper, scales, source)
                 if states
                 else ((n, None, None, None) for n in reversed(range(steps)))

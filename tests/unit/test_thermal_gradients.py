@@ -57,7 +57,7 @@ def _model(mesh, k=None):
     )
 
 
-def _problem(mesh, scale=1.0):
+def _problem(scale=1.0):
     return gfem.TransientThermal(
         gfem.HeatSource.uniform("heater", power_per_length=1.0),
         duration=DURATION,
@@ -73,7 +73,7 @@ def _objective(mesh, options):
     weights = np.linspace(1.0, 2.0, STEPS + 1)
 
     def objective(k):
-        result = gfem.solve(_model(mesh, k), _problem(mesh), options=options)
+        result = gfem.solve(_model(mesh, k), _problem(), options=options)
         field = result.temperature(DURATION * 3 / STEPS).coefficients
         return jnp.sum(result.traces["heater"] * weights) + jnp.sum(field[:40])
 
@@ -113,7 +113,7 @@ def test_the_checkpointed_sweep_equals_the_full_one(mesh, scheme, monkeypatch):
 
 def _kept_entry(mesh, wanted, options=None):
     options = gfem.SolverOptions(order=2) if options is None else options
-    problem = _problem(mesh)
+    problem = _problem()
     model = _model(mesh)
     rule = thermal.TransientThermalRule(model, problem, options)
     rule.wanted_kinds = frozenset(wanted)
@@ -162,7 +162,7 @@ def test_a_waveform_scale_differentiates(mesh):
     model = _model(mesh)
 
     def objective(scale):
-        result = gfem.solve(model, _problem(mesh, scale), options=options)
+        result = gfem.solve(model, _problem(scale), options=options)
         return jnp.sum(result.traces["heater"])
 
     grad = jax.grad(objective)(1.0)
@@ -182,7 +182,9 @@ SECTION = [
 @pytest.fixture(scope="module")
 def section(tmp_path_factory):
     path = tmp_path_factory.mktemp("shift_trace") / "section.msh"
-    return tc.section(path, SECTION, 0.3, [(lambda p: abs(p[1] + 1.0) < 1e-9, "bottom")])
+    return tc.section(
+        path, SECTION, 0.3, [(lambda p: abs(p[1] + 1.0) < 1e-9, "bottom")]
+    )
 
 
 def _section_objective(mesh):

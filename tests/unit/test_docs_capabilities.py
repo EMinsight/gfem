@@ -39,6 +39,12 @@ GRID = {
     "eigenmode_periodic_bloch": (V, V, V, V),
     "eigenmode_participation": (V, V, V, V),
     "eigenmode_field": (V, V, V, R),
+    "steady_thermal": (Z, Z, Z, R),
+    "transient_thermal": (Z, Z, Z, R),
+    "dc_conduction": (Z, V, Z, R),
+    # the held mode's solve reads a sheet's fill too: it raises
+    "thermo_optic_shift": (R, R, R, R),
+    "route_phase": (R, R, R, R),
 }
 FRONT = ("driven", "eigenmode", "electrostatic", "port_mode")
 
@@ -127,6 +133,13 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ("driven_periodic_plain", ["permittivity-law parameters"], 1),
         ("eigenmode_participation", ["lumped values"], 6),
         ("eigenmode_field", ["lumped values"], 1),
+        ("steady_thermal", ["thermal conductivity"], 2),
+        (
+            "transient_thermal",
+            ["thermal conductivity", "mass density", "specific heat"],
+            24,
+        ),
+        ("transient_thermal", ["heat-source amount and waveform scales"], 16),
     ]
     assert [e["text"] for e in derived["also"]] == [
         (
@@ -158,6 +171,18 @@ def test_permeability_loss_tangent_and_lumped_values_are_off_the_grid(derived):
         ),
         "Eigenmode, participations with respect to the lumped values (direct solver)",
         "Eigenmode, mode field with respect to the lumped values (direct solver)",
+        (
+            "Steady thermal with respect to the thermal conductivity "
+            "(direct solver, BDDC + GMRES)"
+        ),
+        (
+            "Transient thermal with respect to the thermal conductivity and the "
+            "mass density and the specific heat (direct solver, BDDC + GMRES)"
+        ),
+        (
+            "Transient thermal with respect to the heat-source amount and waveform "
+            "scales (direct solver, BDDC + GMRES)"
+        ),
     ]
 
 
@@ -224,7 +249,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 55
+    assert len(rows) == 65
     assert "electrostatic x sheet fill" not in rows
     shift = rows["thermo-optic shift x optical permittivity"]
     assert shift["error"] == "NonDifferentiableError"
@@ -299,7 +324,7 @@ def _derive(data, cells=None, expected=None, out_of_scope=None):
 
 
 def test_unchanged_data_derives(data):
-    assert len(_derive(data)["rows"]) == 10
+    assert len(_derive(data)["rows"]) == 15
 
 
 def test_a_new_problem_in_the_cells_fails(data):

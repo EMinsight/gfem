@@ -725,6 +725,116 @@ EXPECTED |= {
 }
 
 
+# Thermal and DC conduction (ADR 0177): each output differentiates with
+# respect to what its solve reads (the thermal properties it reads, the heat
+# source amount, the waveform scales; the conductivity for DC conduction)
+# and is an exact zero for every other material property and the sheet
+# fill; the node coordinates raise (the forms have no shape terms), for
+# every output, since the solve itself is traced.
+THERMAL_KINDS = [
+    ("nodes",),
+    *(("material", "lower", p) for p in ALL_PROPERTIES),
+    ("boundary", 0, "fill", "fill"),
+]
+_K = ("material", "lower", "thermal_conductivity")
+_RHO_CP = (
+    ("material", "lower", "mass_density"),
+    ("material", "lower", "specific_heat"),
+)
+AMOUNT = ("problem", ".heat[0]._amount")
+SCALES = ("problem", "._scales")
+#: Per problem: each result leaf's inputs read (GRADIENT), the rest ZERO.
+THERMAL_READS = {
+    "steady_thermal": {
+        "temperature.coefficients": {_K, AMOUNT},
+        "temperature.mesh.nodes": set(),
+        "rise.coefficients": {_K, AMOUNT},
+        "rise.mesh.nodes": set(),
+        "heat.coefficients": {AMOUNT},
+        "heat.mesh.nodes": set(),
+        "power": {AMOUNT},
+    },
+    "transient_thermal": {
+        "time": set(),
+        "traces.upper": {_K, *_RHO_CP, AMOUNT, SCALES},
+        "_rises": {_K, *_RHO_CP, AMOUNT, SCALES},
+        "_source_free.coefficients": {_K},
+        "_source_free.mesh.nodes": set(),
+        "power": {AMOUNT},
+    },
+    "dc_conduction": {
+        "conductance": {("material", "lower", "conductivity")},
+        "potential.t.coefficients": {("material", "lower", "conductivity")},
+        "potential.t.mesh.nodes": set(),
+        "dissipation": {("material", "lower", "conductivity")},
+    },
+}
+_PROBLEM_KINDS = {
+    "steady_thermal": (AMOUNT,),
+    "transient_thermal": (AMOUNT, SCALES),
+    "dc_conduction": (),
+}
+EXPECTED |= {
+    (name, out, kind): (
+        RAISES if kind == ("nodes",) else GRADIENT if kind in reads else ZERO
+    )
+    for name, leaves in THERMAL_READS.items()
+    for out, reads in leaves.items()
+    for kind in [*THERMAL_KINDS, *_PROBLEM_KINDS[name]]
+}
+
+
+# The thermo-optic shift and the route phase (ADRs 0175, 0183): measurement
+# rows, as the power flow's are, in the optical model's leaves and the
+# rise's coefficients (input kind ("rise",)). The mode is a constant of the
+# measurement: every input its port mode solve reads raises (the
+# electromagnetic properties, the node coordinates, a boundary's sheet fill),
+# for every leaf; the thermal properties are exact zeros. The thermo-optic
+# coefficient moves the phase and the trace's weights; the rise moves the
+# phase only; n_eff moves with neither.
+OPTICAL_EM = ("eps_r", "mu_r", "tan_delta", "conductivity")
+OPTICAL_KINDS = [
+    ("nodes",),
+    *(("material", "core", p) for p in ALL_PROPERTIES),
+    ("boundary", 0, "fill", "fill"),
+    ("rise",),
+]
+_DN = ("material", "core", "thermo_optic_coefficient")
+MEASUREMENT_READS = {
+    "thermo_optic_shift": {
+        "n_eff": set(),
+        "delta_n_eff": {_DN, ("rise",)},
+        "phase_per_length": {_DN, ("rise",)},
+        "_trace._weights": {_DN},
+    },
+    "route_phase": {
+        "n_eff": set(),
+        "phase.r": {_DN, ("rise",)},
+        "phase_per_length.r": {_DN, ("rise",)},
+        "_traces.r._weights": {_DN},
+        # the stations' arc lengths and the route's length: constants
+        "arc_length.r": set(),
+        "length.r": set(),
+    },
+}
+
+
+def _optical_outcome(kind, reads):
+    if kind[0] in ("nodes", "boundary") or (
+        kind[0] == "material" and kind[2] in OPTICAL_EM
+    ):
+        return RAISES
+    return GRADIENT if kind in reads else ZERO
+
+
+EXPECTED |= {
+    (name, out, kind): _optical_outcome(kind, reads)
+    for name, leaves in MEASUREMENT_READS.items()
+    for out, reads in leaves.items()
+    for kind in OPTICAL_KINDS
+}
+
+
 def _field(mesh, region, **overrides):
     # values vary per element, so the terminal potentials depend on them
     n = len(mesh.elements(region))
@@ -1060,6 +1170,185 @@ def eigen_periodic_cases(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def thermal_problem_cases(sheet_mesh):
+    """The steady, transient and DC conduction problems on the sheet line.
+
+    Every material property on the lower half (conducting, the heat source
+    there), a sheet fill between the halves, a fixed temperature and a
+    convection with another ambient (so the source-free temperature is not
+    uniform: its own adjoint pair enters).
+    """
+    mesh = sheet_mesh
+    fill = gfem.SheetField(fill=np.linspace(0.2, 0.9, len(mesh.elements("sheet"))))
+    upper = gfem.Material(
+        eps_r=2.0, thermal_conductivity=1.0, mass_density=2000.0, specific_heat=800.0
+    )
+    model = gfem.Model(
+        mesh,
+        materials={"lower": _field(mesh, "lower"), "upper": upper},
+        boundaries=[
+            gfem.Conductor("sheet", 100.0, 1e-6, fill=fill),
+            gfem.FixedTemperature("plate1", temperature=300.0),
+            gfem.Convection("plate2", coefficient=1e3, ambient=290.0),
+        ],
+    )
+    heat = gfem.HeatSource.uniform("lower", power=1e-3)
+    transient = gfem.TransientThermal(
+        heat,
+        duration=0.5,
+        steps=4,
+        waveform=[(0.0, 1.0), (0.25, 0.5)],
+        traces={"upper": gfem.Trace.mean("upper")},
+        keep_fields=True,
+    )
+    return {
+        "steady_thermal": (model, gfem.SteadyThermal(heat)),
+        "transient_thermal": (model, transient),
+        "dc_conduction": (model, gfem.DCConduction({"t": "port1"}, "port2")),
+    }
+
+
+@pytest.fixture(scope="module")
+def measurement_cases(tmp_path_factory):
+    """The thermo-optic shift on a section, the route phase through a 3D block.
+
+    Each as ``(model, rise, measure)``: ``measure(model, rise)`` is the
+    measurement. The core holds every material property (lossless: the
+    shift refuses a lossy section), a sheet inside the cladding.
+    """
+    directory = tmp_path_factory.mktemp("measurements")
+    rects = [
+        (-1.25, -0.6, 1.25, -0.3, "clad", None),
+        (-1.25, -0.3, 1.25, 0.82, "clad", None),
+        (-0.25, 0.0, 0.25, 0.22, "core", 0.05),
+    ]
+    edges = [
+        (lambda p: abs(p[1] + 0.6) < 1e-9, "bottom"),
+        (lambda p: abs(p[1] + 0.3) < 1e-9, "sheet"),
+    ]
+    section = tc.section(directory / "section.msh", rects, 0.3, edges)
+    n = len(section.elements("core"))
+    ramp = np.linspace(1.0, 1.5, n)
+    values = ALL_PROPERTIES | {
+        "eps_r": 12.1,
+        "tan_delta": 0.0,
+        "conductivity": 0.0,
+        "thermo_optic_coefficient": 1.86e-4,
+    }
+    core = gfem.MaterialField(**{k: v * ramp for k, v in values.items()})
+    clad = gfem.Material(
+        eps_r=2.085,
+        thermal_conductivity=1.38,
+        mass_density=2200.0,
+        specific_heat=700.0,
+        thermo_optic_coefficient=1e-5,
+    )
+    fill = gfem.SheetField(fill=np.linspace(0.2, 0.9, len(section.elements("sheet"))))
+    optical = gfem.Model(
+        section,
+        materials={"clad": clad, "core": core},
+        boundaries=[gfem.Conductor("sheet", 100.0, 1e-6, fill=fill)],
+        ports=[gfem.WavePort("p", "front")],
+    )
+    thermal = gfem.Model(
+        section,
+        materials={"clad": clad, "core": core},
+        boundaries=[gfem.FixedTemperature("bottom", temperature=300.0)],
+    )
+    heat = gfem.HeatSource.uniform("core", power_per_length=1.0)
+    section_rise = gfem.solve(thermal, gfem.SteadyThermal(heat)).rise
+    block_path = directory / "block.msh"
+    sink = [(lambda p: abs(p[0]) < 1e-9, "sink")]
+    block = tc.brick(block_path, (4.0, 3.0), [("block", 3.0)], 1.0, sink)
+    block_model = gfem.Model(
+        block,
+        materials={"block": gfem.Material(thermal_conductivity=1.38)},
+        boundaries=[gfem.FixedTemperature("sink", temperature=300.0)],
+    )
+    source = gfem.HeatSource.uniform("block", power_density=1e12)
+    block_rise = gfem.solve(block_model, gfem.SteadyThermal(source)).rise
+    route = {"r": np.array([[2.0, 0.5, 1.5], [2.0, 2.5, 1.5]]) * 1e-6}
+
+    def shift(model, rise):
+        return gfem.thermo_optic_shift(model, rise, port="p", frequency=1.934e14)
+
+    def phase(model, rise):
+        return gfem.route_phase(model, rise, routes=route, port="p", frequency=1.934e14)
+
+    return {
+        "thermo_optic_shift": (optical, section_rise, shift),
+        "route_phase": (optical, block_rise, phase),
+    }
+
+
+def _measurement_cells(cases):
+    for name, (model, rise, measure) in cases.items():
+        result = measure(model, rise)
+        kinds = [
+            input_kind(path, "model")
+            for path, _ in jax.tree_util.tree_flatten_with_path(model)[0]
+        ] + [("rise",)]
+        for out_path, _ in jax.tree_util.tree_flatten_with_path(result)[0]:
+            out_name = jax.tree_util.keystr(out_path, simple=True, separator=".")
+            for index, kind in enumerate(kinds):
+                yield name, model, rise, measure, out_name, out_path, index, kind
+
+
+def _measurement_objective(model, rise, measure, out_path, index):
+    """One measurement leaf's weighted sum in one input leaf (rise last)."""
+    leaves, treedef = jax.tree.flatten(model)
+    inputs = [*leaves, rise.coefficients]
+
+    def objective(x):
+        moved = [*inputs[:index], x, *inputs[index + 1 :]]
+        result = measure(
+            jax.tree.unflatten(treedef, moved[:-1]),
+            dataclasses.replace(rise, coefficients=moved[-1]),
+        )
+        (value,) = [
+            v
+            for p, v in jax.tree_util.tree_flatten_with_path(result)[0]
+            if p == out_path
+        ]
+        weights = np.random.default_rng(1).uniform(0.5, 1.5, np.shape(value))
+        return jnp.sum(jnp.real(value) * weights)
+
+    return objective, inputs[index]
+
+
+def test_every_measurement_cell_has_an_expected_outcome(measurement_cases):
+    cells = {(n, o, k) for n, *_, o, _, _, k in _measurement_cells(measurement_cases)}
+    assert cells == {c for c in EXPECTED if c[0] in measurement_cases}
+
+
+def test_measurement_raise_table(measurement_cases):
+    for (
+        name,
+        model,
+        rise,
+        measure,
+        out_name,
+        out_path,
+        index,
+        kind,
+    ) in _measurement_cells(measurement_cases):
+        expected = EXPECTED[(name, out_name, kind)]
+        objective, x = _measurement_objective(model, rise, measure, out_path, index)
+        cell = f"{name} {out_name} x {kind}"
+        if expected == RAISES:
+            with pytest.raises(gfem.NonDifferentiableError):  # noqa: PT012
+                jax.make_jaxpr(jax.grad(objective))(x)
+                pytest.fail(f"{cell}: no NonDifferentiableError")
+            continue
+        grad = np.asarray(jax.grad(objective)(x))
+        assert np.isfinite(grad).all(), cell
+        if expected == ZERO:
+            assert not grad.any(), cell
+        else:
+            assert np.abs(grad).max() > 0, cell
+
+
+@pytest.fixture(scope="module")
 def cases(model, driven_model, eigen_model, wave_cases, request):
     mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
     port_model = gfem.Model(
@@ -1093,6 +1382,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
             request.getfixturevalue("eigen_law_model"),
             gfem.Eigenmode(target=17e9),
         ),
+        **request.getfixturevalue("thermal_problem_cases"),
     }
 
 
@@ -1140,7 +1430,7 @@ def _objective(model, problem, out_path, index):
 
 def test_every_cell_has_an_expected_outcome(cases):
     cells = {(p, o, k) for p, _, _, o, _, _, k in _cells(cases)}
-    assert cells == set(EXPECTED)
+    assert cells == {c for c in EXPECTED if c[0] not in MEASUREMENT_READS}
 
 
 def test_raise_table(cases):
@@ -2070,6 +2360,56 @@ def _out_route_phase_by_the_window_nodes(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(mesh.nodes))
 
 
+def _out_traced_boundary(build):
+    def call(_request):
+        jax.make_jaxpr(jax.grad(lambda x: build(x).value))(300.0)
+
+    return call
+
+
+def _transient(**overrides):
+    kwargs = {"duration": 1e-6, "steps": 4} | overrides
+    return gfem.TransientThermal(**kwargs)
+
+
+def _out_traced_time(**build):
+    ((name, value),) = build.items()
+
+    def call(_request):
+        def objective(x):
+            arg = x if name != "waveform" else [(0.0, 1.0), (x, 0.5)]
+            _transient(**{name: arg})
+            return x
+
+        jax.make_jaxpr(jax.grad(objective))(value)
+
+    return call
+
+
+def _out_switching_time(name):
+    def call(_request):
+        t = np.linspace(0.0, 50.0, 501)
+        helper = getattr(gfem, name)
+        jax.make_jaxpr(jax.grad(lambda a: helper(t, a * (1.0 - np.exp(-t / 5.0)))))(1.0)
+
+    return call
+
+
+def _out_thermal_nodes(name):
+    def call(request):
+        model, problem = request.getfixturevalue("thermal_problem_cases")[name]
+        structure = jax.tree_util.tree_structure(model.mesh)
+
+        def objective(nodes):
+            mesh = jax.tree_util.tree_unflatten(structure, [nodes])
+            result = gfem.solve(model.replace(mesh=mesh), problem)
+            return sum(jnp.sum(leaf) for leaf in jax.tree.leaves(result))
+
+        jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+    return call
+
+
 # (row, raising call, error, message): DegenerateModeError on one mode of a
 # degenerate eigenmode cluster is in tests/verification/test_gradient_matrix.py.
 HOST = jax.errors.JaxRuntimeError  # a gfem error raised in the backward pass
@@ -2397,6 +2737,71 @@ OUT_OF_SCOPE = [
         _out_periodic_eigenmode_by_a_law_parameter,
         gfem.NonDifferentiableError,
         r"eps_r\.eps_inf.*periodic eigenmode",
+    ),
+    *(
+        (
+            f"thermal boundary {what}",
+            _out_traced_boundary(build),
+            gfem.NonDifferentiableError,
+            rf"{what}\b.*fixed value",
+        )
+        for what, build in (
+            (
+                "FixedTemperature.temperature",
+                lambda x: gfem.FixedTemperature("bottom", temperature=x),
+            ),
+            (
+                "Convection.coefficient",
+                lambda x: gfem.Convection("top", coefficient=x, ambient=290.0),
+            ),
+            (
+                "Convection.ambient",
+                lambda x: gfem.Convection("top", coefficient=10.0, ambient=x),
+            ),
+            ("HeatFlux.flux", lambda x: gfem.HeatFlux("top", flux=x)),
+        )
+    ),
+    (
+        "TransientThermal duration",
+        _out_traced_time(duration=1e-6),
+        gfem.NonDifferentiableError,
+        r"TransientThermal\.duration is a fixed value",
+    ),
+    (
+        "TransientThermal steps",
+        _out_traced_time(steps=4.0),
+        gfem.NonDifferentiableError,
+        r"TransientThermal\.steps must be a fixed integer",
+    ),
+    (
+        "TransientThermal waveform start time",
+        _out_traced_time(waveform=5e-7),
+        gfem.NonDifferentiableError,
+        r"waveform start time is a fixed value",
+    ),
+    (
+        "TransientThermal initial_temperature",
+        _out_traced_time(initial_temperature=300.0),
+        gfem.NonDifferentiableError,
+        r"TransientThermal\.initial_temperature is a fixed value",
+    ),
+    *(
+        (
+            f"{name} under jax.grad",
+            _out_switching_time(name),
+            gfem.NonDifferentiableError,
+            rf"gfem\.{name} is a measurement on recorded samples",
+        )
+        for name in ("rise_time", "time_constant")
+    ),
+    *(
+        (
+            f"{name} x node coordinates",
+            _out_thermal_nodes(name),
+            gfem.NonDifferentiableError,
+            rf"{name} results with respect to the mesh node coordinates.*shape",
+        )
+        for name in ("steady_thermal", "transient_thermal", "dc_conduction")
     ),
     (
         "thermo-optic shift x optical permittivity",
