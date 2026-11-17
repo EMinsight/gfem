@@ -353,6 +353,13 @@ def test_heat_on_an_excluded_region_raises(gap_mesh):
 # --- linear solvers -----------------------------------------------------------------
 
 
+def _assert_close(field, reference, rel):
+    """``field`` within ``rel`` of ``reference`` relative to its largest coefficient."""
+    a = np.asarray(field.coefficients)
+    b = np.asarray(reference.coefficients)
+    assert np.abs(a - b).max() <= rel * np.abs(b).max()
+
+
 def test_bddc_matches_direct(series_mesh):
     model = _series_model(series_mesh)
     problem = gfem.SteadyThermal(_upper_heat())
@@ -364,10 +371,8 @@ def test_bddc_matches_direct(series_mesh):
             order=2, linear_solver="bddc_gmres", tolerance=1e-14
         ),
     )
-    # 1.8e-16 measured
-    np.testing.assert_allclose(
-        bddc.temperature.coefficients, direct.temperature.coefficients, rtol=1e-10
-    )
+    # 1.8e-16 measured, in the max norm
+    _assert_close(bddc.temperature, direct.temperature, 1e-10)
 
 
 @pytest.mark.petsc
@@ -378,12 +383,9 @@ def test_petsc_matches_direct_thermal(series_mesh):
     petsc = gfem.solve(
         model, problem, options=gfem.SolverOptions(order=2, linear_solver="petsc")
     )
-    np.testing.assert_allclose(
-        petsc.temperature.coefficients, direct.temperature.coefficients, rtol=1e-12
-    )
-    np.testing.assert_allclose(
-        petsc.rise.coefficients, direct.rise.coefficients, rtol=1e-12
-    )
+    # in the max norm: the bubbles of the exact quadratic are round-off
+    for name in ("temperature", "rise"):
+        _assert_close(getattr(petsc, name), getattr(direct, name), 1e-12)
 
 
 # --- measurements -------------------------------------------------------------------
