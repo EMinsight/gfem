@@ -182,13 +182,15 @@ build_petsc() {
     stack_die "petsc: make check against $prefix failed"
   fi
 
+  # SLEPc's make, as its configure prints it: no PETSC_ARCH on the line (an
+  # empty one overrides the arch SLEPc derives for a prefix build, job 49171925).
   slepc=$dir/slepc-$version
   tar -xzf "$tarballs/slepc-$version.tar.gz" -C "$dir"
   (cd "$slepc" && petsc_clean env PETSC_DIR="$prefix" PYTHONPATH="$prefix/lib" \
     "$venv/bin/python" ./configure "--prefix=$prefix" --with-slepc4py)
-  petsc_clean env PYTHONPATH="$prefix/lib" make -C "$slepc" SLEPC_DIR="$slepc" PETSC_DIR="$prefix" PETSC_ARCH=
-  petsc_clean env PYTHONPATH="$prefix/lib" make -C "$slepc" SLEPC_DIR="$slepc" PETSC_DIR="$prefix" PETSC_ARCH= install-lib
-  if ! (cd "$slepc" && petsc_clean make SLEPC_DIR="$prefix" PETSC_DIR="$prefix" PETSC_ARCH= check) 2>&1 |
+  petsc_clean env PYTHONPATH="$prefix/lib" make -C "$slepc" SLEPC_DIR="$slepc" PETSC_DIR="$prefix"
+  petsc_clean env PYTHONPATH="$prefix/lib" make -C "$slepc" SLEPC_DIR="$slepc" PETSC_DIR="$prefix" install-lib
+  if ! (cd "$slepc" && petsc_clean make SLEPC_DIR="$prefix" PETSC_DIR="$prefix" check) 2>&1 |
     tee "$prefix/share/stack/slepc-check.log"; then
     stack_die "slepc: make check against $prefix failed"
   fi
