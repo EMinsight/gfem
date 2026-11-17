@@ -8,6 +8,7 @@ gsim's own test signal (ADR 0162), and warn on an unsettled trace
 (ADR 0181).
 """
 
+import dataclasses
 import math
 import warnings
 
@@ -328,3 +329,85 @@ def test_a_sinkless_part_keeps_its_uniform_start(tmp_path):
     assert float(result.temperature(end).at(top)) - float(
         result.rise(end).at(top)
     ) == pytest.approx(float(free.temperature.at(top)), rel=1e-12)
+
+
+# --- traces beyond points and means ------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _Mixed(gfem.Trace):
+    """A trace of both fields: twice the mean rise plus half the top temperature."""
+
+    point: tuple
+    unit: str = "K"
+
+    def _sample(self, temperature, rise):
+        return 2.0 * gfem.region_mean(rise, "slab") + 0.5 * temperature.at(self.point)
+
+
+def test_a_trace_of_both_fields_is_recorded_through_its_sample(slab):
+    traces = {"mixed": _Mixed(_top(slab))}
+    problem = gfem.TransientThermal(
+        _heat(), duration=2 * TAU1, steps=8, traces=traces, keep_fields=True
+    )
+    result = gfem.solve(_model(slab), problem, options=OPTIONS)
+    for k, t in enumerate(result.kept_times):
+        expected = traces["mixed"]._sample(result.temperature(t), result.rise(t))
+        assert float(result.traces["mixed"][k]) == pytest.approx(
+            float(expected), rel=1e-12
+        )
+
+
+def test_a_thermo_optic_trace_is_the_shift_of_the_rise(tmp_path):
+    # the section of tests/unit/test_thermo_optic.py, with heat capacities
+    rects = [
+        (-1.75, -1.0, 1.75, 1.8, "clad", None),
+        (-0.25, 0.0, 0.25, 0.22, "core", 0.05),
+        (-0.5, 1.5, 0.5, 1.65, "heater", 0.1),
+    ]
+    mesh = tc.section(
+        tmp_path / "section.msh",
+        rects,
+        0.3,
+        [(lambda p: abs(p[1] + 1.0) < 1e-9, "bottom")],
+    )
+    heat = {"mass_density": 2200.0, "specific_heat": 700.0}
+    materials = {
+        "clad": gfem.Material(
+            eps_r=1.444**2,
+            thermal_conductivity=1.38,
+            thermo_optic_coefficient=1e-5,
+            **heat,
+        ),
+        "core": gfem.Material(
+            eps_r=3.4777**2,
+            thermal_conductivity=90.0,
+            thermo_optic_coefficient=1.86e-4,
+            **heat,
+        ),
+        "heater": gfem.Material(thermal_conductivity=28.0, **heat),
+    }
+    model = gfem.Model(
+        mesh,
+        materials=materials,
+        boundaries=[gfem.FixedTemperature("bottom", temperature=300.0)],
+        ports=[gfem.WavePort("p", "front")],
+        excluded={"em": ["heater"]},
+    )
+    frequency = 299792458.0 / 1.55e-6
+    shift = gfem.thermo_optic_shift(model, None, port="p", frequency=frequency)
+    problem = gfem.TransientThermal(
+        gfem.HeatSource.uniform("heater", power_per_length=1.0),
+        duration=5e-6,
+        steps=5,
+        traces={"phase": shift.trace()},
+    )
+    result = gfem.solve(model, problem, options=OPTIONS)
+    end = result.kept_times[-1]
+    expected = gfem.thermo_optic_shift(
+        model, result.rise(end), port="p", frequency=frequency
+    ).phase_per_length
+    assert float(result.traces["phase"][-1]) == pytest.approx(
+        float(expected), rel=1e-12
+    )
+    assert float(result.traces["phase"][0]) == 0.0

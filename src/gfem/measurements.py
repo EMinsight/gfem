@@ -936,8 +936,28 @@ def element_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
         _mpi.refuse_feature("element_mean")
     names = _region_names(region)
     _check_mean_regions(field, names)
+    tets = np.concatenate([field.mesh.elements(n) for n in names])
+    return _element_means(
+        field,
+        tets,
+        f"element_mean over {list(names)}: {{n}} of their elements are outside "
+        "the field's support (excluded from its solve), where it has no value. "
+        "Average over regions the field is defined on.",
+    )
+
+
+def _element_means(field: Field, tetrahedra: np.ndarray, outside: str) -> jax.Array:
+    """The exact mean of a scalar ``field`` over each of ``tetrahedra``.
+
+    `element_mean`'s kernel on given tetrahedra of the field's own mesh,
+    differentiable in the field's coefficients.
+
+    Raises:
+        ValueError: Some tetrahedra are outside the field's support;
+            ``outside`` is the message, ``{n}`` their count.
+    """
     mesh = field.mesh
-    tets = np.concatenate([mesh.elements(n) for n in names])
+    tets = np.asarray(tetrahedra)
     inside = np.isin(
         mesh.tetrahedron_tags[tets], [mesh.region(n).tag for n in field.support]
     )
@@ -947,11 +967,7 @@ def element_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
         for tag, entity in field._excluded:  # noqa: SLF001
             inside &= ~((tags == tag) & (entities == entity))
     if not inside.all():
-        raise ValueError(
-            f"element_mean over {list(names)}: {int((~inside).sum())} of their "
-            "elements are outside the field's support (excluded from its solve), "
-            "where it has no value. Average over regions the field is defined on."
-        )
+        raise ValueError(outside.format(n=int((~inside).sum())))
     kernel = _ElementMeanKernel(field, tets)
     return measure(
         kernel, {"coefficients": field.coefficients, "nodes": field.mesh.nodes}

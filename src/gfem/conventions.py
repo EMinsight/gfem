@@ -272,6 +272,33 @@ For an ordinary transmon all three are negative. Other sources' conventions
 convert as ``chi = -chi_Minev = chi_Nigg = 2 chi_Koch`` and ``alpha =
 -alpha_Minev = alpha_Koch`` (Minev et al. and pyEPR report a downward shift
 as positive; Koch et al. write half the shift).
+
+Temperature and thermo-optic phase
+----------------------------------
+Temperatures are absolute, in kelvin. A thermal result's rise is the
+temperature minus the source-free temperature (the temperature with every
+`gfem.HeatSource` off, which boundary temperatures and fluxes still set),
+so it is the heaters' response even where the boundaries differ.
+
+A material's ``thermo_optic_coefficient`` dn/dT (1/K, any sign) acts on
+the rise about the index ``n0 = sqrt(eps_r)`` of its ``eps_r``, the index
+at the source-free temperature; no reference temperature is stored.
+`gfem.Model.with_temperature_rise` gives each element
+``eps_r = (n0 + dn/dT rise_e)^2``, ``rise_e`` the element's mean rise.
+
+`gfem.thermo_optic_shift` is first order in the rise, about the port's
+mode ``E0`` at 1 W on a lossless section::
+
+    delta_n_eff = (c eps0 / 4) sum_e 2 n0_e (dn/dT)_e rise_e int_e |E0|^2 dA
+    phase_per_length = k0 Re(delta_n_eff)      (rad/m)
+
+``phase_per_length`` is the extra phase delay per unit length of guide:
+positive for a positive coefficient and a positive rise. Under
+``exp(+iωt)`` a guide of length L transmits ``exp(-i beta L)``, so a
+transmission's argument moves by minus ``phase_per_length * L``. The
+power that gives a pi shift is ``P_pi = pi * P' / phase_per_length`` for
+a heater dissipating ``P'`` per unit length (``power_per_length``), which
+equals ``lambda / (2 s)`` with ``s = delta_n_eff / P'``.
 """
 
 from __future__ import annotations

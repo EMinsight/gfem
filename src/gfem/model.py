@@ -7,7 +7,7 @@ import itertools
 import math
 import types
 from collections.abc import Iterable, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import numpy as np
@@ -60,6 +60,9 @@ from gfem._periodic import (
 from gfem._sheet import SheetField
 from gfem.errors import RegionNotFoundError
 from gfem.mesh import Mesh
+
+if TYPE_CHECKING:
+    from gfem._field import Field
 
 __all__ = [
     "PEC",
@@ -754,6 +757,36 @@ class Model:
         """
         _check_volume(self.mesh, region, "Materials are assigned to volumes.")
         return self.replace(materials={**self.materials, region: material})
+
+    def with_temperature_rise(self, rise: Field) -> Model:
+        """A new model whose permittivity follows a temperature rise.
+
+        Each region with a `thermo_optic_coefficient` gets a
+        `MaterialField` with, per element, ``eps_r = (n0 + dn/dT *
+        rise_e)^2``: ``n0 = sqrt(eps_r)`` of its material (the index at the
+        source-free temperature) and ``rise_e`` the mean rise over the
+        element (the exact element mean on the rise's own mesh, else the
+        quadrature mean of the rise at points located in its mesh). Its
+        other properties are kept; regions without a coefficient, and
+        elements excluded from electromagnetic solves, keep their index.
+        Any optical solve then reads the heated index: a `PortMode`
+        re-solve checks `gfem.thermo_optic_shift`'s first order.
+        Differentiable with respect to the rise and the coefficient.
+
+        Args:
+            rise: The temperature rise, a scalar `Field` on any mesh that
+                holds the heated elements (``SteadyThermalResult.rise``).
+
+        Raises:
+            TypeError: ``rise`` is not a scalar `Field`.
+            ValueError: An element lies outside the rise's mesh or support
+                (the message names the point).
+            NotImplementedError: A region with a coefficient has a
+                permittivity law or an anisotropic material.
+        """
+        from gfem.thermo_optic import with_temperature_rise
+
+        return with_temperature_rise(self, rise)
 
     # --- pytree ---------------------------------------------------------------
 

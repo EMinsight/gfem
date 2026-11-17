@@ -449,6 +449,14 @@ RAISES_LABELS = {
         "Eigenmode principal participation, with respect to a lumped port's or "
         "an `Impedance`'s values"
     ),
+    "thermo-optic shift x optical permittivity": (
+        "`thermo_optic_shift`, with respect to the optical model's permittivity, "
+        "loss tangent, permeability or conductivity (the mode is held constant; "
+        "the rise and the thermo-optic coefficient differentiate)"
+    ),
+    "thermo-optic shift x optical node coordinates": (
+        "`thermo_optic_shift`, with respect to the optical model's node coordinates"
+    ),
 }
 STATUS_TEXT = {"verified": "FD-verified", "zero": "exact zero", "raises": "raises"}
 OUTCOMES = {"gradient", "zero", "raises"}

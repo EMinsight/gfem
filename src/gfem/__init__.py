@@ -122,6 +122,7 @@ from gfem.thermal import (  # noqa: E402
     rise_time,
     time_constant,
 )
+from gfem.thermo_optic import ThermoOpticShift, thermo_optic_shift  # noqa: E402
 
 __version__ = _version("gfem")
 
@@ -199,6 +200,7 @@ __all__ = [
     "SweepInfo",
     "SweepNotConvergedWarning",
     "SweepRankDeficientWarning",
+    "ThermoOpticShift",
     "Trace",
     "TransientThermal",
     "TransientThermalResult",
@@ -226,5 +228,6 @@ __all__ = [
     "rise_time",
     "shape",
     "solve",
+    "thermo_optic_shift",
     "time_constant",
 ]

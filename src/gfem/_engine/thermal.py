@@ -62,7 +62,7 @@ from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import SteadyThermal, TransientThermal
 from gfem.results import Field, SteadyThermalResult, TransientThermalResult
-from gfem.thermal import Trace, _tet_volumes
+from gfem.thermal import Trace, _FieldTrace, _tet_volumes
 
 __all__ = ["SteadyThermalRule", "ThermalRule", "TransientThermalRule"]
 
@@ -782,13 +782,16 @@ class TransientThermalRule(ThermalRule):
     def _layout(self) -> tuple:
         return (self.regions, self._excluded, "h1", self.options.order)
 
-    def _trace_rows(self, mesh: Mesh) -> np.ndarray:
-        """``(n_traces, ndof)``: each trace is ``row @ T`` (or ``row @ rise``)."""
+    def _trace_rows(self, mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
+        """``(n_traces, ndof)`` twice: each trace is ``on_t @ T + on_rise @ rise``."""
         traces = list(self.problem.traces.values())
-        rows = np.zeros((len(traces), self._ndof()))
+        n = self._ndof()
+        on_t, on_rise = np.zeros((len(traces), n)), np.zeros((len(traces), n))
         for k, trace in enumerate(traces):
-            rows[k] = trace_row(trace, mesh, self._layout())
-        return rows
+            on_t[k], on_rise[k] = trace_rows(
+                trace, mesh, self._layout(), self._field, n
+            )
+        return on_t, on_rise
 
     # --- the forward ----------------------------------------------------------
 
@@ -881,8 +884,9 @@ class TransientThermalRule(ThermalRule):
         _check_heat_inside(mesh, self.active, density)
         dt, _, kept = self._grid
         scales = self.scales()
-        rows = self._trace_rows(mesh)
-        on_rise = np.array([t._on_rise for t in self.problem.traces.values()], bool)  # noqa: SLF001
+        on_t, on_rise = self._trace_rows(mesh)
+        # T = T0 + rise: each trace is on_t @ T0 + rows @ rise
+        rows = on_t + on_rise
         with task_manager(self.options.threads):
             space, built = self._space(model)
             source = self._source_load(built, space, density)
@@ -894,7 +898,7 @@ class TransientThermalRule(ThermalRule):
             else:
                 u = np.where(stepper.free, self._constant(space, start) - t0, 0.0)
             steps = self.problem.steps
-            offset = np.where(on_rise, 0.0, rows @ t0)
+            offset = on_t @ t0
             traces = np.empty((steps + 1, len(rows)))
             traces[0] = rows @ u + offset
             rises = np.empty((len(kept), len(t0)))
@@ -979,6 +983,8 @@ def _check_trace(mesh: Mesh, regions: tuple[str, ...], name: str, trace: Trace) 
         RegionNotFoundError: The region is not in the mesh.
         ValueError: It is a surface, or holds no element of the domain.
     """
+    if not isinstance(trace, _FieldTrace):
+        return
     for region in trace._regions:  # noqa: SLF001
         if region not in mesh.volumes:
             if region in mesh.surfaces:
@@ -994,33 +1000,43 @@ def _check_trace(mesh: Mesh, regions: tuple[str, ...], name: str, trace: Trace) 
         )
 
 
-def trace_row(trace: Trace, mesh: Mesh, layout: tuple) -> np.ndarray:
-    """``(ndof,)``: the trace's value is ``row @ coefficients`` on ``layout``.
+def trace_rows(
+    trace: Trace, mesh: Mesh, layout: tuple, field: Any, ndof: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(ndof,)`` twice: the trace is ``on_t @ T + on_rise @ rise`` on ``layout``.
 
-    ``"point"``: the basis functions at the point; ``"mean"``: their exact
-    mean over the regions (`gfem.region_mean`'s rows); ``"elements"``: the
-    trace's per-tetrahedron weights on the element means.
+    A point or mean trace (`gfem.Trace.point`, `gfem.Trace.mean`) reads the
+    temperature: the basis functions at the point, or their exact mean
+    over the regions (`gfem.region_mean`'s rows). Any other trace gives its
+    rows by differentiating its linear ``_sample`` once (a reverse pass at
+    zero fields), ``field(coefficients, quantity)`` building its fields.
 
     Raises:
         ValueError: A point outside the thermal domain.
     """
     from gfem._engine import probe
-    from gfem._engine.fields import element_rows, mean_rows
+    from gfem._engine.fields import mean_rows
 
     support, excluded, space, order = layout
-    if trace._kind == "point":  # noqa: SLF001
-        where = probe.Layout(
-            support=support, excluded=excluded, space=space, order=order
-        )
-        point = np.asarray([trace._point], float)  # noqa: SLF001
-        located = probe.locate(mesh, where, point)
-        found = probe.probe(mesh, where, located)
-        return found.transpose(np.ones((1, 1, 1)))[0, : found.ndof].real
-    if trace._kind == "mean":  # noqa: SLF001
-        inside = tuple(r for r in trace._regions if r in support)  # noqa: SLF001
-        return mean_rows(mesh, layout, inside)[0]
-    if trace._kind == "elements":  # noqa: SLF001
-        weights = np.asarray(trace._weights, float)  # noqa: SLF001
-        tets = np.flatnonzero(weights)
-        return np.asarray(element_rows(mesh, layout, tets).T @ weights[tets]).ravel()
-    raise ValueError(f"Unknown trace kind {trace._kind!r}.")  # noqa: SLF001
+    if isinstance(trace, _FieldTrace):
+        if trace._point is not None:  # noqa: SLF001
+            where = probe.Layout(
+                support=support, excluded=excluded, space=space, order=order
+            )
+            point = np.asarray([trace._point], float)  # noqa: SLF001
+            located = probe.locate(mesh, where, point)
+            found = probe.probe(mesh, where, located)
+            row = found.transpose(np.ones((1, 1, 1)))[0, : found.ndof].real
+        else:
+            inside = tuple(r for r in trace._regions if r in support)  # noqa: SLF001
+            row = mean_rows(mesh, layout, inside)[0]
+        return row, np.zeros_like(row)
+    zero = jnp.zeros(ndof)
+
+    def sample(on_t: jax.Array, on_rise: jax.Array) -> jax.Array:
+        value = trace._sample(field(on_t, "T"), field(on_rise, "dT"))  # noqa: SLF001
+        return jnp.reshape(value, ())
+
+    _, pull = jax.vjp(sample, zero, zero)
+    on_t, on_rise = pull(jnp.ones(()))
+    return np.asarray(on_t, float), np.asarray(on_rise, float)

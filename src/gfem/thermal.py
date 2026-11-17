@@ -39,6 +39,7 @@ from gfem.errors import (
 if TYPE_CHECKING:
     import jax
 
+    from gfem._field import Field
     from gfem.mesh import Mesh
 
 __all__ = ["HeatSource", "Trace", "joule_heating", "rise_time", "time_constant"]
@@ -406,17 +407,20 @@ def joule_heating(
     )
 
 
-@dataclasses.dataclass(frozen=True, eq=False)
 class Trace:
     """A linear functional of the temperature, recorded at every time step.
 
     A `gfem.TransientThermal` problem records each of its traces at all
     ``steps + 1`` grid times, ``t = 0`` included
-    (`gfem.TransientThermalResult.traces`), without keeping the fields.
-    Build one with `Trace.point` (the temperature at a point) or
-    `Trace.mean` (the exact mean over volume regions); both are in K and
-    absolute. The functional's weights are built when the problem is
-    solved, on the solve's own unknowns.
+    (`gfem.TransientThermalResult.traces`), without keeping the fields. A
+    trace is a value object: what it reads (a point, a region, a section's
+    thermo-optic weights) is fixed when it is built, and its weights on the
+    solve's degrees of freedom are private, built at solve time.
+
+    Build one with `Trace.point` (the temperature at a point, K) or
+    `Trace.mean` (the exact mean temperature over volume regions, K);
+    `gfem.ThermoOpticShift.trace` gives the thermo-optic phase per length
+    of a section, a functional of the rise (rad/m).
 
     Example:
         The core's mean temperature and the temperature under a heater::
@@ -425,25 +429,28 @@ class Trace:
                 "core": gfem.Trace.mean("core"),
                 "top": gfem.Trace.point((0.0, 2.2e-6, 0.0)),
             }
+
+    Attributes:
+        unit: The unit of the trace's values (``"K"`` for a temperature).
     """
 
-    #: ``"point"``, ``"mean"`` or ``"elements"`` (weights on element means).
-    _kind: str
-    #: For a point trace: the point in m.
-    _point: tuple[float, float, float] | None = None
-    #: For a mean trace: the volume regions.
-    _regions: tuple[str, ...] = ()
-    #: For an ``"elements"`` trace: a weight per tetrahedron (mesh order);
-    #: the trace is the weighted sum of the element means.
-    _weights: Any = None
-    #: The unit of the recorded values.
-    _unit: str = "K"
-    #: Whether the functional reads the temperature rise (else the absolute
-    #: temperature).
-    _on_rise: bool = False
+    unit: str = "K"
 
-    @classmethod
-    def point(cls, point: Any) -> Trace:
+    def _sample(self, temperature: Field, rise: Field) -> jax.Array:
+        """The trace's value on one temperature and its rise (linear in both).
+
+        A solve records it at every step through its weights on the
+        coefficients of both fields, found once by differentiating this
+        method (`gfem._engine.thermal.trace_rows`).
+
+        Args:
+            temperature: The absolute temperature field, K.
+            rise: The temperature rise above the source-free temperature, K.
+        """
+        raise NotImplementedError(f"{type(self).__name__} has no value.")
+
+    @staticmethod
+    def point(point: Any) -> Trace:
         """The temperature at a point, in K.
 
         Args:
@@ -464,10 +471,10 @@ class Trace:
             raise ValueError(
                 f"Trace.point takes one point (x, y, z) in m, got {point!r}."
             )
-        return cls(_kind="point", _point=(float(p[0]), float(p[1]), float(p[2])))
+        return _FieldTrace(_point=(float(p[0]), float(p[1]), float(p[2])))
 
-    @classmethod
-    def mean(cls, region: str | Sequence[str]) -> Trace:
+    @staticmethod
+    def mean(region: str | Sequence[str]) -> Trace:
         """The exact mean temperature over volume regions, in K.
 
         The mean of the solved field over the regions' elements in the
@@ -487,19 +494,36 @@ class Trace:
                 "Trace.mean: region must be a volume region name or a non-empty "
                 f"sequence of names, got {region!r}."
             ) from None
-        return cls(_kind="mean", _regions=regions)
+        return _FieldTrace(_regions=regions)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _FieldTrace(Trace):
+    """The temperature at a point (`Trace.point`) or its mean over regions."""
+
+    #: For a point trace: the point in m.
+    _point: tuple[float, float, float] | None = None
+    #: For a mean trace: the volume regions.
+    _regions: tuple[str, ...] = ()
+    unit: str = "K"
+
+    def _sample(self, temperature: Field, rise: Field) -> jax.Array:
+        """The temperature at the point, or its mean over the regions."""
+        del rise
+        if self._point is not None:
+            return temperature.at(self._point)
+        from gfem.measurements import region_mean
+
+        return region_mean(temperature, self._regions)
 
     def __repr__(self) -> str:
-        if self._kind == "point":
+        if self._point is not None:
             return f"Trace.point({self._point!r})"
-        if self._kind == "mean":
-            regions = self._regions[0] if len(self._regions) == 1 else self._regions
-            return f"Trace.mean({regions!r})"
-        what = "rise" if self._on_rise else "temperature"
-        return f"Trace({self._kind} of the {what}, in {self._unit})"
+        regions = self._regions[0] if len(self._regions) == 1 else self._regions
+        return f"Trace.mean({regions!r})"
 
 
-register_fields(Trace, ("_weights",))
+register_fields(_FieldTrace, ())
 
 
 # --- switching times (copied from gsim, ADR 0162) ------------------------------
