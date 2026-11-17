@@ -1210,7 +1210,9 @@ def _prepare(
             commit=commit,
         )
         if prepare is None:
-            stacks.prepare(resolved, wheel=_wheel())
+            stacks.prepare(
+                resolved, wheel=_wheel(), codes=matrix.campaign_codes(rd.campaign)
+            )
         else:
             prepare(resolved)
         found = stacks.provenance(resolved)

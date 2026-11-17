@@ -425,6 +425,20 @@ def test_wheels_prepare_refuses_a_missing_palace_wheel(tmp_path):
         stacks.prepare(resolved, wheel=wheel)
 
 
+def test_wheels_prepare_of_a_gfem_only_campaign_needs_no_palace_wheel(tmp_path):
+    site, wheel = _wheels_site(tmp_path)
+    resolved = stacks.resolve(
+        "wheels", site, versions={"palace": "0.18.1.post5"}, commit=COMMIT
+    )
+    env = stacks.prepare(resolved, wheel=wheel, codes=("gfem",))
+    assert (env / "manifest.txt").is_file()
+    assert not Path(resolved.code_env["palace"]).exists()
+    prov = stacks.provenance(resolved)
+    assert "gfem_manifest" in prov
+    assert "palace_manifest" not in prov
+    assert "palace_version" not in prov
+
+
 def test_frozen_versions_read_wheels_installed_from_files():
     from benchmarks.stacks import wheels
 
