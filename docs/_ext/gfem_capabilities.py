@@ -1589,11 +1589,14 @@ def _directives() -> dict:
                 what.extend(_with_code(row["label"]))
                 para += what
                 para += nodes.Text(" ")
-                para.extend(self.source(RAISE_TEST, tag))
+                # one flex item: the tag and its catch link wrap together
+                status = nodes.inline(classes=["status"])
+                status.extend(self.source(RAISE_TEST, tag))
                 if links_gradient_errors(row):  # outside the source link: no nesting
-                    para += nodes.Text(" (")
-                    para += self.ref(GRADIENT_ERRORS, nodes.Text("how to catch it"))
-                    para += nodes.Text(")")
+                    status += nodes.Text(" (")
+                    status += self.ref(GRADIENT_ERRORS, nodes.Text("how to catch it"))
+                    status += nodes.Text(")")
+                para += status
                 items += nodes.list_item("", para)
             return [items]
 
