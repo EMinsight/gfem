@@ -1,15 +1,17 @@
 """The ``wheels`` stack kind: pip wheels installed offline into per-commit envs.
 
-Site inputs come from the site file's ``[stacks.<name>]`` table: ``base_venv`` (a
-venv with gfem's dependencies), ``wheel_dirs``, ``petsc_wheelhouse`` (the MPI PETSc
-stack's wheels), ``palace_wheelhouse`` and ``python`` (which makes the Palace
-venvs). :func:`prepare` ports ``tools/scale_env.sh``: gfem's env is a hard-link
-copy of the base venv with the commit's wheel, the PETSc wheels and mpi4py
-installed offline, at ``{cluster.root}/envs/bench-<sha7>-<stack>-<fp8>/``; Palace's
-env is a fresh venv per version at ``{cluster.root}/envs/palace-<version>/``,
-shared across commits. ``manifest.txt``, written last, marks an env finished.
-The ``palace`` version selects the wheel; ``ngsolve`` and ``petsc`` are checked
-against ``pip freeze`` and a mismatch is refused. Standard library only.
+Site inputs come from the site file's ``[stacks.<name>]`` table (a site without one,
+a workstation's, resolves with no inputs and runs only ``run --local``):
+``base_venv`` (a venv with gfem's dependencies), ``wheel_dirs``,
+``petsc_wheelhouse`` (the MPI PETSc stack's wheels), ``palace_wheelhouse`` and
+``python`` (which makes the Palace venvs). :func:`prepare` ports
+``tools/scale_env.sh``: gfem's env is a hard-link copy of the base venv with the
+commit's wheel, the PETSc wheels and mpi4py installed offline, at
+``{cluster.root}/envs/bench-<sha7>-<stack>-<fp8>/``; Palace's env is a fresh venv
+per version at ``{cluster.root}/envs/palace-<version>/``, shared across commits.
+``manifest.txt``, written last, marks an env finished. The ``palace`` version
+selects the wheel; ``ngsolve`` and ``petsc`` are checked against ``pip freeze`` and
+a mismatch is refused. Standard library only.
 """
 
 from __future__ import annotations
@@ -43,7 +45,7 @@ def inputs(
     name = description.name
     table = site.stacks.get(name)
     if table is None:
-        raise ConfigError(f"{site.path}: no [stacks.{name}] table for stack {name}")
+        return {}, {}  # a site without the table only runs ``run --local``
     missing = [k for k in KEYS if k not in table]
     if missing:
         raise ConfigError(f"{site.path} [stacks.{name}]: missing {', '.join(missing)}")
@@ -109,10 +111,19 @@ def _sha256(path: Path) -> str:
 
 
 def frozen_versions(freeze: str) -> dict[str, str]:
-    """``name==version`` lines of ``pip freeze``, names normalised."""
+    """Versions in ``pip freeze``, names normalised.
+
+    ``name==version`` lines, and ``name @ <url>/<wheel>`` lines of wheels installed
+    from a file, whose version is the wheel file name's second field.
+    """
     versions = {}
     for line in freeze.splitlines():
         match = re.match(r"^([A-Za-z0-9_.-]+)==(\S+)$", line.strip())
+        if match is None:
+            match = re.match(
+                r"^([A-Za-z0-9_.-]+) @ \S*/[A-Za-z0-9_.]+-([^-/]+)-[^/]*\.whl\b",
+                line.strip(),
+            )
         if match:
             versions[re.sub(r"[-_.]+", "-", match[1]).lower()] = match[2]
     return versions
@@ -205,6 +216,11 @@ def _palace_env(resolved: Resolved) -> Path:
 
 def prepare(resolved: Resolved, *, wheel: Path) -> Path:
     """Build (or reuse) gfem's env from ``wheel`` and Palace's env; return gfem's."""
+    if not resolved.inputs:
+        raise _refused(
+            f"stack {resolved.name}: the site file has no [stacks.{resolved.name}] "
+            "table (a site without it runs only run --local)"
+        )
     if not Path(wheel).is_file():
         raise _refused(f"stack {resolved.name}: no gfem wheel at {wheel}")
     palace_wheel(resolved)  # refuse before building anything

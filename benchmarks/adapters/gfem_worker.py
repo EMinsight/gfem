@@ -322,7 +322,10 @@ def run(path: Path) -> int:
     }
     logger.removeHandler(handler)
     handler.close()
-    gathered = [(mine, ngsolve.GetNumThreads())]
+    # GetNumThreads is 1 outside a TaskManager; inside one it is the count gfem set
+    with ngsolve.TaskManager():
+        threads = ngsolve.GetNumThreads()
+    gathered = [(mine, threads)]
     if comm is not None:
         gathered = comm.gather(gathered[0], root=0)
     report = solved.report
