@@ -32,6 +32,7 @@ __all__ = [
     "LENGTH_POWER",
     "curl_matrix",
     "dof_shape",
+    "element_rows",
     "fe_space",
     "mean_rows",
     "one_process_column",
@@ -578,3 +579,64 @@ def mean_rows(
     while len(_MEANS) > _MAX_MEANS:
         _MEANS.popitem(last=False)
     return rows
+
+
+_ELEMENT_ROWS: collections.OrderedDict[tuple, tuple] = collections.OrderedDict()
+
+
+def element_rows(
+    mesh: Mesh,
+    layout: tuple[tuple[str, ...], tuple[tuple[int, int], ...], str, int],
+    tetrahedra: np.ndarray,
+) -> Any:
+    """``(len(tetrahedra), ndof)`` sparse rows: the element means are ``rows @ c``.
+
+    Row ``i`` is |e|^-1 int_e phi_j over tetrahedron ``tetrahedra[i]`` (gfem
+    order): exact for the discrete field, on the pinned rule of its order.
+    Every listed tetrahedron must lie in the field's support. ``layout`` is
+    the field's (support, excluded entities, space, order); a scalar space
+    (h1, l2). One process only.
+    """
+    import scipy.sparse
+
+    support, excluded, space, order = layout
+    topology = mesh._topology  # noqa: SLF001
+    nodes = np.ascontiguousarray(mesh.nodes)
+    tetrahedra = np.asarray(tetrahedra, np.int64)
+    key = (
+        id(topology),
+        support,
+        excluded,
+        space,
+        order,
+        hash(tetrahedra.tobytes()),
+        hash(nodes.tobytes()),
+    )
+    found = _ELEMENT_ROWS.get(key)
+    if found is not None and found[0] is topology:
+        _ELEMENT_ROWS.move_to_end(key)
+        return found[1]
+    built, fes, _ = fe_space(mesh, support, excluded, space, order)
+    l2 = ngs.L2(built.mesh, order=0)
+    dx = quadrature.dx(order)
+    q = l2.TestFunction()
+    form = ngs.BilinearForm(trialspace=fes, testspace=l2)
+    form += fes.TrialFunction() * q * dx
+    form.Assemble()
+    volume = ngs.LinearForm(l2)
+    volume += q * dx
+    volume.Assemble()
+    rows, cols, values = form.mat.COO()
+    element = np.asarray(rows, np.int64)
+    matrix = scipy.sparse.csr_matrix(
+        (np.asarray(values) / volume.vec.FV().NumPy()[element], (element, cols)),
+        shape=(l2.ndof, fes.ndof),
+    )
+    # NGSolve element i is gfem tetrahedron tetrahedron_order[i]
+    of_tet = np.empty(len(built.tetrahedron_order), np.int64)
+    of_tet[built.tetrahedron_order] = np.arange(len(built.tetrahedron_order))
+    out = matrix[of_tet[tetrahedra]]
+    _ELEMENT_ROWS[key] = (topology, out)
+    while len(_ELEMENT_ROWS) > _MAX_MEANS:
+        _ELEMENT_ROWS.popitem(last=False)
+    return out

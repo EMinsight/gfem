@@ -17,8 +17,17 @@ import jax
 import numpy as np
 
 from gfem._checks import check_fixed
+from gfem._pytree import register_fields
+from gfem.thermal import HeatSource
 
-__all__ = ["DCConduction", "Driven", "Eigenmode", "Electrostatic", "PortMode"]
+__all__ = [
+    "DCConduction",
+    "Driven",
+    "Eigenmode",
+    "Electrostatic",
+    "PortMode",
+    "SteadyThermal",
+]
 
 
 def _surfaces(value: Any, what: str) -> tuple[str, ...]:
@@ -267,6 +276,80 @@ class DCConduction:
 
 
 jax.tree_util.register_static(DCConduction)
+
+
+def _heat_sources(heat: Any, owner: str) -> tuple[HeatSource, ...]:
+    """``heat`` as a tuple of `gfem.HeatSource` (one, or a sequence of them)."""
+    if isinstance(heat, HeatSource):
+        return (heat,)
+    if isinstance(heat, Sequence) and not isinstance(heat, str):
+        sources = tuple(heat)
+        if all(isinstance(s, HeatSource) for s in sources):
+            return sources
+    raise TypeError(
+        f"{owner}.heat must be a gfem.HeatSource or a sequence of them (from "
+        "gfem.HeatSource.uniform or gfem.joule_heating), got "
+        f"{type(heat).__name__}."
+    )
+
+
+@dataclasses.dataclass(frozen=True, init=False)
+class SteadyThermal:
+    """The steady temperature of a model under heat sources.
+
+    Solves -div(k grad T) = q on the thermal domain: every volume of the
+    mesh minus those excluded from thermal problems
+    (``Model(excluded={"thermal": (...)})``), with k the materials'
+    ``thermal_conductivity``. The boundary conditions are the model's
+    `gfem.FixedTemperature`, `gfem.Convection` and `gfem.HeatFlux`; every
+    other exterior surface of the thermal domain is insulated
+    (`gfem.Model.default_insulated`), and unnamed interior interfaces are in
+    perfect thermal contact. Temperatures are absolute, in kelvin.
+
+    The result (`gfem.SteadyThermalResult`) holds the temperature and its
+    rise: the part linear in the heat sources given here, which scales
+    with their power. The boundary data (fixed temperatures, ambients and
+    heat fluxes) set the source-free temperature the rise is added to.
+
+    Example:
+        A heater dissipating 10 mW over a substrate held at 293.15 K::
+
+            model = gfem.Model(
+                mesh,
+                materials=materials,
+                boundaries=[gfem.FixedTemperature("bottom", temperature=293.15)],
+            )
+            heat = gfem.HeatSource.uniform("heater", power=10e-3)
+            result = gfem.solve(model, gfem.SteadyThermal(heat))
+            result.rise.at(point)  # K
+
+    Args:
+        heat: A `gfem.HeatSource` or a sequence of them; they superpose.
+            Empty: the temperature set by the boundaries alone.
+
+    Raises:
+        TypeError: ``heat`` is not a heat source or a sequence of them.
+
+    `gfem.solve` raises ValueError when a connected piece of the thermal
+    domain has no heat sink (no `gfem.FixedTemperature` or
+    `gfem.Convection` on it: its steady temperature is undetermined), and
+    `gfem.errors.MissingMaterialPropertyError` when a region of the
+    thermal domain has no ``thermal_conductivity``.
+    """
+
+    heat: tuple[HeatSource, ...]
+    _rule: ClassVar[str] = "gfem._engine.thermal:SteadyThermalRule"
+    _physics: ClassVar[str] = "thermal"
+
+    def __init__(self, heat: HeatSource | Sequence[HeatSource] = ()) -> None:
+        """Validate and normalize (see the class docstring)."""
+        object.__setattr__(self, "heat", _heat_sources(heat, "SteadyThermal"))
+
+    def __repr__(self) -> str:
+        return f"SteadyThermal(heat={list(self.heat)!r})"
+
+
+register_fields(SteadyThermal, ("heat",))
 
 
 def _frequencies(value: Any, owner: str = "PortMode") -> tuple[float, ...]:

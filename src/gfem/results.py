@@ -38,6 +38,7 @@ __all__ = [
     "PortModeField",
     "PortModeResult",
     "ReducedFields",
+    "SteadyThermalResult",
     "SweepInfo",
 ]
 
@@ -334,6 +335,83 @@ class DCConductionResult:
 
 
 register_fields(DCConductionResult, ("conductance", "potential", "dissipation"))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class SteadyThermalResult:
+    """The result of a `gfem.SteadyThermal` problem.
+
+    On a cross-section mesh the totals are those of the slab the mesh
+    stands for (`gfem.Mesh.section_thickness`): read `power_per_length`
+    rather than `power`.
+
+    Attributes:
+        temperature: The absolute temperature, a `Field` (quantity ``"T"``,
+            in K) on H1 of the solve order over the thermal domain.
+        rise: The temperature rise, a `Field` (quantity ``"dT"``, in K):
+            `temperature` minus the source-free temperature (the solve with
+            the problem's heat sources off and the model's boundary data
+            kept). It is linear in the heat sources and scales with their
+            power; when every fixed temperature and ambient share one value
+            and no `gfem.HeatFlux` is given, it is the temperature minus
+            that value.
+        heat: The summed power density of the problem's heat sources as
+            solved, a `Field` (quantity ``"q"``, in W/m^3) constant on each
+            tetrahedron (L2 of order 0) over the thermal domain.
+        power: The total power of the heat sources in W (on a cross-section,
+            the slab's). A `gfem.HeatFlux` is boundary data, not counted.
+    """
+
+    temperature: Field
+    rise: Field
+    heat: Field
+    power: jax.Array
+    #: The slab thickness in m of a cross-section mesh, else ``None``.
+    _thickness: float | None = None
+
+    @property
+    def power_per_length(self) -> jax.Array:
+        """`power` per unit length along a cross-section, in W/m.
+
+        Raises:
+            ValueError: The result was not solved on a cross-section mesh.
+        """
+        if self._thickness is None:
+            raise _not_a_section("SteadyThermalResult", "power_per_length", "power")
+        return self.power / self._thickness
+
+    def to_xarray(self) -> xarray.Dataset:
+        """The heat sources' total power as an `xarray.Dataset`.
+
+        ``power`` (W, the slab's on a cross-section) is a scalar; on a
+        cross-section ``power_per_length`` (W/m) too. The fields are
+        `Field` objects: export them with `gfem.Field.to_vtu`. Needs the
+        ``xarray`` extra: ``pip install "gfem[xarray]"``.
+
+        Raises:
+            ImportError: xarray is not installed.
+            TypeError: The result holds JAX tracers.
+        """
+        xr = _xarray(self)
+        data = {"power": _variable((), self.power, "W")}
+        if self._thickness is not None:
+            data["power_per_length"] = _variable((), self.power_per_length, "W/m")
+        return xr.Dataset(data)
+
+    def __repr__(self) -> str:
+        regions = list(self.temperature.support)
+        try:
+            power = float(np.asarray(self.power))
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return f"SteadyThermalResult(regions={regions})"
+        if self._thickness is None:
+            total = f"power {power:.6g} W"
+        else:
+            total = f"power per length {power / self._thickness:.6g} W/m"
+        return f"SteadyThermalResult(regions={regions}, {total})"
+
+
+register_fields(SteadyThermalResult, ("temperature", "rise", "heat", "power"))
 
 
 class PortModeField:

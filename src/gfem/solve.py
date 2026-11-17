@@ -21,13 +21,21 @@ if TYPE_CHECKING:
 
     from gfem._eigen.rule import DualRequest
     from gfem._engine.driven import AdjointLoads
-    from gfem.problems import DCConduction, Driven, Eigenmode, Electrostatic, PortMode
+    from gfem.problems import (
+        DCConduction,
+        Driven,
+        Eigenmode,
+        Electrostatic,
+        PortMode,
+        SteadyThermal,
+    )
     from gfem.results import (
         DCConductionResult,
         DrivenResult,
         EigenmodeResult,
         ElectrostaticResult,
         PortModeResult,
+        SteadyThermalResult,
     )
 
 __all__ = ["release_memory", "solve"]
@@ -49,6 +57,14 @@ def solve(
     options: SolverOptions | None = None,
     comm: Any = None,
 ) -> DCConductionResult: ...
+@overload
+def solve(
+    model: Model,
+    problem: SteadyThermal,
+    *,
+    options: SolverOptions | None = None,
+    comm: Any = None,
+) -> SteadyThermalResult: ...
 @overload
 def solve(
     model: Model,

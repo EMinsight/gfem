@@ -305,7 +305,7 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
     _check_quality(
         model.mesh,
-        model._domain.active,  # noqa: SLF001
+        model._domain_of(getattr(rule, "physics", "em")).active,  # noqa: SLF001
         stacklevel=2,
         comm=getattr(rule, "comm", None),
     )

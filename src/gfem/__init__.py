@@ -55,6 +55,7 @@ from gfem.measurements import (  # noqa: E402
     InterfaceParticipation,
     characteristic_impedance,
     electric_energy,
+    element_mean,
     interface_participation,
     power_flow,
     region_mean,
@@ -86,6 +87,7 @@ from gfem.problems import (  # noqa: E402
     Eigenmode,
     Electrostatic,
     PortMode,
+    SteadyThermal,
 )
 from gfem.refinement import (  # noqa: E402
     ErrorEstimate,
@@ -106,6 +108,7 @@ from gfem.results import (  # noqa: E402
     NetworkParameters,
     PortModeField,
     PortModeResult,
+    SteadyThermalResult,
     SweepInfo,
 )
 from gfem.solve import release_memory, solve  # noqa: E402
@@ -182,6 +185,8 @@ __all__ = [
     "SkippedPortModeWarning",
     "SolverOptions",
     "SolverUnavailableError",
+    "SteadyThermal",
+    "SteadyThermalResult",
     "SweepInfo",
     "SweepNotConvergedWarning",
     "SweepRankDeficientWarning",
@@ -194,6 +199,7 @@ __all__ = [
     "cuda_available",
     "design",
     "electric_energy",
+    "element_mean",
     "enclosed_by",
     "error_estimate",
     "interface_participation",
