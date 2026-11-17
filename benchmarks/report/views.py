@@ -165,9 +165,27 @@ def klass(solver: str) -> str:
     return "direct" if kind in ("direct", "mumps", "petsc-mumps") else "iterative"
 
 
+VERIFIED = ("placement", "layout")
+"""Checks a passing run must have passed, not skipped: its layout was seen."""
+UNVERIFIED = "unverified"
+
+
+def unverified(r: records.SuiteRecord) -> bool:
+    """An ``ok`` run without a failed check whose placement or layout went unseen."""
+    return (
+        r.status == "ok"
+        and "fail" not in r.checks.values()
+        and any(r.checks.get(c) != "pass" for c in VERIFIED)
+    )
+
+
 def passing(r: records.SuiteRecord) -> bool:
-    """Status ``ok`` and no failed check."""
-    return r.status == "ok" and "fail" not in r.checks.values()
+    """Status ``ok``, no failed check, placement and layout verified."""
+    return (
+        r.status == "ok"
+        and "fail" not in r.checks.values()
+        and all(r.checks.get(c) == "pass" for c in VERIFIED)
+    )
 
 
 def layout_of(r: records.SuiteRecord) -> str:
@@ -380,6 +398,11 @@ def _layouts(solver: str, cells: list[dict], unrun: list[dict]) -> dict[str, Any
     }
 
 
+def _unverified_reason(r: records.SuiteRecord) -> str:
+    unseen = [c for c in VERIFIED if r.checks.get(c) != "pass"]
+    return f"{' and '.join(unseen)} not verified"
+
+
 def _unrun(rows: Sequence[records.SuiteRecord], solver: str, tol: float | None):
     seen: dict[str, dict[str, Any]] = {}
     for r in rows:
@@ -387,9 +410,10 @@ def _unrun(rows: Sequence[records.SuiteRecord], solver: str, tol: float | None):
             continue
         lay = layout_of(r) + (" (default)" if r.run.layout.asked == "default" else "")
         entry = seen.setdefault(lay, {"layout": lay, "statuses": [], "reasons": []})
-        entry["statuses"].append(r.status)
-        if r.reason and r.reason not in entry["reasons"]:
-            entry["reasons"].append(r.reason)
+        entry["statuses"].append(UNVERIFIED if unverified(r) else r.status)
+        reason = _unverified_reason(r) if unverified(r) else r.reason
+        if reason and reason not in entry["reasons"]:
+            entry["reasons"].append(reason)
     return [
         {
             "layout": e["layout"],

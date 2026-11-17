@@ -137,6 +137,22 @@ def test_best_layout_ties_and_short_cells(fixture_report):
     ]
 
 
+@pytest.mark.parametrize("check", ["placement", "layout"])
+def test_an_unverified_run_is_left_out_of_the_best_layout(tmp_path, check):
+    def edit(data):
+        run = data["run"]
+        if run["solver"] == "gfem:bddc" and run["layout"]["ranks"] == 4:
+            data["checks"][check] = "skipped"
+
+    report = _json(tmp_path, _store(tmp_path, edit))
+    bddc = _layouts(_case(report, "microstrip"), "gfem:bddc")
+    assert bddc["best"] == "2x8"
+    assert "4x4" not in [c["layout"] for c in bddc["cells"]]
+    assert {"layout": "4x4", "status": "unverified"}.items() <= next(
+        u for u in bddc["unrun"] if u["layout"] == "4x4"
+    ).items()
+
+
 def test_equal_error_interpolates_and_never_extrapolates(fixture_report):
     eq = _case(fixture_report[0], "microstrip")["error_cost"]["equal_error"]
     assert eq["base"] == "gfem:bddc"

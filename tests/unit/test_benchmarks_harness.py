@@ -370,6 +370,19 @@ def test_a_finished_run_is_measured(tmp_path):
     assert (tmp_path / "out.txt").read_text() == "hi\n"
 
 
+def test_a_short_run_still_has_its_placement_checked(tmp_path):
+    m = measure.measure(
+        ["taskset", "-c", "0", "sleep", "0.4"],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        stdout=tmp_path / "out.txt",
+        layout=Layout(1, 1),
+        cap_s=20,
+    )
+    assert m.returncode == 0
+    assert m.placement.status == "pass"
+
+
 def test_sacct_step_facts_wait_for_a_final_state():
     answers = iter([_done("RUNNING|\n"), _done("OUT_OF_MEMORY by 0|2.5G\n")])
     state, rss = measure.step_facts(

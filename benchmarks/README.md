@@ -182,7 +182,7 @@ records.
   `peak_rss_rank_max_gib` (largest rank; Palace `PeakMemoryMegabytes.Max`) and
   `peak_rss_largest_node_gib` (largest per-node sum; Palace
   `PeakNodeMemoryMegabytes.Max`). A node sampler sums `Pss`
-  over the step's pids every second (`pss_peak_sum_gib`); sacct `MaxRSS` is kept for
+  over the step's pids every second (every 0.1 s over the first 5 s) (`pss_peak_sum_gib`); sacct `MaxRSS` is kept for
   runs over 60 s; the codes' self-reports are kept beside. None of them gates.
 - 3 repeats in rounds, round r rotated by r * ceil(cells / repeats), so repeats of a
   cell never run back to back. Medians per figure over passing repeats; a spread over
@@ -210,6 +210,11 @@ left out of medians, best-layout choice and comparisons.
 | `reference_matches` | record | the reference file does not match the case, the mesh, or the file the run named |
 | `accuracy_plausible` | record | error above the plausibility ceiling of the run's order |
 | `dof_equal` | campaign | any two DOF counts observed on a case differ, `dof_mismatch` runs included (gates the "same-mesh comparison" label) |
+
+A run counts as passing in the report only when `layout` and `placement` passed: a
+run whose ranks or masks the sampler never saw (they are `skipped`) is labelled
+`unverified` and left out of the medians and the best-layout choice. The sampler
+looks every 0.1 s over a run's first 5 s, then every second, so short runs are seen.
 
 The DOF guard stops a run on a mismatch: Palace from its `Level k (p = n): N
 unknowns` stdout line, one-process gfem from its `discretize` record, multi-rank gfem
