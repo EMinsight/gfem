@@ -77,8 +77,11 @@ $STACKS_ROOT/
 ## Build rules
 
 - A prefix is complete iff `provenance.json` exists. `build` on a complete
-  prefix with the same recipe hash (sha256 of the `tools/stacks/` tree, without
-  `COMMIT` and byte caches) and toolchain hash is a no-op. A prefix without
+  prefix with the same recipe hash and toolchain hash is a no-op. The recipe
+  hash is per package: `stack.sh`, `build.sbatch`, `provenance.py` and
+  `packages/<pkg>.sh`, by name and content. The README, other packages'
+  recipes and `COMMIT` are not in it, so filling in one recipe leaves the
+  other packages' prefixes complete. The toolchain has its own hash. A prefix without
   `provenance.json` is a killed job's leftovers and is wiped. A complete prefix
   built from another recipe or toolchain is refused unless `--rebuild`, which
   moves its provenance file to `.history/` and wipes the prefix (installs are
@@ -186,7 +189,7 @@ a record that lacks a field.
 | `smoke` | recipe (`stack_smoke`) | command and first output line, plus any recipe checks |
 | `mumps` | Palace and PETSc recipes | see below |
 | `toolchain` | `stack.sh` (`provenance.py toolchain`) | `sha256` of the frozen toolchain file, `module -t list`, compilers with `--version`, flags, BLAS, ScaLAPACK, MPI with `mpicc -show`, `cmake --version` |
-| `recipe` | `stack.sh` | gfem commit, recipe tree sha256, `dirty` |
+| `recipe` | `stack.sh` | gfem commit, the package's recipe hash, `dirty` |
 | `build` | `stack.sh` | job id, host, QOS, CPUs, start, end, elapsed, CPUTimeRAW so far |
 | `depends` | `stack.sh` | each dependency's prefix and the sha256 of its provenance file |
 

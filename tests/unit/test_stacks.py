@@ -275,18 +275,6 @@ def test_a_build_finds_its_prefix_absent_unfinished_matching_or_different(tmp_pa
     assert provenance.state(prefix, recipe, "d" * 64) == "differs"
 
 
-def test_the_recipe_hash_follows_the_content_of_the_shipped_tree(tmp_path):
-    one, two = tmp_path / "one", tmp_path / "two"
-    for tree in (one, two):
-        (tree / "packages").mkdir(parents=True)
-        (tree / "stack.sh").write_text("echo stack\n")
-        (tree / "packages" / "petsc.sh").write_text("DEPENDS=()\n")
-    assert provenance.tree_sha256(one) == provenance.tree_sha256(two)
-
-    (two / "packages" / "petsc.sh").write_text("DEPENDS=(openblas)\n")
-    assert provenance.tree_sha256(one) != provenance.tree_sha256(two)
-
-
 def _cli(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, str(STACKS / "provenance.py"), *args],
@@ -422,10 +410,47 @@ def test_every_stack_script_parses(script):
     assert result.returncode == 0, result.stderr
 
 
-def test_the_commit_file_of_a_shipped_tree_leaves_the_recipe_hash_alone(tmp_path):
-    (tmp_path / "stack.sh").write_text("echo stack\n")
-    before = provenance.tree_sha256(tmp_path)
+def _recipes(root: Path) -> Path:
+    """A shipped recipe tree with two packages, ``a`` and ``b``."""
+    (root / "packages").mkdir(parents=True)
+    for name in ("stack.sh", "build.sbatch", "provenance.py", "README.md"):
+        (root / name).write_text(f"# {name}\n")
+    for package in ("a", "b"):
+        (root / "packages" / f"{package}.sh").write_text("VERSION=1.0\n")
+    return root
 
-    (tmp_path / "COMMIT").write_text("0" * 40 + "\n")
 
-    assert provenance.tree_sha256(tmp_path) == before
+def test_filling_another_packages_recipe_leaves_a_built_prefix_complete(tmp_path):
+    recipes = _recipes(tmp_path / "recipes")
+    prefix = tmp_path / "native-oss" / "a-1.0"
+    prefix.mkdir(parents=True)
+    record = _record("a")
+    record["recipe"]["sha256"] = provenance.recipe_sha256(recipes, "a")
+    provenance.write(prefix, record)
+
+    (recipes / "packages" / "b.sh").write_text("VERSION=2.0\nbuild_b() { :; }\n")
+    (recipes / "README.md").write_text("# rewritten\n")
+    (recipes / "COMMIT").write_text("0" * 40 + "\n")
+
+    now = provenance.recipe_sha256(recipes, "a")
+    assert provenance.state(prefix, now, "a" * 64) == "complete"
+
+
+@pytest.mark.parametrize(
+    "changed", ["stack.sh", "build.sbatch", "provenance.py", "packages/a.sh"]
+)
+def test_a_change_to_the_build_machinery_or_own_recipe_changes_the_hash(
+    tmp_path, changed
+):
+    recipes = _recipes(tmp_path)
+    before = provenance.recipe_sha256(recipes, "a")
+
+    (recipes / changed).write_text("# changed\n")
+
+    assert provenance.recipe_sha256(recipes, "a") != before
+
+
+def test_the_recipe_hash_follows_content_not_location(tmp_path):
+    one, two = _recipes(tmp_path / "one"), _recipes(tmp_path / "two")
+
+    assert provenance.recipe_sha256(one, "a") == provenance.recipe_sha256(two, "a")

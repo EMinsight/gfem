@@ -10,12 +10,12 @@ Command line (``python3 provenance.py COMMAND ...``)::
 
     write PREFIX META_DIR      write PREFIX/provenance.json from META_DIR/<field>.json
     check STACK_DIR...         compare each stack's complete prefixes; exit 1 on errors
-    state PREFIX RECIPE_SHA256 TOOLCHAIN_SHA256
+    state PREFIX RECIPE_HASH TOOLCHAIN_HASH
                                print absent, incomplete, complete or differs
     tofu SUMS FILE             record FILE's sha256 in SUMS on first fetch, check after
     toolchain FILE MODULES     print the toolchain block (FILE: frozen toolchain file,
                                MODULES: output of ``module -t list``)
-    tree-sha256 DIR            print the recipe hash of a tree
+    recipe-sha256 DIR PKG      print the recipe hash of package PKG in tree DIR
     sha256 FILE                print a file's sha256
 """
 
@@ -274,26 +274,27 @@ def tofu(sums: Path, path: Path) -> str:
     return "verified"
 
 
-def tree_sha256(root: Path) -> str:
-    """The sha256 of a directory tree by relative path and file content.
+#: The files of the recipe tree that every package build runs.
+RECIPE_COMMON = ("stack.sh", "build.sbatch", "provenance.py")
 
-    Byte caches (``__pycache__``) are left out, since running the scripts makes
-    them, and so is a shipped tree's ``COMMIT`` file, which names the commit
-    rather than the content.
+
+def recipe_sha256(root: Path, package: str) -> str:
+    """The recipe hash of one package: what its build runs, by name and content.
+
+    It covers ``stack.sh``, ``build.sbatch``, ``provenance.py`` and
+    ``packages/<package>.sh``, and nothing else: the README, other packages'
+    recipes and a shipped tree's ``COMMIT`` file leave it alone, so filling in
+    another recipe does not make a built prefix differ. The toolchain has its
+    own hash.
     """
     root = Path(root)
     digest = hashlib.sha256()
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or "__pycache__" in path.parts:
-            continue
-        relative = path.relative_to(root).as_posix()
-        if relative == "COMMIT":
-            continue
-        digest.update(f"{sha256(path)}  {relative}\n".encode())
+    for relative in (*RECIPE_COMMON, f"packages/{package}.sh"):
+        digest.update(f"{sha256(root / relative)}  {relative}\n".encode())
     return digest.hexdigest()
 
 
-def state(prefix: Path, recipe_sha256: str, toolchain_sha256: str) -> str:
+def state(prefix: Path, recipe_hash: str, toolchain_hash: str) -> str:
     """What a build of ``prefix`` finds there (ADR 0191 idempotency).
 
     Returns:
@@ -309,8 +310,8 @@ def state(prefix: Path, recipe_sha256: str, toolchain_sha256: str) -> str:
     if record is None:
         return "incomplete"
     if (
-        record["recipe"].get("sha256") == recipe_sha256
-        and record["toolchain"]["sha256"] == toolchain_sha256
+        record["recipe"].get("sha256") == recipe_hash
+        and record["toolchain"]["sha256"] == toolchain_hash
     ):
         return "complete"
     return "differs"
@@ -425,7 +426,7 @@ COMMANDS: dict[str, tuple[int | None, Callable[..., int]]] = {
         2,
         lambda f, m: _print(json.dumps(toolchain(Path(f), Path(m)), indent=2)),
     ),
-    "tree-sha256": (1, lambda d: _print(tree_sha256(Path(d)))),
+    "recipe-sha256": (2, lambda d, p: _print(recipe_sha256(Path(d), p))),
     "sha256": (1, lambda f: _print(sha256(Path(f)))),
 }
 

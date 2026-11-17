@@ -233,7 +233,7 @@ cmd_submit() {
 
   if [[ ${#rebuild[@]} -eq 0 || ! " ${rebuild[*]} " =~ " --rebuild " ]]; then
     local now
-    now=$(prov state "$prefix" "$(prov tree-sha256 "$STACK_HOME")" "$(toolchain_sha "$stack")")
+    now=$(prov state "$prefix" "$(prov recipe-sha256 "$STACK_HOME" "$pkg")" "$(toolchain_sha "$stack")")
     [[ $now != complete ]] || {
       stack_log "$stack/$pkg-$version is complete with this recipe and toolchain: nothing to submit"
       return 0
@@ -327,7 +327,7 @@ cmd_build() {
     chmod a-w "$frozen"
   fi
   local recipe_sha toolchain_sha now
-  recipe_sha=$(prov tree-sha256 "$STACK_HOME")
+  recipe_sha=$(prov recipe-sha256 "$STACK_HOME" "$pkg")
   toolchain_sha=$(prov sha256 "$frozen")
   now=$(prov state "$prefix" "$recipe_sha" "$toolchain_sha")
   case $now in
@@ -465,8 +465,7 @@ cmd_check() {
     echo "  toolchains/$stack.sh differs from the frozen $frozen"
   fi
   STACK_NAME=$stack
-  local recipe_sha toolchain_sha pkg version
-  recipe_sha=$(prov tree-sha256 "$STACK_HOME")
+  local toolchain_sha pkg version
   toolchain_sha=$(toolchain_sha "$stack")
   local pkgs=("${PACKAGES[@]}")
   [[ $# -ge 2 ]] && pkgs=("$2")
@@ -476,7 +475,8 @@ cmd_check() {
     builds_on "$stack" || continue
     version=$VERSION
     [[ $# -ge 3 ]] && version=$3
-    echo "$stack/$pkg-$version: $(prov state "$STACKS_ROOT/$stack/$pkg-$version" "$recipe_sha" "$toolchain_sha")"
+    echo "$stack/$pkg-$version: $(prov state "$STACKS_ROOT/$stack/$pkg-$version" \
+      "$(prov recipe-sha256 "$STACK_HOME" "$pkg")" "$toolchain_sha")"
     echo "  version=$version"
     echo "  depends=${DEPENDS[*]}"
     echo "  cpus=$CPUS"
