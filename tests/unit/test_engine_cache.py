@@ -492,7 +492,7 @@ def test_the_next_step_names_a_release_for_retain_memory(
     taken.refactorize(at(1.0 - 1j + 1e-3), frequency=1.0)
     with caplog.at_level("INFO", logger="gfem.solver"):
         report.solve_step(taken, problem="driven", direction="forward", iterations=())
-    (record,) = caplog.records
+    (record,) = [r for r in caplog.records if r.name == "gfem.solver"]
     assert record.action == action
     if action == "refactorized":
         assert record.reason == "factors released (retain_memory)"
