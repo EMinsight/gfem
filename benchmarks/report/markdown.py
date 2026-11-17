@@ -296,7 +296,7 @@ def _error_cost(case: Mapping[str, Any]) -> list[str]:
                 cells += [g(v["work_s"]), g(v["peak_rss_sum_gib"])]
             cells += [g(row["ratios"][s]) for s in eq["solvers"] if s != eq["base"]]
             rows.append(cells)
-        out += table(head, rows) if rows else ["No common decade.", ""]
+        out += table(head, rows) if rows else ["No overlap of the error ranges.", ""]
     return out
 
 

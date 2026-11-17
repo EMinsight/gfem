@@ -15,7 +15,8 @@ Performance is observed, never judged: no value here is a pass or a fail.
   tolerance with at least three passing repeats; cells whose min-max range overlaps
   the best's are **ties**; cells with fewer repeats are no candidates.
 - **Equal achieved error**: each iterative solver's work time and memory read at
-  every decade of the overlap of the solvers' same-code error ranges, by log-log
+  the ends, the geometric midpoint and every decade of the overlap of the solvers'
+  same-code error ranges (:func:`overlap_points`), by log-log
   linear interpolation between neighbouring rungs, never extrapolated.
 - A cross-code ratio uses cells of one Slurm job; across jobs it carries the label
   **different nodes**.
@@ -207,6 +208,21 @@ def interpolate(points: Sequence[tuple[float, float]], e: float) -> float | None
             f = min(max(f, 0.0), 1.0)
             return num(math.exp(math.log(y0) + f * (math.log(y1) - math.log(y0))))
     return num(pts[0][1])
+
+
+def overlap_points(lo: float, hi: float) -> list[float]:
+    """Errors to compare at inside ``[lo, hi]``, never outside it.
+
+    Both ends, the geometric midpoint and the powers of ten in between, ascending;
+    empty when the range is empty.
+    """
+    if lo <= 0 or hi < lo:
+        return []
+    out: list[float] = []
+    for e in sorted([lo, math.sqrt(lo * hi), hi, *decades(lo, hi)]):
+        if not out or e > out[-1] * (1 + 1e-9):
+            out.append(e)
+    return out
 
 
 def decades(lo: float, hi: float) -> list[float]:
@@ -582,7 +598,7 @@ def _equal_error(ladders: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     solvers = [lad["solver"] for lad in ladders]
     base = next((s for s in solvers if s.startswith("gfem:")), solvers[0])
     rows = []
-    for e in decades(lo, hi):
+    for e in overlap_points(lo, hi):
         values = {}
         for lad in ladders:
             pts = [(r["same_code_error"], r) for r in lad["rungs"]]
