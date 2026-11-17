@@ -541,11 +541,12 @@ register_fields(
 
 
 class PortModeField:
-    """The electric field of a port mode on its cross-section, over frequency.
+    r"""The electric field of a port mode on its cross-section, over frequency.
 
     Peak phasor of the mode carrying 1 W time-averaged power through the
-    port, propagating into the solve domain as ``exp(-gamma s)``, ``s`` the
-    distance along the inward port normal. Fields follow e^{+iωt}.
+    port, propagating into the solve domain as :math:`e^{-\gamma s}`,
+    :math:`s` the distance along the inward port normal. Fields follow
+    :math:`e^{+i\omega t}`.
 
     Attributes:
         quantity: ``"E"``.
@@ -657,25 +658,25 @@ class PortModeField:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class PortModeResult:
-    """The mode of a wave port over frequency.
+    r"""The mode of a wave port over frequency.
 
     Not differentiable on its own (`gfem.PortMode`); on a `DrivenResult`
     the modes are constants of the solve (a design may not touch a wave port
     face), so their gradient is an exact zero.
 
-    Fields follow e^{+iωt}; a mode propagates into the solve domain as
-    ``exp(-gamma s)``.
+    Fields follow :math:`e^{+i\omega t}`; a mode propagates into the solve
+    domain as :math:`e^{-\gamma s}`.
 
     Attributes:
         port: The wave port's name.
         mode: Which mode (1 = the most propagating).
         frequency: ``(n_freq,)`` Hz.
-        gamma: Propagation constant ``alpha + i beta``, ``(n_freq,)``, 1/m
-            (``alpha >= 0`` is the attenuation).
-        Z_PV: Power-voltage characteristic impedance ``|V|^2 / (2 P)`` along
+        gamma: Propagation constant :math:`\gamma = \alpha + i\beta`,
+            ``(n_freq,)``, 1/m (:math:`\alpha \ge 0` is the attenuation).
+        Z_PV: Power-voltage characteristic impedance :math:`|V|^2 / (2 P)` along
             the port's ``voltage_path``, ohm; NaN without a voltage path.
         residual: Backward error of the mode at each frequency,
-            ``|A x - lam B x| / (|A x| + |lam| |B x|)`` on the 2D port mode
+            :math:`|A x - \lambda B x| / (|A x| + |\lambda| |B x|)` on the 2D port mode
             problem. It exceeds ``SolverOptions.port_mode_tolerance`` only at
             the formulation's low-frequency accuracy floor, where it is at
             most 10x that of an exact solve.
@@ -697,7 +698,7 @@ class PortModeResult:
 
     @property
     def n_eff(self) -> jax.Array:
-        """Complex effective index ``gamma / (i k0)``, written ``n' - i n''``."""
+        r"""Complex effective index :math:`\gamma/(ik_0)`, written :math:`n'-in''`."""
         k0 = 2 * math.pi * self.frequency / scipy.constants.c
         return self.gamma / (1j * k0)
 
@@ -750,12 +751,13 @@ register_fields(PortModeResult, ("frequency", "gamma", "Z_PV", "residual", "solv
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class DiffractionOrderResult:
-    """The diffraction order of a Floquet port over frequency.
+    r"""The diffraction order of a Floquet port over frequency.
 
     Constants of the solve, read off the lattice and the medium behind the
-    Floquet surface: not differentiable. Plane waves follow e^{+iωt}; the order
-    leaves the cell into the half-space as ``exp(-gamma s)``, ``s`` the
-    distance from the face (see `gfem.conventions`).
+    Floquet surface: not differentiable. Plane waves follow
+    :math:`e^{+i\omega t}`; the order leaves the cell into the half-space as
+    :math:`e^{-\gamma s}`, :math:`s` the distance from the face (see
+    `gfem.conventions`).
 
     Attributes:
         port: The Floquet port's name.
@@ -763,15 +765,20 @@ class DiffractionOrderResult:
         order: The diffraction order (m, n).
         polarization: ``"TE"`` or ``"TM"``.
         surface: The Floquet surface.
-        index: The refractive index sqrt(eps_r mu_r) of the medium behind it.
-        wave_vector: ``(n_freq, 3)`` the order's in-plane wave vector κ, rad/m.
-        gamma: ``(n_freq,)`` complex, 1/m: ``i beta`` where the order
-            propagates, ``alpha > 0`` where it is evanescent, 0 at grazing.
-        propagating: ``(n_freq,)`` bool, gamma² < 0 strictly (False at
-            grazing).
+        index: The refractive index :math:`\sqrt{\varepsilon_r \mu_r}` of the
+            medium behind it.
+        wave_vector: ``(n_freq, 3)`` the order's in-plane wave vector
+            :math:`\kappa`, rad/m.
+        gamma: ``(n_freq,)`` complex, 1/m: :math:`i\beta` where the order
+            propagates, :math:`\alpha > 0` where it is evanescent, 0 at
+            grazing.
+        propagating: ``(n_freq,)`` bool, :math:`\gamma^2 < 0` strictly (False
+            at grazing).
         theta: ``(n_freq,)`` rad, the angle from the face's inward normal,
-            ``arcsin(|κ| / k)``; π/2 at grazing, NaN where evanescent.
-        phi: ``(n_freq,)`` rad, the azimuth of κ from ê1 toward ê2 in the
+            :math:`\arcsin(|\kappa| / k)`; :math:`\pi/2` at grazing, NaN where
+            evanescent.
+        phi: ``(n_freq,)`` rad, the azimuth of :math:`\kappa` from
+            :math:`\hat e_1` toward :math:`\hat e_2` in the
             lattice frame; NaN where evanescent.
     """
 
@@ -811,11 +818,11 @@ register_fields(
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class NetworkParameters:
-    """Scattering parameters over frequency, labelled by port name.
+    r"""Scattering parameters over frequency, labelled by port name.
 
-    Power waves (Kurokawa) under e^{+iωt}, each port with its own reference
-    impedance ``z_ref``: ``values[f, i, j]`` is the outgoing wave at port
-    ``ports[i]`` when port ``excited[j]`` is fed 1 W incident power and
+    Power waves (Kurokawa) under :math:`e^{+i\omega t}`, each port with its own
+    reference impedance ``z_ref``: ``values[f, i, j]`` is the outgoing wave at
+    port ``ports[i]`` when port ``excited[j]`` is fed 1 W incident power and
     every other port is terminated in its reference impedance. For a
     `LumpedPort` the reference impedance is its resistance; an inductance or
     capacitance of the port loads the network in parallel. A port without
@@ -858,16 +865,18 @@ class NetworkParameters:
         return self.values[:, self.ports.index(to), self.excited.index(source)]
 
     def db(self, to: str, source: str) -> jax.Array:
-        """``20 log10 |S[to, from]|`` over frequency, dB."""
+        r""":math:`20 \log_{10} |S_\mathrm{to,from}|` over frequency, dB."""
         return 20 * jnp.log10(jnp.abs(self[to, source]))
 
     def y(self) -> jax.Array:
-        """The admittance matrix in siemens, ``(n_freq, n_ports, n_ports)``.
+        r"""The admittance matrix in siemens, ``(n_freq, n_ports, n_ports)``.
 
-        Rows and columns in `ports` order. With ``F = diag(1 / (2 sqrt(Re
-        z_ref)))`` and ``G = diag(z_ref)``, ``Y = F^-1 (S G + G*)^-1 (I - S) F``
-        (power waves). Written in `jax.numpy`, so it differentiates like S.
-        Entries are NaN where a port has no reference impedance.
+        Rows and columns in `ports` order. With
+        :math:`F = \mathrm{diag}(1 / (2 \sqrt{\mathrm{Re}\, z_\mathrm{ref}}))`
+        and :math:`G = \mathrm{diag}(z_\mathrm{ref})`,
+        :math:`Y = F^{-1} (S G + G^*)^{-1} (I - S) F` (power waves). Written in
+        `jax.numpy`, so it differentiates like S. Entries are NaN where a port
+        has no reference impedance.
 
         Raises:
             ValueError: Not every port was excited, so S is not square.
@@ -878,12 +887,14 @@ class NetworkParameters:
         return jnp.linalg.solve(sg, eye - s) * ratio
 
     def z(self) -> jax.Array:
-        """The impedance matrix in ohm, ``(n_freq, n_ports, n_ports)``.
+        r"""The impedance matrix in ohm, ``(n_freq, n_ports, n_ports)``.
 
-        Rows and columns in `ports` order. With ``F = diag(1 / (2 sqrt(Re
-        z_ref)))`` and ``G = diag(z_ref)``, ``Z = F^-1 (I - S)^-1 (S G + G*) F``
-        (power waves). Written in `jax.numpy`, so it differentiates like S.
-        Entries are NaN where a port has no reference impedance.
+        Rows and columns in `ports` order. With
+        :math:`F = \mathrm{diag}(1 / (2 \sqrt{\mathrm{Re}\, z_\mathrm{ref}}))`
+        and :math:`G = \mathrm{diag}(z_\mathrm{ref})`,
+        :math:`Z = F^{-1} (I - S)^{-1} (S G + G^*) F` (power waves). Written in
+        `jax.numpy`, so it differentiates like S. Entries are NaN where a port
+        has no reference impedance.
 
         Raises:
             ValueError: Not every port was excited, so S is not square.
@@ -1293,7 +1304,7 @@ class SweepInfo:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class DrivenResult:
-    """The result of a `Driven` problem.
+    r"""The result of a `Driven` problem.
 
     ``s.values`` and the kept fields' coefficients are differentiable with
     respect to every electromagnetic `MaterialField` value (``eps_r``,
@@ -1302,12 +1313,12 @@ class DrivenResult:
     Attributes:
         s: The scattering parameters (`NetworkParameters`).
         e_fields: The kept electric fields (``Driven(keep_fields=...)``), one
-            `Field` per kept frequency and excited port, labelled by
-            `kept`; empty by default. Read them with `e_field`. Each is the
-            peak phasor (e^{+iωt}) in V/m for 1 W time-averaged incident
+            `Field` per kept frequency and excited port, labelled by `kept`;
+            empty by default. Read them with `e_field`. Each is the peak phasor
+            (:math:`e^{+i\omega t}`) in V/m for 1 W time-averaged incident
             power at the excited port, every other port terminated in its
-            reference impedance ``z_ref``, so time-averaged densities carry
-            a factor 1/2 (see `gfem.conventions`). A wave port is
+            reference impedance ``z_ref``, so time-averaged densities carry a
+            factor 1/2 (see `gfem.conventions`). A wave port is
             terminated by absorbing its mode (matched), including the other
             modes of the excited port's own surface. Quantity ``"E"``, on
             H(curl) of the solve order, over the solve domain.
@@ -1415,16 +1426,17 @@ class DrivenResult:
         )
 
     def with_offsets(self, offsets: Mapping[str, float]) -> DrivenResult:
-        """This result with S referred to other wave or Floquet port planes.
+        r"""This result with S referred to other wave or Floquet port planes.
 
         ``offsets`` gives, by port name, the distance in m of the new plane
         inside the domain, as ``WavePort(offset=...)`` and
         ``FloquetPort(offset=...)`` do: absolute, not
         an increment, so a result of a solve without offsets shifted to
         ``d`` equals the result of a solve with ``WavePort(offset=d)``, and
-        shifting twice to the same planes changes nothing. ``S_ij`` is
-        multiplied by ``exp(gamma_i (d_i - d_i_old)) exp(gamma_j (d_j -
-        d_j_old))`` at each frequency, ``gamma`` the ports' propagation
+        shifting twice to the same planes changes nothing. :math:`S_{ij}` is
+        multiplied by :math:`e^{\gamma_i (d_i - d_i^\mathrm{old})}
+        e^{\gamma_j (d_j - d_j^\mathrm{old})}` at each frequency,
+        :math:`\gamma` the ports' propagation
         constants in `port_modes` (a Floquet port's order's in
         `diffraction_orders`, the factor 1 where the order does not
         propagate), and `offsets` records the new distances.
@@ -1525,7 +1537,7 @@ register_fields(DrivenResult, ("s", "e_fields", "port_modes", "diffraction_order
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class EigenmodeResult:
-    """The result of an `Eigenmode` problem: ``n_modes`` modes, nearest first.
+    r"""The result of an `Eigenmode` problem: ``n_modes`` modes, nearest first.
 
     Every array has one entry per mode, in order of increasing distance of
     the mode's frequency from ``Eigenmode.target``.
@@ -1549,63 +1561,69 @@ class EigenmodeResult:
 
     Attributes:
         omega: Complex angular frequencies, rad/s, ``(n_modes,)``. Under
-            e^{+iωt} a decaying mode has ``Im omega > 0``.
+            :math:`e^{+i\omega t}` a decaying mode has
+            :math:`\mathrm{Im}\,\omega > 0`.
         error: Backward error of each mode,
-            ``|T(omega) x| / ((|K| + |omega| |C| + |omega|^2 |M|) |x|)`` for
-            the discrete operator ``T(omega) = K + i omega C - omega^2 M``;
-            at most
+            :math:`|T(\omega) x| / ((|K| + |\omega| |C| + |\omega|^2 |M|) |x|)`
+            for the discrete operator
+            :math:`T(\omega) = K + i \omega C - \omega^2 M`; at most
             ``SolverOptions.eigen_tolerance``.
         q_port: Coupling Q of each lumped port with a resistance R, by port
-            name: ``Re omega / kappa`` with the port's coupling rate
-            ``kappa = R |I|^2 / (2 E)``, ``I = V / R`` the current through R
-            for the port voltage V of the mode and ``E`` the mode's electric
+            name: :math:`\mathrm{Re}\,\omega / \kappa` with the port's coupling
+            rate :math:`\kappa = R |I|^2 / (2 E)`, :math:`I = V / R` the
+            current through R for the port voltage V of the mode and
+            :math:`E` the mode's electric
             energy. V is the port's mean voltage
             over its elements, as in a driven problem; when the elements of
             a multi-element port see different voltages, R dissipates more
-            than ``|V|^2 / (2 R)``, and ``1 / Q`` exceeds the sum of the
+            than :math:`|V|^2 / (2 R)`, and :math:`1 / Q` exceeds the sum of the
             ``1 / q_port`` and the dielectric losses. Differentiable as the
             ratios above, but an infinite value takes no gradient:
             differentiate ``1 / q_port``.
         participation: Inductive energy participation ratio of each lumped
-            port with an inductance L, by port name: ``L |I|^2 / (2 E)``
-            with ``I = V / (i Re(omega) L)``, the junction participation of
-            a transmon. Its sign is that of ``Re V``: the field's phase
-            makes a lossless mode real, so the sign is the junction's
-            polarity along its port direction (not ``Re I``, which is zero
-            for a real field). Under a Bloch wave vector the sign is
-            relative to the mode's phase convention (its largest
-            coefficient real). For a lossless mode with a field uniform
-            across the port it is ``-2 d ln omega / d ln L``.
-            Differentiable as the ratios above.
+            port with an inductance L, by port name: :math:`L |I|^2 / (2 E)`
+            with :math:`I = V / (i\, \mathrm{Re}(\omega) L)`, the junction
+            participation of a transmon. Its sign is that of
+            :math:`\mathrm{Re}\, V`: the field's phase makes a lossless mode
+            real, so the sign is the junction's polarity along its port
+            direction (not :math:`\mathrm{Re}\, I`, which is zero for a real
+            field). Under a Bloch wave vector the sign is relative to the
+            mode's phase convention (its largest coefficient real). For a
+            lossless mode with a field uniform across the port it is
+            :math:`-2\, d\ln\omega / d\ln L`. Differentiable as the ratios
+            above.
         bulk_participation: Electric energy participation of each volume
             region of the solve domain, by region name: the fraction of the
             mode's electric energy ``E`` stored in it (in a region with a
             permittivity law, its share of the mode's total energy, weighed
             by the energy permittivity: see `gfem.conventions`). For an isotropic
-            loss, the region's contribution to ``1 / Q`` is ``p * (tan_delta
-            + conductivity / (eps0 eps_r Re omega))``; for a loss given as
+            loss, the region's contribution to :math:`1 / Q` is
+            :math:`p (\tan\delta + \sigma / (\varepsilon_0 \varepsilon_r
+            \mathrm{Re}\,\omega))`; for a loss given as
             principal values use `principal_participation`.
             Differentiable as the ratios above.
         principal_participation: The electric energy participation of each
             anisotropic volume region (an anisotropic `Material`, or a
             `MaterialField` with ``axes``) split along its principal axes, by
             region name: ``(n_modes, 3)``, in the order of the material's
-            ``axes`` (the coordinate axes when ``None``), ``p_k = 1/2 eps0
-            ∫ eps_r[k] |a_k . E|^2 dV / E``; the three add up to the region's
-            `bulk_participation`. The region's contribution to ``1 / Q`` is
-            ``sum_k p_k (tan_delta[k] + conductivity[k] / (eps0 eps_r[k] Re
-            omega))`` for any field direction (with losses uniform over the
-            region). Isotropic regions have no entry. Differentiable as the
-            ratios above, except with respect to a lumped value, which
-            raises: use `bulk_participation` there.
+            ``axes`` (the coordinate axes when ``None``),
+            :math:`p_k = \frac{1}{2} \varepsilon_0 \int \varepsilon_{r,k}
+            |a_k \cdot E|^2 \, dV / E`; the three add up to the region's
+            `bulk_participation`. The region's contribution to :math:`1 / Q`
+            is :math:`\sum_k p_k (\tan\delta_k + \sigma_k / (\varepsilon_0
+            \varepsilon_{r,k} \mathrm{Re}\,\omega))` for any field direction
+            (with losses uniform over the region). Isotropic regions have no
+            entry. Differentiable as the ratios above, except with respect to a
+            lumped value, which raises: use `bulk_participation` there.
         sheet_participation: Inductive energy participation of each
             `Impedance` sheet with an inductance ``L_s``, by surface name,
-            ``(n_modes,)``: ``∫ w |E_t|^2 dS / (2 Re(omega)^2 L_s E)``,
+            ``(n_modes,)``:
+            :math:`\int w |E_t|^2 \, dS / (2\, \mathrm{Re}(\omega)^2 L_s E)`,
             the energy of the current through ``L_s`` over the mode's
             electric energy ``E``, with ``w`` the sheet's fill (1 without a
             `SheetField`), one number for the whole patterned sheet. It is
             non-negative and, for a lossless mode, the sheet's kinetic
-            inductance fraction ``-2 d ln omega / d ln L_s``, in [0, 1]; only
+            inductance fraction :math:`-2\, d\ln\omega / d\ln L_s`, in [0, 1]; only
             the current through L counts when the sheet also has R or C. A
             `Conductor` and a sheet without an inductance have no entry.
             Differentiable as the ratios above, ``L_s`` included.
@@ -1613,11 +1631,11 @@ class EigenmodeResult:
             `e_field`): peak phasors in V/m, quantity ``"E"``, on H(curl)
             of the solve order over the solve domain, each with its mode's
             complex ``omega``. Each mode stores 1 J of electric energy,
-            ``E = 1/2 Re(integral of D* . E dV)`` plus the lumped
-            capacitors' ``C |V|^2 / 2`` and the capacitive sheets'
-            ``1/2 integral of w C_s |E_t|^2 dS`` (the total time-averaged
-            energy of a lossless mode), and its phase makes ``integral of
-            D . E dV`` real and positive.
+            :math:`E = \frac{1}{2} \mathrm{Re} \int D^* \cdot E \, dV` plus the
+            lumped capacitors' :math:`C |V|^2 / 2` and the capacitive sheets'
+            :math:`\frac{1}{2} \int w C_s |E_t|^2 \, dS` (the total
+            time-averaged energy of a lossless mode), and its phase makes
+            :math:`\int D \cdot E \, dV` real and positive.
         materials: The model's materials the modes were solved with, by
             volume region (`Material` or `MaterialField`). Measurements
             that need the media around a surface read them
@@ -1663,12 +1681,15 @@ class EigenmodeResult:
 
     @property
     def frequency(self) -> jax.Array:
-        """Mode frequencies ``Re omega / (2 pi)``, Hz."""
+        r"""Mode frequencies :math:`\mathrm{Re}\,\omega / (2\pi)`, Hz."""
         return jnp.real(self.omega) / (2 * math.pi)
 
     @property
     def q(self) -> jax.Array:
-        """Quality factors ``|omega| / (2 |Im omega|)``; ``inf`` for a lossless mode."""
+        r"""Quality factors :math:`|\omega| / (2 |\mathrm{Im}\,\omega|)`.
+
+        ``inf`` for a lossless mode.
+        """
         return jnp.abs(self.omega) / (2 * jnp.abs(jnp.imag(self.omega)))
 
     @property

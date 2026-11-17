@@ -81,10 +81,11 @@ def _imported_quality(mesh: Mesh) -> np.ndarray:
 
 
 def quality(mesh: Mesh) -> jax.Array:
-    """The scaled Jacobian of every tetrahedron, in mesh order.
+    r"""The scaled Jacobian of every tetrahedron, in mesh order.
 
     The scaled Jacobian is the minimum over a tet's four corners of
-    ``sqrt(2) * det(e1, e2, e3) / (|e1| |e2| |e3|)``, with ``e1, e2, e3`` the
+    :math:`\sqrt{2} \det(e_1, e_2, e_3) / (|e_1| |e_2| |e_3|)`, with
+    :math:`e_1, e_2, e_3` the
     corner's three edges. A regular tet scores 1, a flat one 0, and a tet
     turned inside out relative to the imported mesh scores below 0. Imported
     meshes already contain poor elements (gsim meshes reach 0.015-0.05), so

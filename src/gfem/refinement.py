@@ -72,7 +72,7 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True)
 class FieldEstimator:
-    """Estimates the error of a result's fields in the energy norm.
+    r"""Estimates the error of a result's fields in the energy norm.
 
     The estimate is relative to the field's energy norm: 1e-2 means the
     field is about 1 % off its value on the same geometry with an infinitely
@@ -82,18 +82,21 @@ class FieldEstimator:
     it does not include the faceting of curved surfaces or the error left by
     the linear solve.
 
-    With loss, the flux is the total current ``eps_eff E``, ``eps_eff =
-    eps_r (1 - i tan_delta) - i sigma / (omega eps_0)``, and the norm is
-    ``||curl E||^2_{mu^-1} + |k|^2 int |eps_eff| |E|^2``: the conduction
-    current counts, as it does in the field. Weighting the flux error by
-    ``Re(eps_eff)^-1`` instead overestimates; recovering ``eps_r E``, as
+    With loss, the flux is the total current
+    :math:`\varepsilon_\mathrm{eff} E`, :math:`\varepsilon_\mathrm{eff} =
+    \varepsilon_r (1 - i \tan\delta) - i \sigma / (\omega \varepsilon_0)`,
+    and the norm is :math:`\|\nabla \times E\|^2_{\mu^{-1}} + |k|^2 \int
+    |\varepsilon_\mathrm{eff}| |E|^2`: the conduction current counts, as it
+    does in the field. Weighting the flux error by
+    :math:`\mathrm{Re}(\varepsilon_\mathrm{eff})^{-1}` instead overestimates;
+    recovering :math:`\varepsilon_r E`, as
     without loss, underestimates without bound under conduction loss.
 
-    A dispersive material (a `gfem.PermittivityLaw`) enters at its
-    permittivity at each solved frequency, lossless or not, Re eps < 0
-    included. Where it is exactly zero (a lossless Drude term at its plasma
-    frequency, without conductivity) the flux has no weight, and
-    `refine_mesh` and `error_estimate` raise `ValueError`.
+    A dispersive material (a `gfem.PermittivityLaw`) enters at its permittivity
+    at each solved frequency, lossless or not,
+    :math:`\mathrm{Re}\,\varepsilon < 0` included. Where it is exactly zero (a
+    lossless Drude term at its plasma frequency, without conductivity) the flux
+    has no weight, and `refine_mesh` and `error_estimate` raise `ValueError`.
 
     `refine_mesh` and `error_estimate` raise
     `gfem.MeshRefinementUnsupportedError` at order 1.
@@ -102,7 +105,7 @@ class FieldEstimator:
 
 @dataclasses.dataclass(frozen=True)
 class QuantityEstimator:
-    """Estimates the error of one quantity of a solved result.
+    r"""Estimates the error of one quantity of a solved result.
 
     Estimates how far one quantity of a solved result (a capacitance entry,
     an S entry whose source port is excited, one mode's ``omega`` or its
@@ -118,7 +121,7 @@ class QuantityEstimator:
     the capacitance entry, to ``omega`` or to Q, absolute for an S entry. It has
     no sign or phase, and gfem never adds it to the quantity. It is an
     estimate, not a bound. A diagonal capacitance entry never lies below
-    its value on the meshed geometry: ``C_h >= C``; an off-diagonal entry
+    its value on the meshed geometry: :math:`C_h \ge C`; an off-diagonal entry
     may lie on either side.
 
     Give exactly one keyword, named after the result attribute that holds
@@ -151,7 +154,7 @@ class QuantityEstimator:
             mode is less than twice as far from it as the farthest of them.
             Ask for at least one mode more than the tuple names.
         q: An index into ``EigenmodeResult.q``, followed as ``omega``; the
-            estimate is relative to Q. Q's relative error is cot(arg omega)
+            estimate is relative to Q. Q's relative error is :math:`\cot(\arg\omega)`
             times the imaginary part of omega's relative error, estimated on
             the same terms, with no extra solve. A lossless mode (infinite Q)
             raises `ValueError`.
@@ -202,12 +205,13 @@ class QuantityEstimator:
     surface (``feature`` ``"impedance or absorbing surface"``), with a
     lumped port whose face borders materials of different ``mu_r``
     (``"lumped port spanning a permeability contrast"``), or with a
-    permittivity law at -20 < Re eps < 0 at a solve frequency
-    (``"plasmonic permittivity"``); refine those with `FieldEstimator`. The
-    ``omega`` of a mode bound to a permittivity law region where Re eps < 0
-    at the mode raises it when it is estimated. Both estimators also raise
-    it at order 1. For a lossy mode the ``omega``
-    estimate covers the complex ``omega``; ``q`` estimates Q, and raises on a
+    permittivity law at :math:`-20 < \mathrm{Re}\,\varepsilon < 0` at a solve
+    frequency (``"plasmonic permittivity"``); refine those with
+    `FieldEstimator`. The ``omega`` of a mode bound to a permittivity law
+    region where :math:`\mathrm{Re}\,\varepsilon < 0` at the mode raises it
+    when it is estimated. Both estimators also raise it at order 1. For a lossy
+    mode the ``omega`` estimate covers the complex ``omega``; ``q`` estimates
+    Q, and raises on a
     mode of a model with a permittivity law (``feature`` ``"dispersive
     eigenmode"``), a second-order absorbing boundary, a complex ``mu_r`` or
     loss inside an anisotropic material (``"lossy eigenmode"``). An S entry
@@ -520,7 +524,7 @@ _ESTIMATE_FLOOR = 0.9
 
 
 def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorEstimate:
-    """Estimate the error of a solved result, without refining.
+    r"""Estimate the error of a solved result, without refining.
 
     No solve is needed, except for an S entry, or an objective reading a
     row of S, whose port ``to`` is not excited, or is a wave port with a
@@ -570,13 +574,13 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
             adaptive sweep, a periodic model, another result type, a result
-            solved at order 1, a quantity entry with no verified estimate
-            (an S entry read at a lumped port with no resistance, whose row
-            is undefined; an S entry or a driven objective beside an impedance or
-            absorbing surface, a lumped port across a permeability contrast
-            or a permittivity law at -20 < Re eps < 0; a plasmon-bound mode;
-            see `QuantityEstimator`), or an objective reading what it may
-            not.
+            solved at order 1, a quantity entry with no verified estimate (an S
+            entry read at a lumped port with no resistance, whose row is
+            undefined; an S entry or a driven objective beside an impedance or
+            absorbing surface, a lumped port across a permeability contrast or
+            a permittivity law at :math:`-20 < \mathrm{Re}\,\varepsilon < 0`; a
+            plasmon-bound mode; see `QuantityEstimator`), or an objective
+            reading what it may not.
         DegenerateModeError: A `QuantityEstimator` names a mode of a
             degenerate cluster, or one within the default
             `SolverOptions.cluster_rtol` of another mode (the message names
@@ -623,7 +627,7 @@ def refine_mesh(
     options: SolverOptions | None = None,
     comm: Any = None,
 ) -> MeshRefinement:
-    """Refine the mesh where the error is, until the error estimate meets a tolerance.
+    r"""Refine the mesh where the error is, until the error estimate meets a tolerance.
 
     Each refinement cycle solves the problem, estimates the error, stops if
     the estimate is at or below ``tolerance``, marks the fewest tetrahedra
@@ -682,7 +686,7 @@ def refine_mesh(
             to the capacitance entry, to ``omega``, to a cluster's mean
             ``omega`` or to Q, absolute for an S entry. At least 10 times
             ``options.tolerance`` (``options.eigen_tolerance`` for an
-            `Eigenmode`; for Q times cot(arg omega), about 2Q, checked on
+            `Eigenmode`; for Q times :math:`\cot(\arg\omega)`, about 2Q, checked on
             the first solve), since the estimate does not include the linear
             solve's error. Each tolerance is checked on its own.
         error_fraction: Dörfler's fraction, in (0, 1]: the share of the summed
@@ -719,23 +723,23 @@ def refine_mesh(
             empty or names a quantity twice, or the tolerances do not match
             the estimators one to one, or a cluster shares a mode with
             another estimator; a tolerance is below 10
-            times the solve tolerance (for Q, times cot(arg omega)); a
+            times the solve tolerance (for Q, times :math:`\cot(\arg\omega)`); a
             `QuantityEstimator` names a source port that is not excited, a
             mode index at or above ``n_modes``, a cluster of at least
             ``n_modes`` modes (one more is needed to tell it apart), or the Q
             of a lossless mode; a permittivity law is zero at a driven
             frequency.
         MeshRefinementUnsupportedError: The problem or the estimator has no
-            mesh refinement (``feature`` names what): an adaptive sweep, a
-            port mode problem, a periodic model or a Bloch wave vector,
-            ``options.order=1`` (the ``"fast"`` preset), a quantity entry
-            with no verified estimate (an S entry read at a lumped port
-            with no resistance, whose row is undefined; an S entry or a
-            driven objective beside an impedance or absorbing surface, a
-            lumped port across a permeability contrast or a permittivity law at
-            -20 < Re eps < 0, all before any solve; a plasmon-bound mode on
-            the first estimate, after the first solve; see
-            `QuantityEstimator`), an objective reading what it may not (on
+            mesh refinement (``feature`` names what): an adaptive sweep, a port
+            mode problem, a periodic model or a Bloch wave vector,
+            ``options.order=1`` (the ``"fast"`` preset), a quantity entry with
+            no verified estimate (an S entry read at a lumped port with no
+            resistance, whose row is undefined; an S entry or a driven
+            objective beside an impedance or absorbing surface, a lumped port
+            across a permeability contrast or a permittivity law at
+            :math:`-20 < \mathrm{Re}\,\varepsilon < 0`, all before any solve; a
+            plasmon-bound mode on the first estimate, after the first solve;
+            see `QuantityEstimator`), an objective reading what it may not (on
             the first estimate), or ``frequency_workers`` above 1 for an
             estimate that solves an adjoint dual (an unexcited ``to``, a
             lossy wave port, or an objective's dual), which rides on the

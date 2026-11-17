@@ -1,22 +1,25 @@
-"""Temperature in optics: the first-order thermo-optic shift of a wave port's mode.
+r"""Temperature in optics: the first-order thermo-optic shift of a wave port's mode.
 
-A material's ``thermo_optic_coefficient`` (dn/dT, 1/K) acts on the
+A material's ``thermo_optic_coefficient`` (:math:`dn/dT`, 1/K) acts on the
 temperature rise (the temperature above the source-free temperature, a
 `gfem.SteadyThermalResult.rise`) about the index of the material's ``eps_r``
 (ADR 0160). Two ways read it:
 
 - `thermo_optic_shift`: the change of a wave port mode's effective index to
-  first order in the rise, from one mode solve (ADR 0174)::
+  first order in the rise, from one mode solve (ADR 0174):
 
-      delta_n_eff = (c eps0 / 4) sum_e 2 n0_e (dn/dT)_e rise_e int_e |E0|^2 dA
+  .. math::
 
-  over the triangles of the port's section, ``E0`` the mode at 1 W and
-  ``rise_e`` the mean rise over the tetrahedron behind each triangle. It is
-  linear in the rise and in dn/dT, and its phase per length is
-  ``k0 delta_n_eff``.
-- `gfem.Model.with_temperature_rise`: the model with ``eps_r = (n0 + dn/dT
-  rise_e)^2`` per element, for any optical solve (a `gfem.PortMode`
-  re-solve checks the first order).
+      \delta n_\mathrm{eff} = \frac{c \varepsilon_0}{4} \sum_e 2 n_{0,e}
+          (dn/dT)_e\, \Delta T_e \int_e |E_0|^2 \, dA
+
+  over the triangles of the port's section, :math:`E_0` the mode at 1 W and
+  :math:`\Delta T_e` the mean rise over the tetrahedron behind each
+  triangle. It is linear in the rise and in :math:`dn/dT`, and its phase per
+  length is :math:`k_0\, \delta n_\mathrm{eff}`.
+- `gfem.Model.with_temperature_rise`: the model with
+  :math:`\varepsilon_r = (n_0 + (dn/dT)\, \Delta T_e)^2` per element, for any
+  optical solve (a `gfem.PortMode` re-solve checks the first order).
 
 The rise may live on another mesh than the optical model (a window around
 one core, in the same coordinates): each element's rise is then the
@@ -231,7 +234,7 @@ register_fields(_ShiftTrace, ("_weights",))
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class ThermoOpticShift:
-    """The first-order thermo-optic shift of a wave port's mode.
+    r"""The first-order thermo-optic shift of a wave port's mode.
 
     The mode is solved once on the optical model and held constant: the
     shift is exactly linear in the rise and in the thermo-optic coefficient
@@ -251,7 +254,8 @@ class ThermoOpticShift:
             for a positive coefficient and a positive rise. A transmission
             through length ``L`` turns its argument by minus
             ``phase_per_length * L`` (`gfem.conventions`). With the heater's
-            power per length ``P'``, ``P_pi = pi * P' / phase_per_length``.
+            power per length :math:`P'`, :math:`P_\pi = \pi P' /`
+            ``phase_per_length``.
     """
 
     port: str
@@ -359,18 +363,21 @@ def thermo_optic_shift(
     frequency: float,
     mode: int | None = None,
 ) -> ThermoOpticShift:
-    """The first-order thermo-optic shift of a wave port's mode.
+    r"""The first-order thermo-optic shift of a wave port's mode.
 
     Solves the port's mode on ``model`` (a `gfem.PortMode` at one frequency)
     and gives the change of its effective index caused by ``rise`` through
-    each element's thermo-optic coefficient, to first order::
+    each element's thermo-optic coefficient, to first order:
 
-        delta_n_eff = (c eps0 / 4) sum_e 2 n0_e (dn/dT)_e rise_e int_e |E0|^2 dA
+    .. math::
 
-    ``E0`` is the mode at 1 W, ``e`` runs over the triangles of the port's
-    section, ``n0_e`` and ``(dn/dT)_e`` are the material's of the
-    tetrahedron behind it, and ``rise_e`` is the mean rise over that
-    tetrahedron. Elements without a coefficient contribute nothing.
+        \delta n_\mathrm{eff} = \frac{c \varepsilon_0}{4} \sum_e 2 n_{0,e}
+            (dn/dT)_e\, \Delta T_e \int_e |E_0|^2 \, dA
+
+    :math:`E_0` is the mode at 1 W, :math:`e` runs over the triangles of the
+    port's section, :math:`n_{0,e}` and :math:`(dn/dT)_e` are the material's
+    of the tetrahedron behind it, and :math:`\Delta T_e` is the mean rise
+    over that tetrahedron. Elements without a coefficient contribute nothing.
 
     ``model`` is the optical model, which carries ``eps_r`` and the
     coefficient: the thermal model with the substrate and heater excluded

@@ -498,10 +498,11 @@ jax.tree_util.register_static(HelmholtzFilter)
 def helmholtz_filter(
     carrier: Mesh | LayerGrid, region: str | None = None, *, radius: float
 ) -> HelmholtzFilter:
-    """A Helmholtz (PDE) density filter of a given radius.
+    r"""A Helmholtz (PDE) density filter of a given radius.
 
-    The filtered density ``u`` solves ``-r^2 lap(u) + u = rho`` with
-    zero-flux (Neumann) edges, ``r = radius / (2 sqrt(3))``: the filter has
+    The filtered density :math:`u` solves :math:`-r^2 \nabla^2 u + u = \rho`
+    with zero-flux (Neumann) edges, :math:`r` = ``radius`` /
+    :math:`(2\sqrt{3})`: the filter has
     the second moment of a cone filter of radius ``radius``, and features
     much smaller than ``radius`` are smoothed away. Constants pass unchanged
     and the (volume-weighted) total density is kept.

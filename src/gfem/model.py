@@ -638,10 +638,11 @@ class Model:
     def bloch_wave_vector(
         self, surface: str, frequency: float, *, theta: float, phi: float = 0.0
     ) -> tuple[float, float, float]:
-        """The Bloch wave vector of a plane wave incident through a face, rad/m.
+        r"""The Bloch wave vector of a plane wave incident through a face, rad/m.
 
-        k0 n sin(theta) (cos(phi) ê1 + sin(phi) ê2), with n = sqrt(eps_r
-        mu_r) of the medium behind ``surface`` and (ê1, ê2) its lattice
+        :math:`k_0 n \sin\theta\, (\cos\phi\, \hat e_1 + \sin\phi\, \hat e_2)`,
+        with :math:`n = \sqrt{\varepsilon_r \mu_r}` of the medium behind
+        ``surface`` and :math:`(\hat e_1, \hat e_2)` its lattice
         frame (`gfem.conventions`). Pass it as ``wave_vector`` of
         `gfem.Driven`: it is the specular order's in-plane wave vector, the
         same on every face of the cell.
@@ -650,9 +651,10 @@ class Model:
             surface: An open face of the cell (a Floquet surface, with or
                 without ports yet).
             frequency: Hz.
-            theta: The angle from the face's inward normal, rad, ``|theta| <=
-                pi/2``.
-            phi: The azimuth from ê1 toward ê2, rad.
+            theta: The angle from the face's inward normal, rad,
+                :math:`|\theta| \le \pi/2`.
+            phi: The azimuth from :math:`\hat e_1` toward :math:`\hat e_2`,
+                rad.
 
         Returns:
             ``(kx, ky, kz)`` in rad/m, in model coordinates.
@@ -759,12 +761,13 @@ class Model:
         return self.replace(materials={**self.materials, region: material})
 
     def with_temperature_rise(self, rise: Field) -> Model:
-        """A new model whose permittivity follows a temperature rise.
+        r"""A new model whose permittivity follows a temperature rise.
 
         Each region with a ``thermo_optic_coefficient`` gets a
-        `MaterialField` with, per element, ``eps_r = (n0 + dn/dT *
-        rise_e)^2``: ``n0 = sqrt(eps_r)`` of its material (the index at the
-        source-free temperature) and ``rise_e`` the mean rise over the
+        `MaterialField` with, per element,
+        :math:`\varepsilon_r = (n_0 + (dn/dT)\, \Delta T_e)^2`:
+        :math:`n_0 = \sqrt{\varepsilon_r}` of its material (the index at the
+        source-free temperature) and :math:`\Delta T_e` the mean rise over the
         element (the exact element mean on the rise's own mesh, else the
         quadrature mean of the rise at points located in its mesh). Its
         other properties are kept; regions without a coefficient, and

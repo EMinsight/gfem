@@ -55,14 +55,15 @@ def check_fill(values: np.ndarray) -> None:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class SheetField:
-    """A per-face fill of a sheet: the design of a patterned metal surface.
+    r"""A per-face fill of a sheet: the design of a patterned metal surface.
 
     Attach it to a `Conductor` or `Impedance` on an interior surface (both
     sides in the solve domain) with ``fill=``: the boundary's admittance on
-    face f becomes ``fill[f]`` times the solid sheet's, ``Y_f(ω) = w_f
-    Y_solid(ω)``. Fill 0 is no sheet (the surface is plain dielectric
-    continuity), 1 the solid sheet; values above 1 are legal (more sheet
-    than the solid), negative ones are not (the sheet would be active).
+    face f becomes ``fill[f]`` times the solid sheet's,
+    :math:`Y_f(\omega) = w_f Y_\mathrm{solid}(\omega)`. Fill 0 is no sheet
+    (the surface is plain dielectric continuity), 1 the solid sheet; values
+    above 1 are legal (more sheet than the solid), negative ones are not
+    (the sheet would be active).
 
     `jax.grad` of a driven or eigenmode objective reaches ``fill``. Build it
     from a design density with `interpolate`.
@@ -103,19 +104,21 @@ class SheetField:
         contrast: float = DEFAULT_CONTRAST,
         surface: str | None = None,
     ) -> SheetField:
-        """A fill from a design density per face, 0 = void, 1 = solid.
+        r"""A fill from a design density per face, 0 = void, 1 = solid.
 
-        ``exponential`` (the default) maps ``rho`` to ``w = (r^rho - 1) / (r
-        - 1)``, ``r = contrast``: log-scale in the sheet admittance (``w ≈
-        r^(rho - 1)`` away from 0) with an exact void (``w(0) = 0``) and
-        solid (``w(1) = 1``). A sheet affects the fields over a window of
+        ``exponential`` (the default) maps ``rho`` to
+        :math:`w = (r^\rho - 1) / (r - 1)`, :math:`r` = ``contrast``:
+        log-scale in the sheet admittance (:math:`w \approx r^{\rho - 1}` away
+        from 0) with an exact void (:math:`w(0) = 0`) and solid
+        (:math:`w(1) = 1`). A sheet affects the fields over a window of
         admittances, so a linear map would put the whole void-to-metal
         transition in the first or last fraction of a percent of ``rho``;
-        the exponential one centres it near ``rho_c ≈ 1 - log10(eta |Y|) /
-        log10(r)``, with ``eta |Y|`` the solid sheet's admittance relative to
+        the exponential one centres it near
+        :math:`\rho_c \approx 1 - \log_{10}(\eta |Y|) / \log_{10} r`, with
+        :math:`\eta |Y|` the solid sheet's admittance relative to
         the wave admittance around it (about 1e2 to 1e6 for metal films,
-        so ``rho_c`` between about 0.4 and 0.8 with the default contrast).
-        ``linear`` is ``w = rho``, for a density that already is the
+        so :math:`\rho_c` between about 0.4 and 0.8 with the default contrast).
+        ``linear`` is :math:`w = \rho`, for a density that already is the
         admittance fraction. Grey resistive sheets absorb, so pair the
         design with `gfem.design.project` and a rising ``beta``.
         Differentiable in ``density``.

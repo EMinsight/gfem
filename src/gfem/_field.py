@@ -31,7 +31,7 @@ SPACES = ("h1", "hcurl", "hdiv", "l2")
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Field:
-    """A solution quantity on the model's mesh, as finite-element coefficients.
+    r"""A solution quantity on the model's mesh, as finite-element coefficients.
 
     Results carry their fields as `Field` objects, for example
     ``cap.potential["trace"]`` for an electrostatic terminal potential. A
@@ -40,10 +40,11 @@ class Field:
     live in ``coefficients``. Write it to ParaView with `to_vtu`, or open it
     in a notebook with `to_pyvista`.
 
-    Complex fields are phasors under the e^{+iωt} time convention. A driven
-    field is the peak phasor for 1 W time-averaged incident power at the
-    excited port, every other port terminated in its reference impedance, so
-    time-averaged densities carry a factor 1/2 (w_e = Re(E·D*)/4). An
+    Complex fields are phasors under the :math:`e^{+i\omega t}` time
+    convention. A driven field is the peak phasor for 1 W time-averaged
+    incident power at the excited port, every other port terminated in its
+    reference impedance, so time-averaged densities carry a factor 1/2
+    (:math:`w_e = \mathrm{Re}(E \cdot D^*) / 4`). An
     eigenmode field has an arbitrary normalization.
 
     `jax.grad` reaches a field's ``coefficients``, the mesh node coordinates
@@ -130,11 +131,12 @@ class Field:
         return jnp.iscomplexobj(self.coefficients)
 
     def b(self) -> Field:
-        """The magnetic flux density B = curl E / (-iω) of an electric field.
+        r"""The magnetic flux density of an electric field.
 
-        Exact on the discrete field: B lives in H(div) of one order lower.
-        Differentiable with respect to the coefficients and ``omega``. A
-        flux of point-sampled ``E x B* / mu0`` carries a mesh-periodic bias;
+        :math:`B = \nabla \times E / (-i\omega)`. Exact on the discrete
+        field: B lives in H(div) of one order lower. Differentiable with
+        respect to the coefficients and ``omega``. A flux of point-sampled
+        :math:`E \times B^* / \mu_0` carries a mesh-periodic bias;
         use `gfem.power_flow` for the power through a surface.
 
         Returns:

@@ -218,7 +218,7 @@ def _petsc_options(options: SolverOptions) -> PetscOptions:
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class SolverOptions:
-    """Every numerical knob of a solve, kept apart from the model and problem.
+    r"""Every numerical knob of a solve, kept apart from the model and problem.
 
     Frozen and keyword-only. The defaults suit most models; `preset` trades
     speed for accuracy in one word. Most solves need only ``order``,
@@ -301,7 +301,8 @@ class SolverOptions:
             (``PortModeResult.residual``).
         floquet_order_tolerance: Which evanescent diffraction orders a
             Floquet surface models: those whose round trip to the nearest
-            structure decays by less than this (e^{-2|gamma| d} above it),
+            structure decays by less than this (:math:`e^{-2|\gamma| d}`
+            above it),
             besides every propagating order, up to what the face mesh
             resolves.
         retain_memory: Bytes gfem keeps between solves in one process: each
@@ -330,7 +331,7 @@ class SolverOptions:
         adjoint_tolerance: Relative residual of adjoint solves, in the norm
             ``tolerance`` names for each backend; ``None`` is ``tolerance``.
         eigen_tolerance: Backward error accepted for an eigenmode (the
-            residual over ``|K| + |omega| |C| + |omega|^2 |M|``), in the
+            residual over :math:`|K| + |\omega| |C| + |\omega|^2 |M|`), in the
             eigen solver's first pass (ARPACK's, or SLEPc's ``eps_tol`` with
             ``eigen_solver="slepc"``) and in the refinement. For frequency
             and Q to many digits, and for eigenmode gradients, keep the
@@ -398,10 +399,10 @@ class SolverOptions:
     Notes:
         ``tolerance`` is a different norm per backend, so the same value
         does not give the same accuracy everywhere. With ``"bddc_gmres"``
-        it is the relative preconditioned residual: ``|P(b - Ax)| / |P b|``
+        it is the relative preconditioned residual: :math:`|P(b - Ax)| / |P b|`
         as GMRES estimates it, or for conjugate gradients (electrostatic)
         the P-norm of the residual over its first value. The
-        unpreconditioned residual ``|b - Ax| / |b|`` can be orders larger at
+        unpreconditioned residual :math:`|b - Ax| / |b|` can be orders larger at
         low frequency and does not measure the error. With ``"petsc"`` and
         a Krylov ``ksp_type`` it is PETSc's ``ksp_rtol`` on the
         unpreconditioned residual (unless ``petsc_options`` sets
