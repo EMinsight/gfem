@@ -275,6 +275,39 @@ def test_same_code_error_prefers_pardiso_and_the_tightest_palace_direct():
     assert mumps.same_code_error["value"] == pytest.approx(1e-9)
 
 
+@pytest.mark.parametrize(
+    ("field", "other"),
+    [("stack", "native-oss"), ("version", "0.18.1"), ("order", 5)],
+)
+def test_same_code_anchor_is_per_stack_solver_version_and_order(field, other):
+    c = _case("bragg")
+    direct = _record(c, _modes(5.0e9, 7.0e9), solver="palace:mumps", name="d")
+    elsewhere = _record(c, _modes(5.0e9, 7.0e9), solver="palace:mumps", name="e")
+    pmg = _record(c, _modes(5.0e9 * (1 + 1e-8), 7.0e9), solver="palace:pmg", name="p")
+    for r in (direct, elsewhere, pmg):
+        r.provenance.solver = {"code": "palace", "version": "0.19.0"}
+    if field == "stack":
+        elsewhere.run.stack = pmg.run.stack = other
+    elif field == "version":
+        elsewhere.provenance.solver["version"] = other
+        pmg.provenance.solver["version"] = other
+    else:
+        elsewhere.case.order = pmg.case.order = other
+    elsewhere.outputs = _modes(5.0e9 * (1 + 1e-9), 7.0e9)
+    score.same_code([direct, elsewhere, pmg], {c.name: c})
+    assert pmg.same_code_error["against"] == elsewhere.name
+    assert direct.same_code_error["against"] == direct.name
+
+
+def test_same_code_anchor_needs_a_direct_run_in_the_same_group():
+    c = _case("bragg")
+    direct = _record(c, _modes(5.0e9, 7.0e9), name="d")
+    bddc = _record(c, _modes(5.0e9, 7.0e9), solver="gfem:bddc", name="b")
+    bddc.run.stack = "native-oss"
+    score.same_code([direct, bddc], {c.name: c})
+    assert bddc.same_code_error is None
+
+
 # --- the campaign ---------------------------------------------------------------------
 
 
