@@ -1,0 +1,167 @@
+
+_____________     _______
+_____   __   \____ __   /____ ____________
+____   /_/  /  __ ` /  /  __ ` /  ___/  _ \
+___   _____/  /_/  /  /  /_/  /  /__/  ___/
+  /__/     \___,__/__/\___,__/\_____\_____/
+
+Git changeset ID: v0.18.1
+Running with 1 MPI process, 4 OpenMP threads
+Device configuration: omp,cpu
+Memory configuration: host-std
+libCEED backend: /cpu/self/xsmm/blocked
+
+
+[38;2;255;255;000m--> Warning![0m
+One or more external boundary attributes has no associated boundary condition!
+"PMC"/"ZeroCharge" condition is assumed!
+
+Boundary attribute list: 7, 4
+
+Added 2 boundary elements for material interfaces to the mesh
+
+Characteristic length and time scales:
+ Lc = 1.000e-02 m, tc = 3.336e-02 ns
+Finished partitioning mesh into 1 subdomain
+
+Mesh curvature order: 1
+Mesh bounding box:
+ (Xmin, Ymin, Zmin) = (+0.000e+00, +0.000e+00, +0.000e+00) m
+ (Xmax, Ymax, Zmax) = (+1.000e-02, +2.000e-03, +1.000e-03) m
+
+Parallel Mesh Stats:
+
+                minimum     average     maximum       total
+ vertices            40          40          40          40
+ edges              140         140         140         140
+ faces              160         160         160         160
+ elements            60          60          60          60
+ neighbors            0           0           0
+
+            minimum     maximum
+ h         0.141421    0.141421
+ kappa       3.2255     3.29852
+
+Estimated current per-rank memory usage is: Min. 36.7M, Max. 36.7M, Avg. 36.7M, Total 36.7M
+Estimated current per-node memory usage is: Min. 36.7M, Max. 36.7M, Avg. 36.7M, Total 36.7M
+
+Configuring Dirichlet PEC BC at attributes:
+ 5-6
+
+Assembling system matrices, number of global unknowns:
+ H1 (p = 3): 480, ND (p = 3): 1560, RT (p = 3): 1680
+ Operator assembly level: Partial
+ Mesh geometries:
+  Tetrahedron: P = 45, Q = 24 (quadrature order = 6)
+
+Configuring SLEPc eigenvalue solver:
+ Scaling γ = 5.629e+02, δ = 6.679e-03
+ Using random starting vector
+ Shift-and-invert σ = 4.497e+00 GHz (9.425e-01)
+
+Assembling multigrid hierarchy:
+ Level 0 (p = 1): 140 unknowns
+ Level 1 (p = 2): 600 unknowns
+ Level 2 (p = 3): 1560 unknowns
+ Level 0 (auxiliary) (p = 1): 40 unknowns
+ Level 1 (auxiliary) (p = 2): 180 unknowns
+ Level 2 (auxiliary) (p = 3): 480 unknowns
+
+#PETSc Option Table entries:
+-eps_monitor # (source: code)
+#End of PETSc Option Table entries
+
+GMRES solver converged in 230 iterations (avg. reduction factor: 8.688e-01)
+GMRES solver converged in 230 iterations (avg. reduction factor: 8.683e-01)
+GMRES solver converged in 230 iterations (avg. reduction factor: 8.685e-01)
+GMRES solver converged in 230 iterations (avg. reduction factor: 8.692e-01)
+GMRES solver converged in 277 iterations (avg. reduction factor: 8.895e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.694e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.689e-01)
+GMRES solver converged in 233 iterations (avg. reduction factor: 8.705e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.683e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.687e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.693e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.698e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.681e-01)
+GMRES solver converged in 234 iterations (avg. reduction factor: 8.693e-01)
+GMRES solver converged in 233 iterations (avg. reduction factor: 8.705e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.698e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.688e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.687e-01)
+  1 EPS nconv=2 first unconverged value (error) 0.025292-8.18349e-09i (3.61356830e-06)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.692e-01)
+GMRES solver converged in 230 iterations (avg. reduction factor: 8.692e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.694e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.679e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.685e-01)
+GMRES solver converged in 231 iterations (avg. reduction factor: 8.697e-01)
+GMRES solver converged in 233 iterations (avg. reduction factor: 8.693e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.684e-01)
+  2 EPS nconv=2 first unconverged value (error) 0.025292+5.65162e-12i (1.38398962e-11)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.693e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.688e-01)
+GMRES solver converged in 235 iterations (avg. reduction factor: 8.716e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.692e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.693e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.694e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.688e-01)
+GMRES solver converged in 232 iterations (avg. reduction factor: 8.691e-01)
+  3 EPS nconv=4 first unconverged value (error) 0.0522537-2.25682e-12i (4.22025504e-09)
+
+ Linear eigensolve converged (4 eigenpairs) due to CONVERGED_TOL; iterations 3
+ Total number of linear systems solved: 34
+ Total number of linear solver iterations: 7930
+ Found 4 converged eigenvalues (first = 1.181e+00+7.492e-11i)
+
+Computing solution error estimates and performing postprocessing
+
+     m,        Re{f} (GHz),        Im{f} (GHz),                  Q,      Error (Bkwd.),       Error (Abs.)
+     1,      +5.185530e+00,      +1.644672e-10,      +1.576463e+10,      +5.505125e-12,      +1.651943e-09
+     2,      +7.206818e+00,      -1.393171e-10,      +2.586480e+10,      +7.618582e-12,      +2.290596e-09
+     3,      +1.800252e+01,      +2.029319e-09,      +4.435606e+09,      +9.500207e-11,      +2.916743e-08
+     4,      +2.028993e+01,      +6.030379e-09,      +1.682310e+09,      +1.152049e-10,      +3.560589e-08
+
+Completed 0 iterations of adaptive mesh refinement (AMR):
+ Indicator norm = 2.664e-03, global unknowns = 1560
+ Max. iterations = 0, tol. = 1.000e-02
+
+Estimated peak per-rank memory usage is: Min. 81.2M, Max. 81.2M, Avg. 81.2M, Total 81.2M
+Estimated peak per-node memory usage is: Min. 81.2M, Max. 81.2M, Avg. 81.2M, Total 81.2M
+
+Elapsed Time Report (s)           Min.        Max.        Avg.
+==============================================================
+Initialization                   0.003       0.003       0.003
+  Mesh Preprocessing             0.002       0.002       0.002
+Operator Construction            0.041       0.041       0.041
+Linear Solve                    14.103      14.103      14.103
+  Setup                          0.032       0.032       0.032
+  Preconditioner                48.367      48.367      48.367
+  Coarse Solve                   0.333       0.333       0.333
+Eigenvalue Solve                 0.011       0.011       0.011
+Estimation                       0.001       0.001       0.001
+  Construction                   0.025       0.025       0.025
+  Solve                          0.045       0.045       0.045
+Postprocessing                   0.055       0.055       0.055
+Disk IO                          0.003       0.003       0.003
+--------------------------------------------------------------
+Total                           63.522      63.522      63.522
+
+Peak Memory                   Per-Node       Total   Total HWM
+==============================================================
+Initialization                    3.5M        3.5M        3.5M
+  Mesh Preprocessing              1.8M        1.8M        5.2M
+Operator Construction            19.8M       19.8M       25.1M
+Linear Solve                      9.7M        9.7M       34.8M
+  Setup                           9.0M        9.0M       43.8M
+  Preconditioner                  2.4M        2.4M       46.2M
+  Coarse Solve                    3.5M        3.5M       49.7M
+Eigenvalue Solve                  0.0K        0.0K       49.7M
+Estimation                        0.0K        0.0K       49.7M
+  Construction                    0.0K        0.0K       49.7M
+  Solve                           0.0K        0.0K       49.7M
+Postprocessing                    1.8M        1.8M       51.5M
+Disk IO                           0.0K        0.0K       51.5M
+--------------------------------------------------------------
+Total                            65.5M       65.5M       65.5M
+
