@@ -26,6 +26,7 @@ tutorials/bend
 tutorials/bend3d
 tutorials/metal-bend
 tutorials/metagrating
+tutorials/heater3d
 ```
 
 ```{toctree}
