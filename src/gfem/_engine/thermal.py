@@ -842,8 +842,8 @@ class Stepper:
 
     ``F_n`` is the load on [t_n, t_n+1): the waveform's value there times
     the sources' load. The stage value of TR-BDF2 is returned by `step`, so
-    a reverse sweep can recompute it from ``u_n`` (slice 07's adjoint runs
-    the transposed stages on the same handle; ``A`` and ``C`` are
+    a reverse sweep can recompute it from ``u_n`` (`stage`; the adjoint runs
+    the transposed stages on the same handle, ``A`` and ``C`` being
     symmetric).
 
     Attributes:
@@ -1156,7 +1156,9 @@ class TransientThermalRule(ThermalRule):
         Returns:
             ``{"trace:<name>": (steps + 1,), "kept_rise": (n_kept, ndof),
             "source_free": (ndof,)}``, and, if ``keep``, the cache entry
-            (the stepping operator in a `KeptHandle`) or ``None``.
+            (the stepping operator in a `KeptHandle`; ``fields`` the states
+            and T0, unless only the sources are wanted, see `_trajectory`)
+            or ``None``.
         """
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
