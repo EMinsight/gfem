@@ -641,6 +641,22 @@ def test_the_budget_refuses_past_the_ceiling_with_sacct_spend(tmp_path):
         budget.check(spent, 45.5, 100.0)
 
 
+def test_unfinished_jobs_count_at_their_time_limit_until_they_finish(tmp_path):
+    (tmp_path / "submitted.tsv").write_text(
+        budget.SUBMITTED_HEADER
+        + "\nj\t11\tt\tq\t1:00:00\t5\nk\t12\tt\tq\t1:30:00\t5"
+        + "\nl\t13\tt\tq\t1:00:00\t5\n"
+    )
+    sacct = (
+        "11|COMPLETED|10|36000|n|q|60|1\n"
+        "12|PENDING|0|0|None assigned|q|90|2\n"
+        "13|RUNNING|600|1000|n|q|60|1\n"
+    )
+    spent = budget.spend(0.0, [tmp_path / "submitted.tsv"], lambda *_a, **_k: _done(sacct))
+    # 5 billed + 1.5 h x 2 nodes x 112 + 1 h x 1 node x 112
+    assert spent.jobs_core_h == pytest.approx(5.0 + 336.0 + 112.0)
+
+
 def test_submit_refuses_a_plan_past_the_ceiling(site, tmp_path):
     rd = _plan(site, tmp_path)
     with pytest.raises(budget.BudgetError):

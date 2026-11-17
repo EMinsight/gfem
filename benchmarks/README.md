@@ -429,6 +429,8 @@ Budget unit: billed core-hours, sacct `CPUTimeRAW / 2 / 3600` (one GPP node-hour
 
    `submit` refuses when `prior_core_h` + billed core-h of every `submitted.tsv`
    under `[output] dir` + this estimate exceeds `ceiling_core_h` (or `--ceiling`).
+   A job still pending or running counts at its time limit x nodes x 112 until it
+   finishes.
    It then prepares the stacks, stages the meshes, `sbatch`es
    `benchmarks/job.sbatch RUNDIR JOB` per job and appends the ids to
    `RUNDIR/submitted.tsv`. `--dry-run` prints the budget line and the sbatch lines
