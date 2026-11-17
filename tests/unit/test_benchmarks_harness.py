@@ -785,6 +785,40 @@ def test_ship_dry_run_lists_only_committed_files(tmp_path, capsys):
     assert f"host:/r/refs/{sha[:7]}/" in out
 
 
+def test_ship_of_a_tree_another_tool_shipped_adds_the_missing_commit_date(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            [GIT, "-C", str(repo), *args], check=True, capture_output=True, text=True
+        ).stdout
+
+    git("init", "-q")
+    (repo / "a.py").write_text("x = 1\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "c")
+    sha, when = ship.commit_of(repo, "HEAD")
+    cases = tmp_path / "cases"
+    cases.mkdir()
+    calls = []
+
+    def run(argv, **_kw):
+        calls.append(list(argv))
+        out = "/r/refs/x/dist/gfem-0.1.0-py3-none-any.whl\n" if "ls" in argv[-1] else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    code = ship.ship(
+        "HEAD", ship.Target.parse("host:/r"), repo=repo, cases_dir=cases, run=run
+    )
+    assert code == 0
+    remote = [c[-1] for c in calls if c[0] == "ssh"]
+    dest = f"/r/refs/{sha[:7]}"
+    assert any(
+        f"{dest}/COMMIT_UTC" in cmd and when in cmd and "||" in cmd for cmd in remote
+    )
+
+
 def test_ship_refuses_a_store_mesh_with_another_hash(tmp_path):
     case = load_case(REPO / "benchmarks" / "cases" / "r10M_void")
     store = tmp_path / "store"
