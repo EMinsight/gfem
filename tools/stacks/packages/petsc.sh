@@ -136,6 +136,9 @@ petsc_clean() {
 # with a venv of the stack interpreter holding petsc4py's build tools;
 # petsc4py and slepc4py land in PREFIX/lib (PETSc's PETSC4PY_INSTALL_PATH).
 # PETSc's and SLEPc's own checks run against the installed prefix.
+# install-lib, not install: the example trees (tens of thousands of files)
+# copy at about 2 files/s onto GPFS (job 49169988); the checks run from the
+# source trees.
 build_petsc() {
   local version=$1 prefix=$2 dir=$3 python venv src slepc blas line package stem tarball entry
   local tarballs=$STACK_SRC/tarballs options=() downloads=()
@@ -168,7 +171,7 @@ build_petsc() {
   echo "petsc: configure ${options[*]}"
   (cd "$src" && petsc_clean "$venv/bin/python" ./configure "${options[@]}")
   petsc_clean make -C "$src" PETSC_DIR="$src" PETSC_ARCH="$PETSC_ARCH_NAME" all
-  petsc_clean make -C "$src" PETSC_DIR="$src" PETSC_ARCH="$PETSC_ARCH_NAME" install
+  petsc_clean make -C "$src" PETSC_DIR="$src" PETSC_ARCH="$PETSC_ARCH_NAME" install-lib
   mkdir -p "$prefix/share/stack"
   cp "$src/$PETSC_ARCH_NAME/lib/petsc/conf/configure.log" "$prefix/share/stack/petsc-configure.log"
   find "$src/$PETSC_ARCH_NAME/externalpackages" -path '*MUMPS*' -name Makefile.inc \
@@ -184,7 +187,7 @@ build_petsc() {
   (cd "$slepc" && petsc_clean env PETSC_DIR="$prefix" PYTHONPATH="$prefix/lib" \
     "$venv/bin/python" ./configure "--prefix=$prefix" --with-slepc4py)
   petsc_clean env PYTHONPATH="$prefix/lib" make -C "$slepc" SLEPC_DIR="$slepc" PETSC_DIR="$prefix" PETSC_ARCH=
-  petsc_clean env PYTHONPATH="$prefix/lib" make -C "$slepc" SLEPC_DIR="$slepc" PETSC_DIR="$prefix" PETSC_ARCH= install
+  petsc_clean env PYTHONPATH="$prefix/lib" make -C "$slepc" SLEPC_DIR="$slepc" PETSC_DIR="$prefix" PETSC_ARCH= install-lib
   if ! (cd "$slepc" && petsc_clean make SLEPC_DIR="$prefix" PETSC_DIR="$prefix" PETSC_ARCH= check) 2>&1 |
     tee "$prefix/share/stack/slepc-check.log"; then
     stack_die "slepc: make check against $prefix failed"
