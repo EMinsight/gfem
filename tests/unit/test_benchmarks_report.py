@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.__main__ import main
+from benchmarks.report import views
 
 BENCH = Path(__file__).parent / "data" / "bench"
 FIXTURE = BENCH / "campaign"
@@ -137,10 +138,29 @@ def test_best_layout_ties_and_short_cells(fixture_report):
     ]
 
 
+@pytest.mark.parametrize("check", ["placement", "layout"])
+def test_an_unverified_run_is_left_out_of_the_best_layout(tmp_path, check):
+    def edit(data):
+        run = data["run"]
+        if run["solver"] == "gfem:bddc" and run["layout"]["ranks"] == 4:
+            data["checks"][check] = "skipped"
+
+    report = _json(tmp_path, _store(tmp_path, edit))
+    bddc = _layouts(_case(report, "microstrip"), "gfem:bddc")
+    assert bddc["best"] == "2x8"
+    assert "4x4" not in [c["layout"] for c in bddc["cells"]]
+    assert {"layout": "4x4", "status": "unverified"}.items() <= next(
+        u for u in bddc["unrun"] if u["layout"] == "4x4"
+    ).items()
+
+
 def test_equal_error_interpolates_and_never_extrapolates(fixture_report):
     eq = _case(fixture_report[0], "microstrip")["error_cost"]["equal_error"]
     assert eq["base"] == "gfem:bddc"
-    assert [r["error"] for r in eq["rows"]] == [1e-8, 1e-7, 1e-6, 1e-5]
+    # overlap [5e-9, 1e-5]: both ends, the geometric midpoint and the decades inside
+    assert [r["error"] for r in eq["rows"]] == pytest.approx(
+        [5e-9, 1e-8, 1e-7, (5e-9 * 1e-5) ** 0.5, 1e-6, 1e-5], rel=1e-5
+    )
     at = {r["error"]: r for r in eq["rows"]}
     # gfem sits on a rung at 1e-7 (12.2 s); Palace interpolates between 4e-7 (22.2 s)
     # and 5e-9 (28.2 s): 22.2 (28.2 / 22.2) ** (ln 4 / ln 80) = 23.94 s.
@@ -149,6 +169,18 @@ def test_equal_error_interpolates_and_never_extrapolates(fixture_report):
     assert at[1e-7]["ratios"]["palace:pmg"] == pytest.approx(23.94 / 12.2, rel=1e-3)
     assert 1e-9 not in at
     assert 1e-4 not in at
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi", "points"),
+    [
+        (2e-7, 5e-7, [2e-7, 1e-6 * 0.1**0.5, 5e-7]),
+        (3e-8, 3e-8, [3e-8]),
+        (4e-7, 2e-7, []),
+    ],
+)
+def test_equal_error_points_always_sit_inside_the_overlap(lo, hi, points):
+    assert views.overlap_points(lo, hi) == pytest.approx(points, rel=1e-5)
 
 
 def test_cross_job_ratios_are_labelled_different_nodes(fixture_report):

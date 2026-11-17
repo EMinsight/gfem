@@ -87,6 +87,7 @@ from gfem._linalg import (
     low_rank_update,
     refactorize_or_prepare,
     report,
+    setup_facts,
 )
 from gfem._linalg.base import free_mask
 from gfem._linalg.pieces import (
@@ -722,11 +723,7 @@ class SystemSweep:
             )
             handle = self._system_handle(base, omega)
             if span.enabled:
-                span.set(
-                    solver=getattr(base, "kind", None),
-                    action=getattr(base, "last_action", None) or "factorized",
-                    nbytes=int(base.nbytes),
-                )
+                span.set(**setup_facts(base))
         self._last = (omega, handle)
         return handle
 

@@ -20,8 +20,9 @@ r"""Scoring: accuracy against the converged reference, same-code error (ADR 0409
   ``accuracy_plausible`` passes when the error is at most the ceiling of the run's
   order (``skipped`` without one). The error itself is never gated.
 - Same-code error (solver error, never accuracy): the same metric against the same
-  code's direct run of the case in the campaign (gfem PARDISO, else another direct
-  kind; Palace MUMPS at its tightest tolerance), null without one.
+  code's direct run of the case in the campaign, on the same stack, solver version
+  and order (the adapter's preferred direct kind, else another direct kind; at its
+  tightest tolerance), null without one.
 
 Standard library only (ADR 0400).
 """
@@ -40,8 +41,6 @@ NO_REFERENCE = "no_reference"
 S_METRIC = "max_abs_dS"
 F_METRIC = "max_rel_dRe_f"
 SOLVER_ERROR = "solver error"
-PREFERRED_DIRECT = {"gfem": "direct", "palace": "mumps"}
-"""The direct kind a code's same-code error is measured against first."""
 
 
 class IncompleteError(ValueError):
@@ -231,7 +230,8 @@ def _anchor(rows: Sequence[records.SuiteRecord]) -> records.SuiteRecord | None:
 
     def key(r: records.SuiteRecord) -> tuple[bool, float, str]:
         code, kind = _code_kind(r.run.solver)
-        return (PREFERRED_DIRECT.get(code) != kind, r.run.tolerance or 0.0, r.name)
+        preferred = ADAPTERS[code].direct_kind if code in ADAPTERS else None
+        return (preferred != kind, r.run.tolerance or 0.0, r.name)
 
     return min(direct, key=key)
 
@@ -257,15 +257,27 @@ def _pair(z: complex) -> list[float]:
     return [z.real, z.imag]
 
 
+def _group(r: records.SuiteRecord) -> tuple[Any, ...]:
+    """Records that share a same-code anchor: case, code, stack, version, order."""
+    return (
+        r.run.case,
+        _code_kind(r.run.solver)[0],
+        r.run.stack,
+        r.provenance.solver.get("version"),
+        r.case.order,
+    )
+
+
 def same_code(
     rows: Iterable[records.SuiteRecord], cases: Mapping[str, case_mod.Case]
 ) -> list[records.SuiteRecord]:
     """Fill ``same_code_error`` of ok records still without one; return those set."""
-    groups: dict[tuple[str, str], list[records.SuiteRecord]] = {}
+    groups: dict[tuple[Any, ...], list[records.SuiteRecord]] = {}
     for r in rows:
-        groups.setdefault((r.run.case, _code_kind(r.run.solver)[0]), []).append(r)
+        groups.setdefault(_group(r), []).append(r)
     changed = []
-    for (name, _), members in sorted(groups.items()):
+    for key, members in sorted(groups.items(), key=lambda item: repr(item[0])):
+        name = key[0]
         anchor = _anchor(members)
         case = cases.get(name)
         if anchor is None or case is None:

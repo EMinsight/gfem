@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,12 +36,15 @@ REFERENCES_DIR = PACKAGE / "references"
 """Reference-only sibling cases: ``references/<family>/<rung>/case.toml``."""
 SITE_ENV = "GFEM_BENCH_SITE"
 
-SOLVERS = ("gfem:direct", "gfem:petsc-mumps", "gfem:bddc", "palace:mumps", "palace:pmg")
+Runner = Callable[..., subprocess.CompletedProcess]
+"""What runs an external command (``subprocess.run``, or a test's stand-in)."""
+
 STACKS = ("wheels", "native-oss", "native-intel")
 NAMED_LAYOUTS = ("default", "best")
 NODE_CLASSES = ("standard", "highmem")
 JOB_GROUPS = ("case", "stack")
 VERSIONED = ("palace", "ngsolve", "petsc")
+"""Packages every stack description pins a version of; any code may have one too."""
 AFFINITY_VARIABLES = (
     "OMP_PLACES",
     "OMP_PROC_BIND",
@@ -55,6 +59,25 @@ _PLACEHOLDER = re.compile(r"\{[^}]*\}")
 
 class ConfigError(ValueError):
     """A site or campaign file the suite refuses."""
+
+
+def known_solvers() -> tuple[str, ...]:
+    """Every ``code:kind`` of the registered solver adapters."""
+    from benchmarks import adapters  # the adapters import this module
+
+    return adapters.solvers()
+
+
+def known_codes() -> tuple[str, ...]:
+    """The codes of the registered solver adapters."""
+    from benchmarks import adapters  # the adapters import this module
+
+    return tuple(adapters.ADAPTERS)
+
+
+def versioned() -> tuple[str, ...]:
+    """Names a ``versions`` table may set: :data:`VERSIONED` and every code."""
+    return (*VERSIONED, *(c for c in known_codes() if c not in VERSIONED))
 
 
 # --- shared checks ---------------------------------------------------------------
@@ -395,7 +418,10 @@ def load_campaign(path: Path, *, cases: tuple[str, ...] | None = None) -> Campai
         where,
     )
     solvers = _members(
-        _strs(_required(raw, "solvers", where), "solvers"), SOLVERS, "solver", where
+        _strs(_required(raw, "solvers", where), "solvers"),
+        known_solvers(),
+        "solver",
+        where,
     )
     stack_tables = _table(raw, "stacks", f"{where}: ")
     if "stacks" not in raw or not stack_tables:
@@ -444,7 +470,7 @@ def load_campaign(path: Path, *, cases: tuple[str, ...] | None = None) -> Campai
         _keys(override, _STACK_OVERRIDE_KEYS, label)
         if "versions" in override:
             pinned = _table(override, "versions", f"{label}: ")
-            _keys(pinned, VERSIONED, f"{label}.versions")
+            _keys(pinned, versioned(), f"{label}.versions")
             versions[name] = {
                 k: _str(v, f"stacks.{name}.versions.{k}") for k, v in pinned.items()
             }

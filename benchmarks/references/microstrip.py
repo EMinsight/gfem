@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from benchmarks.adapters import ADAPTERS
 from benchmarks.harness import config, records
 from benchmarks.harness.case import load_case
 from benchmarks.references import document as refdoc
@@ -252,10 +253,10 @@ class Ladder:
                 row.get("case", {}).get("ndof"),
                 f"{row['campaign']}/{row['name']}",
             )
-            if code == "palace" and kind == "mumps":
+            if code == "palace" and kind == ADAPTERS["palace"].direct_kind:
                 version = versions.get(row["campaign"], "unknown")
                 ladder.palace.setdefault(version, {}).setdefault(rung, solve)
-            elif code == "gfem" and kind == "direct":
+            elif code == "gfem" and kind == ADAPTERS["gfem"].direct_kind:
                 ladder.gfem.setdefault((rung, DIRECT), solve)
             elif code == "gfem" and (run.get("tolerance") or 1.0) <= OVERKILL_TOLERANCE:
                 ladder.gfem.setdefault((rung, ITERATIVE), solve)

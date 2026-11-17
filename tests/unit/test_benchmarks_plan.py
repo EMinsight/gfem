@@ -3,11 +3,22 @@
 import itertools
 import json
 import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
+from benchmarks import stacks
 from benchmarks.__main__ import main
+from benchmarks.adapters import (
+    ADAPTERS,
+    Kind,
+    Launch,
+    Layout,
+    Outcome,
+    RunRefusedError,
+)
 from benchmarks.harness import config, matrix, records
 from benchmarks.harness.matrix import PlanError
 
@@ -405,3 +416,91 @@ def test_plan_command_refuses_native_stack_with_provenance_reason(tmp_path, caps
     assert main(argv) == 2
     assert "provenance.json" in capsys.readouterr().err
     assert not (tmp_path / "r").exists()
+
+
+# --- a third code ------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _ThirdAdapter:
+    """A stand-in solver adapter: a code the suite has never heard of."""
+
+    code: str = "third"
+    kinds: Mapping[str, Kind] = field(
+        default_factory=lambda: {"lu": Kind("direct"), "cg": Kind("iterative")}
+    )
+    direct_kind: str = "lu"
+    pins: tuple[str, ...] = ("no field output",)
+    timing_source: str = "third.json"
+    memory_metric: str = "VmHWM_sum"
+    stack_keys: tuple[str, ...] = ("entry",)
+
+    def supports(self, _case, _kind, _layout):
+        return None
+
+    def default_layout(self, _case, _kind, budget):
+        return Layout(1, budget)
+
+    def version(self, _stack):
+        return Launch(commands=())
+
+    def prepare(self, _run):
+        raise RunRefusedError("a stand-in")
+
+    def collect(self, _run, _measured):
+        return Outcome(status="refused")
+
+
+THIRD_SECTION = """
+[third]
+modules = []
+mpi = "pmix"
+entry = "third-bin"
+
+[third.threads]
+OMP_NUM_THREADS = "threads"
+"""
+
+
+def test_a_third_code_is_one_adapter_one_registry_line_and_a_stack_section(
+    site, tmp_path, monkeypatch
+):
+    monkeypatch.setitem(ADAPTERS, "third", _ThirdAdapter())
+    stacks_dir = tmp_path / "stacks"
+    stacks_dir.mkdir()
+    wheels = (REPO / "benchmarks" / "stacks" / "wheels.toml").read_text()
+    wheels = wheels.replace("[versions]", '[versions]\nthird = "1.2"', 1)
+    (stacks_dir / "wheels.toml").write_text(wheels + THIRD_SECTION)
+    monkeypatch.setattr(stacks, "STACKS_DIR", stacks_dir)
+    text = (DATA / "tiny" / "campaign.toml").read_text()
+    text = text.replace('cases_dir = ".."', f'cases_dir = "{DATA}"')
+    text = text.replace(
+        'solvers = ["gfem:direct", "gfem:bddc"]', 'solvers = ["gfem:bddc", "third:cg"]'
+    )
+    plan = matrix.expand(
+        config.load_campaign(_write(tmp_path, text)), site, commit=COMMIT
+    )
+    added = {c.solver for c in plan.cells if c.added_for == matrix.SAME_CODE_ERROR}
+    assert {c.solver for c in plan.cells} == {
+        "gfem:bddc",
+        "gfem:direct",
+        "third:cg",
+        "third:lu",
+    }
+    assert added == {"gfem:direct", "third:lu"}
+    assert plan.solver_versions() == {"third": "1.2"}
+    script = stacks.render(plan.resolved["wheels"], "third", threads=4)
+    assert "export OMP_NUM_THREADS=4" in script
+
+
+def test_a_stack_without_the_codes_section_is_refused_at_plan(
+    site, tmp_path, monkeypatch
+):
+    monkeypatch.setitem(ADAPTERS, "third", _ThirdAdapter())
+    text = (DATA / "tiny" / "campaign.toml").read_text()
+    text = text.replace('cases_dir = ".."', f'cases_dir = "{DATA}"')
+    text = text.replace(
+        'solvers = ["gfem:direct", "gfem:bddc"]', 'solvers = ["third:cg"]'
+    )
+    with pytest.raises(PlanError, match=r"\[third\]"):
+        matrix.expand(config.load_campaign(_write(tmp_path, text)), site, commit=COMMIT)

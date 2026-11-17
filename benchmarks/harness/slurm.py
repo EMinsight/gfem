@@ -51,6 +51,7 @@ from typing import Any
 from benchmarks import stacks
 from benchmarks.adapters import (
     ADAPTERS,
+    Adapter,
     Command,
     CommandResult,
     Layout,
@@ -61,7 +62,7 @@ from benchmarks.adapters import (
 )
 from benchmarks.harness import budget, config, data, matrix, measure, records, score
 from benchmarks.harness.case import Case, definition_sha256, load_case
-from benchmarks.harness.config import ConfigError, Site
+from benchmarks.harness.config import ConfigError, Runner, Site
 
 STEP_STOP = 3
 """``step``'s exit status when Slurm disabled step creation: the job stops."""
@@ -87,8 +88,6 @@ ENDED_STATES = (
 )
 CAMPAIGN_GATES = ("complete", "provenance", "dof_equal")
 """Campaign checks that make ``close`` exit non-zero (ADR 0414)."""
-
-Runner = Callable[..., subprocess.CompletedProcess]
 
 
 class HarnessError(Exception):
@@ -491,7 +490,7 @@ class _Job:
     ctx: Context
     run: Run
     resolved: stacks.Resolved
-    adapter: Any
+    adapter: Adapter
 
 
 def _base_env(x: _Job) -> tuple[dict[str, str], str]:
@@ -558,7 +557,9 @@ def _launch(x: _Job, command: Command, base: Mapping[str, str], script: str):
     return _Launched(m, launch, env, script, cap, why, run.workdir / command.stdout)
 
 
-def _timings(case: Case, outcome: Outcome, wall_s: float, code: str) -> records.Timings:
+def _timings(
+    case: Case, outcome: Outcome, wall_s: float, adapter: Adapter
+) -> records.Timings:
     t = records.Timings(wall_s=round(wall_s, 3))
     for bucket in records.BUCKETS:
         setattr(t, bucket, outcome.phases.get(bucket))
@@ -574,23 +575,19 @@ def _timings(case: Case, outcome: Outcome, wall_s: float, code: str) -> records.
         samples = len(case.problem.frequencies())
         t.per_sample_s = t.work_s / samples if samples else None
     t.rank_reduction = outcome.rank_reduction
-    t.source = outcome.native.get("source") or (
-        "palace.json" if code == "palace" else None
-    )
+    t.source = outcome.native.get("source") or adapter.timing_source
     t.rank0 = dict(outcome.rank0) if outcome.rank0 else None
     return t
 
 
 def _memory(
-    outcome: Outcome, m: measure.Measurement, sacct_rss: float | None, code: str
+    outcome: Outcome, m: measure.Measurement, sacct_rss: float | None, adapter: Adapter
 ) -> records.Memory:
     return records.Memory(
         peak_rss_sum_gib=outcome.self_peak_mem_gib,
-        metric=(
-            ("VmHWM_sum" if code == "gfem" else "PeakNodeMemoryMegabytes.Total")
-            if outcome.self_peak_mem_gib is not None
-            else None
-        ),
+        peak_rss_rank_max_gib=outcome.self_peak_rank_max_gib,
+        peak_rss_largest_node_gib=outcome.self_peak_largest_node_gib,
+        metric=adapter.memory_metric if outcome.self_peak_mem_gib is not None else None,
         pss_peak_sum_gib=m.pss_peak_sum_gib,
         sacct_max_rss_gib=sacct_rss,
         self_reports=(
@@ -723,8 +720,8 @@ def _fill(
     sacct_rss = _status(x, record, launched, wall)
     record.case.ndof = outcome.ndof
     record.outputs = {**outcome.quantities, "iterations": outcome.iterations}
-    record.timings = _timings(run.case, outcome, wall, run.code)
-    record.memory = _memory(outcome, last, sacct_rss, run.code)
+    record.timings = _timings(run.case, outcome, wall, x.adapter)
+    record.memory = _memory(outcome, last, sacct_rss, x.adapter)
     record.structural = outcome.structural
     observed = outcome.provenance.get("version")
     pinned = x.rd.manifest.pins.solvers.get(run.code)
@@ -1276,21 +1273,36 @@ def status(rd: RunDir, run: Runner = subprocess.run) -> int:
     return 0
 
 
+def _observed_ndof(r: records.SuiteRecord) -> int | None:
+    """The DOF count a run reported, else the one the DOF guard read in stdout."""
+    if r.case.ndof is not None:
+        return r.case.ndof
+    seen = (r.extra.get("observations") or {}).get("dof_seen_in_stdout")
+    return seen if isinstance(seen, int) else None
+
+
 def _dof_equal(rows: Sequence[records.SuiteRecord]) -> tuple[str, dict[str, Any]]:
+    """Per case, every DOF count a run observed, whatever its status.
+
+    Any two counts that differ on a case fail it, a ``dof_mismatch`` run included;
+    a case passes once two codes observed the same count, else it is skipped.
+    """
     per_case: dict[str, dict[str, set[int]]] = {}
     for r in rows:
-        if r.status == "ok" and r.case.ndof is not None:
+        ndof = _observed_ndof(r)
+        if ndof is not None:
             code = r.run.solver.partition(":")[0]
-            per_case.setdefault(r.run.case, {}).setdefault(code, set()).add(r.case.ndof)
+            per_case.setdefault(r.run.case, {}).setdefault(code, set()).add(ndof)
     detail: dict[str, Any] = {}
-    verdict = "skipped"
+    verdicts = []
     for case, codes in sorted(per_case.items()):
-        if len(codes) < 2:
+        same = len({n for v in codes.values() for n in v}) == 1
+        if same and len(codes) < 2:
             continue
         counts = {c: sorted(v) for c, v in codes.items()}
-        same = len({n for v in codes.values() for n in v}) == 1
         detail[case] = {"result": "pass" if same else "fail", "ndof": counts}
-        verdict = "fail" if not same or verdict == "fail" else "pass"
+        verdicts.append(detail[case]["result"])
+    verdict = "fail" if "fail" in verdicts else "pass" if verdicts else "skipped"
     return verdict, detail
 
 

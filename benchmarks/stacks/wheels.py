@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from benchmarks.harness.config import ConfigError
+from benchmarks.harness.records import file_sha256
 
 if TYPE_CHECKING:
     from benchmarks.harness.config import Site
@@ -60,11 +61,21 @@ def inputs(
 
 
 def paths(
-    _description: Description, versions: dict[str, str], site: Site, env_dir: str
+    description: Description, versions: dict[str, str], site: Site, env_dir: str
 ) -> dict[str, Any]:
-    """The env of each code: the stack's env dir, Palace's shared per version."""
-    palace = f"{site.cluster_root}/envs/palace-{versions['palace']}"
-    return {"code_env": {"gfem": env_dir, "palace": palace}}
+    """The env of each code: per version, else the stack's env dir.
+
+    A code the stack pins a version of shares one env per version across commits
+    (Palace's ``{cluster.root}/envs/palace-<version>``).
+    """
+    return {
+        "code_env": {
+            code: f"{site.cluster_root}/envs/{code}-{versions[code]}"
+            if code in versions
+            else env_dir
+            for code in description.codes
+        }
+    }
 
 
 def activation(resolved: Resolved, code: str) -> list[str]:
@@ -100,14 +111,6 @@ def _run(argv: list[str]) -> str:
             f"{(result.stderr or result.stdout).strip()[-500:]}"
         )
     return result.stdout
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def frozen_versions(freeze: str) -> dict[str, str]:
@@ -172,8 +175,8 @@ def _gfem_env(resolved: Resolved, wheel: Path) -> Path:
     except Exception:
         shutil.rmtree(env)
         raise
-    lines = [f"commit {resolved.commit}", f"{_sha256(wheel)}  {wheel}"]
-    lines += [f"{_sha256(p)}  {p}" for p in petsc]
+    lines = [f"commit {resolved.commit}", f"{file_sha256(wheel)}  {wheel}"]
+    lines += [f"{file_sha256(p)}  {p}" for p in petsc]
     (env / MANIFEST).write_text("\n".join(lines) + "\n" + freeze)
     return env
 
@@ -207,7 +210,7 @@ def _palace_env(resolved: Resolved) -> Path:
     version = _run([str(env / "bin" / "palace"), "--version"]).strip().splitlines()
     freeze = _run([python, "-m", "pip", "freeze"])
     lines = [
-        f"{_sha256(wheel)}  {wheel}",
+        f"{file_sha256(wheel)}  {wheel}",
         f"palace --version: {version[0] if version else ''}",
     ]
     (env / MANIFEST).write_text("\n".join(lines) + "\n" + freeze)

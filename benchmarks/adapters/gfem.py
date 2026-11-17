@@ -153,6 +153,20 @@ def _max(values: list[float | None]) -> float | None:
     return max(present) if present else None
 
 
+def _peaks(outcome: Outcome, ranks: list[dict[str, Any]]) -> None:
+    """Per-rank ``VmHWM``: summed, the rank max, and the largest node's sum."""
+    if not ranks or any(r.get("vmhwm_kib") is None for r in ranks):
+        return
+    peaks = [float(r["vmhwm_kib"]) / KIB_PER_GIB for r in ranks]
+    nodes: dict[str, float] = {}
+    for r, peak in zip(ranks, peaks, strict=True):
+        host = str(r.get("host") or "")
+        nodes[host] = nodes.get(host, 0.0) + peak
+    outcome.self_peak_mem_gib = sum(peaks)
+    outcome.self_peak_rank_max_gib = max(peaks)
+    outcome.self_peak_largest_node_gib = max(nodes.values())
+
+
 @dataclass(frozen=True)
 class GfemAdapter:
     """The gfem solver adapter."""
@@ -165,6 +179,17 @@ class GfemAdapter:
             "bddc": Kind("iterative", {"linear_solver": "bddc_gmres"}),
         }
     )
+    direct_kind: str = "direct"
+    """PARDISO, one process."""
+    pins: tuple[str, ...] = (
+        "linear_solver per kind",
+        "the run tolerance",
+        "eigen_tolerance 1e-10",
+        "no field output",
+    )
+    timing_source: str = "gfem.timing"
+    memory_metric: str = "VmHWM_sum"
+    stack_keys: tuple[str, ...] = ()
 
     # --- plan time -------------------------------------------------------------------
 
@@ -284,9 +309,7 @@ class GfemAdapter:
         ]
         if any(n is not None for n in nbytes):
             outcome.solver_nbytes = sum(n for n in nbytes if n is not None)
-        peaks = [i.get("vmhwm_kib") for i in info.values()]
-        if peaks and all(p is not None for p in peaks):
-            outcome.self_peak_mem_gib = sum(peaks) / KIB_PER_GIB
+        _peaks(outcome, list(info.values()))
         outcome.ranks_seen = len(info) or len(ranks) or None
         threads = (written or {}).get("threads") or []
         outcome.threads_seen = max(threads) if threads else None

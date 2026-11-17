@@ -2,10 +2,12 @@
 
 A **stack description** is one TOML file beside this module (``<name>.toml``). It
 says what a software stack is and never where: its kind (``wheels`` or ``native``),
-closed-source parts, default package versions, and per code (``[gfem]``,
+closed-source parts, default package versions, and per code it runs (a ``[<code>]``
+section for each code of :data:`benchmarks.adapters.ADAPTERS`, e.g. ``[gfem]``,
 ``[palace]``) the modules or packages to load, fixed environment variables, a table
 of thread variables (``"threads"`` = the layout's threads per rank, or a literal
-count, clamped by ``caps``), the srun MPI plugin, and Palace's launcher and binary.
+count, clamped by ``caps``), the srun MPI plugin, and the keys the code's adapter
+asks for (``stack_keys``: Palace's launcher and binary).
 
 The site file says where the parts live, and a campaign may override versions.
 :func:`resolve` (pure, at ``plan``) fills both in and fingerprints the result;
@@ -38,10 +40,11 @@ from benchmarks.harness.config import (
     ConfigError,
     Site,
     check_env,
+    known_codes,
+    versioned,
 )
 
 STACKS_DIR = Path(__file__).resolve().parent
-CODES = ("gfem", "palace")
 THREAD_VARIABLES = (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -62,7 +65,7 @@ class StackRefusedError(ConfigError):
 
 @dataclass(frozen=True)
 class CodeSection:
-    """What one code (``gfem`` or ``palace``) of a stack loads and exports."""
+    """What one code (``gfem``, ``palace``...) of a stack loads and exports."""
 
     modules: tuple[str, ...] = ()
     """``wheels`` kind: modules loaded after ``module purge``, one per line."""
@@ -132,12 +135,13 @@ class Resolved:
 # --- descriptions ----------------------------------------------------------------
 
 
-def names(stacks_dir: Path = STACKS_DIR) -> tuple[str, ...]:
+def names(stacks_dir: Path | None = None) -> tuple[str, ...]:
     """The committed software stacks: the ``*.toml`` files of ``stacks_dir``."""
+    stacks_dir = STACKS_DIR if stacks_dir is None else stacks_dir
     return tuple(sorted(p.stem for p in stacks_dir.glob("*.toml")))
 
 
-_TOP_KEYS = ("schema", "name", "kind", "closed", "versions", *CODES)
+_TOP_KEYS = ("schema", "name", "kind", "closed", "versions")
 _SECTION_KEYS = {
     "wheels": ("modules", "env", "threads", "mpi", "launcher", "entry", "launch_r1"),
     "native": (
@@ -204,6 +208,12 @@ def _threads(table: object, where: str) -> tuple[dict[str, str | int], dict[str,
     return threads, caps
 
 
+def _stack_keys(code: str) -> tuple[str, ...]:
+    from benchmarks.adapters import ADAPTERS  # the adapters import this module
+
+    return ADAPTERS[code].stack_keys
+
+
 def _section(raw: object, kind: str, code: str, where: str) -> CodeSection:
     where = f"{where} [{code}]"
     if not isinstance(raw, dict):
@@ -237,15 +247,20 @@ def _section(raw: object, kind: str, code: str, where: str) -> CodeSection:
             raw.get("launch_r1", "srun"), LAUNCH_R1, f"{where} launch_r1"
         ),
     )
-    if code == "palace" and (section.launcher is None or section.entry is None):
-        raise ConfigError(f"{where}: Palace needs launcher and entry")
+    missing = [k for k in _stack_keys(code) if getattr(section, k) is None]
+    if missing:
+        raise ConfigError(f"{where}: {code} needs {' and '.join(missing)}")
     if kind == "native" and not section.packages:
         raise ConfigError(f"{where}: a native stack names its packages")
     return section
 
 
-def load(name: str, stacks_dir: Path = STACKS_DIR) -> Description:
-    """Load and validate the committed description of software stack ``name``."""
+def load(name: str, stacks_dir: Path | None = None) -> Description:
+    """Load and validate the committed description of software stack ``name``.
+
+    A stack runs the codes it has a ``[<code>]`` section for.
+    """
+    stacks_dir = STACKS_DIR if stacks_dir is None else stacks_dir
     path = stacks_dir / f"{name}.toml"
     if not path.is_file():
         raise ConfigError(
@@ -257,7 +272,7 @@ def load(name: str, stacks_dir: Path = STACKS_DIR) -> Description:
         raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as error:
         raise ConfigError(f"{where}: {error}") from error
-    _keys(raw, _TOP_KEYS, where)
+    _keys(raw, (*_TOP_KEYS, *known_codes()), where)
     if raw.get("schema") != 1:
         raise ConfigError(f"{where}: schema {raw.get('schema')!r} unknown (reads 1)")
     if raw.get("name") != name:
@@ -266,12 +281,16 @@ def load(name: str, stacks_dir: Path = STACKS_DIR) -> Description:
     versions = raw.get("versions", {})
     if not isinstance(versions, dict):
         raise ConfigError(f"{where}: versions must be a table")
-    _keys(versions, VERSIONED, f"{where} [versions]")
+    _keys(versions, versioned(), f"{where} [versions]")
     missing = [p for p in VERSIONED if p not in versions]
     if missing:
         raise ConfigError(f"{where}: [versions] lacks {', '.join(missing)}")
-    codes = {code: _section(raw.get(code), kind, code, where) for code in CODES}
-    for code, section in codes.items():
+    sections = {
+        code: _section(raw[code], kind, code, where)
+        for code in known_codes()
+        if code in raw
+    }
+    for code, section in sections.items():
         unversioned = [p for p in section.packages if p not in versions]
         if unversioned:
             raise ConfigError(
@@ -284,7 +303,7 @@ def load(name: str, stacks_dir: Path = STACKS_DIR) -> Description:
         kind=kind,
         closed=_strs(raw.get("closed", []), f"{where} closed"),
         versions={k: str(v) for k, v in versions.items()},
-        codes=codes,
+        codes=sections,
     )
 
 
@@ -302,7 +321,7 @@ def resolve(
     env: Mapping[str, str] | None = None,
     *,
     commit: str,
-    stacks_dir: Path = STACKS_DIR,
+    stacks_dir: Path | None = None,
 ) -> Resolved:
     """Resolve stack ``name`` against ``site`` with a campaign's overrides.
 
@@ -312,7 +331,7 @@ def resolve(
     """
     description = load(name, stacks_dir)
     versions = dict(versions or {})
-    _keys(versions, VERSIONED, f"campaign [stacks.{name}.versions]")
+    _keys(versions, versioned(), f"campaign [stacks.{name}.versions]")
     merged = {**description.versions, **versions}
     extra = {**site.env, **dict(env or {})}
     check_env(extra, where=f"site and campaign env of stack {name}")
@@ -356,9 +375,12 @@ def render(resolved: Resolved, code: str, threads: int | None = None) -> str:
     ``OMP_PLACES=cores OMP_PROC_BIND=close``. Without ``threads`` it stops after the
     env exports: the static part written at prepare time. Never ``LD_LIBRARY_PATH``.
     """
-    if code not in CODES:
-        raise ConfigError(f"unknown code {code!r} (known: {', '.join(CODES)})")
-    section = resolved.description.codes[code]
+    section = resolved.description.codes.get(code)
+    if section is None:
+        known = ", ".join(resolved.description.codes)
+        raise ConfigError(
+            f"stack {resolved.name} has no [{code}] section (runs: {known})"
+        )
     lines = ["module purge >/dev/null 2>&1"]
     lines += _kind(resolved).activation(resolved, code)
     lines.append("unset " + " ".join((*THREAD_VARIABLES, *AFFINITY_VARIABLES)))
@@ -384,7 +406,7 @@ def prepare(resolved: Resolved, **options: Any) -> Path:
     the kind's (``wheels``: ``wheel``, the gfem wheel of the commit).
     """
     env_dir = _kind(resolved).prepare(resolved, **options)
-    for code in CODES:
+    for code in resolved.description.codes:
         (env_dir / f"env-{code}.sh").write_text(render(resolved, code))
     return env_dir
 

@@ -68,7 +68,7 @@ that is not on this list is never changed to match the other code.
 |---|---|---|
 | Palace | `Solver.Linear.Type` always written (`MUMPS` for `palace:mumps`, `SuperLU` for `palace:pmg`) | the kind must not depend on build-time defaults; `SuperLU` is what the wheel resolves with `Type` omitted, so `config_resolved.json` matches the default |
 | Palace | `palace:mumps`: `MGMaxLevels 1`, `ComplexCoarseSolve true` | makes the direct kind a complex MUMPS factorization (GMRES around it converges in 1-2 iterations) |
-| Palace | `Tol` = run tolerance (iterative), 1e-10 (direct), 1e-12 for the inner linear solve of eigen runs | same nominal tolerance as gfem; the direct kind's GMRES must not stop early; the eigen inner rule is gfem's own, min(tol, 0.01 eigen tol) |
+| Palace | `Tol` = run tolerance (iterative), 1e-10 (direct), 1e-12 for the inner linear solve of eigen runs | same nominal tolerance as gfem; the direct kind's GMRES must not stop early; the eigen inner rule is gfem's own, $\min(\mathrm{tol}, 0.01\,\mathrm{tol}_{\mathrm{eigen}})$ |
 | Palace | `MaxIts 2000` | the default (100) would bind; iteration caps must never bind |
 | Palace | `EstimatorTol 1e-2`, `EstimatorMG true` | the estimator always runs; this makes it cheaper without changing S |
 | Palace | eigen `Tol 1e-10` | parity with gfem's `eigen_tolerance` |
@@ -94,7 +94,7 @@ every cross-code view. They are never removed or normalised:
   factorization. Counted as is; `setups` and `solves` are recorded.
 - Palace's error estimator always runs (its own `estimate_s` bucket, inside work
   time).
-- `palace:pmg` at p >= 2 has a matrix-free fine level and a real-valued SuperLU
+- `palace:pmg` at $p \ge 2$ has a matrix-free fine level and a real-valued SuperLU
   coarse solve; gfem assembles.
 - Direct arms: gfem PARDISO (one process) or PETSc MUMPS; Palace GMRES around complex
   MUMPS.
@@ -121,13 +121,13 @@ every cross-code view. They are never removed or normalised:
 
 ### Layouts
 
-- Default layout: gfem 1 x c on one node (eigen and periodic runs 1 x c always;
-  above one node (c/4) x 4); Palace c x 1. A default the adapter refuses is a
+- Default layout: gfem $1 \times c$ on one node (eigen and periodic runs $1 \times c$
+  always; above one node $(c/4) \times 4$); Palace $c \times 1$. A default the adapter refuses is a
   `refused` cell, not replaced by another layout.
-- `best` expands at plan time to the layout grid: every R x T = c, whole cores per
-  rank, no hyperthreads, T divides 56 when c > 56 (no rank across a socket), 1 x c
-  always included, refused layouts (gfem R > 1 on eigen or periodic cases,
-  `gfem:direct` R > 1) left out. Records store `layout.asked = "grid"`. The report
+- `best` expands at plan time to the layout grid: every $R \times T = c$, whole cores
+  per rank, no hyperthreads, $T$ divides 56 when $c > 56$ (no rank across a socket),
+  $1 \times c$ always included, refused layouts (gfem $R > 1$ on eigen or periodic
+  cases, `gfem:direct` $R > 1$) left out. Records store `layout.asked = "grid"`. The report
   picks the best layout afterwards: the lowest median work time among cells passing
   every gate with all repeats; ties within the spread are shown as ties.
 - Large cases run only the layouts the campaign lists.
@@ -178,10 +178,13 @@ records.
   (`rank_reduction: "max-of-rows"`, an upper bound).
 - Headline memory is `peak_rss_sum_gib`, the sum of per-rank peak RSS (gfem worker
   `VmHWM`; Palace `PeakNodeMemoryMegabytes.Total`). Shared pages count once per rank,
-  so it is an upper bound on the simultaneous footprint. A node sampler sums `Pss`
-  over the step's pids every second (`pss_peak_sum_gib`); sacct `MaxRSS` is kept for
-  runs over 60 s; the codes' self-reports are kept beside. None of them gates.
-- 3 repeats in rounds, round r rotated by r * ceil(cells / repeats), so repeats of a
+  so it is an upper bound on the simultaneous footprint. Beside it,
+  `peak_rss_rank_max_gib` (largest rank; Palace `PeakMemoryMegabytes.Max`) and
+  `peak_rss_largest_node_gib` (largest per-node sum; Palace
+  `PeakNodeMemoryMegabytes.Max`). A node sampler sums `Pss` over the step's pids
+  every second, every 0.1 s over the first 5 s (`pss_peak_sum_gib`); sacct `MaxRSS`
+  is kept for runs over 60 s; the codes' self-reports are kept beside. None of them gates.
+- 3 repeats in rounds, round $r$ rotated by $r \lceil \text{cells} / \text{repeats} \rceil$, so repeats of a
   cell never run back to back. Medians per figure over passing repeats; a spread over
   10 % is flagged "noisy".
 - Skip rules inside a job: repeat 1 ending `timeout` makes later repeats
@@ -206,7 +209,12 @@ left out of medians, best-layout choice and comparisons.
 | `complete` | record, campaign | outputs missing, Palace `ElapsedTime` missing, a planned row without a final status |
 | `reference_matches` | record | the reference file does not match the case, the mesh, or the file the run named |
 | `accuracy_plausible` | record | error above the plausibility ceiling of the run's order |
-| `dof_equal` | campaign | the codes' DOF counts differ on a case (gates the "same-mesh comparison" label) |
+| `dof_equal` | campaign | any two DOF counts observed on a case differ, `dof_mismatch` runs included (gates the "same-mesh comparison" label) |
+
+A run counts as passing in the report only when `layout` and `placement` passed: a
+run whose ranks or masks the sampler never saw (they are `skipped`) is labelled
+`unverified` and left out of the medians and the best-layout choice. The sampler
+looks every 0.1 s over a run's first 5 s, then every second, so short runs are seen.
 
 The DOF guard stops a run on a mismatch: Palace from its `Level k (p = n): N
 unknowns` stdout line, one-process gfem from its `discretize` record, multi-rank gfem
@@ -236,7 +244,7 @@ lumped ports; each code runs at its defaults except the pins above.
 |---|---|---|---|---|
 | `microstrip` | driven, 2 lumped 50 ohm ports, ABC order 1, {1, 25, 50, 75, 100} GHz, both ports excited, 2x2 S | 315 870 (p2) | committed, um, voided | gfem Richardson over a split ladder (not committed yet) |
 | `lcavity` | eigen, PEC L-shaped cavity, target 100 GHz, 1 mode | 246 416 (p2) | committed, mm | closed form, f1 = 148 140 269 652.022 Hz |
-| `bragg` | eigen, Bloch periodic, k = pi/a along x, 2 modes; a physics case | 1 560 (p3) | committed, mm | transfer-matrix roots, ceiling 1e-5 rel |
+| `bragg` | eigen, Bloch periodic, $k = \pi/a$ along $x$, 2 modes; a physics case | 1 560 (p3) | committed, mm | transfer-matrix roots, ceiling 1e-5 rel |
 | `r10M_void` | driven, 50 GHz, port 1 only, S11 and S21 | 10 248 856 (p2) | external, um | none (`accuracy: null`, `no_reference`); DOF pinned |
 
 Meshes whose xz file is at most 1 MiB are committed as `cases/<case>/mesh.msh.xz`;
@@ -268,14 +276,15 @@ the old one stays archived in the records store under `references/<id>/`.
   python -m benchmarks reference microstrip --from RUNDIR [RUNDIR ...]
   ```
 
-  The pilot's rate estimate decides whether `l2` is worth running (rate >= 1). The
+  The pilot's rate estimate decides whether `l2` is worth running (rate $\ge 1$). The
   Palace stage measures the definition offset δ, stored in `cross_checks` and never
   averaged in. Without L2 records, `--from` prints the pilot's rate and writes
   nothing.
 
-Scoring (`close`, once per `ok` record): S is `max |S - S_ref|` over entries and
-frequencies; eigenfrequencies `max |Re f - f_ref| / f_ref` with modes paired in
-ascending real part at or above the target. An error below 10x the bound is
+Scoring (`close`, once per `ok` record): S is $\max |S_{ij} - S_{\mathrm{ref},ij}|$
+over entries and frequencies; eigenfrequencies
+$\max_k |\mathrm{Re}\, f_k - f_{\mathrm{ref},k}| / f_{\mathrm{ref},k}$ with modes paired
+in ascending real part at or above the target. An error below $10\times$ the bound is
 "unresolved" and printed as such. A mismatched reference gives `accuracy: null` and
 `reference_matches: fail`.
 
@@ -390,7 +399,7 @@ by `[cluster] root`.
 
 ## Running a campaign
 
-Budget unit: billed core-hours, sacct `CPUTimeRAW / 2 / 3600` (one GPP node-hour =
+Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP node-hour =
 112 core-h).
 
 1. **Ship** a committed revision from the workstation:
@@ -429,6 +438,8 @@ Budget unit: billed core-hours, sacct `CPUTimeRAW / 2 / 3600` (one GPP node-hour
 
    `submit` refuses when `prior_core_h` + billed core-h of every `submitted.tsv`
    under `[output] dir` + this estimate exceeds `ceiling_core_h` (or `--ceiling`).
+   A job still pending or running counts at its $\text{time limit} \times \text{nodes} \times 112$ until it
+   finishes.
    It then prepares the stacks, stages the meshes, `sbatch`es
    `benchmarks/job.sbatch RUNDIR JOB` per job and appends the ids to
    `RUNDIR/submitted.tsv`. `--dry-run` prints the budget line and the sbatch lines
@@ -534,8 +545,15 @@ in `harness/config.py`. A new kind is a module in `stacks/` with `inputs`,
 other than `"threads"` needs the build fact cited beside it.
 
 **A solver adapter.** Write `adapters/<code>.py` implementing the `Adapter` protocol
-of `adapters/__init__.py` (`code`, `kinds`, `supports`, `default_layout`, `version`,
-`prepare`, `collect`; it never starts a process) and add it to `ADAPTERS`. Also add
-its `code:kind` names to `SOLVERS` in `harness/config.py`, the code to
-`stacks.CODES`, and a `[<code>]` section to each stack file that runs it. List its
-pinned settings in this README.
+of `adapters/__init__.py` and add one line for it to `ADAPTERS`. The protocol holds
+what the harness needs of a code: `code`, `kinds`, `direct_kind` (what its same-code
+error is measured against), `pins` (settings pinned away from its defaults, listed
+in the report), `timing_source` and `memory_metric` (where its timings and own peak
+memory come from), `stack_keys` (what its stack section must set), `supports`,
+`default_layout`, `version`, `prepare` and `collect`; it never starts a process. The
+`code:kind` names, the stack sections a stack file may hold, the versions a stack
+may pin and the solver versions a campaign records all derive from `ADAPTERS`. Then
+add a `[<code>]` section to each stack file that runs it (a stack without one
+refuses at plan; a version under `[versions]` is optional). On a `wheels` stack the
+kind must also learn to build the code's env. List its pinned settings in this
+README.

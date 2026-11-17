@@ -12,8 +12,9 @@ Hydra (``-launcher fork -bind-to core`` under taskset), recorded ``machine: loca
 - **Watchdog.** A wall cap (the run's ``wall_cap_s``, cut to the job's time left)
   ends the run as ``timeout``; a memory cap, when set, as ``memory_watchdog``. The
   process group gets SIGTERM, then SIGKILL 10 s later.
-- **Sampler.** Every second the run's pids (``scontrol listpids <job>`` on Slurm,
-  the newest numbered step; else the process tree) have their ``Pss`` summed from
+- **Sampler.** Every 0.1 s over the first 5 s, then every second, the run's pids
+  (``scontrol listpids <job>`` on Slurm, the newest numbered step; else the process
+  tree) have their ``Pss`` summed from
   ``/proc/<pid>/smaps_rollup`` (``pss_peak_sum_gib``); once every rank is up, the
   placement check reads each rank's ``Cpus_allowed_list``; every 10 s a ``ps -eLo``
   snapshot of the run's threads is logged and summarised as the most busy threads
@@ -37,11 +38,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from benchmarks.adapters import Layout
+from benchmarks.harness.config import Runner
 
 PROC = Path("/proc")
 SYSFS_CPU = Path("/sys/devices/system/cpu")
 KIB_PER_GIB = 2**20
 SAMPLE_S = 1.0
+START_SAMPLE_S = 0.1
+"""Sampling period over a run's first :data:`START_S`, so short runs get checked."""
+START_S = 5.0
 SNAPSHOT_S = 10.0
 KILL_GRACE_S = 10.0
 BUSY_PCPU = 50.0
@@ -338,8 +343,10 @@ class Sampler:
     """Look the pids up with ``scontrol listpids`` (an srun launch in a job)."""
     proc: Path = PROC
     sysfs: Path = SYSFS_CPU
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run
+    run: Runner = subprocess.run
     sample_s: float = SAMPLE_S
+    start_sample_s: float = START_SAMPLE_S
+    start_s: float = START_S
     snapshot_s: float = SNAPSHOT_S
     exclude_comm: tuple[str, ...] = ("mpiexec", "hydra_pmi_proxy", "taskset")
     """Launcher processes that are no rank (local Hydra)."""
@@ -418,7 +425,7 @@ class _Limits:
 
 
 class _Watch:
-    """One sampling pass per second over a running process."""
+    """Sampling passes over a running process (see :meth:`period`)."""
 
     def __init__(self, sampler: Sampler, limits: _Limits, stdout: Path) -> None:
         self.sampler = sampler
@@ -429,6 +436,13 @@ class _Watch:
         self.peak_kib = 0
         started = _utc()
         self.m = Measurement(None, 0.0, started, started)
+
+    def period(self) -> float:
+        """Seconds to the next sample: :data:`START_SAMPLE_S` early in the run."""
+        sampler = self.sampler
+        if time.monotonic() - self.t0 < sampler.start_s:
+            return min(sampler.start_sample_s, sampler.sample_s)
+        return sampler.sample_s
 
     def sample(self, root: int) -> None:
         """Pids, PSS, placement once, a thread snapshot every 10 s."""
@@ -524,7 +538,7 @@ def measure(
         )
         while True:
             try:
-                state.m.returncode = process.wait(timeout=sampler.sample_s)
+                state.m.returncode = process.wait(timeout=state.period())
                 break
             except subprocess.TimeoutExpired:
                 pass
@@ -551,7 +565,7 @@ def _gib(text: str) -> float | None:
 def step_facts(
     job: str,
     step: str,
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run: Runner = subprocess.run,
     tries: int = 6,
     wait_s: float = 5.0,
 ) -> tuple[str | None, float | None]:

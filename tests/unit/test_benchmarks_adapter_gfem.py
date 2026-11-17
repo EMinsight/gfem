@@ -259,8 +259,20 @@ def _two_ranks(workdir, *, ndof_rank1=500):
             "s": {"p1,p1": [[0.1, 0.0]], "p2,p1": [[0.9, 0.1]]},
         },
         "ranks": [
-            {"rank": 0, "mesh_read_s": 0.2, "span_s": 9.0, "vmhwm_kib": 2**20},
-            {"rank": 1, "mesh_read_s": 0.3, "span_s": 9.5, "vmhwm_kib": 3 * 2**20},
+            {
+                "rank": 0,
+                "mesh_read_s": 0.2,
+                "span_s": 9.0,
+                "vmhwm_kib": 2**20,
+                "host": "n1",
+            },
+            {
+                "rank": 1,
+                "mesh_read_s": 0.3,
+                "span_s": 9.5,
+                "vmhwm_kib": 3 * 2**20,
+                "host": "n1",
+            },
         ],
         "threads": [4, 4],
         "versions": {"gfem": "0.1.0", "ngsolve": "6.2.2608"},
@@ -305,6 +317,25 @@ def test_phases_are_max_over_ranks_with_rank_0_beside(stack, tmp_path):
     assert outcome.iterations == [15]
     assert outcome.self_peak_mem_gib == pytest.approx(4.0)
     assert outcome.solver_nbytes == 40
+
+
+def test_peak_memory_is_summed_with_the_rank_max_and_largest_node_beside(
+    stack, tmp_path
+):
+    _two_ranks(tmp_path)
+    written = json.loads((tmp_path / "outcome.json").read_text())
+    written["ranks"][1]["host"] = "n2"
+    (tmp_path / "outcome.json").write_text(json.dumps(written))
+    outcome = ADAPTER.collect(_r10m(stack, tmp_path), _measured(tmp_path))
+    assert outcome.self_peak_mem_gib == pytest.approx(4.0)
+    assert outcome.self_peak_rank_max_gib == pytest.approx(3.0)
+    assert outcome.self_peak_largest_node_gib == pytest.approx(3.0)
+
+
+def test_ranks_on_one_node_sum_into_its_peak(stack, tmp_path):
+    _two_ranks(tmp_path)
+    outcome = ADAPTER.collect(_r10m(stack, tmp_path), _measured(tmp_path))
+    assert outcome.self_peak_largest_node_gib == pytest.approx(4.0)
 
 
 def test_bddc_structural_note_says_the_preconditioner_build_is_in_assemble(

@@ -15,7 +15,8 @@ Performance is observed, never judged: no value here is a pass or a fail.
   tolerance with at least three passing repeats; cells whose min-max range overlaps
   the best's are **ties**; cells with fewer repeats are no candidates.
 - **Equal achieved error**: each iterative solver's work time and memory read at
-  every decade of the overlap of the solvers' same-code error ranges, by log-log
+  the ends, the geometric midpoint and every decade of the overlap of the solvers'
+  same-code error ranges (:func:`overlap_points`), by log-log
   linear interpolation between neighbouring rungs, never extrapolated.
 - A cross-code ratio uses cells of one Slurm job; across jobs it carries the label
   **different nodes**.
@@ -72,25 +73,6 @@ MEMORY_FIELDS = (
     "pss_peak_sum_gib",
     "sacct_max_rss_gib",
 )
-PINS = {
-    "gfem": (
-        "linear_solver per kind",
-        "the run tolerance",
-        "eigen_tolerance 1e-10",
-        "no field output",
-    ),
-    "palace": (
-        "Refinement 0",
-        "Absorbing.Order 1",
-        "Linear.Type pinned per kind",
-        "MUMPS kind: MGMaxLevels 1, ComplexCoarseSolve, Tol 1e-10",
-        "iterative Tol = the run tolerance, MaxIts 2000",
-        "EstimatorTol 1e-2, EstimatorMG",
-        "eigen Tol 1e-10, inner Linear.Tol 1e-12",
-        "no field output",
-    ),
-}
-"""Settings pinned away from each code's defaults (ADR 0411)."""
 CAVEATS = (
     (
         "Times and memory are observations of one machine, software stack and "
@@ -165,9 +147,27 @@ def klass(solver: str) -> str:
     return "direct" if kind in ("direct", "mumps", "petsc-mumps") else "iterative"
 
 
+VERIFIED = ("placement", "layout")
+"""Checks a passing run must have passed, not skipped: its layout was seen."""
+UNVERIFIED = "unverified"
+
+
+def unverified(r: records.SuiteRecord) -> bool:
+    """An ``ok`` run without a failed check whose placement or layout went unseen."""
+    return (
+        r.status == "ok"
+        and "fail" not in r.checks.values()
+        and any(r.checks.get(c) != "pass" for c in VERIFIED)
+    )
+
+
 def passing(r: records.SuiteRecord) -> bool:
-    """Status ``ok`` and no failed check."""
-    return r.status == "ok" and "fail" not in r.checks.values()
+    """Status ``ok``, no failed check, placement and layout verified."""
+    return (
+        r.status == "ok"
+        and "fail" not in r.checks.values()
+        and all(r.checks.get(c) == "pass" for c in VERIFIED)
+    )
 
 
 def layout_of(r: records.SuiteRecord) -> str:
@@ -189,6 +189,21 @@ def interpolate(points: Sequence[tuple[float, float]], e: float) -> float | None
             f = min(max(f, 0.0), 1.0)
             return num(math.exp(math.log(y0) + f * (math.log(y1) - math.log(y0))))
     return num(pts[0][1])
+
+
+def overlap_points(lo: float, hi: float) -> list[float]:
+    """Errors to compare at inside ``[lo, hi]``, never outside it.
+
+    Both ends, the geometric midpoint and the powers of ten in between, ascending;
+    empty when the range is empty.
+    """
+    if lo <= 0 or hi < lo:
+        return []
+    out: list[float] = []
+    for e in sorted([lo, math.sqrt(lo * hi), hi, *decades(lo, hi)]):
+        if not out or e > out[-1] * (1 + 1e-9):
+            out.append(e)
+    return out
 
 
 def decades(lo: float, hi: float) -> list[float]:
@@ -380,6 +395,11 @@ def _layouts(solver: str, cells: list[dict], unrun: list[dict]) -> dict[str, Any
     }
 
 
+def _unverified_reason(r: records.SuiteRecord) -> str:
+    unseen = [c for c in VERIFIED if r.checks.get(c) != "pass"]
+    return f"{' and '.join(unseen)} not verified"
+
+
 def _unrun(rows: Sequence[records.SuiteRecord], solver: str, tol: float | None):
     seen: dict[str, dict[str, Any]] = {}
     for r in rows:
@@ -387,9 +407,10 @@ def _unrun(rows: Sequence[records.SuiteRecord], solver: str, tol: float | None):
             continue
         lay = layout_of(r) + (" (default)" if r.run.layout.asked == "default" else "")
         entry = seen.setdefault(lay, {"layout": lay, "statuses": [], "reasons": []})
-        entry["statuses"].append(r.status)
-        if r.reason and r.reason not in entry["reasons"]:
-            entry["reasons"].append(r.reason)
+        entry["statuses"].append(UNVERIFIED if unverified(r) else r.status)
+        reason = _unverified_reason(r) if unverified(r) else r.reason
+        if reason and reason not in entry["reasons"]:
+            entry["reasons"].append(reason)
     return [
         {
             "layout": e["layout"],
@@ -558,7 +579,7 @@ def _equal_error(ladders: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     solvers = [lad["solver"] for lad in ladders]
     base = next((s for s in solvers if s.startswith("gfem:")), solvers[0])
     rows = []
-    for e in decades(lo, hi):
+    for e in overlap_points(lo, hi):
         values = {}
         for lad in ladders:
             pts = [(r["same_code_error"], r) for r in lad["rungs"]]
@@ -932,7 +953,7 @@ def _case(
         "comparison": comparison,
         "structural": _structural(rows),
         "pins": {
-            code: list(PINS.get(code, ()))
+            code: list(ADAPTERS[code].pins if code in ADAPTERS else ())
             for code in sorted({i["code"] for i in per_solver.values()})
         },
         "cells": cells,

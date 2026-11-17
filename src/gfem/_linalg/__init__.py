@@ -113,6 +113,7 @@ __all__ = [
     "low_rank_update",
     "prepare",
     "refactorize_or_prepare",
+    "setup_facts",
 ]
 
 Symmetry = Literal["complex_symmetric", "hermitian", "general"]
@@ -288,6 +289,20 @@ class Refactorable(Handle, Protocol):
         ...
 
 
+def setup_facts(handle: Handle) -> dict[str, Any]:
+    """What a ``"setup"`` timing record says of ``handle``: solver, action, bytes.
+
+    The action is the handle's ``last_action`` on a backend that tracks one,
+    else ``"factorized"``.
+    """
+    action = getattr(handle, "last_action", None)
+    return {
+        "solver": handle.kind,
+        "action": action or "factorized",
+        "nbytes": int(handle.nbytes),
+    }
+
+
 def _timed_setup[**P](function: Callable[P, Handle]) -> Callable[P, Handle]:
     """``function`` timed as a ``"setup"`` phase on ``gfem.timing``.
 
@@ -299,11 +314,7 @@ def _timed_setup[**P](function: Callable[P, Handle]) -> Callable[P, Handle]:
         with _timing.phase("setup") as span:
             handle = function(*args, **kwargs)
             if span.enabled:
-                span.set(
-                    solver=getattr(handle, "kind", None),
-                    action=getattr(handle, "last_action", None) or "factorized",
-                    nbytes=int(handle.nbytes),
-                )
+                span.set(**setup_facts(handle))
         return handle
 
     return timed

@@ -1,11 +1,13 @@
-"""The effort's core budget: what ``submit`` may still spend (ADRs 0188, 0414).
+r"""The effort's core budget: what ``submit`` may still spend (ADRs 0188, 0414).
 
 Spend so far = the site's ``[budget] prior_core_h`` (jobs the CLI did not submit:
 probes, the stack check, test gates; updated by hand) + billed core-hours of every
 job listed in a ``submitted.tsv`` under the site's output directory (and the run
 directory being submitted), from sacct: ``CPUTimeRAW`` / 2 / 3600, the formula that
-matches ``bsc_acct`` until it catches up. ``submit`` refuses when spend + the plan's
-estimate passes the ceiling (``[budget] ceiling_core_h``, or ``--ceiling``).
+matches ``bsc_acct`` until it catches up. A job not finished yet (pending, running...)
+counts at :math:`\text{time limit} \times \text{nodes} \times 112` core-hours until
+it finishes. ``submit`` refuses when spend + the plan's estimate passes the ceiling
+(``[budget] ceiling_core_h``, or ``--ceiling``).
 
 Standard library only (ADR 0400).
 """
@@ -13,14 +15,25 @@ Standard library only (ADR 0400).
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from benchmarks.harness.config import ConfigError
+from benchmarks.harness.config import ConfigError, Runner
+from benchmarks.harness.matrix import NODE_CORES
 
 SUBMITTED = "submitted.tsv"
 SUBMITTED_HEADER = "job\tslurm_id\tsubmitted_utc\tqos\ttime_limit\test_core_h"
+UNFINISHED = (
+    "PENDING",
+    "RUNNING",
+    "REQUEUED",
+    "RESIZING",
+    "SUSPENDED",
+    "CONFIGURING",
+    "COMPLETING",
+)
+"""sacct states of a job that may still bill: counted at its time limit."""
 
 
 class BudgetError(ConfigError):
@@ -51,7 +64,7 @@ def submitted_files(output_dir: Path, extra: Iterable[Path] = ()) -> list[Path]:
 
 def sacct_jobs(
     ids: Iterable[str],
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run: Runner = subprocess.run,
 ) -> dict[str, dict[str, str]]:
     """Sacct facts of each job id (allocation lines only)."""
     ids = sorted(set(ids))
@@ -65,7 +78,7 @@ def sacct_jobs(
             "-P",
             "-j",
             ",".join(ids),
-            "--format=JobID,State,ElapsedRaw,CPUTimeRAW,NodeList,QOS",
+            "--format=JobID,State,ElapsedRaw,CPUTimeRAW,NodeList,QOS,TimelimitRaw,NNodes",
         ],
         capture_output=True,
         text=True,
@@ -84,6 +97,8 @@ def sacct_jobs(
             "cputime_raw": fields[3],
             "nodelist": fields[4],
             "qos": fields[5],
+            "timelimit_raw": fields[6] if len(fields) > 6 else "",
+            "nnodes": fields[7] if len(fields) > 7 else "",
         }
     return out
 
@@ -102,19 +117,33 @@ class Spend:
         return self.prior_core_h + self.jobs_core_h
 
 
+def job_core_h(facts: Mapping[str, str]) -> float:
+    r"""Core-hours a job counts for: billed once finished, else its time limit.
+
+    An unfinished job counts
+    :math:`\mathrm{TimelimitRaw} / 60 \times \mathrm{NNodes} \times 112`
+    (``TimelimitRaw`` in minutes).
+    """
+    if facts.get("state") in UNFINISHED:
+        minutes, nodes = facts.get("timelimit_raw", ""), facts.get("nnodes", "")
+        if minutes.isdigit() and nodes.isdigit():
+            return int(minutes) / 60 * int(nodes) * NODE_CORES
+    raw = facts.get("cputime_raw") or ""
+    return billed_core_h(int(raw)) if raw.isdigit() else 0.0
+
+
 def spend(
     prior_core_h: float,
     files: Iterable[Path],
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run: Runner = subprocess.run,
 ) -> Spend:
-    """The effort's spend: ``prior_core_h`` plus sacct over the listed jobs."""
+    """The effort's spend: ``prior_core_h`` plus sacct over the listed jobs.
+
+    Pending and running jobs count at their time limit (:func:`job_core_h`).
+    """
     ids = sorted({i for path in files for i in submitted_ids(path)})
     facts: Mapping[str, Mapping[str, str]] = sacct_jobs(ids, run) if ids else {}
-    core_h = sum(
-        billed_core_h(int(f["cputime_raw"] or 0))
-        for f in facts.values()
-        if (f.get("cputime_raw") or "").isdigit()
-    )
+    core_h = sum(job_core_h(f) for f in facts.values())
     return Spend(prior_core_h, core_h, len(ids))
 
 

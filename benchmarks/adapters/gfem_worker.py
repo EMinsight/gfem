@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import socket
 import sys
 import time
 import traceback
@@ -319,6 +320,7 @@ def run(path: Path) -> int:
         "mesh_read_s": solved.mesh_read_s,
         "span_s": time.perf_counter() - start,
         "vmhwm_kib": vmhwm_kib(),
+        "host": socket.gethostname(),
     }
     logger.removeHandler(handler)
     handler.close()

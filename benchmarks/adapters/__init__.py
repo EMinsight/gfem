@@ -8,8 +8,12 @@ and hands the :class:`Measured` result to :meth:`Adapter.collect`. Accuracy is t
 harness's scorer's job, never an adapter's.
 
 Plan time asks :meth:`Adapter.supports` (``None`` or the reason a cell is refused)
-and :meth:`Adapter.default_layout`. A third solver is one module plus one line in
-:data:`ADAPTERS`.
+and :meth:`Adapter.default_layout`. The adapter also says what the harness, scorer
+and report need to know of its code: the direct kind a same-code error is measured
+against, the settings it pins away from the code's defaults, where its timings and
+peak memory come from, and the stack keys its launch needs. A third solver is one
+module plus one line in :data:`ADAPTERS` (the solver names and the stack sections
+derive from it) and a ``[<code>]`` section in each stack file that runs it.
 
 Every launch is one srun step with one placement rule for every code and rank count
 (ADR 0412): :func:`srun_argv`. At one rank a stack may say ``launch_r1 = "taskset"``;
@@ -189,6 +193,11 @@ class Outcome:
     setups: int | None = None
     solves: int | None = None
     self_peak_mem_gib: float | None = None
+    """The code's own peak memory: per-rank peaks summed."""
+    self_peak_rank_max_gib: float | None = None
+    """The largest per-rank peak."""
+    self_peak_largest_node_gib: float | None = None
+    """The largest sum of per-rank peaks over the ranks of one node."""
     solver_nbytes: float | None = None
     ranks_seen: int | None = None
     threads_seen: int | None = None
@@ -215,6 +224,31 @@ class Adapter(Protocol):
     @property
     def kinds(self) -> Mapping[str, Kind]:
         """Kind name -> class and settings."""
+        ...
+
+    @property
+    def direct_kind(self) -> str:
+        """The direct kind a same-code error is measured against first."""
+        ...
+
+    @property
+    def pins(self) -> tuple[str, ...]:
+        """Settings pinned away from the code's defaults (ADR 0411), for the report."""
+        ...
+
+    @property
+    def timing_source(self) -> str:
+        """Where the code's phase timings come from (the record's ``source``)."""
+        ...
+
+    @property
+    def memory_metric(self) -> str:
+        """What the code's own peak memory (``self_peak_mem_gib``) is."""
+        ...
+
+    @property
+    def stack_keys(self) -> tuple[str, ...]:
+        """Keys the code's ``[<code>]`` section of a stack file must set."""
         ...
 
     def supports(self, case: Case, kind: str, layout: Layout) -> str | None:
@@ -269,3 +303,9 @@ from benchmarks.adapters import gfem, palace  # noqa: E402
 
 ADAPTERS: dict[str, Adapter] = {"gfem": gfem.ADAPTER, "palace": palace.ADAPTER}
 """Solver adapters by code."""
+
+
+def solvers(adapters: Mapping[str, Adapter] | None = None) -> tuple[str, ...]:
+    """Every ``code:kind`` of the registered adapters."""
+    adapters = ADAPTERS if adapters is None else adapters
+    return tuple(f"{code}:{kind}" for code, a in adapters.items() for kind in a.kinds)

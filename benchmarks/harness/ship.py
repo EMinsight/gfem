@@ -16,20 +16,18 @@ first from the local mesh stores; a store file with another hash fails ``ship``.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import shlex
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from benchmarks.harness import config
-from benchmarks.harness.case import Case, load_case, open_mesh
-from benchmarks.harness.config import ConfigError
+from benchmarks.harness.case import Case, load_case, mesh_digest
+from benchmarks.harness.config import ConfigError, Runner
 
-Runner = Callable[..., subprocess.CompletedProcess]
 ROOT = config.PACKAGE.parent
 SSH = ("ssh", "-o", "LogLevel=ERROR")
 
@@ -99,14 +97,6 @@ def external_cases(
     return list(found.values())
 
 
-def _sha256_of_mesh(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open_mesh(path) as stream:
-        for chunk in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def mesh_sources(cases: Sequence[Case], stores: Sequence[Path]) -> list[Path]:
     """Each external case's ``<sha256>.msh.xz``, verified, from the local stores."""
     out = []
@@ -119,7 +109,7 @@ def mesh_sources(cases: Sequence[Case], stores: Sequence[Path]) -> list[Path]:
                 f"mesh {sha[:12]} of {case.name} is in no local store "
                 f"({', '.join(map(str, stores)) or 'none given'})"
             )
-        got = _sha256_of_mesh(source)
+        got, _ = mesh_digest(source)
         if got != sha:
             raise ShipError(
                 f"mesh hash: {source} gives {got[:12]}, pinned {sha[:12]}; "

@@ -24,7 +24,8 @@ Everything that depends on the Palace version lives in :data:`DIALECTS`, keyed b
 
 Palace's timer rows are exclusive, so rank 0's buckets partition ``Total``; the
 untimed rest goes to ``other_s``. A run is complete when ``ElapsedTime`` exists.
-Peak memory is ``PeakNodeMemoryMegabytes.Total``, a sum of per-rank peaks.
+Peak memory is ``PeakNodeMemoryMegabytes.Total``, a sum of per-rank peaks; the rank
+max is ``PeakMemoryMegabytes.Max``, the largest node ``PeakNodeMemoryMegabytes.Max``.
 ``inputs_match`` reads ``config_resolved.json`` back through the case importer and
 compares it with the case. Standard library only (ADR 0400).
 """
@@ -768,6 +769,17 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _memory(outcome: Outcome, meta: Mapping[str, Any]) -> None:
+    """Peak memory: summed over ranks, the largest node and the largest rank."""
+    node = meta.get("PeakNodeMemoryMegabytes")
+    if node is not None:
+        outcome.self_peak_mem_gib = node["Total"] / MIB_PER_GIB
+        outcome.self_peak_largest_node_gib = node["Max"] / MIB_PER_GIB
+    rank = meta.get("PeakMemoryMegabytes")
+    if rank is not None:
+        outcome.self_peak_rank_max_gib = rank["Max"] / MIB_PER_GIB
+
+
 @dataclass(frozen=True)
 class PalaceAdapter:
     """The Palace solver adapter (``palace:mumps``, ``palace:pmg``)."""
@@ -782,6 +794,20 @@ class PalaceAdapter:
             "pmg": Kind("iterative", {"Type": PMG_TYPE}),
         }
     )
+    direct_kind: str = "mumps"
+    pins: tuple[str, ...] = (
+        "Refinement 0",
+        "Absorbing.Order 1",
+        "Linear.Type pinned per kind",
+        "MUMPS kind: MGMaxLevels 1, ComplexCoarseSolve, Tol 1e-10",
+        "iterative Tol = the run tolerance, MaxIts 2000",
+        "EstimatorTol 1e-2, EstimatorMG",
+        "eigen Tol 1e-10, inner Linear.Tol 1e-12",
+        "no field output",
+    )
+    timing_source: str = "palace.json"
+    memory_metric: str = "PeakNodeMemoryMegabytes.Total"
+    stack_keys: tuple[str, ...] = ("launcher", "entry")
 
     def supports(self, case: Case, kind: str, layout: Layout) -> str | None:
         """Refuses unknown kinds, exclusions, unmapped boundaries and sweeps."""
@@ -926,9 +952,7 @@ class PalaceAdapter:
             outcome.setups = elapsed["Counts"].get("Setup")
         solver = meta.get("LinearSolver", {})
         outcome.solves = solver.get("TotalSolves")
-        memory = meta.get("PeakNodeMemoryMegabytes")
-        if memory is not None:
-            outcome.self_peak_mem_gib = memory["Total"] / MIB_PER_GIB
+        _memory(outcome, meta)
         resolved = _read_json(out / "config_resolved.json")
         if resolved is not None:
             outcome.native["config_resolved"] = resolved

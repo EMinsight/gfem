@@ -346,6 +346,8 @@ def test_more_ranks_take_the_max_of_each_row(stack18, tmp_path):
     )
     assert outcome.work_span_s == pytest.approx(425.047, abs=1e-3)
     assert outcome.self_peak_mem_gib == pytest.approx(1693.9375 / 1024)
+    assert outcome.self_peak_rank_max_gib == pytest.approx(443.015625 / 1024)
+    assert outcome.self_peak_largest_node_gib == pytest.approx(1693.9375 / 1024)
     assert outcome.checks["converged"] == "pass"
     assert outcome.iterations == [17, 17]
 

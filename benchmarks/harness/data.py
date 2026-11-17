@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from benchmarks.harness.case import Case, open_mesh
+from benchmarks.harness.records import file_sha256
 
 _CHUNK = 1 << 20
 
@@ -32,14 +33,6 @@ class Refused(Exception):  # noqa: N818 (the record status it leads to)
 def staged_path(data_dir: Path, sha256: str) -> Path:
     """Where the mesh pinned to ``sha256`` is staged."""
     return data_dir / "meshes" / f"{sha256}.msh"
-
-
-def _digest(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(_CHUNK), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _quarantine(path: Path, pinned: str, got: str) -> Path:
@@ -95,7 +88,7 @@ def stage(case: Case, data_dir: Path, stores: Sequence[Path]) -> Path:
     target = staged_path(data_dir, pinned)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
-        got = _digest(target)
+        got = file_sha256(target)
         if got == pinned:
             return target
         _quarantine(target, pinned, got)
@@ -116,6 +109,6 @@ def verify_staged(path: Path, pinned: str) -> None:
     if not path.exists():
         msg = f"mesh {pinned[:12]}: not staged at {path}"
         raise Refused(msg)
-    got = _digest(path)
+    got = file_sha256(path)
     if got != pinned:
         raise _mismatch(path, got, pinned, _quarantine(path, pinned, got))
