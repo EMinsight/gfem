@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Phase timings on the `"gfem.timing"` logger.** Silent by default; when
+  enabled, every driven and eigenmode solve logs one record per phase
+  (discretize, assemble, setup, solve) on each process, with the number of
+  unknowns, the solver's bytes and the Krylov iterations. See "Time each
+  phase" in
+  {doc}`../recipes/solve-a-device`.
 - **Rerun eigenmode results on models with lossy walls.** `gfem.Eigenmode` now
   returns the modes nearest the target on a model with a `Conductor`, `Impedance`
   or `Absorbing` wall. Its starting vectors were wrong on such walls, so a solve

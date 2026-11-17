@@ -84,7 +84,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
-from gfem import _petsc
+from gfem import _petsc, _timing
 from gfem._boundaries import (
     FloquetPort,
     Impedance,
@@ -117,6 +117,7 @@ from gfem._engine.driven import (
     driven_operator,
     lumped_terms,
     operator_terms,
+    owned_dofs,
 )
 from gfem._engine.eigen import (
     DivFreeProjector,
@@ -467,18 +468,22 @@ class EigenmodeRule:
         # before any assembly: a target in a law's unresolved band (ADR 0115)
         dispersion.check_band(model, self.problem.target, "target")
         with task_manager(opts.threads):
-            op = driven_operator(model, order, wave_vector=self.problem.wave_vector)
-            built = op.built
-            sigma = terms.wavenumber(2 * math.pi * self.problem.target, built.scale)
-            eop = self.operator(op, sigma)
+            with _timing.phase("discretize") as span:
+                op = driven_operator(model, order, wave_vector=self.problem.wave_vector)
+                built = op.built
+                sigma = terms.wavenumber(2 * math.pi * self.problem.target, built.scale)
+                eop = self.operator(op, sigma)
+                span.set(ndof=owned_dofs(op))
             divfree = None
             entry = None
             try:
                 eop.factorize()  # before the projector's setup
                 divfree = projector(model, op, self.problem.wave_vector)
-                modes, guard, gaps, unpolished = self._find(
-                    eop, divfree, sigma, guard=keep or self.polishable
-                )
+                # the whole search is one solve: its shift solves are internal
+                with _timing.phase("solve", iterations=()):
+                    modes, guard, gaps, unpolished = self._find(
+                        eop, divfree, sigma, guard=keep or self.polishable
+                    )
                 per_hz = const.c / built.scale / (2 * math.pi)
                 for j, mode in enumerate(modes):
                     f = mode.k.real * per_hz

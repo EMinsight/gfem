@@ -81,7 +81,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.custom_derivatives import SymbolicZero
 
-from gfem import _mpi
+from gfem import _mpi, _timing
 from gfem.errors import NonDifferentiableError
 
 __all__ = ["adjoint_tolerance", "input_kind", "solve_vjp"]
@@ -328,7 +328,9 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
         stacklevel=2,
         comm=getattr(rule, "comm", None),
     )
-    return rule.forward(model, keep=keep)
+    problem = _timing.problem_name(getattr(rule, "problem", None))
+    with _timing.scope(problem, getattr(rule, "comm", None)):
+        return rule.forward(model, keep=keep)
 
 
 def _free_consumed(comm: Any, options: Any) -> None:
@@ -389,7 +391,10 @@ def _host_backward(
     rule, model = rebuild(values)
     comm = getattr(rule, "comm", None)
     cotangents = {n: np.asarray(c) for n, c in zip(live_names, cts, strict=True)}
-    with _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS):
+    with (
+        _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS),
+        _timing.scope(_timing.problem_name(getattr(rule, "problem", None)), comm),
+    ):
         if comm is not None:
             _mpi.entry_check(
                 comm,

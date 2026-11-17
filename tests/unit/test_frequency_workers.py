@@ -251,6 +251,24 @@ def test_two_bddc_workers_agree_to_the_solver_tolerance(line, caplog):
     )
 
 
+def test_the_workers_timing_records_are_logged_here_by_their_logger(line, caplog):
+    # only gfem.timing is on: the workers' gfem.solver records stay silent
+    caplog.set_level(logging.INFO, logger="gfem.timing")
+    options = gfem.SolverOptions(linear_solver="direct", frequency_workers=2)
+    gfem.solve(line, gfem.Driven(FREQUENCIES), options=options)
+    assert not [r for r in caplog.records if r.name == "gfem.solver"]
+    logged = [r for r in caplog.records if r.name == "gfem.timing"]
+    solves = [r for r in logged if r.phase == "solve"]
+    assert [r.frequency for r in solves] == list(FREQUENCIES)
+    # each worker discretizes its own copy of the model
+    discretized = [r for r in logged if r.phase == "discretize"]
+    assert len(discretized) == 2
+    assert len({r.ndof for r in discretized}) == 1
+    for r in logged:
+        assert r.problem == "driven"
+        assert (r.rank, r.ranks) == (0, 1)
+
+
 SIX = (3e9, 3.5e9, 4e9, 4.5e9, 5e9, 5.5e9)  # two blocks of three
 
 

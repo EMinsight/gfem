@@ -272,6 +272,57 @@ The numerical settings are apart from the model and the problem, in
 - `gfem.SolverOptions.preset("fast")` and `preset("accurate")` set these in
   one word.
 
+## Time each phase
+
+gfem logs how long each phase of a driven or eigenmode solve took on the logger
+`"gfem.timing"`, silent by default. A handler of your own reads the records;
+this one sums the seconds of each phase and keeps the number of unknowns:
+
+```python
+import collections
+import logging
+
+
+class PhaseTimes(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.seconds = collections.Counter()
+        self.ndof = 0
+
+    def emit(self, record):
+        self.seconds[record.phase] += record.seconds
+        if record.phase == "discretize":
+            self.ndof += record.ndof
+
+
+times = PhaseTimes()
+timing = logging.getLogger("gfem.timing")
+timing.addHandler(times)
+timing.setLevel(logging.INFO)
+gfem.solve(model, at_5ghz)
+timing.removeHandler(times)
+print(sorted(times.seconds), times.ndof)
+```
+
+```text
+['assemble', 'discretize', 'setup', 'solve'] 24074
+```
+
+- Each record is one phase on one process: `discretize` (spaces and ports;
+  `ndof`, the unknowns this process owns), `assemble` (the matrices), `setup`
+  (the factorization or the preconditioner; `solver`, `action` and `nbytes`,
+  the bytes it holds) and `solve` (one frequency, or a whole eigenmode search;
+  `iterations`, the Krylov iterations per excited port). The phases do not
+  overlap, so their seconds add up.
+- Every record also carries `seconds`, `problem`, `frequency` (Hz, `None`
+  outside a frequency), `rank` and `ranks`. Under MPI each rank logs its own;
+  sum `ndof` over the ranks for the problem's size, and take the slowest rank
+  per phase.
+- Reading the mesh is not a phase: time `gfem.Mesh.from_gmsh` yourself. With
+  `frequency_workers` the workers' records are logged in your process; the
+  workers run side by side, so their seconds can add up to more than the wall
+  time.
+
 ## Check your results
 
 Three checks need no reference. A lossless reciprocal device conserves power,

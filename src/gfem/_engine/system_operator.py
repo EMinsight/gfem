@@ -77,6 +77,7 @@ import ngsolve as ngs
 import numpy as np
 import scipy.linalg
 
+from gfem import _timing
 from gfem._engine.cache import ENTRIES
 from gfem._engine.wave_ports import PortSurfaceCoupling
 from gfem._linalg import (
@@ -708,16 +709,24 @@ class SystemSweep:
         where the site meets ω for the first time. It refactorizes as a
         frequency ``sweep`` (`gfem._linalg.Refactorable.refactorize`).
         """
-        operator = self._operator_at(omega)
-        plans = self._plans
-        if plans is not None and (
-            self._base is None or (self._last is not None and self._last[0] != omega)
-        ):
-            self._take_base(plans, omega)
-        self._base = refactorize_or_prepare(
-            self._base, operator, self._prepare, frequency=omega, sweep=True
-        )
-        handle = self._system_handle(self._base, omega)
+        with _timing.phase("setup", frequency=omega / (2 * math.pi)) as span:
+            operator = self._operator_at(omega)
+            plans = self._plans
+            if plans is not None and (
+                self._base is None
+                or (self._last is not None and self._last[0] != omega)
+            ):
+                self._take_base(plans, omega)
+            base = self._base = refactorize_or_prepare(
+                self._base, operator, self._prepare, frequency=omega, sweep=True
+            )
+            handle = self._system_handle(base, omega)
+            if span.enabled:
+                span.set(
+                    solver=getattr(base, "kind", None),
+                    action=getattr(base, "last_action", None) or "factorized",
+                    nbytes=int(base.nbytes),
+                )
         self._last = (omega, handle)
         return handle
 
@@ -799,13 +808,16 @@ class SystemSweep:
         assume = getattr(self._base, "assume_reference", None)
         if reference is not None and assume is not None:
             assume(reference)
-        x, its = handle.solve_counted(rhs, x0=x0)
+        frequency = omega / (2 * math.pi)
+        with _timing.phase("solve", frequency=frequency) as span:
+            x, its = handle.solve_counted(rhs, x0=x0)
+            span.set(iterations=tuple(int(i) for i in its))
         report.solve_step(
             self._base,
             problem="driven",
             direction="forward",
             iterations=its,
-            frequency=omega / (2 * math.pi),
+            frequency=frequency,
             guess=guess,
         )
         return x, its
