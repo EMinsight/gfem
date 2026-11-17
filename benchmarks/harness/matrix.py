@@ -3,7 +3,8 @@
 A campaign's axes (case x solver x stack x layout x tolerance x repeats) become
 **cells**: one (case, solver, stack, layout, tolerance) each, run ``repeats`` times.
 
-- ``best`` expands to the layout grid (:func:`grid`) minus what the adapter refuses;
+- ``best`` expands to the layout grid (:func:`grid`) minus what the adapter refuses
+  (all of it refused: the default layout, planned refused);
   ``default`` is the adapter's default layout; ``RxT`` is taken as written. A refused
   ``default`` or ``RxT`` cell stays in the plan with its reason, once, so ``step``
   writes its ``refused`` record (ADR 0411).
@@ -471,9 +472,13 @@ def _anchor_layouts(
                 f"{case.name} is a large case: list its layouts, best "
                 "expands only on small cases"
             )
-        for layout in grid(campaign.core_budget):
-            if adapter.supports(case, kind, layout) is None:
-                out.setdefault(str(layout), (layout, "grid"))
+        supported = [
+            layout
+            for layout in grid(campaign.core_budget)
+            if adapter.supports(case, kind, layout) is None
+        ]
+        for layout in supported or [default]:
+            out.setdefault(str(layout), (layout, "grid"))
     return list(out.values())
 
 

@@ -194,7 +194,11 @@ class GfemAdapter:
     # --- plan time -------------------------------------------------------------------
 
     def supports(self, case: Case, kind: str, layout: Layout) -> str | None:
-        """Refuses unknown kinds and inputs, and what gfem has no rank path for."""
+        """Refuses unknown kinds and inputs, and what gfem cannot run.
+
+        That is a rank path gfem lacks, and any kind but direct on a Bloch-periodic
+        eigenproblem (a non-symmetric operator; gfem raises and names direct).
+        """
         if kind not in self.kinds:
             return f"gfem has no kind {kind!r} (known: {', '.join(self.kinds)})"
         unknown = sorted({b.kind for b in case.boundaries} - set(BOUNDARY_KINDS))
@@ -205,6 +209,13 @@ class GfemAdapter:
             return f"port kind(s) {', '.join(ports)} not mapped for gfem"
         if layout.threads > NODE_CORES:
             return f"one gfem process runs on one node ({NODE_CORES} cores)"
+        problem = case.problem
+        bloch = problem.kind == "eigen" and problem.wave_vector is not None
+        if bloch and kind != self.direct_kind:
+            return (
+                "a Bloch-periodic eigen solve is non-symmetric; gfem solves it "
+                "with direct only"
+            )
         return None if layout.ranks == 1 else _rank_refusal(case, kind)
 
     def default_layout(self, case: Case, kind: str, budget: int) -> Layout:
