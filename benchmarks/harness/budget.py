@@ -5,8 +5,9 @@ probes, the stack check, test gates; updated by hand) + billed core-hours of eve
 job listed in a ``submitted.tsv`` under the site's output directory (and the run
 directory being submitted), from sacct: ``CPUTimeRAW`` / 2 / 3600, the formula that
 matches ``bsc_acct`` until it catches up. A job not finished yet (pending, running...)
-counts at its time limit x nodes x 112 cores until it finishes. ``submit`` refuses when spend + the plan's
-estimate passes the ceiling (``[budget] ceiling_core_h``, or ``--ceiling``).
+counts at its time limit x nodes x 112 cores until it finishes. ``submit`` refuses
+when spend + the plan's estimate passes the ceiling (``[budget] ceiling_core_h``, or
+``--ceiling``).
 
 Standard library only (ADR 0400).
 """
@@ -14,11 +15,11 @@ Standard library only (ADR 0400).
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from benchmarks.harness.config import ConfigError
+from benchmarks.harness.config import ConfigError, Runner
 from benchmarks.harness.matrix import NODE_CORES
 
 SUBMITTED = "submitted.tsv"
@@ -63,7 +64,7 @@ def submitted_files(output_dir: Path, extra: Iterable[Path] = ()) -> list[Path]:
 
 def sacct_jobs(
     ids: Iterable[str],
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run: Runner = subprocess.run,
 ) -> dict[str, dict[str, str]]:
     """Sacct facts of each job id (allocation lines only)."""
     ids = sorted(set(ids))
@@ -132,7 +133,7 @@ def job_core_h(facts: Mapping[str, str]) -> float:
 def spend(
     prior_core_h: float,
     files: Iterable[Path],
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run: Runner = subprocess.run,
 ) -> Spend:
     """The effort's spend: ``prior_core_h`` plus sacct over the listed jobs.
 

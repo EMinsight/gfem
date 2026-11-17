@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,9 @@ CASES_DIR = PACKAGE / "cases"
 REFERENCES_DIR = PACKAGE / "references"
 """Reference-only sibling cases: ``references/<family>/<rung>/case.toml``."""
 SITE_ENV = "GFEM_BENCH_SITE"
+
+Runner = Callable[..., subprocess.CompletedProcess]
+"""What runs an external command (``subprocess.run``, or a test's stand-in)."""
 
 SOLVERS = ("gfem:direct", "gfem:petsc-mumps", "gfem:bddc", "palace:mumps", "palace:pmg")
 STACKS = ("wheels", "native-oss", "native-intel")

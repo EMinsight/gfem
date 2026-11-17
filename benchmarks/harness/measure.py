@@ -12,8 +12,9 @@ Hydra (``-launcher fork -bind-to core`` under taskset), recorded ``machine: loca
 - **Watchdog.** A wall cap (the run's ``wall_cap_s``, cut to the job's time left)
   ends the run as ``timeout``; a memory cap, when set, as ``memory_watchdog``. The
   process group gets SIGTERM, then SIGKILL 10 s later.
-- **Sampler.** Every 0.1 s over the first 5 s, then every second, the run's pids (``scontrol listpids <job>`` on Slurm,
-  the newest numbered step; else the process tree) have their ``Pss`` summed from
+- **Sampler.** Every 0.1 s over the first 5 s, then every second, the run's pids
+  (``scontrol listpids <job>`` on Slurm, the newest numbered step; else the process
+  tree) have their ``Pss`` summed from
   ``/proc/<pid>/smaps_rollup`` (``pss_peak_sum_gib``); once every rank is up, the
   placement check reads each rank's ``Cpus_allowed_list``; every 10 s a ``ps -eLo``
   snapshot of the run's threads is logged and summarised as the most busy threads
@@ -37,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from benchmarks.adapters import Layout
+from benchmarks.harness.config import Runner
 
 PROC = Path("/proc")
 SYSFS_CPU = Path("/sys/devices/system/cpu")
@@ -341,7 +343,7 @@ class Sampler:
     """Look the pids up with ``scontrol listpids`` (an srun launch in a job)."""
     proc: Path = PROC
     sysfs: Path = SYSFS_CPU
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run
+    run: Runner = subprocess.run
     sample_s: float = SAMPLE_S
     start_sample_s: float = START_SAMPLE_S
     start_s: float = START_S
@@ -563,7 +565,7 @@ def _gib(text: str) -> float | None:
 def step_facts(
     job: str,
     step: str,
-    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    run: Runner = subprocess.run,
     tries: int = 6,
     wait_s: float = 5.0,
 ) -> tuple[str | None, float | None]:

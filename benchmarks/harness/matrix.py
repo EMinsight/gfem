@@ -704,10 +704,6 @@ def _relative(path: Path) -> str:
         return path.name
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _manifest(
     plan: Plan, site: Site, commit_utc: str | None, campaign_id: str, now: dt.datetime
 ) -> records.Campaign:
@@ -717,7 +713,7 @@ def _manifest(
         name=c.name,
         planned_utc=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         campaign_file=records.CampaignFile(
-            path=_relative(c.path), sha256=_sha256(c.path)
+            path=_relative(c.path), sha256=records.file_sha256(c.path)
         ),
         pins=records.Pins(
             gfem={"commit": plan.commit, "commit_utc": commit_utc},

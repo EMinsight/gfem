@@ -61,7 +61,7 @@ from benchmarks.adapters import (
 )
 from benchmarks.harness import budget, config, data, matrix, measure, records, score
 from benchmarks.harness.case import Case, definition_sha256, load_case
-from benchmarks.harness.config import ConfigError, Site
+from benchmarks.harness.config import ConfigError, Runner, Site
 
 STEP_STOP = 3
 """``step``'s exit status when Slurm disabled step creation: the job stops."""
@@ -87,8 +87,6 @@ ENDED_STATES = (
 )
 CAMPAIGN_GATES = ("complete", "provenance", "dof_equal")
 """Campaign checks that make ``close`` exit non-zero (ADR 0414)."""
-
-Runner = Callable[..., subprocess.CompletedProcess]
 
 
 class HarnessError(Exception):
