@@ -91,7 +91,7 @@ DEFAULT_SOLVER: Kind = "direct"
 _PHYSICS = "thermal"
 
 
-def source_density(problem: Any, mesh: Mesh) -> jax.Array:
+def source_density(problem: SteadyThermal | TransientThermal, mesh: Mesh) -> jax.Array:
     """The summed power density of the problem's heat sources per tetrahedron.
 
     W/m^3 in `gfem.Mesh.tetrahedra` order, in JAX: linear in each source's
@@ -308,7 +308,12 @@ class ThermalRule:
     #: Whether this forward reruns for a backward that lost its entry.
     rerun: bool = False
 
-    def __init__(self, model: Model, problem: Any, options: SolverOptions) -> None:
+    def __init__(
+        self,
+        model: Model,
+        problem: SteadyThermal | TransientThermal,
+        options: SolverOptions,
+    ) -> None:
         """Check the model and problem (see the problem's docstring).
 
         Raises:
@@ -669,6 +674,8 @@ class SteadyThermalRule(ThermalRule):
 
     #: The operator family (a key of `sensitivity.PROPERTIES`).
     form = "steady_thermal"
+    #: The problem as built.
+    spec: SteadyThermal
     problem_name = "steady thermal"
     #: Outputs whose cotangents the backward pass handles.
     differentiable_outputs: frozenset[str] = frozenset({"temperature", "rise"})
@@ -892,6 +899,8 @@ class TransientThermalRule(ThermalRule):
 
     #: The operator family (a key of `sensitivity.PROPERTIES`).
     form = "transient_thermal"
+    #: The problem as built.
+    spec: TransientThermal
     problem_name = "transient thermal"
     reads = ("thermal_conductivity", "mass_density", "specific_heat")
     #: Outputs whose cotangents the backward pass handles: every one (set per
@@ -1077,6 +1086,7 @@ class TransientThermalRule(ThermalRule):
         if not self.loose.any() and uniform is not None:
             return self._constant(space, uniform)
         if self.loose.all() or not self.boundaries.sinks:
+            assert start is not None  # noqa: S101 - `_check_loose` checked
             return self._constant(space, start)
         handle = self._prepare(
             model,
@@ -1090,6 +1100,7 @@ class TransientThermalRule(ThermalRule):
             lift, load = self._boundary_data(built, space)
             rhs = load - handle.apply(lift)
             if self.loose.any():
+                assert start is not None  # noqa: S101 - `_check_loose` checked
                 capacity = _capacity(self, model, built, space, self.loose)
                 rhs = rhs + capacity @ self._constant(space, start)
             return lift + self._solve(handle, rhs)
