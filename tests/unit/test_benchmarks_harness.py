@@ -372,7 +372,7 @@ def test_a_finished_run_is_measured(tmp_path):
 
 def test_a_short_run_still_has_its_placement_checked(tmp_path):
     m = measure.measure(
-        ["taskset", "-c", "0", "sleep", "0.4"],
+        ["taskset", "-c", str(min(os.sched_getaffinity(0))), "sleep", "0.4"],
         cwd=tmp_path,
         env=dict(os.environ),
         stdout=tmp_path / "out.txt",

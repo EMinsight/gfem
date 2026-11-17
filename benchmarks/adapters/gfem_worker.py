@@ -309,6 +309,7 @@ def run(path: Path) -> int:
         spec.get("pinned_ndof") if ranks == 1 else None,
     )
     logger = logging.getLogger("gfem.timing")
+    saved = (logger.level, logger.propagate)
     logger.setLevel(logging.INFO)
     logger.propagate = False
     logger.addHandler(handler)
@@ -323,6 +324,8 @@ def run(path: Path) -> int:
         "host": socket.gethostname(),
     }
     logger.removeHandler(handler)
+    logger.setLevel(saved[0])
+    logger.propagate = saved[1]
     handler.close()
     # GetNumThreads is 1 outside a TaskManager; inside one it is the count gfem set
     with ngsolve.TaskManager():
