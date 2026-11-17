@@ -323,7 +323,7 @@ def test_unimplemented_subcommands_exit_2(argv, capsys):
     assert "not yet" in capsys.readouterr().err
 
 
-def test_plan_validates_campaign_and_site_before_not_yet(tmp_path, capsys):
+def test_plan_refuses_a_bad_campaign_with_status_2(tmp_path, capsys):
     campaign = _write(tmp_path, "smoke.toml", CAMPAIGN.replace("schema = 1", "x = 1"))
     site = _write(tmp_path, "site.toml", SITE)
     argv = ["plan", str(campaign), "--site", str(site), "--out", str(tmp_path / "r")]
