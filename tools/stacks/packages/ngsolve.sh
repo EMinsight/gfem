@@ -115,6 +115,13 @@ ngsolve_gitconfig() {
   printf '[protocol "file"]\n\tallow = always\n[advice]\n\tdetachedHead = false\n' >>"$1"
 }
 
+# ngsolve_check_python LOG ROOT: every Python CMake found in LOG is ROOT's.
+ngsolve_check_python() {
+  local found
+  found=$(grep -a 'Found Python3:' "$1" | grep -v -F "$2/" || true)
+  [[ -z $found ]] || stack_die "ngsolve: CMake found another Python than $2: $found"
+}
+
 # build_ngsolve VERSION PREFIX BUILD_DIR: in the job, offline; installs into PREFIX
 # and writes $STACK_META/{source,configure}.json.
 # A recursive clone of the tag from the mirror (netgen and pybind11 at the
@@ -149,6 +156,16 @@ build_ngsolve() {
     cp "$STACK_SRC/tarballs/$name" "$netgen/external_dependencies/${url##*/}"
   done < <(stack_sources url-tarballs <"$netgen/cmake/external_projects/metis.cmake")
 
+  # netgen's and NGSolve's first find_package(Python3 COMPONENTS
+  # Development.Module) ignores Python3_EXECUTABLE and took the system's
+  # Python 3.9 headers (job 49170308): name the interpreter's root, headers
+  # and library too.
+  local pyroot pyinclude pylibrary
+  pyroot=$(dirname "$(dirname "$python")")
+  pyinclude=$("$python" -c 'import sysconfig; print(sysconfig.get_config_var("INCLUDEPY"))')
+  pylibrary=$("$python" -c 'import os, sysconfig as s; print(os.path.join(s.get_config_var("LIBDIR"), s.get_config_var("LDLIBRARY")))')
+  [[ -f $pyinclude/Python.h && -f $pylibrary ]] ||
+    stack_die "ngsolve: no Python.h in $pyinclude or no $pylibrary"
   case ${STACK_BLAS_VENDOR:-} in
   openblas)
     blas=${STACK_OPENBLAS_PROVENANCE%/provenance.json}/lib/lib$STACK_BLAS_LIB_PTHREADS.so
@@ -164,10 +181,13 @@ build_ngsolve() {
     "-DCMAKE_SHARED_LINKER_FLAGS=$LDFLAGS" "-DCMAKE_MODULE_LINKER_FLAGS=$LDFLAGS"
     "-DCMAKE_EXE_LINKER_FLAGS=$LDFLAGS"
     "-DPython3_EXECUTABLE=$python" "-DPython3_FIND_STRATEGY=LOCATION"
+    "-DPython3_ROOT_DIR=$pyroot" "-DPython3_INCLUDE_DIR=$pyinclude" "-DPython3_LIBRARY=$pylibrary"
     "-DOpenCascade_DIR=$occdir")
   echo "ngsolve: cmake ${options[*]}"
-  cmake -S "$src" -B "$dir/build" -G "Unix Makefiles" "${options[@]}"
-  make -C "$dir/build" -j "$STACK_JOBS"
+  cmake -S "$src" -B "$dir/build" -G "Unix Makefiles" "${options[@]}" 2>&1 | tee "$dir/configure.log"
+  ngsolve_check_python "$dir/configure.log" "$pyroot"
+  make -C "$dir/build" -j "$STACK_JOBS" 2>&1 | tee "$dir/make.log"
+  ngsolve_check_python "$dir/make.log" "$pyroot"
   make -C "$dir/build" install
   mkdir -p "$prefix/share/stack"
   cp "$dir/build/CMakeCache.txt" "$prefix/share/stack/ngsolve-CMakeCache.txt"
