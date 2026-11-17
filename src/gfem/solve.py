@@ -212,7 +212,11 @@ def _solve(
     if adjoint_loads is not None:
         rule.adjoint_loads = adjoint_loads
     if is_traced((model, problem)):
-        return rule.result(solve_vjp(rule, model, problem)), None
+        # a rule may differentiate a problem through its own leaves (a thermal
+        # problem's summed heat density, ADR 0178)
+        inputs = getattr(rule, "vjp_problem", None)
+        leaves = problem if inputs is None else inputs(problem)
+        return rule.result(solve_vjp(rule, model, leaves)), None
     # A moved mesh must keep its periodic pairs and stay valid on the solve
     # domain.
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001

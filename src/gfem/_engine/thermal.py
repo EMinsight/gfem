@@ -35,6 +35,7 @@ on one handle.
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any, ClassVar
 
 import jax
@@ -44,18 +45,29 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.csgraph
 
+from gfem._adjoint.solve_vjp import adjoint_tolerance, input_kind
 from gfem._boundaries import Convection, FixedTemperature, HeatFlux
 from gfem._checks import is_traced
 from gfem._engine import quadrature
-from gfem._engine.cache import Entry, discretization
+from gfem._engine.cache import Entry, _alone, discretization, retain_budget
 from gfem._engine.coefficients import element_values, p0
 from gfem._engine.domain import boundary_region
 from gfem._engine.electrostatic import KeptHandle
 from gfem._engine.fields import fe_space, support_region
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
+from gfem._engine.sensitivity import (
+    LOAD_KIND,
+    Derivative,
+    FieldPair,
+    Integrated,
+    LoadField,
+    Term,
+    element_integrals,
+)
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
 from gfem._linalg.base import free_mask
+from gfem._pytree import register_fields
 from gfem.errors import MissingMaterialPropertyError, RegionNotFoundError
 from gfem.mesh import _TET_FACES, Mesh
 from gfem.model import Model
@@ -64,7 +76,7 @@ from gfem.problems import SteadyThermal, TransientThermal
 from gfem.results import Field, SteadyThermalResult, TransientThermalResult
 from gfem.thermal import Trace, _FieldTrace, _tet_volumes
 
-__all__ = ["SteadyThermalRule", "ThermalRule", "TransientThermalRule"]
+__all__ = ["Loads", "SteadyThermalRule", "ThermalRule", "TransientThermalRule"]
 
 #: The linear solver for ``linear_solver="auto"`` (ADR 0184).
 DEFAULT_SOLVER: Kind = "direct"
@@ -82,6 +94,41 @@ def source_density(problem: Any, mesh: Mesh) -> jax.Array:
     for source in problem.heat:
         density = density + source._density_on(mesh)  # noqa: SLF001
     return density
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class Loads:
+    """A thermal problem as `gfem._adjoint.solve_vjp` sees it (ADR 0178).
+
+    Its differentiable leaves only: every heat source resolved in JAX to one
+    summed power density per tetrahedron, and for a transient the waveform
+    scales and the traces (whose leaves are a section's thermo-optic
+    weights). The rule reads everything else from the problem it was built
+    with (`ThermalRule.spec`). The input kinds are ``("problem",
+    ".density")`` (`gfem._engine.sensitivity.LOAD_KIND`), ``("problem",
+    ".scales")`` and ``("problem", ".traces['<name>']...")``.
+
+    Attributes:
+        density: W/m^3 per tetrahedron (`gfem.Mesh.tetrahedra` order).
+        scales: The waveform's scales, or ``None`` (steady).
+        traces: The traces by name, or ``None`` (steady).
+    """
+
+    density: Any
+    scales: Any = None
+    traces: Any = None
+
+
+register_fields(Loads, ("density", "scales", "traces"))
+
+#: The input kinds of the sources alone: their gradient needs the step
+#: adjoints only, so no trajectory is kept for them (ADR 0179).
+SOURCE_KINDS = frozenset({LOAD_KIND, ("problem", ".scales")})
+
+
+def _stride(steps: int) -> int:
+    """The checkpoint stride of a run of ``steps`` steps: ceil(sqrt(steps))."""
+    return max(1, math.ceil(math.sqrt(steps)))
 
 
 def check_properties(model: Model, active: np.ndarray, reads: tuple[str, ...]) -> None:
@@ -256,6 +303,11 @@ class ThermalRule:
     reads: ClassVar[tuple[str, ...]] = ("thermal_conductivity",)
     #: The problem name in solver logs and messages.
     problem_name: ClassVar[str] = "thermal"
+    #: The wanted input kinds of a differentiated solve (set by
+    #: `gfem._adjoint.solve_vjp` on the host copy), else ``None``.
+    wanted_kinds: frozenset | None = None
+    #: Whether this forward reruns for a backward that lost its entry.
+    rerun: bool = False
 
     def __init__(self, model: Model, problem: Any, options: SolverOptions) -> None:
         """Check the model and problem (see the problem's docstring).
@@ -267,6 +319,9 @@ class ThermalRule:
             ValueError: A heat source heats an excluded region.
         """
         self.problem = problem
+        #: The problem as built: the static values (a host copy's `problem`
+        #: is its `Loads`).
+        self.spec = problem
         self.options = options
         self.linear = ResolvedLinearSolver.resolve(
             options, default=DEFAULT_SOLVER, problem=self.problem_name
@@ -293,9 +348,19 @@ class ThermalRule:
         if not is_traced(tuple(model.materials.values())):
             check_properties(model, self.active, self.reads)
         if not is_traced(problem):
-            _check_heat_inside(
-                mesh, self.active, np.asarray(source_density(problem, mesh))
-            )
+            # concrete sources: evaluated now, even inside a traced function
+            with jax.ensure_compile_time_eval():
+                density = np.asarray(source_density(problem, mesh))
+            _check_heat_inside(mesh, self.active, density)
+
+    def vjp_problem(self, problem: Any) -> Loads:
+        """The problem's differentiable leaves, resolved in JAX (`Loads`)."""
+        return Loads(density=source_density(problem, self._mesh))
+
+    def _loads(self) -> Loads:
+        """This call's `Loads`: the host copy's problem, or resolved here."""
+        problem = self.problem
+        return problem if isinstance(problem, Loads) else self.vjp_problem(problem)
 
     # --- the discretization ---------------------------------------------------
 
@@ -487,7 +552,7 @@ class ThermalRule:
 
     def _heat(self) -> tuple[Field, jax.Array]:
         """The heat field and the sources' total power (W), in JAX."""
-        density = source_density(self.problem, self._mesh)
+        density = source_density(self.spec, self._mesh)
         heat = Field(
             coefficients=density[self._heat_order()],
             mesh=self._mesh,
@@ -525,6 +590,83 @@ class ThermalRule:
             "without its derivative."
         )
 
+    def _domain(self, model: Model, built: EngineMesh) -> ngs.Region:
+        return support_region(built, model.mesh, self.regions, self._excluded)
+
+    def _values(self, model: Model, name: str) -> np.ndarray:
+        """Property ``name`` per tetrahedron, zero off the domain."""
+        return np.where(self.active, element_values(model, name), 0.0)
+
+    def terms(self, model: Model, *, nodes: bool) -> list[Term]:  # noqa: ARG002
+        """The conduction form ``int k grad u . grad v`` (file units) as a `Term`.
+
+        The convection terms read no material: they have none. A transient
+        adds the heat capacity (`TransientThermalRule.terms`).
+        """
+        _, built = self._space(model)
+        return [
+            Term(
+                "conduction",
+                "gradient",
+                coefficient=self._coefficient(model, built, "thermal_conductivity"),
+                derivatives={
+                    "thermal_conductivity": Derivative(1.0, holomorphic=False)
+                },
+            )
+        ]
+
+    def _adjoint(self, handle: Handle, rhs: np.ndarray, *, reused: bool) -> np.ndarray:
+        """``A^-1 rhs`` on the free DOFs, at the adjoint tolerance."""
+        x, its = handle.solve_counted(rhs, tolerance=adjoint_tolerance(self.options))
+        report.solve_step(
+            handle,
+            problem=self.problem_name,
+            direction="backward",
+            iterations=its,
+            reused=reused,
+        )
+        return x
+
+    def _source_free_pair(
+        self,
+        model: Model,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        load: np.ndarray,
+        t0: np.ndarray,
+        *,
+        loose: np.ndarray | None = None,
+    ) -> FieldPair:
+        """The T0 pair ``(-lambda0, T0)`` of a cotangent ``load`` on T0 (ADR 0172).
+
+        ``A0 T0 = boundary load`` on the free DOFs, for the steady operator
+        A0 (with the heat capacity of a sinkless part, ``loose``, where the
+        source-free temperature is its uniform start and the capacity's own
+        pair vanishes), so ``load . dT0 = -lambda0^T dA0 T0`` with ``A0
+        lambda0 = load``. One more solve, on its own prepared operator.
+        """
+        where = None if loose is None or not loose.any() else loose
+        handle = self._prepare(
+            model,
+            built,
+            space,
+            mass=0.0 if where is None else 1.0,
+            where=where,
+            tolerance=adjoint_tolerance(self.options),
+        )
+        try:
+            lam = self._adjoint(handle, load[:, None], reused=False)
+        finally:
+            handle.free()
+        return FieldPair(
+            space=space,
+            left=-lam,
+            right=t0[:, None],
+            weights={"conduction": 1.0},
+            order=self.options.order,
+            domain=self._domain(model, built),
+        )
+
 
 class SteadyThermalRule(ThermalRule):
     """Host-side forward of a `SteadyThermal` problem on a `Model`."""
@@ -533,7 +675,7 @@ class SteadyThermalRule(ThermalRule):
     form = "steady_thermal"
     problem_name = "steady thermal"
     #: Outputs whose cotangents the backward pass handles.
-    differentiable_outputs: frozenset[str] = frozenset()
+    differentiable_outputs: frozenset[str] = frozenset({"temperature", "rise"})
 
     def __init__(
         self, model: Model, problem: SteadyThermal, options: SolverOptions
@@ -564,7 +706,7 @@ class SteadyThermalRule(ThermalRule):
         """
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
-        density = np.asarray(source_density(self.problem, mesh))
+        density = np.asarray(self._loads().density)
         _check_heat_inside(mesh, self.active, density)
         uniform = self.boundaries.uniform
         with task_manager(self.options.threads):
@@ -610,6 +752,62 @@ class SteadyThermalRule(ThermalRule):
             "rise": jax.ShapeDtypeStruct((n,), jnp.float64),
         }
 
+    def backward(
+        self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
+    ) -> list[FieldPair | LoadField]:
+        """Fold the temperature and rise cotangents into pairs and a load.
+
+        ``rise = A^-1 F`` on the free DOFs, so with ``A lambda = ct_T +
+        ct_rise`` the conductivity pair is ``(-lambda, rise)`` and the
+        source density's load is ``lambda`` (`LoadField`, ``F`` reads ``q
+        scale ** 2`` in file units). A temperature cotangent adds the T0
+        pair (`_source_free_pair`) unless the boundaries share one
+        temperature (T0 is then that constant). Solves on the forward's
+        kept operator; an entry that lost it prepares it again.
+        """
+        wanted = self.wanted_kinds or frozenset()
+        conduction = "thermal_conductivity" in {
+            k[2] for k in wanted if k[0] == "material"
+        }
+        order = self.options.order
+        with task_manager(self.options.threads):
+            space, built = self._space(model)
+            free = free_mask(space.FreeDofs(), space.ndof)
+            ct_t = cotangents.get("temperature")
+            load = np.zeros(space.ndof)
+            for name in ("temperature", "rise"):
+                if name in cotangents:
+                    load = load + np.asarray(cotangents[name], dtype=float)
+            load[~free] = 0.0
+            handle = None if entry.handle is None else entry.handle.handle
+            kept = handle is not None
+            if handle is None:
+                tolerance = adjoint_tolerance(self.options)
+                handle = self._prepare(model, built, space, tolerance=tolerance)
+                entry.handle = KeptHandle(handle)
+            lam = self._adjoint(handle, load[:, None], reused=kept)[:, 0]
+            domain = self._domain(model, built)
+            rise = entry.fields["rise"]
+            pairs: list[FieldPair | LoadField] = []
+            if conduction:
+                pairs.append(
+                    FieldPair(
+                        space=space,
+                        left=-lam[:, None],
+                        right=rise[:, None],
+                        weights={"conduction": 1.0},
+                        order=order,
+                        domain=domain,
+                    )
+                )
+                if ct_t is not None and self.boundaries.uniform is None:
+                    t0 = entry.fields["temperature"] - rise
+                    ct0 = np.where(free, np.asarray(ct_t, dtype=float), 0.0)
+                    pairs.append(self._source_free_pair(model, built, space, ct0, t0))
+            if LOAD_KIND in wanted:
+                pairs.append(LoadField(space, lam, order, domain, length_power=2))
+        return pairs
+
     def result(self, outputs: dict) -> SteadyThermalResult:
         """The public result from the forward outputs."""
         heat, power = self._heat()
@@ -644,8 +842,8 @@ class Stepper:
 
     ``F_n`` is the load on [t_n, t_n+1): the waveform's value there times
     the sources' load. The stage value of TR-BDF2 is returned by `step`, so
-    a reverse sweep can recompute it from ``u_n`` (slice 07's adjoint runs
-    the transposed stages on the same handle; ``A`` and ``C`` are
+    a reverse sweep can recompute it from ``u_n`` (`stage`; the adjoint runs
+    the transposed stages on the same handle, ``A`` and ``C`` being
     symmetric).
 
     Attributes:
@@ -668,6 +866,11 @@ class Stepper:
     def _solve(self, rhs: np.ndarray) -> np.ndarray:
         rhs = np.where(self.free, rhs, 0.0)
         return self.solve(self.handle, rhs)
+
+    def stage(self, u: np.ndarray, load: np.ndarray) -> np.ndarray:
+        """TR-BDF2's trapezoid stage from ``u_n`` (recomputed by a reverse sweep)."""
+        cu = self.capacity @ u
+        return self._solve(2.0 * self.mass * cu - self.handle.apply(u) + 2.0 * load)
 
     def step(
         self, u: np.ndarray, load: np.ndarray
@@ -694,7 +897,8 @@ class TransientThermalRule(ThermalRule):
     form = "transient_thermal"
     problem_name = "transient thermal"
     reads = ("thermal_conductivity", "mass_density", "specific_heat")
-    #: Outputs whose cotangents the backward pass handles (slice 07).
+    #: Outputs whose cotangents the backward pass handles: every one (set per
+    #: problem, the traces' names are its own).
     differentiable_outputs: frozenset[str] = frozenset()
 
     def __init__(
@@ -715,6 +919,9 @@ class TransientThermalRule(ThermalRule):
         if not isinstance(problem, TransientThermal):
             raise TypeError(f"Expected gfem.TransientThermal, got {problem!r}.")
         super().__init__(model, problem, options)
+        self.differentiable_outputs = frozenset(
+            {*(f"trace:{name}" for name in problem.traces), "kept_rise", "source_free"}
+        )
         #: Per tetrahedron: in a part of the domain that touches no heat sink.
         self.loose = _loose(model, self.active, self.boundaries.sinks)
         if self.loose.any():
@@ -731,7 +938,7 @@ class TransientThermalRule(ThermalRule):
         """
         mesh = model.mesh
         where = _region_of(mesh, np.flatnonzero(self.loose))
-        if self.problem.initial_temperature is None:
+        if self.spec.initial_temperature is None:
             raise ValueError(
                 f"TransientThermal: the part of the thermal domain that holds region "
                 f"{where!r} touches no heat sink, so it has no source-free (steady) "
@@ -754,12 +961,74 @@ class TransientThermalRule(ThermalRule):
                     "gfem.Convection, or give the heat as a gfem.HeatSource."
                 )
 
+    def vjp_problem(self, problem: Any) -> Loads:
+        """The density, the waveform scales and the traces (`Loads`)."""
+        return Loads(
+            density=source_density(problem, self._mesh),
+            scales=problem._scales,  # noqa: SLF001
+            traces=dict(problem.traces),
+        )
+
+    def terms(self, model: Model, *, nodes: bool) -> list[Term]:
+        """The conduction form and the heat capacity ``int rho c_p u v``.
+
+        Both in file units (the capacity's coefficient ``rho c_p scale **
+        2``); ``d/d rho = c_p scale ** 2`` and ``d/d c_p = rho scale ** 2``.
+        """
+        out = super().terms(model, nodes=nodes)
+        _, built = self._space(model)
+        square = built.scale**2
+        rho = self._values(model, "mass_density")
+        c_p = self._values(model, "specific_heat")
+        out.append(
+            Term(
+                "capacity",
+                "value",
+                coefficient=square * p0(built, rho * c_p),
+                derivatives={
+                    "mass_density": Derivative(lambda: square * c_p, holomorphic=False),
+                    "specific_heat": Derivative(
+                        lambda: square * rho, holomorphic=False
+                    ),
+                },
+            )
+        )
+        return out
+
+    def _start(
+        self, space: ngs.FESpace, free: np.ndarray, t0: np.ndarray
+    ) -> np.ndarray:
+        """The initial rise: zero, or the initial temperature less T0."""
+        start = self.spec.initial_temperature
+        if start is None:
+            return np.zeros_like(t0)
+        return np.where(free, self._constant(space, start) - t0, 0.0)
+
+    def _trajectory(self, handle: Handle, ndof: int) -> str:
+        """``"none"``, ``"full"`` or ``"checkpoints"``: what a kept forward stores.
+
+        Decided once, before stepping (ADR 0179): no trajectory when only the
+        sources are wanted (their gradient reads the step adjoints alone);
+        else every state when the handle and the trajectory fit
+        ``retain_memory`` alone (the test the cache stores with); else a
+        checkpoint every ceil(sqrt(steps)) steps, as a rerun forward does.
+        """
+        wanted = self.wanted_kinds
+        if wanted is not None and wanted <= SOURCE_KINDS:
+            return "none"
+        if self.rerun:
+            return "checkpoints"
+        trajectory = 8 * ndof * (self.spec.steps + 1)
+        held = _alone(Entry(physics=self.physics, handle=KeptHandle(handle)))
+        budget = retain_budget(self.options.retain_memory)
+        return "full" if held + trajectory <= budget else "checkpoints"
+
     # --- the static layout ----------------------------------------------------
 
     @property
     def _grid(self) -> tuple[float, np.ndarray, np.ndarray]:
         """dt, the waveform's start indices and the kept grid indices."""
-        problem = self.problem
+        problem = self.spec
         dt = problem.duration / problem.steps
         starts = np.array([round(t / dt) for t in problem._switches], np.int64)  # noqa: SLF001
         keep = problem.keep_fields
@@ -775,8 +1044,8 @@ class TransientThermalRule(ThermalRule):
     def scales(self) -> np.ndarray:
         """The waveform's value on each step's interval, ``(steps,)``."""
         _, starts, _ = self._grid
-        values = np.asarray(self.problem._scales, float)  # noqa: SLF001
-        which = np.searchsorted(starts, np.arange(self.problem.steps), side="right")
+        values = np.asarray(self._loads().scales, float)
+        which = np.searchsorted(starts, np.arange(self.spec.steps), side="right")
         return np.where(which > 0, values[np.maximum(which - 1, 0)], 0.0)
 
     def _layout(self) -> tuple:
@@ -784,7 +1053,9 @@ class TransientThermalRule(ThermalRule):
 
     def _trace_rows(self, mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
         """``(n_traces, ndof)`` twice: each trace is ``on_t @ T + on_rise @ rise``."""
-        traces = list(self.problem.traces.values())
+        # by the problem's names: a pytree round trip sorts the mapping's keys
+        held = self._loads().traces
+        traces = [held[name] for name in self.spec.traces]
         n = self._ndof()
         on_t, on_rise = np.zeros((len(traces), n)), np.zeros((len(traces), n))
         for k, trace in enumerate(traces):
@@ -806,7 +1077,7 @@ class TransientThermalRule(ThermalRule):
         initial temperature as the matching load, which K does not see.
         """
         uniform = self.boundaries.uniform
-        start = self.problem.initial_temperature
+        start = self.spec.initial_temperature
         if not self.loose.any() and uniform is not None:
             return self._constant(space, uniform)
         if self.loose.all() or not self.boundaries.sinks:
@@ -830,16 +1101,25 @@ class TransientThermalRule(ThermalRule):
             handle.free()
 
     def _stepper(
-        self, model: Model, built: EngineMesh, space: ngs.FESpace, dt: float
+        self,
+        model: Model,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        dt: float,
+        handle: Handle | None = None,
     ) -> Stepper:
-        """The prepared stepping operator of the options' time scheme."""
+        """The stepping operator of the options' time scheme.
+
+        Prepared here, unless ``handle`` holds it.
+        """
         scheme = self.options.time_scheme
         theta = self.options.theta
         mass = 2.0 / (GAMMA * dt) if scheme == "tr_bdf2" else 1.0 / (theta * dt)
         capacity = _capacity(self, model, built, space)
-        handle = self._prepare(
-            model, built, space, mass=mass, tolerance=self.options.tolerance
-        )
+        if handle is None:
+            handle = self._prepare(
+                model, built, space, mass=mass, tolerance=self.options.tolerance
+            )
         return Stepper(
             handle=handle,
             capacity=capacity,
@@ -876,11 +1156,13 @@ class TransientThermalRule(ThermalRule):
         Returns:
             ``{"trace:<name>": (steps + 1,), "kept_rise": (n_kept, ndof),
             "source_free": (ndof,)}``, and, if ``keep``, the cache entry
-            (the stepping operator in a `KeptHandle`) or ``None``.
+            (the stepping operator in a `KeptHandle`; ``fields`` the states
+            and T0, unless only the sources are wanted, see `_trajectory`)
+            or ``None``.
         """
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
-        density = np.asarray(source_density(self.problem, mesh))
+        density = np.asarray(self._loads().density)
         _check_heat_inside(mesh, self.active, density)
         dt, _, kept = self._grid
         scales = self.scales()
@@ -892,12 +1174,11 @@ class TransientThermalRule(ThermalRule):
             source = self._source_load(built, space, density)
             t0 = self._source_free(model, built, space)
             stepper = self._stepper(model, built, space, dt)
-            start = self.problem.initial_temperature
-            if start is None:
-                u = np.zeros_like(t0)
-            else:
-                u = np.where(stepper.free, self._constant(space, start) - t0, 0.0)
-            steps = self.problem.steps
+            u = self._start(space, stepper.free, t0)
+            steps = self.spec.steps
+            layout = self._trajectory(stepper.handle, len(t0)) if keep else "none"
+            stride = 1 if layout == "full" else _stride(steps)
+            states = [] if layout == "none" else [u]
             offset = on_t @ t0
             traces = np.empty((steps + 1, len(rows)))
             traces[0] = rows @ u + offset
@@ -910,27 +1191,310 @@ class TransientThermalRule(ThermalRule):
                 traces[n + 1] = rows @ u + offset
                 if n + 1 in slot:
                     rises[slot[n + 1]] = u
+                if layout != "none" and (n + 1) % stride == 0 and n + 1 < steps:
+                    states.append(u)
+            if layout == "full":
+                states.append(u)
         outputs = {
-            f"trace:{name}": traces[:, k] for k, name in enumerate(self.problem.traces)
+            f"trace:{name}": traces[:, k] for k, name in enumerate(self.spec.traces)
         }
         outputs["kept_rise"] = rises
         outputs["source_free"] = t0
         entry = None
         if keep:
-            entry = Entry(physics=self.physics, handle=KeptHandle(stepper.handle))
+            fields = {}
+            if layout != "none":
+                # the trajectory (every state, or a checkpoint every stride
+                # steps) and T0: the material and trace-weight pairs read them
+                fields = {
+                    "states": np.asarray(states),
+                    "stride": np.asarray([stride]),
+                    "source_free": t0,
+                }
+            entry = Entry(
+                physics=self.physics, handle=KeptHandle(stepper.handle), fields=fields
+            )
         else:
             stepper.handle.free()
         return outputs, entry
+
+    def _reverse(
+        self, entry: Entry, stepper: Stepper, scales: np.ndarray, source: np.ndarray
+    ) -> Any:
+        """``(n, u_n, stage_n, u_n+1)`` for n = steps - 1 down to 0.
+
+        From the kept trajectory, or segment by segment from its checkpoints
+        (one forward step per state, ADR 0165). TR-BDF2's stage is
+        recomputed; a theta step has none.
+        """
+        steps = self.spec.steps
+        states = entry.fields["states"]
+        stride = int(entry.fields["stride"][0])
+        tr_bdf2 = stepper.scheme == "tr_bdf2"
+        for begin in reversed(range(0, steps, stride)):
+            end = min(begin + stride, steps)
+            if stride == 1:
+                segment = [states[begin], states[end]]
+                stages = [
+                    stepper.stage(states[begin], scales[begin] * source)
+                    if tr_bdf2
+                    else None
+                ]
+            else:
+                segment, stages = [states[begin // stride]], []
+                for n in range(begin, end):
+                    nxt, stage = stepper.step(segment[-1], scales[n] * source)
+                    segment.append(nxt)
+                    stages.append(stage)
+            for n in reversed(range(begin, end)):
+                k = n - begin
+                yield n, segment[k], stages[k], segment[k + 1]
+
+    def backward(  # noqa: PLR0912, PLR0915
+        self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
+    ) -> list[FieldPair | LoadField | Integrated]:
+        """The discrete adjoint of the exact scheme, run backwards (ADR 0165).
+
+        One reverse step per forward step on the forward's stepping operator
+        ``A = K + m C`` (symmetric): TR-BDF2 solves ``A mu2 = ubar`` and ``A
+        mu1 = m c1 C mu2`` and passes ``(2 m C - A) mu1 - m c0 C mu2`` back;
+        theta solves ``A mu = ubar`` and passes ``(m C - (1 - theta) A) mu /
+        theta`` back. The step's load adjoint ``d_n`` (``2 mu1 + mu2``, or
+        ``mu / theta``) gives the source density's load ``sum_n s_n d_n``
+        and each waveform scale's ``F . d_n`` over its steps; with the
+        states, the conductivity and heat-capacity pairs of every step are
+        contracted as the sweep goes (`Integrated`). The cotangents on T0
+        (the source-free output, the traces' temperature part and a
+        uniform start's ``-ubar_0``) add the T0 pair.
+        """
+        spec = self.spec
+        loads = self._loads()
+        wanted = self.wanted_kinds or frozenset()
+        properties = {k[2] for k in wanted if k[0] == "material"}
+        trace_kinds = {k for k in wanted if k[0] == "problem"} - SOURCE_KINDS
+        steps = spec.steps
+        dt, starts, kept = self._grid
+        scales = self.scales()
+        names = list(spec.traces)
+        on_t, on_rise = self._trace_rows(model.mesh)
+        rows = on_t + on_rise
+        ct_tr = np.zeros((steps + 1, len(names)))
+        for k, name in enumerate(names):
+            if f"trace:{name}" in cotangents:
+                ct_tr[:, k] = np.asarray(cotangents[f"trace:{name}"], dtype=float)
+        ct_kept = cotangents.get("kept_rise")
+        slot = {int(n): k for k, n in enumerate(kept)}
+
+        def direct(n: int) -> np.ndarray:
+            """dJ/du_n read directly (traces and kept fields)."""
+            out = rows.T @ ct_tr[n]
+            if ct_kept is not None and n in slot:
+                out = out + np.asarray(ct_kept[slot[n]], dtype=float)
+            return out
+
+        order = self.options.order
+        with task_manager(self.options.threads):
+            space, built = self._space(model)
+            domain = self._domain(model, built)
+            free = free_mask(space.FreeDofs(), space.ndof)
+            source = self._source_load(built, space, np.asarray(loads.density))
+            handle = None if entry.handle is None else entry.handle.handle
+            reused = handle is not None
+            stepper = self._stepper(model, built, space, dt, handle=handle)
+            if handle is None:
+                entry.handle = KeptHandle(stepper.handle)
+            terms = self.terms(model, nodes=False) if properties else []
+            pair_terms = [
+                t for t in terms if any(p in t.derivatives for p in properties)
+            ]
+            m, c = stepper.mass, stepper.capacity
+            tr_bdf2 = stepper.scheme == "tr_bdf2"
+            theta = stepper.theta
+
+            def adjoint(rhs: np.ndarray) -> np.ndarray:
+                rhs = np.where(free, rhs, 0.0)
+                return self._adjoint(stepper.handle, rhs[:, None], reused=reused)[:, 0]
+
+            states = bool(properties or trace_kinds)
+            sweep: Any = (
+                self._reverse(entry, stepper, scales, source)
+                if states
+                else ((n, None, None, None) for n in reversed(range(steps)))
+            )
+            ubar = direct(steps)
+            load = np.zeros(space.ndof)
+            per_step = np.zeros(steps)
+            summed = np.zeros((space.ndof, len(names)))
+            integrals: dict[str, np.ndarray] = {}
+            batch: list[FieldPair] = []
+
+            def flush() -> None:
+                for name, values in element_integrals(model, batch, pair_terms).items():
+                    integrals[name] = integrals.get(name, 0.0) + values
+                batch.clear()
+
+            for n, u, stage, nxt in sweep:
+                if tr_bdf2:
+                    g = (2.0 - GAMMA) * GAMMA
+                    c1, c0 = 1.0 / g, (1.0 - GAMMA) ** 2 / g
+                    mu2 = adjoint(ubar)
+                    mu1 = adjoint(m * c1 * (c @ mu2))
+                    back = (
+                        2.0 * m * (c @ mu1)
+                        - stepper.handle.apply(mu1)
+                        - m * c0 * (c @ mu2)
+                    )
+                    d = 2.0 * mu1 + mu2
+                    if properties:
+                        left = np.stack([-mu1, -mu2], axis=1)
+                        batch += [
+                            FieldPair(
+                                space,
+                                left,
+                                np.stack([stage + u, nxt], axis=1),
+                                {"conduction": 1.0},
+                                order,
+                                domain,
+                            ),
+                            FieldPair(
+                                space,
+                                left,
+                                m
+                                * np.stack(
+                                    [stage - u, nxt - c1 * stage + c0 * u], axis=1
+                                ),
+                                {"capacity": 1.0},
+                                order,
+                                domain,
+                            ),
+                        ]
+                else:
+                    mu = adjoint(ubar)
+                    back = (m / theta) * (c @ mu) - (
+                        (1.0 - theta) / theta
+                    ) * stepper.handle.apply(mu)
+                    d = mu / theta
+                    if properties:
+                        left = -mu[:, None]
+                        batch += [
+                            FieldPair(
+                                space,
+                                left,
+                                (nxt + ((1.0 - theta) / theta) * u)[:, None],
+                                {"conduction": 1.0},
+                                order,
+                                domain,
+                            ),
+                            FieldPair(
+                                space,
+                                left,
+                                (m * (nxt - u))[:, None],
+                                {"capacity": 1.0},
+                                order,
+                                domain,
+                            ),
+                        ]
+                if properties and len(batch) >= 8:
+                    flush()
+                if trace_kinds:
+                    if n == steps - 1:
+                        summed += np.outer(nxt, ct_tr[steps])
+                    summed += np.outer(u, ct_tr[n])
+                load += scales[n] * d
+                per_step[n] = source @ d
+                ubar = np.where(free, back, 0.0) + direct(n)
+            if batch:
+                flush()
+            # the cotangent of T0 (dJ/dT0): read directly, and through a
+            # uniform start u_0 = P (T_start - T0)
+            needs_t0 = (properties and "thermal_conductivity" in properties) or (
+                trace_kinds
+            )
+            pairs: list[FieldPair | LoadField | Integrated] = []
+            if integrals:
+                pairs.append(Integrated(integrals))
+            if needs_t0:
+                t0 = entry.fields["source_free"]
+                ct0 = on_t.T @ ct_tr.sum(axis=0)
+                if "source_free" in cotangents:
+                    ct0 = ct0 + np.asarray(cotangents["source_free"], dtype=float)
+                if spec.initial_temperature is not None:
+                    ct0 = ct0 - np.where(free, ubar, 0.0)
+                ct0 = np.where(free, ct0, 0.0)
+                if "thermal_conductivity" in properties and self._t0_solved():
+                    pairs.append(
+                        self._source_free_pair(
+                            model, built, space, ct0, t0, loose=self.loose
+                        )
+                    )
+                if trace_kinds:
+                    self._explicit = self._trace_gradients(
+                        loads, summed, ct_tr.sum(axis=0), t0
+                    )
+            if LOAD_KIND in wanted:
+                pairs.append(LoadField(space, load, order, domain, length_power=2))
+        explicit = getattr(self, "_explicit", {})
+        if ("problem", ".scales") in wanted:
+            which = np.searchsorted(starts, np.arange(steps), side="right") - 1
+            values = np.zeros(len(starts))
+            np.add.at(values, which[which >= 0], per_step[which >= 0])
+            explicit = {**explicit, ("problem", ".scales"): values}
+        self._explicit = explicit
+        return pairs
+
+    def _t0_solved(self) -> bool:
+        """Whether T0 depends on the conductivity (else it is one constant)."""
+        if not self.loose.any() and self.boundaries.uniform is not None:
+            return False
+        return not (self.loose.all() or not self.boundaries.sinks)
+
+    def _trace_gradients(
+        self,
+        loads: Loads,
+        summed: np.ndarray,
+        weights: np.ndarray,
+        t0: np.ndarray,
+    ) -> dict[tuple, np.ndarray]:
+        """The cotangents of the traces' own leaves (a section's weights).
+
+        A trace is linear in its leaves and in the fields, so ``sum_n ct_n
+        trace(T_n, rise_n)`` is the trace of the cotangent-weighted sums of
+        the fields: one reverse pass of its ``_sample`` per trace.
+        """
+        out: dict[tuple, np.ndarray] = {}
+        for k, name in enumerate(self.spec.traces):
+            trace = loads.traces[name]
+            if not jax.tree_util.tree_leaves(trace):
+                continue
+            rise = self._field(summed[:, k], "dT")
+            temperature = self._field(summed[:, k] + weights[k] * t0, "T")
+
+            def sample(
+                tr: Any, temperature: Field = temperature, rise: Field = rise
+            ) -> Any:
+                return jnp.reshape(tr._sample(temperature, rise), ())  # noqa: SLF001
+
+            _, pull = jax.vjp(sample, trace)
+            (grad,) = pull(jnp.ones(()))
+            for path, leaf in jax.tree_util.tree_flatten_with_path(
+                Loads(density=None, traces={name: grad})
+            )[0]:
+                out[input_kind(path, "problem")] = np.asarray(leaf)
+        return out
+
+    def explicit_problem(self) -> dict[tuple, np.ndarray]:
+        """The waveform scales' and the traces' cotangents of the last backward."""
+        return getattr(self, "_explicit", {})
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each forward output (from the mesh topology)."""
         del model
         n = self._ndof()
-        steps = self.problem.steps
+        steps = self.spec.steps
         _, _, kept = self._grid
         specs = {
             f"trace:{name}": jax.ShapeDtypeStruct((steps + 1,), jnp.float64)
-            for name in self.problem.traces
+            for name in self.spec.traces
         }
         specs["kept_rise"] = jax.ShapeDtypeStruct((len(kept), n), jnp.float64)
         specs["source_free"] = jax.ShapeDtypeStruct((n,), jnp.float64)
@@ -938,7 +1502,7 @@ class TransientThermalRule(ThermalRule):
 
     def result(self, outputs: dict) -> TransientThermalResult:
         """The public result from the forward outputs."""
-        problem = self.problem
+        problem = self.spec
         dt, _, kept = self._grid
         _, power = self._heat()
         return TransientThermalResult(
