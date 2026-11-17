@@ -222,6 +222,25 @@ complete prefixes of a software stack by `check`:
 - allowed differences, printed every time: `arithmetics`, `openmp`,
   `orderings`, `metis` (patch level), `blas.threading`.
 
+## The stack venv (`pyenv`)
+
+`pyenv-<python version>` is a venv template, not an environment to activate
+(ADR 0207): gfem's runtime dependencies at `uv.lock`'s pins, mpi4py built
+with the toolchain's `MPICC`, `stack.pth` naming the `python_path` of NGSolve
+and PETSc, and pip `mkl` only when the toolchain's BLAS is MKL and its
+`mkl_rt`, `mkl_core` and `mkl_gnu_thread` are byte-identical to
+`$MKLROOT/lib`. Its `activate.sh` exports `STACK_PYENV` and takes the venv's
+`bin` and `lib` off `PATH` and `LD_LIBRARY_PATH` again. A run copies it:
+
+```bash
+cp -al "$STACK_PYENV" run/env
+run/env/bin/python -m pip install --no-index --no-deps gfem-*.whl
+```
+
+The smoke step does that copy (beside the prefix, same file system) with the
+gfem wheel `$PYENV_GFEM_WHEEL`, else the one wheel under
+`$STACKS_ROOT/verdict/gfem/*/`, and solves a tiny electrostatic case.
+
 ## Using a stack
 
 ```bash
