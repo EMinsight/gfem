@@ -260,6 +260,12 @@ def test_a_slice_of_an_on_off_run_checks_only_its_own_switches(slab):
             gfem.time_constant(t[part], top[part], switch_times=result.switch_times)
 
 
+def test_a_temperature_trace_needs_the_temperature(slab):
+    rise = _run(slab, steps=4, keep_fields=True).rise(0.0)
+    with pytest.raises(ValueError, match="reads the temperature"):
+        gfem.Trace.mean("slab")._sample(None, rise)
+
+
 def test_an_insulated_body_heats_at_its_power_over_its_capacity(slab):
     # no heat sink: the energy balance of the scheme is exact
     model = _model(slab, boundaries=[])

@@ -436,7 +436,7 @@ class Trace:
 
     unit: str = "K"
 
-    def _sample(self, temperature: Field, rise: Field) -> jax.Array:
+    def _sample(self, temperature: Field | None, rise: Field) -> jax.Array:
         """The trace's value on one temperature and its rise (linear in both).
 
         A solve records it at every step through its weights on the
@@ -444,7 +444,8 @@ class Trace:
         method (`gfem._engine.thermal.trace_rows`).
 
         Args:
-            temperature: The absolute temperature field, K.
+            temperature: The absolute temperature field, K, or None for a
+                trace of the rise alone (a thermo-optic phase).
             rise: The temperature rise above the source-free temperature, K.
         """
         raise NotImplementedError(f"{type(self).__name__} has no value.")
@@ -507,9 +508,11 @@ class _FieldTrace(Trace):
     _regions: tuple[str, ...] = ()
     unit: str = "K"
 
-    def _sample(self, temperature: Field, rise: Field) -> jax.Array:
+    def _sample(self, temperature: Field | None, rise: Field) -> jax.Array:
         """The temperature at the point, or its mean over the regions."""
         del rise
+        if temperature is None:
+            raise ValueError(f"{self!r} reads the temperature, and none was given.")
         if self._point is not None:
             return temperature.at(self._point)
         from gfem.measurements import region_mean
