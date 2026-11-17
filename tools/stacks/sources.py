@@ -16,6 +16,7 @@ Command line (``python3 sources.py COMMAND ...``)::
     git-repositories           URL TAG of each GIT_REPOSITORY/GIT_TAG pair
     gitmodules                 PATH URL of each submodule
     mumps-tarball TAG          FILE URL SHA256 of the MUMPS release of a scivision tag
+    url-tarballs               FILE URL MD5 of each URL/URL_MD5 download
     tarball-name URL           the mirror file name of a tarball URL
 """
 
@@ -191,6 +192,18 @@ def mumps_tarball(text: str, tag: str) -> list[tuple[str, str, str]]:
     return [(name, f"https://mumps-solver.org/{name}", digests[version])]
 
 
+_URL_MD5 = re.compile(r"\bURL\s+(\S+)\s+URL_MD5\s+([0-9a-f]{32})")
+
+
+def url_tarballs(text: str) -> list[tuple[str, str, str]]:
+    """The ``URL``/``URL_MD5`` downloads of a CMake file (netgen's METIS).
+
+    Returns:
+        One ``(FILE, URL, MD5)`` per download, FILE as named in the mirror.
+    """
+    return [(tarball_name(url), url, md5) for url, md5 in _URL_MD5.findall(text)]
+
+
 #: The command line: name, number of arguments after the name, handler. A
 #: handler reads the file text from standard input unless it takes no text.
 COMMANDS = {
@@ -200,6 +213,7 @@ COMMANDS = {
     "git-repositories": (0, git_repositories),
     "gitmodules": (0, gitmodules),
     "mumps-tarball": (1, mumps_tarball),
+    "url-tarballs": (0, url_tarballs),
 }
 
 

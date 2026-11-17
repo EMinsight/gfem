@@ -44,6 +44,10 @@ stack.sh check  [STACK [PKG [VERSION]]]    # read-only
   resources) of each package of that stack. It fails when the complete
   prefixes of one software stack name different toolchain hashes, or when
   their `mumps` blocks break the rules below.
+  With `STACK` it also fails when `packages/petsc.sh` drifts from
+  `tools/petsc_wheelhouse.sh` (PETSc/SLEPc version, sdist and `--download`
+  tarball sha256; ADR 0209). The wheelhouse is read beside the recipe tree in
+  a checkout, or inside it in a shipped tree (the harness copies it there).
 - `STACK_PYTHON` names the Python that runs `provenance.py` (default
   `python3`, 3.9 or newer, standard library only).
 

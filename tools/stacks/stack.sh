@@ -630,6 +630,19 @@ write_activate() {
   } >"$file"
 }
 
+# check_petsc_contract: packages/petsc.sh against tools/petsc_wheelhouse.sh
+# (ADR 0209): beside the recipe tree in a checkout, inside it when shipped.
+check_petsc_contract() {
+  local wheelhouse
+  for wheelhouse in "$STACK_HOME/../petsc_wheelhouse.sh" "$STACK_HOME/petsc_wheelhouse.sh"; do
+    if [[ -f $wheelhouse ]]; then
+      prov petsc-contract "$wheelhouse" "$STACK_HOME/packages/petsc.sh"
+      return
+    fi
+  done
+  echo "petsc contract: not checked (no petsc_wheelhouse.sh beside or in $STACK_HOME)"
+}
+
 cmd_check() {
   [[ $# -le 3 ]] || usage
   local stacks=() d
@@ -652,6 +665,7 @@ cmd_check() {
 
   local stack=$1 status=0
   prov check "$STACKS_ROOT/$stack" || status=$?
+  check_petsc_contract || status=1
   [[ -f $STACK_HOME/toolchains/$stack.sh ]] || return "$status"
   local frozen=$STACKS_ROOT/$stack/toolchain.sh
   if [[ -f $frozen ]] && ! cmp -s "$frozen" "$STACK_HOME/toolchains/$stack.sh"; then

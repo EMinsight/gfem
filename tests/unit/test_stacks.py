@@ -960,3 +960,228 @@ def test_an_openblas_build_whose_openmp_library_is_not_openmp_fails_its_smoke(tm
     assert result.returncode != 0
     assert "openblas_omp" in result.stderr
     assert not (prefix / "provenance.json").exists()
+
+
+# --- package petsc: gfem's PETSc contract (ADR 0067, ADR 0209) ----------------
+
+WHEELHOUSE = STACKS.parent / "petsc_wheelhouse.sh"
+PETSC_RECIPE = STACKS / "packages" / "petsc.sh"
+
+
+def test_the_native_petsc_recipe_follows_the_wheelhouses_contract():
+    drift = provenance.petsc_contract_drift(
+        WHEELHOUSE.read_text(), PETSC_RECIPE.read_text()
+    )
+
+    assert drift == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "named"),
+    [
+        ("PETSC_VERSION=3.26.0", "PETSC_VERSION=3.26.1", "version"),
+        (
+            "659c9b57646b5a003ac618baa1faf9dd",
+            "0000000000000000000000000000000",
+            "MUMPS",
+        ),
+        ("SHA256_slepc=a2f4cc2a", "SHA256_slepc=00000000", "slepc"),
+    ],
+)
+def test_a_wheelhouse_that_moves_away_from_the_native_recipe_is_drift(old, new, named):
+    wheelhouse = WHEELHOUSE.read_text()
+    assert old in wheelhouse
+
+    drift = provenance.petsc_contract_drift(
+        wheelhouse.replace(old, new), PETSC_RECIPE.read_text()
+    )
+
+    assert any(named in line for line in drift), drift
+
+
+def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(tmp_path):
+    import shutil
+
+    tools = tmp_path / "tools"
+    shutil.copytree(
+        STACKS, tools / "stacks", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    wheelhouse = WHEELHOUSE.read_text()
+    (tools / "petsc_wheelhouse.sh").write_text(wheelhouse)
+    env = {**os.environ, "STACKS_ROOT": str(tmp_path / "root")}
+    run = [
+        "bash",
+        str(tools / "stacks" / "stack.sh"),
+        "check",
+        "native-oss",
+    ]
+
+    agreed = subprocess.run(run, env=env, capture_output=True, text=True, check=False)
+    (tools / "petsc_wheelhouse.sh").write_text(
+        wheelhouse.replace("PETSC_VERSION=3.26.0", "PETSC_VERSION=3.26.1")
+    )
+    drifted = subprocess.run(run, env=env, capture_output=True, text=True, check=False)
+
+    assert agreed.returncode == 0, agreed.stdout + agreed.stderr
+    assert "petsc contract: matches" in agreed.stdout
+    assert drifted.returncode != 0
+    assert "3.26.1" in drifted.stdout
+
+
+# --- package ngsolve ----------------------------------------------------------
+
+#: netgen v6.2.2608's ``cmake/external_projects/metis.cmake`` (excerpt): the
+#: METIS a ``USE_MPI`` netgen downloads at build time.
+NETGEN_METIS = """
+ExternalProject_Add(project_metis
+  PREFIX ${CMAKE_CURRENT_BINARY_DIR}/dependencies
+  URL https://bitbucket.org/petsc/pkg-metis/get/v5.1.0-p12.tar.gz
+  URL_MD5 6cd66f75f88dfa2cf043de011f85d8bc
+  DOWNLOAD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external_dependencies
+"""
+
+
+def test_a_url_download_of_cmake_is_read_with_its_md5_and_mirror_name():
+    assert sources.url_tarballs(NETGEN_METIS) == [
+        (
+            "petsc-pkg-metis-v5.1.0-p12.tar.gz",
+            "https://bitbucket.org/petsc/pkg-metis/get/v5.1.0-p12.tar.gz",
+            "6cd66f75f88dfa2cf043de011f85d8bc",
+        )
+    ]
+
+
+#: What a native-oss PETSc build leaves for its ``mumps`` block: excerpts of
+#: the installed headers, MUMPS's ``Makefile.inc``, ``nm -D`` and ``ldd`` of
+#: libpetsc, the ``--download`` tarballs.
+PETSC_BUILD = {
+    "petscconf.h": (
+        "#define PETSC_USE_COMPLEX 1\n#define PETSC_USE_64BIT_INDICES 1\n"
+        "#define PETSC_HAVE_MUMPS 1\n#define PETSC_HAVE_METIS 1\n"
+        "#define PETSC_HAVE_PTSCOTCH 1\n#define PETSC_HAVE_SCALAPACK 1\n"
+    ),
+    "mumps_int_def.h": (
+        "#if ! defined(MUMPS_INTSIZE32)\n#define MUMPS_INTSIZE32\n#endif\n"
+    ),
+    "zmumps_c.h": '#define MUMPS_VERSION "5.9.1"\n',
+    "scotch.h": (
+        "#define SCOTCH_VERSION 7\n#define SCOTCH_RELEASE 0\n"
+        "#define SCOTCH_PATCHLEVEL 18\n"
+    ),
+    "Makefile.inc": (
+        "FC = mpif90\n"
+        "OPTF = -fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch\n"
+    ),
+    "dynsym.txt": (
+        "0000000000123456 T zmumps_c\n0000000000123457 T dmumps_c\n"
+        "0000000000123458 T smumps_c\n0000000000123459 T cmumps_c\n"
+        "                 U zgemm_\n                 U dgemm_\n"
+    ),
+    "needed.txt": (
+        "\tlibopenblas.so.0 => /stacks/native-oss/openblas-0.3.34/lib/libopenblas.so.0"
+        " (0x00007f)\n\tlibmpi.so.40 => /apps/openmpi/lib/libmpi.so.40 (0x00007f)\n"
+    ),
+    "compiler.txt": "gfortran 12.3.0\n",
+    "tarballs.txt": (
+        f"{'1' * 64}  /src/tarballs/MUMPS_5.9.1.tar.gz\n"
+        f"{'2' * 64}  /src/tarballs/scalapack-v2.2.3.tar.gz\n"
+        f"{'3' * 64}  /src/tarballs/scotch-v7.0.18.tar.gz\n"
+        f"{'4' * 64}  /src/tarballs/petsc-pkg-metis-v5.1.0-p12.tar.gz\n"
+    ),
+}
+NATIVE_OSS = {
+    "FFLAGS": "-O3 -march=sapphirerapids",
+    "STACK_BLAS_VENDOR": "openblas",
+    "STACK_BLAS_VERSION": "0.3.34",
+}
+
+
+def test_a_petsc_build_records_its_mumps_as_ticket_05_compares_it():
+    block, errors = provenance.petsc_mumps(PETSC_BUILD, NATIVE_OSS)
+
+    assert errors == []
+    assert block == {
+        "version": "5.9.1",
+        "tarball_sha256": "1" * 64,
+        "intsize": 32,
+        "gemmt": False,
+        "blas": {"vendor": "openblas", "version": "0.3.34", "threading": "pthreads"},
+        "scalapack": "2.2.3",
+        "compiler": "gfortran 12.3.0",
+        "fflags": "-O3 -march=sapphirerapids",
+        "arithmetics": ["c", "d", "s", "z"],
+        "openmp": False,
+        "orderings": ["amd", "metis", "pord", "ptscotch"],
+        "metis": "5.1.0-p12",
+        "ptscotch": "7.0.18",
+        "index_bits": 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("file", "old", "new", "named"),
+    [
+        ("petscconf.h", "#define PETSC_USE_64BIT_INDICES 1\n", "", "64-bit"),
+        ("petscconf.h", "", "#define PETSC_HAVE_PARMETIS 1\n", "parmetis"),
+        ("scotch.h", "PATCHLEVEL 18", "PATCHLEVEL 15", "7.0.15"),
+        ("dynsym.txt", "", "                 U zgemmt_\n", "gemmt"),
+        ("Makefile.inc", "-O3 -march=sapphirerapids ", "-O2 ", "OPTF"),
+        ("needed.txt", "libopenblas.so.0", "libopenblas_omp.so.0", "pthreads"),
+        ("needed.txt", "openblas-0.3.34", "openblas-0.3.33", "0.3.34"),
+        ("zmumps_c.h", "5.9.1", "5.8.0", "5.8.0"),
+    ],
+)
+def test_a_petsc_build_that_breaks_adr_0067_or_0209_is_refused(file, old, new, named):
+    build = dict(PETSC_BUILD)
+    build[file] = build[file].replace(old, new) if old else build[file] + new
+    assert build[file] != PETSC_BUILD[file]
+
+    _, errors = provenance.petsc_mumps(build, NATIVE_OSS)
+
+    assert any(named in error for error in errors), errors
+
+
+#: The line of PETSc 3.26.0's ``config/BuildSystem/config/packages/MUMPS.py``
+#: that gives MUMPS ``-DGEMMT_AVAILABLE`` (tools/petsc_wheelhouse.sh).
+GEMMT_LINE = "    if self.blasLapack.checkForRoutine('dgemmt'):\n"
+
+
+def _patch_gemmt(
+    tmp_path: Path, mumps_py: str
+) -> tuple[subprocess.CompletedProcess, Path]:
+    path = tmp_path / "petsc" / "config" / "BuildSystem" / "config" / "packages"
+    path.mkdir(parents=True)
+    (path / "MUMPS.py").write_text(mumps_py)
+    result = subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            'source "$1"; petsc_patch_gemmt "$2"',
+            "-",
+            str(PETSC_RECIPE),
+            str(tmp_path / "petsc"),
+        ],
+        env={**os.environ, "STACK_PYTHON": sys.executable},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, path / "MUMPS.py"
+
+
+def test_mumps_in_petsc_never_gets_gemmt(tmp_path):
+    result, mumps_py = _patch_gemmt(tmp_path, f"x = 1\n{GEMMT_LINE}      y = 2\n")
+
+    assert result.returncode == 0, result.stderr
+    text = mumps_py.read_text()
+    assert "checkForRoutine('dgemmt')" not in text
+    assert "    if False:  # gfem: OpenBLAS's ZGEMMT overflows\n" in text
+
+
+@pytest.mark.parametrize("hits", [0, 2])
+def test_a_petsc_whose_gemmt_check_moved_stops_the_build(tmp_path, hits):
+    result, mumps_py = _patch_gemmt(tmp_path, "x = 1\n" + GEMMT_LINE * hits)
+
+    assert result.returncode != 0
+    assert f"found {hits} times" in result.stderr
+    assert mumps_py.read_text() == "x = 1\n" + GEMMT_LINE * hits

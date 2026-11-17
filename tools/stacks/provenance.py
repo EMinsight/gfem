@@ -17,6 +17,13 @@ Command line (``python3 provenance.py COMMAND ...``)::
                                MODULES: output of ``module -t list``)
     recipe-sha256 DIR PKG      print the recipe hash of package PKG in tree DIR
     sha256 FILE                print a file's sha256
+    petsc-contract WHEELHOUSE RECIPE
+                               compare packages/petsc.sh with tools/petsc_wheelhouse.sh;
+                               exit 1 on drift (ADR 0209)
+    petsc-mumps PREFIX BUILD_DIR
+                               print the ``mumps`` block of a PETSc prefix (headers in
+                               PREFIX/include, the other PETSC_BUILD_FILES in
+                               BUILD_DIR); exit 1 if it breaks ADR 0067's gates
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -274,6 +282,255 @@ def tofu(sums: Path, path: Path) -> str:
     return "verified"
 
 
+_SCALAR = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=([^\s(#]+)", re.MULTILINE)
+_ARRAY = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=\(([^)]*)\)", re.MULTILINE)
+_PIN = re.compile(
+    r"^\s*([a-z0-9]+)-([0-9][0-9.]*)\)\s*echo\s+([0-9a-f]{64})", re.MULTILINE
+)
+
+
+def _bash_scalars(text: str) -> dict[str, str]:
+    """The plain ``NAME=value`` assignments of a bash file (first one wins)."""
+    found: dict[str, str] = {}
+    for name, value in _SCALAR.findall(text):
+        found.setdefault(name, value.strip("\"'"))
+    return found
+
+
+def _bash_tarballs(text: str, name: str) -> dict[str, list[str]]:
+    """``NAME URL [SHA256]`` entries of the bash array ``name``, keyed by file name."""
+    for array, body in _ARRAY.findall(text):
+        if array == name:
+            entries = [line.split() for line in re.findall(r'"([^"]*)"', body)]
+            return {entry[0]: entry[1:] for entry in entries if entry}
+    return {}
+
+
+def petsc_contract_drift(wheelhouse: str, recipe: str) -> list[str]:
+    """Where ``packages/petsc.sh`` differs from ``tools/petsc_wheelhouse.sh``.
+
+    The native recipe copies the wheelhouse's ADR 0067 contract (ADR 0209):
+    the same PETSc/SLEPc version, the same sdists and the same ``--download``
+    tarballs (by URL and sha256). The wheelhouse's OpenBLAS is the one
+    exception: a native stack links its own BLAS.
+
+    Args:
+        wheelhouse: The text of ``tools/petsc_wheelhouse.sh``.
+        recipe: The text of ``tools/stacks/packages/petsc.sh``.
+
+    Returns:
+        One line per difference; empty when they agree.
+    """
+    house, ours = _bash_scalars(wheelhouse), _bash_scalars(recipe)
+    version = ours.get("VERSION")
+    drift = [
+        f"version: petsc_wheelhouse.sh {name}={house.get(name)}, "
+        f"packages/petsc.sh VERSION={version}"
+        for name in ("PETSC_VERSION", "SLEPC_VERSION")
+        if house.get(name) != version
+    ]
+    pins = {
+        package: digest
+        for package, pinned, digest in _PIN.findall(recipe)
+        if pinned == version
+    }
+    drift += [
+        f"{package} sdist sha256: petsc_wheelhouse.sh "
+        f"{house.get('SHA256_' + package)}, packages/petsc.sh {pins.get(package)}"
+        for package in ("petsc", "petsc4py", "slepc", "slepc4py")
+        if house.get(f"SHA256_{package}") != pins.get(package)
+    ]
+    native = _bash_tarballs(recipe, "PETSC_TARBALLS")
+    drift += [
+        f"{name}: petsc_wheelhouse.sh {' '.join(entry)}, "
+        f"packages/petsc.sh {' '.join(native.get(name, ['(none)']))}"
+        for name, entry in _bash_tarballs(wheelhouse, "TARBALLS").items()
+        if not name.startswith("OpenBLAS-") and native.get(name) != entry
+    ]
+    return drift
+
+
+def _defined(header: str, name: str) -> bool:
+    return re.search(rf"^\s*#\s*define\s+{name}\b", header, re.MULTILINE) is not None
+
+
+def _define_int(header: str, name: str) -> int | None:
+    match = re.search(rf"^\s*#\s*define\s+{name}\s+(\d+)", header, re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+#: The files ``petsc_mumps`` reads, as the PETSc recipe saves them.
+PETSC_BUILD_FILES = (
+    "petscconf.h",
+    "mumps_int_def.h",
+    "zmumps_c.h",
+    "scotch.h",
+    "Makefile.inc",
+    "dynsym.txt",
+    "needed.txt",
+    "compiler.txt",
+    "tarballs.txt",
+)
+#: PT-Scotch before 7.0.18 crashes MUMPS's parallel analysis (ADR 0067).
+PTSCOTCH_MIN = (7, 0, 18)
+
+
+def _petsc_tarballs(text: str, errors: list[str]) -> dict[str, tuple[str, str]]:
+    """Version and sha256 of each ``--download`` tarball, from ``sha256sum`` lines."""
+    tarballs = {}
+    for line in text.splitlines():
+        if line.strip():
+            digest, path = line.split(None, 1)
+            tarballs[Path(path.strip()).name] = digest
+    found = {}
+    for key, pattern in (
+        ("mumps", r"MUMPS_([0-9.]+)\.tar\.gz"),
+        ("scalapack", r"scalapack-v([0-9.]+)\.tar\.gz"),
+        ("ptscotch", r"scotch-v([0-9.]+)\.tar\.gz"),
+        ("metis", r"petsc-pkg-metis-v([0-9.]+-p[0-9]+)\.tar\.gz"),
+    ):
+        matches = [
+            (match.group(1), digest)
+            for name, digest in tarballs.items()
+            if (match := re.fullmatch(pattern, name))
+        ]
+        if not matches:
+            errors.append(f"no --download tarball matching {pattern}")
+        found[key] = matches[0] if matches else ("", "")
+    return found
+
+
+#: ``petscconf.h`` defines gfem's PETSc must have (ADR 0067), with their gate.
+PETSC_REQUIRED = (
+    ("PETSC_USE_COMPLEX", "complex scalars"),
+    ("PETSC_USE_64BIT_INDICES", "64-bit indices"),
+    ("PETSC_HAVE_MUMPS", "MUMPS"),
+    ("PETSC_HAVE_PTSCOTCH", "PT-Scotch"),
+    ("PETSC_HAVE_METIS", "METIS"),
+)
+#: The MUMPS orderings a ``petscconf.h`` define brings (AMD and PORD are built in).
+PETSC_ORDERINGS = (
+    ("PETSC_HAVE_METIS", "metis"),
+    ("PETSC_HAVE_PTSCOTCH", "ptscotch"),
+    ("PETSC_HAVE_PARMETIS", "parmetis"),
+)
+
+
+def _petsc_conf(conf: str, errors: list[str]) -> list[str]:
+    """ADR 0067's configure gates; returns the MUMPS orderings."""
+    errors += [
+        f"PETSc has no {gate} ({name}, ADR 0067)"
+        for name, gate in PETSC_REQUIRED
+        if not _defined(conf, name)
+    ]
+    if _defined(conf, "PETSC_HAVE_MPIUNI"):
+        errors.append("PETSc is built without MPI (ADR 0209)")
+    orderings = ["amd", "pord"] + [
+        ordering for name, ordering in PETSC_ORDERINGS if _defined(conf, name)
+    ]
+    if "parmetis" in orderings:
+        errors.append("PETSc has parmetis (ADR 0012, ADR 0067)")
+    return sorted(orderings)
+
+
+def _petsc_blas(needed: str, env: dict[str, str], errors: list[str]) -> dict:
+    """The BLAS libpetsc links: the stack's, pthreads OpenBLAS or mkl_rt."""
+    vendor = env.get("STACK_BLAS_VENDOR", "")
+    version = env.get("STACK_BLAS_VERSION", "")
+    threading = "unknown"
+    if vendor == "openblas":
+        if re.search(r"\blibopenblas_omp\.so", needed):
+            threading = "openmp"
+            errors.append("libpetsc links libopenblas_omp: gfem's PETSc takes pthreads")
+        elif re.search(r"\blibopenblas\.so", needed):
+            threading = "pthreads"
+        else:
+            errors.append("libpetsc links no libopenblas")
+        lib = re.search(r"libopenblas\S*\.so\S*\s*=>\s*(\S+)", needed)
+        if lib is None or f"openblas-{version}/" not in lib.group(1):
+            errors.append(
+                f"libpetsc's OpenBLAS is not the stack's openblas-{version}: "
+                f"{lib.group(1) if lib else 'not found'}"
+            )
+    elif vendor == "mkl":
+        threading = "mkl_rt"
+        if "libmkl_rt.so" not in needed:
+            errors.append("libpetsc links no libmkl_rt")
+    return {"vendor": vendor, "version": version, "threading": threading}
+
+
+def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[str]]:
+    """The ``mumps`` block of a PETSc prefix, and the gates it fails.
+
+    The gates are ADR 0067's (complex, 64-bit ``PetscInt``, MPI, no ParMETIS,
+    PT-Scotch 7.0.18 or newer, no ``?gemmt_`` import) and ADR 0209's (MUMPS
+    from the pinned tarball, the toolchain's Fortran flags, the stack's
+    pthreads BLAS).
+
+    Args:
+        build: The text of each of ``PETSC_BUILD_FILES``: installed headers,
+            MUMPS's ``Makefile.inc``, ``nm -D`` and ``ldd`` of the libraries
+            MUMPS is folded into, ``<basename of FC> <version>``, and the
+            ``sha256sum`` lines of the ``--download`` tarballs.
+        env: The toolchain's ``FFLAGS``, ``STACK_BLAS_VENDOR`` and
+            ``STACK_BLAS_VERSION``.
+
+    Returns:
+        The block, and one line per failed gate (empty when it passes).
+    """
+    errors: list[str] = []
+    conf = build["petscconf.h"]
+    tarballs = _petsc_tarballs(build["tarballs.txt"], errors)
+    version, digest = tarballs["mumps"]
+    header = re.search(r'MUMPS_VERSION\s+"([^"]+)"', build["zmumps_c.h"])
+    installed = header.group(1) if header else None
+    if installed != version:
+        errors.append(f"MUMPS {installed} installed, the tarball is MUMPS {version}")
+    gemmt = re.search(r"\b[sdcz]gemmt_\b", build["dynsym.txt"]) is not None
+    if gemmt:
+        errors.append("MUMPS imports ?gemmt_ (ADR 0205, ADR 0067)")
+    arithmetics = sorted(set(re.findall(r"\bT ([sdcz])mumps_c\b", build["dynsym.txt"])))
+    if "z" not in arithmetics:
+        errors.append(f"no complex double MUMPS (zmumps_c) in {arithmetics}")
+    orderings = _petsc_conf(conf, errors)
+    scotch = ".".join(
+        str(_define_int(build["scotch.h"], f"SCOTCH_{part}") or 0)
+        for part in ("VERSION", "RELEASE", "PATCHLEVEL")
+    )
+    if (
+        tuple(map(int, scotch.split("."))) < PTSCOTCH_MIN
+        or scotch != tarballs["ptscotch"][0]
+    ):
+        errors.append(
+            f"PT-Scotch {scotch} installed (tarball {tarballs['ptscotch'][0]}), "
+            "ADR 0067 needs 7.0.18 or newer"
+        )
+    optf = re.search(r"^OPTF\s*=(.*)$", build["Makefile.inc"], re.MULTILINE)
+    optf_flags = optf.group(1).split() if optf else []
+    fflags = env.get("FFLAGS", "")
+    missing = [flag for flag in fflags.split() if flag not in optf_flags]
+    if missing:
+        errors.append(f"MUMPS's OPTF {optf_flags} lacks the toolchain's {missing}")
+    block = {
+        "version": version,
+        "tarball_sha256": digest,
+        "intsize": 64 if _defined(build["mumps_int_def.h"], "MUMPS_INTSIZE64") else 32,
+        "gemmt": gemmt,
+        "blas": _petsc_blas(build["needed.txt"], env, errors),
+        "scalapack": tarballs["scalapack"][0],
+        "compiler": build["compiler.txt"].strip(),
+        "fflags": fflags,
+        "arithmetics": arithmetics,
+        "openmp": _defined(conf, "PETSC_HAVE_OPENMP")
+        or "libgomp" in build["needed.txt"],
+        "orderings": orderings,
+        "metis": tarballs["metis"][0],
+        "ptscotch": tarballs["ptscotch"][0],
+        "index_bits": 64 if _defined(conf, "PETSC_USE_64BIT_INDICES") else 32,
+    }
+    return block, errors
+
+
 #: The files of the recipe tree that every package build runs.
 RECIPE_COMMON = ("stack.sh", "build.sbatch", "provenance.py")
 
@@ -401,6 +658,31 @@ def _check(*stack_dirs: str) -> int:
     return 1 if failed else 0
 
 
+def _petsc_contract(wheelhouse: str, recipe: str) -> int:
+    drift = petsc_contract_drift(Path(wheelhouse).read_text(), Path(recipe).read_text())
+    if not drift:
+        print(f"petsc contract: matches {wheelhouse}")
+        return 0
+    for line in drift:
+        print(f"  ERROR petsc contract drift (ADR 0209): {line}")
+    return 1
+
+
+def _petsc_mumps(prefix: str, build_dir: str) -> int:
+    """``petsc-mumps``: headers from PREFIX/include, the rest from BUILD_DIR."""
+    build = {}
+    for name in PETSC_BUILD_FILES:
+        path = Path(prefix) / "include" / name
+        if not path.is_file():
+            path = Path(build_dir) / name
+        build[name] = path.read_text() if path.is_file() else ""
+    block, errors = petsc_mumps(build, dict(os.environ))
+    print(json.dumps(block, indent=2, sort_keys=True))
+    for error in errors:
+        print(f"provenance.py: petsc mumps: {error}", file=sys.stderr)
+    return 1 if errors else 0
+
+
 def _print(value: object) -> int:
     print(value)
     return 0
@@ -428,6 +710,8 @@ COMMANDS: dict[str, tuple[int | None, Callable[..., int]]] = {
     ),
     "recipe-sha256": (2, lambda d, p: _print(recipe_sha256(Path(d), p))),
     "sha256": (1, lambda f: _print(sha256(Path(f)))),
+    "petsc-contract": (2, _petsc_contract),
+    "petsc-mumps": (2, _petsc_mumps),
 }
 
 
