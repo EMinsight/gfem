@@ -276,20 +276,24 @@ def tofu(sums: Path, path: Path) -> str:
 
 #: The files of the recipe tree that every package build runs.
 RECIPE_COMMON = ("stack.sh", "build.sbatch", "provenance.py")
+#: Further files of the recipe tree that one package's build runs: Palace's
+#: build reads its pins from the fetched tag with ``sources.py``.
+RECIPE_EXTRA = {"palace": ("sources.py",)}
 
 
 def recipe_sha256(root: Path, package: str) -> str:
     """The recipe hash of one package: what its build runs, by name and content.
 
-    It covers ``stack.sh``, ``build.sbatch``, ``provenance.py`` and
-    ``packages/<package>.sh``, and nothing else: the README, other packages'
-    recipes and a shipped tree's ``COMMIT`` file leave it alone, so filling in
-    another recipe does not make a built prefix differ. The toolchain has its
-    own hash.
+    It covers ``stack.sh``, ``build.sbatch``, ``provenance.py``,
+    ``packages/<package>.sh`` and the package's :data:`RECIPE_EXTRA`, and
+    nothing else: the README, other packages' recipes and a shipped tree's
+    ``COMMIT`` file leave it alone, so filling in another recipe does not make
+    a built prefix differ. The toolchain has its own hash.
     """
     root = Path(root)
     digest = hashlib.sha256()
-    for relative in (*RECIPE_COMMON, f"packages/{package}.sh"):
+    extra = RECIPE_EXTRA.get(package, ())
+    for relative in (*RECIPE_COMMON, f"packages/{package}.sh", *extra):
         digest.update(f"{sha256(root / relative)}  {relative}\n".encode())
     return digest.hexdigest()
 

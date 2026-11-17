@@ -82,8 +82,10 @@ $STACKS_ROOT/
 
 - A prefix is complete iff `provenance.json` exists. `build` on a complete
   prefix with the same recipe hash and toolchain hash is a no-op. The recipe
-  hash is per package: `stack.sh`, `build.sbatch`, `provenance.py` and
-  `packages/<pkg>.sh`, by name and content. The README, other packages'
+  hash is per package: `stack.sh`, `build.sbatch`, `provenance.py`,
+  `packages/<pkg>.sh` and any other file that package's build runs
+  (`sources.py` for palace; `provenance.py RECIPE_EXTRA`), by name and
+  content. The README, other packages'
   recipes and `COMMIT` are not in it, so filling in one recipe leaves the
   other packages' prefixes complete. The toolchain has its own hash. A prefix without
   `provenance.json` is a killed job's leftovers and is wiped. A complete prefix

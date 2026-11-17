@@ -456,6 +456,18 @@ def test_the_recipe_hash_follows_content_not_location(tmp_path):
     assert provenance.recipe_sha256(one, "a") == provenance.recipe_sha256(two, "a")
 
 
+def test_palaces_hash_covers_sources_py_which_its_build_runs(tmp_path):
+    recipes = _recipes(tmp_path)
+    (recipes / "packages" / "palace.sh").write_text("VERSION=0.19.0\n")
+    (recipes / "sources.py").write_text("# sources.py\n")
+    palace, other = (provenance.recipe_sha256(recipes, p) for p in ("palace", "a"))
+
+    (recipes / "sources.py").write_text("# changed\n")
+
+    assert provenance.recipe_sha256(recipes, "palace") != palace
+    assert provenance.recipe_sha256(recipes, "a") == other
+
+
 # --- source mirror: what `stack.sh fetch` reads from a fetched tag ------------
 
 _sources_spec = importlib.util.spec_from_file_location("sources", STACKS / "sources.py")
@@ -960,3 +972,83 @@ def test_an_openblas_build_whose_openmp_library_is_not_openmp_fails_its_smoke(tm
     assert result.returncode != 0
     assert "openblas_omp" in result.stderr
     assert not (prefix / "provenance.json").exists()
+
+
+# --- Palace: the build's edits and checks -------------------------------------
+
+#: An excerpt of Palace v0.19.0's ``cmake/ExternalMUMPS.cmake``.
+PALACE_EXTERNAL_MUMPS = """\
+set(MUMPS_OPTIONS ${PALACE_SUPERBUILD_DEFAULT_ARGS})
+list(APPEND MUMPS_OPTIONS
+  "-DMUMPS_scalapack=ON"
+  "-DMUMPS_USE_MKL=OFF"
+  "-DMUMPS_gemmt=ON"
+  "-DPARMETIS_LIBRARY=${PARMETIS_LIBRARIES}"
+)
+"""
+
+
+def _palace_function(*call: str, cwd: Path) -> subprocess.CompletedProcess:
+    """Run one function of ``packages/palace.sh`` (sourced as stack.sh does)."""
+    script = (
+        'set -euo pipefail; stack_die() { echo "$*" >&2; exit 1; }; '
+        f'source "{STACKS}/packages/palace.sh"; "$@"'
+    )
+    return subprocess.run(
+        ["bash", "-c", script, "palace", *call],  # noqa: S607
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_palaces_mumps_is_built_from_the_mirrors_tarball_without_gemmt(tmp_path):
+    cmake = tmp_path / "ExternalMUMPS.cmake"
+    cmake.write_text(PALACE_EXTERNAL_MUMPS)
+    tarball = "/stacks/src/tarballs/MUMPS_5.9.1.tar.gz"
+
+    result = _palace_function("palace_edit_mumps", str(cmake), tarball, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    edited = cmake.read_text().splitlines()
+    original = PALACE_EXTERNAL_MUMPS.splitlines()
+    changed = [new for old, new in zip(original, edited, strict=True) if old != new]
+    assert changed == [f'  "-DMUMPS_gemmt=OFF" "-DMUMPS_url={tarball}"']
+
+
+def test_an_external_mumps_file_without_the_gemmt_line_fails_the_edit(tmp_path):
+    cmake = tmp_path / "ExternalMUMPS.cmake"
+    cmake.write_text(PALACE_EXTERNAL_MUMPS.replace("gemmt=ON", "gemmt=${X}"))
+
+    result = _palace_function(
+        "palace_edit_mumps", str(cmake), "/t.tar.gz", cwd=tmp_path
+    )
+
+    assert result.returncode != 0
+    assert "MUMPS_gemmt" in result.stderr
+
+
+needs_gcc = pytest.mark.skipif(
+    __import__("shutil").which("gcc") is None, reason="needs gcc"
+)
+
+
+@needs_gcc
+def test_a_library_calling_a_gemmt_is_named_by_the_gemmt_check(tmp_path):
+    for name, routine in (("with", "dgemmt_"), ("without", "dgemm_")):
+        (tmp_path / f"{name}.c").write_text(
+            f"void {routine}(void);\nvoid call(void) {{ {routine}(); }}\n"
+        )
+        subprocess.run(
+            ["gcc", "-shared", "-fPIC", "-o", f"lib{name}.so", f"{name}.c"],  # noqa: S607
+            cwd=tmp_path,
+            check=True,
+        )
+
+    result = _palace_function(
+        "palace_gemmt_imports", "libwith.so", "libwithout.so", cwd=tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["libwith.so:dgemmt_"]
