@@ -178,6 +178,20 @@ def _field(block: dict, dotted: str) -> object:
     return value
 
 
+def _canonical(dotted: str, value: object) -> object:
+    """``value`` as compared: compiler strings reduce to ``gfortran <version>``.
+
+    Recipes report the Fortran compiler differently (``gfortran --version``'s
+    first line against ``gfortran -dumpfullversion``); the same GCC must match.
+    """
+    if dotted == "compiler" and isinstance(value, str):
+        version = re.search(r"(\d+\.\d+\.\d+)\s*$", value.strip())
+        gnu = "gfortran" in value or "GNU Fortran" in value
+        if gnu and version:
+            return f"gfortran {version.group(1)}"
+    return value
+
+
 def _check_mumps(records: dict, report: Report) -> None:
     """Compare the ``mumps`` blocks of a stack's complete prefixes (ADR 0209)."""
     blocks = {}
@@ -202,7 +216,9 @@ def _check_mumps(records: dict, report: Report) -> None:
         for second in names[i + 1 :]:
             a, b = blocks[first], blocks[second]
             for dotted in MUMPS_MUST_MATCH:
-                if _field(a, dotted) != _field(b, dotted):
+                if _canonical(dotted, _field(a, dotted)) != _canonical(
+                    dotted, _field(b, dotted)
+                ):
                     report.errors.append(
                         f"mumps {dotted} must match: {first} {_field(a, dotted)!r}, "
                         f"{second} {_field(b, dotted)!r}"
@@ -533,20 +549,24 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
 
 #: The files of the recipe tree that every package build runs.
 RECIPE_COMMON = ("stack.sh", "build.sbatch", "provenance.py")
+#: Further files of the recipe tree that one package's build runs: Palace's
+#: build reads its pins from the fetched tag with ``sources.py``.
+RECIPE_EXTRA = {"palace": ("sources.py",)}
 
 
 def recipe_sha256(root: Path, package: str) -> str:
     """The recipe hash of one package: what its build runs, by name and content.
 
-    It covers ``stack.sh``, ``build.sbatch``, ``provenance.py`` and
-    ``packages/<package>.sh``, and nothing else: the README, other packages'
-    recipes and a shipped tree's ``COMMIT`` file leave it alone, so filling in
-    another recipe does not make a built prefix differ. The toolchain has its
-    own hash.
+    It covers ``stack.sh``, ``build.sbatch``, ``provenance.py``,
+    ``packages/<package>.sh`` and the package's :data:`RECIPE_EXTRA`, and
+    nothing else: the README, other packages' recipes and a shipped tree's
+    ``COMMIT`` file leave it alone, so filling in another recipe does not make
+    a built prefix differ. The toolchain has its own hash.
     """
     root = Path(root)
     digest = hashlib.sha256()
-    for relative in (*RECIPE_COMMON, f"packages/{package}.sh"):
+    extra = RECIPE_EXTRA.get(package, ())
+    for relative in (*RECIPE_COMMON, f"packages/{package}.sh", *extra):
         digest.update(f"{sha256(root / relative)}  {relative}\n".encode())
     return digest.hexdigest()
 

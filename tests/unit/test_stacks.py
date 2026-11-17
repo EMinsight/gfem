@@ -456,6 +456,18 @@ def test_the_recipe_hash_follows_content_not_location(tmp_path):
     assert provenance.recipe_sha256(one, "a") == provenance.recipe_sha256(two, "a")
 
 
+def test_palaces_hash_covers_sources_py_which_its_build_runs(tmp_path):
+    recipes = _recipes(tmp_path)
+    (recipes / "packages" / "palace.sh").write_text("VERSION=0.19.0\n")
+    (recipes / "sources.py").write_text("# sources.py\n")
+    palace, other = (provenance.recipe_sha256(recipes, p) for p in ("palace", "a"))
+
+    (recipes / "sources.py").write_text("# changed\n")
+
+    assert provenance.recipe_sha256(recipes, "palace") != palace
+    assert provenance.recipe_sha256(recipes, "a") == other
+
+
 # --- source mirror: what `stack.sh fetch` reads from a fetched tag ------------
 
 _sources_spec = importlib.util.spec_from_file_location("sources", STACKS / "sources.py")
@@ -638,6 +650,50 @@ def test_git_dependencies_hard_coded_in_cmake_are_read_from_the_tag():
             "https://github.com/jlblancoc/suitesparse-metis-for-windows.git",
             "1618fd16ea34be287c0fbc32789ca280012a9280",
         )
+    ]
+
+
+#: scnlib v4.0.1's ``cmake/dependencies.cmake``: fast_float is cloned when scn
+#: configures, inside Palace's superbuild.
+SCNLIB_DEPENDENCIES = """
+    FetchContent_Declare(
+            fast_float
+            GIT_REPOSITORY https://github.com/fastfloat/fast_float.git
+            GIT_TAG v6.1.6
+            GIT_SHALLOW TRUE
+    )
+"""
+
+
+@pytest.mark.parametrize("kind", ["zip", "tar.gz"])
+def test_git_dependencies_inside_a_tarball_are_read_from_its_cmake_files(
+    tmp_path, kind
+):
+    import tarfile
+    import zipfile
+
+    tree = {
+        "scnlib-4.0.1/cmake/dependencies.cmake": SCNLIB_DEPENDENCIES,
+        "scnlib-4.0.1/README.md": "GIT_REPOSITORY https://x/y.git GIT_TAG v1\n",
+        "scnlib-4.0.1/CMakeLists.txt": (
+            "FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json"
+            " GIT_TAG ${JSON_FETCH_VERSION})\n"
+        ),
+    }
+    archive = tmp_path / f"scnlib-v4.0.1.{kind}"
+    if kind == "zip":
+        with zipfile.ZipFile(archive, "w") as zipped:
+            for name, text in tree.items():
+                zipped.writestr(name, text)
+    else:
+        for name, text in tree.items():
+            (tmp_path / "t" / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / "t" / name).write_text(text)
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(tmp_path / "t" / "scnlib-4.0.1", arcname="scnlib-4.0.1")
+
+    assert sources.archive_git_repositories(archive) == [
+        ("https://github.com/fastfloat/fast_float.git", "v6.1.6")
     ]
 
 
@@ -960,6 +1016,95 @@ def test_an_openblas_build_whose_openmp_library_is_not_openmp_fails_its_smoke(tm
     assert result.returncode != 0
     assert "openblas_omp" in result.stderr
     assert not (prefix / "provenance.json").exists()
+
+
+# --- Palace: the build's edits and checks -------------------------------------
+
+#: An excerpt of Palace v0.19.0's ``cmake/ExternalMUMPS.cmake``.
+PALACE_EXTERNAL_MUMPS = """\
+set(MUMPS_OPTIONS ${PALACE_SUPERBUILD_DEFAULT_ARGS})
+list(APPEND MUMPS_OPTIONS
+  "-DMUMPS_scalapack=ON"
+  "-DMUMPS_USE_MKL=OFF"
+  "-DMUMPS_gemmt=ON"
+  "-DPARMETIS_LIBRARY=${PARMETIS_LIBRARIES}"
+)
+"""
+
+
+def _palace_function(*call: str, cwd: Path) -> subprocess.CompletedProcess:
+    """Run one function of ``packages/palace.sh`` (sourced as stack.sh does)."""
+    script = (
+        'set -euo pipefail; stack_die() { echo "$*" >&2; exit 1; }; '
+        f'source "{STACKS}/packages/palace.sh"; "$@"'
+    )
+    return subprocess.run(
+        ["bash", "-c", script, "palace", *call],  # noqa: S607
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_palaces_mumps_is_built_from_the_mirrors_tarball_without_gemmt(tmp_path):
+    cmake = tmp_path / "ExternalMUMPS.cmake"
+    cmake.write_text(PALACE_EXTERNAL_MUMPS)
+    tarball = "/stacks/src/tarballs/MUMPS_5.9.1.tar.gz"
+
+    result = _palace_function("palace_edit_mumps", str(cmake), tarball, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    edited = cmake.read_text().splitlines()
+    original = PALACE_EXTERNAL_MUMPS.splitlines()
+    changed = [new for old, new in zip(original, edited, strict=True) if old != new]
+    assert changed == [f'  "-DMUMPS_gemmt=OFF" "-DMUMPS_url={tarball}"']
+
+
+def test_an_external_mumps_file_without_the_gemmt_line_fails_the_edit(tmp_path):
+    cmake = tmp_path / "ExternalMUMPS.cmake"
+    cmake.write_text(PALACE_EXTERNAL_MUMPS.replace("gemmt=ON", "gemmt=${X}"))
+
+    result = _palace_function(
+        "palace_edit_mumps", str(cmake), "/t.tar.gz", cwd=tmp_path
+    )
+
+    assert result.returncode != 0
+    assert "MUMPS_gemmt" in result.stderr
+
+
+needs_gcc = pytest.mark.skipif(
+    __import__("shutil").which("gcc") is None, reason="needs gcc"
+)
+
+
+@needs_gcc
+def test_a_library_calling_a_gemmt_is_named_by_the_gemmt_check(tmp_path):
+    for name, routine in (("with", "dgemmt_"), ("without", "dgemm_")):
+        (tmp_path / f"{name}.c").write_text(
+            f"void {routine}(void);\nvoid call(void) {{ {routine}(); }}\n"
+        )
+        subprocess.run(
+            ["gcc", "-shared", "-fPIC", "-o", f"lib{name}.so", f"{name}.c"],  # noqa: S607
+            cwd=tmp_path,
+            check=True,
+        )
+
+    result = _palace_function(
+        "palace_gemmt_imports", "libwith.so", "libwithout.so", cwd=tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["libwith.so:dgemmt_"]
+
+
+def test_mumps_compiler_strings_of_one_gcc_match():
+    """``gfortran --version`` and ``-dumpfullversion`` spellings of one GCC agree."""
+    a = provenance._canonical("compiler", "GNU Fortran (GCC) 12.3.0")
+    b = provenance._canonical("compiler", "gfortran 12.3.0")
+    c = provenance._canonical("compiler", "gfortran 13.2.0")
+    assert a == b
+    assert a != c
 
 
 # --- package petsc: gfem's PETSc contract (ADR 0067, ADR 0209) ----------------
