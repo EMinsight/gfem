@@ -514,6 +514,19 @@ def test_version_mismatch_is_refused(stack19, tmp_path):
     assert outcome.reason == "Palace v0.18.1 installed, stack wheels declares 0.19.0"
 
 
+def test_a_matching_install_reports_the_stack_version_it_was_checked_against(
+    stack18, tmp_path
+):
+    # the 0.18.1.post5 wheel's binary says v0.18.1: the record's version is the
+    # wheel's (what the campaign pins), the binary's tag kept beside it
+    text = (P18 / "palace-version.txt").read_text()
+    work = _workdir(tmp_path, P18 / "driven-4x1")
+    run = _run("r10M_void", "palace:mumps", stack18, work)
+    outcome = _collect(run, version=text)
+    assert outcome.provenance["version"] == "0.18.1.post5"
+    assert outcome.provenance["binary_version"] == "v0.18.1"
+
+
 def test_version_text_of_both_dialects():
     v18 = palace.parse_version((P18 / "palace-version.txt").read_text())
     assert (v18["version"], v18["schema"]) == ("v0.18.1", "1-7-0")

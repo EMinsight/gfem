@@ -889,6 +889,10 @@ class PalaceAdapter:
             if refused is not None:
                 return Outcome(status="refused", reason=refused, provenance=provenance)
             provenance.update(parse_version(measured.version))
+            # the binary's tag (v0.18.1) matched the declared wheel version's release
+            # (0.18.1.post5): record the wheel version, which the campaign pins
+            provenance["binary_version"] = provenance["version"]
+            provenance["version"] = run.stack.versions["palace"]
         try:
             return self._collect(run, measured, dialect, provenance)
         except PalaceParseError as error:
