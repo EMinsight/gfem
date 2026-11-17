@@ -40,7 +40,7 @@ excite = ["p1", "p2"]
 s = [["p1", "p1"], ["p2", "p1"], ["p1", "p2"], ["p2", "p2"]]
 
 [est_s]
-"gfem:bddc" = 2700
+"gfem:bddc" = 7500  # MN5 highmem 1x112: ~1500 s per frequency (assembly with BDDC setup ~960 s, solve ~530 s)
 
 [[materials]]
 region = "sio2"

@@ -18,6 +18,6 @@ group = "stack"
 
 [wall_cap_s]
 microstrip_L1_p2 = 1200
-microstrip_L2_p2 = 5400
+microstrip_L2_p2 = 9000
 
 [stacks.wheels]
