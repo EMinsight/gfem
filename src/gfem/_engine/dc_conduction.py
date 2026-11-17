@@ -47,7 +47,14 @@ from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import element_tensors, p0
 from gfem._engine.domain import boundary_region
 from gfem._engine.electrostatic import KeptHandle
-from gfem._engine.fields import fe_space, support_region
+from gfem._engine.fields import (
+    dirichlet_h1,
+    face_keys,
+    fe_space,
+    support_region,
+    surface_triangles,
+    tetrahedron_face_keys,
+)
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Derivative, FieldPair, Term
@@ -55,7 +62,7 @@ from gfem._field import FieldMap
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
 from gfem._linalg.base import free_mask
 from gfem._materials import Material, MaterialField
-from gfem.mesh import _TET_FACES, Mesh
+from gfem.mesh import Mesh
 from gfem.model import Model, check_surface
 from gfem.options import SolverOptions
 from gfem.problems import DCConduction
@@ -110,16 +117,6 @@ def _conducts(material: Any) -> bool:
     return bool(np.any(np.asarray(value) != 0))
 
 
-def _face_keys(faces: np.ndarray, n: int) -> np.ndarray:
-    f = np.sort(faces, axis=1).astype(np.int64)
-    return (f[:, 0] * n + f[:, 1]) * n + f[:, 2]
-
-
-def _surface_triangles(mesh: Mesh, surfaces: tuple[str, ...]) -> np.ndarray:
-    tags = [mesh.region(s).tag for s in surfaces]
-    return mesh.triangles[np.isin(mesh.triangle_tags, tags)]
-
-
 def conductors(model: Model, problem: DCConduction) -> _Conductors:
     """The conduction domain: conducting regions minus floating pieces.
 
@@ -144,14 +141,14 @@ def conductors(model: Model, problem: DCConduction) -> _Conductors:
         )
     tets = mesh.tetrahedra
     n_nodes = len(mesh.imported_nodes)
-    faces = _face_keys(tets[conducting][:, _TET_FACES].reshape(-1, 3), n_nodes)
+    faces = tetrahedron_face_keys(mesh, conducting)
     fixed_nodes = []
     for label, surfaces in (
         *((f"terminal {n!r}", s) for n, s in problem.terminals),
         *((("the ground", problem.ground),) if problem.ground else ()),
     ):
-        tris = _surface_triangles(mesh, surfaces)
-        if not np.isin(_face_keys(tris, n_nodes), faces).any():
+        tris = surface_triangles(mesh, surfaces)
+        if not np.isin(face_keys(tris, n_nodes), faces).any():
             raise ValueError(
                 f"DCConduction: {label} ({', '.join(repr(s) for s in surfaces)}) "
                 "touches no conducting volume. The conductors are the volumes "
@@ -370,24 +367,14 @@ class DCConductionRule:
         )
 
     def _space(self, model: Model) -> tuple[ngs.FESpace, EngineMesh]:
-        order = self.options.order
-        disc = discretization(model.mesh)
-        built = disc.built
-        fixed = self.fixed
-        regions, excluded = self.regions, self._excluded
-
-        def build() -> ngs.FESpace:
-            names = built.mesh.GetBoundaries()
-            space = ngs.H1(
-                built.mesh,
-                order=order,
-                definedon=support_region(built, model.mesh, regions, excluded),
-                dirichlet=[j + 1 for j, n in enumerate(names) if n in fixed],
-            )
-            return ngs.Compress(space)
-
-        space = disc.space(((_PHYSICS, regions, excluded), "h1", order, fixed), build)
-        return space, built
+        return dirichlet_h1(
+            model.mesh,
+            _PHYSICS,
+            self.regions,
+            self._excluded,
+            order=self.options.order,
+            fixed=self.fixed,
+        )
 
     def _dissipation(
         self,
@@ -688,7 +675,7 @@ def _check_surface(model: Model, name: str, role: str) -> None:
 
 
 def _nodes(model: Model, surfaces: tuple[str, ...]) -> np.ndarray:
-    return np.unique(_surface_triangles(model.mesh, surfaces))
+    return np.unique(surface_triangles(model.mesh, surfaces))
 
 
 def _check_apart(

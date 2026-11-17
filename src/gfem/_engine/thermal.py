@@ -49,11 +49,18 @@ from gfem._adjoint.solve_vjp import adjoint_tolerance, input_kind
 from gfem._boundaries import Convection, FixedTemperature, HeatFlux
 from gfem._checks import is_traced
 from gfem._engine import quadrature
-from gfem._engine.cache import Entry, _alone, discretization, retain_budget
+from gfem._engine.cache import Entry, _alone, retain_budget
 from gfem._engine.coefficients import element_values, p0
 from gfem._engine.domain import boundary_region
 from gfem._engine.electrostatic import KeptHandle
-from gfem._engine.fields import fe_space, support_region
+from gfem._engine.fields import (
+    dirichlet_h1,
+    face_keys,
+    fe_space,
+    support_region,
+    surface_triangles,
+    tetrahedron_face_keys,
+)
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import (
@@ -69,7 +76,7 @@ from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
 from gfem._linalg.base import free_mask
 from gfem._pytree import register_fields
 from gfem.errors import MissingMaterialPropertyError, RegionNotFoundError
-from gfem.mesh import _TET_FACES, Mesh
+from gfem.mesh import Mesh
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import SteadyThermal, TransientThermal
@@ -156,11 +163,6 @@ def check_properties(model: Model, active: np.ndarray, reads: tuple[str, ...]) -
         raise MissingMaterialPropertyError(missing)
 
 
-def _face_keys(faces: np.ndarray, n: int) -> np.ndarray:
-    f = np.sort(faces, axis=1).astype(np.int64)
-    return (f[:, 0] * n + f[:, 1]) * n + f[:, 2]
-
-
 def pieces(mesh: Mesh, active: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """The connected pieces of the active tetrahedra, through shared faces.
 
@@ -168,8 +170,7 @@ def pieces(mesh: Mesh, active: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         The active tetrahedra (indices) and the piece label of each.
     """
     index = np.flatnonzero(active)
-    n_nodes = len(mesh.imported_nodes)
-    keys = _face_keys(mesh.tetrahedra[index][:, _TET_FACES].reshape(-1, 3), n_nodes)
+    keys = tetrahedron_face_keys(mesh, index)
     _, face = np.unique(keys, return_inverse=True)
     rows = np.repeat(np.arange(len(index)), 4)
     graph = scipy.sparse.coo_matrix(
@@ -184,10 +185,8 @@ def _loose(model: Model, active: np.ndarray, sinks: tuple[str, ...]) -> np.ndarr
     """Per tetrahedron: in a connected piece of the domain that touches no sink."""
     mesh = model.mesh
     index, label = pieces(mesh, active)
-    n_nodes = len(mesh.imported_nodes)
-    tags = [mesh.region(s).tag for s in sinks]
-    sink_keys = _face_keys(mesh.triangles[np.isin(mesh.triangle_tags, tags)], n_nodes)
-    faces = _face_keys(mesh.tetrahedra[index][:, _TET_FACES].reshape(-1, 3), n_nodes)
+    sink_keys = face_keys(surface_triangles(mesh, sinks), len(mesh.imported_nodes))
+    faces = tetrahedron_face_keys(mesh, index)
     touching = np.isin(faces, sink_keys).reshape(-1, 4).any(axis=1)
     cooled = np.unique(label[touching])
     loose = np.zeros(len(mesh.tetrahedra), bool)
@@ -373,24 +372,14 @@ class ThermalRule:
 
     def _space(self, model: Model) -> tuple[ngs.FESpace, EngineMesh]:
         """The compressed H1 space on the thermal domain, fixed on the sinks."""
-        order = self.options.order
-        disc = discretization(model.mesh)
-        built = disc.built
-        fixed = self.boundaries.dirichlet
-        regions, excluded = self.regions, self._excluded
-
-        def build() -> ngs.FESpace:
-            names = built.mesh.GetBoundaries()
-            space = ngs.H1(
-                built.mesh,
-                order=order,
-                definedon=support_region(built, model.mesh, regions, excluded),
-                dirichlet=[j + 1 for j, n in enumerate(names) if n in fixed],
-            )
-            return ngs.Compress(space)
-
-        key = ((_PHYSICS, regions, excluded), "h1", order, fixed)
-        return disc.space(key, build), built
+        return dirichlet_h1(
+            model.mesh,
+            _PHYSICS,
+            self.regions,
+            self._excluded,
+            order=self.options.order,
+            fixed=self.boundaries.dirichlet,
+        )
 
     def _coefficient(
         self,
@@ -956,12 +945,10 @@ class TransientThermalRule(ThermalRule):
                 "one of its surfaces."
             )
         n_nodes = len(mesh.imported_nodes)
-        faces = _face_keys(
-            mesh.tetrahedra[self.loose][:, _TET_FACES].reshape(-1, 3), n_nodes
-        )
+        faces = tetrahedron_face_keys(mesh, self.loose)
         for surface, _ in self.boundaries.flux:
-            tri = mesh.triangles[mesh.triangle_tags == mesh.region(surface).tag]
-            if np.isin(_face_keys(tri, n_nodes), faces).any():
+            tri = surface_triangles(mesh, (surface,))
+            if np.isin(face_keys(tri, n_nodes), faces).any():
                 raise ValueError(
                     f"TransientThermal: gfem.HeatFlux on {surface!r} heats the part of "
                     f"the thermal domain that holds region {where!r}, which touches "
