@@ -410,3 +410,24 @@ def test_mumps_print_without_ranks_says_it_does_nothing(tmp_path: Path) -> None:
     )
     assert done.returncode == 0, done.stdout + done.stderr
     assert done.stdout.count("--mumps-print does nothing without ranks") == 1
+
+
+def test_a_package_without_metadata_records_its_module_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # a native NGSolve installed by CMake has no dist-info (ADR 0207)
+    import importlib.metadata
+    import types
+
+    def version(package: str) -> str:
+        if package == "ngsolve":
+            raise importlib.metadata.PackageNotFoundError(package)
+        return "1.0"
+
+    monkeypatch.setattr(importlib.metadata, "version", version)
+    monkeypatch.setitem(
+        sys.modules, "ngsolve", types.SimpleNamespace(__version__="6.2.2608-native")
+    )
+    versions = scale_run._environment(None)["versions"]
+    assert versions["ngsolve"] == "6.2.2608-native"
+    assert versions["numpy"] == "1.0"
