@@ -54,9 +54,12 @@ DOF = {
     "r10M_void": {"2": 10_248_856},
 }
 """DOF per order on each case's pinned mesh (probe 07 counts; gfem adapter runs)."""
-SAME_MESH_ERROR = {"lcavity": {"2": 3.8907e-4}}
-"""gfem direct's relative error of f1 on the pinned mesh (tests/refinement_cases.py
-``CAVITY_SPLIT`` level 3, the same 246 416-DOF mesh)."""
+SAME_MESH_ERROR = {"lcavity": {"2": 3.8907e-4}, "bragg": {"3": 1.8626e-9}}
+"""gfem direct's relative error on the pinned mesh. lcavity: f1
+(tests/refinement_cases.py ``CAVITY_SPLIT`` level 3, the same 246 416-DOF mesh).
+bragg: max over the two modes, the release-gfem campaign's three direct runs
+(20261117-4d64c1c-release-gfem, 1.86264e-9 each); its ceiling stays the explicit
+physics-case 1e-5."""
 NO_REFERENCE = (
     "no_reference: no converged reference fits the budget (one split is about "
     "80 M DOF); records carry the same-code error only"

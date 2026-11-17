@@ -1,8 +1,8 @@
 {
  "format": "suite-reference/1",
- "id": "bragg-20261117-058b2f5",
+ "id": "bragg-20261117-d2a9be3",
  "family": "bragg",
- "computed_utc": "2026-11-17T18:55:08Z",
+ "computed_utc": "2026-11-17T22:42:49Z",
  "case": {
   "name": "bragg",
   "definition_sha256": "12d5bc3490322cbbca1be204fdc554c8fe56d20f46e5e79a473e964235cd4da9",
@@ -36,7 +36,9 @@
  "ceiling": {
   "3": 1e-05
  },
- "same_mesh_error": {},
+ "same_mesh_error": {
+  "3": 1.8626e-09
+ },
  "cross_checks": [],
  "inputs": {
   "meshes": [
@@ -44,7 +46,7 @@
   ]
  },
  "provenance": {
-  "gfem_commit": "058b2f523ff4af15c1f0108ea8c60bb3a1015086",
+  "gfem_commit": "d2a9be37d60b90b9914641f6bdb02df57256ee9a",
   "script": "benchmarks/references/closed.py",
   "formula": "TMM (Rytov) roots at k = pi/a, a = 10 mm, d1 = 4 mm, eps 2 and 9 (tests/periodic_cases.py tmm_frequency and C3_* at 858bc66)"
  },
