@@ -818,3 +818,145 @@ def test_the_stack_venvs_runtime_pins_are_gfems_lock():
     assert _recipe_array("pyenv", "PIP_SDISTS") == [
         f"mpi4py=={packages['mpi4py']['version']}"
     ]
+
+
+# --- package openblas: a build with make and module faked ---------------------
+
+#: Stand-in for OpenBLAS's make: records each call, and on ``install`` puts a
+#: tiny library (naive dgemm/zdotc, OpenBLAS's config and threading queries)
+#: under the name OpenBLAS would give it.
+FAKE_OPENBLAS_MAKE = r"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$* COMMON_OPT=${COMMON_OPT:-} FCOMMON_OPT=${FCOMMON_OPT:-}" >>"$FAKE_MAKE_LOG"
+prefix= suffix= openmp=0
+for arg in "$@"; do
+  case $arg in
+  PREFIX=*) prefix=${arg#*=} ;;
+  LIBNAMESUFFIX=*) suffix=_${arg#*=} ;;
+  USE_OPENMP=1) openmp=1 ;;
+  esac
+done
+[ "${FAKE_IGNORE_OPENMP:-}" = 1 ] && openmp=0
+[ -n "$prefix" ] || exit 0
+work=$(mktemp -d)
+cat >"$work/blas.f90" <<'F90'
+subroutine dgemm(ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+  character :: ta, tb
+  integer :: m, n, k, lda, ldb, ldc
+  double precision :: alpha, beta, a(lda, *), b(ldb, *), c(ldc, *)
+  c(1:m, 1:n) = alpha * matmul(a(1:m, 1:k), b(1:k, 1:n)) + beta * c(1:m, 1:n)
+end subroutine
+complex(kind(0d0)) function zdotc(n, x, incx, y, incy)
+  integer :: n, incx, incy
+  complex(kind(0d0)) :: x(*), y(*)
+  zdotc = sum(conjg(x(1:n)) * y(1:n))
+end function
+F90
+if [ "$openmp" = 1 ]; then flag="USE_OPENMP " parallel=2; else flag= parallel=1; fi
+cat >"$work/query.c" <<C
+char *openblas_get_config(void) {
+  return "OpenBLAS 0.3.34 NO_AFFINITY ${flag}SAPPHIRERAPIDS MAX_THREADS=256";
+}
+int openblas_get_parallel(void) { return $parallel; }
+int openblas_get_num_threads(void) { return 1; }
+C
+mkdir -p "$prefix/lib/pkgconfig" "$prefix/include"
+[ "$openmp" = 1 ] && omp="-fopenmp -Wl,--no-as-needed -lgomp" || omp=
+# shellcheck disable=SC2086
+gfortran -shared -fPIC $omp $LDFLAGS -o "$prefix/lib/libopenblas$suffix.so" \
+  "$work/blas.f90" "$work/query.c"
+echo "Libs: -lopenblas$suffix" >"$prefix/lib/pkgconfig/openblas.pc"
+echo "/* cblas */" >"$prefix/include/cblas.h"
+rm -rf "$work"
+"""
+
+
+def _openblas_build(
+    tmp_path: Path, **env: str
+) -> tuple[subprocess.CompletedProcess, Path, Path]:
+    """Run ``stack.sh build native-oss openblas`` with make and module faked."""
+    import shutil
+    import tarfile
+
+    recipes = tmp_path / "recipes"
+    shutil.copytree(STACKS, recipes, ignore=shutil.ignore_patterns("__pycache__"))
+    fakes = tmp_path / "bin"
+    fakes.mkdir()
+    (fakes / "make").write_text(FAKE_OPENBLAS_MAKE)
+    (fakes / "module").write_text("#!/bin/sh\nexit 0\n")
+    for fake in fakes.iterdir():
+        fake.chmod(0o755)
+    root = tmp_path / "root"
+    source = tmp_path / "OpenBLAS-0.3.34"
+    source.mkdir()
+    (source / "Makefile").write_text("# fake\n")
+    (root / "src" / "tarballs").mkdir(parents=True)
+    with tarfile.open(
+        root / "src" / "tarballs" / "OpenBLAS-0.3.34.tar.gz", "w:gz"
+    ) as tar:
+        tar.add(source, arcname="OpenBLAS-0.3.34")
+    (tmp_path / "job").mkdir()
+    log = tmp_path / "make.log"
+    result = subprocess.run(
+        [  # noqa: S607
+            "bash",
+            str(recipes / "stack.sh"),
+            "build",
+            "--allow-dirty",
+            "native-oss",
+            "openblas",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fakes}:{os.environ['PATH']}",
+            "STACKS_ROOT": str(root),
+            "SLURM_JOB_ID": "1",
+            "SLURM_CPUS_PER_TASK": "2",
+            "TMPDIR": str(tmp_path / "job"),
+            "FAKE_MAKE_LOG": str(log),
+            **env,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, root / "native-oss" / "openblas-0.3.34", log
+
+
+needs_gfortran = pytest.mark.skipif(
+    __import__("shutil").which("gfortran") is None, reason="needs gfortran"
+)
+
+
+@needs_gfortran
+def test_openblas_builds_a_pthreads_and_an_openmp_library_into_one_prefix(tmp_path):
+    result, prefix, log = _openblas_build(tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (prefix / "lib" / "libopenblas.so").is_file()
+    assert (prefix / "lib" / "libopenblas_omp.so").is_file()
+    calls = log.read_text().splitlines()
+    common = {
+        "TARGET=SAPPHIRERAPIDS",
+        "DYNAMIC_ARCH=0",
+        "NUM_THREADS=256",
+        "NO_AFFINITY=1",
+    }
+    builds = [set(call.split()) for call in calls if "install" not in call.split()]
+    assert len(builds) == 2
+    pthreads, openmp = sorted(builds, key=lambda args: "USE_OPENMP=1" in args)
+    assert common | {"USE_THREAD=1", "USE_OPENMP=0"} <= pthreads
+    assert common | {"USE_OPENMP=1", "LIBNAMESUFFIX=omp"} <= openmp
+    assert all("COMMON_OPT=-O3 -march=sapphirerapids" in call for call in calls)
+    record = json.loads((prefix / "provenance.json").read_text())
+    assert set(record["smoke"]["libraries"]) == {"openblas", "openblas_omp"}
+    assert "zdotc ok" in record["smoke"]["libraries"]["openblas_omp"]
+
+
+@needs_gfortran
+def test_an_openblas_build_whose_openmp_library_is_not_openmp_fails_its_smoke(tmp_path):
+    result, prefix, _ = _openblas_build(tmp_path, FAKE_IGNORE_OPENMP="1")
+
+    assert result.returncode != 0
+    assert "openblas_omp" in result.stderr
+    assert not (prefix / "provenance.json").exists()
