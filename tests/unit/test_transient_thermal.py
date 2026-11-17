@@ -246,6 +246,20 @@ def test_an_unsettled_slab_warns_and_a_settled_one_does_not(slab):
         )
 
 
+def test_a_slice_of_an_on_off_run_checks_only_its_own_switches(slab):
+    # the off switch closes the rising slice: it is not a switch inside it
+    dt = 10 * TAU1 / 100
+    off = 100 * dt
+    result = _run(slab, [(0.0, 1.0), (off, 0.0)], duration=2 * off, steps=200)
+    t = np.asarray(result.time)
+    top = np.asarray(result.traces["top"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for part in (t <= off, t >= off):
+            gfem.rise_time(t[part], top[part], switch_times=result.switch_times)
+            gfem.time_constant(t[part], top[part], switch_times=result.switch_times)
+
+
 def test_an_insulated_body_heats_at_its_power_over_its_capacity(slab):
     # no heat sink: the energy balance of the scheme is exact
     model = _model(slab, boundaries=[])

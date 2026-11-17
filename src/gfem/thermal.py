@@ -573,11 +573,13 @@ def _check_settled(t: np.ndarray, s: np.ndarray, switch_times: Any, name: str) -
     """Warn when the normalised trace ``s`` has not settled (ADR 0181).
 
     The tail still to come is the geometric sum of the increments after the
-    last sample, from the last two increments after the last switch.
+    last sample, from the last two increments after the last switch. Only
+    switches inside the samples count: one at or after the last sample (the
+    switch that ends a slice of a longer run) has not acted on them yet.
     """
     check_fixed(switch_times, f"{name}: switch_times must be fixed times")
     switches = np.asarray(switch_times, dtype=float).reshape(-1)
-    inside = switches[switches >= t[0]]
+    inside = switches[(switches >= t[0]) & (switches < t[-1])]
     after = t > inside.max() if inside.size else np.ones(t.size, bool)
     where = (
         f" after the last waveform switch at {inside.max():g} s" if inside.size else ""
