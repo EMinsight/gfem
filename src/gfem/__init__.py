@@ -113,7 +113,12 @@ from gfem.results import (  # noqa: E402
 )
 from gfem.solve import release_memory, solve  # noqa: E402
 from gfem.thermal import HeatSource, joule_heating  # noqa: E402
-from gfem.thermo_optic import ThermoOpticShift, thermo_optic_shift  # noqa: E402
+from gfem.thermo_optic import (  # noqa: E402
+    RoutePhase,
+    ThermoOpticShift,
+    route_phase,
+    thermo_optic_shift,
+)
 
 __version__ = _version("gfem")
 
@@ -182,6 +187,7 @@ __all__ = [
     "RefinementCycle",
     "Region",
     "RegionNotFoundError",
+    "RoutePhase",
     "SheetField",
     "SkippedPortModeWarning",
     "SolverOptions",
@@ -212,6 +218,7 @@ __all__ = [
     "refine_mesh",
     "region_mean",
     "release_memory",
+    "route_phase",
     "shape",
     "solve",
     "thermo_optic_shift",
