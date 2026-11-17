@@ -155,15 +155,15 @@ def _max(values: list[float | None]) -> float | None:
 
 def _peaks(outcome: Outcome, ranks: list[dict[str, Any]]) -> None:
     """Per-rank ``VmHWM``: summed, the rank max, and the largest node's sum."""
-    peaks = [r.get("vmhwm_kib") for r in ranks]
-    if not peaks or any(p is None for p in peaks):
+    if not ranks or any(r.get("vmhwm_kib") is None for r in ranks):
         return
+    peaks = [float(r["vmhwm_kib"]) / KIB_PER_GIB for r in ranks]
     nodes: dict[str, float] = {}
-    for r in ranks:
+    for r, peak in zip(ranks, peaks, strict=True):
         host = str(r.get("host") or "")
-        nodes[host] = nodes.get(host, 0.0) + r["vmhwm_kib"] / KIB_PER_GIB
-    outcome.self_peak_mem_gib = sum(peaks) / KIB_PER_GIB
-    outcome.self_peak_rank_max_gib = max(peaks) / KIB_PER_GIB
+        nodes[host] = nodes.get(host, 0.0) + peak
+    outcome.self_peak_mem_gib = sum(peaks)
+    outcome.self_peak_rank_max_gib = max(peaks)
     outcome.self_peak_largest_node_gib = max(nodes.values())
 
 

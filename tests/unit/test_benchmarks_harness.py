@@ -665,7 +665,9 @@ def test_unfinished_jobs_count_at_their_time_limit_until_they_finish(tmp_path):
         "12|PENDING|0|0|None assigned|q|90|2\n"
         "13|RUNNING|600|1000|n|q|60|1\n"
     )
-    spent = budget.spend(0.0, [tmp_path / "submitted.tsv"], lambda *_a, **_k: _done(sacct))
+    spent = budget.spend(
+        0.0, [tmp_path / "submitted.tsv"], lambda *_a, **_k: _done(sacct)
+    )
     # 5 billed + 1.5 h x 2 nodes x 112 + 1 h x 1 node x 112
     assert spent.jobs_core_h == pytest.approx(5.0 + 336.0 + 112.0)
 

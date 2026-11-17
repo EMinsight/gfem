@@ -769,6 +769,17 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _memory(outcome: Outcome, meta: Mapping[str, Any]) -> None:
+    """Peak memory: summed over ranks, the largest node and the largest rank."""
+    node = meta.get("PeakNodeMemoryMegabytes")
+    if node is not None:
+        outcome.self_peak_mem_gib = node["Total"] / MIB_PER_GIB
+        outcome.self_peak_largest_node_gib = node["Max"] / MIB_PER_GIB
+    rank = meta.get("PeakMemoryMegabytes")
+    if rank is not None:
+        outcome.self_peak_rank_max_gib = rank["Max"] / MIB_PER_GIB
+
+
 @dataclass(frozen=True)
 class PalaceAdapter:
     """The Palace solver adapter (``palace:mumps``, ``palace:pmg``)."""
@@ -927,13 +938,7 @@ class PalaceAdapter:
             outcome.setups = elapsed["Counts"].get("Setup")
         solver = meta.get("LinearSolver", {})
         outcome.solves = solver.get("TotalSolves")
-        memory = meta.get("PeakNodeMemoryMegabytes")
-        if memory is not None:
-            outcome.self_peak_mem_gib = memory["Total"] / MIB_PER_GIB
-            outcome.self_peak_largest_node_gib = memory["Max"] / MIB_PER_GIB
-        rank = meta.get("PeakMemoryMegabytes")
-        if rank is not None:
-            outcome.self_peak_rank_max_gib = rank["Max"] / MIB_PER_GIB
+        _memory(outcome, meta)
         resolved = _read_json(out / "config_resolved.json")
         if resolved is not None:
             outcome.native["config_resolved"] = resolved
