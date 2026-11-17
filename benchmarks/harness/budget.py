@@ -1,13 +1,13 @@
-"""The effort's core budget: what ``submit`` may still spend (ADRs 0188, 0414).
+r"""The effort's core budget: what ``submit`` may still spend (ADRs 0188, 0414).
 
 Spend so far = the site's ``[budget] prior_core_h`` (jobs the CLI did not submit:
 probes, the stack check, test gates; updated by hand) + billed core-hours of every
 job listed in a ``submitted.tsv`` under the site's output directory (and the run
 directory being submitted), from sacct: ``CPUTimeRAW`` / 2 / 3600, the formula that
 matches ``bsc_acct`` until it catches up. A job not finished yet (pending, running...)
-counts at its time limit x nodes x 112 cores until it finishes. ``submit`` refuses
-when spend + the plan's estimate passes the ceiling (``[budget] ceiling_core_h``, or
-``--ceiling``).
+counts at :math:`\text{time limit} \times \text{nodes} \times 112` core-hours until
+it finishes. ``submit`` refuses when spend + the plan's estimate passes the ceiling
+(``[budget] ceiling_core_h``, or ``--ceiling``).
 
 Standard library only (ADR 0400).
 """
@@ -118,9 +118,11 @@ class Spend:
 
 
 def job_core_h(facts: Mapping[str, str]) -> float:
-    """Core-hours a job counts for: billed once finished, else its time limit.
+    r"""Core-hours a job counts for: billed once finished, else its time limit.
 
-    An unfinished job counts ``TimelimitRaw`` (minutes) / 60 x ``NNodes`` x 112.
+    An unfinished job counts
+    :math:`\mathrm{TimelimitRaw} / 60 \times \mathrm{NNodes} \times 112`
+    (``TimelimitRaw`` in minutes).
     """
     if facts.get("state") in UNFINISHED:
         minutes, nodes = facts.get("timelimit_raw", ""), facts.get("nnodes", "")
