@@ -208,3 +208,30 @@ def test_the_phase_is_positive_and_linear_in_the_rise_and_coefficient(window, st
     assert float(jax.grad(of_dn)(DN_SI)) * DN_SI == pytest.approx(
         float(core_only), rel=1e-12
     )
+
+
+def test_a_route_trace_is_the_route_phase_of_the_transient_rise(window, steady):
+    model = gfem.Model(
+        steady.rise.mesh,
+        materials={
+            "block": gfem.Material(
+                thermal_conductivity=K_BLOCK, mass_density=2200.0, specific_heat=700.0
+            )
+        },
+        boundaries=[gfem.FixedTemperature("sink", temperature=300.0)],
+    )
+    routes = {"line": ALONG_Y}
+    bare = _phase(window, None, routes)
+    problem = gfem.TransientThermal(
+        gfem.HeatSource.uniform("block", power_density=POWER_DENSITY),
+        duration=5e-6,
+        steps=4,
+        traces={"phase": bare.trace("line")},
+    )
+    result = gfem.solve(model, problem)
+    end = result.kept_times[-1]
+    expected = _phase(window, result.rise(end), routes).phase["line"]
+    assert float(result.traces["phase"][-1]) == pytest.approx(
+        float(expected), rel=1e-12
+    )
+    assert float(result.traces["phase"][0]) == 0.0
