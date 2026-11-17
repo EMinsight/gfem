@@ -265,7 +265,7 @@ def launched(
 
 
 # The registry imports the adapter modules, which import the names above.
-from benchmarks.adapters import palace  # noqa: E402
+from benchmarks.adapters import gfem, palace  # noqa: E402
 
-ADAPTERS: dict[str, Adapter] = {"palace": palace.ADAPTER}
-"""Solver adapters by code; ``gfem`` joins with its adapter (ticket 06)."""
+ADAPTERS: dict[str, Adapter] = {"gfem": gfem.ADAPTER, "palace": palace.ADAPTER}
+"""Solver adapters by code."""
