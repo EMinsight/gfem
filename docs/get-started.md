@@ -149,7 +149,9 @@ program, because every gfem solve needs it.
   grating on glass that sends a plane wave into the air at 50°. The
   {doc}`heater <tutorials/heater>` tutorial heats a silicon waveguide with a
   TiN strip: the power for a π phase shift, the crosstalk to a neighbouring
-  guide, and how fast the phase follows the current.
+  guide, and how fast the phase follows the current. The
+  {doc}`3D heater <tutorials/heater3d>` tutorial heats a whole waveguide spiral
+  in 3D and shows how its phase is shared between the passes.
 - {doc}`recipes/solve-a-device` takes this line further: a band of
   frequencies, real metals, its resonances and their Q, its capacitance.
 - {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.
