@@ -137,8 +137,9 @@ build_ngsolve() {
     --no-index --find-links "$STACK_SRC/pip/wheels" --prefix "$prefix" \
     "netgen-occt==${occt#*==}" "$occt"
   site=$prefix/$("$python" -c 'import os, sysconfig; print(os.path.relpath(sysconfig.get_path("platlib"), sysconfig.get_path("data")))')
-  occdir=$(dirname "$(find "$site" -name OpenCASCADEConfig.cmake | head -n 1)")
-  [[ -f $occdir/OpenCASCADEConfig.cmake ]] || stack_die "ngsolve: no OpenCASCADEConfig.cmake in $site"
+  # netgen-occt-devel's CMake config is wheel data: PREFIX/lib/cmake/opencascade.
+  occdir=$(dirname "$(find "$prefix" -name OpenCASCADEConfig.cmake | head -n 1)")
+  [[ -f $occdir/OpenCASCADEConfig.cmake ]] || stack_die "ngsolve: no OpenCASCADEConfig.cmake in $prefix"
 
   local netgen=$src/external_dependencies/netgen
   mkdir -p "$netgen/external_dependencies"
