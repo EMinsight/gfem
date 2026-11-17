@@ -129,6 +129,20 @@ class MeshQualityWarning(UserWarning):
     """
 
 
+class UnsettledTraceWarning(UserWarning):
+    """A trace had not settled when its rise time or time constant was measured.
+
+    `gfem.rise_time` and `gfem.time_constant` normalise a trace to its last
+    sample, so a run that ends before the trace settles biases both times
+    (short). The warning fires when the change still to come after the last
+    sample, estimated from the geometric tail of the last increments after
+    the last waveform switch, exceeds 1 % of the measured swing, or when
+    fewer than three samples follow that switch. Run longer (a larger
+    ``duration`` with the same time step), or filter it with Python's
+    `warnings` module.
+    """
+
+
 class PortGeometryError(ValueError):
     """A port whose geometry the solver cannot use.
 

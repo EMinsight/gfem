@@ -55,15 +55,16 @@ from gfem._engine.fields import fe_space, support_region
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
-from gfem.errors import MissingMaterialPropertyError
+from gfem._linalg.base import free_mask
+from gfem.errors import MissingMaterialPropertyError, RegionNotFoundError
 from gfem.mesh import _TET_FACES, Mesh
 from gfem.model import Model
 from gfem.options import SolverOptions
-from gfem.problems import SteadyThermal
-from gfem.results import Field, SteadyThermalResult
-from gfem.thermal import _tet_volumes
+from gfem.problems import SteadyThermal, TransientThermal
+from gfem.results import Field, SteadyThermalResult, TransientThermalResult
+from gfem.thermal import Trace, _FieldTrace, _tet_volumes
 
-__all__ = ["SteadyThermalRule", "ThermalRule"]
+__all__ = ["SteadyThermalRule", "ThermalRule", "TransientThermalRule"]
 
 #: The linear solver for ``linear_solver="auto"`` (ADR 0184).
 DEFAULT_SOLVER: Kind = "direct"
@@ -132,13 +133,8 @@ def pieces(mesh: Mesh, active: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return index, label[: len(index)]
 
 
-def _check_sinks(model: Model, active: np.ndarray, sinks: tuple[str, ...]) -> None:
-    """Every connected piece of the thermal domain needs a heat sink (ADR 0168).
-
-    Raises:
-        ValueError: A piece touches no `FixedTemperature` or `Convection`
-            surface; the message names a region of it.
-    """
+def _loose(model: Model, active: np.ndarray, sinks: tuple[str, ...]) -> np.ndarray:
+    """Per tetrahedron: in a connected piece of the domain that touches no sink."""
     mesh = model.mesh
     index, label = pieces(mesh, active)
     n_nodes = len(mesh.imported_nodes)
@@ -147,11 +143,27 @@ def _check_sinks(model: Model, active: np.ndarray, sinks: tuple[str, ...]) -> No
     faces = _face_keys(mesh.tetrahedra[index][:, _TET_FACES].reshape(-1, 3), n_nodes)
     touching = np.isin(faces, sink_keys).reshape(-1, 4).any(axis=1)
     cooled = np.unique(label[touching])
-    loose = ~np.isin(label, cooled)
+    loose = np.zeros(len(mesh.tetrahedra), bool)
+    loose[index[~np.isin(label, cooled)]] = True
+    return loose
+
+
+def _region_of(mesh: Mesh, tets: np.ndarray) -> str:
+    """The first volume region (mesh order) holding one of ``tets``."""
+    return next(r for r in mesh.volumes if np.isin(mesh.elements(r), tets).any())
+
+
+def _check_sinks(model: Model, active: np.ndarray, sinks: tuple[str, ...]) -> None:
+    """Every connected piece of the thermal domain needs a heat sink (ADR 0168).
+
+    Raises:
+        ValueError: A piece touches no `FixedTemperature` or `Convection`
+            surface; the message names a region of it.
+    """
+    loose = _loose(model, active, sinks)
     if not loose.any():
         return
-    tets = index[loose]
-    where = next(r for r in mesh.volumes if np.isin(mesh.elements(r), tets).any())
+    where = _region_of(model.mesh, np.flatnonzero(loose))
     raise ValueError(
         f"SteadyThermal: the part of the thermal domain that holds region "
         f"{where!r} ({int(loose.sum())} elements) touches no heat sink, so its "
@@ -309,11 +321,16 @@ class ThermalRule:
         return disc.space(key, build), built
 
     def _coefficient(
-        self, model: Model, built: EngineMesh, name: str
+        self,
+        model: Model,
+        built: EngineMesh,
+        name: str,
+        where: np.ndarray | None = None,
     ) -> ngs.GridFunction:
-        """Property ``name`` per element, zero off the thermal domain."""
+        """Property ``name`` per element, zero off the domain (and off ``where``)."""
         values = element_values(model, name)
-        return p0(built, np.where(self.active, values, 0.0))
+        inside = self.active if where is None else self.active & where
+        return p0(built, np.where(inside, values, 0.0))
 
     def _prepare(
         self,
@@ -322,6 +339,7 @@ class ThermalRule:
         space: ngs.FESpace,
         *,
         mass: float = 0.0,
+        where: np.ndarray | None = None,
         width: int = 1,
         tolerance: float | None = None,
     ) -> Handle:
@@ -329,27 +347,51 @@ class ThermalRule:
 
         ``K`` is the conduction plus convection operator; ``C`` the
         consistent heat-capacity mass ``int rho c_p u v`` (read only with
-        ``mass`` != 0, as ``rho c_p scale ** 2 * mass``).
+        ``mass`` != 0, as ``rho c_p scale ** 2 * mass``), on the elements
+        ``where`` only when given.
         """
-        order = self.options.order
-        scale = built.scale
-        u, v = space.TnT()
         form = ngs.BilinearForm(space, symmetric=True)
-        k = self._coefficient(model, built, "thermal_conductivity")
-        form += k * ngs.grad(u) * ngs.grad(v) * quadrature.dx(order)
-        for surface, h, _ in self.boundaries.convection:
-            region = boundary_region(built, (surface,))
-            form += h * scale * u * v * quadrature.ds(order, definedon=region)
+        self._add_conduction(form, model, built, space)
         if mass:
-            rho = self._coefficient(model, built, "mass_density")
-            c_p = self._coefficient(model, built, "specific_heat")
-            form += mass * scale**2 * rho * c_p * u * v * quadrature.dx(order)
+            form += self._capacity_term(model, built, space, where, factor=mass)
         return self.linear.prepare(
             Operator(form, space.FreeDofs()),
             symmetry="hermitian",
             width=width,
             tolerance=tolerance,
         )
+
+    def _add_conduction(
+        self,
+        form: ngs.BilinearForm,
+        model: Model,
+        built: EngineMesh,
+        space: ngs.FESpace,
+    ) -> None:
+        """Add ``K``, conduction plus convection (file units), to ``form``."""
+        order = self.options.order
+        u, v = space.TnT()
+        k = self._coefficient(model, built, "thermal_conductivity")
+        form += k * ngs.grad(u) * ngs.grad(v) * quadrature.dx(order)
+        for surface, h, _ in self.boundaries.convection:
+            region = boundary_region(built, (surface,))
+            form += h * built.scale * u * v * quadrature.ds(order, definedon=region)
+
+    def _capacity_term(
+        self,
+        model: Model,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        where: np.ndarray | None = None,
+        *,
+        factor: float = 1.0,
+    ) -> Any:
+        """The heat-capacity mass ``factor * C`` as a form term (file units)."""
+        u, v = space.TnT()
+        rho = self._coefficient(model, built, "mass_density", where)
+        c_p = self._coefficient(model, built, "specific_heat", where)
+        dx = quadrature.dx(self.options.order)
+        return factor * built.scale**2 * rho * c_p * u * v * dx
 
     def _boundary_load(self, built: EngineMesh, space: ngs.FESpace) -> np.ndarray:
         """The convection-ambient and heat-flux load (file units)."""
@@ -578,3 +620,423 @@ class SteadyThermalRule(ThermalRule):
             power=power,
             _thickness=self._mesh.section_thickness,
         )
+
+
+# --- transient ------------------------------------------------------------------
+
+#: TR-BDF2's stage fraction (Bank et al. 1985): L-stable, both stages on one matrix.
+GAMMA = 2.0 - np.sqrt(2.0)
+
+
+@dataclasses.dataclass
+class Stepper:
+    """One time step of ``C u' + K u = s(t) F`` on one prepared operator.
+
+    The handle holds ``A = K + mass C`` (file units), with ``mass`` chosen
+    so that every stage of the scheme solves with ``A`` (ADR 0164):
+
+    - TR-BDF2 (``mass = 2 / (gamma dt)``): the trapezoid stage to
+      ``t_n + gamma dt``, ``A u_g = (2 mass C - A) u_n + 2 F_n``, then the
+      BDF2 stage, ``A u_n+1 = mass C (c1 u_g - c0 u_n) + F_n``, with c1 =
+      1 / (gamma (2 - gamma)) and c0 = (1 - gamma) ** 2 / (gamma (2 - gamma)).
+    - theta (``mass = 1 / (theta dt)``): ``A u_n+1 = (mass / theta) C u_n -
+      ((1 - theta) / theta) A u_n + F_n / theta``.
+
+    ``F_n`` is the load on [t_n, t_n+1): the waveform's value there times
+    the sources' load. The stage value of TR-BDF2 is returned by `step`, so
+    a reverse sweep can recompute it from ``u_n`` (slice 07's adjoint runs
+    the transposed stages on the same handle; ``A`` and ``C`` are
+    symmetric).
+
+    Attributes:
+        handle: The prepared ``A``.
+        capacity: ``C`` as a sparse matrix (file units).
+        free: Per DOF, whether it is free (not on a fixed temperature).
+        scheme: ``"tr_bdf2"`` or ``"theta"``.
+        theta: The theta scheme's implicitness (read by ``"theta"``).
+        mass: The ``mass`` of ``A``.
+    """
+
+    handle: Handle
+    capacity: Any
+    free: np.ndarray
+    scheme: str
+    theta: float
+    mass: float
+    solve: Any
+
+    def _solve(self, rhs: np.ndarray) -> np.ndarray:
+        rhs = np.where(self.free, rhs, 0.0)
+        return self.solve(self.handle, rhs)
+
+    def step(
+        self, u: np.ndarray, load: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray | None]:
+        """``u_n+1`` from ``u_n`` and the interval load (and TR-BDF2's stage)."""
+        m = self.mass
+        cu = self.capacity @ u
+        if self.scheme == "tr_bdf2":
+            g = GAMMA
+            c1 = 1.0 / (g * (2.0 - g))
+            c0 = (1.0 - g) ** 2 / (g * (2.0 - g))
+            stage = self._solve(2.0 * m * cu - self.handle.apply(u) + 2.0 * load)
+            nxt = self._solve(m * (c1 * (self.capacity @ stage) - c0 * cu) + load)
+            return nxt, stage
+        th = self.theta
+        rhs = (m / th) * cu - ((1.0 - th) / th) * self.handle.apply(u) + load / th
+        return self._solve(rhs), None
+
+
+class TransientThermalRule(ThermalRule):
+    """Host-side forward of a `TransientThermal` problem on a `Model`."""
+
+    #: The operator family (a key of `sensitivity.PROPERTIES`).
+    form = "transient_thermal"
+    problem_name = "transient thermal"
+    reads = ("thermal_conductivity", "mass_density", "specific_heat")
+    #: Outputs whose cotangents the backward pass handles (slice 07).
+    differentiable_outputs: frozenset[str] = frozenset()
+
+    def __init__(
+        self, model: Model, problem: TransientThermal, options: SolverOptions
+    ) -> None:
+        """Check that the problem fits the model (see `gfem.TransientThermal`).
+
+        Raises:
+            NotImplementedError: The model has a periodic pair.
+            MissingMaterialPropertyError: A region of the thermal domain
+                lacks ``thermal_conductivity``, ``mass_density`` or
+                ``specific_heat``.
+            ValueError: A heat source heats an excluded region; a part of
+                the thermal domain touches no heat sink and the problem has
+                no ``initial_temperature``, or a `gfem.HeatFlux` heats it.
+            RegionNotFoundError: A trace names an unknown region.
+        """
+        if not isinstance(problem, TransientThermal):
+            raise TypeError(f"Expected gfem.TransientThermal, got {problem!r}.")
+        super().__init__(model, problem, options)
+        #: Per tetrahedron: in a part of the domain that touches no heat sink.
+        self.loose = _loose(model, self.active, self.boundaries.sinks)
+        if self.loose.any():
+            self._check_loose(model)
+        for name, trace in problem.traces.items():
+            _check_trace(model.mesh, self.regions, name, trace)
+
+    def _check_loose(self, model: Model) -> None:
+        """A sinkless part needs a uniform start and no heat flux (spec assumption).
+
+        Raises:
+            ValueError: No ``initial_temperature``, or a `gfem.HeatFlux` on
+                the sinkless part.
+        """
+        mesh = model.mesh
+        where = _region_of(mesh, np.flatnonzero(self.loose))
+        if self.problem.initial_temperature is None:
+            raise ValueError(
+                f"TransientThermal: the part of the thermal domain that holds region "
+                f"{where!r} touches no heat sink, so it has no source-free (steady) "
+                "temperature to start from. Give initial_temperature= (K, for "
+                "example 293.15), or a gfem.FixedTemperature or gfem.Convection on "
+                "one of its surfaces."
+            )
+        n_nodes = len(mesh.imported_nodes)
+        faces = _face_keys(
+            mesh.tetrahedra[self.loose][:, _TET_FACES].reshape(-1, 3), n_nodes
+        )
+        for surface, _ in self.boundaries.flux:
+            tri = mesh.triangles[mesh.triangle_tags == mesh.region(surface).tag]
+            if np.isin(_face_keys(tri, n_nodes), faces).any():
+                raise ValueError(
+                    f"TransientThermal: gfem.HeatFlux on {surface!r} heats the part of "
+                    f"the thermal domain that holds region {where!r}, which touches "
+                    "no heat sink, so its source-free temperature drifts and the "
+                    "rise has no meaning. Give that part a gfem.FixedTemperature or "
+                    "gfem.Convection, or give the heat as a gfem.HeatSource."
+                )
+
+    # --- the static layout ----------------------------------------------------
+
+    @property
+    def _grid(self) -> tuple[float, np.ndarray, np.ndarray]:
+        """dt, the waveform's start indices and the kept grid indices."""
+        problem = self.problem
+        dt = problem.duration / problem.steps
+        starts = np.array([round(t / dt) for t in problem._switches], np.int64)  # noqa: SLF001
+        keep = problem.keep_fields
+        if keep is True:
+            kept = np.arange(problem.steps + 1)
+        else:
+            chosen = () if keep is False else keep
+            kept = np.unique([*(round(t / dt) for t in chosen), problem.steps]).astype(
+                np.int64
+            )
+        return dt, starts, kept
+
+    def scales(self) -> np.ndarray:
+        """The waveform's value on each step's interval, ``(steps,)``."""
+        _, starts, _ = self._grid
+        values = np.asarray(self.problem._scales, float)  # noqa: SLF001
+        which = np.searchsorted(starts, np.arange(self.problem.steps), side="right")
+        return np.where(which > 0, values[np.maximum(which - 1, 0)], 0.0)
+
+    def _layout(self) -> tuple:
+        return (self.regions, self._excluded, "h1", self.options.order)
+
+    def _trace_rows(self, mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
+        """``(n_traces, ndof)`` twice: each trace is ``on_t @ T + on_rise @ rise``."""
+        traces = list(self.problem.traces.values())
+        n = self._ndof()
+        on_t, on_rise = np.zeros((len(traces), n)), np.zeros((len(traces), n))
+        for k, trace in enumerate(traces):
+            on_t[k], on_rise[k] = trace_rows(
+                trace, mesh, self._layout(), self._field, n
+            )
+        return on_t, on_rise
+
+    # --- the forward ----------------------------------------------------------
+
+    def _source_free(
+        self, model: Model, built: EngineMesh, space: ngs.FESpace
+    ) -> np.ndarray:
+        """The source-free temperature T0 on its own steady handle (freed after).
+
+        No solve when the boundaries share one temperature and no part is
+        sinkless. A sinkless part takes the initial temperature: its heat
+        capacity is added to the steady operator there, with the uniform
+        initial temperature as the matching load, which K does not see.
+        """
+        uniform = self.boundaries.uniform
+        start = self.problem.initial_temperature
+        if not self.loose.any() and uniform is not None:
+            return self._constant(space, uniform)
+        if self.loose.all() or not self.boundaries.sinks:
+            return self._constant(space, start)
+        handle = self._prepare(
+            model,
+            built,
+            space,
+            mass=1.0 if self.loose.any() else 0.0,
+            where=self.loose,
+            tolerance=self.options.tolerance,
+        )
+        try:
+            lift, load = self._boundary_data(built, space)
+            rhs = load - handle.apply(lift)
+            if self.loose.any():
+                capacity = _capacity(self, model, built, space, self.loose)
+                rhs = rhs + capacity @ self._constant(space, start)
+            return lift + self._solve(handle, rhs)
+        finally:
+            handle.free()
+
+    def _stepper(
+        self, model: Model, built: EngineMesh, space: ngs.FESpace, dt: float
+    ) -> Stepper:
+        """The prepared stepping operator of the options' time scheme."""
+        scheme = self.options.time_scheme
+        theta = self.options.theta
+        mass = 2.0 / (GAMMA * dt) if scheme == "tr_bdf2" else 1.0 / (theta * dt)
+        capacity = _capacity(self, model, built, space)
+        handle = self._prepare(
+            model, built, space, mass=mass, tolerance=self.options.tolerance
+        )
+        return Stepper(
+            handle=handle,
+            capacity=capacity,
+            free=free_mask(space.FreeDofs(), space.ndof),
+            scheme=scheme,
+            theta=theta,
+            mass=mass,
+            solve=self._solve,
+        )
+
+    def matrices(
+        self, model: Model
+    ) -> tuple[scipy.sparse.csr_matrix, scipy.sparse.csr_matrix, np.ndarray]:
+        """``K``, ``C`` (file units, SciPy CSR) and the free DOFs of the scheme.
+
+        ``C u' + K u = F`` is the semi-discrete system the schemes step;
+        verification reads its first eigenvalue (ADR 0166).
+        """
+        with task_manager(self.options.threads):
+            space, built = self._space(model)
+            form = ngs.BilinearForm(space)
+            self._add_conduction(form, model, built, space)
+            form.Assemble()
+            stiffness = _sparse(form.mat)
+            capacity = _capacity(self, model, built, space)
+            free = free_mask(space.FreeDofs(), space.ndof)
+        return stiffness, capacity, free
+
+    def forward(
+        self, model: Model, *, keep: bool
+    ) -> tuple[dict[str, np.ndarray], Entry | None]:
+        """Step the rise over the time grid on one prepared operator.
+
+        Returns:
+            ``{"trace:<name>": (steps + 1,), "kept_rise": (n_kept, ndof),
+            "source_free": (ndof,)}``, and, if ``keep``, the cache entry
+            (the stepping operator in a `KeptHandle`) or ``None``.
+        """
+        mesh = model.mesh
+        check_properties(model, self.active, self.reads)
+        density = np.asarray(source_density(self.problem, mesh))
+        _check_heat_inside(mesh, self.active, density)
+        dt, _, kept = self._grid
+        scales = self.scales()
+        on_t, on_rise = self._trace_rows(mesh)
+        # T = T0 + rise: each trace is on_t @ T0 + rows @ rise
+        rows = on_t + on_rise
+        with task_manager(self.options.threads):
+            space, built = self._space(model)
+            source = self._source_load(built, space, density)
+            t0 = self._source_free(model, built, space)
+            stepper = self._stepper(model, built, space, dt)
+            start = self.problem.initial_temperature
+            if start is None:
+                u = np.zeros_like(t0)
+            else:
+                u = np.where(stepper.free, self._constant(space, start) - t0, 0.0)
+            steps = self.problem.steps
+            offset = on_t @ t0
+            traces = np.empty((steps + 1, len(rows)))
+            traces[0] = rows @ u + offset
+            rises = np.empty((len(kept), len(t0)))
+            slot = {int(n): k for k, n in enumerate(kept)}
+            if 0 in slot:
+                rises[slot[0]] = u
+            for n in range(steps):
+                u, _ = stepper.step(u, scales[n] * source)
+                traces[n + 1] = rows @ u + offset
+                if n + 1 in slot:
+                    rises[slot[n + 1]] = u
+        outputs = {
+            f"trace:{name}": traces[:, k] for k, name in enumerate(self.problem.traces)
+        }
+        outputs["kept_rise"] = rises
+        outputs["source_free"] = t0
+        entry = None
+        if keep:
+            entry = Entry(physics=self.physics, handle=KeptHandle(stepper.handle))
+        else:
+            stepper.handle.free()
+        return outputs, entry
+
+    def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
+        """Shape and dtype of each forward output (from the mesh topology)."""
+        del model
+        n = self._ndof()
+        steps = self.problem.steps
+        _, _, kept = self._grid
+        specs = {
+            f"trace:{name}": jax.ShapeDtypeStruct((steps + 1,), jnp.float64)
+            for name in self.problem.traces
+        }
+        specs["kept_rise"] = jax.ShapeDtypeStruct((len(kept), n), jnp.float64)
+        specs["source_free"] = jax.ShapeDtypeStruct((n,), jnp.float64)
+        return specs
+
+    def result(self, outputs: dict) -> TransientThermalResult:
+        """The public result from the forward outputs."""
+        problem = self.problem
+        dt, _, kept = self._grid
+        _, power = self._heat()
+        return TransientThermalResult(
+            time=jnp.arange(problem.steps + 1) * dt,
+            traces={name: outputs[f"trace:{name}"] for name in problem.traces},
+            _rises=outputs["kept_rise"],
+            _source_free=self._field(outputs["source_free"], "T"),
+            power=power,
+            kept_times=tuple(float(n * dt) for n in kept),
+            switch_times=problem._switches,  # noqa: SLF001
+            _thickness=self._mesh.section_thickness,
+        )
+
+
+def _sparse(matrix: Any) -> scipy.sparse.csr_matrix:
+    """An assembled NGSolve matrix (of a non-symmetric form) as SciPy CSR."""
+    rows, cols, values = matrix.COO()
+    shape = (matrix.height, matrix.width)
+    return scipy.sparse.csr_matrix(
+        (np.asarray(values), (np.asarray(rows), np.asarray(cols))), shape=shape
+    )
+
+
+def _capacity(
+    rule: ThermalRule,
+    model: Model,
+    built: EngineMesh,
+    space: ngs.FESpace,
+    where: np.ndarray | None = None,
+) -> scipy.sparse.csr_matrix:
+    """The heat-capacity mass ``C`` (on ``where``) as SciPy CSR (file units)."""
+    form = ngs.BilinearForm(space)
+    form += rule._capacity_term(model, built, space, where)  # noqa: SLF001
+    form.Assemble()
+    return _sparse(form.mat)
+
+
+def _check_trace(mesh: Mesh, regions: tuple[str, ...], name: str, trace: Trace) -> None:
+    """Raise for a mean trace over an unknown region or one outside the domain.
+
+    Raises:
+        RegionNotFoundError: The region is not in the mesh.
+        ValueError: It is a surface, or holds no element of the domain.
+    """
+    if not isinstance(trace, _FieldTrace):
+        return
+    for region in trace._regions:  # noqa: SLF001
+        if region not in mesh.volumes:
+            if region in mesh.surfaces:
+                raise ValueError(
+                    f"TransientThermal trace {name!r}: {region!r} is a surface; "
+                    "Trace.mean averages over volume regions."
+                )
+            raise RegionNotFoundError(region, mesh.volumes, kind="volume")
+    if trace._regions and not set(trace._regions) & set(regions):  # noqa: SLF001
+        raise ValueError(
+            f"TransientThermal trace {name!r}: {list(trace._regions)} hold no "  # noqa: SLF001
+            "element of the thermal domain; average over regions it solves on."
+        )
+
+
+def trace_rows(
+    trace: Trace, mesh: Mesh, layout: tuple, field: Any, ndof: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(ndof,)`` twice: the trace is ``on_t @ T + on_rise @ rise`` on ``layout``.
+
+    A point or mean trace (`gfem.Trace.point`, `gfem.Trace.mean`) reads the
+    temperature: the basis functions at the point, or their exact mean
+    over the regions (`gfem.region_mean`'s rows). Any other trace gives its
+    rows by differentiating its linear ``_sample`` once (a reverse pass at
+    zero fields), ``field(coefficients, quantity)`` building its fields.
+
+    Raises:
+        ValueError: A point outside the thermal domain.
+    """
+    from gfem._engine import probe
+    from gfem._engine.fields import mean_rows
+
+    support, excluded, space, order = layout
+    if isinstance(trace, _FieldTrace):
+        if trace._point is not None:  # noqa: SLF001
+            where = probe.Layout(
+                support=support, excluded=excluded, space=space, order=order
+            )
+            point = np.asarray([trace._point], float)  # noqa: SLF001
+            located = probe.locate(mesh, where, point)
+            found = probe.probe(mesh, where, located)
+            row = found.transpose(np.ones((1, 1, 1)))[0, : found.ndof].real
+        else:
+            inside = tuple(r for r in trace._regions if r in support)  # noqa: SLF001
+            row = mean_rows(mesh, layout, inside)[0]
+        return row, np.zeros_like(row)
+    zero = jnp.zeros(ndof)
+
+    def sample(on_t: jax.Array, on_rise: jax.Array) -> jax.Array:
+        value = trace._sample(field(on_t, "T"), field(on_rise, "dT"))  # noqa: SLF001
+        return jnp.reshape(value, ())
+
+    _, pull = jax.vjp(sample, zero, zero)
+    on_t, on_rise = pull(jnp.ones(()))
+    return np.asarray(on_t, float), np.asarray(on_rise, float)

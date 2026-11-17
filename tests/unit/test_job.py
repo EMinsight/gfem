@@ -97,6 +97,18 @@ def test_a_job_written_before_the_petsc_fields_reads_their_defaults(model, tmp_p
     assert gfem.Job.from_json(path).options == gfem.SolverOptions()
 
 
+def test_time_stepping_options_are_written_only_when_set(model, tmp_path):
+    path = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
+    written = json.loads(path.read_text())["job"]["options"]
+    assert "time_scheme" not in written
+    assert "theta" not in written
+    options = gfem.SolverOptions(time_scheme="theta", theta=0.5)
+    path = gfem.Job(model, PROBLEM, options).to_json(tmp_path / "theta.json")
+    written = json.loads(path.read_text())["job"]["options"]
+    assert (written["time_scheme"], written["theta"]) == ("theta", 0.5)
+    assert gfem.Job.from_json(path).options == options
+
+
 def test_options_default_to_solver_defaults(model, tmp_path):
     job = gfem.Job(model, PROBLEM)
     assert job.options == gfem.SolverOptions()
