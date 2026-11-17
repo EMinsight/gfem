@@ -9,7 +9,7 @@ solvers = ["gfem:bddc"]
 layouts = ["default"]
 core_budget = 112
 repeats = 1
-node_class = "standard"
+node_class = "highmem"                # L2 p2 BDDC ran out of a standard node's 256 GB (MN5 job 49173510)
 anchor_tolerance = 1e-11
 same_code_direct = false
 
