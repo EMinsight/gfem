@@ -201,6 +201,23 @@ def check_placement(
     return Placement("pass", list(masks))
 
 
+def rank_placement(
+    process: Sequence[str], threads_union: Sequence[str], threads: int, sysfs: Path
+) -> Placement:
+    """The placement check on the process masks, else on the threads' unions.
+
+    A rank's process (main-thread) mask is its allotment unless ``OMP_PROC_BIND``
+    narrowed the main thread to one core; then the union of its threads' masks is.
+    Helper threads of some libraries carry stray masks, so the union alone is not
+    enough either. Either view passing passes; else the process view's failure.
+    """
+    first = check_placement(process, threads, sysfs)
+    if first.status == "pass":
+        return first
+    second = check_placement(threads_union, threads, sysfs)
+    return second if second.status == "pass" else first
+
+
 def busy_threads_per_core(
     ps_text: str, pids: Sequence[int], sysfs: Path = SYSFS_CPU
 ) -> int:
@@ -309,6 +326,12 @@ def _mask(status: Path) -> list[int] | None:
         return None
     match = re.search(r"^Cpus_allowed_list:\s*(\S+)", text, re.MULTILINE)
     return parse_cpu_list(match[1]) if match else None
+
+
+def process_mask(pid: int, proc: Path = PROC) -> str | None:
+    """``Cpus_allowed_list`` of ``pid``'s main thread."""
+    own = _mask(proc / str(pid) / "status")
+    return None if own is None else cpu_list(own)
 
 
 def cpus_allowed(pid: int, proc: Path = PROC) -> str | None:
@@ -471,12 +494,15 @@ class _Watch:
         if m.placement.status != "pass" and len(pids.ranks) == layout.ranks:
             # accumulated over samples: OMP threads start after the main thread binds
             masks = [cpus_allowed(p, sampler.proc) for p in pids.ranks]
-            if all(masks):
+            main = [process_mask(p, sampler.proc) for p in pids.ranks]
+            if all(masks) and all(main):
                 for rank, mask in enumerate(masks):
                     seen = self.masks.setdefault(rank, set())
                     seen.update(parse_cpu_list(mask or ""))
-                kept = [cpu_list(sorted(self.masks[r])) for r in range(len(masks))]
-                m.placement = check_placement(kept, layout.threads, sampler.sysfs)
+                union = [cpu_list(sorted(self.masks[r])) for r in range(len(masks))]
+                m.placement = rank_placement(
+                    [x for x in main if x], union, layout.threads, sampler.sysfs
+                )
         now = time.monotonic()
         if now >= self.next_snapshot and pids.all:
             text = sampler.snapshot()

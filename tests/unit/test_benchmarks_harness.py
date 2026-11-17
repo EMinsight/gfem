@@ -337,6 +337,16 @@ def test_a_rank_mask_is_the_union_of_its_threads_masks(tmp_path):
     assert measure.cpus_allowed(42, tmp_path / "proc") == "0-3,114"
 
 
+def test_placement_passes_on_the_process_masks_or_the_union_of_thread_masks(sysfs):
+    # 2x1: helper threads with stray masks, process masks exact -> pass
+    assert measure.rank_placement(["0", "1"], ["0,5", "1,5"], 1, sysfs).status == "pass"
+    # 1x2 under OMP_PROC_BIND: main thread narrowed, threads cover both cores -> pass
+    assert measure.rank_placement(["0"], ["0-1"], 2, sysfs).status == "pass"
+    # Hydra without binding: every rank on one core -> fail either way
+    found = measure.rank_placement(["0", "0"], ["0", "0"], 1, sysfs)
+    assert found.status == "fail"
+
+
 # --- the watchdog ---------------------------------------------------------------------
 
 
