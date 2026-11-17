@@ -179,6 +179,17 @@ class GfemAdapter:
             "bddc": Kind("iterative", {"linear_solver": "bddc_gmres"}),
         }
     )
+    direct_kind: str = "direct"
+    """PARDISO, one process."""
+    pins: tuple[str, ...] = (
+        "linear_solver per kind",
+        "the run tolerance",
+        "eigen_tolerance 1e-10",
+        "no field output",
+    )
+    timing_source: str = "gfem.timing"
+    memory_metric: str = "VmHWM_sum"
+    stack_keys: tuple[str, ...] = ()
 
     # --- plan time -------------------------------------------------------------------
 

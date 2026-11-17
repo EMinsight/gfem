@@ -545,8 +545,15 @@ in `harness/config.py`. A new kind is a module in `stacks/` with `inputs`,
 other than `"threads"` needs the build fact cited beside it.
 
 **A solver adapter.** Write `adapters/<code>.py` implementing the `Adapter` protocol
-of `adapters/__init__.py` (`code`, `kinds`, `supports`, `default_layout`, `version`,
-`prepare`, `collect`; it never starts a process) and add it to `ADAPTERS`. Also add
-its `code:kind` names to `SOLVERS` in `harness/config.py`, the code to
-`stacks.CODES`, and a `[<code>]` section to each stack file that runs it. List its
-pinned settings in this README.
+of `adapters/__init__.py` and add one line for it to `ADAPTERS`. The protocol holds
+what the harness needs of a code: `code`, `kinds`, `direct_kind` (what its same-code
+error is measured against), `pins` (settings pinned away from its defaults, listed
+in the report), `timing_source` and `memory_metric` (where its timings and own peak
+memory come from), `stack_keys` (what its stack section must set), `supports`,
+`default_layout`, `version`, `prepare` and `collect`; it never starts a process. The
+`code:kind` names, the stack sections a stack file may hold, the versions a stack
+may pin and the solver versions a campaign records all derive from `ADAPTERS`. Then
+add a `[<code>]` section to each stack file that runs it (a stack without one
+refuses at plan; a version under `[versions]` is optional). On a `wheels` stack the
+kind must also learn to build the code's env. List its pinned settings in this
+README.

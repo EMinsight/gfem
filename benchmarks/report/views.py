@@ -73,25 +73,6 @@ MEMORY_FIELDS = (
     "pss_peak_sum_gib",
     "sacct_max_rss_gib",
 )
-PINS = {
-    "gfem": (
-        "linear_solver per kind",
-        "the run tolerance",
-        "eigen_tolerance 1e-10",
-        "no field output",
-    ),
-    "palace": (
-        "Refinement 0",
-        "Absorbing.Order 1",
-        "Linear.Type pinned per kind",
-        "MUMPS kind: MGMaxLevels 1, ComplexCoarseSolve, Tol 1e-10",
-        "iterative Tol = the run tolerance, MaxIts 2000",
-        "EstimatorTol 1e-2, EstimatorMG",
-        "eigen Tol 1e-10, inner Linear.Tol 1e-12",
-        "no field output",
-    ),
-}
-"""Settings pinned away from each code's defaults (ADR 0411)."""
 CAVEATS = (
     (
         "Times and memory are observations of one machine, software stack and "
@@ -972,7 +953,7 @@ def _case(
         "comparison": comparison,
         "structural": _structural(rows),
         "pins": {
-            code: list(PINS.get(code, ()))
+            code: list(ADAPTERS[code].pins if code in ADAPTERS else ())
             for code in sorted({i["code"] for i in per_solver.values()})
         },
         "cells": cells,

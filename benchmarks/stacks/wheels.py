@@ -61,11 +61,21 @@ def inputs(
 
 
 def paths(
-    _description: Description, versions: dict[str, str], site: Site, env_dir: str
+    description: Description, versions: dict[str, str], site: Site, env_dir: str
 ) -> dict[str, Any]:
-    """The env of each code: the stack's env dir, Palace's shared per version."""
-    palace = f"{site.cluster_root}/envs/palace-{versions['palace']}"
-    return {"code_env": {"gfem": env_dir, "palace": palace}}
+    """The env of each code: per version, else the stack's env dir.
+
+    A code the stack pins a version of shares one env per version across commits
+    (Palace's ``{cluster.root}/envs/palace-<version>``).
+    """
+    return {
+        "code_env": {
+            code: f"{site.cluster_root}/envs/{code}-{versions[code]}"
+            if code in versions
+            else env_dir
+            for code in description.codes
+        }
+    }
 
 
 def activation(resolved: Resolved, code: str) -> list[str]:

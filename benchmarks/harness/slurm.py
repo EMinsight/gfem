@@ -51,6 +51,7 @@ from typing import Any
 from benchmarks import stacks
 from benchmarks.adapters import (
     ADAPTERS,
+    Adapter,
     Command,
     CommandResult,
     Layout,
@@ -489,7 +490,7 @@ class _Job:
     ctx: Context
     run: Run
     resolved: stacks.Resolved
-    adapter: Any
+    adapter: Adapter
 
 
 def _base_env(x: _Job) -> tuple[dict[str, str], str]:
@@ -556,7 +557,9 @@ def _launch(x: _Job, command: Command, base: Mapping[str, str], script: str):
     return _Launched(m, launch, env, script, cap, why, run.workdir / command.stdout)
 
 
-def _timings(case: Case, outcome: Outcome, wall_s: float, code: str) -> records.Timings:
+def _timings(
+    case: Case, outcome: Outcome, wall_s: float, adapter: Adapter
+) -> records.Timings:
     t = records.Timings(wall_s=round(wall_s, 3))
     for bucket in records.BUCKETS:
         setattr(t, bucket, outcome.phases.get(bucket))
@@ -572,25 +575,19 @@ def _timings(case: Case, outcome: Outcome, wall_s: float, code: str) -> records.
         samples = len(case.problem.frequencies())
         t.per_sample_s = t.work_s / samples if samples else None
     t.rank_reduction = outcome.rank_reduction
-    t.source = outcome.native.get("source") or (
-        "palace.json" if code == "palace" else None
-    )
+    t.source = outcome.native.get("source") or adapter.timing_source
     t.rank0 = dict(outcome.rank0) if outcome.rank0 else None
     return t
 
 
 def _memory(
-    outcome: Outcome, m: measure.Measurement, sacct_rss: float | None, code: str
+    outcome: Outcome, m: measure.Measurement, sacct_rss: float | None, adapter: Adapter
 ) -> records.Memory:
     return records.Memory(
         peak_rss_sum_gib=outcome.self_peak_mem_gib,
         peak_rss_rank_max_gib=outcome.self_peak_rank_max_gib,
         peak_rss_largest_node_gib=outcome.self_peak_largest_node_gib,
-        metric=(
-            ("VmHWM_sum" if code == "gfem" else "PeakNodeMemoryMegabytes.Total")
-            if outcome.self_peak_mem_gib is not None
-            else None
-        ),
+        metric=adapter.memory_metric if outcome.self_peak_mem_gib is not None else None,
         pss_peak_sum_gib=m.pss_peak_sum_gib,
         sacct_max_rss_gib=sacct_rss,
         self_reports=(
@@ -723,8 +720,8 @@ def _fill(
     sacct_rss = _status(x, record, launched, wall)
     record.case.ndof = outcome.ndof
     record.outputs = {**outcome.quantities, "iterations": outcome.iterations}
-    record.timings = _timings(run.case, outcome, wall, run.code)
-    record.memory = _memory(outcome, last, sacct_rss, run.code)
+    record.timings = _timings(run.case, outcome, wall, x.adapter)
+    record.memory = _memory(outcome, last, sacct_rss, x.adapter)
     record.structural = outcome.structural
     observed = outcome.provenance.get("version")
     pinned = x.rd.manifest.pins.solvers.get(run.code)

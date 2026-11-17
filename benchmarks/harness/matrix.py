@@ -253,13 +253,22 @@ class Plan:
         return sum(job.limit_core_h for job in self.jobs)
 
     def solver_versions(self) -> dict[str, str]:
-        """Pinned solver versions: Palace from the stacks (gfem is the commit)."""
-        if not any(s.startswith("palace:") for s in self.campaign.solvers):
-            return {}
-        versions = sorted(
-            v for r in self.resolved.values() if (v := r.versions.get("palace"))
-        )
-        return {"palace": versions[0]} if versions else {}
+        """Pinned solver versions: of each code a stack pins (gfem is the commit)."""
+        return {
+            code: min(found)
+            for code in campaign_codes(self.campaign)
+            if (found := code_versions(self.resolved, code))
+        }
+
+
+def campaign_codes(campaign: Campaign) -> tuple[str, ...]:
+    """The codes of the campaign's solvers, in order."""
+    return tuple(dict.fromkeys(s.partition(":")[0] for s in campaign.solvers))
+
+
+def code_versions(resolved: Mapping[str, stacks.Resolved], code: str) -> set[str]:
+    """The versions of ``code`` the resolved stacks pin."""
+    return {v for r in resolved.values() if (v := r.versions.get(code))}
 
 
 # --- command-line overrides --------------------------------------------------------
@@ -314,7 +323,7 @@ def _override(
         changes["cases"] = tuple(cases)
         changes["wall_cap_s"] = {c: campaign.wall_cap_s[c] for c in cases}
     if solvers is not None:
-        changes["solvers"] = _registry(solvers, config.SOLVERS, "solver", where)
+        changes["solvers"] = _registry(solvers, config.known_solvers(), "solver", where)
     if stack_names is not None:
         changes["stacks"] = _registry(stack_names, config.STACKS, "stack", where)
     if layouts is not None:
@@ -402,13 +411,17 @@ def expand(
             )
     jobs = _jobs(campaign, cases, cells)
     plan = Plan(campaign, commit, tuple(cells), jobs, resolved, tuple(notes))
-    if len({r.versions.get("palace") for r in resolved.values()}) > 1 and any(
-        s.startswith("palace:") for s in campaign.solvers
-    ):
-        raise PlanError(
-            "stacks resolve different Palace versions; a campaign pins one version "
-            "per solver"
-        )
+    for code in campaign_codes(campaign):
+        if len({r.versions.get(code) for r in resolved.values()}) > 1:
+            raise PlanError(
+                f"stacks resolve different {code} versions; a campaign pins one "
+                "version per solver"
+            )
+        bare = [n for n, r in resolved.items() if code not in r.description.codes]
+        if bare:
+            raise PlanError(
+                f"stack {', '.join(bare)} has no [{code}] section; it cannot run {code}"
+            )
     return plan
 
 
@@ -536,8 +549,9 @@ def _same_code_direct(
         }
         if "iterative" not in klass.values() or "direct" in klass.values():
             continue
-        for kind, spec in adapter.kinds.items():
-            if spec.klass != "direct":
+        preferred = sorted(adapter.kinds, key=lambda k: k != adapter.direct_kind)
+        for kind in preferred:
+            if adapter.kinds[kind].klass != "direct":
                 continue
             layout = adapter.default_layout(case, kind, budget)
             if adapter.supports(case, kind, layout) is not None:

@@ -301,7 +301,7 @@ def test_help_lists_every_subcommand(capsys):
 def test_plan_list_prints_axis_values(capsys):
     assert main(["plan", "--list"]) == 0
     out = capsys.readouterr().out
-    for value in config.SOLVERS + config.STACKS + ("default", "best", "RxT"):
+    for value in config.known_solvers() + config.STACKS + ("default", "best", "RxT"):
         assert value in out
 
 

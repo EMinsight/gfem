@@ -23,7 +23,7 @@ NOT_YET = 2
 def _print_axes() -> None:
     cases = config.known_cases()
     print("case:   " + (", ".join(cases) if cases else "(no committed case yet)"))
-    print("solver: " + ", ".join(config.SOLVERS))
+    print("solver: " + ", ".join(config.known_solvers()))
     print("stack:  " + ", ".join(config.STACKS))
     print("layout: " + ", ".join(config.NAMED_LAYOUTS) + ", RxT (ranks x threads)")
 

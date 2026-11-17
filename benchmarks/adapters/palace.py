@@ -794,6 +794,20 @@ class PalaceAdapter:
             "pmg": Kind("iterative", {"Type": PMG_TYPE}),
         }
     )
+    direct_kind: str = "mumps"
+    pins: tuple[str, ...] = (
+        "Refinement 0",
+        "Absorbing.Order 1",
+        "Linear.Type pinned per kind",
+        "MUMPS kind: MGMaxLevels 1, ComplexCoarseSolve, Tol 1e-10",
+        "iterative Tol = the run tolerance, MaxIts 2000",
+        "EstimatorTol 1e-2, EstimatorMG",
+        "eigen Tol 1e-10, inner Linear.Tol 1e-12",
+        "no field output",
+    )
+    timing_source: str = "palace.json"
+    memory_metric: str = "PeakNodeMemoryMegabytes.Total"
+    stack_keys: tuple[str, ...] = ("launcher", "entry")
 
     def supports(self, case: Case, kind: str, layout: Layout) -> str | None:
         """Refuses unknown kinds, exclusions, unmapped boundaries and sweeps."""

@@ -41,8 +41,6 @@ NO_REFERENCE = "no_reference"
 S_METRIC = "max_abs_dS"
 F_METRIC = "max_rel_dRe_f"
 SOLVER_ERROR = "solver error"
-PREFERRED_DIRECT = {"gfem": "direct", "palace": "mumps"}
-"""The direct kind a code's same-code error is measured against first."""
 
 
 class IncompleteError(ValueError):
@@ -232,7 +230,8 @@ def _anchor(rows: Sequence[records.SuiteRecord]) -> records.SuiteRecord | None:
 
     def key(r: records.SuiteRecord) -> tuple[bool, float, str]:
         code, kind = _code_kind(r.run.solver)
-        return (PREFERRED_DIRECT.get(code) != kind, r.run.tolerance or 0.0, r.name)
+        preferred = ADAPTERS[code].direct_kind if code in ADAPTERS else None
+        return (preferred != kind, r.run.tolerance or 0.0, r.name)
 
     return min(direct, key=key)
 
