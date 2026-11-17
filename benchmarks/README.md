@@ -127,7 +127,10 @@ every cross-code view. They are never removed or normalised:
 - `best` expands at plan time to the layout grid: every $R \times T = c$, whole cores
   per rank, no hyperthreads, $T$ divides 56 when $c > 56$ (no rank across a socket),
   $1 \times c$ always included, refused layouts (gfem $R > 1$ on eigen or periodic
-  cases, `gfem:direct` $R > 1$) left out. Records store `layout.asked = "grid"`. The report
+  cases, `gfem:direct` $R > 1$) left out. A kind refused at every grid layout (gfem
+  `petsc-mumps` and `bddc` on a Bloch-periodic eigenproblem, which gfem solves with
+  `direct` only) is planned once at its default layout as `refused`. Records store
+  `layout.asked = "grid"`. The report
   picks the best layout afterwards: the lowest median work time among cells passing
   every gate with all repeats; ties within the spread are shown as ties.
 - Large cases run only the layouts the campaign lists.
@@ -427,8 +430,9 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
    replace an axis; `--list` prints the axis values. By default one job is one case x
    stack on one exclusive node; `[jobs] group = "stack"` makes one job per stack. The
    time limit is 1.5x the estimate; QOS `debug` up to 2 h, else `long`. Planned
-   today: `smoke` 3 jobs / 153 runs / ~445 core-h, `smoke-r10m` 1 job / 4 runs / ~50,
-   `release-gfem` 1 job / 27 runs / ~49.
+   today: `smoke` 3 jobs / 149 runs / ~442 core-h, `smoke-r10m` 1 job / 4 runs / ~50,
+   `release-gfem` 1 job / 23 runs / ~46 (gfem petsc-mumps and bddc on bragg, a
+   Bloch-periodic eigenproblem, are planned once as `refused`).
 
 3. **Submit** from the same tree:
 
