@@ -41,6 +41,11 @@ bend3d-data work="/tmp/bend3d-run":
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_run.py all --out "{{ work }}"
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_run.py merge --out "{{ work }}" --record docs/tutorials/data
 
+# Rerun the 3D spiral heater and rewrite its run record, docs/tutorials/data/heater3d.{json,npz} (tools/heater3d_run.py, gmsh pinned): about 30 min on 16 cores; the ladder's finest mesh needs about 14 GiB.
+heater3d-data work="/tmp/heater3d-run":
+    JAX_PLATFORMS=cpu uv run --with gmsh==4.15.2 --group docs python tools/heater3d_run.py all --out "{{ work }}"
+    JAX_PLATFORMS=cpu uv run --with gmsh==4.15.2 --group docs python tools/heater3d_run.py merge --out "{{ work }}" --record docs/tutorials/data
+
 # Rerun the arc design's spectrum beside the 3D bend's run record, docs/tutorials/data/bend3d_arc.{json,npz} (tools/bend3d_arc_spectrum.py): about 20 min on 16 cores / 96 GiB with the mkl extra.
 bend3d-arc-data work="/tmp/bend3d-arc":
     JAX_PLATFORMS=cpu uv run --extra mkl --group docs python tools/bend3d_arc_spectrum.py --out docs/tutorials/data --work "{{ work }}"
