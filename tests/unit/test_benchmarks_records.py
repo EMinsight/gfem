@@ -99,8 +99,8 @@ def test_a_started_stub_needs_only_the_run():
 
 
 ROOTS = {
-    "cluster.root": "/gpfs/projects/acct42/someone/gfem",
-    "stacks.wheels.palace_wheelhouse": "/gpfs/projects/acct42/someone/gfem/palace-wh",
+    "{cluster.root}": "/gpfs/projects/acct42/someone/gfem",
+    "{stacks.wheels.palace_wheelhouse}": "/gpfs/projects/acct42/someone/gfem/palace-wh",
 }
 
 
@@ -110,7 +110,7 @@ def test_scrub_replaces_site_roots_longest_first():
         "wheel": "/gpfs/projects/acct42/someone/gfem/palace-wh/palace_solver.whl",
         "sibling": "/gpfs/projects/acct42/someone/gfem2",
     }
-    roots = ROOTS | {"other": "/opt/sw"}
+    roots = ROOTS | {"{other}": "/opt/sw"}
     with pytest.raises(records.ScrubError, match=r"\$\.sibling: /gpfs/"):
         records.scrub(text, roots)
     del text["sibling"]
@@ -137,9 +137,9 @@ def test_scrub_catches_the_account_and_user():
 
 def test_writing_a_record_scrubs_it(tmp_path):
     raw = _json(RECORD)
-    raw["stack"]["env_script"] = "source /home/someone/env.sh\n"
+    raw["stack"]["env"] = "source /home/someone/env.sh\n"
     record = records.SuiteRecord.from_json(raw)
-    with pytest.raises(records.ScrubError, match="env_script"):
+    with pytest.raises(records.ScrubError, match=r"stack\.env"):
         records.write_record(record, tmp_path, roots=ROOTS)
     assert not list(tmp_path.rglob("*.json"))
 
@@ -157,15 +157,15 @@ def test_site_roots_cover_every_site_path(tmp_path):
 
     loaded = config.load_site(site)
     assert records.site_roots(loaded) == {
-        "cluster.root": "/r",
-        "stacks.root": "/s",
-        "data.dir": "/r/data",
-        "output.dir": "/r/runs",
-        "data.stores.0": "/r/store",
-        "ship.mesh_store": "/r/store",
-        "stacks.wheels.base_venv": "/r/venv",
-        "stacks.wheels.wheel_dirs.0": "/r/w1",
-        "stacks.wheels.wheel_dirs.1": "/r/w2",
+        "{cluster.root}": "/r",
+        "{stacks.root}": "/s",
+        "{data.dir}": "/r/data",
+        "{output.dir}": "/r/runs",
+        "{data.stores[0]}": "/r/store",
+        "{ship.mesh_store}": "/r/store",
+        "{stacks.wheels.base_venv}": "/r/venv",
+        "{stacks.wheels.wheel_dirs[0]}": "/r/w1",
+        "{stacks.wheels.wheel_dirs[1]}": "/r/w2",
     }
     assert records.site_secrets(loaded, {"USER": "someone"}) == ("acct42", "someone")
 
@@ -370,3 +370,33 @@ def test_reading_does_not_share_state_with_the_source():
     record = records.SuiteRecord.from_json(raw)
     record.outputs["iterations"].append(9)
     assert raw["outputs"]["iterations"] == [0, 0]
+
+
+def test_a_stack_block_from_the_stacks_module_is_stored_as_is(tmp_path):
+    from benchmarks import stacks
+    from benchmarks.harness import config
+
+    site_file = tmp_path / "site.toml"
+    site_file.write_text(
+        'name = "c"\n[slurm]\naccount = "acct42"\n'
+        '[cluster]\nroot = "/home/someone/gfem"\n'
+        '[stacks.wheels]\nbase_venv = "{root}/venv"\nwheel_dirs = ["{root}/w"]\n'
+        'petsc_wheelhouse = "{root}/petsc"\npalace_wheelhouse = "{root}/palace"\n'
+        'python = "{root}/py/bin/python3"\n'
+        '[data]\ndir = "{root}/data"\n[output]\ndir = "{root}/runs"\n'
+    )
+    site = config.load_site(site_file)
+    resolved = stacks.resolve("wheels", site, commit="858bc66" + "0" * 33)
+    block = stacks.record(
+        resolved,
+        env_script=stacks.render(resolved, "gfem", threads=4),
+        ldd="libopenblas.so => /home/someone/gfem/venv/lib/libopenblas.so",
+    )
+    record = records.SuiteRecord.from_json(_json(RECORD) | {"stack": block})
+    path = records.write_record(
+        record,
+        tmp_path / "records",
+        roots=records.site_roots(site),
+        secrets=records.site_secrets(site, {"USER": "someone"}),
+    )
+    assert _json(path)["stack"] == block

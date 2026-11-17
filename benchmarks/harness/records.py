@@ -521,24 +521,42 @@ def load_campaign(source: Path | Mapping[str, Any]) -> Campaign:
 
 
 def site_roots(site: config.Site) -> dict[str, str]:
-    """Each absolute site root by its key, e.g. ``cluster.root``."""
-    roots: dict[str, str] = {"cluster.root": site.cluster_root}
+    """Each absolute site root by its placeholder, e.g. ``{cluster.root}``.
+
+    The names agree with the stack kinds' (``{stacks.<name>.<key>}``,
+    ``{stacks.<name>.wheel_dirs[i]}``, ``{stacks.root}``), so a ``stack`` block
+    made by ``benchmarks.stacks.record`` passes through this scrub unchanged.
+    """
+    roots: dict[str, str] = {"{cluster.root}": site.cluster_root}
     if site.stacks_root:
-        roots["stacks.root"] = site.stacks_root
-    roots["data.dir"] = site.data_dir
-    roots["output.dir"] = site.output_dir
+        roots["{stacks.root}"] = site.stacks_root
+    roots["{data.dir}"] = site.data_dir
+    roots["{output.dir}"] = site.output_dir
     for i, store in enumerate(site.data_stores):
-        roots[f"data.stores.{i}"] = store
+        roots[f"{{data.stores[{i}]}}"] = store
     if site.ship_mesh_store:
-        roots["ship.mesh_store"] = site.ship_mesh_store
+        roots["{ship.mesh_store}"] = site.ship_mesh_store
     for name, inputs in site.stacks.items():
         for key, value in inputs.items():
             if isinstance(value, list):
                 for i, item in enumerate(value):
-                    roots[f"stacks.{name}.{key}.{i}"] = item
+                    roots[f"{{stacks.{name}.{key}[{i}]}}"] = item
             else:
-                roots[f"stacks.{name}.{key}"] = value
+                roots[f"{{stacks.{name}.{key}}}"] = value
     return roots
+
+
+def replace_roots(text: str, roots: Mapping[str, str]) -> str:
+    """``text`` with each root path replaced by its placeholder, longest first.
+
+    A root matches only as a whole path prefix: ``/r/gfem`` is replaced in
+    ``/r/gfem/envs`` but not in ``/r/gfem2``, which is left for the leak check.
+    """
+    for placeholder, path in sorted(roots.items(), key=lambda kv: -len(kv[1])):
+        root = path.rstrip("/")
+        if root:
+            text = re.sub(re.escape(root) + r"(?=/|$|[^\w.-])", placeholder, text)
+    return text
 
 
 def site_secrets(site: config.Site, environ: Mapping[str, str]) -> tuple[str, ...]:
@@ -548,24 +566,19 @@ def site_secrets(site: config.Site, environ: Mapping[str, str]) -> tuple[str, ..
 
 
 def scrub(value: Any, roots: Mapping[str, str], secrets: Iterable[str] = ()) -> Any:
-    """Replace site roots by ``{key}`` placeholders; refuse what still leaks.
+    """Replace site roots by their placeholders; refuse what still leaks.
 
-    Roots are replaced longest first, so a wheelhouse under the cluster root becomes
+    ``roots`` maps placeholder to path (``site_roots``). Roots are replaced longest
+    first (``replace_roots``), so a wheelhouse under the cluster root becomes
     ``{stacks.wheels.palace_wheelhouse}``, not ``{cluster.root}/...``. Keys and values
     are scrubbed. Raises ``ScrubError`` naming each account or user name and each
     home, scratch or ``/gpfs`` path left.
     """
-    replacements = [
-        (re.compile(re.escape(path.rstrip("/")) + r"(?=/|$|[^\w.-])"), f"{{{key}}}")
-        for key, path in sorted(roots.items(), key=lambda kv: -len(kv[1]))
-        if path.rstrip("/")
-    ]
     names = [re.compile(rf"(?<!\w){re.escape(s)}(?!\w)") for s in secrets if s]
     leaks: list[str] = []
 
     def text(s: str, where: str) -> str:
-        for pattern, placeholder in replacements:
-            s = pattern.sub(placeholder, s)
+        s = replace_roots(s, roots)
         leaks.extend(f"{where}: {m.group(0)}" for m in _PRIVATE_PATH.finditer(s))
         leaks.extend(f"{where}: names {p.pattern}" for p in names if p.search(s))
         return s
