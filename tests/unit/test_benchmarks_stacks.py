@@ -423,3 +423,19 @@ def test_wheels_prepare_refuses_a_missing_palace_wheel(tmp_path):
         stacks.StackRefusedError, match=r"no palace_solver-0.18.1.post5-\*.whl"
     ):
         stacks.prepare(resolved, wheel=wheel)
+
+
+def test_frozen_versions_read_wheels_installed_from_files():
+    from benchmarks.stacks import wheels
+
+    freeze = (
+        "ngsolve==6.2.2608\n"
+        "petsc @ file:///w/wheelhouse-mpi/petsc-3.26.0-py3-none-linux_x86_64.whl"
+        "#sha256=830a\n"
+        "petsc4py @ file:///w/petsc4py-3.26.0-cp312-cp312-linux_x86_64.whl\n"
+    )
+    assert wheels.frozen_versions(freeze) == {
+        "ngsolve": "6.2.2608",
+        "petsc": "3.26.0",
+        "petsc4py": "3.26.0",
+    }

@@ -111,10 +111,19 @@ def _sha256(path: Path) -> str:
 
 
 def frozen_versions(freeze: str) -> dict[str, str]:
-    """``name==version`` lines of ``pip freeze``, names normalised."""
+    """Versions in ``pip freeze``, names normalised.
+
+    ``name==version`` lines, and ``name @ <url>/<wheel>`` lines of wheels installed
+    from a file, whose version is the wheel file name's second field.
+    """
     versions = {}
     for line in freeze.splitlines():
         match = re.match(r"^([A-Za-z0-9_.-]+)==(\S+)$", line.strip())
+        if match is None:
+            match = re.match(
+                r"^([A-Za-z0-9_.-]+) @ \S*/[A-Za-z0-9_.]+-([^-/]+)-[^/]*\.whl\b",
+                line.strip(),
+            )
         if match:
             versions[re.sub(r"[-_.]+", "-", match[1]).lower()] = match[2]
     return versions
