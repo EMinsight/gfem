@@ -922,6 +922,9 @@ def job_start(rd: RunDir, job: str, ctx: Context) -> int:
     roots = rd.roots()
     secrets = records.site_secrets(rd.site, ctx.environ)
 
+    if ctx.environ.get("TMPDIR"):
+        roots = {**roots, "{tmpdir}": ctx.environ["TMPDIR"]}
+
     def keep(name: str, text: str) -> None:
         try:
             records.scrub(text, roots, secrets)
