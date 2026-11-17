@@ -1,0 +1,42 @@
+# Site file of the benchmark suite: where and as whom campaigns run.
+# Copy outside the repository, fill in, and pass it as `--site FILE` or through
+# $GFEM_BENCH_SITE. The only placeholder is {root}, replaced by [cluster] root.
+# Never commit a real site file: it names an account, a user and paths.
+
+name = "example-cluster"                       # machine name written into records
+
+[slurm]
+account = "ACCOUNT"                            # sbatch --account
+constraint = ""                                # extra --constraint ("" = none); highmem comes from the campaign
+
+[slurm.qos]                                    # QOS per purpose; submit picks by time limit
+debug = "DEBUG_QOS"                            # time limit <= 2 h
+long = "LONG_QOS"                              # longer jobs
+
+[cluster]
+root = "/path/to/cluster/root"                 # refs/<sha7>/ (shipped trees), envs/, runs
+
+[stacks]
+root = "/path/to/stacks"                       # prefixes of the native stacks (provenance.json)
+
+[stacks.wheels]                                # inputs of the wheels stack kind
+base_venv = "{root}/venv"                      # hard-link cloned per (commit, stack)
+wheel_dirs = ["{root}/wheels"]                 # offline wheelhouses for the gfem env
+petsc_wheelhouse = "{root}/wheelhouse-petsc"   # MPI PETSc wheels
+palace_wheelhouse = "{root}/wheelhouse-palace" # palace_solver-<version>-*.whl
+python = "{root}/python/bin/python3"           # makes the Palace venvs
+
+[data]
+dir = "{root}/bench-data"                      # staged meshes (meshes/<sha256>.msh)
+stores = ["{root}/mesh-store"]                 # mesh stores searched in order (<sha256>.msh.xz)
+
+[ship]
+host = "TRANSFER_HOST"                         # rsync target host of ship and fetch
+mesh_store = "{root}/mesh-store"               # remote mesh store ship fills
+
+[output]
+dir = "{root}/bench-runs"                      # run directories (campaigns/<id>/)
+
+[budget]                                       # billed core-hours (sacct CPUTimeRAW / 2 / 3600)
+ceiling_core_h = 2000                          # submit refuses past spend + estimate
+prior_core_h = 0                               # spend from jobs the CLI did not submit
