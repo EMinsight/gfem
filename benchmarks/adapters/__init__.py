@@ -207,8 +207,15 @@ class Outcome:
 class Adapter(Protocol):
     """A solver adapter: pure, never starts a process."""
 
-    code: str
-    kinds: Mapping[str, Kind]
+    @property
+    def code(self) -> str:
+        """The code's name (``gfem``, ``palace``)."""
+        ...
+
+    @property
+    def kinds(self) -> Mapping[str, Kind]:
+        """Kind name -> class and settings."""
+        ...
 
     def supports(self, case: Case, kind: str, layout: Layout) -> str | None:
         """``None``, or why this cell is refused."""
