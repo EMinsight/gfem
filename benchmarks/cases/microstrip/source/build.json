@@ -1,0 +1,32 @@
+{
+ "source": "07/ms_a",
+ "builder": "reference/scripts/make_voided.py",
+ "excluded_entities": [
+  [
+   "sio2",
+   5
+  ],
+  [
+   "sio2",
+   7
+  ]
+ ],
+ "nd2_dof": 315870,
+ "tetrahedra": [
+  55335,
+  46996
+ ],
+ "tetrahedra_removed": 8339,
+ "triangles": [
+  17466,
+  17466
+ ],
+ "nodes": [
+  9643,
+  9602
+ ],
+ "gfem_ndof": {
+  "source": 315870,
+  "voided": 315870
+ }
+}

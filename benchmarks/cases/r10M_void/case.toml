@@ -1,0 +1,95 @@
+format = 1
+name = "r10M_void"
+size = "large"
+family = "r10M_void"
+order = 2
+
+[mesh]
+sha256 = "74278001c74e47adb8c5a6e582bdb3019c7ff9e730bbfbcea5b73481808539d2"
+bytes = 100548958
+length_unit = "um"
+
+[mesh.source]
+recipe = "gsim r10M build (refinement bisected to 10 M DOF), then voided by reference/scripts/make_voided.py (sio2 volumes 5, 6, 7 removed); see source/build.json"
+commit = "033594d"
+note = "External mesh, never rebuilt. source/build.json's palace_msh_md5 ff40f9ed... is the cracked source mesh, not this voided file: the pin is the sha256 of the voided file as read. Imported from source/config.json with ABC order 2 changed to 1, 50 GHz only and port p1 excited only, as the earlier scaling comparison. 10 248 856 DOF at order 2."
+
+[regions]
+sio2 = [3, 1]
+sin = [3, 2]
+air = [3, 3]
+topmetal2_xy = [2, 4]
+topmetal2_z = [2, 5]
+P1_E0 = [2, 6]
+P1_E1 = [2, 7]
+P2_E0 = [2, 8]
+P2_E1 = [2, 9]
+air__sio2 = [2, 10]
+sio2__None = [2, 11]
+sin__sio2 = [2, 12]
+air__sin = [2, 13]
+sin__None = [2, 14]
+air__None = [2, 15]
+
+[problem]
+kind = "driven"
+frequencies_hz = [50000000000.0]
+sweep = "uniform"
+excite = ["p1"]
+
+[quantities]
+s = [["p1", "p1"], ["p2", "p1"]]
+
+[[materials]]
+region = "sio2"
+eps_r = 4.1
+tan_delta = 0.0
+
+[[materials]]
+region = "sin"
+eps_r = 7.5
+tan_delta = 0.001
+
+[[materials]]
+region = "air"
+eps_r = 1.0
+tan_delta = 0.0
+
+[[boundaries]]
+kind = "conductor"
+region = "topmetal2_xy"
+conductivity = 37700000.0
+thickness = 3.0
+
+[[boundaries]]
+kind = "conductor"
+region = "topmetal2_z"
+conductivity = 37700000.0
+thickness = 3.0
+
+[[boundaries]]
+kind = "absorbing"
+region = "sio2__None"
+order = 1
+
+[[boundaries]]
+kind = "absorbing"
+region = "sin__None"
+order = 1
+
+[[boundaries]]
+kind = "absorbing"
+region = "air__None"
+order = 1
+
+[[ports]]
+kind = "lumped"
+name = "p1"
+impedance_ohm = 50.0
+elements = [{region = "P1_E0", direction = "+y"}, {region = "P1_E1", direction = "-y"}]
+
+[[ports]]
+kind = "lumped"
+name = "p2"
+impedance_ohm = 50.0
+elements = [{region = "P2_E0", direction = "-y"}, {region = "P2_E1", direction = "+y"}]

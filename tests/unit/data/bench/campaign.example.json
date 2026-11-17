@@ -1,0 +1,23 @@
+{
+ "schema": "suite-campaign/1",
+ "id": "20261120-858bc66-smoke",
+ "name": "smoke",
+ "planned_utc": "2026-11-20T09:12:03Z",
+ "campaign_file": {"path": "benchmarks/campaigns/smoke.toml", "sha256": "ee55"},
+ "pins": {
+  "gfem": {"commit": "858bc66c0ffee", "commit_utc": "2026-11-17T08:01:22Z", "version": "0.1.0"},
+  "harness": {"commit": "858bc66c0ffee"},
+  "solvers": {"gfem": "0.1.0", "palace": "0.19.0"},
+  "stacks": {"wheels": {"description_sha256": "cc33", "env_manifest_sha256": "dd44"}}
+ },
+ "machine": "MareNostrum 5 GPP",
+ "core_budget": 16,
+ "jobs": [{"job": "41234567", "group": "microstrip", "qos": "gp_debug", "constraint": null,
+           "nodes": ["node001"], "elapsed_s": 5321, "billed_core_h": 165.5,
+           "state": "COMPLETED"}],
+ "records": {"records/microstrip/gfem-direct__wheels__default__rep1.json": "ff66"},
+ "checks": {"complete": "pass", "provenance": "pass",
+            "dof_equal": {"microstrip": {"status": "pass",
+                                         "ndof": {"gfem": 315870, "palace": 315870}}}},
+ "closed_utc": "2026-11-20T11:02:40Z"
+}

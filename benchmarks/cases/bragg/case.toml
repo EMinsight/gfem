@@ -1,0 +1,58 @@
+format = 1
+name = "bragg"
+size = "small"
+family = "bragg"
+order = 3
+
+[mesh]
+sha256 = "18019f17cc2a57c17f77a09fa1d429d3a0305ddec0e5a9c5b46eaf4203f1e88e"
+bytes = 3605
+length_unit = "mm"
+file = "mesh.msh.xz"
+
+[mesh.source]
+recipe = "tests/periodic_cases.c3_mesh((10, 1, 1)) on tools/structured_meshes.periodic_cell, adopted from the ADR 0044 R1 run (job 48389307)"
+note = "The R1 file is pinned as built; the generator at later commits writes other bytes (81b2fac4...). Imported from source/config.json (the R1 Palace config) with the two lowest bands compared. 1 560 DOF at order 3."
+
+[regions]
+low = [3, 1]
+high = [3, 2]
+x_min = [2, 3]
+y_min = [2, 4]
+z_min = [2, 5]
+z_max = [2, 6]
+y_max = [2, 7]
+x_max = [2, 8]
+
+[problem]
+kind = "eigen"
+target_hz = 4496886870.0
+n_modes = 3
+wave_vector = [314.1592653589793, 0.0, 0.0]
+
+[quantities]
+modes = 2
+
+[[materials]]
+region = "low"
+eps_r = 2.0
+tan_delta = 0.0
+
+[[materials]]
+region = "high"
+eps_r = 9.0
+tan_delta = 0.0
+
+[[boundaries]]
+kind = "pec"
+region = "z_min"
+
+[[boundaries]]
+kind = "pec"
+region = "z_max"
+
+[[boundaries]]
+kind = "periodic"
+donor = "x_min"
+receiver = "x_max"
+translation = [10.0, 0.0, 0.0]

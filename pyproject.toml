@@ -110,7 +110,7 @@ markers = [
   "petsc: needs complex petsc4py built as the PETSc and SLEPc recipe describes; skipped without it (run alone with -m petsc)",
   "slepc: needs slepc4py on that PETSc; skipped without it",
 ]
-pythonpath = ["tools", "tests"]
+pythonpath = ["tools", "tests", "."]  # "." imports the benchmarks package
 testpaths = ["tests"]
 
 [tool.ruff]
@@ -170,12 +170,17 @@ select = ["ALL"]
   "S603",  # subprocess-without-shell-equals-true
   "T201",  # print
 ]
+"benchmarks/**/*.py" = [
+  "S603",  # subprocess-without-shell-equals-true (launches sbatch, srun, workers)
+  "S607",  # start-process-with-partial-path (sbatch, srun, rsync, git from PATH)
+  "T201",  # print (a command line)
+]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ty.src]
-include = ["src"]
+include = ["src", "benchmarks"]
 
 [tool.ty.analysis]
 # The cuda12 / cuda13 extras: absent from the default environment.
