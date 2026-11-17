@@ -82,6 +82,15 @@ just docs   # strict build and search index, into docs/_build/html
 just serve  # the same, then serve it at http://localhost:8000
 ```
 
+Formulas are math, not plain text. In Markdown pages and notebook cells write
+`$e^{+i\omega t}$` inline and a `$$ … $$` block for a displayed equation; in
+docstrings write `` :math:`e^{+i\omega t}` `` or a `.. math::` block, and make
+any docstring with a backslash a raw string (`r"""…"""`). Leave units after a
+number (50 Ω, 1.5 µm), Python names, code and headings as text. Run
+`ruff check --no-fix` on a docstring that is not raw yet: the project's
+`fix = true` turns `\omega` into `\\omega`. `tests/unit/test_docstring_math.py`
+fails on either mistake.
+
 The build executes no notebook. The tutorials' outputs and the front page's
 hero data (`docs/_data/front-page.json`) are committed; after changing a
 tutorial, regenerate them and commit the result:
