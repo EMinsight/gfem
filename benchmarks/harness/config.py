@@ -281,6 +281,7 @@ _CAMPAIGN_KEYS = (
     "wall_cap_s",
     "jobs",
     "ladder",
+    "cases_dir",
 )
 _LADDER_KEYS = ("cases", "solvers", "tolerances", "layout")
 _STACK_OVERRIDE_KEYS = ("versions", "env")
@@ -317,6 +318,11 @@ class Campaign:
     ladder: tuple[Ladder, ...] = ()
     stack_versions: dict[str, dict[str, str]] = field(default_factory=dict)
     stack_env: dict[str, dict[str, str]] = field(default_factory=dict)
+    cases_dir: Path | None = None
+    """Where the campaign's case directories are; ``None`` = ``benchmarks/cases``.
+
+    Set by ``cases_dir`` in the file (relative to it), for harness fixtures only.
+    """
 
 
 def known_cases(cases_dir: Path = CASES_DIR) -> tuple[str, ...]:
@@ -360,11 +366,15 @@ def _members(
 
 
 def load_campaign(path: Path, *, cases: tuple[str, ...] | None = None) -> Campaign:
-    """Load and validate a campaign file; ``cases`` defaults to the committed cases."""
-    cases = known_cases() if cases is None else cases
+    """Load and validate a campaign file; ``cases`` defaults to the committed cases.
+
+    A ``cases_dir`` key (relative to the file) takes the cases from that directory
+    instead of ``benchmarks/cases``: the harness's own test fixtures use it.
+    """
     raw = _read(path)
     where = str(path)
     _keys(raw, _CAMPAIGN_KEYS, where)
+    cases_dir = _cases_dir(raw, path)
 
     schema = _required(raw, "schema", where)
     if schema != 1:
@@ -372,7 +382,10 @@ def load_campaign(path: Path, *, cases: tuple[str, ...] | None = None) -> Campai
 
     budget = _positive_int(_required(raw, "core_budget", where), "core_budget")
     case_names = _members(
-        _strs(_required(raw, "cases", where), "cases"), cases, "case", where
+        _strs(_required(raw, "cases", where), "cases"),
+        known_cases(cases_dir or CASES_DIR) if cases is None else cases,
+        "case",
+        where,
     )
     solvers = _members(
         _strs(_required(raw, "solvers", where), "solvers"), SOLVERS, "solver", where
@@ -451,7 +464,17 @@ def load_campaign(path: Path, *, cases: tuple[str, ...] | None = None) -> Campai
         ladder=ladder,
         stack_versions=versions,
         stack_env=env,
+        cases_dir=cases_dir,
     )
+
+
+def _cases_dir(raw: Mapping[str, Any], path: Path) -> Path | None:
+    if "cases_dir" not in raw:
+        return None
+    found = (path.parent / _str(raw["cases_dir"], "cases_dir")).resolve()
+    if not found.is_dir():
+        raise ConfigError(f"{path}: cases_dir {found} is not a directory")
+    return found
 
 
 def _ladder(

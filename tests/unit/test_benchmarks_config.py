@@ -308,13 +308,7 @@ def test_plan_list_prints_axis_values(capsys):
 @pytest.mark.parametrize(
     "argv",
     [
-        ["submit", "rundir", "--dry-run"],
-        ["run", "rundir", "--local"],
-        ["step", "rundir", "job", "3"],
-        ["status", "rundir"],
-        ["close", "rundir"],
         ["reference", "bragg"],
-        ["ship", "HEAD", "--to", "host:/root"],
         ["report", "a", "b", "--out", "dir"],
     ],
 )

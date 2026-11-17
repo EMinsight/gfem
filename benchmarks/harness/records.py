@@ -41,6 +41,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import re
 import subprocess
@@ -574,7 +575,11 @@ def scrub(value: Any, roots: Mapping[str, str], secrets: Iterable[str] = ()) -> 
     are scrubbed. Raises ``ScrubError`` naming each account or user name and each
     home, scratch or ``/gpfs`` path left.
     """
-    names = [re.compile(rf"(?<!\w){re.escape(s)}(?!\w)") for s in secrets if s]
+    # a name inside a path or a hyphenated word (data/bench/, bench-<sha7>) is not
+    # the account or user; private paths are caught by _PRIVATE_PATH
+    names = [
+        re.compile(rf"(?<![\w./-]){re.escape(s)}(?![\w./-])") for s in secrets if s
+    ]
     leaks: list[str] = []
 
     def text(s: str, where: str) -> str:
@@ -641,6 +646,45 @@ def write_campaign(
 def allowed_env(environ: Mapping[str, str]) -> dict[str, str]:
     """The allow-listed part of ``environ`` (``ENV_PREFIXES``), sorted by name."""
     return {k: environ[k] for k in sorted(environ) if k.startswith(ENV_PREFIXES)}
+
+
+def file_sha256(path: Path) -> str:
+    """sha256 of a file's bytes (the manifest's ``records`` values)."""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def record_paths(rundir: Path) -> list[Path]:
+    """Every current record under ``rundir/records`` (superseded ones left out)."""
+    root = rundir / "records"
+    if not root.is_dir():
+        return []
+    return sorted(
+        p for p in root.rglob("*.json") if p.is_file() and not is_superseded(p)
+    )
+
+
+def record_hashes(rundir: Path) -> dict[str, str]:
+    """``records/<case>/<name>.json`` -> sha256 of every current record."""
+    return {
+        p.relative_to(rundir).as_posix(): file_sha256(p) for p in record_paths(rundir)
+    }
+
+
+_FILE_URL = re.compile(r"file://(/[^\s#]*/)?([^/\s#]+)")
+
+
+def scrub_freeze(text: str, roots: Mapping[str, str]) -> str:
+    """``pip freeze`` text fit for the store: roots replaced, local paths dropped.
+
+    A ``name @ file:///<path>/<wheel>#sha256=..`` line keeps the wheel's file name
+    and hash, never the path (``jobs/<jobid>/pip-freeze.txt``, ADR 0402).
+    """
+    text = replace_roots(text, roots)
+    return _FILE_URL.sub(lambda m: f"file:{m[2]}", text)
 
 
 # --- names ------------------------------------------------------------------------

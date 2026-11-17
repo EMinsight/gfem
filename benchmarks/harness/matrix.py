@@ -304,7 +304,7 @@ def _override(
     where = f"{campaign.path} (command line)"
     changes: dict[str, Any] = {}
     if cases is not None:
-        known = config.known_cases()
+        known = config.known_cases(campaign.cases_dir or config.CASES_DIR)
         _registry(cases, known, "case", where)
         missing = [c for c in cases if c not in campaign.wall_cap_s]
         if missing:
@@ -379,7 +379,8 @@ def expand(
     adapters: Mapping[str, Adapter] = ADAPTERS,
 ) -> Plan:
     """Expand ``campaign`` into cells and jobs; refuse an unlaunchable stack."""
-    cases = load_cases(campaign.cases) if cases is None else cases
+    if cases is None:
+        cases = load_cases(campaign.cases, campaign.cases_dir or config.CASES_DIR)
     resolved = _resolve_stacks(campaign, site, commit)
     notes: list[str] = []
     cells: list[Cell] = []
@@ -667,6 +668,8 @@ def _campaign_toml(plan: Plan) -> dict[str, Any]:
         "jobs": {"group": c.group},
         "wall_cap_s": dict(c.wall_cap_s),
     }
+    if c.cases_dir is not None:
+        raw["cases_dir"] = str(c.cases_dir)
     if c.ladder:
         raw["ladder"] = [
             {

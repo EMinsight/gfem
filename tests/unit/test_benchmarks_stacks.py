@@ -94,13 +94,15 @@ def test_resolve_refuses_unknown_stack_and_version_key(site):
         stacks.resolve("wheels", site, versions={"mumps": "5"}, commit=COMMIT)
 
 
-def test_wheels_needs_its_site_table(tmp_path):
+def test_wheels_without_its_site_table_resolves_but_never_prepares(tmp_path):
     text = EXAMPLE_SITE.read_text()
     cut = text.split("[stacks.wheels]")[0] + "[data]" + text.split("[data]")[1]
     path = tmp_path / "site.toml"
     path.write_text(cut)
-    with pytest.raises(ConfigError, match=r"\[stacks.wheels\]"):
-        stacks.resolve("wheels", config.load_site(path), commit=COMMIT)
+    resolved = stacks.resolve("wheels", config.load_site(path), commit=COMMIT)
+    assert resolved.inputs == {}
+    with pytest.raises(ConfigError, match=r"\[stacks.wheels\].*run --local"):
+        stacks.prepare(resolved, wheel=tmp_path / "gfem.whl")
 
 
 UNSET = (
