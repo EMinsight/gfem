@@ -146,7 +146,10 @@ program, because every gfem solve needs it.
   a 220 nm silicon guide in oxide. The {doc}`metal bend <tutorials/metal-bend>`
   tutorial places gold in the same bend, over a band of wavelengths, and the
   {doc}`metagrating <tutorials/metagrating>` tutorial designs a silicon
-  grating on glass that sends a plane wave into the air at 50°.
+  grating on glass that sends a plane wave into the air at 50°. The
+  {doc}`heater <tutorials/heater>` tutorial heats a silicon waveguide with a
+  TiN strip: the power for a π phase shift, the crosstalk to a neighbouring
+  guide, and how fast the phase follows the current.
 - {doc}`recipes/solve-a-device` takes this line further: a band of
   frequencies, real metals, its resonances and their Q, its capacitance.
 - {doc}`recipes/prepare-a-mesh` builds the mesh of your own device in gmsh.
