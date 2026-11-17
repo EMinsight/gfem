@@ -9,10 +9,20 @@ from __future__ import annotations
 
 import dataclasses
 import weakref
+from typing import Any
 
 import numpy as np
 
 from gfem.mesh import _TET_EDGES, _TET_FACES, Mesh
+
+
+def physics_of(item: Any) -> str:
+    """The physics key of a boundary, port or problem (``"em"`` by default).
+
+    Each of their classes names its physics as ``_physics``: ``"em"``,
+    ``"thermal"`` or ``"dc_conduction"``, the keys of ``excluded=``.
+    """
+    return getattr(type(item), "_physics", "em")
 
 
 @dataclasses.dataclass(frozen=True, eq=False)

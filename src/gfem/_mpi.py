@@ -288,6 +288,7 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
     Raises:
         DistributedUnsupportedError: Its ``feature`` names what has no path.
     """
+    from gfem._domain import physics_of
     from gfem._floquet import floquet_ports
     from gfem.problems import Driven, Eigenmode, Electrostatic
 
@@ -295,7 +296,7 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
         refuse_feature("eigenmode")
     if isinstance(problem, Electrostatic):
         refuse_feature("electrostatic")
-    physics = getattr(type(problem), "_physics", "em")
+    physics = physics_of(problem)
     if physics != "em":
         # "thermal" (steady and transient) or "dc_conduction" (ADR 0161)
         refuse_feature(physics)

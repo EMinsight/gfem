@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, overload
 from gfem import _mpi
 from gfem._adjoint import solve_vjp
 from gfem._checks import is_traced
+from gfem._domain import physics_of
 from gfem._materials import MaterialField
 from gfem._periodic import check_nodes
 from gfem.errors import LinearSolverConvergenceError
@@ -220,7 +221,7 @@ def _solve(
     # A moved mesh must keep its periodic pairs and stay valid on the solve
     # domain.
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
-    physics = getattr(type(problem), "_physics", "em")
+    physics = physics_of(problem)
     _check_quality(
         model.mesh,
         model._domain_of(physics).active,  # noqa: SLF001
@@ -247,12 +248,12 @@ def _check_domain(model: Model, problem: Any) -> None:
 
     A model needs some volume in some physics' domain (ADR 0167); an empty
     domain for one physics raises when a problem of that physics is solved.
-    A problem names its physics as ``_physics`` (electromagnetic by default).
+    A problem names its physics as ``_physics`` (`physics_of`).
 
     Raises:
         ValueError: Every volume is excluded from the problem's physics.
     """
-    physics = getattr(type(problem), "_physics", "em")
+    physics = physics_of(problem)
     if model._domain_of(physics).active.any():  # noqa: SLF001
         return
     name = _PHYSICS_NAMES[physics]

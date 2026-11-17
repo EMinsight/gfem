@@ -31,7 +31,7 @@ from gfem._boundaries import (
     surfaces_of,
 )
 from gfem._checks import check_fixed, is_traced
-from gfem._domain import EMDomain, em_domain, enclosed_entities
+from gfem._domain import EMDomain, em_domain, enclosed_entities, physics_of
 from gfem._floquet import (
     FloquetFace,
     floquet_face,
@@ -400,7 +400,7 @@ class Model:
         taken: dict[tuple[str, str], list[Boundary | Port]] = {}
         for item in (*self.boundaries, *self.ports):
             what = type(item).__name__
-            physics = item._physics  # noqa: SLF001
+            physics = physics_of(item)
             domain = self._domain_of(physics)
             for surface in surfaces_of(item):
                 check_surface(mesh, surface, what)
@@ -597,7 +597,7 @@ class Model:
         named = {
             s
             for item in (*self.boundaries, *self.ports)
-            if item._physics == physics  # noqa: SLF001
+            if physics_of(item) == physics
             for s in surfaces_of(item)
         }
         domain = self._domain_of(physics)
@@ -855,8 +855,7 @@ class Model:
                 + ", ".join(self.default_pmc)
             )
         thermal = self._excluded_by[_PHYSICS.index("thermal")] or any(
-            b._physics == "thermal"  # noqa: SLF001
-            for b in self.boundaries
+            physics_of(b) == "thermal" for b in self.boundaries
         )
         if thermal and self.default_insulated:
             lines.append(

@@ -23,6 +23,7 @@ import numpy as np
 
 from gfem import _mpi
 from gfem._checks import is_staging, is_traced
+from gfem._domain import physics_of
 from gfem._floquet import floquet_ports
 from gfem._pytree import readonly
 from gfem._refine import Refinement, bisect, transfer, transfer_design
@@ -1624,9 +1625,7 @@ def _conserves_power(model: Model) -> bool:
         all(isinstance(p, LumpedPort) for p in model.ports)
         and not _undefined_rows(model)
         and all(
-            isinstance(b, PEC | PMC)
-            for b in model.boundaries
-            if b._physics == "em"  # noqa: SLF001
+            isinstance(b, PEC | PMC) for b in model.boundaries if physics_of(b) == "em"
         )
         and not _lossy_elements(model).any()
     )
@@ -2418,7 +2417,7 @@ def _check_problem(model: Model, problem: Any) -> None:
             "mode solve runs on the refined port faces.",
         )
     # "thermal" or "dc_conduction": the estimators are electromagnetic
-    feature = getattr(type(problem), "_physics", "em")
+    feature = physics_of(problem)
     if feature != "em":
         raise MeshRefinementUnsupportedError(
             feature,
