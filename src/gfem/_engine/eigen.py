@@ -24,7 +24,7 @@ import numpy as np
 import scipy.constants as const
 import scipy.sparse as sp
 
-from gfem import _linalg
+from gfem import _linalg, _timing
 from gfem._eigen.operator import EigenOperator, LinearMap, NonPolynomial, split
 from gfem._eigen.seed import MIN_SUBSPACE
 from gfem._engine import dispersion, quadrature, terms
@@ -165,7 +165,8 @@ def assemble(
     for c, piece in items:
         form += c * piece.integrand(u, v)
     if not matrix_free:
-        form.Assemble()
+        with _timing.phase("assemble"):
+            form.Assemble()
     return form.mat
 
 
@@ -519,7 +520,8 @@ class DivFreeProjector:
         u, v = hcurl.TnT()
         mass = ngs.BilinearForm(hcurl, symmetric=symmetric)
         mass += (eps * u) * v * dx
-        mass.Assemble()
+        with _timing.phase("assemble"):
+            mass.Assemble()
         #: ``M0``, the electric-energy form on the H(curl) space.
         self.mass = mass.mat
         phi = h1.TrialFunction()
