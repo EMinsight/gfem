@@ -590,11 +590,16 @@ def convergence(text: str) -> tuple[str | None, list[int]]:
     return ("pass" if iterations else None), iterations
 
 
+NULL = "NULL"
+"""What Palace writes in ``port-S.csv`` for an excitation not yet solved."""
+
+
 def port_s(path: Path, names: Sequence[str]) -> dict[str, Any]:
     """``port-S.csv`` (dB, degrees) -> frequencies and complex S as ``[re, im]``.
 
     ``S[i][j]`` is to port ``i`` from port ``j`` (Palace indices, 1-based, are the
-    case's port order); keys are ``"to,from"`` port names.
+    case's port order); keys are ``"to,from"`` port names. A ``NULL`` cell (an
+    excitation the run did not reach) gives ``None``.
     """
     with path.open() as stream:
         rows = [[c.strip() for c in row] for row in csv.reader(stream) if row]
@@ -608,6 +613,9 @@ def port_s(path: Path, names: Sequence[str]) -> dict[str, Any]:
         key = f"{names[int(match[1]) - 1]},{names[int(match[2]) - 1]}"
         values = []
         for r in data:
+            if NULL in (r[col], r[col + 1]):
+                values.append(None)
+                continue
             magnitude = 10.0 ** (float(r[col]) / 20.0)
             z = cmath.rect(magnitude, math.radians(float(r[col + 1])))
             values.append([z.real, z.imag])
@@ -889,6 +897,10 @@ class PalaceAdapter:
             if refused is not None:
                 return Outcome(status="refused", reason=refused, provenance=provenance)
             provenance.update(parse_version(measured.version))
+            # the binary's tag (v0.18.1) matched the declared wheel version's release
+            # (0.18.1.post5): record the wheel version, which the campaign pins
+            provenance["binary_version"] = provenance["version"]
+            provenance["version"] = run.stack.versions["palace"]
         try:
             return self._collect(run, measured, dialect, provenance)
         except PalaceParseError as error:

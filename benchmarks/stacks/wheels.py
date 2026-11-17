@@ -28,6 +28,8 @@ from benchmarks.harness.config import ConfigError
 from benchmarks.harness.records import file_sha256
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from benchmarks.harness.config import Site
     from benchmarks.stacks import Description, Resolved
 
@@ -217,8 +219,14 @@ def _palace_env(resolved: Resolved) -> Path:
     return env
 
 
-def prepare(resolved: Resolved, *, wheel: Path) -> Path:
-    """Build (or reuse) gfem's env from ``wheel`` and Palace's env; return gfem's."""
+def prepare(
+    resolved: Resolved, *, wheel: Path, codes: Sequence[str] | None = None
+) -> Path:
+    """Build (or reuse) gfem's env from ``wheel`` and Palace's env; return gfem's.
+
+    ``codes`` (the campaign's codes, default all): Palace's env is built, and its
+    wheel required, only when ``palace`` is among them.
+    """
     if not resolved.inputs:
         raise _refused(
             f"stack {resolved.name}: the site file has no [stacks.{resolved.name}] "
@@ -226,21 +234,32 @@ def prepare(resolved: Resolved, *, wheel: Path) -> Path:
         )
     if not Path(wheel).is_file():
         raise _refused(f"stack {resolved.name}: no gfem wheel at {wheel}")
-    palace_wheel(resolved)  # refuse before building anything
+    palace = codes is None or "palace" in codes
+    if palace:
+        palace_wheel(resolved)  # refuse before building anything
     env = _gfem_env(resolved, Path(wheel))
-    _palace_env(resolved)
+    if palace:
+        _palace_env(resolved)
     return env
 
 
 def provenance(resolved: Resolved) -> dict[str, Any]:
-    """sha256 and text of both manifests, the Palace wheel's sha256 and version."""
+    """sha256 and text of each prepared manifest, the Palace wheel's sha256 and version.
+
+    A code whose env was not prepared (a campaign without it) is left out.
+    """
     out: dict[str, Any] = {}
     for code, env in resolved.code_env.items():
-        text = (Path(env) / MANIFEST).read_text()
+        path = Path(env) / MANIFEST
+        if code != "gfem" and not path.is_file():
+            continue
+        text = path.read_text()
         out[f"{code}_manifest"] = {
             "sha256": hashlib.sha256(text.encode()).hexdigest(),
             "text": text,
         }
+    if "palace_manifest" not in out:
+        return out
     palace = out["palace_manifest"]["text"].splitlines()
     out["palace_wheel_sha256"] = palace[0].split()[0]
     out["palace_version"] = palace[1].removeprefix("palace --version: ")

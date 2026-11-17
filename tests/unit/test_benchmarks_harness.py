@@ -326,6 +326,27 @@ def test_pss_and_masks_come_from_proc(tmp_path):
     assert measure.pss_kib(43, tmp_path / "proc") == 0
 
 
+def test_a_rank_mask_is_the_union_of_its_threads_masks(tmp_path):
+    # OMP_PROC_BIND=close binds the main thread to the first core of the rank's
+    # cores: the rank's allotment is what its threads together may use
+    pid = tmp_path / "proc" / "42"
+    for tid, mask in (("42", "0"), ("43", "1"), ("44", "2-3,114")):
+        (pid / "task" / tid).mkdir(parents=True)
+        (pid / "task" / tid / "status").write_text(f"Cpus_allowed_list:\t{mask}\n")
+    (pid / "status").write_text("Name:\tx\nCpus_allowed_list:\t0\n")
+    assert measure.cpus_allowed(42, tmp_path / "proc") == "0-3,114"
+
+
+def test_placement_passes_on_the_process_masks_or_the_union_of_thread_masks(sysfs):
+    # 2x1: helper threads with stray masks, process masks exact -> pass
+    assert measure.rank_placement(["0", "1"], ["0,5", "1,5"], 1, sysfs).status == "pass"
+    # 1x2 under OMP_PROC_BIND: main thread narrowed, threads cover both cores -> pass
+    assert measure.rank_placement(["0"], ["0-1"], 2, sysfs).status == "pass"
+    # Hydra without binding: every rank on one core -> fail either way
+    found = measure.rank_placement(["0", "0"], ["0", "0"], 1, sysfs)
+    assert found.status == "fail"
+
+
 # --- the watchdog ---------------------------------------------------------------------
 
 
@@ -381,6 +402,23 @@ def test_a_short_run_still_has_its_placement_checked(tmp_path):
     )
     assert m.returncode == 0
     assert m.placement.status == "pass"
+
+
+def test_a_step_slurm_cancelled_after_its_task_crashed_is_a_solver_failure():
+    # srun cancels the step when a task segfaults: the run failed, nobody killed it
+    assert slurm.slurm_verdict("CANCELLED", 139, None) == (
+        "failed",
+        "solver",
+        "crashed: signal 11 (SIGSEGV); slurm step CANCELLED",
+    )
+    assert slurm.slurm_verdict("CANCELLED", None, None) == (
+        "killed",
+        None,
+        "slurm: CANCELLED",
+    )
+    assert slurm.slurm_verdict("OUT_OF_MEMORY", 137, None)[0] == "killed"
+    assert slurm.slurm_verdict("COMPLETED", 0, None) is None
+    assert slurm.slurm_verdict("CANCELLED", 139, "timeout") is None
 
 
 def test_sacct_step_facts_wait_for_a_final_state():
@@ -783,6 +821,40 @@ def test_ship_dry_run_lists_only_committed_files(tmp_path, capsys):
     assert "untracked.txt" not in out
     sha = git("rev-parse", "HEAD").strip()
     assert f"host:/r/refs/{sha[:7]}/" in out
+
+
+def test_ship_of_a_tree_another_tool_shipped_adds_the_missing_commit_date(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            [GIT, "-C", str(repo), *args], check=True, capture_output=True, text=True
+        ).stdout
+
+    git("init", "-q")
+    (repo / "a.py").write_text("x = 1\n")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "c")
+    sha, when = ship.commit_of(repo, "HEAD")
+    cases = tmp_path / "cases"
+    cases.mkdir()
+    calls = []
+
+    def run(argv, **_kw):
+        calls.append(list(argv))
+        out = "/r/refs/x/dist/gfem-0.1.0-py3-none-any.whl\n" if "ls" in argv[-1] else ""
+        return subprocess.CompletedProcess(argv, 0, out, "")
+
+    code = ship.ship(
+        "HEAD", ship.Target.parse("host:/r"), repo=repo, cases_dir=cases, run=run
+    )
+    assert code == 0
+    remote = [c[-1] for c in calls if c[0] == "ssh"]
+    dest = f"/r/refs/{sha[:7]}"
+    assert any(
+        f"{dest}/COMMIT_UTC" in cmd and when in cmd and "||" in cmd for cmd in remote
+    )
 
 
 def test_ship_refuses_a_store_mesh_with_another_hash(tmp_path):

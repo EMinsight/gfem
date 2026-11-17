@@ -16,7 +16,7 @@ group = "stack"
 
 [wall_cap_s]
 microstrip_L0_p2 = 600
-microstrip_L1_p2 = 1800
+microstrip_L1_p2 = 3600
 
 [stacks.wheels.versions]
 palace = "0.18.1.post5"

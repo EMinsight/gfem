@@ -201,6 +201,23 @@ def check_placement(
     return Placement("pass", list(masks))
 
 
+def rank_placement(
+    process: Sequence[str], threads_union: Sequence[str], threads: int, sysfs: Path
+) -> Placement:
+    """The placement check on the process masks, else on the threads' unions.
+
+    A rank's process (main-thread) mask is its allotment unless ``OMP_PROC_BIND``
+    narrowed the main thread to one core; then the union of its threads' masks is.
+    Helper threads of some libraries carry stray masks, so the union alone is not
+    enough either. Either view passing passes; else the process view's failure.
+    """
+    first = check_placement(process, threads, sysfs)
+    if first.status == "pass":
+        return first
+    second = check_placement(threads_union, threads, sysfs)
+    return second if second.status == "pass" else first
+
+
 def busy_threads_per_core(
     ps_text: str, pids: Sequence[int], sysfs: Path = SYSFS_CPU
 ) -> int:
@@ -302,14 +319,35 @@ def pss_kib(pid: int, proc: Path = PROC) -> int:
     return int(match[1]) if match else 0
 
 
-def cpus_allowed(pid: int, proc: Path = PROC) -> str | None:
-    """``Cpus_allowed_list`` of ``pid``."""
+def _mask(status: Path) -> list[int] | None:
     try:
-        text = (proc / str(pid) / "status").read_text()
+        text = status.read_text()
     except OSError:
         return None
     match = re.search(r"^Cpus_allowed_list:\s*(\S+)", text, re.MULTILINE)
-    return match[1] if match else None
+    return parse_cpu_list(match[1]) if match else None
+
+
+def process_mask(pid: int, proc: Path = PROC) -> str | None:
+    """``Cpus_allowed_list`` of ``pid``'s main thread."""
+    own = _mask(proc / str(pid) / "status")
+    return None if own is None else cpu_list(own)
+
+
+def cpus_allowed(pid: int, proc: Path = PROC) -> str | None:
+    """``Cpus_allowed_list`` of ``pid``: the union over its threads.
+
+    ``OMP_PROC_BIND`` narrows each thread (the main one to the first core), so the
+    rank's allotment is what its threads together may use.
+    """
+    tasks = sorted((proc / str(pid) / "task").glob("*/status"))
+    masks = [m for t in tasks if (m := _mask(t)) is not None]
+    if not masks:
+        own = _mask(proc / str(pid) / "status")
+        masks = [own] if own is not None else []
+    if not masks:
+        return None
+    return cpu_list(sorted({cpu for mask in masks for cpu in mask}))
 
 
 # --- one command ----------------------------------------------------------------------
@@ -434,6 +472,7 @@ class _Watch:
         self.t0 = time.monotonic()
         self.next_snapshot = self.t0
         self.peak_kib = 0
+        self.masks: dict[int, set[int]] = {}
         started = _utc()
         self.m = Measurement(None, 0.0, started, started)
 
@@ -452,11 +491,18 @@ class _Watch:
         pss = sum(pss_kib(p, sampler.proc) for p in pids.all)
         self.peak_kib = max(self.peak_kib, pss)
         layout = self.limits.layout
-        if m.placement.status == "skipped" and len(pids.ranks) == layout.ranks:
+        if m.placement.status != "pass" and len(pids.ranks) == layout.ranks:
+            # accumulated over samples: OMP threads start after the main thread binds
             masks = [cpus_allowed(p, sampler.proc) for p in pids.ranks]
-            if all(masks):
-                kept = [mask for mask in masks if mask]
-                m.placement = check_placement(kept, layout.threads, sampler.sysfs)
+            main = [process_mask(p, sampler.proc) for p in pids.ranks]
+            if all(masks) and all(main):
+                for rank, mask in enumerate(masks):
+                    seen = self.masks.setdefault(rank, set())
+                    seen.update(parse_cpu_list(mask or ""))
+                union = [cpu_list(sorted(self.masks[r])) for r in range(len(masks))]
+                m.placement = rank_placement(
+                    [x for x in main if x], union, layout.threads, sampler.sysfs
+                )
         now = time.monotonic()
         if now >= self.next_snapshot and pids.all:
             text = sampler.snapshot()

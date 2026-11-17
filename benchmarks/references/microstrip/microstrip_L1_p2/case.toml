@@ -42,7 +42,7 @@ s = [["p1", "p1"], ["p2", "p1"], ["p1", "p2"], ["p2", "p2"]]
 [est_s]
 "gfem:direct" = 300
 "gfem:bddc" = 300
-"palace:mumps" = 600
+"palace:mumps" = 2700  # 0.18.1.post5 at 112x1: 6 of 10 solves in 1530 s (job 49172824)
 
 [[materials]]
 region = "sio2"

@@ -150,6 +150,12 @@ def ship(
         )
         if found.returncode == 0 and found.stdout.strip():
             print(f"{target.host}:{dest} already holds {sha7}'s wheel: not shipped")
+            # mn5run ships the same layout without the commit date: add it.
+            utc = shlex.quote(f"{dest}/COMMIT_UTC")
+            run(
+                [*SSH, target.host, f"test -s {utc} || echo {when} > {utc}"],
+                check=False,
+            )
         else:
             _ship_tree(
                 repo,

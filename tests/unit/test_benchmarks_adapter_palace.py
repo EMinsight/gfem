@@ -401,6 +401,20 @@ def test_killed_run_has_null_phases_and_is_incomplete(stack18, tmp_path):
     assert outcome.ranks_seen == 4
 
 
+def test_port_s_of_a_run_ended_mid_sweep_keeps_its_null_cells_empty(tmp_path):
+    # Palace writes NULL for excitations it has not reached yet
+    path = tmp_path / "port-S.csv"
+    path.write_text(
+        "f (GHz), |S[1][1]| (dB), arg(S[1][1]) (deg.), |S[1][2]| (dB), "
+        "arg(S[1][2]) (deg.)\n"
+        " 1.0e+00, -2.0e+01, +1.0e+01, -6.0e+00, +0.0e+00\n"
+        " 2.5e+01, -2.0e+01, +1.0e+01, NULL, NULL\n"
+    )
+    out = palace.port_s(path, ["p1", "p2"])
+    assert out["s"]["p1,p2"][1] is None
+    assert out["s"]["p1,p2"][0] == pytest.approx([10 ** (-6 / 20), 0.0])
+
+
 def test_port_s_db_and_degrees_become_complex(stack18, tmp_path):
     work = _workdir(tmp_path, P18 / "driven-4x1")
     outcome = _collect(_run("r10M_void", "palace:pmg", stack18, work, tolerance=1e-8))
@@ -512,6 +526,19 @@ def test_version_mismatch_is_refused(stack19, tmp_path):
     outcome = _collect(run, version=text)
     assert outcome.status == "refused"
     assert outcome.reason == "Palace v0.18.1 installed, stack wheels declares 0.19.0"
+
+
+def test_a_matching_install_reports_the_stack_version_it_was_checked_against(
+    stack18, tmp_path
+):
+    # the 0.18.1.post5 wheel's binary says v0.18.1: the record's version is the
+    # wheel's (what the campaign pins), the binary's tag kept beside it
+    text = (P18 / "palace-version.txt").read_text()
+    work = _workdir(tmp_path, P18 / "driven-4x1")
+    run = _run("r10M_void", "palace:mumps", stack18, work)
+    outcome = _collect(run, version=text)
+    assert outcome.provenance["version"] == "0.18.1.post5"
+    assert outcome.provenance["binary_version"] == "v0.18.1"
 
 
 def test_version_text_of_both_dialects():
