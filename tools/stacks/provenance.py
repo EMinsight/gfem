@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -170,6 +171,20 @@ def _field(block: dict, dotted: str) -> object:
     return value
 
 
+def _canonical(dotted: str, value: object) -> object:
+    """``value`` as compared: compiler strings reduce to ``gfortran <version>``.
+
+    Recipes report the Fortran compiler differently (``gfortran --version``'s
+    first line against ``gfortran -dumpfullversion``); the same GCC must match.
+    """
+    if dotted == "compiler" and isinstance(value, str):
+        version = re.search(r"(\d+\.\d+\.\d+)\s*$", value.strip())
+        gnu = "gfortran" in value or "GNU Fortran" in value
+        if gnu and version:
+            return f"gfortran {version.group(1)}"
+    return value
+
+
 def _check_mumps(records: dict, report: Report) -> None:
     """Compare the ``mumps`` blocks of a stack's complete prefixes (ADR 0209)."""
     blocks = {}
@@ -194,7 +209,9 @@ def _check_mumps(records: dict, report: Report) -> None:
         for second in names[i + 1 :]:
             a, b = blocks[first], blocks[second]
             for dotted in MUMPS_MUST_MATCH:
-                if _field(a, dotted) != _field(b, dotted):
+                if _canonical(dotted, _field(a, dotted)) != _canonical(
+                    dotted, _field(b, dotted)
+                ):
                     report.errors.append(
                         f"mumps {dotted} must match: {first} {_field(a, dotted)!r}, "
                         f"{second} {_field(b, dotted)!r}"

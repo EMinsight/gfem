@@ -1096,3 +1096,12 @@ def test_a_library_calling_a_gemmt_is_named_by_the_gemmt_check(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.split() == ["libwith.so:dgemmt_"]
+
+
+def test_mumps_compiler_strings_of_one_gcc_match():
+    """``gfortran --version`` and ``-dumpfullversion`` spellings of one GCC agree."""
+    a = provenance._canonical("compiler", "GNU Fortran (GCC) 12.3.0")
+    b = provenance._canonical("compiler", "gfortran 12.3.0")
+    c = provenance._canonical("compiler", "gfortran 13.2.0")
+    assert a == b
+    assert a != c
