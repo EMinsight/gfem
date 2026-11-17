@@ -53,7 +53,11 @@ the wanted input kinds and returns ``None`` where it can differentiate),
 ``output_specs(model)`` (name -> ``jax.ShapeDtypeStruct``), ``role(kind)``
 (``"read"`` or ``"unread"``), ``forward(model, *, keep)``,
 ``backward(model, entry, cotangents)``, ``options`` and ``problem``,
-optionally ``unsupported_input(kind)`` (a reason, or ``None``) for read
+optionally ``wanted_kinds`` (set on the host copy to the wanted input kinds
+before its forward and backward, so a forward keeps only what the backward
+reads; ADR 0179), ``rerun`` (set before a backward reruns the forward),
+``explicit_problem()`` (problem-leaf cotangents the backward computed itself),
+``unsupported_input(kind)`` (a reason, or ``None``) for read
 inputs the rule itself cannot differentiate, and ``terms(model, *, nodes)``
 (its operator as the kernel sees it, a list of
 `gfem._engine.sensitivity.Term`: one per piece of a driven or eigenmode
@@ -145,7 +149,7 @@ def _describe(kind: tuple) -> str:
     return "model." + ".".join(str(k) for k in kind)
 
 
-def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
+def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:  # noqa: PLR0915
     """Run ``rule``'s solve as a differentiable JAX function of the leaves.
 
     Args:
@@ -170,9 +174,12 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
         _rebuild, rule=rule, m_def=m_def, p_def=p_def, n_model=n_model
     )
 
-    def host_forward(keep: bool, *values: Any) -> tuple:
+    def host_forward(keep: bool, wanted: frozenset, *values: Any) -> tuple:
         comm = getattr(rule, "comm", None)
         host_rule, host_model = rebuild(values)
+        if hasattr(host_rule, "wanted_kinds"):
+            # what the backward will read (ADR 0179): a rule may keep less
+            host_rule = _with_wanted(host_rule, rule, wanted)
         with _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS):
             if comm is not None:
                 _mpi.entry_check(
@@ -192,9 +199,9 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
         )
         return (*arrays, np.int64(key))
 
-    def call_forward(keep: bool, values: Sequence[Any]) -> tuple:
+    def call_forward(keep: bool, values: Sequence[Any], wanted: frozenset) -> tuple:
         *outputs, key = jax.pure_callback(
-            functools.partial(host_forward, keep),
+            functools.partial(host_forward, keep, wanted),
             (*out_specs, _KEY),
             *values,
             vmap_method="sequential",
@@ -203,7 +210,7 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
 
     @jax.custom_vjp
     def primal(m_leaves: list, p_leaves: list) -> tuple:
-        outputs, _ = call_forward(False, [*m_leaves, *p_leaves])
+        outputs, _ = call_forward(False, [*m_leaves, *p_leaves], frozenset())
         return outputs
 
     def fwd(m_leaves: list, p_leaves: list) -> tuple:
@@ -211,7 +218,11 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:
         state["wanted"] = _wanted(rule, kinds, [x.perturbed for x in inputs])
         values = [x.value for x in inputs]
         # nothing to keep when every perturbed input is unread
-        outputs, key = call_forward(bool(state["wanted"]), values)
+        outputs, key = call_forward(
+            bool(state["wanted"]),
+            values,
+            frozenset(kinds[i] for i in state["wanted"]),
+        )
         return outputs, (key, values)
 
     def bwd(residuals: tuple, cotangents: tuple) -> tuple:
@@ -290,6 +301,14 @@ def _rebuild(
     host_rule = copy.copy(rule)
     host_rule.problem = jax.tree.unflatten(p_def, arrays[n_model:])
     return host_rule, host_model
+
+
+def _with_wanted(host_rule: Any, rule: Any, wanted: frozenset) -> Any:
+    """``host_rule`` (a copy, never the traced rule) with its wanted kinds set."""
+    if host_rule is rule:
+        host_rule = copy.copy(rule)
+    host_rule.wanted_kinds = wanted
+    return host_rule
 
 
 def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
@@ -452,8 +471,12 @@ def _local_cotangents(
 
     entry = ENTRIES.get(int(key)) if int(key) >= 0 else None
     fresh = None
+    if hasattr(rule, "wanted_kinds"):
+        rule.wanted_kinds = frozenset(wants)
     if not _mpi.agree_all(comm, flag=entry is not None):
         ENTRIES.discard(int(key))
+        if hasattr(rule, "rerun"):
+            rule.rerun = True  # a rerun keeps the least it can (ADR 0179)
         _, entry = rule.forward(model, keep=True)
         fresh = entry
     else:
@@ -485,6 +508,10 @@ def _local_cotangents(
         # the eigenmode ratios' 1 / L and C |V|^2 / 2), once over the ranks
         if hasattr(rule, "explicit_lumped") and _mpi.rank(comm) == 0:
             _add_explicit_lumped(out, rule.explicit_lumped(), wants=wants)
+        # a load form's problem leaves read by the rule itself (ADR 0178:
+        # the waveform scales, a trace's weights)
+        if hasattr(rule, "explicit_problem"):
+            out |= {k: v for k, v in rule.explicit_problem().items() if k in wants}
     finally:
         if fresh is not None:
             fresh.free()

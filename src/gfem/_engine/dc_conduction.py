@@ -244,7 +244,7 @@ class DCConductionRule:
     #: Material properties the conduction form reads.
     reads = frozenset({"conductivity"})
     #: Outputs whose cotangents the backward pass handles.
-    differentiable_outputs = frozenset({"conductance", "potential"})
+    differentiable_outputs = frozenset({"conductance", "dissipation", "potential"})
 
     def __init__(
         self, model: Model, problem: DCConduction, options: SolverOptions
@@ -460,18 +460,34 @@ class DCConductionRule:
     def backward(
         self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
     ) -> list[FieldPair]:
-        """Fold the conductance and potential cotangents into field pairs.
+        """Fold the conductance, dissipation and potential cotangents into pairs.
 
         As `gfem._engine.electrostatic.ElectrostaticRule.backward` without
         the energy: the potentials are their own adjoints for the
         conductance (no solve); a potential cotangent takes one adjoint
         solve for every terminal at once on the kept operator.
+
+        A dissipation cotangent ``ct_e,ij`` (on ``D_e,ij = int_e sigma grad
+        phi_i . grad phi_j / |e|``) is both: an explicit pair ``(phi_i,
+        phi_j)`` per terminal pair, whose term weighs each element by its
+        symmetric cotangent over its volume (`terms`), and the potential
+        cotangent ``sum_j 2 int sigma (ct_ij / |e|) grad phi_j . grad v``.
         """
         phi = entry.fields["potential"]
         order = self.options.order
+        self._dissipation_terms: list[Term] = []
+        extra: list[FieldPair] = []
         with task_manager(self.options.threads):
             space, built = self._space(model)
             left, right = [], []
+            if "dissipation" in cotangents:
+                through, extra = self._dissipation_pairs(
+                    model, built, space, phi, cotangents["dissipation"]
+                )
+                cotangents = dict(cotangents)
+                if "potential" in cotangents:
+                    through = through + np.asarray(cotangents["potential"], float)
+                cotangents["potential"] = through
             if "conductance" in cotangents:
                 ct = np.asarray(cotangents["conductance"], dtype=float)
                 left.append(phi)
@@ -514,7 +530,84 @@ class DCConductionRule:
                         ),
                     )
                 )
-        return pairs
+        return pairs + extra
+
+    def _dissipation_pairs(
+        self,
+        model: Model,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        phi: np.ndarray,
+        cotangent: np.ndarray,
+    ) -> tuple[np.ndarray, list[FieldPair]]:
+        """A dissipation cotangent's potential cotangent and explicit pairs.
+
+        Sets the explicit terms `terms` returns: one per terminal pair
+        ``(i, j)``, ``int grad u . grad v`` per element (file units) with
+        ``dc / d sigma_e = ct_e,ij scale / |e|`` (the forward's per-volume
+        factor, ``|e|`` in m^3).
+        """
+        from gfem.thermal import _tet_volumes
+
+        ct = np.asarray(cotangent, dtype=float)
+        ct = 0.5 * (ct + ct.transpose(0, 2, 1))
+        ct[~self.domain.conducting] = 0.0
+        weights = ct * (built.scale / _tet_volumes(model.mesh))[:, None, None]
+        n = phi.shape[1]
+        order = self.options.order
+        sigma = conductivity(model, built)
+        domain = support_region(built, model.mesh, self.regions, self._excluded)
+        v = space.TestFunction()
+        fields = []
+        for j in range(n):
+            gf = ngs.GridFunction(space)
+            gf.vec.FV().NumPy()[:] = phi[:, j]
+            fields.append(gf)
+        through = np.zeros_like(phi)
+        pairs = []
+        for i in range(n):
+            form = ngs.LinearForm(space)
+            for j in range(n):
+                w = p0(built, 2.0 * weights[:, i, j])
+                form += (
+                    w
+                    * (sigma * ngs.grad(fields[j]))
+                    * ngs.grad(v)
+                    * quadrature.dx(order)
+                )
+            form.Assemble()
+            through[:, i] = form.vec.FV().NumPy()
+            for j in range(n):
+                name = f"dissipation {i} {j}"
+                w_ij = weights[:, i, j]
+                self._dissipation_terms.append(
+                    Term(
+                        name,
+                        "gradient",
+                        coefficient=sigma,
+                        derivatives={
+                            "conductivity": Derivative(
+                                lambda w=w_ij: w,
+                                holomorphic=False,
+                                per_axis=Derivative(
+                                    lambda w=w_ij: np.repeat(w[:, None], 3, axis=1),
+                                    holomorphic=False,
+                                ),
+                            )
+                        },
+                    )
+                )
+                pairs.append(
+                    FieldPair(
+                        space=space,
+                        left=phi[:, i : i + 1],
+                        right=phi[:, j : j + 1],
+                        weights={name: 1.0},
+                        order=order,
+                        domain=domain,
+                    )
+                )
+        return through, pairs
 
     def terms(self, model: Model, *, nodes: bool) -> list[Term]:  # noqa: ARG002
         """The conduction form ``int sigma grad u . grad v``, as a `Term`.
@@ -524,6 +617,7 @@ class DCConductionRule:
         """
         _, built = self._space(model)
         return [
+            *getattr(self, "_dissipation_terms", []),
             Term(
                 "grad_grad",
                 "gradient",
@@ -536,7 +630,7 @@ class DCConductionRule:
                         per_axis=Derivative(1.0, holomorphic=False),
                     )
                 },
-            )
+            ),
         ]
 
     def result(self, outputs: dict) -> DCConductionResult:

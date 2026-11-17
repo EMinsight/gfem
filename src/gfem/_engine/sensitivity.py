@@ -94,10 +94,25 @@ piece, whatever the parameter count. It reads the weight under its own key
 only, so it accepts pairs that carry only that key (an adaptive sweep's,
 weight 1 per key).
 
+A **load** (ADR 0178) is a problem leaf that is one power density per
+tetrahedron (`LOAD_KIND`, the summed heat sources of a thermal problem):
+the load side of the operator, ``F_i = int q psi_i``, so ``dJ / dq_e =
+int_e Lambda`` for the rule's adjoint ``Lambda`` (a transient's is the
+weighted sum of its step adjoints). Its **load pass** integrates the
+adjoint against the constant 1 on each element (P0), times ``scale **
+length_power``; no forward field is involved. The rule returns the adjoint
+as a `LoadField` among its pairs. The other problem leaves of a load form
+(a waveform's scales, a trace's weights) are the rule's explicit terms
+(``explicit_problem``), not passes.
+
+A rule that contracts its pairs as it goes (the transient reverse sweep,
+whose pairs would otherwise hold every step's fields) returns their
+per-element integrals as `Integrated`, which the material pass adds to its
+own integrals of each term.
+
 Adding a problem type means giving its rule a ``terms`` hook (its operator
 as `Term` values, with their derivatives) and a row of `PROPERTIES`, not a
-code path. A later pass plugs in beside these: load pairs ``int lambda psi``
-for problem-leaf sources.
+code path.
 
 Design inputs are named by kind tuples, the same ones `gfem._adjoint` uses:
 ``("material", region, property)`` is a `MaterialField` leaf (per axis when
@@ -106,7 +121,8 @@ the field has `axes`),
 ``model.boundaries[index]``, ``("port", index, "inductance")`` and
 ``("boundary", index, "resistance")`` (and the like) a lumped value,
 ``("law", region, "eps_inf")`` and ``("law", region, term_index, name)`` a
-permittivity law's parameter, and ``("nodes",)`` the mesh node coordinates.
+permittivity law's parameter, ``("nodes",)`` the mesh node coordinates,
+and ``("problem", ".density")`` (`LOAD_KIND`) a load form's power density.
 """
 
 from __future__ import annotations
@@ -131,6 +147,8 @@ from gfem.model import Model
 __all__ = [
     "INTEGRANDS",
     "LAW_FORMS",
+    "LOAD_FORMS",
+    "LOAD_KIND",
     "LUMPED_FORMS",
     "MOMENTS",
     "PROPERTIES",
@@ -138,8 +156,12 @@ __all__ = [
     "SHEET_FORMS",
     "Derivative",
     "FieldPair",
+    "Integrated",
+    "LoadField",
     "Term",
+    "element_integrals",
     "energy_term",
+    "is_load",
     "is_lumped",
     "is_sheet",
     "law_key",
@@ -310,6 +332,12 @@ PROPERTIES: dict[str, frozenset[str]] = {
     "eigenmode": frozenset({"eps_r", "tan_delta", "mu_r", "conductivity"}),
     # a(u, v) = int sigma grad u . grad v on the conductors
     "dc_conduction": frozenset({"conductivity"}),
+    # a(u, v) = int k grad u . grad v (+ convection, which reads no material)
+    "steady_thermal": frozenset({"thermal_conductivity"}),
+    # the steady form and the heat capacity int rho c_p u v
+    "transient_thermal": frozenset(
+        {"thermal_conductivity", "mass_density", "specific_heat"}
+    ),
 }
 
 
@@ -338,6 +366,40 @@ class FieldPair:
     weights: Mapping[str, complex]
     order: int
     domain: ngs.Region
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class LoadField:
+    """The adjoint a load pass integrates per element (`LOAD_KIND`).
+
+    Attributes:
+        space: The NGSolve space of ``values``.
+        values: The adjoint's DOF vector, shape ``(ndof,)`` (real).
+        order: The discretization order (fixes the quadrature rule).
+        domain: The NGSolve volume region the field lives on.
+        length_power: The power of the mesh length unit in ``dF_i / dq_e``
+            over the file-unit integral ``int_e psi_i``.
+    """
+
+    space: ngs.FESpace
+    values: np.ndarray
+    order: int
+    domain: ngs.Region
+    length_power: int = 0
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class Integrated:
+    """Per-element integrals of pairs a rule contracted itself.
+
+    Attributes:
+        values: Per term name, ``sum_pairs theta_t sum_k a_t,e(left_k,
+            right_k)`` per gfem tetrahedron, on the mesh in file units
+            (`element_integrals`; the material pass applies the term's
+            ``scale ** length_power``).
+    """
+
+    values: Mapping[str, np.ndarray]
 
 
 def energy_term(
@@ -400,6 +462,11 @@ SHEET_FORMS = frozenset({"driven", "eigenmode"})
 LUMPED_FORMS = frozenset({"driven", "eigenmode"})
 #: Operator families whose pairs carry the law pieces' dθ/dp (`law_key`).
 LAW_FORMS = frozenset({"driven", "eigenmode", "electrostatic"})
+#: Operator families with a load pass (ADR 0178): their problem leaves are
+#: read, the power density by the pass, the others by the rule's explicit terms.
+LOAD_FORMS = frozenset({"steady_thermal", "transient_thermal"})
+#: The input kind of a load form's power density per tetrahedron.
+LOAD_KIND = ("problem", ".density")
 #: The lumped values that are design inputs (ADR 0100), by owner.
 _LUMPED = {
     "port": ("inductance", "capacitance"),
@@ -410,6 +477,11 @@ _LUMPED = {
 def is_sheet(kind: tuple) -> bool:
     """Whether input ``kind`` is the fill of a boundary's sheet field."""
     return kind[0] == "boundary" and tuple(kind[2:]) == ("fill", "fill")
+
+
+def is_load(kind: tuple) -> bool:
+    """Whether input ``kind`` is a load form's power density (`LOAD_KIND`)."""
+    return tuple(kind) == LOAD_KIND
 
 
 def is_lumped(kind: tuple) -> bool:
@@ -455,6 +527,8 @@ def unsupported(form: str, kind: tuple) -> str | None:  # noqa: PLR0911
             f"gradients of {form} results with respect to mesh node coordinates "
             "(shape gradients) are not available in this version of gfem"
         )
+    if kind[0] == "problem" and form in LOAD_FORMS:
+        return None
     return "this version of gfem has no gradient for this input"
 
 
@@ -530,32 +604,61 @@ def _surface_tests(
     return space, tests, lambda form: rows(form)[:, dofs]
 
 
+#: Columns of one pair integrated in one coefficient function: a wider pair
+#: is split, so a reverse sweep's many columns keep each integrand small.
+_COLUMNS_PER_INTEGRAND = 8
+
+
+def _chunks(pairs: list[FieldPair]) -> list[FieldPair]:
+    """``pairs`` with at most `_COLUMNS_PER_INTEGRAND` columns each."""
+    out = []
+    for pair in pairs:
+        left, right = _columns(pair.left), _columns(pair.right)
+        if left.shape[1] <= _COLUMNS_PER_INTEGRAND:
+            out.append(pair)
+            continue
+        for start in range(0, left.shape[1], _COLUMNS_PER_INTEGRAND):
+            stop = start + _COLUMNS_PER_INTEGRAND
+            out.append(
+                dataclasses.replace(
+                    pair, left=left[:, start:stop], right=right[:, start:stop]
+                )
+            )
+    return out
+
+
 def _element_pass(
     model: Model,
     pairs: list[FieldPair],
     term: Term,
     length_power: int,
     comm: Any = None,
+    *,
+    integrated: Sequence[Integrated] = (),
 ) -> np.ndarray:
     """``sum_pairs theta_t sum_k a_t,e(left_k, right_k)`` per gfem tetrahedron.
 
-    Times ``scale ** length_power``. A face term's integrals per triangle
+    Times ``scale ** length_power``, with the rule's own ``integrated``
+    values of the term added. A face term's integrals per triangle
     are summed into each triangle's owning tetrahedron (`Term.owner`), which may
     lie on another rank: the sum at the backward's end takes care of that.
     """
     built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
     integrand = INTEGRANDS[term.kind]
     name = term.name
-    pairs = [p for p in pairs if name in p.weights]
+    pairs = _chunks([p for p in pairs if name in p.weights])
+    given = [np.asarray(i.values[name]) for i in integrated if name in i.values]
     is_complex = any(
         np.iscomplexobj(p.left)
         or np.iscomplexobj(p.right)
         or np.iscomplexobj(p.weights[name])
         for p in pairs
-    )
+    ) or any(np.iscomplexobj(g) for g in given)
     out = np.zeros(len(model.mesh.tetrahedra), dtype=complex if is_complex else float)
+    for values in given:
+        out = out + values
     if not pairs:
-        return out
+        return out * built.scale**length_power
     owner = term.owner
     if owner is None:
         p0 = ngs.L2(built.mesh, order=0, complex=is_complex)
@@ -565,7 +668,7 @@ def _element_pass(
             dx = quadrature.dx(pair.order, definedon=pair.domain)
             form += pair.weights[name] * _pair_integrand(integrand, pair) * q * dx
         form.Assemble()
-        out[built.tetrahedron_order] = form.vec.FV().NumPy()
+        out[built.tetrahedron_order] += form.vec.FV().NumPy()
         return out * built.scale**length_power
     p0, (q,), read = _surface_tests(built, is_complex=is_complex)
     form = ngs.LinearForm(p0)
@@ -578,6 +681,43 @@ def _element_pass(
     on = owner >= 0
     np.add.at(out, owner[on], per_face[on])
     return out * built.scale**length_power
+
+
+def element_integrals(
+    model: Model, pairs: list[FieldPair], terms: Sequence[Term], comm: Any = None
+) -> dict[str, np.ndarray]:
+    """Each volume term's ``sum_pairs theta_t a_t,e(left, right)`` per tetrahedron.
+
+    On the mesh in file units (no ``scale`` power): what a rule that
+    contracts its pairs as it goes sums into an `Integrated`.
+    """
+    return {
+        term.name: _element_pass(model, pairs, term, 0, comm)
+        for term in terms
+        if term.owner is None and any(term.name in p.weights for p in pairs)
+    }
+
+
+def _load_pass(
+    model: Model, loads: Sequence[LoadField], comm: Any = None
+) -> np.ndarray:
+    """``sum_loads scale ** length_power int_e Lambda`` per gfem tetrahedron."""
+    built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
+    out = np.zeros(len(model.mesh.tetrahedra))
+    if not loads:
+        return out
+    p0 = ngs.L2(built.mesh, order=0)
+    q = p0.TestFunction()
+    for load in loads:
+        gf = ngs.GridFunction(load.space)
+        gf.vec.FV().NumPy()[:] = np.asarray(load.values, dtype=float)
+        form = ngs.LinearForm(p0)
+        form += gf * q * quadrature.dx(load.order, definedon=load.domain)
+        form.Assemble()
+        out[built.tetrahedron_order] += (
+            form.vec.FV().NumPy() * built.scale**load.length_power
+        )
+    return out
 
 
 def _moment_pass(
@@ -973,9 +1113,9 @@ def _node_pass(
     return out / built.scale
 
 
-def sensitivity(
+def sensitivity(  # noqa: PLR0912
     model: Model,
-    pairs: list[FieldPair],
+    pairs: Sequence[FieldPair | LoadField | Integrated],
     wants: set[Hashable],
     *,
     form: str,
@@ -987,7 +1127,9 @@ def sensitivity(
 
     Args:
         model: The design state (concrete leaves) the pairs were solved on.
-        pairs: The rule's field pairs, cotangents folded in.
+        pairs: The rule's field pairs, cotangents folded in; a load form's
+            adjoint (`LoadField`) and the integrals it contracted itself
+            (`Integrated`) among them.
         wants: Input kinds, ``("material", region, property)``,
             ``("boundary", index, "fill", "fill")`` or ``("nodes",)``.
         form: The operator family, a key of `PROPERTIES`.
@@ -1022,6 +1164,15 @@ def sensitivity(
     out: dict[Hashable, np.ndarray] = {}
     if not wants:
         return out
+    loads = [p for p in pairs if isinstance(p, LoadField)]
+    integrated = [p for p in pairs if isinstance(p, Integrated)]
+    pairs = [p for p in pairs if isinstance(p, FieldPair)]
+    if LOAD_KIND in wants:
+        out[LOAD_KIND] = _load_pass(model, loads, comm)
+    # a load form's other problem leaves are the rule's explicit terms
+    wants = {k for k in wants if k[0] != "problem"}  # ty: ignore[not-subscriptable]
+    if not wants:
+        return out
     if terms is None:  # pragma: no cover - rule bug
         msg = f"The {form} rule gives no terms."
         raise NotImplementedError(msg)
@@ -1046,7 +1197,9 @@ def sensitivity(
         out["nodes",] = _node_pass(model, pairs, operator, comm)
     materials = {k for k in wants if k[0] == "material"}  # ty: ignore[not-subscriptable]
     if materials:
-        out |= _material_sensitivity(model, pairs, materials, operator, comm)
+        out |= _material_sensitivity(
+            model, pairs, materials, operator, comm, integrated=integrated
+        )
     return out
 
 
@@ -1064,6 +1217,8 @@ def _material_sensitivity(
     wants: set[Hashable],
     terms: Sequence[Term],
     comm: Any = None,
+    *,
+    integrated: Sequence[Integrated] = (),
 ) -> dict[Hashable, np.ndarray]:
     """The material part of `sensitivity`: each property's terms, in their order."""
     axis_kinds = {k for k in wants if _per_axis(model, k)}  # ty: ignore[invalid-argument-type]
@@ -1077,7 +1232,9 @@ def _material_sensitivity(
                 continue
             key = (term.name, term.length_power + derivative.length_power)
             if key not in integrals:
-                integrals[key] = _element_pass(model, pairs, term, key[1], comm)
+                integrals[key] = _element_pass(
+                    model, pairs, term, key[1], comm, integrated=integrated
+                )
             part = derivative.evaluated() * integrals[key]
             if not derivative.holomorphic:
                 part = np.real(part)
