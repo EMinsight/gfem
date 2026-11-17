@@ -682,6 +682,11 @@ def _options_args(options: SolverOptions, _: _codec.Context) -> dict[str, Any]:
     args = {f.name: getattr(options, f.name) for f in dataclasses.fields(options)}
     # a JSON object, as a user writes it; the constructor sorts it back
     args["petsc_options"] = dict(options.petsc_options)
+    # the time-stepping options are written only when set, so a job that
+    # does not step in time reads in a gfem that predates them
+    for name, default in (("time_scheme", "tr_bdf2"), ("theta", 1.0)):
+        if args[name] == default:
+            del args[name]
     return args
 
 

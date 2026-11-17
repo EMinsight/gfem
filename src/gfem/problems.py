@@ -9,6 +9,7 @@ problem's type.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any, ClassVar, Literal, get_args
@@ -16,9 +17,10 @@ from typing import Any, ClassVar, Literal, get_args
 import jax
 import numpy as np
 
-from gfem._checks import check_fixed
+from gfem._boundaries import _temperature
+from gfem._checks import check_fixed, static_float
 from gfem._pytree import register_fields
-from gfem.thermal import HeatSource
+from gfem.thermal import HeatSource, Trace, _check_finite
 
 __all__ = [
     "DCConduction",
@@ -27,6 +29,7 @@ __all__ = [
     "Electrostatic",
     "PortMode",
     "SteadyThermal",
+    "TransientThermal",
 ]
 
 
@@ -350,6 +353,236 @@ class SteadyThermal:
 
 
 register_fields(SteadyThermal, ("heat",))
+
+
+#: Two grid times closer than this fraction of the step are the same time.
+_GRID_RTOL = 1e-9
+_FIXED_TIME = (
+    "Build the problem from concrete values, outside the transformed function; "
+    "the waveform scales are the differentiable part of a waveform."
+)
+
+
+def _grid_index(time: float, dt: float, steps: int, what: str) -> int:
+    """The grid index ``n`` of ``time = n dt``, or a ValueError naming the nearest.
+
+    Raises:
+        ValueError: ``time`` is outside [0, duration] or between grid times.
+    """
+    k = time / dt
+    n = round(k)
+    if not -_GRID_RTOL <= k <= steps * (1 + _GRID_RTOL):
+        raise ValueError(
+            f"TransientThermal: {what} {time:g} s is outside the run, from 0 to "
+            f"duration={steps * dt:g} s."
+        )
+    if abs(k - n) > _GRID_RTOL * max(1.0, abs(k)):
+        low = math.floor(k)
+        raise ValueError(
+            f"TransientThermal: {what} {time:g} s is not on the time grid (dt = "
+            f"duration / steps = {dt:g} s); the nearest grid times are "
+            f"{low * dt:g} s and {(low + 1) * dt:g} s. Move it to a grid time, or "
+            "choose steps so that it is one."
+        )
+    return n
+
+
+def _waveform(value: Any, dt: float, steps: int) -> tuple[tuple[float, ...], Any]:
+    """The waveform's switch times (static) and scales (a JAX array)."""
+    try:
+        pairs = [tuple(p) for p in value]
+    except TypeError:
+        pairs = []
+    if not pairs or any(len(p) != 2 for p in pairs):
+        raise TypeError(
+            "TransientThermal.waveform must be a non-empty sequence of (start time "
+            f"in s, scale) pairs, e.g. [(0.0, 1.0), (30e-6, 0.0)]; got {value!r}."
+        )
+    times = tuple(
+        static_float(t, "A TransientThermal.waveform start time", _FIXED_TIME)
+        for t, _ in pairs
+    )
+    if any(b <= a for a, b in itertools.pairwise(times)):
+        raise ValueError(
+            "TransientThermal.waveform start times must increase strictly, got "
+            f"{list(times)}."
+        )
+    for t in times:
+        _grid_index(t, dt, steps, "the waveform switch time")
+    scales = jax.numpy.stack(
+        [_check_finite(v, "A TransientThermal.waveform scale") for _, v in pairs]
+    )
+    return times, scales
+
+
+def _kept_times(value: Any, dt: float, steps: int) -> bool | tuple[float, ...]:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    check_fixed(value, "TransientThermal.keep_fields must be fixed times")
+    try:
+        wanted = np.asarray(value, dtype=float).reshape(-1)
+    except (TypeError, ValueError):
+        raise TypeError(
+            "TransientThermal.keep_fields takes True, False or grid times in s, got "
+            f"{value!r}."
+        ) from None
+    kept = {_grid_index(float(t), dt, steps, "the kept time") for t in wanted}
+    return tuple(n * dt for n in sorted(kept))
+
+
+def _traces(value: Any) -> dict[str, Trace]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or not all(
+        isinstance(k, str) and isinstance(v, Trace) for k, v in value.items()
+    ):
+        raise TypeError(
+            "TransientThermal.traces must be a mapping from name to gfem.Trace, "
+            f"e.g. {{'core': gfem.Trace.mean('core')}}; got {value!r}."
+        )
+    return dict(value)
+
+
+@dataclasses.dataclass(frozen=True, init=False)
+class TransientThermal:
+    """The temperature of a model over time, under switched heat sources.
+
+    Solves rho c_p dT/dt - div(k grad T) = s(t) q on the thermal domain
+    (as `gfem.SteadyThermal`, with the materials' ``mass_density`` and
+    ``specific_heat`` too) on the uniform time grid t_n = n dt, dt =
+    ``duration / steps``. The heat sources q follow the waveform s(t):
+    piecewise constant, off before its first start time, the value on
+    [t_n, t_n+1) applied over that step. Every switch time must be a grid
+    time. `gfem.SolverOptions.time_scheme` picks the scheme (TR-BDF2 by
+    default; one factorization serves the whole run).
+
+    The result (`gfem.TransientThermalResult`) records each trace at all
+    ``steps + 1`` grid times and keeps the temperature field at the final
+    time and at the ``keep_fields`` times. Temperatures are absolute, in
+    kelvin; the rise is the temperature minus the source-free temperature
+    (the steady solve with the heat sources off).
+
+    Example:
+        A heater switched on for 30 us, then off for 30 us::
+
+            problem = gfem.TransientThermal(
+                gfem.HeatSource.uniform("heater", power=10e-3),
+                duration=60e-6,
+                steps=240,
+                waveform=[(0.0, 1.0), (30e-6, 0.0)],
+                traces={"core": gfem.Trace.mean("core")},
+            )
+            result = gfem.solve(model, problem)
+            result.traces["core"]  # K, at result.time
+
+    Args:
+        heat: A `gfem.HeatSource` or a sequence of them; they superpose and
+            share the waveform.
+        duration: The run's length in s (> 0).
+        steps: The number of time steps (>= 1).
+        waveform: ``(start time in s, scale)`` pairs with increasing start
+            times on the grid; the scale multiplies every source from its
+            start time to the next one. The default is a step on at t = 0.
+        initial_temperature: ``None`` starts from the source-free
+            temperature (the steady temperature with the sources off), so
+            the rise starts at zero; a number starts from that uniform
+            temperature in K (> 0). A model with a part of the thermal
+            domain that touches no heat sink needs a number.
+        traces: A mapping from name to `gfem.Trace`, recorded every step.
+        keep_fields: Which temperature fields the result keeps besides the
+            final one: ``False`` none, ``True`` every grid time, or a
+            sequence of grid times in s.
+
+    Raises:
+        TypeError: An argument has the wrong type.
+        ValueError: ``duration`` or ``steps`` out of range; a switch time
+            or a kept time off the grid (the message names the nearest
+            grid times) or outside the run; start times not increasing; a
+            temperature <= 0 K.
+        NonDifferentiableError: ``duration``, ``steps``, a waveform start
+            time, ``initial_temperature`` or a kept time is traced by JAX
+            (the waveform scales and the heat sources are differentiable).
+    """
+
+    heat: tuple[HeatSource, ...]
+    duration: float
+    steps: int
+    initial_temperature: float | None
+    traces: dict[str, Trace]
+    keep_fields: bool | tuple[float, ...]
+    #: The waveform's start times in s.
+    _switches: tuple[float, ...]
+    #: The waveform's scales, a JAX array (one per start time).
+    _scales: Any
+    _rule: ClassVar[str] = "gfem._engine.thermal:TransientThermalRule"
+    _physics: ClassVar[str] = "thermal"
+
+    def __init__(
+        self,
+        heat: HeatSource | Sequence[HeatSource] = (),
+        *,
+        duration: float,
+        steps: int,
+        waveform: Sequence[tuple[float, Any]] = ((0.0, 1.0),),
+        initial_temperature: float | None = None,
+        traces: Mapping[str, Trace] | None = None,
+        keep_fields: bool | Sequence[float] = False,
+    ) -> None:
+        """Validate and normalize (see the class docstring)."""
+        set_ = object.__setattr__
+        set_(self, "heat", _heat_sources(heat, "TransientThermal"))
+        duration = static_float(duration, "TransientThermal.duration", _FIXED_TIME)
+        if duration <= 0:
+            raise ValueError(
+                f"TransientThermal.duration must be > 0 s, got {duration}."
+            )
+        check_fixed(steps, "TransientThermal.steps must be a fixed integer")
+        if (
+            not isinstance(steps, (int, np.integer))
+            or isinstance(steps, bool)
+            or steps < 1
+        ):
+            raise ValueError(
+                f"TransientThermal.steps must be an integer >= 1, got {steps!r}."
+            )
+        steps = int(steps)
+        dt = duration / steps
+        set_(self, "duration", duration)
+        set_(self, "steps", steps)
+        times, scales = _waveform(waveform, dt, steps)
+        set_(self, "_switches", times)
+        set_(self, "_scales", scales)
+        if initial_temperature is not None:
+            initial_temperature = _temperature(
+                initial_temperature, "TransientThermal.initial_temperature"
+            )
+        set_(self, "initial_temperature", initial_temperature)
+        set_(self, "traces", _traces(traces))
+        set_(self, "keep_fields", _kept_times(keep_fields, dt, steps))
+
+    @property
+    def dt(self) -> float:
+        """The time step in s: ``duration / steps``."""
+        return self.duration / self.steps
+
+    @property
+    def waveform(self) -> tuple[tuple[float, Any], ...]:
+        """The ``(start time in s, scale)`` pairs."""
+        return tuple(zip(self._switches, self._scales, strict=True))
+
+    def __repr__(self) -> str:
+        try:
+            scales = [float(v) for v in np.asarray(self._scales)]
+            wave = [(t, v) for t, v in zip(self._switches, scales, strict=True)]
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            wave = list(self._switches)
+        return (
+            f"TransientThermal(heat={list(self.heat)!r}, duration={self.duration:g}, "
+            f"steps={self.steps}, waveform={wave}, traces={list(self.traces)})"
+        )
+
+
+register_fields(TransientThermal, ("heat", "traces", "_scales"))
 
 
 def _frequencies(value: Any, owner: str = "PortMode") -> tuple[float, ...]:

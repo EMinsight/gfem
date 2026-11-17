@@ -40,6 +40,7 @@ __all__ = [
     "ReducedFields",
     "SteadyThermalResult",
     "SweepInfo",
+    "TransientThermalResult",
 ]
 
 
@@ -412,6 +413,131 @@ class SteadyThermalResult:
 
 
 register_fields(SteadyThermalResult, ("temperature", "rise", "heat", "power"))
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class TransientThermalResult:
+    """The result of a `gfem.TransientThermal` problem.
+
+    On a cross-section mesh the totals are those of the slab the mesh
+    stands for (`gfem.Mesh.section_thickness`): read `power_per_length`
+    rather than `power`.
+
+    Attributes:
+        time: The grid times in s, ``(steps + 1,)`` from 0 to the duration.
+        traces: Each trace of the problem by name, ``(steps + 1,)`` at
+            `time` (a temperature trace in K).
+        kept_times: The grid times in s whose fields `temperature` and
+            `rise` give, increasing; the final time is always one.
+        switch_times: The waveform's start times in s, for the settling
+            check of `gfem.rise_time` and `gfem.time_constant`.
+        power: The heat sources' total power in W at waveform scale 1 (on
+            a cross-section, the slab's).
+    """
+
+    time: jax.Array
+    traces: dict[str, jax.Array]
+    #: The kept rises, ``(len(kept_times), ndof)`` coefficients in K.
+    _rises: jax.Array
+    #: The source-free temperature, a `Field` (quantity "T", in K).
+    _source_free: Field
+    power: jax.Array
+    kept_times: tuple[float, ...] = ()
+    switch_times: tuple[float, ...] = ()
+    #: The slab thickness in m of a cross-section mesh, else ``None``.
+    _thickness: float | None = None
+
+    def _index(self, time: Any, name: str) -> int:
+        what = f"TransientThermalResult.{name}"
+        t = static_float(
+            time, f"{what} time", "Read a kept time given as a plain number."
+        )
+        kept = np.asarray(self.kept_times)
+        step = float(self.time[1] - self.time[0]) if len(self.time) > 1 else 1.0
+        close = np.flatnonzero(np.abs(kept - t) <= 1e-9 * step)
+        if not close.size:
+            listed = ", ".join(f"{k:g}" for k in self.kept_times)
+            raise ValueError(
+                f"{what}({t:g}): the result keeps the temperature at {listed} s "
+                "only. Read one of those, or solve again with that grid time in "
+                "keep_fields (traces record every step)."
+            )
+        return int(close[0])
+
+    def rise(self, time: float) -> Field:
+        """The temperature rise at a kept time, a `Field` (quantity "dT", in K).
+
+        The temperature minus the source-free temperature.
+
+        Raises:
+            ValueError: ``time`` is not one of `kept_times`; the message
+                lists them.
+        """
+        k = self._index(time, "rise")
+        return dataclasses.replace(
+            self._source_free, coefficients=self._rises[k], quantity="dT"
+        )
+
+    def temperature(self, time: float) -> Field:
+        """The absolute temperature at a kept time, a `Field` (quantity "T", in K).
+
+        Raises:
+            ValueError: ``time`` is not one of `kept_times`; the message
+                lists them.
+        """
+        k = self._index(time, "temperature")
+        free = self._source_free
+        return dataclasses.replace(
+            free, coefficients=free.coefficients + self._rises[k]
+        )
+
+    @property
+    def power_per_length(self) -> jax.Array:
+        """`power` per unit length along a cross-section, in W/m.
+
+        Raises:
+            ValueError: The result was not solved on a cross-section mesh.
+        """
+        if self._thickness is None:
+            raise _not_a_section("TransientThermalResult", "power_per_length", "power")
+        return self.power / self._thickness
+
+    def to_xarray(self) -> xarray.Dataset:
+        """The traces over ``time`` (s) as an `xarray.Dataset`.
+
+        One variable per trace, and the scalar ``power`` (W; on a
+        cross-section ``power_per_length`` in W/m too). Needs the
+        ``xarray`` extra: ``pip install "gfem[xarray]"``.
+
+        Raises:
+            ImportError: xarray is not installed.
+            TypeError: The result holds JAX tracers.
+        """
+        xr = _xarray(self)
+        data = {name: _variable(("time",), y) for name, y in self.traces.items()}
+        data["power"] = _variable((), self.power, "W")
+        if self._thickness is not None:
+            data["power_per_length"] = _variable((), self.power_per_length, "W/m")
+        return xr.Dataset(data, coords={"time": _variable(("time",), self.time, "s")})
+
+    def __repr__(self) -> str:
+        steps = len(self.time) - 1
+        head = (
+            f"TransientThermalResult({steps} steps to {float(self.time[-1]):.6g} s, "
+            f"traces={list(self.traces)}"
+        )
+        try:
+            power = float(np.asarray(self.power))
+        except (TypeError, jax.errors.TracerArrayConversionError):
+            return head + ")"
+        if self._thickness is None:
+            return f"{head}, power {power:.6g} W)"
+        return f"{head}, power per length {power / self._thickness:.6g} W/m)"
+
+
+register_fields(
+    TransientThermalResult, ("time", "traces", "_rises", "_source_free", "power")
+)
 
 
 class PortModeField:

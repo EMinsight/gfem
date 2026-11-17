@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         Electrostatic,
         PortMode,
         SteadyThermal,
+        TransientThermal,
     )
     from gfem.results import (
         DCConductionResult,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
         ElectrostaticResult,
         PortModeResult,
         SteadyThermalResult,
+        TransientThermalResult,
     )
 
 __all__ = ["release_memory", "solve"]
@@ -65,6 +67,14 @@ def solve(
     options: SolverOptions | None = None,
     comm: Any = None,
 ) -> SteadyThermalResult: ...
+@overload
+def solve(
+    model: Model,
+    problem: TransientThermal,
+    *,
+    options: SolverOptions | None = None,
+    comm: Any = None,
+) -> TransientThermalResult: ...
 @overload
 def solve(
     model: Model,

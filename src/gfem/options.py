@@ -14,6 +14,8 @@ LinearSolver = Literal["auto", "bddc_gmres", "direct", "petsc"]
 _LINEAR_SOLVERS = ("auto", "bddc_gmres", "direct", "petsc")
 EigenSolver = Literal["auto", "arpack", "slepc"]
 _EIGEN_SOLVERS = ("auto", "arpack", "slepc")
+TimeScheme = Literal["tr_bdf2", "theta"]
+_TIME_SCHEMES = ("tr_bdf2", "theta")
 #: A PETSc option's value: ``None`` is a flag with no value.
 PetscValue = str | int | float | bool | None
 #: ``SolverOptions.petsc_options`` as stored: pairs sorted by name.
@@ -384,6 +386,14 @@ class SolverOptions:
             a Krylov solve on it does not converge (for example at
             ``ksp_max_it``). Stored as ``(name, value)`` pairs sorted by
             name.
+        time_scheme: How a `gfem.TransientThermal` problem steps in time:
+            ``"tr_bdf2"`` (TR-BDF2, second order and L-stable: no ringing
+            on stiff thin-metal modes; both stages on one factorization)
+            or ``"theta"`` (the theta scheme with `theta`). Other problems
+            ignore it.
+        theta: The implicitness of ``time_scheme="theta"``, from 0.5
+            (Crank-Nicolson) to 1 (backward Euler, the default). Ignored
+            by ``"tr_bdf2"``.
 
     Notes:
         ``tolerance`` is a different norm per backend, so the same value
@@ -417,9 +427,26 @@ class SolverOptions:
     frequency_workers: int = 1
     eigen_solver: EigenSolver = "auto"
     petsc_options: Mapping[str, PetscValue] | PetscOptions = ()
+    time_scheme: TimeScheme = "tr_bdf2"
+    theta: float = 1.0
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
+        if self.time_scheme not in _TIME_SCHEMES:
+            raise ValueError(
+                f"SolverOptions.time_scheme must be one of "
+                f"{', '.join(repr(s) for s in _TIME_SCHEMES)}, got "
+                f"{self.time_scheme!r}."
+            )
+        theta = self.theta
+        ok = isinstance(theta, (int, float)) and not isinstance(theta, bool)
+        if not ok or not 0.5 <= theta <= 1.0:
+            raise ValueError(
+                "SolverOptions.theta must be a number from 0.5 (Crank-Nicolson) to "
+                f"1 (backward Euler), got {theta!r}: below 0.5 the theta scheme is "
+                "unstable."
+            )
+        set_(self, "theta", float(theta))
         _int(
             self.order,
             "order",

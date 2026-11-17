@@ -49,6 +49,7 @@ from gfem.errors import (  # noqa: E402
     SweepRankDeficientWarning,
     UnrequestedOrderWarning,
     UnsampledPixelsWarning,
+    UnsettledTraceWarning,
 )
 from gfem.job import Job, load_result  # noqa: E402
 from gfem.measurements import (  # noqa: E402
@@ -88,6 +89,7 @@ from gfem.problems import (  # noqa: E402
     Electrostatic,
     PortMode,
     SteadyThermal,
+    TransientThermal,
 )
 from gfem.refinement import (  # noqa: E402
     ErrorEstimate,
@@ -110,9 +112,16 @@ from gfem.results import (  # noqa: E402
     PortModeResult,
     SteadyThermalResult,
     SweepInfo,
+    TransientThermalResult,
 )
 from gfem.solve import release_memory, solve  # noqa: E402
-from gfem.thermal import HeatSource, joule_heating  # noqa: E402
+from gfem.thermal import (  # noqa: E402
+    HeatSource,
+    Trace,
+    joule_heating,
+    rise_time,
+    time_constant,
+)
 
 __version__ = _version("gfem")
 
@@ -190,8 +199,12 @@ __all__ = [
     "SweepInfo",
     "SweepNotConvergedWarning",
     "SweepRankDeficientWarning",
+    "Trace",
+    "TransientThermal",
+    "TransientThermalResult",
     "UnrequestedOrderWarning",
     "UnsampledPixelsWarning",
+    "UnsettledTraceWarning",
     "WavePort",
     "__version__",
     "characteristic_impedance",
@@ -210,6 +223,8 @@ __all__ = [
     "refine_mesh",
     "region_mean",
     "release_memory",
+    "rise_time",
     "shape",
     "solve",
+    "time_constant",
 ]
