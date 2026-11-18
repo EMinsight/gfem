@@ -59,6 +59,50 @@ def _stack_sh(*args: str, root: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _stack_function(
+    script: str, *args: str, env: dict | None = None, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
+    """Run ``script`` in bash with ``stack.sh``'s helpers sourced (no command run).
+
+    ``$1``... are ``args``; ``provenance.py`` runs on this interpreter.
+    """
+    return subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            f'source "{STACK_SH}"; {script}',
+            "stack",
+            *args,
+        ],
+        env={**os.environ, "STACK_PYTHON": sys.executable, **(env or {})},
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("arg", "key", "value"),
+    [
+        ("n:=3", "n", 3),
+        ('list:=[1, "a"]', "list", [1, "a"]),
+        ("s=x:=y", "s", "x:=y"),
+        ("s=a=b", "s", "a=b"),
+        ("s=", "s", ""),
+    ],
+)
+def test_stack_json_reads_key_colon_equals_as_json_and_key_equals_as_a_string(
+    tmp_path, arg, key, value
+):
+    out = tmp_path / "out.json"
+
+    result = _stack_function('stack_json "$1" "$2"', str(out), arg)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(out.read_text()) == {key: value}
+
+
 def test_a_prefix_is_complete_once_its_provenance_file_is_written(tmp_path):
     prefix = tmp_path / "native-oss" / "ngsolve-1.0"
     prefix.mkdir(parents=True)

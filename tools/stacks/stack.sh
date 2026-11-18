@@ -66,8 +66,8 @@ import sys
 
 out = {}
 for arg in sys.argv[2:]:
-    if ":=" in arg and arg.index(":=") < arg.find("=") + 1:
-        key, value = arg.split(":=", 1)
+    if arg.partition("=")[0].endswith(":"):
+        key, _, value = arg.partition(":=")
         out[key] = json.loads(value)
     else:
         key, value = arg.split("=", 1)
@@ -705,4 +705,7 @@ main() {
   "cmd_$command" "$@"
 }
 
-main "$@"
+# Sourced (tests of the helpers), it defines the functions and runs nothing.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi
