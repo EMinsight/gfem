@@ -200,10 +200,10 @@ build_petsc() {
 
   local sums=() name
   for name in "petsc-$version.tar.gz" "slepc-$version.tar.gz"; do
-    sums+=("$name=$(sha256sum "$tarballs/$name" | cut -d' ' -f1)")
+    sums+=("$name=$(prov sha256 "$tarballs/$name")")
   done
   for line in "${downloads[@]}"; do
-    sums+=("${line##*/}=$(sha256sum "${line#*=}" | cut -d' ' -f1)")
+    sums+=("${line##*/}=$(prov sha256 "${line#*=}")")
   done
   stack_json "$dir/tarballs.json" "${sums[@]}"
   stack_meta source "url=https://files.pythonhosted.org/packages/source/p/petsc/petsc-$version.tar.gz" \

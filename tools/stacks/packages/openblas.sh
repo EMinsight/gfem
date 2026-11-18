@@ -64,7 +64,7 @@ build_openblas() {
     builds+=("$lib:=$(stack_json - "library=lib$lib.so" "make=${opts[*]}")")
   done
   stack_meta source "url=https://github.com/xianyi/OpenBLAS/archive/v$version.tar.gz" "tag=v$version" \
-    "tarball=$(basename "$tarball")" "sha256=$(sha256sum "$tarball" | cut -d' ' -f1)"
+    "tarball=$(basename "$tarball")" "sha256=$(prov sha256 "$tarball")"
   stack_meta configure "common_opt=$CFLAGS" "fcommon_opt=$FFLAGS" "ldflags=$LDFLAGS" \
     "builds:=$(stack_json - "${builds[@]}")"
 }

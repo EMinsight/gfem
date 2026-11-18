@@ -126,8 +126,8 @@ pyenv_mkl_identical() {
   for lib in "${PYENV_MKL_LIBS[@]}"; do
     [[ -f $1/$lib && -f $MKLROOT/lib/$lib ]] ||
       stack_die "pyenv: $lib missing in $1 or $MKLROOT/lib"
-    ours=$(sha256sum "$1/$lib" | cut -d' ' -f1)
-    theirs=$(sha256sum "$MKLROOT/lib/$lib" | cut -d' ' -f1)
+    ours=$(prov sha256 "$1/$lib")
+    theirs=$(prov sha256 "$MKLROOT/lib/$lib")
     [[ $ours == "$theirs" ]] ||
       stack_die "pyenv: pip $PIP_MKL's $lib ($ours) is not the toolchain's $MKLROOT/lib/$lib ($theirs): no byte-identical twin, so no PARDISO here (ADR 0207)"
     echo "$lib=$ours"
@@ -239,9 +239,9 @@ build_pyenv() {
     stack_die "pyenv: compileall failed"
 
   local tarball=cpython-$version+$PBS_RELEASE-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz files=()
-  files+=("$tarball=$(sha256sum "$STACK_SRC/python/$tarball" | cut -d' ' -f1)")
+  files+=("$tarball=$(prov sha256 "$STACK_SRC/python/$tarball")")
   while read -r path; do
-    files+=("${path##*/}=$(sha256sum "$path" | cut -d' ' -f1)")
+    files+=("${path##*/}=$(prov sha256 "$path")")
   done < <("$STACK_PYTHON" -c '
 import json, sys, urllib.parse, urllib.request
 for item in json.load(open(sys.argv[1]))["install"]:
@@ -249,11 +249,15 @@ for item in json.load(open(sys.argv[1]))["install"]:
 ' "$dir/runtime.json")
   for path in "${PIP_SDISTS[@]}"; do
     path=$(ls "$STACK_SRC"/pip/sdists/"${path%%==*}"-"${path#*==}".tar.gz)
-    files+=("${path##*/}=$(sha256sum "$path" | cut -d' ' -f1)")
+    files+=("${path##*/}=$(prov sha256 "$path")")
   done
-  [[ -z $mkl ]] || files+=("$(cd "$STACK_SRC/pip/wheels" && ls mkl-"${mkl#*==}"-*.whl)=$(sha256sum "$STACK_SRC"/pip/wheels/mkl-"${mkl#*==}"-*.whl | cut -d' ' -f1)")
+  if [[ -n $mkl ]]; then
+    for path in "$STACK_SRC"/pip/wheels/mkl-"${mkl#*==}"-*.whl; do
+      files+=("${path##*/}=$(prov sha256 "$path")")
+    done
+  fi
   for path in "$dir"/wheels/*.whl; do
-    files+=("built ${path##*/}=$(sha256sum "$path" | cut -d' ' -f1)")
+    files+=("built ${path##*/}=$(prov sha256 "$path")")
   done
   stack_json "$dir/files.json" "${files[@]}"
   stack_meta source "python=$("$python" -VV | head -n 1)" "interpreter=$python" \
@@ -527,7 +531,7 @@ PY
   stack_meta smoke "command=python -I in the stack venv: ngsolve, petsc4py, mpi4py, /proc/self/maps; cp -al copy + pip install --no-index --no-deps gfem, electrostatic cube" \
     "output=$(grep -v '^pardiso: ' <<<"$out" | tail -n 1)" "pardiso=$(sed -n 's/^pardiso: //p' <<<"$out")" \
     "template:=$(<"$dir/template.json")" \
-    "gfem_wheel=$wheel" "gfem_wheel_sha256=$(sha256sum "$wheel" | cut -d' ' -f1)" \
+    "gfem_wheel=$wheel" "gfem_wheel_sha256=$(prov sha256 "$wheel")" \
     "pip_check=$(paste -sd';' <<<"$check")" \
     "ldd_libngla=$(ldd "$(find "${STACK_NGSOLVE_PROVENANCE%/provenance.json}" -name 'libngla.so*' | head -n 1)" | grep -E 'libopenblas|libmkl' | xargs)" \
     "ldd_libpetsc=$(ldd "${STACK_PETSC_PROVENANCE%/provenance.json}/lib/libpetsc.so" | grep -E 'libopenblas|libmkl' | xargs)"

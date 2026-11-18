@@ -207,10 +207,10 @@ build_ngsolve() {
   commits+=("suitesparse-metis-for-windows=$(grep -oE 'GIT_TAG [0-9a-f]+' "$src/cmake/SuperBuild.cmake" | head -n 1 | cut -d' ' -f2)")
   stack_json "$dir/commits.json" "${commits[@]}"
   for name in "$STACK_SRC"/pip/wheels/netgen_occt*-"${occt#*==}"-*.whl; do
-    wheels+=("${name##*/}=$(sha256sum "$name" | cut -d' ' -f1)")
+    wheels+=("${name##*/}=$(prov sha256 "$name")")
   done
   while read -r name url md5; do
-    wheels+=("$name=md5 $md5, sha256 $(sha256sum "$STACK_SRC/tarballs/$name" | cut -d' ' -f1)")
+    wheels+=("$name=md5 $md5, sha256 $(prov sha256 "$STACK_SRC/tarballs/$name")")
   done < <(stack_sources url-tarballs <"$netgen/cmake/external_projects/metis.cmake")
   stack_json "$dir/files.json" "${wheels[@]}"
   stack_meta source "url=$NGSOLVE_URL" "tag=v$version" "commits:=$(<"$dir/commits.json")" \
