@@ -226,24 +226,14 @@ class FloquetOrderCapWarning(UserWarning):
 
 
 class PortModeProjectionWarning(UserWarning):
-    """A wave port's S functional is inexact because its port line is lossy.
+    """No longer emitted: wave-port S is exact on lossy port lines.
 
-    Each wave port's S functional projects the field on its conjugated
-    mode, which is exact only when the port line is lossless. It fires at
-    most once per port surface, in one of two cases:
-
-    - Two wave ports of one surface read part of each other's mode: at some
-      frequency, the normalized projection of one requested mode on another
-      port's functional exceeds ``1e-3``. The S entries between those ports
-      carry an error of that order.
-    - Otherwise, a port's mode has ``alpha/beta = |Re gamma| / |Im gamma|``
-      above ``1e-3`` at some frequency, a lone port included. The port's
-      reflection entries of S carry an error of that order; transmission
-      is right to the square of it.
-
-    The remedy is a lossless port line near the port (the biorthogonal
-    functional that would remove the error is not implemented in this
-    version of gfem). Filter it with Python's `warnings` module.
+    Earlier versions projected the field on each wave port's conjugated
+    mode, exact only for a lossless port line, and warned with this class
+    when a lossy line made S inexact. gfem now projects biorthogonally on
+    the modes (ADR 0214), exact lossy or not, and never emits it. The class
+    stays so that filters naming it keep working; it will be removed in a
+    later release.
     """
 
 

@@ -151,7 +151,6 @@ from gfem.errors import (
     LowFrequencyWarning,
     ObliqueAbsorberWarning,
     PortGeometryError,
-    PortModeProjectionWarning,
     SkippedPortModeWarning,
     UnrequestedOrderWarning,
 )
@@ -173,7 +172,6 @@ __all__ = [
     "DEFAULT_SOLVER",
     "FORWARD_WARNINGS",
     "LOW_FREQUENCY_FLOOR",
-    "PORT_MODE_PROJECTION_FLOOR",
     "DrivenOperator",
     "DrivenRule",
     "Expansion",
@@ -197,10 +195,6 @@ DEFAULT_SOLVER: Kind = "bddc_gmres"
 
 #: k0 * h_min below which a driven solve warns (gfem.LowFrequencyWarning).
 LOW_FREQUENCY_FLOOR = 1e-6
-#: The normalized cross-projection between two wave ports of one surface
-#: above which a driven solve warns (gfem.PortModeProjectionWarning): the
-#: default S error target, ``SolverOptions.adaptive_tolerance``.
-PORT_MODE_PROJECTION_FLOOR = 1e-3
 #: k0 * h_min below which MKL PARDISO becomes unreliable (with iparm(10) =
 #: 16; MUMPS and NGSolve's sparse Cholesky hold to 1e-8, the lowest point
 #: measured), named in the low-frequency warning.
@@ -961,7 +955,7 @@ class DrivenRule:
         """
         self._check_adjoint_ports(keep=False)
         with task_manager(self.options.threads, self.comm):
-            system, ports = self._ports(model, warn=False)
+            system, ports = self._ports(model)
             try:
                 with system.sweep(solves=len(self.problem.frequency)) as sweep:
                     for f in self.problem.frequency:
@@ -1174,11 +1168,6 @@ class DrivenRule:
                 frequency=frequencies,
                 tolerance=self.options.port_mode_tolerance,
             )
-        _check_port_mode_projection(
-            [(s.ports, s.cross_projection, [w.gamma for w in s.sweeps]) for s in swept],
-            frequencies,
-            stacklevel=6,
-        )
         return swept
 
     def _at_frequency(self, model: Model, n: int) -> DrivenRule:
@@ -1378,16 +1367,13 @@ class DrivenRule:
             return None
         return self._uniform_result(partial.outputs)
 
-    def _ports(
-        self, model: Model, *, warn: bool = True
-    ) -> tuple[SystemOperator, PortNetwork]:
+    def _ports(self, model: Model) -> tuple[SystemOperator, PortNetwork]:
         """The system operator and the port network of one driven solve.
 
         Both from one set of wave port couplings: the system operator adds
         their Robin pieces and modal corrections, and the port network holds
         the excitations and S functionals. Runs each wave port surface's
-        port mode sweep over the output grid and, with ``warn`` (a forward
-        pass), warns about cross-projections on shared port surfaces.
+        port mode sweep over the output grid.
 
         The couplings and the network are kept on the discretization
         (`_KeptPorts`) and reused while their key holds: a design away from
@@ -1432,20 +1418,6 @@ class DrivenRule:
             if disc is not None:
                 disc.ports = kept
         couplings = kept.couplings
-        if warn:
-            _check_port_mode_projection(
-                [
-                    (
-                        tuple(c.port for c in s.ports),
-                        s.cross_projection,
-                        [c.sweep.gamma for c in s.ports],
-                    )
-                    for s in couplings
-                ],
-                frequency,
-                stacklevel=5,
-                comm=self.comm,
-            )
         transposed = None
         if self.wave_vector is not None:
             # A(k)^T = A(-k): the adjoint solves' operator
@@ -1840,7 +1812,7 @@ class DrivenRule:
         rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
         with task_manager(self.options.threads, self.comm):
             if rebuilt:
-                entry.handle = _Kept(*self._ports(model, warn=False))
+                entry.handle = _Kept(*self._ports(model))
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
             domain = em_region(model, op.built)
@@ -2384,106 +2356,6 @@ def _check_skipped_port_modes(
         _mpi.warn(comm, msg, SkippedPortModeWarning, stacklevel=stacklevel + 1)
 
 
-def _check_port_mode_projection(
-    surfaces: Sequence[
-        tuple[Sequence[WavePort], Callable[[], np.ndarray], Sequence[np.ndarray]]
-    ],
-    frequency: tuple[float, ...],
-    *,
-    stacklevel: int,
-    comm: Any = None,
-) -> None:
-    """Warn at most once per wave port surface whose S functional is inexact.
-
-    The conjugated S functional is exact for a lossless port line only. On
-    a shared surface, the largest normalized cross-projection
-    (`PortSurfaceCoupling.cross_projection`) over the output grid and the
-    surface's pairs of ports is compared with `PORT_MODE_PROJECTION_FLOOR`.
-    On a lone port, or a shared surface below the floor, the largest
-    ``|Re gamma| / |Im gamma|`` over the grid and the surface's ports is:
-    a lossy mode referenced to itself reflects at that order.
-
-    Args:
-        surfaces: Per wave port surface, its wave ports, its
-            ``cross_projection`` (of its coupling, or of its port mode
-            sweep alone in the parent of frequency workers) and each
-            port's propagation constants over the grid.
-        frequency: The output grid, Hz.
-        stacklevel: Passed on to `warnings.warn`, counted from the caller.
-    """
-    for ports, cross_projection, gammas in surfaces:
-        msg = _cross_projection_message(ports, cross_projection, frequency)
-        if msg is None:
-            msg = _attenuation_message(ports, gammas, frequency)
-        if msg is not None:
-            _mpi.warn(comm, msg, PortModeProjectionWarning, stacklevel=stacklevel + 1)
-
-
-def _cross_projection_message(
-    ports: Sequence[WavePort],
-    cross_projection: Callable[[], np.ndarray],
-    frequency: tuple[float, ...],
-) -> str | None:
-    """The warning of a shared surface above the floor, else ``None``."""
-    n = len(ports)
-    if n < 2:
-        return None
-    q = cross_projection()
-    q[:, np.arange(n), np.arange(n)] = 0.0
-    # q[k, l, j]: port j's S functional on port l's mode at frequency k; an
-    # unsolved frequency (a partial sweep) is NaN and does not count
-    if np.isnan(q).all():
-        return None
-    k, l, j = np.unravel_index(int(np.nanargmax(q)), q.shape)
-    value = float(q[k, l, j])
-    if not value > PORT_MODE_PROJECTION_FLOOR:
-        return None
-    a, b = ports[int(l)], ports[int(j)]
-    return (
-        f"WavePorts {a.name!r} and {b.name!r} on surface {a.surface!r}: the S "
-        f"functional of {b.name!r} reads the mode of {a.name!r} with a "
-        f"cross-projection of {value:.3g} at {hertz(frequency[int(k)])} (above "
-        f"{PORT_MODE_PROJECTION_FLOOR:g}), so the S entries between these "
-        "ports carry an error of that order. The conjugated S functional "
-        "separates the modes of a lossless port line only; the biorthogonal "
-        "functional that would remove the error is not implemented in this "
-        "version of gfem. Make the port line lossless near the port, or "
-        "filter this warning if the error is acceptable."
-    )
-
-
-def _attenuation_message(
-    ports: Sequence[WavePort],
-    gammas: Sequence[np.ndarray],
-    frequency: tuple[float, ...],
-) -> str | None:
-    """The warning of a lossy port line above the floor, else ``None``."""
-    # ratio[i, k]: port i's alpha/beta at frequency k; NaN where unsolved (a
-    # partial sweep) or at cutoff (beta = 0), which do not count
-    beta = np.abs(np.imag(gammas))
-    ratio = np.divide(
-        np.abs(np.real(gammas)), beta, out=np.full(beta.shape, np.nan), where=beta > 0
-    )
-    if np.isnan(ratio).all():
-        return None
-    i, k = np.unravel_index(int(np.nanargmax(ratio)), ratio.shape)
-    value = float(ratio[i, k])
-    if not value > PORT_MODE_PROJECTION_FLOOR:
-        return None
-    port = ports[int(i)]
-    return (
-        f"WavePort {port.name!r} on surface {port.surface!r}: its port line is "
-        f"lossy, with alpha/beta of {value:.3g} at {hertz(frequency[int(k)])} "
-        f"(above {PORT_MODE_PROJECTION_FLOOR:g}), so the port's reflection "
-        "entries of S carry an error of that order; transmission is right to "
-        "the square of it. The conjugated S functional is exact for a lossless "
-        "port line only; the biorthogonal functional that would remove the "
-        "error is not implemented in this version of gfem. Make the port line "
-        "lossless near the port, or filter this warning if the error is "
-        "acceptable."
-    )
-
-
 #: The warnings a driven solve gives about its model and ports, whatever
 #: it solves: a second solve of the same sweep (a frequency worker, an
 #: estimate's adjoint) ignores them, since the first already gave them.
@@ -2493,7 +2365,6 @@ FORWARD_WARNINGS = (
     ObliqueAbsorberWarning,
     LowFrequencyWarning,
     SkippedPortModeWarning,
-    PortModeProjectionWarning,
 )
 
 

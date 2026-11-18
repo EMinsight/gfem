@@ -49,8 +49,9 @@ Every API keyed by port name works per mode: `Driven(excite=...)`,
 `result.port_modes["in_TM0"]`, `s.z_ref`, Touchstone and xarray export, and
 the saved job.
 
-- **Each mode is its own port.** S is made of power waves normalized to unit
-  modal power ({py:obj}`gfem.conventions`). `s.y()`, `s.z()` and
+- **Each mode is its own port.** S is made of each mode's waves: modal
+  amplitudes normalized to 1 W on a lossless line, or the mode's
+  pseudo-waves with a `voltage_path` ({py:obj}`gfem.conventions`). `s.y()`, `s.z()` and
   `s.renormalize()` act on modal voltages and currents, one per mode, not on
   the conductors' terminal ones.
 - **One surface, one cross-section.** The wave ports of one surface must
@@ -142,14 +143,11 @@ How gfem itself is checked on wave ports and shared port surfaces:
   the modes the symmetry plane admits, so a mode of the other parity is not a
   gap. A PMC or PEC plane through the strip's mid-height admits only one of
   TE0 and TM0: requesting both needs the full stack.
-- **Lossy port lines.** S reads each mode by the conjugated projection, which
-  separates the requested modes exactly only for a lossless port line. With
-  loss in the cross-section, one port's S may read part of another port's
-  mode (the {term}`mode cross-projection`); above 1e-3 the solve warns with
-  {py:obj}`gfem.PortModeProjectionWarning`, which states the size of that
-  error in S. A lossy port line, lone or shared, also reflects its own mode at
-  the order of $\alpha/\beta$, its attenuation per radian, and warns with the same class
-  above 1e-3. Keep the port line lossless near the port.
+- **Lossy port lines.** S reads each mode by the biorthogonal projection,
+  which separates the requested modes by reciprocity with or without loss in
+  the cross-section, and matches a lossy port line to its own mode. Give every
+  wave port of the device a `voltage_path`, or none: on a lossy line the two
+  kinds of waves differ, and S is symmetric only between ports of one kind.
 - **Degenerate, crossing and cut-off modes.** The solve raises
   {py:obj}`gfem.PortModeError`, naming the port and the surface, in three
   cases. A requested mode degenerate with another (TE10 and TE01 of a square

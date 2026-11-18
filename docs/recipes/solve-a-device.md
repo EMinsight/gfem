@@ -63,7 +63,7 @@ print(s.z_ref[0])  # ohm, the reference impedance of each port at 2 GHz
   `"p1"`: a complex array with one entry per frequency. `s.db(to, source)` is
   its magnitude in dB, and `s.values` the whole array, indexed frequency,
   output port, excited port.
-- S is in {term}`power waves`, normalized to `s.z_ref`: here each port's own
+- S is in {term}`pseudo-waves`, normalized to `s.z_ref`: here each port's own
   resistance, whatever it is. Nothing is referred to 50 Ω unless you ask with
   `s.renormalize(50.0)`.
 - The ceramic section is a line of impedance 62.8 Ω / $\sqrt{10}$, 20 mm long,

@@ -338,7 +338,7 @@ class SweepOutputs:
         """
         specs = {
             "s": jax.ShapeDtypeStruct((n_freq, n_ports, n_excited), jnp.complex128),
-            "z_ref": jax.ShapeDtypeStruct((n_freq, n_ports), jnp.float64),
+            "z_ref": jax.ShapeDtypeStruct((n_freq, n_ports), jnp.complex128),
         }
         if n_wave:
             shape = (n_freq, n_wave)

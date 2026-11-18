@@ -246,13 +246,14 @@ def test_build_gives_one_term_per_wave_port_surface(line):
     assert len(network.excitation) == 1
     assert len(network.outputs) == 1
     assert [c.index for c in network.waves] == [0, 1]
-    # the couplings are held once: the output reads them conjugated
+    # the couplings are held once, the output unconjugated (biorthogonal)
     assert network.outputs[0].vectors is vectors
+    assert not network.outputs[0].conjugate
     assert network.shared() == {id(vectors): vectors.nbytes}
     np.testing.assert_array_equal(network.z_ref, [[10.0, 20.0], [10.0, 20.0]])
     w = OMEGAS[1]
     rhs = vectors @ np.stack([second, first], axis=1) * (w / OMEGAS[0])
     np.testing.assert_allclose(network.rhs(w), rhs, rtol=1e-14, atol=0)
     x = _complex(rng, op.space.ndof, 2)
-    out = np.stack([first, second]) @ (np.conj(vectors).T @ x) * 2j
+    out = np.stack([first, second]) @ (vectors.T @ x) * 2j
     np.testing.assert_allclose(network.outgoing(w, x), out, rtol=1e-12, atol=0)

@@ -397,15 +397,6 @@ def _skipped(directory):
     )
 
 
-def _cross_projected(directory):
-    model = _model("hybrid", directory)
-    return (
-        model.with_material("block", gfem.Material(eps_r=4.0, tan_delta=0.02)),
-        gfem.Driven(55e9),
-        cases.tight("bddc_gmres", threads=1),
-    )
-
-
 def _low_frequency(directory):
     return (
         cases.layered_line(directory),
@@ -429,7 +420,6 @@ def _squashed(directory):
 WARNING_SITES = {
     "PortModeTrackingWarning": lambda _: _crossing(),
     "SkippedPortModeWarning": _skipped,
-    "PortModeProjectionWarning": _cross_projected,
     "LowFrequencyWarning": _low_frequency,
     "MeshQualityWarning": _squashed,
 }
