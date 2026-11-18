@@ -1467,6 +1467,25 @@ def test_a_url_download_of_cmake_is_read_with_its_md5_and_mirror_name():
     ]
 
 
+def test_source_records_name_their_fields():
+    git = sources.palace_git(PALACE_GIT_TAGS)[0]
+    tarball = sources.palace_tarballs(PALACE_GIT_TAGS)[0]
+    patch = sources.patches(PALACE_PATCH_CALLS)[0]
+    metis = sources.url_tarballs(NETGEN_METIS)[0]
+    ref = sources.git_repositories("GIT_REPOSITORY https://h/r.git GIT_TAG v1")[0]
+    module = sources.gitmodules("[submodule x]\n\tpath = p\n\turl = https://h/p\n")[0]
+    mumps = sources.mumps_tarball('{"mumps_sha256": {"5.9.1": "abc"}}', "v5.9.1")[0]
+
+    assert (git.name, git.tag) == ("ARPACK", "3.9.1")
+    assert tarball.file == sources.tarball_name(tarball.url)
+    assert (patch.directory, patch.file) == ("extern/mfem-patches", "mfem_pr3847.diff")
+    assert patch.sha256.startswith("e9be1a0d")
+    assert metis.md5 == "6cd66f75f88dfa2cf043de011f85d8bc"
+    assert (ref.url, ref.tag) == ("https://h/r.git", "v1")
+    assert (module.path, module.url) == ("p", "https://h/p")
+    assert (mumps.file, mumps.sha256) == ("MUMPS_5.9.1.tar.gz", "abc")
+
+
 #: What a native-oss PETSc build leaves for its ``mumps`` block: excerpts of
 #: the installed headers, MUMPS's ``Makefile.inc``, ``nm -D`` and ``ldd`` of
 #: libpetsc, the ``--download`` tarballs.

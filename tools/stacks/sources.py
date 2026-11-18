@@ -28,6 +28,63 @@ import re
 import sys
 import tarfile
 import zipfile
+from typing import NamedTuple
+
+
+class GitDependency(NamedTuple):
+    """A git dependency of a superbuild: its name, repository URL and tag."""
+
+    name: str
+    url: str
+    tag: str
+
+
+class UrlDependency(NamedTuple):
+    """A URL (tarball) dependency: its name, mirror file name and URL."""
+
+    name: str
+    file: str
+    url: str
+
+
+class Patch(NamedTuple):
+    """A ``download_patch`` call: build-tree directory, file, URL, sha256."""
+
+    directory: str
+    file: str
+    url: str
+    sha256: str
+
+
+class GitRef(NamedTuple):
+    """A ``GIT_REPOSITORY``/``GIT_TAG`` pair."""
+
+    url: str
+    tag: str
+
+
+class Submodule(NamedTuple):
+    """A submodule of a ``.gitmodules`` file, as spelled there."""
+
+    path: str
+    url: str
+
+
+class PinnedTarball(NamedTuple):
+    """A tarball with the sha256 an upstream file pins: mirror name, URL, sha256."""
+
+    file: str
+    url: str
+    sha256: str
+
+
+class Md5Tarball(NamedTuple):
+    """A tarball with the MD5 an upstream file pins: mirror name, URL, MD5."""
+
+    file: str
+    url: str
+    md5: str
+
 
 _SET = re.compile(r"set\(\s*(\w+)\s+\"([^\"]*)\"", re.MULTILINE)
 
@@ -37,7 +94,7 @@ def _cache_strings(text: str) -> dict[str, str]:
     return dict(_SET.findall(text))
 
 
-def palace_git(text: str) -> list[tuple[str, str, str]]:
+def palace_git(text: str) -> list[GitDependency]:
     """The git dependencies of Palace's ``cmake/ExternalGitTags.cmake``.
 
     Returns:
@@ -53,7 +110,7 @@ def palace_git(text: str) -> list[tuple[str, str, str]]:
             name = match.group(1)
             tag = values.get(f"EXTERN_{name}_GIT_TAG")
             if tag:
-                deps.append((name, url, tag))
+                deps.append(GitDependency(name, url, tag))
     return deps
 
 
@@ -92,7 +149,7 @@ def tarball_name(url: str) -> str:
     return basename
 
 
-def palace_tarballs(text: str) -> list[tuple[str, str, str]]:
+def palace_tarballs(text: str) -> list[UrlDependency]:
     """The URL (tarball) dependencies of Palace's ``ExternalGitTags.cmake``.
 
     Returns:
@@ -103,7 +160,7 @@ def palace_tarballs(text: str) -> list[tuple[str, str, str]]:
     for var, url in _cache_strings(text).items():
         match = re.fullmatch(r"EXTERN_(\w+)_URL", var)
         if match and not url.endswith(".git"):
-            tarballs.append((match.group(1), tarball_name(url), url))
+            tarballs.append(UrlDependency(match.group(1), tarball_name(url), url))
     return tarballs
 
 
@@ -112,7 +169,7 @@ _DOWNLOAD_PATCH = re.compile(
 )
 
 
-def patches(text: str) -> list[tuple[str, str, str, str]]:
+def patches(text: str) -> list[Patch]:
     """The ``download_patch`` calls of Palace's CMake files (``PatchHelpers.cmake``).
 
     Palace downloads these at configure time into its build tree; a file that
@@ -141,17 +198,18 @@ def patches(text: str) -> list[tuple[str, str, str, str]]:
         if not directory.startswith(prefix):
             msg = f"download_patch of {name}: {written} is not in the build tree"
             raise ValueError(msg)
-        found.append((directory[len(prefix) :], name, url, digest))
+        found.append(Patch(directory[len(prefix) :], name, url, digest))
     return found
 
 
 _GIT_REPOSITORY = re.compile(r"GIT_REPOSITORY\s+(\S+)\s+GIT_TAG\s+(\S+)")
 
 
-def git_repositories(text: str) -> list[tuple[str, str]]:
+def git_repositories(text: str) -> list[GitRef]:
     """``(URL, TAG)`` of each ``GIT_REPOSITORY``/``GIT_TAG`` pair of a CMake file."""
     return [
-        (url.strip('"'), tag.strip('"')) for url, tag in _GIT_REPOSITORY.findall(text)
+        GitRef(url.strip('"'), tag.strip('"'))
+        for url, tag in _GIT_REPOSITORY.findall(text)
     ]
 
 
@@ -160,7 +218,7 @@ def _is_cmake(name: str) -> bool:
     return base == "CMakeLists.txt" or base.endswith(".cmake")
 
 
-def archive_git_repositories(path: str) -> list[tuple[str, str]]:
+def archive_git_repositories(path: str) -> list[GitRef]:
     """The git dependencies a tarball's own CMake files clone when it configures.
 
     A URL dependency of a superbuild can fetch further sources itself
@@ -195,7 +253,7 @@ def archive_git_repositories(path: str) -> list[tuple[str, str]]:
     return found
 
 
-def gitmodules(text: str) -> list[tuple[str, str]]:
+def gitmodules(text: str) -> list[Submodule]:
     """``(PATH, URL)`` of each submodule of a ``.gitmodules`` file, as spelled."""
     found = []
     path = None
@@ -208,11 +266,11 @@ def gitmodules(text: str) -> list[tuple[str, str]]:
             if key == "path":
                 path = value
             elif key == "url" and path is not None:
-                found.append((path, value))
+                found.append(Submodule(path, value))
     return found
 
 
-def mumps_tarball(text: str, tag: str) -> list[tuple[str, str, str]]:
+def mumps_tarball(text: str, tag: str) -> list[PinnedTarball]:
     """The MUMPS release a scivision/mumps tag builds, from its ``cmake/source.json``.
 
     scivision's ``CMakeLists.txt`` takes the release from the first three
@@ -232,19 +290,21 @@ def mumps_tarball(text: str, tag: str) -> list[tuple[str, str, str]]:
         msg = f"scivision/mumps {tag}: no sha256 of MUMPS {version} in source.json"
         raise ValueError(msg)
     name = f"MUMPS_{version}.tar.gz"
-    return [(name, f"https://mumps-solver.org/{name}", digests[version])]
+    return [PinnedTarball(name, f"https://mumps-solver.org/{name}", digests[version])]
 
 
 _URL_MD5 = re.compile(r"\bURL\s+(\S+)\s+URL_MD5\s+([0-9a-f]{32})")
 
 
-def url_tarballs(text: str) -> list[tuple[str, str, str]]:
+def url_tarballs(text: str) -> list[Md5Tarball]:
     """The ``URL``/``URL_MD5`` downloads of a CMake file (netgen's METIS).
 
     Returns:
         One ``(FILE, URL, MD5)`` per download, FILE as named in the mirror.
     """
-    return [(tarball_name(url), url, md5) for url, md5 in _URL_MD5.findall(text)]
+    return [
+        Md5Tarball(tarball_name(url), url, md5) for url, md5 in _URL_MD5.findall(text)
+    ]
 
 
 #: The command line: name, number of arguments after the name, handler. A
