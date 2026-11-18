@@ -103,6 +103,24 @@ def test_stack_json_reads_key_colon_equals_as_json_and_key_equals_as_a_string(
     assert json.loads(out.read_text()) == {key: value}
 
 
+def test_stack_json_to_standard_output_nests_values_with_any_characters(tmp_path):
+    odd = 'a "quoted" \\ path\twith tab'
+    script = 'inner=$(stack_json - "prefix=$1" "n:=2"); stack_json - "dep:=$inner"'
+
+    result = _stack_function(script, odd, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"dep": {"prefix": odd, "n": 2}}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_stack_json_array_writes_its_arguments_as_a_json_list():
+    result = _stack_function('stack_json_array "$@"', '--prefix=/a "b"', "", "c")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ['--prefix=/a "b"', "", "c"]
+
+
 def test_two_first_builds_of_a_stack_freeze_its_toolchain_once(tmp_path):
     source = tmp_path / "native-oss.sh"
     source.write_text("module load gcc/12.3.0\n" * 20000)
@@ -1248,6 +1266,9 @@ def test_openblas_builds_a_pthreads_and_an_openmp_library_into_one_prefix(tmp_pa
     assert all("COMMON_OPT=-O3 -march=sapphirerapids" in call for call in calls)
     record = json.loads((prefix / "provenance.json").read_text())
     assert set(record["smoke"]["libraries"]) == {"openblas", "openblas_omp"}
+    builds = record["configure"]["builds"]
+    assert builds["openblas_omp"]["library"] == "libopenblas_omp.so"
+    assert "USE_OPENMP=1" in builds["openblas_omp"]["make"].split()
     assert "zdotc ok" in record["smoke"]["libraries"]["openblas_omp"]
 
 

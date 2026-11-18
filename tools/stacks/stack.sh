@@ -56,7 +56,9 @@ stack_die() {
   die "$@"
 }
 
-# stack_json FILE KEY=STRING KEY:=JSON ...: write one JSON object.
+# stack_json FILE KEY=STRING KEY:=JSON ...: write one JSON object to FILE
+# (standard output for -). Build nested values with a nested stack_json -,
+# never by pasting strings into JSON.
 stack_json() {
   local file=$1
   shift
@@ -72,10 +74,18 @@ for arg in sys.argv[2:]:
     else:
         key, value = arg.split("=", 1)
         out[key] = value
-with open(sys.argv[1], "w") as handle:
-    json.dump(out, handle, indent=2, sort_keys=True)
-    handle.write("\n")
+text = json.dumps(out, indent=2, sort_keys=True) + "\n"
+if sys.argv[1] == "-":
+    sys.stdout.write(text)
+else:
+    with open(sys.argv[1], "w") as handle:
+        handle.write(text)
 PY
+}
+
+# stack_json_array STRING...: print the strings as one JSON array.
+stack_json_array() {
+  "$STACK_PYTHON" -B -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@"
 }
 
 # stack_meta FIELD KEY=STRING KEY:=JSON ...: one field of the provenance file.
@@ -576,7 +586,8 @@ cmd_build() {
       die "dependency $stack/$dep-$depver is not complete (no provenance.json)"
     source_quietly "$depprefix/activate.sh"
     activates+=("$depprefix/activate.sh")
-    depends_json+=("$dep:={\"prefix\": \"$depprefix\", \"provenance_sha256\": \"$(prov sha256 "$depprefix/provenance.json")\"}")
+    depends_json+=("$dep:=$(stack_json - "prefix=$depprefix" \
+      "provenance_sha256=$(prov sha256 "$depprefix/provenance.json")")")
   done
 
   BUILD_DIR=$TMPDIR/stack-$stack-$pkg-$version

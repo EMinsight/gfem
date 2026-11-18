@@ -211,9 +211,9 @@ build_petsc() {
     "tag=v$version" "tarballs:=$(<"$dir/tarballs.json")" \
     "gemmt_patch=config/BuildSystem/config/packages/MUMPS.py: dgemmt check -> if False (tools/petsc_wheelhouse.sh)" \
     "python=$("$python" -VV | head -n 1) ($python)"
-  stack_json "$dir/options.json" "petsc:=$(printf '%s\n' "${options[@]}" | "$python" -c 'import json, sys; print(json.dumps(sys.stdin.read().splitlines()))')" \
-    "slepc:=[\"--prefix=$prefix\", \"--with-slepc4py\"]"
-  stack_meta configure "options:=$(<"$dir/options.json")" \
+  stack_meta configure \
+    "options:=$(stack_json - "petsc:=$(stack_json_array "${options[@]}")" \
+      "slepc:=$(stack_json_array "--prefix=$prefix" --with-slepc4py)")" \
     "python_path=$prefix/lib" "build_venv=$("$venv/bin/pip" freeze | paste -sd' ')"
 }
 
