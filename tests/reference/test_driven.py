@@ -397,22 +397,28 @@ WP_ROWS = (0, 27, 148, 299)
 #: Palace v0.18.1's port boundary (the baseline): the Robin term plus a
 #: rank-two modal correction per wave port. Without the correction max |dS|
 #: was 1e-5, 7.9e-4 and 1.5e-3 at 1, 50 and 100 GHz.
-#: r8_wp's port line is lossy (alpha/beta ~ 9.5e-5). Palace reads S by the
-#: conjugated projection, which reflects the line's own mode at alpha/beta;
-#: gfem's biorthogonal one does not (ADR 0214). So the reflection entries
-#: may differ from Palace's by that much; transmission, right to its square,
-#: stays at `TOLERANCE`.
+#: r8_wp's port line is lossy (alpha/beta ~ 9.5e-5), and gfem departs from
+#: Palace there by design (ADR 0214), measured on MN5 2026-11-18 against
+#: fcca4c2, which met Palace to 2e-6 on every entry. Reflection: Palace's
+#: conjugated projection reflects the line's own mode at alpha/beta (new
+#: |dS11| up to 0.93 alpha/beta). Transmission: a phase only, ~0.1 alpha/beta
+#: rad, since Palace fixes each mode's phase by a quadrant integral and gfem
+#: normalizes its modal waves by reciprocity; their phases differ at the
+#: order of the loss. So |S| meets Palace at `TOLERANCE` and S within the
+#: loss.
 
 
 def _assert_wave_port_parity(s, palace, gamma):
-    """Transmission within `TOLERANCE` of Palace; reflection within alpha/beta more."""
-    loss = np.abs(gamma.real / gamma.imag)[:, None]
+    """|S| within `TOLERANCE` of Palace; S within it plus the port line's loss."""
+    loss = np.abs(gamma.real / gamma.imag)[:, None, None]
     n = s.shape[1]
     through = ~np.eye(n, dtype=bool)
+    magnitude = np.abs(np.abs(s) - np.abs(palace))
+    assert magnitude[:, through].max() <= TOLERANCE
     diff = np.abs(s - palace)
-    assert diff[:, through].max() <= TOLERANCE
+    assert (diff[:, through] <= TOLERANCE + 0.5 * loss[:, :, 0]).all()
     reflection = diff[:, ~through]
-    assert (reflection <= TOLERANCE + 1.2 * loss).all(), (reflection, loss)
+    assert (reflection <= TOLERANCE + 1.2 * loss[:, :, 0]).all(), (reflection, loss)
 
 
 def test_wave_port_parity_s_matches_palace(reference):
