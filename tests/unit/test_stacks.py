@@ -354,6 +354,22 @@ def test_a_complete_mumps_build_without_a_mumps_block_fails(tmp_path, package):
     assert not any("ngsolve" in error for error in report.errors)
 
 
+@pytest.mark.parametrize(
+    ("raw", "passes"),
+    [
+        ("-fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch", True),
+        ("-fPIC -O2 -fallow-argument-mismatch", False),
+    ],
+)
+def test_mumps_raw_fflags_must_hold_the_toolchains_fflags(tmp_path, raw, passes):
+    petsc = {**_mumps_petsc(), "fflags_raw": raw, "compiler_raw": "mpif90"}
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
+
+    failed = [e for e in report.errors if "fflags_raw" in e and "petsc-1.0" in e]
+    assert bool(failed) != passes, report.errors
+
+
 def test_a_mumps_block_missing_a_field_fails(tmp_path):
     petsc = _mumps_petsc()
     del petsc["intsize"]
@@ -1578,6 +1594,8 @@ def test_a_petsc_build_records_its_mumps_as_ticket_05_compares_it():
         "metis": "5.1.0-p12",
         "ptscotch": "7.0.18",
         "index_bits": 64,
+        "fflags_raw": "-fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch",
+        "compiler_raw": "mpif90",
     }
 
 

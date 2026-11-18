@@ -251,6 +251,14 @@ def _check_mumps_block(name: str, package: str, block: dict, report: Report) -> 
         report.errors.append(
             f"mumps orderings: {name} has parmetis (ADR 0012, ADR 0067)"
         )
+    raw = block.get("fflags_raw")
+    if raw is not None:
+        missing = [flag for flag in block["fflags"].split() if flag not in raw.split()]
+        if missing:
+            report.errors.append(
+                f"mumps fflags_raw: {name} compiled MUMPS with {raw!r}, "
+                f"without the toolchain's {missing}"
+            )
 
 
 def _has(block: dict, dotted: str) -> bool:
@@ -494,6 +502,11 @@ def _petsc_blas(needed: str, env: dict[str, str], errors: list[str]) -> dict:
 def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[str]]:
     """The ``mumps`` block of a PETSc prefix, and the gates it fails.
 
+    Besides the compared fields, the block records MUMPS's ``Makefile.inc``
+    ``OPTF`` and ``FC`` as written (``fflags_raw``, ``compiler_raw``): for
+    information, and ``check`` finds the toolchain's ``fflags`` in
+    ``fflags_raw``.
+
     The gates are ADR 0067's (complex, 64-bit ``PetscInt``, MPI, no ParMETIS,
     PT-Scotch 7.0.18 or newer, no ``?gemmt_`` import) and ADR 0209's (MUMPS
     from the pinned tarball, the toolchain's Fortran flags, the stack's
@@ -539,6 +552,7 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
         )
     optf = re.search(r"^OPTF\s*=(.*)$", build["Makefile.inc"], re.MULTILINE)
     optf_flags = optf.group(1).split() if optf else []
+    fc = re.search(r"^FC\s*=(.*)$", build["Makefile.inc"], re.MULTILINE)
     fflags = env.get("FFLAGS", "")
     missing = [flag for flag in fflags.split() if flag not in optf_flags]
     if missing:
@@ -559,6 +573,8 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
         "metis": tarballs["metis"][0],
         "ptscotch": tarballs["ptscotch"][0],
         "index_bits": 64 if _defined(conf, "PETSC_USE_64BIT_INDICES") else 32,
+        "fflags_raw": " ".join(optf_flags),
+        "compiler_raw": fc.group(1).strip() if fc else "",
     }
     return block, errors
 
