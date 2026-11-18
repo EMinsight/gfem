@@ -121,6 +121,18 @@ def test_stack_json_array_writes_its_arguments_as_a_json_list():
     assert json.loads(result.stdout) == ['--prefix=/a "b"', "", "c"]
 
 
+def test_an_mpi_singleton_runs_without_slurms_pmi_library():
+    result = _stack_function(
+        "stack_singleton env",
+        env={"I_MPI_PMI_LIBRARY": "/usr/lib64/libpmi2.so", "KEPT": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    names = {line.split("=", 1)[0] for line in result.stdout.splitlines()}
+    assert "KEPT" in names
+    assert "I_MPI_PMI_LIBRARY" not in names
+
+
 def test_two_first_builds_of_a_stack_freeze_its_toolchain_once(tmp_path):
     source = tmp_path / "native-oss.sh"
     source.write_text("module load gcc/12.3.0\n" * 20000)

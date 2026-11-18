@@ -320,9 +320,7 @@ smoke_pyenv() {
   *) stack_die "pyenv smoke: unknown STACK_BLAS_VENDOR '${STACK_BLAS_VENDOR:-}'" ;;
   esac
   [[ -f $blas ]] || stack_die "pyenv smoke: no BLAS library $blas"
-  # Singletons: an Intel MPI process outside srun fails MPI_Init with the
-  # module's Slurm libpmi2 (probe 49181762), so none is set for them.
-  out=$(cd "$dir" && env -u I_MPI_PMI_LIBRARY "$prefix/bin/python" -I - "$prefix" "$ngsolve" "$petsc" \
+  out=$(cd "$dir" && stack_singleton "$prefix/bin/python" -I - "$prefix" "$ngsolve" "$petsc" \
     "$(dep_version ngsolve)" "$(readlink -f "$blas")" "$STACK_MPI_VENDOR" "$mkl" "$dir/template.json" 2>&1 <<'PY'
 import importlib.metadata
 import importlib.util
@@ -421,7 +419,7 @@ PY
   if grep -qi '^gfem ' <<<"$check"; then
     stack_die "pyenv smoke: gfem's dependencies are not met in the stack venv: $check"
   fi
-  out=$(cd "$dir" && env -u I_MPI_PMI_LIBRARY "$copy/bin/python" -I - "$copy" "$mkl" 2>&1 <<'PY'
+  out=$(cd "$dir" && stack_singleton "$copy/bin/python" -I - "$copy" "$mkl" 2>&1 <<'PY'
 import itertools
 import sys
 

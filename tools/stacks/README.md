@@ -184,7 +184,9 @@ activate_palace() {         # PREFIX (optional): extra lines for activate.sh
 | `$STACK_META` | directory of provenance fields, one `<field>.json` each (build) |
 | `$STACK_JOBS` | the job's CPUs, for `make -j` (build) |
 | `stack_meta FIELD key=string key:=json ...` | write the provenance field `FIELD` as a JSON object |
-| `stack_json FILE key=string key:=json ...` | write any JSON object |
+| `stack_json FILE key=string key:=json ...` | write any JSON object (`FILE` `-`: print it, for nesting) |
+| `stack_json_array STRING...` | print the strings as a JSON array |
+| `stack_singleton COMMAND...` | run an MPI singleton (one process outside `srun`) without `I_MPI_PMI_LIBRARY` |
 | `stack_smoke COMMAND...` | run the smoke command; record it and its first output line |
 | `stack_tofu FILE` | sha256 of an unpinned tarball: recorded on first fetch, checked after |
 | `stack_mirror URL REF...` | fetch: bare full mirror `mirrors/<host>/<path>.git` (URL as upstream spells it) holding every REF |

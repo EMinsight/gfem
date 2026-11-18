@@ -109,6 +109,14 @@ stack_tofu() {
   prov tofu "$STACKS_ROOT/src/tarballs/SHA256SUMS" "$1"
 }
 
+# stack_singleton COMMAND...: run COMMAND, an MPI singleton (one process
+# outside srun), without I_MPI_PMI_LIBRARY: Intel MPI singletons fail MPI_Init
+# with the module's Slurm libpmi2 (job 49181364, probe 49181762); mpiexec
+# needs none.
+stack_singleton() {
+  env -u I_MPI_PMI_LIBRARY "$@"
+}
+
 # --- helpers for fetch_<pkg> (login node, network) ---------------------------
 # Each reports one line, "new" or "present"; fetch counts them, so a rerun on
 # a complete mirror says "nothing new".
