@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -746,7 +747,6 @@ smoke_fake() { :; }
 def _fake_fetch(tmp_path: Path, pin: str | None = None):
     """A recipe tree with package ``fake`` and its upstream, ready to fetch."""
     import hashlib
-    import shutil
 
     recipes = tmp_path / "recipes"
     shutil.copytree(STACKS, recipes, ignore=shutil.ignore_patterns("__pycache__"))
@@ -1027,7 +1027,6 @@ def _openblas_build(
     tmp_path: Path, **env: str
 ) -> tuple[subprocess.CompletedProcess, Path, Path]:
     """Run ``stack.sh build native-oss openblas`` with make and module faked."""
-    import shutil
     import tarfile
 
     recipes = tmp_path / "recipes"
@@ -1076,7 +1075,7 @@ def _openblas_build(
 
 
 needs_gfortran = pytest.mark.skipif(
-    __import__("shutil").which("gfortran") is None, reason="needs gfortran"
+    shutil.which("gfortran") is None, reason="needs gfortran"
 )
 
 
@@ -1169,9 +1168,7 @@ def test_an_external_mumps_file_without_the_gemmt_line_fails_the_edit(tmp_path):
     assert "MUMPS_gemmt" in result.stderr
 
 
-needs_gcc = pytest.mark.skipif(
-    __import__("shutil").which("gcc") is None, reason="needs gcc"
-)
+needs_gcc = pytest.mark.skipif(shutil.which("gcc") is None, reason="needs gcc")
 
 
 @needs_gcc
@@ -1241,8 +1238,6 @@ def test_a_wheelhouse_that_moves_away_from_the_native_recipe_is_drift(old, new, 
 
 
 def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(tmp_path):
-    import shutil
-
     tools = tmp_path / "tools"
     shutil.copytree(
         STACKS, tools / "stacks", ignore=shutil.ignore_patterns("__pycache__")
