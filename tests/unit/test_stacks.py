@@ -1624,6 +1624,19 @@ def test_palace_0181s_sub_builds_find_the_openmp_openblas(tmp_path):
     )
 
 
+@pytest.mark.parametrize("prefix", ["MUMPS_", ""])
+def test_mumps_orderings_are_read_under_either_scivision_option_name(tmp_path, prefix):
+    cache = tmp_path / "CMakeCache.txt"
+    cache.write_text(
+        f"{prefix}metis:BOOL=ON\n{prefix}parmetis:BOOL=ON\n{prefix}scotch:BOOL=OFF\n"
+    )
+
+    result = _palace_function("palace_mumps_orderings", str(cache), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["amd", "metis", "parmetis", "pord"]
+
+
 #: scivision/mumps's ``CMakeLists.txt`` before ``MUMPS_url`` existed (v5.7.3.1-26).
 SCIVISION_573_CMAKELISTS = """\
 include(FetchContent)

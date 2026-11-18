@@ -450,11 +450,24 @@ build_palace() {
     "$mumps_sha" "${scalapack_tag#v}" "${metis_tag##*-}"
 }
 
+# palace_mumps_orderings CACHE: the orderings of a MUMPS build, one per line,
+# sorted: AMD and PORD always, plus each ordering option ON in its CMake cache,
+# named MUMPS_<ordering> (scivision v5.8 on) or <ordering> (v5.7, Palace 0.18.1).
+palace_mumps_orderings() {
+  local cache=$1 ordering orderings=(amd pord)
+  for ordering in metis parmetis scotch ptscotch; do
+    if [[ $(palace_cache "$cache" "MUMPS_$ordering") == ON || $(palace_cache "$cache" "$ordering") == ON ]]; then
+      orderings+=("$ordering")
+    fi
+  done
+  printf '%s\n' "${orderings[@]}" | sort
+}
+
 # palace_mumps_meta PREFIX MUMPS_CACHE SHA256 SCALAPACK METIS: the provenance
 # mumps block (ADR 0209, ticket 05's table) from the installed MUMPS.
 palace_mumps_meta() {
   local prefix=$1 cache=$2 sha=$3 scalapack=$4 metis=$5
-  local version intsize=32 fc a arith=() orderings=(amd pord) ordering libs=() gemmt
+  local version intsize=32 fc a arith=() orderings=() libs=() gemmt
   version=$(sed -n 's/.*MUMPS_VERSION "\([0-9.]*\)".*/\1/p' "$prefix/include/dmumps_c.h" | head -n 1)
   [[ -n $version ]] || stack_die "palace: no MUMPS_VERSION in $prefix/include/dmumps_c.h"
   grep -q 'define MUMPS_INTSIZE64' "$prefix/include/mumps_int_def.h" && intsize=64
@@ -462,10 +475,7 @@ palace_mumps_meta() {
   for a in s d c z; do
     compgen -G "$prefix/lib*/lib${a}mumps.so" >/dev/null && arith+=("$a")
   done
-  for ordering in metis parmetis scotch ptscotch; do
-    [[ $(palace_cache "$cache" "MUMPS_$ordering") != ON ]] || orderings+=("$ordering")
-  done
-  mapfile -t orderings < <(printf '%s\n' "${orderings[@]}" | sort)
+  mapfile -t orderings < <(palace_mumps_orderings "$cache")
   mapfile -t libs < <(find "$prefix"/lib* -maxdepth 1 -type f \( -name 'lib*mumps*.so*' -o -name 'libpord*.so*' -o -name 'libpalace.so*' \) | sort)
   libs+=("$prefix"/bin/palace-*.bin)
   gemmt=$(palace_gemmt_imports "${libs[@]}")
