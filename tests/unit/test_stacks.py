@@ -468,6 +468,67 @@ def test_a_build_outside_a_slurm_job_is_refused(tmp_path):
     assert not (tmp_path / "native-oss").exists()
 
 
+#: Stand-in for squeue: fails for a job name matching $FAKE_SQUEUE_FAIL, else
+#: lists no job.
+FAKE_SQUEUE = """#!/usr/bin/env bash
+for arg in "$@"; do
+  case $arg in
+  --name=$FAKE_SQUEUE_FAIL) echo "squeue: socket timed out" >&2; exit 1 ;;
+  esac
+done
+"""
+
+
+def _fake_submit(
+    tmp_path: Path, package: str, failing: str
+) -> subprocess.CompletedProcess:
+    """``stack.sh submit native-oss PACKAGE`` with squeue and sbatch faked."""
+    fakes = tmp_path / "bin"
+    fakes.mkdir()
+    (fakes / "squeue").write_text(FAKE_SQUEUE)
+    (fakes / "sbatch").write_text(f'#!/bin/sh\necho "$@" >>{tmp_path}/sbatch.log\n')
+    for fake in fakes.iterdir():
+        fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fakes}:{os.environ['PATH']}",
+        "STACKS_ROOT": str(tmp_path / "root"),
+        "FAKE_SQUEUE_FAIL": failing,
+    }
+    return subprocess.run(
+        ["bash", str(STACK_SH), "submit", "native-oss", package],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a_submit_with_no_job_of_that_name_calls_sbatch(tmp_path):
+    result = _fake_submit(tmp_path, "openblas", "no-such-job")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    sbatch = (tmp_path / "sbatch.log").read_text().split()
+    assert "--job-name=stack-native-oss-openblas-0.3.34" in sbatch
+    assert "--hint=nomultithread" in sbatch
+
+
+@pytest.mark.parametrize(
+    ("package", "failing"),
+    [
+        ("openblas", "stack-native-oss-openblas-*"),
+        ("petsc", "stack-native-oss-openblas-*"),
+    ],
+    ids=["own-job", "dependency-job"],
+)
+def test_a_submit_whose_squeue_fails_submits_nothing(tmp_path, package, failing):
+    result = _fake_submit(tmp_path, package, failing)
+
+    assert result.returncode != 0
+    assert "squeue failed" in result.stderr
+    assert not (tmp_path / "sbatch.log").exists()
+
+
 def test_every_package_recipe_declares_the_recipe_interface(tmp_path):
     for package in ("openblas", "palace", "ngsolve", "petsc", "pyenv"):
         result = _stack_sh("check", "native-oss", package, root=tmp_path)

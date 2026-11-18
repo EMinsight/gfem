@@ -399,6 +399,13 @@ stack_freeze_toolchain() {
     die "$toolchain differs from $frozen, frozen at the stack's first build: a changed toolchain is a new software stack"
 }
 
+# stack_jobs NAME: the ids of this user's pending or running jobs named NAME,
+# one per line. A failed squeue fails the caller: it never reads as "no job".
+stack_jobs() {
+  squeue --me --noheader --name="$1" --format=%i ||
+    die "squeue failed: cannot tell whether a job named $1 is pending or running"
+}
+
 # --- commands ----------------------------------------------------------------
 
 cmd_fetch() {
@@ -454,14 +461,16 @@ cmd_submit() {
     [[ $now != differs ]] ||
       die "$stack/$pkg-$version was built from another recipe or toolchain: pass --rebuild to replace it"
   fi
-  [[ -z $(squeue --me --noheader --name="$name" --format=%i) ]] ||
-    die "a job named $name is already pending or running"
+  local jobs
+  jobs=$(stack_jobs "$name")
+  [[ -z $jobs ]] || die "a job named $name is already pending or running"
 
   local after=() dep depver id
   for dep in "${deps[@]}"; do
     depver=$(dep_version "$dep")
     [[ -f $STACKS_ROOT/$stack/$dep-$depver/provenance.json ]] && continue
-    id=$(squeue --me --noheader --name="stack-$stack-$dep-$depver" --format=%i | head -n 1)
+    jobs=$(stack_jobs "stack-$stack-$dep-$depver")
+    id=$(head -n 1 <<<"$jobs")
     [[ -n $id ]] || die "$stack/$dep-$depver is not built and no job builds it: submit $dep first"
     after+=("$id")
   done
