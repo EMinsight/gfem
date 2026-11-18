@@ -66,7 +66,7 @@ class PortModeRows:
 
     Attributes:
         gamma: Propagation constants, 1/m.
-        z_pv: Power-voltage impedances, ohm.
+        z_pv: Complex power-voltage impedances, ohm.
         residual: Backward errors of the modes.
         solved: True where a mode is an exact solve.
         sweeps: Each wave port's `gfem._sweep.port_mode.PortModeSweep` over
@@ -343,7 +343,7 @@ class SweepOutputs:
         if n_wave:
             shape = (n_freq, n_wave)
             specs["port_gamma"] = jax.ShapeDtypeStruct(shape, jnp.complex128)
-            specs["port_z_pv"] = jax.ShapeDtypeStruct(shape, jnp.float64)
+            specs["port_z_pv"] = jax.ShapeDtypeStruct(shape, jnp.complex128)
             specs["port_residual"] = jax.ShapeDtypeStruct(shape, jnp.float64)
             specs["port_solved"] = jax.ShapeDtypeStruct(shape, jnp.bool_)
         if ndof is not None:

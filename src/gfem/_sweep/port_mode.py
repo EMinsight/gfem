@@ -112,7 +112,7 @@ _EXACT_ONLY = 3
 # has |A x| << |A| |x|, so a part of 1e-8 still carries a backward error ~1e-6.
 _NEW_DIRECTION = 1e-12
 # The fields of a `PortModeSweep` that differ between the modes of one surface.
-_PER_MODE = ("gamma", "residual", "floor", "coords", "voltage")
+_PER_MODE = ("gamma", "residual", "floor", "coords", "voltage", "power")
 # Gauss-Legendre rule for voltage line integrals: points per piece, pieces.
 _GAUSS = np.polynomial.legendre.leggauss(4)
 _PIECES = 32
@@ -140,6 +140,8 @@ class PortModeSweep:
         coords: ``(n_f, m)`` complex.
         voltage: ``(n_f,)`` complex voltage along the port's voltage path,
             V; NaN without one.
+        power: ``(n_f,)`` complex power of the mode through the port, W, of
+            modulus 1.
     """
 
     space: PortModeSpace
@@ -151,10 +153,16 @@ class PortModeSweep:
     basis: np.ndarray
     coords: np.ndarray
     voltage: np.ndarray
+    power: np.ndarray
 
     @property
     def z_pv(self) -> np.ndarray:
-        """Power-voltage impedance ``|V|^2 / (2 P)`` at ``P = 1 W``, ohm."""
+        """Complex power-voltage impedance ``|V|^2 / (2 conj(P))``, ohm."""
+        return np.abs(self.voltage) ** 2 / (2.0 * np.conj(self.power))
+
+    @property
+    def z_ref(self) -> np.ndarray:
+        """The wave port's real reference impedance ``|V|^2 / (2 |P|)``, ohm."""
         return np.abs(self.voltage) ** 2 / 2.0
 
 
@@ -218,7 +226,7 @@ class PortModeRule:
         n = (len(self.problem.frequency),)
         return {
             "gamma": jax.ShapeDtypeStruct(n, jnp.complex128),
-            "Z_PV": jax.ShapeDtypeStruct(n, jnp.float64),
+            "Z_PV": jax.ShapeDtypeStruct(n, jnp.complex128),
             "residual": jax.ShapeDtypeStruct(n, jnp.float64),
             "solved": jax.ShapeDtypeStruct(n, jnp.bool_),
         }
@@ -397,7 +405,7 @@ def port_mode_sweep(
     order = np.argsort(f_given, kind="stable")
     sweep = _Greedy(space, f_given[order], modes, tolerance, ports)
     sweep.run()
-    basis, coords, gamma, voltage = sweep.normalized(rules)
+    basis, coords, gamma, voltage, power = sweep.normalized(rules)
     out = np.empty_like(order)
     out[order] = np.arange(len(order))
     return [
@@ -411,6 +419,7 @@ def port_mode_sweep(
             basis=basis,
             coords=coords[k, out],
             voltage=voltage[k, out],
+            power=power[k, out],
         )
         for k in range(len(modes))
     ]
@@ -793,15 +802,16 @@ class _Greedy:
 
     def normalized(
         self, rules: list[tuple[np.ndarray, np.ndarray] | None]
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """The fixed basis, then per mode 1 W coordinates, gamma (1/m) and voltages.
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """The fixed basis, then per mode 1 W coordinates, gamma, voltages, powers.
 
         Args:
             rules: Each mode's voltage path rule, or ``None`` without a path.
 
         Returns:
             ``basis (ndof, 2m)``, ``coords (n_modes, n_f, 2m)``, ``gamma
-            (n_modes, n_f)`` and ``voltage (n_modes, n_f)``.
+            (n_modes, n_f)`` (1/m), ``voltage (n_modes, n_f)`` (V) and the
+            complex ``power (n_modes, n_f)`` (W, of modulus 1).
         """
         space, red = self.space, self.reduced
         m = red.size
@@ -820,6 +830,7 @@ class _Greedy:
         n, n_modes = len(self.f), len(self.modes)
         coords = np.zeros((n_modes, n, 2 * m), complex)
         voltage = np.full((n_modes, n), complex(math.nan, math.nan))
+        phase = np.ones((n_modes, n), complex)
         gamma = 1j * np.sqrt(-self.lam + 0j)
         for k, rule in enumerate(rules):
             volts = None if rule is None else _voltage_functional(space, basis, rule)
@@ -838,6 +849,7 @@ class _Greedy:
                     )
                 )
                 z /= math.sqrt(abs(power))
+                phase[k, i] = power / abs(power)
                 if i == 0:
                     g = -1j * (ln @ z + gamma[k, i] * (lt @ z))
                     c = w @ z
@@ -854,7 +866,7 @@ class _Greedy:
                     if voltage[k, i].real < 0:
                         z, voltage[k, i] = -z, -voltage[k, i]
                 coords[k, i] = z
-        return basis, coords, gamma / space.section.scale, voltage
+        return basis, coords, gamma / space.section.scale, voltage, phase
 
     # --- errors -------------------------------------------------------------------
 
@@ -1133,17 +1145,18 @@ def _voltage_functional(
 
 
 def _voltage_rule(
-    section: PortSection, path: np.ndarray, name: str
+    section: PortSection, path: np.ndarray, name: str, what: str = "voltage_path"
 ) -> tuple[np.ndarray, np.ndarray]:
     """Plane points and weights (local direction x length, m) of a path.
 
-    ``name`` is the wave port the path belongs to, for messages.
+    ``name`` is the wave port the path belongs to and ``what`` the path's
+    name, for messages.
     """
     path = np.asarray(path, float)
     _local, dist = section.to_local(path)
     if (np.abs(dist) > 1e-5 * section.diameter).any():
         raise ValueError(
-            f"WavePort {name!r}: voltage_path leaves the port plane; "
+            f"WavePort {name!r}: {what} leaves the port plane; "
             "give points (m) on the port surface."
         )
     x, w = _GAUSS
@@ -1170,3 +1183,31 @@ def path_voltage(
     """
     rule = _voltage_rule(space.section, path, name)
     return coords @ _voltage_functional(space, basis, rule)
+
+
+def path_current(
+    space: PortModeSpace,
+    basis: np.ndarray,
+    coords: np.ndarray,
+    *,
+    gamma: np.ndarray,
+    frequency: np.ndarray,
+    path: np.ndarray,
+    name: str,
+) -> np.ndarray:
+    r"""``I = int H . dl`` along ``path`` (m) of each field ``basis @ coords[i]``.
+
+    :math:`H_t = \frac{i}{\omega \mu_0} \nu (\nabla E_n + \gamma E_t)
+    \times n` (`PortModeSpace.magnetic_parts`), at the propagation constant
+    ``gamma[i]`` (1/m) and ``frequency[i]`` (Hz). ``name`` is the wave port
+    the field belongs to, for messages.
+    """
+    rule = _voltage_rule(space.section, path, name, "current_path")
+    pts, wts = rule
+    hn, ht = space.magnetic_parts(basis.T, pts)
+    ln = np.einsum("kpc,pc->k", hn, wts[:, :2])
+    lt = np.einsum("kpc,pc->k", ht, wts[:, :2])
+    s = space.section.scale
+    omega = 2 * math.pi * np.asarray(frequency, float)
+    g = np.asarray(gamma) * s  # per local unit
+    return 1j / (omega * scipy.constants.mu_0 * s) * (coords @ ln + g * (coords @ lt))

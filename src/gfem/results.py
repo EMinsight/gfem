@@ -673,8 +673,13 @@ class PortModeResult:
         frequency: ``(n_freq,)`` Hz.
         gamma: Propagation constant :math:`\gamma = \alpha + i\beta`,
             ``(n_freq,)``, 1/m (:math:`\alpha \ge 0` is the attenuation).
-        Z_PV: Power-voltage characteristic impedance :math:`|V|^2 / (2 P)` along
-            the port's ``voltage_path``, ohm; NaN without a voltage path.
+        Z_PV: Complex power-voltage characteristic impedance
+            :math:`|V|^2 / (2 P^*)` along the port's ``voltage_path``, with
+            :math:`P` the mode's complex power, ``(n_freq,)``, ohm; NaN
+            without a voltage path. Real for a lossless line; a wave port's
+            reference impedance is its modulus (`gfem.conventions`). For
+            the power-current and voltage-current definitions, see
+            `gfem.characteristic_impedance`.
         residual: Backward error of the mode at each frequency,
             :math:`|A x - \lambda B x| / (|A x| + |\lambda| |B x|)` on the 2D port mode
             problem. It exceeds ``SolverOptions.port_mode_tolerance`` only at
@@ -736,7 +741,7 @@ class PortModeResult:
         zs = (
             "no voltage_path"
             if np.isnan(z).all()
-            else (f"Z_PV {z.min():.4g}-{z.max():.4g} ohm")
+            else (f"|Z_PV| {np.abs(z).min():.4g}-{np.abs(z).max():.4g} ohm")
         )
         exact = int(np.asarray(self.solved).sum())
         return (

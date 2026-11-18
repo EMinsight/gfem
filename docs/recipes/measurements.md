@@ -91,14 +91,30 @@ v_gap = gfem.region_mean(static.potential["t1"], ["gap", "gap_top"])  # (), V
 
 ## Characteristic impedance
 
-`gfem.characteristic_impedance(mode, voltage_path)` is the power-voltage
-impedance `|V|^2 / (2 P)` of a `gfem.PortMode` result along any path on the
-port, when the wave port declares none:
+`gfem.characteristic_impedance` gives the complex impedance of a
+`gfem.PortMode` result, by the definition the paths you give select:
+
+- `voltage_path` only: power-voltage, $Z_{PV} = |V|^2 / (2 P^*)$.
+- `current_path` only: power-current, $Z_{PI} = 2 P / |I|^2$.
+- both: voltage-current, $Z_{VI} = V / I$.
+
+Here $V = \int E \cdot dl$, $I = \int H \cdot dl$ and $P$ is the mode's complex
+power. A current path encircles a conductor (repeat its first point to close
+it), or ends on magnetic walls of the cross-section. The three agree for a TEM
+mode; for a lossy line all three are complex, with $\mathrm{Im}\, Z < 0$ for
+conductor loss under $e^{+i\omega t}$.
 
 ```python
 mode = gfem.solve(model, gfem.PortMode("p1", [10e9, 20e9]))
-z = gfem.characteristic_impedance(mode, [(0.0, 0.0, 0.0), (0.0, 10e-6, 0.0)])
+v_path = [(0.0, 0.0, 0.0), (0.0, 10e-6, 0.0)]
+loop = [(-5e-6, 2e-6, 0.0), (5e-6, 2e-6, 0.0), (5e-6, 8e-6, 0.0),
+        (-5e-6, 8e-6, 0.0), (-5e-6, 2e-6, 0.0)]
+z_pv = gfem.characteristic_impedance(mode, v_path)
+z_pi = gfem.characteristic_impedance(mode, current_path=loop)
+z_vi = gfem.characteristic_impedance(mode, v_path, current_path=loop)
 ```
+
+A wave port with a `voltage_path` already holds $Z_{PV}$ as `mode.Z_PV`.
 
 A driven result holds the mode of each wave port too, so
 `result.port_modes["p1"]` takes the place of `mode`, with or without kept
