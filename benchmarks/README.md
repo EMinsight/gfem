@@ -247,7 +247,7 @@ lumped ports; each code runs at its defaults except the pins above.
 |---|---|---|---|---|
 | `microstrip` | driven, 2 lumped 50 ohm ports, ABC order 1, {1, 25, 50, 75, 100} GHz, both ports excited, 2x2 S | 315 870 (p2) | committed, um, voided | gfem Richardson over a split ladder (not committed yet) |
 | `lcavity` | eigen, PEC L-shaped cavity, target 100 GHz, 1 mode | 246 416 (p2) | committed, mm | closed form, f1 = 148 140 269 652.022 Hz |
-| `bragg` | eigen, Bloch periodic, $k = \pi/a$ along $x$, 2 modes; a physics case | 1 560 (p3) | committed, mm | transfer-matrix roots, ceiling 1e-5 rel |
+| `bragg` | eigen, Bloch periodic, $k = \pi/a$ along $x$, 2 modes; a physics case | 10 620 (p3) | committed, mm, R1 mesh split once | transfer-matrix roots, ceiling 1e-5 rel |
 | `r10M_void` | driven, 50 GHz, port 1 only, S11 and S21 | 10 248 856 (p2) | external, um | none (`accuracy: null`, `no_reference`); DOF pinned |
 
 Meshes whose xz file is at most 1 MiB are committed as `cases/<case>/mesh.msh.xz`;
@@ -430,7 +430,7 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
    replace an axis; `--list` prints the axis values. By default one job is one case x
    stack on one exclusive node; `[jobs] group = "stack"` makes one job per stack. The
    time limit is 1.5x the estimate; QOS `debug` up to 2 h, else `long`. Planned
-   today: `smoke` 3 jobs / 149 runs / ~442 core-h, `smoke-r10m` 1 job / 4 runs / ~50,
+   today: `smoke` 3 jobs / 149 runs / ~469 core-h, `smoke-r10m` 1 job / 4 runs / ~50,
    `release-gfem` 1 job / 23 runs / ~46 (gfem petsc-mumps and bddc on bragg, a
    Bloch-periodic eigenproblem, are planned once as `refused`).
 

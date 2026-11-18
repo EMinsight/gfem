@@ -30,8 +30,9 @@ EXAMPLE_SITE = REPO / "benchmarks" / "site.example.toml"
 COMMIT = "858bc66" + "0" * 33
 
 #: probes/12/plan.out, core-hours per job (ticket 12 Q3); bragg less its six refused
-#: gfem runs (25 x 33 / 39; ticket 12 amendment from ticket 14).
-PROBE_CORE_H = {"bragg": 21, "lcavity": 168, "microstrip": 253, "r10M_void": 50}
+#: gfem runs (25 x 33 / 39; ticket 12 amendment from ticket 14), then re-sized for the
+#: once-split mesh (est_s palace:mumps 15 s, palace:pmg 60 s: 35 runs, 49 core-h).
+PROBE_CORE_H = {"bragg": 49, "lcavity": 168, "microstrip": 253, "r10M_void": 50}
 
 
 @pytest.fixture(scope="module")
@@ -195,7 +196,7 @@ def test_estimate_within_five_percent_of_the_sizing_probe(smoke, r10m):
     for job in (*smoke.jobs, *r10m.jobs):
         expected = PROBE_CORE_H[job.cases[0]]
         assert job.est_core_h == pytest.approx(expected, rel=0.05), job.name
-    assert smoke.est_core_h == pytest.approx(442, rel=0.05)
+    assert smoke.est_core_h == pytest.approx(469, rel=0.05)
 
 
 def test_qos_by_time_limit_and_limit_is_one_and_a_half_estimates(smoke):

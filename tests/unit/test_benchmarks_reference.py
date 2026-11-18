@@ -97,6 +97,15 @@ def test_r10m_void_has_no_reference_but_pins_its_dof():
     assert pinned == 10_248_856
 
 
+def test_bragg_pins_the_once_split_mesh_and_its_dof():
+    # The R1 mesh (60 tets) crashed Palace's threaded eigen postprocessing; one
+    # tools/split_mesh.py split gives 480 tets, 10 620 DOF at p3 (Palace's count).
+    c = case.load_case(config.CASES_DIR / "bragg")
+    assert c.mesh.sha256.startswith("6b6cdb1893d6")
+    doc = json.loads((c.directory / "reference.json").read_text())
+    assert doc["meshes"][c.mesh.sha256]["dof"] == {"3": 10_620}
+
+
 def test_schema_check_names_missing_and_unknown_fields():
     doc = closed.document(_lcavity())
     assert refdoc.problems(doc) == []
