@@ -379,6 +379,26 @@ source_quietly() {
   set -u
 }
 
+# stack_freeze_toolchain TOOLCHAIN FROZEN: freeze TOOLCHAIN as FROZEN at a
+# stack's first build, then refuse any build whose TOOLCHAIN differs. Two
+# first builds may race: each writes a private read-only copy beside FROZEN
+# and publishes it with ln, which never replaces an existing file, so FROZEN
+# appears whole or not at all and the loser compares against the winner's.
+stack_freeze_toolchain() {
+  local toolchain=$1 frozen=$2 tmp
+  if [[ ! -f $frozen ]]; then
+    tmp=$frozen.tmp.$(hostname).$BASHPID
+    rm -f "$tmp"
+    cp "$toolchain" "$tmp"
+    chmod a-w "$tmp"
+    ln "$tmp" "$frozen" 2>/dev/null || [[ -f $frozen ]] ||
+      die "cannot freeze $toolchain as $frozen"
+    rm -f "$tmp"
+  fi
+  cmp -s "$frozen" "$toolchain" ||
+    die "$toolchain differs from $frozen, frozen at the stack's first build: a changed toolchain is a new software stack"
+}
+
 # --- commands ----------------------------------------------------------------
 
 cmd_fetch() {
@@ -512,13 +532,7 @@ cmd_build() {
   local prefix=$stack_dir/$pkg-$version
   local frozen=$stack_dir/toolchain.sh
   mkdir -p "$stack_dir"
-  if [[ -f $frozen ]]; then
-    cmp -s "$frozen" "$STACK_HOME/toolchains/$stack.sh" ||
-      die "toolchains/$stack.sh differs from $frozen, frozen at the stack's first build: a changed toolchain is a new software stack"
-  else
-    cp "$STACK_HOME/toolchains/$stack.sh" "$frozen"
-    chmod a-w "$frozen"
-  fi
+  stack_freeze_toolchain "$STACK_HOME/toolchains/$stack.sh" "$frozen"
   local recipe_sha toolchain_sha now
   recipe_sha=$(prov recipe-sha256 "$STACK_HOME" "$pkg")
   toolchain_sha=$(prov sha256 "$frozen")

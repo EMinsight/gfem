@@ -103,6 +103,48 @@ def test_stack_json_reads_key_colon_equals_as_json_and_key_equals_as_a_string(
     assert json.loads(out.read_text()) == {key: value}
 
 
+def test_two_first_builds_of_a_stack_freeze_its_toolchain_once(tmp_path):
+    source = tmp_path / "native-oss.sh"
+    source.write_text("module load gcc/12.3.0\n" * 20000)
+    script = """
+    for i in $(seq 20); do
+      frozen=$2/$i/toolchain.sh
+      mkdir -p "$2/$i"
+      stack_freeze_toolchain "$1" "$frozen" >"$2/$i.a" 2>&1 &
+      a=$!
+      stack_freeze_toolchain "$1" "$frozen" >"$2/$i.b" 2>&1 &
+      b=$!
+      wait $a || { echo "run $i a failed: $(<"$2/$i.a")"; exit 1; }
+      wait $b || { echo "run $i b failed: $(<"$2/$i.b")"; exit 1; }
+    done
+    """
+
+    result = _stack_function(script, str(source), str(tmp_path / "root"))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    for i in range(1, 21):
+        directory = tmp_path / "root" / str(i)
+        assert [p.name for p in directory.iterdir()] == ["toolchain.sh"]
+        frozen = directory / "toolchain.sh"
+        assert frozen.read_bytes() == source.read_bytes()
+        assert not os.access(frozen, os.W_OK) or os.geteuid() == 0
+
+
+def test_a_toolchain_file_that_differs_from_the_frozen_one_is_refused(tmp_path):
+    source = tmp_path / "native-oss.sh"
+    source.write_text("module load gcc/12.3.0\n")
+    frozen = tmp_path / "toolchain.sh"
+    frozen.write_text("module load gcc/13.2.0\n")
+
+    result = _stack_function(
+        'stack_freeze_toolchain "$1" "$2"', str(source), str(frozen)
+    )
+
+    assert result.returncode != 0
+    assert "a changed toolchain is a new software stack" in result.stderr
+    assert frozen.read_text() == "module load gcc/13.2.0\n"
+
+
 def test_a_prefix_is_complete_once_its_provenance_file_is_written(tmp_path):
     prefix = tmp_path / "native-oss" / "ngsolve-1.0"
     prefix.mkdir(parents=True)
