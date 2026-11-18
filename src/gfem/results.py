@@ -840,8 +840,9 @@ class NetworkParameters:
 
     Attributes:
         values: S, complex, shape ``(n_freq, n_ports, n_excited)``.
-        z_ref: Reference impedance of each port in ohm, complex, shape
-            ``(n_freq, n_ports)``.
+        z_ref: Reference impedance of each port in ohm, shape ``(n_freq,
+            n_ports)``; complex when a `WavePort` has a ``voltage_path``,
+            real otherwise.
         frequency: The frequencies in Hz (static labels).
         ports: Port names, the row order of S (the model's port order).
         excited: Names of the excited ports, the column order of S.

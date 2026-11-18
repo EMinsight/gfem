@@ -124,7 +124,7 @@ def _network(case, directory, comm):
         comm=comm,
     )
     with task_manager(1, comm):
-        return rule._ports(model, warn=False)
+        return rule._ports(model)
 
 
 def _reciprocity(case, directory):

@@ -475,6 +475,39 @@ def pseudo_wave_factor(sweep: PortModeSweep, pairing: np.ndarray) -> np.ndarray:
     return np.where(np.isfinite(kappa), kappa, np.sqrt(pairing + 0j))
 
 
+def free_dual_ratio(mode: Any, port: WavePort) -> np.ndarray:
+    """``(n_freq,)``: a wave port's free dual scale over a lossless port's.
+
+    A lone wave port's S functional is ``c`` times its excitation with
+    ``c = -i kappa^2 / (4 k0 eta0 N)`` (`pseudo_wave_factor`, ``N`` the
+    mode's reciprocity pairing): this is ``kappa^2 / N``. 1 without a
+    voltage path (``kappa^2 = N``) and on a lossless line.
+
+    Args:
+        mode: The port's `gfem.PortModeResult`, with its field.
+        port: The wave port.
+    """
+    from gfem._sweep.port_mode import path_voltage
+
+    n = len(np.asarray(mode.frequency))
+    field = mode.e_field
+    if port.voltage_path is None or field is None:
+        return np.ones(n, complex)
+    space, basis, coords = field._space, field._basis, field._coords  # noqa: SLF001
+    v = path_voltage(space, basis, coords, np.asarray(port.voltage_path), port.name)
+    z = np.asarray(mode.Z_PV, complex)
+    kappa = v / np.abs(v) * np.sqrt(z.real / np.abs(z))
+    omega = 2 * np.pi * np.asarray(mode.frequency, float)
+    gamma = np.asarray(mode.gamma, complex) * space.section.scale
+    pairing = np.array(
+        [
+            space.pairing(basis @ c, g, w)
+            for c, g, w in zip(coords, gamma, omega, strict=True)
+        ]
+    )
+    return kappa**2 / pairing
+
+
 def _dual(
     reaction: np.ndarray, coords: list[np.ndarray], phi: list[np.ndarray]
 ) -> tuple[np.ndarray, np.ndarray]:

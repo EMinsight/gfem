@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from gfem import _mpi
-from gfem._boundaries import LumpedPort, Port
+from gfem._boundaries import LumpedPort, Port, WavePort
 from gfem._engine import terms
 from gfem._engine.floquet_ports import FloquetPortCoupling, FloquetSurfaceCoupling
 from gfem._engine.wave_ports import PortSurfaceCoupling, WavePortCoupling
@@ -61,6 +61,7 @@ __all__ = [
     "PARALLEL_RTOL",
     "CotangentSplit",
     "PortNetwork",
+    "complex_reference",
     "parallel_scale",
     "resistance",
     "split_cotangent",
@@ -69,6 +70,17 @@ __all__ = [
 #: A port's S functional counts as parallel to its excitation (so its
 #: adjoint is the port's own solution scaled) to this relative residual.
 PARALLEL_RTOL = 1e-10
+
+
+def complex_reference(ports: Sequence[Port]) -> bool:
+    """Whether ``z_ref`` is complex: some `WavePort` has a ``voltage_path``.
+
+    Its reference is its mode's complex ``Z_PV``; every other port's is
+    real (a resistance, a Floquet order's wave impedance) or NaN, so
+    ``z_ref`` stays real without one. Static: JAX needs the dtype before
+    the solve.
+    """
+    return any(isinstance(p, WavePort) and p.voltage_path is not None for p in ports)
 
 
 def resistance(port: Port) -> float:
@@ -332,11 +344,14 @@ class PortNetwork:
             outputs.append(AffineTerm(surface.vectors, floquet_rows, conjugate=True))
         waves = sorted((c for s in surfaces for c in s.ports), key=lambda c: c.index)
         orders = sorted((c for s in floquet for c in s.ports), key=lambda c: c.index)
-        z_ref = np.zeros((n_freq, n_ports), complex)
+        z_ref = np.zeros(
+            (n_freq, n_ports), complex if complex_reference(model.ports) else float
+        )
         for i in lumped:
             z_ref[:, i] = resistance(model.ports[i])
         for c in (*waves, *orders):
-            z_ref[:, c.index] = c.z_ref
+            # real (or NaN) unless a voltage path made it complex
+            z_ref[:, c.index] = c.z_ref if np.iscomplexobj(z_ref) else np.real(c.z_ref)
         return cls(
             excitation,
             outputs,

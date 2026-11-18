@@ -422,6 +422,24 @@ class PortModeSpace:
         value = ngs.Integrate(cf, self.mesh, order=quadrature.degree(self.order))
         return 0.5 * self.section.scale * 1j / (omega * mu0) * complex(value)
 
+    def pairing(self, coeffs: np.ndarray, gamma: complex, omega: float) -> complex:
+        """Reciprocity pairing ``1/2 int (E x H) . n dA``, unconjugated, W.
+
+        `power` without the conjugate: 1 W for a lossless 1 W mode of real
+        phase; the normalization of a wave port's modal waves.
+
+        Args:
+            coeffs: Full coefficient vector of ``(E_t, E_n)`` (V/m).
+            gamma: Propagation constant per local unit.
+            omega: Angular frequency, rad/s.
+        """
+        et, en = self._gridfunction(coeffs).components
+        a = ngs.grad(en) + gamma * et
+        mu0 = scipy.constants.mu_0
+        cf = et * (self._coef["nu_tt"] * a)
+        value = ngs.Integrate(cf, self.mesh, order=quadrature.degree(self.order))
+        return -0.5j * self.section.scale / (omega * mu0) * complex(value)
+
     def gauge(self, coeffs: np.ndarray, gamma: complex) -> complex:
         """Palace's phase reference: ``int_Q t . (n_out x H) dA`` up to a factor.
 

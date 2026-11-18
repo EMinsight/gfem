@@ -120,7 +120,12 @@ from gfem._engine.floquet_ports import (
     floquet_couplings,
 )
 from gfem._engine.mesh import EngineMesh
-from gfem._engine.port_network import PortNetwork, resistance, split_cotangent
+from gfem._engine.port_network import (
+    PortNetwork,
+    complex_reference,
+    resistance,
+    split_cotangent,
+)
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet, law_key
 from gfem._engine.sweep_outputs import SweepOutputs
@@ -1631,6 +1636,7 @@ class DrivenRule:
             ndof=ndof,
             n_fields=len(self.kept) * len(self.excite),
             reduced=self._padded_size() if self.adaptive else None,
+            complex_z_ref=complex_reference(model.ports),
         )
 
     def role(self, kind: tuple) -> str:
