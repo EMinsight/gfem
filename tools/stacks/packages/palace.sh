@@ -130,18 +130,43 @@ PALACE_FEATURES=(
   -DPALACE_WITH_SUNDIALS=ON
 )
 
-# palace_edit_mumps FILE TARBALL: the one source edit of the superbuild (ADR
-# 0212, ADR 0205): its cmake/ExternalMUMPS.cmake line "-DMUMPS_gemmt=ON"
-# becomes "-DMUMPS_gemmt=OFF" plus MUMPS_url naming the mirror's tarball
-# (scivision's sub-configure downloads it otherwise; Palace forwards neither).
-palace_edit_mumps() {
-  local file=$1 tarball=$2 line='  "-DMUMPS_gemmt=ON"'
-  [[ $(grep -cxF -- "$line" "$file") == 1 ]] ||
-    stack_die "palace: $file has no single line $line: the MUMPS_gemmt/MUMPS_url edit needs updating"
-  local edited="  \"-DMUMPS_gemmt=OFF\" \"-DMUMPS_url=$tarball\""
-  LINE=$line EDITED=$edited awk '$0 == ENVIRON["LINE"] { print ENVIRON["EDITED"]; next } { print }' \
-    "$file" >"$file.edited"
-  mv "$file.edited" "$file"
+# palace_blas_lib: the BLAS/LAPACK library Palace links on this stack: the
+# OpenMP OpenBLAS of package openblas (native-oss), mkl_rt (native-intel,
+# ADR 0205: GNU layers from the toolchain's MKL_*_LAYER at run time).
+palace_blas_lib() {
+  local lib
+  case ${STACK_BLAS_VENDOR:-} in
+  openblas)
+    lib=$(dirname "${STACK_OPENBLAS_PROVENANCE:?the openblas dependency is not activated}")/lib/lib$STACK_BLAS_LIB_OPENMP.so
+    ;;
+  mkl) lib=${MKLROOT:?STACK_BLAS_VENDOR=mkl but no MKLROOT}/lib/libmkl_rt.so ;;
+  *) stack_die "palace: unknown STACK_BLAS_VENDOR '${STACK_BLAS_VENDOR:-}'" ;;
+  esac
+  [[ -f $lib ]] || stack_die "palace: no $lib"
+  echo "$lib"
+}
+
+# palace_blas_args: the superbuild's BLAS options, one per line. OpenBLAS is
+# named to FindBLAS/FindLAPACK by their cache variables because
+# BLA_VENDOR=OpenBLAS alone finds the pthreads libopenblas; MKL is the single
+# dynamic library (Intel10_64_dyn = mkl_rt), never MKL's ScaLAPACK.
+palace_blas_args() {
+  local lib
+  lib=$(palace_blas_lib) || return 1
+  case $STACK_BLAS_VENDOR in
+  openblas) printf '%s\n' -DBLA_VENDOR=OpenBLAS "-DBLAS_openblas_LIBRARY=$lib" "-DLAPACK_openblas_LIBRARY=$lib" ;;
+  mkl) echo -DBLA_VENDOR=Intel10_64_dyn ;;
+  esac
+}
+
+# palace_srun_mpi: srun's MPI plugin for the stack's MPI: PMIx for Open MPI,
+# PMI-2 for Intel MPI (the module's I_MPI_PMI_LIBRARY is Slurm's libpmi2).
+palace_srun_mpi() {
+  case ${STACK_MPI_VENDOR:-} in
+  "Open MPI") echo --mpi=pmix ;;
+  "Intel MPI") echo --mpi=pmi2 ;;
+  *) stack_die "palace: no srun MPI plugin for STACK_MPI_VENDOR '${STACK_MPI_VENDOR:-}'" ;;
+  esac
 }
 
 # palace_gemmt_imports FILE...: "FILE:SYMBOL" for each ?gemmt_ a shared object
@@ -247,19 +272,22 @@ build_palace() {
   cp -r "$patches/." "$build/"
 
   # BLAS/LAPACK of the stack, OpenMP threading for Palace.
-  local blas_dir blas_lib
+  local blas_lib blas_args=()
+  mapfile -t blas_args < <(palace_blas_args) && [[ ${#blas_args[@]} -gt 0 ]] ||
+    stack_die "palace: no BLAS for $STACK_NAME"
+  blas_lib=$(palace_blas_lib)
+  args+=("${blas_args[@]}")
   case $STACK_BLAS_VENDOR in
   openblas)
-    blas_dir=$(dirname "${STACK_OPENBLAS_PROVENANCE:?the openblas dependency is not activated}")
-    blas_lib=$blas_dir/lib/lib$STACK_BLAS_LIB_OPENMP.so
-    [[ -f $blas_lib ]] || stack_die "palace: no $blas_lib"
-    args+=(-DBLA_VENDOR=OpenBLAS "-DBLAS_openblas_LIBRARY=$blas_lib" "-DLAPACK_openblas_LIBRARY=$blas_lib")
-    export OPENBLAS_DIR=$blas_dir
+    export OPENBLAS_DIR=${blas_lib%/lib/*}
+    # An MKL root would win the superbuild's vendor detection.
+    unset MKLROOT MKL_DIR MKL_ROOT
     ;;
-  *) stack_die "palace: BLAS vendor $STACK_BLAS_VENDOR is not written yet (native-builds ticket 10)" ;;
+  mkl)
+    # MKLROOT stays: the superbuild takes MKL_DIR from it (PETSc's MKL headers).
+    unset OPENBLAS_DIR
+    ;;
   esac
-  # An MKL root would win the superbuild's vendor detection.
-  unset MKLROOT MKL_DIR MKL_ROOT
 
   args=(
     "-DCMAKE_INSTALL_PREFIX=$prefix"
@@ -321,12 +349,13 @@ palace_mumps_meta() {
   mapfile -t libs < <(find "$prefix"/lib* -maxdepth 1 -type f \( -name 'lib*mumps*.so*' -o -name 'libpord*.so*' -o -name 'libpalace.so*' \) | sort)
   libs+=("$prefix"/bin/palace-*.bin)
   gemmt=$(palace_gemmt_imports "${libs[@]}")
-  local openmp=false
+  local openmp=false threading=openmp
   [[ $(palace_cache "$cache" MUMPS_openmp) != ON ]] || openmp=true
+  [[ $STACK_BLAS_VENDOR != mkl ]] || threading=mkl_rt
   stack_meta mumps "version=$version" "tarball_sha256=$sha" "intsize:=$intsize" \
     "gemmt:=$([[ -z $gemmt ]] && echo false || echo true)" \
     "gemmt_checked:=$(palace_json_list "${libs[@]##*/}")" \
-    "blas:={\"vendor\": \"$STACK_BLAS_VENDOR\", \"version\": \"$STACK_BLAS_VERSION\", \"threading\": \"openmp\"}" \
+    "blas:={\"vendor\": \"$STACK_BLAS_VENDOR\", \"version\": \"$STACK_BLAS_VERSION\", \"threading\": \"$threading\"}" \
     "scalapack=$scalapack" "compiler=$("$fc" --version | head -n 1)" \
     "fflags=$(palace_cache "$cache" CMAKE_Fortran_FLAGS)" \
     "arithmetics:=$(palace_json_list "${arith[@]}")" "openmp:=$openmp" \
@@ -336,29 +365,51 @@ palace_mumps_meta() {
 
 # smoke_palace VERSION PREFIX: checks the install; records it with stack_meta smoke.
 # The one bin/palace-*.bin (recorded as the provenance entry the verdict
-# runner launches) reports its version and dependencies under srun; it and
-# MUMPS resolve BLAS to the stack's OpenMP OpenBLAS only (no pthreads
-# libopenblas, no MKL, no libiomp5, nothing missing).
+# runner launches) reports its version and dependencies under srun (the
+# plugin of the stack's MPI); it and MUMPS resolve BLAS to the stack's only:
+# the OpenMP OpenBLAS (no pthreads libopenblas, no MKL) or the toolchain's
+# mkl_rt (no OpenBLAS, no MKL ScaLAPACK/BLACS: reference ScaLAPACK from the
+# prefix); never libiomp5, nothing missing.
 smoke_palace() {
-  local version=$1 prefix=$2 bins=() bin out lib deps blas_dir
+  local version=$1 prefix=$2 bins=() bin out lib deps blas_lib blas_line srun_mpi
   bins=("$prefix"/bin/palace-*.bin)
   [[ ${#bins[@]} == 1 && -x ${bins[0]} ]] || stack_die "palace smoke: no single bin/palace-*.bin: ${bins[*]}"
   bin=${bins[0]}
   echo "\"bin/${bin##*/}\"" >"$STACK_META/entry.json"
-  blas_dir=$(dirname "$STACK_OPENBLAS_PROVENANCE")
+  blas_lib=$(palace_blas_lib)
+  case $STACK_BLAS_VENDOR in
+  openblas) blas_line="lib$STACK_BLAS_LIB_OPENMP.so.0 => $(dirname "$blas_lib")/" ;;
+  mkl) blas_line="libmkl_rt.so.2 => $(dirname "$blas_lib")/" ;;
+  esac
   for lib in "$bin" "$prefix"/lib*/libdmumps.so; do
     deps=$(ldd "$lib")
     [[ $deps != *"not found"* ]] || stack_die "palace smoke: ${lib##*/} has missing libraries: $deps"
-    [[ $deps == *"lib$STACK_BLAS_LIB_OPENMP.so.0 => $blas_dir/lib/"* ]] ||
-      stack_die "palace smoke: ${lib##*/} does not load $blas_dir/lib/lib$STACK_BLAS_LIB_OPENMP.so: $deps"
-    ! grep -qE '^\s*(libopenblas\.so|libmkl|libiomp5)' <<<"$deps" ||
-      stack_die "palace smoke: ${lib##*/} loads another BLAS or OpenMP runtime: $deps"
+    [[ $deps == *"$blas_line"* ]] ||
+      stack_die "palace smoke: ${lib##*/} does not load $blas_lib: $deps"
+    case $STACK_BLAS_VENDOR in
+    openblas)
+      ! grep -qE '^\s*(libopenblas\.so|libmkl|libiomp5)' <<<"$deps" ||
+        stack_die "palace smoke: ${lib##*/} loads another BLAS or OpenMP runtime: $deps"
+      ;;
+    mkl)
+      ! grep -qE '^\s*(libopenblas|libiomp5|libmkl_(scalapack|blacs|intel_thread|core|gf|intel_lp))' <<<"$deps" ||
+        stack_die "palace smoke: ${lib##*/} loads another BLAS, MKL ScaLAPACK or OpenMP runtime: $deps"
+      ;;
+    esac
   done
-  out=$(OMP_NUM_THREADS=1 srun --ntasks=1 --cpus-per-task=1 --mpi=pmix "$bin" --version 2>&1) ||
+  if [[ $STACK_BLAS_VENDOR == mkl ]]; then
+    deps=$(ldd "$prefix"/lib*/libdmumps.so)
+    [[ $deps == *"libscalapack.so"*" => $prefix/lib"* ]] ||
+      stack_die "palace smoke: MUMPS does not link the reference ScaLAPACK of $prefix: $deps"
+  fi
+  srun_mpi=$(palace_srun_mpi)
+  out=$(OMP_NUM_THREADS=1 srun --ntasks=1 --cpus-per-task=1 "$srun_mpi" "$bin" --version 2>&1) ||
     stack_die "palace smoke: $bin --version failed: $out"
   [[ $out == *"$version"* ]] || stack_die "palace smoke: $bin --version does not report $version: $out"
   echo "palace smoke: $out"
-  stack_meta smoke "command=srun --ntasks=1 --cpus-per-task=1 --mpi=pmix bin/${bin##*/} --version" \
+  stack_meta smoke "command=srun --ntasks=1 --cpus-per-task=1 $srun_mpi bin/${bin##*/} --version" \
     "output=$(head -n 1 <<<"$out")" "versions:=$(palace_json_list "${out}")" \
-    "blas=$(ldd "$bin" | grep "lib$STACK_BLAS_LIB_OPENMP" | xargs)" "gemmt=none"
+    "blas=$(ldd "$bin" | grep -F "${blas_line%% =>*}" | xargs)" \
+    "scalapack=$(ldd "$prefix"/lib*/libdmumps.so | grep -E 'scalapack' | xargs)" \
+    "srun_mpi=$srun_mpi" "gemmt=none"
 }

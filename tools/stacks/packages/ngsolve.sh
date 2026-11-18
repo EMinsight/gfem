@@ -4,7 +4,8 @@
 
 VERSION=6.2.2608
 CPUS=32
-TIME=01:30:00
+# native-oss took 73 min of 90 on 32 CPUs (job 49173886): margin for native-intel.
+TIME=02:00:00
 STACKS=(native-oss native-intel)
 case ${STACK_NAME:-} in
 native-oss) DEPENDS=(openblas) ;;
@@ -233,10 +234,10 @@ smoke_ngsolve() {
     --find-links "$STACK_SRC/pip/wheels" numpy
   site=$(sed -n 's/.*"python_path": "\(.*\)".*/\1/p' "$STACK_META/configure.json")
   [[ -d $site ]] || stack_die "ngsolve smoke: no site-packages $site"
-  out=$(cd "$dir" && "$dir/venv/bin/python" -I - "$site" "$prefix" "$version" 2>&1 <<'PY'
+  out=$(cd "$dir" && "$dir/venv/bin/python" -I - "$site" "$prefix" "$version" "${STACK_BLAS_VENDOR:-}" 2>&1 <<'PY'
 import sys
 
-site, prefix, version = sys.argv[1:4]
+site, prefix, version, blas = sys.argv[1:5]
 sys.path.insert(0, site)
 import netgen
 import ngsolve
@@ -263,18 +264,20 @@ u, v = fes.TnT()
 a = BilinearForm(grad(u) * grad(v) * dx).Assemble()
 f = LinearForm(1 * v * dx).Assemble()
 peaks = {}
-for inverse in ("sparsecholesky", "umfpack"):
+# An MKL build (USE_MKL) has NGSolve's own PARDISO inverse, linked to mkl_rt.
+inverses = ("sparsecholesky", "umfpack") + (("pardiso",) if blas == "mkl" else ())
+for inverse in inverses:
     gfu = GridFunction(fes)
     gfu.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse=inverse) * f.vec
     peaks[inverse] = gfu(mesh(0.5, 0.5))
-assert abs(peaks["sparsecholesky"] - peaks["umfpack"]) < 1e-12, peaks
+assert all(abs(p - peaks["umfpack"]) < 1e-12 for p in peaks.values()), peaks
 assert abs(peaks["umfpack"] - 0.0736713532) < 1e-6, peaks
 box = OCCGeometry(Box(Pnt(0, 0, 0), Pnt(1, 1, 1)))
 elements = Mesh(box.GenerateMesh(maxh=0.5)).ne
 assert elements > 0
 print(
     f"ngsolve {ngsolve.__version__}: Poisson peak {peaks['umfpack']:.10f} "
-    f"(sparsecholesky = umfpack), OCC box {elements} elements, "
+    f"({' = '.join(peaks)}), OCC box {elements} elements, "
     f"NG_COMPILE_FLAGS {netgen.config.NG_COMPILE_FLAGS}, USE_MPI"
 )
 PY
@@ -289,11 +292,14 @@ PY
       $blas != *libopenblas_omp* ]] ||
       stack_die "ngsolve smoke: libngla's BLAS is not the stack's pthreads OpenBLAS: ${blas:-none}"
     ;;
-  mkl) [[ $blas == *libmkl_rt* ]] || stack_die "ngsolve smoke: libngla links no mkl_rt" ;;
+  mkl) [[ $blas == *"libmkl_rt.so"* ]] || stack_die "ngsolve smoke: libngla links no mkl_rt: ${blas:-none}" ;;
   esac
+  local iomp
+  iomp=$(find "$prefix" -name '*.so*' -type f -exec ldd {} \; 2>/dev/null | grep -E 'libiomp5|libmkl_intel_thread' | sort -u | xargs || true)
+  [[ -z $iomp ]] || stack_die "ngsolve smoke: a library of $prefix links Intel OpenMP: $iomp"
   mpi=$(find "$prefix" -name 'libngcore.so*' -exec ldd {} \; | grep -E 'libmpi\.' | head -n 1 | xargs)
   [[ -n $mpi ]] || stack_die "ngsolve smoke: libngcore links no MPI"
-  stack_meta smoke "command=python -I (stack interpreter, numpy, sys.path += $site): import ngsolve; Poisson sparsecholesky/umfpack; OCC box" \
-    "output=$(tail -n 1 <<<"$out")" "blas=$blas" "mpi=$mpi" "python_path=$site"
+  stack_meta smoke "command=python -I (stack interpreter, numpy, sys.path += $site): import ngsolve; Poisson sparsecholesky/umfpack[/pardiso on MKL]; OCC box" \
+    "output=$(tail -n 1 <<<"$out")" "blas=$blas" "mpi=$mpi" "iomp5=none" "python_path=$site"
   rm -rf "$dir"
 }

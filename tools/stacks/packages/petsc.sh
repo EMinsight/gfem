@@ -215,6 +215,31 @@ build_petsc() {
     "python_path=$prefix/lib" "build_venv=$("$venv/bin/pip" freeze | paste -sd' ')"
 }
 
+# petsc_mkl_zdotc DIR: ADR 0205's MKL build check: a gfortran program calling
+# zdotc through the stack's mkl_rt returns the right complex value under the
+# toolchain's MKL_INTERFACE_LAYER (mkl_rt's default Intel layer returns
+# complex results the gfortran way only by accident). Prints the result line.
+petsc_mkl_zdotc() {
+  cat >"$1/zdotc.f90" <<'F90'
+program zdotc_check
+  implicit none
+  complex(kind=8) :: x(3), y(3), r
+  complex(kind=8), external :: zdotc
+  x = [(1d0, 2d0), (3d0, -1d0), (0d0, 1d0)]
+  y = [(2d0, 0d0), (1d0, 1d0), (-1d0, 4d0)]
+  r = zdotc(3, x, 1, y, 1)
+  ! conj(x) . y = (2-4i) + (2+4i) + (4+i) = 8+i
+  if (abs(r - (8d0, 1d0)) > 1d-12) then
+    print '(a, 2f10.4)', 'zdotc wrong:', r
+    stop 1
+  end if
+  print '(a, 2f6.1)', 'zdotc ok:', r
+end program
+F90
+  gfortran -o "$1/zdotc" "$1/zdotc.f90" -L"$MKLROOT/lib" -lmkl_rt -Wl,-rpath,"$MKLROOT/lib" &&
+    "$1/zdotc"
+}
+
 # smoke_petsc VERSION PREFIX: checks the install; records it with stack_meta smoke.
 # PETSc's and SLEPc's checks passed (with MUMPS and 2 MPI processes); the
 # mumps block and ADR 0067's gates from the installed headers, nm -D and ldd
@@ -246,6 +271,14 @@ smoke_petsc() {
   prov petsc-mumps "$prefix" "$dir" >"$STACK_META/mumps.json" ||
     stack_die "petsc smoke: the mumps block breaks ADR 0067/0209 (above)"
   grep -E '\b[sdcz]gemmt_\b' "$dir/dynsym.txt" && stack_die "petsc smoke: libpetsc imports ?gemmt_"
+  local iomp zdotc=
+  iomp=$(for lib in "$prefix"/lib/lib*.so; do ldd "$lib"; done | grep -E 'libiomp5|libmkl_intel_thread' | sort -u | xargs || true)
+  [[ -z $iomp ]] || stack_die "petsc smoke: a library of $prefix links Intel OpenMP: $iomp"
+  if [[ ${STACK_BLAS_VENDOR:-} == mkl ]]; then
+    zdotc=$(petsc_mkl_zdotc "$dir" 2>&1) ||
+      stack_die "petsc smoke: gfortran zdotc through mkl_rt failed (MKL_INTERFACE_LAYER=${MKL_INTERFACE_LAYER:-unset}): $zdotc"
+    echo "petsc smoke: $zdotc (MKL_INTERFACE_LAYER=$MKL_INTERFACE_LAYER MKL_THREADING_LAYER=$MKL_THREADING_LAYER)"
+  fi
 
   out=$(cd "$dir" && "$BUILD_DIR/venv/bin/python" -I - "$prefix" 2>&1 <<'PY'
 import sys
@@ -309,6 +342,7 @@ PY
     "slepc_check=$(grep 'run successfully' "$prefix/share/stack/slepc-check.log" | paste -sd';')" \
     "blas=$(grep -E 'libopenblas|libmkl_rt' "$dir/needed.txt" | xargs)" \
     "mpi=$(grep -E 'libmpi' "$dir/needed.txt" | head -n 1 | xargs)" \
-    "gemmt_imports=none"
+    "gemmt_imports=none" "iomp5=none" \
+    "mkl_zdotc=${zdotc:-not an MKL stack}"
   rm -rf "$dir"
 }

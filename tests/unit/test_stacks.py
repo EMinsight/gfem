@@ -1330,3 +1330,68 @@ def test_a_petsc_whose_gemmt_check_moved_stops_the_build(tmp_path, hits):
     assert result.returncode != 0
     assert f"found {hits} times" in result.stderr
     assert mumps_py.read_text() == "x = 1\n" + GEMMT_LINE * hits
+
+
+def _palace(function: str, env: dict) -> subprocess.CompletedProcess:
+    """Call one function of ``packages/palace.sh`` with ``env`` (stack_die fails)."""
+    script = (
+        'stack_die() { echo "$*" >&2; exit 1; }; '
+        f'. "{STACKS / "packages" / "palace.sh"}"; {function}'
+    )
+    return subprocess.run(
+        ["bash", "-c", script],  # noqa: S607
+        env={"PATH": os.environ["PATH"], **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_palace_on_an_mkl_stack_links_the_single_dynamic_mkl(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "libmkl_rt.so").write_text("")
+
+    result = _palace(
+        "palace_blas_args",
+        {
+            "STACK_NAME": "native-intel",
+            "STACK_BLAS_VENDOR": "mkl",
+            "MKLROOT": str(tmp_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["-DBLA_VENDOR=Intel10_64_dyn"]
+
+
+def test_palace_on_an_openblas_stack_links_the_openmp_openblas(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "libopenblas_omp.so").write_text("")
+
+    result = _palace(
+        "palace_blas_args",
+        {
+            "STACK_NAME": "native-oss",
+            "STACK_BLAS_VENDOR": "openblas",
+            "STACK_BLAS_LIB_OPENMP": "openblas_omp",
+            "STACK_OPENBLAS_PROVENANCE": str(tmp_path / "provenance.json"),
+        },
+    )
+
+    lib = tmp_path / "lib" / "libopenblas_omp.so"
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "-DBLA_VENDOR=OpenBLAS",
+        f"-DBLAS_openblas_LIBRARY={lib}",
+        f"-DLAPACK_openblas_LIBRARY={lib}",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("vendor", "plugin"), [("Open MPI", "pmix"), ("Intel MPI", "pmi2")]
+)
+def test_palace_is_launched_with_the_slurm_plugin_of_the_stacks_mpi(vendor, plugin):
+    result = _palace("palace_srun_mpi", {"STACK_MPI_VENDOR": vendor})
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"--mpi={plugin}"

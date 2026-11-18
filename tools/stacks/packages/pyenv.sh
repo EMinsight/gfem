@@ -156,7 +156,7 @@ build_pyenv() {
     sdist=$(ls "$STACK_SRC"/pip/sdists/"${req%%==*}"-"${req#*==}".tar.gz)
     [[ -f $sdist ]] || stack_die "pyenv: no sdist of $req in $STACK_SRC/pip/sdists"
     echo "pyenv: building $req with MPICC=$MPICC ($(command -v "$MPICC"))"
-    MPICC=$MPICC "$dir/build-venv/bin/python" -m pip wheel --disable-pip-version-check \
+    MPICC=$MPICC "$dir/build-venv/bin/python" -m pip wheel --disable-pip-version-check --no-cache-dir \
       --no-index --no-deps --no-build-isolation -w "$dir/wheels" "$sdist"
   done
   # by name, not by path: a path install is a direct URL in pip freeze
@@ -325,7 +325,8 @@ else:
     assert not others, f"another OpenBLAS beside {blas}: {others}"
 got = MPI.get_vendor()
 assert got[0] == vendor, got
-library = MPI.Get_library_version().splitlines()[0].strip()
+# Open MPI's string ends in a NUL byte: never record it.
+library = MPI.Get_library_version().replace("\x00", "").splitlines()[0].strip()
 facts = {
     "ngsolve": f"{ngsolve.__version__} {ngsolve.__file__}",
     "petsc4py": f"{petsc4py.__version__} PETSc {'.'.join(map(str, PETSc.Sys.getVersion()))} {petsc4py.get_config()['PETSC_DIR']}",
@@ -419,17 +420,57 @@ result = gfem.solve(model, gfem.Electrostatic(terminals=["top"], ground="bottom"
 c = float(result.capacitance[0][0])
 exact = 2 * 8.8541878188e-12 * 1e-3
 assert abs(c - exact) < 1e-6 * exact, (c, exact)
+pardiso = "absent"
+if mkl:
+    # One PARDISO factorization through gfem's inverse type, against sparse
+    # Cholesky; then the process maps one copy of each MKL library, MKL's GNU
+    # threading layer, and no libiomp5 (ADR 0205, ADR 0207).
+    import os
+
+    import ngsolve as ngs
+    from netgen.geom2d import unit_square
+
+    from gfem._linalg.pardiso import pardiso_inverse
+
+    name = pardiso_inverse("hermitian", is_complex=False)
+    assert name is not None
+    m = ngs.Mesh(unit_square.GenerateMesh(maxh=0.05))
+    fes = ngs.H1(m, order=3, dirichlet=".*")
+    u, v = fes.TnT()
+    a = ngs.BilinearForm(ngs.grad(u) * ngs.grad(v) * ngs.dx).Assemble()
+    f = ngs.LinearForm(1 * v * ngs.dx).Assemble()
+    peaks = {}
+    for inverse in (name, "sparsecholesky"):
+        gfu = ngs.GridFunction(fes)
+        gfu.vec.data = a.mat.Inverse(fes.FreeDofs(), inverse=inverse) * f.vec
+        peaks[inverse] = gfu(m(0.5, 0.5))
+    assert abs(peaks[name] - peaks["sparsecholesky"]) < 1e-12, peaks
+    maps = set()
+    with open("/proc/self/maps") as handle:
+        for line in handle:
+            path = line.split()[-1]
+            if path.startswith("/"):
+                maps.add(os.path.realpath(path))
+    libs = sorted(p for p in maps if "mkl" in os.path.basename(p) or "iomp" in p)
+    assert not any("iomp5" in p for p in libs), libs
+    names = [os.path.basename(p) for p in libs]
+    assert len(names) == len(set(names)), f"two copies of one MKL library: {libs}"
+    assert "libmkl_gnu_thread.so.2" in names, libs
+    assert "libmkl_intel_thread.so.2" not in names, libs
+    pardiso = f"{name}: peak {peaks[name]:.10f} = sparsecholesky; mapped {' '.join(libs)}"
 print(
     f"gfem {gfem.__version__} (--no-deps into a cp -al copy): cube capacitor "
     f"C = {c:.6e} F (exact {exact:.6e}), PARDISO {pardiso_available()}"
 )
+print(f"pardiso: {pardiso}")
 PY
 ) || stack_die "pyenv smoke: gfem in a copy of the stack venv failed: $out"
   echo "pyenv smoke: $out"
   rm -rf "$copy"
   rmdir "$(dirname "$copy")" 2>/dev/null || true
   stack_meta smoke "command=python -I in the stack venv: ngsolve, petsc4py, mpi4py, /proc/self/maps; cp -al copy + pip install --no-index --no-deps gfem, electrostatic cube" \
-    "output=$(tail -n 1 <<<"$out")" "template:=$(<"$dir/template.json")" \
+    "output=$(grep -v '^pardiso: ' <<<"$out" | tail -n 1)" "pardiso=$(sed -n 's/^pardiso: //p' <<<"$out")" \
+    "template:=$(<"$dir/template.json")" \
     "gfem_wheel=$wheel" "gfem_wheel_sha256=$(sha256sum "$wheel" | cut -d' ' -f1)" \
     "pip_check=$(paste -sd';' <<<"$check")" \
     "ldd_libngla=$(ldd "$(find "${STACK_NGSOLVE_PROVENANCE%/provenance.json}" -name 'libngla.so*' | head -n 1)" | grep -E 'libopenblas|libmkl' | xargs)" \
