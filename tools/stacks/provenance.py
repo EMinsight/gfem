@@ -17,9 +17,10 @@ Command line (``python3 provenance.py COMMAND ...``)::
                                MODULES: output of ``module -t list``)
     recipe-sha256 DIR PKG      print the recipe hash of package PKG in tree DIR
     sha256 FILE                print a file's sha256
-    petsc-contract WHEELHOUSE RECIPE
-                               compare packages/petsc.sh with tools/petsc_wheelhouse.sh;
-                               exit 1 on drift (ADR 0209)
+    petsc-contract WHEELHOUSE RECIPE OPENBLAS
+                               compare packages/petsc.sh and packages/openblas.sh's
+                               tarball pin with tools/petsc_wheelhouse.sh; exit 1 on
+                               drift (ADR 0209)
     petsc-mumps PREFIX BUILD_DIR
                                print the ``mumps`` block of a PETSc prefix (headers in
                                PREFIX/include, the other PETSC_BUILD_FILES in
@@ -46,7 +47,7 @@ if TYPE_CHECKING:
 SCHEMA = 1
 #: The file whose presence marks a prefix complete.
 FILENAME = "provenance.json"
-#: The fields every schema-1 record holds (issue 06 Q7, ADR 0191).
+#: The fields every schema-1 record holds (ADR 0191).
 FIELDS = (
     "package",
     "version",
@@ -108,7 +109,7 @@ def read(prefix: Path) -> dict | None:
     return json.loads(path.read_text())
 
 
-#: The ``mumps`` block of a provenance file (ticket 05's table, ADR 0209):
+#: The ``mumps`` block of a provenance file (ADR 0209):
 #: fields both MUMPS builds of a stack must share ...
 MUMPS_MUST_MATCH = (
     "version",
@@ -122,6 +123,8 @@ MUMPS_MUST_MATCH = (
 )
 #: ... and fields where they may differ, printed by every check.
 MUMPS_ALLOWED = ("arithmetics", "openmp", "orderings", "metis", "blas.threading")
+#: The packages that build a MUMPS and so must record its block.
+MUMPS_PACKAGES = ("palace", "petsc")
 #: MUMPS's default selective 64-bit build: 32-bit row and column indices.
 MUMPS_INTSIZE = 32
 
@@ -198,6 +201,8 @@ def _check_mumps(records: dict, report: Report) -> None:
     for name, record in sorted(records.items()):
         block = record.get("mumps")
         if block is None:
+            if record["package"] in MUMPS_PACKAGES:
+                report.errors.append(f"{name}: no mumps block (ADR 0209)")
             continue
         missing = [
             dotted
@@ -246,6 +251,14 @@ def _check_mumps_block(name: str, package: str, block: dict, report: Report) -> 
         report.errors.append(
             f"mumps orderings: {name} has parmetis (ADR 0012, ADR 0067)"
         )
+    raw = block.get("fflags_raw")
+    if raw is not None:
+        missing = [flag for flag in block["fflags"].split() if flag not in raw.split()]
+        if missing:
+            report.errors.append(
+                f"mumps fflags_raw: {name} compiled MUMPS with {raw!r}, "
+                f"without the toolchain's {missing}"
+            )
 
 
 def _has(block: dict, dotted: str) -> bool:
@@ -303,6 +316,7 @@ _ARRAY = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=\(([^)]*)\)", re.MULTILINE)
 _PIN = re.compile(
     r"^\s*([a-z0-9]+)-([0-9][0-9.]*)\)\s*echo\s+([0-9a-f]{64})", re.MULTILINE
 )
+_OPENBLAS_PIN = re.compile(r"^\s*([0-9][0-9.]*)\)\s*pin=([0-9a-f]{64})", re.MULTILINE)
 
 
 def _bash_scalars(text: str) -> dict[str, str]:
@@ -322,17 +336,19 @@ def _bash_tarballs(text: str, name: str) -> dict[str, list[str]]:
     return {}
 
 
-def petsc_contract_drift(wheelhouse: str, recipe: str) -> list[str]:
-    """Where ``packages/petsc.sh`` differs from ``tools/petsc_wheelhouse.sh``.
+def petsc_contract_drift(wheelhouse: str, recipe: str, openblas: str) -> list[str]:
+    """Where the native recipes differ from ``tools/petsc_wheelhouse.sh``.
 
-    The native recipe copies the wheelhouse's ADR 0067 contract (ADR 0209):
-    the same PETSc/SLEPc version, the same sdists and the same ``--download``
-    tarballs (by URL and sha256). The wheelhouse's OpenBLAS is the one
-    exception: a native stack links its own BLAS.
+    The native PETSc recipe copies the wheelhouse's ADR 0067 contract (ADR
+    0209): the same PETSc/SLEPc version, the same sdists and the same
+    ``--download`` tarballs (by URL and sha256). The wheelhouse's OpenBLAS
+    tarball is built by package openblas instead, which must pin the same
+    sha256 for that release.
 
     Args:
         wheelhouse: The text of ``tools/petsc_wheelhouse.sh``.
         recipe: The text of ``tools/stacks/packages/petsc.sh``.
+        openblas: The text of ``tools/stacks/packages/openblas.sh``.
 
     Returns:
         One line per difference; empty when they agree.
@@ -363,6 +379,14 @@ def petsc_contract_drift(wheelhouse: str, recipe: str) -> list[str]:
         for name, entry in _bash_tarballs(wheelhouse, "TARBALLS").items()
         if not name.startswith("OpenBLAS-") and native.get(name) != entry
     ]
+    pinned = dict(_OPENBLAS_PIN.findall(openblas))
+    for name, entry in _bash_tarballs(wheelhouse, "TARBALLS").items():
+        release = re.fullmatch(r"OpenBLAS-([0-9.]+)\.tar\.gz", name)
+        if release and pinned.get(release.group(1)) != entry[-1]:
+            drift.append(
+                f"{name} sha256: petsc_wheelhouse.sh {entry[-1]}, packages/openblas.sh "
+                f"{pinned.get(release.group(1), '(no pin)')}"
+            )
     return drift
 
 
@@ -478,6 +502,11 @@ def _petsc_blas(needed: str, env: dict[str, str], errors: list[str]) -> dict:
 def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[str]]:
     """The ``mumps`` block of a PETSc prefix, and the gates it fails.
 
+    Besides the compared fields, the block records MUMPS's ``Makefile.inc``
+    ``OPTF`` and ``FC`` as written (``fflags_raw``, ``compiler_raw``): for
+    information, and ``check`` finds the toolchain's ``fflags`` in
+    ``fflags_raw``.
+
     The gates are ADR 0067's (complex, 64-bit ``PetscInt``, MPI, no ParMETIS,
     PT-Scotch 7.0.18 or newer, no ``?gemmt_`` import) and ADR 0209's (MUMPS
     from the pinned tarball, the toolchain's Fortran flags, the stack's
@@ -523,6 +552,7 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
         )
     optf = re.search(r"^OPTF\s*=(.*)$", build["Makefile.inc"], re.MULTILINE)
     optf_flags = optf.group(1).split() if optf else []
+    fc = re.search(r"^FC\s*=(.*)$", build["Makefile.inc"], re.MULTILINE)
     fflags = env.get("FFLAGS", "")
     missing = [flag for flag in fflags.split() if flag not in optf_flags]
     if missing:
@@ -543,6 +573,8 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
         "metis": tarballs["metis"][0],
         "ptscotch": tarballs["ptscotch"][0],
         "index_bits": 64 if _defined(conf, "PETSC_USE_64BIT_INDICES") else 32,
+        "fflags_raw": " ".join(optf_flags),
+        "compiler_raw": fc.group(1).strip() if fc else "",
     }
     return block, errors
 
@@ -678,8 +710,12 @@ def _check(*stack_dirs: str) -> int:
     return 1 if failed else 0
 
 
-def _petsc_contract(wheelhouse: str, recipe: str) -> int:
-    drift = petsc_contract_drift(Path(wheelhouse).read_text(), Path(recipe).read_text())
+def _petsc_contract(wheelhouse: str, recipe: str, openblas: str) -> int:
+    drift = petsc_contract_drift(
+        Path(wheelhouse).read_text(),
+        Path(recipe).read_text(),
+        Path(openblas).read_text(),
+    )
     if not drift:
         print(f"petsc contract: matches {wheelhouse}")
         return 0
@@ -730,7 +766,7 @@ COMMANDS: dict[str, tuple[int | None, Callable[..., int]]] = {
     ),
     "recipe-sha256": (2, lambda d, p: _print(recipe_sha256(Path(d), p))),
     "sha256": (1, lambda f: _print(sha256(Path(f)))),
-    "petsc-contract": (2, _petsc_contract),
+    "petsc-contract": (3, _petsc_contract),
     "petsc-mumps": (2, _petsc_mumps),
 }
 

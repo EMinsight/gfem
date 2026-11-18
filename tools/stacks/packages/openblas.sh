@@ -6,16 +6,12 @@ VERSION=0.3.34
 CPUS=16
 TIME=01:00:00
 STACKS=(native-oss)
-case ${STACK_NAME:-} in
-native-oss) DEPENDS=() ;;
-native-intel) DEPENDS=() ;;
-*) DEPENDS=() ;;
-esac
+DEPENDS=()
 
 # fetch_openblas VERSION: login node, network only, into $STACK_SRC.
 # The release tarball; 0.3.34 is pinned by gfem's PETSc contract
-# (tools/petsc_wheelhouse.sh TARBALLS), any other version is trusted on first
-# fetch.
+# (tools/petsc_wheelhouse.sh TARBALLS, which stack.sh check compares), any
+# other version is trusted on first fetch.
 fetch_openblas() {
   local pin=
   case $1 in
@@ -61,14 +57,12 @@ build_openblas() {
       # Keep this build's pkg-config file; the pthreads install overwrites openblas.pc.
       mv "$prefix/lib/pkgconfig/openblas.pc" "$prefix/lib/pkgconfig/$lib.pc"
     fi
-    builds+=("$lib:={\"library\": \"lib$lib.so\", \"make\": \"${opts[*]}\"}")
+    builds+=("$lib:=$(stack_json - "library=lib$lib.so" "make=${opts[*]}")")
   done
   stack_meta source "url=https://github.com/xianyi/OpenBLAS/archive/v$version.tar.gz" "tag=v$version" \
-    "tarball=$(basename "$tarball")" "sha256=$(sha256sum "$tarball" | cut -d' ' -f1)"
-  stack_json "$STACK_META/builds.json" "${builds[@]}"
+    "tarball=$(basename "$tarball")" "sha256=$(prov sha256 "$tarball")"
   stack_meta configure "common_opt=$CFLAGS" "fcommon_opt=$FFLAGS" "ldflags=$LDFLAGS" \
-    "builds:=$(<"$STACK_META/builds.json")"
-  rm "$STACK_META/builds.json"
+    "builds:=$(stack_json - "${builds[@]}")"
 }
 
 # smoke_openblas VERSION PREFIX: checks the install; records it with stack_meta smoke.

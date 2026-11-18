@@ -32,11 +32,13 @@ stack.sh check  [STACK [PKG [VERSION]]]    # read-only
   tarball that is there is not downloaded again (its hash is still checked).
 - `submit` names the job `stack-<stack>-<pkg>-<version>`, uses the recipe's
   `CPUS` and `TIME`, QOS `$STACK_QOS` (default `gp_ehpc`) and
-  `--hint=nomultithread`, writes the log to
+  `--hint=nomultithread` (billing counts hyperthreads; with the hint each
+  of the `CPUS` is a whole core), writes the log to
   `$STACKS_ROOT/logs/<stack>-<pkg>-<version>-<jobid>.out`, and passes the
   arguments after `--` straight to `sbatch` (later ones win:
   `-- --qos=gp_debug --time=01:00:00`). It refuses when a job of that name is
-  pending or running (`squeue --name`, no lock files), does nothing for a prefix
+  pending or running (`squeue --name`, no lock files; a failed `squeue` stops
+  it), does nothing for a prefix
   that is complete with this recipe and toolchain, and chains on a dependency's
   pending build with `--dependency=afterok`.
 - `check` with no argument checks every software stack under `$STACKS_ROOT`;
@@ -46,7 +48,8 @@ stack.sh check  [STACK [PKG [VERSION]]]    # read-only
   their `mumps` blocks break the rules below.
   With `STACK` it also fails when `packages/petsc.sh` drifts from
   `tools/petsc_wheelhouse.sh` (PETSc/SLEPc version, sdist and `--download`
-  tarball sha256; ADR 0209). The wheelhouse is read beside the recipe tree in
+  tarball sha256; ADR 0209), or `packages/openblas.sh` pins another sha256
+  for the wheelhouse's OpenBLAS tarball. The wheelhouse is read beside the recipe tree in
   a checkout, or inside it in a shipped tree (the harness copies it there).
 - `STACK_PYTHON` names the Python that runs `provenance.py` (default
   `python3`, 3.9 or newer, standard library only).
@@ -134,8 +137,10 @@ Open MPI, `srun --mpi=pmi2` for Intel MPI (the module sets
 `mpiexec` (Hydra) also works inside a job; PETSc's `make check` uses it.
 
 It sets no thread counts (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
-`MKL_NUM_THREADS`, `NGS_NUM_THREADS`): those belong to whoever runs. A new
-native software stack is one new toolchain file.
+`MKL_NUM_THREADS`, `NGS_NUM_THREADS`): those belong to whoever runs. Every
+Palace launch, on every stack, sets `OPENBLAS_NUM_THREADS=1` and
+`MKL_NUM_THREADS=1`: MUMPS's OpenMP threads carry the parallelism (ADR 0213).
+A new native software stack is one new toolchain file.
 
 ## Recipe interface
 
@@ -184,7 +189,9 @@ activate_palace() {         # PREFIX (optional): extra lines for activate.sh
 | `$STACK_META` | directory of provenance fields, one `<field>.json` each (build) |
 | `$STACK_JOBS` | the job's CPUs, for `make -j` (build) |
 | `stack_meta FIELD key=string key:=json ...` | write the provenance field `FIELD` as a JSON object |
-| `stack_json FILE key=string key:=json ...` | write any JSON object |
+| `stack_json FILE key=string key:=json ...` | write any JSON object (`FILE` `-`: print it, for nesting) |
+| `stack_json_array STRING...` | print the strings as a JSON array |
+| `stack_singleton COMMAND...` | run an MPI singleton (one process outside `srun`) without `I_MPI_PMI_LIBRARY` |
 | `stack_smoke COMMAND...` | run the smoke command; record it and its first output line |
 | `stack_tofu FILE` | sha256 of an unpinned tarball: recorded on first fetch, checked after |
 | `stack_mirror URL REF...` | fetch: bare full mirror `mirrors/<host>/<path>.git` (URL as upstream spells it) holding every REF |
@@ -212,18 +219,26 @@ a record that lacks a field.
 | `mumps` | Palace and PETSc recipes | see below |
 | `toolchain` | `stack.sh` (`provenance.py toolchain`) | `sha256` of the frozen toolchain file, `module -t list`, compilers with `--version`, flags, BLAS, ScaLAPACK, MPI with `mpicc -show`, `cmake --version` |
 | `recipe` | `stack.sh` | gfem commit, the package's recipe hash, `dirty` |
-| `build` | `stack.sh` | job id, host, QOS, CPUs, start, end, elapsed, CPUTimeRAW so far |
+| `build` | `stack.sh` | job id, host, QOS, CPUs, start, end, elapsed, `cputime_raw_so_far` |
 | `depends` | `stack.sh` | each dependency's prefix and the sha256 of its provenance file |
+
+`build.cputime_raw_so_far` is `sacct`'s CPUTimeRAW read inside the running
+job, so it is partial (it misses the job's end): read the budget a build used
+from `sacct -j <job_id> -o CPUTimeRAW` after the job.
 
 The `mumps` block (`version`, `tarball_sha256`, `intsize`, `gemmt`,
 `blas.{vendor,version,threading}`, `scalapack`, `compiler`, `fflags`,
 `arithmetics`, `openmp`, `orderings`, `metis`) is compared across the
-complete prefixes of a software stack by `check`:
+complete prefixes of a software stack by `check`. A complete `palace` or
+`petsc` prefix without it fails. PETSc's block also records MUMPS's
+`Makefile.inc` `OPTF` and `FC` as written (`fflags_raw`, `compiler_raw`;
+optional, for information).
 
 - must match: `version`, `tarball_sha256`, `intsize`, `scalapack`,
   `compiler`, `fflags`, `blas.vendor`, `blas.version`;
 - must hold in each build: `intsize` 32, `gemmt` false (no `?gemmt_` import),
-  `metis` among the `orderings`, no `parmetis` in PETSc's;
+  `metis` among the `orderings`, no `parmetis` in PETSc's, the toolchain's
+  `fflags` among `fflags_raw` when it is there;
 - allowed differences, printed every time: `arithmetics`, `openmp`,
   `orderings`, `metis` (patch level), `blas.threading`.
 
@@ -234,7 +249,10 @@ complete prefixes of a software stack by `check`:
 with the toolchain's `MPICC`, `stack.pth` naming the `python_path` of NGSolve
 and PETSc, and pip `mkl` only when the toolchain's BLAS is MKL and its
 `mkl_rt`, `mkl_core` and `mkl_gnu_thread` are byte-identical to
-`$MKLROOT/lib`. Its `activate.sh` exports `STACK_PYENV` and takes the venv's
+`$MKLROOT/lib`. A toolchain MKL without such a twin (another release, other
+bytes) does not stop the build: the venv gets no pip `mkl`, so gfem has no
+PARDISO there, and the smoke records `pardiso=unavailable (no byte-identical
+pip mkl)` (configure's `mkl` block says why). Its `activate.sh` exports `STACK_PYENV` and takes the venv's
 `bin` and `lib` off `PATH` and `LD_LIBRARY_PATH` again. A run copies it:
 
 ```bash
@@ -257,5 +275,5 @@ dependency's `activate.sh`, prepends the prefix's `bin`, `lib`, `lib64` and
 `pkgconfig` directories to `PATH`, `LD_LIBRARY_PATH`, `PKG_CONFIG_PATH` and
 `CMAKE_PREFIX_PATH`, and exports `STACK_NAME` and
 `STACK_<PKG>_PROVENANCE=<prefix>/provenance.json`, plus what the recipe's
-`activate_<pkg>` adds. It sets no thread counts and no `PYTHONPATH`, and
-activates no venv.
+`activate_<pkg>` adds (petsc: `PETSC_DIR` and `SLEPC_DIR`, the prefix). It
+sets no thread counts and no `PYTHONPATH`, and activates no venv.

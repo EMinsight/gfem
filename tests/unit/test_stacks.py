@@ -3,6 +3,7 @@
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -58,6 +59,122 @@ def _stack_sh(*args: str, root: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _stack_function(
+    script: str, *args: str, env: dict | None = None, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
+    """Run ``script`` in bash with ``stack.sh``'s helpers sourced (no command run).
+
+    ``$1``... are ``args``; ``provenance.py`` runs on this interpreter.
+    """
+    return subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            f'source "{STACK_SH}"; {script}',
+            "stack",
+            *args,
+        ],
+        env={**os.environ, "STACK_PYTHON": sys.executable, **(env or {})},
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("arg", "key", "value"),
+    [
+        ("n:=3", "n", 3),
+        ('list:=[1, "a"]', "list", [1, "a"]),
+        ("s=x:=y", "s", "x:=y"),
+        ("s=a=b", "s", "a=b"),
+        ("s=", "s", ""),
+    ],
+)
+def test_stack_json_reads_key_colon_equals_as_json_and_key_equals_as_a_string(
+    tmp_path, arg, key, value
+):
+    out = tmp_path / "out.json"
+
+    result = _stack_function('stack_json "$1" "$2"', str(out), arg)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(out.read_text()) == {key: value}
+
+
+def test_stack_json_to_standard_output_nests_values_with_any_characters(tmp_path):
+    odd = 'a "quoted" \\ path\twith tab'
+    script = 'inner=$(stack_json - "prefix=$1" "n:=2"); stack_json - "dep:=$inner"'
+
+    result = _stack_function(script, odd, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"dep": {"prefix": odd, "n": 2}}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_stack_json_array_writes_its_arguments_as_a_json_list():
+    result = _stack_function('stack_json_array "$@"', '--prefix=/a "b"', "", "c")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ['--prefix=/a "b"', "", "c"]
+
+
+def test_an_mpi_singleton_runs_without_slurms_pmi_library():
+    result = _stack_function(
+        "stack_singleton env",
+        env={"I_MPI_PMI_LIBRARY": "/usr/lib64/libpmi2.so", "KEPT": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    names = {line.split("=", 1)[0] for line in result.stdout.splitlines()}
+    assert "KEPT" in names
+    assert "I_MPI_PMI_LIBRARY" not in names
+
+
+def test_two_first_builds_of_a_stack_freeze_its_toolchain_once(tmp_path):
+    source = tmp_path / "native-oss.sh"
+    source.write_text("module load gcc/12.3.0\n" * 20000)
+    script = """
+    for i in $(seq 20); do
+      frozen=$2/$i/toolchain.sh
+      mkdir -p "$2/$i"
+      stack_freeze_toolchain "$1" "$frozen" >"$2/$i.a" 2>&1 &
+      a=$!
+      stack_freeze_toolchain "$1" "$frozen" >"$2/$i.b" 2>&1 &
+      b=$!
+      wait $a || { echo "run $i a failed: $(<"$2/$i.a")"; exit 1; }
+      wait $b || { echo "run $i b failed: $(<"$2/$i.b")"; exit 1; }
+    done
+    """
+
+    result = _stack_function(script, str(source), str(tmp_path / "root"))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    for i in range(1, 21):
+        directory = tmp_path / "root" / str(i)
+        assert [p.name for p in directory.iterdir()] == ["toolchain.sh"]
+        frozen = directory / "toolchain.sh"
+        assert frozen.read_bytes() == source.read_bytes()
+        assert not os.access(frozen, os.W_OK) or os.geteuid() == 0
+
+
+def test_a_toolchain_file_that_differs_from_the_frozen_one_is_refused(tmp_path):
+    source = tmp_path / "native-oss.sh"
+    source.write_text("module load gcc/12.3.0\n")
+    frozen = tmp_path / "toolchain.sh"
+    frozen.write_text("module load gcc/13.2.0\n")
+
+    result = _stack_function(
+        'stack_freeze_toolchain "$1" "$2"', str(source), str(frozen)
+    )
+
+    assert result.returncode != 0
+    assert "a changed toolchain is a new software stack" in result.stderr
+    assert frozen.read_text() == "module load gcc/13.2.0\n"
+
+
 def test_a_prefix_is_complete_once_its_provenance_file_is_written(tmp_path):
     prefix = tmp_path / "native-oss" / "ngsolve-1.0"
     prefix.mkdir(parents=True)
@@ -93,7 +210,7 @@ def test_a_record_without_a_toolchain_hash_is_refused(tmp_path):
 
 def test_packages_of_one_stack_built_on_one_toolchain_agree(tmp_path):
     _prefix(tmp_path, "ngsolve", "a" * 64)
-    _prefix(tmp_path, "petsc", "a" * 64)
+    _prefix(tmp_path, "openblas", "a" * 64)
 
     report = provenance.check_stack(tmp_path / "native-oss")
 
@@ -102,13 +219,13 @@ def test_packages_of_one_stack_built_on_one_toolchain_agree(tmp_path):
 
 def test_packages_of_one_stack_built_on_two_toolchains_fail_the_check(tmp_path):
     _prefix(tmp_path, "ngsolve", "a" * 64)
-    _prefix(tmp_path, "petsc", "c" * 64)
+    _prefix(tmp_path, "openblas", "c" * 64)
 
     report = provenance.check_stack(tmp_path / "native-oss")
 
     assert len(report.errors) == 1
     assert "ngsolve-1.0" in report.errors[0]
-    assert "petsc-1.0" in report.errors[0]
+    assert "openblas-1.0" in report.errors[0]
 
 
 def test_an_unfinished_prefix_is_reported_but_not_compared(tmp_path):
@@ -122,7 +239,7 @@ def test_an_unfinished_prefix_is_reported_but_not_compared(tmp_path):
 
 
 def _mumps_palace() -> dict:
-    """Palace's MUMPS block as ticket 05's table describes it."""
+    """Palace's MUMPS block as ADR 0209 describes it."""
     return {
         "version": "5.9.1",
         "tarball_sha256": "659c9b57" + "0" * 56,
@@ -140,7 +257,7 @@ def _mumps_palace() -> dict:
 
 
 def _mumps_petsc() -> dict:
-    """gfem's PETSc MUMPS block as ticket 05's table describes it."""
+    """gfem's PETSc MUMPS block as ADR 0209 describes it."""
     return {
         **_mumps_palace(),
         "blas": {"vendor": "openblas", "version": "0.3.34", "threading": "pthreads"},
@@ -157,7 +274,7 @@ def _mumps_stack(root: Path, palace: dict, petsc: dict) -> Path:
     return root / "native-oss"
 
 
-def test_the_two_mumps_builds_differ_only_where_ticket_05_allows(tmp_path):
+def test_the_two_mumps_builds_differ_only_where_adr_0209_allows(tmp_path):
     report = provenance.check_stack(
         _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
     )
@@ -221,6 +338,36 @@ def test_parmetis_in_gfems_petsc_fails(tmp_path):
     report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
 
     assert any("parmetis" in error and "petsc-1.0" in error for error in report.errors)
+
+
+@pytest.mark.parametrize("package", ["palace", "petsc"])
+def test_a_complete_mumps_build_without_a_mumps_block_fails(tmp_path, package):
+    _prefix(tmp_path, package, "a" * 64)
+    _prefix(tmp_path, "ngsolve", "a" * 64)
+
+    report = provenance.check_stack(tmp_path / "native-oss")
+
+    assert any(
+        f"{package}-1.0" in error and "no mumps block" in error
+        for error in report.errors
+    ), report.errors
+    assert not any("ngsolve" in error for error in report.errors)
+
+
+@pytest.mark.parametrize(
+    ("raw", "passes"),
+    [
+        ("-fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch", True),
+        ("-fPIC -O2 -fallow-argument-mismatch", False),
+    ],
+)
+def test_mumps_raw_fflags_must_hold_the_toolchains_fflags(tmp_path, raw, passes):
+    petsc = {**_mumps_petsc(), "fflags_raw": raw, "compiler_raw": "mpif90"}
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
+
+    failed = [e for e in report.errors if "fflags_raw" in e and "petsc-1.0" in e]
+    assert bool(failed) != passes, report.errors
 
 
 def test_a_mumps_block_missing_a_field_fails(tmp_path):
@@ -332,7 +479,7 @@ def test_check_passes_on_an_empty_stacks_root(tmp_path):
 
 def test_check_fails_on_a_stack_built_on_two_toolchains(tmp_path):
     _prefix(tmp_path, "ngsolve", "a" * 64)
-    _prefix(tmp_path, "petsc", "c" * 64)
+    _prefix(tmp_path, "openblas", "c" * 64)
 
     result = _stack_sh("check", root=tmp_path)
 
@@ -379,6 +526,67 @@ def test_a_build_outside_a_slurm_job_is_refused(tmp_path):
     assert result.returncode != 0
     assert "SLURM_JOB_ID" in result.stderr
     assert not (tmp_path / "native-oss").exists()
+
+
+#: Stand-in for squeue: fails for a job name matching $FAKE_SQUEUE_FAIL, else
+#: lists no job.
+FAKE_SQUEUE = """#!/usr/bin/env bash
+for arg in "$@"; do
+  case $arg in
+  --name=$FAKE_SQUEUE_FAIL) echo "squeue: socket timed out" >&2; exit 1 ;;
+  esac
+done
+"""
+
+
+def _fake_submit(
+    tmp_path: Path, package: str, failing: str
+) -> subprocess.CompletedProcess:
+    """``stack.sh submit native-oss PACKAGE`` with squeue and sbatch faked."""
+    fakes = tmp_path / "bin"
+    fakes.mkdir()
+    (fakes / "squeue").write_text(FAKE_SQUEUE)
+    (fakes / "sbatch").write_text(f'#!/bin/sh\necho "$@" >>{tmp_path}/sbatch.log\n')
+    for fake in fakes.iterdir():
+        fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fakes}:{os.environ['PATH']}",
+        "STACKS_ROOT": str(tmp_path / "root"),
+        "FAKE_SQUEUE_FAIL": failing,
+    }
+    return subprocess.run(
+        ["bash", str(STACK_SH), "submit", "native-oss", package],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a_submit_with_no_job_of_that_name_calls_sbatch(tmp_path):
+    result = _fake_submit(tmp_path, "openblas", "no-such-job")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    sbatch = (tmp_path / "sbatch.log").read_text().split()
+    assert "--job-name=stack-native-oss-openblas-0.3.34" in sbatch
+    assert "--hint=nomultithread" in sbatch
+
+
+@pytest.mark.parametrize(
+    ("package", "failing"),
+    [
+        ("openblas", "stack-native-oss-openblas-*"),
+        ("petsc", "stack-native-oss-openblas-*"),
+    ],
+    ids=["own-job", "dependency-job"],
+)
+def test_a_submit_whose_squeue_fails_submits_nothing(tmp_path, package, failing):
+    result = _fake_submit(tmp_path, package, failing)
+
+    assert result.returncode != 0
+    assert "squeue failed" in result.stderr
+    assert not (tmp_path / "sbatch.log").exists()
 
 
 def test_every_package_recipe_declares_the_recipe_interface(tmp_path):
@@ -810,7 +1018,6 @@ smoke_fake() { :; }
 def _fake_fetch(tmp_path: Path, pin: str | None = None):
     """A recipe tree with package ``fake`` and its upstream, ready to fetch."""
     import hashlib
-    import shutil
 
     recipes = tmp_path / "recipes"
     shutil.copytree(STACKS, recipes, ignore=shutil.ignore_patterns("__pycache__"))
@@ -921,7 +1128,7 @@ def test_the_stack_venvs_runtime_pins_are_gfems_lock():
 
     lock = tomllib.loads((STACKS.parents[1] / "uv.lock").read_text())
     packages = {package["name"]: package for package in lock["package"]}
-    # Ticket 07: never the PyPI NGSolve, netgen or their OpenBLAS in a stack venv.
+    # ADR 0207: never the PyPI NGSolve, netgen or their OpenBLAS in a stack venv.
     native = {"ngsolve", "netgen-mesher", "ngsolve-openblas"}
     closure, todo = set(), [d["name"] for d in packages["gfem"]["dependencies"]]
     while todo:
@@ -1036,6 +1243,67 @@ def test_the_mkl_hook_leaves_other_imports_and_a_venv_without_mkl_rt_alone(tmp_p
     assert result.stdout.split() == ["ok"]
 
 
+PYENV_RECIPE = STACKS / "packages" / "pyenv.sh"
+#: The MKL libraries pyenv compares with the toolchain's.
+MKL_LIBS = ("libmkl_rt.so.2", "libmkl_core.so.2", "libmkl_gnu_thread.so.2")
+
+
+def _mkl_twin(tmp_path: Path, release: str, pip_bytes: bytes) -> tuple[Path, Path]:
+    """A toolchain MKLROOT at ``release`` and a pip MKL lib dir of ``pip_bytes``."""
+    mklroot, pip = tmp_path / "mkl", tmp_path / "pip" / "lib"
+    (mklroot / "include").mkdir(parents=True)
+    (mklroot / "lib").mkdir()
+    pip.mkdir(parents=True)
+    (mklroot / "include" / "mkl_version.h").write_text(
+        f"#define INTEL_MKL_VERSION {release}\n"
+    )
+    for lib in MKL_LIBS:
+        (mklroot / "lib" / lib).write_bytes(b"module " + lib.encode())
+        (pip / lib).write_bytes(pip_bytes + lib.encode())
+    return mklroot, pip
+
+
+@pytest.mark.parametrize(
+    ("pip_bytes", "twin"), [(b"module ", True), (b"pip ", False)], ids=["twin", "not"]
+)
+def test_a_pip_mkl_is_a_twin_only_when_byte_identical(tmp_path, pip_bytes, twin):
+    mklroot, pip = _mkl_twin(tmp_path, "20250200", pip_bytes)
+
+    result = _stack_function(
+        'source "$1"; if pyenv_mkl_identical "$2"; then echo twin; '
+        'else echo "no twin: $PYENV_MKL_REASON"; fi',
+        str(PYENV_RECIPE),
+        str(pip),
+        env={"MKLROOT": str(mklroot)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    if twin:
+        assert lines[-1] == "twin"
+        assert [line.split("=")[0] for line in lines[:-1]] == list(MKL_LIBS)
+    else:
+        assert lines[-1].startswith("no twin: ")
+        assert "libmkl_rt.so.2" in lines[-1]
+
+
+def test_a_toolchain_mkl_of_another_release_than_the_pin_has_no_twin(tmp_path):
+    mklroot, _ = _mkl_twin(tmp_path, "20260000", b"module ")
+
+    result = _stack_function(
+        'source "$1"; if pyenv_mkl_twin python "$2"; then echo twin; '
+        'else echo "no twin: $PYENV_MKL_REASON"; fi',
+        str(PYENV_RECIPE),
+        str(tmp_path / "probe"),
+        env={"MKLROOT": str(mklroot)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("no twin: ")
+    assert "2026.0.0" in result.stdout
+    assert not (tmp_path / "probe").exists()
+
+
 # --- package openblas: a build with make and module faked ---------------------
 
 #: Stand-in for OpenBLAS's make: records each call, and on ``install`` puts a
@@ -1091,7 +1359,6 @@ def _openblas_build(
     tmp_path: Path, **env: str
 ) -> tuple[subprocess.CompletedProcess, Path, Path]:
     """Run ``stack.sh build native-oss openblas`` with make and module faked."""
-    import shutil
     import tarfile
 
     recipes = tmp_path / "recipes"
@@ -1140,7 +1407,7 @@ def _openblas_build(
 
 
 needs_gfortran = pytest.mark.skipif(
-    __import__("shutil").which("gfortran") is None, reason="needs gfortran"
+    shutil.which("gfortran") is None, reason="needs gfortran"
 )
 
 
@@ -1166,6 +1433,9 @@ def test_openblas_builds_a_pthreads_and_an_openmp_library_into_one_prefix(tmp_pa
     assert all("COMMON_OPT=-O3 -march=sapphirerapids" in call for call in calls)
     record = json.loads((prefix / "provenance.json").read_text())
     assert set(record["smoke"]["libraries"]) == {"openblas", "openblas_omp"}
+    builds = record["configure"]["builds"]
+    assert builds["openblas_omp"]["library"] == "libopenblas_omp.so"
+    assert "USE_OPENMP=1" in builds["openblas_omp"]["make"].split()
     assert "zdotc ok" in record["smoke"]["libraries"]["openblas_omp"]
 
 
@@ -1294,9 +1564,7 @@ def test_a_scivision_tree_without_the_url_line_fails_the_edit(tmp_path):
     assert "mumps-solver.org" in result.stderr
 
 
-needs_gcc = pytest.mark.skipif(
-    __import__("shutil").which("gcc") is None, reason="needs gcc"
-)
+needs_gcc = pytest.mark.skipif(shutil.which("gcc") is None, reason="needs gcc")
 
 
 @needs_gcc
@@ -1332,11 +1600,12 @@ def test_mumps_compiler_strings_of_one_gcc_match():
 
 WHEELHOUSE = STACKS.parent / "petsc_wheelhouse.sh"
 PETSC_RECIPE = STACKS / "packages" / "petsc.sh"
+OPENBLAS_RECIPE = STACKS / "packages" / "openblas.sh"
 
 
 def test_the_native_petsc_recipe_follows_the_wheelhouses_contract():
     drift = provenance.petsc_contract_drift(
-        WHEELHOUSE.read_text(), PETSC_RECIPE.read_text()
+        WHEELHOUSE.read_text(), PETSC_RECIPE.read_text(), OPENBLAS_RECIPE.read_text()
     )
 
     assert drift == []
@@ -1352,6 +1621,8 @@ def test_the_native_petsc_recipe_follows_the_wheelhouses_contract():
             "MUMPS",
         ),
         ("SHA256_slepc=a2f4cc2a", "SHA256_slepc=00000000", "slepc"),
+        ("cd7e129868320cc2", "0000000000000000", "OpenBLAS-0.3.34"),
+        ("OpenBLAS-0.3.34.tar.gz", "OpenBLAS-0.3.35.tar.gz", "OpenBLAS-0.3.35"),
     ],
 )
 def test_a_wheelhouse_that_moves_away_from_the_native_recipe_is_drift(old, new, named):
@@ -1359,15 +1630,25 @@ def test_a_wheelhouse_that_moves_away_from_the_native_recipe_is_drift(old, new, 
     assert old in wheelhouse
 
     drift = provenance.petsc_contract_drift(
-        wheelhouse.replace(old, new), PETSC_RECIPE.read_text()
+        wheelhouse.replace(old, new),
+        PETSC_RECIPE.read_text(),
+        OPENBLAS_RECIPE.read_text(),
     )
 
     assert any(named in line for line in drift), drift
 
 
-def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(tmp_path):
-    import shutil
-
+@pytest.mark.parametrize(
+    ("old", "new", "named"),
+    [
+        ("PETSC_VERSION=3.26.0", "PETSC_VERSION=3.26.1", "3.26.1"),
+        ("cd7e129868320cc2", "0000000000000000", "OpenBLAS-0.3.34.tar.gz sha256"),
+    ],
+    ids=["petsc-version", "openblas-sha256"],
+)
+def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(
+    tmp_path, old, new, named
+):
     tools = tmp_path / "tools"
     shutil.copytree(
         STACKS, tools / "stacks", ignore=shutil.ignore_patterns("__pycache__")
@@ -1383,15 +1664,14 @@ def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(tmp_path):
     ]
 
     agreed = subprocess.run(run, env=env, capture_output=True, text=True, check=False)
-    (tools / "petsc_wheelhouse.sh").write_text(
-        wheelhouse.replace("PETSC_VERSION=3.26.0", "PETSC_VERSION=3.26.1")
-    )
+    assert old in wheelhouse
+    (tools / "petsc_wheelhouse.sh").write_text(wheelhouse.replace(old, new))
     drifted = subprocess.run(run, env=env, capture_output=True, text=True, check=False)
 
     assert agreed.returncode == 0, agreed.stdout + agreed.stderr
     assert "petsc contract: matches" in agreed.stdout
     assert drifted.returncode != 0
-    assert "3.26.1" in drifted.stdout
+    assert named in drifted.stdout
 
 
 # --- package ngsolve ----------------------------------------------------------
@@ -1415,6 +1695,25 @@ def test_a_url_download_of_cmake_is_read_with_its_md5_and_mirror_name():
             "6cd66f75f88dfa2cf043de011f85d8bc",
         )
     ]
+
+
+def test_source_records_name_their_fields():
+    git = sources.palace_git(PALACE_GIT_TAGS)[0]
+    tarball = sources.palace_tarballs(PALACE_GIT_TAGS)[0]
+    patch = sources.patches(PALACE_PATCH_CALLS)[0]
+    metis = sources.url_tarballs(NETGEN_METIS)[0]
+    ref = sources.git_repositories("GIT_REPOSITORY https://h/r.git GIT_TAG v1")[0]
+    module = sources.gitmodules("[submodule x]\n\tpath = p\n\turl = https://h/p\n")[0]
+    mumps = sources.mumps_tarball('{"mumps_sha256": {"5.9.1": "abc"}}', "v5.9.1")[0]
+
+    assert (git.name, git.tag) == ("ARPACK", "3.9.1")
+    assert tarball.file == sources.tarball_name(tarball.url)
+    assert (patch.directory, patch.file) == ("extern/mfem-patches", "mfem_pr3847.diff")
+    assert patch.sha256.startswith("e9be1a0d")
+    assert metis.md5 == "6cd66f75f88dfa2cf043de011f85d8bc"
+    assert (ref.url, ref.tag) == ("https://h/r.git", "v1")
+    assert (module.path, module.url) == ("p", "https://h/p")
+    assert (mumps.file, mumps.sha256) == ("MUMPS_5.9.1.tar.gz", "abc")
 
 
 #: What a native-oss PETSc build leaves for its ``mumps`` block: excerpts of
@@ -1462,7 +1761,7 @@ NATIVE_OSS = {
 }
 
 
-def test_a_petsc_build_records_its_mumps_as_ticket_05_compares_it():
+def test_a_petsc_build_records_its_mumps_block_as_check_compares_it():
     block, errors = provenance.petsc_mumps(PETSC_BUILD, NATIVE_OSS)
 
     assert errors == []
@@ -1481,6 +1780,8 @@ def test_a_petsc_build_records_its_mumps_as_ticket_05_compares_it():
         "metis": "5.1.0-p12",
         "ptscotch": "7.0.18",
         "index_bits": 64,
+        "fflags_raw": "-fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch",
+        "compiler_raw": "mpif90",
     }
 
 
@@ -1505,6 +1806,18 @@ def test_a_petsc_build_that_breaks_adr_0067_or_0209_is_refused(file, old, new, n
     _, errors = provenance.petsc_mumps(build, NATIVE_OSS)
 
     assert any(named in error for error in errors), errors
+
+
+def test_a_petsc_prefix_activates_as_petsc_dir_and_slepc_dir():
+    result = _stack_function(
+        'source "$1"; eval "$(activate_petsc /stacks/native-oss/petsc-3.26.0)"; '
+        'echo "$PETSC_DIR $SLEPC_DIR"; bash -c \'echo "$PETSC_DIR"\'',
+        str(PETSC_RECIPE),
+    )
+
+    assert result.returncode == 0, result.stderr
+    prefix = "/stacks/native-oss/petsc-3.26.0"
+    assert result.stdout.splitlines() == [f"{prefix} {prefix}", prefix]
 
 
 #: The line of PETSc 3.26.0's ``config/BuildSystem/config/packages/MUMPS.py``

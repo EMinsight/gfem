@@ -20,7 +20,8 @@ NETGEN_URL=https://github.com/NGSolve/netgen.git
 # Read from tag vVERSION: mirrors of NGSolve and its submodules at the commits
 # the tag records (netgen, then netgen's pybind11), the UMFPACK source of
 # cmake/SuperBuild.cmake (BUILD_UMFPACK), and the OCCT wheels its
-# pyproject.toml pins (netgen-occt, netgen-occt-devel: ticket 07 Q1).
+# pyproject.toml pins (netgen-occt, netgen-occt-devel), installed into the
+# prefix so the OCCT rpaths point there (ADR 0207).
 fetch_ngsolve() {
   local tag=v$1 line url ref occt umfpack=
   local lines=()
@@ -69,8 +70,8 @@ ngsolve_md5_tarball() {
   fetch_report "$state" "tarballs/$1 (md5 pinned)"
 }
 
-# The CMake options of the native build (ticket 07 Q1, research/upstream-recipes.md
-# §3.2): no -march=native but the toolchain's target through NG_COMPILE_FLAGS
+# The CMake options of the native build (ADR 0205, ADR 0207): no
+# -march=native but the toolchain's target through NG_COMPILE_FLAGS
 # (PUBLIC on ngcore), MPI linked directly (no run-time wrapper; netgen then
 # needs METIS; NG_COMPILE_FLAGS comes after CMAKE_CXX_FLAGS on the command
 # line, and GCC keeps the toolchain's explicit -mno-avx512fp16 over a later
@@ -207,10 +208,10 @@ build_ngsolve() {
   commits+=("suitesparse-metis-for-windows=$(grep -oE 'GIT_TAG [0-9a-f]+' "$src/cmake/SuperBuild.cmake" | head -n 1 | cut -d' ' -f2)")
   stack_json "$dir/commits.json" "${commits[@]}"
   for name in "$STACK_SRC"/pip/wheels/netgen_occt*-"${occt#*==}"-*.whl; do
-    wheels+=("${name##*/}=$(sha256sum "$name" | cut -d' ' -f1)")
+    wheels+=("${name##*/}=$(prov sha256 "$name")")
   done
   while read -r name url md5; do
-    wheels+=("$name=md5 $md5, sha256 $(sha256sum "$STACK_SRC/tarballs/$name" | cut -d' ' -f1)")
+    wheels+=("$name=md5 $md5, sha256 $(prov sha256 "$STACK_SRC/tarballs/$name")")
   done < <(stack_sources url-tarballs <"$netgen/cmake/external_projects/metis.cmake")
   stack_json "$dir/files.json" "${wheels[@]}"
   stack_meta source "url=$NGSOLVE_URL" "tag=v$version" "commits:=$(<"$dir/commits.json")" \

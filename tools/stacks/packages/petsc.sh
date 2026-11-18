@@ -16,7 +16,8 @@ esac
 # TARBALLS pins them (ADR 0067, ADR 0209): "NAME URL [SHA256]". PETSc's
 # configure cannot download through the tunnel (urllib), so the build passes
 # --download-<pkg>=$STACK_SRC/tarballs/NAME. ParMETIS has no pin anywhere:
-# trusted on first fetch (kept for ticket 05, gfem's stack builds without it).
+# trusted on first fetch, fetched but never passed to configure: gfem's PETSc
+# builds without ParMETIS (ADR 0012, ADR 0067).
 PETSC_TARBALLS=(
   "MUMPS_5.9.1.tar.gz https://mumps-solver.org/MUMPS_5.9.1.tar.gz 659c9b57646b5a003ac618baa1faf9dd2044e46c732b3daaccbc7158003e1b46"
   "scalapack-v2.2.3.tar.gz https://github.com/Reference-ScaLAPACK/scalapack/archive/v2.2.3.tar.gz 5d93701eca663925e98010dd8d0f45fd79b2191d74e5afa5711d587370a8b9dd"
@@ -123,12 +124,11 @@ petsc_blas() {
 # petsc_clean COMMAND...: run COMMAND without the compiler variables PETSc's
 # configure warns about and the petsc4py build would pick up, and without
 # MUMPS PORD's OPTFLAGS (tools/petsc_wheelhouse.sh); flags go on the
-# configure line instead. Also without I_MPI_PMI_LIBRARY: Intel MPI
-# singletons (SLEPc's configure imports petsc4py) fail MPI_Init with the
-# module's Slurm libpmi2 (job 49181364, probe 49181762); mpiexec needs none.
+# configure line instead. Also as an MPI singleton (stack_singleton): SLEPc's
+# configure imports petsc4py.
 petsc_clean() {
-  env -u CC -u CXX -u FC -u F77 -u F90 -u CPP -u CFLAGS -u CPPFLAGS -u CXXFLAGS \
-    -u FFLAGS -u FCFLAGS -u LDFLAGS -u OPTFLAGS -u CPATH -u C_INCLUDE_PATH -u I_MPI_PMI_LIBRARY \
+  stack_singleton env -u CC -u CXX -u FC -u F77 -u F90 -u CPP -u CFLAGS -u CPPFLAGS -u CXXFLAGS \
+    -u FFLAGS -u FCFLAGS -u LDFLAGS -u OPTFLAGS -u CPATH -u C_INCLUDE_PATH \
     -u CPLUS_INCLUDE_PATH -u LIBRARY_PATH -u PETSC_DIR -u PETSC_ARCH -u SLEPC_DIR "$@"
 }
 
@@ -201,19 +201,19 @@ build_petsc() {
 
   local sums=() name
   for name in "petsc-$version.tar.gz" "slepc-$version.tar.gz"; do
-    sums+=("$name=$(sha256sum "$tarballs/$name" | cut -d' ' -f1)")
+    sums+=("$name=$(prov sha256 "$tarballs/$name")")
   done
   for line in "${downloads[@]}"; do
-    sums+=("${line##*/}=$(sha256sum "${line#*=}" | cut -d' ' -f1)")
+    sums+=("${line##*/}=$(prov sha256 "${line#*=}")")
   done
   stack_json "$dir/tarballs.json" "${sums[@]}"
   stack_meta source "url=https://files.pythonhosted.org/packages/source/p/petsc/petsc-$version.tar.gz" \
     "tag=v$version" "tarballs:=$(<"$dir/tarballs.json")" \
     "gemmt_patch=config/BuildSystem/config/packages/MUMPS.py: dgemmt check -> if False (tools/petsc_wheelhouse.sh)" \
     "python=$("$python" -VV | head -n 1) ($python)"
-  stack_json "$dir/options.json" "petsc:=$(printf '%s\n' "${options[@]}" | "$python" -c 'import json, sys; print(json.dumps(sys.stdin.read().splitlines()))')" \
-    "slepc:=[\"--prefix=$prefix\", \"--with-slepc4py\"]"
-  stack_meta configure "options:=$(<"$dir/options.json")" \
+  stack_meta configure \
+    "options:=$(stack_json - "petsc:=$(stack_json_array "${options[@]}")" \
+      "slepc:=$(stack_json_array "--prefix=$prefix" --with-slepc4py)")" \
     "python_path=$prefix/lib" "build_venv=$("$venv/bin/pip" freeze | paste -sd' ')"
 }
 
@@ -282,8 +282,7 @@ smoke_petsc() {
     echo "petsc smoke: $zdotc (MKL_INTERFACE_LAYER=$MKL_INTERFACE_LAYER MKL_THREADING_LAYER=$MKL_THREADING_LAYER)"
   fi
 
-  # A singleton: no Slurm PMI library for Intel MPI (petsc_clean).
-  out=$(cd "$dir" && env -u I_MPI_PMI_LIBRARY "$BUILD_DIR/venv/bin/python" -I - "$prefix" 2>&1 <<'PY'
+  out=$(cd "$dir" && stack_singleton "$BUILD_DIR/venv/bin/python" -I - "$prefix" 2>&1 <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1] + "/lib")
 import numpy as np
@@ -348,4 +347,11 @@ PY
     "gemmt_imports=none" "iomp5=none" \
     "mkl_zdotc=${zdotc:-not an MKL stack}"
   rm -rf "$dir"
+}
+
+# activate_petsc PREFIX: PETSc and SLEPc are prefix installs, so PETSC_DIR and
+# SLEPC_DIR name PREFIX (a prefix install takes no PETSC_ARCH).
+activate_petsc() {
+  echo "export PETSC_DIR=\"$1\""
+  echo "export SLEPC_DIR=\"$1\""
 }

@@ -56,7 +56,9 @@ stack_die() {
   die "$@"
 }
 
-# stack_json FILE KEY=STRING KEY:=JSON ...: write one JSON object.
+# stack_json FILE KEY=STRING KEY:=JSON ...: write one JSON object to FILE
+# (standard output for -). Build nested values with a nested stack_json -,
+# never by pasting strings into JSON.
 stack_json() {
   local file=$1
   shift
@@ -66,16 +68,24 @@ import sys
 
 out = {}
 for arg in sys.argv[2:]:
-    if ":=" in arg and arg.index(":=") < arg.find("=") + 1:
-        key, value = arg.split(":=", 1)
+    if arg.partition("=")[0].endswith(":"):
+        key, _, value = arg.partition(":=")
         out[key] = json.loads(value)
     else:
         key, value = arg.split("=", 1)
         out[key] = value
-with open(sys.argv[1], "w") as handle:
-    json.dump(out, handle, indent=2, sort_keys=True)
-    handle.write("\n")
+text = json.dumps(out, indent=2, sort_keys=True) + "\n"
+if sys.argv[1] == "-":
+    sys.stdout.write(text)
+else:
+    with open(sys.argv[1], "w") as handle:
+        handle.write(text)
 PY
+}
+
+# stack_json_array STRING...: print the strings as one JSON array.
+stack_json_array() {
+  "$STACK_PYTHON" -B -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@"
 }
 
 # stack_meta FIELD KEY=STRING KEY:=JSON ...: one field of the provenance file.
@@ -97,6 +107,14 @@ stack_smoke() {
 # fetch and checked on every later one (ADR 0212).
 stack_tofu() {
   prov tofu "$STACKS_ROOT/src/tarballs/SHA256SUMS" "$1"
+}
+
+# stack_singleton COMMAND...: run COMMAND, an MPI singleton (one process
+# outside srun), without I_MPI_PMI_LIBRARY: Intel MPI singletons fail MPI_Init
+# with the module's Slurm libpmi2 (job 49181364, probe 49181762); mpiexec
+# needs none.
+stack_singleton() {
+  env -u I_MPI_PMI_LIBRARY "$@"
 }
 
 # --- helpers for fetch_<pkg> (login node, network) ---------------------------
@@ -379,6 +397,33 @@ source_quietly() {
   set -u
 }
 
+# stack_freeze_toolchain TOOLCHAIN FROZEN: freeze TOOLCHAIN as FROZEN at a
+# stack's first build, then refuse any build whose TOOLCHAIN differs. Two
+# first builds may race: each writes a private read-only copy beside FROZEN
+# and publishes it with ln, which never replaces an existing file, so FROZEN
+# appears whole or not at all and the loser compares against the winner's.
+stack_freeze_toolchain() {
+  local toolchain=$1 frozen=$2 tmp
+  if [[ ! -f $frozen ]]; then
+    tmp=$frozen.tmp.$(hostname).$BASHPID
+    rm -f "$tmp"
+    cp "$toolchain" "$tmp"
+    chmod a-w "$tmp"
+    ln "$tmp" "$frozen" 2>/dev/null || [[ -f $frozen ]] ||
+      die "cannot freeze $toolchain as $frozen"
+    rm -f "$tmp"
+  fi
+  cmp -s "$frozen" "$toolchain" ||
+    die "$toolchain differs from $frozen, frozen at the stack's first build: a changed toolchain is a new software stack"
+}
+
+# stack_jobs NAME: the ids of this user's pending or running jobs named NAME,
+# one per line. A failed squeue fails the caller: it never reads as "no job".
+stack_jobs() {
+  squeue --me --noheader --name="$1" --format=%i ||
+    die "squeue failed: cannot tell whether a job named $1 is pending or running"
+}
+
 # --- commands ----------------------------------------------------------------
 
 cmd_fetch() {
@@ -400,10 +445,10 @@ cmd_fetch() {
 }
 
 cmd_submit() {
-  local rebuild=() extra=() args=()
+  local flags=() extra=() args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
-    --rebuild | --allow-dirty) rebuild+=("$1") ;;
+    --rebuild | --allow-dirty) flags+=("$1") ;;
     --)
       shift
       extra=("$@")
@@ -424,7 +469,7 @@ cmd_submit() {
   local prefix=$STACKS_ROOT/$stack/$pkg-$version
   local deps=("${DEPENDS[@]}") cpus=$CPUS time=$TIME
 
-  if [[ ${#rebuild[@]} -eq 0 || ! " ${rebuild[*]} " =~ " --rebuild " ]]; then
+  if [[ " ${flags[*]} " != *" --rebuild "* ]]; then
     local now
     now=$(prov state "$prefix" "$(prov recipe-sha256 "$STACK_HOME" "$pkg")" "$(toolchain_sha "$stack")")
     [[ $now != complete ]] || {
@@ -434,14 +479,16 @@ cmd_submit() {
     [[ $now != differs ]] ||
       die "$stack/$pkg-$version was built from another recipe or toolchain: pass --rebuild to replace it"
   fi
-  [[ -z $(squeue --me --noheader --name="$name" --format=%i) ]] ||
-    die "a job named $name is already pending or running"
+  local jobs
+  jobs=$(stack_jobs "$name")
+  [[ -z $jobs ]] || die "a job named $name is already pending or running"
 
   local after=() dep depver id
   for dep in "${deps[@]}"; do
     depver=$(dep_version "$dep")
     [[ -f $STACKS_ROOT/$stack/$dep-$depver/provenance.json ]] && continue
-    id=$(squeue --me --noheader --name="stack-$stack-$dep-$depver" --format=%i | head -n 1)
+    jobs=$(stack_jobs "stack-$stack-$dep-$depver")
+    id=$(head -n 1 <<<"$jobs")
     [[ -n $id ]] || die "$stack/$dep-$depver is not built and no job builds it: submit $dep first"
     after+=("$id")
   done
@@ -464,7 +511,7 @@ cmd_submit() {
     --output="$STACKS_ROOT/logs/$stack-$pkg-$version-%j.out" \
     --export="ALL,STACK_HOME=$STACK_HOME" \
     "${dependency[@]}" "${extra[@]}" \
-    "$STACK_HOME/build.sbatch" "${rebuild[@]}" "$stack" "$pkg" "$version"
+    "$STACK_HOME/build.sbatch" "${flags[@]}" "$stack" "$pkg" "$version"
 }
 
 on_build_exit() {
@@ -512,13 +559,7 @@ cmd_build() {
   local prefix=$stack_dir/$pkg-$version
   local frozen=$stack_dir/toolchain.sh
   mkdir -p "$stack_dir"
-  if [[ -f $frozen ]]; then
-    cmp -s "$frozen" "$STACK_HOME/toolchains/$stack.sh" ||
-      die "toolchains/$stack.sh differs from $frozen, frozen at the stack's first build: a changed toolchain is a new software stack"
-  else
-    cp "$STACK_HOME/toolchains/$stack.sh" "$frozen"
-    chmod a-w "$frozen"
-  fi
+  stack_freeze_toolchain "$STACK_HOME/toolchains/$stack.sh" "$frozen"
   local recipe_sha toolchain_sha now
   recipe_sha=$(prov recipe-sha256 "$STACK_HOME" "$pkg")
   toolchain_sha=$(prov sha256 "$frozen")
@@ -553,7 +594,8 @@ cmd_build() {
       die "dependency $stack/$dep-$depver is not complete (no provenance.json)"
     source_quietly "$depprefix/activate.sh"
     activates+=("$depprefix/activate.sh")
-    depends_json+=("$dep:={\"prefix\": \"$depprefix\", \"provenance_sha256\": \"$(prov sha256 "$depprefix/provenance.json")\"}")
+    depends_json+=("$dep:=$(stack_json - "prefix=$depprefix" \
+      "provenance_sha256=$(prov sha256 "$depprefix/provenance.json")")")
   done
 
   BUILD_DIR=$TMPDIR/stack-$stack-$pkg-$version
@@ -630,13 +672,15 @@ write_activate() {
   } >"$file"
 }
 
-# check_petsc_contract: packages/petsc.sh against tools/petsc_wheelhouse.sh
-# (ADR 0209): beside the recipe tree in a checkout, inside it when shipped.
+# check_petsc_contract: packages/petsc.sh and openblas.sh's tarball pin
+# against tools/petsc_wheelhouse.sh (ADR 0209): beside the recipe tree in a
+# checkout, inside it when shipped.
 check_petsc_contract() {
   local wheelhouse
   for wheelhouse in "$STACK_HOME/../petsc_wheelhouse.sh" "$STACK_HOME/petsc_wheelhouse.sh"; do
     if [[ -f $wheelhouse ]]; then
-      prov petsc-contract "$wheelhouse" "$STACK_HOME/packages/petsc.sh"
+      prov petsc-contract "$wheelhouse" "$STACK_HOME/packages/petsc.sh" \
+        "$STACK_HOME/packages/openblas.sh"
       return
     fi
   done
@@ -705,4 +749,7 @@ main() {
   "cmd_$command" "$@"
 }
 
-main "$@"
+# Sourced (tests of the helpers), it defines the functions and runs nothing.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi
