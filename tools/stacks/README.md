@@ -32,11 +32,13 @@ stack.sh check  [STACK [PKG [VERSION]]]    # read-only
   tarball that is there is not downloaded again (its hash is still checked).
 - `submit` names the job `stack-<stack>-<pkg>-<version>`, uses the recipe's
   `CPUS` and `TIME`, QOS `$STACK_QOS` (default `gp_ehpc`) and
-  `--hint=nomultithread`, writes the log to
+  `--hint=nomultithread` (billing counts hyperthreads: without it a job of
+  `CPUS` cores is charged for twice as many), writes the log to
   `$STACKS_ROOT/logs/<stack>-<pkg>-<version>-<jobid>.out`, and passes the
   arguments after `--` straight to `sbatch` (later ones win:
   `-- --qos=gp_debug --time=01:00:00`). It refuses when a job of that name is
-  pending or running (`squeue --name`, no lock files), does nothing for a prefix
+  pending or running (`squeue --name`, no lock files; a failed `squeue` stops
+  it), does nothing for a prefix
   that is complete with this recipe and toolchain, and chains on a dependency's
   pending build with `--dependency=afterok`.
 - `check` with no argument checks every software stack under `$STACKS_ROOT`;
@@ -135,8 +137,10 @@ Open MPI, `srun --mpi=pmi2` for Intel MPI (the module sets
 `mpiexec` (Hydra) also works inside a job; PETSc's `make check` uses it.
 
 It sets no thread counts (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
-`MKL_NUM_THREADS`, `NGS_NUM_THREADS`): those belong to whoever runs. A new
-native software stack is one new toolchain file.
+`MKL_NUM_THREADS`, `NGS_NUM_THREADS`): those belong to whoever runs. Every
+Palace launch, on every stack, sets `OPENBLAS_NUM_THREADS=1` and
+`MKL_NUM_THREADS=1`: MUMPS's OpenMP threads carry the parallelism (ADR 0213).
+A new native software stack is one new toolchain file.
 
 ## Recipe interface
 
@@ -215,18 +219,26 @@ a record that lacks a field.
 | `mumps` | Palace and PETSc recipes | see below |
 | `toolchain` | `stack.sh` (`provenance.py toolchain`) | `sha256` of the frozen toolchain file, `module -t list`, compilers with `--version`, flags, BLAS, ScaLAPACK, MPI with `mpicc -show`, `cmake --version` |
 | `recipe` | `stack.sh` | gfem commit, the package's recipe hash, `dirty` |
-| `build` | `stack.sh` | job id, host, QOS, CPUs, start, end, elapsed, CPUTimeRAW so far |
+| `build` | `stack.sh` | job id, host, QOS, CPUs, start, end, elapsed, `cputime_raw_so_far` |
 | `depends` | `stack.sh` | each dependency's prefix and the sha256 of its provenance file |
+
+`build.cputime_raw_so_far` is `sacct`'s CPUTimeRAW read inside the running
+job, so it is partial (it misses the job's end): read the budget a build used
+from `sacct -j <job_id> -o CPUTimeRAW` after the job.
 
 The `mumps` block (`version`, `tarball_sha256`, `intsize`, `gemmt`,
 `blas.{vendor,version,threading}`, `scalapack`, `compiler`, `fflags`,
 `arithmetics`, `openmp`, `orderings`, `metis`) is compared across the
-complete prefixes of a software stack by `check`:
+complete prefixes of a software stack by `check`. A complete `palace` or
+`petsc` prefix without it fails. PETSc's block also records MUMPS's
+`Makefile.inc` `OPTF` and `FC` as written (`fflags_raw`, `compiler_raw`;
+optional, for information).
 
 - must match: `version`, `tarball_sha256`, `intsize`, `scalapack`,
   `compiler`, `fflags`, `blas.vendor`, `blas.version`;
 - must hold in each build: `intsize` 32, `gemmt` false (no `?gemmt_` import),
-  `metis` among the `orderings`, no `parmetis` in PETSc's;
+  `metis` among the `orderings`, no `parmetis` in PETSc's, the toolchain's
+  `fflags` among `fflags_raw` when it is there;
 - allowed differences, printed every time: `arithmetics`, `openmp`,
   `orderings`, `metis` (patch level), `blas.threading`.
 
@@ -263,5 +275,5 @@ dependency's `activate.sh`, prepends the prefix's `bin`, `lib`, `lib64` and
 `pkgconfig` directories to `PATH`, `LD_LIBRARY_PATH`, `PKG_CONFIG_PATH` and
 `CMAKE_PREFIX_PATH`, and exports `STACK_NAME` and
 `STACK_<PKG>_PROVENANCE=<prefix>/provenance.json`, plus what the recipe's
-`activate_<pkg>` adds (petsc: `PETSC_DIR` and `SLEPC_DIR`, the prefix). It sets no thread counts and no `PYTHONPATH`, and
-activates no venv.
+`activate_<pkg>` adds (petsc: `PETSC_DIR` and `SLEPC_DIR`, the prefix). It
+sets no thread counts and no `PYTHONPATH`, and activates no venv.
