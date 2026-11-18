@@ -175,7 +175,9 @@ build_ngsolve() {
     [[ -f $blas ]] || stack_die "ngsolve: no BLAS library $blas"
     options+=(-DUSE_MKL=OFF "-DLAPACK_LIBRARIES=$blas")
     ;;
-  mkl) options+=(-DUSE_MKL=ON -DMKL_LINK=sdl "-DMKL_ROOT=$MKLROOT") ;;
+  # oneAPI's MKLConfig defaults to intel_thread and then links libiomp5 even
+  # for sdl when it finds one (probe 49181122): GNU threading, as the toolchain.
+  mkl) options+=(-DUSE_MKL=ON -DMKL_LINK=sdl -DMKL_THREADING=gnu_thread -DMKL_INTERFACE=lp64 "-DMKL_ROOT=$MKLROOT") ;;
   *) stack_die "ngsolve: unknown STACK_BLAS_VENDOR '${STACK_BLAS_VENDOR:-}'" ;;
   esac
   options=("-DCMAKE_INSTALL_PREFIX=$prefix" "${NGSOLVE_OPTIONS[@]}" "${options[@]}"
