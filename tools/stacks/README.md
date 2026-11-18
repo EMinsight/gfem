@@ -32,8 +32,8 @@ stack.sh check  [STACK [PKG [VERSION]]]    # read-only
   tarball that is there is not downloaded again (its hash is still checked).
 - `submit` names the job `stack-<stack>-<pkg>-<version>`, uses the recipe's
   `CPUS` and `TIME`, QOS `$STACK_QOS` (default `gp_ehpc`) and
-  `--hint=nomultithread` (billing counts hyperthreads: without it a job of
-  `CPUS` cores is charged for twice as many), writes the log to
+  `--hint=nomultithread` (billing counts hyperthreads; with the hint each
+  of the `CPUS` is a whole core), writes the log to
   `$STACKS_ROOT/logs/<stack>-<pkg>-<version>-<jobid>.out`, and passes the
   arguments after `--` straight to `sbatch` (later ones win:
   `-- --qos=gp_debug --time=01:00:00`). It refuses when a job of that name is
