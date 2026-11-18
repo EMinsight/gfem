@@ -42,13 +42,10 @@ different way, or declined. Talking it over first saves your time.
 4. Add a test for each change in behaviour, and keep each pull request to one
    change.
 
-## Sign-off and licence
+## Licence
 
 gfem is under the [MIT licence](LICENSE), and contributions are accepted under
-the same licence. Sign off each commit (`git commit -s`) to certify the
-[Developer Certificate of Origin](https://developercertificate.org/): that you
-have the right to submit the work under this licence. If you contribute as part
-of your job, check that your employer allows it.
+the same licence.
 
 ## Coding agents
 
