@@ -310,6 +310,35 @@ def test_only_the_newest_version_of_a_package_joins_the_mumps_comparison(tmp_pat
     )
 
 
+def _older_palace(stack: Path, orderings: list[str]) -> None:
+    (stack / "palace-1.0").rename(stack / "palace-0.19.0")
+    provenance.write(
+        stack / "palace-0.19.0",
+        {**_record("palace"), "version": "0.19.0", "mumps": _mumps_palace()},
+    )
+    older = stack / "palace-0.18.1"
+    older.mkdir()
+    record = {**_record("palace"), "version": "0.18.1"}
+    record["mumps"] = {**_mumps_palace(), "version": "5.7.3", "orderings": orderings}
+    provenance.write(older, record)
+
+
+def test_metis_is_required_only_of_the_compared_newest_builds(tmp_path):
+    """METIS in both is a like-for-like rule (ADR 0209), not a single-build one."""
+    stack = _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
+    _older_palace(stack, ["amd", "pord"])
+
+    assert provenance.check_stack(stack).errors == []
+
+
+def test_a_newest_build_without_metis_fails(tmp_path):
+    petsc = {**_mumps_petsc(), "orderings": ["amd", "pord", "ptscotch"]}
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
+
+    assert any("has no metis" in error for error in report.errors)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

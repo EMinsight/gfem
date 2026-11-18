@@ -248,6 +248,9 @@ def _check_mumps(records: dict, report: Report) -> None:
         _check_mumps_block(name, record["package"], block, report)
     newest = _newest_versions(records, blocks, report)
     names = sorted(newest.values())
+    for name in names:  # METIS in both compared builds (ADR 0209)
+        if "metis" not in blocks[name]["orderings"]:
+            report.errors.append(f"mumps orderings: {name} has no metis")
     for i, first in enumerate(names):
         for second in names[i + 1 :]:
             a, b = blocks[first], blocks[second]
@@ -276,8 +279,6 @@ def _check_mumps_block(name: str, package: str, block: dict, report: Report) -> 
         )
     if block["gemmt"]:
         report.errors.append(f"mumps gemmt: {name} uses ?gemmt_ (ADR 0205)")
-    if "metis" not in block["orderings"]:
-        report.errors.append(f"mumps orderings: {name} has no metis")
     if package == "petsc" and "parmetis" in block["orderings"]:
         report.errors.append(
             f"mumps orderings: {name} has parmetis (ADR 0012, ADR 0067)"
