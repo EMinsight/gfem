@@ -432,3 +432,42 @@ def test_the_worker_stops_at_a_dof_count_off_the_pin(stack, tmp_path):
     assert outcome.reason.endswith(f" {TINY_NDOF} != pinned {TINY_NDOF + 1}")
     assert outcome.checks["dof"] == "fail"
     assert outcome.phases["assemble_s"] is None
+
+
+# --- the model a case maps to ---------------------------------------------------------
+
+
+def _conductor_model(mesh_file, region, materials, *, thickness=0.42):
+    """The worker's model of the tiny case with one ``conductor`` on ``region``."""
+    gfem = pytest.importorskip("gfem")
+    from benchmarks.adapters import gfem_worker
+    from benchmarks.harness.case import Boundary, Material
+
+    conductor = Boundary(
+        "conductor", region, {"conductivity": 2e7, "thickness": thickness}
+    )
+    case = replace(
+        load_case(TINY),
+        materials=tuple(Material(name, eps_r=1.0) for name in materials),
+        boundaries=(conductor,),
+        ports=(),
+    )
+    mesh = gfem.Mesh.from_gmsh(Path(__file__).parent / "data" / mesh_file, "um")
+    (model_conductor,) = gfem_worker.model_from_case(case, mesh).boundaries
+    return model_conductor, gfem
+
+
+def test_a_conductor_thickness_is_each_face_s_film_on_the_mesh_exterior():
+    """Palace's default (``External`` false): every face sees a film of ``thickness``.
+
+    gfem counts a mesh-exterior face's thickness twice, so the worker halves it;
+    the voided microstrip otherwise moved S by 1.6e-2 against Palace.
+    """
+    conductor, gfem = _conductor_model("parallel_plate.msh", "plates", ["fill"])
+    factor = gfem.conventions.EXTERIOR_THICKNESS_FACTOR
+    assert conductor.thickness == pytest.approx(0.42e-6 / factor)
+
+
+def test_a_conductor_thickness_on_interior_faces_is_kept():
+    conductor, _ = _conductor_model("two_box_msh41.msh", "metal_xy", ["sub", "air"])
+    assert conductor.thickness == pytest.approx(0.42e-6)
