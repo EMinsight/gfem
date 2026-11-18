@@ -17,9 +17,10 @@ Command line (``python3 provenance.py COMMAND ...``)::
                                MODULES: output of ``module -t list``)
     recipe-sha256 DIR PKG      print the recipe hash of package PKG in tree DIR
     sha256 FILE                print a file's sha256
-    petsc-contract WHEELHOUSE RECIPE
-                               compare packages/petsc.sh with tools/petsc_wheelhouse.sh;
-                               exit 1 on drift (ADR 0209)
+    petsc-contract WHEELHOUSE RECIPE OPENBLAS
+                               compare packages/petsc.sh and packages/openblas.sh's
+                               tarball pin with tools/petsc_wheelhouse.sh; exit 1 on
+                               drift (ADR 0209)
     petsc-mumps PREFIX BUILD_DIR
                                print the ``mumps`` block of a PETSc prefix (headers in
                                PREFIX/include, the other PETSC_BUILD_FILES in
@@ -303,6 +304,7 @@ _ARRAY = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=\(([^)]*)\)", re.MULTILINE)
 _PIN = re.compile(
     r"^\s*([a-z0-9]+)-([0-9][0-9.]*)\)\s*echo\s+([0-9a-f]{64})", re.MULTILINE
 )
+_OPENBLAS_PIN = re.compile(r"^\s*([0-9][0-9.]*)\)\s*pin=([0-9a-f]{64})", re.MULTILINE)
 
 
 def _bash_scalars(text: str) -> dict[str, str]:
@@ -322,17 +324,19 @@ def _bash_tarballs(text: str, name: str) -> dict[str, list[str]]:
     return {}
 
 
-def petsc_contract_drift(wheelhouse: str, recipe: str) -> list[str]:
-    """Where ``packages/petsc.sh`` differs from ``tools/petsc_wheelhouse.sh``.
+def petsc_contract_drift(wheelhouse: str, recipe: str, openblas: str) -> list[str]:
+    """Where the native recipes differ from ``tools/petsc_wheelhouse.sh``.
 
-    The native recipe copies the wheelhouse's ADR 0067 contract (ADR 0209):
-    the same PETSc/SLEPc version, the same sdists and the same ``--download``
-    tarballs (by URL and sha256). The wheelhouse's OpenBLAS is the one
-    exception: a native stack links its own BLAS.
+    The native PETSc recipe copies the wheelhouse's ADR 0067 contract (ADR
+    0209): the same PETSc/SLEPc version, the same sdists and the same
+    ``--download`` tarballs (by URL and sha256). The wheelhouse's OpenBLAS
+    tarball is built by package openblas instead, which must pin the same
+    sha256 for that release.
 
     Args:
         wheelhouse: The text of ``tools/petsc_wheelhouse.sh``.
         recipe: The text of ``tools/stacks/packages/petsc.sh``.
+        openblas: The text of ``tools/stacks/packages/openblas.sh``.
 
     Returns:
         One line per difference; empty when they agree.
@@ -363,6 +367,14 @@ def petsc_contract_drift(wheelhouse: str, recipe: str) -> list[str]:
         for name, entry in _bash_tarballs(wheelhouse, "TARBALLS").items()
         if not name.startswith("OpenBLAS-") and native.get(name) != entry
     ]
+    pinned = dict(_OPENBLAS_PIN.findall(openblas))
+    for name, entry in _bash_tarballs(wheelhouse, "TARBALLS").items():
+        release = re.fullmatch(r"OpenBLAS-([0-9.]+)\.tar\.gz", name)
+        if release and pinned.get(release.group(1)) != entry[-1]:
+            drift.append(
+                f"{name} sha256: petsc_wheelhouse.sh {entry[-1]}, packages/openblas.sh "
+                f"{pinned.get(release.group(1), '(no pin)')}"
+            )
     return drift
 
 
@@ -678,8 +690,12 @@ def _check(*stack_dirs: str) -> int:
     return 1 if failed else 0
 
 
-def _petsc_contract(wheelhouse: str, recipe: str) -> int:
-    drift = petsc_contract_drift(Path(wheelhouse).read_text(), Path(recipe).read_text())
+def _petsc_contract(wheelhouse: str, recipe: str, openblas: str) -> int:
+    drift = petsc_contract_drift(
+        Path(wheelhouse).read_text(),
+        Path(recipe).read_text(),
+        Path(openblas).read_text(),
+    )
     if not drift:
         print(f"petsc contract: matches {wheelhouse}")
         return 0
@@ -730,7 +746,7 @@ COMMANDS: dict[str, tuple[int | None, Callable[..., int]]] = {
     ),
     "recipe-sha256": (2, lambda d, p: _print(recipe_sha256(Path(d), p))),
     "sha256": (1, lambda f: _print(sha256(Path(f)))),
-    "petsc-contract": (2, _petsc_contract),
+    "petsc-contract": (3, _petsc_contract),
     "petsc-mumps": (2, _petsc_mumps),
 }
 

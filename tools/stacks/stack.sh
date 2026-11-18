@@ -672,13 +672,15 @@ write_activate() {
   } >"$file"
 }
 
-# check_petsc_contract: packages/petsc.sh against tools/petsc_wheelhouse.sh
-# (ADR 0209): beside the recipe tree in a checkout, inside it when shipped.
+# check_petsc_contract: packages/petsc.sh and openblas.sh's tarball pin
+# against tools/petsc_wheelhouse.sh (ADR 0209): beside the recipe tree in a
+# checkout, inside it when shipped.
 check_petsc_contract() {
   local wheelhouse
   for wheelhouse in "$STACK_HOME/../petsc_wheelhouse.sh" "$STACK_HOME/petsc_wheelhouse.sh"; do
     if [[ -f $wheelhouse ]]; then
-      prov petsc-contract "$wheelhouse" "$STACK_HOME/packages/petsc.sh"
+      prov petsc-contract "$wheelhouse" "$STACK_HOME/packages/petsc.sh" \
+        "$STACK_HOME/packages/openblas.sh"
       return
     fi
   done

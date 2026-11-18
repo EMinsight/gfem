@@ -1384,11 +1384,12 @@ def test_mumps_compiler_strings_of_one_gcc_match():
 
 WHEELHOUSE = STACKS.parent / "petsc_wheelhouse.sh"
 PETSC_RECIPE = STACKS / "packages" / "petsc.sh"
+OPENBLAS_RECIPE = STACKS / "packages" / "openblas.sh"
 
 
 def test_the_native_petsc_recipe_follows_the_wheelhouses_contract():
     drift = provenance.petsc_contract_drift(
-        WHEELHOUSE.read_text(), PETSC_RECIPE.read_text()
+        WHEELHOUSE.read_text(), PETSC_RECIPE.read_text(), OPENBLAS_RECIPE.read_text()
     )
 
     assert drift == []
@@ -1404,6 +1405,8 @@ def test_the_native_petsc_recipe_follows_the_wheelhouses_contract():
             "MUMPS",
         ),
         ("SHA256_slepc=a2f4cc2a", "SHA256_slepc=00000000", "slepc"),
+        ("cd7e129868320cc2", "0000000000000000", "OpenBLAS-0.3.34"),
+        ("OpenBLAS-0.3.34.tar.gz", "OpenBLAS-0.3.35.tar.gz", "OpenBLAS-0.3.35"),
     ],
 )
 def test_a_wheelhouse_that_moves_away_from_the_native_recipe_is_drift(old, new, named):
@@ -1411,13 +1414,25 @@ def test_a_wheelhouse_that_moves_away_from_the_native_recipe_is_drift(old, new, 
     assert old in wheelhouse
 
     drift = provenance.petsc_contract_drift(
-        wheelhouse.replace(old, new), PETSC_RECIPE.read_text()
+        wheelhouse.replace(old, new),
+        PETSC_RECIPE.read_text(),
+        OPENBLAS_RECIPE.read_text(),
     )
 
     assert any(named in line for line in drift), drift
 
 
-def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(tmp_path):
+@pytest.mark.parametrize(
+    ("old", "new", "named"),
+    [
+        ("PETSC_VERSION=3.26.0", "PETSC_VERSION=3.26.1", "3.26.1"),
+        ("cd7e129868320cc2", "0000000000000000", "OpenBLAS-0.3.34.tar.gz sha256"),
+    ],
+    ids=["petsc-version", "openblas-sha256"],
+)
+def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(
+    tmp_path, old, new, named
+):
     tools = tmp_path / "tools"
     shutil.copytree(
         STACKS, tools / "stacks", ignore=shutil.ignore_patterns("__pycache__")
@@ -1433,15 +1448,14 @@ def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(tmp_path):
     ]
 
     agreed = subprocess.run(run, env=env, capture_output=True, text=True, check=False)
-    (tools / "petsc_wheelhouse.sh").write_text(
-        wheelhouse.replace("PETSC_VERSION=3.26.0", "PETSC_VERSION=3.26.1")
-    )
+    assert old in wheelhouse
+    (tools / "petsc_wheelhouse.sh").write_text(wheelhouse.replace(old, new))
     drifted = subprocess.run(run, env=env, capture_output=True, text=True, check=False)
 
     assert agreed.returncode == 0, agreed.stdout + agreed.stderr
     assert "petsc contract: matches" in agreed.stdout
     assert drifted.returncode != 0
-    assert "3.26.1" in drifted.stdout
+    assert named in drifted.stdout
 
 
 # --- package ngsolve ----------------------------------------------------------
