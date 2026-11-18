@@ -123,10 +123,12 @@ petsc_blas() {
 # petsc_clean COMMAND...: run COMMAND without the compiler variables PETSc's
 # configure warns about and the petsc4py build would pick up, and without
 # MUMPS PORD's OPTFLAGS (tools/petsc_wheelhouse.sh); flags go on the
-# configure line instead.
+# configure line instead. Also without I_MPI_PMI_LIBRARY: Intel MPI
+# singletons (SLEPc's configure imports petsc4py) fail MPI_Init with the
+# module's Slurm libpmi2 (job 49181364, probe 49181762); mpiexec needs none.
 petsc_clean() {
   env -u CC -u CXX -u FC -u F77 -u F90 -u CPP -u CFLAGS -u CPPFLAGS -u CXXFLAGS \
-    -u FFLAGS -u FCFLAGS -u LDFLAGS -u OPTFLAGS -u CPATH -u C_INCLUDE_PATH \
+    -u FFLAGS -u FCFLAGS -u LDFLAGS -u OPTFLAGS -u CPATH -u C_INCLUDE_PATH -u I_MPI_PMI_LIBRARY \
     -u CPLUS_INCLUDE_PATH -u LIBRARY_PATH -u PETSC_DIR -u PETSC_ARCH -u SLEPC_DIR "$@"
 }
 
@@ -280,7 +282,8 @@ smoke_petsc() {
     echo "petsc smoke: $zdotc (MKL_INTERFACE_LAYER=$MKL_INTERFACE_LAYER MKL_THREADING_LAYER=$MKL_THREADING_LAYER)"
   fi
 
-  out=$(cd "$dir" && "$BUILD_DIR/venv/bin/python" -I - "$prefix" 2>&1 <<'PY'
+  # A singleton: no Slurm PMI library for Intel MPI (petsc_clean).
+  out=$(cd "$dir" && env -u I_MPI_PMI_LIBRARY "$BUILD_DIR/venv/bin/python" -I - "$prefix" 2>&1 <<'PY'
 import sys
 sys.path.insert(0, sys.argv[1] + "/lib")
 import numpy as np
