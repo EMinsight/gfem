@@ -2,9 +2,11 @@
 # Sourced by stack.sh with STACK_NAME set to the software stack (empty for
 # fetch). Interface: README.md, "Recipe interface".
 
+# I/O bound: some 15 000 small files on GPFS, whose file creation ran at
+# 0.6 s/file at times (jobs 49177238, 49177839); mpi4py is the only compile.
 VERSION=3.12.12
-CPUS=16
-TIME=01:00:00
+CPUS=8
+TIME=02:00:00
 STACKS=(native-oss native-intel)
 case ${STACK_NAME:-} in
 native-oss) DEPENDS=(ngsolve petsc) ;;
