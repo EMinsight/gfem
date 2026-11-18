@@ -123,6 +123,8 @@ MUMPS_MUST_MATCH = (
 )
 #: ... and fields where they may differ, printed by every check.
 MUMPS_ALLOWED = ("arithmetics", "openmp", "orderings", "metis", "blas.threading")
+#: The packages that build a MUMPS and so must record its block.
+MUMPS_PACKAGES = ("palace", "petsc")
 #: MUMPS's default selective 64-bit build: 32-bit row and column indices.
 MUMPS_INTSIZE = 32
 
@@ -199,6 +201,8 @@ def _check_mumps(records: dict, report: Report) -> None:
     for name, record in sorted(records.items()):
         block = record.get("mumps")
         if block is None:
+            if record["package"] in MUMPS_PACKAGES:
+                report.errors.append(f"{name}: no mumps block (ADR 0209)")
             continue
         missing = [
             dotted

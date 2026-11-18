@@ -210,7 +210,7 @@ def test_a_record_without_a_toolchain_hash_is_refused(tmp_path):
 
 def test_packages_of_one_stack_built_on_one_toolchain_agree(tmp_path):
     _prefix(tmp_path, "ngsolve", "a" * 64)
-    _prefix(tmp_path, "petsc", "a" * 64)
+    _prefix(tmp_path, "openblas", "a" * 64)
 
     report = provenance.check_stack(tmp_path / "native-oss")
 
@@ -219,13 +219,13 @@ def test_packages_of_one_stack_built_on_one_toolchain_agree(tmp_path):
 
 def test_packages_of_one_stack_built_on_two_toolchains_fail_the_check(tmp_path):
     _prefix(tmp_path, "ngsolve", "a" * 64)
-    _prefix(tmp_path, "petsc", "c" * 64)
+    _prefix(tmp_path, "openblas", "c" * 64)
 
     report = provenance.check_stack(tmp_path / "native-oss")
 
     assert len(report.errors) == 1
     assert "ngsolve-1.0" in report.errors[0]
-    assert "petsc-1.0" in report.errors[0]
+    assert "openblas-1.0" in report.errors[0]
 
 
 def test_an_unfinished_prefix_is_reported_but_not_compared(tmp_path):
@@ -340,6 +340,20 @@ def test_parmetis_in_gfems_petsc_fails(tmp_path):
     assert any("parmetis" in error and "petsc-1.0" in error for error in report.errors)
 
 
+@pytest.mark.parametrize("package", ["palace", "petsc"])
+def test_a_complete_mumps_build_without_a_mumps_block_fails(tmp_path, package):
+    _prefix(tmp_path, package, "a" * 64)
+    _prefix(tmp_path, "ngsolve", "a" * 64)
+
+    report = provenance.check_stack(tmp_path / "native-oss")
+
+    assert any(
+        f"{package}-1.0" in error and "no mumps block" in error
+        for error in report.errors
+    ), report.errors
+    assert not any("ngsolve" in error for error in report.errors)
+
+
 def test_a_mumps_block_missing_a_field_fails(tmp_path):
     petsc = _mumps_petsc()
     del petsc["intsize"]
@@ -449,7 +463,7 @@ def test_check_passes_on_an_empty_stacks_root(tmp_path):
 
 def test_check_fails_on_a_stack_built_on_two_toolchains(tmp_path):
     _prefix(tmp_path, "ngsolve", "a" * 64)
-    _prefix(tmp_path, "petsc", "c" * 64)
+    _prefix(tmp_path, "openblas", "c" * 64)
 
     result = _stack_sh("check", root=tmp_path)
 
