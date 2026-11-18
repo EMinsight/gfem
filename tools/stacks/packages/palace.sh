@@ -297,8 +297,10 @@ build_palace() {
     "-DPALACE_GIT_COMMIT_ID=$tag" "-DPALACE_BUILD_ID=$STACK_NAME"
     "${args[@]}"
   )
+  # Palace configure runs PETSc/MPI test programs without a launcher; Intel MPI
+  # singletons abort while I_MPI_PMI_LIBRARY (Slurm libpmi2) is set.
   echo "palace: cmake ${args[*]}"
-  env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS cmake -S "$src" -B "$build" "${args[@]}" ||
+  env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u I_MPI_PMI_LIBRARY cmake -S "$src" -B "$build" "${args[@]}" ||
     stack_die "palace: superbuild configure failed"
   stack_meta configure "options:=$(palace_json_list "${args[@]}")" \
     "edit=cmake/ExternalMUMPS.cmake: -DMUMPS_gemmt=OFF -DMUMPS_url=$mumps_tarball" \
@@ -313,12 +315,12 @@ build_palace() {
   if [[ -n ${PALACE_TARGETS:-} ]]; then
     local targets=()
     read -ra targets <<<"$PALACE_TARGETS"
-    env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS \
+    env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u I_MPI_PMI_LIBRARY \
       cmake --build "$build" -j "$STACK_JOBS" --target "${targets[@]}" ||
       stack_die "palace: probe targets ${targets[*]} failed"
     stack_die "palace: probe done (PALACE_TARGETS=${targets[*]} built); no install"
   fi
-  env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS cmake --build "$build" -j "$STACK_JOBS" ||
+  env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u I_MPI_PMI_LIBRARY cmake --build "$build" -j "$STACK_JOBS" ||
     stack_die "palace: superbuild failed"
 
   mkdir -p "$prefix/share/stack/palace"
