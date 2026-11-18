@@ -17,6 +17,7 @@ Command line (``python3 sources.py COMMAND ...``)::
     archive-git ARCHIVE        URL TAG of each pair in the CMake files of a tarball
     gitmodules                 PATH URL of each submodule
     mumps-tarball TAG          FILE URL SHA256 of the MUMPS release of a scivision tag
+    mumps-release              FILE URL of the MUMPS release of a scivision CMakeLists
     url-tarballs               FILE URL MD5 of each URL/URL_MD5 download
     tarball-name URL           the mirror file name of a tarball URL
 """
@@ -41,15 +42,16 @@ def palace_git(text: str) -> list[tuple[str, str, str]]:
     """The git dependencies of Palace's ``cmake/ExternalGitTags.cmake``.
 
     Returns:
-        ``(NAME, URL, TAG)`` for each ``EXTERN_<NAME>_URL`` that names a git
-        repository and has an ``EXTERN_<NAME>_GIT_TAG``, in file order. The
-        URL is spelled as the file spells it: the mirror path follows it.
+        ``(NAME, URL, TAG)`` for each ``EXTERN_<NAME>_URL`` that has an
+        ``EXTERN_<NAME>_GIT_TAG``, in file order (v0.18.1 spells Umpire's
+        URL without ``.git``). The URL is spelled as the file spells it: the
+        mirror path follows it.
     """
     values = _cache_strings(text)
     deps = []
     for var, url in values.items():
         match = re.fullmatch(r"EXTERN_(\w+)_URL", var)
-        if match and url.endswith(".git"):
+        if match:
             name = match.group(1)
             tag = values.get(f"EXTERN_{name}_GIT_TAG")
             if tag:
@@ -96,13 +98,15 @@ def palace_tarballs(text: str) -> list[tuple[str, str, str]]:
     """The URL (tarball) dependencies of Palace's ``ExternalGitTags.cmake``.
 
     Returns:
-        ``(NAME, FILE, URL)`` for each ``EXTERN_<NAME>_URL`` that is not a git
-        repository; ``FILE`` is its name in the mirror (:func:`tarball_name`).
+        ``(NAME, FILE, URL)`` for each ``EXTERN_<NAME>_URL`` without an
+        ``EXTERN_<NAME>_GIT_TAG`` (:func:`palace_git` takes those); ``FILE``
+        is its name in the mirror (:func:`tarball_name`).
     """
+    values = _cache_strings(text)
     tarballs = []
-    for var, url in _cache_strings(text).items():
+    for var, url in values.items():
         match = re.fullmatch(r"EXTERN_(\w+)_URL", var)
-        if match and not url.endswith(".git"):
+        if match and f"EXTERN_{match.group(1)}_GIT_TAG" not in values:
             tarballs.append((match.group(1), tarball_name(url), url))
     return tarballs
 
@@ -235,6 +239,27 @@ def mumps_tarball(text: str, tag: str) -> list[tuple[str, str, str]]:
     return [(name, f"https://mumps-solver.org/{name}", digests[version])]
 
 
+_UPSTREAM_VERSION = re.compile(r"set\(\s*MUMPS_UPSTREAM_VERSION\s+(\d+\.\d+\.\d+)\s*\)")
+
+
+def mumps_release(text: str) -> list[tuple[str, str]]:
+    """The MUMPS release a scivision/mumps ``CMakeLists.txt`` downloads.
+
+    For a scivision commit without ``cmake/source.json`` (Palace v0.18.1 pins
+    one): the default ``MUMPS_UPSTREAM_VERSION``. It carries no sha256; the
+    recipe pins it.
+
+    Returns:
+        One ``(FILE, URL)``.
+    """
+    match = _UPSTREAM_VERSION.search(text)
+    if match is None:
+        msg = "scivision/mumps CMakeLists.txt sets no MUMPS_UPSTREAM_VERSION"
+        raise ValueError(msg)
+    name = f"MUMPS_{match.group(1)}.tar.gz"
+    return [(name, f"https://mumps-solver.org/{name}")]
+
+
 _URL_MD5 = re.compile(r"\bURL\s+(\S+)\s+URL_MD5\s+([0-9a-f]{32})")
 
 
@@ -256,6 +281,7 @@ COMMANDS = {
     "git-repositories": (0, git_repositories),
     "gitmodules": (0, gitmodules),
     "mumps-tarball": (1, mumps_tarball),
+    "mumps-release": (0, mumps_release),
     "url-tarballs": (0, url_tarballs),
 }
 

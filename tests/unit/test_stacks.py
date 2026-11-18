@@ -570,6 +570,47 @@ def test_palaces_url_tarballs_keep_the_names_of_the_source_mirror():
     )
 
 
+#: An excerpt of Palace v0.18.1's ``cmake/ExternalGitTags.cmake``: Umpire is a
+#: git dependency whose URL does not end in ``.git``.
+PALACE_0181_UMPIRE = """
+set(EXTERN_UMPIRE_URL
+  "https://github.com/LLNL/Umpire" CACHE STRING
+  "URL for external UMPIRE build"
+)
+set(EXTERN_UMPIRE_GIT_BRANCH
+  "develop" CACHE STRING
+  "Git branch for external UMPIRE build"
+)
+set(EXTERN_UMPIRE_GIT_TAG
+  "ac034c775c7b4d4f4ff0f66774398373cf5fce73" CACHE STRING
+  "Git tag for external UMPIRE build"
+)
+"""
+
+
+def test_a_dependency_with_a_git_tag_is_a_git_dependency_without_dot_git():
+    text = PALACE_GIT_TAGS + PALACE_0181_UMPIRE
+
+    assert sources.palace_git(text)[-1] == (
+        "UMPIRE",
+        "https://github.com/LLNL/Umpire",
+        "ac034c775c7b4d4f4ff0f66774398373cf5fce73",
+    )
+    assert "UMPIRE" not in [name for name, _, _ in sources.palace_tarballs(text)]
+
+
+def test_a_scivision_commit_without_source_json_names_its_mumps_release():
+    cmakelists = """if(NOT MUMPS_UPSTREAM_VERSION)
+  set(MUMPS_UPSTREAM_VERSION 5.7.3)
+endif()
+set(url "https://mumps-solver.org/MUMPS_${MUMPS_UPSTREAM_VERSION}.tar.gz")
+"""
+
+    assert sources.mumps_release(cmakelists) == [
+        ("MUMPS_5.7.3.tar.gz", "https://mumps-solver.org/MUMPS_5.7.3.tar.gz")
+    ]
+
+
 @pytest.mark.parametrize(
     ("url", "name"),
     [
@@ -1167,6 +1208,67 @@ def test_an_external_mumps_file_without_the_gemmt_line_fails_the_edit(tmp_path):
 
     assert result.returncode != 0
     assert "MUMPS_gemmt" in result.stderr
+
+
+#: An excerpt of Palace v0.18.1's ``cmake/ExternalMUMPS.cmake``: no
+#: ``MUMPS_gemmt`` line; scivision's tag of that time reads ``gemmt``.
+PALACE_0181_EXTERNAL_MUMPS = """\
+list(APPEND MUMPS_OPTIONS
+  "-DMUMPS_parallel=ON"
+  "-DMUMPS_openmp=${PALACE_WITH_OPENMP}"
+)
+"""
+
+
+def test_a_superbuild_without_the_gemmt_line_turns_scivisions_gemmt_off(tmp_path):
+    cmake = tmp_path / "ExternalMUMPS.cmake"
+    cmake.write_text(PALACE_0181_EXTERNAL_MUMPS)
+
+    result = _palace_function(
+        "palace_edit_mumps_gemmt_option", str(cmake), cwd=tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert cmake.read_text() == PALACE_0181_EXTERNAL_MUMPS.replace(
+        '"-DMUMPS_parallel=ON"', '"-DMUMPS_parallel=ON" "-Dgemmt=OFF"'
+    )
+
+
+#: scivision/mumps's ``CMakeLists.txt`` before ``MUMPS_url`` existed (v5.7.3.1-26).
+SCIVISION_573_CMAKELISTS = """\
+include(FetchContent)
+
+set(url "https://mumps-solver.org/MUMPS_${MUMPS_UPSTREAM_VERSION}.tar.gz")
+
+set(FETCHCONTENT_QUIET no)
+"""
+
+
+def test_a_scivision_tree_without_mumps_url_downloads_the_mirrors_tarball(tmp_path):
+    tree = tmp_path / "mumps"
+    tree.mkdir()
+    (tree / "CMakeLists.txt").write_text(SCIVISION_573_CMAKELISTS)
+    tarball = "/stacks/src/tarballs/MUMPS_5.7.3.tar.gz"
+
+    result = _palace_function("palace_mumps_url_edit", str(tree), tarball, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert (tree / "CMakeLists.txt").read_text() == SCIVISION_573_CMAKELISTS.replace(
+        "https://mumps-solver.org/MUMPS_${MUMPS_UPSTREAM_VERSION}.tar.gz", tarball
+    )
+
+
+def test_a_scivision_tree_without_the_url_line_fails_the_edit(tmp_path):
+    tree = tmp_path / "mumps"
+    tree.mkdir()
+    (tree / "CMakeLists.txt").write_text("set(url other)\n")
+
+    result = _palace_function(
+        "palace_mumps_url_edit", str(tree), "/t.tar.gz", cwd=tmp_path
+    )
+
+    assert result.returncode != 0
+    assert "mumps-solver.org" in result.stderr
 
 
 needs_gcc = pytest.mark.skipif(

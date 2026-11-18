@@ -68,9 +68,7 @@ fetch_palace() {
     done
   done
 
-  read -r file url pin < <(
-    stack_show "$mumps_url" "$mumps_tag" cmake/source.json | stack_sources mumps-tarball "$mumps_tag"
-  )
+  read -r file url pin < <(palace_mumps_release "$mumps_url" "$mumps_tag")
   [[ -n ${pin:-} ]] || stack_die "palace $tag: no MUMPS release for scivision $mumps_tag"
   stack_tarball tarballs "$file" "$url" "$pin"
 
@@ -89,6 +87,34 @@ fetch_palace() {
     read -r dir file url pin <<<"$line"
     stack_tarball "patches/palace-$version/$dir" "$file" "$url" "$pin"
   done
+  # v0.18.1 downloads no patch; the build copies the directory either way.
+  mkdir -p "$STACK_SRC/patches/palace-$version"
+}
+
+# palace_mumps_pin VERSION: sha256 of a MUMPS release that a scivision commit
+# without cmake/source.json builds (Palace v0.18.1 pins one: MUMPS 5.7.3, as
+# the palace-solver 0.18.1 wheel). Digests from scivision/mumps v5.9.1.2's
+# cmake/source.json "mumps_sha256".
+palace_mumps_pin() {
+  case $1 in
+  5.7.3) echo 84a47f7c4231b9efdf4d4f631a2cae2bdd9adeaabc088261d15af040143ed112 ;;
+  *) stack_die "palace: no sha256 pin for MUMPS $1 (add it to palace_mumps_pin)" ;;
+  esac
+}
+
+# palace_mumps_release URL REF: "FILE URL SHA256" of the MUMPS release that
+# scivision/mumps at REF builds: from its cmake/source.json (tags v5.8 on),
+# else from its CMakeLists.txt's MUMPS_UPSTREAM_VERSION and palace_mumps_pin.
+palace_mumps_release() {
+  local url=$1 ref=$2 file release
+  if git --git-dir="$(stack_mirror_dir "$url")" cat-file -e "$ref:cmake/source.json" 2>/dev/null; then
+    stack_show "$url" "$ref" cmake/source.json | stack_sources mumps-tarball "$ref"
+    return
+  fi
+  read -r file release < <(stack_show "$url" "$ref" CMakeLists.txt | stack_sources mumps-release)
+  [[ -n ${release:-} ]] || stack_die "palace: scivision $ref names no MUMPS release"
+  local version=${file#MUMPS_}
+  echo "$file $release $(palace_mumps_pin "${version%.tar.gz}")"
 }
 
 # palace_edit_mumps FILE TARBALL: the one source edit of the superbuild (ADR
@@ -103,6 +129,45 @@ palace_edit_mumps() {
   LINE=$line EDITED=$edited awk '$0 == ENVIRON["LINE"] { print ENVIRON["EDITED"]; next } { print }' \
     "$file" >"$file.edited"
   mv "$file.edited" "$file"
+}
+
+# palace_edit_mumps_gemmt_option FILE: the superbuilds whose ExternalMUMPS.cmake
+# has no MUMPS_gemmt line (v0.18.1) build a scivision tag that reads option
+# "gemmt" (default ON): its line "-DMUMPS_parallel=ON" gains "-Dgemmt=OFF"
+# (ADR 0205).
+palace_edit_mumps_gemmt_option() {
+  local file=$1 line='  "-DMUMPS_parallel=ON"'
+  [[ $(grep -cxF -- "$line" "$file") == 1 ]] ||
+    stack_die "palace: $file has no single line $line: the gemmt edit needs updating"
+  LINE=$line EDITED="$line \"-Dgemmt=OFF\"" \
+    awk '$0 == ENVIRON["LINE"] { print ENVIRON["EDITED"]; next } { print }' "$file" >"$file.edited"
+  mv "$file.edited" "$file"
+}
+
+# palace_mumps_url_edit TREE TARBALL: in a scivision/mumps tree without
+# MUMPS_url (v5.7.3.1-26), its one download URL line names the mirror's
+# tarball (FetchContent_Populate downloads it otherwise).
+palace_mumps_url_edit() {
+  local file=$1/CMakeLists.txt
+  local line='set(url "https://mumps-solver.org/MUMPS_${MUMPS_UPSTREAM_VERSION}.tar.gz")'
+  [[ $(grep -cxF -- "$line" "$file") == 1 ]] ||
+    stack_die "palace: $file has no single line $line: the MUMPS url edit needs updating"
+  LINE=$line EDITED="set(url \"$2\")" \
+    awk '$0 == ENVIRON["LINE"] { print ENVIRON["EDITED"]; next } { print }' "$file" >"$file.edited"
+  mv "$file.edited" "$file"
+}
+
+# palace_mumps_patch URL REF PATCH TARBALL DIR: Palace's own MUMPS patch file
+# (git apply'd on the scivision checkout) regenerated, in DIR/mumps-patch,
+# as that patch plus palace_mumps_url_edit, against scivision at REF.
+palace_mumps_patch() {
+  local url=$1 ref=$2 patch=$3 tarball=$4 tree=$5/mumps-patch
+  git clone -q "$(stack_mirror_dir "$url")" "$tree" && git -C "$tree" checkout -q "$ref" ||
+    stack_die "palace: no scivision $ref in the mirror"
+  git -C "$tree" apply "$patch" || stack_die "palace: $patch does not apply to scivision $ref"
+  palace_mumps_url_edit "$tree" "$tarball"
+  git -C "$tree" diff >"$patch.new" && [[ -s $patch.new ]] || stack_die "palace: empty MUMPS patch"
+  mv "$patch.new" "$patch"
 }
 
 # The palace-solver wheel's feature flags (wheelbuild/superbuild.py
@@ -255,15 +320,24 @@ build_palace() {
 
   # MUMPS: the release its scivision tag names, checked against that tag's pin
   # (an explicit MUMPS_url turns scivision's own hash check off).
-  local mumps_file pin mumps_tarball mumps_sha
-  read -r mumps_file url pin < <(
-    stack_show "$mumps_url" "$mumps_tag" cmake/source.json | stack_sources mumps-tarball "$mumps_tag"
-  )
+  local mumps_file pin mumps_tarball mumps_sha edit
+  read -r mumps_file url pin < <(palace_mumps_release "$mumps_url" "$mumps_tag")
   mumps_tarball=$STACK_SRC/tarballs/$mumps_file
   [[ -f $mumps_tarball ]] || stack_die "no tarballs/$mumps_file: run stack.sh fetch palace $version"
   mumps_sha=$(sha256sum "$mumps_tarball" | cut -d' ' -f1)
   [[ $mumps_sha == "$pin" ]] || stack_die "palace: $mumps_file sha256 $mumps_sha is not scivision $mumps_tag's $pin"
-  palace_edit_mumps "$src/cmake/ExternalMUMPS.cmake" "$mumps_tarball"
+  if grep -qxF -- '  "-DMUMPS_gemmt=ON"' "$src/cmake/ExternalMUMPS.cmake"; then
+    palace_edit_mumps "$src/cmake/ExternalMUMPS.cmake" "$mumps_tarball"
+    edit="cmake/ExternalMUMPS.cmake: -DMUMPS_gemmt=OFF -DMUMPS_url=$mumps_tarball"
+  else
+    # v0.18.1: scivision's options of that time, Palace's single MUMPS patch file.
+    local mumps_patch=$src/extern/patch/mumps/patch_build.diff
+    grep -qxF -- '  "${CMAKE_SOURCE_DIR}/extern/patch/mumps/patch_build.diff"' "$src/cmake/ExternalMUMPS.cmake" ||
+      stack_die "palace: ExternalMUMPS.cmake applies another MUMPS patch than $mumps_patch"
+    palace_edit_mumps_gemmt_option "$src/cmake/ExternalMUMPS.cmake"
+    palace_mumps_patch "$mumps_url" "$mumps_tag" "$mumps_patch" "$mumps_tarball" "$dir"
+    edit="cmake/ExternalMUMPS.cmake: -Dgemmt=OFF; extern/patch/mumps/patch_build.diff: + set(url $mumps_tarball)"
+  fi
 
   # download_patch files, where the superbuild's configure looks for them.
   local patches=$STACK_SRC/patches/palace-$version
@@ -303,7 +377,7 @@ build_palace() {
   env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u I_MPI_PMI_LIBRARY cmake -S "$src" -B "$build" "${args[@]}" ||
     stack_die "palace: superbuild configure failed"
   stack_meta configure "options:=$(palace_json_list "${args[@]}")" \
-    "edit=cmake/ExternalMUMPS.cmake: -DMUMPS_gemmt=OFF -DMUMPS_url=$mumps_tarball" \
+    "edit=$edit" \
     "ldflags=$LDFLAGS" "blas_library=$blas_lib"
   stack_json "$dir/deps.json" "${deps[@]}"
   stack_json "$dir/tarballs.json" "${tarballs[@]}"
