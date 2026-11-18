@@ -196,9 +196,10 @@ def _canonical(dotted: str, value: object) -> object:
 
 
 def _version_key(version: str) -> tuple:
-    """``"0.18.1"`` as ``(0, 18, 1)``, for ordering versions of one package."""
+    """A sort key for versions of one package: numeric parts compare as numbers."""
     return tuple(
-        int(part) if part.isdigit() else part for part in re.split(r"[.-]", version)
+        (0, int(part), "") if part.isdigit() else (1, 0, part)
+        for part in re.split(r"[.-]", version)
     )
 
 
