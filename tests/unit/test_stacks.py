@@ -1570,6 +1570,30 @@ def test_a_palace_that_links_imported_targets_is_left_alone(tmp_path):
     assert cmake.read_text() == fixed
 
 
+#: Palace v0.18.1's top ``CMakeLists.txt``: the arguments every sub-build gets.
+PALACE_0181_DEFAULT_ARGS = """\
+set(PALACE_SUPERBUILD_DEFAULT_ARGS
+  "-DCMAKE_SHARED_LINKER_FLAGS=${CMAKE_SHARED_LINKER_FLAGS}"
+  "-DCMAKE_STATIC_LINKER_FLAGS=${CMAKE_STATIC_LINKER_FLAGS}"
+)
+"""
+
+
+def test_palace_0181s_sub_builds_find_the_openmp_openblas(tmp_path):
+    cmake = tmp_path / "CMakeLists.txt"
+    cmake.write_text(PALACE_0181_DEFAULT_ARGS)
+
+    result = _palace_function("palace_edit_blas_forward", str(cmake), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    line = '  "-DCMAKE_STATIC_LINKER_FLAGS=${CMAKE_STATIC_LINKER_FLAGS}"\n'
+    assert cmake.read_text() == PALACE_0181_DEFAULT_ARGS.replace(
+        line,
+        line + '  "-DBLAS_openblas_LIBRARY=${BLAS_openblas_LIBRARY}"\n'
+        '  "-DLAPACK_openblas_LIBRARY=${LAPACK_openblas_LIBRARY}"\n',
+    )
+
+
 #: scivision/mumps's ``CMakeLists.txt`` before ``MUMPS_url`` existed (v5.7.3.1-26).
 SCIVISION_573_CMAKELISTS = """\
 include(FetchContent)

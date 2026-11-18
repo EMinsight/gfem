@@ -170,6 +170,26 @@ palace_mumps_patch() {
   mv "$patch.new" "$patch"
 }
 
+# palace_edit_blas_forward FILE: Palace v0.18.1's top CMakeLists.txt passes
+# no BLAS choice to its sub-builds, so their FindBLAS (MUMPS, SUNDIALS) finds
+# the pthreads libopenblas beside the OpenMP one on CMAKE_PREFIX_PATH: the
+# default sub-build arguments gain the FindBLAS/FindLAPACK cache variables the
+# recipe sets (palace_blas_args; empty on an MKL stack).
+palace_edit_blas_forward() {
+  local file=$1 line='  "-DCMAKE_STATIC_LINKER_FLAGS=${CMAKE_STATIC_LINKER_FLAGS}"'
+  [[ $(grep -cxF -- "$line" "$file") == 1 ]] ||
+    stack_die "palace: $file has no single line $line: the BLAS forward edit needs updating"
+  LINE=$line awk '
+    $0 == ENVIRON["LINE"] {
+      print
+      print "  \"-DBLAS_openblas_LIBRARY=${BLAS_openblas_LIBRARY}\""
+      print "  \"-DLAPACK_openblas_LIBRARY=${LAPACK_openblas_LIBRARY}\""
+      next
+    }
+    { print }' "$file" >"$file.edited"
+  mv "$file.edited" "$file"
+}
+
 # palace_edit_pkg_targets FILE: Palace v0.18.1's palace/CMakeLists.txt links
 # STRUMPACK's optional packages by bare name ("-lzfp", and zfp installs to
 # lib64): the line becomes upstream's fix (eb94e7af2, in v0.19.0), the
@@ -355,7 +375,8 @@ build_palace() {
       stack_die "palace: ExternalMUMPS.cmake applies another MUMPS patch than $mumps_patch"
     palace_edit_mumps_gemmt_option "$src/cmake/ExternalMUMPS.cmake"
     palace_mumps_patch "$mumps_url" "$mumps_tag" "$mumps_patch" "$mumps_tarball" "$dir"
-    edit="cmake/ExternalMUMPS.cmake: -Dgemmt=OFF; extern/patch/mumps/patch_build.diff: + set(url $mumps_tarball)"
+    palace_edit_blas_forward "$src/CMakeLists.txt"
+    edit="cmake/ExternalMUMPS.cmake: -Dgemmt=OFF; extern/patch/mumps/patch_build.diff: + set(url $mumps_tarball); CMakeLists.txt: sub-builds get BLAS_openblas_LIBRARY/LAPACK_openblas_LIBRARY"
   fi
   if grep -qxF -- '      target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})' "$src/palace/CMakeLists.txt"; then
     palace_edit_pkg_targets "$src/palace/CMakeLists.txt"
