@@ -427,10 +427,10 @@ cmd_fetch() {
 }
 
 cmd_submit() {
-  local rebuild=() extra=() args=()
+  local flags=() extra=() args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
-    --rebuild | --allow-dirty) rebuild+=("$1") ;;
+    --rebuild | --allow-dirty) flags+=("$1") ;;
     --)
       shift
       extra=("$@")
@@ -451,7 +451,7 @@ cmd_submit() {
   local prefix=$STACKS_ROOT/$stack/$pkg-$version
   local deps=("${DEPENDS[@]}") cpus=$CPUS time=$TIME
 
-  if [[ ${#rebuild[@]} -eq 0 || ! " ${rebuild[*]} " =~ " --rebuild " ]]; then
+  if [[ " ${flags[*]} " != *" --rebuild "* ]]; then
     local now
     now=$(prov state "$prefix" "$(prov recipe-sha256 "$STACK_HOME" "$pkg")" "$(toolchain_sha "$stack")")
     [[ $now != complete ]] || {
@@ -493,7 +493,7 @@ cmd_submit() {
     --output="$STACKS_ROOT/logs/$stack-$pkg-$version-%j.out" \
     --export="ALL,STACK_HOME=$STACK_HOME" \
     "${dependency[@]}" "${extra[@]}" \
-    "$STACK_HOME/build.sbatch" "${rebuild[@]}" "$stack" "$pkg" "$version"
+    "$STACK_HOME/build.sbatch" "${flags[@]}" "$stack" "$pkg" "$version"
 }
 
 on_build_exit() {
