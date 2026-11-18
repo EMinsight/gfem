@@ -265,10 +265,6 @@ palace_cache() {
   sed -n "s/^$2:[A-Z]*=//p" "$1" | head -n 1
 }
 
-# palace_json_list ITEM...: the items as a JSON list.
-palace_json_list() {
-  "$STACK_PYTHON" -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "$@"
-}
 
 # build_palace VERSION PREFIX BUILD_DIR: in the job, offline; installs into PREFIX
 # and writes $STACK_META/{source,configure,mumps,entry}.json.
@@ -296,9 +292,9 @@ build_palace() {
   for line in "${lines[@]}"; do
     read -r name url ref <<<"$line"
     [[ " ${PALACE_NOT_MIRRORED[*]} " != *" $name "* ]] || continue
-    deps+=("$name:={\"url\": \"$url\", \"tag\": \"$ref\", \"commit\": \"$(
+    deps+=("$name:=$(stack_json - "url=$url" "tag=$ref" "commit=$(
       git --git-dir="$(stack_mirror_dir "$url")" rev-parse "$ref^{commit}"
-    )\"}")
+    )")")
     case $name in
     MUMPS) mumps_url=$url mumps_tag=$ref ;;
     METIS) metis_tag=$ref ;;
@@ -315,7 +311,7 @@ build_palace() {
     read -r name file url <<<"$line"
     [[ -f $STACK_SRC/tarballs/$file ]] || stack_die "no tarballs/$file: run stack.sh fetch palace $version"
     args+=("-DEXTERN_${name}_URL=$STACK_SRC/tarballs/$file")
-    tarballs+=("$name:={\"file\": \"$file\", \"sha256\": \"$(sha256sum "$STACK_SRC/tarballs/$file" | cut -d' ' -f1)\"}")
+    tarballs+=("$name:=$(stack_json - "file=$file" "sha256=$(prov sha256 "$STACK_SRC/tarballs/$file")")")
   done
 
   # MUMPS: the release its scivision tag names, checked against that tag's pin
@@ -324,7 +320,7 @@ build_palace() {
   read -r mumps_file url pin < <(palace_mumps_release "$mumps_url" "$mumps_tag")
   mumps_tarball=$STACK_SRC/tarballs/$mumps_file
   [[ -f $mumps_tarball ]] || stack_die "no tarballs/$mumps_file: run stack.sh fetch palace $version"
-  mumps_sha=$(sha256sum "$mumps_tarball" | cut -d' ' -f1)
+  mumps_sha=$(prov sha256 "$mumps_tarball")
   [[ $mumps_sha == "$pin" ]] || stack_die "palace: $mumps_file sha256 $mumps_sha is not scivision $mumps_tag's $pin"
   if grep -qxF -- '  "-DMUMPS_gemmt=ON"' "$src/cmake/ExternalMUMPS.cmake"; then
     palace_edit_mumps "$src/cmake/ExternalMUMPS.cmake" "$mumps_tarball"
@@ -374,27 +370,27 @@ build_palace() {
   # Palace configure runs PETSc/MPI test programs without a launcher; Intel MPI
   # singletons abort while I_MPI_PMI_LIBRARY (Slurm libpmi2) is set.
   echo "palace: cmake ${args[*]}"
-  env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u I_MPI_PMI_LIBRARY cmake -S "$src" -B "$build" "${args[@]}" ||
+  stack_singleton env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS cmake -S "$src" -B "$build" "${args[@]}" ||
     stack_die "palace: superbuild configure failed"
-  stack_meta configure "options:=$(palace_json_list "${args[@]}")" \
+  stack_meta configure "options:=$(stack_json_array "${args[@]}")" \
     "edit=$edit" \
     "ldflags=$LDFLAGS" "blas_library=$blas_lib"
   stack_json "$dir/deps.json" "${deps[@]}"
   stack_json "$dir/tarballs.json" "${tarballs[@]}"
   stack_meta source "url=$PALACE_URL" "tag=$tag" "commit=$commit" \
     "git_dependencies:=$(<"$dir/deps.json")" "tarballs:=$(<"$dir/tarballs.json")" \
-    "mumps_tarball:={\"file\": \"$mumps_file\", \"sha256\": \"$mumps_sha\", \"scivision_tag\": \"$mumps_tag\"}" \
+    "mumps_tarball:=$(stack_json - "file=$mumps_file" "sha256=$mumps_sha" "scivision_tag=$mumps_tag")" \
     "patches=$patches"
 
   if [[ -n ${PALACE_TARGETS:-} ]]; then
     local targets=()
     read -ra targets <<<"$PALACE_TARGETS"
-    env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u I_MPI_PMI_LIBRARY \
+    stack_singleton env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS \
       cmake --build "$build" -j "$STACK_JOBS" --target "${targets[@]}" ||
       stack_die "palace: probe targets ${targets[*]} failed"
     stack_die "palace: probe done (PALACE_TARGETS=${targets[*]} built); no install"
   fi
-  env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS -u I_MPI_PMI_LIBRARY cmake --build "$build" -j "$STACK_JOBS" ||
+  stack_singleton env -u CFLAGS -u CXXFLAGS -u FFLAGS -u FCFLAGS cmake --build "$build" -j "$STACK_JOBS" ||
     stack_die "palace: superbuild failed"
 
   mkdir -p "$prefix/share/stack/palace"
@@ -430,12 +426,12 @@ palace_mumps_meta() {
   [[ $STACK_BLAS_VENDOR != mkl ]] || threading=mkl_rt
   stack_meta mumps "version=$version" "tarball_sha256=$sha" "intsize:=$intsize" \
     "gemmt:=$([[ -z $gemmt ]] && echo false || echo true)" \
-    "gemmt_checked:=$(palace_json_list "${libs[@]##*/}")" \
+    "gemmt_checked:=$(stack_json_array "${libs[@]##*/}")" \
     "blas:={\"vendor\": \"$STACK_BLAS_VENDOR\", \"version\": \"$STACK_BLAS_VERSION\", \"threading\": \"$threading\"}" \
     "scalapack=$scalapack" "compiler=$("$fc" --version | head -n 1)" \
     "fflags=$(palace_cache "$cache" CMAKE_Fortran_FLAGS)" \
-    "arithmetics:=$(palace_json_list "${arith[@]}")" "openmp:=$openmp" \
-    "orderings:=$(palace_json_list "${orderings[@]}")" "metis=$metis"
+    "arithmetics:=$(stack_json_array "${arith[@]}")" "openmp:=$openmp" \
+    "orderings:=$(stack_json_array "${orderings[@]}")" "metis=$metis"
   [[ -z $gemmt ]] || stack_die "palace: MUMPS imports GEMMT (ADR 0205): $gemmt"
 }
 
@@ -484,7 +480,7 @@ smoke_palace() {
   [[ $out == *"$version"* ]] || stack_die "palace smoke: $bin --version does not report $version: $out"
   echo "palace smoke: $out"
   stack_meta smoke "command=srun --ntasks=1 --cpus-per-task=1 $srun_mpi bin/${bin##*/} --version" \
-    "output=$(head -n 1 <<<"$out")" "versions:=$(palace_json_list "${out}")" \
+    "output=$(head -n 1 <<<"$out")" "versions:=$(stack_json_array "${out}")" \
     "blas=$(ldd "$bin" | grep -F "${blas_line%% =>*}" | xargs)" \
     "scalapack=$(ldd "$prefix"/lib*/libdmumps.so | grep -E 'scalapack' | xargs)" \
     "srun_mpi=$srun_mpi" "gemmt=none"
