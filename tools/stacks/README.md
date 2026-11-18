@@ -128,6 +128,11 @@ per line, and exports:
 | `STACK_SCALAPACK` | reference 2.2.3, built by each code |
 | `STACK_MPI_VENDOR`, `STACK_MPI_VERSION` and runtime variables | `OMPI_MCA_pml`, `UCX_TLS`; `I_MPI_FABRICS`, `FI_PROVIDER` |
 
+Launch under Slurm with the plugin of the stack's MPI: `srun --mpi=pmix` for
+Open MPI, `srun --mpi=pmi2` for Intel MPI (the module sets
+`I_MPI_PMI_LIBRARY=/usr/lib64/libpmi2.so`; `--mpi=pmix` fails there).
+`mpiexec` (Hydra) also works inside a job; PETSc's `make check` uses it.
+
 It sets no thread counts (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
 `MKL_NUM_THREADS`, `NGS_NUM_THREADS`): those belong to whoever runs. A new
 native software stack is one new toolchain file.
