@@ -285,6 +285,31 @@ def test_the_two_mumps_builds_differ_only_where_adr_0209_allows(tmp_path):
         assert f"mumps {field}" in allowed
 
 
+def test_only_the_newest_version_of_a_package_joins_the_mumps_comparison(tmp_path):
+    stack = _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
+    (stack / "palace-1.0").rename(stack / "palace-0.19.0")
+    older = stack / "palace-0.18.1"
+    older.mkdir()
+    record = {**_record("palace"), "version": "0.18.1"}
+    record["mumps"] = {
+        **_mumps_palace(),
+        "version": "5.7.3",
+        "tarball_sha256": "e" * 64,
+    }
+    provenance.write(older, record)
+    newest = stack / "palace-0.19.0"
+    provenance.write(
+        newest, {**_record("palace"), "version": "0.19.0", "mumps": _mumps_palace()}
+    )
+
+    report = provenance.check_stack(stack)
+
+    assert report.errors == []
+    assert any(
+        "palace-0.18.1" in note and "not the newest" in note for note in report.notes
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

@@ -195,8 +195,37 @@ def _canonical(dotted: str, value: object) -> object:
     return value
 
 
+def _version_key(version: str) -> tuple:
+    """``"0.18.1"`` as ``(0, 18, 1)``, for ordering versions of one package."""
+    return tuple(
+        int(part) if part.isdigit() else part for part in re.split(r"[.-]", version)
+    )
+
+
+def _newest_versions(records: dict, blocks: dict, report: Report) -> dict[str, str]:
+    """Package -> its newest prefix among ``blocks``; older ones noted in ``report``."""
+    newest: dict[str, str] = {}
+    for name in blocks:
+        package = records[name]["package"]
+        if package not in newest or _version_key(
+            records[name]["version"]
+        ) > _version_key(records[newest[package]]["version"]):
+            newest[package] = name
+    for name in sorted(set(blocks) - set(newest.values())):
+        report.notes.append(
+            f"{name}: mumps not compared (not the newest {records[name]['package']} "
+            f"of the stack; {newest[records[name]['package']]} is)"
+        )
+    return newest
+
+
 def _check_mumps(records: dict, report: Report) -> None:
-    """Compare the ``mumps`` blocks of a stack's complete prefixes (ADR 0209)."""
+    """Compare the ``mumps`` blocks of a stack's complete prefixes (ADR 0209).
+
+    Like-for-like holds between the newest version of each package; an older
+    prefix (a comparison build such as Palace 0.18.1 next to 0.19.0) still
+    meets the single-build rules and is listed as a note.
+    """
     blocks = {}
     for name, record in sorted(records.items()):
         block = record.get("mumps")
@@ -216,7 +245,8 @@ def _check_mumps(records: dict, report: Report) -> None:
             continue
         blocks[name] = block
         _check_mumps_block(name, record["package"], block, report)
-    names = sorted(blocks)
+    newest = _newest_versions(records, blocks, report)
+    names = sorted(newest.values())
     for i, first in enumerate(names):
         for second in names[i + 1 :]:
             a, b = blocks[first], blocks[second]
