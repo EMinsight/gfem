@@ -364,14 +364,22 @@ class Ladder:
 def _load_rundirs(rundirs: Sequence[Path]) -> tuple[list[dict], dict[str, str], dict]:
     rows: list[dict] = []
     versions: dict[str, str] = {}
-    facts: dict[str, Any] = {"cost": 0.0, "commits": set(), "campaigns": []}
+    facts: dict[str, Any] = {
+        "cost": 0.0,
+        "commits": set(),
+        "ladder": set(),
+        "campaigns": [],
+    }
     for rundir in rundirs:
         manifest = records.load_campaign(rundir / "campaign.json")
         facts["campaigns"].append(manifest.id)
-        facts["commits"].add(manifest.pins.gfem.get("commit"))
+        commit = manifest.pins.gfem.get("commit")
+        facts["commits"].add(commit)
         facts["cost"] += sum(j.billed_core_h or 0.0 for j in manifest.jobs)
         if "palace" in manifest.pins.solvers:
             versions[manifest.id] = manifest.pins.solvers["palace"]
+        elif commit:
+            facts["ladder"].add((manifest.pins.gfem.get("commit_utc") or "", commit))
         rows += [json.loads(p.read_text()) for p in records.record_paths(rundir)]
     return rows, versions, facts
 
@@ -417,8 +425,13 @@ def write_from(rundirs: Sequence[Path], case_dir: Path) -> int:
     if case.mesh.sha256 not in meshes or meshes[case.mesh.sha256]["level"] != 0:
         raise LadderError(f"no L0 record on {case.name}'s pinned mesh")
     commits = sorted(c for c in facts["commits"] if c)
+    # named after the newest gfem ladder commit: a rerun of the ladder that reuses
+    # older cross-check campaigns still gets a new id
+    ladder_commit = max(facts["ladder"])[1] if facts["ladder"] else None
     doc = refdoc.skeleton(
-        case, commit=commits[0] if commits else "0000000", now=dt.datetime.now(dt.UTC)
+        case,
+        commit=ladder_commit or (commits[0] if commits else "0000000"),
+        now=dt.datetime.now(dt.UTC),
     )
     floors = ladder.same_mesh_error(ext.values)
     smallest = min(floors.values()) if floors else math.inf

@@ -379,10 +379,16 @@ def test_plan_l2_adds_no_direct_run_on_the_finest_rung(tmp_path):
     }
 
 
-def _rundir(tmp_path: Path, cid: str, rows: list[dict], palace=None) -> Path:
+def _rundir(
+    tmp_path: Path, cid: str, rows: list[dict], palace=None, commit=None
+) -> Path:
     rundir = tmp_path / cid
     manifest = json.loads(MANIFEST.read_text())
     manifest["id"] = cid
+    if commit:
+        manifest["pins"]["gfem"]["commit"], manifest["pins"]["gfem"]["commit_utc"] = (
+            commit
+        )
     manifest["pins"]["solvers"] = {"gfem": "0.1.0"}
     if palace:
         manifest["pins"]["solvers"]["palace"] = palace
@@ -502,6 +508,61 @@ def test_from_rundirs_writes_the_microstrip_reference(tmp_path, capsys):
     assert doc["target"]["met"] is False  # the rate sensitivity is about 4e-4
     assert "unresolved" in capsys.readouterr().out
     assert len(doc["provenance"]["records"]) == 9
+
+
+def test_from_rundirs_names_the_reference_after_the_ladder_commit(tmp_path):
+    # The cross-check campaign may predate the ladder (a gfem-only rerun reuses
+    # it): the id takes the newest gfem ladder commit, so a rerun gets a new id.
+    cases, freqs, entries = _ms_cases(tmp_path)
+    ms = case.load_case(cases / "microstrip")
+    n_f, n_e = len(freqs), len(entries)
+    L0, L1, L2 = ms.mesh.sha256, "1" * 64, "2" * 64
+    old = ("1a0108b" + "0" * 33, "2026-11-17T20:00:00Z")
+    new = ("7a078ba" + "0" * 33, "2026-11-18T01:00:00Z")
+
+    def rec(name, rung, solver, h, sha, *, tol=None):
+        s = _full(n_f, n_e, h)
+        return _ms_record(
+            name, rung, solver, s, freqs=freqs, entries=entries, sha=sha, tol=tol
+        )
+
+    pilot = _rundir(
+        tmp_path,
+        "p",
+        [
+            rec("a", "microstrip_L0_p1", "gfem:direct", 2.0, L0),
+            rec("b", "microstrip_L0_p2", "gfem:direct", 1.0, L0),
+            rec("c", "microstrip_L0_p3", "gfem:direct", 0.5, L0),
+            rec("d", "microstrip_L1_p2", "gfem:direct", 0.5, L1),
+            rec("e", "microstrip_L1_p3", "gfem:direct", 0.0, L1),
+        ],
+        commit=new,
+    )
+    l2 = _rundir(
+        tmp_path,
+        "l",
+        [
+            rec("f", "microstrip_L1_p2", "gfem:bddc", 0.5, L1, tol=1e-11),
+            rec("g", "microstrip_L2_p2", "gfem:bddc", 0.25, L2, tol=1e-11),
+        ],
+        commit=new,
+    )
+    pal = _rundir(
+        tmp_path,
+        "q",
+        [
+            rec("h", "microstrip_L0_p2", "palace:mumps", 1.0, L0),
+            rec("i", "microstrip_L1_p2", "palace:mumps", 0.5, L1),
+        ],
+        palace="0.18.1.post5",
+        commit=old,
+    )
+    args = ["reference", "microstrip", "--from", str(pal), str(pilot), str(l2)]
+    assert main([*args, "--cases", str(cases)]) == 0
+    doc = json.loads((cases / "microstrip" / "reference.json").read_text())
+    assert doc["id"].endswith("-7a078ba")
+    assert doc["provenance"]["gfem_commit"] == new[0]
+    assert doc["provenance"]["gfem_commits"] == [old[0], new[0]]
 
 
 def test_ship_sends_the_external_ladder_meshes_once_each():
