@@ -1032,7 +1032,12 @@ def _fake_fetch(tmp_path: Path, pin: str | None = None):
         ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "one"],
         ["git", "-C", str(repo), "tag", "v1.0"],
     ):
-        subprocess.run(command, check=True, capture_output=True)
+        # No user.name/email on cluster nodes: give git an identity here.
+        identity = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t"}
+        identity |= {"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(
+            command, check=True, capture_output=True, env={**os.environ, **identity}
+        )
     gitconfig = tmp_path / "gitconfig"
     gitconfig.write_text(
         f'[url "file://{upstream}/"]\n\tinsteadOf = https://example.invalid/\n'
