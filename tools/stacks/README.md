@@ -237,7 +237,10 @@ complete prefixes of a software stack by `check`:
 with the toolchain's `MPICC`, `stack.pth` naming the `python_path` of NGSolve
 and PETSc, and pip `mkl` only when the toolchain's BLAS is MKL and its
 `mkl_rt`, `mkl_core` and `mkl_gnu_thread` are byte-identical to
-`$MKLROOT/lib`. Its `activate.sh` exports `STACK_PYENV` and takes the venv's
+`$MKLROOT/lib`. A toolchain MKL without such a twin (another release, other
+bytes) does not stop the build: the venv gets no pip `mkl`, so gfem has no
+PARDISO there, and the smoke records `pardiso=unavailable (no byte-identical
+pip mkl)` (configure's `mkl` block says why). Its `activate.sh` exports `STACK_PYENV` and takes the venv's
 `bin` and `lib` off `PATH` and `LD_LIBRARY_PATH` again. A run copies it:
 
 ```bash

@@ -1179,6 +1179,67 @@ def test_the_mkl_hook_leaves_other_imports_and_a_venv_without_mkl_rt_alone(tmp_p
     assert result.stdout.split() == ["ok"]
 
 
+PYENV_RECIPE = STACKS / "packages" / "pyenv.sh"
+#: The MKL libraries pyenv compares with the toolchain's.
+MKL_LIBS = ("libmkl_rt.so.2", "libmkl_core.so.2", "libmkl_gnu_thread.so.2")
+
+
+def _mkl_twin(tmp_path: Path, release: str, pip_bytes: bytes) -> tuple[Path, Path]:
+    """A toolchain MKLROOT at ``release`` and a pip MKL lib dir of ``pip_bytes``."""
+    mklroot, pip = tmp_path / "mkl", tmp_path / "pip" / "lib"
+    (mklroot / "include").mkdir(parents=True)
+    (mklroot / "lib").mkdir()
+    pip.mkdir(parents=True)
+    (mklroot / "include" / "mkl_version.h").write_text(
+        f"#define INTEL_MKL_VERSION {release}\n"
+    )
+    for lib in MKL_LIBS:
+        (mklroot / "lib" / lib).write_bytes(b"module " + lib.encode())
+        (pip / lib).write_bytes(pip_bytes + lib.encode())
+    return mklroot, pip
+
+
+@pytest.mark.parametrize(
+    ("pip_bytes", "twin"), [(b"module ", True), (b"pip ", False)], ids=["twin", "not"]
+)
+def test_a_pip_mkl_is_a_twin_only_when_byte_identical(tmp_path, pip_bytes, twin):
+    mklroot, pip = _mkl_twin(tmp_path, "20250200", pip_bytes)
+
+    result = _stack_function(
+        'source "$1"; if pyenv_mkl_identical "$2"; then echo twin; '
+        'else echo "no twin: $PYENV_MKL_REASON"; fi',
+        str(PYENV_RECIPE),
+        str(pip),
+        env={"MKLROOT": str(mklroot)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    if twin:
+        assert lines[-1] == "twin"
+        assert [line.split("=")[0] for line in lines[:-1]] == list(MKL_LIBS)
+    else:
+        assert lines[-1].startswith("no twin: ")
+        assert "libmkl_rt.so.2" in lines[-1]
+
+
+def test_a_toolchain_mkl_of_another_release_than_the_pin_has_no_twin(tmp_path):
+    mklroot, _ = _mkl_twin(tmp_path, "20260000", b"module ")
+
+    result = _stack_function(
+        'source "$1"; if pyenv_mkl_twin python "$2"; then echo twin; '
+        'else echo "no twin: $PYENV_MKL_REASON"; fi',
+        str(PYENV_RECIPE),
+        str(tmp_path / "probe"),
+        env={"MKLROOT": str(mklroot)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("no twin: ")
+    assert "2026.0.0" in result.stdout
+    assert not (tmp_path / "probe").exists()
+
+
 # --- package openblas: a build with make and module faked ---------------------
 
 #: Stand-in for OpenBLAS's make: records each call, and on ``install`` puts a

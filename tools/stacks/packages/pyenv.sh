@@ -120,7 +120,8 @@ pyenv_mkl_release() {
 PYENV_MKL_LIBS=(libmkl_rt.so.2 libmkl_core.so.2 libmkl_gnu_thread.so.2)
 
 # pyenv_mkl_identical LIBDIR: each of PYENV_MKL_LIBS in LIBDIR has the sha256 of
-# its $MKLROOT/lib copy; prints "name=sha256" lines, fails otherwise.
+# its $MKLROOT/lib copy: prints "name=sha256" lines, or sets PYENV_MKL_REASON
+# and fails.
 pyenv_mkl_identical() {
   local lib ours theirs
   for lib in "${PYENV_MKL_LIBS[@]}"; do
@@ -128,10 +129,29 @@ pyenv_mkl_identical() {
       stack_die "pyenv: $lib missing in $1 or $MKLROOT/lib"
     ours=$(prov sha256 "$1/$lib")
     theirs=$(prov sha256 "$MKLROOT/lib/$lib")
-    [[ $ours == "$theirs" ]] ||
-      stack_die "pyenv: pip $PIP_MKL's $lib ($ours) is not the toolchain's $MKLROOT/lib/$lib ($theirs): no byte-identical twin, so no PARDISO here (ADR 0207)"
+    if [[ $ours != "$theirs" ]]; then
+      PYENV_MKL_REASON="pip $PIP_MKL's $lib ($ours) is not the toolchain's $MKLROOT/lib/$lib ($theirs)"
+      return 1
+    fi
     echo "$lib=$ours"
   done
+}
+
+# pyenv_mkl_twin PYTHON PROBE: whether pip $PIP_MKL is a byte-identical twin
+# of the toolchain's MKL (ADR 0207). Installs it --no-deps under the scratch
+# prefix PROBE with PYTHON and compares: prints pyenv_mkl_identical's lines,
+# or sets PYENV_MKL_REASON and fails. A stack without a twin gets no pip mkl,
+# so no PARDISO, rather than two MKL releases in one process.
+pyenv_mkl_twin() {
+  local python=$1 probe=$2 release
+  release=$(pyenv_mkl_release) || stack_die "pyenv: cannot read the toolchain's MKL release"
+  if [[ $PIP_MKL != "mkl==$release" ]]; then
+    PYENV_MKL_REASON="the toolchain's MKL is $release, the recipe pins $PIP_MKL"
+    return 1
+  fi
+  pyenv_pip "$python" --no-deps --prefix "$probe" "$PIP_MKL" ||
+    stack_die "pyenv: pip install of $PIP_MKL failed: run stack.sh fetch pyenv"
+  pyenv_mkl_identical "$probe/lib"
 }
 
 # pyenv_mkl_install SITE: in an MKL stack venv, puts _stack_mkl.py and
@@ -192,11 +212,12 @@ PY
 # and writes $STACK_META/{source,configure}.json.
 # PREFIX becomes a venv of the fetched interpreter holding gfem's runtime
 # dependencies at uv.lock's pins (pip freeze must equal PIP_RUNTIME plus
-# mpi4py, plus pip mkl in an MKL stack), mpi4py built from its sdist with the
+# mpi4py, plus pip mkl in an MKL stack whose MKL has a byte-identical pip
+# twin), mpi4py built from its sdist with the
 # toolchain's MPICC in a separate build venv, stack.pth naming each
 # dependency's python_path, byte-compiled so copies need not write.
 build_pyenv() {
-  local version=$1 prefix=$2 dir=$3 python site dep path mkl= expected freeze
+  local version=$1 prefix=$2 dir=$3 python site dep path mkl= no_twin= expected freeze
   python=$(pyenv_python "$version")
   "$python" -m venv "$prefix"
   site=$("$prefix/bin/python" -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
@@ -218,12 +239,16 @@ build_pyenv() {
 
   if [[ ${STACK_BLAS_VENDOR:-} == mkl ]]; then
     [[ -n ${MKLROOT:-} ]] || stack_die "pyenv: STACK_BLAS_VENDOR=mkl but no MKLROOT"
-    [[ $PIP_MKL == "mkl==$(pyenv_mkl_release)" ]] ||
-      stack_die "pyenv: the toolchain's MKL is $(pyenv_mkl_release), the recipe pins $PIP_MKL: fetch and pin the matching pip mkl"
-    pyenv_pip "$prefix/bin/python" --no-deps "$PIP_MKL"
-    pyenv_mkl_identical "$prefix/lib" >"$dir/mkl.txt"
-    pyenv_mkl_install "$site"
-    mkl=$PIP_MKL
+    if pyenv_mkl_twin "$prefix/bin/python" "$dir/mkl-probe" >/dev/null; then
+      pyenv_pip "$prefix/bin/python" --no-deps "$PIP_MKL"
+      pyenv_mkl_identical "$prefix/lib" >"$dir/mkl.txt" ||
+        stack_die "pyenv: $PYENV_MKL_REASON"
+      pyenv_mkl_install "$site"
+      mkl=$PIP_MKL
+    else
+      no_twin=$PYENV_MKL_REASON
+      echo "pyenv: no byte-identical pip mkl ($no_twin): the venv gets none, so no PARDISO (ADR 0207)"
+    fi
   fi
 
   for dep in "${DEPENDS[@]}"; do
@@ -263,7 +288,9 @@ for item in json.load(open(sys.argv[1]))["install"]:
   stack_meta source "python=$("$python" -VV | head -n 1)" "interpreter=$python" \
     "python_build_standalone=$PBS_RELEASE" "files:=$(<"$dir/files.json")"
   local mkl_json=null
-  if [[ -n $mkl ]]; then
+  if [[ -n $no_twin ]]; then
+    mkl_json=$(stack_json - "pip=none" "reason=no byte-identical pip mkl: $no_twin")
+  elif [[ -n $mkl ]]; then
     local pairs=()
     mapfile -t pairs <"$dir/mkl.txt"
     stack_json "$dir/mkl.json" "release=${mkl#*==}" "mklroot=$MKLROOT" "${pairs[@]}" \
@@ -305,34 +332,43 @@ pyenv_gfem_wheel() {
 # petsc4py from their prefixes through stack.pth, ngsolve at its version, no
 # ngsolve_openblas; the BLAS the process maps is the stack's (one pthreads
 # OpenBLAS, or one mkl_rt with no libiomp5); pip mkl and NGSolve's PARDISO
-# iff the toolchain's BLAS is MKL; mpi4py on the stack's MPI, its vendor
+# iff the venv holds the pip twin of the toolchain's MKL (else the smoke
+# records pardiso unavailable); mpi4py on the stack's MPI, its vendor
 # recorded with whether gfem's ranked solves accept it (ADR 0057). Then a
 # consumer's run: a cp -al copy (beside the prefix, same file system) with the
 # gfem wheel installed --no-index --no-deps, pip check clean for gfem, and a
 # tiny electrostatic solve against its exact capacitance. The copy is removed.
 smoke_pyenv() {
-  local version=$1 prefix=$2 dir ngsolve petsc blas mkl=false out wheel copy check
+  local version=$1 prefix=$2 dir ngsolve petsc blas mkl=false out wheel copy check pardiso=
   dir=$(mktemp -d "$TMPDIR/pyenv-smoke.XXXXXX")
   ngsolve=${STACK_NGSOLVE_PROVENANCE%/provenance.json}
   petsc=${STACK_PETSC_PROVENANCE%/provenance.json}
   case ${STACK_BLAS_VENDOR:-} in
   openblas) blas=$(readlink -f "${STACK_OPENBLAS_PROVENANCE%/provenance.json}/lib/lib$STACK_BLAS_LIB_PTHREADS.so") ;;
   mkl)
-    blas=$prefix/lib/libmkl_rt.so.2
-    mkl=true
+    # With pip mkl (the toolchain's twin) the process maps the venv's copy;
+    # without, the toolchain's, and there is no PARDISO.
+    if [[ -f $prefix/lib/libmkl_rt.so.2 ]]; then
+      blas=$prefix/lib/libmkl_rt.so.2
+      mkl=true
+    else
+      blas=$MKLROOT/lib/libmkl_rt.so.2
+      pardiso="unavailable (no byte-identical pip mkl)"
+    fi
     ;;
   *) stack_die "pyenv smoke: unknown STACK_BLAS_VENDOR '${STACK_BLAS_VENDOR:-}'" ;;
   esac
   [[ -f $blas ]] || stack_die "pyenv smoke: no BLAS library $blas"
   out=$(cd "$dir" && stack_singleton "$prefix/bin/python" -I - "$prefix" "$ngsolve" "$petsc" \
-    "$(dep_version ngsolve)" "$(readlink -f "$blas")" "$STACK_MPI_VENDOR" "$mkl" "$dir/template.json" 2>&1 <<'PY'
+    "$(dep_version ngsolve)" "$(readlink -f "$blas")" "$STACK_MPI_VENDOR" "$mkl" "$dir/template.json" \
+    "$STACK_BLAS_VENDOR" 2>&1 <<'PY'
 import importlib.metadata
 import importlib.util
 import json
 import os
 import sys
 
-prefix, ngsolve_prefix, petsc_prefix, version, blas, vendor, mkl, out = sys.argv[1:9]
+prefix, ngsolve_prefix, petsc_prefix, version, blas, vendor, mkl, out, blas_vendor = sys.argv[1:10]
 mkl = mkl == "true"
 assert not os.environ.get("PYTHONPATH"), os.environ["PYTHONPATH"]
 import netgen
@@ -377,7 +413,7 @@ loaded = sorted(p for p in maps if any(k in os.path.basename(p) for k in ("openb
 stack_blas = [p for p in loaded if "scipy_openblas" not in p and "numpy" not in p and "scipy" not in p]
 assert blas in maps, f"the stack BLAS {blas} is not mapped: {loaded}"
 assert not any("iomp5" in p for p in loaded), loaded
-if mkl:
+if blas_vendor == "mkl":
     assert [os.path.basename(p) for p in stack_blas if "mkl_rt" in p] == ["libmkl_rt.so.2"], loaded
 else:
     assert not any("mkl" in p for p in loaded), loaded
@@ -529,7 +565,7 @@ PY
   rm -rf "$copy"
   rmdir "$(dirname "$copy")" 2>/dev/null || true
   stack_meta smoke "command=python -I in the stack venv: ngsolve, petsc4py, mpi4py, /proc/self/maps; cp -al copy + pip install --no-index --no-deps gfem, electrostatic cube" \
-    "output=$(grep -v '^pardiso: ' <<<"$out" | tail -n 1)" "pardiso=$(sed -n 's/^pardiso: //p' <<<"$out")" \
+    "output=$(grep -v '^pardiso: ' <<<"$out" | tail -n 1)" "pardiso=${pardiso:-$(sed -n 's/^pardiso: //p' <<<"$out")}" \
     "template:=$(<"$dir/template.json")" \
     "gfem_wheel=$wheel" "gfem_wheel_sha256=$(prov sha256 "$wheel")" \
     "pip_check=$(paste -sd';' <<<"$check")" \
