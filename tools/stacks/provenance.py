@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 SCHEMA = 1
 #: The file whose presence marks a prefix complete.
 FILENAME = "provenance.json"
-#: The fields every schema-1 record holds (issue 06 Q7, ADR 0191).
+#: The fields every schema-1 record holds (ADR 0191).
 FIELDS = (
     "package",
     "version",
@@ -109,7 +109,7 @@ def read(prefix: Path) -> dict | None:
     return json.loads(path.read_text())
 
 
-#: The ``mumps`` block of a provenance file (ticket 05's table, ADR 0209):
+#: The ``mumps`` block of a provenance file (ADR 0209):
 #: fields both MUMPS builds of a stack must share ...
 MUMPS_MUST_MATCH = (
     "version",

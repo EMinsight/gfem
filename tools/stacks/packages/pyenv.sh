@@ -14,10 +14,10 @@ native-intel) DEPENDS=(ngsolve petsc) ;;
 *) DEPENDS=() ;;
 esac
 
-# The python-build-standalone release of the interpreter (ticket 07 Q2).
+# The python-build-standalone release of the interpreter (ADR 0207).
 PBS_RELEASE=20260211
 # gfem's runtime dependencies at uv.lock's pins, without the PyPI NGSolve,
-# netgen and their OpenBLAS (ticket 07 Q3). tests/unit/test_stacks.py fails
+# netgen and their OpenBLAS (ADR 0207). tests/unit/test_stacks.py fails
 # when uv.lock moves away from this list.
 PIP_RUNTIME=(
   jax==0.12.0
@@ -42,10 +42,10 @@ PIP_BUILD=(
   scikit-build-core==1.1.2
   pybind11-stubgen==3.0.0
 )
-# Built from source against the stack MPI, at uv.lock's pin (ticket 07 Q3).
+# Built from source against the stack MPI, at uv.lock's pin (ADR 0207).
 PIP_SDISTS=(mpi4py==4.1.2)
 # The pip twin of native-intel's module MKL 2025.2, installed --no-deps
-# (ticket 07 Q4); the build checks it is byte-identical to $MKLROOT/lib.
+# (ADR 0207); the build checks it is byte-identical to $MKLROOT/lib.
 PIP_MKL=mkl==2025.2.0
 
 # fetch_pyenv VERSION: login node, network only, into $STACK_SRC.

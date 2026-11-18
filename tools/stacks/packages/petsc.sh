@@ -16,7 +16,8 @@ esac
 # TARBALLS pins them (ADR 0067, ADR 0209): "NAME URL [SHA256]". PETSc's
 # configure cannot download through the tunnel (urllib), so the build passes
 # --download-<pkg>=$STACK_SRC/tarballs/NAME. ParMETIS has no pin anywhere:
-# trusted on first fetch (kept for ticket 05, gfem's stack builds without it).
+# trusted on first fetch, fetched but never passed to configure: gfem's PETSc
+# builds without ParMETIS (ADR 0012, ADR 0067).
 PETSC_TARBALLS=(
   "MUMPS_5.9.1.tar.gz https://mumps-solver.org/MUMPS_5.9.1.tar.gz 659c9b57646b5a003ac618baa1faf9dd2044e46c732b3daaccbc7158003e1b46"
   "scalapack-v2.2.3.tar.gz https://github.com/Reference-ScaLAPACK/scalapack/archive/v2.2.3.tar.gz 5d93701eca663925e98010dd8d0f45fd79b2191d74e5afa5711d587370a8b9dd"

@@ -239,7 +239,7 @@ def test_an_unfinished_prefix_is_reported_but_not_compared(tmp_path):
 
 
 def _mumps_palace() -> dict:
-    """Palace's MUMPS block as ticket 05's table describes it."""
+    """Palace's MUMPS block as ADR 0209 describes it."""
     return {
         "version": "5.9.1",
         "tarball_sha256": "659c9b57" + "0" * 56,
@@ -257,7 +257,7 @@ def _mumps_palace() -> dict:
 
 
 def _mumps_petsc() -> dict:
-    """gfem's PETSc MUMPS block as ticket 05's table describes it."""
+    """gfem's PETSc MUMPS block as ADR 0209 describes it."""
     return {
         **_mumps_palace(),
         "blas": {"vendor": "openblas", "version": "0.3.34", "threading": "pthreads"},
@@ -274,7 +274,7 @@ def _mumps_stack(root: Path, palace: dict, petsc: dict) -> Path:
     return root / "native-oss"
 
 
-def test_the_two_mumps_builds_differ_only_where_ticket_05_allows(tmp_path):
+def test_the_two_mumps_builds_differ_only_where_adr_0209_allows(tmp_path):
     report = provenance.check_stack(
         _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
     )
@@ -1064,7 +1064,7 @@ def test_the_stack_venvs_runtime_pins_are_gfems_lock():
 
     lock = tomllib.loads((STACKS.parents[1] / "uv.lock").read_text())
     packages = {package["name"]: package for package in lock["package"]}
-    # Ticket 07: never the PyPI NGSolve, netgen or their OpenBLAS in a stack venv.
+    # ADR 0207: never the PyPI NGSolve, netgen or their OpenBLAS in a stack venv.
     native = {"ngsolve", "netgen-mesher", "ngsolve-openblas"}
     closure, todo = set(), [d["name"] for d in packages["gfem"]["dependencies"]]
     while todo:
@@ -1636,7 +1636,7 @@ NATIVE_OSS = {
 }
 
 
-def test_a_petsc_build_records_its_mumps_as_ticket_05_compares_it():
+def test_a_petsc_build_records_its_mumps_block_as_check_compares_it():
     block, errors = provenance.petsc_mumps(PETSC_BUILD, NATIVE_OSS)
 
     assert errors == []
