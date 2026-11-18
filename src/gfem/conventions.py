@@ -63,15 +63,16 @@ is the time-averaged incident power in W (:math:`|a| = 1` is 1 W). When
   resistance has no reference impedance: its ``z_ref`` and its row of S are
   NaN, and it cannot be excited.
 - A `WavePort`'s S is normalized to unit modal power; its ``z_ref`` is the
-  power-voltage impedance :math:`Z_{PV}` along its ``voltage_path`` (NaN
-  without one). A wave port's S is the projection of the field on the
-  conjugated port mode, with the mode's magnetic field taken at its complex
-  wavenumber, and the mode scaled so that this projection of the mode
-  itself carries 1 W; for a lossless mode this is the modal
-  power wave. The conjugated projection separates the requested modes of
-  a shared port surface only for a lossless port line, and a lossy port
-  line reflects its own mode at order :math:`\alpha/\beta` (transmission is
-  right to the square of it).
+  modulus :math:`|V|^2 / (2 |P|)` of the power-voltage impedance
+  :math:`Z_{PV}` along its ``voltage_path`` (NaN without one), real also for
+  a lossy line, whose ``PortModeResult.Z_PV`` is complex. A wave port's S
+  is the projection of the field on the conjugated port mode, with the
+  mode's magnetic field taken at its complex wavenumber, and the mode
+  scaled so that this projection of the mode itself carries 1 W; for a
+  lossless mode this is the modal power wave. The conjugated projection
+  separates the requested modes of a shared port surface only for a
+  lossless port line, and a lossy port line reflects its own mode at
+  order :math:`\alpha/\beta` (transmission is right to the square of it).
   ``WavePort(offset=d)`` refers S to a plane :math:`d` inside the
   domain: :math:`S_{ij}` times :math:`e^{\gamma_i d_i} e^{\gamma_j d_j}`.
   Without a ``voltage_path``, the sign of a wave port's row and column of

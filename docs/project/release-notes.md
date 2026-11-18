@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Complex characteristic impedances.** `PortModeResult.Z_PV` is now the
+  complex power-voltage impedance $|V|^2 / (2 P^*)$, with $P$ the mode's
+  complex power. Earlier versions returned its modulus $|V|^2 / (2 |P|)$,
+  which differs on a lossy line (conductor loss at low frequency makes $P$
+  strongly reactive). `gfem.characteristic_impedance` takes a new
+  `current_path` and returns the power-current impedance $Z_{PI} = 2P / |I|^2$
+  with it, or the voltage-current impedance $Z_{VI} = V / I$ with both paths.
+  A wave port's reference impedance `z_ref`, and so its S-parameters, are
+  unchanged: `z_ref` stays the real modulus.
+
 - **Rerun eigenmode results on models with lossy walls.** `gfem.Eigenmode` now
   returns the modes nearest the target on a model with a `Conductor`, `Impedance`
   or `Absorbing` wall. Its starting vectors were wrong on such walls, so a solve

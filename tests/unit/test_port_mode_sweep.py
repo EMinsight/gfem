@@ -248,8 +248,13 @@ def test_the_sweep_field_is_affine_in_its_coordinates_at_one_watt(slab_mesh):
         gamma = sweep.gamma[i] * space.section.scale
         power = space.power(c, gamma, 2 * math.pi * GRID[i])
         assert abs(abs(power) - 1.0) < 1e-10
+        assert abs(power - sweep.power[i]) < 1e-10
     assert (sweep.voltage.real > 0).all()
-    np.testing.assert_allclose(sweep.z_pv, np.abs(sweep.voltage) ** 2 / 2)
+    np.testing.assert_allclose(sweep.z_ref, np.abs(sweep.voltage) ** 2 / 2)
+    np.testing.assert_allclose(
+        sweep.z_pv, np.abs(sweep.voltage) ** 2 / (2 * np.conj(sweep.power))
+    )
+    assert np.abs(sweep.z_pv.imag).max() > 0  # a lossy slab
 
 
 # --- several modes of one port surface -------------------------------------------

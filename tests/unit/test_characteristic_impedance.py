@@ -84,3 +84,74 @@ def test_traced_paths_raise(mode):
         jax.jit(lambda p: gfem.characteristic_impedance(mode, p))(
             jnp.array([(W / 2, 0.0, 0.0), (W / 2, D, 0.0)])
         )
+
+
+# --- complex impedances: Z_PV, Z_PI and Z_VI ------------------------------------
+#
+# A TEM mode in a lossy dielectric is still TEM, with the complex impedance
+# eta0 / sqrt(eps) * d / w, eps = eps' (1 - i tan_delta) under e^{+i omega t}.
+# The three definitions agree with it; the PMC side walls end an open current
+# path across the gap, so it carries the whole plate current.
+
+EPS = 4.0 * (1.0 - 0.1j)
+V_PATH = ((W / 3, 0.0, 0.0), (W / 3, D, 0.0))
+I_PATH = ((0.0, D / 2, 0.0), (W, D / 2, 0.0))
+
+
+@pytest.fixture(scope="module")
+def lossy():
+    mesh = gfem.Mesh.from_gmsh(DATA / "parallel_plate.msh", length_unit="um")
+    model = gfem.Model(
+        mesh,
+        materials={"fill": gfem.Material(eps_r=4.0, tan_delta=0.1)},
+        boundaries=[gfem.PEC("plates")],
+        ports=[
+            gfem.WavePort("p1", "port1", voltage_path=V_PATH),
+            gfem.WavePort("p2", "port2"),
+        ],
+    )
+    return gfem.solve(model, gfem.PortMode("p1", [10e9, 40e9]))
+
+
+def test_lossy_z_pv_is_complex_and_exact(lossy):
+    exact = ETA0 / np.sqrt(EPS) * D / W
+    assert np.iscomplexobj(np.asarray(lossy.Z_PV))
+    np.testing.assert_allclose(lossy.Z_PV, exact, rtol=1e-8)
+    np.testing.assert_allclose(
+        gfem.characteristic_impedance(lossy, V_PATH), lossy.Z_PV, rtol=1e-12
+    )
+
+
+@pytest.mark.parametrize("path", [I_PATH, I_PATH[::-1]])
+def test_lossy_z_pi_is_exact_in_either_direction(lossy, path):
+    z = gfem.characteristic_impedance(lossy, current_path=path)
+    np.testing.assert_allclose(z, ETA0 / np.sqrt(EPS) * D / W, rtol=1e-8)
+
+
+@pytest.mark.parametrize("path", [I_PATH, I_PATH[::-1]])
+def test_lossy_z_vi_is_exact_with_a_positive_real_part(lossy, path):
+    z = gfem.characteristic_impedance(lossy, V_PATH, current_path=path)
+    np.testing.assert_allclose(z, ETA0 / np.sqrt(EPS) * D / W, rtol=1e-8)
+
+
+def test_wave_port_reference_impedance_stays_real():
+    from gfem._sweep.port_mode import PortModeSweep
+
+    z = np.array([3.0 + 4.0j])
+    sweep = PortModeSweep.__new__(PortModeSweep)
+    object.__setattr__(sweep, "voltage", np.array([10.0 + 0j]))
+    object.__setattr__(sweep, "power", z / abs(z))
+    np.testing.assert_allclose(sweep.z_ref, [50.0])
+    np.testing.assert_allclose(sweep.z_pv, 50.0 / np.conj(z / abs(z)))
+
+
+def test_needs_a_path(lossy):
+    with pytest.raises(TypeError, match="voltage_path, a current_path"):
+        gfem.characteristic_impedance(lossy)
+
+
+def test_bad_current_path_raises(lossy):
+    with pytest.raises(ValueError, match="current_path leaves the port plane"):
+        gfem.characteristic_impedance(
+            lossy, current_path=[(0.0, D / 2, 0.0), (W, D / 2, 1e-3)]
+        )

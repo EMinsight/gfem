@@ -9,8 +9,9 @@ result reloaded with `gfem.load_result`.
 - `Field.at`: a field's value at points.
 - `interface_participation`: the electric energy of a mode in a thin
   dielectric layer on a surface, and its share of ``1 / Q``.
-- `characteristic_impedance`: the power-voltage impedance of a port mode
-  along a voltage path.
+- `characteristic_impedance`: the complex impedance of a port mode from a
+  voltage path, a current path or both (power-voltage, power-current or
+  voltage-current).
 - `power_flow`: the net power a driven field carries out of a set of
   elements, exact for the solved field (a flux of point-sampled
   ``E x H*`` is not, see the measurements recipe).
@@ -488,35 +489,69 @@ def _media(
 # --- characteristic impedance ------------------------------------------------------
 
 
-def characteristic_impedance(mode: PortModeResult, voltage_path: Any) -> jax.Array:
-    """Power-voltage characteristic impedance of a port mode along a path.
+def characteristic_impedance(
+    mode: PortModeResult,
+    voltage_path: Any = None,
+    *,
+    current_path: Any = None,
+) -> jax.Array:
+    r"""Complex characteristic impedance of a port mode, from a path or two.
 
-    ``Z_PV = |V|^2 / (2 P)`` with ``V`` the line integral of the mode's
-    electric field along ``voltage_path`` and ``P = 1 W`` the mode's power
-    For a wave port declared with a ``voltage_path``
-    the result already holds it as ``Z_PV``; this measures it along any
-    path, after the solve. A constant of the port mode solve: port modes
+    The definition follows the paths given, with :math:`V = \int E \cdot dl`
+    along ``voltage_path``, :math:`I = \int H \cdot dl` along ``current_path``
+    and :math:`P = \tfrac12 \int (E \times H^*) \cdot n\, dA` the mode's
+    complex power through the port:
+
+    - ``voltage_path`` only: power-voltage,
+      :math:`Z_{PV} = |V|^2 / (2 P^*)`.
+    - ``current_path`` only: power-current,
+      :math:`Z_{PI} = 2 P / |I|^2`.
+    - both: voltage-current, :math:`Z_{VI} = V / I`.
+
+    The three agree for a TEM mode and differ by the mode's departure from
+    it. For a lossy line all three are complex; under :math:`e^{+i\omega t}`
+    a line with conductor loss has :math:`\mathrm{Im}\, Z < 0`. For a wave
+    port declared with a ``voltage_path`` the result already holds
+    :math:`Z_{PV}` along it as ``Z_PV``; this measures any definition along
+    any path, after the solve. A constant of the port mode solve: port modes
     are not differentiable.
+
+    The current is the line integral of the in-plane magnetic field, so it
+    is the current through a closed path that encircles a conductor, or
+    through an open path whose ends lie on magnetic walls (natural edges of
+    the cross-section, where :math:`n \times H = 0`). Close a loop by
+    repeating its first point. The direction of either path does not matter
+    for :math:`Z_{PI}`; for :math:`Z_{VI}` the current is taken in the
+    direction that makes :math:`\mathrm{Re}\, Z_{VI} \ge 0`.
+
+    Example:
+        The power-current impedance of a coplanar waveguide's mode, around
+        its centre conductor (a rectangle in the port plane ``z = 0``)::
+
+            loop = [(-a, -b, 0), (a, -b, 0), (a, b, 0), (-a, b, 0), (-a, -b, 0)]
+            z_pi = gfem.characteristic_impedance(mode, current_path=loop)
 
     Args:
         mode: A port mode result.
         voltage_path: Two or more points (m) on the port surface; the path
             runs through them in order, e.g. from a ground to the signal
             conductor.
+        current_path: Two or more points (m) on the port surface, through
+            the medium around a conductor.
 
     Returns:
-        ``(n_freq,)`` ohm.
+        ``(n_freq,)`` complex, ohm.
 
     Raises:
-        TypeError: ``mode`` is not a `gfem.PortModeResult`.
-        ValueError: The path is malformed or leaves the port plane, or
+        TypeError: ``mode`` is not a `gfem.PortModeResult`, or neither path
+            is given.
+        ValueError: A path is malformed or leaves the port plane, or
             ``mode`` carries no field (a driven result computed inside
             `jax.jit`, `jax.grad` or `jax.vmap`).
-        NonDifferentiableError: ``voltage_path`` is computed inside
-            `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
-            fixed value.
+        NonDifferentiableError: A path is computed inside `jax.grad`,
+            `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
-    from gfem._sweep.port_mode import path_voltage
+    from gfem._sweep.port_mode import path_current, path_voltage
     from gfem.results import PortModeResult
 
     if not isinstance(mode, PortModeResult):
@@ -524,15 +559,19 @@ def characteristic_impedance(mode: PortModeResult, voltage_path: Any) -> jax.Arr
             "characteristic_impedance needs a gfem.PortModeResult, got "
             f"{type(mode).__name__}."
         )
-    check_fixed(voltage_path, "voltage_path must be fixed numbers")
-    path = np.asarray(voltage_path, dtype=float)
-    if path.ndim != 2 or path.shape[1] != 3 or len(path) < 2:
-        raise ValueError(
-            "voltage_path must be two or more points (m), each a 3-vector, got "
-            f"shape {path.shape}."
+    if voltage_path is None and current_path is None:
+        raise TypeError(
+            "characteristic_impedance needs a voltage_path, a current_path or "
+            "both (Z_PV, Z_PI or Z_VI)."
         )
-    if not np.isfinite(path).all():
-        raise ValueError("voltage_path must hold finite numbers.")
+    paths = {
+        what: _impedance_path(value, what)
+        for what, value in (
+            ("voltage_path", voltage_path),
+            ("current_path", current_path),
+        )
+        if value is not None
+    }
     field = mode.e_field
     if field is None:
         raise ValueError(
@@ -541,14 +580,52 @@ def characteristic_impedance(mode: PortModeResult, voltage_path: Any) -> jax.Arr
             "port's mode field is not available. Port modes are constants of the "
             "solve: solve gfem.PortMode for the port outside the transformation."
         )
-    volts = path_voltage(
-        field._space,  # noqa: SLF001
-        field._basis,  # noqa: SLF001
-        field._coords,  # noqa: SLF001
-        path,
-        mode.port,
+    space, basis, coords = field._space, field._basis, field._coords  # noqa: SLF001
+    frequency = np.asarray(mode.frequency, float)
+    gamma = np.asarray(mode.gamma, complex)
+    volts = amps = None
+    if "voltage_path" in paths:
+        volts = path_voltage(space, basis, coords, paths["voltage_path"], mode.port)
+    if "current_path" in paths:
+        amps = path_current(
+            space,
+            basis,
+            coords,
+            gamma=gamma,
+            frequency=frequency,
+            path=paths["current_path"],
+            name=mode.port,
+        )
+    if volts is not None and amps is not None:
+        z = volts / amps
+        return jnp.asarray(np.where(z.real < 0, -z, z))
+    omega = 2 * np.pi * frequency
+    scale = space.section.scale
+    power = np.array(
+        [
+            space.power(basis @ c, g * scale, w)
+            for c, g, w in zip(coords, gamma, omega, strict=True)
+        ]
     )
-    return jnp.asarray(np.abs(volts) ** 2 / 2.0)
+    if volts is not None:
+        return jnp.asarray(np.abs(volts) ** 2 / (2.0 * np.conj(power)))
+    if amps is not None:
+        return jnp.asarray(2.0 * power / np.abs(amps) ** 2)
+    raise AssertionError  # unreachable: a path was given
+
+
+def _impedance_path(value: Any, what: str) -> np.ndarray:
+    """A fixed, finite ``(n >= 2, 3)`` path in metres, or raise."""
+    check_fixed(value, f"{what} must be fixed numbers")
+    path = np.asarray(value, dtype=float)
+    if path.ndim != 2 or path.shape[1] != 3 or len(path) < 2:
+        raise ValueError(
+            f"{what} must be two or more points (m), each a 3-vector, got "
+            f"shape {path.shape}."
+        )
+    if not np.isfinite(path).all():
+        raise ValueError(f"{what} must hold finite numbers.")
+    return path
 
 
 # --- power flow --------------------------------------------------------------------

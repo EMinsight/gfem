@@ -149,7 +149,7 @@ class WavePortCoupling:
     @property
     def z_ref(self) -> np.ndarray:
         """``(n_freq,)`` reference impedance ``|V|^2 / 2`` of the scaled mode."""
-        return self.norm**2 * self.sweep.z_pv
+        return self.norm**2 * self.sweep.z_ref
 
     def deembedding(self, omega: float) -> complex:
         """``exp(gamma offset)``: S moves its reference plane into the domain."""
