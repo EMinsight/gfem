@@ -29,8 +29,9 @@ R10M = DATA / "campaigns" / "smoke-r10m.toml"
 EXAMPLE_SITE = REPO / "benchmarks" / "site.example.toml"
 COMMIT = "858bc66" + "0" * 33
 
-#: probes/12/plan.out, core-hours per job (ticket 12 Q3).
-PROBE_CORE_H = {"bragg": 25, "lcavity": 168, "microstrip": 253, "r10M_void": 50}
+#: probes/12/plan.out, core-hours per job (ticket 12 Q3); bragg less its six refused
+#: gfem runs (25 x 33 / 39; ticket 12 amendment from ticket 14).
+PROBE_CORE_H = {"bragg": 21, "lcavity": 168, "microstrip": 253, "r10M_void": 50}
 
 
 @pytest.fixture(scope="module")
@@ -90,14 +91,15 @@ def test_grid_is_every_layout_with_no_rank_across_a_socket(budget, layouts):
 # --- the smoke matrix ------------------------------------------------------------
 
 
-def test_smoke_expands_to_153_runs_in_three_jobs(smoke):
+def test_smoke_expands_to_149_runs_in_three_jobs(smoke):
     assert [job.name for job in smoke.jobs] == [
         "bragg-wheels",
         "lcavity-wheels",
         "microstrip-wheels",
     ]
-    assert [len(job.steps) for job in smoke.jobs] == [39, 39, 75]
-    assert smoke.runs == 153
+    # bragg: 11 cells x 3 repeats + gfem petsc-mumps and bddc refused, once each
+    assert [len(job.steps) for job in smoke.jobs] == [35, 39, 75]
+    assert smoke.runs == 149
 
 
 def test_smoke_cells_per_case(smoke):
@@ -123,6 +125,18 @@ def test_grid_cells_leave_out_refused_layouts(smoke):
         "16x1",
     ]
     assert {c.asked for c in smoke.cells if not c.rung} == {"grid"}
+
+
+def test_a_kind_refused_at_every_grid_layout_is_planned_once_refused(smoke):
+    cells = [c for c in smoke.cells if c.case == "bragg" and c.refused]
+    assert sorted((c.solver, c.layout, c.asked) for c in cells) == [
+        ("gfem:bddc", "1x16", "grid"),
+        ("gfem:petsc-mumps", "1x16", "grid"),
+    ]
+    for cell in cells:
+        assert "direct" in cell.refused
+        assert cell.repeats == 1
+        assert cell.default
 
 
 def test_default_layout_is_marked_in_the_grid(smoke):
@@ -181,7 +195,7 @@ def test_estimate_within_five_percent_of_the_sizing_probe(smoke, r10m):
     for job in (*smoke.jobs, *r10m.jobs):
         expected = PROBE_CORE_H[job.cases[0]]
         assert job.est_core_h == pytest.approx(expected, rel=0.05), job.name
-    assert smoke.est_core_h == pytest.approx(446, rel=0.05)
+    assert smoke.est_core_h == pytest.approx(442, rel=0.05)
 
 
 def test_qos_by_time_limit_and_limit_is_one_and_a_half_estimates(smoke):
@@ -224,7 +238,7 @@ def test_group_stack_packs_every_case_into_one_job(tmp_path, site):
     (job,) = plan.jobs
     assert job.name == "wheels"
     assert job.cases == ("bragg", "lcavity", "microstrip")
-    assert len(job.steps) == 153
+    assert len(job.steps) == 149
 
 
 # --- same-code direct runs ---------------------------------------------------------
@@ -239,8 +253,8 @@ def test_same_code_direct_added_when_missing(tmp_path, site):
     )
     plan = matrix.expand(campaign, site, commit=COMMIT)
     added = [c for c in plan.cells if c.added_for]
+    # bragg's gfem:bddc is refused (Bloch phase), so it needs no gfem direct run
     assert sorted((c.case, c.solver, c.layout) for c in added) == [
-        ("bragg", "gfem:direct", "1x16"),
         ("bragg", "palace:mumps", "16x1"),
         ("lcavity", "gfem:direct", "1x16"),
         ("lcavity", "palace:mumps", "16x1"),
@@ -398,7 +412,7 @@ def test_plan_command_prints_jobs_and_total(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "bragg-wheels" in out
     assert "microstrip-wheels" in out
-    assert "153 runs" in out
+    assert "149 runs" in out
     assert (tmp_path / "r" / "campaign.json").is_file()
 
 

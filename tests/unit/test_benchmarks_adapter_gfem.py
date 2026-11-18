@@ -108,6 +108,8 @@ def test_gfem_is_registered():
         ("lcavity", "bddc", "2x8", "eigen"),
         ("bragg", "petsc-mumps", "2x8", "eigen"),
         ("bragg", "direct", "1x16", None),
+        ("bragg", "petsc-mumps", "1x16", "direct"),
+        ("bragg", "bddc", "1x16", "direct"),
         ("r10M_void", "bddc", "28x4", None),
         ("r10M_void", "bddc", "1x224", "one node"),
         ("microstrip", "mumps", "1x16", "no kind"),
