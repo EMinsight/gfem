@@ -98,7 +98,35 @@ def _region(name: str | None, what: str) -> str:
     return name
 
 
-def _boundary(kind: str, region: str | None, settings: dict[str, Any], unit: float):
+def _film_thickness(mesh: gfem.Mesh, region: str, thickness: float) -> float:
+    """The gfem ``Conductor.thickness`` of a case ``thickness`` on ``region``.
+
+    A case thickness is the film every face of the surface sees, Palace's
+    meaning with ``External`` false (its default). gfem counts the thickness
+    of a mesh-exterior face :data:`gfem.conventions.EXTERIOR_THICKNESS_FACTOR`
+    times (a voided conductor's shell), so it is divided there; interior faces
+    (a shell around an excluded volume) keep it. A surface with both is refused:
+    one gfem thickness cannot carry both.
+    """
+    on = mesh.triangle_tags == mesh.region(region).tag
+    exterior = (mesh.triangle_neighbours[on] < 0).any(axis=1)
+    if exterior.all():
+        return thickness / gfem.conventions.EXTERIOR_THICKNESS_FACTOR
+    if exterior.any():
+        raise ValueError(
+            f"conductor {region!r} has mesh-exterior and interior faces; "
+            "its thickness is not mapped for gfem"
+        )
+    return thickness
+
+
+def _boundary(
+    kind: str,
+    region: str | None,
+    settings: dict[str, Any],
+    unit: float,
+    mesh: gfem.Mesh,
+):
     """One gfem boundary of a case ``[[boundaries]]`` entry."""
     if kind == "periodic":
         return gfem.Periodic((settings["donor"], settings["receiver"]))
@@ -110,7 +138,9 @@ def _boundary(kind: str, region: str | None, settings: dict[str, Any], unit: flo
         return gfem.Conductor(
             surface,
             float(settings["conductivity"]),
-            None if thickness is None else float(thickness) * unit,
+            None
+            if thickness is None
+            else _film_thickness(mesh, surface, float(thickness) * unit),
         )
     if kind == "absorbing":
         order: Any = int(settings.get("order", 1))
@@ -121,7 +151,8 @@ def _boundary(kind: str, region: str | None, settings: dict[str, Any], unit: flo
 def model_from_case(case: Case, mesh: gfem.Mesh) -> gfem.Model:
     """The gfem model of a case: a one-to-one map, the case being name-keyed.
 
-    Lengths in the case are in the mesh's unit and become metres here.
+    Lengths in the case are in the mesh's unit and become metres here. A
+    conductor's thickness is each face's film (:func:`_film_thickness`).
     """
     unit = UNITS[case.mesh.length_unit]
     materials = {}
@@ -137,7 +168,7 @@ def model_from_case(case: Case, mesh: gfem.Mesh) -> gfem.Model:
             **{k: v for k, v in values.items() if v is not None}
         )
     boundaries = [
-        _boundary(b.kind, b.region, b.settings, unit) for b in case.boundaries
+        _boundary(b.kind, b.region, b.settings, unit, mesh) for b in case.boundaries
     ]
     ports = []
     for p in case.ports:
