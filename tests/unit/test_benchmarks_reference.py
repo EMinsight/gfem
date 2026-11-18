@@ -399,6 +399,8 @@ def _rundir(tmp_path: Path, cid: str, rows: list[dict], palace=None) -> Path:
 
 def _ms_cases(tmp_path: Path) -> tuple[Path, list[float], tuple[str, ...]]:
     cases = _copy_case(tmp_path / "cases", "microstrip")
+    # start from no reference: the committed one would mask what the ladder writes
+    (cases / "microstrip" / "reference.json").unlink(missing_ok=True)
     ms = case.load_case(cases / "microstrip")
     return (
         cases,
