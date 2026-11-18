@@ -667,6 +667,29 @@ def test_palaces_patches_land_where_its_build_tree_looks_for_them():
     ]
 
 
+def test_palace_0181s_mfem_patches_land_where_its_build_tree_looks_for_them():
+    text = """
+set(MFEM_PATCH_DIR "${CMAKE_BINARY_DIR}/extern/mfem-patches")
+function(download_mfem_patch FILENAME URL SHA256)
+  set(PATCH_FILE "${MFEM_PATCH_DIR}/${FILENAME}")
+endfunction()
+download_mfem_patch(
+  mfem_pr5502.diff
+  "https://github.com/mfem/mfem/commit/3091ba40b238c4008b67216314bb26da6738b833.diff"
+  52ccf3332f87aaf7ebc84674448226201c04343a3e298006bea5fd8be8e92533
+)
+"""
+
+    assert sources.patches(text) == [
+        (
+            "extern/mfem-patches",
+            "mfem_pr5502.diff",
+            "https://github.com/mfem/mfem/commit/3091ba40b238c4008b67216314bb26da6738b833.diff",
+            "52ccf3332f87aaf7ebc84674448226201c04343a3e298006bea5fd8be8e92533",
+        )
+    ]
+
+
 def test_git_dependencies_hard_coded_in_cmake_are_read_from_the_tag():
     catch2 = """
   FetchContent_Declare(Catch2

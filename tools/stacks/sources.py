@@ -114,10 +114,18 @@ def palace_tarballs(text: str) -> list[tuple[str, str, str]]:
 _DOWNLOAD_PATCH = re.compile(
     r"download_patch\(\s*\w+\s+\"([^\"]+)\"\s+(\S+)\s+\"([^\"]+)\"\s+([0-9a-f]{64})\s*\)"
 )
+#: Palace v0.18.1's MFEM-only form: ``download_mfem_patch(FILE "URL" SHA256)``
+#: into ``${MFEM_PATCH_DIR}`` (a ``file(DOWNLOAD)`` with ``EXPECTED_HASH``, which
+#: also skips a file already there with that hash).
+_DOWNLOAD_MFEM_PATCH = re.compile(
+    r"download_mfem_patch\(\s*(\S+)\s+\"([^\"]+)\"\s+([0-9a-f]{64})\s*\)"
+)
 
 
 def patches(text: str) -> list[tuple[str, str, str, str]]:
     """The ``download_patch`` calls of Palace's CMake files (``PatchHelpers.cmake``).
+
+    Also v0.18.1's ``download_mfem_patch`` calls (:data:`_DOWNLOAD_MFEM_PATCH`).
 
     Palace downloads these at configure time into its build tree; a file that
     is already there with the expected hash is not downloaded again, so the
@@ -131,7 +139,11 @@ def patches(text: str) -> list[tuple[str, str, str, str]]:
     values = _cache_strings(text)
     found = []
     prefix = "${CMAKE_BINARY_DIR}/"
-    for written, name, url, digest in _DOWNLOAD_PATCH.findall(text):
+    calls = _DOWNLOAD_PATCH.findall(text) + [
+        ("${MFEM_PATCH_DIR}", name, url, digest)
+        for name, url, digest in _DOWNLOAD_MFEM_PATCH.findall(text)
+    ]
+    for written, name, url, digest in calls:
         directory = written
         for _ in range(5):
             resolved = re.sub(
