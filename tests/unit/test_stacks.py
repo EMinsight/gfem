@@ -1527,6 +1527,49 @@ def test_a_superbuild_without_the_gemmt_line_turns_scivisions_gemmt_off(tmp_path
     )
 
 
+#: Palace v0.18.1's ``palace/CMakeLists.txt``: STRUMPACK's optional packages
+#: linked by bare name (zfp installs to lib64, where the linker never looks).
+PALACE_0181_STRUMPACK_PKGS = """\
+  foreach(pkg zfp slate lapackpp blaspp ptscotch)
+    find_package(${pkg} QUIET)
+    if(${pkg}_FOUND)
+      message(STATUS "Found ${pkg}")
+      target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})
+    endif()
+  endforeach()
+"""
+
+
+def test_palace_0181_links_strumpacks_packages_by_their_imported_target(tmp_path):
+    cmake = tmp_path / "CMakeLists.txt"
+    cmake.write_text(PALACE_0181_STRUMPACK_PKGS)
+
+    result = _palace_function("palace_edit_pkg_targets", str(cmake), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert cmake.read_text() == PALACE_0181_STRUMPACK_PKGS.replace(
+        "      target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})\n",
+        "      if(TARGET ${pkg}::${pkg})\n"
+        "        target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg}::${pkg})\n"
+        "      else()\n"
+        "        target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})\n"
+        "      endif()\n",
+    )
+
+
+def test_a_palace_that_links_imported_targets_is_left_alone(tmp_path):
+    cmake = tmp_path / "CMakeLists.txt"
+    fixed = PALACE_0181_STRUMPACK_PKGS.replace(
+        "PUBLIC ${pkg})", "PUBLIC ${pkg}::${pkg})"
+    )
+    cmake.write_text(fixed)
+
+    result = _palace_function("palace_edit_pkg_targets", str(cmake), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert cmake.read_text() == fixed
+
+
 #: scivision/mumps's ``CMakeLists.txt`` before ``MUMPS_url`` existed (v5.7.3.1-26).
 SCIVISION_573_CMAKELISTS = """\
 include(FetchContent)

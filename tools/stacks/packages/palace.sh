@@ -170,6 +170,29 @@ palace_mumps_patch() {
   mv "$patch.new" "$patch"
 }
 
+# palace_edit_pkg_targets FILE: Palace v0.18.1's palace/CMakeLists.txt links
+# STRUMPACK's optional packages by bare name ("-lzfp", and zfp installs to
+# lib64): the line becomes upstream's fix (eb94e7af2, in v0.19.0), the
+# imported target <pkg>::<pkg> when it exists. Nothing to do without the line.
+palace_edit_pkg_targets() {
+  local file=$1 line='      target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})'
+  local count
+  count=$(grep -cxF -- "$line" "$file" || true)
+  [[ $count != 0 ]] || return 0
+  [[ $count == 1 ]] || stack_die "palace: $file has $count lines $line: the package-target edit needs updating"
+  LINE=$line awk '
+    $0 == ENVIRON["LINE"] {
+      print "      if(TARGET ${pkg}::${pkg})"
+      print "        target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg}::${pkg})"
+      print "      else()"
+      print "        target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})"
+      print "      endif()"
+      next
+    }
+    { print }' "$file" >"$file.edited"
+  mv "$file.edited" "$file"
+}
+
 # The palace-solver wheel's feature flags (wheelbuild/superbuild.py
 # FEATURE_FLAGS), so wheel and native differ in toolchain, not in features.
 # GPU dependencies off.
@@ -333,6 +356,10 @@ build_palace() {
     palace_edit_mumps_gemmt_option "$src/cmake/ExternalMUMPS.cmake"
     palace_mumps_patch "$mumps_url" "$mumps_tag" "$mumps_patch" "$mumps_tarball" "$dir"
     edit="cmake/ExternalMUMPS.cmake: -Dgemmt=OFF; extern/patch/mumps/patch_build.diff: + set(url $mumps_tarball)"
+  fi
+  if grep -qxF -- '      target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})' "$src/palace/CMakeLists.txt"; then
+    palace_edit_pkg_targets "$src/palace/CMakeLists.txt"
+    edit="$edit; palace/CMakeLists.txt: STRUMPACK packages as <pkg>::<pkg> (upstream eb94e7af2)"
   fi
 
   # download_patch files, where the superbuild's configure looks for them.
