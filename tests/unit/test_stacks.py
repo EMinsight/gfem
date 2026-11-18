@@ -1590,6 +1590,18 @@ def test_a_petsc_build_that_breaks_adr_0067_or_0209_is_refused(file, old, new, n
     assert any(named in error for error in errors), errors
 
 
+def test_a_petsc_prefix_activates_as_petsc_dir_and_slepc_dir():
+    result = _stack_function(
+        'source "$1"; eval "$(activate_petsc /stacks/native-oss/petsc-3.26.0)"; '
+        'echo "$PETSC_DIR $SLEPC_DIR"; bash -c \'echo "$PETSC_DIR"\'',
+        str(PETSC_RECIPE),
+    )
+
+    assert result.returncode == 0, result.stderr
+    prefix = "/stacks/native-oss/petsc-3.26.0"
+    assert result.stdout.splitlines() == [f"{prefix} {prefix}", prefix]
+
+
 #: The line of PETSc 3.26.0's ``config/BuildSystem/config/packages/MUMPS.py``
 #: that gives MUMPS ``-DGEMMT_AVAILABLE`` (tools/petsc_wheelhouse.sh).
 GEMMT_LINE = "    if self.blasLapack.checkForRoutine('dgemmt'):\n"

@@ -260,5 +260,5 @@ dependency's `activate.sh`, prepends the prefix's `bin`, `lib`, `lib64` and
 `pkgconfig` directories to `PATH`, `LD_LIBRARY_PATH`, `PKG_CONFIG_PATH` and
 `CMAKE_PREFIX_PATH`, and exports `STACK_NAME` and
 `STACK_<PKG>_PROVENANCE=<prefix>/provenance.json`, plus what the recipe's
-`activate_<pkg>` adds. It sets no thread counts and no `PYTHONPATH`, and
+`activate_<pkg>` adds (petsc: `PETSC_DIR` and `SLEPC_DIR`, the prefix). It sets no thread counts and no `PYTHONPATH`, and
 activates no venv.

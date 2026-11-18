@@ -347,3 +347,10 @@ PY
     "mkl_zdotc=${zdotc:-not an MKL stack}"
   rm -rf "$dir"
 }
+
+# activate_petsc PREFIX: PETSc and SLEPc are prefix installs, so PETSC_DIR and
+# SLEPC_DIR name PREFIX (a prefix install takes no PETSC_ARCH).
+activate_petsc() {
+  echo "export PETSC_DIR=\"$1\""
+  echo "export SLEPC_DIR=\"$1\""
+}
