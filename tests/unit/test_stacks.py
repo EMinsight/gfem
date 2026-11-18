@@ -876,6 +876,102 @@ def test_the_stack_venvs_runtime_pins_are_gfems_lock():
     ]
 
 
+#: Stand-in for an NGSolve built with USE_MKL: its PARDISO wrapper module never
+#: runs its own lookup of the pip mkl (``_find_mkl``).
+FAKE_NGSOLVE_PARDISO = """
+_pardiso = None
+_mkl_free_buffers = None
+calls = []
+
+
+def _find_mkl():
+    global _pardiso, _mkl_free_buffers
+    calls.append(1)
+    _pardiso = _mkl_free_buffers = "bound"
+"""
+
+
+def _pyenv_mkl_site(tmp_path: Path) -> Path:
+    """A site directory as an MKL stack venv's build leaves it, plus a fake ngsolve."""
+    site = tmp_path / "site"
+    (site / "ngsolve" / "solvers").mkdir(parents=True)
+    (site / "ngsolve" / "__init__.py").write_text(
+        "import ngsolve.solvers.mkl_pardiso as _mkl_pardiso\n"
+    )
+    (site / "ngsolve" / "solvers" / "__init__.py").write_text("")
+    (site / "ngsolve" / "solvers" / "mkl_pardiso.py").write_text(FAKE_NGSOLVE_PARDISO)
+    result = subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            'source "$1"; pyenv_mkl_install "$2"',
+            "-",
+            str(STACKS / "packages" / "pyenv.sh"),
+            str(site),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return site
+
+
+def _in_site(site: Path, code: str) -> subprocess.CompletedProcess:
+    """Run ``code`` in a fresh interpreter that processes ``site``'s .pth files.
+
+    ``site`` goes first on ``sys.path``: the fake ngsolve shadows a real one.
+    """
+    first = (
+        f"import site, sys; site.addsitedir({str(site)!r}); "
+        f"sys.path.insert(0, {str(site)!r})"
+    )
+    return subprocess.run(
+        [sys.executable, "-I", "-c", f"{first}; {code}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_an_mkl_stack_venv_binds_ngsolves_pardiso_wrapper_on_import(tmp_path):
+    site = _pyenv_mkl_site(tmp_path)
+
+    assert (site / "stack-mkl.pth").read_text().split() == ["import", "_stack_mkl"]
+    result = _in_site(
+        site,
+        "import ngsolve; from ngsolve.solvers import mkl_pardiso as m; "
+        "print(m._pardiso, m.calls)",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["bound", "[1]"]
+
+
+def test_the_mkl_hook_leaves_a_wrapper_that_found_mkl_itself_alone(tmp_path):
+    site = _pyenv_mkl_site(tmp_path)
+    pardiso = site / "ngsolve" / "solvers" / "mkl_pardiso.py"
+    pardiso.write_text(FAKE_NGSOLVE_PARDISO + "_find_mkl()\n")
+
+    result = _in_site(
+        site, "from ngsolve.solvers import mkl_pardiso as m; print(m.calls)"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["[1]"]
+
+
+def test_the_mkl_hook_leaves_other_imports_and_a_venv_without_mkl_rt_alone(tmp_path):
+    site = _pyenv_mkl_site(tmp_path)
+
+    # sys.prefix here has no lib/libmkl_rt.so.2: nothing to preload, no error
+    result = _in_site(site, "import json, _stack_mkl; print('ok')")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout.split() == ["ok"]
+
+
 # --- package openblas: a build with make and module faked ---------------------
 
 #: Stand-in for OpenBLAS's make: records each call, and on ``install`` puts a

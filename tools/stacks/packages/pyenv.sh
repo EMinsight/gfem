@@ -134,6 +134,60 @@ pyenv_mkl_identical() {
   done
 }
 
+# pyenv_mkl_install SITE: in an MKL stack venv, puts _stack_mkl.py and
+# stack-mkl.pth (which imports it at interpreter start) into SITE.
+# NGSolve built with USE_MKL (MKL_LINK=sdl) never binds its Python MKL
+# PARDISO wrapper (ngsolve.solvers.mkl_pardiso runs _find_mkl only when
+# not USE_MKL), and its own preload of the pip mkl_rt is skipped without
+# intel-openmp (never installed: ADR 0207), so gfem would see no PARDISO
+# (job 49183876). The module loads the venv's pip mkl_rt global first, so any
+# later library that links mkl_rt (NGSolve, PETSc) maps that one copy, and
+# runs the wrapper's _find_mkl when ngsolve imports it unbound.
+pyenv_mkl_install() {
+  local site=$1
+  cat >"$site/_stack_mkl.py" <<'PY'
+"""MKL stack venv: one pip mkl_rt per process, NGSolve's PARDISO wrapper bound.
+
+Imported at interpreter start by stack-mkl.pth (tools/stacks/packages/pyenv.sh).
+"""
+
+import ctypes
+import os
+import sys
+from importlib.machinery import PathFinder
+
+_MKL_RT = os.path.join(sys.prefix, "lib", "libmkl_rt.so.2")
+_WRAPPER = "ngsolve.solvers.mkl_pardiso"
+
+
+class _BindPardiso:
+    """Runs the wrapper's own MKL lookup after its module, if it left it unbound."""
+
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name != _WRAPPER:
+            return None
+        spec = PathFinder.find_spec(name, path, target)
+        if spec is None or spec.loader is None:
+            return spec
+        exec_module = spec.loader.exec_module
+
+        def exec_and_bind(module):
+            exec_module(module)
+            if getattr(module, "_pardiso", None) is None and hasattr(module, "_find_mkl"):
+                module._find_mkl()
+
+        spec.loader.exec_module = exec_and_bind
+        return spec
+
+
+if os.path.isfile(_MKL_RT):
+    ctypes.CDLL(_MKL_RT, mode=ctypes.RTLD_GLOBAL)
+sys.meta_path.insert(0, _BindPardiso)
+PY
+  echo "import _stack_mkl" >"$site/stack-mkl.pth"
+}
+
 # build_pyenv VERSION PREFIX BUILD_DIR: in the job, offline; installs into PREFIX
 # and writes $STACK_META/{source,configure}.json.
 # PREFIX becomes a venv of the fetched interpreter holding gfem's runtime
@@ -168,6 +222,7 @@ build_pyenv() {
       stack_die "pyenv: the toolchain's MKL is $(pyenv_mkl_release), the recipe pins $PIP_MKL: fetch and pin the matching pip mkl"
     pyenv_pip "$prefix/bin/python" --no-deps "$PIP_MKL"
     pyenv_mkl_identical "$prefix/lib" >"$dir/mkl.txt"
+    pyenv_mkl_install "$site"
     mkl=$PIP_MKL
   fi
 
@@ -207,7 +262,8 @@ for item in json.load(open(sys.argv[1]))["install"]:
   if [[ -n $mkl ]]; then
     local pairs=()
     mapfile -t pairs <"$dir/mkl.txt"
-    stack_json "$dir/mkl.json" "release=${mkl#*==}" "mklroot=$MKLROOT" "${pairs[@]}"
+    stack_json "$dir/mkl.json" "release=${mkl#*==}" "mklroot=$MKLROOT" "${pairs[@]}" \
+      "hook=stack-mkl.pth imports _stack_mkl: preloads <venv>/lib/libmkl_rt.so.2 RTLD_GLOBAL, runs ngsolve.solvers.mkl_pardiso._find_mkl if unbound"
     mkl_json=$(<"$dir/mkl.json")
   fi
   stack_json "$dir/pth.json" "lines:=$("$STACK_PYTHON" -c 'import json, sys; print(json.dumps(open(sys.argv[1]).read().split()))' "$site/stack.pth")"
