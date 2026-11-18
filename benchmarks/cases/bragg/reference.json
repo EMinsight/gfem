@@ -1,19 +1,19 @@
 {
  "format": "suite-reference/1",
- "id": "bragg-20261117-d2a9be3",
+ "id": "bragg-20261118-a0ff134",
  "family": "bragg",
- "computed_utc": "2026-11-17T22:42:49Z",
+ "computed_utc": "2026-11-18T11:01:45Z",
  "case": {
   "name": "bragg",
-  "definition_sha256": "12d5bc3490322cbbca1be204fdc554c8fe56d20f46e5e79a473e964235cd4da9",
-  "mesh_sha256": "18019f17cc2a57c17f77a09fa1d429d3a0305ddec0e5a9c5b46eaf4203f1e88e"
+  "definition_sha256": "8de244805b83cc3fe5e305f99406dd7a611483c99bd71698b6318c412b9f4690",
+  "mesh_sha256": "6b6cdb1893d61a8572cfff7a54c62c7bb9965b613b453ef089edac15c1aaa163"
  },
  "physics_sha256": "31884fe9c043d961c8200d8bf5178571b48a01b18a36df348c2d3ccd142a3b20",
  "meshes": {
-  "18019f17cc2a57c17f77a09fa1d429d3a0305ddec0e5a9c5b46eaf4203f1e88e": {
+  "6b6cdb1893d61a8572cfff7a54c62c7bb9965b613b453ef089edac15c1aaa163": {
    "level": 0,
    "dof": {
-    "3": 1560
+    "3": 10620
    }
   }
  },
@@ -37,16 +37,16 @@
   "3": 1e-05
  },
  "same_mesh_error": {
-  "3": 1.8626e-09
+  "3": 2.9203e-11
  },
  "cross_checks": [],
  "inputs": {
   "meshes": [
-   "18019f17cc2a57c17f77a09fa1d429d3a0305ddec0e5a9c5b46eaf4203f1e88e"
+   "6b6cdb1893d61a8572cfff7a54c62c7bb9965b613b453ef089edac15c1aaa163"
   ]
  },
  "provenance": {
-  "gfem_commit": "d2a9be37d60b90b9914641f6bdb02df57256ee9a",
+  "gfem_commit": "a0ff134e45f01ec96f0177df1efea0c0815a5583",
   "script": "benchmarks/references/closed.py",
   "formula": "TMM (Rytov) roots at k = pi/a, a = 10 mm, d1 = 4 mm, eps 2 and 9 (tests/periodic_cases.py tmm_frequency and C3_* at 858bc66)"
  },
