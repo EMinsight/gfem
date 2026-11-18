@@ -873,8 +873,9 @@ def s_entry(
     ``adjoints`` holds z_i per (frequency, port) where port i is not
     excited or its functional is not parallel to its excitation (a hybrid
     lossy wave port mode).
-    Elsewhere z_i = c_i x_i with |c_i| = 1 / (4 k0 eta0) for fields of 1 W
-    incident (ADR 0089): the free dual, x_i itself on that scale.
+    Elsewhere z_i = c_i x_i with c_i = -i / (4 k0 eta0) for fields of 1 W
+    incident (ADR 0089), times kappa^2 / N for a wave port with a voltage
+    path (ADR 0214, `_free_dual_ratio`): the free dual, x_i on that scale.
     """
     cache = cache or RecoveryCache()
     adjoints = adjoints or {}
@@ -954,7 +955,7 @@ def _s_pair(
         rj, scale = cache.wave_residuals(recovery, adjoint, k), 1.0 + 0j
     else:
         rj = cache.wave_residuals(recovery, fields[f, to], k)
-        scale = -1j / (4 * k * eta0)
+        scale = -1j / (4 * k * eta0) * _free_dual_ratio(model, result, to)[n]
     curl, mass = _pair(recovery, ri, rj, eps_inverse)
     return _SPair(
         curl=curl,
@@ -1807,6 +1808,22 @@ def _potential_view(field: Field, values: np.ndarray) -> ngs.GridFunction:
     gf = ngs.GridFunction(space)
     gf.vec.FV().NumPy()[:] = values
     return gf
+
+
+def _free_dual_ratio(model: Model, result: DrivenResult, name: str) -> np.ndarray:
+    """A port's free dual scale over ``-i / (4 k0 eta0)``, per frequency.
+
+    1 for a lumped port; a wave port's ``kappa^2 / N``
+    (`gfem._engine.wave_ports.free_dual_ratio`): 1 unless it has a voltage
+    path on a lossy line.
+    """
+    from gfem._boundaries import WavePort
+    from gfem._engine.wave_ports import free_dual_ratio
+
+    port = next(p for p in model.ports if p.name == name)
+    if not isinstance(port, WavePort) or name not in result.port_modes:
+        return np.ones(len(result.s.frequency), complex)
+    return free_dual_ratio(result.port_modes[name], port)
 
 
 def _deembedding(result: DrivenResult) -> dict[str, np.ndarray]:

@@ -206,7 +206,7 @@ def _forced_adjoint(model, result, port, frequency=None):
         frequency = float(result.s.frequency[0])
     omega = 2 * math.pi * frequency
     rule = DrivenRule(model, gfem.Driven([frequency]), OPTIONS)
-    system, ports = rule._ports(model, warn=False)
+    system, ports = rule._ports(model)
     i = model.port_names.index(port)
     with system.sweep() as sweep:
         functional = ports.functional(omega)[:, i]
@@ -241,12 +241,12 @@ def test_a_parallel_port_s_estimate_is_its_adjoint_estimate(tmp_path, tan_delta)
 
 @pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
 def test_refine_mesh_solves_the_adjoint_with_the_forward(tmp_path, prepares):
-    # A slab's hybrid lossy port mode is not parallel to its excitation: the
-    # S entry needs port p2's adjoint. refine_mesh solves it as one more
-    # right-hand side of its own solve (one factorization); error_estimate
-    # on the finished result factorizes once more, for the same estimate.
+    # Port p2 is not excited, so the S entry needs its adjoint. refine_mesh
+    # solves it as one more right-hand side of its own solve (one
+    # factorization); error_estimate on the finished result factorizes once
+    # more, for the same estimate.
     model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05, offset=1e-3)
-    problem = gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY])
+    problem = gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY], excite="p1")
     estimator = gfem.QuantityEstimator(s=("p2", "p1"))
     refined = gfem.refine_mesh(
         model, problem, estimator=estimator, max_cycles=0, options=OPTIONS
@@ -255,10 +255,6 @@ def test_refine_mesh_solves_the_adjoint_with_the_forward(tmp_path, prepares):
     again = gfem.error_estimate(refined.result, estimator, model=refined.model)
     assert len(prepares) == 2
     assert again.value == pytest.approx(refined.estimate.value, rel=1e-8)
-    _, own = _forced_adjoint(model, refined.result, "p2")
-    assert own is None
-    free = kernels.s_entry(model, refined.result, "p2", "p1")[0].value
-    assert abs(free / refined.estimate.value - 1) > 1e-6
 
 
 @pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
@@ -378,7 +374,7 @@ def test_an_unconverged_adjoint_is_not_reported_as_a_forward_miss(
     with pytest.raises(gfem.LinearSolverConvergenceError) as caught:
         gfem.refine_mesh(
             model,
-            gfem.Driven(frequencies),
+            gfem.Driven(frequencies, excite="p1"),  # p2's row takes an adjoint
             estimator=gfem.QuantityEstimator(s=("p2", "p1")),
             max_cycles=0,
             options=OPTIONS,

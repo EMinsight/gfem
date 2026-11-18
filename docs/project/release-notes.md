@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Behaviour change: exact S on lossy wave ports.** A wave port's S now reads
+  the field's modal amplitudes by the biorthogonal projection on its modes,
+  and S relates pseudo-waves (Marks and Williams). With a `voltage_path`, a
+  wave port's `z_ref` is its mode's complex $Z_{PV}$, so a uniform lossy line
+  is matched to its own mode ($S_{11} = 0$, $S_{21} = e^{-\gamma L}$), and
+  `s.y()`, `s.z()` and `s.renormalize()` give the line's exact network. Earlier
+  versions projected on the conjugated mode, which reflected a lossy line's own
+  mode at about $\alpha/\beta$ and mixed the modes of a lossy shared port
+  surface; S of lossy wave ports from earlier versions should be recomputed.
+  Lossless wave ports and lumped ports are unchanged. `z_ref` is now complex,
+  `gfem.conventions.WAVES` is `"pseudo"`, and `PortModeProjectionWarning` is no
+  longer emitted (the class stays for warning filters). Give every wave port a
+  `voltage_path`, or none: on a lossy line S is symmetric only between ports of
+  one kind.
+
 - **Complex characteristic impedances.** `PortModeResult.Z_PV` is now the
   complex power-voltage impedance $|V|^2 / (2 P^*)$, with $P$ the mode's
   complex power. Earlier versions returned its modulus $|V|^2 / (2 |P|)$,

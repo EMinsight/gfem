@@ -169,11 +169,11 @@ returning a wrong value:
   surface requests is partly reflected at the port, not converted; request
   it to see where its power goes ({py:obj}`gfem.SkippedPortModeWarning`
   flags a mode left out below a requested one).
-- **Lossy port lines**: wave-port S is the conjugated modal projection, exact
-  for a lossless port line. On a shared port surface with loss in the
-  cross-section the modes do not fully separate, and a lossy port line
-  reflects its own mode at the order of its attenuation per radian,
-  alpha/beta; {py:obj}`gfem.PortModeProjectionWarning` states either error.
+- **Lossy port lines**: wave-port S reads each mode by the biorthogonal
+  projection, so a lossy port line is matched to its own mode and the modes
+  of a lossy shared port surface separate. With a `voltage_path` its
+  reference impedance is the mode's complex $Z_{PV}$ (pseudo-waves); give
+  every wave port a `voltage_path`, or none, for a symmetric S.
 
 - **Dispersive materials**: a permittivity law is isotropic, and
   `mu_r` does not disperse; give an anisotropic or magnetic material constant

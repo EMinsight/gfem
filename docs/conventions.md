@@ -10,7 +10,7 @@ it. The device is the parallel-plate line of {doc}`get-started`.
 | --- | --- | --- |
 | `gfem.conventions.TIME_DEPENDENCE` | `exp(+iωt)` | the time dependence of every complex phasor |
 | `gfem.conventions.PHASOR` | `peak` | a phasor's modulus is the amplitude of the oscillation, not its RMS value |
-| `gfem.conventions.WAVES` | `power` | S relates power waves |
+| `gfem.conventions.WAVES` | `pseudo` | S relates pseudo-waves (power waves on a real reference) |
 | `gfem.conventions.INCIDENT_POWER` | 1 W | the incident power behind every driven field |
 | `gfem.conventions.MODE_ENERGY` | 1 J | the electric energy every mode field stores |
 | `gfem.conventions.BLOCH_PHASE` | `E(r + a) = exp(-i k·a) E(r)` | the phase across a periodic pair |
@@ -92,8 +92,11 @@ every field.
 
 ## S-parameters and power
 
-S relates {term}`power waves` (`WAVES`), normalized to each port's
-{term}`reference impedance`: $|a|^2$ is the power a wave carries, in W.
+S relates {term}`pseudo-waves` (`WAVES`), normalized to each port's
+{term}`reference impedance`. On a real reference they are the
+{term}`power waves`: $|a|^2$ is the power a wave carries, in W. A wave port
+with a `voltage_path` on a lossy line has a complex reference, its mode's
+$Z_{PV}$, and the line is then matched to its own mode: $S_{11} = 0$.
 Phasors are peak values (`PHASOR`), so a time-averaged power carries a
 factor $\tfrac{1}{2}$, as in $|V|^2 / (2R)$. A kept driven field is the field for
 `INCIDENT_POWER`, 1 W, sent into the excited port, with every other port
@@ -307,7 +310,7 @@ minus_one = floquet.diffraction_orders["air -1"]
 print(np.asarray(minus_one.wave_vector[0]), bool(minus_one.propagating[0]))
 print(complex(s["air -1", "glass TE"][0]))
 at = {name: i for i, name in enumerate(s.ports)}
-print(np.asarray(s.z_ref)[0, [at["glass TE"], at["air TE"], at["air -1"]]])  # ohm
+print(np.asarray(s.z_ref).real[0, [at["glass TE"], at["air TE"], at["air -1"]]])  # ohm
 ```
 
 ```text

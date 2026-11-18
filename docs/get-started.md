@@ -64,7 +64,7 @@ What each part does:
   $x = 0$, `"port2"` at $x = 40$ mm), driven along $+z$. Its impedance is the empty
   line's, $\eta_0 h / w \approx 62.8$ Ω.
 - {py:obj}`gfem.Driven` asks for a frequency-domain solve at three frequencies in Hz,
-  with port `"p1"` excited. `result.s` holds the S-parameters as power waves
+  with port `"p1"` excited. `result.s` holds the S-parameters as waves
   normalized to the port impedances; see {py:obj}`gfem.conventions`.
 
 You can check the numbers by hand. The ceramic section is a line of impedance

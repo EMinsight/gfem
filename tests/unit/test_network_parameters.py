@@ -1,8 +1,9 @@
 """`gfem.NetworkParameters`: Y, Z, renormalization and Touchstone export.
 
-Expected values come from closed forms: a load's power-wave reflection
-(Kurokawa) and a transmission line's ABCD matrix, converted to Z by
-Z11 = A / C, Z12 = det / C, Z21 = 1 / C, Z22 = D / C.
+Expected values come from closed forms: a load's pseudo-wave reflection
+(Marks and Williams; the power-wave one for a real reference) and a
+transmission line's ABCD matrix, converted to Z by Z11 = A / C,
+Z12 = det / C, Z21 = 1 / C, Z22 = D / C.
 """
 
 import math
@@ -32,8 +33,8 @@ def _net(values, z_ref, ports=("p1", "p2"), excited=None, frequency=F):
 
 
 def _one_port(load, z_ref):
-    """S of a load under power waves with reference impedance ``z_ref``."""
-    s = (load - np.conj(z_ref)) / (load + z_ref)
+    """S of a load under pseudo-waves with reference impedance ``z_ref``."""
+    s = (load - z_ref) / (load + z_ref)
     return _net(np.reshape(s, (-1, 1, 1)), np.reshape(z_ref, (-1, 1)), ports=("p",))
 
 
@@ -106,12 +107,26 @@ def test_renormalize_to_a_new_real_reference_matches_the_line(line):
     assert (new.ports, new.excited, new.frequency) == (line.ports, line.ports, F)
 
 
-def test_renormalize_to_a_complex_reference_gives_the_power_wave_reflection():
+def test_renormalize_to_a_complex_reference_gives_the_pseudo_wave_reflection():
     loads = np.array([20.0 + 5j, 75.0 - 30j, 10.0 + 0j])
     new = _one_port(loads, np.full(3, 50.0)).renormalize(40.0 - 25j)
     np.testing.assert_allclose(
-        new.values[:, 0, 0], (loads - (40.0 + 25j)) / (loads + 40.0 - 25j), atol=1e-12
+        new.values[:, 0, 0], (loads - (40.0 - 25j)) / (loads + 40.0 - 25j), atol=1e-12
     )
+
+
+def test_a_line_matched_to_its_complex_characteristic_impedance_does_not_reflect():
+    # a lossy line referenced to its own Z_c: S11 = 0, S21 = exp(-gamma l)
+    z_c, gamma, length = 45.0 + 7.0j, 2e3 + 9e4j, 1e-5
+    ch, sh = np.cosh(gamma * length), np.sinh(gamma * length)
+    z = np.array([[z_c * ch / sh, z_c / sh], [z_c / sh, z_c * ch / sh]])
+    s_50 = np.linalg.solve((z + 50.0 * np.eye(2)).T, (z - 50.0 * np.eye(2)).T).T
+    matched = _net([s_50], 50.0, frequency=F[:1]).renormalize(z_c)
+    np.testing.assert_allclose(matched.values[0, 0, 0], 0.0, atol=1e-12)
+    np.testing.assert_allclose(
+        matched.values[0, 1, 0], np.exp(-gamma * length), rtol=1e-12
+    )
+    np.testing.assert_allclose(matched.z()[0], z, rtol=1e-12)
 
 
 def test_renormalize_takes_a_reference_per_port_and_round_trips(line):

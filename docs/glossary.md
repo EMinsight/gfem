@@ -199,11 +199,6 @@ Rayleigh anomaly
   ($|\boldsymbol{\kappa}|$ equal to the medium's wavenumber), changing from evanescent to
   propagating. Efficiencies change steeply there.
 
-Mode cross-projection
-  The conjugated S functional of one {term}`requested mode` applied to another
-  requested mode of the same {term}`shared port surface`; zero for a lossless
-  cross-section, otherwise the error it puts into S.
-
 Dispersive cross-section
   A wave port's cross-section that contains a region with a
   {term}`permittivity law`. It is supported where $\mathrm{Re}\,\varepsilon(f) > 0$ throughout, at
@@ -309,13 +304,22 @@ S-parameters
   The network parameters of a {term}`driven problem`: the entry from port j to
   port i is the wave leaving port i for a unit wave sent into port j, every
   other port terminated in its {term}`reference impedance`. gfem's are
-  {term}`power waves`, one matrix per frequency.
+  {term}`pseudo-waves`, one matrix per frequency.
 
 Power waves
   The incident and outgoing waves $a$ and $b$ of each {term}`port` (Kurokawa),
   defined from its peak voltage and current and its
   {term}`reference impedance` so that $|a|^2$ is the time-averaged incident
-  power in W; $b = S a$.
+  power in W; $b = S a$. On a real reference they equal the
+  {term}`pseudo-waves`.
+
+Pseudo-waves
+  The waves gfem's S relates (Marks and Williams):
+  $a = \sqrt{\mathrm{Re}\, z} / (2|z|)\,(V + zI)$ and
+  $b = \sqrt{\mathrm{Re}\, z} / (2|z|)\,(V - zI)$ for a
+  {term}`reference impedance` $z$. On a real $z$ they are the
+  {term}`power waves`; on a line's complex characteristic impedance the line
+  is matched to its own mode.
 
 Reference impedance
   The impedance per {term}`port` that S-parameters are normalized to: the port

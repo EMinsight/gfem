@@ -9,11 +9,9 @@ import dataclasses
 import itertools
 import math
 import pickle
-import re
 import time
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
 
 import anisotropy as anisotropy_reference
 import jax
@@ -35,7 +33,7 @@ from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._engine import anisotropy, cache, terms, wave_ports
-from gfem._engine.driven import _check_port_mode_projection, driven_operator
+from gfem._engine.driven import driven_operator
 from gfem._engine.wave_ports import trace_dofs, wave_port_couplings
 from gfem._linalg import prepare
 from gfem._linalg.base import PlannedHandle, free_mask
@@ -152,27 +150,29 @@ def _jittered(mesh, rel=1e-13, seed=0):
 @pytest.mark.parametrize("nodes", ["imported", "jittered"])
 def test_conductor_plates_make_a_lossy_passive_reciprocal_line(plate_mesh, nodes):
     mesh = plate_mesh if nodes == "imported" else _jittered(plate_mesh)
+    # both ports referenced alike: pseudo-wave S is symmetric for equal
+    # references (a port without a voltage path takes modal waves)
+    ports = [
+        gfem.WavePort("p1", "port1", voltage_path=((W / 2, 0, 0), (W / 2, D, 0))),
+        gfem.WavePort("p2", "port2", voltage_path=((W / 2, 0, L), (W / 2, D, L))),
+    ]
     model = line(mesh).replace(
-        boundaries=[gfem.Conductor("plates", conductivity=5.8e7)]
+        boundaries=[gfem.Conductor("plates", conductivity=5.8e7)], ports=ports
     )
     # direct: GMRES at tolerance 1e-6 leaves S off by up to ~1e-6, so S01 - S10
     # (2.4e-7 here, 2.6e-6 on another CPU) would gate the solver, not the
     # physics. The direct solve's asymmetry is 1.6e-10 at any thread count.
     options = dataclasses.replace(OPTIONS, linear_solver="direct")
-    with pytest.warns(gfem.PortModeProjectionWarning, match="alpha/beta"):
-        r = gfem.solve(model, gfem.Driven(F), options=options)
+    r = gfem.solve(model, gfem.Driven(F), options=options)
     s = np.asarray(r.s.values)
     gamma = np.asarray(r.port_modes["p1"].gamma)
     assert (gamma.real > 0).all()
     np.testing.assert_allclose(s[:, 0, 1], s[:, 1, 0], rtol=0, atol=1e-8)
     power = np.abs(s[:, 0, 0]) ** 2 + np.abs(s[:, 1, 0]) ** 2
     assert (power < 1).all()
-    # the conjugated S functional reflects a lossy mode referenced to itself
-    # at order alpha/beta; |S21| is right to its square, a looser bound here
-    beta = gamma.imag
-    np.testing.assert_allclose(
-        np.abs(s[:, 1, 0]), np.exp(-gamma.real * L), atol=4 * (gamma.real / beta).max()
-    )
+    # the biorthogonal S functional: a lossy line matched to its own mode
+    assert np.abs(s[:, 0, 0]).max() < 1e-5
+    np.testing.assert_allclose(s[:, 1, 0], np.exp(-gamma * L), atol=1e-5)
 
 
 GRID = tuple(np.linspace(1.0e12, 3.0e12, 9))
@@ -955,7 +955,7 @@ def test_a_lone_hybrid_port_correction_is_the_closed_form(hybrid_couplings):
     assert np.linalg.norm(w - closed) <= 1e-14 * np.linalg.norm(closed)
 
 
-# --- warnings: skipped port modes and cross-projections -----------------------
+# --- warnings: skipped port modes --------------------------------------------
 
 PORT_MODE_WARNINGS = (gfem.SkippedPortModeWarning, gfem.PortModeProjectionWarning)
 
@@ -1086,20 +1086,16 @@ def test_a_lossless_shared_port_surface_warns_nothing(
     _silent(lossless, gfem.Driven(QUADRANT_F), QUADRANT_OPTIONS)
 
 
-def test_a_lossy_shared_port_surface_warns_its_cross_projection(quadrant_mesh):
+def test_a_lossy_shared_port_surface_separates_its_modes(quadrant_mesh):
+    # the biorthogonal S functional reads each mode alone on a lossy cross
+    # section (the conjugated one read 2.7e-2 of the other mode here)
     model = quadrant_guide(quadrant_mesh, 0.02)
-    with pytest.warns(gfem.PortModeProjectionWarning) as record:
-        gfem.solve(model, gfem.Driven(QUADRANT_F), options=QUADRANT_OPTIONS)
-    assert {w.filename for w in record} == {__file__}  # the solve call
-    messages = [str(w.message) for w in record]
-    assert len(messages) == 2  # once per surface
-    for end, message in zip((1, 2), messages, strict=True):
-        for name in (f"'p{end}_m1'", f"'p{end}_m2'", f"'port{end}'", "biorthogonal"):
-            assert name in message
-        assert "at 50 GHz" in message  # where it is largest
-        value = float(re.search(r"cross-projection of ([0-9.e+-]+)", message)[1])
-        # measured 2.67e-2 (1.34 tan_delta): the order of the block's loss
-        assert 2e-2 < value < 3.5e-2
+    result = _silent(model, gfem.Driven(QUADRANT_F), QUADRANT_OPTIONS)
+    s = np.asarray(result.s.values)
+    assert np.abs(s - np.swapaxes(s, 1, 2)).max() <= 1e-10
+    conversion = [(i, j) for i in range(4) for j in range(4) if i % 2 != j % 2]
+    assert max(np.abs(s[:, i, j]).max() for i, j in conversion) <= 2e-3
+    assert max(np.abs(s[:, i, i]).max() for i in range(4)) <= 2e-3
 
 
 def test_a_shared_port_surface_on_an_anisotropic_cross_section(quadrant_mesh):
@@ -1130,33 +1126,23 @@ def test_a_shared_port_surface_on_an_anisotropic_cross_section(quadrant_mesh):
 
 
 def lossy_line(mesh, tan_delta):
-    """The parallel-plate line with a lossy fill: two lone wave ports."""
-    return line(mesh).with_material(
+    """The parallel-plate line with a lossy fill: two lone wave ports, both
+    without a voltage path (modal waves at both ends)."""
+    return line(mesh, path=False).with_material(
         "fill", gfem.Material(eps_r=EPS, tan_delta=tan_delta)
     )
 
 
-def test_a_lossy_lone_port_line_warns_its_attenuation(plate_mesh):
-    # the conjugated S functional reflects a lossy mode referenced to itself
-    # at |S11| ~ alpha/beta (measured 0.99 alpha/beta at three loss levels),
-    # though a uniform line has S11 = 0
-    model = lossy_line(plate_mesh, 0.01)
-    with pytest.warns(gfem.PortModeProjectionWarning) as record:
-        gfem.solve(model, gfem.Driven(F), options=SHARED_OPTIONS)
-    messages = [str(w.message) for w in record]
-    assert len(messages) == 2  # once per port surface
-    for end, message in zip((1, 2), messages, strict=True):
-        for name in (f"'p{end}'", f"'port{end}'", "reflection entries"):
-            assert name in message
-        value = float(re.search(r"alpha/beta of ([0-9.e+-]+)", message)[1])
-        # alpha/beta = tan_delta / 2 on a TEM line
-        assert 4e-3 < value < 6e-3
-
-
-@pytest.mark.parametrize("tan_delta", [0.0, 1e-3])
-def test_a_port_line_below_the_floor_is_silent(plate_mesh, tan_delta):
-    # alpha/beta = 5e-4 at tan_delta = 1e-3
-    _silent(lossy_line(plate_mesh, tan_delta), gfem.Driven(F), SHARED_OPTIONS)
+@pytest.mark.parametrize("tan_delta", [1e-3, 0.01, 0.1])
+def test_a_lossy_lone_port_line_is_matched_to_its_mode(plate_mesh, tan_delta):
+    # a uniform lossy line: S11 = 0 and S21 = exp(-gamma L) under modal waves
+    # (the conjugated S functional gave |S11| ~ alpha/beta)
+    result = _silent(lossy_line(plate_mesh, tan_delta), gfem.Driven(F), SHARED_OPTIONS)
+    s = np.asarray(result.s.values)
+    gamma = np.asarray(result.port_modes["p1"].gamma)
+    assert np.abs(s[:, 0, 0]).max() <= 1e-5
+    np.testing.assert_allclose(s[:, 1, 0], np.exp(-gamma * L), atol=1e-5)
+    np.testing.assert_allclose(s[:, 0, 1], s[:, 1, 0], atol=1e-10)
 
 
 # A narrower quadrant guide (2 x 1 mm): mode 1 propagates at 55 and 65 GHz,
@@ -1557,47 +1543,3 @@ def test_evicted_kept_state_is_rebuilt_not_read_stale(tmp_path, monkeypatch):
         np.testing.assert_allclose(s, s0, rtol=1e-12, atol=1e-14)
         np.testing.assert_allclose(grad, grad0, rtol=1e-9, atol=1e-14)
     cache.ENTRIES.clear()
-
-
-def _projection_warnings(ports, cross_projection, gammas):
-    """The warnings `_check_port_mode_projection` gives one surface on 1, 2 GHz."""
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        _check_port_mode_projection(
-            [(ports, lambda: cross_projection, gammas)], (1e9, 2e9), stacklevel=1
-        )
-    return caught
-
-
-_PORTS = tuple(
-    SimpleNamespace(name=f"p{i}", surface="shared") for i in (1, 2)
-)  # the message reads only the name and the surface
-
-
-def test_an_unsolved_row_does_not_hide_a_lossy_port_line():
-    gamma = np.array([np.nan, 0.01 + 1j])
-    caught = _projection_warnings(_PORTS[:1], None, [gamma])
-    assert [type(w.message) for w in caught] == [gfem.PortModeProjectionWarning]
-    assert "alpha/beta of 0.01 at 2 GHz" in str(caught[0].message)
-
-
-def test_an_unsolved_row_does_not_hide_a_cross_projection():
-    q = np.zeros((2, 2, 2))
-    q[0] = np.nan
-    q[1, 0, 1] = 0.01
-    lossless = [np.array([np.nan, 1j])] * 2
-    caught = _projection_warnings(_PORTS, q, lossless)
-    assert [type(w.message) for w in caught] == [gfem.PortModeProjectionWarning]
-    assert "cross-projection of 0.01 at 2 GHz" in str(caught[0].message)
-
-
-def test_unsolved_rows_alone_give_no_projection_warning():
-    q = np.full((2, 2, 2), np.nan)
-    unsolved = [np.full(2, np.nan + 0j)] * 2
-    assert _projection_warnings(_PORTS, q, unsolved) == []
-
-
-def test_a_mode_at_cutoff_gives_no_division_warning():
-    # Im gamma = 0 (cutoff, or below it) has no alpha/beta: not a lossy line
-    at_cutoff = np.array([0.0 + 0j, 0.5 + 0j])
-    assert _projection_warnings(_PORTS[:1], None, [at_cutoff]) == []
