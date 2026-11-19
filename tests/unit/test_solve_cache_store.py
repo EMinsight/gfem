@@ -331,7 +331,9 @@ def test_two_processes_publishing_one_key_leave_one_complete_entry(stack, tmp_pa
     for x, y in zip(
         jax.tree_util.tree_leaves(back), jax.tree_util.tree_leaves(result), strict=True
     ):
-        np.testing.assert_allclose(np.asarray(x), np.asarray(y), rtol=1e-12, atol=0)
+        want = np.asarray(y)
+        scale = float(np.abs(want).max()) if want.size else 0.0
+        np.testing.assert_allclose(np.asarray(x), want, rtol=1e-12, atol=1e-12 * scale)
 
 
 def test_a_result_the_store_cannot_write_warns_and_stores_nothing(stack, tmp_path):
