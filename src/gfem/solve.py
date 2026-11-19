@@ -165,8 +165,11 @@ def solve(
             `jax.grad`, `jax.jit` or `jax.vmap`, one that raises, and one
             with an input the cache cannot record (a subclass of a gfem
             class, with a `gfem.SolveCacheWarning`) are solved and store
-            nothing. The logger ``"gfem.solve_cache"`` reports each read and
-            store at INFO. ``None`` (the default) solves without a cache.
+            nothing, as is one that keeps fields on more than one rank
+            (with the same warning). The logger ``"gfem.solve_cache"``
+            reports each read and store at INFO. ``None`` (the default)
+            solves without a cache. The save and export recipe, "Solve once,
+            read it back", shows it at work.
 
     Returns:
         The problem type's result, e.g. `gfem.ElectrostaticResult` for an
@@ -392,9 +395,9 @@ def release_memory() -> None:
     after an optimization loop.
 
     ``retain_memory=0`` keeps nothing from then on; this call drops what is
-    kept now. JAX's own compilation caches are not touched: see
-    ``jax.clear_caches()``. Under ``mpiexec`` or ``srun`` every rank must
-    call it at the same point.
+    kept now. It does not touch a solve cache on disk (``cache=``). JAX's
+    own compilation caches are not touched: see ``jax.clear_caches()``.
+    Under ``mpiexec`` or ``srun`` every rank must call it at the same point.
 
     Example:
         After an optimization loop, before another study::

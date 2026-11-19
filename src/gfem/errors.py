@@ -404,7 +404,8 @@ class SolveCacheWarning(UserWarning):
     remedy: an entry that could not be read (removed, solved again and
     stored), a result that could not be stored (a read-only or full
     directory), a result larger than the cache's ``max_bytes``, a directory
-    of another cache layout, or an input the cache cannot key on. Silence it
+    of another cache layout, an input the cache cannot key on, or fields
+    kept on more than one rank, which are not cached. Silence it
     as a whole with
     ``warnings.filterwarnings("ignore", category=gfem.SolveCacheWarning)``.
     """

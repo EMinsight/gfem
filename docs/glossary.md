@@ -294,6 +294,14 @@ Partial bundle
   `gfem.load_result("DIR/partial.json")`; `gfem.load_result("DIR")` reads only
   a complete result.
 
+Solve cache
+  A directory named by `cache=` on `gfem.solve` and `Job.run` (`--cache` on
+  `python -m gfem run`) that keeps finished results, filed under the mesh,
+  materials, problem and solver options they were solved for, so that the
+  same call again reads its result back instead of solving. Off unless a call
+  names one; delete the directory to clear it. What gfem keeps in memory
+  between solves is not part of it, and `gfem.release_memory` leaves it alone.
+
 Unsolved frequency
   A frequency of a uniform sweep that has no entry in the
   {term}`partial result`: the linear solve did not converge there, or the sweep
