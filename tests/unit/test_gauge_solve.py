@@ -1,9 +1,9 @@
 """Driven solves through the tree-cotree gauge (ADR 0215, 0216).
 
 On the parallel-plate line of test_driven.py, whose S has a closed form (ABCD
-matrices), the gauged direct solve keeps every digit far below the
-low-frequency floor where the ungauged one loses them, in S, in its
-reciprocity and in the adjoint gradient. A wave-port model solves the same
+matrices), the gauged direct solve (PARDISO or sparse Cholesky) keeps every
+digit far below the low-frequency floor where the ungauged one loses them, in
+S, in its reciprocity and in the adjoint gradient. A wave-port model solves the same
 gauged and ungauged above the floor, and a uniform sweep refactorizes its
 pooled gauged plan.
 
@@ -12,6 +12,7 @@ ones turn it off (``gauge="none"``).
 """
 
 import dataclasses
+import importlib.metadata
 import logging
 import math
 import warnings
@@ -26,6 +27,7 @@ import structured_meshes as sm
 
 import gfem
 from gfem._engine import cache
+from gfem._linalg import direct
 from gfem._linalg.direct import DirectHandle
 
 L, W, H = 10.0, 2.0, 1.0  # mm
@@ -79,10 +81,29 @@ def _solve(model, problem, *, gauged, options=OPTIONS):
 FREQUENCIES = (1e4, 1e6, 1e8)
 
 
-@pytest.fixture(scope="module")
-def gauged_s(line):
+def _mkl_installed() -> bool:
+    try:
+        importlib.metadata.distribution("mkl")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
+
+
+needs_mkl = pytest.mark.skipif(not _mkl_installed(), reason="needs the mkl extra")
+
+
+@pytest.fixture(
+    scope="module",
+    params=[pytest.param("pardiso", marks=needs_mkl), "sparsecholesky"],
+)
+def gauged_s(line, request):
+    """The gauged S, factorized by PARDISO or by the fallback without MKL."""
     problem = gfem.Driven(frequency=FREQUENCIES)
-    return np.asarray(_solve(line, problem, gauged=True).s.values)
+    cache.release_memory()  # no plan pooled by another backend
+    with pytest.MonkeyPatch.context() as patch:
+        if request.param == "sparsecholesky":
+            patch.setattr(direct, "pardiso_inverse", lambda *_, **__: None)
+        return np.asarray(_solve(line, problem, gauged=True).s.values)
 
 
 @pytest.mark.parametrize("n", range(len(FREQUENCIES)))
