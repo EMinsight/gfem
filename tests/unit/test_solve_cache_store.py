@@ -325,7 +325,13 @@ def test_two_processes_publishing_one_key_leave_one_complete_entry(stack, tmp_pa
     assert [p.name for p in root.iterdir() if len(p.name) == 64] == [key]
     assert list((root / ".tmp").iterdir()) == []
     back, _, _ = Store(root).read(key, model)
-    _assert_bit_equal(back, result)
+    # the entry was solved in another process, whose thread count may differ:
+    # equal to the precision the solve key promises (ADR 0432), not bitwise
+    assert type(back) is type(result)
+    for x, y in zip(
+        jax.tree_util.tree_leaves(back), jax.tree_util.tree_leaves(result), strict=True
+    ):
+        np.testing.assert_allclose(np.asarray(x), np.asarray(y), rtol=1e-12, atol=0)
 
 
 def test_a_result_the_store_cannot_write_warns_and_stores_nothing(stack, tmp_path):
