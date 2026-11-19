@@ -4,6 +4,8 @@ An operator ``A = Σ θ_k A_k`` whose pieces ``A_k`` do not change (a driven
 sweep's frequencies) need not be assembled again for each set of weights
 θ_k: `AssembledPieces` assembles each piece once, with θ = 1, and
 `PieceSum` writes ``Σ θ_k A_k`` into a matrix of the full sparsity pattern.
+`PieceSum` reads its pieces through the `Pieces` protocol, of which
+`AssembledPieces` is one adapter.
 That skips NGSolve's allocation of a new matrix and graph, the part of an
 assembly that does not scale with threads.
 
@@ -32,7 +34,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Protocol
 
 import ngsolve as ngs
 import numpy as np
@@ -486,36 +488,71 @@ def _positions(
     return positions[found]
 
 
+class Pieces(Protocol):
+    """Pieces ``A_k`` a `PieceSum` sums with its weights (`AssembledPieces`)."""
+
+    @property
+    def pattern(self) -> ngs.BaseMatrix | None:
+        """The matrix every sum is shaped as, or ``None`` (assemble instead)."""
+        ...
+
+    @property
+    def generation(self) -> object:
+        """Who holds the values: a new object whenever they change."""
+        ...
+
+    def matrix(self, weights: Sequence[complex]) -> ngs.BaseMatrix | None:
+        """A new matrix of `pattern` holding ``Σ θ_k A_k``; ``None`` without one."""
+        ...
+
+    def sum_into(self, weights: Sequence[complex], matrix: ngs.BaseMatrix) -> None:
+        """Overwrite the values of ``matrix`` (of `pattern`) with ``Σ θ_k A_k``."""
+        ...
+
+    @property
+    def nbytes(self) -> int:
+        """Host memory held, in bytes, but `shared`."""
+        ...
+
+    def shared(self) -> dict[int, int]:
+        """Bytes of what others may hold too, by identity."""
+        ...
+
+    def free(self) -> None:
+        """Drop what is held; a later use builds it again."""
+        ...
+
+
 @dataclasses.dataclass(frozen=True, eq=False)
 class PieceSum:
     """One operator as a piece sum: ``Σ θ_k A_k`` of assembled pieces.
 
     Attributes:
-        pieces: The assembled pieces ``A_k``.
+        pieces: The pieces ``A_k`` (`AssembledPieces` or another adapter).
         weights: θ_k, one per piece.
     """
 
-    pieces: AssembledPieces
+    pieces: Pieces
     weights: tuple[complex, ...]
 
     @property
     def pattern(self) -> ngs.BaseMatrix | None:
-        """See `AssembledPieces.pattern`."""
+        """See `Pieces.pattern`."""
         return self.pieces.pattern
 
     @property
     def key(self) -> tuple[object, tuple[complex, ...]]:
         """What the sum's values are made of: equal keys, equal values.
 
-        The pieces' assembly (`AssembledPieces.generation`) and the weights;
+        The pieces' assembly (`Pieces.generation`) and the weights;
         it holds neither the pieces nor their values.
         """
         return self.pieces.generation, self.weights
 
     def matrix(self) -> ngs.BaseMatrix | None:
-        """See `AssembledPieces.matrix`."""
+        """See `Pieces.matrix`."""
         return self.pieces.matrix(self.weights)
 
     def sum_into(self, matrix: ngs.BaseMatrix) -> None:
-        """See `AssembledPieces.sum_into`."""
+        """See `Pieces.sum_into`."""
         self.pieces.sum_into(self.weights, matrix)
