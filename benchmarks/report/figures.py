@@ -1,4 +1,4 @@
-"""Deterministic SVG figures of a campaign report (ADR 0413).
+r"""Deterministic SVG figures of a campaign report (ADR 0413).
 
 Drawn from the ``report.json`` mapping only. matplotlib is imported here and nowhere
 else in the suite, and only when a report is drawn (``uv run --group docs``). Output
@@ -6,9 +6,11 @@ is byte-stable for one matplotlib version: fixed ``svg.hashsalt``, no date or cr
 metadata, text kept as text, explicit light surface.
 
 Encoding: colour = code, marker = solver class (direct square, iterative circle),
-open markers for unresolved errors, an ordinal blue ramp for phases with startup in
-grey, log axes for time, memory and error, one y scale per panel. With at most four
-series the series are labelled directly; with more, a legend sits below the axes.
+open markers with a :math:`\pm` bound bar for unresolved errors (plotted at their
+value), a shaded :math:`\pm` bound band on an unresolved floor, an ordinal blue
+ramp for phases with startup in grey, log axes for time, memory and error, one y
+scale per panel. With at most four series the series are labelled directly; with
+more, a legend sits below the axes.
 """
 
 from __future__ import annotations
@@ -121,6 +123,16 @@ def _positive(values: Sequence[float | None]) -> bool:
     return any(v is not None and v > 0 for v in values)
 
 
+def _interval(error: float, bound: float) -> tuple[float, float]:
+    """``error ± bound`` on a log axis: below zero, the bar stops a decade down."""
+    return max(error - bound, error / 10), error + bound
+
+
+def _bound_bar(ax: Any, x: float, y: float, bound: float, c: str) -> None:
+    lo, hi = _interval(y, bound)
+    ax.plot([x, x], [lo, hi], color=c, linewidth=1, solid_capstyle="butt")
+
+
 def _accuracy_panel(
     ax: Any,
     ec: Mapping[str, Any],
@@ -161,6 +173,8 @@ def _accuracy_panel(
                 alpha=0.6,
             )
             for p in pts:
+                if p["unresolved"]:
+                    _bound_bar(ax, p[xkey], p["plotted"], p["bound"], c)
                 ax.plot(
                     [p[xkey]],
                     [p["plotted"]],
@@ -172,8 +186,12 @@ def _accuracy_panel(
                     label=solver,
                 )
             labels.append((solver, pts[-1][xkey], pts[-1]["plotted"]))
-        for order, floor in ec["floors"].items():
+        for order, f in ec["floors"].items():
+            floor = f["error"]
             if floor:
+                if f["resolved"] is False:
+                    lo, hi = _interval(floor, f["bound"])
+                    ax.axhspan(lo, hi, color=MUTED, alpha=0.12, linewidth=0)
                 ax.axhline(floor, color=MUTED, linewidth=1, linestyle="--")
                 ax.annotate(
                     f"p{order} floor",

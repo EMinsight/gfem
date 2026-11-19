@@ -10,7 +10,9 @@ library only.
 ``report --check DIR`` regenerates the report from the inputs ``DIR/report.json``
 names (relative to ``DIR``) into a temporary directory and compares bytes. Figures
 made with another matplotlib version, or with none importable, are not compared;
-tables and JSON must still match exactly.
+tables and JSON must still match exactly. ``report.json`` names the harness commit
+that rendered it (``harness_revision``); ``--check`` keeps the stored one and says
+when it differs from the checking tree's.
 """
 
 from __future__ import annotations
@@ -39,6 +41,16 @@ def matplotlib_version() -> str | None:
     return str(mpl.__version__)
 
 
+def harness_revision() -> str | None:
+    """The commit of the harness tree running now, else None."""
+    from benchmarks.harness import matrix
+
+    try:
+        return matrix.source_commit()[0]
+    except matrix.PlanError:
+        return None
+
+
 def _dumps(data: Any) -> str:
     return json.dumps(data, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
 
@@ -49,6 +61,7 @@ def build(
     flags: Mapping[str, Any],
     *,
     matplotlib: str | None,
+    revision: str | None = None,
 ) -> tuple[dict[str, Any], load.Inputs]:
     """Load and check the inputs; the report as it would be written to ``out``."""
     inputs = load.load(
@@ -57,7 +70,13 @@ def build(
         rescore=flags.get("rescore") or {},
     )
     root = Path(os.path.relpath(inputs.root, Path(out).resolve())).as_posix()
-    report = views.build(inputs, flags=flags, inputs_root=root, matplotlib=matplotlib)
+    report = views.build(
+        inputs,
+        flags=flags,
+        inputs_root=root,
+        matplotlib=matplotlib,
+        harness_revision=revision,
+    )
     return report, inputs
 
 
@@ -87,7 +106,9 @@ def generate(directories: Sequence[Path], out: Path, flags: Mapping[str, Any]) -
                 "matplotlib is not importable: run with `uv run --group docs` or "
                 "pass --no-figures"
             )
-    report, inputs = build(directories, out, flags, matplotlib=version)
+    report, inputs = build(
+        directories, out, flags, matplotlib=version, revision=harness_revision()
+    )
     write(report, inputs, out, draw=version is not None)
     return str(report["id"])
 
@@ -113,7 +134,13 @@ def check(directory: Path) -> tuple[bool, list[str]]:
             f"figures regenerated with matplotlib {current} (made with {made_with}); "
             "not compared"
         )
-    report, inputs = build(dirs, directory, flags, matplotlib=made_with)
+    here = harness_revision()
+    rendered_at = stored.get("harness_revision") or here
+    if rendered_at != here:
+        messages.append(f"rendered at harness {rendered_at}; regenerated at {here}")
+    report, inputs = build(
+        dirs, directory, flags, matplotlib=made_with, revision=rendered_at
+    )
     with tempfile.TemporaryDirectory(prefix="bench-report-") as tmp:
         fresh = Path(tmp)
         write(report, inputs, fresh, draw=compare_figures)

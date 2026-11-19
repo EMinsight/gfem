@@ -203,12 +203,12 @@ def test_unresolved_errors_and_delta_beside_palace(fixture_report):
     acc = _case(report, "microstrip")["accuracy"]
     direct = next(a for a in acc if a["solver"] == "gfem:direct")
     assert direct["resolved"] is False
-    assert "≤ 10·bound = 2.00e-06 (unresolved)" in md
-    assert "1.50e-06" not in [
+    assert [
         line.split("|")[6].strip()
-        for line in md.splitlines()
+        for line in _section(md, "microstrip").splitlines()
         if line.startswith("| gfem:direct | 2 |")
-    ]
+    ] == ["1.50e-06 ± 2.00e-07 (unresolved)"]
+    assert "10·bound" not in md
     mumps = next(a for a in acc if a["solver"] == "palace:mumps")
     assert mumps["delta"] == 5e-4
     assert mumps["delta_floor"] is True
@@ -257,6 +257,146 @@ def test_eigen_case_errors_per_mode(fixture_report):
     assert gfem["x"] == [1]
     assert gfem["error"] == [3.89e-4]
     assert lc["error_cost"]["ladders"] == []
+
+
+# --- unresolved errors and the discretization floor (ADR 0457) -------------------
+
+
+@pytest.mark.parametrize(
+    ("error", "bound", "shown"),
+    [
+        (2.5, 0.25, "2.50e+00"),  # e = 10 b: resolved, bare
+        (2.4, 0.25, "2.40e+00 ± 2.50e-01 (unresolved)"),
+        (0.25, 0.25, "2.50e-01 ± 2.50e-01 (unresolved)"),  # e = b: the interval
+        (0.125, 0.25, "≤ 3.75e-01 (unresolved)"),  # e < b: at most e + b
+        (0.125, None, "1.25e-01"),
+        (None, 0.25, "—"),
+    ],
+)
+def test_an_error_is_shown_bare_only_when_resolved(error, bound, shown):
+    from benchmarks.report.markdown import _shown
+
+    assert _shown(error, bound) == shown
+
+
+def _section(md: str, case: str) -> str:
+    start = md.index(f"## {case}\n")
+    end = md.find("\n## ", start + 1)
+    return md[start : end if end >= 0 else None]
+
+
+def test_panel_a_plots_an_unresolved_error_at_its_value_with_its_bound(
+    fixture_report,
+):
+    report, md = fixture_report
+    ec = _case(report, "microstrip")["error_cost"]
+    direct = next(p for p in ec["points"] if p["solver"] == "gfem:direct")
+    assert direct["plotted"] == direct["error"] == 1.5e-6
+    assert direct["bound"] == 2e-7
+    assert direct["unresolved"] is True
+    row = "| gfem:direct | 1x16 | — | 30.5 | 6.1 | 1.50e-06 ± 2.00e-07 (unresolved) |"
+    assert row in md
+    assert ec["floors"] == {"2": {"error": 1.5e-6, "bound": 2e-7, "resolved": False}}
+    floor = (
+        "Discretization floor (same-mesh error): p2 1.50e-06 ± 2.00e-07 (unresolved)."
+    )
+    assert _section(md, "microstrip").count(floor) == 2  # panel (a) and accuracy
+    assert "unresolved errors are shown as value ± reference bound" in md
+
+
+def test_runs_off_the_floor_are_named_per_order(fixture_report):
+    report, md = fixture_report
+    lc = _case(report, "lcavity")
+    assert lc["accuracy_floor"]["2"]["n"] == 2
+    assert lc["accuracy_floor"]["2"]["at_floor"] == 1
+    assert [o["solver"] for o in lc["accuracy_floor"]["2"]["off"]] == ["palace:mumps"]
+    line = (
+        "1 of 2 runs of order 2 are at the p2 floor (within 1 %); off the floor: "
+        "palace:mumps 16x1 tol 1e-10 (5.4 % off)."
+    )
+    assert _section(md, "lcavity").count(line) == 2
+    assert "Discretization floor (same-mesh error): p2 3.89e-04." in md
+
+
+def test_all_runs_at_the_floor_say_codes_compare_by_same_code_error(tmp_path):
+    def edit(d):
+        if d["name"].startswith("lcavity/palace") and d.get("accuracy"):
+            d["accuracy"]["value"] = 0.000389
+            d["accuracy"]["per_item"] = [0.000389]
+
+    out = _report(tmp_path, str(_store(tmp_path, edit)), "--no-figures")
+    report = json.loads((out / "report.json").read_text())
+    md = (out / "index.md").read_text()
+    floor = _case(report, "lcavity")["error_cost"]["at_floor"]["2"]
+    assert (floor["n"], floor["at_floor"], floor["off"]) == (2, 2, [])
+    assert floor["largest_deviation"] == pytest.approx(1.8e-4, rel=0.01)
+    line = (
+        "All 2 runs of order 2 are at the p2 floor (largest deviation 0.018 %): "
+        "accuracy differences between codes do not show at this order on this "
+        "mesh; compare codes by same-code error along the tolerance ladder."
+    )
+    assert _section(md, "lcavity").count(line) == 2
+
+
+def test_a_case_without_reference_prints_no_floor(tmp_path):
+    def edit(d):
+        if d["name"].startswith("lcavity/") and d.get("accuracy"):
+            d["accuracy"] = None
+            d["accuracy_reason"] = "no_reference"
+            d["case"]["reference"] = None
+
+    out = _report(tmp_path, str(_store(tmp_path, edit)), "--no-figures")
+    lc = _case(json.loads((out / "report.json").read_text()), "lcavity")
+    assert lc["error_cost"]["floors"] == {}
+    assert lc["error_cost"]["at_floor"] == {}
+    assert lc["accuracy_floor"] == {}
+    text = _section((out / "index.md").read_text(), "lcavity")
+    assert "(a) No converged reference: no accuracy panel." in text
+    assert "floor" not in text
+    assert "±" not in text
+    assert "reference bound" not in text
+
+
+def test_error_items_carry_the_reference_bound_when_a_cell_is_unresolved(tmp_path):
+    camp = _store(tmp_path)
+    ref = tmp_path / "store/references/microstrip-20261118-858bc66/reference.json"
+    doc = json.loads(ref.read_text())
+    doc["quantities"]["s"]["bound_per_frequency"] = [1e-7, 1.5e-7, 2e-7]
+    ref.write_text(json.dumps(doc))
+    out = _report(tmp_path, str(camp), "--no-figures")
+    md = (out / "index.md").read_text()
+    report = json.loads((out / "report.json").read_text())
+    ms = _case(report, "microstrip")
+    assert ms["error_items"]["bound"] == [1e-7, 1.5e-7, 2e-7]
+    assert "| reference bound |" in _section(md, "microstrip")
+    assert "| 5e+10 | 1.50e-06 | 1.50e-06 | 5.00e-04 | 5.00e-04 | 2.00e-07 |" in md
+    # lcavity is resolved: its per-mode table is unchanged
+    assert "reference bound" not in _section(md, "lcavity")
+    assert "bound" not in _case(report, "lcavity")["error_items"]
+
+
+def test_report_records_the_harness_revision(tmp_path, capsys):
+    out = _report(tmp_path, str(_store(tmp_path)), "--no-figures")
+    stored = json.loads((out / "report.json").read_text())
+    git = shutil.which("git")
+    assert git is not None
+    head = subprocess.run(
+        [git, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=Path(__file__).resolve().parents[2],
+    ).stdout.strip()
+    assert stored["harness_revision"] == head
+    # a report rendered at another revision still checks: the field is provenance
+    stored["harness_revision"] = "0" * 40
+    (out / "report.json").write_text(
+        json.dumps(stored, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+    )
+    assert main(["report", "--check", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert "unchanged" in printed
+    assert f"rendered at harness {'0' * 40}; regenerated at {head}" in printed
 
 
 # --- refusals ---------------------------------------------------------------------
@@ -633,6 +773,7 @@ def test_scaling_section_and_figure(tmp_path):
 def test_a_single_budget_keeps_the_case_keys(fixture_report):
     assert sorted(_case(fixture_report[0], "microstrip")) == [
         "accuracy",
+        "accuracy_floor",
         "campaigns",
         "cells",
         "comparison",

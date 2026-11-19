@@ -182,12 +182,62 @@ def _gates(r: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _shown(error: float | None, bound: float | None) -> str:
+    r"""An error against a reference of bound ``bound`` (ADR 0457).
+
+    Resolved (:math:`e \ge 10b`): the value. Unresolved: the true error lies within
+    :math:`b` of :math:`e`, so ``e ± b``, or ``≤ e + b`` when :math:`e < b`.
+    """
+    if error is None:
+        return DASH
+    if bound is None or error >= 10 * bound:
+        return e(error)
+    if error >= bound:
+        return f"{e(error)} ± {e(bound)} (unresolved)"
+    return f"≤ {e(error + bound)} (unresolved)"
+
+
 def _error_display(a: Mapping[str, Any]) -> str:
     if a["error"] is None:
         return a["accuracy_reason"] or DASH
-    if a["resolved"] is False:
-        return f"≤ 10·bound = {e(10 * a['bound'])} (unresolved)"
-    return e(a["error"])
+    return _shown(a["error"], a["bound"])
+
+
+def _floor_lines(
+    floors: Mapping[str, Mapping[str, Any]], at_floor: Mapping[str, Mapping[str, Any]]
+) -> list[str]:
+    """The discretization floor per order, and which runs sit on it."""
+    if not floors:
+        return []
+    shown = ", ".join(
+        f"p{k} {_shown(f['error'], f['bound'])}" for k, f in floors.items()
+    )
+    out = [f"Discretization floor (same-mesh error): {shown}.", ""]
+    for order, a in at_floor.items():
+        if not a["off"]:
+            out.append(
+                f"All {a['n']} runs of order {order} are at the p{order} floor "
+                f"(largest deviation {_percent(a['largest_deviation'])}): accuracy "
+                "differences between codes do not show at this order on this mesh; "
+                "compare codes by same-code error along the tolerance ladder."
+            )
+        else:
+            off = ", ".join(
+                f"{o['solver']} {o['layout']}"
+                + (f" tol {tol(o['tolerance'])}" if o["tolerance"] is not None else "")
+                + f" ({_percent(o['deviation'])} off)"
+                for o in a["off"]
+            )
+            out.append(
+                f"{a['at_floor']} of {a['n']} runs of order {order} are at the "
+                f"p{order} floor (within 1 %); off the floor: {off}."
+            )
+        out.append("")
+    return out
+
+
+def _percent(x: float) -> str:
+    return f"{100 * x:.2g} %"
 
 
 def _error_cost(case: Mapping[str, Any], h: str = "###") -> list[str]:
@@ -208,16 +258,12 @@ def _error_cost(case: Mapping[str, Any], h: str = "###") -> list[str]:
                     tol(p["tolerance"]),
                     g(p["work_s"]),
                     g(p["peak_rss_sum_gib"]),
-                    f"≤ {e(p['plotted'])} (unresolved)"
-                    if p["unresolved"]
-                    else e(p["error"]),
+                    _shown(p["error"], p["bound"]),
                 ]
                 for p in ec["points"]
             ),
         )
-        if ec["floors"]:
-            floors = ", ".join(f"p{k} {e(v)}" for k, v in ec["floors"].items())
-            out += [f"Discretization floor (same-mesh error): {floors}.", ""]
+        out += _floor_lines(ec["floors"], ec["at_floor"])
         if ec["unresolved_band"] is not None:
             out += [
                 f"Below reference resolution: errors under {e(ec['unresolved_band'])}.",
@@ -505,14 +551,12 @@ def _accuracy(case: Mapping[str, Any], h: str = "###", *, shared: bool = True):
             elif rs["error"] is None:
                 row.append(f"{rs['reason']} (rescored vs {rs['against']})")
             else:
-                shown = (
-                    e(rs["error"])
-                    if rs["resolved"] is not False
-                    else (f"≤ {e(10 * rs['bound'])} (unresolved)")
-                )
+                shown = _shown(rs["error"], rs["bound"])
                 row.append(f"{shown} (rescored vs {rs['against']})")
         rows.append(row)
     out += table(head, rows)
+    if case["error_cost"]["reference"]:
+        out += _floor_lines(case["error_cost"]["floors"], case["accuracy_floor"])
     if any(a["delta_floor"] for a in case["accuracy"]):
         out += [
             "Palace's error has a floor of δ, a definition difference, not accuracy.",
@@ -523,8 +567,13 @@ def _accuracy(case: Mapping[str, Any], h: str = "###", *, shared: bool = True):
         what = "mode" if items["x"] == "mode" else "frequency Hz"
         out += _figure(case, "error_items", f"{case['name']}: error per {what}")
         xs = items["lines"][0]["x"]
+        bounds = items.get("bound")
         out += table(
-            [what, *[f"{ln['solver']} ({ln['layout']})" for ln in items["lines"]]],
+            [
+                what,
+                *[f"{ln['solver']} ({ln['layout']})" for ln in items["lines"]],
+                *(["reference bound"] if bounds is not None else []),
+            ],
             (
                 [
                     g(x, 6),
@@ -532,6 +581,7 @@ def _accuracy(case: Mapping[str, Any], h: str = "###", *, shared: bool = True):
                         e(ln["error"][i]) if i < len(ln["error"]) else DASH
                         for ln in items["lines"]
                     ],
+                    *([e(bounds[i])] if bounds is not None else []),
                 ]
                 for i, x in enumerate(xs)
             ),
