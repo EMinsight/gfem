@@ -162,7 +162,11 @@ def test_every_launch_is_the_one_srun_line(site, tmp_path, solver, layout, mpi):
     assert command.launch == "srun"
 
 
-def test_the_taskset_fallback_pins_the_bare_program_to_a_block(site, tmp_path):
+def test_the_taskset_fallback_pins_the_bare_program_to_a_block(
+    site, tmp_path, monkeypatch
+):
+    # CI runners may allow fewer CPUs than the layout asks; the block rule is under test
+    monkeypatch.setattr(slurm, "_available_cpus", lambda: list(range(8)))
     run = _adapter_run(site, tmp_path, "gfem:direct", "1x4")
     command = gfem.ADAPTER.prepare(run).commands[0]
     command = type(command)(
