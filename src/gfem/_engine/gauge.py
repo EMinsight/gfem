@@ -666,8 +666,10 @@ def resolve_gauge(
     Raises:
         gfem.DistributedUnsupportedError: ``"tree_cotree"`` across ranks.
         ValueError: ``"tree_cotree"`` for any other solve out of scope.
+
+        A refusal's message gives every reason the solve is out of scope.
     """
-    out = _out_of_scope(
+    reasons = _out_of_scope(
         linear_solver,
         kind,
         device,
@@ -676,8 +678,9 @@ def resolve_gauge(
         bloch=bloch,
         floquet=floquet,
     )
-    if gauge == "tree_cotree" and out is not None:
-        _refuse(out[0], linear_solver, kind, auto_reason)
+    if gauge == "tree_cotree" and reasons:
+        _refuse([why for why, _ in reasons], linear_solver, kind, auto_reason)
+    out = reasons[0] if reasons else None
     if gauge == "none":
         if out is None:
             return GaugeChoice(
@@ -706,11 +709,12 @@ def _out_of_scope(
     periodic: bool,
     bloch: bool,
     floquet: bool,
-) -> tuple[str, str | None] | None:
-    """Why the gauge does not apply and what would apply it, or ``None``.
+) -> list[tuple[str, str | None]]:
+    """Why the gauge does not apply, each with what would apply it, or ``[]``.
 
-    The first reason that holds, the most specific first among the model's:
-    Floquet ports and wave vectors come with a periodic pair.
+    Every reason that holds, in order: ranks, device, linear solver, then
+    the model's most specific one only (Floquet ports and wave vectors come
+    with a periodic pair).
     """
     solver: tuple[str, str | None] | None = None
     if kind == "bddc_gmres":
@@ -720,46 +724,80 @@ def _out_of_scope(
         solver = f"linear_solver={chose}", "linear_solver='direct'"
     elif kind != "direct":
         solver = f"linear_solver={kind!r}", None
-    reasons: list[tuple[bool, tuple[str, str | None] | None]] = [
-        (distributed, ("MPI ranks", None)),
-        (device != "cpu", (f"device={device!r}", None)),
-        (solver is not None, solver),
-        (floquet, ("Floquet ports", None)),
-        (bloch, ("a Bloch wave vector", None)),
-        (periodic, ("a periodic pair", None)),
-    ]
-    return next((why for holds, why in reasons if holds), None)
+    model = next(
+        (
+            why
+            for holds, why in (
+                (floquet, "Floquet ports"),
+                (bloch, "a Bloch wave vector"),
+                (periodic, "a periodic pair"),
+            )
+            if holds
+        ),
+        None,
+    )
+    reasons: list[tuple[str, str | None]] = []
+    if distributed:
+        reasons.append(("MPI ranks", None))
+    if device != "cpu":
+        reasons.append((f"device={device!r}", None))
+    if solver is not None:
+        reasons.append(solver)
+    if model is not None:
+        reasons.append((model, None))
+    return reasons
 
 
 def _refuse(
-    reason: str, linear_solver: str, kind: str, auto_reason: str | None
+    reasons: list[str], linear_solver: str, kind: str, auto_reason: str | None
 ) -> None:
-    """Raise for ``gauge="tree_cotree"`` on a solve out of the gauge's scope."""
+    """Raise for ``gauge="tree_cotree"`` on a solve out of the gauge's scope.
+
+    The message gives every reason, each with its remedy; ranks among them
+    raise `gfem.DistributedUnsupportedError`, else `ValueError`.
+    """
+    texts = [_refusal(why, linear_solver, kind, auto_reason) for why in reasons]
+    if len(texts) == 1:
+        message = texts[0]
+    else:
+        listed = "\n".join(f"- {text}" for text in texts)
+        message = (
+            f"gauge='tree_cotree' cannot gauge this solve, for {len(texts)} "
+            f"reasons:\n{listed}"
+        )
+    if "MPI ranks" in reasons:
+        raise DistributedUnsupportedError("tree-cotree gauge", message)
+    raise ValueError(message)
+
+
+def _refusal(
+    reason: str, linear_solver: str, kind: str, auto_reason: str | None
+) -> str:
+    """One reason's refusal text, with its remedy."""
     if reason == "MPI ranks":
-        raise DistributedUnsupportedError(
-            "tree-cotree gauge",
+        return (
             "gauge='tree_cotree' runs on one process, and this solve runs across "
-            "MPI ranks. Solve on one process, "
-            f"{_OR_AUTO} across ranks.",
+            f"MPI ranks. Solve on one process, {_OR_AUTO} across ranks."
         )
     if reason.startswith("device="):
-        raise ValueError(
+        return (
             f"gauge='tree_cotree' runs on the CPU, not {reason} (cuDSS solves "
             f"ungauged). Use device='cpu', {_OR_AUTO} on the GPU."
         )
-    if linear_solver == "auto" and kind == "bddc_gmres":
-        numbers = "" if auto_reason is None else f" ({auto_reason})"
-        raise ValueError(
-            "gauge='tree_cotree' needs the direct solver, but linear_solver='auto' "
-            f"chose 'bddc_gmres'{numbers}. Set linear_solver='direct' to lift that "
-            f"memory guard, {_OR_AUTO}."
-        )
-    if kind != "direct":
-        raise ValueError(
+    if reason.startswith("linear_solver="):
+        if linear_solver == "auto" and kind == "bddc_gmres":
+            numbers = "" if auto_reason is None else f" ({auto_reason})"
+            return (
+                "gauge='tree_cotree' needs the direct solver, but "
+                f"linear_solver='auto' chose 'bddc_gmres'{numbers}. Set "
+                "linear_solver='direct' to lift that memory guard, "
+                f"{_OR_AUTO}."
+            )
+        return (
             f"gauge='tree_cotree' needs linear_solver='direct', not {kind!r}. Use "
             f"linear_solver='direct', {_OR_AUTO}."
         )
-    raise ValueError(
+    return (
         f"gauge='tree_cotree' does not take {reason} in this version of gfem. "
         "Use gauge='auto' to solve ungauged."
     )

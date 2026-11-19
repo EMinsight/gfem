@@ -256,6 +256,53 @@ def test_tree_cotree_refuses_ranks():
         )
 
 
+def test_tree_cotree_refuses_ranks_before_the_solver_s_stack(line, monkeypatch):
+    from gfem import _petsc
+
+    def missing(*_):
+        raise gfem.SolverUnavailableError("no MPI PETSc stack")
+
+    monkeypatch.setattr(_petsc, "require_mpi_petsc", missing)
+    options = gfem.SolverOptions(linear_solver="direct", gauge="tree_cotree")
+    with pytest.raises(gfem.DistributedUnsupportedError, match="one process"):
+        DrivenRule(line, gfem.Driven(1e9), options, comm=object())
+
+
+def test_a_refusal_lists_every_reason(tmp_path):
+    options = gfem.SolverOptions(device="cuda", gauge="tree_cotree")
+    with pytest.raises(ValueError, match="device='cuda'") as err:
+        DrivenRule(_strip(tmp_path, periodic=True), gfem.Driven(1e9), options)
+    assert "periodic pair" in str(err.value)
+
+
+def test_a_refusal_across_ranks_lists_every_reason():
+    with pytest.raises(gfem.DistributedUnsupportedError, match="one process") as err:
+        gauge.resolve_gauge(
+            "tree_cotree",
+            linear_solver="bddc_gmres",
+            kind="bddc_gmres",
+            device="cpu",
+            distributed=True,
+            periodic=True,
+        )
+    assert "linear_solver='direct'" in str(err.value)
+    assert "periodic pair" in str(err.value)
+
+
+def test_the_model_s_own_refusal_comes_before_the_gauge_s(tmp_path):
+    crystal = gfem.Material(eps_r=(2.0, 3.6, 2.5))
+    model = _strip(tmp_path)
+    model = gfem.Model(
+        model.mesh,
+        materials={"cell": crystal},
+        boundaries=[*model.boundaries, gfem.Absorbing("y_min", order=2)],
+        ports=model.ports,
+    )
+    options = gfem.SolverOptions(device="cuda", gauge="tree_cotree")
+    with pytest.raises(NotImplementedError, match="order 2 needs an isotropic"):
+        DrivenRule(model, gfem.Driven(1e9), options)
+
+
 def test_tree_cotree_is_honoured_in_scope(line):
     options = gfem.SolverOptions(linear_solver="direct", gauge="tree_cotree")
     rule, _ = _rule(line, gfem.Driven(1e9), options)

@@ -687,13 +687,14 @@ class DrivenRule:
             linear_solver=options.linear_solver,
             sweep=problem.sweep,
         )
+        # the model's own refusals before the options'
+        _check_supported(model)
         # before any assembly, and before any worker; `gauge` (whether the
         # solve runs through the tree-cotree gauge, ADR 0216, ADR 0220) is
         # resolved next to the linear solver, or the parent rule's
         self.linear, self.gauge = _resolve(
             model, problem, options, comm=comm, gauge=gauge
         )
-        _check_supported(model)
         # a frequency on a lossless pole, before any assembly or worker
         dispersion.check_frequencies(model, problem.frequency)
         if not model.ports:
@@ -2523,9 +2524,14 @@ def _resolve(
     The gauge choice is ``gauge`` when given (a parent rule's); otherwise
     ``options.gauge`` resolved (`resolve_gauge`) and logged. A refusal of
     ``linear_solver="auto"``'s iterative choice states the rule's numbers
-    (`_auto_inputs`).
+    (`_auto_inputs`). Where the linear solver is known without the rule (an
+    explicit one, or any under ``comm``), the gauge resolves first, so its
+    refusal comes before the linear solver's (a missing PETSc stack).
     """
     inputs = _auto_inputs(model, problem, options, comm)
+    known = _known_kind(options, comm)
+    if gauge is None and known is not None:
+        gauge = _resolve_gauge(model, problem, options, comm=comm, kind=known)
     linear = ResolvedLinearSolver.resolve(
         options, default=DEFAULT_SOLVER, problem="driven", comm=comm, **inputs
     )
@@ -2534,10 +2540,39 @@ def _resolve(
     auto_reason = None
     if inputs and linear.kind != "direct":
         auto_reason = auto_linear_solver(DEFAULT_SOLVER, **inputs)[1]
+    choice = _resolve_gauge(
+        model, problem, options, comm=comm, kind=linear.kind, auto_reason=auto_reason
+    )
+    return linear, choice
+
+
+def _known_kind(options: SolverOptions, comm: Any) -> str | None:
+    """The linear solver ``options`` resolve to without the rule, or ``None``.
+
+    ``None`` for ``"auto"`` on one CPU process, which `auto_linear_solver`
+    decides from the system size.
+    """
+    if options.linear_solver != "auto":
+        return options.linear_solver
+    if options.device != "cpu":
+        return "direct"
+    return DEFAULT_SOLVER if comm is not None else None
+
+
+def _resolve_gauge(
+    model: Model,
+    problem: Driven,
+    options: SolverOptions,
+    *,
+    comm: Any,
+    kind: str,
+    auto_reason: str | None = None,
+) -> GaugeChoice:
+    """``options.gauge`` resolved for a ``kind`` solve (`resolve_gauge`), logged."""
     choice = resolve_gauge(
         options.gauge,
         linear_solver=options.linear_solver,
-        kind=linear.kind,
+        kind=kind,
         device=options.device,
         auto_reason=auto_reason,
         distributed=comm is not None,
@@ -2546,7 +2581,7 @@ def _resolve(
         floquet=bool(_floquet.floquet_ports(model.ports)),
     )
     report.gauge_choice(problem="driven", on=choice.on, reason=choice.reason)
-    return linear, choice
+    return choice
 
 
 def _solve_block(
