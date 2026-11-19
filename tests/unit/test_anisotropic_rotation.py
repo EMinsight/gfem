@@ -56,9 +56,11 @@ def test_a_rotated_line_gives_the_same_s_parameters(lines):
     problem = gfem.Driven(frequency=[10e9, 20e9])
     s = np.asarray(gfem.solve(line, problem, options=OPTIONS).s.values)
     s_turned = np.asarray(gfem.solve(turned, problem, options=OPTIONS).s.values)
-    # measured on MN5: max |dS| 2.4e-15 of max |S| (round-off: the bound
-    # leaves room for other nodes' rounding)
-    np.testing.assert_allclose(s_turned, s, rtol=0, atol=2e-14 * np.abs(s).max())
+    # round-off: max |dS| of max |S| measured 2.1e-14 on MN5 and 9.7e-15 on
+    # ostau through the default tree-cotree gauge, 3.7e-15 with gauge="none"
+    # (ostau). Both lines share one gauge basis (one topology): the gauged
+    # products and scaling round 2-3x more, not a geometry dependence.
+    np.testing.assert_allclose(s_turned, s, rtol=0, atol=5e-14 * np.abs(s).max())
 
 
 def test_a_rotated_line_gives_the_same_eigenfrequency(lines):
