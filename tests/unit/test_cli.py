@@ -46,6 +46,22 @@ def test_cli_round_trip_equals_the_in_process_result(model, tmp_path):
     np.testing.assert_allclose(result.capacitance, expected.capacitance, rtol=1e-12)
 
 
+def test_a_second_run_with_the_same_cache_reads_the_result_back(model, tmp_path):
+    job = _job(model, tmp_path)
+    cache = tmp_path / "cache"
+    statuses = []
+    for out in (tmp_path / "first", tmp_path / "second"):
+        argv = ["run", str(job), "--out", str(out), "--cache", str(cache)]
+        assert main(argv) == 0
+        statuses.append(json.loads((out / "result.json").read_text())["run"]["cache"])
+    assert [s["status"] for s in statuses] == ["miss", "hit"]
+    assert statuses[1]["key"] == statuses[0]["key"]
+    np.testing.assert_array_equal(
+        gfem.load_result(tmp_path / "second").capacitance,
+        gfem.load_result(tmp_path / "first").capacitance,
+    )
+
+
 def test_device_override_is_recorded(model, tmp_path):
     job = _job(model, tmp_path, linear_solver="direct", device="cuda")
     out = tmp_path / "results"

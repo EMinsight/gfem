@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import time
 import zipfile
 from pathlib import Path
@@ -99,7 +100,7 @@ from gfem.results import (
     SweepInfo,
     TransientThermalResult,
 )
-from gfem.solve import solve
+from gfem.solve import _solve, solve
 from gfem.thermal import HeatSource, _FieldTrace
 from gfem.thermo_optic import _RouteSampler, _RouteTrace, _Sampling, _ShiftTrace
 
@@ -160,6 +161,7 @@ class Job:
         *,
         device: str | None = None,
         comm: Any = None,
+        cache: str | os.PathLike | None = None,
     ) -> Any:
         """Solve the job: ``gfem.solve(model, problem, options=options)``.
 
@@ -172,6 +174,17 @@ class Job:
                 GPU run on a CPU machine). The bundle records the device used.
             comm: The communicator, as for `gfem.solve`; not part of the job,
                 which does not say where it runs.
+            cache: A directory for the solve cache, as for `gfem.solve`: the
+                result is read from it when this job was solved and stored
+                there before, and stored there otherwise. Independent of
+                ``out``: the bundle is written either way. With a cache the
+                bundle's ``run`` entry has a ``cache`` item: ``status``
+                (``"hit"``, ``"miss"``, or ``"bypass"`` when the cache was
+                not used), ``key`` (the solve key, or None), and on a hit
+                ``solved``, the ``device``, ``ranks`` and ``wall_time_s`` of
+                the run that solved it; ``wall_time_s`` of the ``run`` entry
+                is this call's. ``None`` (the default) solves without a cache
+                and adds no ``cache`` item.
 
         Returns:
             The problem type's result.
@@ -195,20 +208,34 @@ class Job:
             except (TypeError, ValueError) as err:
                 # one argv on every rank, so every rank raises it together
                 raise _mpi.agreed(err) from None
+        use = None
+        if cache is not None:
+            # imported here: the cache's module imports this one
+            from gfem._solve_cache import SolveCache
+
+            use = SolveCache(cache)
         resolved = _mpi.resolve_comm(comm)
         start = time.perf_counter()
 
         def run() -> dict[str, Any]:
-            return {
+            entry = {
                 "device": options.device,
                 "device_override": device,
                 "options": options,
                 "ranks": 1 if resolved is None else resolved.size,
                 "wall_time_s": time.perf_counter() - start,
             }
+            if use is not None:
+                entry["cache"] = use.report()
+            return entry
 
         try:
-            result = solve(self.model, self.problem, options=options, comm=comm)
+            if use is None:
+                result = solve(self.model, self.problem, options=options, comm=comm)
+            else:
+                result = _solve(
+                    self.model, self.problem, options=options, comm=comm, cache=use
+                )[0]
         except LinearSolverConvergenceError as err:
             if out is not None and err.result is not None:
                 _keep_partial(Path(out), err, err.result, run(), resolved)
