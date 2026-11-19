@@ -946,6 +946,10 @@ def _free_numbering(space):
     return types.SimpleNamespace(numbers=numbers, count=count, total=count)
 
 
+#: MUMPS's parallel analysis on PT-Scotch, which only the MPI stack has.
+PARALLEL_ANALYSIS = ("mat_mumps_icntl_28", "mat_mumps_icntl_29")
+
+
 def _rank_options(symmetric):
     return (*petsc.defaults(symmetric), *petsc.RANK_MUMPS_OPTIONS)
 
@@ -980,10 +984,15 @@ def test_across_ranks_mumps_factors_by_lu_unless_a_equals_its_transpose(
     prefix = _petsc.next_prefix()
     ksp.setOptionsPrefix(prefix)
     ksp.setOperators(aij)
-    with _petsc.scoped_options(prefix, options(symmetric)):
+    pairs = options(symmetric)
+    if not _petsc.has_mpi():  # no PT-Scotch: the parallel analysis is the ranks'
+        pairs = tuple((k, v) for k, v in pairs if k not in PARALLEL_ANALYSIS)
+    with _petsc.scoped_options(prefix, pairs):
         ksp.setFromOptions()
         ksp.setUp()
-    assert ksp.getPC().getType() == factorization
+    pc = ksp.getPC()
+    assert pc.getFailedReason() == PETSc.PC.FailedReason.NOERROR
+    assert pc.getType() == factorization
     dense = aij.convert("dense").getDenseArray()
     if general:
         assert np.abs(dense - dense.T).max() > 0.1 * np.abs(dense).max()
