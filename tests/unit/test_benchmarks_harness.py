@@ -316,60 +316,166 @@ def test_listpids_takes_the_newest_step_and_its_tasks_in_order():
     assert set(found.all) == {2000, 2001, 2002}
 
 
-def test_pss_and_masks_come_from_proc(tmp_path):
+def test_pss_comes_from_proc(tmp_path):
     pid = tmp_path / "proc" / "42"
     pid.mkdir(parents=True)
     (pid / "smaps_rollup").write_text("Rss:  10 kB\nPss:  2048 kB\n")
-    (pid / "status").write_text("Name:\tx\nCpus_allowed_list:\t0-3\n")
     assert measure.pss_kib(42, tmp_path / "proc") == 2048
-    assert measure.cpus_allowed(42, tmp_path / "proc") == "0-3"
     assert measure.pss_kib(43, tmp_path / "proc") == 0
 
 
-def test_a_rank_mask_is_the_union_of_its_threads_masks(tmp_path):
-    # OMP_PROC_BIND=close binds the main thread to the first core of the rank's
-    # cores: the rank's allotment is what its threads together may use
+def _task(pid, tid, mask, ticks):
+    task = pid / "task" / str(tid)
+    task.mkdir(parents=True)
+    (task / "status").write_text(f"Name:\tx\nCpus_allowed_list:\t{mask}\n")
+    # comm may hold spaces and parentheses; utime and stime are fields 14 and 15
+    rest = " ".join(["S"] + ["0"] * 10 + [str(ticks), "0"] + ["0"] * 30)
+    (task / "stat").write_text(f"{tid} (palace (real)) {rest}\n")
+
+
+def test_each_thread_has_its_mask_and_cpu_time_from_proc(tmp_path):
     pid = tmp_path / "proc" / "42"
-    for tid, mask in (("42", "0"), ("43", "1"), ("44", "2-3,114")):
-        (pid / "task" / tid).mkdir(parents=True)
-        (pid / "task" / tid / "status").write_text(f"Cpus_allowed_list:\t{mask}\n")
-    (pid / "status").write_text("Name:\tx\nCpus_allowed_list:\t0\n")
-    assert measure.cpus_allowed(42, tmp_path / "proc") == "0-3,114"
+    _task(pid, 42, "0,112", 400)
+    _task(pid, 43, "0,112", 0)
+    _task(pid, 44, "1,113", 350)
+    found = measure.thread_states(42, tmp_path / "proc", ticks_per_s=100)
+    assert found == {
+        42: measure.ThreadSeen("0,112", 4.0),
+        43: measure.ThreadSeen("0,112", 0.0),
+        44: measure.ThreadSeen("1,113", 3.5),
+    }
+    assert measure.thread_states(7, tmp_path / "proc") == {}
 
 
-def test_placement_passes_on_the_process_masks_or_the_union_of_thread_masks(sysfs):
-    # 2x1: helper threads with stray masks, process masks exact -> pass
-    assert measure.rank_placement(["0", "1"], ["0,5", "1,5"], 1, sysfs).status == "pass"
-    # 1x2 under OMP_PROC_BIND: main thread narrowed, threads cover both cores -> pass
-    assert measure.rank_placement(["0"], ["0-1"], 2, sysfs).status == "pass"
-    # Hydra without binding: every rank on one core -> fail either way
-    found = measure.rank_placement(["0", "0"], ["0", "0"], 1, sysfs)
-    assert found.status == "fail"
+def _seen(*threads):
+    """``(tid, mask, cpu_s)`` -> what the sampler saw of one rank."""
+    return {tid: measure.ThreadSeen(mask, cpu_s) for tid, mask, cpu_s in threads}
 
 
-def test_placement_is_unverified_when_a_short_run_showed_too_few_threads(sysfs):
-    # 1x2 run over before its OpenMP threads were sampled: only the narrowed main
-    # thread was seen, so the masks say nothing about the rank's allotment
-    found = measure.rank_placement(["0"], ["0"], 2, sysfs, seen_threads=[1])
-    assert found.status == "skipped"
-    assert "saw 1 of 2 threads" in found.reason
-    # every thread seen and still on one core -> a real failure
-    assert measure.rank_placement(["0"], ["0"], 2, sysfs, seen_threads=[2]).status == (
-        "fail"
+def _rank_2x8(main, first):
+    """One rank of a Palace MUMPS 2x8 run on MN5 (smoke 20261119, threads.txt).
+
+    srun gave the rank cores ``first..first+7``; ``OMP_PROC_BIND=close`` narrowed
+    the main thread to the first; two MPI helper threads stay idle on it; seven
+    OpenMP workers run one per remaining core.
+    """
+    narrowed = f"{first},{first + 112}"
+    threads = [(main, narrowed, 60.0), (main + 1, narrowed, 0.0)]
+    threads.append((main + 2, narrowed, 0.0))
+    threads.extend(
+        (main + 10 + k, f"{first + k},{first + k + 112}", 30.0) for k in range(1, 8)
     )
-    # ranks sharing a core fail whatever was seen
+    return _seen(*threads)
+
+
+def test_placement_passes_on_the_process_masks(sysfs):
+    # 2x1: stray helper masks do not matter when the process masks are exact
+    stray = [_seen((1, "0,5", 1.0)), _seen((2, "1,5", 1.0))]
+    assert measure.rank_placement(["0", "1"], stray, 1, sysfs).status == "pass"
+
+
+def test_placement_passes_on_the_working_threads_of_a_narrowed_rank(sysfs):
+    # smoke lcavity and microstrip palace-mumps 2x8: the main threads read 0,112 and
+    # 8,120, the OpenMP workers cover each rank's eight cores
+    ranks = [_rank_2x8(100, 0), _rank_2x8(200, 8)]
+    found = measure.rank_placement(["0,112", "8,120"], ranks, 8, sysfs)
+    assert found.status == "pass"
+    assert found.masks == ["0-7,112-119", "8-15,120-127"]
+
+
+def test_idle_helper_threads_do_not_count_as_seen_threads(sysfs):
+    # smoke bragg palace-mumps 4x4 rep3 (5 s): the main thread, two idle MPI helpers
+    # and a worker not yet run are four threads on one core, not a misplaced rank
+    rank = _seen((1, "0,112", 2.0), (2, "0,112", 0.0), (3, "0,112", 0.0))
+    rank[4] = measure.ThreadSeen("0,112", 0.0)
+    others = [_seen((10 * r, f"{4 * r},{4 * r + 112}", 2.0)) for r in range(1, 4)]
     found = measure.rank_placement(
-        ["0", "0"], ["0", "0"], 2, sysfs, seen_threads=[1, 1]
+        ["0,112", "4,116", "8,120", "12,124"], [rank, *others], 4, sysfs
     )
+    assert found.status == "skipped"
+    assert "rank 0: saw 1 of 4 working threads" in found.reason
+
+
+def test_placement_is_unverified_when_only_the_narrowed_main_thread_ran(sysfs):
+    found = measure.rank_placement(["0"], [_seen((1, "0", 1.0))], 2, sysfs)
+    assert found.status == "skipped"
+    assert "saw 1 of 2 working threads" in found.reason
+
+
+def test_t_working_threads_on_fewer_cores_is_a_real_failure(sysfs):
+    # srun without -c: each 2x8 rank pinned to one core, its eight threads all on it
+    ranks = [
+        _seen(*[(100 + k, "0,112", 5.0) for k in range(8)]),
+        _seen(*[(200 + k, "8,120", 5.0) for k in range(8)]),
+    ]
+    found = measure.rank_placement(["0,112", "8,120"], ranks, 8, sysfs)
+    assert found.status == "fail"
+    assert "rank 0: 8 working threads on 1 cores" in found.reason
+
+
+def test_ranks_sharing_cores_fail_whatever_was_seen(sysfs):
+    # Hydra without binding: every rank on one core
+    one = [_seen((1, "0", 1.0)), _seen((2, "0", 1.0))]
+    assert measure.rank_placement(["0", "0"], one, 1, sysfs).status == "fail"
+    found = measure.rank_placement(["0", "0"], one, 2, sysfs)
+    assert found.status == "fail"
+    assert "rank 1 shares core 0 with rank 0" in found.reason
+
+
+def test_working_threads_wider_than_the_share_fail(sysfs):
+    # no binding: a rank's workers roam over 16 cores of a 2x8 run
+    ranks = [_seen((1, "0", 1.0), (2, "0-15", 1.0)), _seen((3, "16-23", 1.0))]
+    found = measure.rank_placement(["0", "16"], ranks, 8, sysfs)
     assert found.status == "fail"
 
 
-def test_thread_count_reads_the_task_directory(tmp_path):
-    pid = tmp_path / "proc" / "42"
-    for tid in ("42", "43", "44"):
-        (pid / "task" / tid).mkdir(parents=True)
-    assert measure.thread_count(42, tmp_path / "proc") == 3
-    assert measure.thread_count(7, tmp_path / "proc") == 0
+def test_a_mask_read_before_srun_bound_the_task_does_not_stick(sysfs, tmp_path):
+    # the sampler can read a task before srun binds it (the step's whole cpuset);
+    # each thread's latest mask counts, so the run reads as the 2x8 it was
+    proc = tmp_path / "proc"
+    script = tmp_path / "ranks.py"
+    script.write_text(
+        f"""
+import pathlib, shutil, time
+proc = pathlib.Path({str(proc)!r})
+def task(pid, tid, mask, ticks):
+    t = proc / str(pid) / "task" / str(tid)
+    t.mkdir(parents=True, exist_ok=True)
+    (t / "status").write_text(f"Cpus_allowed_list:\\t{{mask}}\\n")
+    fields = ["0"] * 10 + [str(ticks), "0"]
+    (t / "stat").write_text(f"{{tid}} (x) S " + " ".join(fields))
+    if pid == tid:
+        shutil.copy(t / "status", proc / str(pid) / "status")
+for pid in (500, 600):
+    task(pid, pid, "0-15,112-127", 0)
+time.sleep(0.6)
+for pid, first in ((500, 0), (600, 8)):
+    task(pid, pid, f"{{first}},{{first + 112}}", 500)
+    for k in range(1, 8):
+        task(pid, pid + k, f"{{first + k}},{{first + k + 112}}", 300)
+time.sleep(0.6)
+"""
+    )
+    listing = "PID JOBID STEPID LOCALID GLOBALID\n500 1 4 0 0\n600 1 4 1 1\n"
+
+    def scontrol(argv, **_):
+        return subprocess.CompletedProcess(argv, 0, listing, "")
+
+    sampler = measure.Sampler(
+        slurm_job="1", proc=proc, sysfs=sysfs, run=scontrol, start_sample_s=0.05
+    )
+    m = measure.measure(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        stdout=tmp_path / "out.txt",
+        layout=Layout(2, 8),
+        cap_s=20,
+        sampler=sampler,
+    )
+    assert m.returncode == 0, (tmp_path / "out.txt").read_text()
+    assert m.placement.status == "pass"
+    assert m.placement.masks == ["0-7,112-119", "8-15,120-127"]
 
 
 # --- the watchdog ---------------------------------------------------------------------
