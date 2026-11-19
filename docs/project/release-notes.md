@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Error estimates of loaded results.** `gfem.error_estimate` accepts a
+  result read with `gfem.load_result` and the model it was solved on: the
+  mesh is compared by its elements, regions and node positions, not as the
+  same object. Earlier versions raised `ValueError` for any loaded result.
+
 - **Behaviour change: exact S on lossy wave ports.** A wave port's S now reads
   the field's modal amplitudes by the biorthogonal projection on its modes,
   and S relates pseudo-waves (Marks and Williams). With a `voltage_path`, a

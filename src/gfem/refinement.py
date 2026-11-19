@@ -37,7 +37,7 @@ from gfem.errors import (
     MeshRefinementUnsupportedError,
     NonDifferentiableError,
 )
-from gfem.mesh import Mesh
+from gfem.mesh import Mesh, _same_topology
 from gfem.model import (
     PEC,
     PMC,
@@ -3036,7 +3036,7 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         _check_driven_estimable((estimator,), model, frequencies)
     _check_order(_fields(result)[0].order, estimator)
     mesh = _fields(result)[0].mesh
-    if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
+    if not _same_topology(mesh, model.mesh) or not np.array_equal(
         np.asarray(mesh.nodes), np.asarray(model.mesh.nodes)
     ):
         raise ValueError(
