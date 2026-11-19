@@ -117,6 +117,7 @@ def _submit(args: argparse.Namespace) -> int:
             _rundir(args),
             jobs=args.job,
             qos=args.qos,
+            time_limit=args.time,
             dry_run=args.dry_run,
             ceiling=args.ceiling,
         ),
@@ -184,6 +185,9 @@ def _add_execution(add: Adder) -> None:
     p.add_argument("rundir", type=Path, metavar="RUNDIR")
     p.add_argument("--qos", help="QOS for every job (else by time limit)")
     p.add_argument("--job", action="append", metavar="J", help="only job J (repeat)")
+    p.add_argument(
+        "--time", metavar="H:MM:SS", help="time limit for every job (else planned)"
+    )
     p.add_argument("--dry-run", action="store_true", help="print the sbatch lines")
     p.add_argument("--ceiling", type=float, help="core-hour ceiling (else site)")
     p.add_argument("--site", type=Path, help="site file (else RUNDIR/site.toml)")

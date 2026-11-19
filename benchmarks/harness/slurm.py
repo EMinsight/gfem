@@ -38,6 +38,7 @@ import datetime as dt
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import signal
@@ -62,7 +63,12 @@ from benchmarks.adapters import (
     RunRefusedError,
 )
 from benchmarks.harness import budget, config, data, matrix, measure, records, score
-from benchmarks.harness.case import Case, definition_sha256, load_case
+from benchmarks.harness.case import (
+    Case,
+    definition_sha256,
+    load_case,
+    reference_directory,
+)
 from benchmarks.harness.config import ConfigError, Runner, Site
 
 STEP_STOP = 3
@@ -211,9 +217,10 @@ def _utc(when: float | None = None) -> str:
 
 
 def _reference(case: Case) -> tuple[dict[str, Any] | None, Path | None]:
-    if case.directory is None:
+    directory = reference_directory(case)
+    if directory is None:
         return None, None
-    path = case.directory / REFERENCE_JSON
+    path = directory / REFERENCE_JSON
     if not path.is_file():
         return None, None
     try:
@@ -1141,22 +1148,58 @@ def _wheel(root: Path = matrix.ROOT) -> Path:
     return found[-1]
 
 
+def limit_seconds(value: str) -> int:
+    """Seconds of an ``H:MM:SS`` time limit; :class:`ConfigError` if malformed."""
+    match = re.fullmatch(r"(\d+):([0-5]\d):([0-5]\d)", value)
+    seconds = int(match[1]) * 3600 + int(match[2]) * 60 + int(match[3]) if match else 0
+    if seconds <= 0:
+        raise ConfigError(f"--time {value!r}: expected a positive H:MM:SS")
+    return seconds
+
+
+def with_time_limit(row: Mapping[str, str], value: str) -> dict[str, str]:
+    """A ``plan.tsv`` row at time limit ``value`` (``H:MM:SS``).
+
+    The QOS purpose and the estimate follow the new limit as ``plan`` sets them:
+    ``debug`` up to 2 h, else ``long``; estimate = limit / 1.5.
+    """
+    seconds = limit_seconds(value)
+    hours, rest = divmod(seconds, 3600)
+    est_s = seconds / matrix.LIMIT_FACTOR
+    nodes = int(row["nodes"])
+    return {
+        **row,
+        "time_limit": f"{hours}:{rest // 60:02d}:{rest % 60:02d}",
+        "qos": "debug" if seconds <= matrix.DEBUG_LIMIT_S else "long",
+        "est_s": f"{est_s:.0f}",
+        "est_core_h": f"{nodes * matrix.NODE_CORES * est_s / 3600:.1f}",
+    }
+
+
 def submit(
     rd: RunDir,
     *,
     jobs: Sequence[str] | None = None,
     qos: str | None = None,
+    time_limit: str | None = None,
     dry_run: bool = False,
     ceiling: float | None = None,
     run: Runner = subprocess.run,
     prepare: Callable[[stacks.Resolved], Path] | None = None,
 ) -> int:
-    """Prepare, check the budget, ``sbatch`` each job; print the lines on a dry run."""
+    """Prepare, check the budget, ``sbatch`` each job; print the lines on a dry run.
+
+    ``time_limit`` (``H:MM:SS``) replaces the planned time limit of every submitted job,
+    with its estimate and QOS purpose (:func:`with_time_limit`), for a rerun after a
+    job ran out of time; ``submitted.tsv`` records the limit used.
+    """
     names = list(jobs) if jobs else rd.jobs()
     plan = _plan_rows(rd.path)
     unknown = [j for j in names if j not in plan]
     if unknown:
         raise ConfigError(f"no planned job {', '.join(unknown)} (jobs: {rd.jobs()})")
+    if time_limit is not None:
+        plan = {j: with_time_limit(plan[j], time_limit) for j in names}
     commit, _ = matrix.source_commit()
     try:
         records.check_extends(

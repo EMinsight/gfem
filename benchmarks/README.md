@@ -250,11 +250,12 @@ lumped ports; each code runs at its defaults except the pins above.
 | `lcavity` | eigen, PEC L-shaped cavity, target 100 GHz, 1 mode | 246 416 (p2) | committed, mm | closed form, f1 = 148 140 269 652.022 Hz |
 | `bragg` | eigen, Bloch periodic, $k = \pi/a$ along $x$, 2 modes; a physics case | 10 620 (p3) | committed, mm, R1 mesh split once | transfer-matrix roots, ceiling 1e-5 rel |
 | `r10M_void` | driven, 50 GHz, port 1 only, S11 and S21 | 10 248 856 (p2) | external, um | none (`accuracy: null`, `no_reference`); DOF pinned |
+| `microstrip_p3` | microstrip's problem; the mid-size scale case | 907 791 (p3) | microstrip's (`../microstrip/mesh.msh.xz`) | microstrip's (`[reference] case = "microstrip"`) |
 
 Meshes whose xz file is at most 1 MiB are committed as `cases/<case>/mesh.msh.xz`;
 larger ones live in mesh stores as `<sha256>.msh.xz`. A case's problem does not
 change across Palace versions. Wall caps (in the campaign files): bragg 120 s,
-lcavity and microstrip 600 s, r10M_void 1 800 s. The `est_s` hints of a case file
+lcavity and microstrip 600 s, r10M_void and microstrip_p3 1 800 s. The `est_s` hints of a case file
 feed only the plan's estimate and are left out of the case's definition hash.
 
 ## Converged references
@@ -263,7 +264,9 @@ Each case directory holds one `reference.json` (`suite-reference/1`): `id`
 (`<case>-<YYYYMMDD>-<sha7>`), `physics_sha256` (what the scorer matches), `meshes`
 (per mesh sha256 its DOF per order: the DOF guard's pins), `method`, `quantities`
 with their `bound`, `ceiling` and `same_mesh_error` per order, `cross_checks`,
-provenance. A reference is replaced only by a file with a new id and `computed_utc`;
+provenance. A case file with `[reference] case = "<sibling>"` (same physics,
+another order) has no file of its own: it is scored, and DOF-pinned, by the named
+suite case's `reference.json`, so the reference id stays single. A reference is replaced only by a file with a new id and `computed_utc`;
 the old one stays archived in the records store under `references/<id>/`.
 
 - `python -m benchmarks reference lcavity` (also `bragg`, `r10M_void`) writes the
@@ -438,7 +441,8 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
 3. **Submit** from the same tree:
 
    ```sh
-   python -m benchmarks submit RUNDIR [--job J] [--qos Q] [--ceiling C] [--dry-run]
+   python -m benchmarks submit RUNDIR [--job J] [--qos Q] [--time H:MM:SS] \
+       [--ceiling C] [--dry-run]
    ```
 
    `submit` refuses when `prior_core_h` + billed core-h of every `submitted.tsv`
@@ -448,7 +452,12 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
    It then prepares the stacks, stages the meshes, `sbatch`es
    `benchmarks/job.sbatch RUNDIR JOB` per job and appends the ids to
    `RUNDIR/submitted.tsv`. `--dry-run` prints the budget line and the sbatch lines
-   only. Each job writes its machine facts once (`jobs/<jobid>/`, including a
+   only. `--time H:MM:SS` replaces the planned time limit of every job submitted,
+   for a rerun after a job ran out of time (its remaining lines `not_started` with
+   `job_time_left`): the estimate becomes the new limit / 1.5 and, without `--qos`,
+   the QOS follows the new limit (`debug` up to 2 h, else `long`). `submitted.tsv`
+   records the limit and estimate used; `plan.tsv` keeps the planned ones. Each job
+   writes its machine facts once (`jobs/<jobid>/`, including a
    `tools/scale_bench.py node` machine benchmark), then runs
    `python -m benchmarks step RUNDIR JOB LINE` for each steps line.
 
