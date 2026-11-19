@@ -397,6 +397,28 @@ WP_ROWS = (0, 27, 148, 299)
 #: Palace v0.18.1's port boundary (the baseline): the Robin term plus a
 #: rank-two modal correction per wave port. Without the correction max |dS|
 #: was 1e-5, 7.9e-4 and 1.5e-3 at 1, 50 and 100 GHz.
+#: r8_wp's port line is lossy (alpha/beta ~ 9.5e-5), and gfem departs from
+#: Palace there by design (ADR 0214), measured on MN5 2026-11-18 against
+#: fcca4c2, which met Palace to 2e-6 on every entry. Reflection: Palace's
+#: conjugated projection reflects the line's own mode at alpha/beta (new
+#: |dS11| up to 0.93 alpha/beta). Transmission: a phase only, ~0.1 alpha/beta
+#: rad, since Palace fixes each mode's phase by a quadrant integral and gfem
+#: normalizes its modal waves by reciprocity; their phases differ at the
+#: order of the loss. So |S| meets Palace at `TOLERANCE` and S within the
+#: loss.
+
+
+def _assert_wave_port_parity(s, palace, gamma):
+    """|S| within `TOLERANCE` of Palace; S within it plus the port line's loss."""
+    loss = np.abs(gamma.real / gamma.imag)[:, None, None]
+    n = s.shape[1]
+    through = ~np.eye(n, dtype=bool)
+    magnitude = np.abs(np.abs(s) - np.abs(palace))
+    assert magnitude[:, through].max() <= TOLERANCE
+    diff = np.abs(s - palace)
+    assert (diff[:, through] <= TOLERANCE + 0.5 * loss[:, :, 0]).all()
+    reflection = diff[:, ~through]
+    assert (reflection <= TOLERANCE + 1.2 * loss[:, :, 0]).all(), (reflection, loss)
 
 
 def test_wave_port_parity_s_matches_palace(reference):
@@ -417,19 +439,21 @@ def test_wave_port_parity_s_matches_palace(reference):
         f"{np.round(np.asarray(result.port_modes['p1'].n_eff), 6).tolist()}; "
         f"{wall:.1f} s, peak RSS {peak_rss_gib():.2f} GiB, load {os.getloadavg()}"
     )
-    assert diff.max() <= TOLERANCE
+    gamma = np.asarray(result.port_modes["p1"].gamma)
+    _assert_wave_port_parity(s, palace[rows], gamma)
     np.testing.assert_allclose(s, np.swapaxes(s, 1, 2), atol=1e-6)
 
 
 def test_wave_port_adaptive_parity_s_matches_palace_over_the_grid(reference):
     _, frequency, palace, result, wall, rss = _adaptive(reference, "r8_wp")
     _report("r8_wp", result, wall, rss)
-    diff = np.abs(np.asarray(result.s.values) - palace).max(axis=(1, 2))
+    s = np.asarray(result.s.values)
+    diff = np.abs(s - palace).max(axis=(1, 2))
     print(  # noqa: T201
         f"r8_wp adaptive: max |dS| vs Palace {diff.max():.3g} at "
         f"{frequency[diff.argmax()] / 1e9:.3f} GHz"
     )
-    assert diff.max() <= TOLERANCE
+    _assert_wave_port_parity(s, palace, np.asarray(result.port_modes["p1"].gamma))
 
 
 def test_wave_port_adaptive_matches_uniform_solves_between_samples(reference):

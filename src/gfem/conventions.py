@@ -46,39 +46,46 @@ normalized to 1 W time-averaged power through the port.
 
 Network parameters
 ------------------
-S-parameters are power waves (Kurokawa) with a reference impedance per
-port and per frequency, ``z_ref``:
+S-parameters are pseudo-waves (Marks and Williams) with a reference
+impedance per port and per frequency, ``z_ref``:
 
 .. math::
 
-    a_i = \frac{V_i + z_i I_i}{2 \sqrt{\mathrm{Re}\, z_i}}, \qquad
-    b_i = \frac{V_i - z_i^* I_i}{2 \sqrt{\mathrm{Re}\, z_i}}, \qquad
+    a_i = \frac{\sqrt{\mathrm{Re}\, z_i}}{2 |z_i|} (V_i + z_i I_i), \qquad
+    b_i = \frac{\sqrt{\mathrm{Re}\, z_i}}{2 |z_i|} (V_i - z_i I_i), \qquad
     b = S a,
 
-with :math:`V`, :math:`I` peak port voltage and current, so :math:`|a_i|^2`
-is the time-averaged incident power in W (:math:`|a| = 1` is 1 W). When
-``z_ref`` is real, power waves and pseudo-waves coincide.
+with :math:`V`, :math:`I` peak port voltage and current, scaled so that
+:math:`|a| = 1` is 1 W incident on a real reference. When ``z_ref`` is
+real, pseudo-waves and power waves (Kurokawa) coincide; on a complex
+reference, a line matched to its own characteristic impedance has
+:math:`S_{11} = 0`, which power waves do not give.
 
 - A `LumpedPort`'s ``z_ref`` is its resistance. A port without a
   resistance has no reference impedance: its ``z_ref`` and its row of S are
   NaN, and it cannot be excited.
-- A `WavePort`'s S is normalized to unit modal power; its ``z_ref`` is the
-  power-voltage impedance :math:`Z_{PV}` along its ``voltage_path`` (NaN
-  without one). A wave port's S is the projection of the field on the
-  conjugated port mode, with the mode's magnetic field taken at its complex
-  wavenumber, and the mode scaled so that this projection of the mode
-  itself carries 1 W; for a lossless mode this is the modal
-  power wave. The conjugated projection separates the requested modes of
-  a shared port surface only for a lossless port line, and a lossy port
-  line reflects its own mode at order :math:`\alpha/\beta` (transmission is
-  right to the square of it).
+- A `WavePort`'s S reads the field's modal amplitudes by the biorthogonal
+  projection on the port surface's modes, :math:`c = R^{-1} H^T E` with
+  :math:`R_{lk} = \int (n \times h_l) \cdot e_k` unconjugated, which by
+  reciprocity separates the modes and matches a uniform line to its own
+  mode, lossy or not. With a ``voltage_path`` its ``z_ref`` is the complex
+  power-voltage impedance :math:`Z_{PV} = |V|^2 / (2 P^*)` of its mode, so
+  the port's waves are the pseudo-waves of the mode's voltage and current;
+  a lossless line has a real ``z_ref`` and unit-power modal waves. Without
+  one, ``z_ref`` is NaN and the port's waves are its modal amplitudes
+  normalized by reciprocity, :math:`\tfrac12 \int (e \times h) \cdot n = 1`
+  unconjugated (1 W on a lossless line), which keeps S symmetric for a
+  reciprocal device. S is symmetric when every port has the same kind of
+  reference (all real, all wave ports with equal ``z_ref``, or all modal);
+  a wave port with a ``voltage_path`` beside one without breaks the
+  symmetry by the ratio of their normalizations on a lossy line.
   ``WavePort(offset=d)`` refers S to a plane :math:`d` inside the
   domain: :math:`S_{ij}` times :math:`e^{\gamma_i d_i} e^{\gamma_j d_j}`.
   Without a ``voltage_path``, the sign of a wave port's row and column of
   S is fixed by a mesh-dependent rule; every :math:`|S|` and power is
   unaffected.
 - ``NetworkParameters.y()``, ``.z()`` and ``.renormalize(z_new)`` use the
-  power-wave formulas; ``to_touchstone`` labels a file with ``z_ref`` only
+  pseudo-wave formulas; ``to_touchstone`` labels a file with ``z_ref`` only
   when it is one real value, and otherwise needs ``z0=`` to renormalize
   first. gfem never labels a port 50 Ω unless S was computed or
   renormalized for 50 Ω, or no port has a reference impedance (wave ports
@@ -382,8 +389,9 @@ TIME_DEPENDENCE = "exp(+iωt)"
 PHASOR = "peak"
 #: Time-averaged incident power at the excited port of a driven field, W.
 INCIDENT_POWER = 1.0
-#: The wave definition of S-parameters.
-WAVES = "power"
+#: The wave definition of S-parameters (Marks and Williams; power waves on a
+#: real reference).
+WAVES = "pseudo"
 #: Sheet admittance of one `Conductor` term on an interior surface for a film
 #: much thinner than its skin depth, in units of :math:`\sigma t` (conductivity
 #: times thickness).

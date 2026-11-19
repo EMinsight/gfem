@@ -158,12 +158,12 @@ def test_the_message_names_the_step(line, records):
     assert "21 GHz" in message
 
 
-@pytest.mark.filterwarnings("ignore::gfem.PortModeProjectionWarning")
 def test_adjoint_port_solves_are_logged(tmp_path, records):
     model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
     frequencies = [rc.LOSSY_GUIDE_FREQUENCY, 1.01 * rc.LOSSY_GUIDE_FREQUENCY]
     options = gfem.SolverOptions(order=2, linear_solver="direct")
-    rule = DrivenRule(model, gfem.Driven(frequencies), options)
+    # p2 not excited: its S row needs its own adjoint solve
+    rule = DrivenRule(model, gfem.Driven(frequencies, excite="p1"), options)
     rule.adjoint_loads = port_loads(("p2",))
     rule.forward(model, keep=False)
     adjoint = [r for r in records("forward") if r.columns == "adjoint load"]

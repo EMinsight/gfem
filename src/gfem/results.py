@@ -673,8 +673,13 @@ class PortModeResult:
         frequency: ``(n_freq,)`` Hz.
         gamma: Propagation constant :math:`\gamma = \alpha + i\beta`,
             ``(n_freq,)``, 1/m (:math:`\alpha \ge 0` is the attenuation).
-        Z_PV: Power-voltage characteristic impedance :math:`|V|^2 / (2 P)` along
-            the port's ``voltage_path``, ohm; NaN without a voltage path.
+        Z_PV: Complex power-voltage characteristic impedance
+            :math:`|V|^2 / (2 P^*)` along the port's ``voltage_path``, with
+            :math:`P` the mode's complex power, ``(n_freq,)``, ohm; NaN
+            without a voltage path. Real for a lossless line; a wave port's
+            reference impedance is its modulus (`gfem.conventions`). For
+            the power-current and voltage-current definitions, see
+            `gfem.characteristic_impedance`.
         residual: Backward error of the mode at each frequency,
             :math:`|A x - \lambda B x| / (|A x| + |\lambda| |B x|)` on the 2D port mode
             problem. It exceeds ``SolverOptions.port_mode_tolerance`` only at
@@ -736,7 +741,7 @@ class PortModeResult:
         zs = (
             "no voltage_path"
             if np.isnan(z).all()
-            else (f"Z_PV {z.min():.4g}-{z.max():.4g} ohm")
+            else (f"|Z_PV| {np.abs(z).min():.4g}-{np.abs(z).max():.4g} ohm")
         )
         exact = int(np.asarray(self.solved).sum())
         return (
@@ -820,11 +825,13 @@ register_fields(
 class NetworkParameters:
     r"""Scattering parameters over frequency, labelled by port name.
 
-    Power waves (Kurokawa) under :math:`e^{+i\omega t}`, each port with its own
-    reference impedance ``z_ref``: ``values[f, i, j]`` is the outgoing wave at
-    port ``ports[i]`` when port ``excited[j]`` is fed 1 W incident power and
-    every other port is terminated in its reference impedance. For a
-    `LumpedPort` the reference impedance is its resistance; an inductance or
+    Pseudo-waves (Marks and Williams; power waves on a real reference) under
+    :math:`e^{+i\omega t}`, each port with its own reference impedance
+    ``z_ref``: ``values[f, i, j]`` is the outgoing wave at port ``ports[i]``
+    when port ``excited[j]`` is fed a unit wave (1 W incident power on a real
+    reference) and every other port is terminated in its reference impedance.
+    For a `LumpedPort` the reference impedance is its resistance; for a
+    `WavePort` with a ``voltage_path`` its mode's complex ``Z_PV``; an inductance or
     capacitance of the port loads the network in parallel. A port without
     a resistance has no reference impedance: its ``z_ref`` and its row of S
     are NaN. `y`, `z` and `renormalize` are `jax.numpy` functions of S and
@@ -833,8 +840,9 @@ class NetworkParameters:
 
     Attributes:
         values: S, complex, shape ``(n_freq, n_ports, n_excited)``.
-        z_ref: Reference impedance of each port in ohm, shape
-            ``(n_freq, n_ports)``.
+        z_ref: Reference impedance of each port in ohm, shape ``(n_freq,
+            n_ports)``; complex when a `WavePort` has a ``voltage_path``,
+            real otherwise.
         frequency: The frequencies in Hz (static labels).
         ports: Port names, the row order of S (the model's port order).
         excited: Names of the excited ports, the column order of S.
@@ -872,27 +880,26 @@ class NetworkParameters:
         r"""The admittance matrix in siemens, ``(n_freq, n_ports, n_ports)``.
 
         Rows and columns in `ports` order. With
-        :math:`F = \mathrm{diag}(1 / (2 \sqrt{\mathrm{Re}\, z_\mathrm{ref}}))`
-        and :math:`G = \mathrm{diag}(z_\mathrm{ref})`,
-        :math:`Y = F^{-1} (S G + G^*)^{-1} (I - S) F` (power waves). Written in
-        `jax.numpy`, so it differentiates like S. Entries are NaN where a port
-        has no reference impedance.
+        :math:`K = \mathrm{diag}(\sqrt{\mathrm{Re}\, z_\mathrm{ref}} /
+        |z_\mathrm{ref}|)` and :math:`G = \mathrm{diag}(z_\mathrm{ref})`,
+        :math:`Y = G^{-1} K^{-1} (I + S)^{-1} (I - S) K` (pseudo-waves). Written
+        in `jax.numpy`, so it differentiates like S. Entries are NaN where a
+        port has no reference impedance.
 
         Raises:
             ValueError: Not every port was excited, so S is not square.
         """
         s, g, ratio = self._s_g_ratio("y()")
         eye = jnp.broadcast_to(jnp.eye(s.shape[-1]), s.shape)
-        sg = s * g[:, None, :] + _diag(jnp.conj(g))
-        return jnp.linalg.solve(sg, eye - s) * ratio
+        return jnp.linalg.solve(eye + s, eye - s) * ratio / g[:, :, None]
 
     def z(self) -> jax.Array:
         r"""The impedance matrix in ohm, ``(n_freq, n_ports, n_ports)``.
 
         Rows and columns in `ports` order. With
-        :math:`F = \mathrm{diag}(1 / (2 \sqrt{\mathrm{Re}\, z_\mathrm{ref}}))`
-        and :math:`G = \mathrm{diag}(z_\mathrm{ref})`,
-        :math:`Z = F^{-1} (I - S)^{-1} (S G + G^*) F` (power waves). Written in
+        :math:`K = \mathrm{diag}(\sqrt{\mathrm{Re}\, z_\mathrm{ref}} /
+        |z_\mathrm{ref}|)` and :math:`G = \mathrm{diag}(z_\mathrm{ref})`,
+        :math:`Z = K^{-1} (I - S)^{-1} (I + S) K G` (pseudo-waves). Written in
         `jax.numpy`, so it differentiates like S. Entries are NaN where a port
         has no reference impedance.
 
@@ -901,15 +908,14 @@ class NetworkParameters:
         """
         s, g, ratio = self._s_g_ratio("z()")
         eye = jnp.broadcast_to(jnp.eye(s.shape[-1]), s.shape)
-        sg = s * g[:, None, :] + _diag(jnp.conj(g))
-        return jnp.linalg.solve(eye - s, sg) * ratio
+        return jnp.linalg.solve(eye - s, eye + s) * ratio * g[:, None, :]
 
     def renormalize(self, z_new: Any) -> NetworkParameters:
         """The same network under new reference impedances.
 
-        Power-wave renormalization: the network (its Z matrix) is unchanged,
-        only the waves that describe it change. Written in `jax.numpy`, so
-        it differentiates with respect to S and ``z_new``.
+        Pseudo-wave renormalization (`gfem.conventions`): the network (its Z
+        matrix) is unchanged, only the waves that describe it change.
+        Written in `jax.numpy`, so it differentiates with respect to S and ``z_new``.
 
         Args:
             z_new: The new reference impedance in ohm: one value for every
@@ -937,26 +943,24 @@ class NetworkParameters:
                 )
             if not (np.real(arr) > 0).all():
                 raise ValueError(
-                    "Power-wave reference impedances need a positive real part "
+                    "Reference impedances need a positive real part "
                     f"(a resistance), got {z_new!r}."
                 )
         new = jnp.broadcast_to(jnp.asarray(z_new), (n_f, n))
         z = jnp.asarray(self.z_ref, dtype=complex)
         zn = new.astype(complex)
-        # a' = P a + Q b and b' = U a + T b per port, so S' = (U + T S)(P + Q S)^-1,
-        # each side scaled by 1 / (2 sqrt(Re Z Re Z')).
-        p = jnp.conj(z) + zn
-        q = z - zn
-        u = jnp.conj(z) - jnp.conj(zn)
-        t = z + jnp.conj(zn)
-        num = _diag(u) + t[:, :, None] * s
-        den = _diag(p) + q[:, :, None] * s
+        # pseudo-waves a = k (V + z I), b = k (V - z I), k = sqrt(Re z) / |z|:
+        # a' = c ((z + z') a + (z - z') b), b' = c ((z - z') a + (z + z') b) per
+        # port with c = k' / (2 k z), so S' = C (U + P S)(P + U S)^-1 C^-1.
+        p, u = z + zn, z - zn
+        num = _diag(u) + p[:, :, None] * s
+        den = _diag(p) + u[:, :, None] * s
         s0 = jnp.swapaxes(
             jnp.linalg.solve(jnp.swapaxes(den, 1, 2), jnp.swapaxes(num, 1, 2)), 1, 2
         )
-        d = jnp.sqrt(jnp.real(z) * jnp.real(zn))
+        c = _pseudo(zn) / (_pseudo(z) * z)
         return NetworkParameters(
-            values=s0 * d[:, None, :] / d[:, :, None],
+            values=s0 * c[:, :, None] / c[:, None, :],
             z_ref=new,
             frequency=self.frequency,
             ports=self.ports,
@@ -1102,9 +1106,9 @@ class NetworkParameters:
     def _s_g_ratio(self, what: str) -> tuple[jax.Array, jax.Array, jax.Array]:
         s = self._square(what)
         g = jnp.asarray(self.z_ref, dtype=complex)
-        r = jnp.sqrt(jnp.real(g))
-        # F^-1 M F: entry (i, j) times F_j / F_i = sqrt(Re z_i / Re z_j)
-        return s, g, r[:, :, None] / r[:, None, :]
+        k = _pseudo(g)
+        # K^-1 M K: entry (i, j) times k_j / k_i
+        return s, g, k[:, None, :] / k[:, :, None]
 
     def __repr__(self) -> str:
         return (
@@ -1114,6 +1118,11 @@ class NetworkParameters:
 
 
 register_fields(NetworkParameters, ("values", "z_ref"))
+
+
+def _pseudo(z: jax.Array) -> jax.Array:
+    """The pseudo-wave factor ``sqrt(Re z) / |z|`` of reference impedances ``z``."""
+    return jnp.sqrt(jnp.real(z)) / jnp.abs(z)
 
 
 def _diag(v: jax.Array) -> jax.Array:

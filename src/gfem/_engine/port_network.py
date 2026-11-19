@@ -3,7 +3,7 @@
 Every port enters S twice, both affine in ω: through its incident wave's
 right-hand side (one column per excited port) and through its S
 functional (one row of S per port: ``1 / sqrt(2 R)`` times the port
-voltage for a lumped port, the projection on the conjugated mode for a
+voltage for a lumped port, the biorthogonal projection on its mode for a
 wave port, `gfem._engine.wave_ports`). A `PortNetwork` holds them with the
 reference impedances ``z_ref`` and the wave ports' de-embedding, and
 answers what S is and what an S cotangent asks of the solver: S from the
@@ -12,8 +12,8 @@ S into adjoint columns given by reciprocity, adjoint loads and undefined
 columns (`split_cotangent`).
 
 Reciprocity: with ``A`` complex symmetric and port i's S functional
-``f_i`` parallel to its excitation ``b_i`` (every lumped port; a wave port
-whose mode is real up to one phase), ``A^-1 f_i`` is port i's own solution
+``f_i`` parallel to its excitation ``b_i`` (every lumped port; a lone wave
+port on its surface, lossy or not), ``A^-1 f_i`` is port i's own solution
 scaled, so its row needs no adjoint solve. With a Bloch wave vector
 ``A(k)^T = A(-k)``: port i's adjoint is its own solution at -k, which a
 sweep at k does not have, so the network takes no shortcut there
@@ -23,15 +23,16 @@ has no reference impedance: its S row and ``z_ref`` are NaN, and a
 cotangent on that row makes the gradient NaN like the value (ADR 0011).
 
 A row that reciprocity does not cover needs its own adjoint solution: the
-row of a lumped port that is not excited, or of a wave port whose mode is
-not real up to a phase. A uniform sweep solves it in the backward pass; an
-adaptive sweep, whose backward has no full-size solver, solves these S
-functionals at every sample and adds them to its basis
+row of a lumped port that is not excited, or of a wave port on a shared
+surface, whose functional mixes the surface's modes. A uniform sweep
+solves it in the backward pass; an adaptive sweep, whose backward has no
+full-size solver, solves these S functionals at every sample and adds them
+to its basis
 (`PortNetwork.adjoint_loads`, ADR 0010).
 
 The network only consumes the wave port couplings and holds them once: a
-wave port's output term reads them conjugated on the fly
-(`AffineTerm.conjugate`, ADR 0091). The system operator
+wave port's output term reads them as they are (ADR 0214), a Floquet
+port's conjugated on the fly (`AffineTerm.conjugate`, ADR 0091). The system operator
 (`gfem._engine.system_operator`) solves with the same couplings.
 """
 
@@ -45,7 +46,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from gfem import _mpi
-from gfem._boundaries import LumpedPort, Port
+from gfem._boundaries import LumpedPort, Port, WavePort
 from gfem._engine import terms
 from gfem._engine.floquet_ports import FloquetPortCoupling, FloquetSurfaceCoupling
 from gfem._engine.wave_ports import PortSurfaceCoupling, WavePortCoupling
@@ -60,6 +61,7 @@ __all__ = [
     "PARALLEL_RTOL",
     "CotangentSplit",
     "PortNetwork",
+    "complex_reference",
     "parallel_scale",
     "resistance",
     "split_cotangent",
@@ -68,6 +70,17 @@ __all__ = [
 #: A port's S functional counts as parallel to its excitation (so its
 #: adjoint is the port's own solution scaled) to this relative residual.
 PARALLEL_RTOL = 1e-10
+
+
+def complex_reference(ports: Sequence[Port]) -> bool:
+    """Whether ``z_ref`` is complex: some `WavePort` has a ``voltage_path``.
+
+    Its reference is its mode's complex ``Z_PV``; every other port's is
+    real (a resistance, a Floquet order's wave impedance) or NaN, so
+    ``z_ref`` stays real without one. Static: JAX needs the dtype before
+    the solve.
+    """
+    return any(isinstance(p, WavePort) and p.voltage_path is not None for p in ports)
 
 
 def resistance(port: Port) -> float:
@@ -83,9 +96,9 @@ def parallel_scale(
 ) -> complex | None:
     """``c`` with ``functional = c excitation`` to `PARALLEL_RTOL`, else ``None``.
 
-    True for every lumped port and for a wave port whose mode is real up to
-    one phase (lossless); a lossy wave port's S functional projects on the
-    conjugated mode, which is not parallel to its excitation. Both are load
+    True for every lumped port and for a lone wave port on its surface; on a
+    shared surface a wave port's S functional mixes the surface's modes
+    (``R⁻¹ Hᵀ``), so it is parallel only up to their cross reactions. Both are load
     columns, so across ranks each product is the layout's agreed one.
     """
     norm = np.real(layout.inner(excitation, excitation))
@@ -306,7 +319,7 @@ class PortNetwork:
                     out[c.index] = c.functional(w)
                 return out
 
-            outputs.append(AffineTerm(surface.vectors, wave_rows, conjugate=True))
+            outputs.append(AffineTerm(surface.vectors, wave_rows))
         for surface in floquet:
             m2 = surface.vectors.shape[1]
             fed = [
@@ -331,11 +344,14 @@ class PortNetwork:
             outputs.append(AffineTerm(surface.vectors, floquet_rows, conjugate=True))
         waves = sorted((c for s in surfaces for c in s.ports), key=lambda c: c.index)
         orders = sorted((c for s in floquet for c in s.ports), key=lambda c: c.index)
-        z_ref = np.zeros((n_freq, n_ports))
+        z_ref = np.zeros(
+            (n_freq, n_ports), complex if complex_reference(model.ports) else float
+        )
         for i in lumped:
             z_ref[:, i] = resistance(model.ports[i])
         for c in (*waves, *orders):
-            z_ref[:, c.index] = c.z_ref
+            # real (or NaN) unless a voltage path made it complex
+            z_ref[:, c.index] = c.z_ref if np.iscomplexobj(z_ref) else np.real(c.z_ref)
         return cls(
             excitation,
             outputs,
@@ -377,7 +393,7 @@ class PortNetwork:
     def functional(self, omega: float) -> np.ndarray:
         """``(N, n_ports)``: port i's outgoing wave is ``functional[:, i] @ x``.
 
-        A wave port's projects on its conjugated mode (`WavePortCoupling`).
+        A wave port's is its biorthogonal mode projection (`WavePortCoupling`).
         """
         return np.asarray(
             sum(t.combine(np.asarray(t.coefficients(omega)).T) for t in self.outputs)

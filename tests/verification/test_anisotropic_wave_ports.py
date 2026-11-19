@@ -71,15 +71,11 @@ def test_a_guide_with_anisotropic_permeability_transmits_its_te10_mode(mesh):
 
 def test_a_guide_with_per_axis_conductivity_attenuates_along_its_field(mesh):
     material = gfem.Material(eps_r=EPS, conductivity=SIGMA)
-    with pytest.warns(gfem.PortModeProjectionWarning, match="alpha/beta"):
-        s, _ = _solve(mesh, material, F_SIGMA)
-    # measured on MN5: 4.9e-5 and |S11| = 5.5e-3 at alpha/beta = 7.8e-3. The
-    # conjugated S functional reflects a lossy mode referenced to itself at
-    # order alpha/beta (0.99 alpha/beta on a lossy parallel-plate line), not
-    # only through the attenuation the Robin term drops; the ceiling of the
-    # verification plan stays.
+    s, _ = _solve(mesh, material, F_SIGMA)
+    # the biorthogonal S functional: a lossy guide matched to its own mode
+    # (the conjugated one gave |S11| = 5.5e-3 at alpha/beta = 7.8e-3)
     assert abs(s[1, 0] - np.exp(-GAMMA_SIGMA * LENGTH * 1e-3)) <= 1.5e-4
-    assert abs(s[0, 0]) <= 1e-2
+    assert abs(s[0, 0]) <= 1e-4
 
 
 @pytest.mark.parametrize(

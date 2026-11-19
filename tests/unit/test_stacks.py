@@ -1,0 +1,2070 @@
+"""`tools/stacks/`: provenance files of native software stacks, and the scripts."""
+
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+#: The stack scripts run on Linux clusters: POSIX paths, bash.
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="the stack scripts are Linux only"
+)
+
+STACKS = Path(__file__).parents[2] / "tools" / "stacks"
+STACK_SH = STACKS / "stack.sh"
+
+_spec = importlib.util.spec_from_file_location("provenance", STACKS / "provenance.py")
+assert _spec is not None
+assert _spec.loader is not None
+provenance = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(provenance)
+
+
+def _record(package: str = "ngsolve", toolchain: str = "a" * 64) -> dict:
+    """The fragments a build hands to the writer: everything but the stamp."""
+    return {
+        "package": package,
+        "version": "1.0",
+        "stack": "native-oss",
+        "source": {"url": "https://example.org/x.git", "tag": "v1.0", "commit": "c"},
+        "toolchain": {"sha256": toolchain, "modules": ["gcc/12.3.0"]},
+        "configure": {"options": ["-DX=ON"]},
+        "recipe": {"commit": "r", "sha256": "b" * 64, "dirty": False},
+        "build": {"job_id": "1", "host": "gs01r1b01"},
+        "depends": {},
+        "smoke": {"command": "x --version", "output": "x 1.0"},
+    }
+
+
+def _prefix(root: Path, package: str, toolchain: str, **extra: object) -> Path:
+    prefix = root / "native-oss" / f"{package}-1.0"
+    prefix.mkdir(parents=True)
+    provenance.write(prefix, {**_record(package, toolchain), **extra})
+    return prefix
+
+
+def _stack_sh(*args: str, root: Path) -> subprocess.CompletedProcess:
+    env = {**os.environ, "STACKS_ROOT": str(root)}
+    return subprocess.run(
+        ["bash", str(STACK_SH), *args],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _stack_function(
+    script: str, *args: str, env: dict | None = None, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
+    """Run ``script`` in bash with ``stack.sh``'s helpers sourced (no command run).
+
+    ``$1``... are ``args``; ``provenance.py`` runs on this interpreter.
+    """
+    return subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            f'source "{STACK_SH}"; {script}',
+            "stack",
+            *args,
+        ],
+        env={**os.environ, "STACK_PYTHON": sys.executable, **(env or {})},
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("arg", "key", "value"),
+    [
+        ("n:=3", "n", 3),
+        ('list:=[1, "a"]', "list", [1, "a"]),
+        ("s=x:=y", "s", "x:=y"),
+        ("s=a=b", "s", "a=b"),
+        ("s=", "s", ""),
+    ],
+)
+def test_stack_json_reads_key_colon_equals_as_json_and_key_equals_as_a_string(
+    tmp_path, arg, key, value
+):
+    out = tmp_path / "out.json"
+
+    result = _stack_function('stack_json "$1" "$2"', str(out), arg)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(out.read_text()) == {key: value}
+
+
+def test_stack_json_to_standard_output_nests_values_with_any_characters(tmp_path):
+    odd = 'a "quoted" \\ path\twith tab'
+    script = 'inner=$(stack_json - "prefix=$1" "n:=2"); stack_json - "dep:=$inner"'
+
+    result = _stack_function(script, odd, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"dep": {"prefix": odd, "n": 2}}
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_stack_json_array_writes_its_arguments_as_a_json_list():
+    result = _stack_function('stack_json_array "$@"', '--prefix=/a "b"', "", "c")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ['--prefix=/a "b"', "", "c"]
+
+
+def test_an_mpi_singleton_runs_without_slurms_pmi_library():
+    result = _stack_function(
+        "stack_singleton env",
+        env={"I_MPI_PMI_LIBRARY": "/usr/lib64/libpmi2.so", "KEPT": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    names = {line.split("=", 1)[0] for line in result.stdout.splitlines()}
+    assert "KEPT" in names
+    assert "I_MPI_PMI_LIBRARY" not in names
+
+
+def test_two_first_builds_of_a_stack_freeze_its_toolchain_once(tmp_path):
+    source = tmp_path / "native-oss.sh"
+    source.write_text("module load gcc/12.3.0\n" * 20000)
+    script = """
+    for i in $(seq 20); do
+      frozen=$2/$i/toolchain.sh
+      mkdir -p "$2/$i"
+      stack_freeze_toolchain "$1" "$frozen" >"$2/$i.a" 2>&1 &
+      a=$!
+      stack_freeze_toolchain "$1" "$frozen" >"$2/$i.b" 2>&1 &
+      b=$!
+      wait $a || { echo "run $i a failed: $(<"$2/$i.a")"; exit 1; }
+      wait $b || { echo "run $i b failed: $(<"$2/$i.b")"; exit 1; }
+    done
+    """
+
+    result = _stack_function(script, str(source), str(tmp_path / "root"))
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    for i in range(1, 21):
+        directory = tmp_path / "root" / str(i)
+        assert [p.name for p in directory.iterdir()] == ["toolchain.sh"]
+        frozen = directory / "toolchain.sh"
+        assert frozen.read_bytes() == source.read_bytes()
+        assert not os.access(frozen, os.W_OK) or os.geteuid() == 0
+
+
+def test_a_toolchain_file_that_differs_from_the_frozen_one_is_refused(tmp_path):
+    source = tmp_path / "native-oss.sh"
+    source.write_text("module load gcc/12.3.0\n")
+    frozen = tmp_path / "toolchain.sh"
+    frozen.write_text("module load gcc/13.2.0\n")
+
+    result = _stack_function(
+        'stack_freeze_toolchain "$1" "$2"', str(source), str(frozen)
+    )
+
+    assert result.returncode != 0
+    assert "a changed toolchain is a new software stack" in result.stderr
+    assert frozen.read_text() == "module load gcc/13.2.0\n"
+
+
+def test_a_prefix_is_complete_once_its_provenance_file_is_written(tmp_path):
+    prefix = tmp_path / "native-oss" / "ngsolve-1.0"
+    prefix.mkdir(parents=True)
+    assert provenance.read(prefix) is None
+
+    provenance.write(prefix, _record())
+
+    record = provenance.read(prefix)
+    assert record is not None
+    assert record["schema"] == 1
+    assert record["package"] == "ngsolve"
+    assert record["prefix"] == str(prefix)
+    assert record["complete_utc"].endswith("Z")
+
+
+def test_a_record_missing_a_schema_field_leaves_the_prefix_incomplete(tmp_path):
+    record = _record()
+    del record["toolchain"]
+
+    with pytest.raises(ValueError, match="toolchain"):
+        provenance.write(tmp_path, record)
+
+    assert provenance.read(tmp_path) is None
+
+
+def test_a_record_without_a_toolchain_hash_is_refused(tmp_path):
+    record = _record()
+    del record["toolchain"]["sha256"]
+
+    with pytest.raises(ValueError, match=r"toolchain\.sha256"):
+        provenance.write(tmp_path, record)
+
+
+def test_packages_of_one_stack_built_on_one_toolchain_agree(tmp_path):
+    _prefix(tmp_path, "ngsolve", "a" * 64)
+    _prefix(tmp_path, "openblas", "a" * 64)
+
+    report = provenance.check_stack(tmp_path / "native-oss")
+
+    assert report.errors == []
+
+
+def test_packages_of_one_stack_built_on_two_toolchains_fail_the_check(tmp_path):
+    _prefix(tmp_path, "ngsolve", "a" * 64)
+    _prefix(tmp_path, "openblas", "c" * 64)
+
+    report = provenance.check_stack(tmp_path / "native-oss")
+
+    assert len(report.errors) == 1
+    assert "ngsolve-1.0" in report.errors[0]
+    assert "openblas-1.0" in report.errors[0]
+
+
+def test_an_unfinished_prefix_is_reported_but_not_compared(tmp_path):
+    _prefix(tmp_path, "ngsolve", "a" * 64)
+    (tmp_path / "native-oss" / "petsc-1.0" / "lib").mkdir(parents=True)
+
+    report = provenance.check_stack(tmp_path / "native-oss")
+
+    assert report.errors == []
+    assert any("petsc-1.0" in note and "incomplete" in note for note in report.notes)
+
+
+def _mumps_palace() -> dict:
+    """Palace's MUMPS block as ADR 0209 describes it."""
+    return {
+        "version": "5.9.1",
+        "tarball_sha256": "659c9b57" + "0" * 56,
+        "intsize": 32,
+        "gemmt": False,
+        "blas": {"vendor": "openblas", "version": "0.3.34", "threading": "openmp"},
+        "scalapack": "2.2.3",
+        "compiler": "GNU Fortran (GCC) 12.3.0",
+        "fflags": "-O3 -march=sapphirerapids",
+        "arithmetics": ["d"],
+        "openmp": True,
+        "orderings": ["amd", "metis", "parmetis", "pord"],
+        "metis": "p13",
+    }
+
+
+def _mumps_petsc() -> dict:
+    """gfem's PETSc MUMPS block as ADR 0209 describes it."""
+    return {
+        **_mumps_palace(),
+        "blas": {"vendor": "openblas", "version": "0.3.34", "threading": "pthreads"},
+        "arithmetics": ["s", "d", "c", "z"],
+        "openmp": False,
+        "orderings": ["amd", "metis", "pord", "ptscotch"],
+        "metis": "p12",
+    }
+
+
+def _mumps_stack(root: Path, palace: dict, petsc: dict) -> Path:
+    _prefix(root, "palace", "a" * 64, mumps=palace)
+    _prefix(root, "petsc", "a" * 64, mumps=petsc)
+    return root / "native-oss"
+
+
+def test_the_two_mumps_builds_differ_only_where_adr_0209_allows(tmp_path):
+    report = provenance.check_stack(
+        _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
+    )
+
+    assert report.errors == []
+    allowed = "\n".join(note for note in report.notes if "allowed" in note)
+    for field in ("arithmetics", "openmp", "orderings", "metis", "blas.threading"):
+        assert f"mumps {field}" in allowed
+
+
+def test_only_the_newest_version_of_a_package_joins_the_mumps_comparison(tmp_path):
+    stack = _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
+    (stack / "palace-1.0").rename(stack / "palace-0.19.0")
+    older = stack / "palace-0.18.1"
+    older.mkdir()
+    record = {**_record("palace"), "version": "0.18.1"}
+    record["mumps"] = {
+        **_mumps_palace(),
+        "version": "5.7.3",
+        "tarball_sha256": "e" * 64,
+    }
+    provenance.write(older, record)
+    newest = stack / "palace-0.19.0"
+    provenance.write(
+        newest, {**_record("palace"), "version": "0.19.0", "mumps": _mumps_palace()}
+    )
+
+    report = provenance.check_stack(stack)
+
+    assert report.errors == []
+    assert any(
+        "palace-0.18.1" in note and "not the newest" in note for note in report.notes
+    )
+
+
+def _older_palace(stack: Path, orderings: list[str]) -> None:
+    (stack / "palace-1.0").rename(stack / "palace-0.19.0")
+    provenance.write(
+        stack / "palace-0.19.0",
+        {**_record("palace"), "version": "0.19.0", "mumps": _mumps_palace()},
+    )
+    older = stack / "palace-0.18.1"
+    older.mkdir()
+    record = {**_record("palace"), "version": "0.18.1"}
+    record["mumps"] = {**_mumps_palace(), "version": "5.7.3", "orderings": orderings}
+    provenance.write(older, record)
+
+
+def test_metis_is_required_only_of_the_compared_newest_builds(tmp_path):
+    """METIS in both is a like-for-like rule (ADR 0209), not a single-build one."""
+    stack = _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
+    _older_palace(stack, ["amd", "pord"])
+
+    assert provenance.check_stack(stack).errors == []
+
+
+def test_a_newest_build_without_metis_fails(tmp_path):
+    petsc = {**_mumps_petsc(), "orderings": ["amd", "pord", "ptscotch"]}
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
+
+    assert any("has no metis" in error for error in report.errors)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("version", "5.8.1"),
+        ("tarball_sha256", "f" * 64),
+        ("scalapack", "2.2.2"),
+        ("compiler", "GNU Fortran (GCC) 14.2.0"),
+        ("fflags", "-O2"),
+        ("blas", {"vendor": "mkl", "version": "2025.2", "threading": "gnu"}),
+    ],
+)
+def test_mumps_builds_that_differ_in_a_must_match_field_fail(tmp_path, field, value):
+    petsc = {**_mumps_petsc(), field: value}
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
+
+    assert any(f"mumps {field}" in error for error in report.errors)
+
+
+def test_mumps_with_64_bit_integers_fails_even_in_both_builds(tmp_path):
+    report = provenance.check_stack(
+        _mumps_stack(
+            tmp_path,
+            {**_mumps_palace(), "intsize": 64},
+            {**_mumps_petsc(), "intsize": 64},
+        )
+    )
+
+    assert any("mumps intsize" in error for error in report.errors)
+
+
+def test_a_mumps_build_with_gemmt_fails(tmp_path):
+    report = provenance.check_stack(
+        _mumps_stack(tmp_path, {**_mumps_palace(), "gemmt": True}, _mumps_petsc())
+    )
+
+    assert any("gemmt" in error and "palace-1.0" in error for error in report.errors)
+
+
+def test_a_mumps_build_without_metis_fails(tmp_path):
+    palace = {**_mumps_palace(), "orderings": ["amd", "parmetis", "pord"]}
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, palace, _mumps_petsc()))
+
+    assert any("metis" in error and "palace-1.0" in error for error in report.errors)
+
+
+def test_parmetis_in_gfems_petsc_fails(tmp_path):
+    petsc = {**_mumps_petsc(), "orderings": ["metis", "parmetis", "ptscotch"]}
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
+
+    assert any("parmetis" in error and "petsc-1.0" in error for error in report.errors)
+
+
+@pytest.mark.parametrize("package", ["palace", "petsc"])
+def test_a_complete_mumps_build_without_a_mumps_block_fails(tmp_path, package):
+    _prefix(tmp_path, package, "a" * 64)
+    _prefix(tmp_path, "ngsolve", "a" * 64)
+
+    report = provenance.check_stack(tmp_path / "native-oss")
+
+    assert any(
+        f"{package}-1.0" in error and "no mumps block" in error
+        for error in report.errors
+    ), report.errors
+    assert not any("ngsolve" in error for error in report.errors)
+
+
+@pytest.mark.parametrize(
+    ("raw", "passes"),
+    [
+        ("-fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch", True),
+        ("-fPIC -O2 -fallow-argument-mismatch", False),
+    ],
+)
+def test_mumps_raw_fflags_must_hold_the_toolchains_fflags(tmp_path, raw, passes):
+    petsc = {**_mumps_petsc(), "fflags_raw": raw, "compiler_raw": "mpif90"}
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
+
+    failed = [e for e in report.errors if "fflags_raw" in e and "petsc-1.0" in e]
+    assert bool(failed) != passes, report.errors
+
+
+def test_a_mumps_block_missing_a_field_fails(tmp_path):
+    petsc = _mumps_petsc()
+    del petsc["intsize"]
+
+    report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
+
+    assert any("intsize" in error and "petsc-1.0" in error for error in report.errors)
+
+
+def test_an_unpinned_tarball_is_trusted_on_first_fetch_and_checked_after(tmp_path):
+    tarball = tmp_path / "parmetis-p9.tar.gz"
+    tarball.write_bytes(b"release")
+    sums = tmp_path / "SHA256SUMS"
+
+    assert provenance.tofu(sums, tarball) == "recorded"
+    assert provenance.tofu(sums, tarball) == "verified"
+    # The record is sha256sum's format: coreutils can check it too.
+    check = subprocess.run(
+        ["sha256sum", "-c", "SHA256SUMS"],  # noqa: S607
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+
+
+def test_a_tarball_that_changed_since_its_first_fetch_is_refused(tmp_path):
+    tarball = tmp_path / "parmetis-p9.tar.gz"
+    tarball.write_bytes(b"release")
+    sums = tmp_path / "SHA256SUMS"
+    provenance.tofu(sums, tarball)
+    tarball.write_bytes(b"tampered")
+
+    with pytest.raises(ValueError, match=r"parmetis-p9\.tar\.gz"):
+        provenance.tofu(sums, tarball)
+
+
+def test_a_build_finds_its_prefix_absent_unfinished_matching_or_different(tmp_path):
+    prefix = tmp_path / "native-oss" / "ngsolve-1.0"
+    recipe, toolchain = "b" * 64, "a" * 64
+    assert provenance.state(prefix, recipe, toolchain) == "absent"
+
+    prefix.mkdir(parents=True)
+    assert provenance.state(prefix, recipe, toolchain) == "incomplete"
+
+    provenance.write(prefix, _record())
+    assert provenance.state(prefix, recipe, toolchain) == "complete"
+    assert provenance.state(prefix, "d" * 64, toolchain) == "differs"
+    assert provenance.state(prefix, recipe, "d" * 64) == "differs"
+
+
+def _cli(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, str(STACKS / "provenance.py"), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+
+
+def test_a_build_writes_its_provenance_from_one_json_file_per_field(tmp_path):
+    meta, prefix = tmp_path / "meta", tmp_path / "native-oss" / "ngsolve-1.0"
+    meta.mkdir()
+    prefix.mkdir(parents=True)
+    for field, value in _record().items():
+        (meta / f"{field}.json").write_text(json.dumps(value))
+
+    result = _cli("write", str(prefix), str(meta))
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads((prefix / "provenance.json").read_text())["smoke"] == {
+        "command": "x --version",
+        "output": "x 1.0",
+    }
+
+
+def test_the_toolchain_block_names_the_frozen_toolchain_files_hash(tmp_path):
+    toolchain = tmp_path / "toolchain.sh"
+    toolchain.write_text("module load gcc/12.3.0\n")
+    modules = tmp_path / "modules.txt"
+    modules.write_text("gcc/12.3.0\nopenmpi/4.1.6-gcc\n")
+    env = {**os.environ, "CC": "cc", "CFLAGS": "-O3 -march=sapphirerapids"}
+    expected = subprocess.run(
+        ["sha256sum", str(toolchain)],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()[0]
+
+    result = _cli("toolchain", str(toolchain), str(modules), env=env)
+
+    assert result.returncode == 0, result.stderr
+    block = json.loads(result.stdout)
+    assert block["sha256"] == expected
+    assert block["modules"] == ["gcc/12.3.0", "openmpi/4.1.6-gcc"]
+    assert block["flags"]["CFLAGS"] == "-O3 -march=sapphirerapids"
+    assert block["compilers"]["CC"]["path"]
+
+
+def test_check_passes_on_an_empty_stacks_root(tmp_path):
+    result = _stack_sh("check", root=tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_check_fails_on_a_stack_built_on_two_toolchains(tmp_path):
+    _prefix(tmp_path, "ngsolve", "a" * 64)
+    _prefix(tmp_path, "openblas", "c" * 64)
+
+    result = _stack_sh("check", root=tmp_path)
+
+    assert result.returncode != 0
+    assert "toolchain hashes differ" in result.stdout + result.stderr
+
+
+def test_check_of_one_stack_prints_the_allowed_mumps_differences(tmp_path):
+    _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
+
+    result = _stack_sh("check", "native-oss", root=tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "mumps openmp allowed difference" in result.stdout
+
+
+def test_the_stack_script_needs_a_stacks_root():
+    env = {k: v for k, v in os.environ.items() if k != "STACKS_ROOT"}
+
+    result = subprocess.run(
+        ["bash", str(STACK_SH), "check"],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "STACKS_ROOT" in result.stderr
+
+
+def test_a_build_outside_a_slurm_job_is_refused(tmp_path):
+    env = {k: v for k, v in os.environ.items() if k != "SLURM_JOB_ID"}
+    env["STACKS_ROOT"] = str(tmp_path)
+
+    result = subprocess.run(
+        ["bash", str(STACK_SH), "build", "native-oss", "openblas"],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "SLURM_JOB_ID" in result.stderr
+    assert not (tmp_path / "native-oss").exists()
+
+
+#: Stand-in for squeue: fails for a job name matching $FAKE_SQUEUE_FAIL, else
+#: lists no job.
+FAKE_SQUEUE = """#!/usr/bin/env bash
+for arg in "$@"; do
+  case $arg in
+  --name=$FAKE_SQUEUE_FAIL) echo "squeue: socket timed out" >&2; exit 1 ;;
+  esac
+done
+"""
+
+
+def _fake_submit(
+    tmp_path: Path, package: str, failing: str
+) -> subprocess.CompletedProcess:
+    """``stack.sh submit native-oss PACKAGE`` with squeue and sbatch faked."""
+    fakes = tmp_path / "bin"
+    fakes.mkdir()
+    (fakes / "squeue").write_text(FAKE_SQUEUE)
+    (fakes / "sbatch").write_text(f'#!/bin/sh\necho "$@" >>{tmp_path}/sbatch.log\n')
+    for fake in fakes.iterdir():
+        fake.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fakes}:{os.environ['PATH']}",
+        "STACKS_ROOT": str(tmp_path / "root"),
+        "FAKE_SQUEUE_FAIL": failing,
+    }
+    return subprocess.run(
+        ["bash", str(STACK_SH), "submit", "native-oss", package],  # noqa: S607
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a_submit_with_no_job_of_that_name_calls_sbatch(tmp_path):
+    result = _fake_submit(tmp_path, "openblas", "no-such-job")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    sbatch = (tmp_path / "sbatch.log").read_text().split()
+    assert "--job-name=stack-native-oss-openblas-0.3.34" in sbatch
+    assert "--hint=nomultithread" in sbatch
+
+
+@pytest.mark.parametrize(
+    ("package", "failing"),
+    [
+        ("openblas", "stack-native-oss-openblas-*"),
+        ("petsc", "stack-native-oss-openblas-*"),
+    ],
+    ids=["own-job", "dependency-job"],
+)
+def test_a_submit_whose_squeue_fails_submits_nothing(tmp_path, package, failing):
+    result = _fake_submit(tmp_path, package, failing)
+
+    assert result.returncode != 0
+    assert "squeue failed" in result.stderr
+    assert not (tmp_path / "sbatch.log").exists()
+
+
+def test_every_package_recipe_declares_the_recipe_interface(tmp_path):
+    for package in ("openblas", "palace", "ngsolve", "petsc", "pyenv"):
+        result = _stack_sh("check", "native-oss", package, root=tmp_path)
+        assert result.returncode == 0, result.stdout + result.stderr
+        fields = dict(
+            line.strip().split("=", 1)
+            for line in result.stdout.splitlines()
+            if line.startswith("  ") and "=" in line
+        )
+        assert f"native-oss/{package}-{fields['version']}: absent" in result.stdout
+        assert "depends" in fields
+        assert fields["cpus"].isdigit()
+        assert fields["time"].count(":") == 2
+
+
+@pytest.mark.parametrize(
+    "script", [*sorted(STACKS.rglob("*.sh")), STACKS / "build.sbatch"], ids=str
+)
+def test_every_stack_script_parses(script):
+    result = subprocess.run(
+        ["bash", "-n", str(script)],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def _recipes(root: Path) -> Path:
+    """A shipped recipe tree with two packages, ``a`` and ``b``."""
+    (root / "packages").mkdir(parents=True)
+    for name in ("stack.sh", "build.sbatch", "provenance.py", "README.md"):
+        (root / name).write_text(f"# {name}\n")
+    for package in ("a", "b"):
+        (root / "packages" / f"{package}.sh").write_text("VERSION=1.0\n")
+    return root
+
+
+def test_filling_another_packages_recipe_leaves_a_built_prefix_complete(tmp_path):
+    recipes = _recipes(tmp_path / "recipes")
+    prefix = tmp_path / "native-oss" / "a-1.0"
+    prefix.mkdir(parents=True)
+    record = _record("a")
+    record["recipe"]["sha256"] = provenance.recipe_sha256(recipes, "a")
+    provenance.write(prefix, record)
+
+    (recipes / "packages" / "b.sh").write_text("VERSION=2.0\nbuild_b() { :; }\n")
+    (recipes / "README.md").write_text("# rewritten\n")
+    (recipes / "COMMIT").write_text("0" * 40 + "\n")
+
+    now = provenance.recipe_sha256(recipes, "a")
+    assert provenance.state(prefix, now, "a" * 64) == "complete"
+
+
+@pytest.mark.parametrize(
+    "changed", ["stack.sh", "build.sbatch", "provenance.py", "packages/a.sh"]
+)
+def test_a_change_to_the_build_machinery_or_own_recipe_changes_the_hash(
+    tmp_path, changed
+):
+    recipes = _recipes(tmp_path)
+    before = provenance.recipe_sha256(recipes, "a")
+
+    (recipes / changed).write_text("# changed\n")
+
+    assert provenance.recipe_sha256(recipes, "a") != before
+
+
+def test_the_recipe_hash_follows_content_not_location(tmp_path):
+    one, two = _recipes(tmp_path / "one"), _recipes(tmp_path / "two")
+
+    assert provenance.recipe_sha256(one, "a") == provenance.recipe_sha256(two, "a")
+
+
+def test_palaces_hash_covers_sources_py_which_its_build_runs(tmp_path):
+    recipes = _recipes(tmp_path)
+    (recipes / "packages" / "palace.sh").write_text("VERSION=0.19.0\n")
+    (recipes / "sources.py").write_text("# sources.py\n")
+    palace, other = (provenance.recipe_sha256(recipes, p) for p in ("palace", "a"))
+
+    (recipes / "sources.py").write_text("# changed\n")
+
+    assert provenance.recipe_sha256(recipes, "palace") != palace
+    assert provenance.recipe_sha256(recipes, "a") == other
+
+
+# --- source mirror: what `stack.sh fetch` reads from a fetched tag ------------
+
+_sources_spec = importlib.util.spec_from_file_location("sources", STACKS / "sources.py")
+assert _sources_spec is not None
+assert _sources_spec.loader is not None
+sources = importlib.util.module_from_spec(_sources_spec)
+_sources_spec.loader.exec_module(sources)
+
+#: An excerpt of Palace v0.19.0's ``cmake/ExternalGitTags.cmake``.
+PALACE_GIT_TAGS = """
+# ARPACK-NG
+set(EXTERN_ARPACK_URL
+  "https://github.com/opencollab/arpack-ng.git" CACHE STRING
+  "URL for external ARPACK-NG build"
+)
+set(EXTERN_ARPACK_GIT_BRANCH
+  "master" CACHE STRING
+  "Git branch for external ARPACK-NG build"
+)
+set(EXTERN_ARPACK_GIT_TAG
+  "3.9.1" CACHE STRING
+  "Git tag for external ARPACK-NG build"
+)
+
+# METIS
+set(EXTERN_METIS_URL
+  "https://bitbucket.org/petsc/pkg-metis.git" CACHE STRING
+  "URL for external METIS build"
+)
+set(EXTERN_METIS_GIT_TAG
+  "v5.1.0-p13" CACHE STRING
+  "Git tag for external METIS build"
+)
+
+# nlohmann/json
+set(EXTERN_JSON_URL
+  "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz" CACHE STRING
+  "URL for external nlohmann/json build"
+)
+
+# nlohmann/json-schema-validator
+set(EXTERN_JSON_SCHEMA_VALIDATOR_URL
+  "https://github.com/pboettch/json-schema-validator/archive/refs/tags/2.4.1.tar.gz"
+  CACHE STRING
+  "URL for external nlohmann/json-schema-validator build"
+)
+
+# fmt
+set(EXTERN_FMT_URL
+  "https://github.com/fmtlib/fmt/releases/download/12.2.0/fmt-12.2.0.zip" CACHE STRING
+  "URL for external fmt build"
+)
+
+# scn
+set(EXTERN_SCN_URL
+  "https://github.com/eliaskosunen/scnlib/archive/refs/tags/v4.0.1.zip" CACHE STRING
+  "URL for external scn build"
+)
+
+# Eigen
+set(EXTERN_EIGEN_URL
+  "https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz" CACHE STRING
+  "URL for external Eigen build"
+)
+
+# PETSc (for SLEPc)
+set(EXTERN_PETSC_URL
+  "https://gitlab.com/petsc/petsc.git" CACHE STRING
+  "URL for external PETSc build"
+)
+set(EXTERN_PETSC_GIT_TAG
+  "v3.26.0" CACHE STRING
+  "Git tag for external PETSc build"
+)
+"""
+
+
+def test_palaces_git_dependencies_are_read_from_its_tag():
+    deps = sources.palace_git(PALACE_GIT_TAGS)
+
+    assert deps == [
+        ("ARPACK", "https://github.com/opencollab/arpack-ng.git", "3.9.1"),
+        ("METIS", "https://bitbucket.org/petsc/pkg-metis.git", "v5.1.0-p13"),
+        ("PETSC", "https://gitlab.com/petsc/petsc.git", "v3.26.0"),
+    ]
+
+
+def test_palaces_url_tarballs_keep_the_names_of_the_source_mirror():
+    tarballs = sources.palace_tarballs(PALACE_GIT_TAGS)
+
+    assert [(name, file) for name, file, _ in tarballs] == [
+        ("JSON", "json-3.12.0.tar.xz"),
+        ("JSON_SCHEMA_VALIDATOR", "json-schema-validator-2.4.1.tar.gz"),
+        ("FMT", "fmt-12.2.0.zip"),
+        ("SCN", "scnlib-v4.0.1.zip"),
+        ("EIGEN", "eigen-5.0.1.tar.gz"),
+    ]
+    assert tarballs[0][2] == (
+        "https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz"
+    )
+
+
+#: An excerpt of Palace v0.18.1's ``cmake/ExternalGitTags.cmake``: Umpire is a
+#: git dependency whose URL does not end in ``.git``.
+PALACE_0181_UMPIRE = """
+set(EXTERN_UMPIRE_URL
+  "https://github.com/LLNL/Umpire" CACHE STRING
+  "URL for external UMPIRE build"
+)
+set(EXTERN_UMPIRE_GIT_BRANCH
+  "develop" CACHE STRING
+  "Git branch for external UMPIRE build"
+)
+set(EXTERN_UMPIRE_GIT_TAG
+  "ac034c775c7b4d4f4ff0f66774398373cf5fce73" CACHE STRING
+  "Git tag for external UMPIRE build"
+)
+"""
+
+
+def test_a_dependency_with_a_git_tag_is_a_git_dependency_without_dot_git():
+    text = PALACE_GIT_TAGS + PALACE_0181_UMPIRE
+
+    assert sources.palace_git(text)[-1] == (
+        "UMPIRE",
+        "https://github.com/LLNL/Umpire",
+        "ac034c775c7b4d4f4ff0f66774398373cf5fce73",
+    )
+    assert "UMPIRE" not in [name for name, _, _ in sources.palace_tarballs(text)]
+
+
+def test_a_scivision_commit_without_source_json_names_its_mumps_release():
+    cmakelists = """if(NOT MUMPS_UPSTREAM_VERSION)
+  set(MUMPS_UPSTREAM_VERSION 5.7.3)
+endif()
+set(url "https://mumps-solver.org/MUMPS_${MUMPS_UPSTREAM_VERSION}.tar.gz")
+"""
+
+    assert sources.mumps_release(cmakelists) == [
+        ("MUMPS_5.7.3.tar.gz", "https://mumps-solver.org/MUMPS_5.7.3.tar.gz")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("url", "name"),
+    [
+        (
+            "https://bitbucket.org/petsc/pkg-parmetis/get/v4.0.3-p9.tar.gz",
+            "petsc-pkg-parmetis-v4.0.3-p9.tar.gz",
+        ),
+        (
+            "https://github.com/Reference-ScaLAPACK/scalapack/archive/v2.2.3.tar.gz",
+            "scalapack-v2.2.3.tar.gz",
+        ),
+        ("https://mumps-solver.org/MUMPS_5.9.1.tar.gz", "MUMPS_5.9.1.tar.gz"),
+    ],
+)
+def test_a_tarball_is_named_after_its_project_and_version(url, name):
+    assert sources.tarball_name(url) == name
+
+
+#: Excerpts of Palace v0.19.0's ``ExternalMFEM.cmake`` and ``ExternalSTRUMPACK.cmake``.
+PALACE_PATCH_CALLS = """
+set(MFEM_PATCH_DIR "${CMAKE_BINARY_DIR}/extern/mfem-patches")
+set(MFEM_PATCH_FILES)
+download_patch(MFEM_PATCH_FILES "${MFEM_PATCH_DIR}"
+  mfem_pr3847.diff
+  "https://github.com/mfem/mfem/compare/2d574015756711029556c14d096ca52c15d5b663...50ead1a9a785e3273b2a72ff59ac8ed8a496b498.diff"
+  e9be1a0d4b2642ed1b72f31c36065cf0aacbe342b6594d5d943782c73a6177f4
+)
+if(PALACE_WITH_STRUMPACK)
+  download_patch(ZFP_PATCH_FILES "${CMAKE_BINARY_DIR}/extern/zfp-patches"
+    stream-maximum-size-overflow.patch
+    "https://raw.githubusercontent.com/spack/spack-packages/94ba1d9eb8e89a4e01919a9f41b8c857b5fbe5cc/repos/spack_repo/builtin/packages/zfp/stream-maximum-size-overflow.patch"
+    7ed755650fdcd79208ab165b42c902d64a916187be6dade4643814c09ba6d894
+  )
+endif()
+"""
+
+
+def test_palaces_patches_land_where_its_build_tree_looks_for_them():
+    patches = sources.patches(PALACE_PATCH_CALLS)
+
+    assert patches == [
+        (
+            "extern/mfem-patches",
+            "mfem_pr3847.diff",
+            "https://github.com/mfem/mfem/compare/2d574015756711029556c14d096ca52c15d5b663...50ead1a9a785e3273b2a72ff59ac8ed8a496b498.diff",
+            "e9be1a0d4b2642ed1b72f31c36065cf0aacbe342b6594d5d943782c73a6177f4",
+        ),
+        (
+            "extern/zfp-patches",
+            "stream-maximum-size-overflow.patch",
+            "https://raw.githubusercontent.com/spack/spack-packages/94ba1d9eb8e89a4e01919a9f41b8c857b5fbe5cc/repos/spack_repo/builtin/packages/zfp/stream-maximum-size-overflow.patch",
+            "7ed755650fdcd79208ab165b42c902d64a916187be6dade4643814c09ba6d894",
+        ),
+    ]
+
+
+def test_palace_0181s_mfem_patches_land_where_its_build_tree_looks_for_them():
+    text = """
+set(MFEM_PATCH_DIR "${CMAKE_BINARY_DIR}/extern/mfem-patches")
+function(download_mfem_patch FILENAME URL SHA256)
+  set(PATCH_FILE "${MFEM_PATCH_DIR}/${FILENAME}")
+endfunction()
+download_mfem_patch(
+  mfem_pr5502.diff
+  "https://github.com/mfem/mfem/commit/3091ba40b238c4008b67216314bb26da6738b833.diff"
+  52ccf3332f87aaf7ebc84674448226201c04343a3e298006bea5fd8be8e92533
+)
+"""
+
+    assert sources.patches(text) == [
+        (
+            "extern/mfem-patches",
+            "mfem_pr5502.diff",
+            "https://github.com/mfem/mfem/commit/3091ba40b238c4008b67216314bb26da6738b833.diff",
+            "52ccf3332f87aaf7ebc84674448226201c04343a3e298006bea5fd8be8e92533",
+        )
+    ]
+
+
+def test_git_dependencies_hard_coded_in_cmake_are_read_from_the_tag():
+    catch2 = """
+  FetchContent_Declare(Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG        v3.8.1
+  )
+"""
+    suitesparse = """
+    ExternalProject_Add(
+      suitesparse
+      DEPENDS ${LAPACK_PROJECTS}
+      GIT_REPOSITORY https://github.com/jlblancoc/suitesparse-metis-for-windows.git
+      GIT_TAG 1618fd16ea34be287c0fbc32789ca280012a9280
+      LIST_SEPARATOR |
+"""
+
+    assert sources.git_repositories(catch2) == [
+        ("https://github.com/catchorg/Catch2.git", "v3.8.1")
+    ]
+    assert sources.git_repositories(suitesparse) == [
+        (
+            "https://github.com/jlblancoc/suitesparse-metis-for-windows.git",
+            "1618fd16ea34be287c0fbc32789ca280012a9280",
+        )
+    ]
+
+
+#: scnlib v4.0.1's ``cmake/dependencies.cmake``: fast_float is cloned when scn
+#: configures, inside Palace's superbuild.
+SCNLIB_DEPENDENCIES = """
+    FetchContent_Declare(
+            fast_float
+            GIT_REPOSITORY https://github.com/fastfloat/fast_float.git
+            GIT_TAG v6.1.6
+            GIT_SHALLOW TRUE
+    )
+"""
+
+
+@pytest.mark.parametrize("kind", ["zip", "tar.gz"])
+def test_git_dependencies_inside_a_tarball_are_read_from_its_cmake_files(
+    tmp_path, kind
+):
+    import tarfile
+    import zipfile
+
+    tree = {
+        "scnlib-4.0.1/cmake/dependencies.cmake": SCNLIB_DEPENDENCIES,
+        "scnlib-4.0.1/README.md": "GIT_REPOSITORY https://x/y.git GIT_TAG v1\n",
+        "scnlib-4.0.1/CMakeLists.txt": (
+            "FetchContent_Declare(json GIT_REPOSITORY https://github.com/nlohmann/json"
+            " GIT_TAG ${JSON_FETCH_VERSION})\n"
+        ),
+    }
+    archive = tmp_path / f"scnlib-v4.0.1.{kind}"
+    if kind == "zip":
+        with zipfile.ZipFile(archive, "w") as zipped:
+            for name, text in tree.items():
+                zipped.writestr(name, text)
+    else:
+        for name, text in tree.items():
+            (tmp_path / "t" / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / "t" / name).write_text(text)
+        with tarfile.open(archive, "w:gz") as tar:
+            tar.add(tmp_path / "t" / "scnlib-4.0.1", arcname="scnlib-4.0.1")
+
+    assert sources.archive_git_repositories(archive) == [
+        ("https://github.com/fastfloat/fast_float.git", "v6.1.6")
+    ]
+
+
+def test_submodules_are_read_as_spelled_in_gitmodules():
+    text = """[submodule "external_dependencies/pybind11"]
+\tpath = external_dependencies/pybind11
+\turl = https://github.com/ngsolve/pybind11.git
+"""
+
+    assert sources.gitmodules(text) == [
+        ("external_dependencies/pybind11", "https://github.com/ngsolve/pybind11.git")
+    ]
+
+
+def test_palaces_mumps_tarball_is_the_release_its_scivision_tag_names():
+    source_json = """{
+  "mumps_sha256": {
+    "5.9.0": "02c6efdb91749ec0f82351d40f3f860547272a1eb1d899126a4265b4d6bcc4ca",
+    "5.9.1": "659c9b57646b5a003ac618baa1faf9dd2044e46c732b3daaccbc7158003e1b46"
+  },
+  "mumps_sources": {}
+}"""
+
+    assert sources.mumps_tarball(source_json, "v5.9.1.2") == [
+        (
+            "MUMPS_5.9.1.tar.gz",
+            "https://mumps-solver.org/MUMPS_5.9.1.tar.gz",
+            "659c9b57646b5a003ac618baa1faf9dd2044e46c732b3daaccbc7158003e1b46",
+        )
+    ]
+
+
+# --- `stack.sh fetch`: the source mirror helpers, through a fake recipe -------
+
+FAKE_RECIPE = """VERSION=1.0
+CPUS=1
+TIME=00:10:00
+STACKS=(native-oss)
+fetch_fake() {
+  local up=file://$FAKE_UPSTREAM
+  stack_tarball tarballs pinned-1.0.tar.gz "$up/pinned.tar.gz" "$FAKE_PIN"
+  stack_tarball tarballs unpinned-1.0.tar.gz "$up/unpinned.tar.gz"
+  stack_mirror https://example.invalid/owner/repo.git v1.0
+}
+build_fake() { :; }
+smoke_fake() { :; }
+"""
+
+
+def _fake_fetch(tmp_path: Path, pin: str | None = None):
+    """A recipe tree with package ``fake`` and its upstream, ready to fetch."""
+    import hashlib
+
+    recipes = tmp_path / "recipes"
+    shutil.copytree(STACKS, recipes, ignore=shutil.ignore_patterns("__pycache__"))
+    (recipes / "packages" / "fake.sh").write_text(FAKE_RECIPE)
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    (upstream / "pinned.tar.gz").write_bytes(b"pinned tarball")
+    (upstream / "unpinned.tar.gz").write_bytes(b"unpinned tarball")
+    repo = upstream / "owner" / "repo.git"
+    for command in (
+        ["git", "init", "-q", "-b", "main", str(repo)],
+        ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", "one"],
+        ["git", "-C", str(repo), "tag", "v1.0"],
+    ):
+        # No user.name/email on cluster nodes: give git an identity here.
+        identity = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t"}
+        identity |= {"GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(
+            command, check=True, capture_output=True, env={**os.environ, **identity}
+        )
+    gitconfig = tmp_path / "gitconfig"
+    gitconfig.write_text(
+        f'[url "file://{upstream}/"]\n\tinsteadOf = https://example.invalid/\n'
+        "[user]\n\tname = t\n\temail = t@t\n"
+    )
+    env = {
+        **os.environ,
+        "STACKS_ROOT": str(tmp_path / "root"),
+        "FAKE_UPSTREAM": str(upstream),
+        "FAKE_PIN": pin or hashlib.sha256(b"pinned tarball").hexdigest(),
+        "GIT_CONFIG_GLOBAL": str(gitconfig),
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    env.pop("SLURM_JOB_ID", None)
+
+    def fetch() -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", str(recipes / "stack.sh"), "fetch", "fake"],  # noqa: S607
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    return fetch, tmp_path / "root" / "src"
+
+
+def test_a_fetch_fills_the_mirror_and_a_second_one_finds_nothing_new(tmp_path):
+    fetch, src = _fake_fetch(tmp_path)
+
+    first = fetch()
+    second = fetch()
+
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert (src / "tarballs" / "pinned-1.0.tar.gz").read_bytes() == b"pinned tarball"
+    assert (src / "mirrors" / "example.invalid" / "owner" / "repo.git").is_dir()
+    assert "3 new" in first.stdout
+    assert second.returncode == 0, second.stdout + second.stderr
+    assert "nothing new" in second.stdout
+
+
+def test_only_unpinned_tarballs_are_recorded_on_first_fetch(tmp_path):
+    fetch, src = _fake_fetch(tmp_path)
+
+    fetch()
+
+    names = [
+        line.split()[1]
+        for line in (src / "tarballs" / "SHA256SUMS").read_text().splitlines()
+    ]
+    assert names == ["unpinned-1.0.tar.gz"]
+
+
+def test_an_unpinned_tarball_changed_since_its_first_fetch_fails_the_fetch(tmp_path):
+    fetch, src = _fake_fetch(tmp_path)
+    fetch()
+
+    (src / "tarballs" / "unpinned-1.0.tar.gz").write_bytes(b"tampered")
+    result = fetch()
+
+    assert result.returncode != 0
+    assert "unpinned-1.0.tar.gz" in result.stderr
+
+
+def test_a_tarball_that_does_not_match_its_pin_is_not_kept(tmp_path):
+    fetch, src = _fake_fetch(tmp_path, pin="0" * 64)
+
+    result = fetch()
+
+    assert result.returncode != 0
+    assert "pinned-1.0.tar.gz" in result.stderr
+    assert not (src / "tarballs" / "pinned-1.0.tar.gz").exists()
+
+
+def _recipe_array(package: str, name: str) -> list[str]:
+    result = subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            f'source "$1"; printf "%s\\n" "${{{name}[@]}}"',
+            "-",
+            str(STACKS / "packages" / f"{package}.sh"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.split()
+
+
+def test_the_stack_venvs_runtime_pins_are_gfems_lock():
+    import tomllib
+
+    lock = tomllib.loads((STACKS.parents[1] / "uv.lock").read_text())
+    packages = {package["name"]: package for package in lock["package"]}
+    # ADR 0207: never the PyPI NGSolve, netgen or their OpenBLAS in a stack venv.
+    native = {"ngsolve", "netgen-mesher", "ngsolve-openblas"}
+    closure, todo = set(), [d["name"] for d in packages["gfem"]["dependencies"]]
+    while todo:
+        name = todo.pop()
+        if name not in closure:
+            closure.add(name)
+            todo += [d["name"] for d in packages[name].get("dependencies", [])]
+    expected = sorted(
+        f"{name}=={packages[name]['version']}" for name in closure - native
+    )
+
+    assert sorted(_recipe_array("pyenv", "PIP_RUNTIME")) == expected
+    # mpi4py is built from its sdist against the stack MPI, at the lock's pin.
+    assert _recipe_array("pyenv", "PIP_SDISTS") == [
+        f"mpi4py=={packages['mpi4py']['version']}"
+    ]
+
+
+#: Stand-in for an NGSolve built with USE_MKL: its PARDISO wrapper module never
+#: runs its own lookup of the pip mkl (``_find_mkl``).
+FAKE_NGSOLVE_PARDISO = """
+_pardiso = None
+_mkl_free_buffers = None
+calls = []
+
+
+def _find_mkl():
+    global _pardiso, _mkl_free_buffers
+    calls.append(1)
+    _pardiso = _mkl_free_buffers = "bound"
+"""
+
+
+def _pyenv_mkl_site(tmp_path: Path) -> Path:
+    """A site directory as an MKL stack venv's build leaves it, plus a fake ngsolve."""
+    site = tmp_path / "site"
+    (site / "ngsolve" / "solvers").mkdir(parents=True)
+    (site / "ngsolve" / "__init__.py").write_text(
+        "import ngsolve.solvers.mkl_pardiso as _mkl_pardiso\n"
+    )
+    (site / "ngsolve" / "solvers" / "__init__.py").write_text("")
+    (site / "ngsolve" / "solvers" / "mkl_pardiso.py").write_text(FAKE_NGSOLVE_PARDISO)
+    result = subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            'source "$1"; pyenv_mkl_install "$2"',
+            "-",
+            str(STACKS / "packages" / "pyenv.sh"),
+            str(site),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return site
+
+
+def _in_site(site: Path, code: str) -> subprocess.CompletedProcess:
+    """Run ``code`` in a fresh interpreter that processes ``site``'s .pth files.
+
+    ``site`` goes first on ``sys.path``: the fake ngsolve shadows a real one.
+    """
+    first = (
+        f"import site, sys; site.addsitedir({str(site)!r}); "
+        f"sys.path.insert(0, {str(site)!r})"
+    )
+    return subprocess.run(
+        [sys.executable, "-I", "-c", f"{first}; {code}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_an_mkl_stack_venv_binds_ngsolves_pardiso_wrapper_on_import(tmp_path):
+    site = _pyenv_mkl_site(tmp_path)
+
+    assert (site / "stack-mkl.pth").read_text().split() == ["import", "_stack_mkl"]
+    result = _in_site(
+        site,
+        "import ngsolve; from ngsolve.solvers import mkl_pardiso as m; "
+        "print(m._pardiso, m.calls)",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["bound", "[1]"]
+
+
+def test_the_mkl_hook_leaves_a_wrapper_that_found_mkl_itself_alone(tmp_path):
+    site = _pyenv_mkl_site(tmp_path)
+    pardiso = site / "ngsolve" / "solvers" / "mkl_pardiso.py"
+    pardiso.write_text(FAKE_NGSOLVE_PARDISO + "_find_mkl()\n")
+
+    result = _in_site(
+        site, "from ngsolve.solvers import mkl_pardiso as m; print(m.calls)"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["[1]"]
+
+
+def test_the_mkl_hook_leaves_other_imports_and_a_venv_without_mkl_rt_alone(tmp_path):
+    site = _pyenv_mkl_site(tmp_path)
+
+    # sys.prefix here has no lib/libmkl_rt.so.2: nothing to preload, no error
+    result = _in_site(site, "import json, _stack_mkl; print('ok')")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout.split() == ["ok"]
+
+
+PYENV_RECIPE = STACKS / "packages" / "pyenv.sh"
+#: The MKL libraries pyenv compares with the toolchain's.
+MKL_LIBS = ("libmkl_rt.so.2", "libmkl_core.so.2", "libmkl_gnu_thread.so.2")
+
+
+def _mkl_twin(tmp_path: Path, release: str, pip_bytes: bytes) -> tuple[Path, Path]:
+    """A toolchain MKLROOT at ``release`` and a pip MKL lib dir of ``pip_bytes``."""
+    mklroot, pip = tmp_path / "mkl", tmp_path / "pip" / "lib"
+    (mklroot / "include").mkdir(parents=True)
+    (mklroot / "lib").mkdir()
+    pip.mkdir(parents=True)
+    (mklroot / "include" / "mkl_version.h").write_text(
+        f"#define INTEL_MKL_VERSION {release}\n"
+    )
+    for lib in MKL_LIBS:
+        (mklroot / "lib" / lib).write_bytes(b"module " + lib.encode())
+        (pip / lib).write_bytes(pip_bytes + lib.encode())
+    return mklroot, pip
+
+
+@pytest.mark.parametrize(
+    ("pip_bytes", "twin"), [(b"module ", True), (b"pip ", False)], ids=["twin", "not"]
+)
+def test_a_pip_mkl_is_a_twin_only_when_byte_identical(tmp_path, pip_bytes, twin):
+    mklroot, pip = _mkl_twin(tmp_path, "20250200", pip_bytes)
+
+    result = _stack_function(
+        'source "$1"; if pyenv_mkl_identical "$2"; then echo twin; '
+        'else echo "no twin: $PYENV_MKL_REASON"; fi',
+        str(PYENV_RECIPE),
+        str(pip),
+        env={"MKLROOT": str(mklroot)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    if twin:
+        assert lines[-1] == "twin"
+        assert [line.split("=")[0] for line in lines[:-1]] == list(MKL_LIBS)
+    else:
+        assert lines[-1].startswith("no twin: ")
+        assert "libmkl_rt.so.2" in lines[-1]
+
+
+def test_a_toolchain_mkl_of_another_release_than_the_pin_has_no_twin(tmp_path):
+    mklroot, _ = _mkl_twin(tmp_path, "20260000", b"module ")
+
+    result = _stack_function(
+        'source "$1"; if pyenv_mkl_twin python "$2"; then echo twin; '
+        'else echo "no twin: $PYENV_MKL_REASON"; fi',
+        str(PYENV_RECIPE),
+        str(tmp_path / "probe"),
+        env={"MKLROOT": str(mklroot)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("no twin: ")
+    assert "2026.0.0" in result.stdout
+    assert not (tmp_path / "probe").exists()
+
+
+# --- package openblas: a build with make and module faked ---------------------
+
+#: Stand-in for OpenBLAS's make: records each call, and on ``install`` puts a
+#: tiny library (naive dgemm/zdotc, OpenBLAS's config and threading queries)
+#: under the name OpenBLAS would give it.
+FAKE_OPENBLAS_MAKE = r"""#!/usr/bin/env bash
+set -euo pipefail
+echo "$* COMMON_OPT=${COMMON_OPT:-} FCOMMON_OPT=${FCOMMON_OPT:-}" >>"$FAKE_MAKE_LOG"
+prefix= suffix= openmp=0
+for arg in "$@"; do
+  case $arg in
+  PREFIX=*) prefix=${arg#*=} ;;
+  LIBNAMESUFFIX=*) suffix=${arg#*=} ;;
+  USE_OPENMP=1) openmp=1 ;;
+  esac
+done
+[ "${FAKE_IGNORE_OPENMP:-}" = 1 ] && openmp=0
+[ -n "$prefix" ] || exit 0
+work=$(mktemp -d)
+cat >"$work/blas.f90" <<'F90'
+subroutine dgemm(ta, tb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc)
+  character :: ta, tb
+  integer :: m, n, k, lda, ldb, ldc
+  double precision :: alpha, beta, a(lda, *), b(ldb, *), c(ldc, *)
+  c(1:m, 1:n) = alpha * matmul(a(1:m, 1:k), b(1:k, 1:n)) + beta * c(1:m, 1:n)
+end subroutine
+complex(kind(0d0)) function zdotc(n, x, incx, y, incy)
+  integer :: n, incx, incy
+  complex(kind(0d0)) :: x(*), y(*)
+  zdotc = sum(conjg(x(1:n)) * y(1:n))
+end function
+F90
+if [ "$openmp" = 1 ]; then flag="USE_OPENMP " parallel=2; else flag= parallel=1; fi
+cat >"$work/query.c" <<C
+char *openblas_get_config(void) {
+  return "OpenBLAS 0.3.34 NO_AFFINITY ${flag}SAPPHIRERAPIDS MAX_THREADS=256";
+}
+int openblas_get_parallel(void) { return $parallel; }
+int openblas_get_num_threads(void) { return 1; }
+C
+mkdir -p "$prefix/lib/pkgconfig" "$prefix/include"
+[ "$openmp" = 1 ] && omp="-fopenmp -Wl,--no-as-needed -lgomp" || omp=
+# shellcheck disable=SC2086
+gfortran -shared -fPIC $omp $LDFLAGS -o "$prefix/lib/libopenblas$suffix.so" \
+  "$work/blas.f90" "$work/query.c"
+echo "Libs: -lopenblas$suffix" >"$prefix/lib/pkgconfig/openblas.pc"
+echo "/* cblas */" >"$prefix/include/cblas.h"
+rm -rf "$work"
+"""
+
+
+def _openblas_build(
+    tmp_path: Path, **env: str
+) -> tuple[subprocess.CompletedProcess, Path, Path]:
+    """Run ``stack.sh build native-oss openblas`` with make and module faked."""
+    import tarfile
+
+    recipes = tmp_path / "recipes"
+    shutil.copytree(STACKS, recipes, ignore=shutil.ignore_patterns("__pycache__"))
+    fakes = tmp_path / "bin"
+    fakes.mkdir()
+    (fakes / "make").write_text(FAKE_OPENBLAS_MAKE)
+    (fakes / "module").write_text("#!/bin/sh\nexit 0\n")
+    for fake in fakes.iterdir():
+        fake.chmod(0o755)
+    root = tmp_path / "root"
+    source = tmp_path / "OpenBLAS-0.3.34"
+    source.mkdir()
+    (source / "Makefile").write_text("# fake\n")
+    (root / "src" / "tarballs").mkdir(parents=True)
+    with tarfile.open(
+        root / "src" / "tarballs" / "OpenBLAS-0.3.34.tar.gz", "w:gz"
+    ) as tar:
+        tar.add(source, arcname="OpenBLAS-0.3.34")
+    (tmp_path / "job").mkdir()
+    log = tmp_path / "make.log"
+    result = subprocess.run(
+        [  # noqa: S607
+            "bash",
+            str(recipes / "stack.sh"),
+            "build",
+            "--allow-dirty",
+            "native-oss",
+            "openblas",
+        ],
+        env={
+            **os.environ,
+            "PATH": f"{fakes}:{os.environ['PATH']}",
+            "STACKS_ROOT": str(root),
+            "SLURM_JOB_ID": "1",
+            "SLURM_CPUS_PER_TASK": "2",
+            "TMPDIR": str(tmp_path / "job"),
+            "FAKE_MAKE_LOG": str(log),
+            **env,
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, root / "native-oss" / "openblas-0.3.34", log
+
+
+needs_gfortran = pytest.mark.skipif(
+    shutil.which("gfortran") is None, reason="needs gfortran"
+)
+
+
+@needs_gfortran
+def test_openblas_builds_a_pthreads_and_an_openmp_library_into_one_prefix(tmp_path):
+    result, prefix, log = _openblas_build(tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (prefix / "lib" / "libopenblas.so").is_file()
+    assert (prefix / "lib" / "libopenblas_omp.so").is_file()
+    calls = log.read_text().splitlines()
+    common = {
+        "TARGET=SAPPHIRERAPIDS",
+        "DYNAMIC_ARCH=0",
+        "NUM_THREADS=256",
+        "NO_AFFINITY=1",
+    }
+    builds = [set(call.split()) for call in calls if "install" not in call.split()]
+    assert len(builds) == 2
+    pthreads, openmp = sorted(builds, key=lambda args: "USE_OPENMP=1" in args)
+    assert common | {"USE_THREAD=1", "USE_OPENMP=0"} <= pthreads
+    assert common | {"USE_OPENMP=1", "LIBNAMESUFFIX=_omp"} <= openmp
+    assert all("COMMON_OPT=-O3 -march=sapphirerapids" in call for call in calls)
+    record = json.loads((prefix / "provenance.json").read_text())
+    assert set(record["smoke"]["libraries"]) == {"openblas", "openblas_omp"}
+    builds = record["configure"]["builds"]
+    assert builds["openblas_omp"]["library"] == "libopenblas_omp.so"
+    assert "USE_OPENMP=1" in builds["openblas_omp"]["make"].split()
+    assert "zdotc ok" in record["smoke"]["libraries"]["openblas_omp"]
+
+
+@needs_gfortran
+def test_an_openblas_build_whose_openmp_library_is_not_openmp_fails_its_smoke(tmp_path):
+    result, prefix, _ = _openblas_build(tmp_path, FAKE_IGNORE_OPENMP="1")
+
+    assert result.returncode != 0
+    assert "openblas_omp" in result.stderr
+    assert not (prefix / "provenance.json").exists()
+
+
+# --- Palace: the build's edits and checks -------------------------------------
+
+#: An excerpt of Palace v0.19.0's ``cmake/ExternalMUMPS.cmake``.
+PALACE_EXTERNAL_MUMPS = """\
+set(MUMPS_OPTIONS ${PALACE_SUPERBUILD_DEFAULT_ARGS})
+list(APPEND MUMPS_OPTIONS
+  "-DMUMPS_scalapack=ON"
+  "-DMUMPS_USE_MKL=OFF"
+  "-DMUMPS_gemmt=ON"
+  "-DPARMETIS_LIBRARY=${PARMETIS_LIBRARIES}"
+)
+"""
+
+
+def _palace_function(*call: str, cwd: Path) -> subprocess.CompletedProcess:
+    """Run one function of ``packages/palace.sh`` (sourced as stack.sh does)."""
+    script = (
+        'set -euo pipefail; stack_die() { echo "$*" >&2; exit 1; }; '
+        f'source "{STACKS}/packages/palace.sh"; "$@"'
+    )
+    return subprocess.run(
+        ["bash", "-c", script, "palace", *call],  # noqa: S607
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_palaces_mumps_is_built_from_the_mirrors_tarball_without_gemmt(tmp_path):
+    cmake = tmp_path / "ExternalMUMPS.cmake"
+    cmake.write_text(PALACE_EXTERNAL_MUMPS)
+    tarball = "/stacks/src/tarballs/MUMPS_5.9.1.tar.gz"
+
+    result = _palace_function("palace_edit_mumps", str(cmake), tarball, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    edited = cmake.read_text().splitlines()
+    original = PALACE_EXTERNAL_MUMPS.splitlines()
+    changed = [new for old, new in zip(original, edited, strict=True) if old != new]
+    assert changed == [f'  "-DMUMPS_gemmt=OFF" "-DMUMPS_url={tarball}"']
+
+
+def test_an_external_mumps_file_without_the_gemmt_line_fails_the_edit(tmp_path):
+    cmake = tmp_path / "ExternalMUMPS.cmake"
+    cmake.write_text(PALACE_EXTERNAL_MUMPS.replace("gemmt=ON", "gemmt=${X}"))
+
+    result = _palace_function(
+        "palace_edit_mumps", str(cmake), "/t.tar.gz", cwd=tmp_path
+    )
+
+    assert result.returncode != 0
+    assert "MUMPS_gemmt" in result.stderr
+
+
+#: An excerpt of Palace v0.18.1's ``cmake/ExternalMUMPS.cmake``: no
+#: ``MUMPS_gemmt`` line; scivision's tag of that time reads ``gemmt``.
+PALACE_0181_EXTERNAL_MUMPS = """\
+list(APPEND MUMPS_OPTIONS
+  "-DMUMPS_parallel=ON"
+  "-DMUMPS_openmp=${PALACE_WITH_OPENMP}"
+)
+"""
+
+
+def test_a_superbuild_without_the_gemmt_line_turns_scivisions_gemmt_off(tmp_path):
+    cmake = tmp_path / "ExternalMUMPS.cmake"
+    cmake.write_text(PALACE_0181_EXTERNAL_MUMPS)
+
+    result = _palace_function(
+        "palace_edit_mumps_gemmt_option", str(cmake), cwd=tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert cmake.read_text() == PALACE_0181_EXTERNAL_MUMPS.replace(
+        '"-DMUMPS_parallel=ON"', '"-DMUMPS_parallel=ON" "-Dgemmt=OFF"'
+    )
+
+
+#: Palace v0.18.1's ``palace/CMakeLists.txt``: STRUMPACK's optional packages
+#: linked by bare name (zfp installs to lib64, where the linker never looks).
+PALACE_0181_STRUMPACK_PKGS = """\
+  foreach(pkg zfp slate lapackpp blaspp ptscotch)
+    find_package(${pkg} QUIET)
+    if(${pkg}_FOUND)
+      message(STATUS "Found ${pkg}")
+      target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})
+    endif()
+  endforeach()
+"""
+
+
+def test_palace_0181_links_strumpacks_packages_by_their_imported_target(tmp_path):
+    cmake = tmp_path / "CMakeLists.txt"
+    cmake.write_text(PALACE_0181_STRUMPACK_PKGS)
+
+    result = _palace_function("palace_edit_pkg_targets", str(cmake), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert cmake.read_text() == PALACE_0181_STRUMPACK_PKGS.replace(
+        "      target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})\n",
+        "      if(TARGET ${pkg}::${pkg})\n"
+        "        target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg}::${pkg})\n"
+        "      else()\n"
+        "        target_link_libraries(${LIB_TARGET_NAME} PUBLIC ${pkg})\n"
+        "      endif()\n",
+    )
+
+
+def test_a_palace_that_links_imported_targets_is_left_alone(tmp_path):
+    cmake = tmp_path / "CMakeLists.txt"
+    fixed = PALACE_0181_STRUMPACK_PKGS.replace(
+        "PUBLIC ${pkg})", "PUBLIC ${pkg}::${pkg})"
+    )
+    cmake.write_text(fixed)
+
+    result = _palace_function("palace_edit_pkg_targets", str(cmake), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert cmake.read_text() == fixed
+
+
+#: Palace v0.18.1's top ``CMakeLists.txt``: the arguments every sub-build gets.
+PALACE_0181_DEFAULT_ARGS = """\
+set(PALACE_SUPERBUILD_DEFAULT_ARGS
+  "-DCMAKE_SHARED_LINKER_FLAGS=${CMAKE_SHARED_LINKER_FLAGS}"
+  "-DCMAKE_STATIC_LINKER_FLAGS=${CMAKE_STATIC_LINKER_FLAGS}"
+)
+"""
+
+
+def test_palace_0181s_sub_builds_find_the_openmp_openblas(tmp_path):
+    cmake = tmp_path / "CMakeLists.txt"
+    cmake.write_text(PALACE_0181_DEFAULT_ARGS)
+
+    result = _palace_function("palace_edit_blas_forward", str(cmake), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    line = '  "-DCMAKE_STATIC_LINKER_FLAGS=${CMAKE_STATIC_LINKER_FLAGS}"\n'
+    assert cmake.read_text() == PALACE_0181_DEFAULT_ARGS.replace(
+        line,
+        line + '  "-DBLAS_openblas_LIBRARY=${BLAS_openblas_LIBRARY}"\n'
+        '  "-DLAPACK_openblas_LIBRARY=${LAPACK_openblas_LIBRARY}"\n',
+    )
+
+
+@pytest.mark.parametrize("prefix", ["MUMPS_", ""])
+def test_mumps_orderings_are_read_under_either_scivision_option_name(tmp_path, prefix):
+    cache = tmp_path / "CMakeCache.txt"
+    cache.write_text(
+        f"{prefix}metis:BOOL=ON\n{prefix}parmetis:BOOL=ON\n{prefix}scotch:BOOL=OFF\n"
+    )
+
+    result = _palace_function("palace_mumps_orderings", str(cache), cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["amd", "metis", "parmetis", "pord"]
+
+
+#: scivision/mumps's ``CMakeLists.txt`` before ``MUMPS_url`` existed (v5.7.3.1-26).
+SCIVISION_573_CMAKELISTS = """\
+include(FetchContent)
+
+set(url "https://mumps-solver.org/MUMPS_${MUMPS_UPSTREAM_VERSION}.tar.gz")
+
+set(FETCHCONTENT_QUIET no)
+"""
+
+
+def test_a_scivision_tree_without_mumps_url_downloads_the_mirrors_tarball(tmp_path):
+    tree = tmp_path / "mumps"
+    tree.mkdir()
+    (tree / "CMakeLists.txt").write_text(SCIVISION_573_CMAKELISTS)
+    tarball = "/stacks/src/tarballs/MUMPS_5.7.3.tar.gz"
+
+    result = _palace_function("palace_mumps_url_edit", str(tree), tarball, cwd=tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert (tree / "CMakeLists.txt").read_text() == SCIVISION_573_CMAKELISTS.replace(
+        "https://mumps-solver.org/MUMPS_${MUMPS_UPSTREAM_VERSION}.tar.gz", tarball
+    )
+
+
+def test_a_scivision_tree_without_the_url_line_fails_the_edit(tmp_path):
+    tree = tmp_path / "mumps"
+    tree.mkdir()
+    (tree / "CMakeLists.txt").write_text("set(url other)\n")
+
+    result = _palace_function(
+        "palace_mumps_url_edit", str(tree), "/t.tar.gz", cwd=tmp_path
+    )
+
+    assert result.returncode != 0
+    assert "mumps-solver.org" in result.stderr
+
+
+needs_gcc = pytest.mark.skipif(shutil.which("gcc") is None, reason="needs gcc")
+
+
+@needs_gcc
+def test_a_library_calling_a_gemmt_is_named_by_the_gemmt_check(tmp_path):
+    for name, routine in (("with", "dgemmt_"), ("without", "dgemm_")):
+        (tmp_path / f"{name}.c").write_text(
+            f"void {routine}(void);\nvoid call(void) {{ {routine}(); }}\n"
+        )
+        subprocess.run(
+            ["gcc", "-shared", "-fPIC", "-o", f"lib{name}.so", f"{name}.c"],  # noqa: S607
+            cwd=tmp_path,
+            check=True,
+        )
+
+    result = _palace_function(
+        "palace_gemmt_imports", "libwith.so", "libwithout.so", cwd=tmp_path
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == ["libwith.so:dgemmt_"]
+
+
+def test_mumps_compiler_strings_of_one_gcc_match():
+    """``gfortran --version`` and ``-dumpfullversion`` spellings of one GCC agree."""
+    a = provenance._canonical("compiler", "GNU Fortran (GCC) 12.3.0")
+    b = provenance._canonical("compiler", "gfortran 12.3.0")
+    c = provenance._canonical("compiler", "gfortran 13.2.0")
+    assert a == b
+    assert a != c
+
+
+# --- package petsc: gfem's PETSc contract (ADR 0067, ADR 0209) ----------------
+
+WHEELHOUSE = STACKS.parent / "petsc_wheelhouse.sh"
+PETSC_RECIPE = STACKS / "packages" / "petsc.sh"
+OPENBLAS_RECIPE = STACKS / "packages" / "openblas.sh"
+
+
+def test_the_native_petsc_recipe_follows_the_wheelhouses_contract():
+    drift = provenance.petsc_contract_drift(
+        WHEELHOUSE.read_text(), PETSC_RECIPE.read_text(), OPENBLAS_RECIPE.read_text()
+    )
+
+    assert drift == []
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "named"),
+    [
+        ("PETSC_VERSION=3.26.0", "PETSC_VERSION=3.26.1", "version"),
+        (
+            "659c9b57646b5a003ac618baa1faf9dd",
+            "0000000000000000000000000000000",
+            "MUMPS",
+        ),
+        ("SHA256_slepc=a2f4cc2a", "SHA256_slepc=00000000", "slepc"),
+        ("cd7e129868320cc2", "0000000000000000", "OpenBLAS-0.3.34"),
+        ("OpenBLAS-0.3.34.tar.gz", "OpenBLAS-0.3.35.tar.gz", "OpenBLAS-0.3.35"),
+    ],
+)
+def test_a_wheelhouse_that_moves_away_from_the_native_recipe_is_drift(old, new, named):
+    wheelhouse = WHEELHOUSE.read_text()
+    assert old in wheelhouse
+
+    drift = provenance.petsc_contract_drift(
+        wheelhouse.replace(old, new),
+        PETSC_RECIPE.read_text(),
+        OPENBLAS_RECIPE.read_text(),
+    )
+
+    assert any(named in line for line in drift), drift
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "named"),
+    [
+        ("PETSC_VERSION=3.26.0", "PETSC_VERSION=3.26.1", "3.26.1"),
+        ("cd7e129868320cc2", "0000000000000000", "OpenBLAS-0.3.34.tar.gz sha256"),
+    ],
+    ids=["petsc-version", "openblas-sha256"],
+)
+def test_check_fails_when_the_petsc_recipe_drifts_from_the_wheelhouse(
+    tmp_path, old, new, named
+):
+    tools = tmp_path / "tools"
+    shutil.copytree(
+        STACKS, tools / "stacks", ignore=shutil.ignore_patterns("__pycache__")
+    )
+    wheelhouse = WHEELHOUSE.read_text()
+    (tools / "petsc_wheelhouse.sh").write_text(wheelhouse)
+    env = {**os.environ, "STACKS_ROOT": str(tmp_path / "root")}
+    run = [
+        "bash",
+        str(tools / "stacks" / "stack.sh"),
+        "check",
+        "native-oss",
+    ]
+
+    agreed = subprocess.run(run, env=env, capture_output=True, text=True, check=False)
+    assert old in wheelhouse
+    (tools / "petsc_wheelhouse.sh").write_text(wheelhouse.replace(old, new))
+    drifted = subprocess.run(run, env=env, capture_output=True, text=True, check=False)
+
+    assert agreed.returncode == 0, agreed.stdout + agreed.stderr
+    assert "petsc contract: matches" in agreed.stdout
+    assert drifted.returncode != 0
+    assert named in drifted.stdout
+
+
+# --- package ngsolve ----------------------------------------------------------
+
+#: netgen v6.2.2608's ``cmake/external_projects/metis.cmake`` (excerpt): the
+#: METIS a ``USE_MPI`` netgen downloads at build time.
+NETGEN_METIS = """
+ExternalProject_Add(project_metis
+  PREFIX ${CMAKE_CURRENT_BINARY_DIR}/dependencies
+  URL https://bitbucket.org/petsc/pkg-metis/get/v5.1.0-p12.tar.gz
+  URL_MD5 6cd66f75f88dfa2cf043de011f85d8bc
+  DOWNLOAD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external_dependencies
+"""
+
+
+def test_a_url_download_of_cmake_is_read_with_its_md5_and_mirror_name():
+    assert sources.url_tarballs(NETGEN_METIS) == [
+        (
+            "petsc-pkg-metis-v5.1.0-p12.tar.gz",
+            "https://bitbucket.org/petsc/pkg-metis/get/v5.1.0-p12.tar.gz",
+            "6cd66f75f88dfa2cf043de011f85d8bc",
+        )
+    ]
+
+
+def test_source_records_name_their_fields():
+    git = sources.palace_git(PALACE_GIT_TAGS)[0]
+    tarball = sources.palace_tarballs(PALACE_GIT_TAGS)[0]
+    patch = sources.patches(PALACE_PATCH_CALLS)[0]
+    metis = sources.url_tarballs(NETGEN_METIS)[0]
+    ref = sources.git_repositories("GIT_REPOSITORY https://h/r.git GIT_TAG v1")[0]
+    module = sources.gitmodules("[submodule x]\n\tpath = p\n\turl = https://h/p\n")[0]
+    mumps = sources.mumps_tarball('{"mumps_sha256": {"5.9.1": "abc"}}', "v5.9.1")[0]
+
+    assert (git.name, git.tag) == ("ARPACK", "3.9.1")
+    assert tarball.file == sources.tarball_name(tarball.url)
+    assert (patch.directory, patch.file) == ("extern/mfem-patches", "mfem_pr3847.diff")
+    assert patch.sha256.startswith("e9be1a0d")
+    assert metis.md5 == "6cd66f75f88dfa2cf043de011f85d8bc"
+    assert (ref.url, ref.tag) == ("https://h/r.git", "v1")
+    assert (module.path, module.url) == ("p", "https://h/p")
+    assert (mumps.file, mumps.sha256) == ("MUMPS_5.9.1.tar.gz", "abc")
+
+
+#: What a native-oss PETSc build leaves for its ``mumps`` block: excerpts of
+#: the installed headers, MUMPS's ``Makefile.inc``, ``nm -D`` and ``ldd`` of
+#: libpetsc, the ``--download`` tarballs.
+PETSC_BUILD = {
+    "petscconf.h": (
+        "#define PETSC_USE_COMPLEX 1\n#define PETSC_USE_64BIT_INDICES 1\n"
+        "#define PETSC_HAVE_MUMPS 1\n#define PETSC_HAVE_METIS 1\n"
+        "#define PETSC_HAVE_PTSCOTCH 1\n#define PETSC_HAVE_SCALAPACK 1\n"
+    ),
+    "mumps_int_def.h": (
+        "#if ! defined(MUMPS_INTSIZE32)\n#define MUMPS_INTSIZE32\n#endif\n"
+    ),
+    "zmumps_c.h": '#define MUMPS_VERSION "5.9.1"\n',
+    "scotch.h": (
+        "#define SCOTCH_VERSION 7\n#define SCOTCH_RELEASE 0\n"
+        "#define SCOTCH_PATCHLEVEL 18\n"
+    ),
+    "Makefile.inc": (
+        "FC = mpif90\n"
+        "OPTF = -fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch\n"
+    ),
+    "dynsym.txt": (
+        "0000000000123456 T zmumps_c\n0000000000123457 T dmumps_c\n"
+        "0000000000123458 T smumps_c\n0000000000123459 T cmumps_c\n"
+        "                 U zgemm_\n                 U dgemm_\n"
+    ),
+    "needed.txt": (
+        "\tlibopenblas.so.0 => /stacks/native-oss/openblas-0.3.34/lib/libopenblas.so.0"
+        " (0x00007f)\n\tlibmpi.so.40 => /apps/openmpi/lib/libmpi.so.40 (0x00007f)\n"
+    ),
+    "compiler.txt": "gfortran 12.3.0\n",
+    "tarballs.txt": (
+        f"{'1' * 64}  /src/tarballs/MUMPS_5.9.1.tar.gz\n"
+        f"{'2' * 64}  /src/tarballs/scalapack-v2.2.3.tar.gz\n"
+        f"{'3' * 64}  /src/tarballs/scotch-v7.0.18.tar.gz\n"
+        f"{'4' * 64}  /src/tarballs/petsc-pkg-metis-v5.1.0-p12.tar.gz\n"
+    ),
+}
+NATIVE_OSS = {
+    "FFLAGS": "-O3 -march=sapphirerapids",
+    "STACK_BLAS_VENDOR": "openblas",
+    "STACK_BLAS_VERSION": "0.3.34",
+}
+
+
+def test_a_petsc_build_records_its_mumps_block_as_check_compares_it():
+    block, errors = provenance.petsc_mumps(PETSC_BUILD, NATIVE_OSS)
+
+    assert errors == []
+    assert block == {
+        "version": "5.9.1",
+        "tarball_sha256": "1" * 64,
+        "intsize": 32,
+        "gemmt": False,
+        "blas": {"vendor": "openblas", "version": "0.3.34", "threading": "pthreads"},
+        "scalapack": "2.2.3",
+        "compiler": "gfortran 12.3.0",
+        "fflags": "-O3 -march=sapphirerapids",
+        "arithmetics": ["c", "d", "s", "z"],
+        "openmp": False,
+        "orderings": ["amd", "metis", "pord", "ptscotch"],
+        "metis": "5.1.0-p12",
+        "ptscotch": "7.0.18",
+        "index_bits": 64,
+        "fflags_raw": "-fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch",
+        "compiler_raw": "mpif90",
+    }
+
+
+@pytest.mark.parametrize(
+    ("file", "old", "new", "named"),
+    [
+        ("petscconf.h", "#define PETSC_USE_64BIT_INDICES 1\n", "", "64-bit"),
+        ("petscconf.h", "", "#define PETSC_HAVE_PARMETIS 1\n", "parmetis"),
+        ("scotch.h", "PATCHLEVEL 18", "PATCHLEVEL 15", "7.0.15"),
+        ("dynsym.txt", "", "                 U zgemmt_\n", "gemmt"),
+        ("Makefile.inc", "-O3 -march=sapphirerapids ", "-O2 ", "OPTF"),
+        ("needed.txt", "libopenblas.so.0", "libopenblas_omp.so.0", "pthreads"),
+        ("needed.txt", "openblas-0.3.34", "openblas-0.3.33", "0.3.34"),
+        ("zmumps_c.h", "5.9.1", "5.8.0", "5.8.0"),
+    ],
+)
+def test_a_petsc_build_that_breaks_adr_0067_or_0209_is_refused(file, old, new, named):
+    build = dict(PETSC_BUILD)
+    build[file] = build[file].replace(old, new) if old else build[file] + new
+    assert build[file] != PETSC_BUILD[file]
+
+    _, errors = provenance.petsc_mumps(build, NATIVE_OSS)
+
+    assert any(named in error for error in errors), errors
+
+
+def test_a_petsc_prefix_activates_as_petsc_dir_and_slepc_dir():
+    result = _stack_function(
+        'source "$1"; eval "$(activate_petsc /stacks/native-oss/petsc-3.26.0)"; '
+        'echo "$PETSC_DIR $SLEPC_DIR"; bash -c \'echo "$PETSC_DIR"\'',
+        str(PETSC_RECIPE),
+    )
+
+    assert result.returncode == 0, result.stderr
+    prefix = "/stacks/native-oss/petsc-3.26.0"
+    assert result.stdout.splitlines() == [f"{prefix} {prefix}", prefix]
+
+
+#: The line of PETSc 3.26.0's ``config/BuildSystem/config/packages/MUMPS.py``
+#: that gives MUMPS ``-DGEMMT_AVAILABLE`` (tools/petsc_wheelhouse.sh).
+GEMMT_LINE = "    if self.blasLapack.checkForRoutine('dgemmt'):\n"
+
+
+def _patch_gemmt(
+    tmp_path: Path, mumps_py: str
+) -> tuple[subprocess.CompletedProcess, Path]:
+    path = tmp_path / "petsc" / "config" / "BuildSystem" / "config" / "packages"
+    path.mkdir(parents=True)
+    (path / "MUMPS.py").write_text(mumps_py)
+    result = subprocess.run(
+        [  # noqa: S607
+            "bash",
+            "-c",
+            'source "$1"; petsc_patch_gemmt "$2"',
+            "-",
+            str(PETSC_RECIPE),
+            str(tmp_path / "petsc"),
+        ],
+        env={**os.environ, "STACK_PYTHON": sys.executable},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, path / "MUMPS.py"
+
+
+def test_mumps_in_petsc_never_gets_gemmt(tmp_path):
+    result, mumps_py = _patch_gemmt(tmp_path, f"x = 1\n{GEMMT_LINE}      y = 2\n")
+
+    assert result.returncode == 0, result.stderr
+    text = mumps_py.read_text()
+    assert "checkForRoutine('dgemmt')" not in text
+    assert "    if False:  # gfem: OpenBLAS's ZGEMMT overflows\n" in text
+
+
+@pytest.mark.parametrize("hits", [0, 2])
+def test_a_petsc_whose_gemmt_check_moved_stops_the_build(tmp_path, hits):
+    result, mumps_py = _patch_gemmt(tmp_path, "x = 1\n" + GEMMT_LINE * hits)
+
+    assert result.returncode != 0
+    assert f"found {hits} times" in result.stderr
+    assert mumps_py.read_text() == "x = 1\n" + GEMMT_LINE * hits
+
+
+def _palace(function: str, env: dict) -> subprocess.CompletedProcess:
+    """Call one function of ``packages/palace.sh`` with ``env`` (stack_die fails)."""
+    script = (
+        'stack_die() { echo "$*" >&2; exit 1; }; '
+        f'. "{STACKS / "packages" / "palace.sh"}"; {function}'
+    )
+    return subprocess.run(
+        ["bash", "-c", script],  # noqa: S607
+        env={"PATH": os.environ["PATH"], **env},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_palace_on_an_mkl_stack_links_the_single_dynamic_mkl(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "libmkl_rt.so").write_text("")
+
+    result = _palace(
+        "palace_blas_args",
+        {
+            "STACK_NAME": "native-intel",
+            "STACK_BLAS_VENDOR": "mkl",
+            "MKLROOT": str(tmp_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["-DBLA_VENDOR=Intel10_64_dyn"]
+
+
+def test_palace_on_an_openblas_stack_links_the_openmp_openblas(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "libopenblas_omp.so").write_text("")
+
+    result = _palace(
+        "palace_blas_args",
+        {
+            "STACK_NAME": "native-oss",
+            "STACK_BLAS_VENDOR": "openblas",
+            "STACK_BLAS_LIB_OPENMP": "openblas_omp",
+            "STACK_OPENBLAS_PROVENANCE": str(tmp_path / "provenance.json"),
+        },
+    )
+
+    lib = tmp_path / "lib" / "libopenblas_omp.so"
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "-DBLA_VENDOR=OpenBLAS",
+        f"-DBLAS_openblas_LIBRARY={lib}",
+        f"-DLAPACK_openblas_LIBRARY={lib}",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("vendor", "plugin"), [("Open MPI", "pmix"), ("Intel MPI", "pmi2")]
+)
+def test_palace_is_launched_with_the_slurm_plugin_of_the_stacks_mpi(vendor, plugin):
+    result = _palace("palace_srun_mpi", {"STACK_MPI_VENDOR": vendor})
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"--mpi={plugin}"

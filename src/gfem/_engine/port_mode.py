@@ -371,6 +371,42 @@ class PortModeSpace:
                 out[j, i, 2] = en(mips[i])
         return out
 
+    def magnetic_parts(
+        self, coeffs: np.ndarray, local: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        r"""The two parts of the in-plane magnetic field at plane points.
+
+        :math:`H_t = \frac{i}{\omega \mu_0 s} (h_n + \gamma h_t)` with
+        :math:`h_n = R\, \nu_{tt} \nabla E_n` and :math:`h_t = R\, \nu_{tt}
+        E_t` (Faraday under :math:`e^{+i\omega t}`, :math:`R a = a \times n`,
+        :math:`s` the scale and :math:`\gamma` per local unit). Zero off the
+        cross-section.
+
+        Args:
+            coeffs: Full coefficient vectors of ``(E_t, E_n)``, ``(m, ndof)``.
+            local: Plane coordinates ``(n, 2)`` in local units.
+
+        Returns:
+            ``h_n`` and ``h_t``, each ``(m, n, 2)`` complex in ``(u, v)``.
+        """
+        coeffs = np.atleast_2d(coeffs)
+        mips = [self.mesh(float(x), float(y)) for x, y in np.asarray(local, float)]
+        found = [i for i, mip in enumerate(mips) if mip.nr >= 0]
+        hn = np.zeros((len(coeffs), len(mips), 2), complex)
+        ht = np.zeros_like(hn)
+        gf = ngs.GridFunction(self.space)
+        et, en = gf.components
+        nu = self._coef["nu_tt"]
+        cf_n, cf_t = nu * ngs.grad(en), nu * et
+        for j, c in enumerate(coeffs):
+            gf.vec.FV().NumPy()[:] = c
+            for i in found:
+                hn[j, i] = cf_n(mips[i])
+                ht[j, i] = cf_t(mips[i])
+        # R a = a x n = (a_v, -a_u) in the right-handed frame (u, v, n)
+        rot = np.array([[0.0, 1.0], [-1.0, 0.0]])
+        return hn @ rot.T, ht @ rot.T
+
     def power(self, coeffs: np.ndarray, gamma: complex, omega: float) -> complex:
         """Complex power ``1/2 int (E x H*) . n dA`` through the port, W.
 
@@ -385,6 +421,24 @@ class PortModeSpace:
         cf = et * ngs.Conj(self._coef["nu_tt"] * a)
         value = ngs.Integrate(cf, self.mesh, order=quadrature.degree(self.order))
         return 0.5 * self.section.scale * 1j / (omega * mu0) * complex(value)
+
+    def pairing(self, coeffs: np.ndarray, gamma: complex, omega: float) -> complex:
+        """Reciprocity pairing ``1/2 int (E x H) . n dA``, unconjugated, W.
+
+        `power` without the conjugate: 1 W for a lossless 1 W mode of real
+        phase; the normalization of a wave port's modal waves.
+
+        Args:
+            coeffs: Full coefficient vector of ``(E_t, E_n)`` (V/m).
+            gamma: Propagation constant per local unit.
+            omega: Angular frequency, rad/s.
+        """
+        et, en = self._gridfunction(coeffs).components
+        a = ngs.grad(en) + gamma * et
+        mu0 = scipy.constants.mu_0
+        cf = et * (self._coef["nu_tt"] * a)
+        value = ngs.Integrate(cf, self.mesh, order=quadrature.degree(self.order))
+        return -0.5j * self.section.scale / (omega * mu0) * complex(value)
 
     def gauge(self, coeffs: np.ndarray, gamma: complex) -> complex:
         """Palace's phase reference: ``int_Q t . (n_out x H) dA`` up to a factor.

@@ -165,7 +165,7 @@ select = ["ALL"]
 "docs/**/*.py" = [
   "INP001",  # implicit-namespace-package (Sphinx configuration, not a package)
 ]
-"tools/*.py" = [
+"tools/{*,stacks/*}.py" = [
   "INP001",  # implicit-namespace-package (scripts, not a package)
   "S603",  # subprocess-without-shell-equals-true
   "T201",  # print

@@ -8,6 +8,32 @@
   unknowns, the solver's bytes and the Krylov iterations. See "Time each
   phase" in
   {doc}`../recipes/solve-a-device`.
+
+- **Behaviour change: exact S on lossy wave ports.** A wave port's S now reads
+  the field's modal amplitudes by the biorthogonal projection on its modes,
+  and S relates pseudo-waves (Marks and Williams). With a `voltage_path`, a
+  wave port's `z_ref` is its mode's complex $Z_{PV}$, so a uniform lossy line
+  is matched to its own mode ($S_{11} = 0$, $S_{21} = e^{-\gamma L}$), and
+  `s.y()`, `s.z()` and `s.renormalize()` give the line's exact network. Earlier
+  versions projected on the conjugated mode, which reflected a lossy line's own
+  mode at about $\alpha/\beta$ and mixed the modes of a lossy shared port
+  surface; S of lossy wave ports from earlier versions should be recomputed.
+  Lossless wave ports and lumped ports are unchanged. `z_ref` is now complex,
+  `gfem.conventions.WAVES` is `"pseudo"`, and `PortModeProjectionWarning` is no
+  longer emitted (the class stays for warning filters). Give every wave port a
+  `voltage_path`, or none: on a lossy line S is symmetric only between ports of
+  one kind.
+
+- **Complex characteristic impedances.** `PortModeResult.Z_PV` is now the
+  complex power-voltage impedance $|V|^2 / (2 P^*)$, with $P$ the mode's
+  complex power. Earlier versions returned its modulus $|V|^2 / (2 |P|)$,
+  which differs on a lossy line (conductor loss at low frequency makes $P$
+  strongly reactive). `gfem.characteristic_impedance` takes a new
+  `current_path` and returns the power-current impedance $Z_{PI} = 2P / |I|^2$
+  with it, or the voltage-current impedance $Z_{VI} = V / I$ with both paths.
+  A wave port's reference impedance `z_ref`, and so its S-parameters, are
+  unchanged: `z_ref` stays the real modulus.
+
 - **Rerun eigenmode results on models with lossy walls.** `gfem.Eigenmode` now
   returns the modes nearest the target on a model with a `Conductor`, `Impedance`
   or `Absorbing` wall. Its starting vectors were wrong on such walls, so a solve

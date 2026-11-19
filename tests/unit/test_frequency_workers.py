@@ -139,20 +139,16 @@ def test_a_lossy_wave_port_beside_a_lumped_port_over_two_workers(tmp_path):
     np.testing.assert_allclose(two, one, rtol=0, atol=1e-9 * np.abs(one).max())
 
 
-def test_the_parent_warns_of_cross_projections_on_a_shared_port_surface(
-    tmp_path, monkeypatch
-):
-    # a worker's warnings never reach the user: the parent's port mode sweep
-    # gives the cross-projection
-    monkeypatch.setattr(driven, "PORT_MODE_PROJECTION_FLOOR", 0.0)
+def test_workers_on_shared_port_surfaces_give_the_sequential_sweep(tmp_path):
+    # two shared port surfaces, two workers: the same S as one process, and
+    # no projection warning (the S functional is biorthogonal, ADR 0214)
     model = hybrid_line(hybrid_mesh(tmp_path))
     grid = (60e9, 70e9)
     options = gfem.SolverOptions(order=2, linear_solver="direct", frequency_workers=2)
     rule = DrivenRule(model, gfem.Driven(grid), options)
-    with pytest.warns(gfem.PortModeProjectionWarning) as caught:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", gfem.PortModeProjectionWarning)
         two, _ = rule.forward(model, keep=False)
-    assert len(caught) == 2  # one per shared port surface
-    with pytest.warns(gfem.PortModeProjectionWarning):
         one, _ = _forward(model, gfem.Driven(grid), order=2, linear_solver="direct")
     np.testing.assert_allclose(two["s"], one["s"], rtol=0, atol=1e-12)
     np.testing.assert_allclose(two["port_gamma"], one["port_gamma"], rtol=1e-12)
@@ -173,7 +169,6 @@ def test_a_worker_does_not_repeat_the_parents_port_mode_warnings():
         DrivenRule(model, problem, options)
     with warnings.catch_warnings():
         warnings.simplefilter("error", gfem.SkippedPortModeWarning)
-        warnings.simplefilter("error", gfem.PortModeProjectionWarning)
         outputs, _, reason, _ = _solve_block(
             *workers.model_parts(model), problem, options, keep=False
         )

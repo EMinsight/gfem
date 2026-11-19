@@ -149,8 +149,10 @@ def test_the_s21_gradient_does_not_depend_on_which_ports_are_excited(
     np.testing.assert_allclose(adjoint, full, rtol=1e-8, atol=1e-10 * abs(full).max())
 
 
-@pytest.mark.parametrize(("port", "solves"), [("lossless", 0), ("lossy", 2)])
-def test_only_lossy_wave_ports_take_an_adjoint_solve(mesh, port, solves, monkeypatch):
+# a lone wave port's S functional is parallel to its load, lossy or not
+# (ADR 0214): its adjoint is its own solution scaled
+@pytest.mark.parametrize(("port", "solves"), [("lossless", 0), ("lossy", 0)])
+def test_lone_wave_ports_take_no_adjoint_solve(mesh, port, solves, monkeypatch):
     from gfem import _linalg
     from gfem._engine.system_operator import SystemOperator
 

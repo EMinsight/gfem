@@ -6,9 +6,10 @@ Palace's form (the 3D field ``E`` and test function ``v`` in the units of
 as ``exp(-gamma s)``, ``gamma = alpha + i beta``). One surface carries one
 wave port, or several, one mode each (a shared port surface):
 
-- one Robin term ``i beta_0 ∫ (A E_t) · v_t`` per surface
-  (`gfem._engine.terms`), with ``beta_0`` the real part of the wavenumber
-  of the surface's smallest-``mode`` port (its attenuation dropped) and
+- one Robin term ``gamma_0 ∫ (A E_t) · v_t`` per surface
+  (`gfem._engine.terms`), with ``gamma_0`` the propagation constant of the
+  surface's smallest-``mode`` port (ADR 0214; Palace drops its attenuation,
+  which leaves ``-alpha_0 M e`` on a lossy mode) and
   ``A`` the port's tangential inverse-permeability tensor (``mu_r^-1`` for
   an isotropic material; the port mode problem's ``nu_tt``, ADR 0054);
 - one modal correction of rank ``2 n`` per surface of ``n`` wave ports,
@@ -17,17 +18,20 @@ wave port, or several, one mode each (a shared port surface):
   v_t``), ``E`` their tangential traces, ``M`` the Robin mass, ``R = Hᵀ
   E`` (symmetrized) and ``G = Eᵀ M E``. For one port it is Palace's
   ``W_full - W_scalar``, ``h hᵀ / (hᵀ e) - h_s h_sᵀ / (h_sᵀ e)`` with
-  ``h_s`` the n x H without ``grad E_n``. On every requested mode of a
-  lossless line the Robin term and ``W`` together impose the mode's full
-  n x H, so a hybrid mode (``E_n != 0``) leaves the port without
-  reflection; for a lone TEM mode ``h = h_s`` and ``W = 0``. ``W`` is
-  complex symmetric and does not depend on the modes' scales;
+  ``h_s`` the n x H without ``grad E_n``. On every requested mode the
+  Robin term and ``W`` together impose the mode's full n x H, so a hybrid
+  mode (``E_n != 0``) leaves the port without reflection; for a lone TEM
+  mode ``h = h_s`` and ``W = 0``. ``W`` is complex symmetric and does not
+  depend on the modes' scales;
 - each port's incident wave's excitation ``2 h``;
-- each port's S functional, the projection of the field on its conjugated
-  mode, ``S = (1/2) (i / (omega mu0)) ∫ E_t · conj(A (grad E_n + gamma
-  E_t))`` minus 1 at the excited port, with the mode scaled so that
-  this projection of the incident mode itself has modulus 2 (1 W, in
-  gfem's convention of time-averaged power; Palace's modes carry 1 W peak).
+- each port's S functional, the biorthogonal projection of the field on
+  the surface's modes: the modal amplitudes ``c = R⁻¹ Hᵀ E`` with ``R =
+  Hᵀ E_modes`` the unconjugated reactions (by reciprocity ``h_lᵀ e_k = 0``
+  for ``l != k``, lossy or not), times the port's pseudo-wave factor
+  ``kappa`` (ADR 0214), minus 1 at the excited port. The incident load
+  ``2 h / kappa`` feeds a pseudo-wave of amplitude 1. Palace projects on
+  the conjugated mode instead, which reflects a lossy line's own mode at
+  order ``alpha / beta``.
 
 The 3D trace on the port face and the 2D Nédélec space of the port mode
 problem share the face's triangles and order, and NGSolve orders both bases
@@ -121,8 +125,13 @@ class WavePortCoupling:
         phi: ``(n_freq, 2 m)``: the mode's n x H on the columns of its
             surface's ``vectors``, ``gamma c_t`` and ``c_n`` (gamma per file
             unit): ``h = vectors @ phi``.
-        norm: ``(n_freq,)``: the real factor that rescales the sweep's 1 W
-            mode to Palace's power normalization (1 for a lossless mode).
+        dual: ``(n_freq, 2 m)``: the port's S functional on the columns of
+            ``vectors``: ``kappa`` times row ``k`` of ``R⁻¹ Hᵀ``, so that
+            ``dual @ (vectorsᵀ x)`` is the port's outgoing pseudo-wave.
+        kappa: ``(n_freq,)`` the wave of the sweep's mode at unit modal
+            amplitude (`pseudo_wave_factor`): its pseudo-wave with a voltage
+            path, its reciprocity-normalized modal wave without one; of
+            modulus 1 on a lossless line.
         omegas: ``(n_freq,)`` the output grid, rad/s.
         scale: Metres per mesh file unit.
     """
@@ -131,25 +140,29 @@ class WavePortCoupling:
     port: WavePort
     sweep: PortModeSweep
     phi: np.ndarray
-    norm: np.ndarray
+    dual: np.ndarray
+    kappa: np.ndarray
     omegas: np.ndarray
     scale: float
 
     def excitation(self, omega: float) -> np.ndarray:
         """``(2 m,)``: the incident wave's right-hand side is ``vectors @ this``."""
         k = _at(self.omegas, omega)
-        return 2.0 * self.scale * self.norm[k] * self.phi[k]
+        return 2.0 * self.scale * self.phi[k] / self.kappa[k]
 
     def functional(self, omega: float) -> np.ndarray:
-        """``(2 m,)``: the port's S row is ``this @ (conj(vectors).T @ x)``."""
-        k = _at(self.omegas, omega)
-        mu0 = scipy.constants.mu_0
-        return 0.5j / (omega * mu0) * self.norm[k] * np.conj(self.phi[k])
+        """``(2 m,)``: the port's S row is ``this @ (vectors.T @ x)``."""
+        return self.dual[_at(self.omegas, omega)]
 
     @property
     def z_ref(self) -> np.ndarray:
-        """``(n_freq,)`` reference impedance ``|V|^2 / 2`` of the scaled mode."""
-        return self.norm**2 * self.sweep.z_pv
+        """``(n_freq,)`` complex reference impedance ``Z_PV``; NaN without a path.
+
+        An imaginary part within rounding of zero (a lossless line) is dropped,
+        so a lossless port's ``z_ref`` stays exactly real.
+        """
+        z = self.sweep.z_pv
+        return np.where(np.abs(z.imag) <= 1e-12 * np.abs(z), z.real + 0j, z)
 
     def deembedding(self, omega: float) -> complex:
         """``exp(gamma offset)``: S moves its reference plane into the domain."""
@@ -240,21 +253,6 @@ class PortSurfaceCoupling:
         d[n:, n:] = -np.linalg.inv(g)
         return p, d
 
-    def cross_projection(self) -> np.ndarray:
-        """``(n_freq, n, n)``: ``|Q_lk| / sqrt(|Q_ll| |Q_kk|)`` over the grid.
-
-        ``Q_lk`` is port ``k``'s conjugated S functional applied to port
-        ``l``'s mode, ``c_t,lᵀ conj(reaction)ᵀ conj(phi_k)`` (the mode basis
-        is real), so the ratio does not depend on the modes' scales. Off
-        the diagonal it is zero up to the modes' residuals on a lossless
-        port line, and of the order of the loss otherwise.
-        """
-        return _cross_projection(
-            self.reaction,
-            [c.sweep.coords for c in self.ports],
-            [c.phi for c in self.ports],
-        )
-
     def correction_coefficients(self, omega: float) -> np.ndarray:
         """``C(ω)`` ``(2 m, 2 m)`` with ``W = vectors C vectorsᵀ`` (rank ``2 n``).
 
@@ -280,19 +278,6 @@ def _phi(sweep: PortModeSweep, scale: float, m: int) -> np.ndarray:
     return np.concatenate([gamma[:, None] * coords[:, :m], coords[:, m:]], 1)
 
 
-def _cross_projection(
-    reaction: np.ndarray, coords: list[np.ndarray], phi: list[np.ndarray]
-) -> np.ndarray:
-    """`PortSurfaceCoupling.cross_projection` from the surface's 2D arrays."""
-    m = reaction.shape[1]
-    tangential = np.stack([c[:, :m] for c in coords], axis=1)
-    q = np.einsum(
-        "fli,ji,fkj->flk", tangential, np.conj(reaction), np.conj(np.stack(phi, axis=1))
-    )
-    d = np.sqrt(np.abs(np.einsum("fkk->fk", q)))
-    return np.abs(q) / (d[:, :, None] * d[:, None, :])
-
-
 @dataclasses.dataclass(eq=False)
 class SweptSurface:
     """One wave port surface's port mode sweep over a grid: 2D only.
@@ -306,7 +291,7 @@ class SweptSurface:
         modes: The surface's discrete port mode problem.
         sweeps: Each port's mode over the grid.
         arrays: `gfem._sweep.port_mode.swept_once`'s arrays, with the
-            columns read off the basis (``r``, ``reaction``, ``q``).
+            columns read off the basis (``r``, ``reaction``).
     """
 
     ports: tuple[WavePort, ...]
@@ -317,16 +302,6 @@ class SweptSurface:
     def rows(self, rows: np.ndarray) -> dict[str, np.ndarray]:
         """The arrays at the grid indices ``rows``: plain data that pickles."""
         return rows_of(self.arrays, rows)
-
-    def cross_projection(self) -> np.ndarray:
-        """`PortSurfaceCoupling.cross_projection`, without any 3D term."""
-        reaction = self.arrays["reaction"]
-        scale, m = self.modes.section.scale, reaction.shape[1]
-        return _cross_projection(
-            reaction,
-            [sweep.coords for sweep in self.sweeps],
-            [_phi(sweep, scale, m) for sweep in self.sweeps],
-        )
 
 
 def port_mode_sweeps(
@@ -435,7 +410,7 @@ def wave_port_couplings(
         )
         lead = lead_port(group)
         section = modes.section
-        r, reaction, q = columns["r"], columns["reaction"], columns["q"]
+        r, reaction = columns["r"], columns["reaction"]
         m = r.shape[1] // 2
         idx3, idx2 = trace_dofs(model, section, modes, built, space)
         free = free_mask(space.FreeDofs(), space.ndof)
@@ -447,35 +422,106 @@ def wave_port_couplings(
         vectors = np.zeros((space.ndof, 2 * m), r.dtype)
         vectors[idx3] = r[idx2] / writers[idx3, None]
         scale = section.scale
+        phis = [_phi(sweep, scale, m) for sweep in sweeps]
+        dual, r_kk = _dual(reaction, [s.coords for s in sweeps], phis)
+        # each mode's reciprocity pairing (1/2) int (e x h) . n, unconjugated
+        pairing = -0.5j * scale / (omegas[:, None] * scipy.constants.mu_0) * r_kk
         ports = []
-        for port, sweep in zip(group, sweeps, strict=True):
-            coords = sweep.coords
-            phi = _phi(sweep, scale, m)
-            # Palace's normalization: |(i / (omega mu0)) int E_t . conj(h)| = 2
-            proj = np.einsum("fi,ij,fj->f", coords[:, :m], q, np.conj(phi))
-            power = np.abs(scale * proj / (omegas * scipy.constants.mu_0))
+        for k, (port, sweep) in enumerate(zip(group, sweeps, strict=True)):
+            kappa = pseudo_wave_factor(sweep, pairing[:, k])
             ports.append(
                 WavePortCoupling(
                     index=index[port.name],
                     port=port,
                     sweep=sweep,
-                    phi=phi,
-                    norm=np.sqrt(2.0 / power),
+                    phi=phis[k],
+                    # the load 2 scale h feeds modal amplitude scale
+                    dual=kappa[:, None] * dual[:, k] / scale,
+                    kappa=kappa,
                     omegas=omegas,
                     scale=scale,
                 )
             )
-        beta = next(c for c in ports if c.port is lead).sweep.gamma.imag * scale
+        # gamma_0, not i beta_0: with W's -gamma_0 M E G⁻¹ Eᵀ M the two impose
+        # exactly h on the modes, lossy or not
+        gamma0 = next(c for c in ports if c.port is lead).sweep.gamma * scale
         piece = terms.wave_port_piece(
             model,
             built,
             order,
             port=lead.name,
             surface=lead.surface,
-            theta=terms.Tabulated(omegas, 1j * beta),
+            theta=terms.Tabulated(omegas, gamma0),
         )
         out.append(PortSurfaceCoupling(piece, vectors, reaction, tuple(ports)))
     return out
+
+
+def pseudo_wave_factor(sweep: PortModeSweep, pairing: np.ndarray) -> np.ndarray:
+    """``(n_freq,)``: a mode's wave at unit modal amplitude.
+
+    With a voltage path, Marks and Williams' pseudo-wave ``a = sqrt(Re z) /
+    (2 |z|) (V + z I)`` at ``z = Z_PV``, scaled so that a lossless line's
+    1 W wave has ``|a| = 1``: ``(V/|V|) sqrt(Re Z_PV / |Z_PV|)`` for the
+    sweep's mode of unit power modulus. Without one, the modal wave
+    normalized by reciprocity: ``sqrt(pairing)``, with ``pairing`` the
+    mode's ``(1/2) ∫ (e x h) · n`` unconjugated (1 W on a lossless line).
+    Either way S does not depend on the phase of the mode, and the modal
+    waves make S symmetric for a reciprocal device.
+    """
+    v, z = sweep.voltage, sweep.z_pv
+    with np.errstate(invalid="ignore"):  # NaN without a voltage path
+        kappa = v / np.abs(v) * np.sqrt(z.real / np.abs(z))
+    return np.where(np.isfinite(kappa), kappa, np.sqrt(pairing + 0j))
+
+
+def free_dual_ratio(mode: Any, port: WavePort) -> np.ndarray:
+    """``(n_freq,)``: a wave port's free dual scale over a lossless port's.
+
+    A lone wave port's S functional is ``c`` times its excitation with
+    ``c = -i kappa^2 / (4 k0 eta0 N)`` (`pseudo_wave_factor`, ``N`` the
+    mode's reciprocity pairing): this is ``kappa^2 / N``. 1 without a
+    voltage path (``kappa^2 = N``) and on a lossless line.
+
+    Args:
+        mode: The port's `gfem.PortModeResult`, with its field.
+        port: The wave port.
+    """
+    from gfem._sweep.port_mode import path_voltage
+
+    n = len(np.asarray(mode.frequency))
+    field = mode.e_field
+    if port.voltage_path is None or field is None:
+        return np.ones(n, complex)
+    space, basis, coords = field._space, field._basis, field._coords  # noqa: SLF001
+    v = path_voltage(space, basis, coords, np.asarray(port.voltage_path), port.name)
+    z = np.asarray(mode.Z_PV, complex)
+    kappa = v / np.abs(v) * np.sqrt(z.real / np.abs(z))
+    omega = 2 * np.pi * np.asarray(mode.frequency, float)
+    gamma = np.asarray(mode.gamma, complex) * space.section.scale
+    pairing = np.array(
+        [
+            space.pairing(basis @ c, g, w)
+            for c, g, w in zip(coords, gamma, omega, strict=True)
+        ]
+    )
+    return kappa**2 / pairing
+
+
+def _dual(
+    reaction: np.ndarray, coords: list[np.ndarray], phi: list[np.ndarray]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rows of ``R⁻¹ Φᵀ``, the modal amplitude functionals, and ``R``'s diagonal.
+
+    ``R_lk = h_lᵀ e_k = phi_l @ reaction @ c_t,k``, unconjugated: the
+    biorthogonal projection, exact for a lossy port line too. Returns
+    ``(n_freq, n, 2 m)`` and ``(n_freq, n)``.
+    """
+    m = reaction.shape[1]
+    tangential = np.stack([c[:, :m] for c in coords], axis=2)  # (f, m, n)
+    p = np.stack(phi, axis=1)  # (f, n, 2m)
+    r = np.einsum("fli,ij,fjk->flk", p, reaction, tangential)
+    return np.linalg.solve(r, p), np.einsum("fkk->fk", r)
 
 
 def _port_columns(modes: PortModeSpace, basis: np.ndarray) -> dict[str, np.ndarray]:
@@ -483,14 +529,14 @@ def _port_columns(modes: PortModeSpace, basis: np.ndarray) -> dict[str, np.ndarr
 
     ``r``: the entries of `PortSurfaceCoupling.vectors` on the free 2D DOFs;
     ``reaction``: hᵀ e on the port face, as Palace (the mode vanishes on fixed
-    DOFs); ``q``: the port face's products with conjugated ``r``.
+    DOFs).
     """
     g_form, t_form = modes.coupling_forms
     w = basis[modes.free]
     m = w.shape[1] // 2
     r = np.concatenate([t_form @ w[:, :m], g_form @ w[:, m:]], axis=1)
     tangential = basis[: modes.n_t, :m]
-    return {"r": r, "reaction": r.T @ tangential, "q": tangential.T @ np.conj(r)}
+    return {"r": r, "reaction": r.T @ tangential}
 
 
 def trace_dofs(

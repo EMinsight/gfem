@@ -66,7 +66,7 @@ class PortModeRows:
 
     Attributes:
         gamma: Propagation constants, 1/m.
-        z_pv: Power-voltage impedances, ohm.
+        z_pv: Complex power-voltage impedances, ohm.
         residual: Backward errors of the modes.
         solved: True where a mode is an exact solve.
         sweeps: Each wave port's `gfem._sweep.port_mode.PortModeSweep` over
@@ -323,6 +323,7 @@ class SweepOutputs:
         ndof: int | None = None,
         n_fields: int = 0,
         reduced: int | None = None,
+        complex_z_ref: bool = False,
     ) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each output a JAX transformation reads.
 
@@ -335,15 +336,19 @@ class SweepOutputs:
             n_fields: Kept fields, ``n_kept * n_excited``.
             reduced: An adaptive sweep's padded basis size (its kept fields
                 are reduced); ``None`` for a uniform sweep.
+            complex_z_ref: ``z_ref`` is complex
+                (`gfem._engine.port_network.complex_reference`).
         """
         specs = {
             "s": jax.ShapeDtypeStruct((n_freq, n_ports, n_excited), jnp.complex128),
-            "z_ref": jax.ShapeDtypeStruct((n_freq, n_ports), jnp.float64),
+            "z_ref": jax.ShapeDtypeStruct(
+                (n_freq, n_ports), jnp.complex128 if complex_z_ref else jnp.float64
+            ),
         }
         if n_wave:
             shape = (n_freq, n_wave)
             specs["port_gamma"] = jax.ShapeDtypeStruct(shape, jnp.complex128)
-            specs["port_z_pv"] = jax.ShapeDtypeStruct(shape, jnp.float64)
+            specs["port_z_pv"] = jax.ShapeDtypeStruct(shape, jnp.complex128)
             specs["port_residual"] = jax.ShapeDtypeStruct(shape, jnp.float64)
             specs["port_solved"] = jax.ShapeDtypeStruct(shape, jnp.bool_)
         if ndof is not None:
