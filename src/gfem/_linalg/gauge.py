@@ -151,6 +151,13 @@ class GaugedPieces:
             parts, rows = self._parts, self._rows
         assert rows is not None  # noqa: S101 - built above
         out = matrix.AsVector().FV().NumPy()
+        if out.shape[0] != self._basis.pattern.nnz:
+            # The compiled scatter writes without bounds checks.
+            msg = (
+                f"sum_into needs a matrix of the gauge pattern "
+                f"({self._basis.pattern.nnz} values), got {out.shape[0]}"
+            )
+            raise ValueError(msg)
         out[:] = 0
         scattered = [
             (complex(w), values, at)
