@@ -60,7 +60,7 @@ from typing import Any, Self
 import numpy as np
 
 import gfem
-from gfem import _codec, errors
+from gfem import _codec, _mpi, errors
 from gfem._checks import is_traced
 from gfem.errors import SolveCacheWarning
 from gfem.job import Job
@@ -194,6 +194,9 @@ _READ_ERRORS = (OSError, ValueError, EOFError, zipfile.BadZipFile, KeyError, Typ
 
 _log = logging.getLogger("gfem.solve_cache")
 
+#: A decoded entry: the result, the solving run's record, the recorded warnings.
+type Entry = tuple[Any, dict[str, Any], tuple[tuple[type[Warning], str], ...]]
+
 
 class Store:
     """A solve cache directory: entries read, written and evicted.
@@ -280,9 +283,7 @@ class Store:
             )
         return marker
 
-    def read(
-        self, key: str, model: Any, *, stacklevel: int = 1
-    ) -> tuple[Any, dict[str, Any], tuple[tuple[type[Warning], str], ...]] | None:
+    def read(self, key: str, model: Any, *, stacklevel: int = 1) -> Entry | None:
         """The entry of ``key``, its fields on ``model.mesh``; None on a miss.
 
         A hit marks the entry as used now. An entry that cannot be read (a
@@ -299,6 +300,19 @@ class Store:
             ``(result, run, recorded)``: the result, the solving run's record
             (``device``, ``options``, ``ranks``, ``wall_time_s``) and the
             warnings recorded while solving, as ``(category, message)``.
+        """
+        found = self.read_document(key, model, stacklevel=stacklevel + 1)
+        return None if found is None else found[0]
+
+    def read_document(
+        self, key: str, model: Any, *, stacklevel: int = 1
+    ) -> tuple[Entry, dict[str, Any], dict[str, np.ndarray]] | None:
+        """`read`, with the entry's document and arrays as stored.
+
+        Other ranks decode those with `decode_entry` (ADR 0436).
+
+        Returns:
+            ``((result, run, recorded), document, arrays)``, or None on a miss.
         """
         if not self.usable:
             return None
@@ -495,8 +509,12 @@ def _whole(value: Any) -> bool:
 
 def _load(
     entry: Path, key: str, model: Any
-) -> tuple[Any, dict[str, Any], tuple[tuple[type[Warning], str], ...]]:
-    """Read and decode one entry, raising one of `_READ_ERRORS` if it is damaged."""
+) -> tuple[Entry, dict[str, Any], dict[str, np.ndarray]]:
+    """Read and decode one entry, raising one of `_READ_ERRORS` if it is damaged.
+
+    Returns:
+        The decoded entry, and the document and arrays it was decoded from.
+    """
     doc = json.loads((entry / ENTRY_JSON).read_text())
     if not isinstance(doc, dict) or doc.get("format") != ENTRY_FORMAT:
         raise ValueError(f"{entry / ENTRY_JSON} is not a solve cache entry.")
@@ -508,6 +526,20 @@ def _load(
     if doc["arrays"]:
         with np.load(entry / ENTRY_NPZ, allow_pickle=False) as npz:
             arrays = {k: npz[k] for k in npz.files}
+    return decode_entry(entry, doc, arrays, model), doc, arrays
+
+
+def decode_entry(
+    entry: Path, doc: dict[str, Any], arrays: dict[str, np.ndarray], model: Any
+) -> Entry:
+    """An entry's ``(result, run, recorded)``, its fields on ``model.mesh``.
+
+    Args:
+        entry: The entry's directory.
+        doc: Its ``entry.json`` document.
+        arrays: Its arrays.
+        model: The model of the call.
+    """
     context = _codec.Context(entry, model_mesh=model.mesh)
     decoder = _codec.Decoder(context, arrays, path=entry / ENTRY_JSON)
     run = decoder.decode(doc["run"])
@@ -633,6 +665,10 @@ class SolveCache:
         self._catch: warnings.catch_warnings | None = None
         self._caught: list[warnings.WarningMessage] = []
         self._start = 0.0
+        self._comm: Any = None
+        self._kept_on = 0
+        self._doc: dict[str, Any] | None = None
+        self._arrays: dict[str, np.ndarray] = {}
 
     def report(self) -> dict[str, Any]:
         """The ``cache`` item of a run record: status, key, solving run on a hit."""
@@ -649,17 +685,21 @@ class SolveCache:
         Args:
             model: The model.
             problem: The problem.
-            comm: The resolved communicator; None on one process.
+            comm: The resolved communicator; None on one process. Above one
+                rank, rank 0 alone keys, reads and writes, and a solve that
+                keeps fields bypasses (ADR 0436).
             adjoint: Whether the call solves adjoints with the forward
                 (``refine_mesh``).
         """
         self._start = time.perf_counter()
+        self._comm = comm
         if is_traced((model, problem)):
             self._bypass("traced inputs")
         elif adjoint:
             self._bypass("adjoint loads (refine_mesh)")
-        elif comm is not None:
-            self._bypass(f"a solve on {comm.size} ranks")
+        elif comm is not None and getattr(problem, "keep_fields", False):
+            self._kept_on = comm.size
+            self._bypass(f"fields kept on {comm.size} ranks")
         return self
 
     def _bypass(self, reason: str) -> None:
@@ -671,14 +711,57 @@ class SolveCache:
 
         Opens the store, keys the call and reads its entry. An input the key
         cannot encode, or a cache of another layout, makes the call a bypass
-        with a `gfem.SolveCacheWarning`.
+        with a `gfem.SolveCacheWarning`. Above one rank, every rank calls
+        this: rank 0 does the work and every rank decodes what it found.
 
         Raises:
             ValueError: A non-empty directory that is not a solve cache.
             OSError: The directory cannot be created.
         """
+        if self._kept_on:
+            _mpi.warn(
+                self._comm,
+                f"cache={os.fspath(self.directory)!r} was given, but this solve "
+                f"keeps fields on {self._kept_on} ranks, which the solve cache "
+                "does not store, so it was neither read from nor stored in it. "
+                "The result is correct. For a result readable later, fields "
+                "included, use Job.run(out=); to cache a solve with fields, run "
+                "it on one process (comm=MPI.COMM_SELF).",
+                SolveCacheWarning,
+                stacklevel=_outside_gfem(),
+            )
         if self.status == "bypass":
             return None
+        if self._comm is None:
+            return self._lookup(model, problem, options)
+        return self._lookup_on_root(model, problem, options)
+
+    def _lookup_on_root(self, model: Any, problem: Any, options: SolverOptions) -> Any:
+        """`_lookup` on rank 0; its outcome, document and arrays sent to all."""
+        comm = self._comm
+        found = None
+
+        def compute() -> dict[str, np.ndarray]:
+            nonlocal found
+            found = self._lookup(model, problem, options)
+            head = {"status": self.status, "key": self.key, "document": self._doc}
+            text = np.frombuffer(json.dumps(head).encode(), dtype=np.uint8)
+            return {_HEAD: text, **{_ARRAY + k: a for k, a in self._arrays.items()}}
+
+        shared = _mpi.on_root(comm, compute, results=(ValueError, OSError))
+        self._doc, self._arrays = None, {}
+        if comm.rank == 0:
+            return found
+        head = json.loads(shared.pop(_HEAD).tobytes())
+        self.status, self.key = head["status"], head["key"]
+        if self.status != "hit":
+            return None
+        arrays = {k.removeprefix(_ARRAY): a for k, a in shared.items()}
+        with _mpi.section(comm, agreed=()):
+            entry = Path(self.directory) / str(self.key)
+            return self._hit(decode_entry(entry, head["document"], arrays, model))
+
+    def _lookup(self, model: Any, problem: Any, options: SolverOptions) -> Any:
         stacklevel = _outside_gfem()
         store = Store(self.directory, stacklevel=stacklevel)
         if not store.usable:
@@ -699,24 +782,46 @@ class SolveCache:
             )
             return None
         self._store = store
-        found = store.read(self.key, model, stacklevel=stacklevel)
+        found = store.read_document(self.key, model, stacklevel=stacklevel)
         if found is None:
             self.status = "miss"
             return None
-        result, run, self._replay = found
+        entry, doc, arrays = found
+        if self._comm is not None:
+            self._doc, self._arrays = doc, arrays
+        _log.info("hit %s (%s)", self.key[:12], store.root / self.key)
+        return self._hit(entry)
+
+    def _hit(self, entry: Entry) -> Any:
+        result, run, self._replay = entry
         self.status = "hit"
         self.solved = {k: run.get(k) for k in ("device", "ranks", "wall_time_s")}
-        _log.info("hit %s (%s)", self.key[:12], store.root / self.key)
         return result
 
     def store(self, model: Any, result: Any, options: SolverOptions) -> None:
-        """Store a missed call's result, with the replayed warnings caught."""
-        if self.status != "miss" or self._store is None or self.key is None:
+        """Store a missed call's result, with the replayed warnings caught.
+
+        Above one rank, every rank calls this and rank 0 writes.
+        """
+        if self.status != "miss" or self.key is None:
+            return
+        if self._comm is None:
+            self._write(model, result, options)
+            return
+
+        def compute() -> dict[str, np.ndarray]:
+            self._write(model, result, options)
+            return {}
+
+        _mpi.on_root(self._comm, compute)
+
+    def _write(self, model: Any, result: Any, options: SolverOptions) -> None:
+        if self._store is None or self.key is None:
             return
         run = {
             "device": options.device,
             "options": options,
-            "ranks": 1,
+            "ranks": 1 if self._comm is None else self._comm.size,
             "wall_time_s": time.perf_counter() - self._start,
         }
         recorded = tuple(
@@ -746,6 +851,12 @@ class SolveCache:
         return self
 
     def __exit__(self, kind: object, error: object, tb: object) -> None:
+        """Show the call's warnings at the caller of gfem.
+
+        Above one rank, a call that returns shows rank 0's warnings once, as
+        `gfem._mpi.warn` does: rank 0 shows them, the other ranks record them,
+        so an ``error`` filter raises on every rank.
+        """
         if self._catch is None:
             return
         self._catch.__exit__(None, None, None)
@@ -756,18 +867,50 @@ class SolveCache:
                 self.key[:12],
                 type(error).__name__,
             )
-        stacklevel = _outside_gfem()
-        if self.status == "hit":
-            for category, message in self._replay:
+        hit = self.status == "hit"
+        stored: list[_Shown] = [(m, c, None, 0, None) for c, m in self._replay]
+        mine: list[_Shown] = [
+            (str(w.message), w.category, w.filename, w.lineno, w.source)
+            for w in self._caught
+            # on a hit, raised by the checks before the lookup: stored too
+            if not (hit and issubclass(w.category, REPLAYED))
+        ]
+        comm = self._comm
+        if comm is None or error is not None:
+            _show(stored + mine)
+            return
+        sent = [(m, c, f, n, None) for m, c, f, n, _ in mine]
+        root = comm.bcast(sent if comm.rank == 0 else None, root=0)
+        try:
+            if comm.rank == 0:
+                _show(stored + mine)
+            else:
+                _show(mine)  # this rank's own, shown as without a cache
+                _show(stored + root, quiet=True)
+        except Warning as raised:
+            raise _mpi.agreed(raised) from None
+
+
+#: A caught warning: message, category, file, line (None: the caller's), source.
+type _Shown = tuple[str, type[Warning], str | None, int, Any]
+#: The names of a hit's broadcast: the outcome, and the entry's arrays.
+_HEAD = "solve cache outcome"
+_ARRAY = "array "
+
+
+def _show(items: Sequence[_Shown], *, quiet: bool = False) -> None:
+    """Warn ``items``: the replayed classes at the caller of gfem, others in place.
+
+    ``quiet`` records instead of showing; an ``error`` filter still raises.
+    """
+    stacklevel = _outside_gfem()
+    with warnings.catch_warnings(record=True) if quiet else contextlib.nullcontext():
+        for message, category, filename, lineno, source in items:
+            if filename is None or issubclass(category, (*REPLAYED, SolveCacheWarning)):
                 warnings.warn(message, category, stacklevel=stacklevel)
-        for w in self._caught:
-            if self.status == "hit" and issubclass(w.category, REPLAYED):
-                continue  # raised by the checks before the lookup: stored too
-            if issubclass(w.category, (*REPLAYED, SolveCacheWarning)):
-                warnings.warn(str(w.message), w.category, stacklevel=stacklevel)
             else:
                 warnings.warn_explicit(
-                    w.message, w.category, w.filename, w.lineno, source=w.source
+                    message, category, filename, lineno, source=source
                 )
 
 

@@ -253,7 +253,16 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
         if resolved is None:
             rule = rule_class(model, problem, options)
         else:
-            _mpi.entry_check(resolved, "solve", model, problem, options)
+            # differing caches would split the ranks at the lookup's broadcast
+            directory = "" if cache is None else os.fspath(cache.directory)
+            _mpi.entry_check(
+                resolved,
+                "solve",
+                model,
+                problem,
+                options,
+                arrays={"the solve cache": directory},
+            )
             try:
                 rule = rule_class(model, problem, options, comm=resolved)
             except (TypeError, ValueError) as err:
