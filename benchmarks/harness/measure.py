@@ -16,7 +16,8 @@ Hydra (``-launcher fork -bind-to core`` under taskset), recorded ``machine: loca
   (``scontrol listpids <job>`` on Slurm, the newest numbered step; else the process
   tree) have their ``Pss`` summed from
   ``/proc/<pid>/smaps_rollup`` (``pss_peak_sum_gib``); once every rank is up, the
-  placement check reads each rank's ``Cpus_allowed_list``; every 10 s a ``ps -eLo``
+  placement check reads each thread's ``Cpus_allowed_list`` and CPU time (each thread
+  counted at its latest read); every 10 s a ``ps -eLo``
   snapshot of the run's threads is logged and summarised as the most busy threads
   seen on one physical core (an observation). stdout is tailed for the adapter's
   DOF guard (``Command.watch``): a count off the pin ends the run at once.
@@ -49,6 +50,8 @@ START_SAMPLE_S = 0.1
 START_S = 5.0
 SNAPSHOT_S = 10.0
 KILL_GRACE_S = 10.0
+WORKING_CPU_S = 0.1
+"""CPU time from which a thread counts as working (idle MPI helpers stay near 0)."""
 BUSY_PCPU = 50.0
 """A thread above this ``pcpu`` counts as busy in the thread snapshot."""
 SACCT_MIN_S = 60.0
@@ -201,58 +204,73 @@ def check_placement(
     return Placement("pass", list(masks))
 
 
+@dataclass(frozen=True)
+class ThreadSeen:
+    """One thread of a rank as the sampler last read it."""
+
+    mask: str
+    """Its ``Cpus_allowed_list``."""
+    cpu_s: float
+    """User plus system CPU time so far."""
+
+
 def rank_placement(
     process: Sequence[str],
-    threads_union: Sequence[str],
-    threads: int,
+    threads: Sequence[Mapping[int, ThreadSeen]],
+    threads_per_rank: int,
     sysfs: Path,
-    *,
-    seen_threads: Sequence[int] | None = None,
 ) -> Placement:
-    """The placement check on the process masks, else on the threads' unions.
+    """The placement check on the process masks, else on the working threads.
 
     A rank's process (main-thread) mask is its allotment unless ``OMP_PROC_BIND``
-    narrowed the main thread to one core; then the union of its threads' masks is.
-    Helper threads of some libraries carry stray masks, so the union alone is not
-    enough either. Either view passing passes; else the process view's failure.
+    narrowed the main thread to one core; then the masks of its working threads
+    (``threads``, tid to the latest read, with at least :data:`WORKING_CPU_S`) are.
+    Idle helper threads (MPI's sit on the main thread's core, other libraries' carry
+    stray masks) are left out. Either view passing passes.
 
-    A run over before its threads were sampled (``seen_threads``, the most threads
-    seen per rank, below ``threads``) shows only the narrowed main thread: when the
-    union's only problem is too few cores, the placement is ``skipped`` (unverified),
-    not failed.
+    Ranks whose working threads share a core, or span more cores than their share,
+    fail; so does a rank with ``threads_per_rank`` working threads on fewer cores.
+    A rank with fewer cores only because fewer of its threads were seen working
+    (a run over before its OpenMP threads were sampled) is ``skipped`` (unverified).
     """
-    first = check_placement(process, threads, sysfs)
+    first = check_placement(process, threads_per_rank, sysfs)
     if first.status == "pass":
         return first
-    second = check_placement(threads_union, threads, sysfs)
+    working = [
+        {tid: t for tid, t in rank.items() if t.cpu_s >= WORKING_CPU_S}
+        for rank in threads
+    ]
+    union = [
+        cpu_list(sorted({c for t in rank.values() for c in parse_cpu_list(t.mask)}))
+        for rank in working
+    ]
+    second = check_placement(union, threads_per_rank, sysfs)
     if second.status == "pass":
         return second
-    short = _unseen_threads(threads_union, threads, sysfs, seen_threads)
-    return Placement("skipped", list(threads_union), short) if short else first
-
-
-def _unseen_threads(
-    masks: Sequence[str],
-    threads: int,
-    sysfs: Path,
-    seen_threads: Sequence[int] | None,
-) -> str | None:
-    """Why the masks are unverified, or None when they show a real failure."""
-    if seen_threads is None or len(seen_threads) != len(masks):
-        return None
-    taken: set[int] = set()
-    why = []
-    for rank, (mask, seen) in enumerate(zip(masks, seen_threads, strict=True)):
+    problems, unseen = [], []
+    taken: dict[int, int] = {}
+    for rank, (mask, seen) in enumerate(zip(union, working, strict=True)):
         cores = {core_of(cpu, sysfs) for cpu in parse_cpu_list(mask)}
-        if cores & taken:
-            return None
-        taken |= cores
-        if len(cores) == threads:
-            continue
-        if len(cores) > threads or seen >= threads:
-            return None
-        why.append(f"rank {rank}: saw {seen} of {threads} threads")
-    return "; ".join(why) + " (run too short to verify)" if why else None
+        for core in sorted(cores):
+            if core in taken:
+                problems.append(
+                    f"rank {rank} shares core {core} with rank {taken[core]}"
+                )
+                break
+            taken[core] = rank
+        if len(cores) > threads_per_rank:
+            problems.append(f"rank {rank}: working threads span {len(cores)} cores")
+        elif len(cores) < threads_per_rank and len(seen) >= threads_per_rank:
+            problems.append(
+                f"rank {rank}: {len(seen)} working threads on {len(cores)} cores"
+            )
+        elif len(cores) < threads_per_rank:
+            unseen.append(
+                f"rank {rank}: saw {len(seen)} of {threads_per_rank} working threads"
+            )
+    if problems:
+        return Placement("fail", union, "; ".join(problems))
+    return Placement("skipped", union, "; ".join(unseen) + " (run too short to verify)")
 
 
 def busy_threads_per_core(
@@ -371,28 +389,35 @@ def process_mask(pid: int, proc: Path = PROC) -> str | None:
     return None if own is None else cpu_list(own)
 
 
-def thread_count(pid: int, proc: Path = PROC) -> int:
-    """Threads of ``pid`` now (entries of ``/proc/<pid>/task``; 0 when gone)."""
+def _cpu_s(stat: Path, ticks_per_s: float) -> float | None:
     try:
-        return sum(1 for _ in (proc / str(pid) / "task").iterdir())
+        text = stat.read_text()
     except OSError:
-        return 0
+        return None
+    # comm may hold spaces and parentheses: fields resume after the last ")"
+    fields = text[text.rfind(")") + 2 :].split()
+    try:
+        return (int(fields[11]) + int(fields[12])) / ticks_per_s
+    except (IndexError, ValueError):
+        return None
 
 
-def cpus_allowed(pid: int, proc: Path = PROC) -> str | None:
-    """``Cpus_allowed_list`` of ``pid``: the union over its threads.
+def thread_states(
+    pid: int, proc: Path = PROC, ticks_per_s: float | None = None
+) -> dict[int, ThreadSeen]:
+    """Each thread of ``pid``: its ``Cpus_allowed_list`` and CPU time (empty if gone).
 
     ``OMP_PROC_BIND`` narrows each thread (the main one to the first core), so the
-    rank's allotment is what its threads together may use.
+    rank's allotment is what its working threads together may use.
     """
-    tasks = sorted((proc / str(pid) / "task").glob("*/status"))
-    masks = [m for t in tasks if (m := _mask(t)) is not None]
-    if not masks:
-        own = _mask(proc / str(pid) / "status")
-        masks = [own] if own is not None else []
-    if not masks:
-        return None
-    return cpu_list(sorted({cpu for mask in masks for cpu in mask}))
+    ticks = ticks_per_s or float(os.sysconf("SC_CLK_TCK"))
+    found = {}
+    for task in sorted((proc / str(pid) / "task").glob("*")):
+        mask = _mask(task / "status")
+        cpu_s = _cpu_s(task / "stat", ticks)
+        if task.name.isdigit() and mask is not None and cpu_s is not None:
+            found[int(task.name)] = ThreadSeen(cpu_list(mask), cpu_s)
+    return found
 
 
 # --- one command ----------------------------------------------------------------------
@@ -517,8 +542,7 @@ class _Watch:
         self.t0 = time.monotonic()
         self.next_snapshot = self.t0
         self.peak_kib = 0
-        self.masks: dict[int, set[int]] = {}
-        self.threads: dict[int, int] = {}
+        self.threads: dict[int, dict[int, ThreadSeen]] = {}
         started = _utc()
         self.m = Measurement(None, 0.0, started, started)
 
@@ -538,22 +562,18 @@ class _Watch:
         self.peak_kib = max(self.peak_kib, pss)
         layout = self.limits.layout
         if m.placement.status != "pass" and len(pids.ranks) == layout.ranks:
-            # accumulated over samples: OMP threads start after the main thread binds
-            masks = [cpus_allowed(p, sampler.proc) for p in pids.ranks]
+            # each thread's latest read: OMP threads start after the main thread
+            # binds, and a task read before srun bound it shows the step's cpuset
             main = [process_mask(p, sampler.proc) for p in pids.ranks]
-            if all(masks) and all(main):
-                for rank, (pid, mask) in enumerate(zip(pids.ranks, masks, strict=True)):
-                    seen = self.masks.setdefault(rank, set())
-                    seen.update(parse_cpu_list(mask or ""))
-                    count = thread_count(pid, sampler.proc)
-                    self.threads[rank] = max(self.threads.get(rank, 0), count)
-                union = [cpu_list(sorted(self.masks[r])) for r in range(len(masks))]
+            if all(main):
+                for rank, pid in enumerate(pids.ranks):
+                    seen = self.threads.setdefault(rank, {})
+                    seen.update(thread_states(pid, sampler.proc))
                 m.placement = rank_placement(
                     [x for x in main if x],
-                    union,
+                    [self.threads[r] for r in range(len(main))],
                     layout.threads,
                     sampler.sysfs,
-                    seen_threads=[self.threads[r] for r in range(len(masks))],
                 )
         now = time.monotonic()
         if now >= self.next_snapshot and pids.all:
