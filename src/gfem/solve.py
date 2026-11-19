@@ -8,7 +8,7 @@ import os
 import sys
 from typing import TYPE_CHECKING, Any, overload
 
-from gfem import _mpi
+from gfem import _mpi, _timing
 from gfem._adjoint import solve_vjp
 from gfem._checks import is_traced
 from gfem._domain import physics_of
@@ -309,7 +309,10 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
             if stored is not None:
                 return stored, None
         try:
-            with _mpi.section(resolved, agreed=_mpi.FORWARD_ERRORS):
+            with (
+                _mpi.section(resolved, agreed=_mpi.FORWARD_ERRORS),
+                _timing.scope(_timing.problem_name(problem), resolved),
+            ):
                 outputs, _ = rule.forward(model, keep=False)
         except LinearSolverConvergenceError as err:
             if partial_result is not None:

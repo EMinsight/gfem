@@ -88,7 +88,7 @@ import numpy as np
 import scipy.constants
 import scipy.sparse
 
-from gfem import _floquet, _mpi
+from gfem import _floquet, _mpi, _timing
 from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import (
     FloquetPort,
@@ -463,6 +463,17 @@ def driven_operator(
     )
 
 
+def owned_dofs(op: DrivenOperator) -> int:
+    """The DOFs of ``op``'s solve space this rank owns: all of them in one process.
+
+    Summed over the ranks, the space's count (each DOF has one owner).
+    """
+    owners = None if op.layout is None else op.layout.owners
+    if owners is None:
+        return int(op.space.ndof)
+    return int(owners.sum())
+
+
 def _fixed_pieces(
     model: Model,
     disc: Any,
@@ -811,13 +822,15 @@ class DrivenRule:
         last = getattr(self, "_last_operator", None)
         if last is not None and last[0] is model:
             return last[1]
-        op = driven_operator(
-            model,
-            self.options.order,
-            wave_vector=self.wave_vector,
-            comm=self.comm,
-            swept=self.swept_spaces,
-        )
+        with _timing.phase("discretize") as span:
+            op = driven_operator(
+                model,
+                self.options.order,
+                wave_vector=self.wave_vector,
+                comm=self.comm,
+                swept=self.swept_spaces,
+            )
+            span.set(ndof=owned_dofs(op))
         self._last_operator = (model, op)
         return op
 
@@ -1107,7 +1120,8 @@ class DrivenRule:
                 {
                     "port_modes": [s.rows(block) for s in swept] if swept else None,
                     "order_frequency": tuple(frequencies),
-                    "log": report.LOGGER.isEnabledFor(logging.INFO),
+                    "log": report.LOGGER.isEnabledFor(logging.INFO)
+                    or _timing.LOGGER.isEnabledFor(logging.INFO),
                 }
                 for block in indices
             ],
@@ -1385,82 +1399,84 @@ class DrivenRule:
         the port faces runs no port mode sweep. A frequency worker's
         couplings stand on `handed_port_modes`, its parent's sweep.
         """
-        op = self.operator(model)
-        names = self.port_names
-        columns = [names.index(n) for n in self.excite]
-        frequency = self.problem.frequency
-        tolerance = self.options.port_mode_tolerance
-        disc = cached(op.built)
-        key = _KeptPorts.key_of(
-            model,
-            op,
-            frequency,
-            tolerance,
-            _FloquetKey.of(
-                self.orders,
-                tolerance=self.options.floquet_order_tolerance,
-                grid=self.order_frequency,
-                wave_vector=self.wave_vector,
-                wave_vector_frequency=self.problem.wave_vector_frequency,
-            ),
-        )
-        kept = disc.ports if disc is not None else None
-        if not isinstance(kept, _KeptPorts) or kept.key != key:
-            couplings = wave_port_couplings(
+        with _timing.phase("discretize") as span:
+            op = self.operator(model)
+            names = self.port_names
+            columns = [names.index(n) for n in self.excite]
+            frequency = self.problem.frequency
+            tolerance = self.options.port_mode_tolerance
+            disc = cached(op.built)
+            key = _KeptPorts.key_of(
                 model,
-                op.built,
-                op.space,
-                order=op.order,
-                frequency=frequency,
-                tolerance=tolerance,
-                layout=op.layout or ONE_PROCESS,
-                swept=self.handed_port_modes,
+                op,
+                frequency,
+                tolerance,
+                _FloquetKey.of(
+                    self.orders,
+                    tolerance=self.options.floquet_order_tolerance,
+                    grid=self.order_frequency,
+                    wave_vector=self.wave_vector,
+                    wave_vector_frequency=self.problem.wave_vector_frequency,
+                ),
             )
-            floquet = floquet_couplings(
-                model, op, self.orders, frequency, grid=self.order_frequency
+            kept = disc.ports if disc is not None else None
+            if not isinstance(kept, _KeptPorts) or kept.key != key:
+                couplings = wave_port_couplings(
+                    model,
+                    op.built,
+                    op.space,
+                    order=op.order,
+                    frequency=frequency,
+                    tolerance=tolerance,
+                    layout=op.layout or ONE_PROCESS,
+                    swept=self.handed_port_modes,
+                )
+                floquet = floquet_couplings(
+                    model, op, self.orders, frequency, grid=self.order_frequency
+                )
+                kept = _KeptPorts(key, couplings, floquet)
+                if disc is not None:
+                    disc.ports = kept
+            couplings = kept.couplings
+            transposed = None
+            if self.wave_vector is not None:
+                # A(k)^T = A(-k): the adjoint solves' operator
+                kx, ky, kz = self.wave_vector
+                minus_k = (-kx, -ky, -kz)
+                transposed = functools.partial(
+                    driven_operator,
+                    model,
+                    op.order,
+                    wave_vector=minus_k,
+                    swept=self.swept_spaces,
+                )
+            system = SystemOperator(
+                op,
+                [*couplings, *kept.floquet],
+                self.linear,
+                width=len(columns),
+                adjoint_tolerance=adjoint_tolerance(self.options),
+                transposed=transposed,
+                pool_budget=retain_budget(self.options.retain_memory),
             )
-            kept = _KeptPorts(key, couplings, floquet)
-            if disc is not None:
-                disc.ports = kept
-        couplings = kept.couplings
-        transposed = None
-        if self.wave_vector is not None:
-            # A(k)^T = A(-k): the adjoint solves' operator
-            kx, ky, kz = self.wave_vector
-            minus_k = (-kx, -ky, -kz)
-            transposed = functools.partial(
-                driven_operator,
-                model,
-                op.order,
-                wave_vector=minus_k,
-                swept=self.swept_spaces,
+            network_key = (
+                tuple(columns),
+                len(frequency),
+                self.problem.wave_vector,
+                self.problem.wave_vector_frequency,
             )
-        system = SystemOperator(
-            op,
-            [*couplings, *kept.floquet],
-            self.linear,
-            width=len(columns),
-            adjoint_tolerance=adjoint_tolerance(self.options),
-            transposed=transposed,
-            pool_budget=retain_budget(self.options.retain_memory),
-        )
-        network_key = (
-            tuple(columns),
-            len(frequency),
-            self.problem.wave_vector,
-            self.problem.wave_vector_frequency,
-        )
-        ports = kept.networks.get(network_key)
-        if ports is None:
-            ports = PortNetwork.build(
-                model,
-                system.operator,
-                couplings,
-                columns=columns,
-                n_freq=len(frequency),
-                floquet=kept.floquet,
-            )
-            kept.keep(network_key, ports)
+            ports = kept.networks.get(network_key)
+            if ports is None:
+                ports = PortNetwork.build(
+                    model,
+                    system.operator,
+                    couplings,
+                    columns=columns,
+                    n_freq=len(frequency),
+                    floquet=kept.floquet,
+                )
+                kept.keep(network_key, ports)
+            span.set(ndof=owned_dofs(op))
         return system, ports
 
     def _forward_adaptive(
@@ -2480,7 +2496,10 @@ def _solve_block(
         rule = DrivenRule(model, problem, options, order_frequency=order_frequency)
         rule.keeps_partial = True
         rule.handed_port_modes = port_modes
-        with report.collected(log) as records:
+        with (
+            report.collected(log) as records,
+            _timing.scope(_timing.problem_name(problem)),
+        ):
             try:
                 outputs, entry = rule.forward(model, keep=keep)
             except LinearSolverConvergenceError as err:

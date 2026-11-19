@@ -1,0 +1,33 @@
+# Software stack `native-oss`: GCC, Open MPI and OpenBLAS builds by tools/stacks/.
+# Packages live at {stacks.root}/native-oss/<pkg>-<version>/ (ADR 0191); a prefix
+# without provenance.json is unfinished and the stack refuses to launch.
+schema = 1
+name = "native-oss"
+kind = "native"
+closed = []
+
+[versions]
+palace = "0.19.0"
+ngsolve = "6.2.2608"
+petsc = "3.26.0"
+
+[gfem]
+packages = ["ngsolve", "petsc"]  # their activate.sh are sourced in this order; modules come from toolchain.sh
+python = "ngsolve"               # package whose prefix holds gfem's python (placeholder, native-builds decides)
+mpi = "pmix"
+env = { JAX_PLATFORMS = "cpu", JAX_ENABLE_X64 = "1" }
+
+[gfem.threads]
+OMP_NUM_THREADS = "threads"
+NGS_NUM_THREADS = "threads"
+OPENBLAS_NUM_THREADS = "threads"
+
+[palace]
+packages = ["palace"]
+launcher = "srun"
+mpi = "pmix"
+entry = "palace-x86_64.bin"
+
+[palace.threads]
+OMP_NUM_THREADS = "threads"
+OPENBLAS_NUM_THREADS = "threads"

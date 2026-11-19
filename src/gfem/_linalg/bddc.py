@@ -47,7 +47,7 @@ import math
 import ngsolve as ngs
 import numpy as np
 
-from gfem import _mpi, _petsc
+from gfem import _mpi, _petsc, _timing
 from gfem._linalg import Operator, Symmetry, coarse
 from gfem._linalg.base import (
     NgsHandle,
@@ -144,7 +144,8 @@ def _set_up(
         preconditioner = ngs.Preconditioner(
             form, "bddc", coarsetype=coarse.coarse_type(comm)
         )
-        form.Assemble()
+        with _timing.phase("assemble"):
+            form.Assemble()
         return preconditioner
     inverse = _coarse_inverse(
         symmetry,
@@ -153,7 +154,8 @@ def _set_up(
         columns=columns,
     )
     preconditioner = ngs.Preconditioner(form, "bddc", inverse=inverse)
-    form.Assemble()
+    with _timing.phase("assemble"):
+        form.Assemble()
     return preconditioner
 
 
@@ -305,10 +307,13 @@ class BddcHandle(NgsHandle):
 
     def _build(self, form: ngs.BilinearForm) -> None:
         """Set BDDC up again on ``form`` (assembled again), and hold it."""
-        # release the old setup first
-        self._solver = self._preconditioner = self._matrix = self._form = None
-        self._free_coarse()
-        self._hold(form, self._set_up(form))
+        with _timing.phase("setup") as span:
+            # release the old setup first
+            self._solver = self._preconditioner = self._matrix = self._form = None
+            self._free_coarse()
+            self._hold(form, self._set_up(form))
+            if span.enabled:
+                span.set(solver=self.kind, action="factorized", nbytes=self.nbytes)
 
     def _held(self) -> tuple[ngs.BaseMatrix, ngs.Preconditioner, ngs.BilinearForm]:
         """The matrix, its preconditioner and its form.
@@ -419,7 +424,8 @@ class BddcHandle(NgsHandle):
                 self._build(form)
                 self.last_action, self.last_reason = "factorized", reason
                 return
-            form.Assemble()
+            with _timing.phase("assemble"):
+                form.Assemble()
             self._form = form
             self._matrix = form.mat
             self._solver = self._krylov(form.mat, pre)

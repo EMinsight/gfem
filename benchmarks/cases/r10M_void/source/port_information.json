@@ -1,0 +1,46 @@
+{
+    "ports": [
+        {
+            "portnumber": 1,
+            "name": "o1",
+            "Z0": 50.0,
+            "type": "cpw",
+            "elements": [
+                {
+                    "surface_idx": 0,
+                    "direction": "+Y"
+                },
+                {
+                    "surface_idx": 1,
+                    "direction": "-Y"
+                }
+            ],
+            "width": 15.0,
+            "length": 2.0,
+            "zmin": 11.030000000000001,
+            "zmax": 11.030000000000001
+        },
+        {
+            "portnumber": 2,
+            "name": "o2",
+            "Z0": 50.0,
+            "type": "cpw",
+            "elements": [
+                {
+                    "surface_idx": 0,
+                    "direction": "-Y"
+                },
+                {
+                    "surface_idx": 1,
+                    "direction": "+Y"
+                }
+            ],
+            "width": 15.0,
+            "length": 2.0,
+            "zmin": 11.030000000000001,
+            "zmax": 11.030000000000001
+        }
+    ],
+    "unit": 1e-06,
+    "name": "palace"
+}

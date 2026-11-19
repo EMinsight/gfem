@@ -1,0 +1,33 @@
+# Software stack `wheels`: what pip install gives. Never a path: the site file's
+# [stacks.wheels] table says where the base venv and wheelhouses live (ADR 0403).
+schema = 1
+name = "wheels"
+kind = "wheels"                  # wheels | native: the module of benchmarks/stacks/ that prepares it
+closed = ["mkl (pip, PARDISO)"]  # closed-source parts, shown next to the stack name in reports
+
+[versions]                       # defaults; a campaign may override one ([stacks.wheels.versions])
+palace = "0.19.0"                # selects palace_solver-<version>-*.whl from the Palace wheelhouse
+ngsolve = "6.2.2608"             # checked against the prepared env's pip freeze, not chosen by it
+petsc = "3.26.0"                 # likewise (the MPI PETSc wheelhouse)
+
+[gfem]
+modules = ["openmpi/4.1.6-gcc"]  # after `module purge`; mpi4py and the MPI PETSc wheels link it
+mpi = "pmix"                     # srun --mpi plugin above one rank
+env = { JAX_PLATFORMS = "cpu", JAX_ENABLE_X64 = "1", OMPI_MCA_opal_warn_on_missing_libcuda = "0" }
+
+[gfem.threads]                   # per-rank thread variables: "threads" (= T) or a literal count
+OMP_NUM_THREADS = "threads"
+MKL_NUM_THREADS = "threads"
+NGS_NUM_THREADS = "threads"
+OPENBLAS_NUM_THREADS = "threads"
+caps = { OPENBLAS_NUM_THREADS = 64 }  # SciPy's OpenBLAS corrupts the heap above 64 threads
+
+[palace]
+modules = []                     # the wheel vendors its MPICH and OpenBLAS
+launcher = "srun"
+mpi = "pmi2"                     # the vendored MPICH speaks PMI-2 to srun
+entry = "palace-real"            # never the wrapper, which forces OPENBLAS_NUM_THREADS=-nt
+
+[palace.threads]
+OMP_NUM_THREADS = "threads"
+OPENBLAS_NUM_THREADS = "1"       # build fact of the wheel: OpenBLAS threads under MUMPS are pathological

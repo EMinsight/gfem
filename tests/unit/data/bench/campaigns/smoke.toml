@@ -1,0 +1,28 @@
+# Fixture of the smoke campaign (ticket 12, ADR 0414): the small cases at core
+# budget 16 on the wheels stack with Palace 0.19.0, the whole layout grid, 3 repeats,
+# the tolerance ladder on microstrip's iterative kinds at the default layout.
+schema = 1
+cases = ["bragg", "lcavity", "microstrip"]
+solvers = ["gfem:direct", "gfem:petsc-mumps", "gfem:bddc", "palace:mumps", "palace:pmg"]
+layouts = ["best"]
+core_budget = 16
+repeats = 3
+node_class = "standard"
+anchor_tolerance = 1e-8
+
+[jobs]
+group = "case"
+
+[wall_cap_s]
+bragg = 120
+lcavity = 600
+microstrip = 600
+
+[[ladder]]
+cases = ["microstrip"]
+solvers = ["gfem:bddc", "palace:pmg"]
+tolerances = [1e-6, 1e-8, 1e-10]
+layout = "default"
+
+[stacks.wheels.versions]
+palace = "0.19.0"
