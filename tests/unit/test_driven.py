@@ -727,7 +727,8 @@ def guesses(caplog):
     caplog.set_level(logging.INFO, logger="gfem.solver")
 
     def read():
-        logged = [r for r in caplog.records if r.name == "gfem.solver"]
+        # the solve steps: not the gauge's records
+        logged = [r for r in caplog.records if hasattr(r, "direction")]
         caplog.clear()
         return [r.guess for r in logged if r.direction == "forward"]  # ty: ignore[unresolved-attribute]
 
@@ -959,7 +960,8 @@ def test_a_direct_handle_sums_the_pieces_into_the_assembled_operator(tmp_path):
     # above the wave port's cutoff (about 22 GHz): at 4 GHz its first mode
     # is evanescent, beta = 0.11 - 0.80j 1/mm
     frequencies = (40e9, 50e9)
-    options = gfem.SolverOptions(linear_solver="direct")
+    # the ungauged piece sum: on the driven space, as the assembled operator
+    options = gfem.SolverOptions(linear_solver="direct", gauge="none")
     rule = DrivenRule(model, gfem.Driven(frequencies), options)
     system, _ = rule._ports(model)
     names = {p.name for p in system.operator.pieces}
@@ -1029,14 +1031,16 @@ def test_a_direct_sweep_by_piece_sums_matches_assembled_operators(
     line, monkeypatch, sweep, linear_solver
 ):
     problem = gfem.Driven(frequency=(3e9, 4e9, 5e9, 6e9), sweep=sweep)
-    summed = np.asarray(_s(line, problem, linear_solver=linear_solver).s.values)
+    # the ungauged piece sum: the assembled form is on the driven space
+    options = {"linear_solver": linear_solver, "gauge": "none"}
+    summed = np.asarray(_s(line, problem, **options).s.values)
     operator_at = SystemOperator.operator_at
 
     def assembled(system, omega):  # the operator without its piece sum
         return dataclasses.replace(operator_at(system, omega), piece_sum=None)
 
     monkeypatch.setattr(SystemOperator, "operator_at", assembled)
-    s = np.asarray(_s(line, problem, linear_solver=linear_solver).s.values)
+    s = np.asarray(_s(line, problem, **options).s.values)
     np.testing.assert_allclose(summed, s, rtol=0, atol=1e-12)
 
 

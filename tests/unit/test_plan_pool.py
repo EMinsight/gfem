@@ -654,7 +654,8 @@ def test_vmapped_variants_hold_a_pooled_handle_each(path, plans):
 @pytest.mark.usefixtures("plans")  # an empty cache before and after
 def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
-    options = gfem.SolverOptions(linear_solver="direct")
+    # ungauged: a gauged base keeps the gauge template instead (ADR 0216)
+    options = gfem.SolverOptions(linear_solver="direct", gauge="none")
 
     def pooled_patterns(eps):
         model = _model(mesh, jnp.full(len(mesh.elements("core")), eps))

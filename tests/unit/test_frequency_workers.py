@@ -230,7 +230,7 @@ def test_two_bddc_workers_agree_to_the_solver_tolerance(line, caplog):
     # each block sets BDDC up at its first frequency and reuses it at its second
     assert two["reused"] == [False, True, False, True]
     # the workers' records, logged here in frequency order
-    logged = [r for r in caplog.records if r.name == "gfem.solver"]
+    logged = [r for r in caplog.records if hasattr(r, "direction")]
     assert [r.frequency for r in logged] == list(FREQUENCIES)
     assert [r.action for r in logged] == ["factorized", "reused"] * 2
     assert [r.iterations for r in logged] == two["iterations"]

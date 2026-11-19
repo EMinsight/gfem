@@ -47,10 +47,13 @@ def records(caplog):
     caplog.set_level(logging.INFO, logger=LOGGER)
 
     def read(direction=None):
+        """The solve steps' records (not the gauge's), in ``direction``."""
         return [
             r
             for r in caplog.records
-            if r.name == LOGGER and (direction is None or r.direction == direction)  # ty: ignore[unresolved-attribute]
+            if r.name == LOGGER
+            and hasattr(r, "direction")
+            and (direction is None or r.direction == direction)  # ty: ignore[unresolved-attribute]
         ]
 
     yield read
