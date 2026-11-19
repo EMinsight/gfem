@@ -347,6 +347,31 @@ def test_placement_passes_on_the_process_masks_or_the_union_of_thread_masks(sysf
     assert found.status == "fail"
 
 
+def test_placement_is_unverified_when_a_short_run_showed_too_few_threads(sysfs):
+    # 1x2 run over before its OpenMP threads were sampled: only the narrowed main
+    # thread was seen, so the masks say nothing about the rank's allotment
+    found = measure.rank_placement(["0"], ["0"], 2, sysfs, seen_threads=[1])
+    assert found.status == "skipped"
+    assert "saw 1 of 2 threads" in found.reason
+    # every thread seen and still on one core -> a real failure
+    assert measure.rank_placement(["0"], ["0"], 2, sysfs, seen_threads=[2]).status == (
+        "fail"
+    )
+    # ranks sharing a core fail whatever was seen
+    found = measure.rank_placement(
+        ["0", "0"], ["0", "0"], 2, sysfs, seen_threads=[1, 1]
+    )
+    assert found.status == "fail"
+
+
+def test_thread_count_reads_the_task_directory(tmp_path):
+    pid = tmp_path / "proc" / "42"
+    for tid in ("42", "43", "44"):
+        (pid / "task" / tid).mkdir(parents=True)
+    assert measure.thread_count(42, tmp_path / "proc") == 3
+    assert measure.thread_count(7, tmp_path / "proc") == 0
+
+
 # --- the watchdog ---------------------------------------------------------------------
 
 

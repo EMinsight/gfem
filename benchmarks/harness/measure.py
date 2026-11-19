@@ -202,7 +202,12 @@ def check_placement(
 
 
 def rank_placement(
-    process: Sequence[str], threads_union: Sequence[str], threads: int, sysfs: Path
+    process: Sequence[str],
+    threads_union: Sequence[str],
+    threads: int,
+    sysfs: Path,
+    *,
+    seen_threads: Sequence[int] | None = None,
 ) -> Placement:
     """The placement check on the process masks, else on the threads' unions.
 
@@ -210,12 +215,44 @@ def rank_placement(
     narrowed the main thread to one core; then the union of its threads' masks is.
     Helper threads of some libraries carry stray masks, so the union alone is not
     enough either. Either view passing passes; else the process view's failure.
+
+    A run over before its threads were sampled (``seen_threads``, the most threads
+    seen per rank, below ``threads``) shows only the narrowed main thread: when the
+    union's only problem is too few cores, the placement is ``skipped`` (unverified),
+    not failed.
     """
     first = check_placement(process, threads, sysfs)
     if first.status == "pass":
         return first
     second = check_placement(threads_union, threads, sysfs)
-    return second if second.status == "pass" else first
+    if second.status == "pass":
+        return second
+    short = _unseen_threads(threads_union, threads, sysfs, seen_threads)
+    return Placement("skipped", list(threads_union), short) if short else first
+
+
+def _unseen_threads(
+    masks: Sequence[str],
+    threads: int,
+    sysfs: Path,
+    seen_threads: Sequence[int] | None,
+) -> str | None:
+    """Why the masks are unverified, or None when they show a real failure."""
+    if seen_threads is None or len(seen_threads) != len(masks):
+        return None
+    taken: set[int] = set()
+    why = []
+    for rank, (mask, seen) in enumerate(zip(masks, seen_threads, strict=True)):
+        cores = {core_of(cpu, sysfs) for cpu in parse_cpu_list(mask)}
+        if cores & taken:
+            return None
+        taken |= cores
+        if len(cores) == threads:
+            continue
+        if len(cores) > threads or seen >= threads:
+            return None
+        why.append(f"rank {rank}: saw {seen} of {threads} threads")
+    return "; ".join(why) + " (run too short to verify)" if why else None
 
 
 def busy_threads_per_core(
@@ -332,6 +369,14 @@ def process_mask(pid: int, proc: Path = PROC) -> str | None:
     """``Cpus_allowed_list`` of ``pid``'s main thread."""
     own = _mask(proc / str(pid) / "status")
     return None if own is None else cpu_list(own)
+
+
+def thread_count(pid: int, proc: Path = PROC) -> int:
+    """Threads of ``pid`` now (entries of ``/proc/<pid>/task``; 0 when gone)."""
+    try:
+        return sum(1 for _ in (proc / str(pid) / "task").iterdir())
+    except OSError:
+        return 0
 
 
 def cpus_allowed(pid: int, proc: Path = PROC) -> str | None:
@@ -473,6 +518,7 @@ class _Watch:
         self.next_snapshot = self.t0
         self.peak_kib = 0
         self.masks: dict[int, set[int]] = {}
+        self.threads: dict[int, int] = {}
         started = _utc()
         self.m = Measurement(None, 0.0, started, started)
 
@@ -496,12 +542,18 @@ class _Watch:
             masks = [cpus_allowed(p, sampler.proc) for p in pids.ranks]
             main = [process_mask(p, sampler.proc) for p in pids.ranks]
             if all(masks) and all(main):
-                for rank, mask in enumerate(masks):
+                for rank, (pid, mask) in enumerate(zip(pids.ranks, masks, strict=True)):
                     seen = self.masks.setdefault(rank, set())
                     seen.update(parse_cpu_list(mask or ""))
+                    count = thread_count(pid, sampler.proc)
+                    self.threads[rank] = max(self.threads.get(rank, 0), count)
                 union = [cpu_list(sorted(self.masks[r])) for r in range(len(masks))]
                 m.placement = rank_placement(
-                    [x for x in main if x], union, layout.threads, sampler.sysfs
+                    [x for x in main if x],
+                    union,
+                    layout.threads,
+                    sampler.sysfs,
+                    seen_threads=[self.threads[r] for r in range(len(masks))],
                 )
         now = time.monotonic()
         if now >= self.next_snapshot and pids.all:
