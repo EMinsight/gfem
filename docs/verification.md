@@ -53,6 +53,33 @@ Tests: [gradient matrix](https://github.com/benvial/gfem/blob/main/tests/verific
 [gradients that raise](https://github.com/benvial/gfem/blob/main/tests/verification/test_gradient_matrix_raise_table.py),
 [reused factorizations](https://github.com/benvial/gfem/blob/main/tests/verification/test_factor_reuse_gradient.py).
 
+## Low frequency
+
+The {term}`tree-cotree gauge` is checked on a case whose S has a closed form
+far below the low-frequency floor: a parallel-plate line between two 50 Ω
+lumped ports, its S from the line's ABCD matrix. Its mesh's floor is about
+95 kHz.
+
+- **At 10 kHz** ($k_0 h_\mathrm{min} \approx 10^{-7}$), the gauged direct solve
+  gives S within $10^{-13}$ of the closed form (measured:
+  $4 \times 10^{-15}$), with $S_{12} = S_{21}$ to $10^{-14}$. The same solve
+  with `gauge="none"` is off by more than $10^{-10}$ (measured:
+  $2 \times 10^{-8}$).
+- **At 1 MHz and 100 MHz**, the gauged S is within $10^{-13}$ of the closed
+  form too.
+- **The adjoint gradient** of $S_{11}$ with respect to the permittivity at
+  10 kHz matches the derivative of the closed form to $10^{-10}$, relative.
+- **An adaptive sweep** through the gauge keeps the same digits below the
+  floor, and above it matches the uniform gauged sweep to the sweep
+  tolerance.
+
+A model with wave ports gives the same S gauged and ungauged above the
+floor. Below it, the wave ports' mode problem is not gauged, and the solve warns.
+
+Tests: [gauged solves](https://github.com/benvial/gfem/blob/main/tests/unit/test_gauge_solve.py),
+[adaptive sweep](https://github.com/benvial/gfem/blob/main/tests/unit/test_gauge_adaptive.py),
+[gauge basis](https://github.com/benvial/gfem/blob/main/tests/unit/test_gauge_basis.py).
+
 ## Wave ports and shared port surfaces
 
 - A matched parallel-plate line transmits its TEM mode, and its first higher

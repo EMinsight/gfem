@@ -427,10 +427,11 @@ class SolverOptions:
             `gfem.LowFrequencyWarning` does not fire. The wave ports' mode
             problem is not gauged and keeps its own floor: a gauged solve
             with a `gfem.WavePort` still warns there. Above the floor, S
-            moves by 1e-13 to 1e-10 towards the exact answer; ``"none"``
-            restores the ungauged S bit for bit. Measured costs: a setup of
-            about one factorization per new mesh topology (reused across
-            shape steps) and about 10 % more per refactorization. Eigenmode,
+            moves by :math:`10^{-13}` to :math:`10^{-10}` towards the exact
+            answer; ``"none"`` restores the ungauged S bit for bit. Measured
+            costs: a setup of about one factorization per new mesh topology
+            (reused across shape steps) and about 10 % more per
+            refactorization. Eigenmode,
             electrostatic, DC conduction, thermal and `gfem.PortMode` solves
             ignore it, even ``"tree_cotree"``.
 

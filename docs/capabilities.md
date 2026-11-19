@@ -129,14 +129,20 @@ returning a wrong value:
 
 ## Limits
 
-- **Low frequency**: below the low-frequency floor, $k_0 h_\mathrm{min} = 10^{-6}$ ($f h_\mathrm{min} \approx$
-  48 Hz·m, with $h_\mathrm{min}$ the shortest edge: 48 MHz with 1 µm elements, 5 GHz with
-  10 nm elements), a driven solve's fields, gradients and, with the direct
-  solver or PETSc's default MUMPS factorization, the capacitive part of S
-  lose digits, and it warns with {py:obj}`gfem.LowFrequencyWarning`. For
-  capacitance at low frequency, solve {py:obj}`gfem.Electrostatic`; the
-  details are under {py:obj}`gfem.Driven`. An eigenmode solve whose target or
-  lowest mode is below the floor warns too: its frequencies, fields and
+- **Low frequency**: a direct driven solve on the CPU in one process keeps its
+  digits below the low-frequency floor, $k_0 h_\mathrm{min} = 10^{-6}$
+  ($f h_\mathrm{min} \approx$ 48 Hz·m, with $h_\mathrm{min}$ the shortest
+  edge: 48 MHz with 1 µm elements, 5 GHz with 10 nm elements), through the
+  {term}`tree-cotree gauge`, on by default (`SolverOptions.gauge`). The wave
+  ports' mode problem is not gauged and keeps its own floor: below it, a
+  model with wave ports warns with {py:obj}`gfem.LowFrequencyWarning`, and
+  lumped ports keep their digits. Other driven solves (`"bddc_gmres"`,
+  `"petsc"`, the GPU, several MPI ranks, periodic and Floquet models, or
+  `gauge="none"`) are ungauged: below the floor their fields, gradients and,
+  with an exact factorization, the capacitive part of S lose digits, and they
+  warn. For capacitance at low frequency, solve {py:obj}`gfem.Electrostatic`;
+  the details are under {py:obj}`gfem.Driven`. An eigenmode solve whose target
+  or lowest mode is below the floor warns too: its frequencies, fields and
   participations lose the same digits, and the reported `error` does not
   show it.
 - **Gyrotropic materials**: non-symmetric (non-reciprocal) tensors, such as a
