@@ -32,6 +32,12 @@ entries, reduced to rank 0 and broadcast (`_OwnedBasis`): each decision then rea
 agreed value, and the residual history equals one process's (ADR 0069). NGSolve's own
 ``GMRESSolver`` is no substitute: the wheel's parallel inner product conjugates the
 other operand, which still converges, in more iterations.
+
+An optional stop norm (`StopNorm`, ADR 0094) moves the stopping test, and only
+the test, into other coordinates: the iterates stay those of the Euclidean
+iteration above, and ``residuals`` holds the stop norm of each preconditioned
+residual. A direct handle under the tree-cotree gauge stops its reused-factor
+solves this way, in the field's coordinates (ADR 0216).
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ from typing import Any
 
 import ngsolve as ngs
 import numpy as np
+import scipy.sparse as sp
 from ngsolve import Matrix, Vector
 from ngsolve.krylovspace import GMRESSolver
 
@@ -328,6 +335,10 @@ class _Basis:
 
         return sum(self.cols.map(part))
 
+    def inner(self, q: np.ndarray) -> np.ndarray:
+        """The inner products ``<q_i, q>`` of the basis vectors with ``q``."""
+        return self._coefficients(q)
+
     def add(self, q: np.ndarray, y: np.ndarray, k: int) -> None:
         """``q += Q[:k] y``."""
         views = self._views(k)
@@ -372,6 +383,91 @@ class _OwnedBasis(_Basis):
         if self.n:
             h[:] = super()._coefficients(q * self.owned)
         return _mpi.reduce_bcast(self.comm, h)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class StopNorm:
+    r"""The norm a GMRES stop reads: :math:`\|T (d \circ r_R)\|_2`.
+
+    :math:`r_R` holds the entries ``rows`` of a Krylov vector :math:`r`; in
+    a gauged direct handle :math:`T` is the gauge basis, :math:`d` the
+    scaling of the held values and ``rows`` the gauge space's free DOFs, so
+    the norm is that of the field :math:`T (d \circ r)` the vector stands
+    for. It is the norm of the inner product
+
+    .. math::
+
+        \langle u, v \rangle_W = u^\mathsf{H} W v, \qquad
+        W = D T^\mathsf{T} T D, \quad D = \operatorname{diag}(d),
+
+    with :math:`T` and :math:`d` real.
+
+    Attributes:
+        T: The real sparse map, its columns the entries ``rows``.
+        d: The real scaling, one per column of ``T``.
+        rows: The Krylov vector's entries read, one per column of ``T``.
+    """
+
+    T: sp.csr_array | sp.csr_matrix
+    d: np.ndarray
+    rows: np.ndarray
+
+    def norm(self, r: np.ndarray) -> float:
+        r"""The norm :math:`\|T (d \circ r_R)\|_2` of a Krylov vector ``r``."""
+        return float(np.linalg.norm(self.T @ (self.d * r[self.rows])))
+
+    def gram(self, r: np.ndarray) -> np.ndarray:
+        r""":math:`W r`, zero off ``rows``: the vector whose inner products are ``r``'s.
+
+        :math:`\langle q, W r \rangle = \langle q, r \rangle_W` for every
+        Krylov vector :math:`q`.
+        """
+        out = np.zeros_like(r)
+        out[self.rows] = self.d * (self.T.T @ (self.T @ (self.d * r[self.rows])))
+        return out
+
+
+class _Gram:
+    r"""The running Gram matrix :math:`K_{ij} = q_i^\mathsf{H} W q_j` of a basis.
+
+    Each new basis vector costs one :math:`W` product (`StopNorm.gram`) and
+    its inner products with the basis so far; no field vector is kept.
+    """
+
+    def __init__(self, norm: StopNorm, size: int, dtype: np.dtype) -> None:
+        self.norm = norm
+        self.K = np.zeros((size, size), dtype)
+        self.count = 0
+
+    def append(self, basis: _Basis) -> None:
+        """Add the row and column of ``basis``'s newest vector."""
+        j = basis.k - 1
+        q = basis.blocks[j // BLOCK][j % BLOCK]
+        column = basis.inner(self.norm.gram(q))
+        self.K[: j + 1, j] = column
+        self.K[j, : j + 1] = np.conj(column)
+        self.count = j + 1
+
+    def residual(self, cs: Any, sn: Any, k: int, beta: complex) -> float:
+        r"""The stop norm of the preconditioned residual after step ``k``.
+
+        It is :math:`\beta_{k+1} Q_{k+2} z` with
+        :math:`z = \Omega^\mathsf{H} e_{k+2}`, :math:`\Omega` the step's
+        Givens rotations, so its norm is
+        :math:`|\beta_{k+1}| \sqrt{z^\mathsf{H} K z}`. After a lucky
+        breakdown the last vector is not in the basis and its term is
+        dropped: :math:`\beta_{k+1}` is at rounding level then.
+        """
+        z = np.zeros(k + 2, complex)
+        z[k + 1] = 1.0
+        for i in range(k, -1, -1):
+            c, s = complex(cs[i]), complex(sn[i])
+            zi, zn = z[i], z[i + 1]
+            z[i] = c.conjugate() * zi - s * zn
+            z[i + 1] = s.conjugate() * zi + c * zn
+        z = z[: self.count]
+        quadratic = float(np.real(np.vdot(z, self.K[: self.count, : self.count] @ z)))
+        return abs(beta) * sqrt(max(quadratic, 0.0))
 
 
 def _zeros(n: int, is_complex: bool) -> Any:
@@ -423,9 +519,21 @@ class Gmres(GMRESSolver):
         atol: float | None = None,
         maxiter: int = 100,
         layout: DofLayout = ONE_PROCESS,
+        stop_norm: StopNorm | None = None,
     ) -> None:
+        """Set up the solver; ``stop_norm`` moves the stopping test (one process).
+
+        With ``stop_norm`` the ``tol``/``atol`` test, and ``residuals``, read
+        each preconditioned residual in that norm; the iterates are the same.
+
+        Raises:
+            ValueError: A ``stop_norm`` under ranks.
+        """
+        if stop_norm is not None and layout.comm is not None:
+            raise ValueError("A GMRES stop norm runs on one process only.")
         super().__init__(mat, pre, tol=tol, atol=atol, maxiter=maxiter)
         self._layout = layout
+        self._stop_norm = stop_norm
 
     def _SolveImpl(  # noqa: N802 (NGSolve's name)
         self, rhs: ngs.BaseVector, sol: ngs.BaseVector
@@ -463,10 +571,15 @@ class Gmres(GMRESSolver):
         ra = r.FV().NumPy()
         Q = self._basis(len(rhs), ra.dtype, cols, kernel)
         r_norm = Q.norm(ra)
-        if self.CheckResidual(abs(r_norm)):
+        norm = self._stop_norm
+        gram = None if norm is None else _Gram(norm, m + 1, ra.dtype)
+        first = r_norm if norm is None else norm.norm(ra)
+        if self.CheckResidual(abs(first)):
             return sol
         Q.scale(ra, 1.0 / r_norm)
         Q.append(ra)
+        if gram is not None:
+            gram.append(Q)
         # the newest basis vector as an NGSolve vector, for A * v
         last, spare = r, rhs.CreateVector()
         H = []
@@ -491,19 +604,32 @@ class Gmres(GMRESSolver):
             if not broke:
                 Q.scale(qa, 1.0 / h[k + 1].real)
                 Q.append(qa)
+                if gram is not None:
+                    gram.append(Q)
             H.append(h)
             _rotate(h, cs, sn, k)
             beta[k + 1] = -sn[k].conjugate() * beta[k]
             beta[k] = cs[k] * beta[k]
-            if self.CheckResidual(abs(beta[k + 1])) or broke:
+            residual = (
+                abs(beta[k + 1])
+                if gram is None
+                else gram.residual(cs, sn, k, beta[k + 1])
+            )
+            if self.CheckResidual(residual) or broke:
                 break
             last, spare = q, last
-        # x += Q y, y from the rotated triangle
-        triangle = Matrix(k + 1, k + 1, is_complex)
-        for i in range(k + 1):
-            triangle[:, i] = H[i][: k + 1]
-        rs = Vector(k + 1, is_complex)
-        rs[:] = beta[: k + 1]
-        y = triangle.I * rs
-        Q.add(sol.FV().NumPy(), np.array([y[i] for i in range(k + 1)]), k + 1)
+        _update(sol, Q, H, beta, k, is_complex=is_complex)
         return sol
+
+
+def _update(
+    sol: ngs.BaseVector, Q: _Basis, H: list, beta: Any, k: int, *, is_complex: bool
+) -> None:
+    """``x += Q y``, ``y`` from the rotated triangle of steps ``0..k``."""
+    triangle = Matrix(k + 1, k + 1, is_complex)
+    for i in range(k + 1):
+        triangle[:, i] = H[i][: k + 1]
+    rs = Vector(k + 1, is_complex)
+    rs[:] = beta[: k + 1]
+    y = triangle.I * rs
+    Q.add(sol.FV().NumPy(), np.array([y[i] for i in range(k + 1)]), k + 1)

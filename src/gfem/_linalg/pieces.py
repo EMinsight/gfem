@@ -556,3 +556,16 @@ class PieceSum:
     def sum_into(self, matrix: ngs.BaseMatrix) -> None:
         """See `Pieces.sum_into`."""
         self.pieces.sum_into(self.weights, matrix)
+
+    @property
+    def stop_norm(self) -> tuple[Any, np.ndarray] | None:
+        r"""The map and scaling an iterative stop reads the sum's solutions by.
+
+        ``(T, d)`` when the pieces have a ``stop_norm(weights)`` (the gauged
+        piece sum, `gfem._linalg.gauge.GaugedPieces.stop_norm`): a solution
+        :math:`\hat y` of the sum stands for the field
+        :math:`T (d \circ \hat y)`. ``None`` for every other piece sum, whose
+        solutions are the field itself.
+        """
+        stop_norm = getattr(self.pieces, "stop_norm", None)
+        return None if stop_norm is None else stop_norm(self.weights)

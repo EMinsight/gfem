@@ -43,6 +43,8 @@ from gfem._linalg.base import host_bytes
 from gfem._linalg.pieces import Pieces, _scatter_compiled, _scatter_numpy
 
 if TYPE_CHECKING:
+    import scipy.sparse as sp
+
     from gfem._engine.gauge import GaugeBasis
     from gfem._linalg import Handle, Symmetry
     from gfem._linalg.layout import DofLayout
@@ -121,6 +123,15 @@ class GaugedPieces:
             raise ValueError(f"{len(self._kinds)} weights, got {len(theta)}.")
         size = np.abs(theta @ diagonals)
         return np.where(size > 0, 1.0 / np.sqrt(np.where(size > 0, size, 1.0)), 1.0)
+
+    def stop_norm(self, weights: Sequence[complex]) -> tuple[sp.csr_matrix, np.ndarray]:
+        r"""The gauge basis :math:`T` and the scaling :math:`d` at ``weights``.
+
+        A solution :math:`\hat y` of the scaled sum stands for the field
+        :math:`T (d \circ \hat y)` (Y-free numbering): a direct handle's
+        reused-factor GMRES stops on that field's norm (ADR 0094, 0216).
+        """
+        return self._basis.T, self.scaling(weights)
 
     def matrix(self, weights: Sequence[complex]) -> ngs.BaseMatrix:
         r"""A new matrix of `pattern` holding :math:`D (\sum_k \theta_k \hat A_k) D`."""
