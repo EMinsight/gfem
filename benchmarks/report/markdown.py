@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+from benchmarks.report import views
+
 DASH = "—"
 BUCKET_LABELS = (
     ("mesh_read_s", "mesh read"),
@@ -188,9 +190,9 @@ def _error_display(a: Mapping[str, Any]) -> str:
     return e(a["error"])
 
 
-def _error_cost(case: Mapping[str, Any]) -> list[str]:
+def _error_cost(case: Mapping[str, Any], h: str = "###") -> list[str]:
     ec = case["error_cost"]
-    out = ["### Error against cost", ""]
+    out = [f"{h} Error against cost", ""]
     out += _figure(case, "error_cost", f"{case['name']}: error against work time")
     if ec["reference"]:
         out.append(
@@ -300,8 +302,8 @@ def _error_cost(case: Mapping[str, Any]) -> list[str]:
     return out
 
 
-def _time(case: Mapping[str, Any]) -> list[str]:
-    out = ["### Time", ""]
+def _time(case: Mapping[str, Any], h: str = "###") -> list[str]:
+    out = [f"{h} Time", ""]
     out += _figure(case, "phases", f"{case['name']}: phases")
     head = [
         "solver",
@@ -387,8 +389,8 @@ def _time(case: Mapping[str, Any]) -> list[str]:
     return [*out, ""]
 
 
-def _memory(case: Mapping[str, Any]) -> list[str]:
-    out = ["### Memory", ""]
+def _memory(case: Mapping[str, Any], h: str = "###") -> list[str]:
+    out = [f"{h} Memory", ""]
     out += _figure(case, "memory", f"{case['name']}: peak RSS sum")
     rows = []
     for p in case["phases"]:
@@ -429,8 +431,8 @@ def _memory(case: Mapping[str, Any]) -> list[str]:
     return [*out, ""]
 
 
-def _accuracy(case: Mapping[str, Any]) -> list[str]:
-    out = ["### Accuracy", ""]
+def _reference(case: Mapping[str, Any]) -> list[str]:
+    out = []
     ref = case["reference"]
     if ref["id"] is not None and ref["in_store"]:
         bounds = ", ".join(
@@ -457,7 +459,13 @@ def _accuracy(case: Mapping[str, Any]) -> list[str]:
         out.append(
             f"Rescored cells: vs `{case['rescored_against']}`; stored values beside."
         )
-    out.append("")
+    return out
+
+
+def _accuracy(case: Mapping[str, Any], h: str = "###", *, shared: bool = True):
+    out = [f"{h} Accuracy", ""]
+    if shared:
+        out += [*_reference(case), ""]
     head = [
         "solver",
         "order",
@@ -531,8 +539,8 @@ def _accuracy(case: Mapping[str, Any]) -> list[str]:
     return out
 
 
-def _layouts(case: Mapping[str, Any]) -> list[str]:
-    out = ["### Layouts", ""]
+def _layouts(case: Mapping[str, Any], h: str = "###") -> list[str]:
+    out = [f"{h} Layouts", ""]
     out += _figure(case, "layouts", f"{case['name']}: work time per layout")
     rows = [
         [
@@ -573,9 +581,9 @@ def _layouts(case: Mapping[str, Any]) -> list[str]:
     return out
 
 
-def _snapshot(case: Mapping[str, Any]) -> list[str]:
+def _snapshot(case: Mapping[str, Any], h: str = "###", *, shared: bool = True):
     comp = case["comparison"]
-    title = "### Cross-solver snapshot"
+    title = f"{h} Cross-solver snapshot"
     if comp["label"]:
         title += f" ({comp['label']})"
     out = [title, ""]
@@ -631,13 +639,16 @@ def _snapshot(case: Mapping[str, Any]) -> list[str]:
                 "Iterative kinds compare only at equal achieved error (table above).",
                 "",
             ]
-    out += ["Structural differences (reported, never removed):", ""]
-    for solver, facts in case["structural"].items():
-        for f in facts:
-            out.append(f"- {solver}: {f}")
-    for code, pins in case["pins"].items():
-        out.append(f"- pinned for {code}: " + "; ".join(pins))
-    return [*out, ""]
+    if not shared:
+        return out
+    return [*out, *_structural(case), ""]
+
+
+def _structural(case: Mapping[str, Any]) -> list[str]:
+    out = ["Structural differences (reported, never removed):", ""]
+    out += [f"- {s}: {f}" for s, facts in case["structural"].items() for f in facts]
+    out += [f"- pinned for {c}: " + "; ".join(p) for c, p in case["pins"].items()]
+    return out
 
 
 def _trend(r: Mapping[str, Any]) -> list[str]:
@@ -683,14 +694,33 @@ def _trend(r: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _budget_heading(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
+    """``<case> at c<budget> (<class>, <N> node(s))``."""
+    where = [block["node_class"] or "node class unknown"]
+    if n := block["nodes"]:
+        where.append(f"{n} node" + ("s" if n > 1 else ""))
+    return f"{case['name']} at c{block['core_budget']} ({', '.join(where)})"
+
+
 def render(r: Mapping[str, Any]) -> str:
     """``index.md``."""
     out = _header(r) + _nodes(r) + _gates(r)
     for case in r["cases"]:
         out += [f"## {case['name']}", ""]
         out += ["Campaigns: " + ", ".join(f"`{x}`" for x in case["campaigns"]), ""]
-        out += _error_cost(case) + _time(case) + _memory(case) + _accuracy(case)
-        out += _layouts(case) + _snapshot(case)
+        if "budgets" not in case:
+            out += _error_cost(case) + _time(case) + _memory(case) + _accuracy(case)
+            out += _layouts(case) + _snapshot(case)
+            continue
+        ref = _reference(case)
+        out += [*ref, ""] if ref else []
+        out += [*_structural(case), ""]
+        for block in case["budgets"]:
+            view = {**case, **block, "name": views.budget_title(case, block)}
+            out += [f"### {_budget_heading(case, block)}", ""]
+            out += _error_cost(view, "####") + _time(view, "####")
+            out += _memory(view, "####") + _accuracy(view, "####", shared=False)
+            out += _layouts(view, "####") + _snapshot(view, "####", shared=False)
     out += _trend(r)
     out += ["## Caveats", ""]
     out += [f"{i}. {c}" for i, c in enumerate(r["caveats"], 1)]
