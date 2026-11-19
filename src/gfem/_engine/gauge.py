@@ -759,5 +759,5 @@ def _refuse(
         )
     raise ValueError(
         f"gauge='tree_cotree' does not take {reason} in this version of gfem. "
-        f"Use gauge='auto' to solve ungauged."
+        "Use gauge='auto' to solve ungauged."
     )
