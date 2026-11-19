@@ -16,6 +16,8 @@ EigenSolver = Literal["auto", "arpack", "slepc"]
 _EIGEN_SOLVERS = ("auto", "arpack", "slepc")
 TimeScheme = Literal["tr_bdf2", "theta"]
 _TIME_SCHEMES = ("tr_bdf2", "theta")
+Gauge = Literal["auto", "tree_cotree", "none"]
+_GAUGES = ("auto", "tree_cotree", "none")
 #: A PETSc option's value: ``None`` is a flag with no value.
 PetscValue = str | int | float | bool | None
 #: ``SolverOptions.petsc_options`` as stored: pairs sorted by name.
@@ -23,6 +25,15 @@ PetscOptions = tuple[tuple[str, PetscValue], ...]
 #: ``"cpu"``, ``"cuda"``, or ``"cuda:N"`` for the N-th GPU (hence ``| str``).
 Device = Literal["cpu", "cuda"] | str  # noqa: PYI051 - names the choices
 _DEVICE = re.compile(r"cpu|cuda(:\d+)?")
+
+
+def _one_of(value: object, name: str, choices: tuple[str, ...]) -> None:
+    """Raise `ValueError` unless ``value`` is one of ``choices``."""
+    if value not in choices:
+        raise ValueError(
+            f"SolverOptions.{name} must be one of "
+            f"{', '.join(repr(c) for c in choices)}, got {value!r}."
+        )
 
 
 def _int(
@@ -395,6 +406,33 @@ class SolverOptions:
         theta: The implicitness of ``time_scheme="theta"``, from 0.5
             (Crank-Nicolson) to 1 (backward Euler, the default). Ignored
             by ``"tr_bdf2"``.
+        gauge: How a `gfem.Driven` solve treats the null space of the curl,
+            the gradients :math:`\nabla \phi`, on which the curl-curl term
+            vanishes and the system degenerates as
+            :math:`k_0 h_{\min} \to 0`. ``"auto"`` (the default) solves
+            through the tree-cotree gauge wherever it applies: the linear
+            solver resolves to ``"direct"``, ``device="cpu"``, one process,
+            and the model has no `gfem.Periodic` pair, Bloch wave vector or
+            `gfem.FloquetPort`; any other driven solve runs ungauged, without
+            a word. ``"tree_cotree"`` asks for the gauge and raises
+            `ValueError` when the solve starts wherever it does not apply
+            (`gfem.DistributedUnsupportedError` across MPI ranks), including
+            an ``"auto"`` linear solver that chose ``"bddc_gmres"``.
+            ``"none"`` solves ungauged. The gauge writes the field as
+            :math:`x = T y`, :math:`T` square and nonsingular: node potentials
+            along a spanning tree, one floating potential per conductor other
+            than its region's reference, and the remaining (cotree) edge
+            unknowns, so the direct solve keeps its digits below the
+            low-frequency floor (:math:`k_0 h_{\min} < 10^{-6}`) and
+            `gfem.LowFrequencyWarning` does not fire. The wave ports' mode
+            problem is not gauged and keeps its own floor: a gauged solve
+            with a `gfem.WavePort` still warns there. Above the floor, S
+            moves by 1e-13 to 1e-10 towards the exact answer; ``"none"``
+            restores the ungauged S bit for bit. Measured costs: a setup of
+            about one factorization per new mesh topology (reused across
+            shape steps) and about 10 % more per refactorization. Eigenmode,
+            electrostatic, DC conduction, thermal and `gfem.PortMode` solves
+            ignore it, even ``"tree_cotree"``.
 
     Notes:
         ``tolerance`` is a different norm per backend, so the same value
@@ -430,15 +468,12 @@ class SolverOptions:
     petsc_options: Mapping[str, PetscValue] | PetscOptions = ()
     time_scheme: TimeScheme = "tr_bdf2"
     theta: float = 1.0
+    gauge: Gauge = "auto"
 
     def __post_init__(self) -> None:
         set_ = object.__setattr__
-        if self.time_scheme not in _TIME_SCHEMES:
-            raise ValueError(
-                f"SolverOptions.time_scheme must be one of "
-                f"{', '.join(repr(s) for s in _TIME_SCHEMES)}, got "
-                f"{self.time_scheme!r}."
-            )
+        _one_of(self.gauge, "gauge", _GAUGES)
+        _one_of(self.time_scheme, "time_scheme", _TIME_SCHEMES)
         theta = self.theta
         ok = isinstance(theta, (int, float)) and not isinstance(theta, bool)
         if not ok or not 0.5 <= theta <= 1.0:
@@ -457,18 +492,8 @@ class SolverOptions:
             "order^6: order 12 already takes about 28 MiB and 3 s of assembly per "
             "tetrahedron.",
         )
-        if self.linear_solver not in _LINEAR_SOLVERS:
-            raise ValueError(
-                f"SolverOptions.linear_solver must be one of "
-                f"{', '.join(repr(s) for s in _LINEAR_SOLVERS)}, got "
-                f"{self.linear_solver!r}."
-            )
-        if self.eigen_solver not in _EIGEN_SOLVERS:
-            raise ValueError(
-                f"SolverOptions.eigen_solver must be one of "
-                f"{', '.join(repr(s) for s in _EIGEN_SOLVERS)}, got "
-                f"{self.eigen_solver!r}."
-            )
+        _one_of(self.linear_solver, "linear_solver", _LINEAR_SOLVERS)
+        _one_of(self.eigen_solver, "eigen_solver", _EIGEN_SOLVERS)
         set_(self, "petsc_options", _petsc_options(self))
         for name in (
             "tolerance",

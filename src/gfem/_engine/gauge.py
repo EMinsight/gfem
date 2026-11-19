@@ -34,7 +34,9 @@ gauged pattern :math:`|T|^\mathsf{T} |P| \, |T|`, :math:`P` the element graph
 of :math:`V`; the gauge template is a complex NGSolve matrix on :math:`Y`
 whose free CSR is that pattern, in its order.
 
-Not for periodic pairs, Bloch wave vectors or ranks (ticket 01).
+Not for periodic pairs, Bloch wave vectors or ranks: `resolve_gauge` decides
+whether a driven solve runs through the gauge (``SolverOptions.gauge``, ADR
+0220).
 """
 
 from __future__ import annotations
@@ -51,9 +53,11 @@ import numpy as np
 import scipy.sparse as sp
 from scipy.sparse import csgraph
 
+from gfem._linalg import report
 from gfem._linalg.base import free_mask
 from gfem._linalg.pieces import _positions
 from gfem._pytree import readonly
+from gfem.errors import DistributedUnsupportedError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -92,6 +96,8 @@ class GaugeBasis:
         free: The free DOFs of :math:`Y` (`y_dofs`) as a BitArray.
         pattern: The symbolic gauged pattern :math:`|T|^\mathsf{T} |P| \, |T|`
             in Y-free numbering, CSR with sorted indices and unit values.
+        ungauged_nnz: The entries of :math:`P` on the free DOFs of
+            :math:`V`, the ungauged pattern `pattern` is compared with.
         template: The gauge template: a complex NGSolve sparse matrix on
             :math:`Y`, empty off the free rows, whose free CSR is `pattern`
             in its order. Pattern only (its values are not the operator's);
@@ -117,6 +123,7 @@ class GaugeBasis:
     ndof_y: int
     free: ngs.BitArray
     pattern: sp.csr_matrix
+    ungauged_nnz: int
     template: Any
     key: tuple
     conductors: int
@@ -203,10 +210,22 @@ def gauge_basis(
     with _LOCK:
         held = None if topology is None else _BASES.setdefault(topology, {})
         basis = None if held is None else held.get(key)
+        built = basis is None
         if basis is None:
             basis = _build(operator.space, reference)
             if held is not None:
                 held[key] = basis
+    if built:
+        report.gauge_basis(
+            v_unknowns=len(basis.v_dofs),
+            y_unknowns=len(basis.y_dofs),
+            conductors=basis.conductors,
+            floating=basis.floating,
+            nnz=basis.pattern.nnz,
+            ungauged_nnz=basis.ungauged_nnz,
+            basis_seconds=basis.timings["basis"],
+            template_seconds=basis.timings["template"],
+        )
     return basis
 
 
@@ -247,7 +266,7 @@ def _build(space: Any, reference: Reference) -> GaugeBasis:
     basis_time = time.perf_counter() - start
     start = time.perf_counter()
     n_y = n_base + n_h1 + forest.floating
-    pattern, template = _template(
+    pattern, ungauged_nnz, template = _template(
         base,
         h1=h1,
         floating=forest.floating,
@@ -271,6 +290,7 @@ def _build(space: Any, reference: Reference) -> GaugeBasis:
         ndof_y=n_y,
         free=ngs.BitArray(free_y.tolist()),
         pattern=pattern,
+        ungauged_nnz=ungauged_nnz,
         template=template,
         key=("tree_cotree", digest.hexdigest()),
         conductors=forest.conductors,
@@ -475,14 +495,16 @@ def _template(
     t: sp.csr_matrix,
     y_dofs: np.ndarray,
     v_base: np.ndarray,
-) -> tuple[sp.csr_matrix, Any]:
-    r"""The symbolic gauged pattern and the gauge template (ticket 09's route).
+) -> tuple[sp.csr_matrix, int, Any]:
+    r"""The symbolic gauged pattern, :math:`P`'s entries and the gauge template.
 
     A complex form on :math:`Y` has the full element blocks for its graph
     (each number DOF's row dense), a superset of the gauged pattern, whose
     :math:`V` block is the element graph :math:`P`. The pattern's entries
     are set to 1, every other to 0, and ``DeleteZeroElements`` keeps the
     pattern. ``v_base`` holds the base-space DOF of each row of ``t``.
+    Returns the pattern, the entries of :math:`P` on those rows, and the
+    template.
     """
     mesh = base.mesh
     spaces = [base, h1, *(ngs.NumberSpace(mesh, complex=True) for _ in range(floating))]
@@ -500,6 +522,7 @@ def _template(
         (np.ones(len(cols), np.float32), cols, rowptr), shape=(n_y, n_y)
     )
     element = graph[v_base][:, v_base]
+    ungauged_nnz = int(element.nnz)
     del graph
     a = abs(t).astype(np.float32)
     pattern = sp.csr_matrix(a.T @ (element @ a))
@@ -510,7 +533,7 @@ def _template(
     template = superset.DeleteZeroElements(0.5)
     if template.nze != pattern.nnz:  # pragma: no cover - NGSolve keeps the mask
         raise RuntimeError("The gauge template lost the gauged pattern.")
-    return pattern, template
+    return pattern, ungauged_nnz, template
 
 
 def _mask(
@@ -577,4 +600,164 @@ def _to_scipy(matrix: Any) -> sp.csr_matrix:
     return sp.csr_matrix(
         (np.array(data), np.array(cols), np.array(rowptr)),
         shape=(matrix.height, matrix.width),
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class GaugeChoice:
+    """Whether a driven solve runs through the tree-cotree gauge (`resolve_gauge`).
+
+    Resolved once by the driven rule, which hands it to the low-frequency
+    check, the system operator, its frequency workers and mesh refinement's
+    deferred check. Plain data, so it pickles to a worker.
+
+    Attributes:
+        on: Whether the solve is gauged.
+        reason: Why it is not, in a few words (``None`` when gauged), for
+            the ``gfem.solver`` log.
+        clause: The sentence `gfem.LowFrequencyWarning` adds on why the
+            solve is ungauged and, where one exists, what would gauge it;
+            ``None`` when it adds none.
+    """
+
+    on: bool
+    reason: str | None = None
+    clause: str | None = None
+
+
+#: What a ``"tree_cotree"`` refusal suggests besides the fix.
+_OR_AUTO = "or gauge='auto' to solve ungauged"
+
+
+def resolve_gauge(
+    gauge: str,
+    *,
+    linear_solver: str,
+    kind: str,
+    device: str,
+    auto_reason: str | None = None,
+    distributed: bool = False,
+    periodic: bool = False,
+    bloch: bool = False,
+    floquet: bool = False,
+) -> GaugeChoice:
+    """Resolve ``SolverOptions.gauge`` for one driven solve (ADR 0220).
+
+    The gauge applies to a solve whose linear solver resolved to
+    ``"direct"`` on the CPU in one process, for a model with no periodic
+    pair, Bloch wave vector or Floquet port. ``"auto"`` gauges such a solve
+    and runs every other one ungauged; ``"tree_cotree"`` raises for every
+    other one; ``"none"`` runs ungauged.
+
+    Args:
+        gauge: ``SolverOptions.gauge``.
+        linear_solver: ``SolverOptions.linear_solver``, as written.
+        kind: The linear solver it resolved to (never ``"auto"``).
+        device: ``SolverOptions.device``.
+        auto_reason: Why ``linear_solver="auto"`` chose ``kind``, with its
+            numbers (`gfem._linalg.auto_linear_solver`), or ``None``.
+        distributed: Whether the solve runs across MPI ranks.
+        periodic: Whether the model has a `gfem.Periodic` pair.
+        bloch: Whether the problem has a Bloch wave vector.
+        floquet: Whether the model has a `gfem.FloquetPort`.
+
+    Raises:
+        gfem.DistributedUnsupportedError: ``"tree_cotree"`` across ranks.
+        ValueError: ``"tree_cotree"`` for any other solve out of scope.
+    """
+    out = _out_of_scope(
+        linear_solver,
+        kind,
+        device,
+        distributed=distributed,
+        periodic=periodic,
+        bloch=bloch,
+        floquet=floquet,
+    )
+    if gauge == "tree_cotree" and out is not None:
+        _refuse(out[0], linear_solver, kind, auto_reason)
+    if gauge == "none":
+        if out is None:
+            return GaugeChoice(
+                on=False,
+                reason="gauge='none'",
+                clause="The solve is ungauged (gauge='none'): gauge='auto' keeps "
+                "these digits.",
+            )
+        return GaugeChoice(on=False, reason="gauge='none'")
+    if out is None:
+        return GaugeChoice(on=True)
+    reason, remedy = out
+    if remedy is None:
+        clause = f"This solve cannot be gauged ({reason})."
+    else:
+        clause = f"The solve is ungauged ({reason}): {remedy} keeps these digits."
+    return GaugeChoice(on=False, reason=reason, clause=clause)
+
+
+def _out_of_scope(
+    linear_solver: str,
+    kind: str,
+    device: str,
+    *,
+    distributed: bool,
+    periodic: bool,
+    bloch: bool,
+    floquet: bool,
+) -> tuple[str, str | None] | None:
+    """Why the gauge does not apply and what would apply it, or ``None``.
+
+    The first reason that holds, the most specific first among the model's:
+    Floquet ports and wave vectors come with a periodic pair.
+    """
+    solver: tuple[str, str | None] | None = None
+    if kind == "bddc_gmres":
+        chose = (
+            "'auto' chose 'bddc_gmres'" if linear_solver == "auto" else "'bddc_gmres'"
+        )
+        solver = f"linear_solver={chose}", "linear_solver='direct'"
+    elif kind != "direct":
+        solver = f"linear_solver={kind!r}", None
+    reasons: list[tuple[bool, tuple[str, str | None] | None]] = [
+        (distributed, ("MPI ranks", None)),
+        (device != "cpu", (f"device={device!r}", None)),
+        (solver is not None, solver),
+        (floquet, ("Floquet ports", None)),
+        (bloch, ("a Bloch wave vector", None)),
+        (periodic, ("a periodic pair", None)),
+    ]
+    return next((why for holds, why in reasons if holds), None)
+
+
+def _refuse(
+    reason: str, linear_solver: str, kind: str, auto_reason: str | None
+) -> None:
+    """Raise for ``gauge="tree_cotree"`` on a solve out of the gauge's scope."""
+    if reason == "MPI ranks":
+        raise DistributedUnsupportedError(
+            "tree-cotree gauge",
+            "gauge='tree_cotree' runs on one process, and this solve runs across "
+            "MPI ranks. Solve on one process, "
+            f"{_OR_AUTO} across ranks.",
+        )
+    if reason.startswith("device="):
+        raise ValueError(
+            f"gauge='tree_cotree' runs on the CPU, not {reason} (cuDSS solves "
+            f"ungauged). Use device='cpu', {_OR_AUTO} on the GPU."
+        )
+    if linear_solver == "auto" and kind == "bddc_gmres":
+        numbers = "" if auto_reason is None else f" ({auto_reason})"
+        raise ValueError(
+            "gauge='tree_cotree' needs the direct solver, but linear_solver='auto' "
+            f"chose 'bddc_gmres'{numbers}. Set linear_solver='direct' to lift that "
+            f"memory guard, {_OR_AUTO}."
+        )
+    if kind != "direct":
+        raise ValueError(
+            f"gauge='tree_cotree' needs linear_solver='direct', not {kind!r}. Use "
+            f"linear_solver='direct', {_OR_AUTO}."
+        )
+    raise ValueError(
+        f"gauge='tree_cotree' does not take {reason} in this version of gfem. "
+        f"Use gauge='auto' to solve ungauged."
     )
