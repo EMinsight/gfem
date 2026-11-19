@@ -688,6 +688,30 @@ class Mesh:
         return self._topology.tri_neighbours
 
 
+#: The `Mesh` arrays that, with its regions, define its elements.
+_ELEMENT_ARRAYS = (
+    "tetrahedra",
+    "tetrahedron_tags",
+    "tetrahedron_entities",
+    "triangles",
+    "triangle_tags",
+    "triangle_entities",
+)
+
+
+def _same_topology(a: Mesh, b: Mesh) -> bool:
+    """Whether two meshes have the same elements, tags and regions.
+
+    The same object, or equal arrays: the same file read twice (a loaded
+    result's mesh and the model's) gives two objects.
+    """
+    if a._topology is b._topology:  # noqa: SLF001
+        return True
+    return a.regions == b.regions and all(
+        np.array_equal(getattr(a, name), getattr(b, name)) for name in _ELEMENT_ARRAYS
+    )
+
+
 # Per tetrahedron, its shortest edge, by mesh topology (`_shortest_edges`).
 _SHORTEST_EDGES: weakref.WeakKeyDictionary[_Topology, np.ndarray] = (
     weakref.WeakKeyDictionary()

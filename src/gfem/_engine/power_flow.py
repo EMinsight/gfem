@@ -42,7 +42,7 @@ from gfem._engine import probe
 from gfem._engine.driven import DrivenOperator, driven_operator
 from gfem._engine.mesh import inverse_order
 from gfem._periodic import tie_classes
-from gfem.mesh import _TET_EDGES, Mesh
+from gfem.mesh import _TET_EDGES, Mesh, _same_topology
 
 if TYPE_CHECKING:
     from gfem._field import Field
@@ -61,15 +61,6 @@ __all__ = [
 
 #: The three edges of a triangle, by vertex.
 _TRI_EDGES = np.array([[0, 1], [0, 2], [1, 2]])
-#: The `Mesh` arrays that, with its regions, define its elements.
-_TOPOLOGY_ARRAYS = (
-    "tetrahedra",
-    "tetrahedron_tags",
-    "tetrahedron_entities",
-    "triangles",
-    "triangle_tags",
-    "triangle_entities",
-)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -278,19 +269,6 @@ def _check_support(field: Field, model: Model) -> np.ndarray:
             "or exclusions): pass the model the field was solved with."
         )
     return support
-
-
-def _same_topology(a: Mesh, b: Mesh) -> bool:
-    """Whether two meshes have the same elements, tags and regions.
-
-    The same object, or equal arrays: the same file read twice (a loaded
-    result's mesh and the model's) gives two objects.
-    """
-    if a._topology is b._topology:  # noqa: SLF001
-        return True
-    return a.regions == b.regions and all(
-        np.array_equal(getattr(a, name), getattr(b, name)) for name in _TOPOLOGY_ARRAYS
-    )
 
 
 def _selection(

@@ -158,6 +158,22 @@ def test_an_estimate_needs_the_model_of_its_result(coax, tmp_path):
         gfem.error_estimate(result, gfem.FieldEstimator(), model=other)
 
 
+def test_a_loaded_result_estimates_like_the_fresh_one(coax, tmp_path):
+    out = tmp_path / "results"
+    fresh = gfem.Job(coax, rc.COAX_PROBLEM, OPTIONS).run(out)
+    loaded = gfem.load_result(out)
+    assert loaded.potential["inner"].mesh is not coax.mesh
+    expected = gfem.error_estimate(fresh, gfem.FieldEstimator(), model=coax)
+    estimate = gfem.error_estimate(loaded, gfem.FieldEstimator(), model=coax)
+    assert estimate.value == pytest.approx(COAX_ESTIMATE, abs=1e-4)
+    np.testing.assert_allclose(estimate.value, expected.value, rtol=1e-12)
+    np.testing.assert_allclose(estimate.indicators, expected.indicators, rtol=1e-12)
+
+    other = rc.coax_model(tmp_path, 4)
+    with pytest.raises(ValueError, match="model the result was solved on"):
+        gfem.error_estimate(loaded, gfem.FieldEstimator(), model=other)
+
+
 # --- Dörfler marking --------------------------------------------------------
 
 
