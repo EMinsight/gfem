@@ -9,6 +9,8 @@ bases and entries with one walk: pooled handles' PARDISO factors released,
 then pooled handles, bases and entries freed, in that order.
 """
 
+import types
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -280,6 +282,14 @@ def test_a_pooled_handle_drops_a_pattern_no_kept_fixed_part_holds():
     entries.give_plan(("k",), TOPOLOGY, stale, budget=1000, kept=[kept])
     assert holds.pattern is kept
     assert stale.pattern is None
+
+
+def test_a_slot_lets_a_pooled_base_keep_its_own_patterns_and_the_stores():
+    own, stored = object(), object()
+    store = types.SimpleNamespace(kept={"a": types.SimpleNamespace(pattern=stored)})
+    slot = system_operator.PlanSlot(("site",), TOPOLOGY, 100, store, patterns=(own,))
+    assert slot.kept() == [own, stored]
+    assert system_operator.PlanSlot(("site",), TOPOLOGY, 100).kept() == []
 
 
 def test_clear_frees_the_pool_too():

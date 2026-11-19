@@ -871,6 +871,9 @@ class PlanSlot:
             `gfem._engine.cache.DefaultBudget` under the default).
         store: The kept fixed parts of the operator's space, or ``None``
             without them (`FixedPieces`).
+        patterns: The operator's own patterns a pooled base may keep besides
+            the store's (a second piece adapter's); empty for assembled
+            pieces.
         visit: This design's sweeps on the slot: a forward's, and the backward
             it hands its base to (`SystemSweep.move_base`). The pool counts a
             frequency they return a base under as met only for later visits
@@ -881,13 +884,15 @@ class PlanSlot:
     topology: Any
     budget: int
     store: KeptParts | None = None
+    patterns: tuple[Any, ...] = ()
     visit: object = dataclasses.field(default_factory=object)
 
     def kept(self) -> list[Any]:
-        """The patterns of the kept fixed parts: what a pooled base may keep."""
-        return (
+        """What a pooled base may keep: `patterns`, then the kept fixed parts'."""
+        stored = (
             [] if self.store is None else [k.pattern for k in self.store.kept.values()]
         )
+        return [*self.patterns, *stored]
 
     def key(self, omega: float) -> tuple:
         """The pool key of a base at ``ω``: ``site``, the thread count, ``ω``.
