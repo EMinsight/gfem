@@ -119,6 +119,7 @@ from gfem._engine.floquet_ports import (
     check_excitable,
     floquet_couplings,
 )
+from gfem._engine.gauge import gauge_basis
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import (
     PortNetwork,
@@ -799,6 +800,17 @@ class DrivenRule:
         #: the problem's frequencies: set in a frequency worker, which then
         #: sweeps no port mode itself (ADR 0099). ``None`` anywhere else.
         self.handed_port_modes: list[dict[str, np.ndarray]] | None = None
+        #: Whether the solve runs through the tree-cotree gauge (ADR 0216):
+        #: asked for by the internal `tree_cotree_gauge` context, and only on
+        #: one process with the CPU direct solver, without a Bloch wave vector
+        #: or Floquet ports (`_ports` also leaves periodic pairs ungauged).
+        self.tree_cotree = (
+            _TREE_COTREE.get()
+            and comm is None
+            and (self.linear.kind, self.linear.device) == ("direct", "cpu")
+            and problem.wave_vector is None
+            and not _floquet.floquet_ports(model.ports)
+        )
         _check_low_frequency(model, problem.frequency, stacklevel=4, comm=comm)
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
@@ -1435,6 +1447,12 @@ class DrivenRule:
                 wave_vector=minus_k,
                 swept=self.swept_spaces,
             )
+        gauged = (
+            self.tree_cotree
+            and op.expansion is None
+            and op.layout is None
+            and op.symmetry == "complex_symmetric"
+        )
         system = SystemOperator(
             op,
             [*couplings, *kept.floquet],
@@ -1443,6 +1461,7 @@ class DrivenRule:
             adjoint_tolerance=adjoint_tolerance(self.options),
             transposed=transposed,
             pool_budget=retain_budget(self.options.retain_memory),
+            gauge=gauge_basis(op) if gauged else None,
         )
         network_key = (
             tuple(columns),
@@ -2235,6 +2254,29 @@ def low_frequency_deferred() -> Generator[None]:
         yield
     finally:
         _LOW_FREQUENCY_DEFERRED.reset(token)
+
+
+#: Whether driven rules built in this context solve through the tree-cotree
+#: gauge (`tree_cotree_gauge`).
+_TREE_COTREE = contextvars.ContextVar("tree_cotree_gauge", default=False)
+
+
+@contextlib.contextmanager
+def tree_cotree_gauge() -> Generator[None]:
+    """Solve the driven problems whose rule is built in this context gauged.
+
+    Internal: the switch until ``SolverOptions.gauge`` exists, which
+    replaces it. A rule reads it once, when built (`DrivenRule`), so a
+    solve under ``jax.grad`` or ``jax.jit`` keeps it in its host callbacks;
+    a frequency worker's rule, built in its own process, does not see it.
+    Out of the gauge's scope (ranks, another linear solver, a GPU, Bloch
+    wave vectors, Floquet ports, periodic pairs) the solve runs ungauged.
+    """
+    token = _TREE_COTREE.set(True)
+    try:
+        yield
+    finally:
+        _TREE_COTREE.reset(token)
 
 
 @dataclasses.dataclass(frozen=True)

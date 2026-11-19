@@ -88,6 +88,7 @@ from gfem._linalg import (
     report,
 )
 from gfem._linalg.base import free_mask
+from gfem._linalg.gauge import GaugedHandle, GaugedPieces
 from gfem._linalg.pieces import (
     AssembledPieces,
     FixedPart,
@@ -100,6 +101,7 @@ from gfem._linalg.pieces import (
 if TYPE_CHECKING:
     from gfem._engine.driven import DrivenOperator
     from gfem._engine.floquet_ports import FloquetSurfaceCoupling
+    from gfem._engine.gauge import GaugeBasis
     from gfem._engine.terms import Piece
 
 __all__ = ["FixedPieces", "LowRankTerm", "PlanSlot", "SystemOperator", "SystemSweep"]
@@ -259,6 +261,7 @@ class SystemOperator:
         adjoint_tolerance: float,
         transposed: Callable[[], DrivenOperator] | None = None,
         pool_budget: int | None = None,
+        gauge: GaugeBasis | None = None,
     ) -> None:
         """Add each port surface's Robin piece to ``operator``.
 
@@ -275,6 +278,10 @@ class SystemOperator:
             pool_budget: ``retain_memory``'s bytes: with it the transposed
                 system's adjoint solves refactorize one base from the plan
                 pool where they can (`_adjoint_system`).
+            gauge: The tree-cotree gauge basis of ``operator``'s space, to
+                solve through it (ADR 0216): a serial CPU direct solve of a
+                complex symmetric operator, decided by the driven rule;
+                ``None`` solves ungauged.
         """
         if surfaces:
             operator = dataclasses.replace(
@@ -285,6 +292,7 @@ class SystemOperator:
         self._linear = linear
         self._width = width
         self._adjoint_tolerance = adjoint_tolerance
+        self._gauge = gauge
         # assembled at the first direct prepare (the piece sum); a backward
         # pass reuses them, `free` drops them
         self._pieces: Pieces = self._build_pieces()
@@ -295,7 +303,10 @@ class SystemOperator:
         self._pool_budget = pool_budget
 
     def _build_pieces(self) -> Pieces:
-        """The operator's pieces; fixed parts on a serial CPU direct solve."""
+        """The operator's pieces; fixed parts on a serial CPU direct solve.
+
+        Under a gauge, the gauged piece sum over them (`GaugedPieces`).
+        """
         operator, linear = self.operator, self._linear
         integrands = [piece.integrand for piece in operator.pieces]
         fixed = None
@@ -305,13 +316,17 @@ class SystemOperator:
             and (linear.kind, linear.device) == ("direct", "cpu")
         ):
             integrands, fixed = operator.fixed.split(operator.pieces)
-        return AssembledPieces(
+        pieces = AssembledPieces(
             operator.space,
             integrands,
             symmetric=operator.symmetric,
             comm=operator.built.comm,
             fixed=fixed,
         )
+        if self._gauge is None:
+            return pieces
+        kinds = [piece.kind for piece in operator.pieces]
+        return GaugedPieces(pieces, self._gauge, kinds)
 
     def sweep(
         self,
@@ -373,7 +388,8 @@ class SystemOperator:
         """Where this operator's base handles pool, or ``None`` off the pool.
 
         Serial CPU direct solves only (ADR 0082). The key holds the topology,
-        the space key, a digest of the free DOFs and the symmetry; the sweep
+        the space key, a digest of the free DOFs and the symmetry, and under a
+        gauge its key (a gauged base keeps the gauge template too); the sweep
         adds the thread count.
         """
         op = self.operator
@@ -385,7 +401,12 @@ class SystemOperator:
             return None
         site = (id(op.topology), op.space_key, self.free_digest(), op.symmetry)
         store = None if op.fixed is None else op.fixed.store
-        return PlanSlot(site, op.topology, budget, store)
+        gauge = self._gauge
+        if gauge is None:
+            return PlanSlot(site, op.topology, budget, store)
+        return PlanSlot(
+            (*site, gauge.key), op.topology, budget, store, (gauge.template,)
+        )
 
     def solve_adjoint(self, n: int, omega: float, loads: np.ndarray) -> np.ndarray:
         """Solve the adjoint loads ``(ndof, q)`` of frequency ``n`` at ``ω``.
@@ -572,16 +593,23 @@ class SystemOperator:
         """``A(ω)``, the operator without the modal corrections, to prepare.
 
         Its form, and its piece sum for the ``direct`` and ``petsc`` linear
-        solvers.
+        solvers. Under a gauge, the gauged piece sum on the gauge space's free
+        DOFs; the form stays the driven space's (a backend reads only whether
+        its space is complex, and never assembles it: the gauged piece sum
+        always has its pattern).
         """
         op = self.operator
-        weights = tuple(complex(piece.theta(omega)) for piece in op.pieces)
+        free = op.space.FreeDofs() if self._gauge is None else self._gauge.free
         return Operator(
             op.form(omega),
-            op.space.FreeDofs(),
-            piece_sum=PieceSum(self._pieces, weights),
+            free,
+            piece_sum=PieceSum(self._pieces, self._weights(omega)),
             layout=op.layout,
         )
+
+    def _weights(self, omega: float) -> tuple[complex, ...]:
+        r"""The weights :math:`\theta_k(\omega)`, one per piece."""
+        return tuple(complex(piece.theta(omega)) for piece in self.operator.pieces)
 
     def corrections(self, omega: float) -> LowRankTerm:
         """``W(ω) = U C Vᵀ``, block diagonal over the surface couplings.
@@ -596,8 +624,21 @@ class SystemOperator:
         """A handle of ``A(ω) + W(ω)`` from a handle ``base`` of ``A(ω)``.
 
         ``base`` itself without port surfaces; otherwise a Woodbury update that
-        owns ``base`` or ``borrow``s it.
+        owns ``base`` or ``borrow``s it. Under a gauge ``base`` is the gauged
+        piece sum's, wrapped first in a `GaugedHandle` (that owns or borrows
+        it) at ω's scaling: the Woodbury update stays in the driven space.
         """
+        if self._gauge is not None:
+            pieces = self._pieces
+            if not isinstance(pieces, GaugedPieces):  # pragma: no cover
+                raise TypeError("A gauged system operator sums gauged pieces.")
+            base = GaugedHandle(
+                base,
+                self._gauge,
+                pieces.scaling(self._weights(omega)),
+                ndof=self.operator.space.ndof,
+                borrow=borrow,
+            )
         if not self.surfaces:
             return base
         term = self.corrections(omega)
