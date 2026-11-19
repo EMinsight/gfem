@@ -1,9 +1,10 @@
-"""Affine pieces assembled once, summed per operator: the piece sum.
+r"""Affine pieces assembled once, summed per operator: the piece sum.
 
-An operator ``A = Σ θ_k A_k`` whose pieces ``A_k`` do not change (a driven
-sweep's frequencies) need not be assembled again for each set of weights
-θ_k: `AssembledPieces` assembles each piece once, with θ = 1, and
-`PieceSum` writes ``Σ θ_k A_k`` into a matrix of the full sparsity pattern.
+An operator :math:`A = \sum_k \theta_k A_k` whose pieces :math:`A_k` do not
+change (a driven sweep's frequencies) need not be assembled again for each set
+of weights :math:`\theta_k`: `AssembledPieces` assembles each piece once, with
+:math:`\theta_k = 1`, and `PieceSum` writes :math:`\sum_k \theta_k A_k` into
+a matrix of the full sparsity pattern.
 `PieceSum` reads its pieces through the `Pieces` protocol, of which
 `AssembledPieces` is one adapter.
 That skips NGSolve's allocation of a new matrix and graph, the part of an
@@ -185,7 +186,9 @@ def _assemble(space: ngs.FESpace, symmetric: bool, integrand: Integrand) -> Any:
 
 
 class AssembledPieces:
-    """The pieces ``A_k`` of a complex space, assembled on first use (θ = 1).
+    r"""The pieces :math:`A_k` of a complex space, assembled on first use.
+
+    Each piece is assembled with :math:`\theta_k = 1`.
 
     Holds the full-pattern matrix of the piece with the most nonzeros (its
     pattern is the operator's), the values of the other full-pattern pieces,
@@ -252,7 +255,10 @@ class AssembledPieces:
             return self._generation
 
     def matrix(self, weights: Sequence[complex]) -> ngs.BaseMatrix | None:
-        """A new matrix of `pattern` holding ``Σ θ_k A_k``; ``None`` without one."""
+        r"""A new matrix of `pattern` holding :math:`\sum_k \theta_k A_k`.
+
+        ``None`` without a pattern.
+        """
         template = self.pattern
         if template is None:
             return None
@@ -261,7 +267,10 @@ class AssembledPieces:
         return matrix
 
     def sum_into(self, weights: Sequence[complex], matrix: ngs.BaseMatrix) -> None:
-        """Overwrite the values of ``matrix`` (of `pattern`) with ``Σ θ_k A_k``."""
+        r"""Overwrite the values of ``matrix`` (of `pattern`).
+
+        They become :math:`\sum_k \theta_k A_k`.
+        """
         template, parts = self._assembled()
         if template is None:  # pragma: no cover - callers check the pattern
             raise ValueError("These pieces have no common sparsity pattern.")
@@ -489,7 +498,7 @@ def _positions(
 
 
 class Pieces(Protocol):
-    """Pieces ``A_k`` a `PieceSum` sums with its weights (`AssembledPieces`)."""
+    """Pieces :math:`A_k` a `PieceSum` sums with its weights (`AssembledPieces`)."""
 
     @property
     def pattern(self) -> ngs.BaseMatrix | None:
@@ -502,11 +511,17 @@ class Pieces(Protocol):
         ...
 
     def matrix(self, weights: Sequence[complex]) -> ngs.BaseMatrix | None:
-        """A new matrix of `pattern` holding ``Σ θ_k A_k``; ``None`` without one."""
+        r"""A new matrix of `pattern` holding :math:`\sum_k \theta_k A_k`.
+
+        ``None`` without a pattern.
+        """
         ...
 
     def sum_into(self, weights: Sequence[complex], matrix: ngs.BaseMatrix) -> None:
-        """Overwrite the values of ``matrix`` (of `pattern`) with ``Σ θ_k A_k``."""
+        r"""Overwrite the values of ``matrix`` (of `pattern`).
+
+        They become :math:`\sum_k \theta_k A_k`.
+        """
         ...
 
     @property
@@ -525,11 +540,11 @@ class Pieces(Protocol):
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class PieceSum:
-    """One operator as a piece sum: ``Σ θ_k A_k`` of assembled pieces.
+    r"""One operator as a piece sum: :math:`\sum_k \theta_k A_k` of assembled pieces.
 
     Attributes:
-        pieces: The pieces ``A_k`` (`AssembledPieces` or another adapter).
-        weights: θ_k, one per piece.
+        pieces: The pieces :math:`A_k` (`AssembledPieces` or another adapter).
+        weights: :math:`\theta_k`, one per piece.
     """
 
     pieces: Pieces

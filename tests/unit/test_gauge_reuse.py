@@ -85,7 +85,7 @@ def forced(monkeypatch):
 
 
 def _operator(line, scale):
-    """The gauged operator at ``FREQUENCY`` with the permittivity scaled."""
+    """The gauged piece sum at ``FREQUENCY`` with the permittivity scaled."""
     op, basis, pieces, _ = line
     omega = 2 * math.pi * FREQUENCY
     weights = [complex(piece.theta(omega)) for piece in op.pieces]

@@ -2367,8 +2367,9 @@ def _check_low_frequency(
         msg = below + (
             "The volume solve is gauged and keeps its digits, but the wave ports' "
             "mode solve is not: their modes, and S through them, carry an error "
-            "that grows like 1/f^2 below it, and a mode solve may report a TEM "
-            "mode as evanescent (gfem.PortModeError). Use lumped ports at these "
+            "that grows as the inverse square of the frequency below it, and a "
+            "mode solve may report a TEM mode as evanescent (gfem.PortModeError). "
+            "Use lumped ports at these "
             "frequencies, or raise the lowest frequency."
         )
         _mpi.warn(comm, msg, LowFrequencyWarning, stacklevel=stacklevel + 1)

@@ -30,6 +30,11 @@ def host_bytes(obj) -> int:
     return sum(int(u.host) for u in obj.GetMemoryUsage())
 
 
+def csr_bytes(matrix) -> int:
+    """Host memory of a SciPy CSR matrix's three arrays, in bytes."""
+    return int(matrix.data.nbytes + matrix.indices.nbytes + matrix.indptr.nbytes)
+
+
 def local_matrix(matrix, comm: Any = None) -> Any:
     """The sparse matrix behind ``matrix``: a rank's own under ``comm``, else itself.
 

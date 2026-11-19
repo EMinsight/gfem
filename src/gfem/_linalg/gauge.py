@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING
 import ngsolve as ngs
 import numpy as np
 
-from gfem._linalg.base import host_bytes
+from gfem._linalg.base import csr_bytes, host_bytes
 from gfem._linalg.pieces import Pieces, _scatter_compiled, _scatter_numpy
 
 if TYPE_CHECKING:
@@ -289,9 +289,7 @@ class GaugedHandle:
         shared = getattr(self._base, "shared", None)
         held = {} if shared is None else dict(shared())
         for matrix in (self._basis.T, self._basis.TT):
-            held[id(matrix)] = int(
-                matrix.data.nbytes + matrix.indices.nbytes + matrix.indptr.nbytes
-            )
+            held[id(matrix)] = csr_bytes(matrix)
         return held
 
     def solve(
