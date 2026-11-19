@@ -153,6 +153,11 @@ _REFUSALS = {
         "Job.run(out=) and call it on one process on the field load_result "
         f"gives, {_COPIES}."
     ),
+    "element_mean": (
+        "gfem.element_mean has no distributed path: write the result with "
+        "Job.run(out=) and call it on one process on the field load_result "
+        f"gives, {_COPIES}."
+    ),
     "power_flow": (
         "gfem.power_flow has no distributed path: write the result with "
         "Job.run(out=) and call it on one process on the field load_result "
@@ -292,10 +297,6 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
     from gfem._floquet import floquet_ports
     from gfem.problems import Driven, Eigenmode, Electrostatic
 
-    if isinstance(problem, Eigenmode):
-        refuse_feature("eigenmode")
-    if isinstance(problem, Electrostatic):
-        refuse_feature("electrostatic")
     physics = physics_of(problem)
     if physics != "em":
         # "thermal" (steady and transient) or "dc_conduction" (ADR 0161)
@@ -311,14 +312,28 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("periodic")
         if min(options.frequency_workers, len(problem.frequency)) > 1:
             refuse_feature("frequency_workers")
-        if options.device.startswith("cuda"):
-            refuse_feature("device")
-        if options.order == 1 and options.linear_solver in ("auto", "bddc_gmres"):
-            refuse_feature("bddc_order_1")
-        if options.linear_solver == "petsc" and _serial_only_preconditioner(
-            dict(options.petsc_options)
-        ):
-            refuse_feature("petsc_preconditioner")
+    if isinstance(problem, (Driven, Eigenmode, Electrostatic)):
+        _refuse_options(options)
+    if isinstance(problem, Eigenmode):
+        refuse_feature("eigenmode")
+    if isinstance(problem, Electrostatic):
+        refuse_feature("electrostatic")
+
+
+def _refuse_options(options: Any) -> None:
+    """Refuse the options no 3D EM problem runs above one rank, whatever its type.
+
+    A `gfem.PortMode` is not checked: it ignores ``device`` and ``linear_solver``
+    and runs its 2D solve on rank 0 alone (ADR 0059).
+    """
+    if options.device.startswith("cuda"):
+        refuse_feature("device")
+    if options.order == 1 and options.linear_solver in ("auto", "bddc_gmres"):
+        refuse_feature("bddc_order_1")
+    if options.linear_solver == "petsc" and _serial_only_preconditioner(
+        dict(options.petsc_options)
+    ):
+        refuse_feature("petsc_preconditioner")
 
 
 def _serial_only_preconditioner(petsc_options: dict[str, Any]) -> bool:
