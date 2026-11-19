@@ -146,6 +146,22 @@ def test_reference_command_gives_a_changed_reference_a_new_identity(tmp_path):
     assert new["quantities"]["f_hz"]["values"] != [1.0]
 
 
+def test_a_rerun_on_a_later_day_keeps_an_unchanged_reference_and_its_runs_path(
+    tmp_path,
+):
+    # `runs` names the reference's own id: a rerun with a new date must not count it
+    # as a change
+    path = tmp_path / "reference.json"
+    shutil.copy(config.CASES_DIR / "microstrip" / "reference.json", path)
+    before = path.read_bytes()
+    doc = json.loads(before)
+    doc["id"] = "microstrip-20991231-7a078ba"
+    doc["computed_utc"] = "2099-12-31T00:00:00Z"
+    doc["runs"] = "bench-data:references/microstrip-20991231-7a078ba/"
+    assert refdoc.write(path, doc) is False
+    assert path.read_bytes() == before
+
+
 def test_reference_command_keeps_dof_pins_added_by_hand(tmp_path):
     cases = _copy_case(tmp_path, "bragg")
     path = cases / "bragg" / "reference.json"

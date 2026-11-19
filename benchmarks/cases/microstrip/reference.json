@@ -1,8 +1,8 @@
 {
  "format": "suite-reference/1",
- "id": "microstrip-20261118-7a078ba",
+ "id": "microstrip-20261119-7a078ba",
  "family": "microstrip",
- "computed_utc": "2026-11-18T14:13:25Z",
+ "computed_utc": "2026-11-19T13:15:50Z",
  "case": {
   "name": "microstrip",
   "definition_sha256": "7b0c58694fea8d377a02a5c43e98ec6da2da4a1deb8cf7bb63e84a1371523c19",
@@ -168,6 +168,20 @@
    ],
    "d_L0": 1.567092858608973e-11,
    "d_L1": 4.5034783341796135e-11
+  },
+  {
+   "code": "palace",
+   "version": "0.19.0",
+   "delta": 6.776916040765674e-11,
+   "delta_per_frequency": [
+    6.776916040765674e-11,
+    1.9416281970244034e-12,
+    4.2174202480209774e-12,
+    3.1673967967530558e-12,
+    1.812861578754632e-12
+   ],
+   "d_L0": 6.543526249188878e-12,
+   "d_L1": 4.887738684313804e-11
   }
  ],
  "inputs": {
@@ -183,14 +197,16 @@
   "gfem_commits": [
    "1a0108bd45856e7d8c8e998e23f06bd6f84a9481",
    "36a9dbbf8a9f5bf90aabea7f81ac0779f4d1eac8",
-   "7a078ba60e657062c7b90bdf27bfaef9ec3dde8e"
+   "7a078ba60e657062c7b90bdf27bfaef9ec3dde8e",
+   "7b53a294e587cd6860118d8eecfab9d9125e7633"
   ],
   "campaigns": [
    "20261117-1a0108b-reference-microstrip-palace-0.18.1.post5",
    "20261117-36a9dbb-reference-microstrip-palace-0.18.1.post5",
    "20261118-7a078ba-reference-microstrip-l2",
    "20261118-7a078ba-reference-microstrip-l2-2",
-   "20261118-7a078ba-reference-microstrip-pilot-2"
+   "20261118-7a078ba-reference-microstrip-pilot-2",
+   "20261119-7b53a29-reference-microstrip-palace-0.19.0"
   ],
   "records": [
    "20261117-1a0108b-reference-microstrip-palace-0.18.1.post5/microstrip_L0_p2/palace-mumps__wheels__default__rep1",
@@ -201,7 +217,9 @@
    "20261118-7a078ba-reference-microstrip-pilot-2/microstrip_L0_p2/gfem-direct__wheels__default__rep1",
    "20261118-7a078ba-reference-microstrip-pilot-2/microstrip_L0_p3/gfem-direct__wheels__default__rep1",
    "20261118-7a078ba-reference-microstrip-pilot-2/microstrip_L1_p2/gfem-direct__wheels__default__rep1",
-   "20261118-7a078ba-reference-microstrip-pilot-2/microstrip_L1_p3/gfem-direct__wheels__default__rep1"
+   "20261118-7a078ba-reference-microstrip-pilot-2/microstrip_L1_p3/gfem-direct__wheels__default__rep1",
+   "20261119-7b53a29-reference-microstrip-palace-0.19.0/microstrip_L0_p2/palace-mumps__wheels__default__rep1",
+   "20261119-7b53a29-reference-microstrip-palace-0.19.0/microstrip_L1_p2/palace-mumps__wheels__default__rep1"
   ],
   "rate": {
    "raw": [
@@ -247,8 +265,8 @@
    }
   }
  },
- "runs": "bench-data:references/microstrip-20261118-7a078ba/",
- "cost_core_h": 686.187,
+ "runs": "bench-data:references/microstrip-20261119-7a078ba/",
+ "cost_core_h": 729.68,
  "target": {
   "bound": 0.0001,
   "met": false

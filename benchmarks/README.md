@@ -215,7 +215,8 @@ left out of medians, best-layout choice and comparisons.
 | `dof_equal` | campaign | any two DOF counts observed on a case differ, `dof_mismatch` runs included (gates the "same-mesh comparison" label) |
 
 A run counts as passing in the report only when `layout` and `placement` passed: a
-run whose ranks or masks the sampler never saw (they are `skipped`) is labelled
+run whose ranks or masks the sampler never saw, or that ended before the sampler saw
+$T$ threads in a rank whose masks hold too few cores (both `skipped`), is labelled
 `unverified` and left out of the medians and the best-layout choice. The sampler
 looks every 0.1 s over a run's first 5 s, then every second, so short runs are seen.
 
