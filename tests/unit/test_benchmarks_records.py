@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,11 @@ from benchmarks.harness import records
 DATA = Path(__file__).resolve().parent / "data" / "bench"
 RECORD = DATA / "record.example.json"
 CAMPAIGN = DATA / "campaign.example.json"
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
 
 
 def _json(path: Path) -> dict:

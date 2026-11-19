@@ -84,6 +84,11 @@ JAX_PLATFORMS = "cpu"
 
 CASES = ("bragg", "lcavity", "microstrip")
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
+
 
 def _write(tmp_path: Path, name: str, text: str) -> Path:
     path = tmp_path / name

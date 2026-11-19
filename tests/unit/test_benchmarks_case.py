@@ -3,6 +3,7 @@
 import json
 import lzma
 import shutil
+import sys
 import tomllib
 from pathlib import Path
 
@@ -93,6 +94,11 @@ name = "p2"
 impedance_ohm = 50.0
 elements = [{{region = "sub__None", direction = "-z"}}]
 """.format(sha="ab" * 32)
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
 
 
 # --- $PhysicalNames ----------------------------------------------------------------

@@ -3,6 +3,7 @@
 import cmath
 import json
 import shutil
+import sys
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -17,6 +18,11 @@ from benchmarks.references import document as refdoc
 # Probe 08 exact.out: mpmath at 40 digits, printed by nstr(x, 20) (trailing 0 dropped).
 LCAVITY_F1 = "148140269652.0220093"
 BRAGG_MODES = ("5185529649.204525515", "7206816174.7901555042")
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
 
 
 def _sig(value: Decimal, digits: int) -> str:

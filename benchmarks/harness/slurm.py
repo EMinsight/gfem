@@ -678,12 +678,10 @@ def _run_commands(x: _Job) -> tuple[list[_Launched], str | None]:
     return launched, version
 
 
-CRASH_SIGNALS = (
-    signal.SIGSEGV,
-    signal.SIGABRT,
-    signal.SIGBUS,
-    signal.SIGFPE,
-    signal.SIGILL,
+CRASH_SIGNALS = tuple(
+    getattr(signal, name)
+    for name in ("SIGSEGV", "SIGABRT", "SIGBUS", "SIGFPE", "SIGILL")
+    if hasattr(signal, name)
 )
 """Signals of a task that crashed: srun then cancels the step itself."""
 

@@ -53,6 +53,15 @@ ceiling_core_h = 100
 prior_core_h = 40
 """
 
+LINUX_ONLY = pytest.mark.skipif(
+    sys.platform != "linux", reason="taskset, /proc and Slurm launches are Linux-only"
+)
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
+
 
 def _done(stdout: str = "", code: int = 0) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess([], code, stdout=stdout, stderr="")
@@ -162,6 +171,7 @@ def test_every_launch_is_the_one_srun_line(site, tmp_path, solver, layout, mpi):
     assert command.launch == "srun"
 
 
+@LINUX_ONLY
 def test_the_taskset_fallback_pins_the_bare_program_to_a_block(
     site, tmp_path, monkeypatch
 ):
@@ -498,6 +508,7 @@ def _measure(tmp_path, argv, **kw):
     )
 
 
+@LINUX_ONLY
 def test_the_wall_cap_ends_a_run_as_timeout(tmp_path):
     m = _measure(tmp_path, ["sleep", "30"], cap_s=0.3)
     assert m.ended_by == "timeout"
@@ -505,6 +516,7 @@ def test_the_wall_cap_ends_a_run_as_timeout(tmp_path):
     assert m.wall_s < 15
 
 
+@LINUX_ONLY
 def test_a_dof_count_off_the_pin_ends_the_run(tmp_path):
     def watch(line):
         return int(line.split()[1]) if line.startswith("DOF ") else None
@@ -526,6 +538,7 @@ def test_a_finished_run_is_measured(tmp_path):
     assert (tmp_path / "out.txt").read_text() == "hi\n"
 
 
+@LINUX_ONLY
 def test_a_short_run_still_has_its_placement_checked(tmp_path):
     m = measure.measure(
         ["taskset", "-c", str(min(os.sched_getaffinity(0))), "sleep", "0.4"],
@@ -1006,6 +1019,7 @@ def test_ship_refuses_a_store_mesh_with_another_hash(tmp_path):
 # --- run --local, end to end ----------------------------------------------------------
 
 
+@LINUX_ONLY
 def test_run_local_leaves_a_record_for_every_row(tmp_path, monkeypatch):
     local = tmp_path / "local"
     local.mkdir()

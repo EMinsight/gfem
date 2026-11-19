@@ -7,6 +7,7 @@ the committed ``reference.json`` files (those are no Baseline, ADR 0188).
 import copy
 import json
 import shutil
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +17,11 @@ from benchmarks.harness import case as case_mod
 from benchmarks.harness import config, records, score
 
 BRAGG_F = [5.0e9, 7.0e9]
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
 
 
 def _case(name: str) -> case_mod.Case:

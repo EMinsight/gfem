@@ -19,6 +19,11 @@ from benchmarks.report import views
 BENCH = Path(__file__).parent / "data" / "bench"
 FIXTURE = BENCH / "campaign"
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
+
 
 def _report(tmp_path: Path, *args: str, name: str = "r") -> Path:
     out = tmp_path / name

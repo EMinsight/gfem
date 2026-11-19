@@ -47,6 +47,15 @@ dir = "{root}/out"
 """
 ADAPTER = gfem_adapter.ADAPTER
 
+LINUX_ONLY = pytest.mark.skipif(
+    sys.platform != "linux", reason="taskset, /proc and Slurm launches are Linux-only"
+)
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
+
 
 @pytest.fixture
 def stack(tmp_path):
@@ -400,6 +409,7 @@ def _local(stack, tmp_path, name, **kw):
     return run, ADAPTER.collect(run, measured)
 
 
+@LINUX_ONLY
 def test_the_worker_solves_the_tiny_case(stack, tmp_path):
     run, outcome = _local(stack, tmp_path, "ok", pinned_ndof=TINY_NDOF)
     assert outcome.status == "ok", (run.workdir / "stdout.txt").read_text()

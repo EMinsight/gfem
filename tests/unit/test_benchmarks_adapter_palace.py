@@ -10,6 +10,7 @@ adapter (wave-port timer rows included). No test runs Palace.
 import json
 import math
 import shutil
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -52,6 +53,11 @@ dir = "{root}/data"
 [output]
 dir = "{root}/out"
 """
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
 
 
 def _stack(root: Path, version: str):

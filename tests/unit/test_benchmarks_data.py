@@ -3,6 +3,7 @@
 import hashlib
 import lzma
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,11 @@ MESH41 = DATA / "two_box_msh41.msh"
 MiB = 1 << 20
 
 CASES = config.known_cases()
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
 
 
 # --- the committed cases -----------------------------------------------------------

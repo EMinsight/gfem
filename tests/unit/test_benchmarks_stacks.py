@@ -1,6 +1,7 @@
 """`benchmarks.stacks`: software stacks resolved against a site file (ADR 0403)."""
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,11 @@ from benchmarks.harness.config import ConfigError
 REPO = Path(__file__).resolve().parents[2]
 EXAMPLE_SITE = REPO / "benchmarks" / "site.example.toml"
 COMMIT = "858bc66" + "0" * 33
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
 
 
 @pytest.fixture

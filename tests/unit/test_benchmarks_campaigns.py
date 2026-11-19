@@ -1,5 +1,6 @@
 """Committed campaign files (`benchmarks/campaigns/*.toml`) plan cleanly."""
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,6 +17,11 @@ RELEASE = CAMPAIGNS / "release-gfem.toml"
 COMMIT = "858bc66" + "0" * 33
 
 COMMITTED = sorted(CAMPAIGNS.glob("*.toml"))
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the benchmark harness runs on Linux and macOS",
+)
 
 
 @pytest.fixture(scope="module")
