@@ -396,6 +396,20 @@ class ModeLabelError(RuntimeError):
     """
 
 
+class SolveCacheWarning(UserWarning):
+    """The solve cache could not read or store this call's result.
+
+    The returned result is correct either way; only what is on disk differs
+    from what ``cache=`` asks for. The message says what happened and the
+    remedy: an entry that could not be read (removed, solved again and
+    stored), a result that could not be stored (a read-only or full
+    directory), a result larger than the cache's ``max_bytes``, a directory
+    of another cache layout, or an input the cache cannot key on. Silence it
+    as a whole with
+    ``warnings.filterwarnings("ignore", category=gfem.SolveCacheWarning)``.
+    """
+
+
 class SweepNotConvergedWarning(UserWarning):
     """An adaptive frequency sweep stopped at its sample cap before converging.
 

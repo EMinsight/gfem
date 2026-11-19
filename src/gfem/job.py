@@ -65,7 +65,14 @@ from gfem._pytree import register_fields
 from gfem._sheet import SheetField
 from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
-from gfem.mesh import _TOPOLOGY_ARRAYS, Mesh, Region, _Topology, _topology_sha256
+from gfem.mesh import (
+    _TOPOLOGY_ARRAYS,
+    Mesh,
+    Region,
+    _same_topology,
+    _Topology,
+    _topology_sha256,
+)
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
 from gfem.problems import (
@@ -502,6 +509,11 @@ def _sha256(path: Path) -> str:
 def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
     if context.key:
         return _key_mesh_args(mesh)
+    if context.model_mesh is not None:
+        # a solve cache entry: never a file, so it outlives any edit to one
+        if _is_model_mesh(mesh, context.model_mesh):
+            return {"model_mesh": _topology_sha256(mesh._topology)}  # noqa: SLF001
+        return _in_memory_mesh_args(mesh)
     source = mesh.source
     if source is None:
         return _in_memory_mesh_args(mesh)
@@ -538,6 +550,31 @@ def _key_mesh_args(mesh: Mesh) -> dict[str, Any]:
         | {"topology_sha256": _topology_sha256(mesh._topology)}  # noqa: SLF001
         | _moved_nodes(mesh)
     )
+
+
+def _is_model_mesh(mesh: Mesh, model_mesh: Mesh) -> bool:
+    """Whether ``mesh`` is the model's mesh: the same topology and nodes."""
+    if mesh is model_mesh:
+        return True
+    return _same_topology(mesh, model_mesh) and np.array_equal(
+        np.asarray(mesh.nodes), np.asarray(model_mesh.nodes)
+    )
+
+
+def _model_mesh_from_args(digest: str, context: _codec.Context) -> Mesh:
+    """The model's mesh, which a solve cache entry's fields refer to."""
+    mesh = context.model_mesh
+    if mesh is None:
+        raise ValueError(
+            "The fields refer to the model's mesh, but no model was given."
+        )
+    own = _topology_sha256(mesh._topology)  # noqa: SLF001
+    if digest != own:
+        raise ValueError(
+            f"The fields were solved on a mesh of topology {digest}, but the "
+            f"model's mesh has topology {own}."
+        )
+    return mesh
 
 
 def _section(mesh: Mesh) -> dict[str, Any]:
@@ -599,6 +636,8 @@ def _with_nodes(mesh: Mesh, args: dict[str, Any]) -> Mesh:
 
 
 def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
+    if "model_mesh" in args:
+        return _model_mesh_from_args(args["model_mesh"], context)
     if "path" not in args:
         return _in_memory_mesh_from_args(args)
     path = context.base / args["path"]
@@ -751,8 +790,10 @@ def _job_from_args(args: dict[str, Any], _: _codec.Context) -> Job:
     return Job(args["model"], args["problem"], args.get("options", SolverOptions()))
 
 
-#: What a job file's mesh may hold: a file reference, or a mesh with no file.
+#: What a job file's mesh may hold: a file reference, or a mesh with no file;
+#: a solve cache entry's, a reference to the model's mesh.
 _MESH_NAMES = (
+    "model_mesh",
     "path",
     "sha256",
     "length_unit",
