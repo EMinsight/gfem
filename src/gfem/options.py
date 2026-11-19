@@ -417,7 +417,8 @@ class SolverOptions:
             a word. ``"tree_cotree"`` asks for the gauge and raises
             `ValueError` when the solve starts wherever it does not apply
             (`gfem.DistributedUnsupportedError` across MPI ranks), including
-            an ``"auto"`` linear solver that chose ``"bddc_gmres"``.
+            an ``"auto"`` linear solver that chose ``"bddc_gmres"``; the
+            message names every reason.
             ``"none"`` solves ungauged. The gauge writes the field as
             :math:`x = T y`, :math:`T` square and nonsingular: node potentials
             along a spanning tree, one floating potential per conductor other
