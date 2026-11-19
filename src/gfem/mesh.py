@@ -24,6 +24,10 @@ LENGTH_UNITS = {"m": 1.0, "cm": 1e-2, "mm": 1e-3, "um": 1e-6, "nm": 1e-9}
 _READ_ERRORS = (ValueError, OSError, meshio.ReadError)
 
 _TOPOLOGY_STATICS = ("length_unit", "regions", "source", "section_thickness")
+#: Every array of a `_Topology`, by field name: what a mesh with no file
+#: writes and what its digest hashes. `_ELEMENT_ARRAYS` is the subset, by
+#: `Mesh` property name, that defines its elements; the others (imported
+#: nodes, triangle neighbours) are read or derived alongside.
 _TOPOLOGY_ARRAYS = (
     "imported_nodes",
     "tetrahedra",
@@ -103,12 +107,18 @@ def _topology_sha256(topology: _Topology) -> str:
     return digest
 
 
+def _mesh_sha256(mesh: Mesh) -> str:
+    """The topology digest of a mesh (`_topology_sha256`); its nodes do not enter."""
+    return _topology_sha256(mesh._topology)  # noqa: SLF001
+
+
 def _hash_array(h, path: str, array) -> None:
     """Feed one array to the hash ``h``, independent of its memory layout.
 
     A length-prefixed JSON header ``[path, dtype.str, shape]`` comes first,
     then the little-endian C-order bytes. Float and complex values are
-    normalized first: $-0$ becomes $+0$ (``a + 0``) and every NaN one quiet NaN.
+    normalized first: :math:`-0` becomes :math:`+0` (``a + 0``) and every NaN
+    one quiet NaN.
     """
     a = np.asarray(array)
     if a.dtype.kind in "fc":
@@ -688,7 +698,9 @@ class Mesh:
         return self._topology.tri_neighbours
 
 
-#: The `Mesh` arrays that, with its regions, define its elements.
+#: The `Mesh` arrays that, with its regions, define its elements: the
+#: element part of `_TOPOLOGY_ARRAYS`, by property name, which `_same_topology`
+#: compares.
 _ELEMENT_ARRAYS = (
     "tetrahedra",
     "tetrahedron_tags",
@@ -709,6 +721,25 @@ def _same_topology(a: Mesh, b: Mesh) -> bool:
         return True
     return a.regions == b.regions and all(
         np.array_equal(getattr(a, name), getattr(b, name)) for name in _ELEMENT_ARRAYS
+    )
+
+
+def _is_model_mesh(mesh: Mesh, model_mesh: Mesh) -> bool:
+    """Whether ``mesh`` is the model's mesh: one a result can refer to by digest.
+
+    The same object, or the same elements and regions (`_same_topology`),
+    length unit, cross-section thickness, topology digest
+    (`_mesh_sha256`) and nodes. A solve cache entry stores such a mesh
+    as its digest, and `gfem.error_estimate` needs it.
+    """
+    if mesh is model_mesh:
+        return True
+    return (
+        _same_topology(mesh, model_mesh)
+        and mesh.length_unit == model_mesh.length_unit
+        and mesh.section_thickness == model_mesh.section_thickness
+        and _mesh_sha256(mesh) == _mesh_sha256(model_mesh)
+        and np.array_equal(np.asarray(mesh.nodes), np.asarray(model_mesh.nodes))
     )
 
 

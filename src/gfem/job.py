@@ -70,9 +70,9 @@ from gfem.mesh import (
     _TOPOLOGY_ARRAYS,
     Mesh,
     Region,
-    _same_topology,
+    _is_model_mesh,
+    _mesh_sha256,
     _Topology,
-    _topology_sha256,
 )
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
@@ -100,7 +100,7 @@ from gfem.results import (
     SweepInfo,
     TransientThermalResult,
 )
-from gfem.solve import _solve, solve
+from gfem.solve import _solve, _solve_cache, solve
 from gfem.thermal import HeatSource, _FieldTrace
 from gfem.thermo_optic import _RouteSampler, _RouteTrace, _Sampling, _ShiftTrace
 
@@ -208,12 +208,7 @@ class Job:
             except (TypeError, ValueError) as err:
                 # one argv on every rank, so every rank raises it together
                 raise _mpi.agreed(err) from None
-        use = None
-        if cache is not None:
-            # imported here: the cache's module imports this one
-            from gfem._solve_cache import SolveCache
-
-            use = SolveCache(cache)
+        use = _solve_cache(cache)
         resolved = _mpi.resolve_comm(comm)
         start = time.perf_counter()
 
@@ -539,7 +534,7 @@ def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
     if context.model_mesh is not None:
         # a solve cache entry: never a file, so it outlives any edit to one
         if _is_model_mesh(mesh, context.model_mesh):
-            return {"model_mesh": _topology_sha256(mesh._topology)}  # noqa: SLF001
+            return {"model_mesh": _mesh_sha256(mesh)}
         return _in_memory_mesh_args(mesh)
     source = mesh.source
     if source is None:
@@ -574,17 +569,8 @@ def _key_mesh_args(mesh: Mesh) -> dict[str, Any]:
             "regions": [[r.name, r.tag, r.dim] for r in mesh.regions],
         }
         | _section(mesh)
-        | {"topology_sha256": _topology_sha256(mesh._topology)}  # noqa: SLF001
+        | {"topology_sha256": _mesh_sha256(mesh)}
         | _moved_nodes(mesh)
-    )
-
-
-def _is_model_mesh(mesh: Mesh, model_mesh: Mesh) -> bool:
-    """Whether ``mesh`` is the model's mesh: the same topology and nodes."""
-    if mesh is model_mesh:
-        return True
-    return _same_topology(mesh, model_mesh) and np.array_equal(
-        np.asarray(mesh.nodes), np.asarray(model_mesh.nodes)
     )
 
 
@@ -595,7 +581,7 @@ def _model_mesh_from_args(digest: str, context: _codec.Context) -> Mesh:
         raise ValueError(
             "The fields refer to the model's mesh, but no model was given."
         )
-    own = _topology_sha256(mesh._topology)  # noqa: SLF001
+    own = _mesh_sha256(mesh)
     if digest != own:
         raise ValueError(
             f"The fields were solved on a mesh of topology {digest}, but the "

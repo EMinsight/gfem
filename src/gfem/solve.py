@@ -150,10 +150,11 @@ def solve(
             ``srun``, where every rank makes the same call. A communicator of
             size 1, such as ``MPI.COMM_SELF``, runs one independent copy.
         cache: A directory for the solve cache. The result is stored there
-            under a digest of everything it depends on (the mesh, materials,
-            problem, the solver options except ``threads``,
-            ``frequency_workers``, ``retain_memory`` and ``device``, and the
-            gfem and NGSolve versions), and the same call again reads it
+            under its solve key, a hash of everything it depends on (the
+            mesh, materials, problem, the solver options except ``threads``,
+            ``frequency_workers``, ``retain_memory`` and ``device``, gfem's
+            version and code, and the versions of NGSolve and, when the
+            options select them, PETSc or SLEPc), and the same call again reads it
             back instead of solving: the same result class and values, its
             fields on ``model.mesh``, and the solve's warnings shown again at
             your line. A path that does not exist, or an empty directory,
@@ -196,13 +197,22 @@ def solve(
             ``result`` holds the frequencies it solved, ``unsolved`` the
             rest.
     """
-    use = None
-    if cache is not None:
-        # imported here: the cache's module imports gfem.job, which imports this
-        from gfem._solve_cache import SolveCache
-
-        use = SolveCache(cache)
+    use = _solve_cache(cache)
     return _solve(model, problem, options=options, comm=comm, cache=use)[0]
+
+
+def _solve_cache(cache: str | os.PathLike | None) -> SolveCache | None:
+    """The `SolveCache` of a ``cache=`` argument; None without one.
+
+    Raises:
+        TypeError: ``cache`` is not a path.
+    """
+    if cache is None:
+        return None
+    # imported here: the cache's module imports gfem.job, which imports this
+    from gfem._solve_cache import SolveCache
+
+    return SolveCache(cache)
 
 
 def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks

@@ -225,7 +225,7 @@ def test_an_input_the_key_cannot_encode_warns_once_and_solves(
         assert (filename, lineno) == (__file__, line)
     assert len(forwards) == 2
     assert np.isfinite(result.capacitance).all()
-    assert not _entries(tmp_path / "c")
+    assert not (tmp_path / "c").exists()  # decided before the directory
     assert message.startswith(f"cache={str(tmp_path / 'c')!r} was given, but")
     assert "cannot key on model.materials['oxide'] (" in message
     assert "Glass" in message

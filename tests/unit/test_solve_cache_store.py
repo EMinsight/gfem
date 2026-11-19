@@ -1,5 +1,6 @@
 """The solve cache's store: entries written, read back, removed and evicted."""
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -325,3 +326,76 @@ def test_two_processes_publishing_one_key_leave_one_complete_entry(stack, tmp_pa
     assert list((root / ".tmp").iterdir()) == []
     back, _, _ = Store(root).read(key, model)
     _assert_bit_equal(back, result)
+
+
+def test_a_result_the_store_cannot_write_warns_and_stores_nothing(stack, tmp_path):
+    model, _, key = stack
+
+    class Unwritable:
+        pass
+
+    store = Store(tmp_path)
+    with pytest.warns(gfem.SolveCacheWarning, match="could not be stored") as caught:
+        reason = store.write(key, model, ENV, Unwritable(), _run(), ())
+    assert caught[0].filename == __file__
+    assert "Unwritable" in reason
+    assert not (tmp_path / key).exists()
+    assert list((tmp_path / ".tmp").iterdir()) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permissions")
+def test_a_damaged_entry_that_cannot_be_removed_is_reported_as_left(stack, tmp_path):
+    model, _, key = stack
+    store = _filled(stack, tmp_path)
+    (tmp_path / key / "entry.json").write_text("{")
+    tmp_path.chmod(0o555)
+    try:
+        with pytest.warns(gfem.SolveCacheWarning, match="could not be read") as caught:
+            assert store.read(key, model) is None
+    finally:
+        tmp_path.chmod(0o755)
+    message = str(caught[0].message)
+    assert "was removed" not in message
+    assert "could not be removed" in message
+    assert (tmp_path / key).exists()
+
+
+def test_damaged_entries_count_toward_the_cap_and_are_evicted(stack, tmp_path):
+    model, result, _ = stack
+    store = Store(tmp_path)
+    store.write("a" * 64, model, ENV, result, _run(), ())
+    size = json.loads((tmp_path / ("a" * 64) / "entry.json").read_text())["bytes"]
+    damaged = tmp_path / ("b" * 64)
+    damaged.mkdir()
+    (damaged / "entry.json").write_text("{")
+    (damaged / "arrays.npz").write_bytes(b"\0" * size)
+    os.utime(tmp_path / ("a" * 64) / "entry.json", (1e9, 1e9))
+    for path in (damaged / "entry.json", damaged):  # the least recently used
+        os.utime(path, (9e8, 9e8))
+    _cap(tmp_path, 2 * size)
+    Store(tmp_path).write("c" * 64, model, ENV, result, _run(), ())
+    left = sorted(p.name[0] for p in tmp_path.iterdir() if len(p.name) == 64)
+    assert left == ["a", "c"]
+
+
+def test_a_field_on_a_mesh_in_other_units_is_not_read_back_on_the_model_mesh(
+    stack, tmp_path
+):
+    model, result, key = stack
+    in_mm = gfem.Mesh.from_gmsh(model.mesh.source, length_unit="mm")
+    # moved onto the model's node positions: same elements, same nodes
+    in_mm = jax.tree_util.tree_unflatten(
+        jax.tree_util.tree_structure(in_mm), [model.mesh.nodes]
+    )
+    moved = dataclasses.replace(
+        result,
+        potential={
+            name: dataclasses.replace(field, mesh=in_mm)
+            for name, field in result.potential.items()
+        },
+    )
+    store = Store(tmp_path)
+    store.write(key, model, ENV, moved, _run(), ())
+    back, _, _ = store.read(key, model)
+    assert all(f.mesh is not model.mesh for f in back.potential.values())
+    assert all(f.mesh.length_unit == "mm" for f in back.potential.values())

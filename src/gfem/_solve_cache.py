@@ -13,8 +13,9 @@ The key hashes, in this order:
    "job"}`` (``separators=(",", ":")``, ASCII, no NaN, mappings in insertion
    order). ``job`` is the `gfem._codec` encoding of the job under
    ``Context(key=True)``, which writes a mesh by its in-memory topology
-   (`gfem.mesh._topology_sha256`) instead of its file; the encoder's
-   ``numpy`` flags are dropped and a scalar $-0$ is written as $0$.
+   (`gfem.mesh._mesh_sha256`) instead of its file; the encoder's
+   ``numpy`` flags are dropped and a scalar :math:`-0` is written as
+   :math:`0`.
 2. Every array of the encoder's table, sorted by leaf path, as
    `gfem.mesh._hash_array` feeds it.
 
@@ -115,7 +116,7 @@ def solve_key(
 
 
 def _canonical(node: Any) -> Any:
-    """The encoded JSON without ``numpy`` flags, with $-0$ written as $0$."""
+    """The encoded JSON without ``numpy`` flags, :math:`-0` written as :math:`0`."""
     if isinstance(node, list):
         return [_canonical(v) for v in node]
     if isinstance(node, float):
@@ -287,8 +288,8 @@ class Store:
         """The entry of ``key``, its fields on ``model.mesh``; None on a miss.
 
         A hit marks the entry as used now. An entry that cannot be read (a
-        damaged file, a key or mesh that does not match) is removed, with a
-        `gfem.SolveCacheWarning`, and is a miss.
+        damaged file, a key or mesh that does not match) is a miss with a
+        `gfem.SolveCacheWarning`, and is removed if it can be.
 
         Args:
             key: The solve key.
@@ -324,11 +325,19 @@ class Store:
         except _READ_ERRORS as err:
             if not entry.exists():
                 return None  # evicted while being read
-            _discard(self.root, entry)
+            if _discard(self.root, entry):
+                fate = (
+                    ", so it was removed and this call solved again; the new "
+                    "result is stored"
+                )
+            else:
+                fate = (
+                    " and could not be removed, so this call solved again; "
+                    "delete that directory"
+                )
             warnings.warn(
                 f"The solve cache entry {entry} could not be read "
-                f"({type(err).__name__}: {err}), so it was removed and this call "
-                "solved again; the new result is stored. Entries are written "
+                f"({type(err).__name__}: {err}){fate}. Entries are written "
                 "whole, so something outside gfem changed it (a full disk, a "
                 "sync tool, a hand edit).",
                 SolveCacheWarning,
@@ -374,18 +383,29 @@ class Store:
         if not self.usable:
             return "a solve cache of another layout"
         encoder = _codec.Encoder(_codec.Context(self.root / key, model_mesh=model.mesh))
-        doc: dict[str, Any] = {
-            "format": ENTRY_FORMAT,
-            "layout": LAYOUT,
-            "key": key,
-            "env": env,
-            "created": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
-            "bytes": 0,
-            "arrays": None,
-            "run": encoder.encode(run, ".run"),
-            "warnings": [{"category": c.__name__, "message": m} for c, m in recorded],
-            "result": encoder.encode(result),
-        }
+        try:
+            doc: dict[str, Any] = {
+                "format": ENTRY_FORMAT,
+                "layout": LAYOUT,
+                "key": key,
+                "env": env,
+                "created": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
+                "bytes": 0,
+                "arrays": None,
+                "run": encoder.encode(run, ".run"),
+                "warnings": [
+                    {"category": c.__name__, "message": m} for c, m in recorded
+                ],
+                "result": encoder.encode(result),
+            }
+        except _codec.UnencodableError as err:
+            warnings.warn(
+                f"This solve's result could not be stored in the solve cache "
+                f"{self.root} ({err}); the result is correct.",
+                SolveCacheWarning,
+                stacklevel=stacklevel + 1,
+            )
+            return f"the result cannot be written: {err}"
         size = sum(a.nbytes for a in encoder.arrays.values())
         target = self.root / key
         if size <= self.max_bytes:
@@ -459,7 +479,12 @@ def _publish(
 
 
 def _entries(root: Path) -> list[tuple[float, int, Path]]:
-    """Every readable entry as ``(last used, bytes, directory)``."""
+    """Every entry as ``(last used, bytes, directory)``.
+
+    A damaged entry (no readable ``entry.json``, or no whole ``bytes`` in it)
+    counts by its files' size on disk, last used when its directory last
+    changed, and is evicted like the others.
+    """
     entries = []
     try:
         scan = list(os.scandir(root))
@@ -468,15 +493,24 @@ def _entries(root: Path) -> list[tuple[float, int, Path]]:
     for item in scan:
         if not _KEY.match(item.name) or not item.is_dir(follow_symlinks=False):
             continue
-        path = Path(item.path) / ENTRY_JSON
+        path = Path(item.path)
         try:
-            used = path.stat().st_mtime
-            size = json.loads(path.read_text())["bytes"]
+            used = (path / ENTRY_JSON).stat().st_mtime
+            size = json.loads((path / ENTRY_JSON).read_text())["bytes"]
+            if not _whole(size):
+                raise TypeError(size)  # noqa: TRY301
         except (OSError, ValueError, KeyError, TypeError):
-            continue  # being replaced, or damaged: its reader removes it
-        if _whole(size):
-            entries.append((used, size, Path(item.path)))
+            try:  # damaged
+                used, size = path.stat().st_mtime, _disk_size(path)
+            except OSError:
+                continue  # removed meanwhile
+        entries.append((used, size, path))
     return entries
+
+
+def _disk_size(directory: Path) -> int:
+    """The total size of the files under ``directory``."""
+    return sum(p.lstat().st_size for p in directory.rglob("*") if not p.is_dir())
 
 
 def _sweep(tmp: Path) -> None:
@@ -594,8 +628,8 @@ def _discard(root: Path, entry: Path) -> bool:
 
 
 def _size(n: int) -> str:
-    """A byte count for people: ``"4.5 MB"``."""
-    for unit, scale in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+    """A byte count for people, in binary units: ``"4.5 MiB"``."""
+    for unit, scale in (("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024)):
         if n >= scale:
             return f"{n / scale:.1f} {unit}"
     return f"{n} B"
@@ -709,9 +743,10 @@ class SolveCache:
     def lookup(self, model: Any, problem: Any, options: SolverOptions) -> Any:
         """The stored result of this call, or None to solve.
 
-        Opens the store, keys the call and reads its entry. An input the key
-        cannot encode, or a cache of another layout, makes the call a bypass
-        with a `gfem.SolveCacheWarning`. Above one rank, every rank calls
+        Keys the call, opens the store and reads its entry. An input the key
+        cannot encode (decided before the directory is touched), or a cache
+        of another layout, makes the call a bypass with a
+        `gfem.SolveCacheWarning`. Above one rank, every rank calls
         this: rank 0 does the work and every rank decodes what it found.
 
         Raises:
@@ -763,12 +798,8 @@ class SolveCache:
 
     def _lookup(self, model: Any, problem: Any, options: SolverOptions) -> Any:
         stacklevel = _outside_gfem()
-        store = Store(self.directory, stacklevel=stacklevel)
-        if not store.usable:
-            self._bypass("a solve cache of another layout")
-            return None
-        try:
-            self.key, self._env = solve_key(model, problem, options)
+        try:  # first: an input the key cannot encode leaves the directory alone
+            key, self._env = solve_key(model, problem, options)
         except _codec.UnencodableError as err:
             self._bypass(f"cannot key on {err.path}")
             warnings.warn(
@@ -781,8 +812,12 @@ class SolveCache:
                 stacklevel=stacklevel,
             )
             return None
-        self._store = store
-        found = store.read_document(self.key, model, stacklevel=stacklevel)
+        store = Store(self.directory, stacklevel=stacklevel)
+        if not store.usable:
+            self._bypass("a solve cache of another layout")
+            return None
+        self.key, self._store = key, store
+        found = store.read_document(key, model, stacklevel=stacklevel)
         if found is None:
             self.status = "miss"
             return None
