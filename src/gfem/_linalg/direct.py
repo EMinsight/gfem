@@ -43,7 +43,7 @@ from gfem._linalg.factor_reuse import (
     AmortizedRule,
     cholesky_ratio,
 )
-from gfem._linalg.gmres import Gmres
+from gfem._linalg.gmres import Gmres, StopNorm
 from gfem._linalg.pardiso import (  # noqa: F401 (the first two re-exported)
     PARDISO_FLAGS,
     PardisoFactors,
@@ -246,6 +246,8 @@ class DirectHandle(PlannedHandle):
             )
         # the frequency of the refactorization under way, if told
         self._frequency: float | None = None
+        # the held values' stop norm, for reused-factor GMRES (`_hold_stop_norm`)
+        self._stop: StopNorm | None = None
         #: What the last step did, and why (see the class docstring).
         self.last_action: str | None = "factorized"
         self.last_reason: str | None = FIRST
@@ -341,6 +343,24 @@ class DirectHandle(PlannedHandle):
     def _refactorizing_at(self, frequency: float | None) -> None:
         """Hold the frequency of the refactorization under way; under the lock."""
         self._frequency = frequency
+
+    def _hold_stop_norm(self, stop: tuple[Any, np.ndarray] | None) -> None:
+        r"""Hold the held values' stop norm ``(T, d)``, if any; under the lock.
+
+        Reused-factor GMRES then stops on :math:`\|T (d \circ r)\|` of its
+        preconditioned residual :math:`r` on the free DOFs (ADR 0094, 0216);
+        without one, on :math:`\|r\|`.
+        """
+        if stop is None:
+            self._stop = None
+            return
+        T, d = stop
+        rows = np.flatnonzero(self._free)
+        if T.shape[1] != len(rows) or len(d) != len(rows):
+            raise ValueError(
+                f"A stop norm of {T.shape[1]} columns for {len(rows)} free DOFs."
+            )
+        self._stop = StopNorm(T, np.asarray(d), rows)
 
     def _reuse_pays(self) -> bool:
         """The rule's gate (`AmortizedRule.pays`); tests force it."""
@@ -438,8 +458,10 @@ class DirectHandle(PlannedHandle):
 
         Each stops at `REUSED_TOLERANCE` times ``tolerance`` (``None``: the
         prepared one) relative to its preconditioned load, within the rule's
-        cap. A column that does not refactorizes at the held matrix, and it
-        and the later ones are solved direct (counted 0 iterations after it).
+        cap, both measured in the held values' stop norm when they have one
+        (`_hold_stop_norm`). A column that does not refactorizes at the held
+        matrix, and it and the later ones are solved direct (counted 0
+        iterations after it).
         """
         tight = REUSED_TOLERANCE * (self.tolerance if tolerance is None else tolerance)
         cols, flat = self._columns(B)
@@ -456,10 +478,17 @@ class DirectHandle(PlannedHandle):
                     counts.append(0)
                     out[:, j] = x.FV().NumPy()
                     continue
-                solver = Gmres(matrix, self._solver, tol=tight, maxiter=rule.cap)
+                solver = Gmres(
+                    matrix,
+                    self._solver,
+                    tol=tight,
+                    maxiter=rule.cap,
+                    stop_norm=self._stop,
+                )
                 solver.Solve(rhs=b, sol=x, initialize=True)
                 its = int(solver.iterations)  # ty: ignore[unresolved-attribute]
                 counts.append(its)
+                # in the stop norm's coordinates, when the values have one
                 residuals = solver.residuals  # ty: ignore[unresolved-attribute]
                 if not residuals or residuals[-1] <= tight * residuals[0]:
                     rule.solved_reused(1, its)
