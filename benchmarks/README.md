@@ -438,7 +438,8 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
 3. **Submit** from the same tree:
 
    ```sh
-   python -m benchmarks submit RUNDIR [--job J] [--qos Q] [--ceiling C] [--dry-run]
+   python -m benchmarks submit RUNDIR [--job J] [--qos Q] [--time H:MM:SS] \
+       [--ceiling C] [--dry-run]
    ```
 
    `submit` refuses when `prior_core_h` + billed core-h of every `submitted.tsv`
@@ -448,7 +449,12 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
    It then prepares the stacks, stages the meshes, `sbatch`es
    `benchmarks/job.sbatch RUNDIR JOB` per job and appends the ids to
    `RUNDIR/submitted.tsv`. `--dry-run` prints the budget line and the sbatch lines
-   only. Each job writes its machine facts once (`jobs/<jobid>/`, including a
+   only. `--time H:MM:SS` replaces the planned time limit of every job submitted,
+   for a rerun after a job ran out of time (its remaining lines `not_started` with
+   `job_time_left`): the estimate becomes the new limit / 1.5 and, without `--qos`,
+   the QOS follows the new limit (`debug` up to 2 h, else `long`). `submitted.tsv`
+   records the limit and estimate used; `plan.tsv` keeps the planned ones. Each job
+   writes its machine facts once (`jobs/<jobid>/`, including a
    `tools/scale_bench.py node` machine benchmark), then runs
    `python -m benchmarks step RUNDIR JOB LINE` for each steps line.
 
