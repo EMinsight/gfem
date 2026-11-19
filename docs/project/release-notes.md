@@ -29,6 +29,13 @@
   message now ends with why it is ungauged and, where one exists, the setting
   that gauges it. For capacitance, solve `gfem.Electrostatic`.
 
+- **Phase timings on the `"gfem.timing"` logger.** Silent by default; when
+  enabled, every driven and eigenmode solve logs one record per phase
+  (discretize, assemble, setup, solve) on each process, with the number of
+  unknowns, the solver's bytes and the Krylov iterations. See "Time each
+  phase" in
+  {doc}`../recipes/solve-a-device`.
+
 - **Behaviour change: exact S on lossy wave ports.** A wave port's S now reads
   the field's modal amplitudes by the biorthogonal projection on its modes,
   and S relates pseudo-waves (Marks and Williams). With a `voltage_path`, a

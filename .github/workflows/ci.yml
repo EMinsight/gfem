@@ -42,7 +42,7 @@ jobs:
       # Once, on Linux: the `ty: ignore`s match Linux's ngsolve stubs, which the
       # macOS and Windows wheels do not share.
       if: matrix.os == 'ubuntu-latest'
-      run: uv run ty check src
+      run: uv run ty check src benchmarks
     - name: Unit tier
       run: uv run pytest -m unit
 

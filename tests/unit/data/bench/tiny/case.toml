@@ -1,0 +1,51 @@
+format = 1
+name = "tiny"
+size = "small"
+family = "tiny"
+order = 2
+
+[mesh]
+sha256 = "a3c0dd002a621d6cbc62dc072fbe95e9ac917167190f8e669710cc8dbb7373bf"
+bytes = 6095
+length_unit = "um"
+file = "mesh.msh.xz"
+
+[mesh.source]
+recipe = "tests/unit/data/parallel_plate.msh, copied"
+note = "Parallel plate 40 x 10 x 20 um, plates at y = 0 and 10 um, ports at the z ends. Harness tests only, never a suite case."
+
+[regions]
+port1 = [2, 1]
+port2 = [2, 2]
+plates = [2, 3]
+sides = [2, 4]
+fill = [3, 5]
+
+[problem]
+kind = "driven"
+frequencies_hz = [1000000000000.0, 1500000000000.0]
+sweep = "uniform"
+excite = ["p1", "p2"]
+
+[quantities]
+s = [["p1", "p1"], ["p2", "p1"], ["p1", "p2"], ["p2", "p2"]]
+
+[[materials]]
+region = "fill"
+eps_r = 4.0
+
+[[boundaries]]
+kind = "pec"
+region = "plates"
+
+[[ports]]
+kind = "lumped"
+name = "p1"
+impedance_ohm = 50.0
+elements = [{region = "port1", direction = "+y"}]
+
+[[ports]]
+kind = "lumped"
+name = "p2"
+impedance_ohm = 50.0
+elements = [{region = "port2", direction = "+y"}]

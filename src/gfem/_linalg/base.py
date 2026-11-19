@@ -9,7 +9,7 @@ from typing import Any, ClassVar, Self
 import ngsolve as ngs
 import numpy as np
 
-from gfem import _mpi
+from gfem import _mpi, _timing
 from gfem._linalg import Operator, Symmetry
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 
@@ -75,13 +75,14 @@ def assemble_operator(
     The piece sum when the operator has one whose pieces share a pattern;
     otherwise the assembled form and ``None``.
     """
-    piece_sum = operator.piece_sum
-    if piece_sum is not None:
-        matrix = piece_sum.matrix()
-        if matrix is not None:
-            return matrix, piece_sum.pattern
-    operator.form.Assemble()
-    return operator.form.mat, None
+    with _timing.phase("assemble"):
+        piece_sum = operator.piece_sum
+        if piece_sum is not None:
+            matrix = piece_sum.matrix()
+            if matrix is not None:
+                return matrix, piece_sum.pattern
+        operator.form.Assemble()
+        return operator.form.mat, None
 
 
 def free_mask(freedofs: ngs.BitArray | None, ndof: int) -> np.ndarray:
@@ -417,7 +418,8 @@ class PlannedHandle(NgsHandle):
         """A new matrix of ``operator`` and the pattern of its pieces, if summed."""
         if cls.sums_pieces:
             return assemble_operator(operator)
-        operator.form.Assemble()
+        with _timing.phase("assemble"):
+            operator.form.Assemble()
         return operator.form.mat, None
 
     def refactorize(
@@ -450,7 +452,10 @@ class PlannedHandle(NgsHandle):
         """
         piece_sum = operator.piece_sum if self.sums_pieces else None
         # read outside the lock: the first read assembles the pieces
-        summed = None if piece_sum is None else piece_sum.pattern
+        summed = None
+        if piece_sum is not None:
+            with _timing.phase("assemble"):
+                summed = piece_sum.pattern
         key = None if piece_sum is None or summed is None else piece_sum.key
         stop = self._stop_norm(operator)
         with self._lock:
@@ -460,7 +465,10 @@ class PlannedHandle(NgsHandle):
             if piece_sum is not None and key is not None and summed is self._pattern:
                 # a failed write leaves values of no known sum
                 held_key, self._summed = self._summed, None
-                self._new_values(piece_sum.sum_into, lambda: key == held_key)
+                self._new_values(
+                    _timing.timed("assemble", piece_sum.sum_into),
+                    lambda: key == held_key,
+                )
                 self._summed = key
                 self._hold_stop_norm(stop)
                 return

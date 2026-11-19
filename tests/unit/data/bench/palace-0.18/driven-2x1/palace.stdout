@@ -1,0 +1,212 @@
+memcap: memcap capped at 6G (MemAvailable 13776 MiB)
+
+_____________     _______
+_____   __   \____ __   /____ ____________
+____   /_/  /  __ ` /  /  __ ` /  ___/  _ \
+___   _____/  /_/  /  /  /_/  /  /__/  ___/
+  /__/     \___,__/__/\___,__/\_____\_____/
+
+Git changeset ID: v0.18.1
+Running with 2 MPI processes, 1 OpenMP thread
+Device configuration: omp,cpu
+Memory configuration: host-std
+libCEED backend: /cpu/self/xsmm/blocked
+
+
+Characteristic length and time scales:
+ Lc = 1.140e-03 m, tc = 3.803e-03 ns
+Finished partitioning mesh into 2 subdomains
+
+Mesh curvature order: 1
+Mesh bounding box:
+ (Xmin, Ymin, Zmin) = (-7.000e-05, -7.700e-05, -1.020e-04) m
+ (Xmax, Ymax, Zmax) = (+1.070e-03, +7.700e-05, +1.159e-04) m
+
+Parallel Mesh Stats:
+
+                minimum     average     maximum       total
+ vertices          4780        4801        4822        9602
+ edges            30059       30134       30210       60269
+ faces            48573       48833       49093       97666
+ elements         23335       23498       23661       46996
+ neighbors            1           1           1
+
+            minimum     maximum
+ h       0.00129593   0.0804023
+ kappa      1.12229     315.774
+
+Estimated current per-rank memory usage is: Min. 54.5M, Max. 74.3M, Avg. 64.4M, Total 128.8M
+Estimated current per-node memory usage is: Min. 128.8M, Max. 128.8M, Avg. 128.8M, Total 128.8M
+
+Configuring Robin absorbing BC (order 1) at attributes:
+ 13
+
+Configuring Robin finite conductivity BC at attributes:
+ 4: σ = 2.164e+07 S/m, h = 4.200e-07 m, n = (+0.0,+0.0,+1.0)
+ 5: σ = 2.164e+07 S/m, h = 4.200e-07 m, n = (+0.0,-1.0,+0.0)
+ 6: σ = 3.030e+07 S/m, h = 3.000e-06 m, n = (+0.0,+0.0,+1.0)
+ 7: σ = 3.030e+07 S/m, h = 3.000e-06 m, n = (+0.0,-1.0,+0.0)
+
+Configuring Robin impedance BC for lumped ports at attributes:
+ 8: Rs = 7.165e+01 Ω/sq, n = (+1.0,+0.0,+0.0)
+ 9: Rs = 7.165e+01 Ω/sq, n = (+1.0,+0.0,+0.0)
+
+Configuring lumped port circuit properties:
+ Index = 1: R = 5.000e+01 Ω
+ Index = 2: R = 5.000e+01 Ω
+
+Configuring lumped port excitation source term at attributes:
+ 8: Index = 1
+ 9: Index = 2
+
+Computing frequency response for:
+Excitation 1/2 with index 1 has contributions from:
+ Lumped port  1
+Excitation 2/2 with index 2 has contributions from:
+ Lumped port  2
+
+Assembling system matrices, number of global unknowns:
+ H1 (p = 1): 9602, ND (p = 1): 60269, RT (p = 1): 97666
+ Operator assembly level: Partial
+ Mesh geometries:
+  Tetrahedron: P = 6, Q = 4 (quadrature order = 2)
+ Dropping 0 small entries in sparse matrix out of 661618 (0.0%)
+ Dropping 0 small entries in sparse matrix out of 928241 (0.0%)
+
+Sweeping excitation index 1 (1/2):
+
+Assembling multigrid hierarchy:
+ Level 0 (p = 1): 60269 unknowns
+ Level 0 (auxiliary) (p = 1): 9602 unknowns
+
+It 1/5: ω/2π = 1.000e+00 GHz (total elapsed time = 4.75e+00 s, solve 1/10)
+
+GMRES solver converged in 2 iterations (avg. reduction factor: 8.494e-08)
+ Sol. ||E|| = 1.945478e+01 (||RHS|| = 7.857730e-02)
+ Field energy E (3.780e-12 J) + H (3.996e-12 J) = 7.776e-12 J
+ S[1][1] = +3.253e-02+2.596e-03i, |S[1][1]| = -2.973e+01, arg(S[1][1]) = +4.562e+00
+ S[2][1] = +9.663e-01-5.006e-02i, |S[2][1]| = -2.859e-01, arg(S[2][1]) = -2.966e+00
+ Updating solution error estimates
+
+It 2/5: ω/2π = 2.500e+01 GHz (total elapsed time = 8.08e+00 s, solve 2/10)
+
+GMRES solver converged in 1 iteration (avg. reduction factor: 2.151e-11)
+ Sol. ||E|| = 1.869239e+01 (||RHS|| = 1.964432e+00)
+ Field energy E (3.490e-12 J) + H (2.861e-12 J) = 6.351e-12 J
+ S[1][1] = -4.159e-02-7.531e-02i, |S[1][1]| = -2.131e+01, arg(S[1][1]) = -1.189e+02
+ S[2][1] = +4.317e-01-8.312e-01i, |S[2][1]| = -5.688e-01, arg(S[2][1]) = -6.256e+01
+ Updating solution error estimates
+
+It 3/5: ω/2π = 5.000e+01 GHz (total elapsed time = 1.16e+01 s, solve 3/10)
+
+GMRES solver converged in 1 iteration (avg. reduction factor: 6.220e-12)
+ Sol. ||E|| = 1.771153e+01 (||RHS|| = 3.928865e+00)
+ Field energy E (3.134e-12 J) + H (3.043e-12 J) = 6.177e-12 J
+ S[1][1] = -7.339e-02+9.102e-03i, |S[1][1]| = -2.262e+01, arg(S[1][1]) = +1.729e+02
+ S[2][1] = -5.055e-01-7.669e-01i, |S[2][1]| = -7.383e-01, arg(S[2][1]) = -1.234e+02
+ Updating solution error estimates
+
+It 4/5: ω/2π = 7.500e+01 GHz (total elapsed time = 1.58e+01 s, solve 4/10)
+
+GMRES solver converged in 1 iteration (avg. reduction factor: 2.343e-12)
+ Sol. ||E|| = 1.771546e+01 (||RHS|| = 5.893297e+00)
+ Field energy E (3.137e-12 J) + H (2.997e-12 J) = 6.134e-12 J
+ S[1][1] = -8.484e-03-1.825e-02i, |S[1][1]| = -3.393e+01, arg(S[1][1]) = -1.149e+02
+ S[2][1] = -9.071e-01+6.793e-02i, |S[2][1]| = -8.229e-01, arg(S[2][1]) = +1.757e+02
+ Updating solution error estimates
+
+It 5/5: ω/2π = 1.000e+02 GHz (total elapsed time = 1.93e+01 s, solve 5/10)
+
+GMRES solver converged in 1 iteration (avg. reduction factor: 1.435e-12)
+ Sol. ||E|| = 1.759323e+01 (||RHS|| = 7.857730e+00)
+ Field energy E (3.096e-12 J) + H (2.927e-12 J) = 6.023e-12 J
+ S[1][1] = -7.086e-02-4.964e-02i, |S[1][1]| = -2.126e+01, arg(S[1][1]) = -1.450e+02
+ S[2][1] = -3.766e-01+8.132e-01i, |S[2][1]| = -9.519e-01, arg(S[2][1]) = +1.149e+02
+ Updating solution error estimates
+
+Sweeping excitation index 2 (2/2):
+
+It 1/5: ω/2π = 1.000e+00 GHz (total elapsed time = 2.24e+01 s, solve 6/10)
+
+GMRES solver converged in 2 iterations (avg. reduction factor: 1.018e-07)
+ Sol. ||E|| = 1.945750e+01 (||RHS|| = 7.857730e-02)
+ Field energy E (3.781e-12 J) + H (3.996e-12 J) = 7.776e-12 J
+ S[1][2] = +9.663e-01-5.006e-02i, |S[1][2]| = -2.859e-01, arg(S[1][2]) = -2.966e+00
+ S[2][2] = +3.253e-02+2.593e-03i, |S[2][2]| = -2.973e+01, arg(S[2][2]) = +4.557e+00
+ Updating solution error estimates
+
+It 2/5: ω/2π = 2.500e+01 GHz (total elapsed time = 2.62e+01 s, solve 7/10)
+
+GMRES solver converged in 1 iteration (avg. reduction factor: 2.213e-11)
+ Sol. ||E|| = 1.869901e+01 (||RHS|| = 1.964432e+00)
+ Field energy E (3.492e-12 J) + H (2.859e-12 J) = 6.351e-12 J
+ S[1][2] = +4.317e-01-8.312e-01i, |S[1][2]| = -5.688e-01, arg(S[1][2]) = -6.256e+01
+ S[2][2] = -4.125e-02-7.600e-02i, |S[2][2]| = -2.126e+01, arg(S[2][2]) = -1.185e+02
+ Updating solution error estimates
+
+It 3/5: ω/2π = 5.000e+01 GHz (total elapsed time = 2.94e+01 s, solve 8/10)
+
+GMRES solver converged in 1 iteration (avg. reduction factor: 5.865e-12)
+ Sol. ||E|| = 1.771773e+01 (||RHS|| = 3.928865e+00)
+ Field energy E (3.136e-12 J) + H (3.040e-12 J) = 6.176e-12 J
+ S[1][2] = -5.055e-01-7.669e-01i, |S[1][2]| = -7.383e-01, arg(S[1][2]) = -1.234e+02
+ S[2][2] = -7.419e-02+7.672e-03i, |S[2][2]| = -2.255e+01, arg(S[2][2]) = +1.741e+02
+ Updating solution error estimates
+
+It 4/5: ω/2π = 7.500e+01 GHz (total elapsed time = 3.27e+01 s, solve 9/10)
+
+GMRES solver converged in 1 iteration (avg. reduction factor: 2.378e-12)
+ Sol. ||E|| = 1.771776e+01 (||RHS|| = 5.893297e+00)
+ Field energy E (3.138e-12 J) + H (2.996e-12 J) = 6.134e-12 J
+ S[1][2] = -9.071e-01+6.793e-02i, |S[1][2]| = -8.229e-01, arg(S[1][2]) = +1.757e+02
+ S[2][2] = -8.782e-03-1.859e-02i, |S[2][2]| = -3.374e+01, arg(S[2][2]) = -1.153e+02
+ Updating solution error estimates
+
+It 5/5: ω/2π = 1.000e+02 GHz (total elapsed time = 3.60e+01 s, solve 10/10)
+
+GMRES solver converged in 1 iteration (avg. reduction factor: 1.346e-12)
+ Sol. ||E|| = 1.759766e+01 (||RHS|| = 7.857730e+00)
+ Field energy E (3.098e-12 J) + H (2.924e-12 J) = 6.022e-12 J
+ S[1][2] = -3.766e-01+8.132e-01i, |S[1][2]| = -9.519e-01, arg(S[1][2]) = +1.149e+02
+ S[2][2] = -6.993e-02-5.271e-02i, |S[2][2]| = -2.115e+01, arg(S[2][2]) = -1.430e+02
+ Updating solution error estimates
+
+Completed 0 iterations of adaptive mesh refinement (AMR):
+ Indicator norm = 3.875e-01, global unknowns = 60269
+ Max. iterations = 0, tol. = 1.000e-02
+
+Estimated peak per-rank memory usage is: Min. 531.0M, Max. 531.8M, Avg. 531.4M, Total 1.0G
+Estimated peak per-node memory usage is: Min. 1.0G, Max. 1.0G, Avg. 1.0G, Total 1.0G
+
+Elapsed Time Report (s)           Min.        Max.        Avg.
+==============================================================
+Initialization                   0.331       0.578       0.455
+  Mesh Preprocessing             0.591       0.838       0.715
+Operator Construction            0.594       0.641       0.618
+Linear Solve                     1.895       2.194       2.045
+  Setup                         26.392      26.398      26.395
+  Preconditioner                 3.948       4.247       4.098
+Estimation                       0.449       0.458       0.453
+  Construction                   0.374       0.376       0.375
+  Solve                          2.702       2.742       2.722
+Postprocessing                   0.724       0.732       0.728
+Disk IO                          0.371       0.371       0.371
+--------------------------------------------------------------
+Total                           39.093      39.147      39.120
+
+Peak Memory                   Per-Node       Total   Total HWM
+==============================================================
+Initialization                    4.4M        4.4M        4.4M
+  Mesh Preprocessing             29.4M       29.4M       33.8M
+Operator Construction            34.2M       34.2M       68.0M
+Linear Solve                    256.0K      256.0K       68.3M
+  Setup                         752.5M      752.5M      820.8M
+  Preconditioner                  1.1M        1.1M      821.9M
+Estimation                       19.1M       19.1M      841.0M
+  Construction                  102.6M      102.6M      943.6M
+  Solve                          18.2M       18.2M      961.8M
+Postprocessing                    2.2M        2.2M      964.1M
+Disk IO                          22.1M       22.1M      986.2M
+--------------------------------------------------------------
+Total                          1006.3M     1006.3M     1006.3M
+

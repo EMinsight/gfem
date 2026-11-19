@@ -1,0 +1,22 @@
+# Per-release gfem timing set (ticket 16, ADRs 0188, 0414): the small cases, gfem
+# kinds only at the anchor tolerance, default layout at core budget 16, 3 repeats,
+# on the wheels stack, all in one job. Run on the release commit. The same file is
+# the smoke's gfem-only fallback ("smoke-gfem") when the Palace wheel is late.
+schema = 1
+cases = ["bragg", "lcavity", "microstrip"]
+solvers = ["gfem:direct", "gfem:petsc-mumps", "gfem:bddc"]
+layouts = ["default"]
+core_budget = 16
+repeats = 3
+node_class = "standard"
+anchor_tolerance = 1e-8
+
+[jobs]
+group = "stack"
+
+[wall_cap_s]
+bragg = 120
+lcavity = 600
+microstrip = 600
+
+[stacks.wheels]

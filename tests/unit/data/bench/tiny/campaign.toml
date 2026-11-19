@@ -1,0 +1,16 @@
+# Harness fixture: the tiny parallel-plate case, gfem only, for `run --local`
+# (tests/unit/test_benchmarks_harness.py and ticket 09's local end to end).
+schema = 1
+cases_dir = ".."                 # the case directories beside this fixture, not benchmarks/cases
+cases = ["tiny"]
+solvers = ["gfem:direct", "gfem:bddc"]
+layouts = ["default"]
+core_budget = 1
+repeats = 2
+node_class = "standard"
+anchor_tolerance = 1e-8
+
+[wall_cap_s]
+tiny = 120
+
+[stacks.wheels]

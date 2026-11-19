@@ -1,0 +1,175 @@
+{
+ "accuracy": {
+  "bound": 2e-07,
+  "metric": "max_abs_dS",
+  "per_item": [
+   0.00025,
+   0.000375,
+   0.0005
+  ],
+  "resolved": true,
+  "value": 0.0005
+ },
+ "campaign": "20261120-858bc66-smoke",
+ "case": {
+  "definition_sha256": "def-microstrip",
+  "mesh_sha256": "mesh-microstrip",
+  "ndof": 315870,
+  "order": 2,
+  "reference": {
+   "id": "microstrip-20261118-858bc66",
+   "sha256": "x"
+  }
+ },
+ "checks": {
+  "accuracy_plausible": "pass",
+  "complete": "pass",
+  "converged": "pass",
+  "dof": "pass",
+  "layout": "pass",
+  "mesh_hash": "pass",
+  "placement": "pass",
+  "provenance": "pass",
+  "reference_matches": "pass"
+ },
+ "failure_class": null,
+ "memory": {
+  "metric": "VmHWM_sum",
+  "peak_rss_largest_node_gib": 8.0,
+  "peak_rss_rank_max_gib": 0.5,
+  "peak_rss_sum_gib": 8.0,
+  "pss_peak_sum_gib": 7.6,
+  "sacct_max_rss_gib": null,
+  "self_reports": {
+   "PeakMemoryMegabytes": 8000.0
+  }
+ },
+ "name": "microstrip/palace-pmg__wheels__default__rep2",
+ "outputs": {
+  "frequencies_hz": [
+   1000000000.0,
+   25000000000.0,
+   50000000000.0
+  ],
+  "iterations": [
+   40,
+   42,
+   45
+  ],
+  "s": {
+   "p1,p1": [
+    [
+     -0.1,
+     0.02
+    ],
+    [
+     -0.1,
+     0.02
+    ],
+    [
+     -0.1,
+     0.02
+    ]
+   ]
+  }
+ },
+ "provenance": {
+  "gfem": {
+   "commit": "858bc66c0ffee858bc66c0ffee858bc66c0ffee8",
+   "version": "0.1.0"
+  },
+  "harness": {
+   "commit": "858bc66c0ffee858bc66c0ffee858bc66c0ffee8"
+  },
+  "machine": {
+   "name": "MareNostrum 5 GPP",
+   "node_class": "standard",
+   "nodes": [
+    "node002"
+   ]
+  },
+  "solver": {
+   "code": "palace",
+   "version": "0.19.0"
+  },
+  "stack": {
+   "description_sha256": "cc33",
+   "env_manifest_sha256": "dd44",
+   "name": "wheels"
+  }
+ },
+ "reason": null,
+ "run": {
+  "case": "microstrip",
+  "core_budget": 16,
+  "job": "41000002",
+  "launch": "srun",
+  "layout": {
+   "asked": "default",
+   "ranks": 16,
+   "threads": 1
+  },
+  "repeat": 2,
+  "solver": "palace:pmg",
+  "stack": "wheels",
+  "tolerance": 1e-08
+ },
+ "same_code_error": {
+  "against": "microstrip/palace-mumps__wheels__default__rep1",
+  "label": "solver error",
+  "metric": "max_abs_dS",
+  "per_item": [
+   4e-07,
+   4e-07,
+   4e-07
+  ],
+  "value": 4e-07
+ },
+ "schema": "suite-record/1",
+ "stack": {
+  "fingerprint": "0123abcd",
+  "kind": "wheels",
+  "name": "wheels",
+  "versions": {
+   "palace": "0.19.0"
+  }
+ },
+ "status": "ok",
+ "structural": {
+  "estimator": "always on, lightened (EstimatorTol 1e-2, EstimatorMG)",
+  "excitations": 1,
+  "fine_level": "matrix-free (partial assembly)",
+  "setups": 3,
+  "solves": 3
+ },
+ "timings": {
+  "assemble_s": 4.44,
+  "discretize_s": null,
+  "estimate_s": 1.11,
+  "mesh_read_s": 1.11,
+  "other_s": 1.5539999999999985,
+  "per_sample_s": 7.3999999999999995,
+  "postpro_s": 0.6659999999999999,
+  "rank0": {
+   "assemble_s": 3.774,
+   "discretize_s": null,
+   "estimate_s": 0.9435,
+   "mesh_read_s": 0.9435,
+   "other_s": 1.3208999999999986,
+   "postpro_s": 0.5660999999999999,
+   "rom_s": null,
+   "setup_s": 3.774,
+   "solve_s": 7.548
+  },
+  "rank_reduction": "max-of-rows",
+  "rom_s": null,
+  "setup_s": 4.44,
+  "setup_total_s": 9.99,
+  "solve_s": 8.88,
+  "solve_total_s": 8.88,
+  "source": "palace.json",
+  "startup_s": 3.0,
+  "wall_s": 25.2,
+  "work_s": 22.2
+ }
+}

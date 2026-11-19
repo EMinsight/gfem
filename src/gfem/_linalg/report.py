@@ -20,8 +20,9 @@ Resolving ``linear_solver="auto"`` logs one record of the choice
 (`gauge_choice`), and each tree-cotree gauge basis built logs its sizes and
 setup times (`gauge_basis`).
 
-A frequency worker logs in its own process: `collected` keeps its records
-and the parent logs them with `replay`.
+A frequency worker logs in its own process: `collected` keeps its records,
+on this logger and on ``gfem.timing`` (`gfem._timing`), and the parent logs
+them with `replay`, each on its own logger.
 
 `_linalg` owns the logger so that it imports nothing from `_engine`.
 """
@@ -202,30 +203,42 @@ class _Keep(logging.Handler):
         self.records.append(record)
 
 
+#: The loggers whose records a frequency worker hands its parent.
+COLLECTED = (LOGGER, logging.getLogger("gfem.timing"))
+
+
 @contextlib.contextmanager
 def collected(keep: bool) -> Generator[list[logging.LogRecord]]:
     """The records logged inside the block, not handled here (``keep``).
 
-    For a process whose parent logs them (`replay`); without ``keep`` the
-    list stays empty and the logger is left as it is.
+    For a process whose parent logs them (`replay`): the records of every
+    logger in `COLLECTED`, in the order they were logged. Without ``keep``
+    the list stays empty and the loggers are left as they are.
     """
     if not keep:
         yield []
         return
     handler = _Keep()
-    level, propagate = LOGGER.level, LOGGER.propagate
-    LOGGER.addHandler(handler)
-    LOGGER.setLevel(logging.INFO)
-    LOGGER.propagate = False
+    saved = [(logger, logger.level, logger.propagate) for logger in COLLECTED]
+    for logger in COLLECTED:
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
     try:
         yield handler.records
     finally:
-        LOGGER.removeHandler(handler)
-        LOGGER.setLevel(level)
-        LOGGER.propagate = propagate
+        for logger, level, propagate in saved:
+            logger.removeHandler(handler)
+            logger.setLevel(level)
+            logger.propagate = propagate
 
 
 def replay(records: Sequence[logging.LogRecord]) -> None:
-    """Log another process's ``records`` (`collected`) here, in order."""
+    """Log another process's ``records`` (`collected`) here, in order.
+
+    Each on the logger that logged it, when that logger is enabled for it.
+    """
     for record in records:
-        LOGGER.handle(record)
+        logger = logging.getLogger(record.name)
+        if logger.isEnabledFor(record.levelno):
+            logger.handle(record)
