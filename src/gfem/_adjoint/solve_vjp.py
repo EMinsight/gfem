@@ -53,7 +53,9 @@ the wanted input kinds and returns ``None`` where it can differentiate),
 ``output_specs(model)`` (name -> ``jax.ShapeDtypeStruct``), ``role(kind)``
 (``"read"`` or ``"unread"``), ``forward(model, *, keep)``,
 ``backward(model, entry, cotangents)``, ``options`` and ``problem``,
-optionally ``wanted_kinds`` (set on the host copy to the wanted input kinds
+optionally ``pieces`` (the outputs that are a rank's own piece under ranks,
+whose cotangents the ranks compare by shape; none by default),
+``wanted_kinds`` (set on the host copy to the wanted input kinds
 before its forward and backward, so a forward keeps only what the backward
 reads; ADR 0179), ``rerun`` (set before a backward reruns the forward),
 ``explicit_problem()`` (problem-leaf cotangents the backward computed itself),
@@ -73,7 +75,7 @@ from __future__ import annotations
 
 import copy
 import functools
-from collections.abc import Hashable, Sequence
+from collections.abc import Collection, Hashable, Sequence
 from typing import Any
 
 import jax
@@ -87,8 +89,6 @@ from gfem.errors import NonDifferentiableError
 __all__ = ["adjoint_tolerance", "input_kind", "solve_vjp"]
 
 _KEY = jax.ShapeDtypeStruct((), jnp.int64)
-#: Outputs that are a rank's own piece under ranks (ADR 0063).
-_PIECES = frozenset({"e_field"})
 
 
 def adjoint_tolerance(options: Any) -> float:
@@ -402,7 +402,9 @@ def _host_backward(
                 model,
                 rule.problem,
                 rule.options,
-                arrays=_replicated_cotangents(cotangents),
+                arrays=_replicated_cotangents(
+                    cotangents, getattr(rule, "pieces", frozenset())
+                ),
             )
         grads = _local_cotangents(
             key, rule, model, cotangents, wants={kinds[i] for i in wanted}, comm=comm
@@ -425,10 +427,17 @@ def _host_backward(
     return tuple(out)
 
 
-def _replicated_cotangents(cotangents: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-    """What the ranks must hold alike: a cotangent, or a rank's piece's shape."""
+def _replicated_cotangents(
+    cotangents: dict[str, np.ndarray], pieces: Collection[str]
+) -> dict[str, np.ndarray]:
+    """What the ranks must hold alike: a cotangent, or a rank's piece's shape.
+
+    Args:
+        cotangents: The live cotangents by output name.
+        pieces: The rule's outputs that are a rank's own piece (``rule.pieces``).
+    """
     return {
-        f"the cotangent of {n}": np.asarray(c.shape) if n in _PIECES else c
+        f"the cotangent of {n}": np.asarray(c.shape) if n in pieces else c
         for n, c in cotangents.items()
     }
 

@@ -302,6 +302,9 @@ class ElectrostaticRule:
     reads = frozenset({"eps_r"})
     #: Outputs whose cotangents the backward pass handles.
     differentiable_outputs = frozenset({"capacitance", "energy", "potential"})
+    #: Outputs that are a rank's own piece under ranks (ADR 0063): the ranks
+    #: compare their cotangents' shapes, not their values.
+    pieces = frozenset({"potential"})
 
     def __init__(
         self, model: Model, problem: Electrostatic, options: SolverOptions
