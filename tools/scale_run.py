@@ -51,6 +51,7 @@ import contextlib
 import faulthandler
 import functools
 import hashlib
+import importlib
 import importlib.metadata
 import json
 import math
@@ -739,8 +740,14 @@ def _job_facts() -> dict[str, Any]:
 def _environment(comm: Any) -> dict[str, Any]:
     versions = {}
     for package in PACKAGES:
-        with contextlib.suppress(importlib.metadata.PackageNotFoundError):
+        try:
             versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            # a native NGSolve installed by CMake has no package metadata
+            with contextlib.suppress(ImportError):
+                module = importlib.import_module(package)
+                if isinstance(getattr(module, "__version__", None), str):
+                    versions[package] = module.__version__
     here = (socket.gethostname(), _mem_total_kb())
     every = [here] if comm is None else comm.allgather(here)
     hosts = [host for host, _ in every]
