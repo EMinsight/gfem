@@ -422,6 +422,8 @@ def _spanning_forest(
         return_predecessors=True,
     )
     child = reached[1:][parent[reached[1:]] != nn]
+    if not len(child):  # every node a root (SciPy gives a sparse empty pick)
+        return child, np.zeros(0, np.int64), len(roots)
     pivot = np.asarray(edges[child, parent[child]]).ravel().astype(np.int64) - 1
     return child, pivot, len(roots)
 

@@ -164,6 +164,19 @@ def test_auto_and_none_differ_only_in_round_off_above_the_floor(line):
     assert np.abs(np.asarray(gauged) - np.asarray(ungauged)).max() <= 1e-9
 
 
+def test_a_model_whose_vertices_are_all_on_one_conductor_solves_gauged(tmp_path):
+    # one cell across z and PEC side walls: every vertex is on one conductor,
+    # so the spanning forest has no edge
+    model = _strip(tmp_path)
+    walls = [gfem.PEC(s) for s in ("z_min", "z_max", "y_min", "y_max")]
+    model = model.replace(boundaries=walls)
+    problem = gfem.Driven(1e9)
+    gauged = gfem.solve(model, problem, options=DIRECT).s.values
+    options = gfem.SolverOptions(order=2, linear_solver="direct", gauge="none")
+    ungauged = gfem.solve(model, problem, options=options).s.values
+    assert np.abs(np.asarray(gauged) - np.asarray(ungauged)).max() <= 1e-9
+
+
 # --- refusals of an explicit gauge ----------------------------------------------
 
 
