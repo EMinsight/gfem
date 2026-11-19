@@ -3,13 +3,13 @@
 Fields (union of tickets 08 and 15, spec gap G1): ``format``, ``id``
 (``<case>-<YYYYMMDD>-<sha7>``), ``family``, ``computed_utc``, ``case``
 (``name``, ``definition_sha256``, ``mesh_sha256`` of the suite case it was computed
-for), ``physics_sha256`` (the case minus mesh, order, name, size and ``est_s``;
-what the scorer matches), ``meshes`` (``<sha256>`` -> ``level`` and ``dof`` per
-order: the DOF guard's pins), ``method`` (``closed_form``, ``semi_analytic``,
-``richardson``, ``overkill`` or ``none``, then ``reason``), ``quantities`` (per
-quantity ``values``, ``bound``, ``bound_kind``, ``metric``), ``ceiling`` and
-``same_mesh_error`` per order, ``cross_checks``, ``inputs``, ``provenance``,
-``runs``, ``cost_core_h``.
+for), ``physics_sha256`` (the case minus mesh, order, name, size, ``reference``
+and ``est_s``; what the scorer matches), ``meshes`` (``<sha256>`` -> ``level``
+and ``dof`` per order: the DOF guard's pins), ``method`` (``closed_form``,
+``semi_analytic``, ``richardson``, ``overkill`` or ``none``, then ``reason``),
+``quantities`` (per quantity ``values``, ``bound``, ``bound_kind``, ``metric``),
+``ceiling`` and ``same_mesh_error`` per order, ``cross_checks``, ``inputs``,
+``provenance``, ``runs``, ``cost_core_h``.
 
 A file is replaced only with a new identity (``id``, ``computed_utc``): rewriting an
 unchanged reference keeps its bytes, so ``reference CASE`` is idempotent.

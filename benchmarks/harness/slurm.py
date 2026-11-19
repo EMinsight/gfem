@@ -62,7 +62,12 @@ from benchmarks.adapters import (
     RunRefusedError,
 )
 from benchmarks.harness import budget, config, data, matrix, measure, records, score
-from benchmarks.harness.case import Case, definition_sha256, load_case
+from benchmarks.harness.case import (
+    Case,
+    definition_sha256,
+    load_case,
+    reference_directory,
+)
 from benchmarks.harness.config import ConfigError, Runner, Site
 
 STEP_STOP = 3
@@ -211,9 +216,10 @@ def _utc(when: float | None = None) -> str:
 
 
 def _reference(case: Case) -> tuple[dict[str, Any] | None, Path | None]:
-    if case.directory is None:
+    directory = reference_directory(case)
+    if directory is None:
         return None, None
-    path = case.directory / REFERENCE_JSON
+    path = directory / REFERENCE_JSON
     if not path.is_file():
         return None, None
     try:
