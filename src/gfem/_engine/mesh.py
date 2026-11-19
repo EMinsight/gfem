@@ -181,10 +181,10 @@ def to_ngsolve(
             within the budget; or the search left the seed a distribution of this
             topology and communicator already took.
     """
+    if comm is not None and len(periodic) > 1:
+        _mpi.refuse_feature("periodic")
     check_nodes(np.asarray(mesh.nodes, float), periodic)
     if comm is not None:
-        if len(periodic) > 1:
-            _mpi.refuse_feature("periodic")
         with _mpi.section(comm):
             return _distributed(mesh, comm, periodic)
     scale = LENGTH_UNITS[mesh.length_unit]
