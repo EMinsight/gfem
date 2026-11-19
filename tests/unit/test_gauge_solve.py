@@ -186,5 +186,9 @@ def test_a_uniform_sweep_refactorizes_its_pooled_gauged_plan(line, plans, caplog
         # new frequencies: the pooled base again
         _solve(line, gfem.Driven(frequency=(4e4, 5e4)), gauged=True)
     assert len(plans) == 1
-    actions = [r.action for r in caplog.records if hasattr(r, "action")]
+    actions = [
+        r.action
+        for r in caplog.records
+        if r.name == "gfem.solver" and hasattr(r, "action")
+    ]
     assert actions == ["factorized"] + ["refactorized"] * 4
