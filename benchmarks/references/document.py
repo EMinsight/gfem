@@ -121,18 +121,22 @@ def dumps(doc: Mapping[str, Any]) -> str:
     return json.dumps(doc, indent=1, ensure_ascii=False) + "\n"
 
 
-def _identity(doc: Mapping[str, Any]) -> tuple[Any, Any, Any]:
+def _identity(doc: Mapping[str, Any]) -> tuple[Any, Any, Any, Any]:
     return (
         doc.get("id"),
         doc.get("computed_utc"),
         (doc.get("provenance") or {}).get("gfem_commit"),
+        doc.get("runs"),
     )
 
 
 def _essence(doc: Mapping[str, Any]) -> dict[str, Any]:
-    """``doc`` without its identity: what decides whether it changed."""
+    """``doc`` without its identity: what decides whether it changed.
+
+    ``runs`` is identity too: it names the archive by the reference's own id.
+    """
     out = copy.deepcopy(dict(doc))
-    for key in ("id", "computed_utc"):
+    for key in ("id", "computed_utc", "runs"):
         out.pop(key, None)
     out.get("provenance", {}).pop("gfem_commit", None)
     return json.loads(json.dumps(out))
@@ -163,8 +167,9 @@ def write(path: Path, doc: dict[str, Any]) -> bool:
     old = load(path)
     keep_dof_pins(doc, old)
     if old is not None and _essence(old) == _essence(doc):
-        doc["id"], doc["computed_utc"], commit = _identity(old)
+        doc["id"], doc["computed_utc"], commit, runs = _identity(old)
         doc["provenance"]["gfem_commit"] = commit
+        doc["runs"] = runs
         if path.read_text() == dumps(doc):
             return False
     path.write_text(dumps(doc))
