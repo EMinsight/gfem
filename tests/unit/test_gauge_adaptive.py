@@ -6,10 +6,11 @@ low-frequency floor: its snapshots are gauged solves, and its reduced pieces,
 projected by the matrix-free ``DrivenOperator.apply``, lose none. Above the
 floor it matches the uniform gauged sweep to the sweep tolerance.
 
-The gauge is switched on by the internal `driven.tree_cotree_gauge` context
-until `SolverOptions.gauge` exists.
+The gauged solves ask for the gauge (``gauge="tree_cotree"``), the ungauged
+ones turn it off (``gauge="none"``).
 """
 
+import dataclasses
 import math
 import warnings
 
@@ -19,7 +20,6 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
-from gfem._engine import driven
 
 L, W, H = 10.0, 2.0, 1.0  # mm
 EPS = 4.0
@@ -64,12 +64,10 @@ def _closed_form(f):
 
 
 def _solve(model, problem, *, gauged):
+    options = dataclasses.replace(OPTIONS, gauge="tree_cotree" if gauged else "none")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", gfem.LowFrequencyWarning)
-        if not gauged:
-            return gfem.solve(model, problem, options=OPTIONS)
-        with driven.tree_cotree_gauge():
-            return gfem.solve(model, problem, options=OPTIONS)
+        return gfem.solve(model, problem, options=options)
 
 
 def test_gauged_adaptive_sweep_matches_the_closed_form_below_the_floor(line):
