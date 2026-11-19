@@ -252,7 +252,7 @@ log.setLevel(logging.INFO)
 
 result = gfem.solve(model, problem, cache="solves")  # solves and stores
 again = gfem.solve(model, problem, cache="solves")  # reads back, no solve
-print(abs(again.s.values - s.values).max())
+print(abs(again.s.values - result.s.values).max())
 ```
 
 ```text
@@ -277,11 +277,13 @@ print(run["cache"]["status"], run["cache"]["key"])
 hit 4c0b6f1e9d27a8530f62c1d9b4e7a03f5c8d21e6b9f0a47c3d5e8b1f2a6c904e
 ```
 
-- The entry is found by a digest of the mesh (its nodes and elements, not
-  its file), the materials, the problem, the solver options other than
-  `threads`, `frequency_workers`, `retain_memory` and `device`, and the
-  versions of gfem and NGSolve. Change any of them and the call solves and
-  adds an entry. A new gfem version never reads an older one's entries.
+- The entry is found by its solve key, a hash of the mesh (its nodes and
+  elements, not its file), the materials, the problem, the solver options
+  other than `threads`, `frequency_workers`, `retain_memory` and `device`,
+  gfem's version and code, and the versions of NGSolve and, when the
+  options select them, PETSc or SLEPc. Change any of them and the call
+  solves and adds an entry. A new gfem version, or an edit to gfem's code,
+  never reads an older one's entries.
 - A result read back has the same type and the same values as the solve
   that stored it, with its fields on your `model.mesh`, and the solve's
   warnings are shown again at your line. A wrong argument still raises,
