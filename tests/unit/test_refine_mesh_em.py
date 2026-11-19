@@ -5,6 +5,7 @@ re-entrant edge, where the field error concentrates; a rectangular PEC box
 (`structured_meshes.plate`) carries smooth modes for the material cases.
 """
 
+import dataclasses
 import math
 import warnings
 
@@ -242,12 +243,14 @@ def _h_min(model):
 
 
 def test_a_chip_scale_loop_warns_of_the_low_frequency_floor_once(tmp_path):
-    # in um, k0 h_min = 5e-7 on the input mesh: every cycle is below the floor
+    # in um, k0 h_min = 5e-7 on the input mesh: every cycle is below the floor;
+    # ungauged, since a gauged solve with lumped ports does not warn
     model = rc.step_model(tmp_path, 2, unit="um")
     f = 5e-7 * const.c / (2 * math.pi * _h_min(model))
+    options = dataclasses.replace(OPTIONS, gauge="none")
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        ref = gfem.refine_mesh(model, gfem.Driven(f), max_cycles=2, options=OPTIONS)
+        ref = gfem.refine_mesh(model, gfem.Driven(f), max_cycles=2, options=options)
     (low,) = [w for w in record if w.category is gfem.LowFrequencyWarning]
     # checked once, on the returned model's mesh
     assert f"h_min = {_h_min(ref.model):.3g} m" in str(low.message)

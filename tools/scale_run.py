@@ -223,7 +223,12 @@ def _instrument_solve(phases: Phases, facts: Facts) -> None:
             x, iterations = sweep_solve(self, omega, rhs, x0=x0)
         handle = self._last[1]
         with phases.timed("true_residual"):
-            residual = handle.apply(x) - rhs
+            try:
+                residual = handle.apply(x) - rhs
+            except NotImplementedError:
+                # a gauged direct handle has no product: no residual to record
+                facts.residuals.append({"omega": float(omega), "relative": None})
+                return x, iterations
             norm = facts.layout.norm if facts.layout else np.linalg.norm
             facts.residuals.append(
                 {

@@ -29,7 +29,7 @@ import numpy as np
 import scipy.sparse as sp
 
 from gfem._linalg import Symmetry
-from gfem._linalg.base import PlannedHandle, host_bytes
+from gfem._linalg.base import PlannedHandle, csr_bytes, host_bytes
 
 _INT32_MAX = np.iinfo(np.int32).max
 
@@ -306,8 +306,7 @@ class CudssHandle(PlannedHandle):
         matrix, lower, gather = self._matrix, self._lower, self._gather
         if self._solver is None or matrix is None:
             return 0
-        csr = lower.data.nbytes + lower.indices.nbytes + lower.indptr.nbytes
-        held = 2 * csr + gather.nbytes
+        held = 2 * csr_bytes(lower) + gather.nbytes
         return host_bytes(matrix) + held + sum(self._estimates)
 
     def _release(self) -> None:

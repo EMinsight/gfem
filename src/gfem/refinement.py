@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from collections.abc import Hashable, Mapping
 
     from gfem._engine.estimate import RecoveryCache
+    from gfem._engine.gauge import GaugeChoice
 
 __all__ = [
     "ErrorEstimate",
@@ -927,6 +928,29 @@ def _describe(estimator: Estimator) -> str:
     return f"QuantityEstimator({keyword}={getattr(estimator, keyword)!r})"
 
 
+def _deferred_solve(
+    model: Model,
+    problem: Any,
+    *,
+    options: SolverOptions,
+    comm: Any,
+    adjoint_loads: Any,
+) -> tuple[Any, dict[Any, Any] | None, GaugeChoice | None]:
+    """`_solve` with the driven low-frequency check deferred (ADR 0088).
+
+    Also returns the gauge choice of the solve's driven rule (``None`` for
+    another problem): each pass resolves it afresh, and the deferred check
+    on the returned mesh reads the last pass's (ADR 0220).
+    """
+    from gfem._engine import driven
+
+    with driven.low_frequency_deferred() as deferred:
+        result, adjoints = _solve(
+            model, problem, options=options, comm=comm, adjoint_loads=adjoint_loads
+        )
+    return result, adjoints, deferred.gauge
+
+
 def _loop(
     model: Model,
     problem: Any,
@@ -956,9 +980,9 @@ def _loop(
     tri_parents = np.arange(len(model.mesh.triangles))
     duals = _Duals(_adjoint_port_union(estimators, model, problem), problem)
     tracks = _Tracks(estimators)
-    with driven.low_frequency_deferred(), warnings.catch_warnings():
+    with warnings.catch_warnings():
         warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
-        result, adjoints = _solve(
+        result, adjoints, gauge = _deferred_solve(
             model,
             problem,
             options=options,
@@ -1027,22 +1051,26 @@ def _loop(
         tracks.bound(current, result, estimates, threads=options.threads, cache=cache)
         refined = transfer_design(current, fine, refinement)
         try:
-            with driven.low_frequency_deferred():
-                refined_result, refined_adjoints = _solve(
-                    refined,
-                    problem,
-                    options=options,
-                    comm=comm,
-                    adjoint_loads=duals.loads(tracks),
-                )
+            refined_result, refined_adjoints, refined_gauge = _deferred_solve(
+                refined,
+                problem,
+                options=options,
+                comm=comm,
+                adjoint_loads=duals.loads(tracks),
+            )
         except (LinearSolverConvergenceError, EigenmodeConvergenceError) as err:
             stop, failure = "solve failed", err
             break
-        current, result, adjoints = refined, refined_result, refined_adjoints
+        current, result, adjoints, gauge = (
+            refined,
+            refined_result,
+            refined_adjoints,
+            refined_gauge,
+        )
         tet_parents = tet_parents[refinement.tetrahedron_parents]
         tri_parents = tri_parents[refinement.triangle_parents]
     if isinstance(problem, Driven):
-        driven.check_low_frequency(current, problem.frequency, stacklevel=3)
+        driven.check_low_frequency(current, problem.frequency, gauge, stacklevel=3)
     if above:
         _warn_not_converged(
             stop,

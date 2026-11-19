@@ -357,8 +357,10 @@ True
 
 ## Limits
 
-- Below the low-frequency floor a driven solve loses digits and warns with
-  {py:obj}`gfem.LowFrequencyWarning`; for the capacitance of a device far
+- Below the low-frequency floor a direct solve on the CPU keeps its digits
+  through the {term}`tree-cotree gauge`; wave ports, whose mode problem is
+  not gauged, and the other linear solvers lose digits there and warn with
+  {py:obj}`gfem.LowFrequencyWarning`. For the capacitance of a device far
   smaller than the wavelength, solve {py:obj}`gfem.Electrostatic`. See
   "Limits" in {doc}`../capabilities`.
 - The mesh is straight-sided tetrahedra read from gmsh. A curved surface is

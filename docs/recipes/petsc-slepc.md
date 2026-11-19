@@ -207,8 +207,11 @@ solved. Adaptive sweeps set the preconditioner up at every sample.
   MUMPS has no ILU, so `pc_type` `ilu` alone is refused.
 - Below the low-frequency floor ({py:obj}`gfem.LowFrequencyWarning`), a Krylov
   method on the MUMPS factorization loses the same digits of the capacitive
-  part of S as the factorization alone, whatever the `tolerance`, and S12 and
-  S21 agree to about 1e-9 instead of 1e-15.
+  part of S as the factorization alone, whatever the `tolerance`, and
+  $S_{12}$ and $S_{21}$ agree to about $10^{-9}$ instead of $10^{-15}$.
+  `"petsc"` solves are not gauged. `linear_solver="direct"` on one process
+  goes through the {term}`tree-cotree gauge` and keeps these digits; MUMPS
+  through PETSc does not.
 
 ## What gfem refuses, and what to set instead
 

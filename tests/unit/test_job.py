@@ -109,6 +109,15 @@ def test_time_stepping_options_are_written_only_when_set(model, tmp_path):
     assert gfem.Job.from_json(path).options == options
 
 
+def test_the_gauge_is_written_only_when_set(model, tmp_path):
+    path = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
+    assert "gauge" not in json.loads(path.read_text())["job"]["options"]
+    options = gfem.SolverOptions(gauge="none")
+    path = gfem.Job(model, PROBLEM, options).to_json(tmp_path / "none.json")
+    assert json.loads(path.read_text())["job"]["options"]["gauge"] == "none"
+    assert gfem.Job.from_json(path).options == options
+
+
 def test_options_default_to_solver_defaults(model, tmp_path):
     job = gfem.Job(model, PROBLEM)
     assert job.options == gfem.SolverOptions()

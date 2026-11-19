@@ -727,7 +727,8 @@ def guesses(caplog):
     caplog.set_level(logging.INFO, logger="gfem.solver")
 
     def read():
-        logged = [r for r in caplog.records if r.name == "gfem.solver"]
+        # the solve steps: not the gauge's records
+        logged = [r for r in caplog.records if hasattr(r, "direction")]
         caplog.clear()
         return [r.guess for r in logged if r.direction == "forward"]  # ty: ignore[unresolved-attribute]
 
@@ -959,7 +960,8 @@ def test_a_direct_handle_sums_the_pieces_into_the_assembled_operator(tmp_path):
     # above the wave port's cutoff (about 22 GHz): at 4 GHz its first mode
     # is evanescent, beta = 0.11 - 0.80j 1/mm
     frequencies = (40e9, 50e9)
-    options = gfem.SolverOptions(linear_solver="direct")
+    # the ungauged piece sum: on the driven space, as the assembled operator
+    options = gfem.SolverOptions(linear_solver="direct", gauge="none")
     rule = DrivenRule(model, gfem.Driven(frequencies), options)
     system, _ = rule._ports(model)
     names = {p.name for p in system.operator.pieces}
@@ -1029,14 +1031,16 @@ def test_a_direct_sweep_by_piece_sums_matches_assembled_operators(
     line, monkeypatch, sweep, linear_solver
 ):
     problem = gfem.Driven(frequency=(3e9, 4e9, 5e9, 6e9), sweep=sweep)
-    summed = np.asarray(_s(line, problem, linear_solver=linear_solver).s.values)
+    # the ungauged piece sum: the assembled form is on the driven space
+    options = {"linear_solver": linear_solver, "gauge": "none"}
+    summed = np.asarray(_s(line, problem, **options).s.values)
     operator_at = SystemOperator.operator_at
 
     def assembled(system, omega):  # the operator without its piece sum
         return dataclasses.replace(operator_at(system, omega), piece_sum=None)
 
     monkeypatch.setattr(SystemOperator, "operator_at", assembled)
-    s = np.asarray(_s(line, problem, linear_solver=linear_solver).s.values)
+    s = np.asarray(_s(line, problem, **options).s.values)
     np.testing.assert_allclose(summed, s, rtol=0, atol=1e-12)
 
 
@@ -1314,7 +1318,7 @@ def test_a_frequency_below_the_low_frequency_floor_warns_once_per_sweep(mesh, li
     problem = gfem.Driven([_f(5e-7, mesh), 1e9, _f(2e-7, mesh)])
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        DrivenRule(line, problem, gfem.SolverOptions())
+        DrivenRule(line, problem, gfem.SolverOptions(gauge="none"))
     (w,) = _low_frequency(record)
     message = str(w.message)
     assert "2 of 3 frequencies" in message
@@ -1323,15 +1327,21 @@ def test_a_frequency_below_the_low_frequency_floor_warns_once_per_sweep(mesh, li
     assert "k0*h_min = 2e-07" in message
     assert f"h_min = {_edges(mesh).min():.3g} m" in message
     assert "gfem.Electrostatic" in message
+    assert message.endswith("gauge='auto' keeps these digits.")
 
 
 @pytest.mark.parametrize("sweep", ["uniform", "adaptive"])
 @pytest.mark.parametrize(
-    "linear_solver",
-    ["auto", "bddc_gmres", "direct", pytest.param("petsc", marks=pytest.mark.petsc)],
+    ("linear_solver", "warns"),
+    [
+        ("auto", 0),  # "direct" on this line: gauged
+        ("bddc_gmres", 1),
+        ("direct", 0),
+        pytest.param("petsc", 1, marks=pytest.mark.petsc),
+    ],
 )
-def test_the_low_frequency_warning_ignores_the_linear_solver(
-    mesh, line, linear_solver, sweep
+def test_only_an_ungauged_solve_warns_below_the_low_frequency_floor(
+    mesh, line, linear_solver, warns, sweep
 ):
     kh = (5e-7,) if sweep == "uniform" else (2e-7, 5e-7, 8e-7)
     problem = gfem.Driven([_f(k, mesh) for k in kh], sweep=sweep)
@@ -1339,7 +1349,7 @@ def test_the_low_frequency_warning_ignores_the_linear_solver(
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
         DrivenRule(line, problem, options)
-    assert len(_low_frequency(record)) == 1
+    assert len(_low_frequency(record)) == warns
 
 
 def test_frequencies_above_the_low_frequency_floor_do_not_warn(mesh, line):
@@ -1350,7 +1360,7 @@ def test_frequencies_above_the_low_frequency_floor_do_not_warn(mesh, line):
 
 
 def test_the_low_frequency_warning_points_at_the_solve_call(mesh, line):
-    options = gfem.SolverOptions(linear_solver="direct")
+    options = gfem.SolverOptions(linear_solver="direct", gauge="none")
     with pytest.warns(gfem.LowFrequencyWarning) as record:
         gfem.solve(line, gfem.Driven(_f(5e-7, mesh)), options=options)
     assert record[0].filename == __file__
@@ -1418,11 +1428,11 @@ def test_petsc_gmres_on_mumps_matches_the_factorization_below_the_low_frequency_
 @pytest.mark.skipif(not pardiso.pardiso_available(), reason="needs the mkl extra")
 def test_pardiso_keeps_reciprocity_below_the_low_frequency_floor(mesh, line):
     """MKL PARDISO, like MUMPS, keeps reciprocity and L below the floor (down
-    to k0 h = 3e-8) and loses C read from S like 1e-16/(k0 h)^2. The sweep
-    factors at the first frequency and refactorizes at the second."""
+    to k0 h = 3e-8) and loses C read from S like 1e-16/(k0 h)^2, ungauged.
+    The sweep factors at the first frequency and refactorizes at the second."""
     kh = (5e-7, 1e-3)
     f = [_f(k, mesh) for k in kh]
-    options = gfem.SolverOptions(linear_solver="direct")
+    options = gfem.SolverOptions(linear_solver="direct", gauge="none")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", gfem.LowFrequencyWarning)
         s = np.asarray(gfem.solve(line, gfem.Driven(f), options=options).s.values)

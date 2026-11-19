@@ -71,7 +71,9 @@ def test_an_objective_at_its_target_keeps_its_read_with_zero_cotangent(
 
     objective = _objective.classify(at_target, step_result, step)
     (read,) = objective.reads
-    assert (read.leaf, read.index, read.cotangent) == (".s.values", (0, 1, 0), 0)
+    assert (read.leaf, read.index) == (".s.values", (0, 1, 0))
+    # |S|^2 - t is zero up to the round-off of reading |S|^2 twice
+    assert read.cotangent == pytest.approx(0, abs=1e-14)
     # J = (|S|^2 - t)^2: its Hessian in (Re, Im) S is 8 S S^T at the target
     s = complex(np.asarray(step_result.s["p2", "p1"])[0])
     assert objective.curvature[0, 0] == pytest.approx(8 * abs(s) ** 2)

@@ -213,10 +213,11 @@ def test_equal_principal_values_give_the_isotropic_s_and_cotangents(axes_line):
     equal = {k: jnp.repeat(v[:, None], 3, axis=1) for k, v in values.items()}
     iso, iso_grad = jax.value_and_grad(lambda v: objective(v, axes=None))(values)
     per_axis, axes_grad = jax.value_and_grad(objective)(equal)
-    # measured on MN5: S 7.3e-15 relative, cotangents 1.1e-15 .. 1.5e-15
+    # measured on MN5: S 7.3e-15 relative, cotangents 1.1e-15 .. 1.5e-15;
+    # gauged (the default), up to 5.9e-15
     assert abs(float(per_axis) - float(iso)) <= 3e-14 * abs(float(iso))
     for name, g in iso_grad.items():
-        assert _relative(axes_grad[name].sum(axis=1), g) <= 5e-15, name
+        assert _relative(axes_grad[name].sum(axis=1), g) <= 1e-14, name
 
 
 def test_a_uniform_cotangent_is_the_sum_of_the_per_element_ones(axes_line):
