@@ -40,12 +40,56 @@ excite = ["p1"]
 [quantities]
 s = [["p1", "p1"], ["p2", "p1"]]
 
-# Plan estimate hints, seconds per run at budget 112 incl. ~60 s mesh read (probes/12/plan.py); staging = per job.
+# Plan estimate hints, seconds per run, per (solver, layout) at every single-node
+# core budget of the campaign series (ADR 0458): built by the campaign's hint model
+# (smoke c16 step times, per-kind serial fraction, 1.3 margin; scale cells partly
+# guessed until the dress rehearsal replaces them). staging = seconds per job.
 [est_s]
-"gfem:direct" = 240
-"gfem:bddc" = 240
-"palace:mumps" = 360
-"palace:pmg" = 180
+"gfem:bddc@14x4" = 131
+"gfem:bddc@1x112" = 240
+"gfem:bddc@1x16" = 267
+"gfem:bddc@1x32" = 262
+"gfem:bddc@1x56" = 251
+"gfem:bddc@1x8" = 368
+"gfem:bddc@28x4" = 124
+"gfem:bddc@2x4" = 192
+"gfem:bddc@4x4" = 139
+"gfem:bddc@8x4" = 137
+"gfem:direct@1x112" = 141
+"gfem:direct@1x16" = 220
+"gfem:direct@1x32" = 218
+"gfem:direct@1x56" = 175
+"gfem:direct@1x8" = 258
+"gfem:petsc-mumps@14x4" = 280
+"gfem:petsc-mumps@1x112" = 380
+"gfem:petsc-mumps@1x16" = 1000
+"gfem:petsc-mumps@1x32" = 650
+"gfem:petsc-mumps@1x56" = 480
+"gfem:petsc-mumps@1x8" = 1500
+"gfem:petsc-mumps@28x4" = 160
+"gfem:petsc-mumps@2x4" = 1100
+"gfem:petsc-mumps@4x4" = 700
+"gfem:petsc-mumps@8x4" = 420
+"palace:mumps@112x1" = 361
+"palace:mumps@14x4" = 707
+"palace:mumps@16x1" = 666
+"palace:mumps@28x4" = 577
+"palace:mumps@2x4" = 1413
+"palace:mumps@32x1" = 543
+"palace:mumps@4x4" = 1065
+"palace:mumps@56x1" = 442
+"palace:mumps@8x1" = 883
+"palace:mumps@8x4" = 868
+"palace:pmg@112x1" = 157
+"palace:pmg@14x4" = 315
+"palace:pmg@16x1" = 445
+"palace:pmg@28x4" = 219
+"palace:pmg@2x4" = 1068
+"palace:pmg@32x1" = 326
+"palace:pmg@4x4" = 618
+"palace:pmg@56x1" = 227
+"palace:pmg@8x1" = 767
+"palace:pmg@8x4" = 454
 staging = 180
 
 [[materials]]

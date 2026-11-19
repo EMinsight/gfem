@@ -43,7 +43,12 @@ from typing import Any, cast
 from benchmarks.adapters import ADAPTERS
 from benchmarks.harness import case as case_mod
 from benchmarks.harness import config, records, score
-from benchmarks.report.load import Inputs, LoadedCampaign, ReportError
+from benchmarks.report.load import (
+    Inputs,
+    LoadedCampaign,
+    ReportError,
+    reference_families,
+)
 
 SCHEMA = "suite-report/1"
 NOISY = 0.10
@@ -925,10 +930,11 @@ def _reference_block(case: str, rows, inputs: Inputs) -> dict[str, Any]:
             r.case.reference.sha256 for r in rows if r.case.reference is not None
         }
         block["sha256_matches"] = named_sha == {ref.sha256}
+    families = reference_families(case)
     newer = [
         (x.doc.get("computed_utc") or "", x_id)
         for x_id, x in inputs.references.items()
-        if x.doc.get("family") == case
+        if x.doc.get("family") in families
         and x_id not in named
         and (
             ref is None

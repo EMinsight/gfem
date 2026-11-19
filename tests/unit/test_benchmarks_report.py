@@ -491,6 +491,18 @@ def test_newer_reference_prints_the_rescore_command(fixture_report):
     assert "a newer reference `microstrip-20261125-aaaaaaa`" in md
 
 
+def test_newer_reference_follows_the_case_files_reference_key(tmp_path):
+    # microstrip_p3 is scored by the microstrip reference ([reference] case key)
+    def edit(d):
+        if d["run"]["case"] == "microstrip":
+            d["run"]["case"] = "microstrip_p3"
+
+    report = _json(tmp_path, _store(tmp_path, edit))
+    p3 = _case(report, "microstrip_p3")
+    assert p3["reference"]["newer"]["id"] == "microstrip-20261125-aaaaaaa"
+    assert p3["rescore_flag"] == "--rescore microstrip_p3=microstrip-20261125-aaaaaaa"
+
+
 def test_rescore_marks_cells_and_rewrites_no_record(tmp_path):
     camp = _store(tmp_path)
     before = {p: p.read_bytes() for p in camp.rglob("*.json")}
