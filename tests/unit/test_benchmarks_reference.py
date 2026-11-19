@@ -184,6 +184,13 @@ def test_reference_command_refuses_microstrip_without_a_step(tmp_path, capsys):
     assert "--plan" in capsys.readouterr().err
 
 
+def test_reference_command_refuses_a_case_scored_by_a_sibling(capsys):
+    assert main(["reference", "microstrip_p3"]) == 2
+    err = capsys.readouterr().err
+    assert "microstrip_p3" in err
+    assert "benchmarks reference microstrip" in err
+
+
 # --- microstrip ladder ---------------------------------------------------------------
 
 

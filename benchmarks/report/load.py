@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from benchmarks.harness import case as case_mod
 from benchmarks.harness import config, records
 
 REFERENCES = "references"
@@ -145,6 +146,19 @@ def _campaign(directory: Path, root: Path, files: dict[str, str]) -> LoadedCampa
     return LoadedCampaign(_rel(directory, root), manifest, rows, machines)
 
 
+def reference_families(case: str) -> set[str]:
+    """Reference families that score ``case``: its own and its ``[reference]`` sibling.
+
+    A suite case whose ``case.toml`` has ``[reference] case = "<sibling>"`` (for
+    instance microstrip_p3) is scored by the sibling's references.
+    """
+    try:
+        sibling = case_mod.load_case(config.CASES_DIR / case).reference_case
+    except case_mod.CaseError:
+        sibling = None
+    return {case} if sibling is None else {case, sibling}
+
+
 def _references(
     root: Path, families: set[str], named: set[str], files: dict[str, str]
 ) -> dict[str, Reference]:
@@ -199,7 +213,7 @@ def load(
         )
     named = {r.case.reference.id for r in rows if r.case.reference is not None}
     named |= set((rescore or {}).values())
-    families = {r.run.case for r in rows}
+    families = set().union(*(reference_families(c) for c in {r.run.case for r in rows}))
     references = _references(root, families, named, files)
     for case, rid in (rescore or {}).items():
         if rid not in references:

@@ -1,0 +1,22 @@
+# Dress rehearsal (ticket 08), NOT part of the campaign series: the scale cells at
+# core budget 16, 1 repeat, no ladder, at the pre-freeze branch tip; measures the unmeasured
+# scale cells and runs every new harness path once before the freeze.
+schema = 1
+cases = ["r10M_void", "microstrip_p3"]
+solvers = ["gfem:direct", "gfem:petsc-mumps", "gfem:bddc", "palace:mumps", "palace:pmg"]
+layouts = ["default", "4x4"]
+core_budget = 16
+repeats = 1
+node_class = "highmem"
+anchor_tolerance = 1e-8
+
+[jobs]
+group = "case"
+
+[wall_cap_s]
+r10M_void = 1800
+microstrip_p3 = 1800
+
+
+[stacks.wheels.versions]
+palace = "0.19.0"
