@@ -233,6 +233,8 @@ class Case:
     """Volumes removed from the domain, each as the surfaces enclosing it."""
     est_s: dict[str, float] = field(default_factory=dict)
     """Run-time hints for ``plan``'s estimate (keys set by the plan)."""
+    reference_case: str | None = None
+    """The sibling suite case whose ``reference.json`` scores this one, if not own."""
     directory: Path | None = field(default=None, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -250,6 +252,7 @@ _TOP = (
     "regions",
     "problem",
     "quantities",
+    "reference",
     "est_s",
     "materials",
     "boundaries",
@@ -346,7 +349,7 @@ def _choice(value: object, choices: Sequence[str], where: str) -> str:
 
 PLANNING_KEYS = ("est_s",)
 """Case-file tables that are planning hints, outside every case hash."""
-SIBLING_KEYS = ("name", "size", "order", "mesh")
+SIBLING_KEYS = ("name", "size", "order", "mesh", "reference")
 """What may differ between siblings of one physics (order, ladder level)."""
 
 
@@ -361,7 +364,7 @@ def definition_sha256(case: Case) -> str:
 
 
 def physics_sha256(case: Case) -> str:
-    """sha256 of the physics: the definition minus mesh, order, name and size.
+    """sha256 of the physics: the definition minus mesh, order, name, size, reference.
 
     Siblings of one family (orders, split levels) share it; a converged reference
     is matched by it plus the run's mesh sha256 (ADR 0408).
@@ -438,6 +441,11 @@ def case_from_dict(raw: Mapping[str, Any], *, where: str = "case") -> Case:
         _table(_get(raw, "quantities", where), "quantities"), where, names
     )
     est = _table(raw.get("est_s", {}), "est_s")
+    reference_case = None
+    if "reference" in raw:
+        table = _table(raw["reference"], "reference")
+        _keys(table, ("case",), f"{where} reference")
+        reference_case = _case_name(_get(table, "case", "reference"), "reference.case")
     return Case(
         name=_str(_get(raw, "name", where), "name"),
         size=_choice(_get(raw, "size", where), SIZES, f"{where}: size"),
@@ -452,7 +460,30 @@ def case_from_dict(raw: Mapping[str, Any], *, where: str = "case") -> Case:
         ports=ports,
         excluded=tuple(excluded),
         est_s={k: _float(v, f"est_s.{k}") for k, v in est.items()},
+        reference_case=reference_case,
     )
+
+
+def _case_name(value: object, where: str) -> str:
+    name = value if isinstance(value, str) else ""
+    if not name or name in (".", "..") or "/" in name or "\\" in name:
+        msg = f"{where} must be a suite case name, got {value!r}"
+        raise CaseError(msg)
+    return name
+
+
+def reference_directory(case: Case) -> Path | None:
+    """Where the case's ``reference.json`` lives: its own directory or the named case's.
+
+    A ``[reference] case = "<sibling>"`` key makes a sibling suite case (same
+    physics, another order) score against the sibling's reference, with no copy,
+    so the reference id stays single.
+    """
+    if case.directory is None:
+        return None
+    if case.reference_case is None:
+        return case.directory
+    return case.directory.parent / case.reference_case
 
 
 def _regions(table: Mapping[str, Any], where: str) -> dict[str, tuple[int, int]]:
@@ -668,6 +699,8 @@ def _case_dict(c: Case) -> dict[str, Any]:
         "problem": problem,
         "quantities": quantities,
     }
+    if c.reference_case is not None:
+        out["reference"] = {"case": c.reference_case}
     if c.est_s:
         out["est_s"] = dict(c.est_s)
     if c.materials:

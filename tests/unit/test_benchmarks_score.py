@@ -345,3 +345,22 @@ def test_a_reference_file_changed_since_the_run_refuses_to_score(tmp_path):
     score.score_campaign([r], lambda name: case_mod.load_case(cases / name))
     assert r.checks["reference_matches"] == "fail"
     assert "reference.json" in r.extra["accuracy_reason"]
+
+
+def test_microstrip_p3_scores_against_the_microstrip_reference_with_no_copy(tmp_path):
+    cases = _cases_with_reference(tmp_path, "microstrip", _ms_reference())
+    shutil.copytree(config.CASES_DIR / "microstrip_p3", cases / "microstrip_p3")
+    assert not (cases / "microstrip_p3" / "reference.json").exists()
+    p3 = case_mod.load_case(cases / "microstrip_p3")
+    assert p3.order == 3
+    assert p3.mesh.sha256 == _case("microstrip").mesh.sha256
+    doc, sha = score.load_reference(p3)
+    assert doc is not None
+    assert doc["id"] == "microstrip-20261117-0000000"
+    assert sha == records.file_sha256(cases / "microstrip" / "reference.json")
+    r = _record(p3, _s_outputs(p3, lambda i, _k: complex(0.1 * i, -0.5) + 2e-4))
+    score.score_campaign([r], lambda name: case_mod.load_case(cases / name))
+    assert r.checks["reference_matches"] == "pass"
+    assert r.extra.get("accuracy_reason") != "no_reference"
+    assert r.accuracy is not None
+    assert r.accuracy.value == pytest.approx(2e-4)
