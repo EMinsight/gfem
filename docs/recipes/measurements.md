@@ -107,8 +107,13 @@ conductor loss under $e^{+i\omega t}$.
 ```python
 mode = gfem.solve(model, gfem.PortMode("p1", [10e9, 20e9]))
 v_path = [(0.0, 0.0, 0.0), (0.0, 10e-6, 0.0)]
-loop = [(-5e-6, 2e-6, 0.0), (5e-6, 2e-6, 0.0), (5e-6, 8e-6, 0.0),
-        (-5e-6, 8e-6, 0.0), (-5e-6, 2e-6, 0.0)]
+loop = [
+    (-5e-6, 2e-6, 0.0),
+    (5e-6, 2e-6, 0.0),
+    (5e-6, 8e-6, 0.0),
+    (-5e-6, 8e-6, 0.0),
+    (-5e-6, 2e-6, 0.0),
+]
 z_pv = gfem.characteristic_impedance(mode, v_path)
 z_pi = gfem.characteristic_impedance(mode, current_path=loop)
 z_vi = gfem.characteristic_impedance(mode, v_path, current_path=loop)
