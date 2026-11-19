@@ -5,9 +5,12 @@ r"""The numbers of a campaign report, as plain JSON values (``report.json``).
 Markdown prints, so a later reader builds on data, never on scraped Markdown.
 Performance is observed, never judged: no value here is a pass or a fail.
 
-- A **cell** is the passing records of one (case, solver, stack, layout, tolerance),
-  the default layout apart from the grid. A record passes when its status is ``ok``
-  and no check failed; every other record goes to the failures table and to no view.
+- A **cell** is the passing records of one (case, core budget, node class, solver,
+  stack, layout, tolerance), the default layout apart from the grid. Every per-case
+  view is computed per (core budget, node class); a case with several holds them
+  under ``budgets`` (ADR 0452), a case with one keeps them at its top level. A
+  record passes when its status is ``ok`` and no check failed; every other record
+  goes to the failures table and to no view.
 - Medians over passing repeats, each bucket taken independently; a ``null`` bucket
   stays ``null``. Spread is :math:`(\max - \min) / \mathrm{median}` of work time,
   **noisy** above 10 %.
@@ -30,7 +33,7 @@ import itertools
 import math
 import statistics
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from benchmarks.adapters import ADAPTERS
 from benchmarks.harness import case as case_mod
@@ -322,6 +325,8 @@ def _cells(rows: Sequence[records.SuiteRecord]) -> list[dict[str, Any]]:
             continue
         key = (
             r.run.case,
+            r.run.core_budget,
+            r.provenance.machine.node_class or "",
             r.run.solver,
             r.run.stack,
             r.run.layout.asked == "default",
@@ -332,14 +337,24 @@ def _cells(rows: Sequence[records.SuiteRecord]) -> list[dict[str, Any]]:
     out = []
     for key in sorted(groups, key=_cell_order):
         rs = sorted(groups[key], key=lambda r: r.run.repeat)
-        out.append(cell(rs, default=key[3]))
+        out.append(cell(rs, default=key[5]))
     return out
 
 
 def _cell_order(key: tuple) -> tuple:
-    case, solver, stack, default, layout, tol = key
+    case, budget, node_class, solver, stack, default, layout, tol = key
     ranks = int(layout.split("x")[0]) if "x" in layout else 0
-    return (case, solver, stack, not default, ranks, layout, -(tol or 0.0))
+    return (
+        case,
+        budget,
+        node_class,
+        solver,
+        stack,
+        not default,
+        ranks,
+        layout,
+        -(tol or 0.0),
+    )
 
 
 # --- per case -----------------------------------------------------------------------
@@ -910,22 +925,58 @@ def _case_order(campaigns: Sequence[LoadedCampaign], rows) -> list[str]:
     return [n for n in order if any(r.run.case == n for r in rows)]
 
 
-def _case(
-    name: str,
+def _partition(rows: Sequence[records.SuiteRecord]) -> list[dict[str, Any]]:
+    """The case's rows per (core budget, node class), smallest budget first.
+
+    A record without a node class (never started, refused) takes its job's class,
+    else its budget's only class.
+    """
+    by_job: dict[str, set[str]] = {}
+    by_budget: dict[int, set[str]] = {}
+    for r in rows:
+        if nc := r.provenance.machine.node_class:
+            by_job.setdefault(r.run.job or "", set()).add(nc)
+            by_budget.setdefault(r.run.core_budget, set()).add(nc)
+
+    def node_class(r: records.SuiteRecord) -> str | None:
+        if nc := r.provenance.machine.node_class:
+            return nc
+        for known in (by_job.get(r.run.job or ""), by_budget.get(r.run.core_budget)):
+            if known and len(known) == 1:
+                return next(iter(known))
+        return None
+
+    groups: dict[tuple[int, str | None], list[records.SuiteRecord]] = {}
+    for r in rows:
+        groups.setdefault((r.run.core_budget, node_class(r)), []).append(r)
+    out = []
+    for (budget, nc), rs in sorted(
+        groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")
+    ):
+        nodes = max((len(r.provenance.machine.nodes) for r in rs), default=0)
+        out.append(
+            {
+                "core_budget": budget,
+                "node_class": nc,
+                "nodes": nodes or None,
+                "rows": rs,
+            }
+        )
+    return out
+
+
+def _views(
     rows: Sequence[records.SuiteRecord],
     *,
-    inputs: Inputs,
+    ref_doc: Mapping[str, Any] | None,
     anchor: float,
     machines: Mapping[str, Any],
-    rescore: Mapping[str, str],
+    rescored: tuple[Mapping[str, dict[str, Any]], str] | None,
 ) -> dict[str, Any]:
-    reference = _reference_block(name, rows, inputs)
-    ref_doc = inputs.references[reference["id"]].doc if reference["in_store"] else None
+    """Every per-case view of one (core budget, node class) of a case."""
     cells = _cells(rows)
-    if name in rescore:
-        _attach_rescore(
-            cells, _rescore(name, rescore[name], rows, inputs), rescore[name]
-        )
+    if rescored is not None:
+        _attach_rescore(cells, *rescored)
     per_solver: dict[str, dict[str, Any]] = {}
     for solver in sorted({c["solver"] for c in cells}):
         mine = [c for c in cells if c["solver"] == solver]
@@ -939,6 +990,45 @@ def _case(
             "layouts": _layouts(solver, at, _unrun(rows, solver, tol)),
         }
     kind = "eigen" if any("f_hz" in r.outputs for r in rows if passing(r)) else "driven"
+    return {
+        "cells": cells,
+        "error_cost": _error_cost(per_solver, rows, ref_doc),
+        "phases": _phase_rows(per_solver),
+        "accuracy": _accuracy(cells, ref_doc),
+        "error_items": _error_items(per_solver, rows, kind),
+        "layouts": [info["layouts"] for info in per_solver.values()],
+        "snapshot": _snapshot(per_solver, machines),
+    }
+
+
+def _case(
+    name: str,
+    rows: Sequence[records.SuiteRecord],
+    *,
+    inputs: Inputs,
+    anchor: float,
+    machines: Mapping[str, Any],
+    rescore: Mapping[str, str],
+) -> dict[str, Any]:
+    """One case; its views per (core budget, node class) when it has several."""
+    reference = _reference_block(name, rows, inputs)
+    ref_doc = inputs.references[reference["id"]].doc if reference["in_store"] else None
+    rescored = None
+    if name in rescore:
+        rescored = (_rescore(name, rescore[name], rows, inputs), rescore[name])
+    kind = "eigen" if any("f_hz" in r.outputs for r in rows if passing(r)) else "driven"
+    parts = _partition(rows)
+    blocks = [
+        _views(
+            p["rows"],
+            ref_doc=ref_doc,
+            anchor=anchor,
+            machines=machines,
+            rescored=rescored,
+        )
+        for p in parts
+    ]
+    codes = sorted({code_kind(c["solver"])[0] for b in blocks for c in b["cells"]})
     notes = []
     if ref_doc is not None and ref_doc.get("method") == "none":
         notes.append(
@@ -950,7 +1040,7 @@ def _case(
     rescore_cmd = None
     if "newer" in reference and name not in rescore:
         rescore_cmd = f"--rescore {name}={reference['newer']['id']}"
-    return {
+    out: dict[str, Any] = {
         "name": name,
         "kind": kind,
         "reference": reference,
@@ -960,18 +1050,30 @@ def _case(
         "structural": _structural(rows),
         "pins": {
             code: list(ADAPTERS[code].pins if code in ADAPTERS else ())
-            for code in sorted({i["code"] for i in per_solver.values()})
+            for code in codes
         },
-        "cells": cells,
-        "error_cost": _error_cost(per_solver, rows, ref_doc),
-        "phases": _phase_rows(per_solver),
-        "accuracy": _accuracy(cells, ref_doc),
-        "error_items": _error_items(per_solver, rows, kind),
-        "layouts": [info["layouts"] for info in per_solver.values()],
-        "snapshot": _snapshot(per_solver, machines),
         "notes": notes,
         "figures": {},
     }
+    if len(blocks) == 1:
+        out.update(blocks[0])
+    else:
+        out["budgets"] = [
+            {
+                "core_budget": p["core_budget"],
+                "node_class": p["node_class"],
+                "nodes": p["nodes"],
+                **b,
+                "figures": {},
+            }
+            for p, b in zip(parts, blocks, strict=True)
+        ]
+    return out
+
+
+def budget_views(case: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The per-budget view blocks of a case: itself when it has a single budget."""
+    return case.get("budgets") or [cast("dict[str, Any]", case)]
 
 
 # --- campaign level -----------------------------------------------------------------
@@ -1244,18 +1346,39 @@ def build(
     return report
 
 
+def _suffix(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
+    """``-c<budget>`` on a multi-budget case; ``-<class>`` too if a budget has two."""
+    if "budgets" not in case:
+        return ""
+    budget = block["core_budget"]
+    twin = sum(b["core_budget"] == budget for b in case["budgets"]) > 1
+    return f"-c{budget}" + (f"-{block['node_class']}" if twin else "")
+
+
+def budget_title(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
+    """``<case> at c<budget>`` (and the class when a budget has two); else the name."""
+    if "budgets" not in case:
+        return str(case["name"])
+    title = f"{case['name']} at c{block['core_budget']}"
+    if sum(b["core_budget"] == block["core_budget"] for b in case["budgets"]) > 1:
+        title += f" {block['node_class']}"
+    return title
+
+
 def assign_figures(report: dict[str, Any]) -> None:
     """Name each figure the report draws (``fig-*.svg``)."""
     for c in report["cases"]:
         name = c["name"]
-        figs = {"error_cost": f"fig-{name}-error-cost.svg"}
-        if c["phases"]:
-            figs["phases"] = f"fig-{name}-phases.svg"
-            figs["memory"] = f"fig-{name}-memory.svg"
-        if c["error_items"]["lines"]:
-            figs["error_items"] = f"fig-{name}-error-items.svg"
-        if any(len(lay["cells"]) > 1 for lay in c["layouts"]):
-            figs["layouts"] = f"fig-{name}-layouts.svg"
+        for b in budget_views(c):
+            tail = _suffix(c, b)
+            figs = {"error_cost": f"fig-{name}-error-cost{tail}.svg"}
+            if b["phases"]:
+                figs["phases"] = f"fig-{name}-phases{tail}.svg"
+                figs["memory"] = f"fig-{name}-memory{tail}.svg"
+            if b["error_items"]["lines"]:
+                figs["error_items"] = f"fig-{name}-error-items{tail}.svg"
+            if any(len(lay["cells"]) > 1 for lay in b["layouts"]):
+                figs["layouts"] = f"fig-{name}-layouts{tail}.svg"
+            b["figures"] = figs
         if any(s["case"] == name for s in report["trend"]["series"]):
-            figs["trend"] = f"fig-{name}-trend.svg"
-        c["figures"] = figs
+            c["figures"]["trend"] = f"fig-{name}-trend.svg"

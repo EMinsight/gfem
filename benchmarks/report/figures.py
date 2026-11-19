@@ -22,6 +22,8 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter
 
+from benchmarks.report import views
+
 COLORS = {"gfem": "#2a78d6", "palace": "#eb6834"}
 THIRD = "#1baf7a"
 MARKERS = {"direct": "s", "iterative": "o"}
@@ -497,19 +499,24 @@ def _trend(report: Mapping[str, Any], name: str, path: Path) -> None:
 def render(report: Mapping[str, Any], out: Path) -> list[Path]:
     """Draw every figure the report names into ``out``; return the paths."""
     written = []
+    draw = {
+        "error_cost": _error_cost,
+        "phases": _phases,
+        "memory": _memory,
+        "error_items": _error_items,
+        "layouts": _layouts,
+    }
     with mpl.rc_context(cast("Any", RC)):
         for case in report["cases"]:
-            figs = case["figures"]
-            draw = {
-                "error_cost": lambda p, c=case: _error_cost(c, p),
-                "phases": lambda p, c=case: _phases(c, p),
-                "memory": lambda p, c=case: _memory(c, p),
-                "error_items": lambda p, c=case: _error_items(c, p),
-                "layouts": lambda p, c=case: _layouts(c, p),
-                "trend": lambda p, c=case: _trend(report, c["name"], p),
-            }
-            for view, name in sorted(figs.items()):
+            for block in views.budget_views(case):
+                titled = {**block, "name": views.budget_title(case, block)}
+                for view, name in sorted(block["figures"].items()):
+                    if view in draw:
+                        path = out / name
+                        draw[view](titled, path)
+                        written.append(path)
+            if name := case["figures"].get("trend"):
                 path = out / name
-                draw[view](path)
+                _trend(report, case["name"], path)
                 written.append(path)
     return written

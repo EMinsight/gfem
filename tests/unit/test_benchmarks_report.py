@@ -455,6 +455,108 @@ def test_trend_over_two_gfem_commits_restarts_on_a_key_change(tmp_path):
     assert _phase(ms, "gfem:direct", "1x16")["n"] == 3
 
 
+# --- core budgets (ADR 0452) ------------------------------------------------------
+
+
+def _budget_campaign(tmp_path: Path, budget: int, edit=None) -> Path:
+    """The fixture campaign rerun at ``budget`` cores, same gfem commit."""
+    cid = f"20261120-858bc66-smoke-c{budget}"
+
+    def at_budget(d):
+        d["campaign"] = cid
+        d["run"]["core_budget"] = budget
+        if edit is not None:
+            edit(d)
+
+    camp = _store(tmp_path, at_budget, name=f"campaign-c{budget}")
+    manifest = json.loads((camp / "campaign.json").read_text())
+    manifest["id"] = cid
+    manifest["core_budget"] = budget
+    (camp / "campaign.json").write_text(json.dumps(manifest))
+    return camp
+
+
+def _two_budgets(tmp_path: Path) -> Path:
+    """c8 and c16 of the fixture; at c8 gfem:bddc is fastest at 2x8 (halved)."""
+
+    def faster_2x8(d):
+        run = d["run"]
+        if run["solver"] == "gfem:bddc" and run["layout"]["ranks"] == 2:
+            d["timings"]["work_s"] = (d["timings"]["work_s"] or 0) * 0.5
+
+    c8 = _budget_campaign(tmp_path, 8, faster_2x8)
+    c16 = _budget_campaign(tmp_path, 16)
+    return _report(tmp_path, str(c8), str(c16), "--no-figures", name="budgets")
+
+
+def _budget(case: dict, budget: int) -> dict:
+    return next(b for b in case["budgets"] if b["core_budget"] == budget)
+
+
+def test_each_core_budget_has_its_own_best_layout(tmp_path):
+    out = _two_budgets(tmp_path)
+    ms = _case(json.loads((out / "report.json").read_text()), "microstrip")
+    assert [(b["core_budget"], b["node_class"]) for b in ms["budgets"]] == [
+        (8, "standard"),
+        (16, "standard"),
+    ]
+    # c16 is the fixture: 4x4 best (11.0 s); c8 halves 2x8 below it
+    assert _layouts(_budget(ms, 16), "gfem:bddc")["best"] == "4x4"
+    assert _layouts(_budget(ms, 8), "gfem:bddc")["best"] == "2x8"
+    assert _phase(_budget(ms, 8), "gfem:direct", "1x16")["n"] == 3
+    assert "layouts" not in ms
+    assert ms["reference"]["id"] is not None
+
+
+def test_each_core_budget_gets_a_subsection(tmp_path):
+    index = (_two_budgets(tmp_path) / "index.md").read_text()
+    c8 = index.index("### microstrip at c8 (standard, 1 node)")
+    c16 = index.index("### microstrip at c16 (standard, 1 node)")
+    assert index.index("## microstrip") < c8 < c16
+    section = index[c8:c16]
+    assert "#### Error against cost" in section
+    assert "#### Layouts" in section
+    assert index.count("Structural differences (reported, never removed)") == 2
+
+
+def test_figures_of_several_budgets_carry_the_budget(tmp_path):
+    pytest.importorskip("matplotlib")
+    c8 = _budget_campaign(tmp_path, 8)
+    c16 = _budget_campaign(tmp_path, 16)
+    out = _report(tmp_path, str(c8), str(c16), name="figs")
+    svgs = sorted(p.name for p in out.glob("fig-microstrip-*.svg"))
+    assert "fig-microstrip-error-cost-c8.svg" in svgs
+    assert "fig-microstrip-layouts-c16.svg" in svgs
+    assert "fig-microstrip-error-cost.svg" not in svgs
+    index = (out / "index.md").read_text()
+    for name in svgs:
+        assert f"]({name})" in index
+
+
+def test_a_single_budget_keeps_the_case_keys(fixture_report):
+    assert sorted(_case(fixture_report[0], "microstrip")) == [
+        "accuracy",
+        "campaigns",
+        "cells",
+        "comparison",
+        "error_cost",
+        "error_items",
+        "figures",
+        "kind",
+        "layouts",
+        "name",
+        "notes",
+        "phases",
+        "pins",
+        "reference",
+        "rescore_flag",
+        "rescored_against",
+        "snapshot",
+        "structural",
+    ]
+    assert "### microstrip at" not in fixture_report[1]
+
+
 # --- figures ----------------------------------------------------------------------
 
 
