@@ -7,6 +7,7 @@ Every test needs complex petsc4py: skipped without it (the ``petsc`` marker).
 
 import dataclasses
 import re
+import types
 from pathlib import Path
 
 import jax
@@ -21,7 +22,7 @@ import gfem
 from gfem import _petsc
 from gfem._engine import quadrature
 from gfem._engine.mesh import to_ngsolve
-from gfem._linalg import Operator, prepare
+from gfem._linalg import Operator, coarse, petsc, prepare
 from gfem._linalg.petsc import PetscHandle
 from gfem._linalg.pieces import AssembledPieces, PieceSum
 
@@ -922,3 +923,87 @@ def test_an_unread_petsc_option_raises_from_every_problem(line, plate, problem):
     )
     with pytest.raises(ValueError, match=r"\['ksp_tpye'\] was not read"):
         gfem.solve(model, p, options=options)
+
+
+# --- the options across ranks, by symmetry, on COMM_SELF ----------------------------
+
+
+def _advection(built, shift=1 - 2j):
+    """A complex operator with A^T != A: a Laplacian with a drift term."""
+    space = ngs.H1(built.mesh, order=2, dirichlet="bottom|top", complex=True)
+    u, v = space.TnT()
+    drift = ngs.InnerProduct(ngs.CF((3.0, 1.0, 0.0)), ngs.grad(u)) * v
+    form = ngs.BilinearForm(space, symmetric=False)
+    form += (ngs.grad(u) * ngs.grad(v) + shift * u * v + drift) * quadrature.dx(2)
+    return Operator(form, space.FreeDofs()), space
+
+
+def _free_numbering(space):
+    """Every free DOF numbered in order, as one rank owning them all numbers them."""
+    free = _free(space)
+    numbers = np.where(free, np.cumsum(free) - 1, -1)
+    count = int(free.sum())
+    return types.SimpleNamespace(numbers=numbers, count=count, total=count)
+
+
+def _rank_options(symmetric):
+    return (*petsc.defaults(symmetric), *petsc.RANK_MUMPS_OPTIONS)
+
+
+def _coarse_options(symmetric):
+    return coarse.options(symmetric, workspace=60, factor=1)
+
+
+@pytest.mark.parametrize("options", [_rank_options, _coarse_options])
+@pytest.mark.parametrize(
+    ("symmetry", "factorization", "flagged"),
+    [
+        ("general", "lu", (False, False)),
+        ("complex_symmetric", "cholesky", (True, True)),
+    ],
+)
+def test_across_ranks_mumps_factors_by_lu_unless_a_equals_its_transpose(
+    built, options, symmetry, factorization, flagged
+):
+    # what `direct` and BDDC's coarse problem set up under ranks, on COMM_SELF
+    PETSc = _petsc.require_petsc()
+    general = symmetry == "general"
+    op, space = _advection(built) if general else _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    A = op.form.mat
+    symmetric = not general
+    aij, _ = petsc.distributed_aij(
+        A, _free_numbering(space), PETSc.COMM_SELF, symmetric=symmetric
+    )
+    assert aij.isSymmetricKnown() == flagged
+    ksp = PETSc.KSP().create(PETSc.COMM_SELF)
+    prefix = _petsc.next_prefix()
+    ksp.setOptionsPrefix(prefix)
+    ksp.setOperators(aij)
+    with _petsc.scoped_options(prefix, options(symmetric)):
+        ksp.setFromOptions()
+        ksp.setUp()
+    assert ksp.getPC().getType() == factorization
+    dense = aij.convert("dense").getDenseArray()
+    if general:
+        assert np.abs(dense - dense.T).max() > 0.1 * np.abs(dense).max()
+    rng = np.random.default_rng(4)
+    b, x = aij.createVecs()
+    b.array[:] = rng.standard_normal(b.size) + 1j * rng.standard_normal(b.size)
+    ksp.solve(b, x)
+    np.testing.assert_allclose(
+        dense @ x.array, b.array, atol=1e-10 * np.abs(b.array).max()
+    )
+    for obj in (ksp, aij, b, x):
+        obj.destroy()
+
+
+@pytest.mark.parametrize(
+    ("symmetric", "factorization"), [(False, "lu"), (True, "cholesky")]
+)
+def test_a_telescoped_coarse_problem_factors_by_symmetry_behind_it(
+    symmetric, factorization
+):
+    options = dict(coarse.options(symmetric, workspace=60, factor=4))
+    assert options["pc_type"] == "telescope"
+    assert options["telescope_pc_type"] == factorization

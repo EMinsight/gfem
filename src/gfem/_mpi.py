@@ -134,10 +134,6 @@ _REFUSALS = {
         "BDDC at order 1 has a coarse problem as large as the system, so it is "
         f"refused above one rank: use linear_solver='direct' or order=2, {_COPIES}."
     ),
-    "general_operator": (
-        "Only a system equal to its transpose has a distributed solver, and this "
-        f"one has none: {_RUN_COPIES}."
-    ),
     "field_export": (
         "A field across ranks is not sampled into one object, which would hold the "
         "whole sampled mesh in one process: write one file with Field.to_vtu, read "

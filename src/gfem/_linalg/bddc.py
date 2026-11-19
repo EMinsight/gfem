@@ -142,7 +142,11 @@ def _set_up(
     is_complex = bool(form.space.is_complex)
     if _coarse_on_mumps(comm, is_complex=is_complex):
         preconditioner = ngs.Preconditioner(
-            form, "bddc", coarsetype=coarse.coarse_type(comm)
+            form,
+            "bddc",
+            coarsetype=coarse.coarse_type(
+                comm, equals_its_transpose(symmetry, is_complex=is_complex)
+            ),
         )
         with _timing.phase("assemble"):
             form.Assemble()
