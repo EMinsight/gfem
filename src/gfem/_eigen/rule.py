@@ -356,6 +356,10 @@ class EigenmodeRule:
     #: the mode-field outputs, within the reach `nondifferentiable_output`
     #: checks for the wanted inputs (ADR 0102).
     differentiable_outputs = frozenset({"omega", "cluster", *_MODE_FIELD})
+    #: Outputs that are a rank's own piece under ranks (ADR 0063): the ranks
+    #: compare their cotangents' shapes, not their values. The mode fields'
+    #: ratios are values.
+    pieces = frozenset({"e_field"})
     #: `nondifferentiable_output` takes the wanted input kinds and may
     #: return ``None`` (`gfem._adjoint.solve_vjp`).
     input_aware = True
