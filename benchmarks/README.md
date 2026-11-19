@@ -526,6 +526,17 @@ time, phase bars, memory, accuracy, layouts and a cross-solver snapshot; a trend
 section with at least two gfem commits; caveats. A job whose machine benchmark is
 more than 10 % below the campaign median is flagged "slow node".
 
+**Core budgets.** A cell is keyed by case, core budget, node class, solver, stack,
+layout and tolerance, and every per-case view is computed per (core budget, node
+class): best and default layout, ladder, equal-error table and snapshot ratios hold
+one budget's records only. A record without a node class (never started, refused)
+takes its job's class. A case run at a single (budget, class) prints as above. A case
+with several prints its reference and structural block once, then one
+`### <case> at c<budget> (<class>, <N> node(s))` subsection per budget, smallest
+first, holding the views in the order above; `report.json` holds them under
+`cases[i].budgets` and the figures carry a `-c<budget>` suffix
+(`-c<budget>-<class>` when one budget ran on two node classes).
+
 ## Extending the suite
 
 **A case.** Write `cases/<name>/case.toml` by hand, or import a gsim Palace config
