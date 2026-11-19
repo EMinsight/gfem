@@ -40,17 +40,65 @@ def test_release_and_smoke_campaigns_are_committed():
     } <= names
 
 
+#: The campaign series (ADRs 0450, 0456, 0458): small cases, bragg and scale cases at
+#: every single-node core budget, plus bragg's Palace pmg cell at 16 cores.
+BUDGETS = (8, 16, 32, 56, 112)
+SERIES = sorted(
+    [f"full-{s}c{b}" for s in ("", "bragg-", "scale-") for b in BUDGETS]
+    + ["full-bragg-pmg-c16"]
+)
+
+
+def test_the_series_and_its_rehearsal_are_committed():
+    names = {p.stem for p in COMMITTED}
+    assert {*SERIES, "rehearsal-scale-c16"} <= names
+    assert len(SERIES) == 16
+
+
+def test_the_series_plans_26_jobs_1221_runs_and_about_8476_core_hours(site):
+    campaigns = [config.load_campaign(CAMPAIGNS / f"{n}.toml") for n in SERIES]
+    plans = [matrix.expand(c, site, commit=COMMIT) for c in campaigns]
+    assert sum(len(p.jobs) for p in plans) == 26
+    assert sum(p.runs for p in plans) == 1221
+    # issue 08's plan totals on the probe files (probes/08/plans/)
+    assert sum(p.est_core_h for p in plans) == pytest.approx(8476, rel=0.03)
+
+
+def test_the_rehearsal_plans_the_two_scale_cases_at_16_cores(site):
+    path = CAMPAIGNS / "rehearsal-scale-c16.toml"
+    plan = matrix.expand(config.load_campaign(path), site, commit=COMMIT)
+    assert [job.cases for job in plan.jobs] == [("r10M_void",), ("microstrip_p3",)]
+    assert {s.core_budget for j in plan.jobs for s in j.steps} == {16}
+    assert plan.est_core_h == pytest.approx(385, rel=0.03)
+
+
+def test_series_hints_cover_every_planned_layout(site):
+    # a cell without a "<solver>@<RxT>" hint would be estimated at the wall cap
+    for name in SERIES:
+        campaign = config.load_campaign(CAMPAIGNS / f"{name}.toml")
+        cases = matrix.load_cases(campaign.cases)
+        plan = matrix.expand(campaign, site, commit=COMMIT, cases=cases)
+        for cell in plan.cells:
+            if not cell.refused:
+                key = f"{cell.solver}@{cell.layout}"
+                assert key in cases[cell.case].est_s, (name, cell.case, key)
+
+
 #: The only refusals a committed campaign plans: gfem's non-direct kinds on bragg's
 #: Bloch-periodic eigenproblem (ticket 12 amendment from ticket 14).
 BLOCH_REFUSED = {("bragg", "gfem:petsc-mumps"), ("bragg", "gfem:bddc")}
 
 
 @pytest.mark.parametrize("path", COMMITTED, ids=lambda p: p.stem)
-def test_every_committed_campaign_plans_only_the_bloch_refusals(path, site):
+def test_every_committed_campaign_plans_only_the_expected_refusals(path, site):
+    # besides the Bloch refusals, only gfem:direct (one process) on the scale files'
+    # explicit multi-rank layout
     plan = matrix.expand(config.load_campaign(path), site, commit=COMMIT)
     assert plan.jobs
-    refused = {(c.case, c.solver) for c in plan.cells if c.refused}
-    assert refused <= BLOCH_REFUSED
+    for c in plan.cells:
+        if c.refused and (c.case, c.solver) not in BLOCH_REFUSED:
+            assert c.solver == "gfem:direct", (c.case, c.solver, c.layout)
+            assert int(c.layout.split("x")[0]) > 1, (c.case, c.layout)
 
 
 @pytest.mark.parametrize("name", ["smoke", "smoke-r10m"])

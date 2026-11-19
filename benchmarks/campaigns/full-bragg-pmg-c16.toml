@@ -1,0 +1,20 @@
+# Campaign series (ADR 0458; ticket 08): the bragg palace:pmg observation cell, core
+# budget 16, default layout 16x1, 3 repeats, cap 900 s. plan adds the same-code
+# palace:mumps run.
+schema = 1
+cases = ["bragg"]
+solvers = ["palace:pmg"]
+layouts = ["default"]
+core_budget = 16
+repeats = 3
+node_class = "standard"
+anchor_tolerance = 1e-8
+
+[jobs]
+group = "case"
+
+[wall_cap_s]
+bragg = 900
+
+[stacks.wheels.versions]
+palace = "0.19.0"

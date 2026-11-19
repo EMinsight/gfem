@@ -29,7 +29,8 @@ benchmarks/
   adapters/          solver adapters: gfem.py, gfem_worker.py, palace.py
   stacks/            stack descriptions (*.toml) and kind modules (wheels, native)
   cases/<name>/      case.toml, mesh.msh.xz (if small), reference.json, source/
-  campaigns/         campaign files: smoke, smoke-r10m, release-gfem, reference-*
+  campaigns/         campaign files: smoke, smoke-r10m, release-gfem, reference-*,
+                     the campaign series full-* and its rehearsal-scale-c16
   references/        closed forms and the microstrip ladder (rung case files)
   report/            load, views, markdown, figures
 ```
@@ -434,9 +435,20 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
    replace an axis; `--list` prints the axis values. By default one job is one case x
    stack on one exclusive node; `[jobs] group = "stack"` makes one job per stack. The
    time limit is 1.5x the estimate; QOS `debug` up to 2 h, else `long`. Planned
-   today: `smoke` 3 jobs / 149 runs / ~469 core-h, `smoke-r10m` 1 job / 4 runs / ~50,
+   today: `smoke` 3 jobs / 149 runs / ~539 core-h, `smoke-r10m` 1 job / 4 runs / ~47,
    `release-gfem` 1 job / 23 runs / ~46 (gfem petsc-mumps and bddc on bragg, a
    Bloch-periodic eigenproblem, are planned once as `refused`).
+
+   The campaign series is 16 files, one job per case, at the core budgets
+   8, 16, 32, 56 and 112 on one node: `full-c<b>` (lcavity, microstrip, every layout
+   of the grid, the tolerance ladder on microstrip's iterative kinds) 10 jobs / 696
+   runs / ~2 397 core-h, `full-bragg-c<b>` and `full-bragg-pmg-c16` 6 jobs / 125
+   runs / ~133, `full-scale-c<b>` (r10M_void and microstrip_p3 on highmem nodes,
+   default and `<b/4>x4` layouts; gfem:direct at `<b/4>x4` is planned once as
+   `refused`) 10 jobs / 400 runs / ~5 946. In all: 26 jobs, 1 221 runs, ~8 476
+   core-h. `rehearsal-scale-c16` (2 jobs / 20 runs / ~385, one repeat) is the dress
+   rehearsal run before the series, outside it. The estimates come from the case
+   files' `est_s` hints, keyed `"<solver>@<RxT>"` for every layout of every budget.
 
 3. **Submit** from the same tree:
 

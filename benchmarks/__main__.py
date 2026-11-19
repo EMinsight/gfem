@@ -56,6 +56,17 @@ def _plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _refuse_sibling_scored(loaded: case.Case) -> None:
+    """Refuse a case whose ``[reference] case`` key names the sibling that scores it."""
+    sibling = loaded.reference_case
+    if sibling is not None:
+        msg = (
+            f"{loaded.name} is scored by the {sibling} reference ([reference] case "
+            f"key); run `benchmarks reference {sibling}` instead"
+        )
+        raise ValueError(msg)
+
+
 def _reference(args: argparse.Namespace) -> int:
     name = args.case
     if name == microstrip.CASE:
@@ -83,6 +94,7 @@ def _reference(args: argparse.Namespace) -> int:
         return NOT_YET
     try:
         loaded = case.load_case(args.cases / name)
+        _refuse_sibling_scored(loaded)
         commit = matrix.source_commit()[0]
         doc = closed.document(loaded, commit=commit)
         path = args.cases / name / refdoc.FILE

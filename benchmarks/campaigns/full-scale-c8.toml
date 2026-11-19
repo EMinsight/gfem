@@ -1,0 +1,27 @@
+# Campaign series (ADR 0456; ticket 08): r10M_void and microstrip_p3 at core budget
+# 8 on a highmem node, layouts default and 2x4, 3 repeats, the tolerance ladder on
+# the iterative kinds of both cases at the default layout.
+schema = 1
+cases = ["r10M_void", "microstrip_p3"]
+solvers = ["gfem:direct", "gfem:petsc-mumps", "gfem:bddc", "palace:mumps", "palace:pmg"]
+layouts = ["default", "2x4"]
+core_budget = 8
+repeats = 3
+node_class = "highmem"
+anchor_tolerance = 1e-8
+
+[jobs]
+group = "case"
+
+[wall_cap_s]
+r10M_void = 1800
+microstrip_p3 = 1800
+
+[[ladder]]
+cases = ["r10M_void", "microstrip_p3"]
+solvers = ["gfem:bddc", "palace:pmg"]
+tolerances = [1e-6, 1e-8, 1e-10]
+layout = "default"
+
+[stacks.wheels.versions]
+palace = "0.19.0"
