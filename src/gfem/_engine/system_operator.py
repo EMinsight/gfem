@@ -93,6 +93,7 @@ from gfem._linalg.pieces import (
     FixedPart,
     Integrand,
     KeptParts,
+    Pieces,
     PieceSum,
 )
 
@@ -286,6 +287,16 @@ class SystemOperator:
         self._adjoint_tolerance = adjoint_tolerance
         # assembled at the first direct prepare (the piece sum); a backward
         # pass reuses them, `free` drops them
+        self._pieces: Pieces = self._build_pieces()
+        self._handles: dict[int, Handle] = {}
+        self._adjoint_sweep: SystemSweep | None = None
+        self._transposed = transposed
+        self._transposed_system: SystemOperator | None = None
+        self._pool_budget = pool_budget
+
+    def _build_pieces(self) -> Pieces:
+        """The operator's pieces; fixed parts on a serial CPU direct solve."""
+        operator, linear = self.operator, self._linear
         integrands = [piece.integrand for piece in operator.pieces]
         fixed = None
         if (
@@ -294,18 +305,13 @@ class SystemOperator:
             and (linear.kind, linear.device) == ("direct", "cpu")
         ):
             integrands, fixed = operator.fixed.split(operator.pieces)
-        self._pieces = AssembledPieces(
+        return AssembledPieces(
             operator.space,
             integrands,
             symmetric=operator.symmetric,
             comm=operator.built.comm,
             fixed=fixed,
         )
-        self._handles: dict[int, Handle] = {}
-        self._adjoint_sweep: SystemSweep | None = None
-        self._transposed = transposed
-        self._transposed_system: SystemOperator | None = None
-        self._pool_budget = pool_budget
 
     def sweep(
         self,
