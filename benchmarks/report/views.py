@@ -23,6 +23,11 @@ Performance is observed, never judged: no value here is a pass or a fail.
   linear interpolation between neighbouring rungs, never extrapolated.
 - A cross-code ratio uses cells of one Slurm job; across jobs it carries the label
   **different nodes**.
+- **Scaling** (``scaling``, a case with passing cells at two or more budgets): per
+  solver its best-layout cell at every (core budget, node class), with speedup
+  :math:`S(c) = T(c_0)/T(c)` and parallel efficiency
+  :math:`E(c) = c_0 T(c_0) / (c\,T(c))` against its smallest budget :math:`c_0` of
+  the same node class, and the cross-code ratios per budget.
 
 Standard library only (ADR 0400).
 """
@@ -50,6 +55,12 @@ SAME_MESH = "same-mesh comparison"
 DIFFERENT_DISCRETIZATIONS = "different discretizations"
 TREND_NEEDS = "trend needs two campaigns"
 UNRESOLVED = "unresolved"
+TCP = "TCP between nodes"
+FIRST_NODE = "first node only"
+NOMINAL = (
+    "nominal tolerances differ; iterative kinds compare at equal achieved error "
+    "(the equal-error table of each budget)"
+)
 PHASES = (
     "mesh_read_s",
     "discretize_s",
@@ -1062,7 +1073,144 @@ def _case(
             }
             for p, b in zip(parts, blocks, strict=True)
         ]
+        scaling = _scaling(parts, blocks)
+        if scaling is not None:
+            out["scaling"] = scaling
     return out
+
+
+def _scaling_cell(block: Mapping[str, Any], lay: Mapping[str, Any]):
+    """The best-layout cell of one solver in one budget block, and its default."""
+    at = [
+        c
+        for c in block["cells"]
+        if c["solver"] == lay["solver"] and c["tolerance"] == lay["tolerance"]
+    ]
+    default = next((c for c in at if c["default"]), None)
+    best = None
+    if lay["best"] is not None:
+        best = next(
+            (c for c in at if c["layout"] == lay["best"] and not c["default"]), None
+        ) or next((c for c in at if c["layout"] == lay["best"]), None)
+    return best, default
+
+
+def _scaling_point(part: Mapping[str, Any], block: Mapping[str, Any], lay) -> Any:
+    best, default = _scaling_cell(block, lay)
+    c = best or default
+    if c is None or c["work_s"] is None:
+        return None
+    nodes = part["nodes"] or 1
+    labels = [] if best is not None else ["default (no best)"]
+    if c["n"] < REPEATS:
+        labels.append(f"n = {c['n']}")
+    if nodes > 1 and c["stack"] == "wheels" and c["code"] == "palace":
+        labels.append(TCP)
+    if nodes > 1:
+        labels.append(f"largest node GiB: {FIRST_NODE}")
+    return {
+        "core_budget": part["core_budget"],
+        "node_class": part["node_class"],
+        "nodes": part["nodes"],
+        "layout": c["layout"],
+        "tolerance": c["tolerance"],
+        "n": c["n"],
+        "work_s": c["work_s"],
+        "work_min_s": c["work_min_s"],
+        "work_max_s": c["work_max_s"],
+        "default_layout": default["layout"] if default else None,
+        "default_work_s": default["work_s"] if default else None,
+        "peak_rss_sum_gib": c["memory"]["peak_rss_sum_gib"],
+        "peak_rss_largest_node_gib": (
+            c["memory"]["peak_rss_largest_node_gib"] if nodes > 1 else None
+        ),
+        "error": c["error"],
+        "bound": c["bound"],
+        "resolved": c["resolved"],
+        "accuracy_reason": c["accuracy_reason"],
+        "jobs": c["jobs"],
+        "labels": labels,
+    }
+
+
+def _efficiency(points: list[dict[str, Any]]) -> None:
+    r"""Speedup :math:`S(c) = T(c_0)/T(c)` and efficiency :math:`c_0 T(c_0)/(c T(c))`.
+
+    :math:`c_0` is the smallest budget of the point's node class; a point whose class
+    differs from the previous point's restarts the line.
+    """
+    base: dict[str | None, dict[str, Any]] = {}
+    prev: str | None = points[0]["node_class"] if points else None
+    for p in points:
+        nc = p["node_class"]
+        first = base.setdefault(nc, p)
+        p["baseline"] = first["core_budget"]
+        p["speedup"] = num(first["work_s"] / p["work_s"]) if p["work_s"] else None
+        p["efficiency"] = None
+        if p["work_s"] and p["core_budget"]:
+            c0_t0 = first["core_budget"] * first["work_s"]
+            p["efficiency"] = num(c0_t0 / (p["core_budget"] * p["work_s"]))
+        if nc != prev:
+            p["restart"] = f"line restarts: node class {prev} -> {nc}"
+        prev = nc
+
+
+def _scaling(
+    parts: Sequence[Mapping[str, Any]], blocks: Sequence[Mapping[str, Any]]
+) -> dict[str, Any] | None:
+    """Per solver across (core budget, node class) and cross-code ratios per budget.
+
+    None unless passing cells sit at two or more core budgets.
+    """
+    pairs = zip(parts, blocks, strict=True)
+    budgets = {p["core_budget"] for p, b in pairs if b["cells"]}
+    if len(budgets) < 2:
+        return None
+    lines: dict[str, list[dict[str, Any]]] = {}
+    for part, block in zip(parts, blocks, strict=True):
+        for lay in block["layouts"]:
+            point = _scaling_point(part, block, lay)
+            if point is not None:
+                lines.setdefault(lay["solver"], []).append(point)
+    solvers: list[dict[str, Any]] = []
+    for solver, points in sorted(lines.items()):
+        _efficiency(points)
+        code = code_kind(solver)[0]
+        solvers.append(
+            {"solver": solver, "code": code, "class": klass(solver), "points": points}
+        )
+    ratios = []
+    for part in parts:
+        here = {
+            s["solver"]: p
+            for s in solvers
+            for p in s["points"]
+            if (p["core_budget"], p["node_class"])
+            == (part["core_budget"], part["node_class"])
+        }
+        for other in sorted(here):
+            o = here[other]
+            if code_kind(other)[0] == "gfem":
+                continue
+            for against in sorted(here):
+                g = here[against]
+                if code_kind(against)[0] != "gfem" or klass(against) != klass(other):
+                    continue
+                same_job = len(g["jobs"]) == 1 and g["jobs"] == o["jobs"]
+                ratios.append(
+                    {
+                        "core_budget": part["core_budget"],
+                        "node_class": part["node_class"],
+                        "class": klass(other),
+                        "solver": other,
+                        "against": against,
+                        "work": _ratio(o["work_s"], g["work_s"]),
+                        "memory": _ratio(o["peak_rss_sum_gib"], g["peak_rss_sum_gib"]),
+                        "pairing": "same job" if same_job else DIFFERENT_NODES,
+                        "caveat": NOMINAL if klass(other) == "iterative" else None,
+                    }
+                )
+    return {"solvers": solvers, "ratios": ratios}
 
 
 def budget_views(case: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1374,5 +1522,7 @@ def assign_figures(report: dict[str, Any]) -> None:
             if any(len(lay["cells"]) > 1 for lay in b["layouts"]):
                 figs["layouts"] = f"fig-{name}-layouts{tail}.svg"
             b["figures"] = figs
+        if "scaling" in c:
+            c["figures"]["scaling"] = f"fig-{name}-scaling.svg"
         if any(s["case"] == name for s in report["trend"]["series"]):
             c["figures"]["trend"] = f"fig-{name}-trend.svg"

@@ -531,7 +531,8 @@ convention `../gfem-bench-data/reports/<report-id>`.
   JSON must still match.
 
 Sections: gates and failures, then per case the structural block, error against work
-time, phase bars, memory, accuracy, layouts and a cross-solver snapshot; a trend
+time, phase bars, memory, accuracy, layouts and a cross-solver snapshot (per budget,
+then a scaling view, on a multi-budget case; see below); a trend
 section with at least two gfem commits; caveats. A job whose machine benchmark is
 more than 10 % below the campaign median is flagged "slow node".
 
@@ -545,6 +546,23 @@ with several prints its reference and structural block once, then one
 first, holding the views in the order above; `report.json` holds them under
 `cases[i].budgets` and the figures carry a `-c<budget>` suffix
 (`-c<budget>-<class>` when one budget ran on two node classes).
+
+**Scaling view.** A case with passing cells at two or more core budgets gets a
+`### <case> scaling across core budgets` section after its budget subsections
+(`report.json` `cases[i].scaling`, figure `fig-<case>-scaling.svg`: (a) work time and
+(b) peak RSS sum against core budget, log-log, each solver's ideal line from its
+smallest budget dotted). Per solver and (budget, class), at the anchor tolerance: the
+best-layout cell (the default, labelled, when no layout has 3 repeats) with median
+work time and min-max, the default layout's work time beside, peak RSS sum, the
+largest node's RSS on multi-node points (first node only), n, jobs and the error.
+Speedup $S(c) = T(c_0)/T(c)$ and parallel efficiency $E(c) = c_0 T(c_0)/(c T(c))$ are
+taken against the solver's smallest budget $c_0$ of the same node class; a node class
+change restarts the line, and nothing is extrapolated. A multi-node Palace point on
+`wheels` is labelled "TCP between nodes". Cross-code ratios per budget (Palace over
+gfem, work time and memory, direct against direct, iterative against iterative) are
+labelled "different nodes" unless both cells share one job; iterative ratios carry
+the note that nominal tolerances differ, the per-budget equal-error table being the
+fair comparison. A single-budget case has no scaling view and prints as before.
 
 ## Extending the suite
 

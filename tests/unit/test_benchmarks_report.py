@@ -521,6 +521,115 @@ def test_figures_of_several_budgets_carry_the_budget(tmp_path):
         assert f"]({name})" in index
 
 
+def _slower(factor: float):
+    """Every work time of a campaign times ``factor``."""
+
+    def edit(d):
+        if d.get("timings", {}).get("work_s") is not None:
+            d["timings"]["work_s"] *= factor
+
+    return edit
+
+
+def _on(node_class: str, *, factor: float = 1.0, nodes: int = 1):
+    """Every record on ``node_class`` nodes (``nodes`` of them), work times scaled."""
+
+    def edit(d):
+        _slower(factor)(d)
+        machine = d.get("provenance", {}).get("machine")
+        if machine is not None:
+            machine["node_class"] = node_class
+            machine["nodes"] = [f"node{k:03d}" for k in range(1, nodes + 1)]
+
+    return edit
+
+
+def _point(case: dict, solver: str, budget: int) -> dict:
+    line = next(s for s in case["scaling"]["solvers"] if s["solver"] == solver)
+    return next(p for p in line["points"] if p["core_budget"] == budget)
+
+
+def test_scaling_gives_speedup_and_efficiency_against_the_smallest_budget(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _slower(1.6))
+    c16 = _budget_campaign(tmp_path, 16)
+    ms = _case(_json(tmp_path, c8, c16), "microstrip")
+    first, second = (_point(ms, "gfem:direct", b) for b in (8, 16))
+    assert (first["speedup"], first["efficiency"]) == (1.0, 1.0)
+    # T(c8) = 1.6 T(c16): S = 1.6, E = 8 * 1.6 / 16 = 0.8
+    assert second["speedup"] == pytest.approx(1.6, rel=1e-5)
+    assert second["efficiency"] == pytest.approx(0.8, rel=1e-5)
+    assert second["work_s"] == pytest.approx(30.5)
+    assert first["work_s"] == pytest.approx(1.6 * 30.5, rel=1e-5)
+    # best layout of each budget, the default beside it
+    bddc = _point(ms, "gfem:bddc", 16)
+    assert (bddc["layout"], bddc["default_layout"]) == ("4x4", "1x16")
+    assert bddc["work_s"] == pytest.approx(11.0)  # median of 10.8, 11.0, 11.2
+    assert bddc["default_work_s"] == pytest.approx(12.2)  # of 12.0, 12.2, 12.4
+    assert bddc["error"] is not None
+    assert bddc["peak_rss_sum_gib"] is not None
+
+
+def test_scaling_cross_code_ratio_is_labelled_different_nodes(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _slower(1.6))
+    c16 = _budget_campaign(tmp_path, 16)
+    ms = _case(_json(tmp_path, c8, c16), "microstrip")
+    ratios = ms["scaling"]["ratios"]
+    direct = next(
+        r
+        for r in ratios
+        if r["core_budget"] == 16
+        and (r["solver"], r["against"]) == ("palace:mumps", "gfem:direct")
+    )
+    assert direct["work"] == pytest.approx(41.0 / 30.5, rel=1e-5)
+    assert direct["pairing"] == "different nodes"
+    iterative = next(
+        r
+        for r in ratios
+        if r["core_budget"] == 8
+        and (r["solver"], r["against"]) == ("palace:pmg", "gfem:bddc")
+    )
+    assert iterative["pairing"] == "different nodes"
+    assert "equal achieved error" in iterative["caveat"]
+    assert direct["caveat"] is None
+
+
+def test_a_node_class_change_restarts_the_scaling_line(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _on("standard", factor=3.0))
+    c16 = _budget_campaign(tmp_path, 16, _on("highmem"))
+    c32 = _budget_campaign(tmp_path, 32, _on("highmem", factor=0.5, nodes=2))
+    ms = _case(_json(tmp_path, c8, c16, c32), "microstrip")
+    p8, p16, p32 = (_point(ms, "gfem:direct", b) for b in (8, 16, 32))
+    assert "restart" not in p8
+    assert p16["restart"] == "line restarts: node class standard -> highmem"
+    assert (p16["speedup"], p16["efficiency"]) == (1.0, 1.0)
+    assert p16["baseline"] == 16
+    # against c16 on highmem, not c8 on standard: S = 2, E = 16 * 2 / 32 = 1
+    assert p32["speedup"] == pytest.approx(2.0)
+    assert p32["efficiency"] == pytest.approx(1.0)
+    assert "restart" not in p32
+    assert "TCP between nodes" in _point(ms, "palace:mumps", 32)["labels"]
+    assert "TCP between nodes" not in p32["labels"]
+
+
+def test_scaling_section_and_figure(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _slower(1.6))
+    c16 = _budget_campaign(tmp_path, 16)
+    out = _report(tmp_path, str(c8), str(c16), "--no-figures", name="scal")
+    index = (out / "index.md").read_text()
+    section = index.index("### microstrip scaling across core budgets")
+    assert index.index("### microstrip at c16 (standard, 1 node)") < section
+    end = index.index("## lcavity")
+    assert section < end
+    text = index[section:end]
+    assert "$S(c) = T(c_0)/T(c)$" in text
+    assert "| palace:mumps / gfem:direct |" in text
+    assert "different nodes" in text
+    pytest.importorskip("matplotlib")
+    figs = _report(tmp_path, str(c8), str(c16), name="scalfig")
+    assert (figs / "fig-microstrip-scaling.svg").is_file()
+    assert "](fig-microstrip-scaling.svg)" in (figs / "index.md").read_text()
+
+
 def test_a_single_budget_keeps_the_case_keys(fixture_report):
     assert sorted(_case(fixture_report[0], "microstrip")) == [
         "accuracy",
