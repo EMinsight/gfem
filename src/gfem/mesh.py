@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import weakref
 from pathlib import Path
 
@@ -78,6 +80,52 @@ class _Topology:
     tri_neighbours: np.ndarray
     source: Path | None = None
     section_thickness: float | None = None
+
+
+_TOPOLOGY_DIGESTS: weakref.WeakKeyDictionary[_Topology, str] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _topology_sha256(topology: _Topology) -> str:
+    """The sha256 (64 hex) of a topology's arrays, computed once per topology.
+
+    Each of `_TOPOLOGY_ARRAYS` enters as `_hash_array` feeds it, in that
+    order. The topology is immutable, so the digest is memoized on it.
+    """
+    digest = _TOPOLOGY_DIGESTS.get(topology)
+    if digest is None:
+        h = hashlib.sha256()
+        for name in _TOPOLOGY_ARRAYS:
+            _hash_array(h, name, getattr(topology, name))
+        digest = h.hexdigest()
+        _TOPOLOGY_DIGESTS[topology] = digest
+    return digest
+
+
+def _hash_array(h, path: str, array) -> None:
+    """Feed one array to the hash ``h``, independent of its memory layout.
+
+    A length-prefixed JSON header ``[path, dtype.str, shape]`` comes first,
+    then the little-endian C-order bytes. Float and complex values are
+    normalized first: $-0$ becomes $+0$ (``a + 0``) and every NaN one quiet NaN.
+    """
+    a = np.asarray(array)
+    if a.dtype.kind in "fc":
+        a = a + a.dtype.type(0)
+        if a.dtype.kind == "f":
+            a = np.where(np.isnan(a), a.dtype.type(np.nan), a)
+        else:
+            nan = a.real.dtype.type(np.nan)
+            re = np.where(np.isnan(a.real), nan, a.real)
+            im = np.where(np.isnan(a.imag), nan, a.imag)
+            a = np.empty(a.shape, a.dtype)
+            a.real, a.imag = re, im
+    a = np.ascontiguousarray(a.astype(a.dtype.newbyteorder("<"), copy=False))
+    head = json.dumps([path, a.dtype.str, list(a.shape)]).encode()
+    h.update(len(head).to_bytes(8, "little"))
+    h.update(head)
+    h.update(memoryview(a.reshape(-1)).cast("B"))
 
 
 def _read_gmsh(path: Path, length_unit: str) -> _Topology:

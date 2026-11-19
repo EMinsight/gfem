@@ -65,7 +65,7 @@ from gfem._pytree import register_fields
 from gfem._sheet import SheetField
 from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
-from gfem.mesh import _TOPOLOGY_ARRAYS, Mesh, Region, _Topology
+from gfem.mesh import _TOPOLOGY_ARRAYS, Mesh, Region, _Topology, _topology_sha256
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
 from gfem.problems import (
@@ -500,6 +500,8 @@ def _sha256(path: Path) -> str:
 
 
 def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
+    if context.key:
+        return _key_mesh_args(mesh)
     source = mesh.source
     if source is None:
         return _in_memory_mesh_args(mesh)
@@ -519,6 +521,23 @@ def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
         "length_unit": mesh.length_unit,
     }
     return args | _section(mesh) | _moved_nodes(mesh)
+
+
+def _key_mesh_args(mesh: Mesh) -> dict[str, Any]:
+    """A mesh as the solve key sees it: the arrays in memory, never a file.
+
+    A mesh read from a file, the same file elsewhere and the same topology
+    rebuilt in memory all give these arguments.
+    """
+    return (
+        {
+            "length_unit": mesh.length_unit,
+            "regions": [[r.name, r.tag, r.dim] for r in mesh.regions],
+        }
+        | _section(mesh)
+        | {"topology_sha256": _topology_sha256(mesh._topology)}  # noqa: SLF001
+        | _moved_nodes(mesh)
+    )
 
 
 def _section(mesh: Mesh) -> dict[str, Any]:

@@ -64,10 +64,20 @@ class Context:
         base: The directory of the JSON document; file references (the mesh)
             are relative to it when they lie inside it.
         comm: The communicator a reader was given, as it was given.
+        key: Encode for the solve key: a mesh by its in-memory topology,
+            never by a file path or the file's sha256.
+        model_mesh: The model's mesh, which an encoder may write as a
+            reference instead of inline (the solve cache's entries).
     """
 
     base: Path
     comm: Any = None
+    key: bool = False
+    model_mesh: Any = None
+
+
+class UnencodableError(TypeError):
+    """A value of a type that is not registered, a subclass included."""
 
 
 ToArgs = Callable[[Any, Context], Mapping[str, Any]]
@@ -189,7 +199,7 @@ class Encoder:
         if isinstance(value, Mapping):
             obj = self._mapping(value, path, attrs=False)
             return {"$map": obj} if any(k.startswith("$") for k in obj) else obj
-        raise TypeError(
+        raise UnencodableError(
             f"Cannot write {path or 'the value'}: {type(value).__name__} is not "
             "a serializable gfem value."
         )
