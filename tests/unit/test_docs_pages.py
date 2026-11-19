@@ -218,6 +218,7 @@ USER_TERMS = (
     "Trace",
     "Settled trace",
     "Per-length quantity",
+    "Tree-cotree gauge",
 )
 
 

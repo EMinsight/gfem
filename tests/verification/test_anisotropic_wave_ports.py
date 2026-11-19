@@ -173,7 +173,11 @@ def test_a_rotated_guide_gives_the_same_s_parameters(mesh, tmp_path_factory):
     s_turned, gamma_turned = _solve(
         turned, anisotropy.rotated(material, q), F_MU, ports(q)
     )
-    # measured on MN5: gamma 1.2e-15 and 4.4e-15 relative (two nodes), max
-    # |dS| 1.5e-14: round-off
+    # measured on MN5: gamma 1.2e-15 and 4.4e-15 relative (two nodes); max
+    # |dS| 5.8e-14 on MN5 and 5.7e-14 to 6.2e-14 on ostau through the default
+    # tree-cotree gauge, 1.2e-14 with gauge="none": round-off. Both guides
+    # share one gauge basis (one topology); the gauged and ungauged S of one
+    # guide differ by 2e-14 (straight) to 7e-14 (turned), the gauge's own
+    # rounding at order 3.
     np.testing.assert_allclose(gamma_turned, gamma, rtol=1.5e-14)
-    np.testing.assert_allclose(s_turned, s, rtol=0, atol=5e-14)
+    np.testing.assert_allclose(s_turned, s, rtol=0, atol=1.5e-13)

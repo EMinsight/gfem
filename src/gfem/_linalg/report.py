@@ -16,7 +16,9 @@ solution (ADR 0126), else ``None``) and ``columns``
 ``None``), plus the reason's numbers where it has some.
 
 Resolving ``linear_solver="auto"`` logs one record of the choice
-(`auto_choice`).
+(`auto_choice`). A driven rule logs how it resolved ``SolverOptions.gauge``
+(`gauge_choice`), and each tree-cotree gauge basis built logs its sizes and
+setup times (`gauge_basis`).
 
 A frequency worker logs in its own process: `collected` keeps its records,
 on this logger and on ``gfem.timing`` (`gfem._timing`), and the parent logs
@@ -123,6 +125,71 @@ def auto_choice(
             "unknowns": unknowns,
             "estimate": estimate,
             "budget": budget,
+        },
+    )
+
+
+def gauge_choice(*, problem: str, on: bool, reason: str | None) -> None:
+    """Log whether a ``problem`` solve runs through the tree-cotree gauge.
+
+    ``reason`` says why it does not (``None`` when it does). Attributes
+    ``gauge`` (``"tree_cotree"``, or ``None`` for an ungauged solve) and
+    ``reason``.
+    """
+    state = "on" if on else f"off ({reason})"
+    LOGGER.info(
+        "%s: tree-cotree gauge %s",
+        problem.capitalize(),
+        state,
+        extra={
+            "problem": problem,
+            "gauge": "tree_cotree" if on else None,
+            "reason": reason,
+        },
+    )
+
+
+def gauge_basis(
+    *,
+    v_unknowns: int,
+    y_unknowns: int,
+    conductors: int,
+    floating: int,
+    nnz: int,
+    ungauged_nnz: int,
+    basis_seconds: float,
+    template_seconds: float,
+) -> None:
+    """Log one build of a tree-cotree gauge basis and its gauge template.
+
+    The free unknowns of the driven space (``v_unknowns``) and of the gauge
+    space (``y_unknowns``), the PEC conductors and their floating
+    potentials, the gauged pattern's entries against the ungauged element
+    graph's (``nnz``, ``ungauged_nnz``), and the setup seconds of the basis
+    (gradient and spanning forest) and of the template. The attributes carry
+    the same names.
+    """
+    LOGGER.info(
+        "Tree-cotree gauge basis: %d -> %d free unknowns, %d conductors "
+        "(%d floating), template %d entries (ungauged %d), basis %.3g s, "
+        "template %.3g s",
+        v_unknowns,
+        y_unknowns,
+        conductors,
+        floating,
+        nnz,
+        ungauged_nnz,
+        basis_seconds,
+        template_seconds,
+        extra={
+            "v_unknowns": v_unknowns,
+            "y_unknowns": y_unknowns,
+            "conductors": conductors,
+            "floating": floating,
+            "nnz": nnz,
+            "ungauged_nnz": ungauged_nnz,
+            "basis_seconds": basis_seconds,
+            "template_seconds": template_seconds,
         },
     )
 

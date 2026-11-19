@@ -23,7 +23,7 @@ from gfem._linalg import (
     prepare,
 )
 from gfem._linalg.gmres import Gmres
-from gfem._linalg.pieces import AssembledPieces, PieceSum
+from gfem._linalg.pieces import AssembledPieces, Pieces, PieceSum
 
 
 @pytest.fixture(scope="module")
@@ -157,6 +157,46 @@ def test_a_direct_handle_sums_a_piece_sum_instead_of_assembling(built):
     assert np.abs(handle.apply(np.eye(n)) - A).max() <= 1e-14 * np.abs(A).max()
     B = np.random.default_rng(3).standard_normal(n) + 0j
     np.testing.assert_allclose(handle.solve(B), fresh.solve(B), rtol=1e-12)
+
+
+class Doubled:
+    """A second piece adapter: the wrapped pieces at twice the weights."""
+
+    def __init__(self, pieces: Pieces) -> None:
+        self._pieces = pieces
+        self.pattern = pieces.pattern
+        self.generation = pieces.generation
+
+    def matrix(self, weights):
+        return self._pieces.matrix([2 * w for w in weights])
+
+    def sum_into(self, weights, matrix):
+        self._pieces.sum_into([2 * w for w in weights], matrix)
+
+    nbytes = 0
+
+    def shared(self):
+        return {}
+
+    def free(self):
+        pass
+
+
+def test_a_direct_handle_factors_the_piece_sum_of_any_pieces_adapter(built):
+    integrands = (*VOLUME, _on("side"))
+    weights = (1.0, 2 - 1j, 3j)
+    op, pieces = _pieces(built, integrands, weights)
+    doubled = dataclasses.replace(op, piece_sum=PieceSum(Doubled(pieces), weights))
+    handle = prepare(doubled, symmetry="complex_symmetric", kind="direct")
+    twice = tuple(2 * w for w in weights)
+    fresh = prepare(
+        dataclasses.replace(_pieces(built, integrands, twice)[0], piece_sum=None),
+        symmetry="complex_symmetric",
+        kind="direct",
+    )
+    n = handle.ndof
+    A = fresh.apply(np.eye(n))
+    assert np.abs(handle.apply(np.eye(n)) - A).max() <= 1e-14 * np.abs(A).max()
 
 
 PLANNED = ["direct", pytest.param("petsc", marks=pytest.mark.petsc)]

@@ -829,26 +829,39 @@ class Driven:
             ``linear_solver="direct"``.
 
     Notes:
-        Below the mesh's low-frequency floor,
+        The mesh's low-frequency floor is
         :math:`k_0 h_\mathrm{min} = 10^{-6}` (:math:`f h_\mathrm{min} \approx`
-        48 Hz·m, with :math:`h_\mathrm{min}` the shortest edge, at order 2),
-        the solve warns
-        with `gfem.LowFrequencyWarning`. The floor is 48 MHz with 1 µm
-        elements and 5 GHz with 10 nm elements. Below it, the E-field
-        formulation's rounding error grows like
-        :math:`10^{-16} / (k_0 h_\mathrm{min})^2`, so the
-        fields and gradients lose digits. With an exact factorization
-        (``linear_solver="direct"``, or ``"petsc"`` with its default MUMPS
-        factorization) the capacitive part of S loses digits too. The
+        48 Hz·m, with :math:`h_\mathrm{min}` the shortest edge, at order 2):
+        48 MHz with 1 µm elements and 5 GHz with 10 nm elements. Below it, the
+        gradients :math:`\nabla \phi`, on which the curl-curl term vanishes,
+        dominate the E-field system. With the default
+        ``SolverOptions.gauge="auto"``, a direct solve on the CPU in one
+        process goes through the tree-cotree gauge, which carries those
+        gradients as node potentials and one floating potential per
+        conductor: S, the fields and their gradients keep their digits below
+        the floor, and the solve does not warn.
+
+        The other driven solves run ungauged: ``gauge="none"``,
+        ``linear_solver="bddc_gmres"`` or ``"petsc"``, ``device="cuda"``,
+        several MPI ranks, and models with a `gfem.Periodic` pair, a Bloch
+        ``wave_vector`` or a `gfem.FloquetPort`. Below the floor they warn
+        with `gfem.LowFrequencyWarning`, and their rounding error grows like
+        :math:`10^{-16} / (k_0 h_\mathrm{min})^2`, so the fields and
+        gradients lose digits. With an exact factorization (``"direct"``
+        with ``gauge="none"`` or on the GPU, or ``"petsc"`` with its default
+        MUMPS factorization) the capacitive part of S loses digits too. The
         inductance read from S and reciprocity are unaffected down to at
-        least :math:`k_0 h_\mathrm{min} = 10^{-8}`. MKL PARDISO becomes
-        unreliable below :math:`k_0 h_\mathrm{min} \approx 3 \times 10^{-8}`,
-        and ``"direct"`` uses it whenever the ``mkl`` extra
-        is installed. Below that, use ``linear_solver="petsc"`` (MUMPS), or
-        ``"direct"`` in an environment without the ``mkl`` extra. With
+        least :math:`k_0 h_\mathrm{min} = 10^{-8}`. Ungauged MKL PARDISO
+        (``"direct"`` with the ``mkl`` extra) becomes unreliable below
+        :math:`k_0 h_\mathrm{min} \approx 3 \times 10^{-8}`. With
         ``bddc_gmres``, S stays at ``SolverOptions.tolerance``, but a
         capacitance read from S is good only to about
-        ``tolerance`` / :math:`(\omega C Z_0)`. For
+        ``tolerance`` / :math:`(\omega C Z_0)`.
+
+        The wave ports' mode problem is not gauged and keeps its own floor:
+        below the floor, the modes of a `gfem.WavePort`, and S through them, carry
+        an error that grows like :math:`1/f^2`, and a gauged solve with wave
+        ports still warns. Use lumped ports at these frequencies. For
         capacitance at low frequency, solve `gfem.Electrostatic`.
 
         A driven solve ignores ``SolverOptions.eigen_solver``.

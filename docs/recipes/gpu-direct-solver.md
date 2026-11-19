@@ -80,6 +80,10 @@ How gfem itself is checked: {doc}`../verification`.
   gradient through a mode's field (participations, port Q, the field itself)
   raises `gfem.NonDifferentiableError` with `device="cuda"`: solve on the CPU
   for those ({doc}`eigenmode-gradient`).
+- cuDSS solves are not gauged: below the low-frequency floor a driven solve
+  on the GPU loses digits and warns with {py:obj}`gfem.LowFrequencyWarning`,
+  where the same solve on the CPU keeps them through the
+  {term}`tree-cotree gauge`. Solve low frequencies with `device="cpu"`.
 
 ## Next
 

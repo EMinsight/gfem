@@ -16,6 +16,33 @@
   mesh is compared by its elements, regions and node positions, not as the
   same object. Earlier versions raised `ValueError` for any loaded result.
 
+- **Behaviour change: direct driven solves keep their digits below the
+  low-frequency floor.** A new option, `SolverOptions.gauge`, solves a driven
+  problem through the tree-cotree gauge: the gradients $\nabla \phi$, on
+  which the curl-curl term vanishes, become node potentials and one floating
+  potential per conductor. It is on by default (`"auto"`) wherever the linear
+  solver resolves to `"direct"` on the CPU in one process, for a model with
+  no periodic pair, Bloch wave vector or Floquet port, in uniform and adaptive
+  sweeps and their gradients. Below the floor
+  ($k_0 h_\mathrm{min} < 10^{-6}$) such a solve now keeps S, the fields and
+  their gradients to round-off: on a
+  parallel-plate line at 10 kHz, S is within $10^{-13}$ of its closed form.
+  `gauge="tree_cotree"` asks for the gauge and raises where it does not
+  apply; `gauge="none"` restores the previous path bit for bit.
+  Eigenmode, electrostatic, DC conduction, thermal and port mode solves
+  ignore the option.
+- **Above the floor, S with `"direct"` changes by $10^{-13}$ to
+  $10^{-10}$**, towards the exact answer. Set `gauge="none"` to reproduce
+  results from earlier versions exactly. A new mesh topology pays a setup of
+  about one factorization, reused across shape steps, and each
+  refactorization costs about 10 % more.
+- **`LowFrequencyWarning` fires less often.** A gauged solve does not warn
+  below the floor, unless the model has wave ports: their mode problem is not
+  gauged and keeps its own floor, and the warning then says to use lumped
+  ports at those frequencies. An ungauged solve warns as before, and the
+  message now ends with why it is ungauged and, where one exists, the setting
+  that gauges it. For capacitance, solve `gfem.Electrostatic`.
+
 - **Phase timings on the `"gfem.timing"` logger.** Silent by default; when
   enabled, every driven and eigenmode solve logs one record per phase
   (discretize, assemble, setup, solve) on each process, with the number of

@@ -137,7 +137,18 @@ def test_an_entry_too_big_with_its_base_is_kept_without_it(path, counts, solver)
     # the cache also counts what the entry shares (its pieces' pattern, kept
     # fixed parts, ADR 0091), not the other frequency's pooled base (ADR 0121)
     pooled = sum(int(p.handle.nbytes) for p in cache.ENTRIES._plans.values())
-    budget = cache.ENTRIES.nbytes - pooled - base.nbytes // 2
+    # nor kept fixed parts the entry does not share: a gauged entry holds its
+    # gauged values instead (ADR 0216), and the walk drops those parts first
+    shares = set(entry.shared()) | {
+        k for p in cache.ENTRIES._plans.values() for k in p.handle.shared()
+    }
+    kept = {
+        k: v
+        for disc in cache.ENTRIES._discretizations()
+        for k, v in disc.shared().items()
+        if k not in shares
+    }
+    budget = cache.ENTRIES.nbytes - pooled - sum(kept.values()) - base.nbytes // 2
     cache.ENTRIES.clear()
 
     counts.prepared = {"forward": 0, "backward": 0}

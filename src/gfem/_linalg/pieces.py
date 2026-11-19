@@ -1,9 +1,12 @@
-"""Affine pieces assembled once, summed per operator: the piece sum.
+r"""Affine pieces assembled once, summed per operator: the piece sum.
 
-An operator ``A = Σ θ_k A_k`` whose pieces ``A_k`` do not change (a driven
-sweep's frequencies) need not be assembled again for each set of weights
-θ_k: `AssembledPieces` assembles each piece once, with θ = 1, and
-`PieceSum` writes ``Σ θ_k A_k`` into a matrix of the full sparsity pattern.
+An operator :math:`A = \sum_k \theta_k A_k` whose pieces :math:`A_k` do not
+change (a driven sweep's frequencies) need not be assembled again for each set
+of weights :math:`\theta_k`: `AssembledPieces` assembles each piece once, with
+:math:`\theta_k = 1`, and `PieceSum` writes :math:`\sum_k \theta_k A_k` into
+a matrix of the full sparsity pattern.
+`PieceSum` reads its pieces through the `Pieces` protocol, of which
+`AssembledPieces` is one adapter.
 That skips NGSolve's allocation of a new matrix and graph, the part of an
 assembly that does not scale with threads.
 
@@ -32,7 +35,7 @@ from __future__ import annotations
 import dataclasses
 import threading
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, Protocol
 
 import ngsolve as ngs
 import numpy as np
@@ -183,7 +186,9 @@ def _assemble(space: ngs.FESpace, symmetric: bool, integrand: Integrand) -> Any:
 
 
 class AssembledPieces:
-    """The pieces ``A_k`` of a complex space, assembled on first use (θ = 1).
+    r"""The pieces :math:`A_k` of a complex space, assembled on first use.
+
+    Each piece is assembled with :math:`\theta_k = 1`.
 
     Holds the full-pattern matrix of the piece with the most nonzeros (its
     pattern is the operator's), the values of the other full-pattern pieces,
@@ -250,7 +255,10 @@ class AssembledPieces:
             return self._generation
 
     def matrix(self, weights: Sequence[complex]) -> ngs.BaseMatrix | None:
-        """A new matrix of `pattern` holding ``Σ θ_k A_k``; ``None`` without one."""
+        r"""A new matrix of `pattern` holding :math:`\sum_k \theta_k A_k`.
+
+        ``None`` without a pattern.
+        """
         template = self.pattern
         if template is None:
             return None
@@ -259,7 +267,10 @@ class AssembledPieces:
         return matrix
 
     def sum_into(self, weights: Sequence[complex], matrix: ngs.BaseMatrix) -> None:
-        """Overwrite the values of ``matrix`` (of `pattern`) with ``Σ θ_k A_k``."""
+        r"""Overwrite the values of ``matrix`` (of `pattern`).
+
+        They become :math:`\sum_k \theta_k A_k`.
+        """
         template, parts = self._assembled()
         if template is None:  # pragma: no cover - callers check the pattern
             raise ValueError("These pieces have no common sparsity pattern.")
@@ -486,36 +497,90 @@ def _positions(
     return positions[found]
 
 
+class Pieces(Protocol):
+    """Pieces :math:`A_k` a `PieceSum` sums with its weights (`AssembledPieces`)."""
+
+    @property
+    def pattern(self) -> ngs.BaseMatrix | None:
+        """The matrix every sum is shaped as, or ``None`` (assemble instead)."""
+        ...
+
+    @property
+    def generation(self) -> object:
+        """Who holds the values: a new object whenever they change."""
+        ...
+
+    def matrix(self, weights: Sequence[complex]) -> ngs.BaseMatrix | None:
+        r"""A new matrix of `pattern` holding :math:`\sum_k \theta_k A_k`.
+
+        ``None`` without a pattern.
+        """
+        ...
+
+    def sum_into(self, weights: Sequence[complex], matrix: ngs.BaseMatrix) -> None:
+        r"""Overwrite the values of ``matrix`` (of `pattern`).
+
+        They become :math:`\sum_k \theta_k A_k`.
+        """
+        ...
+
+    @property
+    def nbytes(self) -> int:
+        """Host memory held, in bytes, but `shared`."""
+        ...
+
+    def shared(self) -> dict[int, int]:
+        """Bytes of what others may hold too, by identity."""
+        ...
+
+    def free(self) -> None:
+        """Drop what is held; a later use builds it again."""
+        ...
+
+
 @dataclasses.dataclass(frozen=True, eq=False)
 class PieceSum:
-    """One operator as a piece sum: ``Σ θ_k A_k`` of assembled pieces.
+    r"""One operator as a piece sum: :math:`\sum_k \theta_k A_k` of assembled pieces.
 
     Attributes:
-        pieces: The assembled pieces ``A_k``.
-        weights: θ_k, one per piece.
+        pieces: The pieces :math:`A_k` (`AssembledPieces` or another adapter).
+        weights: :math:`\theta_k`, one per piece.
     """
 
-    pieces: AssembledPieces
+    pieces: Pieces
     weights: tuple[complex, ...]
 
     @property
     def pattern(self) -> ngs.BaseMatrix | None:
-        """See `AssembledPieces.pattern`."""
+        """See `Pieces.pattern`."""
         return self.pieces.pattern
 
     @property
     def key(self) -> tuple[object, tuple[complex, ...]]:
         """What the sum's values are made of: equal keys, equal values.
 
-        The pieces' assembly (`AssembledPieces.generation`) and the weights;
+        The pieces' assembly (`Pieces.generation`) and the weights;
         it holds neither the pieces nor their values.
         """
         return self.pieces.generation, self.weights
 
     def matrix(self) -> ngs.BaseMatrix | None:
-        """See `AssembledPieces.matrix`."""
+        """See `Pieces.matrix`."""
         return self.pieces.matrix(self.weights)
 
     def sum_into(self, matrix: ngs.BaseMatrix) -> None:
-        """See `AssembledPieces.sum_into`."""
+        """See `Pieces.sum_into`."""
         self.pieces.sum_into(self.weights, matrix)
+
+    @property
+    def stop_norm(self) -> tuple[Any, np.ndarray] | None:
+        r"""The map and scaling an iterative stop reads the sum's solutions by.
+
+        ``(T, d)`` when the pieces have a ``stop_norm(weights)`` (the gauged
+        piece sum, `gfem._linalg.gauge.GaugedPieces.stop_norm`): a solution
+        :math:`\hat y` of the sum stands for the field
+        :math:`T (d \circ \hat y)`. ``None`` for every other piece sum, whose
+        solutions are the field itself.
+        """
+        stop_norm = getattr(self.pieces, "stop_norm", None)
+        return None if stop_norm is None else stop_norm(self.weights)

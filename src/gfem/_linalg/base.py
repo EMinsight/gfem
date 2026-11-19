@@ -30,6 +30,11 @@ def host_bytes(obj) -> int:
     return sum(int(u.host) for u in obj.GetMemoryUsage())
 
 
+def csr_bytes(matrix) -> int:
+    """Host memory of a SciPy CSR matrix's three arrays, in bytes."""
+    return int(matrix.data.nbytes + matrix.indices.nbytes + matrix.indptr.nbytes)
+
+
 def local_matrix(matrix, comm: Any = None) -> Any:
     """The sparse matrix behind ``matrix``: a rank's own under ``comm``, else itself.
 
@@ -367,7 +372,8 @@ class PlannedHandle(NgsHandle):
     (``Operator.piece_sum``) instead of assembling its form: into a new
     matrix at creation, into the held matrix at `refactorize` when the
     piece sum shares the held matrix's pieces. Otherwise it assembles the
-    form, and never reads the piece sum.
+    form, and never reads the piece sum. With the values it holds the piece
+    sum's stop norm (`PieceSum.stop_norm`, `_hold_stop_norm`).
     """
 
     #: The backend sums an operator's piece sum instead of assembling its form.
@@ -396,7 +402,14 @@ class PlannedHandle(NgsHandle):
         handle._pattern = pattern
         if pattern is not None and operator.piece_sum is not None:
             handle._summed = operator.piece_sum.key
+        handle._hold_stop_norm(cls._stop_norm(operator))
         return handle
+
+    @classmethod
+    def _stop_norm(cls, operator: Operator) -> tuple[Any, np.ndarray] | None:
+        """``operator``'s `PieceSum.stop_norm`, if the backend sums it."""
+        piece_sum = operator.piece_sum if cls.sums_pieces else None
+        return None if piece_sum is None else piece_sum.stop_norm
 
     @classmethod
     def _assemble(
@@ -444,6 +457,7 @@ class PlannedHandle(NgsHandle):
             with _timing.phase("assemble"):
                 summed = piece_sum.pattern
         key = None if piece_sum is None or summed is None else piece_sum.key
+        stop = self._stop_norm(operator)
         with self._lock:
             self._live()
             self._keeps_free_dofs(operator.freedofs)
@@ -456,6 +470,7 @@ class PlannedHandle(NgsHandle):
                     lambda: key == held_key,
                 )
                 self._summed = key
+                self._hold_stop_norm(stop)
                 return
         new, pattern = self._assemble(operator)  # assembly needs no lock
         if pattern is None:
@@ -478,12 +493,14 @@ class PlannedHandle(NgsHandle):
 
                 self._new_values(write, same)
                 self._summed = key
+                self._hold_stop_norm(stop)
                 return
             # a failed plan leaves no pattern to sum into: the next
             # refactorization assembles
             self._pattern, self._summed = None, None
             self._new_plan(new, operator.freedofs)
             self._pattern, self._summed = pattern, key
+            self._hold_stop_norm(stop)
 
     def _keeps_free_dofs(self, freedofs: ngs.BitArray | None) -> None:
         """Refuse a free-DOF set other than the handle's; under the lock.
@@ -549,6 +566,13 @@ class PlannedHandle(NgsHandle):
     def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
         """Raise the backend's refusal of ``symmetry``, if it refuses it."""
         raise NotImplementedError
+
+    def _hold_stop_norm(self, stop: tuple[Any, np.ndarray] | None) -> None:
+        """Hook: the held values' stop norm (`PieceSum.stop_norm`); under the lock.
+
+        Read with the values at creation and at each `refactorize`. Only the
+        direct backend reads it (`gfem._linalg.direct.DirectHandle`).
+        """
 
     def _refactorizing_at(self, frequency: float | None) -> None:
         """Hook: the refactorization under way is at ``frequency``; under the lock.

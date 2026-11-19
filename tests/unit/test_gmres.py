@@ -8,12 +8,13 @@ from typing import ClassVar
 import ngsolve as ngs
 import numpy as np
 import pytest
+import scipy.sparse as sp
 from netgen.geom2d import unit_square
 
 from gfem._engine.runtime import task_manager
 from gfem._linalg import gmres
 from gfem._linalg.direct import _real_sparse_matrix
-from gfem._linalg.gmres import Gmres
+from gfem._linalg.gmres import Gmres, StopNorm
 
 pytestmark = pytest.mark.usefixtures("ngsolve_threads")
 
@@ -91,6 +92,85 @@ def test_gmres_returns_the_solution_on_a_lucky_breakdown():
     x = solver.Solve(b)
     exact = b.FV().NumPy() / diagonal
     assert _relative(x.FV().NumPy(), exact) < 1e-12
+    assert solver.residuals[-1] <= 1e-10 * solver.residuals[0]
+    assert solver.iterations < 50
+
+
+def _field_norm(mesh, seed=0):
+    """A stop norm on the Helmholtz space's free DOFs: a sparse T, a scaling d."""
+    space = ngs.H1(mesh, order=2, complex=True, dirichlet="left")
+    rows = np.flatnonzero(list(space.FreeDofs()))
+    n = len(rows)
+    rng = np.random.default_rng(seed)
+    T = sp.eye_array(n, format="csr") + sp.random_array(
+        (n, n), density=3 / n, format="csr", rng=rng
+    )
+    return StopNorm(sp.csr_array(T), rng.uniform(0.1, 10.0, n), rows)
+
+
+def _field(norm, A, pre, b, x=None):
+    """The stop norm of the preconditioned residual of ``x`` (zero if ``None``)."""
+    if x is None:
+        x = b.CreateVector()
+        x[:] = 0
+    r, out = b.CreateVector(), b.CreateVector()
+    r.data = b - A * x
+    out.data = pre * r
+    return np.linalg.norm(norm.T @ (norm.d * out.FV().NumPy()[norm.rows]))
+
+
+@pytest.mark.parametrize("threads", [1, 4])
+def test_an_identity_stop_norm_gives_the_same_iterates(mesh, monkeypatch, threads):
+    monkeypatch.setattr(gmres, "COLUMNS", 64)
+    A, pre, b = _helmholtz(mesh, complex_valued=True)
+    n = len(b)
+    identity = StopNorm(sp.eye_array(n, format="csr"), np.ones(n), np.arange(n))
+    with task_manager(threads):
+        plain = Gmres(A, pre, tol=1e-8, maxiter=400)
+        x = plain.Solve(b).FV().NumPy().copy()
+        normed = Gmres(A, pre, tol=1e-8, maxiter=400, stop_norm=identity)
+        y = normed.Solve(b).FV().NumPy().copy()
+    assert plain.iterations > 50
+    assert normed.iterations == plain.iterations
+    assert np.array_equal(x, y)
+    np.testing.assert_allclose(normed.residuals, plain.residuals, rtol=1e-8)
+
+
+@pytest.mark.parametrize("steps", [2, 3, 6, 13])
+def test_the_stop_norm_is_the_field_norm_of_the_preconditioned_residual(mesh, steps):
+    A, pre, b = _helmholtz(mesh, complex_valued=True)
+    norm = _field_norm(mesh)
+    solver = Gmres(A, pre, tol=1e-14, maxiter=steps, stop_norm=norm)
+    x = solver.Solve(b)
+    np.testing.assert_allclose(solver.residuals[0], _field(norm, A, pre, b), rtol=1e-10)
+    np.testing.assert_allclose(
+        solver.residuals[-1], _field(norm, A, pre, b, x), rtol=1e-6
+    )
+
+
+def test_gmres_stops_on_the_stop_norm(mesh):
+    A, pre, b = _helmholtz(mesh, complex_valued=True)
+    norm = _field_norm(mesh)
+    tol = 1e-8
+    first = _field(norm, A, pre, b)
+    solver = Gmres(A, pre, tol=tol, maxiter=400, stop_norm=norm)
+    x = solver.Solve(b)
+    assert _field(norm, A, pre, b, x) <= 1.01 * tol * first
+    # one step fewer is above it: the test stopped on this norm
+    early = Gmres(A, pre, tol=tol, maxiter=solver.iterations - 2, stop_norm=norm)
+    assert _field(norm, A, pre, b, early.Solve(b)) > tol * first
+
+
+def test_a_stop_norm_survives_a_lucky_breakdown():
+    diagonal = np.repeat([1.0, 2.0, 5.0], 10)
+    A, eye = _diagonal(diagonal)
+    b = A.CreateColVector()
+    b.FV().NumPy()[:] = np.arange(1, len(diagonal) + 1)
+    n = len(diagonal)
+    norm = StopNorm(3.0 * sp.eye_array(n, format="csr"), np.full(n, 0.5), np.arange(n))
+    solver = Gmres(A, eye, tol=1e-10, maxiter=50, stop_norm=norm)
+    x = solver.Solve(b)
+    assert _relative(x.FV().NumPy(), b.FV().NumPy() / diagonal) < 1e-12
     assert solver.residuals[-1] <= 1e-10 * solver.residuals[0]
     assert solver.iterations < 50
 

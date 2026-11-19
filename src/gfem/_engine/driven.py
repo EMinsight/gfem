@@ -94,6 +94,7 @@ from gfem._boundaries import (
     FloquetPort,
     Impedance,
     LumpedPort,
+    Periodic,
     WavePort,
     lead_port,
     sheet_of,
@@ -119,6 +120,7 @@ from gfem._engine.floquet_ports import (
     check_excitable,
     floquet_couplings,
 )
+from gfem._engine.gauge import GaugeChoice, gauge_basis, resolve_gauge
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import (
     PortNetwork,
@@ -136,7 +138,7 @@ from gfem._engine.wave_ports import (
     port_mode_sweeps,
     wave_port_couplings,
 )
-from gfem._linalg import Kind, ResolvedLinearSolver, report
+from gfem._linalg import Kind, ResolvedLinearSolver, auto_linear_solver, report
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
 from gfem._materials import MaterialField
@@ -638,6 +640,7 @@ class DrivenRule:
         *,
         comm: Any = None,
         order_frequency: Sequence[float] | None = None,
+        gauge: GaugeChoice | None = None,
     ) -> None:
         """Check that the problem fits the model (see `gfem.Driven`).
 
@@ -645,12 +648,18 @@ class DrivenRule:
         ``order_frequency`` is the grid the Floquet order table is computed
         over: a frequency worker's whole sweep, so that its block models the
         sweep's orders (ADR 0149, ADR 0152); the problem's by default.
+        ``gauge`` is the parent rule's gauge choice (a frequency worker, a
+        fixed-angle sweep's frequency), taken as it is; by default the rule
+        resolves ``SolverOptions.gauge`` (`resolve_gauge`) and logs it.
 
         Raises:
             NotImplementedError: A feature this version cannot solve.
             ValueError: The problem does not fit the model (among others, a
                 wave vector without a periodic pair, or outside the span of
-                the pairs' translations).
+                the pairs' translations), or ``gauge="tree_cotree"`` where
+                the tree-cotree gauge does not apply.
+            gfem.DistributedUnsupportedError: ``gauge="tree_cotree"`` under
+                ``comm``.
             gfem.SolverUnavailableError: ``linear_solver="petsc"`` and PETSc
                 cannot be used, or ``"direct"`` or ``"petsc"`` under ``comm``
                 without the MPI PETSc stack.
@@ -689,15 +698,14 @@ class DrivenRule:
             linear_solver=options.linear_solver,
             sweep=problem.sweep,
         )
-        # before any assembly, and before any worker
-        self.linear = ResolvedLinearSolver.resolve(
-            options,
-            default=DEFAULT_SOLVER,
-            problem="driven",
-            comm=comm,
-            **_auto_inputs(model, problem, options, comm),
-        )
+        # the model's own refusals before the options'
         _check_supported(model)
+        # before any assembly, and before any worker; `gauge` (whether the
+        # solve runs through the tree-cotree gauge, ADR 0216, ADR 0220) is
+        # resolved next to the linear solver, or the parent rule's
+        self.linear, self.gauge = _resolve(
+            model, problem, options, comm=comm, gauge=gauge
+        )
         # a frequency on a lossless pole, before any assembly or worker
         dispersion.check_frequencies(model, problem.frequency)
         if not model.ports:
@@ -810,7 +818,9 @@ class DrivenRule:
         #: the problem's frequencies: set in a frequency worker, which then
         #: sweeps no port mode itself (ADR 0099). ``None`` anywhere else.
         self.handed_port_modes: list[dict[str, np.ndarray]] | None = None
-        _check_low_frequency(model, problem.frequency, stacklevel=4, comm=comm)
+        _check_low_frequency(
+            model, problem.frequency, self.gauge, stacklevel=4, comm=comm
+        )
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
     def operator(self, model: Model) -> DrivenOperator:
@@ -1122,6 +1132,7 @@ class DrivenRule:
                     "order_frequency": tuple(frequencies),
                     "log": report.LOGGER.isEnabledFor(logging.INFO)
                     or _timing.LOGGER.isEnabledFor(logging.INFO),
+                    "gauge": self.gauge,
                 }
                 for block in indices
             ],
@@ -1222,6 +1233,7 @@ class DrivenRule:
                 options,
                 comm=self.comm,
                 order_frequency=self.order_frequency,
+                gauge=self.gauge,
             )
         rule.keeps_partial = True
         rule.adjoint_loads = self.adjoint_loads
@@ -1458,6 +1470,7 @@ class DrivenRule:
                 adjoint_tolerance=adjoint_tolerance(self.options),
                 transposed=transposed,
                 pool_budget=retain_budget(self.options.retain_memory),
+                gauge=gauge_basis(op) if self.gauge.on else None,
             )
             network_key = (
                 tuple(columns),
@@ -2233,22 +2246,39 @@ def check_ports_held(model: Model) -> None:
                 )
 
 
-#: Whether driven solves skip `_check_low_frequency` (`low_frequency_deferred`).
-_LOW_FREQUENCY_DEFERRED = contextvars.ContextVar(
-    "low_frequency_deferred", default=False
+@dataclasses.dataclass
+class DeferredCheck:
+    """A deferred low-frequency check (`low_frequency_deferred`).
+
+    Attributes:
+        gauge: The gauge choice of the last driven rule built in the
+            context, for `check_low_frequency`; ``None`` before any.
+    """
+
+    gauge: GaugeChoice | None = None
+
+
+#: The deferred check of the driven solves in this context, or ``None``
+#: (`low_frequency_deferred`).
+_LOW_FREQUENCY_DEFERRED: contextvars.ContextVar[DeferredCheck | None] = (
+    contextvars.ContextVar("low_frequency_deferred", default=None)
 )
 
 
 @contextlib.contextmanager
-def low_frequency_deferred() -> Generator[None]:
+def low_frequency_deferred() -> Generator[DeferredCheck]:
     """Skip the low-frequency check of the driven solves in this context.
 
     Mesh refinement solves on a new mesh each cycle and checks the floor once,
-    on the mesh it returns (ADR 0088), with `check_low_frequency`.
+    on the mesh it returns (ADR 0088), with `check_low_frequency`. Each rule
+    built in the context records its gauge choice on the yielded check
+    (`_check_low_frequency`), so that the deferred check words its warning
+    as the last solve was gauged.
     """
-    token = _LOW_FREQUENCY_DEFERRED.set(True)
+    deferred = DeferredCheck()
+    token = _LOW_FREQUENCY_DEFERRED.set(deferred)
     try:
-        yield
+        yield deferred
     finally:
         _LOW_FREQUENCY_DEFERRED.reset(token)
 
@@ -2290,15 +2320,25 @@ class LowFrequencyFloor:
 
 
 def check_low_frequency(
-    model: Model, frequencies: tuple[float, ...], *, stacklevel: int
+    model: Model,
+    frequencies: tuple[float, ...],
+    gauge: GaugeChoice | None,
+    *,
+    stacklevel: int,
 ) -> None:
-    """`_check_low_frequency` on one process, for a deferred check."""
-    _check_low_frequency(model, frequencies, stacklevel=stacklevel + 1, force=True)
+    """`_check_low_frequency` on one process, for a deferred check.
+
+    ``gauge`` is the last solve's gauge choice (`DeferredCheck.gauge`).
+    """
+    _check_low_frequency(
+        model, frequencies, gauge, stacklevel=stacklevel + 1, force=True
+    )
 
 
 def _check_low_frequency(
     model: Model,
     frequencies: tuple[float, ...],
+    gauge: GaugeChoice | None,
     *,
     stacklevel: int,
     comm: Any = None,
@@ -2308,15 +2348,26 @@ def _check_low_frequency(
 
     h_min is the shortest edge of the solve domain on the imported nodes,
     so the message is the same at every step of a shape optimization.
-    Skipped inside `low_frequency_deferred` unless ``force``.
+    Skipped inside `low_frequency_deferred` unless ``force``. A gauged
+    solve warns only with wave ports, about their modes (ADR 0220); an
+    ungauged one ends with the gauge choice's clause on why.
 
     Args:
-        model: The model, its solve domain and its mesh.
+        model: The model, its solve domain, its mesh and its ports.
         frequencies: The output frequencies (Hz).
+        gauge: The solve's gauge choice; ``None`` reads as ungauged, with
+            no clause.
         stacklevel: Passed on to `warnings.warn`, counted from the caller.
-        force: Check inside `low_frequency_deferred` too.
+        force: Check inside `low_frequency_deferred` too; without it,
+            the check there records ``gauge`` (`DeferredCheck.gauge`).
     """
-    if _LOW_FREQUENCY_DEFERRED.get() and not force:
+    deferred = _LOW_FREQUENCY_DEFERRED.get()
+    if deferred is not None and not force:
+        deferred.gauge = gauge
+        return
+    gauged = gauge is not None and gauge.on
+    wave_ports = any(isinstance(p, WavePort) for p in model.ports)
+    if gauged and not wave_ports:
         return
     floor = LowFrequencyFloor.of(model)
     f = np.asarray(frequencies)
@@ -2325,9 +2376,22 @@ def _check_low_frequency(
     if not low.any():
         return
     lowest = int(np.argmin(f))
-    msg = (
+    below = (
         f"Driven: {int(low.sum())} of {len(f)} frequencies, the lowest "
         f"{hertz(f[lowest], 4)}, are below {floor.describe(k0h[lowest])}. "
+    )
+    if gauged:
+        msg = below + (
+            "The volume solve is gauged and keeps its digits, but the wave ports' "
+            "mode solve is not: their modes, and S through them, carry an error "
+            "that grows as the inverse square of the frequency below it, and a "
+            "mode solve may report a TEM mode as evanescent (gfem.PortModeError). "
+            "Use lumped ports at these "
+            "frequencies, or raise the lowest frequency."
+        )
+        _mpi.warn(comm, msg, LowFrequencyWarning, stacklevel=stacklevel + 1)
+        return
+    msg = below + (
         "Below it the fields and their gradients, and "
         "with linear_solver='direct', or 'petsc' with its default "
         "factorization, the capacitive part of S, "
@@ -2337,6 +2401,8 @@ def _check_low_frequency(
         "gfem.Electrostatic instead of reading it from S; otherwise raise the "
         "lowest frequency or coarsen the smallest elements."
     )
+    if gauge is not None and gauge.clause is not None:
+        msg = f"{msg} {gauge.clause}"
     _mpi.warn(comm, msg, LowFrequencyWarning, stacklevel=stacklevel + 1)
 
 
@@ -2461,6 +2527,79 @@ def _auto_inputs(
     }
 
 
+def _resolve(
+    model: Model,
+    problem: Driven,
+    options: SolverOptions,
+    *,
+    comm: Any,
+    gauge: GaugeChoice | None,
+) -> tuple[ResolvedLinearSolver, GaugeChoice]:
+    """The rule's linear solver and gauge choice, before any assembly.
+
+    The gauge choice is ``gauge`` when given (a parent rule's); otherwise
+    ``options.gauge`` resolved (`resolve_gauge`) and logged. A refusal of
+    ``linear_solver="auto"``'s iterative choice states the rule's numbers
+    (`_auto_inputs`). Where the linear solver is known without the rule (an
+    explicit one, or any under ``comm``), the gauge resolves first, so its
+    refusal comes before the linear solver's (a missing PETSc stack).
+    """
+    inputs = _auto_inputs(model, problem, options, comm)
+    known = _known_kind(options, comm)
+    if gauge is None and known is not None:
+        gauge = _resolve_gauge(model, problem, options, comm=comm, kind=known)
+    linear = ResolvedLinearSolver.resolve(
+        options, default=DEFAULT_SOLVER, problem="driven", comm=comm, **inputs
+    )
+    if gauge is not None:
+        return linear, gauge
+    auto_reason = None
+    if inputs and linear.kind != "direct":
+        auto_reason = auto_linear_solver(DEFAULT_SOLVER, **inputs)[1]
+    choice = _resolve_gauge(
+        model, problem, options, comm=comm, kind=linear.kind, auto_reason=auto_reason
+    )
+    return linear, choice
+
+
+def _known_kind(options: SolverOptions, comm: Any) -> str | None:
+    """The linear solver ``options`` resolve to without the rule, or ``None``.
+
+    ``None`` for ``"auto"`` on one CPU process, which `auto_linear_solver`
+    decides from the system size.
+    """
+    if options.linear_solver != "auto":
+        return options.linear_solver
+    if options.device != "cpu":
+        return "direct"
+    return DEFAULT_SOLVER if comm is not None else None
+
+
+def _resolve_gauge(
+    model: Model,
+    problem: Driven,
+    options: SolverOptions,
+    *,
+    comm: Any,
+    kind: str,
+    auto_reason: str | None = None,
+) -> GaugeChoice:
+    """``options.gauge`` resolved for a ``kind`` solve (`resolve_gauge`), logged."""
+    choice = resolve_gauge(
+        options.gauge,
+        linear_solver=options.linear_solver,
+        kind=kind,
+        device=options.device,
+        auto_reason=auto_reason,
+        distributed=comm is not None,
+        periodic=any(isinstance(b, Periodic) for b in model.boundaries),
+        bloch=problem.wave_vector is not None,
+        floquet=bool(_floquet.floquet_ports(model.ports)),
+    )
+    report.gauge_choice(problem="driven", on=choice.on, reason=choice.reason)
+    return choice
+
+
 def _solve_block(
     aux: Any,
     children: Any,
@@ -2471,6 +2610,7 @@ def _solve_block(
     port_modes: list[dict[str, np.ndarray]] | None = None,
     order_frequency: Sequence[float] | None = None,
     log: bool = False,
+    gauge: GaugeChoice | None = None,
 ) -> tuple[SweepOutputs, np.ndarray | None, str | None, list[logging.LogRecord]]:
     """A frequency worker's `DrivenRule.forward` of its block.
 
@@ -2478,7 +2618,8 @@ def _solve_block(
     ``port_modes`` the block's rows of the parent's port mode sweeps, per
     wave port surface (`DrivenRule.handed_port_modes`), ``order_frequency``
     the whole sweep's grid, over which the block computes its Floquet order
-    table (`DrivenRule.order_frequency`).
+    table (`DrivenRule.order_frequency`), ``gauge`` the parent rule's gauge
+    choice (`DrivenRule.gauge`).
     Returns the block's outputs (rows: indices into the block; without the
     wave ports' modes, which are the parent's), its
     solutions (``keep``; else ``None``), ``None`` and, with ``log``, its
@@ -2493,7 +2634,9 @@ def _solve_block(
         # the parent's rule already warned for the whole sweep
         for category in FORWARD_WARNINGS:
             warnings.simplefilter("ignore", category)
-        rule = DrivenRule(model, problem, options, order_frequency=order_frequency)
+        rule = DrivenRule(
+            model, problem, options, order_frequency=order_frequency, gauge=gauge
+        )
         rule.keeps_partial = True
         rule.handed_port_modes = port_modes
         with (

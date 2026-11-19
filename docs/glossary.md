@@ -224,6 +224,15 @@ Device
   The hardware a solve's linear algebra runs on, the CPU or one CUDA GPU; part
   of the {term}`solver options`, never of the {term}`model`.
 
+Tree-cotree gauge
+  A change of basis for a driven solve's unknowns that writes the gradients
+  $\nabla \phi$, on which the curl-curl term vanishes, as node potentials along
+  a spanning tree of the mesh and one floating potential per conductor, so
+  that a direct solve keeps its digits below the low-frequency floor
+  ($k_0 h_\mathrm{min} < 10^{-6}$). On by default for a direct solve on the
+  CPU in one process (`SolverOptions.gauge`); the wave ports' mode problem is
+  not gauged.
+
 Eigen solver
   The iteration that finds an eigenmode problem's modes near the target,
   ARPACK or SLEPc; gfem refines and differentiates the modes the same way for

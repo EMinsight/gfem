@@ -9,6 +9,8 @@ bases and entries with one walk: pooled handles' PARDISO factors released,
 then pooled handles, bases and entries freed, in that order.
 """
 
+import types
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -280,6 +282,14 @@ def test_a_pooled_handle_drops_a_pattern_no_kept_fixed_part_holds():
     entries.give_plan(("k",), TOPOLOGY, stale, budget=1000, kept=[kept])
     assert holds.pattern is kept
     assert stale.pattern is None
+
+
+def test_a_slot_lets_a_pooled_base_keep_its_own_patterns_and_the_stores():
+    own, stored = object(), object()
+    store = types.SimpleNamespace(kept={"a": types.SimpleNamespace(pattern=stored)})
+    slot = system_operator.PlanSlot(("site",), TOPOLOGY, 100, store, patterns=(own,))
+    assert slot.kept() == [own, stored]
+    assert system_operator.PlanSlot(("site",), TOPOLOGY, 100).kept() == []
 
 
 def test_clear_frees_the_pool_too():
@@ -644,7 +654,8 @@ def test_vmapped_variants_hold_a_pooled_handle_each(path, plans):
 @pytest.mark.usefixtures("plans")  # an empty cache before and after
 def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
-    options = gfem.SolverOptions(linear_solver="direct")
+    # ungauged: a gauged base keeps the gauge template instead (ADR 0216)
+    options = gfem.SolverOptions(linear_solver="direct", gauge="none")
 
     def pooled_patterns(eps):
         model = _model(mesh, jnp.full(len(mesh.elements("core")), eps))

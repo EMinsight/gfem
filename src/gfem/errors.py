@@ -445,19 +445,35 @@ class UnsampledPixelsWarning(UserWarning):
 
 
 class LowFrequencyWarning(UserWarning):
-    """A driven frequency or an eigenmode is below the mesh's low-frequency floor.
+    r"""A driven frequency or an eigenmode is below the mesh's low-frequency floor.
 
-    The floor is k0 * h_min = 1e-6 (f * h_min = 48 Hz*m), with k0 the
-    vacuum wavenumber and h_min the shortest edge of the solve domain.
-    Below it the fields and their gradients lose digits, and with an exact
-    factorization so does the capacitive part of S. For capacitance at low
-    frequency solve `gfem.Electrostatic`; otherwise raise the lowest
-    frequency or coarsen the smallest elements. The solve still runs; see
-    `gfem.Driven`, Notes, for how far each result holds. An `gfem.Eigenmode`
-    solve warns when its target or its lowest mode is below the floor: the
-    eigenfrequencies, fields and participations lose the same digits, and
-    `gfem.EigenmodeResult.error` does not show it. Filter it with Python's
-    `warnings` module.
+    The floor is :math:`k_0 h_\mathrm{min} = 10^{-6}`
+    (:math:`f h_\mathrm{min} \approx` 48 Hz·m), with :math:`k_0` the vacuum
+    wavenumber and :math:`h_\mathrm{min}` the shortest edge of the solve
+    domain. The solve still runs; see `gfem.Driven`, Notes, for how far each
+    result holds. Filter the warning with Python's `warnings` module.
+
+    A driven solve through the tree-cotree gauge (``SolverOptions.gauge``,
+    on by default for a direct solve on the CPU in one process) keeps its
+    digits below the floor and does not warn, unless the model has a
+    `gfem.WavePort`. The wave ports' mode problem is not gauged: below the
+    floor their modes, and S through them, carry an error that grows like
+    :math:`1/f^2`, and a mode solve may report a TEM mode as evanescent
+    (`gfem.PortModeError`). Use lumped ports at these frequencies, or raise
+    the lowest frequency.
+
+    An ungauged driven solve (``gauge="none"``, ``"bddc_gmres"``,
+    ``"petsc"``, ``device="cuda"``, several MPI ranks, a periodic or
+    Floquet model) loses digits in its fields and gradients below the
+    floor, and with an exact factorization in the capacitive part of S. The
+    message ends with why the solve is ungauged and, where one exists, the
+    setting that gauges it. For capacitance at low frequency solve
+    `gfem.Electrostatic`; otherwise raise the lowest frequency or coarsen the
+    smallest elements.
+
+    A `gfem.Eigenmode` solve warns when its target or its lowest mode is
+    below the floor: the eigenfrequencies, fields and participations lose
+    the same digits, and `gfem.EigenmodeResult.error` does not show it.
     """
 
 
