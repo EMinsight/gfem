@@ -8,7 +8,7 @@ Dependencies:
   libCEED: 1.0.1
   HYPRE: 3.2.0
   LAPACK API: 3.12.0
-  OpenBLAS: OpenBLAS 0.3.34 NO_AFFINITY USE_OPENMP ZEN MAX_THREADS=64
+  OpenBLAS: OpenBLAS 0.3.34 DYNAMIC_ARCH NO_AFFINITY USE_OPENMP SapphireRapids MAX_THREADS=64
   SLEPc: 3.26.0
   PETSc: 3.26.0
   ARPACK-NG: 3.9.1
@@ -21,6 +21,7 @@ Dependencies:
   METIS: 5.1.0
   ParMETIS: 4.0.3
   libxsmm: 2.1.0
+  zlib: 1.2.11
   Eigen: 5.0.1
   fmt: 12.2.0
   scn: 4.0.1
