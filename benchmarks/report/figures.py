@@ -496,6 +496,82 @@ def _trend(report: Mapping[str, Any], name: str, path: Path) -> None:
     _save(fig, path)
 
 
+LINESTYLES = ("-", "--", "-.")
+
+
+def _scaling(case: Mapping[str, Any], path: Path) -> None:
+    """(a) work time and (b) peak RSS sum against core budget, one line per solver.
+
+    A line is drawn per node class; (a) adds each segment's ideal line from its
+    smallest budget, dotted.
+    """
+    fig = Figure(figsize=(10, 4.4), layout="constrained")
+    axes = fig.subplots(1, 2, squeeze=False)[0]
+    panels = (
+        ("work_s", "work time, median, best layout [s]", "(a) work time"),
+        ("peak_rss_sum_gib", "peak RSS sum, median [GiB]", "(b) memory"),
+    )
+    seen: dict[tuple[str, str], int] = {}
+    for s in case["scaling"]["solvers"]:
+        group = (s["code"], s["class"])
+        style = LINESTYLES[seen.get(group, 0) % len(LINESTYLES)]
+        seen[group] = seen.get(group, 0) + 1
+        segments: dict[str | None, list[dict[str, Any]]] = {}
+        for p in s["points"]:
+            segments.setdefault(p["node_class"], []).append(p)
+        for ax, (key, _, _) in zip(axes, panels, strict=True):
+            for k, pts in enumerate(segments.values()):
+                xy = [(p["core_budget"], p[key]) for p in pts if p[key]]
+                if not xy:
+                    continue
+                xs, ys = zip(*xy, strict=True)
+                ax.plot(
+                    xs,
+                    ys,
+                    color=color(s["code"]),
+                    linestyle=style,
+                    marker=MARKERS[s["class"]],
+                    markersize=7,
+                    label=s["solver"] if k == 0 else None,
+                )
+                if key == "work_s" and len(xy) > 1:
+                    c0, t0 = xy[0]
+                    ax.plot(
+                        xs,
+                        [t0 * c0 / c for c in xs],
+                        color=color(s["code"]),
+                        linestyle=":",
+                        linewidth=1,
+                    )
+    for ax, (_, label, title) in zip(axes, panels, strict=True):
+        _axes_style(ax)
+        if ax.get_lines():
+            _log(ax, "x", "y")
+        budgets = sorted(
+            {p["core_budget"] for s in case["scaling"]["solvers"] for p in s["points"]}
+        )
+        ax.set_xticks(budgets, [str(b) for b in budgets])
+        ax.set_xticks([], minor=True)
+        ax.set_xlabel("core budget")
+        ax.set_ylabel(label)
+        ax.set_title(title, loc="left")
+    if axes[0].get_legend_handles_labels()[0]:
+        fig.legend(
+            *axes[0].get_legend_handles_labels(),
+            loc="outside lower center",
+            ncol=5,
+            frameon=False,
+            fontsize=8,
+        )
+    fig.suptitle(
+        f"{case['name']}: scaling across core budgets (ideal from each "
+        "solver's smallest budget dotted)",
+        x=0.01,
+        ha="left",
+    )
+    _save(fig, path)
+
+
 def render(report: Mapping[str, Any], out: Path) -> list[Path]:
     """Draw every figure the report names into ``out``; return the paths."""
     written = []
@@ -515,6 +591,10 @@ def render(report: Mapping[str, Any], out: Path) -> list[Path]:
                         path = out / name
                         draw[view](titled, path)
                         written.append(path)
+            if name := case["figures"].get("scaling"):
+                path = out / name
+                _scaling(case, path)
+                written.append(path)
             if name := case["figures"].get("trend"):
                 path = out / name
                 _trend(report, case["name"], path)

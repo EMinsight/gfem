@@ -694,6 +694,90 @@ def _trend(r: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _scaling(case: Mapping[str, Any]) -> list[str]:
+    sc = case["scaling"]
+    out = [f"### {case['name']} scaling across core budgets", ""]
+    out += _figure(case, "scaling", f"{case['name']}: work time and memory per budget")
+    out += [
+        (
+            "Per solver at its best layout of each budget (anchor tolerance), the "
+            "default layout beside. Speedup $S(c) = T(c_0)/T(c)$ and parallel "
+            "efficiency $E(c) = c_0\\,T(c_0)/(c\\,T(c))$ on median work time "
+            "$T$, against the solver's smallest budget $c_0$ on the same node "
+            "class; a node class change restarts the line. Never extrapolated."
+        ),
+        "",
+    ]
+    rows = []
+    for s in sc["solvers"]:
+        for p in s["points"]:
+            labels = [p["restart"]] if "restart" in p else []
+            default = DASH
+            if p["default_layout"] is not None:
+                default = f"{g(p['default_work_s'])} ({p['default_layout']})"
+            rows.append(
+                [
+                    s["solver"],
+                    p["core_budget"],
+                    p["node_class"] or DASH,
+                    p["nodes"] or DASH,
+                    p["layout"],
+                    p["n"],
+                    g(p["work_s"]),
+                    f"{g(p['work_min_s'])}-{g(p['work_max_s'])}",
+                    default,
+                    f"c{p['baseline']}",
+                    g(p["speedup"]),
+                    g(p["efficiency"]),
+                    g(p["peak_rss_sum_gib"]),
+                    g(p["peak_rss_largest_node_gib"]),
+                    _error_display(p),
+                    ", ".join(p["jobs"]) or DASH,
+                    ", ".join(labels + p["labels"]),
+                ]
+            )
+    out += table(
+        [
+            "solver",
+            "cores",
+            "class",
+            "nodes",
+            "best layout",
+            "n",
+            "work s",
+            "min-max",
+            "default work s",
+            "$c_0$",
+            "$S$",
+            "$E$",
+            "peak RSS sum GiB",
+            "largest node GiB",
+            "error",
+            "jobs",
+            "",
+        ],
+        rows,
+    )
+    if sc["ratios"]:
+        out += ["Cross-code ratios per budget, at best layout:", ""]
+        out += table(
+            ["cores", "class", "ratio", "work", "memory", "pairing", ""],
+            (
+                [
+                    x["core_budget"],
+                    x["node_class"] or DASH,
+                    f"{x['solver']} / {x['against']}",
+                    g(x["work"]),
+                    g(x["memory"]),
+                    x["pairing"],
+                    x["caveat"] or "",
+                ]
+                for x in sc["ratios"]
+            ),
+        )
+    return out
+
+
 def _budget_heading(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
     """``<case> at c<budget> (<class>, <N> node(s))``."""
     where = [block["node_class"] or "node class unknown"]
@@ -721,6 +805,8 @@ def render(r: Mapping[str, Any]) -> str:
             out += _error_cost(view, "####") + _time(view, "####")
             out += _memory(view, "####") + _accuracy(view, "####", shared=False)
             out += _layouts(view, "####") + _snapshot(view, "####", shared=False)
+        if "scaling" in case:
+            out += _scaling(case)
     out += _trend(r)
     out += ["## Caveats", ""]
     out += [f"{i}. {c}" for i, c in enumerate(r["caveats"], 1)]
