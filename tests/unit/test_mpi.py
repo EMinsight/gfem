@@ -1,6 +1,7 @@
 """Launcher resolution and refusals, with no MPI: stub communicators, fake mpi4py."""
 
 import dataclasses
+import importlib
 import math
 import os
 import pickle
@@ -328,9 +329,49 @@ def test_a_port_solve_is_all_that_passes_so_far(tmp_path):
         options = gfem.SolverOptions(linear_solver=solver)
         assert _mpi.refuse(line, frequency, options) is None
         assert _mpi.refuse(wave, frequency, options) is None
-    assert _mpi.refuse(wave, gfem.PortMode("w", 5e9), gfem.SolverOptions()) is None
+    for options in (gfem.SolverOptions(), *SHARED_REFUSALS.values()):
+        # a port mode ignores the device and the linear solver: rank 0 runs it
+        assert _mpi.refuse(wave, gfem.PortMode("w", 5e9), options) is None
     kept = gfem.Driven(5e9, keep_fields=[5e9])
     assert _mpi.refuse(line, kept, gfem.SolverOptions()) is None
+
+
+#: Options every problem refuses above one rank, by the key each raises.
+SHARED_REFUSALS = {
+    "device": gfem.SolverOptions(linear_solver="direct", device="cuda"),
+    "bddc_order_1": gfem.SolverOptions(order=1, linear_solver="bddc_gmres"),
+    "bddc_order_1_auto": gfem.SolverOptions(order=1),
+    "petsc_preconditioner": gfem.SolverOptions(
+        linear_solver="petsc", petsc_options={"pc_type": "ilu"}
+    ),
+}
+
+
+@pytest.mark.parametrize("problem_key", ["electrostatic", "eigenmode"])
+@pytest.mark.parametrize("key", SHARED_REFUSALS)
+def test_the_shared_refusals_hold_for_every_problem(
+    key, problem_key, tmp_path, monkeypatch
+):
+    model, problem, _ = mpi_cases.refused(problem_key, tmp_path)
+    use_mpi(monkeypatch, fake_mpi())
+    with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+        gfem.solve(model, problem, options=SHARED_REFUSALS[key], comm=Stub(4))
+    assert caught.value.feature == mpi_cases.feature(key)
+
+
+@pytest.mark.parametrize("key", ["thermal", "thermal_transient", "dc_conduction"])
+def test_a_refused_physics_raises_its_own_key_before_the_shared_ones(key, tmp_path):
+    model, problem, _ = mpi_cases.refused(key, tmp_path)
+    for options in SHARED_REFUSALS.values():
+        with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+            _mpi.refuse(model, problem, options)
+        assert caught.value.feature == mpi_cases.feature(key)
+
+
+def test_element_mean_has_region_means_text():
+    assert _mpi._REFUSALS["element_mean"] == _mpi._REFUSALS["region_mean"].replace(
+        "region_mean", "element_mean"
+    )
 
 
 def test_every_refusal_key_is_snake_case():
@@ -515,6 +556,15 @@ def test_a_field_from_ranks_refuses_export_on_a_stub(tmp_path):
     assert caught.value.feature == "electric_energy"
 
 
+def test_a_scalar_field_from_ranks_refuses_element_mean_on_a_stub(tmp_path):
+    piece = dataclasses.replace(
+        _piece(tmp_path), quantity="T", unit="K", space="h1", omega=None
+    )
+    with pytest.raises(gfem.DistributedUnsupportedError, match="COMM_SELF") as caught:
+        gfem.element_mean(piece, "sub")
+    assert caught.value.feature == "element_mean"
+
+
 def test_a_result_from_ranks_refuses_error_estimate_on_a_stub(tmp_path):
     model = rc.coax_model(tmp_path, 2)
     options = gfem.SolverOptions(order=2, linear_solver="direct")
@@ -558,3 +608,24 @@ def test_a_launch_above_the_cap_skips(monkeypatch):
     monkeypatch.setenv(ranks.MAX_RANKS, "4")
     with pytest.raises(pytest.skip.Exception, match="8 ranks"):
         ranks.on_ranks_argv(["never-run"], ranks=8)
+
+
+# --- field pieces -----------------------------------------------------------------
+
+
+def test_each_rule_names_its_field_pieces():
+    from gfem._eigen.rule import EigenmodeRule
+    from gfem._engine.driven import DrivenRule
+    from gfem._engine.electrostatic import ElectrostaticRule
+
+    assert DrivenRule.pieces == {"e_field"}
+    assert ElectrostaticRule.pieces == {"potential"}
+    assert EigenmodeRule.pieces == {"e_field"}
+
+
+def test_ranks_compare_a_pieces_cotangent_by_shape_and_any_other_by_value():
+    solve_vjp = importlib.import_module("gfem._adjoint.solve_vjp")
+    cotangents = {"potential": np.ones((5, 2)), "capacitance": np.eye(2)}
+    replicated = solve_vjp._replicated_cotangents(cotangents, {"potential"})
+    np.testing.assert_array_equal(replicated["the cotangent of potential"], [5, 2])
+    np.testing.assert_array_equal(replicated["the cotangent of capacitance"], np.eye(2))

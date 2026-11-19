@@ -631,6 +631,9 @@ class DrivenRule:
     #: Outputs whose cotangents the backward pass handles (a design may not
     #: touch a wave port face: `unsupported_input`).
     differentiable_outputs = sweep_outputs.DIFFERENTIABLE
+    #: Outputs that are a rank's own piece under ranks (ADR 0063): the ranks
+    #: compare their cotangents' shapes, not their values.
+    pieces = frozenset({"e_field"})
 
     def __init__(
         self,
