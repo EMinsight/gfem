@@ -1,0 +1,24 @@
+# Microstrip reference, pilot stage (ticket 08 Q3, ADR 0408): gfem direct on the
+# ladder rungs L0 p1-p3, L1 p2, L1 p3, one node, one job. Its rate estimate against
+# L1 p3 decides whether the l2 stage runs (`reference microstrip --from RUNDIR`).
+schema = 1
+cases_dir = "../references/microstrip"
+cases = ["microstrip_L0_p1", "microstrip_L0_p2", "microstrip_L0_p3", "microstrip_L1_p2", "microstrip_L1_p3"]
+solvers = ["gfem:direct"]
+layouts = ["default"]
+core_budget = 112
+repeats = 1
+node_class = "standard"
+anchor_tolerance = 1e-11
+
+[jobs]
+group = "stack"
+
+[wall_cap_s]
+microstrip_L0_p1 = 300
+microstrip_L0_p2 = 600
+microstrip_L0_p3 = 900
+microstrip_L1_p2 = 1200
+microstrip_L1_p3 = 3600
+
+[stacks.wheels]

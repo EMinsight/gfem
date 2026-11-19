@@ -1,0 +1,111 @@
+{
+ "source": "tmp/r10M",
+ "builder": "reference/scripts/make_voided.py",
+ "excluded_entities": [
+  [
+   "sio2",
+   5
+  ],
+  [
+   "sio2",
+   6
+  ],
+  [
+   "sio2",
+   7
+  ]
+ ],
+ "nd2_dof": 10248856,
+ "tetrahedra": [
+  1992249,
+  1464909
+ ],
+ "tetrahedra_removed": 527340,
+ "triangles": [
+  616990,
+  566474
+ ],
+ "nodes": [
+  382246,
+  353921
+ ],
+ "void_run": {
+  "cmd": "/opt/venv/bin/python -c import sys, types; from pathlib import Path; text = Path('/opt/scaling/make_voided.py').read_text().replace('Path(__file__).resolve().parents[4] / \"tests\"', 'Path(\"/opt/gfem/tests\")'); m = types.ModuleType('make_voided'); m.__file__ = 'make_voided.py'; exec(compile(text, 'make_voided.py', 'exec'), m.__dict__); sys.argv = ['make_voided.py', '/tmp/r10M', '/tmp/r10M_void', '--no-ndof']; m.main()",
+  "returncode": 0,
+  "status": "ok",
+  "wall_s": 110.818,
+  "cpu_s": 109.05,
+  "avg_cores": 0.98,
+  "peak_mem_gib": 3.6353,
+  "mem_metric": "rss_tree_sum"
+ },
+ "container": {
+  "hostname": "modal",
+  "os_cpu_count": 4,
+  "cpu_vendor": "AuthenticAMD",
+  "cpu_brand": "AMD EPYC 7V73X 64-Core Processor",
+  "sched_affinity": 4,
+  "task_id": "ta-01M5Y9X24266GHDEKQ4XJ6QQ8R",
+  "region": "ap-south",
+  "cloud_provider": "CLOUD_PROVIDER_AZURE",
+  "image_id": "im-nY2yPuNifWQdeQr4iUdCRD"
+ },
+ "gfem_sha": "033594d672caebfdc0b4902e75150a5ced4989e4",
+ "source_build": {
+  "name": "r10M",
+  "attempts": [
+   {
+    "refined_um": 0.125,
+    "estimated_field_dofs": 8015506,
+    "gfem_dof_estimate": 6011630,
+    "tetrahedra": 1233329,
+    "build_wall_s": 125.846,
+    "build_peak_mem_gib": 2.2969
+   },
+   {
+    "refined_um": 0.0796,
+    "estimated_field_dofs": 10153860,
+    "gfem_dof_estimate": 7615395,
+    "tetrahedra": 1565306,
+    "build_wall_s": 174.467,
+    "build_peak_mem_gib": 2.513
+   },
+   {
+    "refined_um": 0.0473,
+    "estimated_field_dofs": 12904648,
+    "gfem_dof_estimate": 9678486,
+    "tetrahedra": 1992249,
+    "build_wall_s": 280.201,
+    "build_peak_mem_gib": 2.7904
+   }
+  ],
+  "refined_um": 0.0473,
+  "target_gfem_dof": 10000000.0,
+  "gfem_per_nd": 0.75,
+  "mesh_hash": "sha256:440b4306e83f8c4ab9876d7ccc8b5656a0dd5c379b7f08d5b343be8b6c0abd09",
+  "palace_msh_md5": "ff40f9ed5e6f7e150ad9bc61dccff4db",
+  "gsim_commit": "8eae781c1df8a452bc08d51a3869fd9566cd0952",
+  "builder": "reference/scripts/driven_cpw.py OUTDIR REFINED_UM",
+  "container": {
+   "requested": {
+    "cpu": [
+     16,
+     16
+    ],
+    "memory_mib": [
+     262144,
+     262144
+    ]
+   },
+   "hostname": "modal",
+   "os_cpu_count": 16,
+   "cpu_model": "unknown",
+   "avx512f": true,
+   "sched_affinity": 16,
+   "task_id": "ta-01M5F47WMMNGDTD6JX310GB4AR",
+   "region": "us-east",
+   "cloud_provider": "CLOUD_PROVIDER_AZURE",
+   "image_id": "im-lUqjJabtPCPTmc0SwMY1nL"
+  }
+ }
+}

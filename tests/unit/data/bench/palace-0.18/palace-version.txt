@@ -1,0 +1,4 @@
+
+Palace version: v0.18.1
+Schema version: 1-7-0
+palace-solver 0.18.1.post5

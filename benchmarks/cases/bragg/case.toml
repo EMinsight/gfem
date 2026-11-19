@@ -1,0 +1,69 @@
+format = 1
+name = "bragg"
+size = "small"
+family = "bragg"
+order = 3
+
+[mesh]
+sha256 = "6b6cdb1893d61a8572cfff7a54c62c7bb9965b613b453ef089edac15c1aaa163"
+bytes = 27038
+length_unit = "mm"
+file = "mesh.msh.xz"
+
+[mesh.source]
+recipe = "tools/split_mesh.py applied once to the R1 mesh 18019f17cc2a57c17f77a09fa1d429d3a0305ddec0e5a9c5b46eaf4203f1e88e (tests/periodic_cases.c3_mesh((10, 1, 1)) on tools/structured_meshes.periodic_cell, adopted from the ADR 0044 R1 run, job 48389307)"
+note = "Re-pinned from the R1 file (60 tets, 1 560 DOF at order 3) because Palace 0.18.1.post5 and 0.19.0 segfault in eigen postprocessing on it at 13, 14 and 16+ OpenMP threads. One split: 480 tets, 10 620 DOF at order 3. Imported from source/config.json (the R1 Palace config) with the two lowest bands compared."
+
+[regions]
+low = [3, 1]
+high = [3, 2]
+x_min = [2, 3]
+y_min = [2, 4]
+z_min = [2, 5]
+z_max = [2, 6]
+y_max = [2, 7]
+x_max = [2, 8]
+
+[problem]
+kind = "eigen"
+target_hz = 4496886870.0
+n_modes = 3
+wave_vector = [314.1592653589793, 0.0, 0.0]
+
+[quantities]
+modes = 2
+
+# Plan estimate hints, seconds per run (probes/12/plan.py), from the once-split mesh's
+# check runs (1x13, 1x16): gfem direct 5-14 s wall (startup dominated), Palace mumps
+# 12-13 s wall (6 s of it postprocessing). pmg unmeasured on this mesh (41 s work at
+# 4x4 on the R1 mesh, about 220 GMRES iterations per solve).
+[est_s]
+"gfem:direct" = 15
+"gfem:petsc-mumps" = 15
+"gfem:bddc" = 15
+"palace:mumps" = 15
+"palace:pmg" = 60
+
+[[materials]]
+region = "low"
+eps_r = 2.0
+tan_delta = 0.0
+
+[[materials]]
+region = "high"
+eps_r = 9.0
+tan_delta = 0.0
+
+[[boundaries]]
+kind = "pec"
+region = "z_min"
+
+[[boundaries]]
+kind = "pec"
+region = "z_max"
+
+[[boundaries]]
+kind = "periodic"
+donor = "x_min"
+receiver = "x_max"
+translation = [10.0, 0.0, 0.0]

@@ -1,0 +1,153 @@
+{
+ "anchor_tolerance": 1e-08,
+ "campaign_file": {
+  "path": "benchmarks/campaigns/smoke.toml",
+  "sha256": "ee55"
+ },
+ "checks": {
+  "complete": "pass",
+  "dof_equal": "pass",
+  "dof_equal_detail": {
+   "lcavity": {
+    "ndof": {
+     "gfem": [
+      246416
+     ],
+     "palace": [
+      246416
+     ]
+    },
+    "result": "pass"
+   },
+   "microstrip": {
+    "ndof": {
+     "gfem": [
+      315870
+     ],
+     "palace": [
+      315870
+     ]
+    },
+    "result": "pass"
+   }
+  },
+  "harness_failures": [],
+  "node_class": {
+   "observed": [
+    "standard"
+   ],
+   "planned": "standard"
+  },
+  "provenance": "pass"
+ },
+ "closed_utc": "2026-11-20T11:02:40Z",
+ "core_budget": 16,
+ "id": "20261120-858bc66-smoke",
+ "jobs": [
+  {
+   "billed_core_h": 30.5,
+   "cases": [
+    "microstrip",
+    "lcavity"
+   ],
+   "group": "case",
+   "job": "microstrip-wheels",
+   "nodes": [
+    "node001"
+   ],
+   "qos": "gp_debug",
+   "slurm_ids": [
+    "41000001"
+   ],
+   "state": "COMPLETED"
+  },
+  {
+   "billed_core_h": 40.25,
+   "cases": [
+    "microstrip",
+    "lcavity"
+   ],
+   "group": "case",
+   "job": "palace-wheels",
+   "nodes": [
+    "node002"
+   ],
+   "qos": "gp_debug",
+   "slurm_ids": [
+    "41000002"
+   ],
+   "state": "COMPLETED"
+  }
+ ],
+ "machine": "MareNostrum 5 GPP",
+ "name": "smoke",
+ "pins": {
+  "gfem": {
+   "commit": "858bc66c0ffee858bc66c0ffee858bc66c0ffee8",
+   "commit_utc": "2026-11-17T08:01:22Z",
+   "version": "0.1.0"
+  },
+  "harness": {
+   "commit": "858bc66c0ffee858bc66c0ffee858bc66c0ffee8"
+  },
+  "solvers": {
+   "gfem": "0.1.0",
+   "palace": "0.19.0"
+  },
+  "stacks": {
+   "wheels": {
+    "description_sha256": "cc33",
+    "env_manifest_sha256": "dd44"
+   }
+  }
+ },
+ "planned_utc": "2026-11-20T09:12:03Z",
+ "records": {
+  "records/lcavity/gfem-direct__wheels__default__rep1.json": "0138f61c5e804fdc3dee5b69b4b6c384e31002a6da2b8eb505979ec3582a83e7",
+  "records/lcavity/gfem-direct__wheels__default__rep2.json": "900a04d6d7bf49a475e464d762dc11587f52641289f56d84ffeb61701f23b368",
+  "records/lcavity/gfem-direct__wheels__default__rep3.json": "34f1c0fc165ff848912fb9e176e7b54b14d2a837ea2b47d7dbec77839c1115e3",
+  "records/lcavity/palace-mumps__wheels__default__rep1.json": "80f89da48837426f4a88530419d95c11e80318a4743ffcd577bc1b9710cdf865",
+  "records/lcavity/palace-mumps__wheels__default__rep2.json": "580acd9466c5fcf570c72499fcbe5d31fc1928925de6b12c04454e15012b75e2",
+  "records/lcavity/palace-mumps__wheels__default__rep3.json": "30f7043acadeb297bc8d4e54e1b7c0c28a01d8369c6ee9477c48796dadc0d77e",
+  "records/microstrip/gfem-bddc__wheels__16x1__rep1.json": "906e4a7a0dfb420f5745f5ee8e34dc424a2e29162c1f254a0455e1a4613945c2",
+  "records/microstrip/gfem-bddc__wheels__16x1__rep2.json": "755533b8c4e327abad8f38d213d889c16d3a581a36febc027ea0ba418bf18852",
+  "records/microstrip/gfem-bddc__wheels__16x1__rep3.json": "c01ea888cc26ab247ca6955179da46a3f739ad27739f2f3f217ac4f501e0c962",
+  "records/microstrip/gfem-bddc__wheels__2x8__rep1.json": "b82c6a9556412c36ddfa9e92ef26efbd41dd5279fab0aed560657f3e4e4db40d",
+  "records/microstrip/gfem-bddc__wheels__2x8__rep2.json": "7543aa2dacd0fc77b491c9a419733d0ced2b0cf4eb218ac84da9df7c8cdff701",
+  "records/microstrip/gfem-bddc__wheels__2x8__rep3.json": "f85a74ed638e89aa2c91873553f48b759bad4564e5a17c7e6b2954efd1da25f7",
+  "records/microstrip/gfem-bddc__wheels__4x4__rep1.json": "d99758bd4e431a9dea9cf1e3113c8cb5bae52bd35cfbbe951aecfedd65a40c2d",
+  "records/microstrip/gfem-bddc__wheels__4x4__rep2.json": "fb8303b916057b237b9b12e12ff420784b6008e1693be2ec3c2876e4073f3fc4",
+  "records/microstrip/gfem-bddc__wheels__4x4__rep3.json": "d97cad163d28a3a0807cc925bd969f8fc6619f4e5c4dc40f9a7bcba24c6ffd8b",
+  "records/microstrip/gfem-bddc__wheels__default__rep1.json": "13c650a2b91d6fc71d203c02f2f725ae6d6b71480a448ff5eadac161a8f2a908",
+  "records/microstrip/gfem-bddc__wheels__default__rep2.json": "8611f819c2e6607b02cfa724c611e64d167acc815bcce805acb909e29549143d",
+  "records/microstrip/gfem-bddc__wheels__default__rep3.json": "8bb37a412cb07d1e2fd9bc3e2c28ff5203a8aa05129199ecce83083e29f91f0d",
+  "records/microstrip/gfem-bddc__wheels__default__tol1e-06__rep1.json": "7a319dd05a88470a9e919e15f38f7afc42efd6930ea5acf613701247eb33b7d8",
+  "records/microstrip/gfem-bddc__wheels__default__tol1e-06__rep2.json": "dcafe75cddd69fb5310d10e0658b8cfafe17c31f0221de63157444b1876a2048",
+  "records/microstrip/gfem-bddc__wheels__default__tol1e-06__rep3.json": "27b2059e5d1dfd861a894b8288f7512f6a1ef1648324583aad11c69e6c266dd3",
+  "records/microstrip/gfem-bddc__wheels__default__tol1e-10__rep1.json": "51d2bb77dc2afb299b3eaef8a738871e6095a07bcdd0fd69f8de114fcf418a9c",
+  "records/microstrip/gfem-bddc__wheels__default__tol1e-10__rep2.json": "11166533d7ade035befe5de03dfabe6119aad879524cacea28e19fe4d3a2878d",
+  "records/microstrip/gfem-bddc__wheels__default__tol1e-10__rep3.json": "81b53abb73f7415085c0b140ba7b67f655e18aac52a584c52c5fe59edbf2d555",
+  "records/microstrip/gfem-direct__wheels__default__rep1.json": "eb62a21b08b7789bd4d42994c93cea60aec92f070f8adf75cefb2f45f8316151",
+  "records/microstrip/gfem-direct__wheels__default__rep2.json": "273afade26f313c7f30ed3b9298949172d7a6491d9b678d1f8b64edbe389c40f",
+  "records/microstrip/gfem-direct__wheels__default__rep3.json": "186ca8029f3f6239c3833306df8e348b5b5a6de20166931cce7600560951cde2",
+  "records/microstrip/palace-mumps__wheels__default__rep1.json": "10f3ce9c1bf0119d33d926fd2bfbdf6c63d1d326d67221fc820545b9d2559be1",
+  "records/microstrip/palace-mumps__wheels__default__rep2.json": "22dcf48e186514307f57647896fb8cdcf014f245f76ab3bb74c19304cd5e8607",
+  "records/microstrip/palace-mumps__wheels__default__rep3.json": "d7d1027431afd7dbbe1fbea414444fbda7d749117b1268f16749711c4c3f7549",
+  "records/microstrip/palace-pmg__wheels__1x16__rep1.json": "b39c94bbd8c19a6998ea0c3947ae3eee86f87b1c9da7a2c7324cbeb2c25985c3",
+  "records/microstrip/palace-pmg__wheels__1x16__rep2.json": "72d305901451e1338303a87b9a304d903418f18797ab0a788317f2ca6769fba4",
+  "records/microstrip/palace-pmg__wheels__1x16__rep3.json": "d7d163b34134e601dbdf819f66ad239ef5eeef8e21a5569d93c1690f20152f4d",
+  "records/microstrip/palace-pmg__wheels__4x4__rep1.json": "eccbcc1413b3c8c965b7ed8bbad307b37f8bd7214d2e15c236a6d7390c8bb301",
+  "records/microstrip/palace-pmg__wheels__4x4__rep2.json": "55bdeebddecc8c67c639489018d897dcadeebf5e1769045e24354501dcb87e61",
+  "records/microstrip/palace-pmg__wheels__4x4__rep3.json": "3dfa41a217951574e92473bc8d6aa23ea2a826e64ad85e10fd41b9cab515e0d4",
+  "records/microstrip/palace-pmg__wheels__default__rep1.json": "5eed8b57b995ea23bcd4ac410825381616c24112a3c820669afcceaab69fb7d4",
+  "records/microstrip/palace-pmg__wheels__default__rep2.json": "7bca8c9e4a5d5655c5eb94a558639ed939cbe24320a3dd58309dabddad076c94",
+  "records/microstrip/palace-pmg__wheels__default__rep3.json": "7cce4909d5c5c0d08114e25f0583a2ff096625bf71967fc7dcee0440eaa6f920",
+  "records/microstrip/palace-pmg__wheels__default__tol1e-06__rep1.json": "8000245b63e7e6e595db0d97bbf4d9a1cc3728d6712927136ef50a1d6c766ba2",
+  "records/microstrip/palace-pmg__wheels__default__tol1e-06__rep2.json": "5908d69635323fbd9c79d9dab4cc8aa82477d41300f63cce899b4d3beaf8ffe8",
+  "records/microstrip/palace-pmg__wheels__default__tol1e-06__rep3.json": "f507998be000ecb7267c0b4e264fd5388c42f208190162e78f1a6978701e210f",
+  "records/microstrip/palace-pmg__wheels__default__tol1e-10__rep1.json": "425e4c5023655c6c6962ed457bcfc967a08004e10961fd87ac2b247ca5b37596",
+  "records/microstrip/palace-pmg__wheels__default__tol1e-10__rep2.json": "99ce9bfb7383f6a6f2efee7072841f6dc1865aa6f943f2de7af85f54c2f15886",
+  "records/microstrip/palace-pmg__wheels__default__tol1e-10__rep3.json": "8e80cc28a43235b83d1795e2b61b459cfcce845065ca6f63d16aa29e3f9b33c5"
+ },
+ "schema": "suite-campaign/1"
+}

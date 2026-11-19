@@ -1,0 +1,16 @@
+# Fixture of the smoke-r10m campaign (ticket 12, ADR 0414): r10M_void once on a
+# highmem node at budget 112, default layouts, 1 repeat.
+schema = 1
+cases = ["r10M_void"]
+solvers = ["gfem:direct", "gfem:bddc", "palace:mumps", "palace:pmg"]
+layouts = ["default"]
+core_budget = 112
+repeats = 1
+node_class = "highmem"
+anchor_tolerance = 1e-8
+
+[wall_cap_s]
+r10M_void = 1800
+
+[stacks.wheels.versions]
+palace = "0.19.0"
