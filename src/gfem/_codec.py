@@ -77,7 +77,17 @@ class Context:
 
 
 class UnencodableError(TypeError):
-    """A value of a type that is not registered, a subclass included."""
+    """A value of a type that is not registered, a subclass included.
+
+    Attributes:
+        path: Where the value sits in the encoded object, e.g.
+            ``.model.materials['oxide']``.
+    """
+
+    def __init__(self, message: str, path: str = "") -> None:
+        """The error, and where the value sits."""
+        super().__init__(message)
+        self.path = path
 
 
 ToArgs = Callable[[Any, Context], Mapping[str, Any]]
@@ -201,7 +211,8 @@ class Encoder:
             return {"$map": obj} if any(k.startswith("$") for k in obj) else obj
         raise UnencodableError(
             f"Cannot write {path or 'the value'}: {type(value).__name__} is not "
-            "a serializable gfem value."
+            "a serializable gfem value.",
+            path,
         )
 
     def _mapping(self, value: Mapping, path: str, *, attrs: bool) -> dict[str, Any]:

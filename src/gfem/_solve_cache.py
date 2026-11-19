@@ -47,6 +47,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import tempfile
 import time
 import warnings
@@ -54,12 +55,13 @@ import zipfile
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 
 import gfem
 from gfem import _codec, errors
+from gfem._checks import is_traced
 from gfem.errors import SolveCacheWarning
 from gfem.job import Job
 from gfem.mesh import _hash_array
@@ -186,8 +188,9 @@ _CACHEDIR_TAG = (
 _KEY = re.compile(r"[0-9a-f]{64}\Z")
 #: ``.tmp/`` children older than this (crashed writers) are removed.
 _TMP_AGE_S = 24 * 3600
-#: What reading a damaged entry raises; ``JSONDecodeError`` is a ``ValueError``.
-_READ_ERRORS = (OSError, ValueError, EOFError, zipfile.BadZipFile, KeyError)
+#: What reading a damaged entry raises; ``JSONDecodeError`` is a ``ValueError``,
+#: ``TypeError`` a hand edit that breaks a constructor.
+_READ_ERRORS = (OSError, ValueError, EOFError, zipfile.BadZipFile, KeyError, TypeError)
 
 _log = logging.getLogger("gfem.solve_cache")
 
@@ -564,3 +567,220 @@ def _size(n: int) -> str:
         if n >= scale:
             return f"{n / scale:.1f} {unit}"
     return f"{n} B"
+
+
+# --- one call -------------------------------------------------------------------
+
+#: The gfem warnings a solve raises about its inputs or its result: recorded
+#: on a miss, replayed on a hit (ADR 0435). Others (a device's memory, a
+#: third party's deprecation) are facts of one run and are not stored.
+REPLAYED = (
+    errors.MeshQualityWarning,
+    errors.LowFrequencyWarning,
+    errors.SweepNotConvergedWarning,
+    errors.SweepRankDeficientWarning,
+    errors.UnrequestedOrderWarning,
+    errors.FloquetOrderCapWarning,
+    errors.ObliqueAbsorberWarning,
+    errors.SkippedPortModeWarning,
+    errors.PortModeTrackingWarning,
+)
+
+_GFEM_DIR = str(Path(gfem.__file__).parent) + os.sep
+
+
+class SolveCache:
+    """One call's use of the solve cache named by ``cache=``.
+
+    ``gfem.solve`` (through ``_solve``) drives it in three steps: `session`,
+    a context around the whole call that decides a bypass and catches the
+    call's warnings; `lookup` after every check; `store` after the forward.
+    Leaving the session shows the warnings at the caller of gfem: the
+    replayed classes (`REPLAYED`) and `gfem.SolveCacheWarning` at its line,
+    as a hit shows its stored ones, the others where they were raised, so a
+    miss and a hit print alike. gfem runs one solve per process at a time,
+    so catching warnings process-wide is safe.
+
+    What happened is left in `status`, `key` and `solved`; `report` writes
+    them as a run record's ``cache`` item.
+
+    Attributes:
+        directory: The directory, as given.
+        status: ``"hit"``, ``"miss"`` or ``"bypass"``; None before the lookup.
+        key: The solve key; None on a bypass.
+        solved: On a hit, the solving run's ``device``, ``ranks`` and
+            ``wall_time_s``; otherwise None.
+    """
+
+    def __init__(self, directory: str | os.PathLike) -> None:
+        """Name the directory; nothing is read or created yet.
+
+        Raises:
+            TypeError: ``directory`` is not a path.
+        """
+        if not isinstance(directory, (str, os.PathLike)):
+            raise TypeError(
+                "cache must be a directory path (str or os.PathLike), got "
+                f"{type(directory).__name__}."
+            )
+        self.directory = directory
+        self.status: str | None = None
+        self.key: str | None = None
+        self.solved: dict[str, Any] | None = None
+        self._store: Store | None = None
+        self._env: dict[str, str | None] = {}
+        self._replay: tuple[tuple[type[Warning], str], ...] = ()
+        self._catch: warnings.catch_warnings | None = None
+        self._caught: list[warnings.WarningMessage] = []
+        self._start = 0.0
+
+    def report(self) -> dict[str, Any]:
+        """The ``cache`` item of a run record: status, key, solving run on a hit."""
+        item: dict[str, Any] = {"status": self.status, "key": self.key}
+        if self.solved is not None:
+            item["solved"] = self.solved
+        return item
+
+    def session(
+        self, model: Any, problem: Any, *, comm: Any, adjoint: bool
+    ) -> SolveCache:
+        """The context of one call, with its bypass decided.
+
+        Args:
+            model: The model.
+            problem: The problem.
+            comm: The resolved communicator; None on one process.
+            adjoint: Whether the call solves adjoints with the forward
+                (``refine_mesh``).
+        """
+        self._start = time.perf_counter()
+        if is_traced((model, problem)):
+            self._bypass("traced inputs")
+        elif adjoint:
+            self._bypass("adjoint loads (refine_mesh)")
+        elif comm is not None:
+            self._bypass(f"a solve on {comm.size} ranks")
+        return self
+
+    def _bypass(self, reason: str) -> None:
+        self.status = "bypass"
+        _log.debug("bypass: %s", reason)
+
+    def lookup(self, model: Any, problem: Any, options: SolverOptions) -> Any:
+        """The stored result of this call, or None to solve.
+
+        Opens the store, keys the call and reads its entry. An input the key
+        cannot encode, or a cache of another layout, makes the call a bypass
+        with a `gfem.SolveCacheWarning`.
+
+        Raises:
+            ValueError: A non-empty directory that is not a solve cache.
+            OSError: The directory cannot be created.
+        """
+        if self.status == "bypass":
+            return None
+        stacklevel = _outside_gfem()
+        store = Store(self.directory, stacklevel=stacklevel)
+        if not store.usable:
+            self._bypass("a solve cache of another layout")
+            return None
+        try:
+            self.key, self._env = solve_key(model, problem, options)
+        except _codec.UnencodableError as err:
+            self._bypass(f"cannot key on {err.path}")
+            warnings.warn(
+                f"cache={os.fspath(self.directory)!r} was given, but this solve "
+                "was neither read from nor stored in it: the solve cache cannot "
+                f"key on {err.path.lstrip('.') or 'the input'} ({err}). The "
+                "result is correct. Use the gfem class instead of a subclass, "
+                "or drop cache= for this call.",
+                SolveCacheWarning,
+                stacklevel=stacklevel,
+            )
+            return None
+        self._store = store
+        found = store.read(self.key, model, stacklevel=stacklevel)
+        if found is None:
+            self.status = "miss"
+            return None
+        result, run, self._replay = found
+        self.status = "hit"
+        self.solved = {k: run.get(k) for k in ("device", "ranks", "wall_time_s")}
+        _log.info("hit %s (%s)", self.key[:12], store.root / self.key)
+        return result
+
+    def store(self, model: Any, result: Any, options: SolverOptions) -> None:
+        """Store a missed call's result, with the replayed warnings caught."""
+        if self.status != "miss" or self._store is None or self.key is None:
+            return
+        run = {
+            "device": options.device,
+            "options": options,
+            "ranks": 1,
+            "wall_time_s": time.perf_counter() - self._start,
+        }
+        recorded = tuple(
+            (w.category, str(w.message))
+            for w in self._caught
+            if issubclass(w.category, REPLAYED)
+        )
+        where = self._store.write(
+            self.key,
+            model,
+            self._env,
+            result,
+            run,
+            recorded,
+            stacklevel=_outside_gfem(),
+        )
+        if isinstance(where, Path):
+            _log.info("miss %s: solved and stored (%s)", self.key[:12], where)
+        else:
+            _log.info("miss %s: nothing stored (%s)", self.key[:12], where)
+
+    def __enter__(self) -> Self:
+        if self.status != "bypass":
+            self._catch = warnings.catch_warnings(record=True)
+            self._caught = self._catch.__enter__()
+            warnings.simplefilter("always")
+        return self
+
+    def __exit__(self, kind: object, error: object, tb: object) -> None:
+        if self._catch is None:
+            return
+        self._catch.__exit__(None, None, None)
+        self._catch = None
+        if error is not None and self.status == "miss" and self.key is not None:
+            _log.info(
+                "miss %s: nothing stored (the solve raised %s)",
+                self.key[:12],
+                type(error).__name__,
+            )
+        stacklevel = _outside_gfem()
+        if self.status == "hit":
+            for category, message in self._replay:
+                warnings.warn(message, category, stacklevel=stacklevel)
+        for w in self._caught:
+            if self.status == "hit" and issubclass(w.category, REPLAYED):
+                continue  # raised by the checks before the lookup: stored too
+            if issubclass(w.category, (*REPLAYED, SolveCacheWarning)):
+                warnings.warn(str(w.message), w.category, stacklevel=stacklevel)
+            else:
+                warnings.warn_explicit(
+                    w.message, w.category, w.filename, w.lineno, source=w.source
+                )
+
+
+def _outside_gfem() -> int:
+    """The ``stacklevel`` of the first frame outside gfem, for the caller's caller.
+
+    Counted as `warnings.warn` counts it when called by the function that
+    calls this one: a warning there points at the user's line that called
+    gfem, however deep inside gfem it is raised.
+    """
+    frame = sys._getframe(1)  # noqa: SLF001
+    level = 1
+    while frame is not None and frame.f_code.co_filename.startswith(_GFEM_DIR):
+        frame = frame.f_back
+        level += 1
+    return level
