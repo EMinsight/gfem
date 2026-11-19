@@ -293,8 +293,8 @@ Scoring (`close`, once per `ok` record): S is $\max |S_{ij} - S_{\mathrm{ref},ij
 over entries and frequencies; eigenfrequencies
 $\max_k |\mathrm{Re}\, f_k - f_{\mathrm{ref},k}| / f_{\mathrm{ref},k}$ with modes paired
 in ascending real part at or above the target. An error below $10\times$ the bound is
-"unresolved" and printed as such. A mismatched reference gives `accuracy: null` and
-`reference_matches: fail`.
+"unresolved" (see the report's accuracy display below). A mismatched reference gives
+`accuracy: null` and `reference_matches: fail`.
 
 ## Records and the store
 
@@ -540,13 +540,28 @@ convention `../gfem-bench-data/reports/<report-id>`.
   `DIR: unchanged` and exits 0, or names the files that differ and exits 1. Figures
   made with another matplotlib version, or with none importable, are regenerated but
   not compared ("figures regenerated with matplotlib X ... not compared"); tables and
-  JSON must still match.
+  JSON must still match. `report.json` records the harness commit that rendered it
+  (`harness_revision`); `--check` keeps the stored one and prints "rendered at harness
+  X; regenerated at Y" when the checking tree differs.
 
 Sections: gates and failures, then per case the structural block, error against work
 time, phase bars, memory, accuracy, layouts and a cross-solver snapshot (per budget,
 then a scaling view, on a multi-budget case; see below); a trend
 section with at least two gfem commits; caveats. A job whose machine benchmark is
 more than 10 % below the campaign median is flagged "slow node".
+
+**Accuracy display** (ADR 0457). The scored error $e$ of a max-norm metric lies within
+the reference bound $b$ of the true error, so a resolved error ($e \ge 10b$) prints as
+its value, an unresolved one as `e ± b (unresolved)` when $b \le e < 10b$ and as
+`≤ e+b (unresolved)` when $e < b$: in the accuracy table, panel (a), the rescored
+column and the scaling view. Panel (a) plots unresolved errors at $e$ with a
+$\pm b$ bar. Each order's discretization floor $f_p$ (the reference's same-mesh
+error) is printed the same way, after panel (a) and after the accuracy table, with a
+shaded $\pm b$ band in the figure when unresolved; then, per order with scored runs,
+a sentence says whether every run is at the floor, $|e - f_p| \le 0.01 f_p$, or lists
+the runs off it. When a case has an unresolved cell, its per-item error table gains a
+"reference bound" column (the reference's per-frequency bound where it has one).
+Scoring and records are unchanged.
 
 **Core budgets.** A cell is keyed by case, core budget, node class, solver, stack,
 layout and tolerance, and every per-case view is computed per (core budget, node

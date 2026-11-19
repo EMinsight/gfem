@@ -52,6 +52,7 @@ from benchmarks.report.load import (
 
 SCHEMA = "suite-report/1"
 NOISY = 0.10
+AT_FLOOR = 0.01  # a run within 1 % of its order's discretization floor (ADR 0457)
 SLOW_NODE = 0.10
 REPEATS = 3
 DEFAULT_ANCHOR = 1e-8
@@ -117,8 +118,8 @@ CAVEATS = (
     ),
     (
         "Accuracy is against the named converged reference; unresolved errors are "
-        "shown as such; Palace errors carry the definition offset δ; same-code error "
-        "is solver error, not accuracy."
+        "shown as value ± reference bound; Palace errors carry the definition offset "
+        "δ; same-code error is solver error, not accuracy."
     ),
     (
         "Each code runs at its own defaults except the listed pins; structural "
@@ -536,16 +537,63 @@ def _differences(
 
 def _floors(
     reference: Mapping[str, Any] | None,
-) -> tuple[dict[str, float | None], float | None]:
-    """Same-mesh error per order and the unresolved band (10 bound)."""
+) -> tuple[dict[str, dict[str, Any]], float | None]:
+    r"""Same-mesh error per order with the reference bound, and the unresolved band.
+
+    A floor is known only as well as the reference: it carries the reference's
+    (largest) bound :math:`b` and is resolved at :math:`f \ge 10b`, like a run's
+    error. The band is :math:`10b`.
+    """
     if reference is None:
         return {}, None
-    floors = {
-        k: num(v) for k, v in sorted((reference.get("same_mesh_error") or {}).items())
-    }
     bounds = [q.get("bound") for q in (reference.get("quantities") or {}).values()]
     bounds = [b for b in bounds if isinstance(b, (int, float))]
-    return floors, (num(10 * max(bounds)) if bounds else None)
+    bound = max(bounds) if bounds else None
+    floors = {}
+    for k, v in sorted((reference.get("same_mesh_error") or {}).items()):
+        f = num(v)
+        floors[k] = {
+            "error": f,
+            "bound": num(bound),
+            "resolved": None if f is None or bound is None else f >= 10 * bound,
+        }
+    return floors, (num(10 * bound) if bound is not None else None)
+
+
+def _at_floor(
+    runs: Sequence[Mapping[str, Any]], floors: Mapping[str, Mapping[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    r"""Per order: how many scored runs sit within 1 % of the order's floor.
+
+    :math:`|e - f_p| \le 0.01 f_p`, the smallest deviation three printed digits
+    show. It does not involve the reference bound (ADR 0457).
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for order, floor in floors.items():
+        f = floor["error"]
+        if not f:
+            continue
+        mine = [r for r in runs if r["error"] is not None and str(r["order"]) == order]
+        if not mine:
+            continue
+        devs = [abs(r["error"] - f) / f for r in mine]
+        out[order] = {
+            "n": len(mine),
+            "at_floor": sum(abs(r["error"] - f) <= AT_FLOOR * f for r in mine),
+            "largest_deviation": num(max(devs)),
+            "off": [
+                {
+                    "solver": r["solver"],
+                    "layout": r["layout"],
+                    "tolerance": r["tolerance"],
+                    "error": r["error"],
+                    "deviation": num(d),
+                }
+                for r, d in zip(mine, devs, strict=True)
+                if abs(r["error"] - f) > AT_FLOOR * f
+            ],
+        }
+    return out
 
 
 def _error_cost(
@@ -553,7 +601,7 @@ def _error_cost(
     rows: Sequence[records.SuiteRecord],
     reference: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    points_a, ladders, directs, differences = [], [], [], []
+    points_a, ladders, directs, differences, scored = [], [], [], [], []
     has_reference = reference is not None and reference.get("method") != "none"
     gfem_direct = [
         r for r in rows if passing(r) and r.run.solver == "gfem:direct" and r.outputs
@@ -564,13 +612,14 @@ def _error_cost(
             if h["error"] is None:
                 continue
             p = _point(h)
-            unresolved = h["resolved"] is False
             p.update(
                 error=h["error"],
-                unresolved=unresolved,
-                plotted=num(10 * h["bound"]) if unresolved else h["error"],
+                bound=h["bound"],
+                unresolved=h["resolved"] is False,
+                plotted=h["error"],
             )
             points_a.append(p)
+            scored.append(h)
         if info["class"] == "direct":
             if heads:
                 directs.append(_point(heads[0]))
@@ -589,6 +638,7 @@ def _error_cost(
         "reference": has_reference,
         "points": points_a,
         "floors": floors,
+        "at_floor": _at_floor(scored, floors),
         "unresolved_band": band,
         "ladders": ladders,
         "directs": directs,
@@ -699,7 +749,35 @@ def _accuracy(
     return out
 
 
-def _error_items(per_solver: Mapping[str, dict[str, Any]], rows, kind: str):
+def _item_bounds(
+    reference: Mapping[str, Any] | None, xs: Sequence[float], kind: str
+) -> list[float | None]:
+    """The reference bound at each item: per frequency where the reference has it."""
+    quantities = (reference or {}).get("quantities") or {}
+    scalars = [q.get("bound") for q in quantities.values()]
+    scalars = [b for b in scalars if isinstance(b, (int, float))]
+    fallback = num(max(scalars)) if scalars else None
+    per: list[tuple[float, float]] = []
+    if kind != "eigen":
+        for q in quantities.values():
+            per += zip(
+                q.get("frequencies_hz") or [],
+                q.get("bound_per_frequency") or [],
+                strict=False,
+            )
+    out = []
+    for x in xs:
+        hits = [b for f, b in per if math.isclose(f, x, rel_tol=1e-9)]
+        out.append(num(max(hits)) if hits else fallback)
+    return out
+
+
+def _error_items(
+    per_solver: Mapping[str, dict[str, Any]],
+    rows,
+    kind: str,
+    reference: Mapping[str, Any] | None = None,
+):
     lines = []
     for solver, info in per_solver.items():
         h = _headline(info["anchor_cells"], info["layouts"]["best"])
@@ -720,7 +798,16 @@ def _error_items(per_solver: Mapping[str, dict[str, Any]], rows, kind: str):
                 "error": h["error_items"],
             }
         )
-    return {"x": "mode" if kind == "eigen" else "frequency_hz", "lines": lines}
+    out: dict[str, Any] = {
+        "x": "mode" if kind == "eigen" else "frequency_hz",
+        "lines": lines,
+    }
+    unresolved = any(
+        c["resolved"] is False for info in per_solver.values() for c in info["cells"]
+    )
+    if lines and unresolved:
+        out["bound"] = _item_bounds(reference, cast("list[float]", lines[0]["x"]), kind)
+    return out
 
 
 def _snapshot(per_solver: Mapping[str, dict[str, Any]], machines: Mapping[str, Any]):
@@ -1001,12 +1088,15 @@ def _views(
             "layouts": _layouts(solver, at, _unrun(rows, solver, tol)),
         }
     kind = "eigen" if any("f_hz" in r.outputs for r in rows if passing(r)) else "driven"
+    error_cost = _error_cost(per_solver, rows, ref_doc)
+    accuracy = _accuracy(cells, ref_doc)
     return {
         "cells": cells,
-        "error_cost": _error_cost(per_solver, rows, ref_doc),
+        "error_cost": error_cost,
         "phases": _phase_rows(per_solver),
-        "accuracy": _accuracy(cells, ref_doc),
-        "error_items": _error_items(per_solver, rows, kind),
+        "accuracy": accuracy,
+        "accuracy_floor": _at_floor(accuracy, error_cost["floors"]),
+        "error_items": _error_items(per_solver, rows, kind, ref_doc),
         "layouts": [info["layouts"] for info in per_solver.values()],
         "snapshot": _snapshot(per_solver, machines),
     }
@@ -1430,8 +1520,12 @@ def build(
     flags: Mapping[str, Any],
     inputs_root: str,
     matplotlib: str | None,
+    harness_revision: str | None = None,
 ) -> dict[str, Any]:
-    """The ``suite-report/1`` mapping of ``inputs``."""
+    """The ``suite-report/1`` mapping of ``inputs``.
+
+    ``harness_revision`` is the commit of the harness tree that renders it.
+    """
     rescore = dict(flags.get("rescore") or {})
     campaigns = inputs.campaigns
     rows = [r for c in campaigns for r in c.rows]
@@ -1479,6 +1573,7 @@ def build(
         },
         "command": command([c.manifest.id for c in campaigns], flags),
         "matplotlib": matplotlib,
+        "harness_revision": harness_revision,
         "stamps": stamps,
         "anchor_tolerance": anchor,
         "header": _header(inputs),
