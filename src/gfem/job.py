@@ -26,6 +26,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import time
 import zipfile
 from pathlib import Path
@@ -65,7 +66,14 @@ from gfem._pytree import register_fields
 from gfem._sheet import SheetField
 from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
-from gfem.mesh import _TOPOLOGY_ARRAYS, Mesh, Region, _Topology
+from gfem.mesh import (
+    _TOPOLOGY_ARRAYS,
+    Mesh,
+    Region,
+    _is_model_mesh,
+    _mesh_sha256,
+    _Topology,
+)
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
 from gfem.problems import (
@@ -92,7 +100,7 @@ from gfem.results import (
     SweepInfo,
     TransientThermalResult,
 )
-from gfem.solve import solve
+from gfem.solve import _solve, _solve_cache, solve
 from gfem.thermal import HeatSource, _FieldTrace
 from gfem.thermo_optic import _RouteSampler, _RouteTrace, _Sampling, _ShiftTrace
 
@@ -153,6 +161,7 @@ class Job:
         *,
         device: str | None = None,
         comm: Any = None,
+        cache: str | os.PathLike | None = None,
     ) -> Any:
         """Solve the job: ``gfem.solve(model, problem, options=options)``.
 
@@ -165,6 +174,17 @@ class Job:
                 GPU run on a CPU machine). The bundle records the device used.
             comm: The communicator, as for `gfem.solve`; not part of the job,
                 which does not say where it runs.
+            cache: A directory for the solve cache, as for `gfem.solve`: the
+                result is read from it when this job was solved and stored
+                there before, and stored there otherwise. Independent of
+                ``out``: the bundle is written either way. With a cache the
+                bundle's ``run`` entry has a ``cache`` item: ``status``
+                (``"hit"``, ``"miss"``, or ``"bypass"`` when the cache was
+                not used), ``key`` (the solve key, or None), and on a hit
+                ``solved``, the ``device``, ``ranks`` and ``wall_time_s`` of
+                the run that solved it; ``wall_time_s`` of the ``run`` entry
+                is this call's. ``None`` (the default) solves without a cache
+                and adds no ``cache`` item.
 
         Returns:
             The problem type's result.
@@ -188,20 +208,29 @@ class Job:
             except (TypeError, ValueError) as err:
                 # one argv on every rank, so every rank raises it together
                 raise _mpi.agreed(err) from None
+        use = _solve_cache(cache)
         resolved = _mpi.resolve_comm(comm)
         start = time.perf_counter()
 
         def run() -> dict[str, Any]:
-            return {
+            entry = {
                 "device": options.device,
                 "device_override": device,
                 "options": options,
                 "ranks": 1 if resolved is None else resolved.size,
                 "wall_time_s": time.perf_counter() - start,
             }
+            if use is not None:
+                entry["cache"] = use.report()
+            return entry
 
         try:
-            result = solve(self.model, self.problem, options=options, comm=comm)
+            if use is None:
+                result = solve(self.model, self.problem, options=options, comm=comm)
+            else:
+                result = _solve(
+                    self.model, self.problem, options=options, comm=comm, cache=use
+                )[0]
         except LinearSolverConvergenceError as err:
             if out is not None and err.result is not None:
                 _keep_partial(Path(out), err, err.result, run(), resolved)
@@ -500,6 +529,13 @@ def _sha256(path: Path) -> str:
 
 
 def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
+    if context.key:
+        return _key_mesh_args(mesh)
+    if context.model_mesh is not None:
+        # a solve cache entry: never a file, so it outlives any edit to one
+        if _is_model_mesh(mesh, context.model_mesh):
+            return {"model_mesh": _mesh_sha256(mesh)}
+        return _in_memory_mesh_args(mesh)
     source = mesh.source
     if source is None:
         return _in_memory_mesh_args(mesh)
@@ -519,6 +555,39 @@ def _mesh_args(mesh: Mesh, context: _codec.Context) -> dict[str, Any]:
         "length_unit": mesh.length_unit,
     }
     return args | _section(mesh) | _moved_nodes(mesh)
+
+
+def _key_mesh_args(mesh: Mesh) -> dict[str, Any]:
+    """A mesh as the solve key sees it: the arrays in memory, never a file.
+
+    A mesh read from a file, the same file elsewhere and the same topology
+    rebuilt in memory all give these arguments.
+    """
+    return (
+        {
+            "length_unit": mesh.length_unit,
+            "regions": [[r.name, r.tag, r.dim] for r in mesh.regions],
+        }
+        | _section(mesh)
+        | {"topology_sha256": _mesh_sha256(mesh)}
+        | _moved_nodes(mesh)
+    )
+
+
+def _model_mesh_from_args(digest: str, context: _codec.Context) -> Mesh:
+    """The model's mesh, which a solve cache entry's fields refer to."""
+    mesh = context.model_mesh
+    if mesh is None:
+        raise ValueError(
+            "The fields refer to the model's mesh, but no model was given."
+        )
+    own = _mesh_sha256(mesh)
+    if digest != own:
+        raise ValueError(
+            f"The fields were solved on a mesh of topology {digest}, but the "
+            f"model's mesh has topology {own}."
+        )
+    return mesh
 
 
 def _section(mesh: Mesh) -> dict[str, Any]:
@@ -580,6 +649,8 @@ def _with_nodes(mesh: Mesh, args: dict[str, Any]) -> Mesh:
 
 
 def _mesh_from_args(args: dict[str, Any], context: _codec.Context) -> Mesh:
+    if "model_mesh" in args:
+        return _model_mesh_from_args(args["model_mesh"], context)
     if "path" not in args:
         return _in_memory_mesh_from_args(args)
     path = context.base / args["path"]
@@ -736,8 +807,10 @@ def _job_from_args(args: dict[str, Any], _: _codec.Context) -> Job:
     return Job(args["model"], args["problem"], args.get("options", SolverOptions()))
 
 
-#: What a job file's mesh may hold: a file reference, or a mesh with no file.
+#: What a job file's mesh may hold: a file reference, or a mesh with no file;
+#: a solve cache entry's, a reference to the model's mesh.
 _MESH_NAMES = (
+    "model_mesh",
     "path",
     "sha256",
     "length_unit",

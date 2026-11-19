@@ -1,5 +1,8 @@
 """The command-line runner: ``python -m gfem run job.json --out DIR``.
 
+``--cache CACHE`` reads the result from a solve cache, or stores it there,
+as ``Job.run(cache=...)`` does.
+
 Exit codes: 0 on success; 1 when the job cannot be read or solved (the
 error message goes to stderr: a changed mesh file, a newer schema version,
 a device that cannot run, a physics error, ...); 2 for command-line usage
@@ -53,6 +56,14 @@ def _parser() -> argparse.ArgumentParser:
         "(recorded in result.json); a job whose linear_solver is 'auto' runs "
         "the direct solver on a GPU",
     )
+    run.add_argument(
+        "--cache",
+        type=Path,
+        metavar="DIR",
+        help="a solve cache directory: read the result back when the same job "
+        "was solved there before, store it otherwise (created when missing); "
+        "result.json is written either way and records the hit or miss",
+    )
     return parser
 
 
@@ -82,7 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS):
             job = Job.from_json(args.job, comm=comm)
-            job.run(args.out, device=args.device, comm=comm)
+            job.run(args.out, device=args.device, comm=comm, cache=args.cache)
     except Exception as err:  # noqa: BLE001 (report any failure as exit code 1)
         if _mpi.rank(comm) == 0:
             print(f"gfem: error: {type(err).__name__}: {err}", file=sys.stderr)  # noqa: T201

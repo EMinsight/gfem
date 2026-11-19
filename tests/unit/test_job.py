@@ -718,6 +718,38 @@ def test_run_equals_solve_and_result_round_trips(model, tmp_path):
     )
 
 
+def test_a_cached_run_records_the_hit_and_writes_the_same_bundle(model, tmp_path):
+    job = gfem.Job(model, PROBLEM, gfem.SolverOptions(order=1))
+    cache = tmp_path / "cache"
+    job.run(tmp_path / "first", cache=cache)
+    first = json.loads((tmp_path / "first" / "result.json").read_text())["run"]
+    assert first["cache"]["status"] == "miss"
+    assert len(first["cache"]["key"]) == 64
+    assert "solved" not in first["cache"]
+
+    job.run(tmp_path / "second", cache=cache, device="cpu")
+    second = json.loads((tmp_path / "second" / "result.json").read_text())["run"]
+    assert second["cache"]["status"] == "hit"
+    assert second["cache"]["key"] == first["cache"]["key"]
+    assert second["cache"]["solved"] == {
+        "device": "cpu",
+        "ranks": 1,
+        "wall_time_s": second["cache"]["solved"]["wall_time_s"],
+    }
+    assert second["cache"]["solved"]["wall_time_s"] > 0
+    a = gfem.load_result(tmp_path / "first")
+    b = gfem.load_result(tmp_path / "second")
+    np.testing.assert_array_equal(b.capacitance, a.capacitance)
+    for region, energy in a.energy.items():
+        np.testing.assert_array_equal(b.energy[region], energy)
+
+
+def test_a_run_without_a_cache_records_no_cache_item(model, tmp_path):
+    gfem.Job(model, PROBLEM, gfem.SolverOptions(order=1)).run(tmp_path / "out")
+    run = json.loads((tmp_path / "out" / "result.json").read_text())["run"]
+    assert "cache" not in run
+
+
 def test_load_result_refuses_a_job_file(model, tmp_path):
     path = gfem.Job(model, PROBLEM).to_json(tmp_path / "job.json")
     with pytest.raises(ValueError, match="gfem result file"):
@@ -824,6 +856,22 @@ def test_a_sweep_that_stops_leaves_a_partial_bundle_and_a_note(
         f"No result.json in {out}, only a partial result: the run stopped at an "
         f'unsolved frequency. Read it with gfem.load_result("{out / "partial.json"}").'
     )
+
+
+def test_a_cached_sweep_that_stops_records_a_miss_and_stores_nothing(
+    sweep_job, tmp_path, monkeypatch
+):
+    out = tmp_path / "results"
+    cache = tmp_path / "cache"
+    cannot_converge_at(monkeypatch, (SWEEP[2],))
+    with pytest.raises(gfem.LinearSolverConvergenceError):
+        sweep_job.run(out, cache=cache)
+    run = json.loads((out / "partial.json").read_text())["run"]
+    assert run["cache"]["status"] == "miss"
+    assert len(run["cache"]["key"]) == 64
+    assert "solved" not in run["cache"]
+    with pytest.raises(gfem.LinearSolverConvergenceError):
+        sweep_job.run(out, cache=cache)
 
 
 def test_a_sweep_that_solves_nothing_writes_nothing(sweep_job, tmp_path, monkeypatch):

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
+import os
 import sys
 from typing import TYPE_CHECKING, Any, overload
 
@@ -22,6 +24,7 @@ if TYPE_CHECKING:
 
     from gfem._eigen.rule import DualRequest
     from gfem._engine.driven import AdjointLoads
+    from gfem._solve_cache import SolveCache
     from gfem.problems import (
         DCConduction,
         Driven,
@@ -51,6 +54,7 @@ def solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
+    cache: str | os.PathLike | None = None,
 ) -> ElectrostaticResult: ...
 @overload
 def solve(
@@ -59,6 +63,7 @@ def solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
+    cache: str | os.PathLike | None = None,
 ) -> DCConductionResult: ...
 @overload
 def solve(
@@ -67,6 +72,7 @@ def solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
+    cache: str | os.PathLike | None = None,
 ) -> SteadyThermalResult: ...
 @overload
 def solve(
@@ -75,6 +81,7 @@ def solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
+    cache: str | os.PathLike | None = None,
 ) -> TransientThermalResult: ...
 @overload
 def solve(
@@ -83,6 +90,7 @@ def solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
+    cache: str | os.PathLike | None = None,
 ) -> DrivenResult: ...
 @overload
 def solve(
@@ -91,6 +99,7 @@ def solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
+    cache: str | os.PathLike | None = None,
 ) -> EigenmodeResult: ...
 @overload
 def solve(
@@ -99,6 +108,7 @@ def solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
+    cache: str | os.PathLike | None = None,
 ) -> PortModeResult: ...
 def solve(
     model: Model,
@@ -106,6 +116,7 @@ def solve(
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
+    cache: str | os.PathLike | None = None,
 ) -> Any:
     """Solve one problem type on a model.
 
@@ -138,6 +149,28 @@ def solve(
             process without one, the world communicator under ``mpiexec`` or
             ``srun``, where every rank makes the same call. A communicator of
             size 1, such as ``MPI.COMM_SELF``, runs one independent copy.
+        cache: A directory for the solve cache. The result is stored there
+            under its solve key, a hash of everything it depends on (the
+            mesh, materials, problem, the solver options except ``threads``,
+            ``frequency_workers``, ``retain_memory`` and ``device``, gfem's
+            version and code, and the versions of NGSolve and, when the
+            options select them, PETSc or SLEPc), and the same call again reads it
+            back instead of solving: the same result class and values, its
+            fields on ``model.mesh``, and the solve's warnings shown again at
+            your line. A path that does not exist, or an empty directory,
+            becomes a cache; delete the directory to clear it. A result read
+            back may have been solved on another machine, device, thread
+            count or rank count: the same answer to the precision gfem
+            documents, not bit-for-bit. A ``device="cuda"`` call that reads
+            its result needs no GPU; one that solves does. A solve under
+            `jax.grad`, `jax.jit` or `jax.vmap`, one that raises, and one
+            with an input the cache cannot record (a subclass of a gfem
+            class, with a `gfem.SolveCacheWarning`) are solved and store
+            nothing, as is one that keeps fields on more than one rank
+            (with the same warning). The logger ``"gfem.solve_cache"``
+            reports each read and store at INFO. ``None`` (the default)
+            solves without a cache. The save and export recipe, "Solve once,
+            read it back", shows it at work.
 
     Returns:
         The problem type's result, e.g. `gfem.ElectrostaticResult` for an
@@ -153,7 +186,8 @@ def solve(
             the message names one.
         RegionNotFoundError: The problem names a region the mesh lacks.
         ValueError: The problem does not fit the model; the message gives
-            the remedy.
+            the remedy. Or ``cache`` names a non-empty directory that is not
+            a solve cache.
         NonDifferentiableError: Under `jax.grad`, an input or output gfem
             does not differentiate is perturbed or used.
         LinearSolverConvergenceError: An iterative linear solve
@@ -163,16 +197,32 @@ def solve(
             ``result`` holds the frequencies it solved, ``unsolved`` the
             rest.
     """
-    return _solve(model, problem, options=options, comm=comm)[0]
+    use = _solve_cache(cache)
+    return _solve(model, problem, options=options, comm=comm, cache=use)[0]
 
 
-def _solve(
+def _solve_cache(cache: str | os.PathLike | None) -> SolveCache | None:
+    """The `SolveCache` of a ``cache=`` argument; None without one.
+
+    Raises:
+        TypeError: ``cache`` is not a path.
+    """
+    if cache is None:
+        return None
+    # imported here: the cache's module imports gfem.job, which imports this
+    from gfem._solve_cache import SolveCache
+
+    return SolveCache(cache)
+
+
+def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
     model: Model,
     problem: Any,
     *,
     options: SolverOptions | None = None,
     comm: Any = None,
     adjoint_loads: AdjointLoads | Sequence[DualRequest] | None = None,
+    cache: SolveCache | None = None,
 ) -> tuple[Any, dict[Any, Any] | None]:
     """`solve`, and the adjoints of the per-frequency ``adjoint_loads`` with it.
 
@@ -185,6 +235,11 @@ def _solve(
     the result, and those adjoints per (frequency, key), or ``None``
     without ``adjoint_loads``. Warnings point at the caller of `solve`,
     one frame above this one.
+
+    With ``cache``, the call is read from or stored in the solve cache: the
+    lookup runs after every check, so a warm cache raises the same errors.
+    ``cache`` is left holding what happened (`SolveCache.report`), for
+    `gfem.Job.run`'s run record.
     """
     if not isinstance(model, Model):
         raise TypeError(f"solve needs a gfem.Model, got {type(model).__name__}.")
@@ -195,55 +250,79 @@ def _solve(
             f"options must be a gfem.SolverOptions, got {type(options).__name__}."
         )
     resolved = _mpi.resolve_comm(comm)
-    if resolved is not None:
-        _mpi.refuse(model, problem, options)
-    rule_class = _rule_class(problem)
-    _check_domain(model, problem)
-    _check_blends(model, problem)
-    if resolved is None:
-        rule = rule_class(model, problem, options)
-    else:
-        _mpi.entry_check(resolved, "solve", model, problem, options)
-        try:
-            rule = rule_class(model, problem, options, comm=resolved)
-        except (TypeError, ValueError) as err:
-            # the rule reads inputs the entry check has just found equal
-            _mpi.agreed(err)
-            raise
-    if adjoint_loads is not None:
-        rule.adjoint_loads = adjoint_loads
-    if is_traced((model, problem)):
-        # a rule may differentiate a problem through its own leaves (a thermal
-        # problem's summed heat density, ADR 0178)
-        inputs = getattr(rule, "vjp_problem", None)
-        leaves = problem if inputs is None else inputs(problem)
-        return rule.result(solve_vjp(rule, model, leaves)), None
-    # A moved mesh must keep its periodic pairs and stay valid on the solve
-    # domain.
-    check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
-    physics = physics_of(problem)
-    _check_quality(
-        model.mesh,
-        model._domain_of(physics).active,  # noqa: SLF001
-        stacklevel=4,
-        comm=resolved,
+    session = (
+        contextlib.nullcontext()
+        if cache is None
+        else cache.session(
+            model, problem, comm=resolved, adjoint=adjoint_loads is not None
+        )
     )
-    # a uniform sweep's partial result, built here: never in a JAX callback
-    partial_result = getattr(rule, "partial_result", None)
-    if partial_result is not None:
-        rule.keeps_partial = True
-    try:
-        with (
-            _mpi.section(resolved, agreed=_mpi.FORWARD_ERRORS),
-            _timing.scope(_timing.problem_name(problem), resolved),
-        ):
-            outputs, _ = rule.forward(model, keep=False)
-    except LinearSolverConvergenceError as err:
+    with session:
+        if resolved is not None:
+            _mpi.refuse(model, problem, options)
+        rule_class = _rule_class(problem)
+        _check_domain(model, problem)
+        _check_blends(model, problem)
+        if resolved is None:
+            rule = rule_class(model, problem, options)
+        else:
+            # differing caches would split the ranks at the lookup's broadcast
+            directory = "" if cache is None else os.fspath(cache.directory)
+            _mpi.entry_check(
+                resolved,
+                "solve",
+                model,
+                problem,
+                options,
+                arrays={"the solve cache": directory},
+            )
+            try:
+                rule = rule_class(model, problem, options, comm=resolved)
+            except (TypeError, ValueError) as err:
+                # the rule reads inputs the entry check has just found equal
+                _mpi.agreed(err)
+                raise
+        if adjoint_loads is not None:
+            rule.adjoint_loads = adjoint_loads
+        if is_traced((model, problem)):
+            # a rule may differentiate a problem through its own leaves (a thermal
+            # problem's summed heat density, ADR 0178)
+            inputs = getattr(rule, "vjp_problem", None)
+            leaves = problem if inputs is None else inputs(problem)
+            return rule.result(solve_vjp(rule, model, leaves)), None
+        # A moved mesh must keep its periodic pairs and stay valid on the solve
+        # domain.
+        check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
+        physics = physics_of(problem)
+        _check_quality(
+            model.mesh,
+            model._domain_of(physics).active,  # noqa: SLF001
+            stacklevel=4,
+            comm=resolved,
+        )
+        # a uniform sweep's partial result, built here: never in a JAX callback
+        partial_result = getattr(rule, "partial_result", None)
         if partial_result is not None:
-            err.result = partial_result(err)
-        raise
-    adjoints = rule.adjoints if adjoint_loads is not None else None
-    return rule.result(outputs), adjoints
+            rule.keeps_partial = True
+        if cache is not None:
+            stored = cache.lookup(model, problem, options)
+            if stored is not None:
+                return stored, None
+        try:
+            with (
+                _mpi.section(resolved, agreed=_mpi.FORWARD_ERRORS),
+                _timing.scope(_timing.problem_name(problem), resolved),
+            ):
+                outputs, _ = rule.forward(model, keep=False)
+        except LinearSolverConvergenceError as err:
+            if partial_result is not None:
+                err.result = partial_result(err)
+            raise
+        adjoints = rule.adjoints if adjoint_loads is not None else None
+        result = rule.result(outputs)
+        if cache is not None:
+            cache.store(model, result, options)
+        return result, adjoints
 
 
 def _check_domain(model: Model, problem: Any) -> None:
@@ -329,9 +408,9 @@ def release_memory() -> None:
     after an optimization loop.
 
     ``retain_memory=0`` keeps nothing from then on; this call drops what is
-    kept now. JAX's own compilation caches are not touched: see
-    ``jax.clear_caches()``. Under ``mpiexec`` or ``srun`` every rank must
-    call it at the same point.
+    kept now. It does not touch a solve cache on disk (``cache=``). JAX's
+    own compilation caches are not touched: see ``jax.clear_caches()``.
+    Under ``mpiexec`` or ``srun`` every rank must call it at the same point.
 
     Example:
         After an optimization loop, before another study::

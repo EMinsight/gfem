@@ -37,7 +37,7 @@ from gfem.errors import (
     MeshRefinementUnsupportedError,
     NonDifferentiableError,
 )
-from gfem.mesh import Mesh
+from gfem.mesh import Mesh, _is_model_mesh
 from gfem.model import (
     PEC,
     PMC,
@@ -3064,9 +3064,7 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         _check_driven_estimable((estimator,), model, frequencies)
     _check_order(_fields(result)[0].order, estimator)
     mesh = _fields(result)[0].mesh
-    if mesh._topology is not model.mesh._topology or not np.array_equal(  # noqa: SLF001
-        np.asarray(mesh.nodes), np.asarray(model.mesh.nodes)
-    ):
+    if not _is_model_mesh(mesh, model.mesh):
         raise ValueError(
             "error_estimate needs the model the result was solved on: the "
             "result's fields live on another mesh, or on other node positions."

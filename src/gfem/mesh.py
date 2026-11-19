@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 import weakref
 from pathlib import Path
 
@@ -22,6 +24,10 @@ LENGTH_UNITS = {"m": 1.0, "cm": 1e-2, "mm": 1e-3, "um": 1e-6, "nm": 1e-9}
 _READ_ERRORS = (ValueError, OSError, meshio.ReadError)
 
 _TOPOLOGY_STATICS = ("length_unit", "regions", "source", "section_thickness")
+#: Every array of a `_Topology`, by field name: what a mesh with no file
+#: writes and what its digest hashes. `_ELEMENT_ARRAYS` is the subset, by
+#: `Mesh` property name, that defines its elements; the others (imported
+#: nodes, triangle neighbours) are read or derived alongside.
 _TOPOLOGY_ARRAYS = (
     "imported_nodes",
     "tetrahedra",
@@ -78,6 +84,58 @@ class _Topology:
     tri_neighbours: np.ndarray
     source: Path | None = None
     section_thickness: float | None = None
+
+
+_TOPOLOGY_DIGESTS: weakref.WeakKeyDictionary[_Topology, str] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _topology_sha256(topology: _Topology) -> str:
+    """The sha256 (64 hex) of a topology's arrays, computed once per topology.
+
+    Each of `_TOPOLOGY_ARRAYS` enters as `_hash_array` feeds it, in that
+    order. The topology is immutable, so the digest is memoized on it.
+    """
+    digest = _TOPOLOGY_DIGESTS.get(topology)
+    if digest is None:
+        h = hashlib.sha256()
+        for name in _TOPOLOGY_ARRAYS:
+            _hash_array(h, name, getattr(topology, name))
+        digest = h.hexdigest()
+        _TOPOLOGY_DIGESTS[topology] = digest
+    return digest
+
+
+def _mesh_sha256(mesh: Mesh) -> str:
+    """The topology digest of a mesh (`_topology_sha256`); its nodes do not enter."""
+    return _topology_sha256(mesh._topology)  # noqa: SLF001
+
+
+def _hash_array(h, path: str, array) -> None:
+    """Feed one array to the hash ``h``, independent of its memory layout.
+
+    A length-prefixed JSON header ``[path, dtype.str, shape]`` comes first,
+    then the little-endian C-order bytes. Float and complex values are
+    normalized first: :math:`-0` becomes :math:`+0` (``a + 0``) and every NaN
+    one quiet NaN.
+    """
+    a = np.asarray(array)
+    if a.dtype.kind in "fc":
+        a = a + a.dtype.type(0)
+        if a.dtype.kind == "f":
+            a = np.where(np.isnan(a), a.dtype.type(np.nan), a)
+        else:
+            nan = a.real.dtype.type(np.nan)
+            re = np.where(np.isnan(a.real), nan, a.real)
+            im = np.where(np.isnan(a.imag), nan, a.imag)
+            a = np.empty(a.shape, a.dtype)
+            a.real, a.imag = re, im
+    a = np.ascontiguousarray(a.astype(a.dtype.newbyteorder("<"), copy=False))
+    head = json.dumps([path, a.dtype.str, list(a.shape)]).encode()
+    h.update(len(head).to_bytes(8, "little"))
+    h.update(head)
+    h.update(memoryview(a.reshape(-1)).cast("B"))
 
 
 def _read_gmsh(path: Path, length_unit: str) -> _Topology:
@@ -638,6 +696,51 @@ class Mesh:
         -1 means outside the mesh.
         """
         return self._topology.tri_neighbours
+
+
+#: The `Mesh` arrays that, with its regions, define its elements: the
+#: element part of `_TOPOLOGY_ARRAYS`, by property name, which `_same_topology`
+#: compares.
+_ELEMENT_ARRAYS = (
+    "tetrahedra",
+    "tetrahedron_tags",
+    "tetrahedron_entities",
+    "triangles",
+    "triangle_tags",
+    "triangle_entities",
+)
+
+
+def _same_topology(a: Mesh, b: Mesh) -> bool:
+    """Whether two meshes have the same elements, tags and regions.
+
+    The same object, or equal arrays: the same file read twice (a loaded
+    result's mesh and the model's) gives two objects.
+    """
+    if a._topology is b._topology:  # noqa: SLF001
+        return True
+    return a.regions == b.regions and all(
+        np.array_equal(getattr(a, name), getattr(b, name)) for name in _ELEMENT_ARRAYS
+    )
+
+
+def _is_model_mesh(mesh: Mesh, model_mesh: Mesh) -> bool:
+    """Whether ``mesh`` is the model's mesh: one a result can refer to by digest.
+
+    The same object, or the same elements and regions (`_same_topology`),
+    length unit, cross-section thickness, topology digest
+    (`_mesh_sha256`) and nodes. A solve cache entry stores such a mesh
+    as its digest, and `gfem.error_estimate` needs it.
+    """
+    if mesh is model_mesh:
+        return True
+    return (
+        _same_topology(mesh, model_mesh)
+        and mesh.length_unit == model_mesh.length_unit
+        and mesh.section_thickness == model_mesh.section_thickness
+        and _mesh_sha256(mesh) == _mesh_sha256(model_mesh)
+        and np.array_equal(np.asarray(mesh.nodes), np.asarray(model_mesh.nodes))
+    )
 
 
 # Per tetrahedron, its shortest edge, by mesh topology (`_shortest_edges`).

@@ -235,6 +235,88 @@ print(sorted(run))
   and rank 0 writes one bundle, which reads on a single process
   ({doc}`distributed-solve`).
 
+## Solve once, read it back
+
+Re-running a notebook solves every cell again. Name a directory with
+`cache=` and gfem keeps each finished result there, filed under the model,
+the problem and the solver options; the same call again reads the result
+back instead of solving. Nothing is kept unless a call names a directory.
+
+```python
+import logging
+import sys
+
+log = logging.getLogger("gfem.solve_cache")  # silent unless you turn it on
+log.addHandler(logging.StreamHandler(sys.stdout))
+log.setLevel(logging.INFO)
+
+result = gfem.solve(model, problem, cache="solves")  # solves and stores
+again = gfem.solve(model, problem, cache="solves")  # reads back, no solve
+print(abs(again.s.values - result.s.values).max())
+```
+
+```text
+miss 4c0b6f1e9d27: solved and stored (solves/4c0b6f1e9d27a8530f62c1d9b4e7a03f5c8d21e6b9f0a47c3d5e8b1f2a6c904e)
+hit 4c0b6f1e9d27 (solves/4c0b6f1e9d27a8530f62c1d9b4e7a03f5c8d21e6b9f0a47c3d5e8b1f2a6c904e)
+0.0
+```
+
+A job takes the same directory, from Python as `Job.run(out=..., cache=...)`
+or from the command line:
+
+```bash
+python -m gfem run job.json --out cached --cache solves
+```
+
+```python
+run = json.loads(Path("cached/result.json").read_text())["run"]
+print(run["cache"]["status"], run["cache"]["key"])
+```
+
+```text
+hit 4c0b6f1e9d27a8530f62c1d9b4e7a03f5c8d21e6b9f0a47c3d5e8b1f2a6c904e
+```
+
+- The entry is found by its solve key, a hash of the mesh (its nodes and
+  elements, not its file), the materials, the problem, the solver options
+  other than `threads`, `frequency_workers`, `retain_memory` and `device`,
+  gfem's version and code, and the versions of NGSolve and, when the
+  options select them, PETSc or SLEPc. Change any of them and the call
+  solves and adds an entry. A new gfem version, or an edit to gfem's code,
+  never reads an older one's entries.
+- A result read back has the same type and the same values as the solve
+  that stored it, with its fields on your `model.mesh`, and the solve's
+  warnings are shown again at your line. A wrong argument still raises,
+  cache or not.
+- The stored result may have been solved on another machine, device,
+  thread count or number of ranks. It then agrees with a solve here to the
+  precision gfem documents, not to every digit. A `device="cuda"` call that
+  reads its result back needs no GPU; one that solves does.
+- The logger above prints one `hit` or `miss` line per call, and a line
+  when old entries are deleted. A job's bundle is written either way, and
+  its `run` entry gains a `cache` item: the status, the key, and on a hit
+  `solved`, the device, ranks and wall time of the run that stored the
+  entry ({py:obj}`gfem.Job.run`). The bundle's own `wall_time_s` is this
+  call's.
+- Some calls solve and store nothing, even with `cache=`: a solve under
+  `jax.grad`, `jax.jit` or `jax.vmap` (gradients), a solve that raises (a
+  sweep that stopped), and one with an input the cache cannot file, such
+  as a subclass of a gfem class ({py:obj}`gfem.SolveCacheWarning` names
+  it). {py:obj}`gfem.refine_mesh` never uses a cache.
+- The directory is created when it does not exist. A directory that exists
+  and is not a solve cache is refused before solving.
+- Once the entries pass 10 GiB in total, the least recently used ones are
+  deleted. To change that limit, edit `max_bytes` (in bytes) in
+  `solves/solve-cache.json`. A result larger than the limit is not stored.
+- To solve again, drop `cache=` for that call or delete its entry,
+  `solves/<key>/`. To empty the cache, delete the directory.
+  {py:obj}`gfem.release_memory` frees memory and leaves the directory alone.
+- On a cluster, put the directory on a shared filesystem, never on a
+  node's local disk. Under a launcher, rank 0 reads and writes it for
+  every rank. A solve that keeps fields on more than one rank is not
+  cached: write those with `Job.run(out=)`, or solve with
+  `comm=MPI.COMM_SELF` ({doc}`distributed-solve`).
+
 ## When a sweep stops
 
 An iterative linear solve that does not converge at one frequency of a
@@ -258,6 +340,8 @@ and prints a second line, `gfem: note: ...`, that says where it is.
 
 - Read back what you wrote: `gfem.load_result` gives the S of the solve, and
   `np.loadtxt` the S of a Touchstone file, as above.
+- To trust a result read from a solve cache, solve once without `cache=`
+  and compare its S with the one read back.
 - Open the `.s2p` file in your circuit simulator and compare one value with
   `s["p2", "p1"]` at the same frequency, with the reference impedance on the
   file's `#` line.
@@ -276,7 +360,12 @@ and prints a second line, `gfem: note: ...`, that says where it is.
   says so. A network that mixes such ports with ports that have a reference
   impedance cannot be written.
 - A result holds the fields `keep_fields` asked for, and only those; a field
-  you did not keep needs a new solve.
+  you did not keep needs a new solve. A solve cache does not change that:
+  it reads back the fields the stored solve kept.
+- The solve cache files a result under the inputs of the solve, as a job
+  file records them. An input it cannot record, such as a subclass of a
+  gfem class, is never guessed at: that call solves without the cache
+  ({py:obj}`gfem.SolveCacheWarning`).
 - Across ranks, write S and the job from rank 0, and call a field's
   `to_vtu` on every rank ({doc}`distributed-solve`, "Write files").
 - A job or result file records the gfem version that wrote it. gfem reads

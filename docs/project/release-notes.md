@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **Solve cache.** `gfem.solve(..., cache="solves")`, `Job.run(cache=...)` and
+  `python -m gfem run ... --cache solves` keep each finished result in the
+  named directory, filed under the mesh, materials, problem, solver options
+  and gfem version, and read it back when the same call comes again: the
+  same result type and values, its warnings shown again. Gradients and
+  solves that raise are solved and store nothing. Off unless a call names a
+  directory; the logger `"gfem.solve_cache"` reports each read and store
+  (save and export recipe, "Solve once, read it back").
+
+- **Error estimates of loaded results.** `gfem.error_estimate` accepts a
+  result read with `gfem.load_result` and the model it was solved on: the
+  mesh is compared by its elements, regions and node positions, not as the
+  same object. Earlier versions raised `ValueError` for any loaded result.
+
 - **Behaviour change: direct driven solves keep their digits below the
   low-frequency floor.** A new option, `SolverOptions.gauge`, solves a driven
   problem through the tree-cotree gauge: the gradients $\nabla \phi$, on

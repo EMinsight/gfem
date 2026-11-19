@@ -8,12 +8,15 @@ and compared with the solve: the Touchstone files with S and its 50 ohm
 renormalization, the xarray and netCDF files, the VTU file, the job file's
 mesh entry with the mesh file, and the result bundle with the in-process
 result. The page's sentences about where the job puts its mesh are checked
-against what the job file holds.
+against what the job file holds. The solve cache section is checked with its
+keys elided: they change with every edit of gfem's code.
 """
 
 import hashlib
 import json
+import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -28,6 +31,8 @@ import gfem
 
 PAGE = dp.DOCS / "recipes" / "save-and-export.md"
 Z_LINE = 376.73 / 6
+CACHE = "Solve once, read it back"
+KEY = re.compile(r"\b(?:[0-9a-f]{64}|[0-9a-f]{12})\b")
 
 
 def _run(command: str) -> None:
@@ -50,7 +55,14 @@ def _run(command: str) -> None:
 @pytest.fixture(scope="module")
 def page(tmp_path_factory):
     workdir = tmp_path_factory.mktemp("save_and_export")
-    return workdir, dp.run_page(PAGE, workdir, shell=_run)
+    log = logging.getLogger("gfem.solve_cache")
+    handlers, level = list(log.handlers), log.level
+    try:
+        yield workdir, dp.run_page(PAGE, workdir, shell=_run)
+    finally:
+        # the page turns the logger on for the reader's session, not the tests'
+        log.handlers[:] = handlers
+        log.setLevel(level)
 
 
 @pytest.fixture(scope="module")
@@ -93,7 +105,14 @@ def test_the_page_downloads_the_tutorial_mesh():
 
 
 def test_every_output_block_is_what_the_code_prints(ran):
-    assert not dp.output_problems(ran), "\n".join(dp.output_problems(ran))
+    keyed = [example for example in ran if example.section != CACHE]
+    assert not dp.output_problems(keyed), "\n".join(dp.output_problems(keyed))
+
+
+def _cache_blocks(ran) -> list[dp.Example]:
+    found = [example for example in ran if example.section == CACHE]
+    assert found, f"no Python block under {CACHE!r}"
+    return found
 
 
 def test_every_section_with_a_number_prints_it(ran):
@@ -103,6 +122,7 @@ def test_every_section_with_a_number_prints_it(ran):
         "S to xarray",
         "Fields to ParaView or PyVista",
         "A run as a file",
+        CACHE,
     }
 
 
@@ -190,3 +210,34 @@ def test_the_result_bundle_reads_back_as_the_solve(ran, workdir):
     mesh = json.loads(field)
     # The page: "here by its absolute path, since the mesh is outside result/".
     assert mesh["path"] == str((workdir / "line.msh").resolve())
+
+
+def test_the_cache_blocks_print_what_the_page_shows_but_the_keys(ran):
+    for example in _cache_blocks(ran):
+        assert example.shown is not None, example.code
+        printed, shown = (
+            KEY.sub("<key>", text) for text in (example.printed, example.shown)
+        )
+        assert printed.split() == shown.split()
+
+
+def test_the_second_solve_is_read_back_from_the_cache(ran, workdir):
+    first, *_ = _cache_blocks(ran)
+    miss, hit, difference = first.printed.splitlines()
+    # The page: the first call solves and stores, the second reads it back.
+    key = miss.split()[1].rstrip(":")
+    assert miss.startswith(f"miss {key}: solved and stored (solves")
+    assert hit.startswith(f"hit {key} (solves")
+    (entry,) = [p for p in (workdir / "solves").iterdir() if KEY.fullmatch(p.name)]
+    assert entry.name.startswith(key)
+    assert float(difference) == 0.0  # read back bit for bit
+
+
+def test_the_command_line_reads_the_same_entry(ran, workdir):
+    *_, last = _cache_blocks(ran)
+    run = json.loads((workdir / "cached" / "result.json").read_text())["run"]
+    assert run["cache"]["status"] == "hit"
+    (entry,) = [p for p in (workdir / "solves").iterdir() if KEY.fullmatch(p.name)]
+    assert run["cache"]["key"] == entry.name
+    assert run["cache"]["solved"]["ranks"] == 1
+    assert "hit" in last.printed
