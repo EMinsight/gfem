@@ -349,8 +349,9 @@ def test_a_plain_and_a_bloch_bddc_solve_share_a_communicator(tmp_path):
     )[0]
     assert _rel(got_plain, plain) < GATES["bddc_gmres"]
     assert _rel(got_bloch, bloch) < GATES["bddc_gmres"]
-    # one coarse creator per symmetry: LDL^T for the plain one, LU for Bloch
-    assert names == ["cholesky", "lu"]
+    # one coarse creator per symmetry on the MPI stack: LDL^T for the plain one, LU
+    # for Bloch; without it the coarse problem stays on rank 0 and none is made
+    assert names == (["cholesky", "lu"] if _petsc.has_mpi() else [])
 
 
 @needs_stack

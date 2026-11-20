@@ -216,7 +216,14 @@ def test_s_matches_one_process(case, solver, ranks, tmp_path):
     assert _rel(got, want) < GATES[solver]
 
 
-@pytest.mark.parametrize(("case", "ranks"), [("cellx", 4), ("box8", 8), ("box8", 16)])
+@pytest.mark.parametrize(
+    ("case", "ranks"),
+    [
+        pytest.param("cellx", 4, marks=DIRECT.marks),
+        pytest.param("box8", 8, marks=DIRECT.marks),
+        pytest.param("box8", 16, marks=DIRECT.marks),
+    ],
+)
 def test_a_kept_field_matches_one_process_at_the_seam(case, ranks, tmp_path):
     want = _field(case, "direct", tmp_path)
     got = on_ranks(_field, case, "direct", tmp_path, ranks=ranks, limit=600)[0]
