@@ -46,54 +46,55 @@ case = "microstrip"
 
 # Plan estimate hints, seconds per run, per (solver, layout) at every single-node
 # core budget of the campaign series (ADR 0460): built by the campaign's hint model
-# (smoke c16 step times, per-kind serial fraction, 1.3 margin; scale cells partly
-# guessed until the dress rehearsal replaces them).
+# (dress rehearsal c16 step times x 1.3, x 1.15 more on the iterative default cell,
+# scaled to the other budgets by the per-kind serial-fraction law; cells the
+# rehearsal did not finish keep the earlier estimate).
 [est_s]
-"gfem:bddc@14x4" = 405
-"gfem:bddc@1x112" = 332
-"gfem:bddc@1x16" = 682
-"gfem:bddc@1x32" = 478
-"gfem:bddc@1x56" = 390
-"gfem:bddc@1x8" = 1091
-"gfem:bddc@28x4" = 344
-"gfem:bddc@2x4" = 1132
-"gfem:bddc@4x4" = 708
-"gfem:bddc@8x4" = 496
-"gfem:direct@1x112" = 65
-"gfem:direct@1x16" = 78
-"gfem:direct@1x32" = 71
-"gfem:direct@1x56" = 67
-"gfem:direct@1x8" = 94
-"gfem:petsc-mumps@14x4" = 130
-"gfem:petsc-mumps@1x112" = 186
-"gfem:petsc-mumps@1x16" = 383
-"gfem:petsc-mumps@1x32" = 268
-"gfem:petsc-mumps@1x56" = 219
-"gfem:petsc-mumps@1x8" = 612
-"gfem:petsc-mumps@28x4" = 110
-"gfem:petsc-mumps@2x4" = 362
-"gfem:petsc-mumps@4x4" = 227
-"gfem:petsc-mumps@8x4" = 159
-"palace:mumps@112x1" = 363
+"gfem:bddc@14x4" = 211
+"gfem:bddc@1x112" = 265
+"gfem:bddc@1x16" = 545
+"gfem:bddc@1x32" = 382
+"gfem:bddc@1x56" = 312
+"gfem:bddc@1x8" = 871
+"gfem:bddc@28x4" = 179
+"gfem:bddc@2x4" = 589
+"gfem:bddc@4x4" = 368
+"gfem:bddc@8x4" = 258
+"gfem:direct@1x112" = 58
+"gfem:direct@1x16" = 70
+"gfem:direct@1x32" = 63
+"gfem:direct@1x56" = 60
+"gfem:direct@1x8" = 83
+"gfem:petsc-mumps@14x4" = 70
+"gfem:petsc-mumps@1x112" = 125
+"gfem:petsc-mumps@1x16" = 258
+"gfem:petsc-mumps@1x32" = 180
+"gfem:petsc-mumps@1x56" = 147
+"gfem:petsc-mumps@1x8" = 412
+"gfem:petsc-mumps@28x4" = 59
+"gfem:petsc-mumps@2x4" = 194
+"gfem:petsc-mumps@4x4" = 121
+"gfem:petsc-mumps@8x4" = 85
+"palace:mumps@112x1" = 405
 "palace:mumps@14x4" = 1475
-"palace:mumps@16x1" = 1124
+"palace:mumps@16x1" = 1252
 "palace:mumps@28x4" = 1093
 "palace:mumps@2x4" = 6060
-"palace:mumps@32x1" = 680
+"palace:mumps@32x1" = 758
 "palace:mumps@4x4" = 3386
-"palace:mumps@56x1" = 490
-"palace:mumps@8x1" = 2011
+"palace:mumps@56x1" = 546
+"palace:mumps@8x1" = 2241
 "palace:mumps@8x4" = 2049
-"palace:pmg@112x1" = 264
-"palace:pmg@14x4" = 284
-"palace:pmg@16x1" = 658
-"palace:pmg@28x4" = 227
-"palace:pmg@2x4" = 964
-"palace:pmg@32x1" = 428
-"palace:pmg@4x4" = 567
-"palace:pmg@56x1" = 329
-"palace:pmg@8x1" = 1119
-"palace:pmg@8x4" = 369
+"palace:pmg@112x1" = 107
+"palace:pmg@14x4" = 178
+"palace:pmg@16x1" = 266
+"palace:pmg@28x4" = 143
+"palace:pmg@2x4" = 605
+"palace:pmg@32x1" = 173
+"palace:pmg@4x4" = 356
+"palace:pmg@56x1" = 133
+"palace:pmg@8x1" = 453
+"palace:pmg@8x4" = 232
 
 [[materials]]
 region = "sio2"

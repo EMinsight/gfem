@@ -55,13 +55,13 @@ def test_the_series_and_its_rehearsal_are_committed():
     assert len(SERIES) == 16
 
 
-def test_the_series_plans_26_jobs_1221_runs_and_about_8476_core_hours(site):
+def test_the_series_plans_26_jobs_1221_runs_and_about_6985_core_hours(site):
     campaigns = [config.load_campaign(CAMPAIGNS / f"{n}.toml") for n in SERIES]
     plans = [matrix.expand(c, site, commit=COMMIT) for c in campaigns]
     assert sum(len(p.jobs) for p in plans) == 26
     assert sum(p.runs for p in plans) == 1221
-    # issue 08's plan totals on the probe files (probes/08/plans/)
-    assert sum(p.est_core_h for p in plans) == pytest.approx(8476, rel=0.03)
+    # scale hints from the dress rehearsal (was 8476 on the guessed hints)
+    assert sum(p.est_core_h for p in plans) == pytest.approx(6985, rel=0.03)
 
 
 def test_the_rehearsal_plans_the_two_scale_cases_at_16_cores(site):
@@ -69,7 +69,8 @@ def test_the_rehearsal_plans_the_two_scale_cases_at_16_cores(site):
     plan = matrix.expand(config.load_campaign(path), site, commit=COMMIT)
     assert [job.cases for job in plan.jobs] == [("r10M_void",), ("microstrip_p3",)]
     assert {s.core_budget for j in plan.jobs for s in j.steps} == {16}
-    assert plan.est_core_h == pytest.approx(385, rel=0.03)
+    # 385 when it was submitted; 314 on the rehearsal's own hints
+    assert plan.est_core_h == pytest.approx(314, rel=0.03)
 
 
 def test_series_hints_cover_every_planned_layout(site):

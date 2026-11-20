@@ -538,7 +538,7 @@ palace = "0.19.0"
     refused = {(c.solver, c.layout) for c in plan.cells if c.refused}
     assert refused == {("gfem:direct", "4x4")}  # one rank only
     direct = next(c for c in plan.cells if c.solver == "gfem:direct" and not c.refused)
-    assert direct.est_s == 78  # its "gfem:direct@1x16" hint
+    assert direct.est_s == 70  # its "gfem:direct@1x16" hint
     p3 = case.load_case(config.CASES_DIR / "microstrip_p3")
     assert slurm.pinned_ndof(p3) == 907_791
     assert case.reference_directory(p3) == config.CASES_DIR / "microstrip"
