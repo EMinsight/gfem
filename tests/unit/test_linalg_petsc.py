@@ -1068,16 +1068,16 @@ def no_telescope_symbol(monkeypatch):
 
 
 def _zeroed(monkeypatch):
-    """Every coarse matrix zero, so MUMPS fails to factor it; set-ups counted."""
+    """Every coarse matrix singular by one zero row and column; set-ups counted."""
     built = coarse.distributed_aij
     set_ups = []
 
-    def zero(*args, **kwargs):
+    def singular(*args, **kwargs):
         aij, index = built(*args, **kwargs)
-        aij.zeroEntries()
+        aij.zeroRowsColumns(np.array([0], dtype=_petsc.require_petsc().IntType), 0.0)
         return aij, index
 
-    monkeypatch.setattr(coarse, "distributed_aij", zero)
+    monkeypatch.setattr(coarse, "distributed_aij", singular)
     monkeypatch.setattr(
         coarse._petsc,
         "next_prefix",

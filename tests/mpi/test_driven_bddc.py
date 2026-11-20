@@ -303,12 +303,15 @@ def _a_singular_coarse_problem(directory, route):
     coarse.reduction = REDUCTIONS[route]
     built = coarse.distributed_aij
 
-    def zero(*args, **kwargs):
+    def singular(*args, **kwargs):
+        # one zero pivot: a zero matrix also overruns MUMPS's workspace
         aij, index = built(*args, **kwargs)
-        aij.zeroEntries()
+        lo, hi = aij.getOwnershipRange()
+        first = np.arange(lo, min(lo + 1, hi), dtype=_petsc.require_petsc().IntType)
+        aij.zeroRowsColumns(first, diag=0.0)
         return aij, index
 
-    coarse.distributed_aij = zero
+    coarse.distributed_aij = singular
     set_ups = _count_set_ups()
     options = cases.tight("bddc_gmres", threads=1)
     problem = gfem.Driven(FREQUENCY)
