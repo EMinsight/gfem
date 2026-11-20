@@ -357,6 +357,27 @@ def test_an_eigenmode_on_a_periodic_cell_keeps_its_refusal(key, wave_vector, tmp
     assert caught.value.feature == key
 
 
+def test_one_periodic_pair_passes_for_a_driven_solve_only(tmp_path):
+    cell = mpi_cases._cell(tmp_path)  # one pair
+    options = gfem.SolverOptions(linear_solver="direct")
+    assert _mpi.refuse(cell, gfem.Driven(5e9), options) is None
+    bloch = gfem.Driven(5e9, wave_vector=periodic_cases.C1_K)
+    eigen = gfem.Eigenmode(target=5e9, n_modes=1)
+    for problem, key in ((bloch, "bloch"), (eigen, "periodic")):
+        with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+            _mpi.refuse(cell, problem, options)
+        assert caught.value.feature == key
+
+
+def test_two_periodic_pairs_refuse_a_driven_and_an_eigenmode_solve(tmp_path):
+    cell = periodic_cases.c2(periodic_cases.c2_mesh(tmp_path))  # two pairs
+    options = gfem.SolverOptions(linear_solver="direct")
+    for problem in (gfem.Driven(5e9), gfem.Eigenmode(target=5e9, n_modes=1)):
+        with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+            _mpi.refuse(cell, problem, options)
+        assert caught.value.feature == "periodic"
+
+
 #: Options every problem refuses above one rank, by the key each raises.
 SHARED_REFUSALS = {
     "device": gfem.SolverOptions(linear_solver="direct", device="cuda"),

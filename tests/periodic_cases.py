@@ -19,6 +19,9 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
   ports, a PEC ground, an absorbing top, a resistive `gfem.Impedance` sheet
   touching both pairs and a sidewall "wall" crossing the x seam (the
   periodic cells of the gradient verification matrix).
+  `cellx` is G with its x pair only; `periodic_box` is `mpi_cases.box`
+  periodic along x with ports touching the seam: the one-pair cases of the
+  distributed periodic tests.
 - F1, `f1`: a Fresnel slab between Floquet ports (meshes in um), its S the
   tangential-E Airy form `f1_airy`; with an air substrate, the Brewster
   cell. F2, `f2`: a lamellar grating between Floquet ports.
@@ -410,6 +413,49 @@ def g(
         ports=[
             gfem.LumpedPort("p1", "port1", "+z", impedance=50.0),
             gfem.LumpedPort("p2", "port2", "+z", impedance=50.0),
+        ],
+    )
+
+
+# --- one pair across ranks: cellx and the periodic box -------------------------------
+
+#: The frequencies of the periodic box, Hz.
+BOX_FREQUENCIES = (60e12, 90e12)
+
+
+def cellx(mesh: gfem.Mesh, *, eps_r=None, conductivity=None, cover=None) -> gfem.Model:
+    """G with its x pair only: one pair, as a distributed solve takes.
+
+    ``eps_r`` and ``conductivity`` as `g`; ``cover``: the "cover" material
+    (vacuum by default).
+    """
+    model = g(mesh, eps_r=eps_r, conductivity=conductivity)
+    keep = [b for b in model.boundaries if b != gfem.Periodic(("y_min", "y_max"))]
+    materials = {**model.materials, "cover": cover or gfem.Material()}
+    return model.replace(boundaries=keep, materials=materials)
+
+
+def periodic_box(mesh: gfem.Mesh, *, eps_r=None, conductivity=None) -> gfem.Model:
+    """`mpi_cases.box` periodic along x, with two lumped ports touching the seam.
+
+    Ports on "port" (z = 0) and on the interior "sheet", an absorbing top
+    "abc"; "diel" is a `gfem.MaterialField` of ``eps_r`` and ``conductivity``
+    per element (lossy constants by default).
+    """
+    n = len(mesh.elements("diel"))
+    eps = np.full(n, 3.0) if eps_r is None else eps_r
+    sigma = np.full(n, 1e3) if conductivity is None else conductivity
+    return gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(),
+            "metal": gfem.Material(eps_r=2.0, conductivity=2e5),
+            "diel": gfem.MaterialField(eps_r=eps, conductivity=sigma),
+        },
+        boundaries=[gfem.Periodic(("xmin", "xmax")), gfem.Absorbing("abc")],
+        ports=[
+            gfem.LumpedPort("p1", "port", "+y", impedance=50.0),
+            gfem.LumpedPort("p2", "sheet", "+y", impedance=50.0),
         ],
     )
 

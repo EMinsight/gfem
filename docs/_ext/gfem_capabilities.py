@@ -942,7 +942,7 @@ REFUSAL_LABELS = {
     "thermal": "`SteadyThermal`",
     "thermal_transient": "`TransientThermal`",
     "dc_conduction": "`DCConduction`",
-    "periodic": "A `Periodic` boundary on a `Driven` problem, on any number of axes",
+    "periodic": "`Periodic` boundaries on two axes of a `Driven` problem",
     "bloch": "`Driven(wave_vector=...)`",
     "floquet_port": "A `FloquetPort` on a `Driven` problem",
     "frequency_workers": "`frequency_workers` above 1, on more than one frequency",
