@@ -132,7 +132,7 @@ from gfem._engine.fields import dof_shape, fe_space, one_process_dofs
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped
 from gfem._linalg import Kind, ResolvedLinearSolver
-from gfem._linalg.layout import ONE_PROCESS, DofLayout
+from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
 from gfem._sign import largest_entry, largest_value
@@ -835,19 +835,34 @@ class EigenmodeRule:
             sigma,
             linear=self.linear,
             tolerance=self._inner_tolerance(),
-            numbers=self._numbers(),
+            numbers=self._start_numbers(op),
         )
 
     def _numbers(self) -> np.ndarray | None:
-        """Each local DOF's one-process number under ranks; ``None`` on one process.
+        """Each field row's one-process number under ranks; ``None`` on one process.
 
-        `gfem._engine.fields.one_process_dofs`, memoized per topology.
+        `gfem._engine.fields.one_process_dofs`, memoized per topology: the rows
+        of a result field, which are the solve space's without periodic pairs.
         """
         if self.comm is None:
             return None
         return one_process_dofs(
             self._mesh, self.regions, self._excluded, self.options.order, self.comm
         )
+
+    def _start_numbers(self, op: DrivenOperator) -> np.ndarray | None:
+        """A number per solve-space DOF for the norm start; ``None`` on one process.
+
+        Without periodic pairs each DOF's one-process number (`_numbers`). On a
+        periodic space, whose DOFs no one-process number names (a swapped
+        partition changes the seam's basis), the layout's global numbers
+        (``ParallelDofs.EnumerateGlobally``): they depend on the partition, and
+        only the norm estimates read them.
+        """
+        if self.comm is None or op.expansion is None:
+            return self._numbers()
+        numbers, _ = _layout(op).pardofs.EnumerateGlobally()  # ty: ignore[unresolved-attribute]
+        return np.asarray(numbers, dtype=np.int64)
 
     def _inner_tolerance(self) -> float:
         """The tolerance of the shift solves of an iterative linear solver."""
@@ -1238,7 +1253,7 @@ class EigenmodeRule:
         q_port = np.zeros((len(self.resistive), n))
         participation = np.zeros((len(self.inductive), n))
         for j, mode in enumerate(modes):
-            x = self._phase(mode.x, divfree, layout, numbers)
+            x = self._phase(mode.x, op, divfree, numbers)
             # electric energy per element (gfem order) at this amplitude
             per_tet = np.zeros(len(mesh.tetrahedra))
             per_tet[built.tetrahedron_order] = (
@@ -1292,14 +1307,17 @@ class EigenmodeRule:
     def _phase(
         self,
         x: np.ndarray,
+        op: DrivenOperator,
         divfree: DivFreeProjector,
-        layout: DofLayout,
         numbers: np.ndarray | None,
     ) -> np.ndarray:
         """``x`` with the phase and sign of the mode convention (`gfem.conventions`).
 
         ``∫ E . E`` real and positive, then the largest entry's real part
-        positive (one process's entry under ranks, `largest_value`).
+        positive (one process's entry under ranks, `largest_value`). On a
+        periodic model that entry is the expanded field's (``P x`` on the field
+        rows, ``numbers`` theirs), on one process and under ranks alike: a
+        partition can change the periodic basis on the seam, never ``P x``.
         """
         if self.problem.wave_vector is not None:
             # a Bloch mode's ∫ E . E depends on the cell and can vanish:
@@ -1310,11 +1328,31 @@ class EigenmodeRule:
             x = x * (np.conj(largest) / abs(largest))
             x[i] = abs(largest)
             return x
+        layout = _layout(op)
         s = layout.pair(divfree.energy(x), x)
         x = x * np.exp(-0.5j * np.angle(s))
-        if largest_value(x, layout, numbers).real < 0:
+        if op.expansion is None:
+            reference = largest_value(x, layout, numbers)
+        else:
+            reference = largest_value(op.expand(x), self._field_layout(), numbers)
+        if reference.real < 0:
             x = -x
         return x
+
+    def _field_layout(self) -> DofLayout:
+        """The field rows' layout across ranks; `ONE_PROCESS` on one process.
+
+        The plain mesh's H(curl) space of `fe_space`, whose rows are a result
+        field's (`gfem._engine.driven.Expansion.field_rows`), memoized with it.
+        """
+        if self.comm is None:
+            return ONE_PROCESS
+        still = Mesh(self._mesh.imported_nodes, self._mesh._topology)  # noqa: SLF001
+        regions, excluded, order = self.regions, self._excluded, self.options.order
+        _, space, _ = fe_space(still, regions, excluded, "hcurl", order, comm=self.comm)
+        disc = discretization(still, (), self.comm)
+        key = (("field", tuple(regions), tuple(excluded)), "hcurl", order, "layout")
+        return disc.space(key, lambda: RankLayout(space, self.comm))
 
     def _volume_energies(
         self, mesh: Mesh, per_tet: np.ndarray, per_axis: np.ndarray | None
