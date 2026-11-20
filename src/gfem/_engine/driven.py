@@ -113,7 +113,13 @@ from gfem._engine.cache import (
     discretization,
     retain_budget,
 )
-from gfem._engine.domain import em_region, hcurl_space, pec_surfaces, space_key
+from gfem._engine.domain import (
+    element_dofs,
+    em_region,
+    hcurl_space,
+    pec_surfaces,
+    space_key,
+)
 from gfem._engine.fields import dof_shape
 from gfem._engine.floquet_ports import (
     FloquetSurfaceCoupling,
@@ -161,7 +167,7 @@ from gfem.errors import (
     SkippedPortModeWarning,
     UnrequestedOrderWarning,
 )
-from gfem.mesh import _shortest_edges
+from gfem.mesh import Mesh, _shortest_edges
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Driven
@@ -215,12 +221,24 @@ class Expansion:
     Attributes:
         matrix: P, the periodic space's coefficients to the unpaired
             space's (`expansion_matrix`).
-        space: The complex unpaired space (P's rows): where results keep
-            their fields and the backward pass's field pairs live.
+        space: The complex unpaired space (P's rows): where the backward
+            pass's field pairs live.
+        field_rows: Under ranks, the rows of ``space`` that a local volume
+            element uses (`gfem._engine.domain.element_dofs`): the plain
+            mesh's field layout, in its order, so results keep ``P x`` on
+            those rows (ADR 0071). ``None`` on one process: every row.
     """
 
     matrix: scipy.sparse.csr_matrix
     space: ngs.FESpace
+    field_rows: np.ndarray | None = None
+
+    @functools.cached_property
+    def field(self) -> scipy.sparse.csr_matrix:
+        """P on the field rows: solve-space coefficients to a result field's."""
+        if self.field_rows is None:
+            return self.matrix
+        return self.matrix[self.field_rows]
 
 
 @dataclasses.dataclass(eq=False)
@@ -267,8 +285,19 @@ class DrivenOperator:
     latent: tuple[terms.Piece, ...] = ()
 
     def expand(self, x: np.ndarray) -> np.ndarray:
-        """``P x``: solve-space coefficients ``(ndof, ...)`` on the unpaired space."""
-        return x if self.expansion is None else self.expansion.matrix @ x
+        """``P x``: solve-space coefficients ``(ndof, ...)`` as a result field's.
+
+        Under ranks, the rows of P a local volume element uses
+        (`Expansion.field_rows`).
+        """
+        return x if self.expansion is None else self.expansion.field @ x
+
+    @property
+    def field_ndof(self) -> int:
+        """The rows of a result field on this rank: the rows `expand` gives."""
+        if self.expansion is None:
+            return int(self.space.ndof)
+        return int(self.expansion.field.shape[0])
 
     def pair(
         self,
@@ -412,7 +441,7 @@ def driven_operator(
     disc = discretization(model.mesh, periodic, comm)
     built = disc.built
     pec = pec_surfaces(model)
-    solve_key = space_key(model, "hcurl", order)
+    unpaired_key = solve_key = space_key(model, "hcurl", order)
     unpaired = disc.space(
         solve_key, lambda: hcurl_space(model, built, order, dirichlet=pec)
     )
@@ -430,11 +459,16 @@ def driven_operator(
         )
         matrix = disc.space(
             (*key, "expansion"),
-            lambda: expansion_matrix(space, unpaired, real=phases is None),
+            lambda: expansion_matrix(space, unpaired, real=phases is None, comm=comm),
             group=phases,
             swept=swept,
         )
-        expansion = Expansion(matrix, unpaired)
+        rows = None
+        if comm is not None:
+            rows = disc.space(
+                (*unpaired_key, "field rows"), lambda: element_dofs(unpaired)
+            )
+        expansion = Expansion(matrix, unpaired, rows)
     ports = terms.lumped_ports(model, built.scale)
     pieces, latent = terms.pieces(
         model, built, order, ports, elements=elements, faces=faces
@@ -442,8 +476,13 @@ def driven_operator(
     symmetry: DrivenSymmetry = "complex_symmetric" if wave_vector is None else "general"
     layout = None
     if comm is not None:
-        key = (*space_key(model, "hcurl", order), "layout")
-        layout = disc.space(key, lambda: RankLayout(space, comm))
+        # under the solve space's key: a periodic or Bloch space has its own
+        layout = disc.space(
+            (*solve_key, "layout"),
+            lambda: RankLayout(space, comm),
+            group=phases,
+            swept=swept,
+        )
     fixed = None
     if comm is None and elements is None and faces is None:
         fixed = _fixed_pieces(
@@ -514,16 +553,32 @@ def _fixed_pieces(
 EXPANSION_FLOOR = 1e-12
 
 
+#: The largest element-wise gap between a periodic field and its expansion
+#: P x that a distributed P may have (`element_gap`; 8.4e-16 measured).
+ELEMENT_GAP_LIMIT = 1e-10
+
+
 def expansion_matrix(
-    periodic: ngs.FESpace, unpaired: ngs.FESpace, *, real: bool
+    periodic: ngs.FESpace, unpaired: ngs.FESpace, *, real: bool, comm: Any = None
 ) -> scipy.sparse.csr_matrix:
     """P, the periodic space's coefficients to the unpaired space's (e = P x).
 
     From NGSolve's ``ConvertOperator``, exact on every field of the
     periodic space; entries below `EXPANSION_FLOOR` dropped, real for plain
-    periodicity (``real``).
+    periodicity (``real``). Under ranks (``comm``) P is the conversion this
+    rank computes alone, between its local spaces: NGSolve's parallel
+    conversion is wrong from a periodic space. Each such P is checked
+    element by element (`element_gap`), with no exchange.
+
+    Raises:
+        gfem._mpi.AgreedError: On every rank, when a rank's P is not the
+            periodic field on its elements.
     """
-    rows, cols, values = ngs.ConvertOperator(periodic, unpaired).COO()
+    if comm is None:
+        convert = ngs.ConvertOperator(periodic, unpaired)
+    else:
+        convert = ngs.ConvertOperator(periodic, unpaired, localop=True, parmat=False)
+    rows, cols, values = convert.COO()
     data = np.asarray(values)
     if real:
         data = data.real
@@ -533,7 +588,55 @@ def expansion_matrix(
     )
     out.data[np.abs(out.data) < EXPANSION_FLOOR] = 0
     out.eliminate_zeros()
+    if comm is not None:
+        gaps = np.zeros(comm.size)
+        gaps[comm.rank] = element_gap(periodic, unpaired, out)
+        gaps = _mpi.max_bcast(comm, gaps)
+        if gaps.max() > ELEMENT_GAP_LIMIT:
+            ranks = np.flatnonzero(gaps > ELEMENT_GAP_LIMIT).tolist()
+            raise _mpi.AgreedError(
+                f"The periodic expansion differs from the periodic field by up to "
+                f"{gaps.max():.1e} (element-wise, relative) on ranks {ranks}: "
+                "netgen or NGSolve now behaves differently from what ADR 0071 "
+                "measured. Report it, and run one-process copies with "
+                "comm=MPI.COMM_SELF meanwhile."
+            )
     return out
+
+
+def element_gap(
+    periodic: ngs.FESpace,
+    unpaired: ngs.FESpace,
+    matrix: scipy.sparse.csr_matrix,
+    trials: int = 2,
+) -> float:
+    r"""The largest element-wise gap between a periodic field and its ``matrix`` image.
+
+    For ``trials`` seeded random coefficient vectors $x$ of ``periodic``, the
+    largest over this rank's elements $K$ of
+    $\|P x - x\|_{L^2(K)} / \|x\|_{L^2(K)}$, with $P$ = ``matrix`` onto
+    ``unpaired``. Local: element-wise integrals only, no exchange.
+    """
+    rng = np.random.default_rng(7)
+    mesh = periodic.mesh
+    worst = 0.0
+    for _ in range(trials):
+        x = rng.standard_normal(periodic.ndof)
+        if periodic.is_complex:
+            x = x + 1j * rng.standard_normal(periodic.ndof)
+        field, image = ngs.GridFunction(periodic), ngs.GridFunction(unpaired)
+        field.vec.FV().NumPy()[:] = x
+        image.vec.FV().NumPy()[:] = matrix @ x
+        gap, size = (
+            np.asarray(
+                ngs.Integrate(ngs.InnerProduct(u, u).real, mesh, element_wise=True)
+            )
+            for u in (image - field, field)
+        )
+        if len(gap):
+            ratio = gap / np.maximum(size, np.finfo(float).tiny)
+            worst = max(worst, float(np.sqrt(ratio.max())))
+    return worst
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -570,7 +673,7 @@ class AdjointContext:
         cotangent does in the backward pass).
         """
         expansion = self._operator.expansion
-        return g if expansion is None else expansion.matrix.T @ g
+        return g if expansion is None else expansion.field.T @ g
 
     def s_functional(self, port: str) -> np.ndarray:
         """``(N,)``: port ``port``'s S functional on the solve space (its load)."""
@@ -1617,7 +1720,17 @@ class DrivenRule:
         return out.outputs(), entry
 
     def _field_shape(self, model: Model) -> tuple[int, int]:
-        """``(width, ndof)`` of a kept field: `gfem._engine.fields.dof_shape`."""
+        """``(width, ndof)`` of a kept field: `gfem._engine.fields.dof_shape`.
+
+        On a periodic model under ranks the paired mesh is distributed first:
+        its search picks the partition, and the plain mesh the field lives on
+        follows it (ADR 0071). Distributed plain first, it would hold a seed
+        the search may not keep.
+        """
+        periodic = model._periodic  # noqa: SLF001
+        if self.comm is not None and periodic:
+            still = Mesh(model.mesh.imported_nodes, model.mesh._topology)  # noqa: SLF001
+            discretization(still, periodic, self.comm)
         return dof_shape(
             model.mesh,
             self.regions,
@@ -1870,9 +1983,9 @@ class DrivenRule:
                     k = self.kept.index(n)
                     g = np.asarray(ct_e)[:, k * width : (k + 1) * width]
                     if self.comm is not None:  # a rank's rows, then its padding
-                        g = g[: x.shape[0]]
+                        g = g[: op.field_ndof]
                     # the field is P x: its cotangent loads P^T g
-                    load += g if op.expansion is None else op.expansion.matrix.T @ g
+                    load += g if op.expansion is None else op.expansion.field.T @ g
                 # a rank without port DOFs would skip a collective solve
                 if _mpi.agree_any(self.comm, flag=bool(load.any())):
                     try:
