@@ -14,6 +14,7 @@ import pytest
 
 from gfem._engine.mesh import to_ngsolve
 from gfem._engine.seam_check import (
+    SeamCounts,
     expected_surface_counts,
     seam_counts,
     surface_counts,
@@ -112,12 +113,12 @@ def test_the_seam_check_counts_what_the_loops_count(n, axes):
 def test_a_whole_mesh_misses_nothing():
     mesh = mpi_cases.box(3)
     full = to_ngsolve(mesh, (pairing(mesh, "xmin", "xmax"),)).mesh.ngmesh
-    assert seam_counts(full).tolist() == [0, 0, 0, 0]
+    assert seam_counts(full) == SeamCounts(0, 0, 0, 0)
 
 
 def test_a_mesh_with_no_elements_counts_zero():
     m = ngm.Mesh(dim=3)  # ty: ignore[unresolved-attribute]
-    assert seam_counts(m).tolist() == [0, 0, 0, 0]
+    assert seam_counts(m) == SeamCounts(0, 0, 0, 0)
 
 
 def test_paired_surfaces_are_expected_twice_and_others_once():

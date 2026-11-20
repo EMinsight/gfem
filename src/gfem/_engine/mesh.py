@@ -20,6 +20,7 @@ import numpy as np
 
 from gfem import _mpi
 from gfem._engine.seam_check import (
+    SeamCounts,
     expected_surface_counts,
     seam_counts,
     surface_counts,
@@ -342,7 +343,7 @@ def _checked(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _T
         tet_order = _match(received.tets, mesh.tetrahedra, received.node_order, n_nodes)
         tri_order = _match(received.tris, mesh.triangles, received.node_order, n_nodes)
         if received.ngmesh.ne > 0:
-            local[:4] = seam_counts(received.ngmesh)
+            local[:4] = seam_counts(received.ngmesh)  # `SeamCounts`'s order
         local[4 : 4 + len(tags)] = surface_counts(mesh.triangle_tags, tri_order, tags)
     except Exception:  # noqa: BLE001
         print(  # noqa: T201
@@ -361,12 +362,13 @@ def _checked(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _T
             f"{', '.join(map(str, failed))}; each printed its traceback (ADR 0071)."
         )
     want = expected_surface_counts(mesh.triangle_tags, tags, paired)
+    seam = SeamCounts(*total[:4].tolist())
     return _Try(
         received,
         tet_order,
         tri_order,
-        missing=int(total[0] + total[1]),
-        reverse=int(total[2] + total[3]),
+        missing=seam.missing_edges + seam.missing_faces,
+        reverse=seam.reverse_edges + seam.reverse_faces,
         surfaces=bool(np.array_equal(total[4 : 4 + len(tags)], want)),
     )
 

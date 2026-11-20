@@ -16,7 +16,7 @@ booleans per local element and integers per surface vertex.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 
@@ -27,7 +27,20 @@ _SEGMENT = np.array([(0, 1)])
 _TRIANGLE = np.array([(0, 1, 2)])
 
 
-def seam_counts(ngmesh: Any) -> np.ndarray:
+class SeamCounts(NamedTuple):
+    """A rank's counts of distinct twins, in the order a reduction packs them."""
+
+    #: Second-side edges whose first-side twin, declared orientation, is not held.
+    missing_edges: int
+    #: Second-side faces whose first-side twin, declared orientation, is not held.
+    missing_faces: int
+    #: The edges that would be missing with the pair swapped.
+    reverse_edges: int
+    #: The faces that would be missing with the pair swapped.
+    reverse_faces: int
+
+
+def seam_counts(ngmesh: Any) -> SeamCounts:
     """Missing edges, missing faces, reverse edges and reverse faces on this rank.
 
     Each count is of distinct twins. A mesh with no elements counts zero.
@@ -41,7 +54,7 @@ def seam_counts(ngmesh: Any) -> np.ndarray:
     segments = _nodes(ngmesh.Elements1D(), 2)
     out = np.zeros(4, dtype=np.int64)
     if len(second) == 0 or len(tets) + len(tris) + len(segments) == 0:
-        return out
+        return SeamCounts(*out.tolist())
     n_points = int(max(second.max(), first.max())) + 1
     for array in (tets, tris, segments):
         if len(array):
@@ -53,15 +66,15 @@ def seam_counts(ngmesh: Any) -> np.ndarray:
     edges = (
         np.concatenate(
             [
-                _gather(tets, _TET_EDGES, on),
-                _gather(tris, _TRI_EDGES, on),
-                _gather(segments, _SEGMENT, on),
+                _entities(tets, _TET_EDGES, on),
+                _entities(tris, _TRI_EDGES, on),
+                _entities(segments, _SEGMENT, on),
             ]
         )
         - 1
     )
     faces = np.concatenate(
-        [_gather(tets, _TET_FACES, on), _gather(tris, _TRIANGLE, on)]
+        [_entities(tets, _TET_FACES, on), _entities(tris, _TRIANGLE, on)]
     )
     faces -= 1
     # a compact numbering of the surface vertices keeps a face's key in int64
@@ -86,7 +99,7 @@ def seam_counts(ngmesh: Any) -> np.ndarray:
                     lost[i].append(found[~np.isin(found, keys)])
         for i in range(2):
             out[2 * j + i] = len(np.unique(np.concatenate(lost[i]))) if lost[i] else 0
-    return out
+    return SeamCounts(*out.tolist())
 
 
 def surface_counts(
@@ -141,7 +154,7 @@ def _nodes(elements: Any, k: int) -> np.ndarray:
     return nodes[:, :k].astype(np.int64)
 
 
-def _gather(cells: np.ndarray, local: np.ndarray, on: np.ndarray) -> np.ndarray:
+def _entities(cells: np.ndarray, local: np.ndarray, on: np.ndarray) -> np.ndarray:
     """The entities ``cells[:, local]`` with all vertices ``on``, rows sorted."""
     if len(cells) == 0:
         return np.zeros((0, local.shape[1]), dtype=np.int64)
