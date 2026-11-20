@@ -7,14 +7,18 @@ the same, in the same order: `omega` to `OMEGA_GATE`, the coupling Q to `Q_GATE`
 the clusters equal, the participations to `PARTICIPATION_GATE` (a distributed
 polish, ADR 0104), the mode fields through `gfem.Field.at` to `FIELD_GATE` with
 their sign, and `gfem.interface_participation` on their pieces to
-`INTERFACE_GATE`. `on_ranks` checks that every rank holds the same bits. Every
-solve needs the MPI PETSc stack (SLEPc), so the tests skip without it.
+`INTERFACE_GATE`. The eigenfrequency's gradient matches one process to
+`GRADIENT_GATE`; a mode-field gradient raises on every rank when the backward is
+traced. `on_ranks` checks that every rank holds the same bits. Every solve needs
+the MPI PETSc stack (SLEPc), so the tests skip without it.
 """
 
 from pathlib import Path
 
 import eigen_cases
 import gradient_cases as cases
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from ranks import on_ranks
@@ -34,6 +38,8 @@ PARTICIPATION_GATE = 1e-9
 FIELD_GATE = 1e-8
 #: Relative.
 INTERFACE_GATE = 1e-9
+#: Relative to the largest one-process entry (decision 08 Q6 case 6).
+GRADIENT_GATE = 1e-9
 RANKS = (2, 3, 4)
 LIMIT = 600
 
@@ -172,3 +178,77 @@ def test_bddc_shift_solves_give_one_process_modes(tmp_path, ranks):
         _modes, tmp_path, "terminated", "bddc_gmres", "auto", ranks=ranks, limit=LIMIT
     )
     _assert_same_modes(got, one, omega_gate=BDDC_OMEGA_GATE)
+
+
+def _cavity(directory):
+    """``(mesh, eps, fill)``: the sheet cavity, a P0 permittivity below its sheet."""
+    mesh = cases.sheet_cavity(Path(directory))
+    fill, rng = cases.cavity_fill(mesh, seed=1)
+    eps = jnp.asarray(rng.uniform(1.5, 2.5, len(mesh.elements("lower"))))
+    return mesh, eps, fill
+
+
+def _frequency_gradient(directory, eigen_solver):
+    """The eigenfrequency's gradient by the permittivity field and the sheet's fill."""
+    mesh, eps, fill = _cavity(directory)
+    options = gfem.SolverOptions(
+        order=2,
+        linear_solver="direct",
+        eigen_solver=eigen_solver,
+        tolerance=1e-12,
+        threads=1,
+    )
+
+    def objective(eps, fill):
+        model = cases.cavity_model(mesh, fill).with_material(
+            "lower", gfem.MaterialField(eps_r=eps)
+        )
+        result = gfem.solve(model, gfem.Eigenmode(cases.CAVITY_TARGET), options=options)
+        # frequency and loss, weighted
+        return jnp.real(result.omega[0] * cases.OMEGA_WEIGHT)
+
+    grads = jax.grad(objective, argnums=(0, 1))(eps, fill)
+    return {"eps": np.asarray(grads[0]), "fill": np.asarray(grads[1])}
+
+
+@pytest.mark.parametrize("ranks", RANKS)
+def test_an_eigenfrequency_gradient_matches_one_process(tmp_path, ranks):
+    (one,) = on_ranks(_frequency_gradient, tmp_path, "slepc", ranks=1, limit=LIMIT)
+    got, *_ = on_ranks(_frequency_gradient, tmp_path, "auto", ranks=ranks, limit=LIMIT)
+    for name in ("eps", "fill"):
+        scale = np.abs(one[name]).max()
+        assert scale > 0, f"no {name} gradient on one process"
+        error = np.abs(got[name] - one[name]).max() / scale
+        print(f"ranks={ranks} {name} gradient error={error:.3g}")  # noqa: T201
+        assert error < GRADIENT_GATE, f"the {name} gradient off by {error:.3g}"
+
+
+def _mode_field_gradient_then_a_collective(directory):
+    from mpi4py import MPI
+
+    world = MPI.COMM_WORLD
+    mesh, eps, fill = _cavity(directory)
+    options = gfem.SolverOptions(order=2, linear_solver="direct", threads=1)
+
+    def objective(eps):
+        model = cases.cavity_model(mesh, fill).with_material(
+            "lower", gfem.MaterialField(eps_r=eps)
+        )
+        result = gfem.solve(model, gfem.Eigenmode(cases.CAVITY_TARGET), options=options)
+        return result.bulk_participation["lower"][0]
+
+    try:
+        # jit traces the backward before any host call, so before any mesh
+        jax.jit(jax.grad(objective))(eps)
+    except gfem.DistributedUnsupportedError as err:
+        return err.feature, world.allreduce(world.rank)
+    raise AssertionError("a mode-field gradient ran")
+
+
+def test_every_rank_refuses_a_mode_field_gradient_and_a_later_collective_runs(
+    tmp_path,
+):
+    values = on_ranks(
+        _mode_field_gradient_then_a_collective, tmp_path, ranks=3, limit=LIMIT
+    )
+    assert values[0] == ("mode_field_gradient", 0 + 1 + 2)

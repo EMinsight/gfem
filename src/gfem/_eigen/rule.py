@@ -871,11 +871,13 @@ class EigenmodeRule:
         ``x`` holds the modes on the solve space, ``y`` their left
         eigenvectors (``None``: ``x``, complex symmetric). ``gram`` is block
         diagonal by cluster: ``y_i^T T'(k_c) x_j`` for modes i, j of cluster
-        c, with ``k_c`` the cluster's mean. ``incomplete`` flags the modes
-        of a cluster the guard mode belongs to; ``gap`` each mode's relative
-        gap to its gap set (`GapSet.gap`, ``inf`` without a neighbour), 0
-        for a mode whose polish failed; ``polish_failed`` flags those modes
-        (`isolated` is then false for them: the backward names the failure).
+        c, with ``k_c`` the cluster's mean; under ranks a pairing of loads
+        and states (`DofLayout.pair`), the same on every rank. ``incomplete``
+        flags the modes of a cluster the guard mode belongs to; ``gap`` each
+        mode's relative gap to its gap set (`GapSet.gap`, ``inf`` without a
+        neighbour), 0 for a mode whose polish failed; ``polish_failed`` flags
+        those modes (`isolated` is then false for them: the backward names the
+        failure).
         """
         left = x if y is None else y
         labels = np.asarray(labels)
@@ -888,7 +890,11 @@ class EigenmodeRule:
             members = np.flatnonzero(labels == label)
             mean = k[members].mean()
             tx = np.stack([op.derivative(mean, x[:, j]) for j in members], axis=1)
-            gram[np.ix_(members, members)] = left[:, members].T @ tx
+            if self.comm is None:
+                gram[np.ix_(members, members)] = left[:, members].T @ tx
+            else:
+                # the loads T'(k_c) x paired with the states y: agreed values
+                gram[np.ix_(members, members)] = op.layout.pair(tx, left[:, members]).T
         fields = {
             "x": x,
             "k": k,
@@ -1609,7 +1615,9 @@ class EigenmodeRule:
         y^T T' x``). No solve. On a periodic model the pair is expanded to
         the unpaired space, ``(conj(P) Y, P X G^-1)``: ``y^T P^H a P x =
         (conj(P) y)^T a (P x)`` for the unpaired forms ``a``
-        (`DrivenOperator.pair`).
+        (`DrivenOperator.pair`). Under ranks ``gram`` is agreed and the
+        pairs hold each rank's state columns, whose element passes the
+        caller sums over ranks (ADR 0065).
 
         **Mode-field outputs** (`_field_pairs`): per mode with a cotangent
         on its ratios, one adjoint solve on the kept eigen operator and two
@@ -1635,7 +1643,7 @@ class EigenmodeRule:
         ct = cotangents.get("omega")
         pairs = []
         self._explicit = {}
-        with task_manager(self.options.threads):
+        with task_manager(self.options.threads, self.comm):
             op = self.driven(model)
             domain = em_region(model, op.built)
             per_k = const.c / op.built.scale
@@ -1648,15 +1656,23 @@ class EigenmodeRule:
                         continue
                     spread = np.abs(c - c.mean()).max()
                     symmetric = spread <= _SYMMETRIC_RTOL * np.abs(c).max()
+                    # from agreed values (the cotangents, the clusters, gram):
+                    # every rank raises it together
                     if incomplete[members].any() or not symmetric:
-                        raise DegenerateModeError(
-                            self._degenerate_message(k, members, c, incomplete, per_k)
+                        raise _mpi.agreed(
+                            DegenerateModeError(
+                                self._degenerate_message(
+                                    k, members, c, incomplete, per_k
+                                )
+                            )
                         )
                     g = gram[np.ix_(members, members)]
                     if "y" in fields and np.linalg.cond(g) > _DEFECTIVE:
-                        raise DegenerateModeError(
-                            self._defective_message(
-                                k, members, np.linalg.cond(g), per_k
+                        raise _mpi.agreed(
+                            DegenerateModeError(
+                                self._defective_message(
+                                    k, members, np.linalg.cond(g), per_k
+                                )
                             )
                         )
                     pairs.append(
@@ -1874,11 +1890,15 @@ class EigenmodeRule:
         if (
             last is not None
             and last[0] is model
-            and last[1].built is discretization(model.mesh, model._periodic).built  # noqa: SLF001
+            and last[1].built
+            is discretization(model.mesh, model._periodic, self.comm).built  # noqa: SLF001
         ):
             return last[1]
         op = driven_operator(
-            model, self.options.order, wave_vector=self.problem.wave_vector
+            model,
+            self.options.order,
+            wave_vector=self.problem.wave_vector,
+            comm=self.comm,
         )
         self._last_driven = (model, op)
         return op

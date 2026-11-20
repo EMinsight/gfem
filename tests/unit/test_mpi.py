@@ -375,7 +375,9 @@ def test_the_eigenfrequencies_still_differentiate_above_one_rank(tmp_path):
     assert rule.nondifferentiable_output("omega", eps) is None
     assert rule.nondifferentiable_output("cluster", eps) is None
     # the backward error has no derivative anywhere: one process's reason
-    assert "backward error" in rule.nondifferentiable_output("error", eps)
+    reason = rule.nondifferentiable_output("error", eps)
+    assert reason is not None
+    assert "backward error" in reason
 
 
 @pytest.mark.parametrize(
