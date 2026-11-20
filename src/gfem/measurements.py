@@ -580,7 +580,7 @@ def characteristic_impedance(
         NonDifferentiableError: A path is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
-    from gfem._sweep.port_mode import path_current, path_voltage
+    from gfem._sweep.port_mode import path_current, path_voltage, planar
     from gfem.results import PortModeResult
 
     if not isinstance(mode, PortModeResult):
@@ -588,8 +588,9 @@ def characteristic_impedance(
             "characteristic_impedance needs a gfem.PortModeResult, got "
             f"{type(mode).__name__}."
         )
-    if mode.e_field is not None and len(mode.e_field.normal) == 2:
-        # a 2-component normal: the mode of a line port on a 2D mesh
+    field = mode.e_field if mode.e_field is not None else mode.h_field
+    if field is not None and len(field.normal) == 2:
+        # a 2-component normal (or an Hz field): the mode of a line port
         raise entry_refusal("characteristic_impedance")
     if voltage_path is None and current_path is None:
         raise TypeError(
@@ -612,7 +613,7 @@ def characteristic_impedance(
             "port's mode field is not available. Port modes are constants of the "
             "solve: solve gfem.PortMode for the port outside the transformation."
         )
-    space, basis, coords = field._space, field._basis, field._coords  # noqa: SLF001
+    space, basis, coords = planar(field._space), field._basis, field._coords  # noqa: SLF001
     frequency = np.asarray(mode.frequency, float)
     gamma = np.asarray(mode.gamma, complex)
     volts = amps = None

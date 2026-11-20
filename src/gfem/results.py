@@ -24,7 +24,8 @@ from gfem._text import hertz, hertz_band
 if TYPE_CHECKING:
     import xarray
 
-    from gfem._engine.port_mode import PortModeSpace
+    from gfem._engine.line_mode import ModeSpace
+    from gfem._line_section import LineSection
     from gfem._port_section import PortSection
     from gfem.problems import Polarization
 
@@ -542,39 +543,42 @@ register_fields(
 
 
 class PortModeField:
-    r"""The electric field of a port mode on its cross-section, over frequency.
+    r"""The field of a port mode on its cross-section, over frequency.
 
     Peak phasor of the mode carrying 1 W time-averaged power through the
-    port, propagating into the solve domain as :math:`e^{-\gamma s}`,
-    :math:`s` the distance along the inward port normal. Fields follow
-    :math:`e^{+i\omega t}`.
+    port (1 W/m through a line port of a 2D mesh), propagating into the solve
+    domain as :math:`e^{-\gamma s}`, :math:`s` the distance along the inward
+    port normal. Fields follow :math:`e^{+i\omega t}`.
 
     Attributes:
-        quantity: ``"E"``.
-        unit: ``"V/m"``.
-        normal: Unit inward port normal, global frame.
+        quantity: ``"E"``; on a line port, ``"Ez"`` or ``"Hz"``.
+        unit: ``"V/m"``; ``"A/m"`` for ``"Hz"``.
+        normal: Unit inward port normal, global frame (2 components on a
+            line port).
     """
 
     quantity = "E"
     unit = "V/m"
 
-    def __init__(
-        self, space: PortModeSpace, basis: np.ndarray, coords: np.ndarray
-    ) -> None:
+    def __init__(self, space: ModeSpace, basis: np.ndarray, coords: np.ndarray) -> None:
         """Internal: built by `gfem.solve` (field ``i`` is ``basis @ coords[i]``)."""
-        self._parts: tuple[PortModeSpace, np.ndarray, np.ndarray] | None = (
+        self._parts: tuple[ModeSpace, np.ndarray, np.ndarray] | None = (
             space,
             basis,
             coords,
         )
         self._build: Callable[[], tuple] | None = None
         self._port = space.section.port.name
+        self.quantity, self.unit = space.quantity, space.unit
 
     @classmethod
     def _deferred(
         cls,
         port: str,
-        build: Callable[[], tuple[PortModeSpace, np.ndarray, np.ndarray]],
+        build: Callable[[], tuple[ModeSpace, np.ndarray, np.ndarray]],
+        *,
+        quantity: str = "E",
+        unit: str = "V/m",
     ) -> PortModeField:
         """Internal: a field built by ``build()`` on first use.
 
@@ -586,9 +590,10 @@ class PortModeField:
         field._parts = None
         field._build = build
         field._port = port
+        field.quantity, field.unit = quantity, unit
         return field
 
-    def _data(self) -> tuple[PortModeSpace, np.ndarray, np.ndarray]:
+    def _data(self) -> tuple[ModeSpace, np.ndarray, np.ndarray]:
         if self._parts is None:
             if self._build is None:  # pragma: no cover - set by the constructors
                 raise RuntimeError("PortModeField has no data.")
@@ -597,7 +602,7 @@ class PortModeField:
         return self._parts
 
     @property
-    def _space(self) -> PortModeSpace:
+    def _space(self) -> ModeSpace:
         return self._data()[0]
 
     @property
@@ -609,30 +614,42 @@ class PortModeField:
         return self._data()[2]
 
     @property
-    def _section(self) -> PortSection:
+    def _section(self) -> PortSection | LineSection:
         return self._space.section
 
     @property
     def normal(self) -> tuple[float, ...]:
         """Unit inward port normal, global frame."""
-        return tuple(float(x) for x in self._section.frame[2])
+        return tuple(float(x) for x in self._section.normal)
 
     def at(self, points: Any) -> jax.Array:
         """The field at points on the port, ``(n_freq, n_points, 3)`` complex.
 
         Points off the cross-section's elements (inside metal holes or outside
-        the port) give zero.
+        the port) give zero. On a line port of a 2D mesh, the scalar field at
+        ``(n_points, 2)`` points: ``(n_freq, n_points)``.
 
         Args:
             points: ``(n_points, 3)`` (or one ``(3,)``) global coordinates, m,
-                on the port plane.
+                on the port plane; ``(n_points, 2)`` on a line port.
 
         Raises:
-            ValueError: A point is not on the port plane.
+            ValueError: A point is not on the port plane (line), or has the
+                wrong number of coordinates.
         """
         p = np.asarray(points, float)
         single = p.ndim == 1
         p = np.atleast_2d(p)
+        dim = len(self.normal)
+        if dim == 2:
+            if p.shape[-1] != 2:
+                raise ValueError(
+                    f"points on line port {self._port!r} must be (x, y) pairs in m, "
+                    f"got shape {p.shape}."
+                )
+            columns = self._space.evaluate(self._basis.T, self._local(p))
+            u = self._coords @ columns
+            return jnp.asarray(u[:, 0] if single else u)
         if p.shape[-1] != 3:
             raise ValueError(f"points must be 3-vectors in m, got shape {p.shape}.")
         local = self._local(p)
@@ -646,15 +663,16 @@ class PortModeField:
         tol = 1e-5 * s.diameter
         if (np.abs(dist) > tol).any():
             worst = p[int(np.argmax(np.abs(dist)))]
+            where = "line" if len(self.normal) == 2 else "plane"
             raise ValueError(
-                f"Point {tuple(float(x) for x in worst)} (m) is not on the plane of "
-                f"wave port {s.port.name!r}."
+                f"Point {tuple(float(x) for x in worst)} (m) is not on the {where} "
+                f"of wave port {s.port.name!r}."
             )
         return local
 
     def __repr__(self) -> str:
         n = "not built" if self._parts is None else f"{len(self._coords)} frequencies"
-        return f"PortModeField(E, V/m, {n}, port {self._port!r})"
+        return f"PortModeField({self.quantity}, {self.unit}, {n}, port {self._port!r})"
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -689,8 +707,12 @@ class PortModeResult:
         solved: ``(n_freq,)`` bool, True where the port's cross-section was
             solved exactly (shared by the wave ports of a shared port
             surface); elsewhere it comes from the reduced port mode model.
-        e_field: The mode's electric field, normalized to 1 W; ``None`` on a
-            driven result computed inside `jax.jit`, `jax.grad` or `jax.vmap`.
+        e_field: The mode's electric field, normalized to 1 W (1 W/m for a
+            line port of a 2D mesh); ``None`` on a driven result computed
+            inside `jax.jit`, `jax.grad` or `jax.vmap`, and for an Hz line
+            port, whose field is ``h_field``.
+        h_field: The magnetic field ``Hz`` of an Hz line port's mode,
+            normalized to 1 W/m; ``None`` otherwise.
     """
 
     port: str
@@ -701,6 +723,7 @@ class PortModeResult:
     residual: jax.Array
     solved: jax.Array
     e_field: PortModeField | None = None
+    h_field: PortModeField | None = None
 
     @property
     def n_eff(self) -> jax.Array:

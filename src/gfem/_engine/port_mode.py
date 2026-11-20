@@ -86,12 +86,17 @@ class PortModeSpace:
     Attributes:
         section: The cross-section.
         order: Element order (Nédélec first kind and H1).
+        quantity: The mode field's name, ``"E"``.
+        unit: Its unit, ``"V/m"``.
         mesh: The 2D NGSolve mesh in local plane coordinates.
         space: The compound space ``HCurl x H1``.
         free: Indices of the free (non-Dirichlet) DOFs.
         n_t: Number of Nédélec DOFs (the first block of ``space``).
         pencil: The affine pieces of ``A`` and ``B``.
     """
+
+    quantity = "E"
+    unit = "V/m"
 
     def __init__(self, section: PortSection, order: int) -> None:
         """Build the mesh and spaces and assemble the pencil."""
@@ -341,6 +346,49 @@ class PortModeSpace:
         s = self.section
         return ngs.CF((float(s.frame[0].sum()), float(s.frame[1].sum())))
 
+    # --- the sweep's protocol -------------------------------------------------
+
+    def reduce(self, v: np.ndarray) -> SectionReduction:
+        """The sweep's fixed field basis on the reduced basis ``v``.
+
+        The pencil vector is ``(gamma E_t, E_n)``: ``v`` splits into a
+        tangential and a normal block, so the field is affine in its
+        coordinates.
+        """
+        return SectionReduction(self, v)
+
+    def port_columns(self, basis: np.ndarray) -> dict[str, np.ndarray]:
+        """What the 2D forms give per column of the sweep's ``basis``.
+
+        ``r``: the entries of the coupling's ``vectors`` on the free 2D DOFs;
+        ``reaction``: hᵀ e on the port face (the mode vanishes on fixed
+        DOFs).
+        """
+        g_form, t_form = self.coupling_forms
+        w = basis[self.free]
+        m = w.shape[1] // 2
+        r = np.concatenate([t_form @ w[:, :m], g_form @ w[:, m:]], axis=1)
+        tangential = basis[: self.n_t, :m]
+        return {"r": r, "reaction": r.T @ tangential}
+
+    def phi(self, coords: np.ndarray, gamma: np.ndarray, omega: np.ndarray):
+        """``(n_freq, 2 m)``: the mode's n x H on the columns of ``r``.
+
+        ``gamma c_t`` and ``c_n``, ``gamma`` per file unit.
+        """
+        del omega
+        m = coords.shape[1] // 2
+        return np.concatenate([gamma[:, None] * coords[:, :m], coords[:, m:]], 1)
+
+    def scalar(self, trace: np.ndarray, gamma0: complex, omega: float) -> np.ndarray:
+        """``gamma0 M E`` on the columns of ``r``, for traces ``(m, n)``."""
+        del omega
+        return np.concatenate([gamma0 * trace, np.zeros_like(trace)])
+
+    def pairing_factor(self, omegas: np.ndarray) -> np.ndarray:
+        """``factor hᵀ e`` is the reciprocity pairing ``(1/2) int (e x h) . n``, W."""
+        return -0.5j * self.section.scale / (omegas[:, None] * scipy.constants.mu_0)
+
     # --- fields ---------------------------------------------------------------
 
     def full(self, x: np.ndarray) -> np.ndarray:
@@ -461,6 +509,51 @@ class PortModeSpace:
         return complex(
             ngs.Integrate(cf, self.mesh, order=quadrature.degree(self.order))
         )
+
+
+@dataclasses.dataclass(eq=False)
+class SectionReduction:
+    """A port mode's field basis, power and gauge on a fixed reduced basis.
+
+    Attributes:
+        space: The port mode problem.
+        v: ``(n_free, m)`` the reduced basis of pencil vectors.
+    """
+
+    space: PortModeSpace
+    v: np.ndarray
+
+    def __post_init__(self) -> None:
+        space, v = self.space, self.v
+        m = v.shape[1]
+        tangential = space.free < space.n_t
+        w = np.zeros((len(space.free), 2 * m))
+        w[tangential, :m] = v[tangential]
+        w[~tangential, m:] = v[~tangential]
+        self.w = w
+        g_form, t_form = space.power_forms
+        self._g, self._t = w.T @ (g_form @ w), w.T @ (t_form @ w)
+        ln, lt = space.gauge_forms
+        self._ln, self._lt = ln @ w, lt @ w
+
+    def coords(self, y: np.ndarray, gamma: complex) -> np.ndarray:
+        """The field's coordinates ``(y / gamma, y)`` of a pencil vector's."""
+        return np.concatenate([y / gamma, y])
+
+    def power(self, z: np.ndarray, gamma: complex, omega: float) -> complex:
+        """Complex power through the port, W (`PortModeSpace.power`)."""
+        return (
+            0.5
+            * self.space.section.scale
+            * 1j
+            / (omega * scipy.constants.mu_0)
+            * (z @ self._g @ z.conj() + gamma.conjugate() * (z @ self._t @ z.conj()))
+        )
+
+    def gauge(self, z: np.ndarray, gamma: complex, omega: float) -> complex:
+        """Phase reference (`PortModeSpace.gauge`)."""
+        del omega
+        return -1j * (self._ln @ z + gamma * (self._lt @ z))
 
 
 def _build_mesh(section: PortSection) -> ngs.Mesh:

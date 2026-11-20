@@ -611,6 +611,10 @@ def _frequencies(value: Any, owner: str = "PortMode") -> tuple[float, ...]:
     return out
 
 
+Polarization = Literal["Ez", "Hz"]
+_POLARIZATIONS = get_args(Polarization)
+
+
 @dataclasses.dataclass(frozen=True, init=False)
 class PortMode:
     """The 2D port mode problem of a wave port over a frequency grid.
@@ -647,11 +651,17 @@ class PortMode:
             order: by decreasing effective index for lossless modes (1 = the
             most confined), with strongly attenuated modes ranked lower.
             ``None``: the wave port's own ``mode``.
+        polarization: On a 2D mesh, the field normal to the plane that the
+            line port's mode carries: ``"Ez"`` (its field is
+            `PortModeResult.e_field`) or ``"Hz"`` (`PortModeResult.h_field`).
+            Required there, and ``None`` on a 3D mesh, as for `Driven`.
 
     Raises:
         TypeError: ``port`` is not a name.
-        ValueError: A frequency is not finite and positive, or ``mode`` is
-            not an integer >= 1.
+        ValueError: A frequency is not finite and positive, ``mode`` is
+            not an integer >= 1, or ``polarization`` is not ``"Ez"``, ``"Hz"``
+            or ``None``. `gfem.solve` raises it for no ``polarization`` on a
+            2D mesh and for one on a 3D mesh.
         NonDifferentiableError: ``frequency`` is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
 
@@ -674,10 +684,19 @@ class PortMode:
     port: str
     frequency: tuple[float, ...]
     mode: int | None
+    polarization: Polarization | None = None
     _rule: ClassVar[str] = "gfem._sweep.port_mode:PortModeRule"
 
-    def __init__(self, port: str, frequency: Any, *, mode: int | None = None) -> None:
+    def __init__(
+        self,
+        port: str,
+        frequency: Any,
+        *,
+        mode: int | None = None,
+        polarization: Polarization | None = None,
+    ) -> None:
         """Validate and normalize (see the class docstring)."""
+        _polarization(polarization, "PortMode")
         if not isinstance(port, str):
             raise TypeError(
                 f"PortMode.port must be the name of a WavePort, got {port!r}."
@@ -693,6 +712,7 @@ class PortMode:
         object.__setattr__(self, "port", port)
         object.__setattr__(self, "frequency", _frequencies(frequency))
         object.__setattr__(self, "mode", None if mode is None else int(mode))
+        object.__setattr__(self, "polarization", polarization)
 
 
 jax.tree_util.register_static(PortMode)
@@ -700,8 +720,6 @@ jax.tree_util.register_static(PortMode)
 
 Sweep = Literal["uniform", "adaptive"]
 _SWEEPS = get_args(Sweep)
-Polarization = Literal["Ez", "Hz"]
-_POLARIZATIONS = get_args(Polarization)
 #: Frequency grids up to this size are listed in full in error messages.
 _LISTED = 8
 
@@ -911,12 +929,7 @@ class Driven:
             raise ValueError(
                 f"Driven.sweep must be 'uniform' or 'adaptive', got {sweep!r}."
             )
-        if polarization is not None and polarization not in _POLARIZATIONS:
-            raise ValueError(
-                "Driven.polarization must be 'Ez' (E normal to the plane of a 2D "
-                "mesh) or 'Hz' (H normal to it), or None on a 3D mesh, got "
-                f"{polarization!r}."
-            )
+        _polarization(polarization, "Driven")
         frequencies = _frequencies(frequency, "Driven")
         object.__setattr__(self, "frequency", frequencies)
         object.__setattr__(self, "excite", _port_names(excite))
@@ -941,23 +954,35 @@ class Driven:
         return self.keep_fields
 
 
+def _polarization(value: Any, owner: str) -> None:
+    """Raise for a ``polarization`` that is not ``"Ez"``, ``"Hz"`` or ``None``."""
+    if value is not None and value not in _POLARIZATIONS:
+        raise ValueError(
+            f"{owner}.polarization must be 'Ez' (E normal to the plane of a 2D "
+            "mesh) or 'Hz' (H normal to it), or None on a 3D mesh, got "
+            f"{value!r}."
+        )
+
+
 def _check_polarization(problem: Any, dim: int) -> None:
-    """Raise when a driven problem's polarization does not fit a mesh of ``dim``.
+    """Raise when a problem's polarization does not fit a mesh of ``dim``.
 
     Raises:
-        ValueError: No polarization on a 2D mesh, or one on a 3D mesh.
+        ValueError: No polarization on a 2D mesh, or one on a 3D mesh, for a
+            driven or port mode problem.
     """
-    if not isinstance(problem, Driven):
+    if not isinstance(problem, (Driven, PortMode)):
         return
+    owner = type(problem).__name__
     if dim == 2 and problem.polarization is None:
         raise ValueError(
-            'A 2D mesh solves one polarization: pass Driven(polarization="Ez") '
+            f'A 2D mesh solves one polarization: pass {owner}(polarization="Ez") '
             '(E normal to the plane) or polarization="Hz" (H normal to the '
             "plane)."
         )
     if dim != 2 and problem.polarization is not None:
         raise ValueError(
-            "Driven.polarization applies to a 2D mesh; a 3D solve has both "
+            f"{owner}.polarization applies to a 2D mesh; a 3D solve has both "
             f"polarizations. Leave it out (got {problem.polarization!r})."
         )
 

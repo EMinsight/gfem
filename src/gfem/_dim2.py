@@ -142,14 +142,14 @@ def refuse_model(
             )
 
 
-#: Problem types with no 2D solve, by class name.
+#: Problem types with no 2D solve, by class name. A `PortMode` solves the mode
+#: of a line port (every wave port of a 2D model is one).
 _PROBLEMS = {
     "Eigenmode": f"For its modes, {SLAB}.",
     "Electrostatic": f"For its capacitances, {SLAB}.",
     "DCConduction": f"DC conduction on a cross-section runs on the slab: {SLAB}.",
     "SteadyThermal": _THERMAL,
     "TransientThermal": _THERMAL,
-    "PortMode": f"For the port's modes, {SLAB}.",
     "Driven": f"For its S-parameters, {SLAB}.",
 }
 

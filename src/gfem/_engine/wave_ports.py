@@ -58,14 +58,12 @@ is a rank's own: a load column, each value shared by the ranks that write it.
 from __future__ import annotations
 
 import dataclasses
-import functools
 import math
 from collections.abc import Sequence
 from typing import Any
 
 import ngsolve as ngs
 import numpy as np
-import scipy.constants
 
 from gfem._boundaries import (
     WavePort,
@@ -74,10 +72,11 @@ from gfem._boundaries import (
     wave_port_surfaces,
 )
 from gfem._engine import terms
+from gfem._engine.line_mode import LineModeSpace, ModeSpace, mode_space
 from gfem._engine.mesh import EngineMesh, inverse_order
-from gfem._engine.port_mode import PortModeSpace
 from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
+from gfem._line_section import LineSection
 from gfem._port_section import PortSection, port_section
 from gfem._sweep.port_mode import PortModeSweep, rows_of, sweeps_on, swept_once
 from gfem._text import hertz
@@ -215,7 +214,7 @@ class PortSurfaceCoupling:
         gamma0 = lead.sweep.gamma[k] * lead.scale
         full = np.stack([c.phi[k] for c in self.ports], axis=1)
         tangential = np.stack([c.sweep.coords[k, :m] for c in self.ports], axis=1)
-        scalar = np.concatenate([gamma0 * tangential, np.zeros_like(tangential)])
+        scalar = lead.sweep.space.scalar(tangential, gamma0, lead.omegas[k])
         p = np.concatenate([full, scalar], axis=1)
         reactions = p.T @ (self.reaction @ tangential)
         r = reactions[:n]
@@ -272,11 +271,10 @@ def _singular(a: np.ndarray) -> bool:
     return bool(sigma[0] == 0 or sigma[-1] <= 1e-12 * sigma[0])
 
 
-def _phi(sweep: PortModeSweep, scale: float, m: int) -> np.ndarray:
-    """``(n_freq, 2 m)``: `WavePortCoupling.phi` of a mode's sweep."""
-    coords = sweep.coords
-    gamma = sweep.gamma * scale
-    return np.concatenate([gamma[:, None] * coords[:, :m], coords[:, m:]], 1)
+def _phi(sweep: PortModeSweep, scale: float) -> np.ndarray:
+    """`WavePortCoupling.phi` of a mode's sweep (the space's n x H columns)."""
+    omegas = 2 * np.pi * sweep.frequency
+    return sweep.space.phi(sweep.coords, sweep.gamma * scale, omegas)
 
 
 @dataclasses.dataclass(eq=False)
@@ -296,7 +294,7 @@ class SweptSurface:
     """
 
     ports: tuple[WavePort, ...]
-    modes: PortModeSpace
+    modes: ModeSpace
     sweeps: list[PortModeSweep]
     arrays: dict[str, np.ndarray]
 
@@ -313,6 +311,7 @@ def port_mode_sweeps(
     tolerance: float,
     comm: Any = None,
     handed: Sequence[dict[str, np.ndarray]] | None = None,
+    polarization: str | None = None,
 ) -> list[SweptSurface]:
     """Each wave port surface's port mode sweep over ``frequency``.
 
@@ -327,6 +326,7 @@ def port_mode_sweeps(
         comm: The resolved communicator (the sweep runs once, on rank 0).
         handed: Per surface, a whole-grid sweep's arrays at ``frequency``
             (`SweptSurface.rows`).
+        polarization: A 2D model's, for its line ports' modes.
 
     Returns:
         One per surface with wave ports, in the order of each surface's
@@ -344,7 +344,7 @@ def port_mode_sweeps(
     out = []
     for k, group in enumerate(groups):
         section = port_section(model, lead_port(group))
-        modes = PortModeSpace(section, order)
+        modes = mode_space(section, order, polarization)
         if handed is not None:
             arrays = handed[k]
             sweeps = sweeps_on(modes, frequency, arrays)
@@ -356,7 +356,7 @@ def port_mode_sweeps(
                 [p.mode for p in group],
                 tolerance=tolerance,
                 ports=list(group),
-                derived=functools.partial(_port_columns, modes),
+                derived=modes.port_columns,
             )
         out.append(SweptSurface(tuple(group), modes, sweeps, arrays))
     return out
@@ -412,7 +412,6 @@ def wave_port_couplings(
         lead = lead_port(group)
         section = modes.section
         r, reaction = columns["r"], columns["reaction"]
-        m = r.shape[1] // 2
         idx3, idx2 = trace_dofs(model, section, modes, built, space)
         free = free_mask(space.FreeDofs(), space.ndof)
         idx3, idx2 = idx3[free[idx3]], idx2[free[idx3]]
@@ -420,13 +419,13 @@ def wave_port_couplings(
         writers = np.zeros(space.ndof)
         writers[idx3] = 1.0
         writers = np.real(layout.exchange(writers))
-        vectors = np.zeros((space.ndof, 2 * m), r.dtype)
+        vectors = np.zeros((space.ndof, r.shape[1]), r.dtype)
         vectors[idx3] = r[idx2] / writers[idx3, None]
         scale = section.scale
-        phis = [_phi(sweep, scale, m) for sweep in sweeps]
+        phis = [_phi(sweep, scale) for sweep in sweeps]
         dual, r_kk = _dual(reaction, [s.coords for s in sweeps], phis)
         # each mode's reciprocity pairing (1/2) int (e x h) . n, unconjugated
-        pairing = -0.5j * scale / (omegas[:, None] * scipy.constants.mu_0) * r_kk
+        pairing = modes.pairing_factor(omegas) * r_kk
         ports = []
         for k, (port, sweep) in enumerate(zip(group, sweeps, strict=True)):
             kappa = pseudo_wave_factor(sweep, pairing[:, k])
@@ -525,29 +524,17 @@ def _dual(
     return np.linalg.solve(r, p), np.einsum("fkk->fk", r)
 
 
-def _port_columns(modes: PortModeSpace, basis: np.ndarray) -> dict[str, np.ndarray]:
-    """What the 2D forms give per column of the sweep's ``basis``.
-
-    ``r``: the entries of `PortSurfaceCoupling.vectors` on the free 2D DOFs;
-    ``reaction``: hᵀ e on the port face (the mode vanishes on fixed
-    DOFs).
-    """
-    g_form, t_form = modes.coupling_forms
-    w = basis[modes.free]
-    m = w.shape[1] // 2
-    r = np.concatenate([t_form @ w[:, :m], g_form @ w[:, m:]], axis=1)
-    tangential = basis[: modes.n_t, :m]
-    return {"r": r, "reaction": r.T @ tangential}
-
-
 def trace_dofs(
     model: Model,
-    section: PortSection,
-    modes: PortModeSpace,
+    section: PortSection | LineSection,
+    modes: ModeSpace,
     built: EngineMesh,
     space: ngs.FESpace,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Matching DOFs of the 3D space and the port's 2D Nédélec space.
+
+    On a 2D mesh, of the 2D H1 space and the line port's 1D H1 space
+    (`_line_trace_dofs`).
 
     The 3D field's tangential trace on the port has, on 2D DOF ``idx2[k]``,
     the coefficient of 3D DOF ``idx3[k]``: edges are matched through the gfem
@@ -557,6 +544,10 @@ def trace_dofs(
     Returns:
         ``(idx3, idx2)``.
     """
+    if isinstance(section, LineSection):
+        if not isinstance(modes, LineModeSpace):  # pragma: no cover
+            raise TypeError("A line section's trace needs its LineModeSpace.")
+        return _line_trace_dofs(model, section, modes, built, space)
     if section.faces is None:  # pragma: no cover - sections built by gfem have them
         raise ValueError("The port section does not record its mesh triangles.")
     used = np.unique(model.mesh.triangles[section.faces])
@@ -591,3 +582,51 @@ def trace_dofs(
     idx2 = np.fromiter(pairs, int, len(pairs))
     idx3 = np.fromiter(pairs.values(), int, len(pairs))
     return idx3, idx2
+
+
+def _line_trace_dofs(
+    model: Model,
+    section: LineSection,
+    modes: LineModeSpace,
+    built: EngineMesh,
+    space: ngs.FESpace,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Matching DOFs of a 2D H1 space and a line port's 1D H1 space.
+
+    Vertices match through their gfem node; a segment's interior DOFs through
+    the segment. Both meshes number their vertices in increasing gfem node,
+    so NGSolve orients each segment's interior basis the same way on both.
+
+    Returns:
+        ``(idx2d, idx1d)``.
+    """
+    surface = model.mesh.surface_elements
+    used = np.unique(surface[section.faces])
+    element_of = inverse_order(section.faces, len(surface))
+    on_line = element_of[built.facet_order]
+    line_element = inverse_order(modes.element_segment, len(section.segments))
+    mesh2, mesh1, h1 = built.mesh, modes.mesh, modes.space
+    node = built.node_order
+    pairs: dict[int, int] = {}
+
+    def split(fes, el, gfem_of) -> tuple[dict[int, int], list[int]]:
+        vertices = {int(gfem_of[v.nr]): v.nr for v in el.vertices}
+        at = {
+            g: int(fes.GetDofNrs(ngs.NodeId(ngs.VERTEX, nr))[0])
+            for g, nr in vertices.items()
+        }
+        inner = [int(d) for d in fes.GetDofNrs(el) if int(d) not in at.values()]
+        return at, inner
+
+    for local in np.flatnonzero(on_line >= 0):
+        bnd = mesh2[ngs.ElementId(ngs.BND, int(local))]
+        el = mesh1[ngs.ElementId(ngs.VOL, int(line_element[on_line[local]]))]
+        at2, inner2 = split(space, bnd, node)
+        at1, inner1 = split(h1, el, used)
+        if at2.keys() != at1.keys() or len(inner2) != len(inner1):  # pragma: no cover
+            raise RuntimeError("The 2D trace and the line port space do not match.")
+        pairs.update({at1[g]: d2 for g, d2 in at2.items() if d2 >= 0})
+        pairs.update({d1: d2 for d1, d2 in zip(inner1, inner2, strict=True) if d2 >= 0})
+    idx1 = np.fromiter(pairs, int, len(pairs))
+    idx2 = np.fromiter(pairs.values(), int, len(pairs))
+    return idx2, idx1

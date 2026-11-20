@@ -280,30 +280,15 @@ def test_an_entry_on_a_2d_mesh_refuses_by_name(model, entry):
 # --- backstops behind the solve entry --------------------------------------------
 
 
-def test_a_port_section_of_a_2d_mesh_refuses(mesh):
-    from gfem._port_section import port_section
-
-    port = gfem.WavePort("p", "outer")
-    model = gfem.Model(mesh, materials=materials(), ports=(port,))
-    with pytest.raises(NotImplementedError, match="planar port of a tetrahedral"):
-        port_section(model, port)
-
-
-def test_a_port_mode_space_refuses_a_section_that_is_not_planar():
+def test_a_planar_port_mode_space_refuses_a_section_that_is_not_planar():
     from gfem._engine.port_mode import PortModeSpace
 
     with pytest.raises(TypeError, match="planar PortSection"):
         PortModeSpace(types.SimpleNamespace(), 1)
 
 
-@pytest.mark.parametrize(
-    ("problem", "name"),
-    [(gfem.Driven(F), "Driven"), (gfem.PortMode("p", F), "PortMode")],
-)
-def test_a_wave_problem_on_a_2d_mesh_refuses_until_its_2d_rule_exists(
-    mesh, problem, name
-):
+def test_a_driven_problem_on_a_2d_mesh_refuses_until_its_2d_rule_exists(mesh):
     model = gfem.Model(
         mesh, materials=materials(), ports=(gfem.WavePort("p", "outer"),)
     )
-    _raises(rf"{name}.*{SLAB}", lambda: gfem.solve(model, problem))
+    _raises(rf"Driven.*{SLAB}", lambda: gfem.solve(model, gfem.Driven(F)))

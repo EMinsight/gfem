@@ -51,6 +51,7 @@ from gfem._boundaries import (
     WavePort,
 )
 from gfem._checks import is_traced
+from gfem._line_section import LineSection
 from gfem._materials import (
     Blend,
     Debye,
@@ -775,18 +776,20 @@ def _field_args(field: Field, _: _codec.Context) -> dict[str, Any]:
 
 def _port_mode_field_args(field: PortModeField, _: _codec.Context) -> dict[str, Any]:
     space = field._space  # noqa: SLF001
+    # a line port's polarization; a planar port's field is written as before
+    polarization = getattr(space, "polarization", None)
     return {
         "section": space.section,
         "order": space.order,
         "basis": field._basis,  # noqa: SLF001
         "coords": field._coords,  # noqa: SLF001
-    }
+    } | ({} if polarization is None else {"polarization": polarization})
 
 
 def _port_mode_field_from_args(args: dict[str, Any], _: _codec.Context) -> Any:
-    from gfem._engine.port_mode import PortModeSpace
+    from gfem._engine.line_mode import mode_space
 
-    space = PortModeSpace(args["section"], args["order"])
+    space = mode_space(args["section"], args["order"], args.get("polarization"))
     return PortModeField(space, args["basis"], args["coords"])
 
 
@@ -924,9 +927,7 @@ for _cls in (
     LumpedPort,
     WavePort,
     FloquetPort,
-    PortMode,
     ElectrostaticResult,
-    PortModeResult,
     DiffractionOrderResult,
     NetworkParameters,
     SweepInfo,
@@ -946,6 +947,8 @@ _codec.register(
 )
 _codec.register(SolverOptions, to_args=_options_args)
 _codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None))
+_codec.register(PortMode, to_args=_unset_omitted(PortMode, polarization=None))
+_codec.register(PortModeResult, to_args=_unset_omitted(PortModeResult, h_field=None))
 _codec.register(
     DrivenResult, to_args=_unset_omitted(DrivenResult, h_fields=(), polarization=None)
 )
@@ -986,6 +989,7 @@ _codec.register(
     PortModeField,
     to_args=_port_mode_field_args,
     from_args=_port_mode_field_from_args,
-    names=("section", "order", "basis", "coords"),
+    names=("section", "order", "basis", "coords", "polarization"),
 )
+_codec.register(LineSection)
 _codec.register(Job, from_args=_job_from_args, names=("model", "problem", "options"))

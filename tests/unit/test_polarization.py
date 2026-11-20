@@ -217,3 +217,27 @@ def test_a_2d_mesh_without_a_polarization_raises_at_solve():
 @pytest.mark.parametrize("polarization", ["Ez", "Hz"])
 def test_a_2d_mesh_with_a_polarization_passes_the_check(polarization):
     _check_polarization(gfem.Driven(frequency=1e9, polarization=polarization), dim=2)
+
+
+# --- the port mode problem ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("value", ["TE", "ez", 1])
+def test_an_unknown_port_mode_polarization_raises_naming_both(value):
+    with pytest.raises(ValueError, match=r"PortMode\.polarization.*'Ez'.*'Hz'"):
+        gfem.PortMode("p1", 1e9, polarization=value)
+
+
+def test_a_port_mode_polarization_on_a_3d_mesh_raises_at_solve():
+    problem = gfem.PortMode("p1", 1e9, polarization="Hz")
+    with pytest.raises(ValueError, match=r"PortMode\.polarization applies to a 2D"):
+        _check_polarization(problem, dim=3)
+
+
+@pytest.mark.parametrize("polarization", ["Ez", "Hz", None])
+def test_a_job_file_keeps_a_port_modes_polarization(model, tmp_path, polarization):
+    problem = gfem.PortMode("p1", 1e9, polarization=polarization)
+    written, path = _written_problem(model, problem, tmp_path)
+    assert gfem.Job.from_json(path).problem == problem
+    # a 3D problem is written as before polarization existed
+    assert ("polarization" in written) == (polarization is not None)
