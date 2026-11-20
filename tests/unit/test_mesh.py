@@ -116,6 +116,15 @@ def test_moved_mesh_keeps_the_imported_geometry(two_box):
     np.testing.assert_allclose(moved.nodes, 2 * moved.imported_nodes)
 
 
+def test_a_moved_mesh_at_its_imported_nodes_shares_its_topology(two_box):
+    from gfem.mesh import _at_imported_nodes
+
+    moved = jax.tree_util.tree_map(lambda x: 2 * x, two_box)
+    still = _at_imported_nodes(moved)
+    np.testing.assert_array_equal(still.nodes, np.asarray(two_box.nodes))
+    assert jax.tree_util.tree_structure(still) == jax.tree_util.tree_structure(moved)
+
+
 def test_adjacency_lists_the_volumes_on_each_side_of_a_surface(two_box):
     def sides(name):
         return {frozenset(pair) for pair in two_box.adjacency(name)}

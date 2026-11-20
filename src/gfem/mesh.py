@@ -112,6 +112,11 @@ def _mesh_sha256(mesh: Mesh) -> str:
     return _topology_sha256(mesh._topology)  # noqa: SLF001
 
 
+def _at_imported_nodes(mesh: Mesh) -> Mesh:
+    """``mesh`` at its imported nodes: the same topology, no traced values."""
+    return Mesh(mesh.imported_nodes, mesh._topology)  # noqa: SLF001
+
+
 def _hash_array(h, path: str, array) -> None:
     """Feed one array to the hash ``h``, independent of its memory layout.
 

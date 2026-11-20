@@ -167,7 +167,7 @@ from gfem.errors import (
     SkippedPortModeWarning,
     UnrequestedOrderWarning,
 )
-from gfem.mesh import Mesh, _shortest_edges
+from gfem.mesh import _at_imported_nodes, _shortest_edges
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Driven
@@ -1735,7 +1735,7 @@ class DrivenRule:
         """
         periodic = model._periodic  # noqa: SLF001
         if self.comm is not None and periodic:
-            still = Mesh(model.mesh.imported_nodes, model.mesh._topology)  # noqa: SLF001
+            still = _at_imported_nodes(model.mesh)
             discretization(still, periodic, self.comm)
         return dof_shape(
             model.mesh,

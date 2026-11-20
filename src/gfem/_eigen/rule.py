@@ -145,7 +145,7 @@ from gfem.errors import (
     LowFrequencyWarning,
     SolverUnavailableError,
 )
-from gfem.mesh import Mesh
+from gfem.mesh import Mesh, _at_imported_nodes
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Eigenmode
@@ -1349,7 +1349,7 @@ class EigenmodeRule:
         """
         if self.comm is None:
             return ONE_PROCESS
-        still = Mesh(self._mesh.imported_nodes, self._mesh._topology)  # noqa: SLF001
+        still = _at_imported_nodes(self._mesh)
         regions, excluded, order = self.regions, self._excluded, self.options.order
         _, space, _ = fe_space(still, regions, excluded, "hcurl", order, comm=self.comm)
         disc = discretization(still, (), self.comm)
@@ -1435,7 +1435,7 @@ class EigenmodeRule:
         n = self.problem.n_modes
         if self.comm is None:
             mesh = model.mesh
-            still = Mesh(mesh.imported_nodes, mesh._topology)  # noqa: SLF001
+            still = _at_imported_nodes(mesh)
             with task_manager(self.options.threads):
                 _, space, _ = fe_space(
                     still, self.regions, self._excluded, "hcurl", self.options.order
