@@ -770,6 +770,20 @@ def test_scaling_gives_speedup_and_efficiency_against_the_smallest_budget(tmp_pa
     assert bddc["peak_rss_sum_gib"] is not None
 
 
+def test_a_scaling_point_without_best_layout_is_the_default_labelled_n(tmp_path):
+    def two_repeats(d):
+        if d["name"].startswith("microstrip/gfem-direct") and d["run"]["repeat"] == 3:
+            d["status"] = "failed"
+
+    c8 = _budget_campaign(tmp_path, 8, two_repeats)
+    c16 = _budget_campaign(tmp_path, 16)
+    ms = _case(_json(tmp_path, c8, c16), "microstrip")
+    p8 = _point(ms, "gfem:direct", 8)
+    assert (p8["layout"], p8["n"]) == ("1x16", 2)
+    assert p8["labels"] == ["default, n = 2"]
+    assert _point(ms, "gfem:direct", 16)["labels"] == []
+
+
 def test_scaling_cross_code_ratio_is_labelled_different_nodes(tmp_path):
     c8 = _budget_campaign(tmp_path, 8, _slower(1.6))
     c16 = _budget_campaign(tmp_path, 16)

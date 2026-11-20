@@ -1192,9 +1192,10 @@ def _scaling_point(part: Mapping[str, Any], block: Mapping[str, Any], lay) -> An
     if c is None or c["work_s"] is None:
         return None
     nodes = part["nodes"] or 1
-    labels = [] if best is not None else ["default (no best)"]
-    if c["n"] < REPEATS:
-        labels.append(f"n = {c['n']}")
+    if best is None:
+        labels = [f"default, n = {c['n']}"]
+    else:
+        labels = [f"n = {c['n']}"] if c["n"] < REPEATS else []
     if nodes > 1 and c["stack"] == "wheels" and c["code"] == "palace":
         labels.append(TCP)
     if nodes > 1:
