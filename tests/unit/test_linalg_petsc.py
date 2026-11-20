@@ -993,7 +993,9 @@ def test_across_ranks_mumps_factors_by_lu_unless_a_equals_its_transpose(
     pc = ksp.getPC()
     assert pc.getFailedReason() == PETSc.PC.FailedReason.NOERROR
     assert pc.getType() == factorization
-    dense = aij.convert("dense").getDenseArray()
+    copy = aij.copy().convert("dense")  # convert alone would replace the factored AIJ
+    dense = copy.getDenseArray().copy()
+    copy.destroy()
     if general:
         assert np.abs(dense - dense.T).max() > 0.1 * np.abs(dense).max()
     rng = np.random.default_rng(4)
