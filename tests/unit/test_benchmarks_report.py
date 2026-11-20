@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.__main__ import main
+from benchmarks.harness import matrix
 from benchmarks.report import views
 
 BENCH = Path(__file__).parent / "data" / "bench"
@@ -378,15 +379,9 @@ def test_error_items_carry_the_reference_bound_when_a_cell_is_unresolved(tmp_pat
 def test_report_records_the_harness_revision(tmp_path, capsys):
     out = _report(tmp_path, str(_store(tmp_path)), "--no-figures")
     stored = json.loads((out / "report.json").read_text())
-    git = shutil.which("git")
-    assert git is not None
-    head = subprocess.run(
-        [git, "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-        check=True,
-        cwd=Path(__file__).resolve().parents[2],
-    ).stdout.strip()
+    # the tree's commit: its COMMIT file when shipped (no .git), else git HEAD
+    head = matrix.source_commit()[0]
+    assert len(head) == 40
     assert stored["harness_revision"] == head
     # a report rendered at another revision still checks: the field is provenance
     stored["harness_revision"] = "0" * 40
