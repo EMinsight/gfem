@@ -448,7 +448,8 @@ def _instrument_coarse(
         numbering = getattr(self, "_numbering", None)
         chosen = calls.get("rule") or {
             "columns": getattr(self, "columns", None),
-            "seen": getattr(self, "_seen", None),
+            # unknown: set_up has added the key by now
+            "seen": None,
         }
         here = {
             "host": socket.gethostname(),
@@ -469,7 +470,7 @@ def _instrument_coarse(
             "reduction": factor,
             "ranks": math.ceil(comm.size / factor),
             **chosen,
-            "kept": not any(analysed) if analysed else getattr(self, "_kept", None),
+            "kept": not any(analysed) if analysed else None,
             "retries": getattr(
                 self,
                 "_retries",

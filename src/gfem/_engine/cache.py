@@ -591,7 +591,7 @@ _ALL = object()
 def _coarse_held(owner: Any) -> list[Any]:
     """The pooled coarse factorizations of ``owner``'s communicator, oldest first.
 
-    None before the coarse factorization was first loaded: only BDDC under ranks
+    Empty before the coarse factorization was first loaded: only BDDC under ranks
     pools one.
     """
     coarse = sys.modules.get("gfem._linalg.coarse")
