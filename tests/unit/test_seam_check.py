@@ -2,7 +2,7 @@
 
 A received mesh is mimicked on one process: a random half of a periodic box's tets
 and triangles, with all of its identifications, so edges and faces go missing.
-The loops are mpi-support probe 17's, with faces added to the reverse count.
+The loops count plainly what `seam_counts` counts by array operations.
 """
 
 import itertools

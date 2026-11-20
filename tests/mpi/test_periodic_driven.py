@@ -5,7 +5,7 @@ the largest one-process entry, at ADR 0070's gates; `on_ranks` checks that ranks
 agree bit for bit. The cases are `periodic_cases.cellx` (G with its x pair) and
 `periodic_cases.periodic_box` on `mpi_cases.box`, whose ports touch the seam. On this
 wheel box8 takes a clean partition at 3 and 4 ranks, a swapped one at 5 and 8 and a
-reordered one at 16 (ticket 06), but the tests assert results, not paths: which
+reordered one at 16 (ADR 0071), but the tests assert results, not paths: which
 seed or swap a partition takes depends on METIS in the wheel.
 """
 
@@ -29,7 +29,7 @@ from gfem._periodic import pair_names
 #: Relative to the largest one-process entry: ADR 0070's gates.
 GATES = {"bddc_gmres": 1e-9, "direct": 1e-11}
 #: A kept field at points, relative to its largest one-process value (1.9e-13
-#: measured, ticket 06).
+#: measured).
 FIELD_GATE = 1e-10
 DIRECT = pytest.param(
     "direct",

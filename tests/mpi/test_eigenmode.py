@@ -26,7 +26,7 @@ from ranks import on_ranks
 import gfem
 from gfem import _petsc
 
-#: Decision 08 Q6: relative to each mode's |omega|.
+#: Relative to each mode's |omega|.
 OMEGA_GATE = 1e-10
 #: ``bddc_gmres``'s shift solves are iterative.
 BDDC_OMEGA_GATE = 1e-8
@@ -38,7 +38,7 @@ PARTICIPATION_GATE = 1e-9
 FIELD_GATE = 1e-8
 #: Relative.
 INTERFACE_GATE = 1e-9
-#: Relative to the largest one-process entry (decision 08 Q6 case 6).
+#: Relative to the largest one-process entry.
 GRADIENT_GATE = 1e-9
 RANKS = (2, 3, 4)
 LIMIT = 600
@@ -47,7 +47,7 @@ pytestmark = pytest.mark.skipif(not _petsc.has_mpi(), reason="needs the MPI stac
 
 
 def _model(directory, case):
-    """``(model, problem)`` of a case of decision 08 Q6."""
+    """``(model, problem)`` of the launched case named ``case``."""
     directory = Path(directory)
     if case == "terminated":  # damped, companion seed, lumped R
         mesh = eigen_cases.line_mesh(directory)

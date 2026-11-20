@@ -1522,7 +1522,7 @@ class EigenmodeRule:
             return None
         if name in _MODE_FIELD and self.comm is not None:
             # replicated values only, so every rank raises it at the backward's
-            # trace (ADR 0072 amendment, decision 08 Raised-by-01 item 4)
+            # trace (ADR 0072, amended 2026-11-19)
             _mpi.refuse_feature("mode_field_gradient")
         public = _MODE_FIELD.get(name, name)
         head = f"gfem cannot differentiate the eigenmode output {public!r}"

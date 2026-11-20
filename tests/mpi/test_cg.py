@@ -76,7 +76,7 @@ def one_process(tmp_path_factory):
 def test_cg_matches_one_process_with_one_iteration_count(tmp_path, one_process, ranks):
     rows = on_ranks(_cg_solve, tmp_path, ranks=ranks)
     got = rows[0]  # every rank's value is the same, bit for bit
-    # against one process an observation, not a gate (ticket 02 Q12)
+    # against one process an observation, not a gate: ranks must agree bitwise
     print(f"CG iterations: {ranks} ranks {got['counts']}, one {one_process['counts']}")  # noqa: T201
     for key in ("pair", "norms", "inner", "gram", "projection"):
         want = np.asarray(one_process[key])

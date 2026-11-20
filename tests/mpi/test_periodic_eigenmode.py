@@ -26,7 +26,7 @@ from ranks import on_ranks
 import gfem
 from gfem import _petsc
 
-#: Decision 06, periodic-eigenmode slice: relative to each mode's |omega|.
+#: Relative to each mode's |omega|.
 OMEGA_GATE = 1e-10
 #: Relative to the largest one-process value, sign included.
 FIELD_GATE = 1e-8

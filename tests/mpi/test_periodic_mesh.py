@@ -107,7 +107,7 @@ def _exhaust():
 
 
 def test_running_out_of_tries_raises_on_every_rank():
-    # box8 on 16 ranks needs 3 partitions on this wheel (ticket 06)
+    # box8 on 16 ranks needs 3 partitions on this wheel (ADR 0071)
     values = on_ranks(_exhaust, ranks=16, limit=240)
     message, total = values[0]
     assert total == 16
