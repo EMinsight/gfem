@@ -1434,6 +1434,7 @@ def test_every_cell_has_an_expected_outcome(cases):
     assert cells == {c for c in EXPECTED if c[0] not in MEASUREMENT_READS}
 
 
+@pytest.mark.bitwise  # its low-Q lumped mode converges run to run only on one thread
 def test_raise_table(cases):
     for name, model, problem, out_name, out_path, index, kind in _cells(cases):
         expected = EXPECTED[(name, out_name, kind)]

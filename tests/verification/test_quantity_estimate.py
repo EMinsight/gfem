@@ -1769,6 +1769,7 @@ def _absorbing_box(directory, m):
     )
 
 
+@pytest.mark.bitwise  # its low-Q modes converge run to run only on one thread
 @pytest.mark.parametrize("m", [1, 2])
 def test_the_box_with_second_order_absorbing_walls(tmp_path, m):
     # Q 1.7 to 4. Six modes are solved and the one nearest the stored order-4

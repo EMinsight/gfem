@@ -1052,6 +1052,7 @@ def test_per_axis_conductivity_damps_along_its_axis(mesh):
     np.testing.assert_allclose(omega.imag, isotropic.imag, rtol=2e-4)
 
 
+@pytest.mark.bitwise
 def test_a_uniform_field_of_a_crystal_has_the_crystal_s_modes(mesh):
     # a tilted biaxial lossy, conducting, magnetic crystal: its uniform field
     # holds the same principal values on the same axes
