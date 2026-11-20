@@ -310,16 +310,17 @@ def one_process_dofs(
     cells = tables["cells"]
     mine = built.tetrahedron_order
     mine = mine[cells[mine] >= 0]
-    n_nodes = len(mesh.imported_nodes)
-    edge_keys, face_keys = _entity_keys(mesh.tetrahedra[mine], n_nodes)
-    # a local face's key holds a local edge's rank: it moves to one process's rank
-    edges = np.searchsorted(tables["edges"], edge_keys)
-    faces = np.searchsorted(
-        tables["faces"], edges[face_keys // n_nodes] * n_nodes + face_keys % n_nodes
-    )
+    nodes, edges, faces = _local_entities(built, mesh, tables, mine)
     if space == "h1":
         numbers, total = _h1_numbers(
-            built, mesh, tables, mine=mine, edges=edges, faces=faces, order=order
+            built,
+            mesh,
+            tables,
+            nodes=nodes,
+            mine=mine,
+            edges=edges,
+            faces=faces,
+            order=order,
         )
     else:
         numbers, total = _hcurl_numbers(tables, cells[mine], edges, faces, order)
@@ -336,6 +337,53 @@ def one_process_dofs(
 
 
 _SPACE_NAMES = {"hcurl": "H(curl)", "h1": "H1"}
+
+#: Vertex pairs of a triangle's edges, with sorted rows.
+_TRIANGLE_EDGES = np.array([[0, 1], [0, 2], [1, 2]])
+
+
+def _find(table: np.ndarray, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Each key's position in the sorted ``table``, and whether it is there."""
+    at = np.searchsorted(table, keys)
+    found = at < len(table)
+    found[found] = table[at[found]] == keys[found]
+    return at, found
+
+
+def _local_entities(
+    built: EngineMesh,
+    mesh: Mesh,
+    tables: dict[str, np.ndarray],
+    mine: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The gfem nodes, one-process edges and one-process faces holding local DOFs.
+
+    Those of the local support tets, and of each local triangle that is a face of
+    the support: netgen sends a surface element with one adjacent volume element,
+    so a rank can hold a support face, and its DOFs, without its support tet.
+    Edges and faces come ascending, which is lexicographic in their gfem nodes.
+    """
+    n_nodes = len(mesh.imported_nodes)
+    edge_table, face_table = tables["edges"], tables["faces"]
+    tets = np.sort(mesh.tetrahedra[mine], axis=1)
+    triangles = np.sort(np.asarray(mesh.triangles)[built.triangle_order], axis=1)
+    low, on_edge = _find(edge_table, triangles[:, 0] * n_nodes + triangles[:, 1])
+    at, on_face = _find(face_table, low * n_nodes + triangles[:, 2])
+    support = on_edge & on_face
+    triangles = triangles[support]
+    pairs = np.concatenate(
+        [
+            tets[:, _TET_EDGES].reshape(-1, 2),
+            triangles[:, _TRIANGLE_EDGES].reshape(-1, 2),
+        ]
+    )
+    edges = np.unique(np.searchsorted(edge_table, pairs[:, 0] * n_nodes + pairs[:, 1]))
+    triples = tets[:, _TET_FACES].reshape(-1, 3)
+    low = np.searchsorted(edge_table, triples[:, 0] * n_nodes + triples[:, 1])
+    in_tets = np.searchsorted(face_table, low * n_nodes + triples[:, 2])
+    faces = np.unique(np.concatenate([in_tets, at[support]]))
+    nodes = np.unique(np.concatenate([tets.ravel(), triangles.ravel()]))
+    return nodes, edges, faces
 
 
 def _blocks(first: int, entities: np.ndarray, per_entity: int) -> np.ndarray:
@@ -376,6 +424,7 @@ def _h1_numbers(
     mesh: Mesh,
     tables: dict[str, np.ndarray],
     *,
+    nodes: np.ndarray,
     mine: np.ndarray,
     edges: np.ndarray,
     faces: np.ndarray,
@@ -384,11 +433,12 @@ def _h1_numbers(
     """An H1 layout's one-process numbers, and one process's DOF count.
 
     The local vertex order need not follow gfem nodes, so each used local vertex
-    finds its gfem node among one process's used vertices.
+    (of ``nodes``, gfem nodes) finds its gfem node among one process's used
+    vertices.
     """
     vertex = np.full(len(mesh.imported_nodes), -1, dtype=np.int64)
     vertex[built.node_order] = np.arange(len(built.node_order))
-    used = np.unique(vertex[mesh.tetrahedra[mine]])
+    used = np.unique(vertex[nodes])
     on_edge = order - 1
     on_face = (order - 1) * (order - 2) // 2
     in_cell = (order - 1) * (order - 2) * (order - 3) // 6

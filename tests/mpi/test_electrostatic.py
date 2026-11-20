@@ -159,7 +159,8 @@ def test_potentials_are_pieces_that_probe_as_one_process(tmp_path, name, solver,
     got, *_ = on_ranks(_pieces, name, tmp_path, solver, points, ranks=ranks, limit=300)
     assert got["shaped"]
     assert got["padded"]
-    assert got["width"] >= one.potential[problem.terminal_names[0]].coefficients.size
+    # the largest rank's rows: below one process's, above zero
+    assert 0 < got["width"] < one.potential[problem.terminal_names[0]].coefficients.size
     _assert_below(got["at"], expected, GATES[solver], f"{name} {solver} Field.at")
 
 
@@ -487,7 +488,8 @@ def _kept(directory, solver, lost):
         "retained forwards": retained_forwards,
         "after": np.asarray(after),
         "lost forwards": lost_forwards,
-        "held": _mpi.agree_all(_world(), flag=held),
+        # rank 0 holds no DOFs, so nothing of a BDDC operator
+        "held": _mpi.agree_any(_world(), flag=held),
         "freed": _mpi.agree_all(_world(), flag=entry.handle is None),
     }
 
