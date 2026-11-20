@@ -30,6 +30,12 @@ dependencies = [
   "scipy>=1.15",
 ]
 
+[project.urls]
+Homepage = "https://bvial.info/gfem/"
+Documentation = "https://bvial.info/gfem/"
+Source = "https://github.com/benvial/gfem"
+Issues = "https://github.com/benvial/gfem/issues"
+
 [project.scripts]
 gfem = "gfem.__main__:main"
 

@@ -1,7 +1,7 @@
 <h1>
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/_static/logo/gfem-lockup-dark.svg">
-    <img alt="gfem" src="docs/_static/logo/gfem-lockup-light.svg" height="64">
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/benvial/gfem/main/docs/_static/logo/gfem-lockup-dark.svg">
+    <img alt="gfem" src="https://raw.githubusercontent.com/benvial/gfem/main/docs/_static/logo/gfem-lockup-light.svg" height="64">
   </picture>
 </h1>
 
