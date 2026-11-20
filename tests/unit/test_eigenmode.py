@@ -52,6 +52,7 @@ from gfem._engine.runtime import task_manager
 from gfem._linalg import prepare
 from gfem._linalg.base import PlannedHandle
 from gfem._linalg.bddc import BddcHandle
+from gfem._linalg.layout import ONE_PROCESS
 
 
 @pytest.fixture(scope="module")
@@ -496,6 +497,7 @@ class _Stub:
 
     shift: complex
     nonpolynomial: tuple = ()
+    layout = ONE_PROCESS
 
     def reshift(self, k, **_):
         self.shift = k
