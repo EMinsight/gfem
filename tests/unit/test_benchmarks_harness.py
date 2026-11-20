@@ -142,6 +142,7 @@ SRUN = (
     "{R}",
     "-c",
     "{T}",
+    "--mem=0",
     "--cpu-bind=cores",
     "--distribution=block:block",
     "--hint=nomultithread",
