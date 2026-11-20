@@ -234,7 +234,11 @@ def _read_plane(raw: meshio.Mesh, path: Path, length_unit: str) -> _Topology:
     """
     regions = _regions(raw, top=2)
     section = _read_section(
-        raw, path, length_unit, {r.tag: r.name for r in regions if r.dim == 1}
+        raw,
+        path,
+        length_unit,
+        {r.tag: r.name for r in regions if r.dim == 1},
+        kind="2D mesh",
     )
     nodes = np.ascontiguousarray(section.points[:, :2])
     neighbours = _segment_neighbours(nodes, section.tris, section.lines, path)
@@ -277,13 +281,14 @@ def _check_thickness(thickness) -> float:
     return value
 
 
-def _check_section_plane(points: np.ndarray, path: Path) -> None:
-    """The section must lie in a plane z = constant."""
+def _check_section_plane(points: np.ndarray, path: Path, kind: str) -> None:
+    """The section (a ``kind``) must lie in a plane z = constant."""
     extent = np.ptp(points[:, :2], axis=0).max()
     if np.ptp(points[:, 2]) > 1e-9 * extent:
+        it = "the section" if kind == "cross-section" else "it"
         raise ValueError(
-            f"{path.name}: the cross-section's nodes do not lie in one plane "
-            "z = constant. Mesh the section in the xy plane in gmsh."
+            f"{path.name}: the {kind}'s nodes do not lie in one plane "
+            f"z = constant. Mesh {it} in the xy plane in gmsh."
         )
 
 
@@ -376,20 +381,26 @@ class _Section:
 
 
 def _read_section(
-    raw: meshio.Mesh, path: Path, length_unit: str, line_names: dict[int, str]
+    raw: meshio.Mesh,
+    path: Path,
+    length_unit: str,
+    line_names: dict[int, str],
+    *,
+    kind: str = "cross-section",
 ) -> _Section:
     """The checked triangles and lines of a 2D file.
 
     The checks a cross-section and a 2D mesh share: the cell types, the
     overlaps and duplicates, one plane z = constant, and every grouped line
     on an edge of the triangles (``line_names`` names the line groups).
+    Messages name the file a ``kind``: ``"cross-section"`` or ``"2D mesh"``.
     """
-    cells = _cells(raw, path, section=True)
+    cells = _cells(raw, path, section=True, file=kind)
     tris, area_tags, area_entities = cells["triangle"]
     lines, line_tags, line_entities = cells["line"]
     if len(tris) == 0:
         raise ValueError(
-            f"{path.name} has no triangle in a 2D physical group: a cross-section "
+            f"{path.name} has no triangle in a 2D physical group: a {kind} "
             "needs its areas meshed and named as gmsh physical groups."
         )
     # keep the section's nodes, in file order
@@ -399,7 +410,7 @@ def _read_section(
     points = np.asarray(raw.points, dtype=float)[used] * LENGTH_UNITS[length_unit]
     tris, lines = index[tris], index[lines]
     edges = np.unique(np.sort(tris[:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2)), axis=0)
-    _check_section_plane(points, path)
+    _check_section_plane(points, path, kind)
     _check_lines_on_edges(lines, line_tags, edges, line_names, path)
     return _Section(
         points, tris, area_tags, area_entities, lines, line_tags, line_entities, edges
@@ -1008,17 +1019,20 @@ def _regions(
 
 # meshio cell types with a 3D (volume) element
 _VOLUME_TYPES = ("tetra", "hexahedron", "wedge", "pyramid")
+# the plural of each kind of triangle file, in messages
+_KINDS = {"cross-section": "cross-sections", "2D mesh": "2D meshes"}
 # the dimension of each cell type a reader keeps
 _CELL_DIM = {"tetra": 3, "triangle": 2, "line": 1}
 
 
 def _cells(
-    raw: meshio.Mesh, path: Path, *, section: bool = False
+    raw: meshio.Mesh, path: Path, *, section: bool = False, file: str = "cross-section"
 ) -> dict[str, tuple[np.ndarray, ...]]:
     """Volume and surface cells with their physical and entity tags.
 
-    For `Mesh.from_gmsh` tetrahedra and triangles; for a cross-section
-    (``section``) triangles and lines.
+    For `Mesh.from_gmsh` tetrahedra and triangles; for a cross-section or a
+    2D mesh (``section``, the ``file`` kind named in messages) triangles and
+    lines.
     """
     if "gmsh:physical" not in raw.cell_data:
         dims = "areas and lines" if section else "volumes and surfaces"
@@ -1049,7 +1063,7 @@ def _cells(
     other = [t for t in types if t not in (*width, "line", "vertex")]
     if other:
         supported = (
-            "cross-sections of triangles only (lines on boundaries)"
+            f"{_KINDS[file]} of triangles only (lines on boundaries)"
             if section
             else "tetrahedral meshes only (triangles on surfaces)"
         )

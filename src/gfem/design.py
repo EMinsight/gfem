@@ -38,6 +38,7 @@ from jax.scipy import fft
 
 from gfem import _morph, _mpi, _sparse
 from gfem._checks import is_traced, static_float
+from gfem._dim2 import refuse_entry
 from gfem.errors import UnsampledPixelsWarning
 from gfem.mesh import Mesh
 
@@ -542,6 +543,7 @@ def helmholtz_filter(
         return HelmholtzFilter(
             radius, carrier.shape, _grid_filter(carrier, length), repr(carrier)
         )
+    refuse_entry(carrier, "helmholtz_filter")
     if region is None:
         raise ValueError(
             "helmholtz_filter: name the design's volume region, "

@@ -23,6 +23,7 @@ import numpy as np
 
 from gfem import _mpi
 from gfem._checks import is_staging, is_traced
+from gfem._dim2 import refuse_entry
 from gfem._domain import physics_of
 from gfem._floquet import floquet_ports
 from gfem._pytree import readonly
@@ -597,6 +598,7 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
     """
     if not isinstance(model, Model):
         raise TypeError(f"model must be a gfem.Model, got {type(model).__name__}.")
+    refuse_entry(model.mesh, "error_estimate")
     if isinstance(estimator, (tuple, list)):
         raise TypeError(
             "error_estimate takes one estimator, got a "
@@ -776,6 +778,7 @@ def refine_mesh(
     """
     if not isinstance(model, Model):
         raise TypeError(f"refine_mesh needs a gfem.Model, got {type(model).__name__}.")
+    refuse_entry(model.mesh, "refine_mesh")
     if options is None:
         options = SolverOptions()
     elif not isinstance(options, SolverOptions):

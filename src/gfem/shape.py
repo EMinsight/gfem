@@ -22,6 +22,7 @@ import scipy.sparse as sp
 from gfem import _morph, _mpi, _periodic
 from gfem._boundaries import surfaces_of
 from gfem._checks import is_traced
+from gfem._dim2 import refuse_entry
 from gfem._pytree import readonly
 from gfem._sparse import Coo, coo, spd_solve
 from gfem.errors import MeshQualityError, MeshQualityWarning, RegionNotFoundError
@@ -103,6 +104,7 @@ def quality(mesh: Mesh) -> jax.Array:
     Returns:
         One value per tetrahedron, shape ``(n_tetrahedra,)``.
     """
+    refuse_entry(mesh, "quality")
     return _scaled_jacobian(
         jnp, jnp.asarray(mesh.nodes), mesh.tetrahedra, _orientation(mesh)
     )
@@ -334,7 +336,7 @@ class BoundaryMorph:
 jax.tree_util.register_static(BoundaryMorph)
 
 
-def boundary_morph(
+def boundary_morph(  # noqa: PLR0915
     model: Model,
     moving: str,
     *,
@@ -407,6 +409,7 @@ def boundary_morph(
             ``extension`` is unknown, or ``moving`` is a periodic surface.
         TypeError: An argument has the wrong type.
     """
+    refuse_entry(getattr(model, "mesh", None), "boundary_morph")
     if not isinstance(model, Model):
         msg = f"boundary_morph needs a gfem.Model, got {type(model).__name__}."
         raise TypeError(msg)

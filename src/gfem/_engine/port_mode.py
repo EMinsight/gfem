@@ -95,6 +95,12 @@ class PortModeSpace:
 
     def __init__(self, section: PortSection, order: int) -> None:
         """Build the mesh and spaces and assemble the pencil."""
+        if not isinstance(section, PortSection):
+            # a backstop: a 2D mesh's line ports never reach this space
+            raise TypeError(
+                "PortModeSpace solves the modes of a planar PortSection, got "
+                f"{type(section).__name__}."
+            )
         self.section = section
         self.order = order
         self.mesh = _build_mesh(section)

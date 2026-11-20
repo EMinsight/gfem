@@ -9,6 +9,7 @@ from pathlib import Path
 import ngsolve as ngs
 import numpy as np
 import pytest
+from strip2d import write_strip
 
 import gfem
 from gfem._engine.mesh import to_ngsolve
@@ -24,58 +25,6 @@ AREAS = (
     "cladding",
     "substrate",
 )
-
-
-# Three unit squares side by side, areas "a" | "b" | "c", each two triangles.
-# Line "ab" runs up x = 1 (+y), "cb" down x = 2 (-y); "outer" goes round
-# anticlockwise, except its segment on x = 0, which runs up (+y).
-NODES = [(x, y) for y in (0, 1) for x in (0, 1, 2, 3)]  # gmsh nodes 1-8
-TRIANGLES = {
-    1: [(1, 2, 6), (1, 6, 5)],
-    2: [(2, 3, 7), (2, 7, 6)],
-    3: [(3, 4, 8), (3, 8, 7)],
-}
-LINES = {
-    11: [(2, 6)],
-    12: [(7, 3)],
-    13: [(1, 2), (2, 3), (3, 4), (4, 8), (8, 7), (7, 6), (6, 5), (1, 5)],
-}
-NAMES = {(2, 1): "a", (2, 2): "b", (2, 3): "c", (1, 11): "ab", (1, 12): "cb"}
-NAMES[1, 13] = "outer"
-
-
-def write_strip(path: Path) -> Path:
-    """The three-square strip as a gmsh msh 2.2 ASCII file, in um."""
-    elements = [
-        f"2 2 {tag} {tag} {' '.join(map(str, t))}"
-        for tag, tris in TRIANGLES.items()
-        for t in tris
-    ]
-    elements += [
-        f"1 2 {tag} {tag} {' '.join(map(str, line))}"
-        for tag, lines in LINES.items()
-        for line in lines
-    ]
-    text = [
-        "$MeshFormat",
-        "2.2 0 8",
-        "$EndMeshFormat",
-        "$PhysicalNames",
-        str(len(NAMES)),
-        *(f'{dim} {tag} "{name}"' for (dim, tag), name in NAMES.items()),
-        "$EndPhysicalNames",
-        "$Nodes",
-        str(len(NODES)),
-        *(f"{i} {x} {y} 0" for i, (x, y) in enumerate(NODES, start=1)),
-        "$EndNodes",
-        "$Elements",
-        str(len(elements)),
-        *(f"{i} {e}" for i, e in enumerate(elements, start=1)),
-        "$EndElements",
-        "",
-    ]
-    path.write_text("\n".join(text))
-    return path
 
 
 @pytest.fixture
@@ -255,3 +204,27 @@ def test_a_2d_engine_mesh_under_ranks_raises_naming_the_slab(strip):
     mesh = gfem.Mesh.from_gmsh(strip)
     with pytest.raises(NotImplementedError, match="from_gmsh_cross_section"):
         to_ngsolve(mesh, comm=object())
+
+
+def _message(path):
+    with pytest.raises(ValueError) as info:
+        gfem.Mesh.from_gmsh(path)
+    return str(info.value)
+
+
+def test_a_2d_mesh_out_of_one_plane_is_named_a_2d_mesh(strip):
+    strip.write_text(strip.read_text().replace("\n8 3 1 0\n", "\n8 3 1 0.5\n"))
+    message = _message(strip)
+    assert "the 2D mesh's nodes" in message
+    assert "cross-section" not in message
+
+
+def test_a_2d_mesh_with_quadrilaterals_is_named_a_2d_mesh(strip):
+    text = strip.read_text().replace("$EndElements\n", "")
+    n = int(text.split("$Elements\n")[1].split("\n")[0])
+    text = text.replace(f"$Elements\n{n}\n", f"$Elements\n{n + 1}\n")
+    text += f"{n + 1} 3 2 1 1 1 2 6 5\n$EndElements\n"
+    strip.write_text(text)
+    message = _message(strip)
+    assert "2D meshes of triangles only" in message
+    assert "cross-section" not in message
