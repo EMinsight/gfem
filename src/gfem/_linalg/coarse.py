@@ -381,25 +381,27 @@ class CoarseMumps(ngs.BaseMatrix):
         self._source = matrix
         self._freedofs = freedofs
         self._comm = comm
-        self._kept: Kept | None = None
+        self._held: Kept | None = None
         self._freed = False
         self._readable = True
         #: The columns the set-up is expected to serve, for `rule`.
         self.columns = 1
         #: The pool key of the wirebasket, once set up.
         self.key: PoolKey | None = None
+        #: The set-up's failed attempts that a new KSP followed.
+        self._retries = 0
 
     @property
     def _ksp(self) -> Any:
-        return None if self._kept is None else self._kept.ksp
+        return None if self._held is None else self._held.ksp
 
     @property
     def _x(self) -> Any:
-        return None if self._kept is None else self._kept.x
+        return None if self._held is None else self._held.x
 
     @property
     def _b(self) -> Any:
-        return None if self._kept is None else self._kept.b
+        return None if self._held is None else self._held.b
 
     def set_up(self) -> None:
         """Factor the wirebasket, on a new KSP while MUMPS's workspace is too small.
@@ -439,11 +441,11 @@ class CoarseMumps(ngs.BaseMatrix):
                 )
             else:
                 set_values(kept.aij, local.CSR()[0], kept.index)
-            self._kept = kept
+            self._held = kept
             try:
                 self._factorize(kept)
             except BaseException:
-                self._kept = None
+                self._held = None
                 kept.destroy()
                 raise
             _seen.add(self.key)
@@ -453,6 +455,7 @@ class CoarseMumps(ngs.BaseMatrix):
         PETSc = _petsc.require_petsc()
         comm = self._comm
         retried = RETRIED if self._readable else (*RETRIED, UNREAD)
+        self._retries = 0
         for attempt in range(MUMPS_RETRIES + 1):
             new = kept.ksp is None
             if new:
@@ -491,6 +494,7 @@ class CoarseMumps(ngs.BaseMatrix):
                     f"workspace than ICNTL(14) {kept.workspace} gives."
                 )
             kept.workspace *= 2
+            self._retries = attempt + 1
 
     def _agreed_failure(self) -> int | None:
         """``None`` if the set-up succeeded, else INFOG(1) on every rank.
@@ -514,7 +518,7 @@ class CoarseMumps(ngs.BaseMatrix):
 
     def _inner_factor(self) -> Any:
         """MUMPS's factor matrix on this rank, ``None`` on a rank telescoping drops."""
-        return None if self._kept is None else self._kept.inner_factor()
+        return None if self._held is None else self._held.inner_factor()
 
     @property
     def nbytes(self) -> int:
@@ -523,7 +527,7 @@ class CoarseMumps(ngs.BaseMatrix):
         0 on a rank telescoping drops, and where the factor behind ``PCTELESCOPE``
         cannot be read (`_petsc.telescope_symbols`).
         """
-        return 0 if self._kept is None else self._kept.nbytes
+        return 0 if self._held is None else self._held.nbytes
 
     def IsComplex(self) -> bool:  # noqa: N802 - NGSolve's name
         """Only complex operators take this route (`gfem._linalg.bddc`)."""
@@ -564,7 +568,7 @@ class CoarseMumps(ngs.BaseMatrix):
         """Give the factorization back to the pool; every rank calls this together."""
         with _petsc.LOCK:
             self._freed = True
-            kept, self._kept = self._kept, None
+            kept, self._held = self._held, None
             if kept is not None:
                 _give(kept)
 
