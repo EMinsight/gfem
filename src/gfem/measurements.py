@@ -48,6 +48,7 @@ import scipy.constants as const
 from gfem import _mpi, _objective, _probe
 from gfem._adjoint.measure import measure
 from gfem._checks import check_fixed, is_traced
+from gfem._dim2 import entry_refusal, refuse_entry
 from gfem._materials import Material, _is_law, field_principal_values
 from gfem._pytree import register_fields
 from gfem.conventions import MODE_ENERGY
@@ -215,6 +216,8 @@ def interface_participation(
     """
     from gfem.results import EigenmodeResult
 
+    fields = getattr(modes, "e_fields", ())
+    refuse_entry(fields[0].mesh if fields else None, "interface_participation")
     if not isinstance(modes, EigenmodeResult):
         raise TypeError(
             "interface_participation needs a gfem.EigenmodeResult, got "
@@ -584,6 +587,9 @@ def characteristic_impedance(
             "characteristic_impedance needs a gfem.PortModeResult, got "
             f"{type(mode).__name__}."
         )
+    if mode.e_field is not None and len(mode.e_field.normal) == 2:
+        # a 2-component normal: the mode of a line port on a 2D mesh
+        raise entry_refusal("characteristic_impedance")
     if voltage_path is None and current_path is None:
         raise TypeError(
             "characteristic_impedance needs a voltage_path, a current_path or "
@@ -733,6 +739,7 @@ def power_flow(
     from gfem._field import Field
     from gfem.model import Model
 
+    refuse_entry(getattr(field, "mesh", None), "power_flow")
     if not isinstance(field, Field):
         raise TypeError(f"power_flow needs a gfem.Field, got {type(field).__name__}.")
     if field._communicator is not None:  # noqa: SLF001
@@ -879,6 +886,7 @@ def region_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
     """
     from gfem._field import Field
 
+    refuse_entry(getattr(field, "mesh", None), "region_mean")
     if not isinstance(field, Field):
         raise TypeError(f"region_mean needs a gfem.Field, got {type(field).__name__}.")
     if field._communicator is not None:  # noqa: SLF001
@@ -1027,6 +1035,7 @@ def element_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
     """
     from gfem._field import Field
 
+    refuse_entry(getattr(field, "mesh", None), "element_mean")
     if not isinstance(field, Field):
         raise TypeError(f"element_mean needs a gfem.Field, got {type(field).__name__}.")
     if _probe.COMPONENTS[field.space] != 1:
@@ -1191,6 +1200,7 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
     from gfem._field import Field
     from gfem.model import Model
 
+    refuse_entry(getattr(field, "mesh", None), "electric_energy")
     if not isinstance(field, Field):
         raise TypeError(
             f"electric_energy needs a gfem.Field, got {type(field).__name__}."

@@ -91,8 +91,9 @@ def _distinct_rows(rows: np.ndarray) -> int:
 
 
 def entity_keys(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
-    """Distinct ``(tag, entity)`` rows and the row of each tetrahedron."""
-    keys = np.stack([mesh.tetrahedron_tags, mesh.tetrahedron_entities], axis=1)
+    """Distinct ``(tag, entity)`` rows and the row of each volume element."""
+    topology = mesh._topology  # noqa: SLF001 - the role arrays of either dimension
+    keys = np.stack([topology.volume_tags, topology.volume_entities], axis=1)
     uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
     return uniq, inverse.ravel()
 
@@ -141,17 +142,18 @@ def em_domain(mesh: Mesh, excluded: set[tuple[int, int]]) -> EMDomain:
 
 
 def _domain(mesh: Mesh, excluded: set[tuple[int, int]]) -> EMDomain:
-    keys = np.stack([mesh.tetrahedron_tags, mesh.tetrahedron_entities], axis=1)
+    topology = mesh._topology  # noqa: SLF001 - the role arrays of either dimension
+    keys = np.stack([topology.volume_tags, topology.volume_entities], axis=1)
     out = np.zeros(len(keys), dtype=bool)
     for tag, ent in excluded:
         out |= (keys[:, 0] == tag) & (keys[:, 1] == ent)
     active = ~out
     active.flags.writeable = False
-    nb = mesh.triangle_neighbours
+    nb = topology.surface_neighbours
     n_active = ((nb >= 0) & active[np.maximum(nb, 0)]).sum(axis=1)
     sides = {}
     for r in mesh.regions:
         if r.dim == mesh.dim - 1:
-            counts = np.bincount(n_active[mesh.triangle_tags == r.tag], minlength=3)
+            counts = np.bincount(n_active[topology.surface_tags == r.tag], minlength=3)
             sides[r.name] = (int(counts[0]), int(counts[1]), int(counts[2]))
     return EMDomain(excluded=tuple(sorted(excluded)), active=active, sides=sides)

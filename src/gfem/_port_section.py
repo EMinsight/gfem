@@ -245,8 +245,15 @@ def port_section(model: Model, port: WavePort) -> PortSection:
         PortGeometryError: The port surface is not planar.
         ValueError: An anisotropic material beside the port has no principal
             axis along the port normal.
+        NotImplementedError: The mesh is a 2D mesh (a backstop: the solve
+            entry refuses its port modes first).
     """
     mesh = model.mesh
+    if mesh.dim != 3:
+        raise NotImplementedError(
+            f"port_section reads the planar port of a tetrahedral mesh, but "
+            f"{port.name!r} is on a mesh of dimension {mesh.dim}."
+        )
     scale = LENGTH_UNITS[mesh.length_unit]
     nodes = np.asarray(mesh.nodes, float) / scale
     active = model._domain.active  # noqa: SLF001

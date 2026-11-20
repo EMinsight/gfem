@@ -31,6 +31,7 @@ from gfem._boundaries import (
     surfaces_of,
 )
 from gfem._checks import check_fixed, is_traced
+from gfem._dim2 import refuse_model
 from gfem._domain import EMDomain, em_domain, enclosed_entities, physics_of
 from gfem._floquet import (
     FloquetFace,
@@ -305,7 +306,11 @@ class Model:
             of a `Periodic` pair (for plane-wave incidence on a periodic
             cell, use `FloquetPort`); a `FloquetPort` surface whose rim lies
             on one pair only, with several regions behind it, or with a
-            medium that is not lossless, isotropic and constant.
+            medium that is not lossless, isotropic and constant. On a 2D
+            mesh, a part with no 2D path (lumped and Floquet ports,
+            `Periodic`, sheets, thermal boundaries, `enclosed_by`, a
+            ``voltage_path``, an anisotropic material); the message names
+            the remedy.
         PortGeometryError: A `FloquetPort` surface that is not planar, or
             whose rim is not on the seams of two pairs over whole periods.
     """
@@ -346,6 +351,9 @@ class Model:
                 "with gfem.Mesh.from_gmsh(path)."
             )
         by = _excluded_by_physics(excluded)
+        if mesh.dim == 2:
+            items = (*_as_tuple(boundaries, "boundaries"), *_as_tuple(ports, "ports"))
+            refuse_model(mesh, materials, items, by)
         if domains is None:
             # physics with the same exclusions share one domain
             keys = [frozenset(_excluded_entities(mesh, e)) for e in by]
@@ -495,6 +503,8 @@ class Model:
         Raises:
             NotImplementedError: A wave port touches a pair, even at one node.
         """
+        if not pairs:
+            return
         mesh = self.mesh
         for port in self.ports:
             if not isinstance(port, WavePort):
@@ -903,7 +913,8 @@ def _excluded_entities(mesh: Mesh, excluded: tuple) -> set[tuple[int, int]]:
             )
             idx = mesh.elements(entry)
             tag = mesh.region(entry).tag
-            out |= {(tag, int(e)) for e in set(mesh.tetrahedron_entities[idx].tolist())}
+            entities = mesh._topology.volume_entities[idx]  # noqa: SLF001 - either dimension
+            out |= {(tag, int(e)) for e in set(entities.tolist())}
         elif isinstance(entry, EnclosedBy):
             for s in entry.surfaces:
                 check_surface(mesh, s, repr(entry))
