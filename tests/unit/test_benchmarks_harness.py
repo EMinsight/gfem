@@ -531,6 +531,7 @@ def test_a_dof_count_off_the_pin_ends_the_run(tmp_path):
     assert m.dof_seen == 12
 
 
+@LINUX_ONLY
 def test_a_finished_run_is_measured(tmp_path):
     m = _measure(tmp_path, [sys.executable, "-c", "print('hi')"], cap_s=20)
     assert m.returncode == 0

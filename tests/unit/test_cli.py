@@ -123,6 +123,9 @@ def test_a_gpu_job_without_a_gpu_names_the_cuda_error(
     _cuda.probe.cache_clear()
 
 
+@pytest.mark.skipif(
+    sys.platform == "darwin", reason="macOS refuses CUDA before probing"
+)
 def test_a_default_job_sent_to_a_missing_gpu_names_the_cuda_error(
     model, tmp_path, capsys, monkeypatch
 ):
