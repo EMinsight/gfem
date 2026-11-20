@@ -12,9 +12,16 @@ load is split. NGSolve's vectors carry the status, and `mark_load` and `mark_sta
 tell them what a NumPy write just put there: a state in a column vector is wrong by
 far more than its size, with no error.
 
+Two states multiply over owned DOFs only (`DofLayout.state_inner`,
+`DofLayout.state_gram`, `DofLayout.state_norm`), and a few state columns are made
+orthonormal by Cholesky QR twice on their Gram matrix (`DofLayout.state_qr`). A DOF
+mask set by any of its holders becomes one every holder agrees on through one
+exchange (`DofLayout.held_by_any`).
+
 With one process (`ONE_PROCESS`) the roles collapse: `pair` is literally
-``load.T @ state`` and nothing communicates. Each product returns an agreed value,
-reduced to rank 0 and broadcast (ADR 0058).
+``load.T @ state``, each state product is today's NumPy expression, bit for bit,
+and nothing communicates. Each product returns an agreed value, reduced to rank 0
+and broadcast (ADR 0058).
 """
 
 from __future__ import annotations
@@ -60,9 +67,27 @@ class DofLayout:
         """The state column of a load's summed values."""
         return load
 
-    def state_norm(self, vector: ngs.BaseVector) -> float:
-        """The 2-norm of an NGSolve vector holding a state."""
-        return ngs.Norm(vector)
+    def held_by_any(self, mask: np.ndarray) -> np.ndarray:
+        """Per local DOF, whether some rank holding it set ``mask`` there."""
+        return np.asarray(mask, dtype=bool)
+
+    def state_inner(self, a: np.ndarray, b: np.ndarray) -> Any:
+        """The owned-entry product ``vdot(a, b)`` of two state columns."""
+        return np.vdot(a, b)
+
+    def state_gram(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
+        r"""Owned-entry products :math:`A^\mathsf{H} B` of two sets of state columns."""
+        return A.conj().T @ B
+
+    def state_norm(self, state: np.ndarray | ngs.BaseVector) -> float:
+        """The 2-norm of a state column, or of an NGSolve vector holding one."""
+        if isinstance(state, ngs.BaseVector):
+            return ngs.Norm(state)
+        return float(np.linalg.norm(state))
+
+    def state_qr(self, A: np.ndarray) -> np.ndarray:
+        """Orthonormal state columns spanning those of ``A``: ``np.linalg.qr``'s Q."""
+        return np.linalg.qr(A)[0]
 
     def mark_load(self, vector: ngs.BaseVector) -> None:
         """Tell ``vector`` that a load was written into its NumPy view."""
@@ -96,8 +121,12 @@ class RankLayout(DofLayout):
         self._work = ngs.GridFunction(space).vec.CreateVector()
 
     def _sum(self, local: np.ndarray) -> np.ndarray:
-        """The rank sum of ``local``, in this space's scalar type."""
-        return _mpi.reduce_bcast(self.comm, np.asarray(local, self._dtype))
+        """The rank sum of ``local``, in this space's scalar type and its shape.
+
+        A product of two columns is 0-d, which the reduction's buffer is not.
+        """
+        local = np.asarray(local, self._dtype)
+        return _mpi.reduce_bcast(self.comm, local).reshape(local.shape)
 
     def pair(self, load: np.ndarray, state: np.ndarray) -> np.ndarray:
         """The rank sum of the local products ``load.T @ state``."""
@@ -135,9 +164,43 @@ class RankLayout(DofLayout):
         # a copy: the next exchange writes here
         return np.array(work.FV().NumPy())
 
-    def state_norm(self, vector: ngs.BaseVector) -> float:
+    def held_by_any(self, mask: np.ndarray) -> np.ndarray:
+        """The OR of ``mask`` over each DOF's holders: one neighbour exchange."""
+        return np.real(self.exchange(np.asarray(mask, dtype=self._dtype))) > 0
+
+    def state_inner(self, a: np.ndarray, b: np.ndarray) -> Any:
+        """The owned-entry product of two states: owned DOFs' ``vdot``, rank-summed."""
+        owned = self.owners
+        local = np.atleast_1d(np.vdot(a[owned], b[owned]))
+        return _mpi.reduce_bcast(self.comm, local)[0]
+
+    def state_gram(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
+        r"""Owned-entry products :math:`A^\mathsf{H} B` of state columns, summed."""
+        owned = self.owners
+        return _mpi.reduce_bcast(self.comm, A[owned].conj().T @ B[owned])
+
+    def state_norm(self, state: np.ndarray | ngs.BaseVector) -> float:
         """The 2-norm over owned DOFs: agreed, unlike ``ngs.Norm``, an ``Allreduce``."""
-        return _owned_norm(self.comm, vector.FV().NumPy()[self.owners])
+        if isinstance(state, ngs.BaseVector):
+            state = state.FV().NumPy()
+        return _owned_norm(self.comm, np.asarray(state)[self.owners])
+
+    def state_qr(self, A: np.ndarray) -> np.ndarray:
+        r"""Orthonormal state columns spanning ``A``'s: Cholesky QR twice.
+
+        With :math:`G = A^\mathsf{H} A = R^\mathsf{H} R`, :math:`Q = A R^{-1}`, done
+        twice, each Gram matrix agreed. Its columns may differ from one process's
+        Householder Q by a unit factor each; the span is the same.
+
+        Raises:
+            numpy.linalg.LinAlgError: ``A``'s columns are numerically dependent, on
+                every rank alike (the Gram matrix is agreed).
+        """
+        Q = np.asarray(A)
+        for _ in range(2):
+            upper = np.linalg.cholesky(self.state_gram(Q, Q)).conj().T
+            Q = np.linalg.solve(upper.T, Q.T).T
+        return Q
 
     def mark_load(self, vector: ngs.BaseVector) -> None:
         """``vector``'s status becomes ``DISTRIBUTED``."""

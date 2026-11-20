@@ -6,7 +6,11 @@ every face's ``domin`` / ``domout`` to 1 / 0.
 
 from __future__ import annotations
 
+import collections.abc
+import contextlib
 import dataclasses
+import sys
+import traceback
 import weakref
 from typing import Any
 
@@ -15,7 +19,13 @@ import ngsolve as ngs
 import numpy as np
 
 from gfem import _mpi
-from gfem._periodic import Pairing, check_nodes
+from gfem._engine.seam_check import (
+    SeamCounts,
+    expected_surface_counts,
+    seam_counts,
+    surface_counts,
+)
+from gfem._periodic import Pairing, check_nodes, pair_names
 from gfem.mesh import LENGTH_UNITS, Mesh
 
 
@@ -40,6 +50,9 @@ class EngineMesh:
             ``triangle_order[i]``.
         node_order: NGSolve vertex ``i`` is gfem node ``node_order[i]``.
         comm: The communicator of a distributed mesh; ``None`` on one process.
+        pairs: The periodic pairs as the mesh carries them: a model's pairs, or,
+            under ranks, the pair swapped when the search kept the swapped
+            orientation (its surfaces and nodes exchanged, its translation negated).
         surface_spaces: `gfem._engine.coefficients`' surface P0 spaces and maps of
             a distributed mesh, by whether the space is complex.
     """
@@ -51,26 +64,84 @@ class EngineMesh:
     triangle_order: np.ndarray
     node_order: np.ndarray
     comm: Any = None
+    pairs: tuple[Pairing, ...] = ()
     surface_spaces: dict = dataclasses.field(default_factory=dict)
+
+
+#: Partitions a periodic search may take, swaps included (ADR 0071).
+TRIES = 8
+#: A retry shuffles the tetrahedra within blocks of this many consecutive ones.
+BLOCK = 4096
 
 
 @dataclasses.dataclass(eq=False)
 class _Partition:
-    """A rank's first maps of one topology on one communicator."""
+    """A rank's first maps of one topology on one communicator with one set of pairs.
+
+    Attributes:
+        seed: The element order the partition was taken from: 0 is the file order,
+            and ``s`` shuffles it within blocks with ``default_rng(s)``
+            (`block_order`). Every set of pairs of a topology on a communicator
+            shares it, so their meshes have the same local tetrahedra.
+        swapped: Per pair, whether the mesh carries it swapped.
+    """
 
     node_order: np.ndarray
     tetrahedron_order: np.ndarray
     triangle_order: np.ndarray
+    seed: int = 0
+    swapped: tuple[bool, ...] = ()
 
 
-_PARTITIONS: weakref.WeakKeyDictionary[Any, dict[int | None, _Partition]] = (
+_PARTITIONS: weakref.WeakKeyDictionary[Any, dict[tuple, _Partition]] = (
     weakref.WeakKeyDictionary()
 )
 
 
-def partition_memo(topology: Any) -> dict[int | None, _Partition]:
-    """The maps a topology has had, by `gfem._mpi.comm_key`."""
+def partition_memo(topology: Any) -> dict[tuple, _Partition]:
+    """The maps a topology has had, by `gfem._mpi.comm_key` and pair names."""
     return _PARTITIONS.setdefault(topology, {})
+
+
+@dataclasses.dataclass
+class _Forced:
+    """A test's start seed, forced swap and budget for the periodic search."""
+
+    start: int | None = None
+    swap: bool = False
+    tries: int = TRIES
+
+
+_FORCED = _Forced()
+
+
+@contextlib.contextmanager
+def forced_search(
+    *, start: int | None = None, swap: bool = False, tries: int = TRIES
+) -> collections.abc.Generator[None]:
+    """Run periodic searches from seed ``start``, swapping a clean partition.
+
+    A private test hook: ``swap`` distributes a clean partition again with the
+    pair swapped, so the swapped path runs on a mesh that needs none.
+    """
+    global _FORCED  # noqa: PLW0603
+    previous, _FORCED = _FORCED, _Forced(start, swap, tries)
+    try:
+        yield
+    finally:
+        _FORCED = previous
+
+
+def block_order(n: int, seed: int) -> np.ndarray | None:
+    """The tetrahedron order of try ``seed``: ``None`` (file order) for 0.
+
+    A shuffle within blocks of `BLOCK` consecutive tetrahedra keeps METIS near its
+    cost on the file order, and was accepted as often as a full shuffle.
+    """
+    if seed == 0:
+        return None
+    rng = np.random.default_rng(seed)
+    return np.argsort(np.arange(n) // BLOCK + rng.random(n), kind="stable")
 
 
 def inverse_order(order: np.ndarray, n: int) -> np.ndarray:
@@ -105,16 +176,18 @@ def to_ngsolve(
     Raises:
         ValueError: The nodes have moved so that a pair no longer matches
             under its translation (NGSolve checks no coordinates).
-        gfem.DistributedUnsupportedError: ``periodic`` above one rank.
+        gfem.DistributedUnsupportedError: More than one pair above one rank.
         gfem._mpi.AgreedError: This partition differs from the first one of this
-            topology and communicator.
+            topology and communicator; no partition passed the periodic check
+            within the budget; or the search left the seed a partition of this
+            topology and communicator already took.
     """
-    if comm is not None:
-        if periodic:
-            _mpi.refuse_feature("periodic")
-        with _mpi.section(comm):
-            return _distributed(mesh, comm)
+    if comm is not None and len(periodic) > 1:
+        _mpi.refuse_feature("periodic")
     check_nodes(np.asarray(mesh.nodes, float), periodic)
+    if comm is not None:
+        with _mpi.section(comm):
+            return _distributed(mesh, comm, periodic)
     scale = LENGTH_UNITS[mesh.length_unit]
     points = np.asarray(mesh.nodes, float) / scale
     ngmesh, domains, tet_order, tri_order = _netgen_mesh(mesh, points, periodic)
@@ -125,6 +198,7 @@ def to_ngsolve(
         tetrahedron_order=tet_order,
         triangle_order=tri_order,
         node_order=np.arange(len(points)),
+        pairs=periodic,
     )
 
 
@@ -140,20 +214,29 @@ def tetrahedron_domains(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _netgen_mesh(
-    mesh: Mesh, points: np.ndarray, periodic: tuple[Pairing, ...]
+    mesh: Mesh,
+    points: np.ndarray,
+    periodic: tuple[Pairing, ...],
+    order: np.ndarray | None = None,
 ) -> tuple[Any, tuple[tuple[int, int], ...], np.ndarray, np.ndarray]:
-    """The whole netgen mesh on ``points``, its domains and its element orders."""
+    """The whole netgen mesh on ``points``, its domains and its element orders.
+
+    ``order`` (`block_order`) feeds the tetrahedra of each domain to netgen in
+    that order instead of the file's.
+    """
     names = {(r.dim, r.tag): r.name for r in mesh.regions}
     ngmesh = ngm.Mesh(dim=3)  # ty: ignore[unresolved-attribute]
     ngmesh.AddPoints(np.ascontiguousarray(points))
 
     domains, tet_domain = tetrahedron_domains(mesh)
-    tet_order = np.argsort(tet_domain, kind="stable")
+    if order is None:
+        order = np.arange(len(tet_domain))
+    ordered = tet_domain[order]
+    tet_order = order[np.argsort(ordered, kind="stable")]
+    tets = mesh.tetrahedra[order]
     for k, (tag, _) in enumerate(domains, start=1):
         ngmesh.SetMaterial(k, names[3, int(tag)])
-        ngmesh.AddElements(
-            dim=3, index=k, data=mesh.tetrahedra[tet_domain == k], base=0
-        )
+        ngmesh.AddElements(dim=3, index=k, data=tets[ordered == k], base=0)
 
     nb = mesh.triangle_neighbours
     din = np.where(nb[:, 0] >= 0, tet_domain[np.maximum(nb[:, 0], 0)], 0)
@@ -187,8 +270,31 @@ def _netgen_mesh(
     return ngmesh, tuple((int(t), int(e)) for t, e in domains), tet_order, tri_order
 
 
-def _distributed(mesh: Mesh, comm: Any) -> EngineMesh:
-    """Rank 0 partitions, every rank reads its gfem numbers (ADR 0061).
+@dataclasses.dataclass(eq=False)
+class _Received:
+    """One partition as a rank received it, before the wrap."""
+
+    ngmesh: Any
+    domains: tuple[tuple[int, int], ...]
+    node_order: np.ndarray
+    tets: np.ndarray
+    tris: np.ndarray
+
+
+@dataclasses.dataclass(eq=False)
+class _Try:
+    """A checked periodic partition and its agreed counts."""
+
+    received: _Received
+    tetrahedron_order: np.ndarray
+    triangle_order: np.ndarray
+    missing: int
+    reverse: int
+    surfaces: bool
+
+
+def _receive(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _Received:
+    """Rank 0 partitions and sends, every rank reads its gfem numbers (ADR 0061).
 
     The wheel's Python layer binds no global number, so each point crosses
     ``Distribute`` with its gfem node number in ``x``: partitioning and sending read
@@ -196,43 +302,208 @@ def _distributed(mesh: Mesh, comm: Any) -> EngineMesh:
     memory for nothing.
     """
     nodes = np.asarray(mesh.nodes, float)
-    scale = LENGTH_UNITS[mesh.length_unit]
     channel = ngm.MPI_Comm(comm)
     domains = None
     if comm.rank == 0:
         ids = np.zeros_like(nodes)
         ids[:, 0] = np.arange(len(nodes))
-        ngmesh, domains, _, _ = _netgen_mesh(mesh, ids, ())
+        order = block_order(len(mesh.tetrahedra), seed)
+        ngmesh, domains, _, _ = _netgen_mesh(mesh, ids, pairs, order)
         ngmesh.Partition(comm.size)
         ngmesh.Distribute(channel)
     else:
         ngmesh = ngm.Mesh.Receive(channel)  # ty: ignore[unresolved-attribute]
     domains = comm.bcast(domains, root=0)
-
     node_order = np.zeros(0, dtype=np.int64)
     # a rank METIS gave nothing has no point array: `Coordinates()` raises
     if ngmesh.ne > 0:
-        coordinates = ngmesh.Coordinates()
-        node_order = np.rint(coordinates[:, 0]).astype(np.int64)
-        coordinates[:] = nodes[node_order] / scale
+        node_order = np.rint(ngmesh.Coordinates()[:, 0]).astype(np.int64)
     tets = node_order[np.asarray(ngmesh._get3dElementsAsTets()).reshape(-1, 4)]  # noqa: SLF001
     tris = node_order[np.asarray(ngmesh._get2dElementsAsTriangles()).reshape(-1, 3)]  # noqa: SLF001
+    return _Received(ngmesh, domains, node_order, tets, tris)
 
+
+def _checked(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _Try:
+    """One periodic partition, judged on agreed counts.
+
+    Every rank counts its missing and reverse twins (`seam_counts`) and its
+    triangles per surface tag; one reduction sums them with a flag per rank whose
+    check raised.
+
+    Raises:
+        gfem._mpi.AgreedError: The check raised on some rank, which printed it.
+    """
+    received = _receive(mesh, comm, pairs, seed)
+    n_nodes = len(mesh.nodes)
+    tags = np.unique(mesh.triangle_tags)
+    paired = {mesh.region(name).tag for p in pairs for name in (p.first, p.second)}
+    local = np.zeros(4 + len(tags) + comm.size, dtype=np.int64)
+    tet_order = tri_order = np.zeros(0, dtype=np.int64)
+    try:
+        tet_order = _match(received.tets, mesh.tetrahedra, received.node_order, n_nodes)
+        tri_order = _match(received.tris, mesh.triangles, received.node_order, n_nodes)
+        if received.ngmesh.ne > 0:
+            local[:4] = seam_counts(received.ngmesh)  # `SeamCounts`'s order
+        local[4 : 4 + len(tags)] = surface_counts(mesh.triangle_tags, tri_order, tags)
+    except Exception:  # noqa: BLE001
+        print(  # noqa: T201
+            f"gfem: rank {comm.rank}: the periodic mesh check raised:",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc()
+        sys.stderr.flush()
+        local[4 + len(tags) + comm.rank] = 1
+    total = _mpi.reduce_bcast(comm, local)
+    failed = np.flatnonzero(total[4 + len(tags) :])
+    if len(failed):
+        raise _mpi.AgreedError(
+            "The periodic mesh check raised on ranks "
+            f"{', '.join(map(str, failed))}; each printed its traceback (ADR 0071)."
+        )
+    want = expected_surface_counts(mesh.triangle_tags, tags, paired)
+    seam = SeamCounts(*total[:4].tolist())
+    return _Try(
+        received,
+        tet_order,
+        tri_order,
+        missing=seam.missing_edges + seam.missing_faces,
+        reverse=seam.reverse_edges + seam.reverse_faces,
+        surfaces=bool(np.array_equal(total[4 : 4 + len(tags)], want)),
+    )
+
+
+def _swap(p: Pairing) -> Pairing:
+    """``p`` with its surfaces exchanged and its translation negated."""
+    return dataclasses.replace(
+        p,
+        first=p.second,
+        second=p.first,
+        first_nodes=p.second_nodes,
+        second_nodes=p.first_nodes,
+        translation=(-p.translation[0], -p.translation[1], -p.translation[2]),
+    )
+
+
+def _search(
+    mesh: Mesh,
+    comm: Any,
+    periodic: tuple[Pairing, ...],
+    memo: dict[tuple, _Partition],
+    key: int | None,
+) -> tuple[_Try, int, bool]:
+    """The strict search for a partition of one pair (ADR 0071): try, seed, swapped.
+
+    A try is kept unswapped with no missing and no reverse twins. With missing twins
+    and no reverse ones, the same order is distributed again with the pair swapped,
+    and kept if it misses nothing. Anything else moves to the next seed. Surface
+    counts off their expected values fail a try too. A topology already distributed
+    on this communicator holds its seed; a search for other pairs, or the same
+    pairs again, starts there in the orientation it kept.
+
+    Raises:
+        gfem._mpi.AgreedError: No partition passed in the budget, or the search
+            left the seed already held.
+    """
+    forced = _FORCED
+    names = pair_names(periodic)
+    held = {k[1]: p for k, p in memo.items() if k[0] == key}
+    fixed = next((p.seed for p in held.values()), None)
+    again = held.get(names)
+    seed = forced.start if forced.start is not None else (fixed or 0)
+    replay = again is not None and again.swapped == (True,) and forced.start is None
+    rows: list[str] = []
+    used = 0
+    swap = False
+    while used < forced.tries:
+        if fixed is not None and seed != fixed:
+            raise _mpi.AgreedError(_conflict(() in held))
+        if not replay:
+            found = _checked(mesh, comm, periodic, seed)
+            used += 1
+            rows.append(f"seed {seed}: {found.missing}, {found.reverse}")
+            if (
+                found.surfaces
+                and found.missing == 0
+                and found.reverse == 0
+                and not forced.swap
+            ):
+                return found, seed, False
+            swap = found.surfaces and found.reverse == 0
+            swap = swap and (found.missing > 0 or forced.swap)
+            del found
+        if replay or (swap and used < forced.tries):
+            replay = False
+            found = _checked(mesh, comm, tuple(_swap(p) for p in periodic), seed)
+            used += 1
+            rows.append(f"seed {seed} swapped: {found.missing}, {found.reverse}")
+            if found.surfaces and found.missing == 0:
+                return found, seed, True
+            del found
+        seed += 1
+    raise _mpi.AgreedError(
+        f"No partition of this periodic mesh on {comm.size} ranks passed gfem's "
+        f"check in {forced.tries} tries (missing, reverse per try: "
+        f"{'; '.join(rows)}). Try another number of ranks, or run one-process "
+        "copies with comm=MPI.COMM_SELF (ADR 0071)."
+    )
+
+
+def _conflict(plain: bool) -> str:
+    first = "without its pairs" if plain else "with other pairs"
+    return (
+        f"This mesh was distributed {first} first on this communicator, with "
+        "another partition than its periodic model needs; solve the periodic "
+        "model first, or use comm.Dup() (ADR 0071)."
+    )
+
+
+def _distributed(
+    mesh: Mesh, comm: Any, periodic: tuple[Pairing, ...] = ()
+) -> EngineMesh:
+    """This rank's part of ``mesh``, the same partition each time (ADR 0061, 0071).
+
+    A mesh with a pair takes the partition `_search` keeps. A plain mesh follows
+    the seed a periodic search of its topology and communicator took, so both have
+    the same local tetrahedra in the same order.
+    """
+    nodes = np.asarray(mesh.nodes, float)
+    scale = LENGTH_UNITS[mesh.length_unit]
     memo = partition_memo(mesh._topology)  # noqa: SLF001
     key = _mpi.comm_key(comm)
-    if key in memo:
-        first = memo[key]
+    names = pair_names(periodic)
+    pairs = periodic
+    tet_order = tri_order = None
+    if periodic:
+        found, seed, swapped = _search(mesh, comm, periodic, memo, key)
+        received = found.received
+        tet_order, tri_order = found.tetrahedron_order, found.triangle_order
+        if swapped:
+            pairs = tuple(_swap(p) for p in periodic)
+    else:
+        seed = next((p.seed for k, p in memo.items() if k[0] == key), 0)
+        swapped = False
+        received = _receive(mesh, comm, (), seed)
+    node_order = received.node_order
+    tets, tris = received.tets, received.tris
+    first = memo.get((key, names))
+    if first is not None:
         same = np.array_equal(node_order, first.node_order) and (
             _same_rows(tets, mesh.tetrahedra[first.tetrahedron_order])
             and _same_rows(tris, mesh.triangles[first.triangle_order])
         )
     else:
+        if tet_order is None or tri_order is None:
+            tet_order = _match(tets, mesh.tetrahedra, node_order, len(nodes))
+            tri_order = _match(tris, mesh.triangles, node_order, len(nodes))
         first = _Partition(
             node_order,
-            _match(tets, mesh.tetrahedra, node_order, len(nodes)),
-            _match(tris, mesh.triangles, node_order, len(nodes)),
+            tet_order,
+            tri_order,
+            seed=seed,
+            swapped=(swapped,) if periodic else (),
         )
-        memo[key] = first
+        memo[key, names] = first
         same = True
     if not _mpi.agree_all(comm, flag=same):
         raise _mpi.AgreedError(
@@ -240,14 +511,18 @@ def _distributed(mesh: Mesh, comm: Any) -> EngineMesh:
             "this communicator, though partitioning reads connectivity only. Report "
             "it; a wheel upgrade may have changed netgen (ADR 0061)."
         )
+    ngmesh = received.ngmesh
+    if ngmesh.ne > 0:
+        ngmesh.Coordinates()[:] = nodes[node_order] / scale
     return EngineMesh(
         mesh=ngs.Mesh(ngmesh),
         scale=scale,
-        domains=domains,
+        domains=received.domains,
         tetrahedron_order=first.tetrahedron_order,
         triangle_order=first.triangle_order,
         node_order=first.node_order,
         comm=comm,
+        pairs=pairs,
     )
 
 

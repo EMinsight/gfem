@@ -26,7 +26,7 @@ pip install "gfem[mkl] @ git+https://github.com/benvial/gfem"     # a faster CPU
 pip install "gfem[cuda12] @ git+https://github.com/benvial/gfem"  # the direct solver on an NVIDIA GPU, cuDSS (Linux x86_64, Windows); cuda13 for CUDA 13
 pip install "gfem[xarray] @ git+https://github.com/benvial/gfem"  # results as xarray datasets (.to_xarray())
 pip install "gfem[viz] @ git+https://github.com/benvial/gfem"     # fields as PyVista grids (.to_pyvista())
-pip install "gfem[mpi] @ git+https://github.com/benvial/gfem"     # one driven solve across MPI ranks (Linux x86_64; Open MPI from your machine)
+pip install "gfem[mpi] @ git+https://github.com/benvial/gfem"     # one solve across MPI ranks (Linux x86_64; Open MPI from your machine)
 ```
 
 Supported platforms: Linux x86_64 (glibc >= 2.28), macOS arm64 and Windows x86_64, Python >= 3.12.
@@ -79,7 +79,7 @@ The documentation is at <https://bvial.info/gfem/>. Good places to start:
 - [Heaters and thermo-optic phase](https://bvial.info/gfem/recipes/heater-temperature.html): steady and transient
   heat conduction, Joule heating from a DC current, and the phase a heater puts on a waveguide, in 2D and 3D.
 - [PETSc and SLEPc](https://bvial.info/gfem/recipes/petsc-slepc.html): the PETSc and SLEPc solvers, which need a source build.
-- [Distributed solve](https://bvial.info/gfem/recipes/distributed-solve.html): one driven solve across the ranks of an MPI job.
+- [Distributed solve](https://bvial.info/gfem/recipes/distributed-solve.html): one driven, electrostatic or eigenmode solve across the ranks of an MPI job.
 
 ## Licence
 

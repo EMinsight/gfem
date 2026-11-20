@@ -8,7 +8,7 @@ refactorization is numeric only, on one solver plan.
 
 By default it is exact: ``ksp_type preonly``, ``pc_type cholesky``,
 ``pc_factor_mat_solver_type mumps``, MUMPS LDL^T on a matrix flagged
-symmetric. Those defaults, ``ksp_max_it`` and ``ksp_rtol`` are entries of
+symmetric (`defaults`). Those defaults, ``ksp_max_it`` and ``ksp_rtol`` are entries of
 PETSc's options database under the handle's own prefix, so a user's
 ``petsc_options`` override them; they are in the database only while the
 handle reads them (`gfem._petsc.scoped_options`). A user option PETSc did
@@ -23,18 +23,20 @@ the current operator raises `gfem.LinearSolverConvergenceError`.
 Across ranks `RankPetscHandle` holds the free block as an ``MPIAIJ`` filled through
 COO (ADR 0062), and is also what ``kind="direct"`` means there: MUMPS LDL^T on
 PT-Scotch, with retries on a new KSP while MUMPS runs out of workspace (ADR 0068).
+A ``direct`` operator unequal to its transpose (a Bloch phase) is factored by MUMPS LU
+on a matrix not flagged symmetric; ``petsc`` refuses it as on one process.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple, Self
 
 import ngsolve as ngs
 import numpy as np
 
 from gfem import _mpi, _petsc
-from gfem._linalg import MAXITER, Symmetry
+from gfem._linalg import MAXITER, Operator, Symmetry
 from gfem._linalg.base import (
     PlannedHandle,
     equals_its_transpose,
@@ -48,12 +50,19 @@ if TYPE_CHECKING:
     from gfem._linalg.layout import RankLayout
     from gfem.options import PetscOptions
 
-#: gfem's options, under the user's: an exact MUMPS LDL^T factorization.
-DEFAULTS: tuple[tuple[str, Any], ...] = (
-    ("ksp_type", "preonly"),
-    ("pc_type", "cholesky"),
-    ("pc_factor_mat_solver_type", "mumps"),
-)
+
+def defaults(symmetric: bool) -> tuple[tuple[str, Any], ...]:
+    """Gfem's options, under the user's: an exact MUMPS factorization.
+
+    :math:`L D L^T` where :math:`A^T = A` (``symmetric``, `equals_its_transpose`), LU
+    otherwise.
+    """
+    return (
+        ("ksp_type", "preonly"),
+        ("pc_type", "cholesky" if symmetric else "lu"),
+        ("pc_factor_mat_solver_type", "mumps"),
+    )
+
 
 #: Added to the error of a Krylov solve that met an indefinite operator.
 CG_HINT = (
@@ -157,10 +166,12 @@ class FreeNumbering:
 
 
 def distributed_aij(
-    local: Any, numbering: FreeNumbering, comm: Any
+    local: Any, numbering: FreeNumbering, comm: Any, *, symmetric: bool
 ) -> tuple[Any, np.ndarray]:
-    """A rank's unassembled ``local`` matrix as a symmetric ``MPIAIJ`` by COO.
+    """A rank's unassembled ``local`` matrix as an ``MPIAIJ`` by COO.
 
+    It is flagged symmetric, for MUMPS :math:`L D L^T`, only where ``symmetric``:
+    :math:`A^T = A`.
     Returns the matrix and the positions of its entries in ``local``'s value vector,
     for `set_values`.
     """
@@ -179,8 +190,9 @@ def distributed_aij(
             numbers[cols[index]].astype(PETSc.IntType),
         )
         set_values(aij, data, index)
-        aij.setOption(PETSc.Mat.Option.SYMMETRIC, True)
-        aij.setOption(PETSc.Mat.Option.SYMMETRY_ETERNAL, True)
+        if symmetric:
+            aij.setOption(PETSc.Mat.Option.SYMMETRIC, True)
+            aij.setOption(PETSc.Mat.Option.SYMMETRY_ETERNAL, True)
     except BaseException:
         aij.destroy()
         raise
@@ -230,6 +242,9 @@ class PetscHandle(PlannedHandle):
         """
         _refuse_storage(local_matrix(matrix, self.layout.comm))
         super().__init__(matrix, freedofs, symmetry, is_complex=is_complex)
+        #: :math:`A^T = A`: MUMPS :math:`L D L^T` on a matrix flagged symmetric, else
+        #: LU.
+        self._symmetric = equals_its_transpose(symmetry, is_complex=is_complex)
         self._lock = _petsc.LOCK  # PETSc's database and registry are global
         #: The KSP and the AIJ (petsc4py objects); ``None`` once freed.
         self._ksp: Any = None
@@ -265,7 +280,7 @@ class PetscHandle(PlannedHandle):
 
     def _defaults(self) -> tuple[tuple[str, Any], ...]:
         """Gfem's options on this communicator, under the user's."""
-        return DEFAULTS
+        return defaults(self._symmetric)
 
     def _new_ksp(self) -> None:
         """A KSP on the held AIJ under this handle's prefix, not configured."""
@@ -484,8 +499,9 @@ class PetscHandle(PlannedHandle):
             (n, n), (rowptr, block_cols, values), comm=PETSc.COMM_SELF
         )
         try:
-            aij.setOption(PETSc.Mat.Option.SYMMETRIC, True)
-            aij.setOption(PETSc.Mat.Option.SYMMETRY_ETERNAL, True)
+            if self._symmetric:
+                aij.setOption(PETSc.Mat.Option.SYMMETRIC, True)
+                aij.setOption(PETSc.Mat.Option.SYMMETRY_ETERNAL, True)
         except BaseException:
             aij.destroy()
             raise
@@ -758,8 +774,27 @@ class RankPetscHandle(PetscHandle):
             reuse=reuse,
         )
 
+    @classmethod
+    def from_operator(
+        cls, operator: Operator, symmetry: Symmetry, **options: Any
+    ) -> Self:
+        """As `PlannedHandle.from_operator`; ``kind="petsc"`` refuses as on one process.
+
+        Its refusal is raised from replicated values, the same on every rank.
+        """
+        if options.get("kind", "petsc") == "petsc":
+            _refuse(symmetry, is_complex=bool(operator.form.space.is_complex))
+        return super().from_operator(operator, symmetry, **options)
+
+    @classmethod
+    def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
+        r"""``direct`` takes every operator: LU where :math:`A^T \neq A`.
+
+        As `defaults` says.
+        """
+
     def _defaults(self) -> tuple[tuple[str, Any], ...]:
-        return (*DEFAULTS, *RANK_MUMPS_OPTIONS)
+        return (*defaults(self._symmetric), *RANK_MUMPS_OPTIONS)
 
     def _petsc_comm(self) -> Any:
         return self.layout.comm
@@ -770,7 +805,9 @@ class RankPetscHandle(PetscHandle):
     def _block(self, matrix) -> _Block:
         """The free block of ``matrix`` as a new ``MPIAIJ``, which copies the values."""
         local = local_matrix(matrix, self.layout.comm)
-        aij, index = distributed_aij(local, self._numbering, self.layout.comm)
+        aij, index = distributed_aij(
+            local, self._numbering, self.layout.comm, symmetric=self._symmetric
+        )
         nothing = np.zeros(0, dtype=np.int64)
         return _Block(aij, nothing, nothing, index, nothing)
 
@@ -863,10 +900,13 @@ def _refuse(symmetry: Symmetry, *, is_complex: bool) -> None:
     It needs ``A^T = A`` (the matrix is flagged symmetric for MUMPS LDL^T).
     """
     if not equals_its_transpose(symmetry, is_complex=is_complex):
-        raise ValueError(
-            "linear_solver='petsc' needs A^T = A: a real symmetric or complex "
-            f"symmetric operator, not {symmetry!r}; use linear_solver='direct' or "
-            "'bddc_gmres'."
+        # replicated values: under ranks every rank raises it together
+        raise _mpi.agreed(
+            ValueError(
+                "linear_solver='petsc' needs A^T = A: a real symmetric or complex "
+                f"symmetric operator, not {symmetry!r}; use linear_solver='direct' "
+                "or 'bddc_gmres'."
+            )
         )
 
 

@@ -483,7 +483,12 @@ def prepare(
             width=width,
             solves=solves,
         )
-    raise NotImplementedError(
+    raise _unavailable(kind)
+
+
+def _unavailable(kind: str) -> NotImplementedError:
+    """The error of a ``kind`` that is no backend."""
+    return NotImplementedError(
         f"linear_solver={kind!r} is not available in this version of gfem; use "
         f"one of {', '.join(repr(k) for k in KINDS)}."
     )
@@ -502,21 +507,22 @@ def _prepare_on_ranks(
     reuse_preconditioner: bool,
     petsc_options: PetscOptions,
 ) -> Handle:
-    """`prepare` across ranks: a backend that takes a layout, ``A^T = A`` only.
+    """`prepare` across ranks: a backend that takes a layout.
+
+    ``direct`` and ``bddc_gmres`` take an operator without :math:`A^T = A` (MUMPS LU,
+    and BDDC with an LU coarse problem); ``petsc`` refuses it as on one process.
 
     Raises:
-        gfem.DistributedUnsupportedError: No distributed backend of ``kind``, or of
-            an operator without ``A^T = A``.
+        NotImplementedError: No backend of ``kind``, on every rank.
+        ValueError: ``petsc`` and an operator without :math:`A^T = A`, on every rank.
         gfem.SolverUnavailableError: ``direct`` or ``petsc`` without the MPI PETSc
             stack.
     """
     from gfem import _mpi
-    from gfem._linalg.base import equals_its_transpose
     from gfem._linalg.bddc import BddcHandle
 
-    is_complex = bool(operator.form.space.is_complex)
-    if kind not in KINDS or not equals_its_transpose(symmetry, is_complex=is_complex):
-        _mpi.refuse_feature("general_operator")
+    if kind not in KINDS:
+        raise _mpi.agreed(_unavailable(kind))
     if kind in ("direct", "petsc"):
         from gfem import _petsc
 

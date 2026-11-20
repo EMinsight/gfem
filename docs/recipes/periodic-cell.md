@@ -154,6 +154,7 @@ grad = jax.grad(lowest_band)(jnp.full(n, 9.0))  # Hz per unit eps_r
 | `bddc_gmres` | driven and eigenmode | driven only; eigenmode raises `ValueError`: use `direct` |
 | `petsc` | driven | raises `ValueError`: use `direct` |
 | `device="cuda"` | untested: compare with `direct` once on your cell | raises `NotImplementedError`: use `direct` on the CPU |
+| several MPI ranks | one pair: driven on `direct` and `bddc_gmres`, eigenmode on `direct`; two or three pairs raise | one pair: driven on `direct` and `bddc_gmres`; eigenmode raises |
 | eigen solver | ARPACK or SLEPc | ARPACK or SLEPc |
 | Floquet ports | `direct` and `bddc_gmres`, driven uniform sweep only; every other entry raises | the same |
 
@@ -197,6 +198,8 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
   ports and read them off S.
 - Translations only, one to three pairs. For a rotational symmetry, mesh the
   whole structure.
+- Across MPI ranks, one pair only, and no Bloch eigenmode solve
+  ({doc}`distributed-solve`).
 - `gfem.Electrostatic` on a periodic model raises `NotImplementedError`. Mesh
   enough cells and solve without pairs.
 - `gfem.interface_participation` on a paired face raises `ValueError`, since

@@ -255,19 +255,13 @@ def require_mpi_petsc(kind: str, comm: Any) -> Any:
             "linear_solver='bddc_gmres', or pass comm=MPI.COMM_SELF for independent "
             "one-process copies."
         )
-    try:
-        found, unreadable = has_zgemmt(), None
-    except SolverUnavailableError as err:
-        found, unreadable = True, err
-    if not _mpi.agree_all(comm, flag=unreadable is None):
-        raise _mpi.agreed(
-            unreadable
-            or SolverUnavailableError(
-                f"linear_solver={kind!r} cannot run: another rank cannot read its "
-                "libpetsc to check whether the stack's MUMPS calls ZGEMMT (that "
-                "rank's error names the file)."
-            )
-        )
+    found = _mpi.available(
+        comm,
+        has_zgemmt,
+        f"linear_solver={kind!r} cannot run: another rank cannot read its "
+        "libpetsc to check whether the stack's MUMPS calls ZGEMMT (that "
+        "rank's error names the file).",
+    )
     if not _mpi.agree_all(comm, flag=not found):
         raise SolverUnavailableError(
             f"linear_solver={kind!r} cannot run: {_ZGEMMT} --mpi as {_mpi.RECIPE} "

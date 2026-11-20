@@ -346,22 +346,30 @@ def tie_classes(n_nodes: int, pairings: Iterable[Pairing]) -> np.ndarray:
 
 
 def bloch_phases(
-    model: Model, wave_vector: Iterable[float] | None
+    model: Model,
+    wave_vector: Iterable[float] | None,
+    *,
+    pairs: Iterable[Pairing] | None = None,
 ) -> tuple[complex, ...] | None:
     """NGSolve's phase of each periodic pair, in ``boundaries`` order.
 
     ``exp(-i k·a_j)`` for the wave vector k (rad/m) and pair j's translation
     a_j (m), the factor from a pair's first surface to its second
     (`gfem.conventions.BLOCH_PHASE`); ``None`` without a wave vector (plain
-    periodicity).
+    periodicity). ``pairs`` are the pairs as the mesh carries them
+    (`gfem._engine.mesh.EngineMesh.pairs`; the model's by default): under ranks
+    a pair the partition search swapped has its translation negated, so its
+    phase is the inverse (ADR 0071).
     """
     if wave_vector is None:
         return None
     k = np.asarray(tuple(wave_vector), dtype=float)
-    return tuple(
-        complex(np.exp(-1j * float(k @ np.asarray(a))))
-        for a in model.periodic_translations
+    translations = (
+        model.periodic_translations
+        if pairs is None
+        else tuple(p.translation for p in pairs)
     )
+    return tuple(complex(np.exp(-1j * float(k @ np.asarray(a)))) for a in translations)
 
 
 def check_wave_vector(

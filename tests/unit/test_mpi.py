@@ -1,6 +1,7 @@
 """Launcher resolution and refusals, with no MPI: stub communicators, fake mpi4py."""
 
 import dataclasses
+import importlib
 import math
 import os
 import pickle
@@ -15,6 +16,7 @@ import gradient_cases as cases
 import jax
 import mpi_cases
 import numpy as np
+import periodic_cases
 import pytest
 import ranks
 import refinement_cases as rc
@@ -271,9 +273,9 @@ def test_the_coarse_problem_runs_on_at_most_one_rank_per_100k_dofs_and_64_ranks(
 
 
 def test_the_error_is_a_not_implemented_error_with_its_key():
-    err = gfem.DistributedUnsupportedError("eigenmode", "no path; use COMM_SELF")
+    err = gfem.DistributedUnsupportedError("adaptive_sweep", "no path; use COMM_SELF")
     assert isinstance(err, NotImplementedError)
-    assert err.feature == "eigenmode"
+    assert err.feature == "adaptive_sweep"
     assert str(err) == "no path; use COMM_SELF"
     copy = pickle.loads(pickle.dumps(err))  # noqa: S301
     assert (copy.feature, str(copy)) == (err.feature, str(err))
@@ -291,16 +293,16 @@ def test_a_solve_above_one_rank_raises_its_key_and_a_remedy(key, tmp_path, monke
 def test_a_launched_job_raises_without_being_given_a_communicator(
     tmp_path, monkeypatch
 ):
-    model, problem, options = mpi_cases.refused("eigenmode", tmp_path)
+    model, problem, options = mpi_cases.refused("arpack", tmp_path)
     use_mpi(monkeypatch, fake_mpi())
     monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.solve(model, problem, options=options)
-    assert caught.value.feature == "eigenmode"
+    assert caught.value.feature == "arpack"
 
 
 def test_a_job_passes_its_communicator_on(tmp_path, monkeypatch):
-    model, problem, options = mpi_cases.refused("eigenmode", tmp_path)
+    model, problem, options = mpi_cases.refused("arpack", tmp_path)
     use_mpi(monkeypatch, fake_mpi())
     with pytest.raises(gfem.DistributedUnsupportedError):
         gfem.Job(model, problem, options).run(comm=Stub(4))
@@ -328,9 +330,159 @@ def test_a_port_solve_is_all_that_passes_so_far(tmp_path):
         options = gfem.SolverOptions(linear_solver=solver)
         assert _mpi.refuse(line, frequency, options) is None
         assert _mpi.refuse(wave, frequency, options) is None
-    assert _mpi.refuse(wave, gfem.PortMode("w", 5e9), gfem.SolverOptions()) is None
+    for options in (gfem.SolverOptions(), *SHARED_REFUSALS.values()):
+        # a port mode ignores the device and the linear solver: rank 0 runs it
+        assert _mpi.refuse(wave, gfem.PortMode("w", 5e9), options) is None
     kept = gfem.Driven(5e9, keep_fields=[5e9])
     assert _mpi.refuse(line, kept, gfem.SolverOptions()) is None
+
+
+def test_an_eigenmode_solve_passes_with_auto_and_slepc(tmp_path):
+    line = cases.layered_line(tmp_path)
+    problem = gfem.Eigenmode(target=5e9)
+    for solver in ("auto", "slepc"):
+        for linear in ("auto", "direct", "bddc_gmres"):
+            options = gfem.SolverOptions(eigen_solver=solver, linear_solver=linear)
+            assert _mpi.refuse(line, problem, options) is None
+
+
+MODE_FIELD_OUTPUTS = ("q_port", "participation", "bulk", "principal", "sheet")
+
+
+@pytest.mark.parametrize("name", [*MODE_FIELD_OUTPUTS, "e_field"])
+def test_a_mode_field_cotangent_above_one_rank_raises_its_key(name, tmp_path):
+    from gfem._eigen.rule import EigenmodeRule
+
+    line = cases.layered_line(tmp_path)
+    rule = EigenmodeRule(line, gfem.Eigenmode(target=5e9), gfem.SolverOptions())
+    # the check reads the communicator's size, the output and the wanted kinds:
+    # replicated values, so every rank raises it, and nothing communicates
+    rule.comm = Stub(4)
+    eps = frozenset({("material", "sub", "eps_r")})
+    with pytest.raises(gfem.DistributedUnsupportedError, match="COMM_SELF") as caught:
+        rule.nondifferentiable_output(name, eps)
+    assert caught.value.feature == "mode_field_gradient"
+    assert "stop_gradient" in str(caught.value)
+
+
+def test_the_eigenfrequencies_still_differentiate_above_one_rank(tmp_path):
+    from gfem._eigen.rule import EigenmodeRule
+
+    line = cases.layered_line(tmp_path)
+    rule = EigenmodeRule(line, gfem.Eigenmode(target=5e9), gfem.SolverOptions())
+    rule.comm = Stub(4)
+    eps = frozenset({("material", "sub", "eps_r")})
+    assert rule.nondifferentiable_output("omega", eps) is None
+    assert rule.nondifferentiable_output("cluster", eps) is None
+    # the backward error has no derivative anywhere: one process's reason
+    reason = rule.nondifferentiable_output("error", eps)
+    assert reason is not None
+    assert "backward error" in reason
+
+
+def test_a_bloch_eigenmode_on_a_periodic_cell_keeps_its_refusal(tmp_path):
+    cell = periodic_cases.c1(periodic_cases.c1_mesh(tmp_path))
+    problem = gfem.Eigenmode(target=5e9, wave_vector=periodic_cases.C1_K)
+    with pytest.raises(gfem.DistributedUnsupportedError, match="COMM_SELF") as caught:
+        _mpi.refuse(cell, problem, gfem.SolverOptions())
+    assert caught.value.feature == "bloch"
+
+
+def test_one_periodic_pair_passes_for_a_driven_solve_plain_or_bloch(tmp_path):
+    cell = mpi_cases._cell(tmp_path)  # one pair
+    options = gfem.SolverOptions(linear_solver="direct")
+    assert _mpi.refuse(cell, gfem.Driven(5e9), options) is None
+    bloch = gfem.Driven(5e9, wave_vector=periodic_cases.C1_K)
+    assert _mpi.refuse(cell, bloch, options) is None
+    angle = gfem.Driven(
+        [5e9, 6e9], wave_vector=periodic_cases.C1_K, wave_vector_frequency=5e9
+    )
+    assert _mpi.refuse(cell, angle, options) is None
+
+
+def test_one_periodic_pair_passes_for_a_plain_eigenmode_solve(tmp_path):
+    cell = mpi_cases._cell(tmp_path)  # one pair
+    options = gfem.SolverOptions(linear_solver="direct")
+    eigen = gfem.Eigenmode(target=5e9, n_modes=1)
+    assert _mpi.refuse(cell, eigen, options) is None
+
+
+def test_a_bloch_eigenmode_keeps_its_refusal(tmp_path):
+    cell = mpi_cases._cell(tmp_path)  # one pair
+    problem = gfem.Eigenmode(target=5e9, n_modes=1, wave_vector=periodic_cases.C1_K)
+    with pytest.raises(gfem.DistributedUnsupportedError, match="eigenmode") as caught:
+        _mpi.refuse(cell, problem, gfem.SolverOptions())
+    assert caught.value.feature == "bloch"
+
+
+def test_two_periodic_pairs_refuse_a_driven_and_an_eigenmode_solve(tmp_path):
+    cell = periodic_cases.c2(periodic_cases.c2_mesh(tmp_path))  # two pairs
+    options = gfem.SolverOptions(linear_solver="direct")
+    bloch = gfem.Driven(5e9, wave_vector=periodic_cases.C2_K)
+    for problem in (gfem.Driven(5e9), bloch, gfem.Eigenmode(target=5e9, n_modes=1)):
+        with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+            _mpi.refuse(cell, problem, options)
+        assert caught.value.feature == "periodic"
+
+
+#: Options every problem refuses above one rank, by the key each raises.
+SHARED_REFUSALS = {
+    "device": gfem.SolverOptions(linear_solver="direct", device="cuda"),
+    "bddc_order_1": gfem.SolverOptions(order=1, linear_solver="bddc_gmres"),
+    "bddc_order_1_auto": gfem.SolverOptions(order=1),
+    "petsc_preconditioner": gfem.SolverOptions(
+        linear_solver="petsc", petsc_options={"pc_type": "ilu"}
+    ),
+}
+
+
+def _problem(key, directory):
+    """``(model, problem)`` of a refused case, or of an electrostatic solve."""
+    if key == "electrostatic":
+        return mpi_cases.stack(directory), mpi_cases.ELECTROSTATIC
+    return mpi_cases.refused(key, directory)[:2]
+
+
+@pytest.mark.parametrize("problem_key", ["electrostatic", "arpack"])
+@pytest.mark.parametrize("key", SHARED_REFUSALS)
+def test_the_shared_refusals_hold_for_every_problem(
+    key, problem_key, tmp_path, monkeypatch
+):
+    model, problem = _problem(problem_key, tmp_path)
+    use_mpi(monkeypatch, fake_mpi())
+    with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+        gfem.solve(model, problem, options=SHARED_REFUSALS[key], comm=Stub(4))
+    assert caught.value.feature == mpi_cases.feature(key)
+
+
+@pytest.mark.parametrize("key", ["thermal", "thermal_transient", "dc_conduction"])
+def test_a_refused_physics_raises_its_own_key_before_the_shared_ones(key, tmp_path):
+    model, problem, _ = mpi_cases.refused(key, tmp_path)
+    for options in SHARED_REFUSALS.values():
+        with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+            _mpi.refuse(model, problem, options)
+        assert caught.value.feature == mpi_cases.feature(key)
+
+
+@pytest.mark.parametrize("solver", ["auto", "direct", "bddc_gmres", "petsc"])
+def test_an_electrostatic_solve_has_a_distributed_path(solver, tmp_path):
+    options = gfem.SolverOptions(order=2, linear_solver=solver)
+    _mpi.refuse(mpi_cases.stack(tmp_path), mpi_cases.ELECTROSTATIC, options)
+    assert "electrostatic" not in _mpi._REFUSALS
+
+
+def test_an_electrostatic_solve_on_a_periodic_model_is_refused(tmp_path):
+    model, _, options = mpi_cases.refused("periodic", tmp_path)
+    problem = gfem.Electrostatic(terminals={"a": "z_max"}, ground="z_min")
+    with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+        _mpi.refuse(model, problem, options)
+    assert caught.value.feature == "periodic"
+
+
+def test_element_mean_has_region_means_text():
+    assert _mpi._REFUSALS["element_mean"] == _mpi._REFUSALS["region_mean"].replace(
+        "region_mean", "element_mean"
+    )
 
 
 def test_every_refusal_key_is_snake_case():
@@ -444,14 +596,16 @@ def test_an_unknown_problem_stays_a_type_error(tmp_path, monkeypatch):
 
 
 def test_a_communicator_of_size_one_runs_what_ranks_refuse(tmp_path):
-    model = mpi_cases.stack(tmp_path)
-    problem = gfem.Electrostatic(terminals=mpi_cases.TERMINALS)
-    options = gfem.SolverOptions(order=1)
-    expected = gfem.solve(model, problem, options=options).capacitance
+    model, problem = mpi_cases.series(mpi_cases.series_mesh(tmp_path))
+    options = gfem.SolverOptions(order=1, linear_solver="direct")
+    with pytest.raises(gfem.DistributedUnsupportedError):
+        _mpi.refuse(model, problem, options)
+    top = mpi_cases.SERIES_TOP
+    expected = gfem.solve(model, problem, options=options).temperature.at(top)
     result = gfem.solve(model, problem, options=options, comm=Stub(1))
-    np.testing.assert_allclose(result.capacitance, expected, rtol=1e-12)
+    np.testing.assert_allclose(result.temperature.at(top), expected, rtol=1e-12)
     job = gfem.Job(model, problem, options).run(comm=Stub(1))
-    np.testing.assert_allclose(job.capacitance, expected, rtol=1e-12)
+    np.testing.assert_allclose(job.temperature.at(top), expected, rtol=1e-12)
 
 
 # --- agreement, trivial at one process --------------------------------------------
@@ -472,6 +626,44 @@ def test_agreement_is_trivial_at_one_process():
 def test_a_section_at_one_process_lets_any_error_through():
     with pytest.raises(ValueError, match="local"), _mpi.section(None):
         raise ValueError("local")
+
+
+def test_an_error_is_agreed_by_its_class_or_its_mark():
+    assert _mpi.is_agreed(gfem.SolverUnavailableError("all ranks"))
+    assert not _mpi.is_agreed(ValueError("one rank"))
+    assert _mpi.is_agreed(_mpi.agreed(ValueError("all ranks")))
+    assert not _mpi.is_agreed(gfem.SolverUnavailableError("all ranks"), ())
+    assert _mpi.is_agreed(ValueError("all ranks"), (ValueError,))
+
+
+def test_raised_together_marks_only_the_classes_named():
+    with pytest.raises(ValueError) as caught, _mpi.raised_together(ValueError):
+        raise ValueError("replicated")
+    assert _mpi.is_agreed(caught.value, ())
+    with pytest.raises(KeyError) as other, _mpi.raised_together(ValueError):
+        raise KeyError("local")
+    assert not _mpi.is_agreed(other.value, ())
+
+
+def test_a_check_that_passes_everywhere_returns_its_value():
+    assert _mpi.available(None, lambda: 3, "elsewhere") == 3
+
+
+def test_a_rank_whose_check_fails_raises_its_own_error_agreed():
+    def check():
+        raise gfem.SolverUnavailableError("here")
+
+    with pytest.raises(gfem.SolverUnavailableError, match="here") as caught:
+        _mpi.available(None, check, "elsewhere")
+    assert _mpi.is_agreed(caught.value, ())
+
+
+def test_a_rank_whose_check_passes_raises_with_the_others_failure(monkeypatch):
+    # another rank's check failed: the vote is false where this one passed
+    monkeypatch.setattr(_mpi, "agree_all", lambda *_, **__: False)
+    with pytest.raises(gfem.SolverUnavailableError, match="elsewhere") as caught:
+        _mpi.available(object(), lambda: 3, "elsewhere")
+    assert _mpi.is_agreed(caught.value, ())
 
 
 def test_a_warning_at_one_process_warns_at_the_callers_line():
@@ -513,6 +705,15 @@ def test_a_field_from_ranks_refuses_export_on_a_stub(tmp_path):
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.electric_energy(piece, model=cases.layered_line(tmp_path))
     assert caught.value.feature == "electric_energy"
+
+
+def test_a_scalar_field_from_ranks_refuses_element_mean_on_a_stub(tmp_path):
+    piece = dataclasses.replace(
+        _piece(tmp_path), quantity="T", unit="K", space="h1", omega=None
+    )
+    with pytest.raises(gfem.DistributedUnsupportedError, match="COMM_SELF") as caught:
+        gfem.element_mean(piece, "sub")
+    assert caught.value.feature == "element_mean"
 
 
 def test_a_result_from_ranks_refuses_error_estimate_on_a_stub(tmp_path):
@@ -558,3 +759,49 @@ def test_a_launch_above_the_cap_skips(monkeypatch):
     monkeypatch.setenv(ranks.MAX_RANKS, "4")
     with pytest.raises(pytest.skip.Exception, match="8 ranks"):
         ranks.on_ranks_argv(["never-run"], ranks=8)
+
+
+def test_a_general_operator_is_no_distributed_refusal():
+    # a general operator under ranks reaches its backend (ADR 0078 amendment)
+    assert "general_operator" not in _mpi._REFUSALS
+    assert "general_operator" not in mpi_cases.GUARD_KEYS
+
+
+def test_each_symmetry_registers_its_own_coarse_type(monkeypatch):
+    # a plain and a Bloch BDDC solve on one communicator never share a creator
+    registered = {}
+    monkeypatch.setattr(coarse, "_made", {})
+    monkeypatch.setattr(coarse, "_registered", set())
+    monkeypatch.setattr(_mpi, "comm_key", lambda _: 7)
+    monkeypatch.setattr(
+        coarse.ngs.comp, "RegisterPreconditioner", registered.setdefault
+    )
+    comm = Stub(4)
+    lu, cholesky = coarse.coarse_type(comm, False), coarse.coarse_type(comm, True)
+    assert (lu, cholesky) == ("gfem_mumps_7_lu", "gfem_mumps_7_cholesky")
+    assert coarse.coarse_type(comm, False) == lu
+    assert set(registered) == {lu, cholesky}
+    made = [registered[name](None, None) for name in (lu, cholesky)]
+    assert [m.symmetric for m in made] == [False, True]
+    assert coarse._made[7] == made  # `finish` takes the last one NGSolve asked for
+
+
+# --- field pieces -----------------------------------------------------------------
+
+
+def test_each_rule_names_its_field_pieces():
+    from gfem._eigen.rule import EigenmodeRule
+    from gfem._engine.driven import DrivenRule
+    from gfem._engine.electrostatic import ElectrostaticRule
+
+    assert DrivenRule.pieces == {"e_field"}
+    assert ElectrostaticRule.pieces == {"potential"}
+    assert EigenmodeRule.pieces == {"e_field"}
+
+
+def test_ranks_compare_a_pieces_cotangent_by_shape_and_any_other_by_value():
+    solve_vjp = importlib.import_module("gfem._adjoint.solve_vjp")
+    cotangents = {"potential": np.ones((5, 2)), "capacitance": np.eye(2)}
+    replicated = solve_vjp._replicated_cotangents(cotangents, {"potential"})
+    np.testing.assert_array_equal(replicated["the cotangent of potential"], [5, 2])
+    np.testing.assert_array_equal(replicated["the cotangent of capacitance"], np.eye(2))

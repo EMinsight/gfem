@@ -39,6 +39,7 @@ import ngsolve as ngs
 import numpy as np
 import scipy.constants
 
+from gfem import _mpi
 from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import PEC, Conductor, sheet_of, surfaces_of
 from gfem._engine import quadrature
@@ -46,20 +47,19 @@ from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import p0, permittivity
 from gfem._engine.dispersion import check_static, law_regions
 from gfem._engine.domain import (
-    boundary_region,
     domain_key,
     em_region,
     h1_space,
     region_domain,
 )
-from gfem._engine.fields import fe_space
+from gfem._engine.fields import dof_shape, rank_piece
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Derivative, FieldPair, Term, law_key
 from gfem._field import FieldMap
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
 from gfem._linalg.base import free_mask
-from gfem.mesh import Mesh
+from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem.model import Model, check_surface
 from gfem.options import SolverOptions
 from gfem.problems import Electrostatic
@@ -72,6 +72,7 @@ __all__ = [
     "KeptHandle",
     "objective_loads",
     "solve_duals",
+    "terminal_lifting",
 ]
 
 #: The linear solver for ``linear_solver="auto"``: CG + BDDC.
@@ -251,17 +252,57 @@ def _prepare_form(
     order: int,
     width: int,
     tolerance: float,
+    layout: DofLayout = ONE_PROCESS,
 ) -> Handle:
-    """The prepared operator ``int eps_r grad u . grad v`` (file units)."""
+    """The prepared operator ``int eps_r grad u . grad v`` (file units).
+
+    Under ranks ``layout`` is the space's `RankLayout`, on which `prepare`
+    dispatches.
+    """
     u, v = space.TnT()
     form = ngs.BilinearForm(space, symmetric=True)
     form += eps * ngs.grad(u) * ngs.grad(v) * quadrature.dx(order)
     return linear.prepare(
-        Operator(form, space.FreeDofs()),
+        Operator(
+            form, space.FreeDofs(), layout=None if layout is ONE_PROCESS else layout
+        ),
         symmetry="hermitian",
         width=width,
         tolerance=tolerance,
     )
+
+
+def terminal_lifting(
+    model: Model,
+    built: EngineMesh,
+    space: ngs.FESpace,
+    surfaces: tuple[str, ...],
+    layout: DofLayout = ONE_PROCESS,
+) -> np.ndarray:
+    """A terminal's lifting: 1 on the vertex DOFs of its surfaces, 0 elsewhere.
+
+    The constant 1 lies in the vertex block of NGSolve's H1 basis, so the
+    indicator of the vertex DOFs of the terminal's triangles is its exact
+    lifting. Under ranks a rank may hold a terminal vertex without any of its
+    triangles: the mask goes through `DofLayout.held_by_any`, so every holder
+    of a DOF agrees and the column is a state (ADR 0501).
+
+    Returns:
+        ``(ndof,)``, a state column.
+    """
+    mesh = model.mesh
+    tags = [mesh.region(s).tag for s in surfaces]
+    local = built.triangle_order[
+        np.isin(np.asarray(mesh.triangle_tags)[built.triangle_order], tags)
+    ]
+    nodes = np.unique(np.asarray(mesh.triangles)[local])
+    vertex = np.full(len(mesh.imported_nodes), -1, dtype=np.int64)
+    vertex[built.node_order] = np.arange(len(built.node_order))
+    mask = np.zeros(space.ndof, dtype=bool)
+    for v in vertex[nodes]:
+        dofs = [d for d in space.GetDofNrs(ngs.NodeId(ngs.VERTEX, int(v))) if d >= 0]
+        mask[dofs] = True
+    return layout.held_by_any(mask).astype(float)
 
 
 def _solve_keyed(
@@ -302,11 +343,21 @@ class ElectrostaticRule:
     reads = frozenset({"eps_r"})
     #: Outputs whose cotangents the backward pass handles.
     differentiable_outputs = frozenset({"capacitance", "energy", "potential"})
+    #: Outputs that are a rank's own piece under ranks (ADR 0063): the ranks
+    #: compare their cotangents' shapes, not their values.
+    pieces = frozenset({"potential"})
 
     def __init__(
-        self, model: Model, problem: Electrostatic, options: SolverOptions
+        self,
+        model: Model,
+        problem: Electrostatic,
+        options: SolverOptions,
+        *,
+        comm: Any = None,
     ) -> None:
         """Check that the problem fits the model (see `gfem.Electrostatic`).
+
+        ``comm`` is the resolved communicator of a distributed solve.
 
         Raises:
             NotImplementedError: The model has a periodic pair, or a sheet
@@ -314,15 +365,17 @@ class ElectrostaticRule:
             ValueError: A permittivity law has a Drude term (no static
                 permittivity).
             gfem.SolverUnavailableError: ``linear_solver="petsc"`` and PETSc
-                cannot be used.
+                cannot be used, or ``"direct"`` or ``"petsc"`` under ``comm``
+                without the MPI PETSc stack.
         """
         if not isinstance(problem, Electrostatic):
             raise TypeError(f"Expected gfem.Electrostatic, got {problem!r}.")
         self.problem = problem
         self.options = options
+        self.comm = comm
         # before any assembly
         self.linear = ResolvedLinearSolver.resolve(
-            options, default=DEFAULT_SOLVER, problem="electrostatic"
+            options, default=DEFAULT_SOLVER, problem="electrostatic", comm=comm
         )
         # a law reads its static permittivity; a Drude term has none
         check_static(model)
@@ -394,37 +447,43 @@ class ElectrostaticRule:
             ValueError: Part of the solve domain touches no terminal or
                 ground, so its potential is undetermined.
         """
-        with task_manager(self.options.threads):
-            space, built = self._space(model)
-            regions = [
-                boundary_region(built, surfaces)
-                for _, surfaces in self.problem.terminals
-            ]
+        with task_manager(self.options.threads, self.comm):
+            space, built, layout = self._space(model)
             eps = permittivity(model, built)
-            handle = self._prepare(space, eps, self.options.tolerance)
-            lift = np.zeros((space.ndof, len(regions)))
-            for i, region in enumerate(regions):
-                gf = ngs.GridFunction(space)
-                gf.Set(ngs.CF(1.0), definedon=region)
-                lift[:, i] = gf.vec.FV().NumPy()
+            handle = self._prepare(space, eps, self.options.tolerance, layout)
+            lift = np.stack(
+                [
+                    terminal_lifting(model, built, space, surfaces, layout)
+                    for _, surfaces in self.problem.terminals
+                ],
+                axis=1,
+            )
             phi, its = handle.solve_counted(-handle.apply(lift))
             report.solve_step(
                 handle, problem="electrostatic", direction="forward", iterations=its
             )
             phi += lift
             scale = scipy.constants.epsilon_0 * built.scale
-            c = phi.T @ handle.apply(phi) * scale
-            energy = 0.5 * scale * self._region_energies(model, built, space, eps, phi)
+            # a load paired with a state: a rank sum, agreed (ADR 0062)
+            c = handle.layout.pair(handle.apply(phi), phi) * scale
+            energy = (
+                0.5
+                * scale
+                * self._region_energies(model, built, space, eps, phi, layout=layout)
+            )
             if self.adjoint_loads is not None and np.isfinite(c).all():
                 self._solve_duals(model, handle, space, built=built, eps=eps, phi=phi)
         c = 0.5 * (c + c.T)
         if not keep or not np.isfinite(c).all():
             handle.free()
         if not np.isfinite(c).all():
-            raise ValueError(
-                "The electrostatic potential is undetermined: some part of the "
-                "solve domain touches no terminal and no ground. Add a ground "
-                "surface there, or exclude that volume."
+            # read from the agreed capacitance: every rank raises it
+            raise _mpi.agreed(
+                ValueError(
+                    "The electrostatic potential is undetermined: some part of the "
+                    "solve domain touches no terminal and no ground. Add a ground "
+                    "surface there, or exclude that volume."
+                )
             )
         entry = None
         if keep:
@@ -433,10 +492,27 @@ class ElectrostaticRule:
                 handle=KeptHandle(handle),
                 fields={"potential": phi},
             )
-        return {"capacitance": c, "energy": energy, "potential": phi}, entry
+        potential = rank_piece(phi, self._field_width, self.comm, dtype=float)
+        outputs = {"capacitance": c, "energy": energy, "potential": potential}
+        return outputs, entry
+
+    def _field_width(self) -> int:
+        """The rows of a potential at the JAX seam: `fields.dof_shape`'s width."""
+        return dof_shape(
+            self._mesh,
+            self.regions,
+            self._excluded,
+            "h1",
+            self.options.order,
+            comm=self.comm,
+        )[0]
 
     def _prepare(
-        self, space: ngs.FESpace, eps: ngs.CoefficientFunction, tolerance: float
+        self,
+        space: ngs.FESpace,
+        eps: ngs.CoefficientFunction,
+        tolerance: float,
+        layout: DofLayout,
     ) -> Handle:
         """The prepared operator ``int eps_r grad u . grad v`` (file units)."""
         return _prepare_form(
@@ -446,6 +522,7 @@ class ElectrostaticRule:
             order=self.options.order,
             width=len(self.problem.terminals),
             tolerance=tolerance,
+            layout=layout,
         )
 
     def _solve_duals(
@@ -475,30 +552,33 @@ class ElectrostaticRule:
         if keyed:
             self.adjoints.update(_solve_keyed(handle, space, keyed, reused=True))
 
-    def _space(self, model: Model) -> tuple[ngs.FESpace, EngineMesh]:
+    def _space(self, model: Model) -> tuple[ngs.FESpace, EngineMesh, DofLayout]:
+        """The solve space, its mesh, and how it lies across ranks.
+
+        The layout is cached on the discretization next to the space, as
+        driven's is; `ONE_PROCESS` without a communicator.
+        """
         order = self.options.order
-        disc = discretization(model.mesh)
+        disc = discretization(model.mesh, (), self.comm)
         built = disc.built
         fixed = self.fixed
-        space = disc.space(
-            (domain_key(model), "h1", order, fixed),
-            lambda: h1_space(model, built, order, fixed),
-        )
-        return space, built
+        key = (domain_key(model), "h1", order, fixed)
+        space = disc.space(key, lambda: h1_space(model, built, order, fixed))
+        layout: DofLayout = ONE_PROCESS
+        if self.comm is not None:
+            comm = self.comm
+            layout = disc.space((*key, "layout"), lambda: RankLayout(space, comm))
+        return space, built, layout
 
-    def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
+    def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:  # noqa: ARG002
         """Shape and dtype of each forward output (from the mesh topology)."""
         n = len(self.problem.terminals)
-        mesh = model.mesh
-        still = Mesh(mesh.imported_nodes, mesh._topology)  # noqa: SLF001
-        with task_manager(self.options.threads):
-            _, space, _ = fe_space(
-                still, self.regions, self._excluded, "h1", self.options.order
-            )
+        with task_manager(self.options.threads, self.comm):
+            width = self._field_width()
         return {
             "capacitance": jax.ShapeDtypeStruct((n, n), jnp.float64),
             "energy": jax.ShapeDtypeStruct((len(self.regions), n), jnp.float64),
-            "potential": jax.ShapeDtypeStruct((space.ndof, n), jnp.float64),
+            "potential": jax.ShapeDtypeStruct((width, n), jnp.float64),
         }
 
     def role(self, kind: tuple) -> str:
@@ -550,8 +630,8 @@ class ElectrostaticRule:
         phi = entry.fields["potential"]
         eps0 = scipy.constants.epsilon_0
         order = self.options.order
-        with task_manager(self.options.threads):
-            space, built = self._space(model)
+        with task_manager(self.options.threads, self.comm):
+            space, built, layout = self._space(model)
             pairs = []
             left, right = [], []
             if "capacitance" in cotangents:
@@ -560,7 +640,8 @@ class ElectrostaticRule:
                 right.append(phi @ (0.5 * (ct + ct.T)).T)
             load = None
             if "potential" in cotangents:
-                load = np.array(cotangents["potential"], dtype=float)
+                # a rank's rows, then its padding (ADR 0063)
+                load = np.array(cotangents["potential"], dtype=float)[: phi.shape[0]]
             if "energy" in cotangents:
                 ct = np.asarray(cotangents["energy"], dtype=float)
                 eps = permittivity(model, built)
@@ -569,7 +650,9 @@ class ElectrostaticRule:
                     if not ct[r].any():
                         continue
                     region = region_domain(model, built, name)
-                    through += self._region_apply(space, eps, region, phi) * ct[r]
+                    through += (
+                        self._region_apply(space, eps, region, phi, layout) * ct[r]
+                    )
                     pairs.append(
                         FieldPair(
                             space=space,
@@ -595,7 +678,7 @@ class ElectrostaticRule:
                 kept = handle is not None
                 if handle is None:
                     eps = permittivity(model, built)
-                    handle = self._prepare(space, eps, tolerance)
+                    handle = self._prepare(space, eps, tolerance, layout)
                     entry.handle = KeptHandle(handle)
                 # the handle solves the form without eps0 * scale
                 adjoint, its = handle.solve_counted(load, tolerance=tolerance)
@@ -628,8 +711,13 @@ class ElectrostaticRule:
         eps: ngs.CoefficientFunction,
         region: ngs.Region,
         phi: np.ndarray,
+        layout: DofLayout,
     ) -> np.ndarray:
-        """``K_r phi_i`` per column: the operator on ``region`` only (file units)."""
+        """``K_r phi_i`` per column: the operator on ``region`` only (file units).
+
+        Each column is a load: under ranks a shared DOF's value is split over its
+        holders.
+        """
         gf = ngs.GridFunction(space)
         v = space.TestFunction()
         form = ngs.LinearForm(space)
@@ -641,6 +729,7 @@ class ElectrostaticRule:
         out = np.zeros_like(phi)
         for i in range(phi.shape[1]):
             gf.vec.FV().NumPy()[:] = phi[:, i]
+            layout.mark_state(gf.vec)
             form.Assemble()
             out[:, i] = form.vec.FV().NumPy()
         return out
@@ -660,7 +749,7 @@ class ElectrostaticRule:
         is linear in them, so each one's form is the region's
         ``grad u . grad v`` (its coefficient 1 there, 0 elsewhere).
         """
-        _, built = self._space(model)
+        _, built, _ = self._space(model)
         laws = [
             Term(
                 _law_term(lr.region),
@@ -718,6 +807,7 @@ class ElectrostaticRule:
                     order=self.options.order,
                     support=self.regions,
                     _excluded=self._excluded,
+                    _comm=_mpi.static_comm(self.comm),
                 )
                 for i, name in enumerate(names)
             },
@@ -741,11 +831,14 @@ class ElectrostaticRule:
         space: ngs.FESpace,
         eps: ngs.CoefficientFunction,
         phi: np.ndarray,
+        *,
+        layout: DofLayout,
     ) -> np.ndarray:
         """``phi_i^T K_r phi_i``, shape ``(len(self.regions), n_terminals)``.
 
         One element pass per terminal (a P0 linear form on the pinned rule),
-        summed per region over its active tetrahedra.
+        summed per region over its active tetrahedra. Under ranks each rank
+        sums its own tetrahedra, zero elsewhere, and the sums are rank-summed.
         """
         order = self.options.order
         mesh = model.mesh
@@ -758,6 +851,7 @@ class ElectrostaticRule:
         per_tet = np.zeros((len(mesh.tetrahedra), phi.shape[1]))
         for i in range(phi.shape[1]):
             gf.vec.FV().NumPy()[:] = phi[:, i]
+            layout.mark_state(gf.vec)
             form.Assemble()
             per_tet[built.tetrahedron_order, i] = form.vec.FV().NumPy()
         active = model._domain.active  # noqa: SLF001
@@ -765,7 +859,7 @@ class ElectrostaticRule:
         for k, region in enumerate(self.regions):
             tets = mesh.elements(region)
             out[k] = per_tet[tets[active[tets]]].sum(axis=0)
-        return out
+        return _mpi.reduce_bcast(self.comm, out)
 
 
 #: The law parameters the static permittivity reads: eps(0) = eps_inf + the

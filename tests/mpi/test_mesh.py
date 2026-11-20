@@ -427,7 +427,7 @@ def _plant_another_partition(planting):
     mesh = mpi_cases.box(4)
     first = to_ngsolve(mesh, comm=world)
     if world.rank == planting:
-        memo = engine.partition_memo(mesh._topology)[_mpi.comm_key(world)]
+        memo = engine.partition_memo(mesh._topology)[_mpi.comm_key(world), ()]
         memo.node_order = memo.node_order[::-1]
     try:
         to_ngsolve(_moved(mesh), comm=world)
@@ -448,7 +448,7 @@ def _plant_other_tets():
     world = _world()
     mesh = mpi_cases.box(4)
     to_ngsolve(mesh, comm=world)
-    memo = engine.partition_memo(mesh._topology)[_mpi.comm_key(world)]
+    memo = engine.partition_memo(mesh._topology)[_mpi.comm_key(world), ()]
     if world.rank == 1:
         memo.tetrahedron_order = memo.tetrahedron_order[::-1]
     try:
@@ -530,13 +530,13 @@ def _periodic_under_ranks():
     world = _world()
     mesh = mpi_cases.box(2)
     try:
-        to_ngsolve(mesh, periodic=(object(),), comm=world)
+        to_ngsolve(mesh, periodic=(object(), object()), comm=world)
     except gfem.DistributedUnsupportedError as err:
         return err.feature
     raise AssertionError("periodic ran")
 
 
-def test_a_periodic_mesh_does_not_reach_netgen_under_ranks():
+def test_a_mesh_with_two_pairs_does_not_reach_netgen_under_ranks():
     assert on_ranks(_periodic_under_ranks, ranks=3)[0] == "periodic"
 
 

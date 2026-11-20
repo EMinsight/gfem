@@ -18,6 +18,7 @@ phases.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import ngsolve as ngs
 import numpy as np
@@ -44,6 +45,8 @@ from gfem._engine.domain import (
 from gfem._engine.driven import DrivenOperator, real_space
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver
 from gfem._linalg.base import free_mask, host_bytes
+from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
+from gfem._linalg.petsc import FreeNumbering
 from gfem._materials import PermittivityLaw
 from gfem._periodic import bloch_phases
 from gfem.model import Model
@@ -72,6 +75,7 @@ def eigen_operator(
     *,
     linear: ResolvedLinearSolver,
     tolerance: float,
+    numbers: np.ndarray | None = None,
 ) -> EigenOperator:
     """The eigen operator ``T(k)`` of the driven operator, shifted at ``sigma``.
 
@@ -79,6 +83,11 @@ def eigen_operator(
     ``tolerance`` is the linear solver of every shift (`gfem._linalg`), of
     the driven operator's symmetry. A ``"general"`` operator's damping and
     nonpolynomial maps are assembled, so their transposes are exact.
+
+    Under ranks (``op.layout``) every shift is prepared on the layout, the seed's
+    rows are the owned free DOFs (`gfem._linalg.petsc.FreeNumbering`), and
+    ``numbers`` are each local DOF's one-process number
+    (`gfem._engine.fields.one_process_dofs`).
     """
     space, scale = op.space, op.built.scale
     classes = split(op.pieces, scale, sigma)
@@ -88,9 +97,23 @@ def eigen_operator(
     constant = [(c, p) for c, p in powers[0] if p.law is not None]
     free = free_mask(space.FreeDofs(), space.ndof)
     symmetry, matrix_free = op.symmetry, op.symmetric
+    layout = op.layout or ONE_PROCESS
+    numbering = None
+    if isinstance(op.layout, RankLayout):
+        numbering = FreeNumbering(
+            op.layout.pardofs,
+            space.FreeDofs(),
+            ngs.GridFunction(space).vec.CreateVector(),
+            op.layout.comm,
+        )
+
+    def _linear_map(matrix) -> LinearMap:
+        return _Map(matrix, layout)
 
     def operator(k: complex) -> Operator:
-        return Operator(op.form(k * const.c / scale), space.FreeDofs())
+        return Operator(
+            op.form(k * const.c / scale), space.FreeDofs(), layout=op.layout
+        )
 
     def prepare_shift(t: Operator, solves: int = MIN_SUBSPACE) -> Handle:
         """Prepare ``t``: ``T(k)`` at one shift (`operator`), for ``solves``.
@@ -143,6 +166,9 @@ def eigen_operator(
             if constant
             else None
         ),
+        layout=layout,
+        numbers=numbers,
+        numbering=numbering,
     )
 
 
@@ -170,38 +196,45 @@ def assemble(
     return form.mat
 
 
-def matvec(matrix, x: np.ndarray, *, transpose: bool = False) -> np.ndarray:
+def matvec(
+    matrix,
+    x: np.ndarray,
+    *,
+    transpose: bool = False,
+    layout: DofLayout = ONE_PROCESS,
+) -> np.ndarray:
     """An NGSolve matrix (``transpose``: its transpose) applied to a NumPy vector.
 
     The transpose of an assembled matrix only: a matrix-free form's ``.T``
-    applies the form itself on a Bloch-phased space.
+    applies the form itself on a Bloch-phased space. ``x`` is a state column of
+    ``layout`` (marked so, as the driven solves mark theirs), the result a load.
     """
     a = matrix.CreateColVector()
     a.FV().NumPy()[:] = x
+    layout.mark_state(a)
     b = matrix.CreateColVector()
     b.data = (matrix.T if transpose else matrix) * a
     return b.FV().NumPy().copy()
 
 
 class _Map:
-    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors, and its bytes."""
+    """``matrix @ x`` (or ``matrix.T @ x``) on NumPy vectors, and its bytes.
 
-    def __init__(self, matrix) -> None:
+    ``x`` is a state of ``layout``, the result a load (`matvec`).
+    """
+
+    def __init__(self, matrix, layout: DofLayout = ONE_PROCESS) -> None:
         self.matrix = matrix
+        self.layout = layout
 
     def __call__(self, x: np.ndarray, /, *, transpose: bool = False) -> np.ndarray:
         """``matrix x``, or ``matrix^T x``."""
-        return matvec(self.matrix, x, transpose=transpose)
+        return matvec(self.matrix, x, transpose=transpose, layout=self.layout)
 
     @property
     def nbytes(self) -> int:
         """The assembled matrix's host bytes; 0 for a matrix-free form."""
         return host_bytes(self.matrix)
-
-
-def _linear_map(matrix) -> LinearMap:
-    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors (`_Map`)."""
-    return _Map(matrix)
 
 
 def real_eps(model: Model) -> np.ndarray:
@@ -259,23 +292,25 @@ def projector(
     (`gfem._engine.driven.real_space` without pairs), and periodic over a
     model's pairs. Under a Bloch ``wave_vector`` (rad/m) the H(curl) space
     is the solve's own complex one and the H1 space complex, with the same
-    Bloch phases.
+    Bloch phases. Under ranks (``op.layout``) both spaces are the distributed
+    mesh's, and the projection maps states to states (`DivFreeProjector`).
     """
     built, order = op.built, op.order
     periodic = model._periodic  # noqa: SLF001
-    disc = discretization(model.mesh, periodic)
+    disc = discretization(model.mesh, periodic, built.comm)
     pec = pec_surfaces(model)
     fixed = potential_surfaces(model)
     if not periodic:
         hcurl = real_space(model, op)
-        h1 = disc.space(
-            space_key(model, "h1", order, fixed=fixed),
-            lambda: h1_space(model, built, order, fixed),
-        )
+        h1_key = space_key(model, "h1", order, fixed=fixed)
+        h1 = disc.space(h1_key, lambda: h1_space(model, built, order, fixed))
     else:
         phases = bloch_phases(model, wave_vector)
+        h1_key = space_key(
+            model, "h1", order, periodic=True, phases=phases, fixed=fixed
+        )
         h1 = disc.space(
-            space_key(model, "h1", order, periodic=True, phases=phases, fixed=fixed),
+            h1_key,
             lambda: h1_space(model, built, order, fixed, periodic=True, phases=phases),
             group=phases,
         )
@@ -296,7 +331,19 @@ def projector(
     eps = coefficient(built, real_eps(model))
     nodes = np.asarray(model.mesh.nodes) / built.scale
     diameter = float(np.linalg.norm(np.ptp(nodes, axis=0)))
-    return DivFreeProjector(hcurl, h1, eps, order, diameter)
+    h1_layout = None
+    if op.layout is not None:
+        h1_layout = disc.space((*h1_key, "layout"), lambda: RankLayout(h1, built.comm))
+    return DivFreeProjector(
+        hcurl,
+        h1,
+        eps,
+        order,
+        diameter,
+        layout=op.layout,
+        h1_layout=h1_layout,
+        periodic=bool(periodic),
+    )
 
 
 def element_energy(
@@ -309,14 +356,18 @@ def element_energy(
     order (`gfem._engine.mesh.EngineMesh.tetrahedron_order` maps it to the
     mesh's), in the mesh's file units, at quadrature order ``2 order``.
     ``Re(eps_r)`` is `real_eps`'s: eps_inf on a law region, which the
-    caller scales to its weight at a frequency (`law_scale`).
+    caller scales to its weight at a frequency (`law_scale`). Under ranks the
+    integrals are those of the rank's own tetrahedra
+    (`gfem._engine.mesh.EngineMesh.tetrahedron_order` is then the rank's).
     """
     built = op.built
     eps = coefficient(built, real_eps(model))
     gf = ngs.GridFunction(op.space)
+    layout = op.layout or ONE_PROCESS
 
     def density(x: np.ndarray) -> np.ndarray:
         gf.vec.FV().NumPy()[:] = x
+        layout.mark_state(gf.vec)
         values = ngs.Integrate(
             (eps * gf) * ngs.Conj(gf),
             built.mesh,
@@ -447,9 +498,11 @@ def principal_energy(
         for k in range(3)
     ]
     gf = ngs.GridFunction(op.space)
+    layout = op.layout or ONE_PROCESS
 
     def density(x: np.ndarray) -> np.ndarray:
         gf.vec.FV().NumPy()[:] = x
+        layout.mark_state(gf.vec)
         return np.stack(
             [
                 ngs.Integrate(
@@ -491,6 +544,15 @@ class DivFreeProjector:
     and a Bloch eigenvector satisfies ``G^H M0 x = 0``, not ``G^T M0 x =
     0``.
 
+    Under ranks (``layout``, real spaces only) ``x`` is a state, ``M0 x`` a load,
+    :math:`G^T` maps a load to a load and ``G`` a state to a state, through NGSolve's
+    own ``ParallelMatrix`` ``G``, and the H1 form is factored by MUMPS on
+    ``h1_layout`` (ADR 0502). Between periodic spaces ``G`` is instead the
+    conversion each rank computes alone, a local CSR, as the periodic
+    expansion is (`gfem._engine.driven.expansion_matrix`): NGSolve's parallel
+    conversion is wrong on a paired mesh (ADR 0071). One process keeps SciPy's
+    CSR ``G``.
+
     Args:
         hcurl: The H(curl) space (the solve's numbering and `PEC` DOFs):
             real, or the complex Bloch-phased solve space.
@@ -501,6 +563,9 @@ class DivFreeProjector:
             3x3).
         order: The polynomial order (quadrature).
         diameter: Size of the domain in mesh file units.
+        layout: The H(curl) space's layout across ranks, ``None`` on one process.
+        h1_layout: The H1 space's, with ``layout``.
+        periodic: Whether the spaces are periodic (a local ``G`` under ranks).
     """
 
     def __init__(
@@ -510,9 +575,14 @@ class DivFreeProjector:
         eps: ngs.CoefficientFunction,
         order: int,
         diameter: float,
+        *,
+        layout: DofLayout | None = None,
+        h1_layout: DofLayout | None = None,
+        periodic: bool = False,
     ) -> None:
         """Build ``G``, ``M0`` and factorize the H1 form."""
         dx = quadrature.dx(order)
+        self._layout = layout or ONE_PROCESS
         #: Whether the spaces are complex (a Bloch phase).
         self.complex = bool(hcurl.is_complex)
         # a complex form is Hermitian, not symmetric: PARDISO reads the flag
@@ -525,28 +595,45 @@ class DivFreeProjector:
         #: ``M0``, the electric-energy form on the H(curl) space.
         self.mass = mass.mat
         phi = h1.TrialFunction()
-        g = ngs.ConvertOperator(h1, hcurl, trial_proxy=ngs.grad(phi))
-        rows, cols, values = g.COO()
-        self._g = sp.csr_matrix(
-            (np.asarray(values), (np.asarray(rows), np.asarray(cols))),
-            shape=(g.height, g.width),
-        )
-        self._g.eliminate_zeros()
-        # G^H as CSR, so a product with it runs row by row like G's
-        self._gh = self._g.conj().T.tocsr()
+        local = layout is not None and periodic
+        if local:
+            g = ngs.ConvertOperator(
+                h1, hcurl, trial_proxy=ngs.grad(phi), localop=True, parmat=False
+            )
+        else:
+            g = ngs.ConvertOperator(h1, hcurl, trial_proxy=ngs.grad(phi))
+        #: NGSolve's G under ranks between plain spaces, a ``ParallelMatrix``;
+        #: ``None`` on one process and between periodic spaces.
+        self._parallel_g: Any = g if layout is not None and not local else None
+        #: Whether ``_g`` is a rank's local G (periodic spaces under ranks).
+        self._local_g = local
+        if self._parallel_g is None:
+            rows, cols, values = g.COO()
+            self._g = sp.csr_matrix(
+                (np.asarray(values), (np.asarray(rows), np.asarray(cols))),
+                shape=(g.height, g.width),
+            )
+            self._g.eliminate_zeros()
+            # G^H as CSR, so a product with it runs row by row like G's
+            self._gh = self._g.conj().T.tocsr()
         phi, psi = h1.TnT()
         laplace = ngs.BilinearForm(h1, symmetric=symmetric)
         laplace += (eps * ngs.grad(phi)) * ngs.grad(psi) * dx
         laplace += (_REGULARIZATION / diameter**2) * phi * psi * dx
         self._laplace = _linalg.prepare(
-            Operator(laplace, h1.FreeDofs()), symmetry="hermitian", kind="direct"
+            Operator(laplace, h1.FreeDofs(), layout=h1_layout),
+            symmetry="hermitian",
+            kind="direct",
         )
 
     def energy(self, x: np.ndarray) -> np.ndarray:
-        """``M0 x`` (on a real space, complex ``x`` part by part)."""
+        """``M0 x`` (on a real space, complex ``x`` part by part): a load."""
+        layout = self._layout
         if self.complex:
-            return matvec(self.mass, x)
-        return matvec(self.mass, x.real) + 1j * matvec(self.mass, x.imag)
+            return matvec(self.mass, x, layout=layout)
+        return matvec(self.mass, x.real, layout=layout) + 1j * matvec(
+            self.mass, x.imag, layout=layout
+        )
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         """``x`` without its gradient part (``(n,)`` complex).
@@ -556,11 +643,46 @@ class DivFreeProjector:
         complex on every call. The result is bit-identical.
         """
         energy = self.energy(x)
+        if self._parallel_g is not None or self._local_g:
+            return self._project_on_ranks(x, energy)
         if self.complex:
             return x - self._g @ self._laplace.solve(self._gh @ energy)
         rhs = self._gh @ energy.real + 1j * (self._gh @ energy.imag)
         phi = self._laplace.solve(rhs)
         return x - (self._g @ phi.real + 1j * (self._g @ phi.imag))
+
+    def _project_on_ranks(self, x: np.ndarray, energy: np.ndarray) -> np.ndarray:
+        """`__call__` under ranks: :math:`G^T` of the load, MUMPS, ``G`` of the state.
+
+        The real H1 factors solve the real and imaginary parts as two columns.
+        """
+        rhs = np.stack(
+            [self._g_apply(e, transpose=True) for e in (energy.real, energy.imag)],
+            axis=1,
+        )
+        phi = self._laplace.solve(rhs).real
+        return x - (self._g_apply(phi[:, 0]) + 1j * self._g_apply(phi[:, 1]))
+
+    def _g_apply(self, values: np.ndarray, *, transpose: bool = False) -> np.ndarray:
+        """``G`` of a real H1 state (a state), or :math:`G^T` of a real load (a load).
+
+        A local ``G`` maps them on each rank's own DOFs, with no exchange.
+        """
+        if self._local_g:
+            return (self._gh if transpose else self._g) @ values
+        g = self._parallel_g
+        source = g.CreateColVector() if transpose else g.CreateRowVector()
+        target = g.CreateRowVector() if transpose else g.CreateColVector()
+        source.FV().NumPy()[:] = values
+        if transpose:
+            self._layout.mark_load(source)
+            target.data = g.T * source
+            target.Distribute()
+        else:
+            self._layout.mark_state(source)
+            target.data = g * source
+            target.Cumulate()
+        return target.FV().NumPy().copy()
 
     def free(self) -> None:
         """Release the H1 factorization."""

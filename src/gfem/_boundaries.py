@@ -241,7 +241,9 @@ class Periodic:
 
     `gfem.Eigenmode` and `gfem.Driven` solve periodic models: a driven
     problem with a wave vector on the uniform sweep only, without one on
-    both sweeps. `gfem.Electrostatic` raises on a periodic model. A paired
+    both sweeps. `gfem.Electrostatic` raises on a periodic model. Across MPI
+    ranks a model with one pair solves both problems, a Bloch eigenmode solve
+    excepted; two or three pairs raise `gfem.DistributedUnsupportedError`. A paired
     surface takes no other boundary or port, and the default PMC skips it.
     The two meshes are checked when the `gfem.Model` is built. See the
     "Solve a periodic cell" recipe.

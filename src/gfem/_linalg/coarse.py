@@ -9,6 +9,10 @@ PT-Scotch's fill grows with the ranks it orders on (r10M: 556 M entries at 104 k
 wirebasket DOF per rank, 4520 M at 52 k; r10M_void_split, 4 threads per rank: 7.3 G on
 64 ranks, 85 G on 180), so ``PCTELESCOPE`` in front of MUMPS runs it on at most one
 rank per `DOFS_PER_RANK` and `MAX_RANKS` ranks, without building a communicator by hand.
+
+MUMPS factors it by :math:`L D L^T` where the operator equals its transpose and by LU
+otherwise (a Bloch phase). NGSolve hands the creator only the matrix and the free
+DOFs, so each symmetry has its own registered ``coarsetype`` (`coarse_type`).
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from gfem._linalg.petsc import (
     FreeNumbering,
     distributed_aij,
 )
+from gfem._linalg.petsc import defaults as factor_defaults
 
 #: Wirebasket DOFs per coarse rank: PT-Scotch's fill is fine at 66 k and 104 k and
 #: jumps at 52 k and 33 k on r0.5 and r10M; "about 100 k" errs on the fine side.
@@ -38,8 +43,11 @@ MAX_RANKS = 64
 #: Failures a larger workspace may cure: behind telescoping every failure reads 0.
 RETRIED = (MUMPS_WORKSPACE_ERROR, 0)
 
-#: Per communicator, the factorizations NGSolve asked for since the last `finish`.
+#: Per communicator, the factorizations NGSolve asked for since the last `finish`,
+#: of either symmetry.
 _made: dict[int | None, list[CoarseMumps]] = {}
+#: The ``coarsetype`` names registered with NGSolve in this process.
+_registered: set[str] = set()
 
 
 def reduction(dofs: int, size: int) -> int:
@@ -56,6 +64,34 @@ def reduction(dofs: int, size: int) -> int:
     return max(1, math.ceil(size / max(1, min(dofs // DOFS_PER_RANK, MAX_RANKS))))
 
 
+def options(
+    symmetric: bool,
+    *,
+    workspace: int,
+    factor: int,
+) -> tuple[tuple[str, Any], ...]:
+    """PETSc's options: an exact MUMPS factorization, behind telescoping if it reduces.
+
+    Args:
+        symmetric: The operator has :math:`A^T = A`: :math:`L D L^T`, else LU.
+        workspace: MUMPS's ICNTL(14).
+        factor: ``PCTELESCOPE``'s reduction (`reduction`); 1 for none.
+    """
+    factorization = (
+        *factor_defaults(symmetric)[1:],
+        *{**dict(RANK_MUMPS_OPTIONS), "mat_mumps_icntl_14": workspace}.items(),
+    )
+    if factor == 1:
+        return (("ksp_type", "preonly"), *factorization)
+    return (
+        ("ksp_type", "preonly"),
+        ("pc_type", "telescope"),
+        ("pc_telescope_reduction_factor", factor),
+        ("telescope_ksp_type", "preonly"),
+        *((f"telescope_{name}", value) for name, value in factorization),
+    )
+
+
 class CoarseMumps(ngs.BaseMatrix):
     """The coarse factorization: a ``ParallelMatrix`` factored by MUMPS across ranks.
 
@@ -65,9 +101,21 @@ class CoarseMumps(ngs.BaseMatrix):
     together, never by a collector that runs at another time on each rank.
     """
 
-    def __init__(self, matrix: Any, freedofs: Any, comm: Any) -> None:
-        """Hold what NGSolve gives; nothing is read from it yet."""
+    def __init__(
+        self,
+        matrix: Any,
+        freedofs: Any,
+        comm: Any,
+        *,
+        symmetric: bool,
+    ) -> None:
+        """Hold what NGSolve gives; nothing is read from it yet.
+
+        ``symmetric``: the operator has :math:`A^T = A`, so MUMPS factors it by
+        :math:`L D L^T` on a matrix flagged symmetric; LU otherwise.
+        """
         super().__init__()
+        self.symmetric = symmetric
         self._source = matrix
         self._freedofs = freedofs
         self._comm = comm
@@ -91,7 +139,7 @@ class CoarseMumps(ngs.BaseMatrix):
                 self._source.row_pardofs, self._freedofs, self._work, comm
             )
             self._aij, _ = distributed_aij(
-                self._source.local_mat, self._numbering, comm
+                self._source.local_mat, self._numbering, comm, symmetric=self.symmetric
             )
             self._x, self._b = self._aij.createVecs()
             self._factor = reduction(self._numbering.total, comm.size)
@@ -101,7 +149,10 @@ class CoarseMumps(ngs.BaseMatrix):
                 prefix = _petsc.next_prefix()
                 self._ksp.setOptionsPrefix(prefix)
                 self._ksp.setOperators(self._aij)
-                with _petsc.scoped_options(prefix, self._options(workspace)):
+                pairs = options(
+                    self.symmetric, workspace=workspace, factor=self._factor
+                )
+                with _petsc.scoped_options(prefix, pairs):
                     self._ksp.setFromOptions()
                     self._ksp.setUp()
                     if self._factor > 1:
@@ -122,23 +173,6 @@ class CoarseMumps(ngs.BaseMatrix):
                         f"workspace than ICNTL(14) {workspace} gives."
                     )
                 workspace *= 2
-
-    def _options(self, workspace: int) -> tuple[tuple[str, Any], ...]:
-        """PETSc's options: an exact MUMPS LDL^T, behind telescoping if it reduces."""
-        factorization = (
-            ("pc_type", "cholesky"),
-            ("pc_factor_mat_solver_type", "mumps"),
-            *{**dict(RANK_MUMPS_OPTIONS), "mat_mumps_icntl_14": workspace}.items(),
-        )
-        if self._factor == 1:
-            return (("ksp_type", "preonly"), *factorization)
-        return (
-            ("ksp_type", "preonly"),
-            ("pc_type", "telescope"),
-            ("pc_telescope_reduction_factor", self._factor),
-            ("telescope_ksp_type", "preonly"),
-            *((f"telescope_{name}", value) for name, value in factorization),
-        )
 
     def _agreed_failure(self) -> int | None:
         """``None`` if the set-up succeeded, else INFOG(1) on every rank.
@@ -214,19 +248,25 @@ class CoarseMumps(ngs.BaseMatrix):
             self._ksp = self._aij = self._x = self._b = None
 
 
-def coarse_type(comm: Any) -> str:
-    """The ``coarsetype`` flag of BDDC on ``comm``, registered on first use."""
+def coarse_type(comm: Any, symmetric: bool) -> str:
+    """The ``coarsetype`` flag of BDDC on ``comm``, registered on first use.
+
+    One per communicator and symmetry, ``gfem_mumps_{key}_{lu|cholesky}``: the
+    creator closes over its factorization, since NGSolve gives it no symmetry. Both
+    keep their factorizations in one list, for `finish`.
+    """
     key = _mpi.comm_key(comm)
-    name = f"gfem_mumps_{key}"
-    if key not in _made:
-        _made[key] = []
+    name = f"gfem_mumps_{key}_{'cholesky' if symmetric else 'lu'}"
+    _made.setdefault(key, [])
+    if name not in _registered:
 
         def create(matrix: Any, freedofs: Any, *_: Any) -> CoarseMumps:
-            made = CoarseMumps(matrix, freedofs, comm)
-            _made[key].append(made)
+            made = CoarseMumps(matrix, freedofs, comm, symmetric=symmetric)
+            _made.setdefault(key, []).append(made)
             return made
 
         ngs.comp.RegisterPreconditioner(name, create)
+        _registered.add(name)
     return name
 
 

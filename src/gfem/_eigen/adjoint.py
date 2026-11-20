@@ -26,6 +26,12 @@ never serves it.
 `polish` takes Newton steps on a converged mode with the same solve: mode
 polishing, the forward's correction of every mode in mode-field reach (ADR
 0104, amendment of ticket 19).
+
+Columns keep the roles of `gfem._linalg.layout`: ``x``, ``y``, the iterates
+and GMRES's preconditioned basis are states; ``b``, ``t`` and residuals are
+loads. :math:`y^T v` and :math:`t^T v` pair a load with a state, and the basis's
+products and norms are the eigen operator's layout's state products, so every
+value a branch reads is agreed across ranks.
 """
 
 from __future__ import annotations
@@ -37,7 +43,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from gfem import _mpi
 from gfem._eigen.refine import Refined
+from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem.errors import EigenmodeConvergenceError, LinearSolverConvergenceError
 
 if TYPE_CHECKING:
@@ -95,18 +103,19 @@ class _System:
         self.k = complex(k)
         self.x = np.where(eop.free, x, 0)
         self.y = self.x if y is None else np.where(eop.free, y, 0)
+        self.layout = eop.layout
         self.t = eop.derivative(self.k, self.x)
-        self.yt = self.y @ self.t
-        self.tx = self.t @ self.x
+        self.yt = self.layout.pair(self.t, self.y)
+        self.tx = self.layout.pair(self.t, self.x)
         self.applies = 0
 
     def residual(self, v: np.ndarray) -> np.ndarray:
         """``P v``: onto the range of ``T(k)``, along ``t``."""
-        return v - self.t * ((self.y @ v) / self.yt)
+        return v - self.t * (self.layout.pair(v, self.y) / self.yt)
 
     def gauge(self, v: np.ndarray) -> np.ndarray:
         """``Q v``: ``t^T (Q v) = 0``, along ``x``."""
-        return v - self.x * ((self.t @ v) / self.tx)
+        return v - self.x * (self.layout.pair(self.t, v) / self.tx)
 
     def precondition(self, v: np.ndarray) -> np.ndarray:
         """``Q T(sigma)^-1 P v``: one factor solve."""
@@ -185,22 +194,27 @@ def _cycles(
 ) -> tuple[np.ndarray, float, bool]:
     """Restarted GMRES from ``z`` on the current factors, `APPLY_CAP` applies."""
     eop, k = system.eop, system.k
+    norm = system.layout.state_norm
     start = system.applies
-    r = system.precondition(b - eop.apply(k, z) if z.any() else b)
-    size = np.linalg.norm(r)
+    # z is a state: a DOF's holders agree, but a rank may hold none of z's
+    nonzero = _mpi.agree_any(system.layout.comm, flag=bool(z.any()))
+    r = system.precondition(b - eop.apply(k, z) if nonzero else b)
+    size = norm(r)
     if size == 0:
         return z, 0.0, True
     tolerance = stop * size
     rho = math.inf
     while system.applies - start < APPLY_CAP:
         left = APPLY_CAP - (system.applies - start)
-        z = system.gauge(z + _gmres(system.matvec, r, tolerance, left))
+        z = system.gauge(
+            z + _gmres(system.matvec, r, tolerance, left, layout=system.layout)
+        )
         r = system.precondition(b - eop.apply(k, z))
-        norm = np.linalg.norm(z)
-        rho = float(np.linalg.norm(r) / norm) if norm > 0 else math.inf
+        size = norm(z)
+        rho = float(norm(r) / size) if size > 0 else math.inf
         if rho <= accept:
             return z, rho, True
-        tolerance = stop * norm
+        tolerance = stop * size
     return z, rho, False
 
 
@@ -209,13 +223,17 @@ def _gmres(
     b: np.ndarray,
     tolerance: float,
     steps: int,
+    *,
+    layout: DofLayout = ONE_PROCESS,
 ) -> np.ndarray:
     """GMRES from zero, stopped when its Arnoldi estimate is at most ``tolerance``.
 
     Classical Gram-Schmidt twice; the least-squares problem is solved anew
-    each step (at most `APPLY_CAP` columns).
+    each step (at most `APPLY_CAP` columns). ``b`` and ``matvec``'s values are
+    states: the basis's products are ``layout``'s.
     """
-    beta = np.linalg.norm(b)
+    norm = layout.state_norm
+    beta = norm(b)
     if beta <= tolerance:
         return np.zeros_like(b)
     basis = [b / beta]
@@ -226,12 +244,12 @@ def _gmres(
     for j in range(steps):
         w = matvec(basis[j])
         q = np.array(basis)
-        before = np.linalg.norm(w)
+        before = norm(w)
         for _ in range(2):
-            c = q.conj() @ w
+            c = layout.state_gram(q.T, w)  # q.conj() @ w
             w = w - c @ q
             h[: j + 1, j] += c
-        h[j + 1, j] = np.linalg.norm(w)
+        h[j + 1, j] = norm(w)
         coefficients = np.linalg.lstsq(h[: j + 2, : j + 1], e1[: j + 2], rcond=None)[0]
         estimate = np.linalg.norm(h[: j + 2, : j + 1] @ coefficients - e1[: j + 2])
         if estimate <= tolerance or abs(h[j + 1, j]) <= 1e-14 * before:
@@ -254,8 +272,9 @@ def polish(eop: EigenOperator, mode: Refined, gap: float, *, index: int) -> Refi
             above ``1e-4 |x|``.
         LinearSolverConvergenceError: A step's solve was not accepted.
     """
+    norm = eop.layout.state_norm
     x = np.where(eop.free, mode.x, 0)
-    x = x / np.linalg.norm(x)
+    x = x / norm(x)
     k = complex(mode.k)
     reshift = True
     size = math.inf
@@ -274,9 +293,9 @@ def polish(eop: EigenOperator, mode: Refined, gap: float, *, index: int) -> Refi
             purpose="polish",
         )
         reshift = reshift and not step.reshifted
-        size = float(np.linalg.norm(step.z))  # relative: |x| = 1
+        size = float(norm(step.z))  # relative: |x| = 1
         x = x + step.z
-        x = x / np.linalg.norm(x)
+        x = x / norm(x)
         k = eop.rayleigh(x, k)
         if size <= POLISH_LIMIT:
             return dataclasses.replace(mode, k=k, x=x, error=eop.backward_error(k, x))

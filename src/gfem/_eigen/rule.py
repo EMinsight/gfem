@@ -75,16 +75,15 @@ from __future__ import annotations
 import cmath
 import dataclasses
 import math
-import warnings
 from collections.abc import Callable, Sequence
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
-from gfem import _petsc, _timing
+from gfem import _mpi, _petsc, _timing
 from gfem._boundaries import (
     FloquetPort,
     Impedance,
@@ -128,13 +127,14 @@ from gfem._engine.eigen import (
     projector,
     scale_per_tetrahedron,
 )
-from gfem._engine.fields import fe_space
+from gfem._engine.fields import dof_shape, fe_space, one_process_dofs, rank_piece
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped
 from gfem._linalg import Kind, ResolvedLinearSolver
+from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
-from gfem._sign import largest_entry
+from gfem._sign import largest_entry, largest_value
 from gfem._text import hertz
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import (
@@ -142,8 +142,9 @@ from gfem.errors import (
     EigenmodeConvergenceError,
     LinearSolverConvergenceError,
     LowFrequencyWarning,
+    SolverUnavailableError,
 )
-from gfem.mesh import Mesh
+from gfem.mesh import Mesh, _at_imported_nodes
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import Eigenmode
@@ -356,14 +357,26 @@ class EigenmodeRule:
     #: the mode-field outputs, within the reach `nondifferentiable_output`
     #: checks for the wanted inputs (ADR 0102).
     differentiable_outputs = frozenset({"omega", "cluster", *_MODE_FIELD})
+    #: Outputs that are a rank's own piece under ranks (ADR 0063): the ranks
+    #: compare their cotangents' shapes, not their values. The mode fields'
+    #: ratios are values.
+    pieces = frozenset({"e_field"})
     #: `nondifferentiable_output` takes the wanted input kinds and may
     #: return ``None`` (`gfem._adjoint.solve_vjp`).
     input_aware = True
 
     def __init__(
-        self, model: Model, problem: Eigenmode, options: SolverOptions
+        self,
+        model: Model,
+        problem: Eigenmode,
+        options: SolverOptions,
+        *,
+        comm: Any = None,
     ) -> None:
         """Check that the problem fits the model (see `gfem.Eigenmode`).
+
+        ``comm`` is the resolved communicator of a distributed solve: its seed
+        solver is SLEPc, also for ``eigen_solver="auto"`` (ADR 0502).
 
         Raises:
             NotImplementedError: A feature this version cannot solve.
@@ -371,12 +384,14 @@ class EigenmodeRule:
                 outside the span of the pairs' translations, or with a
                 linear solver other than ``"direct"``.
             gfem.SolverUnavailableError: ``linear_solver="petsc"`` or
-                ``eigen_solver="slepc"`` names a library that cannot be used.
+                ``eigen_solver="slepc"`` names a library that cannot be used,
+                or under ``comm`` the MPI PETSc stack with SLEPc is missing.
         """
         if not isinstance(problem, Eigenmode):
             raise TypeError(f"Expected gfem.Eigenmode, got {problem!r}.")
         self.problem = problem
         self.options = options
+        self.comm = comm
         # before the Bloch refusals: a wave vector without a pair is the
         # first thing to fix
         check_wave_vector(model, problem.wave_vector, "Eigenmode")
@@ -393,9 +408,11 @@ class EigenmodeRule:
             )
         # before any assembly
         self.linear = ResolvedLinearSolver.resolve(
-            options, default=DEFAULT_SOLVER, problem="eigenmode"
+            options, default=DEFAULT_SOLVER, problem="eigenmode", comm=comm
         )
-        if options.eigen_solver == "slepc":
+        if comm is not None:
+            _require_rank_slepc(comm)
+        elif options.eigen_solver == "slepc":
             _petsc.require_slepc("eigen_solver")
         _check_supported(model)
         lumped = [p for p in model.ports if isinstance(p, LumpedPort)]
@@ -465,11 +482,15 @@ class EigenmodeRule:
         """
         opts = self.options
         order = opts.order
+        comm = self.comm
         # before any assembly: a target in a law's unresolved band (ADR 0115)
-        dispersion.check_band(model, self.problem.target, "target")
-        with task_manager(opts.threads):
+        with _mpi.raised_together(ValueError):
+            dispersion.check_band(model, self.problem.target, "target")
+        with task_manager(opts.threads, comm):
             with _timing.phase("discretize") as span:
-                op = driven_operator(model, order, wave_vector=self.problem.wave_vector)
+                op = driven_operator(
+                    model, order, wave_vector=self.problem.wave_vector, comm=comm
+                )
                 built = op.built
                 sigma = terms.wavenumber(2 * math.pi * self.problem.target, built.scale)
                 eop = self.operator(op, sigma)
@@ -480,21 +501,29 @@ class EigenmodeRule:
                 eop.factorize()  # before the projector's setup
                 divfree = projector(model, op, self.problem.wave_vector)
                 # the whole search is one solve: its shift solves are internal
-                with _timing.phase("solve", iterations=()):
+                with (
+                    _timing.phase("solve", iterations=()),
+                    _mpi.raised_together(EigenmodeConvergenceError),
+                ):
                     modes, guard, gaps, unpolished = self._find(
                         eop, divfree, sigma, guard=keep or self.polishable
                     )
                 per_hz = const.c / built.scale / (2 * math.pi)
                 for j, mode in enumerate(modes):
                     f = mode.k.real * per_hz
-                    dispersion.check_band(model, f, f"mode {j} at")
-                    # the mode energy's weight (ADR 0109)
-                    dispersion.check_energy(model, f, f"mode {j} at")
+                    with _mpi.raised_together(ValueError):
+                        dispersion.check_band(model, f, f"mode {j} at")
+                        # the mode energy's weight (ADR 0109)
+                        dispersion.check_energy(model, f, f"mode {j} at")
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
                 lowest = min(k.real for k in ks) * const.c / built.scale
                 _check_low_frequency(
-                    model, self.problem.target, lowest / (2 * math.pi), stacklevel=2
+                    model,
+                    self.problem.target,
+                    lowest / (2 * math.pi),
+                    stacklevel=2,
+                    comm=comm,
                 )
                 outputs["cluster"] = clusters(ks, opts.cluster_rtol)
                 if self.adjoint_loads:
@@ -713,7 +742,7 @@ class EigenmodeRule:
             nev *= 2  # too few candidates near the target: look wider
         if bound is not None and len(modes) < n_modes:
             raise EigenmodeConvergenceError(self._seed_message(bound))
-        skipped = self._skipped(modes, failed, sigma)
+        skipped = self._skipped(modes, failed, sigma, layout=eop.layout)
         if len(modes) < n_modes or skipped:
             raise EigenmodeConvergenceError(
                 self._convergence_message(eop, modes, failed, skipped)
@@ -784,8 +813,11 @@ class EigenmodeRule:
     def _shift_invert(
         self, op: EigenOperator, project, nev: int, *, tol: float
     ) -> tuple[np.ndarray, np.ndarray]:
-        """The seed solve on ``SolverOptions.eigen_solver`` (see `shift_invert`)."""
-        if self.options.eigen_solver == "slepc":
+        """The seed solve on ``SolverOptions.eigen_solver`` (see `shift_invert`).
+
+        Above one rank ``"auto"`` is SLEPc (ADR 0502).
+        """
+        if self.options.eigen_solver == "slepc" or self.comm is not None:
             options = self.options.petsc_options
             return slepc.shift_invert(op, project, nev, tol=tol, options=options)
         # the module's name, looked up now: tests replace it
@@ -802,7 +834,34 @@ class EigenmodeRule:
             sigma,
             linear=self.linear,
             tolerance=self._inner_tolerance(),
+            numbers=self._start_numbers(op),
         )
+
+    def _numbers(self) -> np.ndarray | None:
+        """Each field row's one-process number under ranks; ``None`` on one process.
+
+        `gfem._engine.fields.one_process_dofs`, memoized per topology: the rows
+        of a result field, which are the solve space's without periodic pairs.
+        """
+        if self.comm is None:
+            return None
+        return one_process_dofs(
+            self._mesh, self.regions, self._excluded, self.options.order, self.comm
+        )
+
+    def _start_numbers(self, op: DrivenOperator) -> np.ndarray | None:
+        """A number per solve-space DOF for the norm start; ``None`` on one process.
+
+        Without periodic pairs each DOF's one-process number (`_numbers`). On a
+        periodic space, whose DOFs no one-process number names (a swapped
+        partition changes the seam's basis), the layout's global numbers
+        (``ParallelDofs.EnumerateGlobally``): they depend on the partition, and
+        only the norm estimates read them.
+        """
+        if self.comm is None or op.expansion is None:
+            return self._numbers()
+        numbers, _ = _layout(op).pardofs.EnumerateGlobally()  # ty: ignore[unresolved-attribute]
+        return np.asarray(numbers, dtype=np.int64)
 
     def _inner_tolerance(self) -> float:
         """The tolerance of the shift solves of an iterative linear solver."""
@@ -826,11 +885,13 @@ class EigenmodeRule:
         ``x`` holds the modes on the solve space, ``y`` their left
         eigenvectors (``None``: ``x``, complex symmetric). ``gram`` is block
         diagonal by cluster: ``y_i^T T'(k_c) x_j`` for modes i, j of cluster
-        c, with ``k_c`` the cluster's mean. ``incomplete`` flags the modes
-        of a cluster the guard mode belongs to; ``gap`` each mode's relative
-        gap to its gap set (`GapSet.gap`, ``inf`` without a neighbour), 0
-        for a mode whose polish failed; ``polish_failed`` flags those modes
-        (`isolated` is then false for them: the backward names the failure).
+        c, with ``k_c`` the cluster's mean; under ranks a pairing of loads
+        and states (`DofLayout.pair`), the same on every rank. ``incomplete``
+        flags the modes of a cluster the guard mode belongs to; ``gap`` each
+        mode's relative gap to its gap set (`GapSet.gap`, ``inf`` without a
+        neighbour), 0 for a mode whose polish failed; ``polish_failed`` flags
+        those modes (`isolated` is then false for them: the backward names the
+        failure).
         """
         left = x if y is None else y
         labels = np.asarray(labels)
@@ -843,7 +904,11 @@ class EigenmodeRule:
             members = np.flatnonzero(labels == label)
             mean = k[members].mean()
             tx = np.stack([op.derivative(mean, x[:, j]) for j in members], axis=1)
-            gram[np.ix_(members, members)] = left[:, members].T @ tx
+            if self.comm is None:
+                gram[np.ix_(members, members)] = left[:, members].T @ tx
+            else:
+                # the loads T'(k_c) x paired with the states y: agreed values
+                gram[np.ix_(members, members)] = op.layout.pair(tx, left[:, members]).T
         fields = {
             "x": x,
             "k": k,
@@ -908,7 +973,8 @@ class EigenmodeRule:
         tolerance = self.options.eigen_tolerance
         seeds = [j for j in range(len(k)) if k[j].real > _STATIC * sigma]
         seeds.sort(key=lambda j: abs(k[j].real - sigma))
-        vectors = _orthonormal_multiples(k, vectors)
+        layout = op.layout
+        vectors = _orthonormal_multiples(k, vectors, layout=layout)
         accepted: list[Refined] = []
         failed: list[Refined] = []
         extra = None
@@ -920,9 +986,9 @@ class EigenmodeRule:
             # unless its part outside the span is more than round-off: then it
             # landed on a degenerate eigenspace whose twin the seed solve
             # missed, and that part, refined, is the twin (ticket 17)
-            if not _in_span(mode, accepted, window):
+            if not _in_span(mode, accepted, window, layout=layout):
                 return mode
-            rest = _outside(mode, accepted, window)
+            rest = _outside(mode, accepted, window, layout=layout)
             if rest is None:
                 return None
             twin = refine(
@@ -937,7 +1003,7 @@ class EigenmodeRule:
                 twin.converged
                 and twin.k.real > _STATIC * sigma
                 and not self._longitudinal(op, twin)
-                and not _in_span(twin, accepted, window)
+                and not _in_span(twin, accepted, window, layout=layout)
             ):
                 return twin
             return None
@@ -961,7 +1027,15 @@ class EigenmodeRule:
                 far
                 and not full
                 and (
-                    _lost(mode, seed, k, sigma, accepted=accepted, window=window)
+                    _lost(
+                        mode,
+                        seed,
+                        k,
+                        sigma,
+                        accepted=accepted,
+                        window=window,
+                        layout=layout,
+                    )
                     or self._longitudinal(op, mode)
                 )
             ):
@@ -1027,7 +1101,12 @@ class EigenmodeRule:
         return max(_DUPLICATE * self.options.eigen_tolerance, self.options.cluster_rtol)
 
     def _skipped(
-        self, accepted: list[Refined], failed: list[Refined], sigma: float
+        self,
+        accepted: list[Refined],
+        failed: list[Refined],
+        sigma: float,
+        *,
+        layout: DofLayout = ONE_PROCESS,
     ) -> list[Refined]:
         """The unconverged pairs that the accepted modes may have skipped.
 
@@ -1045,7 +1124,7 @@ class EigenmodeRule:
             for m in failed
             if m.error <= TRUSTED
             and abs(m.k.real - sigma) < reach
-            and not _in_span(m, accepted, window)
+            and not _in_span(m, accepted, window, layout=layout)
         ]
 
     def _convergence_message(
@@ -1144,9 +1223,15 @@ class EigenmodeRule:
         """The outputs, and the modes scaled to them on the solve space.
 
         ``e_field`` holds the modes expanded to the unpaired space on a
-        periodic model (``P x``).
+        periodic model (``P x``). A mode is a state, an energy form's or a
+        port's functional a load: their products are the layout's pairings.
+        Under ranks a rank integrates its own tetrahedra's energies, summed over
+        the ranks per region (`_volume_energies`), the sign follows one process's
+        largest entry (`gfem._sign.largest_value`), and ``e_field`` is the rank's
+        piece, padded (`gfem._engine.fields.rank_piece`).
         """
         built, space, order = op.built, op.space, op.order
+        layout, numbers = _layout(op), self._numbers()
         scale = built.scale
         ports = {data.port.name: data for data in op.ports}
         voltage = {
@@ -1167,47 +1252,35 @@ class EigenmodeRule:
         q_port = np.zeros((len(self.resistive), n))
         participation = np.zeros((len(self.inductive), n))
         for j, mode in enumerate(modes):
-            x = mode.x
-            if self.problem.wave_vector is not None:
-                # a Bloch mode's ∫ E . E depends on the cell and can vanish:
-                # its largest coefficient is made real and positive instead
-                # (set exactly: the product's imaginary part is round-off)
-                i = largest_entry(x)
-                largest = x[i]
-                x = x * (np.conj(largest) / abs(largest))
-                x[i] = abs(largest)
-            else:
-                s = x @ divfree.energy(x)
-                x = x * np.exp(-0.5j * np.angle(s))
-                if x[largest_entry(x)].real < 0:
-                    x = -x
+            x = self._phase(mode.x, op, divfree, numbers)
             # electric energy per element (gfem order) at this amplitude
             per_tet = np.zeros(len(mesh.tetrahedra))
             per_tet[built.tetrahedron_order] = (
                 0.5 * const.epsilon_0 * scale * np.real(density(x))
             )
             per_tet *= self._law_factor(model, mode.k, scale)
-            volts = {name: complex(v @ x) for name, v in voltage.items()}
+            volts = {name: complex(layout.pair(v, x)) for name, v in voltage.items()}
             capacitors = sum(
                 0.5 * data.port.rlc[2] * abs(volts[name]) ** 2
                 for name, data in ports.items()
                 if data.port.rlc[2] is not None
             )
-            # + 0.0 without a capacitive sheet leaves the sum bit-identical
-            energy = per_tet.sum() + capacitors + (0.0 if sheets is None else sheets(x))
-            amplitude = math.sqrt(MODE_ENERGY / energy)
-            solve[:, j] = x * amplitude
-            for r, region in enumerate(self.regions):
-                bulk[r, j] = per_tet[mesh.elements(region)].sum() / energy
+            per_axis = None
             if split is not None:
                 # the same energy along each principal axis
                 per_axis = np.zeros((len(mesh.tetrahedra), 3))
                 per_axis[built.tetrahedron_order] = (
                     0.5 * const.epsilon_0 * scale * np.real(split(x))
                 )
-                for r, region in enumerate(self.anisotropic):
-                    elements = mesh.elements(region)
-                    principal[r, j] = per_axis[elements].sum(axis=0) / energy
+            volume, regions, axes = self._volume_energies(mesh, per_tet, per_axis)
+            # + 0.0 without a capacitive sheet leaves the sum bit-identical
+            energy = volume + capacitors + (0.0 if sheets is None else sheets(x))
+            amplitude = math.sqrt(MODE_ENERGY / energy)
+            solve[:, j] = x * amplitude
+            for r in range(len(self.regions)):
+                bulk[r, j] = regions[r] / energy
+            for r in range(len(self.anisotropic)):
+                principal[r, j] = axes[r] / energy
             w = omega[j].real
             for p, name in enumerate(self.resistive):
                 resistance = ports[name].port.rlc[0]
@@ -1226,9 +1299,101 @@ class EigenmodeRule:
             "bulk": bulk,
             "principal": principal,
             "sheet": self._sheet_shares(op, solve, omega),
-            "e_field": op.expand(solve),
+            "e_field": rank_piece(
+                op.expand(solve), lambda: self._field_width(model), self.comm
+            ),
         }
         return outputs, solve
+
+    def _phase(
+        self,
+        x: np.ndarray,
+        op: DrivenOperator,
+        divfree: DivFreeProjector,
+        numbers: np.ndarray | None,
+    ) -> np.ndarray:
+        r"""``x`` with the phase and sign of the mode convention (`gfem.conventions`).
+
+        :math:`\int E \cdot E` real and positive, then the largest entry's real part
+        positive (one process's entry under ranks, `largest_value`). On a
+        periodic model that entry is the expanded field's (``P x`` on the field
+        rows, ``numbers`` theirs), on one process and under ranks alike: a
+        partition can change the periodic basis on the seam, never ``P x``.
+        """
+        if self.problem.wave_vector is not None:
+            # a Bloch mode's ∫ E . E depends on the cell and can vanish:
+            # its largest coefficient is made real and positive instead
+            # (set exactly: the product's imaginary part is round-off)
+            i = largest_entry(x)
+            largest = x[i]
+            x = x * (np.conj(largest) / abs(largest))
+            x[i] = abs(largest)
+            return x
+        layout = _layout(op)
+        s = layout.pair(divfree.energy(x), x)
+        x = x * np.exp(-0.5j * np.angle(s))
+        if op.expansion is None:
+            reference = largest_value(x, layout, numbers)
+        else:
+            reference = largest_value(op.expand(x), self._field_layout(), numbers)
+        if reference.real < 0:
+            x = -x
+        return x
+
+    def _field_layout(self) -> DofLayout:
+        """The field rows' layout across ranks; `ONE_PROCESS` on one process.
+
+        The plain mesh's H(curl) space of `fe_space`, whose rows are a result
+        field's (`gfem._engine.driven.Expansion.field_rows`), memoized with it.
+        """
+        if self.comm is None:
+            return ONE_PROCESS
+        still = _at_imported_nodes(self._mesh)
+        regions, excluded, order = self.regions, self._excluded, self.options.order
+        _, space, _ = fe_space(still, regions, excluded, "hcurl", order, comm=self.comm)
+        disc = discretization(still, (), self.comm)
+        key = (("field", tuple(regions), tuple(excluded)), "hcurl", order, "layout")
+        return disc.space(key, lambda: RankLayout(space, self.comm))
+
+    def _volume_energies(
+        self, mesh: Mesh, per_tet: np.ndarray, per_axis: np.ndarray | None
+    ) -> tuple[float, list, list]:
+        """The volume energy, each region's, and each anisotropic region's per axis.
+
+        ``per_tet`` and ``per_axis`` hold this rank's tetrahedra (gfem order;
+        zero elsewhere). Under ranks the sums are rank sums of the local ones, one
+        reduction of ``1 + n_regions + 3 n_anisotropic`` values, never of a whole
+        array.
+        """
+        volume = per_tet.sum()
+        regions = [per_tet[mesh.elements(region)].sum() for region in self.regions]
+        axes = []
+        if per_axis is not None:
+            axes = [
+                per_axis[mesh.elements(region)].sum(axis=0)
+                for region in self.anisotropic
+            ]
+        if self.comm is None:
+            return volume, regions, axes
+        local = np.concatenate([[volume], regions, np.ravel(axes)])
+        total = _mpi.reduce_bcast(self.comm, local)
+        n = len(self.regions)
+        return (
+            float(total[0]),
+            list(total[1 : 1 + n]),
+            list(total[1 + n :].reshape(-1, 3)),
+        )
+
+    def _field_width(self, model: Model) -> int:
+        """A mode field's rows on every rank: `dof_shape`'s width."""
+        return dof_shape(
+            model.mesh,
+            self.regions,
+            self._excluded,
+            "hcurl",
+            self.options.order,
+            comm=self.comm,
+        )[0]
 
     def _law_factor(self, model: Model, k: complex, scale: float) -> np.ndarray | float:
         """The mode energy's factor per tetrahedron at the mode ``k`` (ADR 0109).
@@ -1252,10 +1417,11 @@ class EigenmodeRule:
         L_s)`` is its form over ``2 mu0 scale omega^2``.
         """
         out = np.zeros((len(self.kinetic), len(omega)))
+        layout = _layout(op)
         for s, piece in enumerate(sheet_inductors(op, self.kinetic)):
             applied = op.apply(piece, solve)
             for j in range(len(omega)):
-                form = float(np.real(np.conj(solve[:, j]) @ applied[:, j]))
+                form = float(np.real(layout.pair(applied[:, j], np.conj(solve[:, j]))))
                 out[s, j] = form / (
                     2 * const.mu_0 * op.built.scale * omega[j].real ** 2 * MODE_ENERGY
                 )
@@ -1266,12 +1432,17 @@ class EigenmodeRule:
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each forward output."""
         n = self.problem.n_modes
-        mesh = model.mesh
-        still = Mesh(mesh.imported_nodes, mesh._topology)  # noqa: SLF001
-        with task_manager(self.options.threads):
-            _, space, _ = fe_space(
-                still, self.regions, self._excluded, "hcurl", self.options.order
-            )
+        if self.comm is None:
+            mesh = model.mesh
+            still = _at_imported_nodes(mesh)
+            with task_manager(self.options.threads):
+                _, space, _ = fe_space(
+                    still, self.regions, self._excluded, "hcurl", self.options.order
+                )
+            rows = space.ndof
+        else:
+            with task_manager(self.options.threads, self.comm):
+                rows = self._field_width(model)
         return {
             "omega": jax.ShapeDtypeStruct((n,), jnp.complex128),
             "error": jax.ShapeDtypeStruct((n,), jnp.float64),
@@ -1284,7 +1455,7 @@ class EigenmodeRule:
                 (len(self.anisotropic), n, 3), jnp.float64
             ),
             "sheet": jax.ShapeDtypeStruct((len(self.kinetic), n), jnp.float64),
-            "e_field": jax.ShapeDtypeStruct((space.ndof, n), jnp.complex128),
+            "e_field": jax.ShapeDtypeStruct((rows, n), jnp.complex128),
             "cluster": jax.ShapeDtypeStruct((n,), jnp.int64),
         }
 
@@ -1331,9 +1502,18 @@ class EigenmodeRule:
         respect to a permittivity law's parameter. What depends on the modes
         (a cluster, a near pair, a port without voltage) raises in the
         backward.
+
+        Raises:
+            DistributedUnsupportedError: Above one rank, any mode-field output
+                (key ``mode_field_gradient``). It reads replicated values
+                only, so every rank raises it at the backward's trace.
         """
         if name in ("omega", "cluster"):
             return None
+        if name in _MODE_FIELD and self.comm is not None:
+            # replicated values only, so every rank raises it at the backward's
+            # trace (ADR 0072, amended 2026-11-19)
+            _mpi.refuse_feature("mode_field_gradient")
         public = _MODE_FIELD.get(name, name)
         head = f"gfem cannot differentiate the eigenmode output {public!r}"
         opt_out = (
@@ -1463,7 +1643,9 @@ class EigenmodeRule:
         y^T T' x``). No solve. On a periodic model the pair is expanded to
         the unpaired space, ``(conj(P) Y, P X G^-1)``: ``y^T P^H a P x =
         (conj(P) y)^T a (P x)`` for the unpaired forms ``a``
-        (`DrivenOperator.pair`).
+        (`DrivenOperator.pair`). Under ranks ``gram`` is agreed and the
+        pairs hold each rank's state columns, whose element passes the
+        caller sums over ranks (ADR 0065).
 
         **Mode-field outputs** (`_field_pairs`): per mode with a cotangent
         on its ratios, one adjoint solve on the kept eigen operator and two
@@ -1489,7 +1671,7 @@ class EigenmodeRule:
         ct = cotangents.get("omega")
         pairs = []
         self._explicit = {}
-        with task_manager(self.options.threads):
+        with task_manager(self.options.threads, self.comm):
             op = self.driven(model)
             domain = em_region(model, op.built)
             per_k = const.c / op.built.scale
@@ -1502,15 +1684,23 @@ class EigenmodeRule:
                         continue
                     spread = np.abs(c - c.mean()).max()
                     symmetric = spread <= _SYMMETRIC_RTOL * np.abs(c).max()
+                    # from agreed values (the cotangents, the clusters, gram):
+                    # every rank raises it together
                     if incomplete[members].any() or not symmetric:
-                        raise DegenerateModeError(
-                            self._degenerate_message(k, members, c, incomplete, per_k)
+                        raise _mpi.agreed(
+                            DegenerateModeError(
+                                self._degenerate_message(
+                                    k, members, c, incomplete, per_k
+                                )
+                            )
                         )
                     g = gram[np.ix_(members, members)]
                     if "y" in fields and np.linalg.cond(g) > _DEFECTIVE:
-                        raise DegenerateModeError(
-                            self._defective_message(
-                                k, members, np.linalg.cond(g), per_k
+                        raise _mpi.agreed(
+                            DegenerateModeError(
+                                self._defective_message(
+                                    k, members, np.linalg.cond(g), per_k
+                                )
                             )
                         )
                     pairs.append(
@@ -1728,11 +1918,15 @@ class EigenmodeRule:
         if (
             last is not None
             and last[0] is model
-            and last[1].built is discretization(model.mesh, model._periodic).built  # noqa: SLF001
+            and last[1].built
+            is discretization(model.mesh, model._periodic, self.comm).built  # noqa: SLF001
         ):
             return last[1]
         op = driven_operator(
-            model, self.options.order, wave_vector=self.problem.wave_vector
+            model,
+            self.options.order,
+            wave_vector=self.problem.wave_vector,
+            comm=self.comm,
         )
         self._last_driven = (model, op)
         return op
@@ -1870,6 +2064,7 @@ class EigenmodeRule:
                 support=self.regions,
                 omega=omega[j],
                 _excluded=self._excluded,
+                _comm=_mpi.static_comm(self.comm),
             )
             for j in range(self.problem.n_modes)
         ]
@@ -2008,11 +2203,14 @@ def _contraction(seed: complex, shift: complex, ritz: np.ndarray) -> float:
     return abs(seed - shift) / nearest if nearest > 0 else math.inf
 
 
-def _orthonormal_multiples(k: np.ndarray, vectors: np.ndarray) -> np.ndarray:
+def _orthonormal_multiples(
+    k: np.ndarray, vectors: np.ndarray, *, layout: DofLayout = ONE_PROCESS
+) -> np.ndarray:
     """``vectors`` with each multiple Ritz value's vectors orthonormalized.
 
     Any basis of a multiple eigenvalue's eigenspace is as good a set of
     seeds; an orthonormal one keeps its members apart under `_in_span`.
+    The vectors are states, orthonormal over ``layout``'s owned DOFs.
     """
     out = vectors
     done = np.zeros(len(k), dtype=bool)
@@ -2024,49 +2222,65 @@ def _orthonormal_multiples(k: np.ndarray, vectors: np.ndarray) -> np.ndarray:
         if len(members) > 1:
             if out is vectors:
                 out = vectors.copy()
-            out[:, members] = np.linalg.qr(vectors[:, members])[0]
+            out[:, members] = layout.state_qr(vectors[:, members])
     return out
 
 
-def _same(a: Refined, b: Refined, window: float) -> bool:
+def _same(
+    a: Refined, b: Refined, window: float, *, layout: DofLayout = ONE_PROCESS
+) -> bool:
+    """Whether ``a`` and ``b`` are one mode: near in ``k``, parallel in ``x``."""
     if abs(a.k - b.k) > window * abs(b.k):
         return False
-    overlap = abs(np.vdot(a.x, b.x)) / (np.linalg.norm(a.x) * np.linalg.norm(b.x))
+    norm = layout.state_norm
+    overlap = abs(layout.state_inner(a.x, b.x)) / (norm(a.x) * norm(b.x))
     return overlap > _OVERLAP
 
 
-def _in_span(mode: Refined, accepted: list[Refined], window: float) -> bool:
+def _in_span(
+    mode: Refined,
+    accepted: list[Refined],
+    window: float,
+    *,
+    layout: DofLayout = ONE_PROCESS,
+) -> bool:
     """Whether ``mode`` is a combination of accepted modes: a duplicate.
 
     The norm of its projection on the span of the accepted modes within
     ``window`` (relative) of its ``k`` exceeds `_OVERLAP` of its own. Against
     the span, not each mode: any vector of a degenerate cluster's eigenspace
     is a duplicate, also one at 45 degrees from two accepted members.
+    The modes are states, their products ``layout``'s.
     """
     near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
     if not near:
         return False
-    basis = np.linalg.qr(np.stack(near, axis=1))[0]
-    inside = np.linalg.norm(basis.conj().T @ mode.x)
-    return bool(inside > _OVERLAP * np.linalg.norm(mode.x))
+    basis = layout.state_qr(np.stack(near, axis=1))
+    inside = np.linalg.norm(layout.state_gram(basis, mode.x))
+    return bool(inside > _OVERLAP * layout.state_norm(mode.x))
 
 
 def _outside(
-    mode: Refined, accepted: list[Refined], window: float
+    mode: Refined,
+    accepted: list[Refined],
+    window: float,
+    *,
+    layout: DofLayout = ONE_PROCESS,
 ) -> np.ndarray | None:
     """``mode``'s part outside the span of the accepted modes near its ``k``.
 
     ``None`` when it is at most `_TWIN` of its norm: round-off of a duplicate
     of a simple mode (1e-11 to 2e-9 measured), not a twin (0.36 to 0.94 on the
-    lossy-wall mirrored cavity, quantum-metrics ticket 17).
+    lossy-wall mirrored cavity, quantum-metrics ticket 17). The modes are
+    states, their products ``layout``'s.
     """
     near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
     if not near:
         return None
-    basis = np.linalg.qr(np.stack(near, axis=1))[0]
-    rest = mode.x - basis @ (basis.conj().T @ mode.x)
-    norm = np.linalg.norm(rest)
-    if norm <= _TWIN * np.linalg.norm(mode.x):
+    basis = layout.state_qr(np.stack(near, axis=1))
+    rest = mode.x - basis @ layout.state_gram(basis, mode.x)
+    norm = layout.state_norm(rest)
+    if norm <= _TWIN * layout.state_norm(mode.x):
         return None
     return rest / norm
 
@@ -2079,6 +2293,7 @@ def _lost(
     *,
     accepted: list[Refined],
     window: float,
+    layout: DofLayout = ONE_PROCESS,
 ) -> bool:
     """Whether ``seed``'s refinement gave nothing to accept as its mode.
 
@@ -2093,13 +2308,13 @@ def _lost(
     if len(others) and np.min(np.abs(others - mode.k)) < abs(mode.k - seed):
         return True
     return any(
-        _same(mode, other, window) and not _close(seed, other.k, window)
+        _same(mode, other, window, layout=layout) and not _close(seed, other.k, window)
         for other in accepted
     )
 
 
 def _check_low_frequency(
-    model: Model, target: float, lowest: float, *, stacklevel: int
+    model: Model, target: float, lowest: float, *, stacklevel: int, comm: Any = None
 ) -> None:
     """Warn if the target or the lowest mode is below the low-frequency floor.
 
@@ -2115,6 +2330,7 @@ def _check_low_frequency(
         target: ``Eigenmode.target`` (Hz).
         lowest: The lowest ``Re f`` of the modes found (Hz).
         stacklevel: Passed on to `warnings.warn`, counted from the caller.
+        comm: The resolved communicator: the warning is the job's, once.
     """
     floor = LowFrequencyFloor.of(model)
     f = min(target, lowest)
@@ -2122,7 +2338,8 @@ def _check_low_frequency(
     if k0h >= LOW_FREQUENCY_FLOOR:
         return
     what = "target" if target <= lowest else "lowest mode found"
-    warnings.warn(
+    _mpi.warn(
+        comm,
         f"Eigenmode: the {what}, {hertz(f, 4)}, is below {floor.describe(k0h)}. "
         "Below it the eigenfrequencies, the mode fields "
         "and the participations carry rounding errors up to about "
@@ -2131,6 +2348,33 @@ def _check_low_frequency(
         LowFrequencyWarning,
         stacklevel=stacklevel + 1,
     )
+
+
+def _require_rank_slepc(comm: Any) -> None:
+    """SLEPc on the MPI PETSc stack, on every rank, or raise on every rank.
+
+    Raises:
+        gfem.SolverUnavailableError: The MPI stack is missing, or a rank cannot
+            use slepc4py.
+    """
+    if not _mpi.agree_all(comm, flag=_petsc.has_mpi()):
+        raise SolverUnavailableError(
+            "An eigenmode solve above one rank runs SLEPc on the MPI PETSc stack, "
+            "and this environment does not have it. Build it with "
+            f"tools/petsc_wheelhouse.sh --mpi as {_mpi.RECIPE} describes, or pass "
+            "comm=MPI.COMM_SELF for independent one-process copies."
+        )
+    _mpi.available(
+        comm,
+        lambda: _petsc.require_slepc("eigen_solver"),
+        "eigen_solver='slepc' cannot run: another rank cannot use slepc4py "
+        "(that rank's error names why).",
+    )
+
+
+def _layout(op: DrivenOperator) -> DofLayout:
+    """The driven operator's layout: `ONE_PROCESS` on one process."""
+    return op.layout or ONE_PROCESS
 
 
 def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
@@ -2146,9 +2390,13 @@ def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
     if not sheets:
         return None
     factor = 0.5 * const.epsilon_0 * op.built.scale
+    pair = _layout(op).pair
 
     def energy(x: np.ndarray) -> float:
-        return sum(factor * float(np.real(np.conj(x) @ op.apply(k, x))) for k in sheets)
+        # the load A x paired with the state conj(x)
+        return sum(
+            factor * float(np.real(pair(op.apply(k, x), np.conj(x)))) for k in sheets
+        )
 
     return energy
 
@@ -2157,7 +2405,9 @@ def _is_real(op: EigenOperator) -> bool:
     """Whether ``K`` and ``M`` are real: a lossless, undamped problem."""
     probe = np.where(op.free, np.random.default_rng(1).standard_normal(len(op.free)), 0)
     kx, _, mx = op.parts(probe.astype(complex))
-    return not kx.imag.any() and not mx.imag.any()
+    # a real matrix gives a real load on any rank's DOFs: every rank must agree
+    real = not kx.imag.any() and not mx.imag.any()
+    return _mpi.agree_all(op.layout.comm, flag=real)
 
 
 def _is_hermitian(op: EigenOperator) -> bool:

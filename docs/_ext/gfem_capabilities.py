@@ -937,13 +937,15 @@ def links_gradient_errors(row: dict) -> bool:
 #: or a label with no case, fails the build.
 REFUSAL_LABELS = {
     "adaptive_sweep": '`Driven(sweep="adaptive")`, with or without `samples`',
-    "eigenmode": "`Eigenmode`, nonlinear ones included",
-    "electrostatic": "`Electrostatic`",
+    "arpack": '`eigen_solver="arpack"` on an `Eigenmode` problem',
     "thermal": "`SteadyThermal`",
     "thermal_transient": "`TransientThermal`",
     "dc_conduction": "`DCConduction`",
-    "periodic": "A `Periodic` boundary on a `Driven` problem, on any number of axes",
-    "bloch": "`Driven(wave_vector=...)`",
+    "periodic": (
+        "`Periodic` pairs on two or three axes of a `Driven` or an `Eigenmode` "
+        "problem; `Electrostatic` on a periodic model"
+    ),
+    "bloch": "`Eigenmode(wave_vector=...)`",
     "floquet_port": "A `FloquetPort` on a `Driven` problem",
     "frequency_workers": "`frequency_workers` above 1, on more than one frequency",
     "device": '`device="cuda"`',
@@ -957,9 +959,14 @@ REFUSAL_LABELS = {
     "load_result_fields": "`load_result` of a bundle with fields",
     "power_flow": "`power_flow`",
     "region_mean": "`region_mean`",
+    "element_mean": "`element_mean`",
     "electric_energy": "`electric_energy`",
     "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
+    "mode_field_gradient": (
+        "A gradient through an `Eigenmode` result's mode field: `q_port`, the "
+        "participations, `e_fields`, `interface_participation`"
+    ),
 }
 
 

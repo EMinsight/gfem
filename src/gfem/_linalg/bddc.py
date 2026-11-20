@@ -9,8 +9,8 @@ expected to serve enough right-hand-side columns for its threads: 16 or more
 on 16 threads or more, 6 or more on 56 threads or more (`_coarse_inverse`).
 A general operator (a Bloch phase, A^T != A) is never given sparse Cholesky:
 its coarse problem is factored by PARDISO LU, or UMFPACK without MKL.
-The Krylov method follows the operator: NGSolve's conjugate gradients for a
-Hermitian (real symmetric positive definite) operator, otherwise gfem's
+The Krylov method follows the operator: conjugate gradients for a Hermitian
+(real symmetric positive definite) operator, NGSolve's on one process, otherwise gfem's
 GMRES (`gfem._linalg.gmres`), which orthogonalizes its Krylov basis by CGS2
 on gfem's threads.
 
@@ -34,9 +34,10 @@ solve).
 
 Under ranks (an operator with a layout) BDDC's coarse problem is factored by MUMPS
 across ranks when the MPI PETSc stack is installed (`gfem._linalg.coarse`), otherwise
-on rank 0 by the same rule; GMRES runs on owned entries (`gfem._linalg.gmres`), and
-every decision above reads an agreed value: the iterations, the residuals and the
-norms of `gfem._linalg.layout`. Each rank's BLAS runs at its threads in a setup and at
+on rank 0 by the same rule; GMRES runs on owned entries (`gfem._linalg.gmres`), CG
+is gfem's on agreed products (`gfem._linalg.cg`, ADR 0500), and every decision above
+reads an agreed value: the iterations, the residuals and the norms of
+`gfem._linalg.layout`. Each rank's BLAS runs at its threads in a setup and at
 one thread in a solve, whose coarse apply gains nothing from them (ADR 0076).
 """
 
@@ -56,6 +57,7 @@ from gfem._linalg.base import (
     local_matrix,
     same_free_dofs,
 )
+from gfem._linalg.cg import Cg
 from gfem._linalg.direct import GENERAL_INVERSE, INVERSE
 from gfem._linalg.gmres import Gmres
 from gfem._linalg.pardiso import pardiso_inverse
@@ -142,7 +144,11 @@ def _set_up(
     is_complex = bool(form.space.is_complex)
     if _coarse_on_mumps(comm, is_complex=is_complex):
         preconditioner = ngs.Preconditioner(
-            form, "bddc", coarsetype=coarse.coarse_type(comm)
+            form,
+            "bddc",
+            coarsetype=coarse.coarse_type(
+                comm, equals_its_transpose(symmetry, is_complex=is_complex)
+            ),
         )
         with _timing.phase("assemble"):
             form.Assemble()
@@ -346,6 +352,16 @@ class BddcHandle(NgsHandle):
             stop = {"tol": self.tolerance}
         else:
             stop = {"atol": self.tolerance * reference}
+        if self.layout.comm is not None:
+            # products agreed across ranks (ADR 0500)
+            return Cg(
+                matrix,
+                pre.mat,
+                maxiter=maxiter,
+                conjugate=self._complex,
+                layout=self.layout,
+                **stop,
+            )
         return ngs.solvers.CGSolver(
             matrix, pre.mat, maxiter=maxiter, conjugate=self._complex, **stop
         )

@@ -786,7 +786,8 @@ class Driven:
             frequency. ``None``: plain periodicity, the fields equal on both
             surfaces of every pair. Any vector, (0, 0, 0) included, declares
             a Bloch solve: a uniform sweep on the CPU, with
-            ``linear_solver`` ``"direct"`` or ``"bddc_gmres"``, whose S is
+            ``linear_solver`` ``"direct"`` or ``"bddc_gmres"``, on a model
+            with one pair across MPI ranks, whose S is
             not symmetric (S(k)ᵀ = S(-k)) and is referenced to the field E,
             not to its periodic envelope (`gfem.conventions`).
         wave_vector_frequency: The frequency, Hz, at which ``wave_vector``
@@ -1050,7 +1051,10 @@ class Eigenmode:
     ValueError on a model without a `gfem.Periodic` pair, for a k with a
     component outside the span of the pairs' translations, and with any
     ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU
-    ``device``.
+    ``device``. Across MPI ranks (the "Run a distributed solve" recipe) the
+    eigen solver is SLEPc, and a ``wave_vector``, ``eigen_solver="arpack"``,
+    two or three `gfem.Periodic` pairs and a gradient through a mode's field
+    raise `gfem.DistributedUnsupportedError`.
 
     Notes:
         When ``target`` or the lowest mode found is below the mesh's

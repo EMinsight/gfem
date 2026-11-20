@@ -2,7 +2,8 @@
 
 `tests/unit/test_mpi.py` raises each one on a stub communicator, and
 `tests/mpi/test_launch.py` raises each one on every rank of a launched job.
-Nothing here solves. Every model is built from a directory, so a launched
+Nothing here solves; `series` is the thermal solve the exemplar tests run
+as one process. Every model is built from a directory, so a launched
 function can build it from arguments that pickle.
 """
 
@@ -12,6 +13,7 @@ from pathlib import Path
 import gradient_cases as cases
 import numpy as np
 import periodic_cases as pc
+import thermal_cases as tc
 
 import gfem
 from gfem.mesh import LENGTH_UNITS, Region, _Topology, _triangle_neighbours
@@ -20,6 +22,8 @@ FREQUENCY = 5e9
 
 #: Two terminals of `stack`, which `cases.stack` names by its layers.
 TERMINALS = {"top": "top", "mid": "oxide__nitride"}
+#: The electrostatic problem of `stack`: two terminals, the bottom grounded.
+ELECTROSTATIC = gfem.Electrostatic(terminals=TERMINALS, ground="bottom")
 
 
 def stack(directory: Path) -> gfem.Model:
@@ -30,6 +34,41 @@ def stack(directory: Path) -> gfem.Model:
             "nitride": gfem.Material(eps_r=7.5),
         }
     )
+
+
+#: test_steady_thermal's two-layer series slab, (name, thickness in um) up z.
+SERIES = (("lower", 6.0), ("upper", 2.0))
+
+
+def series_mesh(directory: Path) -> Path:
+    """Write the series slab's 2 x 1 x 8 um brick to ``directory``; its path.
+
+    Write it on one process: a launched function reads it with `series`.
+    """
+    path = directory / "series.msh"
+    bottom = (lambda p: abs(p[2]) < 1e-9, "bottom")
+    tc.brick(path, (2.0, 1.0), SERIES, 0.7, [bottom])
+    return path
+
+
+def series(path: Path) -> tuple[gfem.Model, gfem.SteadyThermal]:
+    """``(model, problem)``: the series slab heated above, a thermal solve ranks refuse.
+
+    Rank copies (``comm=MPI.COMM_SELF``) and a communicator of one rank solve it.
+    """
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    materials = {
+        "lower": gfem.Material(thermal_conductivity=1.4),
+        "upper": gfem.Material(thermal_conductivity=0.2),
+    }
+    bottom = gfem.FixedTemperature("bottom", temperature=300.0)
+    model = gfem.Model(mesh, materials=materials, boundaries=[bottom])
+    heat = gfem.HeatSource.uniform("upper", power_density=1e12)
+    return model, gfem.SteadyThermal(heat)
+
+
+#: Points (m) on the series slab's top face, where its rise is largest.
+SERIES_TOP = np.array([[x * 1e-6, 0.5e-6, 8e-6] for x in (0.3, 1.0, 1.7)])
 
 
 def _line(directory: Path) -> gfem.Model:
@@ -47,10 +86,10 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
         case "adaptive_sweep":
             problem = gfem.Driven([1e9, 5e9], sweep="adaptive")
             return _line(directory), problem, direct
-        case "eigenmode":
-            return _line(directory), gfem.Eigenmode(target=FREQUENCY, n_modes=1), direct
-        case "electrostatic":
-            return _line(directory), gfem.Electrostatic(terminals=TERMINALS), direct
+        case "arpack":
+            options = gfem.SolverOptions(linear_solver="direct", eigen_solver="arpack")
+            problem = gfem.Eigenmode(target=FREQUENCY, n_modes=1)
+            return _line(directory), problem, options
         case "thermal":
             return stack(directory), gfem.SteadyThermal(), direct
         case "thermal_transient":
@@ -59,10 +98,10 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
         case "dc_conduction":
             problem = gfem.DCConduction(terminals=TERMINALS)
             return stack(directory), problem, direct
-        case "periodic":
-            return _cell(directory), gfem.Driven(FREQUENCY), direct
-        case "bloch":
-            problem = gfem.Driven(FREQUENCY, wave_vector=pc.C1_K)
+        case "periodic":  # two pairs: one pair runs distributed
+            return pc.c2(pc.c2_mesh(directory)), gfem.Driven(FREQUENCY), direct
+        case "bloch":  # a Bloch driven solve runs distributed
+            problem = gfem.Eigenmode(target=FREQUENCY, n_modes=1, wave_vector=pc.C1_K)
             return _cell(directory), problem, direct
         case "floquet_port":
             model = pc.f1(pc.f1_mesh(directory))
@@ -90,8 +129,7 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
 #: Every case of `refused`.
 KEYS = (
     "adaptive_sweep",
-    "eigenmode",
-    "electrostatic",
+    "arpack",
     "thermal",
     "thermal_transient",
     "dc_conduction",
@@ -107,19 +145,21 @@ KEYS = (
 
 
 #: What a call other than `gfem.solve` refuses (a method after a solve,
-#: `gfem.error_estimate` or `gfem.refine_mesh`); `tests/mpi` raises each one on
-#: every rank.
+#: `gfem.error_estimate`, `gfem.refine_mesh`, or the backward of an eigenmode
+#: mode-field output); `tests/mpi` raises each one on every rank.
 METHOD_KEYS = (
     "field_export",
     "load_result_fields",
     "power_flow",
     "region_mean",
+    "element_mean",
     "electric_energy",
     "error_estimate",
     "mesh_refinement",
+    "mode_field_gradient",
 )
-#: A guard no public call reaches while Bloch and eigenmode raise, so no page lists it.
-GUARD_KEYS = ("general_operator",)
+#: The refusal keys no public call reaches, so no page lists them.
+GUARD_KEYS: tuple[str, ...] = ()
 
 
 def feature(key: str) -> str:

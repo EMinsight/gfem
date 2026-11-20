@@ -26,7 +26,7 @@ import traceback
 import warnings
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -50,6 +50,7 @@ __all__ = [
     "agree_max",
     "agree_min",
     "agreed",
+    "available",
     "bcast_arrays",
     "check_call",
     "comm_key",
@@ -57,6 +58,7 @@ __all__ = [
     "entry_check",
     "gather_rows",
     "install_abort_hook",
+    "is_agreed",
     "launched_tasks",
     "max_bcast",
     "meet",
@@ -64,6 +66,7 @@ __all__ = [
     "node_bytes",
     "node_share",
     "on_root",
+    "raised_together",
     "rank",
     "reduce_bcast",
     "refuse",
@@ -118,13 +121,24 @@ _REFUSALS = {
     "adaptive_sweep": (
         f"An adaptive sweep has no distributed path: use a uniform sweep, {_COPIES}."
     ),
-    "eigenmode": f"An eigenmode solve has no distributed path: {_RUN_COPIES}.",
-    "electrostatic": f"An electrostatic solve has no distributed path: {_RUN_COPIES}.",
+    "arpack": (
+        "ARPACK runs on one process only: leave eigen_solver='auto', which is "
+        f"SLEPc above one rank, or set eigen_solver='slepc', {_COPIES}."
+    ),
+    "mode_field_gradient": (
+        "A gradient through an eigenmode's mode field (q_port, the participations, "
+        "e_fields) has no distributed path: differentiate omega, frequency or Q, "
+        "wrap the value in jax.lax.stop_gradient to use it without its "
+        f"derivative, {_COPIES}."
+    ),
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
-    "periodic": f"A periodic model has no distributed path: {_RUN_COPIES}.",
+    "periodic": (
+        "Periodic pairs on more than one axis, and an electrostatic solve on a "
+        f"periodic model, have no distributed path: {_RUN_COPIES}."
+    ),
     "floquet_port": f"A Floquet port has no distributed path: {_RUN_COPIES}.",
-    "bloch": f"A Bloch wave vector has no distributed path: {_RUN_COPIES}.",
+    "bloch": f"A Bloch eigenmode solve has no distributed path: {_RUN_COPIES}.",
     "frequency_workers": (
         "Frequency workers have no distributed path: use frequency_workers=1, "
         f"one solve per communicator from comm.Split, {_COPIES}."
@@ -133,10 +147,6 @@ _REFUSALS = {
     "bddc_order_1": (
         "BDDC at order 1 has a coarse problem as large as the system, so it is "
         f"refused above one rank: use linear_solver='direct' or order=2, {_COPIES}."
-    ),
-    "general_operator": (
-        "Only a system equal to its transpose has a distributed solver, and this "
-        f"one has none: {_RUN_COPIES}."
     ),
     "field_export": (
         "A field across ranks is not sampled into one object, which would hold the "
@@ -150,6 +160,11 @@ _REFUSALS = {
     ),
     "region_mean": (
         "gfem.region_mean has no distributed path: write the result with "
+        "Job.run(out=) and call it on one process on the field load_result "
+        f"gives, {_COPIES}."
+    ),
+    "element_mean": (
+        "gfem.element_mean has no distributed path: write the result with "
         "Job.run(out=) and call it on one process on the field load_result "
         f"gives, {_COPIES}."
     ),
@@ -292,10 +307,6 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
     from gfem._floquet import floquet_ports
     from gfem.problems import Driven, Eigenmode, Electrostatic
 
-    if isinstance(problem, Eigenmode):
-        refuse_feature("eigenmode")
-    if isinstance(problem, Electrostatic):
-        refuse_feature("electrostatic")
     physics = physics_of(problem)
     if physics != "em":
         # "thermal" (steady and transient) or "dc_conduction" (ADR 0161)
@@ -305,20 +316,45 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("adaptive_sweep")
         if floquet_ports(model.ports):
             refuse_feature("floquet_port")
-        if problem.wave_vector is not None:
-            refuse_feature("bloch")
-        if model._periodic:  # noqa: SLF001
+        if len(model._periodic) > 1:  # noqa: SLF001
             refuse_feature("periodic")
         if min(options.frequency_workers, len(problem.frequency)) > 1:
             refuse_feature("frequency_workers")
-        if options.device.startswith("cuda"):
-            refuse_feature("device")
-        if options.order == 1 and options.linear_solver in ("auto", "bddc_gmres"):
-            refuse_feature("bddc_order_1")
-        if options.linear_solver == "petsc" and _serial_only_preconditioner(
-            dict(options.petsc_options)
-        ):
-            refuse_feature("petsc_preconditioner")
+    if isinstance(problem, Eigenmode):
+        _refuse_eigenmode(model, problem, options)
+    if isinstance(problem, Electrostatic) and model._periodic:  # noqa: SLF001
+        refuse_feature("periodic")
+    if isinstance(problem, (Driven, Eigenmode, Electrostatic)):
+        _refuse_options(options)
+
+
+def _refuse_eigenmode(model: Any, problem: Any, options: Any) -> None:
+    """Refuse what an `gfem.Eigenmode` cannot run above one rank (ADR 0502).
+
+    Bloch before periodic, since a wave vector needs a pair.
+    """
+    if problem.wave_vector is not None:
+        refuse_feature("bloch")
+    if len(model._periodic) > 1:  # noqa: SLF001
+        refuse_feature("periodic")
+    if options.eigen_solver == "arpack":
+        refuse_feature("arpack")
+
+
+def _refuse_options(options: Any) -> None:
+    """Refuse the options no 3D EM problem runs above one rank, whatever its type.
+
+    A `gfem.PortMode` is not checked: it ignores ``device`` and ``linear_solver``
+    and runs its 2D solve on rank 0 alone (ADR 0059).
+    """
+    if options.device.startswith("cuda"):
+        refuse_feature("device")
+    if options.order == 1 and options.linear_solver in ("auto", "bddc_gmres"):
+        refuse_feature("bddc_order_1")
+    if options.linear_solver == "petsc" and _serial_only_preconditioner(
+        dict(options.petsc_options)
+    ):
+        refuse_feature("petsc_preconditioner")
 
 
 def _serial_only_preconditioner(petsc_options: dict[str, Any]) -> bool:
@@ -376,6 +412,48 @@ def agreed[E: BaseException](error: E) -> E:
     """``error``, marked as raised by every rank together, so `section` lets it pass."""
     error._gfem_agreed = True  # ty: ignore[unresolved-attribute]  # noqa: SLF001
     return error
+
+
+def available[T](
+    comm: Any, check: collections.abc.Callable[[], T], elsewhere: str
+) -> T:
+    """``check()``'s value where it passes on every rank; else raise on every rank.
+
+    A rank whose ``check`` raised `gfem.SolverUnavailableError` raises its own error,
+    the others one saying ``elsewhere``; both `agreed`.
+    """
+    error = None
+    value = None
+    try:
+        value = check()
+    except SolverUnavailableError as err:
+        error = err
+    if not agree_all(comm, flag=error is None):
+        raise agreed(error or SolverUnavailableError(elsewhere))
+    return cast("T", value)
+
+
+def is_agreed(
+    error: BaseException, classes: tuple[type[BaseException], ...] = AGREED_ERRORS
+) -> bool:
+    """Whether every rank raises ``error`` together: one of ``classes``, or `agreed`."""
+    return isinstance(error, classes) or getattr(error, "_gfem_agreed", False)
+
+
+@contextlib.contextmanager
+def raised_together(
+    *errors: type[BaseException],
+) -> collections.abc.Generator[None]:
+    """``errors`` raised inside are raised by every rank together (ADR 0058).
+
+    Around code whose failures read agreed or replicated values only: each such
+    error is marked `agreed` and raised on.
+    """
+    try:
+        yield
+    except errors as error:
+        agreed(error)
+        raise
 
 
 def reduce_bcast(comm: Any, values: Any) -> Any:
@@ -826,10 +904,8 @@ def section(
     """
     try:
         yield
-    except agreed:
-        raise
     except BaseException as error:
-        if comm is None or getattr(error, "_gfem_agreed", False):
+        if comm is None or is_agreed(error, agreed):
             raise
         _abort(comm, error)
 

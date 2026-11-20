@@ -632,10 +632,13 @@ Solvers, memory and ranks:
   physical core between the ranks whose affinity mask holds it, so partly
   overlapping masks no longer oversubscribe; identical and disjoint masks give
   the same counts as before.
-- **Driven solves across MPI ranks.** `mpirun -n N python script.py` or
-  `srun --mpi=pmix` now runs a uniform driven sweep and its gradients across the
-  ranks, with `comm=` on `gfem.solve`, `Job.run`, `Mesh.from_gmsh`, `Job.from_json`
-  and `load_result`. Every other problem and some options raise
+- **Solves across MPI ranks.** `mpirun -n N python script.py` or
+  `srun --mpi=pmix` now runs a uniform driven sweep, an electrostatic solve, an
+  eigenmode solve and periodic models on one axis (Bloch driven included), and
+  their gradients, across the ranks, with `comm=` on `gfem.solve`, `Job.run`,
+  `Mesh.from_gmsh`, `Job.from_json` and `load_result`. An eigenmode solve there
+  uses SLEPc; gradients through a mode's field, two or three periodic pairs,
+  Bloch eigenmode, thermal and DC conduction problems and some options raise
   {py:obj}`gfem.DistributedUnsupportedError`. See {doc}`../recipes/distributed-solve`.
   - The `mpi` extra is mpi4py; `import gfem` needs neither it nor MPI. Only Open MPI
     is accepted above one rank.

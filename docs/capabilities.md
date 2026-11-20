@@ -82,18 +82,20 @@ v0.1.
   MUMPS and its options, your own PETSc Krylov method and preconditioner, or
   SLEPc's own controls. With no options, `"petsc"` gives the same results as
   `"direct"`, and SLEPc the same modes and Q as ARPACK, the default eigen
-  solver. You build them from
-  source ({doc}`recipes/petsc-slepc`).
+  solver on one process (across MPI ranks the default is SLEPc). You build
+  them from source ({doc}`recipes/petsc-slepc`).
 - **`device="cuda"`**: the direct solver on one NVIDIA GPU through cuDSS,
   experimental ({doc}`recipes/gpu-direct-solver`).
 - **Thermal and DC conduction problems** solve on `"direct"` by default and
   accept `"bddc_gmres"` and `"petsc"`. One factorization serves a whole
   transient run. They do not run on the GPU solver or across MPI ranks: both
   raise.
-- **Across MPI ranks**: a driven uniform sweep and its gradients run split
-  across the ranks of one job, on Open MPI and Linux x86_64. Everything else
-  raises {py:obj}`gfem.DistributedUnsupportedError` there; the full table is
-  in {doc}`recipes/distributed-solve`.
+- **Across MPI ranks**: driven uniform sweeps, electrostatic and eigenmode
+  solves, and periodic cells on one axis run split across the ranks of one
+  job, with their gradients (except gradients through a mode's field), on
+  Open MPI and Linux x86_64. Everything else raises
+  {py:obj}`gfem.DistributedUnsupportedError` there; the full table is in
+  {doc}`recipes/distributed-solve`.
 
 How large a model each solver has finished, and in what time:
 {doc}`project/scaling`.
