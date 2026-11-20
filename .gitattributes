@@ -1,0 +1,3 @@
+# LF everywhere, Windows checkouts too: tests hash committed text files (meshes,
+# scripts) and compare them byte for byte.
+* text=auto eol=lf

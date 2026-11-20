@@ -17,7 +17,9 @@ def test_no_docs_page_holds_a_placeholder():
     found = [
         f"{page.relative_to(DOCS)}:{number}"
         for page in pages
-        for number, line in enumerate(page.read_text().splitlines(), start=1)
+        for number, line in enumerate(
+            page.read_text(encoding="utf-8").splitlines(), start=1
+        )
         if any(mark in line for mark in PLACEHOLDER)
     ]
     assert not found, f"placeholders left in: {found}"

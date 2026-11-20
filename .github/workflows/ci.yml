@@ -160,7 +160,7 @@ jobs:
         .venv-mpich/bin/mpiexec -n 2 .venv-mpich/bin/python tools/mpi_refusal.py
 
   tutorials:
-    name: tutorial notebooks (ubuntu, py3.12)
+    name: tutorial notebooks (ubuntu, py3.13)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -168,10 +168,12 @@ jobs:
     - uses: astral-sh/setup-uv@v6
       with:
         version: ${{ env.UV_VERSION }}
-        python-version: "3.12"
+        python-version: "3.13"
         enable-cache: true
     - name: Install
-      run: uv sync --locked --group docs
+      # as `just notebooks`: the docs profile exports 3D scenes through the site
+      # group's trame (Python >= 3.13)
+      run: uv sync --locked --group docs --group site
     - name: Headless OpenGL
       # PyVista renders through EGL on Mesa's software rasteriser (no display,
       # and OSMesa is gone from recent Mesa).
@@ -180,10 +182,10 @@ jobs:
       env:
         JAX_PLATFORMS: cpu
         VTK_DEFAULT_OPENGL_WINDOW: vtkEGLRenderWindow
-        # the docs IPython profile, as `just notebooks`: it registers gfem's colormaps
+        # the docs IPython profile, as `just notebooks`: gfem's colormaps and scenes
         IPYTHONDIR: ${{ github.workspace }}/docs/_ipython
       run: >-
-        uv run --group docs jupyter nbconvert --to notebook --execute
+        uv run --group docs --group site jupyter nbconvert --to notebook --execute
         --ExecutePreprocessor.timeout=1800 --output-dir "$RUNNER_TEMP"
         docs/tutorials/*.ipynb
 

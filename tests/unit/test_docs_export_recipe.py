@@ -209,7 +209,7 @@ def test_the_result_bundle_reads_back_as_the_solve(ran, workdir):
     (field,) = {json.dumps(f["mesh"]) for f in doc["result"]["e_fields"]}
     mesh = json.loads(field)
     # The page: "here by its absolute path, since the mesh is outside result/".
-    assert mesh["path"] == str((workdir / "line.msh").resolve())
+    assert mesh["path"] == (workdir / "line.msh").resolve().as_posix()
 
 
 def test_the_cache_blocks_print_what_the_page_shows_but_the_keys(ran):
@@ -218,7 +218,8 @@ def test_the_cache_blocks_print_what_the_page_shows_but_the_keys(ran):
         printed, shown = (
             KEY.sub("<key>", text) for text in (example.printed, example.shown)
         )
-        assert printed.split() == shown.split()
+        # the page prints a path; Windows writes its separator as a backslash
+        assert printed.replace("\\", "/").split() == shown.split()
 
 
 def test_the_second_solve_is_read_back_from_the_cache(ran, workdir):

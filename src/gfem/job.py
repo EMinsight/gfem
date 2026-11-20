@@ -486,7 +486,7 @@ def _read_json(path: Path) -> Any:
     if not path.is_file():
         raise FileNotFoundError(f"No such file: {path}.")
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as err:
         raise ValueError(f"{path} is not valid JSON: {err}.") from None
 

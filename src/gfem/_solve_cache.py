@@ -549,7 +549,7 @@ def _load(
     Returns:
         The decoded entry, and the document and arrays it was decoded from.
     """
-    doc = json.loads((entry / ENTRY_JSON).read_text())
+    doc = json.loads((entry / ENTRY_JSON).read_text(encoding="utf-8"))
     if not isinstance(doc, dict) or doc.get("format") != ENTRY_FORMAT:
         raise ValueError(f"{entry / ENTRY_JSON} is not a solve cache entry.")
     if doc.get("layout") != LAYOUT:
@@ -558,7 +558,12 @@ def _load(
         raise ValueError(f"the entry holds key {doc.get('key')!r}, not its name")
     arrays: dict[str, np.ndarray] = {}
     if doc["arrays"]:
-        with np.load(entry / ENTRY_NPZ, allow_pickle=False) as npz:
+        # np.load leaves its file open when a damaged zip raises, and Windows
+        # cannot then move the entry away: open and close the file here
+        with (
+            (entry / ENTRY_NPZ).open("rb") as f,
+            np.load(f, allow_pickle=False) as npz,
+        ):
             arrays = {k: npz[k] for k in npz.files}
     return decode_entry(entry, doc, arrays, model), doc, arrays
 

@@ -19,7 +19,7 @@ def docstring_tokens(path: Path):
     """Each docstring's (line, source text) as written, prefix and quotes included."""
     lines = {
         node.body[0].value.lineno
-        for node in ast.walk(ast.parse(path.read_text()))
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
         if isinstance(
             node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
         )

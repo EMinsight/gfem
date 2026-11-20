@@ -920,9 +920,9 @@ def test_a_partial_bundle_that_cannot_be_written_leaves_the_solver_error(
     err = _stopped(sweep_job, out)
     assert err.result.s.frequency == SWEEP[:2]
     (note,) = err.__notes__
-    assert note.startswith(
-        f"The partial result could not be written to {out}: NotADirectoryError: "
-    )
+    # NotADirectoryError on POSIX; Windows names another OSError
+    assert note.startswith(f"The partial result could not be written to {out}: ")
+    assert "Error: " in note
 
 
 @pytest.mark.parametrize(

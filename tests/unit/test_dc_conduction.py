@@ -139,7 +139,8 @@ def test_the_drive_is_differentiable(bar_mesh):
         heat = gfem.joule_heating(dc, current=i)
         return jnp.sum(heat._density_on(bar_mesh) * vol)
 
-    assert float(jax.grad(power)(0.01)) == pytest.approx(2 * 0.01 * 50.0, rel=1e-12)
+    # 1.1e-12 off on a GitHub runner without PARDISO: the solve's rounding
+    assert float(jax.grad(power)(0.01)) == pytest.approx(2 * 0.01 * 50.0, rel=1e-11)
 
 
 def test_the_conductance_is_differentiable_in_the_conductivity(bar_mesh):
