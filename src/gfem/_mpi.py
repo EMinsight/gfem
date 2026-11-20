@@ -57,6 +57,7 @@ __all__ = [
     "entry_check",
     "gather_rows",
     "install_abort_hook",
+    "is_agreed",
     "launched_tasks",
     "max_bcast",
     "meet",
@@ -64,6 +65,7 @@ __all__ = [
     "node_bytes",
     "node_share",
     "on_root",
+    "raised_together",
     "rank",
     "reduce_bcast",
     "refuse",
@@ -409,6 +411,29 @@ def agreed[E: BaseException](error: E) -> E:
     """``error``, marked as raised by every rank together, so `section` lets it pass."""
     error._gfem_agreed = True  # ty: ignore[unresolved-attribute]  # noqa: SLF001
     return error
+
+
+def is_agreed(
+    error: BaseException, classes: tuple[type[BaseException], ...] = AGREED_ERRORS
+) -> bool:
+    """Whether every rank raises ``error`` together: one of ``classes``, or `agreed`."""
+    return isinstance(error, classes) or getattr(error, "_gfem_agreed", False)
+
+
+@contextlib.contextmanager
+def raised_together(
+    *errors: type[BaseException],
+) -> collections.abc.Generator[None]:
+    """``errors`` raised inside are raised by every rank together (ADR 0058).
+
+    Around code whose failures read agreed or replicated values only: each such
+    error is marked `agreed` and raised on.
+    """
+    try:
+        yield
+    except errors as error:
+        agreed(error)
+        raise
 
 
 def reduce_bcast(comm: Any, values: Any) -> Any:
@@ -859,10 +884,8 @@ def section(
     """
     try:
         yield
-    except agreed:
-        raise
     except BaseException as error:
-        if comm is None or getattr(error, "_gfem_agreed", False):
+        if comm is None or is_agreed(error, agreed):
             raise
         _abort(comm, error)
 

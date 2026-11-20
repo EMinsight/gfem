@@ -628,6 +628,23 @@ def test_a_section_at_one_process_lets_any_error_through():
         raise ValueError("local")
 
 
+def test_an_error_is_agreed_by_its_class_or_its_mark():
+    assert _mpi.is_agreed(gfem.SolverUnavailableError("all ranks"))
+    assert not _mpi.is_agreed(ValueError("one rank"))
+    assert _mpi.is_agreed(_mpi.agreed(ValueError("all ranks")))
+    assert not _mpi.is_agreed(gfem.SolverUnavailableError("all ranks"), ())
+    assert _mpi.is_agreed(ValueError("all ranks"), (ValueError,))
+
+
+def test_raised_together_marks_only_the_classes_named():
+    with pytest.raises(ValueError) as caught, _mpi.raised_together(ValueError):
+        raise ValueError("replicated")
+    assert _mpi.is_agreed(caught.value, ())
+    with pytest.raises(KeyError) as other, _mpi.raised_together(ValueError):
+        raise KeyError("local")
+    assert not _mpi.is_agreed(other.value, ())
+
+
 def test_a_warning_at_one_process_warns_at_the_callers_line():
     with pytest.warns(UserWarning, match="once") as caught:
         _mpi.warn(None, "once", UserWarning)

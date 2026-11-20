@@ -25,9 +25,8 @@ imported at module scope.
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Callable, Mapping
 from typing import Any, cast
 
 import numpy as np
@@ -71,19 +70,12 @@ class _Shell:
             try:
                 y.array = self._apply(x.array_r.copy())
             except BaseException as err:
-                if self._distributed and not _agreed(err):
+                if self._distributed and not _mpi.is_agreed(err):
                     raise
                 self.error = err
             else:
                 return
         y.array = 0.0
-
-
-def _agreed(error: BaseException) -> bool:
-    """Whether every rank raises ``error`` together (`gfem._mpi.section`'s test)."""
-    return isinstance(error, _mpi.AGREED_ERRORS) or getattr(
-        error, "_gfem_agreed", False
-    )
 
 
 class _Rows:
@@ -180,16 +172,6 @@ class _Plan:
         vector = mat.createVecRight()
         vector.array = self.rows.rows(start)
         return vector
-
-    @contextlib.contextmanager
-    def replicated(self) -> Generator[None]:
-        """A `ValueError` from the replicated options is raised by every rank."""
-        try:
-            yield
-        except ValueError as err:
-            if self.mpi_comm is not None:
-                _mpi.agreed(err)
-            raise
 
 
 def _stopping_test(shell: _Shell):
@@ -377,13 +359,14 @@ def shift_invert(
             # SLEPc reads its viewer options (eps_view, eps_error_*, ...) at
             # the end of the solve: the options stay in the database across it
             with _petsc.scoped_options(prefix, pairs):
-                with plan.replicated():
+                # a ValueError from the replicated options is every rank's
+                with _mpi.raised_together(ValueError):
                     _set_from_options(eps)
                 eps.setInitialSpace([start])
                 eps.solve()
                 if shell.error is not None:
                     raise shell.error
-                with plan.replicated():
+                with _mpi.raised_together(ValueError):
                     _check_read(eps, [name for name, _ in pairs])
             theta, vectors = _eigenpairs(eps, vector, nev, plan)
             bound = _bound(eps, seed, theta, vectors, plan)

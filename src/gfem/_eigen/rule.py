@@ -73,10 +73,9 @@ vanish).
 from __future__ import annotations
 
 import cmath
-import contextlib
 import dataclasses
 import math
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, cast
 
 import jax
@@ -485,7 +484,7 @@ class EigenmodeRule:
         order = opts.order
         comm = self.comm
         # before any assembly: a target in a law's unresolved band (ADR 0115)
-        with _agreed(ValueError):
+        with _mpi.raised_together(ValueError):
             dispersion.check_band(model, self.problem.target, "target")
         with task_manager(opts.threads, comm):
             with _timing.phase("discretize") as span:
@@ -504,7 +503,7 @@ class EigenmodeRule:
                 # the whole search is one solve: its shift solves are internal
                 with (
                     _timing.phase("solve", iterations=()),
-                    _agreed(EigenmodeConvergenceError),
+                    _mpi.raised_together(EigenmodeConvergenceError),
                 ):
                     modes, guard, gaps, unpolished = self._find(
                         eop, divfree, sigma, guard=keep or self.polishable
@@ -512,7 +511,7 @@ class EigenmodeRule:
                 per_hz = const.c / built.scale / (2 * math.pi)
                 for j, mode in enumerate(modes):
                     f = mode.k.real * per_hz
-                    with _agreed(ValueError):
+                    with _mpi.raised_together(ValueError):
                         dispersion.check_band(model, f, f"mode {j} at")
                         # the mode energy's weight (ADR 0109)
                         dispersion.check_energy(model, f, f"mode {j} at")
@@ -2349,20 +2348,6 @@ def _check_low_frequency(
         LowFrequencyWarning,
         stacklevel=stacklevel + 1,
     )
-
-
-@contextlib.contextmanager
-def _agreed(*errors: type[BaseException]) -> Generator[None]:
-    """``errors`` raised inside are raised by every rank together (ADR 0058).
-
-    Around code whose failures read agreed or replicated values only: the band
-    checks, and the mode search, whose every branch reads agreed values.
-    """
-    try:
-        yield
-    except errors as error:
-        _mpi.agreed(error)
-        raise
 
 
 def _require_rank_slepc(comm: Any) -> None:
