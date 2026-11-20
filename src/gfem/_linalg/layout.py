@@ -121,8 +121,12 @@ class RankLayout(DofLayout):
         self._work = ngs.GridFunction(space).vec.CreateVector()
 
     def _sum(self, local: np.ndarray) -> np.ndarray:
-        """The rank sum of ``local``, in this space's scalar type."""
-        return _mpi.reduce_bcast(self.comm, np.asarray(local, self._dtype))
+        """The rank sum of ``local``, in this space's scalar type and its shape.
+
+        A product of two columns is 0-d, which the reduction's buffer is not.
+        """
+        local = np.asarray(local, self._dtype)
+        return _mpi.reduce_bcast(self.comm, local).reshape(local.shape)
 
     def pair(self, load: np.ndarray, state: np.ndarray) -> np.ndarray:
         """The rank sum of the local products ``load.T @ state``."""
