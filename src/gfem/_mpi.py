@@ -119,7 +119,6 @@ _REFUSALS = {
         f"An adaptive sweep has no distributed path: use a uniform sweep, {_COPIES}."
     ),
     "eigenmode": f"An eigenmode solve has no distributed path: {_RUN_COPIES}.",
-    "electrostatic": f"An electrostatic solve has no distributed path: {_RUN_COPIES}.",
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
     "periodic": f"A periodic model has no distributed path: {_RUN_COPIES}.",
@@ -312,12 +311,12 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("periodic")
         if min(options.frequency_workers, len(problem.frequency)) > 1:
             refuse_feature("frequency_workers")
+    if isinstance(problem, Electrostatic) and model._periodic:  # noqa: SLF001
+        refuse_feature("periodic")
     if isinstance(problem, (Driven, Eigenmode, Electrostatic)):
         _refuse_options(options)
     if isinstance(problem, Eigenmode):
         refuse_feature("eigenmode")
-    if isinstance(problem, Electrostatic):
-        refuse_feature("electrostatic")
 
 
 def _refuse_options(options: Any) -> None:

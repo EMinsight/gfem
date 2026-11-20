@@ -347,12 +347,19 @@ SHARED_REFUSALS = {
 }
 
 
+def _problem(key, directory):
+    """``(model, problem)`` of a refused case, or of an electrostatic solve."""
+    if key == "electrostatic":
+        return mpi_cases.stack(directory), mpi_cases.ELECTROSTATIC
+    return mpi_cases.refused(key, directory)[:2]
+
+
 @pytest.mark.parametrize("problem_key", ["electrostatic", "eigenmode"])
 @pytest.mark.parametrize("key", SHARED_REFUSALS)
 def test_the_shared_refusals_hold_for_every_problem(
     key, problem_key, tmp_path, monkeypatch
 ):
-    model, problem, _ = mpi_cases.refused(problem_key, tmp_path)
+    model, problem = _problem(problem_key, tmp_path)
     use_mpi(monkeypatch, fake_mpi())
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.solve(model, problem, options=SHARED_REFUSALS[key], comm=Stub(4))
@@ -366,6 +373,21 @@ def test_a_refused_physics_raises_its_own_key_before_the_shared_ones(key, tmp_pa
         with pytest.raises(gfem.DistributedUnsupportedError) as caught:
             _mpi.refuse(model, problem, options)
         assert caught.value.feature == mpi_cases.feature(key)
+
+
+@pytest.mark.parametrize("solver", ["auto", "direct", "bddc_gmres", "petsc"])
+def test_an_electrostatic_solve_has_a_distributed_path(solver, tmp_path):
+    options = gfem.SolverOptions(order=2, linear_solver=solver)
+    _mpi.refuse(mpi_cases.stack(tmp_path), mpi_cases.ELECTROSTATIC, options)
+    assert "electrostatic" not in _mpi._REFUSALS
+
+
+def test_an_electrostatic_solve_on_a_periodic_model_is_refused(tmp_path):
+    model, _, options = mpi_cases.refused("periodic", tmp_path)
+    problem = gfem.Electrostatic(terminals={"a": "z_max"}, ground="z_min")
+    with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+        _mpi.refuse(model, problem, options)
+    assert caught.value.feature == "periodic"
 
 
 def test_element_mean_has_region_means_text():

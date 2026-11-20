@@ -938,7 +938,6 @@ def links_gradient_errors(row: dict) -> bool:
 REFUSAL_LABELS = {
     "adaptive_sweep": '`Driven(sweep="adaptive")`, with or without `samples`',
     "eigenmode": "`Eigenmode`, nonlinear ones included",
-    "electrostatic": "`Electrostatic`",
     "thermal": "`SteadyThermal`",
     "thermal_transient": "`TransientThermal`",
     "dc_conduction": "`DCConduction`",
