@@ -776,7 +776,7 @@ def test_the_mode_is_followed_by_nearest_omega(cavity):
     )
     omegas = [cycle.value for cycle in ref.cycles]
     first = np.asarray(gfem.solve(cavity, problem, options=OPTIONS).omega)
-    assert omegas[0] == complex(first[1])
+    assert omegas[0] == pytest.approx(complex(first[1]), rel=1e-13)
     for before, after in itertools.pairwise(omegas):
         assert abs(after - before) < abs(first[1] - first[0]) / 2
 

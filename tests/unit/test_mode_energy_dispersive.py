@@ -148,7 +148,8 @@ def test_the_normalized_lossless_mode_is_the_grams_quasinormal_norm(core_box, ke
     d_chi = dispersion.d_susceptibility(LORENTZ, omega) * per_k
     # E-only quasinormal norm, unconjugated: x^T K x / k^2 + x^T d(k eps)/dk M x
     norm = (e @ kx) / k**2 - (e @ mx) + (chi + k * d_chi) * (e @ a_x)
-    assert abs(omega.imag) == 0
+    # lossless: real to rounding (macOS's arm64 build leaves ~1e-33 relative)
+    assert abs(omega.imag) <= 1e-15 * abs(omega.real)
     np.testing.assert_allclose(gram / (-k * norm), 1.0, rtol=1e-12)
     # 1 J = 1/2 eps0 int eps_W |E|^2 = eps0 scale N / 4
     np.testing.assert_allclose(

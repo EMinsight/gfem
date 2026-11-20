@@ -334,12 +334,16 @@ def test_two_processes_publishing_one_key_leave_one_complete_entry(stack, tmp_pa
     # the entry was solved in another process, whose thread count may differ:
     # equal to the precision the solve key promises, not bitwise
     assert type(back) is type(result)
+    # A leaf that is rounding noise around zero (~1e-47 here) differs between
+    # thread counts by more than its own size: 1e-30 floors the tolerance, far
+    # below any value this SI result holds.
     for x, y in zip(
         jax.tree_util.tree_leaves(back), jax.tree_util.tree_leaves(result), strict=True
     ):
         want = np.asarray(y)
         scale = float(np.abs(want).max()) if want.size else 0.0
-        np.testing.assert_allclose(np.asarray(x), want, rtol=1e-12, atol=1e-12 * scale)
+        atol = 1e-12 * scale + 1e-30
+        np.testing.assert_allclose(np.asarray(x), want, rtol=1e-12, atol=atol)
 
 
 def test_a_result_the_store_cannot_write_warns_and_stores_nothing(stack, tmp_path):
