@@ -61,8 +61,8 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
         case "dc_conduction":
             problem = gfem.DCConduction(terminals=TERMINALS)
             return stack(directory), problem, direct
-        case "periodic":
-            return _cell(directory), gfem.Driven(FREQUENCY), direct
+        case "periodic":  # two pairs: one pair runs distributed
+            return pc.c2(pc.c2_mesh(directory)), gfem.Driven(FREQUENCY), direct
         case "bloch":
             problem = gfem.Driven(FREQUENCY, wave_vector=pc.C1_K)
             return _cell(directory), problem, direct
@@ -108,8 +108,8 @@ KEYS = (
 
 
 #: What a call other than `gfem.solve` refuses (a method after a solve,
-#: `gfem.error_estimate` or `gfem.refine_mesh`); `tests/mpi` raises each one on
-#: every rank.
+#: `gfem.error_estimate`, `gfem.refine_mesh`, or the backward of an eigenmode
+#: mode-field output); `tests/mpi` raises each one on every rank.
 METHOD_KEYS = (
     "field_export",
     "load_result_fields",
@@ -119,6 +119,7 @@ METHOD_KEYS = (
     "electric_energy",
     "error_estimate",
     "mesh_refinement",
+    "mode_field_gradient",
 )
 #: The refusal keys no public call reaches, so no page lists them.
 GUARD_KEYS: tuple[str, ...] = ()
