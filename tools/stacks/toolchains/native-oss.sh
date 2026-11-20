@@ -1,4 +1,4 @@
-# Toolchain of the native-oss software stack (ADR 0205), MN5 GPP modules:
+# Toolchain of the native-oss software stack, MN5 GPP modules:
 # GCC 12.3 for C, C++ and Fortran, Open MPI 4.1.6 over UCX 1.16, and the
 # self-built OpenBLAS 0.3.34 of package openblas (pthreads libopenblas for
 # gfem's NGSolve and PETSc, OpenMP libopenblas_omp for Palace). ScaLAPACK

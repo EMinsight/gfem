@@ -1,4 +1,4 @@
-"""The gfem worker: one suite run in the stack's gfem env (ADR 0406).
+"""The gfem worker: one suite run in the stack's gfem env.
 
 ``python -m benchmarks.adapters.gfem_worker run.json`` (on every rank under srun)
 reads the run the gfem adapter rendered, times the mesh read, logs ``gfem.timing``
@@ -12,7 +12,7 @@ At one rank the worker is the DOF guard: the ``discretize`` record is checked ag
 the pinned count and a mismatch stops the solve there. Above one rank the adapter
 checks the summed count after the run.
 
-The one module of ``benchmarks/`` that imports gfem (ADR 0400).
+The one module of ``benchmarks/`` that imports gfem.
 """
 
 from __future__ import annotations

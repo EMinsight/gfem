@@ -1,4 +1,4 @@
-"""Suite records, campaign manifests and the records store (ADRs 0401, 0402).
+"""Suite records, campaign manifests and the records store.
 
 A **suite record** (``suite-record/1``) is one JSON file per planned run, named
 ``<case>/<code>-<kind>__<stack>__<layout>__rep<n>`` under the run directory's
@@ -33,7 +33,7 @@ Unknown keys of a known major are kept as they are (an optional key added later)
 The **records store** is a worktree of the orphan branch ``bench-data``. Per campaign
 it holds ``campaign.json``, ``records/<case>/*.json`` and
 ``jobs/<jobid>/{node.txt, pip-freeze.txt, machine.json}``; ``fetch --records-only``
-writes exactly that set. Standard library only (ADR 0400).
+writes exactly that set. Standard library only.
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ STATUSES = (
 FINAL_STATUSES = tuple(s for s in STATUSES if s != "started")
 FAILURE_CLASSES = ("solver", "harness")
 SKIP_REASONS = ("earlier_repeat_timeout", "kind_not_converging")
-"""Reasons of ``not_started`` records skipped inside a job (ticket 12)."""
+"""Reasons of ``not_started`` records skipped inside a job."""
 CHECK_VALUES = ("pass", "fail", "skipped", "observed")
 LAYOUTS_ASKED = ("default", "best", "grid")
 """Named values of ``run.layout.asked``; an explicit ``RxT`` is the other form."""
@@ -437,7 +437,7 @@ class Job(_Block):
     nodes: list[str] = field(default_factory=list)
     elapsed_s: float | None = None
     billed_core_h: float | None = None
-    """sacct ``CPUTimeRAW`` / 2 / 3600 (ADR 0188)."""
+    """sacct ``CPUTimeRAW`` / 2 / 3600."""
     state: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
@@ -681,7 +681,7 @@ def scrub_freeze(text: str, roots: Mapping[str, str]) -> str:
     """``pip freeze`` text fit for the store: roots replaced, local paths dropped.
 
     A ``name @ file:///<path>/<wheel>#sha256=..`` line keeps the wheel's file name
-    and hash, never the path (``jobs/<jobid>/pip-freeze.txt``, ADR 0402).
+    and hash, never the path (``jobs/<jobid>/pip-freeze.txt``).
     """
     text = replace_roots(text, roots)
     return _FILE_URL.sub(lambda m: f"file:{m[2]}", text)

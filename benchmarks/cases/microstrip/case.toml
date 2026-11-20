@@ -39,7 +39,7 @@ excite = ["p1", "p2"]
 [quantities]
 s = [["p1", "p1"], ["p2", "p1"], ["p1", "p2"], ["p2", "p2"]]
 
-# Plan estimate hints, seconds per run at budget 16 (probes/12/plan.py); 600 = wall cap (Palace MUMPS 1x16 times out).
+# Plan estimate hints, seconds per run at budget 16; 600 = wall cap (Palace MUMPS 1x16 times out).
 [est_s]
 "gfem:direct" = 40
 "gfem:petsc-mumps" = 45

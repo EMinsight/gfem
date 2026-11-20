@@ -1,4 +1,4 @@
-r"""Scoring: accuracy against the converged reference, same-code error (ADR 0409).
+r"""Scoring: accuracy against the converged reference, same-code error.
 
 ``close`` scores each ``ok`` record once; a scored record is never rescored silently
 (the report's ``--rescore`` recomputes beside it).
@@ -24,7 +24,7 @@ r"""Scoring: accuracy against the converged reference, same-code error (ADR 0409
   and order (the adapter's preferred direct kind, else another direct kind; at its
   tightest tolerance), null without one.
 
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations

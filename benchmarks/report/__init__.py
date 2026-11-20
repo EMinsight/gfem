@@ -1,4 +1,4 @@
-"""Campaign reports: a deterministic Markdown and SVG directory (ADR 0413).
+"""Campaign reports: a deterministic Markdown and SVG directory.
 
 ``python -m benchmarks report <campaign ids|dirs> --out DIR`` reads only the campaign
 manifests, the records they list and the store's references (:mod:`.load`), computes

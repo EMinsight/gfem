@@ -1,6 +1,6 @@
 """The ``reference.json`` file (``suite-reference/1``): fields, checks and writer.
 
-Fields (union of tickets 08 and 15, spec gap G1): ``format``, ``id``
+Fields: ``format``, ``id``
 (``<case>-<YYYYMMDD>-<sha7>``), ``family``, ``computed_utc``, ``case``
 (``name``, ``definition_sha256``, ``mesh_sha256`` of the suite case it was computed
 for), ``physics_sha256`` (the case minus mesh, order, name, size and ``est_s``;

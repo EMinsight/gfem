@@ -21,7 +21,7 @@ Performance is observed, never judged: no value here is a pass or a fail.
 - A cross-code ratio uses cells of one Slurm job; across jobs it carries the label
   **different nodes**.
 
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations

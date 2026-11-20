@@ -1,4 +1,4 @@
-"""What ``stack.sh fetch`` reads from a fetched upstream tag (ADR 0212).
+"""What ``stack.sh fetch`` reads from a fetched upstream tag.
 
 Dependency pins of a superbuild are read from the tag, never repeated in a
 recipe: Palace's ``cmake/ExternalGitTags.cmake`` and ``download_patch`` calls,

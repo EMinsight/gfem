@@ -1,4 +1,4 @@
-# Recipe of package petsc: PETSc and SLEPc with petsc4py and slepc4py, gfem's ADR 0067 contract (ADR 0209).
+# Recipe of package petsc: PETSc and SLEPc with petsc4py and slepc4py, gfem's PETSc contract.
 # Sourced by stack.sh with STACK_NAME set to the software stack (empty for
 # fetch). Interface: README.md, "Recipe interface".
 
@@ -13,11 +13,11 @@ native-intel) DEPENDS=() ;;
 esac
 
 # The --download tarballs of gfem's PETSc contract, as tools/petsc_wheelhouse.sh
-# TARBALLS pins them (ADR 0067, ADR 0209): "NAME URL [SHA256]". PETSc's
+# TARBALLS pins them: "NAME URL [SHA256]". PETSc's
 # configure cannot download through the tunnel (urllib), so the build passes
 # --download-<pkg>=$STACK_SRC/tarballs/NAME. ParMETIS has no pin anywhere:
 # trusted on first fetch, fetched but never passed to configure: gfem's PETSc
-# builds without ParMETIS (ADR 0012, ADR 0067).
+# builds without ParMETIS (GPL).
 PETSC_TARBALLS=(
   "MUMPS_5.9.1.tar.gz https://mumps-solver.org/MUMPS_5.9.1.tar.gz 659c9b57646b5a003ac618baa1faf9dd2044e46c732b3daaccbc7158003e1b46"
   "scalapack-v2.2.3.tar.gz https://github.com/Reference-ScaLAPACK/scalapack/archive/v2.2.3.tar.gz 5d93701eca663925e98010dd8d0f45fd79b2191d74e5afa5711d587370a8b9dd"
@@ -56,7 +56,7 @@ fetch_petsc() {
 }
 
 # The configure options of gfem's PETSc contract (tools/petsc_wheelhouse.sh
-# --mpi, ADR 0067) plus the native parts of ADR 0209: the stack's MPI
+# --mpi) plus the native parts: the stack's MPI
 # compilers, BLAS and flags, no OpenMP, an install into the prefix with
 # petsc4py. The --download tarballs and --with-blaslapack-lib are added by
 # build_petsc.
@@ -70,7 +70,7 @@ PETSC_OPTIONS=(
   --with-x=0
   --with-petsc4py
 )
-# --download-<package> of each PETSC_TARBALLS entry (ParMETIS: none, ADR 0012).
+# --download-<package> of each PETSC_TARBALLS entry (ParMETIS: none).
 PETSC_DOWNLOADS=(
   "mumps MUMPS_"
   "scalapack scalapack-"
@@ -81,7 +81,7 @@ PETSC_DOWNLOADS=(
 PETSC_PIP_BUILD=(setuptools wheel cython numpy packaging)
 PETSC_ARCH_NAME=arch-stack
 
-# petsc_python: the stack interpreter (ADR 0207), the pyenv package's version.
+# petsc_python: the stack interpreter, the pyenv package's version.
 petsc_python() {
   local python
   python=$STACK_SRC/python/cpython-$(dep_version pyenv)-linux-x86_64-gnu/bin/python3
@@ -89,8 +89,8 @@ petsc_python() {
   echo "$python"
 }
 
-# petsc_patch_gemmt PETSC_SRC: never let PETSc give MUMPS -DGEMMT_AVAILABLE
-# (ADR 0205): the replace tools/petsc_wheelhouse.sh makes on the sdist, with
+# petsc_patch_gemmt PETSC_SRC: never let PETSc give MUMPS -DGEMMT_AVAILABLE:
+# the replace tools/petsc_wheelhouse.sh makes on the sdist, with
 # the same "found once" guard, on the unpacked tree.
 petsc_patch_gemmt() {
   "${STACK_PYTHON:-python3}" - "$1/config/BuildSystem/config/packages/MUMPS.py" <<'PY'
@@ -217,7 +217,7 @@ build_petsc() {
     "python_path=$prefix/lib" "build_venv=$("$venv/bin/pip" freeze | paste -sd' ')"
 }
 
-# petsc_mkl_zdotc DIR: ADR 0205's MKL build check: a gfortran program calling
+# petsc_mkl_zdotc DIR: the MKL build check: a gfortran program calling
 # zdotc through the stack's mkl_rt returns the right complex value under the
 # toolchain's MKL_INTERFACE_LAYER (mkl_rt's default Intel layer returns
 # complex results the gfortran way only by accident). Prints the result line.
@@ -244,7 +244,7 @@ F90
 
 # smoke_petsc VERSION PREFIX: checks the install; records it with stack_meta smoke.
 # PETSc's and SLEPc's checks passed (with MUMPS and 2 MPI processes); the
-# mumps block and ADR 0067's gates from the installed headers, nm -D and ldd
+# mumps block and the PETSc contract's gates from the installed headers, nm -D and ldd
 # of libpetsc (provenance.py petsc-mumps); petsc4py and slepc4py as a
 # singleton: complex, 64-bit PetscInt, PETSc from this prefix, a complex MUMPS
 # LU solve and a SLEPc eigenvalue.
@@ -271,7 +271,7 @@ smoke_petsc() {
     esac
   done >"$dir/tarballs.txt"
   prov petsc-mumps "$prefix" "$dir" >"$STACK_META/mumps.json" ||
-    stack_die "petsc smoke: the mumps block breaks ADR 0067/0209 (above)"
+    stack_die "petsc smoke: the mumps block breaks the PETSc contract (above)"
   grep -E '\b[sdcz]gemmt_\b' "$dir/dynsym.txt" && stack_die "petsc smoke: libpetsc imports ?gemmt_"
   local iomp zdotc=
   iomp=$(for lib in "$prefix"/lib/lib*.so; do ldd "$lib"; done | grep -E 'libiomp5|libmkl_intel_thread' | sort -u | xargs || true)

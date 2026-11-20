@@ -1,7 +1,7 @@
-r"""The effort's core budget: what ``submit`` may still spend (ADRs 0188, 0414).
+r"""The allocation's core budget: what ``submit`` may still spend.
 
 Spend so far = the site's ``[budget] prior_core_h`` (jobs the CLI did not submit:
-probes, the stack check, test gates; updated by hand) + billed core-hours of every
+one-off runs, the stack check, test gates; updated by hand) + billed core-hours of every
 job listed in a ``submitted.tsv`` under the site's output directory (and the run
 directory being submitted), from sacct: ``CPUTimeRAW`` / 2 / 3600, the formula that
 matches ``bsc_acct`` until it catches up. A job not finished yet (pending, running...)
@@ -9,7 +9,7 @@ counts at :math:`\text{time limit} \times \text{nodes} \times 112` core-hours un
 it finishes. ``submit`` refuses when spend + the plan's estimate passes the ceiling
 (``[budget] ceiling_core_h``, or ``--ceiling``).
 
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations
@@ -37,11 +37,11 @@ UNFINISHED = (
 
 
 class BudgetError(ConfigError):
-    """A submission that would pass the effort's core-hour ceiling."""
+    """A submission that would pass the allocation's core-hour ceiling."""
 
 
 def billed_core_h(cputime_raw: int) -> float:
-    """Billed core-hours of a job: ``CPUTimeRAW`` / 2 / 3600 (ADR 0188)."""
+    """Billed core-hours of a job: ``CPUTimeRAW`` / 2 / 3600."""
     return cputime_raw / 2 / 3600
 
 
@@ -105,7 +105,7 @@ def sacct_jobs(
 
 @dataclass(frozen=True)
 class Spend:
-    """Core-hours spent by the effort so far."""
+    """Core-hours spent on the allocation so far."""
 
     prior_core_h: float
     jobs_core_h: float
@@ -137,7 +137,7 @@ def spend(
     files: Iterable[Path],
     run: Runner = subprocess.run,
 ) -> Spend:
-    """The effort's spend: ``prior_core_h`` plus sacct over the listed jobs.
+    """The allocation's spend: ``prior_core_h`` plus sacct over the listed jobs.
 
     Pending and running jobs count at their time limit (:func:`job_core_h`).
     """

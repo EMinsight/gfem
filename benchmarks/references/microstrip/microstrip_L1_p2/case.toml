@@ -1,4 +1,4 @@
-# Microstrip ladder rung L1 p2 (ticket 08, spec G2): reference campaigns only, never a suite case.
+# Microstrip ladder rung L1 p2: reference campaigns only, never a suite case.
 format = 1
 name = "microstrip_L1_p2"
 size = "small"

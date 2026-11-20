@@ -1,4 +1,4 @@
-r"""The microstrip converged reference: a split ladder extrapolated in h (ADR 0408).
+r"""The microstrip converged reference: a split ladder extrapolated in h.
 
 The rungs are sibling case files of ``microstrip`` (same physics, ``family =
 "microstrip"``) under ``benchmarks/references/microstrip/``: L0 is the pinned mesh,
@@ -25,7 +25,7 @@ fetched records, per frequency and S entry (complex), at order 2:
 
 Same-mesh error per order: :math:`\max |S_{L0,p} - S_\mathrm{ref}|`; the
 plausibility ceiling is ten times it. With L2 missing, the command prints the pilot's
-rate estimate and writes nothing. Standard library only (ADR 0400).
+rate estimate and writes nothing. Standard library only.
 """
 
 from __future__ import annotations

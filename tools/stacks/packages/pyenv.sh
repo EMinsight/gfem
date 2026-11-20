@@ -1,4 +1,4 @@
-# Recipe of package pyenv: the stack venv template (python-build-standalone) naming NGSolve and PETSc (ADR 0207).
+# Recipe of package pyenv: the stack venv template (python-build-standalone) naming NGSolve and PETSc.
 # Sourced by stack.sh with STACK_NAME set to the software stack (empty for
 # fetch). Interface: README.md, "Recipe interface".
 
@@ -14,10 +14,10 @@ native-intel) DEPENDS=(ngsolve petsc) ;;
 *) DEPENDS=() ;;
 esac
 
-# The python-build-standalone release of the interpreter (ADR 0207).
+# The python-build-standalone release of the interpreter.
 PBS_RELEASE=20260211
 # gfem's runtime dependencies at uv.lock's pins, without the PyPI NGSolve,
-# netgen and their OpenBLAS (ADR 0207). tests/unit/test_stacks.py fails
+# netgen and their OpenBLAS. tests/unit/test_stacks.py fails
 # when uv.lock moves away from this list.
 PIP_RUNTIME=(
   jax==0.12.0
@@ -42,15 +42,15 @@ PIP_BUILD=(
   scikit-build-core==1.1.2
   pybind11-stubgen==3.0.0
 )
-# Built from source against the stack MPI, at uv.lock's pin (ADR 0207).
+# Built from source against the stack MPI, at uv.lock's pin.
 PIP_SDISTS=(mpi4py==4.1.2)
-# The pip twin of native-intel's module MKL 2025.2, installed --no-deps
-# (ADR 0207); the build checks it is byte-identical to $MKLROOT/lib.
+# The pip twin of native-intel's module MKL 2025.2, installed --no-deps;
+# the build checks it is byte-identical to $MKLROOT/lib.
 PIP_MKL=mkl==2025.2.0
 
 # fetch_pyenv VERSION: login node, network only, into $STACK_SRC.
 # The interpreter (tarball pinned by its release's SHA256SUMS, unpacked once
-# into python/cpython-VERSION-linux-x86_64-gnu/: slow on GPFS, see ADR 0212)
+# into python/cpython-VERSION-linux-x86_64-gnu/: slow on GPFS)
 # and the wheels and sdists of the stack venv.
 fetch_pyenv() {
   local version=$1 rel=$PBS_RELEASE
@@ -82,7 +82,7 @@ fetch_pyenv() {
 }
 
 
-# pyenv_python VERSION: the fetched interpreter (ADR 0207).
+# pyenv_python VERSION: the fetched interpreter.
 pyenv_python() {
   local python=$STACK_SRC/python/cpython-$1-linux-x86_64-gnu/bin/python3
   [[ -x $python ]] || stack_die "pyenv: no $python: run stack.sh fetch pyenv"
@@ -138,7 +138,7 @@ pyenv_mkl_identical() {
 }
 
 # pyenv_mkl_twin PYTHON PROBE: whether pip $PIP_MKL is a byte-identical twin
-# of the toolchain's MKL (ADR 0207). Installs it --no-deps under the scratch
+# of the toolchain's MKL. Installs it --no-deps under the scratch
 # prefix PROBE with PYTHON and compares: prints pyenv_mkl_identical's lines,
 # or sets PYENV_MKL_REASON and fails. A stack without a twin gets no pip mkl,
 # so no PARDISO, rather than two MKL releases in one process.
@@ -159,7 +159,7 @@ pyenv_mkl_twin() {
 # NGSolve built with USE_MKL (MKL_LINK=sdl) never binds its Python MKL
 # PARDISO wrapper (ngsolve.solvers.mkl_pardiso runs _find_mkl only when
 # not USE_MKL), and its own preload of the pip mkl_rt is skipped without
-# intel-openmp (never installed: ADR 0207), so gfem would see no PARDISO
+# intel-openmp (never installed), so gfem would see no PARDISO
 # (job 49183876). The module loads the venv's pip mkl_rt global first, so any
 # later library that links mkl_rt (NGSolve, PETSc) maps that one copy, and
 # runs the wrapper's _find_mkl when ngsolve imports it unbound.
@@ -247,7 +247,7 @@ build_pyenv() {
       mkl=$PIP_MKL
     else
       no_twin=$PYENV_MKL_REASON
-      echo "pyenv: no byte-identical pip mkl ($no_twin): the venv gets none, so no PARDISO (ADR 0207)"
+      echo "pyenv: no byte-identical pip mkl ($no_twin): the venv gets none, so no PARDISO"
     fi
   fi
 
@@ -334,7 +334,7 @@ pyenv_gfem_wheel() {
 # OpenBLAS, or one mkl_rt with no libiomp5); pip mkl and NGSolve's PARDISO
 # iff the venv holds the pip twin of the toolchain's MKL (else the smoke
 # records pardiso unavailable); mpi4py on the stack's MPI, its vendor
-# recorded with whether gfem's ranked solves accept it (ADR 0057). Then a
+# recorded with whether gfem's ranked solves accept it. Then a
 # consumer's run: a cp -al copy (beside the prefix, same file system) with the
 # gfem wheel installed --no-index --no-deps, pip check clean for gfem, and a
 # tiny electrostatic solve against its exact capacitance. The copy is removed.
@@ -520,7 +520,7 @@ pardiso = "absent"
 if mkl:
     # One PARDISO factorization through gfem's inverse type, against sparse
     # Cholesky; then the process maps one copy of each MKL library, MKL's GNU
-    # threading layer, and no libiomp5 (ADR 0205, ADR 0207).
+    # threading layer, and no libiomp5.
     import os
 
     import ngsolve as ngs
@@ -575,7 +575,7 @@ PY
 }
 
 # activate_pyenv PREFIX: STACK_PYENV names the venv template. The template is
-# copied, not activated (ADR 0207): its bin and lib, which every activate.sh
+# copied, not activated: its bin and lib, which every activate.sh
 # prepends, are taken off PATH and LD_LIBRARY_PATH again.
 activate_pyenv() {
   cat <<EOF

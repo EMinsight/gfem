@@ -2,18 +2,18 @@
 
 gfem runs as ``python -m benchmarks.adapters.gfem_worker run.json`` in the stack's
 gfem env, under the suite's srun line at every rank count (``--mpi=none`` at one
-rank, the stack's plugin above; ADR 0412), or bare when the stack's one-rank launch
+rank, the stack's plugin above), or bare when the stack's one-rank launch
 path is ``taskset``. :meth:`GfemAdapter.prepare` writes ``run.json``; the worker
 writes ``outcome.json`` (status, quantities, per-rank mesh read, span, ``VmHWM`` and
-threads) and one ``phases.rank<k>.jsonl`` of ``gfem.timing`` records per rank (ADR
-0190); :meth:`GfemAdapter.collect` reduces them per bucket by max over ranks, with
+threads) and one ``phases.rank<k>.jsonl`` of ``gfem.timing`` records per rank;
+:meth:`GfemAdapter.collect` reduces them per bucket by max over ranks, with
 rank 0's values beside.
 
-Pins (ADR 0411): ``linear_solver`` per kind, ``tolerance`` on the iterative kind
+Pins: ``linear_solver`` per kind, ``tolerance`` on the iterative kind
 only, ``eigen_tolerance`` 1e-10, no field output; everything else at gfem's
 defaults (``threads=None`` follows the bound mask, one frequency worker).
 
-Standard library only (ADR 0400): the worker is the only module that imports gfem.
+Standard library only: the worker is the only module that imports gfem.
 """
 
 from __future__ import annotations

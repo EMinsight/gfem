@@ -18,8 +18,8 @@ PALACE_URL=https://github.com/awslabs/palace.git
 PALACE_NOT_MIRRORED=(MAGMA UMPIRE ENZYME)
 
 # fetch_palace VERSION: login node, network only, into $STACK_SRC.
-# Everything the superbuild at tag vVERSION fetches, read from that tag
-# (ADR 0212): mirrors of its git dependencies (cmake/ExternalGitTags.cmake)
+# Everything the superbuild at tag vVERSION fetches, read from that tag:
+# mirrors of its git dependencies (cmake/ExternalGitTags.cmake)
 # and of Catch2 (test/unit/CMakeLists.txt, cloned at configure even without
 # tests); its URL tarballs, trusted on first fetch; the MUMPS release that its
 # scivision/mumps tag builds, pinned by that tag's cmake/source.json; and its
@@ -117,8 +117,8 @@ palace_mumps_release() {
   echo "$file $release $(palace_mumps_pin "${version%.tar.gz}")"
 }
 
-# palace_edit_mumps FILE TARBALL: the one source edit of the superbuild (ADR
-# 0212, ADR 0205): its cmake/ExternalMUMPS.cmake line "-DMUMPS_gemmt=ON"
+# palace_edit_mumps FILE TARBALL: the one source edit of the superbuild,
+# so it builds offline from the mirror: its cmake/ExternalMUMPS.cmake line "-DMUMPS_gemmt=ON"
 # becomes "-DMUMPS_gemmt=OFF" plus MUMPS_url naming the mirror's tarball
 # (scivision's sub-configure downloads it otherwise; Palace forwards neither).
 palace_edit_mumps() {
@@ -133,8 +133,7 @@ palace_edit_mumps() {
 
 # palace_edit_mumps_gemmt_option FILE: the superbuilds whose ExternalMUMPS.cmake
 # has no MUMPS_gemmt line (v0.18.1) build a scivision tag that reads option
-# "gemmt" (default ON): its line "-DMUMPS_parallel=ON" gains "-Dgemmt=OFF"
-# (ADR 0205).
+# "gemmt" (default ON): its line "-DMUMPS_parallel=ON" gains "-Dgemmt=OFF".
 palace_edit_mumps_gemmt_option() {
   local file=$1 line='  "-DMUMPS_parallel=ON"'
   [[ $(grep -cxF -- "$line" "$file") == 1 ]] ||
@@ -240,7 +239,7 @@ PALACE_FEATURES=(
 
 # palace_blas_lib: the BLAS/LAPACK library Palace links on this stack: the
 # OpenMP OpenBLAS of package openblas (native-oss), mkl_rt (native-intel,
-# ADR 0205: GNU layers from the toolchain's MKL_*_LAYER at run time).
+# GNU layers from the toolchain's MKL_*_LAYER at run time).
 palace_blas_lib() {
   local lib
   case ${STACK_BLAS_VENDOR:-} in
@@ -278,7 +277,7 @@ palace_srun_mpi() {
 }
 
 # palace_gemmt_imports FILE...: "FILE:SYMBOL" for each ?gemmt_ a shared object
-# or executable imports (ADR 0205: MUMPS never calls GEMMT); nothing if none.
+# or executable imports (MUMPS must never call GEMMT); nothing if none.
 palace_gemmt_imports() {
   local file
   for file in "$@"; do
@@ -287,7 +286,7 @@ palace_gemmt_imports() {
   done
 }
 
-# palace_offline_git FILE: the job-local git configuration (ADR 0212): every
+# palace_offline_git FILE: the job-local git configuration: every
 # github.com, gitlab.com and bitbucket.org URL maps onto the source mirror, and
 # file:// is allowed for submodules. Exported as GIT_CONFIG_GLOBAL, so
 # ~/.gitconfig is never read or touched.
@@ -315,7 +314,7 @@ palace_cache() {
 # through the job-local insteadOf, its URL tarballs through -DEXTERN_<NAME>_URL,
 # its download_patch files pre-placed in the build tree, its MUMPS from the
 # mirror's tarball without GEMMT. BLAS: the stack's OpenMP OpenBLAS
-# (libopenblas_omp, ADR 0205), named to FindBLAS/FindLAPACK by their cache
+# (libopenblas_omp), named to FindBLAS/FindLAPACK by their cache
 # variables because BLA_VENDOR=OpenBLAS alone finds the pthreads libopenblas.
 # The toolchain flags go in CMAKE_<LANG>_FLAGS only: libCEED's Makefile takes
 # a CFLAGS environment variable instead of its own flags (and loses -fPIC).
@@ -464,7 +463,7 @@ palace_mumps_orderings() {
 }
 
 # palace_mumps_meta PREFIX MUMPS_CACHE SHA256 SCALAPACK METIS: the provenance
-# mumps block (ADR 0209, ticket 05's table) from the installed MUMPS.
+# mumps block from the installed MUMPS.
 palace_mumps_meta() {
   local prefix=$1 cache=$2 sha=$3 scalapack=$4 metis=$5
   local version intsize=32 fc a arith=() orderings=() libs=() gemmt
@@ -490,7 +489,7 @@ palace_mumps_meta() {
     "fflags=$(palace_cache "$cache" CMAKE_Fortran_FLAGS)" \
     "arithmetics:=$(stack_json_array "${arith[@]}")" "openmp:=$openmp" \
     "orderings:=$(stack_json_array "${orderings[@]}")" "metis=$metis"
-  [[ -z $gemmt ]] || stack_die "palace: MUMPS imports GEMMT (ADR 0205): $gemmt"
+  [[ -z $gemmt ]] || stack_die "palace: MUMPS imports GEMMT: $gemmt"
 }
 
 # smoke_palace VERSION PREFIX: checks the install; records it with stack_meta smoke.

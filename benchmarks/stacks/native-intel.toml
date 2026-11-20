@@ -1,5 +1,5 @@
 # Software stack `native-intel`: GCC with MKL and Intel MPI, built by tools/stacks/.
-# Packages live at {stacks.root}/native-intel/<pkg>-<version>/ (ADR 0191); a prefix
+# Packages live at {stacks.root}/native-intel/<pkg>-<version>/; a prefix
 # without provenance.json is unfinished and the stack refuses to launch.
 schema = 1
 name = "native-intel"

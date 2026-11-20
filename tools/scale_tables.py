@@ -5,7 +5,7 @@
 Reads every ``*.json`` in ``RECORDS`` that ``scale_run.py`` and ``scale_bench.py`` wrote
 (superseded ones aside) and writes one Markdown snippet per table of `CAMPAIGN` into
 ``OUT``, which ``docs/project/scaling.md`` includes. The docs build never runs this
-script, opens a record or computes a number (ADR 0017's amendment); a person reruns it
+script, opens a record or computes a number; a person reruns it
 and diffs. Each snippet's first line, a comment the page does not render, names the
 commit and the SHA-256 of the records manifest: one line per record file, its SHA-256
 and its name, sorted by name. What renders names no commit and no Slurm job: the

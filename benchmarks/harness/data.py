@@ -1,16 +1,16 @@
 """Case data: staging pinned meshes into the site's data directory.
 
-A suite case's mesh is pinned by the sha256 of its uncompressed ``.msh`` (ADR 0405).
+A suite case's mesh is pinned by the sha256 of its uncompressed ``.msh``.
 Its bytes are committed beside the case (``[mesh] file``, an ``.xz``) or, when
 external, held as ``<sha256>.msh.xz`` in the mesh stores the site file lists
-(``[data] stores``, searched in order; ADR 0407).
+(``[data] stores``, searched in order).
 
 The prepare step stages each planned case's mesh into the data directory, a cache,
 as ``<data dir>/meshes/<sha256>.msh``: decompressed into a temp file, hashed while
 written, renamed into place only if it matches, then made read-only. ``step``
 re-verifies the staged file before every run. A mismatch is never repaired: the
 bytes are kept aside as ``<sha256>.bad-<got12>`` and the run is refused.
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations

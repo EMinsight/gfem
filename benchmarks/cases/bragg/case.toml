@@ -33,7 +33,7 @@ wave_vector = [314.1592653589793, 0.0, 0.0]
 [quantities]
 modes = 2
 
-# Plan estimate hints, seconds per run (probes/12/plan.py), from the once-split mesh's
+# Plan estimate hints, seconds per run, from the once-split mesh's
 # check runs (1x13, 1x16): gfem direct 5-14 s wall (startup dominated), Palace mumps
 # 12-13 s wall (6 s of it postprocessing). pmg unmeasured on this mesh (41 s work at
 # 4x4 on the R1 mesh, about 220 GMRES iterations per solve).

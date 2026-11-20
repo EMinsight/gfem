@@ -3,7 +3,7 @@
 A **site file** says where and as whom the suite runs: Slurm account, QOS per
 purpose, node constraint, cluster and stack roots, the inputs of the ``wheels``
 stack kind, data and mesh-store directories, the transfer host, the output
-directory and the effort's core-hour ceiling. It lives outside the repository and is
+directory and the allocation's core-hour ceiling. It lives outside the repository and is
 found through ``--site`` or ``$GFEM_BENCH_SITE``; only ``benchmarks/site.example.toml``
 is committed. The one placeholder is ``{root}``, replaced by ``[cluster] root``.
 
@@ -16,7 +16,7 @@ overrides (``[stacks.wheels.versions] palace = "0.19.0"``) and an ``env`` table.
 
 Both loaders refuse unknown keys, missing keys and values outside the registries,
 and every ``env`` table refuses the affinity variables the harness sets itself.
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations
@@ -351,7 +351,7 @@ class Campaign:
     reference campaigns (``benchmarks/references/<family>/``).
     """
     same_code_direct: bool = True
-    """Add the same-code direct runs (ADR 0409); off only for reference campaigns
+    """Add the same-code direct runs; off only for reference campaigns
     whose finest rung no direct solver can take."""
 
 

@@ -21,7 +21,7 @@ NETGEN_URL=https://github.com/NGSolve/netgen.git
 # the tag records (netgen, then netgen's pybind11), the UMFPACK source of
 # cmake/SuperBuild.cmake (BUILD_UMFPACK), and the OCCT wheels its
 # pyproject.toml pins (netgen-occt, netgen-occt-devel), installed into the
-# prefix so the OCCT rpaths point there (ADR 0207).
+# prefix so the OCCT rpaths point there.
 fetch_ngsolve() {
   local tag=v$1 line url ref occt umfpack=
   local lines=()
@@ -70,7 +70,7 @@ ngsolve_md5_tarball() {
   fetch_report "$state" "tarballs/$1 (md5 pinned)"
 }
 
-# The CMake options of the native build (ADR 0205, ADR 0207): no
+# The CMake options of the native build: no
 # -march=native but the toolchain's target through NG_COMPILE_FLAGS
 # (PUBLIC on ngcore), MPI linked directly (no run-time wrapper; netgen then
 # needs METIS; NG_COMPILE_FLAGS comes after CMAKE_CXX_FLAGS on the command
@@ -99,7 +99,7 @@ NGSOLVE_OPTIONS=(
   -DENABLE_UNIT_TESTS=OFF
 )
 
-# ngsolve_python: the stack interpreter (ADR 0207), the pyenv package's version.
+# ngsolve_python: the stack interpreter, the pyenv package's version.
 ngsolve_python() {
   local python
   python=$STACK_SRC/python/cpython-$(dep_version pyenv)-linux-x86_64-gnu/bin/python3
@@ -107,7 +107,7 @@ ngsolve_python() {
   echo "$python"
 }
 
-# ngsolve_gitconfig FILE: the job-local git config of ADR 0212: every
+# ngsolve_gitconfig FILE: the job-local git config of offline builds: every
 # upstream URL read from the source mirror, file:// submodules allowed.
 ngsolve_gitconfig() {
   local host
@@ -177,7 +177,7 @@ build_ngsolve() {
     options+=(-DUSE_MKL=OFF "-DLAPACK_LIBRARIES=$blas")
     ;;
   # oneAPI's MKLConfig defaults to intel_thread and then links libiomp5 even
-  # for sdl when it finds one (probe 49181122): GNU threading, as the toolchain.
+  # for sdl when it finds one (job 49181122): GNU threading, as the toolchain.
   mkl) options+=(-DUSE_MKL=ON -DMKL_LINK=sdl -DMKL_THREADING=gnu_thread -DMKL_INTERFACE=lp64 "-DMKL_ROOT=$MKLROOT") ;;
   *) stack_die "ngsolve: unknown STACK_BLAS_VENDOR '${STACK_BLAS_VENDOR:-}'" ;;
   esac

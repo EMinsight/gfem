@@ -1,4 +1,4 @@
-"""The Palace solver adapter and its version dialects (ADRs 0404, 0406).
+"""The Palace solver adapter and its version dialects.
 
 Everything that depends on the Palace version lives in :data:`DIALECTS`, keyed by
 ``major.minor``: one frozen :class:`Dialect` per version with three parts.
@@ -27,7 +27,7 @@ untimed rest goes to ``other_s``. A run is complete when ``ElapsedTime`` exists.
 Peak memory is ``PeakNodeMemoryMegabytes.Total``, a sum of per-rank peaks; the rank
 max is ``PeakMemoryMegabytes.Max``, the largest node ``PeakNodeMemoryMegabytes.Max``.
 ``inputs_match`` reads ``config_resolved.json`` back through the case importer and
-compares it with the case. Standard library only (ADR 0400).
+compares it with the case. Standard library only.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ VERSION_STDOUT = "palace-version.txt"
 MIB_PER_GIB = 1024.0
 #: Boundary kinds of a case this adapter renders.
 BOUNDARY_KINDS = ("pec", "conductor", "absorbing", "impedance", "periodic")
-#: Pinned solver settings (ADR 0411): direct and eigen tolerances, caps, estimator.
+#: Pinned solver settings: direct and eigen tolerances, caps, estimator.
 DIRECT_TOL = 1e-10
 EIGEN_TOL = 1e-10
 EIGEN_LINEAR_TOL = 1e-12

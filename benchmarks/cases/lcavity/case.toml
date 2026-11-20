@@ -27,7 +27,7 @@ n_modes = 1
 [quantities]
 modes = 1
 
-# Plan estimate hints, seconds per run at budget 16 (probes/12/plan.py); 600 = wall cap (Palace MUMPS 1x16 times out).
+# Plan estimate hints, seconds per run at budget 16; 600 = wall cap (Palace MUMPS 1x16 times out).
 [est_s]
 "gfem:direct" = 30
 "gfem:petsc-mumps" = 40

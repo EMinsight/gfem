@@ -1,4 +1,4 @@
-# Toolchain of the native-intel software stack (ADR 0205), MN5 GPP modules:
+# Toolchain of the native-intel software stack, MN5 GPP modules:
 # GCC 12.3 for C, C++ and Fortran (not icx/ifx), MKL 2025.2 through mkl_rt
 # with the GNU interface and threading layers, and Intel MPI 2021.16 over
 # libfabric's mlx provider. "Intel" labels the closed BLAS and MPI only.

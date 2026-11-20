@@ -1,4 +1,4 @@
-"""Launch one command of a run and measure it (ADRs 0410-0412).
+"""Launch one command of a run and measure it.
 
 Every run is one process tree started here: on the cluster the adapter's srun line
 (each run its own Slurm step, one placement rule for every code and rank count), at
@@ -22,7 +22,7 @@ Hydra (``-launcher fork -bind-to core`` under taskset), recorded ``machine: loca
   seen on one physical core (an observation). stdout is tailed for the adapter's
   DOF guard (``Command.watch``): a count off the pin ends the run at once.
 
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ def taskset_argv(program: Sequence[str], cpus: Sequence[int]) -> tuple[str, ...]
 def hydra_argv(
     program: Sequence[str], layout: Layout, cpus: Sequence[int], mpiexec: str
 ) -> tuple[str, ...]:
-    """Hydra under taskset with rank binding: ``run --local`` only (ADR 0412)."""
+    """Hydra under taskset with rank binding: ``run --local`` only."""
     return (
         *taskset_argv((mpiexec, "-n", str(layout.ranks), *HYDRA_ARGS), cpus),
         *program,

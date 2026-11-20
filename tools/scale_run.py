@@ -1,7 +1,7 @@
 """A run on a gsim case through the real `gfem.solve`, its record, its agreement gates.
 
 Run it under the launcher, once per node count and solver, or with no launcher for the
-one-process reference (ADR 0073). Layout and limits belong to the job script; only the
+one-process reference. Layout and limits belong to the job script; only the
 agreement gates can fail, and no time is ever a gate:
 
     srun --mpi=pmix --cpus-per-task=4 python scale_run.py run CASE OUT/NAME \
@@ -21,11 +21,11 @@ permittivity of the highest-permittivity volume and the fill of a resistive shee
 largest interface between two volumes, since a sheet needs the domain on both sides.
 ``--spaces-only`` stops once the space is built, for the DOFs per rank.
 
-``check`` compares a run with its reference at ADR 0070's gates: 1e-11 on ``direct``,
-1e-9 and the exact iteration count on ``bddc_gmres``, S entries relative to the largest
-of the reference's. Gradient entries read `GRADIENT_GATE` on a real mesh. The result
-goes into the run's record. ``--observe`` reports the same difference with no gate, for
-a run on another mesh.
+``check`` compares a run with its reference at the MPI tests' agreement gates: 1e-11
+on ``direct``, 1e-9 and the exact iteration count on ``bddc_gmres``, S entries
+relative to the largest of the reference's. Gradient entries read `GRADIENT_GATE` on
+a real mesh. The result goes into the run's record. ``--observe`` reports the same
+difference with no gate, for a run on another mesh.
 
 ``close`` is the job script's, after every step, and by hand after a job that died
 with its script. A run that left no record gets a stub, ``failed: true``, with Slurm's
@@ -67,10 +67,10 @@ from typing import Any
 
 import numpy as np
 
-#: ADR 0070's gates, relative to the largest entry of the reference.
+#: The MPI tests' agreement gates, relative to the largest entry of the reference.
 GATES = {"direct": 1e-11, "bddc_gmres": 1e-9}
 #: Gradient entries on a real mesh, either solver, relative to the reference's largest.
-#: ADR 0070's 1e-11 for ``direct`` holds on the launched tier's tiny meshes. On
+#: The 1e-11 gate for ``direct`` holds on the launched tier's tiny meshes. On
 #: r10M_void gradients differ beyond it with no ranks at all, against one-process
 #: PARDISO at 112 threads: PARDISO at 56 threads by 6.5e-11 in eps_r (job 48473913),
 #: one-process MUMPS by 9.9e-11 (48473915). MUMPS on 112 ranks differs by 1.4e-10

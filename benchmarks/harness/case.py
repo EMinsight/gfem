@@ -13,7 +13,7 @@ SI. Tolerance, solver, layout and threads belong to a run, never to a case.
 where the size rule says: ``mesh.msh.xz`` beside the case when its xz file is at most
 1 MiB, else ``<sha256>.msh.xz`` in the first mesh store. ``case import`` turns a gsim
 Palace ``config.json`` into a case file once, at authoring time, and pins its mesh
-with the same code. Standard library only (ADR 0400).
+with the same code. Standard library only.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def physical_names(path: Path) -> dict[str, tuple[int, int]]:
 
 @dataclass(frozen=True)
 class MeshSource:
-    """Where a pinned mesh came from: provenance, never executed (ADR 0405)."""
+    """Where a pinned mesh came from: provenance, never executed."""
 
     recipe: str
     commit: str | None = None
@@ -364,7 +364,7 @@ def physics_sha256(case: Case) -> str:
     """sha256 of the physics: the definition minus mesh, order, name and size.
 
     Siblings of one family (orders, split levels) share it; a converged reference
-    is matched by it plus the run's mesh sha256 (ADR 0408).
+    is matched by it plus the run's mesh sha256.
     """
     left_out = (*PLANNING_KEYS, *SIBLING_KEYS)
     return _digest_of({k: v for k, v in case.to_dict().items() if k not in left_out})
@@ -857,7 +857,7 @@ def pin(case_dir: Path, mesh: Path, unit: str, stores: Sequence[Path] = ()) -> P
 
     Creates ``case.toml`` (``format``, ``name``) if missing and keeps an existing
     ``[mesh.source]``. Refuses a case that already has a pin: changing a pin is a
-    deliberate edit of the case file, never a command (ADR 0405).
+    deliberate edit of the case file, never a command.
     """
     if unit not in UNITS:
         msg = f"unit {unit!r} not in {', '.join(UNITS)}"

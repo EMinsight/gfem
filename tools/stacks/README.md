@@ -48,7 +48,7 @@ stack.sh check  [STACK [PKG [VERSION]]]    # read-only
   their `mumps` blocks break the rules below.
   With `STACK` it also fails when `packages/petsc.sh` drifts from
   `tools/petsc_wheelhouse.sh` (PETSc/SLEPc version, sdist and `--download`
-  tarball sha256; ADR 0209), or `packages/openblas.sh` pins another sha256
+  tarball sha256), or `packages/openblas.sh` pins another sha256
   for the wheelhouse's OpenBLAS tarball. The wheelhouse is read beside the recipe tree in
   a checkout, or inside it in a shipped tree (the harness copies it there).
 - `STACK_PYTHON` names the Python that runs `provenance.py` (default
@@ -139,7 +139,7 @@ Open MPI, `srun --mpi=pmi2` for Intel MPI (the module sets
 It sets no thread counts (`OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`,
 `MKL_NUM_THREADS`, `NGS_NUM_THREADS`): those belong to whoever runs. Every
 Palace launch, on every stack, sets `OPENBLAS_NUM_THREADS=1` and
-`MKL_NUM_THREADS=1`: MUMPS's OpenMP threads carry the parallelism (ADR 0213).
+`MKL_NUM_THREADS=1`: MUMPS's OpenMP threads carry the parallelism.
 A new native software stack is one new toolchain file.
 
 ## Recipe interface
@@ -244,8 +244,8 @@ optional, for information).
 
 ## The stack venv (`pyenv`)
 
-`pyenv-<python version>` is a venv template, not an environment to activate
-(ADR 0207): gfem's runtime dependencies at `uv.lock`'s pins, mpi4py built
+`pyenv-<python version>` is a venv template, not an environment to activate:
+gfem's runtime dependencies at `uv.lock`'s pins, mpi4py built
 with the toolchain's `MPICC`, `stack.pth` naming the `python_path` of NGSolve
 and PETSc, and pip `mkl` only when the toolchain's BLAS is MKL and its
 `mkl_rt`, `mkl_core` and `mkl_gnu_thread` are byte-identical to

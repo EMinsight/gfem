@@ -1,9 +1,9 @@
-"""``submit``, ``step``, ``run --local``, ``status``, ``close`` (ADRs 0401, 0410-0414).
+"""``submit``, ``step``, ``run --local``, ``status``, ``close``.
 
 A planned run directory (``plan``) holds one steps file per job; each line is one run.
 
 - ``submit`` (login node) prepares the stacks and stages the meshes, refuses past the
-  effort's core-hour ceiling (:mod:`benchmarks.harness.budget`), then ``sbatch``es
+  allocation's core-hour ceiling (:mod:`benchmarks.harness.budget`), then ``sbatch``es
   ``benchmarks/job.sbatch RUNDIR JOB`` per job and lists the ids in ``submitted.tsv``.
 - ``job.sbatch`` runs :func:`job_start` (``jobs/<jobid>/{node.txt, pip-freeze.txt,
   machine.json}``, ``module -t list`` and the BLAS ``ldd`` line once) and then
@@ -22,12 +22,12 @@ A planned run directory (``plan``) holds one steps file per job; each line is on
   jobs (billed core-h), records (sha256) and campaign checks, and exits non-zero
   only when ``complete``, ``provenance`` or ``dof_equal`` fails.
 
-Skip rules (ADR 0414): repeat 1 of a cell ending ``timeout`` makes its later repeats
+Skip rules: repeat 1 of a cell ending ``timeout`` makes its later repeats
 ``not_started`` (``earlier_repeat_timeout``); the default-layout cell of an
 iterative (case, kind) failing ``converged`` in round 1 makes the other cells of that
 (case, kind) ``not_started`` (``kind_not_converging``).
 
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ ENDED_STATES = (
     "DEADLINE",
 )
 CAMPAIGN_GATES = ("complete", "provenance", "dof_equal")
-"""Campaign checks that make ``close`` exit non-zero (ADR 0414)."""
+"""Campaign checks that make ``close`` exit non-zero."""
 
 
 class HarnessError(Exception):
@@ -309,7 +309,7 @@ def _rep_name(name: str, repeat: int) -> str:
 def skip_reason(
     rd: RunDir, row: Mapping[str, Any], steps: Sequence[Mapping]
 ) -> str | None:
-    """``earlier_repeat_timeout``, ``kind_not_converging`` or ``None`` (ADR 0414)."""
+    """``earlier_repeat_timeout``, ``kind_not_converging`` or ``None``."""
     if row["repeat"] > 1:
         first = _load(_record_path(rd.path, _rep_name(row["name"], 1)))
         if first is not None and first.status == "timeout":

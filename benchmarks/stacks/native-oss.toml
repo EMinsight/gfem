@@ -1,5 +1,5 @@
 # Software stack `native-oss`: GCC, Open MPI and OpenBLAS builds by tools/stacks/.
-# Packages live at {stacks.root}/native-oss/<pkg>-<version>/ (ADR 0191); a prefix
+# Packages live at {stacks.root}/native-oss/<pkg>-<version>/; a prefix
 # without provenance.json is unfinished and the stack refuses to launch.
 schema = 1
 name = "native-oss"

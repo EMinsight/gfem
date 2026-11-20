@@ -2,7 +2,7 @@
 
 A package prefix ``$STACKS_ROOT/<stack>/<pkg>-<version>/`` is complete once its
 ``provenance.json`` exists: ``stack.sh build`` writes it last, after install and
-smoke step (ADR 0191). This module is the only writer and reader; ``stack.sh``
+smoke step. This module is the only writer and reader; ``stack.sh``
 calls its command line. It runs on the cluster's system Python, so it keeps to
 Python 3.9 and the standard library.
 
@@ -20,11 +20,11 @@ Command line (``python3 provenance.py COMMAND ...``)::
     petsc-contract WHEELHOUSE RECIPE OPENBLAS
                                compare packages/petsc.sh and packages/openblas.sh's
                                tarball pin with tools/petsc_wheelhouse.sh; exit 1 on
-                               drift (ADR 0209)
+                               drift
     petsc-mumps PREFIX BUILD_DIR
                                print the ``mumps`` block of a PETSc prefix (headers in
                                PREFIX/include, the other PETSC_BUILD_FILES in
-                               BUILD_DIR); exit 1 if it breaks ADR 0067's gates
+                               BUILD_DIR); exit 1 if it breaks the PETSc contract
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 SCHEMA = 1
 #: The file whose presence marks a prefix complete.
 FILENAME = "provenance.json"
-#: The fields every schema-1 record holds (ADR 0191).
+#: The fields every schema-1 record holds.
 FIELDS = (
     "package",
     "version",
@@ -109,7 +109,7 @@ def read(prefix: Path) -> dict | None:
     return json.loads(path.read_text())
 
 
-#: The ``mumps`` block of a provenance file (ADR 0209):
+#: The ``mumps`` block of a provenance file:
 #: fields both MUMPS builds of a stack must share ...
 MUMPS_MUST_MATCH = (
     "version",
@@ -154,7 +154,7 @@ def check_stack(stack_dir: Path) -> Report:
     """Check the complete prefixes of one software stack against each other.
 
     Every complete prefix must name the same toolchain hash: one toolchain
-    for every code of a stack (ADR 0191). Incomplete prefixes are noted.
+    for every code of a stack. Incomplete prefixes are noted.
     """
     report = Report()
     records = {}
@@ -221,7 +221,7 @@ def _newest_versions(records: dict, blocks: dict, report: Report) -> dict[str, s
 
 
 def _check_mumps(records: dict, report: Report) -> None:
-    """Compare the ``mumps`` blocks of a stack's complete prefixes (ADR 0209).
+    """Compare the ``mumps`` blocks of a stack's complete prefixes.
 
     Like-for-like holds between the newest version of each package; an older
     prefix (a comparison build such as Palace 0.18.1 next to 0.19.0) still
@@ -232,7 +232,7 @@ def _check_mumps(records: dict, report: Report) -> None:
         block = record.get("mumps")
         if block is None:
             if record["package"] in MUMPS_PACKAGES:
-                report.errors.append(f"{name}: no mumps block (ADR 0209)")
+                report.errors.append(f"{name}: no mumps block")
             continue
         missing = [
             dotted
@@ -248,7 +248,7 @@ def _check_mumps(records: dict, report: Report) -> None:
         _check_mumps_block(name, record["package"], block, report)
     newest = _newest_versions(records, blocks, report)
     names = sorted(newest.values())
-    for name in names:  # METIS in both compared builds (ADR 0209)
+    for name in names:  # METIS in both compared builds
         if "metis" not in blocks[name]["orderings"]:
             report.errors.append(f"mumps orderings: {name} has no metis")
     for i, first in enumerate(names):
@@ -272,17 +272,15 @@ def _check_mumps(records: dict, report: Report) -> None:
 
 
 def _check_mumps_block(name: str, package: str, block: dict, report: Report) -> None:
-    """The rules one MUMPS build meets on its own (ADR 0205, ADR 0209)."""
+    """The rules one MUMPS build meets on its own."""
     if block["intsize"] != MUMPS_INTSIZE:
         report.errors.append(
             f"mumps intsize: {name} has {block['intsize']}, must be {MUMPS_INTSIZE}"
         )
     if block["gemmt"]:
-        report.errors.append(f"mumps gemmt: {name} uses ?gemmt_ (ADR 0205)")
+        report.errors.append(f"mumps gemmt: {name} uses ?gemmt_")
     if package == "petsc" and "parmetis" in block["orderings"]:
-        report.errors.append(
-            f"mumps orderings: {name} has parmetis (ADR 0012, ADR 0067)"
-        )
+        report.errors.append(f"mumps orderings: {name} has parmetis")
     raw = block.get("fflags_raw")
     if raw is not None:
         missing = [flag for flag in block["fflags"].split() if flag not in raw.split()]
@@ -314,7 +312,7 @@ def tofu(sums: Path, path: Path) -> str:
     """Trust a tarball no upstream file pins on its first fetch, check it after.
 
     The record ``sums`` is in ``sha256sum`` format, one ``<hex>  <name>`` line
-    per tarball, keyed by file name (ADR 0212).
+    per tarball, keyed by file name.
 
     Returns:
         ``"recorded"`` on the first fetch, ``"verified"`` after.
@@ -371,8 +369,9 @@ def _bash_tarballs(text: str, name: str) -> dict[str, list[str]]:
 def petsc_contract_drift(wheelhouse: str, recipe: str, openblas: str) -> list[str]:
     """Where the native recipes differ from ``tools/petsc_wheelhouse.sh``.
 
-    The native PETSc recipe copies the wheelhouse's ADR 0067 contract (ADR
-    0209): the same PETSc/SLEPc version, the same sdists and the same
+    The native PETSc recipe copies the wheelhouse's PETSc contract, so
+    MUMPS is like-for-like across codes: the same PETSc/SLEPc version, the
+    same sdists and the same
     ``--download`` tarballs (by URL and sha256). The wheelhouse's OpenBLAS
     tarball is built by package openblas instead, which must pin the same
     sha256 for that release.
@@ -443,7 +442,7 @@ PETSC_BUILD_FILES = (
     "compiler.txt",
     "tarballs.txt",
 )
-#: PT-Scotch before 7.0.18 crashes MUMPS's parallel analysis (ADR 0067).
+#: PT-Scotch before 7.0.18 crashes MUMPS's parallel analysis.
 PTSCOTCH_MIN = (7, 0, 18)
 
 
@@ -472,7 +471,7 @@ def _petsc_tarballs(text: str, errors: list[str]) -> dict[str, tuple[str, str]]:
     return found
 
 
-#: ``petscconf.h`` defines gfem's PETSc must have (ADR 0067), with their gate.
+#: ``petscconf.h`` defines gfem's PETSc must have, with their gate.
 PETSC_REQUIRED = (
     ("PETSC_USE_COMPLEX", "complex scalars"),
     ("PETSC_USE_64BIT_INDICES", "64-bit indices"),
@@ -489,19 +488,19 @@ PETSC_ORDERINGS = (
 
 
 def _petsc_conf(conf: str, errors: list[str]) -> list[str]:
-    """ADR 0067's configure gates; returns the MUMPS orderings."""
+    """The PETSc contract's configure gates; returns the MUMPS orderings."""
     errors += [
-        f"PETSc has no {gate} ({name}, ADR 0067)"
+        f"PETSc has no {gate} ({name})"
         for name, gate in PETSC_REQUIRED
         if not _defined(conf, name)
     ]
     if _defined(conf, "PETSC_HAVE_MPIUNI"):
-        errors.append("PETSc is built without MPI (ADR 0209)")
+        errors.append("PETSc is built without MPI")
     orderings = ["amd", "pord"] + [
         ordering for name, ordering in PETSC_ORDERINGS if _defined(conf, name)
     ]
     if "parmetis" in orderings:
-        errors.append("PETSc has parmetis (ADR 0012, ADR 0067)")
+        errors.append("PETSc has parmetis")
     return sorted(orderings)
 
 
@@ -539,8 +538,8 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
     information, and ``check`` finds the toolchain's ``fflags`` in
     ``fflags_raw``.
 
-    The gates are ADR 0067's (complex, 64-bit ``PetscInt``, MPI, no ParMETIS,
-    PT-Scotch 7.0.18 or newer, no ``?gemmt_`` import) and ADR 0209's (MUMPS
+    The gates are the PETSc contract's (complex, 64-bit ``PetscInt``, MPI, no ParMETIS,
+    PT-Scotch 7.0.18 or newer, no ``?gemmt_`` import) and like-for-like MUMPS's (MUMPS
     from the pinned tarball, the toolchain's Fortran flags, the stack's
     pthreads BLAS).
 
@@ -565,7 +564,7 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
         errors.append(f"MUMPS {installed} installed, the tarball is MUMPS {version}")
     gemmt = re.search(r"\b[sdcz]gemmt_\b", build["dynsym.txt"]) is not None
     if gemmt:
-        errors.append("MUMPS imports ?gemmt_ (ADR 0205, ADR 0067)")
+        errors.append("MUMPS imports ?gemmt_")
     arithmetics = sorted(set(re.findall(r"\bT ([sdcz])mumps_c\b", build["dynsym.txt"])))
     if "z" not in arithmetics:
         errors.append(f"no complex double MUMPS (zmumps_c) in {arithmetics}")
@@ -580,7 +579,7 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
     ):
         errors.append(
             f"PT-Scotch {scotch} installed (tarball {tarballs['ptscotch'][0]}), "
-            "ADR 0067 needs 7.0.18 or newer"
+            "the PETSc contract needs 7.0.18 or newer"
         )
     optf = re.search(r"^OPTF\s*=(.*)$", build["Makefile.inc"], re.MULTILINE)
     optf_flags = optf.group(1).split() if optf else []
@@ -636,7 +635,7 @@ def recipe_sha256(root: Path, package: str) -> str:
 
 
 def state(prefix: Path, recipe_hash: str, toolchain_hash: str) -> str:
-    """What a build of ``prefix`` finds there (ADR 0191 idempotency).
+    """What a build of ``prefix`` finds there (idempotent builds).
 
     Returns:
         ``"absent"``: no prefix; ``"incomplete"``: a prefix without provenance
@@ -752,7 +751,7 @@ def _petsc_contract(wheelhouse: str, recipe: str, openblas: str) -> int:
         print(f"petsc contract: matches {wheelhouse}")
         return 0
     for line in drift:
-        print(f"  ERROR petsc contract drift (ADR 0209): {line}")
+        print(f"  ERROR petsc contract drift: {line}")
     return 1
 
 

@@ -1,4 +1,4 @@
-"""Read a report's inputs: manifests, the records they list, references (ADR 0413).
+"""Read a report's inputs: manifests, the records they list, references.
 
 The inputs are exactly each campaign's ``campaign.json``, the records it lists
 (``records`` {path: sha256}, each checked before it is read), the per-job machine
@@ -13,7 +13,7 @@ input, sorted by path; its own sha256 is the report's digest.
 
 Refused: a record whose sha256 differs from its manifest entry, an unknown schema
 major, a mixed campaign (unless ``allow_mixed``), and records of ``run --local``
-mixed with cluster records. Standard library only (ADR 0400).
+mixed with cluster records. Standard library only.
 """
 
 from __future__ import annotations

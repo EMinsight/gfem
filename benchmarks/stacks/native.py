@@ -1,4 +1,4 @@
-"""The ``native`` stack kind: prefixes built by ``tools/stacks/`` (ADR 0191).
+"""The ``native`` stack kind: prefixes built by ``tools/stacks/``.
 
 Each package of a native stack lives at ``{stacks.root}/<stack>/<pkg>-<version>/``
 with an ``activate.sh`` (which sources the stack's frozen toolchain) and, once
