@@ -17,7 +17,7 @@ with k0 = ω scale / c, the wavenumber per file unit, and the pieces
 - ``absorbing``, θ = i k0: ∫ sqrt(eps_r / mu_r) E_t · v_t on every
   absorbing surface (real parts of the adjacent element's values); next to
   an anisotropic material, ∫ (Y E_t) · v_t with the face's normal-incidence
-  admittance tensor Y (`gfem._engine.anisotropy`, ADR 0051);
+  admittance tensor Y (`gfem._engine.anisotropy`);
 - ``absorbing order 2``, θ = 1 / (2 i k0): ∫ mu_r^-1 (eps_r mu_r)^-1/2
   (n · curl E)(n · curl v) on second-order absorbing surfaces (the
   textbook sign, see `gfem.Absorbing`);
@@ -34,7 +34,7 @@ with k0 = ω scale / c, the wavenumber per file unit, and the pieces
   propagation constant, tabulated on the output grid by the port mode
   sweep, see `Tabulated`): ∫ (A E_t) · v_t on the port surface, with A
   the port's tangential inverse-permeability tensor (``mu_r^-1`` for an
-  isotropic material, `wave_port_coefficients`, ADR 0054).
+  isotropic material, `wave_port_coefficients`).
 
 Each θ is a closed-form scalar function of ω, or a table over the output
 grid filled before the solve, and each a_k is assembled without ω, so an
@@ -130,7 +130,7 @@ ETA0 = const.mu_0 * const.c
 #: Angular frequency at which a piece's θ is checked to be a scalar.
 _PROBE = 2 * math.pi * 1e9
 #: The probe of a permittivity law's pieces: in the lower half plane, where
-#: every passive law is analytic under e^{+iωt} (ADR 0111), so it meets no
+#: every passive law is analytic under e^{+iωt}, so it meets no
 #: pole, no real output frequency and no decaying eigenfrequency.
 _LAW_PROBE = _PROBE * (1 - 1j)
 #: |d . n| above which a port direction is not tangent to its surface.
@@ -175,7 +175,7 @@ class Tabulated:
 
 @dataclasses.dataclass(frozen=True)
 class LumpedValue:
-    """How a piece moves with one lumped value ``p`` (ADR 0100).
+    """How a piece moves with one lumped value ``p``.
 
     The piece's coefficient is proportional to ``p`` (a capacitance) or to
     ``1 / p`` (a resistance or an inductance), so ``dA / dp = slope A``.
@@ -214,7 +214,7 @@ class Piece:
             (face-) wise coefficient its integrand reads.
         values: The values of a volume piece's ``coefficient`` per gfem
             tetrahedron, ``(n,)`` or ``(n, 3, 3)`` (what a kept fixed part
-            is keyed on, ADR 0082).
+            is keyed on).
         region: The boundary region of a ``"trace"`` or ``"curl trace"``
             piece.
         frequency_class: ``"polynomial"`` (θ a polynomial of degree at most
@@ -243,7 +243,7 @@ class Piece:
         law: For a permittivity law's piece (its susceptibility piece and its
             absorbing face pieces), ``(region, d_theta_dp)``: the law's
             region and dθ/dp(ω) by each law parameter, keyed as
-            `gfem._engine.dispersion.d_eps` (the law pass, ADR 0112);
+            `gfem._engine.dispersion.d_eps` (the law pass);
             ``None`` otherwise.
 
     Raises:
@@ -475,7 +475,7 @@ def _inverse(values: np.ndarray) -> np.ndarray:
 
 
 def polynomial_law(law: Any) -> bool:
-    """Whether every term of ``law`` is a lossless Drude term (ADR 0115).
+    """Whether every term of ``law`` is a lossless Drude term.
 
     Its susceptibility piece's θ = -k0² chi = k_p² is then a constant: the
     piece is declared polynomial, so the eigenmode problem puts it in ``K``
@@ -494,7 +494,7 @@ def susceptibility_pieces(
     *,
     elements: np.ndarray | None = None,
 ) -> list[Piece]:
-    """One susceptibility piece per permittivity law region (ADR 0110).
+    """One susceptibility piece per permittivity law region.
 
     θ = -k0² chi(ω), chi = eps(ω) - eps_inf summed over the law's terms,
     with an analytic dθ/dω; the coefficient is the region's element
@@ -557,7 +557,7 @@ def blend_pieces(
     *,
     elements: np.ndarray | None = None,
 ) -> list[Piece]:
-    """The susceptibility pieces of each law blend (ADR 0113).
+    """The susceptibility pieces of each law blend.
 
     One piece per part of `gfem._engine.dispersion.blend_parts` (at most a
     void, a solid and a cross piece per region): θ = -k0² X(ω) with an
@@ -692,7 +692,7 @@ def pieces(
 
     # each piece carries its coefficient and, next to it, the coefficient's
     # derivatives by material property (lazy: a backward pass reads them)
-    # a permittivity law keeps its eps_inf in the mass (ADR 0110)
+    # a permittivity law keeps its eps_inf in the mass
     eps = dispersion.high_frequency_eps(model)
     nu_values = _inverse(element_tensors(model, "mu_r"))
     nu = coefficient(built, nu_values)
@@ -761,7 +761,7 @@ def pieces(
         surfaces, owner = absorbing_faces(model, order=1)
         admittance, curl = absorbing_coefficients(model, surfaces, owner)
         # the faces a permittivity law owns leave the shared pieces
-        # (coefficient and owner) for their law's face pieces (ADR 0110)
+        # (coefficient and owner) for their law's face pieces
         laws = law_faces(model, surfaces, owner)
         on_law = np.zeros(len(owner), bool)
         for _, lf in laws:
@@ -906,8 +906,8 @@ def check_absorbing(model: Model, *, dispersive: bool = False) -> None:
     Structural: it reads which materials are anisotropic or dispersive,
     never values. ``dispersive`` admits a face behind a permittivity law's
     region: the driven problem's face pieces read sqrt(Re eps(omega)), which
-    is not analytic in omega, so the eigenmode problem refuses it (ADR 0110,
-    0111). Whether Re eps > 0 there is checked per frequency
+    is not analytic in omega, so the eigenmode problem refuses it.
+    Whether Re eps > 0 there is checked per frequency
     (`gfem._engine.dispersion.check_frequencies`).
 
     Raises:
@@ -939,7 +939,7 @@ def check_absorbing(model: Model, *, dispersive: bool = False) -> None:
 
 
 def _refuse_absorbing_blends(model: Model) -> None:
-    """Raise for an `Absorbing` face on a law blend's region (ADR 0113).
+    """Raise for an `Absorbing` face on a law blend's region.
 
     Raises:
         NotImplementedError: An absorbing surface has a face on a blend.
@@ -987,7 +987,7 @@ def _law_absorbing_pieces(
     tris: Any,
     faces: np.ndarray | None,
 ) -> list[Piece]:
-    """The absorbing face pieces of each permittivity law (ADR 0110).
+    """The absorbing face pieces of each permittivity law.
 
     On the faces a law region owns (``laws``, from `law_faces`): order 1
     θ = i k0 sqrt(Re eps(ω)) with coefficient mu_r^-1/2, and on the
@@ -1507,8 +1507,8 @@ def wave_port_coefficients(model: Model, surface: str) -> np.ndarray:
     is ``(n, 3, 3)``: the port's tangential inverse-permeability tensor ``A
     = N mu_r^-1 N^T`` (`anisotropy.tangential_inverse_permeability`, the
     absorbing boundary's ``A``) on those faces and ``1 / mu_r`` times the
-    identity on the others. On a port cross-section (transverse-anisotropic,
-    ADR 0052) ``A`` is the section's ``nu_tt`` in the global frame.
+    identity on the others. On a port cross-section (transverse-anisotropic)
+    ``A`` is the section's ``nu_tt`` in the global frame.
     """
     mesh = model.mesh
     owner = face_owner(model)

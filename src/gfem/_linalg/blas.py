@@ -1,4 +1,4 @@
-"""The thread count of every loaded BLAS, set from Python under ranks (ADR 0076).
+"""The thread count of every loaded BLAS, set from Python under ranks.
 
 No launcher sets it safely: under ``mpirun`` each rank's OpenBLAS takes every CPU
 of its mask, a slowdown of 10x or more with no error. A factorization needs the

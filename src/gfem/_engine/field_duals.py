@@ -1,22 +1,22 @@
-"""The duals of objectives of driven fields (ADRs 0132, 0133, 0144).
+"""The duals of objectives of driven fields.
 
 An objective reads a driven field only through a recognized measurement,
-whose outputs each get a dual solved for a unit cotangent on that output
-(ADR 0143): ``A z = g``, ``g`` the output's pullback load on the field's
+whose outputs each get a dual solved for a unit cotangent on that output:
+``A z = g``, ``g`` the output's pullback load on the field's
 coefficients, at the output's frequency, on the forward's factorization
 (`gfem._engine.driven.AdjointLoads`). Two outputs, keyed:
 
 - ``("power", f, excitation, side)``: `gfem.power_flow` over a side with no
-  port and only volume losses, in its volume form (ADR 0132): the net power
+  port and only volume losses, in its volume form: the net power
   leaving ``side`` is ``-x^H M_w x``, M_w the H(curl) mass matrix weighted
   by `absorbed_weights`; its load is ``-2 conj(M_w x)``.
 - ``("mean", f, excitation, regions, c)``: component ``c`` of
-  `gfem.region_mean` over ``regions`` (ADR 0133); its load is the averaging
+  `gfem.region_mean` over ``regions``; its load is the averaging
   row (`gfem._engine.fields.mean_rows`).
 
 Each load is the assembly of a continuous volume load ``g`` (`load_parts`),
 which the estimate adds to the dual's flux: ``eps_eff z + g / k0^2`` is
-divergence free (the equilibrated dual flux, ADR 0144).
+divergence free (the equilibrated dual flux).
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""BDDC's coarse problem across ranks on PETSc MUMPS (ADRs 0069, 0078).
+"""BDDC's coarse problem across ranks on PETSc MUMPS.
 
 On rank 0 the coarse factorization holds about a third of a mesh's DOFs in one
 process and every rank waits for its apply. NGSolve lets a registered ``coarsetype``
@@ -37,7 +37,7 @@ from gfem._linalg.petsc import defaults as factor_defaults
 #: jumps at 52 k and 33 k on r0.5 and r10M; "about 100 k" errs on the fine side.
 DOFS_PER_RANK = 100_000
 #: Coarse ranks at most: on r10M_void_split's 22.4 M wirebasket DOFs, 64 ranks stay
-#: within 1.4x of METIS's 5.2 G entries, 112 give 3.2x and 180 give 16x (ADR 0078).
+#: within 1.4x of METIS's 5.2 G entries, 112 give 3.2x and 180 give 16x.
 MAX_RANKS = 64
 
 #: Failures a larger workspace may cure: behind telescoping every failure reads 0.

@@ -3,8 +3,8 @@
 At an eigenvalue ``k`` of ``T`` with right eigenvector ``x`` and left one
 ``y`` (``x`` when complex symmetric), ``T(k)`` is singular: ``T(k) z = b``
 has a solution only for ``y^T b = 0``, and it is defined up to a multiple
-of ``x``. `deflated_solve` solves it with the two rank-one projections of
-quantum-metrics ticket 03, ``t = T'(k) x``:
+of ``x``. `deflated_solve` solves it with the two rank-one projections
+``t = T'(k) x``:
 
 - ``P v = v - t (y^T v) / (y^T t)`` on right-hand sides and residuals: onto
   the range of ``T(k)``, along ``t``;
@@ -13,19 +13,18 @@ quantum-metrics ticket 03, ``t = T'(k) x``:
 GMRES runs on ``Q T(sigma)^-1 P T(k) Q``, left-preconditioned by the
 factors the eigen operator holds at its current shift ``sigma`` near ``k``
 (no refactorization): only `EigenOperator.solve`, ``apply`` and
-``derivative`` are used. Its stopping rule is ADR 0104's (amendment of
-ticket 19): an Arnoldi stop at ``stop |P b|``, then one more solve gives
+``derivative`` are used. Its stopping rule: an Arnoldi stop at
+``stop |P b|``, then one more solve gives
 ``rho = |P(b - T z)| / |z|``, accepted at ``rho <= accept``; otherwise it
 restarts from the iterate with the absolute tolerance ``stop |z|``. After
 `APPLY_CAP` applies (factor solves) without acceptance the operator reshifts
 once to ``k (1 + d)``, ``d = min(1e-3, 1e-2 gap)``, never exactly at ``k``,
 and stays there; after another `APPLY_CAP`, `LinearSolverConvergenceError`.
-No call passes a frequency to the refactorization, so ADR 0094's factor reuse
-never serves it.
+No call passes a frequency to the refactorization, so factor reuse across
+designs never serves it.
 
 `polish` takes Newton steps on a converged mode with the same solve: mode
-polishing, the forward's correction of every mode in mode-field reach (ADR
-0104, amendment of ticket 19).
+polishing, the forward's correction of every mode in mode-field reach.
 
 Columns keep the roles of `gfem._linalg.layout`: ``x``, ``y``, the iterates
 and GMRES's preconditioned basis are states; ``b``, ``t`` and residuals are

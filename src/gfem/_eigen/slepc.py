@@ -9,15 +9,14 @@ and the spectral transform is SLEPc's default ``shift`` at 0, so SLEPc sets
 up no linear solver of its own. The start vector is the seed's fixed,
 projected vector, so a solve is deterministic; no deflation space is set.
 A solve stops after ``seed._SEED_RESTARTS`` restarts, unless the user's
-``eps_max_it`` says otherwise (ADR 0122).
+``eps_max_it`` says otherwise.
 
-Under ranks (ADR 0502) the shell, its vectors and the EPS live on the mesh
+Under ranks the shell, its vectors and the EPS live on the mesh
 communicator, and a vector's rows are the owned free DOFs of the eigen operator
 (`EigenOperator.numbering`), ``[x rows; v rows]`` for the companion form: each
 apply maps the rows to a state, applies the seed operator unchanged and maps its
 state back, so the Krylov process is one process's, permuted. The converged count,
-the reason and every eigenvalue are rank 0's, broadcast before gfem reads them
-(ADR 0058).
+the reason and every eigenvalue are rank 0's, broadcast before gfem reads them.
 
 petsc4py and slepc4py come from `gfem._petsc` on the first solve; nothing is
 imported at module scope.
@@ -51,7 +50,7 @@ class _Shell:
 
     Under ranks (``distributed``) only an agreed error is kept: every rank
     raises it at the same apply, so every rank's stopping test ends the solve
-    together. Any other error propagates and ends the job (ADR 0058): kept, it
+    together. Any other error propagates and ends the job: kept, it
     would leave the other ranks inside a collective solve.
     """
 

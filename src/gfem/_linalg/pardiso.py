@@ -68,7 +68,7 @@ from gfem._linalg.factor_reuse import PARDISO_FLOOR_MFLOP, pardiso_ratio
 #: a solve cost about 4.5 substitutions instead of one. 0 is MKL's default.
 #: iparm(10) = 16: perturb a pivot only below 1e-16 ‖A‖, not NGSolve's
 #: 1e-13; a perturbed pivot triggers MKL's two refinement steps, which break
-#: A^T = A in the solution near the low-frequency floor (ADR 0029).
+#: A^T = A in the solution near the low-frequency floor.
 #: iparm(19) = -1: MKL reports the factorization's Mflop in iparm[18], a
 #: count the factor-reuse rule reads (`PardisoFactors.model_ratio`).
 PARDISO_FLAGS = {

@@ -1,4 +1,4 @@
-"""The kept-operator holder: an eigenmode entry's handle (ADR 0104).
+"""The kept-operator holder: an eigenmode entry's handle.
 
 A differentiated eigenmode forward keeps its `EigenOperator` as it leaves it
 (the factors at the last shift, the mass, damping and nonpolynomial maps,
@@ -42,7 +42,7 @@ class KeptOperator:
     def shared(self) -> dict[int, int]:
         """The kept fixed parts' bytes, by identity (empty without or once freed).
 
-        The entry cache counts them once with the discretization's (ADR 0091).
+        The entry cache counts them once with the discretization's.
         """
         if self.operator is None or self.store is None:
             return {}

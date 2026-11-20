@@ -32,7 +32,7 @@ pairs, so a cluster cut by the request is detected when its next member is
 among them (best-effort: no Arnoldi attempt is added for it).
 
 The ratios of the mode fields (``q_port``, ``participation``, the region,
-principal and sheet shares) differentiate for isolated modes (ADR 0102) with
+principal and sheet shares) differentiate for isolated modes with
 respect to materials, sheet fills and node coordinates (port surfaces
 held), and the normalized mode fields themselves (through the
 normalization multipliers of `gfem._eigen.ratios`) with respect to
@@ -40,10 +40,10 @@ materials and sheet fills, never the node coordinates; on one CPU process
 with the ``direct`` linear solver: per mode with a cotangent, one deflated
 GMRES solve of the singular system of the mode-field adjoint, ``T(k) lam0
 = -w``, ``t^T lam0 = 0``, on the live factors the forward kept
-(`gfem._eigen.adjoint`, ADR 0104), the load ``(w, kappa, explicit terms)``
+(`gfem._eigen.adjoint`), the load ``(w, kappa, explicit terms)``
 of `gfem._eigen.ratios`, and the pairs
 ``(2 lam, x)`` and ``(conj(x), x)`` on the mode energy's ``Re(eps_r)``
-terms (ADR 0103) and the sheets' L and C pieces. What does not
+terms and the sheets' L and C pieces. What does not
 differentiate is refused by name: at trace time from the model, the
 options and the wanted inputs (`EigenmodeRule.nondifferentiable_output`),
 in the backward from the modes (a cluster, a near pair, a defective mode,
@@ -52,16 +52,16 @@ an infinite ``q_port``).
 Post-processing follows Palace: electric energy ``E = 1/2 Re ∫ D* . E`` per
 volume region plus ``C |V|^2 / 2`` per capacitive lumped port and ``1/2 ∫
 w C_s |E_t|^2`` per capacitive `Impedance` sheet (the quadratic form of
-its C piece, ADR 0103); a port's voltage is its driven voltage functional.
+its C piece); a port's voltage is its driven voltage functional.
 Each mode is scaled to ``E = 1 J`` with ``∫ D . E`` real and positive. An
 anisotropic region's energy is also split along its principal axes (``1/2
-ε0 eps_k ∫ |a_k . E|^2``, ADR 0055).
+ε0 eps_k ∫ |a_k . E|^2``).
 
 On a model with `gfem.Periodic` pairs the modes are solved on the periodic
 space and their fields expanded to the unpaired space (``e = P x``,
 `DrivenOperator.expand`); the backward pass's pairs are expanded too
 (``P X``, and ``conj(P) Y`` on the left). With ``Eigenmode.wave_vector``
-(Bloch) ``T(k)`` is general (ADR 0042): the refinement is two-sided, its
+(Bloch) ``T(k)`` is general: the refinement is two-sided, its
 left eigenvectors ``Y`` replace ``X`` on the left of every gradient (``G =
 Y^T T'(k_c) X``), only the ``direct`` linear solver runs it (transposed
 solves on its factors), the real snap of a lossless cell tests that ``K``
@@ -173,7 +173,7 @@ _STATIC = 1e-6
 #: A converged pair of a law model whose curl energy is at most this fraction
 #: of its electric energy (`EigenOperator.curl_ratio`) is a gradient field at
 #: a zero of eps(omega), a longitudinal mode: dropped like a static pair
-#: (ADR 0115 amendment; round-off reaches it only below k h_max ~ 3e-6,
+#: (round-off reaches it only below k h_max ~ 3e-6,
 #: transverse modes measured 0.55 and up).
 _LONGITUDINAL = 1e-4
 #: A refined mode closer than this many eigen tolerances (relative, and at
@@ -182,13 +182,13 @@ _LONGITUDINAL = 1e-4
 _DUPLICATE = 10.0
 #: The modal overlap from which a seed solve's error names the region: every
 #: case below it converged in 47 shift solves or fewer, every hang had 70 or
-#: more (ADR 0122).
+#: more.
 _CROWDED = 10.0
 _OVERLAP = 0.9
 #: A duplicate with more than this fraction of its norm outside the span
 #: landed on a degenerate eigenspace: that part is refined as the twin the
 #: seed solve may not have returned (a frozen seed solve gives one Ritz
-#: value for a pair, ticket 17 of quantum-metrics).
+#: value for a pair).
 _TWIN = 1e-2
 #: Ritz values this close (relative) are one multiple eigenvalue. The seed
 #: solver returns an arbitrary basis of its eigenspace, as nearly parallel as
@@ -208,26 +208,25 @@ _ATTEMPTS = 3
 #: Arnoldi tolerance of a nonlinear problem's frozen seeds. Their roots are
 #: off the true ones by the freeze error anyway (small for a conductor,
 #: whose seeds reach backward error 1e-8 to 1e-4 now that the projection
-#: fixes its potential on the wall, ADR 0097; up to 18 % for a second-order
+#: fixes its potential on the wall; up to 18 % for a second-order
 #: absorbing wall) and every seed is refined, so converging them further
 #: only spends shift solves. The linearization
 #: cluster's solves are avoided by asking for few pairs (see the nev comment
-#: in the forward pass, ADR 0035), not by this tolerance.
+#: in the forward pass), not by this tolerance.
 _SEED_TOLERANCE = 1e-3
 #: Cotangents on the members of a cluster that agree to this (relative to
 #: the largest) make an objective symmetric in the cluster to first order
 #: (a smooth symmetric function's cotangents differ by O(gap)).
 _SYMMETRIC_RTOL = 1e-3
 #: The smallest relative gap of a mode in mode-field reach (with
-#: ``SolverOptions.cluster_rtol`` if larger): an isolated mode (ADR 0102),
-#: polished in the forward and given mode-field gradients (ADR 0104).
+#: ``SolverOptions.cluster_rtol`` if larger): an isolated mode,
+#: polished in the forward and given mode-field gradients.
 _ISOLATED = 1e-4
 #: A Bloch cluster's ``G = Y^T T' X`` with a condition number above this is
 #: singular: a defective eigenvalue, whose frequency has no derivative.
 _DEFECTIVE = 1e8
 #: A mode with ``|y^T T'(k) x|`` below this times ``|y| |T'(k) x|`` is
-#: defective: the singular system of its mode-field adjoint has no solution
-#: (ADR 0102).
+#: defective: the singular system of its mode-field adjoint has no solution.
 _DEFECTIVE_FIELD = 1e-8
 #: The largest ``SolverOptions.eigen_tolerance`` of a solve whose mode
 #: fields differentiate: it keeps the forward polish's Newton start close.
@@ -252,7 +251,7 @@ class _InputRefusal:
         kind: ``"nodes"`` (no node gradient of the normalized field),
             ``"lumped"`` (a lumped value the output has no gradient by yet)
             or ``"law"`` (a permittivity law's parameter: the mode-field
-            outputs read the mode energy, ADR 0112).
+            outputs read the mode energy).
         message: The reason, starting "with respect to".
     """
 
@@ -267,7 +266,7 @@ _HERMITIAN = 1e-12
 
 @dataclasses.dataclass(frozen=True)
 class GapSet:
-    """The modes a mode's relative gap is measured to (ADR 0104).
+    """The modes a mode's relative gap is measured to.
 
     Attributes:
         pool: The ``k`` of every converged, distinct pair the selection
@@ -325,7 +324,7 @@ class DualRequest:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class ParticipationDual:
-    """The mode-field dual of one region's bulk participation (ADR 0142).
+    """The mode-field dual of one region's bulk participation.
 
     Attributes:
         mode: The mode's index on the result it was solved for.
@@ -355,9 +354,9 @@ class EigenmodeRule:
     #: Outputs whose cotangents the backward pass can handle: the eigenvalues
     #: (``cluster`` holds integer labels: its cotangent is always zero) and
     #: the mode-field outputs, within the reach `nondifferentiable_output`
-    #: checks for the wanted inputs (ADR 0102).
+    #: checks for the wanted inputs.
     differentiable_outputs = frozenset({"omega", "cluster", *_MODE_FIELD})
-    #: Outputs that are a rank's own piece under ranks (ADR 0063): the ranks
+    #: Outputs that are a rank's own piece under ranks: the ranks
     #: compare their cotangents' shapes, not their values. The mode fields'
     #: ratios are values.
     pieces = frozenset({"e_field"})
@@ -376,7 +375,7 @@ class EigenmodeRule:
         """Check that the problem fits the model (see `gfem.Eigenmode`).
 
         ``comm`` is the resolved communicator of a distributed solve: its seed
-        solver is SLEPc, also for ``eigen_solver="auto"`` (ADR 0502).
+        solver is SLEPc, also for ``eigen_solver="auto"``.
 
         Raises:
             NotImplementedError: A feature this version cannot solve.
@@ -444,7 +443,7 @@ class EigenmodeRule:
         #: converged pair be a longitudinal mode (`_longitudinal`).
         self._laws = bool(dispersion.law_regions(model))
         #: Participation duals for `gfem.refine_mesh` to solve on the
-        #: forward's live factors (ADR 0142), and the duals solved.
+        #: forward's live factors, and the duals solved.
         self.adjoint_loads: Sequence[DualRequest] | None = None
         self.adjoints: dict[tuple[int, str], ParticipationDual] = {}
 
@@ -483,7 +482,7 @@ class EigenmodeRule:
         opts = self.options
         order = opts.order
         comm = self.comm
-        # before any assembly: a target in a law's unresolved band (ADR 0115)
+        # before any assembly: a target in a law's unresolved band
         with _mpi.raised_together(ValueError):
             dispersion.check_band(model, self.problem.target, "target")
         with task_manager(opts.threads, comm):
@@ -513,7 +512,7 @@ class EigenmodeRule:
                     f = mode.k.real * per_hz
                     with _mpi.raised_together(ValueError):
                         dispersion.check_band(model, f, f"mode {j} at")
-                        # the mode energy's weight (ADR 0109)
+                        # the mode energy's weight
                         dispersion.check_energy(model, f, f"mode {j} at")
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
@@ -543,7 +542,7 @@ class EigenmodeRule:
                             [m.x if m.y is None else m.y for m in modes], axis=1
                         )
                     # the backward maps vectors with the operator as it is
-                    # left (ADR 0104): the entry's holder owns it from here
+                    # left: the entry's holder owns it from here
                     store = None if op.fixed is None else op.fixed.store
                     entry = self._entry(
                         KeptOperator(eop, store),
@@ -621,7 +620,7 @@ class EigenmodeRule:
         mode: int,
         regions: Sequence[str],
     ) -> dict[str, ParticipationDual]:
-        """The dual of each region's bulk participation of mode ``(k, u)`` (ADR 0142).
+        """The dual of each region's bulk participation of mode ``(k, u)``.
 
         Per region, the load of a unit cotangent on its participation
         (`Ratios.load`), the deflated solve ``T(k) lam0 = -w``, ``t^T lam0 =
@@ -691,7 +690,7 @@ class EigenmodeRule:
         pairs as the last) and the selection of their refined pairs
         (`_select`). A seed solve that stops at its restart bound ends the
         attempts: its converged pairs are selected, and a wider retry would
-        converge none (ADR 0122). ``guard``: refine one mode beyond
+        converge none. ``guard``: refine one mode beyond
         ``n_modes`` (``None`` when no seed gave one). Where the forward
         polishes (`polishable`), each isolated mode is polished (`_polish`)
         on the factors the search leaves, before a lossless problem's ``k``
@@ -714,7 +713,7 @@ class EigenmodeRule:
         # twice as many pairs. A nonpolynomial seed asks for one pair
         # beyond n_modes, the guard's slot: behind its modes lies the
         # linearization cluster, which costs shift solves to converge
-        # and holds no mode (ADR 0035).
+        # and holds no mode.
         if eop.nonpolynomial:
             nev = n_modes + 1
             seed_tolerance = max(seed_tolerance, _SEED_TOLERANCE)
@@ -763,10 +762,10 @@ class EigenmodeRule:
 
     @property
     def polishable(self) -> bool:
-        """Whether the forward polishes its isolated modes (ADR 0104).
+        """Whether the forward polishes its isolated modes.
 
         On the CPU with ``linear_solver="direct"``, without a periodic pair
-        or a Bloch wave vector: where mode-field gradients reach (ADR 0102).
+        or a Bloch wave vector: where mode-field gradients reach.
         """
         return (
             self.options.device == "cpu"
@@ -791,7 +790,7 @@ class EigenmodeRule:
         accepted) is evidence of a neighbour the gap set missed, such as the
         twin of a degenerate pair the seed solve never returned: the mode
         is kept as mode refinement left it and flagged, and its entry
-        records it as not isolated (ADR 0104, amendment of ticket 04). A
+        records it as not isolated. A
         solve never raises because of polishing.
         """
         ks = [m.k for m in modes]
@@ -815,7 +814,7 @@ class EigenmodeRule:
     ) -> tuple[np.ndarray, np.ndarray]:
         """The seed solve on ``SolverOptions.eigen_solver`` (see `shift_invert`).
 
-        Above one rank ``"auto"`` is SLEPc (ADR 0502).
+        Above one rank ``"auto"`` is SLEPc.
         """
         if self.options.eigen_solver == "slepc" or self.comm is not None:
             options = self.options.petsc_options
@@ -948,7 +947,7 @@ class EigenmodeRule:
         factorization at its own Ritz value. A converged pair that is not
         static and not in the span of the accepted modes (`_in_span`) is
         never discarded: the first refinement of such a seed is accepted
-        too when it is one (ADR 0097), so the accepted modes can outnumber
+        too when it is one, so the accepted modes can outnumber
         ``n_modes``; they are sorted by distance to the target and cut. A
         pair in that span with more than `_TWIN` of its norm outside it
         landed on a degenerate eigenspace: its outside part is refined and,
@@ -985,7 +984,7 @@ class EigenmodeRule:
             # a converged pair in the span of the accepted modes is a duplicate
             # unless its part outside the span is more than round-off: then it
             # landed on a degenerate eigenspace whose twin the seed solve
-            # missed, and that part, refined, is the twin (ticket 17)
+            # missed, and that part, refined, is the twin
             if not _in_span(mode, accepted, window, layout=layout):
                 return mode
             rest = _outside(mode, accepted, window, layout=layout)
@@ -1089,7 +1088,7 @@ class EigenmodeRule:
 
         A gradient field at a zero of a law's eps(omega): its curl energy
         is at most `_LONGITUDINAL` of its electric energy
-        (`EigenOperator.curl_ratio`, ADR 0115). One ``K`` apply; never on a
+        (`EigenOperator.curl_ratio`). One ``K`` apply; never on a
         model without a law, where eps has no zero.
         """
         if not self._laws or not mode.converged:
@@ -1396,7 +1395,7 @@ class EigenmodeRule:
         )[0]
 
     def _law_factor(self, model: Model, k: complex, scale: float) -> np.ndarray | float:
-        """The mode energy's factor per tetrahedron at the mode ``k`` (ADR 0109).
+        """The mode energy's factor per tetrahedron at the mode ``k``.
 
         eps_W / eps_inf on a law region (its energy permittivity at ``Re
         omega`` over the eps_inf that `element_energy` integrates), 1
@@ -1413,7 +1412,7 @@ class EigenmodeRule:
         """``(n_kinetic, n)`` sheet participations of the modes scaled to 1 J.
 
         A sheet's L piece is ``mu0 scale / L_s ∫ w u_t . v_t`` (the fill
-        ``w`` as in the operator, ADR 0013): ``∫ w |E_t|^2 / (2 omega^2
+        ``w`` as in the operator): ``∫ w |E_t|^2 / (2 omega^2
         L_s)`` is its form over ``2 mu0 scale omega^2``.
         """
         out = np.zeros((len(self.kinetic), len(omega)))
@@ -1470,7 +1469,7 @@ class EigenmodeRule:
 
         The node coordinates, next to a tensor absorbing admittance
         (`terms.absorbing_shape_unsupported`); a permittivity law's
-        parameter on a periodic model (no verification cell, ADR 0112).
+        parameter on a periodic model (no verification cell).
         """
         if kind == ("nodes",):
             return self.nodes_unsupported
@@ -1488,7 +1487,7 @@ class EigenmodeRule:
     ) -> str | None:
         """Why a cotangent on output ``name`` cannot be pulled back, or ``None``.
 
-        Input-aware (ADR 0102): ``kinds`` are the wanted input kinds. The
+        Input-aware: ``kinds`` are the wanted input kinds. The
         eigenvalues differentiate with respect to every read input. The
         mode-field outputs (``q_port``, ``participation``,
         ``bulk_participation``, ``principal_participation``,
@@ -1512,7 +1511,7 @@ class EigenmodeRule:
             return None
         if name in _MODE_FIELD and self.comm is not None:
             # replicated values only, so every rank raises it at the backward's
-            # trace (ADR 0072, amended 2026-11-19)
+            # trace
             _mpi.refuse_feature("mode_field_gradient")
         public = _MODE_FIELD.get(name, name)
         head = f"gfem cannot differentiate the eigenmode output {public!r}"
@@ -1598,7 +1597,7 @@ class EigenmodeRule:
     ) -> _InputRefusal | None:
         """Why output ``name`` does not differentiate by ``kinds``, or ``None``.
 
-        Every mode-field output by a permittivity law's parameter (ADR 0112),
+        Every mode-field output by a permittivity law's parameter,
         the normalized field by the node coordinates, and the principal
         shares by a lumped value.
         """
@@ -1621,7 +1620,7 @@ class EigenmodeRule:
             )
         lumped = sorted(k for k in kinds if is_lumped(k))
         # the principal shares have no finite-difference cell by a lumped
-        # value yet (ADR 0102 amendment); every other output does
+        # value yet; every other output does
         if lumped and name == "principal":
             kind = lumped[0]
             where = "ports" if kind[0] == "port" else "boundaries"
@@ -1645,7 +1644,7 @@ class EigenmodeRule:
         (conj(P) y)^T a (P x)`` for the unpaired forms ``a``
         (`DrivenOperator.pair`). Under ranks ``gram`` is agreed and the
         pairs hold each rank's state columns, whose element passes the
-        caller sums over ranks (ADR 0065).
+        caller sums over ranks.
 
         **Mode-field outputs** (`_field_pairs`): per mode with a cotangent
         on its ratios, one adjoint solve on the kept eigen operator and two
@@ -1722,7 +1721,7 @@ class EigenmodeRule:
         op: DrivenOperator,
         domain,
     ) -> list[FieldPair]:
-        """The mode-field outputs' pairs (quantum-metrics ticket 03, ADR 0104).
+        """The mode-field outputs' pairs.
 
         Per mode ``(k, x)`` with a nonzero cotangent on its ratios or on its
         normalized field: the load ``(w, kappa, explicit terms)``
@@ -1898,8 +1897,8 @@ class EigenmodeRule:
             raise DegenerateModeError(
                 f"DegenerateModeError: a quantity of the field of {mode} "
                 f"(participation, port Q, a field) is not differentiable: "
-                f"{reason}. Mode-field gradients are for isolated modes only "
-                "(ADR 0102): near another mode the field is a mix of the two "
+                f"{reason}. Mode-field gradients are for isolated modes only: "
+                "near another mode the field is a mix of the two "
                 "that any perturbation rotates. Remedies: separate the modes "
                 "(break the design's symmetry, move them apart); differentiate "
                 "the frequencies only; or wrap the field quantity in "
@@ -1912,7 +1911,7 @@ class EigenmodeRule:
         The last model's operator is kept, so that a backward pass and its
         terms build it once, while its discretization is the model's cached
         one: an operator on an evicted discretization would pair with
-        kernel objects of the new one (ADR 0104).
+        kernel objects of the new one.
         """
         last = getattr(self, "_last_driven", None)
         if (
@@ -1941,7 +1940,7 @@ class EigenmodeRule:
         every port surface.
 
         The explicit energy terms of the mode-field outputs follow
-        (`Ratios.terms`, ADR 0103): ``Re(eps_r)`` per region and per
+        (`Ratios.terms`): ``Re(eps_r)`` per region and per
         principal axis, which only their energy pairs weight. They are
         ``"value"`` terms on the element-wise ``Re(eps_r)`` masked to their
         part, so the node pass transports them as it does the mass piece; the
@@ -1961,7 +1960,7 @@ class EigenmodeRule:
             resistive=(),
             inductive=(),
         )
-        # a density blend never reaches an eigenmode solve (ADR 0113): its
+        # a density blend never reaches an eigenmode solve: its
         # mass derivative is the driven family's only
         pieces = [
             dataclasses.replace(
@@ -1974,7 +1973,7 @@ class EigenmodeRule:
         return pieces + ratios.terms()
 
     def lumped_terms(self, model: Model) -> list[Term]:
-        """The pieces of ``T(k)`` that move with a lumped value (ADR 0100).
+        """The pieces of ``T(k)`` that move with a lumped value.
 
         The driven operator's (`gfem._engine.driven.lumped_terms`), weighted
         with their θ at the mode like the other pieces.
@@ -1991,8 +1990,7 @@ class EigenmodeRule:
         ``-p / L`` in its participation, ``|V|^2 / 2`` in the mode energy
         (and so in every ratio and, through ``mu1``, the normalized field).
         These are scalars, by ``("port", index, "inductance" |
-        "capacitance")``, which `solve_vjp` adds to the lumped pass's values
-        (quantum-metrics ticket 21, ADR 0102 amendment).
+        "capacitance")``, which `solve_vjp` adds to the lumped pass's values.
         """
         return dict(self._explicit)
 
@@ -2119,7 +2117,7 @@ def _incomplete(
 def isolated(
     labels: np.ndarray, incomplete: np.ndarray, gap: np.ndarray, rtol: float
 ) -> np.ndarray:
-    """Which modes are in mode-field reach (ADR 0102, ADR 0104).
+    """Which modes are in mode-field reach.
 
     A mode is when it is the only member of its cluster (``labels``), its
     cluster is not cut short by the guard mode (``incomplete``), and its
@@ -2164,7 +2162,7 @@ def _modal_overlap(
     its complex permittivity at ``frequency`` (the mean of its principal
     values, or its permittivity law's value; ``tan_delta`` and
     ``conductivity`` give the loss). 0 where ``Re eps <= 0``. It matched the
-    counted modes to 10-30 % (ADR 0122).
+    counted modes to 10-30 %.
     """
     omega = 2 * math.pi * frequency
     sigma = np.mean(np.asarray(material.conductivity, dtype=float))
@@ -2271,7 +2269,7 @@ def _outside(
 
     ``None`` when it is at most `_TWIN` of its norm: round-off of a duplicate
     of a simple mode (1e-11 to 2e-9 measured), not a twin (0.36 to 0.94 on the
-    lossy-wall mirrored cavity, quantum-metrics ticket 17). The modes are
+    lossy-wall mirrored cavity). The modes are
     states, their products ``layout``'s.
     """
     near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
@@ -2383,7 +2381,7 @@ def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
     A capacitive `Impedance`'s C piece is ``∫ w C_s / (eps0 scale) u_t .
     v_t``, as the mass piece is ``∫ eps_r u . v``: its quadratic form with
     ``(conj(x), x)`` times ``eps0 scale / 2`` is the sheet's electric
-    energy, as `element_energy` gives the volume's (ADR 0103). ``None``
+    energy, as `element_energy` gives the volume's. ``None``
     without a capacitive sheet, so such models add nothing.
     """
     sheets = sheet_capacitors(op)

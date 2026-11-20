@@ -1,4 +1,4 @@
-"""Per-face wave admittances of anisotropic materials (ADR 0051).
+"""Per-face wave admittances of anisotropic materials.
 
 Under e^{+iωt}, in normalized units (eta0 = 1), a plane wave leaving a
 material through a face of unit normal n satisfies at normal incidence
@@ -25,8 +25,8 @@ so `admittance_derivatives` takes ``dY/de_k`` and ``dY/dm_k`` by complex
 step on the closed form: exact to rounding, with no derivative of a matrix
 function written by hand.
 
-A wave port's cross-section holds transverse-anisotropic materials only
-(ADR 0052): a principal axis along the port normal ``n``. There ``Y`` of an
+A wave port's cross-section holds transverse-anisotropic materials only:
+a principal axis along the port normal ``n``. There ``Y`` of an
 absorbing face that meets the port along an edge is diagonal in the edge
 tangent and ``n``, and `edge_admittance` gives those two values from the
 section's 2x2 blocks in closed form.
@@ -209,7 +209,7 @@ def edge_admittance(
     """The admittances ``(Y_tau, Y_n)`` of absorbing edges, ``(m, 2)``.
 
     An absorbing edge of the cross-section is the trace of a 3D absorbing
-    face, whose admittance is ``Y = A # eps_eff`` (ADR 0051) from the real
+    face, whose admittance is ``Y = A # eps_eff`` from the real
     parts of the material's tensors. With ``n`` principal, as the port mode
     problem requires, ``Y`` is diagonal in the face's tangents, the edge
     tangent ``tau`` and ``n``. In the frame ``(m, tau, n)``, ``m`` the

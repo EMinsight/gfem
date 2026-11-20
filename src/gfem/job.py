@@ -599,7 +599,7 @@ def _model_mesh_from_args(digest: str, context: _codec.Context) -> Mesh:
 
 
 def _section(mesh: Mesh) -> dict[str, Any]:
-    """A cross-section's thickness; no key for any other mesh (ADR 0096)."""
+    """A cross-section's thickness; no key for any other mesh."""
     thickness = mesh.section_thickness
     return {} if thickness is None else {"section_thickness": thickness}
 
@@ -851,7 +851,7 @@ _codec.register(
 
 
 def _renamed_density_from_args(cls: type) -> _codec.FromArgs:
-    """Read an older file's ``density`` key as ``mass_density`` (ADR 0171)."""
+    """Read an older file's ``density`` key as ``mass_density``."""
 
     def from_args(args: dict[str, Any], _: _codec.Context) -> Any:
         if "density" in args:
@@ -876,7 +876,7 @@ for _cls in (
     Lorentz,
     Debye,
     DjordjevicSarkar,
-    # a law blend's fixed ends (MaterialField.blend_ends, ADR 0113)
+    # a law blend's fixed ends (MaterialField.blend_ends)
     Blend,
     SheetField,
     PEC,

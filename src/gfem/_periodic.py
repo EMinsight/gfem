@@ -359,7 +359,7 @@ def bloch_phases(
     periodicity). ``pairs`` are the pairs as the mesh carries them
     (`gfem._engine.mesh.EngineMesh.pairs`; the model's by default): under ranks
     a pair the partition search swapped has its translation negated, so its
-    phase is the inverse (ADR 0071).
+    phase is the inverse.
     """
     if wave_vector is None:
         return None
@@ -459,7 +459,7 @@ def check_floquet(
 
     The sibling of `check_bloch`, called after it: only the uniform sweep
     on the CPU with ``direct`` or ``bddc_gmres`` (or ``"auto"``, which picks
-    one of them on one process) has a Floquet port path (ADR 0149).
+    one of them on one process) has a Floquet port path.
     Checked before the linear solver is resolved, so the refusal does not
     depend on what is installed. Nothing happens without ``ports``.
 

@@ -68,7 +68,7 @@ class AffineTerm:
         coefficients: ``ω -> (m, n_excitations)`` for an excitation term,
             ``ω -> (n_outputs, m)`` for an output term.
         conjugate: The block is ``conj(vectors)``, read on the fly so a
-            wave port's couplings are held once (ADR 0091).
+            wave port's couplings are held once.
     """
 
     vectors: np.ndarray
@@ -292,7 +292,7 @@ def adaptive_sweep(
         memory: Consecutive samples under ``tolerance`` that converge.
         samples: Grid indices to solve, in order, instead of the greedy.
         seeds: Grid indices the greedy solves right after the endpoints, in
-            order, before it picks its own (ADR 0116: the grid neighbours of
+            order, before it picks its own (the grid neighbours of
             an in-band material resonance). Measured and counted like greedy
             samples; ignored with ``samples``.
         z_scale: ω times ``z_scale`` is the MRI's (dimensionless)

@@ -1,22 +1,21 @@
-"""Every per-element read of a permittivity law (ADR 0111).
+"""Every per-element read of a permittivity law.
 
 A `Material` whose ``eps_r`` is a `gfem.PermittivityLaw` has no one
 permittivity: `gfem._engine.coefficients.element_values` refuses it, and the
 readers that understand a law read it here, each at a named frequency:
 
-- `high_frequency_eps`: the law's eps_inf, the shared mass piece's value
-  (ADR 0110);
+- `high_frequency_eps`: the law's eps_inf, the shared mass piece's value;
 - `eps_at`: the complex permittivity at an angular frequency;
 - `static_eps`: the static permittivity eps(0), the electrostatic
   coefficient (`check_static` refuses a Drude term);
 - `law_regions`: the laws and their tetrahedra, for the susceptibility
   pieces (`susceptibility`, `d_susceptibility`) and the checks;
-- `blend_regions`: the density blends with a law end (ADR 0113), whose
+- `blend_regions`: the density blends with a law end, whose
   eps_inf limit `high_frequency_eps` holds and whose susceptibility parts
   (`blend_parts`) the driven operator reads; `gfem.solve` refuses them on
   every other problem;
 - `check_frequencies`: what a driven sweep checks before any assembly;
-- `check_band`: the eigenmode problem's unresolved band (ADR 0115), and
+- `check_band`: the eigenmode problem's unresolved band, and
   `nearest_term`, the term a message names;
 - `resonance_seeds`: the grid frequencies the adaptive sweep solves first;
 - `absorbing_surfaces`: the absorbing surfaces each law region lies behind;
@@ -119,7 +118,7 @@ def law_regions(model: Model) -> tuple[LawRegion, ...]:
 
 @dataclasses.dataclass(frozen=True)
 class BlendRegion:
-    """A region whose `MaterialField` blends a law end by a density (ADR 0113).
+    """A region whose `MaterialField` blends a law end by a density.
 
     Attributes:
         region: The volume region.
@@ -210,7 +209,7 @@ def blend_mass(br: BlendRegion) -> tuple[np.ndarray, np.ndarray]:
 
 
 def blend_parts(br: BlendRegion) -> list[BlendPart]:
-    """The susceptibility parts of a law blend (ADR 0113).
+    """The susceptibility parts of a law blend.
 
     ``"index"``: chi_a with c = (1 - rho)^2, chi_b with c = rho^2, and the
     cross part N_a N_b - sqrt(eps_inf,a eps_inf,b) with c = 2 rho (1 - rho),
@@ -270,9 +269,9 @@ def blend_parts(br: BlendRegion) -> list[BlendPart]:
 def high_frequency_eps(model: Model) -> np.ndarray:
     """`gfem._engine.coefficients.lossy_eps` with eps_inf on the law regions.
 
-    The value of the shared mass piece (ADR 0110): a law's frequency
+    The value of the shared mass piece: a law's frequency
     dependence is its susceptibility piece. A law blend's region holds its
-    eps_inf limit (`blend_mass`, ADR 0113).
+    eps_inf limit (`blend_mass`).
     """
     eps = lossy_eps(model, law=0.0)
     values = [(lr.mask, float(lr.law.eps_inf)) for lr in law_regions(model)]
@@ -310,11 +309,11 @@ def check_static(model: Model) -> None:
     """Raise for a law region with no static permittivity (a Drude term).
 
     Static: it reads the term kinds only, so it runs before any value is
-    known (ticket 09 Q4). A lossless Drude term diverges at 0 Hz and a lossy
+    known. A lossless Drude term diverges at 0 Hz and a lossy
     one gives Re chi(0) = -ωp²/γ² < 0, which would make the electrostatic
     operator indefinite; dropping the term would give a metal eps_inf.
 
-    A density blend with a law end (ADR 0113) is refused too
+    A density blend with a law end is refused too
     (`refuse_blends`).
 
     Raises:
@@ -339,7 +338,7 @@ def check_static(model: Model) -> None:
             )
 
 
-#: The remedy of every refusal of a law blend (ADR 0113).
+#: The remedy of every refusal of a law blend.
 _UNIFORM_ONLY = (
     "a metal-dielectric blend (MaterialField.interpolate with a permittivity "
     "law) is supported on the driven uniform sweep only (gfem.Driven with "
@@ -363,7 +362,7 @@ def _blends(model: Model) -> list[tuple[str, Blend]]:
 def refuse_blends(model: Model, where: str, *, static: bool = False) -> None:
     """Raise if the model has a law blend: ``where`` does not support one.
 
-    A density blend with a permittivity-law end (ADR 0113) is solved by
+    A density blend with a permittivity-law end is solved by
     `gfem.Driven` on the uniform sweep only: its cross piece's square root
     has branch cuts in complex omega (eigenmode), the adaptive sweep, the
     port mode problem, the estimators and the energies do not read it.
@@ -496,7 +495,7 @@ def d_eps(law: PermittivityLaw, omega: complex) -> dict[tuple, complex]:
     Keyed in the order of the law's leaves: ``("eps_inf",)`` (d eps / d
     eps_inf = 1), then ``(i, name)`` for parameter ``name`` of
     ``law.terms[i]``, per Hz for a frequency. Written by hand beside
-    `d_susceptibility` (ADR 0112): the law pass weighs each law piece's
+    `d_susceptibility`: the law pass weighs each law piece's
     form with it. Non-finite (never raising) on a lossless pole.
     """
     f = omega / _TWO_PI
@@ -588,7 +587,7 @@ def _derivatives(
 def energy_eps(law: PermittivityLaw, omega: float) -> float:
     """The energy permittivity Re[eps + (omega / 2) eps'] at ``omega`` (rad/s).
 
-    The weight of ``|E|^2`` in a mode's total energy (ADR 0109): half the
+    The weight of ``|E|^2`` in a mode's total energy: half the
     Brillouin electric weight plus Re eps. eps_inf for a lossless Drude law.
     Non-finite on a lossless pole.
     """
@@ -605,8 +604,8 @@ def d_energy_eps(law: PermittivityLaw, omega: float) -> float:
 def brillouin_eps(law: PermittivityLaw, omega: float) -> float:
     """The Brillouin electric weight Re d(omega eps)/d omega at ``omega`` (rad/s).
 
-    ``gfem.electric_energy`` reads ``1/4 eps0 Re d(omega eps)/d omega |E|^2``
-    (ADR 0109); Re eps_r for a constant material.
+    ``gfem.electric_energy`` reads ``1/4 eps0 Re d(omega eps)/d omega |E|^2``;
+    Re eps_r for a constant material.
     """
     eps, slope, _ = _derivatives(law, omega)
     return float((eps + slope).real)
@@ -616,7 +615,7 @@ def brillouin_eps(law: PermittivityLaw, omega: float) -> float:
 
 
 def resonance_seeds(model: Model, frequencies: Sequence[float]) -> list[int]:
-    """Indices into ``frequencies`` the adaptive greedy solves first (ADR 0116).
+    """Indices into ``frequencies`` the adaptive greedy solves first.
 
     For each `Lorentz` term of each law region, in ``model.materials`` and
     term order, whose resonance frequency lies strictly inside the grid's
@@ -649,7 +648,7 @@ def check_frequencies(
 
     With ``absorbing``, a law region behind a face of an `Absorbing` surface
     must hold a propagating medium (Re eps > 0) at every frequency: its face
-    pieces read sqrt(Re eps(omega)) (ADR 0110, ticket 09 Q3), at either order.
+    pieces read sqrt(Re eps(omega)), at either order.
 
     Static: it reads the laws and the frequencies only, so every rank of a
     distributed solve raises the same error before any collective. A law
@@ -702,7 +701,7 @@ def check_frequencies(
 
 
 def _check_blend_poles(model: Model, frequencies: Iterable[float]) -> None:
-    """Raise for a frequency on a lossless pole of a law blend's end (ADR 0113).
+    """Raise for a frequency on a lossless pole of a law blend's end.
 
     Reads the ends only (static data), never the density, so it runs on a
     traced model too.
@@ -756,7 +755,7 @@ def absorbing_surfaces(
     return out
 
 
-# --- the eigenmode problem's unresolved band (ADR 0115) ----------------------------
+# --- the eigenmode problem's unresolved band ----------------------------
 
 #: k0 Re sqrt(eps) h_max above which a law region is in its unresolved band:
 #: its wavelength is shorter than two of its longest edges.
@@ -823,8 +822,8 @@ def check_band(model: Model, frequency: float, what: str) -> None:
     sqrt(eps(f)) h_max > pi`` (`BAND`, principal root): its propagating
     wavelength is shorter than two longest edges. There, next to a Lorentz
     resonance, the modes crowd at the resonance, which of them the mesh
-    holds depends on it, and the seed solve cannot tell the nearest apart
-    (ADR 0115 and its amendment). An infinite permittivity (a lossless
+    holds depends on it, and the seed solve cannot tell the nearest apart.
+    An infinite permittivity (a lossless
     pole) is in the band. ``what`` names the frequency in the message (the
     target, or a mode).
 
@@ -856,7 +855,7 @@ def check_band(model: Model, frequency: float, what: str) -> None:
             )
 
 
-#: The remedy of a weight that is not positive (ADR 0109).
+#: The remedy of a weight that is not positive.
 _LOSS_DOMINATES = (
     "the energy is undefined where loss dominates the law (a metal below "
     "its damping frequency, a Lorentz pole inside its linewidth): model a "
@@ -875,7 +874,7 @@ def check_energy(
     """Raise where a law region's energy weight at ``frequency`` (Hz) is <= 0.
 
     The mode energy reads the energy permittivity `energy_eps`; with
-    ``brillouin``, `gfem.electric_energy` reads `brillouin_eps` (ADR 0109).
+    ``brillouin``, `gfem.electric_energy` reads `brillouin_eps`.
     ``what`` names the frequency in the message (a mode, or a field);
     ``regions`` limits the check to those regions.
 
@@ -930,7 +929,7 @@ _ZERO = 1e-9
 
 
 def check_estimator_frequencies(model: Model, frequencies: Iterable[float]) -> None:
-    """Raise for a frequency where a law region's eps_eff is zero (ADR 0111).
+    """Raise for a frequency where a law region's eps_eff is zero.
 
     The flux recovery of every wave estimator weights a tetrahedron's flux
     error with |eps_eff|^-1: at eps(omega) = 0 (a lossless Drude term at its

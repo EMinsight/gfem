@@ -1,8 +1,7 @@
 """Floquet ports in the driven problem: plane-wave orders coupled to the cell.
 
-A Floquet surface (`gfem._floquet`) enters the driven operator as (ADR 0148,
-amended by ADR 0153), in the units of `gfem._engine.terms` (lengths in mesh
-file units):
+A Floquet surface (`gfem._floquet`) enters the driven operator as follows, in the units
+of `gfem._engine.terms` (lengths in mesh file units):
 
 - one Robin term ``i k0 ∫ (n_f / mu_f) E_t · v_t`` on the surface, the
   first-order absorbing admittance of the half-space behind it
@@ -21,7 +20,7 @@ periodic space, `gfem._engine.driven.expansion_matrix`); no port mode is
 solved.
 
 Each Floquet port reads its order's coefficient ``c_o = vᴴ (P x) / A`` and
-is fed by the load ``2 λ_q Pᴴ v_q``, scaled to power waves (ADR 0154): an
+is fed by the load ``2 λ_q Pᴴ v_q``, scaled to power waves: an
 order carries ``|c|² A / (2 Z_o)`` through one cell, so the load is
 multiplied by ``sqrt(2 Z_q / A)`` (1 W incident) and the row by
 ``sqrt(A / (2 Z_p))``. A row reads exactly 0 where its order does not
@@ -204,7 +203,7 @@ def _projections(
 
     κ and the reference vectors at the table's row ``row``, the output
     grid's first frequency: one wave vector holds at every frequency of a
-    solve (a fixed-angle sweep solves each frequency on its own, ADR 0151).
+    solve (a fixed-angle sweep solves each frequency on its own).
     Zero on the unpaired space's fixed DOFs.
     """
     region = boundary_region(built, (surface_orders.face.surface,))
@@ -320,8 +319,8 @@ def check_excitable(
 
     Raises:
         ValueError: An excited Floquet port's order has gamma² >= 0 at a
-            frequency of the grid: it carries no incident power there (ADR
-            0153). Raised for the whole sweep, before any factorization.
+            frequency of the grid: it carries no incident power there.
+            Raised for the whole sweep, before any factorization.
     """
     propagating = {}
     for surface_orders in table.values():

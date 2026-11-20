@@ -8,10 +8,10 @@ wave port, or several, one mode each (a shared port surface):
 
 - one Robin term ``gamma_0 ∫ (A E_t) · v_t`` per surface
   (`gfem._engine.terms`), with ``gamma_0`` the propagation constant of the
-  surface's smallest-``mode`` port (ADR 0214; Palace drops its attenuation,
+  surface's smallest-``mode`` port (Palace drops its attenuation,
   which leaves ``-alpha_0 M e`` on a lossy mode) and
   ``A`` the port's tangential inverse-permeability tensor (``mu_r^-1`` for
-  an isotropic material; the port mode problem's ``nu_tt``, ADR 0054);
+  an isotropic material; the port mode problem's ``nu_tt``);
 - one modal correction of rank ``2 n`` per surface of ``n`` wave ports,
   ``W = H R_sym⁻¹ Hᵀ - gamma_0 M E G⁻¹ Eᵀ M``, never assembled, with ``H``
   the modes' n x H as 3D vectors (``h = ∫ A (grad E_n + gamma E_t) ·
@@ -28,7 +28,7 @@ wave port, or several, one mode each (a shared port surface):
   the surface's modes: the modal amplitudes ``c = R⁻¹ Hᵀ E`` with ``R =
   Hᵀ E_modes`` the unconjugated reactions (by reciprocity ``h_lᵀ e_k = 0``
   for ``l != k``, lossy or not), times the port's pseudo-wave factor
-  ``kappa`` (ADR 0214), minus 1 at the excited port. The incident load
+  ``kappa``, minus 1 at the excited port. The incident load
   ``2 h / kappa`` feeds a pseudo-wave of amplitude 1. Palace projects on
   the conjugated mode instead, which reflects a lossy line's own mode at
   order ``alpha / beta``.
@@ -36,7 +36,7 @@ wave port, or several, one mode each (a shared port surface):
 The 3D trace on the port face and the 2D Nédélec space of the port mode
 problem share the face's triangles and order, and NGSolve orders both bases
 by vertex number, which runs with gfem's node number on either mesh, also on
-a rank's part (ADR 0059). So the trace of a 3D field is the 2D field with the
+a rank's part. So the trace of a 3D field is the 2D field with the
 same coefficients on matching edges and faces (`trace_dofs`). With
 the modes written in the surface's port mode sweep's fixed basis,
 ``mode(omega) = W c(omega)``, the excitations and the functionals are fixed
@@ -284,7 +284,7 @@ class SweptSurface:
 
     What `wave_port_couplings` couples to the 3D field, and what the parent
     of frequency workers runs once over the whole grid, keeps for the
-    result and hands over by rows (ADR 0099).
+    result and hands over by rows.
 
     Attributes:
         ports: The surface's wave ports, in model port order.

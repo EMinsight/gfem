@@ -14,7 +14,7 @@ to one power density per tetrahedron, in W/m^3.
 On a cross-section mesh (`gfem.Mesh.from_gmsh_cross_section`) extensive
 amounts are given per unit length (``power_per_length``, W/m): ``power``
 and ``voltage`` raise there, since the slab's thickness is a numerical
-choice the result does not depend on (ADR 0170).
+choice the result does not depend on.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ def _check_finite(value: Any, what: str) -> Any:
 
 
 def _per_length_remedy(name: str, owner: str) -> ValueError:
-    """The error of an extensive amount given on a cross-section (ADR 0170)."""
+    """The error of an extensive amount given on a cross-section."""
     if name == "voltage":
         remedy = (
             "drive the heater by current instead: current=V / "
@@ -529,9 +529,9 @@ class _FieldTrace(Trace):
 register_fields(_FieldTrace, ())
 
 
-# --- switching times (copied from gsim, ADR 0162) ------------------------------
+# --- switching times (copied from gsim) ------------------------------
 
-#: The tail still to come, relative to the swing, that warns (ADR 0181).
+#: The tail still to come, relative to the swing, that warns.
 _SETTLED = 1e-2
 
 
@@ -573,7 +573,7 @@ def _crossing_time(t: np.ndarray, s: np.ndarray, level: float, name: str) -> flo
 
 
 def _check_settled(t: np.ndarray, s: np.ndarray, switch_times: Any, name: str) -> None:
-    """Warn when the normalised trace ``s`` has not settled (ADR 0181).
+    """Warn when the normalised trace ``s`` has not settled.
 
     The tail still to come is the geometric sum of the increments after the
     last sample, from the last two increments after the last switch. Only

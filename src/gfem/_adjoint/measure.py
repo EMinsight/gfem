@@ -24,7 +24,7 @@ or the reason the input cannot be differentiated), ``forward(values)`` and
 inputs, by name), all on NumPy values, and ``describe(name)`` for errors.
 
 A kernel may name a ``comm``, the communicator of a field it reads; it is then a
-collective host call, and ``pieces`` names its inputs that are a rank's own (ADR 0063).
+collective host call, and ``pieces`` names its inputs that are a rank's own.
 Each such input has one shape on all ranks, so that every rank runs each callback.
 """
 

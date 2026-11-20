@@ -1,6 +1,6 @@
 """When a direct handle solves on an earlier design's factors: the amortized rule.
 
-Preconditioner reuse for the direct solver (ADR 0094, amended): a serial
+Preconditioner reuse for the direct solver: a serial
 direct handle (PARDISO, or sparse Cholesky without MKL) of an operator equal
 to its transpose, held in the plan pool, keeps design j's factors and solves
 the next design's matrix by GMRES, left-preconditioned by them, instead of
@@ -8,7 +8,7 @@ refactorizing. A step is one refactorization call on the handle with new
 values, and every solve until the next (the same values again are no step).
 In a sweep each frequency base carries its own rule.
 
-`AmortizedRule` decides each step from counts, never a clock (ADR 0119), in
+`AmortizedRule` decides each step from counts, never a clock, in
 units of one direct-solve column: the plan's model ratio ``R`` (one
 refactorization over one direct column, `pardiso_ratio` or `cholesky_ratio`,
 taken once per plan after its analysis) and the GMRES iterations of reused
@@ -29,7 +29,7 @@ fixed thread count (``kappa`` and PARDISO's parallel ordering depend on it).
 
 A refactorized step names its `AmortizedRule.reason`: the first condition
 of `next_step` that failed, or ``capped`` for a reused step a capped
-column turned into a refactorized one (ADR 0120).
+column turned into a refactorized one.
 """
 
 from __future__ import annotations

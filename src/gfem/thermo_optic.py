@@ -2,11 +2,11 @@ r"""Temperature in optics: the first-order thermo-optic shift of a wave port's m
 
 A material's ``thermo_optic_coefficient`` (:math:`dn/dT`, 1/K) acts on the
 temperature rise (the temperature above the source-free temperature, a
-`gfem.SteadyThermalResult.rise`) about the index of the material's ``eps_r``
-(ADR 0160). Two ways read it:
+`gfem.SteadyThermalResult.rise`) about the index of the material's ``eps_r``.
+Two ways read it:
 
 - `thermo_optic_shift`: the change of a wave port mode's effective index to
-  first order in the rise, from one mode solve (ADR 0174):
+  first order in the rise, from one mode solve:
 
   .. math::
 
@@ -23,7 +23,7 @@ temperature rise (the temperature above the source-free temperature, a
 
 The rise may live on another mesh than the optical model (a window around
 one core, in the same coordinates): each element's rise is then the
-quadrature mean of the rise at points located in its mesh (ADR 0176).
+quadrature mean of the rise at points located in its mesh.
 """
 
 from __future__ import annotations
@@ -237,8 +237,8 @@ class ThermoOpticShift:
     r"""The first-order thermo-optic shift of a wave port's mode.
 
     The mode is solved once on the optical model and held constant: the
-    shift is exactly linear in the rise and in the thermo-optic coefficient
-    (ADR 0174), and differentiable with respect to both (through the rise,
+    shift is exactly linear in the rise and in the thermo-optic coefficient,
+    and differentiable with respect to both (through the rise,
     the thermal inputs).
 
     Attributes:
@@ -501,7 +501,7 @@ def with_temperature_rise(model: Model, rise: Field) -> Model:
     return model.replace(materials=materials)
 
 
-# --- route phase (ADR 0183) -------------------------------------------------
+# --- route phase -------------------------------------------------
 
 #: Window points located per block of stations: bounds the location's memory.
 _POINTS_PER_BLOCK = 2_000_000
@@ -778,10 +778,10 @@ register_fields(_RouteTrace, ("_weights",))
 class RoutePhase:
     """The thermo-optic phase along named routes through a 3D rise.
 
-    One optical window's first-order weights (its mode held constant, ADR
-    0174) swept along each route: exactly linear in the rise and in the
+    One optical window's first-order weights (its mode held constant)
+    swept along each route: exactly linear in the rise and in the
     window's thermo-optic coefficient, and differentiable with respect to
-    both (ADR 0183).
+    both.
 
     Attributes:
         port: The window's wave port.
@@ -907,7 +907,7 @@ def route_phase(
 
     Solves the mode of an optical window (a model of one isolated guide's
     cross-section with a wave port, ``port``) once, and sweeps its first-order
-    weights along each route (ADR 0183)::
+    weights along each route::
 
         phase = int sum_t k0 w_t (dn/dT)_t rise_t(s) ds
 

@@ -1,4 +1,4 @@
-"""Thermal rules: heat conduction on the thermal domain (ADRs 0167, 0168, 0172).
+"""Thermal rules: heat conduction on the thermal domain.
 
 The unknown is the absolute temperature T in kelvin, in real H1 of the
 solve order on the thermal domain (every tetrahedron minus the volumes
@@ -13,7 +13,7 @@ value per tetrahedron), ``int_S flux v`` per `gfem.HeatFlux` and
 values (a Dirichlet value wins on nodes shared with another condition).
 Insulated surfaces need no term.
 
-The temperature splits as T = T0 + rise (ADR 0172): T0 is the source-free
+The temperature splits as T = T0 + rise: T0 is the source-free
 temperature (boundary data only) and the rise is linear in the problem's
 heat sources, with homogeneous boundary data. Both are right-hand sides of
 one prepared operator; T0 needs no solve when every fixed temperature and
@@ -85,7 +85,7 @@ from gfem.thermal import Trace, _FieldTrace, _tet_volumes
 
 __all__ = ["Loads", "SteadyThermalRule", "ThermalRule", "TransientThermalRule"]
 
-#: The linear solver for ``linear_solver="auto"`` (ADR 0184).
+#: The linear solver for ``linear_solver="auto"``.
 DEFAULT_SOLVER: Kind = "direct"
 #: The physics key of the model's solve domains and exclusions.
 _PHYSICS = "thermal"
@@ -95,7 +95,7 @@ def source_density(problem: SteadyThermal | TransientThermal, mesh: Mesh) -> jax
     """The summed power density of the problem's heat sources per tetrahedron.
 
     W/m^3 in `gfem.Mesh.tetrahedra` order, in JAX: linear in each source's
-    amount (ADR 0178). Zero without a source.
+    amount. Zero without a source.
     """
     density = jnp.zeros(len(mesh.tetrahedra), jnp.float64)
     for source in problem.heat:
@@ -105,7 +105,7 @@ def source_density(problem: SteadyThermal | TransientThermal, mesh: Mesh) -> jax
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Loads:
-    """A thermal problem as `gfem._adjoint.solve_vjp` sees it (ADR 0178).
+    """A thermal problem as `gfem._adjoint.solve_vjp` sees it.
 
     Its differentiable leaves only: every heat source resolved in JAX to one
     summed power density per tetrahedron, and for a transient the waveform
@@ -129,7 +129,7 @@ class Loads:
 register_fields(Loads, ("density", "scales", "traces"))
 
 #: The input kinds of the sources alone: their gradient needs the step
-#: adjoints only, so no trajectory is kept for them (ADR 0179).
+#: adjoints only, so no trajectory is kept for them.
 SOURCE_KINDS = frozenset({LOAD_KIND, ("problem", ".scales")})
 
 
@@ -200,7 +200,7 @@ def _region_of(mesh: Mesh, tets: np.ndarray) -> str:
 
 
 def _check_sinks(model: Model, active: np.ndarray, sinks: tuple[str, ...]) -> None:
-    """Every connected piece of the thermal domain needs a heat sink (ADR 0168).
+    """Every connected piece of the thermal domain needs a heat sink.
 
     Raises:
         ValueError: A piece touches no `FixedTemperature` or `Convection`
@@ -324,7 +324,7 @@ class ThermalRule:
             ValueError: A heat source heats an excluded region.
         """
         if options.device != "cpu":
-            # no GPU smoke test has run for thermal problems (ADR 0184)
+            # no GPU smoke test has run for thermal problems
             raise NotImplementedError(
                 f"{type(problem).__name__} has no GPU path in this version of "
                 f"gfem (device={options.device!r}): solve with device='cpu'."
@@ -638,7 +638,7 @@ class ThermalRule:
         *,
         loose: np.ndarray | None = None,
     ) -> FieldPair:
-        """The T0 pair ``(-lambda0, T0)`` of a cotangent ``load`` on T0 (ADR 0172).
+        """The T0 pair ``(-lambda0, T0)`` of a cotangent ``load`` on T0.
 
         ``A0 T0 = boundary load`` on the free DOFs, for the steady operator
         A0 (with the heat capacity of a sinkless part, ``loose``, where the
@@ -835,7 +835,7 @@ class Stepper:
     """One time step of ``C u' + K u = s(t) F`` on one prepared operator.
 
     The handle holds ``A = K + mass C`` (file units), with ``mass`` chosen
-    so that every stage of the scheme solves with ``A`` (ADR 0164):
+    so that every stage of the scheme solves with ``A``:
 
     - TR-BDF2 (``mass = 2 / (gamma dt)``): the trapezoid stage to
       ``t_n + gamma dt``, ``A u_g = (2 mass C - A) u_n + 2 F_n``, then the
@@ -937,7 +937,7 @@ class TransientThermalRule(ThermalRule):
             _check_trace(model.mesh, self.regions, name, trace)
 
     def _check_loose(self, model: Model) -> None:
-        """A sinkless part needs a uniform start and no heat flux (spec assumption).
+        """A sinkless part needs a uniform start and no heat flux.
 
         Raises:
             ValueError: No ``initial_temperature``, or a `gfem.HeatFlux` on
@@ -1012,7 +1012,7 @@ class TransientThermalRule(ThermalRule):
     def _trajectory(self, handle: Handle, ndof: int) -> str:
         """``"none"``, ``"full"`` or ``"checkpoints"``: what a kept forward stores.
 
-        Decided once, before stepping (ADR 0179): no trajectory when only the
+        Decided once, before stepping: no trajectory when only the
         sources are wanted (their gradient reads the step adjoints alone);
         else every state when the handle and the trajectory fit
         ``retain_memory`` alone (the test the cache stores with); else a
@@ -1143,7 +1143,7 @@ class TransientThermalRule(ThermalRule):
         """``K``, ``C`` (file units, SciPy CSR) and the free DOFs of the scheme.
 
         ``C u' + K u = F`` is the semi-discrete system the schemes step;
-        verification reads its first eigenvalue (ADR 0166).
+        verification reads its first eigenvalue.
         """
         with task_manager(self.options.threads):
             space, built = self._space(model)
@@ -1231,7 +1231,7 @@ class TransientThermalRule(ThermalRule):
         """``(n, u_n, stage_n, u_n+1)`` for n = steps - 1 down to 0.
 
         From the kept trajectory, or segment by segment from its checkpoints
-        (one forward step per state, ADR 0165). TR-BDF2's stage is
+        (one forward step per state). TR-BDF2's stage is
         recomputed; a theta step has none.
         """
         steps = self.spec.steps
@@ -1260,7 +1260,7 @@ class TransientThermalRule(ThermalRule):
     def backward(  # noqa: PLR0912, PLR0915
         self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
     ) -> list[FieldPair | LoadField | Integrated]:
-        """The discrete adjoint of the exact scheme, run backwards (ADR 0165).
+        """The discrete adjoint of the exact scheme, run backwards.
 
         One reverse step per forward step on the forward's stepping operator
         ``A = K + m C`` (symmetric): TR-BDF2 solves ``A mu2 = ubar`` and ``A
