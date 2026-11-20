@@ -16,10 +16,11 @@ meshes in the mesh stores. They run only in the reference campaigns
 ``python -m benchmarks reference microstrip --from RUNDIR..`` extrapolates the
 fetched records, per frequency and S entry (complex), at order 2:
 
-- rate :math:`\alpha = \log_2(|S_0 - S_1| / |S_1 - S_2|)`, the maximum over entries
-  per frequency, clipped to [1, 4];
+- rate :math:`\alpha = \log_2(|S_0 - S_1| / |S_1 - S_2|)`, fitted per frequency and
+  per entry, clipped to [1, 4] (ADR 0454: a slow entry such as S21 is not
+  extrapolated at a faster entry's rate);
 - value :math:`S_\mathrm{ref} = S_2 + (S_2 - S_1) / (2^\alpha - 1)`;
-- bound, the largest of the rate sensitivity
+- bound per frequency, the largest over entries of the rate sensitivity
   :math:`|S_\mathrm{ref}(\alpha) - S_\mathrm{ref}(\alpha \pm 0.5)|`, the distance to
   L1 p3, and the BDDC-vs-direct difference on L1 p2.
 
@@ -108,15 +109,20 @@ def _richardson(s1: complex, s2: complex, alpha: float) -> complex:
     return s2 + (s2 - s1) / (2.0**alpha - 1.0)
 
 
+Rates = list[list[float]]
+"""A rate per frequency, per entry (the layout of :data:`Matrix`)."""
+
+
 @dataclass
 class Extrapolation:
-    """Rate, value and bound per frequency."""
+    """Rate per frequency and entry; value, bound terms and bound per frequency."""
 
-    raw_alpha: list[float]
-    alpha: list[float]
+    raw_alpha: Rates
+    alpha: Rates
     values: Matrix
     terms: dict[str, list[float]]
-    """``rate``, ``finer_order``, ``algebraic``: each bound term per frequency."""
+    """``rate``, ``finer_order``, ``algebraic``: each bound term per frequency, the
+    maximum over entries."""
     bound_per_frequency: list[float]
     bound: float
 
@@ -130,22 +136,22 @@ def extrapolate(
     l1_iter: Matrix | None = None,
     l1_direct: Matrix | None = None,
 ) -> Extrapolation:
-    """Richardson over the three p2 levels, with the three bound terms."""
+    """Richardson over the three p2 levels per entry, with the three bound terms."""
     raw, alpha, values = [], [], []
     terms: dict[str, list[float]] = {"rate": [], "finer_order": [], "algebraic": []}
     for f, (r0, r1, r2) in enumerate(zip(l0, l1, l2, strict=True)):
-        a_raw = max(
+        a_raw = [
             _rate(abs(a - b), abs(b - c)) for a, b, c in zip(r0, r1, r2, strict=True)
-        )
-        a = _clip(a_raw)
-        ref = [_richardson(b, c, a) for b, c in zip(r1, r2, strict=True)]
+        ]
+        a = [_clip(x) for x in a_raw]
+        ref = [_richardson(b, c, x) for b, c, x in zip(r1, r2, a, strict=True)]
         raw.append(a_raw)
         alpha.append(a)
         values.append(ref)
         terms["rate"].append(
             max(
-                abs(_richardson(b, c, a + s) - v)
-                for b, c, v in zip(r1, r2, ref, strict=True)
+                abs(_richardson(b, c, x + s) - v)
+                for b, c, x, v in zip(r1, r2, a, ref, strict=True)
                 for s in (-RATE_SENSITIVITY, RATE_SENSITIVITY)
             )
         )
@@ -173,14 +179,15 @@ def pilot_rate(l0: Matrix, l1: Matrix, finer: Matrix) -> list[float]:
     ]
 
 
-def definition_offset(d0: Matrix, d1: Matrix, alpha: Sequence[float]) -> dict:
+def definition_offset(d0: Matrix, d1: Matrix, alpha: Rates) -> dict:
     r"""The part of a cross-code difference that does not shrink with h.
 
     :math:`\delta = d_1 + (d_1 - d_0) / (2^\alpha - 1)` per entry, with
-    :math:`d_L = S_\mathrm{other} - S_\mathrm{gfem}` on level L at p2.
+    :math:`d_L = S_\mathrm{other} - S_\mathrm{gfem}` on level L at p2 and
+    :math:`\alpha` the entry's rate.
     """
     per_f = [
-        max(abs(_richardson(a, b, alpha[f])) for a, b in zip(r0, r1, strict=True))
+        max(abs(_richardson(a, b, x)) for a, b, x in zip(r0, r1, alpha[f], strict=True))
         for f, (r0, r1) in enumerate(zip(d0, d1, strict=True))
     ]
     return {
@@ -323,7 +330,7 @@ class Ladder:
                 out[str(order)] = _max_abs(found.s, values)
         return out
 
-    def cross_checks(self, alpha: Sequence[float]) -> list[dict[str, Any]]:
+    def cross_checks(self, alpha: Rates) -> list[dict[str, Any]]:
         """The definition offset per Palace version with L0 and L1 at p2."""
         gfem0, gfem1 = self._get("L0_p2"), self._get("L1_p2")
         out = []
@@ -390,8 +397,12 @@ def _pairs(values: Matrix, entries: Sequence[str]) -> dict[str, list[list[float]
     }
 
 
-def _finite(values: Iterable[float]) -> list[float | None]:
-    return [v if math.isfinite(v) else None for v in values]
+def _by_entry(rates: Rates, entries: Sequence[str]) -> dict[str, list[float | None]]:
+    """Rates as entry -> per frequency (the layout of ``values``); inf as null."""
+    return {
+        e: [row[i] if math.isfinite(row[i]) else None for row in rates]
+        for i, e in enumerate(entries)
+    }
 
 
 def write_from(rundirs: Sequence[Path], case_dir: Path) -> int:
@@ -463,14 +474,17 @@ def write_from(rundirs: Sequence[Path], case_dir: Path) -> int:
         campaigns=sorted(facts["campaigns"]),
         records=ladder.records(),
         rate={
-            "raw": _finite(ext.raw_alpha),
-            "alpha": ext.alpha,
+            "raw": _by_entry(ext.raw_alpha, entries),
+            "alpha": _by_entry(ext.alpha, entries),
             "clip": list(RATE_CLIP),
             "terms": ext.terms,
         },
     )
     path = case_dir / refdoc.FILE
-    changed = refdoc.write(path, doc)
+    try:
+        changed = refdoc.write(path, doc)
+    except ValueError as error:
+        raise LadderError(str(error)) from error
     print(f"{path}: {'written' if changed else 'unchanged'} ({doc['id']})")
     print(f"bound {ext.bound:.3g}; same-mesh error per order {floors}")
     if not met:

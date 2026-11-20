@@ -12,7 +12,9 @@ and ``dof`` per order: the DOF guard's pins), ``method`` (``closed_form``,
 ``provenance``, ``runs``, ``cost_core_h``.
 
 A file is replaced only with a new identity (``id``, ``computed_utc``): rewriting an
-unchanged reference keeps its bytes, so ``reference CASE`` is idempotent.
+unchanged reference keeps its bytes, so ``reference CASE`` is idempotent, and a
+changed one is refused while it would keep the old ``id`` (the id names the archive
+and the records scored against it; rerun on a later day or at a new commit).
 """
 
 from __future__ import annotations
@@ -159,7 +161,7 @@ def write(path: Path, doc: dict[str, Any]) -> bool:
     """Write ``doc`` to ``path``; return False when the file already says the same.
 
     An unchanged reference keeps its identity and its bytes; a changed one is
-    written with the identity of ``doc``.
+    written with the identity of ``doc``, which must not keep the old ``id``.
     """
     found = problems(doc)
     if found:
@@ -172,5 +174,10 @@ def write(path: Path, doc: dict[str, Any]) -> bool:
         doc["runs"] = runs
         if path.read_text() == dumps(doc):
             return False
+    elif old is not None and old.get("id") == doc["id"]:
+        raise ValueError(
+            f"{path}: the changed reference keeps the id {doc['id']} of the one it "
+            "replaces; rerun on a later day or at a new commit"
+        )
     path.write_text(dumps(doc))
     return True
