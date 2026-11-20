@@ -298,6 +298,7 @@ def test_empty_gap_set_takes_the_seed_ritz_values(mesh):
     )
 
 
+@pytest.mark.bitwise
 def test_entry_records_a_failed_polish_with_a_zero_gap(mesh, monkeypatch):
     model = terminated_line(mesh, 1000.0)
     monkeypatch.setattr(eigen_rule, "polish", lambda _eop, mode, _gap, **_: mode)

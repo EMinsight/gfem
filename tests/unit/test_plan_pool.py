@@ -689,6 +689,10 @@ def _store(mesh):
     return store
 
 
+@pytest.mark.skipif(
+    not pardiso.pardiso_available(),
+    reason="only PARDISO releases factors; sparse Cholesky keeps them",
+)
 @pytest.mark.usefixtures("plans")  # an empty cache before and after
 def test_fixed_parts_stay_kept_across_steps_just_over_budget(path):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")

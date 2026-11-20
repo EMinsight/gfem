@@ -16,6 +16,7 @@ from gfem._engine.electrostatic import ElectrostaticRule
 from gfem._engine.mesh import to_ngsolve
 from gfem._linalg import Operator, report
 from gfem._linalg.direct import DirectHandle
+from gfem._linalg.pardiso import pardiso_available
 from gfem._linalg.pieces import KeptParts
 
 
@@ -471,7 +472,19 @@ def helmholtz(tmp_path_factory):
     return at, B
 
 
-@pytest.mark.parametrize("room", [True, False])
+@pytest.mark.parametrize(
+    "room",
+    [
+        True,
+        pytest.param(
+            False,
+            marks=pytest.mark.skipif(
+                not pardiso_available(),
+                reason="only PARDISO releases factors; sparse Cholesky keeps them",
+            ),
+        ),
+    ],
+)
 def test_the_next_step_names_a_release_for_retain_memory(
     machine, monkeypatch, caplog, helmholtz, room
 ):

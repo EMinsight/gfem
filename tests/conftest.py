@@ -16,6 +16,10 @@ Tests in tests/mpi are skipped where mpi4py or the launcher is missing.
 
 A test that sets NGSolve's thread count, or enters its own `ngs.TaskManager()`, uses
 the `ngsolve_threads` fixture, which then sets the count `threads=None` would use.
+
+A test marked ``bitwise`` compares direct solves to the last bit. PARDISO repeats
+its bits on any thread count; NGSolve's sparse Cholesky, the fallback without the
+mkl extra, only on one thread, so without PARDISO the test runs on one.
 """
 
 import os
@@ -100,6 +104,17 @@ def _skip_without_mpi(items: list[pytest.Item]) -> None:
     if reason is not None:
         for item in marked:
             item.add_marker(pytest.mark.skip(reason=reason))
+
+
+@pytest.fixture(autouse=True)
+def _bitwise_threads(request, monkeypatch):
+    """One solve thread for a ``bitwise`` test where PARDISO is missing."""
+    if request.node.get_closest_marker("bitwise") is None:
+        return
+    from gfem._linalg.pardiso import pardiso_available
+
+    if not pardiso_available():
+        monkeypatch.setenv("NGS_NUM_THREADS", "1")
 
 
 @pytest.fixture

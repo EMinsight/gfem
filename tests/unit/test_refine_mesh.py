@@ -723,6 +723,7 @@ def test_refine_mesh_runs_under_grad_with_concrete_inputs(coax):
         assert float(jax.grad(objective)(2.0)) == pytest.approx(plain)
 
 
+@pytest.mark.bitwise
 def test_refine_mesh_frees_consumed_solve_entries_before_its_first_solve(coax):
     from gfem._engine.cache import ENTRIES
 

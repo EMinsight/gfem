@@ -52,6 +52,7 @@ def _static(law):
     return float(np.real(complex(law(0))))
 
 
+@pytest.mark.bitwise
 def test_a_law_solves_as_a_material_at_its_static_permittivity(stack):
     reference = stack.with_material("nitride", gfem.Material(eps_r=_static(LAW)))
     got = gfem.solve(stack, PROBLEM, options=OPTIONS)

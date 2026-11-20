@@ -371,6 +371,7 @@ def _drop_design_guesses() -> None:
         disc.drop_guesses()
 
 
+@pytest.mark.bitwise
 def test_kept_fields_with_wave_ports_run_under_jit(plate_mesh):
     fill = gfem.MaterialField.uniform("fill", gfem.Material(eps_r=EPS))
     problem = gfem.Driven(F[:2], excite="p1", keep_fields=F[1])

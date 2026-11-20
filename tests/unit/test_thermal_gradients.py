@@ -85,6 +85,7 @@ def _k(mesh):
     return jnp.asarray(rng.uniform(1.0, 2.0, len(mesh.tetrahedra)))
 
 
+@pytest.mark.bitwise
 @pytest.mark.parametrize("scheme", ["tr_bdf2", "theta"])
 def test_the_checkpointed_sweep_equals_the_full_one(mesh, scheme, monkeypatch):
     options = gfem.SolverOptions(

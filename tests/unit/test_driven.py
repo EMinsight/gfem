@@ -281,6 +281,7 @@ CRYSTAL = gfem.Material(
 )
 
 
+@pytest.mark.bitwise
 def test_a_uniform_field_of_a_crystal_solves_like_the_crystal(mesh):
     # MaterialField.uniform holds the crystal's principal values on its axes:
     # the same tensors in every piece, the first-order absorbing side walls

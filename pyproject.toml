@@ -115,6 +115,7 @@ markers = [
   "mpi: launched under ranks from a one-process pytest, needs mpi4py and Open MPI; skipped without them (tests/mpi, deselected by default)",
   "petsc: needs complex petsc4py built as the PETSc and SLEPc recipe describes; skipped without it (run alone with -m petsc)",
   "slepc: needs slepc4py on that PETSc; skipped without it",
+  "bitwise: compares two direct solves to the last bit; one solve thread without PARDISO",
 ]
 pythonpath = ["tools", "tests", "."]  # "." imports the benchmarks package
 testpaths = ["tests"]

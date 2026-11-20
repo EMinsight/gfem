@@ -1007,6 +1007,7 @@ def test_conductivity_damps_the_line_exactly(mesh):
     np.testing.assert_allclose(complex(lossy.omega[0]), k * const.c, rtol=1e-10)
 
 
+@pytest.mark.bitwise
 def test_a_zero_conductivity_field_adds_no_damping(mesh):
     # a conductivity of zeros assembles no matrix: the cavity stays on the
     # undamped path, with the frequencies of the model without the field
