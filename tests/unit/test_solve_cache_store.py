@@ -21,6 +21,12 @@ ELECTROSTATIC = gfem.Electrostatic(terminals={"top": "top", "mid": "oxide__nitri
 OPTIONS = gfem.SolverOptions(order=1)
 ENV = {"gfem": gfem.__version__, "gfem_code": "0" * 64, "ngsolve": "x"}
 
+# Windows ignores POSIX directory modes, and root bypasses them.
+needs_permissions = pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="directory modes are not enforced here",
+)
+
 
 @pytest.fixture(scope="module")
 def stack(tmp_path_factory):
@@ -181,7 +187,7 @@ def test_a_missing_entry_is_a_silent_miss(stack, tmp_path):
     assert Store(tmp_path).read("0" * 64, model) is None
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permissions")
+@needs_permissions
 def test_a_read_only_cache_still_reads_and_warns_on_write(stack, tmp_path):
     model, result, key = stack
     store = _filled(stack, tmp_path)
@@ -351,7 +357,7 @@ def test_a_result_the_store_cannot_write_warns_and_stores_nothing(stack, tmp_pat
     assert list((tmp_path / ".tmp").iterdir()) == []
 
 
-@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permissions")
+@needs_permissions
 def test_a_damaged_entry_that_cannot_be_removed_is_reported_as_left(stack, tmp_path):
     model, _, key = stack
     store = _filled(stack, tmp_path)
