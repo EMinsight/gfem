@@ -5,14 +5,37 @@ process and every rank waits for its apply. NGSolve lets a registered ``coarsety
 take its place, so with the MPI PETSc stack `CoarseMumps` factors the wirebasket
 across ranks, with no change to BDDC: iterations and S stay those of the rank 0 route.
 
-PT-Scotch's fill grows with the ranks it orders on (r10M: 556 M entries at 104 k
-wirebasket DOF per rank, 4520 M at 52 k; r10M_void_split, 4 threads per rank: 7.3 G on
-64 ranks, 85 G on 180), so ``PCTELESCOPE`` in front of MUMPS runs it on at most one
-rank per `DOFS_PER_RANK` and `MAX_RANKS` ranks, without building a communicator by hand.
+``PCTELESCOPE`` in front of MUMPS runs the factorization on every factor-th rank,
+without building a communicator by hand. `rule` picks that factor and the ordering
+from counts known at the set-up: the coarse DOFs, the ranks, the columns the set-up
+is expected to serve, and whether this process has set up the same pattern before.
+It reads counts only, so every rank and every rerun of a script picks the same; none
+of it is an option, since S does not change with it beyond round-off.
 
-MUMPS factors it by :math:`L D L^T` where the operator equals its transpose and by LU
-otherwise (a Bloch phase). NGSolve hands the creator only the matrix and the free
-DOFs, so each symmetry has its own registered ``coarsetype`` (`coarse_type`).
+- PT-Scotch by default. Its fill grows with the ranks it orders on (r10M: 556 M
+  entries at 104 k wirebasket DOF per rank, 4520 M at 52 k), so it takes at most
+  one rank per `DOFS_PER_RANK`. With an even count per node MUMPS orders on the
+  largest power of two of them: 56 ranks order on 32, but 64 order on 64, where
+  the fill jumps. Hence `MAX_RANKS`.
+- Sequential METIS on every `METIS_EVERY`-th rank, at least
+  `METIS_DOFS_PER_RANK` DOFs each, when that gives more ranks than PT-Scotch may
+  take. Its fill does not depend on the ranks, so its apply keeps getting faster
+  with nodes, but its analysis runs on one process and costs several PT-Scotch
+  set-ups. It is taken only where that is paid back: a set-up expected to serve
+  `METIS_COLUMNS` columns or more, or a pattern this process has set up before (a
+  design loop, a sweep's rebuilds, an eigen reshift), whose analysis the pool keeps.
+
+METIS's ``NITER=1`` takes about 15 % off that serial analysis for 2 % more fill.
+PETSc has no option for it and MUMPS reads it only from the file named by
+``MUMPS_CONFIG_FILE``, so a METIS set-up names the packaged `MUMPS_CONFIG` there,
+under `_petsc.LOCK` and for that set-up only (`mumps_config`): nothing is written at
+run time, and MUMPS factors set up elsewhere in the process never read it. A value
+the user set is left as it is.
+
+MUMPS factors the coarse problem by :math:`L D L^T` where the operator equals its
+transpose and by LU otherwise (a Bloch phase). NGSolve hands the creator only the
+matrix and the free DOFs, so each symmetry has its own registered ``coarsetype``
+(`coarse_type`).
 
 MUMPS's analysis of the coarse problem costs up to several of its numeric
 factorizations, and BDDC is set up again on the same wirebasket at every design, at a
@@ -21,7 +44,16 @@ this process, keyed by communicator, symmetry and wirebasket pattern, and a late
 set-up on that key writes its values into the pooled matrix and refactorizes
 numerically only. A pooled factorization belongs to at most one live set-up, and one
 whose factorization failed is never pooled: PETSc refuses a numeric factorization
-after a failed one. The solve cache counts the pool against ``retain_memory``.
+after a failed one. A pooled factorization holds its factors, so the solve cache
+counts the pool against ``retain_memory``; ``retain_memory=0`` empties it at the end
+of each solve, and ``gfem.release_memory()`` and the process's exit free it.
+
+petsc4py cannot reach the KSP behind ``PCTELESCOPE``, so `_petsc.telescope_ksp`
+reads it through ``libpetsc``. Its MUMPS factor gives the bytes the pool and the
+solve cache count, and the failure every rank agrees on: only a workspace error is
+retried, with a larger ICNTL(14), while a singular operator (at a resonance) raises
+at once. Where that symbol cannot be loaded the factor counts 0 bytes, and every
+failure is retried, since it may be the workspace.
 """
 
 from __future__ import annotations

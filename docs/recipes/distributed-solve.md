@@ -170,7 +170,9 @@ during the solve and does not read `OMP_NUM_THREADS`. Under ranks, the
 default of `retain_memory` compares the memory held by a node's ranks with
 half of the smallest node's memory. `retain_memory` evicts only what the
 solving communicator holds, so solves on a second communicator
-({term}`rank copies`, `comm.Split`) can keep memory past it.
+({term}`rank copies`, `comm.Split`) can keep memory past it. Under ranks,
+BDDC's coarse factorizations kept between solves count against
+`retain_memory`; with `retain_memory=0` every solve sets them up anew.
 
 Measured times for each layout, up to 108.6 M DOF on 32 nodes, are on
 {doc}`../project/scaling`.
