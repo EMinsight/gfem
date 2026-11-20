@@ -64,14 +64,19 @@ def test_a_rotated_line_gives_the_same_s_parameters(lines):
     np.testing.assert_allclose(s_turned, s, rtol=0, atol=2e-13 * np.abs(s).max())
 
 
-@pytest.mark.bitwise  # its damped modes: one and the same run to run on one thread only
 def test_a_rotated_line_gives_the_same_eigenfrequency(lines):
     line, turned = lines
-    problem = gfem.Eigenmode(target=15e9)
-    omega = complex(gfem.solve(line, problem, options=OPTIONS).omega[0])
-    omega_turned = complex(gfem.solve(turned, problem, options=OPTIONS).omega[0])
-    # measured on MN5: 7.2e-16 relative (a strongly damped mode: the side
-    # walls absorb the line's field, Im omega > Re omega)
+    # Strongly damped modes (the side walls absorb the line's field, Im omega >
+    # Re omega) lie at similar distances from the target: one requested mode
+    # can be either of two (macOS arm64). Three modes, matched by value.
+    problem = gfem.Eigenmode(target=15e9, n_modes=3)
+    omegas = np.asarray(gfem.solve(line, problem, options=OPTIONS).omega, complex)
+    turned_omegas = np.asarray(
+        gfem.solve(turned, problem, options=OPTIONS).omega, complex
+    )
+    omega = omegas[0]
+    omega_turned = turned_omegas[np.argmin(abs(turned_omegas - omega))]
+    # measured on MN5: 7.2e-16 relative
     np.testing.assert_allclose(omega_turned, omega, rtol=1e-14)
 
 
