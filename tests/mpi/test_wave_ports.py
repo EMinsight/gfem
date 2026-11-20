@@ -143,17 +143,13 @@ def _reciprocity(case, directory):
     ]
 
 
-def test_a_lossless_port_is_reciprocal_with_the_scale_of_one_process(tmp_path):
-    one = _reciprocity("lossless", tmp_path)
-    scales, *_ = on_ranks(_reciprocity, "lossless", tmp_path, ranks=4)
+@pytest.mark.parametrize("case", ["lossless", "lossy"])
+def test_a_lone_wave_port_is_reciprocal_with_the_scale_of_one_process(tmp_path, case):
+    # lossy too: the biorthogonal functional is parallel to the load (ADR 0214)
+    one = _reciprocity(case, tmp_path)
+    scales, *_ = on_ranks(_reciprocity, case, tmp_path, ranks=4)
     assert None not in one
     np.testing.assert_allclose(scales, one, rtol=1e-12, atol=0)
-
-
-def test_a_lossy_port_is_not_reciprocal_on_any_rank(tmp_path):
-    assert _reciprocity("lossy", tmp_path) == [None, None]
-    scales, *_ = on_ranks(_reciprocity, "lossy", tmp_path, ranks=4)
-    assert scales == [None, None]
 
 
 def _update_residual(case, directory):
