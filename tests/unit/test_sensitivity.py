@@ -30,7 +30,7 @@ def solved(tmp_path_factory):
     problem = gfem.Electrostatic(terminals={"mid": "oxide__nitride"}, ground="bottom")
     rule = ElectrostaticRule(model, problem, gfem.SolverOptions(order=2))
     outputs, entry = rule.forward(model, keep=True)
-    space, built = rule._space(model)
+    space, built, _ = rule._space(model)
     # phi^T K phi in m (K assembled in file units, um)
     energy = outputs["capacitance"][0, 0] / scipy.constants.epsilon_0
     yield model, entry, space, em_region(model, built), eps, energy, rule
