@@ -346,6 +346,38 @@ def test_an_eigenmode_solve_passes_with_auto_and_slepc(tmp_path):
             assert _mpi.refuse(line, problem, options) is None
 
 
+MODE_FIELD_OUTPUTS = ("q_port", "participation", "bulk", "principal", "sheet")
+
+
+@pytest.mark.parametrize("name", [*MODE_FIELD_OUTPUTS, "e_field"])
+def test_a_mode_field_cotangent_above_one_rank_raises_its_key(name, tmp_path):
+    from gfem._eigen.rule import EigenmodeRule
+
+    line = cases.layered_line(tmp_path)
+    rule = EigenmodeRule(line, gfem.Eigenmode(target=5e9), gfem.SolverOptions())
+    # the check reads the communicator's size, the output and the wanted kinds:
+    # replicated values, so every rank raises it, and nothing communicates
+    rule.comm = Stub(4)
+    eps = frozenset({("material", "sub", "eps_r")})
+    with pytest.raises(gfem.DistributedUnsupportedError, match="COMM_SELF") as caught:
+        rule.nondifferentiable_output(name, eps)
+    assert caught.value.feature == "mode_field_gradient"
+    assert "stop_gradient" in str(caught.value)
+
+
+def test_the_eigenfrequencies_still_differentiate_above_one_rank(tmp_path):
+    from gfem._eigen.rule import EigenmodeRule
+
+    line = cases.layered_line(tmp_path)
+    rule = EigenmodeRule(line, gfem.Eigenmode(target=5e9), gfem.SolverOptions())
+    rule.comm = Stub(4)
+    eps = frozenset({("material", "sub", "eps_r")})
+    assert rule.nondifferentiable_output("omega", eps) is None
+    assert rule.nondifferentiable_output("cluster", eps) is None
+    # the backward error has no derivative anywhere: one process's reason
+    assert "backward error" in rule.nondifferentiable_output("error", eps)
+
+
 @pytest.mark.parametrize(
     ("key", "wave_vector"), [("periodic", None), ("bloch", periodic_cases.C1_K)]
 )

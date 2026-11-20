@@ -1468,9 +1468,18 @@ class EigenmodeRule:
         respect to a permittivity law's parameter. What depends on the modes
         (a cluster, a near pair, a port without voltage) raises in the
         backward.
+
+        Raises:
+            DistributedUnsupportedError: Above one rank, any mode-field output
+                (key ``mode_field_gradient``). It reads replicated values
+                only, so every rank raises it at the backward's trace.
         """
         if name in ("omega", "cluster"):
             return None
+        if name in _MODE_FIELD and self.comm is not None:
+            # replicated values only, so every rank raises it at the backward's
+            # trace (ADR 0072 amendment, decision 08 Raised-by-01 item 4)
+            _mpi.refuse_feature("mode_field_gradient")
         public = _MODE_FIELD.get(name, name)
         head = f"gfem cannot differentiate the eigenmode output {public!r}"
         opt_out = (
