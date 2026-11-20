@@ -216,8 +216,9 @@ def interface_participation(
     """
     from gfem.results import EigenmodeResult
 
-    fields = getattr(modes, "e_fields", ())
-    refuse_entry(fields[0].mesh if fields else None, "interface_participation")
+    fields = tuple(getattr(modes, "e_fields", ()))
+    mesh = getattr(fields[0], "mesh", None) if fields else None
+    refuse_entry(mesh, "interface_participation")
     if not isinstance(modes, EigenmodeResult):
         raise TypeError(
             "interface_participation needs a gfem.EigenmodeResult, got "
