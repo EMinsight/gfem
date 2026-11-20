@@ -15,7 +15,7 @@ import pytest
 
 from benchmarks.__main__ import main
 from benchmarks.harness import matrix
-from benchmarks.report import views
+from benchmarks.report import harness_revision, views
 
 BENCH = Path(__file__).parent / "data" / "bench"
 FIXTURE = BENCH / "campaign"
@@ -379,10 +379,12 @@ def test_error_items_carry_the_reference_bound_when_a_cell_is_unresolved(tmp_pat
 def test_report_records_the_harness_revision(tmp_path, capsys):
     out = _report(tmp_path, str(_store(tmp_path)), "--no-figures")
     stored = json.loads((out / "report.json").read_text())
-    # the tree's commit: its COMMIT file when shipped (no .git), else git HEAD
+    # the tree's commit: its COMMIT file when shipped (no .git), else git HEAD,
+    # marked dirty when the checkout has changes
     head = matrix.source_commit()[0]
     assert len(head) == 40
-    assert stored["harness_revision"] == head
+    here = stored["harness_revision"]
+    assert here in (head, f"{head}-dirty")
     # a report rendered at another revision still checks: the field is provenance
     stored["harness_revision"] = "0" * 40
     (out / "report.json").write_text(
@@ -391,7 +393,41 @@ def test_report_records_the_harness_revision(tmp_path, capsys):
     assert main(["report", "--check", str(out)]) == 0
     printed = capsys.readouterr().out
     assert "unchanged" in printed
-    assert f"rendered at harness {'0' * 40}; regenerated at {head}" in printed
+    assert f"rendered at harness {'0' * 40}; regenerated at {here}" in printed
+
+
+def _git(root, *args):
+    subprocess.run(
+        [shutil.which("git") or "git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_harness_revision_marks_a_checkout_with_changes_dirty(tmp_path):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("a\n")
+    _git(tmp_path, "add", "a.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.org",
+        "commit",
+        "-qm",
+        "a",
+    )
+    head = matrix.source_commit(tmp_path)[0]
+    assert harness_revision(tmp_path) == head
+    (tmp_path / "a.txt").write_text("b\n")
+    assert harness_revision(tmp_path) == f"{head}-dirty"
+
+
+def test_harness_revision_of_a_shipped_tree_is_its_commit_file(tmp_path):
+    (tmp_path / "COMMIT").write_text("c" * 40 + "\n")
+    (tmp_path / "extra.txt").write_text("not tracked anywhere\n")
+    assert harness_revision(tmp_path) == "c" * 40
 
 
 # --- refusals ---------------------------------------------------------------------
