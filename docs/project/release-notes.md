@@ -655,25 +655,25 @@ Solvers, memory and ranks:
 - **BDDC's coarse problem across ranks.** With `bddc_gmres` on the
   {term}`MPI PETSc stack`, MUMPS factors BDDC's coarse problem on a share of
   the ranks. gfem picks the share and the ordering from the coarse problem's
-  size, the number of ranks, the right-hand sides the setup will serve, and
+  size, the number of ranks, the right-hand sides the set-up will serve, and
   whether the process has set up the same mesh before:
   - PT-Scotch orders it on at most one rank per 100 000 coarse DOFs and at
     most 56 ranks, where its fill stays low.
   - Sequential METIS orders it on every fourth rank, at least 30 000 coarse
     DOFs each, when that gives more ranks than PT-Scotch may take and the
-    setup will serve 6 right-hand sides or more, or repeats a mesh already set
+    set-up will serve 6 right-hand sides or more, or repeats a mesh already set
     up in this process (the designs of a loop, a sweep's rebuilds). Its
-    analysis costs more than PT-Scotch's, and only many right-hand sides or a
-    kept analysis repay it.
+    ordering and symbolic factorization cost more than PT-Scotch's, and only
+    many right-hand sides or keeping them repays it.
 
   The same script on the same ranks always takes the same route. It is not an
   option: S stays that of the coarse problem factored on one rank, to
   round-off. A singular coarse problem now raises at once; only a MUMPS
   workspace error is retried, with more workspace.
-- **Repeated solves keep BDDC's coarse analysis.** Under ranks, gfem keeps a
-  coarse factorization when its setup is freed, and a later setup on the same
+- **Repeated solves keep BDDC's coarse ordering.** Under ranks, gfem keeps a
+  coarse factorization when its set-up is freed, and a later set-up on the same
   mesh in the same process refactorizes it with new values instead of
-  analysing it again. A kept factorization holds its factors in memory, so
+  ordering it and factorizing it symbolically again. A kept factorization holds its factors in memory, so
   under ranks `retain_memory` now also bounds the coarse factorizations kept
   between solves: `retain_memory=0` keeps none past a solve, and
   `gfem.release_memory()` frees them.
