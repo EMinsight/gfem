@@ -1026,19 +1026,26 @@ def _one_process_coarse(monkeypatch, op, space, ordering=coarse.PT_SCOTCH, facto
 
     One rank owns every free DOF and agreements are its own values. A ``factor``
     above 1 puts the factorization behind ``PCTELESCOPE``, which keeps the one rank.
+    Without the MPI stack there is no parallel analysis to ask for.
     """
     PETSc = _petsc.require_petsc()
     monkeypatch.setattr(coarse, "FreeNumbering", lambda *_: _free_numbering(space))
     monkeypatch.setattr(coarse, "rule", lambda *_, **__: (ordering, factor))
-    if factor > 1:
-        options = coarse.options
+    options = coarse.options
 
-        def kept(*args, **kwargs):
-            pairs = dict(options(*args, **kwargs))
+    def one_rank(*args, **kwargs):
+        pairs = dict(options(*args, **kwargs))
+        if "pc_telescope_reduction_factor" in pairs:
             pairs["pc_telescope_reduction_factor"] = 1
+        if _petsc.has_mpi():
             return tuple(pairs.items())
+        return tuple(
+            (k, v)
+            for k, v in pairs.items()
+            if not (k.endswith(PARALLEL_ANALYSIS) and (k.endswith("29") or v == 2))
+        )
 
-        monkeypatch.setattr(coarse, "options", kept)
+    monkeypatch.setattr(coarse, "options", one_rank)
     for name in ("agree_any", "agree_all"):
         monkeypatch.setattr(coarse._mpi, name, lambda _, *, flag: flag)
     for name in ("agree_min", "agree_max"):
