@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from gfem import _mpi
+from gfem import _mpi, _pml
 from gfem._checks import is_staging, is_traced
 from gfem._domain import physics_of
 from gfem._floquet import floquet_ports
@@ -574,7 +574,8 @@ def error_estimate(result: Any, estimator: Estimator, *, model: Model) -> ErrorE
             permittivity law is zero at a driven frequency.
         MeshRefinementUnsupportedError: The estimator or the result has no
             estimate in this version of gfem (``feature`` names what): an
-            adaptive sweep, a periodic model, another result type, a result
+            adaptive sweep, a periodic model, a driven or eigenmode result on
+            a model with a `gfem.PML`, another result type, a result
             solved at order 1, a quantity entry with no verified estimate (an S
             entry read at a lumped port with no resistance, whose row is
             undefined; an S entry or a driven objective beside an impedance or
@@ -732,7 +733,8 @@ def refine_mesh(
             frequency.
         MeshRefinementUnsupportedError: The problem or the estimator has no
             mesh refinement (``feature`` names what): an adaptive sweep, a port
-            mode problem, a periodic model or a Bloch wave vector,
+            mode problem, a periodic model or a Bloch wave vector, a driven or
+            eigenmode problem on a model with a `gfem.PML` (before any solve),
             ``options.order=1`` (the ``"fast"`` preset), a quantity entry with
             no verified estimate (an S entry read at a lumped port with no
             resistance, whose row is undefined; an S entry or a driven
@@ -2462,6 +2464,11 @@ def _check_problem(model: Model, problem: Any) -> None:
             "refine_mesh needs a gfem.Electrostatic, gfem.Driven or "
             f"gfem.Eigenmode problem, got {type(problem).__name__}."
         )
+    if model.pml is not None and isinstance(problem, (Driven, Eigenmode)):
+        # the electrostatic estimator reads the background the solve sees
+        raise _pml.refuse_estimate(
+            "gfem.refine_mesh", model.pml, type(problem).__name__
+        )
     if isinstance(problem, Driven) and problem.sweep == "adaptive":
         raise MeshRefinementUnsupportedError(
             "adaptive sweep",
@@ -3043,6 +3050,9 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         raise _unsupported_result(result, estimator)
     if any(field._comm is not None for field in _fields(result)):  # noqa: SLF001
         _mpi.refuse_feature("error_estimate")
+    if model.pml is not None and isinstance(result, (DrivenResult, EigenmodeResult)):
+        # the electrostatic estimator reads the background the solve sees
+        raise _pml.refuse_estimate(f"gfem.{type(estimator).__name__}", model.pml)
     if floquet_ports(model.ports):
         raise MeshRefinementUnsupportedError(
             "floquet port",

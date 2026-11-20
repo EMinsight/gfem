@@ -313,6 +313,7 @@ class PortModeRule:
             residual=jnp.asarray(outputs["residual"]),
             solved=jnp.asarray(outputs["solved"]),
             e_field=field,
+            pml=self._model.pml,
         )
 
     def _field(self) -> tuple[PortModeSpace, np.ndarray, np.ndarray]:

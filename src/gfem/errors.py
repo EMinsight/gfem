@@ -306,7 +306,8 @@ class MeshRefinementUnsupportedError(NotImplementedError):
 
     Attributes:
         feature: What has no path: ``"adaptive sweep"``, ``"port mode"``,
-            ``"periodic"``, ``"bloch"``, ``"floquet port"``, or an estimator
+            ``"periodic"``, ``"bloch"``, ``"floquet port"``,
+            ``"perfectly matched layer"``, or an estimator
             or problem type that this version of gfem cannot estimate yet.
     """
 

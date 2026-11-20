@@ -702,3 +702,187 @@ def test_a_thin_layer_warns(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error", gfem.ThinLayerWarning)
         _driven(model, (pml_cases.C0 / 49e-6,))
+
+
+# --- readers ------------------------------------------------------------------------
+
+
+def test_electric_energy_reads_the_physical_regions_only(tmp_path):
+    # the layer's tetrahedra hold the stretched field with the background
+    # permittivity: no energy, so no key, and the device's own unchanged
+    model = _line(tmp_path, gfem.PML("pml", target_reflection=1e-2))
+    field = _driven(model).e_field(pml_cases.F0)
+    got = gfem.electric_energy(field, model=model)
+    whole = gfem.electric_energy(field, model=model.replace(pml=None))
+    assert set(whole) == {"air", "pml"}
+    assert got == {"air": pytest.approx(whole["air"], rel=1e-14)}
+
+
+def _split_box(tmp_path, materials=None):
+    """The +x box with air and layer cut at z = 1/2 by "mid_air" and "mid_pml"."""
+
+    def volume(c):
+        half = "low" if c[2] < 0.5 else "high"
+        return f"{half}_air" if ((c > 0) & (c < 1)).all() else f"{half}_pml"
+
+    def surface(c):
+        if abs(c[2] - 0.5) < 1e-9 and 0 < c[1] < 1:
+            return "mid_air" if c[0] < 1 else "mid_pml"
+        return ""
+
+    mesh = _box(tmp_path, ("+x",), volume=volume, surface=surface)
+    if materials is None:
+        crystal = gfem.Material(eps_r=(2.0, 3.0, 4.0))
+        materials = {
+            "low_air": gfem.Material(eps_r=2.0),
+            "high_air": AIR,
+            "low_pml": crystal,
+            "high_pml": AIR,
+        }
+    return gfem.Model(mesh, materials=materials, pml=gfem.PML(("low_pml", "high_pml")))
+
+
+def _modes(model):
+    problem = gfem.Eigenmode(n_modes=2, target=1.0e14)
+    return gfem.solve(model, problem, options=DIRECT)
+
+
+def test_a_mode_s_participations_count_the_physical_regions_only(tmp_path):
+    model = _split_box(tmp_path)
+    modes = _modes(model)
+    assert modes.pml == gfem.PML(("low_pml", "high_pml"))
+    assert set(modes.bulk_participation) == {"low_air", "high_air"}
+    # the anisotropic background of the layer gets no principal split
+    assert modes.principal_participation == {}
+    total = sum(np.asarray(p) for p in modes.bulk_participation.values())
+    np.testing.assert_allclose(total, 1.0, rtol=1e-12)
+    # 1 J over the physical regions: the energy reader agrees
+    for k, field in enumerate(modes.e_fields):
+        energy = gfem.electric_energy(field, model=model)
+        assert set(energy) == {"low_air", "high_air"}
+        assert 2 * float(sum(energy.values())) == pytest.approx(1.0, rel=1e-10), k
+
+
+def test_an_eigenmode_result_carries_its_layer_through_a_result_file(tmp_path):
+    model = _split_box(tmp_path)
+    problem = gfem.Eigenmode(n_modes=1, target=1.0e14)
+    gfem.Job(model, problem, DIRECT).run(out=tmp_path / "out")
+    loaded = gfem.load_result(tmp_path / "out")
+    assert loaded.pml == model.pml
+    assert set(loaded.bulk_participation) == {"low_air", "high_air"}
+
+
+def test_a_port_mode_carries_its_layer_through_a_result_file(tmp_path):
+    model = _line(tmp_path, gfem.PML("pml"))
+    problem = gfem.Driven((pml_cases.F0,))
+    result = gfem.Job(model, problem, DIRECT).run(out=tmp_path / "out")
+    assert result.port_modes["p1"].pml == model.pml
+    assert gfem.load_result(tmp_path / "out").port_modes["p1"].pml == model.pml
+    alone = gfem.solve(model, gfem.PortMode("p1", (pml_cases.F0,)), options=DIRECT)
+    assert alone.pml == model.pml
+
+
+def test_a_result_without_a_layer_writes_no_layer_entry(tmp_path):
+    from gfem import _codec
+
+    result = gfem.EigenmodeResult(omega=np.array([1e10 + 1e6j]), error=np.array([0.0]))
+    context = _codec.Context(tmp_path)
+    doc = _codec.Encoder(context).encode(result)
+    assert "pml" not in json.dumps(doc)
+
+
+def test_interface_participation_drops_the_faces_in_the_layer(tmp_path):
+    modes = _modes(_split_box(tmp_path))
+    both = gfem.interface_participation(modes, ["mid_air", "mid_pml"], 1e-9, 4.0)
+    air = gfem.interface_participation(modes, "mid_air", 1e-9, 4.0)
+    assert np.all(np.asarray(air.participation) > 0)
+    np.testing.assert_allclose(both.participation, air.participation, rtol=1e-14)
+
+
+def test_interface_participation_refuses_a_surface_all_in_the_layer(tmp_path):
+    modes = _modes(_split_box(tmp_path))
+    with pytest.raises(
+        ValueError,
+        match=r"'mid_pml'.*every face.*perfectly matched layer \('low_pml', "
+        r"'high_pml'\).*physical regions",
+    ):
+        gfem.interface_participation(modes, "mid_pml", 1e-9, 4.0)
+
+
+def _refused(subject):
+    return pytest.raises(
+        gfem.MeshRefinementUnsupportedError,
+        match=rf"^{subject} has no path for a model with a perfectly matched "
+        r"layer \(regions '.*'\): its indicators weigh the layer with its "
+        r"background material.*gfem.Absorbing",
+    )
+
+
+@pytest.mark.parametrize(
+    ("estimator", "subject"),
+    [
+        (gfem.FieldEstimator(), "gfem.FieldEstimator"),
+        (gfem.QuantityEstimator(s=("p1", "p1")), "gfem.QuantityEstimator"),
+        (
+            gfem.QuantityEstimator(objective=lambda r, _: abs(r.s["p1", "p1"][0])),
+            "gfem.QuantityEstimator",
+        ),
+    ],
+)
+def test_driven_error_estimates_refuse_the_layer(tmp_path, estimator, subject):
+    model = _line(tmp_path, gfem.PML("pml"))
+    result = _driven(model)
+    with _refused(subject) as caught:
+        gfem.error_estimate(result, estimator, model=model)
+    assert caught.value.feature == "perfectly matched layer"
+
+
+@pytest.mark.parametrize(
+    ("estimator", "subject"),
+    [
+        (gfem.FieldEstimator(), "gfem.FieldEstimator"),
+        (gfem.QuantityEstimator(omega=0), "gfem.QuantityEstimator"),
+    ],
+)
+def test_eigenmode_error_estimates_refuse_the_layer(tmp_path, estimator, subject):
+    model = _split_box(tmp_path)
+    with _refused(subject):
+        gfem.error_estimate(_modes(model), estimator, model=model)
+
+
+@pytest.mark.parametrize(
+    "problem",
+    [gfem.Driven((pml_cases.F0,)), gfem.Eigenmode(n_modes=1, target=1.0e14)],
+    ids=["driven", "eigenmode"],
+)
+def test_refine_mesh_refuses_the_layer_before_any_solve(tmp_path, monkeypatch, problem):
+    from gfem import refinement
+
+    def no_solve(*_, **__):
+        raise AssertionError("solved")
+
+    monkeypatch.setattr(refinement, "solve", no_solve, raising=False)
+    model = _line(tmp_path, gfem.PML("pml"))
+    name = type(problem).__name__
+    with pytest.raises(
+        gfem.MeshRefinementUnsupportedError,
+        match=rf"^gfem.refine_mesh has no path for a gfem.{name} problem on a model "
+        r"with a perfectly matched layer \(regions 'pml'\)",
+    ):
+        gfem.refine_mesh(model, problem)
+
+
+def test_electrostatic_refinement_runs_on_a_layered_model(tmp_path):
+    # the electrostatic solve sees the background, and so does its estimator
+    model = _static_box(tmp_path, gfem.PML("pml"))
+    problem = gfem.Electrostatic(terminals={"t": "top"}, ground="bottom")
+    options = gfem.SolverOptions(order=2, linear_solver="direct")
+    # between the plates the potential is linear: met on the first mesh
+    refined = gfem.refine_mesh(
+        model, problem, tolerance=1e-4, max_cycles=1, options=options
+    )
+    assert refined.stop == "tolerance"
+    assert refined.model.pml == model.pml
+    result = gfem.solve(model, problem, options=options)
+    estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
+    assert np.isfinite(estimate.value)

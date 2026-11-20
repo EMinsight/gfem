@@ -40,7 +40,11 @@ from gfem._checks import optional_positive, static_float
 from gfem._materials import Material, MaterialField, PermittivityLaw
 from gfem._periodic import REL_TOL, Pairing
 from gfem._pytree import readonly
-from gfem.errors import RegionNotFoundError, ThinLayerWarning
+from gfem.errors import (
+    MeshRefinementUnsupportedError,
+    RegionNotFoundError,
+    ThinLayerWarning,
+)
 from gfem.mesh import LENGTH_UNITS, Mesh, _shortest_edges
 
 if TYPE_CHECKING:
@@ -611,6 +615,51 @@ def describe(layers: Layers, mesh: Mesh) -> list[str]:
         f"{s.label}: d = {_length(s.thickness, mesh)} ({', '.join(s.regions)})"
         for s in layers.sides
     ]
+
+
+# --- readers ---------------------------------------------------------------------
+
+
+def layer_tetrahedra(mesh: Mesh, pml: PML | None) -> np.ndarray | None:
+    """Per tetrahedron (gfem order), whether it lies in a layer region.
+
+    ``None`` without a layer. The energy readers zero these tetrahedra:
+    their element arrays hold the background material while the field
+    there is the stretched one, so the integral would depend on the
+    layer's thickness and target reflection, not on the device.
+    """
+    if pml is None:
+        return None
+    tags = [mesh.region(r).tag for r in pml.regions]
+    return np.isin(mesh.tetrahedron_tags, tags)
+
+
+def physical_regions(regions: Iterable[str], pml: PML | None) -> tuple[str, ...]:
+    """``regions`` without the layer regions, in their order."""
+    layer = set() if pml is None else set(pml.regions)
+    return tuple(r for r in regions if r not in layer)
+
+
+def refuse_estimate(
+    subject: str, pml: PML, problem: str | None = None
+) -> MeshRefinementUnsupportedError:
+    """The refusal of a wave estimator or refinement on a model with a layer.
+
+    Args:
+        subject: What refuses, e.g. ``"gfem.FieldEstimator"``.
+        pml: The model's layer.
+        problem: The problem type refined, e.g. ``"Driven"``, or ``None``.
+    """
+    what = "a model" if problem is None else f"a gfem.{problem} problem on a model"
+    return MeshRefinementUnsupportedError(
+        "perfectly matched layer",
+        f"{subject} has no path for {what} with a perfectly matched layer "
+        f"(regions {', '.join(map(repr, pml.regions))}): its indicators weigh "
+        "the layer with its background material, not the stretched one, so "
+        "they would mark the layer and its inner face. Refine the mesh in "
+        "your mesher, or refine the same device closed by gfem.Absorbing and "
+        "solve the refined mesh with the layer.",
+    )
 
 
 # --- the stretch of a solve ------------------------------------------------------
