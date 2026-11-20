@@ -84,7 +84,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
-from gfem import _petsc, _timing
+from gfem import _mpi, _petsc, _timing
 from gfem._boundaries import (
     FloquetPort,
     Impedance,
@@ -132,6 +132,7 @@ from gfem._engine.fields import fe_space
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped
 from gfem._linalg import Kind, ResolvedLinearSolver
+from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
 from gfem._sign import largest_entry
@@ -717,7 +718,7 @@ class EigenmodeRule:
             nev *= 2  # too few candidates near the target: look wider
         if bound is not None and len(modes) < n_modes:
             raise EigenmodeConvergenceError(self._seed_message(bound))
-        skipped = self._skipped(modes, failed, sigma)
+        skipped = self._skipped(modes, failed, sigma, layout=eop.layout)
         if len(modes) < n_modes or skipped:
             raise EigenmodeConvergenceError(
                 self._convergence_message(eop, modes, failed, skipped)
@@ -912,7 +913,8 @@ class EigenmodeRule:
         tolerance = self.options.eigen_tolerance
         seeds = [j for j in range(len(k)) if k[j].real > _STATIC * sigma]
         seeds.sort(key=lambda j: abs(k[j].real - sigma))
-        vectors = _orthonormal_multiples(k, vectors)
+        layout = op.layout
+        vectors = _orthonormal_multiples(k, vectors, layout=layout)
         accepted: list[Refined] = []
         failed: list[Refined] = []
         extra = None
@@ -924,9 +926,9 @@ class EigenmodeRule:
             # unless its part outside the span is more than round-off: then it
             # landed on a degenerate eigenspace whose twin the seed solve
             # missed, and that part, refined, is the twin (ticket 17)
-            if not _in_span(mode, accepted, window):
+            if not _in_span(mode, accepted, window, layout=layout):
                 return mode
-            rest = _outside(mode, accepted, window)
+            rest = _outside(mode, accepted, window, layout=layout)
             if rest is None:
                 return None
             twin = refine(
@@ -941,7 +943,7 @@ class EigenmodeRule:
                 twin.converged
                 and twin.k.real > _STATIC * sigma
                 and not self._longitudinal(op, twin)
-                and not _in_span(twin, accepted, window)
+                and not _in_span(twin, accepted, window, layout=layout)
             ):
                 return twin
             return None
@@ -965,7 +967,15 @@ class EigenmodeRule:
                 far
                 and not full
                 and (
-                    _lost(mode, seed, k, sigma, accepted=accepted, window=window)
+                    _lost(
+                        mode,
+                        seed,
+                        k,
+                        sigma,
+                        accepted=accepted,
+                        window=window,
+                        layout=layout,
+                    )
                     or self._longitudinal(op, mode)
                 )
             ):
@@ -1031,7 +1041,12 @@ class EigenmodeRule:
         return max(_DUPLICATE * self.options.eigen_tolerance, self.options.cluster_rtol)
 
     def _skipped(
-        self, accepted: list[Refined], failed: list[Refined], sigma: float
+        self,
+        accepted: list[Refined],
+        failed: list[Refined],
+        sigma: float,
+        *,
+        layout: DofLayout = ONE_PROCESS,
     ) -> list[Refined]:
         """The unconverged pairs that the accepted modes may have skipped.
 
@@ -1049,7 +1064,7 @@ class EigenmodeRule:
             for m in failed
             if m.error <= TRUSTED
             and abs(m.k.real - sigma) < reach
-            and not _in_span(m, accepted, window)
+            and not _in_span(m, accepted, window, layout=layout)
         ]
 
     def _convergence_message(
@@ -1148,7 +1163,8 @@ class EigenmodeRule:
         """The outputs, and the modes scaled to them on the solve space.
 
         ``e_field`` holds the modes expanded to the unpaired space on a
-        periodic model (``P x``).
+        periodic model (``P x``). A mode is a state, an energy form's or a
+        port's functional a load: their products are the layout's pairings.
         """
         built, space, order = op.built, op.space, op.order
         scale = built.scale
@@ -1181,7 +1197,7 @@ class EigenmodeRule:
                 x = x * (np.conj(largest) / abs(largest))
                 x[i] = abs(largest)
             else:
-                s = x @ divfree.energy(x)
+                s = _layout(op).pair(divfree.energy(x), x)
                 x = x * np.exp(-0.5j * np.angle(s))
                 if x[largest_entry(x)].real < 0:
                     x = -x
@@ -1191,7 +1207,9 @@ class EigenmodeRule:
                 0.5 * const.epsilon_0 * scale * np.real(density(x))
             )
             per_tet *= self._law_factor(model, mode.k, scale)
-            volts = {name: complex(v @ x) for name, v in voltage.items()}
+            volts = {
+                name: complex(_layout(op).pair(v, x)) for name, v in voltage.items()
+            }
             capacitors = sum(
                 0.5 * data.port.rlc[2] * abs(volts[name]) ** 2
                 for name, data in ports.items()
@@ -1256,10 +1274,11 @@ class EigenmodeRule:
         L_s)`` is its form over ``2 mu0 scale omega^2``.
         """
         out = np.zeros((len(self.kinetic), len(omega)))
+        layout = _layout(op)
         for s, piece in enumerate(sheet_inductors(op, self.kinetic)):
             applied = op.apply(piece, solve)
             for j in range(len(omega)):
-                form = float(np.real(np.conj(solve[:, j]) @ applied[:, j]))
+                form = float(np.real(layout.pair(applied[:, j], np.conj(solve[:, j]))))
                 out[s, j] = form / (
                     2 * const.mu_0 * op.built.scale * omega[j].real ** 2 * MODE_ENERGY
                 )
@@ -2012,11 +2031,14 @@ def _contraction(seed: complex, shift: complex, ritz: np.ndarray) -> float:
     return abs(seed - shift) / nearest if nearest > 0 else math.inf
 
 
-def _orthonormal_multiples(k: np.ndarray, vectors: np.ndarray) -> np.ndarray:
+def _orthonormal_multiples(
+    k: np.ndarray, vectors: np.ndarray, *, layout: DofLayout = ONE_PROCESS
+) -> np.ndarray:
     """``vectors`` with each multiple Ritz value's vectors orthonormalized.
 
     Any basis of a multiple eigenvalue's eigenspace is as good a set of
     seeds; an orthonormal one keeps its members apart under `_in_span`.
+    The vectors are states, orthonormal over ``layout``'s owned DOFs.
     """
     out = vectors
     done = np.zeros(len(k), dtype=bool)
@@ -2028,49 +2050,65 @@ def _orthonormal_multiples(k: np.ndarray, vectors: np.ndarray) -> np.ndarray:
         if len(members) > 1:
             if out is vectors:
                 out = vectors.copy()
-            out[:, members] = np.linalg.qr(vectors[:, members])[0]
+            out[:, members] = layout.state_qr(vectors[:, members])
     return out
 
 
-def _same(a: Refined, b: Refined, window: float) -> bool:
+def _same(
+    a: Refined, b: Refined, window: float, *, layout: DofLayout = ONE_PROCESS
+) -> bool:
+    """Whether ``a`` and ``b`` are one mode: near in ``k``, parallel in ``x``."""
     if abs(a.k - b.k) > window * abs(b.k):
         return False
-    overlap = abs(np.vdot(a.x, b.x)) / (np.linalg.norm(a.x) * np.linalg.norm(b.x))
+    norm = layout.state_norm
+    overlap = abs(layout.state_inner(a.x, b.x)) / (norm(a.x) * norm(b.x))
     return overlap > _OVERLAP
 
 
-def _in_span(mode: Refined, accepted: list[Refined], window: float) -> bool:
+def _in_span(
+    mode: Refined,
+    accepted: list[Refined],
+    window: float,
+    *,
+    layout: DofLayout = ONE_PROCESS,
+) -> bool:
     """Whether ``mode`` is a combination of accepted modes: a duplicate.
 
     The norm of its projection on the span of the accepted modes within
     ``window`` (relative) of its ``k`` exceeds `_OVERLAP` of its own. Against
     the span, not each mode: any vector of a degenerate cluster's eigenspace
     is a duplicate, also one at 45 degrees from two accepted members.
+    The modes are states, their products ``layout``'s.
     """
     near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
     if not near:
         return False
-    basis = np.linalg.qr(np.stack(near, axis=1))[0]
-    inside = np.linalg.norm(basis.conj().T @ mode.x)
-    return bool(inside > _OVERLAP * np.linalg.norm(mode.x))
+    basis = layout.state_qr(np.stack(near, axis=1))
+    inside = np.linalg.norm(layout.state_gram(basis, mode.x))
+    return bool(inside > _OVERLAP * layout.state_norm(mode.x))
 
 
 def _outside(
-    mode: Refined, accepted: list[Refined], window: float
+    mode: Refined,
+    accepted: list[Refined],
+    window: float,
+    *,
+    layout: DofLayout = ONE_PROCESS,
 ) -> np.ndarray | None:
     """``mode``'s part outside the span of the accepted modes near its ``k``.
 
     ``None`` when it is at most `_TWIN` of its norm: round-off of a duplicate
     of a simple mode (1e-11 to 2e-9 measured), not a twin (0.36 to 0.94 on the
-    lossy-wall mirrored cavity, quantum-metrics ticket 17).
+    lossy-wall mirrored cavity, quantum-metrics ticket 17). The modes are
+    states, their products ``layout``'s.
     """
     near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
     if not near:
         return None
-    basis = np.linalg.qr(np.stack(near, axis=1))[0]
-    rest = mode.x - basis @ (basis.conj().T @ mode.x)
-    norm = np.linalg.norm(rest)
-    if norm <= _TWIN * np.linalg.norm(mode.x):
+    basis = layout.state_qr(np.stack(near, axis=1))
+    rest = mode.x - basis @ layout.state_gram(basis, mode.x)
+    norm = layout.state_norm(rest)
+    if norm <= _TWIN * layout.state_norm(mode.x):
         return None
     return rest / norm
 
@@ -2083,6 +2121,7 @@ def _lost(
     *,
     accepted: list[Refined],
     window: float,
+    layout: DofLayout = ONE_PROCESS,
 ) -> bool:
     """Whether ``seed``'s refinement gave nothing to accept as its mode.
 
@@ -2097,7 +2136,7 @@ def _lost(
     if len(others) and np.min(np.abs(others - mode.k)) < abs(mode.k - seed):
         return True
     return any(
-        _same(mode, other, window) and not _close(seed, other.k, window)
+        _same(mode, other, window, layout=layout) and not _close(seed, other.k, window)
         for other in accepted
     )
 
@@ -2137,6 +2176,11 @@ def _check_low_frequency(
     )
 
 
+def _layout(op: DrivenOperator) -> DofLayout:
+    """The driven operator's layout: `ONE_PROCESS` on one process."""
+    return op.layout or ONE_PROCESS
+
+
 def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
     """``x -> Σ 1/2 ∫ w C_s |E_t|^2 dS`` of the capacitive sheets (J), or ``None``.
 
@@ -2150,9 +2194,13 @@ def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
     if not sheets:
         return None
     factor = 0.5 * const.epsilon_0 * op.built.scale
+    pair = _layout(op).pair
 
     def energy(x: np.ndarray) -> float:
-        return sum(factor * float(np.real(np.conj(x) @ op.apply(k, x))) for k in sheets)
+        # the load A x paired with the state conj(x)
+        return sum(
+            factor * float(np.real(pair(op.apply(k, x), np.conj(x)))) for k in sheets
+        )
 
     return energy
 
@@ -2161,7 +2209,9 @@ def _is_real(op: EigenOperator) -> bool:
     """Whether ``K`` and ``M`` are real: a lossless, undamped problem."""
     probe = np.where(op.free, np.random.default_rng(1).standard_normal(len(op.free)), 0)
     kx, _, mx = op.parts(probe.astype(complex))
-    return not kx.imag.any() and not mx.imag.any()
+    # a real matrix gives a real load on any rank's DOFs: every rank must agree
+    real = not kx.imag.any() and not mx.imag.any()
+    return _mpi.agree_all(op.layout.comm, flag=real)
 
 
 def _is_hermitian(op: EigenOperator) -> bool:

@@ -24,6 +24,7 @@ from gfem._eigen.refine import Refined
 from gfem._eigen.rule import EigenmodeRule, GapSet, isolated
 from gfem._engine import cache
 from gfem._linalg import direct
+from gfem._linalg.layout import ONE_PROCESS
 from gfem.errors import EigenmodeConvergenceError, LinearSolverConvergenceError
 
 
@@ -35,6 +36,7 @@ class Stub:
     """
 
     general = False
+    layout = ONE_PROCESS
 
     def __init__(self, lam, *, shift, exact=lambda _: True, seed=0):
         n = len(lam)
