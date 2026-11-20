@@ -180,3 +180,50 @@ def test_a_cross_check_runs_tighter_and_reads_direct(steps: Path) -> None:
     run, check = _lines(steps, "r8_B2_void_split")
     assert "--tol 1e-10" in run
     assert check == "check r8_B2_void_split r3_direct_32 bddc_gmres"
+
+
+@pytest.fixture
+def coarse_steps(tmp_path: Path) -> Path:
+    scale_steps.write_coarse(Path("/m"), tmp_path)
+    return tmp_path
+
+
+def test_the_second_set_runs_a_smoke_then_a_job_per_rung(coarse_steps: Path) -> None:
+    plan = _plan(coarse_steps)
+    assert {name: (row["row"], row["nodes"]) for name, row in plan.items()} == {
+        "coarse_smoke": ("0", "1"),
+        "coarse_32": ("1", "32"),
+        "coarse_16": ("2", "16"),
+        "coarse_8": ("2", "8"),
+    }
+    assert {row["qos"] for row in plan.values()} == {"gp_ehpc"}
+    assert [plan[f"coarse_{n}"]["time_min"] for n in ("smoke", 32, 16, 8)] == [
+        "20",
+        "58",
+        "60",
+        "60",
+    ]
+
+
+def test_a_rung_runs_the_loop_then_one_more_solve_then_the_smaller_mesh(
+    coarse_steps: Path,
+) -> None:
+    loop, again, small = _lines(coarse_steps, "coarse_32")
+    assert loop.split()[:6] == [
+        "c2_bddc_32_r1",
+        "28",
+        "4",
+        "/m/B2_void_split",
+        "bddc_gmres",
+        "50",
+    ]
+    assert "--repeat 1" in loop
+    assert "--solves 4" in loop
+    assert again.startswith("c2_bddc_32_r2 28 4 /m/B2_void_split bddc_gmres 50 ")
+    assert "--repeat 2" in again
+    assert "--solves" not in again
+    assert small.startswith("c4_bddc_32_r1 28 4 /m/r0.5_void_split bddc_gmres 50 ")
+    assert all("--mumps-print" in line for line in (loop, again, small))
+    (smoke,) = _lines(coarse_steps, "coarse_smoke")
+    assert smoke.startswith("c4_smoke_1 28 4 /m/r0.5_void_split bddc_gmres 50 ")
+    assert "--solves 2" in smoke

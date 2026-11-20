@@ -1,6 +1,7 @@
 """The scaling campaign's step files, one per Slurm job, and the plan that submits them.
 
     python scale_steps.py --meshes DIR --reference DIR/r10M_void --out STEPS
+    python scale_steps.py --set coarse --meshes DIR --out STEPS
 
 ``--meshes`` holds the six cases `scale_void.py` and `split_mesh.py` made. Each
 ``STEPS/NAME.txt`` is what ``scale_job.sbatch`` reads. ``STEPS/plan.tsv`` gives each
@@ -17,6 +18,11 @@ MS3 is repeat 1 of ``r2_bddc_32``. A row's ``*_more`` file or a second attempt i
 submitted only if the stop rule asks: `direct` strong at 16 and 32 nodes takes more
 repeats only when its first is faster than the rung below it. A ``r8_*`` file is a
 choice: run the one for the largest mesh both solvers finished.
+
+``--set coarse`` writes the second scaling set's instead (`write_coarse`): a one-node
+smoke, then one job per rung at 8, 16 and 32 nodes, the 32-node one first and alone.
+Each runs a 4-design loop on B2_void_split (its design 0 is the rung's first
+one-frequency repeat), one more one-frequency solve of it, and one of r0.5_void_split.
 """
 
 from __future__ import annotations
@@ -52,6 +58,15 @@ BENCH_LIMITS = {1: 15, 32: 5}
 RUN_OPTIONS = "--mumps-print"
 
 
+#: The second set's rungs, and each step's estimated wall in seconds, start included:
+#: the loop, the second B2_void_split repeat, r0.5_void_split.
+COARSE_RUNGS = {32: (1390, 720, 210), 16: (1500, 670, 210), 8: (1530, 660, 180)}
+#: Designs in a rung's loop, and in the smoke's.
+COARSE_SOLVES, SMOKE_SOLVES = 4, 2
+#: The smoke's limit, minutes: the first run of the new tools, so a fixed margin.
+SMOKE_LIMIT = 20
+
+
 class Plan:
     """The step files being written and the plan's lines."""
 
@@ -61,10 +76,18 @@ class Plan:
         self.lines = ["file\trow\tnodes\tqos\ttime_min"]
         out.mkdir(parents=True, exist_ok=True)
 
-    def job(self, name: str, row: int, nodes: int, limit: float, *steps: str) -> None:
+    def job(
+        self,
+        name: str,
+        row: int,
+        nodes: int,
+        limit: float,
+        *steps: str,
+        qos: str | None = None,
+    ) -> None:
         """One Slurm job's file, and its line of the plan."""
         (self.out / f"{name}.txt").write_text("\n".join(steps) + "\n")
-        qos = SERIAL_QOS if row <= 3 else OVERLAP_QOS
+        qos = qos or (SERIAL_QOS if row <= 3 else OVERLAP_QOS)
         self.lines.append(f"{name}\t{row}\t{nodes}\t{qos}\t{math.ceil(limit)}")
 
     def finish(self) -> None:
@@ -217,14 +240,58 @@ def write(meshes: Path, reference: Path, out: Path) -> None:
     plan.finish()
 
 
+def write_coarse(meshes: Path, out: Path) -> None:
+    """The second set's step files and plan: the smoke, then 32, 16 and 8 nodes.
+
+    The plan's rows are the order of submission: the smoke, the 32-node job alone,
+    then the 16- and 8-node jobs, which may overlap.
+    """
+    b2 = meshes / "B2_void_split"
+    r05 = meshes / "r0.5_void_split"
+    plan = Plan(out)
+    plan.job(
+        "coarse_smoke",
+        0,
+        1,
+        SMOKE_LIMIT,
+        _step(
+            "c4_smoke_1", r05, "bddc_gmres", extra=f"--repeat 1 --solves {SMOKE_SOLVES}"
+        ),
+        qos=OVERLAP_QOS,
+    )
+    for nodes, seconds in COARSE_RUNGS.items():
+        plan.job(
+            f"coarse_{nodes}",
+            1 if nodes == max(COARSE_RUNGS) else 2,
+            nodes,
+            1.5 * sum(seconds) / 60,
+            _step(
+                f"c2_bddc_{nodes}_r1",
+                b2,
+                "bddc_gmres",
+                extra=f"--repeat 1 --solves {COARSE_SOLVES}",
+            ),
+            _step(f"c2_bddc_{nodes}_r2", b2, "bddc_gmres", extra="--repeat 2"),
+            _step(f"c4_bddc_{nodes}_r1", r05, "bddc_gmres", extra="--repeat 1"),
+            qos=OVERLAP_QOS,
+        )
+    plan.finish()
+
+
 def main() -> None:
     """Parse the directories and write."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--meshes", type=Path, required=True)
-    parser.add_argument("--reference", type=Path, required=True)
+    parser.add_argument("--reference", type=Path)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--set", choices=("campaign", "coarse"), default="campaign")
     args = parser.parse_args()
-    write(args.meshes, args.reference, args.out)
+    if args.set == "coarse":
+        write_coarse(args.meshes, args.out)
+    elif args.reference is None:
+        parser.error("--reference is required for the campaign")
+    else:
+        write(args.meshes, args.reference, args.out)
 
 
 if __name__ == "__main__":
