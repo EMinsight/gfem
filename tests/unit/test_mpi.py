@@ -346,6 +346,40 @@ def test_an_eigenmode_solve_passes_with_auto_and_slepc(tmp_path):
             assert _mpi.refuse(line, problem, options) is None
 
 
+MODE_FIELD_OUTPUTS = ("q_port", "participation", "bulk", "principal", "sheet")
+
+
+@pytest.mark.parametrize("name", [*MODE_FIELD_OUTPUTS, "e_field"])
+def test_a_mode_field_cotangent_above_one_rank_raises_its_key(name, tmp_path):
+    from gfem._eigen.rule import EigenmodeRule
+
+    line = cases.layered_line(tmp_path)
+    rule = EigenmodeRule(line, gfem.Eigenmode(target=5e9), gfem.SolverOptions())
+    # the check reads the communicator's size, the output and the wanted kinds:
+    # replicated values, so every rank raises it, and nothing communicates
+    rule.comm = Stub(4)
+    eps = frozenset({("material", "sub", "eps_r")})
+    with pytest.raises(gfem.DistributedUnsupportedError, match="COMM_SELF") as caught:
+        rule.nondifferentiable_output(name, eps)
+    assert caught.value.feature == "mode_field_gradient"
+    assert "stop_gradient" in str(caught.value)
+
+
+def test_the_eigenfrequencies_still_differentiate_above_one_rank(tmp_path):
+    from gfem._eigen.rule import EigenmodeRule
+
+    line = cases.layered_line(tmp_path)
+    rule = EigenmodeRule(line, gfem.Eigenmode(target=5e9), gfem.SolverOptions())
+    rule.comm = Stub(4)
+    eps = frozenset({("material", "sub", "eps_r")})
+    assert rule.nondifferentiable_output("omega", eps) is None
+    assert rule.nondifferentiable_output("cluster", eps) is None
+    # the backward error has no derivative anywhere: one process's reason
+    reason = rule.nondifferentiable_output("error", eps)
+    assert reason is not None
+    assert "backward error" in reason
+
+
 @pytest.mark.parametrize(
     ("key", "wave_vector"), [("periodic", None), ("bloch", periodic_cases.C1_K)]
 )
@@ -398,12 +432,19 @@ SHARED_REFUSALS = {
 }
 
 
+def _problem(key, directory):
+    """``(model, problem)`` of a refused case, or of an electrostatic solve."""
+    if key == "electrostatic":
+        return mpi_cases.stack(directory), mpi_cases.ELECTROSTATIC
+    return mpi_cases.refused(key, directory)[:2]
+
+
 @pytest.mark.parametrize("problem_key", ["electrostatic", "arpack"])
 @pytest.mark.parametrize("key", SHARED_REFUSALS)
 def test_the_shared_refusals_hold_for_every_problem(
     key, problem_key, tmp_path, monkeypatch
 ):
-    model, problem, _ = mpi_cases.refused(problem_key, tmp_path)
+    model, problem = _problem(problem_key, tmp_path)
     use_mpi(monkeypatch, fake_mpi())
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.solve(model, problem, options=SHARED_REFUSALS[key], comm=Stub(4))
@@ -417,6 +458,21 @@ def test_a_refused_physics_raises_its_own_key_before_the_shared_ones(key, tmp_pa
         with pytest.raises(gfem.DistributedUnsupportedError) as caught:
             _mpi.refuse(model, problem, options)
         assert caught.value.feature == mpi_cases.feature(key)
+
+
+@pytest.mark.parametrize("solver", ["auto", "direct", "bddc_gmres", "petsc"])
+def test_an_electrostatic_solve_has_a_distributed_path(solver, tmp_path):
+    options = gfem.SolverOptions(order=2, linear_solver=solver)
+    _mpi.refuse(mpi_cases.stack(tmp_path), mpi_cases.ELECTROSTATIC, options)
+    assert "electrostatic" not in _mpi._REFUSALS
+
+
+def test_an_electrostatic_solve_on_a_periodic_model_is_refused(tmp_path):
+    model, _, options = mpi_cases.refused("periodic", tmp_path)
+    problem = gfem.Electrostatic(terminals={"a": "z_max"}, ground="z_min")
+    with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+        _mpi.refuse(model, problem, options)
+    assert caught.value.feature == "periodic"
 
 
 def test_element_mean_has_region_means_text():

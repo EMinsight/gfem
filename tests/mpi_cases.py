@@ -20,6 +20,8 @@ FREQUENCY = 5e9
 
 #: Two terminals of `stack`, which `cases.stack` names by its layers.
 TERMINALS = {"top": "top", "mid": "oxide__nitride"}
+#: The electrostatic problem of `stack`: two terminals, the bottom grounded.
+ELECTROSTATIC = gfem.Electrostatic(terminals=TERMINALS, ground="bottom")
 
 
 def stack(directory: Path) -> gfem.Model:
@@ -51,8 +53,6 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
             options = gfem.SolverOptions(linear_solver="direct", eigen_solver="arpack")
             problem = gfem.Eigenmode(target=FREQUENCY, n_modes=1)
             return _line(directory), problem, options
-        case "electrostatic":
-            return _line(directory), gfem.Electrostatic(terminals=TERMINALS), direct
         case "thermal":
             return stack(directory), gfem.SteadyThermal(), direct
         case "thermal_transient":
@@ -93,7 +93,6 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
 KEYS = (
     "adaptive_sweep",
     "arpack",
-    "electrostatic",
     "thermal",
     "thermal_transient",
     "dc_conduction",
@@ -109,8 +108,8 @@ KEYS = (
 
 
 #: What a call other than `gfem.solve` refuses (a method after a solve,
-#: `gfem.error_estimate` or `gfem.refine_mesh`); `tests/mpi` raises each one on
-#: every rank.
+#: `gfem.error_estimate`, `gfem.refine_mesh`, or the backward of an eigenmode
+#: mode-field output); `tests/mpi` raises each one on every rank.
 METHOD_KEYS = (
     "field_export",
     "load_result_fields",
@@ -120,6 +119,7 @@ METHOD_KEYS = (
     "electric_energy",
     "error_estimate",
     "mesh_refinement",
+    "mode_field_gradient",
 )
 #: The refusal keys no public call reaches, so no page lists them.
 GUARD_KEYS: tuple[str, ...] = ()

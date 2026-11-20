@@ -938,7 +938,6 @@ def links_gradient_errors(row: dict) -> bool:
 REFUSAL_LABELS = {
     "adaptive_sweep": '`Driven(sweep="adaptive")`, with or without `samples`',
     "arpack": '`Eigenmode` with `eigen_solver="arpack"`',
-    "electrostatic": "`Electrostatic`",
     "thermal": "`SteadyThermal`",
     "thermal_transient": "`TransientThermal`",
     "dc_conduction": "`DCConduction`",
@@ -961,6 +960,10 @@ REFUSAL_LABELS = {
     "electric_energy": "`electric_energy`",
     "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
+    "mode_field_gradient": (
+        "A gradient of an `Eigenmode` mode-field output (`q_port`, the "
+        "participations, `e_fields`)"
+    ),
 }
 
 
