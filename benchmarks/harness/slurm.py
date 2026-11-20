@@ -1158,19 +1158,20 @@ def limit_seconds(value: str) -> int:
 
 
 def with_time_limit(row: Mapping[str, str], value: str) -> dict[str, str]:
-    """A ``plan.tsv`` row at time limit ``value`` (``H:MM:SS``).
+    r"""A ``plan.tsv`` row at time limit ``value`` (``H:MM:SS``).
 
-    The QOS purpose and the estimate follow the new limit as ``plan`` sets them:
-    ``debug`` up to 2 h, else ``long``; estimate = limit / 1.5.
+    The QOS purpose and the estimate follow the new limit as ``plan`` sets them
+    (:func:`~benchmarks.harness.matrix.limit_rule`): ``debug`` up to 2 h, else
+    ``long``; the estimate is :math:`\text{limit} / 1.5`.
     """
     seconds = limit_seconds(value)
     hours, rest = divmod(seconds, 3600)
-    est_s = seconds / matrix.LIMIT_FACTOR
+    qos, est_s = matrix.limit_rule(seconds)
     nodes = int(row["nodes"])
     return {
         **row,
         "time_limit": f"{hours}:{rest // 60:02d}:{rest % 60:02d}",
-        "qos": "debug" if seconds <= matrix.DEBUG_LIMIT_S else "long",
+        "qos": qos,
         "est_s": f"{est_s:.0f}",
         "est_core_h": f"{nodes * matrix.NODE_CORES * est_s / 3600:.1f}",
     }

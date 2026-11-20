@@ -57,6 +57,17 @@ JOB_OVERHEAD_S = 420.0
 LIMIT_FACTOR = 1.5
 DEBUG_LIMIT_S = 2 * 3600.0
 """Jobs whose limit is at most this go to the ``debug`` QOS, others to ``long``."""
+
+
+def limit_rule(limit_s: float) -> tuple[str, float]:
+    r"""QOS purpose and estimate (seconds) of a job with time limit ``limit_s``.
+
+    ``debug`` up to 2 h, else ``long``; the estimate is
+    :math:`\text{limit} / 1.5`, the inverse of how ``plan`` sets the limit.
+    """
+    return ("debug" if limit_s <= DEBUG_LIMIT_S else "long"), limit_s / LIMIT_FACTOR
+
+
 STAGING_KEY = "staging"
 SAME_CODE_ERROR = "same_code_error"
 STEPS_SUFFIX = ".steps"
@@ -218,7 +229,7 @@ class Job:
     @property
     def qos(self) -> str:
         """QOS purpose by time limit: ``debug`` (at most 2 h) or ``long``."""
-        return "debug" if self.limit_s <= DEBUG_LIMIT_S else "long"
+        return limit_rule(self.limit_s)[0]
 
     @property
     def time_limit(self) -> str:

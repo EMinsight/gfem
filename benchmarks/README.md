@@ -466,8 +466,8 @@ Budget unit: billed core-hours, sacct $\mathrm{CPUTimeRAW} / 2 / 3600$ (one GPP 
    `RUNDIR/submitted.tsv`. `--dry-run` prints the budget line and the sbatch lines
    only. `--time H:MM:SS` replaces the planned time limit of every job submitted,
    for a rerun after a job ran out of time (its remaining lines `not_started` with
-   `job_time_left`): the estimate becomes the new limit / 1.5 and, without `--qos`,
-   the QOS follows the new limit (`debug` up to 2 h, else `long`). `submitted.tsv`
+   `job_time_left`): the estimate becomes $\text{limit} / 1.5$ for the new limit
+   and, without `--qos`, the QOS follows it (`debug` up to 2 h, else `long`). `submitted.tsv`
    records the limit and estimate used; `plan.tsv` keeps the planned ones. Each job
    writes its machine facts once (`jobs/<jobid>/`, including a
    `tools/scale_bench.py node` machine benchmark), then runs
@@ -541,8 +541,11 @@ convention `../gfem-bench-data/reports/<report-id>`.
   made with another matplotlib version, or with none importable, are regenerated but
   not compared ("figures regenerated with matplotlib X ... not compared"); tables and
   JSON must still match. `report.json` records the harness commit that rendered it
-  (`harness_revision`); `--check` keeps the stored one and prints "rendered at harness
-  X; regenerated at Y" when the checking tree differs.
+  (`harness_revision`, `-dirty` when the checkout had changes); `--check` keeps the
+  stored one and prints "rendered at harness X; regenerated at Y" when the checking
+  tree differs. It also records the reference families read per case
+  (`reference_families`: the case and its `[reference] case` sibling), and
+  `--check` reuses that map rather than the checking tree's case files.
 
 Sections: gates and failures, then per case the structural block, error against work
 time, phase bars, memory, accuracy, layouts and a cross-solver snapshot (per budget,

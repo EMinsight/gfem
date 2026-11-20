@@ -11,19 +11,24 @@ library only.
 names (relative to ``DIR``) into a temporary directory and compares bytes. Figures
 made with another matplotlib version, or with none importable, are not compared;
 tables and JSON must still match exactly. ``report.json`` names the harness commit
-that rendered it (``harness_revision``); ``--check`` keeps the stored one and says
-when it differs from the checking tree's.
+that rendered it (``harness_revision``, ``-dirty`` when the checkout had changes);
+``--check`` keeps the stored one and says when it differs from the checking tree's.
+``report.json`` also records the reference families read per case
+(``reference_families``, from the case files' ``[reference]`` key); ``--check``
+reuses that map instead of the checking tree's case files.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from benchmarks.harness import matrix
 from benchmarks.report import load, markdown, views
 from benchmarks.report.load import ReportError
 
@@ -41,14 +46,29 @@ def matplotlib_version() -> str | None:
     return str(mpl.__version__)
 
 
-def harness_revision() -> str | None:
-    """The commit of the harness tree running now, else None."""
-    from benchmarks.harness import matrix
+def harness_revision(root: Path = matrix.ROOT) -> str | None:
+    """The commit of the harness tree ``root``, else None.
 
+    A git checkout with changes (``git status --porcelain`` not empty) gets
+    ``-dirty`` appended; a shipped tree (``COMMIT`` file, no ``.git``) is clean by
+    construction.
+    """
     try:
-        return matrix.source_commit()[0]
+        commit = matrix.source_commit(root)[0]
     except matrix.PlanError:
         return None
+    if not (root / ".git").exists():
+        return commit
+    try:
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return commit
+    return f"{commit}-dirty" if status.strip() else commit
 
 
 def _dumps(data: Any) -> str:
@@ -62,12 +82,18 @@ def build(
     *,
     matplotlib: str | None,
     revision: str | None = None,
+    families: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[dict[str, Any], load.Inputs]:
-    """Load and check the inputs; the report as it would be written to ``out``."""
+    """Load and check the inputs; the report as it would be written to ``out``.
+
+    ``families`` is a stored report's reference-family map; without it the map
+    comes from the case files of this tree.
+    """
     inputs = load.load(
         directories,
         allow_mixed=bool(flags.get("allow_mixed")),
         rescore=flags.get("rescore") or {},
+        families=families,
     )
     root = Path(os.path.relpath(inputs.root, Path(out).resolve())).as_posix()
     report = views.build(
@@ -139,7 +165,12 @@ def check(directory: Path) -> tuple[bool, list[str]]:
     if rendered_at != here:
         messages.append(f"rendered at harness {rendered_at}; regenerated at {here}")
     report, inputs = build(
-        dirs, directory, flags, matplotlib=made_with, revision=rendered_at
+        dirs,
+        directory,
+        flags,
+        matplotlib=made_with,
+        revision=rendered_at,
+        families=stored.get("reference_families"),
     )
     with tempfile.TemporaryDirectory(prefix="bench-report-") as tmp:
         fresh = Path(tmp)

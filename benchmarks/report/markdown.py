@@ -849,7 +849,7 @@ def render(r: Mapping[str, Any]) -> str:
         ref = _reference(case)
         out += [*ref, ""] if ref else []
         out += [*_structural(case), ""]
-        for block in case["budgets"]:
+        for block in views.budget_views(case):
             view = {**case, **block, "name": views.budget_title(case, block)}
             out += [f"### {_budget_heading(case, block)}", ""]
             out += _error_cost(view, "####") + _time(view, "####")

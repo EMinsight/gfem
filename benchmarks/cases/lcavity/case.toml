@@ -28,7 +28,7 @@ n_modes = 1
 modes = 1
 
 # Plan estimate hints, seconds per run, per (solver, layout) at every single-node
-# core budget of the campaign series (ADR 0458): built by the campaign's hint model
+# core budget of the campaign series (ADR 0460): built by the campaign's hint model
 # (smoke c16 step times, per-kind serial fraction, 1.3 margin; scale cells partly
 # guessed until the dress rehearsal replaces them).
 [est_s]

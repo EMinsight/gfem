@@ -69,6 +69,8 @@ class Inputs:
     files: dict[str, str]
     """Relative path -> sha256 of every input."""
     local_only: bool = False
+    families: dict[str, list[str]] = field(default_factory=dict)
+    """Case -> the reference families read for it (sorted)."""
 
     def manifest(self) -> str:
         """``inputs.sha256``: ``sha256  relpath`` per input, sorted by path."""
@@ -183,8 +185,14 @@ def load(
     *,
     allow_mixed: bool = False,
     rescore: Mapping[str, str] | None = None,
+    families: Mapping[str, Sequence[str]] | None = None,
 ) -> Inputs:
-    """Read and check every input of a report over ``directories``."""
+    """Read and check every input of a report over ``directories``.
+
+    ``families`` (case -> reference families, as a stored ``report.json`` records
+    them) replaces :func:`reference_families` for the cases it names, so a check
+    does not depend on the case files of the checking tree.
+    """
     if not directories:
         raise ReportError("no campaign given")
     roots = {store_root(d) for d in directories}
@@ -213,12 +221,23 @@ def load(
         )
     named = {r.case.reference.id for r in rows if r.case.reference is not None}
     named |= set((rescore or {}).values())
-    families = set().union(*(reference_families(c) for c in {r.run.case for r in rows}))
-    references = _references(root, families, named, files)
+    stored = families or {}
+    by_case = {
+        c: sorted(stored[c]) if c in stored else sorted(reference_families(c))
+        for c in sorted({r.run.case for r in rows})
+    }
+    references = _references(root, set().union(*by_case.values()), named, files)
     for case, rid in (rescore or {}).items():
         if rid not in references:
             raise ReportError(
                 f"--rescore {case}={rid}: no {REFERENCES}/{rid}/{REFERENCE_FILE} "
                 f"in the store {root}"
             )
-    return Inputs(root, campaigns, references, files, local_only=local == {True})
+    return Inputs(
+        root,
+        campaigns,
+        references,
+        files,
+        local_only=local == {True},
+        families=by_case,
+    )

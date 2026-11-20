@@ -43,12 +43,7 @@ from typing import Any, cast
 from benchmarks.adapters import ADAPTERS
 from benchmarks.harness import case as case_mod
 from benchmarks.harness import config, records, score
-from benchmarks.report.load import (
-    Inputs,
-    LoadedCampaign,
-    ReportError,
-    reference_families,
-)
+from benchmarks.report.load import Inputs, LoadedCampaign, ReportError
 
 SCHEMA = "suite-report/1"
 NOISY = 0.10
@@ -535,6 +530,14 @@ def _differences(
     return out
 
 
+def _largest_bound(reference: Mapping[str, Any] | None) -> float | None:
+    """The largest scalar bound over the reference's quantities, else None."""
+    quantities = (reference or {}).get("quantities") or {}
+    bounds = [q.get("bound") for q in quantities.values()]
+    bounds = [b for b in bounds if isinstance(b, (int, float))]
+    return max(bounds) if bounds else None
+
+
 def _floors(
     reference: Mapping[str, Any] | None,
 ) -> tuple[dict[str, dict[str, Any]], float | None]:
@@ -546,9 +549,7 @@ def _floors(
     """
     if reference is None:
         return {}, None
-    bounds = [q.get("bound") for q in (reference.get("quantities") or {}).values()]
-    bounds = [b for b in bounds if isinstance(b, (int, float))]
-    bound = max(bounds) if bounds else None
+    bound = _largest_bound(reference)
     floors = {}
     for k, v in sorted((reference.get("same_mesh_error") or {}).items()):
         f = num(v)
@@ -579,7 +580,7 @@ def _at_floor(
         devs = [abs(r["error"] - f) / f for r in mine]
         out[order] = {
             "n": len(mine),
-            "at_floor": sum(abs(r["error"] - f) <= AT_FLOOR * f for r in mine),
+            "at_floor": sum(d <= AT_FLOOR for d in devs),
             "largest_deviation": num(max(devs)),
             "off": [
                 {
@@ -590,7 +591,7 @@ def _at_floor(
                     "deviation": num(d),
                 }
                 for r, d in zip(mine, devs, strict=True)
-                if abs(r["error"] - f) > AT_FLOOR * f
+                if d > AT_FLOOR
             ],
         }
     return out
@@ -754,9 +755,7 @@ def _item_bounds(
 ) -> list[float | None]:
     """The reference bound at each item: per frequency where the reference has it."""
     quantities = (reference or {}).get("quantities") or {}
-    scalars = [q.get("bound") for q in quantities.values()]
-    scalars = [b for b in scalars if isinstance(b, (int, float))]
-    fallback = num(max(scalars)) if scalars else None
+    fallback = num(_largest_bound(reference))
     per: list[tuple[float, float]] = []
     if kind != "eigen":
         for q in quantities.values():
@@ -930,7 +929,7 @@ def _reference_block(case: str, rows, inputs: Inputs) -> dict[str, Any]:
             r.case.reference.sha256 for r in rows if r.case.reference is not None
         }
         block["sha256_matches"] = named_sha == {ref.sha256}
-    families = reference_families(case)
+    families = set(inputs.families.get(case, ()))
     newer = [
         (x.doc.get("computed_utc") or "", x_id)
         for x_id, x in inputs.references.items()
@@ -1063,6 +1062,11 @@ def _partition(rows: Sequence[records.SuiteRecord]) -> list[dict[str, Any]]:
     return out
 
 
+def _kind(rows: Sequence[records.SuiteRecord]) -> str:
+    """``eigen`` when a passing record has eigenfrequencies, else ``driven``."""
+    return "eigen" if any("f_hz" in r.outputs for r in rows if passing(r)) else "driven"
+
+
 def _views(
     rows: Sequence[records.SuiteRecord],
     *,
@@ -1087,7 +1091,7 @@ def _views(
             "anchor_cells": at,
             "layouts": _layouts(solver, at, _unrun(rows, solver, tol)),
         }
-    kind = "eigen" if any("f_hz" in r.outputs for r in rows if passing(r)) else "driven"
+    kind = _kind(rows)
     error_cost = _error_cost(per_solver, rows, ref_doc)
     accuracy = _accuracy(cells, ref_doc)
     return {
@@ -1117,7 +1121,7 @@ def _case(
     rescored = None
     if name in rescore:
         rescored = (_rescore(name, rescore[name], rows, inputs), rescore[name])
-    kind = "eigen" if any("f_hz" in r.outputs for r in rows if passing(r)) else "driven"
+    kind = _kind(rows)
     parts = _partition(rows)
     blocks = [
         _views(
@@ -1197,9 +1201,10 @@ def _scaling_point(part: Mapping[str, Any], block: Mapping[str, Any], lay) -> An
     if c is None or c["work_s"] is None:
         return None
     nodes = part["nodes"] or 1
-    labels = [] if best is not None else ["default (no best)"]
-    if c["n"] < REPEATS:
-        labels.append(f"n = {c['n']}")
+    if best is None:
+        labels = [f"default, n = {c['n']}"]
+    else:
+        labels = [f"n = {c['n']}"] if c["n"] < REPEATS else []
     if nodes > 1 and c["stack"] == "wheels" and c["code"] == "palace":
         labels.append(TCP)
     if nodes > 1:
@@ -1232,9 +1237,12 @@ def _scaling_point(part: Mapping[str, Any], block: Mapping[str, Any], lay) -> An
 def _efficiency(points: list[dict[str, Any]]) -> None:
     r"""Speedup :math:`S(c) = T(c_0)/T(c)` and efficiency :math:`c_0 T(c_0)/(c T(c))`.
 
-    :math:`c_0` is the smallest budget of the point's node class; a point whose class
-    differs from the previous point's restarts the line.
+    :math:`c_0` is the smallest budget of the point's node class. The points are
+    ordered by (first appearance of their class, budget), so each class is one
+    stretch of the line; the first point of each later stretch restarts it.
     """
+    seen = list(dict.fromkeys(p["node_class"] for p in points))
+    points.sort(key=lambda p: (seen.index(p["node_class"]), p["core_budget"]))
     base: dict[str | None, dict[str, Any]] = {}
     prev: str | None = points[0]["node_class"] if points else None
     for p in points:
@@ -1285,14 +1293,17 @@ def _scaling(
             == (part["core_budget"], part["node_class"])
         }
         for other in sorted(here):
-            o = here[other]
+            other_point = here[other]
             if code_kind(other)[0] == "gfem":
                 continue
             for against in sorted(here):
-                g = here[against]
+                gfem_point = here[against]
                 if code_kind(against)[0] != "gfem" or klass(against) != klass(other):
                     continue
-                same_job = len(g["jobs"]) == 1 and g["jobs"] == o["jobs"]
+                same_job = (
+                    len(gfem_point["jobs"]) == 1
+                    and gfem_point["jobs"] == other_point["jobs"]
+                )
                 ratios.append(
                     {
                         "core_budget": part["core_budget"],
@@ -1300,8 +1311,11 @@ def _scaling(
                         "class": klass(other),
                         "solver": other,
                         "against": against,
-                        "work": _ratio(o["work_s"], g["work_s"]),
-                        "memory": _ratio(o["peak_rss_sum_gib"], g["peak_rss_sum_gib"]),
+                        "work": _ratio(other_point["work_s"], gfem_point["work_s"]),
+                        "memory": _ratio(
+                            other_point["peak_rss_sum_gib"],
+                            gfem_point["peak_rss_sum_gib"],
+                        ),
                         "pairing": "same job" if same_job else DIFFERENT_NODES,
                         "caveat": NOMINAL if klass(other) == "iterative" else None,
                     }
@@ -1574,6 +1588,7 @@ def build(
         "command": command([c.manifest.id for c in campaigns], flags),
         "matplotlib": matplotlib,
         "harness_revision": harness_revision,
+        "reference_families": dict(sorted(inputs.families.items())),
         "stamps": stamps,
         "anchor_tolerance": anchor,
         "header": _header(inputs),
@@ -1589,23 +1604,26 @@ def build(
     return report
 
 
+def _twin(case: Mapping[str, Any], block: Mapping[str, Any]) -> bool:
+    """Whether the block's core budget has a second node class in the case."""
+    budget = block["core_budget"]
+    return sum(b["core_budget"] == budget for b in budget_views(case)) > 1
+
+
 def _suffix(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
     """``-c<budget>`` on a multi-budget case; ``-<class>`` too if a budget has two."""
     if "budgets" not in case:
         return ""
-    budget = block["core_budget"]
-    twin = sum(b["core_budget"] == budget for b in case["budgets"]) > 1
-    return f"-c{budget}" + (f"-{block['node_class']}" if twin else "")
+    twin = f"-{block['node_class']}" if _twin(case, block) else ""
+    return f"-c{block['core_budget']}{twin}"
 
 
 def budget_title(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
     """``<case> at c<budget>`` (and the class when a budget has two); else the name."""
     if "budgets" not in case:
         return str(case["name"])
-    title = f"{case['name']} at c{block['core_budget']}"
-    if sum(b["core_budget"] == block["core_budget"] for b in case["budgets"]) > 1:
-        title += f" {block['node_class']}"
-    return title
+    twin = f" {block['node_class']}" if _twin(case, block) else ""
+    return f"{case['name']} at c{block['core_budget']}{twin}"
 
 
 def assign_figures(report: dict[str, Any]) -> None:

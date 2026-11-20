@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from benchmarks.__main__ import main
-from benchmarks.harness import matrix
-from benchmarks.report import views
+from benchmarks.harness import config, matrix
+from benchmarks.report import harness_revision, views
 
 BENCH = Path(__file__).parent / "data" / "bench"
 FIXTURE = BENCH / "campaign"
@@ -379,10 +379,12 @@ def test_error_items_carry_the_reference_bound_when_a_cell_is_unresolved(tmp_pat
 def test_report_records_the_harness_revision(tmp_path, capsys):
     out = _report(tmp_path, str(_store(tmp_path)), "--no-figures")
     stored = json.loads((out / "report.json").read_text())
-    # the tree's commit: its COMMIT file when shipped (no .git), else git HEAD
+    # the tree's commit: its COMMIT file when shipped (no .git), else git HEAD,
+    # marked dirty when the checkout has changes
     head = matrix.source_commit()[0]
     assert len(head) == 40
-    assert stored["harness_revision"] == head
+    here = stored["harness_revision"]
+    assert here in (head, f"{head}-dirty")
     # a report rendered at another revision still checks: the field is provenance
     stored["harness_revision"] = "0" * 40
     (out / "report.json").write_text(
@@ -391,7 +393,41 @@ def test_report_records_the_harness_revision(tmp_path, capsys):
     assert main(["report", "--check", str(out)]) == 0
     printed = capsys.readouterr().out
     assert "unchanged" in printed
-    assert f"rendered at harness {'0' * 40}; regenerated at {head}" in printed
+    assert f"rendered at harness {'0' * 40}; regenerated at {here}" in printed
+
+
+def _git(root, *args):
+    subprocess.run(
+        [shutil.which("git") or "git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+    )
+
+
+def test_harness_revision_marks_a_checkout_with_changes_dirty(tmp_path):
+    _git(tmp_path, "init", "-q")
+    (tmp_path / "a.txt").write_text("a\n")
+    _git(tmp_path, "add", "a.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@example.org",
+        "commit",
+        "-qm",
+        "a",
+    )
+    head = matrix.source_commit(tmp_path)[0]
+    assert harness_revision(tmp_path) == head
+    (tmp_path / "a.txt").write_text("b\n")
+    assert harness_revision(tmp_path) == f"{head}-dirty"
+
+
+def test_harness_revision_of_a_shipped_tree_is_its_commit_file(tmp_path):
+    (tmp_path / "COMMIT").write_text("c" * 40 + "\n")
+    (tmp_path / "extra.txt").write_text("not tracked anywhere\n")
+    assert harness_revision(tmp_path) == "c" * 40
 
 
 # --- refusals ---------------------------------------------------------------------
@@ -498,6 +534,24 @@ def test_newer_reference_follows_the_case_files_reference_key(tmp_path):
     assert p3["rescore_flag"] == "--rescore microstrip_p3=microstrip-20261125-aaaaaaa"
 
 
+def test_check_reuses_the_stored_reference_families(tmp_path, capsys, monkeypatch):
+    def edit(d):
+        if d["run"]["case"] == "microstrip":
+            d["run"]["case"] = "microstrip_p3"
+
+    out = _report(tmp_path, str(_store(tmp_path, edit)), "--no-figures")
+    stored = json.loads((out / "report.json").read_text())
+    assert stored["reference_families"]["microstrip_p3"] == [
+        "microstrip",
+        "microstrip_p3",
+    ]
+    assert stored["reference_families"]["lcavity"] == ["lcavity"]
+    # a checking tree whose case files lack the [reference] sibling key
+    monkeypatch.setattr(config, "CASES_DIR", tmp_path / "no-cases")
+    assert main(["report", "--check", str(out)]) == 0
+    assert "unchanged" in capsys.readouterr().out
+
+
 def test_rescore_marks_cells_and_rewrites_no_record(tmp_path):
     camp = _store(tmp_path)
     before = {p: p.read_bytes() for p in camp.rglob("*.json")}
@@ -593,9 +647,9 @@ def test_trend_over_two_gfem_commits_restarts_on_a_key_change(tmp_path):
 # --- core budgets (ADR 0452) ------------------------------------------------------
 
 
-def _budget_campaign(tmp_path: Path, budget: int, edit=None) -> Path:
+def _budget_campaign(tmp_path: Path, budget: int, edit=None, *, tag: str = "") -> Path:
     """The fixture campaign rerun at ``budget`` cores, same gfem commit."""
-    cid = f"20261120-858bc66-smoke-c{budget}"
+    cid = f"20261120-858bc66-smoke-c{budget}{tag}"
 
     def at_budget(d):
         d["campaign"] = cid
@@ -603,7 +657,7 @@ def _budget_campaign(tmp_path: Path, budget: int, edit=None) -> Path:
         if edit is not None:
             edit(d)
 
-    camp = _store(tmp_path, at_budget, name=f"campaign-c{budget}")
+    camp = _store(tmp_path, at_budget, name=f"campaign-c{budget}{tag}")
     manifest = json.loads((camp / "campaign.json").read_text())
     manifest["id"] = cid
     manifest["core_budget"] = budget
@@ -716,6 +770,20 @@ def test_scaling_gives_speedup_and_efficiency_against_the_smallest_budget(tmp_pa
     assert bddc["peak_rss_sum_gib"] is not None
 
 
+def test_a_scaling_point_without_best_layout_is_the_default_labelled_n(tmp_path):
+    def two_repeats(d):
+        if d["name"].startswith("microstrip/gfem-direct") and d["run"]["repeat"] == 3:
+            d["status"] = "failed"
+
+    c8 = _budget_campaign(tmp_path, 8, two_repeats)
+    c16 = _budget_campaign(tmp_path, 16)
+    ms = _case(_json(tmp_path, c8, c16), "microstrip")
+    p8 = _point(ms, "gfem:direct", 8)
+    assert (p8["layout"], p8["n"]) == ("1x16", 2)
+    assert p8["labels"] == ["default, n = 2"]
+    assert _point(ms, "gfem:direct", 16)["labels"] == []
+
+
 def test_scaling_cross_code_ratio_is_labelled_different_nodes(tmp_path):
     c8 = _budget_campaign(tmp_path, 8, _slower(1.6))
     c16 = _budget_campaign(tmp_path, 16)
@@ -756,6 +824,18 @@ def test_a_node_class_change_restarts_the_scaling_line(tmp_path):
     assert "restart" not in p32
     assert "TCP between nodes" in _point(ms, "palace:mumps", 32)["labels"]
     assert "TCP between nodes" not in p32["labels"]
+
+
+def test_one_budget_on_two_node_classes_restarts_the_line_once(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _on("standard", factor=2.0))
+    c16 = _budget_campaign(tmp_path, 16, _on("standard"))
+    c16h = _budget_campaign(tmp_path, 16, _on("highmem"), tag="-hm")
+    ms = _case(_json(tmp_path, c8, c16, c16h), "microstrip")
+    line = next(s for s in ms["scaling"]["solvers"] if s["solver"] == "gfem:direct")
+    order = [(p["core_budget"], p["node_class"]) for p in line["points"]]
+    assert order == [(8, "standard"), (16, "standard"), (16, "highmem")]
+    restarts = [p.get("restart") for p in line["points"]]
+    assert restarts == [None, None, "line restarts: node class standard -> highmem"]
 
 
 def test_scaling_section_and_figure(tmp_path):
