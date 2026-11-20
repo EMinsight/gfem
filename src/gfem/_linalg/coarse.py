@@ -13,11 +13,23 @@ rank per `DOFS_PER_RANK` and `MAX_RANKS` ranks, without building a communicator 
 MUMPS factors it by :math:`L D L^T` where the operator equals its transpose and by LU
 otherwise (a Bloch phase). NGSolve hands the creator only the matrix and the free
 DOFs, so each symmetry has its own registered ``coarsetype`` (`coarse_type`).
+
+MUMPS's analysis of the coarse problem costs up to several of its numeric
+factorizations, and BDDC is set up again on the same wirebasket at every design, at a
+sweep's rebuilds and at an eigen reshift. So a freed factorization goes to a pool of
+this process, keyed by communicator, symmetry and wirebasket pattern, and a later
+set-up on that key writes its values into the pooled matrix and refactorizes
+numerically only. A pooled factorization belongs to at most one live set-up, and one
+whose factorization failed is never pooled: PETSc refuses a numeric factorization
+after a failed one. The solve cache counts the pool against ``retain_memory``.
 """
 
 from __future__ import annotations
 
+import atexit
 import contextlib
+import dataclasses
+import hashlib
 import math
 import os
 from collections.abc import Generator
@@ -34,6 +46,7 @@ from gfem._linalg.petsc import (
     RANK_MUMPS_OPTIONS,
     FreeNumbering,
     distributed_aij,
+    set_values,
 )
 from gfem._linalg.petsc import defaults as factor_defaults
 
@@ -80,6 +93,169 @@ UNREAD = 0
 _made: dict[int | None, list[CoarseMumps]] = {}
 #: The ``coarsetype`` names registered with NGSolve in this process.
 _registered: set[str] = set()
+
+#: A pool key: communicator key, :math:`A^T = A`, and the wirebasket pattern's
+#: digest, the same on every rank.
+type PoolKey = tuple[int | None, bool, bytes]
+#: The pooled factorizations no set-up holds, least recently returned first.
+_pool: list[Kept] = []
+#: The keys set up in this process: they outlive eviction, so a pattern met again
+#: after its factorization went is still known as met.
+_seen: set[PoolKey] = set()
+#: Whether `release` runs at exit, before PETSc finalizes.
+_at_exit: list[bool] = []
+
+
+@dataclasses.dataclass(eq=False)
+class Kept:
+    """One coarse factorization and what a refactorization on its pattern reuses.
+
+    Attributes:
+        key: Its pool key.
+        aij: The matrix, refilled in place on the same pattern.
+        index: The positions of its entries in the wirebasket's value vector.
+        x: A solution vector of ``aij``.
+        b: A load vector of ``aij``.
+        ordering: The ordering its KSP was set up with.
+        factor: ``PCTELESCOPE``'s factor its KSP was set up with.
+        workspace: MUMPS's ICNTL(14) of its KSP.
+        ksp: The KSP, ``None`` until set up and after a failed factorization.
+        prefix: The KSP's options prefix.
+        pairs: The options read under ``prefix``.
+    """
+
+    key: PoolKey
+    aij: Any
+    index: np.ndarray
+    x: Any
+    b: Any
+    ordering: Ordering
+    factor: int
+    workspace: int
+    ksp: Any = None
+    prefix: str = ""
+    pairs: tuple[tuple[str, Any], ...] = ()
+
+    def inner_factor(self) -> Any:
+        """MUMPS's factor matrix on this rank, ``None`` on a rank telescoping drops."""
+        pc = self.ksp.getPC()
+        if self.factor == 1:
+            return pc.getFactorMatrix()
+        inner = _petsc.telescope_ksp(pc)
+        return None if inner is None else inner.getPC().getFactorMatrix()
+
+    @property
+    def nbytes(self) -> int:
+        """This rank's factors, by MUMPS's own count (INFO(22)).
+
+        0 on a rank telescoping drops, and where the factor behind ``PCTELESCOPE``
+        cannot be read (`_petsc.telescope_symbols`).
+        """
+        if self.ksp is None:
+            return 0
+        factor = self.inner_factor()
+        return 0 if factor is None else 10**6 * int(factor.getMumpsInfo(22))
+
+    def drop_ksp(self) -> None:
+        """Destroy the KSP: a failed factorization is not set up again."""
+        if self.ksp is not None:
+            self.ksp.destroy()
+            self.ksp = None
+
+    def destroy(self) -> None:
+        """Destroy every PETSc object; every rank calls this together."""
+        self.drop_ksp()
+        for obj in (self.aij, self.x, self.b):
+            obj.destroy()
+
+
+def pattern_key(
+    comm: Any, local: Any, numbers: np.ndarray, *, symmetric: bool
+) -> PoolKey:
+    """The pool key of a wirebasket: its rows on this rank and its free numbering.
+
+    Each rank hashes its own rows and the digests are summed over the ranks, so every
+    rank reads one key and the pool's history is the same on each.
+    """
+    _, cols, rowptr = local.CSR()
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(np.int64(_mpi.rank(comm)).tobytes())
+    for array in (cols, rowptr, numbers):
+        digest.update(np.ascontiguousarray(array, dtype=np.int64).tobytes())
+    words = np.frombuffer(digest.digest(), dtype=np.uint64).copy()
+    agreed = np.asarray(_mpi.reduce_bcast(comm, words), dtype=np.uint64)
+    return _mpi.comm_key(comm), symmetric, agreed.tobytes()
+
+
+def seen(key: PoolKey) -> bool:
+    """Whether this process has set a coarse problem up on ``key`` before."""
+    return key in _seen
+
+
+def pooled() -> int:
+    """The factorizations in the pool."""
+    return len(_pool)
+
+
+def held(owner: int | None) -> list[Kept]:
+    """The pooled factorizations of the communicator ``owner``, oldest first."""
+    return [k for k in _pool if k.key[0] == owner]
+
+
+def held_all() -> list[Kept]:
+    """Every pooled factorization, oldest first."""
+    return list(_pool)
+
+
+def evict(kept: Kept) -> None:
+    """Free one pooled factorization; every rank of its communicator together."""
+    with _petsc.LOCK:
+        _pool.remove(kept)
+        kept.destroy()
+
+
+def empty(comm: Any) -> None:
+    """Free the pooled factorizations of ``comm``; its ranks together."""
+    for kept in held(_mpi.comm_key(comm)):
+        evict(kept)
+
+
+def release() -> None:
+    """Free every pooled factorization and forget the keys seen.
+
+    Every rank calls it at the same point.
+    """
+    with _petsc.LOCK:
+        while _pool:
+            _pool.pop(0).destroy()
+        _seen.clear()
+
+
+def _take(key: PoolKey, ordering: Ordering, factor: int) -> Kept | None:
+    """The most recently returned factorization on ``key``, out of the pool.
+
+    One set up otherwise (another ordering once the rule changed it) is freed: it
+    would never be taken again.
+    """
+    for kept in [k for k in _pool if k.key == key]:
+        if (kept.ordering, kept.factor) != (ordering, factor):
+            evict(kept)
+    for kept in reversed(_pool):
+        if kept.key == key:
+            _pool.remove(kept)
+            return kept
+    return None
+
+
+def _give(kept: Kept) -> None:
+    """Pool ``kept``; the first time, `release` is registered to run at exit.
+
+    Registered after PETSc was imported, so it runs before PETSc finalizes.
+    """
+    _pool.append(kept)
+    if not _at_exit:
+        atexit.register(release)
+        _at_exit.append(True)
 
 
 def reduction(dofs: int, size: int) -> int:
@@ -182,8 +358,9 @@ class CoarseMumps(ngs.BaseMatrix):
 
     NGSolve calls the creator twice per setup, first with the form's whole matrix,
     which is not assembled yet, and last with the wirebasket, so nothing is factored
-    until `set_up`. The PETSc objects are destroyed by `free`, which every rank calls
-    together, never by a collector that runs at another time on each rank.
+    until `set_up`. Its PETSc objects come from the pool where one on the same
+    pattern is free, and go back to it at `free`, which every rank calls together,
+    never a collector that runs at another time on each rank.
     """
 
     def __init__(
@@ -204,32 +381,45 @@ class CoarseMumps(ngs.BaseMatrix):
         self._source = matrix
         self._freedofs = freedofs
         self._comm = comm
-        self._ksp: Any = None
-        self._aij: Any = None
-        self._x: Any = None
-        self._b: Any = None
+        self._kept: Kept | None = None
         self._freed = False
         self._readable = True
         #: The columns the set-up is expected to serve, for `rule`.
         self.columns = 1
+        #: The pool key of the wirebasket, once set up.
+        self.key: PoolKey | None = None
+
+    @property
+    def _ksp(self) -> Any:
+        return None if self._kept is None else self._kept.ksp
+
+    @property
+    def _x(self) -> Any:
+        return None if self._kept is None else self._kept.x
+
+    @property
+    def _b(self) -> Any:
+        return None if self._kept is None else self._kept.b
 
     def set_up(self) -> None:
         """Factor the wirebasket, on a new KSP while MUMPS's workspace is too small.
 
+        A pooled factorization on the same key is refilled and refactorized
+        numerically; a failed one is dropped and the next attempt has a new KSP.
+
         Raises:
             gfem._mpi.AgreedError: The factorization failed, on every rank.
         """
-        PETSc = _petsc.require_petsc()
         comm = self._comm
         with _petsc.LOCK:
             self._work = self._source.CreateColVector()
             self._numbering = FreeNumbering(
                 self._source.row_pardofs, self._freedofs, self._work, comm
             )
-            self._aij, _ = distributed_aij(
-                self._source.local_mat, self._numbering, comm, symmetric=self.symmetric
+            local = self._source.local_mat
+            self.key = pattern_key(
+                comm, local, self._numbering.numbers, symmetric=self.symmetric
             )
-            self._x, self._b = self._aij.createVecs()
             self._ordering, self._factor = rule(
                 self._numbering.total, comm.size, self.columns, seen=False
             )
@@ -237,44 +427,70 @@ class CoarseMumps(ngs.BaseMatrix):
             self._readable = self._factor == 1 or _mpi.agree_all(
                 comm, flag=_petsc.telescope_symbols() is not None
             )
-            retried = RETRIED if self._readable else (*RETRIED, UNREAD)
-            workspace = dict(RANK_MUMPS_OPTIONS)["mat_mumps_icntl_14"]
-            for attempt in range(MUMPS_RETRIES + 1):
-                self._ksp = PETSc.KSP().create(comm)
-                prefix = _petsc.next_prefix()
-                self._ksp.setOptionsPrefix(prefix)
-                self._ksp.setOperators(self._aij)
-                pairs = options(
-                    self.symmetric,
-                    workspace=workspace,
-                    factor=self._factor,
-                    ordering=self._ordering,
+            kept = _take(self.key, self._ordering, self._factor)
+            if kept is None:
+                aij, index = distributed_aij(
+                    local, self._numbering, comm, symmetric=self.symmetric
                 )
-                with (
-                    _petsc.scoped_options(prefix, pairs),
-                    mumps_config(self._ordering),
-                ):
-                    self._ksp.setFromOptions()
-                    self._ksp.setUp()
-                    if self._factor > 1:
-                        # the inner factorization happens at the first apply
-                        self._b.set(1.0)
-                        self._ksp.solve(self._b, self._x)
-                failure = self._agreed_failure()
-                if failure is None:
-                    return
-                self._ksp.destroy()
-                self._ksp = None
-                if failure not in retried or attempt == MUMPS_RETRIES:
-                    self.free()
-                    infog = failure if self._readable else "unread behind PCTELESCOPE"
-                    raise _mpi.AgreedError(
-                        "The factorization of BDDC's coarse problem failed (MUMPS "
-                        f"INFOG(1)={infog}): the "
-                        "operator is singular at this frequency, or MUMPS needs more "
-                        f"workspace than ICNTL(14) {workspace} gives."
-                    )
-                workspace *= 2
+                x, b = aij.createVecs()
+                workspace = dict(RANK_MUMPS_OPTIONS)["mat_mumps_icntl_14"]
+                kept = Kept(
+                    self.key, aij, index, x, b, self._ordering, self._factor, workspace
+                )
+            else:
+                set_values(kept.aij, local.CSR()[0], kept.index)
+            self._kept = kept
+            try:
+                self._factorize(kept)
+            except BaseException:
+                self._kept = None
+                kept.destroy()
+                raise
+            _seen.add(self.key)
+
+    def _factorize(self, kept: Kept) -> None:
+        """Set ``kept``'s KSP up, a new one at each attempt the workspace may cure."""
+        PETSc = _petsc.require_petsc()
+        comm = self._comm
+        retried = RETRIED if self._readable else (*RETRIED, UNREAD)
+        for attempt in range(MUMPS_RETRIES + 1):
+            new = kept.ksp is None
+            if new:
+                kept.ksp = PETSc.KSP().create(comm)
+                kept.prefix = _petsc.next_prefix()
+                kept.ksp.setOptionsPrefix(kept.prefix)
+                kept.pairs = options(
+                    self.symmetric,
+                    workspace=kept.workspace,
+                    factor=kept.factor,
+                    ordering=kept.ordering,
+                )
+            # the same matrix with new values: MUMPS keeps its analysis
+            kept.ksp.setOperators(kept.aij)
+            with (
+                _petsc.scoped_options(kept.prefix, kept.pairs),
+                mumps_config(kept.ordering),
+            ):
+                if new:
+                    kept.ksp.setFromOptions()
+                kept.ksp.setUp()
+                if kept.factor > 1:
+                    # the inner factorization happens at the first apply
+                    kept.b.set(1.0)
+                    kept.ksp.solve(kept.b, kept.x)
+            failure = self._agreed_failure()
+            if failure is None:
+                return
+            kept.drop_ksp()
+            if failure not in retried or attempt == MUMPS_RETRIES:
+                infog = failure if self._readable else "unread behind PCTELESCOPE"
+                raise _mpi.AgreedError(
+                    "The factorization of BDDC's coarse problem failed (MUMPS "
+                    f"INFOG(1)={infog}): the "
+                    "operator is singular at this frequency, or MUMPS needs more "
+                    f"workspace than ICNTL(14) {kept.workspace} gives."
+                )
+            kept.workspace *= 2
 
     def _agreed_failure(self) -> int | None:
         """``None`` if the set-up succeeded, else INFOG(1) on every rank.
@@ -298,11 +514,7 @@ class CoarseMumps(ngs.BaseMatrix):
 
     def _inner_factor(self) -> Any:
         """MUMPS's factor matrix on this rank, ``None`` on a rank telescoping drops."""
-        pc = self._ksp.getPC()
-        if self._factor == 1:
-            return pc.getFactorMatrix()
-        inner = _petsc.telescope_ksp(pc)
-        return None if inner is None else inner.getPC().getFactorMatrix()
+        return None if self._kept is None else self._kept.inner_factor()
 
     @property
     def nbytes(self) -> int:
@@ -311,10 +523,7 @@ class CoarseMumps(ngs.BaseMatrix):
         0 on a rank telescoping drops, and where the factor behind ``PCTELESCOPE``
         cannot be read (`_petsc.telescope_symbols`).
         """
-        if self._ksp is None:
-            return 0
-        factor = self._inner_factor()
-        return 0 if factor is None else 10**6 * int(factor.getMumpsInfo(22))
+        return 0 if self._kept is None else self._kept.nbytes
 
     def IsComplex(self) -> bool:  # noqa: N802 - NGSolve's name
         """Only complex operators take this route (`gfem._linalg.bddc`)."""
@@ -352,13 +561,12 @@ class CoarseMumps(ngs.BaseMatrix):
             y.SetParallelStatus(ngs.la.PARALLEL_STATUS.CUMULATED)
 
     def free(self) -> None:
-        """Destroy the PETSc objects; every rank calls this together."""
+        """Give the factorization back to the pool; every rank calls this together."""
         with _petsc.LOCK:
             self._freed = True
-            for obj in (self._ksp, self._aij, self._x, self._b):
-                if obj is not None:
-                    obj.destroy()
-            self._ksp = self._aij = self._x = self._b = None
+            kept, self._kept = self._kept, None
+            if kept is not None:
+                _give(kept)
 
 
 def coarse_type(comm: Any, symmetric: bool) -> str:

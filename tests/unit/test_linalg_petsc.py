@@ -11,6 +11,7 @@ import re
 import types
 from pathlib import Path
 
+import gradient_cases
 import jax
 import jax.numpy as jnp
 import ngsolve as ngs
@@ -21,7 +22,7 @@ from petsc_recipe import KSP_VIEW, MUMPS_LU
 
 import gfem
 from gfem import _petsc
-from gfem._engine import quadrature
+from gfem._engine import cache, quadrature
 from gfem._engine.mesh import to_ngsolve
 from gfem._linalg import Operator, coarse, petsc, prepare
 from gfem._linalg.petsc import PetscHandle
@@ -1050,12 +1051,22 @@ def _one_process_coarse(monkeypatch, op, space, ordering=coarse.PT_SCOTCH, facto
         monkeypatch.setattr(coarse._mpi, name, lambda _, *, flag: flag)
     for name in ("agree_min", "agree_max"):
         monkeypatch.setattr(coarse._mpi, name, lambda _, value: value)
+    # the pool keys it as the one-process walk of the cache reads it
+    monkeypatch.setattr(coarse._mpi, "comm_key", lambda _: None)
+    monkeypatch.setattr(coarse._mpi, "reduce_bcast", lambda _, values: values)
     source = types.SimpleNamespace(
         local_mat=op.form.mat,
         row_pardofs=None,
         CreateColVector=op.form.mat.CreateColVector,
     )
     return coarse.CoarseMumps(source, space.FreeDofs(), PETSc.COMM_SELF, symmetric=True)
+
+
+@pytest.fixture(autouse=True)
+def empty_coarse_pool():
+    """No pooled coarse factorization outlives a test."""
+    yield
+    coarse.release()
 
 
 @pytest.fixture
@@ -1180,3 +1191,202 @@ def test_a_metis_coarse_set_up_reads_gfems_mumps_config_only_while_it_factors(
         assert (factor.getMumpsIcntl(28), factor.getMumpsIcntl(7)) == (1, 5)
     finally:
         made.free()
+
+
+# --- the coarse pool ---------------------------------------------------------------
+
+
+def _coarse_on(monkeypatch, built, shift, order=2, ordering=coarse.PT_SCOTCH):
+    """A one-process coarse factorization of a shifted Laplacian, not set up."""
+    op, space = _laplace(built, True, shift, order=order)
+    op.form.Assemble()
+    return _one_process_coarse(monkeypatch, op, space, ordering)
+
+
+def _coarse_solution(made):
+    """The coarse KSP's solution of one fixed right-hand side."""
+    rhs = np.random.default_rng(7).standard_normal(made._b.getLocalSize())
+    made._b.array[:] = rhs * (1 + 0.5j)
+    made._ksp.solve(made._b, made._x)
+    return made._x.array.copy()
+
+
+def test_a_second_coarse_set_up_on_one_pattern_refactors_numerically_only(
+    built, monkeypatch
+):
+    counts = _factorizations()
+    before = counts()["MatCholFctrSym"]
+    first = _coarse_on(monkeypatch, built, 1 - 2j)
+    first.set_up()
+    first.free()
+    kept = _coarse_on(monkeypatch, built, 3 + 1j)  # new values, one pattern
+    kept.set_up()
+    assert counts()["MatCholFctrSym"] - before == 1
+    assert kept.key == first.key
+    solution = _coarse_solution(kept)
+    kept.free()
+    coarse.release()
+    fresh = _coarse_on(monkeypatch, built, 3 + 1j)
+    fresh.set_up()
+    try:
+        assert counts()["MatCholFctrSym"] - before == 2
+        assert np.array_equal(solution, _coarse_solution(fresh))
+    finally:
+        fresh.free()
+
+
+def test_another_wirebasket_pattern_analyses_anew(built, monkeypatch):
+    counts = _factorizations()
+    before = counts()["MatCholFctrSym"]
+    first = _coarse_on(monkeypatch, built, 1 - 2j)
+    first.set_up()
+    first.free()
+    other = _coarse_on(monkeypatch, built, 1 - 2j, order=3)
+    other.set_up()
+    other.free()
+    assert counts()["MatCholFctrSym"] - before == 2
+    assert other.key != first.key
+    assert coarse.pooled() == 2
+
+
+def test_two_live_coarse_factorizations_on_one_pattern_hold_two_ksps(
+    built, monkeypatch
+):
+    one = _coarse_on(monkeypatch, built, 1 - 2j)
+    two = _coarse_on(monkeypatch, built, 1 - 2j)
+    one.set_up()
+    two.set_up()
+    assert one.key == two.key
+    assert one._ksp.handle != two._ksp.handle
+    one.free()
+    two.free()
+    assert coarse.pooled() == 2
+    # each frees once: no live owner left to take a pooled KSP back
+    assert one._ksp is None
+    assert two._ksp is None
+
+
+def _failing_once(monkeypatch, failure):
+    """The next coarse set-up's first factorization reads ``failure``."""
+    real = coarse.CoarseMumps._agreed_failure
+    calls = []
+
+    def forced(self):
+        calls.append(1)
+        return failure if len(calls) == 1 else real(self)
+
+    monkeypatch.setattr(coarse.CoarseMumps, "_agreed_failure", forced)
+    return calls
+
+
+def test_a_failed_coarse_refactorization_is_not_pooled(built, monkeypatch):
+    first = _coarse_on(monkeypatch, built, 1 - 2j)
+    first.set_up()
+    first.free()
+    assert coarse.pooled() == 1
+    _failing_once(monkeypatch, -10)  # singular: not retried
+    kept = _coarse_on(monkeypatch, built, 3 + 1j)
+    with pytest.raises(gfem._mpi.AgreedError, match=r"INFOG\(1\)=-10"):
+        kept.set_up()
+    kept.free()
+    assert coarse.pooled() == 0
+
+
+def test_a_workspace_retry_on_refactorization_pools_its_doubled_icntl_14(
+    built, monkeypatch
+):
+    counts = _factorizations()
+    before = counts()["MatCholFctrSym"]
+    first = _coarse_on(monkeypatch, built, 1 - 2j)
+    first.set_up()
+    first.free()
+    calls = _failing_once(monkeypatch, coarse.MUMPS_WORKSPACE_ERROR)
+    retried = _coarse_on(monkeypatch, built, 3 + 1j)
+    retried.set_up()
+    assert len(calls) == 2
+    assert retried._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 120
+    retried.free()
+    assert coarse.pooled() == 1
+    # a new KSP after the failure: one more analysis, then the pooled one serves
+    third = _coarse_on(monkeypatch, built, 2 - 1j)
+    third.set_up()
+    try:
+        assert counts()["MatCholFctrSym"] - before == 2
+        assert third._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 120
+    finally:
+        third.free()
+
+
+def test_switching_a_pattern_to_metis_frees_its_pt_scotch_factorizations(
+    built, monkeypatch
+):
+    counts = _factorizations()
+    before = counts()["MatCholFctrSym"]
+    scotch = _coarse_on(monkeypatch, built, 1 - 2j)
+    scotch.set_up()
+    scotch.free()
+    metis = _coarse_on(monkeypatch, built, 1 - 2j, ordering=coarse.METIS)
+    metis.set_up()
+    metis.free()
+    assert counts()["MatCholFctrSym"] - before == 2
+    assert coarse.pooled() == 1
+
+
+def test_a_seen_pattern_stays_seen_when_its_factorization_is_evicted(
+    built, monkeypatch
+):
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    made.set_up()
+    made.free()
+    assert coarse.seen(made.key)
+    coarse.empty(None)
+    assert coarse.pooled() == 0
+    assert coarse.seen(made.key)
+    gfem.release_memory()
+    assert not coarse.seen(made.key)
+
+
+def test_release_memory_empties_the_coarse_pool(built, monkeypatch):
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    made.set_up()
+    made.free()
+    assert coarse.pooled() == 1
+    gfem.release_memory()
+    assert coarse.pooled() == 0
+
+
+@pytest.mark.parametrize("retain_memory", [0, None])
+def test_retain_memory_0_leaves_the_coarse_pool_empty_after_a_solve(
+    built, monkeypatch, tmp_path, retain_memory
+):
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    made.set_up()
+    made.free()
+    model = gradient_cases.layered_line(tmp_path)
+    options = gfem.SolverOptions(
+        order=1, linear_solver="direct", retain_memory=retain_memory
+    )
+    gfem.solve(model, gfem.Driven(frequency=24e9), options=options)
+    assert coarse.pooled() == (0 if retain_memory == 0 else 1)
+
+
+def test_pooled_coarse_factorizations_count_and_go_at_the_caches_tier_3(
+    built, monkeypatch
+):
+    gfem.release_memory()
+    entries = cache.ENTRIES
+    older = _coarse_on(monkeypatch, built, 1 - 2j)
+    latest = _coarse_on(monkeypatch, built, 1 - 2j)
+    older.set_up()
+    latest.set_up()
+    one = older.nbytes
+    assert one > 0
+    older.free()
+    latest.free()
+    assert entries.nbytes >= 2 * one
+    # the default budget leaves the most recently returned one its factors
+    entries.trim(cache.DefaultBudget(0))
+    assert coarse.pooled() == 1
+    entries.trim(0)
+    assert coarse.pooled() == 0
+    assert entries.nbytes == 0

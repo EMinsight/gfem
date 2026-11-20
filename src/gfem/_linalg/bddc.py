@@ -683,7 +683,7 @@ class BddcHandle(NgsHandle):
         return host_bytes(matrix) + host_bytes(pre.mat) + factors
 
     def _free_coarse(self) -> None:
-        """Destroy a coarse factorization on MUMPS, which every rank does together."""
+        """Give a coarse factorization back to its pool, every rank together."""
         if self._coarse is not None:
             self._coarse.free()
             self._coarse = None
