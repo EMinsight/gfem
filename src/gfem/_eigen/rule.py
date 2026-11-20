@@ -2364,19 +2364,12 @@ def _require_rank_slepc(comm: Any) -> None:
             f"tools/petsc_wheelhouse.sh --mpi as {_mpi.RECIPE} describes, or pass "
             "comm=MPI.COMM_SELF for independent one-process copies."
         )
-    error = None
-    try:
-        _petsc.require_slepc("eigen_solver")
-    except SolverUnavailableError as err:
-        error = err
-    if not _mpi.agree_all(comm, flag=error is None):
-        raise _mpi.agreed(
-            error
-            or SolverUnavailableError(
-                "eigen_solver='slepc' cannot run: another rank cannot use slepc4py "
-                "(that rank's error names why)."
-            )
-        )
+    _mpi.available(
+        comm,
+        lambda: _petsc.require_slepc("eigen_solver"),
+        "eigen_solver='slepc' cannot run: another rank cannot use slepc4py "
+        "(that rank's error names why).",
+    )
 
 
 def _layout(op: DrivenOperator) -> DofLayout:

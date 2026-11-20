@@ -26,7 +26,7 @@ import traceback
 import warnings
 from fractions import Fraction
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -50,6 +50,7 @@ __all__ = [
     "agree_max",
     "agree_min",
     "agreed",
+    "available",
     "bcast_arrays",
     "check_call",
     "comm_key",
@@ -411,6 +412,25 @@ def agreed[E: BaseException](error: E) -> E:
     """``error``, marked as raised by every rank together, so `section` lets it pass."""
     error._gfem_agreed = True  # ty: ignore[unresolved-attribute]  # noqa: SLF001
     return error
+
+
+def available[T](
+    comm: Any, check: collections.abc.Callable[[], T], elsewhere: str
+) -> T:
+    """``check()``'s value where it passes on every rank; else raise on every rank.
+
+    A rank whose ``check`` raised `gfem.SolverUnavailableError` raises its own error,
+    the others one saying ``elsewhere``; both `agreed`.
+    """
+    error = None
+    value = None
+    try:
+        value = check()
+    except SolverUnavailableError as err:
+        error = err
+    if not agree_all(comm, flag=error is None):
+        raise agreed(error or SolverUnavailableError(elsewhere))
+    return cast("T", value)
 
 
 def is_agreed(

@@ -645,6 +645,27 @@ def test_raised_together_marks_only_the_classes_named():
     assert not _mpi.is_agreed(other.value, ())
 
 
+def test_a_check_that_passes_everywhere_returns_its_value():
+    assert _mpi.available(None, lambda: 3, "elsewhere") == 3
+
+
+def test_a_rank_whose_check_fails_raises_its_own_error_agreed():
+    def check():
+        raise gfem.SolverUnavailableError("here")
+
+    with pytest.raises(gfem.SolverUnavailableError, match="here") as caught:
+        _mpi.available(None, check, "elsewhere")
+    assert _mpi.is_agreed(caught.value, ())
+
+
+def test_a_rank_whose_check_passes_raises_with_the_others_failure(monkeypatch):
+    # another rank's check failed: the vote is false where this one passed
+    monkeypatch.setattr(_mpi, "agree_all", lambda *_, **__: False)
+    with pytest.raises(gfem.SolverUnavailableError, match="elsewhere") as caught:
+        _mpi.available(object(), lambda: 3, "elsewhere")
+    assert _mpi.is_agreed(caught.value, ())
+
+
 def test_a_warning_at_one_process_warns_at_the_callers_line():
     with pytest.warns(UserWarning, match="once") as caught:
         _mpi.warn(None, "once", UserWarning)
