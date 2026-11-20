@@ -159,6 +159,6 @@ def test_the_verification_page_has_a_dispersive_section():
 
 
 def test_the_release_notes_announce_laws_and_the_restart_bound():
-    notes = _read("project/release-notes.md").split("## 0.1.0")[0]
+    notes = _read("project/release-notes.md").split("\n## ")[1]  # the newest release
     assert "gfem.PermittivityLaw" in notes
     assert "100 restarts" in notes

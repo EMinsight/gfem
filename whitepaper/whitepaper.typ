@@ -279,7 +279,7 @@ Observations from these runs:
 - *How many nodes.* Past #L.fastest_nodes nodes, more nodes made BDDC + GMRES slower at #mega(L.dof) DOF. The coarse problem's apply is #pct(T.coarse_share.at(0)) to #pct(T.coarse_share.at(1)) of the solve there, and its setup grows from #T.coarse_setup.at(0) s on #T.setup_nodes.at(0) nodes to #T.coarse_setup.at(1) s on #T.setup_nodes.at(1).
 - *Agreement.* Every rank held the same S, bit for bit. On a #grouped(AG.dof) DOF line, each rank count from #AG.nodes.at(0) to #AG.nodes.at(1) nodes agreed with its one-process run to a relative difference of at most #sci(AG.max_diff), and BDDC + GMRES took the same iterations. At #grouped(AG.cross_dof) DOF on #AG.cross_nodes nodes, BDDC + GMRES at a tolerance of #sci(AG.cross_tol) and the direct solver differed by #sci(AG.cross_diff).
 
-These are one machine, one gfem version (the development version of #date.display("[day padding:none] [month repr:long] [year]"), commit #raw(sc.commit), after 0.1.0), one family of meshes and one frequency. The run records, logs, job scripts and meshes are archived with the commit they name.
+These are one machine, one gfem version (the development version of #date.display("[day padding:none] [month repr:long] [year]"), commit #raw(sc.commit), before the 0.1.0 release), one family of meshes and one frequency. The run records, logs, job scripts and meshes are archived with the commit they name.
 
 = Limits of version 0.1 <limits>
 
@@ -295,10 +295,10 @@ gfem states what it does not do.
 
 = Availability
 
-gfem is MIT-licensed. It depends on NGSolve (LGPL-2.1), whose wheels contain GPL-2.0+ SuiteSparse code, and on JAX. It runs on Linux x86_64, macOS arm64 and Windows x86_64 with Python 3.12 or later. It is not on PyPI yet; pip installs it from the repository:
+gfem is MIT-licensed. It depends on NGSolve (LGPL-2.1), whose wheels contain GPL-2.0+ SuiteSparse code, and on JAX. It runs on Linux x86_64, macOS arm64 and Windows x86_64 with Python 3.12 or later. It installs from PyPI:
 
 ```bash
-pip install "gfem @ git+https://github.com/benvial/gfem"
+pip install gfem
 ```
 
 Extras add MKL PARDISO (`mkl`), the cuDSS GPU solver (`cuda12`, `cuda13`), xarray and PyVista outputs (`xarray`, `viz`) and distributed solves (`mpi`). Documentation, tutorials and the full gradient matrix: #link("https://bvial.info/gfem/")[bvial.info/gfem]. Source: #link("https://github.com/benvial/gfem")[github.com/benvial/gfem].

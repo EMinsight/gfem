@@ -28,8 +28,7 @@ project = "gfem"
 html_title = "gfem"
 version = release = gfem.__version__
 
-# The repository and the published site. REPO_URL also switches the install
-# line below to a pip-from-git install.
+# The repository and the published site.
 REPO_URL = "https://github.com/benvial/gfem"
 html_baseurl = "https://bvial.info/gfem/"
 
@@ -259,21 +258,12 @@ gfem_capabilities_source_url = f"{REPO_URL}/blob/main/"
 
 # The install line and its note, in one place: the front page and get-started.md
 # (the {{ install }} substitution) show both. "extra" is the same source with an
-# extra, for get-started.md's {{ install_extras }}. At PyPI publishing this becomes
-# {"line": "pip install gfem", "note": "", "extra": 'pip install "gfem[{extra}]"'}.
-if REPO_URL:
-    gfem_install = {
-        "line": f'pip install "gfem @ git+{REPO_URL}"',
-        "note": "gfem is not on PyPI yet: pip installs it from the repository.",
-        "extra": f'pip install "gfem[{{extra}}] @ git+{REPO_URL}"',
-    }
-else:
-    gfem_install = {
-        "line": "uv build --wheel && pip install dist/gfem-*.whl",
-        "note": "gfem is not on PyPI yet: build the wheel in a checkout of the "
-        "repository and install it.",
-        "extra": 'pip install "$(ls dist/gfem-*.whl)[{extra}]"',
-    }
+# extra, for get-started.md's {{ install_extras }}.
+gfem_install = {
+    "line": "pip install gfem",
+    "note": "",
+    "extra": 'pip install "gfem[{extra}]"',
+}
 # The extras get-started.md installs, in its table's order.
 gfem_extras = ("mkl", "cuda12", "xarray", "viz", "mpi")
 

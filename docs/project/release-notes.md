@@ -1,6 +1,18 @@
 # Release notes
 
-## Unreleased
+## 0.1.0 (2026-11-20)
+
+First release on PyPI (`pip install gfem`): driven problems (uniform and
+adaptive sweeps), eigenmode problems (including nonlinear ones), electrostatic,
+port mode and thermal problems, with lumped, wave and Floquet ports, on one
+process or across MPI ranks. Gradients with respect to permittivity,
+conductivity, sheet fill and mesh node coordinates are checked against finite
+differences.
+
+The 2026-11-01 preview was tagged 0.1.0 in the repository and never published
+on PyPI; the tag now names this release. The preview stays at commit
+[`18235aa`](https://github.com/benvial/gfem/commit/18235aa). Changes since the
+preview:
 
 - **Solve cache.** `gfem.solve(..., cache="solves")`, `Job.run(cache=...)` and
   `python -m gfem run ... --cache solves` keep each finished result in the
@@ -611,8 +623,8 @@ Mesh refinement:
 
 Solvers, memory and ranks:
 
-- **Wrong S from a PETSc stack built by 0.1.0's script: rebuild it.** A stack built by
-  0.1.0's [`tools/petsc_wheelhouse.sh`](https://github.com/benvial/gfem/blob/main/tools/petsc_wheelhouse.sh)
+- **Wrong S from a PETSc stack built by the preview's script: rebuild it.** A stack built by
+  the preview's [`tools/petsc_wheelhouse.sh`](https://github.com/benvial/gfem/blob/main/tools/petsc_wheelhouse.sh)
   can return wrong S, with no error, on a large direct solve with
   `linear_solver="petsc"`. A 10 M DOF mesh solved in one process stayed below the size
   where this happens. Rebuild the stack with the current script, as
@@ -760,7 +772,7 @@ Anisotropic materials and shared port surfaces:
     Non-symmetric (gyrotropic) tensors and tensors with different principal
     axes raise `ValueError` at `Material`.
 
-  Job files and saved results from 0.1.0 read unchanged.
+  Job files and saved results from the preview read unchanged.
 - **Behaviour change: equal principal values are one value.**
   `Material(eps_r=(2, 2, 2))` is now stored as `eps_r=2.0`: it equals
   `Material(eps_r=2)`, `isotropic` is `True`, and its repr changes. Results are
@@ -777,7 +789,7 @@ Anisotropic materials and shared port surfaces:
   - A second-order surface touching an anisotropic material now raises
     `NotImplementedError`.
   - Node-coordinate gradients of a model whose absorbing face has an
-    anisotropic material behind it now raise `NonDifferentiableError`; 0.1.0
+    anisotropic material behind it now raise `NonDifferentiableError`; the preview
     differentiated the approximate coefficient.
 - **Behaviour change: port modes of rotated transverse tensors.** A port
   cross-section holding a tensor rotated about the port normal no longer drops
@@ -807,11 +819,11 @@ Anisotropic materials and shared port surfaces:
   port or a boundary condition beside a wave port on one surface still does.
 - **Behaviour change for a lone wave port.** A port mode whose reaction or
   Gram matrix on the port face is singular now raises
-  {py:obj}`gfem.PortModeError` before the 3D solve, where 0.1.0 went on
+  {py:obj}`gfem.PortModeError` before the 3D solve, where the preview went on
   without warning. Lone-port S is otherwise unchanged.
 - **Behaviour change: lossy modes below cutoff.** A requested port mode whose
   attenuation is at least its phase constant ($\mathrm{Re}\,\beta \le |\mathrm{Im}\,\beta|$, for example an
-  RC-like line at low frequency) now counts as below cutoff, where 0.1.0
+  RC-like line at low frequency) now counts as below cutoff, where the preview
   accepted it as a propagating mode. The solve raises the port mode sweep's
   cutoff {py:obj}`gfem.PortModeError`, naming the port (and its surface when
   shared), lone wave ports included.
@@ -840,9 +852,10 @@ $\mathbf{E}(\mathbf{r} + \mathbf{a}) = e^{-i \mathbf{k} \cdot \mathbf{a}} \mathb
 - **Job files** carry `Periodic` and `wave_vector`; older job files read
   unchanged.
 
-## 0.1.0 (2026-11-01)
+## Preview (2026-11-01)
 
-First release: driven problems (uniform and adaptive sweeps), eigenmode problems
+Tagged 0.1.0 in the repository until the PyPI release; now commit
+[`18235aa`](https://github.com/benvial/gfem/commit/18235aa). Driven problems (uniform and adaptive sweeps), eigenmode problems
 (including nonlinear ones), electrostatic and port mode problems, with lumped
 and wave ports. Gradients with respect to permittivity, conductivity, sheet
 fill and mesh node coordinates are checked against finite differences.

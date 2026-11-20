@@ -101,7 +101,7 @@ def test_the_extra_is_the_one_the_page_names(page):
     project = tomllib.loads((REPO / "pyproject.toml").read_text())["project"]
     (spec,) = project["optional-dependencies"]["mpi"]
     assert spec.startswith("mpi4py>=4.1.2,<5;")
-    assert "{{ install_mpi }}" in page  # conf.py's install form, not PyPI's
+    assert "{{ install_mpi }}" in page  # conf.py's install line, not a copy of it
     assert 'pip install "gfem[' not in page
 
 

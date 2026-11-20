@@ -133,7 +133,7 @@ extrapolation.
 
 ## How these were measured
 
-- **gfem**: the development version of 5 November 2026, after 0.1.0, with Open MPI
+- **gfem**: the development version of 5 November 2026, between the preview and 0.1.0, with Open MPI
   4.1.6, PETSc 3.26.0 and NGSolve 6.2.2608.
 - **Machine**: MareNostrum 5 general-purpose partition, `highmem` nodes, 28 ranks of 4
   threads per node.

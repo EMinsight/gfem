@@ -13,20 +13,18 @@ gfem 0.1.0 is the first release. The API may still change before 1.0.
 
 ## Install
 
-gfem is not on PyPI yet: pip installs it from the repository.
-
 ```bash
-pip install "gfem @ git+https://github.com/benvial/gfem"
+pip install gfem
 ```
 
 Each optional extra goes in brackets after `gfem`:
 
 ```bash
-pip install "gfem[mkl] @ git+https://github.com/benvial/gfem"     # a faster CPU direct solver, MKL PARDISO (Linux x86_64, Windows); read the licence first
-pip install "gfem[cuda12] @ git+https://github.com/benvial/gfem"  # the direct solver on an NVIDIA GPU, cuDSS (Linux x86_64, Windows); cuda13 for CUDA 13
-pip install "gfem[xarray] @ git+https://github.com/benvial/gfem"  # results as xarray datasets (.to_xarray())
-pip install "gfem[viz] @ git+https://github.com/benvial/gfem"     # fields as PyVista grids (.to_pyvista())
-pip install "gfem[mpi] @ git+https://github.com/benvial/gfem"     # one solve across MPI ranks (Linux x86_64; Open MPI from your machine)
+pip install "gfem[mkl]"     # a faster CPU direct solver, MKL PARDISO (Linux x86_64, Windows); read the licence first
+pip install "gfem[cuda12]"  # the direct solver on an NVIDIA GPU, cuDSS (Linux x86_64, Windows); cuda13 for CUDA 13
+pip install "gfem[xarray]"  # results as xarray datasets (.to_xarray())
+pip install "gfem[viz]"     # fields as PyVista grids (.to_pyvista())
+pip install "gfem[mpi]"     # one solve across MPI ranks (Linux x86_64; Open MPI from your machine)
 ```
 
 Supported platforms: Linux x86_64 (glibc >= 2.28), macOS arm64 and Windows x86_64, Python >= 3.12.
