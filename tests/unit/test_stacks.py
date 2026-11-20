@@ -274,7 +274,7 @@ def _mumps_stack(root: Path, palace: dict, petsc: dict) -> Path:
     return root / "native-oss"
 
 
-def test_the_two_mumps_builds_differ_only_where_adr_0209_allows(tmp_path):
+def test_the_two_mumps_builds_differ_only_in_allowed_build_settings(tmp_path):
     report = provenance.check_stack(
         _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
     )
@@ -1937,7 +1937,7 @@ def test_a_petsc_build_records_its_mumps_block_as_check_compares_it():
         ("zmumps_c.h", "5.9.1", "5.8.0", "5.8.0"),
     ],
 )
-def test_a_petsc_build_that_breaks_adr_0067_or_0209_is_refused(file, old, new, named):
+def test_a_petsc_build_that_breaks_the_petsc_contract_is_refused(file, old, new, named):
     build = dict(PETSC_BUILD)
     build[file] = build[file].replace(old, new) if old else build[file] + new
     assert build[file] != PETSC_BUILD[file]
