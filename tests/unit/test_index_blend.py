@@ -1,4 +1,4 @@
-"""Metal-dielectric density blends (ADR 0113): the index scheme and law ends.
+"""Metal-dielectric density blends: the index scheme and law ends.
 
 `MaterialField.interpolate(..., scheme="index")` blends n - i kappa
 linearly, eps = ((1 - rho) N_void + rho N_solid)^2. With a permittivity law at
@@ -191,7 +191,7 @@ def _constant_eps_solve(mesh, eps, problem):
 
 # --- the paths that refuse a blend ------------------------------------------------
 
-#: The remedy every refusal of a law blend names (ADR 0113).
+#: The remedy every refusal of a law blend names.
 UNIFORM_ONLY = (
     r"metal-dielectric blend \(MaterialField.interpolate with a permittivity "
     r"law\) is supported on the driven uniform sweep only"
@@ -278,7 +278,7 @@ def test_a_frequency_on_a_lossless_pole_of_a_blend_end_raises(mesh):
 
 
 def test_the_static_check_refuses_a_blend_with_a_drude_end(mesh):
-    # the electrostatic rule's own check, whatever calls it (ADR 0111, 0113)
+    # the electrostatic rule's own check, whatever calls it
     from gfem._engine.dispersion import check_static
 
     with pytest.raises(ValueError, match=r"'core' blends .* Drude"):

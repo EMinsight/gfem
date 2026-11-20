@@ -192,7 +192,7 @@ class DirectHandle(PlannedHandle):
 
     A handle (PARDISO or sparse Cholesky) of an operator equal to its
     transpose may solve a refactorization on the factors it holds instead
-    (preconditioner reuse across designs, ADR 0094): `refactorize` at the
+    (preconditioner reuse across designs): `refactorize` at the
     ``frequency`` its factors were made at writes the new values into the
     held matrix and leaves the factors, and its solves run `Gmres` on the
     held matrix, left-preconditioned by them, to `REUSED_TOLERANCE` times the
@@ -348,7 +348,7 @@ class DirectHandle(PlannedHandle):
         r"""Hold the held values' stop norm ``(T, d)``, if any; under the lock.
 
         Reused-factor GMRES then stops on :math:`\|T (d \circ r)\|` of its
-        preconditioned residual :math:`r` on the free DOFs (ADR 0094, 0216);
+        preconditioned residual :math:`r` on the free DOFs;
         without one, on :math:`\|r\|`.
         """
         if stop is None:
@@ -523,7 +523,7 @@ class DirectHandle(PlannedHandle):
 
     @property
     def factor_bytes(self) -> int:
-        """The bytes of `nbytes` that `release_factors` frees (ADR 0123)."""
+        """The bytes of `nbytes` that `release_factors` frees."""
         factors = self._factors
         return 0 if factors is None else factors.factor_bytes
 

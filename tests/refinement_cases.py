@@ -55,7 +55,7 @@ Two more cases, not singular at a re-entrant corner:
   (y, z), wave ports "p1" and "p2" at its ends, at `LOSSY_GUIDE_FREQUENCY`.
   "uniform" fills it with a lossy vacuum (TE10); "slab" puts a lossy eps_r 4
   slab under y = 1 mm along its length (a hybrid lossy port mode); both are
-  uniform lines, matched to their own mode (S11 = 0, ADR 0214). Every lone
+  uniform lines, matched to their own mode (S11 = 0). Every lone
   port's S functional is parallel to its excitation. "step" widens that
   slab to y < 1.5 mm from x = 2 mm on. References `LOSSY_GUIDE_S`, order 4
   on the n = 4 mesh with the same offsets.
@@ -137,14 +137,12 @@ CAVITY_SPLIT = (
 #: rate fitted on m = 3, 4, 5 (alpha 3.98 impedance and absorbing, 4.02
 #: conductor); the alpha = 4 extrapolation lies within 4.2e-9 (relative), and
 #: `LOSSY_WALL_BOUND` bounds both, 1/100 of the m = 3 error (2.4e-6 or more).
-#: Provenance: .scratch/adaptive-refinement-followups/probes/04 (wall.jsonl).
 LOSSY_WALL_OMEGA = {
     "impedance": 1888057987875.6094 + 236196247959.60132j,  # 377 ohm/sq
     "absorbing": 1887838945992.7559 + 236275835911.12192j,  # first order
     "conductor": 1639154393785.1357 + 3222701363.0419827j,  # 1e5 S/m
     # 50 ohm/sq (Q 16.6): Richardson with alpha = 4 on m = 4, 5; the (3, 5)
     # extrapolation lies within 1.2e-10 (relative), its Q within 2.4e-8.
-    # Provenance: .scratch/quantity-estimates/probes/06 (wall.jsonl).
     "impedance 50": 1646446067072.405 + 49650544763.42546j,
 }
 #: Relative bound of each `LOSSY_WALL_OMEGA`.
@@ -156,7 +154,6 @@ LOSSY_WALL_BOUND = 2e-8
 #: fitted on them (alpha 1.33, the corner's 4/3). Against the alpha = 4/3
 #: extrapolation its Q moves by `CONDUCTOR_CAVITY_Q_BOUND` (relative), 16 %
 #: of the n = 16 Q error and 25 % of the n = 32 one, which is not asserted.
-#: Provenance: .scratch/quantity-estimates/probes/06 (lwall.jsonl).
 CONDUCTOR_CAVITY_OMEGA = 460170192679.7072 + 5074129465.918461j
 #: Relative bound of the Q of `CONDUCTOR_CAVITY_OMEGA`.
 CONDUCTOR_CAVITY_Q_BOUND = 8.3e-4
@@ -165,7 +162,7 @@ CONDUCTOR_CAVITY_Q_BOUND = 8.3e-4
 #: (Q about 30), exactly degenerate on the mirrored mesh. Adaptive order-4
 #: refinement on the cluster indicators to 139,848 DOF; its last estimate,
 #: `CONDUCTOR_PAIR_BOUND` (relative), bounds the change between the last
-#: cycles. Provenance: .scratch/quantity-estimates/probes/09 (ref.jsonl).
+#: cycles.
 CONDUCTOR_PAIR_F = 177166666304.92017 + 2933904245.038058j
 #: Relative bound of `CONDUCTOR_PAIR_F`.
 CONDUCTOR_PAIR_BOUND = 2e-9
@@ -262,7 +259,7 @@ ANISOTROPIC_BOX_F = {
     "layer_mu": (161.103601495e9, 226.726156671e9, 238.567948030e9, 255.087323796e9),
 }
 
-#: The lossy fills of the PEC box (ADR 0138), per region: eps_r 2 with a
+#: The lossy fills of the PEC box, per region: eps_r 2 with a
 #: complex mu_r 2 (1 - 0.1i) ("lossy_mu"); "a" (eps_r 3) under "b" (mu_r
 #: 2.5 (1 - 0.2i)) ("lossy_layer_mu"); `ANISOTROPIC_BOX`'s "diag" fill with
 #: tan_delta 0.1 ("lossy_diag_tan"), conductivity (5, 10, 20) S/m
@@ -305,7 +302,6 @@ LOSSY_BOX = {
 #: box's `ANISOTROPIC_BOX_F` frequency (its key here, Hz) (ostau,
 #: 2026-11-14). `LOSSY_BOX_BOUND` (relative) bounds each by |order 3 -
 #: order 4|, under 2 % of the order-2 error it checks.
-#: Provenance: .scratch/quantity-estimates/probes/10 (cmu.jsonl, aniso.jsonl).
 LOSSY_BOX_OMEGA = {
     "lossy_layer_mu": {
         161.103601495e9: 1007119253424.7919 + 68907669884.89853j,
@@ -341,7 +337,6 @@ LOSSY_BOX_BOUND = {
 #: 217.4 GHz ("constant"). Order 4 on the same mesh, direct (ostau,
 #: 2026-11-14); `LAYERED_BOX_BOUND` (relative) bounds each by |order 3 -
 #: order 4|, at most 3 % of the order-2 error it checks.
-#: Provenance: .scratch/quantity-estimates/probes/10 (law.jsonl).
 LAYERED_BOX_OMEGA = {
     "law": {
         200e9: 1365886721224.771 + 28583488045.186317j,
@@ -366,7 +361,6 @@ LAYERED_BOX_BOUND = {
 #: direct, the mode of six nearest the PEC frequency (ostau, 2026-11-14);
 #: `ABSORBING_BOX_BOUND` (relative) bounds each by |order 3 - order 4|, at
 #: most 9.4 % of the order-2 error it checks.
-#: Provenance: .scratch/quantity-estimates/probes/10 (abc2.jsonl).
 ABSORBING_BOX_OMEGA = {
     (1, (1, 1, 0)): 1427348796225.951 + 451233361025.6063j,
     (2, (1, 1, 0)): 1427390703452.3496 + 451169484224.0431j,
@@ -390,7 +384,7 @@ ABSORBING_BOX_BOUND = {
 #: mode) under 0.2 mm of air, the root of the LSM^z dispersion relation
 #: (kz1 / e1) tan(kz1 d1) + (kz2 / e2) tan(kz2 d2) = 0, solved by Newton's
 #: method to `PLASMON_BOUND` (relative); order-4 solves agree with it to
-#: 5e-9 to 1e-5. Provenance: .scratch/quantity-estimates/probes/10 (lsm.py).
+#: 5e-9 to 1e-5.
 PLASMON_OMEGA = 1331954822019.4377 + 10841584018.340836j
 #: Relative bound of `PLASMON_OMEGA`.
 PLASMON_BOUND = 1e-12
@@ -413,7 +407,7 @@ BLOCK_GUIDE_S = {
 LOSSY_GUIDE_FREQUENCY = 170e9
 #: The lossy guide's S entries (to, from), keyed (kind, tan_delta, offset of
 #: both ports in mm): order 4 on the n = 4 mesh, regenerated for the
-#: biorthogonal S functional (ADR 0214, .scratch/port-impedance/refs). An
+#: biorthogonal S functional. An
 #: order-3 solve on n = 6 meets them to 1e-6 (uniform) and 6e-5 (slab,
 #: step); the tan_delta 0.3 thru entries of slab and step at n = 8 are not
 #: used.
@@ -492,7 +486,7 @@ LOSSY_GUIDE_S = {
     },
 }
 
-#: The hybrid strip guide's frequency, Hz (ADR 0137).
+#: The hybrid strip guide's frequency, Hz.
 HYBRID_STRIP_FREQUENCY = 170e9
 #: The hybrid strip guide's propagation constant (1/m) at
 #: `HYBRID_STRIP_FREQUENCY`: Richardson (fitted rate h^1.5, the strip's
@@ -671,7 +665,7 @@ def lossy_guide_model(
 def hybrid_strip_model(
     directory: Path, n: int, offsets: tuple[float, float] = (0.0, 0.0)
 ) -> gfem.Model:
-    """The hybrid strip guide, in mm, ``n`` cells per mm (ADR 0137).
+    """The hybrid strip guide, in mm, ``n`` cells per mm.
 
     A PEC guide 4 mm long (x), 2 x 0.8 mm (y, z), with an eps_r 4 strip at
     y 0.5-1.5 and z 0-0.4 mm along its whole length, so both port faces carry
@@ -752,7 +746,7 @@ def cluster_box_model(
     About ``n`` cells per mm on each axis, Kuhn-split and mirrored about the
     midplanes of x and y, and of z for a cube: a degenerate pair or triple
     stays exactly degenerate on this mesh (the Kuhn split alone would split
-    it by about the discretization error, ADR 0136).
+    it by about the discretization error).
     """
     lx, ly, lz = size
     counts = [max(1, round(n * side)) for side in size]

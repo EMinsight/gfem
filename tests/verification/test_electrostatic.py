@@ -227,7 +227,7 @@ def test_backward_on_the_kept_operator_equals_one_that_prepares_again(
     tmp_path, solver, output
 ):
     # The forward keeps its prepared operator for the adjoint solve; emptied
-    # first, the backward prepares it again (ADR 0125).
+    # first, the backward prepares it again.
     from gfem._engine.cache import ENTRIES
 
     model = stack(tmp_path)

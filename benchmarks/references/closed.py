@@ -9,10 +9,10 @@ r"""Closed-form references, evaluated at 40 significant digits with ``decimal``.
   :math:`\cos(n_1 k_0 d_1) \cos(n_2 k_0 d_2) - \tfrac12 (n_1/n_2 + n_2/n_1)
   \sin(n_1 k_0 d_1) \sin(n_2 k_0 d_2) = \cos(k a)`. With PEC z walls and PMC y
   walls those bands are exact TEM layer modes; the roots are simple. Bound 1e-12
-  relative, ceiling 1e-5 relative (a physics case, ADR 0044).
+  relative, ceiling 1e-5 relative (a physics case).
 - ``r10M_void``: no converged reference (``method: "none"``); the file pins the DOF.
 
-The numbers are checked against probe 08's mpmath values in the unit tests. DOF
+The numbers are checked against mpmath values in the unit tests. DOF
 pins, same-mesh errors and ceilings are the observed figures named beside them.
 """
 
@@ -53,7 +53,7 @@ DOF = {
     "bragg": {"3": 10_620},
     "r10M_void": {"2": 10_248_856},
 }
-"""DOF per order on each case's pinned mesh (probe 07 counts; gfem adapter runs)."""
+"""DOF per order on each case's pinned mesh (gfem adapter runs)."""
 SAME_MESH_ERROR = {"lcavity": {"2": 3.8907e-4}, "bragg": {"3": 2.9203e-11}}
 """gfem direct's relative error on the pinned mesh. lcavity: f1
 (tests/refinement_cases.py ``CAVITY_SPLIT`` level 3, the same 246 416-DOF mesh).

@@ -1,4 +1,4 @@
-# Microstrip reference, pilot stage (ticket 08 Q3, ADR 0408): gfem direct on the
+# Microstrip reference, pilot stage: gfem direct on the
 # ladder rungs L0 p1-p3, L1 p2, L1 p3, one node, one job. Its rate estimate against
 # L1 p3 decides whether the l2 stage runs (`reference microstrip --from RUNDIR`).
 schema = 1

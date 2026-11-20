@@ -39,7 +39,7 @@ Cases and references (none recomputed by the tests but the closed forms):
   on n = 4 against the closed form in `refinement_cases.HYBRID_STRIP_GAMMA`;
   on the same guide without offsets, the share of the S21 estimate that the
   port mode's own gamma error brings at offsets over the whole length stays
-  below `PORT_MODE_SHARE` (ADR 0137);
+  below `PORT_MODE_SHARE`;
 - parallel-plate line between 50 and 30 ohm lumped ports, eps_r 4: S11, S21
   and S22 at 3, 8, 15, 25 GHz on n = 4, 8, 16 cells along the line, against
   its ABCD closed form; the same with a lossy fill (tan_delta 0.3, or
@@ -79,7 +79,7 @@ Cases and references (none recomputed by the tests but the closed forms):
 - lossy walls: the air box with an impedance (377 ohm/sq), first-order
   absorbing or conductor (1e5 S/m) top wall, mode 110 on m = 2, 3, against
   `refinement_cases.LOSSY_WALL_OMEGA` (Richardson);
-- several quantities refining one mesh (ADR 0130), each against its own
+- several quantities refining one mesh, each against its own
   reference on every cycle: the step line's S21 and S11 at 3 or 8 GHz,
   tolerance 2e-4 each, until both meet it; the two bars "screen" C_aa and
   C_ab, tolerances 1e-3 and 5e-3, until both meet them (18 668 DOF, where
@@ -88,7 +88,7 @@ Cases and references (none recomputed by the tests but the closed forms):
 - resistive line: the parallel-plate line closed by its 50 and 30 ohm
   lumped ports as a resonator, first two resonances on n = 4, 8, 16, 32, 64,
   256, against its transmission-line closed form.
-- beside the driven refusals (ADRs 0134, 0139, 0140; `contrast_cases`):
+- beside the driven refusals (`contrast_cases`):
   the conductor plate line (1e3 and 1e5 S/m, n = 1, 2, 3) against order 4
   on the same mesh; the deep-metal wedge and flat floor (Re eps -29.7,
   n = 1, 2) against `contrast_cases.METAL_FLOOR_S`; the metal-block line at
@@ -99,7 +99,7 @@ Cases and references (none recomputed by the tests but the closed forms):
   refused impedance wall, permeability contrast at a lumped port and metal
   wedge at Re eps -1.5 are measured past the refusal (`REFUSED_S`).
 
-Q (kind ``q``, ADR 0131), relative to Q, on the solves of the omega cases:
+Q (kind ``q``), relative to Q, on the solves of the omega cases:
 the resistive line; the lossy walls, plus an impedance wall of 50 ohm/sq
 (`refinement_cases.LOSSY_WALL_OMEGA`, Richardson); the lossy box (exact);
 the L cavity filled with eps_r 4 and 5 S/m, with and without tan_delta 0.05,
@@ -109,7 +109,7 @@ with conductor walls of 1e5 S/m on n = 4, 8, 16 against
 tan_delta Q is exact on any mesh, and its estimate is asserted below 1e-10
 of omega's on the box and the L cavity.
 
-Cluster means (kind ``cluster mean``, ADR 0136), the mean omega of whole
+Cluster means (kind ``cluster mean``), the mean omega of whole
 degenerate clusters relative to its modulus, on air boxes in mm with PEC
 walls (`refinement_cases.cluster_box_model`, mirrored meshes): the 1 x 1 x
 1.5 box's exactly degenerate TE101/TE011 pair on uniform n = 2, 4 and over
@@ -125,7 +125,7 @@ cross on the first refined mesh, and `refine_mesh` raises
 In the reference tier, `refine_mesh` runs of 8 cycles: the pair from n = 2
 and 4, the triple from n = 2.
 
-The eigen terms ADR 0138 lifted, and the lossy magnetic and anisotropic
+The eigen terms the estimates admit, and the lossy magnetic and anisotropic
 fills of the line:
 
 - dispersive box: the rectangular box filled with a Drude (lossy and
@@ -316,7 +316,7 @@ OVERESTIMATES: dict[str, tuple[str, tuple[float, float]]] = {}
 
 #: Configurations that are not claimed, measured bands that reach below 0.9:
 #: name -> (kind, (low, high)). Stretched cells: a lumped port whose face
-#: crosses a permittivity interface, on cells 10:1 along the line (ADR 0139).
+#: crosses a permittivity interface, on cells 10:1 along the line.
 WITNESSES: dict[str, tuple[str, tuple[float, float]]] = {
     "stretched cells at a lumped port across a permittivity contrast": (
         "s",
@@ -324,7 +324,7 @@ WITNESSES: dict[str, tuple[str, tuple[float, float]]] = {
     ),
 }
 
-#: The de-embedding share of a wave port's 2D mode error (ADR 0137): on the
+#: The de-embedding share of a wave port's 2D mode error: on the
 #: hybrid strip guide de-embedded over its whole port-to-port length, the
 #: S21 term |(d_h - d) S21| (d = exp(gamma sum(offsets)), d_h with the port
 #: mode's own gamma) over the S21 estimate stays below it. Measured 0.014 at
@@ -580,7 +580,7 @@ def test_the_step_line_s21_under_mesh_refinement(tmp_path, frequency):
         _assert_in("s", "step line, lumped ports", ref.estimate, error, cycle.estimate)
 
 
-# --- several quantities on one mesh (ADR 0130) ---------------------------------
+# --- several quantities on one mesh --------------------------------------------
 
 
 @pytest.mark.parametrize("frequency", list(rc.STEP_S))
@@ -743,7 +743,7 @@ _HYBRID_STRIP_LENGTH = 4e-3
 
 def test_the_hybrid_strip_port_s_with_offsets(tmp_path):
     # The estimate does not see the port mode's 2D error, which enters S
-    # through the de-embedding factor (ADR 0137): S21 against the closed form
+    # through the de-embedding factor: S21 against the closed form
     # with the exact gamma, the offsets applied by the solve with its own.
     model = rc.hybrid_strip_model(tmp_path, 4, HYBRID_STRIP_OFFSETS)
     problem = gfem.Driven([rc.HYBRID_STRIP_FREQUENCY], keep_fields=True)
@@ -945,7 +945,7 @@ def test_the_rotated_anisotropic_line_s_against_order_4(tmp_path, n):
         _assert_in("s", "anisotropic line", estimate, error, value)
 
 
-# --- next to the driven refusals (ADRs 0134, 0139, 0140) ----------------------
+# --- next to the driven refusals ----------------------------------------------
 
 _ENTRIES = (("p1", "p1"), ("p2", "p1"), ("p2", "p2"))
 
@@ -1001,7 +1001,7 @@ def _driven(model, frequencies):
 @pytest.mark.parametrize("n", [1, 2, pytest.param(3, marks=pytest.mark.reference)])
 @pytest.mark.parametrize("sigma", [1e3, 1e5])
 def test_the_conductor_plate_line_s(tmp_path, sigma, n):
-    # Conductor plates on a propagating line keep the S estimate (ADR 0134):
+    # Conductor plates on a propagating line keep the S estimate:
     # their surface share of the error is at most 0.07.
     plates = tuple(gfem.Conductor(p, conductivity=sigma) for p in ("plate1", "plate2"))
     model = cc.plate_line_model(tmp_path, n, plates=plates)
@@ -1013,7 +1013,7 @@ def test_the_conductor_plate_line_s(tmp_path, sigma, n):
 @pytest.mark.parametrize("n", [1, 2])
 @pytest.mark.parametrize("geometry", ["wedge", "flat"])
 def test_the_deep_metal_s(tmp_path, geometry, n):
-    # Re eps -29.7: past the plasmonic window (ADR 0140). Its edge at -19.9,
+    # Re eps -29.7: past the plasmonic window. Its edge at -19.9,
     # also measured (wedge 3.12 to 3.17, flat 2.07 to 2.29), lies inside the
     # window, so the public estimate refuses it.
     model = cc.metal_floor_model(tmp_path, geometry, n)
@@ -1088,7 +1088,7 @@ def test_the_metal_block_line_s(tmp_path, n):
     ],
 )
 def test_a_port_beside_a_contrast_keeps_the_s_estimate(tmp_path, contrast, ports, case):
-    # The lumped-port refusal (ADR 0139) is not needed for a wave port on a
+    # The lumped-port refusal is not needed for a wave port on a
     # permeability contrast, nor for a lumped port on a loss contrast.
     model = cc.contrast_line_model(tmp_path, contrast, 1, ports=ports)
     reference = cc.CONTRAST_LINE_S[contrast, ports]
@@ -1100,7 +1100,7 @@ def test_a_port_beside_a_contrast_keeps_the_s_estimate(tmp_path, contrast, ports
 
 def test_stretched_cells_at_a_lumped_port_across_a_permittivity_contrast(tmp_path):
     # Cells 10:1 along the line next to the port: an end layer they do not
-    # resolve (ADR 0139). It vanishes on cells of 5:1 or less.
+    # resolve. It vanishes on cells of 5:1 or less.
     model = cc.split_line_model(tmp_path, "across", cc.SPLIT_LINE_HALVES["eps"], 4, 2)
     reference = cc.SPLIT_LINE_S["across", "eps", 4, 2, 3e9]
     kind, (low, high) = WITNESSES[
@@ -1119,7 +1119,7 @@ def _refused_band(name, ratios):
 
 @pytest.mark.parametrize("n", [1, 2])
 def test_the_s_estimate_misses_the_current_on_an_impedance_surface(tmp_path, n):
-    # Why the S estimate refuses it (ADR 0134): S11's error share on the
+    # Why the S estimate refuses it: S11's error share on the
     # resistive walls is not in the volume identity.
     side = gfem.Impedance("side", resistance=100.0)
     model = cc.plate_line_model(tmp_path, n, side=side)
@@ -1133,7 +1133,7 @@ def test_the_s_estimate_misses_the_current_on_an_impedance_surface(tmp_path, n):
 def test_the_s_estimate_misses_the_edge_of_a_permeability_contrast_at_a_port(
     tmp_path,
 ):
-    # Why the S estimate refuses it (ADR 0139): it falls under refinement.
+    # Why the S estimate refuses it: it falls under refinement.
     model = cc.split_line_model(tmp_path, "beside", cc.SPLIT_LINE_HALVES["mu"], 16)
     reference = cc.SPLIT_LINE_S["beside", "mu", 16, 1, 15e9]
     ratios = _entry_ratios(model, _driven(model, [15e9]), reference, refused=True)
@@ -1141,7 +1141,7 @@ def test_the_s_estimate_misses_the_edge_of_a_permeability_contrast_at_a_port(
 
 
 def test_the_s_estimate_misses_a_metal_wedge_in_the_plasmonic_window(tmp_path):
-    # Why the S estimate refuses it (ADR 0140): Re eps -1.5, where the
+    # Why the S estimate refuses it: Re eps -1.5, where the
     # solution itself does not converge at the wedge.
     model = cc.metal_floor_model(tmp_path, "wedge", 2)
     reference = cc.METAL_FLOOR_S["wedge", 2, cc.METAL_PLASMONIC]
@@ -1151,7 +1151,7 @@ def test_the_s_estimate_misses_a_metal_wedge_in_the_plasmonic_window(tmp_path):
     _refused_band("plasmonic permittivity", ratios)
 
 
-# --- lossy magnetic and anisotropic lines: S (ADR 0138) ----------------------
+# --- lossy magnetic and anisotropic lines: S ---------------------------------
 
 _LOSSY_AXES = np.array([3.0, 5.0, 2.0]) * (1 - 1j * np.array([0.05, 0.1, 0.3]))
 #: The line's lossy magnetic and anisotropic fills: (material, eps_zz, mu_yy),
@@ -1187,7 +1187,7 @@ LOSSY_LINE_TENSORS = {
 
 @pytest.mark.parametrize("n", [4, 16])
 def test_the_lossy_permeability_line_s(tmp_path, n):
-    # The recovered H is mu^-1 curl E with the complex mu (ADR 0138).
+    # The recovered H is mu^-1 curl E with the complex mu.
     material, eps, mu = LOSSY_LINE_TENSORS["mu"]
     exact = np.array([_line_s(f, eps, mu) for f in LINE_FREQUENCIES])
     model, result = _line(tmp_path, n, material=material)
@@ -1602,7 +1602,7 @@ def test_an_exact_q_has_a_vanishing_estimate(tmp_path):
         assert q.value < 1e-10 * estimate.value
 
 
-# --- lifted eigen terms (ADR 0138): laws, second-order walls, lossy mu, loss --
+# --- lifted eigen terms: laws, second-order walls, lossy mu, loss -------------
 # --- inside an anisotropic material --------------------------------------------
 
 
@@ -1863,7 +1863,7 @@ def _lossy_diagonal_roots(fill):
 @pytest.mark.parametrize("fill", list(LOSSY_DIAGONAL))
 def test_the_lossy_anisotropic_box_frequencies(tmp_path, fill, m, modes):
     # Loss inside a diagonal tensor fill, Q 1.1 to 10: the modulus weights of
-    # the complex tensor eps_eff are exact (ADR 0138).
+    # the complex tensor eps_eff are exact.
     model = rc.anisotropic_box_model(tmp_path, m, fill)
     roots = _lossy_diagonal_roots(fill)
     for mode in modes:
@@ -1877,8 +1877,8 @@ def test_the_lossy_anisotropic_box_frequencies(tmp_path, fill, m, modes):
 
 
 def test_the_plasmon_bound_mode_measures_below_the_floor(tmp_path):
-    # Not claimed: why a mode bound to a law region at Re eps < 0 raises
-    # (ADR 0138). The private kernel, past the refusal, estimates the LSM
+    # Not claimed: why a mode bound to a law region at Re eps < 0 raises.
+    # The private kernel, past the refusal, estimates the LSM
     # (2, 1) mode of the Drude floor at about 0.96 of its error on m = 2,
     # falling towards 0.81 as Re eps approaches -1 and the mesh coarsens.
     from gfem._engine import estimate as kernels
@@ -1909,7 +1909,7 @@ def test_the_plasmon_bound_mode_measures_below_the_floor(tmp_path):
 PLASMON_WITNESS = (0.93, 0.99)
 
 
-# --- cluster means (ADR 0136) ------------------------------------------------
+# --- cluster means -----------------------------------------------------------
 
 
 def _pair_k2(depth=1.5, width=1.0):

@@ -1,4 +1,4 @@
-# Smoke campaign, r10M part (ticket 12, ADR 0414): r10M_void once on a highmem
+# Smoke campaign, r10M part: r10M_void once on a highmem
 # node at budget 112, default layouts, 1 repeat.
 schema = 1
 cases = ["r10M_void"]

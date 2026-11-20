@@ -7,7 +7,7 @@ that holds the port and only lossless elements is the power the lossy rest
 absorbs, to solver precision, both for plain periodicity and under a Bloch
 wave vector. The side surfaces cross the pairs' surfaces, and one side
 touches x_min but not x_max, so the measurement must read edges and DOFs
-across the pairs (ticket 10 Q4, Q6).
+across the pairs.
 """
 
 import json
@@ -32,7 +32,7 @@ FREQUENCY = 20e9
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 #: The Bloch wave vector, rad/m.
 K = (0.3 * math.pi / (AX * MM), 0.2 * math.pi / (AY * MM), 0.0)
-#: Error of the power identity, W, for 1 W incident (ticket 06; measured
+#: Error of the power identity, W, for 1 W incident (measured
 #: 6e-14 plain and 1.4e-13 Bloch).
 POWER_TOL = 1e-12
 

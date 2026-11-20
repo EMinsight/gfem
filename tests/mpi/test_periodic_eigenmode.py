@@ -1,4 +1,4 @@
-r"""An eigenmode solve on a model with one plain periodic pair, across ranks (ADR 0071).
+r"""An eigenmode solve on a model with one plain periodic pair, across ranks.
 
 The case is `periodic_cases.c3`, the two-layer cell periodic in x, solved on one
 process with ``eigen_solver="slepc"`` and ``direct`` and on 2, 3 and 4 ranks with

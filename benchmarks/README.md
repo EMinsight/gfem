@@ -4,10 +4,10 @@
 cluster under the fairness rules below, stores one suite record per run, and writes
 a campaign report from those records. It is a developer tool. It is not part of the
 gfem wheel or sdist, and no page of the docs build reads, links or includes this
-directory, a record or a report (ADRs 0017, 0080, 0189). This file and the code
+directory, a record or a report. This file and the code
 under `benchmarks/` may name Palace; user-facing docs may not.
 
-Vocabulary (GLOSSARY "Benchmark suite"): suite case, case file, solver adapter,
+Vocabulary: suite case, case file, solver adapter,
 solver kind (`code:kind`), pinned mesh, mesh store, suite record, campaign, campaign
 file, campaign manifest, converged reference, reference bound, software stack, stack
 description, site file, core budget, layout grid, default and best layout, work
@@ -36,14 +36,12 @@ benchmarks/
 
 Everything except `adapters/gfem_worker.py` (runs inside the stack's gfem env) and
 `report/figures.py` (matplotlib, imported lazily) imports only the standard library
-at module top level (ADR 0400). There is no requirements file. The CLI runs with any
+at module top level. There is no requirements file. The CLI runs with any
 Python 3.12 from the repository root or a shipped tree; the report's figures need
 `uv run --group docs`. Harness tests are `tests/unit/test_benchmarks_*.py`; no test
 tier runs Palace.
 
 ## Method and fairness rules
-
-ADRs 0410, 0411 and 0412 hold the decisions.
 
 ### By construction
 
@@ -169,8 +167,8 @@ records.
 - Buckets per record: `startup_s`, `mesh_read_s`, `discretize_s`, `assemble_s`,
   `setup_s`, `solve_s`, `estimate_s`, `postpro_s`, optional `rom_s`, `other_s`. A
   phase a code does not report is `null`, never 0. gfem's come from the `gfem.timing`
-  logger (ADR 0190); Palace's from `palace.json` through an explicit key table (ADR
-  0404; an unknown key fails the parse).
+  logger; Palace's from `palace.json` through an explicit key table (an
+  unknown key fails the parse).
 - Headline time is work time, `work_s = wall_s - startup_s`. Startup (gfem: step wall
   minus the worker's span; Palace: step wall minus `Total`) is shown apart: it
   measures imports and file-system cache state. The estimator and postprocessing stay
@@ -334,7 +332,7 @@ kept. The typed contract is the dataclasses in `harness/records.py`
 ### Records store
 
 Suite records and campaign manifests are kept on `bench-data`, an orphan branch of
-the gfem repository, never in main history (ADR 0402). Create its worktree once,
+the gfem repository, never in main history. Create its worktree once,
 next to the gfem checkout:
 
 ```sh
@@ -376,7 +374,7 @@ site file says where its parts live.
   Palace defaults to 0.19.0; a campaign may override it
   (`[stacks.wheels.versions] palace = "0.18.1.post5"`). Building the gfem env takes
   about 12-15 minutes per commit on the login node.
-- `native-oss`, `native-intel`: prefixes built by `tools/stacks/` (ADR 0191). They
+- `native-oss`, `native-intel`: prefixes built by `tools/stacks/`. They
   validate and refuse to launch while a prefix lacks `provenance.json` or the
   toolchain hashes differ (`plan --stack native-oss` exits 2 today).
 

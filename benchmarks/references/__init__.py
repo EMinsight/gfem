@@ -1,4 +1,4 @@
-"""Converged references of the suite cases (ADRs 0408, 0409).
+"""Converged references of the suite cases.
 
 Each suite case directory holds one ``reference.json`` (``suite-reference/1``):
 the converged values a run is scored against, their bound, the plausibility
@@ -11,5 +11,5 @@ ceiling per order, the DOF pin per mesh and order, and provenance.
 - :mod:`benchmarks.references.microstrip`: the microstrip ladder (rung case files
   under ``microstrip/``, campaign stages, Richardson extrapolation, bound).
 
-Standard library only (ADR 0400).
+Standard library only.
 """

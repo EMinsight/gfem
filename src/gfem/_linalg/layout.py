@@ -1,7 +1,7 @@
 """How a space's DOFs lie across ranks: the products of load and state columns.
 
 A column is a NumPy array over a rank's DOFs, shared ones included, and its role
-names its status (ADR 0062). A **load column** (``solve``'s ``B``, ``apply``'s
+names its status. A **load column** (``solve``'s ``B``, ``apply``'s
 result, a port's excitation or functional) is ``DISTRIBUTED``: a shared DOF's value
 is the sum over the ranks that hold it. A **state column** (``solve``'s result,
 ``x0``, ``apply``'s ``X``) is ``CUMULATED``: each of those ranks holds the value.
@@ -21,7 +21,7 @@ exchange (`DofLayout.held_by_any`).
 With one process (`ONE_PROCESS`) the roles collapse: `pair` is literally
 ``load.T @ state``, each state product is today's NumPy expression, bit for bit,
 and nothing communicates. Each product returns an agreed value, reduced to rank 0
-and broadcast (ADR 0058).
+and broadcast.
 """
 
 from __future__ import annotations
@@ -211,7 +211,7 @@ class RankLayout(DofLayout):
         vector.SetParallelStatus(ngs.la.PARALLEL_STATUS.CUMULATED)
 
     def blas_threads(self, threads: int) -> contextlib.AbstractContextManager[None]:
-        """Hold every loaded BLAS at ``threads`` for a phase (ADR 0076)."""
+        """Hold every loaded BLAS at ``threads`` for a phase."""
         return blas.held(threads)
 
 

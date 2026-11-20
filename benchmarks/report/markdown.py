@@ -1,7 +1,7 @@
-"""``index.md`` of a campaign report, from the ``report.json`` mapping (ADR 0413).
+"""``index.md`` of a campaign report, from the ``report.json`` mapping.
 
 Every figure is followed by the table of its numbers. The first line is an HTML
-comment naming the inputs digest. Standard library only (ADR 0400).
+comment naming the inputs digest. Standard library only.
 """
 
 from __future__ import annotations

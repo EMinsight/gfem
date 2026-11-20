@@ -4,7 +4,7 @@ The host kernel of `gfem.electric_energy`: ``1/4 eps0 ∫ Re(eps_r) E .
 conj(E)`` over each region's tetrahedra in the solve domain, at quadrature
 order ``2 order``, exact for the discrete field and an element-wise
 permittivity. A permittivity law region reads the Brillouin weight ``Re
-d(omega eps)/d omega`` at the field's real frequency instead (ADR 0109).
+d(omega eps)/d omega`` at the field's real frequency instead.
 The field's coefficients are on the unpaired space of the driven operator,
 also on a model with `gfem.Periodic` pairs.
 """
@@ -55,7 +55,7 @@ def electric_energy(field: Field, model: Model) -> dict[str, float]:
     )
     if dispersion.law_regions(model):
         # a law region's eps_inf to its Brillouin weight at the field's
-        # frequency (ADR 0109)
+        # frequency
         omega = float(np.real(np.asarray(field.omega)))
         dispersion.check_energy(
             model, omega / (2 * math.pi), "field at", brillouin=True

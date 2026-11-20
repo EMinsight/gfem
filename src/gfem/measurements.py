@@ -382,7 +382,7 @@ def _layer_energy(
     if kind == "default":
         density = eps_l * _norm2(_average(e, ex))
     elif kind == "MS":
-        # one layer per selected side (ADR 0106): density per side, then summed
+        # one layer per selected side: density per side, then summed
         d = jnp.einsum("tsij,mtsqj->mtsqi", eps_side, e)
         dn = jnp.einsum("mtsqi,ti->mtsq", d, normal)
         density = _sum_sides(_sq(dn), ex & ~vacuum) / eps_l
@@ -403,7 +403,7 @@ def _refuse_law_sides(
     """Raise if a side of a measured surface lies in a permittivity law region.
 
     The ``"MS"`` and ``"SA"`` layers read a side's Re eps_r, which a law does
-    not have (ADR 0109). A law region that touches no measured face is
+    not have. A law region that touches no measured face is
     skipped by `_media`.
 
     Raises:
@@ -769,9 +769,8 @@ def _recorded_power_flow(
 ) -> jax.Array:
     """`power_flow` while an objective is classified: one recorded output.
 
-    Its side is checked as the absorbed-power estimate needs it (ADR 0143,
-    ticket 11's raise table): named regions, no port surface in or on it,
-    only volume losses, isotropic non-law materials.
+    Its side is checked as the absorbed-power estimate needs it: named regions, no port
+    surface in or on it, only volume losses, isotropic non-law materials.
     """
     label = recorder.label(field, "power_flow")
     if callable(names):

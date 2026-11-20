@@ -17,7 +17,7 @@ two-sided: a left vector ``y`` (``T(k)^T y = 0``), started at ``conj(x)``
 (exact for a lossless, undamped cell), takes the same steps on the transposed
 system, ``y <- y - T(sigma)^-T T(k)^T y`` on the same factorization; ``k``
 comes from ``y^T T(k) x = 0``, second order in both errors, and a pair
-converges when both backward errors meet the tolerance (ADR 0042).
+converges when both backward errors meet the tolerance.
 
 The vectors are state columns: their norms are the layout's
 (`gfem._linalg.layout.DofLayout.state_norm`), over owned DOFs under ranks.

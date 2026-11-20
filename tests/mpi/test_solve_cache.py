@@ -1,4 +1,4 @@
-"""The solve cache across ranks (ADR 0436).
+"""The solve cache across ranks.
 
 Rank 0 alone reads and writes the store and broadcasts what it found; every rank
 returns the same bits, checked by `on_ranks`. Only a fieldless sweep is cached: a

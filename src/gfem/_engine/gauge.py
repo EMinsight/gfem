@@ -8,8 +8,7 @@ is written :math:`x = T y` with the gauge basis
     T = \begin{bmatrix} E_c & G_f & X \end{bmatrix},
 
 square and nonsingular from the free DOFs of the gauge space
-:math:`Y = V \times H^1 \times \mathbb{C}^k` to those of :math:`V` (ADR
-0217):
+:math:`Y = V \times H^1 \times \mathbb{C}^k` to those of :math:`V`:
 
 - :math:`E_c`: a unit column per free cotree H(curl) DOF;
 - :math:`G_f`: the discrete gradient of each free H1 DOF, read off NGSolve's
@@ -29,14 +28,13 @@ PEC set only, so it is cached per topology and survives node moves.
 A piece :math:`A_k` becomes :math:`\hat A_k = T^\mathsf{T} A_k T`; a curl
 piece is formed on the cotree block alone, :math:`E_c^\mathsf{T} A_k E_c`,
 so its gradient rows and columns hold exact zeros, which the low-frequency
-accuracy rests on (ADR 0215). Every :math:`\hat A_k` lies in the symbolic
+accuracy rests on. Every :math:`\hat A_k` lies in the symbolic
 gauged pattern :math:`|T|^\mathsf{T} |P| \, |T|`, :math:`P` the element graph
 of :math:`V`; the gauge template is a complex NGSolve matrix on :math:`Y`
 whose free CSR is that pattern, in its order.
 
 Not for periodic pairs, Bloch wave vectors or ranks: `resolve_gauge` decides
-whether a driven solve runs through the gauge (``SolverOptions.gauge``, ADR
-0220).
+whether a driven solve runs through the gauge (``SolverOptions.gauge``).
 """
 
 from __future__ import annotations
@@ -643,7 +641,7 @@ def resolve_gauge(
     bloch: bool = False,
     floquet: bool = False,
 ) -> GaugeChoice:
-    """Resolve ``SolverOptions.gauge`` for one driven solve (ADR 0220).
+    """Resolve ``SolverOptions.gauge`` for one driven solve.
 
     The gauge applies to a solve whose linear solver resolved to
     ``"direct"`` on the CPU in one process, for a model with no periodic

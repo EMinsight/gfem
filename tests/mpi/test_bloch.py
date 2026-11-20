@@ -1,7 +1,7 @@
-"""A driven Bloch solve on a model with one periodic pair across ranks (ADR 0040, 0071).
+"""A driven Bloch solve on a model with one periodic pair across ranks.
 
 Each row compares ranks with the same function in pytest's one process, relative to
-the largest one-process entry, at ADR 0070's gates; `on_ranks` checks that ranks
+the largest one-process entry, at the rank gates; `on_ranks` checks that ranks
 agree bit for bit. The wave vector lies along the pair, ``k = 0.3 pi / a``. The cases:
 
 - cellx (`periodic_cases.cellx`): G with its x pair, a resistive sheet across the
@@ -34,7 +34,7 @@ from gfem._engine.cache import ENTRIES
 from gfem._engine.mesh import forced_search
 from gfem._linalg import coarse
 
-#: Relative to the largest one-process entry: ADR 0070's gates.
+#: Relative to the largest one-process entry: 1e-11 on direct, 1e-9 on BDDC.
 GATES = {"bddc_gmres": 1e-9, "direct": 1e-11}
 #: A kept field at points, and a field objective, relative (7.1e-13 measured).
 FIELD_GATE = 1e-10

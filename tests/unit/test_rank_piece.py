@@ -1,4 +1,4 @@
-"""A rank's piece of a field: columns padded to one shape on all ranks (ADR 0063)."""
+"""A rank's piece of a field: columns padded to one shape on all ranks."""
 
 import numpy as np
 

@@ -1,6 +1,6 @@
 """Permittivity laws: the value of a `Material`'s eps_r that depends on frequency.
 
-Reference values come from the sign probe of the dispersive-materials design
+Reference values come from an independent check of the sign convention
 (e^{+iωt}, angular-frequency forms in rad/s) and its printed output.
 """
 
@@ -19,7 +19,7 @@ from gfem import _codec
 TP = 2 * np.pi
 
 
-# The probe's forms, in rad/s (the classes take Hz).
+# The check's forms, in rad/s (the classes take Hz).
 def _drude(f, fp, g):
     w = TP * f
     return -((TP * fp) ** 2) / (w * (w - 1j * TP * g))

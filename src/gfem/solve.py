@@ -226,12 +226,12 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
 ) -> tuple[Any, dict[Any, Any] | None]:
     """`solve`, and the adjoints of the per-frequency ``adjoint_loads`` with it.
 
-    ``gfem.refine_mesh`` asks for an estimate's solved duals (ADR 0089
-    amendment, ADR 0132): extra right-hand sides on the forward's
+    ``gfem.refine_mesh`` asks for an estimate's solved duals:
+    extra right-hand sides on the forward's
     factorization, formed per frequency from that frequency's solution
     (`gfem._engine.driven.AdjointLoads`); for an eigenmode problem, the
     participation duals of its `gfem._eigen.rule.DualRequest`s, on the
-    forward's live factors (ADR 0142). Returns
+    forward's live factors. Returns
     the result, and those adjoints per (frequency, key), or ``None``
     without ``adjoint_loads``. Warnings point at the caller of `solve`,
     one frame above this one.
@@ -286,7 +286,7 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
             rule.adjoint_loads = adjoint_loads
         if is_traced((model, problem)):
             # a rule may differentiate a problem through its own leaves (a thermal
-            # problem's summed heat density, ADR 0178)
+            # problem's summed heat density)
             inputs = getattr(rule, "vjp_problem", None)
             leaves = problem if inputs is None else inputs(problem)
             return rule.result(solve_vjp(rule, model, leaves)), None
@@ -328,7 +328,7 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
 def _check_domain(model: Model, problem: Any) -> None:
     """Raise when the problem's physics has nothing left to solve on.
 
-    A model needs some volume in some physics' domain (ADR 0167); an empty
+    A model needs some volume in some physics' domain; an empty
     domain for one physics raises when a problem of that physics is solved.
     A problem names its physics as ``_physics`` (`physics_of`).
 
@@ -349,7 +349,7 @@ def _check_domain(model: Model, problem: Any) -> None:
 def _check_blends(model: Model, problem: Any) -> None:
     """Raise for a density blend with a law end off the driven uniform sweep.
 
-    Such a blend (ADR 0113) is solved by `gfem.Driven` on the uniform sweep
+    Such a blend is solved by `gfem.Driven` on the uniform sweep
     only (`gfem._engine.dispersion.refuse_blends`).
 
     Raises:

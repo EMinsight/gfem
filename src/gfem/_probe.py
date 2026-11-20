@@ -7,7 +7,7 @@ Both run `gfem._engine.probe` behind gfem's gradient wrapper
 (`gfem._adjoint.measure`): differentiable in the field coefficients, while
 mesh-node and point perturbations raise `gfem.NonDifferentiableError`.
 
-Under ranks a field's coefficients are a rank's piece (ADR 0063), and each of these
+Under ranks a field's coefficients are a rank's piece, and each of these
 calls is collective.
 """
 

@@ -4,7 +4,7 @@ For terminal i, the potential phi_i is 1 on terminal i, 0 on the other
 terminals and the ground, and solves the charge-free Laplace problem
 ``a(phi_i, v) = 0`` with ``a(u, v) = int eps0 eps_r grad u . grad v`` for
 every v vanishing on the fixed surfaces. Then ``C_ij = a(phi_i, phi_j)``,
-which equals Palace's energy formula ``E(phi_i + phi_j) - (C_ii + C_jj) / 2``
+which equals the energy formula ``E(phi_i + phi_j) - (C_ii + C_jj) / 2``
 and is symmetric. All terminals share one prepared operator: the right-hand
 sides are the liftings, solved together: by CG + BDDC by default, or by
 one sparse Cholesky factorization (``direct``). ``phi_i^T K phi_j`` is
@@ -14,7 +14,7 @@ the solver tolerance.
 
 The terminal potentials are their own adjoints (``dC_ij = phi_i^T dK phi_j``),
 so a capacitance gradient needs no solve. A kept entry holds the potentials
-and the forward's prepared operator (`KeptHandle`, ADR 0125): a potential
+and the forward's prepared operator (`KeptHandle`): a potential
 cotangent solves its adjoint on it, at the adjoint tolerance, and a backward
 with no such cotangent frees it. An entry over ``retain_memory`` loses the
 operator first and keeps its potentials; its backward then prepares the
@@ -84,7 +84,7 @@ class KeptHandle:
     """An electrostatic forward's prepared operator, kept for its backward pass.
 
     The cache entry's ``handle`` (`gfem._engine.cache.Entry`), modelled on
-    `gfem._eigen.kept.KeptOperator` (ADR 0104): the cache counts its bytes
+    `gfem._eigen.kept.KeptOperator`: the cache counts its bytes
     and, through `free_base`, drops the operator of an entry over
     ``SolverOptions.retain_memory`` before it drops any entry, which keeps
     its potentials. Nothing of it goes to the plan pool.
@@ -171,7 +171,7 @@ ElectrostaticLoads = Callable[[DualContext], Mapping[Hashable, np.ndarray]]
 
 
 def objective_loads(keys: Sequence[tuple[Any, ...]]) -> ElectrostaticLoads:
-    """The dual loads of an electrostatic objective's reads (ADR 0141).
+    """The dual loads of an electrostatic objective's reads.
 
     A key ``("energy", region, terminal)`` is the load ``K_r phi_i`` of the
     energy of excitation ``terminal`` in ``region``; ``("mean", regions)``
@@ -285,7 +285,7 @@ def terminal_lifting(
     indicator of the vertex DOFs of the terminal's triangles is its exact
     lifting. Under ranks a rank may hold a terminal vertex without any of its
     triangles: the mask goes through `DofLayout.held_by_any`, so every holder
-    of a DOF agrees and the column is a state (ADR 0501).
+    of a DOF agrees and the column is a state.
 
     Returns:
         ``(ndof,)``, a state column.
@@ -343,7 +343,7 @@ class ElectrostaticRule:
     reads = frozenset({"eps_r"})
     #: Outputs whose cotangents the backward pass handles.
     differentiable_outputs = frozenset({"capacitance", "energy", "potential"})
-    #: Outputs that are a rank's own piece under ranks (ADR 0063): the ranks
+    #: Outputs that are a rank's own piece under ranks: the ranks
     #: compare their cotangents' shapes, not their values.
     pieces = frozenset({"potential"})
 
@@ -464,7 +464,7 @@ class ElectrostaticRule:
             )
             phi += lift
             scale = scipy.constants.epsilon_0 * built.scale
-            # a load paired with a state: a rank sum, agreed (ADR 0062)
+            # a load paired with a state: a rank sum, agreed
             c = handle.layout.pair(handle.apply(phi), phi) * scale
             energy = (
                 0.5
@@ -588,8 +588,7 @@ class ElectrostaticRule:
         material property (losses, ``mu_r``, thermal values), boundary and
         port value is not, so its gradient is an exact zero. Of a
         permittivity law, the static permittivity reads eps_inf and the
-        strengths only; its frequency parameters are exact zeros (ADR 0011's
-        amendment).
+        strengths only; its frequency parameters are exact zeros.
         """
         if kind[0] == "material":
             return "read" if kind[2] in self.reads else "unread"
@@ -640,7 +639,7 @@ class ElectrostaticRule:
                 right.append(phi @ (0.5 * (ct + ct.T)).T)
             load = None
             if "potential" in cotangents:
-                # a rank's rows, then its padding (ADR 0063)
+                # a rank's rows, then its padding
                 load = np.array(cotangents["potential"], dtype=float)[: phi.shape[0]]
             if "energy" in cotangents:
                 ct = np.asarray(cotangents["energy"], dtype=float)

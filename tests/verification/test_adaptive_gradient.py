@@ -207,7 +207,7 @@ def test_pullbacks_twice_and_after_eviction_equal_fresh_gradients(line):
     np.testing.assert_allclose(recompute(eps), fresh, rtol=RTOL)
 
 
-# --- factors reused across designs at each sample (ADR 0121) ---------------------
+# --- factors reused across designs at each sample --------------------------------
 
 REUSE_TOLERANCE = 1e-6
 SAMPLE_ROWS = [GRID.index(f) for f in SAMPLES]
@@ -266,7 +266,7 @@ def test_each_frozen_sample_reuses_its_own_factors_across_designs(line, monkeypa
     omegas = sorted(2 * np.pi * f for f in SAMPLES)
     # design 0 meets each sample for the first time, its backward too (the
     # same visit): one base, refactorized from sample to sample; design 1
-    # gives each sample its own base (ADR 0121, amended), whose chain starts
+    # gives each sample its own base, whose chain starts
     # at its next refactorization; then every sample reuses its own, and a
     # backward's steps refactorize nothing
     assert not [step for step in steps[0] if step[1] == "reused"]

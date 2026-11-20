@@ -252,10 +252,10 @@ def test_a_one_process_solve_never_imports_mpi4py(environment, tmp_path):
     ("dofs", "size", "factor"),
     [
         (3_300_000, 28, 1),  # r10M at 28x4: 119 k per rank, nothing to reduce
-        (3_300_000, 64, 2),  # 32 ranks, as ticket 18 ran
+        (3_300_000, 64, 2),  # 32 ranks, as run on MN5
         (22_356_889, 896, 14),  # r10M_void_split on 32 nodes: 64 ranks, not 180
         (22_356_889, 64, 1),
-        (33_000_000, 896, 14),  # ADR 0078's arithmetic at 100 M DOF: still 64
+        (33_000_000, 896, 14),  # arithmetic at 100 M DOF: still 64
         (250_000, 8, 4),
         (1_000, 8, 8),  # a tiny mesh: one rank
         (1_000, 1, 1),
@@ -546,7 +546,7 @@ def test_load_result_above_one_rank_refuses_a_bundle_with_fields(tmp_path, monke
     assert gfem.load_result(tmp_path / "fields", comm=Stub(1)).e_fields
 
 
-#: One MN5 node's hyperthreads (ticket 18): CPU c and c + 112 share a core.
+#: One MN5 node's hyperthreads: CPU c and c + 112 share a core.
 def _mn5_core(cpu: int) -> int:
     return cpu % 112
 
@@ -559,7 +559,7 @@ def _cpus(text: str) -> frozenset[int]:
     return frozenset(out)
 
 
-#: Masks read under each launcher (ticket 18, job 48435924), and each rank's threads.
+#: Masks read under each launcher (MN5 job 48435924), and each rank's threads.
 RECORDED_MASKS = [
     ("srun -c7", ["0-6", "56-62"], 7),
     ("srun -c7 --cpu-bind=cores", ["0-6,112-118", "56-62,168-174"], 7),
@@ -762,7 +762,7 @@ def test_a_launch_above_the_cap_skips(monkeypatch):
 
 
 def test_a_general_operator_is_no_distributed_refusal():
-    # a general operator under ranks reaches its backend (ADR 0078 amendment)
+    # a general operator under ranks reaches its backend
     assert "general_operator" not in _mpi._REFUSALS
     assert "general_operator" not in mpi_cases.GUARD_KEYS
 

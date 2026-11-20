@@ -7,7 +7,7 @@ Ampère as the 6x6 pencil ``[[0, mu], [-eps, 0]] x = n_eff [[N, 0], [0, N]]
 x`` on ``x = (E, H)``, with ``N = [n]x``. Its finite eigenvalues are ``±n_1``
 and ``±n_2``. For each of the two forward modes (``Re n_eff > 0``),
 ``n x mu^-1 curl E / (i k0) = -n_eff n x mu^-1 (n x E)``; the admittance is
-the unique tangential map that holds for both (ADR 0051).
+the unique tangential map that holds for both.
 """
 
 import numpy as np

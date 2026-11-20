@@ -106,7 +106,7 @@ def _wave_vector(value: Any, owner: str) -> tuple[float, float, float] | None:
 
 
 def _reference_frequency(value: Any, wave_vector: Any) -> float | None:
-    """``None``, or the frequency (Hz) at which ``wave_vector`` holds (ADR 0151)."""
+    """``None``, or the frequency (Hz) at which ``wave_vector`` holds."""
     if value is None:
         return None
     check_fixed(value, "Driven.wave_vector_frequency must be a fixed number")

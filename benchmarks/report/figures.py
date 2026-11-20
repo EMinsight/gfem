@@ -1,4 +1,4 @@
-"""Deterministic SVG figures of a campaign report (ADR 0413).
+"""Deterministic SVG figures of a campaign report.
 
 Drawn from the ``report.json`` mapping only. matplotlib is imported here and nowhere
 else in the suite, and only when a report is drawn (``uv run --group docs``). Output

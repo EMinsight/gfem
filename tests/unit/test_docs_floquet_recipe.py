@@ -3,7 +3,7 @@
 docs/recipes/floquet-ports.md runs nothing at docs build time: its meshes are
 the reader's own. Its slab formula is checked here against the tangential-E
 Airy form the Floquet verification cases use, its public names against
-gfem, and the page against quoting test evidence (ADR 0017, as amended).
+gfem, and the page against quoting test evidence.
 """
 
 import math

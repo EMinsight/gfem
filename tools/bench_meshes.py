@@ -4,7 +4,7 @@
 
 writes ``OUT_DIR/lcav16.msh``; pin it with
 ``python -m benchmarks case pin lcavity OUT_DIR/lcav16.msh --unit mm``. The pinned
-file is authoritative (ADR 0405): no harness step, campaign or test re-runs a
+file is authoritative: no harness step, campaign or test re-runs a
 generator. A human runs one only to author a new case or a ladder level, which gets
 its own pin. Imports ``tools/structured_meshes`` only, never ``tests/``.
 """

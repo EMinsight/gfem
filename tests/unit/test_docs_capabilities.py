@@ -747,7 +747,7 @@ def test_the_effectivity_table_lists_every_estimate_kind(derived):
 
 
 def test_the_port_mode_share_is_the_estimate_tests_bound(derived, estimate_test):
-    # ADR 0137: the Limits sentence quotes the bound the hybrid strip test holds.
+    # the Limits sentence quotes the bound the hybrid strip test holds.
     share = estimate_test.PORT_MODE_SHARE
     assert derived["effectivity"]["port mode share"] == {"high": f"{share:g}"}
 

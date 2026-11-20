@@ -1,8 +1,8 @@
 """Per-physics solve domains, thermal boundaries and their model checks.
 
 `Model(excluded=...)` takes a tuple (electromagnetic problems only) or a
-mapping with the keys "em", "thermal" and "dc_conduction" (ADRs 0167, 0173).
-Thermal boundaries are checked against the thermal domain (ADR 0168).
+mapping with the keys "em", "thermal" and "dc_conduction".
+Thermal boundaries are checked against the thermal domain.
 
 Fixture (see test_model.py): "sub" holds a dielectric entity and a conductor
 entity whose shell is "metal_xy" + "metal_z"; "air" sits on top; "air__sub"

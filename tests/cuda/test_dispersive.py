@@ -1,6 +1,6 @@
 """A permittivity law on the GPU: run with ``pytest -m cuda``.
 
-The GPU's only path is the summed matrix (ADR 0110), which the law's
+The GPU's only path is the summed matrix, which the law's
 susceptibility piece joins like any other piece: driven S of the strip line with
 the `poles` law on its core (`gradient_cases.dispersive_line`, Re eps < 0 at its
 first frequency) on ``device="cuda"`` equals the CPU direct solver's.

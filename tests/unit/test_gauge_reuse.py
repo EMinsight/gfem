@@ -1,6 +1,6 @@
 r"""Reused direct factors under the tree-cotree gauge stop in the field's norm.
 
-ADR 0094 and 0216. On the parallel-plate line (12 280 free DOFs), a gauged
+On the parallel-plate line (12 280 free DOFs), a gauged
 direct handle refactorized at one permittivity solves a nearby one on the
 factors it holds. Its GMRES stops on the field :math:`X = T (d \circ \hat Y)`,
 so the field is within a twentieth of the tolerance of the exact gauged solve;

@@ -145,7 +145,7 @@ ROWS = {
         recipe="recipes/periodic-cell",
         front=False,
     ),
-    # the ratios and normalized fields of isolated modes (ADR 0102):
+    # the ratios and normalized fields of isolated modes:
     # Capabilities page only
     "eigenmode_participation": Row(
         "Eigenmode, participations",
@@ -159,7 +159,7 @@ ROWS = {
         recipe="recipes/measurements",
         front=False,
     ),
-    # thermal and DC conduction (ADR 0177): Capabilities page only
+    # thermal and DC conduction: Capabilities page only
     "steady_thermal": Row(
         "Steady thermal", "temperature, rise, heat and power", front=False
     ),
@@ -171,7 +171,7 @@ ROWS = {
     "dc_conduction": Row(
         "DC conduction", "conductance, dissipation and potentials", front=False
     ),
-    # measurements of a rise on a held mode (ADRs 0175, 0183): the mode's
+    # measurements of a rise on a held mode: the mode's
     # inputs raise, the rise and the thermo-optic coefficient differentiate
     "thermo_optic_shift": Row(
         "Thermo-optic shift", "phase per length of a section", front=False
@@ -194,7 +194,7 @@ PROBLEMS = {
     "driven_adaptive": Problem("driven", "s.values", "lumped"),
     "driven_periodic_plain": Problem("driven_periodic_plain", "s.values", "lumped"),
     "driven_periodic_bloch": Problem("driven_periodic_bloch", "s.values", "lumped"),
-    # Floquet ports on a periodic cell (ADR 0155): S on the periodic rows
+    # Floquet ports on a periodic cell: S on the periodic rows
     "driven_floquet_plain": Problem("driven_periodic_plain", "s.values", "floquet"),
     "driven_floquet_bloch": Problem("driven_periodic_bloch", "s.values", "floquet"),
     "eigenmode": Problem("eigenmode", "omega"),
@@ -213,17 +213,17 @@ PROBLEMS = {
     "electrostatic_lumped": Problem("electrostatic", "capacitance"),
     "port_mode_lumped": Problem("port_mode", "gamma"),
     "port_mode_law": Problem("port_mode", "gamma"),
-    # a permittivity law beside a material field (ADR 0112)
+    # a permittivity law beside a material field
     "driven_law": Problem("driven", "s.values", "lumped"),
     "driven_law_absorbing": Problem("driven", "s.values", "lumped"),
     "driven_law_adaptive": Problem("driven", "s.values", "lumped"),
     "driven_periodic_law": Problem("driven_periodic_plain", "s.values", "lumped"),
     "eigenmode_law": Problem("eigenmode", "omega"),
-    # a metal-dielectric density blend (ADR 0113)
+    # a metal-dielectric density blend
     "driven_blend": Problem("driven", "s.values", "lumped"),
-    # the static permittivity of a law (ADR 0111)
+    # the static permittivity of a law
     "electrostatic_law": Problem("electrostatic", "capacitance"),
-    # thermal and DC conduction (ADR 0177)
+    # thermal and DC conduction
     "steady_thermal": Problem("steady_thermal", "temperature.coefficients"),
     "transient_thermal": Problem("transient_thermal", "traces.upper"),
     "dc_conduction": Problem("dc_conduction", "conductance"),
@@ -258,9 +258,9 @@ OFF_GRID = {
     "tan_delta": "loss tangent",
     "lumped": "lumped values",
     "law": "permittivity-law parameters",
-    # the density leaf of a law blend, ("material", region, "blend") (ADR 0113)
+    # the density leaf of a law blend, ("material", region, "blend")
     "blend": "density of a metal-dielectric blend",
-    # thermal problems (ADR 0177): their properties, and the problem leaves
+    # thermal problems: their properties, and the problem leaves
     # ("problem", ...): a heat source's amount, the waveform's scales
     "thermal_conductivity": "thermal conductivity",
     "mass_density": "mass density",
@@ -287,7 +287,7 @@ FORMS |= dict.fromkeys(OFF_GRID_PROPERTIES, "isotropic") | {
     f"{name}{AXES}": "principal values" for name in OFF_GRID_PROPERTIES
 }
 #: The lumped values of EXPECTED's input kinds ("port", <index>, <value>) and
-#: ("boundary", <index>, <value>): the off-grid input "lumped" (ADR 0100).
+#: ("boundary", <index>, <value>): the off-grid input "lumped".
 LUMPED_VALUES = {
     "port": ("inductance", "capacitance"),
     "boundary": ("resistance", "inductance", "capacitance"),
@@ -307,7 +307,7 @@ SOLVERS = {"direct": "direct solver", "bddc_gmres": "BDDC + GMRES"}
 GRID_LABELS = {
     "electrostatic x sheet fill": ("electrostatic", "fill"),
     "eigenmode mode field x node coordinates": ("eigenmode_field", "nodes"),
-    # the shape-gradient refusal of the thermal and conduction forms (ADR 0177)
+    # the shape-gradient refusal of the thermal and conduction forms
     "steady_thermal x node coordinates": ("steady_thermal", "nodes"),
     "transient_thermal x node coordinates": ("transient_thermal", "nodes"),
     "dc_conduction x node coordinates": ("dc_conduction", "nodes"),
@@ -772,7 +772,7 @@ def gradient_matrix(cells, expected, out_of_scope) -> dict:
 #: The ``EXPECTED`` outcomes an off-grid input's cells may verify, by input:
 #: gradients, and for a permittivity law also the exact zeros of the
 #: parameters a problem never reads (the electrostatic static permittivity
-#: reads no frequency, ADR 0011's amendment).
+#: reads no frequency).
 _VERIFIED_CLAIMS = {name: ({"gradient"},) for name in OFF_GRID} | {
     "law": ({"gradient"}, {"gradient", "zero"})
 }
@@ -1007,11 +1007,12 @@ def distributed_refusals(keys, methods, guards, feature, messages) -> list[dict]
 
 # --- The error estimates' effectivity -------------------------------------------
 
-#: The lowest effectivity any claimed case may assert (ADR 0128): below it a
+#: The lowest effectivity any claimed case may assert: below it a
 #: band is a witness, not a claim.
 CLAIMS_FLOOR = 0.9
 
-#: The entry kinds the ``quantity`` range spans (ADR 0128's entry span).
+#: The entry kinds the ``quantity`` range spans: the kinds admitted on their
+#: measured effectivity.
 ENTRY_KINDS = ("capacitance", "s", "omega")
 
 #: Each estimate kind (``gfem.refinement.ESTIMATE_KINDS``) in words, for the
@@ -1102,7 +1103,7 @@ def effectivity_by_kind(by_kind, kinds, emitted, source: str = ESTIMATE_TEST) ->
 
 
 def entry_span(by_kind: dict, entries=ENTRY_KINDS) -> dict:
-    """The ``quantity`` range: the span of the entry kinds' cases (ADR 0128)."""
+    """The ``quantity`` range: the span of the entry kinds' cases."""
     ranges = {}
     for kind in entries:
         ranges.update(by_kind.get(kind, {}))
@@ -1177,7 +1178,7 @@ def overestimate(band, quoted: dict, source: str = ESTIMATE_TEST) -> dict:
 
 
 def port_mode_share(share, source: str = ESTIMATE_TEST) -> dict:
-    """The bound on a wave port's 2D mode share of the S estimate (ADR 0137).
+    """The bound on a wave port's 2D mode share of the S estimate.
 
     Args:
         share: ``PORT_MODE_SHARE``, the bound the hybrid strip test holds the

@@ -78,7 +78,7 @@ __all__ = [
     "swept_once",
 ]
 
-# The shift is this factor above the largest bulk (Re eps)(Re mu), as in Palace.
+# The shift is this factor above the largest bulk (Re eps)(Re mu).
 _TARGET = 1.1
 # A Ritz pair propagates when Re beta exceeds this fraction of k0 n_max, and
 # exceeds |Im beta| (Re beta^2 > 0: above cutoff; below it a lossy mode, or a
@@ -195,7 +195,7 @@ class PortModeRule:
         """Check that the problem fits the model (see `gfem.PortMode`).
 
         ``comm`` is the resolved communicator of a distributed solve: every result
-        is the one sweep rank 0 ran (ADR 0059).
+        is the one sweep rank 0 ran.
 
         The options' ``device``, ``linear_solver`` and ``eigen_solver`` are
         ignored: the 2D port mode problem always runs SuperLU and SciPy on
@@ -386,8 +386,8 @@ def port_mode_sweep(
             degenerate, or two candidates cannot be told apart, or two modes
             follow the same candidate.
         ValueError: A frequency lies on a lossless pole of a law in the
-            cross-section, or a law region there has Re eps <= 0 (a metal;
-            ADR 0114), checked before any exact solve.
+            cross-section, or a law region there has Re eps <= 0 (a metal),
+            checked before any exact solve.
 
     Warns:
         PortModeTrackingWarning: A tracked mode stops being its ``mode``-th
@@ -437,7 +437,7 @@ def swept_once(
 ) -> tuple[list[PortModeSweep], dict[str, np.ndarray]]:
     """`port_mode_sweep` once, on rank 0 of ``comm``, with its arrays on every rank.
 
-    A `PortModeError` and the sweep's warnings reach every rank (ADR 0059), and each
+    A `PortModeError` and the sweep's warnings reach every rank, and each
     rank's sweeps stand on its own ``space``. Collective, on every rank of ``comm``.
 
     Args:
@@ -479,7 +479,7 @@ def sweeps_on(
     """The sweeps that stand on ``space`` and on `swept_once`'s ``arrays``.
 
     What a rank does with the arrays rank 0 sent, and a frequency worker with
-    the rows its parent handed it (`rows_of`, ADR 0099): no port mode solve.
+    the rows its parent handed it (`rows_of`): no port mode solve.
 
     Args:
         space: The surface's discrete port mode problem, built here.
@@ -566,7 +566,7 @@ class _Greedy:
         self.residual = np.full((n_modes, n), np.inf)
         self.solved = np.zeros(n, bool)
         self.floor = np.full((n_modes, n), tolerance)
-        # exact solves: candidates and the positions (in Palace's order) kept
+        # exact solves: candidates and the positions (in shift-inverted order) kept
         self.candidates: dict[int, _Candidates] = {}
         self.pick: dict[int, list[int]] = {}
 
@@ -623,7 +623,7 @@ class _Greedy:
                 & (beta.real <= k_max * (1 + 1e-6))
                 & (res < _UNCONVERGED)
             )
-            # Palace's order: largest Re of the shift-inverted eigenvalue
+            # Order: largest Re of the shift-inverted eigenvalue
             rank = (1 / (lam - self.shift[j])).real
             ranked = np.flatnonzero(ok)[np.argsort(-rank[ok], kind="stable")]
             if len(ranked) >= mode or want >= n - 2:
@@ -1119,7 +1119,7 @@ def _overlaps(mass, x_ref: np.ndarray, vecs: np.ndarray) -> np.ndarray:
 def _wavenumbers(section: PortSection, frequency: float) -> tuple[float, float, float]:
     """``k0``, the largest propagating wavenumber and the shift, per local unit.
 
-    The section's laws are read at ``frequency`` (ADR 0114).
+    The section's laws are read at ``frequency``.
 
     The largest wavenumber is the largest bulk one, times `_SLOW_WAVE` when
     `Conductor` or `Impedance` edges can slow the mode down.

@@ -1,4 +1,4 @@
-"""``ship REV --to HOST:ROOT``: a committed revision to the cluster (ADRs 0400, 0407).
+"""``ship REV --to HOST:ROOT``: a committed revision to the cluster.
 
 ``git archive REV`` into a temp tree, ``COMMIT`` (full sha) and ``COMMIT_UTC`` (the
 commit date) beside it, ``uv build --wheel`` into its ``dist/``, then ``rsync -a`` to

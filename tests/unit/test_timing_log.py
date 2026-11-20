@@ -1,4 +1,4 @@
-"""The ``gfem.timing`` records: one per phase occurrence per rank (ADR 0190).
+"""The ``gfem.timing`` records: one per phase occurrence per rank.
 
 Small driven and eigenmode solves read through ``caplog``: which phases each
 solve logs, at which frequency, and the attributes a handler reads (the

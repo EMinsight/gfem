@@ -1,4 +1,4 @@
-"""Driven cases around the refusals of the S estimate (ADRs 0134, 0139, 0140).
+"""Driven cases around the refusals of the S estimate.
 
 Each builder takes the directory to write its mesh to and its refinement
 level; every mesh is structured (`structured_meshes`, no gmsh), in mm.
@@ -21,8 +21,8 @@ level; every mesh is structured (`structured_meshes`, no gmsh), in mm.
   z = 0, 1) split "beside" at y = 0.25 into "a" and "b", with a "core"
   block (1 < x < 2, z < 0.5) that makes S11 nonzero; cells 6k x 2k x 2k,
   isotropic (h = 0.5 / k mm). Wave ports, or lumped ports p1 (50 ohm) and
-  p2 (30 ohm) along +z. Its y walls are left unnamed, as measured (ticket
-  18): the recovery does not constrain them. References `CONTRAST_LINE_S`:
+  p2 (30 ohm) along +z. Its y walls are left unnamed, as measured: the
+  recovery does not constrain them. References `CONTRAST_LINE_S`:
   order 4 on the k = 2 mesh, for the k = 1 mesh; |S4(1) - S4(2)| is at most
   0.09 of the k = 1 error.
 - Metal floor, `metal_floor_model`: a parallel-plate guide 1 x 0.3 x 0.6 mm
@@ -56,7 +56,7 @@ METAL_PLASMONIC = 189736659610.10275  # 300 GHz / sqrt(2.5)
 #: S of the metal floor, (geometry, n, frequency) -> {(to, from): S}, order 4
 #: on the same mesh (direct). At `METAL_DEEP` its own error, |S3 - S4|, is
 #: 0.24 to 0.28 of |S2 - S4| (the lumped port edges; an eps_r 2 floor shows
-#: the same); at `METAL_PLASMONIC` the wedge does not converge (ADR 0140).
+#: the same); at `METAL_PLASMONIC` the wedge does not converge.
 METAL_FLOOR_S = {
     ("flat", 1, METAL_DEEP): {
         ("p1", "p1"): 0.9266001034516802 - 0.35557391764073437j,

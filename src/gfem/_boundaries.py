@@ -188,7 +188,7 @@ class Conductor:
 class Impedance:
     """A surface impedance: per-square R (ohm), L (H) and C (F) in parallel.
 
-    The three values are design inputs (pytree leaves; ADR 0100): driven
+    The three values are design inputs (pytree leaves): driven
     S-parameters, kept fields and eigenfrequencies differentiate with respect
     to them. A value built under `jax.grad`, `jax.jit` or `jax.vmap` is
     checked when the solve runs, where a non-finite or non-positive one
@@ -549,8 +549,8 @@ class LumpedPort:
         resistance: Termination resistance, ohm. It is the port's reference
             impedance, a fixed value: a traced one raises
             `gfem.NonDifferentiableError`.
-        inductance: Termination inductance, H. A design input (a pytree leaf;
-            ADR 0100): driven S-parameters, kept fields and eigenfrequencies
+        inductance: Termination inductance, H. A design input (a pytree
+            leaf): driven S-parameters, kept fields and eigenfrequencies
             differentiate with respect to it.
         capacitance: Termination capacitance, F. A design input, like
             ``inductance``.

@@ -398,7 +398,7 @@ WP_ROWS = (0, 27, 148, 299)
 #: rank-two modal correction per wave port. Without the correction max |dS|
 #: was 1e-5, 7.9e-4 and 1.5e-3 at 1, 50 and 100 GHz.
 #: r8_wp's port line is lossy (alpha/beta ~ 9.5e-5), and gfem departs from
-#: Palace there by design (ADR 0214), measured on MN5 2026-11-18 against
+#: Palace there by design, measured on MN5 2026-11-18 against
 #: fcca4c2, which met Palace to 2e-6 on every entry. Reflection: Palace's
 #: conjugated projection reflects the line's own mode at alpha/beta (new
 #: |dS11| up to 0.93 alpha/beta). Transmission: a phase only, ~0.1 alpha/beta

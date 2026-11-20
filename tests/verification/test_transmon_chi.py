@@ -8,10 +8,10 @@ edges, each moved by half the change, with the stub tips, the walls and the
 junction port held.
 
 ``jax.grad`` of the diagonalized dispersive shift ``chi`` between the qubit
-and the readout mode runs the mode-field adjoint (ADR 0104) through the
+and the readout mode runs the mode-field adjoint through the
 eigenmode solve, the junction participation and `gfem.quantum.dressed_modes`.
 It is checked against a fourth-order difference of plain solves with a 5 um
-step. The expected values are ticket 23's measurements on the polished
+step. The expected values were measured on the polished
 forward at the default ``eigen_tolerance``.
 
 Reference tier: six forwards of 20-26 s each and about 1.05 GiB.

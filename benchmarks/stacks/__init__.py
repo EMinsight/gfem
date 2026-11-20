@@ -18,7 +18,7 @@ resolved stack cannot launch; :func:`prepare` (login node, ``submit`` and
 (:mod:`benchmarks.stacks.wheels`, :mod:`benchmarks.stacks.native`) with
 ``inputs``, ``activation``, ``refusal`` and ``prepare``.
 
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ THREAD_VARIABLES = (
 )
 """Unset before a code's own thread table is exported."""
 PLACES = {"OMP_PLACES": "cores", "OMP_PROC_BIND": "close"}
-"""Exported last for every code and layout (ADR 0412)."""
+"""Exported last for every code and layout."""
 LAUNCHERS = ("srun",)
 MPI_PLUGINS = ("pmix", "pmi2")
 LAUNCH_R1 = ("srun", "taskset")
@@ -456,7 +456,7 @@ def record(
     modules: str = "",
     ldd: str = "",
 ) -> dict[str, Any]:
-    """The scrubbed ``stack`` block of a suite record (ADRs 0401, 0403).
+    """The scrubbed ``stack`` block of a suite record.
 
     ``env_script`` is the script the step sourced, ``provenance`` what
     :func:`provenance` read after prepare, ``modules`` and ``ldd`` the job's

@@ -1,4 +1,4 @@
-"""The solver adapter seam of the benchmark suite (ADR 0406).
+"""The solver adapter seam of the benchmark suite.
 
 A **solver adapter** is a pure module per code that renders one run of a suite case
 into input files and command lines, and parses the outputs back into a neutral
@@ -15,11 +15,11 @@ peak memory come from, and the stack keys its launch needs. A third solver is on
 module plus one line in :data:`ADAPTERS` (the solver names and the stack sections
 derive from it) and a ``[<code>]`` section in each stack file that runs it.
 
-Every launch is one srun step with one placement rule for every code and rank count
-(ADR 0412): :func:`srun_argv`. At one rank a stack may say ``launch_r1 = "taskset"``;
+Every launch is one srun step with one placement rule for every code and rank count:
+:func:`srun_argv`. At one rank a stack may say ``launch_r1 = "taskset"``;
 the command then carries the bare program and the harness pins it with ``taskset``.
 
-Standard library only (ADR 0400).
+Standard library only.
 """
 
 from __future__ import annotations
@@ -171,7 +171,7 @@ class Measured:
 
 @dataclass
 class Outcome:
-    """What a run produced, in the suite's neutral terms (ADR 0406)."""
+    """What a run produced, in the suite's neutral terms."""
 
     status: str
     """``ok``, ``failed`` or ``refused``."""
@@ -233,7 +233,7 @@ class Adapter(Protocol):
 
     @property
     def pins(self) -> tuple[str, ...]:
-        """Settings pinned away from the code's defaults (ADR 0411), for the report."""
+        """Settings pinned away from the code's defaults, for the report."""
         ...
 
     @property
@@ -273,7 +273,7 @@ class Adapter(Protocol):
 
 
 def srun_argv(layout: Layout, mpi: str) -> tuple[str, ...]:
-    """The one srun line of every suite launch (ADR 0412)."""
+    """The one srun line of every suite launch."""
     return (
         "srun",
         "--exact",

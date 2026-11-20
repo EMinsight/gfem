@@ -1,4 +1,4 @@
-# Smoke campaign (ticket 12, ADR 0414): the small cases at core budget 16 on the
+# Smoke campaign: the small cases at core budget 16 on the
 # wheels stack with Palace 0.19.0, the whole layout grid, 3 repeats, the tolerance
 # ladder on microstrip's iterative kinds at the default layout.
 schema = 1

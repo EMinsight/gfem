@@ -21,7 +21,7 @@ fetch_openblas() {
     "https://github.com/xianyi/OpenBLAS/archive/v$1.tar.gz" $pin
 }
 
-# The make options shared by both threading builds (ADR 0205): SPR kernels
+# The make options shared by both threading builds: SPR kernels
 # only, up to 256 threads, no thread pinning (Slurm and the caller pin).
 OPENBLAS_OPTIONS=(TARGET=SAPPHIRERAPIDS DYNAMIC_ARCH=0 NUM_THREADS=256 NO_AFFINITY=1)
 # Threading builds, as "library|make options": pthreads libopenblas for gfem's

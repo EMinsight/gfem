@@ -1,4 +1,4 @@
-"""Deflated GMRES on the live factors and the forward's mode polish (ADR 0104).
+"""Deflated GMRES on the live factors and the forward's mode polish.
 
 A stub eigen operator ``T(k) = K - k^2 I`` with ``K`` real symmetric (so
 complex symmetric) stands in for the eigen operator: its eigenpairs are
@@ -167,7 +167,7 @@ def test_polish_raises_after_three_large_corrections():
 
 
 def test_a_polish_that_fails_keeps_the_unpolished_mode_and_marks_it():
-    # the forward's fallback (ticket 19 amendment from ticket 04): the mixed
+    # the forward's fallback: the mixed
     # mode of the test above is kept as it came, its neighbour is polished,
     # and the failure is recorded for the reach test (gap 0)
     lam = np.linspace(1.0, 4.0, 40) ** 2
@@ -193,7 +193,7 @@ def test_a_polish_that_fails_keeps_the_unpolished_mode_and_marks_it():
     np.testing.assert_array_equal(reach, [False, True])
 
 
-# --- the mode-field backward (ADR 0102) ------------------------------------------
+# --- the mode-field backward -----------------------------------------------------
 
 
 class _Defective(Stub):
@@ -278,7 +278,7 @@ def test_sparsecholesky_backward_matches_pardiso(line_mesh_dir, monkeypatch):
 
 @pytest.mark.parametrize("read", ["ratios", "field"])
 def test_capacitive_sheet_mode_field_gradient_matches_differences(tmp_path, read):
-    # the sheet's share of the mode energy (ADR 0103) differentiates with the
+    # the sheet's share of the mode energy differentiates with the
     # rest of it: a region's share and the sheet participation, and the field
     # normalized to that energy, in eps_r; the mode at 5.6 GHz puts its
     # voltage on the sheet, which stores 6 % of its electric energy

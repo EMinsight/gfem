@@ -467,7 +467,7 @@ def _oblique_cell(directory, cells=(24, 2, 2)):
 def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
     """A Bloch cell radiating at 30° onto `Absorbing` faces: r = (1 - cos)/(1 + cos).
 
-    The solve warns `gfem.ObliqueAbsorberWarning` for each face (ADR 0150).
+    The solve warns `gfem.ObliqueAbsorberWarning` for each face.
 
     The cell is periodic along y and z; a wave vector k_t along z makes the
     port sheet radiate at sin θ = k_t / (k0 n), with E in the plane of

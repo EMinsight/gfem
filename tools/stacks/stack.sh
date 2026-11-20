@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the native software stacks (native-oss, native-intel) of the native
-# builds effort on a Slurm cluster: Palace, NGSolve, PETSc/SLEPc, OpenBLAS and
+# Build the native software stacks (native-oss, native-intel) on a Slurm
+# cluster: Palace, NGSolve, PETSc/SLEPc, OpenBLAS and
 # gfem's stack venv, each into its own prefix
 #   $STACKS_ROOT/<stack>/<pkg>-<version>/
 # with a provenance file (provenance.json) written last, which marks it
@@ -104,14 +104,14 @@ stack_smoke() {
 }
 
 # stack_tofu FILE: sha256 of a tarball no upstream file pins, trusted on first
-# fetch and checked on every later one (ADR 0212).
+# fetch and checked on every later one.
 stack_tofu() {
   prov tofu "$STACKS_ROOT/src/tarballs/SHA256SUMS" "$1"
 }
 
 # stack_singleton COMMAND...: run COMMAND, an MPI singleton (one process
 # outside srun), without I_MPI_PMI_LIBRARY: Intel MPI singletons fail MPI_Init
-# with the module's Slurm libpmi2 (job 49181364, probe 49181762); mpiexec
+# with the module's Slurm libpmi2 (jobs 49181364, 49181762); mpiexec
 # needs none.
 stack_singleton() {
   env -u I_MPI_PMI_LIBRARY "$@"
@@ -673,7 +673,7 @@ write_activate() {
 }
 
 # check_petsc_contract: packages/petsc.sh and openblas.sh's tarball pin
-# against tools/petsc_wheelhouse.sh (ADR 0209): beside the recipe tree in a
+# against tools/petsc_wheelhouse.sh: beside the recipe tree in a
 # checkout, inside it when shipped.
 check_petsc_contract() {
   local wheelhouse

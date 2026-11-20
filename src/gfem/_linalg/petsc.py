@@ -21,8 +21,8 @@ again from the partial iterate; only a solve on a preconditioner set up at
 the current operator raises `gfem.LinearSolverConvergenceError`.
 
 Across ranks `RankPetscHandle` holds the free block as an ``MPIAIJ`` filled through
-COO (ADR 0062), and is also what ``kind="direct"`` means there: MUMPS LDL^T on
-PT-Scotch, with retries on a new KSP while MUMPS runs out of workspace (ADR 0068).
+COO, and is also what ``kind="direct"`` means there: MUMPS LDL^T on
+PT-Scotch, with retries on a new KSP while MUMPS runs out of workspace.
 A ``direct`` operator unequal to its transpose (a Bloch phase) is factored by MUMPS LU
 on a matrix not flagged symmetric; ``petsc`` refuses it as on one process.
 """
@@ -76,7 +76,7 @@ EXACT = ("cholesky", "lu")
 
 #: gfem's MUMPS options under ranks, under the user's. PT-Scotch: METIS's analysis is
 #: sequential. ICNTL(14) 60: the default gave INFOG(1)=-9 on tiny meshes at 4 and 8
-#: ranks and in 2 of 6 runs at 224 ranks, and 60 in none of 35 (ADR 0068).
+#: ranks and in 2 of 6 runs at 224 ranks, and 60 in none of 35.
 RANK_MUMPS_OPTIONS: tuple[tuple[str, Any], ...] = (
     ("mat_mumps_icntl_28", 2),
     ("mat_mumps_icntl_29", 1),
@@ -104,7 +104,7 @@ class AgreedValueError(_mpi.AgreedError, ValueError):
 
 
 class FreeNumbering:
-    """A matrix's free DOFs across ranks, in PETSc's ownership ranges (ADR 0062).
+    """A matrix's free DOFs across ranks, in PETSc's ownership ranges.
 
     ``EnumerateGlobally`` numbers every free DOF, the same on each rank that holds it;
     a rank's owned numbers are contiguous and start at the sum of the earlier ranks'
@@ -730,7 +730,7 @@ class PetscHandle(PlannedHandle):
 class RankPetscHandle(PetscHandle):
     """A PETSc KSP / PC on the free block across ranks: ``petsc``, and ``direct``.
 
-    Columns are a rank's, and their roles name their status (ADR 0062): a load goes
+    Columns are a rank's, and their roles name their status: a load goes
     through an exchange to owned rows, and owned rows through another to a state.
     The AIJ holds its own values, so a refactorization sends new ones through COO.
     ``kind="direct"`` reads no user options; ``kind="petsc"`` reads them over gfem's
@@ -884,7 +884,7 @@ class RankPetscHandle(PetscHandle):
         return ((rows, self._numbering.total), (PETSc.DECIDE, columns))
 
     def _mumps_megabytes(self, factor: Any) -> int:
-        """This rank's: INFO(22). INFOG(22) is the sum, and ADR 0058 sums per node."""
+        """This rank's: INFO(22). INFOG(22) is the sum; reports sum per node."""
         return int(factor.getMumpsInfo(22))
 
 

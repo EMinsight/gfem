@@ -1,6 +1,6 @@
 """`gfem.SteadyThermal`: steady heat conduction on the thermal domain.
 
-Exact checks (ADR 0180): across layered slabs heated uniformly, the
+Exact checks: across layered slabs heated uniformly, the
 temperature is piecewise quadratic in depth, so at order 2 it lies in the
 space of any mesh that conforms to the layer interfaces, and the solve
 reproduces gsim's closed forms to round-off on an unstructured 2D
@@ -183,7 +183,7 @@ def test_absolute_minus_rise_is_the_source_free_temperature(robin_mesh):
     )
 
 
-# --- interior surfaces (thermal probes/06) --------------------------------------
+# --- interior surfaces -------------------------------------------------------------
 
 STACK = (("a", 1.0), ("b", 1.0))
 
@@ -414,7 +414,7 @@ def test_element_means_sum_to_the_region_mean(series_mesh):
 
 def test_a_driven_solve_runs_on_a_permittivity_from_the_temperature(tmp_path):
     # a full 3D eps(T) driven solve needs no thermal code: the rise per
-    # element sets a MaterialField permittivity (ADR 0160)
+    # element sets a MaterialField permittivity
     import structured_meshes as sm
 
     path = tmp_path / "plate.msh"

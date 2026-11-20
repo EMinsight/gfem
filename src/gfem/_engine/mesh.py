@@ -34,7 +34,7 @@ class EngineMesh:
     """An NGSolve mesh and how its elements map back to the `gfem.Mesh`.
 
     Under ranks ``mesh`` is this rank's part and each order has a local length: the
-    same sentence holds for a local element or vertex (ADR 0061). The first rank
+    same sentence holds for a local element or vertex. The first rank
     holds nothing.
 
     Attributes:
@@ -68,7 +68,7 @@ class EngineMesh:
     surface_spaces: dict = dataclasses.field(default_factory=dict)
 
 
-#: Partitions a periodic search may take, swaps included (ADR 0071).
+#: Partitions a periodic search may take, swaps included.
 TRIES = 8
 #: A retry shuffles the tetrahedra within blocks of this many consecutive ones.
 BLOCK = 4096
@@ -170,8 +170,8 @@ def to_ngsolve(
     Args:
         mesh: The mesh, the same on every rank.
         periodic: A model's periodic pairs.
-        comm: A resolved communicator: collective, and each rank gets its part
-            (ADR 0061). ``None`` is one process.
+        comm: A resolved communicator: collective, and each rank gets its part.
+            ``None`` is one process.
 
     Raises:
         ValueError: The nodes have moved so that a pair no longer matches
@@ -294,7 +294,7 @@ class _Try:
 
 
 def _receive(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _Received:
-    """Rank 0 partitions and sends, every rank reads its gfem numbers (ADR 0061).
+    """Rank 0 partitions and sends, every rank reads its gfem numbers.
 
     The wheel's Python layer binds no global number, so each point crosses
     ``Distribute`` with its gfem node number in ``x``: partitioning and sending read
@@ -359,7 +359,7 @@ def _checked(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _T
     if len(failed):
         raise _mpi.AgreedError(
             "The periodic mesh check raised on ranks "
-            f"{', '.join(map(str, failed))}; each printed its traceback (ADR 0071)."
+            f"{', '.join(map(str, failed))}; each printed its traceback."
         )
     want = expected_surface_counts(mesh.triangle_tags, tags, paired)
     seam = SeamCounts(*total[:4].tolist())
@@ -392,7 +392,7 @@ def _search(
     memo: dict[tuple, _Partition],
     key: int | None,
 ) -> tuple[_Try, int, bool]:
-    """The strict search for a partition of one pair (ADR 0071): try, seed, swapped.
+    """The strict search for a partition of one pair: try, seed, swapped.
 
     A try is kept unswapped with no missing and no reverse twins. With missing twins
     and no reverse ones, the same order is distributed again with the pair swapped,
@@ -445,7 +445,7 @@ def _search(
         f"No partition of this periodic mesh on {comm.size} ranks passed gfem's "
         f"check in {forced.tries} tries (missing, reverse per try: "
         f"{'; '.join(rows)}). Try another number of ranks, or run one-process "
-        "copies with comm=MPI.COMM_SELF (ADR 0071)."
+        "copies with comm=MPI.COMM_SELF."
     )
 
 
@@ -454,14 +454,14 @@ def _conflict(plain: bool) -> str:
     return (
         f"This mesh was distributed {first} first on this communicator, with "
         "another partition than its periodic model needs; solve the periodic "
-        "model first, or use comm.Dup() (ADR 0071)."
+        "model first, or use comm.Dup()."
     )
 
 
 def _distributed(
     mesh: Mesh, comm: Any, periodic: tuple[Pairing, ...] = ()
 ) -> EngineMesh:
-    """This rank's part of ``mesh``, the same partition each time (ADR 0061, 0071).
+    """This rank's part of ``mesh``, the same partition each time.
 
     A mesh with a pair takes the partition `_search` keeps. A plain mesh follows
     the seed a periodic search of its topology and communicator took, so both have
@@ -509,7 +509,7 @@ def _distributed(
         raise _mpi.AgreedError(
             "This mesh's partition differs from the first one of its topology on "
             "this communicator, though partitioning reads connectivity only. Report "
-            "it; a wheel upgrade may have changed netgen (ADR 0061)."
+            "it; a wheel upgrade may have changed netgen."
         )
     ngmesh = received.ngmesh
     if ngmesh.ne > 0:

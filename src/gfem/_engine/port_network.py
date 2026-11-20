@@ -20,7 +20,7 @@ sweep at k does not have, so the network takes no shortcut there
 (`PortNetwork.reciprocal`) and every row with a cotangent is an adjoint
 load. A port without a resistance
 has no reference impedance: its S row and ``z_ref`` are NaN, and a
-cotangent on that row makes the gradient NaN like the value (ADR 0011).
+cotangent on that row makes the gradient NaN like the value.
 
 A row that reciprocity does not cover needs its own adjoint solution: the
 row of a lumped port that is not excited, or of a wave port on a shared
@@ -28,11 +28,11 @@ surface, whose functional mixes the surface's modes. A uniform sweep
 solves it in the backward pass; an adaptive sweep, whose backward has no
 full-size solver, solves these S functionals at every sample and adds them
 to its basis
-(`PortNetwork.adjoint_loads`, ADR 0010).
+(`PortNetwork.adjoint_loads`).
 
 The network only consumes the wave port couplings and holds them once: a
-wave port's output term reads them as they are (ADR 0214), a Floquet
-port's conjugated on the fly (`AffineTerm.conjugate`, ADR 0091). The system operator
+wave port's output term reads them as they are, a Floquet
+port's conjugated on the fly (`AffineTerm.conjugate`). The system operator
 (`gfem._engine.system_operator`) solves with the same couplings.
 """
 
@@ -419,7 +419,7 @@ class PortNetwork:
         that is not excited (an excited one's adjoint is its own solution)
         and has a resistance (without one the functional is NaN and the row
         undefined). An adaptive sweep adds their solutions to its basis at
-        every sample (`gfem._sweep.adaptive`, ADR 0010), so the frozen-basis
+        every sample (`gfem._sweep.adaptive`), so the frozen-basis
         gradient of every defined S entry is exact at the samples.
         """
         excited = any(c.index in self.columns for c in self.waves)

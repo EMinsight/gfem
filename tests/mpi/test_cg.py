@@ -1,4 +1,4 @@
-"""A real symmetric BDDC solve across ranks: gfem's CG on agreed products (ADR 0500).
+"""A real symmetric BDDC solve across ranks: gfem's CG on agreed products.
 
 Every value is compared bit for bit across ranks (`on_ranks`), so each rank stops at
 the same CG iteration; the solution's functionals match pytest's one process, where
@@ -18,7 +18,7 @@ from gfem._engine.domain import h1_space
 from gfem._linalg import Operator, prepare
 from gfem._linalg.layout import ONE_PROCESS, RankLayout
 
-#: Relative to the one-process value: ADR 0070's BDDC gate.
+#: Relative to the one-process value: the BDDC rank gate.
 GATE = 1e-9
 ORDER = 3
 

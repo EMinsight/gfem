@@ -93,7 +93,7 @@ def eigen_operator(
     classes = split(op.pieces, scale, sigma)
     powers = classes.powers
     # the constant θ of polynomial law pieces (lossless Drude), out of the
-    # curl energy of the longitudinal-mode test (ADR 0115)
+    # curl energy of the longitudinal-mode test
     constant = [(c, p) for c, p in powers[0] if p.law is not None]
     free = free_mask(space.FreeDofs(), space.ndof)
     symmetry, matrix_free = op.symmetry, op.symmetric
@@ -241,7 +241,7 @@ def real_eps(model: Model) -> np.ndarray:
     """``Re(eps_r)`` per tetrahedron, ``(n,)`` or ``(n, 3, 3)``: the projector's weight.
 
     A permittivity law region reads its eps_inf
-    (`gfem._engine.dispersion.high_frequency_eps`, ADR 0109, ADR 0115): the
+    (`gfem._engine.dispersion.high_frequency_eps`): the
     divergence-free projection's inner product and the phase rule's form.
     The energies integrate it too, and `law_scale` turns a law region's
     eps_inf into the weight at a frequency. A model without a law reads
@@ -260,8 +260,8 @@ def law_scale(
     `real_eps` holds eps_inf on a law region, and an energy integrates it
     times ``|x|^2`` per element: the factor turns that into ``weight`` times
     ``|x|^2`` (`gfem._engine.dispersion.energy_eps` for the mode energy,
-    `gfem._engine.dispersion.brillouin_eps` for `gfem.electric_energy`,
-    ADR 0109). Empty without a law.
+    `gfem._engine.dispersion.brillouin_eps` for `gfem.electric_energy`).
+    Empty without a law.
     """
     return {
         lr.region: weight(lr.law, omega) / float(lr.law.eps_inf)
@@ -287,7 +287,7 @@ def projector(
 
     The H(curl) space has the solve's DOF numbering and `PEC` DOFs; the H1
     space of the same order is fixed on the `PEC` surfaces and on every
-    lossy wall (`gfem._engine.domain.potential_surfaces`, ADR 0097). Both
+    lossy wall (`gfem._engine.domain.potential_surfaces`). Both
     are real
     (`gfem._engine.driven.real_space` without pairs), and periodic over a
     model's pairs. Under a Bloch ``wave_vector`` (rad/m) the H(curl) space
@@ -435,7 +435,7 @@ def energy_parts(
     `element_energy` form on the solve domain), and for each region of
     ``anisotropic`` its three axis parts (adding up to its region part),
     the forms of the eigenmode ratios' explicit energy terms
-    (`gfem._engine.sensitivity.energy_term`, ADR 0103).
+    (`gfem._engine.sensitivity.energy_term`).
     """
     mesh = model.mesh
     eps = real_eps(model)
@@ -525,7 +525,7 @@ class DivFreeProjector:
     The curl-curl operator vanishes on gradients, so every gradient of an
     H1 function (zero on the `PEC` surfaces and the lossy walls, where a
     gradient with a tangential part is no null vector: the wall term acts
-    on it, ADR 0097) is an eigenvector of the
+    on it) is an eigenvector of the
     eigenmode problem at frequency 0, a huge null space next to the
     physical modes. When the target lies below about half a mode's
     frequency, shift-invert returns these first. Projecting every Arnoldi
@@ -547,10 +547,10 @@ class DivFreeProjector:
     Under ranks (``layout``, real spaces only) ``x`` is a state, ``M0 x`` a load,
     :math:`G^T` maps a load to a load and ``G`` a state to a state, through NGSolve's
     own ``ParallelMatrix`` ``G``, and the H1 form is factored by MUMPS on
-    ``h1_layout`` (ADR 0502). Between periodic spaces ``G`` is instead the
+    ``h1_layout``. Between periodic spaces ``G`` is instead the
     conversion each rank computes alone, a local CSR, as the periodic
     expansion is (`gfem._engine.driven.expansion_matrix`): NGSolve's parallel
-    conversion is wrong on a paired mesh (ADR 0071). One process keeps SciPy's
+    conversion is wrong on a paired mesh. One process keeps SciPy's
     CSR ``G``.
 
     Args:

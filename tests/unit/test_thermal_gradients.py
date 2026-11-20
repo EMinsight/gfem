@@ -2,7 +2,7 @@
 
 The finite-difference cells are in tests/verification/test_gradient_matrix.py;
 these tests pin what the cells cannot see: the trajectory layout a
-differentiated transient forward keeps (ADR 0179), the checkpointed reverse
+differentiated transient forward keeps, the checkpointed reverse
 sweep against the full one, and the traces' own leaves (a section's
 thermo-optic weights, read by a JAX reverse pass inside the host forward)
 under `jax.grad`.

@@ -310,7 +310,7 @@ class Store:
     ) -> tuple[Entry, dict[str, Any], dict[str, np.ndarray]] | None:
         """`read`, with the entry's document and arrays as stored.
 
-        Other ranks decode those with `decode_entry` (ADR 0436).
+        Other ranks decode those with `decode_entry`.
 
         Returns:
             ``((result, run, recorded), document, arrays)``, or None on a miss.
@@ -638,7 +638,7 @@ def _size(n: int) -> str:
 # --- one call -------------------------------------------------------------------
 
 #: The gfem warnings a solve raises about its inputs or its result: recorded
-#: on a miss, replayed on a hit (ADR 0435). Others (a device's memory, a
+#: on a miss, replayed on a hit. Others (a device's memory, a
 #: third party's deprecation) are facts of one run and are not stored.
 REPLAYED = (
     errors.MeshQualityWarning,
@@ -721,7 +721,7 @@ class SolveCache:
             problem: The problem.
             comm: The resolved communicator; None on one process. Above one
                 rank, rank 0 alone keys, reads and writes, and a solve that
-                keeps fields bypasses (ADR 0436).
+                keeps fields bypasses.
             adjoint: Whether the call solves adjoints with the forward
                 (``refine_mesh``).
         """

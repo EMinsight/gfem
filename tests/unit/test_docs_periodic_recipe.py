@@ -2,7 +2,7 @@
 
 docs/recipes/periodic-cell.md runs nothing at docs build time. How gfem's
 periodic solves are checked is on docs/verification.md, in words; the recipe
-quotes no test tolerance and no case id (ADR 0017, as amended). Its public
+quotes no test tolerance and no case id. Its public
 names and its Bloch phase are checked here.
 """
 

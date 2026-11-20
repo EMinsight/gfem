@@ -5,14 +5,14 @@ The gradient matrix's ``eigenmode_participation`` cells check the ratios
 the conductivity and the sheet fill. Here, on the same fixture J
 (tests/gradient_cases.py, `junction_line`), the loss tangent and the
 permeability (whose explicit energy term is zero: the mode energy reads
-``Re(eps_r)`` only, ADR 0103), and a port that reads no voltage, whose
+``Re(eps_r)`` only), and a port that reads no voltage, whose
 ``q_port`` is infinite and has no derivative while ``1 / q_port`` is an
 exact zero. And the node pullback of the ratios on the `gfem.Conductor`
 variant, against the cache: other discretizations between the forward and
 the pullback (they evict the forward's), with and without its entry. And
 the convention of a complex field's cotangent: a real ``g`` of the
 normalized mode field's coefficients ``e`` pulls back with ``dg = Re(ct^T
-de)``, unconjugated (quantum-metrics ticket 03). And the dressed modes of
+de)``, unconjugated. And the dressed modes of
 `gfem.quantum` in the junction's inductance through the solve: one traced
 ``L_J`` feeds the `gfem.LumpedPort` and `gfem.quantum.dressed_modes`, on
 the lossless glued line of lumped cell L6.
@@ -215,7 +215,7 @@ def test_dressed_modes_through_the_solve_in_l_j(tmp_path):
     # One traced L_J, the junction port's inductance and the dressed step's:
     # the derivative runs through omega and participation as well as E_J,
     # and agrees with differences of re-solves. Holding the modes (the port's
-    # value stopped) leaves the explicit term only, far off (ticket 21: 65 %).
+    # value stopped) leaves the explicit term only, far off (65 % measured).
     mesh = sheet_mesh(tmp_path)
     problem = gfem.Eigenmode(target=LUMPED_TARGET)
 

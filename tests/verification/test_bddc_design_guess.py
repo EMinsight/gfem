@@ -1,14 +1,14 @@
 """Gradients of BDDC solves that start from the previous design's solution.
 
-The design initial guess (ADR 0126): on one process each ``bddc_gmres``
+The design initial guess: on one process each ``bddc_gmres``
 design's first frequency starts from the previous design's solution there.
 Four designs in a row on the small 3D two-layer line
 (`gradient_cases.layered_line`), through ``jax.value_and_grad`` at tolerance
 1e-6, against the same designs solved at 1e-10 (the reference) and at 1e-6
 with no kept state between designs (no guess). The guess saves iterations;
 S stays within the tolerance of the reference, and the gradient's relative
-difference from it at most twice the guess-free run's (the bound of the
-effort's spec, §4.2; ticket 04 measured 1.5x on the 1.0M-DOF 3D bend).
+difference from it at most twice the guess-free run's (1.5x was
+measured on the 1.0M-DOF 3D bend).
 """
 
 import jax

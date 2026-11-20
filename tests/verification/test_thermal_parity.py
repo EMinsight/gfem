@@ -1,4 +1,4 @@
-"""Parity with gsim's 2D thermal path on gsim's own mesh (ADR 0180).
+"""Parity with gsim's 2D thermal path on gsim's own mesh.
 
 gsim's femwell TiN heater (femwell's metal heater phase shifter example,
 after Jacques et al. 2019): a 500 x 220 nm silicon core (k 90 W/(m K)) on a
@@ -10,11 +10,11 @@ both codes solve on the same triangles; gfem reads it as a slab.
 
 - P_pi through an optical window around the core (gsim's window, the core
   plus 1.5 um aside and 1 um above and below) against gsim's frozen value
-  at 1e-3 (6e-6 measured on this mesh with a mode re-solve, thermal
-  probes/13); against femwell's own example output at 3 %.
+  at 1e-3 (6e-6 measured on this mesh with a mode
+  re-solve); against femwell's own example output at 3 %.
 - The phase step response at P_pi, theta = 1 over gsim's time grid: its
-  10-90 % rise time and its time constant at 1e-4 (ADR 0180's 2e-3,
-  tightened: 2e-6 and 7e-6 measured).
+  10-90 % rise time and its time constant at 1e-4 (the 2e-3 thermal
+  gate, tightened: 2e-6 and 7e-6 measured).
 
 Measured (ostau, 2 threads): P_pi 22.3920 mW (2.3e-4 from gsim's re-solve,
 gsim's own first order sits 1.9e-4 off it), rise time 18.78643 us, time
@@ -35,8 +35,7 @@ MESH = Path(__file__).parent / "data" / "gsim_femwell_tin.msh"
 # Frozen gsim numbers on MESH: gsim 5ecbb6a (femwell 0.1.12, scikit-fem
 # 12.0.2), gsim's tests/thermal femwell_sim() at its default precision
 # (thermal degree 2, optical order 2, thermal window -8..8 um, heater
-# length 320 um), run by .scratch/thermal/probes/13/gsim_femwell_tin.py
-# (gsim_femwell_tin.json). P_pi from gsim's mode re-solve; the transient
+# length 320 um), run by a local script. P_pi from gsim's mode re-solve; the transient
 # steps 400 times over 60 us at the P_pi drive, first-order phase.
 GSIM_P_PI = 22.38686e-3  # W
 GSIM_RISE_TIME_THETA_1 = 18.7864e-6  # s, 10-90 %

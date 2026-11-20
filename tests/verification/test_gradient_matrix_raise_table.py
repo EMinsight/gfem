@@ -161,7 +161,7 @@ EXPECTED |= {
     for (name, out, kind), outcome in list(EXPECTED.items())
     if name == "driven"
 }
-# A permittivity law on a second region "core" (ADR 0112): one term of each
+# A permittivity law on a second region "core": one term of each
 # kind (Re eps > 0 at the table's 5 GHz), 11 leaves. S and the kept fields'
 # coefficients differentiate by every law parameter; z_ref and the fields'
 # omega and mesh are constants. The host field and the nodes are as on the
@@ -200,7 +200,7 @@ EXPECTED |= {
         *LAW_KINDS,
     ]
 }
-# A density blend of a constant end and TABLE_LAW on "core" (ADR 0113,
+# A density blend of a constant end and TABLE_LAW on "core" (the
 # index scheme): S and the kept fields' coefficients differentiate by its
 # density and by the mu_r and conductivity the blend interpolates; the host
 # field and the nodes are as on the plain line.
@@ -267,7 +267,7 @@ EXPECTED |= {
     )
     for kind in [("nodes",)] + [("material", "dielectric", p) for p in ALL_PROPERTIES]
 }
-# The law line on the adaptive sweep (ADR 0116): the law's leaves
+# The law line on the adaptive sweep: the law's leaves
 # differentiate S and the kept fields' reduced coordinates, like the host's
 # material; the frozen basis raises; the other inputs as `driven_adaptive`.
 EXPECTED |= {
@@ -325,7 +325,7 @@ EXPECTED |= {
 # the slab, away from both faces; plain and at a conical Bloch wave vector):
 # S differentiates like the periodic line's, in the materials and the node
 # coordinates; z_ref (the orders' wave impedances) and every leaf of the
-# diffraction orders are constants of the solve (ADR 0155). The half-space's
+# diffraction orders are constants of the solve. The half-space's
 # medium, the incidence and the Floquet surfaces' nodes raise (`OUT_OF_SCOPE`).
 FLOQUET_PORTS = ("R_TE", "R_TM", "T_TE", "T_TM")
 DIFFRACTION_ORDER_OUTPUTS = (
@@ -381,7 +381,7 @@ EXPECTED |= {
 # coordinates and the lumped values. The ratios of the mode fields (port Q,
 # participations, region, principal and sheet shares) differentiate with respect to
 # the electromagnetic properties, sheet fills, node coordinates and lumped
-# values (ADR 0102 and its amendment), and the normalized mode fields'
+# values, and the normalized mode fields'
 # coefficients with respect to the electromagnetic properties, sheet fills
 # and lumped values (never the node coordinates); the principal shares raise
 # with respect to the lumped values in this version, as does the backward
@@ -406,7 +406,7 @@ def _eigen_outcome(out, kind, *, periodic=False):
         if out == "cluster":
             return ZERO
         dependent = (*_EIGEN_DEPENDENT, "e_fields.0.mesh.nodes")
-        # the normalized field has no node gradient (ADR 0102)
+        # the normalized field has no node gradient
         ratio = out.startswith(_EIGEN_RATIOS) and not periodic
         field = out == "e_fields.0.coefficients"
         return GRADIENT if out in dependent or (ratio and not field) else RAISES
@@ -452,7 +452,7 @@ EXPECTED |= {
     for kind in EIGEN_KINDS
 }
 
-# Eigenmode with TABLE_LAW on a second region "core" (ADR 0112, ADR 0115):
+# Eigenmode with TABLE_LAW on a second region "core":
 # omega (so frequency and Q) differentiates by every law parameter; the
 # mode-field outputs and the backward error raise by them ("differentiate
 # the eigenfrequency or Q"); the cluster labels and the fields' mesh are
@@ -562,7 +562,7 @@ EXPECTED |= {
     for kind in [("nodes",), FILL]
 }
 
-# Lumped values (ADR 0100): port p1's inductance and capacitance and the
+# Lumped values: port p1's inductance and capacitance and the
 # sheet's resistance, inductance and capacitance on the glued line (static
 # materials).
 # Driven S, the kept fields and the eigenfrequencies differentiate with
@@ -662,7 +662,7 @@ EXPECTED |= {
 }
 
 
-# A permittivity law in a wave port's cross-section (ADR 0114): the port mode
+# A permittivity law in a wave port's cross-section: the port mode
 # problem is not differentiable, so every law parameter raises, with the node
 # coordinates. One term of each kind, each with Re eps > 0 at 10 GHz.
 PORT_MODE_LAW = gfem.PermittivityLaw(
@@ -693,12 +693,13 @@ EXPECTED |= {
     for kind in [("nodes",), *PORT_MODE_LAW_KINDS]
 }
 
-# The stack with a permittivity law on its nitride (ADR 0111): the table's
+# The stack with a permittivity law on its nitride: the table's
 # law without its Drude term (a Drude metal has no static permittivity). The
 # capacitance, the energies and the potentials differentiate by eps_inf and
 # every strength, which the static permittivity reads; every frequency
-# parameter is an exact zero (ADR 0011's amendment: a leaf the physics never
-# reads). The oxide field and the nodes are as on the plain stack.
+# parameter is an exact zero (a leaf the physics never reads has a zero
+# gradient, not an error). The oxide field and the nodes are as on the plain
+# stack.
 ELECTROSTATIC_LAW = dataclasses.replace(TABLE_LAW, terms=TABLE_LAW.terms[1:])
 ELECTROSTATIC_LAW_KINDS = [
     ("law", "nitride", "eps_inf"),
@@ -725,7 +726,7 @@ EXPECTED |= {
 }
 
 
-# Thermal and DC conduction (ADR 0177): each output differentiates with
+# Thermal and DC conduction: each output differentiates with
 # respect to what its solve reads (the thermal properties it reads, the heat
 # source amount, the waveform scales; the conductivity for DC conduction)
 # and is an exact zero for every other material property and the sheet
@@ -784,7 +785,7 @@ EXPECTED |= {
 }
 
 
-# The thermo-optic shift and the route phase (ADRs 0175, 0183): measurement
+# The thermo-optic shift and the route phase: measurement
 # rows, as the power flow's are, in the optical model's leaves and the
 # rise's coefficients (input kind ("rise",)). The mode is a constant of the
 # measurement: every input its port mode solve reads raises (the
@@ -1613,7 +1614,7 @@ def _out_law_under_a_bloch_wave_vector(request):
 
 
 def _out_law_of_a_blend_end(_request):
-    # the ends of a blend are fixed (ADR 0113): a traced law raises while
+    # the ends of a blend are fixed: a traced law raises while
     # the field is built, with the remedy
     def objective(eps_inf):
         law = dataclasses.replace(TABLE_LAW, eps_inf=eps_inf)
@@ -1922,7 +1923,7 @@ def _out_bloch_adaptive_sweep(request):
     jax.grad(objective)(eps)
 
 
-# --- Floquet path rows (ADR 0149) ------------------------------------------------
+# --- Floquet path rows -----------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
@@ -2039,7 +2040,7 @@ def _out_bloch_eigenmode_on_bddc(request):
     gfem.solve(model, _bloch_eigenmode(k), options=options)
 
 
-# --- eigenmode rows of a permittivity law (ADR 0112, ADR 0115) ------------------------
+# --- eigenmode rows of a permittivity law ---------------------------------------------
 
 
 def _eigen_law_objective(request, read, *, model=None, problem=None):
@@ -2097,7 +2098,7 @@ def _out_periodic_eigenmode_by_a_law_parameter(request):
     jax.make_jaxpr(jax.grad(objective))(2.0)
 
 
-# --- eigenmode mode-field rows (ADR 0102) ---------------------------------------------
+# --- eigenmode mode-field rows --------------------------------------------------------
 
 
 def _eigen_ratio_objective(model, problem, options, read):
@@ -2581,7 +2582,7 @@ OUT_OF_SCOPE = [
         NotImplementedError,
         "sweep='uniform'",
     ),
-    # Floquet gradient rows (ADR 0155)
+    # Floquet gradient rows
     (
         "driven x material of a Floquet port's half-space",
         _out_material_of_a_floquet_half_space,
@@ -2629,7 +2630,7 @@ OUT_OF_SCOPE = [
         ValueError,
         "linear_solver='direct'",
     ),
-    # eigenmode mode-field outputs (ADR 0102)
+    # eigenmode mode-field outputs
     (
         "eigenmode backward error",
         _out_eigenmode_error,
@@ -2890,7 +2891,7 @@ def _omega_corner(request, *, delta, read):
     assert np.abs(np.asarray(grad)).max() > 0
 
 
-#: The models of the mode-field rows 3 to 12 (ticket 23's numbering) with
+#: The models of the mode-field rows 3 to 12 with
 #: an omega-only objective: the new refusals stay off the frequency path.
 #: Rows 9 (a moved port node) and 11 (a cluster cut by n_modes) are left
 #: out: omega raises there too, by its own rows ("eigenmode x nodes of a

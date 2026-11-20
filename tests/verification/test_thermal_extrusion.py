@@ -1,4 +1,4 @@
-"""A z-invariant 3D extrusion against the one-element slab (ADR 0180).
+"""A z-invariant 3D extrusion against the one-element slab.
 
 A heater cross-section shaped like femwell's TiN heater (a silicon wafer
 under a 2 um oxide box, a 500 x 220 nm silicon core, a 2 um x 140 nm TiN
@@ -8,11 +8,11 @@ into tetrahedra) with insulated ends. Both carry the heater's DC terminals
 on their end faces and heat by Joule heating, so the 3D path from DC
 conduction to temperature runs on the slab's physics.
 
-- The resistance per length to round-off (ADR 0180's 1e-3, tightened: the
+- The resistance per length to round-off (the 1e-3 thermal gate, tightened: the
   potential is linear along z, so both spaces hold it; 6e-14 measured).
 - The core's mean rise per W/m within 1e-3 (the split prisms do not hold a
-  z-invariant field exactly; 2.4e-5 measured, 4e-5 spread in thermal
-  probes/03).
+  z-invariant field exactly; 2.4e-5 measured, 4e-5 spread
+  measured).
 """
 
 import pytest

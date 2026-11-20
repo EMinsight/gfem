@@ -1,4 +1,4 @@
-"""Electrostatic solves across ranks (ADRs 0500, 0501).
+"""Electrostatic solves across ranks.
 
 Every row compares ranks with the same function in pytest's one process: replicated
 values bit for bit across ranks (`on_ranks`), and each value to its solver's gate in
@@ -29,7 +29,7 @@ from gfem._engine import fields as engine_fields
 from gfem._engine.cache import ENTRIES
 from gfem._engine.electrostatic import ElectrostaticRule
 
-#: Relative to the largest one-process entry: ADR 0070's gates.
+#: Relative to the largest one-process entry: 1e-11 on direct, 1e-9 on BDDC.
 GATES = {"bddc_gmres": 1e-9, "direct": 1e-11}
 #: A bundle's gates, as `tests/mpi/test_job.py`'s.
 BUNDLE_GATES = {"bddc_gmres": 1e-9, "direct": 1e-13}

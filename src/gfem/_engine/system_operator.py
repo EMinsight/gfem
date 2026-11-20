@@ -28,10 +28,10 @@ Cᵀ Uᵀ``, read off the forward vectors), which the transposed system takes in
 its place. Adjoint solves refactorize one base handle at each
 frequency, so memory holds one factorization whatever the number of
 frequencies: on a GPU, and, starting from the forward's base handle
-(`keep_base`, ADR 0065), under ranks and on one process with the CPU
+(`keep_base`), under ranks and on one process with the CPU
 ``bddc_gmres`` solver. On one process with the CPU ``direct`` solver they take
 each frequency's base from the plan pool instead (frequency bases, below), the
-transposed system's under the -k key (ADR 0092). Elsewhere on the CPU (the
+transposed system's under the -k key. Elsewhere on the CPU (the
 transposed system off that solver, the ``petsc`` solver, a backward without
 its forward's system) an adjoint solve keeps one handle per frequency for
 later backward passes.
@@ -40,11 +40,11 @@ On one process with the CPU ``direct`` solver, each volume piece of an operator
 with material-field regions (`FixedPieces`) is summed as its part on those
 regions, assembled every solve, plus its part on the other elements, kept per
 discretization behind a digest of its coefficient there and of the regions'
-layout (ADR 0082). S moves by summation round-off only.
+layout. S moves by summation round-off only.
 
 There, too, a forward sweep takes its base handle from the plan pool
 (`gfem._engine.cache`) and refactorizes it, rather than planning again
-(`PlanSlot`). It holds one base per frequency (frequency bases, ADR 0121): at
+(`PlanSlot`). It holds one base per frequency (frequency bases): at
 each new frequency the base returns to the pool under the frequency it was
 at, and the base of the new one is taken, which still holds that frequency's
 factors of the last design. A frequency gets its own base only the second
@@ -55,8 +55,8 @@ way, each still holding its design's values, and refactorize nothing. Where
 ``retain_memory`` holds fewer bases than frequencies, a returning base gives up
 its own factors first, so a fixed set of frequencies keeps theirs. A
 differentiated forward's last base moves to its entry and returns to
-the pool once the entry no longer holds it: when the consumed entry is freed
-(ADR 0081), or when the entry gives it up under ``retain_memory`` (ADR 0093),
+the pool once the entry no longer holds it: when the consumed entry is freed,
+or when the entry gives it up under ``retain_memory``,
 after which its backward takes a plan back from the pool. Any other returns
 when the sweep ends. The transposed system's base returns the same way.
 
@@ -281,7 +281,7 @@ class SystemOperator:
                 system's adjoint solves refactorize one base from the plan
                 pool where they can (`_adjoint_system`).
             gauge: The tree-cotree gauge basis of ``operator``'s space, to
-                solve through it (ADR 0216): a serial CPU direct solve of a
+                solve through it: a serial CPU direct solve of a
                 complex symmetric operator, decided by the driven rule;
                 ``None`` solves ungauged.
         """
@@ -389,7 +389,7 @@ class SystemOperator:
     def _plan_slot(self, budget: int) -> PlanSlot | None:
         """Where this operator's base handles pool, or ``None`` off the pool.
 
-        Serial CPU direct solves only (ADR 0082). The key holds the topology,
+        Serial CPU direct solves only. The key holds the topology,
         the space key, a digest of the free DOFs and the symmetry, and under a
         gauge its key (a gauged base keeps the gauge template too); the sweep
         adds the thread count.
@@ -507,14 +507,14 @@ class SystemOperator:
         """Move a finished forward sweep's base handle to the adjoint solves.
 
         Under ranks, where one factorization per frequency does not fit and a
-        backward must not prepare what its forward just freed (ADR 0065), and on
+        backward must not prepare what its forward just freed, and on
         one process with the CPU ``direct`` and ``bddc_gmres`` solvers when the
         operator is its own adjoint's, so that the backward refactorizes it rather
         than preparing a handle per frequency (on the plan pool, takes each
         frequency's base in turn: `SystemSweep.at`). A base it no longer holds is
         prepared again at the adjoint tolerance, taking a plan from the pool where
         it can. A shared base from the plan pool returns to the pool once no
-        entry holds it (ADRs 0082, 0093). A
+        entry holds it. A
         base the adjoint solves do not share (the transposed system's solves,
         which hold a base of their own) stays with its sweep: ``with`` returns it
         to the pool or frees it, under ranks too, so that a Bloch backward holds
@@ -702,7 +702,7 @@ class SystemSweep:
     leaving the ``with`` block) releases the base, also when the sweep
     raises, and the sweep prepares it again if asked.
 
-    With a `PlanSlot` the base is a frequency base (ADR 0121): each new ω
+    With a `PlanSlot` the base is a frequency base: each new ω
     returns the held base to the plan pool under the ω it was at and takes
     ω's (`gfem._engine.cache.EntryCache.take_plan`), or prepares one; leaving
     the ``with`` block without an error returns the base to the pool. A taken
@@ -754,7 +754,7 @@ class SystemSweep:
     def at(self, omega: float) -> Handle:
         """A handle of ``A(ω) + W(ω)``, borrowing the sweep's base handle.
 
-        A pooled sweep holds a base per frequency (ADR 0121): at another ω the
+        A pooled sweep holds a base per frequency: at another ω the
         base returns to the pool under its last frequency, and ω's is taken
         (`gfem._engine.cache.EntryCache.take_plan`), or the same base again
         where the site meets ω for the first time. It refactorizes as a
@@ -919,7 +919,7 @@ class SystemSweep:
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class PlanSlot:
-    """Where a serial CPU direct sweep's base handle pools (ADR 0082).
+    """Where a serial CPU direct sweep's base handle pools.
 
     Attributes:
         site: The pool key but the thread count: topology identity, space
@@ -957,7 +957,7 @@ class PlanSlot:
         """The pool key of a base at ``ω``: ``site``, the thread count, ``ω``.
 
         The thread count of a plan made now: a PARDISO handle runs on the
-        thread count of its analysis (ADR 0032), so another count plans anew.
-        A sweep holds one base per frequency it met before (ADR 0121).
+        thread count of its analysis, so another count plans anew.
+        A sweep holds one base per frequency it met before.
         """
         return (*self.site, max(1, ngs.GetNumThreads()), float(omega))

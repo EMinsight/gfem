@@ -415,7 +415,7 @@ def test_mumps_print_without_ranks_says_it_does_nothing(tmp_path: Path) -> None:
 def test_a_package_without_metadata_records_its_module_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # a native NGSolve installed by CMake has no dist-info (ADR 0207)
+    # a native NGSolve installed by CMake has no dist-info
     import importlib.metadata
     import types
 

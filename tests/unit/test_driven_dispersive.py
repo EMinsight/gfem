@@ -1,7 +1,7 @@
 """Driven solves of a model with a permittivity law (a dispersive material).
 
 A law region's eps_inf stays in the mass and the rest of the law enters as
-one susceptibility piece (ADR 0110). Each sweep must equal, frequency by
+one susceptibility piece. Each sweep must equal, frequency by
 frequency, the same model with a constant material holding the law's value
 there: a `Material` where Re eps > 0, and where no `Material` admits the
 value (Re eps <= 0, a metal below its plasma frequency) the reference
@@ -195,7 +195,7 @@ def test_the_frequency_check_reads_a_one_pass_iterable(mesh):
 
 
 def test_the_greedy_solves_the_grid_neighbours_of_an_in_band_resonance_first(mesh):
-    # ADR 0116: after the endpoints, the two grid frequencies on either side
+    # after the endpoints, the two grid frequencies on either side
     # of each in-band Lorentz resonance, region by region; one outside the
     # grid and the Drude pole at 0 add none
     law = gfem.PermittivityLaw(
@@ -388,7 +388,7 @@ def _debye_objective(mesh, parameter):
     [("eps_inf", 3.0), ("relaxation_frequency", 5 * GHZ)],
 )
 def test_a_traced_law_parameter_solves_and_differentiates(mesh, parameter, value):
-    # the law pass (ADR 0112); its finite-difference cells are the gradient
+    # the law pass; its finite-difference cells are the gradient
     # matrix's "law" input
     objective = _debye_objective(mesh, parameter)
     grad = float(jax.grad(objective)(value))

@@ -1,4 +1,4 @@
-"""`gfem._refine.bisect`: longest-edge bisection of marked tetrahedra (ADR 0083)."""
+"""`gfem._refine.bisect`: longest-edge bisection of marked tetrahedra."""
 
 from pathlib import Path
 

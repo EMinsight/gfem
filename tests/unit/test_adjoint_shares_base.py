@@ -1,4 +1,4 @@
-"""On one process the backward refactorizes the forward's base (ADR 0065, amended).
+"""On one process the backward refactorizes the forward's base.
 
 A differentiated serial driven forward on the CPU (``direct`` or ``bddc_gmres``)
 moves its base handle to its entry. A backward that needs adjoint solves
@@ -135,10 +135,10 @@ def test_an_entry_too_big_with_its_base_is_kept_without_it(path, counts, solver)
     base = entry.handle.system._adjoint_sweep._base
     with_base = entry.nbytes
     # the cache also counts what the entry shares (its pieces' pattern, kept
-    # fixed parts, ADR 0091), not the other frequency's pooled base (ADR 0121)
+    # fixed parts), not the other frequency's pooled base
     pooled = sum(int(p.handle.nbytes) for p in cache.ENTRIES._plans.values())
     # nor kept fixed parts the entry does not share: a gauged entry holds its
-    # gauged values instead (ADR 0216), and the walk drops those parts first
+    # gauged values instead, and the walk drops those parts first
     shares = set(entry.shared()) | {
         k for p in cache.ENTRIES._plans.values() for k in p.handle.shared()
     }
@@ -162,7 +162,7 @@ def test_an_entry_too_big_with_its_base_is_kept_without_it(path, counts, solver)
         np.testing.assert_allclose(got, want, rtol=1e-10, atol=0)
     else:
         # the kept base's adjoints ran on its reused preconditioner, these on
-        # a fresh one (ADR 0127): equal within the solve tolerance
+        # a fresh one: equal within the solve tolerance
         bound = 10 * gfem.SolverOptions().tolerance * np.abs(want).max()
         np.testing.assert_allclose(got, want, rtol=0, atol=bound)
 
@@ -191,8 +191,8 @@ def test_vmapped_variants_each_back_onto_their_own_base(path, counts, solver):
     assert counts.refactorized["backward"] == 3 * (len(F) - 1)
     cache.ENTRIES.clear()
     want = loop(robust(retain_memory=0))
-    # BDDC's forwards there start from the previous design's solution (ADR
-    # 0126), these from zero: equal within the solve tolerance
+    # BDDC's forwards there start from the previous design's
+    # solution, these from zero: equal within the solve tolerance
     rel, grad_rel = 1e-12, 1e-10
     if solver == "bddc_gmres":
         rel = grad_rel = 10 * gfem.SolverOptions().tolerance

@@ -1,4 +1,4 @@
-"""What thermal and DC conduction problems refuse, by name (ADRs 0161, 0184).
+"""What thermal and DC conduction problems refuse, by name.
 
 MPI, mesh refinement, error estimates, a GPU device and periodic models
 have no path for `gfem.SteadyThermal`, `gfem.TransientThermal` and

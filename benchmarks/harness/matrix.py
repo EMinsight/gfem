@@ -7,13 +7,13 @@ A campaign's axes (case x solver x stack x layout x tolerance x repeats) become
   (all of it refused: the default layout, planned refused);
   ``default`` is the adapter's default layout; ``RxT`` is taken as written. A refused
   ``default`` or ``RxT`` cell stays in the plan with its reason, once, so ``step``
-  writes its ``refused`` record (ADR 0411).
+  writes its ``refused`` record.
 - Iterative kinds run at the anchor tolerance; ``[[ladder]]`` rungs off the anchor
-  run at the default layout (or the ``RxT`` the ladder names; ADR 0414). Direct kinds
+  run at the default layout (or the ``RxT`` the ladder names). Direct kinds
   carry no tolerance.
 - For each (stack, case, code) with an iterative cell and no direct one, one run of
   the code's direct kind at its default layout is added (``added_for =
-  "same_code_error"``, 1 repeat; ADR 0409), unless the campaign sets
+  "same_code_error"``, 1 repeat), unless the campaign sets
   ``same_code_direct = false`` (reference campaigns whose finest rung no direct
   solver takes).
 - Cells are grouped into jobs (one per case x stack, or one per stack with ``[jobs]
@@ -22,11 +22,11 @@ A campaign's axes (case x solver x stack x layout x tolerance x repeats) become
 - The estimate uses the case files' ``est_s`` hints (``"<solver>@<RxT>"``, then
   ``"<solver>"``, else the wall cap; ``staging`` is per job): a cell whose hint
   reaches its wall cap counts once (later repeats are skipped after a timeout), each
-  job adds :data:`JOB_OVERHEAD_S`. Core-hours = nodes x 112 x hours (ADR 0188); the
+  job adds :data:`JOB_OVERHEAD_S`. Core-hours = nodes x 112 x hours; the
   time limit is 1.5x the estimate, QOS ``debug`` up to 2 h, else ``long``.
 
 :func:`write` lays out ``RUNDIR/{campaign.toml, COMMIT, plan.tsv, jobs/<job>.steps,
-campaign.json}``; each steps line is one run as JSON. Standard library only (ADR 0400).
+campaign.json}``; each steps line is one run as JSON. Standard library only.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ from benchmarks.harness.case import Case
 from benchmarks.harness.config import Campaign, ConfigError, Site
 
 NODE_CORES = 112
-"""Cores of one MN5 GPP node; an exclusive node bills all of them (ADR 0188)."""
+"""Cores of one MN5 GPP node; an exclusive node bills all of them."""
 SOCKET_CORES = 56
 JOB_OVERHEAD_S = 420.0
 """Per job: env check, staging, sampler warm-up (300 s), machine benchmark (120 s)."""
@@ -74,7 +74,7 @@ def grid(budget: int) -> tuple[Layout, ...]:
     """Every R x T = ``budget``, ranks ascending; T divides 56 when ``budget`` > 56.
 
     The one-process layout 1 x c is always in; no rank straddles a socket under
-    ``block:block`` (ADR 0412). Refusals per code are the adapters' (:func:`expand`).
+    ``block:block``. Refusals per code are the adapters' (:func:`expand`).
     """
     out = []
     for ranks in range(1, budget + 1):
@@ -540,7 +540,7 @@ def _same_code_direct(
     adapters: Mapping[str, Adapter],
     notes: list[str],
 ) -> list[Cell]:
-    """The direct runs ADR 0409 needs for the same-code error, when none is planned."""
+    """The direct runs the same-code error needs, when none is planned."""
     added = []
     budget = campaign.core_budget
     cap = campaign.wall_cap_s[case.name]
@@ -589,7 +589,7 @@ def _same_code_direct(
 
 
 def rotate[T](rows: Sequence[T], repeats: int | Sequence[int]) -> list[T]:
-    """Rows in rounds, round r rotated by r * ceil(|rows| / R) (ADR 0411).
+    """Rows in rounds, round r rotated by r * ceil(|rows| / R).
 
     ``repeats`` is one count for every row or one per row; a row runs in the first
     ``repeats`` rounds. A repeat that would follow the same row is swapped with the

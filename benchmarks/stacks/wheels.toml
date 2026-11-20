@@ -1,5 +1,5 @@
 # Software stack `wheels`: what pip install gives. Never a path: the site file's
-# [stacks.wheels] table says where the base venv and wheelhouses live (ADR 0403).
+# [stacks.wheels] table says where the base venv and wheelhouses live.
 schema = 1
 name = "wheels"
 kind = "wheels"                  # wheels | native: the module of benchmarks/stacks/ that prepares it

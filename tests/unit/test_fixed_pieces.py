@@ -1,4 +1,4 @@
-"""Piece values outside material-field regions, kept across designs (ADR 0082).
+"""Piece values outside material-field regions, kept across designs.
 
 A CPU direct driven solve assembles each volume piece as its part on the
 `MaterialField` regions plus the part on the other elements; the latter is

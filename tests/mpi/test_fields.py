@@ -1,4 +1,4 @@
-"""Kept fields through the real `gfem.solve` across ranks (ADR 0063).
+"""Kept fields through the real `gfem.solve` across ranks.
 
 A kept field is a rank's piece, and each of its methods is collective: every rank
 gets the same bits of a value, checked by `on_ranks`, and they agree with the same
@@ -26,7 +26,7 @@ from gfem._engine import fields as engine_fields
 from gfem._engine.probe import Layout, locate
 from gfem._mpi import AgreedError
 
-#: Relative to the largest one-process value: ADR 0070's gates.
+#: Relative to the largest one-process value: 1e-11 on direct, 1e-9 on BDDC.
 GATES = {"bddc_gmres": 1e-9, "direct": 1e-11}
 SOLVERS = (
     "bddc_gmres",

@@ -1,4 +1,4 @@
-"""Bisection refinement of a gfem mesh (ADR 0083).
+"""Bisection refinement of a gfem mesh.
 
 Longest-edge (Rivara) bisection with conforming closure, on gfem's arrays in
 NumPy:
@@ -15,7 +15,7 @@ its parent's node order with one vertex replaced by the midpoint, so it keeps
 the parent's orientation; unrefined elements keep their relative order, old
 nodes keep their indices and midpoints are appended.
 
-`refine_model` refines a whole `Model` (ADR 0084): it refuses traced leaves,
+`refine_model` refines a whole `Model`: it refuses traced leaves,
 checks the quality of a moved mesh, bisects it at its current coordinates and
 copies each parent's per-element design values to its children with
 `transfer`, the region-local gather.
@@ -243,14 +243,14 @@ def _gather_field(field: MaterialField, region: str, gather) -> MaterialField:
         value = getattr(field, name)
         if value is not None and value.ndim == 1 + field.has_principal_values(name):
             changes[name] = gather(value, region)
-    # a law blend's density (ADR 0113)
+    # a law blend's density
     if field.blend is not None and field.blend.ndim == 1:
         changes["blend"] = gather(field.blend, region)
     return dataclasses.replace(field, **changes)
 
 
 def _check_concrete(model: Model) -> None:
-    """Raise if a leaf refinement reads or copies is traced (ADR 0011)."""
+    """Raise if a leaf refinement reads or copies is traced."""
     leaves = [("the mesh nodes", model.mesh.nodes)]
     leaves += [
         (f"materials[{region!r}]", value)

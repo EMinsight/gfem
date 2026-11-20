@@ -13,7 +13,7 @@ bump, through `gfem.shape.boundary_morph` with the ports held. Gates:
   and at most 0.3 of it for an adaptive sweep with frozen samples, both
   warm (as in every iteration of an optimization after the first).
 
-A BDDC solve starts from the previous design's solution (ADR 0126), so a
+A BDDC solve starts from the previous design's solution, so a
 design solved twice costs almost no iterations the second time. The kernel
 gate drops that initial guess before its timed forward solve; the backward
 gates time each evaluation at a new bump amplitude (a new mesh, as in a shape

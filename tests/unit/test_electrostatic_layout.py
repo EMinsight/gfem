@@ -1,6 +1,6 @@
 """What an electrostatic solve across ranks rests on, checked on one process.
 
-The terminal lifting is the indicator of its vertex DOFs (ADR 0501), which must be
+The terminal lifting is the indicator of its vertex DOFs, which must be
 the lifting ``gf.Set`` gave; the map of an H1 piece to one-process numbering must
 name each DOF as `GetDofNrs` does, entity by entity.
 """

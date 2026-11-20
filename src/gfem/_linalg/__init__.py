@@ -120,11 +120,11 @@ Symmetry = Literal["complex_symmetric", "hermitian", "general"]
 #: A linear solver a problem can use (`ResolvedLinearSolver.kind`).
 Kind = Literal["direct", "bddc_gmres", "petsc"]
 KINDS: tuple[Kind, ...] = get_args(Kind)
-#: Most Krylov iterations of an iterative solve (as Palace).
+#: Most Krylov iterations of an iterative solve.
 MAXITER = 400
 #: Bytes per unknown of a direct factorization, above every measured peak
 #: (46.9 KiB, sparse Cholesky at order 3; PARDISO 16.7-21.7 KiB):
-#: `auto_linear_solver` (ADR 0124).
+#: `auto_linear_solver`.
 DIRECT_BYTES_PER_UNKNOWN = 48 * 2**10
 
 
@@ -136,7 +136,7 @@ def auto_linear_solver(
     The estimate is `DIRECT_BYTES_PER_UNKNOWN` times ``unknowns`` per
     factorization ``in_flight``, doubled for a ``general`` operator (LU
     stores L and U). Equal to the budget fits. Reads no clock and no
-    installed library (ADR 0124). Returns the kind, why in words, and the
+    installed library. Returns the kind, why in words, and the
     estimate in bytes.
     """
     estimate = direct_estimate(unknowns, in_flight=in_flight, general=general)
@@ -278,10 +278,10 @@ class Refactorable(Handle, Protocol):
         (`prepare`'s ``solves``); ``None`` keeps it. Only BDDC's coarse
         choice reads it. ``frequency``: the ω the operator is at, when the
         caller knows it; only the direct solver reads it, to solve a design on
-        factors made at the same ω for an earlier one (ADR 0094). ``sweep``:
+        factors made at the same ω for an earlier one. ``sweep``:
         the operator is a frequency sweep's next one; only BDDC reads it, to
-        solve without an initial guess on its reused preconditioner (ADR
-        0127; otherwise it sets BDDC up again first).
+        solve without an initial guess on its reused preconditioner
+        (otherwise it sets BDDC up again first).
 
         Raises:
             RuntimeError: The handle was freed.
@@ -387,7 +387,7 @@ def prepare(
         tolerance: Relative preconditioned residual of iterative backends
             (``|P(b - Ax)| / |P b|`` for BDDC + GMRES, the P-norm of the
             residual over its first value for CG). The direct backend reads
-            it only on factors reused across designs (ADR 0094).
+            it only on factors reused across designs.
         maxiter: Most iterations of iterative backends; a solve that does
             not converge in them raises `gfem.LinearSolverConvergenceError`.
         width: Right-hand-side columns of a usual solve (the block width:

@@ -7,11 +7,11 @@ unusable. They are initialised without command-line arguments (never the
 script's ``sys.argv``), and a PETSc another library initialised first is
 accepted as it is.
 
-gfem documents two builds (ADR 0067). The no-MPI stack serves one process and rank
+gfem documents two builds. The no-MPI stack serves one process and rank
 copies, which pass PETSc its launch option; only the MPI stack serves a distributed
 solve (`require_mpi_petsc`). `has_mpi` tells them apart without initialising PETSc.
 A stack whose MUMPS calls ZGEMMT is refused whatever the size of the problem
-(`has_zgemmt`, ADR 0078).
+(`has_zgemmt`).
 
 Every PETSc or SLEPc object gfem creates gets its own options prefix
 (`next_prefix`). gfem's options sit in PETSc's global options database only

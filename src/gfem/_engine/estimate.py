@@ -1,4 +1,4 @@
-"""Flux recovery: the field estimator's error indicators (ADR 0087).
+"""Flux recovery: the field estimator's error indicators.
 
 A solved field's flux (eps grad V in electrostatics; eps E, and curl E, for
 driven and eigenmode fields) is projected into a continuous recovery space of
@@ -23,7 +23,7 @@ domain's natural surfaces, n . R(eps E) = 0 and n x R(mu^-1 curl E) = 0
 one): for a potential every exterior surface not held at a potential, for a
 wave field the PMC and default PMC surfaces. Unconstrained, the recovery
 there is free to miss the solved field's natural condition, and a tensor eps
-then hides the error (ADR 0087). Each mass matrix is factorized
+then hides the error. Each mass matrix is factorized
 once per mesh (`FluxRecovery`) and the factor reused for every field, real
 and imaginary part. NGSolve's local ``GridFunction.Set`` is never used: it
 does not converge at a corner singularity.
@@ -333,7 +333,7 @@ class FluxRecovery:
 
         Returns (the weight of the recovered H error, the weight of the curl
         energy, mu as parts, mu^-1 as parts). For a real mu the weights are mu
-        and mu^-1 and each is its own one part. For a complex mu (ADR 0138)
+        and mu^-1 and each is its own one part. For a complex mu
         the weights are the moduli (mu^H mu)^{1/2} and (mu mu^H)^{-1/2}
         (`_modulus_weights`), and mu^-1 curl E and the curl term c_K use the
         complex mu, as real and imaginary parts.
@@ -564,7 +564,7 @@ class RecoveryCache:
 class Terms:
     """One quantity's error identity on one solve, tetrahedron by tetrahedron.
 
-    The identity's volume part (ADR 0089) is sum_K a_K, with
+    The identity's volume part is sum_K a_K, with
     a_K = c_K - lam m_K of the recovered errors of the quantity's field and
     of its dual, complex bilinear (not Hermitian):
 
@@ -606,7 +606,7 @@ class Terms:
 
     @property
     def weights(self) -> np.ndarray:
-        """Each tetrahedron's |a_K| in the quantity's units (ticket 08's indicator)."""
+        """Each tetrahedron's |a_K| in the quantity's units (the marking indicator)."""
         return self.scale * np.abs(self.curl - self.lam * self.mass)
 
     @property
@@ -723,7 +723,7 @@ def _wave(recovery: FluxRecovery, field: Field, cache: RecoveryCache) -> np.ndar
     residual sums its real and imaginary parts. The energy is
     || curl E ||^2_{|mu|^-1} + |k|^2 int |eps_eff| |E|^2 over the solve
     domain. A complex mu_r enters mu^-1 curl E whole and the norms through
-    its modulus (`FluxRecovery`, ADR 0138). Without loss eps_eff = eps_r,
+    its modulus (`FluxRecovery`). Without loss eps_eff = eps_r,
     |mu| = mu, and this is the lossless estimate.
     """
     built = recovery.built
@@ -758,7 +758,7 @@ def _modulus_weights(eps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     (A^H A)^{1/2}, A^-1 and A for a real symmetric A. Real for every tensor
     gfem represents: A = R D R^T with real orthonormal axes R shared by
     eps_r, tan_delta and conductivity (and by mu_r), so A A^H = R |D|^2 R^T
-    is real and ``.real`` drops only rounding (ADR 0138).
+    is real and ``.real`` drops only rounding.
     """
     if eps.ndim == 1:
         return 1.0 / np.abs(eps), np.abs(eps)
@@ -789,7 +789,7 @@ def combine(
     return values, indicators
 
 
-# --- the quantity estimator (ADR 0089 and its amendment) ---------------------
+# --- the quantity estimator -------------------------------------------------
 #
 # Each quantity has an exact quadratic error identity in the error e = u_h - u
 # of its field and of its free dual (the potential itself, the other port's
@@ -805,7 +805,7 @@ def combine(
 # reported estimate is the magnitude |sum c_K| + |lam| |sum m_K| (the two terms
 # are never let cancel over the mesh), scaled to the quantity's units. A
 # tetrahedron's weight is the magnitude of its term of the identity,
-# |a_K| = |c_K - lam m_K| with the same scale (ticket 08's indicator): marking
+# |a_K| = |c_K - lam m_K| with the same scale (the marking indicator): marking
 # is unchanged by the reported sum, and the weights add up to neither that sum
 # nor |sum a_K| in general.
 
@@ -874,8 +874,8 @@ def s_entry(
     excited or its functional is not parallel to its excitation (a hybrid
     lossy wave port mode).
     Elsewhere z_i = c_i x_i with c_i = -i / (4 k0 eta0) for fields of 1 W
-    incident (ADR 0089), times kappa^2 / N for a wave port with a voltage
-    path (ADR 0214, `_free_dual_ratio`): the free dual, x_i on that scale.
+    incident, times kappa^2 / N for a wave port with a voltage
+    path (`_free_dual_ratio`): the free dual, x_i on that scale.
     """
     cache = cache or RecoveryCache()
     adjoints = adjoints or {}
@@ -996,7 +996,7 @@ def objective_of_s(
     adjoints: Mapping[tuple[float, Hashable], Field] | None = None,
     cache: RecoveryCache | None = None,
 ) -> ObjectiveTerms:
-    """An objective of S's estimate, the C form of ADR 0129.
+    """An objective of S's estimate, in its C form.
 
     eta_J = sum_f (|sum_K X_c,K| + k_f^2 |sum_K X_m,K|) + 1/2 sum_ab
     ||H_ab|| eta_a eta_b, with X_.,K = sum_e ct_e factor_e (.)_K,e over the
@@ -1076,12 +1076,12 @@ def objective_of_omega(
     *,
     cache: RecoveryCache | None = None,
 ) -> ObjectiveTerms:
-    """An objective of the modes' omega (ADR 0131 amendment), free duals.
+    """An objective of the modes' omega, free duals.
 
     Per mode read, omega's identity (`omega`) gives k_h - k ~= -(A1 - A2),
     A1 = sum c_K / s, A2 = k^2 sum m_K / s, s = x_h^T T'(k_h) x_h. A real J
     of omega changes by Re(g delta omega), g its cotangent (``dJ/dRe - i
-    dJ/dIm``). The estimate keeps the two terms from cancelling (ADR 0131):
+    dJ/dIm``). The estimate keeps the two terms from cancelling:
 
         sum_m (|Re(g_m A1_m)| + |Re(g_m A2_m)|) c / scale
             + 1/2 sum_mn ||H_mn|| eta_m eta_n,
@@ -1151,7 +1151,7 @@ def objective_of_fields(
     duals: Mapping[Hashable, np.ndarray],
     cache: RecoveryCache | None = None,
 ) -> ObjectiveTerms:
-    """An objective of driven fields' estimate (ADRs 0132, 0133, 0144).
+    """An objective of driven fields' estimate.
 
     Each read ``a`` is a measurement output (`gfem._engine.field_duals`
     key), with the objective's cotangent ct_a and its solved dual z_a
@@ -1338,7 +1338,7 @@ class _FieldGroup:
 
 @dataclasses.dataclass(frozen=True)
 class RewriteTerms(ObjectiveTerms):
-    """An objective's lossless rewrite on one result (ADR 0135).
+    """An objective's lossless rewrite on one result.
 
     ``linear``, ``remainder`` and ``weights`` are the C form's of J_lam
     (`objective_of_s`); the global defect term is not in ``weights``.
@@ -1376,7 +1376,7 @@ def lossless_rewrite(
     cache: RecoveryCache | None = None,
     lam: np.ndarray | None = None,
 ) -> RewriteTerms:
-    """An objective of S's estimate through its lossless rewrite (ADR 0135).
+    """An objective of S's estimate through its lossless rewrite.
 
     On a network that conserves power, sum_i |S_ic|^2 = 1 for every column
     c = (frequency, source), so J_lam = J + sum_c lam_c (sum_i |S_ic|^2 - 1)
@@ -1501,7 +1501,7 @@ def objective_of_potentials(
     duals: Mapping[Hashable, np.ndarray] | None = None,
     cache: RecoveryCache | None = None,
 ) -> ObjectiveTerms:
-    """An electrostatic objective's estimate (ADR 0141).
+    """An electrostatic objective's estimate.
 
     Each read ``a`` has per-tetrahedron terms t_K,a of its error identity, in
     the read's units, and an own remainder rho_K,a:
@@ -1598,7 +1598,7 @@ def objective_of_participation(
     duals: Mapping[tuple[int, str], ParticipationDual],
     cache: RecoveryCache | None = None,
 ) -> ObjectiveTerms:
-    """An objective of bulk participations (and omega), ADR 0142.
+    """An objective of bulk participations (and omega).
 
     A mode's participation p = N_r / D has the mode-field dual lam of the
     gradient (`gfem._eigen.rule.EigenmodeRule.participation_duals`), and
@@ -1606,7 +1606,7 @@ def objective_of_participation(
     m(e_u, e_lam)) from the recovered errors of the mode u and of lam. The
     dual solves T(k) lam0 = b with the volume load b = -w, so its continuous
     flux is eps_eff lam + b / k^2, not eps_eff lam: lam's flux is recovered
-    equilibrated with the whole load (ADR 0142; the plain one reads b's
+    equilibrated with the whole load (the plain one reads b's
     jumps as error). Per mode, the reads' cotangents combine the c_K, m_K
     of their duals before magnitudes are taken: 2 (|sum C| + |k^2| |sum
     M|), a tetrahedron's 2 |C_K - k^2 M_K|.
@@ -1733,7 +1733,7 @@ def _dual_residuals(
 
     The dual solves T(k) lam0 = b, b = -w = -sum_r weights_r conj(A_r u),
     A_r the region's Re eps_r mass form, so div(k^2 eps_eff lam + b) = 0:
-    the flux recovered is eps_eff lam + b / k^2 (ADR 0142).
+    the flux recovered is eps_eff lam + b / k^2.
     """
     model, built = recovery.model, recovery.built
     n_tet = len(model.mesh.tetrahedra)
@@ -1879,7 +1879,7 @@ def omega_cluster(
     *,
     cache: RecoveryCache | None = None,
 ) -> Terms:
-    """The terms of the relative error of the mean ``omega`` of ``modes`` (ADR 0136).
+    """The terms of the relative error of the mean ``omega`` of ``modes``.
 
     The cluster's members X = [x_1 .. x_m] span what the single-mode identity
     (`omega`) reads off one mode: the mean k's error is ~= -tr(G^-1 E^T T E)
@@ -1937,7 +1937,7 @@ def _mode_terms(
 
 @dataclasses.dataclass(frozen=True)
 class QTerms(Terms):
-    """The terms of a mode's Q relative error (ADR 0131), from omega's identity.
+    """The terms of a mode's Q relative error, from omega's identity.
 
     Q = |k| / (2 Im k) = 1 / (2 sin phi), phi = arg k_h, so dQ/Q = -cot phi
     Im(delta k / k): the real part of omega's relative error drops out. With
@@ -1976,7 +1976,7 @@ def q(
     *,
     cache: RecoveryCache | None = None,
 ) -> QTerms:
-    """The terms of ``q[mode]``'s relative error (ADR 0131); see `QTerms`.
+    """The terms of ``q[mode]``'s relative error; see `QTerms`.
 
     The mode must be lossy (Im omega > 0): Q is infinite otherwise.
     """
@@ -2012,7 +2012,7 @@ def _lossy_eps_eff(recovery: FluxRecovery, k: complex) -> np.ndarray | None:
 
     Without loss the recovery's own real ``eps`` coefficients stand. With a
     law region the values stand even when real: a lossless law depends on
-    frequency, and ``recovery.eps`` holds its eps_inf (ADR 0111).
+    frequency, and ``recovery.eps`` holds its eps_inf.
     """
     eps = _eps_eff_values(recovery.model, recovery.built, k)
     return eps if np.any(eps.imag) or law_regions(recovery.model) else None

@@ -40,7 +40,7 @@ excite = ["p1"]
 [quantities]
 s = [["p1", "p1"], ["p2", "p1"]]
 
-# Plan estimate hints, seconds per run at budget 112 incl. ~60 s mesh read (probes/12/plan.py); staging = per job.
+# Plan estimate hints, seconds per run at budget 112 incl. ~60 s mesh read; staging = per job.
 [est_s]
 "gfem:direct" = 240
 "gfem:bddc" = 240
