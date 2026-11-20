@@ -26,6 +26,8 @@ from gfem._engine.mesh import EngineMesh, inverse_order, tetrahedron_domains
 from gfem.mesh import Mesh
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from gfem._field import Field
 
 __all__ = [
@@ -39,6 +41,7 @@ __all__ = [
     "mean_rows",
     "one_process_column",
     "one_process_dofs",
+    "rank_piece",
     "sample",
     "support_region",
     "surface_triangles",
@@ -189,6 +192,22 @@ def dof_shape(
         _, fes, _ = fe_space(still, support, excluded, space, order, comm=comm)
         memo[key] = (_mpi.agree_max(comm, int(fes.ndof)), int(fes.ndof))
     return memo[key]
+
+
+def rank_piece(
+    columns: np.ndarray, width: Callable[[], int], comm: Any, dtype: type = complex
+) -> np.ndarray:
+    """``columns`` padded with zero rows to ``width()``: one shape on all ranks.
+
+    A rank's piece of a field (ADR 0063). On one process (``comm`` ``None``)
+    ``columns`` itself comes back and ``width`` is not called, since under ranks
+    it may be a collective.
+    """
+    if comm is None:
+        return columns
+    piece = np.zeros((width(), columns.shape[1]), dtype)
+    piece[: columns.shape[0]] = columns
+    return piece
 
 
 def _check_size(field: Field, fes: ngs.FESpace, width: int | None = None) -> None:

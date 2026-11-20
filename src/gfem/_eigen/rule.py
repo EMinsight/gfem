@@ -128,7 +128,7 @@ from gfem._engine.eigen import (
     projector,
     scale_per_tetrahedron,
 )
-from gfem._engine.fields import dof_shape, fe_space, one_process_dofs
+from gfem._engine.fields import dof_shape, fe_space, one_process_dofs, rank_piece
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped
 from gfem._linalg import Kind, ResolvedLinearSolver
@@ -1229,7 +1229,7 @@ class EigenmodeRule:
         Under ranks a rank integrates its own tetrahedra's energies, summed over
         the ranks per region (`_volume_energies`), the sign follows one process's
         largest entry (`gfem._sign.largest_value`), and ``e_field`` is the rank's
-        piece, padded (`_piece`).
+        piece, padded (`gfem._engine.fields.rank_piece`).
         """
         built, space, order = op.built, op.space, op.order
         layout, numbers = _layout(op), self._numbers()
@@ -1300,7 +1300,9 @@ class EigenmodeRule:
             "bulk": bulk,
             "principal": principal,
             "sheet": self._sheet_shares(op, solve, omega),
-            "e_field": self._piece(model, op.expand(solve)),
+            "e_field": rank_piece(
+                op.expand(solve), lambda: self._field_width(model), self.comm
+            ),
         }
         return outputs, solve
 
@@ -1382,17 +1384,6 @@ class EigenmodeRule:
             list(total[1 : 1 + n]),
             list(total[1 + n :].reshape(-1, 3)),
         )
-
-    def _piece(self, model: Model, columns: np.ndarray) -> np.ndarray:
-        """The mode columns padded with zero rows to one shape on all ranks.
-
-        A rank's piece of a field (ADR 0063).
-        """
-        if self.comm is None:
-            return columns
-        piece = np.zeros((self._field_width(model), columns.shape[1]), complex)
-        piece[: columns.shape[0]] = columns
-        return piece
 
     def _field_width(self, model: Model) -> int:
         """A mode field's rows on every rank: `dof_shape`'s width."""

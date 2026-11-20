@@ -120,7 +120,7 @@ from gfem._engine.domain import (
     pec_surfaces,
     space_key,
 )
-from gfem._engine.fields import dof_shape
+from gfem._engine.fields import dof_shape, rank_piece
 from gfem._engine.floquet_ports import (
     FloquetSurfaceCoupling,
     check_excitable,
@@ -1061,7 +1061,11 @@ class DrivenRule:
             z_ref=ports.z_ref,
             iterations=iterations,
             reused=reused,
-            e_field=self._piece(model, np.concatenate(fields, axis=1))
+            e_field=rank_piece(
+                np.concatenate(fields, axis=1),
+                lambda: self._field_shape(model)[0],
+                self.comm,
+            )
             if fields
             else None,
             waves=ports.waves,
@@ -1741,14 +1745,6 @@ class DrivenRule:
             self.options.order,
             comm=self.comm,
         )
-
-    def _piece(self, model: Model, columns: np.ndarray) -> np.ndarray:
-        """Kept columns padded with zero rows to one shape on all ranks (ADR 0063)."""
-        if self.comm is None:
-            return columns
-        piece = np.zeros((self._field_shape(model)[0], columns.shape[1]), complex)
-        piece[: columns.shape[0]] = columns
-        return piece
 
     def _padded_size(self) -> int:
         """Most basis vectors frozen samples give.

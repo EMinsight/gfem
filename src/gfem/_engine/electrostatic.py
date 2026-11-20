@@ -52,7 +52,7 @@ from gfem._engine.domain import (
     h1_space,
     region_domain,
 )
-from gfem._engine.fields import dof_shape
+from gfem._engine.fields import dof_shape, rank_piece
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Derivative, FieldPair, Term, law_key
@@ -492,16 +492,9 @@ class ElectrostaticRule:
                 handle=KeptHandle(handle),
                 fields={"potential": phi},
             )
-        outputs = {"capacitance": c, "energy": energy, "potential": self._piece(phi)}
+        potential = rank_piece(phi, self._field_width, self.comm, dtype=float)
+        outputs = {"capacitance": c, "energy": energy, "potential": potential}
         return outputs, entry
-
-    def _piece(self, phi: np.ndarray) -> np.ndarray:
-        """The potentials padded with zero rows to one shape on all ranks (ADR 0063)."""
-        if self.comm is None:
-            return phi
-        piece = np.zeros((self._field_width(), phi.shape[1]))
-        piece[: phi.shape[0]] = phi
-        return piece
 
     def _field_width(self) -> int:
         """The rows of a potential at the JAX seam: `fields.dof_shape`'s width."""
