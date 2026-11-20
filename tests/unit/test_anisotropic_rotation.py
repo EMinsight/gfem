@@ -64,6 +64,7 @@ def test_a_rotated_line_gives_the_same_s_parameters(lines):
     np.testing.assert_allclose(s_turned, s, rtol=0, atol=2e-13 * np.abs(s).max())
 
 
+@pytest.mark.bitwise  # its strongly damped modes: the same one run to run only on one thread
 def test_a_rotated_line_gives_the_same_eigenfrequency(lines):
     line, turned = lines
     problem = gfem.Eigenmode(target=15e9)

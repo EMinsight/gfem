@@ -32,9 +32,16 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         SHA: ${{ github.sha }}
       run: |
-        passed=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI \
-          --commit "$SHA" --status success --json event \
-          --jq '[.[] | select(.event == "schedule" or .event == "workflow_dispatch")] | length')
+        # a full run: nightly or on demand, with its verification jobs (a
+        # targeted run, `-f tests=...`, has none)
+        passed=0
+        for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow CI \
+            --commit "$SHA" --status success --json databaseId,event \
+            --jq '.[] | select(.event == "schedule" or .event == "workflow_dispatch") | .databaseId'); do
+          verified=$(gh run view "$run" --repo "$GITHUB_REPOSITORY" --json jobs \
+            --jq '[.jobs[] | select((.name | startswith("verification")) and .conclusion == "success")] | length')
+          if [ "$verified" -gt 0 ]; then passed=1; fi
+        done
         if [ "$passed" -eq 0 ]; then
           echo "::error::no full CI run passed on $SHA: run 'gh workflow run CI --ref main' and tag once it is green"
           exit 1
