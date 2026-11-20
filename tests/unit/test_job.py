@@ -794,6 +794,15 @@ def test_a_driven_result_saved_before_the_solve_record_loads_without_it(tmp_path
     assert sweep.preconditioner_reused is None
 
 
+def test_a_driven_result_saved_before_2d_models_reads_as_a_3d_result(tmp_path):
+    (tmp_path / "result.json").write_text(DRIVEN_RESULT_9F004A7)
+    arrays = {".s.values": np.zeros((2, 2, 2), complex), ".s.z_ref": np.ones((2, 2))}
+    np.savez(tmp_path / "result.npz", **arrays)
+    result = gfem.load_result(tmp_path)
+    assert result.h_fields == ()
+    assert result.polarization is None
+
+
 # --- a sweep that stops part-way ----------------------------------------------------
 
 SWEEP = (2e9, 3e9, 4e9, 5e9, 6e9)

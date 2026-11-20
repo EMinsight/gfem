@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from gfem._engine.port_mode import PortModeSpace
     from gfem._port_section import PortSection
+    from gfem.problems import Polarization
 
 __all__ = [
     "DCConductionResult",
@@ -1337,8 +1338,9 @@ class DrivenResult:
             is read. Their accuracy is the sweep's field error, about
             ``SolverOptions.adaptive_tolerance`` or better. Gradients of an
             adaptive sweep hold its basis fixed (see ``Driven.samples``).
-        kept: ``(frequency in Hz, excited port)`` of each of `e_fields`
-            (static labels), frequency-major.
+            On a 2D model, the kept Ez fields of an Ez solve (below).
+        kept: ``(frequency in Hz, excited port)`` of each of `e_fields`, or of
+            `h_fields` (static labels), frequency-major.
         sweep: How the frequencies were solved (`SweepInfo`).
         port_modes: The mode of each wave port over the frequencies
             (`PortModeResult`, by port name), as the port mode sweep found
@@ -1357,6 +1359,20 @@ class DrivenResult:
             the frequencies (`DiffractionOrderResult`, by port name); empty
             without Floquet ports. Constants of the solve: not
             differentiable.
+        h_fields: The kept magnetic fields of a 2D model's Hz solve
+            (``Driven(polarization="Hz")``), labelled by `kept` as
+            `e_fields` are, which are then empty; empty otherwise. Read them
+            with `h_field`.
+        polarization: The field normal to the plane that a 2D model's solve
+            computed, ``"Ez"`` or ``"Hz"``; ``None`` for a 3D model. A
+            static label.
+
+    On a 2D model (a mesh of dimension 2, `gfem.conventions`) every port is
+    fed 1 W/m time-averaged incident power per metre along :math:`z`, and S is
+    dimensionless. A kept field is the scalar normal component, peak phasor
+    for that 1 W/m: quantity ``"Ez"`` in V/m in `e_fields`, or ``"Hz"`` in
+    A/m in `h_fields`, in H1 of the solve order over the solve domain's
+    areas. Its `Field.at` takes ``(m, 2)`` points in the plane.
     """
 
     s: NetworkParameters
@@ -1368,11 +1384,19 @@ class DrivenResult:
     diffraction_orders: Mapping[str, DiffractionOrderResult] = dataclasses.field(
         default_factory=dict
     )
+    h_fields: Sequence[Field] = ()
+    polarization: Polarization | None = None
 
     def __post_init__(self) -> None:
         """Hold the fields as a sequence matching their labels."""
-        if not isinstance(self.e_fields, ReducedFields):
-            object.__setattr__(self, "e_fields", tuple(self.e_fields))
+        for name in ("e_fields", "h_fields"):
+            if not isinstance(getattr(self, name), ReducedFields):
+                object.__setattr__(self, name, tuple(getattr(self, name)))
+        if len(self.e_fields) and len(self.h_fields):
+            raise ValueError(
+                "A driven result keeps e_fields or h_fields (an Hz solve of a 2D "
+                "model), not both."
+            )
         if self.sweep is None:
             object.__setattr__(self, "sweep", SweepInfo.uniform(self.s.frequency))
         object.__setattr__(
@@ -1385,9 +1409,10 @@ class DrivenResult:
             "offsets",
             tuple((str(k), float(v)) for k, v in dict(self.offsets).items()),
         )
-        if len(self.e_fields) != len(self.kept):
+        fields = self.h_fields if len(self.h_fields) else self.e_fields
+        if len(fields) != len(self.kept):
             raise ValueError(
-                f"{len(self.e_fields)} fields but {len(self.kept)} labels in kept."
+                f"{len(fields)} fields but {len(self.kept)} labels in kept."
             )
 
     @property
@@ -1398,16 +1423,53 @@ class DrivenResult:
     def e_field(self, frequency: float, excite: str | None = None) -> Field:
         """The kept electric field at ``frequency`` with port ``excite`` fed.
 
+        On a 2D model, the kept Ez field of an Ez solve.
+
         Args:
             frequency: A kept frequency, Hz (matched to 1e-9 relative).
             excite: The excited port; may be left out when one port was
                 excited.
 
         Raises:
-            ValueError: No field was kept at ``frequency``, or ``excite`` is
-                needed.
+            ValueError: No field was kept at ``frequency``, ``excite`` is
+                needed, or the result is a 2D model's Hz solve (read
+                `h_field`).
             KeyError: ``excite`` is not an excited port.
         """
+        if self.polarization == "Hz":
+            raise ValueError(
+                "This result solved the Hz polarization of a 2D model: its kept "
+                "field is Hz, read result.h_field(frequency, excite)."
+            )
+        return self._kept_field(self.e_fields, frequency, excite)
+
+    def h_field(self, frequency: float, excite: str | None = None) -> Field:
+        """The kept Hz field of a 2D model's Hz solve at ``frequency``.
+
+        Args:
+            frequency: A kept frequency, Hz (matched to 1e-9 relative).
+            excite: The excited port; may be left out when one port was
+                excited.
+
+        Raises:
+            ValueError: The result is not an Hz solve (read `e_field`), no
+                field was kept at ``frequency``, or ``excite`` is needed.
+            KeyError: ``excite`` is not an excited port.
+        """
+        if self.polarization != "Hz":
+            solved = (
+                "the Ez polarization of a 2D model: its kept field is Ez"
+                if self.polarization == "Ez"
+                else "a 3D model: h_field reads the Hz polarization of a 2D model"
+            )
+            raise ValueError(
+                f"This result solved {solved}; read result.e_field(frequency, excite)."
+            )
+        return self._kept_field(self.h_fields, frequency, excite)
+
+    def _kept_field(
+        self, fields: Sequence[Field], frequency: float, excite: str | None
+    ) -> Field:
         if not self.kept:
             raise ValueError(
                 "This result keeps no fields: solve with Driven(..., "
@@ -1428,7 +1490,7 @@ class DrivenResult:
         frequencies = sorted({f for f, _ in self.kept})
         for k, (f, port) in enumerate(self.kept):
             if port == excite and math.isclose(f, frequency, rel_tol=1e-9):
-                return self.e_fields[k]
+                return fields[k]
         raise ValueError(
             f"No field kept at {frequency:g} Hz; the kept frequencies are "
             f"{', '.join(f'{f:g}' for f in frequencies)} Hz (Driven.keep_fields)."
@@ -1533,7 +1595,8 @@ class DrivenResult:
     def __repr__(self) -> str:
         f = self.frequency
         span = hertz_band(f.min(), f.max(), 4)
-        fields = f", {len(self.e_fields)} kept fields" if self.e_fields else ""
+        kept = len(self.h_fields) or len(self.e_fields)
+        fields = f", {kept} kept fields" if kept else ""
         sweep = "" if self.sweep is None else f", {self.sweep!r}"
         return (
             f"DrivenResult({len(f)} frequencies {span}, ports={list(self.s.ports)}, "
@@ -1541,7 +1604,9 @@ class DrivenResult:
         )
 
 
-register_fields(DrivenResult, ("s", "e_fields", "port_modes", "diffraction_orders"))
+register_fields(
+    DrivenResult, ("s", "e_fields", "port_modes", "diffraction_orders", "h_fields")
+)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)

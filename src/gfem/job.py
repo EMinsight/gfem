@@ -434,6 +434,7 @@ def _write_result(
             result = dataclasses.replace(
                 result,
                 e_fields=tuple(field._gathered() for field in result.e_fields),  # noqa: SLF001
+                h_fields=tuple(field._gathered() for field in result.h_fields),  # noqa: SLF001
             )
         elif isinstance(result, ElectrostaticResult):
             result = dataclasses.replace(
@@ -818,6 +819,27 @@ def _options_args(options: SolverOptions, _: _codec.Context) -> dict[str, Any]:
     return args
 
 
+def _unset_omitted(cls: Any, **defaults: Any) -> _codec.ToArgs:
+    """Write ``cls``'s init fields, leaving out each of ``defaults`` at its default.
+
+    A field added for 2D meshes is then absent from a 3D file, which stays as an
+    older gfem wrote it and reads there; its solve key is unchanged.
+    """
+    names = [f.name for f in dataclasses.fields(cls) if f.init]
+
+    def to_args(obj: Any, _: _codec.Context) -> dict[str, Any]:
+        args = {n: getattr(obj, n) for n in names}
+        for name, default in defaults.items():
+            # a field sequence equals no default: only an empty one is left out
+            value = args[name]
+            unset = not len(value) if isinstance(default, tuple) else value == default
+            if unset:
+                del args[name]
+        return args
+
+    return to_args
+
+
 def _job_from_args(args: dict[str, Any], _: _codec.Context) -> Job:
     return Job(args["model"], args["problem"], args.get("options", SolverOptions()))
 
@@ -906,8 +928,6 @@ for _cls in (
     ElectrostaticResult,
     PortModeResult,
     DiffractionOrderResult,
-    Driven,
-    DrivenResult,
     NetworkParameters,
     SweepInfo,
     ReducedFields,
@@ -925,6 +945,10 @@ _codec.register(
     names=[f.name for f in dataclasses.fields(Field) if f.name != "_comm"],
 )
 _codec.register(SolverOptions, to_args=_options_args)
+_codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None))
+_codec.register(
+    DrivenResult, to_args=_unset_omitted(DrivenResult, h_fields=(), polarization=None)
+)
 _codec.register(
     PortSection,
     from_args=_port_section_from_args,

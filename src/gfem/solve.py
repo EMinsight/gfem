@@ -17,6 +17,7 @@ from gfem._periodic import check_nodes
 from gfem.errors import LinearSolverConvergenceError
 from gfem.model import _PHYSICS_NAMES, Model
 from gfem.options import SolverOptions
+from gfem.problems import _check_polarization
 from gfem.shape import _check_quality
 
 if TYPE_CHECKING:
@@ -215,7 +216,7 @@ def _solve_cache(cache: str | os.PathLike | None) -> SolveCache | None:
     return SolveCache(cache)
 
 
-def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
+def _solve(  # noqa: PLR0912, PLR0915 - the cache's seam sits between the checks
     model: Model,
     problem: Any,
     *,
@@ -261,6 +262,7 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
         if resolved is not None:
             _mpi.refuse(model, problem, options)
         rule_class = _rule_class(problem)
+        _check_polarization(problem, model.mesh.dim)
         _check_domain(model, problem)
         _check_blends(model, problem)
         if resolved is None:
