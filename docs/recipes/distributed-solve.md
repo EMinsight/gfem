@@ -1,11 +1,11 @@
 # Run a distributed solve
 
-Split one large driven solve across the cores and nodes of a cluster. You
-start your script with `mpirun` or `srun`, and gfem divides the mesh and the
-linear system between the ranks. Every rank gets the same S and the same
-gradients, from the same calls you make on one process. A driven uniform
-sweep and its gradients run this way; anything else raises at once
-({ref}`distributed-what-runs`).
+Split one large solve across the cores and nodes of a cluster. You start
+your script with `mpirun` or `srun`, and gfem divides the mesh and the linear
+system between the ranks. Every rank gets the same result and the same
+gradients, from the same calls you make on one process. Driven uniform
+sweeps, electrostatic and eigenmode solves, and periodic cells on one axis
+run this way; anything else raises at once ({ref}`distributed-what-runs`).
 
 ## Install
 
@@ -18,9 +18,10 @@ machine and must be **Open MPI**.
   into the environment: mpi4py would load it before the module and miss the
   cluster's interconnect.
 - On a workstation, install your distribution's Open MPI.
-- The `direct` and `petsc` solvers also need the {term}`MPI PETSc stack`
-  ({ref}`petsc-with-mpi`); `bddc_gmres` and `auto` do not. Run the stack under
-  the Open MPI module it was built with: gfem does not check this.
+- The `direct` and `petsc` solvers, and every eigenmode solve, also need the
+  {term}`MPI PETSc stack` ({ref}`petsc-with-mpi`); driven and electrostatic
+  solves on `bddc_gmres` or `auto` do not. Run the stack under the Open MPI
+  module it was built with: gfem does not check this.
 
 ## Run the script
 
@@ -49,22 +50,33 @@ srun --mpi=pmix python distributed_line.py direct   # under Slurm
 - A job file runs the same way: `srun --mpi=pmix python -m gfem run job.json --out result`.
 - On a machine with fewer cores than ranks, add `--oversubscribe --bind-to
   none --mca mpi_yield_when_idle 1` to `mpirun`.
+- The script is a driven solve; an electrostatic or eigenmode script runs the
+  same way, with the calls you make on one process.
 
 (distributed-what-runs)=
 ## What runs across ranks
 
-A {term}`distributed solve` runs a `gfem.Driven` uniform sweep and its
-gradients with:
+A {term}`distributed solve` runs these, with their gradients:
 
-- lumped ports with a resistance, and wave ports, several on one surface
-  included;
+- a `gfem.Driven` uniform sweep, with lumped ports with a resistance, and wave
+  ports, several on one surface included;
+- a `gfem.Electrostatic` solve: capacitance, potentials and region energies;
+- a `gfem.Eigenmode` solve, nonlinear and dispersive ones included:
+  frequencies, Q, mode fields, participations and
+  `gfem.interface_participation`. Frequency and Q differentiate; a gradient
+  through a mode's field raises;
+- a model with one `gfem.Periodic` pair: driven and eigenmode solves without a
+  wave vector, and a driven solve with a {term}`Bloch wave vector` on `direct`
+  or `bddc_gmres`;
 - `PEC`, `PMC` and `Absorbing` (orders 1 and 2) boundaries, excluded volumes,
   `Conductor` and `Impedance` sheets, `SheetField`, anisotropic materials and
   `MaterialField`;
 - gradients in permittivity, conductivity, `mu_r`, `tan_delta`, sheet fill and
   node coordinates, also under `jax.jit`, `jax.vmap` and `jax.jacrev`;
-- the solvers `auto` and `bddc_gmres` at order 2 and above, `direct` and
-  `petsc`;
+- the solvers `auto`, `direct` and `petsc`, and `bddc_gmres` at order 2 and
+  above. `auto` is `bddc_gmres` for driven and electrostatic solves and
+  `direct` for eigenmode. The eigen solver is SLEPc: `eigen_solver="auto"`
+  names it across ranks;
 - kept fields with `Field.at`, `Field.b` and `Field.to_vtu`, `Job`,
   `python -m gfem run`, `gfem.PortMode`, and the partial result of a
   `gfem.LinearSolverConvergenceError`.
@@ -77,6 +89,11 @@ process:
 
 ```{gfem-distributed-refusals}
 ```
+
+A periodic model is divided so that each pair's two surfaces fall on the
+ranks together. gfem tries up to 8 divisions. When none passes, every rank
+raises `RuntimeError` naming the tries: run on another number of ranks, or as
+{term}`rank copies`.
 
 {py:obj}`gfem.SolverUnavailableError` means the ranks cannot be used: mpi4py
 or MPI does not load, the MPI is not Open MPI, the launcher started no MPI
@@ -165,6 +182,9 @@ Measured times for each layout, up to 108.6 M DOF on 32 nodes, are on
   tolerance, and on `direct` close to rounding error.
 - **Two solvers.** Run with `direct` and with `bddc_gmres`. S should agree to
   about `SolverOptions.tolerance`.
+- **Eigenmode.** Compare with one process on `eigen_solver="slepc"`. The
+  number of SLEPc iterations can change with the rank count; the frequencies,
+  Q and participations should agree to the eigen tolerance.
 
 How gfem itself is checked across ranks: {doc}`../verification`.
 
@@ -176,16 +196,18 @@ How gfem itself is checked across ranks: {doc}`../verification`.
   module.
 - `direct` across ranks is MUMPS through PETSc, not PARDISO: the `mkl` extra
   does not apply to it. Install the extra for one-process solves.
-- A driven or an eigenmode solve on a periodic model runs across ranks with
-  one periodic pair and no wave vector. More than one pair, or a Bloch wave
-  vector, raise `gfem.DistributedUnsupportedError`. Solve those on one process
+- Periodic pairs on one axis only: two or three pairs, and a Bloch eigenmode
+  solve, raise `gfem.DistributedUnsupportedError`. Solve them on one process
   or as rank copies.
-- A lumped port terminated by an inductance or a capacitance, and
-  `gfem.characteristic_impedance`, run across ranks but have not been compared
-  with one process yet. Compare them once on your model.
+- A lumped port terminated by an inductance or a capacitance,
+  `gfem.characteristic_impedance`, `linear_solver="petsc"` on an
+  electrostatic, eigenmode or periodic solve, and a periodic eigenmode solve
+  on `bddc_gmres` run across ranks but have not been compared with one process
+  yet. Compare them once on your model.
 
 ## Next
 
-{py:obj}`gfem.solve`, {py:obj}`gfem.DistributedUnsupportedError`,
-{py:obj}`gfem.SolverUnavailableError`, {doc}`petsc-slepc`,
+{py:obj}`gfem.solve`, {py:obj}`gfem.Eigenmode`,
+{py:obj}`gfem.DistributedUnsupportedError`,
+{py:obj}`gfem.SolverUnavailableError`, {doc}`petsc-slepc`, {doc}`periodic-cell`,
 {doc}`../project/scaling`.

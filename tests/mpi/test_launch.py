@@ -1,6 +1,6 @@
 """Launching: refusals raise on every rank, one rank's failure ends the job.
 
-No distributed solve exists yet, so every launched solve above one rank raises.
+A solve with no distributed path raises on every rank before any mesh is built.
 Every rank writes one mesh file, by rename, and `gfem.Mesh.from_gmsh` reads it once.
 """
 
@@ -335,25 +335,28 @@ def test_comm_self_copies_may_differ_across_ranks(tmp_path):
         _assert_close(value, _one_process(tmp_path, frequency))
 
 
-def _electrostatic_copy(directory):
+def _thermal_copy(path):
     from mpi4py import MPI
 
+    model, problem = mpi_cases.series(Path(path))
     result = gfem.solve(
-        mpi_cases.stack(Path(directory)),
-        gfem.Electrostatic(terminals=mpi_cases.TERMINALS),
-        options=gfem.SolverOptions(order=1, threads=1),
+        model,
+        problem,
+        options=gfem.SolverOptions(order=1, linear_solver="direct", threads=1),
         comm=MPI.COMM_SELF,
     )
-    return np.asarray(result.capacitance)
+    return np.asarray(result.temperature.at(mpi_cases.SERIES_TOP))
 
 
 def test_comm_self_runs_what_ranks_refuse(tmp_path):
+    path = mpi_cases.series_mesh(tmp_path)
+    model, problem = mpi_cases.series(path)
     expected = gfem.solve(
-        mpi_cases.stack(tmp_path),
-        gfem.Electrostatic(terminals=mpi_cases.TERMINALS),
-        options=gfem.SolverOptions(order=1, threads=1),
-    ).capacitance
-    values = on_ranks(_electrostatic_copy, tmp_path, ranks=3, limit=180)
+        model,
+        problem,
+        options=gfem.SolverOptions(order=1, linear_solver="direct", threads=1),
+    ).temperature.at(mpi_cases.SERIES_TOP)
+    values = on_ranks(_thermal_copy, path, ranks=3, limit=180)
     _assert_close(values[0], np.asarray(expected))
 
 

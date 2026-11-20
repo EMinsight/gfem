@@ -2,7 +2,8 @@
 
 `tests/unit/test_mpi.py` raises each one on a stub communicator, and
 `tests/mpi/test_launch.py` raises each one on every rank of a launched job.
-Nothing here solves. Every model is built from a directory, so a launched
+Nothing here solves; `series` is the thermal solve the exemplar tests run
+as one process. Every model is built from a directory, so a launched
 function can build it from arguments that pickle.
 """
 
@@ -12,6 +13,7 @@ from pathlib import Path
 import gradient_cases as cases
 import numpy as np
 import periodic_cases as pc
+import thermal_cases as tc
 
 import gfem
 from gfem.mesh import LENGTH_UNITS, Region, _Topology, _triangle_neighbours
@@ -32,6 +34,41 @@ def stack(directory: Path) -> gfem.Model:
             "nitride": gfem.Material(eps_r=7.5),
         }
     )
+
+
+#: test_steady_thermal's two-layer series slab, (name, thickness in um) up z.
+SERIES = (("lower", 6.0), ("upper", 2.0))
+
+
+def series_mesh(directory: Path) -> Path:
+    """Write the series slab's 2 x 1 x 8 um brick to ``directory``; its path.
+
+    Write it on one process: a launched function reads it with `series`.
+    """
+    path = directory / "series.msh"
+    bottom = (lambda p: abs(p[2]) < 1e-9, "bottom")
+    tc.brick(path, (2.0, 1.0), SERIES, 0.7, [bottom])
+    return path
+
+
+def series(path: Path) -> tuple[gfem.Model, gfem.SteadyThermal]:
+    """``(model, problem)``: the series slab heated above, a thermal solve ranks refuse.
+
+    Rank copies (``comm=MPI.COMM_SELF``) and a communicator of one rank solve it.
+    """
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="um")
+    materials = {
+        "lower": gfem.Material(thermal_conductivity=1.4),
+        "upper": gfem.Material(thermal_conductivity=0.2),
+    }
+    bottom = gfem.FixedTemperature("bottom", temperature=300.0)
+    model = gfem.Model(mesh, materials=materials, boundaries=[bottom])
+    heat = gfem.HeatSource.uniform("upper", power_density=1e12)
+    return model, gfem.SteadyThermal(heat)
+
+
+#: Points (m) on the series slab's top face, where its rise is largest.
+SERIES_TOP = np.array([[x * 1e-6, 0.5e-6, 8e-6] for x in (0.3, 1.0, 1.7)])
 
 
 def _line(directory: Path) -> gfem.Model:

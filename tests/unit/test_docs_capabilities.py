@@ -480,8 +480,14 @@ def test_two_cases_of_one_key_are_two_rows(monkeypatch):
     assert rows[0]["message"] == "a has no path"
 
 
-def test_a_guard_no_user_reaches_has_no_row(derived):
-    assert "general_operator" not in {r["feature"] for r in derived["refusals"]}
+def test_no_guard_key_is_left():
+    assert mpi_cases.GUARD_KEYS == ()
+    assert "general_operator" not in _mpi._REFUSALS
+
+
+def test_the_lifted_solves_have_no_row(derived):
+    features = {r["feature"] for r in derived["refusals"]}
+    assert not features & {"eigenmode", "electrostatic", "general_operator"}
 
 
 def test_a_case_with_no_label_fails_the_build(monkeypatch):

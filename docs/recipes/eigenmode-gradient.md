@@ -209,6 +209,10 @@ How gfem itself is checked: {doc}`../verification`.
   `gfem.NonDifferentiableError` for a mode-field gradient. The frequencies
   still differentiate there, as {doc}`../capabilities` shows; or wrap the
   value in `jax.lax.stop_gradient` to use it without its derivative.
+- Across MPI ranks a gradient through a mode's field raises
+  `gfem.DistributedUnsupportedError` (feature `mode_field_gradient`) when
+  `jax.grad` traces it; frequencies and Q differentiate there
+  ({doc}`distributed-solve`).
 - A mode whose polishing does not converge is left unpolished and is not
   isolated: a gradient through its field raises `gfem.DegenerateModeError`
   naming it. Separate the modes in the design, or build the objective from

@@ -114,5 +114,17 @@ def test_the_page_names_public_objects():
         "interface_participation",
         "characteristic_impedance",
         "PortMode",
+        "Electrostatic",
+        "Eigenmode",
+        "Periodic",
+        "element_mean",
     ):
         assert hasattr(gfem, name), name
+
+
+@pytest.mark.parametrize(
+    "name", ["gfem.Driven", "gfem.Electrostatic", "gfem.Eigenmode", "gfem.Periodic"]
+)
+def test_what_runs_names_each_lifted_solve(page, name):
+    what_runs = page.split("## What runs across ranks")[1].split("\n## ")[0]
+    assert f"`{name}`" in what_runs

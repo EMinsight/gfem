@@ -546,15 +546,20 @@ and the PETSc cells of the
 
 Each thing a {term}`distributed solve` runs (see
 {doc}`recipes/distributed-solve`) has a test launched on several ranks. It
-compares the result with one process, on `"direct"` and on `"bddc_gmres"`
-(where the iteration count must also match), and checks that every rank
-holds the same result, bit for bit. Two things have no such test yet: a
-lumped port terminated by an inductance or a capacitance, and
-{py:obj}`gfem.characteristic_impedance`. They run the same code and do not
-raise.
+compares the result with one process, on `"direct"` and on `"bddc_gmres"`,
+and checks that every rank holds the same result, bit for bit. A driven solve
+on `"bddc_gmres"` must also take the same number of iterations. An eigenmode
+solve is compared with one process on SLEPc; its frequencies, Q and fields
+must match, not its iteration count. Periodic driven cells are checked on
+divisions that keep the pairs as given and on divisions that swap them. Some
+things have no such test yet: a lumped port terminated by an inductance or a
+capacitance, {py:obj}`gfem.characteristic_impedance`, `"petsc"` on an
+electrostatic, eigenmode or periodic solve, and a periodic eigenmode solve on
+`"bddc_gmres"`. They run the same code and do not raise.
 
 The launched tests on `"bddc_gmres"` run on every change. Those on
-`"direct"` need the {term}`MPI PETSc stack` and run twice a week.
+`"direct"`, and every eigenmode test, need the {term}`MPI PETSc stack` and
+run twice a week.
 
 Tests: [launched tests](https://github.com/benvial/gfem/tree/main/tests/mpi).
 

@@ -937,12 +937,13 @@ def links_gradient_errors(row: dict) -> bool:
 #: or a label with no case, fails the build.
 REFUSAL_LABELS = {
     "adaptive_sweep": '`Driven(sweep="adaptive")`, with or without `samples`',
-    "arpack": '`Eigenmode` with `eigen_solver="arpack"`',
+    "arpack": '`eigen_solver="arpack"` on an `Eigenmode` problem',
     "thermal": "`SteadyThermal`",
     "thermal_transient": "`TransientThermal`",
     "dc_conduction": "`DCConduction`",
     "periodic": (
-        "`Periodic` boundaries on two axes of a `Driven` or an `Eigenmode` problem"
+        "`Periodic` pairs on two or three axes of a `Driven` or an `Eigenmode` "
+        "problem; `Electrostatic` on a periodic model"
     ),
     "bloch": "`Eigenmode(wave_vector=...)`",
     "floquet_port": "A `FloquetPort` on a `Driven` problem",
@@ -963,8 +964,8 @@ REFUSAL_LABELS = {
     "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
     "mode_field_gradient": (
-        "A gradient of an `Eigenmode` mode-field output (`q_port`, the "
-        "participations, `e_fields`)"
+        "A gradient through an `Eigenmode` result's mode field: `q_port`, the "
+        "participations, `e_fields`, `interface_participation`"
     ),
 }
 

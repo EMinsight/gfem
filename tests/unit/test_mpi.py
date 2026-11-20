@@ -273,9 +273,9 @@ def test_the_coarse_problem_runs_on_at_most_one_rank_per_100k_dofs_and_64_ranks(
 
 
 def test_the_error_is_a_not_implemented_error_with_its_key():
-    err = gfem.DistributedUnsupportedError("eigenmode", "no path; use COMM_SELF")
+    err = gfem.DistributedUnsupportedError("adaptive_sweep", "no path; use COMM_SELF")
     assert isinstance(err, NotImplementedError)
-    assert err.feature == "eigenmode"
+    assert err.feature == "adaptive_sweep"
     assert str(err) == "no path; use COMM_SELF"
     copy = pickle.loads(pickle.dumps(err))  # noqa: S301
     assert (copy.feature, str(copy)) == (err.feature, str(err))
@@ -596,14 +596,16 @@ def test_an_unknown_problem_stays_a_type_error(tmp_path, monkeypatch):
 
 
 def test_a_communicator_of_size_one_runs_what_ranks_refuse(tmp_path):
-    model = mpi_cases.stack(tmp_path)
-    problem = gfem.Electrostatic(terminals=mpi_cases.TERMINALS)
-    options = gfem.SolverOptions(order=1)
-    expected = gfem.solve(model, problem, options=options).capacitance
+    model, problem = mpi_cases.series(mpi_cases.series_mesh(tmp_path))
+    options = gfem.SolverOptions(order=1, linear_solver="direct")
+    with pytest.raises(gfem.DistributedUnsupportedError):
+        _mpi.refuse(model, problem, options)
+    top = mpi_cases.SERIES_TOP
+    expected = gfem.solve(model, problem, options=options).temperature.at(top)
     result = gfem.solve(model, problem, options=options, comm=Stub(1))
-    np.testing.assert_allclose(result.capacitance, expected, rtol=1e-12)
+    np.testing.assert_allclose(result.temperature.at(top), expected, rtol=1e-12)
     job = gfem.Job(model, problem, options).run(comm=Stub(1))
-    np.testing.assert_allclose(job.capacitance, expected, rtol=1e-12)
+    np.testing.assert_allclose(job.temperature.at(top), expected, rtol=1e-12)
 
 
 # --- agreement, trivial at one process --------------------------------------------

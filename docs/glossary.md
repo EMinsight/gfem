@@ -235,8 +235,8 @@ Tree-cotree gauge
 
 Eigen solver
   The iteration that finds an eigenmode problem's modes near the target,
-  ARPACK or SLEPc; gfem refines and differentiates the modes the same way for
-  both.
+  ARPACK or SLEPc (SLEPc only in a {term}`distributed solve`); gfem refines
+  and differentiates the modes the same way for both.
 
 PETSc stack
   Complex PETSc and SLEPc with their Python bindings, built as

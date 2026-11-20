@@ -255,7 +255,8 @@ class SolverOptions:
             half the memory the process may use, else ``"bddc_gmres"``;
             ``"bddc_gmres"`` for electrostatic; ``"direct"`` for eigenmode
             and for every problem type on a GPU (``device``);
-            ``"bddc_gmres"`` across MPI ranks. The choice is logged on the
+            ``"bddc_gmres"`` for a driven problem across MPI ranks (eigenmode
+            keeps ``"direct"``). The choice is logged on the
             ``gfem.solver`` logger. ``"direct"`` suits small and medium
             models on one machine: one factorization per frequency serves
             every port, and the ``mkl`` extra makes it faster (MKL PARDISO);
@@ -367,13 +368,15 @@ class SolverOptions:
             spawned processes, so a script that sets it must guard its
             entry point with ``if __name__ == "__main__":``.
         eigen_solver: What finds an `gfem.Eigenmode` problem's modes near
-            ``target`` from shift-invert solves: ``"auto"`` or ``"arpack"``
-            (SciPy ARPACK), or ``"slepc"`` (SLEPc's Krylov-Schur, through
+            ``target`` from shift-invert solves: ``"arpack"`` (SciPy ARPACK,
+            one process only), ``"slepc"`` (SLEPc's Krylov-Schur, through
             slepc4py, from the PETSc stack the "Solve with PETSc and SLEPc"
-            recipe builds; never chosen by ``"auto"``). gfem refines and
-            differentiates the modes the same way after either. Driven
-            and electrostatic solves ignore it. SLEPc this Python cannot use raises
-            `gfem.SolverUnavailableError` when the solve starts.
+            recipe builds), or ``"auto"``: ARPACK on one process, SLEPc
+            across MPI ranks, where ``"arpack"`` raises
+            `gfem.DistributedUnsupportedError`. gfem refines and
+            differentiates the modes the same way after either. Driven and
+            electrostatic solves ignore it. SLEPc this Python cannot use
+            raises `gfem.SolverUnavailableError` when the solve starts.
         petsc_options: PETSc and SLEPc option names, without the leading
             ``-``, and their values, read by ``linear_solver="petsc"`` and
             ``eigen_solver="slepc"``; a value of ``None`` is a flag, a

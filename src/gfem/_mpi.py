@@ -119,21 +119,20 @@ _REFUSALS = {
         f"An adaptive sweep has no distributed path: use a uniform sweep, {_COPIES}."
     ),
     "arpack": (
-        "ARPACK runs on one process: use eigen_solver='slepc' or 'auto' above one "
-        f"rank, {_COPIES}."
+        "ARPACK runs on one process only: leave eigen_solver='auto', which is "
+        f"SLEPc above one rank, or set eigen_solver='slepc', {_COPIES}."
     ),
     "mode_field_gradient": (
-        "The gradient of an eigenmode's mode-field output (q_port, the "
-        "participations, e_fields) has no distributed path; the eigenfrequencies "
-        "(omega, so frequency and Q) keep theirs. Wrap the mode-field output in "
-        "jax.lax.stop_gradient to use its value without its derivative, "
-        f"{_COPIES}."
+        "A gradient through an eigenmode's mode field (q_port, the participations, "
+        "e_fields) has no distributed path: differentiate omega, frequency or Q, "
+        "wrap the value in jax.lax.stop_gradient to use it without its "
+        f"derivative, {_COPIES}."
     ),
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
     "periodic": (
-        "A periodic model with more than one pair has no distributed path for a "
-        f"driven or an eigenmode solve: {_RUN_COPIES}."
+        "Periodic pairs on more than one axis, and an electrostatic solve on a "
+        f"periodic model, have no distributed path: {_RUN_COPIES}."
     ),
     "floquet_port": f"A Floquet port has no distributed path: {_RUN_COPIES}.",
     "bloch": f"A Bloch eigenmode solve has no distributed path: {_RUN_COPIES}.",

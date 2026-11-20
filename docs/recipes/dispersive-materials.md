@@ -165,7 +165,7 @@ this way over 1.5 to 1.6 µm.
   region needs $\operatorname{Re} \varepsilon > 0$ at every frequency of the grid. Where it is not, the
   solve raises `ValueError`: move the boundary into a dielectric.
 - **{py:obj}`gfem.Eigenmode`**: modes nearest the target, as for a constant
-  material. A target or a mode in a law region's {term}`unresolved band`, where
+  material, on one process and across MPI ranks. A target or a mode in a law region's {term}`unresolved band`, where
   its wavelength is shorter than two of its longest edges, raises
   `ValueError`. Move the target away from the resonance, or refine the mesh
   in that region. The mode energy weighs a law region with its
