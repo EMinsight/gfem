@@ -67,12 +67,15 @@ from gfem._sheet import SheetField
 from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
 from gfem.mesh import (
+    _ROLE_ARRAYS,
     _TOPOLOGY_ARRAYS,
     Mesh,
     Region,
+    _array_names,
     _is_model_mesh,
     _mesh_sha256,
-    _Topology,
+    _topology_arrays,
+    _topology_from_arrays,
 )
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
@@ -621,23 +624,27 @@ def _in_memory_mesh_args(mesh: Mesh) -> dict[str, Any]:
             "regions": mesh.regions,
         }
         | _section(mesh)
-        | {name: np.asarray(getattr(topology, name)) for name in _TOPOLOGY_ARRAYS}
+        | ({} if topology.dim == 3 else {"dim": topology.dim})
+        | {name: np.asarray(a) for name, a in _topology_arrays(topology).items()}
         | _moved_nodes(mesh)
     )
 
 
 def _in_memory_mesh_from_args(args: dict[str, Any]) -> Mesh:
+    # a tetrahedral mesh writes no dimension and its arrays' historical names
+    dim = int(args.get("dim", 3))
     arrays = {}
-    for name in _TOPOLOGY_ARRAYS:
+    for name in _array_names(dim):
         array = np.array(args[name])
         array.flags.writeable = False
         arrays[name] = array
-    topology = _Topology(
+    topology = _topology_from_arrays(
+        arrays,
         length_unit=args["length_unit"],
         regions=tuple(args["regions"]),
         source=None,
         section_thickness=args.get("section_thickness"),
-        **arrays,
+        dim=dim,
     )
     return _with_nodes(Mesh(jnp.asarray(topology.imported_nodes), topology), args)
 
@@ -826,7 +833,8 @@ _MESH_NAMES = (
     "source",
     "regions",
     "section_thickness",
-    *_TOPOLOGY_ARRAYS,
+    "dim",
+    *dict.fromkeys((*_TOPOLOGY_ARRAYS, *_ROLE_ARRAYS)),
 )
 
 _codec.register(Mesh, to_args=_mesh_args, from_args=_mesh_from_args, names=_MESH_NAMES)

@@ -107,13 +107,13 @@ def bisect(mesh: Mesh, marked) -> tuple[Mesh, Refinement]:
         length_unit=old.length_unit,
         imported_nodes=readonly(x),
         regions=old.regions,
-        tetrahedra=readonly(tets),
-        tet_tags=readonly(old.tet_tags[tet_parents]),
-        tet_entities=readonly(old.tet_entities[tet_parents]),
-        triangles=readonly(tris),
-        tri_tags=readonly(old.tri_tags[tri_parents]),
-        tri_entities=readonly(old.tri_entities[tri_parents]),
-        tri_neighbours=readonly(
+        volume_elements=readonly(tets),
+        volume_tags=readonly(old.volume_tags[tet_parents]),
+        volume_entities=readonly(old.volume_entities[tet_parents]),
+        surface_elements=readonly(tris),
+        surface_tags=readonly(old.surface_tags[tri_parents]),
+        surface_entities=readonly(old.surface_entities[tri_parents]),
+        surface_neighbours=readonly(
             _triangle_neighbours(x, tets, tris, Path("refined mesh"))
         ),
         source=None,
@@ -216,7 +216,7 @@ def transfer(
         ValueError: ``values`` does not hold one value per coarse element.
     """
     r = coarse.region(region)
-    if r.dim == 3:
+    if r.dim == coarse.dim:
         parents, n_all = refinement.tetrahedron_parents, len(coarse.tetrahedra)
     else:
         parents, n_all = refinement.triangle_parents, len(coarse.triangles)

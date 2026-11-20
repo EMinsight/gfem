@@ -58,7 +58,7 @@ def support_region(
     excluded: tuple[tuple[int, int], ...],
 ) -> ngs.Region:
     """The NGSolve volume region of ``support`` minus ``excluded`` entities."""
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
     wanted, out = set(support), set(excluded)
     bits = ngs.BitArray(len(built.domains))
     bits.Clear()
@@ -265,7 +265,7 @@ def _one_process_tables(
     ``vertices`` are the used gfem nodes, ascending; ``cells`` numbers each support
     tet, ``-1`` off the support.
     """
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
     domains, tet_domain = tetrahedron_domains(mesh)
     in_support = np.array(
         [

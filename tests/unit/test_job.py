@@ -15,7 +15,7 @@ from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._refine import refine_model
-from gfem.mesh import _TOPOLOGY_ARRAYS
+from gfem.mesh import _topology_arrays
 
 DATA = Path(__file__).parent / "data"
 LAYERS = (("oxide", 0.5), ("nitride", 0.25))
@@ -182,8 +182,9 @@ def _assert_same_topology(a, b):
     assert b.source is None
     assert a.length_unit == b.length_unit
     assert a.regions == b.regions
-    for name in _TOPOLOGY_ARRAYS:
-        x, y = getattr(a._topology, name), getattr(b._topology, name)
+    ya = _topology_arrays(b._topology)
+    for name, x in _topology_arrays(a._topology).items():
+        y = ya[name]
         assert x.dtype == y.dtype
         np.testing.assert_array_equal(x, y)
         assert not y.flags.writeable

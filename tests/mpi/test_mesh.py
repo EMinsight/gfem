@@ -31,13 +31,13 @@ from gfem.mesh import LENGTH_UNITS
 
 TOPOLOGY_ARRAYS = (
     "imported_nodes",
-    "tetrahedra",
-    "tet_tags",
-    "tet_entities",
-    "triangles",
-    "tri_tags",
-    "tri_entities",
-    "tri_neighbours",
+    "volume_elements",
+    "volume_tags",
+    "volume_entities",
+    "surface_elements",
+    "surface_tags",
+    "surface_entities",
+    "surface_neighbours",
 )
 
 

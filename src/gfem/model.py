@@ -588,7 +588,7 @@ class Model:
 
     def _excluded_entities_of(self, physics: str) -> tuple[tuple[str, int], ...]:
         """``(region name, gmsh entity number)`` excluded from ``physics``."""
-        names = {r.tag: r.name for r in self.mesh.regions if r.dim == 3}
+        names = {r.tag: r.name for r in self.mesh.regions if r.dim == self.mesh.dim}
         domain = self._domain_of(physics)
         return tuple((names[tag], ent) for tag, ent in domain.excluded)
 

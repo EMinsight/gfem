@@ -3148,7 +3148,7 @@ def _port_regions(model: Model) -> dict[str, tuple[str, ...]]:
     """Per wave port, the solve-domain volume regions beside its face."""
     mesh = model.mesh
     active = model._domain.active  # noqa: SLF001
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
     out = {}
     for port in model.ports:
         if not isinstance(port, WavePort):

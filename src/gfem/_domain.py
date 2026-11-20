@@ -151,7 +151,7 @@ def _domain(mesh: Mesh, excluded: set[tuple[int, int]]) -> EMDomain:
     n_active = ((nb >= 0) & active[np.maximum(nb, 0)]).sum(axis=1)
     sides = {}
     for r in mesh.regions:
-        if r.dim == 2:
+        if r.dim == mesh.dim - 1:
             counts = np.bincount(n_active[mesh.triangle_tags == r.tag], minlength=3)
             sides[r.name] = (int(counts[0]), int(counts[1]), int(counts[2]))
     return EMDomain(excluded=tuple(sorted(excluded)), active=active, sides=sides)

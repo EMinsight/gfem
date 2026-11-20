@@ -176,7 +176,7 @@ def _quality_message(
     region = next(
         r.name
         for r in mesh.regions
-        if r.dim == 3 and r.tag == mesh.tetrahedron_tags[worst]
+        if r.dim == mesh.dim and r.tag == mesh.tetrahedron_tags[worst]
     )
     centroid = nodes[tet].mean(axis=0) / scale
     edges = [np.linalg.norm(x0[i] - x0[j]) for i in range(4) for j in range(i + 1, 4)]
@@ -440,7 +440,7 @@ def boundary_morph(
     ties = _periodic.tie_classes(n_nodes, pairings)
     held_surfaces = {s for port in model.ports for s in surfaces_of(port)}
     held_surfaces |= set(fixed)
-    tag = {r.name: r.tag for r in mesh.regions if r.dim == 2}
+    tag = {r.name: r.tag for r in mesh.regions if r.dim == mesh.dim - 1}
     tri_tags = mesh.triangle_tags
     held_tri = np.isin(tri_tags, [tag[s] for s in held_surfaces])
     held = np.zeros(n_nodes, dtype=bool)
@@ -633,7 +633,7 @@ def _face_signs(
 
 def _sides(model: Model, faces: np.ndarray) -> str:
     mesh = model.mesh
-    name = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    name = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
     nb = mesh.triangle_neighbours[faces]
     pairs = {
         tuple(name[int(mesh.tetrahedron_tags[t])] if t >= 0 else "outside" for t in row)

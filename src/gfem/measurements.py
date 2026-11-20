@@ -294,7 +294,7 @@ class _SurfaceGeometry:
         triangles = []
         for name in surfaces:
             region = mesh.region(name)
-            if region.dim != 2:
+            if region.dim != mesh.dim - 1:
                 raise ValueError(
                     f"{name!r} is a volume region; interface_participation needs "
                     "a surface region."
@@ -913,7 +913,7 @@ def _check_mean_regions(field: Field, names: tuple[str, ...]) -> None:
     """Raise for a surface name, or regions with no element in the support."""
     mesh = field.mesh
     for name in names:
-        if mesh.region(name).dim != 3:
+        if mesh.region(name).dim != mesh.dim:
             raise ValueError(
                 f"region_mean averages over volume regions, but {name!r} is a "
                 "surface region of the mesh."

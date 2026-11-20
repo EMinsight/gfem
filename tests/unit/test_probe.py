@@ -210,9 +210,9 @@ def test_a_flat_tet_beside_a_point_is_skipped():
         [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1], [1, 1, 0]], float
     )
     topology = _Topology()
-    topology.tetrahedra = np.array([[0, 1, 2, 3], [0, 1, 2, 4], [1, 2, 5, 0]])
+    topology.volume_elements = np.array([[0, 1, 2, 3], [0, 1, 2, 4], [1, 2, 5, 0]])
     mesh = types.SimpleNamespace(
-        nodes=nodes, tetrahedra=topology.tetrahedra, _topology=topology
+        nodes=nodes, tetrahedra=topology.volume_elements, _topology=topology
     )
     point = np.array([[0.25, 0.25, 0.0]])
     support = np.ones(3, bool)

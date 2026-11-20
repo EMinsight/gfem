@@ -1,0 +1,185 @@
+"""`gfem.Mesh.from_gmsh` on a triangle-only file: a mesh of dimension 2.
+
+Its areas are the volumes and its lines the surfaces; the shape-named arrays of
+a tetrahedral mesh raise and name the role array to read instead.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+import gfem
+
+HEATER = Path(__file__).parents[2] / "docs" / "tutorials" / "data" / "heater_w2.msh"
+AREAS = (
+    "core",
+    "neighbour",
+    "heater",
+    "window",
+    "neighbour_window",
+    "box",
+    "cladding",
+    "substrate",
+)
+
+
+# Three unit squares side by side, areas "a" | "b" | "c", each two triangles.
+# Line "ab" runs up x = 1 (+y), "cb" down x = 2 (-y); "outer" goes round
+# anticlockwise, except its segment on x = 0, which runs up (+y).
+NODES = [(x, y) for y in (0, 1) for x in (0, 1, 2, 3)]  # gmsh nodes 1-8
+TRIANGLES = {
+    1: [(1, 2, 6), (1, 6, 5)],
+    2: [(2, 3, 7), (2, 7, 6)],
+    3: [(3, 4, 8), (3, 8, 7)],
+}
+LINES = {
+    11: [(2, 6)],
+    12: [(7, 3)],
+    13: [(1, 2), (2, 3), (3, 4), (4, 8), (8, 7), (7, 6), (6, 5), (1, 5)],
+}
+NAMES = {(2, 1): "a", (2, 2): "b", (2, 3): "c", (1, 11): "ab", (1, 12): "cb"}
+NAMES[1, 13] = "outer"
+
+
+def write_strip(path: Path) -> Path:
+    """The three-square strip as a gmsh msh 2.2 ASCII file, in um."""
+    elements = [
+        f"2 2 {tag} {tag} {' '.join(map(str, t))}"
+        for tag, tris in TRIANGLES.items()
+        for t in tris
+    ]
+    elements += [
+        f"1 2 {tag} {tag} {' '.join(map(str, line))}"
+        for tag, lines in LINES.items()
+        for line in lines
+    ]
+    text = [
+        "$MeshFormat",
+        "2.2 0 8",
+        "$EndMeshFormat",
+        "$PhysicalNames",
+        str(len(NAMES)),
+        *(f'{dim} {tag} "{name}"' for (dim, tag), name in NAMES.items()),
+        "$EndPhysicalNames",
+        "$Nodes",
+        str(len(NODES)),
+        *(f"{i} {x} {y} 0" for i, (x, y) in enumerate(NODES, start=1)),
+        "$EndNodes",
+        "$Elements",
+        str(len(elements)),
+        *(f"{i} {e}" for i, e in enumerate(elements, start=1)),
+        "$EndElements",
+        "",
+    ]
+    path.write_text("\n".join(text))
+    return path
+
+
+@pytest.fixture
+def strip(tmp_path):
+    return write_strip(tmp_path / "strip.msh")
+
+
+@pytest.fixture(scope="module")
+def heater():
+    return gfem.Mesh.from_gmsh(HEATER, length_unit="um")
+
+
+def test_a_triangle_only_file_reads_as_a_mesh_of_dimension_2(heater):
+    assert heater.dim == 2
+    assert heater.nodes.shape == (4634, 2)
+    assert heater.volumes == AREAS
+    assert heater.surfaces == ("bottom", "top")
+    assert {r.dim for r in heater.regions} == {1, 2}
+
+
+def test_its_volume_elements_are_triangles_and_its_surface_elements_segments(heater):
+    assert heater.volume_elements.shape == (9173, 3)
+    assert heater.surface_elements.shape == (73, 2)
+    rows = heater.elements("core")
+    assert heater.volume_elements[rows].shape[1] == 3
+    assert heater.surface_elements[heater.elements("top")].shape[1] == 2
+
+
+@pytest.mark.parametrize(
+    ("name", "role"),
+    [
+        ("tetrahedra", "volume_elements"),
+        ("tetrahedron_tags", "volume_elements"),
+        ("tetrahedron_entities", "volume_elements"),
+        ("triangles", "surface_elements"),
+        ("triangle_tags", "surface_elements"),
+        ("triangle_entities", "surface_elements"),
+        ("triangle_neighbours", "surface_elements"),
+    ],
+)
+def test_a_tetrahedral_array_raises_naming_the_role_array(heater, name, role):
+    with pytest.raises(ValueError, match=rf"Mesh\.{name} .*Mesh\.{role}"):
+        getattr(heater, name)
+
+
+def test_a_tetrahedral_mesh_has_dimension_3_and_its_arrays_under_both_names():
+    mesh = gfem.Mesh.from_gmsh(Path(__file__).parent / "data" / "two_box_msh22.msh")
+    assert mesh.dim == 3
+    assert mesh.volume_elements is mesh.tetrahedra
+    assert mesh.surface_elements is mesh.triangles
+
+
+def test_a_line_has_on_its_left_the_area_behind_its_normal(strip):
+    mesh = gfem.Mesh.from_gmsh(strip)
+    assert mesh.adjacency("ab") == (("a", "b"),)
+    assert mesh.adjacency("cb") == (("c", "b"),)
+    assert mesh.adjacency("outer") == (
+        (None, "a"),
+        ("a", None),
+        ("b", None),
+        ("c", None),
+    )
+
+
+def test_a_line_borders_the_areas_its_slab_face_borders(strip):
+    # the slab's faces take domin/domout from the tetrahedra: the 3D rule
+    plane = gfem.Mesh.from_gmsh(strip)
+    slab = gfem.Mesh.from_gmsh_cross_section(strip)
+    for line in plane.surfaces:
+        assert plane.adjacency(line) == slab.adjacency(line)
+
+
+def test_the_same_file_read_as_a_cross_section_is_still_a_slab(strip):
+    slab = gfem.Mesh.from_gmsh_cross_section(strip)
+    assert slab.dim == 3
+    assert slab.nodes.shape[1] == 3
+    assert slab.surfaces == ("ab", "cb", "outer", "front", "back")
+
+
+def test_a_2d_mesh_names_its_elements_and_exports_them(strip):
+    mesh = gfem.Mesh.from_gmsh(strip)
+    assert repr(mesh) == (
+        "Mesh(8 nodes, 6 triangles, volumes=['a', 'b', 'c'], "
+        "surfaces=['ab', 'cb', 'outer'], length_unit='um')"
+    )
+    out = mesh.to_meshio()
+    assert [c.type for c in out.cells] == ["triangle", "line"]
+    assert out.points.shape == (8, 2)
+    np.testing.assert_array_equal(out.cell_data["region"][1][:2], [11, 12])
+
+
+def test_a_2d_mesh_out_of_one_plane_raises(strip):
+    text = strip.read_text().replace("\n8 3 1 0\n", "\n8 3 1 0.5\n")
+    strip.write_text(text)
+    with pytest.raises(ValueError, match="do not lie in one plane"):
+        gfem.Mesh.from_gmsh(strip)
+
+
+def test_a_2d_mesh_with_a_line_off_the_triangles_edges_raises(strip):
+    text = strip.read_text().replace(" 11 11 2 6\n", " 11 11 1 7\n")
+    strip.write_text(text)
+    with pytest.raises(ValueError, match="'ab' is not an edge"):
+        gfem.Mesh.from_gmsh(strip)
+
+
+def test_an_area_of_a_2d_mesh_is_a_volume_to_a_layer_grid(heater):
+    grid = gfem.design.LayerGrid(heater, "core", pitch=0.1e-6)
+    assert grid.n_elements == len(heater.elements("core"))
+    assert grid.n_faces is None

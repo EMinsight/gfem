@@ -178,8 +178,8 @@ def permuted(mesh: gfem.Mesh, seed: int = 7) -> gfem.Mesh:
         dataclasses.replace(
             topology,
             imported_nodes=np.asarray(topology.imported_nodes)[order],
-            tetrahedra=number[topology.tetrahedra],
-            triangles=number[topology.triangles],
+            volume_elements=number[topology.volume_elements],
+            surface_elements=number[topology.surface_elements],
             source=None,
         ),
     )
@@ -272,12 +272,12 @@ def box(n: int, seed: int = 1) -> gfem.Mesh:
         length_unit="um",
         imported_nodes=metres,
         regions=regions,
-        tetrahedra=tets,
-        tet_tags=tags,
-        tet_entities=tags.copy(),
-        triangles=tris,
-        tri_tags=tri_tags,
-        tri_entities=tri_tags.copy(),
-        tri_neighbours=_triangle_neighbours(nodes, tets, tris, Path("box")),
+        volume_elements=tets,
+        volume_tags=tags,
+        volume_entities=tags.copy(),
+        surface_elements=tris,
+        surface_tags=tri_tags,
+        surface_entities=tri_tags.copy(),
+        surface_neighbours=_triangle_neighbours(nodes, tets, tris, Path("box")),
     )
     return gfem.Mesh(metres, topology)

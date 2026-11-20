@@ -229,7 +229,7 @@ def check_domain(mesh: Mesh, p: Pairing, domain: EMDomain) -> None:
         (p.second, p.first, tri_f[i]) if on_s[i] else (p.first, p.second, tri_s[i])
     )
     tets = nb[tri][nb[tri] >= 0]
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
     region = names[int(mesh.tetrahedron_tags[tets[0]])]
     raise ValueError(
         f"{p.label}: {bad.size} faces of {inside!r} border the solve domain where "

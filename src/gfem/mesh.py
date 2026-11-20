@@ -23,11 +23,24 @@ LENGTH_UNITS = {"m": 1.0, "cm": 1e-2, "mm": 1e-3, "um": 1e-6, "nm": 1e-9}
 #: What a failed read raises on one process, so on every rank above one.
 _READ_ERRORS = (ValueError, OSError, meshio.ReadError)
 
-_TOPOLOGY_STATICS = ("length_unit", "regions", "source", "section_thickness")
-#: Every array of a `_Topology`, by field name: what a mesh with no file
-#: writes and what its digest hashes. `_ELEMENT_ARRAYS` is the subset, by
-#: `Mesh` property name, that defines its elements; the others (imported
-#: nodes, triangle neighbours) are read or derived alongside.
+_TOPOLOGY_STATICS = ("length_unit", "regions", "source", "section_thickness", "dim")
+#: Every array field of a `_Topology`, by role: the volume elements (the
+#: highest dimension) and the surface elements (one below) with their gmsh
+#: numbers and the volume elements on each side of each surface element.
+_ROLE_ARRAYS = (
+    "imported_nodes",
+    "volume_elements",
+    "volume_tags",
+    "volume_entities",
+    "surface_elements",
+    "surface_tags",
+    "surface_entities",
+    "surface_neighbours",
+)
+#: The names of a tetrahedral mesh's arrays, `_ROLE_ARRAYS` in order: what a
+#: dimension-3 mesh with no file writes and what its digest hashes. They are
+#: the names these arrays had before meshes had a dimension, so job files and
+#: digests of tetrahedral meshes stay as they were.
 _TOPOLOGY_ARRAYS = (
     "imported_nodes",
     "tetrahedra",
@@ -43,6 +56,8 @@ _TOPOLOGY_ARRAYS = (
 _TET_FACES = np.array([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]])
 # Local vertex pairs of a tetrahedron's six edges.
 _TET_EDGES = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+# Local edge k of a triangle is the one opposite its vertex k.
+_TRI_EDGES = np.array([[1, 2], [0, 2], [0, 1]])
 
 #: The end faces a cross-section's slab gains, at the section's plane and one
 #: thickness along +z.
@@ -53,10 +68,15 @@ END_FACES = ("front", "back")
 class Region:
     """A named volume or surface of the mesh: one gmsh physical group.
 
+    A region whose dimension is the mesh's is a volume, one a dimension lower
+    a surface: on a 2D mesh the areas are its volumes and the lines its
+    surfaces.
+
     Attributes:
         name: The gmsh physical-group name, an opaque string.
         tag: The gmsh physical-group number.
-        dim: 3 for a volume, 2 for a surface.
+        dim: The region's dimension: 3 for a volume and 2 for a surface of a
+            tetrahedral mesh, 2 for an area and 1 for a line of a 2D mesh.
     """
 
     name: str
@@ -70,20 +90,45 @@ class _Topology:
 
     This is the static part of the `Mesh` pytree. It compares by identity, so
     a jitted function retraces only when it sees a different imported mesh.
+    Its arrays are named by role (`_ROLE_ARRAYS`): tetrahedra and triangles
+    on a mesh of dimension 3, triangles and line segments on one of dimension 2.
     """
 
     length_unit: str
     imported_nodes: np.ndarray
     regions: tuple[Region, ...]
-    tetrahedra: np.ndarray
-    tet_tags: np.ndarray
-    tet_entities: np.ndarray
-    triangles: np.ndarray
-    tri_tags: np.ndarray
-    tri_entities: np.ndarray
-    tri_neighbours: np.ndarray
+    volume_elements: np.ndarray
+    volume_tags: np.ndarray
+    volume_entities: np.ndarray
+    surface_elements: np.ndarray
+    surface_tags: np.ndarray
+    surface_entities: np.ndarray
+    surface_neighbours: np.ndarray
     source: Path | None = None
     section_thickness: float | None = None
+    dim: int = 3
+
+
+def _array_names(dim: int) -> tuple[str, ...]:
+    """The names a topology of dimension ``dim`` stores its arrays under."""
+    return _TOPOLOGY_ARRAYS if dim == 3 else _ROLE_ARRAYS
+
+
+def _topology_arrays(topology: _Topology) -> dict[str, np.ndarray]:
+    """A topology's arrays by stored name (`_array_names`), in that order."""
+    return {
+        name: getattr(topology, field)
+        for name, field in zip(_array_names(topology.dim), _ROLE_ARRAYS, strict=True)
+    }
+
+
+def _topology_from_arrays(arrays, **statics) -> _Topology:
+    """The topology of `_topology_arrays` and the statics (`_TOPOLOGY_STATICS`)."""
+    names = _array_names(statics.get("dim", 3))
+    fields = {
+        field: arrays[name] for name, field in zip(names, _ROLE_ARRAYS, strict=True)
+    }
+    return _Topology(**statics, **fields)
 
 
 _TOPOLOGY_DIGESTS: weakref.WeakKeyDictionary[_Topology, str] = (
@@ -94,14 +139,17 @@ _TOPOLOGY_DIGESTS: weakref.WeakKeyDictionary[_Topology, str] = (
 def _topology_sha256(topology: _Topology) -> str:
     """The sha256 (64 hex) of a topology's arrays, computed once per topology.
 
-    Each of `_TOPOLOGY_ARRAYS` enters as `_hash_array` feeds it, in that
-    order. The topology is immutable, so the digest is memoized on it.
+    Each array enters as `_hash_array` feeds it, under its stored name, in the
+    order of `_topology_arrays`; a mesh of another dimension than 3 hashes its
+    dimension first. The topology is immutable, so the digest is memoized on it.
     """
     digest = _TOPOLOGY_DIGESTS.get(topology)
     if digest is None:
         h = hashlib.sha256()
-        for name in _TOPOLOGY_ARRAYS:
-            _hash_array(h, name, getattr(topology, name))
+        if topology.dim != 3:
+            _hash_array(h, "dim", np.int64(topology.dim))
+        for name, array in _topology_arrays(topology).items():
+            _hash_array(h, name, array)
         digest = h.hexdigest()
         _TOPOLOGY_DIGESTS[topology] = digest
     return digest
@@ -147,6 +195,8 @@ def _read_gmsh(path: Path, length_unit: str) -> _Topology:
     """Parse the file: what `Mesh.from_gmsh` does on one process."""
     _check_unit(length_unit)
     raw = meshio.read(path, file_format="gmsh")
+    if _is_plane(raw):
+        return _read_plane(raw, path, length_unit)
     regions = _regions(raw)
     cells = _cells(raw, path)
     tets, tet_tags, tet_entities = cells["tetra"]
@@ -157,14 +207,50 @@ def _read_gmsh(path: Path, length_unit: str) -> _Topology:
         length_unit=length_unit,
         imported_nodes=readonly(points * LENGTH_UNITS[length_unit]),
         regions=regions,
-        tetrahedra=readonly(tets),
-        tet_tags=readonly(tet_tags),
-        tet_entities=readonly(tet_entities),
-        triangles=readonly(tris),
-        tri_tags=readonly(tri_tags),
-        tri_entities=readonly(tri_entities),
-        tri_neighbours=readonly(neighbours),
+        volume_elements=readonly(tets),
+        volume_tags=readonly(tet_tags),
+        volume_entities=readonly(tet_entities),
+        surface_elements=readonly(tris),
+        surface_tags=readonly(tri_tags),
+        surface_entities=readonly(tri_entities),
+        surface_neighbours=readonly(neighbours),
         source=path.resolve(),
+    )
+    _check_tags(topology, path)
+    return topology
+
+
+def _is_plane(raw: meshio.Mesh) -> bool:
+    """Whether a file holds a 2D mesh: triangles and no 3D element."""
+    types = {block.type for block in raw.cells}
+    return "triangle" in types and not types & set(_VOLUME_TYPES)
+
+
+def _read_plane(raw: meshio.Mesh, path: Path, length_unit: str) -> _Topology:
+    """A triangle-only file as a mesh of dimension 2 (`Mesh.from_gmsh`).
+
+    The same checks as a cross-section's, then z is dropped: the nodes are
+    (n, 2), the areas its volumes and the lines its surfaces.
+    """
+    regions = _regions(raw, top=2)
+    section = _read_section(
+        raw, path, length_unit, {r.tag: r.name for r in regions if r.dim == 1}
+    )
+    nodes = np.ascontiguousarray(section.points[:, :2])
+    neighbours = _segment_neighbours(nodes, section.tris, section.lines, path)
+    topology = _Topology(
+        length_unit=length_unit,
+        imported_nodes=readonly(nodes),
+        regions=regions,
+        volume_elements=readonly(section.tris),
+        volume_tags=readonly(section.area_tags),
+        volume_entities=readonly(section.area_entities),
+        surface_elements=readonly(section.lines),
+        surface_tags=readonly(section.line_tags),
+        surface_entities=readonly(section.line_entities),
+        surface_neighbours=readonly(neighbours),
+        source=path.resolve(),
+        dim=2,
     )
     _check_tags(topology, path)
     return topology
@@ -205,16 +291,18 @@ def _check_lines_on_edges(
     lines: np.ndarray,
     tags: np.ndarray,
     edges: np.ndarray,
-    regions: tuple[Region, ...],
+    names: dict[int, str],
     path: Path,
 ) -> None:
-    """Every grouped line must be an edge of the section's triangles."""
+    """Every grouped line must be an edge of the section's triangles.
+
+    ``names`` names the line groups by gmsh number.
+    """
     off = (lines < 0).any(axis=1)
     known = {tuple(e) for e in edges.tolist()}
     off |= np.array([tuple(sorted(e)) not in known for e in lines.tolist()], bool)
     if off.any():
-        name = {r.tag: r.name for r in regions if r.dim == 2}
-        group = name.get(int(tags[np.flatnonzero(off)[0]]))
+        group = names.get(int(tags[np.flatnonzero(off)[0]]))
         raise ValueError(
             f"{path.name}: a line of the 1D physical group {group!r} is not an edge "
             "of the section's triangles, so the lines and the triangles do not "
@@ -269,22 +357,33 @@ def _split_quads(lines: np.ndarray, n: int) -> np.ndarray:
     return np.stack([first, second], axis=1).reshape(-1, 3)
 
 
-def _read_cross_section(
-    path: Path, length_unit: str, thickness: float | None
-) -> _Topology:
-    """Parse a triangle section and extrude it (`Mesh.from_gmsh_cross_section`)."""
-    _check_unit(length_unit)
-    if thickness is not None:
-        thickness = _check_thickness(thickness)
-    raw = meshio.read(path, file_format="gmsh")
-    regions = _regions(raw, section=True)
-    taken = [r.name for r in regions if r.name in END_FACES]
-    if taken:
-        raise ValueError(
-            f"{path.name} names a physical group {taken[0]!r}, but a cross-section's "
-            f"end faces are named {END_FACES[0]!r} and {END_FACES[1]!r}. Rename the "
-            "group in gmsh and export the mesh again."
-        )
+@dataclasses.dataclass(frozen=True)
+class _Section:
+    """A 2D file's triangles and grouped lines on the triangles' nodes, checked.
+
+    ``points`` are (n, 3) in metres, in file order; ``edges`` are the
+    triangles' edges, each sorted and once.
+    """
+
+    points: np.ndarray
+    tris: np.ndarray
+    area_tags: np.ndarray
+    area_entities: np.ndarray
+    lines: np.ndarray
+    line_tags: np.ndarray
+    line_entities: np.ndarray
+    edges: np.ndarray
+
+
+def _read_section(
+    raw: meshio.Mesh, path: Path, length_unit: str, line_names: dict[int, str]
+) -> _Section:
+    """The checked triangles and lines of a 2D file.
+
+    The checks a cross-section and a 2D mesh share: the cell types, the
+    overlaps and duplicates, one plane z = constant, and every grouped line
+    on an edge of the triangles (``line_names`` names the line groups).
+    """
     cells = _cells(raw, path, section=True)
     tris, area_tags, area_entities = cells["triangle"]
     lines, line_tags, line_entities = cells["line"]
@@ -301,9 +400,35 @@ def _read_cross_section(
     tris, lines = index[tris], index[lines]
     edges = np.unique(np.sort(tris[:, [[0, 1], [1, 2], [0, 2]]].reshape(-1, 2)), axis=0)
     _check_section_plane(points, path)
-    _check_lines_on_edges(lines, line_tags, edges, regions, path)
+    _check_lines_on_edges(lines, line_tags, edges, line_names, path)
+    return _Section(
+        points, tris, area_tags, area_entities, lines, line_tags, line_entities, edges
+    )
+
+
+def _read_cross_section(
+    path: Path, length_unit: str, thickness: float | None
+) -> _Topology:
+    """Parse a triangle section and extrude it (`Mesh.from_gmsh_cross_section`)."""
+    _check_unit(length_unit)
+    if thickness is not None:
+        thickness = _check_thickness(thickness)
+    raw = meshio.read(path, file_format="gmsh")
+    regions = _regions(raw, section=True)
+    taken = [r.name for r in regions if r.name in END_FACES]
+    if taken:
+        raise ValueError(
+            f"{path.name} names a physical group {taken[0]!r}, but a cross-section's "
+            f"end faces are named {END_FACES[0]!r} and {END_FACES[1]!r}. Rename the "
+            "group in gmsh and export the mesh again."
+        )
+    section = _read_section(
+        raw, path, length_unit, {r.tag: r.name for r in regions if r.dim == 2}
+    )
+    points, tris, lines = section.points, section.tris, section.lines
+    line_tags, line_entities = section.line_tags, section.line_entities
     if thickness is None:
-        thickness = _default_thickness(points, edges)
+        thickness = _default_thickness(points, section.edges)
     n = len(points)
     nodes = np.concatenate([points, points + np.array([0.0, 0.0, thickness])])
     tets = _split_prisms(tris, n, nodes)
@@ -323,13 +448,13 @@ def _read_cross_section(
         length_unit=length_unit,
         imported_nodes=readonly(nodes),
         regions=(*regions, front, back),
-        tetrahedra=readonly(tets),
-        tet_tags=readonly(np.repeat(area_tags, 3)),
-        tet_entities=readonly(np.repeat(area_entities, 3)),
-        triangles=readonly(triangles),
-        tri_tags=readonly(tri_tags),
-        tri_entities=readonly(tri_entities),
-        tri_neighbours=readonly(neighbours),
+        volume_elements=readonly(tets),
+        volume_tags=readonly(np.repeat(section.area_tags, 3)),
+        volume_entities=readonly(np.repeat(section.area_entities, 3)),
+        surface_elements=readonly(triangles),
+        surface_tags=readonly(tri_tags),
+        surface_entities=readonly(tri_entities),
+        surface_neighbours=readonly(neighbours),
         source=path.resolve(),
         section_thickness=float(thickness),
     )
@@ -373,7 +498,7 @@ def _read_on_rank_0(
             statics, arrays = None, None
             if topology is not None:
                 statics = {f: getattr(topology, f) for f in _TOPOLOGY_STATICS}
-                arrays = {f: getattr(topology, f) for f in _TOPOLOGY_ARRAYS}
+                arrays = _topology_arrays(topology)
             statics = comm.bcast(statics, root=0)
             arrays = _mpi.bcast_arrays(comm, arrays)
     if error is not None:
@@ -382,18 +507,24 @@ def _read_on_rank_0(
         return topology
     for array in arrays.values():
         array.flags.writeable = False
-    return _Topology(**statics, **arrays)
+    return _topology_from_arrays(arrays, **statics)
 
 
 @jax.tree_util.register_pytree_with_keys_class
 class Mesh:
-    """A straight-sided tetrahedral mesh with named regions.
+    """A straight-sided tetrahedral or triangle mesh with named regions.
 
     Build one with `Mesh.from_gmsh` from a gmsh ``.msh`` file (format 2.2
     ASCII or 4.1), or with `Mesh.from_gmsh_cross_section` from a 2D triangle
     section, read as a one-element-thick slab; ``length_unit`` names the unit
     of the file's coordinates, and `nodes` are in metres. Regions are the
     gmsh physical groups, by name and number.
+
+    A tetrahedral mesh has `dim` 3. A triangle-only file read with
+    `Mesh.from_gmsh` gives a 2D mesh (`dim` 2) in the (x, y) plane: its
+    `nodes` are (n, 2), its areas are its volumes and its lines its surfaces.
+    `volume_elements` and `surface_elements` hold the elements of both kinds
+    of mesh.
 
     A `Mesh` is a JAX
     `pytree <https://docs.jax.dev/en/latest/pytrees.html>`__:
@@ -433,6 +564,12 @@ class Mesh:
         3D groups are volumes, 2D groups are surfaces. Elements outside any
         physical group, points and lines are ignored.
 
+        A file of triangles only, in one plane z = constant, is a 2D mesh
+        (`dim` 2): z is dropped, so the nodes are (n, 2); 2D groups are its
+        volumes (areas) and 1D groups its surfaces (lines), and every grouped
+        line must be an edge of the triangles. To read such a file as a
+        one-element-thick slab instead, use `from_gmsh_cross_section`.
+
         Above one rank this is collective: rank 0 reads the file once and every
         rank ends up with the same whole mesh, so a call on one rank alone hangs.
 
@@ -448,7 +585,9 @@ class Mesh:
 
         Raises:
             ValueError: The unit is unknown, the mesh is second order (curved),
-                has elements other than tetrahedra and triangles, or its
+                has elements other than tetrahedra and triangles (or, in 2D,
+                triangles and lines), a 2D mesh is not in one plane z =
+                constant or has a line off its triangles' edges, or its
                 physical groups cannot be addressed by name.
             RuntimeError: Ranks asked for different paths or units.
         """
@@ -524,9 +663,10 @@ class Mesh:
 
     def __repr__(self) -> str:
         section = self.section_thickness
+        kind = "tetrahedra" if self.dim == 3 else "triangles"
         return (
-            f"Mesh({len(self.imported_nodes)} nodes, {len(self.tetrahedra)} "
-            f"tetrahedra, volumes={list(self.volumes)}, "
+            f"Mesh({len(self.imported_nodes)} nodes, {len(self.volume_elements)} "
+            f"{kind}, volumes={list(self.volumes)}, "
             f"surfaces={list(self.surfaces)}, length_unit={self.length_unit!r}"
             + ("" if section is None else f", section_thickness={section:.4g} m")
             + ")"
@@ -535,19 +675,24 @@ class Mesh:
     # --- regions -------------------------------------------------------------
 
     @property
+    def dim(self) -> int:
+        """The mesh's dimension: 3 for a tetrahedral mesh, 2 for a 2D mesh."""
+        return self._topology.dim
+
+    @property
     def regions(self) -> tuple[Region, ...]:
         """All regions, volumes then surfaces, each by tag."""
         return self._topology.regions
 
     @property
     def volumes(self) -> tuple[str, ...]:
-        """Names of the volume regions, by tag."""
-        return tuple(r.name for r in self.regions if r.dim == 3)
+        """Names of the volume regions (the areas of a 2D mesh), by tag."""
+        return tuple(r.name for r in self.regions if r.dim == self.dim)
 
     @property
     def surfaces(self) -> tuple[str, ...]:
-        """Names of the surface regions, by tag."""
-        return tuple(r.name for r in self.regions if r.dim == 2)
+        """Names of the surface regions (the lines of a 2D mesh), by tag."""
+        return tuple(r.name for r in self.regions if r.dim == self.dim - 1)
 
     def region(self, name: str) -> Region:
         """Look up a region by its gmsh physical-group name.
@@ -563,14 +708,16 @@ class Mesh:
     def elements(self, region: str) -> np.ndarray:
         """Indices of a region's elements, in mesh order.
 
-        For a volume, rows of `tetrahedra` (the order of a `MaterialField`'s
-        per-element values); for a surface, rows of `triangles`.
+        For a volume, rows of `volume_elements` (the order of a
+        `MaterialField`'s per-element values); for a surface, rows of
+        `surface_elements`.
 
         Raises:
             RegionNotFoundError: No region has this name.
         """
         r = self.region(region)
-        tags = self.tetrahedron_tags if r.dim == 3 else self.triangle_tags
+        t = self._topology
+        tags = t.volume_tags if r.dim == t.dim else t.surface_tags
         return readonly(np.flatnonzero(tags == r.tag))
 
     def adjacency(self, surface: str) -> tuple[tuple[str | None, str | None], ...]:
@@ -578,17 +725,19 @@ class Mesh:
 
         For each triangle of the surface, ``domin`` is the volume behind it
         and ``domout`` the volume in front of it, along the triangle's normal
-        (right-hand rule on its node order). ``None`` stands for outside the
-        mesh. Each distinct pair appears once, sorted by tag.
+        (right-hand rule on its node order). On a 2D mesh a line segment's
+        normal is its direction crossed with +z, so ``domin`` is the area on
+        its left. ``None`` stands for outside the mesh. Each distinct pair
+        appears once, sorted by tag.
 
         Raises:
             RegionNotFoundError: The mesh has no surface of this name.
         """
         tag = self._surface(surface).tag
-        tet_tags = self.tetrahedron_tags
-        nb = self.triangle_neighbours[self.triangle_tags == tag]
-        sides = np.where(nb >= 0, tet_tags[np.maximum(nb, 0)], -1)
-        name = {r.tag: r.name for r in self.regions if r.dim == 3}
+        t = self._topology
+        nb = t.surface_neighbours[t.surface_tags == tag]
+        sides = np.where(nb >= 0, t.volume_tags[np.maximum(nb, 0)], -1)
+        name = {r.tag: r.name for r in self.regions if r.dim == self.dim}
         pairs = sorted({(int(a), int(b)) for a, b in sides})
         return tuple((name.get(a), name.get(b)) for a, b in pairs)
 
@@ -603,7 +752,7 @@ class Mesh:
 
     def _surface(self, name: str) -> Region:
         for r in self.regions:
-            if r.name == name and r.dim == 2:
+            if r.name == name and r.dim == self.dim - 1:
                 return r
         raise RegionNotFoundError(name, self.surfaces, kind="surface")
 
@@ -612,15 +761,18 @@ class Mesh:
     def to_meshio(self) -> meshio.Mesh:
         """The mesh as a `meshio.Mesh`, coordinates in metres.
 
-        Tetrahedra and triangles carry two cell-data arrays: ``region`` (the
-        gmsh physical-group number) and ``entity`` (the gmsh entity number).
+        Tetrahedra and triangles (on a 2D mesh, triangles and lines) carry two
+        cell-data arrays: ``region`` (the gmsh physical-group number) and
+        ``entity`` (the gmsh entity number).
         """
+        t = self._topology
+        kinds = ("tetra", "triangle") if t.dim == 3 else ("triangle", "line")
         return meshio.Mesh(
             np.asarray(self.nodes, dtype=float),
-            [("tetra", self.tetrahedra), ("triangle", self.triangles)],
+            [(kinds[0], t.volume_elements), (kinds[1], t.surface_elements)],
             cell_data={
-                "region": [self.tetrahedron_tags, self.triangle_tags],
-                "entity": [self.tetrahedron_entities, self.triangle_entities],
+                "region": [t.volume_tags, t.surface_tags],
+                "entity": [t.volume_entities, t.surface_entities],
             },
         )
 
@@ -659,14 +811,51 @@ class Mesh:
         return self._topology.imported_nodes
 
     @property
+    def volume_elements(self) -> np.ndarray:
+        """Node indices of each volume element, shape ``(n, dim + 1)``.
+
+        The tetrahedra of a tetrahedral mesh (`tetrahedra`), the triangles
+        of a 2D mesh. `elements` gives a volume's rows.
+        """
+        return self._topology.volume_elements
+
+    @property
+    def surface_elements(self) -> np.ndarray:
+        """Node indices of each surface-region element, shape ``(n, dim)``.
+
+        The triangles of a tetrahedral mesh (`triangles`), the line segments
+        of a 2D mesh. `elements` gives a surface's rows.
+        """
+        return self._topology.surface_elements
+
+    def _tetrahedral(self, name: str, role: str) -> _Topology:
+        """The topology, after checking that ``name`` exists on this mesh."""
+        if self._topology.dim != 3:
+            raise ValueError(
+                f"Mesh.{name} is an array of a tetrahedral mesh, and this mesh "
+                f"has dimension {self._topology.dim}: its triangles are its "
+                f"volume elements. Read Mesh.{role} (and Mesh.elements(region) "
+                "for a region's rows) instead."
+            )
+        return self._topology
+
+    @property
     def tetrahedra(self) -> np.ndarray:
-        """Node indices of each tetrahedron, shape ``(n_tet, 4)``."""
-        return self._topology.tetrahedra
+        """Node indices of each tetrahedron, shape ``(n_tet, 4)``.
+
+        Raises:
+            ValueError: The mesh is a 2D mesh; read `volume_elements`.
+        """
+        return self._tetrahedral("tetrahedra", "volume_elements").volume_elements
 
     @property
     def tetrahedron_tags(self) -> np.ndarray:
-        """Physical-group number of each tetrahedron's volume region."""
-        return self._topology.tet_tags
+        """Physical-group number of each tetrahedron's volume region.
+
+        Raises:
+            ValueError: The mesh is a 2D mesh; read `volume_elements`.
+        """
+        return self._tetrahedral("tetrahedron_tags", "volume_elements").volume_tags
 
     @property
     def tetrahedron_entities(self) -> np.ndarray:
@@ -674,23 +863,41 @@ class Mesh:
 
         One region may hold several entities: gsim, for example, tags meshed
         conductor volumes with the name of the surrounding dielectric.
+
+        Raises:
+            ValueError: The mesh is a 2D mesh; read `volume_elements`.
         """
-        return self._topology.tet_entities
+        topology = self._tetrahedral("tetrahedron_entities", "volume_elements")
+        return topology.volume_entities
 
     @property
     def triangles(self) -> np.ndarray:
-        """Node indices of each surface-region triangle, shape ``(n_tri, 3)``."""
-        return self._topology.triangles
+        """Node indices of each surface-region triangle, shape ``(n_tri, 3)``.
+
+        Raises:
+            ValueError: The mesh is a 2D mesh, whose triangles are its volume
+                elements; read `surface_elements` for its lines.
+        """
+        return self._tetrahedral("triangles", "surface_elements").surface_elements
 
     @property
     def triangle_tags(self) -> np.ndarray:
-        """Physical-group number of each triangle's surface region."""
-        return self._topology.tri_tags
+        """Physical-group number of each triangle's surface region.
+
+        Raises:
+            ValueError: The mesh is a 2D mesh; read `surface_elements`.
+        """
+        return self._tetrahedral("triangle_tags", "surface_elements").surface_tags
 
     @property
     def triangle_entities(self) -> np.ndarray:
-        """Gmsh entity (elementary surface) number of each triangle."""
-        return self._topology.tri_entities
+        """Gmsh entity (elementary surface) number of each triangle.
+
+        Raises:
+            ValueError: The mesh is a 2D mesh; read `surface_elements`.
+        """
+        topology = self._tetrahedral("triangle_entities", "surface_elements")
+        return topology.surface_entities
 
     @property
     def triangle_neighbours(self) -> np.ndarray:
@@ -699,20 +906,25 @@ class Mesh:
         Column 0 is the tetrahedron behind the triangle (``domin``), column 1
         the one in front of it (``domout``), along the triangle's normal;
         -1 means outside the mesh.
+
+        Raises:
+            ValueError: The mesh is a 2D mesh; read `surface_elements` and
+                `adjacency`.
         """
-        return self._topology.tri_neighbours
+        topology = self._tetrahedral("triangle_neighbours", "surface_elements")
+        return topology.surface_neighbours
 
 
-#: The `Mesh` arrays that, with its regions, define its elements: the
-#: element part of `_TOPOLOGY_ARRAYS`, by property name, which `_same_topology`
+#: The `_Topology` arrays that, with its regions and dimension, define its
+#: elements: the element part of `_ROLE_ARRAYS`, which `_same_topology`
 #: compares.
 _ELEMENT_ARRAYS = (
-    "tetrahedra",
-    "tetrahedron_tags",
-    "tetrahedron_entities",
-    "triangles",
-    "triangle_tags",
-    "triangle_entities",
+    "volume_elements",
+    "volume_tags",
+    "volume_entities",
+    "surface_elements",
+    "surface_tags",
+    "surface_entities",
 )
 
 
@@ -722,10 +934,16 @@ def _same_topology(a: Mesh, b: Mesh) -> bool:
     The same object, or equal arrays: the same file read twice (a loaded
     result's mesh and the model's) gives two objects.
     """
-    if a._topology is b._topology:  # noqa: SLF001
+    ta, tb = a._topology, b._topology  # noqa: SLF001
+    if ta is tb:
         return True
-    return a.regions == b.regions and all(
-        np.array_equal(getattr(a, name), getattr(b, name)) for name in _ELEMENT_ARRAYS
+    return (
+        ta.dim == tb.dim
+        and a.regions == b.regions
+        and all(
+            np.array_equal(getattr(ta, name), getattr(tb, name))
+            for name in _ELEMENT_ARRAYS
+        )
     )
 
 
@@ -748,35 +966,42 @@ def _is_model_mesh(mesh: Mesh, model_mesh: Mesh) -> bool:
     )
 
 
-# Per tetrahedron, its shortest edge, by mesh topology (`_shortest_edges`).
+# Per volume element, its shortest edge, by mesh topology (`_shortest_edges`).
 _SHORTEST_EDGES: weakref.WeakKeyDictionary[_Topology, np.ndarray] = (
     weakref.WeakKeyDictionary()
 )
 
 
 def _shortest_edges(mesh: Mesh) -> np.ndarray:
-    """The shortest edge (m) of each tetrahedron on the imported nodes.
+    """The shortest edge (m) of each volume element on the imported nodes.
 
     Cached per mesh topology: moved nodes do not change it.
     """
     topology = mesh._topology  # noqa: SLF001
     h = _SHORTEST_EDGES.get(topology)
     if h is None:
-        x = mesh.imported_nodes[mesh.tetrahedra]
+        x = mesh.imported_nodes[topology.volume_elements]
         sq = np.full(len(x), np.inf)
-        for i, j in _TET_EDGES:
+        pairs = _TET_EDGES if topology.dim == 3 else ((0, 1), (0, 2), (1, 2))
+        for i, j in pairs:
             sq = np.minimum(sq, np.sum((x[:, i] - x[:, j]) ** 2, axis=1))
         h = _SHORTEST_EDGES[topology] = readonly(np.sqrt(sq))
     return h
 
 
-def _regions(raw: meshio.Mesh, *, section: bool = False) -> tuple[Region, ...]:
-    """The physical groups; on a cross-section 2D groups are volumes, 1D surfaces."""
+def _regions(
+    raw: meshio.Mesh, *, section: bool = False, top: int = 3
+) -> tuple[Region, ...]:
+    """The physical groups of dimension ``top`` and one below.
+
+    On a cross-section (``section``) 2D groups are lifted to volumes and 1D
+    groups to surfaces.
+    """
     lift = 1 if section else 0
     regions = (
         Region(name=name, tag=int(tag), dim=int(dim) + lift)
         for name, (tag, dim) in raw.field_data.items()
-        if int(dim) + lift in (2, 3)
+        if int(dim) + lift in (top - 1, top)
     )
     return tuple(sorted(regions, key=lambda r: (-r.dim, r.tag)))
 
@@ -820,12 +1045,6 @@ def _cells(
             f"{path.name} has {' / '.join(solid)} elements: it is a 3D mesh. Read "
             "it with gfem.Mesh.from_gmsh; Mesh.from_gmsh_cross_section reads a 2D "
             "section of triangles only."
-        )
-    if not section and not solid and "triangle" in types:
-        raise ValueError(
-            f"{path.name} has triangles and no tetrahedra: it is a 2D mesh. Read a "
-            "2D cross-section with gfem.Mesh.from_gmsh_cross_section, which "
-            "extrudes it into a one-element-thick slab."
         )
     other = [t for t in types if t not in (*width, "line", "vertex")]
     if other:
@@ -960,11 +1179,58 @@ def _triangle_neighbours(
     return neighbours
 
 
+def _segment_neighbours(
+    points: np.ndarray, tris: np.ndarray, lines: np.ndarray, path: Path
+) -> np.ndarray:
+    """For each line segment, the triangle behind it and the one in front.
+
+    A segment's normal is its direction crossed with +z, as for the faces a
+    cross-section's slab extrudes from its lines: column 0 (``domin``) is the
+    triangle on the segment's left, column 1 (``domout``) the one on its
+    right, -1 outside the mesh. Every segment is an edge of the triangles
+    (`_check_lines_on_edges`).
+    """
+    neighbours = np.full((len(lines), 2), -1, dtype=np.int64)
+    if len(lines) == 0:
+        return neighbours
+    edges = np.sort(tris[:, _TRI_EDGES].reshape(-1, 2), axis=1)
+    _, ids = np.unique(
+        np.concatenate([edges, np.sort(lines, axis=1)]), axis=0, return_inverse=True
+    )
+    ids = ids.ravel()
+    edge_ids, line_ids = ids[: len(edges)], ids[len(edges) :]
+    counts = np.bincount(edge_ids, minlength=ids.max() + 1)
+    if (counts > 2).any():
+        raise ValueError(f"{path.name}: an edge is shared by more than two triangles.")
+    n_tris = counts[line_ids]
+    order = np.argsort(edge_ids, kind="stable")
+    first = np.searchsorted(edge_ids[order], line_ids)
+    a, b = points[lines[:, 0]], points[lines[:, 1]]
+    t = b - a
+    normal = np.stack([t[:, 1], -t[:, 0]], axis=1)  # t x z
+    for slot in (0, 1):
+        has = n_tris > slot
+        edge = order[first[has] + slot]
+        tri, opposite = edge // 3, tris.reshape(-1)[edge]
+        side = np.einsum("ij,ij->i", normal[has], points[opposite] - a[has])
+        rows = np.flatnonzero(has)
+        neighbours[rows[side < 0], 0] = tri[side < 0]
+        neighbours[rows[side > 0], 1] = tri[side > 0]
+    two = n_tris == 2
+    if (neighbours[two] < 0).any():
+        raise ValueError(
+            f"{path.name}: two triangles overlap on the same side of an edge."
+        )
+    return neighbours
+
+
 def _check_tags(topology: _Topology, path: Path, *, section: bool = False) -> None:
     """Every element's physical group must exist and be named."""
+    top = topology.dim
+    kinds = ("tetrahedra", "triangles") if top == 3 else ("triangles", "lines")
     for dim, tags, kind in (
-        (3, topology.tet_tags, "tetrahedra"),
-        (2, topology.tri_tags, "triangles"),
+        (top, topology.volume_tags, kinds[0]),
+        (top - 1, topology.surface_tags, kinds[1]),
     ):
         named = {r.tag for r in topology.regions if r.dim == dim}
         missing = sorted(set(np.unique(tags).tolist()) - named)

@@ -87,7 +87,7 @@ _FLAT = 1e-13
 
 def in_support(mesh: Mesh, layout: Layout) -> np.ndarray:
     """Per gfem tetrahedron: whether the field is defined on it."""
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
     wanted = {t for t, n in names.items() if n in set(layout.support)}
     inside = np.isin(mesh.tetrahedron_tags, list(wanted))
     if layout.excluded:
@@ -139,7 +139,7 @@ def locate(mesh: Mesh, layout: Layout, points: np.ndarray, comm: Any = None) -> 
     inside = support[tets]
     if not inside.all():
         k = int(np.flatnonzero(~inside)[0])
-        names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+        names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
         region = names[int(mesh.tetrahedron_tags[tets[k]])]
         raise _mpi.agreed(
             ValueError(
@@ -194,7 +194,7 @@ def _tets_of_nodes(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
     topology = mesh._topology  # noqa: SLF001
     found = _NODE_TETS.get(topology)
     if found is None:
-        flat = np.asarray(topology.tetrahedra).ravel()
+        flat = np.asarray(topology.volume_elements).ravel()
         tets = np.argsort(flat, kind="stable") // 4
         start = np.concatenate(([0], np.cumsum(np.bincount(flat))))
         found = _NODE_TETS[topology] = (tets, start)

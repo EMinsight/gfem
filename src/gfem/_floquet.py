@@ -635,7 +635,7 @@ def _rim_surfaces(
     tag = mesh.region(surface).tag
     keys, counts = np.unique(_edges(tris), axis=0, return_counts=True)
     rim = [tuple(r) for r in keys[counts == 1].tolist()]
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 2}
+    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim - 1}
     on: dict[tuple[int, int], set[str]] = {r: set() for r in rim}
     all_e = _edges(mesh.triangles)
     n = len(mesh.imported_nodes)
@@ -725,7 +725,7 @@ def _medium(
         NotImplementedError: Several regions, or an unsupported medium.
     """
     mesh = model.mesh
-    volumes = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    volumes = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
     regions = list(dict.fromkeys(volumes[int(t)] for t in mesh.tetrahedron_tags[tets]))
     if len(regions) > 1:
         raise NotImplementedError(
@@ -1137,7 +1137,7 @@ def _indices(model: Model, surface: str, f: np.ndarray) -> list[np.ndarray]:
     mesh = model.mesh
     owner = face_owner(model)[mesh.triangle_tags == mesh.region(surface).tag]
     behind = np.unique(owner[owner >= 0])
-    volumes = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    volumes = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
     columns = [np.zeros((len(f), 0))]
     for tag in np.unique(mesh.tetrahedron_tags[behind]).tolist():
         region = volumes[tag]

@@ -246,10 +246,11 @@ class LayerGrid:
                 "from a mesh with concrete nodes."
             )
         nodes = np.asarray(mesh.nodes)
-        if r.dim == 3:
-            cells = mesh.tetrahedra[mesh.elements(region)]
+        volume = r.dim == mesh.dim
+        if volume:
+            cells = mesh.volume_elements[mesh.elements(region)]
         else:
-            cells = mesh.triangles[mesh.elements(region)]
+            cells = mesh.surface_elements[mesh.elements(region)]
             _check_horizontal(nodes, cells, region)
         points = nodes[cells].mean(axis=1)[:, :2]
         lo = nodes[cells.ravel()].min(axis=0)[:2]
@@ -277,9 +278,9 @@ class LayerGrid:
         self.origin = origin
         self.x = origin[0] + (np.arange(n[0]) + 0.5) * pitch
         self.y = origin[1] + (np.arange(n[1]) + 0.5) * pitch
-        self.n_elements = len(cells) if r.dim == 3 else None
-        self.n_faces = len(cells) if r.dim == 2 else None
-        self._what = "element" if r.dim == 3 else "face"
+        self.n_elements = len(cells) if volume else None
+        self.n_faces = None if volume else len(cells)
+        self._what = "element" if volume else "face"
         self._index, self._weight = _bilinear(
             points, origin, pitch, self.shape, periodic
         )
@@ -546,7 +547,7 @@ def helmholtz_filter(
             "helmholtz_filter: name the design's volume region, "
             "helmholtz_filter(mesh, region, radius=...)."
         )
-    if carrier.region(region).dim != 3:
+    if carrier.region(region).dim != carrier.dim:
         raise ValueError(
             f"helmholtz_filter: {region!r} is a surface; filter a layer design "
             "on its pixel grid instead: helmholtz_filter(LayerGrid(mesh, region, "

@@ -262,11 +262,10 @@ def test_the_cross_section_reader_refuses_a_tetrahedral_file_naming_from_gmsh():
         gfem.Mesh.from_gmsh_cross_section(TWO_BOX, length_unit="um")
 
 
-def test_from_gmsh_refuses_a_triangle_only_file_naming_the_cross_section_reader(
-    section_path,
-):
-    with pytest.raises(ValueError, match=r"2D mesh\..*from_gmsh_cross_section"):
-        gfem.Mesh.from_gmsh(section_path, length_unit="um")
+def test_from_gmsh_reads_a_triangle_only_file_as_a_2d_mesh_not_a_slab(section_path):
+    mesh = gfem.Mesh.from_gmsh(section_path, length_unit="um")
+    assert mesh.dim == 2
+    assert mesh.section_thickness is None
 
 
 def test_a_group_named_like_an_end_face_raises(tmp_path):
