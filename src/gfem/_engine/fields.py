@@ -241,7 +241,11 @@ def _entity_keys(tets: np.ndarray, n_nodes: int) -> tuple[np.ndarray, np.ndarray
 def _one_process_tables(
     mesh: Mesh, support: tuple[str, ...], excluded: tuple[tuple[int, int], ...]
 ) -> dict[str, np.ndarray]:
-    """One process's edges and faces of the support, and each tet's cell number."""
+    """One process's vertices, edges and faces of the support, and each tet's cell.
+
+    ``vertices`` are the used gfem nodes, ascending; ``cells`` numbers each support
+    tet, ``-1`` off the support.
+    """
     names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
     domains, tet_domain = tetrahedron_domains(mesh)
     in_support = np.array(
@@ -259,7 +263,8 @@ def _one_process_tables(
     in_order = in_order[used[in_order]]
     cells = np.full(len(used), -1, dtype=np.int64)
     cells[in_order] = np.arange(len(in_order))
-    return {"edges": edges, "faces": faces, "cells": cells}
+    vertices = np.unique(mesh.tetrahedra[used])
+    return {"edges": edges, "faces": faces, "cells": cells, "vertices": vertices}
 
 
 def one_process_dofs(
@@ -268,65 +273,178 @@ def one_process_dofs(
     excluded: tuple[tuple[int, int], ...],
     order: int,
     comm: Any = None,
+    *,
+    space: str = "hcurl",
 ) -> np.ndarray:
-    """Per local DOF of an H(curl) layout, its number on one process (ADR 0064).
+    """Per local DOF of an H(curl) or H1 layout, its number on one process (ADR 0064).
 
     NumPy on the replicated arrays, with no walk and no serial mesh. In a local mesh
-    and in one process's alike, edges and faces are lexicographic in their gfem nodes,
-    and DOFs are edges' lowest order, edges' higher orders, faces, then cells, each in
-    its entities' order. This rests on netgen's behaviour, so the counts are checked.
-    Rank 0 builds the one-process tables, the expensive part. Memoized per topology,
-    since a moved mesh has the same numbers. A miss is collective.
+    and in one process's alike, edges and faces are lexicographic in their gfem nodes.
+    H(curl) DOFs are edges' lowest order, edges' higher orders, faces, then cells,
+    each in its entities' order. H1 DOFs are the used vertices first, in local vertex
+    order locally and by gfem node on one process, then ``p-1`` per edge,
+    ``(p-1)(p-2)/2`` per face and ``(p-1)(p-2)(p-3)/6`` per cell. This rests on
+    netgen's behaviour, so the counts are checked. Rank 0 builds the one-process
+    tables, the expensive part. Memoized per topology, since a moved mesh has the
+    same numbers. A miss is collective.
+
+    Args:
+        mesh: The field's mesh.
+        support: The field's support regions.
+        excluded: Its excluded volume entities.
+        order: Its order.
+        comm: The resolved communicator; ``None`` on one process.
+        space: ``"hcurl"`` or ``"h1"``.
 
     Raises:
         gfem._mpi.AgreedError: The map's counts are not the space's.
     """
     topology = mesh._topology  # noqa: SLF001
     memo = _MAPS.setdefault(topology, {})
-    key = (_mpi.comm_key(comm), tuple(support), tuple(excluded), order)
+    key = (_mpi.comm_key(comm), tuple(support), tuple(excluded), order, space)
     if key in memo:
         return memo[key]
     still = Mesh(mesh.imported_nodes, topology)
-    built, fes, _ = fe_space(still, support, excluded, "hcurl", order, comm=comm)
+    built, fes, _ = fe_space(still, support, excluded, space, order, comm=comm)
     tables = _mpi.on_root(comm, lambda: _one_process_tables(still, support, excluded))
     cells = tables["cells"]
     mine = built.tetrahedron_order
     mine = mine[cells[mine] >= 0]
+    nodes, edges, faces = _local_entities(built, mesh, tables)
+    if space == "h1":
+        numbers, total = _h1_numbers(
+            built,
+            mesh,
+            tables,
+            nodes=nodes,
+            mine=mine,
+            edges=edges,
+            faces=faces,
+            order=order,
+        )
+    else:
+        numbers, total = _hcurl_numbers(tables, cells[mine], edges, faces, order)
+    if not _mpi.agree_all(
+        comm, flag=len(numbers) == fes.ndof and total == fes.ndofglobal
+    ):
+        raise _mpi.AgreedError(
+            f"This {_SPACE_NAMES[space]} space's DOF counts are not those of the map "
+            "to one-process numbering, which rests on netgen's numbering. Report it; "
+            "a wheel upgrade may have changed netgen (ADR 0064)."
+        )
+    memo[key] = numbers
+    return numbers
+
+
+_SPACE_NAMES = {"hcurl": "H(curl)", "h1": "H1"}
+
+#: Vertex pairs of a triangle's edges, with sorted rows.
+_TRIANGLE_EDGES = np.array([[0, 1], [0, 2], [1, 2]])
+
+
+def _find(table: np.ndarray, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Each key's position in the sorted ``table``, and whether it is there."""
+    at = np.searchsorted(table, keys)
+    found = at < len(table)
+    found[found] = table[at[found]] == keys[found]
+    return at, found
+
+
+def _local_entities(
+    built: EngineMesh, mesh: Mesh, tables: dict[str, np.ndarray]
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The gfem nodes, one-process edges and one-process faces holding local DOFs.
+
+    Every support entity a rank holds carries its DOFs there, whichever local
+    element brings it: a support tet, a support face netgen sent with the tet on
+    its other side, or an edge or vertex of a tet off the support (DOFs are
+    agreed across a shared entity's holders). Edges and faces come ascending,
+    which is lexicographic in their gfem nodes.
+    """
     n_nodes = len(mesh.imported_nodes)
-    edge_keys, face_keys = _entity_keys(mesh.tetrahedra[mine], n_nodes)
-    # a local face's key holds a local edge's rank: it moves to one process's rank
-    edges = np.searchsorted(tables["edges"], edge_keys)
-    faces = np.searchsorted(
-        tables["faces"], edges[face_keys // n_nodes] * n_nodes + face_keys % n_nodes
-    )
+    edge_table, face_table = tables["edges"], tables["faces"]
+    tets = np.sort(mesh.tetrahedra[built.tetrahedron_order], axis=1)
+    triangles = np.sort(np.asarray(mesh.triangles)[built.triangle_order], axis=1)
+    triples = np.concatenate([tets[:, _TET_FACES].reshape(-1, 3), triangles])
+    pairs = triples[:, _TRIANGLE_EDGES].reshape(-1, 2)
+    edges, on_edge = _find(edge_table, pairs[:, 0] * n_nodes + pairs[:, 1])
+    low, on_low = _find(edge_table, triples[:, 0] * n_nodes + triples[:, 1])
+    faces, on_face = _find(face_table, low * n_nodes + triples[:, 2])
+    on_face &= on_low
+    nodes = np.unique(triples)
+    nodes = nodes[_find(tables["vertices"], nodes)[1]]
+    return nodes, np.unique(edges[on_edge]), np.unique(faces[on_face])
+
+
+def _blocks(first: int, entities: np.ndarray, per_entity: int) -> np.ndarray:
+    """``per_entity`` consecutive numbers per entity, from ``first``."""
+    return (first + entities[:, None] * per_entity + np.arange(per_entity)).ravel()
+
+
+def _hcurl_numbers(
+    tables: dict[str, np.ndarray],
+    cells: np.ndarray,
+    edges: np.ndarray,
+    faces: np.ndarray,
+    order: int,
+) -> tuple[np.ndarray, int]:
+    """An H(curl) layout's one-process numbers, and one process's DOF count."""
     on_edge, on_face, in_cell = (
         order,
         order * (order - 1),
         order * (order - 1) * (order - 2) // 2,
     )
     n_edges, n_faces = len(tables["edges"]), len(tables["faces"])
-    high = n_edges + edges[:, None] * (on_edge - 1) + np.arange(on_edge - 1)
     first_face = n_edges * on_edge
     first_cell = first_face + n_faces * on_face
     numbers = np.concatenate(
         [
             edges,
-            high.ravel(),
-            (first_face + faces[:, None] * on_face + np.arange(on_face)).ravel(),
-            (first_cell + cells[mine][:, None] * in_cell + np.arange(in_cell)).ravel(),
+            _blocks(n_edges, edges, on_edge - 1),
+            _blocks(first_face, faces, on_face),
+            _blocks(first_cell, cells, in_cell),
         ]
     )
-    total = first_cell + np.count_nonzero(cells >= 0) * in_cell
-    if not _mpi.agree_all(
-        comm, flag=len(numbers) == fes.ndof and total == fes.ndofglobal
-    ):
-        raise _mpi.AgreedError(
-            "This H(curl) space's DOF counts are not those of the map to one-process "
-            "numbering, which rests on netgen's numbering. Report it; a wheel upgrade "
-            "may have changed netgen (ADR 0064)."
-        )
-    memo[key] = numbers
-    return numbers
+    total = int(first_cell + np.count_nonzero(tables["cells"] >= 0) * in_cell)
+    return numbers, total
+
+
+def _h1_numbers(
+    built: EngineMesh,
+    mesh: Mesh,
+    tables: dict[str, np.ndarray],
+    *,
+    nodes: np.ndarray,
+    mine: np.ndarray,
+    edges: np.ndarray,
+    faces: np.ndarray,
+    order: int,
+) -> tuple[np.ndarray, int]:
+    """An H1 layout's one-process numbers, and one process's DOF count.
+
+    The local vertex order need not follow gfem nodes, so each used local vertex
+    (of ``nodes``, gfem nodes) finds its gfem node among one process's used
+    vertices.
+    """
+    vertex = np.full(len(mesh.imported_nodes), -1, dtype=np.int64)
+    vertex[built.node_order] = np.arange(len(built.node_order))
+    used = np.unique(vertex[nodes])
+    on_edge = order - 1
+    on_face = (order - 1) * (order - 2) // 2
+    in_cell = (order - 1) * (order - 2) * (order - 3) // 6
+    n_vertices = len(tables["vertices"])
+    first_face = n_vertices + len(tables["edges"]) * on_edge
+    first_cell = first_face + len(tables["faces"]) * on_face
+    numbers = np.concatenate(
+        [
+            np.searchsorted(tables["vertices"], built.node_order[used]),
+            _blocks(n_vertices, edges, on_edge),
+            _blocks(first_face, faces, on_face),
+            _blocks(first_cell, tables["cells"][mine], in_cell),
+        ]
+    )
+    total = int(first_cell + np.count_nonzero(tables["cells"] >= 0) * in_cell)
+    return numbers, total
 
 
 def one_process_column(field: Field) -> np.ndarray | None:
@@ -341,6 +459,7 @@ def one_process_column(field: Field) -> np.ndarray | None:
         field._excluded,  # noqa: SLF001
         field.order,
         comm,
+        space=field.space,
     )
     positions = _mpi.gather_rows(comm, numbers)
     values = _mpi.gather_rows(comm, np.asarray(field.coefficients)[: len(numbers)])

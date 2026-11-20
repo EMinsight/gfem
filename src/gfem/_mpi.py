@@ -129,7 +129,6 @@ _REFUSALS = {
         "jax.lax.stop_gradient to use its value without its derivative, "
         f"{_COPIES}."
     ),
-    "electrostatic": f"An electrostatic solve has no distributed path: {_RUN_COPIES}.",
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
     "periodic": (
@@ -323,10 +322,10 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("frequency_workers")
     if isinstance(problem, Eigenmode):
         _refuse_eigenmode(model, problem, options)
+    if isinstance(problem, Electrostatic) and model._periodic:  # noqa: SLF001
+        refuse_feature("periodic")
     if isinstance(problem, (Driven, Eigenmode, Electrostatic)):
         _refuse_options(options)
-    if isinstance(problem, Electrostatic):
-        refuse_feature("electrostatic")
 
 
 def _refuse_eigenmode(model: Any, problem: Any, options: Any) -> None:

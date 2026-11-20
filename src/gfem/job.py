@@ -432,6 +432,14 @@ def _write_result(
                 result,
                 e_fields=tuple(field._gathered() for field in result.e_fields),  # noqa: SLF001
             )
+        elif isinstance(result, ElectrostaticResult):
+            result = dataclasses.replace(
+                result,
+                potential={
+                    name: field._gathered()  # noqa: SLF001
+                    for name, field in result.potential.items()
+                },
+            )
 
     def write() -> dict[str, np.ndarray]:
         out.mkdir(parents=True, exist_ok=True)
