@@ -316,9 +316,8 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
                 _timing.scope(_timing.problem_name(problem), resolved),
             ):
                 outputs, _ = rule.forward(model, keep=False)
-        except LinearSolverConvergenceError as err:
-            if partial_result is not None:
-                err.result = partial_result(err)
+        except BaseException as err:
+            _end_of_failed_solve(err, options, resolved, partial_result)
             raise
         adjoints = rule.adjoints if adjoint_loads is not None else None
         result = rule.result(_end_of_solve(options, resolved, outputs))
@@ -327,13 +326,28 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
         return result, adjoints
 
 
+def _end_of_failed_solve(
+    error: BaseException, options: SolverOptions, comm: Any, partial_result: Any
+) -> None:
+    """Before ``error`` leaves a forward: its partial result, and `_end_of_solve`.
+
+    Emptying the pool is collective, so it runs on an agreed error only: every rank
+    raises that one together.
+    """
+    if isinstance(error, LinearSolverConvergenceError) and partial_result is not None:
+        error.result = partial_result(error)
+    if comm is None or _mpi.is_agreed(error, _mpi.FORWARD_ERRORS):
+        _end_of_solve(options, comm, None)
+
+
 def _end_of_solve[T](options: SolverOptions, comm: Any, outputs: T) -> T:
     """``outputs``, the solve's pooled coarse factorizations freed if it keeps none.
 
     That is ``retain_memory=0``.
 
     Inside the call they served its later set-ups (a sweep's rebuilds, an eigen
-    reshift); none outlives it. Every rank of ``comm`` gets here together.
+    reshift); none outlives it, nor a solve that raised an agreed error. Every rank
+    of ``comm`` gets here together.
     """
     coarse = sys.modules.get("gfem._linalg.coarse")
     if options.retain_memory == 0 and coarse is not None:
