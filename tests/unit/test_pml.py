@@ -9,6 +9,7 @@ helpers are checked against the continuum PML reflection,
 """
 
 import json
+import logging
 import math
 import warnings
 from pathlib import Path
@@ -531,3 +532,172 @@ def test_no_layer_warning_fires_while_building_a_layered_model(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         _model(_box(tmp_path))
+
+
+# --- driven solves -----------------------------------------------------------------
+
+DIRECT = gfem.SolverOptions(order=2, linear_solver="direct")
+ORDER_3 = gfem.SolverOptions(order=3, linear_solver="direct")
+
+
+def _line(tmp_path, pml, *, air=AIR, name="line.msh", cells=6, **kw):
+    """The TEM line of `pml_cases` closed by a layer, h = 1 / ``cells`` um."""
+    mesh = gfem.Mesh.from_gmsh(pml_cases.tem_line(tmp_path / name, cells=cells))
+    return gfem.Model(
+        mesh,
+        materials={"air": air, "pml": AIR},
+        boundaries=[gfem.PEC("pec")],
+        ports=[gfem.WavePort("p1", "port")],
+        pml=pml,
+        **kw,
+    )
+
+
+def _driven(model, frequencies=(pml_cases.F0,), options=DIRECT, **kw):
+    problem = gfem.Driven(tuple(frequencies), keep_fields=True, **kw)
+    return gfem.solve(model, problem, options=options)
+
+
+def test_the_layer_absorbs_what_the_port_does_not_get_back(tmp_path):
+    # order 3 at h = lambda / 10: the port's 1 W counts its section's mode,
+    # whose propagation constant differs from the 3D mesh's by the
+    # discretization error, which caps the balance at 4.6e-6 at order 2
+    # (measured 3.9e-9 here)
+    model = _line(tmp_path, gfem.PML("pml", target_reflection=1e-2), cells=10)
+    frequencies = (0.8 * pml_cases.F0, pml_cases.F0)
+    result = _driven(model, frequencies, options=ORDER_3)
+    for k, f in enumerate(frequencies):
+        s11 = complex(np.asarray(result.s.values)[k, 0, 0])
+        field = result.e_field(f)
+        absorbed = -float(gfem.power_flow(field, "pml", model=model))
+        assert absorbed == pytest.approx(1 - abs(s11) ** 2, rel=1e-8)
+        # and what crosses any plane of the air reaches the layer
+        crossing = -float(gfem.power_flow(field, _beyond(0.7), model=model))
+        assert crossing == pytest.approx(absorbed, rel=1e-12)
+
+
+def _beyond(z):
+    return lambda c: c[:, 2] > z * 1e-6
+
+
+def test_a_side_cutting_the_layer_reads_the_field_s_own_stretch(tmp_path):
+    # inside the layer the power reads the stretched pieces, so the power
+    # out of a side and out of its complement cancel only with the stretch
+    # the field was solved with: the sweep's, normalized at its lowest
+    # frequency, not one at the field's own frequency
+    model = _line(tmp_path, gfem.PML("pml", target_reflection=1e-2))
+    f = 1.3 * pml_cases.F0
+    field = _driven(model, (pml_cases.F0, f)).e_field(f)
+    deep = float(gfem.power_flow(field, _beyond(1.75), model=model))
+    rest = float(gfem.power_flow(field, lambda c: c[:, 2] <= 1.75e-6, model=model))
+    assert deep < 0
+    assert rest == pytest.approx(-deep, rel=1e-10)
+
+
+def _static_box(tmp_path, pml):
+    """The unit cube with a +x layer, between a "top" (z = 1) and a "bottom" plate."""
+
+    def plates(c):
+        if abs(c[2]) < 1e-9:
+            return "bottom"
+        return "top" if abs(c[2] - 1) < 1e-9 else ""
+
+    mesh = _box(tmp_path, ("+x",), surface=plates)
+    background = gfem.Material(eps_r=2.0, conductivity=3.0)
+    return gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(eps_r=4.0, conductivity=5.0),
+            "pml": background,
+        },
+        pml=pml,
+    )
+
+
+@pytest.mark.bitwise
+def test_static_solves_see_the_background(tmp_path):
+    layered = _static_box(tmp_path, gfem.PML("pml"))
+    plain = _static_box(tmp_path, None)
+    options = gfem.SolverOptions(linear_solver="direct", threads=1)
+    for problem, read in [
+        (gfem.Electrostatic(terminals={"t": "top"}, ground="bottom"), "capacitance"),
+        (gfem.DCConduction(terminals={"t": "top"}, ground="bottom"), "conductance"),
+    ]:
+        got, want = (
+            np.asarray(getattr(gfem.solve(m, problem, options=options), read))
+            for m in (layered, plain)
+        )
+        np.testing.assert_array_equal(got, want)
+        assert got.all()
+
+
+def test_changing_the_target_reflection_changes_the_operator(tmp_path):
+    from gfem._engine.driven import driven_operator
+    from gfem._solve_cache import solve_key
+
+    # the air as a material field: the layer lies in the operator's kept part
+    mesh = gfem.Mesh.from_gmsh(pml_cases.tem_line(tmp_path / "line.msh", cells=6))
+    air = gfem.MaterialField.uniform("air", AIR)
+    models = [
+        gfem.Model(
+            mesh,
+            materials={"air": air, "pml": AIR},
+            boundaries=[gfem.PEC("pec")],
+            ports=[gfem.WavePort("p1", "port")],
+            pml=gfem.PML("pml", target_reflection=r0),
+        )
+        for r0 in (1e-2, 1e-3)
+    ]
+    problem = gfem.Driven((pml_cases.F0,))
+    # on one mesh, one after the other: the kept part of the first stretch
+    # must not serve the second
+    s = [abs(complex(np.asarray(_driven(m).s.values)[0, 0, 0])) for m in models]
+    fresh = _line(tmp_path, gfem.PML("pml", target_reflection=1e-3), name="b.msh")
+    assert s[1] == pytest.approx(
+        abs(complex(np.asarray(_driven(fresh).s.values)[0, 0, 0]))
+    )
+    assert s[0] != pytest.approx(s[1], rel=1e-2)
+    keys = {solve_key(m, problem, DIRECT)[0] for m in models}
+    assert len(keys) == 2
+    digests = set()
+    for m in models:
+        stretch = _pml.stretch(m, [pml_cases.F0])
+        op = driven_operator(m, 2, stretch=stretch)
+        digests.add(tuple(p.digest for p in op.fixed.split(op.pieces)[1] if p))
+    assert len(digests) == 2
+
+
+def test_an_explicit_bddc_gmres_refuses_the_layer(tmp_path):
+    model = _line(tmp_path, gfem.PML("pml"))
+    options = gfem.SolverOptions(linear_solver="bddc_gmres")
+    with pytest.raises(ValueError, match=r"bddc_gmres.*perfectly matched layer.*'pml'"):
+        _driven(model, options=options)
+
+
+def test_auto_picks_direct_for_a_layer_whatever_the_memory(
+    tmp_path, monkeypatch, caplog
+):
+    from gfem._engine import driven
+    from gfem._engine.driven import DrivenRule
+
+    model = _line(tmp_path, gfem.PML("pml"))
+    # no budget at all: without a layer, auto would take bddc_gmres
+    monkeypatch.setattr(driven, "default_retain_memory", lambda: 0)
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    rule = DrivenRule(model, gfem.Driven((pml_cases.F0,)), gfem.SolverOptions())
+    assert rule.linear.kind == "direct"
+    (record,) = [r for r in caplog.records if hasattr(r, "linear_solver")]
+    assert record.linear_solver == "direct"
+    assert "perfectly matched layer" in record.getMessage()
+
+
+def test_a_thin_layer_warns(tmp_path):
+    model = _line(tmp_path, gfem.PML("pml"))
+    # d = 0.5 um: k_ref d = 2 pi / 100 at lambda_ref = 50 um, thin above
+    thin = pml_cases.C0 / 51e-6
+    with pytest.warns(gfem.ThinLayerWarning, match=r"\+z side \(pml\)") as record:
+        _driven(model, (thin,))
+    assert Path(record[0].filename) == Path(__file__)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", gfem.ThinLayerWarning)
+        _driven(model, (pml_cases.C0 / 49e-6,))

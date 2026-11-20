@@ -759,13 +759,20 @@ def _transient_from_args(args: dict[str, Any], _: _codec.Context) -> TransientTh
     return TransientThermal(**args, waveform=tuple(zip(switches, scales, strict=True)))
 
 
-def _field_args(field: Field, _: _codec.Context) -> dict[str, Any]:
-    """A field's arguments: a communicator is not part of what it is."""
-    return {
+def _field_args(field: Any, _: _codec.Context) -> dict[str, Any]:
+    """A field's arguments: a communicator is not part of what it is.
+
+    A layer's reference frequency is written only when set, so that a field
+    without one encodes as before.
+    """
+    out = {
         f.name: getattr(field, f.name)
         for f in dataclasses.fields(field)
         if f.name != "_comm"
     }
+    if out.get("_reference_frequency", 0) is None:
+        del out["_reference_frequency"]
+    return out
 
 
 def _port_mode_field_args(field: PortModeField, _: _codec.Context) -> dict[str, Any]:
@@ -906,7 +913,6 @@ for _cls in (
     DrivenResult,
     NetworkParameters,
     SweepInfo,
-    ReducedFields,
     Eigenmode,
     EigenmodeResult,
     InterfaceParticipation,
@@ -919,6 +925,11 @@ _codec.register(
     Field,
     to_args=_field_args,
     names=[f.name for f in dataclasses.fields(Field) if f.name != "_comm"],
+)
+_codec.register(
+    ReducedFields,
+    to_args=_field_args,
+    names=[f.name for f in dataclasses.fields(ReducedFields)],
 )
 _codec.register(SolverOptions, to_args=_options_args)
 _codec.register(

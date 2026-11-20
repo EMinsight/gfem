@@ -88,7 +88,7 @@ import numpy as np
 import scipy.constants
 import scipy.sparse
 
-from gfem import _floquet, _mpi, _timing
+from gfem import _floquet, _mpi, _pml, _timing
 from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import (
     FloquetPort,
@@ -154,6 +154,7 @@ from gfem._periodic import (
     check_floquet,
     check_wave_vector,
 )
+from gfem._pml import Stretch
 from gfem._port_section import port_section_key
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
 from gfem._sweep.port_mode import rows_of
@@ -165,6 +166,7 @@ from gfem.errors import (
     ObliqueAbsorberWarning,
     PortGeometryError,
     SkippedPortModeWarning,
+    ThinLayerWarning,
     UnrequestedOrderWarning,
 )
 from gfem.mesh import _at_imported_nodes, _shortest_edges
@@ -420,6 +422,7 @@ def driven_operator(
     paired: bool = True,
     comm: Any = None,
     swept: bool = False,
+    stretch: Stretch | None = None,
 ) -> DrivenOperator:
     """The driven operator of ``model`` at its current node positions.
 
@@ -435,7 +438,9 @@ def driven_operator(
     expansion). ``comm`` is the resolved communicator of a distributed solve.
     With ``swept`` the wave vector is one of a fixed-angle sweep's: its
     spaces sit in the discretization's swept group
-    (`gfem._engine.cache.Discretization.space`).
+    (`gfem._engine.cache.Discretization.space`). ``stretch`` is the
+    perfectly matched layer's stretch for this solve (`gfem._pml.stretch`),
+    composed into the volume pieces (`terms.pieces`).
     """
     periodic = model._periodic  # noqa: SLF001
     disc = discretization(model.mesh, periodic, comm)
@@ -472,7 +477,7 @@ def driven_operator(
         expansion = Expansion(matrix, unpaired, rows)
     ports = terms.lumped_ports(model, built.scale)
     pieces, latent = terms.pieces(
-        model, built, order, ports, elements=elements, faces=faces
+        model, built, order, ports, elements=elements, faces=faces, stretch=stretch
     )
     symmetry: DrivenSymmetry = "complex_symmetric" if wave_vector is None else "general"
     layout = None
@@ -487,7 +492,14 @@ def driven_operator(
     fixed = None
     if comm is None and elements is None and faces is None:
         fixed = _fixed_pieces(
-            model, disc, solve_key, order, ports, phases=phases, swept=swept
+            model,
+            disc,
+            solve_key,
+            order,
+            ports,
+            phases=phases,
+            swept=swept,
+            stretch=stretch,
         )
     return DrivenOperator(
         built,
@@ -525,12 +537,14 @@ def _fixed_pieces(
     *,
     phases: tuple[complex, ...] | None = None,
     swept: bool = False,
+    stretch: Stretch | None = None,
 ) -> FixedPieces | None:
     """The split of the volume pieces at ``model``'s material-field regions.
 
     ``None`` when no element, or every element, lies in one (nothing to keep).
     ``key`` is the solve space's: the store lives with it, and leaves with
-    its Bloch ``phases`` (`gfem._engine.cache.Discretization.space`).
+    its Bloch ``phases`` (`gfem._engine.cache.Discretization.space`). A
+    layer's ``stretch`` enters the pieces and the fixed parts' keys.
     """
     mesh = model.mesh
     inside = np.zeros(len(mesh.tetrahedra), bool)
@@ -544,8 +558,15 @@ def _fixed_pieces(
         disc.space((*key, "fixed pieces"), KeptParts, group=phases, swept=swept),
         ~inside,
         lambda: terms.pieces(
-            model, built, order, ports, elements=inside, faces=no_faces
+            model,
+            built,
+            order,
+            ports,
+            elements=inside,
+            faces=no_faces,
+            stretch=stretch,
         )[0],
+        stretch=() if stretch is None else stretch.key,
     )
 
 
@@ -842,6 +863,10 @@ class DrivenRule:
         self.order_frequency = tuple(
             problem.frequency if order_frequency is None else order_frequency
         )
+        #: The perfectly matched layer's stretch, at the reference frequency
+        #: of the whole sweep (in a frequency worker too); ``None`` without a
+        #: layer.
+        self.stretch = _layer_stretch(model, self.order_frequency)
         #: Whether this rule's Bloch spaces sit in the discretization's
         #: swept group (`gfem._engine.cache.Discretization.space`): a
         #: fixed-angle sweep of several frequencies, read on the whole grid
@@ -929,6 +954,11 @@ class DrivenRule:
         )
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
+    @property
+    def _reference_frequency(self) -> float | None:
+        """What the result fields carry for readers of the stretched operator."""
+        return None if self.stretch is None else self.stretch.reference_frequency
+
     def operator(self, model: Model) -> DrivenOperator:
         """The model's driven operator at its current node positions.
 
@@ -945,6 +975,7 @@ class DrivenRule:
                 wave_vector=self.wave_vector,
                 comm=self.comm,
                 swept=self.swept_spaces,
+                stretch=self.stretch,
             )
             span.set(ndof=owned_dofs(op))
         self._last_operator = (model, op)
@@ -2094,6 +2125,7 @@ class DrivenRule:
                     omega=jnp.asarray(2 * math.pi * f),
                     _excluded=self._excluded,
                     _comm=_mpi.static_comm(self.comm),
+                    _reference_frequency=self._reference_frequency,
                 )
                 for k, (f, _) in enumerate(kept)
             ]
@@ -2212,6 +2244,7 @@ class DrivenRule:
                 order=self.options.order,
                 support=self.regions,
                 _excluded=self._excluded,
+                _reference_frequency=self._reference_frequency,
             )
         return DrivenResult(
             s=NetworkParameters(
@@ -2566,7 +2599,17 @@ FORWARD_WARNINGS = (
     ObliqueAbsorberWarning,
     LowFrequencyWarning,
     SkippedPortModeWarning,
+    ThinLayerWarning,
 )
+
+
+def _layer_stretch(model: Model, grid: Sequence[float]) -> Stretch | None:
+    """The layer's stretch over the sweep's ``grid``; warns a thin layer."""
+    stretch = _pml.stretch(model, grid)
+    if stretch is not None:
+        # from DrivenRule.__init__: the user's call is three frames up
+        stretch.warn_thin(stacklevel=5)
+    return stretch
 
 
 def _floquet_prepass(
@@ -2656,13 +2699,28 @@ def _resolve(
     (`_auto_inputs`). Where the linear solver is known without the rule (an
     explicit one, or any under ``comm``), the gauge resolves first, so its
     refusal comes before the linear solver's (a missing PETSc stack).
+
+    A perfectly matched layer stalls ``bddc_gmres``: an explicit one raises,
+    and ``"auto"`` resolves to ``direct`` whatever the memory estimate.
+
+    Raises:
+        ValueError: ``linear_solver="bddc_gmres"`` with a perfectly matched
+            layer.
     """
-    inputs = _auto_inputs(model, problem, options, comm)
-    known = _known_kind(options, comm)
+    layer = model.pml is not None
+    if layer and options.linear_solver == "bddc_gmres":
+        raise _pml.refuse_bddc(model.pml)
+    inputs = {} if layer else _auto_inputs(model, problem, options, comm)
+    known = _known_kind(options, comm, layer=layer)
     if gauge is None and known is not None:
         gauge = _resolve_gauge(model, problem, options, comm=comm, kind=known)
     linear = ResolvedLinearSolver.resolve(
-        options, default=DEFAULT_SOLVER, problem="driven", comm=comm, **inputs
+        options,
+        default="direct" if layer else DEFAULT_SOLVER,
+        problem="driven",
+        comm=comm,
+        reason=_LAYER_DIRECT if layer else None,
+        **inputs,
     )
     if gauge is not None:
         return linear, gauge
@@ -2675,15 +2733,25 @@ def _resolve(
     return linear, choice
 
 
-def _known_kind(options: SolverOptions, comm: Any) -> str | None:
+#: Why ``linear_solver="auto"`` picks ``direct`` for a model with a layer.
+_LAYER_DIRECT = (
+    "the perfectly matched layer excludes 'bddc_gmres', whose iterations stall "
+    "on its stretch"
+)
+
+
+def _known_kind(
+    options: SolverOptions, comm: Any, *, layer: bool = False
+) -> str | None:
     """The linear solver ``options`` resolve to without the rule, or ``None``.
 
     ``None`` for ``"auto"`` on one CPU process, which `auto_linear_solver`
-    decides from the system size.
+    decides from the system size; ``direct`` with a perfectly matched
+    ``layer``.
     """
     if options.linear_solver != "auto":
         return options.linear_solver
-    if options.device != "cpu":
+    if options.device != "cpu" or layer:
         return "direct"
     return DEFAULT_SOLVER if comm is not None else None
 

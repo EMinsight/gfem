@@ -18,7 +18,9 @@ tensor is
 from __future__ import annotations
 
 import dataclasses
+import functools
 import math
+import warnings
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
@@ -38,13 +40,15 @@ from gfem._checks import optional_positive, static_float
 from gfem._materials import Material, MaterialField, PermittivityLaw
 from gfem._periodic import REL_TOL, Pairing
 from gfem._pytree import readonly
-from gfem.errors import RegionNotFoundError
+from gfem.errors import RegionNotFoundError, ThinLayerWarning
 from gfem.mesh import LENGTH_UNITS, Mesh, _shortest_edges
 
 if TYPE_CHECKING:
     from gfem._domain import EMDomain
 
 _AXES = "xyz"
+#: Speed of light in vacuum, m/s.
+C0 = 299792458.0
 #: The faces of a tetrahedron (node positions), each opposite node ``k``.
 _FACES = np.array([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]])
 #: Largest component of a unit vector counted as zero (a face normal across
@@ -661,3 +665,115 @@ def pml_tensor(
         return CF((v[0], 0, 0, 0, v[1], 0, 0, 0, v[2]), dims=(3, 3))
 
     return diag(lam), diag(inv)
+
+
+# --- the stretch of a solve ------------------------------------------------------
+
+#: :math:`k_\text{ref} d` below which a side is electrically thin.
+THIN = 2 * math.pi / 100
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class Stretch:
+    r"""A layer's stretch for one solve: its geometry at a reference frequency.
+
+    Attributes:
+        layers: The layer geometry (`derive_layers`).
+        target_reflection: :math:`R_0`.
+        reference_frequency: :math:`f_\text{ref}`, Hz.
+    """
+
+    layers: Layers
+    target_reflection: float
+    reference_frequency: float
+
+    @property
+    def k_ref(self) -> float:
+        r""":math:`k_\text{ref} = 2\pi f_\text{ref}/c`, rad/m (vacuum)."""
+        return 2 * math.pi * self.reference_frequency / C0
+
+    @functools.cached_property
+    def key(self) -> tuple:
+        r"""What the stretched operator depends on, for cache keys.
+
+        Per side its axis, sign, face, thickness and :math:`\sigma_\max`,
+        then the reference frequency and the target reflection.
+        """
+        sides = tuple(
+            (
+                s.axis,
+                s.sign,
+                s.face,
+                s.thickness,
+                sigma_max(self.target_reflection, self.k_ref, s.thickness),
+            )
+            for s in self.layers.sides
+        )
+        return ("pml", sides, self.reference_frequency, self.target_reflection)
+
+    def tensor(self, scale: float) -> tuple[Any, Any]:
+        r""":math:`(\Lambda, \Lambda^{-1})` in coordinates of ``scale`` metres."""
+        return pml_tensor(self.layers, self.k_ref, self.target_reflection, scale)
+
+    def warn_thin(self, stacklevel: int = 2) -> None:
+        r"""Warn `ThinLayerWarning` for a side with :math:`k_\text{ref}d < 2\pi/100`."""
+        for side in self.layers.sides:
+            kd = self.k_ref * side.thickness
+            smax = sigma_max(self.target_reflection, self.k_ref, side.thickness)
+            if kd < THIN:
+                warnings.warn(
+                    f"perfectly matched layer, {side.label} side "
+                    f"({', '.join(side.regions)}): it is "
+                    f"{side.thickness * self.reference_frequency / C0:.3g} "
+                    "reference wavelengths thick (k_ref d = "
+                    f"{kd:.3g} < 2 pi / 100 at {self.reference_frequency:.6g} Hz), "
+                    f"so its stretch maximum {smax:.3g} makes the operator badly "
+                    "conditioned and loses digits. "
+                    "Make the layer about half a wavelength thick.",
+                    ThinLayerWarning,
+                    stacklevel=stacklevel + 1,
+                )
+
+
+def reference_frequency(pml: PML, frequencies: Iterable[float]) -> float:
+    """The layer's reference frequency: pinned, else the lowest of ``frequencies``.
+
+    ``frequencies`` is the whole solve's grid (a frequency worker's parent's).
+    """
+    if pml.reference_frequency is not None:
+        return pml.reference_frequency
+    return float(min(frequencies))
+
+
+def stretch(model: Any, frequencies: Iterable[float]) -> Stretch | None:
+    """The stretch of ``model``'s layer for a solve over ``frequencies``.
+
+    ``None`` without a layer.
+    """
+    pml, layers = model.pml, model._layers  # noqa: SLF001
+    if pml is None or layers is None:
+        return None
+    return Stretch(layers, pml.target_reflection, reference_frequency(pml, frequencies))
+
+
+def refuse_bddc(pml: PML) -> ValueError:
+    """The refusal of an explicit ``linear_solver="bddc_gmres"`` with a layer."""
+    return ValueError(
+        f"linear_solver='bddc_gmres' cannot solve a model with a perfectly matched "
+        f"layer ({', '.join(map(repr, pml.regions))}): its stretch stalls the "
+        "BDDC-preconditioned GMRES. Use linear_solver='direct' (or 'auto', which "
+        "picks it), or end the air box with gfem.Absorbing faces instead of the "
+        "layer."
+    )
+
+
+def field_stretch(model: Any, field: Any) -> Stretch | None:
+    """The stretch a driven ``field`` of ``model`` was solved with.
+
+    The field's own reference frequency, else the layer's pinned one, else
+    the field's frequency (a field formed outside a solve).
+    """
+    f_ref = field._reference_frequency  # noqa: SLF001
+    if f_ref is None:
+        f_ref = float(np.real(np.asarray(field.omega))) / (2 * math.pi)
+    return stretch(model, [f_ref])

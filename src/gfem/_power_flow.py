@@ -31,6 +31,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from gfem import _pml
 from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
 from gfem._boundaries import surfaces_of
@@ -206,7 +207,11 @@ class _PowerFlowKernel:
         pf.check_nodes(field, model)
         key = b"".join(np.ascontiguousarray(values[n]).tobytes() for n in m_names)
         if self._cached is None or self._cached[0] != key:
-            self._cached = (key, pf.build(self.order, model, self.where))
+            stretch = _pml.field_stretch(model, field)
+            self._cached = (
+                key,
+                pf.build(self.order, model, self.where, stretch=stretch),
+            )
         flux = self._cached[1]
         e = np.asarray(values["coefficients"])
         pf.check_size(e, flux.op, self.order)

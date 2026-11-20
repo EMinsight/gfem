@@ -92,6 +92,7 @@ from gfem._engine.mesh import EngineMesh
 from gfem._engine.sensitivity import Derivative
 from gfem._materials import Drude
 from gfem._morph import unit_normals
+from gfem._pml import Stretch
 from gfem._sheet import check_fill
 from gfem.conventions import EXTERIOR_THICKNESS_FACTOR
 from gfem.errors import PortGeometryError
@@ -616,6 +617,7 @@ def conductivity_piece(
     order: int,
     *,
     elements: np.ndarray | None = None,
+    stretch: Stretch | None = None,
 ) -> Piece:
     """The ``conductivity`` piece of ``model``: θ = i k0, ∫ eta0 sigma scale E · v.
 
@@ -623,7 +625,7 @@ def conductivity_piece(
     on the solve domain (a zero matrix, and no damping term for the eigenmode
     operator). Its derivative by the conductivity is not zero there, so a
     backward pass still reads the piece (`gfem._engine.driven.DrivenOperator.latent`).
-    ``elements`` restricts the form as in `pieces`.
+    ``elements`` and ``stretch`` act as in `pieces`.
     """
     scale = built.scale
     k = lambda w: wavenumber(w, scale)  # noqa: E731
@@ -637,6 +639,8 @@ def conductivity_piece(
     # out the length scale
     values = ETA0 * scale * sigma
     cf = coefficient(built, values)
+    if stretch is not None:
+        cf = cf * stretch.tensor(scale)[0]
     return Piece(
         "conductivity",
         lambda w: 1j * k(w),
@@ -663,6 +667,7 @@ def pieces(
     *,
     elements: np.ndarray | None = None,
     faces: np.ndarray | None = None,
+    stretch: Stretch | None = None,
 ) -> tuple[list[Piece], tuple[Piece, ...]]:
     """The driven operator's pieces on ``model`` (see the module docstring).
 
@@ -681,6 +686,12 @@ def pieces(
     the mesh sum to the unrestricted pieces. θ and the coefficients do not
     change.
 
+    A perfectly matched layer's ``stretch`` composes its PML tensor Λ, a
+    coefficient of position, into the volume pieces: the curl-curl
+    coefficient becomes mu_r^-1 Λ^-1, the mass eps_r Λ and the conductivity
+    sigma Λ (Λ is the identity outside the layer). θ, ``Piece.values`` and
+    the derivatives keep the background material.
+
     Raises:
         ValueError: A mask is not one boolean per tetrahedron (triangle).
     """
@@ -697,6 +708,9 @@ def pieces(
     nu_values = _inverse(element_tensors(model, "mu_r"))
     nu = coefficient(built, nu_values)
     eps_cf = coefficient(built, eps)
+    if stretch is not None:
+        lam, lam_inv = stretch.tensor(scale)
+        nu, eps_cf = nu * lam_inv, eps_cf * lam
     out = [
         Piece(
             "curl_curl",
@@ -747,7 +761,9 @@ def pieces(
     # eigen operator splits the pieces by power of k)
     out.extend(susceptibility_pieces(model, built, order, elements=elements))
     out.extend(blend_pieces(model, built, order, elements=elements))
-    conductivity = conductivity_piece(model, built, order, elements=elements)
+    conductivity = conductivity_piece(
+        model, built, order, elements=elements, stretch=stretch
+    )
     latent: tuple[Piece, ...] = ()
     if np.any(conductivity.values):
         out.append(conductivity)

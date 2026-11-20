@@ -88,6 +88,10 @@ class Field:
     #: Formed from a frozen reduced basis (`ReducedFields`): its coefficients
     #: differentiate through the reduced coordinates alone.
     _reduced: bool = False
+    #: The reference frequency (Hz) of the perfectly matched layer the field
+    #: was solved with, so that readers of the operator stretch it as the
+    #: solve did; ``None`` without a layer.
+    _reference_frequency: float | None = None
 
     def __post_init__(self) -> None:
         """Check the descriptor against the mesh."""
@@ -362,6 +366,7 @@ class ReducedFields(Sequence[Field]):
     order: int
     support: tuple[str, ...]
     _excluded: tuple[tuple[int, int], ...] = ()
+    _reference_frequency: float | None = None
 
     def __post_init__(self) -> None:
         """Hold the arrays as JAX arrays with matching shapes."""
@@ -405,6 +410,7 @@ class ReducedFields(Sequence[Field]):
             omega=self.omega[k],
             _excluded=self._excluded,
             _reduced=True,
+            _reference_frequency=self._reference_frequency,
         )
 
     def __iter__(self) -> Iterator[Field]:

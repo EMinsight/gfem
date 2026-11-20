@@ -119,11 +119,15 @@ class FixedPieces:
             `gfem.MaterialField` region: the fixed parts' elements.
         varying: Builds the pieces restricted to the material-field regions
             (`gfem._engine.terms.pieces` with ``elements``), on demand.
+        stretch: The key of a perfectly matched layer's stretch
+            (`gfem._pml.Stretch.key`), which the volume coefficients carry
+            besides their values; empty without a layer.
     """
 
     store: KeptParts
     outside: np.ndarray
     varying: Callable[[], list[Piece]]
+    stretch: tuple = ()
 
     def split(
         self, pieces: Sequence[Piece]
@@ -132,8 +136,9 @@ class FixedPieces:
 
         A volume piece (one with coefficient values) gives its varying part
         and a `FixedPart` keyed on a digest of its coefficient outside the
-        material-field regions and of those regions' layout (which elements
-        lie outside); every other piece itself and ``None``.
+        material-field regions, of those regions' layout (which elements
+        lie outside) and of a layer's stretch; every other piece itself and
+        ``None``.
         """
         varying = {p.name: p for p in self.varying() if p.values is not None}
         layout = np.packbits(np.asarray(self.outside, bool)).tobytes()
@@ -150,6 +155,9 @@ class FixedPieces:
             digest.update(f"{values.dtype.str}{values.shape}".encode())
             digest.update(layout)
             digest.update(values.tobytes())
+            if self.stretch:
+                # the values are the background's: the stretch is not in them
+                digest.update(repr(self.stretch).encode())
             integrands.append(part.integrand)
             fixed.append(
                 FixedPart(self.store, piece.name, digest.hexdigest(), piece.integrand)
