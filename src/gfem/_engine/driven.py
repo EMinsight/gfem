@@ -759,7 +759,7 @@ class DrivenRule:
     #: compare their cotangents' shapes, not their values.
     pieces = frozenset({"e_field"})
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
         model: Model,
         problem: Driven,
@@ -867,6 +867,8 @@ class DrivenRule:
         #: of the whole sweep (in a frequency worker too); ``None`` without a
         #: layer.
         self.stretch = _layer_stretch(model, self.order_frequency)
+        #: The layer, which the port modes carry.
+        self.pml = model.pml
         #: Whether this rule's Bloch spaces sit in the discretization's
         #: swept group (`gfem._engine.cache.Discretization.space`): a
         #: fixed-angle sweep of several frequencies, read on the whole grid
@@ -2198,6 +2200,7 @@ class DrivenRule:
                 residual=jnp.asarray(ports.residual[:, k]),
                 solved=jnp.asarray(ports.solved[:, k]),
                 e_field=ports.field(k),
+                pml=self.pml,
             )
         return modes
 

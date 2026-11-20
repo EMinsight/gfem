@@ -775,6 +775,17 @@ def _field_args(field: Any, _: _codec.Context) -> dict[str, Any]:
     return out
 
 
+def _with_layer_args(result: Any, _: _codec.Context) -> dict[str, Any]:
+    """A result's arguments, its layer only when set.
+
+    A result without a layer then encodes as before.
+    """
+    out = {f.name: getattr(result, f.name) for f in dataclasses.fields(result)}
+    if out["pml"] is None:
+        del out["pml"]
+    return out
+
+
 def _port_mode_field_args(field: PortModeField, _: _codec.Context) -> dict[str, Any]:
     space = field._space  # noqa: SLF001
     return {
@@ -907,20 +918,20 @@ for _cls in (
     FloquetPort,
     PortMode,
     ElectrostaticResult,
-    PortModeResult,
     DiffractionOrderResult,
     Driven,
     DrivenResult,
     NetworkParameters,
     SweepInfo,
     Eigenmode,
-    EigenmodeResult,
     InterfaceParticipation,
     DCConductionResult,
     SteadyThermalResult,
     TransientThermalResult,
 ):
     _codec.register(_cls)
+for _cls in (EigenmodeResult, PortModeResult):
+    _codec.register(_cls, to_args=_with_layer_args)
 _codec.register(
     Field,
     to_args=_field_args,

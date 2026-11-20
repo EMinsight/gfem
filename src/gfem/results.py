@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     import xarray
 
     from gfem._engine.port_mode import PortModeSpace
+    from gfem._pml import PML
     from gfem._port_section import PortSection
 
 __all__ = [
@@ -690,6 +691,9 @@ class PortModeResult:
             surface); elsewhere it comes from the reduced port mode model.
         e_field: The mode's electric field, normalized to 1 W; ``None`` on a
             driven result computed inside `jax.jit`, `jax.grad` or `jax.vmap`.
+        pml: The model's perfectly matched layer (`gfem.PML`) the mode was
+            solved with, or ``None``. In its regions the field is the
+            stretched one, not a physical field.
     """
 
     port: str
@@ -700,6 +704,7 @@ class PortModeResult:
     residual: jax.Array
     solved: jax.Array
     e_field: PortModeField | None = None
+    pml: PML | None = None
 
     @property
     def n_eff(self) -> jax.Array:
@@ -1602,7 +1607,8 @@ class EigenmodeResult:
             :math:`-2\, d\ln\omega / d\ln L`. Differentiable as the ratios
             above.
         bulk_participation: Electric energy participation of each volume
-            region of the solve domain, by region name: the fraction of the
+            region of the solve domain outside a perfectly matched layer, by
+            region name: the fraction of the
             mode's electric energy ``E`` stored in it (in a region with a
             permittivity law, its share of the mode's total energy, weighed
             by the energy permittivity: see `gfem.conventions`). For an isotropic
@@ -1654,6 +1660,12 @@ class EigenmodeResult:
             empty for a model with no pair, and for a result saved before
             gfem recorded them. `gfem.interface_participation` refuses
             these surfaces: they are interior to the periodic cell.
+        pml: The model's perfectly matched layer (`gfem.PML`) the modes were
+            solved with, or ``None``. Its regions hold no energy of the
+            mode: the 1 J, the participations and
+            `gfem.interface_participation` count the physical regions only,
+            and in the layer the field is the stretched one, not a physical
+            field.
         cluster: Integer label per mode, ``(n_modes,)``: modes with the same
             label form a degenerate cluster, frequencies within
             ``SolverOptions.cluster_rtol`` of each other. A cluster's modes
@@ -1677,6 +1689,7 @@ class EigenmodeResult:
     )
     periodic_surfaces: tuple[tuple[str, str], ...] = ()
     sheet_participation: dict[str, jax.Array] = dataclasses.field(default_factory=dict)
+    pml: PML | None = None
 
     def __post_init__(self) -> None:
         """Hold fields, materials and pairs as tuples and dict; label simple modes."""

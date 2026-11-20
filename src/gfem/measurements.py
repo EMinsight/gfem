@@ -165,9 +165,13 @@ def interface_participation(
     the field is averaged over the sides of the wanted kind. Where no side
     is of the wanted kind (``"MA"`` on a plate under substrate), the surface
     adds nothing. Sides inside volumes the model excludes from the solve
-    (metal) do not count. The participation is that energy over the mode's
-    electric energy ``E`` (1 J, see `gfem.conventions`), and
-    ``participation * tan_delta`` is the layer's contribution to ``1 / Q``.
+    (metal) do not count. A face with a side in a perfectly matched layer
+    (`gfem.PML`) does not count either: the field there is the stretched
+    one, not a physical field, so a ground plane that runs into a side
+    layer counts its part in the physical regions. The participation is
+    that energy over the mode's electric energy ``E`` (1 J, see
+    `gfem.conventions`), and ``participation * tan_delta`` is the layer's
+    contribution to ``1 / Q``.
 
     On a zero-thickness film the field at the film edge is singular, and the
     participation of a layer that reaches the edge grows without bound as
@@ -210,8 +214,9 @@ def interface_participation(
         ValueError: A name is a volume region or a surface of a
             `gfem.Periodic` pair (interior to the periodic cell), a number is
             out of range, the result does not carry its materials (saved
-            by an older gfem), or a side of the surface lies in a region
-            with a permittivity law.
+            by an older gfem), a side of the surface lies in a region
+            with a permittivity law, or every face of the surfaces has a
+            side in a perfectly matched layer.
     """
     from gfem.results import EigenmodeResult
 
@@ -265,7 +270,8 @@ def interface_participation(
                 "the loss tangent": np.nan if tan_delta is None else tan_delta,
             },
         )
-    geometry = _surface_geometry(field, surfaces)
+    layer = () if modes.pml is None else modes.pml.regions
+    geometry = _surface_geometry(field, surfaces, layer)
     _refuse_law_sides(modes.materials, field.mesh, geometry, surfaces)
     coefficients = jnp.stack([f.coefficients for f in modes.e_fields])
     energy = _layer_energy(
@@ -290,7 +296,13 @@ class _SurfaceGeometry:
     layout), so `_layer_energy` compiles once per surface.
     """
 
-    def __init__(self, mesh: Mesh, surfaces: tuple[str, ...], layout: Any) -> None:
+    def __init__(
+        self,
+        mesh: Mesh,
+        surfaces: tuple[str, ...],
+        layout: Any,
+        layer: tuple[str, ...] = (),
+    ) -> None:
         triangles = []
         for name in surfaces:
             region = mesh.region(name)
@@ -304,6 +316,24 @@ class _SurfaceGeometry:
         tri = np.concatenate(triangles)
         sides = mesh.triangle_neighbours[tri]
         inside = engine.in_support(mesh, layout)
+        if layer:
+            # a face counts when no side of it lies in the perfectly matched
+            # layer: there the field is the stretched one, which holds no
+            # energy of the device
+            in_layer = np.isin(
+                mesh.tetrahedron_tags, [mesh.region(r).tag for r in layer]
+            )
+            held = (sides >= 0) & inside[np.maximum(sides, 0)]
+            physical = ~(held & in_layer[np.maximum(sides, 0)]).any(axis=1)
+            if not physical.any():
+                raise ValueError(
+                    "interface_participation on "
+                    f"{', '.join(map(repr, surfaces))}: every face of the surface "
+                    "lies in the perfectly matched layer "
+                    f"({', '.join(map(repr, layer))}), where the field is not "
+                    "physical. Measure a surface in the physical regions."
+                )
+            tri, sides = tri[physical], sides[physical]
         self.topology = mesh._topology  # noqa: SLF001
         self.layout = layout
         self.triangles = tri
@@ -327,14 +357,16 @@ _GEOMETRIES: dict[tuple, _SurfaceGeometry] = {}
 _MAX_GEOMETRIES = 8
 
 
-def _surface_geometry(field: Field, surfaces: tuple[str, ...]) -> _SurfaceGeometry:
+def _surface_geometry(
+    field: Field, surfaces: tuple[str, ...], layer: tuple[str, ...] = ()
+) -> _SurfaceGeometry:
     mesh = field.mesh
     layout = _probe.layout(field)
-    key = (id(mesh._topology), surfaces, layout)  # noqa: SLF001
+    key = (id(mesh._topology), surfaces, layout, layer)  # noqa: SLF001
     found = _GEOMETRIES.get(key)
     if found is not None and found.topology is mesh._topology:  # noqa: SLF001
         return found
-    made = _SurfaceGeometry(mesh, surfaces, layout)
+    made = _SurfaceGeometry(mesh, surfaces, layout, layer)
     _GEOMETRIES[key] = made
     while len(_GEOMETRIES) > _MAX_GEOMETRIES:
         _GEOMETRIES.pop(next(iter(_GEOMETRIES)))
@@ -1155,6 +1187,10 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
     without a permittivity law (the mode energy weighs a law region with its
     energy permittivity instead, see `gfem.conventions`).
 
+    On a model with a `gfem.PML` the layer regions get no entry: there the
+    field is the stretched one, not a physical field, and its energy would
+    depend on the layer's thickness and target reflection.
+
     The integral is exact for the solved field and the model's element-wise
     permittivity. A field of an adaptive sweep (`gfem.ReducedFields`) is
     exact at the solved frequencies and accurate to the sweep's tolerance in
@@ -1168,7 +1204,7 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
 
     Returns:
         A 0-d float64 array per volume region with elements in the solve
-        domain, by region name, J.
+        domain, outside a perfectly matched layer, by region name, J.
 
     Raises:
         TypeError: ``field`` is not a `gfem.Field`, or ``model`` is not a

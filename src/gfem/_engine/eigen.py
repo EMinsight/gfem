@@ -49,6 +49,7 @@ from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.petsc import FreeNumbering
 from gfem._materials import PermittivityLaw
 from gfem._periodic import bloch_phases
+from gfem._pml import layer_tetrahedra
 from gfem.model import Model
 
 __all__ = [
@@ -359,9 +360,17 @@ def element_energy(
     caller scales to its weight at a frequency (`law_scale`). Under ranks the
     integrals are those of the rank's own tetrahedra
     (`gfem._engine.mesh.EngineMesh.tetrahedron_order` is then the rank's).
+
+    A perfectly matched layer's tetrahedra integrate to zero
+    (`gfem._pml.layer_tetrahedra`): the energies, the mode normalization
+    and the participations count the physical regions only.
     """
     built = op.built
-    eps = coefficient(built, real_eps(model))
+    values = real_eps(model)
+    layer = layer_tetrahedra(model.mesh, model.pml)
+    if layer is not None:
+        values = np.where(layer.reshape((-1,) + (1,) * (values.ndim - 1)), 0.0, values)
+    eps = coefficient(built, values)
     gf = ngs.GridFunction(op.space)
     layout = op.layout or ONE_PROCESS
 

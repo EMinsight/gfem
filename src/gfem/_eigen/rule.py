@@ -134,6 +134,7 @@ from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
+from gfem._pml import physical_regions
 from gfem._sign import largest_entry, largest_value
 from gfem._text import hertz
 from gfem.conventions import MODE_ENERGY
@@ -429,8 +430,13 @@ class EigenmodeRule:
         mesh, active = model.mesh, model._domain.active  # noqa: SLF001
         #: Volume regions with tetrahedra in the solve domain: the field support.
         self.regions = tuple(r for r in mesh.volumes if active[mesh.elements(r)].any())
+        #: The regions of the field support outside a perfectly matched layer:
+        #: the energies and participations, whose element arrays hold the
+        #: layer's background, not its stretch.
+        self.physical = physical_regions(self.regions, model.pml)
         #: The regions with an anisotropic material: the principal split.
-        self.anisotropic = anisotropic_regions(model, self.regions)
+        self.anisotropic = anisotropic_regions(model, self.physical)
+        self._pml = model.pml
         self._mesh = model.mesh
         self._materials = dict(model.materials)
         self._periodic_surfaces = pair_names(model._periodic)  # noqa: SLF001
@@ -632,7 +638,7 @@ class EigenmodeRule:
         ratios = Ratios(
             model,
             op,
-            regions=self.regions,
+            regions=self.physical,
             anisotropic=self.anisotropic,
             resistive=self.resistive,
             inductive=self.inductive,
@@ -642,13 +648,13 @@ class EigenmodeRule:
         omega = complex(k * const.c / op.built.scale)
         out = {}
         for region in regions:
-            unit = np.zeros(len(self.regions))
-            unit[self.regions.index(region)] = 1.0
+            unit = np.zeros(len(self.physical))
+            unit[self.physical.index(region)] = 1.0
             load = ratios.load(u, k, {"bulk": unit}, mode=mode)
             solved = deflated_solve(eop, u, None, -load.w, k=k, gap=gap, mode=mode)
             weights = {
                 r: load.energy[energy_name(r)]
-                for r in self.regions
+                for r in self.physical
                 if energy_name(r) in load.energy
             }
             out[region] = ParticipationDual(
@@ -1246,7 +1252,7 @@ class EigenmodeRule:
         n = len(modes)
         omega = np.array([m.k * const.c / scale for m in modes], dtype=complex)
         solve = np.zeros((space.ndof, n), dtype=complex)
-        bulk = np.zeros((len(self.regions), n))
+        bulk = np.zeros((len(self.physical), n))
         principal = np.zeros((len(self.anisotropic), n, 3))
         q_port = np.zeros((len(self.resistive), n))
         participation = np.zeros((len(self.inductive), n))
@@ -1276,7 +1282,7 @@ class EigenmodeRule:
             energy = volume + capacitors + (0.0 if sheets is None else sheets(x))
             amplitude = math.sqrt(MODE_ENERGY / energy)
             solve[:, j] = x * amplitude
-            for r in range(len(self.regions)):
+            for r in range(len(self.physical)):
                 bulk[r, j] = regions[r] / energy
             for r in range(len(self.anisotropic)):
                 principal[r, j] = axes[r] / energy
@@ -1365,7 +1371,7 @@ class EigenmodeRule:
         array.
         """
         volume = per_tet.sum()
-        regions = [per_tet[mesh.elements(region)].sum() for region in self.regions]
+        regions = [per_tet[mesh.elements(region)].sum() for region in self.physical]
         axes = []
         if per_axis is not None:
             axes = [
@@ -1376,7 +1382,7 @@ class EigenmodeRule:
             return volume, regions, axes
         local = np.concatenate([[volume], regions, np.ravel(axes)])
         total = _mpi.reduce_bcast(self.comm, local)
-        n = len(self.regions)
+        n = len(self.physical)
         return (
             float(total[0]),
             list(total[1 : 1 + n]),
@@ -1449,7 +1455,7 @@ class EigenmodeRule:
             "participation": jax.ShapeDtypeStruct(
                 (len(self.inductive), n), jnp.float64
             ),
-            "bulk": jax.ShapeDtypeStruct((len(self.regions), n), jnp.float64),
+            "bulk": jax.ShapeDtypeStruct((len(self.physical), n), jnp.float64),
             "principal": jax.ShapeDtypeStruct(
                 (len(self.anisotropic), n, 3), jnp.float64
             ),
@@ -1792,7 +1798,7 @@ class EigenmodeRule:
             ratios = Ratios(
                 model,
                 op,
-                regions=self.regions,
+                regions=self.physical,
                 anisotropic=self.anisotropic,
                 resistive=self.resistive,
                 inductive=self.inductive,
@@ -1955,7 +1961,7 @@ class EigenmodeRule:
         ratios = Ratios(
             model,
             op,
-            regions=self.regions,
+            regions=self.physical,
             anisotropic=self.anisotropic,
             resistive=(),
             inductive=(),
@@ -2079,7 +2085,7 @@ class EigenmodeRule:
             },
             bulk_participation={
                 region: jnp.asarray(outputs["bulk"][r])
-                for r, region in enumerate(self.regions)
+                for r, region in enumerate(self.physical)
             },
             principal_participation={
                 region: jnp.asarray(outputs["principal"][r])
@@ -2093,6 +2099,7 @@ class EigenmodeRule:
             materials=self._materials,
             periodic_surfaces=self._periodic_surfaces,
             cluster=jnp.asarray(outputs["cluster"]),
+            pml=self._pml,
         )
 
 
