@@ -61,6 +61,7 @@ from gfem._materials import (
     MaterialField,
     PermittivityLaw,
 )
+from gfem._pml import PML
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
 from gfem._sheet import SheetField
@@ -719,6 +720,8 @@ def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
         "boundaries": model.boundaries,
         "ports": model.ports,
         "excluded": _excluded_args(model),
+        # written only when set: a model without a layer encodes as before
+        **({"pml": model.pml} if model.pml is not None else {}),
     }
 
 
@@ -835,7 +838,7 @@ _codec.register(
     Model,
     to_args=_model_args,
     from_args=_model_from_args,
-    names=("mesh", "materials", "boundaries", "ports", "excluded"),
+    names=("mesh", "materials", "boundaries", "ports", "excluded", "pml"),
 )
 _codec.register(
     _Excluded,
@@ -885,6 +888,7 @@ for _cls in (
     Conductor,
     Impedance,
     Periodic,
+    PML,
     FixedTemperature,
     Convection,
     HeatFlux,

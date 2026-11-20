@@ -212,6 +212,31 @@ class ObliqueAbsorberWarning(UserWarning):
     """
 
 
+class ThinLayerWarning(UserWarning):
+    r"""A perfectly matched layer is thin against the reference wavelength.
+
+    It fires when a side of the layer has :math:`k_\text{ref} d < 2\pi/100`,
+    with :math:`d` its thickness and :math:`k_\text{ref}` the vacuum
+    wavenumber at its reference frequency. The stretch maximum
+    :math:`\sigma_\max = -3\ln R_0/(2 k_\text{ref} d)` is then large, so the
+    operator is badly conditioned and the mesh cannot follow the field's
+    decay across the layer. Make the layer about half a wavelength thick, or
+    filter the warning with Python's `warnings` module.
+    """
+
+
+class LayerClearanceWarning(UserWarning):
+    """A mode keeps a noticeable share of its energy in a perfectly matched layer.
+
+    It fires when a wave port's mode, or an eigenmode, holds more than about
+    1% of its electric energy in the layer, or when an eigenmode grows in
+    time beyond round-off: the layer sits too close to the guided field
+    (too little clearance), so it absorbs or distorts the mode itself. Move
+    the layer away from the structure, or filter the warning with Python's
+    `warnings` module.
+    """
+
+
 class FloquetOrderCapWarning(UserWarning):
     """A Floquet surface's mesh cannot resolve every order it should model.
 

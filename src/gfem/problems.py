@@ -105,7 +105,7 @@ def _wave_vector(value: Any, owner: str) -> tuple[float, float, float] | None:
     return (float(k[0]), float(k[1]), float(k[2]))
 
 
-def _reference_frequency(value: Any, wave_vector: Any) -> float | None:
+def _wave_vector_frequency(value: Any, wave_vector: Any) -> float | None:
     """``None``, or the frequency (Hz) at which ``wave_vector`` holds."""
     if value is None:
         return None
@@ -903,7 +903,7 @@ class Driven:
         object.__setattr__(
             self,
             "wave_vector_frequency",
-            _reference_frequency(wave_vector_frequency, self.wave_vector),
+            _wave_vector_frequency(wave_vector_frequency, self.wave_vector),
         )
 
     @property

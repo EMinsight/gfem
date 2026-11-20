@@ -655,6 +655,8 @@ REPLAYED = (
     errors.ObliqueAbsorberWarning,
     errors.SkippedPortModeWarning,
     errors.PortModeTrackingWarning,
+    errors.ThinLayerWarning,
+    errors.LayerClearanceWarning,
 )
 
 _GFEM_DIR = str(Path(gfem.__file__).parent) + os.sep

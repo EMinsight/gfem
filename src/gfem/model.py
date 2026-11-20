@@ -57,6 +57,15 @@ from gfem._periodic import (
     check_wave_vector,
     pairing,
 )
+from gfem._pml import (
+    PML,
+    Layers,
+    check_regions,
+    check_surfaces,
+    derive_layers,
+    describe,
+    missing_background,
+)
 from gfem._sheet import SheetField
 from gfem.errors import RegionNotFoundError
 from gfem.mesh import Mesh
@@ -67,6 +76,7 @@ if TYPE_CHECKING:
 __all__ = [
     "PEC",
     "PMC",
+    "PML",
     "Absorbing",
     "Boundary",
     "Conductor",
@@ -253,6 +263,17 @@ class Model:
     thermal domain. Exterior surfaces of the thermal domain that no thermal
     condition names are insulated; `default_insulated` lists them.
 
+    A perfectly matched layer (``pml=``) is refused with a `ValueError` when
+    a region is a surface or excluded from electromagnetic solves, a layer
+    tetrahedron lies inside the interior box, a side does not end on one
+    plane, the layer stretches along no axis, or an `Absorbing` sits on a
+    face of a layer tetrahedron; with a `NotImplementedError` for a
+    background that is a `MaterialField`, a permittivity law or rotated off
+    the coordinate axes, a layer that is not a box shell, a sheet in the
+    layer, a lumped port or a Floquet face touching it, a wave port whose
+    normal is not across the stretch axes it meets, or a stretch along a
+    periodic axis.
+
     Example:
         A two-port microstrip on a substrate::
 
@@ -289,6 +310,10 @@ class Model:
             conductor excluded from electromagnetic problems stays in the
             thermal domain (it is often the heater) and may carry a
             material; a region excluded from every physics has none.
+        pml: A `PML` naming every perfectly matched layer region, or
+            ``None``. Each layer region keeps its background material in
+            ``materials``; the stretch axes and thicknesses are read from the
+            mesh (see `PML`).
 
     Raises:
         RegionNotFoundError: A name is not a region of the mesh.
@@ -315,6 +340,8 @@ class Model:
     boundaries: tuple[Boundary, ...]
     ports: tuple[Port, ...]
     excluded: tuple[Excluded, ...]
+    pml: PML | None
+    _layers: Layers | None
     _excluded_by: tuple[tuple[Excluded, ...], ...]
     _domains: tuple[EMDomain, ...]
     _domain: EMDomain
@@ -328,6 +355,7 @@ class Model:
         boundaries: Iterable[Boundary] = (),
         ports: Iterable[Port] = (),
         excluded: Iterable[Excluded] | Mapping[str, Iterable[Excluded]] = (),
+        pml: PML | None = None,
     ) -> None:
         """Validate and build the model (see the class docstring)."""
         self._build(
@@ -336,14 +364,22 @@ class Model:
             boundaries=boundaries,
             ports=ports,
             excluded=excluded,
+            pml=pml,
             domains=None,
         )
 
-    def _build(self, *, mesh, materials, boundaries, ports, excluded, domains) -> None:
+    def _build(
+        self, *, mesh, materials, boundaries, ports, excluded, pml, domains, layers=None
+    ) -> None:
         if not isinstance(mesh, Mesh):
             raise TypeError(
                 f"Model needs a gfem.Mesh, got {type(mesh).__name__}; read one "
                 "with gfem.Mesh.from_gmsh(path)."
+            )
+        if pml is not None and not isinstance(pml, PML):
+            raise TypeError(
+                "Model: pml takes one gfem.PML naming every layer region, got "
+                f"{type(pml).__name__}; write pml=gfem.PML(('pml_x', 'pml_y'))."
             )
         by = _excluded_by_physics(excluded)
         if domains is None:
@@ -367,12 +403,27 @@ class Model:
         set_(
             self,
             "materials",
-            _materials(mesh, materials, everywhere, self._fully_excluded("em")),
+            _materials(mesh, materials, everywhere, self._fully_excluded("em"), pml),
         )
+        set_(self, "pml", pml)
+        if pml is not None:
+            check_regions(mesh, pml, self._fully_excluded("em"), dict(self.materials))
+            if layers is None:
+                layers = derive_layers(mesh, pml, self._domain.active)
+        set_(self, "_layers", layers if pml is not None else None)
         set_(self, "boundaries", _items(boundaries, _BOUNDARY_TYPES, "boundaries"))
         set_(self, "ports", _items(ports, _PORT_TYPES, "ports"))
         self._check_surfaces()
         set_(self, "_periodic", self._check_periodic())
+        if self._layers is not None:
+            check_surfaces(
+                mesh,
+                self._layers,
+                boundaries=self.boundaries,
+                ports=self.ports,
+                domain=self._domain,
+                pairs=self._periodic,
+            )
 
     # --- validation -----------------------------------------------------------
 
@@ -723,16 +774,16 @@ class Model:
     def replace(self, **changes: Any) -> Model:
         """A new model with some fields changed, validated again.
 
-        The fields are ``mesh``, ``materials``, ``boundaries``, ``ports`` and
-        ``excluded``. Shape optimization passes ``mesh=moved_mesh``. A new
-        ``excluded`` replaces every physics' entries (a list or tuple: the
-        electromagnetic ones, nothing excluded for the others); without it,
-        each physics keeps its entries.
+        The fields are ``mesh``, ``materials``, ``boundaries``, ``ports``,
+        ``excluded`` and ``pml``. Shape optimization passes
+        ``mesh=moved_mesh``. A new ``excluded`` replaces every physics'
+        entries (a list or tuple: the electromagnetic ones, nothing excluded
+        for the others); without it, each physics keeps its entries.
 
         Raises:
             TypeError: An unknown field name.
         """
-        fields = ("mesh", "materials", "boundaries", "ports", "excluded")
+        fields = ("mesh", "materials", "boundaries", "ports", "excluded", "pml")
         unknown = sorted(set(changes) - set(fields))
         if unknown:
             raise TypeError(
@@ -747,8 +798,15 @@ class Model:
             and args["mesh"]._topology is self.mesh._topology  # noqa: SLF001
             and "excluded" not in changes
         )
+        # the layer geometry is read from the imported nodes: a moved mesh
+        # of the same topology keeps it
+        keep = same_domain and args["pml"] is not None and args["pml"] == self.pml
         new = object.__new__(Model)
-        new._build(**args, domains=self._domains if same_domain else None)
+        new._build(
+            **args,
+            domains=self._domains if same_domain else None,
+            layers=self._layers if keep else None,
+        )
         return new
 
     def with_material(self, region: str, material: Material | MaterialField) -> Model:
@@ -802,7 +860,14 @@ class Model:
             (key("boundaries"), self.boundaries),
             (key("ports"), self.ports),
         )
-        aux = (tuple(self.materials), self._excluded_by, self._domains, self._periodic)
+        aux = (
+            tuple(self.materials),
+            self._excluded_by,
+            self._domains,
+            self._periodic,
+            self.pml,
+            self._layers,
+        )
         return children, aux
 
     def tree_flatten(self):
@@ -813,7 +878,7 @@ class Model:
     @classmethod
     def tree_unflatten(cls, aux, children) -> Model:
         """JAX pytree protocol (no validation: the structure is unchanged)."""
-        order, excluded_by, domains, periodic = aux
+        order, excluded_by, domains, periodic, pml, layers = aux
         mesh, materials, boundaries, ports = children
         new = object.__new__(cls)
         set_ = object.__setattr__
@@ -826,6 +891,8 @@ class Model:
         set_(new, "_domains", domains)
         set_(new, "_domain", domains[0])
         set_(new, "_periodic", periodic)
+        set_(new, "pml", pml)
+        set_(new, "_layers", layers)
         return new
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -852,6 +919,9 @@ class Model:
         if self.ports:
             lines.append("  ports:")
             lines += [f"    {p!r}" for p in self.ports]
+        if self.pml is not None and self._layers is not None:
+            lines.append(f"  pml: {self.pml!r}")
+            lines += [f"    {line}" for line in describe(self._layers, self.mesh)]
         if self.default_pmc:
             lines.append(
                 "  default PMC (electromagnetic problems): "
@@ -940,7 +1010,11 @@ def _off_domain(what: str, surface: str, physics: str) -> str:
 
 
 def _materials(
-    mesh: Mesh, materials: Any, everywhere: set[str], em_excluded: set[str]
+    mesh: Mesh,
+    materials: Any,
+    everywhere: set[str],
+    em_excluded: set[str],
+    pml: PML | None = None,
 ) -> Mapping[str, Material | MaterialField]:
     """Check ``materials``: none on ``everywhere``, all on EM-active volumes.
 
@@ -975,7 +1049,7 @@ def _materials(
             f"No material for volume(s) {', '.join(repr(v) for v in missing)}. "
             "Give each volume a material, e.g. materials={..., "
             f"{missing[0]!r}: gfem.Material(eps_r=...)}}, or remove it from the "
-            "solve with excluded=(...)."
+            "solve with excluded=(...)." + missing_background(missing, pml)
         )
     return types.MappingProxyType(
         {v: materials[v] for v in mesh.volumes if v in materials}
