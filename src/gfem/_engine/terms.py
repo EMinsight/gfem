@@ -90,6 +90,7 @@ from gfem._engine.coefficients import (
 from gfem._engine.domain import boundary_region
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.sensitivity import Derivative
+from gfem._engine.stretch import stretch_tensor
 from gfem._materials import Drude
 from gfem._morph import unit_normals
 from gfem._pml import Stretch
@@ -640,7 +641,7 @@ def conductivity_piece(
     values = ETA0 * scale * sigma
     cf = coefficient(built, values)
     if stretch is not None:
-        cf = cf * stretch.tensor(scale)[0]
+        cf = cf * stretch_tensor(stretch, scale)[0]
     return Piece(
         "conductivity",
         lambda w: 1j * k(w),
@@ -709,7 +710,7 @@ def pieces(
     nu = coefficient(built, nu_values)
     eps_cf = coefficient(built, eps)
     if stretch is not None:
-        lam, lam_inv = stretch.tensor(scale)
+        lam, lam_inv = stretch_tensor(stretch, scale)
         nu, eps_cf = nu * lam_inv, eps_cf * lam
     out = [
         Piece(

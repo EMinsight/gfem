@@ -613,60 +613,6 @@ def describe(layers: Layers, mesh: Mesh) -> list[str]:
     ]
 
 
-# --- stretch -------------------------------------------------------------------
-
-
-def stretch_factors(
-    layers: Layers, k_ref: float, target_reflection: float, scale: float = 1.0
-) -> tuple[Any, Any, Any]:
-    r"""The stretch factors :math:`(s_x, s_y, s_z)` as coefficient functions.
-
-    :math:`s_i = 1 - i\sigma_i`, :math:`\sigma_i = \sigma_\max(\xi/d)^2` at
-    the depth :math:`\xi` beyond a covered face along axis :math:`i`, zero
-    elsewhere.
-
-    Args:
-        layers: The layer geometry.
-        k_ref: The reference wavenumber, rad/m.
-        target_reflection: :math:`R_0`.
-        scale: Metres per unit of the coefficient functions' coordinates
-            (the mesh file unit for gfem's discretizations).
-    """
-    from ngsolve import CF, IfPos, x, y, z
-
-    coord = (x, y, z)
-    sigma = [CF(0.0), CF(0.0), CF(0.0)]
-    for side in layers.sides:
-        smax = sigma_max(target_reflection, k_ref, side.thickness)
-        d = side.thickness / scale
-        xi = side.sign * (coord[side.axis] - side.face / scale)
-        sigma[side.axis] = sigma[side.axis] + IfPos(xi, smax * (xi / d) ** 2, 0.0)
-    sx, sy, sz = (1 - 1j * s for s in sigma)
-    return sx, sy, sz
-
-
-def pml_tensor(
-    layers: Layers, k_ref: float, target_reflection: float, scale: float = 1.0
-) -> tuple[Any, Any]:
-    r"""The PML tensor :math:`\Lambda` and its inverse, 3x3 coefficient functions.
-
-    :math:`\Lambda = \operatorname{diag}(s_y s_z/s_x,\ s_x s_z/s_y,\ s_x s_y/s_z)`
-    multiplies the background permittivity and conductivity,
-    :math:`\Lambda^{-1}` the inverse permeability. Arguments as
-    `stretch_factors`.
-    """
-    from ngsolve import CF
-
-    sx, sy, sz = stretch_factors(layers, k_ref, target_reflection, scale)
-    lam = (sy * sz / sx, sx * sz / sy, sx * sy / sz)
-    inv = (sx / (sy * sz), sy / (sx * sz), sz / (sx * sy))
-
-    def diag(v):
-        return CF((v[0], 0, 0, 0, v[1], 0, 0, 0, v[2]), dims=(3, 3))
-
-    return diag(lam), diag(inv)
-
-
 # --- the stretch of a solve ------------------------------------------------------
 
 #: :math:`k_\text{ref} d` below which a side is electrically thin.
@@ -710,10 +656,6 @@ class Stretch:
             for s in self.layers.sides
         )
         return ("pml", sides, self.reference_frequency, self.target_reflection)
-
-    def tensor(self, scale: float) -> tuple[Any, Any]:
-        r""":math:`(\Lambda, \Lambda^{-1})` in coordinates of ``scale`` metres."""
-        return pml_tensor(self.layers, self.k_ref, self.target_reflection, scale)
 
     def warn_thin(self, stacklevel: int = 2) -> None:
         r"""Warn `ThinLayerWarning` for a side with :math:`k_\text{ref}d < 2\pi/100`."""

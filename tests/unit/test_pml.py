@@ -22,6 +22,7 @@ import structured_meshes as sm
 
 import gfem
 from gfem import _pml
+from gfem._engine.stretch import pml_tensor
 
 AIR = gfem.Material()
 LINE = Path(__file__).parents[2] / "docs" / "tutorials" / "data" / "line.msh"
@@ -508,7 +509,7 @@ def test_the_pml_tensor_is_the_product_of_the_axis_stretches(tmp_path):
     model = _model(_box(tmp_path, sides=("+x", "-y")))
     layers = model._layers
     k_ref, target = 2 * math.pi / 1e-6, 1e-4
-    lam, lam_inv = _pml.pml_tensor(layers, k_ref, target, scale=1e-6)
+    lam, lam_inv = pml_tensor(layers, k_ref, target, scale=1e-6)
     mesh = _ngsolve_box()
     # sigma_max = -3 ln(1e-4) / (2 k_ref d), d = 0.5 um: k_ref d = pi
     smax = -3 * math.log(1e-4) / (2 * math.pi)
