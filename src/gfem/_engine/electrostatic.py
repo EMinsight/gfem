@@ -4,7 +4,7 @@ For terminal i, the potential phi_i is 1 on terminal i, 0 on the other
 terminals and the ground, and solves the charge-free Laplace problem
 ``a(phi_i, v) = 0`` with ``a(u, v) = int eps0 eps_r grad u . grad v`` for
 every v vanishing on the fixed surfaces. Then ``C_ij = a(phi_i, phi_j)``,
-which equals Palace's energy formula ``E(phi_i + phi_j) - (C_ii + C_jj) / 2``
+which equals the energy formula ``E(phi_i + phi_j) - (C_ii + C_jj) / 2``
 and is symmetric. All terminals share one prepared operator: the right-hand
 sides are the liftings, solved together: by CG + BDDC by default, or by
 one sparse Cholesky factorization (``direct``). ``phi_i^T K phi_j`` is

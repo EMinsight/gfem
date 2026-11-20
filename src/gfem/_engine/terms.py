@@ -300,7 +300,7 @@ def _constant(omega: complex) -> complex:  # noqa: ARG001
 
 
 def surface_impedance(sigma: float, thickness: float | None, omega: complex) -> complex:
-    """Surface impedance of a metal, ohm per square (Palace's HFSS form).
+    """Surface impedance of a metal, ohm per square (the HFSS form).
 
     Thick metal: ``Z_s = (1 + i) / (sigma delta)`` with skin depth
     ``delta = sqrt(2 / (mu0 sigma omega))``. A film of thickness ``h``

@@ -2,7 +2,8 @@
 
 Excluded volume entities are left out of every space of their physics
 (``definedon`` the remaining domains, then ``Compress``), so their shells
-become exterior boundaries of the solve, as in Palace, which cracks them.
+become exterior boundaries of the solve (the conductor is cracked out of
+the mesh).
 Each function takes the physics (``"em"``, ``"thermal"``,
 ``"dc_conduction"``); the electromagnetic domain is the default.
 """

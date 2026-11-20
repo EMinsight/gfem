@@ -1,23 +1,23 @@
 """Wave ports in the driven problem: the port mode sweep coupled to the 3D field.
 
-A wave port surface enters the driven problem through four terms, all in
-Palace's form (the 3D field ``E`` and test function ``v`` in the units of
+A wave port surface enters the driven problem through four terms (the 3D field ``E`` and test function ``v`` in the units of
 `gfem._engine.terms`, each mode ``(E_t, E_n)`` propagating into the domain
 as ``exp(-gamma s)``, ``gamma = alpha + i beta``). One surface carries one
 wave port, or several, one mode each (a shared port surface):
 
 - one Robin term ``gamma_0 ∫ (A E_t) · v_t`` per surface
   (`gfem._engine.terms`), with ``gamma_0`` the propagation constant of the
-  surface's smallest-``mode`` port (Palace drops its attenuation,
-  which leaves ``-alpha_0 M e`` on a lossy mode) and
+  surface's smallest-``mode`` port (keeping its attenuation: dropping
+  it would leave ``-alpha_0 M e`` on a lossy mode) and
   ``A`` the port's tangential inverse-permeability tensor (``mu_r^-1`` for
   an isotropic material; the port mode problem's ``nu_tt``);
 - one modal correction of rank ``2 n`` per surface of ``n`` wave ports,
   ``W = H R_sym⁻¹ Hᵀ - gamma_0 M E G⁻¹ Eᵀ M``, never assembled, with ``H``
   the modes' n x H as 3D vectors (``h = ∫ A (grad E_n + gamma E_t) ·
   v_t``), ``E`` their tangential traces, ``M`` the Robin mass, ``R = Hᵀ
-  E`` (symmetrized) and ``G = Eᵀ M E``. For one port it is Palace's
-  ``W_full - W_scalar``, ``h hᵀ / (hᵀ e) - h_s h_sᵀ / (h_sᵀ e)`` with
+  E`` (symmetrized) and ``G = Eᵀ M E``. For one port it is the full
+  minus scalar port operator ``W_full - W_scalar``,
+  ``h hᵀ / (hᵀ e) - h_s h_sᵀ / (h_sᵀ e)`` with
   ``h_s`` the n x H without ``grad E_n``. On every requested mode the
   Robin term and ``W`` together impose the mode's full n x H, so a hybrid
   mode (``E_n != 0``) leaves the port without reflection; for a lone TEM
@@ -29,8 +29,8 @@ wave port, or several, one mode each (a shared port surface):
   Hᵀ E_modes`` the unconjugated reactions (by reciprocity ``h_lᵀ e_k = 0``
   for ``l != k``, lossy or not), times the port's pseudo-wave factor
   ``kappa``, minus 1 at the excited port. The incident load
-  ``2 h / kappa`` feeds a pseudo-wave of amplitude 1. Palace projects on
-  the conjugated mode instead, which reflects a lossy line's own mode at
+  ``2 h / kappa`` feeds a pseudo-wave of amplitude 1. Projecting on
+  the conjugated mode instead reflects a lossy line's own mode at
   order ``alpha / beta``.
 
 The 3D trace on the port face and the 2D Nédélec space of the port mode
@@ -528,7 +528,7 @@ def _port_columns(modes: PortModeSpace, basis: np.ndarray) -> dict[str, np.ndarr
     """What the 2D forms give per column of the sweep's ``basis``.
 
     ``r``: the entries of `PortSurfaceCoupling.vectors` on the free 2D DOFs;
-    ``reaction``: hᵀ e on the port face, as Palace (the mode vanishes on fixed
+    ``reaction``: hᵀ e on the port face (the mode vanishes on fixed
     DOFs).
     """
     g_form, t_form = modes.coupling_forms

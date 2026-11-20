@@ -149,7 +149,7 @@ class PortSection:
                 law triangle counts its eps_inf.
 
         Returns:
-            ``max Re(eps) max Re(mu)`` (the shift, as in Palace; largest
+            ``max Re(eps) max Re(mu)`` (the shift; largest
             eigenvalues) and ``(max |eps| + sigma_term) max |mu|`` (an upper
             bound on the ``|n|^2`` of any propagating mode; spectral norms).
         """

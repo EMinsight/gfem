@@ -120,7 +120,7 @@ Symmetry = Literal["complex_symmetric", "hermitian", "general"]
 #: A linear solver a problem can use (`ResolvedLinearSolver.kind`).
 Kind = Literal["direct", "bddc_gmres", "petsc"]
 KINDS: tuple[Kind, ...] = get_args(Kind)
-#: Most Krylov iterations of an iterative solve (as Palace).
+#: Most Krylov iterations of an iterative solve.
 MAXITER = 400
 #: Bytes per unknown of a direct factorization, above every measured peak
 #: (46.9 KiB, sparse Cholesky at order 3; PARDISO 16.7-21.7 KiB):

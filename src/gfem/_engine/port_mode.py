@@ -324,7 +324,7 @@ class PortModeSpace:
         corners = s.to_global(s.points) / s.scale
         lo, hi = corners.min(axis=0), corners.max(axis=0)
         da, db = np.argsort(hi - lo)[::-1][:2]
-        # Closed like Palace's (x >= c), with a margin: symmetric quadrature
+        # Closed (x >= c), with a margin: symmetric quadrature
         # rules put points on the medians of a structured mesh, which can lie
         # on a midline, and rounding would put them on either side.
         tol = _QUADRANT_RTOL * float((hi - lo).max())
@@ -441,7 +441,7 @@ class PortModeSpace:
         return -0.5j * self.section.scale / (omega * mu0) * complex(value)
 
     def gauge(self, coeffs: np.ndarray, gamma: complex) -> complex:
-        """Palace's phase reference: ``int_Q t . (n_out x H) dA`` up to a factor.
+        """Phase reference: ``int_Q t . (n_out x H) dA`` up to a factor.
 
         ``Q`` is the closed upper-right quadrant of the port's bounding box
         along its two largest global extents and ``t`` the in-plane part of

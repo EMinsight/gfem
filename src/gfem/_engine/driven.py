@@ -1626,7 +1626,7 @@ class DrivenRule:
         options = self.options
         iterations: list[tuple[int, ...]] = []
         reused: list[bool] = []
-        # Palace's dimensionless frequency: omega times the largest extent / c
+        # Dimensionless frequency: omega times the largest extent / c
         extent = np.ptp(np.asarray(model.mesh.nodes), axis=0).max()
         z_scale = float(extent) / scipy.constants.c
         with task_manager(options.threads):

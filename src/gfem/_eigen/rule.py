@@ -49,7 +49,7 @@ options and the wanted inputs (`EigenmodeRule.nondifferentiable_output`),
 in the backward from the modes (a cluster, a near pair, a defective mode,
 an infinite ``q_port``).
 
-Post-processing follows Palace: electric energy ``E = 1/2 Re ∫ D* . E`` per
+Post-processing: electric energy ``E = 1/2 Re ∫ D* . E`` per
 volume region plus ``C |V|^2 / 2`` per capacitive lumped port and ``1/2 ∫
 w C_s |E_t|^2`` per capacitive `Impedance` sheet (the quadratic form of
 its C piece); a port's voltage is its driven voltage functional.

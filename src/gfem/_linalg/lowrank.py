@@ -3,7 +3,7 @@
 ``low_rank_update(handle, U, C, right=V)`` wraps a prepared handle of ``A``
 into a handle of ``A + U C Vᵀ`` (``U`` and ``V`` ``(ndof, p)`` with few
 columns, ``C`` ``(p, p)``), never assembling the update: a wave port's modal
-correction is dense on the port face, so it stays matrix-free, as in Palace.
+correction is dense on the port face, so it stays matrix-free.
 ``V`` defaults to ``U`` (a wave port's ``U C Uᵀ``); a Floquet surface under a
 Bloch wave vector has ``V = conj(U)``. A solve uses the Sherman-Morrison-Woodbury
 identity

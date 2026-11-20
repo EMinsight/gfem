@@ -78,7 +78,7 @@ __all__ = [
     "swept_once",
 ]
 
-# The shift is this factor above the largest bulk (Re eps)(Re mu), as in Palace.
+# The shift is this factor above the largest bulk (Re eps)(Re mu).
 _TARGET = 1.1
 # A Ritz pair propagates when Re beta exceeds this fraction of k0 n_max, and
 # exceeds |Im beta| (Re beta^2 > 0: above cutoff; below it a lossy mode, or a
@@ -566,7 +566,7 @@ class _Greedy:
         self.residual = np.full((n_modes, n), np.inf)
         self.solved = np.zeros(n, bool)
         self.floor = np.full((n_modes, n), tolerance)
-        # exact solves: candidates and the positions (in Palace's order) kept
+        # exact solves: candidates and the positions (in shift-inverted order) kept
         self.candidates: dict[int, _Candidates] = {}
         self.pick: dict[int, list[int]] = {}
 
@@ -623,7 +623,7 @@ class _Greedy:
                 & (beta.real <= k_max * (1 + 1e-6))
                 & (res < _UNCONVERGED)
             )
-            # Palace's order: largest Re of the shift-inverted eigenvalue
+            # Order: largest Re of the shift-inverted eigenvalue
             rank = (1 / (lam - self.shift[j])).real
             ranked = np.flatnonzero(ok)[np.argsort(-rank[ok], kind="stable")]
             if len(ranked) >= mode or want >= n - 2:
