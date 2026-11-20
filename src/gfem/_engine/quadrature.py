@@ -8,6 +8,11 @@ gradient errors). gfem therefore integrates every volume and surface form of
 a discretization of polynomial order p with one fixed rule of degree 2p:
 exact for every mass and stiffness term of order-p fields with element-wise
 constant coefficients on straight-sided elements.
+
+NGSolve applies a rule only to the element type it is keyed by, and silently
+integrates other elements at its own order. Each rule is therefore keyed by
+the volume and surface element types of both mesh dimensions: tetrahedra and
+triangles on a tetrahedral mesh, triangles and segments on a 2D mesh.
 """
 
 from __future__ import annotations
@@ -22,16 +27,25 @@ def degree(order: int) -> int:
     return 2 * order
 
 
+#: The volume element types (a tetrahedral mesh's, a 2D mesh's).
+_VOLUME = (ngs.ET.TET, ngs.ET.TRIG)
+#: The surface element types, in the same order.
+_SURFACE = (ngs.ET.TRIG, ngs.ET.SEGM)
+
+
+def _rules(types: tuple, q: int) -> dict:
+    """The rule of degree ``q`` keyed by each element type of ``types``."""
+    return {t: ngs.IntegrationRule(t, q) for t in types}
+
+
 def dx(order: int, **kwargs) -> ngs.comp.DifferentialSymbol:
-    """Volume integration on the pinned tetrahedron rule of ``order``."""
-    rule = ngs.IntegrationRule(ngs.ET.TET, degree(order))
-    return ngs.dx(intrules={ngs.ET.TET: rule}, **kwargs)
+    """Volume integration on the pinned tetrahedron or triangle rule of ``order``."""
+    return ngs.dx(intrules=_rules(_VOLUME, degree(order)), **kwargs)
 
 
 def ds(order: int, **kwargs) -> ngs.comp.DifferentialSymbol:
-    """Surface integration on the pinned triangle rule of ``order``."""
-    rule = ngs.IntegrationRule(ngs.ET.TRIG, degree(order))
-    return ngs.ds(intrules={ngs.ET.TRIG: rule}, **kwargs)
+    """Surface integration on the pinned triangle or segment rule of ``order``."""
+    return ngs.ds(intrules=_rules(_SURFACE, degree(order)), **kwargs)
 
 
 def dx_derivatives(order: int, **kwargs) -> ngs.comp.DifferentialSymbol:
@@ -44,5 +58,4 @@ def dx_derivatives(order: int, **kwargs) -> ngs.comp.DifferentialSymbol:
     points. The shape-gradient kernel uses it for its curl and gradient
     terms (the transport tensor of ``curl u . curl v`` is such a product).
     """
-    rule = ngs.IntegrationRule(ngs.ET.TET, max(0, degree(order) - 2))
-    return ngs.dx(intrules={ngs.ET.TET: rule}, **kwargs)
+    return ngs.dx(intrules=_rules(_VOLUME, max(0, degree(order) - 2)), **kwargs)

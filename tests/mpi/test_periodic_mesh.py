@@ -45,13 +45,11 @@ def _distribute(start=0, swap=False):
         "swapped": memo.swapped,
         "pairs": [(p.first, p.second, p.translation) for p in paired.pairs],
         "counts": counts.tolist(),
-        "tets": paired.tetrahedron_order,
-        "same tets as plain": bool(
-            np.array_equal(paired.tetrahedron_order, plain.tetrahedron_order)
-        ),
+        "tets": paired.cell_order,
+        "same tets as plain": bool(np.array_equal(paired.cell_order, plain.cell_order)),
         "same maps again": all(
             np.array_equal(getattr(paired, f), getattr(again, f))
-            for f in ("node_order", "tetrahedron_order", "triangle_order")
+            for f in ("node_order", "cell_order", "facet_order")
         ),
         "plain seed": partition_memo(mesh._topology)[_mpi.comm_key(world), ()].seed,
     }

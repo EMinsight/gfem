@@ -353,12 +353,12 @@ def element_energy(
 
     The returned function takes a coefficient vector of ``op.space`` and
     gives the integral over each tetrahedron in the engine mesh's element
-    order (`gfem._engine.mesh.EngineMesh.tetrahedron_order` maps it to the
+    order (`gfem._engine.mesh.EngineMesh.cell_order` maps it to the
     mesh's), in the mesh's file units, at quadrature order ``2 order``.
     ``Re(eps_r)`` is `real_eps`'s: eps_inf on a law region, which the
     caller scales to its weight at a frequency (`law_scale`). Under ranks the
     integrals are those of the rank's own tetrahedra
-    (`gfem._engine.mesh.EngineMesh.tetrahedron_order` is then the rank's).
+    (`gfem._engine.mesh.EngineMesh.cell_order` is then the rank's).
     """
     built = op.built
     eps = coefficient(built, real_eps(model))

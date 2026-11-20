@@ -236,8 +236,8 @@ def _part(case, directory):
         "size": built.mesh.comm.size,
         "domains": built.domains,
         "node_order": built.node_order,
-        "tetrahedron_order": built.tetrahedron_order,
-        "triangle_order": built.triangle_order,
+        "cell_order": built.cell_order,
+        "facet_order": built.facet_order,
         "coordinates": np.array(ngmesh.Coordinates()),
         "tets": np.asarray(ngmesh._get3dElementsAsTets()).reshape(-1, 4),
         "tris": np.asarray(ngmesh._get2dElementsAsTriangles()).reshape(-1, 3),
@@ -258,12 +258,12 @@ def test_each_element_is_on_one_rank_and_the_maps_name_it(case, ranks, tmp_path)
     names = _names(mesh)
     assert {p["size"] for p in parts} == {ranks}
     assert all(p["domains"] == parts[0]["domains"] for p in parts)
-    tets = np.concatenate([p["tetrahedron_order"] for p in parts])
-    tris = np.concatenate([p["triangle_order"] for p in parts])
+    tets = np.concatenate([p["cell_order"] for p in parts])
+    tris = np.concatenate([p["facet_order"] for p in parts])
     assert np.array_equal(np.sort(tets), np.arange(len(mesh.tetrahedra)))
     assert np.array_equal(np.sort(tris), np.arange(len(mesh.triangles)))
     # rank 0 keeps nothing
-    assert len(parts[0]["tetrahedron_order"]) == len(parts[0]["node_order"]) == 0
+    assert len(parts[0]["cell_order"]) == len(parts[0]["node_order"]) == 0
     nodes = np.asarray(mesh.nodes) / LENGTH_UNITS[mesh.length_unit]
     held = np.unique(np.concatenate([p["node_order"] for p in parts]))
     assert np.array_equal(held, np.arange(len(nodes)))
@@ -272,17 +272,17 @@ def test_each_element_is_on_one_rank_and_the_maps_name_it(case, ranks, tmp_path)
         assert np.array_equal(p["coordinates"], nodes[order])
         # a local element holds the nodes of the gfem element the map names
         for local, rows, map_ in (
-            (p["tets"], mesh.tetrahedra, p["tetrahedron_order"]),
-            (p["tris"], mesh.triangles, p["triangle_order"]),
+            (p["tets"], mesh.tetrahedra, p["cell_order"]),
+            (p["tris"], mesh.triangles, p["facet_order"]),
         ):
             assert np.array_equal(
                 np.sort(order[local], axis=1), np.sort(rows[map_], axis=1)
             )
         assert p["materials"] == [
-            names[3, int(t)] for t in mesh.tetrahedron_tags[p["tetrahedron_order"]]
+            names[3, int(t)] for t in mesh.tetrahedron_tags[p["cell_order"]]
         ]
         assert p["boundaries"] == [
-            names[2, int(t)] for t in mesh.triangle_tags[p["triangle_order"]]
+            names[2, int(t)] for t in mesh.triangle_tags[p["facet_order"]]
         ]
 
 
@@ -290,8 +290,8 @@ def _inverses(case, directory):
     mesh = _mesh(case, directory)
     built = to_ngsolve(mesh, comm=_world())
     return (
-        built.tetrahedron_order,
-        inverse_order(built.tetrahedron_order, len(mesh.tetrahedra)),
+        built.cell_order,
+        inverse_order(built.cell_order, len(mesh.tetrahedra)),
     )
 
 
@@ -400,7 +400,7 @@ def _move():
     return {
         "same maps": all(
             np.array_equal(getattr(first, f), getattr(second, f))
-            for f in ("node_order", "tetrahedron_order", "triangle_order")
+            for f in ("node_order", "cell_order", "facet_order")
         ),
         "same local dofs": fes[0].ndof == fes[1].ndof,
         "other meshes": first.mesh is not second.mesh,
@@ -450,7 +450,7 @@ def _plant_other_tets():
     to_ngsolve(mesh, comm=world)
     memo = engine.partition_memo(mesh._topology)[_mpi.comm_key(world), ()]
     if world.rank == 1:
-        memo.tetrahedron_order = memo.tetrahedron_order[::-1]
+        memo.cell_order = memo.cell_order[::-1]
     try:
         to_ngsolve(_moved(mesh), comm=world)
     except _mpi.AgreedError:
@@ -477,7 +477,7 @@ def _keys():
         "another communicator": on_dup is not on_world,
         "one process apart": alone is not on_world and alone.built.comm is None,
         "dup is the comm": on_dup.built.comm is dup,
-        "alone holds all": len(alone.built.tetrahedron_order) == len(mesh.tetrahedra),
+        "alone holds all": len(alone.built.cell_order) == len(mesh.tetrahedra),
     }
     # MPI may reuse a freed handle: the next communicator is not found as the old one
     dup.Free()
@@ -497,7 +497,7 @@ def _on_a_part_of_the_world():
     part = world.Split(world.rank % 2, world.rank)
     mesh = mpi_cases.box(3)
     built = to_ngsolve(mesh, comm=part)
-    tets = part.allreduce(len(built.tetrahedron_order))
+    tets = part.allreduce(len(built.cell_order))
     volume = ngs.Integrate(1, built.mesh)
     return built.mesh.comm.size, tets, len(mesh.tetrahedra), round(volume, 12)
 
@@ -512,7 +512,7 @@ def _smaller_than_the_ranks():
     world = _world()
     mesh = mpi_cases.box(1)
     built = to_ngsolve(mesh, comm=world)
-    return built.mesh.ne, built.tetrahedron_order, _integrals(built, mesh)
+    return built.mesh.ne, built.cell_order, _integrals(built, mesh)
 
 
 def test_a_rank_of_the_partition_can_hold_nothing():
@@ -550,10 +550,10 @@ def _one_sided_cuts(built, mesh, world):
     its other side on another rank, and no such triangle the other way round.
     """
     owner = np.zeros(len(mesh.tetrahedra), dtype=np.int64)
-    owner[built.tetrahedron_order] = world.rank
+    owner[built.cell_order] = world.rank
     world.Allreduce(_in_place(), owner)
     holder = np.zeros(len(mesh.triangles), dtype=np.int64)
-    holder[built.triangle_order] = world.rank
+    holder[built.facet_order] = world.rank
     world.Allreduce(_in_place(), holder)
     neighbours = np.asarray(mesh.triangle_neighbours)
     inner = (neighbours >= 0).all(axis=1)

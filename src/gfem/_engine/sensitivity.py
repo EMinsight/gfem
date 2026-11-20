@@ -668,7 +668,7 @@ def _element_pass(
             dx = quadrature.dx(pair.order, definedon=pair.domain)
             form += pair.weights[name] * _pair_integrand(integrand, pair) * q * dx
         form.Assemble()
-        out[built.tetrahedron_order] += form.vec.FV().NumPy()
+        out[built.cell_order] += form.vec.FV().NumPy()
         return out * built.scale**length_power
     p0, (q,), read = _surface_tests(built, is_complex=is_complex)
     form = ngs.LinearForm(p0)
@@ -677,7 +677,7 @@ def _element_pass(
         form += pair.weights[name] * _pair_integrand(integrand, pair) * q * ds
     form.Assemble()
     per_face = np.zeros(len(owner), dtype=out.dtype)
-    per_face[built.triangle_order] = read(form)[0]
+    per_face[built.facet_order] = read(form)[0]
     on = owner >= 0
     np.add.at(out, owner[on], per_face[on])
     return out * built.scale**length_power
@@ -714,9 +714,7 @@ def _load_pass(
         form = ngs.LinearForm(p0)
         form += gf * q * quadrature.dx(load.order, definedon=load.domain)
         form.Assemble()
-        out[built.tetrahedron_order] += (
-            form.vec.FV().NumPy() * built.scale**load.length_power
-        )
+        out[built.cell_order] += form.vec.FV().NumPy() * built.scale**load.length_power
     return out
 
 
@@ -755,13 +753,13 @@ def _moment_pass(
         space, tests, read = _surface_tests(
             built, is_complex=is_complex, copies=len(_SYMMETRIC)
         )
-        order = built.triangle_order
+        order = built.facet_order
     else:
         p0 = ngs.L2(built.mesh, order=0, complex=is_complex)
         space = ngs.FESpace([p0] * len(_SYMMETRIC))
         tests = space.TestFunction()
         read = _rows(len(_SYMMETRIC), p0.ndof)
-        order = built.tetrahedron_order
+        order = built.cell_order
     form = ngs.LinearForm(space)
     for pair in pairs:
         if face:
@@ -821,7 +819,7 @@ def _sheet_pass(
         form += weight * _pair_integrand(_tangential, pair) * q * ds
     form.Assemble()
     per_face = np.zeros(len(model.mesh.triangles), dtype=complex)
-    per_face[built.triangle_order] = read(form)[0]
+    per_face[built.facet_order] = read(form)[0]
     return per_face[faces]
 
 

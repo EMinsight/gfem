@@ -48,7 +48,7 @@ def _world():
 # --- the map to one-process numbering -------------------------------------------------
 
 
-def _walk(fes, mesh, node_order, tetrahedron_order):
+def _walk(fes, mesh, node_order, cell_order):
     """``(kind, a, b, c, position) -> DOF`` by `GetDofNrs`, in gfem's numbers."""
     rows = {}
     for kind, nodes, node_type in (
@@ -62,7 +62,7 @@ def _walk(fes, mesh, node_order, tetrahedron_order):
             rows |= {(*key, j): d for j, d in enumerate(dofs) if d >= 0}
     for element in range(mesh.ne):
         dofs = fes.GetDofNrs(ngs.NodeId(ngs.CELL, element))
-        key = (3, int(tetrahedron_order[element]), -1, -1)
+        key = (3, int(cell_order[element]), -1, -1)
         rows |= {(*key, j): d for j, d in enumerate(dofs) if d >= 0}
     return rows
 
@@ -72,7 +72,7 @@ def _walked(mesh, order, comm):
         mesh, SUPPORT, EXCLUDED, "hcurl", order, comm=comm
     )
     return (
-        _walk(fes, built.mesh, built.node_order, built.tetrahedron_order),
+        _walk(fes, built.mesh, built.node_order, built.cell_order),
         int(fes.ndof),
     )
 

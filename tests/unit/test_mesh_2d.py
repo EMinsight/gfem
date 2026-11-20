@@ -6,10 +6,12 @@ a tetrahedral mesh raise and name the role array to read instead.
 
 from pathlib import Path
 
+import ngsolve as ngs
 import numpy as np
 import pytest
 
 import gfem
+from gfem._engine.mesh import to_ngsolve
 
 HEATER = Path(__file__).parents[2] / "docs" / "tutorials" / "data" / "heater_w2.msh"
 AREAS = (
@@ -183,3 +185,73 @@ def test_an_area_of_a_2d_mesh_is_a_volume_to_a_layer_grid(heater):
     grid = gfem.design.LayerGrid(heater, "core", pitch=0.1e-6)
     assert grid.n_elements == len(heater.elements("core"))
     assert grid.n_faces is None
+
+
+# --- the engine mesh -------------------------------------------------------------
+
+
+def _areas(mesh):
+    x = np.asarray(mesh.nodes)[mesh.volume_elements]
+    e1, e2 = x[:, 1] - x[:, 0], x[:, 2] - x[:, 0]
+    return 0.5 * np.abs(e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0])
+
+
+def test_the_engine_mesh_is_2d_and_covers_the_areas(heater):
+    built = to_ngsolve(heater)
+    assert built.mesh.dim == 2
+    assert set(built.mesh.GetMaterials()) == set(AREAS)
+    assert set(built.mesh.GetBoundaries()) == {"bottom", "top"}
+    area = ngs.Integrate(1, built.mesh) * built.scale**2
+    assert area == pytest.approx(_areas(heater).sum(), rel=1e-12)
+    for name in AREAS:
+        region = built.mesh.Materials(name)
+        part = ngs.Integrate(1, built.mesh, definedon=region) * built.scale**2
+        expected = _areas(heater)[heater.elements(name)].sum()
+        assert part == pytest.approx(expected, rel=1e-12)
+
+
+def test_a_p0_value_in_mesh_order_reads_back_at_each_centroid(heater):
+    built = to_ngsolve(heater)
+    values = np.arange(len(heater.volume_elements), dtype=float)
+    p0 = ngs.GridFunction(ngs.L2(built.mesh, order=0))
+    p0.vec.FV().NumPy()[:] = values[built.cell_order]
+    rows = np.random.default_rng(0).choice(len(values), 50, replace=False)
+    centroids = np.asarray(heater.nodes)[heater.volume_elements[rows]].mean(axis=1)
+    for row, (x, y) in zip(rows, centroids / built.scale, strict=True):
+        assert p0(built.mesh(x, y)) == row
+
+
+def test_engine_segments_are_the_mesh_segments_in_facet_order(heater):
+    built = to_ngsolve(heater)
+    segments = heater.surface_elements[built.facet_order]
+    for i, el in enumerate(built.mesh.Elements(ngs.BND)):
+        assert sorted(v.nr for v in el.vertices) == sorted(segments[i])
+
+
+def test_a_p0_value_reads_domin_behind_a_segments_normal(strip):
+    # the engine normal points out of domin, as a face's does in 3D
+    mesh = gfem.Mesh.from_gmsh(strip)
+    built = to_ngsolve(mesh)
+    value = {"a": 1.0, "b": 2.0, "c": 3.0}
+    p0 = ngs.GridFunction(ngs.L2(built.mesh, order=0))
+    tags = {mesh.region(n).tag: v for n, v in value.items()}
+    per_element = np.array([tags[int(t)] for t in mesh._topology.volume_tags])
+    p0.vec.FV().NumPy()[:] = per_element[built.cell_order]
+    normal = ngs.specialcf.normal(2)
+    nodes = np.asarray(mesh.nodes) / built.scale
+    for line, (behind, front) in (("ab", ("a", "b")), ("cb", ("c", "b"))):
+        (segment,) = mesh.surface_elements[mesh.elements(line)]
+        mid = nodes[segment].mean(axis=0)
+        n = np.array(normal(built.mesh(*mid, VOL_or_BND=ngs.BND)))
+        assert p0(built.mesh(*(mid - 0.1 * n))) == value[behind]
+        assert p0(built.mesh(*(mid + 0.1 * n))) == value[front]
+    for segment in mesh.surface_elements[mesh.elements("outer")]:
+        mid = nodes[segment].mean(axis=0)
+        n = np.array(normal(built.mesh(*mid, VOL_or_BND=ngs.BND)))
+        assert n @ (mid - [1.5, 0.5]) > 0  # out of the mesh
+
+
+def test_a_2d_engine_mesh_under_ranks_raises_naming_the_slab(strip):
+    mesh = gfem.Mesh.from_gmsh(strip)
+    with pytest.raises(NotImplementedError, match="from_gmsh_cross_section"):
+        to_ngsolve(mesh, comm=object())

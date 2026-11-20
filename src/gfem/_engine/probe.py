@@ -123,7 +123,7 @@ def locate(mesh: Mesh, layout: Layout, points: np.ndarray, comm: Any = None) -> 
     nr = np.asarray(found["nr"], dtype=np.int64)
     held = nr >= 0
     tets = np.full(len(nr), -1, dtype=np.int64)
-    tets[held] = np.asarray(built.tetrahedron_order)[nr[held]]
+    tets[held] = np.asarray(built.cell_order)[nr[held]]
     tets = _agree_location(comm, tets)
     outside = tets < 0
     if outside.any():
@@ -314,7 +314,7 @@ class Probe:
         self._built: EngineMesh = built
         self._fes = fes
         self.factor = built.scale ** LENGTH_POWER[layout.space]
-        inverse = inverse_order(built.tetrahedron_order, len(mesh.tetrahedra))
+        inverse = inverse_order(built.cell_order, len(mesh.tetrahedra))
         self._elements = inverse[located.tetrahedra]
         self.n_points = len(self._elements)
         self._own = np.flatnonzero(self._elements >= 0)

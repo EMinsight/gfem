@@ -265,7 +265,7 @@ def p0(built: EngineMesh, values: np.ndarray) -> ngs.GridFunction:
     """An element-wise constant field with ``values`` per gfem tetrahedron."""
     is_complex = np.iscomplexobj(values)
     gf = ngs.GridFunction(ngs.L2(built.mesh, order=0, complex=is_complex))
-    gf.vec.FV().NumPy()[:] = np.asarray(values)[built.tetrahedron_order]
+    gf.vec.FV().NumPy()[:] = np.asarray(values)[built.cell_order]
     return gf
 
 
@@ -392,10 +392,10 @@ def surface_p0(built: EngineMesh, values: np.ndarray) -> ngs.GridFunction:
     if built.comm is not None:
         space, dofs = facet_space(built, is_complex=is_complex)
         gf = ngs.GridFunction(space)
-        gf.vec.FV().NumPy()[dofs] = np.asarray(values)[built.triangle_order]
+        gf.vec.FV().NumPy()[dofs] = np.asarray(values)[built.facet_order]
         return gf
     gf = ngs.GridFunction(ngs.SurfaceL2(built.mesh, order=0, complex=is_complex))
-    gf.vec.FV().NumPy()[:] = np.asarray(values)[built.triangle_order]
+    gf.vec.FV().NumPy()[:] = np.asarray(values)[built.facet_order]
     return gf
 
 

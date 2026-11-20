@@ -22,7 +22,7 @@ from gfem import _mpi
 from gfem._engine import quadrature
 from gfem._engine.cache import discretization
 from gfem._engine.coefficients import p0
-from gfem._engine.mesh import EngineMesh, inverse_order, tetrahedron_domains
+from gfem._engine.mesh import EngineMesh, cell_domains, inverse_order
 from gfem.mesh import Mesh
 
 if TYPE_CHECKING:
@@ -266,7 +266,7 @@ def _one_process_tables(
     tet, ``-1`` off the support.
     """
     names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
-    domains, tet_domain = tetrahedron_domains(mesh)
+    domains, tet_domain = cell_domains(mesh)
     in_support = np.array(
         [
             False,
@@ -327,7 +327,7 @@ def one_process_dofs(
     built, fes, _ = fe_space(still, support, excluded, space, order, comm=comm)
     tables = _mpi.on_root(comm, lambda: _one_process_tables(still, support, excluded))
     cells = tables["cells"]
-    mine = built.tetrahedron_order
+    mine = built.cell_order
     mine = mine[cells[mine] >= 0]
     nodes, edges, faces = _local_entities(built, mesh, tables)
     if space == "h1":
@@ -382,8 +382,8 @@ def _local_entities(
     """
     n_nodes = len(mesh.imported_nodes)
     edge_table, face_table = tables["edges"], tables["faces"]
-    tets = np.sort(mesh.tetrahedra[built.tetrahedron_order], axis=1)
-    triangles = np.sort(np.asarray(mesh.triangles)[built.triangle_order], axis=1)
+    tets = np.sort(mesh.tetrahedra[built.cell_order], axis=1)
+    triangles = np.sort(np.asarray(mesh.triangles)[built.facet_order], axis=1)
     triples = np.concatenate([tets[:, _TET_FACES].reshape(-1, 3), triangles])
     pairs = triples[:, _TRIANGLE_EDGES].reshape(-1, 2)
     edges, on_edge = _find(edge_table, pairs[:, 0] * n_nodes + pairs[:, 1])
@@ -638,7 +638,7 @@ def _gather_sample(
     gathered = {name: _mpi.gather_rows(comm, values) for name, values in rows.items()}
     if tets is None:
         return None
-    _, tet_domain = tetrahedron_domains(mesh)
+    _, tet_domain = cell_domains(mesh)
     position = inverse_order(np.argsort(tet_domain, kind="stable"), len(tet_domain))
     in_order = np.argsort(position[tets])
 
@@ -826,9 +826,9 @@ def element_rows(
         (np.asarray(values) / volume.vec.FV().NumPy()[element], (element, cols)),
         shape=(l2.ndof, fes.ndof),
     )
-    # NGSolve element i is gfem tetrahedron tetrahedron_order[i]
-    of_tet = np.empty(len(built.tetrahedron_order), np.int64)
-    of_tet[built.tetrahedron_order] = np.arange(len(built.tetrahedron_order))
+    # NGSolve element i is gfem tetrahedron cell_order[i]
+    of_tet = np.empty(len(built.cell_order), np.int64)
+    of_tet[built.cell_order] = np.arange(len(built.cell_order))
     out = matrix[of_tet[tetrahedra]]
     _ELEMENT_ROWS[key] = (topology, out)
     while len(_ELEMENT_ROWS) > _MAX_MEANS:

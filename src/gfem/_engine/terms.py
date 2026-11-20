@@ -503,7 +503,7 @@ def susceptibility_pieces(
     lossless Drude terms only gives a polynomial piece (`polynomial_law`).
     """
     scale = built.scale
-    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron")
     dx = quadrature.dx(order, definedonelements=tets)
 
     def k2(w: complex) -> complex:
@@ -566,7 +566,7 @@ def blend_pieces(
     limit is in the mass. ``elements`` restricts the form as in `pieces`.
     """
     scale = built.scale
-    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron")
     dx = quadrature.dx(order, definedonelements=tets)
 
     def k2(w: complex) -> complex:
@@ -627,7 +627,7 @@ def conductivity_piece(
     """
     scale = built.scale
     k = lambda w: wavenumber(w, scale)  # noqa: E731
-    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron")
     dx = quadrature.dx(order, definedonelements=tets)
     active = model._domain.active  # noqa: SLF001
     # an anisotropic material gives its 3x3 tensor
@@ -686,8 +686,8 @@ def pieces(
     """
     scale = built.scale
     k = lambda w: wavenumber(w, scale)  # noqa: E731
-    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
-    tris = _bits(faces, built.triangle_order, "triangle")
+    tets = _bits(elements, built.cell_order, "tetrahedron")
+    tris = _bits(faces, built.facet_order, "triangle")
     dx = quadrature.dx(order, definedonelements=tets)
 
     # each piece carries its coefficient and, next to it, the coefficient's

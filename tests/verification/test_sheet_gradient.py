@@ -227,7 +227,7 @@ def _reference_root(mesh, fill) -> complex:
     per_face = np.zeros(len(mesh.triangles))
     per_face[mesh.elements("sheet")] = np.asarray(fill)
     weight = ngs.GridFunction(ngs.SurfaceL2(built.mesh, order=0))
-    weight.vec.FV().NumPy()[:] = per_face[built.triangle_order]
+    weight.vec.FV().NumPy()[:] = per_face[built.facet_order]
 
     def assemble(integrand):
         form = ngs.BilinearForm(space)

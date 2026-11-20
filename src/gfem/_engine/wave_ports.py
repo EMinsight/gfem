@@ -573,7 +573,7 @@ def trace_dofs(
             if a >= 0:
                 pairs[int(b)] = int(a)
 
-    elements = element_of[built.triangle_order]
+    elements = element_of[built.facet_order]
     for local in np.flatnonzero(elements >= 0):
         bnd = mesh3[ngs.ElementId(ngs.BND, int(local))]
         el = mesh2[ngs.ElementId(ngs.VOL, int(elements[local]))]

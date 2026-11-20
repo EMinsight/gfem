@@ -103,16 +103,16 @@ def seam_counts(ngmesh: Any) -> SeamCounts:
 
 
 def surface_counts(
-    triangle_tags: np.ndarray, triangle_order: np.ndarray, tags: np.ndarray
+    triangle_tags: np.ndarray, facet_order: np.ndarray, tags: np.ndarray
 ) -> np.ndarray:
     """How many local triangles carry each of ``tags``.
 
     Args:
         triangle_tags: The `gfem.Mesh`'s triangle tags.
-        triangle_order: This rank's triangles, as gfem triangle numbers.
+        facet_order: This rank's triangles, as gfem triangle numbers.
         tags: The surface tags counted, sorted.
     """
-    local = np.asarray(triangle_tags)[np.asarray(triangle_order, dtype=np.int64)]
+    local = np.asarray(triangle_tags)[np.asarray(facet_order, dtype=np.int64)]
     return _count(local, tags)
 
 

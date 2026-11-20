@@ -50,7 +50,7 @@ def electric_energy(field: Field, model: Model) -> dict[str, float]:
     check_size(e, op, field.order)
     density = element_energy(model, op)
     per_tet = np.zeros(len(mesh.tetrahedra))
-    per_tet[op.built.tetrahedron_order] = (
+    per_tet[op.built.cell_order] = (
         0.25 * const.epsilon_0 * op.built.scale * np.real(density(e))
     )
     if dispersion.law_regions(model):

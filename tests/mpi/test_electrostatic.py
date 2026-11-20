@@ -189,7 +189,7 @@ def _walked(mesh, support, order, comm):
             rows |= {(*key, j): d for j, d in enumerate(dofs) if d >= 0}
     for el in range(ngm.ne):
         dofs = fes.GetDofNrs(ngs.NodeId(ngs.CELL, el))
-        key = (4, int(built.tetrahedron_order[el]), -1, -1)
+        key = (4, int(built.cell_order[el]), -1, -1)
         rows |= {(*key, j): d for j, d in enumerate(dofs) if d >= 0}
     return rows, int(fes.ndof)
 
