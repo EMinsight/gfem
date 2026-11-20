@@ -1,16 +1,22 @@
 name: CI
+# Every push and pull request runs the fast jobs. The slow ones (verification,
+# the tutorial notebooks: hours on a runner) run nightly and on demand
+# (`gh workflow run CI --ref main`); release.yml publishes a tag only after a run
+# of all of them passed on its commit.
 on:
   pull_request:
   push:
     branches:
     - main
   schedule:
-  - cron: "0 4 * * 1"  # weekly: catches licence changes in new dependency releases
+  # nightly, 02:17 UTC: the slow jobs, and licence changes in new dependency releases
+  - cron: "17 2 * * *"
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  # a push cancels the push run before it, never a nightly or on-demand full run
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 env:
   UV_VERSION: "0.13.1"
@@ -48,6 +54,7 @@ jobs:
 
   verification:
     name: verification (ubuntu, py3.12)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
@@ -70,10 +77,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-        - {os: ubuntu-latest, tier: unit}
-        - {os: windows-latest, tier: unit}
-        - {os: ubuntu-latest, tier: verification}
+        # the verification entry only on full runs, as the verification job
+        include: ${{ fromJSON(
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+          && '[{"os":"ubuntu-latest","tier":"unit"},{"os":"windows-latest","tier":"unit"},{"os":"ubuntu-latest","tier":"verification"}]'
+          || '[{"os":"ubuntu-latest","tier":"unit"},{"os":"windows-latest","tier":"unit"}]') }}
     defaults:
       run:
         shell: bash
@@ -153,6 +161,7 @@ jobs:
 
   tutorials:
     name: tutorial notebooks (ubuntu, py3.12)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
