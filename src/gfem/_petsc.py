@@ -18,13 +18,18 @@ Every PETSc or SLEPc object gfem creates gets its own options prefix
 while that object reads them (`scoped_options`), so they never reach a
 user's own PETSc objects, and a user's unprefixed options never reach
 gfem's. One process-wide reentrant lock, `LOCK`, guards every PETSc call.
+
+petsc4py has no accessor for the KSP behind ``PCTELESCOPE``, so `telescope_ksp`
+reaches it through ``libpetsc`` by ctypes.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import functools
 import itertools
+import logging
 import mmap
 import re
 import threading
@@ -52,6 +57,8 @@ __all__ = [
     "require_petsc",
     "require_slepc",
     "scoped_options",
+    "telescope_ksp",
+    "telescope_symbols",
     "unread",
     "unwrap",
 ]
@@ -63,6 +70,10 @@ MIN_VERSION = (3, 26)
 #: operator calls gfem's PETSc linear solver from inside a SLEPc solve).
 LOCK = threading.RLock()
 _PREFIXES = itertools.count()
+#: Says once that the factor behind ``PCTELESCOPE`` cannot be read.
+_LOGGER = logging.getLogger("gfem.solver")
+#: The name under which `telescope_ksp` composes the inner KSP on its PC.
+_INNER = b"gfem_telescope_ksp"
 
 _RECIPE = "the 'Solve with PETSc and SLEPc' recipe in the gfem docs"
 #: Lets a PETSc without MPI start under a launcher: each rank is a copy of its own.
@@ -364,3 +375,51 @@ def error_text(err: BaseException) -> str:
     lines = (_RANK.sub("", line).strip() for line in str(err).splitlines()[1:])
     reason = " ".join(line for line in lines if line and not _TRACEBACK.search(line))
     return f"{reason} (PETSc error {code})"
+
+
+@functools.cache
+def telescope_symbols() -> tuple[Any, Any] | None:
+    """``PCTelescopeGetKSP`` and ``PetscObjectCompose`` from ``libpetsc``, or ``None``.
+
+    Looked up through petsc4py's own extension, which links ``libpetsc``. A build
+    without them gives ``None``, said once on the ``gfem.solver`` logger.
+    """
+    PETSc = require_petsc()
+    try:
+        library = ctypes.CDLL(PETSc.__file__)
+        get, compose = library.PCTelescopeGetKSP, library.PetscObjectCompose
+    except (OSError, AttributeError) as err:
+        _LOGGER.info(
+            "PCTelescopeGetKSP cannot be loaded from the PETSc stack (%s): the "
+            "factor behind PCTELESCOPE is not read, its bytes count as 0 and every "
+            "failure of it is retried",
+            err,
+        )
+        return None
+    get.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+    compose.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p)
+    get.restype = compose.restype = ctypes.c_int
+    return get, compose
+
+
+def telescope_ksp(pc: Any) -> Any:
+    """The KSP behind a set-up ``PCTELESCOPE`` on a rank it keeps, else ``None``.
+
+    Also ``None`` when `telescope_symbols` cannot be loaded. The KSP is composed on
+    ``pc``, which petsc4py's ``query`` then wraps.
+
+    Raises:
+        RuntimeError: PETSc returned an error code.
+    """
+    symbols = telescope_symbols()
+    if symbols is None:
+        return None
+    get, compose = symbols
+    with LOCK:
+        inner = ctypes.c_void_p()
+        code = get(pc.handle, ctypes.byref(inner))
+        if code == 0 and inner.value:
+            code = compose(pc.handle, _INNER, inner)
+        if code != 0:
+            raise RuntimeError(f"PCTelescopeGetKSP failed (PETSc error {code})")
+        return pc.query(_INNER.decode()) if inner.value else None

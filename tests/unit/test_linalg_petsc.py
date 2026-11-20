@@ -6,6 +6,7 @@ Every test needs complex petsc4py: skipped without it (the ``petsc`` marker).
 """
 
 import dataclasses
+import logging
 import re
 import types
 from pathlib import Path
@@ -1020,6 +1021,124 @@ def test_a_telescoped_coarse_problem_factors_by_symmetry_behind_it(
     assert options["telescope_pc_type"] == factorization
 
 
+def _one_process_coarse(monkeypatch, op, space, ordering=coarse.PT_SCOTCH, factor=1):
+    """A real `coarse.CoarseMumps` on ``op``'s assembled matrix, on one process.
+
+    One rank owns every free DOF and agreements are its own values. A ``factor``
+    above 1 puts the factorization behind ``PCTELESCOPE``, which keeps the one rank.
+    """
+    PETSc = _petsc.require_petsc()
+    monkeypatch.setattr(coarse, "FreeNumbering", lambda *_: _free_numbering(space))
+    monkeypatch.setattr(coarse, "rule", lambda *_, **__: (ordering, factor))
+    if factor > 1:
+        options = coarse.options
+
+        def kept(*args, **kwargs):
+            pairs = dict(options(*args, **kwargs))
+            pairs["pc_telescope_reduction_factor"] = 1
+            return tuple(pairs.items())
+
+        monkeypatch.setattr(coarse, "options", kept)
+    for name in ("agree_any", "agree_all"):
+        monkeypatch.setattr(coarse._mpi, name, lambda _, *, flag: flag)
+    for name in ("agree_min", "agree_max"):
+        monkeypatch.setattr(coarse._mpi, name, lambda _, value: value)
+    source = types.SimpleNamespace(
+        local_mat=op.form.mat,
+        row_pardofs=None,
+        CreateColVector=op.form.mat.CreateColVector,
+    )
+    return coarse.CoarseMumps(source, space.FreeDofs(), PETSc.COMM_SELF, symmetric=True)
+
+
+@pytest.fixture
+def no_telescope_symbol(monkeypatch):
+    """A PETSc build without ``PCTelescopeGetKSP``."""
+    monkeypatch.setattr(_petsc.ctypes, "CDLL", lambda *_, **__: object())
+    _petsc.telescope_symbols.cache_clear()
+    yield
+    _petsc.telescope_symbols.cache_clear()
+
+
+def _zeroed(monkeypatch):
+    """Every coarse matrix zero, so MUMPS fails to factor it; set-ups counted."""
+    built = coarse.distributed_aij
+    set_ups = []
+
+    def zero(*args, **kwargs):
+        aij, index = built(*args, **kwargs)
+        aij.zeroEntries()
+        return aij, index
+
+    monkeypatch.setattr(coarse, "distributed_aij", zero)
+    monkeypatch.setattr(
+        coarse._petsc,
+        "next_prefix",
+        lambda real=_petsc.next_prefix: set_ups.append(1) or real(),
+    )
+    return set_ups
+
+
+def test_the_factor_behind_telescoping_is_read(built, monkeypatch):
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    made = _one_process_coarse(monkeypatch, op, space, factor=2)
+    made.set_up()
+    try:
+        pc = made._ksp.getPC()
+        assert pc.getType() == "telescope"
+        inner = _petsc.telescope_ksp(pc)
+        assert inner.getPC().getType() == "cholesky"
+        assert made.nbytes > 0
+    finally:
+        made.free()
+
+
+def test_a_singular_coarse_behind_telescoping_raises_after_one_set_up(
+    built, monkeypatch
+):
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    set_ups = _zeroed(monkeypatch)
+    made = _one_process_coarse(monkeypatch, op, space, factor=2)
+    with pytest.raises(gfem._mpi.AgreedError, match=r"INFOG\(1\)=-\d+"):
+        made.set_up()
+    assert len(set_ups) == 1
+
+
+@pytest.mark.usefixtures("no_telescope_symbol")
+def test_without_the_telescope_symbol_the_inner_ksp_is_none_and_said_once(
+    built, monkeypatch, caplog
+):
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    made = _one_process_coarse(monkeypatch, op, space, factor=2)
+    made.set_up()
+    try:
+        pc = made._ksp.getPC()
+        assert _petsc.telescope_ksp(pc) is None
+        assert _petsc.telescope_ksp(pc) is None
+        assert made.nbytes == 0
+    finally:
+        made.free()
+    said = [r for r in caplog.records if "PCTelescopeGetKSP" in r.getMessage()]
+    assert len(said) == 1
+
+
+@pytest.mark.usefixtures("no_telescope_symbol")
+def test_without_the_telescope_symbol_every_coarse_failure_is_retried(
+    built, monkeypatch
+):
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    set_ups = _zeroed(monkeypatch)
+    made = _one_process_coarse(monkeypatch, op, space, factor=2)
+    with pytest.raises(gfem._mpi.AgreedError, match="unread behind PCTELESCOPE"):
+        made.set_up()
+    assert len(set_ups) == petsc.MUMPS_RETRIES + 1
+
+
 @pytest.mark.parametrize("theirs", [False, True])
 def test_a_metis_coarse_set_up_reads_gfems_mumps_config_only_while_it_factors(
     built, monkeypatch, tmp_path, theirs
@@ -1041,21 +1160,11 @@ def test_a_metis_coarse_set_up_reads_gfems_mumps_config_only_while_it_factors(
 
     spied = types.SimpleNamespace(**{**vars(PETSc), "KSP": Spy})
     monkeypatch.setattr(_petsc, "require_petsc", lambda *_: spied)
-    monkeypatch.setattr(coarse, "FreeNumbering", lambda *_: _free_numbering(space))
-    monkeypatch.setattr(coarse, "rule", lambda *_, **__: (coarse.METIS, 1))
-    for name in ("agree_any", "agree_all"):
-        monkeypatch.setattr(coarse._mpi, name, lambda _, *, flag: flag)
-    monkeypatch.setattr(coarse._mpi, "agree_min", lambda _, value: value)
     if users is None:
         monkeypatch.delenv(coarse.CONFIG_VARIABLE, raising=False)
     else:
         monkeypatch.setenv(coarse.CONFIG_VARIABLE, users)
-    source = types.SimpleNamespace(
-        local_mat=op.form.mat,
-        row_pardofs=None,
-        CreateColVector=op.form.mat.CreateColVector,
-    )
-    made = coarse.CoarseMumps(source, space.FreeDofs(), PETSc.COMM_SELF, symmetric=True)
+    made = _one_process_coarse(monkeypatch, op, space, coarse.METIS)
     made.set_up()
     try:
         assert seen == [str(coarse.MUMPS_CONFIG) if users is None else users]

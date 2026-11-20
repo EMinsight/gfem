@@ -69,8 +69,11 @@ METIS_MUMPS_OPTIONS: tuple[tuple[str, Any], ...] = (
     ("mat_mumps_icntl_7", 5),
 )
 
-#: Failures a larger workspace may cure: behind telescoping every failure reads 0.
-RETRIED = (MUMPS_WORKSPACE_ERROR, 0)
+#: Failures a larger workspace may cure.
+RETRIED = (MUMPS_WORKSPACE_ERROR,)
+#: The failure read where the factor behind ``PCTELESCOPE`` cannot be: retried too,
+#: since it may be the workspace.
+UNREAD = 0
 
 #: Per communicator, the factorizations NGSolve asked for since the last `finish`,
 #: of either symmetry.
@@ -206,6 +209,7 @@ class CoarseMumps(ngs.BaseMatrix):
         self._x: Any = None
         self._b: Any = None
         self._freed = False
+        self._readable = True
         #: The columns the set-up is expected to serve, for `rule`.
         self.columns = 1
 
@@ -229,6 +233,11 @@ class CoarseMumps(ngs.BaseMatrix):
             self._ordering, self._factor = rule(
                 self._numbering.total, comm.size, self.columns, seen=False
             )
+            # every rank must take the same retries
+            self._readable = self._factor == 1 or _mpi.agree_all(
+                comm, flag=_petsc.telescope_symbols() is not None
+            )
+            retried = RETRIED if self._readable else (*RETRIED, UNREAD)
             workspace = dict(RANK_MUMPS_OPTIONS)["mat_mumps_icntl_14"]
             for attempt in range(MUMPS_RETRIES + 1):
                 self._ksp = PETSc.KSP().create(comm)
@@ -256,11 +265,12 @@ class CoarseMumps(ngs.BaseMatrix):
                     return
                 self._ksp.destroy()
                 self._ksp = None
-                if failure not in RETRIED or attempt == MUMPS_RETRIES:
+                if failure not in retried or attempt == MUMPS_RETRIES:
                     self.free()
+                    infog = failure if self._readable else "unread behind PCTELESCOPE"
                     raise _mpi.AgreedError(
                         "The factorization of BDDC's coarse problem failed (MUMPS "
-                        f"INFOG(1)={failure or 'unread behind PCTELESCOPE'}): the "
+                        f"INFOG(1)={infog}): the "
                         "operator is singular at this frequency, or MUMPS needs more "
                         f"workspace than ICNTL(14) {workspace} gives."
                     )
@@ -269,31 +279,42 @@ class CoarseMumps(ngs.BaseMatrix):
     def _agreed_failure(self) -> int | None:
         """``None`` if the set-up succeeded, else INFOG(1) on every rank.
 
-        Behind ``PCTELESCOPE`` it is 0: petsc4py 3.26 has no way to the inner factor,
-        so what shows there is the first apply's failed preconditioner and a solution
-        that is not finite.
+        Behind ``PCTELESCOPE`` the ranks it keeps read the inner factor's and the
+        others give 0, so the minimum is the failure. Where the inner factor cannot
+        be read (`_petsc.telescope_symbols`), the failure is `UNREAD`, seen as the
+        first apply's failed preconditioner or a solution that is not finite.
         """
         PETSc = _petsc.require_petsc()
         pc = self._ksp.getPC()
         failed = pc.getFailedReason() != PETSc.PC.FailedReason.NOERROR
-        if self._factor > 1:
+        if not self._readable:
             failed = failed or not np.isfinite(self._x.array).all()
-        if not _mpi.agree_any(self._comm, flag=failed):
+            return UNREAD if _mpi.agree_any(self._comm, flag=failed) else None
+        factor = self._inner_factor()
+        info = 0 if factor is None else int(factor.getMumpsInfog(1))
+        if not _mpi.agree_any(self._comm, flag=failed or info < 0):
             return None
-        if self._factor > 1:
-            return 0
-        return _mpi.agree_min(self._comm, int(pc.getFactorMatrix().getMumpsInfog(1)))
+        return _mpi.agree_min(self._comm, info)
+
+    def _inner_factor(self) -> Any:
+        """MUMPS's factor matrix on this rank, ``None`` on a rank telescoping drops."""
+        pc = self._ksp.getPC()
+        if self._factor == 1:
+            return pc.getFactorMatrix()
+        inner = _petsc.telescope_ksp(pc)
+        return None if inner is None else inner.getPC().getFactorMatrix()
 
     @property
     def nbytes(self) -> int:
         """This rank's factors, by MUMPS's own count (INFO(22)).
 
-        0 behind ``PCTELESCOPE``, whose inner factor cannot be read
-        (`_agreed_failure`): the cache's count then leaves these factors out.
+        0 on a rank telescoping drops, and where the factor behind ``PCTELESCOPE``
+        cannot be read (`_petsc.telescope_symbols`).
         """
-        if self._ksp is None or self._factor > 1:
+        if self._ksp is None:
             return 0
-        return 10**6 * int(self._ksp.getPC().getFactorMatrix().getMumpsInfo(22))
+        factor = self._inner_factor()
+        return 0 if factor is None else 10**6 * int(factor.getMumpsInfo(22))
 
     def IsComplex(self) -> bool:  # noqa: N802 - NGSolve's name
         """Only complex operators take this route (`gfem._linalg.bddc`)."""

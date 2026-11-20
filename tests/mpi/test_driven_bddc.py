@@ -8,6 +8,7 @@ products, since such a method still converges to the right S.
 
 import inspect
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -308,24 +309,115 @@ def _a_singular_coarse_problem(directory, route):
         return aij, index
 
     coarse.distributed_aij = zero
+    set_ups = _count_set_ups()
     options = cases.tight("bddc_gmres", threads=1)
     problem = gfem.Driven(FREQUENCY)
     try:
         gfem.solve(cases.layered_line(directory), problem, options=options)
     except _mpi.AgreedError as err:
-        return str(err), _world().allreduce(1)
+        return str(err), len(set_ups), _world().allreduce(1)
     raise AssertionError("a zero matrix factored")
+
+
+def _count_set_ups():
+    """One entry per coarse KSP set up: each takes a new options prefix."""
+    set_ups = []
+    prefix = coarse._petsc.next_prefix
+
+    def counted():
+        set_ups.append(1)
+        return prefix()
+
+    coarse._petsc.next_prefix = counted
+    return set_ups
 
 
 @needs_stack
 @pytest.mark.parametrize("route", [EVERY_RANK, ONE_RANK])
-def test_a_factorization_that_fails_is_an_agreed_error_with_no_nan(tmp_path, route):
-    (text, ranks), *_ = on_ranks(
+def test_a_singular_coarse_problem_raises_after_one_set_up_naming_infog1(
+    tmp_path, route
+):
+    (text, set_ups, ranks), *_ = on_ranks(
         _a_singular_coarse_problem, tmp_path, route, ranks=4, limit=300
     )
-    assert "coarse problem failed" in text
-    assert ranks == 4
     print(text)  # noqa: T201
+    assert "coarse problem failed" in text
+    assert re.search(r"INFOG\(1\)=-\d+", text)
+    assert set_ups == 1
+    assert ranks == 4
+
+
+def _telescoped_nbytes(directory):
+    """Each rank's count of its coarse factor, behind telescoping to one rank."""
+    coarse.reduction = REDUCTIONS[ONE_RANK]
+    counted = []
+    set_up = coarse.CoarseMumps.set_up
+
+    def spy(self):
+        set_up(self)
+        counted.append(self.nbytes)
+
+    coarse.CoarseMumps.set_up = spy
+    _s_and_iterations(directory, (FREQUENCY,))
+    return counted
+
+
+@needs_stack
+def test_a_telescoped_coarse_factor_counts_its_bytes_on_the_kept_rank(tmp_path):
+    counted = on_ranks(_telescoped_nbytes, tmp_path, ranks=4, replicated=False)
+    print(f"nbytes per rank: {counted}")  # noqa: T201
+    assert counted[0]
+    assert all(n > 0 for n in counted[0])
+    assert all(n == 0 for rank in counted[1:] for n in rank)
+
+
+class _Infog1:
+    """An inner KSP whose factor reads ``value`` for INFOG(1), the rest as it is."""
+
+    def __init__(self, ksp, value):
+        self._factor = ksp.getPC().getFactorMatrix()
+        self._value = value
+
+    def getPC(self):  # noqa: N802 - petsc4py's name
+        return self
+
+    def getFactorMatrix(self):  # noqa: N802 - petsc4py's name
+        return self
+
+    def getMumpsInfog(self, i):  # noqa: N802 - petsc4py's name
+        return self._value if i == 1 else self._factor.getMumpsInfog(i)
+
+    def getMumpsInfo(self, i):  # noqa: N802 - petsc4py's name
+        return self._factor.getMumpsInfo(i)
+
+
+def _workspace_error_behind_telescoping(directory):
+    """The first telescoped set-up's inner factor reads INFOG(1)=-9."""
+    coarse.reduction = REDUCTIONS[ONE_RANK]
+    set_ups = _count_set_ups()
+    first = []
+    real = coarse._petsc.telescope_ksp
+
+    def forced(pc):
+        inner = real(pc)
+        first[:] = first or [pc.getOptionsPrefix()]
+        if inner is None or pc.getOptionsPrefix() != first[0]:
+            return inner
+        return _Infog1(inner, coarse.MUMPS_WORKSPACE_ERROR)
+
+    coarse._petsc.telescope_ksp = forced
+    s, *_ = _s_and_iterations(directory, (FREQUENCY,))
+    return s, len(set_ups)
+
+
+@needs_stack
+def test_a_workspace_error_behind_telescoping_retries_once(tmp_path):
+    s_one, *_ = _s_and_iterations(tmp_path, (FREQUENCY,))
+    (s, set_ups), *_ = on_ranks(
+        _workspace_error_behind_telescoping, tmp_path, ranks=4, limit=300
+    )
+    assert set_ups == 2
+    assert np.abs(s - s_one).max() < S_GATE * np.abs(s_one).max()
 
 
 # --- what lies under the solve ------------------------------------------------------
