@@ -613,10 +613,10 @@ def element_gap(
 ) -> float:
     r"""The largest element-wise gap between a periodic field and its ``matrix`` image.
 
-    For ``trials`` seeded random coefficient vectors $x$ of ``periodic``, the
-    largest over this rank's elements $K$ of
-    $\|P x - x\|_{L^2(K)} / \|x\|_{L^2(K)}$, with $P$ = ``matrix`` onto
-    ``unpaired``. Local: element-wise integrals only, no exchange.
+    For ``trials`` seeded random coefficient vectors :math:`x` of ``periodic``,
+    the largest over this rank's elements :math:`K` of
+    :math:`\|P x - x\|_{L^2(K)} / \|x\|_{L^2(K)}`, with :math:`P` = ``matrix``
+    onto ``unpaired``. Local: element-wise integrals only, no exchange.
     """
     rng = np.random.default_rng(7)
     mesh = periodic.mesh
