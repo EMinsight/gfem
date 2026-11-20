@@ -6,6 +6,7 @@ iterations exactly. Only the count shows a Krylov method that lost its global
 products, since such a method still converges to the right S (ADR 0069).
 """
 
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -516,7 +517,8 @@ def test_a_failure_on_one_rank_in_the_solve_ends_the_job(tmp_path):
 def _a_miss_on_every_rank(directory):
     """Two iterations cannot converge: the error is agreed, and a job goes on."""
     world = _world()
-    prepare.__kwdefaults__["maxiter"] = 2
+    # `prepare` is timed by a wrapper, which carries no keyword defaults
+    inspect.unwrap(prepare).__kwdefaults__["maxiter"] = 2
     try:
         gfem.solve(cases.layered_line(directory), gfem.Driven(list(SWEEP)))
     except gfem.LinearSolverConvergenceError as err:
