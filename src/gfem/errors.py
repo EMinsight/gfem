@@ -208,7 +208,9 @@ class ObliqueAbsorberWarning(UserWarning):
     Bloch wave vector and every propagating diffraction order meet the face
     at an angle, so the driven solve warns once per face when that
     reflection reaches 1%. A `gfem.FloquetPort` on the face absorbs every
-    order at any angle. Filter it with Python's `warnings` module.
+    order at any angle, and so does a perfectly matched layer (`gfem.PML`)
+    meshed beyond it, which also takes a lossy or layered substrate. Filter
+    it with Python's `warnings` module.
     """
 
 

@@ -236,7 +236,9 @@ def _text(surface, theta, order, frequency):
         f"Absorbing {surface!r} meets a plane wave at {math.degrees(theta):.1f}° "
         f"(order {order} at {frequency}), and its first-order condition reflects "
         f"about {r:.1%} of the amplitude of such a wave; a gfem.FloquetPort on "
-        f"{surface!r} absorbs every order at any angle."
+        f"{surface!r} absorbs every order at any angle, and so does a perfectly "
+        "matched layer (gfem.PML) meshed beyond it, which also takes a lossy or "
+        "layered substrate."
     )
 
 
