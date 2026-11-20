@@ -623,6 +623,31 @@ def test_a_launch_above_the_cap_skips(monkeypatch):
         ranks.on_ranks_argv(["never-run"], ranks=8)
 
 
+def test_a_general_operator_is_no_distributed_refusal():
+    # a general operator under ranks reaches its backend (ADR 0078 amendment)
+    assert "general_operator" not in _mpi._REFUSALS
+    assert "general_operator" not in mpi_cases.GUARD_KEYS
+
+
+def test_each_symmetry_registers_its_own_coarse_type(monkeypatch):
+    # a plain and a Bloch BDDC solve on one communicator never share a creator
+    registered = {}
+    monkeypatch.setattr(coarse, "_made", {})
+    monkeypatch.setattr(coarse, "_registered", set())
+    monkeypatch.setattr(_mpi, "comm_key", lambda _: 7)
+    monkeypatch.setattr(
+        coarse.ngs.comp, "RegisterPreconditioner", registered.setdefault
+    )
+    comm = Stub(4)
+    lu, cholesky = coarse.coarse_type(comm, False), coarse.coarse_type(comm, True)
+    assert (lu, cholesky) == ("gfem_mumps_7_lu", "gfem_mumps_7_cholesky")
+    assert coarse.coarse_type(comm, False) == lu
+    assert set(registered) == {lu, cholesky}
+    made = [registered[name](None, None) for name in (lu, cholesky)]
+    assert [m.symmetric for m in made] == [False, True]
+    assert coarse._made[7] == made  # `finish` takes the last one NGSolve asked for
+
+
 # --- field pieces -----------------------------------------------------------------
 
 

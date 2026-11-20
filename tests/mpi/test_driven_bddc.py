@@ -301,8 +301,8 @@ def _a_singular_coarse_problem(directory, route):
     coarse.reduction = REDUCTIONS[route]
     built = coarse.distributed_aij
 
-    def zero(*args):
-        aij, index = built(*args)
+    def zero(*args, **kwargs):
+        aij, index = built(*args, **kwargs)
         aij.zeroEntries()
         return aij, index
 
@@ -444,21 +444,6 @@ def test_apply_takes_a_state_and_gives_a_load(tmp_path):
     (energy, again, counts), *_ = on_ranks(_apply_then_solve, tmp_path, ranks=4)
     assert abs(again - energy) < 1e-8 * abs(energy)
     assert counts[0] > 0
-
-
-def _prepare_a_general_operator(directory):
-    _, system = _system(directory)
-    operator = system.operator_at(2 * np.pi * FREQUENCY)
-    try:
-        prepare(operator, symmetry="general", kind="bddc_gmres")
-    except gfem.DistributedUnsupportedError as err:
-        return err.feature
-    raise AssertionError("a general operator was prepared")
-
-
-def test_a_general_operator_is_refused_on_every_rank(tmp_path):
-    feature, *_ = on_ranks(_prepare_a_general_operator, tmp_path, ranks=3)
-    assert feature == "general_operator"
 
 
 # --- what a job sees ----------------------------------------------------------------
