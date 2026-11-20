@@ -248,25 +248,71 @@ def test_a_one_process_solve_never_imports_mpi4py(environment, tmp_path):
     assert proc.stdout.strip() == "[]"
 
 
+#: B2's and r0.5's coarse DOFs (wirebasket, 28 ranks x 4 threads per node).
+B2, R05 = 30_399_588, 7_050_000
+
+
 @pytest.mark.parametrize(
-    ("dofs", "size", "factor"),
+    ("dofs", "size", "columns", "seen", "expected"),
     [
-        (3_300_000, 28, 1),  # r10M at 28x4: 119 k per rank, nothing to reduce
-        (3_300_000, 64, 2),  # 32 ranks, as run on MN5
-        (22_356_889, 896, 14),  # r10M_void_split on 32 nodes: 64 ranks, not 180
-        (22_356_889, 64, 1),
-        (33_000_000, 896, 14),  # arithmetic at 100 M DOF: still 64
-        (250_000, 8, 4),
-        (1_000, 8, 8),  # a tiny mesh: one rank
-        (1_000, 1, 1),
+        # B2 on 8 nodes: both would take 56 ranks, so PT-Scotch even when seen
+        (B2, 224, 2, False, ("pt-scotch", 4)),
+        (B2, 224, 30, True, ("pt-scotch", 4)),
+        # B2 on 16 and 32 nodes: one set-up of 2 ports stays on 56 PT-Scotch ranks
+        (B2, 448, 2, False, ("pt-scotch", 8)),
+        (B2, 448, 5, False, ("pt-scotch", 8)),
+        (B2, 448, 6, False, ("metis", 4)),  # 112 ranks from 6 columns
+        (B2, 448, 2, True, ("metis", 4)),  # or from the second set-up
+        (B2, 896, 2, False, ("pt-scotch", 16)),
+        (B2, 896, 30, False, ("metis", 4)),  # a broad sweep: 224 ranks
+        (B2, 896, 2, True, ("metis", 4)),
+        # r0.5
+        (R05, 224, 2, True, ("pt-scotch", 4)),
+        (R05, 896, 2, False, ("pt-scotch", 16)),
+        (R05, 896, 2, True, ("metis", 4)),
+        # r10M at 28x4: 119 k per rank, nothing to reduce
+        (3_300_000, 28, 30, True, ("pt-scotch", 1)),
+        (22_356_889, 896, 2, False, ("pt-scotch", 16)),  # 56 ranks, not 64
+        # tiny meshes of the launched tier: one rank, whatever the set-up
+        (1_000, 8, 30, True, ("pt-scotch", 8)),
+        (50_000, 16, 30, True, ("pt-scotch", 16)),
+        (1_000, 1, 1, False, ("pt-scotch", 1)),
+        # METIS's floor of 30 k DOFs per coarse rank
+        (59_999, 16, 30, True, ("pt-scotch", 16)),
+        (60_000, 16, 30, True, ("metis", 8)),
+        (90_000, 64, 30, True, ("metis", 22)),
     ],
 )
-def test_the_coarse_problem_runs_on_at_most_one_rank_per_100k_dofs_and_64_ranks(
-    dofs, size, factor
+def test_the_coarse_rule_picks_metis_on_every_fourth_rank_only_when_it_repays(
+    dofs, size, columns, seen, expected
 ):
-    assert coarse.reduction(dofs, size) == factor
-    assert math.ceil(size / factor) <= max(1, dofs // coarse.DOFS_PER_RANK)
-    assert math.ceil(size / factor) <= coarse.MAX_RANKS
+    ordering, factor = coarse.rule(dofs, size, columns, seen=seen)
+    assert (ordering, factor) == expected
+    kept = math.ceil(size / factor)
+    if ordering == coarse.PT_SCOTCH:
+        assert kept <= coarse.MAX_RANKS == 56
+        assert kept <= max(1, dofs // coarse.DOFS_PER_RANK)
+    else:
+        assert kept <= math.ceil(size / 4)
+
+
+@pytest.mark.parametrize("symmetric", [False, True])
+def test_metis_orders_sequentially_without_pt_scotch_behind_the_telescope(symmetric):
+    pairs = coarse.options(symmetric, workspace=60, factor=4, ordering=coarse.METIS)
+    options = dict(pairs)
+    assert len(options) == len(pairs)
+    assert options["pc_type"] == "telescope"
+    assert options["telescope_mat_mumps_icntl_28"] == 1
+    assert options["telescope_mat_mumps_icntl_7"] == 5
+    assert options["telescope_mat_mumps_icntl_14"] == 60
+    assert not any("icntl_29" in name for name in options)
+    scotch = dict(coarse.options(symmetric, workspace=60, factor=4))
+    assert scotch["telescope_mat_mumps_icntl_28"] == 2
+    assert scotch["telescope_mat_mumps_icntl_29"] == 1
+
+
+def test_the_packaged_mumps_config_sets_metis_niter_to_one():
+    assert coarse.MUMPS_CONFIG.read_text() == "METIS_OPTIONS(7)=1\n"
 
 
 # --- refusals ---------------------------------------------------------------------

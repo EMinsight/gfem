@@ -1018,3 +1018,49 @@ def test_a_telescoped_coarse_problem_factors_by_symmetry_behind_it(
     options = dict(coarse.options(symmetric, workspace=60, factor=4))
     assert options["pc_type"] == "telescope"
     assert options["telescope_pc_type"] == factorization
+
+
+@pytest.mark.parametrize("theirs", [False, True])
+def test_a_metis_coarse_set_up_reads_gfems_mumps_config_only_while_it_factors(
+    built, monkeypatch, tmp_path, theirs
+):
+    # one rank, METIS forced: the variable during the set-up, and only then
+    users = None
+    if theirs:  # MUMPS reads it at every job, so it must exist
+        users = str(tmp_path / "mumps.cfg")
+        Path(users).write_text("METIS_OPTIONS(7)=1\n")
+    PETSc = _petsc.require_petsc()
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    seen = []
+
+    class Spy(PETSc.KSP):
+        def setUp(self):
+            seen.append(coarse.os.environ.get(coarse.CONFIG_VARIABLE))
+            return super().setUp()
+
+    spied = types.SimpleNamespace(**{**vars(PETSc), "KSP": Spy})
+    monkeypatch.setattr(_petsc, "require_petsc", lambda *_: spied)
+    monkeypatch.setattr(coarse, "FreeNumbering", lambda *_: _free_numbering(space))
+    monkeypatch.setattr(coarse, "rule", lambda *_, **__: (coarse.METIS, 1))
+    for name in ("agree_any", "agree_all"):
+        monkeypatch.setattr(coarse._mpi, name, lambda _, *, flag: flag)
+    monkeypatch.setattr(coarse._mpi, "agree_min", lambda _, value: value)
+    if users is None:
+        monkeypatch.delenv(coarse.CONFIG_VARIABLE, raising=False)
+    else:
+        monkeypatch.setenv(coarse.CONFIG_VARIABLE, users)
+    source = types.SimpleNamespace(
+        local_mat=op.form.mat,
+        row_pardofs=None,
+        CreateColVector=op.form.mat.CreateColVector,
+    )
+    made = coarse.CoarseMumps(source, space.FreeDofs(), PETSc.COMM_SELF, symmetric=True)
+    made.set_up()
+    try:
+        assert seen == [str(coarse.MUMPS_CONFIG) if users is None else users]
+        assert coarse.os.environ.get(coarse.CONFIG_VARIABLE) == users
+        factor = made._ksp.getPC().getFactorMatrix()
+        assert (factor.getMumpsIcntl(28), factor.getMumpsIcntl(7)) == (1, 5)
+    finally:
+        made.free()

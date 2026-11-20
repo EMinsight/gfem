@@ -17,8 +17,12 @@ DOFs, so each symmetry has its own registered ``coarsetype`` (`coarse_type`).
 
 from __future__ import annotations
 
+import contextlib
 import math
-from typing import Any
+import os
+from collections.abc import Generator
+from pathlib import Path
+from typing import Any, Final, Literal
 
 import ngsolve as ngs
 import numpy as np
@@ -36,9 +40,34 @@ from gfem._linalg.petsc import defaults as factor_defaults
 #: Wirebasket DOFs per coarse rank: PT-Scotch's fill is fine at 66 k and 104 k and
 #: jumps at 52 k and 33 k on r0.5 and r10M; "about 100 k" errs on the fine side.
 DOFS_PER_RANK = 100_000
-#: Coarse ranks at most: on r10M_void_split's 22.4 M wirebasket DOFs, 64 ranks stay
-#: within 1.4x of METIS's 5.2 G entries, 112 give 3.2x and 180 give 16x.
-MAX_RANKS = 64
+#: Coarse ranks at most under PT-Scotch: with an even count per node it orders on the
+#: largest power of two of them, so 56 orders on 32 and 64 on 64, where the fill jumps
+#: (B2_void_split: 8.87 G entries on 56 ranks, 10.8-11.3 G on 64).
+MAX_RANKS = 56
+
+#: The two coarse orderings `rule` picks from.
+PT_SCOTCH: Final = "pt-scotch"
+METIS: Final = "metis"
+type Ordering = Literal["pt-scotch", "metis"]
+#: METIS's coarse ranks are every this-many-th rank: 7 per node at 28 ranks per node.
+METIS_EVERY = 4
+#: Wirebasket DOFs per METIS coarse rank at least: r0.5 on 224 ranks, 31.5 k each,
+#: still applied faster than on 56.
+METIS_DOFS_PER_RANK = 30_000
+#: Columns from which one METIS set-up repays its serial analysis: about 300-370
+#: applies at B2's 64 iterations per column.
+METIS_COLUMNS = 6
+#: MUMPS reads it through ``MUMPS_CONFIG_FILE``: METIS's ``NITER=1`` takes about
+#: 15 % off the serial analysis for 2 % more fill, and PETSc has no option for it.
+MUMPS_CONFIG = Path(__file__).with_name("mumps_metis.cfg")
+#: The variable MUMPS reads its configuration file from.
+CONFIG_VARIABLE = "MUMPS_CONFIG_FILE"
+#: MUMPS's ordering options under METIS: a sequential analysis (ICNTL(28) 1) with
+#: METIS (ICNTL(7) 5), so ICNTL(29), PT-Scotch's choice, is left out.
+METIS_MUMPS_OPTIONS: tuple[tuple[str, Any], ...] = (
+    ("mat_mumps_icntl_28", 1),
+    ("mat_mumps_icntl_7", 5),
+)
 
 #: Failures a larger workspace may cure: behind telescoping every failure reads 0.
 RETRIED = (MUMPS_WORKSPACE_ERROR, 0)
@@ -64,23 +93,76 @@ def reduction(dofs: int, size: int) -> int:
     return max(1, math.ceil(size / max(1, min(dofs // DOFS_PER_RANK, MAX_RANKS))))
 
 
+def rule(dofs: int, size: int, columns: int, *, seen: bool) -> tuple[Ordering, int]:
+    r"""The coarse ordering and ``PCTELESCOPE``'s factor of one set-up.
+
+    With :math:`n` the coarse DOFs and :math:`P` the ranks, PT-Scotch takes
+    :math:`c_P = \max(1, \min(P, \lfloor n / 100\,000 \rfloor, 56))` ranks and
+    sequential METIS :math:`c_M = \max(1, \min(\lceil P / 4 \rceil,
+    \lfloor n / 30\,000 \rfloor))`. METIS orders when :math:`c_M > c_P` and the
+    set-up serves at least `METIS_COLUMNS` columns or repeats a pattern: its serial
+    analysis costs several PT-Scotch set-ups, which only a faster apply over many
+    columns, or an analysis kept across set-ups, pays back. The rule reads counts
+    only, so every rank and every rerun picks the same.
+
+    Args:
+        dofs: The coarse problem's free DOFs.
+        size: The ranks of the communicator.
+        columns: The columns the set-up is expected to serve.
+        seen: This process has set up the same pattern before.
+
+    Returns:
+        The ordering and the factor: PETSc keeps every factor-th rank.
+    """
+    scotch = max(1, min(size, dofs // DOFS_PER_RANK, MAX_RANKS))
+    metis = max(1, min(math.ceil(size / METIS_EVERY), dofs // METIS_DOFS_PER_RANK))
+    if metis > scotch and (columns >= METIS_COLUMNS or seen):
+        return METIS, math.ceil(size / metis)
+    return PT_SCOTCH, reduction(dofs, size)
+
+
+@contextlib.contextmanager
+def mumps_config(ordering: Ordering) -> Generator[None]:
+    """``MUMPS_CONFIG_FILE`` on `MUMPS_CONFIG` for a METIS set-up, under `_petsc.LOCK`.
+
+    MUMPS reads the variable at each job, so rank-local factors set up outside the
+    scope never see it, while the coarse factor keeps ``NITER=1`` for its later
+    jobs. A value the user set is left as it is: it applies to every MUMPS in the
+    process.
+    """
+    with _petsc.LOCK:
+        if ordering != METIS or CONFIG_VARIABLE in os.environ:
+            yield
+            return
+        os.environ[CONFIG_VARIABLE] = str(MUMPS_CONFIG)
+        try:
+            yield
+        finally:
+            os.environ.pop(CONFIG_VARIABLE, None)
+
+
 def options(
     symmetric: bool,
     *,
     workspace: int,
     factor: int,
+    ordering: Ordering = PT_SCOTCH,
 ) -> tuple[tuple[str, Any], ...]:
     """PETSc's options: an exact MUMPS factorization, behind telescoping if it reduces.
 
     Args:
         symmetric: The operator has :math:`A^T = A`: :math:`L D L^T`, else LU.
         workspace: MUMPS's ICNTL(14).
-        factor: ``PCTELESCOPE``'s reduction (`reduction`); 1 for none.
+        factor: ``PCTELESCOPE``'s reduction (`rule`); 1 for none.
+        ordering: `PT_SCOTCH`, gfem's options under ranks, or `METIS`
+            (`METIS_MUMPS_OPTIONS` in their place).
     """
-    factorization = (
-        *factor_defaults(symmetric)[1:],
-        *{**dict(RANK_MUMPS_OPTIONS), "mat_mumps_icntl_14": workspace}.items(),
-    )
+    mumps = dict(RANK_MUMPS_OPTIONS)
+    if ordering == METIS:
+        del mumps["mat_mumps_icntl_29"]
+        mumps.update(METIS_MUMPS_OPTIONS)
+    mumps["mat_mumps_icntl_14"] = workspace
+    factorization = (*factor_defaults(symmetric)[1:], *mumps.items())
     if factor == 1:
         return (("ksp_type", "preonly"), *factorization)
     return (
@@ -124,6 +206,8 @@ class CoarseMumps(ngs.BaseMatrix):
         self._x: Any = None
         self._b: Any = None
         self._freed = False
+        #: The columns the set-up is expected to serve, for `rule`.
+        self.columns = 1
 
     def set_up(self) -> None:
         """Factor the wirebasket, on a new KSP while MUMPS's workspace is too small.
@@ -142,7 +226,9 @@ class CoarseMumps(ngs.BaseMatrix):
                 self._source.local_mat, self._numbering, comm, symmetric=self.symmetric
             )
             self._x, self._b = self._aij.createVecs()
-            self._factor = reduction(self._numbering.total, comm.size)
+            self._ordering, self._factor = rule(
+                self._numbering.total, comm.size, self.columns, seen=False
+            )
             workspace = dict(RANK_MUMPS_OPTIONS)["mat_mumps_icntl_14"]
             for attempt in range(MUMPS_RETRIES + 1):
                 self._ksp = PETSc.KSP().create(comm)
@@ -150,9 +236,15 @@ class CoarseMumps(ngs.BaseMatrix):
                 self._ksp.setOptionsPrefix(prefix)
                 self._ksp.setOperators(self._aij)
                 pairs = options(
-                    self.symmetric, workspace=workspace, factor=self._factor
+                    self.symmetric,
+                    workspace=workspace,
+                    factor=self._factor,
+                    ordering=self._ordering,
                 )
-                with _petsc.scoped_options(prefix, pairs):
+                with (
+                    _petsc.scoped_options(prefix, pairs),
+                    mumps_config(self._ordering),
+                ):
                     self._ksp.setFromOptions()
                     self._ksp.setUp()
                     if self._factor > 1:
