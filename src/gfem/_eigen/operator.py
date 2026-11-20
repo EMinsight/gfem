@@ -45,7 +45,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from collections.abc import Callable
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import numpy as np
 import scipy.constants as const
@@ -221,8 +221,12 @@ class EigenOperator:
         layout: How the DOFs lie across ranks (`ONE_PROCESS` on one process):
             every whole-vector product's.
         numbers: Each DOF's one-process number, or ``None`` on one process:
-            the start of the `norms` estimates is then a function of them,
-            the same state on every rank count.
+            the start of the `norms` estimates and the sign of a mode
+            (`gfem._sign.largest_value`) are then functions of them, the same
+            on every rank count.
+        numbering: Under ranks, the owned free DOFs as rows
+            (`gfem._linalg.petsc.FreeNumbering`): the seed solver's vectors.
+            ``None`` on one process.
         shifts: How many times `reshift` refactorized.
     """
 
@@ -238,6 +242,7 @@ class EigenOperator:
     law_constant: LinearMap | None = None
     layout: DofLayout = ONE_PROCESS
     numbers: np.ndarray | None = None
+    numbering: Any = None
     shifts: int = 0
     _norms: tuple[float, ...] | None = None
     _handle: Handle | None = None

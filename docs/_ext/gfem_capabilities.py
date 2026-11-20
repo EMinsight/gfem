@@ -937,7 +937,7 @@ def links_gradient_errors(row: dict) -> bool:
 #: or a label with no case, fails the build.
 REFUSAL_LABELS = {
     "adaptive_sweep": '`Driven(sweep="adaptive")`, with or without `samples`',
-    "eigenmode": "`Eigenmode`, nonlinear ones included",
+    "arpack": '`Eigenmode` with `eigen_solver="arpack"`',
     "electrostatic": "`Electrostatic`",
     "thermal": "`SteadyThermal`",
     "thermal_transient": "`TransientThermal`",

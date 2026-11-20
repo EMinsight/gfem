@@ -118,7 +118,10 @@ _REFUSALS = {
     "adaptive_sweep": (
         f"An adaptive sweep has no distributed path: use a uniform sweep, {_COPIES}."
     ),
-    "eigenmode": f"An eigenmode solve has no distributed path: {_RUN_COPIES}.",
+    "arpack": (
+        "ARPACK runs on one process: use eigen_solver='slepc' or 'auto' above one "
+        f"rank, {_COPIES}."
+    ),
     "electrostatic": f"An electrostatic solve has no distributed path: {_RUN_COPIES}.",
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
@@ -312,12 +315,25 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("periodic")
         if min(options.frequency_workers, len(problem.frequency)) > 1:
             refuse_feature("frequency_workers")
+    if isinstance(problem, Eigenmode):
+        _refuse_eigenmode(model, problem, options)
     if isinstance(problem, (Driven, Eigenmode, Electrostatic)):
         _refuse_options(options)
-    if isinstance(problem, Eigenmode):
-        refuse_feature("eigenmode")
     if isinstance(problem, Electrostatic):
         refuse_feature("electrostatic")
+
+
+def _refuse_eigenmode(model: Any, problem: Any, options: Any) -> None:
+    """Refuse what an `gfem.Eigenmode` cannot run above one rank (ADR 0502).
+
+    Bloch before periodic, since a wave vector needs a pair.
+    """
+    if problem.wave_vector is not None:
+        refuse_feature("bloch")
+    if model._periodic:  # noqa: SLF001
+        refuse_feature("periodic")
+    if options.eigen_solver == "arpack":
+        refuse_feature("arpack")
 
 
 def _refuse_options(options: Any) -> None:

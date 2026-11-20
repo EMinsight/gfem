@@ -47,8 +47,10 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
         case "adaptive_sweep":
             problem = gfem.Driven([1e9, 5e9], sweep="adaptive")
             return _line(directory), problem, direct
-        case "eigenmode":
-            return _line(directory), gfem.Eigenmode(target=FREQUENCY, n_modes=1), direct
+        case "arpack":
+            options = gfem.SolverOptions(linear_solver="direct", eigen_solver="arpack")
+            problem = gfem.Eigenmode(target=FREQUENCY, n_modes=1)
+            return _line(directory), problem, options
         case "electrostatic":
             return _line(directory), gfem.Electrostatic(terminals=TERMINALS), direct
         case "thermal":
@@ -90,7 +92,7 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
 #: Every case of `refused`.
 KEYS = (
     "adaptive_sweep",
-    "eigenmode",
+    "arpack",
     "electrostatic",
     "thermal",
     "thermal_transient",
@@ -119,7 +121,7 @@ METHOD_KEYS = (
     "error_estimate",
     "mesh_refinement",
 )
-#: A guard no public call reaches while Bloch and eigenmode raise, so no page lists it.
+#: A guard no public call reaches while Bloch raises, so no page lists it.
 GUARD_KEYS = ("general_operator",)
 
 
