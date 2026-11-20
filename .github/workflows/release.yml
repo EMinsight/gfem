@@ -102,4 +102,9 @@ jobs:
         TAG: ${{ github.ref_name }}
       run: |
         gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
-          --title "gfem $TAG" --generate-notes --verify-tag
+          --title "gfem $TAG" --verify-tag --notes "$(cat <<EOF
+        \`pip install gfem==$TAG\` ([PyPI](https://pypi.org/project/gfem/$TAG/))
+
+        What changed: [release notes](https://bvial.info/gfem/project/release-notes.html).
+        EOF
+        )"
