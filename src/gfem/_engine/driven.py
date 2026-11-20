@@ -5,12 +5,12 @@ At each frequency the operator ``A(ω) = Σ θ_k(ω) A_k`` (see
 port's right-hand side is solved in one handle call: GMRES + BDDC by
 default, each port starting from its solution at the previous frequency
 (at a uniform sweep's first, on one process, from the previous design's
-there: ADR 0126), or one LDL^T factorization (``direct``: MKL PARDISO with
+there), or one LDL^T factorization (``direct``: MKL PARDISO with
 the ``mkl`` extra, NGSolve sparse Cholesky otherwise). The system operator
 (`gfem._engine.system_operator.SystemOperator`) answers the forward and
 adjoint solves. A sweep keeps one base handle: a direct solver plans at the
 first frequency and refactorizes at the others (on the plan pool, one base per
-frequency met before, kept across designs: ADR 0121), and sums each frequency's
+frequency met before, kept across designs), and sums each frequency's
 matrix from the pieces ``A_k`` assembled once per forward (the piece sum,
 kept with the system operator for the backward pass) instead of assembling
 it.
@@ -26,7 +26,7 @@ A(k)^T = A(-k), so S(k)^T = S(-k), and the direct solver factors it by LU
 At a fixed angle (``Driven.wave_vector_frequency``) the wave vector scales
 with frequency, k(f) = k f / f_ref: each frequency is solved by a
 single-frequency rule of its own, with its Bloch space, operator,
-factorization and transposed system at ±k(f) (ADR 0151).
+factorization and transposed system at ±k(f).
 
 S is read from the port voltages: with the excited port fed 1 W incident
 power (incident voltage sqrt(2 R)), ``S_ij = V_i / sqrt(2 R_i) - δ_ij``,
@@ -203,7 +203,7 @@ DrivenSymmetry = Literal["complex_symmetric", "general"]
 
 #: The linear solver for ``linear_solver="auto"`` when direct does not fit
 #: (`gfem._linalg.auto_linear_solver`): direct while it fits, else GMRES +
-#: BDDC (ADR 0124).
+#: BDDC.
 DEFAULT_SOLVER: Kind = "bddc_gmres"
 
 #: k0 * h_min below which a driven solve warns (gfem.LowFrequencyWarning).
@@ -226,7 +226,7 @@ class Expansion:
         field_rows: Under ranks, the rows of ``space`` that a local volume
             element uses (`gfem._engine.domain.element_dofs`): the plain
             mesh's field layout, in its order, so results keep ``P x`` on
-            those rows (ADR 0071). ``None`` on one process: every row.
+            those rows. ``None`` on one process: every row.
     """
 
     matrix: scipy.sparse.csr_matrix
@@ -259,10 +259,10 @@ class DrivenOperator:
             wave vector, never read from its value.
         layout: How ``space`` lies across ranks; ``None`` on one process.
         fixed: How the volume pieces split at the material-field regions,
-            for a piece sum that keeps their other part (ADR 0082); ``None``
+            for a piece sum that keeps their other part; ``None``
             when nothing is fixed, restricted, or under ranks.
         topology: The mesh topology ``space`` lies on; with ``space_key``,
-            what a solver plan of the operator is pooled under (ADR 0082).
+            what a solver plan of the operator is pooled under.
         space_key: ``space``'s key in its discretization (order, `PEC`
             surfaces, periodic pairs and phases).
         latent: Pieces whose matrix is zero at this design, so that no
@@ -358,11 +358,11 @@ class DrivenOperator:
         them up by name: its terms are the pieces, under their names
         (`operator_terms`, and `lumped_terms` for the lumped values). Of the
         ports' pieces only a lumped port's L and C pieces move (with their
-        values, ADR 0100); its R piece, its surface and a wave port's mode
+        values); its R piece, its surface and a wave port's mode
         are fixed, so no pair carries them. The `latent` pieces are
         included: their derivative is not zero. A permittivity law's pieces
         add dθ/dp by each law parameter, each under its own key
-        (`gfem._engine.sensitivity.law_key`, the law pass, ADR 0112), unless
+        (`gfem._engine.sensitivity.law_key`, the law pass), unless
         ``laws`` is false (no law parameter is a wanted input).
         """
         out = {
@@ -598,8 +598,8 @@ def expansion_matrix(
             raise _mpi.AgreedError(
                 f"The periodic expansion differs from the periodic field by up to "
                 f"{gaps.max():.1e} (element-wise, relative) on ranks {ranks}: "
-                "netgen or NGSolve now behaves differently from what ADR 0071 "
-                "measured. Report it, and run one-process copies with "
+                "netgen or NGSolve now behaves differently from the version gfem "
+                "was checked against. Report it, and run one-process copies with "
                 "comm=MPI.COMM_SELF meanwhile."
             )
     return out
@@ -691,7 +691,7 @@ AdjointLoads = Callable[[AdjointContext], Mapping[Hashable, np.ndarray]]
 
 
 def port_loads(names: Sequence[str]) -> AdjointLoads:
-    """The S-functional adjoint loads of ports ``names`` (ADR 0089).
+    """The S-functional adjoint loads of ports ``names``.
 
     Keyed by port name, and only where a port's adjoint is not its own
     solution scaled: a port that is not excited, or whose S functional is
@@ -725,8 +725,7 @@ class DrivenRule:
     physics = "em"
     #: The operator family (a key of `sensitivity.PROPERTIES`).
     form = "driven"
-    #: Material properties the driven forms read, and a law blend's density
-    #: (ADR 0113).
+    #: Material properties the driven forms read, and a law blend's density.
     reads = frozenset({"eps_r", "mu_r", "tan_delta", "conductivity", "blend"})
     #: Whether the backward's pairs carry the law pieces' dθ/dp: the adjoint
     #: wrapper clears it when no law parameter is a wanted input, so a
@@ -735,7 +734,7 @@ class DrivenRule:
     #: Outputs whose cotangents the backward pass handles (a design may not
     #: touch a wave port face: `unsupported_input`).
     differentiable_outputs = sweep_outputs.DIFFERENTIABLE
-    #: Outputs that are a rank's own piece under ranks (ADR 0063): the ranks
+    #: Outputs that are a rank's own piece under ranks: the ranks
     #: compare their cotangents' shapes, not their values.
     pieces = frozenset({"e_field"})
 
@@ -754,7 +753,7 @@ class DrivenRule:
         ``comm`` is the resolved communicator of a distributed solve.
         ``order_frequency`` is the grid the Floquet order table is computed
         over: a frequency worker's whole sweep, so that its block models the
-        sweep's orders (ADR 0149, ADR 0152); the problem's by default.
+        sweep's orders; the problem's by default.
         ``gauge`` is the parent rule's gauge choice (a frequency worker, a
         fixed-angle sweep's frequency), taken as it is; by default the rule
         resolves ``SolverOptions.gauge`` (`resolve_gauge`) and logs it.
@@ -777,7 +776,7 @@ class DrivenRule:
         self.options = options
         self.comm = comm
         #: Whether the sweep solves several wave vectors, one per frequency
-        #: (a fixed-angle sweep, ADR 0151): `forward` and `backward` then
+        #: (a fixed-angle sweep): `forward` and `backward` then
         #: run one single-frequency rule per frequency (`_at_frequency`).
         self.swept = (
             problem.wave_vector_frequency is not None and len(problem.frequency) > 1
@@ -808,7 +807,7 @@ class DrivenRule:
         # the model's own refusals before the options'
         _check_supported(model)
         # before any assembly, and before any worker; `gauge` (whether the
-        # solve runs through the tree-cotree gauge, ADR 0216, ADR 0220) is
+        # solve runs through the tree-cotree gauge) is
         # resolved next to the linear solver, or the parent rule's
         self.linear, self.gauge = _resolve(
             model, problem, options, comm=comm, gauge=gauge
@@ -853,11 +852,11 @@ class DrivenRule:
         )
         #: Per Floquet surface, its order table over the whole grid
         #: (`gfem._floquet.order_table`): the parent's pre-pass, before any
-        #: assembly (ADR 0149); empty without Floquet ports.
+        #: assembly; empty without Floquet ports.
         self.orders = _floquet_prepass(
             model, problem, options, self.order_frequency, self.excite
         )
-        # the parent's warning, from the same grid (ADR 0150)
+        # the parent's warning, from the same grid
         _floquet.warn_oblique_absorbers(
             model,
             problem.frequency,
@@ -916,14 +915,14 @@ class DrivenRule:
         self.keeps_partial = False
         #: The per-frequency adjoint loads a uniform forward also solves, on
         #: its own factorization (`AdjointLoads`): set by `gfem.refine_mesh`
-        #: for an estimate's solved duals (ADR 0089 amendment, ADR 0132),
+        #: for an estimate's solved duals,
         #: never on a differentiated solve.
         self.adjoint_loads: AdjointLoads | None = None
         #: Those adjoints, per (frequency, key), on the unpaired space.
         self.adjoints: dict[tuple[float, Hashable], np.ndarray] = {}
         #: Per wave port surface, the rows of its parent's port mode sweep at
         #: the problem's frequencies: set in a frequency worker, which then
-        #: sweeps no port mode itself (ADR 0099). ``None`` anywhere else.
+        #: sweeps no port mode itself. ``None`` anywhere else.
         self.handed_port_modes: list[dict[str, np.ndarray]] | None = None
         _check_low_frequency(
             model, problem.frequency, self.gauge, stacklevel=4, comm=comm
@@ -1011,7 +1010,7 @@ class DrivenRule:
         with task_manager(self.options.threads, self.comm):
             system, ports = self._ports(model)
             s = np.zeros((len(frequencies), len(self.port_names), width), complex)
-            # the first frequency starts from the previous design (ADR 0126)
+            # the first frequency starts from the previous design
             previous, design = None, _DesignGuess.of(self, system)
             with system.sweep(
                 solves=len(frequencies),
@@ -1200,7 +1199,7 @@ class DrivenRule:
         reports every block's miss.
 
         With wave ports, each surface's port mode sweep runs here, once over
-        the whole grid and before any worker starts (ADR 0099): a block's
+        the whole grid and before any worker starts: a block's
         own sweep would track other modes. Each worker takes its rows of the
         swept arrays; the port modes of the result, a `PortModeError` and
         the cross-projection warning are this process's.
@@ -1212,8 +1211,8 @@ class DrivenRule:
         )
         indices = [block for block in indices if len(block)]
         threads = workers.worker_threads(self.options.threads, len(indices))
-        # a worker's block cannot re-decide "auto" (ADR 0124); its bases die
-        # with it, and would each take half the machine (ADR 0121)
+        # a worker's block cannot re-decide "auto"; its bases die
+        # with it, and would each take half the machine
         options = dataclasses.replace(
             self.options,
             threads=threads,
@@ -1293,7 +1292,7 @@ class DrivenRule:
         return None
 
     def _whole_grid_port_modes(self, model: Model) -> list[SweptSurface]:
-        """Each wave port surface's port mode sweep over the whole grid (ADR 0099).
+        """Each wave port surface's port mode sweep over the whole grid.
 
         Run once by a sweep that splits its grid (frequency workers, a
         fixed-angle sweep's frequencies), which hands each part its rows;
@@ -1315,8 +1314,8 @@ class DrivenRule:
         """The single-frequency rule of a fixed-angle sweep's frequency ``n``.
 
         Its problem is this one at that frequency alone, so its operator,
-        Floquet couplings, port network and transposed system are at k(f)
-        (ADR 0151); its order table is over this rule's grid (the whole
+        Floquet couplings, port network and transposed system are at k(f);
+        its order table is over this rule's grid (the whole
         sweep's), its linear solver this one's resolved kind. Built once per
         frequency, without the warnings this rule gave for the whole sweep.
         """
@@ -1358,7 +1357,7 @@ class DrivenRule:
 
         Each frequency is solved by its single-frequency rule
         (`_at_frequency`): Bloch space, expansion, pieces, factorization (or
-        BDDC preconditioner) and port network at k(f) (ADR 0151); the rows
+        BDDC preconditioner) and port network at k(f); the rows
         join in frequency order. The wave ports' modes come from one sweep
         over the whole grid, the parent's in a frequency worker. The entry
         holds the solutions only: the backward builds each frequency's
@@ -1427,7 +1426,7 @@ class DrivenRule:
 
         Each frequency's single-frequency rule (`_at_frequency`) builds its
         system at k(f) again and solves its adjoint loads on the transposed
-        system at -k(f) (ADR 0040 per frequency, ADR 0151); its handles are
+        system at -k(f), per frequency; its handles are
         freed before the next frequency.
         """
         solution = entry.fields["solution"]
@@ -1730,7 +1729,7 @@ class DrivenRule:
 
         On a periodic model under ranks the paired mesh is distributed first:
         its search picks the partition, and the plain mesh the field lives on
-        follows it (ADR 0071). Distributed plain first, it would hold a seed
+        follows it. Distributed plain first, it would hold a seed
         the search may not keep.
         """
         periodic = model._periodic  # noqa: SLF001
@@ -1892,8 +1891,8 @@ class DrivenRule:
     def _law_unsupported(self) -> str | None:
         """Why a law parameter cannot be differentiated on this sweep, or None.
 
-        The law pass is verified on the uniform and adaptive sweeps (ADRs
-        0112, 0116: the adaptive backward's per-key pairs carry d theta/dp
+        The law pass is verified on the uniform and adaptive sweeps (the
+        adaptive backward's per-key pairs carry d theta/dp
         under the law's own keys), without a Bloch wave vector: a
         Bloch-periodic cell has no verification cell.
         """
@@ -1946,7 +1945,7 @@ class DrivenRule:
         sits at the last (`SystemOperator.keep_base`), and a backward leaves it
         at the frequency it ended on, so each pass refactorizes once fewer. On
         the plan pool each frequency's base still holds the design, and a pass
-        refactorizes nothing (ADR 0121). The pairs stay in frequency order.
+        refactorizes nothing. The pairs stay in frequency order.
         """
         if self.adaptive:
             return self._backward_adaptive(model, entry, cotangents)
@@ -2384,7 +2383,7 @@ def low_frequency_deferred() -> Generator[DeferredCheck]:
     """Skip the low-frequency check of the driven solves in this context.
 
     Mesh refinement solves on a new mesh each cycle and checks the floor once,
-    on the mesh it returns (ADR 0088), with `check_low_frequency`. Each rule
+    on the mesh it returns, with `check_low_frequency`. Each rule
     built in the context records its gauge choice on the yielded check
     (`_check_low_frequency`), so that the deferred check words its warning
     as the last solve was gauged.
@@ -2463,7 +2462,7 @@ def _check_low_frequency(
     h_min is the shortest edge of the solve domain on the imported nodes,
     so the message is the same at every step of a shape optimization.
     Skipped inside `low_frequency_deferred` unless ``force``. A gauged
-    solve warns only with wave ports, about their modes (ADR 0220); an
+    solve warns only with wave ports, about their modes; an
     ungauged one ends with the gauge choice's clause on why.
 
     Args:
@@ -2579,8 +2578,8 @@ def _floquet_prepass(
 ) -> dict[str, _floquet.SurfaceOrders]:
     """The Floquet order table over ``grid``, its warnings and the excitation check.
 
-    The parent's pre-pass, before any assembly (ADR 0149): at a fixed angle
-    each frequency's row reads its own k(f) (ADR 0151). Empty without
+    The parent's pre-pass, before any assembly: at a fixed angle
+    each frequency's row reads its own k(f). Empty without
     Floquet ports.
     """
     orders = _floquet.order_table(model, grid, wave_vectors(problem, grid), options)
@@ -2596,7 +2595,7 @@ def wave_vector_at(
 ) -> tuple[float, float, float] | None:
     """The Bloch wave vector, rad/m, of ``problem``'s solve at ``frequency``.
 
-    ``problem.wave_vector`` itself, or at a fixed angle (ADR 0151) that
+    ``problem.wave_vector`` itself, or at a fixed angle that
     vector times ``frequency / wave_vector_frequency``; ``None`` for plain
     periodicity.
     """
@@ -2624,7 +2623,7 @@ def wave_vectors(problem: Driven, frequency: Sequence[float]) -> Any:
 def _auto_inputs(
     model: Model, problem: Driven, options: SolverOptions, comm: Any
 ) -> dict[str, Any]:
-    """What ``linear_solver="auto"`` reads on one CPU process (ADR 0124).
+    """What ``linear_solver="auto"`` reads on one CPU process.
 
     Empty when the rule does not apply, so the unknowns are counted only
     when it does.
@@ -2865,7 +2864,7 @@ class _Kept:
 
         Wave port couplings, the port network, kept fixed parts and patterns
         are in `shared`: a discretization or another entry may hold them, so
-        the entry cache counts them once (ADR 0091), and an entry's bytes do
+        the entry cache counts them once, and an entry's bytes do
         not depend on what the discretization still keeps.
         """
         return 0 if self._freed else self.system.nbytes
@@ -2879,7 +2878,7 @@ class _Kept:
     def free_base(self, comm: Any, *, walk: bool = True) -> None:
         """Give up the base handle kept for a backward pass, if it is on ``comm``.
 
-        A base from the plan pool returns there, with its factors (ADR 0093),
+        A base from the plan pool returns there, with its factors,
         and the pool walks unless not to ``walk`` (`EntryCache.give_plan`);
         any other is freed. Freeing may be collective on a backend, so an entry
         of another communicator stays: its ranks are not here.
@@ -2906,7 +2905,7 @@ class _Kept:
 class _DesignGuess:
     """Where a uniform BDDC sweep's cold solves find the previous design's solution.
 
-    ADR 0126: on one process, a ``bddc_gmres`` sweep's first frequency starts
+    On one process, a ``bddc_gmres`` sweep's first frequency starts
     from the previous design's solution there, kept with the discretization
     (`Discretization.guesses`, dropped first by the walk). It is used only
     for the same excited ports and wave vector, free DOFs, symmetry and
@@ -3053,7 +3052,7 @@ class _KeptPorts:
     One per discretization (`gfem._engine.cache.Discretization.ports`),
     replaced when a solve's key differs: the next design of an optimization
     reuses them, a design touching a port face or a node move (a new
-    discretization) rebuilds them (ADR 0082).
+    discretization) rebuilds them.
 
     Attributes:
         key: `key_of` the solve that built them.
@@ -3167,5 +3166,5 @@ def _check_supported(model: Model) -> None:
     for port in model.ports:
         if not isinstance(port, (LumpedPort, WavePort, FloquetPort)):
             raise TypeError(f"Unknown port {port!r}.")  # pragma: no cover
-    # a law region behind an absorbing face takes its face pieces (ADR 0110)
+    # a law region behind an absorbing face takes its face pieces
     terms.check_absorbing(model, dispersive=True)

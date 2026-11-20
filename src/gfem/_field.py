@@ -291,7 +291,7 @@ class Field:
     def _gathered(self) -> Field:
         """A piece as a one-process field: whole on rank 0, empty elsewhere.
 
-        Collective. Its DOFs are in one process's numbering (ADR 0064).
+        Collective. Its DOFs are in one process's numbering.
         """
         column = _engine().one_process_column(self)
         if column is None:

@@ -2,7 +2,7 @@
 
 ``MeshAccess::UpdateBuffers`` maps each second-side edge and face of a rank to its
 first-side twin (last identification wins) and fails, or numbers DOFs wrongly,
-when the twin is not on that rank (ADR 0071). `seam_counts` predicts that from the
+when the twin is not on that rank. `seam_counts` predicts that from the
 netgen mesh a rank received, before ``ngs.Mesh``: the missing twins in the declared
 orientation, and the reverse ones, which are what would be missing with the pair
 swapped on the same partition. A rank also holds the partner triangles of its

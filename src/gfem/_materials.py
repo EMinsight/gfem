@@ -724,7 +724,7 @@ _ANISOTROPIC_LAW = (
 
 
 def _renamed_density[T: type](cls: T) -> T:
-    """Map the deprecated keyword ``density=`` to ``mass_density=`` (ADR 0171).
+    """Map the deprecated keyword ``density=`` to ``mass_density=``.
 
     The keyword warns for one release; the attribute ``.density`` is gone
     (reading it raises `AttributeError` naming `mass_density`), because a
@@ -1067,7 +1067,7 @@ def _check_blend_values(rho: np.ndarray) -> None:
     Outside [0, 1] a weight end's coefficient 1 - w or w turns negative,
     which makes a lossy susceptibility gain, and SIMP of a negative density
     is NaN: no passivity check of a blended eps_r catches it, since a law
-    blend blends no eps_r (ADR 0113).
+    blend blends no eps_r.
     """
     if not np.isfinite(rho).all():
         raise ValueError("MaterialField: blend must be finite.")
@@ -1090,7 +1090,7 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
     Raises:
         ValueError: A value the constructor refuses (not finite, not
             passive, or a blend density outside [0, 1]), with the region
-            named; the same for a permittivity law's parameters (ADR 0112).
+            named; the same for a permittivity law's parameters.
     """
     for region, material in materials.items():
         if isinstance(material, Material) and isinstance(
@@ -1117,7 +1117,7 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
 
 
 def _check_law(region: str, law: PermittivityLaw) -> None:
-    """Rerun a law's construction checks on its concrete values (ADR 0112).
+    """Rerun a law's construction checks on its concrete values.
 
     A law built under a JAX transformation skipped them: each term and the
     law are rebuilt with `dataclasses.replace`, and the constructor's error
@@ -1140,7 +1140,7 @@ _SCHEMES: dict[str, Callable[[jax.Array, float], jax.Array]] = {
     "ramp": lambda rho, p: rho / (1 + p * (1 - rho)),
 }
 #: The interpolation schemes `MaterialField.interpolate` takes: the weights,
-#: and the refractive-index blend of the permittivity (ADR 0113).
+#: and the refractive-index blend of the permittivity.
 _ALL_SCHEMES = (*_SCHEMES, "index")
 #: dw / d rho of each weight, on the host (a law blend's pieces).
 _SLOPES: dict[str, Callable[[np.ndarray, float], np.ndarray]] = {
@@ -1152,7 +1152,7 @@ _SLOPES: dict[str, Callable[[np.ndarray, float], np.ndarray]] = {
 
 @dataclasses.dataclass(frozen=True)
 class Blend:
-    """The fixed half of a blend with a permittivity-law end (ADR 0113).
+    """The fixed half of a blend with a permittivity-law end.
 
     A `MaterialField` built by `MaterialField.interpolate` from a material
     whose ``eps_r`` is a `PermittivityLaw` holds its density as the leaf
@@ -1205,7 +1205,7 @@ def _blend_end(material: Material, which: str) -> PermittivityLaw | complex:
     Raises:
         ValueError: The end is anisotropic.
         NonDifferentiableError: The end's law is computed inside a JAX
-            transformation (its parameters are fixed, ADR 0113).
+            transformation (its parameters are fixed).
     """
     eps_r = material.eps_r
     if isinstance(eps_r, PermittivityLaw):
@@ -1228,7 +1228,7 @@ def _blend_end(material: Material, which: str) -> PermittivityLaw | complex:
 
 
 def refractive_index(eps: complex) -> complex:
-    """``n - i kappa = sqrt(eps)`` on the branch with ``kappa >= 0`` (ADR 0113)."""
+    """``n - i kappa = sqrt(eps)`` on the branch with ``kappa >= 0``."""
     n = complex(np.sqrt(complex(eps)))
     return -n if n.imag > 0 else n
 
@@ -1547,7 +1547,7 @@ class MaterialField:
         *,
         law: bool,
     ) -> MaterialField:
-        """`interpolate` under ``"index"`` or with a law end (ADR 0113).
+        """`interpolate` under ``"index"`` or with a law end.
 
         The permittivity (with its loss tangent) blends by the scheme; every
         other property both ends define by the weight (rho for ``"index"``).

@@ -217,7 +217,7 @@ def _check_physics(physics: Any, what: str) -> str:
 def _excluded_by_physics(excluded: Any) -> tuple[tuple, ...]:
     """``excluded=`` as one tuple per physics, in `_PHYSICS` order.
 
-    A list or tuple excludes for electromagnetic problems only (ADR 0167).
+    A list or tuple excludes for electromagnetic problems only.
     """
     if not isinstance(excluded, Mapping):
         return (_as_tuple(excluded, "excluded"), (), ())
@@ -457,7 +457,7 @@ class Model:
                     )
 
     def _check_periodic(self) -> tuple[Pairing, ...]:
-        """Pair the nodes of every `Periodic` and check the pairs (ADR 0041)."""
+        """Pair the nodes of every `Periodic` and check the pairs."""
         pairs = [b for b in self.boundaries if isinstance(b, Periodic)]
         if len(pairs) > _MAX_PERIODIC_PAIRS:
             raise ValueError(

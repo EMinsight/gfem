@@ -10,8 +10,8 @@ frequencies is one ``rows``. Frequency workers' blocks join into one value
 a uniform sweep's partial result is the value at its solved rows, carried by
 the error that reports it.
 
-It also owns the names at the ``custom_vjp`` seam (`gfem._adjoint.solve_vjp`,
-ADR 0007), which stays a dict: `SweepOutputs.outputs` is the forward's
+It also owns the names at the ``custom_vjp`` seam (`gfem._adjoint.solve_vjp`),
+which stays a dict: `SweepOutputs.outputs` is the forward's
 dict, `SweepOutputs.read` its inverse (also of the JAX path's dict, which
 has no host-only key), `SweepOutputs.specs` each output's shape and dtype,
 and `DIFFERENTIABLE` the outputs a backward pass differentiates. The rule
@@ -208,7 +208,7 @@ class SweepOutputs:
         """Frequency workers' blocks joined in order.
 
         The wave ports' modes are the parent's: it swept them once over the
-        whole grid, and the blocks come without (ADR 0099).
+        whole grid, and the blocks come without.
 
         Args:
             blocks: Per block, the grid indices of its frequencies and its

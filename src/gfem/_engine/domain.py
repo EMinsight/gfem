@@ -100,7 +100,7 @@ def element_dofs(space: ngs.FESpace) -> np.ndarray:
     Read from the diagonal of a local volume mass form, with no exchange. On a
     paired distributed mesh, the unpaired space also holds the DOFs of partner
     triangles a rank has without their tetrahedra; these rows are the plain
-    mesh's field layout, element by element (ADR 0071).
+    mesh's field layout, element by element.
     """
     u, v = space.TnT()
     form = ngs.BilinearForm(space, symmetric=True, diagonal=True)
@@ -139,7 +139,7 @@ def potential_surfaces(model: Model) -> tuple[str, ...]:
     inductance. The gradient of a potential that vanishes on such a wall has
     no tangential trace there, so the wall term does not act on it and it
     is a null vector of the curl-curl operator; a gradient with a
-    tangential part on the wall is not (ADR 0097). A capacitance-only
+    tangential part on the wall is not. A capacitance-only
     `Impedance` adds to the mass term alone and port surfaces carry a term
     along one tangential direction: their potential stays free. Sorted.
     """

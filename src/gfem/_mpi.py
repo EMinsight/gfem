@@ -1,11 +1,11 @@
 """The one module that touches mpi4py: launch resolution, agreement, failures.
 
-A distributed solve is SPMD (ADR 0057). A resolved communicator of ``None`` is
+A distributed solve is SPMD. A resolved communicator of ``None`` is
 the one-process path: every function here that takes one is then trivial, except
 `default_threads`, which has no count to read there, mpi4py is never imported, and
 a call site reads the same on one rank or many. A value that decides control flow
 must be held bitwise by all ranks, so it goes through `agree_any`, `agree_all` or
-`reduce_bcast` (ADR 0058). A failure one rank alone
+`reduce_bcast`. A failure one rank alone
 sees cannot be raised, because its peers may sit in a C++ collective, so it
 ends the job through `section` or the abort hook.
 """
@@ -294,7 +294,7 @@ def resolve_comm(comm: Any = None) -> Any:
 
 
 def refuse(model: Any, problem: Any, options: Any) -> None:
-    """Raise if this solve has no distributed path, before any mesh or rule (ADR 0072).
+    """Raise if this solve has no distributed path, before any mesh or rule.
 
     Reads static replicated values only, so it needs no communication and raises
     on every rank, also while JAX traces. A problem it does not know falls through,
@@ -309,7 +309,7 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
 
     physics = physics_of(problem)
     if physics != "em":
-        # "thermal" (steady and transient) or "dc_conduction" (ADR 0161)
+        # thermal (steady and transient) or DC conduction: no distributed solve
         refuse_feature(physics)
     if isinstance(problem, Driven):
         if problem.sweep == "adaptive":
@@ -329,7 +329,7 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
 
 
 def _refuse_eigenmode(model: Any, problem: Any, options: Any) -> None:
-    """Refuse what an `gfem.Eigenmode` cannot run above one rank (ADR 0502).
+    """Refuse what an `gfem.Eigenmode` cannot run above one rank.
 
     Bloch before periodic, since a wave vector needs a pair.
     """
@@ -345,7 +345,7 @@ def _refuse_options(options: Any) -> None:
     """Refuse the options no 3D EM problem runs above one rank, whatever its type.
 
     A `gfem.PortMode` is not checked: it ignores ``device`` and ``linear_solver``
-    and runs its 2D solve on rank 0 alone (ADR 0059).
+    and runs its 2D solve on rank 0 alone.
     """
     if options.device.startswith("cuda"):
         refuse_feature("device")
@@ -444,7 +444,7 @@ def is_agreed(
 def raised_together(
     *errors: type[BaseException],
 ) -> collections.abc.Generator[None]:
-    """``errors`` raised inside are raised by every rank together (ADR 0058).
+    """``errors`` raised inside are raised by every rank together.
 
     Around code whose failures read agreed or replicated values only: each such
     error is marked `agreed` and raised on.
@@ -506,7 +506,7 @@ def bcast_arrays(comm: Any, arrays: dict[str, np.ndarray] | None) -> dict:
 
 
 #: Elements of one message of `gather_rows`: past 2^31 a count overflows, and a
-#: ``Gatherv`` of 3.2e9 doubles raised ``MPI_ERR_ARG`` (ADR 0064).
+#: ``Gatherv`` of 3.2e9 doubles raised ``MPI_ERR_ARG``.
 GATHER_MESSAGE = 2**30
 
 
@@ -623,7 +623,7 @@ def node_share(
     A core held by ``n`` ranks of the node counts ``1 / n`` for each; the sum is
     rounded down. Identical masks of ``c`` cores on ``n`` ranks give ``c // n``,
     disjoint masks their own cores, and partly overlapping masks split only the
-    cores both hold. ADR 0056's count alone reads 14 on 7 cores under
+    cores both hold. The physical-core count alone reads 14 on 7 cores under
     ``--cpu-bind=cores`` and 224 per rank under ``--cpu-bind=none``.
 
     Args:
@@ -657,9 +657,9 @@ def ngs_num_threads() -> int | None:
 
 
 def default_threads(comm: Any) -> int:
-    """``threads=None`` across ranks: one count for all, read once (ADR 0077).
+    """``threads=None`` across ranks: one count for all, read once.
 
-    ``NGS_NUM_THREADS`` if set (`ngs_num_threads`), as ADR 0056 says, else
+    ``NGS_NUM_THREADS`` if set (`ngs_num_threads`), else
     `node_share`; then the minimum over ranks. Collective on the first call on a
     communicator.
 
@@ -741,7 +741,7 @@ def entry_check(
     *,
     arrays: collections.abc.Mapping[str, Any] | None = None,
 ) -> None:
-    """Every rank at this collective call, with the same inputs (ADR 0058).
+    """Every rank at this collective call, with the same inputs.
 
     Compares a digest of the call's number and name and of the replicated inputs, so
     a rank that drifted is told at the door and not by a hang or a silent wrong answer.
@@ -789,7 +789,7 @@ def check_call(comm: Any, call: str, arrays: collections.abc.Mapping[str, Any]) 
         comm: The resolved communicator.
         call: The call's name.
         arrays: The call's replicated values, by name. A rank's piece of a field is
-            no such value: its shape stands for it (ADR 0063).
+            no such value: its shape stands for it.
 
     Raises:
         AgreedError: On every rank, naming the first input that differs.
@@ -845,7 +845,7 @@ def on_root(
 ) -> dict[str, np.ndarray]:
     """``compute()``'s named arrays on every rank, computed once on rank 0.
 
-    Placement of a whole computation (ADR 0059): every rank must call this, a rank
+    Placement of a whole computation: every rank must call this, a rank
     holding no DOFs too, so no local test may stand in front of it. Warnings are
     recorded on rank 0 whatever its filters say and replayed by `warn`, and one of
     the ``results`` errors is raised on every rank after them, and `section` lets it

@@ -1,8 +1,8 @@
 """Diffraction orders of Floquet surfaces: frame, order table and truncation.
 
 A Floquet surface is an open face of a periodic cell whose rim lies on the
-seams of two periodic pairs (ADR 0146). Its diffraction orders are plane
-waves in the homogeneous lossless medium behind it (ADR 0147):
+seams of two periodic pairs. Its diffraction orders are plane
+waves in the homogeneous lossless medium behind it:
 
 - Lattice frame: ê1 = a1/|a1|, ê3 = a1 x a2 normalized, ê2 = ê3 x ê1, with
   a1, a2 the translations of the face's two pairs in ``boundaries`` order.
@@ -16,14 +16,14 @@ waves in the homogeneous lossless medium behind it (ADR 0147):
   n x (μ_r⁻¹ curl E) = λ E_t: λ_TE = gamma/μ_r, λ_TM = -k²/(gamma μ_r) (the
   propagating λ_TE = iβ/μ_r, λ_TM = i k²/(β μ_r), and their evanescent
   continuations). λ_TM is infinite at gamma = 0: a flag, never ``inf+nanj``.
-- Modelled orders (ADR 0152): every propagating order plus the evanescent
+- Modelled orders: every propagating order plus the evanescent
   ones with e^{-2|gamma|d} > ``floquet_order_tolerance``, d the distance from
   the face to the nearest scatterer, never beyond the order cap
   ⌊pπ/(|b_i| h_face)⌋; one set per sweep, the union over the grid.
 
 Everything here is NumPy on host values: the order table is a pure
 function of the model, the frequencies, the wave vector(s) and the options,
-so the parent and every frequency worker compute the same rows (ADR 0149).
+so the parent and every frequency worker compute the same rows.
 """
 
 from __future__ import annotations
@@ -340,7 +340,7 @@ def modelled_orders(
     tolerance: float,
     cap: tuple[int, int],
 ) -> Truncation:
-    """The orders a face models over a sweep (ADR 0152).
+    """The orders a face models over a sweep.
 
     Every order that propagates (or grazes) at some frequency, plus every
     evanescent one with e^{-2alpha d} > ``tolerance`` at some frequency, within
@@ -524,7 +524,7 @@ def floquet_face(
 ) -> FloquetFace:
     """Check ``surface`` as a Floquet surface of ``model`` and measure it.
 
-    The checks of ticket 08 Q6, in order (the first two after planarity
+    The checks, in order (the first two after planarity
     and one-sidedness): a periodic pair exists; no pair translates out of
     the face plane; the rim lies on two pairs and nothing else; the face
     spans whole periods (rim twins on the face); one region behind it; that
@@ -750,7 +750,7 @@ def _medium(
 
 
 def _check_fixed_medium(material: Any, region: str, lead: str) -> None:
-    """Raise if an electromagnetic property of the half-space is traced (ADR 0155).
+    """Raise if an electromagnetic property of the half-space is traced.
 
     The medium fixes the orders, so it is a constant of the solve, like the
     incidence; checked before the medium's own checks, which cannot read a
@@ -855,7 +855,7 @@ def order_table(
     """The order table of every Floquet surface of ``model``, by surface.
 
     A pure function of its arguments: the parent and every frequency
-    worker compute the same rows (ADR 0149).
+    worker compute the same rows.
 
     Args:
         model: The model.
@@ -983,7 +983,7 @@ def warn_unrequested(table: dict[str, SurfaceOrders]) -> None:
 # --- the oblique-absorber warning ---------------------------------------------------
 
 #: The amplitude reflection (1 - cos θ)/(1 + cos θ) of a first-order absorbing
-#: face from which `warn_oblique_absorbers` warns (ADR 0150).
+#: face from which `warn_oblique_absorbers` warns.
 OBLIQUE_REFLECTION = 0.01
 
 
@@ -992,7 +992,7 @@ def warn_oblique_absorbers(
 ) -> None:
     """Warn `ObliqueAbsorberWarning` once per `Absorbing` face of a periodic model.
 
-    Each face takes the propagating plane waves that meet it (ADR 0150):
+    Each face takes the propagating plane waves that meet it:
     every propagating diffraction order of its two in-plane pairs when its
     rim lies on them, else the wave vector's component in its plane, in the
     real index of each material behind it. It warns when one of them has

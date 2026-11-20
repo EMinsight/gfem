@@ -20,7 +20,7 @@ terms frozen at the shift (`EigenOperator.seed_damping`, `seed_mass`).
 ``P`` is the divergence-free projection. The undamped output is projected.
 A companion output is ``[P a; y1 + sigma P a]``, one projection per apply:
 it equals the projected step ``[P a; P b]`` wherever ``P y1 = y1``, which
-every output satisfies (ADR 0035). The start vector is a fixed, projected
+every output satisfies. The start vector is a fixed, projected
 vector, so a seed solve is deterministic. The eigen solvers
 (`gfem._eigen.arpack`, `gfem._eigen.slepc`) only find the largest
 eigenvalues ``theta`` of `SeedOperator.apply`; `SeedOperator.pairs` maps them
@@ -45,7 +45,7 @@ MIN_SUBSPACE = 20
 #: The most restarts a seed solve makes (ARPACK's ``maxiter``, SLEPc's
 #: ``max_it``, which ``eps_max_it`` overrides). Good cases need 0 to 2, the
 #: slowest converging case measured about 31; a seed solve among modes
-#: closer than their linewidth would otherwise run for days (ADR 0122).
+#: closer than their linewidth would otherwise run for days.
 #: Read at each solve: tests patch it.
 _SEED_RESTARTS = 100
 
@@ -55,7 +55,7 @@ class SeedBoundReached(Exception):  # noqa: N818 - a signal, not a user error
 
     Raised by the eigen solvers' ``shift_invert`` instead of returning;
     the rule selects among ``k`` and ``vectors`` as for a solve that
-    returned, and does not retry (ADR 0122).
+    returned, and does not retry.
 
     Attributes:
         k: The converged wavenumbers, ``(m,)``.
@@ -143,7 +143,7 @@ def seed_operator(op: EigenOperator, project) -> SeedOperator:
         def apply(y):
             # [P a; y1 + s P a]: equal to [P a; P(y1 + s a)] where P y1 = y1,
             # which holds for every Krylov vector from the projected start,
-            # and both map into that set (ADR 0035)
+            # and both map into that set
             y1, y2 = y[:n], y[n:]
             a = -op.solve(mass(y2 + s * y1) + op.seed_damping(y1))
             pa = project(a)

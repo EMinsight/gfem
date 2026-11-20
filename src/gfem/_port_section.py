@@ -90,7 +90,7 @@ class PortSection:
             3D surface along each impedance edge (1 for a boundary without
             one), or ``None`` when no edge's boundary has a sheet field.
         laws: ``(region, law)`` per region of the section whose eps_r is a
-            `gfem.PermittivityLaw` (ADR 0114); empty without one.
+            `gfem.PermittivityLaw`; empty without one.
         law_index: ``(n_tri,)`` each triangle's index in ``laws``, -1 off
             them; ``None`` without laws.
         absorbing_law: ``(n,)`` the index in ``laws`` of the triangle beside
@@ -187,7 +187,7 @@ class PortSection:
         return [susceptibility(law, omega) for _, law in self.laws]
 
     def check_frequencies(self, frequencies) -> None:
-        """Raise where a law of the section cannot be solved (ADR 0114).
+        """Raise where a law of the section cannot be solved.
 
         Static: reads the laws and the frequencies only, before any solve.
 
@@ -415,7 +415,7 @@ def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray
     """Per-triangle material values in the port frame.
 
     Also whether each triangle's material is isotropic. A law triangle holds
-    eps_inf (ADR 0114).
+    eps_inf.
     """
     mesh = model.mesh
     names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
@@ -502,7 +502,7 @@ def _permittivity(material: Material) -> tuple[np.ndarray, str]:
     """A material's lossy permittivity tensor, and the property it comes from.
 
     A law gives its eps_inf (isotropic, with no tan_delta beside it): its
-    susceptibility is a piece of the port mode pencil (ADR 0114).
+    susceptibility is a piece of the port mode pencil.
     """
     eps_r = material.eps_r
     if isinstance(eps_r, PermittivityLaw):
@@ -647,7 +647,7 @@ def _edges(model, port, tris, used, *, points, tensors, isotropic, law_index, la
 
     Raises:
         NotImplementedError: A second-order absorbing edge lies beside a law
-            triangle (unverified, ADR 0114).
+            triangle (unverified).
     """
     port_edges = _edge_keys(tris)
     kinds = _edge_kinds(model, port)

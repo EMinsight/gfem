@@ -21,7 +21,7 @@ share the full pattern where another's does not. Two things are agreed, because
 they decide what every rank does next: the piece the pattern comes from, by summed
 nonzeros, and whether some piece lies outside the pattern.
 
-On one process a piece may also have a fixed part (`FixedPart`, ADR 0082): the
+On one process a piece may also have a fixed part (`FixedPart`): the
 piece is then its varying part, assembled at every build, plus the fixed part,
 whose values in the full pattern outlive the pieces in a `KeptParts` store,
 behind a digest of what it reads. The fixed part is kept the second time it is

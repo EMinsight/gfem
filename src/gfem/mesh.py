@@ -223,7 +223,7 @@ def _check_lines_on_edges(
 
 
 def _default_thickness(points: np.ndarray, edges: np.ndarray) -> float:
-    """The mean in-plane edge length: well-shaped tetrahedra (ADR 0170)."""
+    """The mean in-plane edge length: well-shaped tetrahedra."""
     return float(
         np.linalg.norm(points[edges[:, 0]] - points[edges[:, 1]], axis=1).mean()
     )
@@ -340,7 +340,7 @@ def _read_cross_section(
 def _read_on_rank_0(
     path: Path, length_unit: str, comm, *, section: bool = False, thickness=None
 ) -> _Topology:
-    """Parse on rank 0 and broadcast (ADR 0060); a failed read raises on every rank.
+    """Parse on rank 0 and broadcast; a failed read raises on every rank.
 
     With ``section``, read a cross-section (`Mesh.from_gmsh_cross_section`,
     whose ``thickness`` argument this is).

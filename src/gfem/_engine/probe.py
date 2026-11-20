@@ -18,7 +18,7 @@ order, which the engine mesh keeps). Points on a face shared by two
 elements are therefore evaluated from the element they are given with: a
 one-sided value of a field that jumps across the face.
 
-Under ranks (ADR 0063) a tetrahedron lies on one rank, which holds the points in it:
+Under ranks a tetrahedron lies on one rank, which holds the points in it:
 ``Phi c`` is the rank sum of what each rank evaluates, and ``Phi^T g`` is a
 ``DISTRIBUTED`` load, each point counted once. A point's tetrahedron is settled from the
 replicated mesh, so it does not depend on the partition. Coefficients are a rank's piece
@@ -206,7 +206,7 @@ def _settle(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Move each point out of a tetrahedron netgen accepted but that does not hold it.
 
-    Reads only the mesh every rank holds (ADR 0059), so the answer does not depend on
+    Reads only the mesh every rank holds, so the answer does not depend on
     the partition. Every tetrahedron holding a point shares a node with any other, and
     so with one netgen found holding it.
 

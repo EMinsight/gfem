@@ -1,4 +1,4 @@
-"""The ``gfem.timing`` logger: how long each phase of a solve took (ADR 0190).
+"""The ``gfem.timing`` logger: how long each phase of a solve took.
 
 One INFO record per phase occurrence on each rank. Silent by default: Python's
 root level is WARNING, and a record is built only when the logger is enabled

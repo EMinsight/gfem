@@ -20,13 +20,13 @@ preconditioner to a tolerance `REUSED_TOLERANCE` times tighter, caps every
 warm solve there from that count, and sets it up again when GMRES iterations
 grow past one setup's worth. A GMRES solve without an initial guess on a
 preconditioner reused across a sweep's frequencies (an adjoint solve of a
-multi-frequency backward) runs that warm path from a zero guess (ADR 0127);
+multi-frequency backward) runs that warm path from a zero guess;
 after a refactorization at no stated frequency (an eigen reshift) it sets
 BDDC up at the new operator first. A handle prepared without
 reuse sets BDDC up at each `BddcHandle.refactorize`.
 
 `BddcHandle.last_action` and `last_reason` say what the last step did and
-why (`gfem._linalg.report`, ADR 0120): ``factorized`` (set up: ``first``,
+why (`gfem._linalg.report`): ``factorized`` (set up: ``first``,
 ``rebuild rule``, or ``cold solve`` for a CG solve, or a GMRES solve after
 an eigen reshift, on a reused preconditioner), ``reused``, or ``reused,
 capped, refactorized`` (``capped``: a warm column set BDDC up inside the
@@ -35,10 +35,10 @@ solve).
 Under ranks (an operator with a layout) BDDC's coarse problem is factored by MUMPS
 across ranks when the MPI PETSc stack is installed (`gfem._linalg.coarse`), otherwise
 on rank 0 by the same rule; GMRES runs on owned entries (`gfem._linalg.gmres`), CG
-is gfem's on agreed products (`gfem._linalg.cg`, ADR 0500), and every decision above
+is gfem's on agreed products (`gfem._linalg.cg`), and every decision above
 reads an agreed value: the iterations, the residuals and the norms of
 `gfem._linalg.layout`. Each rank's BLAS runs at its threads in a setup and at
-one thread in a solve, whose coarse apply gains nothing from them (ADR 0076).
+one thread in a solve, whose coarse apply gains nothing from them.
 """
 
 from __future__ import annotations
@@ -273,7 +273,7 @@ class BddcHandle(NgsHandle):
     def assume_reference(self, iterations: int) -> None:
         """Take ``iterations`` as ``n_ref`` of a fresh preconditioner not yet measured.
 
-        For a solve from the previous design's solution (ADR 0126): it takes
+        For a solve from the previous design's solution: it takes
         fewer iterations than a cold solve, and would set ``n_ref`` so low
         that the next frequencies' reused solves cap and set BDDC up again.
         The ``n_ref`` the previous design measured stands in.
@@ -353,7 +353,7 @@ class BddcHandle(NgsHandle):
         else:
             stop = {"atol": self.tolerance * reference}
         if self.layout.comm is not None:
-            # products agreed across ranks (ADR 0500)
+            # products agreed across ranks
             return Cg(
                 matrix,
                 pre.mat,
@@ -418,8 +418,8 @@ class BddcHandle(NgsHandle):
         solve on a reused preconditioner is capped (see `_warm`). A GMRES
         solve without an initial guess on a reused preconditioner runs that
         warm path from zero when this refactorization is a frequency
-        ``sweep``'s (ADR 0127); otherwise (an eigen reshift,
-        far from the operator the preconditioner was set up at, ADR 0118) and
+        ``sweep``'s; otherwise (an eigen reshift,
+        far from the operator the preconditioner was set up at) and
         for a CG solve, it sets BDDC up again first. The rule counts
         iterations, never times, so runs repeat exactly.
 
@@ -529,7 +529,7 @@ class BddcHandle(NgsHandle):
                 self._build(form)
                 self.last_action, self.last_reason = "factorized", "cold solve"
             elif self._reused and x0 is None:
-                # GMRES on the reused preconditioner from zero (ADR 0127)
+                # GMRES on the reused preconditioner from zero
                 x0 = np.zeros(B.shape, dtype=np.complex128 if self._complex else float)
             solver = self._solver
             prepared = self.tolerance

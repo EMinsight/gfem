@@ -29,15 +29,15 @@ test called before the loop leaves, so the iterate is right.
 Under ranks (a `gfem._linalg.layout.RankLayout`) the iteration is the same. Every
 Krylov vector is a state, so its norm and its coefficients are sums over owned
 entries, reduced to rank 0 and broadcast (`_OwnedBasis`): each decision then reads an
-agreed value, and the residual history equals one process's (ADR 0069). NGSolve's own
+agreed value, and the residual history equals one process's. NGSolve's own
 ``GMRESSolver`` is no substitute: the wheel's parallel inner product conjugates the
 other operand, which still converges, in more iterations.
 
-An optional stop norm (`StopNorm`, ADR 0094) moves the stopping test, and only
+An optional stop norm (`StopNorm`) moves the stopping test, and only
 the test, into other coordinates: the iterates stay those of the Euclidean
 iteration above, and ``residuals`` holds the stop norm of each preconditioned
 residual. A direct handle under the tree-cotree gauge stops its reused-factor
-solves this way, in the field's coordinates (ADR 0216).
+solves this way, in the field's coordinates.
 """
 
 from __future__ import annotations

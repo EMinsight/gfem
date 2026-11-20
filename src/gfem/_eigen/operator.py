@@ -216,7 +216,7 @@ class EigenOperator:
         symmetry: ``"complex_symmetric"``, or ``"general"`` under a Bloch
             wave vector (the driven operator's).
         law_constant: The part of ``K`` from polynomial permittivity law
-            pieces (a lossless Drude law's constant θ = k_p², ADR 0115), or
+            pieces (a lossless Drude law's constant θ = k_p²), or
             ``None``: `curl_ratio` leaves it out of the curl energy.
         layout: How the DOFs lie across ranks (`ONE_PROCESS` on one process):
             every whole-vector product's.
@@ -379,7 +379,7 @@ class EigenOperator:
         lumped inductances). A gradient field has none: at a zero of a
         law's eps(omega) it is an eigenvector of ``T`` (a longitudinal
         mode), with a ratio at round-off (1e-15 / (k h)^2); a transverse
-        mode's is of order one (0.55 to 15 measured, ADR 0115).
+        mode's is of order one (0.55 to 15 measured).
         """
         kx, _, mx = self.parts(x)
         if self.law_constant is not None:
