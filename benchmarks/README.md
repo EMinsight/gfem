@@ -141,9 +141,12 @@ every cross-code view. They are never removed or normalised:
 Every run, both codes, every rank count:
 
 ```
-srun --exact -n R -c T --cpu-bind=cores --distribution=block:block \
+srun --exact -n R -c T --mem=0 --cpu-bind=cores --distribution=block:block \
      --hint=nomultithread --ear=off --mpi=<plugin> <argv>
 ```
+
+`--mem=0` gives every run step the whole node's memory: a core budget limits cores
+only, and memory use stays visible as peak RSS (ADR 0462).
 
 Plugins: gfem `none` at R = 1 and `pmix` above; wheels Palace `pmi2`; native stacks
 per stack file. If a stack sets `launch_r1 = "taskset"` (decided by the stack check),
