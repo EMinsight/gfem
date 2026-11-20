@@ -1,11 +1,11 @@
-"""Eigenmode solves across ranks against one process (ADR 0502).
+"""Eigenmode solves across ranks against one process.
 
 Each case is solved on one process with ``eigen_solver="slepc"`` and ``direct`` (the
 seed method a distributed solve runs) and on 2, 3 and 4 ranks with ``eigen_solver``
 left at ``"auto"``, which names SLEPc above one rank. The selected modes must be
 the same, in the same order: `omega` to `OMEGA_GATE`, the coupling Q to `Q_GATE`,
 the clusters equal, the participations to `PARTICIPATION_GATE` (a distributed
-polish, ADR 0104), the mode fields through `gfem.Field.at` to `FIELD_GATE` with
+polish), the mode fields through `gfem.Field.at` to `FIELD_GATE` with
 their sign, and `gfem.interface_participation` on their pieces to
 `INTERFACE_GATE`. The eigenfrequency's gradient matches one process to
 `GRADIENT_GATE`; a mode-field gradient raises on every rank when the backward is
@@ -32,7 +32,7 @@ OMEGA_GATE = 1e-10
 BDDC_OMEGA_GATE = 1e-8
 #: Relative.
 Q_GATE = 1e-7
-#: Absolute: an unpolished mode is off by 1e-6 to 3e-4 (ADR 0104 amendment 1).
+#: Absolute: an unpolished mode is off by 1e-6 to 3e-4.
 PARTICIPATION_GATE = 1e-9
 #: Relative to the largest one-process value, sign included.
 FIELD_GATE = 1e-8

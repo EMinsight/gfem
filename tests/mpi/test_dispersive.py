@@ -1,4 +1,4 @@
-"""A permittivity law across ranks: driven S and the law pass (ADR 0112).
+"""A permittivity law across ranks: driven S and the law pass.
 
 The `poles` law of the gradient matrix's cell D1 (Drude and Lorentz terms, Re eps
 < 0 at its first frequency) on the core of `gradient_cases.dispersive_line`, on two
@@ -22,7 +22,7 @@ from ranks import on_ranks
 import gfem
 from gfem import _petsc
 
-#: Relative to the largest entry of the one-process value (decision ticket 10 Q10).
+#: Relative to the largest entry of the one-process value.
 S_GATE = 1e-12
 GRADIENT_GATE = 1e-10
 RANKS = 2

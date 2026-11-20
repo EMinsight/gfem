@@ -2,7 +2,7 @@
 
 Every solve compares ranks with the same function in pytest's one process: S bit for
 bit across ranks (`on_ranks`), to `S_GATE` against one process, and the Krylov
-iterations exactly (ADR 0070). `tests/mpi/test_driven_bddc.py` holds the lumped port
+iterations exactly. `tests/mpi/test_driven_bddc.py` holds the lumped port
 twin of these tests.
 """
 
@@ -29,7 +29,7 @@ from gfem._linalg.base import free_mask
 from gfem._port_section import port_section
 from gfem.mesh import Mesh
 
-#: Relative to the largest entry of the one-process S: ADR 0070's BDDC gate.
+#: Relative to the largest entry of the one-process S: the BDDC rank gate.
 S_GATE = 1e-9
 WAVE_SWEEP = (12e9, 24e9)
 HYBRID_SWEEP = (55e9, 65e9)
@@ -145,7 +145,7 @@ def _reciprocity(case, directory):
 
 @pytest.mark.parametrize("case", ["lossless", "lossy"])
 def test_a_lone_wave_port_is_reciprocal_with_the_scale_of_one_process(tmp_path, case):
-    # lossy too: the biorthogonal functional is parallel to the load (ADR 0214)
+    # lossy too: the biorthogonal functional is parallel to the load
     one = _reciprocity(case, tmp_path)
     scales, *_ = on_ranks(_reciprocity, case, tmp_path, ranks=4)
     assert None not in one

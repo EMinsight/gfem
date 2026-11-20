@@ -17,7 +17,7 @@ __all__ = ["available_cpus", "solve_threads", "task_manager"]
 
 
 def available_cpus() -> int:
-    """Physical cores in this process's affinity mask, >= 1 (ADR 0056).
+    """Physical cores in this process's affinity mask, >= 1.
 
     Python's own override (``PYTHON_CPU_COUNT``, ``-X cpu_count``, 3.13) counts as
     given. Without an affinity mask (macOS, Windows) the standard library cannot tell
@@ -47,7 +47,7 @@ def solve_threads(threads: int | None) -> int:
 
     An ``NGS_NUM_THREADS`` that is not a positive integer is treated as unset
     (`gfem._mpi.ngs_num_threads`). Under ranks `gfem._mpi.default_threads` decides
-    instead (ADR 0077).
+    instead.
     """
     if threads is not None:
         return threads
@@ -66,7 +66,7 @@ def task_manager(threads: int | None, comm: Any = None) -> Generator[None]:
         threads: CPU threads (``SolverOptions.threads``); ``None`` is `solve_threads`,
             and under ``comm`` is `gfem._mpi.default_threads`.
         comm: The resolved communicator. The first distributed solve also sets
-            each loaded BLAS to the threads the rank runs on (ADR 0076).
+            each loaded BLAS to the threads the rank runs on.
     """
     if ngs.GetNumThreads() != 1:  # 1 outside any TaskManager
         threads = ngs.GetNumThreads()

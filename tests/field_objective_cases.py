@@ -1,4 +1,4 @@
-"""Driven cases for objectives of fields (ADRs 0132, 0133, 0144), with references.
+"""Driven cases for objectives of fields, with references.
 
 Two pairs of cases, each a lossy region and regions to average over:
 

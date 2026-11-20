@@ -1,4 +1,4 @@
-"""`benchmarks.adapters.palace`: render, launch and parse per Palace dialect (ADR 0404).
+"""`benchmarks.adapters.palace`: render, launch and parse per Palace dialect.
 
 Outputs are committed fixtures. 0.18: wheel 0.18.1.post5 runs on the cluster (r8_void
 driven at 4x1 and 1x4, the bragg eigen run, a killed r10M_void run) and a 2x1 run of

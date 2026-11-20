@@ -179,7 +179,7 @@ def dof_shape(
     """``(width, ndof)`` of a layout: a piece's rows at the JAX seam, and its own.
 
     ``width`` is the same on every rank, the largest ``ndof``, since a callback whose
-    read outputs are all empty does not run on that rank (ADR 0063); on one process
+    read outputs are all empty does not run on that rank; on one process
     it is ``ndof``. A shape step's nodes are tracers when this is needed, so it reads
     the imported nodes, and is memoized: a topology and a rank count have one
     partition. A miss is collective.
@@ -199,7 +199,7 @@ def rank_piece(
 ) -> np.ndarray:
     """``columns`` padded with zero rows to ``width()``: one shape on all ranks.
 
-    A rank's piece of a field (ADR 0063). On one process (``comm`` ``None``)
+    A rank's piece of a field. On one process (``comm`` ``None``)
     ``columns`` itself comes back and ``width`` is not called, since under ranks
     it may be a collective.
     """
@@ -295,7 +295,7 @@ def one_process_dofs(
     *,
     space: str = "hcurl",
 ) -> np.ndarray:
-    """Per local DOF of an H(curl) or H1 layout, its number on one process (ADR 0064).
+    """Per local DOF of an H(curl) or H1 layout, its number on one process.
 
     NumPy on the replicated arrays, with no walk and no serial mesh. In a local mesh
     and in one process's alike, edges and faces are lexicographic in their gfem nodes.
@@ -349,7 +349,7 @@ def one_process_dofs(
         raise _mpi.AgreedError(
             f"This {_SPACE_NAMES[space]} space's DOF counts are not those of the map "
             "to one-process numbering, which rests on netgen's numbering. Report it; "
-            "a wheel upgrade may have changed netgen (ADR 0064)."
+            "a wheel upgrade may have changed netgen."
         )
     memo[key] = numbers
     return numbers
@@ -665,7 +665,7 @@ def curl_matrix(field: Field) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
 
     Across ranks it is this rank's part, and a miss is collective. Each row of
     ``local_mat`` is multiplied by the number of ranks holding its H(div) DOF: only
-    that matched one process, ``Cumulate`` did not (ADR 0063). ``n_rows`` is then the
+    that matched one process, ``Cumulate`` did not. ``n_rows`` is then the
     seam's width, the same on every rank.
 
     Returns:
@@ -704,7 +704,7 @@ def curl_matrix(field: Field) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
         if rows.size == 0:
             # A rank with no entry would read no coefficient and no cotangent, and
             # under jit JAX drops a callback whose outputs go unread on that rank
-            # alone: its peers then wait for it (ADR 0063). A zero entry reads them.
+            # alone: its peers then wait for it. A zero entry reads them.
             rows, cols = np.zeros(1, np.int64), np.zeros(1, np.int64)
             values = np.zeros(1)
     matrix = (

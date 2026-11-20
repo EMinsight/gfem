@@ -1,6 +1,6 @@
 """`gfem.DCConduction`, `gfem.joule_heating` and `gfem.HeatSource`.
 
-Exact checks (ADR 0180): a straight bar's potential is linear, so every H1
+Exact checks: a straight bar's potential is linear, so every H1
 space holds it and R = L / (sigma A) to round-off with a uniform Joule
 density; on a cross-section slab with terminals on its end faces the
 potential is linear through the thickness, so the solve reproduces the
@@ -456,6 +456,6 @@ def test_femwell_resistance_is_gsims_on_its_mesh():
     )
     problem = gfem.DCConduction(terminals={"heater": "front"}, ground="back")
     dc = gfem.solve(model, problem, options=DIRECT)
-    # gsim 5ecbb6a: 496.8944099378894 Ohm (thermal probes/13); 3e-14 measured
+    # gsim 5ecbb6a: 496.8944099378894 Ohm; 3e-14 measured
     resistance = float(dc.resistance_per_length[0, 0]) * 320e-6
     assert resistance == pytest.approx(496.8944099378894, rel=1e-9)

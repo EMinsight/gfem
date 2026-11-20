@@ -1,4 +1,4 @@
-"""Run a test's function on every rank of a launched job (ADR 0070).
+"""Run a test's function on every rank of a launched job.
 
 pytest stays one process: a hang or a one-rank failure under ranks would take it
 with it, and nothing could time it out. `on_ranks` is the sibling of

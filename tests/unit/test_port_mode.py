@@ -538,7 +538,7 @@ def test_te10_reads_the_conductivity_along_its_field(wr28_mesh):
         return _wr28_gamma(wr28_mesh, material)
 
     reference = gamma((0.2, 0.05, 0.1))
-    # TE10 with eps_y (1 - i sigma_y / (omega eps0)), research note
+    # TE10 with eps_y (1 - i sigma_y / (omega eps0)), computed independently
     np.testing.assert_allclose(
         reference, 5.540510958349465 + 712.541098151911j, rtol=1.5e-9
     )  # measured 4.4e-10 (2.8e-9 on the real part alone)
@@ -623,7 +623,7 @@ def test_a_field_with_axes_has_the_mode_of_its_material(wr28_mesh):
     )
 
 
-# --- dispersive cross-sections (ADR 0114) ----------------------------------------
+# --- dispersive cross-sections ---------------------------------------------------
 
 #: Re eps <= 0 from its resonance (12 GHz) to sqrt(2) times it (16.97 GHz).
 BAND_LORENTZ = gfem.PermittivityLaw(

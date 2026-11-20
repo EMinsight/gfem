@@ -1,10 +1,9 @@
-"""Objective classification: what an objective ``J(result, model)`` reads (ADR 0143).
+"""Objective classification: what an objective ``J(result, model)`` reads.
 
 `classify` traces the user's objective on a solved result and returns its
 estimate kind, value, read entries with their cotangents, and the curvature
 of the objective over those entries (the 2x2 spectral norms of its Hessian's
-(Re, Im) blocks, for the remainder term of ADR 0129). Two levels (ADR 0143
-amendment):
+(Re, Im) blocks, for the remainder term). Two levels:
 
 1. **Kind, refusals and mixtures** come from structural dependence on whole
    result leaves and on recorded measurement outputs: the objective's jaxpr,
@@ -93,14 +92,14 @@ MEASUREMENT_KINDS: dict[tuple[str, str], str] = {
     ("region_mean", "potential"): "objective of potential means",
 }
 
-#: The one admitted mixture of kinds (ADR 0142), and the kind it takes.
+#: The one admitted mixture of kinds, and the kind it takes.
 _MIXTURE = (
     frozenset({"objective of omega", "objective of participation"}),
     "objective of participation",
 )
 
 #: Primitives that branch on their operands: an objective applying one to a
-#: read entry is not smooth there (ADR 0143 amendment). ``select_n`` and
+#: read entry is not smooth there. ``select_n`` and
 #: ``cond`` count when their predicate depends on a read entry.
 _BRANCHING = frozenset(
     {
@@ -168,7 +167,7 @@ class Objective:
             scalar has a one-row block).
         diagonal: Per read scalar, its own (Re, Im) block ``H_aa`` of the
             Hessian (2 x 2 for a complex entry, 1 x 1 for a real one): the
-            blocks a rewrite of the objective shifts (ADR 0135).
+            blocks a rewrite of the objective shifts.
         floor_scales: Per read, its scale in the tolerance floor: 1 for an
             absolute entry (S), its magnitude otherwise.
         measurements: Per measurement key the objective reads, its record
@@ -699,7 +698,7 @@ def _kind(kinds: set[str]) -> str:
 
 
 def _refuse_arrays(split: _Split, live: list[int], point_reads: set[str]) -> None:
-    """Raise for a live field or refused leaf (ADR 0143, ticket 11 Q10)."""
+    """Raise for a live field or refused leaf."""
     for i in live:
         path = split.arrays[i]
         label = path.removesuffix(".coefficients")
@@ -714,7 +713,7 @@ def _refuse_arrays(split: _Split, live: list[int], point_reads: set[str]) -> Non
                 raise MeshRefinementUnsupportedError(
                     "point value",
                     f"The objective reads {label} at points (Field.at), and a "
-                    "point value has no estimate (ADR 0133): read the mean "
+                    "point value has no estimate: read the mean "
                     "over a small region with gfem.region_mean.",
                 )
             raise MeshRefinementUnsupportedError(
@@ -830,8 +829,8 @@ def _walk(
 
     Raises for a branch on a read value that reaches a live output
     (``live_out``, every output by default; `_live`), a user's custom
-    derivative, or a higher-order primitive this walk does not know (ADR
-    0143 amendment). Recurses into every sub-jaxpr: calls, ``cond``,
+    derivative, or a higher-order primitive this walk does not know.
+    Recurses into every sub-jaxpr: calls, ``cond``,
     ``scan``, ``while`` and JAX's own custom rules. On the objective's
     pruned jaxpr every input is read.
     """
@@ -1117,7 +1116,7 @@ def _nan_reads(
     """The candidate positions (in ``xs``) whose NaN reaches the objective's value.
 
     Vectorized over the candidates and jitted: a loop over them is quadratic
-    in the entries (ticket 20's scaling).
+    in the entries.
     """
     if not candidates:
         return []
@@ -1173,7 +1172,7 @@ _MODE_MAPS = (
 
 
 def aligned(result: Any, modes: Mapping[int, int]) -> Any:
-    """An eigenmode result with its modes in the first mesh's order (ADR 0143).
+    """An eigenmode result with its modes in the first mesh's order.
 
     ``modes`` maps each mode index read on the first mesh to the index of
     the mode followed from it on ``result``'s mesh: that mode moves to the

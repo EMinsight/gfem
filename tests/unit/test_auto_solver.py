@@ -1,4 +1,4 @@
-"""``linear_solver="auto"`` for a driven problem: direct while it fits (ADR 0124)."""
+"""``linear_solver="auto"`` for a driven problem: direct while it fits."""
 
 import dataclasses
 import logging

@@ -231,7 +231,7 @@ class PortModeProjectionWarning(UserWarning):
     Earlier versions projected the field on each wave port's conjugated
     mode, exact only for a lossless port line, and warned with this class
     when a lossy line made S inexact. gfem now projects biorthogonally on
-    the modes (ADR 0214), exact lossy or not, and never emits it. The class
+    the modes, exact lossy or not, and never emits it. The class
     stays so that filters naming it keep working; it will be removed in a
     later release.
     """

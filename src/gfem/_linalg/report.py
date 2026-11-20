@@ -1,4 +1,4 @@
-"""The ``gfem.solver`` logger: what each solve step did (ADR 0120).
+"""The ``gfem.solver`` logger: what each solve step did.
 
 One INFO record per solve step, forward and backward, on the driven and
 electrostatic paths, under ``jax.grad`` and ``jax.jit`` too (the solves run
@@ -11,7 +11,7 @@ refactorized``, ``held``: a direct step on the values it holds),
 ``iterations`` (per column, ``()`` for a direct solve on fresh factors),
 ``reason`` (why a step set up or refactorized, else ``None``), ``guess``
 (``"previous design"`` for a solve that started from the previous design's
-solution (ADR 0126), else ``None``) and ``columns``
+solution, else ``None``) and ``columns``
 (``"adjoint load"`` for a uniform sweep's adjoint load columns, else
 ``None``), plus the reason's numbers where it has some.
 
@@ -109,7 +109,7 @@ def auto_choice(
 ) -> None:
     """Log what ``linear_solver="auto"`` resolved to for a ``problem`` problem.
 
-    ``reason`` states the driven rule's numbers (ADR 0124); a fixed choice
+    ``reason`` states the driven rule's numbers; a fixed choice
     has none. Attributes ``linear_solver``, ``unknowns``, ``estimate`` and
     ``budget`` (bytes; ``None`` for a fixed choice).
     """

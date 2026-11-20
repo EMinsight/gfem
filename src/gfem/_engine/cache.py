@@ -10,7 +10,7 @@ its backward pass, a solver `Handle` (factors or preconditioner) and the
 forward fields, under an integer key that travels with the JAX residuals.
 An entry a backward has read is **consumed**, and is freed when the next
 differentiated forward on its communicator starts, before that forward
-assembles (ADR 0081): an optimization loop keeps only its current step. Reading
+assembles: an optimization loop keeps only its current step. Reading
 never frees an entry, so ``jax.jacrev`` and repeated pullbacks reuse it. The
 rest is bounded in bytes by ``SolverOptions.retain_memory``, least recently
 used out first, and only an entry of the storing solve's communicator goes out,
@@ -18,7 +18,7 @@ since freeing may be collective.
 A missing entry is not an error: the backward pass recomputes it from the
 design state in its residuals (time, never correctness).
 
-**The plan pool** (in `ENTRIES`, ADRs 0082, 0093): serial CPU direct base
+**The plan pool** (in `ENTRIES`): serial CPU direct base
 handles no solve holds, kept for a later design to refactorize on their solver
 plan (`EntryCache.take_plan`). A handle returns (`EntryCache.give_plan`) once
 no solve entry holds it: at the end of a non-differentiated solve, when its
@@ -27,14 +27,14 @@ It returns with its factors and summed pattern: the next forward refactorizes
 in place, on memory already touched. An entry that gave up its base serves its
 backward by taking a plan back from the pool, or by preparing one. The pool
 holds several handles per key (one per ``jax.vmap`` variant). A sweep's key
-ends in a frequency: it keeps one handle per frequency (frequency bases, ADR
-0121), and a frequency without its own takes another's (`take_plan`); a
+ends in a frequency: it keeps one handle per frequency (frequency bases),
+and a frequency without its own takes another's (`take_plan`); a
 frequency the sweep's site meets for the first time (a design's forward and
 its backward are one visit) takes the most recently returned, so a one-shot
 sweep or gradient keeps one handle. Pooled handles whose mesh
 topology has no discretization left are freed.
 
-**Kept discretization state** (ADRs 0082, 0091, 0126): a discretization's kept
+**Kept discretization state**: a discretization's kept
 fixed parts (`KeptParts` stores among its spaces), its kept wave port couplings
 and port networks (``Discretization.ports``) and its design initial guesses
 (``Discretization.guesses``).
@@ -47,7 +47,7 @@ the walk of a stored entry (`EntryCache.put`):
 
 0. drops design initial guesses (they cost iterations, never correctness);
 1. releases pooled handles' PARDISO factors, keeping their plans (a
-   returning handle's own first, ADR 0121);
+   returning handle's own first);
 2. drops kept fixed parts, whole stores, least recently used discretization
    first; a store whose parts another holder references stays (its bytes
    would not leave), with the digests it has seen;
@@ -60,7 +60,7 @@ the walk of a stored entry (`EntryCache.put`):
 Under the default budget (``retain_memory=None``, a `DefaultBudget`) the walk
 of one process leaves the most recently returned pooled direct base alone,
 factors and all, while the process's peak memory plus a tenth of its memory
-limit stays under that limit (ADR 0123); the rest is trimmed as if its
+limit stays under that limit; the rest is trimmed as if its
 factors had been released. An explicit ``retain_memory`` is a hard bound.
 
 A handle returning to the pool, or a differentiated forward freeing consumed
@@ -113,7 +113,7 @@ _MAX_DISCRETIZATIONS = 4
 #: wave vectors.
 _MAX_PHASE_SETS = 8
 #: Bloch phase sets of a swept wave vector (a fixed-angle sweep's k(f) and
-#: -k(f), ADR 0151) a discretization keeps, apart from the others: a long
+#: -k(f)) a discretization keeps, apart from the others: a long
 #: sweep does not evict the spaces of fixed wave vectors.
 _MAX_SWEPT_SETS = 2
 #: Design initial guesses a discretization keeps, least recently kept out first.
@@ -134,7 +134,7 @@ class Discretization:
         ports: The wave port couplings and port networks the last driven
             solve on it built, behind their key (`gfem._engine.driven`), or
             ``None``. Anything with a ``shared()`` of its bytes by identity.
-        guesses: Design initial guesses (ADR 0126): a design's solution
+        guesses: Design initial guesses: a design's solution
             blocks (anything with ``nbytes``), by key, each with what a later
             solve must match to start from it (`guess`).
     """
@@ -300,7 +300,7 @@ class Entry:
         physics: The physics domain the solve ran on (``"em"``, ...).
         handle: The prepared solver, or ``None`` if the backward needs none.
         fields: Forward fields as NumPy arrays (DOF vectors), by name.
-        consumed: Whether a backward has read the entry (ADR 0081).
+        consumed: Whether a backward has read the entry.
     """
 
     physics: str
@@ -321,7 +321,7 @@ class Entry:
     def free(self, *, return_plans: bool = False) -> None:
         """Release the solver handle and the fields.
 
-        With ``return_plans`` (a consumed entry, ADR 0081) a base handle the
+        With ``return_plans`` (a consumed entry) a base handle the
         solver handle holds goes to the plan pool instead, where it can
         (handles with a ``free_base``).
         """
@@ -428,7 +428,7 @@ def peak_rss() -> int:
 
 
 def _room_for_the_latest() -> bool:
-    """Whether the peak so far leaves a tenth of `memory_limit` free (ADR 0123)."""
+    """Whether the peak so far leaves a tenth of `memory_limit` free."""
     limit = memory_limit()
     return peak_rss() + limit // 10 <= limit
 
@@ -437,7 +437,7 @@ class DefaultBudget(int):
     """The bytes of the default ``retain_memory`` (``None``), marked as such.
 
     A walk on it leaves the most recently returned pooled direct base its
-    factors while the process has room (ADR 0123); any other budget is a hard
+    factors while the process has room; any other budget is a hard
     bound.
     """
 
@@ -504,7 +504,7 @@ class _Tally:
 class _Walk:
     """A walk's tally against its budget (the node's under ``comm``).
 
-    An ``exempt`` pooled handle keeps its factors and stays pooled (ADR 0123):
+    An ``exempt`` pooled handle keeps its factors and stays pooled:
     its factor bytes (``factor_bytes``, what releasing them frees) leave the
     tally, so everything else is trimmed as if its factors had been released;
     its plan, matrix and shared objects still count.
@@ -607,11 +607,11 @@ class EntryCache:
         self._keys = itertools.count()
         # least recently returned first
         self._plans: collections.OrderedDict[int, _Pooled] = collections.OrderedDict()
-        # the most recently returned pooled direct base (ADR 0123)
+        # the most recently returned pooled direct base
         self._latest: Any = None
         # per site (a frequency key but its frequency): its plans' topology
         # and, by frequency a returned base was keyed by, the visit that
-        # returned it last (ADR 0121)
+        # returned it last
         self._seen: dict[Hashable, tuple[Any, dict[Any, Any]]] = {}
         self._discretizations = discretizations
 
@@ -630,7 +630,7 @@ class EntryCache:
 
         Under ``comm`` the bytes are the largest node's and the budget the smallest
         node's, so all ranks evict alike: a rank's own bytes would leave some ranks
-        to re-run a forward without the others, and hang (ADR 0058). All entries count
+        to re-run a forward without the others, and hang. All entries count
         against the budget, but only ``comm``'s are evicted: freeing a base may be
         collective on a communicator whose ranks are not here, so the budget does not
         bound what a solve on another communicator keeps. The plan pool and kept
@@ -705,7 +705,7 @@ class EntryCache:
 
         The most recently returned pooled direct base, with its factors, while
         the process's peak memory plus a tenth of `memory_limit` stays under
-        that limit (ADR 0123): the peak already counts it beside everything
+        that limit: the peak already counts it beside everything
         else held, since it was just factorized with them. One process only.
         """
         latest = self._latest
@@ -733,8 +733,8 @@ class EntryCache:
     def _release_pooled(self, walk: _Walk, first: Any = None) -> bool:
         """Tier 1, ``first`` (a pooled handle) first; whether the cache fits after.
 
-        A returning frequency base releases its own factors before the others'
-        (ADR 0121): in a cyclic sweep the least recently returned base is the
+        A returning frequency base releases its own factors before the others':
+        in a cyclic sweep the least recently returned base is the
         one the next frequency takes, so a fixed set of frequencies keeps its
         factors only this way.
         """
@@ -797,7 +797,7 @@ class EntryCache:
         return True
 
     def _give_up_base(self, entry: Entry, comm: Any) -> list[Any]:
-        """``entry``'s base handle to the plan pool, without a walk (ADR 0093).
+        """``entry``'s base handle to the plan pool, without a walk.
 
         Where its handle can (`free_base`, told not to walk: the caller's walk
         counts what it pools): other bases are freed. The handles it pooled.
@@ -835,7 +835,7 @@ class EntryCache:
             entry.free()
 
     def free_consumed(self, comm: Any = None, budget: int | None = None) -> None:
-        """Free the consumed entries of ``comm`` (ADR 0081).
+        """Free the consumed entries of ``comm``.
 
         Called when a differentiated forward on ``comm`` starts. Under ranks the
         backward is replicated, so every rank frees the same entries together.
@@ -884,14 +884,14 @@ class EntryCache:
 
         While the cache is over ``budget``, the walk's tiers 0, 1, 2, 3 and 6 run,
         tier 1 on ``handle`` first (its own factors go before other pooled
-        handles', ADR 0121), unless not to ``walk`` (an entry giving the
+        handles'), unless not to ``walk`` (an entry giving the
         handle up: that walk counts it); entries and their bases stay (only
         `put` evicts them),
         so another solve's pending entries outlive a ``retain_memory=0`` solve.
         ``topology`` is the mesh topology of its plan: the handle is freed once
         no discretization of it is left (`free_plans_off`). One process only.
 
-        ``kept`` holds the patterns of the kept fixed parts (ADR 0082) of the
+        ``kept`` holds the patterns of the kept fixed parts of the
         handle's space: a handle's pieces' pattern that is none of them is
         dropped, since no later piece sum can share it.
 
@@ -937,7 +937,7 @@ class EntryCache:
         to: tuple,
         visit: Any = None,
     ) -> Any | None:
-        """Pool a frequency base under ``key`` and take one for ``to`` (ADR 0121).
+        """Pool a frequency base under ``key`` and take one for ``to``.
 
         As `give_plan` then `take_plan` with ``budget``, but the walk before
         the take only releases factors (``handle``'s first): a sweep whose
@@ -965,7 +965,7 @@ class EntryCache:
 
         It leaves the pool: no other solve takes it until it returns.
 
-        With a ``budget``, ``key`` is a frequency base's (ADR 0121): its last
+        With a ``budget``, ``key`` is a frequency base's: its last
         element the frequency, the rest its site and thread count. Without a
         handle of its own it takes one of the site's other frequencies. The
         first time the site meets the frequency, the most recently returned:
@@ -1021,7 +1021,7 @@ class EntryCache:
         return len(self._plans)
 
     def free_bases(self, comm: Any, keep: Entry | None = None) -> None:
-        """Free the base handles kept on ``comm``, all but ``keep``'s (ADR 0065).
+        """Free the base handles kept on ``comm``, all but ``keep``'s.
 
         A design loop under ranks holds one factorization at a time. An entry keeps
         its fields, and a later backward from it prepares again. Nothing happens on

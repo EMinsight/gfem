@@ -78,8 +78,8 @@ def element_values(
 
     A `Material` whose ``eps_r`` is a `PermittivityLaw` has no one
     ``eps_r`` either: it depends on frequency, and only
-    `gfem._engine.dispersion` reads it (ADR 0111); nor does a
-    `MaterialField` blend with a law end (ADR 0113). Its tetrahedra get
+    `gfem._engine.dispersion` reads it; nor does a
+    `MaterialField` blend with a law end. Its tetrahedra get
     ``law``, a placeholder for a caller that never reads them, and raise
     when it is ``None``, so a reader not taught about laws fails loudly
     instead of reading a frequency-free value.
@@ -102,7 +102,7 @@ def element_values(
             and isinstance(material, MaterialField)
             and material.blend_ends is not None
         ):
-            # a density blend with a law end (ADR 0113): a law per element
+            # a density blend with a law end: a law per element
             value = material.blend_ends
         if value is None:
             continue
@@ -405,7 +405,7 @@ def facet_space(
     """Surface P0 under ranks: the space, and the DOF of each local surface element.
 
     `ngs.SurfaceL2` deadlocks in its constructor when a surface triangle lies on
-    the cut between two ranks and only one of them holds such triangles (ADR 0066),
+    the cut between two ranks and only one of them holds such triangles,
     so it never runs above one rank. One space per discretization; collective.
     """
     found = built.surface_spaces.get(is_complex)

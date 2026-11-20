@@ -5,7 +5,7 @@ shared seed operator (`gfem._eigen.seed`, which derives the shift-invert
 and companion forms): ``T(sigma)^-1`` through the eigen operator's linear
 solver, the divergence-free projection on every vector, and a fixed,
 projected start vector, so a solve is deterministic. A solve stops after
-``seed._SEED_RESTARTS`` restarts (ADR 0122).
+``seed._SEED_RESTARTS`` restarts.
 """
 
 from __future__ import annotations

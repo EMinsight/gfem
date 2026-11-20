@@ -1,14 +1,14 @@
 """The first-order weights of a thermo-optic shift on a wave port's section.
 
 `ShiftWeightsRule` runs the port's mode solve (`gfem.PortMode`) and turns
-its mode at 1 W into one weight per triangle of the section (ADR 0174)::
+its mode at 1 W into one weight per triangle of the section::
 
     w_t = (c eps0 / 4) 2 n0_t int_t |E0|^2 dA
 
 so that ``delta_n_eff = sum_t w_t (dn/dT)_t rise_t``. ``n0_t`` is the
 square root of the real permittivity of the tetrahedron behind triangle
 ``t``, as the port mode problem reads it. The weights are constants of the
-mode (ADR 0175): no output has a gradient, and every input the port mode
+mode: no output has a gradient, and every input the port mode
 problem reads (the optical model's ``eps_r``, ``tan_delta``, ``mu_r``,
 ``conductivity``, node coordinates, boundary and port values) raises
 `gfem.NonDifferentiableError` under `jax.grad`; the thermal properties and

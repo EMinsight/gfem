@@ -1,4 +1,4 @@
-"""The ``gfem.timing`` records across ranks (ADR 0190).
+"""The ``gfem.timing`` records across ranks.
 
 Each rank logs its own records: its ``rank``, the job's ``ranks`` and, on
 ``discretize``, the DOFs it owns. Summed over the ranks those are the

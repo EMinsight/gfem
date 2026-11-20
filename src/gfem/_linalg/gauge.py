@@ -1,4 +1,4 @@
-r"""The gauged piece sum and the handle that solves through it (ADR 0215, 0216).
+r"""The gauged piece sum and the handle that solves through it.
 
 Two adapters on existing protocols carry a driven solve through the
 tree-cotree gauge :math:`x = T y` (`gfem._engine.gauge.GaugeBasis`):
@@ -129,7 +129,7 @@ class GaugedPieces:
 
         A solution :math:`\hat y` of the scaled sum stands for the field
         :math:`T (d \circ \hat y)` (Y-free numbering): a direct handle's
-        reused-factor GMRES stops on that field's norm (ADR 0094, 0216).
+        reused-factor GMRES stops on that field's norm.
         """
         return self._basis.T, self.scaling(weights)
 

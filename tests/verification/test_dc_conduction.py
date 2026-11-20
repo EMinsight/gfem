@@ -6,7 +6,7 @@ ln(r2/r1)) and the Joule density sigma (2 / (pi r))^2 crowds to the inner
 edge (4x the outer one here). The mesh has its nodes on the circles and
 straight sides. A square-corner L bend has no closed form; its corner's
 excess resistance, in squares (about 0.56 in the thin-film literature),
-is frozen at the finest mesh measured at implementation (ADR 0180).
+is frozen at the finest mesh measured at implementation.
 """
 
 import math

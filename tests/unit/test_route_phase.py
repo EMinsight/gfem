@@ -4,7 +4,7 @@ One optical window (a silicon core in oxide on a cross-section slab) is
 swept along routes through a small 3D block heated evenly and sunk on its
 face x = 0, so the rise grows with x alone: a route along y sees the same
 rise at every station, and which side of the route the window's core
-samples shows in the phase (ADR 0183).
+samples shows in the phase.
 """
 
 import dataclasses

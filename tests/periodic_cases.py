@@ -372,7 +372,7 @@ G_FREQUENCIES = (20e9, 28e9)
 G_K = (0.3 * math.pi / (G_A * MM), -0.2 * math.pi / (G_B * MM), 0.0)
 #: The warning filter of G's solves under `G_K`: its Bloch wave meets the
 #: first-order `Absorbing` top at 39.6° at 20 GHz (r = 0.13), so a solve with
-#: concrete "cover" values warns `gfem.ObliqueAbsorberWarning` (ADR 0150); the
+#: concrete "cover" values warns `gfem.ObliqueAbsorberWarning`; the
 #: checks on G compare gfem with itself (gradients, solvers), not with a
 #: perfect absorber.
 G_OBLIQUE = "ignore::gfem.ObliqueAbsorberWarning"
@@ -830,7 +830,7 @@ def f2(
     )
 
 
-# --- F2's frozen RCWA references (ticket 09 Q3) ------------------------------------
+# --- F2's frozen RCWA references ------------------------------------------------
 
 #: F2's cells at h about lambda0 / 10 with grid lines on the ridge edges
 #: (`f2_mesh`), solved at p = 3 for the grating gates below.
@@ -846,8 +846,8 @@ F2_CASES = {
 #: Diffraction efficiencies of F2 by case, incident polarization (from the
 #: air, the specular order) and (face, m): "R" the air side, "T" the
 #: substrate; the sum over both output polarizations of |S|^2. Every
-#: propagating order of each case is listed; order labels follow ADR 0147
-#: (b1 along +x).
+#: propagating order of each case is listed; order labels follow gfem's lattice
+#: frame (b1 along +x).
 #:
 #: Method: the planar cases (G0, G20, G20L) from a Li-rule (inverse rule)
 #: 1D RCWA at N = 640 harmonics, the conical G20c from nannos 2.6.5
@@ -855,7 +855,7 @@ F2_CASES = {
 #: equal truncation; the values move by at most 4e-7 (planar) and 3e-6
 #: (conical) from half the truncation, power balance closes to 1e-11 in the
 #: lossless cases: the values are good to about 1e-6. The generation
-#: scripts stay with the effort's notes; no RCWA package is a test
+#: scripts are not in the repository; no RCWA package is a test
 #: dependency.
 F2_RCWA = {
     "G0": {

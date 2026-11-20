@@ -239,7 +239,7 @@ def test_an_unfinished_prefix_is_reported_but_not_compared(tmp_path):
 
 
 def _mumps_palace() -> dict:
-    """Palace's MUMPS block as ADR 0209 describes it."""
+    """Palace's MUMPS block: same source and toolchain as gfem's."""
     return {
         "version": "5.9.1",
         "tarball_sha256": "659c9b57" + "0" * 56,
@@ -257,7 +257,7 @@ def _mumps_palace() -> dict:
 
 
 def _mumps_petsc() -> dict:
-    """gfem's PETSc MUMPS block as ADR 0209 describes it."""
+    """gfem's PETSc MUMPS block: same source and toolchain as Palace's."""
     return {
         **_mumps_palace(),
         "blas": {"vendor": "openblas", "version": "0.3.34", "threading": "pthreads"},
@@ -324,7 +324,7 @@ def _older_palace(stack: Path, orderings: list[str]) -> None:
 
 
 def test_metis_is_required_only_of_the_compared_newest_builds(tmp_path):
-    """METIS in both is a like-for-like rule (ADR 0209), not a single-build one."""
+    """METIS in both is a like-for-like rule, not a single-build one."""
     stack = _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
     _older_palace(stack, ["amd", "pord"])
 
@@ -1187,7 +1187,7 @@ def test_the_stack_venvs_runtime_pins_are_gfems_lock():
 
     lock = tomllib.loads((STACKS.parents[1] / "uv.lock").read_text())
     packages = {package["name"]: package for package in lock["package"]}
-    # ADR 0207: never the PyPI NGSolve, netgen or their OpenBLAS in a stack venv.
+    # never the PyPI NGSolve, netgen or their OpenBLAS in a stack venv.
     native = {"ngsolve", "netgen-mesher", "ngsolve-openblas"}
     closure, todo = set(), [d["name"] for d in packages["gfem"]["dependencies"]]
     while todo:
@@ -1735,7 +1735,7 @@ def test_mumps_compiler_strings_of_one_gcc_match():
     assert a != c
 
 
-# --- package petsc: gfem's PETSc contract (ADR 0067, ADR 0209) ----------------
+# --- package petsc: gfem's PETSc contract -------------------------------------
 
 WHEELHOUSE = STACKS.parent / "petsc_wheelhouse.sh"
 PETSC_RECIPE = STACKS / "packages" / "petsc.sh"

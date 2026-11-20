@@ -24,8 +24,8 @@ host; this module owns everything JAX sees:
   ``SolverOptions.retain_memory``, least recently used out first, never
   freed by a read, so ``jax.jacrev`` and a pullback called twice reuse it).
   An entry a backward has read is consumed, and the next differentiated
-  forward frees it before it assembles (ADR 0081), its base handle returning
-  to the plan pool for that forward (ADR 0082), so a pullback called after
+  forward frees it before it assembles, its base handle returning
+  to the plan pool for that forward, so a pullback called after
   another differentiated solve runs its forward again.
   The backward rebuilds the model and the problem from the residual leaves,
   never from engine state, and re-runs the forward when the entry was
@@ -40,7 +40,7 @@ so ``vmap`` runs one solve per batch member. Errors raised on the host
 during the backward reach the user as ``jax.errors.JaxRuntimeError`` with
 the message kept, or as ``ValueError`` once a jitted function has succeeded.
 
-Under ranks (ADR 0065) every rank runs this whole function and its callbacks on
+Under ranks every rank runs this whole function and its callbacks on
 replicated values; only host calls communicate. The integer key is a rank's own
 number, and the backward agrees on whether every rank still holds its entry. The
 kernel writes each rank's elements into global zeros, and each wanted leaf is summed
@@ -57,7 +57,7 @@ optionally ``pieces`` (the outputs that are a rank's own piece under ranks,
 whose cotangents the ranks compare by shape; none by default),
 ``wanted_kinds`` (set on the host copy to the wanted input kinds
 before its forward and backward, so a forward keeps only what the backward
-reads; ADR 0179), ``rerun`` (set before a backward reruns the forward),
+reads), ``rerun`` (set before a backward reruns the forward),
 ``explicit_problem()`` (problem-leaf cotangents the backward computed itself),
 ``unsupported_input(kind)`` (a reason, or ``None``) for read
 inputs the rule itself cannot differentiate, and ``terms(model, *, nodes)``
@@ -65,7 +65,7 @@ inputs the rule itself cannot differentiate, and ``terms(model, *, nodes)``
 `gfem._engine.sensitivity.Term`: one per piece of a driven or eigenmode
 operator, or the electrostatic form; ``nodes`` when the node coordinates
 are wanted) and ``lumped_terms(model)`` (the pieces that move with a
-lumped value, ADR 0100). Host
+lumped value). Host
 calls get the model and a shallow copy of the rule whose ``problem`` holds
 the call's concrete values, so a rule reads problem values from
 ``self.problem`` and never sees a tracer there.
@@ -178,7 +178,7 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:  # n
         comm = getattr(rule, "comm", None)
         host_rule, host_model = rebuild(values)
         if hasattr(host_rule, "wanted_kinds"):
-            # what the backward will read (ADR 0179): a rule may keep less
+            # what the backward will read: a rule may keep less
             host_rule = _with_wanted(host_rule, rule, wanted)
         with _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS):
             if comm is not None:
@@ -249,7 +249,7 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:  # n
                     wanted=wanted,
                     live_names=tuple(n for n, _ in live),
                 ),
-                # a lumped value given as a Python number has no shape (ADR 0100)
+                # a lumped value given as a Python number has no shape
                 tuple(
                     jax.ShapeDtypeStruct(
                         jnp.shape(values[i]), jnp.result_type(values[i])
@@ -317,7 +317,7 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
     from gfem.shape import _check_quality
 
     # Traced material values skipped the constructor's check; the host holds
-    # their concrete values here (ADR 0011).
+    # their concrete values here.
     check_field_values(model.materials)
     # A moved mesh must keep its periodic pairs and stay valid on the solve
     # domain.
@@ -336,8 +336,8 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
 def _free_consumed(comm: Any, options: Any) -> None:
     """Free the entries a backward has read, before this forward assembles.
 
-    Their base handles return to the plan pool, for this forward to take
-    (ADR 0082), within ``options.retain_memory``.
+    Their base handles return to the plan pool, for this forward to take,
+    within ``options.retain_memory``.
     """
     from gfem._engine.cache import ENTRIES, retain_budget
 
@@ -412,7 +412,7 @@ def _host_backward(
     out = []
     for i in wanted:
         # every step from a pass to here is real-linear on replicated values, so one
-        # sum, before the leaf's shape, equals a sum per pass (ADR 0065)
+        # sum, before the leaf's shape, equals a sum per pass
         g = _mpi.reduce_bcast(comm, np.asarray(grads[kinds[i]]))
         leaf = np.asarray(values[i])
         if not leaf.ndim:
@@ -490,16 +490,16 @@ def _local_cotangents(
     if not _mpi.agree_all(comm, flag=entry is not None):
         ENTRIES.discard(int(key))
         if hasattr(rule, "rerun"):
-            rule.rerun = True  # a rerun keeps the least it can (ADR 0179)
+            rule.rerun = True  # a rerun keeps the least it can
         _, entry = rule.forward(model, keep=True)
         fresh = entry
     else:
         if entry is not None:  # freed when the next differentiated forward starts
-            entry.consumed = True  # (ADR 0081)
-        # the base handles of other entries go before this one prepares (ADR 0065)
+            entry.consumed = True
+        # the base handles of other entries go before this one prepares
         ENTRIES.free_bases(comm, keep=entry)
     if hasattr(rule, "law_inputs"):
-        # no law parameter wanted: the pairs carry no dθ/dp (ADR 0112)
+        # no law parameter wanted: the pairs carry no dθ/dp
         rule.law_inputs = any(kind[0] == "law" for kind in wants)  # ty: ignore[not-subscriptable]
     try:
         pairs = rule.backward(model, entry, cotangents)
@@ -522,8 +522,8 @@ def _local_cotangents(
         # the eigenmode ratios' 1 / L and C |V|^2 / 2), once over the ranks
         if hasattr(rule, "explicit_lumped") and _mpi.rank(comm) == 0:
             _add_explicit_lumped(out, rule.explicit_lumped(), wants=wants)
-        # a load form's problem leaves read by the rule itself (ADR 0178:
-        # the waveform scales, a trace's weights)
+        # a load form's problem leaves read by the rule itself (the
+        # waveform scales, a trace's weights)
         if hasattr(rule, "explicit_problem"):
             out |= {k: v for k, v in rule.explicit_problem().items() if k in wants}
     finally:

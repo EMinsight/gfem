@@ -1,4 +1,4 @@
-"""The forward polishes every mode in mode-field reach (ADR 0104, ticket 19).
+"""The forward polishes every mode in mode-field reach.
 
 A refined mode's error is an admixture of the other modes, which its
 backward error hardly sees: participation from the default

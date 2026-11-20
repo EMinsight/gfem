@@ -50,7 +50,7 @@ Bloch eigenmode solve), where the left eigenvectors carry the gradient. Its
 node direction moves the twins of every pair together (a periodic
 direction, the raw node gradient).
 
-The chain gate (``-k chain``, ADR 0177) differentiates the whole thermal
+The chain gate (``-k chain``) differentiates the whole thermal
 chain on a heater slab: DC conduction -> Joule heating at a current ->
 steady thermal -> thermo-optic shift (phase per length plus the core's mean
 temperature), in the heater's per-element conductivity, every element's
@@ -306,7 +306,7 @@ FLOQUET_PROBLEMS = ("driven_floquet_plain", "driven_floquet_bloch")
 
 
 def _driven_floquet_cells() -> list[Cell]:
-    """The driven cells of a cell with Floquet ports (coarse F2, ADR 0155).
+    """The driven cells of a cell with Floquet ports (coarse F2).
 
     Plain periodicity and a conical Bloch wave vector (20°, 30° from the
     air) on the uniform sweep, in the permittivity and the nodes on the
@@ -315,7 +315,7 @@ def _driven_floquet_cells() -> list[Cell]:
     reads a ±1 order's efficiency, a cross-polarized entry and a row that
     does not propagate at one frequency at least. One more Bloch cell keeps
     the angle fixed over its two frequencies (``fixed_angle``: ±k(f) per
-    frequency, ADR 0151), in the permittivity on the direct solver.
+    frequency), in the permittivity on the direct solver.
     """
     return [
         Cell("driven_floquet_bloch", "eps_r", "direct", "uniform", "fixed_angle"),
@@ -400,7 +400,7 @@ def _participation_cells() -> list[Cell]:
         Cell(key, "nodes", "direct", variant="capacitive_sheet"),
         Cell(key, "eps_r", "direct", variant="chi"),
         Cell(key, "nodes", "direct", variant="chi"),
-        # the lumped values (ticket 21): one cell per ratio (`_lumped_ratio`)
+        # the lumped values: one cell per ratio (`_lumped_ratio`)
         *(
             Cell(key, "lumped", "direct", variant=v)
             for v in (
@@ -438,7 +438,7 @@ def _field_cells() -> list[Cell]:
 
 
 def _law_cells() -> list[Cell]:
-    """The driven cells of a permittivity law (ADR 0112), on ``direct``.
+    """The driven cells of a permittivity law, on ``direct``.
 
     Input ``"law"``: the law's parameters, normalized as p0 (1 + t), on the
     strip line (`dispersive_line`) for each law of `LAWS` (``poles``,
@@ -479,7 +479,7 @@ def _law_cells() -> list[Cell]:
 
 
 def _adaptive_law_cells() -> list[Cell]:
-    """The adaptive sweep's law cells (ADR 0116), frozen samples.
+    """The adaptive sweep's law cells, frozen samples.
 
     The ``poles`` law with its Lorentz pole moved into the band
     (`ADAPTIVE_LAWS`) and the ``lorentz`` law behind first-order absorbing
@@ -494,7 +494,7 @@ def _adaptive_law_cells() -> list[Cell]:
 
 
 def _blend_cells() -> list[Cell]:
-    """The density of a metal-dielectric blend (ADR 0113): cells D11 and D12.
+    """The density of a metal-dielectric blend: cells D11 and D12.
 
     The strip line's core blends a constant dielectric and a Drude metal by a
     density in [0.2, 0.8], under the index scheme and the linear one.
@@ -506,7 +506,7 @@ def _blend_cells() -> list[Cell]:
 
 
 def _electrostatic_law_cells() -> list[Cell]:
-    """Cell S1: the capacitance in a law's parameters (ADR 0111), on ``direct``.
+    """Cell S1: the capacitance in a law's parameters, on ``direct``.
 
     The capacitor's nitride holds `STATIC_LAW`: the static permittivity reads
     eps_inf and the strengths, and the frequency parameters are exact zeros.
@@ -515,11 +515,11 @@ def _electrostatic_law_cells() -> list[Cell]:
 
 
 def _thermal_cells() -> list[Cell]:
-    """Steady and transient heat conduction, and DC conduction (ADR 0177).
+    """Steady and transient heat conduction, and DC conduction.
 
     Each transient input on both schemes, on a kept trajectory (``full``)
     and from checkpoints (``checkpoints``: ``retain_memory=0`` keeps no
-    entry, so the backward reruns its forward with checkpoints, ADR 0179).
+    entry, so the backward reruns its forward with checkpoints).
     """
     cells = []
     for solver in SOLVERS:
@@ -574,7 +574,7 @@ PETSC_CELLS = [
     # the mode-field adjoint after SLEPc seeds (its linear solver stays
     # direct: a PETSc one raises for a mode-field cotangent)
     Cell("eigenmode_participation", "eps_r", "direct", variant="slepc"),
-    # a permittivity law's parameters (ADR 0112): the law pass after a PETSc
+    # a permittivity law's parameters: the law pass after a PETSc
     # solve, and the eigenfrequency after SLEPc seeds
     Cell("driven", "law", "petsc", "uniform", "poles"),
     Cell("eigenmode", "law", "petsc", variant="lorentz"),
@@ -1272,7 +1272,7 @@ def _kinetic(d: Designs, cell: Cell, options, seed: int) -> Case:
     The ``"sheet"`` variant reads the sheet participation; the
     ``"capacitive_sheet"`` one adds a capacitance to the sheet and reads
     "lower"'s share of the mode energy beside it (both move with the
-    sheet's term of the energy, ADR 0103). The node cells move the sheet
+    sheet's term of the energy). The node cells move the sheet
     with its glue plane, "lower" growing.
     """
     mesh = d.sheet_cavity
@@ -1489,7 +1489,7 @@ def _field(d: Designs, cell: Cell, options, seed: int) -> Case:
 
 
 def _lumped_ratio(d: Designs, cell: Cell, options, seed: int) -> Case:
-    """Mode 0 of the lossy glued line in its five lumped values (ticket 21).
+    """Mode 0 of the lossy glued line in its five lumped values.
 
     All five values scaled by ``1 + t`` (`_lumped_values`). By variant: port
     p1's participation, its port Q, "lower"'s share of the mode energy, the
@@ -1756,7 +1756,7 @@ FLOQUET_ORDERS = ((0, 0), (-1, 0), (1, 0), (-2, 0))
 FLOQUET_FREQUENCIES = (pc.F1_FREQUENCY, 0.8 * pc.F1_FREQUENCY)
 #: The conical Bloch incidence from the air, rad.
 FLOQUET_THETA, FLOQUET_PHI = np.radians(20.0), np.radians(30.0)
-#: The smallest |gamma| / k of a propagating order (ADR 0155: nearer
+#: The smallest |gamma| / k of a propagating order (nearer
 #: grazing the differences carry the forward's noise divided by the step).
 FLOQUET_GRAZING = 1e-2
 #: The excited ports: the specular order from the air in both polarizations.
@@ -1890,7 +1890,7 @@ def _floquet_nodes(d: Designs, cell: Cell, options, seed: int) -> Case:
 # --- the law cells' objectives --------------------------------------------------------
 
 #: The smallest normalized law-gradient component a law cell admits, relative
-#: to the gradient's norm: no parameter hides under the 1e-6 gate (ADR 0112).
+#: to the gradient's norm: no parameter hides under the 1e-6 gate.
 LAW_COMPONENT = 1e-4
 
 
@@ -2355,7 +2355,7 @@ def _thermal_model(mesh, values):
         boundaries=[
             gfem.FixedTemperature("bottom", temperature=300.0),
             # another ambient: the source-free temperature is not uniform,
-            # so its own adjoint pair enters (ADR 0172)
+            # so its own adjoint pair enters
             gfem.Convection("top", coefficient=1e4, ambient=290.0),
         ],
     )
@@ -2631,7 +2631,7 @@ FAMILIES = [
     # a permittivity law as a pytree inside `gfem.Material` (cells D1 and E1)
     Cell("driven", "law", "direct", "uniform", "poles"),
     Cell("eigenmode", "law", "direct", variant="lorentz"),
-    # thermal and DC conduction (ADR 0177): the reverse sweep's kept
+    # thermal and DC conduction: the reverse sweep's kept
     # trajectory, and the dissipation's adjoint
     Cell("steady_thermal", "thermal_conductivity", "direct"),
     Cell("transient_thermal", "thermal_conductivity", "direct", variant="tr_bdf2-full"),
@@ -2679,7 +2679,7 @@ def test_gradient_matrix_transformations_and_eviction_agree(designs, cell):
     _assert_same(first, looped[0], cell)
     # the same kept entry: the second pullback repeats the first exactly, but
     # for a mode-field adjoint, an iterative solve on the kept operator that a
-    # first pullback may have reshifted (ADR 0104): there it agrees to the
+    # first pullback may have reshifted: there it agrees to the
     # solve's acceptance (measured 1e-11 on MN5), not bit for bit
     repeat = 1e-9 if cell.problem in MODE_FIELD else 1e-12
     np.testing.assert_allclose(pullback(2.0)[0], 2 * first, rtol=repeat)
@@ -3143,7 +3143,7 @@ def _chain(d: Designs, solver: str, transient: bool):
 
     def optical(dn):
         # the same slab with the heater out of the mode solve (a traced
-        # conductivity on the model the shift reads raises, ADR 0175)
+        # conductivity on the model the shift reads raises)
         n_clad = len(tets["clad"])
         materials = {
             "clad": gfem.MaterialField(

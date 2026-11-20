@@ -21,8 +21,8 @@ eta0 / R``, ``mu0 scale / L`` and ``-k0^2 C / (eps0 scale)`` for an
 impedance. A region whose eps_r is a permittivity law holds eps_inf in
 ``eps_tt`` and ``eps_nn`` and adds its susceptibility as one more piece,
 ``-k0^2 chi(omega) ((e_t, v_t) + (e_n, v_n))`` on its triangles, and an
-absorbing edge beside it ``i k0 sqrt(Re eps(omega) / Re mu)`` on both blocks
-(ADR 0114). Both matrices are affine: each is a sum of fixed matrices times
+absorbing edge beside it ``i k0 sqrt(Re eps(omega) / Re mu)`` on both blocks.
+Both matrices are affine: each is a sum of fixed matrices times
 1, -k0^2, i k0, a conductor's own scalar or a law's, assembled once.
 Coordinates are in the mesh file's unit, so ``k0`` is per local unit.
 """

@@ -1,7 +1,7 @@
 """The quantum-metrics and loss-budget recipes run what can run without a mesh.
 
 docs/recipes/quantum-metrics.md and docs/recipes/loss-budget.md solve nothing
-at docs build time and print no solved number (ADR 0017, as amended): the
+at docs build time and print no solved number (user pages quote no test evidence): the
 transmon tutorial is where solved values live, and how gfem checks them is on
 docs/verification.md. This checks that the pages name public objects only,
 quote no tolerance of the dispersive-shift verification, keep the default

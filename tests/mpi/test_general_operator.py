@@ -1,10 +1,10 @@
 r"""A system unequal to its transpose across ranks: MUMPS LU, BDDC with an LU coarse.
 
-A Bloch-phased space makes :math:`A^T \neq A` (ADR 0040); here a gyrotropic
+A Bloch-phased space makes :math:`A^T \neq A`; here a gyrotropic
 permittivity does, on the layered line's distributed space, so no periodic partition
 is needed. Each test compares the rank sums :math:`S_{ij} = f_i^T A^{-1} f_j` bit for
 bit across ranks (`on_ranks`) and against one process's ``direct`` (PARDISO or
-UMFPACK LU) at ADR 0070's gates. :math:`S_{12}` far from :math:`S_{21}` keeps a
+UMFPACK LU) at the rank gates. :math:`S_{12}` far from :math:`S_{21}` keeps a
 symmetric factorization from passing.
 """
 
@@ -20,7 +20,7 @@ from gfem._engine.driven import driven_operator
 from gfem._linalg import Operator, prepare
 from gfem._linalg.layout import ONE_PROCESS
 
-#: Relative to the largest one-process entry: ADR 0070's gates.
+#: Relative to the largest one-process entry: 1e-11 on direct, 1e-9 on BDDC.
 GATES = {"direct": 1e-11, "bddc_gmres": 1e-9}
 #: The wavenumber, in the line's length unit: about one wavelength along it.
 KAPPA = 1.5

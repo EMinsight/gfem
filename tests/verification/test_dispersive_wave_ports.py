@@ -1,4 +1,4 @@
-"""Wave ports whose cross-section holds a dispersive dielectric (ADR 0114).
+"""Wave ports whose cross-section holds a dispersive dielectric.
 
 A 10 mm WR-28 guide filled with a permittivity law, between two wave ports,
 over 14-18 GHz. In a uniform guide TE10 has the closed form ``gamma =

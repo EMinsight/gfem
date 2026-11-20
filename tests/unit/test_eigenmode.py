@@ -386,7 +386,7 @@ def test_a_far_seed_refined_onto_a_farther_root_still_gives_its_own_mode(
 
 def test_a_far_seed_keeps_the_new_mode_its_first_refinement_found(mesh, monkeypatch):
     # a rough seed refined on a shift nearer another mode can land on a mode
-    # no other seed gives (ADR 0097: 21.2 GHz of a copper cavity, thrown away
+    # no other seed gives (measured: 21.2 GHz of a copper cavity, thrown away
     # for the 23.4 GHz mode of the retry). Here the seed solve returns no
     # pair for roots 2 and 3, and root 4's seed is made to land on root 2
     # first: root 2 is kept, and root 4 from the retry becomes the guard
@@ -510,7 +510,7 @@ def _twin_select(mesh, monkeypatch, n_modes):
     seed at 13.8 refined away from its own shift lands on the pair's
     eigenspace with 36 % of its norm outside the accepted member's span: in
     the span by the 0.9 test, yet that part is the twin (lossy-wall mirrored
-    cavity on MN5, quantum-metrics ticket 17).
+    cavity on MN5).
     """
     from gfem._eigen.refine import Refined
 
@@ -827,7 +827,7 @@ _INDUCTIVE = dict.fromkeys(
 @pytest.mark.parametrize("case", list(_INDUCTIVE))
 def test_participation_is_minus_twice_the_log_derivative_in_l(mesh, shunted, case):
     # a lossless mode's omega^2 is a Rayleigh quotient: the inductor's share
-    # of the mode energy (every capacitive element in it, ADR 0103) is
+    # of the mode energy (every capacitive element in it) is
     # -2 d ln omega / d ln L on any mesh
     inductance, target = _INDUCTIVE[case]
     options = gfem.SolverOptions(eigen_tolerance=1e-12)
@@ -1161,7 +1161,7 @@ def test_divfree_projection_matches_the_complex_product(tmp_path, order):
 def test_the_companion_apply_projects_once(mesh, monkeypatch):
     # on vectors whose first half is projected, [P a; y1 + sigma P a] is the
     # companion step [P a; P(y1 + sigma a)], a = -T(sigma)^-1 (M (y2 + sigma
-    # y1) + D' y1), for one projection and one seed-mass product (ADR 0035)
+    # y1) + D' y1), for one projection and one seed-mass product
     model = terminated_line(mesh, 1000.0)
     problem = gfem.Eigenmode(target=8e9)
     rule = eigen_rule.EigenmodeRule(model, problem, gfem.SolverOptions())

@@ -1,4 +1,4 @@
-"""Kept state counts against ``retain_memory`` (ADRs 0091, 0093).
+"""Kept state counts against ``retain_memory``.
 
 Kept fixed parts (`KeptParts` stores) and kept port state
 (``Discretization.ports``) count in `EntryCache.nbytes`, each object once, by
@@ -260,7 +260,7 @@ def test_a_store_no_other_holder_references_is_dropped():
 
 
 class PoolingKept(FakeKept):
-    """An entry's handle whose base goes back to the plan pool (ADR 0093)."""
+    """An entry's handle whose base goes back to the plan pool."""
 
     def __init__(self, entries, budget, nbytes, base=None, **kwargs):
         super().__init__(nbytes, base, **kwargs)

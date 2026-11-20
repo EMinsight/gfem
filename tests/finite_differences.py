@@ -14,7 +14,7 @@ The iterative solve's error is far larger than 1e-15 at production
 tolerance, but it is the same smooth function of the design at every sample
 and cancels in the differences, as long as each evaluation solves as if
 alone: a ``bddc_gmres`` solve would otherwise start from the previous
-evaluation's solution (the design initial guess, ADR 0126), stop at another
+evaluation's solution (the design initial guess), stop at another
 iterate, and leave noise of the tolerance's order. Every evaluation here
 drops the design guesses first.
 
@@ -73,7 +73,7 @@ def unit_directions(rng: np.random.Generator, shape, n: int) -> list[np.ndarray]
 
 
 def _alone(objective: Objective, p) -> jax.Array:
-    """``objective(p)`` solved as if alone: without design guesses (ADR 0126)."""
+    """``objective(p)`` solved as if alone: without design guesses."""
     for disc in cache._DISCRETIZATIONS.values():
         disc.drop_guesses()
     return objective(p)

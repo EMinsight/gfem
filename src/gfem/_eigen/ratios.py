@@ -1,4 +1,4 @@
-"""The loads of the mode-field adjoint for the eigenmode ratios (ADR 0102).
+"""The loads of the mode-field adjoint for the eigenmode ratios.
 
 The ratios on an `EigenmodeResult` (``q_port``, ``participation``,
 ``bulk_participation``, ``principal_participation``,
@@ -8,16 +8,16 @@ mode ``(k, u)``: quadratic forms of ``u`` over the electric energy
     E = 1/2 eps0 int Re(eps_r) |u|^2 + sum_ports C_p |V_p|^2 / 2
         + sum_sheets 1/2 eps0 scale u^H A_C u
 
-(``V_p = l_p^T u`` the port voltage, ``A_C`` a capacitive sheet's C piece,
-ADR 0103), and ``Re k``. On a permittivity law region ``Re(eps_r)`` is the
-energy permittivity eps_W at the mode's ``Re omega`` (ADR 0109): the region's
+(``V_p = l_p^T u`` the port voltage, ``A_C`` a capacitive sheet's C piece),
+and ``Re k``. On a permittivity law region ``Re(eps_r)`` is the
+energy permittivity eps_W at the mode's ``Re omega``: the region's
 form is built on eps_inf (`gfem._engine.eigen.real_eps`) and scaled by
 ``s = eps_W / eps_inf`` per mode, so its explicit term's weight carries
 ``s`` and ``kappa`` gains ``1/2 dG/dE_r dE_r/dRe k`` with ``dE_r/dRe k =
 1/2 eps0 (d eps_W / d omega) (c / scale) int_r |u|^2``. A sheet's
 participation is its L piece's form ``u^H A_L u / (2 mu0 scale
 Re(omega)^2 E)``. A real objective ``G = sum ct g`` of them gives the load
-of quantum-metrics ticket 03: its Wirtinger partial ``w = dG/du`` (``dG = 2
+of the mode-field adjoint: its Wirtinger partial ``w = dG/du`` (``dG = 2
 Re(w^T du + kappa dk) + ...``),
 ``kappa = dG/dk``, and the explicit terms, the derivative of ``G`` by each
 energy part at fixed ``u``. Scale and phase invariance give ``u^T w = 0``, so
@@ -38,8 +38,7 @@ normalization multipliers
 give the adjoint's right-hand side ``r = w + mu1 conj(W u) - i mu2 B u``
 (``u^T r = 0``) and the explicit terms ``mu1 u^H (dW/dp) u + mu2 Im(u^T
 (dB/dp) u)``: ``mu1`` adds to ``dG`` by the energy, and ``mu2`` weighs the
-pair ``(u, u)`` on the same ``Re(eps_r)`` terms with ``-i mu2``
-(quantum-metrics ticket 03).
+pair ``(u, u)`` on the same ``Re(eps_r)`` terms with ``-i mu2``.
 
 The explicit part is contracted by the sensitivity kernel through one
 `gfem._engine.sensitivity.energy_term` per region (``Re(eps_r)`` there) and
@@ -53,7 +52,7 @@ lumped pass their derivative in the sheet's L and C (each piece is
 proportional to ``1 / L_s`` or ``C_s``). A lumped port's L and C enter the
 ratios through no piece (``1 / L`` in its participation, ``C |V|^2 / 2`` in
 the energy), so their explicit terms are scalars (`Load.lumped`) the rule
-adds to the lumped pass's values (quantum-metrics ticket 21).
+adds to the lumped pass's values.
 """
 
 from __future__ import annotations
@@ -399,7 +398,7 @@ class _Partials:
             if c:
                 w += c * s * ratios.unit * np.conj(applied)
                 weights[energy_name(region)] = c * s * ratios.unit
-        # a law region's energy depends on Re k through eps_W (ADR 0109)
+        # a law region's energy depends on Re k through eps_W
         kappa = self.kappa + 0.5 * float(whole @ mode.slope)
         for (r, a), c in np.ndenumerate(self.axis):
             if c:
@@ -477,6 +476,6 @@ def _normalized(ratios: Ratios, mode: _Mode, load: Load, field: np.ndarray) -> L
     for name in mode.capacitors:
         key = (name, "capacitance")
         lumped[key] = lumped.get(key, 0.0) + mu1 * 0.5 * abs(mode.volts[name]) ** 2
-    # mu1 dE/dRe k: a law region's eps_W (ADR 0109)
+    # mu1 dE/dRe k: a law region's eps_W
     kappa = load.kappa + 0.5 * mu1 * float(mode.slope.sum())
     return Load(w=w, kappa=kappa, energy=energy, phase=phase, lumped=lumped)

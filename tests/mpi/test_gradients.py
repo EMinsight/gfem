@@ -31,7 +31,8 @@ from gfem._engine.driven import DrivenRule
 from gfem._mpi import AgreedError
 from gfem.shape import boundary_morph
 
-#: Relative to the largest entry of the one-process gradient: ADR 0070's gates.
+#: Relative to the largest entry of the one-process gradient: 1e-11 on direct,
+#: 1e-9 on BDDC.
 GATES = {"bddc_gmres": 1e-9, "direct": 1e-11}
 SOLVERS = (
     "bddc_gmres",
@@ -54,7 +55,7 @@ STEPS = {
     "nodes": 2e-6,
     "fill": 5e-3,
 }
-#: What a backward's error is, seen from a script (ADR 0065).
+#: What a backward's error is, seen from a script.
 BACKWARD_ERRORS = (jax.errors.JaxRuntimeError, ValueError)
 
 
@@ -277,7 +278,7 @@ def _shared(directory, cells=(4, 2, 2)):
     return objective, p, unit_directions(rng, p.shape, 2), STEPS["eps_r"]
 
 
-#: One row per line of ticket 09's table, then `mu_r` and `tan_delta`.
+#: One row per design input of the driven gradients, then `mu_r` and `tan_delta`.
 ROWS = {
     "eps": _eps,
     "sigma": lambda d: _line_row("conductivity", 4, d),
@@ -483,7 +484,7 @@ def test_an_entry_lost_on_one_rank_runs_every_forward_again(tmp_path, lost, solv
         _on, "_an_entry_lost_on_one_rank", solver, tmp_path, lost, ranks=4, limit=300
     )
     assert forwards == 1
-    # the first grad's was consumed, freed at the vjp's forward (ADR 0081); the
+    # the first grad's was consumed, freed at the vjp's forward; the
     # pullback's was freed by all
     assert entries == 0
     _assert_below_the_gate(grad, reference, "after the loss", solver)
@@ -555,11 +556,11 @@ def test_a_two_frequency_gradient_prepares_one_base(tmp_path, solver):
         f"prepares: {prepares} under ranks, {serial} on one process; "
         f"refactorizations {refactorized}"
     )
-    # one process keeps the forward's base for the adjoint too (ADR 0065, amended)
+    # one process keeps the forward's base for the adjoint too
     assert serial == 1
     assert prepares == 1
     # the sweep's second frequency, then the adjoint at the first only: the backward
-    # starts at the base's frequency (ADR 0065, amended)
+    # starts at the base's frequency
     assert refactorized == 2
     _assert_below_the_gate(grad, grad_one, "one base", solver)
 

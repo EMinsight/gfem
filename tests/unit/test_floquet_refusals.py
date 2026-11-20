@@ -1,14 +1,14 @@
 """Floquet models off the uniform driven sweep, readers, the oblique-absorber warning.
 
 Every path but the uniform driven sweep refuses a model with Floquet ports
-by name (ADR 0149): the adaptive sweep, the GPU solver and PETSc before the
+by name: the adaptive sweep, the GPU solver and PETSc before the
 linear solver is resolved, eigenmode, mesh refinement, error estimates and
 `gfem.PortMode`; the MPI refusal is a row of `mpi_cases`. An objective that
 reads `DrivenResult.diffraction_orders` is a refused leaf of the estimates,
 and `gfem.power_flow` admits a Floquet face inside its side and names one
 outside it. A first-order `gfem.Absorbing` face of a periodic cell warns when
 a propagating wave (a diffraction order or the Bloch wave) meets it
-obliquely (ADR 0150).
+obliquely.
 """
 
 import math

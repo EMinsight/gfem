@@ -1,4 +1,4 @@
-"""`SolverOptions.gauge`: its resolution, refusals, warnings and logs (ADR 0220).
+"""`SolverOptions.gauge`: its resolution, refusals, warnings and logs.
 
 ``"auto"`` gauges a one-process CPU direct driven solve without periodic
 pairs, a Bloch wave vector or Floquet ports and runs every other one

@@ -1,4 +1,4 @@
-"""Thermal solves against convergent closed forms (ADR 0180).
+"""Thermal solves against convergent closed forms.
 
 Steady: a strip heater on a slab. Transient: gsim's 1D slab (below).
 
@@ -71,7 +71,7 @@ def strip(tmp_path_factory):
 
 def test_a_strip_heater_follows_the_ln_coth_profile(strip):
     exact = np.array([_exact(x) for x in XS])
-    # gate 2e-3 (ADR 0180; 2.4e-4 measured)
+    # gate 2e-3 (2.4e-4 measured)
     np.testing.assert_allclose(strip, exact, rtol=2e-3)
 
 
@@ -83,7 +83,7 @@ def test_the_far_field_decay_length_is_2h_over_pi(strip):
     assert -1 / slope == pytest.approx(2 * H / math.pi, rel=2e-2)
 
 
-# --- transient: gsim's 1D slab (ADRs 0164, 0166, 0180) -------------------------
+# --- transient: gsim's 1D slab -------------------------------------------------
 #
 # Depth SL, sink at the bottom, insulated top, uniform heat SQ switched on at
 # t = 0: the top rises as T_s - sum_n b_n sin(l_n SL) exp(-a l_n^2 t), with
@@ -152,7 +152,7 @@ def test_the_first_eigenvalue_gives_tau1(slab):
     k = stiffness[free][:, free]
     c = capacity[free][:, free]
     lowest = eigsh(k, k=1, M=c, sigma=0.0, which="LM", return_eigenvectors=False)
-    # gate 1e-6 (ADR 0180; 2.8e-8 measured, 588 DOF)
+    # gate 1e-6 (2.8e-8 measured, 588 DOF)
     assert 1 / lowest[0] == pytest.approx(TAU1, rel=1e-6)
 
 
@@ -164,14 +164,14 @@ def _decay_tau(t, rise):
 
 def test_the_late_decay_slope_of_tr_bdf2_gives_tau1(slab):
     t, rise, _ = _step(slab, 5 * TAU1, 100)
-    # gate 1e-3 (ADR 0180; 1.0e-4 measured)
+    # gate 1e-3 (1.0e-4 measured)
     assert _decay_tau(t, rise) == pytest.approx(TAU1, rel=1e-3)
 
 
 @pytest.mark.parametrize("theta", [1.0, 0.5])
 def test_the_late_decay_slope_of_the_theta_scheme_gives_tau1(slab, theta):
     t, rise, _ = _step(slab, 5 * TAU1, 500, time_scheme="theta", theta=theta)
-    # gate 1 % (gsim's, ADR 0180; 5.0e-3 measured at theta 1, backward
+    # gate 1 % (gsim's; 5.0e-3 measured at theta 1, backward
     # Euler's first-order lag, and 8.4e-6 at theta 0.5)
     assert _decay_tau(t, rise) == pytest.approx(TAU1, rel=1e-2)
 
@@ -188,7 +188,7 @@ def test_the_trace_times_match_the_analytic_trace(slab):
             (gfem.time_constant(t, rise), gfem.time_constant(fine, exact)),
         ]
     for measured, analytic in pairs:
-        # gate 1e-3 (ADR 0180; 6.9e-8 and 1.9e-6 measured)
+        # gate 1e-3 (6.9e-8 and 1.9e-6 measured)
         assert measured == pytest.approx(analytic, rel=1e-3)
 
 
@@ -201,5 +201,5 @@ def test_the_final_temperature_is_the_steady_one(slab):
     )
     top = _top(slab)
     final = float(result.rise(result.kept_times[-1]).at(top))
-    # gate 5e-3 (ADR 0180; 4.7e-5 measured)
+    # gate 5e-3 (4.7e-5 measured)
     assert final == pytest.approx(float(steady.rise.at(top)), rel=5e-3)

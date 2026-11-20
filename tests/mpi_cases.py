@@ -1,4 +1,4 @@
-"""The problems with no distributed path: one case per refusal key (ADR 0072).
+"""The problems with no distributed path: one case per refusal key.
 
 `tests/unit/test_mpi.py` raises each one on a stub communicator, and
 `tests/mpi/test_launch.py` raises each one on every rank of a launched job.

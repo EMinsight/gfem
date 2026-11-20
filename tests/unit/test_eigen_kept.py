@@ -1,4 +1,4 @@
-"""The eigenmode entry's kept operator, its gap set and the driven memo (ADR 0104).
+"""The eigenmode entry's kept operator, its gap set and the driven memo.
 
 A differentiated eigenmode forward keeps its `EigenOperator` (the factors at
 the last shift and the assembled maps) in a kept-operator holder, the
@@ -176,7 +176,7 @@ def test_bases_tier_frees_eigen_operators_before_entries(mesh):
     entries.clear()
 
 
-# --- no factor reuse across designs (ADR 0094) ------------------------------------
+# --- no factor reuse across designs -----------------------------------------------
 
 
 @pytest.mark.skipif(
@@ -280,7 +280,7 @@ def test_gap_set_holds_cut_modes_and_the_guard(mesh, monkeypatch):
 
 
 def test_empty_gap_set_takes_the_seed_ritz_values(mesh):
-    # no guard mode on the small line (ADR 0104, ticket 23 amendment): the
+    # no guard mode on the small line: the
     # mode's neighbour is the next root's unrefined Ritz value
     _, _outputs, entry = _kept(terminated_line(mesh, 1000.0))
     first, second = line_roots(1000.0, [1, 2])

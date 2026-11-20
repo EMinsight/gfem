@@ -141,7 +141,7 @@ def test_a_lossy_wave_port_beside_a_lumped_port_over_two_workers(tmp_path):
 
 def test_workers_on_shared_port_surfaces_give_the_sequential_sweep(tmp_path):
     # two shared port surfaces, two workers: the same S as one process, and
-    # no projection warning (the S functional is biorthogonal, ADR 0214)
+    # no projection warning (the S functional is biorthogonal)
     model = hybrid_line(hybrid_mesh(tmp_path))
     grid = (60e9, 70e9)
     options = gfem.SolverOptions(order=2, linear_solver="direct", frequency_workers=2)
@@ -202,7 +202,7 @@ def test_two_exact_workers_give_the_sequential_sweep(line, monkeypatch, linear_s
     calls = _count_prepares(monkeypatch)
     cache.ENTRIES.clear()  # no pooled base of an earlier test serves
     one, one_entry = _forward(line, problem, keep=True, linear_solver=linear_solver)
-    # one base: direct meets each frequency for the first time (ADR 0121)
+    # one base: direct meets each frequency for the first time
     planned = 1
     assert len(calls) == planned
     two, two_entry = _forward(

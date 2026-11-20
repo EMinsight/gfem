@@ -1,4 +1,4 @@
-"""The route phase against the 2D shift and against station re-solves (ADR 0183).
+"""The route phase against the 2D shift and against station re-solves.
 
 A heater cross-section shaped like femwell's TiN heater (a silicon wafer
 under a 2 um oxide box, a 500 x 220 nm silicon core, a 2 um x 140 nm heater
@@ -8,11 +8,11 @@ window (the core in oxide, a cross-section slab) is swept along the core.
 
 - With the heater along the whole extrusion the rise is z-invariant, so the
   route phase over the length L is L times the window's 2D shift on the
-  section's slab (-2.7e-5 on femwell's section, thermal probes/09).
+  section's slab (-2.7e-5 on femwell's section).
 - With the heater in the middle 4 um of a 16 um extrusion only, the
   first-order phase per length at the middle station is within 1e-3 of a
   mode re-solve of the window placed there with eps(rise), at the drive
-  that would give a pi shift over 320 um (7e-5 on the spiral, thermal probes/09).
+  that would give a pi shift over 320 um (7e-5 on the spiral).
 """
 
 import jax

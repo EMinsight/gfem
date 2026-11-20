@@ -130,7 +130,7 @@ def test_periodic_surfaces_must_differ():
         gfem.Periodic(("x_min", "x_min"))
 
 
-# --- model checks (ticket 03) ------------------------------------------------------
+# --- model checks ----------------------------------------------------------------
 
 
 def _split_x(c):
@@ -213,7 +213,7 @@ def test_a_wave_port_off_the_pairs_is_allowed(tmp_path):
     _model(mesh, [_x_pair()], ports=[gfem.WavePort("w", "port")])
 
 
-# --- mesh checks (ticket 04) -------------------------------------------------------
+# --- mesh checks -----------------------------------------------------------------
 
 
 def test_node_counts_must_match(tmp_path):

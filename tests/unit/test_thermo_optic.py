@@ -3,7 +3,7 @@
 A silicon core in oxide under a heater on a small cross-section slab: the
 heater is excluded from electromagnetic solves, so the port's section is
 the oxide and the core. The shift is first order in the rise from one mode
-solve (ADR 0174), so it is exactly linear in the rise and in dn/dT; the
+solve, so it is exactly linear in the rise and in dn/dT; the
 re-solve checks live in tests/verification/test_thermo_optic.py.
 """
 

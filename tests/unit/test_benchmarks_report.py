@@ -1,4 +1,4 @@
-"""`python -m benchmarks report`: a deterministic campaign report (ADR 0413).
+"""`python -m benchmarks report`: a deterministic campaign report.
 
 The fixture campaign under ``tests/unit/data/bench/campaign`` holds synthetic records
 (numbers invented, no real run's timing) and the store's ``references/`` beside it.

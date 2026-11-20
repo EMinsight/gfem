@@ -73,7 +73,7 @@ per face, with no owner tetrahedron: the fill is a property of the face.
 Each sheet piece's term carries its ``c_p`` (`Term.sheet`).
 
 A **lumped value** ``p`` (a lumped port's inductance or capacitance, an
-`Impedance`'s resistance, inductance or capacitance; ADR 0100) scales the
+`Impedance`'s resistance, inductance or capacitance) scales the
 coefficient of its pieces, ``c ∝ p`` (C) or ``1 / p`` (R, L), so ``dA / dp =
 (s / p) sum_t theta_t A_t`` with ``s = ±1``. Its **lumped pass** integrates
 ``sum_t theta_t (s / p) c_t left_t . right_t`` on the pieces' surfaces with the
@@ -82,7 +82,7 @@ The rule gives those pieces as `Term` values carrying ``Term.lumped``, through a
 ``lumped_terms`` hook beside ``terms``.
 
 A **law parameter** ``p`` (a permittivity law's eps_inf, a strength or a
-frequency; ADR 0112) moves the θ of its law's pieces, not their
+frequency) moves the θ of its law's pieces, not their
 coefficients: the susceptibility piece (whose form, the region's indicator
 times ``u . v``, is also eps_inf's part of the mass) and the law's absorbing
 face pieces. The rule gives dθ/dp at each pair's frequency as a weight of
@@ -94,7 +94,7 @@ piece, whatever the parameter count. It reads the weight under its own key
 only, so it accepts pairs that carry only that key (an adaptive sweep's,
 weight 1 per key).
 
-A **load** (ADR 0178) is a problem leaf that is one power density per
+A **load** is a problem leaf that is one power density per
 tetrahedron (`LOAD_KIND`, the summed heat sources of a thermal problem):
 the load side of the operator, ``F_i = int q psi_i``, so ``dJ / dq_e =
 int_e Lambda`` for the rule's adjoint ``Lambda`` (a transient's is the
@@ -324,7 +324,7 @@ PROPERTIES: dict[str, frozenset[str]] = {
     "electrostatic": frozenset({"eps_r"}),
     # driven: mass eps_r (1 - i tan_delta), curl-curl 1 / mu_r, conductivity
     # eta0 sigma scale (real sigma), absorbing c1 and c2 of the real e and m
-    # and the density of a blend with a law end (ADR 0113): its mass limit
+    # and the density of a blend with a law end: its mass limit
     # and its susceptibility pieces' coefficients
     "driven": frozenset({"eps_r", "tan_delta", "mu_r", "conductivity", "blend"}),
     # the driven pieces (`gfem._eigen.operator`), weighted at the complex
@@ -412,7 +412,7 @@ def energy_term(
     """An explicit term of the mode energy: ``int Re(eps_r) u . v`` on ``elements``.
 
     The eigenmode rule's ratios divide by the electric energy ``1/2 eps0 int
-    Re(eps_r) |E|^2`` (ADR 0103), and a region's or a principal axis's share
+    Re(eps_r) |E|^2``, and a region's or a principal axis's share
     is the same integral on part of the mesh. Their explicit design
     derivative is this term, not the operator's mass piece ``eps_r (1 - i
     tan_delta)``: its coefficient reads ``r = Re(eps_r)`` (``dc/dr = 1`` on
@@ -462,12 +462,12 @@ SHEET_FORMS = frozenset({"driven", "eigenmode"})
 LUMPED_FORMS = frozenset({"driven", "eigenmode"})
 #: Operator families whose pairs carry the law pieces' dθ/dp (`law_key`).
 LAW_FORMS = frozenset({"driven", "eigenmode", "electrostatic"})
-#: Operator families with a load pass (ADR 0178): their problem leaves are
+#: Operator families with a load pass: their problem leaves are
 #: read, the power density by the pass, the others by the rule's explicit terms.
 LOAD_FORMS = frozenset({"steady_thermal", "transient_thermal"})
 #: The input kind of a load form's power density per tetrahedron.
 LOAD_KIND = ("problem", ".density")
-#: The lumped values that are design inputs (ADR 0100), by owner.
+#: The lumped values that are design inputs, by owner.
 _LUMPED = {
     "port": ("inductance", "capacitance"),
     "boundary": ("resistance", "inductance", "capacitance"),
@@ -585,7 +585,7 @@ def _surface_tests(
         The space (``copies`` of it, compound, above 1); its test functions, one
         per copy; and what reads an assembled form as ``(copies, n)``, one value per
         local surface element. Under ranks the space is `facet_space`, whose DOFs
-        are not the elements' (ADR 0066).
+        are not the elements'.
     """
     if built.comm is None:
         one = ngs.SurfaceL2(built.mesh, order=0, complex=is_complex)

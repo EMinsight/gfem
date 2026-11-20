@@ -2,11 +2,11 @@
 
 `refine_mesh` solves, estimates the error, marks the tetrahedra holding most
 of it (Dörfler marking), bisects them and solves again, until the error
-estimate meets a tolerance or a cap stops it (ADR 0085). `error_estimate`
-gives one estimate of a result without refining (a measurement, ADR 0004).
-Estimators are value objects named by what they estimate (ADR 0086): the
+estimate meets a tolerance or a cap stops it. `error_estimate`
+gives one estimate of a result without refining (a measurement).
+Estimators are value objects named by what they estimate: the
 `FieldEstimator` estimates the field's error in the energy norm by flux
-recovery (ADR 0087); the `QuantityEstimator` names one quantity of interest.
+recovery; the `QuantityEstimator` names one quantity of interest.
 """
 
 from __future__ import annotations
@@ -320,7 +320,7 @@ def _cluster_members(value: tuple | list) -> tuple[int, ...]:
 
 Estimator = FieldEstimator | QuantityEstimator
 
-#: What an `ErrorEstimate` can be of (its ``kind``): a closed set (ADR 0143).
+#: What an `ErrorEstimate` can be of (its ``kind``): a closed set.
 #: ``"field"`` is the `FieldEstimator`'s; ``"capacitance"``, ``"s"`` and
 #: ``"omega"`` a `QuantityEstimator`'s entries; ``"q"`` and ``"cluster mean"``
 #: a mode's Q and a degenerate cluster's mean omega; every ``"objective of
@@ -401,7 +401,7 @@ class ErrorEstimate:
     _modes: tuple[int, ...] = dataclasses.field(default=(), repr=False)
     #: The (mode, region) participations whose mode-field duals it reads.
     _dual_modes: tuple[tuple[int, str], ...] = dataclasses.field(default=(), repr=False)
-    #: A lossless rewrite's computed defect term lam . D, signed (ADR 0135):
+    #: A lossless rewrite's computed defect term lam . D, signed:
     #: ``value - abs(_defect)`` is the rewritten objective's own estimate.
     _defect: float = dataclasses.field(default=0.0, repr=False)
     #: The electrostatic dual loads an objective's estimate reads, by key
@@ -840,7 +840,7 @@ _DEFAULT_TOLERANCE = 1e-2
 def _quantities(
     estimator: Any, tolerance: Any
 ) -> tuple[tuple[Estimator, ...], tuple[Any, ...]]:
-    """The estimators of `refine_mesh` and one tolerance each (ADR 0130).
+    """The estimators of `refine_mesh` and one tolerance each.
 
     A tuple of estimators holds `QuantityEstimator`s, at least one, none
     twice; a tuple of tolerances needs a tuple of estimators of its length.
@@ -897,7 +897,7 @@ def _quantities(
 def _check_disjoint_tracks(first: Estimator, second: Estimator) -> None:
     """Raise when a cluster shares a mode with another estimator's mode or cluster.
 
-    A cluster is followed as a whole (ADR 0136), and one mode of it has no
+    A cluster is followed as a whole, and one mode of it has no
     track of its own; two estimators of one mode share its track.
     """
     a, b = _track_start(first), _track_start(second)
@@ -936,11 +936,11 @@ def _deferred_solve(
     comm: Any,
     adjoint_loads: Any,
 ) -> tuple[Any, dict[Any, Any] | None, GaugeChoice | None]:
-    """`_solve` with the driven low-frequency check deferred (ADR 0088).
+    """`_solve` with the driven low-frequency check deferred.
 
     Also returns the gauge choice of the solve's driven rule (``None`` for
     another problem): each pass resolves it afresh, and the deferred check
-    on the returned mesh reads the last pass's (ADR 0220).
+    on the returned mesh reads the last pass's.
     """
     from gfem._engine import driven
 
@@ -968,7 +968,7 @@ def _loop(
 
     Every estimator is estimated on every mesh; marking sums the
     tolerance-normalized weights of those still above their tolerance
-    (`_marking`), and the loop stops when none is (ADR 0130). ``joint``
+    (`_marking`), and the loop stops when none is. ``joint``
     (a tuple was given) makes the records tuples. Each solved mesh gets one
     `RecoveryCache`, shared by its estimates and dropped with the mesh.
     """
@@ -1146,8 +1146,8 @@ def _estimates(
 
     The modes are ``tracks``' (`_Tracks.follow`), plus, on the ``first``
     mesh, those its objectives read (`_Tracks.add`). An objective sees an
-    eigenmode result's followed modes in the first mesh's order (ADR 0143,
-    `_aligned`).
+    eigenmode result's followed modes in the first mesh's order
+    (`_aligned`).
     """
     modes = tracks.follow(result, options.cluster_rtol)
     view = _aligned(result, modes)
@@ -1193,7 +1193,7 @@ def _marking(
     """The indicators Dörfler marks on: those of the quantities above tolerance.
 
     Each quantity's ``indicators**2`` is in its own units; divided by its
-    tolerance they add up across quantities (ADR 0130). A lone quantity's
+    tolerance they add up across quantities. A lone quantity's
     indicators are marked on as they are.
     """
     if len(above) == 1:
@@ -1208,8 +1208,8 @@ class _Tracks:
     """The modes the estimators follow: one track per distinct start.
 
     A start is one mode index, or a cluster's members (``omega=(i, ...)``).
-    Estimators naming the same mode on the first mesh share its track
-    (ADR 0130). On each mesh a mode's track follows the mode nearest its
+    Estimators naming the same mode on the first mesh share its track.
+    On each mesh a mode's track follows the mode nearest its
     previous omega (`_track_mode`), a cluster's the as many modes nearest its
     previous mean (`_track_cluster`), each shift bounded by the omega
     estimate on the previous mesh (`bound`); two tracks landing on one mode
@@ -1236,7 +1236,7 @@ class _Tracks:
     ) -> dict[int, int]:
         """Follow the modes the first mesh's objectives read, one track each.
 
-        On the first mesh each such mode is itself (ADR 0130 amendment):
+        On the first mesh each such mode is itself:
         ``modes`` with them added.
         """
         read = sorted({m for e in estimates for m in e._modes})  # noqa: SLF001
@@ -1528,11 +1528,11 @@ def _estimate_objective(
     rtol: float,
     reach: str | None = None,
 ) -> ErrorEstimate:
-    """An objective's estimate: classify it, then its kind's kernel (ADR 0143).
+    """An objective's estimate: classify it, then its kind's kernel.
 
     An objective of S on a model that conserves power (`_conserves_power`)
-    is estimated through its lossless rewrite (ADR 0135), over every row of
-    the columns it reads; any other through the C form (ADR 0129).
+    is estimated through its lossless rewrite, over every row of
+    the columns it reads; any other through the C form.
     The S-functional adjoints of the rows that need one (a port not
     excited, or a lossy wave port) and did not ride on the solve
     (``ridden``) are solved here: one more factorization per frequency
@@ -1646,7 +1646,7 @@ def _estimate_objective(
 def _conserves_power(model: Model) -> bool:
     """Whether the true S of ``model`` conserves power, sum_i |S_ic|^2 = 1.
 
-    A conservative whitelist (ADR 0135): every material lossless (real
+    A conservative whitelist: every material lossless (real
     eps_r and mu_r, no tan_delta, conductivity or lossy law), every surface
     PEC or PMC, and every port lumped, whose resistance is the reference.
     A wave port is left out: its kept modes need not carry all the power;
@@ -1663,7 +1663,7 @@ def _conserves_power(model: Model) -> bool:
     )
 
 
-#: The estimate kinds of an objective of driven fields (ADRs 0132, 0133).
+#: The estimate kinds of an objective of driven fields.
 _FIELD_KINDS = ("objective of absorbed power", "objective of field means")
 
 
@@ -1678,7 +1678,7 @@ def _estimate_field_objective(
     ridden: tuple[Any, ...],
     cache: RecoveryCache,
 ) -> ErrorEstimate:
-    """An objective of driven fields' estimate (ADRs 0132, 0133, 0144).
+    """An objective of driven fields' estimate.
 
     One dual per measurement output read (`gfem._engine.field_duals`):
     those that did not ride on the solve (``ridden``) are solved here, one
@@ -1754,7 +1754,7 @@ def _field_duals(
         return rule.solve_adjoints(model, solutions)
 
 
-#: The estimate kinds of an objective of an electrostatic result (ADR 0141).
+#: The estimate kinds of an objective of an electrostatic result.
 _POTENTIAL_KINDS = (
     "objective of capacitance",
     "objective of electrostatic energy",
@@ -1773,7 +1773,7 @@ def _estimate_potential_objective(
     ridden: tuple[Any, ...],
     cache: RecoveryCache,
 ) -> ErrorEstimate:
-    """An electrostatic objective's estimate (ADR 0141).
+    """An electrostatic objective's estimate.
 
     J(C) reads the potentials' free duals. An energy or potential mean reads
     one dual per read energy and per averaged region set: those that did not
@@ -1839,10 +1839,10 @@ def _estimate_objective_of_omega(
     rtol: float,
     cache: RecoveryCache,
 ) -> ErrorEstimate:
-    """An objective of the modes' omega (ADR 0131 amendment): free duals.
+    """An objective of the modes' omega: free duals.
 
     Each mode read is followed as a mode of its own (``_modes``), and must
-    be clearly apart from the others (`_track_mode`). The terms ADR 0138
+    be clearly apart from the others (`_track_mode`). The terms
     lifted for the omega estimate alone raise (`_check_lossy_mode`).
     """
     from gfem._engine import estimate as kernels
@@ -1877,7 +1877,7 @@ def _estimate_objective_of_participation(
     duals: Mapping[Any, Any],
     cache: RecoveryCache,
 ) -> ErrorEstimate:
-    """An objective of bulk participations, and omega (ADR 0142).
+    """An objective of bulk participations, and omega.
 
     Each participation read needs its mode-field dual: ridden on the
     forward (``duals``, by mode and region, when it was solved for the same
@@ -1936,7 +1936,7 @@ def _rides(dual: Any, omega: complex) -> bool:
 
 
 def _mode_field_reach(options: SolverOptions) -> str | None:
-    """Why a solve with ``options`` leaves mode-field duals out of reach (ADR 0102)."""
+    """Why a solve with ``options`` leaves mode-field duals out of reach."""
     from gfem._eigen.rule import _FIELD_TOLERANCE
     from gfem._linalg import ResolvedLinearSolver
 
@@ -1962,7 +1962,7 @@ def _check_mode_field_reach(model: Model, reach: str | None) -> None:
         raise MeshRefinementUnsupportedError(
             "mode-field dual",
             "An objective of a participation is estimated with its mode-field "
-            f"dual, which is out of reach with {reach} (ADR 0102). Solve with "
+            f"dual, which is out of reach with {reach}. Solve with "
             "those options, or use gfem.FieldEstimator().",
         )
     surface = [
@@ -1985,7 +1985,7 @@ def _check_mode_field_reach(model: Model, reach: str | None) -> None:
 
 
 def _check_isolated(omega: np.ndarray, mode: int, rtol: float) -> None:
-    """Raise unless ``mode`` is apart from every other mode (ADR 0102 reach)."""
+    """Raise unless ``mode`` is apart from every other mode."""
     from gfem._eigen.rule import _ISOLATED
 
     others = [i for i in range(len(omega)) if i != mode]
@@ -1999,7 +1999,7 @@ def _check_isolated(omega: np.ndarray, mode: int, rtol: float) -> None:
             f"An objective of the participation of mode {mode} at "
             f"{_frequency(omega, mode)} needs the mode isolated, but mode "
             f"{near} at {_frequency(omega, near)} lies within a relative gap "
-            f"of {gaps.min():.3g}, below {threshold:g} (ADR 0102): near another "
+            f"of {gaps.min():.3g}, below {threshold:g}: near another "
             "mode the field is a mix of the two. Separate the modes, or use "
             "gfem.FieldEstimator()."
         )
@@ -2068,7 +2068,7 @@ def _check_first_estimates(
     ``quantities`` holds the estimators, their estimates and tolerances.
     Q's floor is `_check_q_floors`. An objective's is the solve tolerance
     carried through the objective's first-order sensitivity, 10 x
-    tolerance x sum_a |ct_a| s_a (ADR 0143),
+    tolerance x sum_a |ct_a| s_a,
     since the estimate does not include the solve's error. A dual that
     rides on the forward solve needs one worker.
     """
@@ -2185,8 +2185,8 @@ def _check_q_floor(
 ) -> None:
     """Raise for a Q tolerance below the eigen solve's error carried into Q.
 
-    Q's relative error is cot(arg omega) times omega's relative error (ADR
-    0131), so the solve's ``eigen_tolerance`` reaches Q multiplied by it.
+    Q's relative error is cot(arg omega) times omega's relative error,
+    so the solve's ``eigen_tolerance`` reaches Q multiplied by it.
     """
     _check_lossy_q(result, mode)
     omega = complex(np.asarray(result.omega)[mode])
@@ -2340,7 +2340,7 @@ def _track_cluster(
     previous: complex | None,
     previous_estimate: float | None,
 ) -> tuple[int, ...]:
-    """The modes of ``result`` a cluster mean follows (ADR 0136).
+    """The modes of ``result`` a cluster mean follows.
 
     On the first result (``previous`` is ``None``) they are ``members``, which
     must be whole ``result.cluster`` groups. On a refined mesh they are the
@@ -2424,7 +2424,7 @@ def _fields(result: Any) -> list:
 
 
 def _refuse_blends(model: Model, where: str) -> None:
-    """Raise for a law blend: the estimators do not read one (ADR 0113)."""
+    """Raise for a law blend: the estimators do not read one."""
     from gfem._engine import dispersion
 
     dispersion.refuse_blends(model, where)
@@ -2595,7 +2595,7 @@ def _check_mode(mode: int | None, n_modes: int, keyword: str = "omega") -> None:
 def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
     """Raise for a quantity entry the verification tier has no case for.
 
-    ``q`` keeps the mode refusals ADR 0138 lifted for ``omega``
+    ``q`` keeps the mode refusals lifted for ``omega``
     (`_check_lossy_mode`); the omega estimate checks its mode's Re eps when
     it estimates (`_check_mode_eps`).
     """
@@ -2631,7 +2631,7 @@ def _check_defined_row(to: str, model: Model) -> None:
 def _adjoint_ports(
     estimator: Estimator, model: Model, excited: list[str]
 ) -> tuple[str, ...]:
-    """The port whose S-functional adjoint an S estimate may need (ADR 0089).
+    """The port whose S-functional adjoint an S estimate may need.
 
     ``to`` of ``QuantityEstimator(s=(to, source))`` when it is not among
     ``excited`` (it has no field of its own), or when it is a wave port
@@ -2672,7 +2672,7 @@ def _adjoint_port_union(
 ) -> tuple[str, ...]:
     """The ports whose S-functional adjoints the S entries' duals solve.
 
-    The union over the estimators (ADR 0130), each port once: two S entries
+    The union over the estimators, each port once: two S entries
     reading one port share its adjoint. An objective's ports are known once
     it has been classified, on the first result (`ErrorEstimate`).
     """
@@ -2691,9 +2691,9 @@ class _Duals:
 
     On a driven problem, the ports whose S-functional adjoints ride: an S
     entry's from the first solve; an objective's once its estimate has read
-    them (`add`), from the next solve on (ADR 0089 amendment, ADR 0143). On
+    them (`add`), from the next solve on. On
     an electrostatic problem, an objective's energy and potential-mean
-    duals, the same way (ADR 0141).
+    duals, the same way.
     """
 
     def __init__(self, ports: tuple[str, ...], problem: Any = None) -> None:
@@ -2766,8 +2766,8 @@ def _check_adjoint_workers(
     """Refuse frequency workers for an estimate that solves a dual.
 
     Its adjoint loads (`_loads`) ride on the forward's
-    factorization (ADR 0089), which a frequency worker does not hand back:
-    frequency workers take wave ports (ADR 0099) but spread no adjoint
+    factorization, which a frequency worker does not hand back:
+    frequency workers take wave ports but spread no adjoint
     solve.
     """
     if not isinstance(problem, Driven):
@@ -2810,7 +2810,7 @@ def _adjoints(
 def _lossy_elements(model: Model) -> np.ndarray:
     """Whether each tetrahedron is lossy: tan_delta, conductivity, complex eps, mu.
 
-    A law region is lossy when a term of its law carries loss (ADR 0111).
+    A law region is lossy when a term of its law carries loss.
     """
     from gfem._engine import dispersion
     from gfem._engine.coefficients import element_tensors, lossy_eps
@@ -2837,11 +2837,11 @@ def _lossy_elements(model: Model) -> np.ndarray:
 def _check_lossy_mode(model: Model, keyword: str) -> None:
     """Raise for a mode term an estimate built on the mode has no case for.
 
-    The terms ADR 0138 lifted for omega alone: a permittivity law
+    The terms lifted for omega alone: a permittivity law
     ("dispersive eigenmode"), and a second-order absorbing boundary, a
     complex mu_r or loss inside an anisotropic material ("lossy
-    eigenmode"). Q and the objectives of a mode keep refusing them (ADR 0143
-    Assumptions); ``keyword`` names the refused estimator's keyword.
+    eigenmode"). Q and the objectives of a mode keep refusing them;
+    ``keyword`` names the refused estimator's keyword.
     """
     from gfem._engine import dispersion
     from gfem._engine.coefficients import element_tensors
@@ -2870,7 +2870,7 @@ def _check_lossy_mode(model: Model, keyword: str) -> None:
 
 
 def _check_mode_eps(model: Model, result: EigenmodeResult, mode: int) -> None:
-    """Raise for a mode bound to a law region at Re eps < 0 (ADR 0138).
+    """Raise for a mode bound to a law region at Re eps < 0.
 
     The omega estimate of such a mode (a plasmon) measured below the error,
     0.81 to 1.02, falling as Re eps approaches -1. Each law region's eps is
@@ -2904,7 +2904,7 @@ def _lossy_anisotropic_region(model: Model) -> str | None:
     return None
 
 
-#: The plasmonic window of a law region's Re eps (ADR 0140), open at both ends.
+#: The plasmonic window of a law region's Re eps, open at both ends.
 _PLASMONIC_WINDOW = (-20.0, 0.0)
 
 
@@ -2927,7 +2927,7 @@ def _check_driven_quantity(model: Model, frequencies: list[float], what: str) ->
     """Raise where a driven quantity estimate was measured underestimating.
 
     One check for the S estimate, objectives of S and driven field
-    objectives, before any solve (ADRs 0134, 0139, 0140). It runs after
+    objectives, before any solve. It runs after
     `dispersion.check_estimator_frequencies` has gone over every frequency,
     whose zero-weight `ValueError` comes first. The field estimate is not
     refused here: it is unclaimed (recipe Limits).

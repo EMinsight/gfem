@@ -1,9 +1,9 @@
 """Floquet ports before any solve: the order table, the helpers and the model checks.
 
 The pure functions of `gfem._floquet` (lattice frame, diffraction orders,
-DtN values, wave impedances, the modelled set and the order cap; ADRs
-0147, 0152, 0153), `gfem.FloquetPort` construction, the `Model` checks of a
-Floquet surface (ticket 08 Q6 of the floquet-ports spec), the
+DtN values, wave impedances, the modelled set and the order cap),
+`gfem.FloquetPort` construction, the `Model` checks of a
+Floquet surface, the
 `Model.bloch_wave_vector` and `Model.propagating_orders` helpers, and the
 codec. The cells are `structured_meshes.periodic_cell` boxes in um, 1.2 x
 0.4 um, layered along z: substrate (eps 2.25) below z = 0.3 um, a slab

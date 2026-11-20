@@ -4,13 +4,13 @@ A 16 x 8 x 1 mm parallel-plate patch (host eps 4, PEC plates, first-order
 `Absorbing` on the y walls and on the x ends outside the ports, 2 mm lumped
 strip ports centred on each end) with a 4 x 4 mm block "core" off the axis,
 swept over 1-20 GHz on 51 points. Every law enters the reduced model as its
-susceptibility piece weighted by its exact theta(omega) (ADR 0010).
+susceptibility piece weighted by its exact theta(omega).
 
 A lossless Lorentz pole inside the band is the case the plain greedy gets
 wrong while reporting convergence: the field shapes next to the pole are
 absent from a basis built away from it (on this patch, 1.3e-3 on S at the
 default tolerance). The greedy therefore solves the grid neighbours of the
-pole right after the endpoints (ADR 0116). The smooth laws need no seed: a
+pole right after the endpoints. The smooth laws need no seed: a
 Djordjevic-Sarkar substrate and a Debye block behind the absorbing wall (its
 face pieces read sqrt(Re eps(omega))) converge like a constant material.
 """

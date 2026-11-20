@@ -67,7 +67,7 @@ def test_two_modes_reproduce_pyepr_tutorial_6():
 
 
 def test_regression_pin_of_the_probe_digits():
-    # A pin of ticket 06's probe (exact cosine), not evidence.
+    # A pin of a direct diagonalization (exact cosine), not evidence.
     omega, p, lj = _one_transmon()
     one = quantum.dressed_modes(omega, p, inductance=lj, levels=15)
     assert _ghz(one.omega[0]) == pytest.approx(6.61345, abs=5e-6)

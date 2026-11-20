@@ -9,8 +9,7 @@ surfaces; every other surface of a conductor is insulated. Then
 ``G_ij = a(phi_i, phi_j)`` with no extra solve, and the dissipation per
 tetrahedron at unit voltages is ``D_e,ij = (1 / |e|) int_e sigma grad phi_i
 . grad phi_j`` (the exact element mean, on the pinned quadrature rule): a
-drive with terminal voltages V heats element e with ``V^T D_e V`` W/m^3
-(ADR 0169).
+drive with terminal voltages V heats element e with ``V^T D_e V`` W/m^3.
 
 The conduction domain is derived from the materials: every volume whose
 conductivity is not zero, minus the volumes excluded from DC conduction.
@@ -259,7 +258,7 @@ class DCConductionRule:
         if not isinstance(problem, DCConduction):
             raise TypeError(f"Expected gfem.DCConduction, got {problem!r}.")
         if options.device != "cpu":
-            # no GPU smoke test has run for DC conduction (ADR 0184)
+            # no GPU smoke test has run for DC conduction
             raise NotImplementedError(
                 "DCConduction has no GPU path in this version of gfem "
                 f"(device={options.device!r}): solve with device='cpu'."

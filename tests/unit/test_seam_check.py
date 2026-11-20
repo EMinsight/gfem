@@ -1,4 +1,4 @@
-"""The periodic seam check on a received mesh, against plain loops (ADR 0071).
+"""The periodic seam check on a received mesh, against plain loops.
 
 A received mesh is mimicked on one process: a random half of a periodic box's tets
 and triangles, with all of its identifications, so edges and faces go missing.

@@ -1,4 +1,4 @@
-"""Eigenmode solves of a model with a permittivity law (ADR 0115).
+"""Eigenmode solves of a model with a permittivity law.
 
 The frozen seed and residual inverse iteration find the modes of a law
 model exactly outside the law's unresolved band. The references:
@@ -192,12 +192,12 @@ def test_a_lossless_drude_law_is_solved_as_a_polynomial_problem(
     np.testing.assert_allclose(polynomial, general, rtol=1e-12)
 
 
-# --- the unresolved band (ADR 0115) ------------------------------------------------
+# --- the unresolved band -----------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
 def coarse(tmp_path_factory):
-    """The probe-04 box at (6, 5, 5) cells (h_max 2.52 mm), for order 1."""
+    """The box at (6, 5, 5) cells (h_max 2.52 mm), for order 1."""
     return _box(tmp_path_factory.mktemp("coarse"), (6, 5, 5))
 
 
@@ -205,7 +205,7 @@ def coarse(tmp_path_factory):
 def plate(tmp_path_factory):
     """The box at (13, 11, 5 + 5) cells in two layers (h_max 1.22 mm), for order 1.
 
-    Ticket 10's order-1 mesh: there the frozen seed's four nearest roots
+    An order-1 mesh where the frozen seed's four nearest roots
     were measured exact. (On the coarse box at order 1, 20 and 22 GHz
     targets skip one nearer root of the crowded lower branch.)
     """
@@ -321,7 +321,7 @@ def test_a_returned_mode_in_the_band_raises(coarse, seed_solves):
     assert seed_solves[0] >= 1
 
 
-# --- longitudinal modes (ADR 0115 amendment) -----------------------------------------
+# --- longitudinal modes --------------------------------------------------------------
 
 
 def _gradient_pair(model, f_b, options):
@@ -393,7 +393,7 @@ def cored(mesh, core):
 def test_a_drude_core_next_to_its_plasma_zero_returns_transverse_modes(
     core_box, operators
 ):
-    # ticket 04's case: host eps 4, a 2 mm Drude core with f_B = 19.799 GHz,
+    # host eps 4, a 2 mm Drude core with f_B = 19.799 GHz,
     # the target 1e-6 above it; hundreds of gradient eigenvalues sit at f_B
     law = gfem.PermittivityLaw(
         eps_inf=2.0, terms=[gfem.Drude(plasma_frequency=28 * GHZ, damping=0)]
@@ -435,7 +435,7 @@ def test_a_lossless_law_mode_is_the_constant_materials_at_its_frequency(core_box
     )
 
 
-# --- gradients by the law's parameters (ADR 0112) ------------------------------------
+# --- gradients by the law's parameters -----------------------------------------------
 
 
 def test_omega_differentiates_by_the_law_parameters(core_box):

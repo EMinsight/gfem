@@ -1,10 +1,10 @@
-"""The plan pool: serial CPU direct solves refactorize a held handle (ADR 0082).
+"""The plan pool: serial CPU direct solves refactorize a held handle.
 
 A driven solve on one process with the CPU ``direct`` solver takes its base
 handle from the plan pool when a handle of the same key is free there, and
 refactorizes it instead of planning again. A handle returns to the pool at the
-end of a non-differentiated solve, or when its consumed entry is freed (ADR
-0081), with its factors. ``retain_memory`` bounds pooled handles, entries'
+end of a non-differentiated solve, or when its consumed entry is freed,
+with its factors. ``retain_memory`` bounds pooled handles, entries'
 bases and entries with one walk: pooled handles' PARDISO factors released,
 then pooled handles, bases and entries freed, in that order.
 """
@@ -301,7 +301,7 @@ def test_clear_frees_the_pool_too():
     assert entries.pooled == 0
 
 
-# --- frequency bases (ADR 0121) ---------------------------------------------------
+# --- frequency bases --------------------------------------------------------------
 
 
 def test_a_returning_handle_over_budget_releases_its_own_factors_first():
@@ -583,7 +583,7 @@ def _eps(mesh):
 def test_a_density_loop_plans_once_per_frequency(path, plans):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     got = _loop(_objective(mesh), _eps(mesh))
-    # one base per frequency (ADR 0121)
+    # one base per frequency
     assert len(plans) == len(F)
     plans.clear()
     want = _loop(_objective(mesh, retain_memory=0), _eps(mesh))
@@ -654,7 +654,7 @@ def test_vmapped_variants_hold_a_pooled_handle_each(path, plans):
 @pytest.mark.usefixtures("plans")  # an empty cache before and after
 def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
-    # ungauged: a gauged base keeps the gauge template instead (ADR 0216)
+    # ungauged: a gauged base keeps the gauge template instead
     options = gfem.SolverOptions(linear_solver="direct", gauge="none")
 
     def pooled_patterns(eps):
@@ -663,7 +663,7 @@ def test_a_pooled_handle_keeps_only_a_pattern_its_kept_fixed_parts_hold(path):
         return [p.handle.pattern for p in cache.ENTRIES._plans.values()]
 
     # the first solve keeps no fixed part: its pieces' pattern dies with them
-    # (and its sweep keeps one base, ADR 0121)
+    # (and its sweep keeps one base)
     assert pooled_patterns(3.0) == [None]
     # the second keeps them, in the full pattern the piece sum sums into
     patterns = pooled_patterns(3.5)
@@ -718,7 +718,7 @@ def test_a_direct_handle_shares_its_pieces_pattern():
     alone = handle.nbytes
     pattern = DirectHandle.from_scipy(matrix)._matrix
     handle._pattern = pattern
-    # counted once at the cache, whoever else holds it (ADR 0091)
+    # counted once at the cache, whoever else holds it
     assert handle.nbytes == alone
     assert handle.shared() == {id(pattern): host_bytes(pattern)}
     handle.drop_pattern()
@@ -734,7 +734,7 @@ def test_pooled_handles_of_a_topology_left_out_of_the_discretizations_are_freed(
         gfem.Driven(frequency=F),
         options=gfem.SolverOptions(linear_solver="direct"),
     )
-    assert cache.ENTRIES.pooled == 1  # a one-shot sweep's base (ADR 0121)
+    assert cache.ENTRIES.pooled == 1  # a one-shot sweep's base
     for _ in range(cache._MAX_DISCRETIZATIONS):
         cache.discretization(gfem.Mesh.from_gmsh(path, length_unit="mm"))
     assert cache.ENTRIES.pooled == 0
@@ -758,7 +758,7 @@ def test_a_bloch_forward_returns_its_base_to_the_pool(tmp_path):
     _, vjp = jax.vjp(objective, eps)
     (entry,) = cache.ENTRIES._entries.values()
     assert entry.handle.system._adjoint_sweep is None
-    # the sweep met its frequencies for the first time: one base (ADR 0121)
+    # the sweep met its frequencies for the first time: one base
     assert cache.ENTRIES.pooled == 1
     (got,) = vjp(1.0)
     cache.ENTRIES.clear()
@@ -846,7 +846,6 @@ def test_a_bloch_gradient_loop_plans_its_adjoint_once_per_frequency(tmp_path, pl
         assert transposed._adjoint_sweep._base is not None
     # the forward (k) and the transposed system (-k) plan one base each at
     # the first step, a base per frequency each by the second, none after
-    # (ADR 0121)
     assert per_step == [2, 2 * len(pc.G_FREQUENCIES) - 2, 0]
     cache.ENTRIES.clear()
     objective, eps = _bloch(tmp_path, retain_memory=0)
@@ -857,7 +856,7 @@ def test_a_bloch_gradient_loop_plans_its_adjoint_once_per_frequency(tmp_path, pl
 @pytest.mark.usefixtures("plans")  # an empty cache before and after
 def test_a_bloch_entry_gives_its_transposed_base_to_the_pool(tmp_path):
     objective, eps = _bloch(tmp_path)
-    # the second design has a base per frequency (ADR 0121)
+    # the second design has a base per frequency
     for _ in range(2):
         _, vjp = jax.vjp(objective, eps)
         vjp(1.0)
@@ -918,7 +917,6 @@ def test_a_frozen_sample_adaptive_loop_plans_once_per_sample(path, plans):
         eps = eps + 0.5 * grad / jnp.max(jnp.abs(grad))
     # one analysis at the first step (the samples are new), one per other
     # sample at the second; later steps refactorize each sample's pooled base
-    # (ADR 0121)
     assert per_step == [1, 2, 0]
     cache.ENTRIES.free_consumed(comm=None, budget=2**40)
     assert sorted(p.key[-1] for p in cache.ENTRIES._plans.values()) == sorted(
@@ -927,7 +925,7 @@ def test_a_frozen_sample_adaptive_loop_plans_once_per_sample(path, plans):
 
 
 def test_a_greedy_adaptive_sweep_plans_once(path, plans):
-    # each greedy sample is a new frequency: the sweep keeps one base (ADR 0121)
+    # each greedy sample is a new frequency: the sweep keeps one base
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     grid = np.linspace(20e9, 28e9, 9)
     gfem.solve(

@@ -302,8 +302,8 @@ def seed_errors(monkeypatch):
 def test_a_lossy_wall_cavity_gives_the_modes_nearest_the_target(
     cavity, wall, seed_errors
 ):
-    # the divergence-free projection fixes its potential on the wall (ADR
-    # 0097): a potential free there removes gradients the wall term acts on,
+    # the divergence-free projection fixes its potential on the wall:
+    # a potential free there removes gradients the wall term acts on,
     # and the seeds are then no eigenpairs (backward error 0.16 to 0.27,
     # modes skipped); at most 1.4e-4 measured with the potential fixed
     model = gfem.Model(

@@ -18,7 +18,7 @@ energy of a thin layer on a plate or an interface.
   fields on each face of the sheet. The vacuum line's mode has MA
   t / (eps_MA H2) on the sheet (vacuum side) and no MS; the substrate
   line's mode has MS t eps / (eps_MS H1) (substrate side) and no MA. Each
-  face carries its own MA or MS layer and the faces add (ADR 0106); with one
+  face carries its own MA or MS layer and the faces add; with one
   vacuum and one substrate face, each kind has one face, so the sum is that
   face alone. The default kind averages the two sides, so it sees half the
   vacuum field.
@@ -230,7 +230,7 @@ def test_two_sided_sheet_picks_the_vacuum_or_substrate_side(sheet):
     )
 
 
-# --- a film with the same medium on both faces (ADR 0106) --------------------------
+# --- a film with the same medium on both faces -------------------------------------
 
 WF, HF, SF = 1.0, 1.0, 0.5  # box width and height, strip half width, mm
 
@@ -429,7 +429,7 @@ def test_per_axis_substrate_permittivity_differentiates_the_metal_substrate_laye
 
 
 def test_through_the_eigenmode_solve_the_permittivity_gradient_is_exact(tmp_path):
-    # Mode fields differentiate with respect to materials (ADR 0102). A
+    # Mode fields differentiate with respect to materials. A
     # uniform dielectric's permittivity keeps the mode's shape: its 1 J field
     # scales as eps^(-1/2), so p_MS ~ |eps E_n|^2 grows as eps and dp/deps =
     # p / eps. The node coordinates raise (the measurement refuses them).

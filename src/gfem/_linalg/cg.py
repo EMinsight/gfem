@@ -10,7 +10,7 @@ operator's product :math:`A s` are loads, the preconditioned residual :math:`w` 
 the search direction :math:`s` are states. Each product pairs a state with a load,
 so it is the rank sum of the local products, reduced to rank 0 and broadcast
 (`gfem._mpi.reduce_bcast`): every rank reads the same :math:`\alpha`, :math:`\beta`
-and residual, and stops at the same iteration (ADR 0058, ADR 0500). NGSolve's own
+and residual, and stops at the same iteration. NGSolve's own
 ``InnerProduct`` is an ``MPI_Allreduce``, which MPI does not promise to hold bitwise
 across ranks. A one-process handle keeps NGSolve's ``CGSolver``.
 """

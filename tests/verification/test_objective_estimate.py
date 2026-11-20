@@ -1,4 +1,4 @@
-"""The objective estimates' effectivity, on known answers (ADRs 0129, 0143).
+"""The objective estimates' effectivity, on known answers.
 
 A `gfem.QuantityEstimator(objective=J)` estimates how far an objective
 ``J(result, model)`` of a solved result is from its value on the same
@@ -12,7 +12,7 @@ A row is not asserted where the reference's own uncertainty, carried into
 J (sum |ct| bound plus the remainder of the bound), exceeds 20 % of the
 error, or where the error is below 1e-12 (the rule of the S cases).
 
-Objectives of S (kind ``objective of s``, the C form of ADR 0129):
+Objectives of S (kind ``objective of s``, the cotangent-weighted form):
 
 - lossy line: the parallel-plate line between 50 and 30 ohm lumped ports,
   eps_r 4 with tan_delta 0.3, at 3, 8, 15, 25 GHz on n = 4, 8, 16, against
@@ -36,7 +36,7 @@ Objectives of S (kind ``objective of s``, the C form of ADR 0129):
   -29.7, n = 1, 2): |S21|^2 against `contrast_cases.METAL_FLOOR_S`.
 
 Objectives of S on lossless models with lumped ports (kind ``objective of
-s, lossless rewrite``, ADR 0135):
+s, lossless rewrite``):
 
 - step line (`refinement_cases.step_model`, 3 and 8 GHz, n = 2, 4; both
   ports excited, and p1 alone): |S21|^2 at each frequency, the band mean of
@@ -54,7 +54,7 @@ Every row of the rewrite also passes the inner gate: the rewritten
 objective's own estimate C(J_lam) against its own error err(J) - lam . D,
 asserted >= 0.9 (not quoted), so the computed defect does not prop it up.
 
-Objectives of omega (kind ``objective of omega``, ADR 0131 amendment):
+Objectives of omega (kind ``objective of omega``):
 free duals, the Re rule per mode read plus the Hessian remainder, against
 exact omegas:
 
@@ -66,8 +66,8 @@ exact omegas:
 - two-mode box (eps_r 4, 0.5 S/m, modes 110 and 210, m = 1, 2): the ratio
   f2/f1 off target, the split in GHz and the sum of 1/q.
 
-Objectives of participation (kind ``objective of participation``, ADR
-0142): the mode-field dual with its flux equilibrated, plus the remainder
+Objectives of participation (kind ``objective of participation``):
+the mode-field dual with its flux equilibrated, plus the remainder
 R2, on a 1 x 0.7 x 0.2 mm box at 140 GHz with eps_r 4 in a region:
 
 - slab (0.3 < x < 0.6 across the section, m = 1, 2): PEC, tan_delta 0.05,
@@ -125,9 +125,9 @@ Measured (ostau, 2 threads):
 The lossy guide's slab at tan_delta 0.05 without offset is not run: its
 reference uncertainty exceeds 20 % of every row's error. The top, 175, is
 the near-lossless uniform guide's |S21|^2, whose error is second order and
-mostly a phase error of S21 that the magnitude form cannot see (ADR 0129).
+mostly a phase error of S21 that the magnitude form cannot see.
 
-Electrostatic objectives (ADR 0141), on the split two bars
+Electrostatic objectives, on the split two bars
 (`refinement_cases.bars_split_model`, near and screen, n = 4, 8) against
 `refinement_cases.BARS_SPLIT_REFERENCE`, and the coax (n = 2, 4, 8)
 against `refinement_cases.COAX_C`; the effectivity is the estimate over
@@ -152,7 +152,7 @@ Measured (ostau, 2 threads):
     means, bars           1.71 - 15.3
     means, two regions    1.65 - 2.18
 
-Objectives of driven fields (ADRs 0132, 0133, 0144), each reading port
+Objectives of driven fields, each reading port
 p1's excitation through ``-gfem.power_flow`` over a lossy side (kind
 ``objective of absorbed power``) or ``gfem.region_mean`` (Re of its E_z
 and |mean E|^2: ``objective of field means``), against the stored
@@ -558,7 +558,7 @@ def test_objective_of_s_on_deep_metal(tmp_path, geometry, n):
     _assert_rows("objective of s", "deep metal", [row])
 
 
-# --- the lossless rewrite (ADR 0135) ----------------------------------------------
+# --- the lossless rewrite ---------------------------------------------------------
 
 #: The line's characteristic impedance, eta0 / sqrt(4) x height / width.
 _Z0 = math.sqrt(const.mu_0 / const.epsilon_0) / 2 * _LINE["height"] / _LINE["width"]
@@ -590,7 +590,7 @@ def _rewrite_rows(model, result, reference, bound, objectives):
 
 _REWRITE = "objective of s, lossless rewrite"
 
-# step line: 3 and 8 GHz, every objective of ticket 03 but the robust max
+# step line: 3 and 8 GHz, every objective of S above but the robust max
 
 
 def _step_objectives(reflection=True):
@@ -713,7 +713,7 @@ def test_objective_of_s_lossless_rewrite_of_a_reflection_near_its_zero(near_line
     _assert_overestimate("reflection objective near a reflection zero", rows)
 
 
-# --- electrostatic objectives (ADR 0141) ------------------------------------------
+# --- electrostatic objectives -----------------------------------------------------
 #
 # Each objective is written once on a reader of the quantities it needs, and
 # evaluated on the result (the objective gfem classifies) and on the
@@ -874,7 +874,7 @@ def test_objective_of_potential_means_over_two_regions(split_bars):
     _assert_rows("objective of potential means", "bars, two regions", rows)
 
 
-# --- objectives of driven fields (ADRs 0132, 0133, 0144) ---------------------------
+# --- objectives of driven fields ---------------------------------------------------
 #
 # Each objective reads the excitation of port p1 at the case's frequency,
 # through gfem.power_flow (absorbed power: minus the power leaving a lossy
@@ -1383,7 +1383,7 @@ def test_objective_of_participation_on_the_slab(tmp_path, m, variant):
 @pytest.mark.parametrize("m", [1, 2])
 def test_objective_of_participation_times_frequency_on_the_slab(tmp_path, m):
     # p f mixes the two kinds: their errors cancel in J, which the magnitude
-    # form cannot see (ADR 0142), so it is quoted on its own
+    # form cannot see, so it is quoted on its own
     model, result, exact = _slab(tmp_path, m, "pec")
     rows = []
     for j in range(2):
@@ -1398,7 +1398,7 @@ def test_objective_of_participation_times_frequency_on_the_slab(tmp_path, m):
 @pytest.mark.parametrize("m", [2, pytest.param(3, marks=pytest.mark.reference)])
 def test_objective_of_participation_on_the_block(tmp_path, m, variant):
     # A block with 3D corners whose top face crosses E's normal component:
-    # the dual flux must be equilibrated with its load (ADR 0142). The
+    # the dual flux must be equilibrated with its load. The
     # Impedance variant holds a 377 ohm/sq top (a very lossy mode).
     top = gfem.Impedance("top", resistance=377.0) if variant == "impedance" else None
     model = _participation_box(tmp_path, m, _BLOCK, top=top)

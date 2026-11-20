@@ -1,4 +1,4 @@
-"""Direct factors reused across designs under the amortized rule (ADR 0094).
+"""Direct factors reused across designs under the amortized rule.
 
 The rule on synthetic and recorded counts, with no clock; the counts PARDISO
 and sparse Cholesky report; then a direct handle (PARDISO or sparse Cholesky)
@@ -82,9 +82,9 @@ def test_a_reused_step_at_the_mean_refactorizes():
     assert rule.reason == "chain"
 
 
-# ticket 02's amortized run on the 2.49M-DOF 3D bend, 16 threads
-# (probes/02/all/t16-amort): each chain's reused steps, in GMRES iterations
-# per column of 6 columns; its measured R = t22 / t33 was 89-92 columns
+# an amortized run on the 2.49M-DOF 3D bend, 16 threads: each chain's reused
+# steps, in GMRES iterations per column of 6 columns; its measured
+# R = t22 / t33 was 89-92 columns
 RECORDED_CHAINS = (
     (14, 19),
     (11, 15),
@@ -129,7 +129,7 @@ def test_the_gate_is_off_while_r_over_c_is_below_the_first_reused_iterations():
 
 
 def test_the_gate_starts_at_five_iterations():
-    # ticket 15: the fewest iterations per column measured at lag 1 (CPW, 5)
+    # the fewest iterations per column measured at lag 1 (CPW, 5)
     assert FIRST_ITERATIONS == 5.0
     rule = _rule(36.0)  # R/C = 6: the 4-port CPWs reuse from the second step
     _refactorized_step(rule)

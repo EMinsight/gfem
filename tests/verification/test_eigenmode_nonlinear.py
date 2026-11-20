@@ -211,7 +211,7 @@ def _union(runs, rtol=1e-6):
 @pytest.mark.parametrize("wall", WALLS, ids=repr)
 def test_a_lossy_wall_cavity_skips_no_mode_near_the_target(mirrored, wall):
     # with the projection's potential free on the wall, five of these seven
-    # returned a set that skipped modes (or none after minutes): ADR 0097
+    # returned a set that skipped modes (or none after minutes)
     target = 2 * math.pi * MIRRORED_TARGET
     reference = _union(_wall_modes(mirrored, wall, f, 6) for f in (21e9, 25e9))
     found = _wall_modes(mirrored, wall, MIRRORED_TARGET, 3)

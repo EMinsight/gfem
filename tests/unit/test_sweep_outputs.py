@@ -181,7 +181,7 @@ def test_join_takes_the_whole_grids_port_modes_at_the_joined_rows():
 
 
 def test_join_refuses_a_blocks_own_port_modes():
-    # a block's own port mode sweep is not the whole grid's (ADR 0099)
+    # a block's own port mode sweep is not the whole grid's
     rng = np.random.default_rng(6)
     block = _uniform(rng, (0, 1), waves=[_wave(rng, "w1")])
     with pytest.raises(ValueError, match="port mode"):

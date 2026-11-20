@@ -1,7 +1,7 @@
-"""`benchmarks.harness.score`: accuracy against a converged reference (ADR 0409).
+"""`benchmarks.harness.score`: accuracy against a converged reference.
 
 The references here are synthetic fixtures built on the committed cases' physics, never
-the committed ``reference.json`` files (those are no Baseline, ADR 0188).
+the committed ``reference.json`` files (those are no Baseline).
 """
 
 import copy
