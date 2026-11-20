@@ -9,7 +9,7 @@ reordered one at 16 (ticket 06), but the tests assert results, not paths: which
 seed or swap a partition takes depends on METIS in the wheel.
 """
 
-import contextlib
+import functools
 from pathlib import Path
 
 import jax
@@ -62,7 +62,9 @@ def _world():
     return MPI.COMM_WORLD
 
 
+@functools.cache
 def _mesh(case, directory):
+    """One mesh per case and directory in a process: its partition memo is shared."""
     if case == "cellx":
         path = Path(directory) / "g.msh"
         # pytest's one process writes it; ranks only read it
@@ -74,7 +76,7 @@ def _mesh(case, directory):
 
 def _setup(case, directory):
     """``(mesh, build(eps, sigma, cover=None), eps, sigma, frequencies, size)``."""
-    mesh = _mesh(case, directory)
+    mesh = _mesh(case, str(directory))
     rng = np.random.default_rng(5)
     if case == "cellx":
         n = len(mesh.elements("core")) + len(mesh.elements("sub"))
@@ -101,12 +103,6 @@ def _setup(case, directory):
 
 def _options(solver):
     return gfem.SolverOptions(order=2, linear_solver=solver, tolerance=1e-12, threads=1)
-
-
-def _forced(start, swap):
-    if start is None and not swap:
-        return contextlib.nullcontext()
-    return forced_search(start=start, swap=swap)
 
 
 def _objective(s):
