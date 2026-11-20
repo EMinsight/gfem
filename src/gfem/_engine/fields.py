@@ -540,6 +540,33 @@ def _lattice(n: int) -> tuple[np.ndarray, np.ndarray]:
     return points, cells
 
 
+def _triangle_lattice(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """Points and sub-triangles of the reference triangle cut ``n`` times.
+
+    Returns the lattice points ``(i, j) / n`` (reference coordinates,
+    ``i + j <= n``) and ``n**2`` counterclockwise sub-triangles as point indices.
+    """
+    ij = [(i, j) for j in range(n + 1) for i in range(n + 1 - j)]
+    index = {p: m for m, p in enumerate(ij)}
+    tris = []
+    for i, j in ij:
+        if i + j <= n - 1:
+            tris.append([index[i, j], index[i + 1, j], index[i, j + 1]])
+        if i + j <= n - 2:
+            tris.append([index[i + 1, j], index[i + 1, j + 1], index[i, j + 1]])
+    return np.array(ij, dtype=float) / n, np.array(tris, dtype=np.int64)
+
+
+def _orient_triangles(points: np.ndarray, cells: np.ndarray) -> np.ndarray:
+    """``cells`` with the last two vertices swapped where the area is < 0."""
+    p = points[cells]
+    d1, d2 = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+    out = cells.copy()
+    flip = d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0] < 0
+    out[flip, 1], out[flip, 2] = cells[flip, 2], cells[flip, 1]
+    return out
+
+
 def _orient(points: np.ndarray, cells: np.ndarray) -> np.ndarray:
     """``cells`` with the last two vertices swapped where the volume is < 0."""
     p = points[cells]
@@ -557,12 +584,14 @@ def sample(
 ) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray], dict[str, np.ndarray]] | None:
     """The field at the vertices of its support's tetrahedra cut ``order`` times.
 
+    On a 2D mesh, of its support's triangles, the points at z = 0.
+
     Across ranks this is collective: each rank samples its own tetrahedra, and rank 0
     gets them in one process's order, the others ``None``.
 
     Returns:
-        ``(points (N, 3) in m, cells (M, 4), point_data, cell_data)``; the
-        points of each tetrahedron are its own (no sharing).
+        ``(points (N, 3) in m, cells (M, dim + 1), point_data, cell_data)``;
+        the points of each element are its own (no sharing).
     """
     mesh = field.mesh
     excluded = field._excluded  # noqa: SLF001
@@ -577,14 +606,19 @@ def sample(
         )[0]
     _check_size(field, fes, width)
     n = max(field.order, 1)
-    ref, sub = _lattice(n)
+    flat = mesh.dim == 2
+    ref, sub = _triangle_lattice(n) if flat else _lattice(n)
     rule = ngs.IntegrationRule([tuple(p) for p in ref], [0.0] * len(ref))
     mips = built.mesh.MapToAllElements(rule, region)
     # a rank with no element reads empty arrays with no second axis
-    xyz = np.asarray(ngs.CF((ngs.x, ngs.y, ngs.z))(mips)).reshape(-1, 3) * built.scale
+    position = (ngs.x, ngs.y, 0) if flat else (ngs.x, ngs.y, ngs.z)
+    xyz = np.asarray(ngs.CF(position)(mips)).reshape(-1, 3) * built.scale
 
-    centre = ngs.IntegrationRule([(0.25, 0.25, 0.25)], [0.0])
-    owner = p0(built, np.arange(len(mesh.tetrahedra), dtype=float))
+    centre = ngs.IntegrationRule(
+        [(1 / 3, 1 / 3)] if flat else [(0.25, 0.25, 0.25)], [0.0]
+    )
+    topology = mesh._topology  # noqa: SLF001
+    owner = p0(built, np.arange(len(topology.volume_elements), dtype=float))
     tet = np.rint(
         np.asarray(owner(built.mesh.MapToAllElements(centre, region))).reshape(-1)
     ).astype(np.int64)
@@ -611,11 +645,13 @@ def sample(
         tet, point_data = gathered
         xyz = point_data.pop("points")
     n_el = len(tet)
-    cells = (sub[None] + len(ref) * np.arange(n_el)[:, None, None]).reshape(-1, 4)
-    cells = _orient(xyz, cells)
+    cells = (sub[None] + len(ref) * np.arange(n_el)[:, None, None]).reshape(
+        -1, sub.shape[1]
+    )
+    cells = _orient_triangles(xyz, cells) if flat else _orient(xyz, cells)
     cell_data = {
-        "region": np.repeat(mesh.tetrahedron_tags[tet], len(sub)),
-        "entity": np.repeat(mesh.tetrahedron_entities[tet], len(sub)),
+        "region": np.repeat(topology.volume_tags[tet], len(sub)),
+        "entity": np.repeat(topology.volume_entities[tet], len(sub)),
     }
     return xyz, cells, point_data, cell_data
 

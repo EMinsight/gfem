@@ -62,13 +62,16 @@ class Field:
             of them differs per rank.
         mesh: The mesh the field lives on (the model's mesh, as solved).
         quantity: What the field is: ``"V"`` (electric potential), ``"E"``
-            (electric field), ``"B"`` (magnetic flux density), and later
-            ``"H"``, ``"T"`` (temperature) or a loss density.
+            (electric field), ``"B"`` (magnetic flux density), ``"Ez"`` or
+            ``"Hz"`` (the component of E or H normal to the plane of a 2D
+            mesh, a scalar), and later ``"H"``, ``"T"`` (temperature) or a
+            loss density.
         unit: The SI unit of the field's values, e.g. ``"V"``, ``"V/m"``.
         space: The finite-element space, one of ``"h1"``, ``"hcurl"``,
             ``"hdiv"`` or ``"l2"``.
         order: The polynomial order of the space.
-        support: The volume regions the field is defined on. Volume entities
+        support: The volume regions (a 2D mesh's areas) the field is defined
+            on. Volume entities
             removed from the solve (the model's ``excluded=``) are outside the
             support even when they belong to a listed region.
         omega: The angular frequency in rad/s of a time-harmonic field
@@ -195,13 +198,17 @@ class Field:
         a small tolerance outside the mesh (1e-4 of an element's size) is still
         accepted, and evaluates from the nearest element.
 
+        On a 2D mesh, read tetrahedron as triangle and face as edge: the points
+        lie in the :math:`(x, y)` plane and are given as :math:`(x, y)`.
+
         Args:
-            points: One point ``(3,)`` or ``(n, 3)`` points, in metres.
+            points: One point ``(3,)`` or ``(n, 3)`` points, in metres; on a
+                2D mesh ``(2,)`` or ``(n, 2)``.
 
         Returns:
             ``(n, 3)`` for a vector field (``E``, ``B``), ``(n,)`` for a
-            scalar one (``V``); without the leading axis for one point.
-            Complex for a phasor.
+            scalar one (``V``, and a 2D mesh's ``Ez`` or ``Hz``); without the
+            leading axis for one point. Complex for a phasor.
 
         Raises:
             ValueError: A point is outside the mesh, past that tolerance, or inside
@@ -210,7 +217,8 @@ class Field:
                 With points or node coordinates computed inside `jax.jit`, this
                 surfaces as a ``jax.errors.JaxRuntimeError``, or as ``ValueError``
                 from a jitted function that has already succeeded, with the
-                same message.
+                same message. On a 2D mesh, also for points with a third
+                coordinate: pass ``(n, 2)`` points.
         """
         from gfem import _objective
 
@@ -223,7 +231,8 @@ class Field:
         """The field sampled for visualization, as a `meshio.Mesh`.
 
         Every tetrahedron of the support is cut into ``order**3`` (at least
-        one) sub-tetrahedra, and the field is sampled at their vertices,
+        one) sub-tetrahedra (on a 2D mesh, every triangle into ``order**2``
+        sub-triangles, at z = 0), and the field is sampled at their vertices,
         separately per tetrahedron (so fields that jump across elements show
         their jumps). Coordinates are in metres and values in SI units. A
         real field is the point data ``quantity`` (e.g. ``"V"``); a complex
@@ -480,7 +489,7 @@ def _meshio_mesh(sampled: Any) -> meshio.Mesh:
     points, cells, point_data, cell_data = sampled
     return meshio.Mesh(
         points,
-        [("tetra", cells)],
+        [("tetra" if cells.shape[1] == 4 else "triangle", cells)],
         point_data=point_data,
         cell_data={k: [v] for k, v in cell_data.items()},
     )
