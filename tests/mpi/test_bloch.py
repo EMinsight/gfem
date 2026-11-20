@@ -234,6 +234,37 @@ def _plain_and_bloch(directory):
     return np.asarray(plain.s.values), np.asarray(bloch.s.values), names
 
 
+def _bloch_coarse_entries(directory):
+    """cellx's Bloch gradient on bddc_gmres at two designs: its coarse factorizations.
+
+    Each set-up's pool entry and key, and the coarse KSPs made: each new one is an
+    analysis, a pooled one refactorizes numerically.
+    """
+    build, eps, sigma, problem, _ = _setup("cellx", directory)
+    entries, keys, made = [], set(), []
+    set_up, prefix = coarse.CoarseMumps.set_up, coarse._petsc.next_prefix
+
+    def spy(self):
+        set_up(self)
+        entries.append(id(self._held))
+        keys.add(self.key)
+
+    def counted():
+        made.append(1)
+        return prefix()
+
+    coarse.CoarseMumps.set_up = spy
+    coarse._petsc.next_prefix = counted
+
+    def objective(e):
+        result = gfem.solve(build(e, sigma), problem(), options=_options("bddc_gmres"))
+        return _objective(result.s.values)
+
+    for design in (eps, 1.1 * eps):
+        jax.grad(objective)(design)
+    return len(entries), len(set(entries)), len(made), [key[1] for key in keys]
+
+
 def _petsc_refusal(directory):
     """The one-process ``ValueError`` of ``petsc`` on a Bloch solve, then a sum."""
     from mpi4py import MPI
@@ -352,6 +383,21 @@ def test_a_plain_and_a_bloch_bddc_solve_share_a_communicator(tmp_path):
     # one coarse creator per symmetry on the MPI stack: LDL^T for the plain one, LU
     # for Bloch; without it the coarse problem stays on rank 0 and none is made
     assert names == (["cholesky", "lu"] if _petsc.has_mpi() else [])
+
+
+@needs_stack
+def test_a_bloch_gradients_forward_and_transposed_coarse_share_one_analysis(
+    tmp_path,
+):
+    # A(k) and its transpose A(-k) share the wirebasket's pattern, and the forward's
+    # base is freed before the backward sets up: its coarse entry serves both
+    set_ups, entries, made, symmetric = on_ranks(
+        _bloch_coarse_entries, tmp_path, ranks=3, limit=900
+    )[0]
+    print(f"set-ups={set_ups} entries={entries} KSPs={made}")  # noqa: T201
+    assert set_ups == 4  # forward and transposed, at each design
+    assert entries == made == 1
+    assert symmetric == [False]  # LU, one key
 
 
 @needs_stack
