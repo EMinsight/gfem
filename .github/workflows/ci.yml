@@ -171,6 +171,8 @@ jobs:
       env:
         JAX_PLATFORMS: cpu
         VTK_DEFAULT_OPENGL_WINDOW: vtkEGLRenderWindow
+        # the docs IPython profile, as `just notebooks`: it registers gfem's colormaps
+        IPYTHONDIR: ${{ github.workspace }}/docs/_ipython
       run: >-
         uv run --group docs jupyter nbconvert --to notebook --execute
         --ExecutePreprocessor.timeout=1800 --output-dir "$RUNNER_TEMP"
