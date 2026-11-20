@@ -1,6 +1,7 @@
 """Wave ports in the driven problem: the port mode sweep coupled to the 3D field.
 
-A wave port surface enters the driven problem through four terms (the 3D field ``E`` and test function ``v`` in the units of
+A wave port surface enters the driven problem through four terms (the 3D
+field ``E`` and test function ``v`` in the units of
 `gfem._engine.terms`, each mode ``(E_t, E_n)`` propagating into the domain
 as ``exp(-gamma s)``, ``gamma = alpha + i beta``). One surface carries one
 wave port, or several, one mode each (a shared port surface):
