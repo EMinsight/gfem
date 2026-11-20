@@ -1203,6 +1203,22 @@ def _coarse_on(monkeypatch, built, shift, order=2, ordering=coarse.PT_SCOTCH):
     return _one_process_coarse(monkeypatch, op, space, ordering)
 
 
+@pytest.fixture
+def analyses():
+    """MUMPS's analyses (symbolic Cholesky factorizations) so far, read on call.
+
+    In a log stage of its own: a PETSc error inside an event leaves that event open
+    in its stage, which then counts it no more.
+    """
+    PETSc = _petsc.require_petsc()
+    PETSc.Log.begin()
+    stage = PETSc.Log.Stage("gfem coarse pool")
+    event = PETSc.Log.Event("MatCholFctrSym")
+    stage.push()
+    yield lambda: event.getPerfInfo(stage.id)["count"]
+    stage.pop()
+
+
 def _coarse_solution(made):
     """The coarse KSP's solution of one fixed right-hand side."""
     rhs = np.random.default_rng(7).standard_normal(made._b.getLocalSize())
@@ -1212,16 +1228,15 @@ def _coarse_solution(made):
 
 
 def test_a_second_coarse_set_up_on_one_pattern_refactors_numerically_only(
-    built, monkeypatch
+    built, monkeypatch, analyses
 ):
-    counts = _factorizations()
-    before = counts()["MatCholFctrSym"]
+    before = analyses()
     first = _coarse_on(monkeypatch, built, 1 - 2j)
     first.set_up()
     first.free()
     kept = _coarse_on(monkeypatch, built, 3 + 1j)  # new values, one pattern
     kept.set_up()
-    assert counts()["MatCholFctrSym"] - before == 1
+    assert analyses() - before == 1
     assert kept.key == first.key
     solution = _coarse_solution(kept)
     kept.free()
@@ -1229,22 +1244,21 @@ def test_a_second_coarse_set_up_on_one_pattern_refactors_numerically_only(
     fresh = _coarse_on(monkeypatch, built, 3 + 1j)
     fresh.set_up()
     try:
-        assert counts()["MatCholFctrSym"] - before == 2
+        assert analyses() - before == 2
         assert np.array_equal(solution, _coarse_solution(fresh))
     finally:
         fresh.free()
 
 
-def test_another_wirebasket_pattern_analyses_anew(built, monkeypatch):
-    counts = _factorizations()
-    before = counts()["MatCholFctrSym"]
+def test_another_wirebasket_pattern_analyses_anew(built, monkeypatch, analyses):
+    before = analyses()
     first = _coarse_on(monkeypatch, built, 1 - 2j)
     first.set_up()
     first.free()
     other = _coarse_on(monkeypatch, built, 1 - 2j, order=3)
     other.set_up()
     other.free()
-    assert counts()["MatCholFctrSym"] - before == 2
+    assert analyses() - before == 2
     assert other.key != first.key
     assert coarse.pooled() == 2
 
@@ -1293,10 +1307,9 @@ def test_a_failed_coarse_refactorization_is_not_pooled(built, monkeypatch):
 
 
 def test_a_workspace_retry_on_refactorization_pools_its_doubled_icntl_14(
-    built, monkeypatch
+    built, monkeypatch, analyses
 ):
-    counts = _factorizations()
-    before = counts()["MatCholFctrSym"]
+    before = analyses()
     first = _coarse_on(monkeypatch, built, 1 - 2j)
     first.set_up()
     first.free()
@@ -1311,24 +1324,23 @@ def test_a_workspace_retry_on_refactorization_pools_its_doubled_icntl_14(
     third = _coarse_on(monkeypatch, built, 2 - 1j)
     third.set_up()
     try:
-        assert counts()["MatCholFctrSym"] - before == 2
+        assert analyses() - before == 2
         assert third._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 120
     finally:
         third.free()
 
 
 def test_switching_a_pattern_to_metis_frees_its_pt_scotch_factorizations(
-    built, monkeypatch
+    built, monkeypatch, analyses
 ):
-    counts = _factorizations()
-    before = counts()["MatCholFctrSym"]
+    before = analyses()
     scotch = _coarse_on(monkeypatch, built, 1 - 2j)
     scotch.set_up()
     scotch.free()
     metis = _coarse_on(monkeypatch, built, 1 - 2j, ordering=coarse.METIS)
     metis.set_up()
     metis.free()
-    assert counts()["MatCholFctrSym"] - before == 2
+    assert analyses() - before == 2
     assert coarse.pooled() == 1
 
 

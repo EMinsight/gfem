@@ -630,17 +630,12 @@ def _free_coarse(walk: _Walk, owner: int | None, kept: Any) -> bool:
     return not walk.over()
 
 
-def _coarse_returned(
-    walk: _Walk, owner: int | None, before: list[Any], kept: Any
-) -> bool:
-    """Count the coarse factorizations pooled since ``before``, then tier 3."""
+def _enter_coarse(walk: _Walk, owner: int | None, before: list[Any]) -> None:
+    """Count the coarse factorizations ``owner``'s pool gained since ``before``."""
     known = {id(k) for k in before}
-    returned = [k for k in _coarse_held(owner) if id(k) not in known]
-    if not returned:
-        return not walk.over()
-    for pooled in returned:
-        walk.enter(pooled)
-    return _free_coarse(walk, owner, kept)
+    for pooled in _coarse_held(owner):
+        if id(pooled) not in known:
+            walk.enter(pooled)
 
 
 @dataclasses.dataclass(eq=False)
@@ -855,16 +850,16 @@ class EntryCache:
             pooled = walk.move(
                 entry, functools.partial(self._give_up_base, entry, comm)
             )
-            if _coarse_returned(walk, owner, returned, kept):
-                return True
-            if not pool:
-                continue
-            for handle in pooled:
-                walk.enter(handle)
-                release = _release_for_budget(handle, walk)
-                if release is not None:
-                    walk.step(handle, release)
-            if self._free_plans(walk):
+            _enter_coarse(walk, owner, returned)
+            if pool:
+                for handle in pooled:
+                    walk.enter(handle)
+                    release = _release_for_budget(handle, walk)
+                    if release is not None:
+                        walk.step(handle, release)
+                if self._free_plans(walk):
+                    return True
+            if _free_coarse(walk, owner, kept):
                 return True
         while walk.over():
             oldest = next((k for k in self._entries if self._comms[k] == owner), None)
@@ -874,7 +869,8 @@ class EntryCache:
             entry = self._entries.pop(oldest)
             returned = _coarse_held(owner)
             walk.step(entry, entry.free, gone=True)
-            _coarse_returned(walk, owner, returned, kept)
+            _enter_coarse(walk, owner, returned)
+            _free_coarse(walk, owner, kept)
         return True
 
     def _give_up_base(self, entry: Entry, comm: Any) -> list[Any]:
