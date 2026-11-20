@@ -380,15 +380,12 @@ def test_the_eigenfrequencies_still_differentiate_above_one_rank(tmp_path):
     assert "backward error" in reason
 
 
-@pytest.mark.parametrize(
-    ("key", "wave_vector"), [("periodic", None), ("bloch", periodic_cases.C1_K)]
-)
-def test_an_eigenmode_on_a_periodic_cell_keeps_its_refusal(key, wave_vector, tmp_path):
+def test_a_bloch_eigenmode_on_a_periodic_cell_keeps_its_refusal(tmp_path):
     cell = periodic_cases.c1(periodic_cases.c1_mesh(tmp_path))
-    problem = gfem.Eigenmode(target=5e9, wave_vector=wave_vector)
+    problem = gfem.Eigenmode(target=5e9, wave_vector=periodic_cases.C1_K)
     with pytest.raises(gfem.DistributedUnsupportedError, match="COMM_SELF") as caught:
         _mpi.refuse(cell, problem, gfem.SolverOptions())
-    assert caught.value.feature == key
+    assert caught.value.feature == "bloch"
 
 
 def test_one_periodic_pair_passes_for_a_driven_solve_plain_or_bloch(tmp_path):
@@ -401,6 +398,13 @@ def test_one_periodic_pair_passes_for_a_driven_solve_plain_or_bloch(tmp_path):
         [5e9, 6e9], wave_vector=periodic_cases.C1_K, wave_vector_frequency=5e9
     )
     assert _mpi.refuse(cell, angle, options) is None
+
+
+def test_one_periodic_pair_passes_for_a_plain_eigenmode_solve(tmp_path):
+    cell = mpi_cases._cell(tmp_path)  # one pair
+    options = gfem.SolverOptions(linear_solver="direct")
+    eigen = gfem.Eigenmode(target=5e9, n_modes=1)
+    assert _mpi.refuse(cell, eigen, options) is None
 
 
 def test_a_bloch_eigenmode_keeps_its_refusal(tmp_path):
