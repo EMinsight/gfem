@@ -2,7 +2,8 @@ r"""gfem's conjugate gradients: NGSolve's ``CGSolver`` on the layout's products.
 
 `Cg` is NGSolve 6.2.2608's preconditioned CG (the ``tol``/``atol`` test of
 ``CheckResidual`` on the square root of :math:`|w^\mathsf{H} d|`, :math:`w` the
-preconditioned residual :math:`d`) with its two inner products taken by gfem.
+preconditioned residual :math:`d`) with its two products taken by gfem as
+pairings, each of a state with a load.
 
 Under ranks the vectors keep NGSolve's statuses: the residual :math:`d` and the
 operator's product :math:`A s` are loads, the preconditioned residual :math:`w` and
@@ -30,7 +31,7 @@ __all__ = ["Cg"]
 
 
 class Cg(LinearSolver):
-    """NGSolve's preconditioned CG, its inner products agreed across ranks.
+    """NGSolve's preconditioned CG, its pairings agreed across ranks.
 
     ``Solve``, ``residuals``, ``iterations``, ``maxiter`` and ``tol``/``atol``
     (read on every solve) are NGSolve's ``LinearSolver``'s.

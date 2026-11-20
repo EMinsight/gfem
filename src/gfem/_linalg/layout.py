@@ -72,11 +72,11 @@ class DofLayout:
         return np.asarray(mask, dtype=bool)
 
     def state_inner(self, a: np.ndarray, b: np.ndarray) -> Any:
-        """``vdot(a, b)`` of two state columns."""
+        """The owned-entry product ``vdot(a, b)`` of two state columns."""
         return np.vdot(a, b)
 
     def state_gram(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
-        r""":math:`A^\mathsf{H} B` of the state columns of ``A`` and ``B``."""
+        r"""Owned-entry products :math:`A^\mathsf{H} B` of two sets of state columns."""
         return A.conj().T @ B
 
     def state_norm(self, state: np.ndarray | ngs.BaseVector) -> float:
@@ -169,13 +169,13 @@ class RankLayout(DofLayout):
         return np.real(self.exchange(np.asarray(mask, dtype=self._dtype))) > 0
 
     def state_inner(self, a: np.ndarray, b: np.ndarray) -> Any:
-        """``vdot`` over owned DOFs of two states, summed over ranks."""
+        """The owned-entry product of two states: owned DOFs' ``vdot``, rank-summed."""
         owned = self.owners
         local = np.atleast_1d(np.vdot(a[owned], b[owned]))
         return _mpi.reduce_bcast(self.comm, local)[0]
 
     def state_gram(self, A: np.ndarray, B: np.ndarray) -> np.ndarray:
-        r""":math:`A^\mathsf{H} B` of state columns over owned DOFs, rank-summed."""
+        r"""Owned-entry products :math:`A^\mathsf{H} B` of state columns, summed."""
         owned = self.owners
         return _mpi.reduce_bcast(self.comm, A[owned].conj().T @ B[owned])
 
