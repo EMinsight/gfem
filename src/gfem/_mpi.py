@@ -122,7 +122,10 @@ _REFUSALS = {
     "electrostatic": f"An electrostatic solve has no distributed path: {_RUN_COPIES}.",
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
-    "periodic": f"A periodic model has no distributed path: {_RUN_COPIES}.",
+    "periodic": (
+        "A periodic model with more than one pair has no distributed path: "
+        f"{_RUN_COPIES}."
+    ),
     "floquet_port": f"A Floquet port has no distributed path: {_RUN_COPIES}.",
     "bloch": f"A Bloch wave vector has no distributed path: {_RUN_COPIES}.",
     "frequency_workers": (
@@ -308,7 +311,7 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("floquet_port")
         if problem.wave_vector is not None:
             refuse_feature("bloch")
-        if model._periodic:  # noqa: SLF001
+        if len(model._periodic) > 1:  # noqa: SLF001
             refuse_feature("periodic")
         if min(options.frequency_workers, len(problem.frequency)) > 1:
             refuse_feature("frequency_workers")

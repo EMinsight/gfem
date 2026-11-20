@@ -16,6 +16,7 @@ import gradient_cases as cases
 import jax
 import mpi_cases
 import numpy as np
+import periodic_cases as pc
 import pytest
 import ranks
 import refinement_cases as rc
@@ -334,6 +335,18 @@ def test_a_port_solve_is_all_that_passes_so_far(tmp_path):
         assert _mpi.refuse(wave, gfem.PortMode("w", 5e9), options) is None
     kept = gfem.Driven(5e9, keep_fields=[5e9])
     assert _mpi.refuse(line, kept, gfem.SolverOptions()) is None
+
+
+def test_one_periodic_pair_passes_for_a_driven_solve_only(tmp_path):
+    cell = mpi_cases._cell(tmp_path)  # one pair
+    options = gfem.SolverOptions(linear_solver="direct")
+    assert _mpi.refuse(cell, gfem.Driven(5e9), options) is None
+    bloch = gfem.Driven(5e9, wave_vector=pc.C1_K)
+    eigen = gfem.Eigenmode(target=5e9, n_modes=1)
+    for problem, key in ((bloch, "bloch"), (eigen, "eigenmode")):
+        with pytest.raises(gfem.DistributedUnsupportedError) as caught:
+            _mpi.refuse(cell, problem, options)
+        assert caught.value.feature == key
 
 
 #: Options every problem refuses above one rank, by the key each raises.

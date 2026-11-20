@@ -59,8 +59,8 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
         case "dc_conduction":
             problem = gfem.DCConduction(terminals=TERMINALS)
             return stack(directory), problem, direct
-        case "periodic":
-            return _cell(directory), gfem.Driven(FREQUENCY), direct
+        case "periodic":  # two pairs: one pair runs distributed
+            return pc.c2(pc.c2_mesh(directory)), gfem.Driven(FREQUENCY), direct
         case "bloch":
             problem = gfem.Driven(FREQUENCY, wave_vector=pc.C1_K)
             return _cell(directory), problem, direct
