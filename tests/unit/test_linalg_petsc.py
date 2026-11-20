@@ -1402,3 +1402,21 @@ def test_pooled_coarse_factorizations_count_and_go_at_the_caches_tier_3(
     entries.trim(0)
     assert coarse.pooled() == 0
     assert entries.nbytes == 0
+
+
+def test_a_coarse_set_up_hands_the_rule_its_columns_and_whether_it_was_seen(
+    built, monkeypatch
+):
+    calls = []
+
+    def rule(_dofs, _size, columns, *, seen):
+        calls.append((columns, seen))
+        return coarse.PT_SCOTCH, 1
+
+    for shift in (1 - 2j, 3 + 1j):
+        made = _coarse_on(monkeypatch, built, shift)
+        monkeypatch.setattr(coarse, "rule", rule)
+        coarse._made[None] = [made]
+        assert coarse.finish(made._comm, columns=12) is made
+        made.free()
+    assert calls == [(12, False), (12, True)]

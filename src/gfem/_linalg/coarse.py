@@ -423,7 +423,7 @@ class CoarseMumps(ngs.BaseMatrix):
                 comm, local, self._numbering.numbers, symmetric=self.symmetric
             )
             self._ordering, self._factor = rule(
-                self._numbering.total, comm.size, self.columns, seen=False
+                self._numbering.total, comm.size, self.columns, seen=seen(self.key)
             )
             # every rank must take the same retries
             self._readable = self._factor == 1 or _mpi.agree_all(
@@ -595,15 +595,17 @@ def coarse_type(comm: Any, symmetric: bool) -> str:
     return name
 
 
-def finish(comm: Any) -> CoarseMumps | None:
+def finish(comm: Any, *, columns: int = 1) -> CoarseMumps | None:
     """After a setup: the factorization it uses, factored; ``None`` on the rank 0 route.
 
     BDDC keeps the last one NGSolve asked for, and an earlier one was never factored.
+    ``columns``: those the setup is expected to serve, for `rule`.
     """
     made = _made.get(_mpi.comm_key(comm)) if comm is not None else None
     if not made:
         return None
     last = made[-1]
     made.clear()
+    last.columns = columns
     last.set_up()
     return last

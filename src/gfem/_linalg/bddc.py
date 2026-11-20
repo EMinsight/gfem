@@ -296,7 +296,7 @@ class BddcHandle(NgsHandle):
             preconditioner = _set_up(
                 form, self.symmetry, columns=self._expected_columns, comm=comm
             )
-            self._coarse = coarse.finish(comm)
+            self._coarse = coarse.finish(comm, columns=self._expected_columns)
         return preconditioner
 
     def _hold(self, form: ngs.BilinearForm, preconditioner) -> None:
