@@ -10,6 +10,7 @@ Each function takes the physics (``"em"``, ``"thermal"``,
 from __future__ import annotations
 
 import ngsolve as ngs
+import numpy as np
 
 from gfem._boundaries import PEC, Absorbing, Conductor, Impedance
 from gfem._engine.mesh import EngineMesh
@@ -91,6 +92,23 @@ def hcurl_space(
         dirichlet=_bc_numbers(built, dirichlet),
     )
     return _compressed(space, periodic=periodic, phases=phases)
+
+
+def element_dofs(space: ngs.FESpace) -> np.ndarray:
+    """The positions of ``space``'s DOFs that a local volume element uses, sorted.
+
+    Read from the diagonal of a local volume mass form, with no exchange. On a
+    paired distributed mesh, the unpaired space also holds the DOFs of partner
+    triangles a rank has without their tetrahedra; these rows are the plain
+    mesh's field layout, element by element (ADR 0071).
+    """
+    u, v = space.TnT()
+    form = ngs.BilinearForm(space, symmetric=True, diagonal=True)
+    form += u * v * ngs.dx
+    form.Assemble()
+    matrix = getattr(form.mat, "local_mat", form.mat)
+    diagonal = np.asarray(matrix.AsVector().FV().NumPy())
+    return np.flatnonzero(np.abs(diagonal) > 0)
 
 
 def _compressed(

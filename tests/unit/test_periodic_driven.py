@@ -139,6 +139,29 @@ def test_plain_periodic_fields_live_on_the_unpaired_space(c1_mesh):
     np.testing.assert_allclose(e2[:, 1:], e1[:, 1:], rtol=0, atol=1e-10 * scale)
 
 
+def test_one_process_fields_read_every_row_of_the_expansion(c1_mesh):
+    from gfem._engine.driven import driven_operator
+
+    op = driven_operator(pc.c1(c1_mesh), pc.C1_ORDER)
+    assert op.expansion is not None
+    assert op.expansion.field_rows is None
+    x = np.random.default_rng(0).standard_normal((op.space.ndof, 2)) + 0j
+    np.testing.assert_array_equal(op.expand(x), op.expansion.matrix @ x)
+    assert op.field_ndof == op.expansion.space.ndof
+
+
+def test_the_element_check_passes_p_and_sees_a_broken_one(c1_mesh):
+    from gfem._engine.driven import driven_operator, element_gap
+
+    op = driven_operator(pc.c1(c1_mesh), pc.C1_ORDER)
+    assert op.expansion is not None
+    p, unpaired = op.expansion.matrix, op.expansion.space
+    assert element_gap(op.space, unpaired, p) < 1e-12
+    broken = p.tolil()
+    broken[p.nonzero()[0][0], :] = 0
+    assert element_gap(op.space, unpaired, broken.tocsr()) > 1e-3
+
+
 # --- a move that breaks a pair --------------------------------------------------------
 
 
