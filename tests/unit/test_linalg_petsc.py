@@ -929,7 +929,7 @@ def test_an_unread_petsc_option_raises_from_every_problem(line, plate, problem):
 
 
 def _advection(built, shift=1 - 2j):
-    """A complex operator with A^T != A: a Laplacian with a drift term."""
+    r"""A complex operator with :math:`A^T \neq A`: a Laplacian with a drift term."""
     space = ngs.H1(built.mesh, order=2, dirichlet="bottom|top", complex=True)
     u, v = space.TnT()
     drift = ngs.InnerProduct(ngs.CF((3.0, 1.0, 0.0)), ngs.grad(u)) * v

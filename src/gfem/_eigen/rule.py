@@ -1311,9 +1311,9 @@ class EigenmodeRule:
         divfree: DivFreeProjector,
         numbers: np.ndarray | None,
     ) -> np.ndarray:
-        """``x`` with the phase and sign of the mode convention (`gfem.conventions`).
+        r"""``x`` with the phase and sign of the mode convention (`gfem.conventions`).
 
-        ``∫ E . E`` real and positive, then the largest entry's real part
+        :math:`\int E \cdot E` real and positive, then the largest entry's real part
         positive (one process's entry under ranks, `largest_value`). On a
         periodic model that entry is the expanded field's (``P x`` on the field
         rows, ``numbers`` theirs), on one process and under ranks alike: a

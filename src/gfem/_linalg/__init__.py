@@ -509,12 +509,12 @@ def _prepare_on_ranks(
 ) -> Handle:
     """`prepare` across ranks: a backend that takes a layout.
 
-    ``direct`` and ``bddc_gmres`` take an operator without ``A^T = A`` (MUMPS LU, and
-    BDDC with an LU coarse problem); ``petsc`` refuses it as on one process.
+    ``direct`` and ``bddc_gmres`` take an operator without :math:`A^T = A` (MUMPS LU,
+    and BDDC with an LU coarse problem); ``petsc`` refuses it as on one process.
 
     Raises:
         NotImplementedError: No backend of ``kind``, on every rank.
-        ValueError: ``petsc`` and an operator without ``A^T = A``, on every rank.
+        ValueError: ``petsc`` and an operator without :math:`A^T = A`, on every rank.
         gfem.SolverUnavailableError: ``direct`` or ``petsc`` without the MPI PETSc
             stack.
     """

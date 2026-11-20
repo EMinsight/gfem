@@ -6,9 +6,10 @@ process with ``eigen_solver="slepc"`` and ``direct`` and on 2, 3 and 4 ranks wit
 `OMEGA_GATE`, the mode fields through `gfem.Field.at` to `FIELD_GATE` with their
 sign, and the eigenfrequency gradient with respect to a `gfem.MaterialField` on the
 low layer to `GRADIENT_GATE`. The divergence-free projection between the periodic
-spaces leaves no gradient part: $\|G^T M_0 P x\| / \|G^T M_0 x\|$ below
-`RESIDUAL_GATE`, the load $G^T M_0 y$ assembled as $\int \varepsilon\, y \cdot
-\nabla \psi$ on the periodic H1 space, independently of the projection's own $G$.
+spaces leaves no gradient part: :math:`\|G^T M_0 P x\| / \|G^T M_0 x\|` below
+`RESIDUAL_GATE`, the load :math:`G^T M_0 y` assembled as
+:math:`\int \varepsilon\, y \cdot \nabla \psi` on the periodic H1 space, independently
+of the projection's own :math:`G`.
 `on_ranks` checks that every rank holds the same bits. Every solve needs the MPI
 PETSc stack (SLEPc), so the tests skip without it.
 """
@@ -114,7 +115,10 @@ def _gradient(path, eigen_solver):
 
 
 def _residual(path):
-    r"""$\|G^T M_0 P x\| / \|G^T M_0 x\|$ of a smooth field $x$, free H1 DOFs."""
+    r""":math:`\|G^T M_0 P x\| / \|G^T M_0 x\|` of a smooth field :math:`x`.
+
+    Over the free H1 DOFs.
+    """
     import ngsolve as ngs
 
     from gfem import _mpi
@@ -166,7 +170,10 @@ def _residual(path):
         psi = h1.TestFunction()
 
         def load(y):
-            r"""$G^T M_0 y$ as $\int \varepsilon\, y \cdot \nabla \psi$, a load."""
+            r"""The load :math:`G^T M_0 y`.
+
+            Assembled as :math:`\int \varepsilon\, y \cdot \nabla \psi`.
+            """
             gf = ngs.GridFunction(hcurl)
             gf.vec.FV().NumPy()[:] = y
             if op.layout is not None:

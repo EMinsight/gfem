@@ -1,10 +1,11 @@
-"""A system unequal to its transpose across ranks: MUMPS LU, BDDC with an LU coarse.
+r"""A system unequal to its transpose across ranks: MUMPS LU, BDDC with an LU coarse.
 
-A Bloch-phased space makes ``A^T != A`` (ADR 0040); here a gyrotropic permittivity
-does, on the layered line's distributed space, so no periodic partition is needed.
-Each test compares the rank sums ``S_ij = f_i^T A^{-1} f_j`` bit for bit across ranks
-(`on_ranks`) and against one process's ``direct`` (PARDISO or UMFPACK LU) at ADR
-0070's gates. ``S_12`` far from ``S_21`` keeps a symmetric factorization from passing.
+A Bloch-phased space makes :math:`A^T \neq A` (ADR 0040); here a gyrotropic
+permittivity does, on the layered line's distributed space, so no periodic partition
+is needed. Each test compares the rank sums :math:`S_{ij} = f_i^T A^{-1} f_j` bit for
+bit across ranks (`on_ranks`) and against one process's ``direct`` (PARDISO or
+UMFPACK LU) at ADR 0070's gates. :math:`S_{12}` far from :math:`S_{21}` keeps a
+symmetric factorization from passing.
 """
 
 import gradient_cases as cases
@@ -55,7 +56,7 @@ def _general_operator(directory):
 
 
 def _s(directory, kind):
-    """``S_ij = f_i^T A^{-1} f_j``, summed over ranks, one thread."""
+    """:math:`S_{ij} = f_i^T A^{-1} f_j`, summed over ranks, one thread."""
     ngs.SetNumThreads(1)
     operator, loads = _general_operator(directory)
     handle = prepare(

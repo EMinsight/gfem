@@ -218,7 +218,7 @@ def matvec(
 
 
 class _Map:
-    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors, and its bytes.
+    """``matrix @ x`` (or ``matrix.T @ x``) on NumPy vectors, and its bytes.
 
     ``x`` is a state of ``layout``, the result a load (`matvec`).
     """
@@ -545,7 +545,7 @@ class DivFreeProjector:
     0``.
 
     Under ranks (``layout``, real spaces only) ``x`` is a state, ``M0 x`` a load,
-    ``G^T`` maps a load to a load and ``G`` a state to a state, through NGSolve's
+    :math:`G^T` maps a load to a load and ``G`` a state to a state, through NGSolve's
     own ``ParallelMatrix`` ``G``, and the H1 form is factored by MUMPS on
     ``h1_layout`` (ADR 0502). Between periodic spaces ``G`` is instead the
     conversion each rank computes alone, a local CSR, as the periodic
@@ -652,7 +652,7 @@ class DivFreeProjector:
         return x - (self._g @ phi.real + 1j * (self._g @ phi.imag))
 
     def _project_on_ranks(self, x: np.ndarray, energy: np.ndarray) -> np.ndarray:
-        """`__call__` under ranks: ``G^T`` of the load, MUMPS, ``G`` of the state.
+        """`__call__` under ranks: :math:`G^T` of the load, MUMPS, ``G`` of the state.
 
         The real H1 factors solve the real and imaginary parts as two columns.
         """
@@ -664,7 +664,7 @@ class DivFreeProjector:
         return x - (self._g_apply(phi[:, 0]) + 1j * self._g_apply(phi[:, 1]))
 
     def _g_apply(self, values: np.ndarray, *, transpose: bool = False) -> np.ndarray:
-        """``G`` of a real H1 state (a state), or ``G^T`` of a real load (a load).
+        """``G`` of a real H1 state (a state), or :math:`G^T` of a real load (a load).
 
         A local ``G`` maps them on each rank's own DOFs, with no exchange.
         """

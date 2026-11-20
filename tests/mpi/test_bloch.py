@@ -40,7 +40,7 @@ GATES = {"bddc_gmres": 1e-9, "direct": 1e-11}
 FIELD_GATE = 1e-10
 #: The Bloch condition across the seam, relative to the largest field (3.4e-16).
 SEAM_GATE = 1e-12
-#: ``max|S - S^T| / max|S|`` above this: a transposition error cannot pass.
+#: :math:`\max|S - S^T| / \max|S|` above this: a transposition error cannot pass.
 NONRECIPROCAL = 1e-2
 needs_stack = pytest.mark.skipif(not _petsc.has_mpi(), reason="needs the MPI stack")
 #: Points in units of the cell: two seam twins (x = 0 and x = a) and inside points.

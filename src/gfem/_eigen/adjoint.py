@@ -29,7 +29,7 @@ polishing, the forward's correction of every mode in mode-field reach (ADR
 
 Columns keep the roles of `gfem._linalg.layout`: ``x``, ``y``, the iterates
 and GMRES's preconditioned basis are states; ``b``, ``t`` and residuals are
-loads. ``y^T v`` and ``t^T v`` pair a load with a state, and the basis's
+loads. :math:`y^T v` and :math:`t^T v` pair a load with a state, and the basis's
 products and norms are the eigen operator's layout's state products, so every
 value a branch reads is agreed across ranks.
 """

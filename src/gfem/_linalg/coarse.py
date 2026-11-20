@@ -10,9 +10,9 @@ wirebasket DOF per rank, 4520 M at 52 k; r10M_void_split, 4 threads per rank: 7.
 64 ranks, 85 G on 180), so ``PCTELESCOPE`` in front of MUMPS runs it on at most one
 rank per `DOFS_PER_RANK` and `MAX_RANKS` ranks, without building a communicator by hand.
 
-MUMPS factors it by LDL^T where the operator equals its transpose and by LU otherwise
-(a Bloch phase). NGSolve hands the creator only the matrix and the free DOFs, so each
-symmetry has its own registered ``coarsetype`` (`coarse_type`).
+MUMPS factors it by :math:`L D L^T` where the operator equals its transpose and by LU
+otherwise (a Bloch phase). NGSolve hands the creator only the matrix and the free
+DOFs, so each symmetry has its own registered ``coarsetype`` (`coarse_type`).
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def options(
     """PETSc's options: an exact MUMPS factorization, behind telescoping if it reduces.
 
     Args:
-        symmetric: The operator has ``A^T = A``: LDL^T, else LU.
+        symmetric: The operator has :math:`A^T = A`: :math:`L D L^T`, else LU.
         workspace: MUMPS's ICNTL(14).
         factor: ``PCTELESCOPE``'s reduction (`reduction`); 1 for none.
     """
@@ -111,8 +111,8 @@ class CoarseMumps(ngs.BaseMatrix):
     ) -> None:
         """Hold what NGSolve gives; nothing is read from it yet.
 
-        ``symmetric``: the operator has ``A^T = A``, so MUMPS factors it by LDL^T on
-        a matrix flagged symmetric; LU otherwise.
+        ``symmetric``: the operator has :math:`A^T = A`, so MUMPS factors it by
+        :math:`L D L^T` on a matrix flagged symmetric; LU otherwise.
         """
         super().__init__()
         self.symmetric = symmetric

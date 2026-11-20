@@ -54,7 +54,8 @@ if TYPE_CHECKING:
 def defaults(symmetric: bool) -> tuple[tuple[str, Any], ...]:
     """Gfem's options, under the user's: an exact MUMPS factorization.
 
-    LDL^T where ``A^T = A`` (``symmetric``, `equals_its_transpose`), LU otherwise.
+    :math:`L D L^T` where :math:`A^T = A` (``symmetric``, `equals_its_transpose`), LU
+    otherwise.
     """
     return (
         ("ksp_type", "preonly"),
@@ -169,7 +170,8 @@ def distributed_aij(
 ) -> tuple[Any, np.ndarray]:
     """A rank's unassembled ``local`` matrix as an ``MPIAIJ`` by COO.
 
-    It is flagged symmetric, for MUMPS LDL^T, only where ``symmetric``: ``A^T = A``.
+    It is flagged symmetric, for MUMPS :math:`L D L^T`, only where ``symmetric``:
+    :math:`A^T = A`.
     Returns the matrix and the positions of its entries in ``local``'s value vector,
     for `set_values`.
     """
@@ -240,7 +242,8 @@ class PetscHandle(PlannedHandle):
         """
         _refuse_storage(local_matrix(matrix, self.layout.comm))
         super().__init__(matrix, freedofs, symmetry, is_complex=is_complex)
-        #: ``A^T = A``: MUMPS LDL^T on a matrix flagged symmetric, else LU.
+        #: :math:`A^T = A`: MUMPS :math:`L D L^T` on a matrix flagged symmetric, else
+        #: LU.
         self._symmetric = equals_its_transpose(symmetry, is_complex=is_complex)
         self._lock = _petsc.LOCK  # PETSc's database and registry are global
         #: The KSP and the AIJ (petsc4py objects); ``None`` once freed.
@@ -785,7 +788,10 @@ class RankPetscHandle(PetscHandle):
 
     @classmethod
     def _admit(cls, symmetry: Symmetry, *, is_complex: bool) -> None:
-        """``direct`` takes every operator: LU where ``A^T != A`` (`defaults`)."""
+        r"""``direct`` takes every operator: LU where :math:`A^T \neq A`.
+
+        As `defaults` says.
+        """
 
     def _defaults(self) -> tuple[tuple[str, Any], ...]:
         return (*defaults(self._symmetric), *RANK_MUMPS_OPTIONS)
