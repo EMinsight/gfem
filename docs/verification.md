@@ -551,7 +551,7 @@ and checks that every rank holds the same result, bit for bit. A driven solve
 on `"bddc_gmres"` must also take the same number of iterations. An eigenmode
 solve is compared with one process on SLEPc; its frequencies, Q and fields
 must match, not its iteration count. Periodic driven cells are checked on
-divisions that keep the pairs as given and on divisions that swap them. Some
+partitions that keep the pairs as given and on partitions that swap them. Some
 things have no such test yet: a lumped port terminated by an inductance or a
 capacitance, {py:obj}`gfem.characteristic_impedance`, `"petsc"` on an
 electrostatic, eigenmode or periodic solve, and a periodic eigenmode solve on

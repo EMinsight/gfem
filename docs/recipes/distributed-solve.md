@@ -90,8 +90,8 @@ process:
 ```{gfem-distributed-refusals}
 ```
 
-A periodic model is divided so that each pair's two surfaces fall on the
-ranks together. gfem tries up to 8 divisions. When none passes, every rank
+A periodic model is partitioned so that each pair's two surfaces fall on the
+ranks together. gfem tries up to 8 partitions. When none passes, every rank
 raises `RuntimeError` naming the tries: run on another number of ranks, or as
 {term}`rank copies`.
 

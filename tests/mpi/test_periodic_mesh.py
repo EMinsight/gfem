@@ -103,15 +103,15 @@ def _exhaust():
             to_ngsolve(mesh, _pair(mesh), world)
     except _mpi.AgreedError as err:
         return str(err), world.allreduce(1)
-    raise AssertionError("the search passed in one distribution")
+    raise AssertionError("the search passed in one partition")
 
 
 def test_running_out_of_tries_raises_on_every_rank():
-    # box8 on 16 ranks needs 3 distributions on this wheel (ticket 06)
+    # box8 on 16 ranks needs 3 partitions on this wheel (ticket 06)
     values = on_ranks(_exhaust, ranks=16, limit=240)
     message, total = values[0]
     assert total == 16
-    assert "in 1 distributions" in message
+    assert "in 1 tries" in message
     assert "16 ranks" in message
 
 

@@ -67,7 +67,7 @@ class EngineMesh:
     surface_spaces: dict = dataclasses.field(default_factory=dict)
 
 
-#: Distributions a periodic search may take, swaps included (ADR 0071).
+#: Partitions a periodic search may take, swaps included (ADR 0071).
 TRIES = 8
 #: A retry shuffles the tetrahedra within blocks of this many consecutive ones.
 BLOCK = 4096
@@ -178,7 +178,7 @@ def to_ngsolve(
         gfem.DistributedUnsupportedError: More than one pair above one rank.
         gfem._mpi.AgreedError: This partition differs from the first one of this
             topology and communicator; no partition passed the periodic check
-            within the budget; or the search left the seed a distribution of this
+            within the budget; or the search left the seed a partition of this
             topology and communicator already took.
     """
     if comm is not None and len(periodic) > 1:
@@ -271,7 +271,7 @@ def _netgen_mesh(
 
 @dataclasses.dataclass(eq=False)
 class _Received:
-    """One distribution as a rank received it, before the wrap."""
+    """One partition as a rank received it, before the wrap."""
 
     ngmesh: Any
     domains: tuple[tuple[int, int], ...]
@@ -282,7 +282,7 @@ class _Received:
 
 @dataclasses.dataclass(eq=False)
 class _Try:
-    """A checked periodic distribution and its agreed counts."""
+    """A checked periodic partition and its agreed counts."""
 
     received: _Received
     tetrahedron_order: np.ndarray
@@ -323,7 +323,7 @@ def _receive(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _R
 
 
 def _checked(mesh: Mesh, comm: Any, pairs: tuple[Pairing, ...], seed: int) -> _Try:
-    """One periodic distribution, judged on agreed counts.
+    """One periodic partition, judged on agreed counts.
 
     Every rank counts its missing and reverse twins (`seam_counts`) and its
     triangles per surface tag; one reduction sums them with a flag per rank whose
@@ -441,7 +441,7 @@ def _search(
         seed += 1
     raise _mpi.AgreedError(
         f"No partition of this periodic mesh on {comm.size} ranks passed gfem's "
-        f"check in {forced.tries} distributions (missing, reverse per try: "
+        f"check in {forced.tries} tries (missing, reverse per try: "
         f"{'; '.join(rows)}). Try another number of ranks, or run one-process "
         "copies with comm=MPI.COMM_SELF (ADR 0071)."
     )
