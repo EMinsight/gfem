@@ -130,7 +130,7 @@ _REFUSALS = {
         f"a driven solve with more than one pair: {_RUN_COPIES}."
     ),
     "floquet_port": f"A Floquet port has no distributed path: {_RUN_COPIES}.",
-    "bloch": f"A Bloch wave vector has no distributed path: {_RUN_COPIES}.",
+    "bloch": f"A Bloch eigenmode solve has no distributed path: {_RUN_COPIES}.",
     "frequency_workers": (
         "Frequency workers have no distributed path: use frequency_workers=1, "
         f"one solve per communicator from comm.Split, {_COPIES}."
@@ -308,8 +308,6 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("adaptive_sweep")
         if floquet_ports(model.ports):
             refuse_feature("floquet_port")
-        if problem.wave_vector is not None:
-            refuse_feature("bloch")
         if len(model._periodic) > 1:  # noqa: SLF001
             refuse_feature("periodic")
         if min(options.frequency_workers, len(problem.frequency)) > 1:

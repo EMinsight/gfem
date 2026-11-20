@@ -357,22 +357,31 @@ def test_an_eigenmode_on_a_periodic_cell_keeps_its_refusal(key, wave_vector, tmp
     assert caught.value.feature == key
 
 
-def test_one_periodic_pair_passes_for_a_driven_solve_only(tmp_path):
+def test_one_periodic_pair_passes_for_a_driven_solve_plain_or_bloch(tmp_path):
     cell = mpi_cases._cell(tmp_path)  # one pair
     options = gfem.SolverOptions(linear_solver="direct")
     assert _mpi.refuse(cell, gfem.Driven(5e9), options) is None
     bloch = gfem.Driven(5e9, wave_vector=periodic_cases.C1_K)
-    eigen = gfem.Eigenmode(target=5e9, n_modes=1)
-    for problem, key in ((bloch, "bloch"), (eigen, "periodic")):
-        with pytest.raises(gfem.DistributedUnsupportedError) as caught:
-            _mpi.refuse(cell, problem, options)
-        assert caught.value.feature == key
+    assert _mpi.refuse(cell, bloch, options) is None
+    angle = gfem.Driven(
+        [5e9, 6e9], wave_vector=periodic_cases.C1_K, wave_vector_frequency=5e9
+    )
+    assert _mpi.refuse(cell, angle, options) is None
+
+
+def test_a_bloch_eigenmode_keeps_its_refusal(tmp_path):
+    cell = mpi_cases._cell(tmp_path)  # one pair
+    problem = gfem.Eigenmode(target=5e9, n_modes=1, wave_vector=periodic_cases.C1_K)
+    with pytest.raises(gfem.DistributedUnsupportedError, match="eigenmode") as caught:
+        _mpi.refuse(cell, problem, gfem.SolverOptions())
+    assert caught.value.feature == "bloch"
 
 
 def test_two_periodic_pairs_refuse_a_driven_and_an_eigenmode_solve(tmp_path):
     cell = periodic_cases.c2(periodic_cases.c2_mesh(tmp_path))  # two pairs
     options = gfem.SolverOptions(linear_solver="direct")
-    for problem in (gfem.Driven(5e9), gfem.Eigenmode(target=5e9, n_modes=1)):
+    bloch = gfem.Driven(5e9, wave_vector=periodic_cases.C2_K)
+    for problem in (gfem.Driven(5e9), bloch, gfem.Eigenmode(target=5e9, n_modes=1)):
         with pytest.raises(gfem.DistributedUnsupportedError) as caught:
             _mpi.refuse(cell, problem, options)
         assert caught.value.feature == "periodic"

@@ -63,8 +63,8 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
             return stack(directory), problem, direct
         case "periodic":  # two pairs: one pair runs distributed
             return pc.c2(pc.c2_mesh(directory)), gfem.Driven(FREQUENCY), direct
-        case "bloch":
-            problem = gfem.Driven(FREQUENCY, wave_vector=pc.C1_K)
+        case "bloch":  # a Bloch driven solve runs distributed
+            problem = gfem.Eigenmode(target=FREQUENCY, n_modes=1, wave_vector=pc.C1_K)
             return _cell(directory), problem, direct
         case "floquet_port":
             model = pc.f1(pc.f1_mesh(directory))

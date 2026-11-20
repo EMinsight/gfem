@@ -290,39 +290,10 @@ def test_bloch_backends_agree(c1_mesh, monkeypatch):
     np.testing.assert_allclose(bddc, mkl, rtol=0, atol=10 * BLOCH_BDDC_TOL)
 
 
-def _edge_port_c1(directory):
-    """C1 with port p1 on the y_min strip of the last x cell, touching x_max."""
-    dx = pc.C1_A / 16
-
-    def surface(c):
-        return "edge_port" if c[1] < 1e-9 and c[0] > pc.C1_A - dx else ""
-
-    edges = tuple(
-        np.linspace(0, s, n + 1)
-        for s, n in zip((pc.C1_A, pc.C1_W, pc.C1_H), (16, 1, 1), strict=True)
-    )
-    cell = sm.periodic_cell(edges, sheets=(("sheet2", pc.C1_X2),), surface=surface)
-    path = sm.write_msh22(directory / "edge.msh", cell)
-    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
-    return gfem.Model(
-        mesh,
-        materials={"cell": gfem.Material(eps_r=pc.C1_EPS, tan_delta=pc.C1_TAN_DELTA)},
-        boundaries=[
-            gfem.Periodic(("x_min", "x_max")),
-            gfem.PEC("z_min"),
-            gfem.PEC("z_max"),
-        ],
-        ports=[
-            gfem.LumpedPort("p1", "edge_port", "+z", impedance=50.0),
-            gfem.LumpedPort("p2", "sheet2", "+z", impedance=50.0),
-        ],
-    )
-
-
 def test_bloch_s_transposed_is_s_at_minus_k(tmp_path):
     # p1's edges on x_max are the pair's second surface: its voltage is read
     # through the Bloch phase of the second surface's DOFs
-    model = _edge_port_c1(tmp_path)
+    model = pc.c1edge(pc.c1edge_mesh(tmp_path))
     plus = _bloch_s(model, pc.C1_K)
     minus = _bloch_s(model, tuple(-v for v in pc.C1_K))
     assert np.abs(plus - plus.T).max() > 1e-2

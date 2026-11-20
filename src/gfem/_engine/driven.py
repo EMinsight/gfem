@@ -447,7 +447,8 @@ def driven_operator(
     )
     space, expansion, phases = unpaired, None, None
     if periodic and paired:
-        phases = bloch_phases(model, wave_vector)
+        # the pairs as distributed: a swapped pair takes the inverse phase
+        phases = bloch_phases(model, wave_vector, pairs=built.pairs)
         key = solve_key = space_key(model, "hcurl", order, periodic=True, phases=phases)
         space = disc.space(
             key,
@@ -1566,6 +1567,7 @@ class DrivenRule:
                     model,
                     op.order,
                     wave_vector=minus_k,
+                    comm=self.comm,
                     swept=self.swept_spaces,
                 )
             system = SystemOperator(

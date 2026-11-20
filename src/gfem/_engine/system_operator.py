@@ -517,8 +517,11 @@ class SystemOperator:
         entry holds it (ADRs 0082, 0093). A
         base the adjoint solves do not share (the transposed system's solves,
         which hold a base of their own) stays with its sweep: ``with`` returns it
-        to the pool or frees it.
+        to the pool or frees it, under ranks too, so that a Bloch backward holds
+        one factorization, the transposed system's.
         """
+        if self._transposed is not None:
+            return
         if self.operator.built.comm is None and not self._shares_base():
             return
         adjoint = self.sweep(tolerance=self._adjoint_tolerance)

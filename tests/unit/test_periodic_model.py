@@ -460,6 +460,19 @@ def test_bloch_phases_follow_the_convention(c2_mesh):
     assert all(type(p) is complex for p in phases)
 
 
+def test_a_swapped_pair_takes_the_inverse_phase(c2_mesh):
+    from gfem._engine.mesh import _swap
+    from gfem._periodic import bloch_phases
+
+    model = pc.c2(c2_mesh)
+    first, second = model._periodic
+    phases = bloch_phases(model, pc.C2_K, pairs=(_swap(first), second))
+    # the pairs as a distributed mesh carries them: x swapped, translation -a_x
+    np.testing.assert_allclose(
+        phases, [np.exp(0.4j * np.pi), np.exp(0.25j * np.pi)], rtol=0, atol=1e-15
+    )
+
+
 # --- job files ----------------------------------------------------------------------
 
 

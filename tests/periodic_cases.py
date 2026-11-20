@@ -8,7 +8,9 @@ read without NGSolve. Meshes are in mm, wave vectors in rad/m.
 
 - C1, `c1`: a parallel-plate TEM line periodic along x (PEC plates at z = 0
   and H, PMC y walls) with two 50 ohm lumped ports on interior sheets; its
-  open-circuit impedance matrix is `bloch_line_z`.
+  open-circuit impedance matrix is `bloch_line_z`. `c1edge` moves p1 onto
+  the last x cell's y = 0 strip, touching the seam: its Bloch S is far from
+  reciprocal.
 - C2, `c2`: an empty parallel-plate cell periodic along x and y; its bands
   are the empty lattice, `empty_lattice`.
 - C3, `c3`: a layered (Bragg) TEM line periodic along x; its bands are the
@@ -107,6 +109,45 @@ def c1(mesh: gfem.Mesh) -> gfem.Model:
         ],
         ports=[
             gfem.LumpedPort("p1", "sheet1", "+z", impedance=50.0),
+            gfem.LumpedPort("p2", "sheet2", "+z", impedance=50.0),
+        ],
+    )
+
+
+def c1edge_mesh(directory: Path) -> gfem.Mesh:
+    """C1's mesh with p1's surface "edge_port" on the last x cell's y = 0 strip.
+
+    Its edges on x = A lie on the pair's second surface; "sheet2" as `c1_mesh`.
+    """
+    dx = C1_A / 16
+
+    def surface(c):
+        return "edge_port" if c[1] < 1e-9 and c[0] > C1_A - dx else ""
+
+    edges = _edges((C1_A, C1_W, C1_H), (16, 1, 1))
+    cell = sm.periodic_cell(edges, sheets=(("sheet2", C1_X2),), surface=surface)
+    return _mesh(directory, "c1edge", cell)
+
+
+def c1edge(mesh: gfem.Mesh, *, eps_r=None, conductivity=None) -> gfem.Model:
+    """C1 with port p1 touching the seam: a Bloch S far from reciprocal.
+
+    ``eps_r`` and ``conductivity`` per element make "cell" a
+    `gfem.MaterialField`; by default it is C1's lossy dielectric.
+    """
+    material = gfem.Material(eps_r=C1_EPS, tan_delta=C1_TAN_DELTA)
+    if eps_r is not None:
+        material = gfem.MaterialField(eps_r=eps_r, conductivity=conductivity)
+    return gfem.Model(
+        mesh,
+        materials={"cell": material},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.PEC("z_min"),
+            gfem.PEC("z_max"),
+        ],
+        ports=[
+            gfem.LumpedPort("p1", "edge_port", "+z", impedance=50.0),
             gfem.LumpedPort("p2", "sheet2", "+z", impedance=50.0),
         ],
     )

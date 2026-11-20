@@ -943,7 +943,7 @@ REFUSAL_LABELS = {
     "thermal_transient": "`TransientThermal`",
     "dc_conduction": "`DCConduction`",
     "periodic": "`Periodic` boundaries on two axes of a `Driven` problem",
-    "bloch": "`Driven(wave_vector=...)`",
+    "bloch": "`Eigenmode(wave_vector=...)`",
     "floquet_port": "A `FloquetPort` on a `Driven` problem",
     "frequency_workers": "`frequency_workers` above 1, on more than one frequency",
     "device": '`device="cuda"`',
