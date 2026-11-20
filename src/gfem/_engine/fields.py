@@ -310,7 +310,7 @@ def one_process_dofs(
     cells = tables["cells"]
     mine = built.tetrahedron_order
     mine = mine[cells[mine] >= 0]
-    nodes, edges, faces = _local_entities(built, mesh, tables, mine)
+    nodes, edges, faces = _local_entities(built, mesh, tables)
     if space == "h1":
         numbers, total = _h1_numbers(
             built,
@@ -351,39 +351,29 @@ def _find(table: np.ndarray, keys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _local_entities(
-    built: EngineMesh,
-    mesh: Mesh,
-    tables: dict[str, np.ndarray],
-    mine: np.ndarray,
+    built: EngineMesh, mesh: Mesh, tables: dict[str, np.ndarray]
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """The gfem nodes, one-process edges and one-process faces holding local DOFs.
 
-    Those of the local support tets, and of each local triangle that is a face of
-    the support: netgen sends a surface element with one adjacent volume element,
-    so a rank can hold a support face, and its DOFs, without its support tet.
-    Edges and faces come ascending, which is lexicographic in their gfem nodes.
+    Every support entity a rank holds carries its DOFs there, whichever local
+    element brings it: a support tet, a support face netgen sent with the tet on
+    its other side, or an edge or vertex of a tet off the support (DOFs are
+    agreed across a shared entity's holders). Edges and faces come ascending,
+    which is lexicographic in their gfem nodes.
     """
     n_nodes = len(mesh.imported_nodes)
     edge_table, face_table = tables["edges"], tables["faces"]
-    tets = np.sort(mesh.tetrahedra[mine], axis=1)
+    tets = np.sort(mesh.tetrahedra[built.tetrahedron_order], axis=1)
     triangles = np.sort(np.asarray(mesh.triangles)[built.triangle_order], axis=1)
-    low, on_edge = _find(edge_table, triangles[:, 0] * n_nodes + triangles[:, 1])
-    at, on_face = _find(face_table, low * n_nodes + triangles[:, 2])
-    support = on_edge & on_face
-    triangles = triangles[support]
-    pairs = np.concatenate(
-        [
-            tets[:, _TET_EDGES].reshape(-1, 2),
-            triangles[:, _TRIANGLE_EDGES].reshape(-1, 2),
-        ]
-    )
-    edges = np.unique(np.searchsorted(edge_table, pairs[:, 0] * n_nodes + pairs[:, 1]))
-    triples = tets[:, _TET_FACES].reshape(-1, 3)
-    low = np.searchsorted(edge_table, triples[:, 0] * n_nodes + triples[:, 1])
-    in_tets = np.searchsorted(face_table, low * n_nodes + triples[:, 2])
-    faces = np.unique(np.concatenate([in_tets, at[support]]))
-    nodes = np.unique(np.concatenate([tets.ravel(), triangles.ravel()]))
-    return nodes, edges, faces
+    triples = np.concatenate([tets[:, _TET_FACES].reshape(-1, 3), triangles])
+    pairs = triples[:, _TRIANGLE_EDGES].reshape(-1, 2)
+    edges, on_edge = _find(edge_table, pairs[:, 0] * n_nodes + pairs[:, 1])
+    low, on_low = _find(edge_table, triples[:, 0] * n_nodes + triples[:, 1])
+    faces, on_face = _find(face_table, low * n_nodes + triples[:, 2])
+    on_face &= on_low
+    nodes = np.unique(triples)
+    nodes = nodes[_find(tables["vertices"], nodes)[1]]
+    return nodes, np.unique(edges[on_edge]), np.unique(faces[on_face])
 
 
 def _blocks(first: int, entities: np.ndarray, per_entity: int) -> np.ndarray:

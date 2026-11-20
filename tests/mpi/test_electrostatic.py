@@ -214,7 +214,7 @@ def _map_against_the_walk(serial):
     return _mpi.agree_all(comm, flag=same)
 
 
-@pytest.mark.parametrize("ranks", [3, 8])
+@pytest.mark.parametrize("ranks", [3, 8, 16])
 def test_the_h1_map_is_the_walk(ranks):
     mesh = mpi_cases.permuted(mpi_cases.box(4))
     serial = {
