@@ -23,6 +23,7 @@ from petsc_recipe import KSP_VIEW, MUMPS_LU
 import gfem
 from gfem import _petsc
 from gfem._engine import cache, quadrature
+from gfem._engine.driven import DrivenRule
 from gfem._engine.mesh import to_ngsolve
 from gfem._linalg import Operator, coarse, petsc, prepare
 from gfem._linalg.petsc import PetscHandle
@@ -1380,6 +1381,25 @@ def test_retain_memory_0_leaves_the_coarse_pool_empty_after_a_solve(
     )
     gfem.solve(model, gfem.Driven(frequency=24e9), options=options)
     assert coarse.pooled() == (0 if retain_memory == 0 else 1)
+
+
+def test_retain_memory_0_empties_the_coarse_pool_when_the_forward_raises(
+    built, monkeypatch, tmp_path
+):
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    made.set_up()
+    made.free()
+    model = gradient_cases.layered_line(tmp_path)
+
+    def singular(*_, **__):
+        # as a singular coarse set-up raises, on every rank, before any walk
+        raise gfem._mpi.AgreedError("the coarse factorization failed")
+
+    monkeypatch.setattr(DrivenRule, "forward", singular)
+    options = gfem.SolverOptions(order=1, linear_solver="direct", retain_memory=0)
+    with pytest.raises(gfem._mpi.AgreedError):
+        gfem.solve(model, gfem.Driven(frequency=24e9), options=options)
+    assert coarse.pooled() == 0
 
 
 def test_pooled_coarse_factorizations_count_and_go_at_the_caches_tier_3(
