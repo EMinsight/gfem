@@ -302,14 +302,15 @@ def projector(
     fixed = potential_surfaces(model)
     if not periodic:
         hcurl = real_space(model, op)
-        h1 = disc.space(
-            space_key(model, "h1", order, fixed=fixed),
-            lambda: h1_space(model, built, order, fixed),
-        )
+        h1_key = space_key(model, "h1", order, fixed=fixed)
+        h1 = disc.space(h1_key, lambda: h1_space(model, built, order, fixed))
     else:
         phases = bloch_phases(model, wave_vector)
+        h1_key = space_key(
+            model, "h1", order, periodic=True, phases=phases, fixed=fixed
+        )
         h1 = disc.space(
-            space_key(model, "h1", order, periodic=True, phases=phases, fixed=fixed),
+            h1_key,
             lambda: h1_space(model, built, order, fixed, periodic=True, phases=phases),
             group=phases,
         )
@@ -332,10 +333,16 @@ def projector(
     diameter = float(np.linalg.norm(np.ptp(nodes, axis=0)))
     h1_layout = None
     if op.layout is not None:
-        key = (*space_key(model, "h1", order, fixed=fixed), "layout")
-        h1_layout = disc.space(key, lambda: RankLayout(h1, built.comm))
+        h1_layout = disc.space((*h1_key, "layout"), lambda: RankLayout(h1, built.comm))
     return DivFreeProjector(
-        hcurl, h1, eps, order, diameter, layout=op.layout, h1_layout=h1_layout
+        hcurl,
+        h1,
+        eps,
+        order,
+        diameter,
+        layout=op.layout,
+        h1_layout=h1_layout,
+        periodic=bool(periodic),
     )
 
 
@@ -540,7 +547,11 @@ class DivFreeProjector:
     Under ranks (``layout``, real spaces only) ``x`` is a state, ``M0 x`` a load,
     ``G^T`` maps a load to a load and ``G`` a state to a state, through NGSolve's
     own ``ParallelMatrix`` ``G``, and the H1 form is factored by MUMPS on
-    ``h1_layout`` (ADR 0502). One process keeps SciPy's CSR ``G``.
+    ``h1_layout`` (ADR 0502). Between periodic spaces ``G`` is instead the
+    conversion each rank computes alone, a local CSR, as the periodic
+    expansion is (`gfem._engine.driven.expansion_matrix`): NGSolve's parallel
+    conversion is wrong on a paired mesh (ADR 0071). One process keeps SciPy's
+    CSR ``G``.
 
     Args:
         hcurl: The H(curl) space (the solve's numbering and `PEC` DOFs):
@@ -554,6 +565,7 @@ class DivFreeProjector:
         diameter: Size of the domain in mesh file units.
         layout: The H(curl) space's layout across ranks, ``None`` on one process.
         h1_layout: The H1 space's, with ``layout``.
+        periodic: Whether the spaces are periodic (a local ``G`` under ranks).
     """
 
     def __init__(
@@ -566,6 +578,7 @@ class DivFreeProjector:
         *,
         layout: DofLayout | None = None,
         h1_layout: DofLayout | None = None,
+        periodic: bool = False,
     ) -> None:
         """Build ``G``, ``M0`` and factorize the H1 form."""
         dx = quadrature.dx(order)
@@ -582,10 +595,19 @@ class DivFreeProjector:
         #: ``M0``, the electric-energy form on the H(curl) space.
         self.mass = mass.mat
         phi = h1.TrialFunction()
-        g = ngs.ConvertOperator(h1, hcurl, trial_proxy=ngs.grad(phi))
-        #: NGSolve's G under ranks, a ``ParallelMatrix``; ``None`` on one process.
-        self._parallel_g: Any = g if layout is not None else None
-        if layout is None:
+        local = layout is not None and periodic
+        if local:
+            g = ngs.ConvertOperator(
+                h1, hcurl, trial_proxy=ngs.grad(phi), localop=True, parmat=False
+            )
+        else:
+            g = ngs.ConvertOperator(h1, hcurl, trial_proxy=ngs.grad(phi))
+        #: NGSolve's G under ranks between plain spaces, a ``ParallelMatrix``;
+        #: ``None`` on one process and between periodic spaces.
+        self._parallel_g: Any = g if layout is not None and not local else None
+        #: Whether ``_g`` is a rank's local G (periodic spaces under ranks).
+        self._local_g = local
+        if self._parallel_g is None:
             rows, cols, values = g.COO()
             self._g = sp.csr_matrix(
                 (np.asarray(values), (np.asarray(rows), np.asarray(cols))),
@@ -621,7 +643,7 @@ class DivFreeProjector:
         complex on every call. The result is bit-identical.
         """
         energy = self.energy(x)
-        if self._parallel_g is not None:
+        if self._parallel_g is not None or self._local_g:
             return self._project_on_ranks(x, energy)
         if self.complex:
             return x - self._g @ self._laplace.solve(self._gh @ energy)
@@ -642,7 +664,12 @@ class DivFreeProjector:
         return x - (self._g_apply(phi[:, 0]) + 1j * self._g_apply(phi[:, 1]))
 
     def _g_apply(self, values: np.ndarray, *, transpose: bool = False) -> np.ndarray:
-        """``G`` of a real H1 state (a state), or ``G^T`` of a real load (a load)."""
+        """``G`` of a real H1 state (a state), or ``G^T`` of a real load (a load).
+
+        A local ``G`` maps them on each rank's own DOFs, with no exchange.
+        """
+        if self._local_g:
+            return (self._gh if transpose else self._g) @ values
         g = self._parallel_g
         source = g.CreateColVector() if transpose else g.CreateRowVector()
         target = g.CreateRowVector() if transpose else g.CreateColVector()

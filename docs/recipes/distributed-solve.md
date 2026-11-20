@@ -176,11 +176,10 @@ How gfem itself is checked across ranks: {doc}`../verification`.
   module.
 - `direct` across ranks is MUMPS through PETSc, not PARDISO: the `mkl` extra
   does not apply to it. Install the extra for one-process solves.
-- A driven solve on a periodic model runs across ranks with one periodic pair
-  and no wave vector. More than one pair, a Bloch wave vector, or an
-  eigenmode solve on a periodic model raise
-  `gfem.DistributedUnsupportedError`. Solve those on one process or as rank
-  copies.
+- A driven or an eigenmode solve on a periodic model runs across ranks with
+  one periodic pair and no wave vector. More than one pair, or a Bloch wave
+  vector, raise `gfem.DistributedUnsupportedError`. Solve those on one process
+  or as rank copies.
 - A lumped port terminated by an inductance or a capacitance, and
   `gfem.characteristic_impedance`, run across ranks but have not been compared
   with one process yet. Compare them once on your model.

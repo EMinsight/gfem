@@ -126,8 +126,8 @@ _REFUSALS = {
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
     "periodic": (
-        "A periodic model has no distributed path for an eigenmode solve, nor for "
-        f"a driven solve with more than one pair: {_RUN_COPIES}."
+        "A periodic model with more than one pair has no distributed path for a "
+        f"driven or an eigenmode solve: {_RUN_COPIES}."
     ),
     "floquet_port": f"A Floquet port has no distributed path: {_RUN_COPIES}.",
     "bloch": f"A Bloch wave vector has no distributed path: {_RUN_COPIES}.",
@@ -329,7 +329,7 @@ def _refuse_eigenmode(model: Any, problem: Any, options: Any) -> None:
     """
     if problem.wave_vector is not None:
         refuse_feature("bloch")
-    if model._periodic:  # noqa: SLF001
+    if len(model._periodic) > 1:  # noqa: SLF001
         refuse_feature("periodic")
     if options.eigen_solver == "arpack":
         refuse_feature("arpack")
