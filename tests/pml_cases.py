@@ -173,6 +173,51 @@ def te10_guide(path: str | Path, *, cells: float = 14) -> Path:
     return waveguide(path, GUIDE_SECTION, cells=cells)
 
 
+#: The dielectric slab of `slab_line`, along z (um).
+SLAB = (0.5, 1.0)
+
+
+def slab_line(path: str | Path, *, cells: float = 10) -> Path:
+    """The TEM line with a "slab" region in its air, for gradients.
+
+    As `tem_line`, two cells across the section, with the tetrahedra
+    between z = ``SLAB[0]`` and ``SLAB[1]`` in "slab" and its face at
+    z = ``SLAB[0]`` named "front" (an interface for `boundary_morph`).
+
+    Args:
+        path: The gmsh 2.2 file to write.
+        cells: Cells per um along z (multiples of 1 / ``cells`` must hit the
+            slab's faces and the layer's).
+
+    Returns:
+        ``path``.
+    """
+    a, b = LINE_SECTION
+    total = AIR_LENGTH + THICKNESS
+    edges = (
+        np.linspace(0.0, a, 3),
+        np.linspace(0.0, b, 3),
+        np.linspace(0.0, total, round(total * cells) + 1),
+    )
+    eps = 1e-9
+
+    def volume(c):
+        if c[2] > AIR_LENGTH:
+            return "pml"
+        return "slab" if SLAB[0] < c[2] < SLAB[1] else "air"
+
+    def surface(c):
+        if abs(c[2]) < eps:
+            return "port"
+        if abs(c[2] - SLAB[0]) < eps:
+            return "front"
+        if abs(c[2] - total) < eps or abs(c[1]) < eps or abs(c[1] - b) < eps:
+            return "pec"
+        return ""
+
+    return sm.write_msh22(path, sm.structured(edges, volume, surface))
+
+
 # --- the Bloch cell ---------------------------------------------------------------
 
 #: The Bloch cell's lateral period along x and y (um, 0.4 lambda) and its

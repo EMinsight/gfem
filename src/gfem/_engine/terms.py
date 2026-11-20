@@ -247,6 +247,10 @@ class Piece:
             region and dθ/dp(ω) by each law parameter, keyed as
             `gfem._engine.dispersion.d_eps` (the law pass);
             ``None`` otherwise.
+        position: Whether ``coefficient`` also varies in position within an
+            element: a perfectly matched layer's stretch composed into a
+            volume piece (shape gradients read it at the moved quadrature
+            points).
 
     Raises:
         ValueError: ``theta`` does not give one scalar: the term is not
@@ -269,6 +273,7 @@ class Piece:
     sheet: tuple[int, float] | None = None
     values: np.ndarray | None = dataclasses.field(default=None, compare=False)
     lumped: LumpedValue | None = dataclasses.field(default=None, compare=False)
+    position: bool = dataclasses.field(default=False, compare=False)
     probe: complex = _PROBE
     law: tuple[str, Callable[[complex], dict[tuple, complex]]] | None = (
         dataclasses.field(default=None, compare=False)
@@ -649,6 +654,7 @@ def conductivity_piece(
         kind="value",
         coefficient=cf,
         values=values,
+        position=stretch is not None,
         derivatives={
             "conductivity": Derivative(
                 ETA0,
@@ -720,6 +726,7 @@ def pieces(
             kind="curl",
             coefficient=nu,
             values=nu_values,
+            position=stretch is not None,
             derivatives={
                 "mu_r": Derivative(
                     lambda: -(element_values(model, "mu_r", per_axis=1.0) ** -2.0),
@@ -738,6 +745,7 @@ def pieces(
             kind="value",
             coefficient=eps_cf,
             values=eps,
+            position=stretch is not None,
             derivatives={
                 "eps_r": Derivative(
                     lambda: _loss(model),

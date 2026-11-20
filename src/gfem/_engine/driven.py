@@ -2311,6 +2311,7 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
                 piece.kind,
                 coefficient=piece.coefficient,
                 region=piece.region,
+                position=piece.position,
                 **common,
             )
         out.append(term)
