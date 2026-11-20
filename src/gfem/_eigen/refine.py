@@ -19,6 +19,9 @@ system, ``y <- y - T(sigma)^-T T(k)^T y`` on the same factorization; ``k``
 comes from ``y^T T(k) x = 0``, second order in both errors, and a pair
 converges when both backward errors meet the tolerance (ADR 0042).
 
+The vectors are state columns: their norms are the layout's
+(`gfem._linalg.layout.DofLayout.state_norm`), over owned DOFs under ranks.
+
 For a polynomial ``T`` an Arnoldi pair usually meets the tolerance at once
 (step 0 is only the Rayleigh functional, which sharpens ``k`` to second
 order in the eigenvector's error); the iteration repairs the pairs that the
@@ -92,7 +95,8 @@ def refine(
     # the eigenvector lives on the free DOFs: weight on the fixed ones would
     # hide the residual from the backward error (corrections never touch it)
     x = np.where(op.free, x, 0)
-    x = x / np.linalg.norm(x)
+    norm = op.layout.state_norm
+    x = x / norm(x)
     y = np.conj(x) if op.general else None
     best: Refined | None = None
     history: list[float] = []
@@ -115,10 +119,10 @@ def refine(
             shifts += 1
             history.clear()
         x = x - op.solve(op.apply(k, x))
-        x = x / np.linalg.norm(x)
+        x = x / norm(x)
         if y is not None:
             y = y - op.solve(op.apply(k, y, transpose=True), transpose=True)
-            y = y / np.linalg.norm(y)
+            y = y / norm(y)
     if best is None:  # pragma: no cover - the loop runs at least once
         raise RuntimeError("No refinement step ran.")
     return best
