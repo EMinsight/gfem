@@ -1,4 +1,4 @@
-"""The mode energy of a model with a permittivity law (ADR 0109).
+"""The mode energy of a model with a permittivity law.
 
 A mode's volume energy reads the energy permittivity eps_W = Re[eps +
 (omega / 2) eps'] at its frequency on a law region, so that for a lossless
@@ -8,7 +8,7 @@ eps_W |E|^2``. The ratios then obey the eigenvalue derivatives
 (Hellmann-Feynman): the host's share is ``-2 d ln omega / d ln eps_host`` and
 the junction's participation ``-2 d ln omega / d ln L``.
 
-The references: the probe-05 box (a 3 mm host of eps 4 under a 2 mm core
+The references: a box (a 3 mm host of eps 4 under a 2 mm core
 holding a lossless Lorentz law) and the uniform-field line of
 `eigen_cases` with a Lorentz region at its junction's end.
 """
@@ -217,7 +217,7 @@ def test_the_junction_participation_beside_a_law_is_minus_twice_the_log_derivati
     )
 
 
-# --- refusals (ticket 10's C10) -------------------------------------------------------
+# --- refusals -------------------------------------------------------------------------
 
 
 def damped(f0):

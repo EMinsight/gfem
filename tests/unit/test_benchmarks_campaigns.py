@@ -41,7 +41,7 @@ def test_release_and_smoke_campaigns_are_committed():
 
 
 #: The only refusals a committed campaign plans: gfem's non-direct kinds on bragg's
-#: Bloch-periodic eigenproblem (ticket 12 amendment from ticket 14).
+#: Bloch-periodic eigenproblem.
 BLOCH_REFUSED = {("bragg", "gfem:petsc-mumps"), ("bragg", "gfem:bddc")}
 
 

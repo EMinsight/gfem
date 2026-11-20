@@ -3,9 +3,8 @@
 The problem is linear with time-invariant operators, so the stepping is
 linear in the waveform: an on/off run equals the difference of two
 shifted step responses, and doubling the power doubles the rise, to
-round-off (ADRs 0164, 0172). The trace helpers are gsim's, checked on
-gsim's own test signal (ADR 0162), and warn on an unsettled trace
-(ADR 0181).
+round-off. The trace helpers are gsim's, checked on
+gsim's own test signal, and warn on an unsettled trace.
 """
 
 import dataclasses
@@ -219,7 +218,7 @@ def test_theta_outside_its_range_raises():
         gfem.SolverOptions(time_scheme="theta", theta=0.4)
     with pytest.raises(ValueError, match="time_scheme must be one of"):
         gfem.SolverOptions(time_scheme="bdf2")
-    # read by the theta scheme only (ADR 0098), but checked always
+    # read by the theta scheme only, but checked always
     assert gfem.SolverOptions(theta=0.5).time_scheme == "tr_bdf2"
 
 

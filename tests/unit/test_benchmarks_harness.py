@@ -288,7 +288,7 @@ def test_a_sibling_hyperthread_maps_to_its_physical_core(sysfs):
     [
         (["0-3", "4-7", "8-11", "12-15"], 4, "pass"),
         (["0,112", "1,113", "2,114", "3,115"], 1, "pass"),  # Hydra -bind-to core
-        (["0-3", "0-3", "0-3", "0-3"], 1, "fail"),  # probe 13: one shared mask
+        (["0-3", "0-3", "0-3", "0-3"], 1, "fail"),  # measured: one shared mask
         (["0-1", "1-2"], 2, "fail"),
         (["0-15"], 16, "pass"),
         (["0,112"], 2, "fail"),  # two hyperthreads of one core are one core

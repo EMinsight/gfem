@@ -1,7 +1,7 @@
 """The dispersive-materials recipe runs what can run without a mesh.
 
 docs/recipes/dispersive-materials.md solves nothing at docs build time and
-prints no solved number (ADR 0017, as amended): the metal-bend tutorial is
+prints no solved number (user pages quote no test evidence): the metal-bend tutorial is
 where solved values live, and how gfem checks them is on docs/verification.md.
 This checks that the page's law block runs and builds what the page says, that
 the page shows the pattern that keeps a law's frequencies of order one for an

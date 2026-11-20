@@ -1,4 +1,4 @@
-"""The first-order thermo-optic shift against mode re-solves (ADR 0174, 0176).
+"""The first-order thermo-optic shift against mode re-solves.
 
 A heater cross-section shaped like femwell's TiN heater (a silicon wafer
 under a 2 um oxide box, a 500 x 220 nm silicon core, a 2 um x 140 nm heater
@@ -8,7 +8,7 @@ the core's.
 
 - At the drive that gives a pi shift, the first-order shift is within 1e-3
   of a `gfem.PortMode` re-solve on `gfem.Model.with_temperature_rise`
-  (1.4e-4 on the femwell mesh, thermal probes/08).
+  (1.4e-4 on the femwell mesh).
 - A separate optical window around the core, in the same coordinates, with
   the rise sampled across meshes, gives the same shift within 1e-3 as the
   EM-excluded section (1e-4 on the femwell mesh).
@@ -27,7 +27,7 @@ N_SI, N_OX = 3.4777, 1.444
 HALF = 6.0  # um, half width of the section
 #: One slab thickness for both meshes: the window's elements lie in the section's.
 THICKNESS = 0.2e-6
-#: The heater length of thermal probes/08: P_pi over it is 70 W/m on femwell's heater.
+#: The heater length: P_pi over it is 70 W/m on femwell's heater.
 LENGTH = 320e-6
 CORE = (-0.25, 0.0, 0.25, 0.22, "core", 0.04)
 SECTION = [

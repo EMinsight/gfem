@@ -157,7 +157,7 @@ LOSSY_ANISOTROPIC = {
 
 
 def test_the_field_estimator_estimates_loss_in_an_anisotropic_material(tmp_path):
-    # ADR 0138: the modulus weights of a complex tensor eps_eff are exact
+    # the modulus weights of a complex tensor eps_eff are exact
     # (real axes), so the field estimate admits anisotropic loss.
     model = _box(tmp_path, LOSSY_ANISOTROPIC)
     problem = gfem.Eigenmode(target=F_BOX / 1.3, n_modes=1)

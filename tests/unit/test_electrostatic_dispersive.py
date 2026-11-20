@@ -1,7 +1,7 @@
 """The electrostatic problem on a dispersive material: its static permittivity.
 
 A law region solves with eps(0) = eps_inf + the strengths of its Lorentz,
-Debye and Djordjevic-Sarkar terms (ADR 0111): exactly as a constant
+Debye and Djordjevic-Sarkar terms: exactly as a constant
 material set to ``law(0)``. A Drude term has no static permittivity and
 raises by name. The finite-difference cell of the law's parameters is S1 of
 the gradient matrix (tests/verification/test_gradient_matrix.py).
@@ -128,7 +128,7 @@ def test_eps_inf_and_each_strength_differentiate_as_the_static_permittivity(stac
 
 
 def test_the_frequency_parameters_are_an_exact_zero(stack):
-    # the static permittivity never reads them (ADR 0011's amendment)
+    # the static permittivity never reads them
     grad = jax.grad(_by_law(stack))(LAW)
     lorentz, debye, sarkar = grad.terms
     assert lorentz.resonance_frequency == 0

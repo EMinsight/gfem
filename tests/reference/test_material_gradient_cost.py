@@ -8,7 +8,7 @@ pair) must take at most a tenth of the forward wall time, both warm (as in
 every iteration of an optimization after the first).
 
 Each timed evaluation is a new design, one optimizer step (1 %) from the
-last: a BDDC solve starts from the previous design's solution (ADR 0126), so
+last: a BDDC solve starts from the previous design's solution, so
 timing the design just solved again measures a forward of almost no
 iterations. The backward is the fastest of three runs of the same pullback.
 """

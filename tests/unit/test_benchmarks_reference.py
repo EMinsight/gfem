@@ -15,7 +15,7 @@ from benchmarks.harness import case, config
 from benchmarks.references import closed, microstrip
 from benchmarks.references import document as refdoc
 
-# Probe 08 exact.out: mpmath at 40 digits, printed by nstr(x, 20) (trailing 0 dropped).
+# The exact value: mpmath at 40 digits, printed by nstr(x, 20) (trailing 0 dropped).
 LCAVITY_F1 = "148140269652.0220093"
 BRAGG_MODES = ("5185529649.204525515", "7206816174.7901555042")
 

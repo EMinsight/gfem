@@ -6,7 +6,7 @@ column repeats the DOF's value on every copy; a load column splits it between
 them, so only the layout's products (`gfem._linalg.layout`) give the
 one-process value. The eigen operator, its refinement, the polish and the
 selection's span tests on ghosted columns must give the plain problem's
-results, as they will on ranks (ADR 0058).
+results, as they will on ranks.
 """
 
 import numpy as np

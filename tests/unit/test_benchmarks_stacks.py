@@ -1,4 +1,4 @@
-"""`benchmarks.stacks`: software stacks resolved against a site file (ADR 0403)."""
+"""`benchmarks.stacks`: software stacks resolved against a site file."""
 
 import json
 import sys

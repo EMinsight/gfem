@@ -12,7 +12,7 @@ admittance ``k_eff / (omega mu0)``, with ``k_eff = k - k_t^2 / (2 k)`` in the
 textbook form.
 
 Next to an anisotropic material the first-order absorbing boundary applies
-the normal-incidence admittance tensor (ADR 0051): checked against the 6x6
+the normal-incidence admittance tensor: checked against the 6x6
 plane-wave reference of ``tests/anisotropy.py``, and on a parallel-plate
 line filled with a crystal and ended by the boundary, which then reflects
 like a half-space of the crystal, at every length.
@@ -323,7 +323,7 @@ def test_second_order_absorbing_boundary_is_the_textbook_condition(guide):
     assert abs(s_abc2 - s_text) < 1e-6
 
 
-# --- absorbing boundary next to an anisotropic material (ADR 0051) ---------------
+# --- absorbing boundary next to an anisotropic material --------------------------
 
 #: A biaxial, magnetic crystal on the coordinate axes.
 CRYSTAL = gfem.Material(eps_r=(2.0, 3.6, 2.5), mu_r=(1.5, 1.0, 1.2))

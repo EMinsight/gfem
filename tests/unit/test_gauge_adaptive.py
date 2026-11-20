@@ -1,4 +1,4 @@
-"""The adaptive sweep through the tree-cotree gauge (ADR 0216).
+"""The adaptive sweep through the tree-cotree gauge.
 
 On the parallel-plate line of test_gauge_solve.py, whose S has a closed form,
 an adaptive sweep through the gauge keeps every digit below the

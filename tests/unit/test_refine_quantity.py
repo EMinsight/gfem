@@ -416,7 +416,7 @@ def test_adjoint_ports_never_reach_an_adaptive_sweep(tmp_path):
 
 @pytest.mark.usefixtures("no_solve")
 def test_frequency_workers_refuse_an_s_estimate_on_a_lossy_wave_port(tmp_path):
-    # Frequency workers take wave ports (ADR 0099) but solve no adjoint:
+    # Frequency workers take wave ports but solve no adjoint:
     # refine_mesh raises before any solve rather than drop the adjoint ports.
     model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
     f = rc.LOSSY_GUIDE_FREQUENCY
@@ -781,7 +781,7 @@ def test_the_mode_is_followed_by_nearest_omega(cavity):
         assert abs(after - before) < abs(first[1] - first[0]) / 2
 
 
-# --- cluster means (ADR 0136) ------------------------------------------------
+# --- cluster means -----------------------------------------------------------
 
 #: The 1 x 1 x 1.5 mm box's TE101/TE011 pair, exactly degenerate (Hz).
 PAIR_F = const.c * 1e3 * math.sqrt(1 + 1 / 2.25) / 2
@@ -1023,7 +1023,7 @@ def test_a_lossy_mode_is_estimated(tmp_path, material, top):
     assert np.all(np.isfinite(estimate.indicators))
 
 
-#: Each eigen term ADR 0138 lifted for omega: (material, boundary).
+#: Each eigen term the omega estimate admits: (material, boundary).
 LIFTED = {
     "second-order-absorbing": (None, gfem.Absorbing("side", order=2)),
     "lossy-mu": (gfem.MaterialField(eps_r=2.0, mu_r=2 * (1 - 0.1j)), None),
@@ -1044,7 +1044,7 @@ def _lifted_box(directory, name):
 
 @pytest.mark.parametrize("name", list(LIFTED))
 def test_a_lifted_lossy_mode_is_estimated(tmp_path, name):
-    # ADR 0138: second-order absorbing walls, a complex mu_r and loss inside
+    # second-order absorbing walls, a complex mu_r and loss inside
     # an anisotropic material no longer refuse the omega estimate.
     model = _lifted_box(tmp_path, name)
     problem = gfem.Eigenmode(target=BOX_110, n_modes=2)
@@ -1075,7 +1075,7 @@ LOSSY_TENSOR = gfem.Material(eps_r=(1, 2, 3), tan_delta=0.01)
 def test_loss_in_an_anisotropic_material_is_estimated(
     request, fixture, problem, estimator
 ):
-    # ADR 0138: every tensor gfem represents is R D R^T with real axes, so
+    # every tensor gfem represents is R D R^T with real axes, so
     # the modulus weights of the complex eps_eff are exact; S, omega and the
     # field estimate it.
     model = request.getfixturevalue(fixture)
@@ -1089,7 +1089,7 @@ def test_loss_in_an_anisotropic_material_is_estimated(
     assert ref.estimate.value > 0
 
 
-# --- driven refusals (ADRs 0134, 0139, 0140) ----------------------------------
+# --- driven refusals ----------------------------------------------------------
 
 
 class _SolvedError(Exception):
@@ -1316,7 +1316,7 @@ def test_an_interior_sheet_terminal_does_not_smear_the_estimate(tmp_path):
     assert quantity.value < 1e-12
 
 
-# --- Q (ADR 0131) --------------------------------------------------------------
+# --- Q -------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -1364,8 +1364,8 @@ def _resistive_line(directory, n):
 
 
 def test_q_estimate_of_the_resistive_line(tmp_path):
-    # Its value and indicators as measured by the ticket-06 probe's own
-    # implementation of ADR 0131 (line, n = 4, first resonance, Q 1.78).
+    # Its value and indicators as measured by an independent
+    # implementation of the Q estimate (line, n = 4, first resonance, Q 1.78).
     model = _resistive_line(tmp_path, 4)
     problem = gfem.Eigenmode(target=7.5e9, n_modes=1)
     result = gfem.solve(model, problem, options=OPTIONS)
@@ -1447,7 +1447,7 @@ def test_q_tolerance_below_its_floor_raises(cavity):
 def test_q_keeps_the_lossy_eigenmode_refusals(
     cavity, material, boundary, feature, cause
 ):
-    # ADR 0138 lifts these for omega= only: Q has no case for them.
+    # the omega estimate alone admits these: Q has no case for them.
     changes = {}
     if material is not None:
         changes["materials"] = {"air": material}
@@ -1465,7 +1465,7 @@ def test_q_keeps_the_lossy_eigenmode_refusals(
     assert "q=" in str(caught.value)
 
 
-# --- several quantities (ADR 0130) ---------------------------------------------
+# --- several quantities --------------------------------------------------------
 
 S11 = gfem.QuantityEstimator(s=("p1", "p1"))
 

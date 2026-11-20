@@ -116,7 +116,7 @@ def test_a_pullback_called_twice_equals_fresh_gradients(stack):
 def test_retain_memory_zero_recomputes_the_same_gradient(stack):
     eps = _designs(stack, 1, seed=3)[0]
     cached = jax.grad(_objective(stack))(eps)
-    # the next differentiated forward frees the consumed entry of `cached` (ADR 0081)
+    # the next differentiated forward frees the consumed entry of `cached`
     held = sum(not e.consumed for e in ENTRIES._entries.values())
     options = gfem.SolverOptions(retain_memory=0)
     _, pullback = jax.vjp(lambda e: _capacitance(stack, e, options), eps)

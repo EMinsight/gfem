@@ -1,4 +1,4 @@
-"""`direct` and `petsc` across ranks: PETSc MUMPS on the MPI PETSc stack (ADR 0068).
+"""`direct` and `petsc` across ranks: PETSc MUMPS on the MPI PETSc stack.
 
 The tests of the solve need that stack and are skipped without it. S is compared bit
 for bit across ranks (`on_ranks`) and to `S_GATE` against one process's `direct`.
@@ -23,7 +23,7 @@ from gfem._engine.system_operator import SystemOperator
 from gfem._linalg import ResolvedLinearSolver, blas, prepare
 from gfem._linalg import petsc as petsc_handle
 
-#: Relative to the largest entry of the one-process S: ADR 0070's direct gate.
+#: Relative to the largest entry of the one-process S: the direct rank gate.
 S_GATE = 1e-11
 FREQUENCY = 5e9
 #: Far enough apart that a value added to the previous frequency's shows in S.
@@ -286,7 +286,7 @@ def test_a_krylov_method_runs_across_ranks(tmp_path):
 
 
 def _blas_in_a_factorization(directory):
-    """Each BLAS's count in every factorization of a sweep, and after (ADR 0076)."""
+    """Each BLAS's count in every factorization of a sweep, and after."""
     seen = []
     held = blas.held
 

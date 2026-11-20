@@ -197,7 +197,7 @@ def test_adaptive_s_matches_the_uniform_sweep(plate_mesh):
 def test_a_direct_sweep_plans_once_per_frequency_and_matches_fresh_handles(
     plate_mesh, monkeypatch, sweep
 ):
-    # a pooled base per frequency (ADR 0121), wrapped in a borrowing Woodbury
+    # a pooled base per frequency, wrapped in a borrowing Woodbury
     # update
     model = line(plate_mesh, second="lumped")
     problem = gfem.Driven(F, sweep=sweep)
@@ -387,7 +387,7 @@ def test_kept_fields_with_wave_ports_run_under_jit(plate_mesh):
         return result.e_field(F[1], "p1").coefficients
 
     # each without a design guess: BDDC would start from the previous solution
-    # at the first frequency (ADR 0126). The rest of the kept state stays: two
+    # at the first frequency. The rest of the kept state stays: two
     # runs from released memory differ in the last digits at two threads
     _drop_design_guesses()
     eager = solve(fill.eps_r)
@@ -532,7 +532,7 @@ def test_an_open_dielectric_guide_transmits_its_fundamental_mode(dielectric_guid
 # --- anisotropic permeability: the Robin tensor and the modal coupling --------
 
 #: WR-28 filled with mu_r = (1, 2, 1.5), eps_r = (2, 4, 3): TE10 alone
-#: propagates at 16 GHz (research note of ADR 0054).
+#: propagates at 16 GHz.
 F_WR28 = 16e9
 
 
@@ -664,8 +664,8 @@ def test_the_port_imposes_its_modes_n_cross_h(turned_wr28):
 
 
 def test_the_turned_ports_correction_is_the_lone_closed_form(turned_wr28):
-    # the per-surface builder on an anisotropic port (ADR 0054 with ADR
-    # 0046): W = h hᵀ / (hᵀ e) - h_s h_sᵀ / (h_sᵀ e), complex symmetric
+    # the per-surface builder on an anisotropic port, one tangential mu^-1
+    # tensor per face: W = h hᵀ / (hᵀ e) - h_s h_sᵀ / (h_sᵀ e), complex symmetric
     model, op, surface = turned_wr28
     (port,) = surface.ports
     sweep, space = port.sweep, op.space
@@ -1282,7 +1282,7 @@ def test_a_shared_surface_of_overlapping_modes_is_reflectionless(hybrid_line_mod
     assert reciprocity < 1e-8  # measured 2.3e-15
 
 
-# --- port couplings kept across designs (ADR 0082) ------------------------------
+# --- port couplings kept across designs -----------------------------------------
 # The hybrid line's core lies away from both port faces; its leads ("block",
 # "fill") touch them.
 
@@ -1537,7 +1537,7 @@ def test_evicted_kept_state_is_rebuilt_not_read_stale(tmp_path, monkeypatch):
     # the walk drops the kept fixed parts and couplings at every step
     tight = loop(dataclasses.replace(KEPT_OPTIONS, retain_memory=0), fresh=False)
     # the couplings were rebuilt at every forward, and at every backward,
-    # which reruns its freed forward (ADR 0081)
+    # which reruns its freed forward
     assert len(sweeps) == 2 * 2 * 3
     for (s, grad), (s0, grad0) in zip(tight, fresh, strict=True):
         np.testing.assert_allclose(s, s0, rtol=1e-12, atol=1e-14)

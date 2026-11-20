@@ -1,4 +1,4 @@
-"""Files across ranks: bundles, the command line, one `.vtu` (ADR 0064).
+"""Files across ranks: bundles, the command line, one `.vtu`.
 
 A bundle written by any rank count is an ordinary one-process bundle, so each test
 writes under ranks and reads in pytest's one process, against the same solve there.
@@ -23,8 +23,8 @@ from gfem import _mpi, _petsc
 from gfem._engine import fields as engine_fields
 
 RANKS = (3, 4, 8)
-#: Relative to the largest one-process value: ticket 08's gate on a direct solve,
-#: ADR 0070's on BDDC.
+#: Relative to the largest one-process value: tighter than the usual rank gate on a
+#: direct solve, the usual one on BDDC.
 GATES = {"bddc_gmres": 1e-9, "direct": 1e-13}
 SOLVERS = (
     "bddc_gmres",
@@ -510,7 +510,7 @@ def test_to_vtu_gathers_one_file_matching_sample(tmp_path, solver):
     _assert_matches_sample(b_path, field.b(), gate, f"B {solver}")
 
 
-# --- the command line under ranks: one report, exit 1 (spec 1.5) -------------------
+# --- the command line under ranks: one report, exit 1 -----------------------------
 
 
 def _cli(job, *flags, ranks=3):

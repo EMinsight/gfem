@@ -1,10 +1,10 @@
 """Error estimates and mesh refinement of a model with a permittivity law.
 
-The estimators read a law region at the solve frequency (ADR 0111): the
+The estimators read a law region at the solve frequency: the
 field and S estimates of a law region equal those of the constant material
 holding the law's value there. The eigen omega estimate admits a law
 where Re eps > 0 at the mode, and refuses a mode bound to a law region at
-Re eps < 0 when it estimates (ADR 0138); every estimator refuses where
+Re eps < 0 when it estimates; every estimator refuses where
 eps(omega) = 0 (the flux recovery has no weight there). The metal case's
 effectivity is verified in `tests/verification/test_field_estimate.py`.
 
@@ -97,7 +97,7 @@ def test_a_law_region_is_estimated_at_its_value_at_the_solve_frequency(
 
 
 def test_the_omega_estimator_admits_a_law_at_positive_re_eps(tmp_path):
-    # ADR 0138: a mode where every law region has Re eps > 0 is estimated.
+    # a mode where every law region has Re eps > 0 is estimated.
     cavity = rc.cavity_model(tmp_path, 2)
     model = gfem.Model(
         cavity.mesh,
@@ -118,7 +118,7 @@ def test_the_omega_estimator_admits_a_law_at_positive_re_eps(tmp_path):
 
 #: The plasmon box: a 0.2 mm Drude floor (Re eps about -1.7 at the mode)
 #: under 0.2 mm of air, 1 x 0.7 x 0.4 mm, PEC walls; its LSM (2, 1) mode
-#: lies near 212 GHz (ADR 0138).
+#: lies near 212 GHz.
 FLOOR = gfem.PermittivityLaw(
     terms=[gfem.Drude(plasma_frequency=350 * GHZ, damping=5 * GHZ)]
 )
@@ -139,7 +139,7 @@ PLASMON_PROBLEM = gfem.Eigenmode(target=200 * GHZ, n_modes=1)
 
 def test_the_omega_estimator_refuses_a_plasmon_bound_mode(tmp_path):
     # Bound to a region at Re eps < 0, the omega estimate measured 0.81 to
-    # 1.02 times the error: the mode raises at estimate time (ADR 0138).
+    # 1.02 times the error: the mode raises at estimate time.
     model = _plasmon_box(tmp_path)
     result = gfem.solve(model, PLASMON_PROBLEM, options=OPTIONS)
     with pytest.raises(gfem.MeshRefinementUnsupportedError) as caught:

@@ -31,7 +31,7 @@ a Gauss rule on each tetrahedron.
 Anisotropic coax (`refinement_cases.anisotropic_coax_model`), electrostatic:
 the circular coax quarter filled with a rotated tensor eps_r, against an
 order-5 solve on the same mesh. The recovery's constraint on the natural
-surfaces (ADR 0087) is what keeps this estimate above the error: without it
+surfaces is what keeps this estimate above the error: without it
 the estimate measured 0.45 times the error.
 
 Lossy cases, in the norm || curl e ||^2 + |k|^2 || e ||^2_{|eps_eff|} (the
@@ -47,12 +47,12 @@ layers, the upper lossy) is a witness: its effectivity is asserted in its
 measured band, `WITNESSES["lumped port across a loss jump"]`, below the
 quoted range.
 
-Metal block (ADR 0111): the parallel-plate line with its middle 2 mm filled
+Metal block: the parallel-plate line with its middle 2 mm filled
 with a damped Drude law at Re eps < 0 at both frequencies, where the flux
 and energy weights are |eps(omega)|, against the closed-form cascade of
 three TEM sections.
 
-The eigen terms ADR 0138 lifted, in the norm || curl e ||^2_{|mu|^-1} +
+The eigen terms the estimates admit, in the norm || curl e ||^2_{|mu|^-1} +
 |k|^2 || e ||^2_{|eps_eff|}: the box filled with eps_r 2 and mu_r
 2 (1 - 0.1i), or with diagonal eps_r and mu_r carrying tan_delta 0.1,
 (5, 10, 20) S/m or per-axis complex eps_r, modes 110 and 101 on m = 1
@@ -525,7 +525,7 @@ def test_the_field_effectivity_on_a_parallel_plate_line_at_order_3(tmp_path, n):
 
 
 def test_the_field_estimate_of_a_lossless_line_is_unchanged(tmp_path):
-    # Measured before the lossy flux (ADR 0087, ticket 11 amendment): without
+    # Measured before the lossy flux: without
     # loss eps_eff = eps_r and |k| = k, so the estimate is the same number.
     cells = sm.strip_line(10.0, 2.0, 1.0, (4, 1, 1))
     filling = gfem.Material(eps_r=_LINE["eps_r"])
@@ -844,14 +844,14 @@ def _metal_line(tmp_path, n, options):
 
 @pytest.mark.parametrize("n", [5, 10, 20])
 def test_the_field_effectivity_on_a_line_through_a_metal_block(tmp_path, n):
-    # Re eps < 0 in the core: the flux and energy weights are |eps(omega)|
-    # (ADR 0111), the core's own value at each frequency. At n = 40 it
+    # Re eps < 0 in the core: the flux and energy weights are |eps(omega)|,
+    # the core's own value at each frequency. At n = 40 it
     # measured 1.05, 1.03; a dielectric core of eps_r 4 gives 1.20 to 1.05
     # over n = 5 to 40 on the same line.
     _metal_line(tmp_path, n, OPTIONS)
 
 
-# --- next to the driven refusals (ADRs 0134, 0139, 0140) ----------------------
+# --- next to the driven refusals ----------------------------------------------
 
 
 def _order_4_ratios(model, frequencies):
@@ -919,7 +919,7 @@ def test_the_field_effectivity_on_a_conductor_plate_line(tmp_path, sigma, n):
 @pytest.mark.parametrize("n", [1, pytest.param(2, marks=pytest.mark.reference)])
 @pytest.mark.parametrize("geometry", ["wedge", "flat"])
 def test_the_field_effectivity_on_a_deep_metal(tmp_path, geometry, n):
-    # Re eps -29.7 and -19.9: the S estimate refuses the second (ADR 0140),
+    # Re eps -29.7 and -19.9: the S estimate refuses the second,
     # the field estimate refuses neither.
     model = cc.metal_floor_model(tmp_path, geometry, n)
     ratios = _order_4_ratios(model, [cc.METAL_DEEP, cc.METAL_EDGE])
@@ -928,7 +928,7 @@ def test_the_field_effectivity_on_a_deep_metal(tmp_path, geometry, n):
 
 @pytest.mark.parametrize("n", [1, 2])
 def test_the_field_estimate_next_to_an_impedance_surface(tmp_path, n):
-    # Unclaimed (ADR 0134): the recovery copies the discrete field's wrong
+    # Unclaimed: the recovery copies the discrete field's wrong
     # trace on the resistive walls, and reads 0.65 to 0.70 of the volume
     # error next to them.
     side = gfem.Impedance("side", resistance=100.0)
@@ -938,7 +938,7 @@ def test_the_field_estimate_next_to_an_impedance_surface(tmp_path, n):
 
 
 def test_the_field_estimate_on_a_metal_wedge_in_the_plasmonic_window(tmp_path):
-    # Unclaimed (ADR 0140): at Re eps -1.5 the solution itself does not
+    # Unclaimed: at Re eps -1.5 the solution itself does not
     # converge at the wedge, against which the order-4 reference is no
     # better.
     model = cc.metal_floor_model(tmp_path, "wedge", 2)
@@ -947,14 +947,14 @@ def test_the_field_estimate_on_a_metal_wedge_in_the_plasmonic_window(tmp_path):
 
 
 def test_the_field_estimate_at_a_lumped_port_across_a_permeability_contrast(tmp_path):
-    # Unclaimed (ADR 0139): the S estimate refuses it; the field estimate
+    # Unclaimed: the S estimate refuses it; the field estimate
     # stays flat under refinement.
     model = cc.split_line_model(tmp_path, "beside", cc.SPLIT_LINE_HALVES["mu"], 16)
     ratios = _order_4_ratios(model, [15e9])
     _assert_witness("lumped port across a permeability contrast", ratios)
 
 
-# --- lifted eigen terms (ADR 0138): second-order walls, lossy mu, loss ---------
+# --- lifted eigen terms: second-order walls, lossy mu, loss --------------------
 # --- inside an anisotropic material --------------------------------------------
 
 

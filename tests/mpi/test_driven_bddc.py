@@ -3,7 +3,7 @@
 Every test compares ranks with the same function in pytest's one process: S bit
 for bit across ranks (`on_ranks`), to `S_GATE` against one process, and the Krylov
 iterations exactly. Only the count shows a Krylov method that lost its global
-products, since such a method still converges to the right S (ADR 0069).
+products, since such a method still converges to the right S.
 """
 
 import inspect
@@ -30,10 +30,10 @@ from gfem._linalg.gmres import Gmres
 from gfem._linalg.pardiso import pardiso_inverse
 from gfem._linalg.pieces import AssembledPieces
 
-#: Relative to the largest entry of the one-process S: ADR 0070's BDDC gate.
+#: Relative to the largest entry of the one-process S: the BDDC rank gate.
 S_GATE = 1e-9
 FREQUENCY = 5e9
-#: Close enough for one BDDC setup to serve all three (ADR 0036).
+#: Close enough for one BDDC setup to serve all three.
 SWEEP = (4.9e9, 5.0e9, 5.1e9)
 
 
@@ -567,7 +567,10 @@ def _physical_cores() -> int:
 
 
 def _blas_in_each_phase(directory):
-    """Each loaded BLAS's count in a setup, in a solve, and after: ADR 0076's phases."""
+    """Each loaded BLAS's count in a setup, in a solve, and after.
+
+    These are the phases where gfem sets the BLAS threads.
+    """
     import gfem._linalg.gmres as krylov
 
     seen = {"setup": set(), "solve": set()}

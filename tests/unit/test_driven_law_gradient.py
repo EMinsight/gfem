@@ -1,4 +1,4 @@
-"""Gradients by a permittivity law's parameters on the driven sweep (ADRs 0112, 0116).
+"""Gradients by a permittivity law's parameters on the driven sweep.
 
 The law pass weighs each law piece's form with d theta / dp at each pair's
 frequency. The finite-difference cells are in the gradient matrix
@@ -133,7 +133,7 @@ def test_a_traced_law_is_refused_by_refinement(mesh):
         jax.grad(refined_mesh)(2.0)
 
 
-# --- the adaptive sweep (ADR 0116) ----------------------------------------------------
+# --- the adaptive sweep ---------------------------------------------------------------
 
 
 def test_law_parameters_on_the_adaptive_sweep_equal_the_full_solve_at_the_samples(
@@ -166,7 +166,7 @@ def test_law_parameters_on_the_adaptive_sweep_equal_the_full_solve_at_the_sample
 
 
 def test_law_parameters_differentiate_the_eigenfrequency(mesh):
-    # the eigenmode pairs carry the law pass's weights too (ADR 0112):
+    # the eigenmode pairs carry the law pass's weights too:
     # tests/unit/test_eigenmode_dispersive.py checks them by differences
     def objective(law):
         result = gfem.solve(

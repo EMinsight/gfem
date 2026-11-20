@@ -544,7 +544,7 @@ def test_a_mesh_with_two_pairs_does_not_reach_netgen_under_ranks():
 
 
 def _one_sided_cuts(built, mesh, world):
-    """Pairs ``(holder, other)`` that ticket 09's rule predicts hang `SurfaceL2`.
+    """Pairs ``(holder, other)`` that the one-sided-cut rule predicts hang `SurfaceL2`.
 
     A pair is a surface triangle inside the mesh, held by one rank, with the tet on
     its other side on another rank, and no such triangle the other way round.

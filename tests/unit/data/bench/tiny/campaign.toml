@@ -1,5 +1,5 @@
 # Harness fixture: the tiny parallel-plate case, gfem only, for `run --local`
-# (tests/unit/test_benchmarks_harness.py and ticket 09's local end to end).
+# (tests/unit/test_benchmarks_harness.py and a local end-to-end run).
 schema = 1
 cases_dir = ".."                 # the case directories beside this fixture, not benchmarks/cases
 cases = ["tiny"]

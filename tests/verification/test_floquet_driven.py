@@ -2,7 +2,7 @@
 
 F1 (`periodic_cases.f1`: an eps 4 slab on an eps 2.25 substrate, air above,
 Floquet ports on both open faces) at p = 3 with h about lambda/10 in each
-medium, TE and TM, against the tangential-E Airy form in ADR 0147's lattice
+medium, TE and TM, against the tangential-E Airy form in gfem's lattice
 frame: the complex S entries, the cross-polarized entries and the power
 defect of each excited column. At normal incidence, at conical incidence
 (40 degrees, azimuth 30) under the Bloch wave vector, and on the Brewster

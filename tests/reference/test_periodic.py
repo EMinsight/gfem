@@ -6,7 +6,7 @@ paired DOFs, so the two discrete operators differ and agreement is bounded
 by Palace's own discretization error on these meshes. Each case directory
 of ``periodic/`` holds the mesh Palace ran (built by
 `periodic_cases`), its ``config.json`` and ``output/``; the generation
-scripts are kept with the effort's notes. Palace's FloquetWaveVector is in
+scripts are not in the repository. Palace's FloquetWaveVector is in
 rad per L0 (mm), gfem's ``wave_vector`` in rad/m.
 
 - R1, the Bragg line C3 (order 3, 10 cells): the 2 lowest Bloch bands at

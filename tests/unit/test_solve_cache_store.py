@@ -326,7 +326,7 @@ def test_two_processes_publishing_one_key_leave_one_complete_entry(stack, tmp_pa
     assert list((root / ".tmp").iterdir()) == []
     back, _, _ = Store(root).read(key, model)
     # the entry was solved in another process, whose thread count may differ:
-    # equal to the precision the solve key promises (ADR 0432), not bitwise
+    # equal to the precision the solve key promises, not bitwise
     assert type(back) is type(result)
     for x, y in zip(
         jax.tree_util.tree_leaves(back), jax.tree_util.tree_leaves(result), strict=True

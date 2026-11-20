@@ -1,4 +1,4 @@
-"""The ``gfem.solver`` records: one per solve step, forward and backward (ADR 0120).
+"""The ``gfem.solver`` records: one per solve step, forward and backward.
 
 Driven and electrostatic solves on small models, read through ``caplog``:
 the attributes a handler sees, under ``jax.value_and_grad`` too, the actions
@@ -123,9 +123,9 @@ def test_a_direct_base_factorizes_then_refactorizes_with_its_reason(line, record
 def test_a_backward_on_a_frequency_base_holding_its_design_refactorizes_nothing(
     line, records, caplog
 ):
-    # from the third design each frequency refactorizes its own pooled base
-    # (ADR 0121): the backward takes back the base its forward left at F[0],
-    # which holds this design's values
+    # from the third design each frequency refactorizes its own pooled base:
+    # the backward takes back the base its forward left at F[0], which
+    # holds this design's values
     def objective(eps):
         return jnp.sum(jnp.abs(_s(line, eps, excite="p1")) ** 2)
 
@@ -214,7 +214,7 @@ def test_an_electrostatic_energy_gradient_logs_its_forward_and_backward(
         assert r.problem == "electrostatic"
         assert r.solver == solver
         assert r.frequency is None
-    # the backward solves on the forward's kept operator (ADR 0125)
+    # the backward solves on the forward's kept operator
     assert (forward[0].action, forward[0].reason) == ("factorized", "first")
     assert (backward[0].action, backward[0].reason) == ("reused", None)
     # one column per terminal

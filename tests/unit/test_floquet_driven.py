@@ -2,7 +2,7 @@
 
 Cell F1 of `periodic_cases` (an eps 4 slab on an eps 2.25 substrate, air
 above, Floquet ports on both open faces) at normal incidence, coarse (p = 2),
-against the tangential-E Airy form in ADR 0147's lattice frame; a bare
+against the tangential-E Airy form in gfem's lattice frame; a bare
 glass/air interface; a cell closed by PEC behind one Floquet face; the
 `DrivenResult.diffraction_orders` it reports; and the `bddc_gmres` solver
 against `direct`.

@@ -1,8 +1,9 @@
-"""Solve threads: what a ``threads=None`` solve runs NGSolve on (ADR 0056).
+"""Solve threads: what a ``threads=None`` solve runs NGSolve on.
 
 ``NGS_NUM_THREADS`` when it holds a positive integer, else the physical cores in the
 process's affinity mask, not NGSolve's own default of every hardware thread of the
-machine. Under ranks ADR 0077 decides instead (tests/unit/test_mpi.py).
+machine. Under ranks the cores are shared between ranks instead
+(tests/unit/test_mpi.py).
 """
 
 import os
@@ -142,7 +143,7 @@ class _Ranks:
 
 
 def _default_threads(monkeypatch, under):
-    """`threads=None` at one process, or under ranks (ADR 0077)."""
+    """`threads=None` at one process, or under ranks."""
     if under == "one process":
         return solve_threads(None)
     mpi = types.SimpleNamespace(COMM_TYPE_SHARED=0, MIN="min")

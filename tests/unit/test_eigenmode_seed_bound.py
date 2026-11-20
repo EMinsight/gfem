@@ -1,4 +1,4 @@
-"""Every eigenmode seed solve stops after a bounded number of restarts (ADR 0122).
+"""Every eigenmode seed solve stops after a bounded number of restarts.
 
 A lossy region whose modes lie closer together than their linewidth (a
 modal overlap M of about 100 or more) keeps the shift-invert Arnoldi from
@@ -7,10 +7,10 @@ restarts ran for days. The seed solve now stops at ``_SEED_RESTARTS``
 restarts, ends the attempt ladder, and the solve raises
 `EigenmodeConvergenceError` naming the seed solve and the crowded region.
 
-The crowded case is ticket 14's constant twin: a 10 x 8 x 5 mm PEC plate
+The crowded case is a constant twin of the law case: a 10 x 8 x 5 mm PEC plate
 filled with eps = 22.3 (1 - 0.448 i) at 24.5 GHz (M about 260 over the
 plate), with the bound patched to 5 so that it raises in seconds. The law
-case of ticket 14 (a Lorentz fill one damping below its resonance) joins
+case (a Lorentz fill one damping below its resonance) joins
 these tests with the permittivity laws.
 """
 
@@ -165,7 +165,7 @@ def test_a_seed_solve_well_inside_its_bound_is_unchanged(line, seed_solves):
     assert len(seed_solves) == 1
 
 
-#: Ticket 14's law case: a Lorentz fill (eps_inf 2, delta 1, f0 25 GHz,
+#: The law case: a Lorentz fill (eps_inf 2, delta 1, f0 25 GHz,
 #: gamma 0.5 GHz) one damping below its resonance, eps 22.3 - 10.0i there:
 #: below the unresolved band (kh 3.02), in the same crowd as the twin.
 CROWDED_LAW = gfem.PermittivityLaw(

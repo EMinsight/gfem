@@ -1,4 +1,4 @@
-"""Driven solves through the tree-cotree gauge (ADR 0215, 0216).
+"""Driven solves through the tree-cotree gauge.
 
 On the parallel-plate line of test_driven.py, whose S has a closed form (ABCD
 matrices), the gauged direct solve (PARDISO or sparse Cholesky) keeps every

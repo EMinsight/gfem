@@ -842,7 +842,7 @@ COVER_LAW = gfem.PermittivityLaw(
     terms=[gfem.Lorentz(delta_eps=1.0, resonance_frequency=40 * GHZ, damping=2 * GHZ)],
 )
 
-#: The ends of the blend cells (ADR 0113): a constant dielectric and a
+#: The ends of the blend cells: a constant dielectric and a
 #: gold-like Drude metal (eps = -14.4 - 3.1j at 5 GHz), at 5 and 12 GHz.
 BLEND_DIELECTRIC = gfem.Material(eps_r=2.0)
 BLEND_METAL = gfem.Material(

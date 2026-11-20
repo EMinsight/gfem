@@ -3,14 +3,14 @@
 The gate (`DirectHandle._reuse_pays`) forced on a small 3D line: three nearby
 designs in a row through ``jax.value_and_grad`` on the plan pool's base. Each
 reused design's S stays within a twentieth of the tolerance of the exact
-run's, and its gradient within the tolerance, relative (ADR 0094, amended).
+run's, and its gradient within the tolerance, relative.
 With the rule's cap at 1 every reused column passes it, refactorizes mid-step
 and finishes direct: S and the gradient are then the exact run's. The same
 holds on sparse Cholesky, the factorization without MKL, and a script run
 twice at one thread reuses at the same designs (the rule reads counts).
 
 Over several frequencies each frequency gets its own base the second time
-the sweep meets it (ADR 0121, amended): from then on every frequency's
+the sweep meets it: from then on every frequency's
 forward reuses, and a backward that solves finds each base holding its
 design's values and refactorizes nothing (``held``, ``same design``).
 """
@@ -138,7 +138,7 @@ def test_a_column_past_its_cap_refactorizes_and_gives_the_exact_gradient(
 
 
 def test_sparse_cholesky_reuses_factors_within_the_tolerance(line, monkeypatch):
-    # the factorization without the mkl extra (ADR 0094, amended 2026-11-13)
+    # the factorization without the mkl extra
     monkeypatch.setattr(direct, "pardiso_inverse", lambda *_, **__: None)
     values, designs = _designs(line)
     keep_nothing = dataclasses.replace(OPTIONS, retain_memory=0)

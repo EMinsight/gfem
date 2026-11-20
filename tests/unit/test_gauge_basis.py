@@ -1,4 +1,4 @@
-"""The tree-cotree gauge basis T and its gauge template (ADR 0215, 0217).
+"""The tree-cotree gauge basis T and its gauge template.
 
 On the parallel-plate line of test_driven.py and the tutorial CPW: T is
 square and nonsingular from the free gauge space Y to the free driven space
@@ -75,7 +75,7 @@ def _assert_square_nonsingular(basis):
     t = basis.T
     assert t.shape == (len(basis.v_dofs), len(basis.y_dofs))
     assert t.shape[0] == t.shape[1]
-    # SuperLU raises on an exactly singular matrix; ticket 03 saw pivots >= 0.83
+    # SuperLU raises on an exactly singular matrix; pivots >= 0.83 were measured
     lu = spla.splu(t.tocsc())
     assert np.abs(lu.U.diagonal()).min() > 1e-3
 

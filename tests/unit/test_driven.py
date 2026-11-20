@@ -383,13 +383,13 @@ def test_an_exact_sweep_plans_once_per_base_and_matches_fresh_handles(
     line, monkeypatch, sweep, linear_solver
 ):
     problem = gfem.Driven(frequency=(3e9, 4e9, 5e9, 6e9), sweep=sweep)
-    # an earlier solve on `line` left a plan in the pool (ADR 0082)
+    # an earlier solve on `line` left a plan in the pool
     ENTRIES.clear()
     calls = _count_prepares(monkeypatch)
     first = _s(line, problem, linear_solver=linear_solver)
     s = np.asarray(first.s.values)
     solved = 4 if sweep == "uniform" else len(first.sweep.sampled_frequencies)
-    # one base: direct meets each frequency for the first time (ADR 0121)
+    # one base: direct meets each frequency for the first time
     assert len(calls) == 1
     calls.clear()
     _s(line, problem, linear_solver=linear_solver)
@@ -486,7 +486,7 @@ def test_a_reused_solve_at_its_cap_rebuilds_and_converges(line, monkeypatch):
 def test_a_bddc_sweep_rebuilds_at_the_same_iterations_every_run(line):
     # the rebuild rule counts iterations, never times: runs repeat exactly
     # (each from no kept state: the second would start from the first's
-    # solution, ADR 0126)
+    # solution)
     problem = gfem.Driven(frequency=(1e9, 1.5e9, 12e9, 13e9, 20e9, 30e9))
     rule = DrivenRule(line, problem, gfem.SolverOptions(linear_solver="bddc_gmres"))
     gfem.release_memory()
@@ -675,7 +675,7 @@ def test_an_adaptive_bddc_sweep_sets_its_coarse_problem_up_for_one_sample(
 def test_a_bddc_adjoint_solves_on_the_forwards_preconditioner(line, monkeypatch):
     # both ports excited over 2 frequencies; the kept fields' cotangents take
     # one adjoint solve per frequency, cold on the preconditioner the forward
-    # sweep set up: it runs there from zero and sets nothing up (ADR 0127)
+    # sweep set up: it runs there from zero and sets nothing up
     frequency = (3e9, 3.5e9)
     problem = gfem.Driven(frequency=frequency, keep_fields=True)
     options = gfem.SolverOptions(linear_solver="bddc_gmres")
@@ -717,7 +717,7 @@ def test_a_bddc_sweep_reports_its_iterations_and_its_reused_preconditioner(line)
     assert all(n > 0 for its in sweep.iterations for n in its)
 
 
-# --- the BDDC design initial guess (ADR 0126) ---------------------------------------
+# --- the BDDC design initial guess --------------------------------------------------
 
 
 @pytest.fixture
@@ -1097,7 +1097,7 @@ def test_a_kept_forward_is_freed_once_and_then_holds_nothing():
         shared=lambda: {1: 7},
     )
     kept = driven._Kept(system, SimpleNamespace(nbytes=5, shared=lambda: {2: 5}))
-    # the port network is shared: the cache counts it (ADR 0091)
+    # the port network is shared: the cache counts it
     assert kept.nbytes == 10
     assert kept.shared() == {1: 7, 2: 5}
     kept.free()

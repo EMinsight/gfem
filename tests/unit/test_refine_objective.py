@@ -1,7 +1,7 @@
 """`gfem.QuantityEstimator(objective=J)`: classification, raises and checks.
 
-An objective ``J(result, model)`` is classified by tracing it (ADR 0143 and
-its amendment): its estimate kind, refusals and mixtures from what it
+An objective ``J(result, model)`` is classified by tracing it: its
+estimate kind, refusals and mixtures from what it
 structurally reads, its read entries from NaN reach and nonzero cotangents.
 The effectivity of the objective estimates is verified in
 `tests/verification/test_objective_estimate.py`.
@@ -575,7 +575,7 @@ def test_error_estimate_of_an_objective_of_s(step, step_result):
     assert estimate.value > 0
     assert estimate.indicators.shape == (len(step.mesh.tetrahedra),)
     # its value is the combined dual's: never above the chain-rule sum of the
-    # entries' own estimates (ADR 0129), plus its remainder
+    # entries' own estimates, plus its remainder
     s21 = np.abs(np.asarray(step_result.s["p2", "p1"]))
     entry = gfem.error_estimate(
         step_result, gfem.QuantityEstimator(s=("p2", "p1")), model=step
@@ -585,7 +585,7 @@ def test_error_estimate_of_an_objective_of_s(step, step_result):
     assert estimate.value <= chain + remainder * (1 + 1e-9)
 
 
-# --- objectives of driven fields (ADRs 0132, 0133, 0144) ---------------------------
+# --- objectives of driven fields ---------------------------------------------------
 
 LINE_F = foc.STEPPED_LINE_F
 
@@ -1155,7 +1155,7 @@ def test_the_participation_dual_is_solved_once_then_rides_on_the_forward(
     assert again.value == pytest.approx(refined.estimate.value, rel=1e-6)
 
 
-# --- the lossless rewrite (ADR 0135) --------------------------------------------
+# --- the lossless rewrite -------------------------------------------------------
 
 
 def test_a_lossless_lumped_port_model_estimates_through_its_lossless_rewrite(
@@ -1165,7 +1165,7 @@ def test_a_lossless_lumped_port_model_estimates_through_its_lossless_rewrite(
     estimate = gfem.error_estimate(step_result, estimator, model=step)
     assert estimate.kind == "objective of s, lossless rewrite"
     assert estimate.indicators.shape == (len(step.mesh.tetrahedra),)
-    # lam = 0 is a choice of the rewrite, so it is never above C (ADR 0129)
+    # lam = 0 is a choice of the rewrite, so it is never above C
     _, _, c = _c_form(step, step_result, _s21_band)
     assert 0 < estimate.value <= c.value * (1 + 1e-12)
 
@@ -1280,7 +1280,7 @@ def test_no_lossless_rewrite_where_power_may_not_be_conserved(variant, step, tmp
     assert estimate.value == pytest.approx(c.value, rel=1e-12)
 
 
-# --- electrostatic objectives (ADR 0141) ---------------------------------------------
+# --- electrostatic objectives --------------------------------------------------------
 
 
 @pytest.mark.parametrize(

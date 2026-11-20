@@ -1,4 +1,4 @@
-"""What a Floquet model refuses to differentiate, and how it says so (ADR 0155).
+"""What a Floquet model refuses to differentiate, and how it says so.
 
 Design gradients inside the cell go through Floquet S on the existing adjoint
 path (tests/verification/test_gradient_matrix.py, `_driven_floquet_cells`).
@@ -56,7 +56,7 @@ def test_a_traced_property_of_the_half_space_raises_while_tracing(
 
 
 def test_a_concrete_field_on_the_half_space_is_still_refused_as_a_medium(f1_model):
-    # no tracer: the model-time check names the field (ticket 08 Q6 check 7)
+    # no tracer: the model-time check names the field
     n = len(f1_model.mesh.elements("air"))
     with pytest.raises(NotImplementedError, match="has a MaterialField"):
         f1_model.with_material("air", gfem.MaterialField(eps_r=np.ones(n)))

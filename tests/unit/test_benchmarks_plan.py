@@ -30,8 +30,8 @@ R10M = DATA / "campaigns" / "smoke-r10m.toml"
 EXAMPLE_SITE = REPO / "benchmarks" / "site.example.toml"
 COMMIT = "858bc66" + "0" * 33
 
-#: probes/12/plan.out, core-hours per job (ticket 12 Q3); bragg less its six refused
-#: gfem runs (25 x 33 / 39; ticket 12 amendment from ticket 14), then re-sized for the
+#: The sizing run's plan output, core-hours per job; bragg less its six refused
+#: gfem runs (25 x 33 / 39), then re-sized for the
 #: once-split mesh (est_s palace:mumps 15 s, palace:pmg 60 s: 35 runs, 49 core-h).
 PROBE_CORE_H = {"bragg": 49, "lcavity": 168, "microstrip": 253, "r10M_void": 50}
 

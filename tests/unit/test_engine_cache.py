@@ -245,7 +245,7 @@ def test_a_limit_below_the_ram_wins_without_readable_ram(tmp_path, monkeypatch):
     assert cache.default_retain_memory() == GIB // 2
 
 
-# --- the default budget's exemption (ADR 0123) ------------------------------------
+# --- the default budget's exemption -----------------------------------------------
 
 
 class Base:
@@ -373,7 +373,7 @@ def test_an_exempt_base_keeps_the_kept_part_it_shares_counted():
     assert disc.ports is None
 
 
-# --- design initial guesses (ADR 0126) ----------------------------------------------
+# --- design initial guesses ---------------------------------------------------------
 
 
 class Ports:
@@ -500,7 +500,7 @@ def test_the_next_step_names_a_release_for_retain_memory(
     handle.free()
 
 
-# --- consumed entries (ADR 0081) ---------------------------------------------------
+# --- consumed entries --------------------------------------------------------------
 
 
 def test_only_consumed_entries_are_freed_when_a_differentiated_forward_starts():
@@ -610,7 +610,7 @@ def test_a_pullback_after_a_later_forward_runs_its_own_again(stack, forwards):
 
 
 def test_kept_electrostatic_solve_holds_the_potentials_and_its_operator(model):
-    # the operator serves an energy or potential gradient (ADR 0125); the
+    # the operator serves an energy or potential gradient; the
     # cache drops it before the potentials
     problem = gfem.Electrostatic(terminals={"top": "top"}, ground="bottom")
     rule = ElectrostaticRule(model, problem, gfem.SolverOptions(order=2))
