@@ -88,6 +88,9 @@ class SeedOperator:
         start: The projected start vector, ``(size,)``.
         shift: The wavenumber ``sigma`` it is shift-inverted at.
         damped: Whether it is the companion form.
+        total: Its dimension over all ranks: the free DOFs (twice for the
+            companion form) under ranks, where ``size`` is the rank's columns;
+            ``size`` on one process.
     """
 
     size: int
@@ -96,11 +99,12 @@ class SeedOperator:
     start: np.ndarray
     shift: complex
     damped: bool
+    total: int
 
     def dimensions(self, nev: int) -> tuple[int, int]:
         """``(nev, ncv)``: ``nev`` clamped to the operator, and the subspace size."""
-        nev = max(1, min(nev, self.size - 2))
-        return nev, min(self.size, max(2 * nev + 1, MIN_SUBSPACE))
+        nev = max(1, min(nev, self.total - 2))
+        return nev, min(self.total, max(2 * nev + 1, MIN_SUBSPACE))
 
     def pairs(
         self, theta: np.ndarray, vectors: np.ndarray
@@ -147,4 +151,7 @@ def seed_operator(op: EigenOperator, project) -> SeedOperator:
 
         x0 = project(free.astype(complex))
         start = np.concatenate([x0, s * x0])
-    return SeedOperator(size, n, apply, start, s, damped)
+    total = size
+    if op.numbering is not None:
+        total = op.numbering.total * (2 if damped else 1)
+    return SeedOperator(size, n, apply, start, s, damped, total)

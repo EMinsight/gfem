@@ -107,7 +107,7 @@ import mpi_cases
 
 world = MPI.COMM_WORLD
 directory = Path(sys.argv[1])
-model, problem, options = mpi_cases.refused("eigenmode", directory)
+model, problem, options = mpi_cases.refused("arpack", directory)
 try:
     gfem.solve(model, problem, options=options)
 except gfem.DistributedUnsupportedError:
@@ -161,7 +161,7 @@ import gfem
 import mpi_cases
 
 directory = Path(sys.argv[1])
-model, problem, options = mpi_cases.refused("eigenmode", directory)
+model, problem, options = mpi_cases.refused("arpack", directory)
 gfem.solve(model, problem, options=options)
 """
 
@@ -528,7 +528,7 @@ def test_a_copy_evicts_no_entry_of_the_world():
 
 
 def _job_file(tmp_path) -> Path:
-    model, problem, options = mpi_cases.refused("eigenmode", tmp_path)
+    model, problem, options = mpi_cases.refused("arpack", tmp_path)
     return gfem.Job(model, problem, options).to_json(tmp_path / "job.json")
 
 

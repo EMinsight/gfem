@@ -16,6 +16,7 @@ import gradient_cases as cases
 import jax
 import mpi_cases
 import numpy as np
+import periodic_cases
 import pytest
 import ranks
 import refinement_cases as rc
@@ -292,16 +293,16 @@ def test_a_solve_above_one_rank_raises_its_key_and_a_remedy(key, tmp_path, monke
 def test_a_launched_job_raises_without_being_given_a_communicator(
     tmp_path, monkeypatch
 ):
-    model, problem, options = mpi_cases.refused("eigenmode", tmp_path)
+    model, problem, options = mpi_cases.refused("arpack", tmp_path)
     use_mpi(monkeypatch, fake_mpi())
     monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
     with pytest.raises(gfem.DistributedUnsupportedError) as caught:
         gfem.solve(model, problem, options=options)
-    assert caught.value.feature == "eigenmode"
+    assert caught.value.feature == "arpack"
 
 
 def test_a_job_passes_its_communicator_on(tmp_path, monkeypatch):
-    model, problem, options = mpi_cases.refused("eigenmode", tmp_path)
+    model, problem, options = mpi_cases.refused("arpack", tmp_path)
     use_mpi(monkeypatch, fake_mpi())
     with pytest.raises(gfem.DistributedUnsupportedError):
         gfem.Job(model, problem, options).run(comm=Stub(4))
@@ -336,6 +337,26 @@ def test_a_port_solve_is_all_that_passes_so_far(tmp_path):
     assert _mpi.refuse(line, kept, gfem.SolverOptions()) is None
 
 
+def test_an_eigenmode_solve_passes_with_auto_and_slepc(tmp_path):
+    line = cases.layered_line(tmp_path)
+    problem = gfem.Eigenmode(target=5e9)
+    for solver in ("auto", "slepc"):
+        for linear in ("auto", "direct", "bddc_gmres"):
+            options = gfem.SolverOptions(eigen_solver=solver, linear_solver=linear)
+            assert _mpi.refuse(line, problem, options) is None
+
+
+@pytest.mark.parametrize(
+    ("key", "wave_vector"), [("periodic", None), ("bloch", periodic_cases.C1_K)]
+)
+def test_an_eigenmode_on_a_periodic_cell_keeps_its_refusal(key, wave_vector, tmp_path):
+    cell = periodic_cases.c1(periodic_cases.c1_mesh(tmp_path))
+    problem = gfem.Eigenmode(target=5e9, wave_vector=wave_vector)
+    with pytest.raises(gfem.DistributedUnsupportedError, match="COMM_SELF") as caught:
+        _mpi.refuse(cell, problem, gfem.SolverOptions())
+    assert caught.value.feature == key
+
+
 #: Options every problem refuses above one rank, by the key each raises.
 SHARED_REFUSALS = {
     "device": gfem.SolverOptions(linear_solver="direct", device="cuda"),
@@ -354,7 +375,7 @@ def _problem(key, directory):
     return mpi_cases.refused(key, directory)[:2]
 
 
-@pytest.mark.parametrize("problem_key", ["electrostatic", "eigenmode"])
+@pytest.mark.parametrize("problem_key", ["electrostatic", "arpack"])
 @pytest.mark.parametrize("key", SHARED_REFUSALS)
 def test_the_shared_refusals_hold_for_every_problem(
     key, problem_key, tmp_path, monkeypatch
@@ -630,6 +651,31 @@ def test_a_launch_above_the_cap_skips(monkeypatch):
     monkeypatch.setenv(ranks.MAX_RANKS, "4")
     with pytest.raises(pytest.skip.Exception, match="8 ranks"):
         ranks.on_ranks_argv(["never-run"], ranks=8)
+
+
+def test_a_general_operator_is_no_distributed_refusal():
+    # a general operator under ranks reaches its backend (ADR 0078 amendment)
+    assert "general_operator" not in _mpi._REFUSALS
+    assert "general_operator" not in mpi_cases.GUARD_KEYS
+
+
+def test_each_symmetry_registers_its_own_coarse_type(monkeypatch):
+    # a plain and a Bloch BDDC solve on one communicator never share a creator
+    registered = {}
+    monkeypatch.setattr(coarse, "_made", {})
+    monkeypatch.setattr(coarse, "_registered", set())
+    monkeypatch.setattr(_mpi, "comm_key", lambda _: 7)
+    monkeypatch.setattr(
+        coarse.ngs.comp, "RegisterPreconditioner", registered.setdefault
+    )
+    comm = Stub(4)
+    lu, cholesky = coarse.coarse_type(comm, False), coarse.coarse_type(comm, True)
+    assert (lu, cholesky) == ("gfem_mumps_7_lu", "gfem_mumps_7_cholesky")
+    assert coarse.coarse_type(comm, False) == lu
+    assert set(registered) == {lu, cholesky}
+    made = [registered[name](None, None) for name in (lu, cholesky)]
+    assert [m.symmetric for m in made] == [False, True]
+    assert coarse._made[7] == made  # `finish` takes the last one NGSolve asked for
 
 
 # --- field pieces -----------------------------------------------------------------

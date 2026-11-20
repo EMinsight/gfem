@@ -6,6 +6,7 @@ iterations exactly. Only the count shows a Krylov method that lost its global
 products, since such a method still converges to the right S (ADR 0069).
 """
 
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -301,8 +302,8 @@ def _a_singular_coarse_problem(directory, route):
     coarse.reduction = REDUCTIONS[route]
     built = coarse.distributed_aij
 
-    def zero(*args):
-        aij, index = built(*args)
+    def zero(*args, **kwargs):
+        aij, index = built(*args, **kwargs)
         aij.zeroEntries()
         return aij, index
 
@@ -446,21 +447,6 @@ def test_apply_takes_a_state_and_gives_a_load(tmp_path):
     assert counts[0] > 0
 
 
-def _prepare_a_general_operator(directory):
-    _, system = _system(directory)
-    operator = system.operator_at(2 * np.pi * FREQUENCY)
-    try:
-        prepare(operator, symmetry="general", kind="bddc_gmres")
-    except gfem.DistributedUnsupportedError as err:
-        return err.feature
-    raise AssertionError("a general operator was prepared")
-
-
-def test_a_general_operator_is_refused_on_every_rank(tmp_path):
-    feature, *_ = on_ranks(_prepare_a_general_operator, tmp_path, ranks=3)
-    assert feature == "general_operator"
-
-
 # --- what a job sees ----------------------------------------------------------------
 
 
@@ -531,7 +517,8 @@ def test_a_failure_on_one_rank_in_the_solve_ends_the_job(tmp_path):
 def _a_miss_on_every_rank(directory):
     """Two iterations cannot converge: the error is agreed, and a job goes on."""
     world = _world()
-    prepare.__kwdefaults__["maxiter"] = 2
+    # `prepare` is timed by a wrapper, which carries no keyword defaults
+    inspect.unwrap(prepare).__kwdefaults__["maxiter"] = 2
     try:
         gfem.solve(cases.layered_line(directory), gfem.Driven(list(SWEEP)))
     except gfem.LinearSolverConvergenceError as err:

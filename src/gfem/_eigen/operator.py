@@ -30,6 +30,14 @@ eigenvector ``x`` to second order in its error. Under a Bloch wave vector
 
 The matrices are NumPy linear maps (`LinearMap`): `gfem._engine.eigen`
 assembles them from the NGSolve forms.
+
+Its columns have the roles of `gfem._linalg.layout`: an eigenvector, a solve's
+result and a map's input are states, a map's result (``T(k) x``, ``M x``) is a
+load. Every whole-vector product goes through the operator's layout: a state
+paired with a load (the Rayleigh functional, `EigenOperator.curl_ratio`), the
+norm of a state or of a load, and a load fed back to a map is exchanged to a
+state first (`_norm2`). On one process (`ONE_PROCESS`) each is today's NumPy
+expression, bit for bit.
 """
 
 from __future__ import annotations
@@ -37,13 +45,14 @@ from __future__ import annotations
 import dataclasses
 import math
 from collections.abc import Callable
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import numpy as np
 import scipy.constants as const
 
 from gfem._engine import terms
 from gfem._linalg import Handle, Operator, refactorize_or_prepare
+from gfem._linalg.layout import ONE_PROCESS, DofLayout
 
 __all__ = [
     "RESHIFT_SOLVES",
@@ -209,6 +218,15 @@ class EigenOperator:
         law_constant: The part of ``K`` from polynomial permittivity law
             pieces (a lossless Drude law's constant θ = k_p², ADR 0115), or
             ``None``: `curl_ratio` leaves it out of the curl energy.
+        layout: How the DOFs lie across ranks (`ONE_PROCESS` on one process):
+            every whole-vector product's.
+        numbers: Each DOF's one-process number, or ``None`` on one process:
+            the start of the `norms` estimates and the sign of a mode
+            (`gfem._sign.largest_value`) are then functions of them, the same
+            on every rank count.
+        numbering: Under ranks, the owned free DOFs as rows
+            (`gfem._linalg.petsc.FreeNumbering`): the seed solver's vectors.
+            ``None`` on one process.
         shifts: How many times `reshift` refactorized.
     """
 
@@ -222,6 +240,9 @@ class EigenOperator:
     nonpolynomial: tuple[NonPolynomial, ...] = ()
     symmetry: EigenSymmetry = "complex_symmetric"
     law_constant: LinearMap | None = None
+    layout: DofLayout = ONE_PROCESS
+    numbers: np.ndarray | None = None
+    numbering: Any = None
     shifts: int = 0
     _norms: tuple[float, ...] | None = None
     _handle: Handle | None = None
@@ -363,8 +384,10 @@ class EigenOperator:
         kx, _, mx = self.parts(x)
         if self.law_constant is not None:
             kx = kx - self._matvec(self.law_constant, x)
-        electric = abs(k) ** 2 * abs(np.vdot(x, mx))
-        return float(abs(np.vdot(x, kx)) / electric) if electric > 0 else math.inf
+        # x^H A x: the load A x paired with the state conj(x)
+        pair, xh = self.layout.pair, np.conj(x)
+        electric = abs(k) ** 2 * abs(pair(mx, xh))
+        return float(abs(pair(kx, xh)) / electric) if electric > 0 else math.inf
 
     # --- the frozen seed -----------------------------------------------------------
 
@@ -406,10 +429,16 @@ class EigenOperator:
         """
         y = x if left is None else np.where(self.free, left, 0)
         kx, dx, mx, ax = self._parts(x)
-        a, b, c = y @ kx, y @ dx, y @ mx
+
+        def pair(load: np.ndarray) -> complex:
+            # a scalar: a rank layout's sum is a 0-d array, which += below
+            # would change in place
+            return complex(self.layout.pair(load, y))
+
+        a, b, c = pair(kx), pair(dx), pair(mx)
         if not self.nonpolynomial:
             return _nearest_root((a, b, c), k)
-        pairs = [(t, y @ v) for t, v in zip(self.nonpolynomial, ax, strict=True)]
+        pairs = [(t, pair(v)) for t, v in zip(self.nonpolynomial, ax, strict=True)]
         k = complex(k)
         for _ in range(_NEWTON_STEPS):
             linear = [a, b, c]
@@ -431,8 +460,7 @@ class EigenOperator:
         Those of their transposes too: ``|A^T|_2 = |A|_2``.
         """
         if self._norms is None:
-            rng = np.random.default_rng(0)
-            start = np.where(self.free, rng.standard_normal(len(self.free)), 0)
+            start = np.where(self.free, self._norm_start(), 0)
 
             def k_op(x, *, transpose=False):
                 return self.parts(x, transpose=transpose)[0]
@@ -445,7 +473,7 @@ class EigenOperator:
                 )
 
             def norm(op):
-                return _norm2(op, start, general=self.general)
+                return _norm2(op, start, self.layout, general=self.general)
 
             self._norms = (
                 norm(k_op),
@@ -455,6 +483,17 @@ class EigenOperator:
             )
         return self._norms
 
+    def _norm_start(self) -> np.ndarray:
+        """The power iterations' start: a state of the one-process numbers.
+
+        ``default_rng(0)`` over the column on one process (`numbers` ``None``);
+        else `_hashed` of each DOF's one-process number, the same state
+        whatever the ranks hold.
+        """
+        if self.numbers is None:
+            return np.random.default_rng(0).standard_normal(len(self.free))
+        return _hashed(self.numbers)
+
     def backward_error(
         self, k: complex, x: np.ndarray, *, transpose: bool = False
     ) -> float:
@@ -463,12 +502,13 @@ class EigenOperator:
         ``transpose``: of ``T(k)^T x``, a left eigenvector's.
         """
         nk, nd, nm, *na = self.norms
-        r = np.linalg.norm(self.apply(k, x, transpose=transpose))
+        layout = self.layout
+        r = layout.norm(self.apply(k, x, transpose=transpose))
         den = nk + abs(k) * nd + abs(k) ** 2 * nm
         den += sum(
             abs(t.value(k)) * a for t, a in zip(self.nonpolynomial, na, strict=True)
         )
-        den *= np.linalg.norm(x)
+        den *= layout.state_norm(x)
         return float(r / den) if den > 0 else math.inf
 
 
@@ -479,20 +519,38 @@ def _nearest_root(coefficients, k: complex) -> complex:
     return complex(roots[np.argmin(np.abs(roots - k))])
 
 
-def _norm2(op, start: np.ndarray, *, general: bool = False) -> float:
+def _norm2(
+    op, start: np.ndarray, layout: DofLayout = ONE_PROCESS, *, general: bool = False
+) -> float:
     """``|A|_2``: power iteration on ``A^H A``.
 
     ``A^H y = conj(A^T conj(y))``, with ``A^T = A`` for a complex symmetric
-    operator, and ``op(x, transpose=True)`` for a ``general`` one.
+    operator, and ``op(x, transpose=True)`` for a ``general`` one. ``op`` takes
+    a state and gives a load, so each load is exchanged to a state before it is
+    fed back (on one process the exchange is the identity).
     """
-    x = start / np.linalg.norm(start)
+    x = start / layout.state_norm(start)
     value = 0.0
     for _ in range(_NORM_ITERATIONS):
-        y = op(x)
-        z = np.conj(op(np.conj(y), transpose=general))  # A^H y
-        n = np.linalg.norm(z)
+        y = layout.exchange(op(x))
+        z = layout.exchange(np.conj(op(np.conj(y), transpose=general)))  # A^H y
+        n = layout.state_norm(z)
         if n == 0:
             return 0.0
         value = math.sqrt(n)
         x = z / n
     return value
+
+
+def _hashed(numbers: np.ndarray) -> np.ndarray:
+    """A value in ``[-1, 1)`` per integer, a function of that integer alone.
+
+    SplitMix64's finalizer of each number, its top 53 bits as a fraction: a
+    start vector without structure, as a random one, that every rank computes
+    alike from the one-process DOF numbers.
+    """
+    z = np.asarray(numbers, dtype=np.uint64) + np.uint64(0x9E3779B97F4A7C15)
+    z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+    z = (z ^ (z >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    z = z ^ (z >> np.uint64(31))
+    return (z >> np.uint64(11)).astype(np.float64) * 2.0**-52 - 1.0

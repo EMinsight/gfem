@@ -26,6 +26,7 @@ from gfem._eigen.rule import EigenmodeRule
 from gfem._engine import cache
 from gfem._linalg.base import host_bytes
 from gfem._linalg.direct import DirectHandle
+from gfem._linalg.layout import ONE_PROCESS
 
 TARGET = 8e9
 
@@ -240,6 +241,7 @@ def _stub_select(monkeypatch, rule):
     class Stub:
         shift: complex
         nonpolynomial: tuple = ()
+        layout = ONE_PROCESS
 
         def reshift(self, k, **_):
             self.shift = k

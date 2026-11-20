@@ -118,7 +118,10 @@ _REFUSALS = {
     "adaptive_sweep": (
         f"An adaptive sweep has no distributed path: use a uniform sweep, {_COPIES}."
     ),
-    "eigenmode": f"An eigenmode solve has no distributed path: {_RUN_COPIES}.",
+    "arpack": (
+        "ARPACK runs on one process: use eigen_solver='slepc' or 'auto' above one "
+        f"rank, {_COPIES}."
+    ),
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
     "periodic": f"A periodic model has no distributed path: {_RUN_COPIES}.",
@@ -132,10 +135,6 @@ _REFUSALS = {
     "bddc_order_1": (
         "BDDC at order 1 has a coarse problem as large as the system, so it is "
         f"refused above one rank: use linear_solver='direct' or order=2, {_COPIES}."
-    ),
-    "general_operator": (
-        "Only a system equal to its transpose has a distributed solver, and this "
-        f"one has none: {_RUN_COPIES}."
     ),
     "field_export": (
         "A field across ranks is not sampled into one object, which would hold the "
@@ -311,12 +310,25 @@ def refuse(model: Any, problem: Any, options: Any) -> None:
             refuse_feature("periodic")
         if min(options.frequency_workers, len(problem.frequency)) > 1:
             refuse_feature("frequency_workers")
+    if isinstance(problem, Eigenmode):
+        _refuse_eigenmode(model, problem, options)
     if isinstance(problem, Electrostatic) and model._periodic:  # noqa: SLF001
         refuse_feature("periodic")
     if isinstance(problem, (Driven, Eigenmode, Electrostatic)):
         _refuse_options(options)
-    if isinstance(problem, Eigenmode):
-        refuse_feature("eigenmode")
+
+
+def _refuse_eigenmode(model: Any, problem: Any, options: Any) -> None:
+    """Refuse what an `gfem.Eigenmode` cannot run above one rank (ADR 0502).
+
+    Bloch before periodic, since a wave vector needs a pair.
+    """
+    if problem.wave_vector is not None:
+        refuse_feature("bloch")
+    if model._periodic:  # noqa: SLF001
+        refuse_feature("periodic")
+    if options.eigen_solver == "arpack":
+        refuse_feature("arpack")
 
 
 def _refuse_options(options: Any) -> None:

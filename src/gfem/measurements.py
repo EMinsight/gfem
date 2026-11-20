@@ -187,6 +187,10 @@ def interface_participation(
     `gfem.NonDifferentiableError`: take finite differences of the
     participation over meshes moved by `gfem.shape.boundary_morph` instead.
 
+    On a result solved across ranks the mode fields are each rank's pieces, and
+    the call is collective: every rank makes it with the same arguments and gets
+    the same participation.
+
     Args:
         modes: An eigenmode result.
         surface: A surface region, or several (their layers add up).
@@ -248,12 +252,26 @@ def interface_participation(
                     "is interior to the periodic cell: it holds no interface "
                     "layer."
                 )
+    comm = field._communicator  # noqa: SLF001
+    with _mpi.section(comm):
+        _mpi.check_call(
+            comm,
+            "interface_participation",
+            {
+                "the surfaces": np.array(surfaces),
+                "the kind": np.array(kind),
+                "the thickness": thickness,
+                "the layer's eps_r": eps_r,
+                "the loss tangent": np.nan if tan_delta is None else tan_delta,
+            },
+        )
     geometry = _surface_geometry(field, surfaces)
     _refuse_law_sides(modes.materials, field.mesh, geometry, surfaces)
     coefficients = jnp.stack([f.coefficients for f in modes.e_fields])
     energy = _layer_energy(
         geometry,
         kind,
+        _mpi.static_comm(comm),
         coefficients=coefficients,
         nodes=field.mesh.nodes,
         materials=modes.materials,
@@ -323,10 +341,11 @@ def _surface_geometry(field: Field, surfaces: tuple[str, ...]) -> _SurfaceGeomet
     return made
 
 
-@functools.partial(jax.jit, static_argnames=("geometry", "kind"))
+@functools.partial(jax.jit, static_argnames=("geometry", "kind", "comm"))
 def _layer_energy(
     geometry: _SurfaceGeometry,
     kind: InterfaceKind,
+    comm: _mpi.StaticComm | None,
     *,
     coefficients: jax.Array,
     nodes: jax.Array,
@@ -334,11 +353,17 @@ def _layer_energy(
     thickness: jax.Array,
     eps_l: jax.Array,
 ) -> jax.Array:
-    """The layer's electric energy per mode, J (see `interface_participation`)."""
+    """The layer's electric energy per mode, J (see `interface_participation`).
+
+    Under ranks (``comm``) the coefficients are each rank's pieces, and the values
+    at the points every rank's (`gfem._probe.evaluate`).
+    """
     g = geometry
     mesh = Mesh(nodes, g.topology)
     m, n_t, n_q = coefficients.shape[0], len(g.triangles), g.n_q
-    values = _probe.evaluate(coefficients, mesh, g.layout, g.located)
+    values = _probe.evaluate(
+        coefficients, mesh, g.layout, g.located, None if comm is None else comm.comm
+    )
     e = jnp.zeros((m, n_t, 2, n_q, 3), dtype=values.dtype)
     start = 0
     for s, k in enumerate(g.pairs):
