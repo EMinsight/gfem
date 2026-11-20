@@ -166,7 +166,7 @@ def test_a_waveform_scale_differentiates(mesh):
         return jnp.sum(result.traces["heater"])
 
     grad = jax.grad(objective)(1.0)
-    assert grad == pytest.approx(_difference(objective, 1.0, 1e-3), rel=1e-8)
+    assert grad == pytest.approx(float(_difference(objective, 1.0, 1e-3)), rel=1e-8)
 
 
 # --- a section's thermo-optic trace: its weights are problem leaves -------------

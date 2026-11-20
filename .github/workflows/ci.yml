@@ -188,9 +188,12 @@ jobs:
         version: ${{ env.UV_VERSION }}
         python-version: "3.12"
     - name: Install
-      run: uv sync --resolution lowest-direct
+      # Resolving lowest rewrites uv.lock; put it back, as tests read the lock.
+      run: |
+        uv sync --resolution lowest-direct
+        git checkout -- uv.lock
     - name: Unit tier
-      run: uv run pytest -m unit
+      run: uv run --no-sync pytest -m unit
 
   build:
     name: build wheel and sdist

@@ -12,7 +12,7 @@ import pytest
 
 #: The stack scripts run on Linux clusters: POSIX paths, bash.
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="the stack scripts are Linux only"
+    sys.platform != "linux", reason="the stack scripts are Linux only"
 )
 
 STACKS = Path(__file__).parents[2] / "tools" / "stacks"
