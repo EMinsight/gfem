@@ -32,6 +32,12 @@ y < -1.5, |x| <= 0.275) and "cladding" (the rest). Surfaces "plates"
 |x| <= 1.1) and "outer" (every other side face). ``bend_7um.msh`` (um): the
 same in a 7 x 7 um box, x and y in [-3.5, 3.5]; inside |x|, |y| < 2.5 its
 nodes and tetrahedra are those of ``bend.msh``.
+
+``line2d.msh``, ``bend2d.msh`` and ``bend2d_7um.msh``: triangle-only meshes,
+the z = 0 face of ``line.msh``, ``bend.msh`` and ``bend_7um.msh`` node for
+node. Areas carry the volume names; lines on the boundary carry the side
+names: "port1", "port2" and "side" for the line, "port1", "port2" and "outer"
+for the bend.
 """
 
 import itertools
@@ -186,6 +192,9 @@ def write(out: Path) -> list[Path]:
         sm.write_msh22(out / "sheet_line.msh", sheet_line()),
         sm.write_msh22(out / "bend.msh", bend()),
         sm.write_msh22(out / "bend_7um.msh", bend(half=3.5)),
+        sm.write_msh22(out / "line2d.msh", sm.z0_face(line())),
+        sm.write_msh22(out / "bend2d.msh", sm.z0_face(bend())),
+        sm.write_msh22(out / "bend2d_7um.msh", sm.z0_face(bend(half=3.5))),
     ]
 
 
