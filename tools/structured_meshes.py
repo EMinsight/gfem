@@ -146,7 +146,7 @@ def write_msh22(path: str | Path, mesh: tuple) -> Path:
     # by rename: every rank of a launched test may write this same file, and rank 0
     # must not read another rank's half
     handle, partial = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    with os.fdopen(handle, "w") as out:
+    with os.fdopen(handle, "w", newline="\n") as out:  # LF on Windows too
         out.write("\n".join(lines) + "\n")
     Path(partial).chmod(0o644)
     Path(partial).replace(path)
