@@ -121,8 +121,8 @@ METHOD_KEYS = (
     "error_estimate",
     "mesh_refinement",
 )
-#: A guard no public call reaches while Bloch raises, so no page lists it.
-GUARD_KEYS = ("general_operator",)
+#: The refusal keys no public call reaches, so no page lists them.
+GUARD_KEYS: tuple[str, ...] = ()
 
 
 def feature(key: str) -> str:
