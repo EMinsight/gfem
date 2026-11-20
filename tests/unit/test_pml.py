@@ -886,3 +886,20 @@ def test_electrostatic_refinement_runs_on_a_layered_model(tmp_path):
     result = gfem.solve(model, problem, options=options)
     estimate = gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
     assert np.isfinite(estimate.value)
+
+
+def test_a_mode_with_gain_sign_warns(tmp_path):
+    # a target at 0.3 f finds the mode trapped in the core below the air's
+    # cutoff: the stretch does not damp its evanescent tail, which reaches
+    # the layer and comes back with the gain sign
+    model, _ = pml_cases.leaky_guide_model(tmp_path / "guide.msh")
+    target = 0.3 * pml_cases.guide_root().real * pml_cases.C0 * 1e3 / (2 * math.pi)
+    with pytest.warns(gfem.LayerClearanceWarning, match="grows in time"):
+        result = gfem.solve(
+            model,
+            gfem.Eigenmode(target=target),
+            options=gfem.SolverOptions(order=2, linear_solver="direct"),
+        )
+    assert float(np.imag(result.omega[0])) < 0
+    # readers of the stretched operator rebuild the solve's stretch
+    assert result.e_fields[0]._reference_frequency == pytest.approx(target)

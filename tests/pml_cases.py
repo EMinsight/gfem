@@ -217,3 +217,118 @@ def bloch_cell(path: str | Path, *, cells: float = 10, lateral: int = 4) -> Path
         return "air" if c[2] > 0 else "pml"
 
     return sm.write_msh22(path, sm.periodic_cell((side, side, z), volume, paired="xy"))
+
+
+# --- the leaky guide (eigenmodes) ---------------------------------------------------
+
+#: The leaky guide, mm: a TE10 guide (PEC walls, ``GUIDE_WIDTH`` wide,
+#: ``GUIDE_HEIGHT`` high) shorted at x = 0, filled with eps_r = ``GUIDE_EPS``
+#: up to ``GUIDE_CORE``, then ``GUIDE_TAIL`` of vacuum, then a PEC-backed
+#: layer ``GUIDE_LAYER`` thick.
+GUIDE_CORE, GUIDE_TAIL, GUIDE_LAYER = 3.0, 3.0, 4.0
+GUIDE_WIDTH, GUIDE_HEIGHT, GUIDE_EPS = 10.0, 1.0, 10.0
+#: Cells per mm along x and across y (h = 1 mm, 5k DOFs at order 2).
+GUIDE_CELLS = (1.0, 1.0)
+#: Relative gate on the leaky guide's k at order 2 (measured 4.3e-4, plain
+#: and Bloch) and on its Q (measured 0.52 % high).
+GUIDE_K_REL, GUIDE_Q_REL = 2e-3, 1e-2
+#: How far (relative) a returned mode may move when the target reflection
+#: drops from 1e-6 to 1e-9: measured 4.3e-4 at most over the four modes
+#: nearest the leaky one; a mode of the layer moves 3e-2 and more.
+GUIDE_MOVE = 5e-3
+#: The guide's leaky resonance under a perfect match, rad/mm: the root of
+#: :math:`b_1\cos(b_1 a) + i b_2\sin(b_1 a) = 0`, with
+#: :math:`b_1^2 = \varepsilon k^2 - k_t^2`, :math:`b_2^2 = k^2 - k_t^2`,
+#: :math:`k_t = \pi / W` (24.128 GHz, Q = 9.453).
+GUIDE_ROOT = 0.505676 + 0.026784j
+
+
+def guide_root(k_guess: complex = GUIDE_ROOT) -> complex:
+    """`GUIDE_ROOT` to round-off, by Newton from ``k_guess`` (rad/mm)."""
+    import cmath
+
+    kt = np.pi / GUIDE_WIDTH
+
+    def residual(k):
+        b1 = cmath.sqrt(k * k * GUIDE_EPS - kt * kt)
+        b2 = cmath.sqrt(k * k - kt * kt)
+        return b1 * cmath.cos(b1 * GUIDE_CORE) + 1j * b2 * cmath.sin(b1 * GUIDE_CORE)
+
+    k = complex(k_guess)
+    for _ in range(60):
+        h = 1e-7 * abs(k)
+        step = residual(k) / ((residual(k + h) - residual(k - h)) / (2 * h))
+        k -= step
+        if abs(step) < 1e-14 * abs(k):
+            break
+    return k
+
+
+def leaky_guide_model(
+    path: str | Path, *, bloch: bool = False, target_reflection: float = 1e-6
+):
+    r"""The model of `leaky_guide`'s mesh at ``path`` (written there first).
+
+    Returns:
+        The model and the Bloch wave vector (rad/m) its solves take, ``None``
+        without ``bloch``: :math:`k_y = \pi / W`, so the TE10 field across
+        the width is the plain guide's.
+    """
+    import gfem
+
+    leaky_guide(path, bloch=bloch)
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    boundaries = [gfem.PEC("short"), gfem.PEC("pec")]
+    wave_vector = None
+    if bloch:
+        boundaries.append(gfem.Periodic(("y_min", "y_max")))
+        wave_vector = (0.0, np.pi / (GUIDE_WIDTH * 1e-3), 0.0)
+    air = gfem.Material()
+    model = gfem.Model(
+        mesh,
+        materials={"core": gfem.Material(eps_r=GUIDE_EPS), "tail": air, "pml": air},
+        boundaries=boundaries,
+        pml=gfem.PML("pml", target_reflection=target_reflection),
+    )
+    return model, wave_vector
+
+
+def leaky_guide(path: str | Path, *, bloch: bool = False) -> Path:
+    """The leaky guide along x: "core", "tail", then "pml" (mm).
+
+    Surfaces: "short" at x = 0, "pec" on the layer's back face and the z
+    walls, and on the y walls unless ``bloch``: then the y walls are the
+    paired faces "y_min" / "y_max", for a Bloch phase across the width.
+
+    Returns:
+        ``path``.
+    """
+    length = GUIDE_CORE + GUIDE_TAIL + GUIDE_LAYER
+    along, across = GUIDE_CELLS
+    edges = (
+        np.linspace(0.0, length, round(length * along) + 1),
+        np.linspace(0.0, GUIDE_WIDTH, round(GUIDE_WIDTH * across) + 1),
+        np.linspace(0.0, GUIDE_HEIGHT, 2),
+    )
+    eps = 1e-9
+
+    def volume(c):
+        if c[0] < GUIDE_CORE:
+            return "core"
+        return "tail" if c[0] < GUIDE_CORE + GUIDE_TAIL else "pml"
+
+    def surface(c):
+        if abs(c[0]) < eps:
+            return "short"
+        on_z = abs(c[2]) < eps or abs(c[2] - GUIDE_HEIGHT) < eps
+        if abs(c[0] - length) < eps or on_z:
+            return "pec"
+        if not bloch and (abs(c[1]) < eps or abs(c[1] - GUIDE_WIDTH) < eps):
+            return "pec"
+        return ""
+
+    if bloch:
+        mesh = sm.periodic_cell(edges, volume, surface=surface, paired="y")
+    else:
+        mesh = sm.structured(edges, volume, surface)
+    return sm.write_msh22(path, mesh)

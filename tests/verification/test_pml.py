@@ -166,3 +166,52 @@ def test_a_layer_under_a_periodic_cell_absorbs_oblique_waves(cell, pol):
         assert expected >= 100 * pc.CELL_FLOOR, theta
         _close(abs(complex(s[f"R_{pol}", f"R_{pol}"][0])), expected)
         assert abs(complex(s[f"R_{other}", f"R_{pol}"][0])) <= CROSS_TOL, theta
+
+
+# --- a leaky guide's resonance ------------------------------------------------------
+
+
+def _ks(result):
+    """The modes' k, rad/mm."""
+    return np.asarray(result.omega) / (pc.C0 * 1e3)
+
+
+@pytest.fixture(scope="module", params=[False, True], ids=["plain", "bloch"])
+def leaky(request, tmp_path_factory):
+    """The leaky guide's modes nearest its resonance: four at R0 = 1e-6, six at 1e-9.
+
+    The second solve looks wider, so that the first's farthest mode is not
+    cut from it by a neighbour's small move.
+    """
+    root = pc.guide_root()
+    target = root.real * pc.C0 * 1e3 / (2 * math.pi)
+    out = []
+    for r0, n_modes in ((1e-6, 4), (1e-9, 6)):
+        model, k = pc.leaky_guide_model(
+            tmp_path_factory.mktemp("pml") / "guide.msh",
+            bloch=request.param,
+            target_reflection=r0,
+        )
+        problem = gfem.Eigenmode(target=target, n_modes=n_modes, wave_vector=k)
+        options = gfem.SolverOptions(order=2, linear_solver="direct")
+        with warnings.catch_warnings():
+            # the far modes trapped below the air's cutoff may take the gain
+            # sign (a unit test covers the warning)
+            warnings.simplefilter("ignore", gfem.LayerClearanceWarning)
+            out.append(gfem.solve(model, problem, options=options))
+    return root, out
+
+
+def test_a_leaky_guide_resonance_matches_its_root(leaky):
+    root, (result, stricter) = leaky
+    ks = _ks(result)
+    nearest = int(np.argmin(np.abs(ks - root)))
+    k = ks[nearest]
+    assert abs(k - root) <= pc.GUIDE_K_REL * abs(root)
+    q_root = abs(root) / (2 * root.imag)
+    assert float(result.q[nearest]) == pytest.approx(q_root, rel=pc.GUIDE_Q_REL)
+    # every mode returned is the device's: a mode of the layer would move
+    # with the stretch
+    others = _ks(stricter)
+    for z in ks:
+        assert np.min(np.abs(others - z)) <= pc.GUIDE_MOVE * abs(z), z

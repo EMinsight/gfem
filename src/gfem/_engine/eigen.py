@@ -43,13 +43,14 @@ from gfem._engine.domain import (
     space_key,
 )
 from gfem._engine.driven import DrivenOperator, real_space
-from gfem._linalg import Handle, Operator, ResolvedLinearSolver
+from gfem._engine.stretch import stretch_tensor
+from gfem._linalg import Handle, Operator, ResolvedLinearSolver, Symmetry
 from gfem._linalg.base import free_mask, host_bytes
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._linalg.petsc import FreeNumbering
 from gfem._materials import PermittivityLaw
 from gfem._periodic import bloch_phases
-from gfem._pml import layer_tetrahedra
+from gfem._pml import Stretch, layer_tetrahedra
 from gfem.model import Model
 
 __all__ = [
@@ -59,6 +60,7 @@ __all__ = [
     "element_energy",
     "energy_parts",
     "law_scale",
+    "layer_energy",
     "matvec",
     "principal_energy",
     "projector",
@@ -283,8 +285,9 @@ def projector(
     model: Model,
     op: DrivenOperator,
     wave_vector: tuple[float, float, float] | None = None,
+    stretch: Stretch | None = None,
 ) -> DivFreeProjector:
-    """The divergence-free projection on ``op``'s space (`DivFreeProjector`).
+    r"""The divergence-free projection on ``op``'s space (`DivFreeProjector`).
 
     The H(curl) space has the solve's DOF numbering and `PEC` DOFs; the H1
     space of the same order is fixed on the `PEC` surfaces and on every
@@ -295,12 +298,25 @@ def projector(
     is the solve's own complex one and the H1 space complex, with the same
     Bloch phases. Under ranks (``op.layout``) both spaces are the distributed
     mesh's, and the projection maps states to states (`DivFreeProjector`).
+
+    With a perfectly matched layer's ``stretch`` the physical modes are
+    orthogonal to the gradients in the stretched mass form
+    :math:`\int \operatorname{Re}(\varepsilon_r)\Lambda\, u \cdot v`, not in
+    the background one: a background weight leaves each projected vector a
+    gradient part that refinement amplifies when the target lies below the
+    mode. So the weight is :math:`\operatorname{Re}(\varepsilon_r)\Lambda`,
+    on the complex solve space and a complex H1 space, its H1 form complex
+    symmetric (general under a Bloch phase). The phase convention keeps a
+    real form of its own, :math:`\operatorname{Re}(\varepsilon_r)` on the
+    physical regions only (`DivFreeProjector.energy`).
     """
     built, order = op.built, op.order
     periodic = model._periodic  # noqa: SLF001
     disc = discretization(model.mesh, periodic, built.comm)
     pec = pec_surfaces(model)
     fixed = potential_surfaces(model)
+    if stretch is not None:
+        return _stretched_projector(model, op, wave_vector, stretch)
     if not periodic:
         hcurl = real_space(model, op)
         h1_key = space_key(model, "h1", order, fixed=fixed)
@@ -347,6 +363,101 @@ def projector(
     )
 
 
+def _stretched_projector(
+    model: Model,
+    op: DrivenOperator,
+    wave_vector: tuple[float, float, float] | None,
+    stretch: Stretch,
+) -> DivFreeProjector:
+    """`projector` with a layer: complex spaces, the stretched weight."""
+    built, order = op.built, op.order
+    periodic = model._periodic  # noqa: SLF001
+    disc = discretization(model.mesh, periodic, built.comm)
+    fixed = potential_surfaces(model)
+    phases = bloch_phases(model, wave_vector) if periodic else None
+    h1_key = (
+        *space_key(
+            model, "h1", order, periodic=bool(periodic), phases=phases, fixed=fixed
+        ),
+        "complex",
+    )
+    h1 = disc.space(
+        h1_key,
+        lambda: h1_space(
+            model,
+            built,
+            order,
+            fixed,
+            periodic=bool(periodic),
+            phases=phases,
+            complex_valued=True,
+        ),
+        group=phases,
+    )
+    lam = stretch_tensor(stretch, built.scale)[0]
+    weight = coefficient(built, real_eps(model)) * lam
+    nodes = np.asarray(model.mesh.nodes) / built.scale
+    diameter = float(np.linalg.norm(np.ptp(nodes, axis=0)))
+    h1_layout = None
+    if op.layout is not None:
+        h1_layout = disc.space((*h1_key, "layout"), lambda: RankLayout(h1, built.comm))
+    return DivFreeProjector(
+        op.space,
+        h1,
+        weight,
+        order,
+        diameter,
+        layout=op.layout,
+        h1_layout=h1_layout,
+        periodic=bool(periodic),
+        symmetry="complex_symmetric" if phases is None else "general",
+        energy_weight=coefficient(built, _physical_eps(model)),
+    )
+
+
+def _physical_eps(model: Model) -> np.ndarray:
+    """`real_eps`, zero on a perfectly matched layer's tetrahedra."""
+    values = real_eps(model)
+    layer = layer_tetrahedra(model.mesh, model.pml)
+    if layer is None:
+        return values
+    return np.where(layer.reshape((-1,) + (1,) * (values.ndim - 1)), 0.0, values)
+
+
+def layer_energy(
+    model: Model, op: DrivenOperator
+) -> Callable[[np.ndarray], np.ndarray] | None:
+    """``x -> [∫_layer Re(eps_r) |x|^2, ∫ Re(eps_r) |x|^2]``, ``None`` without a layer.
+
+    The background-weighted energy in a perfectly matched layer's
+    tetrahedra and in the whole solve domain, of a coefficient vector of
+    ``op.space``: their ratio is the share of a mode in the layer. Under
+    ranks the integrals are those of the rank's own tetrahedra.
+    """
+    layer = layer_tetrahedra(model.mesh, model.pml)
+    if layer is None:
+        return None
+    built = op.built
+    eps = coefficient(built, real_eps(model))
+    inside = layer[built.tetrahedron_order]
+    gf = ngs.GridFunction(op.space)
+    layout = op.layout or ONE_PROCESS
+
+    def energy(x: np.ndarray) -> np.ndarray:
+        gf.vec.FV().NumPy()[:] = x
+        layout.mark_state(gf.vec)
+        values = ngs.Integrate(
+            (eps * gf) * ngs.Conj(gf),
+            built.mesh,
+            order=2 * op.order,
+            element_wise=True,
+        ).NumPy()
+        values = np.real(values)
+        return np.array([values[inside].sum(), values.sum()])
+
+    return energy
+
+
 def element_energy(
     model: Model, op: DrivenOperator
 ) -> Callable[[np.ndarray], np.ndarray]:
@@ -366,11 +477,7 @@ def element_energy(
     and the participations count the physical regions only.
     """
     built = op.built
-    values = real_eps(model)
-    layer = layer_tetrahedra(model.mesh, model.pml)
-    if layer is not None:
-        values = np.where(layer.reshape((-1,) + (1,) * (values.ndim - 1)), 0.0, values)
-    eps = coefficient(built, values)
+    eps = coefficient(built, _physical_eps(model))
     gf = ngs.GridFunction(op.space)
     layout = op.layout or ONE_PROCESS
 
@@ -575,6 +682,13 @@ class DivFreeProjector:
         layout: The H(curl) space's layout across ranks, ``None`` on one process.
         h1_layout: The H1 space's, with ``layout``.
         periodic: Whether the spaces are periodic (a local ``G`` under ranks).
+        symmetry: The H1 form's (`gfem._linalg` symmetry): ``"hermitian"``
+            for a real weight, ``"complex_symmetric"`` for a perfectly
+            matched layer's complex weight on plain spaces, ``"general"``
+            for that weight under a Bloch phase.
+        energy_weight: The weight of `energy`'s form when it is not
+            ``eps`` (a layer's: the physical regions' ``Re(eps_r)``),
+            ``None`` to read the projection's own form.
     """
 
     def __init__(
@@ -588,21 +702,30 @@ class DivFreeProjector:
         layout: DofLayout | None = None,
         h1_layout: DofLayout | None = None,
         periodic: bool = False,
+        symmetry: Symmetry = "hermitian",
+        energy_weight: ngs.CoefficientFunction | None = None,
     ) -> None:
         """Build ``G``, ``M0`` and factorize the H1 form."""
         dx = quadrature.dx(order)
         self._layout = layout or ONE_PROCESS
-        #: Whether the spaces are complex (a Bloch phase).
+        #: Whether the spaces are complex (a Bloch phase, or a layer).
         self.complex = bool(hcurl.is_complex)
-        # a complex form is Hermitian, not symmetric: PARDISO reads the flag
-        symmetric = not self.complex
+        self._symmetry = symmetry
+        # a complex Hermitian form is not symmetric: PARDISO reads the flag
+        symmetric = symmetry == "complex_symmetric" or not self.complex
         u, v = hcurl.TnT()
-        mass = ngs.BilinearForm(hcurl, symmetric=symmetric)
-        mass += (eps * u) * v * dx
-        with _timing.phase("assemble"):
-            mass.Assemble()
-        #: ``M0``, the electric-energy form on the H(curl) space.
-        self.mass = mass.mat
+
+        def mass_form(weight):
+            form = ngs.BilinearForm(hcurl, symmetric=symmetric)
+            form += (weight * u) * v * dx
+            with _timing.phase("assemble"):
+                form.Assemble()
+            return form.mat
+
+        #: The projection's form on the H(curl) space.
+        self._weight = mass_form(eps)
+        #: ``M0``, the electric-energy form `energy` applies.
+        self.mass = self._weight if energy_weight is None else mass_form(energy_weight)
         phi = h1.TrialFunction()
         local = layout is not None and periodic
         if local:
@@ -631,17 +754,20 @@ class DivFreeProjector:
         laplace += (_REGULARIZATION / diameter**2) * phi * psi * dx
         self._laplace = _linalg.prepare(
             Operator(laplace, h1.FreeDofs(), layout=h1_layout),
-            symmetry="hermitian",
+            symmetry=symmetry,
             kind="direct",
         )
 
     def energy(self, x: np.ndarray) -> np.ndarray:
         """``M0 x`` (on a real space, complex ``x`` part by part): a load."""
+        return self._apply(self.mass, x)
+
+    def _apply(self, matrix, x: np.ndarray) -> np.ndarray:
         layout = self._layout
         if self.complex:
-            return matvec(self.mass, x, layout=layout)
-        return matvec(self.mass, x.real, layout=layout) + 1j * matvec(
-            self.mass, x.imag, layout=layout
+            return matvec(matrix, x, layout=layout)
+        return matvec(matrix, x.real, layout=layout) + 1j * matvec(
+            matrix, x.imag, layout=layout
         )
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
@@ -651,7 +777,7 @@ class DivFreeProjector:
         separately: a product with a complex vector would copy ``G`` to
         complex on every call. The result is bit-identical.
         """
-        energy = self.energy(x)
+        energy = self._apply(self._weight, x)
         if self._parallel_g is not None or self._local_g:
             return self._project_on_ranks(x, energy)
         if self.complex:
@@ -663,8 +789,18 @@ class DivFreeProjector:
     def _project_on_ranks(self, x: np.ndarray, energy: np.ndarray) -> np.ndarray:
         """`__call__` under ranks: :math:`G^T` of the load, MUMPS, ``G`` of the state.
 
-        The real H1 factors solve the real and imaginary parts as two columns.
+        The real H1 factors solve the real and imaginary parts as two columns;
+        a layer's complex factors solve them as one complex column (``G`` is
+        real there: no Bloch phase).
         """
+        if self._symmetry != "hermitian":
+            rhs = self._g_apply(energy.real, transpose=True) + 1j * self._g_apply(
+                energy.imag, transpose=True
+            )
+            phi = self._laplace.solve(rhs)
+            return x - (
+                self._g_apply(phi.real).real + 1j * self._g_apply(phi.imag).real
+            )
         rhs = np.stack(
             [self._g_apply(e, transpose=True) for e in (energy.real, energy.imag)],
             axis=1,
