@@ -20,6 +20,9 @@ the `ngsolve_threads` fixture, which then sets the count `threads=None` would us
 A test marked ``bitwise`` compares direct solves to the last bit. PARDISO repeats
 its bits on any thread count; NGSolve's sparse Cholesky, the fallback without the
 mkl extra, only on one thread, so without PARDISO the test runs on one.
+
+``--shard i/n`` keeps every n-th selected test, from the i-th (0-based), so n CI
+jobs share a tier; tests are dealt one by one, so a long file spreads over them.
 """
 
 import os
@@ -30,6 +33,45 @@ import pytest
 TIERS = ("unit", "verification", "reference", "benchmark", "cuda", "mpi")
 TESTS_DIR = Path(__file__).parent
 REFERENCE_ENV = "GFEM_REFERENCE_DIR"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--shard",
+        default=None,
+        metavar="I/N",
+        help="run every N-th selected test, from the I-th (0-based)",
+    )
+
+
+class _Shard:
+    """Keeps shard ``index`` of ``count`` once `-m` and `-k` have deselected."""
+
+    def __init__(self, index: int, count: int) -> None:
+        self.index, self.count = index, count
+
+    @pytest.hookimpl(trylast=True)
+    def pytest_collection_modifyitems(
+        self, config: pytest.Config, items: list[pytest.Item]
+    ) -> None:
+        kept = items[self.index :: self.count]
+        dropped = [item for i, item in enumerate(items) if i % self.count != self.index]
+        if dropped:
+            config.hook.pytest_deselected(items=dropped)
+        items[:] = kept
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    shard = config.getoption("--shard")
+    if shard is None:
+        return
+    try:
+        index, count = (int(part) for part in shard.split("/"))
+    except ValueError:
+        raise pytest.UsageError(f"--shard takes I/N, got {shard!r}") from None
+    if not 0 <= index < count:
+        raise pytest.UsageError(f"--shard {shard}: I must be in 0..N-1")
+    config.pluginmanager.register(_Shard(index, count), "gfem-shard")
 
 
 @pytest.hookimpl(tryfirst=True)

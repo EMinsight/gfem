@@ -53,9 +53,16 @@ jobs:
       run: uv run pytest -m unit
 
   verification:
-    name: verification (ubuntu, py3.12)
+    # Serial, the tier takes over 3 h on one runner: split into shards, each
+    # running every 8th test (conftest.py's --shard), with and without MKL.
+    name: verification (ubuntu, py3.12${{ matrix.extra && ', mkl' || '' }}, shard ${{ matrix.shard }}/8)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: ["", mkl]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
     - uses: actions/checkout@v6
     - uses: astral-sh/setup-uv@v6
@@ -63,25 +70,28 @@ jobs:
         version: ${{ env.UV_VERSION }}
         python-version: "3.12"
         enable-cache: true
+        cache-suffix: ${{ matrix.extra }}
     - name: Install
-      run: uv sync --locked
+      run: uv sync --locked ${{ matrix.extra && '--extra mkl' || '' }}
+    - name: MKL is live
+      if: matrix.extra == 'mkl'
+      run: >-
+        uv run python -c "from gfem._linalg import pardiso;
+        assert pardiso.pardiso_available(), 'MKL PARDISO not found'"
     - name: Verification tier
-      run: uv run pytest -m verification
+      run: uv run pytest -m verification -rs --shard ${{ matrix.shard }}/8
 
   mkl:
     # The mkl extra: MKL PARDISO (the direct backend, BDDC's coarse problem).
     # The mkl wheel exists for Linux x86_64 and Windows AMD64 only (PyPI), so
     # no macOS entry: there the extra installs nothing.
-    name: ${{ matrix.tier }} (${{ matrix.os }}, py3.12, mkl)
+    # (its verification tier runs in the verification job)
+    name: unit (${{ matrix.os }}, py3.12, mkl)
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # the verification entry only on full runs, as the verification job
-        include: ${{ fromJSON(
-          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-          && '[{"os":"ubuntu-latest","tier":"unit"},{"os":"windows-latest","tier":"unit"},{"os":"ubuntu-latest","tier":"verification"}]'
-          || '[{"os":"ubuntu-latest","tier":"unit"},{"os":"windows-latest","tier":"unit"}]') }}
+        os: [ubuntu-latest, windows-latest]
     defaults:
       run:
         shell: bash
@@ -106,10 +116,9 @@ jobs:
         assert pardiso.pardiso_available(), 'MKL PARDISO not found';
         print('mkl', md.version('mkl'), ': PARDISO live')"
     - name: MKL tests
-      if: matrix.tier == 'unit'
       run: uv run pytest -v -rs tests/unit/test_linalg_mkl.py
-    - name: ${{ matrix.tier }} tier
-      run: uv run pytest -m ${{ matrix.tier }} -rs
+    - name: Unit tier
+      run: uv run pytest -m unit -rs
 
   mpi:
     # The launched tier on the wheel's BDDC, at most 4 ranks on a runner's 4 cores,
