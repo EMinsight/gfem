@@ -301,7 +301,12 @@ def reduction(dofs: int, size: int) -> int:
         1 for no reduction. PETSc keeps every factor-th rank, ``ceil(size / factor)``
         of them.
     """
-    return max(1, math.ceil(size / max(1, min(dofs // DOFS_PER_RANK, MAX_RANKS))))
+    return max(1, math.ceil(size / _scotch_ranks(dofs, size)))
+
+
+def _scotch_ranks(dofs: int, size: int) -> int:
+    """The ranks PT-Scotch's factorization takes: `reduction`'s and `rule`'s."""
+    return max(1, min(size, dofs // DOFS_PER_RANK, MAX_RANKS))
 
 
 def rule(dofs: int, size: int, columns: int, *, seen: bool) -> tuple[Ordering, int]:
@@ -325,7 +330,7 @@ def rule(dofs: int, size: int, columns: int, *, seen: bool) -> tuple[Ordering, i
     Returns:
         The ordering and the factor: PETSc keeps every factor-th rank.
     """
-    scotch = max(1, min(size, dofs // DOFS_PER_RANK, MAX_RANKS))
+    scotch = _scotch_ranks(dofs, size)
     metis = max(1, min(math.ceil(size / METIS_EVERY), dofs // METIS_DOFS_PER_RANK))
     if metis > scotch and (columns >= METIS_COLUMNS or seen):
         return METIS, math.ceil(size / metis)
@@ -388,7 +393,7 @@ def options(
 class CoarseMumps(ngs.BaseMatrix):
     """The coarse factorization: a ``ParallelMatrix`` factored by MUMPS across ranks.
 
-    NGSolve calls the creator twice per setup, first with the form's whole matrix,
+    NGSolve calls the creator twice per set-up, first with the form's whole matrix,
     which is not assembled yet, and last with the wirebasket, so nothing is factored
     until `set_up`. Its PETSc objects come from the pool where one on the same
     pattern is free, and go back to it at `free`, which every rank calls together,
@@ -462,6 +467,7 @@ class CoarseMumps(ngs.BaseMatrix):
                 comm, flag=_petsc.telescope_symbols() is not None
             )
             kept = _take(self.key, self._ordering, self._factor)
+            pooled = kept is not None
             if kept is None:
                 aij, index = distributed_aij(
                     local, self._numbering, comm, symmetric=self.symmetric
@@ -471,10 +477,10 @@ class CoarseMumps(ngs.BaseMatrix):
                 kept = Kept(
                     self.key, aij, index, x, b, self._ordering, self._factor, workspace
                 )
-            else:
-                set_values(kept.aij, local.CSR()[0], kept.index)
             self._held = kept
             try:
+                if pooled:
+                    set_values(kept.aij, local.CSR()[0], kept.index)
                 self._factorize(kept)
             except BaseException:
                 self._held = None
@@ -628,10 +634,10 @@ def coarse_type(comm: Any, symmetric: bool) -> str:
 
 
 def finish(comm: Any, *, columns: int = 1) -> CoarseMumps | None:
-    """After a setup: the factorization it uses, factored; ``None`` on the rank 0 route.
+    """After a set-up: its factorization, factored; ``None`` on the rank 0 route.
 
     BDDC keeps the last one NGSolve asked for, and an earlier one was never factored.
-    ``columns``: those the setup is expected to serve, for `rule`.
+    ``columns``: those the set-up is expected to serve, for `rule`.
     """
     made = _made.get(_mpi.comm_key(comm)) if comm is not None else None
     if not made:
