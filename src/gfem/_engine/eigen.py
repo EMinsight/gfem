@@ -44,6 +44,7 @@ from gfem._engine.domain import (
 from gfem._engine.driven import DrivenOperator, real_space
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver
 from gfem._linalg.base import free_mask, host_bytes
+from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._materials import PermittivityLaw
 from gfem._periodic import bloch_phases
 from gfem.model import Model
@@ -88,6 +89,10 @@ def eigen_operator(
     constant = [(c, p) for c, p in powers[0] if p.law is not None]
     free = free_mask(space.FreeDofs(), space.ndof)
     symmetry, matrix_free = op.symmetry, op.symmetric
+    layout = op.layout or ONE_PROCESS
+
+    def _linear_map(matrix) -> LinearMap:
+        return _Map(matrix, layout)
 
     def operator(k: complex) -> Operator:
         return Operator(op.form(k * const.c / scale), space.FreeDofs())
@@ -143,6 +148,7 @@ def eigen_operator(
             if constant
             else None
         ),
+        layout=layout,
     )
 
 
@@ -170,38 +176,45 @@ def assemble(
     return form.mat
 
 
-def matvec(matrix, x: np.ndarray, *, transpose: bool = False) -> np.ndarray:
+def matvec(
+    matrix,
+    x: np.ndarray,
+    *,
+    transpose: bool = False,
+    layout: DofLayout = ONE_PROCESS,
+) -> np.ndarray:
     """An NGSolve matrix (``transpose``: its transpose) applied to a NumPy vector.
 
     The transpose of an assembled matrix only: a matrix-free form's ``.T``
-    applies the form itself on a Bloch-phased space.
+    applies the form itself on a Bloch-phased space. ``x`` is a state column of
+    ``layout`` (marked so, as the driven solves mark theirs), the result a load.
     """
     a = matrix.CreateColVector()
     a.FV().NumPy()[:] = x
+    layout.mark_state(a)
     b = matrix.CreateColVector()
     b.data = (matrix.T if transpose else matrix) * a
     return b.FV().NumPy().copy()
 
 
 class _Map:
-    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors, and its bytes."""
+    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors, and its bytes.
 
-    def __init__(self, matrix) -> None:
+    ``x`` is a state of ``layout``, the result a load (`matvec`).
+    """
+
+    def __init__(self, matrix, layout: DofLayout = ONE_PROCESS) -> None:
         self.matrix = matrix
+        self.layout = layout
 
     def __call__(self, x: np.ndarray, /, *, transpose: bool = False) -> np.ndarray:
         """``matrix x``, or ``matrix^T x``."""
-        return matvec(self.matrix, x, transpose=transpose)
+        return matvec(self.matrix, x, transpose=transpose, layout=self.layout)
 
     @property
     def nbytes(self) -> int:
         """The assembled matrix's host bytes; 0 for a matrix-free form."""
         return host_bytes(self.matrix)
-
-
-def _linear_map(matrix) -> LinearMap:
-    """``x -> matrix x`` (or ``matrix^T x``) on NumPy vectors (`_Map`)."""
-    return _Map(matrix)
 
 
 def real_eps(model: Model) -> np.ndarray:
