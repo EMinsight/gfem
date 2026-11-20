@@ -431,3 +431,197 @@ def test_a_package_without_metadata_records_its_module_version(
     versions = scale_run._environment(None)["versions"]
     assert versions["ngsolve"] == "6.2.2608-native"
     assert versions["numpy"] == "1.0"
+
+
+@pytest.fixture(scope="module")
+def looped(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A design loop of two solves in one process, through the script.
+
+    BDDC's second design starts from the first's solution: the sweep's wrapper takes
+    what gfem passes it.
+    """
+    root = tmp_path_factory.mktemp("loop")
+    done = _tool(
+        "run",
+        _case(root / "case"),
+        root / "records" / "loop",
+        "--solver",
+        "bddc_gmres",
+        "--threads",
+        "1",
+        "--solves",
+        "2",
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    return root / "records" / "loop"
+
+
+def test_a_design_loop_records_each_design_apart(looped: Path) -> None:
+    import numpy as np
+
+    record = json.loads(Path(f"{looped}.json").read_text())
+    assert record["solves"] == 2
+    first, second = record["designs"]
+    assert (first["design"], second["design"]) == (0, 1)
+    # design 0 is the run's one-frequency solve, from the run's start
+    assert {"mesh_read", "solve"} <= set(first["phases"])
+    assert "solve_1" in second["phases"]
+    assert not {"mesh_read", "solve"} & set(second["phases"])
+    assert record["phases"]["solve"]["max_s"] == first["phases"]["solve"]["max_s"]
+    for design in (first, second):
+        assert design["memory"]["peak_rss_largest_node_gib"] > 0
+    assert set(record["iterations"]) == {"iterations", "iterations_1"}
+    arrays = np.load(f"{looped}.npz")
+    assert {"s", "s_1"} <= set(arrays.files)
+    assert not np.array_equal(arrays["s"], arrays["s_1"])  # another permittivity
+
+
+class _Comm:
+    """One rank of a communicator of ``size``: every gather is this rank's."""
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+
+    def allgather(self, value):
+        return [value]
+
+
+def _fake_coarse(retries: int = 0):
+    """A coarse module whose set-up resolves `rule` and `options` as module globals."""
+    import types
+
+    from gfem._linalg import coarse
+
+    module = types.SimpleNamespace(options=coarse.options, rule=coarse.rule)
+
+    class Made:
+        _comm = _Comm(224)
+        _numbering = types.SimpleNamespace(total=9_000_000)
+        columns = 2
+
+        def set_up(self):
+            self._ordering, self._factor = module.rule(
+                self._numbering.total, self._comm.size, self.columns, seen=False
+            )
+            for k in range(retries + 1):
+                module.options(
+                    True,
+                    workspace=60 * 2**k,
+                    factor=self._factor,
+                    ordering=self._ordering,
+                )
+
+        def Mult(self, x, y):  # noqa: N802 - NGSolve's name
+            pass
+
+    module.CoarseMumps = Made
+    return module
+
+
+def _factor_facts(icntl14: int):
+    return lambda _made: {
+        "icntl14": icntl14,
+        "infog29": 7_900_000_000,
+        "infog22_mb": 371_796,
+        "infog7": 3,
+        "info22_mb": 2198,
+    }
+
+
+def test_a_coarse_set_up_records_its_configuration_and_retries() -> None:
+    phases, facts = scale_run.Phases(), scale_run.Facts()
+    counts = iter((5, 6))  # one symbolic factorization during the set-up
+    module = _fake_coarse(retries=1)
+    scale_run._instrument_coarse(
+        phases,
+        facts,
+        module,
+        factor_facts=_factor_facts(120),
+        symbolic=lambda: next(counts),
+    )
+    facts.design = 3
+    module.CoarseMumps().set_up()
+    (fact,) = facts.coarse
+    assert phases.calls["coarse_attempt"] == 2
+    assert phases.calls["coarse_setup"] == 1
+    assert fact["design"] == 3
+    assert fact["ordering"] == "pt-scotch"
+    assert (fact["reduction"], fact["ranks"]) == (4, 56)
+    assert (fact["columns"], fact["seen"]) == (2, False)
+    assert (fact["retries"], fact["kept"], fact["icntl14"]) == (1, False, 120)
+    assert (fact["infog29"], fact["infog7"]) == (7_900_000_000, 3)
+    assert fact["info22_mb_node_max"] == 2198  # one rank on this node
+    assert fact["setup_s"] >= 0
+
+
+def test_a_set_up_with_no_symbolic_factorization_kept_its_analysis() -> None:
+    phases, facts = scale_run.Phases(), scale_run.Facts()
+    module = _fake_coarse()
+    scale_run._instrument_coarse(
+        phases, facts, module, factor_facts=_factor_facts(60), symbolic=lambda: 7
+    )
+    module.CoarseMumps().set_up()
+    assert facts.coarse[0]["kept"] is True
+    assert facts.coarse[0]["retries"] == 0
+
+
+def test_mumps_print_reaches_the_coarse_factor_behind_telescoping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gfem._linalg import coarse
+
+    monkeypatch.setattr(coarse, "options", coarse.options)  # restored after
+    scale_run._print_coarse(coarse)
+    assert coarse.options(True, workspace=60, factor=4)[-1] == (
+        "telescope_mat_mumps_icntl_4",
+        2,
+    )
+    assert coarse.options(True, workspace=60, factor=1)[-1] == ("mat_mumps_icntl_4", 2)
+
+
+#: Two coarse set-ups as ``--trace --mumps-print`` prints them on rank 0, MUMPS 5.9.1:
+#: METIS's new analysis, then a refactorization that kept it.
+COARSE_LOG = """\
+coarse_setup starts at 10.1 GiB peak
+Entering ZMUMPS 5.9.1 from C interface with JOB, N =   1    30399588
+ ELAPSED TIME SPENT IN METIS reordering  =    399.6139
+ Elapsed time in analysis driver=     421.7358
+Entering ZMUMPS 5.9.1 from C interface with JOB, N =   2    30399588
+ INFOG (29) Number of entries in factors            =      7900211661
+ Elapsed time in factorization driver               =     17.0576
+Entering ZMUMPS 5.9.1 from C interface with JOB, N =   3    30399588
+ Elapsed time in solve driver=       0.4628
+coarse_setup ends at 26.6 GiB peak
+coarse_apply starts at 26.6 GiB peak
+Entering ZMUMPS 5.9.1 from C interface with JOB, N =   3    30399588
+ Elapsed time in solve driver=       0.3000
+coarse_apply ends at 26.6 GiB peak
+coarse_setup starts at 26.6 GiB peak
+Entering ZMUMPS 5.9.1 from C interface with JOB, N =   2    30399588
+ INFOG (29) Number of entries in factors            =      7900211700
+ Elapsed time in factorization driver               =     16.5000
+Entering ZMUMPS 5.9.1 from C interface with JOB, N =   3    30399588
+ Elapsed time in solve driver=       0.4000
+coarse_setup ends at 26.6 GiB peak
+"""
+
+
+def test_closing_attaches_mumps_times_to_each_coarse_set_up(
+    solved: Path, tmp_path: Path
+) -> None:
+    copy = tmp_path / solved.name
+    record = json.loads(Path(f"{solved}.json").read_text())
+    record["coarse"] = [{"design": 0}, {"design": 1}]
+    Path(f"{copy}.json").write_text(json.dumps(record))
+    log = tmp_path / "coarse.log"
+    log.write_text(COARSE_LOG)
+    assert _tool("close", copy, "--log", log, "--state", "COMPLETED").returncode == 0
+    first, second = json.loads(Path(f"{copy}.json").read_text())["coarse"]
+    assert first["analysis_s"] == pytest.approx(421.7358)
+    assert first["metis_s"] == pytest.approx(399.6139)
+    assert first["factorization_s"] == pytest.approx(17.0576)
+    assert first["entries"] == 7900211661
+    assert first["solve_driver_calls"] == 2
+    assert first["solve_driver_median_s"] == pytest.approx((0.4628 + 0.3) / 2)
+    assert "analysis_s" not in second
+    assert second["factorization_s"] == pytest.approx(16.5)
