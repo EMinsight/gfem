@@ -171,3 +171,49 @@ def tem_line(path: str | Path, *, cells: float = 10) -> Path:
 def te10_guide(path: str | Path, *, cells: float = 14) -> Path:
     """The TE10 guide (a = 0.75, b = 0.3 um, PEC walls), `waveguide`."""
     return waveguide(path, GUIDE_SECTION, cells=cells)
+
+
+# --- the Bloch cell ---------------------------------------------------------------
+
+#: The Bloch cell's lateral period along x and y (um, 0.4 lambda) and its
+#: depth of air (or of the filling) between the layer and the Floquet face.
+CELL_PERIOD = 0.4
+CELL_DEPTH = 0.5
+#: Cells per um along z: lambda / 10 in vacuum, lambda / 9.3 in the
+#: eps_r = 2.25 filling (the layer's face must stay a grid plane).
+CELL_CELLS = {1.0: 10, 2.25: 14}
+#: Reflection floor of the Bloch cell at order 3, 4 x 4 lateral cells,
+#: `CELL_CELLS`: measured |S| = 4.3e-7 for R0 = 1e-6 at normal incidence in
+#: vacuum (6.9e-7 in eps_r = 2.25, where the continuum value is 1e-9), and
+#: |S - R0^cos| up to 2.6e-6 for R0 = 1e-6 at 60 degrees (5.4e-6 for the
+#: steeper R0 = 1e-8). The lateral Bloch phase leaves the TEM line's floor
+#: in place. With R0 = 1e-2 the measured errors are at most 6.9e-7
+#: (2.6e-4 relative, eps_r = 2.25 at normal incidence) and the
+#: cross-polarized entries at most 2.5e-7; every closed form there
+#: (1e-3 to 0.1) sits more than 100 times above this floor.
+CELL_FLOOR = 3e-6
+
+
+def bloch_cell(path: str | Path, *, cells: float = 10, lateral: int = 4) -> Path:
+    """A periodic cell over a PEC-backed layer: "pml" below z = 0, "air" above.
+
+    The cell is ``CELL_PERIOD`` wide along x and y (paired faces "x_min" /
+    "x_max", "y_min" / "y_max"), with ``THICKNESS`` of "pml" from z = 0 down
+    to the PEC face "z_min" and ``CELL_DEPTH`` of "air" up to the open face
+    "z_max". The layer spans the whole period, so it stretches along z only.
+
+    Args:
+        path: The gmsh 2.2 file to write.
+        cells: Cells per um along z (the layer's face is a grid plane).
+        lateral: Cells across the period, along x and y.
+
+    Returns:
+        ``path``.
+    """
+    side = np.linspace(0.0, CELL_PERIOD, lateral + 1)
+    z = np.linspace(-THICKNESS, CELL_DEPTH, round((THICKNESS + CELL_DEPTH) * cells) + 1)
+
+    def volume(c):
+        return "air" if c[2] > 0 else "pml"
+
+    return sm.write_msh22(path, sm.periodic_cell((side, side, z), volume, paired="xy"))

@@ -8,7 +8,11 @@ with a layer and read :math:`|S_{11}|` at a wave port on the far end, which
 is exact for the guide's mode, so :math:`|S_{11}| = |R|`:
 
 - a TEM line (PEC y walls, PMC x walls): normal incidence;
-- a TE10 guide: two plane waves at :math:`\cos\theta = \beta_{10}/k_0`.
+- a TE10 guide: two plane waves at :math:`\cos\theta = \beta_{10}/k_0`;
+- a periodic cell over a layer, read at a Floquet port on its top face:
+  oblique incidence under the Bloch wave vector, TE and TM, in vacuum and in
+  a filling of index :math:`n = 1.5`, where the vacuum angle refracts to
+  :math:`\theta_n` and :math:`|R| = R_0^{n\cos\theta_n}`.
 
 Order 3 on z-layered structured meshes, :math:`h = \lambda/10`
 (:math:`\lambda/14` for TE10), where the reflection floor is about
@@ -17,6 +21,7 @@ and is asserted to 1 % (`pml_cases`).
 """
 
 import math
+import warnings
 
 import numpy as np
 import pml_cases as pc
@@ -103,3 +108,61 @@ def test_a_reference_frequency_at_beta_restores_the_target(guide):
     f = pc.F0 / 1.4
     (s11,) = _s11(guide, [f], gfem.PML("pml", reference_frequency=f * _cos_te10(1.4)))
     assert s11 <= pc.GUIDE_FLOOR
+
+
+# --- a layer under a periodic cell ------------------------------------------------
+
+#: Incidence angles (degrees, in vacuum) and azimuths, as the Fresnel slab's
+#: conical case holds them at 40 degrees.
+ANGLES = ((0.0, 0.0), (40.0, 30.0), (60.0, 0.0))
+#: Cross-polarized |S| allowed: the Floquet slab's gate.
+CROSS_TOL = 1e-5
+
+
+@pytest.fixture(scope="module", params=[1.0, 2.25], ids=["vacuum", "eps2.25"])
+def cell(request, tmp_path_factory):
+    """S of the Bloch cell over a layer, at each of `ANGLES`, both polarizations."""
+    eps_r = request.param
+    path = pc.bloch_cell(
+        tmp_path_factory.mktemp("pml") / "cell.msh", cells=pc.CELL_CELLS[eps_r]
+    )
+    material = gfem.Material(eps_r=eps_r)
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path, length_unit="um"),
+        materials={"air": material, "pml": material},
+        boundaries=[
+            gfem.Periodic(("x_min", "x_max")),
+            gfem.Periodic(("y_min", "y_max")),
+            gfem.PEC("z_min"),
+        ],
+        ports=[
+            gfem.FloquetPort(f"R_{pol}", "z_max", polarization=pol)
+            for pol in ("TE", "TM")
+        ],
+        pml=gfem.PML("pml", target_reflection=1e-2),
+    )
+    n = math.sqrt(eps_r)
+    out = []
+    for theta, phi in ANGLES:
+        # the vacuum angle theta refracted into the filling
+        theta_n = math.asin(math.sin(math.radians(theta)) / n)
+        k = model.bloch_wave_vector(
+            "z_max", pc.F0, theta=theta_n, phi=math.radians(phi)
+        )
+        problem = gfem.Driven([pc.F0], excite=["R_TE", "R_TM"], wave_vector=k)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", gfem.ObliqueAbsorberWarning)
+            result = gfem.solve(model, problem, options=OPTIONS)
+        expected = _pml.reflection(1e-2, n * pc.F0, pc.F0, math.cos(theta_n))
+        out.append((theta, expected, result.s))
+    return out
+
+
+@pytest.mark.parametrize("pol", ["TE", "TM"])
+def test_a_layer_under_a_periodic_cell_absorbs_oblique_waves(cell, pol):
+    other = "TM" if pol == "TE" else "TE"
+    for theta, expected, s in cell:
+        # the 1 % gate needs the closed form 100 times above the cell's floor
+        assert expected >= 100 * pc.CELL_FLOOR, theta
+        _close(abs(complex(s[f"R_{pol}", f"R_{pol}"][0])), expected)
+        assert abs(complex(s[f"R_{other}", f"R_{pol}"][0])) <= CROSS_TOL, theta
