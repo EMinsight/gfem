@@ -1,0 +1,88 @@
+name: Release
+# Pushing a version tag (`0.1.0`, no `v`) builds the sdist and wheel, publishes
+# them to PyPI and opens the GitHub release with the same files.
+# One-time settings:
+# - PyPI -> gfem -> Publishing: trusted publisher for benvial/gfem, workflow
+#   release.yml, environment pypi (a pending publisher before the first upload).
+# - GitHub -> Settings -> Environments: a `pypi` environment, restricted to tags
+#   and gated on a required reviewer.
+on:
+  push:
+    tags:
+    - "[0-9]+.[0-9]+.[0-9]+*"
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  UV_VERSION: "0.13.1"
+jobs:
+  build:
+    name: build wheel and sdist
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6
+      with:
+        persist-credentials: false
+    - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6
+      with:
+        version: ${{ env.UV_VERSION }}
+        python-version: "3.12"
+    - name: The tag names the package version
+      env:
+        TAG: ${{ github.ref_name }}
+      run: |
+        version=$(uv version --short)
+        if [ "$version" != "$TAG" ]; then
+          echo "::error::tag $TAG but pyproject.toml says $version"
+          exit 1
+        fi
+    - name: Build
+      run: |
+        uv build
+        ls dist/gfem-"$GITHUB_REF_NAME"-py3-none-any.whl dist/gfem-"$GITHUB_REF_NAME".tar.gz
+    - name: The wheel installs and imports
+      run: |
+        uv venv "$RUNNER_TEMP/smoke"
+        uv pip install --python "$RUNNER_TEMP/smoke" dist/gfem-*.whl
+        "$RUNNER_TEMP/smoke/bin/python" -c "import gfem; print(gfem.__version__)"
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+      with:
+        name: dist
+        path: dist/
+
+  pypi:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/gfem/${{ github.ref_name }}/
+    permissions:
+      id-token: write  # trusted publishing, no stored token
+    steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+      with:
+        name: dist
+        path: dist/
+    - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
+
+  github-release:
+    name: GitHub release
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+      with:
+        name: dist
+        path: dist/
+    - name: Create the release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TAG: ${{ github.ref_name }}
+      run: |
+        gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" \
+          --title "gfem $TAG" --generate-notes --verify-tag
