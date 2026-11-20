@@ -541,8 +541,11 @@ convention `../gfem-bench-data/reports/<report-id>`.
   made with another matplotlib version, or with none importable, are regenerated but
   not compared ("figures regenerated with matplotlib X ... not compared"); tables and
   JSON must still match. `report.json` records the harness commit that rendered it
-  (`harness_revision`); `--check` keeps the stored one and prints "rendered at harness
-  X; regenerated at Y" when the checking tree differs.
+  (`harness_revision`, `-dirty` when the checkout had changes); `--check` keeps the
+  stored one and prints "rendered at harness X; regenerated at Y" when the checking
+  tree differs. It also records the reference families read per case
+  (`reference_families`: the case and its `[reference] case` sibling), and
+  `--check` reuses that map rather than the checking tree's case files.
 
 Sections: gates and failures, then per case the structural block, error against work
 time, phase bars, memory, accuracy, layouts and a cross-solver snapshot (per budget,

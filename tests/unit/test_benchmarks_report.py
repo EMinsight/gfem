@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks.__main__ import main
-from benchmarks.harness import matrix
+from benchmarks.harness import config, matrix
 from benchmarks.report import harness_revision, views
 
 BENCH = Path(__file__).parent / "data" / "bench"
@@ -532,6 +532,24 @@ def test_newer_reference_follows_the_case_files_reference_key(tmp_path):
     p3 = _case(report, "microstrip_p3")
     assert p3["reference"]["newer"]["id"] == "microstrip-20261125-aaaaaaa"
     assert p3["rescore_flag"] == "--rescore microstrip_p3=microstrip-20261125-aaaaaaa"
+
+
+def test_check_reuses_the_stored_reference_families(tmp_path, capsys, monkeypatch):
+    def edit(d):
+        if d["run"]["case"] == "microstrip":
+            d["run"]["case"] = "microstrip_p3"
+
+    out = _report(tmp_path, str(_store(tmp_path, edit)), "--no-figures")
+    stored = json.loads((out / "report.json").read_text())
+    assert stored["reference_families"]["microstrip_p3"] == [
+        "microstrip",
+        "microstrip_p3",
+    ]
+    assert stored["reference_families"]["lcavity"] == ["lcavity"]
+    # a checking tree whose case files lack the [reference] sibling key
+    monkeypatch.setattr(config, "CASES_DIR", tmp_path / "no-cases")
+    assert main(["report", "--check", str(out)]) == 0
+    assert "unchanged" in capsys.readouterr().out
 
 
 def test_rescore_marks_cells_and_rewrites_no_record(tmp_path):
