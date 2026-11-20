@@ -1,0 +1,6 @@
+| Mesh | Nodes | Ranks x threads | DOF per rank | `tol` | Mesh read, s | Partition, s | Spaces, s | Coarse setup, s | GMRES, s | Coarse apply, s | `gfem.solve`, s | Coarse apply in `gfem.solve` | Krylov vector share of GMRES | Reduction wait, s | Reduction wait in GMRES | Reduction wait in `gfem.solve` | Coarse DOF | Coarse ranks | Coarse factor entries | Repeats |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| m_void | 1 | 28 x 4 | 100 k | 1e-08 | - | - | - | - | 55 | 28 | 110 | 25% | 10.0% | 1.0 | 1.8% | 0.9% | 9,000 | 2 | - | 2 |
+| m_void | 2 | 56 x 4 | 50 k | 1e-08 | - | - | - | - | 25 | 12 | 50 | 25% | 10.0% | 1.0 | 4.0% | 2.0% | 9,000 | 2 | - | 1 |
+
+Medians over the finished repeats, and shares of those medians. Phases are the slowest rank's. GMRES holds the coarse apply; the coarse setup is its factorization. The Krylov vector share is the time in GMRES's vector work, reductions included, over GMRES's time, the median of the repeats' shares; the reduction wait is the time in its `Allreduce` calls. Coarse factor entries are MUMPS's printed count. `tol` is `SolverOptions.tolerance`, GMRES's relative preconditioned residual; it does not apply to `direct`.
