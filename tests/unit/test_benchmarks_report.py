@@ -647,9 +647,9 @@ def test_trend_over_two_gfem_commits_restarts_on_a_key_change(tmp_path):
 # --- core budgets (ADR 0452) ------------------------------------------------------
 
 
-def _budget_campaign(tmp_path: Path, budget: int, edit=None) -> Path:
+def _budget_campaign(tmp_path: Path, budget: int, edit=None, *, tag: str = "") -> Path:
     """The fixture campaign rerun at ``budget`` cores, same gfem commit."""
-    cid = f"20261120-858bc66-smoke-c{budget}"
+    cid = f"20261120-858bc66-smoke-c{budget}{tag}"
 
     def at_budget(d):
         d["campaign"] = cid
@@ -657,7 +657,7 @@ def _budget_campaign(tmp_path: Path, budget: int, edit=None) -> Path:
         if edit is not None:
             edit(d)
 
-    camp = _store(tmp_path, at_budget, name=f"campaign-c{budget}")
+    camp = _store(tmp_path, at_budget, name=f"campaign-c{budget}{tag}")
     manifest = json.loads((camp / "campaign.json").read_text())
     manifest["id"] = cid
     manifest["core_budget"] = budget
@@ -810,6 +810,18 @@ def test_a_node_class_change_restarts_the_scaling_line(tmp_path):
     assert "restart" not in p32
     assert "TCP between nodes" in _point(ms, "palace:mumps", 32)["labels"]
     assert "TCP between nodes" not in p32["labels"]
+
+
+def test_one_budget_on_two_node_classes_restarts_the_line_once(tmp_path):
+    c8 = _budget_campaign(tmp_path, 8, _on("standard", factor=2.0))
+    c16 = _budget_campaign(tmp_path, 16, _on("standard"))
+    c16h = _budget_campaign(tmp_path, 16, _on("highmem"), tag="-hm")
+    ms = _case(_json(tmp_path, c8, c16, c16h), "microstrip")
+    line = next(s for s in ms["scaling"]["solvers"] if s["solver"] == "gfem:direct")
+    order = [(p["core_budget"], p["node_class"]) for p in line["points"]]
+    assert order == [(8, "standard"), (16, "standard"), (16, "highmem")]
+    restarts = [p.get("restart") for p in line["points"]]
+    assert restarts == [None, None, "line restarts: node class standard -> highmem"]
 
 
 def test_scaling_section_and_figure(tmp_path):

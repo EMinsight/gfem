@@ -1227,9 +1227,12 @@ def _scaling_point(part: Mapping[str, Any], block: Mapping[str, Any], lay) -> An
 def _efficiency(points: list[dict[str, Any]]) -> None:
     r"""Speedup :math:`S(c) = T(c_0)/T(c)` and efficiency :math:`c_0 T(c_0)/(c T(c))`.
 
-    :math:`c_0` is the smallest budget of the point's node class; a point whose class
-    differs from the previous point's restarts the line.
+    :math:`c_0` is the smallest budget of the point's node class. The points are
+    ordered by (first appearance of their class, budget), so each class is one
+    stretch of the line; the first point of each later stretch restarts it.
     """
+    seen = list(dict.fromkeys(p["node_class"] for p in points))
+    points.sort(key=lambda p: (seen.index(p["node_class"]), p["core_budget"]))
     base: dict[str | None, dict[str, Any]] = {}
     prev: str | None = points[0]["node_class"] if points else None
     for p in points:
