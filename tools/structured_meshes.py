@@ -117,14 +117,18 @@ def write_msh22(path: str | Path, mesh: tuple) -> Path:
 
     Args:
         path: The file to write.
-        mesh: ``(nodes, tets, tet_names, tris, tri_names)`` from `structured`.
+        mesh: ``(nodes, tets, tet_names, tris, tri_names)`` from `structured`,
+            or ``(nodes, tris, tri_names, segments, segment_names)`` from
+            `z0_face` (a triangle-only mesh: areas and boundary lines).
     """
     path = Path(path)
-    nodes, tets, tet_names, tris, tri_names = mesh
-    vols = list(dict.fromkeys(tet_names))
-    surfs = list(dict.fromkeys(tri_names))
-    tag = {(3, n): i + 1 for i, n in enumerate(vols)}
-    tag |= {(2, n): len(vols) + i + 1 for i, n in enumerate(surfs)}
+    nodes, cells, cell_names, facets, facet_names = mesh
+    dim = np.shape(cells)[1] - 1  # 3 for tetrahedra, 2 for triangles
+    gmsh_type = {1: 1, 2: 2, 3: 4}  # line, triangle, tetrahedron
+    vols = list(dict.fromkeys(cell_names))
+    surfs = list(dict.fromkeys(facet_names))
+    tag = {(dim, n): i + 1 for i, n in enumerate(vols)}
+    tag |= {(dim - 1, n): len(vols) + i + 1 for i, n in enumerate(surfs)}
     lines = ["$MeshFormat", "2.2 0 8", "$EndMeshFormat", "$PhysicalNames"]
     lines.append(str(len(tag)))
     lines += [f'{dim} {t} "{name}"' for (dim, name), t in tag.items()]
@@ -132,16 +136,16 @@ def write_msh22(path: str | Path, mesh: tuple) -> Path:
     lines += [
         f"{i + 1} {x:.17g} {y:.17g} {z:.17g}" for i, (x, y, z) in enumerate(nodes)
     ]
-    lines += ["$EndNodes", "$Elements", str(len(tris) + len(tets))]
+    lines += ["$EndNodes", "$Elements", str(len(facets) + len(cells))]
     k = 0
-    for tri, name in zip(tris, tri_names, strict=True):
-        k += 1
-        t = tag[2, name]
-        lines.append(f"{k} 2 2 {t} {t} " + " ".join(str(v + 1) for v in tri))
-    for tet, name in zip(tets, tet_names, strict=True):
-        k += 1
-        t = tag[3, name]
-        lines.append(f"{k} 4 2 {t} {t} " + " ".join(str(v + 1) for v in tet))
+    groups = ((dim - 1, facets, facet_names), (dim, cells, cell_names))
+    for d, elements, names in groups:
+        for element, name in zip(elements, names, strict=True):
+            k += 1
+            t = tag[d, name]
+            lines.append(
+                f"{k} {gmsh_type[d]} 2 {t} {t} " + " ".join(str(v + 1) for v in element)
+            )
     lines.append("$EndElements")
     # by rename: every rank of a launched test may write this same file, and rank 0
     # must not read another rank's half
@@ -151,6 +155,62 @@ def write_msh22(path: str | Path, mesh: tuple) -> Path:
     Path(partial).chmod(0o644)
     Path(partial).replace(path)
     return path
+
+
+def z0_face(mesh: tuple) -> tuple:
+    """The z = 0 face of a `structured` mesh as a triangle-only mesh.
+
+    Nodes are the mesh's z = 0 nodes in their order (z kept, equal to 0).
+    Each triangle is a tetrahedron's face lying on z = 0, oriented
+    counterclockwise in the xy plane, named after that tetrahedron's volume.
+    Each boundary edge of those triangles becomes a line, named after the
+    named side triangle standing on it (the triangle of the face above that
+    edge which contains it); an edge with none raises.
+
+    Returns:
+        ``(nodes, triangles, triangle names, segments, segment names)``, which
+        `write_msh22` writes.
+    """
+    nodes, tets, tet_names, tris, tri_names = mesh
+    on = nodes[:, 2] == 0.0
+    index = np.full(len(nodes), -1)
+    index[on] = np.arange(on.sum())
+    faces, face_names = [], []
+    for tet, name in zip(tets, tet_names, strict=True):
+        face = [v for v in tet if on[v]]
+        if len(face) == 3:
+            faces.append(face)
+            face_names.append(name)
+    faces = np.array(faces)
+    p = nodes[faces][:, :, :2]
+    d1, d2 = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+    clockwise = d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0] < 0
+    faces[clockwise] = faces[clockwise][:, [0, 2, 1]]
+
+    sides = {}
+    for tri, name in zip(tris, tri_names, strict=True):
+        edge = [v for v in tri if on[v]]
+        if len(edge) == 2:
+            sides[frozenset(edge)] = name
+    count = {}
+    for face in faces:
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            key = frozenset((face[a], face[b]))
+            count[key] = count.get(key, 0) + 1
+    segments, segment_names = [], []
+    for face in faces:
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            key = frozenset((face[a], face[b]))
+            if count[key] == 1:
+                segments.append((face[a], face[b]))
+                segment_names.append(sides[key])
+    return (
+        nodes[on],
+        index[faces],
+        face_names,
+        index[np.array(segments)].reshape(-1, 2),
+        segment_names,
+    )
 
 
 def plate(
