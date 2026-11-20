@@ -122,6 +122,13 @@ _REFUSALS = {
         "ARPACK runs on one process: use eigen_solver='slepc' or 'auto' above one "
         f"rank, {_COPIES}."
     ),
+    "mode_field_gradient": (
+        "The gradient of an eigenmode's mode-field output (q_port, the "
+        "participations, e_fields) has no distributed path; the eigenfrequencies "
+        "(omega, so frequency and Q) keep theirs. Wrap the mode-field output in "
+        "jax.lax.stop_gradient to use its value without its derivative, "
+        f"{_COPIES}."
+    ),
     "electrostatic": f"An electrostatic solve has no distributed path: {_RUN_COPIES}.",
     "thermal": f"A thermal solve has no distributed path: {_RUN_COPIES}.",
     "dc_conduction": f"A DC conduction solve has no distributed path: {_RUN_COPIES}.",
