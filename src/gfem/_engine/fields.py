@@ -367,7 +367,7 @@ def _hcurl_numbers(
             _blocks(first_cell, cells, in_cell),
         ]
     )
-    total = first_cell + np.count_nonzero(tables["cells"] >= 0) * in_cell
+    total = int(first_cell + np.count_nonzero(tables["cells"] >= 0) * in_cell)
     return numbers, total
 
 
@@ -403,7 +403,7 @@ def _h1_numbers(
             _blocks(first_cell, tables["cells"][mine], in_cell),
         ]
     )
-    total = first_cell + np.count_nonzero(tables["cells"] >= 0) * in_cell
+    total = int(first_cell + np.count_nonzero(tables["cells"] >= 0) * in_cell)
     return numbers, total
 
 
