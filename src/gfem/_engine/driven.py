@@ -607,7 +607,7 @@ def expansion_matrix(
 def element_gap(
     periodic: ngs.FESpace,
     unpaired: ngs.FESpace,
-    matrix: scipy.sparse.spmatrix,
+    matrix: scipy.sparse.csr_matrix,
     trials: int = 2,
 ) -> float:
     r"""The largest element-wise gap between a periodic field and its ``matrix`` image.
