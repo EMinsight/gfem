@@ -1985,7 +1985,7 @@ def _check_mode_field_reach(model: Model, reach: str | None) -> None:
 
 def _check_isolated(omega: np.ndarray, mode: int, rtol: float) -> None:
     """Raise unless ``mode`` is apart from every other mode."""
-    from gfem._eigen.rule import _ISOLATED
+    from gfem._eigen.reach import _ISOLATED
 
     others = [i for i in range(len(omega)) if i != mode]
     if not others:

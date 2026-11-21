@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import cmath
 import dataclasses
+import functools
 import math
 from collections.abc import Callable, Sequence
 from typing import Any, Literal, cast
@@ -91,9 +92,8 @@ from gfem._boundaries import (
     WavePort,
     wave_port_surfaces,
 )
-from gfem._eigen import slepc
-from gfem._eigen.adjoint import deflated_solve, polish, reshift_offset
-from gfem._eigen.arpack import shift_invert
+from gfem._eigen import arpack, slepc
+from gfem._eigen.adjoint import deflated_solve, reshift_offset
 from gfem._eigen.kept import KeptOperator
 from gfem._eigen.operator import EigenOperator
 from gfem._eigen.ratios import (
@@ -102,8 +102,9 @@ from gfem._eigen.ratios import (
     sheet_capacitors,
     sheet_inductors,
 )
-from gfem._eigen.refine import TRUSTED, Refined, refine
-from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
+from gfem._eigen.reach import _ISOLATED, GapSet, _incomplete, isolated
+from gfem._eigen.refine import Refined
+from gfem._eigen.search import FoundModes, ModeSearch
 from gfem._engine import dispersion, terms
 from gfem._engine.cache import Entry, discretization
 from gfem._engine.coefficients import anisotropic_regions
@@ -165,64 +166,14 @@ _INNER = 1e-2
 #: to ask for. It also bounds PETSc Krylov inner solves, whose ``ksp_rtol``
 #: floor is no lower.
 _INNER_FLOOR = 1e-13
-#: Seeds with Re k at or below this fraction of the shift are the curl-curl
-#: null space, a lossy medium's relaxation modes (Re k = 0), mirror roots or
-#: a conductor's linearization cluster (Re k near -sigma), not resonances. A
-#: second-order absorbing wall's cluster lies near Re k = 2 sigma: this test
-#: keeps it, and only the distance to the target ranks the modes ahead of it.
-_STATIC = 1e-6
-#: A converged pair of a law model whose curl energy is at most this fraction
-#: of its electric energy (`EigenOperator.curl_ratio`) is a gradient field at
-#: a zero of eps(omega), a longitudinal mode: dropped like a static pair
-#: (round-off reaches it only below k h_max ~ 3e-6,
-#: transverse modes measured 0.55 and up).
-_LONGITUDINAL = 1e-4
-#: A refined mode closer than this many eigen tolerances (relative, and at
-#: least ``SolverOptions.cluster_rtol``) to accepted modes, with this much of
-#: its norm in their span, is one of them again.
-_DUPLICATE = 10.0
 #: The modal overlap from which a seed solve's error names the region: every
 #: case below it converged in 47 shift solves or fewer, every hang had 70 or
 #: more.
 _CROWDED = 10.0
-_OVERLAP = 0.9
-#: A duplicate with more than this fraction of its norm outside the span
-#: landed on a degenerate eigenspace: that part is refined as the twin the
-#: seed solve may not have returned (a frozen seed solve gives one Ritz
-#: value for a pair).
-_TWIN = 1e-2
-#: Ritz values this close (relative) are one multiple eigenvalue. The seed
-#: solver returns an arbitrary basis of its eigenspace, as nearly parallel as
-#: round-off makes it: the seeds are orthonormalized, or two members would
-#: overlap like one mode refined twice. Round-off also splits the multiple
-#: Ritz value: by up to 3e-8 for a frozen nonlinear seed at its 1e-3 seed
-#: tolerance.
-_MULTIPLE = 1e-6
-#: A seed that needs correction steps is refined on a new factorization at
-#: its own Ritz value when the current shift would contract its error by
-#: less than this per step (the shift is nearer another Ritz value: residual
-#: inverse iteration would drift to that mode).
-_CONTRACTION = 0.5
-#: Arnoldi runs, each asking for twice as many pairs as the last, before
-#: too few modes near the target is an error.
-_ATTEMPTS = 3
-#: Arnoldi tolerance of a nonlinear problem's frozen seeds. Their roots are
-#: off the true ones by the freeze error anyway (small for a conductor,
-#: whose seeds reach backward error 1e-8 to 1e-4 now that the projection
-#: fixes its potential on the wall; up to 18 % for a second-order
-#: absorbing wall) and every seed is refined, so converging them further
-#: only spends shift solves. The linearization
-#: cluster's solves are avoided by asking for few pairs (see the nev comment
-#: in the forward pass), not by this tolerance.
-_SEED_TOLERANCE = 1e-3
 #: Cotangents on the members of a cluster that agree to this (relative to
 #: the largest) make an objective symmetric in the cluster to first order
 #: (a smooth symmetric function's cotangents differ by O(gap)).
 _SYMMETRIC_RTOL = 1e-3
-#: The smallest relative gap of a mode in mode-field reach (with
-#: ``SolverOptions.cluster_rtol`` if larger): an isolated mode,
-#: polished in the forward and given mode-field gradients.
-_ISOLATED = 1e-4
 #: A Bloch cluster's ``G = Y^T T' X`` with a condition number above this is
 #: singular: a defective eigenvalue, whose frequency has no derivative.
 _DEFECTIVE = 1e8
@@ -258,53 +209,6 @@ class _InputRefusal:
 
     kind: Literal["nodes", "lumped", "law"]
     message: str
-
-
-#: ``|v^H A u - conj(u^H A v)|`` below this times ``|A| |u| |v|`` for ``K``
-#: and ``M``: a Hermitian (lossless) Bloch problem, whose eigenvalues are real.
-_HERMITIAN = 1e-12
-
-
-@dataclasses.dataclass(frozen=True)
-class GapSet:
-    """The modes a mode's relative gap is measured to.
-
-    Attributes:
-        pool: The ``k`` of every converged, distinct pair the selection
-            accepted, those cut beyond ``n_modes`` included, and of a mode
-            found after the count was met: the modes themselves among them.
-        guard: The guard mode's ``k``, or ``None`` when none was found.
-        ritz: The seed solve's unrefined Ritz values (polynomial operators
-            only): the gap set when the pool and the guard leave it empty.
-    """
-
-    pool: np.ndarray
-    guard: complex | None
-    ritz: np.ndarray
-
-    def gap(self, k: complex) -> float:
-        """``min |k - k_j| / max(|k|, |k_j|)`` over ``k``'s neighbours.
-
-        The neighbours are the pool and the guard, ``k``'s own entry (the
-        pool's nearest to it) left out; without any, the Ritz values but
-        the nearest to ``k`` (its own seed). ``inf`` when there are none:
-        the mode is isolated.
-        """
-        near = _others(self.pool, k)
-        if self.guard is not None:
-            near = np.append(near, self.guard)
-        if not len(near):
-            near = _others(self.ritz, k)
-        if not len(near):
-            return math.inf
-        return float(np.min(np.abs(near - k) / np.maximum(abs(k), np.abs(near))))
-
-
-def _others(values: np.ndarray, k: complex) -> np.ndarray:
-    """``values`` without the one nearest ``k`` (``k``'s own)."""
-    if not len(values):
-        return values
-    return np.delete(values, int(np.argmin(np.abs(values - k))))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -441,7 +345,7 @@ class EigenmodeRule:
         #: The last backward's explicit terms in the lumped ports' values.
         self._explicit: dict[tuple, float] = {}
         #: Whether a region holds a permittivity law: only then can a
-        #: converged pair be a longitudinal mode (`_longitudinal`).
+        #: converged pair be a longitudinal mode (`ModeSearch._longitudinal`).
         self._laws = bool(dispersion.law_regions(model))
 
     # --- forward -----------------------------------------------------------------
@@ -506,9 +410,14 @@ class EigenmodeRule:
                     _timing.phase("solve", iterations=()),
                     _mpi.raised_together(EigenmodeConvergenceError),
                 ):
-                    modes, guard, gaps, unpolished = self._find(
-                        eop, divfree, sigma, guard=keep or self.polishable
+                    found = self.search().find(
+                        eop,
+                        divfree,
+                        sigma,
+                        guard=keep or self.polishable,
+                        polish_isolated=self.polishable,
                     )
+                modes = found.modes
                 per_hz = const.c / built.scale / (2 * math.pi)
                 for j, mode in enumerate(modes):
                     f = mode.k.real * per_hz
@@ -526,7 +435,7 @@ class EigenmodeRule:
                     stacklevel=2,
                     comm=comm,
                 )
-                outputs["cluster"] = clusters(ks, opts.cluster_rtol)
+                outputs["cluster"] = found.labels
                 if request.adjoint_loads:
                     self._ride_duals(
                         model,
@@ -534,7 +443,7 @@ class EigenmodeRule:
                         eop,
                         x=x,
                         ks=ks,
-                        found=(outputs["cluster"], guard, gaps, unpolished),
+                        found=found,
                         loads=cast("Sequence[DualRequest]", request.adjoint_loads),
                         into=request.adjoints,
                     )
@@ -553,10 +462,10 @@ class EigenmodeRule:
                         ks,
                         x,
                         y,
-                        labels=outputs["cluster"],
-                        guard=guard,
-                        gaps=gaps,
-                        polish_failed=unpolished,
+                        labels=found.labels,
+                        guard=found.guard,
+                        gaps=found.gaps,
+                        polish_failed=found.polish_failed,
                     )
             except LinearSolverConvergenceError as err:
                 raise self._inner_failure(err) from err
@@ -575,7 +484,7 @@ class EigenmodeRule:
         *,
         x: np.ndarray,
         ks: list[complex],
-        found: tuple[np.ndarray, Refined | None, GapSet, np.ndarray],
+        found: FoundModes,
         loads: Sequence[DualRequest],
         into: dict[tuple[int, str], ParticipationDual],
     ) -> None:
@@ -585,10 +494,11 @@ class EigenmodeRule:
         `gfem.refine_mesh` follows it; a mode out of mode-field reach
         (`isolated`) gets none, and the estimate raises for it. ``found``
         holds the modes' cluster labels, the guard mode, the gap set and
-        the failed polishes (`_find`). The duals land in ``into`` by
-        ``(start, region)``.
+        the failed polishes (`ModeSearch.find`). The duals land in ``into``
+        by ``(start, region)``.
         """
-        labels, guard, gaps, unpolished = found
+        labels, guard = found.labels, found.guard
+        gaps, unpolished = found.gaps, found.polish_failed
         rtol = self.options.cluster_rtol
         guard_k = None if guard is None else guard.k
         gap = np.array(
@@ -687,85 +597,6 @@ class EigenmodeRule:
             message = f"{message} For an eigenmode solve, try {remedy}."
         return LinearSolverConvergenceError(message)
 
-    def _find(
-        self, eop: EigenOperator, divfree, sigma: float, *, guard: bool
-    ) -> tuple[list[Refined], Refined | None, GapSet, np.ndarray]:
-        """The ``n_modes`` modes, the guard mode, the gap set, and failed polishes.
-
-        Seed solves at the target (each attempt asking for twice as many
-        pairs as the last) and the selection of their refined pairs
-        (`_select`). A seed solve that stops at its restart bound ends the
-        attempts: its converged pairs are selected, and a wider retry would
-        converge none. ``guard``: refine one mode beyond
-        ``n_modes`` (``None`` when no seed gave one). Where the forward
-        polishes (`polishable`), each isolated mode is polished (`_polish`)
-        on the factors the search leaves, before a lossless problem's ``k``
-        are snapped real; the last return flags the modes whose polish
-        failed (kept unpolished).
-
-        Raises:
-            EigenmodeConvergenceError: Fewer than ``n_modes`` modes
-                converged, or the modes found would skip a pair that nearly
-                converged (`_skipped`).
-        """
-        opts = self.options
-        n_modes = self.problem.n_modes
-        seed_tolerance = opts.eigen_tolerance
-        # the companion problem also holds each mode's mirror root
-        # -conj(k), |k + sigma| from the shift (behind its mode, about
-        # 2 sigma away for a mode near the target), and pairs near
-        # k = 0 about sigma away; they take slots in front of wanted
-        # modes farther than that, so a damped linear seed asks for
-        # twice as many pairs. A nonpolynomial seed asks for one pair
-        # beyond n_modes, the guard's slot: behind its modes lies the
-        # linearization cluster, which costs shift solves to converge
-        # and holds no mode.
-        if eop.nonpolynomial:
-            nev = n_modes + 1
-            seed_tolerance = max(seed_tolerance, _SEED_TOLERANCE)
-        else:
-            nev = max(2 * n_modes, n_modes + 2)
-            nev *= 2 if eop.seed_damped else 1
-        found = None
-        bound = None
-        for _ in range(_ATTEMPTS):
-            if eop.shift != sigma:
-                # a retry is a seed solve: at the target, on a
-                # factorization counted for the seed (refinement
-                # reshifted it)
-                eop.reshift(sigma, solves=MIN_SUBSPACE)
-            try:
-                k, vectors = self._shift_invert(eop, divfree, nev, tol=seed_tolerance)
-            except SeedBoundReached as err:
-                bound = err
-                k, vectors = err.k, err.vectors
-            modes, failed, found, pool, ritz = self._select(
-                eop, k, vectors, sigma, guard=guard
-            )
-            if len(modes) == n_modes or failed or bound is not None:
-                break
-            nev *= 2  # too few candidates near the target: look wider
-        if bound is not None and len(modes) < n_modes:
-            raise EigenmodeConvergenceError(self._seed_message(bound))
-        skipped = self._skipped(modes, failed, sigma, layout=eop.layout)
-        if len(modes) < n_modes or skipped:
-            raise EigenmodeConvergenceError(
-                self._convergence_message(eop, modes, failed, skipped)
-            )
-        guard_k = None if found is None else found.k
-        unpolished = np.zeros(len(modes), dtype=bool)
-        if self.polishable:
-            gap_set = GapSet(pool, guard_k, ritz)
-            modes, unpolished = self._polish(eop, modes, gap_set, guard_k)
-        lossless = _is_hermitian if eop.general else _is_real
-        if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
-            modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
-            if found is not None:
-                found = dataclasses.replace(found, k=found.k.real)
-            pool = pool.real.astype(complex)
-        gaps = GapSet(pool, None if found is None else found.k, ritz)
-        return modes, found, gaps, unpolished
-
     @property
     def polishable(self) -> bool:
         """Whether the forward polishes its isolated modes.
@@ -780,53 +611,55 @@ class EigenmodeRule:
             and not self._periodic_surfaces
         )
 
-    def _polish(
-        self,
-        eop: EigenOperator,
-        modes: list[Refined],
-        gaps: GapSet,
-        guard: complex | None,
-    ) -> tuple[list[Refined], np.ndarray]:
-        """``modes`` with each isolated one polished (`polish`), and which failed.
+    def search(self) -> ModeSearch:
+        """The mode search of this problem and options.
 
-        A mode is isolated (`isolated`) when it is alone in its cluster, the
-        guard mode is not in its cluster, and its relative gap is at least
-        `_ISOLATED` (``cluster_rtol`` if larger). The guard mode is never
-        polished. A polish that does not converge (or whose solve is not
-        accepted) is evidence of a neighbour the gap set missed, such as the
-        twin of a degenerate pair the seed solve never returned: the mode
-        is kept as mode refinement left it and flagged, and its entry
-        records it as not isolated. A
-        solve never raises because of polishing.
+        Its eigen solver is ``SolverOptions.eigen_solver``'s
+        ``shift_invert``; above one rank ``"auto"`` is SLEPc.
         """
-        ks = [m.k for m in modes]
-        rtol = self.options.cluster_rtol
-        labels = clusters(ks, rtol)
-        gap = np.array([gaps.gap(k) for k in ks])
-        reach = isolated(labels, _incomplete(ks, labels, guard, rtol), gap, rtol)
-        failed = np.zeros(len(modes), dtype=bool)
-        out = []
-        for i, m in enumerate(modes):
-            if reach[i]:
-                try:
-                    m = polish(eop, m, float(gap[i]), index=i)  # noqa: PLW2901
-                except (EigenmodeConvergenceError, LinearSolverConvergenceError):
-                    failed[i] = True
-            out.append(m)
-        return out, failed
+        opts = self.options
+        if opts.eigen_solver == "slepc" or self.comm is not None:
+            solver = functools.partial(slepc.shift_invert, options=opts.petsc_options)
+        else:
+            solver = arpack.shift_invert
+        return ModeSearch(
+            n_modes=self.problem.n_modes,
+            target=self.problem.target,
+            eigen_tolerance=opts.eigen_tolerance,
+            max_refine_iterations=opts.max_refine_iterations,
+            cluster_rtol=opts.cluster_rtol,
+            laws=self._laws,
+            eigen_solver=solver,
+            crowding=self._crowding,
+        )
 
-    def _shift_invert(
-        self, op: EigenOperator, project, nev: int, *, tol: float
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """The seed solve on ``SolverOptions.eigen_solver`` (see `shift_invert`).
+    def _crowding(self) -> str | None:
+        """The seed-bound error's line on a region crowded with modes, or ``None``.
 
-        Above one rank ``"auto"`` is SLEPc.
+        Names the lossy region with the largest modal overlap at the target
+        (`_modal_overlap`) when it is `_CROWDED` or more, and for a law
+        region its term nearest the target: a diagnosis only.
         """
-        if self.options.eigen_solver == "slepc" or self.comm is not None:
-            options = self.options.petsc_options
-            return slepc.shift_invert(op, project, nev, tol=tol, options=options)
-        # the module's name, looked up now: tests replace it
-        return shift_invert(op, project, nev, tol=tol)
+        target = self.problem.target
+        overlaps = {
+            region: _modal_overlap(self._mesh, region, material, target)
+            for region, material in self._materials.items()
+            if region in self.regions and isinstance(material, Material)
+        }
+        if overlaps:
+            region = max(overlaps, key=lambda r: overlaps[r])
+            if overlaps[region] >= _CROWDED:
+                eps_r = self._materials[region].eps_r
+                term = (
+                    f" ({dispersion.nearest_term(eps_r, target)})"
+                    if isinstance(eps_r, PermittivityLaw)
+                    else ""
+                )
+                return (
+                    f"Region {region!r} holds about {overlaps[region]:.0f} modes "
+                    f"within one linewidth of the target{term}."
+                )
+        return None
 
     def operator(self, op: DrivenOperator, sigma: float) -> EigenOperator:
         """The eigen operator ``T(k)`` of the driven operator, shifted at ``sigma``.
@@ -929,292 +762,6 @@ class EigenmodeRule:
         if y is not None:
             fields["y"] = y
         return Entry(self.physics, handle=holder, fields=fields)
-
-    def _select(
-        self,
-        op: EigenOperator,
-        k: np.ndarray,
-        vectors: np.ndarray,
-        sigma: float,
-        *,
-        guard: bool = False,
-    ) -> tuple[list[Refined], list[Refined], Refined | None, np.ndarray, np.ndarray]:
-        """Refine the seeds nearest ``sigma`` until ``n_modes`` distinct ones.
-
-        Seeds (and refined pairs) with ``Re k`` near zero or negative are the
-        curl-curl null space, a lossy medium's relaxation modes, mirror
-        roots or a conductor's linearization cluster, not resonances: they
-        are dropped, and so is a converged longitudinal mode of a law model
-        (`_longitudinal`).
-        A second-order absorbing wall's cluster has ``Re k`` near ``2
-        sigma``, so it is not dropped; the modes nearer the target come
-        first. A seed far from the current shift whose refinement gives
-        nothing to accept as its mode (see `_lost`) is refined again on a
-        factorization at its own Ritz value. A converged pair that is not
-        static and not in the span of the accepted modes (`_in_span`) is
-        never discarded: the first refinement of such a seed is accepted
-        too when it is one, so the accepted modes can outnumber
-        ``n_modes``; they are sorted by distance to the target and cut. A
-        pair in that span with more than `_TWIN` of its norm outside it
-        landed on a degenerate eigenspace: its outside part is refined and,
-        converged, is the twin the seed solve did not give.
-        With ``guard``, the remaining seeds are refined (without
-        refactorizing) until one more distinct mode converges: the guard
-        mode, or the nearest mode cut off when there is one. It is
-        best-effort: none is found when no remaining seed converges to a
-        mode.
-
-        Returns:
-            The accepted modes, nearest ``sigma`` first (at most
-            ``n_modes``), the seeds that did not converge, the guard
-            mode (``None`` without ``guard`` or when no seed gave one), the
-            pool of the gap set (`GapSet`): the ``k`` of every converged,
-            distinct pair accepted, those cut beyond ``n_modes`` included,
-            and of a mode found after the count was met, nearest ``sigma``
-            first; and the seeds' unrefined Ritz values (none for a
-            nonpolynomial operator, whose frozen seeds are too rough).
-        """
-        n_modes = self.problem.n_modes
-        tolerance = self.options.eigen_tolerance
-        seeds = [j for j in range(len(k)) if k[j].real > _STATIC * sigma]
-        seeds.sort(key=lambda j: abs(k[j].real - sigma))
-        layout = op.layout
-        vectors = _orthonormal_multiples(k, vectors, layout=layout)
-        accepted: list[Refined] = []
-        failed: list[Refined] = []
-        extra = None
-        window = self._window()
-        steps = self.options.max_refine_iterations
-
-        def distinct(mode: Refined) -> Refined | None:
-            # a converged pair in the span of the accepted modes is a duplicate
-            # unless its part outside the span is more than round-off: then it
-            # landed on a degenerate eigenspace whose twin the seed solve
-            # missed, and that part, refined, is the twin
-            if not _in_span(mode, accepted, window, layout=layout):
-                return mode
-            rest = _outside(mode, accepted, window, layout=layout)
-            if rest is None:
-                return None
-            twin = refine(
-                op,
-                mode.k,
-                rest,
-                tolerance=tolerance,
-                max_iterations=steps,
-                reshift=False,
-            )
-            if (
-                twin.converged
-                and twin.k.real > _STATIC * sigma
-                and not self._longitudinal(op, twin)
-                and not _in_span(twin, accepted, window, layout=layout)
-            ):
-                return twin
-            return None
-
-        for j in seeds:
-            full = len(accepted) >= n_modes
-            if full and not guard:
-                break
-            seed = complex(k[j])
-            far = _contraction(seed, op.shift, k) > _CONTRACTION
-            mode = refine(
-                op,
-                seed,
-                vectors[:, j],
-                tolerance=tolerance,
-                max_iterations=steps,
-                reshift=not full,
-                reshift_first=far,
-            )
-            if (
-                far
-                and not full
-                and (
-                    _lost(
-                        mode,
-                        seed,
-                        k,
-                        sigma,
-                        accepted=accepted,
-                        window=window,
-                        layout=layout,
-                    )
-                    or self._longitudinal(op, mode)
-                )
-            ):
-                # a frozen seed rougher than TRUSTED, refined on a shift nearer
-                # another mode, wanders where round-off takes it (onto an
-                # accepted mode, a mirror root, or another seed's mode): refine
-                # it again on a factorization at its own Ritz value. Where it
-                # wandered may be a mode no other seed gives: it is kept
-                if (
-                    mode.converged
-                    and mode.k.real > _STATIC * sigma
-                    and not self._longitudinal(op, mode)
-                ):
-                    kept = distinct(mode)
-                    if kept is not None:
-                        accepted.append(kept)
-                op.reshift(seed)
-                mode = refine(
-                    op, seed, vectors[:, j], tolerance=tolerance, max_iterations=steps
-                )
-            if mode.k.real <= _STATIC * sigma or self._longitudinal(op, mode):
-                continue
-            if not mode.converged:
-                if not full:
-                    failed.append(mode)
-                continue
-            mode = distinct(mode)
-            if mode is None:
-                continue
-            if full:
-                extra = mode
-                break
-            accepted.append(mode)
-        accepted.sort(key=lambda m: abs(m.k.real - sigma))
-        pool = [m.k for m in accepted] + ([] if extra is None else [extra.k])
-        pool.sort(key=lambda z: abs(z.real - sigma))
-        ritz = [complex(k[j]) for j in seeds] if not op.nonpolynomial else []
-        if guard and len(accepted) > n_modes:
-            # nearer the target than a guard found after the count was met
-            extra = accepted[n_modes]
-        return (
-            accepted[:n_modes],
-            failed,
-            extra,
-            np.array(pool, dtype=complex),
-            np.array(ritz, dtype=complex),
-        )
-
-    def _longitudinal(self, op: EigenOperator, mode: Refined) -> bool:
-        """Whether ``mode`` is a converged longitudinal mode of a law model.
-
-        A gradient field at a zero of a law's eps(omega): its curl energy
-        is at most `_LONGITUDINAL` of its electric energy
-        (`EigenOperator.curl_ratio`). One ``K`` apply; never on a
-        model without a law, where eps has no zero.
-        """
-        if not self._laws or not mode.converged:
-            return False
-        return op.curl_ratio(mode.k, mode.x) <= _LONGITUDINAL
-
-    def _window(self) -> float:
-        """Relative distance in ``k`` within which two refined pairs can be one mode."""
-        return max(_DUPLICATE * self.options.eigen_tolerance, self.options.cluster_rtol)
-
-    def _skipped(
-        self,
-        accepted: list[Refined],
-        failed: list[Refined],
-        sigma: float,
-        *,
-        layout: DofLayout = ONE_PROCESS,
-    ) -> list[Refined]:
-        """The unconverged pairs that the accepted modes may have skipped.
-
-        A pair that stopped within `TRUSTED` of an eigenpair, nearer the
-        target than the farthest accepted mode and outside the span of the
-        accepted modes, is a mode the set would silently leave out. Rougher
-        pairs (members of a linearization cluster) are not modes.
-        """
-        if len(accepted) < self.problem.n_modes:
-            return []  # the count already raises
-        reach = max(abs(m.k.real - sigma) for m in accepted)
-        window = self._window()
-        return [
-            m
-            for m in failed
-            if m.error <= TRUSTED
-            and abs(m.k.real - sigma) < reach
-            and not _in_span(m, accepted, window, layout=layout)
-        ]
-
-    def _convergence_message(
-        self,
-        op: EigenOperator,
-        accepted: list[Refined],
-        failed: list[Refined],
-        skipped: list[Refined] | None = None,
-    ) -> str:
-        """Why the solve raises: too few modes, or ``skipped`` (see `_skipped`)."""
-        c = const.c / op.scale / (2 * math.pi)
-        target = hertz(self.problem.target)
-        tolerance = (
-            f"backward error {self.options.eigen_tolerance:g} "
-            "(SolverOptions.eigen_tolerance)"
-        )
-        if skipped:
-            farthest = hertz(accepted[-1].k.real * c)  # sorted by distance
-            head = (
-                f"Eigenmode found {len(accepted)} mode(s) near {target} to "
-                f"{tolerance}, the farthest at {farthest}, but a pair "
-                "nearer the target did not converge: the modes found would "
-                "skip it."
-            )
-        else:
-            head = (
-                f"Eigenmode found {len(accepted)} of the {self.problem.n_modes} "
-                f"requested mode(s) near {target} to {tolerance}."
-            )
-        lines = [
-            head,
-            *(
-                f"  not converged: {hertz(m.k.real * c)}, best backward "
-                f"error {m.error:.3g} after {m.iterations} refinement steps"
-                for m in (skipped or failed)
-            ),
-        ]
-        lines.append(
-            "Remedies: move Eigenmode.target closer to the wanted modes; loosen "
-            "SolverOptions.eigen_tolerance or raise max_refine_iterations; for a "
-            "mode with Q below about 2, find the resonance from a gfem.Driven "
-            "sweep instead."
-        )
-        return "\n".join(lines)
-
-    def _seed_message(self, bound: SeedBoundReached) -> str:
-        """Why the solve raises after a seed solve stopped at its restart bound.
-
-        Names the lossy region with the largest modal overlap at the target
-        (`_modal_overlap`) when it is `_CROWDED` or more, and for a law
-        region its term nearest the target: a diagnosis only.
-        """
-        target = self.problem.target
-        head = (
-            f"Eigenmode's seed solve near {hertz(target)} did not converge in "
-            f"{bound.restarts} restarts ({bound.applies} shift solves): the modes "
-            "there are closer together than their linewidth, so the nearest ones "
-            "cannot be told apart."
-        )
-        lines = [head]
-        overlaps = {
-            region: _modal_overlap(self._mesh, region, material, target)
-            for region, material in self._materials.items()
-            if region in self.regions and isinstance(material, Material)
-        }
-        if overlaps:
-            region = max(overlaps, key=lambda r: overlaps[r])
-            if overlaps[region] >= _CROWDED:
-                eps_r = self._materials[region].eps_r
-                term = (
-                    f" ({dispersion.nearest_term(eps_r, target)})"
-                    if isinstance(eps_r, PermittivityLaw)
-                    else ""
-                )
-                lines.append(
-                    f"Region {region!r} holds about {overlaps[region]:.0f} modes "
-                    f"within one linewidth of the target{term}."
-                )
-        lines.append(
-            "Remedies: move Eigenmode.target where the modes are separated (away "
-            "from a lossy resonance); find overlapping resonances from a "
-            "gfem.Driven sweep; raise eps_max_it in SolverOptions.petsc_options "
-            "(SLEPc) only if the modes are known to be separated."
-        )
-        return "\n".join(lines)
 
     # --- post-processing ---------------------------------------------------------
 
@@ -2108,62 +1655,6 @@ class EigenmodeRule:
         )
 
 
-def _close(a: complex, b: complex, rtol: float) -> bool:
-    return abs(a - b) <= rtol * max(abs(a), abs(b))
-
-
-def _incomplete(
-    ks: list[complex], labels: np.ndarray, guard: complex | None, rtol: float
-) -> np.ndarray:
-    """Whether each mode's cluster reaches the guard mode ``guard`` (cut short)."""
-    incomplete = np.zeros(len(ks), dtype=bool)
-    if guard is None:
-        return incomplete
-    for label in np.unique(labels):
-        members = np.flatnonzero(labels == label)
-        if any(_close(guard, ks[j], rtol) for j in members):
-            incomplete[members] = True
-    return incomplete
-
-
-def isolated(
-    labels: np.ndarray, incomplete: np.ndarray, gap: np.ndarray, rtol: float
-) -> np.ndarray:
-    """Which modes are in mode-field reach.
-
-    A mode is when it is the only member of its cluster (``labels``), its
-    cluster is not cut short by the guard mode (``incomplete``), and its
-    relative gap to its gap set is at least `_ISOLATED`, or ``rtol``
-    (``SolverOptions.cluster_rtol``) when that is larger. An entry stores a
-    gap of 0 for a mode whose forward polish failed (its ``polish_failed``
-    field), so such a mode is never isolated.
-    """
-    labels = np.asarray(labels)
-    single = np.array([np.count_nonzero(labels == v) == 1 for v in labels], dtype=bool)
-    return (
-        single
-        & ~np.asarray(incomplete, dtype=bool)
-        & (np.asarray(gap) >= max(_ISOLATED, rtol))
-    )
-
-
-def clusters(ks: list[complex], rtol: float) -> np.ndarray:
-    """A label per eigenvalue: chains of eigenvalues within ``rtol`` share one.
-
-    Labels count from 0 in order of first appearance.
-    """
-    labels = list(range(len(ks)))
-    for i in range(len(ks)):
-        for j in range(i):
-            if _close(ks[i], ks[j], rtol) and labels[i] != labels[j]:
-                old, new = labels[i], labels[j]
-                labels = [new if v == old else v for v in labels]
-    renumber: dict[int, int] = {}
-    for v in labels:
-        renumber.setdefault(v, len(renumber))
-    return np.array([renumber[v] for v in labels], dtype=np.int64)
-
-
 def _modal_overlap(
     mesh: Mesh, region: str, material: Material, frequency: float
 ) -> float:
@@ -2198,129 +1689,6 @@ def _modal_overlap(
     volume = float(np.abs(np.linalg.det(edges)).sum()) / 6
     k0 = omega / const.c
     return volume * k0**3 * abs(eps.imag) * math.sqrt(eps.real) / math.pi**2
-
-
-def _contraction(seed: complex, shift: complex, ritz: np.ndarray) -> float:
-    """Residual inverse iteration's error ratio per step for ``seed``.
-
-    ``|seed - shift|`` over the distance from ``shift`` to the nearest other
-    Ritz value: the component of that mode grows unless the ratio is below 1.
-    """
-    others = ritz[np.abs(ritz - seed) > _MULTIPLE * abs(seed)]
-    if not len(others):
-        return 0.0
-    nearest = float(np.min(np.abs(others - shift)))
-    return abs(seed - shift) / nearest if nearest > 0 else math.inf
-
-
-def _orthonormal_multiples(
-    k: np.ndarray, vectors: np.ndarray, *, layout: DofLayout = ONE_PROCESS
-) -> np.ndarray:
-    """``vectors`` with each multiple Ritz value's vectors orthonormalized.
-
-    Any basis of a multiple eigenvalue's eigenspace is as good a set of
-    seeds; an orthonormal one keeps its members apart under `_in_span`.
-    The vectors are states, orthonormal over ``layout``'s owned DOFs.
-    """
-    out = vectors
-    done = np.zeros(len(k), dtype=bool)
-    for j in range(len(k)):
-        if done[j]:
-            continue
-        members = np.flatnonzero(np.abs(k - k[j]) <= _MULTIPLE * abs(k[j]))
-        done[members] = True
-        if len(members) > 1:
-            if out is vectors:
-                out = vectors.copy()
-            out[:, members] = layout.state_qr(vectors[:, members])
-    return out
-
-
-def _same(
-    a: Refined, b: Refined, window: float, *, layout: DofLayout = ONE_PROCESS
-) -> bool:
-    """Whether ``a`` and ``b`` are one mode: near in ``k``, parallel in ``x``."""
-    if abs(a.k - b.k) > window * abs(b.k):
-        return False
-    norm = layout.state_norm
-    overlap = abs(layout.state_inner(a.x, b.x)) / (norm(a.x) * norm(b.x))
-    return overlap > _OVERLAP
-
-
-def _in_span(
-    mode: Refined,
-    accepted: list[Refined],
-    window: float,
-    *,
-    layout: DofLayout = ONE_PROCESS,
-) -> bool:
-    """Whether ``mode`` is a combination of accepted modes: a duplicate.
-
-    The norm of its projection on the span of the accepted modes within
-    ``window`` (relative) of its ``k`` exceeds `_OVERLAP` of its own. Against
-    the span, not each mode: any vector of a degenerate cluster's eigenspace
-    is a duplicate, also one at 45 degrees from two accepted members.
-    The modes are states, their products ``layout``'s.
-    """
-    near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
-    if not near:
-        return False
-    basis = layout.state_qr(np.stack(near, axis=1))
-    inside = np.linalg.norm(layout.state_gram(basis, mode.x))
-    return bool(inside > _OVERLAP * layout.state_norm(mode.x))
-
-
-def _outside(
-    mode: Refined,
-    accepted: list[Refined],
-    window: float,
-    *,
-    layout: DofLayout = ONE_PROCESS,
-) -> np.ndarray | None:
-    """``mode``'s part outside the span of the accepted modes near its ``k``.
-
-    ``None`` when it is at most `_TWIN` of its norm: round-off of a duplicate
-    of a simple mode (1e-11 to 2e-9 measured), not a twin (0.36 to 0.94 on the
-    lossy-wall mirrored cavity). The modes are
-    states, their products ``layout``'s.
-    """
-    near = [a.x for a in accepted if abs(mode.k - a.k) <= window * abs(a.k)]
-    if not near:
-        return None
-    basis = layout.state_qr(np.stack(near, axis=1))
-    rest = mode.x - basis @ layout.state_gram(basis, mode.x)
-    norm = layout.state_norm(rest)
-    if norm <= _TWIN * layout.state_norm(mode.x):
-        return None
-    return rest / norm
-
-
-def _lost(
-    mode: Refined,
-    seed: complex,
-    ritz: np.ndarray,
-    sigma: float,
-    *,
-    accepted: list[Refined],
-    window: float,
-    layout: DofLayout = ONE_PROCESS,
-) -> bool:
-    """Whether ``seed``'s refinement gave nothing to accept as its mode.
-
-    It did not converge, converged to a static or mirror root, converged
-    nearer another of the ``ritz`` values than ``seed`` (that seed's mode,
-    which would take this one's place), or converged to an accepted mode
-    the seed is not near.
-    """
-    if not mode.converged or mode.k.real <= _STATIC * sigma:
-        return True
-    others = ritz[np.abs(ritz - seed) > _MULTIPLE * abs(seed)]
-    if len(others) and np.min(np.abs(others - mode.k)) < abs(mode.k - seed):
-        return True
-    return any(
-        _same(mode, other, window, layout=layout) and not _close(seed, other.k, window)
-        for other in accepted
-    )
 
 
 def _check_low_frequency(
@@ -2409,38 +1777,6 @@ def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
         )
 
     return energy
-
-
-def _is_real(op: EigenOperator) -> bool:
-    """Whether ``K`` and ``M`` are real: a lossless, undamped problem."""
-    probe = np.where(op.free, np.random.default_rng(1).standard_normal(len(op.free)), 0)
-    kx, _, mx = op.parts(probe.astype(complex))
-    # a real matrix gives a real load on any rank's DOFs: every rank must agree
-    real = not kx.imag.any() and not mx.imag.any()
-    return _mpi.agree_all(op.layout.comm, flag=real)
-
-
-def _is_hermitian(op: EigenOperator) -> bool:
-    """Whether ``K`` and ``M`` are Hermitian: a lossless Bloch problem.
-
-    A Bloch-phased ``K`` is complex even when lossless (`_is_real` never
-    holds): two random complex probes ``u``, ``v`` test ``|v^H A u -
-    conj(u^H A v)| <= _HERMITIAN |A| |u| |v|`` for ``K`` and ``M``.
-    """
-    rng = np.random.default_rng(1)
-    n = len(op.free)
-    u, v = (
-        np.where(op.free, rng.standard_normal(n) + 1j * rng.standard_normal(n), 0)
-        for _ in range(2)
-    )
-    ku, _, mu = op.parts(u)
-    kv, _, mv = op.parts(v)
-    nk, _, nm, *_ = op.norms
-    size = np.linalg.norm(u) * np.linalg.norm(v)
-    return all(
-        abs(np.vdot(v, au) - np.conj(np.vdot(u, av))) <= _HERMITIAN * norm * size
-        for au, av, norm in ((ku, kv, nk), (mu, mv, nm))
-    )
 
 
 def _check_supported(model: Model) -> None:

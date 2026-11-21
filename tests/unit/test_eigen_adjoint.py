@@ -20,8 +20,10 @@ from finite_differences import derivative
 import gfem
 from gfem._eigen.adjoint import deflated_solve, polish
 from gfem._eigen.kept import KeptOperator
+from gfem._eigen.reach import isolated
 from gfem._eigen.refine import Refined
-from gfem._eigen.rule import EigenmodeRule, GapSet, isolated
+from gfem._eigen.rule import EigenmodeRule
+from gfem._eigen.search import ModeSearch
 from gfem._engine import cache
 from gfem._linalg import direct
 from gfem._linalg.layout import ONE_PROCESS
@@ -181,13 +183,28 @@ def test_a_polish_that_fails_keeps_the_unpolished_mode_and_marks_it():
         Refined(stub.rayleigh(mixed, 0), mixed, 1e-12, 1, True),
         Refined(stub.rayleigh(clean, 0), clean, 1e-12, 1, True),
     ]
-    # the gap set misses the mixed mode's twin, as the cavity's does
-    gaps = GapSet(np.array([m.k for m in modes]), None, np.array([]))
-    rule = SimpleNamespace(options=gfem.SolverOptions())
-    polished, failed = EigenmodeRule._polish(rule, stub, modes, gaps, None)
-    np.testing.assert_array_equal(failed, [True, False])
-    assert polished[0] is modes[0]
-    assert polished[1].k == pytest.approx(math.sqrt(lam[20]), rel=1e-14)
+    # the seed solve gives the two modes and refinement keeps them as they
+    # are: the gap set misses the mixed mode's twin, as the cavity's does
+    stub.nonpolynomial, stub.seed_damped = (), True  # no real snap
+    options = gfem.SolverOptions()
+    search = ModeSearch(
+        n_modes=2,
+        target=1e9,
+        eigen_tolerance=options.eigen_tolerance,
+        max_refine_iterations=options.max_refine_iterations,
+        cluster_rtol=options.cluster_rtol,
+        laws=False,
+        eigen_solver=lambda *_, **__: (
+            np.array([m.k for m in modes]),
+            np.stack([m.x for m in modes], axis=1),
+        ),
+        crowding=lambda: None,
+        refine=lambda _op, seed, _x, **_: next(m for m in modes if m.k == seed),
+    )
+    found = search.find(stub, None, stub.shift, guard=False, polish_isolated=True)
+    np.testing.assert_array_equal(found.polish_failed, [True, False])
+    assert found.modes[0] is modes[0]
+    assert found.modes[1].k == pytest.approx(math.sqrt(lam[20]), rel=1e-14)
     # a failed polish's gap of 0 is out of reach
     reach = isolated(np.array([0, 1]), np.zeros(2, bool), np.array([0.0, 0.1]), 1e-6)
     np.testing.assert_array_equal(reach, [False, True])

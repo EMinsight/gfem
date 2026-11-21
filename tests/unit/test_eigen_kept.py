@@ -8,25 +8,30 @@ pooled. The entry also stores each mode's relative gap to the other
 converged modes the selection accepted and to the guard mode.
 """
 
-import dataclasses
 import importlib.metadata
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from eigen_cases import EPS, conductor_line, line_mesh, line_roots, terminated_line
+from eigen_cases import (
+    EPS,
+    conductor_line,
+    line_mesh,
+    line_roots,
+    steer_search,
+    terminated_line,
+)
 
 import gfem
-from gfem._eigen import rule as eigen_rule
 from gfem._eigen.adjoint import deflated_solve, polish
 from gfem._eigen.kept import KeptOperator
+from gfem._eigen.reach import GapSet
 from gfem._eigen.refine import Refined
 from gfem._eigen.rule import EigenmodeRule
 from gfem._engine import cache
 from gfem._linalg.base import host_bytes
 from gfem._linalg.direct import DirectHandle
-from gfem._linalg.layout import ONE_PROCESS
 
 TARGET = 8e9
 
@@ -228,57 +233,6 @@ def test_eigen_refactorizations_never_reuse_factors(mesh, monkeypatch):
 # --- the gap set ------------------------------------------------------------------
 
 
-def _stub_select(monkeypatch, rule):
-    """`_select` on a stub operator: seeds at 10 and 13, the target at 11.4.
-
-    The seed at 10 is far from the shift; its first refinement wanders to
-    12.6 (nearer the seed at 13: lost) and is kept, and its retry at its own
-    Ritz value gives 10. The count of one is then met by 12.6 and 10 is cut;
-    the seed at 13 gives 13 after the count.
-    """
-
-    @dataclasses.dataclass
-    class Stub:
-        shift: complex
-        nonpolynomial: tuple = ()
-        layout = ONE_PROCESS
-
-        def reshift(self, k, **_):
-            self.shift = k
-
-    basis = np.eye(4, dtype=complex)
-
-    def refine(op, seed, x, **_):
-        if seed == 10 and op.shift != 10:
-            k, v = 12.6, basis[:, 2]
-        else:
-            k, v = seed, x
-        return Refined(complex(k), v, 0.0, 1, converged=True)
-
-    monkeypatch.setattr(eigen_rule, "refine", refine)
-    ritz = np.array([10.0, 13.0], dtype=complex)
-    return rule._select(Stub(11.4), ritz, basis[:, :2], 11.4, guard=True)
-
-
-def test_gap_set_holds_cut_modes_and_the_guard(mesh, monkeypatch):
-    rule = EigenmodeRule(
-        terminated_line(mesh, 1000.0),
-        gfem.Eigenmode(target=TARGET),
-        gfem.SolverOptions(),
-    )
-    modes, failed, guard, pool, ritz = _stub_select(monkeypatch, rule)
-    assert [m.k for m in modes] == [12.6]
-    assert not failed
-    assert guard.k == 10  # the nearest mode cut off
-    # every converged distinct pair: the mode, the cut one, the one found after
-    np.testing.assert_array_equal(pool, [12.6, 10, 13])
-    np.testing.assert_array_equal(ritz, [10, 13])
-    assert eigen_rule.GapSet(pool, guard.k, ritz).gap(12.6) == pytest.approx(0.4 / 13)
-    # the guard alone is a neighbour
-    alone = eigen_rule.GapSet(np.array([12.6 + 0j]), guard.k, ritz)
-    assert alone.gap(12.6) == pytest.approx(2.6 / 12.6)
-
-
 def test_empty_gap_set_takes_the_seed_ritz_values(mesh):
     # no guard mode on the small line: the
     # mode's neighbour is the next root's unrefined Ritz value
@@ -293,15 +247,14 @@ def test_empty_gap_set_takes_the_seed_ritz_values(mesh):
     np.testing.assert_array_equal(entry.fields["gap"], [np.inf])
     entry.free()
     assert (
-        eigen_rule.GapSet(np.array([12.6 + 0j]), None, np.array([12.6 + 0j])).gap(12.6)
-        == np.inf
+        GapSet(np.array([12.6 + 0j]), None, np.array([12.6 + 0j])).gap(12.6) == np.inf
     )
 
 
 @pytest.mark.bitwise
 def test_entry_records_a_failed_polish_with_a_zero_gap(mesh, monkeypatch):
     model = terminated_line(mesh, 1000.0)
-    monkeypatch.setattr(eigen_rule, "polish", lambda _eop, mode, _gap, **_: mode)
+    steer_search(monkeypatch, polish=lambda _: lambda _eop, mode, _gap, **_: mode)
     unpolished, _ = EigenmodeRule(
         model, gfem.Eigenmode(target=TARGET), gfem.SolverOptions()
     ).forward(model, keep=False)
@@ -309,7 +262,7 @@ def test_entry_records_a_failed_polish_with_a_zero_gap(mesh, monkeypatch):
     def fails(_eop, _mode, _gap, *, index):
         raise gfem.EigenmodeConvergenceError(f"Polishing mode {index} did not converge")
 
-    monkeypatch.setattr(eigen_rule, "polish", fails)
+    steer_search(monkeypatch, polish=lambda _: fails)
     _, outputs, entry = _kept(model)
     # the mode as it came from the refinement, recorded as not isolated
     np.testing.assert_array_equal(outputs["omega"], unpolished["omega"])

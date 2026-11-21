@@ -15,7 +15,7 @@ import pytest
 from gfem._eigen.adjoint import deflated_solve, polish
 from gfem._eigen.operator import EigenOperator, NonPolynomial
 from gfem._eigen.refine import Refined, refine
-from gfem._eigen.rule import _in_span, _orthonormal_multiples, _outside, _same
+from gfem._eigen.search import _in_span, _orthonormal_multiples, _outside, _same
 from gfem._linalg.layout import ONE_PROCESS, RankLayout
 
 N = 14
