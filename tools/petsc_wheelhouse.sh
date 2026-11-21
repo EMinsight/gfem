@@ -70,9 +70,10 @@ TARBALLS=(
 # MUMPS (CeCILL-C), its ordering METIS (Apache-2.0), BLAS and LAPACK (BSD-3-Clause)
 NO_MPI_PACKAGES=(mumps metis openblas)
 # Also MUMPS's root ScaLAPACK (BSD-3-Clause) and its parallel ordering PT-Scotch
-# (CeCILL-C). ParMETIS only with --with-parmetis: it is free only for non-profit
-# research and education, so a stack with it is for its builder alone and is
-# never shared.
+# (CeCILL-C). ParMETIS only with --with-parmetis: it is free only for educational
+# and research use by non-profit institutions and US government agencies, and for
+# evaluation by others; it may not be redistributed. So a stack with it is for its
+# builder alone and is never shared.
 MPI_PACKAGES=(mumps scalapack ptscotch metis openblas)
 # ParMETIS's tarball, outside TARBALLS (the licence page's set): name, URL, sha256
 PARMETIS_TARBALL="petsc-pkg-parmetis-v4.0.3-p9.tar.gz https://bitbucket.org/petsc/pkg-parmetis/get/v4.0.3-p9.tar.gz 612717e85992c984f09b0f5670be421bbb90a4c04145ab5b9a3358b92765d891"

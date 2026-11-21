@@ -37,11 +37,12 @@ The script builds PETSc, SLEPc and their Python bindings (BSD-2-Clause) with:
 - on the {term}`MPI PETSc stack`, the same, with ScaLAPACK (BSD-3-Clause) and
   PT-Scotch (CeCILL-C), on the machine's Open MPI.
 
-ParMETIS (free only for non-profit education and research) is part of neither
-stack. The script adds it to the MPI stack with `--with-parmetis`, for users its
-terms allow; that stack is for its builder alone and must not be shared. gfem
-then orders BDDC's coarse problem with it. The no-MPI stack contains neither
-PT-Scotch nor ScaLAPACK. The MPI stack's
+ParMETIS is part of neither stack: it is free only for educational and research
+use by non-profit institutions and US government agencies, and for evaluation by
+others; it may not be redistributed. The script adds it to the MPI stack with
+`--with-parmetis`, for users its terms allow; that stack is for its builder
+alone and must not be shared. gfem then orders BDDC's coarse problem with it.
+The no-MPI stack contains neither PT-Scotch nor ScaLAPACK. The MPI stack's
 `libptscotchparmetisv3` is Scotch's own ParMETIS-compatible interface, not
-ParMETIS. conda-forge's PETSc depends on ParMETIS, which is why the recipe builds
-from source.
+ParMETIS. conda-forge's PETSc depends on ParMETIS, which is why the recipe
+builds from source.
