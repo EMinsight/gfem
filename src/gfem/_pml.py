@@ -609,6 +609,52 @@ def _side_mask(mesh: Mesh, layers: Layers, side: Side) -> np.ndarray:
     ).any(axis=1)
 
 
+def check_layer_nodes(model: Any) -> None:
+    """Raise if a moved mesh puts physical tetrahedra past a stretched face.
+
+    The stretch is fixed at the imported mesh (its interior box and
+    thicknesses), so a vertex of an active tetrahedron outside the layer
+    moved beyond a covered face would be stretched with the device
+    material. Layer vertices may move inward: below its inner face the
+    layer is its background.
+
+    Args:
+        model: A model with concrete node coordinates.
+
+    Raises:
+        ValueError: A vertex of an active non-layer tetrahedron lies beyond
+            a covered face by more than the node tolerance.
+    """
+    layers, mesh = model._layers, model.mesh  # noqa: SLF001
+    if layers is None:
+        return
+    nodes = np.asarray(mesh.nodes)
+    if np.array_equal(nodes, mesh.imported_nodes):
+        return
+    active = model._domain.active  # noqa: SLF001
+    is_layer = np.zeros(len(mesh.tetrahedra), dtype=bool)
+    is_layer[layers.elements] = True
+    inner = np.flatnonzero(active & ~is_layer)
+    tol = REL_TOL * float(_shortest_edges(mesh)[inner].min())
+    p = nodes[mesh.tetrahedra[inner]]  # (n, 4, 3)
+    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    for side in layers.sides:
+        past = (side.sign * (p[:, :, side.axis] - side.face) > tol).any(axis=1)
+        if not past.any():
+            continue
+        tags = mesh.tetrahedron_tags[inner[past]]
+        region = names[int(tags[0])]
+        n = int(np.count_nonzero(tags == tags[0]))
+        raise ValueError(
+            f"The moved mesh puts {n} tetrahedra of region {region!r} past the "
+            f"inner face {side.label} ({_AXES[side.axis]} = {side.face:.6g} m) of "
+            "the perfectly matched layer, whose stretch is fixed at the imported "
+            "mesh, so the stretch would act on them. Keep the moving geometry "
+            "inside the layer's interior box (gfem.shape.boundary_morph holds "
+            "the layer), or remesh."
+        )
+
+
 def describe(layers: Layers, mesh: Mesh) -> list[str]:
     """One line per side for a model's repr: ``+x: d = 0.6 um (pml)``."""
     return [

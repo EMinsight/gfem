@@ -15,6 +15,7 @@ import warnings
 from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pml_cases
 import pytest
@@ -908,3 +909,102 @@ def test_a_mode_with_gain_sign_warns(tmp_path):
     assert float(np.imag(result.omega[0])) < 0
     # readers of the stretched operator rebuild the solve's stretch
     assert result.e_fields[0]._reference_frequency == pytest.approx(target)
+
+
+# --- gradients next to a layer ----------------------------------------------------
+
+
+def _moved(model, node, dz):
+    """``model`` with node ``node`` moved by ``dz`` metres along z."""
+    mesh = model.mesh
+    x = np.asarray(mesh.nodes).copy()
+    x[node, 2] += dz
+    moved = jax.tree_util.tree_unflatten(jax.tree_util.tree_structure(mesh), [x])
+    return model.replace(mesh=moved)
+
+
+def _inner_face_node(model):
+    """A node on the layer's inner face (z = 1.5 um) off the line's walls."""
+    x = np.asarray(model.mesh.imported_nodes) * 1e6
+    on = np.flatnonzero(np.abs(x[:, 2] - pml_cases.AIR_LENGTH) < 1e-9)
+    return int(on[np.argmin(np.abs(x[on, 0] - 0.1) + np.abs(x[on, 1] - 0.1))])
+
+
+def test_a_moved_mesh_pushing_air_past_a_stretched_face_is_refused(tmp_path):
+    model = _line(tmp_path, gfem.PML("pml"), cells=10)
+    moved = _moved(model, _inner_face_node(model), 0.02e-6)
+    match = (
+        r"^The moved mesh puts \d+ tetrahedra of region 'air' past the inner face "
+        r"\+z \(z = 1\.5e-06 m\) of the perfectly matched layer"
+    )
+    with pytest.raises(ValueError, match=match):
+        _pml.check_layer_nodes(moved)
+    with pytest.raises(ValueError, match=match):
+        _driven(moved)
+
+
+def test_a_moved_mesh_pushing_air_past_a_stretched_face_is_refused_under_grad(
+    tmp_path,
+):
+    model = _line(tmp_path, gfem.PML("pml"), cells=10)
+    node = _inner_face_node(model)
+    mesh = model.mesh
+
+    def objective(dz):
+        x = jnp.asarray(mesh.nodes).at[node, 2].add(dz)
+        moved = jax.tree_util.tree_unflatten(jax.tree_util.tree_structure(mesh), [x])
+        result = gfem.solve(model.replace(mesh=moved), gfem.Driven(pml_cases.F0))
+        return jnp.sum(jnp.abs(result.s.values) ** 2)
+
+    with pytest.raises(
+        jax.errors.JaxRuntimeError, match=r"ValueError.*past the inner face \+z"
+    ):
+        jax.grad(objective)(0.02e-6)
+
+
+def test_a_layer_node_moved_inward_is_accepted(tmp_path):
+    # the layer's background has no stretch below its inner face
+    model = _line(tmp_path, gfem.PML("pml"), cells=10)
+    _pml.check_layer_nodes(_moved(model, _inner_face_node(model), -0.02e-6))
+
+
+def _walled_box(tmp_path):
+    """The +x layer box with a "core" below x = 0.5 and named faces."""
+
+    def volume(c):
+        if c[0] > 1:
+            return "pml"
+        return "core" if c[0] < 0.5 else "air"
+
+    def surface(c):
+        if abs(c[0] - 0.5) < 1e-9:
+            return "wall"
+        if abs(c[0] - 1.5) < 1e-9:
+            return "far"
+        return ""
+
+    mesh = _box(tmp_path, cells=4, volume=volume, surface=surface)
+    return _model(mesh, materials={"air": AIR, "core": AIR, "pml": AIR})
+
+
+def test_boundary_morph_holds_the_layer(tmp_path):
+    from gfem.shape import boundary_morph
+
+    model = _walled_box(tmp_path)
+    morph = boundary_morph(model, "wall", grows="core")
+    nodes = np.asarray(morph(0.05e-6 * np.ones(morph.n_params)).nodes)
+    x0 = np.asarray(model.mesh.imported_nodes)
+    layer = np.unique(
+        model.mesh.tetrahedra[_pml.layer_tetrahedra(model.mesh, model.pml)]
+    )
+    moved = np.any(nodes != x0, axis=1)
+    assert moved.any()
+    assert not moved[layer].any()
+
+
+def test_boundary_morph_of_a_surface_in_the_layer_is_refused(tmp_path):
+    from gfem.shape import boundary_morph
+
+    model = _walled_box(tmp_path)
+    with pytest.raises(ValueError, match="or lies in the perfectly matched layer"):
+        boundary_morph(model, "far")
