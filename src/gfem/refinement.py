@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-import math
 import types
 import warnings
 from collections.abc import Callable
@@ -22,6 +21,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from gfem._domain import physics_of
+from gfem._dual_supply import (
+    DualNeed,
+    DualSupply,
+    RiddenDuals,
+    _adjoint_ports,
+    _needs_adjoint,
+)
 from gfem._pytree import readonly
 from gfem._refine import Refinement, bisect, transfer, transfer_design
 from gfem._text import hertz
@@ -40,7 +46,6 @@ from gfem.model import (
     Impedance,
     LumpedPort,
     Model,
-    WavePort,
 )
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic
@@ -387,20 +392,17 @@ class ErrorEstimate:
     indicators: np.ndarray
     #: An objective's value on the result it estimated (`RefinementCycle.value`).
     _quantity: float | None = dataclasses.field(default=None, repr=False)
-    #: The ports whose S-functional adjoints an objective's dual reads.
-    _dual_ports: tuple[str, ...] = dataclasses.field(default=(), repr=False)
+    #: The solved duals an objective's estimate reads: the ports whose
+    #: S-functional adjoints, the keys of its field or electrostatic duals,
+    #: the (mode, region) participations whose mode-field duals.
+    _duals: DualNeed = dataclasses.field(default=DualNeed(), repr=False)
     #: An objective's first-order sensitivity, sum_a |ct_a| s_a (its floor).
     _sensitivity: float = dataclasses.field(default=0.0, repr=False)
     #: The modes an objective reads, by index on its result: each is followed.
     _modes: tuple[int, ...] = dataclasses.field(default=(), repr=False)
-    #: The (mode, region) participations whose mode-field duals it reads.
-    _dual_modes: tuple[tuple[int, str], ...] = dataclasses.field(default=(), repr=False)
     #: A lossless rewrite's computed defect term lam . D, signed:
     #: ``value - abs(_defect)`` is the rewritten objective's own estimate.
     _defect: float = dataclasses.field(default=0.0, repr=False)
-    #: The electrostatic dual loads an objective's estimate reads, by key
-    #: (`gfem._engine.electrostatic.objective_loads`).
-    _dual_keys: tuple[tuple[Any, ...], ...] = dataclasses.field(default=(), repr=False)
 
     @property
     def value(self) -> float:
@@ -874,7 +876,7 @@ def _loop(
         problem = dataclasses.replace(problem, keep_fields=True)
     tet_parents = np.arange(len(model.mesh.tetrahedra))
     tri_parents = np.arange(len(model.mesh.triangles))
-    duals = _Duals(_adjoint_port_union(estimators, model, problem), problem)
+    duals = RiddenDuals(estimators, model, problem)
     tracks = _Tracks(estimators)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
@@ -896,8 +898,7 @@ def _loop(
             estimators,
             tracks,
             options,
-            adjoints=adjoints,
-            ridden=duals.ridden,
+            duals=duals.supply(adjoints),
             cache=cache,
             first=not cycles,
         )
@@ -1020,8 +1021,7 @@ def _estimates(
     tracks: _Tracks,
     options: SolverOptions,
     *,
-    adjoints: Any,
-    ridden: tuple[Any, ...],
+    duals: DualSupply,
     cache: RecoveryCache,
     first: bool,
 ) -> tuple[tuple[ErrorEstimate, ...], dict[int, int]]:
@@ -1041,8 +1041,7 @@ def _estimates(
             each,
             threads=options.threads,
             mode=_followed(modes, each),
-            adjoints=adjoints,
-            ridden=ridden,
+            duals=duals,
             cache=cache,
             rtol=options.cluster_rtol,
             reach=_mode_field_reach(options),
@@ -1304,8 +1303,7 @@ def _estimate(
     *,
     threads: int | None,
     mode: int | tuple[int, ...] | None = None,
-    adjoints: Mapping[Any, np.ndarray] | None = None,
-    ridden: tuple[Any, ...] = (),
+    duals: DualSupply | None = None,
     cache: RecoveryCache | None = None,
     rtol: float | None = None,
     reach: str | None = None,
@@ -1314,10 +1312,9 @@ def _estimate(
 
     ``mode`` is the eigenmode a `QuantityEstimator` follows on this result,
     or the modes of a cluster it follows.
-    ``adjoints`` are the S-functional adjoints solved with ``result``
-    (`gfem.solve._solve`) for the ports ``ridden``;
-    ``None`` solves them here if the entry needs them (`_adjoint_ports`). An
-    objective solves here those of its dual's ports not ``ridden``.
+    ``duals`` is the mesh's `gfem._dual_supply.DualSupply`: the solved
+    duals that rode on the solve of ``result``, the others solved there;
+    ``None`` (nothing rode) solves every one the estimate needs.
     ``cache`` is the mesh's `gfem._engine.estimate.RecoveryCache`, shared by
     every estimate of ``result``'s mesh; ``None`` makes one for this call.
     ``rtol`` is the solve's ``cluster_rtol`` (`SolverOptions`' default for
@@ -1329,6 +1326,7 @@ def _estimate(
     from gfem._estimate_admission import _unsupported_result
 
     cache = cache or kernels.RecoveryCache()
+    duals = duals or DualSupply()
     kind = _kind(estimator)
     if isinstance(estimator, QuantityEstimator) and estimator.objective is not None:
         return _estimate_objective(
@@ -1336,8 +1334,7 @@ def _estimate(
             result,
             estimator,
             threads=threads,
-            adjoints=adjoints or {},
-            ridden=ridden if adjoints is not None else (),
+            duals=duals,
             cache=cache,
             rtol=SolverOptions().cluster_rtol if rtol is None else rtol,
             reach=reach,
@@ -1350,12 +1347,11 @@ def _estimate(
                 )
             ]
         elif estimator.s is not None:
-            if adjoints is None:
-                ports = _adjoint_ports(estimator, model, list(result.s.excited))
-                adjoints = _adjoints(model, result, ports, threads) if ports else {}
-            duals = _dual_fields(result, adjoints, cache)
+            ports = _adjoint_ports(estimator, model, list(result.s.excited))
+            adjoints = duals.s_adjoints(model, result, ports, threads)
+            fields = _dual_fields(result, adjoints, cache)
             parts = kernels.s_entry(
-                model, result, *estimator.s, threads, adjoints=duals, cache=cache
+                model, result, *estimator.s, threads, adjoints=fields, cache=cache
             )
         else:
             parts = [
@@ -1406,8 +1402,7 @@ def _estimate_objective(
     estimator: QuantityEstimator,
     *,
     threads: int | None,
-    adjoints: Mapping[Any, np.ndarray],
-    ridden: tuple[Any, ...],
+    duals: DualSupply,
     cache: RecoveryCache,
     rtol: float,
     reach: str | None = None,
@@ -1418,9 +1413,9 @@ def _estimate_objective(
     is estimated through its lossless rewrite, over every row of
     the columns it reads; any other through the C form.
     The S-functional adjoints of the rows that need one (a port not
-    excited, or a lossy wave port) and did not ride on the solve
-    (``ridden``) are solved here: one more factorization per frequency
-    (`_adjoints`).
+    excited, or a lossy wave port) and did not ride on the solve are
+    solved by ``duals``: one more factorization per frequency
+    (`gfem._dual_supply.DualSupply.s_adjoints`).
     """
     from gfem import _objective
     from gfem._engine import estimate as kernels
@@ -1439,7 +1434,7 @@ def _estimate_objective(
             threads=threads,
             rtol=rtol,
             reach=reach,
-            duals=adjoints,
+            duals=duals,
             cache=cache,
         )
     if objective.kind in _POTENTIAL_KINDS:
@@ -1449,8 +1444,7 @@ def _estimate_objective(
             estimator,
             objective,
             threads=threads,
-            adjoints=adjoints,
-            ridden=ridden,
+            duals=duals,
             cache=cache,
         )
     if objective.kind in _FIELD_KINDS:
@@ -1460,8 +1454,7 @@ def _estimate_objective(
             estimator,
             objective,
             threads=threads,
-            adjoints=adjoints,
-            ridden=ridden,
+            duals=duals,
             cache=cache,
         )
     if objective.kind != "objective of s":
@@ -1486,11 +1479,8 @@ def _estimate_objective(
     ports = tuple(
         dict.fromkeys(to for to in rows if _needs_adjoint(to, model, excited))
     )
-    missing = tuple(p for p in ports if p not in ridden)
-    solved: dict[Any, np.ndarray] = dict(adjoints)
-    if missing:
-        solved.update(_adjoints(model, result, missing, threads))
-    duals = _dual_fields(result, solved, cache)
+    solved = duals.s_adjoints(model, result, ports, threads)
+    fields = _dual_fields(result, solved, cache)
     if rewrite:
         terms = kernels.lossless_rewrite(
             model,
@@ -1499,7 +1489,7 @@ def _estimate_objective(
             objective.curvature,
             objective.diagonal,
             threads=threads,
-            adjoints=duals,
+            adjoints=fields,
             cache=cache,
         )
         kind = "objective of s, lossless rewrite"
@@ -1511,7 +1501,7 @@ def _estimate_objective(
             reads,
             objective.curvature,
             threads,
-            adjoints=duals,
+            adjoints=fields,
             cache=cache,
         )
         kind, defect = objective.kind, 0.0
@@ -1521,7 +1511,7 @@ def _estimate_objective(
         values=(terms.value,),
         indicators=readonly(np.sqrt(terms.weights)),
         _quantity=objective.value,
-        _dual_ports=ports,
+        _duals=DualNeed(ports=ports),
         _sensitivity=objective.sensitivity,
         _defect=defect,
     )
@@ -1560,15 +1550,15 @@ def _estimate_field_objective(
     objective: Any,
     *,
     threads: int | None,
-    adjoints: Mapping[Any, np.ndarray],
-    ridden: tuple[Any, ...],
+    duals: DualSupply,
     cache: RecoveryCache,
 ) -> ErrorEstimate:
     """An objective of driven fields' estimate.
 
     One dual per measurement output read (`gfem._engine.field_duals`):
-    those that did not ride on the solve (``ridden``) are solved here, one
-    more factorization per frequency read (`_field_duals`).
+    those that did not ride on the solve are solved by ``duals``, one
+    more factorization per frequency read
+    (`gfem._dual_supply.DualSupply.field_duals`).
     """
     from gfem._engine import estimate as kernels
 
@@ -1584,14 +1574,7 @@ def _estimate_field_objective(
             key = ("mean", float(f), excitation, tuple(spec["regions"]), r.index[0])
             reads.append((key, complex(r.cotangent)))
     keys = list(dict.fromkeys(key for key, _ in reads))
-    solved: dict[Any, np.ndarray] = {
-        (k[1], k): adjoints[k[1], k]
-        for k in keys
-        if k in ridden and (k[1], k) in adjoints
-    }
-    missing = [k for k in keys if (k[1], k) not in solved]
-    if missing:
-        solved.update(_field_duals(model, result, missing, threads))
+    solved = duals.field_duals(model, result, keys, threads)
     terms = kernels.objective_of_fields(
         model,
         result,
@@ -1607,36 +1590,9 @@ def _estimate_field_objective(
         values=(terms.value,),
         indicators=readonly(np.sqrt(terms.weights)),
         _quantity=objective.value,
-        _dual_keys=tuple(keys),
+        _duals=DualNeed(keys=tuple(keys)),
         _sensitivity=objective.sensitivity,
     )
-
-
-def _field_duals(
-    model: Model, result: DrivenResult, keys: list[Any], threads: int | None
-) -> dict[tuple[float, Hashable], np.ndarray]:
-    """The duals of field measurement outputs on a finished result.
-
-    One more factorization per frequency read, with the direct solver at the
-    result's order, the loads formed from the result's fields there.
-    """
-    from gfem._engine import driven, field_duals
-
-    frequencies = sorted({k[1] for k in keys})
-    excite = list(result.s.excited)
-    fields = dict(zip(result.kept, result.e_fields, strict=True))
-    solutions = {
-        f: np.stack([np.asarray(fields[f, p].coefficients) for p in excite], axis=1)
-        for f in frequencies
-    }
-    problem = Driven(frequencies, excite=excite)
-    order = _fields(result)[0].order
-    options = SolverOptions(order=order, linear_solver="direct", threads=threads)
-    with driven.low_frequency_deferred(), warnings.catch_warnings():
-        for category in driven.FORWARD_WARNINGS:  # the solve of ``result`` warned
-            warnings.simplefilter("ignore", category)
-        rule = driven.DrivenRule(model, problem, options)
-        return rule.solve_adjoints(model, field_duals.field_loads(keys), solutions)
 
 
 #: The estimate kinds of an objective of an electrostatic result.
@@ -1654,18 +1610,16 @@ def _estimate_potential_objective(
     objective: Any,
     *,
     threads: int | None,
-    adjoints: Mapping[Any, np.ndarray],
-    ridden: tuple[Any, ...],
+    duals: DualSupply,
     cache: RecoveryCache,
 ) -> ErrorEstimate:
     """An electrostatic objective's estimate.
 
     J(C) reads the potentials' free duals. An energy or potential mean reads
     one dual per read energy and per averaged region set: those that did not
-    ride on the solve (``ridden``) are solved here, one more factorization
-    (`gfem._engine.electrostatic.solve_duals`).
+    ride on the solve are solved by ``duals``, one more factorization
+    (`gfem._dual_supply.DualSupply.potential_duals`).
     """
-    from gfem._engine import electrostatic
     from gfem._engine import estimate as kernels
 
     terminals = list(result.terminals)
@@ -1687,13 +1641,7 @@ def _estimate_potential_objective(
             reads.append((("mean", key[1], terminal.strip("'\"")), ct))
             keys.append(key)
     keys = list(dict.fromkeys(keys))
-    solved: dict[Any, np.ndarray] = {
-        k: adjoints[k] for k in keys if k in ridden and k in adjoints
-    }
-    missing = [k for k in keys if k not in solved]
-    if missing:
-        loads = electrostatic.objective_loads(missing)
-        solved.update(electrostatic.solve_duals(model, result, loads, threads))
+    solved = duals.potential_duals(model, result, keys, threads)
     terms = kernels.objective_of_potentials(
         model,
         result,
@@ -1709,7 +1657,7 @@ def _estimate_potential_objective(
         values=(terms.value,),
         indicators=readonly(np.sqrt(terms.weights)),
         _quantity=objective.value,
-        _dual_keys=tuple(keys),
+        _duals=DualNeed(keys=tuple(keys)),
         _sensitivity=objective.sensitivity,
     )
 
@@ -1760,17 +1708,18 @@ def _estimate_objective_of_participation(
     threads: int | None,
     rtol: float,
     reach: str | None,
-    duals: Mapping[Any, Any],
+    duals: DualSupply,
     cache: RecoveryCache,
 ) -> ErrorEstimate:
     """An objective of bulk participations, and omega.
 
     Each participation read needs its mode-field dual: ridden on the
-    forward (``duals``, by mode and region, when it was solved for the same
-    mode), else solved here on an operator prepared at the mode
-    (`_participation_duals`). Raises for a mode out of mode-field reach,
-    for the mode Q's refusals, and for a mode energy holding a surface
-    term, which the equilibrated dual flux has no volume load for.
+    forward when it was solved for the same mode, else solved by ``duals``
+    on an operator prepared at the mode
+    (`gfem._dual_supply.DualSupply.mode_duals`). Raises for a mode out of
+    mode-field reach, for the mode Q's refusals, and for a mode energy
+    holding a surface term, which the equilibrated dual flux has no volume
+    load for.
     """
     from gfem._engine import estimate as kernels
     from gfem._estimate_admission import _check_lossy_mode
@@ -1793,14 +1742,7 @@ def _estimate_objective_of_participation(
     solved: dict[tuple[int, str], Any] = {}
     for mode, names in regions.items():
         _check_isolated(omega, mode, rtol)
-        ridden = {
-            name: duals.get((mode, name))
-            for name in names
-            if _rides(duals.get((mode, name)), omega[mode])
-        }
-        missing = [name for name in names if name not in ridden]
-        if missing:
-            ridden |= _participation_duals(model, result, mode, missing, threads)
+        ridden = duals.mode_duals(model, result, mode, names, threads)
         solved |= {(mode, name): dual for name, dual in ridden.items()}
     terms = kernels.objective_of_participation(
         model, result, reads, objective.curvature, threads, duals=solved, cache=cache
@@ -1813,13 +1755,8 @@ def _estimate_objective_of_participation(
         _quantity=objective.value,
         _sensitivity=objective.sensitivity,
         _modes=tuple(modes),
-        _dual_modes=tuple(solved),
+        _duals=DualNeed(modes=tuple(solved)),
     )
-
-
-def _rides(dual: Any, omega: complex) -> bool:
-    """Whether a ridden ``dual`` was solved for the mode at ``omega``."""
-    return dual is not None and abs(dual.omega - omega) <= 1e-12 * abs(omega)
 
 
 def _mode_field_reach(options: SolverOptions) -> str | None:
@@ -1890,53 +1827,6 @@ def _check_isolated(omega: np.ndarray, mode: int, rtol: float) -> None:
             "mode the field is a mix of the two. Separate the modes, or use "
             "gfem.FieldEstimator()."
         )
-
-
-def _participation_duals(
-    model: Model,
-    result: EigenmodeResult,
-    mode: int,
-    regions: list[str],
-    threads: int | None,
-) -> dict[str, Any]:
-    """The participation duals of ``mode`` on a finished result: one factorization.
-
-    The operator is prepared at k (1 + d) next to the mode, as a backward
-    without its forward's operator does (`EigenmodeRule._field_pairs`),
-    with the direct solver: the result does not record its options.
-    """
-    import scipy.constants
-
-    from gfem._eigen.adjoint import reshift_offset
-    from gfem._eigen.rule import EigenmodeRule
-
-    omega = np.asarray(result.omega)
-    field = result.e_fields[mode]
-    problem = Eigenmode(target=omega[mode].real / (2 * np.pi), n_modes=len(omega))
-    options = SolverOptions(order=field.order, linear_solver="direct", threads=threads)
-    rule = EigenmodeRule(model, problem, options)
-    op = rule.driven(model)
-    k = complex(omega[mode]) * op.built.scale / scipy.constants.c
-    others = np.delete(omega, mode)
-    gap = (
-        float(np.min(np.abs(others - omega[mode])) / abs(omega[mode]))
-        if len(others)
-        else math.inf
-    )
-    eop = rule.operator(op, k * (1 + reshift_offset(gap)))
-    try:
-        return rule.participation_duals(
-            model,
-            op,
-            eop,
-            u=np.asarray(field.coefficients, complex),
-            k=k,
-            gap=gap,
-            mode=mode,
-            regions=tuple(regions),
-        )
-    finally:
-        eop.free_handle()
 
 
 def _is_objective(estimator: Any) -> bool:
@@ -2220,158 +2110,6 @@ def _fields(result: Any) -> list:
     if isinstance(result, ElectrostaticResult):
         return list(result.potential.values())
     return list(result.e_fields)
-
-
-def _adjoint_ports(
-    estimator: Estimator, model: Model, excited: list[str]
-) -> tuple[str, ...]:
-    """The port whose S-functional adjoint an S estimate may need.
-
-    ``to`` of ``QuantityEstimator(s=(to, source))`` when it is not among
-    ``excited`` (it has no field of its own), or when it is a wave port
-    touching a lossy element: its mode may then not be parallel to its
-    excitation (the solve checks), and its adjoint is not its own field.
-    """
-    if not isinstance(estimator, QuantityEstimator) or estimator.s is None:
-        return ()
-    to = estimator.s[0]
-    return (to,) if _needs_adjoint(to, model, excited) else ()
-
-
-def _needs_adjoint(to: str, model: Model, excited: list[str]) -> bool:
-    """Whether the row of port ``to`` may need its solved S-functional adjoint.
-
-    When it is not among ``excited`` (it has no field of its own), or is a
-    wave port touching a lossy element: its mode may then not be parallel
-    to its excitation (the solve checks), and its adjoint is not its own
-    field.
-    """
-    from gfem._estimate_admission import _lossy_elements, _touching
-
-    if to not in excited:
-        return True
-    port = next((p for p in model.ports if p.name == to), None)
-    if not isinstance(port, WavePort):
-        return False
-    return bool(_lossy_elements(model)[_touching(model, port.surface)].any())
-
-
-def _excited(problem: Driven, model: Model) -> list[str]:
-    """The ports ``problem`` excites on ``model``."""
-    if problem.excite is None:
-        return [p.name for p in model.ports]
-    return list(problem.excite)
-
-
-def _adjoint_port_union(
-    estimators: tuple[Estimator, ...], model: Model, problem: Any
-) -> tuple[str, ...]:
-    """The ports whose S-functional adjoints the S entries' duals solve.
-
-    The union over the estimators, each port once: two S entries
-    reading one port share its adjoint. An objective's ports are known once
-    it has been classified, on the first result (`ErrorEstimate`).
-    """
-    if not isinstance(problem, Driven):
-        return ()
-    excited = _excited(problem, model)
-    return tuple(
-        dict.fromkeys(
-            port for each in estimators for port in _adjoint_ports(each, model, excited)
-        )
-    )
-
-
-class _Duals:
-    """The duals that ride on `refine_mesh`'s solves.
-
-    On a driven problem, the ports whose S-functional adjoints ride: an S
-    entry's from the first solve; an objective's once its estimate has read
-    them (`add`), from the next solve on. On
-    an electrostatic problem, an objective's energy and potential-mean
-    duals, the same way.
-    """
-
-    def __init__(self, ports: tuple[str, ...], problem: Any = None) -> None:
-        self.ports = ports
-        #: The participations whose mode-field duals ride on the eigen
-        #: forward: (mode on the first mesh, region).
-        self.modes: tuple[tuple[int, str], ...] = ()
-        self.keys: tuple[tuple[Any, ...], ...] = ()
-        self._electrostatic = isinstance(problem, Electrostatic)
-
-    def loads(self, tracks: _Tracks) -> Any:
-        """The solves' adjoint loads; ``None`` for free duals only.
-
-        On an eigenmode problem, the participations' dual requests: each
-        asks for the mode nearest its track's omega on the last mesh
-        (`_Tracks.omega`).
-        """
-        if self.modes:
-            from gfem._eigen.rule import DualRequest
-
-            regions: dict[int, list[str]] = {}
-            for start, region in self.modes:
-                regions.setdefault(start, []).append(region)
-            return [
-                DualRequest(start, omega, tuple(names))
-                for start, names in regions.items()
-                if (omega := tracks.omega(start)) is not None
-            ]
-        if self._electrostatic:
-            from gfem._engine.electrostatic import objective_loads
-
-            return objective_loads(self.keys) if self.keys else None
-        from gfem._engine.driven import port_loads
-        from gfem._engine.field_duals import field_loads
-
-        parts = []
-        if self.ports:
-            parts.append(port_loads(self.ports))
-        if self.keys:
-            parts.append(field_loads(self.keys))
-        if len(parts) < 2:
-            return parts[0] if parts else None
-
-        def loads(context: Any) -> dict[Hashable, np.ndarray]:
-            return {k: v for part in parts for k, v in part(context).items()}
-
-        return loads
-
-    @property
-    def ridden(self) -> tuple[Any, ...]:
-        """What rides: the ports and field-dual keys, or the electrostatic keys."""
-        return self.keys if self._electrostatic else (*self.ports, *self.keys)
-
-    def add(self, estimates: tuple[ErrorEstimate, ...]) -> None:
-        """Add the duals the estimates' objectives read."""
-        read = (p for e in estimates for p in e._dual_ports)  # noqa: SLF001
-        self.ports = tuple(dict.fromkeys([*self.ports, *read]))
-        keys = (k for e in estimates for k in e._dual_keys)  # noqa: SLF001
-        self.keys = tuple(dict.fromkeys([*self.keys, *keys]))
-        modes = (m for e in estimates for m in e._dual_modes)  # noqa: SLF001
-        self.modes = tuple(dict.fromkeys([*self.modes, *modes]))
-
-
-def _adjoints(
-    model: Model, result: DrivenResult, ports: tuple[str, ...], threads: int | None
-) -> dict[tuple[float, Hashable], np.ndarray]:
-    """The adjoints of ``ports`` on a finished result: one more factorization.
-
-    Only at the frequencies where one is not its port's own field scaled.
-    The result does not record its options: the direct solver, which the
-    estimate's few digits need no iterative tolerance for.
-    """
-    from gfem._engine import driven
-
-    problem = Driven(list(result.s.frequency), excite=list(result.s.excited))
-    order = _fields(result)[0].order
-    options = SolverOptions(order=order, linear_solver="direct", threads=threads)
-    with driven.low_frequency_deferred(), warnings.catch_warnings():
-        for category in driven.FORWARD_WARNINGS:  # the solve of ``result`` warned
-            warnings.simplefilter("ignore", category)
-        rule = driven.DrivenRule(model, problem, options)
-        return rule.solve_adjoints(model, driven.port_loads(ports))
 
 
 def _check_mode_eps(model: Model, result: EigenmodeResult, mode: int) -> None:

@@ -25,7 +25,7 @@ from preconditioners import coarse_columns, count_preconditioners
 from solver_misses import cannot_converge_at
 
 import gfem
-from gfem._engine import driven, terms, workers
+from gfem._engine import driven, driven_sweep, terms, workers
 from gfem._engine.cache import ENTRIES
 from gfem._engine.driven import DrivenRule
 from gfem._engine.solve_request import SolveRequest
@@ -1372,7 +1372,7 @@ def test_frequency_workers_do_not_repeat_the_low_frequency_warning(mesh, line):
     options = gfem.SolverOptions(linear_solver="direct")
     with warnings.catch_warnings():
         warnings.simplefilter("error", gfem.LowFrequencyWarning)
-        driven._solve_block(*workers.model_parts(line), problem, options, False)
+        driven_sweep.solve_block(*workers.model_parts(line), problem, options, False)
 
 
 def _pi_model(s, f):

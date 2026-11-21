@@ -20,6 +20,7 @@ import numpy as np
 from gfem import _mpi
 from gfem._checks import is_staging, is_traced
 from gfem._domain import physics_of
+from gfem._dual_supply import _adjoint_ports, _excited
 from gfem._floquet import floquet_ports
 from gfem._text import hertz
 from gfem.errors import MeshRefinementUnsupportedError, NonDifferentiableError
@@ -32,10 +33,8 @@ from gfem.refinement import (
     Estimator,
     FieldEstimator,
     QuantityEstimator,
-    _adjoint_ports,
     _describe,
     _estimator_mode,
-    _excited,
     _fields,
     _is_objective,
     _track_start,
@@ -148,7 +147,7 @@ def admit_first_estimates(
                 f"solve's error. Lower SolverOptions.{name} to at most "
                 f"{tolerance / (10 * sensitivity):.2g}, or raise tolerance."
             )
-        if workers > 1 and (estimate._dual_ports or estimate._dual_keys):  # noqa: SLF001
+        if workers > 1 and (estimate._duals.ports or estimate._duals.keys):  # noqa: SLF001
             raise MeshRefinementUnsupportedError(
                 "frequency workers",
                 f"{_describe(estimator)} solves its adjoint duals with the "
