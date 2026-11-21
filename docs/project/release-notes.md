@@ -679,10 +679,12 @@ Solvers, memory and ranks:
 - **The MPI stack caps PT-Scotch's parallel ordering: rebuild it to get the
   cap.** The MUMPS that
   [`tools/petsc_wheelhouse.sh`](https://github.com/benvial/gfem/blob/main/tools/petsc_wheelhouse.sh)
-  builds now orders with PT-Scotch on at most 32 processes. Without the cap,
-  MUMPS orders on the largest power of two of its processes, and the fill grows
-  with them. The variable `MUMPS_PARAORD_MAX` sets another cap for a run, `0`
-  for none. A stack built before this change has no cap: rebuild it with the
+  builds now orders with PT-Scotch on at most 32 processes, where every node
+  holds as many processes. Without the cap, MUMPS orders on the largest power of
+  two of its processes, and the fill grows with them. On another layout, such as
+  `direct` with unequal ranks per node, MUMPS still orders on all of them. The
+  variable `MUMPS_PARAORD_MAX` sets another cap for a run, of 2 or more (`1`
+  counts as `2`), or `0` for none. A stack built before this change has no cap: rebuild it with the
   current script, as {doc}`../recipes/petsc-slepc` says. Until then gfem keeps
   the earlier coarse route above; where a rebuilt stack would factor the
   coarse problem on more ranks, it says how many, once per process, at INFO

@@ -378,11 +378,14 @@ EOF
 # that count: on a 30 M unknown coarse problem 8.9e9 entries on 32 processes,
 # 1.1e10 on 64 and about 3e10 on 128, against 44-47 s of analysis at 32 for any
 # number of ranks. So the stack caps PT-Scotch's ordering processes at 32 (not
-# ParMETIS's, whose fill does not grow with them). MUMPS_PARAORD_MAX overrides
-# the cap at run time, for measurement: 0 restores MUMPS's own count, N of 2
-# and more caps at N, and 1 caps at 2 (MUMPS orders on every process when its
-# count is 1); a value that is not a whole number of 0 and more keeps 32. Rank 0 writes a "PARAORD cap C nprocs P paraord W" line to MUMPS's
-# output stream ICNTL(3) when ICNTL(4) is 2 or more. Edit src/tools_common.F
+# ParMETIS's, whose fill does not grow with them). The cap holds where every
+# node holds as many processes: on another layout (direct with unequal ranks per
+# node, say) MUMPS orders on every process, capped or not. MUMPS_PARAORD_MAX
+# overrides the cap at run time, for measurement: 0 restores MUMPS's own count,
+# N of 2 and more caps at N, and 1 caps at 2 (MUMPS orders on every process when
+# its count is 1); a value that is not a whole number of 0 and more keeps 32.
+# Rank 0 writes a "PARAORD cap C nprocs P paraord W" line to MUMPS's output
+# stream ICNTL(3) when ICNTL(4) is 2 or more. Edit src/tools_common.F
 # (MUMPS_BUILD_COMM_PARA_ANA) at three lines, each found exactly once, into a
 # repacked tarball beside the pristine one. A MUMPS bump fails the sha256 or
 # that count; the edit is then derived again from the new source, or dropped if
