@@ -133,12 +133,19 @@ differences:
   design area that owns a second-order absorbing line is differentiated too.
   The {doc}`tutorials/metal-bend` bend's band objective, through gold's law and
   the index blend, matches a difference on both the 2D model and the slab.
+- Before each release, on that bend's 45° gold mirror: the tutorial mesh at
+  element order 3 gives the S of the same 2D model on cells eight times
+  smaller at order 2, a value computed once and frozen; and the band
+  objective's gradient with respect to the pixels points the same way on the
+  2D model and on the slab, though the two read the pixels at different
+  points.
 
 Tests: [closed forms and the slab](https://github.com/benvial/gfem/blob/main/tests/verification/test_2d_models.py),
 [guide modes](https://github.com/benvial/gfem/blob/main/tests/verification/test_2d_line_port_modes.py),
 [material-field gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_2d_gradients.py),
 [layer-grid gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_2d_layer_gradients.py),
-[metal bend](https://github.com/benvial/gfem/blob/main/tests/verification/test_metal_bend.py).
+[metal bend](https://github.com/benvial/gfem/blob/main/tests/verification/test_metal_bend.py),
+[metal bend, fine mesh and slab gradient](https://github.com/benvial/gfem/blob/main/tests/reference/test_metal_bend_fine.py).
 
 ## Periodic cells
 
