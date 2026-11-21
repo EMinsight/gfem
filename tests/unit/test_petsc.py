@@ -752,12 +752,155 @@ def test_the_build_script_stops_if_the_wheel_holds_no_libpetsc(tmp_path):
     assert "no libpetsc" in done.stderr
 
 
+# The three places of MUMPS 5.9.1's src/tools_common.F, in MUMPS_BUILD_COMM_PARA_ANA,
+# that the ordering cap edits: the end of the declarations, the ordering process
+# count, and the label every path that built the communicators reaches.
+_DECLARATIONS_END = (
+    b"      INTEGER, PARAMETER :: MAXNODE_SCOTCH=16, MAXNODE_METIS=64,  \n"
+    b"     &                      ROOT=0\n"
+)
+_WORKERS = b"           WORKERS = min(NPROCS,N/16)\n"
+_LABEL_500 = b" 500  CONTINUE\n"
+
+
+def _tools_common(*, declarations=1, workers=1, label=1):
+    """A ``tools_common.F`` with each anchor the given number of times."""
+    return (
+        b"      SUBROUTINE MUMPS_BUILD_COMM_PARA_ANA (\n"
+        + _DECLARATIONS_END * declarations
+        + b"      IF (KEEP(339).NE.0) THEN\n"
+        + _WORKERS * workers
+        + b"      ENDIF\n"
+        + _LABEL_500 * label
+        + b"  600 CONTINUE\n"
+        b"      RETURN\n"
+        b"      END SUBROUTINE MUMPS_BUILD_COMM_PARA_ANA\n"
+    )
+
+
+def _mumps(work, tools_common):
+    """A MUMPS tarball holding this ``src/tools_common.F`` and one other file."""
+    path = work / "MUMPS_5.9.1.tar.gz"
+    with tarfile.open(path, "w:gz") as tarball:
+        for name, data in (
+            ("MUMPS_5.9.1/src/tools_common.F", tools_common),
+            ("MUMPS_5.9.1/README", b"read me\n"),
+        ):
+            member = tarfile.TarInfo(name)
+            member.size = len(data)
+            tarball.addfile(member, io.BytesIO(data))
+    return path
+
+
+def _patch_mumps(work):
+    return _run_function(
+        "patch_mumps", WORK=str(work), MUMPS_TARBALL="MUMPS_5.9.1.tar.gz"
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
+def test_the_build_script_caps_pt_scotchs_ordering_processes_in_mumps(tmp_path):
+    pristine = _mumps(tmp_path, _tools_common()).read_bytes()
+    done = _patch_mumps(tmp_path)
+    assert done.returncode == 0, done.stderr
+    assert (tmp_path / "MUMPS_5.9.1.tar.gz").read_bytes() == pristine
+    with tarfile.open(tmp_path / "MUMPS_5.9.1-gfem.tar.gz") as tarball:
+        source, readme = (
+            typing.cast("typing.IO[bytes]", tarball.extractfile(member)).read()
+            for member in tarball.getmembers()
+        )
+        assert tarball.getnames() == [
+            "MUMPS_5.9.1/src/tools_common.F",
+            "MUMPS_5.9.1/README",
+        ]
+    assert readme == b"read me\n"
+    lines = source.decode().splitlines()
+    # fixed-form Fortran: code stops at column 72
+    assert all(len(line) <= 72 for line in lines if line[:1] not in "Cc!")
+    declarations = lines.index("     &                      ROOT=0")
+    workers = lines.index("           WORKERS = min(NPROCS,N/16)")
+    label = lines.index(" 500  CONTINUE")
+    read = lines[declarations + 1 : lines.index("      IF (KEEP(339).NE.0) THEN")]
+    assert any("'MUMPS_PARAORD_MAX'" in line for line in read)
+    assert "      CAPVAL = 32" in read
+    # only PT-Scotch's count, only with a cap, right after MUMPS computes it
+    capped = " ".join(
+        line.removeprefix("     &").strip() for line in lines[workers + 1 : workers + 3]
+    )
+    assert capped == (
+        "IF (KEEP(245).EQ.1 .AND. CAPVAL.GE.1) WORKERS = min(WORKERS, CAPVAL)"
+    )
+    report = "\n".join(lines[label + 1 : lines.index("  600 CONTINUE")])
+    assert "MYID.EQ.0 .AND. ICNTL(3).GT.0 .AND. ICNTL(4).GE.2" in report
+    assert "WRITE(ICNTL(3)" in report
+    assert all(word in report for word in ("PARAORD cap", "nprocs", "paraord"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
+@pytest.mark.parametrize("count", [0, 2])
+@pytest.mark.parametrize(
+    ("anchor", "text"),
+    [
+        ("declarations", "ROOT=0"),
+        ("workers", "WORKERS = min(NPROCS,N/16)"),
+        ("label", " 500  CONTINUE"),
+    ],
+)
+def test_the_build_script_stops_unless_each_place_of_the_cap_is_found_once(
+    tmp_path, anchor, text, count
+):
+    _mumps(tmp_path, _tools_common(**{anchor: count}))
+    done = _patch_mumps(tmp_path)
+    assert done.returncode != 0
+    assert f"'{text}' found {count} times" in done.stderr
+    assert "found 1 times" not in done.stderr  # only the wrong one is named
+    assert not (tmp_path / "MUMPS_5.9.1-gfem.tar.gz").exists()
+
+
+_CAPPED = b"\x7fELF\0zgemm_\0MUMPS_PARAORD_MAX\0"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
+def test_the_build_script_stops_if_a_libpetsc_lacks_the_ordering_cap(tmp_path):
+    members = {"libpetsc.so.3.26": _CAPPED, "libpetsc.so.3.26.0": _WITHOUT_ZGEMMT}
+    _wheel(tmp_path, **members)
+    done = _run_function("check_paraord_cap", OUT=str(tmp_path), PETSC_VERSION="3.26.0")
+    assert done.returncode != 0
+    assert "libpetsc.so.3.26.0 lacks MUMPS_PARAORD_MAX" in done.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
+def test_the_build_script_goes_on_if_every_libpetsc_has_the_ordering_cap(tmp_path):
+    _wheel(tmp_path, **{"libpetsc.so.3.26.0": _CAPPED, "libother.so": b""})
+    done = _run_function("check_paraord_cap", OUT=str(tmp_path), PETSC_VERSION="3.26.0")
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
+def test_the_ordering_cap_check_stops_if_the_wheel_holds_no_libpetsc(tmp_path):
+    _wheel(tmp_path, **{"libother.so": _CAPPED})
+    done = _run_function("check_paraord_cap", OUT=str(tmp_path), PETSC_VERSION="3.26.0")
+    assert done.returncode != 0
+    assert "no libpetsc" in done.stderr
+
+
 def test_the_build_script_patches_after_the_checksum_and_checks_after_the_build():
     lines = [line.strip() for line in _script_lines()]
     fetched = lines.index('fetch petsc "$PETSC_VERSION" "$SHA256_petsc"')
     patched = lines.index("patch_petsc_sdist")
     built = lines.index('build petsc "$PETSC_VERSION"')
     assert fetched < patched < built < lines.index("check_no_gemmt")
+
+
+def test_the_build_script_caps_mumps_after_its_checksum_and_checks_the_build():
+    lines = [line.strip() for line in _script_lines()]
+    copied = lines.index('check_sha256 "$WORK/$MUMPS_TARBALL" "$sha256"')
+    downloaded = lines.index('download "$url" "$sha256" "$WORK/$MUMPS_TARBALL"')
+    patched = lines.index("patch_mumps")
+    built = lines.index('build petsc "$PETSC_VERSION"')
+    assert copied < patched
+    assert downloaded < patched < built
+    assert built < lines.index("check_paraord_cap")
 
 
 def _stub(folder, name, body):
@@ -858,10 +1001,13 @@ BASH_SCRIPT = pytest.mark.skipif(
 def test_the_no_mpi_stacks_configure_options_do_not_change(tmp_path):
     result = _check(tmp_path)
     assert result.returncode == 0, result.stderr
-    assert _options(result.stdout) == [
+    options = _options(result.stdout)
+    # MUMPS from the tarball the script repacked with the ordering cap
+    assert options[2].startswith("--download-mumps=")
+    assert options[2].endswith("/MUMPS_5.9.1-gfem.tar.gz")
+    assert options[:2] + options[3:] == [
         "--with-scalar-type=complex",
         "--with-mpi=0",
-        "--download-mumps",
         "--download-metis",
         "--download-openblas",
         "--download-openblas-use-pthreads",
@@ -885,6 +1031,8 @@ def test_the_mpi_stack_has_64_bit_indices_and_scotch_over_petscs_pin(tmp_path):
         assert option in options
     (scotch,) = (o for o in options if o.startswith("--download-ptscotch="))
     assert scotch.endswith("/scotch-v7.0.18.tar.gz")
+    (mumps,) = (o for o in options if o.startswith("--download-mumps"))
+    assert mumps.endswith("/MUMPS_5.9.1-gfem.tar.gz")
 
 
 @NOT_CONDA
