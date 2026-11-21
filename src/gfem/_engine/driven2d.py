@@ -60,6 +60,7 @@ import math
 from collections.abc import Sequence
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import ngsolve as ngs
 import numpy as np
@@ -198,7 +199,13 @@ class Driven2DRule(DrivenRule):
         _check_skipped_port_modes(model, stacklevel=4)
 
     def operator(self, model: Model) -> DrivenOperator:
-        """The model's scalar driven operator; the last model's is kept."""
+        """The model's scalar driven operator; the last model's is kept.
+
+        Raises:
+            NotImplementedError: An Hz material field with a nonzero
+                conductivity (`_check_materials`, on the concrete values).
+        """
+        _check_materials(model, self.polarization)
         last = getattr(self, "_last_operator", None)
         if last is not None and last[0] is model:
             return last[1]
@@ -221,9 +228,24 @@ class Driven2DRule(DrivenRule):
         )
 
     def unsupported_input(self, kind: tuple) -> str | None:
-        """Every input: a 2D model's gradients are not available yet."""
-        del kind
-        return _NO_GRADIENTS
+        """Why a read input cannot be differentiated here, or ``None``.
+
+        A `MaterialField`'s values are differentiated, as on a 3D model (a
+        region beside a wave port raises); in Hz but a law blend's density,
+        which the forward refuses. An Hz field's conductivity is
+        differentiated at its only admitted value, zero.
+        Every other input (node coordinates, law parameters, boundary and
+        port values) is not.
+
+        Raises:
+            PortGeometryError: ``kind`` is the material of a region beside
+                a wave port line.
+        """
+        if kind[0] != "material":
+            return _NO_GRADIENTS
+        if self.polarization == "Hz" and kind[2] == "blend":
+            return _HZ_FREQUENCY_DEPENDENT
+        return super().unsupported_input(kind)
 
     def result(self, outputs: dict) -> DrivenResult:
         """The public result from the forward outputs."""
@@ -287,8 +309,16 @@ class Driven2DRule(DrivenRule):
         )
 
 
-#: Why a 2D model's inputs cannot be differentiated in this version.
-_NO_GRADIENTS = "gradients of a 2D model are not available in this version"
+#: Why a 2D model's other inputs cannot be differentiated in this version.
+_NO_GRADIENTS = (
+    "gradients of a 2D model are available in this version with respect to "
+    "material field values only"
+)
+#: Why an Hz solve cannot be differentiated by a frequency-dependent field.
+_HZ_FREQUENCY_DEPENDENT = (
+    "an Hz solve of a 2D model takes no material field blended with a "
+    "permittivity law; solve the Ez polarization"
+)
 
 
 def _resolve(
@@ -357,9 +387,13 @@ def _check_materials(model: Model, polarization: str) -> None:
     for region, material in model.materials.items():
         if not isinstance(material, MaterialField):
             continue
-        conductive = material.conductivity is not None and np.any(
-            np.asarray(material.conductivity) != 0
-        )
+        conductive = False
+        if material.conductivity is not None:
+            try:
+                conductive = bool(np.any(np.asarray(material.conductivity) != 0))
+            except jax.errors.TracerArrayConversionError:
+                # traced at the solve entry: the host forward checks the values
+                conductive = False
         if conductive or material.blend_ends is not None:
             what = "a conductivity" if conductive else "a permittivity-law end"
             raise NotImplementedError(
@@ -544,6 +578,7 @@ def scalar_pieces(
                 kind="value",
                 coefficient=eps_cf,
                 values=eps,
+                derivatives=terms.mass_derivatives(model),
             ),
         ]
         out += terms.susceptibility_pieces(model, built, order, elements=elements)
@@ -569,6 +604,7 @@ def scalar_pieces(
                 kind="gradient",
                 coefficient=inv_cf,
                 values=inverse,
+                derivatives=_inverse_derivatives(model, steady > 0),
             ),
             terms.Piece(
                 "mass",
@@ -577,12 +613,72 @@ def scalar_pieces(
                 kind="value",
                 coefficient=mu_cf,
                 values=mu,
+                derivatives={"mu_r": Derivative(1.0, holomorphic=True)},
             ),
         ]
         for region, (mask, material) in varying.items():
             out.append(_stiffness_piece(built, region, mask, material, dx))
+        latent = (_conductivity_stiffness(model, built, steady > 0, dx),)
     out += _absorbing_pieces(model, built, order, polarization, faces=faces)
     return out, latent
+
+
+def _inverse_derivatives(model: Model, steady: np.ndarray) -> dict[str, Derivative]:
+    r"""The derivatives of the Hz stiffness coefficient :math:`1/\varepsilon`.
+
+    With :math:`\varepsilon = \varepsilon_r(1 - i\tan\delta)` on the
+    ``steady`` elements (zero on the others, which have pieces of their own):
+    :math:`-(1 - i\tan\delta)/\varepsilon^2` by ``eps_r`` and
+    :math:`i\varepsilon_r/\varepsilon^2` by ``tan_delta``.
+    """
+
+    def by(factor: np.ndarray) -> np.ndarray:
+        eps = dispersion.high_frequency_eps(model)
+        return np.where(steady, factor / np.where(steady, eps, 1.0) ** 2, 0.0)
+
+    def loss() -> np.ndarray:
+        return 1.0 - 1j * np.real(element_values(model, "tan_delta"))
+
+    return {
+        "eps_r": Derivative(lambda: by(-loss()), holomorphic=True),
+        "tan_delta": Derivative(
+            lambda: by(1j * element_values(model, "eps_r", law=1.0)),
+            holomorphic=False,
+        ),
+    }
+
+
+def _conductivity_stiffness(
+    model: Model, built: Any, steady: np.ndarray, dx: Any
+) -> terms.Piece:
+    r"""The latent Hz piece of a material field's conductivity.
+
+    An Hz field's conductivity is zero (`_check_materials`), but its
+    derivative is not: :math:`\varepsilon - i\sigma/(\omega\varepsilon_0)`
+    moves the stiffness coefficient by
+    :math:`(i/(\omega\varepsilon_0))\,\varepsilon^{-2}` per unit
+    :math:`\sigma`. So the piece has
+    :math:`\theta = i/(\omega\varepsilon_0)`, a zero coefficient, and the
+    derivative :math:`\varepsilon^{-2}` on the ``steady`` elements.
+    """
+    values = np.zeros(len(steady))
+    cf = coefficient(built, values)
+
+    def by_sigma() -> np.ndarray:
+        eps = dispersion.high_frequency_eps(model)
+        return np.where(steady, 1.0 / np.where(steady, eps, 1.0) ** 2, 0.0)
+
+    return terms.Piece(
+        "stiffness conductivity",
+        lambda w: 1j / (w * const.epsilon_0),
+        lambda u, v: (cf * ngs.grad(u)) * ngs.grad(v) * dx,
+        kind="gradient",
+        coefficient=cf,
+        values=values,
+        frequency_class="nonpolynomial",
+        d_theta=lambda w: -1j / (w**2 * const.epsilon_0),
+        derivatives={"conductivity": Derivative(by_sigma, holomorphic=False)},
+    )
 
 
 def _varying_regions(model: Model) -> dict[str, tuple[np.ndarray, Material]]:
@@ -687,9 +783,16 @@ def _absorbing_pieces(
     y1 = np.where(ok, first[np.maximum(owner, 0)], 0.0)
     y2 = np.where(ok, curl[np.maximum(owner, 0)], 0.0)
     laws = terms.law_faces(model, surfaces, owner)
+    # a law's segments take its own pieces, which no material field reads
+    on_law = np.zeros(len(owner), bool)
     for _, lf in laws:
         y1[lf] = 0.0
         y2[lf] = 0.0
+        on_law |= lf
+
+    def owned(lines: tuple[str, ...]) -> np.ndarray:
+        return terms._owned(model, lines, owner, faces)  # noqa: SLF001
+
     region1 = boundary_region(built, surfaces)
     ds1 = quadrature.ds(order, definedon=region1, definedonelements=segments)
     y1_cf = surface_coefficient(built, y1)
@@ -705,7 +808,8 @@ def _absorbing_pieces(
             kind="trace",
             coefficient=y1_cf,
             region=region1,
-            owner=terms._owned(model, surfaces, owner, faces),  # noqa: SLF001
+            derivatives=terms.absorbing_derivatives(model, order=1, swapped=not ez),
+            owner=np.where(on_law, -1, owned(surfaces)),
         )
     ]
     if second:
@@ -717,12 +821,13 @@ def _absorbing_pieces(
                 "absorbing order 2",
                 lambda w: 1 / (2j * k(w)),
                 lambda u, v: y2_cf * u.Trace().Deriv() * v.Trace().Deriv() * ds2,
-                kind="surface",
+                kind="tangential gradient",
                 coefficient=y2_cf,
                 region=region2,
                 frequency_class="nonpolynomial",
                 d_theta=lambda w: -1 / (2j * k(w) * w),
-                owner=terms._owned(model, second, owner, faces),  # noqa: SLF001
+                derivatives=terms.absorbing_derivatives(model, order=2, swapped=not ez),
+                owner=np.where(on_law, -1, owned(second)),
             )
         )
     tags = model.mesh._topology.surface_tags  # noqa: SLF001
@@ -804,7 +909,7 @@ def _law_absorbing(
                 f"absorbing order 2 {lr.region}",
                 theta2,
                 lambda u, v: y2_cf * u.Trace().Deriv() * v.Trace().Deriv() * ds2,
-                kind="surface",
+                kind="tangential gradient",
                 coefficient=y2_cf,
                 frequency_class="nonpolynomial",
                 d_theta=d_theta2,

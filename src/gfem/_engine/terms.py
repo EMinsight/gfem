@@ -106,6 +106,7 @@ __all__ = [
     "Piece",
     "Tabulated",
     "absorbing_coefficients",
+    "absorbing_derivatives",
     "absorbing_faces",
     "absorbing_shape_unsupported",
     "blend_pieces",
@@ -114,6 +115,7 @@ __all__ = [
     "face_owner",
     "law_faces",
     "lumped_ports",
+    "mass_derivatives",
     "pieces",
     "polynomial_law",
     "port_vectors",
@@ -207,10 +209,11 @@ class Piece:
             gradients: ``"curl"`` (``∫ (C curl u) · curl v``), ``"gradient"``
             (``∫ (C grad u) · grad v``, a 2D model's scalar field), ``"value"``
             (``∫ (C u) · v``), ``"trace"`` (``∫ c u_t · v_t`` on surfaces),
-            ``"curl trace"`` (``∫ c (n · curl u)(n · curl v)``), another
-            ``"surface"`` form, or ``"port"`` (a port's term, which reads
-            only the port's own geometry: shape gradients hold port nodes
-            in place).
+            ``"curl trace"`` (``∫ c (n · curl u)(n · curl v)``),
+            ``"tangential gradient"`` (``∫ c ∂_t u ∂_t v`` on a 2D model's
+            lines), another ``"surface"`` form, or ``"port"`` (a port's
+            term, which reads only the port's own geometry: shape gradients
+            hold port nodes in place).
         coefficient: ``C`` (``c``) of a volume (trace) piece, the element-
             (face-) wise coefficient its integrand reads.
         values: The values of a volume piece's ``coefficient`` per gfem
@@ -257,7 +260,14 @@ class Piece:
     theta: Callable[[complex], complex]
     integrand: Callable[[Any, Any], Any]
     kind: Literal[
-        "curl", "gradient", "value", "trace", "curl trace", "surface", "port"
+        "curl",
+        "gradient",
+        "value",
+        "trace",
+        "curl trace",
+        "tangential gradient",
+        "surface",
+        "port",
     ] = "surface"
     coefficient: Any = None
     region: Any = None
@@ -605,6 +615,32 @@ def blend_pieces(
     return out
 
 
+def mass_derivatives(model: Model) -> dict[str, Derivative]:
+    r"""The derivatives of the mass coefficient :math:`\varepsilon_r(1 - i\tan\delta)`.
+
+    By ``eps_r``, ``tan_delta`` and a law blend's density (``blend``, whose
+    eps_inf limit is in the mass), per element, with their per-axis forms.
+    """
+    return {
+        "eps_r": Derivative(
+            lambda: _loss(model),
+            holomorphic=True,
+            per_axis=Derivative(lambda: _axis_loss(model), holomorphic=True),
+        ),
+        # a law blend's eps_inf limit moves with its density
+        "blend": Derivative(lambda: _blend_mass_slope(model), holomorphic=True),
+        "tan_delta": Derivative(
+            # a law region has no tan_delta (nor a field): never read
+            lambda: -1j * element_values(model, "eps_r", per_axis=1.0, law=1.0),
+            holomorphic=False,
+            per_axis=Derivative(
+                lambda: -1j * principal_values(model, "eps_r"),
+                holomorphic=False,
+            ),
+        ),
+    }
+
+
 def _blend_mass_slope(model: Model) -> np.ndarray:
     """D (mass value) / d rho per tetrahedron: the law blends' eps_inf limits."""
     out = np.zeros(len(model.mesh.volume_elements))
@@ -726,24 +762,7 @@ def pieces(
             kind="value",
             coefficient=eps_cf,
             values=eps,
-            derivatives={
-                "eps_r": Derivative(
-                    lambda: _loss(model),
-                    holomorphic=True,
-                    per_axis=Derivative(lambda: _axis_loss(model), holomorphic=True),
-                ),
-                # a law blend's eps_inf limit moves with its density
-                "blend": Derivative(lambda: _blend_mass_slope(model), holomorphic=True),
-                "tan_delta": Derivative(
-                    # a law region has no tan_delta (nor a field): never read
-                    lambda: -1j * element_values(model, "eps_r", per_axis=1.0, law=1.0),
-                    holomorphic=False,
-                    per_axis=Derivative(
-                        lambda: -1j * principal_values(model, "eps_r"),
-                        holomorphic=False,
-                    ),
-                ),
-            },
+            derivatives=mass_derivatives(model),
         ),
     ]
     # the conductivity has its own i k0 piece, not folded into the mass (the
@@ -779,7 +798,7 @@ def pieces(
                 kind="trace",
                 coefficient=y_cf,
                 region=form.region,
-                derivatives=_absorbing_derivatives(
+                derivatives=absorbing_derivatives(
                     model, order=1, faces=(surfaces, owner)
                 ),
                 owner=np.where(on_law, -1, _owned(model, surfaces, owner, faces)),
@@ -802,7 +821,7 @@ def pieces(
                     region=region,
                     frequency_class="nonpolynomial",
                     d_theta=lambda w: -1 / (2j * k(w) * w),
-                    derivatives=_absorbing_derivatives(model, order=2),
+                    derivatives=absorbing_derivatives(model, order=2),
                     owner=np.where(on_law, -1, _owned(model, second, owner, faces)),
                 )
             )
@@ -1147,17 +1166,23 @@ def _axis_loss(model: Model) -> np.ndarray:
     return 1.0 - 1j * np.real(principal_values(model, "tan_delta"))
 
 
-def _absorbing_derivatives(
-    model: Model, order: int, faces: tuple[tuple[str, ...], np.ndarray] | None = None
+def absorbing_derivatives(
+    model: Model,
+    order: int,
+    faces: tuple[tuple[str, ...], np.ndarray] | None = None,
+    *,
+    swapped: bool = False,
 ) -> dict[str, Derivative]:
-    """The derivatives of the absorbing coefficient of ``order`` per tetrahedron.
+    """The derivatives of the absorbing coefficient of ``order`` per element.
 
     Of the real ``e = Re(eps_r (1 - i tan_delta))`` and ``m = Re(mu_r)`` of
     the isotropic element values: ``de/deps_r`` is 1 along ``Re(chain
     eps_r)`` with ``chain = 1 - i tan_delta``, and ``de/dtan_delta =
     Im(eps_r)``. With ``faces`` (the surfaces and the owner per triangle of
     the first-order term), each also has its per-axis form, per face
-    (`_absorbing_axis_derivatives`).
+    (`_absorbing_axis_derivatives`). ``swapped`` exchanges the roles of
+    ``e`` and ``m`` in the coefficient: a 2D model's Hz coefficients
+    ``sqrt(m / e)`` and ``1 / (e sqrt(e m))``.
     """
 
     def em() -> tuple[np.ndarray, np.ndarray]:
@@ -1167,10 +1192,12 @@ def _absorbing_derivatives(
         return e, np.real(element_values(model, "mu_r", per_axis=1.0))
 
     def by_e() -> np.ndarray:
-        return _absorbing_by_e(*em(), order)
+        e, m = em()
+        return _absorbing_by_m(m, e, order) if swapped else _absorbing_by_e(e, m, order)
 
     def by_m() -> np.ndarray:
-        return _absorbing_by_m(*em(), order)
+        e, m = em()
+        return _absorbing_by_e(m, e, order) if swapped else _absorbing_by_m(e, m, order)
 
     axis = {} if faces is None else _absorbing_axis_derivatives(model, *faces)
     return {
