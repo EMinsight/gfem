@@ -55,6 +55,7 @@ equals that of the slab it is the cross-section of.
 from __future__ import annotations
 
 import cmath
+import functools
 import hashlib
 import math
 from collections.abc import Sequence
@@ -69,7 +70,7 @@ import scipy.constants as const
 from gfem import _mpi, _timing
 from gfem._boundaries import PEC, PMC, Absorbing, WavePort, wave_port_surfaces
 from gfem._domain import h1_unknowns
-from gfem._engine import dispersion, quadrature, terms
+from gfem._engine import dispersion, points, quadrature, terms
 from gfem._engine.cache import default_retain_memory, discretization
 from gfem._engine.coefficients import (
     coefficient,
@@ -150,6 +151,12 @@ class Driven2DRule(DrivenRule):
         self.orders: dict = {}
         _check_lines(model, self.polarization)
         _check_materials(model, self.polarization)
+        #: The layer grids of two constant ends, whose pixels Hz differentiates.
+        self._constant_grids = frozenset(
+            r
+            for r, f in points.point_blends(model).items()
+            if f.blend_ends is not None and _constant_ends(f.blend_ends)
+        )
         self.linear = _resolve(model, problem, options)
         self.gauge = _UNGAUGED
         dispersion.check_frequencies(model, problem.frequency)
@@ -232,7 +239,8 @@ class Driven2DRule(DrivenRule):
 
         A `MaterialField`'s values are differentiated, as on a 3D model (a
         region beside a wave port raises); in Hz but a law blend's density,
-        which the forward refuses. An Hz field's conductivity is
+        which the forward refuses (a layer grid's pixels between two
+        constant ends are differentiated). An Hz field's conductivity is
         differentiated at its only admitted value, zero.
         Every other input (node coordinates, law parameters, boundary and
         port values) is not.
@@ -243,7 +251,11 @@ class Driven2DRule(DrivenRule):
         """
         if kind[0] != "material":
             return _NO_GRADIENTS
-        if self.polarization == "Hz" and kind[2] == "blend":
+        if (
+            self.polarization == "Hz"
+            and kind[2] == "blend"
+            and kind[1] not in self._constant_grids
+        ):
             return _HZ_FREQUENCY_DEPENDENT
         return super().unsupported_input(kind)
 
@@ -394,7 +406,16 @@ def _check_materials(model: Model, polarization: str) -> None:
             except jax.errors.TracerArrayConversionError:
                 # traced at the solve entry: the host forward checks the values
                 conductive = False
-        if conductive or material.blend_ends is not None:
+        ends = material.blend_ends
+        if ends is not None and ends.pixels is not None:
+            # a layer grid's blend of two constant ends is applied per point
+            conductive = any(
+                n == "conductivity" and (a or b) for n, a, b in ends.others
+            )
+            law = not _constant_ends(ends)
+        else:
+            law = ends is not None
+        if conductive or law:
             what = "a conductivity" if conductive else "a permittivity-law end"
             raise NotImplementedError(
                 f"The material field of region {region!r} has {what}, so its "
@@ -403,6 +424,11 @@ def _check_materials(model: Model, polarization: str) -> None:
                 "take. Give the region a gfem.Material, or solve the Ez "
                 "polarization."
             )
+
+
+def _constant_ends(ends: Any) -> bool:
+    """Whether neither end of a blend is a permittivity law."""
+    return not any(isinstance(e, PermittivityLaw) for e in (ends.void, ends.solid))
 
 
 # --- the operator ------------------------------------------------------------------
@@ -555,10 +581,14 @@ def scalar_pieces(
     dx = quadrature.dx(order, definedonelements=cells)
     eps = dispersion.high_frequency_eps(model)
     mu = element_values(model, "mu_r")
+    # a layer grid's elements take their coefficients at the points only
+    grids = np.zeros(len(mu), bool)
+    for region in points.point_blends(model):
+        grids[model.mesh.elements(region)] = True
     out: list[terms.Piece] = []
     latent: tuple[terms.Piece, ...] = ()
     if polarization == "Ez":
-        nu = 1.0 / mu
+        nu = np.where(grids, 0.0, 1.0 / mu)
         nu_cf = coefficient(built, nu)
         eps_cf = coefficient(built, eps)
         out += [
@@ -590,11 +620,12 @@ def scalar_pieces(
             latent = (conductivity,)
     else:
         varying = _varying_regions(model)
-        steady = np.ones(len(eps))
+        steady = np.where(grids, 0.0, 1.0)
         for mask, _ in varying.values():
             steady[mask] = 0.0
         inverse = np.where(steady > 0, 1.0 / np.where(steady > 0, eps, 1.0), 0.0)
         inv_cf = coefficient(built, inverse)
+        mu = np.where(grids, 0.0, mu)
         mu_cf = coefficient(built, mu)
         out += [
             terms.Piece(
@@ -619,8 +650,112 @@ def scalar_pieces(
         for region, (mask, material) in varying.items():
             out.append(_stiffness_piece(built, region, mask, material, dx))
         latent = (_conductivity_stiffness(model, built, steady > 0, dx),)
+    out += _point_pieces(model, built, order, polarization, elements=elements)
     out += _absorbing_pieces(model, built, order, polarization, faces=faces)
     return out, latent
+
+
+def _point_pieces(
+    model: Model,
+    built: Any,
+    order: int,
+    polarization: str,
+    *,
+    elements: np.ndarray | None,
+) -> list[terms.Piece]:
+    r"""The pieces of each layer grid's region, on its quadrature points.
+
+    The blend at the points' densities :math:`\rho_q` (`gfem._engine.points`):
+    in Ez the stiffness :math:`\mu_r^{-1}`, the mass :math:`\varepsilon_r`
+    (with a law end, its eps_inf limit and one piece per susceptibility part,
+    as `gfem._engine.terms.blend_pieces` per element) and a nonzero
+    conductivity; in Hz, whose ends are constant, the stiffness
+    :math:`\varepsilon_r^{-1}` and the mass :math:`\mu_r`. Each carries
+    :math:`dc/d\rho` per point as its ``"blend"`` derivative.
+    """
+    scale = built.scale
+    out: list[terms.Piece] = []
+
+    def k2(w: complex) -> complex:
+        return (w * scale / const.c) ** 2
+
+    def mass_theta(w: complex) -> complex:
+        return -k2(w)
+
+    for region, field in points.point_blends(model).items():
+        pm = points.point_map(model, region, order)
+        if elements is not None and not elements[pm.elements].any():
+            continue
+        ends = field.blend_ends
+        if ends is None:  # pragma: no cover - point_blends holds blends only
+            continue
+        rho = pm.matrix @ np.asarray(field.blend, dtype=float).ravel()
+        mu, d_mu = points.other(ends, "mu_r", rho, 1.0)
+
+        piece = functools.partial(
+            _point_piece, model=model, order=order, pm=pm, region=region
+        )
+
+        if polarization == "Hz":
+            eps, d_eps = points.constant_permittivity(ends, rho)
+            out += [
+                piece(
+                    "stiffness",
+                    terms._constant,  # noqa: SLF001
+                    1.0 / eps,
+                    -d_eps / eps**2,
+                    kind="gradient",
+                ),
+                piece("mass", mass_theta, mu, d_mu),
+            ]
+            continue
+        out.append(
+            piece(
+                "stiffness",
+                terms._constant,  # noqa: SLF001
+                1.0 / mu,
+                -d_mu / mu**2,
+                kind="gradient",
+            )
+        )
+        law = any(isinstance(e, PermittivityLaw) for e in (ends.void, ends.solid))
+        if not law:
+            eps, d_eps = points.constant_permittivity(ends, rho)
+            out.append(piece("mass", mass_theta, eps, d_eps))
+        else:
+            br = dispersion.BlendRegion(region, ends, np.ones(len(rho), bool), rho)
+            eps, d_eps = dispersion.blend_mass(br)
+            out.append(piece("mass", mass_theta, eps, d_eps))
+            for part in dispersion.blend_parts(br):
+
+                def theta(w: complex, part: Any = part) -> complex:
+                    return -k2(w) * part.chi(w)
+
+                def d_theta(w: complex, part: Any = part) -> complex:
+                    return -k2(w) * (2 / w * part.chi(w) + part.d_chi(w))
+
+                out.append(
+                    piece(
+                        f"blend {part.name}",
+                        theta,
+                        part.c,
+                        part.dc,
+                        frequency_class="nonpolynomial",
+                        d_theta=d_theta,
+                        probe=terms._LAW_PROBE,  # noqa: SLF001
+                    )
+                )
+        sigma, d_sigma = points.other(ends, "conductivity", rho, 0.0)
+        if np.any(sigma) or np.any(d_sigma):
+            out.append(
+                piece(
+                    "conductivity",
+                    lambda w: 1j * terms.wavenumber(w, scale),
+                    terms.ETA0 * scale * np.real(sigma),
+                    terms.ETA0 * scale * np.real(d_sigma),
+                )
+            )
+    return out
 
 
 def _inverse_derivatives(model: Model, steady: np.ndarray) -> dict[str, Derivative]:
@@ -746,6 +881,38 @@ def _stiffness_piece(
         frequency_class="nonpolynomial",
         d_theta=lambda w: -d_eps(w) / eps(w) ** 2,
         probe=terms._LAW_PROBE,  # noqa: SLF001
+    )
+
+
+def _point_piece(
+    name: str,
+    theta: Any,
+    values: np.ndarray,
+    slope: np.ndarray,
+    *,
+    model: Model,
+    order: int,
+    pm: points.PointMap,
+    region: str,
+    kind: str = "value",
+    **kw: Any,
+) -> terms.Piece:
+    """A piece of ``region``'s layer grid: ``values`` and their slope per point."""
+    cf = points.function(model, order, pm, values)
+    dx = quadrature.dx(order, definedonelements=pm.cells)
+    if kind == "gradient":
+        form = lambda u, v: (cf * ngs.grad(u)) * ngs.grad(v) * dx  # noqa: E731
+    else:
+        form = lambda u, v: (cf * u) * v * dx  # noqa: E731
+    return terms.Piece(
+        f"points {name} {region}",
+        theta,
+        form,
+        kind="gradient" if kind == "gradient" else "value",
+        coefficient=cf,
+        derivatives={"blend": Derivative(lambda: slope, holomorphic=True)},
+        points=region,
+        **kw,
     )
 
 

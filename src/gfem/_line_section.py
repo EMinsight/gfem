@@ -265,13 +265,17 @@ def _materials(model: Model, port: WavePort, cells: np.ndarray):
         if not isinstance(material, MaterialField):  # pragma: no cover
             raise TypeError(f"Unknown material type {type(material).__name__}.")
         if material.blend_ends is not None:
+            what = (
+                "a layer-grid design"
+                if material.blend_ends.pixels is not None
+                else "a density blend with a permittivity-law end"
+            )
             raise NotImplementedError(
                 f"WavePort {port.name!r}: region {region!r} has elements beside "
-                "the port's line and is a density blend with a permittivity-law "
-                "end (MaterialField.interpolate), which the port mode problem "
-                "does not read. Keep the design away from line ports (give the "
-                "elements beside the port a region of their own with a constant "
-                "gfem.Material)."
+                f"the port's line and is {what} (MaterialField.interpolate), "
+                "which the port mode problem does not read. Keep the design away "
+                "from line ports (give the elements beside the port a region of "
+                "their own with a constant gfem.Material)."
             )
         pos = np.searchsorted(mesh.elements(region), cells[rows])
         tan = _field(material, "tan_delta", 0.0, pos).real

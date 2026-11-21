@@ -135,12 +135,20 @@ class BlendRegion:
 
 
 def blend_regions(model: Model) -> tuple[BlendRegion, ...]:
-    """The model's law blends, in ``model.materials`` order (concrete densities)."""
+    """The model's law blends, in ``model.materials`` order (concrete densities).
+
+    Per element: a layer grid's pixels, sampled at the quadrature points
+    (`gfem._engine.points`), are left out.
+    """
     mesh = model.mesh
     active = model._domain.active  # noqa: SLF001
     out = []
     for region, material in model.materials.items():
-        if isinstance(material, MaterialField) and material.blend_ends is not None:
+        if (
+            isinstance(material, MaterialField)
+            and material.blend_ends is not None
+            and material.blend_ends.pixels is None
+        ):
             elements = mesh.elements(region)
             mask = np.zeros(len(mesh.volume_elements), bool)
             mask[elements] = True
@@ -385,6 +393,11 @@ def refuse_blends(model: Model, where: str, *, static: bool = False) -> None:
             "which has no static permittivity (eps(0) is infinite), so the "
             "electrostatic problem cannot read it. Use a constant material for "
             "the electrostatic model."
+        )
+    if ends.pixels is not None:
+        raise NotImplementedError(
+            f"Region {region!r} holds a layer-grid design of a 2D model, which "
+            f"{where} does not support: it is solved by gfem.Driven only."
         )
     raise NotImplementedError(
         f"Region {region!r} holds a density blend with a permittivity-law end, "

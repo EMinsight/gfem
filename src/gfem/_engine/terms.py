@@ -90,7 +90,7 @@ from gfem._engine.coefficients import (
 from gfem._engine.domain import boundary_region
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.sensitivity import Derivative
-from gfem._materials import Drude
+from gfem._materials import Drude, MaterialField
 from gfem._morph import unit_normals
 from gfem._sheet import check_fill
 from gfem.conventions import EXTERIOR_THICKNESS_FACTOR
@@ -249,6 +249,11 @@ class Piece:
             region and dθ/dp(ω) by each law parameter, keyed as
             `gfem._engine.dispersion.d_eps` (the law pass);
             ``None`` otherwise.
+        points: For a piece of a layer grid's region of a 2D mesh, whose
+            coefficient lives on the quadrature points
+            (`gfem._engine.points`), that region: its derivatives are per
+            point of the region, and the point pass reads them. ``None``
+            otherwise.
 
     Raises:
         ValueError: ``theta`` does not give one scalar: the term is not
@@ -284,6 +289,7 @@ class Piece:
     law: tuple[str, Callable[[complex], dict[tuple, complex]]] | None = (
         dataclasses.field(default=None, compare=False)
     )
+    points: str | None = None
 
     def __post_init__(self) -> None:
         """Check that θ is a scalar function of ω."""
@@ -960,19 +966,39 @@ def check_absorbing(model: Model, *, dispersive: bool = False) -> None:
             )
 
 
+class _Masked(NamedTuple):
+    """A region and its elements, as `dispersion.absorbing_surfaces` reads them."""
+
+    region: str
+    mask: np.ndarray
+
+
 def _refuse_absorbing_blends(model: Model) -> None:
     """Raise for an `Absorbing` face on a law blend's region.
 
     Raises:
         NotImplementedError: An absorbing surface has a face on a blend.
     """
-    blends = dispersion.blend_regions(model)
-    for region, surfaces in dispersion.absorbing_surfaces(model, blends).items():  # ty: ignore[invalid-argument-type]
+    blends = {
+        r: m.blend_ends.pixels is not None
+        for r, m in model.materials.items()
+        if isinstance(m, MaterialField) and m.blend_ends is not None
+    }
+    regions = []
+    for region in blends:
+        mask = np.zeros(len(model.mesh.volume_elements), bool)
+        mask[model.mesh.elements(region)] = True
+        regions.append(_Masked(region, mask))
+    for region, surfaces in dispersion.absorbing_surfaces(model, regions).items():  # ty: ignore[invalid-argument-type]
+        what = (
+            "a layer-grid design"
+            if blends[region]
+            else "a density blend with a permittivity-law end"
+        )
         raise NotImplementedError(
-            f"Absorbing {surfaces[0]!r} lies on region {region!r}, a density "
-            "blend with a permittivity-law end: an absorbing boundary on a blend "
-            "is not supported. Put a constant layer between the design region and "
-            "the boundary."
+            f"Absorbing {surfaces[0]!r} lies on region {region!r}, {what}: an "
+            "absorbing boundary on a blend is not supported. Put a constant layer "
+            "between the design region and the boundary."
         )
 
 

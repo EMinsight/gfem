@@ -2264,6 +2264,7 @@ def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Ter
             "owner": piece.owner,
             "sheet": piece.sheet,
             "law": None if piece.law is None else piece.law[0],
+            "points": piece.points,
         }
         if piece.kind == "surface":
             term = Term(
