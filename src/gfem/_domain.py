@@ -83,6 +83,20 @@ def nedelec_unknowns(mesh: Mesh, domain: EMDomain, order: int) -> int:
     return p * e + p * (p - 1) * f + p * (p - 1) * (p - 2) // 2 * t
 
 
+def h1_unknowns(mesh: Mesh, domain: EMDomain, order: int) -> int:
+    """H1 unknowns of ``order`` on ``domain`` of a 2D ``mesh``.
+
+    ``V + (p-1) E + (p-1)(p-2)/2 T`` over the domain's vertices, edges and
+    triangles: NGSolve's ``H1(order=p)`` size on triangles. Dirichlet
+    unknowns count, so it bounds the system size from above.
+    """
+    cells = mesh.volume_elements[domain.active]
+    edges = cells[:, np.array([[0, 1], [1, 2], [2, 0]])].reshape(-1, 2)
+    v, e, t = len(np.unique(cells)), _distinct_rows(edges), len(cells)
+    p = order
+    return v + (p - 1) * e + (p - 1) * (p - 2) // 2 * t
+
+
 def _distinct_rows(rows: np.ndarray) -> int:
     """How many distinct vertex sets the rows hold."""
     rows = np.ascontiguousarray(np.sort(rows, axis=1), dtype=np.int64)

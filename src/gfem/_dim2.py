@@ -150,7 +150,6 @@ _PROBLEMS = {
     "DCConduction": f"DC conduction on a cross-section runs on the slab: {SLAB}.",
     "SteadyThermal": _THERMAL,
     "TransientThermal": _THERMAL,
-    "Driven": f"For its S-parameters, {SLAB}.",
 }
 
 

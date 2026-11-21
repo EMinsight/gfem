@@ -267,7 +267,7 @@ def _solve(  # noqa: PLR0912, PLR0915 - the cache's seam sits between the checks
     with session:
         if resolved is not None:
             _mpi.refuse(model, problem, options)
-        rule_class = _rule_class(problem)
+        rule_class = _rule_class(problem, model.mesh.dim)
         _check_polarization(problem, model.mesh.dim)
         _check_domain(model, problem)
         _check_blends(model, problem)
@@ -383,14 +383,16 @@ def _check_blends(model: Model, problem: Any) -> None:
     refuse_blends(model, where, static=kind == "Electrostatic")
 
 
-def _rule_class(problem: Any) -> type:
-    """The engine rule of a problem type, imported on first use.
+def _rule_class(problem: Any, dim: int = 3) -> type:
+    """The engine rule of a problem type on a mesh of ``dim``, imported on first use.
 
-    Each problem class names its rule as ``_rule = "module:Class"``, so a new
-    problem type needs no change here, and importing gfem does not import
-    the engine.
+    Each problem class names its rule as ``_rule = "module:Class"``, and its
+    rule on a 2D mesh as ``_rule_2d`` where that differs, so a new problem
+    type needs no change here, and importing gfem does not import the engine.
     """
     path = getattr(type(problem), "_rule", None)
+    if dim == 2:
+        path = getattr(type(problem), "_rule_2d", path)
     if not isinstance(path, str):
         raise TypeError(
             "solve needs a problem type such as gfem.Electrostatic(...), got "

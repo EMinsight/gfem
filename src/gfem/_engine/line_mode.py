@@ -107,7 +107,7 @@ class LineModeSpace:
         self.mesh, self.element_segment = _build_mesh(section, essential)
         self.space = ngs.H1(self.mesh, order=order, complex=True, dirichlet="essential")
         self.free = np.flatnonzero(free_mask(self.space.FreeDofs(), self.space.ndof))
-        self.pencil, self._b_weights = self._assemble()
+        self.pencil, self._b_weights, self._b_values = self._assemble()
 
     def __reduce__(self) -> tuple[type[LineModeSpace], tuple[LineSection, int, str]]:
         """Pickle as the section, order and polarization, rebuilt on load."""
@@ -130,8 +130,12 @@ class LineModeSpace:
         """The angular frequency (rad/s) of a wavenumber per local unit."""
         return k0 * scipy.constants.c / self.section.scale
 
-    def _assemble(self) -> tuple[Pencil, list]:
-        """The pencil, and each slot's ``B`` weight (a coefficient or ``None``)."""
+    def _assemble(self) -> tuple[Pencil, list, list]:
+        """The pencil, and each slot's ``B`` weight: a coefficient and its values.
+
+        The values are per section segment (``None`` where the slot has no
+        ``B`` piece).
+        """
         s = self.section
         u, v = self.space.TnT()
         dx = self._dx()
@@ -158,12 +162,14 @@ class LineModeSpace:
             [self._p0(Z0 * s.scale * s.sigma) * u * v * dx] if ez else zero,
         ]
         b = [self._p0(w), None, None]
+        values: list[np.ndarray | None] = [np.asarray(w, complex), None, None]
         points = [None, None, self._end_points(law=False)]
         extra: list[Callable[[float], complex]] = []
         if ez:
             for g, (_, law) in enumerate(s.laws):
                 a.append([self._p0(index == g) * u * v * dx])
                 b.append(None)
+                values.append(None)
                 points.append(None)
                 extra.append(self._law_theta(law))
         else:
@@ -172,6 +178,7 @@ class LineModeSpace:
                 inside[rows] = 1.0
                 a.append([self._p0(inside) * du * dv * dx])
                 b.append(self._p0(inside))
+                values.append(inside.astype(complex))
                 points.append(None)
                 extra.append(self._inverse_eps_theta(eps, sigma, g))
         for g in range(len(s.laws)):
@@ -179,11 +186,12 @@ class LineModeSpace:
             if beside is not None:
                 a.append(zero)
                 b.append(None)
+                values.append(None)
                 points.append(beside)
                 extra.append(self._law_end_theta(g))
         mats_a = tuple(self._matrix(f, p) for f, p in zip(a, points, strict=True))
         mats_b = tuple(self._matrix([] if c is None else [c * u * v * dx]) for c in b)
-        return Pencil(a=mats_a, b=mats_b, extra=tuple(extra)), b
+        return Pencil(a=mats_a, b=mats_b, extra=tuple(extra)), b, values
 
     def _end_points(self, law: int | bool) -> sp.csr_matrix | None:
         """Absorbing ends' point terms: off the laws (``False``) or beside law ``g``.
@@ -305,6 +313,19 @@ class LineModeSpace:
         """The scalar of each ``B`` slot at ``k0`` (per local unit)."""
         theta = self.pencil.theta(k0)
         return np.array([theta[j] for j in self._b_slots])
+
+    @property
+    def weight_values(self) -> list[np.ndarray]:
+        r"""Per ``B`` slot, its weight :math:`w_j` on each section segment.
+
+        The line's :math:`w` is :math:`\sum_j \theta_j(\omega) w_j`, the
+        scalars `weights` gives.
+        """
+        return [self._b_values[j] for j in self._b_slots]
+
+    def weights(self, omega: np.ndarray) -> np.ndarray:
+        """``(n_freq, n_slots)``: each ``B`` slot's scalar at ``omega`` (rad/s)."""
+        return np.array([self._weights(k) for k in self._k0(omega)])
 
     def _k0(self, omega) -> np.ndarray:
         return np.asarray(omega, float) * self.section.scale / scipy.constants.c

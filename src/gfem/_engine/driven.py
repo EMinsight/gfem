@@ -1227,6 +1227,7 @@ class DrivenRule:
                 keep_fields=[frequencies[i] for i in block if i in self.kept],
                 wave_vector=self.problem.wave_vector,
                 wave_vector_frequency=self.problem.wave_vector_frequency,
+                polarization=self.problem.polarization,
             )
             for block in indices
         ]
@@ -1307,6 +1308,7 @@ class DrivenRule:
                 order=self.options.order,
                 frequency=frequencies,
                 tolerance=self.options.port_mode_tolerance,
+                polarization=self.problem.polarization,
             )
         return swept
 
@@ -1540,6 +1542,7 @@ class DrivenRule:
                     wave_vector=self.wave_vector,
                     wave_vector_frequency=self.problem.wave_vector_frequency,
                 ),
+                polarization=self.problem.polarization,
             )
             kept = disc.ports if disc is not None else None
             if not isinstance(kept, _KeptPorts) or kept.key != key:
@@ -1552,6 +1555,7 @@ class DrivenRule:
                     tolerance=tolerance,
                     layout=op.layout or ONE_PROCESS,
                     swept=self.handed_port_modes,
+                    polarization=self.problem.polarization,
                 )
                 floquet = floquet_couplings(
                     model, op, self.orders, frequency, grid=self.order_frequency
@@ -2747,7 +2751,7 @@ def _solve_block(
         # the parent's rule already warned for the whole sweep
         for category in FORWARD_WARNINGS:
             warnings.simplefilter("ignore", category)
-        rule = DrivenRule(
+        rule = rule_class(model)(
             model, problem, options, order_frequency=order_frequency, gauge=gauge
         )
         rule.keeps_partial = True
@@ -2769,6 +2773,15 @@ def _solve_block(
         solution = entry.fields["solution"]
         entry.free()
     return SweepOutputs.read(outputs).without_port_modes(), solution, None, records
+
+
+def rule_class(model: Model) -> type[DrivenRule]:
+    """The driven rule of ``model``'s mesh: `DrivenRule`, or a 2D mesh's."""
+    if model.mesh.dim == 2:
+        from gfem._engine.driven2d import Driven2DRule
+
+        return Driven2DRule
+    return DrivenRule
 
 
 def _sample_error(
@@ -3074,6 +3087,8 @@ class _KeptPorts:
         frequency: tuple[float, ...],
         tolerance: float,
         floquet: _FloquetKey | None = None,
+        *,
+        polarization: str | None = None,
     ) -> tuple:
         """What the couplings of ``model`` on ``op``'s discretization depend on.
 
@@ -3081,15 +3096,15 @@ class _KeptPorts:
         stable, and a Bloch-phased space is its wave vector's), the order,
         the output grid, the port mode tolerance, the Floquet surfaces'
         `_FloquetKey` (order table settings and half-space media), the
-        ports, and per wave port surface
-        `port_section_key`:
-        never the port section itself.
+        ports, per wave port surface
+        `port_section_key`
+        (never the port section itself), and a 2D model's ``polarization``.
         """
         sections = tuple(
             port_section_key(model, lead_port(group))
             for group in wave_port_surfaces(model.ports).values()
         )
-        return (
+        key = (
             id(op.space),
             op.order,
             tuple(frequency),
@@ -3098,6 +3113,7 @@ class _KeptPorts:
             repr(model.ports),
             sections,
         )
+        return key if polarization is None else (*key, polarization)
 
     def shared(self) -> dict[int, int]:
         """The couplings' and the networks' arrays' bytes, by identity."""
@@ -3153,10 +3169,11 @@ def _port_regions(model: Model) -> dict[str, tuple[str, ...]]:
     for port in model.ports:
         if not isinstance(port, WavePort):
             continue
-        on = mesh.triangle_tags == mesh.region(port.surface).tag
-        nb = mesh.triangle_neighbours[on]
+        topology = mesh._topology  # noqa: SLF001 - a 2D mesh's lines too
+        on = topology.surface_tags == mesh.region(port.surface).tag
+        nb = topology.surface_neighbours[on]
         tets = nb[nb >= 0]
-        tags = np.unique(mesh.tetrahedron_tags[tets[active[tets]]])
+        tags = np.unique(topology.volume_tags[tets[active[tets]]])
         out[port.name] = tuple(names[int(t)] for t in tags)
     return out
 

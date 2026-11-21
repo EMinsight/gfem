@@ -287,8 +287,9 @@ def test_a_planar_port_mode_space_refuses_a_section_that_is_not_planar():
         PortModeSpace(types.SimpleNamespace(), 1)
 
 
-def test_a_driven_problem_on_a_2d_mesh_refuses_until_its_2d_rule_exists(mesh):
+def test_a_driven_solve_on_a_2d_mesh_needs_a_polarization(mesh):
     model = gfem.Model(
         mesh, materials=materials(), ports=(gfem.WavePort("p", "outer"),)
     )
-    _raises(rf"Driven.*{SLAB}", lambda: gfem.solve(model, gfem.Driven(F)))
+    with pytest.raises(ValueError, match=r'Driven\(polarization="Ez"\).*"Hz"'):
+        gfem.solve(model, gfem.Driven(F))

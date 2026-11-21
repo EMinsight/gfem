@@ -204,7 +204,8 @@ class Piece:
         theta: θ(ω), a complex scalar for an angular frequency in rad/s.
         integrand: ``(trial, test) -> integrals`` of the form, with no ω.
         kind: How the form depends on the node coordinates, for shape
-            gradients: ``"curl"`` (``∫ (C curl u) · curl v``), ``"value"``
+            gradients: ``"curl"`` (``∫ (C curl u) · curl v``), ``"gradient"``
+            (``∫ (C grad u) · grad v``, a 2D model's scalar field), ``"value"``
             (``∫ (C u) · v``), ``"trace"`` (``∫ c u_t · v_t`` on surfaces),
             ``"curl trace"`` (``∫ c (n · curl u)(n · curl v)``), another
             ``"surface"`` form, or ``"port"`` (a port's term, which reads
@@ -255,7 +256,9 @@ class Piece:
     name: str
     theta: Callable[[complex], complex]
     integrand: Callable[[Any, Any], Any]
-    kind: Literal["curl", "value", "trace", "curl trace", "surface", "port"] = "surface"
+    kind: Literal[
+        "curl", "gradient", "value", "trace", "curl trace", "surface", "port"
+    ] = "surface"
     coefficient: Any = None
     region: Any = None
     frequency_class: Literal["polynomial", "nonpolynomial"] = "polynomial"
@@ -604,7 +607,7 @@ def blend_pieces(
 
 def _blend_mass_slope(model: Model) -> np.ndarray:
     """D (mass value) / d rho per tetrahedron: the law blends' eps_inf limits."""
-    out = np.zeros(len(model.mesh.tetrahedra))
+    out = np.zeros(len(model.mesh.volume_elements))
     for br in dispersion.blend_regions(model):
         out += dispersion.blend_mass(br)[1]
     return out
@@ -966,7 +969,8 @@ def law_faces(
     if not laws or not surfaces:
         return []
     mesh = model.mesh
-    on = np.isin(mesh.triangle_tags, [mesh.region(s).tag for s in surfaces])
+    tags = mesh._topology.surface_tags  # noqa: SLF001 - either dimension's faces
+    on = np.isin(tags, [mesh.region(s).tag for s in surfaces])
     on &= owner >= 0
     out = []
     for lr in laws:
@@ -1259,9 +1263,13 @@ def _owned(
     owner: np.ndarray,
     faces: np.ndarray | None,
 ) -> np.ndarray:
-    """``owner`` on the triangles of ``surfaces`` (and of ``faces``), -1 elsewhere."""
+    """``owner`` on the triangles of ``surfaces`` (and of ``faces``), -1 elsewhere.
+
+    On a 2D mesh, on its line segments.
+    """
     mesh = model.mesh
-    on = np.isin(mesh.triangle_tags, [mesh.region(s).tag for s in surfaces])
+    tags = mesh._topology.surface_tags  # noqa: SLF001 - either dimension's faces
+    on = np.isin(tags, [mesh.region(s).tag for s in surfaces])
     if faces is not None:
         on &= np.asarray(faces)
     return np.where(on, owner, -1)
@@ -1271,10 +1279,11 @@ def face_owner(model: Model) -> np.ndarray:
     """The solve-domain tetrahedron whose values a face term reads, per triangle.
 
     The tetrahedron behind the triangle's normal when it is in the solve
-    domain, else the one in front, else -1.
+    domain, else the one in front, else -1. On a 2D mesh, the area triangle
+    beside each line segment.
     """
     active = model._domain.active  # noqa: SLF001
-    nb = model.mesh.triangle_neighbours
+    nb = model.mesh._topology.surface_neighbours  # noqa: SLF001 - either dimension
     owner = np.full(len(nb), -1)
     for side in (1, 0):
         tet = nb[:, side]

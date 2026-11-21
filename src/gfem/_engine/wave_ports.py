@@ -71,7 +71,9 @@ from gfem._boundaries import (
     wave_port_label,
     wave_port_surfaces,
 )
-from gfem._engine import terms
+from gfem._engine import quadrature, terms
+from gfem._engine.coefficients import surface_p0
+from gfem._engine.domain import boundary_region
 from gfem._engine.line_mode import LineModeSpace, ModeSpace, mode_space
 from gfem._engine.mesh import EngineMesh, inverse_order
 from gfem._linalg.base import free_mask
@@ -88,6 +90,7 @@ __all__ = [
     "SweptSurface",
     "WavePortCoupling",
     "deembedding",
+    "line_robin_pieces",
     "port_mode_sweeps",
     "trace_dofs",
     "wave_port_couplings",
@@ -134,6 +137,9 @@ class WavePortCoupling:
             modulus 1 on a lossless line.
         omegas: ``(n_freq,)`` the output grid, rad/s.
         scale: Metres per mesh file unit.
+        field_factor: The solved field per SI field: ``scale`` for a 3D field
+            in volts per file unit, 1 for a 2D model's field in SI units.
+            ``None`` reads ``scale``.
     """
 
     index: int
@@ -144,11 +150,13 @@ class WavePortCoupling:
     kappa: np.ndarray
     omegas: np.ndarray
     scale: float
+    field_factor: float | None = None
 
     def excitation(self, omega: float) -> np.ndarray:
         """``(2 m,)``: the incident wave's right-hand side is ``vectors @ this``."""
         k = _at(self.omegas, omega)
-        return 2.0 * self.scale * self.phi[k] / self.kappa[k]
+        factor = self.scale if self.field_factor is None else self.field_factor
+        return 2.0 * factor * self.phi[k] / self.kappa[k]
 
     def functional(self, omega: float) -> np.ndarray:
         """``(2 m,)``: the port's S row is ``this @ (vectors.T @ x)``."""
@@ -187,12 +195,21 @@ class PortSurfaceCoupling:
             = phi @ reaction @ c_t``.
         ports: The surface's wave ports, in model port order; the first
             with the smallest ``mode`` is the lead.
+        extra: Further Robin pieces of a line port whose weight ``w``
+            depends on the frequency (`line_robin_pieces`); empty on a 3D
+            port.
     """
 
     piece: terms.Piece
     vectors: np.ndarray
     reaction: np.ndarray
     ports: tuple[WavePortCoupling, ...]
+    extra: tuple[terms.Piece, ...] = ()
+
+    @property
+    def pieces(self) -> tuple[terms.Piece, ...]:
+        """The surface's Robin pieces: `piece`, then `extra`."""
+        return (self.piece, *self.extra)
 
     def __post_init__(self) -> None:
         for k in range(len(self.lead.omegas)):
@@ -372,13 +389,17 @@ def wave_port_couplings(
     tolerance: float,
     layout: DofLayout = ONE_PROCESS,
     swept: Sequence[dict[str, np.ndarray]] | None = None,
+    polarization: str | None = None,
 ) -> list[PortSurfaceCoupling]:
     """Run each wave port surface's port mode sweep and build its driven terms.
+
+    On a 2D mesh each surface is a line port, coupled to the 2D field of
+    ``polarization`` through its Robin pieces (`line_robin_pieces`).
 
     Args:
         model: The model.
         built: Its engine mesh.
-        space: The 3D driven space.
+        space: The 3D driven space, or a 2D model's H1 space.
         order: The element order (the port mode problem uses the same).
         frequency: The output grid, Hz.
         tolerance: ``SolverOptions.port_mode_tolerance``.
@@ -386,6 +407,7 @@ def wave_port_couplings(
         swept: Per surface, a port mode sweep's arrays at ``frequency``,
             handed over in place of the sweep (a frequency worker's rows of
             its parent's whole-grid sweep, `port_mode_sweeps`).
+        polarization: A 2D model's, ``"Ez"`` or ``"Hz"``.
 
     Returns:
         One coupling per surface with wave ports, in the order of each
@@ -401,6 +423,7 @@ def wave_port_couplings(
         tolerance=tolerance,
         comm=layout.comm,
         handed=swept,
+        polarization=polarization,
     )
     for surface in surfaces:
         group, modes, sweeps, columns = (
@@ -426,6 +449,8 @@ def wave_port_couplings(
         dual, r_kk = _dual(reaction, [s.coords for s in sweeps], phis)
         # each mode's reciprocity pairing (1/2) int (e x h) . n, unconjugated
         pairing = modes.pairing_factor(omegas) * r_kk
+        # a 2D model's H1 field is in SI units, a 3D one in volts per file unit
+        factor = 1.0 if isinstance(modes, LineModeSpace) else scale
         ports = []
         for k, (port, sweep) in enumerate(zip(group, sweeps, strict=True)):
             kappa = pseudo_wave_factor(sweep, pairing[:, k])
@@ -435,16 +460,27 @@ def wave_port_couplings(
                     port=port,
                     sweep=sweep,
                     phi=phis[k],
-                    # the load 2 scale h feeds modal amplitude scale
-                    dual=kappa[:, None] * dual[:, k] / scale,
+                    # the load 2 factor h feeds modal amplitude factor
+                    dual=kappa[:, None] * dual[:, k] / factor,
                     kappa=kappa,
                     omegas=omegas,
                     scale=scale,
+                    field_factor=None if factor == scale else factor,
                 )
             )
         # gamma_0, not i beta_0: with W's -gamma_0 M E G⁻¹ Eᵀ M the two impose
         # exactly h on the modes, lossy or not
         gamma0 = next(c for c in ports if c.port is lead).sweep.gamma * scale
+        if isinstance(modes, LineModeSpace):
+            piece, *extra = line_robin_pieces(
+                built, order, modes, port=lead.name, gamma0=gamma0, omegas=omegas
+            )
+            out.append(
+                PortSurfaceCoupling(
+                    piece, vectors, reaction, tuple(ports), extra=tuple(extra)
+                )
+            )
+            continue
         piece = terms.wave_port_piece(
             model,
             built,
@@ -454,6 +490,53 @@ def wave_port_couplings(
             theta=terms.Tabulated(omegas, gamma0),
         )
         out.append(PortSurfaceCoupling(piece, vectors, reaction, tuple(ports)))
+    return out
+
+
+def line_robin_pieces(
+    built: EngineMesh,
+    order: int,
+    modes: LineModeSpace,
+    *,
+    port: str,
+    gamma0: np.ndarray,
+    omegas: np.ndarray,
+) -> list[terms.Piece]:
+    r"""The Robin term :math:`\gamma_0 \int w\,u\,v\,dt` of a line port.
+
+    One piece per ``B`` slot of the line's port mode problem: :math:`w =
+    \sum_j \theta_j(\omega) w_j`, each :math:`w_j` per segment of the line
+    (:math:`\mu_r^{-1}` in Ez, :math:`\varepsilon_r^{-1}` off the
+    frequency-dependent segments in Hz, and their indicator for each group of
+    those), so piece ``j`` has :math:`\theta = \gamma_0 \theta_j(\omega)`,
+    tabulated on the output grid. The first is the line's steady weight.
+
+    Args:
+        built: The 2D engine mesh.
+        order: The element order.
+        modes: The line's port mode problem.
+        port: The lead port's name.
+        gamma0: ``(n_freq,)`` its propagation constant per file unit.
+        omegas: ``(n_freq,)`` the output grid, rad/s.
+    """
+    section = modes.section
+    region = boundary_region(built, (section.port.surface,))
+    ds = quadrature.ds(order, definedon=region)
+    n_faces = len(built.facet_order)
+    scalars = modes.weights(omegas)
+    out = []
+    for j, w in enumerate(modes.weight_values):
+        values = np.zeros(n_faces, complex)
+        values[section.faces] = w
+        cf = surface_p0(built, values)
+        out.append(
+            terms.Piece(
+                f"waveport {port}" if j == 0 else f"waveport {port} {j}",
+                terms.Tabulated(omegas, gamma0 * scalars[:, j]),
+                lambda u, v, cf=cf: cf * u * v * ds,
+                kind="port",
+            )
+        )
     return out
 
 

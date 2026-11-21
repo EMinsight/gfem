@@ -94,7 +94,7 @@ def element_values(
     """
     mesh = model.mesh
     default = _DEFAULTS[name]
-    out = np.full(len(mesh.tetrahedra), np.nan if default is None else default)
+    out = np.full(len(mesh.volume_elements), np.nan if default is None else default)
     for region, material in model.materials.items():
         value = getattr(material, name)
         if (
@@ -151,7 +151,7 @@ def _per_axis_fields(model: Model) -> dict[str, MaterialField]:
 
 def per_axis_elements(model: Model) -> np.ndarray:
     """Whether each tetrahedron lies in a `MaterialField` with `axes`."""
-    out = np.zeros(len(model.mesh.tetrahedra), bool)
+    out = np.zeros(len(model.mesh.volume_elements), bool)
     for region in _per_axis_fields(model):
         out[model.mesh.elements(region)] = True
     return out
@@ -163,7 +163,7 @@ def element_axes(model: Model) -> np.ndarray:
     The axes of the `MaterialField` with `axes` the tetrahedron lies in; the
     coordinate axes elsewhere.
     """
-    out = np.broadcast_to(np.eye(3), (len(model.mesh.tetrahedra), 3, 3)).copy()
+    out = np.broadcast_to(np.eye(3), (len(model.mesh.volume_elements), 3, 3)).copy()
     for region, field in _per_axis_fields(model).items():
         out[model.mesh.elements(region)] = np.asarray(field.axes, float)
     return out
@@ -247,8 +247,8 @@ def principal_permittivity(
     ``sum_k values[:, k] a_k a_k^T`` is ``Re eps_r`` on those tetrahedra.
     """
     mesh = model.mesh
-    values = np.zeros((len(mesh.tetrahedra), 3))
-    axes = np.zeros((len(mesh.tetrahedra), 3, 3))
+    values = np.zeros((len(mesh.volume_elements), 3))
+    axes = np.zeros((len(mesh.volume_elements), 3, 3))
     for region in regions:
         material = model.materials[region]
         if isinstance(material, Material):
@@ -333,7 +333,7 @@ def anisotropic_elements(model: Model) -> np.ndarray:
     boundary admittances, isotropic. `anisotropic_regions` counts them (see
     the module docstring).
     """
-    out = np.zeros(len(model.mesh.tetrahedra), bool)
+    out = np.zeros(len(model.mesh.volume_elements), bool)
     for region, material in model.materials.items():
         if isinstance(material, MaterialField):
             tensor = material.axes is not None

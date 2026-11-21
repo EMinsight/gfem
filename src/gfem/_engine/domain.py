@@ -203,19 +203,20 @@ def h1_space(
     periodic: bool = False,
     phases: tuple[complex, ...] | None = None,
     physics: str = "em",
+    complex_valued: bool = False,
 ) -> ngs.FESpace:
-    """Real H1 space of ``order`` on the domain of ``physics``, compressed.
+    """H1 space of ``order`` on the domain of ``physics``, compressed.
 
     The DOFs on the ``dirichlet`` surfaces (exact names) are fixed: they are
     left out of ``FreeDofs()``, which BDDC reads. With ``periodic``, periodic
     over the model's pairs as `hcurl_space`; Bloch ``phases`` make it
-    complex. ``physics`` picks the solve domain (`em_region`; the
-    electromagnetic one by default).
+    complex, as does ``complex_valued`` (real by default). ``physics`` picks
+    the solve domain (`em_region`; the electromagnetic one by default).
     """
     space = ngs.H1(
         built.mesh,
         order=order,
-        complex=phases is not None,
+        complex=complex_valued or phases is not None,
         definedon=em_region(model, built, physics),
         dirichlet=_bc_numbers(built, dirichlet),
     )

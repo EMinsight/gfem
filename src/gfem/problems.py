@@ -911,6 +911,8 @@ class Driven:
     wave_vector_frequency: float | None = None
     polarization: Polarization | None = None
     _rule: ClassVar[str] = "gfem._engine.driven:DrivenRule"
+    #: The rule on a 2D mesh: the scalar field normal to the plane.
+    _rule_2d: ClassVar[str] = "gfem._engine.driven2d:Driven2DRule"
 
     def __init__(
         self,
