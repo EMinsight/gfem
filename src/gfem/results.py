@@ -569,7 +569,9 @@ class PortModeField:
         )
         self._build: Callable[[], tuple] | None = None
         self._port = space.section.port.name
-        self.quantity, self.unit = space.quantity, space.unit
+        # a space that does not name its field is a planar port's: E in V/m
+        self.quantity = getattr(space, "quantity", "E")
+        self.unit = getattr(space, "unit", "V/m")
 
     @classmethod
     def _deferred(
