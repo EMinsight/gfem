@@ -61,6 +61,7 @@ from gfem._materials import (
     Material,
     MaterialField,
     PermittivityLaw,
+    PixelGeometry,
 )
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
@@ -909,8 +910,6 @@ for _cls in (
     Lorentz,
     Debye,
     DjordjevicSarkar,
-    # a law blend's fixed ends (MaterialField.blend_ends)
-    Blend,
     SheetField,
     PEC,
     PMC,
@@ -945,6 +944,10 @@ _codec.register(
     to_args=_field_args,
     names=[f.name for f in dataclasses.fields(Field) if f.name != "_comm"],
 )
+# a blend's fixed ends (MaterialField.blend_ends); a layer density's grid and
+# other properties only when set, so a 3D blend is written as before
+_codec.register(Blend, to_args=_unset_omitted(Blend, others=(), pixels=None))
+_codec.register(PixelGeometry)
 _codec.register(SolverOptions, to_args=_options_args)
 _codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None))
 _codec.register(PortMode, to_args=_unset_omitted(PortMode, polarization=None))

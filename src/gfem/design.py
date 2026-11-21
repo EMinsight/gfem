@@ -26,6 +26,7 @@ is your own (optax, nlopt, scipy, ...).
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections.abc import Callable
 from typing import Any, NamedTuple
@@ -39,11 +40,14 @@ from jax.scipy import fft
 from gfem import _morph, _mpi, _sparse
 from gfem._checks import is_traced, static_float
 from gfem._dim2 import refuse_entry
+from gfem._materials import PixelGeometry
+from gfem._pytree import register_fields
 from gfem.errors import UnsampledPixelsWarning
 from gfem.mesh import Mesh
 
 __all__ = [
     "HelmholtzFilter",
+    "LayerDensity",
     "LayerGrid",
     "Robust",
     "helmholtz_filter",
@@ -172,6 +176,12 @@ class LayerGrid:
     no gradient: the constructor warns with their count. Pixels outside a
     non-rectangular footprint are such pixels; `sampled` masks them.
 
+    On a 2D mesh (a cross-section in the xy plane), a solve samples the
+    pixels at its own quadrature points instead of at centroids:
+    `to_elements` returns a `LayerDensity`, which keeps the pixels, and
+    coverage counts the points of the lowest-order rule, the edge midpoints
+    of each triangle. Surface regions (lines) are not designable there.
+
     On a periodic cell, pass ``periodic`` for the axes along which the
     region spans one period: the grid's edges there are one seam, so
     `helmholtz_filter` smooths across it and the bilinear map wraps around
@@ -190,10 +200,13 @@ class LayerGrid:
         x: Pixel-centre x coordinates, ``(nx,)`` (m).
         y: Pixel-centre y coordinates, ``(ny,)`` (m).
         sampled: ``(ny, nx)`` bool, pixels some element (face) centroid
-            samples.
-        n_elements: On a volume, the number of its elements (the length of
-            `to_elements`' output, in ``mesh.elements(region)`` order);
-            ``None`` on a surface.
+            samples; on a 2D mesh, pixels some point of the lowest-order rule
+            (an edge midpoint) samples.
+        n_elements: On a volume, the number of its elements (on a tetrahedral
+            mesh the length of `to_elements`' output, in
+            ``mesh.elements(region)`` order); ``None`` on a surface.
+        geometry: Where the pixels lie (region, origin, pitch, shape,
+            periodic), what a solve needs to sample them.
         n_faces: On a surface, the number of its faces (the length of
             `to_faces`' output, in ``mesh.elements(region)`` order); ``None``
             on a volume.
@@ -224,6 +237,7 @@ class LayerGrid:
                 warning. ``MPI.COMM_SELF`` under a launcher shows it on each rank.
 
         Raises:
+            NotImplementedError: ``region`` is a line of a 2D mesh.
             RegionNotFoundError: The mesh has no such region.
             ValueError: ``pitch <= 0``, ``pitch`` does not divide the
                 footprint along a periodic axis, the mesh nodes are computed inside
@@ -232,7 +246,7 @@ class LayerGrid:
 
         Warns:
             gfem.UnsampledPixelsWarning: Some pixels are sampled by no element
-                (face) centroid.
+                (face) centroid, or on a 2D mesh by no edge midpoint.
         """
         comm = _mpi.resolve_comm(comm)
         r = mesh.region(region)
@@ -250,10 +264,16 @@ class LayerGrid:
         volume = r.dim == mesh.dim
         if volume:
             cells = mesh.volume_elements[mesh.elements(region)]
+        elif mesh.dim == 2:
+            raise NotImplementedError(
+                f"LayerGrid: {region!r} is a line of a 2D mesh, and a sheet "
+                "design (gfem.SheetField) is not available on a 2D mesh. Lay the "
+                "grid over an area region."
+            )
         else:
             cells = mesh.surface_elements[mesh.elements(region)]
             _check_horizontal(nodes, cells, region)
-        points = nodes[cells].mean(axis=1)[:, :2]
+        points = _sampling_points(nodes, cells, mesh.dim)
         lo = nodes[cells.ravel()].min(axis=0)[:2]
         hi = nodes[cells.ravel()].max(axis=0)[:2]
         n = [
@@ -282,6 +302,10 @@ class LayerGrid:
         self.n_elements = len(cells) if volume else None
         self.n_faces = None if volume else len(cells)
         self._what = "element" if volume else "face"
+        self._points = mesh.dim == 2
+        self.geometry = PixelGeometry(
+            region, tuple(origin), pitch, self.shape, periodic
+        )
         self._index, self._weight = _bilinear(
             points, origin, pitch, self.shape, periodic
         )
@@ -293,10 +317,15 @@ class LayerGrid:
             a.flags.writeable = False
         dead = int((~self.sampled).sum())
         if dead:
+            by = (
+                "are reached by no quadrature point of the lowest-order rule"
+                if self._points
+                else f"are sampled by no {self._what} centroid"
+            )
             _mpi.warn(
                 comm,
                 f"LayerGrid on {region!r}: {dead} of {self.sampled.size} pixels "
-                f"are sampled by no {self._what} centroid, so they get no gradient and "
+                f"{by}, so they get no gradient and "
                 "do not reach the solve. Refine the mesh in the region, or coarsen "
                 f"the pitch (now {pitch:g} m). Pixels outside a non-rectangular "
                 "footprint are always unsampled: mask them with grid.sampled.",
@@ -304,15 +333,21 @@ class LayerGrid:
                 stacklevel=2,
             )
 
-    def to_elements(self, rho: jax.Array) -> jax.Array:
-        """Per-element values of a pixel array: bilinear at element centroids.
+    def to_elements(self, rho: jax.Array) -> jax.Array | LayerDensity:
+        """The design of a pixel array on the region's elements.
+
+        On a tetrahedral mesh, each element's value is the bilinear
+        interpolation of the pixels at its centroid. On a 2D mesh, a solve
+        samples the pixels at its own quadrature points, which depend on its
+        order: the result is a `LayerDensity` holding the pixels.
 
         Args:
             rho: Pixel values, shape `shape`.
 
         Returns:
-            ``(n_elements,)`` values in ``mesh.elements(region)`` order, the
-            input of `gfem.MaterialField.interpolate`.
+            The input of `gfem.MaterialField.interpolate`: on a tetrahedral
+            mesh ``(n_elements,)`` values in ``mesh.elements(region)``
+            order; on a 2D mesh a `LayerDensity`.
 
         Raises:
             ValueError: ``rho`` does not have the grid's shape, or the grid
@@ -323,6 +358,8 @@ class LayerGrid:
                 f"LayerGrid.to_elements: the grid is on the surface {self.region!r}; "
                 "map a sheet design to its faces with grid.to_faces(rho)."
             )
+        if self._points:
+            return LayerDensity(self._pixels(rho, "to_elements"), self)
         return self._interpolate(rho, "to_elements")
 
     def to_faces(self, rho: jax.Array) -> jax.Array:
@@ -346,13 +383,18 @@ class LayerGrid:
             )
         return self._interpolate(rho, "to_faces")
 
-    def _interpolate(self, rho: jax.Array, name: str) -> jax.Array:
+    def _pixels(self, rho: jax.Array, name: str) -> jax.Array:
+        """``rho`` as an array, or raise for a wrong shape."""
         rho = jnp.asarray(rho)
         if rho.shape != self.shape:
             raise ValueError(
                 f"LayerGrid.{name}: rho has shape {rho.shape}, but the grid "
                 f"on {self.region!r} has shape {self.shape} (ny, nx)."
             )
+        return rho
+
+    def _interpolate(self, rho: jax.Array, name: str) -> jax.Array:
+        rho = self._pixels(rho, name)
         return jnp.sum(rho.reshape(-1)[self._index] * self._weight, axis=1)
 
     def __repr__(self) -> str:
@@ -365,6 +407,66 @@ class LayerGrid:
 
 
 jax.tree_util.register_static(LayerGrid)
+
+
+#: Why a layer density has no array value.
+_NO_ARRAY = (
+    "a layer density on a 2D model is sampled at the solve's quadrature points, "
+    "so it has no value per element; transform the pixel array before "
+    "to_elements, and plot density.pixels on grid.x, grid.y"
+)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class LayerDensity:
+    """A pixel design bound to its layer grid, on a 2D mesh.
+
+    What `LayerGrid.to_elements` returns on a 2D mesh, the input of
+    `gfem.MaterialField.interpolate`: a solve samples the pixels at its own
+    quadrature points. A JAX pytree whose leaf is `pixels`. It has no
+    arithmetic and no array value (``numpy.asarray`` raises `TypeError`):
+    filter, project and combine the pixel array before `to_elements`.
+
+    Attributes:
+        pixels: The pixel values, shape ``grid.shape``.
+        grid: The layer grid.
+
+    Raises:
+        ValueError: ``pixels`` does not have the grid's shape.
+    """
+
+    pixels: jax.Array
+    grid: LayerGrid
+
+    def __post_init__(self) -> None:
+        if np.shape(self.pixels) != self.grid.shape:
+            raise ValueError(
+                f"LayerDensity: pixels have shape {np.shape(self.pixels)}, but the "
+                f"grid on {self.grid.region!r} has shape {self.grid.shape} (ny, nx)."
+            )
+
+    def __array__(self, dtype: Any = None, copy: Any = None) -> np.ndarray:
+        """Raise: a layer density has no value per element."""
+        raise TypeError(f"LayerDensity: {_NO_ARRAY}.")
+
+    def __repr__(self) -> str:
+        return f"LayerDensity({self.grid!r})"
+
+
+register_fields(LayerDensity, ("pixels",))
+
+
+def _sampling_points(nodes: np.ndarray, cells: np.ndarray, dim: int) -> np.ndarray:
+    """The (x, y) points at which a grid's coverage is counted.
+
+    The cells' centroids on a tetrahedral mesh; on a 2D mesh the points of
+    the lowest-order rule a solve samples at, the edge midpoints (the
+    degree-2 triangle rule).
+    """
+    if dim == 2:
+        ends = nodes[cells[:, [1, 2, 0]]]
+        return ((nodes[cells] + ends) / 2).reshape(-1, 2)
+    return nodes[cells].mean(axis=1)[:, :2]
 
 
 #: Pixels a periodic footprint's length may miss a whole number by (round-off of

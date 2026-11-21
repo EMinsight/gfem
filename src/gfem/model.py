@@ -999,12 +999,21 @@ def _check_field(mesh: Mesh, region: str, field: MaterialField) -> None:
             f"materials[{region!r}] is a MaterialField built for region "
             f"{field.region!r}; assign it to that region."
         )
+    if field.blend_ends is not None and field.blend_ends.pixels is not None:
+        # a layer grid's pixels: the solve samples them at its own points
+        if mesh.dim != 2:
+            raise ValueError(
+                f"materials[{region!r}] is a MaterialField over the pixels of a "
+                "layer grid of a 2D mesh, which a tetrahedral model cannot "
+                "sample. Build the grid on this model's mesh."
+            )
+        return
     n = field.n_elements
     expected = len(mesh.elements(region))
     if n is not None and n != expected:
         raise ValueError(
             f"materials[{region!r}] is a MaterialField with {n} values, but region "
-            f"{region!r} has {expected} tetrahedra: give one value per element, in "
+            f"{region!r} has {expected} elements: give one value per element, in "
             f"the order of mesh.elements({region!r})."
         )
 
