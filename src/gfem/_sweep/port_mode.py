@@ -536,7 +536,8 @@ class _Candidates:
     lam: np.ndarray
     vecs: np.ndarray
     residual: np.ndarray
-    share: np.ndarray
+    #: Each candidate's layer energy share; ``None`` reads as zero (no layer).
+    share: np.ndarray | None = None
 
 
 class _Greedy:
@@ -656,6 +657,8 @@ class _Greedy:
 
     def _warn_clearance(self, first: _Candidates) -> None:
         """Warn for each picked mode with a layer energy share above `_CLEARANCE`."""
+        if first.share is None:
+            return
         for k, mode in enumerate(self.modes):
             share = float(first.share[mode - 1])
             if share <= _CLEARANCE:
