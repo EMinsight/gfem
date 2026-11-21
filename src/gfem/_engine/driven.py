@@ -170,7 +170,7 @@ from gfem.errors import (
 from gfem.mesh import _at_imported_nodes, _shortest_edges
 from gfem.model import Model
 from gfem.options import SolverOptions
-from gfem.problems import Driven
+from gfem.problems import Driven, Polarization
 from gfem.results import (
     DiffractionOrderResult,
     DrivenResult,
@@ -3089,7 +3089,7 @@ class _KeptPorts:
         tolerance: float,
         floquet: _FloquetKey | None = None,
         *,
-        polarization: str | None = None,
+        polarization: Polarization | None = None,
     ) -> tuple:
         """What the couplings of ``model`` on ``op``'s discretization depend on.
 

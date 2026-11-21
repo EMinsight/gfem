@@ -84,6 +84,7 @@ from gfem._sweep.port_mode import PortModeSweep, rows_of, sweeps_on, swept_once
 from gfem._text import hertz
 from gfem.errors import PortModeError
 from gfem.model import Model
+from gfem.problems import Polarization
 
 __all__ = [
     "PortSurfaceCoupling",
@@ -328,7 +329,7 @@ def port_mode_sweeps(
     tolerance: float,
     comm: Any = None,
     handed: Sequence[dict[str, np.ndarray]] | None = None,
-    polarization: str | None = None,
+    polarization: Polarization | None = None,
 ) -> list[SweptSurface]:
     """Each wave port surface's port mode sweep over ``frequency``.
 
@@ -389,7 +390,7 @@ def wave_port_couplings(
     tolerance: float,
     layout: DofLayout = ONE_PROCESS,
     swept: Sequence[dict[str, np.ndarray]] | None = None,
-    polarization: str | None = None,
+    polarization: Polarization | None = None,
 ) -> list[PortSurfaceCoupling]:
     """Run each wave port surface's port mode sweep and build its driven terms.
 

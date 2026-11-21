@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import math
 from collections.abc import Callable
 
 import netgen.meshing as ngm
@@ -43,10 +42,18 @@ import scipy.sparse as sp
 
 from gfem._engine import quadrature
 from gfem._engine.dispersion import susceptibility
-from gfem._engine.port_mode import Pencil, PortModeSpace
+from gfem._engine.port_mode import (
+    Pencil,
+    PortModeSpace,
+    admittance,
+    law_absorbing_theta,
+    law_theta,
+    omega_of,
+)
 from gfem._linalg.base import free_mask
 from gfem._line_section import LineSection
 from gfem._port_section import PortSection
+from gfem.problems import Polarization
 
 Z0 = scipy.constants.mu_0 * scipy.constants.c  # vacuum wave impedance, ohm
 
@@ -59,7 +66,9 @@ _POLARIZATION = {
 
 
 def mode_space(
-    section: PortSection | LineSection, order: int, polarization: str | None = None
+    section: PortSection | LineSection,
+    order: int,
+    polarization: Polarization | None = None,
 ) -> ModeSpace:
     """The discrete port mode problem of a section: planar, or a line's.
 
@@ -96,7 +105,9 @@ class LineModeSpace:
         pencil: The affine pieces of ``A`` and ``B``.
     """
 
-    def __init__(self, section: LineSection, order: int, polarization: str) -> None:
+    def __init__(
+        self, section: LineSection, order: int, polarization: Polarization
+    ) -> None:
         """Build the mesh and space and assemble the pencil."""
         if polarization not in _POLARIZATION:
             raise ValueError(f"Unknown polarization {polarization!r}.")
@@ -109,7 +120,9 @@ class LineModeSpace:
         self.free = np.flatnonzero(free_mask(self.space.FreeDofs(), self.space.ndof))
         self.pencil, self._b_weights, self._b_values = self._assemble()
 
-    def __reduce__(self) -> tuple[type[LineModeSpace], tuple[LineSection, int, str]]:
+    def __reduce__(
+        self,
+    ) -> tuple[type[LineModeSpace], tuple[LineSection, int, Polarization]]:
         """Pickle as the section, order and polarization, rebuilt on load."""
         return (LineModeSpace, (self.section, self.order, self.polarization))
 
@@ -125,10 +138,6 @@ class LineModeSpace:
     def _dx(self):
         q = quadrature.degree(self.order)
         return ngs.dx(intrules={ngs.SEGM: ngs.IntegrationRule(ngs.SEGM, q)})
-
-    def _omega(self, k0: float) -> float:
-        """The angular frequency (rad/s) of a wavenumber per local unit."""
-        return k0 * scipy.constants.c / self.section.scale
 
     def _assemble(self) -> tuple[Pencil, list, list]:
         """The pencil, and each slot's ``B`` weight: a coefficient and its values.
@@ -171,7 +180,7 @@ class LineModeSpace:
                 b.append(None)
                 values.append(None)
                 points.append(None)
-                extra.append(self._law_theta(law))
+                extra.append(law_theta(law, s.scale))
         else:
             for (eps, sigma, g), rows in groups.items():
                 inside = np.zeros(len(s.eps))
@@ -188,7 +197,7 @@ class LineModeSpace:
                 b.append(None)
                 values.append(None)
                 points.append(beside)
-                extra.append(self._law_end_theta(g))
+                extra.append(self._law_end_theta(g, ez=ez))
         mats_a = tuple(self._matrix(f, p) for f, p in zip(a, points, strict=True))
         mats_b = tuple(self._matrix([] if c is None else [c * u * v * dx]) for c in b)
         return Pencil(a=mats_a, b=mats_b, extra=tuple(extra)), b, values
@@ -212,27 +221,20 @@ class LineModeSpace:
             dof = self.space.GetDofNrs(ngs.NodeId(ngs.VERTEX, int(node)))[0]
             pos = int(np.searchsorted(self.free, dof))
             eps, mu = float(s.eps[seg].real), float(s.mu[seg].real)
-            ratio = eps / mu if self.polarization == "Ez" else mu / eps
-            out[pos, pos] += 1.0 if g >= 0 else math.sqrt(ratio)
+            ez = self.polarization == "Ez"
+            y = admittance(eps, mu) if ez else admittance(mu, eps)
+            out[pos, pos] += 1.0 if g >= 0 else y
             found = True
         return out.tocsr() if found else None
-
-    def _law_theta(self, law) -> Callable[[float], complex]:
-        """``-k0^2 chi(omega)`` of a law's susceptibility piece (Ez)."""
-
-        def theta(k0: float) -> complex:
-            return -(k0**2) * susceptibility(law, self._omega(k0))
-
-        return theta
 
     def _inverse_eps_theta(
         self, eps: complex, sigma: float, g: int
     ) -> Callable[[float], complex]:
-        """``1 / eps_r(omega)`` of a group of Hz segments."""
+        r""":math:`1/\varepsilon_r(\omega)` of a group of Hz segments."""
         law = None if g < 0 else self.section.laws[g][1]
 
         def theta(k0: float) -> complex:
-            omega = self._omega(k0)
+            omega = omega_of(k0, self.section.scale)
             value = eps - 1j * sigma / (omega * scipy.constants.epsilon_0)
             if law is not None:
                 value += susceptibility(law, omega)
@@ -240,20 +242,12 @@ class LineModeSpace:
 
         return theta
 
-    def _law_end_theta(self, g: int) -> Callable[[float], complex]:
-        """``i k0 Y(omega)`` of an absorbing end beside law ``g``."""
+    def _law_end_theta(self, g: int, *, ez: bool) -> Callable[[float], complex]:
+        r""":math:`ik_0 Y(\omega)` of an absorbing end beside law ``g``."""
         s = self.section
         rows = np.asarray(s.law_index) == g
         mu = float(s.mu[rows][0].real)
-        eps_inf = float(s.laws[g][1].eps_inf)
-        law = s.laws[g][1]
-        ez = self.polarization == "Ez"
-
-        def theta(k0: float) -> complex:
-            eps = eps_inf + susceptibility(law, self._omega(k0)).real
-            return 1j * k0 * math.sqrt(eps / mu if ez else mu / eps)
-
-        return theta
+        return law_absorbing_theta(s.laws[g][1], mu, s.scale, inverse=not ez)
 
     def _full_matrix(self, integrands) -> sp.csr_matrix:
         n = self.space.ndof
@@ -288,7 +282,7 @@ class LineModeSpace:
 
     @functools.cached_property
     def _gauge_forms(self) -> list[np.ndarray]:
-        """Per ``B`` slot, the free-DOF vector of ``int w_j v``."""
+        r"""Per ``B`` slot, the free-DOF vector of :math:`\int w_j v`."""
         v = self.space.TestFunction()
         out = []
         for j in self._b_slots:
@@ -300,7 +294,10 @@ class LineModeSpace:
 
     @functools.cached_property
     def _coupling_forms(self) -> list[sp.csr_matrix]:
-        """Per ``B`` slot, ``int w_j phi_j phi_i``: rows every DOF, columns free."""
+        r"""Per ``B`` slot, :math:`\int w_j \phi_j \phi_i`.
+
+        Rows every DOF, columns the free ones.
+        """
         u, v = self.space.TnT()
         return [
             self._full_matrix([self._b_weights[j] * u * v * self._dx()])[
@@ -337,12 +334,12 @@ class LineModeSpace:
         return LineReduction(self, v)
 
     def port_columns(self, basis: np.ndarray) -> dict[str, np.ndarray]:
-        """What the line's forms give per column of the sweep's ``basis``.
+        r"""What the line's forms give per column of the sweep's ``basis``.
 
-        ``r``: per ``B`` slot ``j``, the vector of ``int w_j (column) v`` over
-        every DOF (the trace of the 2D field, Dirichlet DOFs included);
-        ``reaction``: ``rᵀ e`` with ``e`` the basis (the mode vanishes on
-        fixed DOFs).
+        ``r``: per ``B`` slot ``j`` and column :math:`c`, the vector of
+        :math:`\int w_j c\,v` over every DOF (the trace of the 2D field,
+        Dirichlet DOFs included); ``reaction``: :math:`r^T e` with :math:`e`
+        the basis (the mode vanishes on fixed DOFs).
         """
         w = basis[self.free]
         r = np.concatenate([m @ w for m in self._coupling_forms], axis=1)
@@ -364,12 +361,15 @@ class LineModeSpace:
         )
 
     def scalar(self, trace: np.ndarray, gamma0: complex, omega: float) -> np.ndarray:
-        """``gamma0 M e`` on the columns of ``r``, for traces ``(m, n)``."""
+        r""":math:`\gamma_0 M e` on the columns of ``r``, for traces ``(m, n)``."""
         weights = self._weights(float(self._k0(omega)))
         return np.concatenate([gamma0 * wj * trace for wj in weights])
 
     def pairing_factor(self, omegas: np.ndarray) -> np.ndarray:
-        """``Q' = factor h^T e``: the reciprocity pairing per metre, W/m."""
+        r"""The factor of the reciprocity pairing per metre, W/m.
+
+        :math:`Q' = \text{factor}\,h^T e`.
+        """
         return -0.5j / (omegas[:, None] * self._vacuum)
 
     # --- fields ---------------------------------------------------------------
@@ -454,7 +454,7 @@ class LineReduction:
         return -1j * gamma / (2 * omega * space._vacuum) * quad  # noqa: SLF001
 
     def gauge(self, z: np.ndarray, gamma: complex, omega: float) -> complex:
-        """Phase reference: ``int w u dt``."""
+        r"""Phase reference: :math:`\int w u\,dt`."""
         del gamma
         space = self.space
         k0 = float(space._k0(omega))  # noqa: SLF001

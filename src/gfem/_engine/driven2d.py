@@ -88,6 +88,7 @@ from gfem._engine.driven import (
 )
 from gfem._engine.fields import dof_shape
 from gfem._engine.gauge import GaugeChoice
+from gfem._engine.port_mode import admittance
 from gfem._engine.sensitivity import Derivative
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces
@@ -97,7 +98,7 @@ from gfem._line_section import line_section
 from gfem._materials import Material, MaterialField, PermittivityLaw
 from gfem.model import Model
 from gfem.options import SolverOptions
-from gfem.problems import Driven
+from gfem.problems import _POLARIZATIONS, Driven, Polarization
 from gfem.results import DrivenResult, Field, NetworkParameters, SweepInfo
 
 __all__ = ["Driven2DRule", "driven2d_operator", "hz_signs"]
@@ -140,12 +141,14 @@ class Driven2DRule(DrivenRule):
         del order_frequency, gauge
         if not isinstance(problem, Driven):
             raise TypeError(f"Expected gfem.Driven, got {problem!r}.")
-        if problem.polarization not in ("Ez", "Hz"):  # pragma: no cover - solve checks
-            raise ValueError(f"Unknown polarization {problem.polarization!r}.")
+        polarization = problem.polarization
+        if polarization is None or polarization not in _POLARIZATIONS:
+            # the solve entry checks it first
+            raise ValueError(f"Unknown polarization {polarization!r}.")
         self.problem = problem
         self.options = options
         self.comm = comm
-        self.polarization: str = problem.polarization
+        self.polarization: Polarization = polarization
         self.swept = False
         self.wave_vector = None
         self.swept_spaces = False
@@ -357,7 +360,7 @@ def _resolve(
 # --- checks ------------------------------------------------------------------------
 
 
-def _check_lines(model: Model, polarization: str) -> None:
+def _check_lines(model: Model, polarization: Polarization) -> None:
     """Raise for a natural condition on an interior line, or an Hz port's end.
 
     Raises:
@@ -411,7 +414,7 @@ def _check_pec_edges(model: Model) -> None:
             )
 
 
-def _check_materials(model: Model, polarization: str) -> None:
+def _check_materials(model: Model, polarization: Polarization) -> None:
     """Raise for an Hz material field whose permittivity depends on the frequency.
 
     In Hz the permittivity enters the stiffness as its inverse, one piece per
@@ -462,7 +465,7 @@ def _constant_ends(ends: Any) -> bool:
 # --- the operator ------------------------------------------------------------------
 
 
-def hz_signs(model: Model, polarization: str) -> np.ndarray:
+def hz_signs(model: Model, polarization: Polarization) -> np.ndarray:
     r"""Per port, the sign that phases its Hz mode as a 3D port's mode is phased.
 
     A 3D port's mode is phased by :math:`\int t\cdot(\hat n_\text{out}\times
@@ -485,7 +488,9 @@ def hz_signs(model: Model, polarization: str) -> np.ndarray:
     return out
 
 
-def driven2d_operator(model: Model, order: int, polarization: str) -> DrivenOperator:
+def driven2d_operator(
+    model: Model, order: int, polarization: Polarization
+) -> DrivenOperator:
     """The scalar driven operator of a 2D ``model`` (see the module docstring)."""
     disc = discretization(model.mesh, (), None)
     built = disc.built
@@ -529,7 +534,9 @@ def driven2d_operator(model: Model, order: int, polarization: str) -> DrivenOper
     )
 
 
-def _fixed(model: Model, polarization: str) -> tuple[tuple[str, ...], np.ndarray]:
+def _fixed(
+    model: Model, polarization: Polarization
+) -> tuple[tuple[str, ...], np.ndarray]:
     """The Dirichlet lines by name, and the exterior edges fixed besides them.
 
     Ez fixes the `PEC` lines. Hz fixes the `PMC` lines and every exterior edge
@@ -597,7 +604,7 @@ def scalar_pieces(
     model: Model,
     built: Any,
     order: int,
-    polarization: str,
+    polarization: Polarization,
     *,
     elements: np.ndarray | None = None,
     faces: np.ndarray | None = None,
@@ -690,7 +697,7 @@ def _point_pieces(
     model: Model,
     built: Any,
     order: int,
-    polarization: str,
+    polarization: Polarization,
     *,
     elements: np.ndarray | None,
 ) -> list[terms.Piece]:
@@ -951,7 +958,7 @@ def _absorbing_pieces(
     model: Model,
     built: Any,
     order: int,
-    polarization: str,
+    polarization: Polarization,
     *,
     faces: np.ndarray | None,
 ) -> list[terms.Piece]:
@@ -975,7 +982,7 @@ def _absorbing_pieces(
     e = np.real(element_values(model, "eps_r", law=1.0) * (1.0 - 1j * tan))
     m = np.real(element_values(model, "mu_r"))
     ez = polarization == "Ez"
-    first = np.sqrt(e / m) if ez else np.sqrt(m / e)
+    first = admittance(e, m) if ez else admittance(m, e)
     curl = 1 / (m * np.sqrt(e * m)) if ez else 1 / (e * np.sqrt(e * m))
     ok = owner >= 0
     y1 = np.where(ok, first[np.maximum(owner, 0)], 0.0)

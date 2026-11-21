@@ -32,6 +32,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 from collections.abc import Callable
+from typing import Any
 
 import netgen.meshing as ngm
 import ngsolve as ngs
@@ -78,6 +79,48 @@ class Pencil:
         a = sum(t * m for t, m in zip(theta, self.a, strict=True))
         b = sum(t * m for t, m in zip(theta, self.b, strict=True))
         return sp.csr_matrix(a), sp.csr_matrix(b)
+
+
+def omega_of(k0: float, scale: float) -> float:
+    """The angular frequency (rad/s) of a wavenumber per local unit.
+
+    ``scale`` is the local unit in metres.
+    """
+    return k0 * scipy.constants.c / scale
+
+
+def admittance(eps: Any, mu: Any) -> Any:
+    r"""The wave admittance relative to vacuum, :math:`\sqrt{\varepsilon_r/\mu_r}`.
+
+    Real ``eps`` and ``mu``, scalars or arrays.
+    """
+    return np.sqrt(eps / mu)
+
+
+def law_theta(law: Any, scale: float) -> Callable[[float], complex]:
+    r""":math:`-k_0^2\chi(\omega)` of a law's susceptibility piece."""
+
+    def theta(k0: float) -> complex:
+        return -(k0**2) * susceptibility(law, omega_of(k0, scale))
+
+    return theta
+
+
+def law_absorbing_theta(
+    law: Any, mu: float, scale: float, *, inverse: bool = False
+) -> Callable[[float], complex]:
+    r""":math:`ik_0 Y(\omega)` of the absorbing edges beside a law.
+
+    :math:`Y` is the `admittance` of :math:`\operatorname{Re}\varepsilon_r(\omega)`
+    and ``mu``, or its inverse with ``inverse``.
+    """
+    eps_inf = float(law.eps_inf)
+
+    def theta(k0: float) -> complex:
+        eps = eps_inf + susceptibility(law, omega_of(k0, scale)).real
+        return 1j * k0 * (admittance(mu, eps) if inverse else admittance(eps, mu))
+
+    return theta
 
 
 class PortModeSpace:
@@ -177,14 +220,16 @@ class PortModeSpace:
             inside = _p0(self.mesh, (np.asarray(index) == g).astype(float))
             forms_a.append([inside * et * vt * dx])
             forms_b.append([inside * en * vn * dx])
-            extra.append(self._law_theta(law))
+            extra.append(law_theta(law, self.section.scale))
             if absorbing_law is not None and (absorbing_law == g).any():
                 ds = ngs.ds(
                     f"law{g}", intrules={ngs.SEGM: ngs.IntegrationRule(ngs.SEGM, q)}
                 )
                 forms_a.append([et.Trace() * vt.Trace() * ds])
                 forms_b.append([en.Trace() * vn.Trace() * ds])
-                extra.append(self._law_edge_theta(law, g))
+                rows = np.asarray(index) == g
+                mu = 1 / float(self.section.nu_nn[rows][0].real)
+                extra.append(law_absorbing_theta(law, mu, self.section.scale))
         a = tuple(self._matrix(f) for f in forms_a)
         b = tuple(self._matrix(f) for f in forms_b)
         return Pencil(a=a, b=b, extra=tuple(extra))
@@ -198,32 +243,7 @@ class PortModeSpace:
         sigma = item.conductivity
 
         def theta(k0: float) -> complex:
-            omega = k0 * scipy.constants.c / scale
-            return 1j * k0 * Z0 / surface_impedance(sigma, h, omega)
-
-        return theta
-
-    def _omega(self, k0: float) -> float:
-        """The angular frequency (rad/s) of a wavenumber per local unit."""
-        return k0 * scipy.constants.c / self.section.scale
-
-    def _law_theta(self, law) -> Callable[[float], complex]:
-        """``-k0^2 chi(omega)`` of a law's susceptibility piece."""
-
-        def theta(k0: float) -> complex:
-            return -(k0**2) * susceptibility(law, self._omega(k0))
-
-        return theta
-
-    def _law_edge_theta(self, law, g: int) -> Callable[[float], complex]:
-        """``i k0 sqrt(Re eps(omega) / Re mu)`` of a law's absorbing edges."""
-        rows = np.asarray(self.section.law_index) == g
-        mu = 1 / float(self.section.nu_nn[rows][0].real)
-        eps_inf = float(law.eps_inf)
-
-        def theta(k0: float) -> complex:
-            eps = eps_inf + susceptibility(law, self._omega(k0)).real
-            return 1j * k0 * np.sqrt(eps / mu)
+            return 1j * k0 * Z0 / surface_impedance(sigma, h, omega_of(k0, scale))
 
         return theta
 
