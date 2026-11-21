@@ -239,7 +239,7 @@ def line_section(model: Model, port: WavePort) -> LineSection:
 
 def _region_names(model: Model) -> dict[int, str]:
     mesh = model.mesh
-    return {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
+    return mesh._region_names()  # noqa: SLF001
 
 
 def _materials(model: Model, port: WavePort, cells: np.ndarray):
@@ -318,7 +318,7 @@ def _end_kinds(model: Model, port: WavePort, nodes: np.ndarray) -> tuple[str, st
     active = model._domain.active  # noqa: SLF001
     touches = ((nb >= 0) & active[np.maximum(nb, 0)]).any(axis=1)
     other = (topology.surface_tags != mesh.region(port.surface).tag) & touches
-    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim - 1}
+    names = mesh._region_names(surfaces=True)  # noqa: SLF001
     kinds = _edge_kinds(model, port)
     out = []
     for node in nodes:

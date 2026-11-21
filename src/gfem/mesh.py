@@ -705,6 +705,11 @@ class Mesh:
         """Names of the surface regions (the lines of a 2D mesh), by tag."""
         return tuple(r.name for r in self.regions if r.dim == self.dim - 1)
 
+    def _region_names(self, *, surfaces: bool = False) -> dict[int, str]:
+        """Tag to name of the volume regions, or of the surface regions."""
+        dim = self.dim - 1 if surfaces else self.dim
+        return {r.tag: r.name for r in self.regions if r.dim == dim}
+
     def region(self, name: str) -> Region:
         """Look up a region by its gmsh physical-group name.
 
@@ -748,7 +753,7 @@ class Mesh:
         t = self._topology
         nb = t.surface_neighbours[t.surface_tags == tag]
         sides = np.where(nb >= 0, t.volume_tags[np.maximum(nb, 0)], -1)
-        name = {r.tag: r.name for r in self.regions if r.dim == self.dim}
+        name = self._region_names()
         pairs = sorted({(int(a), int(b)) for a, b in sides})
         return tuple((name.get(a), name.get(b)) for a, b in pairs)
 

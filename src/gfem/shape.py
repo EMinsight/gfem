@@ -636,7 +636,7 @@ def _face_signs(
 
 def _sides(model: Model, faces: np.ndarray) -> str:
     mesh = model.mesh
-    name = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
+    name = mesh._region_names()  # noqa: SLF001
     nb = mesh.triangle_neighbours[faces]
     pairs = {
         tuple(name[int(mesh.tetrahedron_tags[t])] if t >= 0 else "outside" for t in row)

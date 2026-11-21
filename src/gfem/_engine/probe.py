@@ -91,7 +91,7 @@ _FLAT = 1e-13
 def in_support(mesh: Mesh, layout: Layout) -> np.ndarray:
     """Per gfem volume element: whether the field is defined on it."""
     topology = mesh._topology  # noqa: SLF001
-    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
+    names = mesh._region_names()  # noqa: SLF001
     wanted = {t for t, n in names.items() if n in set(layout.support)}
     inside = np.isin(topology.volume_tags, list(wanted))
     if layout.excluded:
@@ -148,7 +148,7 @@ def locate(mesh: Mesh, layout: Layout, points: np.ndarray, comm: Any = None) -> 
     inside = support[tets]
     if not inside.all():
         k = int(np.flatnonzero(~inside)[0])
-        names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
+        names = mesh._region_names()  # noqa: SLF001
         region = names[int(mesh._topology.volume_tags[tets[k]])]  # noqa: SLF001
         raise _mpi.agreed(
             ValueError(

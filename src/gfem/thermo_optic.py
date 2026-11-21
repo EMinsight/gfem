@@ -72,7 +72,7 @@ def _section(model: Model, port: Any) -> tuple[np.ndarray, np.ndarray]:
 
 def _region_rows(mesh: Mesh, tets: np.ndarray) -> dict[str, np.ndarray]:
     """The positions in ``tets`` of each volume region's tetrahedra."""
-    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
+    names = mesh._region_names()  # noqa: SLF001
     tags = np.asarray(mesh.tetrahedron_tags)[tets]
     return {names[int(t)]: np.flatnonzero(tags == t) for t in np.unique(tags)}
 

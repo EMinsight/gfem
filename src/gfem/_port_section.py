@@ -405,7 +405,7 @@ def port_section_key(model: Model, port: WavePort) -> str:
     faces = mesh.elements(port.surface)
     nb = mesh.triangle_neighbours[faces]
     tets = np.unique(nb[(nb >= 0) & domain.active[np.maximum(nb, 0)]])
-    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
+    names = mesh._region_names()  # noqa: SLF001
     region_of = mesh.tetrahedron_tags[tets]
     for rtag in np.unique(region_of):
         region = names[int(rtag)]
@@ -448,7 +448,7 @@ def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray
     eps_inf.
     """
     mesh = model.mesh
-    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
+    names = mesh._region_names()  # noqa: SLF001
     n = len(tets)
     eps_tt = np.zeros((n, 2, 2), complex)
     eps_nn = np.zeros(n, complex)
@@ -513,7 +513,7 @@ def _laws(model: Model, tets: np.ndarray):
     off the law regions.
     """
     mesh = model.mesh
-    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim}
+    names = mesh._region_names()  # noqa: SLF001
     laws: list[tuple[str, PermittivityLaw]] = []
     index = np.full(len(tets), -1, np.int64)
     region_of = mesh.tetrahedron_tags[tets]
@@ -649,7 +649,7 @@ def _surfaces_on_edges(
     nb = mesh.triangle_neighbours
     touches = ((nb >= 0) & model._domain.active[np.maximum(nb, 0)]).any(axis=1)  # noqa: SLF001
     other = (mesh.triangle_tags != mesh.region(port.surface).tag) & touches
-    names = {r.tag: r.name for r in mesh.regions if r.dim == mesh.dim - 1}
+    names = mesh._region_names(surfaces=True)  # noqa: SLF001
     o_edges = _edge_keys(mesh.triangles[other])
     o_tags = np.repeat(mesh.triangle_tags[other], 3)
     o_one = np.repeat((nb[other] < 0).any(axis=1), 3)
