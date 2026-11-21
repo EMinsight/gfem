@@ -296,6 +296,183 @@ def test_the_coarse_rule_picks_metis_on_every_fourth_rank_only_when_it_repays(
         assert kept <= math.ceil(size / 4)
 
 
+def _blocks(nodes: int, per_node: int) -> tuple[int, ...]:
+    """The node of each rank, ``per_node`` consecutive ranks to a node."""
+    return tuple(r // per_node for r in range(nodes * per_node))
+
+
+def _cyclic(nodes: int, per_node: int) -> tuple[int, ...]:
+    """The node of each rank, dealt round the nodes one rank at a time."""
+    return tuple(r % nodes for r in range(nodes * per_node))
+
+
+@pytest.mark.parametrize("kind", ["capped", "parmetis"])
+@pytest.mark.parametrize(
+    ("dofs", "nodes", "factor"),
+    [
+        # B2 at 28x4 on 8, 16 and 32 nodes: every fourth rank, 7 per node
+        (B2, _blocks(8, 28), 4),
+        (B2, _blocks(16, 28), 4),
+        (B2, _blocks(32, 28), 4),
+        # r0.5 on 32 nodes: 224 ranks of 31.5 k DOFs each
+        (R05, _blocks(32, 28), 4),
+        # 8x14: every fourth rank is 4 then 3 per node, and every seventh rank (2
+        # per node, 16 ranks) is the even count nearest 28; fewer than PT-Scotch's
+        # 56, so the stock rule: every second rank, 7 per node
+        (B2, _blocks(8, 14), 2),
+        # 8x14 on 16 nodes: the even count nearest 56 is 32; the stock rule's 56
+        # ranks are every fourth
+        (B2, _blocks(16, 14), 4),
+        # ranks dealt round 8 nodes: every fourth rank is 28 on each of 2 nodes
+        (B2, _cyclic(8, 28), 4),
+        # at 14 per node, 14 on each of 2 nodes: fewer than PT-Scotch's 56
+        (B2, _cyclic(8, 14), 2),
+        # the launched tier's tiny meshes: one coarse rank
+        (1_000, _blocks(1, 8), 8),
+        (50_000, _blocks(2, 8), 16),
+        (1_000, (0,), 1),
+        # the 30 k floor: 600 k DOFs take 20 ranks at most; every sixth rank is 5,
+        # 5 and 4 per node, so every seventh, 4 per node
+        (600_000, _blocks(4, 28), 7),
+        # 90 k DOFs on one node of 64 ranks: 3 ranks, every 22nd
+        (90_000, _blocks(1, 64), 22),
+        (59_999, _blocks(1, 16), 16),
+        (60_000, _blocks(1, 16), 8),
+    ],
+)
+def test_the_coarse_rule_takes_the_even_layout_nearest_every_fourth_rank(
+    kind, dofs, nodes, factor
+):
+    size = len(nodes)
+    ordering = coarse.PARMETIS if kind == "parmetis" else coarse.PT_SCOTCH
+    # the same for one column or many, a pattern new or seen: no METIS switch
+    for columns, seen in ((1, False), (30, True)):
+        chosen = coarse.rule(dofs, size, columns, seen=seen, kind=kind, nodes=nodes)
+        assert chosen == (ordering, factor)
+
+
+def test_the_even_coarse_layout_counts_only_the_nodes_holding_a_coarse_rank():
+    # every 28th rank of 4x28 is one rank on each node; every 56th, one on every
+    # second node: both even
+    nodes = _blocks(4, 28)
+    assert coarse.is_even(28, nodes)
+    assert coarse.is_even(56, nodes)
+    assert coarse.is_even(4, nodes)
+    assert not coarse.is_even(3, nodes)  # 10 then 9 per node
+    assert not coarse.is_even(4, _blocks(2, 14))  # 4 then 3 per node
+
+
+@pytest.mark.parametrize(
+    ("dofs", "size", "columns", "seen", "expected"),
+    [
+        (B2, 224, 30, True, ("pt-scotch", 4)),
+        (B2, 448, 6, False, ("metis", 4)),
+        (B2, 896, 2, False, ("pt-scotch", 16)),
+        (B2, 896, 2, True, ("metis", 4)),
+    ],
+)
+def test_a_stock_stack_keeps_the_rule_that_reads_counts_only(
+    dofs, size, columns, seen, expected
+):
+    nodes = _blocks(size // 28, 28)
+    chosen = coarse.rule(dofs, size, columns, seen=seen, kind="stock", nodes=nodes)
+    assert chosen == expected
+
+
+@pytest.mark.parametrize(
+    ("dofs", "nodes", "ranks"),
+    [
+        (B2, _blocks(8, 28), 56),
+        (B2, _blocks(32, 28), 224),
+        (B2, _blocks(8, 14), 56),  # the stock rule's, as on a capped stack
+        (1_000, _blocks(1, 8), 1),
+    ],
+)
+def test_a_stock_stack_is_told_the_coarse_ranks_a_capped_one_would_take(
+    dofs, nodes, ranks
+):
+    assert coarse.capped_ranks(dofs, nodes) == ranks
+
+
+class _NodeOf:
+    """A node communicator: its first rank's rank in the whole is the leader."""
+
+    def __init__(self, leader: int) -> None:
+        self.leader = leader
+        self.freed = False
+
+    def bcast(self, value, root=0):  # noqa: ARG002
+        return self.leader
+
+    def Free(self):  # noqa: N802 - mpi4py's name
+        self.freed = True
+
+
+class _Placed(Stub):
+    """Rank ``rank`` of ranks whose node leaders are ``leaders``."""
+
+    def __init__(self, rank: int, leaders: list[int]) -> None:
+        super().__init__(len(leaders))
+        self.rank = rank
+        self.leaders = leaders
+        self.node = _NodeOf(leaders[rank])
+        self.key = 7
+
+    def Split_type(self, _kind):  # noqa: N802 - mpi4py's name
+        return self.node
+
+    def allgather(self, value):
+        assert value == self.leaders[self.rank]
+        return list(self.leaders)
+
+
+def _placed_mpi(monkeypatch):
+    shared = types.SimpleNamespace(COMM_TYPE_SHARED=0)
+    monkeypatch.setattr(_mpi, "_load_mpi", lambda: shared)
+    monkeypatch.setattr(_mpi, "comm_key", lambda comm: comm.key)
+    monkeypatch.setattr(_mpi, "_NODE_IDS", {})
+
+
+def test_each_rank_reads_every_ranks_node_numbered_from_zero(monkeypatch):
+    _placed_mpi(monkeypatch)
+    comm = _Placed(3, [0, 0, 2, 2, 4, 4])
+    assert _mpi.node_ids(comm) == (0, 0, 1, 1, 2, 2)
+    assert comm.node.freed
+    assert _mpi.node_ids(None) == (0,)
+
+
+def test_the_node_of_each_rank_is_read_once_per_communicator(monkeypatch):
+    _placed_mpi(monkeypatch)
+    comm = _Placed(0, [0, 1])
+    assert _mpi.node_ids(comm) == (0, 1)
+    comm.leaders = [0, 0]  # a second read would see this
+    assert _mpi.node_ids(comm) == (0, 1)
+
+
+@pytest.mark.parametrize(
+    ("ordering", "workspace"),
+    [("pt-scotch", 120), ("metis", 60), ("parmetis", 60)],
+)
+def test_pt_scotch_starts_its_coarse_workspace_at_120_the_others_at_60(
+    ordering, workspace
+):
+    assert coarse.workspace(ordering) == workspace
+
+
+@pytest.mark.parametrize("symmetric", [False, True])
+def test_parmetis_orders_in_parallel_with_no_config_file(symmetric, monkeypatch):
+    monkeypatch.delenv(coarse.CONFIG_VARIABLE, raising=False)
+    pairs = coarse.options(symmetric, workspace=60, factor=4, ordering=coarse.PARMETIS)
+    options = dict(pairs)
+    assert len(options) == len(pairs)
+    assert options["telescope_mat_mumps_icntl_28"] == 2
+    assert options["telescope_mat_mumps_icntl_29"] == 2
+    assert options["telescope_mat_mumps_icntl_14"] == 60
+    assert not any("icntl_7" in name for name in options)
+    with coarse.mumps_config(coarse.PARMETIS):
+        assert coarse.CONFIG_VARIABLE not in os.environ
+
+
 @pytest.mark.parametrize("symmetric", [False, True])
 def test_metis_orders_sequentially_without_pt_scotch_behind_the_telescope(symmetric):
     pairs = coarse.options(symmetric, workspace=60, factor=4, ordering=coarse.METIS)

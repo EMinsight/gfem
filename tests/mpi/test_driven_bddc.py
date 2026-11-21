@@ -157,21 +157,29 @@ REDUCTIONS = {
 #: Sequential METIS on every second rank: the rule's thresholds patched, since a
 #: tiny wirebasket takes PT-Scotch on one rank. ``"learnt"`` keeps the columns'
 #: threshold, so a set-up takes METIS from enough columns or a pattern seen before.
-METIS, LEARNT = "metis", "learnt"
+#: ``"capped"``: the rule of a stack with the ordering cap, PT-Scotch on every
+#: second rank, whatever the stack.
+METIS, LEARNT, CAPPED = "metis", "learnt", "capped"
 THRESHOLDS = {
-    METIS: {"METIS_EVERY": 2, "METIS_DOFS_PER_RANK": 1, "METIS_COLUMNS": 1},
-    LEARNT: {"METIS_EVERY": 2, "METIS_DOFS_PER_RANK": 1},
+    METIS: {"COARSE_EVERY": 2, "COARSE_DOFS_PER_RANK": 1, "METIS_COLUMNS": 1},
+    LEARNT: {"COARSE_EVERY": 2, "COARSE_DOFS_PER_RANK": 1},
+    CAPPED: {"COARSE_EVERY": 2, "COARSE_DOFS_PER_RANK": 1},
 }
 
 
 def _take_route(route):
     """Put the coarse problem on ``route`` in this process: `REDUCTIONS`, `THRESHOLDS`.
 
-    ``"rank 0"`` is what a wheel-only install runs.
+    ``"rank 0"`` is what a wheel-only install runs. Every other route but
+    ``"capped"`` takes the stock stack's rule, which `REDUCTIONS` patches, on any
+    stack.
     """
     if route == "rank 0":
         bddc._coarse_on_mumps = lambda *_, **__: False
-    elif route in THRESHOLDS:
+        return
+    kind = coarse.CAPPED if route == CAPPED else coarse.STOCK
+    coarse.stack_kind = lambda _comm: kind
+    if route in THRESHOLDS:
         for name, value in THRESHOLDS[route].items():
             setattr(coarse, name, value)
     else:
@@ -250,6 +258,35 @@ def test_a_metis_coarse_changes_neither_iterations_nor_s(tmp_path, ranks):
 
 
 @needs_stack
+@pytest.mark.parametrize("ranks", [3, 4, 8])
+def test_a_capped_stacks_coarse_changes_neither_iterations_nor_s(tmp_path, ranks):
+    # three ranks on one node: every second rank is 2, an even layout
+    seen = _assert_routes_agree(tmp_path, (FREQUENCY,), ranks, routes=[CAPPED])
+    assert seen[CAPPED] == [("telescope", 2, coarse.PT_SCOTCH)]
+
+
+@needs_stack
+def test_a_capped_stack_takes_one_rule_for_many_columns_or_a_pattern_seen(tmp_path):
+    # METIS would order from 6 columns, or from the second set-up, on a stock stack
+    seen = _assert_routes_agree(tmp_path, SWEEP, 4, routes=[CAPPED])
+    assert {f[1:] for f in seen[CAPPED]} == {(2, coarse.PT_SCOTCH)}
+
+
+def _kind_and_nodes():
+    """The stack kind and each rank's node, as the coarse set-up reads them."""
+    world = _world()
+    return coarse.stack_kind(world), _mpi.node_ids(world)
+
+
+@needs_stack
+def test_every_rank_reads_the_stack_kind_and_one_node_here():
+    (kind, nodes), *_ = on_ranks(_kind_and_nodes, ranks=4)
+    expected = coarse.CAPPED if _petsc.has_paraord_cap() else coarse.STOCK
+    assert kind == (coarse.PARMETIS if _petsc.has_parmetis() else expected)
+    assert nodes == (0, 0, 0, 0)  # a launch of this tier is on one node
+
+
+@needs_stack
 def test_a_sweep_serving_enough_columns_takes_metis_from_its_first_set_up(tmp_path):
     # 3 frequencies of 2 ports on one set-up: 6 columns; one frequency: 2
     seen = _assert_routes_agree(tmp_path, SWEEP, 4, routes=[LEARNT])
@@ -307,7 +344,7 @@ REBUILT = (1e9, 60e9)
 
 
 @needs_stack
-@pytest.mark.parametrize("route", [ONE_RANK, METIS])
+@pytest.mark.parametrize("route", [ONE_RANK, METIS, CAPPED])
 @pytest.mark.parametrize(
     ("designs", "frequencies", "set_ups"),
     [((2.0,), REBUILT, 2), ((2.0, 3.0), (FREQUENCY,), 2)],
@@ -324,6 +361,8 @@ def test_set_ups_on_one_wirebasket_analyse_it_once_on_every_rank(
     print(f"{route}: factored={factored} analyses={analyses}")  # noqa: T201
     assert len(factored) == set_ups
     assert analyses == 1
+    if route == CAPPED:  # no METIS on the pattern seen
+        assert {f[1:] for f in factored} == {(2, coarse.PT_SCOTCH)}
     assert np.abs(s - s_one).max() / np.abs(s_one).max() < S_GATE
 
 
@@ -400,7 +439,7 @@ def test_the_rank_0_route_names_its_inverse(tmp_path):
 
 def _forced_coarse_failures(directory, route, failures):
     """INFOG(1)=-9 ``failures`` times on the real route: a retry's count."""
-    coarse.reduction = REDUCTIONS[route]
+    _take_route(route)
     calls = []
     real = coarse.CoarseMumps._agreed_failure
 
@@ -431,7 +470,7 @@ def test_a_coarse_workspace_too_small_retries_on_a_new_ksp(tmp_path, route):
 
 def _a_singular_coarse_problem(directory, route):
     """A real failure in MUMPS, not a forced value: the real paths must see it."""
-    coarse.reduction = REDUCTIONS[route]
+    _take_route(route)
     built = coarse.distributed_aij
 
     def singular(*args, **kwargs):
@@ -483,7 +522,7 @@ def test_a_singular_coarse_problem_raises_after_one_set_up_naming_infog1(
 
 def _telescoped_nbytes(directory):
     """Each rank's count of its coarse factor, behind telescoping to one rank."""
-    coarse.reduction = REDUCTIONS[ONE_RANK]
+    _take_route(ONE_RANK)
     counted = []
     set_up = coarse.CoarseMumps.set_up
 
@@ -527,7 +566,7 @@ class _Infog1:
 
 def _workspace_error_behind_telescoping(directory):
     """The first telescoped set-up's inner factor reads INFOG(1)=-9."""
-    coarse.reduction = REDUCTIONS[ONE_RANK]
+    _take_route(ONE_RANK)
     set_ups = _count_set_ups()
     first = []
     real = coarse._petsc.telescope_ksp

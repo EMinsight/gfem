@@ -500,8 +500,14 @@ def _fake_coarse(retries: int = 0):
         columns = 2
 
         def set_up(self):
+            # 8 nodes of 28 ranks on a capped stack, as on MN5
             self._ordering, self._factor = module.rule(
-                self._numbering.total, self._comm.size, self.columns, seen=False
+                self._numbering.total,
+                self._comm.size,
+                self.columns,
+                seen=False,
+                kind="capped",
+                nodes=tuple(r // 28 for r in range(self._comm.size)),
             )
             for k in range(retries + 1):
                 module.options(

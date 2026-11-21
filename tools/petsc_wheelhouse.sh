@@ -454,17 +454,22 @@ EOF
 }
 
 # Every libpetsc must hold the ordering cap of patch_mumps: MUMPS is folded into
-# it, and the cap's reading of MUMPS_PARAORD_MAX leaves that name in it.
+# it, and the cap's reading of MUMPS_PARAORD_MAX leaves that name in it. The
+# wheel's libpetsc.so is a linker script naming the library, so not one itself.
 check_paraord_cap() {
   "$PY" - "$OUT"/petsc-"$PETSC_VERSION"-*.whl << 'EOF'
 import os, sys, zipfile
 
 with zipfile.ZipFile(sys.argv[1]) as wheel:
     names = [n for n in wheel.namelist() if os.path.basename(n).startswith("libpetsc.so")]
-    if not names:
+    images = {n: wheel.read(n) for n in names}
+    for name in [n for n, data in images.items() if data.startswith(b"INPUT(")]:
+        print(f"{name}: linker script, skipped")
+        del images[name]
+    if not images:
         sys.exit(f"{sys.argv[1]}: no libpetsc to check")
-    for name in names:
-        if b"MUMPS_PARAORD_MAX" not in wheel.read(name):
+    for name, data in images.items():
+        if b"MUMPS_PARAORD_MAX" not in data:
             sys.exit(f"{name} lacks MUMPS_PARAORD_MAX: MUMPS was built without the ordering cap")
         print(f"{name}: MUMPS_PARAORD_MAX")
 EOF

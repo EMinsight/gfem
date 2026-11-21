@@ -423,8 +423,8 @@ def _instrument_coarse(
     calls: dict[str, Any] = {}
     rule = coarse.rule
 
-    def read_rule(dofs, size, columns, *, seen):
-        ordering, factor = rule(dofs, size, columns, seen=seen)
+    def read_rule(dofs, size, columns, *, seen, **stack):
+        ordering, factor = rule(dofs, size, columns, seen=seen, **stack)
         calls["rule"] = {"columns": int(columns), "seen": bool(seen)}
         calls["chose"] = (ordering, factor)
         return ordering, factor

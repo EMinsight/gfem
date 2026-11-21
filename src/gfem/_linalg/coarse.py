@@ -17,8 +17,8 @@ of it is an option, since S does not change with it beyond round-off.
   one rank per `DOFS_PER_RANK`. With an even count per node MUMPS orders on the
   largest power of two of them: 56 ranks order on 32, but 64 order on 64, where
   the fill jumps. Hence `MAX_RANKS`.
-- Sequential METIS on every `METIS_EVERY`-th rank, at least
-  `METIS_DOFS_PER_RANK` DOFs each, when that gives more ranks than PT-Scotch may
+- Sequential METIS on every `COARSE_EVERY`-th rank, at least
+  `COARSE_DOFS_PER_RANK` DOFs each, when that gives more ranks than PT-Scotch may
   take. Its fill does not depend on the ranks, so its apply keeps getting faster
   with nodes, but its analysis runs on one process and costs several PT-Scotch
   set-ups. It is taken only where that is paid back: a set-up expected to serve
@@ -64,13 +64,14 @@ failure is retried, since it may be the workspace.
 from __future__ import annotations
 
 import atexit
+import collections
 import contextlib
 import dataclasses
 import hashlib
 import logging
 import math
 import os
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from pathlib import Path
 from typing import Any, Final, Literal
 
@@ -96,15 +97,18 @@ DOFS_PER_RANK = 100_000
 #: (B2_void_split: 8.87 G entries on 56 ranks, 10.8-11.3 G on 64).
 MAX_RANKS = 56
 
-#: The two coarse orderings `rule` picks from.
+#: The coarse orderings `rule` picks from; `PARMETIS` only on a stack that has it.
 PT_SCOTCH: Final = "pt-scotch"
 METIS: Final = "metis"
-type Ordering = Literal["pt-scotch", "metis"]
-#: METIS's coarse ranks are every this-many-th rank: 7 per node at 28 ranks per node.
-METIS_EVERY = 4
-#: Wirebasket DOFs per METIS coarse rank at least: r0.5 on 224 ranks, 31.5 k each,
-#: still applied faster than on 56.
-METIS_DOFS_PER_RANK = 30_000
+PARMETIS: Final = "parmetis"
+type Ordering = Literal["pt-scotch", "metis", "parmetis"]
+#: Coarse ranks are every this-many-th rank, or the even layout nearest it: 7 per
+#: node at 28 ranks per node, under METIS, ParMETIS and capped PT-Scotch alike.
+COARSE_EVERY = 4
+#: Wirebasket DOFs per coarse rank at least, but under stock PT-Scotch
+#: (`DOFS_PER_RANK`): r0.5 on 224 ranks, 31.5 k each, still applied faster than on
+#: 56.
+COARSE_DOFS_PER_RANK = 30_000
 #: Columns from which one METIS set-up repays its serial analysis: about 300-370
 #: applies at B2's 64 iterations per column.
 METIS_COLUMNS = 6
@@ -119,12 +123,19 @@ METIS_MUMPS_OPTIONS: tuple[tuple[str, Any], ...] = (
     ("mat_mumps_icntl_28", 1),
     ("mat_mumps_icntl_7", 5),
 )
+#: MUMPS's ordering option under ParMETIS: a parallel analysis (ICNTL(28) 2, as
+#: under ranks) with ParMETIS (ICNTL(29) 2).
+PARMETIS_MUMPS_OPTIONS: tuple[tuple[str, Any], ...] = (("mat_mumps_icntl_29", 2),)
+#: MUMPS's first ICNTL(14) under PT-Scotch: 5 of 31 PT-Scotch set-ups of B2 ran out
+#: of workspace at 60, against none of about 20 under METIS or ParMETIS, which
+#: start at `RANK_MUMPS_OPTIONS`'s.
+SCOTCH_WORKSPACE = 120
 
-#: Says what the stack kind leaves to the user.
+#: Says what the stack kind leaves to the user, and each set-up's choice.
 _LOGGER = logging.getLogger("gfem.solver")
-#: The kinds of PETSc stack `stack_kind` tells apart: with ParMETIS, with the cap
-#: gfem's build script puts on PT-Scotch's parallel ordering, or neither.
-PARMETIS: Final = "parmetis"
+#: The kinds of PETSc stack `stack_kind` tells apart: with ParMETIS (`PARMETIS`),
+#: with the cap gfem's build script puts on PT-Scotch's parallel ordering, or
+#: neither.
 CAPPED: Final = "capped"
 STOCK: Final = "stock"
 type StackKind = Literal["parmetis", "capped", "stock"]
@@ -384,32 +395,108 @@ def _scotch_ranks(dofs: int, size: int) -> int:
     return max(1, min(size, dofs // DOFS_PER_RANK, MAX_RANKS))
 
 
-def rule(dofs: int, size: int, columns: int, *, seen: bool) -> tuple[Ordering, int]:
+def is_even(factor: int, nodes: Sequence[int]) -> bool:
+    """Whether every node holding a rank ``PCTELESCOPE`` keeps holds as many.
+
+    ``nodes``: the node of each rank (`gfem._mpi.node_ids`). PETSc keeps every
+    ``factor``-th rank. A node that holds none does not count: MUMPS counts the
+    processes per node of its own communicator only.
+    """
+    counts = collections.Counter(nodes[::factor])
+    return len(set(counts.values())) == 1
+
+
+def even_factor(dofs: int, nodes: Sequence[int]) -> int:
+    r"""``PCTELESCOPE``'s factor of the even coarse layout nearest every fourth rank.
+
+    With :math:`n` the coarse DOFs and :math:`P` the ranks, the target is
+    :math:`c^* = \min(\lceil P / 4 \rceil, \max(1, \lfloor n / 30\,000 \rfloor))`
+    coarse ranks. Of the factors :math:`f` whose :math:`\lceil P / f \rceil` kept
+    ranks are even per node (`is_even`) and at most the floor's
+    :math:`\max(1, \lfloor n / 30\,000 \rfloor)`, it takes the count nearest
+    :math:`c^*`, ties to more ranks, then the smallest factor. Every rank holds the
+    same ``nodes``, so every rank picks the same.
+
+    Args:
+        dofs: The coarse problem's free DOFs.
+        nodes: The node of each rank (`gfem._mpi.node_ids`).
+    """
+    size = len(nodes)
+    floor = max(1, dofs // COARSE_DOFS_PER_RANK)
+    target = min(math.ceil(size / COARSE_EVERY), floor)
+    even = [
+        f
+        for f in range(1, size + 1)
+        if math.ceil(size / f) <= floor and is_even(f, nodes)
+    ]
+    # f = size keeps one rank, always even, so ``even`` is never empty
+    return min(even, key=lambda f: (abs(math.ceil(size / f) - target), f))
+
+
+def capped_ranks(dofs: int, nodes: Sequence[int]) -> int:
+    """The coarse ranks `rule` takes on a `CAPPED` stack, for `say_stock`."""
+    size = len(nodes)
+    return max(math.ceil(size / even_factor(dofs, nodes)), _scotch_ranks(dofs, size))
+
+
+def rule(
+    dofs: int,
+    size: int,
+    columns: int,
+    *,
+    seen: bool,
+    kind: StackKind = STOCK,
+    nodes: Sequence[int] | None = None,
+) -> tuple[Ordering, int]:
     r"""The coarse ordering and ``PCTELESCOPE``'s factor of one set-up.
 
-    With :math:`n` the coarse DOFs and :math:`P` the ranks, PT-Scotch takes
-    :math:`c_P = \max(1, \min(P, \lfloor n / 100\,000 \rfloor, 56))` ranks and
-    sequential METIS :math:`c_M = \max(1, \min(\lceil P / 4 \rceil,
-    \lfloor n / 30\,000 \rfloor))`. METIS orders when :math:`c_M > c_P` and the
-    set-up serves at least `METIS_COLUMNS` columns or repeats a pattern: its serial
-    analysis costs several PT-Scotch set-ups, which only a faster apply over many
-    columns, or an analysis kept across set-ups, pays back. The rule reads counts
-    only, so every rank and every rerun picks the same.
+    On a `PARMETIS` or `CAPPED` stack the fill no longer grows with the ranks
+    ordering it, so the coarse problem takes ParMETIS or PT-Scotch on the even
+    layout nearest every fourth rank (`even_factor`), for every set-up alike. A
+    layout so placed that it holds fewer ranks than stock PT-Scotch's takes stock
+    PT-Scotch's factor instead.
+
+    On a `STOCK` stack, with :math:`n` the coarse DOFs and :math:`P` the ranks,
+    PT-Scotch takes :math:`c_P = \max(1, \min(P, \lfloor n / 100\,000 \rfloor,
+    56))` ranks and sequential METIS :math:`c_M = \max(1, \min(\lceil P / 4
+    \rceil, \lfloor n / 30\,000 \rfloor))`. METIS orders when :math:`c_M > c_P`
+    and the set-up serves at least `METIS_COLUMNS` columns or repeats a pattern: its
+    serial analysis costs several PT-Scotch set-ups, which only a faster apply over
+    many columns, or an analysis kept across set-ups, pays back.
+
+    The rule reads counts and the agreed node of each rank only, so every rank and
+    every rerun picks the same.
 
     Args:
         dofs: The coarse problem's free DOFs.
         size: The ranks of the communicator.
-        columns: The columns the set-up is expected to serve.
-        seen: This process has set up the same pattern before.
+        columns: The columns the set-up is expected to serve; read on `STOCK` only.
+        seen: This process has set up the same pattern before; read on `STOCK`
+            only.
+        kind: The stack every rank runs (`stack_kind`).
+        nodes: The node of each rank (`gfem._mpi.node_ids`); ``None`` for one node.
 
     Returns:
         The ordering and the factor: PETSc keeps every factor-th rank.
     """
     scotch = _scotch_ranks(dofs, size)
-    metis = max(1, min(math.ceil(size / METIS_EVERY), dofs // METIS_DOFS_PER_RANK))
+    if kind != STOCK:
+        layout = tuple(nodes) if nodes is not None else (0,) * size
+        factor = even_factor(dofs, layout)
+        if math.ceil(size / factor) < scotch:
+            factor = reduction(dofs, size)
+        return (PARMETIS if kind == PARMETIS else PT_SCOTCH), factor
+    metis = max(1, min(math.ceil(size / COARSE_EVERY), dofs // COARSE_DOFS_PER_RANK))
     if metis > scotch and (columns >= METIS_COLUMNS or seen):
         return METIS, math.ceil(size / metis)
     return PT_SCOTCH, reduction(dofs, size)
+
+
+def workspace(ordering: Ordering) -> int:
+    """MUMPS's first ICNTL(14) for the coarse factorization under ``ordering``."""
+    if ordering == PT_SCOTCH:
+        return SCOTCH_WORKSPACE
+    return int(dict(RANK_MUMPS_OPTIONS)["mat_mumps_icntl_14"])
 
 
 @contextlib.contextmanager
@@ -445,13 +532,16 @@ def options(
         symmetric: The operator has :math:`A^T = A`: :math:`L D L^T`, else LU.
         workspace: MUMPS's ICNTL(14).
         factor: ``PCTELESCOPE``'s reduction (`rule`); 1 for none.
-        ordering: `PT_SCOTCH`, gfem's options under ranks, or `METIS`
-            (`METIS_MUMPS_OPTIONS` in their place).
+        ordering: `PT_SCOTCH`, gfem's options under ranks; `METIS`
+            (`METIS_MUMPS_OPTIONS` in their place); or `PARMETIS`
+            (`PARMETIS_MUMPS_OPTIONS` over them).
     """
     mumps = dict(RANK_MUMPS_OPTIONS)
     if ordering == METIS:
         del mumps["mat_mumps_icntl_29"]
         mumps.update(METIS_MUMPS_OPTIONS)
+    elif ordering == PARMETIS:
+        mumps.update(PARMETIS_MUMPS_OPTIONS)
     mumps["mat_mumps_icntl_14"] = workspace
     factorization = (*factor_defaults(symmetric)[1:], *mumps.items())
     if factor == 1:
@@ -502,6 +592,8 @@ class CoarseMumps(ngs.BaseMatrix):
         self.key: PoolKey | None = None
         #: The set-up's failed attempts that a new KSP followed.
         self._retries = 0
+        #: The stack kind its last set-up read (`stack_kind`).
+        self._kind: StackKind = STOCK
 
     @property
     def _ksp(self) -> Any:
@@ -534,8 +626,27 @@ class CoarseMumps(ngs.BaseMatrix):
             self.key = pattern_key(
                 comm, local, self._numbering.numbers, symmetric=self.symmetric
             )
+            total = self._numbering.total
+            kind = self._kind = stack_kind(comm)
+            nodes = _mpi.node_ids(comm)
+            if kind == STOCK:
+                say_stock(_scotch_ranks(total, comm.size), capped_ranks(total, nodes))
             self._ordering, self._factor = rule(
-                self._numbering.total, comm.size, self.columns, seen=seen(self.key)
+                total,
+                comm.size,
+                self.columns,
+                seen=seen(self.key),
+                kind=kind,
+                nodes=nodes,
+            )
+            _LOGGER.info(
+                "BDDC's coarse problem: %s on %d of %d ranks, %d DOFs, on a %s "
+                "PETSc stack",
+                self._ordering,
+                math.ceil(comm.size / self._factor),
+                comm.size,
+                total,
+                kind,
             )
             # every rank must take the same retries
             self._readable = self._factor == 1 or _mpi.agree_all(
@@ -548,9 +659,15 @@ class CoarseMumps(ngs.BaseMatrix):
                     local, self._numbering, comm, symmetric=self.symmetric
                 )
                 x, b = aij.createVecs()
-                workspace = dict(RANK_MUMPS_OPTIONS)["mat_mumps_icntl_14"]
                 kept = Kept(
-                    self.key, aij, index, x, b, self._ordering, self._factor, workspace
+                    self.key,
+                    aij,
+                    index,
+                    x,
+                    b,
+                    self._ordering,
+                    self._factor,
+                    workspace(self._ordering),
                 )
             self._held = kept
             try:

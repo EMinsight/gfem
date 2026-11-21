@@ -1094,6 +1094,7 @@ def _one_process_coarse(monkeypatch, op, space, ordering=coarse.PT_SCOTCH, facto
     # the pool keys it as the one-process walk of the cache reads it
     monkeypatch.setattr(coarse._mpi, "comm_key", lambda _: None)
     monkeypatch.setattr(coarse._mpi, "reduce_bcast", lambda _, values: values)
+    monkeypatch.setattr(coarse._mpi, "node_ids", lambda comm: (0,) * comm.size)
     source = types.SimpleNamespace(
         local_mat=op.form.mat,
         row_pardofs=None,
@@ -1357,7 +1358,8 @@ def test_a_workspace_retry_on_refactorization_pools_its_doubled_icntl_14(
     retried = _coarse_on(monkeypatch, built, 3 + 1j)
     retried.set_up()
     assert len(calls) == 2
-    assert retried._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 120
+    # PT-Scotch's first 120, doubled
+    assert retried._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 240
     retried.free()
     assert coarse.pooled() == 1
     # a new KSP after the failure: one more analysis, then the pooled one serves
@@ -1365,7 +1367,7 @@ def test_a_workspace_retry_on_refactorization_pools_its_doubled_icntl_14(
     third.set_up()
     try:
         assert analyses() - before == 2
-        assert third._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 120
+        assert third._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 240
     finally:
         third.free()
 
@@ -1463,19 +1465,47 @@ def test_pooled_coarse_factorizations_count_and_go_at_the_caches_tier_3(
     assert entries.nbytes == 0
 
 
-def test_a_coarse_set_up_hands_the_rule_its_columns_and_whether_it_was_seen(
+def test_a_coarse_set_up_hands_the_rule_its_columns_seen_stack_kind_and_nodes(
     built, monkeypatch
 ):
     calls = []
 
-    def rule(_dofs, _size, columns, *, seen):
-        calls.append((columns, seen))
+    def rule(_dofs, _size, columns, *, seen, kind, nodes):
+        calls.append((columns, seen, kind, nodes))
         return coarse.PT_SCOTCH, 1
 
+    monkeypatch.setattr(coarse, "_kinds", {})
+    monkeypatch.setattr(coarse._petsc, "has_parmetis", lambda: False)
+    monkeypatch.setattr(coarse._petsc, "has_paraord_cap", lambda: True)
     for shift in (1 - 2j, 3 + 1j):
         made = _coarse_on(monkeypatch, built, shift)
         monkeypatch.setattr(coarse, "rule", rule)
         coarse._made[None] = [made]
         assert coarse.finish(made._comm, columns=12) is made
         made.free()
-    assert calls == [(12, False), (12, True)]
+    assert calls == [(12, False, "capped", (0,)), (12, True, "capped", (0,))]
+
+
+@pytest.mark.parametrize(
+    ("ordering", "workspace"), [(coarse.PT_SCOTCH, 120), (coarse.METIS, 60)]
+)
+def test_a_coarse_factorization_starts_at_its_orderings_workspace(
+    built, monkeypatch, ordering, workspace
+):
+    made = _coarse_on(monkeypatch, built, 1 - 2j, ordering=ordering)
+    made.set_up()
+    assert int(made._inner_factor().getMumpsIcntl(14)) == workspace
+    made.free()
+
+
+def test_a_coarse_set_up_logs_its_ordering_ranks_and_stack_kind(
+    built, monkeypatch, caplog
+):
+    monkeypatch.setattr(coarse, "_kinds", {None: coarse.CAPPED})
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        made.set_up()
+    made.free()
+    (record,) = [r for r in caplog.records if "coarse problem" in r.message]
+    assert "pt-scotch on 1 of 1 ranks" in record.message
+    assert "capped PETSc stack" in record.message

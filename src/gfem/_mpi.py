@@ -594,6 +594,33 @@ def node_bytes(comm: Any, local: int) -> int:
     return comm.allreduce(held, op=mpi.MAX)
 
 
+#: Per communicator key, `node_ids`.
+_NODE_IDS: dict[int | None, tuple[int, ...]] = {}
+
+
+def node_ids(comm: Any) -> tuple[int, ...]:
+    """The node of each rank of ``comm``, numbered from 0, the same on every rank.
+
+    Each node's ranks share the rank of its first one in ``comm``, gathered from
+    every rank. Collective on the first call on a communicator; ``(0,)`` for one
+    process.
+    """
+    if comm is None:
+        return (0,)
+    key = comm_key(comm)
+    if key in _NODE_IDS:
+        return _NODE_IDS[key]
+    node = comm.Split_type(_load_mpi().COMM_TYPE_SHARED)
+    try:
+        leader = node.bcast(comm.rank, root=0)
+    finally:
+        node.Free()
+    leaders = comm.allgather(leader)
+    number = {first: i for i, first in enumerate(sorted(set(leaders)))}
+    _NODE_IDS[key] = tuple(number[first] for first in leaders)
+    return _NODE_IDS[key]
+
+
 def node_budget(comm: Any, local: int) -> int:
     """The per-node budget: the smallest of what each rank reads for its node.
 

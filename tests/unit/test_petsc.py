@@ -549,6 +549,16 @@ def test_a_stack_with_the_ordering_cap_is_told_by_its_marker(
     assert _petsc.has_paraord_cap() is capped
 
 
+def test_a_linker_script_beside_the_capped_libpetsc_leaves_the_stack_capped(
+    stack, tmp_path
+):
+    # the petsc wheel's libpetsc.so is a text file naming libpetsc.so.3.26
+    stack(petsc=_with_libpetsc(fake("petsc4py"), tmp_path, _WITH_CAP))
+    (tmp_path / "lib" / "libpetsc.so").write_bytes(_LINKER_SCRIPT)
+    assert _petsc.has_paraord_cap()
+    assert not _petsc.has_zgemmt()
+
+
 def test_a_stack_without_a_libpetsc_to_read_has_no_cap(stack, tmp_path):
     stack(petsc=_with_conf(fake("petsc4py"), tmp_path, mpiuni=True))
     assert not _petsc.has_paraord_cap()
@@ -913,6 +923,27 @@ def test_the_build_script_goes_on_if_every_libpetsc_has_the_ordering_cap(tmp_pat
     _wheel(tmp_path, **{"libpetsc.so.3.26.0": _CAPPED, "libother.so": b""})
     done = _run_function("check_paraord_cap", OUT=str(tmp_path), PETSC_VERSION="3.26.0")
     assert done.returncode == 0, done.stderr
+
+
+#: What the petsc wheel ships as ``libpetsc.so``: a linker script naming the library.
+_LINKER_SCRIPT = b"INPUT(libpetsc.so.3.26)\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
+def test_the_ordering_cap_check_reads_past_a_linker_script(tmp_path):
+    members = {"libpetsc.so": _LINKER_SCRIPT, "libpetsc.so.3.26": _CAPPED}
+    _wheel(tmp_path, **members)
+    done = _run_function("check_paraord_cap", OUT=str(tmp_path), PETSC_VERSION="3.26.0")
+    assert done.returncode == 0, done.stderr
+    assert "libpetsc.so.3.26: MUMPS_PARAORD_MAX" in done.stdout
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
+def test_the_ordering_cap_check_stops_if_only_a_linker_script_is_left(tmp_path):
+    _wheel(tmp_path, **{"libpetsc.so": _LINKER_SCRIPT})
+    done = _run_function("check_paraord_cap", OUT=str(tmp_path), PETSC_VERSION="3.26.0")
+    assert done.returncode != 0
+    assert "no libpetsc" in done.stderr
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
