@@ -94,6 +94,9 @@ print(mode.n_eff)  # the effective index of the port's fundamental mode
 
 - A port line must be straight and on the outside of the mesh.
 - `pec_edges` makes the ends of a port line conducting, as on a 3D port.
+  In Hz a `pec_edges` line must be a `PEC`, `Absorbing` or port line of the
+  model: on a PMC line, the default, the field is fixed while the mode is free,
+  and the solve raises.
 - A line port carries 1 W/m and needs no reference impedance: a `voltage_path`
   raises, and the mode's $Z_{PV}$ is NaN.
 - Lumped ports raise on a 2D model: feed a line with a line port across it, as

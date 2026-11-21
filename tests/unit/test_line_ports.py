@@ -276,3 +276,19 @@ def test_an_hz_line_modes_result_bundle_reads_back_its_field(mesh, tmp_path):
     assert back.e_field is None
     assert back.h_field.quantity == "Hz"
     np.testing.assert_array_equal(back.h_field.at(points), result.h_field.at(points))
+
+
+def test_an_ez_pec_edges_mode_vanishes_where_the_2d_field_stays_free(mesh):
+    # pec_edges fixes the mode at the ends, while the PMC sides leave the 2D
+    # field free there: the coupling meets the mode's zero end values only
+    model = line(mesh, pec_edges=("side",))
+    mode = gfem.solve(model, gfem.PortMode("p1", F, polarization="Ez"), options=OPTIONS)
+    ends = np.asarray(mode.e_field.at(np.array([[0.0, 0.0], [0.0, LENGTH * 1e-3]])))
+    middle = np.asarray(mode.e_field.at(np.array([[0.0, LENGTH * 0.5e-3]])))
+    assert np.abs(ends).max() <= 1e-12 * np.abs(middle).max()
+    result = gfem.solve(model, gfem.Driven(F, polarization="Ez"), options=OPTIONS)
+    s = np.asarray(result.s.values)[0]
+    assert np.isfinite(s).all()
+    # passive (the 2D field's other modes take some power) and reciprocal
+    assert ((np.abs(s) ** 2).sum(axis=0) <= 1 + 1e-9).all()
+    assert s[0, 1] == pytest.approx(s[1, 0], abs=1e-9)

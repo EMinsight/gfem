@@ -358,11 +358,12 @@ def _resolve(
 
 
 def _check_lines(model: Model, polarization: str) -> None:
-    """Raise for a natural condition on an interior line.
+    """Raise for a natural condition on an interior line, or an Hz port's end.
 
     Raises:
         ValueError: A `PEC` line inside the solve domain in Hz, or a `PMC`
-            line in Ez.
+            line in Ez; in Hz, a wave port's ``pec_edges`` line on which the
+            field is fixed.
     """
     domain = model._domain  # noqa: SLF001
     natural, what = (PEC, "PEC") if polarization == "Hz" else (PMC, "PMC")
@@ -381,6 +382,33 @@ def _check_lines(model: Model, polarization: str) -> None:
             f"{polarization} it is a natural condition, which does nothing on an "
             f"interior line: the line would be transparent. {remedy}"
         )
+    if polarization == "Hz":
+        _check_pec_edges(model)
+
+
+def _check_pec_edges(model: Model) -> None:
+    """Raise for an Hz port's ``pec_edges`` line on which the field is fixed.
+
+    In Hz a PEC end of the line mode is natural, so the mode is free there,
+    while the 2D field is fixed on every line but a `PEC`, `Absorbing` or
+    wave port line: the coupling would drop the mode's end value.
+    """
+    natural = {
+        b.surface for b in model.boundaries if isinstance(b, (PEC, Absorbing))
+    } | {p.surface for p in model.ports if isinstance(p, WavePort)}
+    for port in model.ports:
+        if not isinstance(port, WavePort):
+            continue
+        for line in port.pec_edges:
+            if line in natural:
+                continue
+            raise ValueError(
+                f"WavePort {port.name!r} names {line!r} in pec_edges, but in Hz "
+                f"the 2D field is fixed on {line!r} (a PMC line, the default) "
+                "while the port mode is free at a PEC end, so the two would "
+                f"disagree. Add gfem.PEC({line!r}) to the boundaries, or leave "
+                "the line out of pec_edges."
+            )
 
 
 def _check_materials(model: Model, polarization: str) -> None:

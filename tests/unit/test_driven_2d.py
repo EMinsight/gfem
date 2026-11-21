@@ -82,6 +82,20 @@ def test_an_hz_material_field_with_a_conductivity_raises(mesh):
         gfem.solve(model, gfem.Driven(F, polarization="Hz"))
 
 
+def test_hz_pec_edges_off_a_pec_line_raises(mesh):
+    # the 1D mode is free at a pec_edges end, the 2D field fixed on a PMC line
+    model = gfem.Model(
+        mesh,
+        materials={"feed": gfem.Material(), "design": gfem.Material()},
+        ports=(
+            gfem.WavePort("p1", "port1", pec_edges=("side",)),
+            gfem.WavePort("p2", "port2"),
+        ),
+    )
+    with pytest.raises(ValueError, match=r"'p1'.*pec_edges.*'side'.*PEC\('side'\)"):
+        gfem.solve(model, gfem.Driven(F, polarization="Hz"))
+
+
 # --- the fields of a port fed 1 W/m --------------------------------------------------
 
 
