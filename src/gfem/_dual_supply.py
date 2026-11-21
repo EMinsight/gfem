@@ -46,7 +46,7 @@ class DualNeed:
     modes: tuple[tuple[int, str], ...] = ()
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, eq=False)
 class DualSupply:
     """One mesh's solved duals: those that rode on its solve, the rest solved here.
 
@@ -242,7 +242,7 @@ class RiddenDuals:
         """
         return DualSupply(
             asked=self.need if adjoints is not None else DualNeed(),
-            reply=adjoints or {},
+            reply=types.MappingProxyType(adjoints or {}),
         )
 
     def add(self, estimates: tuple[ErrorEstimate, ...]) -> None:
