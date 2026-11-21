@@ -114,12 +114,12 @@ def admit_first_estimates(
     *,
     first: bool,
 ) -> None:
-    """On the first mesh, raise for a Q or objective floor, or for workers.
+    r"""On the first mesh, raise for a Q or objective floor, or for workers.
 
     ``quantities`` holds the estimators, their estimates and tolerances.
     Q's floor is `_check_q_floors`. An objective's is the solve tolerance
-    carried through the objective's first-order sensitivity, 10 x
-    tolerance x sum_a |ct_a| s_a,
+    :math:`\tau` carried through the objective's first-order sensitivity,
+    :math:`10\, \tau \sum_a |\partial J / \partial y_a| \, |y_a|`,
     since the estimate does not include the solve's error. A dual that
     rides on the forward solve needs one worker.
     """
