@@ -84,7 +84,8 @@ CAMPAIGN: dict[str, dict[str, Any]] = {
 }
 
 #: The second scaling set: the coarse configuration of a later version, at 8, 16 and 32
-#: nodes. ``c2_bddc_N_r1`` is a 4-design loop whose design 0 is also a repeat.
+#: nodes. ``c2_bddc_N_r1`` is a 3-design loop whose design 0 is also the rung's
+#: one-frequency repeat, and the records say how many repeats a rung has.
 COARSE: dict[str, dict[str, Any]] = {
     "coarse-strong-108m": {
         "kind": "ladder",
@@ -98,7 +99,7 @@ COARSE: dict[str, dict[str, Any]] = {
 #: The scaling sets by the name ``--set`` takes.
 SETS = {"campaign": CAMPAIGN, "coarse": COARSE}
 #: How a table names MUMPS's ordering of the coarse problem.
-ORDERINGS = {"pt-scotch": "PT-Scotch", "metis": "METIS"}
+ORDERINGS = {"pt-scotch": "PT-Scotch", "metis": "METIS", "parmetis": "ParMETIS"}
 
 TOL_NOTE = (
     "`tol` is `SolverOptions.tolerance`, GMRES's relative preconditioned residual; it "
@@ -707,8 +708,10 @@ def loop(chosen: list[Record]) -> str:
         "Iterations, ports 1/2",
         "Largest node after this design, GiB",
     )
+    counts = {len(r["designs"]) for r in finished}
+    several = f"{counts.pop()} designs" if len(counts) == 1 else "several designs"
     note = (
-        "\nA design loop solves several designs in one process, on one mesh, one "
+        f"\nA design loop solves {several} in one process, on one mesh, one "
         "`gfem.solve` at one frequency each: design $i$ scales the permittivity of the "
         "highest-permittivity volume by $1 + 10^{-3} i$, so the designs' S differ by "
         "design. Design 0 is the first solve. An analysis kept is the coarse "

@@ -7,16 +7,39 @@ across ranks, with no change to BDDC: iterations and S stay those of the rank 0 
 
 ``PCTELESCOPE`` in front of MUMPS runs the factorization on every factor-th rank,
 without building a communicator by hand. `rule` picks that factor and the ordering
-from counts known at the set-up: the coarse DOFs, the ranks, the columns the set-up
-is expected to serve, and whether this process has set up the same pattern before.
-It reads counts only, so every rank and every rerun of a script picks the same; none
-of it is an option, since S does not change with it beyond round-off.
+from what is known at the set-up: the stack kind, the coarse DOFs, the ranks and the
+node of each, the columns the set-up is expected to serve, and whether this process
+has set up the same pattern before. Every rank holds the same of these, so every rank
+and every rerun of a script picks the same; none of it is an option, since S does not
+change with it beyond round-off.
 
-- PT-Scotch by default. Its fill grows with the ranks it orders on (r10M: 556 M
-  entries at 104 k wirebasket DOF per rank, 4520 M at 52 k), so it takes at most
-  one rank per `DOFS_PER_RANK`. With an even count per node MUMPS orders on the
-  largest power of two of them: 56 ranks order on 32, but 64 order on 64, where
-  the fill jumps. Hence `MAX_RANKS`.
+MUMPS orders the coarse problem in parallel on some of its processes. With PT-Scotch
+it takes the largest power of two of them where every node holds as many, and the
+fill grows with that count (r10M: 556 M entries at 104 k wirebasket DOF per rank,
+4520 M at 52 k). On another layout it orders on every process. `stack_kind` tells which
+PETSc stack every rank runs, and the rule follows it:
+
+- A ParMETIS stack, which a user builds for their own use with
+  ``tools/petsc_wheelhouse.sh --mpi --with-parmetis``: ParMETIS orders, with METIS's
+  fill and no serial analysis.
+- A capped stack, as gfem's build script makes them: its MUMPS orders with PT-Scotch on
+  at most 32 processes, so the fill stays put as the coarse ranks grow.
+- A stock stack, without that cap, such as one an earlier script built.
+
+On a ParMETIS or capped stack the coarse ranks are the even coarse layout nearest every
+`COARSE_EVERY`-th rank, at least `COARSE_DOFS_PER_RANK` DOFs each (`even_factor`): every
+node holding a coarse rank holds as many, 7 per node at 28 ranks per node. Only such a
+layout keeps the cap: an uneven one orders on every coarse rank. Where the nearest
+even layout has fewer coarse ranks than a stock stack's PT-Scotch would take, the
+largest even layout up to that count is taken instead. Every set-up takes the same
+ordering, and the pool keeps its analysis across set-ups. Sequential METIS is never
+taken there: against a kept capped PT-Scotch analysis, its serial one pays back only
+after about 14 designs, and ParMETIS has its fill without it.
+
+On a stock stack:
+
+- PT-Scotch by default, on at most one rank per `DOFS_PER_RANK` and `MAX_RANKS`: 56
+  ranks order on 32, but 64 order on 64, where the fill jumps.
 - Sequential METIS on every `COARSE_EVERY`-th rank, at least
   `COARSE_DOFS_PER_RANK` DOFs each, when that gives more ranks than PT-Scotch may
   take. Its fill does not depend on the ranks, so its apply keeps getting faster
@@ -25,12 +48,13 @@ of it is an option, since S does not change with it beyond round-off.
   `METIS_COLUMNS` columns or more, or a pattern this process has set up before (a
   design loop, a sweep's rebuilds, an eigen reshift), whose analysis the pool keeps.
 
-`stack_kind` tells which PETSc stack every rank runs: one with ParMETIS, one whose
-MUMPS caps PT-Scotch's parallel ordering, as gfem's build script makes it, or a
-stock one. Ranks on different stacks take the kind they
-share, which changes the coarse problem's speed, never S.
+A stock stack says once per process when a rebuilt stack would give the coarse problem
+more ranks (`say_stock`). Ranks on different stacks take the kind they share, which
+changes the coarse problem's speed, never S. PT-Scotch's factorization starts with a
+larger MUMPS workspace (`SCOTCH_WORKSPACE`) than METIS's and ParMETIS's, which ran out
+of it far less often.
 
-METIS's ``NITER=1`` takes about 15 % off that serial analysis for 2 % more fill.
+METIS's ``NITER=1`` takes about 15 % off its serial analysis for 2 % more fill.
 PETSc has no option for it and MUMPS reads it only from the file named by
 ``MUMPS_CONFIG_FILE``, so a METIS set-up names the packaged `MUMPS_CONFIG` there,
 under `_petsc.LOCK` and for that set-up only (`mumps_config`): nothing is written at

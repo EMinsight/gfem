@@ -38,7 +38,8 @@ with its script. A run that left no record gets a stub, ``failed: true``, with S
 state, the phases its ``--trace`` left open and the figures MUMPS printed. A finished
 run keeps its record, with those figures added: the coarse factor's own figures are
 read through ``PCTelescopeGetKSP``, and its MUMPS times only print. Each coarse set-up
-of the trace gets its analysis, METIS, ordering, factorization and solve driver times.
+of the trace gets its analysis, METIS, ordering, factorization and solve driver times,
+and on a capped stack the processes its parallel ordering ran on (``PARAORD``).
 ``check`` reports a stub as not passed, and ``table`` shows it.
 ``close --state STARTED``, before a run, first moves any record and sidecar of that
 name aside to ``NAME.superseded-N.json`` and ``.npz``, so a killed rerun is not
@@ -52,8 +53,9 @@ A phase is read through a wrapper around gfem's own functions. These are private
 this script is pinned to the commit in its record. Each coarse set-up's record reads
 the module-level ``rule`` and ``options`` it calls, the factor behind telescoping
 (`gfem._petsc.telescope_ksp`), PETSc's count of symbolic factorizations (none: the
-analysis was kept), and ``CoarseMumps``'s ``_comm``, ``_numbering``, ``_factor``,
-``_ksp`` and ``columns``, with its ``_retries`` and ``_seen`` where it keeps them.
+analysis was kept), the stack kind and the node of each rank it hands ``rule``, and
+``CoarseMumps``'s ``_comm``, ``_numbering``, ``_factor``, ``_ksp`` and ``columns``,
+with its ``_retries``, ``_seen`` and ``_kind`` where it keeps them.
 """
 
 from __future__ import annotations
@@ -72,7 +74,7 @@ import re
 import socket
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -427,6 +429,7 @@ def _instrument_coarse(
         ordering, factor = rule(dofs, size, columns, seen=seen, **stack)
         calls["rule"] = {"columns": int(columns), "seen": bool(seen)}
         calls["chose"] = (ordering, factor)
+        calls["stack"] = stack
         return ordering, factor
 
     coarse.rule = read_rule
@@ -458,6 +461,8 @@ def _instrument_coarse(
             **_quiet(lambda: factor_facts(self), {}),
         }
         every = comm.allgather(here)
+        stack = calls.get("stack", {})
+        layout = stack.get("nodes") or [r["host"] for r in every]
         read = [r for r in every if "infog29" in r]
         nodes: dict[str, int] = defaultdict(int)
         for r in every:
@@ -469,6 +474,9 @@ def _instrument_coarse(
             "ordering": ordering,
             "reduction": factor,
             "ranks": math.ceil(comm.size / factor),
+            "kind": stack.get("kind", getattr(self, "_kind", None)),
+            # the most on one node: the layout is even on capped and ParMETIS stacks
+            "per_node": max(Counter(layout[::factor]).values()),
             **chosen,
             "kept": not any(analysed) if analysed else None,
             "retries": getattr(
@@ -548,6 +556,14 @@ def _factor_events() -> dict[str, float]:
 TRACE_LINE = re.compile(r"^(\w+) (starts|ends) at [\d.]+ GiB peak$", re.MULTILINE)
 #: MUMPS's line opening a call, ``ICNTL(4)=2``: the job and the system's size.
 MUMPS_CALL = re.compile(r"Entering [SDCZ]MUMPS \S+ .*JOB, N =\s*(\d+)\s+(\d+)")
+#: The ordering cap's line, ``PARAORD cap C nprocs P paraord W``, which a capped
+#: stack's MUMPS prints at each parallel analysis: the cap (0 for none), the
+#: processes MUMPS orders for, and those it orders on.
+PARAORD = {
+    "paraord_cap": r"PARAORD cap\s*(\d+)",
+    "paraord_nprocs": r"PARAORD cap\s*\d+\s*nprocs\s*(\d+)",
+    "paraord": r"PARAORD cap\s*\d+\s*nprocs\s*\d+\s*paraord\s*(\d+)",
+}
 #: MUMPS's lines worth keeping, in the words it prints them.
 MUMPS_FIGURES = {
     "entries_estimated": r"\(20\) Number of entries in factors \(estim\.\)\s*=\s*(\S+)",
@@ -559,16 +575,19 @@ MUMPS_FIGURES = {
     "total_used_mb": r"\(INFOG\(22\)\):\s*(\S+)",
     "entries": r"INFOG \(29\) Number of entries in factors\s*=\s*(\S+)",
     "front": r"INFOG \(11\) Maximum front size\s*=\s*(\S+)",
+    **PARAORD,
 }
 
 
-#: MUMPS's printed times of a coarse set-up, seconds, in the words it prints them.
+#: MUMPS's printed times of a coarse set-up, seconds, in the words it prints them,
+#: with its entries and its ordering cap's line.
 MUMPS_TIMES = {
     "analysis_s": r"Elapsed time in analysis driver\s*=\s*(\S+)",
     "metis_s": r"ELAPSED TIME SPENT IN METIS reordering\s*=\s*(\S+)",
     "ordering_s": r"ELAPSED time in (?:parallel )?ordering\s*=\s*(\S+)",
     "factorization_s": r"Elapsed time in factorization driver\s*=\s*(\S+)",
     "entries": r"INFOG \(29\) Number of entries in factors\s*=\s*(\S+)",
+    **PARAORD,
 }
 SOLVE_DRIVER = re.compile(r"Elapsed time in solve driver\s*=\s*(\S+)")
 #: ``--trace``'s line opening a coarse set-up.

@@ -560,6 +560,18 @@ def test_a_coarse_set_up_records_its_configuration_and_retries() -> None:
     assert fact["setup_s"] >= 0
 
 
+def test_a_coarse_set_up_records_its_stack_kind_and_coarse_ranks_per_node() -> None:
+    phases, facts = scale_run.Phases(), scale_run.Facts()
+    module = _fake_coarse()
+    scale_run._instrument_coarse(
+        phases, facts, module, factor_facts=_factor_facts(120), symbolic=lambda: 7
+    )
+    module.CoarseMumps().set_up()
+    (fact,) = facts.coarse
+    # every fourth of 28 ranks per node: 7 coarse ranks on each of 8 nodes
+    assert (fact["kind"], fact["per_node"]) == ("capped", 7)
+
+
 def test_a_set_up_with_no_symbolic_factorization_kept_its_analysis() -> None:
     phases, facts = scale_run.Phases(), scale_run.Facts()
     module = _fake_coarse()
@@ -631,3 +643,40 @@ def test_closing_attaches_mumps_times_to_each_coarse_set_up(
     assert first["solve_driver_median_s"] == pytest.approx((0.4628 + 0.3) / 2)
     assert "analysis_s" not in second
     assert second["factorization_s"] == pytest.approx(16.5)
+
+
+#: A capped stack's coarse analysis, ``--mumps-print`` on rank 0: 56 coarse ranks,
+#: whose parallel ordering the cap holds at 32 processes.
+PARAORD_LOG = """\
+coarse_setup starts at 10.1 GiB peak
+Entering ZMUMPS 5.9.1 from C interface with JOB, N =   1    30399588
+ PARAORD cap       32 nprocs       56 paraord       32
+ ELAPSED time in parallel ordering  =     38.2000
+ Elapsed time in analysis driver=      45.1000
+Entering ZMUMPS 5.9.1 from C interface with JOB, N =   2    30399588
+ INFOG (29) Number of entries in factors            =      8812345678
+ Elapsed time in factorization driver               =     21.0000
+coarse_setup ends at 26.6 GiB peak
+"""
+
+
+def test_closing_reads_the_ordering_cap_of_each_coarse_analysis(
+    solved: Path, tmp_path: Path
+) -> None:
+    copy = tmp_path / solved.name
+    record = json.loads(Path(f"{solved}.json").read_text())
+    record["coarse"] = [{"design": 0}]
+    Path(f"{copy}.json").write_text(json.dumps(record))
+    log = tmp_path / "paraord.log"
+    log.write_text(PARAORD_LOG)
+    assert _tool("close", copy, "--log", log, "--state", "COMPLETED").returncode == 0
+    closed = json.loads(Path(f"{copy}.json").read_text())
+    (fact,) = closed["coarse"]
+    assert (fact["paraord_cap"], fact["paraord_nprocs"], fact["paraord"]) == (
+        32,
+        56,
+        32,
+    )
+    assert fact["ordering_s"] == pytest.approx(38.2)
+    (printed,) = closed["mumps_printed"]
+    assert (printed["paraord_cap"], printed["paraord"]) == (32, 32)

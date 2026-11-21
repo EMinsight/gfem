@@ -523,3 +523,47 @@ def test_the_set_defaults_to_the_first(tmp_path, ladder, monkeypatch):
         [str(ladder), str(tmp_path), "--commit", "9a57680", "--set", "coarse"]
     )
     assert seen["spec"] is scale_tables.SETS["coarse"]
+
+
+@pytest.fixture
+def capped_set(tmp_path):
+    """The second set on a capped stack: one job per rung, a 3-design loop, r0.5."""
+    records = []
+    for nodes, ranks, solve in ((8, 56, 434.0), (16, 112, 333.0), (32, 224, 266.0)):
+        designs = [
+            {
+                "solve": solve if i == 0 else solve / 2,
+                "ordering": "pt-scotch",
+                "ranks": ranks,
+                "kept": i > 0,
+                "memory": 60.0 + i,
+            }
+            for i in range(3)
+        ]
+        records.append(_loop(f"c2_bddc_{nodes}_r1", nodes=nodes, designs=designs))
+        records.append(
+            _single(
+                f"c4_bddc_{nodes}_r1",
+                nodes=nodes,
+                solve=150.0,
+                memory=20.0,
+                mesh="r0.5_void_split",
+            )
+        )
+    return _write(tmp_path / "capped", *records)
+
+
+def test_the_capped_set_renders_with_one_repeat_per_rung(capped_set, tmp_path):
+    scale_tables.write_snippets(
+        capped_set, tmp_path / "out", commit="c0ffee0", spec=scale_tables.SETS["coarse"]
+    )
+    text = (tmp_path / "out" / "coarse-strong-108m.md").read_text()
+    rows = _table_rows(text)
+    b2 = [r for r in rows if r[3] == "B2_void_split"]
+    assert [r[0] for r in b2] == ["8", "16", "32"]
+    assert {r[_column(text, "Repeats")] for r in rows} == {"1"}
+    assert {r[_column(text, "Coarse ordering")] for r in b2} == {"PT-Scotch"}
+    assert [r[_column(text, "Coarse ranks")] for r in b2] == ["56", "112", "224"]
+    loop = (tmp_path / "out" / "coarse-design-loop.md").read_text()
+    assert len(_table_rows(loop)) == 9
+    assert "solves 3 designs" in loop
