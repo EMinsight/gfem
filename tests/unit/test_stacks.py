@@ -285,6 +285,19 @@ def test_the_two_mumps_builds_differ_only_in_allowed_build_settings(tmp_path):
         assert f"mumps {field}" in allowed
 
 
+def test_the_ordering_cap_is_an_allowed_difference_and_absent_means_none(tmp_path):
+    # Palace's block, recorded before the field, has no paraord_cap
+    report = provenance.check_stack(
+        _mumps_stack(tmp_path, _mumps_palace(), {**_mumps_petsc(), "paraord_cap": True})
+    )
+
+    assert report.errors == []
+    assert any(
+        "mumps paraord_cap allowed difference" in note and "False" in note
+        for note in report.notes
+    ), report.notes
+
+
 def test_only_the_newest_version_of_a_package_joins_the_mumps_comparison(tmp_path):
     stack = _mumps_stack(tmp_path, _mumps_palace(), _mumps_petsc())
     (stack / "palace-1.0").rename(stack / "palace-0.19.0")
@@ -1890,6 +1903,7 @@ PETSC_BUILD = {
         " (0x00007f)\n\tlibmpi.so.40 => /apps/openmpi/lib/libmpi.so.40 (0x00007f)\n"
     ),
     "compiler.txt": "gfortran 12.3.0\n",
+    "paraord.txt": "",
     "tarballs.txt": (
         f"{'1' * 64}  /src/tarballs/MUMPS_5.9.1.tar.gz\n"
         f"{'2' * 64}  /src/tarballs/scalapack-v2.2.3.tar.gz\n"
@@ -1925,7 +1939,17 @@ def test_a_petsc_build_records_its_mumps_block_as_check_compares_it():
         "index_bits": 64,
         "fflags_raw": "-fPIC -O3 -march=sapphirerapids -fallow-argument-mismatch",
         "compiler_raw": "mpif90",
+        "paraord_cap": False,
     }
+
+
+def test_a_petsc_build_records_whether_its_mumps_caps_the_ordering():
+    build = {**PETSC_BUILD, "paraord.txt": "lib/libpetsc.so:MUMPS_PARAORD_MAX\n"}
+
+    block, errors = provenance.petsc_mumps(build, NATIVE_OSS)
+
+    assert errors == []
+    assert block["paraord_cap"] is True
 
 
 @pytest.mark.parametrize(
