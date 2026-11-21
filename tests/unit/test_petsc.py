@@ -1037,6 +1037,28 @@ def test_the_mpi_stack_has_64_bit_indices_and_scotch_over_petscs_pin(tmp_path):
 
 @NOT_CONDA
 @BASH_SCRIPT
+def test_with_parmetis_the_mpi_stack_downloads_it_and_states_its_terms(tmp_path):
+    flags = ["--mpi", "--with-parmetis"]
+    result = _check(tmp_path, path=[_mpi_tools(tmp_path)], flags=flags)
+    assert result.returncode == 0, result.stderr
+    options = _options(result.stdout)
+    assert "--download-parmetis" in options
+    assert "--with-parmetis=0" not in options
+    # the licence's terms, with no prompt: --check reads no input
+    for words in ("non-profit", "evaluation", "must not be shared"):
+        assert words in result.stderr
+
+
+@NOT_CONDA
+@BASH_SCRIPT
+def test_with_parmetis_needs_mpi(tmp_path):
+    result = _check(tmp_path, flags=["--with-parmetis"])
+    assert result.returncode != 0
+    assert "ParMETIS orders only across ranks" in result.stderr
+
+
+@NOT_CONDA
+@BASH_SCRIPT
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [

@@ -7,6 +7,7 @@ Every test needs complex petsc4py: skipped without it (the ``petsc`` marker).
 
 import dataclasses
 import logging
+import os
 import re
 import types
 from pathlib import Path
@@ -65,15 +66,19 @@ def _scotch_version() -> tuple[int, int, int]:
     return major, minor, patch
 
 
+# ParMETIS, not free for commercial use, is on no stack gfem's CI builds; a user's
+# own --with-parmetis stack declares itself with GFEM_PARMETIS_STACK=1.
+PARMETIS_STACK = os.environ.get("GFEM_PARMETIS_STACK") == "1"
+
+
 def test_the_petsc_stack_is_complex_with_mumps_and_no_non_free_package():
     # The licence control (no non-free or non-commercial dependency) for a stack the
     # licence gate cannot see (what tools/petsc_wheelhouse.sh compiles into the petsc
-    # wheel). ParMETIS, which is not free for commercial use, is on neither stack.
+    # wheel).
     PETSc = _petsc.require_petsc()
     assert np.dtype(PETSc.ScalarType) == np.complex128
     assert PETSc.Sys.hasExternalPackage("mumps")
     assert PETSc.Sys.hasExternalPackage("metis")
-    assert not PETSc.Sys.hasExternalPackage("parmetis")
     # OpenBLAS's ZGEMMT overflows on complex fronts of 32,768 or more: MUMPS without it
     assert not _petsc.has_zgemmt()
     has_mpi = _petsc.has_mpi()
@@ -84,6 +89,19 @@ def test_the_petsc_stack_is_complex_with_mumps_and_no_non_free_package():
         # MUMPS's parallel analysis
         assert np.dtype(PETSc.IntType) == np.int64
         assert _scotch_version() >= (7, 0, 18)
+
+
+@pytest.mark.skipif(
+    PARMETIS_STACK, reason="GFEM_PARMETIS_STACK=1: a user's own ParMETIS stack"
+)
+def test_parmetis_is_on_no_stack_gfems_ci_builds():
+    assert not _petsc.require_petsc().Sys.hasExternalPackage("parmetis")
+
+
+@pytest.mark.skipif(not PARMETIS_STACK, reason="GFEM_PARMETIS_STACK is not 1")
+def test_a_users_parmetis_stack_is_an_mpi_stack():
+    if _petsc.require_petsc().Sys.hasExternalPackage("parmetis"):
+        assert _petsc.has_mpi()
 
 
 def test_petsc_solves_many_right_hand_sides_on_the_free_dofs(built):

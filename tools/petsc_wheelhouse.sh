@@ -4,16 +4,18 @@
 # wheelhouse (a folder of four wheels) to install into the environment that
 # runs gfem. The default stack has no MPI and serves one process, or copies of
 # one process per rank. With --mpi it is built on the machine's Open MPI and
-# also serves distributed solves.
+# also serves distributed solves. --with-parmetis adds ParMETIS to the MPI stack,
+# for users its licence allows (see parmetis_terms): such a stack is for its
+# builder alone and is never shared.
 #
 # Usage:
-#   bash petsc_wheelhouse.sh [--mpi] [--sources DIR] OUTPUT_DIR
+#   bash petsc_wheelhouse.sh [--mpi [--with-parmetis]] [--sources DIR] OUTPUT_DIR
 #                                   build the four wheels into OUTPUT_DIR (a new
 #                                   or empty folder)
-#   bash petsc_wheelhouse.sh [--mpi] [--sources DIR] --check
+#   bash petsc_wheelhouse.sh [--mpi [--with-parmetis]] [--sources DIR] --check
 #                                   check the prerequisites only, and print the
 #                                   configure options
-#   bash petsc_wheelhouse.sh --fetch-sources DIR
+#   bash petsc_wheelhouse.sh [--with-parmetis] --fetch-sources DIR
 #                                   on a machine with internet: download into DIR
 #                                   what --sources reads on one without it
 # then, in the environment that runs gfem:
@@ -68,8 +70,12 @@ TARBALLS=(
 # MUMPS (CeCILL-C), its ordering METIS (Apache-2.0), BLAS and LAPACK (BSD-3-Clause)
 NO_MPI_PACKAGES=(mumps metis openblas)
 # Also MUMPS's root ScaLAPACK (BSD-3-Clause) and its parallel ordering PT-Scotch
-# (CeCILL-C). Never ParMETIS, which is not free for commercial use.
+# (CeCILL-C). ParMETIS only with --with-parmetis: it is free only for non-profit
+# research and education, so a stack with it is for its builder alone and is
+# never shared.
 MPI_PACKAGES=(mumps scalapack ptscotch metis openblas)
+# ParMETIS's tarball, outside TARBALLS (the licence page's set): name, URL, sha256
+PARMETIS_TARBALL="petsc-pkg-parmetis-v4.0.3-p9.tar.gz https://bitbucket.org/petsc/pkg-parmetis/get/v4.0.3-p9.tar.gz 612717e85992c984f09b0f5670be421bbb90a4c04145ab5b9a3358b92765d891"
 # PETSc 3.26.0 pins Scotch 7.0.15, whose hdgraphFold2 crashes MUMPS's parallel
 # analysis (fixed upstream in 7.0.18), so the MPI stack always takes this tarball.
 SCOTCH_TARBALL=scotch-v7.0.18.tar.gz
@@ -84,6 +90,14 @@ usage() {
 fail() {
   echo "petsc_wheelhouse.sh: $*" >&2
   exit 1
+}
+
+# ParMETIS's terms (its LICENSE.txt), on stderr. No prompt: builds run in batch
+# jobs, and the flag is the explicit choice.
+parmetis_terms() {
+  cat >&2 << 'EOF'
+warning: --with-parmetis adds ParMETIS, copyrighted by the Regents of the University of Minnesota. It can be freely used for educational and research purposes by non-profit institutions and US government agencies only; other organizations may use it for evaluation only, and any further use needs the University's prior approval. It may not be sold or redistributed without that approval. The wheels this build makes hold ParMETIS: they are for your own use and must not be shared or uploaded anywhere. Building with this flag is your acceptance of ParMETIS's terms.
+EOF
 }
 
 # An active conda environment puts its own gcc, g++ and gfortran first on
@@ -211,7 +225,7 @@ check_sources() {
     [ -f "$SOURCES/$name-$version.tar.gz" ] || fail "$SOURCES/$name-$version.tar.gz is missing"
     check_sha256 "$SOURCES/$name-$version.tar.gz" "$sha256"
   done
-  for line in "${TARBALLS[@]}"; do
+  for line in "${TARBALLS[@]}" ${WITH_PARMETIS:+"$PARMETIS_TARBALL"}; do
     read -r name url sha256 <<< "$line"
     case $name in
       scalapack* | scotch*) ((MPI == 1)) || continue ;;
@@ -225,9 +239,9 @@ check_sources() {
 # The name of a package's tarball.
 tarball() {
   local line
-  for line in "${TARBALLS[@]}"; do
+  for line in "${TARBALLS[@]}" "$PARMETIS_TARBALL"; do
     case $1:$line in
-      mumps:MUMPS* | scalapack:scalapack* | ptscotch:scotch* | metis:petsc-pkg-metis* | openblas:OpenBLAS*)
+      mumps:MUMPS* | scalapack:scalapack* | ptscotch:scotch* | metis:petsc-pkg-metis* | parmetis:petsc-pkg-parmetis* | openblas:OpenBLAS*)
         echo "${line%% *}"
         return
         ;;
@@ -244,7 +258,12 @@ set_configure_options() {
   if ((MPI == 1)); then
     packages=("${MPI_PACKAGES[@]}")
     # 64-bit: the graph passes 2^31 near 54 M DOF at order 2
-    CONFIGURE_OPTIONS+=(--with-64-bit-indices --with-parmetis=0)
+    CONFIGURE_OPTIONS+=(--with-64-bit-indices)
+    if [ -n "$WITH_PARMETIS" ]; then
+      packages+=(parmetis)
+    else
+      CONFIGURE_OPTIONS+=(--with-parmetis=0)
+    fi
   else
     CONFIGURE_OPTIONS+=(--with-mpi=0) # one process: MUMPS on its serial libseq
   fi
@@ -285,7 +304,7 @@ fetch_sources() {
   download "$(pypi_url petsc4py "$PETSC_VERSION")" "$SHA256_petsc4py" "$dir/petsc4py-$PETSC_VERSION.tar.gz"
   download "$(pypi_url slepc "$SLEPC_VERSION")" "$SHA256_slepc" "$dir/slepc-$SLEPC_VERSION.tar.gz"
   download "$(pypi_url slepc4py "$SLEPC_VERSION")" "$SHA256_slepc4py" "$dir/slepc4py-$SLEPC_VERSION.tar.gz"
-  for line in "${TARBALLS[@]}"; do
+  for line in "${TARBALLS[@]}" ${WITH_PARMETIS:+"$PARMETIS_TARBALL"}; do
     read -r name url sha256 <<< "$line"
     download "$url" "$sha256" "$dir/$name"
   done
@@ -487,10 +506,11 @@ os.replace(patched, wheel)
 EOF
 }
 
-MPI=0 CHECK=0 SOURCES="" FETCH_SOURCES="" OUTPUT=""
+MPI=0 CHECK=0 SOURCES="" FETCH_SOURCES="" OUTPUT="" WITH_PARMETIS=""
 while (($#)); do
   case $1 in
     --mpi) MPI=1 ;;
+    --with-parmetis) WITH_PARMETIS=1 ;;
     --check) CHECK=1 ;;
     --sources)
       (($# >= 2)) || usage
@@ -516,6 +536,12 @@ FORMS=0
 [ -z "$OUTPUT" ] || FORMS=$((FORMS + 1))
 [ -z "$FETCH_SOURCES" ] || FORMS=$((FORMS + 1))
 ((FORMS == 1)) || usage
+if [ -n "$WITH_PARMETIS" ]; then
+  # --fetch-sources fetches what either stack reads, so it takes no --mpi
+  ((MPI == 1)) || [ -n "$FETCH_SOURCES" ] ||
+    fail "ParMETIS orders only across ranks: --with-parmetis needs --mpi"
+  parmetis_terms # before anything is downloaded
+fi
 if [ -n "$SOURCES" ]; then
   [ -d "$SOURCES" ] || fail "$SOURCES is not a folder"
   SOURCES=$(cd "$SOURCES" && pwd)

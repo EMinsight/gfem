@@ -391,7 +391,11 @@ def test_parmetis_in_gfems_petsc_fails(tmp_path):
 
     report = provenance.check_stack(_mumps_stack(tmp_path, _mumps_palace(), petsc))
 
-    assert any("parmetis" in error and "petsc-1.0" in error for error in report.errors)
+    assert any(
+        error == "mumps orderings: petsc-1.0 has parmetis, "
+        "which a recorded stack never holds (licence)"
+        for error in report.errors
+    ), report.errors
 
 
 @pytest.mark.parametrize("package", ["palace", "petsc"])
@@ -1928,7 +1932,12 @@ def test_a_petsc_build_records_its_mumps_block_as_check_compares_it():
     ("file", "old", "new", "named"),
     [
         ("petscconf.h", "#define PETSC_USE_64BIT_INDICES 1\n", "", "64-bit"),
-        ("petscconf.h", "", "#define PETSC_HAVE_PARMETIS 1\n", "parmetis"),
+        (
+            "petscconf.h",
+            "",
+            "#define PETSC_HAVE_PARMETIS 1\n",
+            "PETSc has parmetis, which a recorded stack never holds (licence)",
+        ),
         ("scotch.h", "PATCHLEVEL 18", "PATCHLEVEL 15", "7.0.15"),
         ("dynsym.txt", "", "                 U zgemmt_\n", "gemmt"),
         ("Makefile.inc", "-O3 -march=sapphirerapids ", "-O2 ", "OPTF"),
