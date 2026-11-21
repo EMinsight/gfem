@@ -36,6 +36,21 @@ def step_result(step):
     return gfem.solve(step, problem, options=OPTIONS)
 
 
+def _supplies(monkeypatch):
+    """The dual supply of each mesh `refine_mesh` estimates, in order."""
+    from gfem._dual_supply import RiddenDuals
+
+    supplies = []
+    supply = RiddenDuals.supply
+
+    def recorded(self, adjoints):
+        supplies.append(supply(self, adjoints))
+        return supplies[-1]
+
+    monkeypatch.setattr(RiddenDuals, "supply", recorded)
+    return supplies
+
+
 def _s21_band(result, _model):
     return jnp.mean(1 - jnp.abs(result.s["p2", "p1"]) ** 2)
 
@@ -770,16 +785,7 @@ def test_a_power_flow_side_touching_a_port_raises(line, line_result):
 
 @pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
 def test_the_field_dual_factorizes_once_then_rides_on_the_solves(line, monkeypatch):
-    from gfem import refinement
-
-    calls = []
-    duals = refinement._field_duals
-
-    def counted(*args, **kwargs):
-        calls.append(args[2])
-        return duals(*args, **kwargs)
-
-    monkeypatch.setattr(refinement, "_field_duals", counted)
+    supplies = _supplies(monkeypatch)
     estimator = gfem.QuantityEstimator(objective=_layer_power)
     refinement_ = gfem.refine_mesh(
         line,
@@ -789,7 +795,11 @@ def test_the_field_dual_factorizes_once_then_rides_on_the_solves(line, monkeypat
         options=OPTIONS,
         max_cycles=2,
     )
-    assert calls == [[("power", LINE_F, "p1", ("lsub", "lossy"))]]  # cycle 0 only
+    assert [s.solved for s in supplies] == [
+        {"field": ([("power", LINE_F, "p1", ("lsub", "lossy"))],)},  # cycle 0 only
+        {},
+        {},
+    ]
     assert len(refinement_.cycles) == 3
     assert refinement_.estimate.kind == "objective of absorbed power"
     # the ridden dual gives the estimate error_estimate gives on the last mesh
@@ -898,16 +908,7 @@ def test_an_objective_with_a_solved_dual_refuses_frequency_workers(step):
 
 @pytest.mark.filterwarnings("ignore::gfem.MeshRefinementNotConvergedWarning")
 def test_the_objective_dual_factorizes_once_then_rides_on_the_solves(step, monkeypatch):
-    from gfem import refinement
-
-    calls = []
-    adjoints = refinement._adjoints
-
-    def counted(*args, **kwargs):
-        calls.append(args[2])
-        return adjoints(*args, **kwargs)
-
-    monkeypatch.setattr(refinement, "_adjoints", counted)
+    supplies = _supplies(monkeypatch)
     estimator = gfem.QuantityEstimator(objective=_s21_band)
     refinement_ = gfem.refine_mesh(
         step,
@@ -917,7 +918,7 @@ def test_the_objective_dual_factorizes_once_then_rides_on_the_solves(step, monke
         options=OPTIONS,
         max_cycles=2,
     )
-    assert calls == [("p2",)]  # cycle 0 only
+    assert [s.solved for s in supplies] == [{"s": (("p2",),)}, {}, {}]  # cycle 0 only
     assert len(refinement_.cycles) == 3
     for cycle in refinement_.cycles:
         assert isinstance(cycle.value, float)
@@ -1072,7 +1073,7 @@ def test_error_estimate_of_a_participation(slab):
     assert estimate.kind == "objective of participation"
     assert estimate.value > 0
     assert estimate.indicators.shape == (len(model.mesh.tetrahedra),)
-    assert estimate._dual_modes == ((0, "block"),)
+    assert estimate._duals.modes == ((0, "block"),)
 
 
 def test_a_participation_times_its_frequency_is_one_participation_objective(slab):
@@ -1125,16 +1126,7 @@ def test_a_participation_out_of_mode_field_reach_raises(slab, options):
 def test_the_participation_dual_is_solved_once_then_rides_on_the_forward(
     slab, monkeypatch
 ):
-    from gfem import refinement
-
-    calls = []
-    solve = refinement._participation_duals
-
-    def counted(*args, **kwargs):
-        calls.append(args[2])
-        return solve(*args, **kwargs)
-
-    monkeypatch.setattr(refinement, "_participation_duals", counted)
+    supplies = _supplies(monkeypatch)
     model, problem, _ = slab
     estimator = gfem.QuantityEstimator(objective=_block_share)
     refined = gfem.refine_mesh(
@@ -1145,7 +1137,7 @@ def test_the_participation_dual_is_solved_once_then_rides_on_the_forward(
         options=OPTIONS,
         max_cycles=2,
     )
-    assert calls == [0]  # the first mesh only
+    assert [s.solved for s in supplies] == [{"mode": (0,)}, {}, {}]  # first mesh only
     assert len(refined.cycles) == 3
     for cycle in refined.cycles:
         assert 0 in cycle.modes
