@@ -672,7 +672,7 @@ Solvers, memory and ranks:
     only many right-hand sides or keeping them repays it.
 
   The same script on the same ranks and stack always takes the same route. It
-  is not an option: S stays that of the coarse problem factored on one rank,
+  is not an option: $S$ stays that of the coarse problem factored on one rank,
   to round-off. A singular coarse problem now raises at once; only a MUMPS
   workspace error is retried, with more workspace, which a PT-Scotch
   factorization starts with twice as much of.

@@ -3,15 +3,16 @@
 On rank 0 the coarse factorization holds about a third of a mesh's DOFs in one
 process and every rank waits for its apply. NGSolve lets a registered ``coarsetype``
 take its place, so with the MPI PETSc stack `CoarseMumps` factors the wirebasket
-across ranks, with no change to BDDC: iterations and S stay those of the rank 0 route.
+across ranks, with no change to BDDC: iterations and :math:`S` stay those of the
+rank 0 route.
 
 ``PCTELESCOPE`` in front of MUMPS runs the factorization on every factor-th rank,
 without building a communicator by hand. `rule` picks that factor and the ordering
 from what is known at the set-up: the stack kind, the coarse DOFs, the ranks and the
 node of each, the columns the set-up is expected to serve, and whether this process
 has set up the same pattern before. Every rank holds the same of these, so every rank
-and every rerun of a script picks the same; none of it is an option, since S does not
-change with it beyond round-off.
+and every rerun of a script picks the same; none of it is an option, since
+:math:`S` does not change with it beyond round-off.
 
 MUMPS orders the coarse problem in parallel on some of its processes. With PT-Scotch
 it takes the largest power of two of them where every node holds as many, and the
@@ -50,9 +51,9 @@ On a stock stack:
 
 A stock stack says once per process when a rebuilt stack would give the coarse problem
 more ranks (`say_stock`). Ranks on different stacks take the kind they share, which
-changes the coarse problem's speed, never S. PT-Scotch's factorization starts with a
-larger MUMPS workspace (`SCOTCH_WORKSPACE`) than METIS's and ParMETIS's, which ran out
-of it far less often.
+changes the coarse problem's speed, never :math:`S`. PT-Scotch's factorization starts
+with a larger MUMPS workspace (`SCOTCH_WORKSPACE`) than METIS's and ParMETIS's, which
+ran out of it far less often.
 
 METIS's ``NITER=1`` takes about 15 % off its serial analysis for 2 % more fill.
 PETSc has no option for it and MUMPS reads it only from the file named by
@@ -351,7 +352,7 @@ def stack_kind(comm: Any) -> StackKind:
     rank's ``libpetsc`` carries the ordering cap, else `STOCK`. Every rank calls it
     together, at most two reductions the first time. Ranks that run different stacks
     fall through to the next kind, and a rank whose own stack has more says so once:
-    the kind changes the coarse problem's speed, never S.
+    the kind changes the coarse problem's speed, never :math:`S`.
     """
     key = _mpi.comm_key(comm)
     if key in _kinds:
