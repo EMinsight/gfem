@@ -12,9 +12,13 @@ excited: S is that of a three-part transmission line, in closed form.
 import math
 from pathlib import Path
 
+import ngsolve as ngs
 import numpy as np
 import pytest
+import scipy.linalg as sla
+import scipy.sparse as sp
 import structured_meshes as sm
+from netgen.read_gmsh import ReadGmsh
 from scipy.constants import c, epsilon_0, mu_0
 
 import gfem
@@ -373,16 +377,145 @@ def test_v6_ez_bend_matches_its_pec_plate_slab_with_core():
     assert_same_s(*results, atol=2e-3)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the 2D Hz bend and its PMC-plate slab differ by 3.0e-3 (S11) and "
-    "3.4e-3 (S21), both converged in the 2D mesh and order; the gap is not "
-    "explained yet",
-)
-def test_v7_hz_bend_matches_its_pmc_plate_slab():
+def _line_mode(k0, dofs, mw, stiff, mass):
+    r"""A port line's fundamental mode: :math:`\beta_0` and :math:`\phi`,
+    :math:`\phi^T M_w\phi = 1`, its largest entry positive."""
+    sub = np.ix_(dofs, dofs)
+    lam, vec = sla.eigh((k0**2 * mass - stiff)[sub].toarray(), mw[sub].toarray())
+    phi = np.zeros(mw.shape[0])
+    phi[dofs] = vec[:, -1] / np.sqrt(vec[:, -1] @ mw[sub] @ vec[:, -1])
+    return np.sqrt(lam[-1]), phi * np.sign(phi[np.argmax(np.abs(phi))])
+
+
+def _solve_with_rank_update(matrix, columns, weights, b):
+    r"""Solve :math:`(A + UCU^T)x = b`, :math:`C = \mathrm{diag}(1/w)`, by Woodbury."""
+    inverse = matrix.Inverse(inverse="sparsecholesky")
+    rhs, sol = matrix.CreateColVector(), matrix.CreateColVector()
+
+    def solve(vector):
+        rhs.FV().NumPy()[:] = vector
+        sol.data = inverse * rhs
+        return sol.FV().NumPy().copy()
+
+    u_cols = np.array(columns).T
+    a_inv_u = np.column_stack([solve(col) for col in columns])
+    x0 = solve(b)
+    small = np.diag(weights) + u_cols.T @ a_inv_u
+    return x0 - a_inv_u @ np.linalg.solve(small, u_cols.T @ x0)
+
+
+def hz_bend_reference(port_term, order=3):
+    r"""S11, S21 of the 2D bend, design all cladding, from a plain :math:`H_z` solve.
+
+    :math:`\int\varepsilon_r^{-1}\nabla u\cdot\nabla v - k_0^2\int uv`, the
+    order-1 absorbing term :math:`\int\varepsilon_r^{-1}ik\,uv` on ``outer``,
+    and on each port a term :math:`\int c\,uv` plus the rank-two correction
+    :math:`W = hh^T/(h^T\phi) - gg^T/(g^T\phi)`, :math:`h = i\beta_0 M_w\phi`,
+    :math:`g = B_c\phi`, which makes the port exact on its mode :math:`\phi`
+    (:math:`M_w` the :math:`\varepsilon_r^{-1}`-weighted line mass, :math:`B_c`
+    the port term's matrix, the port's ends natural). ``port_term`` picks
+    :math:`c`: ``"line"``, :math:`i\beta_0\varepsilon_r^{-1}` (then
+    :math:`W = 0`), or ``"slab"``, :math:`ik_0^2/\beta_0`, a 3D wave port's
+    term written in :math:`H_z`. S is E-based: :math:`S_{11} = -S_{11}^H`.
+    """
+    mesh = ngs.Mesh(ReadGmsh(str(BEND_2D.with_suffix(""))))  # um
+    fes = ngs.H1(mesh, order=order, complex=True)
+    u, v = fes.TnT()
+    real = ngs.H1(mesh, order=order)
+    ur, vr = real.TnT()
+    n = fes.ndof
+    eps = mesh.MaterialCF({"core": N_CORE**2}, default=N_CLADDING**2)
+
+    def scipy_matrix(integrand):
+        form = ngs.BilinearForm(real)
+        form += integrand
+        form.Assemble()
+        rows, cols, values = form.mat.COO()
+        return sp.csr_matrix(
+            (np.asarray(values), (np.asarray(rows), np.asarray(cols))), (n, n)
+        )
+
+    def line_forms(name):
+        r"""The port line's :math:`\varepsilon_r^{-1}`, its dofs and line forms."""
+        across = ngs.y if name == "port1" else ngs.x
+        eps_line = ngs.IfPos((CORE / 2) ** 2 - across**2, N_CORE**2, N_CLADDING**2)
+        dofs = sorted(
+            {
+                d
+                for el in mesh.Elements(ngs.BND)
+                if el.mat == name
+                for d in real.GetDofNrs(el)
+            }
+        )
+        ds = ngs.ds(name)
+        dt = ur.Trace().Deriv() * vr.Trace().Deriv()
+        mats = [
+            scipy_matrix(w * ds) for w in (ur * vr / eps_line, dt / eps_line, ur * vr)
+        ]
+        return 1 / eps_line, dofs, mats
+
+    lines = {name: line_forms(name) for name in ("port1", "port2")}
+    s11, s21 = [], []
+    for f in FREQUENCIES:
+        k0 = 2 * np.pi * f / c * um
+        system = ngs.BilinearForm(fes, symmetric=True)
+        system += (ngs.grad(u) * ngs.grad(v) / eps - k0**2 * u * v) * ngs.dx
+        system += 1j * k0 / N_CLADDING * u * v * ngs.ds("outer")
+        columns, weights, fluxes, modes = [], [], [], []
+        for name, (inv_eps, dofs, (mw, stiff, mass)) in lines.items():
+            beta, phi = _line_mode(k0, dofs, mw, stiff, mass)
+            if port_term == "line":
+                system += 1j * beta * inv_eps * u * v * ngs.ds(name)
+                g = 1j * beta * (mw @ phi)
+            else:
+                system += 1j * k0**2 / beta * u * v * ngs.ds(name)
+                g = 1j * k0**2 / beta * (mass @ phi)
+            h = 1j * beta * (mw @ phi)
+            columns += [h, g]
+            weights += [h @ phi, -(g @ phi)]  # W = U diag(1/weights) U^T
+            fluxes.append(h)
+            modes.append(phi)
+        system.Assemble()
+        x = _solve_with_rank_update(system.mat, columns, weights, 2 * fluxes[0])
+        s11.append(1 - fluxes[0] @ x / (fluxes[0] @ modes[0]))
+        s21.append(fluxes[1] @ x / (fluxes[1] @ modes[1]))
+    return np.array(s11), np.array(s21)
+
+
+@pytest.fixture(scope="module")
+def hz_cladding():
     # order 1 on both: the slab's order 2 is its order 1 for this field
-    results = slab_and_plane(CLAD, "Hz", gfem.Absorbing("outer", order=1))
-    assert_same_s(*results, atol=2e-3)
+    return slab_and_plane(CLAD, "Hz", gfem.Absorbing("outer", order=1))
+
+
+def test_v7a_hz_bend_is_the_plain_hz_solve_with_the_line_port_term(hz_cladding):
+    r"""The 2D Hz bend against :func:`hz_bend_reference` with
+    :math:`\partial_n H_z + i\beta_0 H_z = 0` on its ports: the same forms on
+    the same triangles, so equal to round-off.
+    """
+    _, plane_result = hz_cladding
+    s11, s21 = hz_bend_reference(port_term="line")
+    np.testing.assert_allclose(np.asarray(plane_result.s["p1", "p1"]), s11, atol=1e-10)
+    np.testing.assert_allclose(np.asarray(plane_result.s["p2", "p1"]), s21, atol=1e-10)
+
+
+def test_v7b_hz_slab_is_the_plain_hz_solve_with_the_slab_port_term(hz_cladding):
+    r"""The PMC-plate slab against :func:`hz_bend_reference` with
+    :math:`\partial_n H_z + i(k^2/\beta_0)H_z = 0` on its ports.
+
+    A 3D wave port is impedance-matched to TE waves of its mode's
+    :math:`\beta_0`, which for the slab's TM field is an impedance
+    :math:`\omega\mu/\beta_0`; the 2D Hz line port is matched to TM waves.
+    Both are exact on the port's own mode but reflect the bend's radiation
+    with opposite signs (:math:`\pm 0.15` in the cladding at normal
+    incidence), so the slab and the 2D bend differ by about 3e-3 in S. The
+    reference with the slab's port term shows they solve the same Hz physics
+    otherwise; what is left is the slab's edge field against H1.
+    """
+    slab_result, _ = hz_cladding
+    s11, s21 = hz_bend_reference(port_term="slab")
+    np.testing.assert_allclose(np.asarray(slab_result.s["p1", "p1"]), s11, atol=2e-3)
+    np.testing.assert_allclose(np.asarray(slab_result.s["p2", "p1"]), s21, atol=2e-3)
 
 
 def test_v9_the_2d_field_is_the_slabs_times_the_square_root_of_its_thickness(
