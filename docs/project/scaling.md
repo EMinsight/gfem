@@ -9,7 +9,7 @@ number in this summary comes from the tables below.
 
 - **Largest model.** `linear_solver="bddc_gmres"` solved 108,570,046 DOF on 4 to 32
   nodes. Its fastest {py:obj}`gfem.solve` was 423 s, on 8 nodes, in the earlier
-  version ([table](scaling-strong-108m)); 454 s on 8 nodes in the later one
+  version ([table](scaling-strong-108m)); 291 s on 32 nodes in the later one
   ([table](scaling-coarse)).
 - **Largest model with `direct`.** `linear_solver="direct"` solved 47,277,960 DOF on
   16 nodes in 832 s ([table](scaling-weak)). At 108,570,046 DOF on 32 nodes it ran
@@ -23,21 +23,20 @@ number in this summary comes from the tables below.
 - **How many nodes.** In the earlier version, past a point more nodes made
   `bddc_gmres` slower: at 108,570,046 DOF its time was lowest on 8 nodes, at
   23,148,138 DOF on 4 to 8 nodes. On 16 and 32 nodes that version factored
-  BDDC's coarse problem on 64 ranks, which the later version no longer does. In
-  the later version a single solve did not get faster past 8 nodes either: at
-  108,570,046 DOF it took 454, 692 and 475 s on 8, 16 and 32 nodes, and at
-  23,148,138 DOF 118, 258 and 292 s ([table](scaling-coarse)). The 16-node
-  median at 108,570,046 DOF includes a run that factored the coarse problem
-  twice, the second time with more memory.
-- **Repeated solves.** When one script solves the same mesh again, as a loop over
-  designs does, gfem keeps BDDC's coarse analysis between the solves, and from
-  16 nodes it reorders the coarse problem to factor it on more ranks. In a loop
-  of 4 designs at 108,570,046 DOF, each design after the second took 313 to
-  314 s on 8 nodes, 145 s on 16 and 95 s on 32, against 458, 841 and 476 s for
-  the first ([table](scaling-design-loop)). The first design on 16 nodes is the
-  run that factored its coarse problem twice. The second design pays for the new
-  ordering on 16 and 32 nodes, so the 4 designs together took 1395, 1702 and
-  1183 s.
+  BDDC's coarse problem on 64 ranks. In the later version, on a PETSc stack
+  built by its build script, a single solve took 440, 323 and 291 s on 8, 16
+  and 32 nodes at 108,570,046 DOF, and 129, 111 and 76 s at 23,148,138 DOF
+  ([table](scaling-coarse)). Each of these times is one run. On a stack built
+  by an earlier script, the later version factors the coarse problem another
+  way, and these times do not apply to it.
+- **Repeated solves.** When one script solves the same mesh again, as a loop
+  over designs does, gfem keeps the ordering and symbolic factorization of
+  BDDC's coarse problem between the solves, and GMRES starts from the previous
+  design's solution. In one loop of 3 designs at 108,570,046 DOF in the later
+  version, the second and third designs took 301 and 300 s on 8 nodes, 187 s
+  each on 16 and 153 and 152 s on 32, against 440, 323 and 291 s for the first
+  ([table](scaling-design-loop)). The 3 designs together took 1042, 697 and
+  596 s.
 - **Before the solve.** Reading and partitioning the mesh come before
   `gfem.solve` and are not in its time: about 200 s at 108,570,046 DOF
   ([table](scaling-phases)).
@@ -147,39 +146,38 @@ At 32 nodes the reduction wait is 0.8 % of `gfem.solve`.
 (scaling-coarse)=
 ## The later version: one solve and repeated solves
 
-In the later version a single solve factors BDDC's coarse problem on at most 56
-ranks. Solves repeated on one mesh in one process keep the coarse problem's
-ordering and symbolic factorization, and from 16 nodes factor it on a quarter of
-the ranks.
+These runs need the PETSc stack that the later version's
+`petsc_wheelhouse.sh` builds ({doc}`../recipes/petsc-slepc`): its MUMPS orders
+BDDC's coarse problem with PT-Scotch on at most 32 processes. On that stack
+gfem factors the coarse problem on every fourth rank, 7 per node at 28 ranks
+per node, in every set-up. Solves repeated on one mesh in one process keep the
+coarse problem's ordering and symbolic factorization. On a stack built by an
+earlier script, without that limit, gfem takes another route for the coarse
+problem, and the tables of this section do not describe it.
 
 One solve at one frequency, from 8 to 32 nodes, at 108,570,046 and 23,148,138
-DOF. Efficiency is against 8 nodes, so it does not compare with the earlier
-tables' column, which is against 4 nodes at 108,570,046 DOF and 1 node at
-23,148,138 DOF.
+DOF, one run per row. Efficiency is against 8 nodes, so it does not compare
+with the earlier tables' column, which is against 4 nodes at 108,570,046 DOF
+and 1 node at 23,148,138 DOF.
 
 ```{include} _scaling/coarse-strong-108m.md
 ```
 
-At 16 nodes one of the two runs at 108,570,046 DOF factored the coarse problem
-twice: MUMPS reported too little working memory, and gfem retried with a larger
-allowance. Its coarse setup took 478 s, against 173 s in the other 16-node run,
-and its `gfem.solve` 841 s against 543 s.
-
 (scaling-design-loop)=
-### A loop of 4 designs
+### A loop of 3 designs
 
-Four designs solved one after the other in one process, on the 108,570,046 DOF
-mesh. Each design changes one volume's permittivity and keeps the mesh, and
-each starts GMRES from the previous design's solution. GMRES took 63/64
-iterations in every design. Design 0 is the first run of the
-108,570,046 DOF row above, so its 16-node row is the run with the retry.
+Three designs solved one after the other in one process, on the 108,570,046 DOF
+mesh, one run per node count. Each design changes one volume's permittivity and
+keeps the mesh, and each starts GMRES from the previous design's solution.
+GMRES took 63/64 iterations in every design. Design 0 is the 108,570,046 DOF
+row above.
 
 ```{include} _scaling/coarse-design-loop.md
 ```
 
-On 8 nodes the coarse problem stays on 56 ranks and keeps its analysis from
-design 1 on. On 16 and 32 nodes design 1 orders it anew on 112 and 224 ranks,
-and designs 2 and 3 keep that analysis.
+Designs 1 and 2 keep design 0's coarse analysis and only refactor: the coarse
+set-up goes from 98, 77 and 71 s in design 0 to 53, 36 and 30 s on 8, 16 and
+32 nodes. The coarse apply per call is the same in every design of a run.
 
 The phases of the one-frequency runs, as in {ref}`scaling-phases`:
 
@@ -210,7 +208,10 @@ extrapolation.
 
 - **gfem**: the earlier version is the development version of 5 November 2026,
   after 0.1.0, with Open MPI 4.1.6, PETSc 3.26.0 and NGSolve 6.2.2608. The later
-  version is the development version of 20 November 2026, with the same stack.
+  version is the development version of 21 November 2026, with the same Open
+  MPI, PETSc and NGSolve, on a PETSc stack built by that version's
+  `petsc_wheelhouse.sh`, whose MUMPS caps PT-Scotch's parallel ordering at 32
+  processes.
 - **Machine**: MareNostrum 5 general-purpose partition, `highmem` nodes, 28 ranks of 4
   threads per node.
 - **Runs**: order 2, one frequency of 50 GHz unless a row says otherwise, both ports

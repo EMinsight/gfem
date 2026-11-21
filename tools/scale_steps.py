@@ -21,8 +21,8 @@ choice: run the one for the largest mesh both solvers finished.
 
 ``--set coarse`` writes the second scaling set's instead (`write_coarse`): a one-node
 smoke, then one job per rung at 8, 16 and 32 nodes, the 32-node one first and alone.
-Each runs a 4-design loop on B2_void_split (its design 0 is the rung's first
-one-frequency repeat), one more one-frequency solve of it, and one of r0.5_void_split.
+Each runs a 3-design loop on B2_void_split (its design 0 is the rung's one-frequency
+solve) and one one-frequency solve of r0.5_void_split.
 """
 
 from __future__ import annotations
@@ -59,10 +59,11 @@ RUN_OPTIONS = "--mumps-print"
 
 
 #: The second set's rungs, and each step's estimated wall in seconds, start included:
-#: the loop, the second B2_void_split repeat, r0.5_void_split.
-COARSE_RUNGS = {32: (1390, 720, 210), 16: (1500, 670, 210), 8: (1530, 660, 180)}
+#: the loop on B2_void_split, then r0.5_void_split. The 32-node loop is a pessimistic
+#: estimate, so that its job's limit is 25 minutes.
+COARSE_RUNGS = {32: (830, 170), 16: (890, 200), 8: (1155, 155)}
 #: Designs in a rung's loop, and in the smoke's.
-COARSE_SOLVES, SMOKE_SOLVES = 4, 2
+COARSE_SOLVES, SMOKE_SOLVES = 3, 2
 #: The smoke's limit, minutes: the first run of the new tools, so a fixed margin.
 SMOKE_LIMIT = 20
 
@@ -271,7 +272,6 @@ def write_coarse(meshes: Path, out: Path) -> None:
                 "bddc_gmres",
                 extra=f"--repeat 1 --solves {COARSE_SOLVES}",
             ),
-            _step(f"c2_bddc_{nodes}_r2", b2, "bddc_gmres", extra="--repeat 2"),
             _step(f"c4_bddc_{nodes}_r1", r05, "bddc_gmres", extra="--repeat 1"),
             qos=OVERLAP_QOS,
         )

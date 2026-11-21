@@ -199,16 +199,14 @@ def test_the_second_set_runs_a_smoke_then_a_job_per_rung(coarse_steps: Path) -> 
     assert {row["qos"] for row in plan.values()} == {"gp_ehpc"}
     assert [plan[f"coarse_{n}"]["time_min"] for n in ("smoke", 32, 16, 8)] == [
         "20",
-        "58",
-        "60",
-        "60",
+        "25",
+        "28",
+        "33",
     ]
 
 
-def test_a_rung_runs_the_loop_then_one_more_solve_then_the_smaller_mesh(
-    coarse_steps: Path,
-) -> None:
-    loop, again, small = _lines(coarse_steps, "coarse_32")
+def test_a_rung_runs_the_loop_then_the_smaller_mesh(coarse_steps: Path) -> None:
+    loop, small = _lines(coarse_steps, "coarse_32")
     assert loop.split()[:6] == [
         "c2_bddc_32_r1",
         "28",
@@ -217,13 +215,13 @@ def test_a_rung_runs_the_loop_then_one_more_solve_then_the_smaller_mesh(
         "bddc_gmres",
         "50",
     ]
-    assert "--repeat 1" in loop
-    assert "--solves 4" in loop
-    assert again.startswith("c2_bddc_32_r2 28 4 /m/B2_void_split bddc_gmres 50 ")
-    assert "--repeat 2" in again
-    assert "--solves" not in again
-    assert small.startswith("c4_bddc_32_r1 28 4 /m/r0.5_void_split bddc_gmres 50 ")
-    assert all("--mumps-print" in line for line in (loop, again, small))
+    assert loop.endswith("--mumps-print --repeat 1 --solves 3")
+    assert small == (
+        "c4_bddc_32_r1 28 4 /m/r0.5_void_split bddc_gmres 50 --mumps-print --repeat 1"
+    )
+    assert not any(
+        "_r2" in line for n in (8, 16) for line in _lines(coarse_steps, f"coarse_{n}")
+    )
     (smoke,) = _lines(coarse_steps, "coarse_smoke")
     assert smoke.startswith("c4_smoke_1 28 4 /m/r0.5_void_split bddc_gmres 50 ")
     assert "--solves 2" in smoke

@@ -13,7 +13,7 @@ DOCS = Path(__file__).parents[2] / "docs"
 PAGE = DOCS / "project" / "scaling.md"
 SNIPPETS = sorted((DOCS / "project" / "_scaling").glob("*.md"))
 #: Each scaling set's frozen commit, by its snippets' name prefix.
-SETS = {"coarse-": "1bea3ef", "": "9a57680"}
+SETS = {"coarse-": "f199837", "": "9a57680"}
 
 
 def _commit(snippet: Path) -> str:

@@ -156,11 +156,13 @@ Give every rank the same number of cores, and size the layout by the solver:
   so use fewer ranks with more threads, for example 8 ranks × 14 threads on a
   112-core node.
 - Use fewer ranks when a rank would hold under about 90 k DOF.
-- With `bddc_gmres` on a large model, the third and later designs of a loop on
-  one mesh in one process took less time each on 16 and 32 nodes than on 8,
-  while a single solve did not get faster past 8 nodes: see
-  {doc}`../project/scaling`. Keep the designs in one script on one set of
-  ranks, since what BDDC keeps between them ends with the process.
+- With `bddc_gmres` on a large model, on a PETSc stack built by the current
+  `petsc_wheelhouse.sh`, a single solve and each later design of a loop on
+  one mesh in one process took less time on 16 and 32 nodes than on 8: see
+  {doc}`../project/scaling`. On a stack built by an earlier script these
+  times do not apply; {doc}`petsc-slepc` says how to rebuild it. Keep the
+  designs in one script on one set of ranks, since what BDDC keeps between
+  them ends with the process.
 - Do not pass `--cpu-bind`. Rank 0 needs no node or threads of its own.
 
 With `threads=None`, each rank takes `NGS_NUM_THREADS` if set. Otherwise it
