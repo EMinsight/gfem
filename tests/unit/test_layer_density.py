@@ -186,9 +186,9 @@ def test_the_solve_key_carries_the_pixels_the_geometry_and_the_order(mesh, grid)
     assert key(rho, order=3) != base
 
 
-#: A 3D layer-grid law blend as gfem wrote it before 2D designs: its
-#: materials' JSON (keys sorted), and its solve key in a fixed environment (the
-#: key's environment holds a digest of gfem's code).
+#: A 3D layer-grid law blend as gfem wrote it before 2D designs: its materials'
+#: JSON (keys sorted, zeros unsigned), and its solve key in a fixed environment
+#: (the key's environment holds a digest of gfem's code).
 FROZEN_3D_MATERIALS = (
     '{"air": {"$type": "Material", "axes": null, "conductivity": 0.0, "eps_r": 1.0, "'
     'mass_density": null, "mu_r": 1.0, "name": null, "specific_heat": null, "tan_delt'
@@ -197,7 +197,7 @@ FROZEN_3D_MATERIALS = (
     'ls[\'design\'].blend"}, "blend_ends": {"$type": "Blend", "penalty": 3.0, "scheme":'
     ' "index", "solid": {"$type": "PermittivityLaw", "eps_inf": 1.0, "terms": [{"$typ'
     'e": "Drude", "damping": 2000000000.0, "plasma_frequency": 20000000000.0}]}, "voi'
-    'd": {"$complex": [2.0, -0.0]}}, "conductivity": {"$array": ".model.materials[\'de'
+    'd": {"$complex": [2.0, 0.0]}}, "conductivity": {"$array": ".model.materials[\'de'
     'sign\'].conductivity"}, "eps_r": null, "mass_density": null, "mu_r": {"$array": "'
     '.model.materials[\'design\'].mu_r"}, "region": null, "specific_heat": null, "tan_d'
     'elta": null, "thermal_conductivity": null, "thermo_optic_coefficient": null}, "s'
@@ -238,7 +238,10 @@ def test_a_3d_layer_grid_job_and_its_key_are_unchanged(tmp_path, monkeypatch):
     problem, options = gfem.Driven(5e9), gfem.SolverOptions(order=2)
     written = gfem.Job(model, problem, options).to_json(tmp_path / "job.json")
     doc = json.loads(written.read_text())
-    text = json.dumps(doc["job"]["model"]["materials"], sort_keys=True)
+    # -0.0 as 0.0, as the solve key writes it: the sign of a zero loss's
+    # imaginary part differs between platforms
+    materials = _solve_cache._canonical(doc["job"]["model"]["materials"])
+    text = json.dumps(materials, sort_keys=True)
     assert text == FROZEN_3D_MATERIALS
     assert _solve_cache.solve_key(model, problem, options)[0] == FROZEN_3D_KEY
 
