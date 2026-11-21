@@ -191,7 +191,7 @@ def _forced_paths(start, swap, solver, directory):
     memo = partition_memo(mesh._topology)[_mpi.comm_key(world), pair_names(periodic)]
     paired = cache.discretization(mesh, periodic, world).built
     plain = cache.discretization(mesh, (), world).built
-    same = np.array_equal(paired.tetrahedron_order, plain.tetrahedron_order)
+    same = np.array_equal(paired.cell_order, plain.cell_order)
     return s, gradient, memo.seed, memo.swapped, world.allreduce(int(same))
 
 

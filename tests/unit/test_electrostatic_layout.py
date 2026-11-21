@@ -86,7 +86,7 @@ def _walk(fes, built):
     for el in range(ngm.ne):
         dofs = [d for d in fes.GetDofNrs(ngs.NodeId(ngs.CELL, el)) if d >= 0]
         if dofs:
-            yield ("cell", int(built.tetrahedron_order[el])), dofs
+            yield ("cell", int(built.cell_order[el])), dofs
 
 
 @pytest.mark.parametrize("order", [1, 2, 3, 4])

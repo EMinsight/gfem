@@ -369,7 +369,7 @@ class FluxRecovery:
         form += density * self._p0.TestFunction() * self.dx
         form.Assemble()
         out = np.zeros(len(self.model.mesh.tetrahedra))
-        out[self.built.tetrahedron_order] = form.vec.FV().NumPy()
+        out[self.built.cell_order] = form.vec.FV().NumPy()
         return out
 
     def flux_residual(self, flux: ngs.CoefficientFunction) -> ngs.CoefficientFunction:

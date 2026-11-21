@@ -294,6 +294,40 @@ wave on an open face of a periodic cell (a Floquet surface).
   to IEEE right-handed circular incidence; on a face whose outward normal is
   :math:`-\hat e_3` the same combination is left-handed.
 
+2D models
+---------
+A model whose mesh has dimension 2 (``Mesh.dim == 2``, read from a
+triangle-only gmsh file) lies in the :math:`(x, y)` plane: its nodes are
+:math:`(x, y)`, :math:`z` is normal to the plane, the fields do not vary
+along :math:`z` (:math:`\partial_z = 0`), and waves travel in the plane.
+A driven solve computes one polarization, the field component normal to the
+plane, chosen by ``Driven(polarization=...)``:
+
+.. math::
+
+    \text{Ez:}\quad & \nabla \cdot (\mu_r^{-1} \nabla E_z)
+        + k_0^2 \varepsilon_r E_z = 0 \\
+    \text{Hz:}\quad & \nabla \cdot (\varepsilon_r^{-1} \nabla H_z)
+        + k_0^2 \mu_r H_z = 0
+
+with :math:`k_0 = \omega / c` and :math:`\varepsilon_r` including a
+conductivity as :math:`-i\sigma / (\omega \varepsilon_0)` under
+:math:`e^{+i\omega t}`. Ez has :math:`E` normal to the plane and
+:math:`H` in it; Hz the reverse. A `gfem.PEC` line sets
+:math:`E_z = 0` in Ez and leaves :math:`H_z` free (zero normal derivative)
+in Hz; a `gfem.PMC` line does the reverse.
+
+Every extensive quantity of a 2D model is per metre along :math:`z`: each
+excited port is fed 1 W/m time-averaged incident power, and a kept field
+(``"Ez"`` in V/m, ``"Hz"`` in A/m) is the peak phasor for that 1 W/m. S is
+dimensionless. Against a slab of thickness :math:`h` between plates
+(``Mesh.from_gmsh_cross_section``) fed 1 W, which is :math:`1/h` W/m, S is
+the same and the fields relate by
+
+.. math::
+
+    E^{\mathrm{2D}} = \sqrt{h}\, E^{\mathrm{slab}}.
+
 Quantum metrics
 ---------------
 `gfem.quantum.dressed_modes` puts one junction's cosine on the solved

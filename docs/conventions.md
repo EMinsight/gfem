@@ -480,9 +480,29 @@ outer surface of the mesh the thickness already counts
 `EXTERIOR_THICKNESS_FACTOR` times, and the film is $\sigma t$. The module's "Surface
 conductors" section has the formula.
 
+## 2D models
+
+On a {term}`2D model` the fields do not vary along z, and every extensive
+quantity is per metre along z. The rows that change:
+
+| Quantity | On a 3D model | On a 2D model |
+| --- | --- | --- |
+| power fed into an excited port (`INCIDENT_POWER`) | 1 W | 1 W/m |
+| kept driven field | $\mathbf{E}$ in V/m | $E_z$ in V/m (Ez) or $H_z$ in A/m (Hz), for 1 W/m |
+| S-parameters | dimensionless | dimensionless, and the same |
+| `Field.at` | (m, 3) points, (m, 3) values | (m, 2) points, (m,) values |
+
+S is a ratio of powers, so it does not depend on the height of the structure:
+a {term}`slab <Slab model>` of thickness $h$ between plates and the 2D model of
+its plane give the same S. The slab's 1 W is $1/h$ W/m, so the fields relate by
+$E^{\mathrm{2D}} = \sqrt{h}\,E^{\mathrm{slab}}$. The time dependence, the phasors and
+the sign of loss are those above. The module's "2D models" section gives the
+equation of each polarization and which line is a conductor in each.
+
 ## Next
 
 - {py:obj}`gfem.conventions`: every convention in full, with the formulas
   for power waves, wave ports and energy densities.
 - {doc}`recipes/solve-a-device`: the solves this page reads its numbers from.
 - {doc}`recipes/measurements`: power through a surface and energy in a region.
+- {doc}`recipes/2d-models`: solving a 2D model in either polarization.

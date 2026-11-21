@@ -58,14 +58,12 @@ is a rank's own: a load column, each value shared by the ranks that write it.
 from __future__ import annotations
 
 import dataclasses
-import functools
 import math
 from collections.abc import Sequence
 from typing import Any
 
 import ngsolve as ngs
 import numpy as np
-import scipy.constants
 
 from gfem._boundaries import (
     WavePort,
@@ -73,22 +71,27 @@ from gfem._boundaries import (
     wave_port_label,
     wave_port_surfaces,
 )
-from gfem._engine import terms
+from gfem._engine import quadrature, terms
+from gfem._engine.coefficients import surface_p0
+from gfem._engine.domain import boundary_region
+from gfem._engine.line_mode import LineModeSpace, ModeSpace, mode_space
 from gfem._engine.mesh import EngineMesh, inverse_order
-from gfem._engine.port_mode import PortModeSpace
 from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
+from gfem._line_section import LineSection
 from gfem._port_section import PortSection, port_section
 from gfem._sweep.port_mode import PortModeSweep, rows_of, sweeps_on, swept_once
 from gfem._text import hertz
 from gfem.errors import PortModeError
 from gfem.model import Model
+from gfem.problems import Polarization
 
 __all__ = [
     "PortSurfaceCoupling",
     "SweptSurface",
     "WavePortCoupling",
     "deembedding",
+    "line_robin_pieces",
     "port_mode_sweeps",
     "trace_dofs",
     "wave_port_couplings",
@@ -135,6 +138,9 @@ class WavePortCoupling:
             modulus 1 on a lossless line.
         omegas: ``(n_freq,)`` the output grid, rad/s.
         scale: Metres per mesh file unit.
+        field_factor: The solved field per SI field: ``scale`` for a 3D field
+            in volts per file unit, 1 for a 2D model's field in SI units.
+            ``None`` reads ``scale``.
     """
 
     index: int
@@ -145,11 +151,13 @@ class WavePortCoupling:
     kappa: np.ndarray
     omegas: np.ndarray
     scale: float
+    field_factor: float | None = None
 
     def excitation(self, omega: float) -> np.ndarray:
         """``(2 m,)``: the incident wave's right-hand side is ``vectors @ this``."""
         k = _at(self.omegas, omega)
-        return 2.0 * self.scale * self.phi[k] / self.kappa[k]
+        factor = self.scale if self.field_factor is None else self.field_factor
+        return 2.0 * factor * self.phi[k] / self.kappa[k]
 
     def functional(self, omega: float) -> np.ndarray:
         """``(2 m,)``: the port's S row is ``this @ (vectors.T @ x)``."""
@@ -188,12 +196,21 @@ class PortSurfaceCoupling:
             = phi @ reaction @ c_t``.
         ports: The surface's wave ports, in model port order; the first
             with the smallest ``mode`` is the lead.
+        extra: Further Robin pieces of a line port whose weight ``w``
+            depends on the frequency (`line_robin_pieces`); empty on a 3D
+            port.
     """
 
     piece: terms.Piece
     vectors: np.ndarray
     reaction: np.ndarray
     ports: tuple[WavePortCoupling, ...]
+    extra: tuple[terms.Piece, ...] = ()
+
+    @property
+    def pieces(self) -> tuple[terms.Piece, ...]:
+        """The surface's Robin pieces: `piece`, then `extra`."""
+        return (self.piece, *self.extra)
 
     def __post_init__(self) -> None:
         for k in range(len(self.lead.omegas)):
@@ -215,7 +232,7 @@ class PortSurfaceCoupling:
         gamma0 = lead.sweep.gamma[k] * lead.scale
         full = np.stack([c.phi[k] for c in self.ports], axis=1)
         tangential = np.stack([c.sweep.coords[k, :m] for c in self.ports], axis=1)
-        scalar = np.concatenate([gamma0 * tangential, np.zeros_like(tangential)])
+        scalar = lead.sweep.space.scalar(tangential, gamma0, lead.omegas[k])
         p = np.concatenate([full, scalar], axis=1)
         reactions = p.T @ (self.reaction @ tangential)
         r = reactions[:n]
@@ -272,11 +289,10 @@ def _singular(a: np.ndarray) -> bool:
     return bool(sigma[0] == 0 or sigma[-1] <= 1e-12 * sigma[0])
 
 
-def _phi(sweep: PortModeSweep, scale: float, m: int) -> np.ndarray:
-    """``(n_freq, 2 m)``: `WavePortCoupling.phi` of a mode's sweep."""
-    coords = sweep.coords
-    gamma = sweep.gamma * scale
-    return np.concatenate([gamma[:, None] * coords[:, :m], coords[:, m:]], 1)
+def _phi(sweep: PortModeSweep, scale: float) -> np.ndarray:
+    """`WavePortCoupling.phi` of a mode's sweep (the space's n x H columns)."""
+    omegas = 2 * np.pi * sweep.frequency
+    return sweep.space.phi(sweep.coords, sweep.gamma * scale, omegas)
 
 
 @dataclasses.dataclass(eq=False)
@@ -296,7 +312,7 @@ class SweptSurface:
     """
 
     ports: tuple[WavePort, ...]
-    modes: PortModeSpace
+    modes: ModeSpace
     sweeps: list[PortModeSweep]
     arrays: dict[str, np.ndarray]
 
@@ -313,6 +329,7 @@ def port_mode_sweeps(
     tolerance: float,
     comm: Any = None,
     handed: Sequence[dict[str, np.ndarray]] | None = None,
+    polarization: Polarization | None = None,
 ) -> list[SweptSurface]:
     """Each wave port surface's port mode sweep over ``frequency``.
 
@@ -327,6 +344,7 @@ def port_mode_sweeps(
         comm: The resolved communicator (the sweep runs once, on rank 0).
         handed: Per surface, a whole-grid sweep's arrays at ``frequency``
             (`SweptSurface.rows`).
+        polarization: A 2D model's, for its line ports' modes.
 
     Returns:
         One per surface with wave ports, in the order of each surface's
@@ -344,7 +362,7 @@ def port_mode_sweeps(
     out = []
     for k, group in enumerate(groups):
         section = port_section(model, lead_port(group))
-        modes = PortModeSpace(section, order)
+        modes = mode_space(section, order, polarization)
         if handed is not None:
             arrays = handed[k]
             sweeps = sweeps_on(modes, frequency, arrays)
@@ -356,7 +374,7 @@ def port_mode_sweeps(
                 [p.mode for p in group],
                 tolerance=tolerance,
                 ports=list(group),
-                derived=functools.partial(_port_columns, modes),
+                derived=modes.port_columns,
             )
         out.append(SweptSurface(tuple(group), modes, sweeps, arrays))
     return out
@@ -372,13 +390,17 @@ def wave_port_couplings(
     tolerance: float,
     layout: DofLayout = ONE_PROCESS,
     swept: Sequence[dict[str, np.ndarray]] | None = None,
+    polarization: Polarization | None = None,
 ) -> list[PortSurfaceCoupling]:
     """Run each wave port surface's port mode sweep and build its driven terms.
+
+    On a 2D mesh each surface is a line port, coupled to the 2D field of
+    ``polarization`` through its Robin pieces (`line_robin_pieces`).
 
     Args:
         model: The model.
         built: Its engine mesh.
-        space: The 3D driven space.
+        space: The 3D driven space, or a 2D model's H1 space.
         order: The element order (the port mode problem uses the same).
         frequency: The output grid, Hz.
         tolerance: ``SolverOptions.port_mode_tolerance``.
@@ -386,6 +408,7 @@ def wave_port_couplings(
         swept: Per surface, a port mode sweep's arrays at ``frequency``,
             handed over in place of the sweep (a frequency worker's rows of
             its parent's whole-grid sweep, `port_mode_sweeps`).
+        polarization: A 2D model's, ``"Ez"`` or ``"Hz"``.
 
     Returns:
         One coupling per surface with wave ports, in the order of each
@@ -401,6 +424,7 @@ def wave_port_couplings(
         tolerance=tolerance,
         comm=layout.comm,
         handed=swept,
+        polarization=polarization,
     )
     for surface in surfaces:
         group, modes, sweeps, columns = (
@@ -412,7 +436,6 @@ def wave_port_couplings(
         lead = lead_port(group)
         section = modes.section
         r, reaction = columns["r"], columns["reaction"]
-        m = r.shape[1] // 2
         idx3, idx2 = trace_dofs(model, section, modes, built, space)
         free = free_mask(space.FreeDofs(), space.ndof)
         idx3, idx2 = idx3[free[idx3]], idx2[free[idx3]]
@@ -420,13 +443,15 @@ def wave_port_couplings(
         writers = np.zeros(space.ndof)
         writers[idx3] = 1.0
         writers = np.real(layout.exchange(writers))
-        vectors = np.zeros((space.ndof, 2 * m), r.dtype)
+        vectors = np.zeros((space.ndof, r.shape[1]), r.dtype)
         vectors[idx3] = r[idx2] / writers[idx3, None]
         scale = section.scale
-        phis = [_phi(sweep, scale, m) for sweep in sweeps]
+        phis = [_phi(sweep, scale) for sweep in sweeps]
         dual, r_kk = _dual(reaction, [s.coords for s in sweeps], phis)
         # each mode's reciprocity pairing (1/2) int (e x h) . n, unconjugated
-        pairing = -0.5j * scale / (omegas[:, None] * scipy.constants.mu_0) * r_kk
+        pairing = modes.pairing_factor(omegas) * r_kk
+        # a 2D model's H1 field is in SI units, a 3D one in volts per file unit
+        factor = 1.0 if isinstance(modes, LineModeSpace) else scale
         ports = []
         for k, (port, sweep) in enumerate(zip(group, sweeps, strict=True)):
             kappa = pseudo_wave_factor(sweep, pairing[:, k])
@@ -436,16 +461,27 @@ def wave_port_couplings(
                     port=port,
                     sweep=sweep,
                     phi=phis[k],
-                    # the load 2 scale h feeds modal amplitude scale
-                    dual=kappa[:, None] * dual[:, k] / scale,
+                    # the load 2 factor h feeds modal amplitude factor
+                    dual=kappa[:, None] * dual[:, k] / factor,
                     kappa=kappa,
                     omegas=omegas,
                     scale=scale,
+                    field_factor=None if factor == scale else factor,
                 )
             )
         # gamma_0, not i beta_0: with W's -gamma_0 M E G⁻¹ Eᵀ M the two impose
         # exactly h on the modes, lossy or not
         gamma0 = next(c for c in ports if c.port is lead).sweep.gamma * scale
+        if isinstance(modes, LineModeSpace):
+            piece, *extra = line_robin_pieces(
+                built, order, modes, port=lead.name, gamma0=gamma0, omegas=omegas
+            )
+            out.append(
+                PortSurfaceCoupling(
+                    piece, vectors, reaction, tuple(ports), extra=tuple(extra)
+                )
+            )
+            continue
         piece = terms.wave_port_piece(
             model,
             built,
@@ -455,6 +491,53 @@ def wave_port_couplings(
             theta=terms.Tabulated(omegas, gamma0),
         )
         out.append(PortSurfaceCoupling(piece, vectors, reaction, tuple(ports)))
+    return out
+
+
+def line_robin_pieces(
+    built: EngineMesh,
+    order: int,
+    modes: LineModeSpace,
+    *,
+    port: str,
+    gamma0: np.ndarray,
+    omegas: np.ndarray,
+) -> list[terms.Piece]:
+    r"""The Robin term :math:`\gamma_0 \int w\,u\,v\,dt` of a line port.
+
+    One piece per ``B`` slot of the line's port mode problem: :math:`w =
+    \sum_j \theta_j(\omega) w_j`, each :math:`w_j` per segment of the line
+    (:math:`\mu_r^{-1}` in Ez, :math:`\varepsilon_r^{-1}` off the
+    frequency-dependent segments in Hz, and their indicator for each group of
+    those), so piece ``j`` has :math:`\theta = \gamma_0 \theta_j(\omega)`,
+    tabulated on the output grid. The first is the line's steady weight.
+
+    Args:
+        built: The 2D engine mesh.
+        order: The element order.
+        modes: The line's port mode problem.
+        port: The lead port's name.
+        gamma0: ``(n_freq,)`` its propagation constant per file unit.
+        omegas: ``(n_freq,)`` the output grid, rad/s.
+    """
+    section = modes.section
+    region = boundary_region(built, (section.port.surface,))
+    ds = quadrature.ds(order, definedon=region)
+    n_faces = len(built.facet_order)
+    scalars = modes.weights(omegas)
+    out = []
+    for j, w in enumerate(modes.weight_values):
+        values = np.zeros(n_faces, complex)
+        values[section.faces] = w
+        cf = surface_p0(built, values)
+        out.append(
+            terms.Piece(
+                f"waveport {port}" if j == 0 else f"waveport {port} {j}",
+                terms.Tabulated(omegas, gamma0 * scalars[:, j]),
+                lambda u, v, cf=cf: cf * u * v * ds,
+                kind="port",
+            )
+        )
     return out
 
 
@@ -525,29 +608,17 @@ def _dual(
     return np.linalg.solve(r, p), np.einsum("fkk->fk", r)
 
 
-def _port_columns(modes: PortModeSpace, basis: np.ndarray) -> dict[str, np.ndarray]:
-    """What the 2D forms give per column of the sweep's ``basis``.
-
-    ``r``: the entries of `PortSurfaceCoupling.vectors` on the free 2D DOFs;
-    ``reaction``: hᵀ e on the port face (the mode vanishes on fixed
-    DOFs).
-    """
-    g_form, t_form = modes.coupling_forms
-    w = basis[modes.free]
-    m = w.shape[1] // 2
-    r = np.concatenate([t_form @ w[:, :m], g_form @ w[:, m:]], axis=1)
-    tangential = basis[: modes.n_t, :m]
-    return {"r": r, "reaction": r.T @ tangential}
-
-
 def trace_dofs(
     model: Model,
-    section: PortSection,
-    modes: PortModeSpace,
+    section: PortSection | LineSection,
+    modes: ModeSpace,
     built: EngineMesh,
     space: ngs.FESpace,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Matching DOFs of the 3D space and the port's 2D Nédélec space.
+
+    On a 2D mesh, of the 2D H1 space and the line port's 1D H1 space
+    (`_line_trace_dofs`).
 
     The 3D field's tangential trace on the port has, on 2D DOF ``idx2[k]``,
     the coefficient of 3D DOF ``idx3[k]``: edges are matched through the gfem
@@ -557,6 +628,10 @@ def trace_dofs(
     Returns:
         ``(idx3, idx2)``.
     """
+    if isinstance(section, LineSection):
+        if not isinstance(modes, LineModeSpace):  # pragma: no cover
+            raise TypeError("A line section's trace needs its LineModeSpace.")
+        return _line_trace_dofs(model, section, modes, built, space)
     if section.faces is None:  # pragma: no cover - sections built by gfem have them
         raise ValueError("The port section does not record its mesh triangles.")
     used = np.unique(model.mesh.triangles[section.faces])
@@ -573,7 +648,7 @@ def trace_dofs(
             if a >= 0:
                 pairs[int(b)] = int(a)
 
-    elements = element_of[built.triangle_order]
+    elements = element_of[built.facet_order]
     for local in np.flatnonzero(elements >= 0):
         bnd = mesh3[ngs.ElementId(ngs.BND, int(local))]
         el = mesh2[ngs.ElementId(ngs.VOL, int(elements[local]))]
@@ -591,3 +666,51 @@ def trace_dofs(
     idx2 = np.fromiter(pairs, int, len(pairs))
     idx3 = np.fromiter(pairs.values(), int, len(pairs))
     return idx3, idx2
+
+
+def _line_trace_dofs(
+    model: Model,
+    section: LineSection,
+    modes: LineModeSpace,
+    built: EngineMesh,
+    space: ngs.FESpace,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Matching DOFs of a 2D H1 space and a line port's 1D H1 space.
+
+    Vertices match through their gfem node; a segment's interior DOFs through
+    the segment. Both meshes number their vertices in increasing gfem node,
+    so NGSolve orients each segment's interior basis the same way on both.
+
+    Returns:
+        ``(idx2d, idx1d)``.
+    """
+    surface = model.mesh.surface_elements
+    used = np.unique(surface[section.faces])
+    element_of = inverse_order(section.faces, len(surface))
+    on_line = element_of[built.facet_order]
+    line_element = inverse_order(modes.element_segment, len(section.segments))
+    mesh2, mesh1, h1 = built.mesh, modes.mesh, modes.space
+    node = built.node_order
+    pairs: dict[int, int] = {}
+
+    def split(fes, el, gfem_of) -> tuple[dict[int, int], list[int]]:
+        vertices = {int(gfem_of[v.nr]): v.nr for v in el.vertices}
+        at = {
+            g: int(fes.GetDofNrs(ngs.NodeId(ngs.VERTEX, nr))[0])
+            for g, nr in vertices.items()
+        }
+        inner = [int(d) for d in fes.GetDofNrs(el) if int(d) not in at.values()]
+        return at, inner
+
+    for local in np.flatnonzero(on_line >= 0):
+        bnd = mesh2[ngs.ElementId(ngs.BND, int(local))]
+        el = mesh1[ngs.ElementId(ngs.VOL, int(line_element[on_line[local]]))]
+        at2, inner2 = split(space, bnd, node)
+        at1, inner1 = split(h1, el, used)
+        if at2.keys() != at1.keys() or len(inner2) != len(inner1):  # pragma: no cover
+            raise RuntimeError("The 2D trace and the line port space do not match.")
+        pairs.update({at1[g]: d2 for g, d2 in at2.items() if d2 >= 0})
+        pairs.update({d1: d2 for d1, d2 in zip(inner1, inner2, strict=True) if d2 >= 0})
+    idx1 = np.fromiter(pairs, int, len(pairs))
+    idx2 = np.fromiter(pairs.values(), int, len(pairs))
+    return idx2, idx1

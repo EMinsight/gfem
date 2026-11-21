@@ -48,6 +48,7 @@ import scipy.constants as const
 from gfem import _mpi, _objective, _probe
 from gfem._adjoint.measure import measure
 from gfem._checks import check_fixed, is_traced
+from gfem._dim2 import entry_refusal, refuse_entry
 from gfem._materials import Material, _is_law, field_principal_values
 from gfem._pytree import register_fields
 from gfem.conventions import MODE_ENERGY
@@ -215,6 +216,9 @@ def interface_participation(
     """
     from gfem.results import EigenmodeResult
 
+    fields = tuple(getattr(modes, "e_fields", ()))
+    mesh = getattr(fields[0], "mesh", None) if fields else None
+    refuse_entry(mesh, "interface_participation")
     if not isinstance(modes, EigenmodeResult):
         raise TypeError(
             "interface_participation needs a gfem.EigenmodeResult, got "
@@ -294,7 +298,7 @@ class _SurfaceGeometry:
         triangles = []
         for name in surfaces:
             region = mesh.region(name)
-            if region.dim != 2:
+            if region.dim != mesh.dim - 1:
                 raise ValueError(
                     f"{name!r} is a volume region; interface_participation needs "
                     "a surface region."
@@ -576,7 +580,7 @@ def characteristic_impedance(
         NonDifferentiableError: A path is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
-    from gfem._sweep.port_mode import path_current, path_voltage
+    from gfem._sweep.port_mode import path_current, path_voltage, planar
     from gfem.results import PortModeResult
 
     if not isinstance(mode, PortModeResult):
@@ -584,6 +588,10 @@ def characteristic_impedance(
             "characteristic_impedance needs a gfem.PortModeResult, got "
             f"{type(mode).__name__}."
         )
+    field = mode.e_field if mode.e_field is not None else mode.h_field
+    if field is not None and len(field.normal) == 2:
+        # a 2-component normal (or an Hz field): the mode of a line port
+        raise entry_refusal("characteristic_impedance")
     if voltage_path is None and current_path is None:
         raise TypeError(
             "characteristic_impedance needs a voltage_path, a current_path or "
@@ -605,7 +613,7 @@ def characteristic_impedance(
             "port's mode field is not available. Port modes are constants of the "
             "solve: solve gfem.PortMode for the port outside the transformation."
         )
-    space, basis, coords = field._space, field._basis, field._coords  # noqa: SLF001
+    space, basis, coords = planar(field._space), field._basis, field._coords  # noqa: SLF001
     frequency = np.asarray(mode.frequency, float)
     gamma = np.asarray(mode.gamma, complex)
     volts = amps = None
@@ -733,6 +741,7 @@ def power_flow(
     from gfem._field import Field
     from gfem.model import Model
 
+    refuse_entry(getattr(field, "mesh", None), "power_flow")
     if not isinstance(field, Field):
         raise TypeError(f"power_flow needs a gfem.Field, got {type(field).__name__}.")
     if field._communicator is not None:  # noqa: SLF001
@@ -879,6 +888,7 @@ def region_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
     """
     from gfem._field import Field
 
+    refuse_entry(getattr(field, "mesh", None), "region_mean")
     if not isinstance(field, Field):
         raise TypeError(f"region_mean needs a gfem.Field, got {type(field).__name__}.")
     if field._communicator is not None:  # noqa: SLF001
@@ -913,7 +923,7 @@ def _check_mean_regions(field: Field, names: tuple[str, ...]) -> None:
     """Raise for a surface name, or regions with no element in the support."""
     mesh = field.mesh
     for name in names:
-        if mesh.region(name).dim != 3:
+        if mesh.region(name).dim != mesh.dim:
             raise ValueError(
                 f"region_mean averages over volume regions, but {name!r} is a "
                 "surface region of the mesh."
@@ -1027,6 +1037,7 @@ def element_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
     """
     from gfem._field import Field
 
+    refuse_entry(getattr(field, "mesh", None), "element_mean")
     if not isinstance(field, Field):
         raise TypeError(f"element_mean needs a gfem.Field, got {type(field).__name__}.")
     if _probe.COMPONENTS[field.space] != 1:
@@ -1191,6 +1202,7 @@ def electric_energy(field: Field, *, model: Model) -> dict[str, jax.Array]:
     from gfem._field import Field
     from gfem.model import Model
 
+    refuse_entry(getattr(field, "mesh", None), "electric_energy")
     if not isinstance(field, Field):
         raise TypeError(
             f"electric_energy needs a gfem.Field, got {type(field).__name__}."

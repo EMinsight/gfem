@@ -56,9 +56,11 @@ from gfem._boundaries import (
     wave_port_surfaces,
 )
 from gfem._checks import is_traced
+from gfem._engine.line_mode import ModeSpace, mode_space
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.runtime import task_manager
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
+from gfem._line_section import LineSection
 from gfem._port_section import PortSection, port_section
 from gfem._sign import largest_entry
 from gfem._text import hertz, hertz_band
@@ -125,9 +127,10 @@ class PortModeSweep:
 
     The field at ``frequency[i]`` is ``basis @ coords[i]`` (full coefficient
     vector of ``(E_t, E_n)`` on ``space``, V/m at 1 W). The basis is real and
-    fixed; it splits into a tangential and a normal block, so the field is
-    affine in ``coords`` even though the pencil vector is ``(gamma E_t,
-    E_n)``.
+    fixed; for a planar port it splits into a tangential and a normal block,
+    so the field is affine in ``coords`` even though the pencil vector is
+    ``(gamma E_t, E_n)``. A line port's field is its scalar mode ``u`` (Ez
+    in V/m or Hz in A/m, at 1 W/m), and its basis is the reduced one.
 
     Attributes:
         space: The discrete port mode problem.
@@ -144,7 +147,7 @@ class PortModeSweep:
             modulus 1.
     """
 
-    space: PortModeSpace
+    space: ModeSpace
     frequency: np.ndarray
     gamma: np.ndarray
     residual: np.ndarray
@@ -274,7 +277,7 @@ class PortModeRule:
         lead = lead_port(ports)
         section = port_section(model, lead)
         with task_manager(self.options.threads, self.comm):
-            space = PortModeSpace(section, self.options.order)
+            space = mode_space(section, self.options.order, self.problem.polarization)
             sweeps, _ = swept_once(
                 self.comm,
                 space,
@@ -300,10 +303,15 @@ class PortModeRule:
         on first use, from the model's values when they are concrete.
         """
         sweep: PortModeSweep | None = outputs.get("sweep")
+        polarization = self.problem.polarization
         if sweep is None:
-            field = PortModeField._deferred(self.port.name, self._field)  # noqa: SLF001
+            quantity, unit = _FIELD_NAMES[polarization]
+            field = PortModeField._deferred(  # noqa: SLF001
+                self.port.name, self._field, quantity=quantity, unit=unit
+            )
         else:
             field = PortModeField(sweep.space, sweep.basis, sweep.coords)
+        fields = {"h_field": field} if polarization == "Hz" else {"e_field": field}
         return PortModeResult(
             port=self.port.name,
             mode=self.mode,
@@ -312,16 +320,17 @@ class PortModeRule:
             Z_PV=jnp.asarray(outputs["Z_PV"]),
             residual=jnp.asarray(outputs["residual"]),
             solved=jnp.asarray(outputs["solved"]),
-            e_field=field,
+            **fields,
         )
 
-    def _field(self) -> tuple[PortModeSpace, np.ndarray, np.ndarray]:
+    def _field(self) -> tuple[ModeSpace, np.ndarray, np.ndarray]:
         if is_traced(self._model):
+            name = "h_field" if self.problem.polarization == "Hz" else "e_field"
             raise TypeError(
-                "PortModeResult.e_field is not available from a port mode solve "
+                f"PortModeResult.{name} is not available from a port mode solve "
                 "computed inside jax.grad, jax.jit or jax.vmap: the mode field "
                 "needs concrete model values. Solve PortMode outside the transformed "
-                "function to read e_field."
+                f"function to read {name}."
             )
         sweep = self.forward(self._model, keep=False)[0]["sweep"]
         return sweep.space, sweep.basis, sweep.coords
@@ -352,11 +361,15 @@ def _wave_port(model: Model, name: str) -> WavePort:
     )
 
 
+#: A port mode field's quantity and unit by the problem's polarization.
+_FIELD_NAMES = {None: ("E", "V/m"), "Ez": ("Ez", "V/m"), "Hz": ("Hz", "A/m")}
+
+
 # --- the sweep ------------------------------------------------------------------
 
 
 def port_mode_sweep(
-    space: PortModeSpace,
+    space: ModeSpace,
     frequency: tuple[float, ...] | np.ndarray,
     modes: list[int],
     *,
@@ -399,7 +412,9 @@ def port_mode_sweep(
     rules = [
         None
         if p.voltage_path is None
-        else _voltage_rule(section, np.asarray(p.voltage_path, float), p.name)
+        else _voltage_rule(
+            planar(space).section, np.asarray(p.voltage_path, float), p.name
+        )
         for p in ports
     ]
     order = np.argsort(f_given, kind="stable")
@@ -427,7 +442,7 @@ def port_mode_sweep(
 
 def swept_once(
     comm: Any,
-    space: PortModeSpace,
+    space: ModeSpace,
     frequency: tuple[float, ...] | np.ndarray,
     modes: list[int],
     *,
@@ -472,7 +487,7 @@ def swept_once(
 
 
 def sweeps_on(
-    space: PortModeSpace,
+    space: ModeSpace,
     frequency: tuple[float, ...] | np.ndarray,
     arrays: dict[str, np.ndarray],
 ) -> list[PortModeSweep]:
@@ -543,7 +558,7 @@ class _Greedy:
 
     def __init__(
         self,
-        space: PortModeSpace,
+        space: ModeSpace,
         f: np.ndarray,
         modes: list[int],
         tolerance: float,
@@ -805,53 +820,45 @@ class _Greedy:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """The fixed basis, then per mode 1 W coordinates, gamma, voltages, powers.
 
+        The space gives the field basis on the reduced one, the power and the
+        phase gauge (`gfem._engine.port_mode.PortModeSpace.reduce`); a line
+        port's mode carries 1 W/m.
+
         Args:
             rules: Each mode's voltage path rule, or ``None`` without a path.
 
         Returns:
-            ``basis (ndof, 2m)``, ``coords (n_modes, n_f, 2m)``, ``gamma
+            ``basis (ndof, M)``, ``coords (n_modes, n_f, M)``, ``gamma
             (n_modes, n_f)`` (1/m), ``voltage (n_modes, n_f)`` (V) and the
             complex ``power (n_modes, n_f)`` (W, of modulus 1).
         """
-        space, red = self.space, self.reduced
-        m = red.size
-        tangential = space.free < space.n_t
-        w = np.zeros((len(space.free), 2 * m))
-        w[tangential, :m] = red.v[tangential]
-        w[~tangential, m:] = red.v[~tangential]
-        g_form, t_form = space.power_forms
-        g_red, t_red = w.T @ (g_form @ w), w.T @ (t_form @ w)
+        space = self.space
+        fields = space.reduce(self.reduced.v)
+        w = fields.w
         mass = w.T @ (space.mass @ w)
-        ln, lt = space.gauge_forms
-        ln, lt = ln @ w, lt @ w
-        basis = np.zeros((space.space.ndof, 2 * m))
+        basis = np.zeros((space.space.ndof, w.shape[1]))
         basis[space.free] = w
 
         n, n_modes = len(self.f), len(self.modes)
-        coords = np.zeros((n_modes, n, 2 * m), complex)
+        coords = np.zeros((n_modes, n, w.shape[1]), complex)
         voltage = np.full((n_modes, n), complex(math.nan, math.nan))
         phase = np.ones((n_modes, n), complex)
         gamma = 1j * np.sqrt(-self.lam + 0j)
         for k, rule in enumerate(rules):
-            volts = None if rule is None else _voltage_functional(space, basis, rule)
+            volts = (
+                None
+                if rule is None
+                else _voltage_functional(planar(space), basis, rule)
+            )
             for i in range(n):
                 y = self.coords_at(i, k)
-                z = np.concatenate([y / gamma[k, i], y])
+                z = fields.coords(y, gamma[k, i])
                 omega = 2 * math.pi * self.f[i]
-                power = (
-                    0.5
-                    * space.section.scale
-                    * 1j
-                    / (omega * scipy.constants.mu_0)
-                    * (
-                        z @ g_red @ z.conj()
-                        + gamma[k, i].conjugate() * (z @ t_red @ z.conj())
-                    )
-                )
+                power = fields.power(z, gamma[k, i], omega)
                 z /= math.sqrt(abs(power))
                 phase[k, i] = power / abs(power)
                 if i == 0:
-                    g = -1j * (ln @ z + gamma[k, i] * (lt @ z))
+                    g = fields.gauge(z, gamma[k, i], omega)
                     c = w @ z
                     if abs(g) > 1e-12 * np.abs(c).max():
                         z *= abs(g) / g
@@ -1003,7 +1010,7 @@ class _Greedy:
 class _Reduced:
     """Rayleigh-Ritz model of the affine pencil on a growing real basis."""
 
-    def __init__(self, space: PortModeSpace) -> None:
+    def __init__(self, space: ModeSpace) -> None:
         self.space = space
         self.v = np.zeros((len(space.free), 0))
         self._pieces = [
@@ -1116,7 +1123,9 @@ def _overlaps(mass, x_ref: np.ndarray, vecs: np.ndarray) -> np.ndarray:
     return num / den
 
 
-def _wavenumbers(section: PortSection, frequency: float) -> tuple[float, float, float]:
+def _wavenumbers(
+    section: PortSection | LineSection, frequency: float
+) -> tuple[float, float, float]:
     """``k0``, the largest propagating wavenumber and the shift, per local unit.
 
     The section's laws are read at ``frequency``.
@@ -1133,6 +1142,20 @@ def _wavenumbers(section: PortSection, frequency: float) -> tuple[float, float, 
     if len(section.impedance_terms):
         k_max *= _SLOW_WAVE
     return k0, k_max, -_TARGET * n2_shift * k0**2
+
+
+def planar(space: ModeSpace) -> PortModeSpace:
+    """``space`` as a planar port's: a voltage or current path needs one.
+
+    Raises:
+        TypeError: ``space`` is a line port's (a 2D model refuses its paths).
+    """
+    if not isinstance(space, PortModeSpace):
+        raise TypeError(
+            f"WavePort {space.section.port.name!r} is a line port: its mode has no "
+            "voltage or current path."
+        )
+    return space
 
 
 def _voltage_functional(

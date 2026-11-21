@@ -95,7 +95,7 @@ def _tensor(model, *, symmetric=True):
     for i in range(3):
         for j in range(3):
             gf = ngs.GridFunction(ngs.L2(built.mesh, order=0))
-            gf.vec.FV().NumPy()[:] = values[built.tetrahedron_order, i, j]
+            gf.vec.FV().NumPy()[:] = values[built.cell_order, i, j]
             gfs.append(gf)
     return ngs.CF(tuple(gfs), dims=(3, 3))
 

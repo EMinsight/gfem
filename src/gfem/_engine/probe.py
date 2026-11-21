@@ -13,10 +13,11 @@ one pass.
 
 Points are given as (NGSolve volume element, reference coordinates), the
 reference coordinates being the barycentric coordinates of the point with
-respect to the element's first three vertices (gfem's tetrahedron vertex
-order, which the engine mesh keeps). Points on a face shared by two
-elements are therefore evaluated from the element they are given with: a
-one-sided value of a field that jumps across the face.
+respect to the element's first ``dim`` vertices (gfem's vertex order of a
+tetrahedron, or of a 2D mesh's triangle, which the engine mesh keeps).
+Points on a face shared by two elements are therefore evaluated from the
+element they are given with: a one-sided value of a field that jumps across
+the face.
 
 Under ranks a tetrahedron lies on one rank, which holds the points in it:
 ``Phi c`` is the rank sum of what each rank evaluates, and ``Phi^T g`` is a
@@ -55,12 +56,13 @@ __all__ = [
 
 @dataclasses.dataclass(frozen=True, eq=False)
 class Located:
-    """Points as (gfem tetrahedron, barycentric coordinates).
+    """Points as (gfem volume element, barycentric coordinates).
 
     Attributes:
-        tetrahedra: ``(n,)`` gfem tetrahedron index of each point.
-        barycentric: ``(n, 4)`` barycentric coordinates with respect to the
-            tetrahedron's vertices, in gfem order.
+        tetrahedra: ``(n,)`` gfem volume element (`gfem.Mesh.volume_elements`
+            row) of each point: a tetrahedron, or a 2D mesh's triangle.
+        barycentric: ``(n, dim + 1)`` barycentric coordinates with respect to
+            the element's vertices, in gfem order.
     """
 
     tetrahedra: np.ndarray
@@ -81,24 +83,29 @@ class Layout:
 #: on a sliver tetrahedron reaches 1e-11.
 ON_FACE = 1e-9
 
-#: A tetrahedron whose volume is below this share of its longest edge cubed is flat.
+#: An element whose volume (area) is below this share of its longest edge to the
+#: power ``dim`` is flat.
 _FLAT = 1e-13
 
 
 def in_support(mesh: Mesh, layout: Layout) -> np.ndarray:
-    """Per gfem tetrahedron: whether the field is defined on it."""
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    """Per gfem volume element: whether the field is defined on it."""
+    topology = mesh._topology  # noqa: SLF001
+    names = mesh._region_names()  # noqa: SLF001
     wanted = {t for t, n in names.items() if n in set(layout.support)}
-    inside = np.isin(mesh.tetrahedron_tags, list(wanted))
+    inside = np.isin(topology.volume_tags, list(wanted))
     if layout.excluded:
-        pairs = np.stack([mesh.tetrahedron_tags, mesh.tetrahedron_entities], axis=1)
+        pairs = np.stack([topology.volume_tags, topology.volume_entities], axis=1)
         out = (pairs[:, None, :] == np.asarray(layout.excluded)[None]).all(-1).any(-1)
         inside &= ~out
     return inside
 
 
 def locate(mesh: Mesh, layout: Layout, points: np.ndarray, comm: Any = None) -> Located:
-    """The tetrahedra holding ``points`` (``(n, 3)``, m).
+    """The volume elements holding ``points`` (``(n, dim)``, m).
+
+    On a 2D mesh the elements are triangles and the points ``(n, 2)``; what
+    follows says tetrahedron for either.
 
     A point inside a tetrahedron gets that one, on any number of ranks. On a face, to
     1e-9 barycentric (`ON_FACE`), it gets one holding it to that tolerance: in the
@@ -118,16 +125,18 @@ def locate(mesh: Mesh, layout: Layout, points: np.ndarray, comm: Any = None) -> 
     from gfem._engine.cache import discretization
 
     built = discretization(mesh, (), comm).built
-    p = np.asarray(points, float).reshape(-1, 3) / built.scale
-    found = built.mesh(p[:, 0].copy(), p[:, 1].copy(), p[:, 2].copy())
+    points = np.asarray(points, float).reshape(-1, mesh.dim)
+    p = points / built.scale
+    z = p[:, 2].copy() if mesh.dim == 3 else np.zeros(len(p))
+    found = built.mesh(p[:, 0].copy(), p[:, 1].copy(), z)
     nr = np.asarray(found["nr"], dtype=np.int64)
     held = nr >= 0
     tets = np.full(len(nr), -1, dtype=np.int64)
-    tets[held] = np.asarray(built.tetrahedron_order)[nr[held]]
+    tets[held] = np.asarray(built.cell_order)[nr[held]]
     tets = _agree_location(comm, tets)
     outside = tets < 0
     if outside.any():
-        worst = points.reshape(-1, 3)[int(np.flatnonzero(outside)[0])]
+        worst = points[int(np.flatnonzero(outside)[0])]
         raise _mpi.agreed(
             ValueError(
                 f"Point {_fmt(worst)} m is outside the mesh: a field has no value "
@@ -135,15 +144,15 @@ def locate(mesh: Mesh, layout: Layout, points: np.ndarray, comm: Any = None) -> 
             )
         )
     support = in_support(mesh, layout)
-    tets, bary = _settle(mesh, support, tets, np.asarray(points, float).reshape(-1, 3))
+    tets, bary = _settle(mesh, support, tets, points)
     inside = support[tets]
     if not inside.all():
         k = int(np.flatnonzero(~inside)[0])
-        names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
-        region = names[int(mesh.tetrahedron_tags[tets[k]])]
+        names = mesh._region_names()  # noqa: SLF001
+        region = names[int(mesh._topology.volume_tags[tets[k]])]  # noqa: SLF001
         raise _mpi.agreed(
             ValueError(
-                f"Point {_fmt(points.reshape(-1, 3)[k])} m lies in volume region "
+                f"Point {_fmt(points[k])} m lies in volume region "
                 f"{region!r}, where the field is not defined (its support is "
                 f"{list(layout.support)}, minus the volumes the model excludes from "
                 "the solve)."
@@ -163,17 +172,20 @@ def _agree_location(comm: Any, tets: np.ndarray) -> np.ndarray:
 def _barycentric(
     nodes: np.ndarray, tetrahedra: np.ndarray, points: np.ndarray
 ) -> np.ndarray:
-    """``(n, 4)`` barycentric coordinates of ``points`` in ``(n, 4)`` ``tetrahedra``.
+    """``(n, d + 1)`` barycentric coordinates of ``(n, d)`` ``points`` in elements.
 
-    A flat tetrahedron (zero volume to round-off) gets ``-inf``: it holds no point.
+    ``tetrahedra`` are ``(n, d + 1)`` node indices: tetrahedra, or a 2D mesh's
+    triangles. A flat element (zero volume to round-off) gets ``-inf``: it holds
+    no point.
     """
     v = nodes[tetrahedra]
-    edges = np.stack([v[:, i] - v[:, 3] for i in range(3)], axis=-1)
+    d = v.shape[-1]
+    edges = np.stack([v[:, i] - v[:, d] for i in range(d)], axis=-1)
     longest = np.linalg.norm(edges, axis=1).max(axis=1)
-    flat = np.abs(np.linalg.det(edges)) <= _FLAT * longest**3
-    bary = np.full((len(v), 4), -np.inf)
+    flat = np.abs(np.linalg.det(edges)) <= _FLAT * longest**d
+    bary = np.full((len(v), d + 1), -np.inf)
     if (~flat).any():
-        rhs = (points - v[:, 3])[~flat][..., None]
+        rhs = (points - v[:, d])[~flat][..., None]
         head = np.linalg.solve(edges[~flat], rhs)[..., 0]
         bary[~flat] = np.concatenate(
             [head, 1.0 - head.sum(axis=1, keepdims=True)], axis=1
@@ -187,15 +199,16 @@ _NODE_TETS: weakref.WeakKeyDictionary[Any, tuple[np.ndarray, np.ndarray]] = (
 
 
 def _tets_of_nodes(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
-    """The tetrahedra around each node, CSR: ``tets[start[n] : start[n + 1]]``.
+    """The volume elements around each node, CSR: ``tets[start[n] : start[n + 1]]``.
 
     Built once per mesh topology.
     """
     topology = mesh._topology  # noqa: SLF001
     found = _NODE_TETS.get(topology)
     if found is None:
-        flat = np.asarray(topology.tetrahedra).ravel()
-        tets = np.argsort(flat, kind="stable") // 4
+        elements = np.asarray(topology.volume_elements)
+        flat = elements.ravel()
+        tets = np.argsort(flat, kind="stable") // elements.shape[1]
         start = np.concatenate(([0], np.cumsum(np.bincount(flat))))
         found = _NODE_TETS[topology] = (tets, start)
     return found
@@ -214,7 +227,7 @@ def _settle(
         The settled ``(n,)`` tetrahedra and their ``(n, 4)`` barycentric coordinates.
     """
     nodes = np.asarray(mesh.nodes, float)
-    all_tets = np.asarray(mesh.tetrahedra)
+    all_tets = np.asarray(mesh._topology.volume_elements)  # noqa: SLF001
     tets = tets.copy()
     bary = _barycentric(nodes, all_tets[tets], points)
     flagged = np.flatnonzero(bary.min(axis=1) < ON_FACE)
@@ -314,7 +327,7 @@ class Probe:
         self._built: EngineMesh = built
         self._fes = fes
         self.factor = built.scale ** LENGTH_POWER[layout.space]
-        inverse = inverse_order(built.tetrahedron_order, len(mesh.tetrahedra))
+        inverse = inverse_order(built.cell_order, len(mesh.volume_elements))
         self._elements = inverse[located.tetrahedra]
         self.n_points = len(self._elements)
         self._own = np.flatnonzero(self._elements >= 0)
@@ -325,7 +338,9 @@ class Probe:
             mips["nr"] = self._elements[self._own]
             mips["VorB"] = 0
             bary = located.barycentric[self._own]
-            mips["x"], mips["y"], mips["z"] = bary[:, 0], bary[:, 1], bary[:, 2]
+            # the reference coordinates: the first dim barycentric ones
+            mips["x"], mips["y"] = bary[:, 0], bary[:, 1]
+            mips["z"] = bary[:, 2] if mesh.dim == 3 else 0.0
             self._mips = mips
         self._local: tuple | None = None
         # a collective call, so no rank may leave it for its first point

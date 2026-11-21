@@ -90,7 +90,7 @@ from gfem._engine.coefficients import (
 from gfem._engine.domain import boundary_region
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.sensitivity import Derivative
-from gfem._materials import Drude
+from gfem._materials import Drude, MaterialField
 from gfem._morph import unit_normals
 from gfem._sheet import check_fill
 from gfem.conventions import EXTERIOR_THICKNESS_FACTOR
@@ -106,6 +106,7 @@ __all__ = [
     "Piece",
     "Tabulated",
     "absorbing_coefficients",
+    "absorbing_derivatives",
     "absorbing_faces",
     "absorbing_shape_unsupported",
     "blend_pieces",
@@ -114,6 +115,7 @@ __all__ = [
     "face_owner",
     "law_faces",
     "lumped_ports",
+    "mass_derivatives",
     "pieces",
     "polynomial_law",
     "port_vectors",
@@ -204,12 +206,14 @@ class Piece:
         theta: θ(ω), a complex scalar for an angular frequency in rad/s.
         integrand: ``(trial, test) -> integrals`` of the form, with no ω.
         kind: How the form depends on the node coordinates, for shape
-            gradients: ``"curl"`` (``∫ (C curl u) · curl v``), ``"value"``
+            gradients: ``"curl"`` (``∫ (C curl u) · curl v``), ``"gradient"``
+            (``∫ (C grad u) · grad v``, a 2D model's scalar field), ``"value"``
             (``∫ (C u) · v``), ``"trace"`` (``∫ c u_t · v_t`` on surfaces),
-            ``"curl trace"`` (``∫ c (n · curl u)(n · curl v)``), another
-            ``"surface"`` form, or ``"port"`` (a port's term, which reads
-            only the port's own geometry: shape gradients hold port nodes
-            in place).
+            ``"curl trace"`` (``∫ c (n · curl u)(n · curl v)``),
+            ``"tangential gradient"`` (``∫ c ∂_t u ∂_t v`` on a 2D model's
+            lines), another ``"surface"`` form, or ``"port"`` (a port's
+            term, which reads only the port's own geometry: shape gradients
+            hold port nodes in place).
         coefficient: ``C`` (``c``) of a volume (trace) piece, the element-
             (face-) wise coefficient its integrand reads.
         values: The values of a volume piece's ``coefficient`` per gfem
@@ -245,6 +249,11 @@ class Piece:
             region and dθ/dp(ω) by each law parameter, keyed as
             `gfem._engine.dispersion.d_eps` (the law pass);
             ``None`` otherwise.
+        points: For a piece of a layer grid's region of a 2D mesh, whose
+            coefficient lives on the quadrature points
+            (`gfem._engine.points`), that region: its derivatives are per
+            point of the region, and the point pass reads them. ``None``
+            otherwise.
 
     Raises:
         ValueError: ``theta`` does not give one scalar: the term is not
@@ -255,7 +264,16 @@ class Piece:
     name: str
     theta: Callable[[complex], complex]
     integrand: Callable[[Any, Any], Any]
-    kind: Literal["curl", "value", "trace", "curl trace", "surface", "port"] = "surface"
+    kind: Literal[
+        "curl",
+        "gradient",
+        "value",
+        "trace",
+        "curl trace",
+        "tangential gradient",
+        "surface",
+        "port",
+    ] = "surface"
     coefficient: Any = None
     region: Any = None
     frequency_class: Literal["polynomial", "nonpolynomial"] = "polynomial"
@@ -271,6 +289,7 @@ class Piece:
     law: tuple[str, Callable[[complex], dict[tuple, complex]]] | None = (
         dataclasses.field(default=None, compare=False)
     )
+    points: str | None = None
 
     def __post_init__(self) -> None:
         """Check that θ is a scalar function of ω."""
@@ -503,7 +522,7 @@ def susceptibility_pieces(
     lossless Drude terms only gives a polynomial piece (`polynomial_law`).
     """
     scale = built.scale
-    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron")
     dx = quadrature.dx(order, definedonelements=tets)
 
     def k2(w: complex) -> complex:
@@ -566,7 +585,7 @@ def blend_pieces(
     limit is in the mass. ``elements`` restricts the form as in `pieces`.
     """
     scale = built.scale
-    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron")
     dx = quadrature.dx(order, definedonelements=tets)
 
     def k2(w: complex) -> complex:
@@ -602,9 +621,35 @@ def blend_pieces(
     return out
 
 
+def mass_derivatives(model: Model) -> dict[str, Derivative]:
+    r"""The derivatives of the mass coefficient :math:`\varepsilon_r(1 - i\tan\delta)`.
+
+    By ``eps_r``, ``tan_delta`` and a law blend's density (``blend``, whose
+    eps_inf limit is in the mass), per element, with their per-axis forms.
+    """
+    return {
+        "eps_r": Derivative(
+            lambda: _loss(model),
+            holomorphic=True,
+            per_axis=Derivative(lambda: _axis_loss(model), holomorphic=True),
+        ),
+        # a law blend's eps_inf limit moves with its density
+        "blend": Derivative(lambda: _blend_mass_slope(model), holomorphic=True),
+        "tan_delta": Derivative(
+            # a law region has no tan_delta (nor a field): never read
+            lambda: -1j * element_values(model, "eps_r", per_axis=1.0, law=1.0),
+            holomorphic=False,
+            per_axis=Derivative(
+                lambda: -1j * principal_values(model, "eps_r"),
+                holomorphic=False,
+            ),
+        ),
+    }
+
+
 def _blend_mass_slope(model: Model) -> np.ndarray:
     """D (mass value) / d rho per tetrahedron: the law blends' eps_inf limits."""
-    out = np.zeros(len(model.mesh.tetrahedra))
+    out = np.zeros(len(model.mesh.volume_elements))
     for br in dispersion.blend_regions(model):
         out += dispersion.blend_mass(br)[1]
     return out
@@ -627,7 +672,7 @@ def conductivity_piece(
     """
     scale = built.scale
     k = lambda w: wavenumber(w, scale)  # noqa: E731
-    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
+    tets = _bits(elements, built.cell_order, "tetrahedron")
     dx = quadrature.dx(order, definedonelements=tets)
     active = model._domain.active  # noqa: SLF001
     # an anisotropic material gives its 3x3 tensor
@@ -686,8 +731,8 @@ def pieces(
     """
     scale = built.scale
     k = lambda w: wavenumber(w, scale)  # noqa: E731
-    tets = _bits(elements, built.tetrahedron_order, "tetrahedron")
-    tris = _bits(faces, built.triangle_order, "triangle")
+    tets = _bits(elements, built.cell_order, "tetrahedron")
+    tris = _bits(faces, built.facet_order, "triangle")
     dx = quadrature.dx(order, definedonelements=tets)
 
     # each piece carries its coefficient and, next to it, the coefficient's
@@ -723,24 +768,7 @@ def pieces(
             kind="value",
             coefficient=eps_cf,
             values=eps,
-            derivatives={
-                "eps_r": Derivative(
-                    lambda: _loss(model),
-                    holomorphic=True,
-                    per_axis=Derivative(lambda: _axis_loss(model), holomorphic=True),
-                ),
-                # a law blend's eps_inf limit moves with its density
-                "blend": Derivative(lambda: _blend_mass_slope(model), holomorphic=True),
-                "tan_delta": Derivative(
-                    # a law region has no tan_delta (nor a field): never read
-                    lambda: -1j * element_values(model, "eps_r", per_axis=1.0, law=1.0),
-                    holomorphic=False,
-                    per_axis=Derivative(
-                        lambda: -1j * principal_values(model, "eps_r"),
-                        holomorphic=False,
-                    ),
-                ),
-            },
+            derivatives=mass_derivatives(model),
         ),
     ]
     # the conductivity has its own i k0 piece, not folded into the mass (the
@@ -776,7 +804,7 @@ def pieces(
                 kind="trace",
                 coefficient=y_cf,
                 region=form.region,
-                derivatives=_absorbing_derivatives(
+                derivatives=absorbing_derivatives(
                     model, order=1, faces=(surfaces, owner)
                 ),
                 owner=np.where(on_law, -1, _owned(model, surfaces, owner, faces)),
@@ -799,7 +827,7 @@ def pieces(
                     region=region,
                     frequency_class="nonpolynomial",
                     d_theta=lambda w: -1 / (2j * k(w) * w),
-                    derivatives=_absorbing_derivatives(model, order=2),
+                    derivatives=absorbing_derivatives(model, order=2),
                     owner=np.where(on_law, -1, _owned(model, second, owner, faces)),
                 )
             )
@@ -938,19 +966,39 @@ def check_absorbing(model: Model, *, dispersive: bool = False) -> None:
             )
 
 
+class _Masked(NamedTuple):
+    """A region and its elements, as `dispersion.absorbing_surfaces` reads them."""
+
+    region: str
+    mask: np.ndarray
+
+
 def _refuse_absorbing_blends(model: Model) -> None:
     """Raise for an `Absorbing` face on a law blend's region.
 
     Raises:
         NotImplementedError: An absorbing surface has a face on a blend.
     """
-    blends = dispersion.blend_regions(model)
-    for region, surfaces in dispersion.absorbing_surfaces(model, blends).items():  # ty: ignore[invalid-argument-type]
+    blends = {
+        r: m.blend_ends.pixels is not None
+        for r, m in model.materials.items()
+        if isinstance(m, MaterialField) and m.blend_ends is not None
+    }
+    regions = []
+    for region in blends:
+        mask = np.zeros(len(model.mesh.volume_elements), bool)
+        mask[model.mesh.elements(region)] = True
+        regions.append(_Masked(region, mask))
+    for region, surfaces in dispersion.absorbing_surfaces(model, regions).items():  # ty: ignore[invalid-argument-type]
+        what = (
+            "a layer-grid design"
+            if blends[region]
+            else "a density blend with a permittivity-law end"
+        )
         raise NotImplementedError(
-            f"Absorbing {surfaces[0]!r} lies on region {region!r}, a density "
-            "blend with a permittivity-law end: an absorbing boundary on a blend "
-            "is not supported. Put a constant layer between the design region and "
-            "the boundary."
+            f"Absorbing {surfaces[0]!r} lies on region {region!r}, {what}: an "
+            "absorbing boundary on a blend is not supported. Put a constant layer "
+            "between the design region and the boundary."
         )
 
 
@@ -966,7 +1014,8 @@ def law_faces(
     if not laws or not surfaces:
         return []
     mesh = model.mesh
-    on = np.isin(mesh.triangle_tags, [mesh.region(s).tag for s in surfaces])
+    tags = mesh._topology.surface_tags  # noqa: SLF001 - either dimension's faces
+    on = np.isin(tags, [mesh.region(s).tag for s in surfaces])
     on &= owner >= 0
     out = []
     for lr in laws:
@@ -1143,17 +1192,23 @@ def _axis_loss(model: Model) -> np.ndarray:
     return 1.0 - 1j * np.real(principal_values(model, "tan_delta"))
 
 
-def _absorbing_derivatives(
-    model: Model, order: int, faces: tuple[tuple[str, ...], np.ndarray] | None = None
+def absorbing_derivatives(
+    model: Model,
+    order: int,
+    faces: tuple[tuple[str, ...], np.ndarray] | None = None,
+    *,
+    swapped: bool = False,
 ) -> dict[str, Derivative]:
-    """The derivatives of the absorbing coefficient of ``order`` per tetrahedron.
+    """The derivatives of the absorbing coefficient of ``order`` per element.
 
     Of the real ``e = Re(eps_r (1 - i tan_delta))`` and ``m = Re(mu_r)`` of
     the isotropic element values: ``de/deps_r`` is 1 along ``Re(chain
     eps_r)`` with ``chain = 1 - i tan_delta``, and ``de/dtan_delta =
     Im(eps_r)``. With ``faces`` (the surfaces and the owner per triangle of
     the first-order term), each also has its per-axis form, per face
-    (`_absorbing_axis_derivatives`).
+    (`_absorbing_axis_derivatives`). ``swapped`` exchanges the roles of
+    ``e`` and ``m`` in the coefficient: a 2D model's Hz coefficients
+    ``sqrt(m / e)`` and ``1 / (e sqrt(e m))``.
     """
 
     def em() -> tuple[np.ndarray, np.ndarray]:
@@ -1163,10 +1218,12 @@ def _absorbing_derivatives(
         return e, np.real(element_values(model, "mu_r", per_axis=1.0))
 
     def by_e() -> np.ndarray:
-        return _absorbing_by_e(*em(), order)
+        e, m = em()
+        return _absorbing_by_m(m, e, order) if swapped else _absorbing_by_e(e, m, order)
 
     def by_m() -> np.ndarray:
-        return _absorbing_by_m(*em(), order)
+        e, m = em()
+        return _absorbing_by_e(m, e, order) if swapped else _absorbing_by_m(e, m, order)
 
     axis = {} if faces is None else _absorbing_axis_derivatives(model, *faces)
     return {
@@ -1259,9 +1316,13 @@ def _owned(
     owner: np.ndarray,
     faces: np.ndarray | None,
 ) -> np.ndarray:
-    """``owner`` on the triangles of ``surfaces`` (and of ``faces``), -1 elsewhere."""
+    """``owner`` on the triangles of ``surfaces`` (and of ``faces``), -1 elsewhere.
+
+    On a 2D mesh, on its line segments.
+    """
     mesh = model.mesh
-    on = np.isin(mesh.triangle_tags, [mesh.region(s).tag for s in surfaces])
+    tags = mesh._topology.surface_tags  # noqa: SLF001 - either dimension's faces
+    on = np.isin(tags, [mesh.region(s).tag for s in surfaces])
     if faces is not None:
         on &= np.asarray(faces)
     return np.where(on, owner, -1)
@@ -1271,10 +1332,11 @@ def face_owner(model: Model) -> np.ndarray:
     """The solve-domain tetrahedron whose values a face term reads, per triangle.
 
     The tetrahedron behind the triangle's normal when it is in the solve
-    domain, else the one in front, else -1.
+    domain, else the one in front, else -1. On a 2D mesh, the area triangle
+    beside each line segment.
     """
     active = model._domain.active  # noqa: SLF001
-    nb = model.mesh.triangle_neighbours
+    nb = model.mesh._topology.surface_neighbours  # noqa: SLF001 - either dimension
     owner = np.full(len(nb), -1)
     for side in (1, 0):
         tet = nb[:, side]

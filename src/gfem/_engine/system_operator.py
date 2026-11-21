@@ -230,6 +230,12 @@ def _term(coupling: Any, omega: float) -> LowRankTerm:
     return LowRankTerm(coupling.vectors @ p, d)
 
 
+def _robin(coupling: Any) -> tuple[Piece, ...]:
+    """A surface coupling's Robin pieces: its ``pieces``, else its ``piece``."""
+    pieces = getattr(coupling, "pieces", None)
+    return (coupling.piece,) if pieces is None else tuple(pieces)
+
+
 def _transposed(coupling: Any) -> Any:
     """A coupling for the transposed system: its ``transposed()``, else itself."""
     transposed = getattr(coupling, "transposed", None)
@@ -247,7 +253,8 @@ class SystemOperator:
 
     Attributes:
         operator: The driven operator, port surfaces' Robin pieces included.
-        surfaces: The port surfaces' couplings: each has a Robin ``piece``,
+        surfaces: The port surfaces' couplings: each has a Robin ``piece``
+            (a line port's ``pieces``, one per weight),
             its ``vectors`` and either a wave port's ``correction(ω)`` or its
             own ``term(ω)`` (a `LowRankTerm`), and may give a
             ``transposed()`` coupling for the transposed system.
@@ -287,7 +294,8 @@ class SystemOperator:
         """
         if surfaces:
             operator = dataclasses.replace(
-                operator, pieces=[*operator.pieces, *(c.piece for c in surfaces)]
+                operator,
+                pieces=[*operator.pieces, *(p for c in surfaces for p in _robin(c))],
             )
         self.operator = operator
         self.surfaces = list(surfaces)

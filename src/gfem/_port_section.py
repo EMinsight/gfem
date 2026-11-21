@@ -25,6 +25,7 @@ from gfem._boundaries import (
 )
 from gfem._domain import physics_of
 from gfem._engine.anisotropy import CROSS_N, edge_admittance
+from gfem._line_section import LineSection, line_section, line_section_key
 from gfem._materials import (
     PROPERTIES,
     Material,
@@ -126,6 +127,11 @@ class PortSection:
     absorbing_law: np.ndarray | None = None
 
     @property
+    def normal(self) -> np.ndarray:
+        """Unit inward port normal, global frame, ``(3,)``."""
+        return self.frame[2]
+
+    @property
     def diameter(self) -> float:
         """Largest extent of the cross-section, local units."""
         return float(np.ptp(self.points, axis=0).max())
@@ -195,28 +201,7 @@ class PortSection:
             ValueError: A frequency lies on a lossless pole of a law, or a
                 law region has Re eps <= 0 there (a metal in the section).
         """
-        for f in frequencies:
-            for (region, law), chi in zip(
-                self.laws, self.susceptibilities(float(f)), strict=True
-            ):
-                name = self.port.name
-                if not np.isfinite(chi):
-                    raise ValueError(
-                        f"WavePort {name!r}: frequency {hertz(f)} lies on a "
-                        f"lossless pole of the permittivity law of region "
-                        f"{region!r} in the port's cross-section: its permittivity "
-                        "is infinite there. Give the term a damping, or leave "
-                        "this frequency out."
-                    )
-                eps = float(law.eps_inf) + chi.real
-                if eps <= 0:
-                    raise ValueError(
-                        f"WavePort {name!r}: region {region!r} has Re eps = "
-                        f"{eps:.3g} at {hertz(f)} in the port's cross-section; a "
-                        "port mode with a metal (Re eps <= 0) in its cross-section "
-                        "is not supported. Move the port plane so that its "
-                        "cross-section is dielectric, or use a LumpedPort."
-                    )
+        check_law_frequencies(self.port, self.laws, self.susceptibilities, frequencies)
 
     def to_local(self, points_m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Plane coordinates ``(n, 2)`` and normal distances of global points (m)."""
@@ -226,6 +211,43 @@ class PortSection:
     def to_global(self, local: np.ndarray) -> np.ndarray:
         """Global points (m) of plane coordinates ``(n, 2)``."""
         return (self.origin + np.asarray(local, float) @ self.frame[:2]) * self.scale
+
+
+def check_law_frequencies(port: WavePort, laws, susceptibilities, frequencies) -> None:
+    """Raise where a law of a port's section cannot be solved.
+
+    Static: reads the laws and the frequencies only, before any solve.
+
+    Args:
+        port: The wave port, for messages.
+        laws: The section's ``(region, law)`` pairs.
+        susceptibilities: ``frequency -> [chi of each law]``.
+        frequencies: Hz.
+
+    Raises:
+        ValueError: A frequency lies on a lossless pole of a law, or a
+            law region has Re eps <= 0 there (a metal in the section).
+    """
+    for f in frequencies:
+        for (region, law), chi in zip(laws, susceptibilities(float(f)), strict=True):
+            name = port.name
+            if not np.isfinite(chi):
+                raise ValueError(
+                    f"WavePort {name!r}: frequency {hertz(f)} lies on a "
+                    f"lossless pole of the permittivity law of region "
+                    f"{region!r} in the port's cross-section: its permittivity "
+                    "is infinite there. Give the term a damping, or leave "
+                    "this frequency out."
+                )
+            eps = float(law.eps_inf) + chi.real
+            if eps <= 0:
+                raise ValueError(
+                    f"WavePort {name!r}: region {region!r} has Re eps = "
+                    f"{eps:.3g} at {hertz(f)} in the port's cross-section; a "
+                    "port mode with a metal (Re eps <= 0) in its cross-section "
+                    "is not supported. Move the port plane so that its "
+                    "cross-section is dielectric, or use a LumpedPort."
+                )
 
 
 def _largest(tt: np.ndarray, nn: np.ndarray) -> float:
@@ -238,15 +260,20 @@ def _norm(tt: np.ndarray, nn: np.ndarray) -> float:
     return max(np.linalg.norm(tt, ord=2, axis=(1, 2)).max(), np.abs(nn).max())
 
 
-def port_section(model: Model, port: WavePort) -> PortSection:
+def port_section(model: Model, port: WavePort) -> PortSection | LineSection:
     """Extract the cross-section of ``port`` from ``model``.
 
+    On a 2D mesh, the `LineSection` of a line port (`line_section`).
+
     Raises:
-        PortGeometryError: The port surface is not planar.
+        PortGeometryError: The port surface is not planar (on a 2D mesh: the
+            line is not straight and connected).
         ValueError: An anisotropic material beside the port has no principal
             axis along the port normal.
     """
     mesh = model.mesh
+    if mesh.dim == 2:
+        return line_section(model, port)
     scale = LENGTH_UNITS[mesh.length_unit]
     nodes = np.asarray(mesh.nodes, float) / scale
     active = model._domain.active  # noqa: SLF001
@@ -354,9 +381,12 @@ def port_section_key(model: Model, port: WavePort) -> str:
     values (eps_r, mu_r, tan_delta, conductivity, principal axes) of the
     solve-domain tetrahedra beside the port's faces, and the sheet fill of the
     faces sharing an edge with them. It builds no section: no plane fit and
-    no edge classification, so it costs a fraction of `port_section`.
+    no edge classification, so it costs a fraction of `port_section`. On a 2D
+    mesh, `line_section_key`.
     """
     mesh = model.mesh
+    if mesh.dim == 2:
+        return line_section_key(model, port)
     domain = model._domain  # noqa: SLF001
     digest = hashlib.blake2b(digest_size=16)
 
@@ -375,7 +405,7 @@ def port_section_key(model: Model, port: WavePort) -> str:
     faces = mesh.elements(port.surface)
     nb = mesh.triangle_neighbours[faces]
     tets = np.unique(nb[(nb >= 0) & domain.active[np.maximum(nb, 0)]])
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    names = mesh._region_names()  # noqa: SLF001
     region_of = mesh.tetrahedron_tags[tets]
     for rtag in np.unique(region_of):
         region = names[int(rtag)]
@@ -418,7 +448,7 @@ def _materials(model: Model, port: WavePort, tets: np.ndarray, frame: np.ndarray
     eps_inf.
     """
     mesh = model.mesh
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    names = mesh._region_names()  # noqa: SLF001
     n = len(tets)
     eps_tt = np.zeros((n, 2, 2), complex)
     eps_nn = np.zeros(n, complex)
@@ -483,7 +513,7 @@ def _laws(model: Model, tets: np.ndarray):
     off the law regions.
     """
     mesh = model.mesh
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    names = mesh._region_names()  # noqa: SLF001
     laws: list[tuple[str, PermittivityLaw]] = []
     index = np.full(len(tets), -1, np.int64)
     region_of = mesh.tetrahedron_tags[tets]
@@ -619,7 +649,7 @@ def _surfaces_on_edges(
     nb = mesh.triangle_neighbours
     touches = ((nb >= 0) & model._domain.active[np.maximum(nb, 0)]).any(axis=1)  # noqa: SLF001
     other = (mesh.triangle_tags != mesh.region(port.surface).tag) & touches
-    names = {r.tag: r.name for r in mesh.regions if r.dim == 2}
+    names = mesh._region_names(surfaces=True)  # noqa: SLF001
     o_edges = _edge_keys(mesh.triangles[other])
     o_tags = np.repeat(mesh.triangle_tags[other], 3)
     o_one = np.repeat((nb[other] < 0).any(axis=1), 3)

@@ -141,14 +141,20 @@ def field_at(field: Field, points: Any) -> jax.Array:
     """The values of ``field`` at ``points`` (see `gfem.Field.at`)."""
     single = np.ndim(points) == 1
     p = points if is_traced(points) else np.asarray(points, float)
-    if p.shape[-1:] != (3,) or p.ndim not in (1, 2):
-        raise ValueError(
-            f"points must be one 3-vector or an (n, 3) array in m, got shape "
-            f"{np.shape(points)}."
-        )
-    p = p.reshape(-1, 3)
-    where = layout(field)
     mesh = field.mesh
+    dim = mesh.dim
+    if dim == 2 and p.shape[-1:] == (3,):
+        raise ValueError(
+            "A 2D mesh lies in the (x, y) plane: pass (m, 2) points (or one "
+            f"2-vector) in m, got shape {np.shape(points)}."
+        )
+    if p.shape[-1:] != (dim,) or p.ndim not in (1, 2):
+        raise ValueError(
+            f"points must be one {dim}-vector or an (n, {dim}) array in m, got "
+            f"shape {np.shape(points)}."
+        )
+    p = p.reshape(-1, dim)
+    where = layout(field)
     c = field.coefficients
     n_comp = COMPONENTS[field.space]
     comm = field._communicator  # noqa: SLF001

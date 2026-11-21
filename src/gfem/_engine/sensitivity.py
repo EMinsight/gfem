@@ -20,6 +20,18 @@ tetrahedron behind each face) is integrated per triangle in a face-wise
 (surface P0) pass, and each face's integral is added to its owning
 tetrahedron, so its coefficient rows read like a volume term's.
 
+On a 2D mesh the elements are triangles and the faces line segments, and
+the passes run unchanged on them (counts by role: volume and surface
+elements). The second-order absorbing term there is a **tangential
+gradient** ``int c grad_t u . grad_t v`` along each segment.
+
+A **layer grid** of a 2D mesh (a `MaterialField` holding pixels) has its
+coefficients on the pinned rule's points (`gfem._engine.points`): its terms
+carry `Term.points` and a derivative per point. Its **point pass** integrates
+each such term against the rule space's test function, one value per point,
+and the transpose of the bilinear point map carries the sum of derivative
+times integral back to the pixels. The element pass skips these terms.
+
 **Node coordinates** (shape gradients) are a third pass over the same
 pairs, against the same terms, the operator's pieces with their
 coefficients. Under a node displacement ``W`` (a real P1 vector
@@ -229,7 +241,9 @@ class Term:
         kind: ``"gradient"`` (``int (C grad u) . grad v``, H1), ``"value"``
             (``int (C u) . v``, H(curl)), ``"curl"`` (``int (C curl u) .
             curl v``), ``"trace"`` (``int c u_t . v_t`` on a surface),
-            ``"curl trace"`` (``int c (n . curl u)(n . curl v)``), or
+            ``"curl trace"`` (``int c (n . curl u)(n . curl v)``),
+            ``"tangential gradient"`` (``int c grad_t u . grad_t v`` on a
+            line of a 2D mesh, H1; no node pass), or
             ``"surface"`` (any other surface form, differentiated by
             ``DiffShape``). The material pass integrates the kind's bare
             integrand (`INTEGRANDS`).
@@ -265,10 +279,22 @@ class Term:
         law: For a piece of a permittivity law (its θ moves with the law's
             parameters), the law's region: the law pass reads its weights
             under `law_key`. ``None`` otherwise.
+        points: For a volume term whose coefficient lives on the quadrature
+            points of a layer grid's region (`gfem._engine.points`), that
+            region: its derivatives are per point of the region, and the
+            point pass reads them. ``None`` otherwise.
     """
 
     name: str
-    kind: Literal["gradient", "value", "curl", "trace", "curl trace", "surface"]
+    kind: Literal[
+        "gradient",
+        "value",
+        "curl",
+        "trace",
+        "curl trace",
+        "tangential gradient",
+        "surface",
+    ]
     coefficient: Any = None
     region: Any = None
     integrand: Callable[[Any, Any], Any] | None = None
@@ -279,6 +305,7 @@ class Term:
     sheet: tuple[int, float] | None = None
     lumped: tuple[tuple, float] | None = None
     law: str | None = None
+    points: str | None = None
 
 
 def _dot(u: ngs.CoefficientFunction, v: ngs.CoefficientFunction) -> ngs.CF:
@@ -298,6 +325,8 @@ INTEGRANDS: dict[str, Callable[[Any, Any], Any]] = {
     "value": _dot,
     "trace": _tangential,
     "curl trace": lambda u, v: ngs.curl(u).Trace() * ngs.curl(v).Trace(),
+    # on a boundary element an H1 field's gradient is its surface gradient
+    "tangential gradient": lambda u, v: ngs.grad(u) * ngs.grad(v),
 }
 
 #: The symmetric moment ``u (x) v`` of each kind of `Term` with a
@@ -654,7 +683,9 @@ def _element_pass(
         or np.iscomplexobj(p.weights[name])
         for p in pairs
     ) or any(np.iscomplexobj(g) for g in given)
-    out = np.zeros(len(model.mesh.tetrahedra), dtype=complex if is_complex else float)
+    out = np.zeros(
+        len(model.mesh.volume_elements), dtype=complex if is_complex else float
+    )
     for values in given:
         out = out + values
     if not pairs:
@@ -668,7 +699,7 @@ def _element_pass(
             dx = quadrature.dx(pair.order, definedon=pair.domain)
             form += pair.weights[name] * _pair_integrand(integrand, pair) * q * dx
         form.Assemble()
-        out[built.tetrahedron_order] += form.vec.FV().NumPy()
+        out[built.cell_order] += form.vec.FV().NumPy()
         return out * built.scale**length_power
     p0, (q,), read = _surface_tests(built, is_complex=is_complex)
     form = ngs.LinearForm(p0)
@@ -677,10 +708,91 @@ def _element_pass(
         form += pair.weights[name] * _pair_integrand(integrand, pair) * q * ds
     form.Assemble()
     per_face = np.zeros(len(owner), dtype=out.dtype)
-    per_face[built.triangle_order] = read(form)[0]
+    per_face[built.facet_order] = read(form)[0]
     on = owner >= 0
     np.add.at(out, owner[on], per_face[on])
     return out * built.scale**length_power
+
+
+def _point_pass(
+    model: Model, pairs: list[FieldPair], term: Term, points: Any, comm: Any = None
+) -> np.ndarray:
+    """``sum_pairs theta_t sum_k a_t(left_k, right_k)`` at each point of ``points``.
+
+    On the pinned rule's points of a layer grid's region (a `PointMap`): the
+    rule space's test function gives each point its weight times the
+    integrand there, times ``scale ** term.length_power``.
+    """
+    from gfem._engine.points import rule_space
+
+    built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
+    name = term.name
+    pairs = _chunks([p for p in pairs if name in p.weights])
+    out = np.zeros(len(points.dofs), dtype=complex)
+    if not pairs:
+        return out
+    (order,) = {p.order for p in pairs}
+    space = rule_space(model, order, is_complex=True)
+    q = space.TestFunction()
+    form = ngs.LinearForm(space)
+    integrand = INTEGRANDS[term.kind]
+    dx = quadrature.dx(order, definedonelements=points.cells)
+    for pair in pairs:
+        form += pair.weights[name] * _pair_integrand(integrand, pair) * q * dx
+    form.Assemble()
+    out += form.vec.FV().NumPy()[points.dofs]
+    return out * built.scale**term.length_power
+
+
+def _point_sensitivity(
+    model: Model,
+    pairs: list[FieldPair],
+    wants: set[Hashable],
+    terms: Sequence[Term],
+    comm: Any = None,
+) -> dict[Hashable, np.ndarray]:
+    """The pixel cotangent of each wanted layer grid's density, ``(ny * nx,)``.
+
+    Each term on the grid's points contributes its derivative per point
+    times its point pass; the bilinear map's transpose carries the sum to
+    the pixels.
+    """
+    from gfem._engine.points import geometry_of, point_map
+
+    out: dict[Hashable, np.ndarray] = {}
+    orders = {p.order for p in pairs if isinstance(p, FieldPair)}
+    for kind in wants:
+        region = kind[1]  # ty: ignore[not-subscriptable]
+        total: np.ndarray = np.zeros(0, dtype=complex)
+        found = None
+        for term in terms:
+            derivative = term.derivatives.get("blend")
+            if term.points != region or derivative is None:
+                continue
+            if found is None:
+                (order,) = orders
+                found = point_map(model, region, order)
+                total = np.zeros(len(found.dofs), dtype=complex)
+            total = total + derivative.evaluated() * _point_pass(
+                model, pairs, term, found, comm
+            )
+        if found is None:
+            shape = geometry_of(model, region).shape
+            out[kind] = np.zeros(shape[0] * shape[1])
+            continue
+        out[kind] = found.matrix.T @ total
+    return out
+
+
+def _on_points(model: Model, kind: tuple) -> bool:
+    """Whether material ``kind`` is a layer grid's pixels (`gfem._engine.points`)."""
+    material = model.materials.get(kind[1])
+    return (
+        kind[2] == "blend"
+        and isinstance(material, MaterialField)
+        and material.blend_ends is not None
+        and material.blend_ends.pixels is not None
+    )
 
 
 def element_integrals(
@@ -703,7 +815,7 @@ def _load_pass(
 ) -> np.ndarray:
     """``sum_loads scale ** length_power int_e Lambda`` per gfem tetrahedron."""
     built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
-    out = np.zeros(len(model.mesh.tetrahedra))
+    out = np.zeros(len(model.mesh.volume_elements))
     if not loads:
         return out
     p0 = ngs.L2(built.mesh, order=0)
@@ -714,9 +826,7 @@ def _load_pass(
         form = ngs.LinearForm(p0)
         form += gf * q * quadrature.dx(load.order, definedon=load.domain)
         form.Assemble()
-        out[built.tetrahedron_order] += (
-            form.vec.FV().NumPy() * built.scale**load.length_power
-        )
+        out[built.cell_order] += form.vec.FV().NumPy() * built.scale**load.length_power
     return out
 
 
@@ -747,7 +857,7 @@ def _moment_pass(
     )
     owner = term.owner
     face = owner is not None
-    count = len(model.mesh.tetrahedra) if owner is None else len(owner)
+    count = len(model.mesh.volume_elements) if owner is None else len(owner)
     out = np.zeros((count, 3, 3), dtype=complex if is_complex else float)
     if not pairs:
         return out
@@ -755,13 +865,13 @@ def _moment_pass(
         space, tests, read = _surface_tests(
             built, is_complex=is_complex, copies=len(_SYMMETRIC)
         )
-        order = built.triangle_order
+        order = built.facet_order
     else:
         p0 = ngs.L2(built.mesh, order=0, complex=is_complex)
         space = ngs.FESpace([p0] * len(_SYMMETRIC))
         tests = space.TestFunction()
         read = _rows(len(_SYMMETRIC), p0.ndof)
-        order = built.tetrahedron_order
+        order = built.cell_order
     form = ngs.LinearForm(space)
     for pair in pairs:
         if face:
@@ -821,7 +931,7 @@ def _sheet_pass(
         form += weight * _pair_integrand(_tangential, pair) * q * ds
     form.Assemble()
     per_face = np.zeros(len(model.mesh.triangles), dtype=complex)
-    per_face[built.triangle_order] = read(form)[0]
+    per_face[built.facet_order] = read(form)[0]
     return per_face[faces]
 
 
@@ -1088,6 +1198,10 @@ def _node_pass(
             if theta is None or theta == 0:
                 continue
             weighted = (term, theta * built.scale**term.length_power)
+            if term.kind == "tangential gradient":  # pragma: no cover
+                # a 2D model's rule refuses the node coordinates first
+                msg = f"The term {term.name!r} has no shape derivative."
+                raise NonDifferentiableError(msg)
             if term.kind == "surface":
                 surface.append(weighted)
             elif term.kind in ("trace", "curl trace"):
@@ -1221,14 +1335,17 @@ def _material_sensitivity(
     integrated: Sequence[Integrated] = (),
 ) -> dict[Hashable, np.ndarray]:
     """The material part of `sensitivity`: each property's terms, in their order."""
+    point_kinds = {k for k in wants if _on_points(model, k)}  # ty: ignore[invalid-argument-type]
+    on_points = _point_sensitivity(model, pairs, point_kinds, terms, comm)
+    wants = wants - point_kinds
     axis_kinds = {k for k in wants if _per_axis(model, k)}  # ty: ignore[invalid-argument-type]
     integrals: dict[tuple[str, int], np.ndarray] = {}
     per_property: dict[str, np.ndarray] = {}
     for prop in sorted({k[2] for k in wants - axis_kinds}):  # ty: ignore[not-subscriptable]
-        total: np.ndarray = np.zeros(len(model.mesh.tetrahedra))
+        total: np.ndarray = np.zeros(len(model.mesh.volume_elements))
         for term in terms:
             derivative = term.derivatives.get(prop)
-            if derivative is None:
+            if derivative is None or term.points is not None:
                 continue
             key = (term.name, term.length_power + derivative.length_power)
             if key not in integrals:
@@ -1249,7 +1366,7 @@ def _material_sensitivity(
         terms,
         comm,
     )
-    return {
+    return on_points | {
         kind: (per_axis if kind in axis_kinds else per_property)[kind[2]][  # ty: ignore[not-subscriptable]
             model.mesh.elements(kind[1])  # ty: ignore[not-subscriptable]
         ]
@@ -1281,10 +1398,10 @@ def _per_axis_sensitivity(
     moments: dict[tuple[str, int], np.ndarray] = {}
     out: dict[str, np.ndarray] = {}
     for prop in sorted(props):
-        total: np.ndarray = np.zeros((len(model.mesh.tetrahedra), 3))
+        total: np.ndarray = np.zeros((len(model.mesh.volume_elements), 3))
         for term in terms:
             derivative = term.derivatives.get(prop)
-            if derivative is None:
+            if derivative is None or term.points is not None:
                 continue
             axis = derivative.per_axis
             if axis is None:
@@ -1305,7 +1422,7 @@ def _per_axis_sensitivity(
                 part = axis.evaluated() * along
             else:
                 per_face = np.einsum("fkij,fij->fk", axis.evaluated(), moment)
-                part = np.zeros((len(model.mesh.tetrahedra), 3), per_face.dtype)
+                part = np.zeros((len(model.mesh.volume_elements), 3), per_face.dtype)
                 on = term.owner >= 0
                 np.add.at(part, term.owner[on], per_face[on])
             if not axis.holomorphic:

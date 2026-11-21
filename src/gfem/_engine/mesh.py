@@ -39,15 +39,16 @@ class EngineMesh:
 
     Attributes:
         mesh: Coordinates in the gmsh file's length unit (``scale`` metres).
-            Domain ``k`` (1-based) is one gmsh volume entity, named after its
-            region; boundary ``j`` is one (surface region, domin, domout)
-            triple, named after its region, with ``bc`` = the gmsh number.
+            Domain ``k`` (1-based) is one gmsh volume entity (an area of a 2D
+            mesh), named after its region; boundary ``j`` is one (surface
+            region, domin, domout) triple, named after its region, with
+            ``bc`` = the gmsh number on a tetrahedral mesh.
         scale: Metres per mesh coordinate unit.
         domains: ``(physical tag, entity tag)`` of domain ``k`` at ``k - 1``.
-        tetrahedron_order: NGSolve volume element ``i`` is gfem tetrahedron
-            ``tetrahedron_order[i]``.
-        triangle_order: NGSolve surface element ``i`` is gfem triangle
-            ``triangle_order[i]``.
+        cell_order: NGSolve volume element ``i`` is gfem volume element
+            ``cell_order[i]`` (a row of `gfem.Mesh.volume_elements`).
+        facet_order: NGSolve surface element ``i`` is gfem surface element
+            ``facet_order[i]`` (a row of `gfem.Mesh.surface_elements`).
         node_order: NGSolve vertex ``i`` is gfem node ``node_order[i]``.
         comm: The communicator of a distributed mesh; ``None`` on one process.
         pairs: The periodic pairs as the mesh carries them: a model's pairs, or,
@@ -60,8 +61,8 @@ class EngineMesh:
     mesh: ngs.Mesh
     scale: float
     domains: tuple[tuple[int, int], ...]
-    tetrahedron_order: np.ndarray
-    triangle_order: np.ndarray
+    cell_order: np.ndarray
+    facet_order: np.ndarray
     node_order: np.ndarray
     comm: Any = None
     pairs: tuple[Pairing, ...] = ()
@@ -87,8 +88,8 @@ class _Partition:
     """
 
     node_order: np.ndarray
-    tetrahedron_order: np.ndarray
-    triangle_order: np.ndarray
+    cell_order: np.ndarray
+    facet_order: np.ndarray
     seed: int = 0
     swapped: tuple[bool, ...] = ()
 
@@ -148,7 +149,7 @@ def inverse_order(order: np.ndarray, n: int) -> np.ndarray:
     """The inverse of an element order at full length, ``-1`` where a rank holds none.
 
     Args:
-        order: `EngineMesh.tetrahedron_order` or `EngineMesh.triangle_order`.
+        order: `EngineMesh.cell_order` or `EngineMesh.facet_order`.
         n: The number of such elements in the whole `gfem.Mesh`.
     """
     inverse = np.full(n, -1, dtype=np.int64)
@@ -181,7 +182,15 @@ def to_ngsolve(
             topology and communicator; no partition passed the periodic check
             within the budget; or the search left the seed a partition of this
             topology and communicator already took.
+        NotImplementedError: A 2D mesh with periodic pairs or a communicator.
     """
+    if mesh.dim != 3 and (periodic or comm is not None):
+        what = "periodic pairs" if periodic else "a communicator (ranks)"
+        raise NotImplementedError(
+            f"A 2D mesh is built on one process without periodic pairs, but this "
+            f"build asked for {what}. Solve it on one process, or read the file "
+            "as a slab with gfem.Mesh.from_gmsh_cross_section."
+        )
     if comm is not None and len(periodic) > 1:
         _mpi.refuse_feature("periodic")
     check_nodes(np.asarray(mesh.nodes, float), periodic)
@@ -195,20 +204,22 @@ def to_ngsolve(
         mesh=ngs.Mesh(ngmesh),
         scale=scale,
         domains=domains,
-        tetrahedron_order=tet_order,
-        triangle_order=tri_order,
+        cell_order=tet_order,
+        facet_order=tri_order,
         node_order=np.arange(len(points)),
         pairs=periodic,
     )
 
 
-def tetrahedron_domains(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
-    """The ``(physical tag, entity tag)`` of each domain, and each tet's 1-based domain.
+def cell_domains(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
+    """The ``(physical tag, entity tag)`` of each domain, and each cell's 1-based one.
 
-    One process's volume elements are the tets in order of their domain, each domain
-    in file order.
+    The cells are the volume elements (`gfem.Mesh.volume_elements`). One process's
+    NGSolve volume elements are the cells in order of their domain, each domain in
+    file order.
     """
-    keys = np.stack([mesh.tetrahedron_tags, mesh.tetrahedron_entities], axis=1)
+    topology = mesh._topology  # noqa: SLF001
+    keys = np.stack([topology.volume_tags, topology.volume_entities], axis=1)
     domains, tet_domain = np.unique(keys, axis=0, return_inverse=True)
     return domains, tet_domain.ravel() + 1
 
@@ -224,11 +235,13 @@ def _netgen_mesh(
     ``order`` (`block_order`) feeds the tetrahedra of each domain to netgen in
     that order instead of the file's.
     """
+    if mesh.dim == 2:
+        return _netgen_mesh_2d(mesh, points)
     names = {(r.dim, r.tag): r.name for r in mesh.regions}
     ngmesh = ngm.Mesh(dim=3)  # ty: ignore[unresolved-attribute]
     ngmesh.AddPoints(np.ascontiguousarray(points))
 
-    domains, tet_domain = tetrahedron_domains(mesh)
+    domains, tet_domain = cell_domains(mesh)
     if order is None:
         order = np.arange(len(tet_domain))
     ordered = tet_domain[order]
@@ -270,6 +283,52 @@ def _netgen_mesh(
     return ngmesh, tuple((int(t), int(e)) for t, e in domains), tet_order, tri_order
 
 
+def _netgen_mesh_2d(
+    mesh: Mesh, points: np.ndarray
+) -> tuple[Any, tuple[tuple[int, int], ...], np.ndarray, np.ndarray]:
+    """The netgen mesh of a 2D mesh: areas, then the lines' segments.
+
+    A segment's normal is its direction crossed with +z: NGSolve's, and the one
+    `gfem.Mesh.adjacency` reads, so it points out of ``domin``. A segment with
+    only a front side is reversed so that its normal leaves the mesh, as a 3D
+    face with only a front side is flipped.
+    """
+    topology = mesh._topology  # noqa: SLF001
+    names = {(r.dim, r.tag): r.name for r in mesh.regions}
+    ngmesh = ngm.Mesh(dim=2)  # ty: ignore[unresolved-attribute]
+    ngmesh.AddPoints(np.ascontiguousarray(points))
+
+    domains, cell_domain = cell_domains(mesh)
+    cell_order = np.argsort(cell_domain, kind="stable")
+    cells = topology.volume_elements
+    for k, (tag, _) in enumerate(domains, start=1):
+        ngmesh.SetMaterial(k, names[2, int(tag)])
+        ngmesh.AddElements(
+            dim=2, index=k, data=np.ascontiguousarray(cells[cell_domain == k]), base=0
+        )
+
+    nb = topology.surface_neighbours
+    din = np.where(nb[:, 0] >= 0, cell_domain[np.maximum(nb[:, 0], 0)], 0)
+    dout = np.where(nb[:, 1] >= 0, cell_domain[np.maximum(nb[:, 1], 0)], 0)
+    segments = topology.surface_elements.copy()
+    flip = din == 0
+    segments[flip] = segments[flip][:, ::-1]
+    din[flip], dout[flip] = dout[flip], 0
+    keys = np.stack([topology.surface_tags, din, dout], axis=1)
+    groups, segment_group = np.unique(keys, axis=0, return_inverse=True)
+    segment_group = segment_group.ravel() + 1
+    facet_order = np.argsort(segment_group, kind="stable")
+    for j, (tag, _, _) in enumerate(groups, start=1):
+        ngmesh.SetBCName(j - 1, names[1, int(tag)])
+        ngmesh.AddElements(
+            dim=1,
+            index=j,
+            data=np.ascontiguousarray(segments[segment_group == j]),
+            base=0,
+        )
+    return ngmesh, tuple((int(t), int(e)) for t, e in domains), cell_order, facet_order
+
+
 @dataclasses.dataclass(eq=False)
 class _Received:
     """One partition as a rank received it, before the wrap."""
@@ -286,8 +345,8 @@ class _Try:
     """A checked periodic partition and its agreed counts."""
 
     received: _Received
-    tetrahedron_order: np.ndarray
-    triangle_order: np.ndarray
+    cell_order: np.ndarray
+    facet_order: np.ndarray
     missing: int
     reverse: int
     surfaces: bool
@@ -477,7 +536,7 @@ def _distributed(
     if periodic:
         found, seed, swapped = _search(mesh, comm, periodic, memo, key)
         received = found.received
-        tet_order, tri_order = found.tetrahedron_order, found.triangle_order
+        tet_order, tri_order = found.cell_order, found.facet_order
         if swapped:
             pairs = tuple(_swap(p) for p in periodic)
     else:
@@ -489,8 +548,8 @@ def _distributed(
     first = memo.get((key, names))
     if first is not None:
         same = np.array_equal(node_order, first.node_order) and (
-            _same_rows(tets, mesh.tetrahedra[first.tetrahedron_order])
-            and _same_rows(tris, mesh.triangles[first.triangle_order])
+            _same_rows(tets, mesh.tetrahedra[first.cell_order])
+            and _same_rows(tris, mesh.triangles[first.facet_order])
         )
     else:
         if tet_order is None or tri_order is None:
@@ -518,8 +577,8 @@ def _distributed(
         mesh=ngs.Mesh(ngmesh),
         scale=scale,
         domains=received.domains,
-        tetrahedron_order=first.tetrahedron_order,
-        triangle_order=first.triangle_order,
+        cell_order=first.cell_order,
+        facet_order=first.facet_order,
         node_order=first.node_order,
         comm=comm,
         pairs=pairs,

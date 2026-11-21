@@ -22,6 +22,7 @@ import scipy.sparse as sp
 from gfem import _morph, _mpi, _periodic
 from gfem._boundaries import surfaces_of
 from gfem._checks import is_traced
+from gfem._dim2 import refuse_entry
 from gfem._pytree import readonly
 from gfem._sparse import Coo, coo, spd_solve
 from gfem.errors import MeshQualityError, MeshQualityWarning, RegionNotFoundError
@@ -103,6 +104,7 @@ def quality(mesh: Mesh) -> jax.Array:
     Returns:
         One value per tetrahedron, shape ``(n_tetrahedra,)``.
     """
+    refuse_entry(mesh, "quality")
     return _scaled_jacobian(
         jnp, jnp.asarray(mesh.nodes), mesh.tetrahedra, _orientation(mesh)
     )
@@ -176,7 +178,7 @@ def _quality_message(
     region = next(
         r.name
         for r in mesh.regions
-        if r.dim == 3 and r.tag == mesh.tetrahedron_tags[worst]
+        if r.dim == mesh.dim and r.tag == mesh.tetrahedron_tags[worst]
     )
     centroid = nodes[tet].mean(axis=0) / scale
     edges = [np.linalg.norm(x0[i] - x0[j]) for i in range(4) for j in range(i + 1, 4)]
@@ -334,7 +336,7 @@ class BoundaryMorph:
 jax.tree_util.register_static(BoundaryMorph)
 
 
-def boundary_morph(
+def boundary_morph(  # noqa: PLR0915
     model: Model,
     moving: str,
     *,
@@ -407,6 +409,7 @@ def boundary_morph(
             ``extension`` is unknown, or ``moving`` is a periodic surface.
         TypeError: An argument has the wrong type.
     """
+    refuse_entry(getattr(model, "mesh", None), "boundary_morph")
     if not isinstance(model, Model):
         msg = f"boundary_morph needs a gfem.Model, got {type(model).__name__}."
         raise TypeError(msg)
@@ -440,7 +443,7 @@ def boundary_morph(
     ties = _periodic.tie_classes(n_nodes, pairings)
     held_surfaces = {s for port in model.ports for s in surfaces_of(port)}
     held_surfaces |= set(fixed)
-    tag = {r.name: r.tag for r in mesh.regions if r.dim == 2}
+    tag = {r.name: r.tag for r in mesh.regions if r.dim == mesh.dim - 1}
     tri_tags = mesh.triangle_tags
     held_tri = np.isin(tri_tags, [tag[s] for s in held_surfaces])
     held = np.zeros(n_nodes, dtype=bool)
@@ -633,7 +636,7 @@ def _face_signs(
 
 def _sides(model: Model, faces: np.ndarray) -> str:
     mesh = model.mesh
-    name = {r.tag: r.name for r in mesh.regions if r.dim == 3}
+    name = mesh._region_names()  # noqa: SLF001
     nb = mesh.triangle_neighbours[faces]
     pairs = {
         tuple(name[int(mesh.tetrahedron_tags[t])] if t >= 0 else "outside" for t in row)

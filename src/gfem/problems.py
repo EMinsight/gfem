@@ -611,6 +611,10 @@ def _frequencies(value: Any, owner: str = "PortMode") -> tuple[float, ...]:
     return out
 
 
+Polarization = Literal["Ez", "Hz"]
+_POLARIZATIONS = get_args(Polarization)
+
+
 @dataclasses.dataclass(frozen=True, init=False)
 class PortMode:
     """The 2D port mode problem of a wave port over a frequency grid.
@@ -647,11 +651,17 @@ class PortMode:
             order: by decreasing effective index for lossless modes (1 = the
             most confined), with strongly attenuated modes ranked lower.
             ``None``: the wave port's own ``mode``.
+        polarization: On a 2D mesh, the field normal to the plane that the
+            line port's mode carries: ``"Ez"`` (its field is
+            `PortModeResult.e_field`) or ``"Hz"`` (`PortModeResult.h_field`).
+            Required there, and ``None`` on a 3D mesh, as for `Driven`.
 
     Raises:
         TypeError: ``port`` is not a name.
-        ValueError: A frequency is not finite and positive, or ``mode`` is
-            not an integer >= 1.
+        ValueError: A frequency is not finite and positive, ``mode`` is
+            not an integer >= 1, or ``polarization`` is not ``"Ez"``, ``"Hz"``
+            or ``None``. `gfem.solve` raises it for no ``polarization`` on a
+            2D mesh and for one on a 3D mesh.
         NonDifferentiableError: ``frequency`` is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
 
@@ -674,10 +684,19 @@ class PortMode:
     port: str
     frequency: tuple[float, ...]
     mode: int | None
+    polarization: Polarization | None = None
     _rule: ClassVar[str] = "gfem._sweep.port_mode:PortModeRule"
 
-    def __init__(self, port: str, frequency: Any, *, mode: int | None = None) -> None:
+    def __init__(
+        self,
+        port: str,
+        frequency: Any,
+        *,
+        mode: int | None = None,
+        polarization: Polarization | None = None,
+    ) -> None:
         """Validate and normalize (see the class docstring)."""
+        _polarization(polarization, "PortMode")
         if not isinstance(port, str):
             raise TypeError(
                 f"PortMode.port must be the name of a WavePort, got {port!r}."
@@ -693,6 +712,7 @@ class PortMode:
         object.__setattr__(self, "port", port)
         object.__setattr__(self, "frequency", _frequencies(frequency))
         object.__setattr__(self, "mode", None if mode is None else int(mode))
+        object.__setattr__(self, "polarization", polarization)
 
 
 jax.tree_util.register_static(PortMode)
@@ -736,6 +756,10 @@ class Driven:
     that mode, and ``WavePort(offset=...)`` de-embeds it. The port absorbs
     its own mode without reflection, hybrid modes included, and the modes
     are on ``DrivenResult.port_modes``.
+
+    On a 2D model (a mesh of dimension 2) the solve computes one
+    polarization, ``polarization="Ez"`` or ``"Hz"``, and each excited port is
+    fed 1 W/m per metre along :math:`z` (`gfem.conventions`, 2D models).
 
     Example:
         Solve 100 frequencies in full, or read a 300-point sweep from a few
@@ -797,6 +821,13 @@ class Driven:
             incidence angle fixed in every port medium at once. Build
             ``wave_vector`` with `gfem.Model.bloch_wave_vector` at this
             frequency. ``None``: the same wave vector at every frequency.
+        polarization: On a 2D mesh, the field normal to the plane that the
+            solve computes: ``"Ez"`` (E normal to the plane, H in it; kept
+            fields read with ``DrivenResult.e_field``) or ``"Hz"`` (H normal
+            to the plane; read with ``DrivenResult.h_field``). Required
+            there, since a perfect conductor is a different boundary
+            condition for each. ``None`` (the default) on a 3D mesh, whose
+            solve holds both.
 
     Raises:
         TypeError: ``excite`` is not port names, or ``keep_fields`` is not a
@@ -807,7 +838,10 @@ class Driven:
             frequency, a ``samples`` or ``keep_fields`` frequency is not one
             of ``frequency``, ``wave_vector`` is not a finite 3-vector, or
             ``wave_vector_frequency`` is not a positive finite frequency or
-            is given without ``wave_vector``. With ``wave_vector``,
+            is given without ``wave_vector``, or ``polarization`` is not
+            ``"Ez"``, ``"Hz"`` or ``None``. `gfem.solve` also raises it
+            for no ``polarization`` on a 2D mesh and for one on a 3D mesh.
+            With ``wave_vector``,
             `gfem.solve` also raises it on a model without a `gfem.Periodic`
             pair, for a k with a component outside the span of the pairs'
             translations, and with
@@ -875,7 +909,10 @@ class Driven:
     samples: tuple[float, ...] | None = None
     wave_vector: tuple[float, float, float] | None = None
     wave_vector_frequency: float | None = None
+    polarization: Polarization | None = None
     _rule: ClassVar[str] = "gfem._engine.driven:DrivenRule"
+    #: The rule on a 2D mesh: the scalar field normal to the plane.
+    _rule_2d: ClassVar[str] = "gfem._engine.driven2d:Driven2DRule"
 
     def __init__(
         self,
@@ -887,12 +924,14 @@ class Driven:
         keep_fields: bool | float | Sequence[float] = False,
         wave_vector: Sequence[float] | None = None,
         wave_vector_frequency: float | None = None,
+        polarization: Polarization | None = None,
     ) -> None:
         """Validate and normalize (see the class docstring)."""
         if sweep not in _SWEEPS:
             raise ValueError(
                 f"Driven.sweep must be 'uniform' or 'adaptive', got {sweep!r}."
             )
+        _polarization(polarization, "Driven")
         frequencies = _frequencies(frequency, "Driven")
         object.__setattr__(self, "frequency", frequencies)
         object.__setattr__(self, "excite", _port_names(excite))
@@ -905,6 +944,7 @@ class Driven:
             "wave_vector_frequency",
             _reference_frequency(wave_vector_frequency, self.wave_vector),
         )
+        object.__setattr__(self, "polarization", polarization)
 
     @property
     def kept_frequencies(self) -> tuple[float, ...]:
@@ -914,6 +954,39 @@ class Driven:
         if self.keep_fields is False:
             return ()
         return self.keep_fields
+
+
+def _polarization(value: Any, owner: str) -> None:
+    """Raise for a ``polarization`` that is not ``"Ez"``, ``"Hz"`` or ``None``."""
+    if value is not None and value not in _POLARIZATIONS:
+        raise ValueError(
+            f"{owner}.polarization must be 'Ez' (E normal to the plane of a 2D "
+            "mesh) or 'Hz' (H normal to it), or None on a 3D mesh, got "
+            f"{value!r}."
+        )
+
+
+def _check_polarization(problem: Any, dim: int) -> None:
+    """Raise when a problem's polarization does not fit a mesh of ``dim``.
+
+    Raises:
+        ValueError: No polarization on a 2D mesh, or one on a 3D mesh, for a
+            driven or port mode problem.
+    """
+    if not isinstance(problem, (Driven, PortMode)):
+        return
+    owner = type(problem).__name__
+    if dim == 2 and problem.polarization is None:
+        raise ValueError(
+            f'A 2D mesh solves one polarization: pass {owner}(polarization="Ez") '
+            '(E normal to the plane) or polarization="Hz" (H normal to the '
+            "plane)."
+        )
+    if dim != 2 and problem.polarization is not None:
+        raise ValueError(
+            f"{owner}.polarization applies to a 2D mesh; a 3D solve has both "
+            f"polarizations. Leave it out (got {problem.polarization!r})."
+        )
 
 
 def _kept(value: Any, frequencies: tuple[float, ...]) -> bool | tuple[float, ...]:

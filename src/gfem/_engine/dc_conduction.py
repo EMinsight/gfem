@@ -343,7 +343,7 @@ class DCConductionRule:
         free = ngs.BitArray(space.FreeDofs())
         if self.domain.pinned.size:
             built = discretization(self._mesh).built
-            order = np.argsort(built.tetrahedron_order)
+            order = np.argsort(built.cell_order)
             for tet in self.domain.pinned:
                 element = ngs.ElementId(ngs.VOL, int(order[tet]))
                 for dof in space.GetDofNrs(element):
@@ -406,7 +406,7 @@ class DCConductionRule:
             for j in range(i, n):
                 right.vec.FV().NumPy()[:] = phi[:, j]
                 form.Assemble()
-                out[built.tetrahedron_order, i, j] = form.vec.FV().NumPy() * per_volume
+                out[built.cell_order, i, j] = form.vec.FV().NumPy() * per_volume
                 out[:, j, i] = out[:, i, j]
         out[~self.domain.conducting] = 0.0
         return out

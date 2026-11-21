@@ -7,7 +7,7 @@ import functools
 import itertools
 import warnings
 from collections.abc import Callable, Mapping
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -16,6 +16,9 @@ import numpy as np
 from gfem._checks import is_traced
 from gfem._pytree import register_fields
 from gfem.errors import NonDifferentiableError
+
+if TYPE_CHECKING:
+    from gfem.design import LayerDensity
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1151,8 +1154,34 @@ _SLOPES: dict[str, Callable[[np.ndarray, float], np.ndarray]] = {
 
 
 @dataclasses.dataclass(frozen=True)
+class PixelGeometry:
+    """Where a layer grid's pixels lie: what a solve needs to sample them.
+
+    Attributes:
+        region: The volume region the grid covers.
+        origin: The grid's lower-left corner ``(x, y)`` (m).
+        pitch: The pixel side (m).
+        shape: ``(ny, nx)``.
+        periodic: Per axis ``(x, y)``, whether the grid wraps around a seam.
+    """
+
+    region: str
+    origin: tuple[float, float]
+    pitch: float
+    shape: tuple[int, int]
+    periodic: tuple[bool, bool] = (False, False)
+
+    def __post_init__(self) -> None:
+        # plain Python values: hashable static data, exact in JSON
+        object.__setattr__(self, "origin", tuple(float(x) for x in self.origin))
+        object.__setattr__(self, "pitch", float(self.pitch))
+        object.__setattr__(self, "shape", tuple(int(n) for n in self.shape))
+        object.__setattr__(self, "periodic", tuple(bool(p) for p in self.periodic))
+
+
+@dataclasses.dataclass(frozen=True)
 class Blend:
-    """The fixed half of a blend with a permittivity-law end.
+    r"""The fixed half of a blend held by its density.
 
     A `MaterialField` built by `MaterialField.interpolate` from a material
     whose ``eps_r`` is a `PermittivityLaw` holds its density as the leaf
@@ -1161,18 +1190,42 @@ class Blend:
     eps_inf limit plus one susceptibility piece per end and, for
     ``"index"``, a cross piece (`gfem._engine.terms.blend_pieces`).
 
+    A field built from a layer density of a 2D mesh
+    (`gfem.design.LayerDensity`) takes this form whatever its ends: the
+    leaf is then the pixel array, `pixels` locates it, and `others` holds
+    the other properties both ends define. A solve applies the scheme at
+    each of its quadrature points.
+
     Attributes:
         void: The permittivity at density 0: a law, or a constant end's
             complex ``eps_r (1 - i tan_delta)``.
         solid: The permittivity at density 1, the same way.
         scheme: ``"index"``, ``"linear"``, ``"simp"`` or ``"ramp"``.
         penalty: The SIMP / RAMP penalty.
+        others: For a layer density, ``(name, void, solid)`` of each other
+            property both ends define (``mu_r``, ``conductivity``, ...),
+            blended by the scheme's weight (:math:`w = \rho` for
+            ``"index"``); ``()`` otherwise.
+        pixels: For a layer density, where its pixels lie; ``None`` for a
+            density per element.
     """
 
     void: PermittivityLaw | complex
     solid: PermittivityLaw | complex
     scheme: str
     penalty: float
+    others: tuple[tuple[str, Any, Any], ...] = ()
+    pixels: PixelGeometry | None = None
+
+    def other(self, name: str, rho: np.ndarray) -> tuple[Any, Any] | None:
+        """Property ``name`` of `others` at densities ``rho``, and its slope.
+
+        ``None`` when the ends do not both define it.
+        """
+        for n, a, b in self.others:
+            if n == name:
+                return a + self.weight(rho) * (b - a), self.slope(rho) * (b - a)
+        return None
 
     def weight(self, rho: np.ndarray) -> np.ndarray:
         """``w(rho)`` of a weight scheme (``rho`` for ``"index"``)."""
@@ -1225,6 +1278,12 @@ def _blend_end(material: Material, which: str) -> PermittivityLaw | complex:
             "index scheme and a permittivity-law blend take isotropic ends only."
         )
     return complex(float(eps_r) * (1 - 1j * float(material.tan_delta)))  # ty: ignore[invalid-argument-type]
+
+
+def _scalar(value: Any) -> float | complex:
+    """A material's isotropic property value as a Python number."""
+    value = complex(value)
+    return value.real if value.imag == 0 else value
 
 
 def refractive_index(eps: complex) -> complex:
@@ -1302,7 +1361,7 @@ class MaterialField:
     Keyword-only. Any `Material` property may be given; a property left out
     is ``None`` (adding a property later never changes the structure that
     `jax.tree` functions see in existing code). Each given property is
-    either an array of one value per tetrahedron of the region, in mesh order
+    either an array of one value per element of the region, in mesh order
     (``mesh.elements(region)``), or a single value for the whole region.
 
     `jax.grad` of any objective reaches the values.
@@ -1332,7 +1391,8 @@ class MaterialField:
             cannot be differentiated.
         blend: For a blend with a permittivity-law end
             (`MaterialField.interpolate`), its density per element, the
-            design leaf that `jax.grad` reaches; ``None`` otherwise. Its
+            design leaf that `jax.grad` reaches; for a layer density of a 2D
+            model, its pixels ``(ny, nx)``; ``None`` otherwise. Its
             permittivity is then `blend_ends` at that density (`eps_r` and
             `tan_delta` are ``None``).
         blend_ends: The fixed ends and scheme of that blend (`Blend`), or
@@ -1405,7 +1465,14 @@ class MaterialField:
                 "eps_r, tan_delta and axes must be None."
             )
         rho = jnp.asarray(self.blend)
-        if jnp.iscomplexobj(rho) or rho.ndim > 1:
+        grid = getattr(self.blend_ends, "pixels", None)
+        if grid is not None:
+            if jnp.iscomplexobj(rho) or rho.shape != grid.shape:
+                raise ValueError(
+                    "MaterialField: the blend of a layer grid is a real pixel "
+                    f"array of shape {grid.shape} (ny, nx), got shape {rho.shape}."
+                )
+        elif jnp.iscomplexobj(rho) or rho.ndim > 1:
             raise ValueError(
                 "MaterialField: blend is a real density, one value per element "
                 f"or one for the region, got shape {rho.shape}."
@@ -1439,7 +1506,7 @@ class MaterialField:
     @classmethod
     def interpolate(
         cls,
-        density: jax.Array,
+        density: jax.Array | LayerDensity,
         void: Material,
         solid: Material,
         *,
@@ -1496,8 +1563,15 @@ class MaterialField:
         field (an anisotropic material field otherwise). The ``index``
         scheme and a law end take isotropic ends only.
 
+        On a 2D model, ``density`` is a layer grid's `gfem.design.LayerDensity`
+        (``grid.to_elements(rho)``): the field keeps the pixels as its leaf
+        `blend`, with `blend_ends` holding the ends, the scheme and the grid's
+        geometry, and a solve applies the scheme at each of its quadrature
+        points. Its ends are isotropic.
+
         Args:
-            density: One value per element, in [0, 1] (0 = void, 1 = solid).
+            density: One value per element, in [0, 1] (0 = void, 1 = solid),
+                or a `gfem.design.LayerDensity` on a 2D model.
             void: The material at density 0.
             solid: The material at density 1.
             scheme: The interpolation: a weight, or ``"index"``.
@@ -1516,6 +1590,11 @@ class MaterialField:
                 f"Unknown interpolation scheme {scheme!r}; use one of "
                 f"{', '.join(repr(s) for s in _ALL_SCHEMES)}."
             )
+        # imported here: gfem.design imports this module
+        from gfem.design import LayerDensity
+
+        if isinstance(density, LayerDensity):
+            return cls._interpolate_pixels(density, void, solid, scheme, penalty)
         rho = jnp.asarray(density, dtype=jnp.float64)
         law = any(isinstance(m.eps_r, PermittivityLaw) for m in (void, solid))
         if law or scheme == "index":
@@ -1570,6 +1649,44 @@ class MaterialField:
         return cls(**props, eps_r=((1 - rho) * na + rho * nb) ** 2)
 
     @classmethod
+    def _interpolate_pixels(
+        cls, density: Any, void: Material, solid: Material, scheme: str, penalty: float
+    ) -> MaterialField:
+        """`interpolate` of a `gfem.design.LayerDensity`: the pixels in the blend.
+
+        Every scheme, constant ends included, is applied at each point a solve
+        samples, so the ends, the other properties both define and the grid's
+        geometry are the blend's static data.
+
+        Raises:
+            ValueError: An end is anisotropic.
+        """
+        for which, m in (("void", void), ("solid", solid)):
+            if not m.isotropic:
+                raise ValueError(
+                    f"MaterialField.interpolate: the {which} end is anisotropic, "
+                    "but a layer density of a 2D model takes isotropic ends only."
+                )
+        ends = (_blend_end(void, "void"), _blend_end(solid, "solid"))
+        others = []
+        for name in PROPERTY_NAMES:
+            if name in ("eps_r", "tan_delta"):
+                continue
+            a, b = getattr(void, name), getattr(solid, name)
+            if a is not None and b is not None:
+                others.append((name, _scalar(a), _scalar(b)))
+        blend = Blend(
+            ends[0],
+            ends[1],
+            scheme,
+            float(penalty),
+            others=tuple(others),
+            pixels=density.grid.geometry,
+        )
+        rho = jnp.asarray(density.pixels, dtype=jnp.float64)
+        return cls(blend=rho, blend_ends=blend, region=density.grid.region)
+
+    @classmethod
     def uniform(cls, region: str, material: Material) -> MaterialField:
         """A whole region's constant material, as a differentiable field.
 
@@ -1606,6 +1723,8 @@ class MaterialField:
     def __repr__(self) -> str:
         n = self.n_elements
         size = "uniform" if n is None else f"{n} elements"
+        if self.blend_ends is not None and self.blend_ends.pixels is not None:
+            size = f"layer grid {self.blend_ends.pixels.shape}"
         parts = []
         for name in self.properties:
             v = getattr(self, name)

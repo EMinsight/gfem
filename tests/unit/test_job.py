@@ -15,7 +15,7 @@ from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._refine import refine_model
-from gfem.mesh import _TOPOLOGY_ARRAYS
+from gfem.mesh import _topology_arrays
 
 DATA = Path(__file__).parent / "data"
 LAYERS = (("oxide", 0.5), ("nitride", 0.25))
@@ -182,8 +182,9 @@ def _assert_same_topology(a, b):
     assert b.source is None
     assert a.length_unit == b.length_unit
     assert a.regions == b.regions
-    for name in _TOPOLOGY_ARRAYS:
-        x, y = getattr(a._topology, name), getattr(b._topology, name)
+    ya = _topology_arrays(b._topology)
+    for name, x in _topology_arrays(a._topology).items():
+        y = ya[name]
         assert x.dtype == y.dtype
         np.testing.assert_array_equal(x, y)
         assert not y.flags.writeable
@@ -791,6 +792,15 @@ def test_a_driven_result_saved_before_the_solve_record_loads_without_it(tmp_path
     assert sweep.solved == (True, True)
     assert sweep.iterations is None
     assert sweep.preconditioner_reused is None
+
+
+def test_a_driven_result_saved_before_2d_models_reads_as_a_3d_result(tmp_path):
+    (tmp_path / "result.json").write_text(DRIVEN_RESULT_9F004A7)
+    arrays = {".s.values": np.zeros((2, 2, 2), complex), ".s.z_ref": np.ones((2, 2))}
+    np.savez(tmp_path / "result.npz", **arrays)
+    result = gfem.load_result(tmp_path)
+    assert result.h_fields == ()
+    assert result.polarization is None
 
 
 # --- a sweep that stops part-way ----------------------------------------------------

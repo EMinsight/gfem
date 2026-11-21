@@ -201,6 +201,8 @@ nitpick_ignore = [
             "Sweep",
             "Excluded",
             "Direction",
+            "Polarization",
+            "gfem.problems.Polarization",
             "Extension",
             "InterfaceKind",
             "LinearSolver",

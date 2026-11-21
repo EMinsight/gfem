@@ -66,10 +66,10 @@ def test_each_gmsh_entity_is_its_own_domain(two_box):
 
 def test_element_order_maps_engine_elements_to_mesh_elements(two_box):
     built = to_ngsolve(two_box)
-    tets = two_box.tetrahedra[built.tetrahedron_order]
+    tets = two_box.tetrahedra[built.cell_order]
     for i, el in enumerate(built.mesh.Elements(ngs.VOL)):
         assert sorted(v.nr for v in el.vertices) == sorted(tets[i])
-    tris = two_box.triangles[built.triangle_order]
+    tris = two_box.triangles[built.facet_order]
     for i, el in enumerate(built.mesh.Elements(ngs.BND)):
         assert sorted(v.nr for v in el.vertices) == sorted(tris[i])
 
@@ -104,7 +104,7 @@ def test_one_process_holds_every_node_in_gfem_order(two_box):
 
 
 def test_the_inverse_of_a_whole_order_undoes_it(two_box):
-    order = to_ngsolve(two_box).tetrahedron_order
+    order = to_ngsolve(two_box).cell_order
     inverse = inverse_order(order, len(order))
     assert np.array_equal(inverse, np.argsort(order))
 

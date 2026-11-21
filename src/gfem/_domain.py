@@ -83,6 +83,20 @@ def nedelec_unknowns(mesh: Mesh, domain: EMDomain, order: int) -> int:
     return p * e + p * (p - 1) * f + p * (p - 1) * (p - 2) // 2 * t
 
 
+def h1_unknowns(mesh: Mesh, domain: EMDomain, order: int) -> int:
+    """H1 unknowns of ``order`` on ``domain`` of a 2D ``mesh``.
+
+    ``V + (p-1) E + (p-1)(p-2)/2 T`` over the domain's vertices, edges and
+    triangles: NGSolve's ``H1(order=p)`` size on triangles. Dirichlet
+    unknowns count, so it bounds the system size from above.
+    """
+    cells = mesh.volume_elements[domain.active]
+    edges = cells[:, np.array([[0, 1], [1, 2], [2, 0]])].reshape(-1, 2)
+    v, e, t = len(np.unique(cells)), _distinct_rows(edges), len(cells)
+    p = order
+    return v + (p - 1) * e + (p - 1) * (p - 2) // 2 * t
+
+
 def _distinct_rows(rows: np.ndarray) -> int:
     """How many distinct vertex sets the rows hold."""
     rows = np.ascontiguousarray(np.sort(rows, axis=1), dtype=np.int64)
@@ -91,8 +105,9 @@ def _distinct_rows(rows: np.ndarray) -> int:
 
 
 def entity_keys(mesh: Mesh) -> tuple[np.ndarray, np.ndarray]:
-    """Distinct ``(tag, entity)`` rows and the row of each tetrahedron."""
-    keys = np.stack([mesh.tetrahedron_tags, mesh.tetrahedron_entities], axis=1)
+    """Distinct ``(tag, entity)`` rows and the row of each volume element."""
+    topology = mesh._topology  # noqa: SLF001 - the role arrays of either dimension
+    keys = np.stack([topology.volume_tags, topology.volume_entities], axis=1)
     uniq, inverse = np.unique(keys, axis=0, return_inverse=True)
     return uniq, inverse.ravel()
 
@@ -141,17 +156,18 @@ def em_domain(mesh: Mesh, excluded: set[tuple[int, int]]) -> EMDomain:
 
 
 def _domain(mesh: Mesh, excluded: set[tuple[int, int]]) -> EMDomain:
-    keys = np.stack([mesh.tetrahedron_tags, mesh.tetrahedron_entities], axis=1)
+    topology = mesh._topology  # noqa: SLF001 - the role arrays of either dimension
+    keys = np.stack([topology.volume_tags, topology.volume_entities], axis=1)
     out = np.zeros(len(keys), dtype=bool)
     for tag, ent in excluded:
         out |= (keys[:, 0] == tag) & (keys[:, 1] == ent)
     active = ~out
     active.flags.writeable = False
-    nb = mesh.triangle_neighbours
+    nb = topology.surface_neighbours
     n_active = ((nb >= 0) & active[np.maximum(nb, 0)]).sum(axis=1)
     sides = {}
     for r in mesh.regions:
-        if r.dim == 2:
-            counts = np.bincount(n_active[mesh.triangle_tags == r.tag], minlength=3)
+        if r.dim == mesh.dim - 1:
+            counts = np.bincount(n_active[topology.surface_tags == r.tag], minlength=3)
             sides[r.name] = (int(counts[0]), int(counts[1]), int(counts[2]))
     return EMDomain(excluded=tuple(sorted(excluded)), active=active, sides=sides)

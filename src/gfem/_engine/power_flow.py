@@ -294,7 +294,7 @@ def _selection(
         return out
     out = np.zeros(n, bool)
     for name in side:
-        if mesh.region(name).dim != 3:
+        if mesh.region(name).dim != mesh.dim:
             raise ValueError(
                 f"{name!r} is a surface region; power_flow's side is a set of "
                 "elements: volume regions, or a predicate on element centroids."
@@ -345,7 +345,7 @@ def _dofs(
     the edges and faces themselves.
     """
     space, ngmesh = op.space, op.built.mesh
-    ngs_index = inverse_order(op.built.tetrahedron_order, len(elements))
+    ngs_index = inverse_order(op.built.cell_order, len(elements))
     out = np.zeros(space.ndof, bool)
 
     def mark(node: ngs.NodeId) -> None:

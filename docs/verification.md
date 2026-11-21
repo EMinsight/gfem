@@ -99,6 +99,54 @@ Tests: [shared port surface](https://github.com/benvial/gfem/blob/main/tests/ver
 [wave ports](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven_wave_ports.py),
 [silicon strip](https://github.com/benvial/gfem/blob/main/tests/reference/test_shared_port_surface.py).
 
+## 2D models
+
+Each case solves a {term}`2D model` and compares it with a closed form, with
+the same plane posed as a {term}`slab <Slab model>`, or with finite
+differences:
+
+- **A loaded line, both polarizations, both kinds of wall.** The topology
+  tutorial's line in top view, a section of $\varepsilon_r = 10$ between air feeds,
+  transmits and reflects as the closed-form three-part transmission line. Its
+  TEM mode is checked in Ez between magnetic walls and in Hz between conducting
+  walls; the mode that varies as $\sin(\pi y / w)$ across the width, above its cutoff,
+  in Ez between conducting walls and in Hz between magnetic walls. A straight
+  guide passes its mode with no reflection, and a conducting wall reflects the
+  electric field with $-1$ in both polarizations.
+- **Guide modes.** The {term}`line port <Line port>` across the bend tutorial's
+  guide finds the effective index of the symmetric slab guide's closed form,
+  even mode with E along z (Ez) and with H along z (Hz), at 1.50, 1.55 and
+  1.60 µm.
+- **Agreement with the slab.** The bend, with its design square all cladding or
+  all core, gives the same S as a slab one cell thick between PEC plates in Ez.
+  In Hz the bend solves exactly the plain $H_z$ equation with the line port's
+  boundary term; the slab, between magnetic plates, solves it with its own port
+  term, and agrees with that problem instead. The topology line's S agrees with
+  the slab's lumped ports matched to the line and with the closed form, empty
+  and with a uniform ceramic section. The field of the 2D model is
+  $\sqrt{h}$ times the slab's, for a slab $h$ thick fed 1 W.
+- **Gradients.** Gradients of S by per-element material fields (an index blend
+  with a Drude end in Ez, constant permittivities in Hz, a loss tangent and a
+  permeability) and by the pixels of a layer grid at element orders 2 and 3
+  match central differences, with a Taylor remainder of slope 2. The pixels'
+  permittivity, read inside each triangle, is their bilinear interpolation. A
+  design area that owns a second-order absorbing line is differentiated too.
+  The {doc}`tutorials/metal-bend` bend's band objective, through gold's law and
+  the index blend, matches a difference on both the 2D model and the slab.
+- Before each release, on that bend's 45° gold mirror: the tutorial mesh at
+  element order 3 gives the S of the same 2D model on cells eight times
+  smaller at order 2, a value computed once and frozen; and the band
+  objective's gradient with respect to the pixels points the same way on the
+  2D model and on the slab, though the two read the pixels at different
+  points.
+
+Tests: [closed forms and the slab](https://github.com/benvial/gfem/blob/main/tests/verification/test_2d_models.py),
+[guide modes](https://github.com/benvial/gfem/blob/main/tests/verification/test_2d_line_port_modes.py),
+[material-field gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_2d_gradients.py),
+[layer-grid gradients](https://github.com/benvial/gfem/blob/main/tests/unit/test_2d_layer_gradients.py),
+[metal bend](https://github.com/benvial/gfem/blob/main/tests/verification/test_metal_bend.py),
+[metal bend, fine mesh and slab gradient](https://github.com/benvial/gfem/blob/main/tests/reference/test_metal_bend_fine.py).
+
 ## Periodic cells
 
 Each case compares a periodic solve with a closed form:

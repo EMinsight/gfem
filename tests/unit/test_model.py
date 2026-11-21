@@ -333,7 +333,7 @@ def test_material_field_has_one_value_per_region_element(mesh):
     field = gfem.MaterialField(eps_r=jnp.full(n, 4.0))
     model = gfem.Model(mesh, materials={"sub": field, "air": AIR})
     assert model.materials["sub"] is field
-    with pytest.raises(ValueError, match=f"{n} tetrahedra"):
+    with pytest.raises(ValueError, match=f"{n} elements"):
         gfem.Model(
             mesh,
             materials={"sub": gfem.MaterialField(eps_r=jnp.ones(n + 1)), "air": AIR},

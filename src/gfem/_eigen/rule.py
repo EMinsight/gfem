@@ -1254,7 +1254,7 @@ class EigenmodeRule:
             x = self._phase(mode.x, op, divfree, numbers)
             # electric energy per element (gfem order) at this amplitude
             per_tet = np.zeros(len(mesh.tetrahedra))
-            per_tet[built.tetrahedron_order] = (
+            per_tet[built.cell_order] = (
                 0.5 * const.epsilon_0 * scale * np.real(density(x))
             )
             per_tet *= self._law_factor(model, mode.k, scale)
@@ -1268,7 +1268,7 @@ class EigenmodeRule:
             if split is not None:
                 # the same energy along each principal axis
                 per_axis = np.zeros((len(mesh.tetrahedra), 3))
-                per_axis[built.tetrahedron_order] = (
+                per_axis[built.cell_order] = (
                     0.5 * const.epsilon_0 * scale * np.real(split(x))
                 )
             volume, regions, axes = self._volume_energies(mesh, per_tet, per_axis)

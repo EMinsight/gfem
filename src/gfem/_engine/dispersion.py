@@ -110,7 +110,7 @@ def law_regions(model: Model) -> tuple[LawRegion, ...]:
         if isinstance(material, Material) and isinstance(
             material.eps_r, PermittivityLaw
         ):
-            mask = np.zeros(len(mesh.tetrahedra), bool)
+            mask = np.zeros(len(mesh.volume_elements), bool)
             mask[mesh.elements(region)] = True
             out.append(LawRegion(region, material.eps_r, mask & active))
     return tuple(out)
@@ -135,16 +135,24 @@ class BlendRegion:
 
 
 def blend_regions(model: Model) -> tuple[BlendRegion, ...]:
-    """The model's law blends, in ``model.materials`` order (concrete densities)."""
+    """The model's law blends, in ``model.materials`` order (concrete densities).
+
+    Per element: a layer grid's pixels, sampled at the quadrature points
+    (`gfem._engine.points`), are left out.
+    """
     mesh = model.mesh
     active = model._domain.active  # noqa: SLF001
     out = []
     for region, material in model.materials.items():
-        if isinstance(material, MaterialField) and material.blend_ends is not None:
+        if (
+            isinstance(material, MaterialField)
+            and material.blend_ends is not None
+            and material.blend_ends.pixels is None
+        ):
             elements = mesh.elements(region)
-            mask = np.zeros(len(mesh.tetrahedra), bool)
+            mask = np.zeros(len(mesh.volume_elements), bool)
             mask[elements] = True
-            rho = np.zeros(len(mesh.tetrahedra))
+            rho = np.zeros(len(mesh.volume_elements))
             rho[elements] = np.asarray(material.blend, dtype=float)
             out.append(BlendRegion(region, material.blend_ends, mask & active, rho))
     return tuple(out)
@@ -385,6 +393,11 @@ def refuse_blends(model: Model, where: str, *, static: bool = False) -> None:
             "which has no static permittivity (eps(0) is infinite), so the "
             "electrostatic problem cannot read it. Use a constant material for "
             "the electrostatic model."
+        )
+    if ends.pixels is not None:
+        raise NotImplementedError(
+            f"Region {region!r} holds a layer-grid design of a 2D model, which "
+            f"{where} does not support: it is solved by gfem.Driven only."
         )
     raise NotImplementedError(
         f"Region {region!r} holds a density blend with a permittivity-law end, "
@@ -747,7 +760,8 @@ def absorbing_surfaces(
     for lr in regions:
         found = []
         for surface in dict.fromkeys(absorbing):
-            tets = owner[mesh.triangle_tags == mesh.region(surface).tag]
+            tags = mesh._topology.surface_tags  # noqa: SLF001 - either dimension
+            tets = owner[tags == mesh.region(surface).tag]
             if lr.mask[tets[tets >= 0]].any():
                 found.append(surface)
         if found:
@@ -798,18 +812,19 @@ def nearest_term(law: PermittivityLaw, frequency: float) -> str:
 
 
 def _longest_edges(model: Model, regions: Iterable[LawRegion]) -> dict[str, float]:
-    """The longest tetrahedron edge (m) of each law region on the solve domain."""
+    """The longest element edge (m) of each law region on the solve domain."""
     nodes = np.asarray(model.mesh.nodes, dtype=float)
-    tets = np.asarray(model.mesh.tetrahedra)
+    cells = np.asarray(model.mesh.volume_elements)
     out = {}
     for lr in regions:
-        corners = nodes[tets[lr.mask]]
+        corners = nodes[cells[lr.mask]]
         if not len(corners):
             continue
+        n = corners.shape[1]
         edges = [
             np.linalg.norm(corners[:, i] - corners[:, j], axis=1).max()
-            for i in range(4)
-            for j in range(i + 1, 4)
+            for i in range(n)
+            for j in range(i + 1, n)
         ]
         out[lr.region] = float(max(edges))
     return out

@@ -51,6 +51,7 @@ from gfem._boundaries import (
     WavePort,
 )
 from gfem._checks import is_traced
+from gfem._line_section import LineSection
 from gfem._materials import (
     Blend,
     Debye,
@@ -60,6 +61,7 @@ from gfem._materials import (
     Material,
     MaterialField,
     PermittivityLaw,
+    PixelGeometry,
 )
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
@@ -67,12 +69,15 @@ from gfem._sheet import SheetField
 from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
 from gfem.mesh import (
+    _ROLE_ARRAYS,
     _TOPOLOGY_ARRAYS,
     Mesh,
     Region,
+    _array_names,
     _is_model_mesh,
     _mesh_sha256,
-    _Topology,
+    _topology_arrays,
+    _topology_from_arrays,
 )
 from gfem.model import EnclosedBy, Model
 from gfem.options import SolverOptions
@@ -431,6 +436,7 @@ def _write_result(
             result = dataclasses.replace(
                 result,
                 e_fields=tuple(field._gathered() for field in result.e_fields),  # noqa: SLF001
+                h_fields=tuple(field._gathered() for field in result.h_fields),  # noqa: SLF001
             )
         elif isinstance(result, ElectrostaticResult):
             result = dataclasses.replace(
@@ -621,23 +627,27 @@ def _in_memory_mesh_args(mesh: Mesh) -> dict[str, Any]:
             "regions": mesh.regions,
         }
         | _section(mesh)
-        | {name: np.asarray(getattr(topology, name)) for name in _TOPOLOGY_ARRAYS}
+        | ({} if topology.dim == 3 else {"dim": topology.dim})
+        | {name: np.asarray(a) for name, a in _topology_arrays(topology).items()}
         | _moved_nodes(mesh)
     )
 
 
 def _in_memory_mesh_from_args(args: dict[str, Any]) -> Mesh:
+    # a tetrahedral mesh writes no dimension and its arrays' historical names
+    dim = int(args.get("dim", 3))
     arrays = {}
-    for name in _TOPOLOGY_ARRAYS:
+    for name in _array_names(dim):
         array = np.array(args[name])
         array.flags.writeable = False
         arrays[name] = array
-    topology = _Topology(
+    topology = _topology_from_arrays(
+        arrays,
         length_unit=args["length_unit"],
         regions=tuple(args["regions"]),
         source=None,
         section_thickness=args.get("section_thickness"),
-        **arrays,
+        dim=dim,
     )
     return _with_nodes(Mesh(jnp.asarray(topology.imported_nodes), topology), args)
 
@@ -767,18 +777,20 @@ def _field_args(field: Field, _: _codec.Context) -> dict[str, Any]:
 
 def _port_mode_field_args(field: PortModeField, _: _codec.Context) -> dict[str, Any]:
     space = field._space  # noqa: SLF001
+    # a line port's polarization; a planar port's field is written as before
+    polarization = getattr(space, "polarization", None)
     return {
         "section": space.section,
         "order": space.order,
         "basis": field._basis,  # noqa: SLF001
         "coords": field._coords,  # noqa: SLF001
-    }
+    } | ({} if polarization is None else {"polarization": polarization})
 
 
 def _port_mode_field_from_args(args: dict[str, Any], _: _codec.Context) -> Any:
-    from gfem._engine.port_mode import PortModeSpace
+    from gfem._engine.line_mode import mode_space
 
-    space = PortModeSpace(args["section"], args["order"])
+    space = mode_space(args["section"], args["order"], args.get("polarization"))
     return PortModeField(space, args["basis"], args["coords"])
 
 
@@ -811,6 +823,27 @@ def _options_args(options: SolverOptions, _: _codec.Context) -> dict[str, Any]:
     return args
 
 
+def _unset_omitted(cls: Any, **defaults: Any) -> _codec.ToArgs:
+    """Write ``cls``'s init fields, leaving out each of ``defaults`` at its default.
+
+    A field added for 2D meshes is then absent from a 3D file, which stays as an
+    older gfem wrote it and reads there; its solve key is unchanged.
+    """
+    names = [f.name for f in dataclasses.fields(cls) if f.init]
+
+    def to_args(obj: Any, _: _codec.Context) -> dict[str, Any]:
+        args = {n: getattr(obj, n) for n in names}
+        for name, default in defaults.items():
+            # a field sequence equals no default: only an empty one is left out
+            value = args[name]
+            unset = not len(value) if isinstance(default, tuple) else value == default
+            if unset:
+                del args[name]
+        return args
+
+    return to_args
+
+
 def _job_from_args(args: dict[str, Any], _: _codec.Context) -> Job:
     return Job(args["model"], args["problem"], args.get("options", SolverOptions()))
 
@@ -826,7 +859,8 @@ _MESH_NAMES = (
     "source",
     "regions",
     "section_thickness",
-    *_TOPOLOGY_ARRAYS,
+    "dim",
+    *dict.fromkeys((*_TOPOLOGY_ARRAYS, *_ROLE_ARRAYS)),
 )
 
 _codec.register(Mesh, to_args=_mesh_args, from_args=_mesh_from_args, names=_MESH_NAMES)
@@ -876,8 +910,6 @@ for _cls in (
     Lorentz,
     Debye,
     DjordjevicSarkar,
-    # a law blend's fixed ends (MaterialField.blend_ends)
-    Blend,
     SheetField,
     PEC,
     PMC,
@@ -894,12 +926,8 @@ for _cls in (
     LumpedPort,
     WavePort,
     FloquetPort,
-    PortMode,
     ElectrostaticResult,
-    PortModeResult,
     DiffractionOrderResult,
-    Driven,
-    DrivenResult,
     NetworkParameters,
     SweepInfo,
     ReducedFields,
@@ -916,7 +944,17 @@ _codec.register(
     to_args=_field_args,
     names=[f.name for f in dataclasses.fields(Field) if f.name != "_comm"],
 )
+# a blend's fixed ends (MaterialField.blend_ends); a layer density's grid and
+# other properties only when set, so a 3D blend is written as before
+_codec.register(Blend, to_args=_unset_omitted(Blend, others=(), pixels=None))
+_codec.register(PixelGeometry)
 _codec.register(SolverOptions, to_args=_options_args)
+_codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None))
+_codec.register(PortMode, to_args=_unset_omitted(PortMode, polarization=None))
+_codec.register(PortModeResult, to_args=_unset_omitted(PortModeResult, h_field=None))
+_codec.register(
+    DrivenResult, to_args=_unset_omitted(DrivenResult, h_fields=(), polarization=None)
+)
 _codec.register(
     PortSection,
     from_args=_port_section_from_args,
@@ -954,6 +992,7 @@ _codec.register(
     PortModeField,
     to_args=_port_mode_field_args,
     from_args=_port_mode_field_from_args,
-    names=("section", "order", "basis", "coords"),
+    names=("section", "order", "basis", "coords", "polarization"),
 )
+_codec.register(LineSection)
 _codec.register(Job, from_args=_job_from_args, names=("model", "problem", "options"))

@@ -11,12 +11,14 @@ from typing import TYPE_CHECKING, Any, overload
 from gfem import _mpi, _timing
 from gfem._adjoint import solve_vjp
 from gfem._checks import is_traced
+from gfem._dim2 import refuse_solve
 from gfem._domain import physics_of
 from gfem._materials import MaterialField
 from gfem._periodic import check_nodes
 from gfem.errors import LinearSolverConvergenceError
 from gfem.model import _PHYSICS_NAMES, Model
 from gfem.options import SolverOptions
+from gfem.problems import _check_polarization
 from gfem.shape import _check_quality
 
 if TYPE_CHECKING:
@@ -196,6 +198,10 @@ def solve(
             uniform `gfem.Driven` sweep stops there, and the error's
             ``result`` holds the frequencies it solved, ``unsolved`` the
             rest.
+        NotImplementedError: On a 2D mesh, an input with no 2D path (the
+            problem type, ``wave_vector``, the adaptive sweep, ``comm``, an
+            iterative solver, a GPU, moved nodes); the message names the
+            remedy.
     """
     use = _solve_cache(cache)
     return _solve(model, problem, options=options, comm=comm, cache=use)[0]
@@ -215,7 +221,7 @@ def _solve_cache(cache: str | os.PathLike | None) -> SolveCache | None:
     return SolveCache(cache)
 
 
-def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
+def _solve(  # noqa: PLR0912, PLR0915 - the cache's seam sits between the checks
     model: Model,
     problem: Any,
     *,
@@ -249,6 +255,7 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
         raise TypeError(
             f"options must be a gfem.SolverOptions, got {type(options).__name__}."
         )
+    refuse_solve(model, problem, options, comm)
     resolved = _mpi.resolve_comm(comm)
     session = (
         contextlib.nullcontext()
@@ -260,7 +267,8 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
     with session:
         if resolved is not None:
             _mpi.refuse(model, problem, options)
-        rule_class = _rule_class(problem)
+        rule_class = _rule_class(problem, model.mesh.dim)
+        _check_polarization(problem, model.mesh.dim)
         _check_domain(model, problem)
         _check_blends(model, problem)
         if resolved is None:
@@ -375,14 +383,16 @@ def _check_blends(model: Model, problem: Any) -> None:
     refuse_blends(model, where, static=kind == "Electrostatic")
 
 
-def _rule_class(problem: Any) -> type:
-    """The engine rule of a problem type, imported on first use.
+def _rule_class(problem: Any, dim: int = 3) -> type:
+    """The engine rule of a problem type on a mesh of ``dim``, imported on first use.
 
-    Each problem class names its rule as ``_rule = "module:Class"``, so a new
-    problem type needs no change here, and importing gfem does not import
-    the engine.
+    Each problem class names its rule as ``_rule = "module:Class"``, and its
+    rule on a 2D mesh as ``_rule_2d`` where that differs, so a new problem
+    type needs no change here, and importing gfem does not import the engine.
     """
     path = getattr(type(problem), "_rule", None)
+    if dim == 2:
+        path = getattr(type(problem), "_rule_2d", path)
     if not isinstance(path, str):
         raise TypeError(
             "solve needs a problem type such as gfem.Electrostatic(...), got "

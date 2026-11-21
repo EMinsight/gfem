@@ -24,8 +24,10 @@ from gfem._text import hertz, hertz_band
 if TYPE_CHECKING:
     import xarray
 
-    from gfem._engine.port_mode import PortModeSpace
+    from gfem._engine.line_mode import ModeSpace
+    from gfem._line_section import LineSection
     from gfem._port_section import PortSection
+    from gfem.problems import Polarization
 
 __all__ = [
     "DCConductionResult",
@@ -541,39 +543,44 @@ register_fields(
 
 
 class PortModeField:
-    r"""The electric field of a port mode on its cross-section, over frequency.
+    r"""The field of a port mode on its cross-section, over frequency.
 
     Peak phasor of the mode carrying 1 W time-averaged power through the
-    port, propagating into the solve domain as :math:`e^{-\gamma s}`,
-    :math:`s` the distance along the inward port normal. Fields follow
-    :math:`e^{+i\omega t}`.
+    port (1 W/m through a line port of a 2D mesh), propagating into the solve
+    domain as :math:`e^{-\gamma s}`, :math:`s` the distance along the inward
+    port normal. Fields follow :math:`e^{+i\omega t}`.
 
     Attributes:
-        quantity: ``"E"``.
-        unit: ``"V/m"``.
-        normal: Unit inward port normal, global frame.
+        quantity: ``"E"``; on a line port, ``"Ez"`` or ``"Hz"``.
+        unit: ``"V/m"``; ``"A/m"`` for ``"Hz"``.
+        normal: Unit inward port normal, global frame (2 components on a
+            line port).
     """
 
     quantity = "E"
     unit = "V/m"
 
-    def __init__(
-        self, space: PortModeSpace, basis: np.ndarray, coords: np.ndarray
-    ) -> None:
+    def __init__(self, space: ModeSpace, basis: np.ndarray, coords: np.ndarray) -> None:
         """Internal: built by `gfem.solve` (field ``i`` is ``basis @ coords[i]``)."""
-        self._parts: tuple[PortModeSpace, np.ndarray, np.ndarray] | None = (
+        self._parts: tuple[ModeSpace, np.ndarray, np.ndarray] | None = (
             space,
             basis,
             coords,
         )
         self._build: Callable[[], tuple] | None = None
         self._port = space.section.port.name
+        # a space that does not name its field is a planar port's: E in V/m
+        self.quantity = getattr(space, "quantity", "E")
+        self.unit = getattr(space, "unit", "V/m")
 
     @classmethod
     def _deferred(
         cls,
         port: str,
-        build: Callable[[], tuple[PortModeSpace, np.ndarray, np.ndarray]],
+        build: Callable[[], tuple[ModeSpace, np.ndarray, np.ndarray]],
+        *,
+        quantity: str = "E",
+        unit: str = "V/m",
     ) -> PortModeField:
         """Internal: a field built by ``build()`` on first use.
 
@@ -585,9 +592,10 @@ class PortModeField:
         field._parts = None
         field._build = build
         field._port = port
+        field.quantity, field.unit = quantity, unit
         return field
 
-    def _data(self) -> tuple[PortModeSpace, np.ndarray, np.ndarray]:
+    def _data(self) -> tuple[ModeSpace, np.ndarray, np.ndarray]:
         if self._parts is None:
             if self._build is None:  # pragma: no cover - set by the constructors
                 raise RuntimeError("PortModeField has no data.")
@@ -596,7 +604,7 @@ class PortModeField:
         return self._parts
 
     @property
-    def _space(self) -> PortModeSpace:
+    def _space(self) -> ModeSpace:
         return self._data()[0]
 
     @property
@@ -608,30 +616,42 @@ class PortModeField:
         return self._data()[2]
 
     @property
-    def _section(self) -> PortSection:
+    def _section(self) -> PortSection | LineSection:
         return self._space.section
 
     @property
     def normal(self) -> tuple[float, ...]:
         """Unit inward port normal, global frame."""
-        return tuple(float(x) for x in self._section.frame[2])
+        return tuple(float(x) for x in self._section.normal)
 
     def at(self, points: Any) -> jax.Array:
         """The field at points on the port, ``(n_freq, n_points, 3)`` complex.
 
         Points off the cross-section's elements (inside metal holes or outside
-        the port) give zero.
+        the port) give zero. On a line port of a 2D mesh, the scalar field at
+        ``(n_points, 2)`` points: ``(n_freq, n_points)``.
 
         Args:
             points: ``(n_points, 3)`` (or one ``(3,)``) global coordinates, m,
-                on the port plane.
+                on the port plane; ``(n_points, 2)`` on a line port.
 
         Raises:
-            ValueError: A point is not on the port plane.
+            ValueError: A point is not on the port plane (line), or has the
+                wrong number of coordinates.
         """
         p = np.asarray(points, float)
         single = p.ndim == 1
         p = np.atleast_2d(p)
+        dim = len(self.normal)
+        if dim == 2:
+            if p.shape[-1] != 2:
+                raise ValueError(
+                    f"points on line port {self._port!r} must be (x, y) pairs in m, "
+                    f"got shape {p.shape}."
+                )
+            columns = self._space.evaluate(self._basis.T, self._local(p))
+            u = self._coords @ columns
+            return jnp.asarray(u[:, 0] if single else u)
         if p.shape[-1] != 3:
             raise ValueError(f"points must be 3-vectors in m, got shape {p.shape}.")
         local = self._local(p)
@@ -645,15 +665,16 @@ class PortModeField:
         tol = 1e-5 * s.diameter
         if (np.abs(dist) > tol).any():
             worst = p[int(np.argmax(np.abs(dist)))]
+            where = "line" if len(self.normal) == 2 else "plane"
             raise ValueError(
-                f"Point {tuple(float(x) for x in worst)} (m) is not on the plane of "
-                f"wave port {s.port.name!r}."
+                f"Point {tuple(float(x) for x in worst)} (m) is not on the {where} "
+                f"of wave port {s.port.name!r}."
             )
         return local
 
     def __repr__(self) -> str:
         n = "not built" if self._parts is None else f"{len(self._coords)} frequencies"
-        return f"PortModeField(E, V/m, {n}, port {self._port!r})"
+        return f"PortModeField({self.quantity}, {self.unit}, {n}, port {self._port!r})"
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -688,8 +709,12 @@ class PortModeResult:
         solved: ``(n_freq,)`` bool, True where the port's cross-section was
             solved exactly (shared by the wave ports of a shared port
             surface); elsewhere it comes from the reduced port mode model.
-        e_field: The mode's electric field, normalized to 1 W; ``None`` on a
-            driven result computed inside `jax.jit`, `jax.grad` or `jax.vmap`.
+        e_field: The mode's electric field, normalized to 1 W (1 W/m for a
+            line port of a 2D mesh); ``None`` on a driven result computed
+            inside `jax.jit`, `jax.grad` or `jax.vmap`, and for an Hz line
+            port, whose field is ``h_field``.
+        h_field: The magnetic field ``Hz`` of an Hz line port's mode,
+            normalized to 1 W/m; ``None`` otherwise.
     """
 
     port: str
@@ -700,6 +725,7 @@ class PortModeResult:
     residual: jax.Array
     solved: jax.Array
     e_field: PortModeField | None = None
+    h_field: PortModeField | None = None
 
     @property
     def n_eff(self) -> jax.Array:
@@ -1337,8 +1363,9 @@ class DrivenResult:
             is read. Their accuracy is the sweep's field error, about
             ``SolverOptions.adaptive_tolerance`` or better. Gradients of an
             adaptive sweep hold its basis fixed (see ``Driven.samples``).
-        kept: ``(frequency in Hz, excited port)`` of each of `e_fields`
-            (static labels), frequency-major.
+            On a 2D model, the kept Ez fields of an Ez solve (below).
+        kept: ``(frequency in Hz, excited port)`` of each of `e_fields`, or of
+            `h_fields` (static labels), frequency-major.
         sweep: How the frequencies were solved (`SweepInfo`).
         port_modes: The mode of each wave port over the frequencies
             (`PortModeResult`, by port name), as the port mode sweep found
@@ -1357,6 +1384,20 @@ class DrivenResult:
             the frequencies (`DiffractionOrderResult`, by port name); empty
             without Floquet ports. Constants of the solve: not
             differentiable.
+        h_fields: The kept magnetic fields of a 2D model's Hz solve
+            (``Driven(polarization="Hz")``), labelled by `kept` as
+            `e_fields` are, which are then empty; empty otherwise. Read them
+            with `h_field`.
+        polarization: The field normal to the plane that a 2D model's solve
+            computed, ``"Ez"`` or ``"Hz"``; ``None`` for a 3D model. A
+            static label.
+
+    On a 2D model (a mesh of dimension 2, `gfem.conventions`) every port is
+    fed 1 W/m time-averaged incident power per metre along :math:`z`, and S is
+    dimensionless. A kept field is the scalar normal component, peak phasor
+    for that 1 W/m: quantity ``"Ez"`` in V/m in `e_fields`, or ``"Hz"`` in
+    A/m in `h_fields`, in H1 of the solve order over the solve domain's
+    areas. Its `Field.at` takes ``(m, 2)`` points in the plane.
     """
 
     s: NetworkParameters
@@ -1368,11 +1409,19 @@ class DrivenResult:
     diffraction_orders: Mapping[str, DiffractionOrderResult] = dataclasses.field(
         default_factory=dict
     )
+    h_fields: Sequence[Field] = ()
+    polarization: Polarization | None = None
 
     def __post_init__(self) -> None:
         """Hold the fields as a sequence matching their labels."""
-        if not isinstance(self.e_fields, ReducedFields):
-            object.__setattr__(self, "e_fields", tuple(self.e_fields))
+        for name in ("e_fields", "h_fields"):
+            if not isinstance(getattr(self, name), ReducedFields):
+                object.__setattr__(self, name, tuple(getattr(self, name)))
+        if len(self.e_fields) and len(self.h_fields):
+            raise ValueError(
+                "A driven result keeps e_fields or h_fields (an Hz solve of a 2D "
+                "model), not both."
+            )
         if self.sweep is None:
             object.__setattr__(self, "sweep", SweepInfo.uniform(self.s.frequency))
         object.__setattr__(
@@ -1385,9 +1434,10 @@ class DrivenResult:
             "offsets",
             tuple((str(k), float(v)) for k, v in dict(self.offsets).items()),
         )
-        if len(self.e_fields) != len(self.kept):
+        fields = self.h_fields if len(self.h_fields) else self.e_fields
+        if len(fields) != len(self.kept):
             raise ValueError(
-                f"{len(self.e_fields)} fields but {len(self.kept)} labels in kept."
+                f"{len(fields)} fields but {len(self.kept)} labels in kept."
             )
 
     @property
@@ -1398,16 +1448,53 @@ class DrivenResult:
     def e_field(self, frequency: float, excite: str | None = None) -> Field:
         """The kept electric field at ``frequency`` with port ``excite`` fed.
 
+        On a 2D model, the kept Ez field of an Ez solve.
+
         Args:
             frequency: A kept frequency, Hz (matched to 1e-9 relative).
             excite: The excited port; may be left out when one port was
                 excited.
 
         Raises:
-            ValueError: No field was kept at ``frequency``, or ``excite`` is
-                needed.
+            ValueError: No field was kept at ``frequency``, ``excite`` is
+                needed, or the result is a 2D model's Hz solve (read
+                `h_field`).
             KeyError: ``excite`` is not an excited port.
         """
+        if self.polarization == "Hz":
+            raise ValueError(
+                "This result solved the Hz polarization of a 2D model: its kept "
+                "field is Hz, read result.h_field(frequency, excite)."
+            )
+        return self._kept_field(self.e_fields, frequency, excite)
+
+    def h_field(self, frequency: float, excite: str | None = None) -> Field:
+        """The kept Hz field of a 2D model's Hz solve at ``frequency``.
+
+        Args:
+            frequency: A kept frequency, Hz (matched to 1e-9 relative).
+            excite: The excited port; may be left out when one port was
+                excited.
+
+        Raises:
+            ValueError: The result is not an Hz solve (read `e_field`), no
+                field was kept at ``frequency``, or ``excite`` is needed.
+            KeyError: ``excite`` is not an excited port.
+        """
+        if self.polarization != "Hz":
+            solved = (
+                "the Ez polarization of a 2D model: its kept field is Ez"
+                if self.polarization == "Ez"
+                else "a 3D model: h_field reads the Hz polarization of a 2D model"
+            )
+            raise ValueError(
+                f"This result solved {solved}; read result.e_field(frequency, excite)."
+            )
+        return self._kept_field(self.h_fields, frequency, excite)
+
+    def _kept_field(
+        self, fields: Sequence[Field], frequency: float, excite: str | None
+    ) -> Field:
         if not self.kept:
             raise ValueError(
                 "This result keeps no fields: solve with Driven(..., "
@@ -1428,7 +1515,7 @@ class DrivenResult:
         frequencies = sorted({f for f, _ in self.kept})
         for k, (f, port) in enumerate(self.kept):
             if port == excite and math.isclose(f, frequency, rel_tol=1e-9):
-                return self.e_fields[k]
+                return fields[k]
         raise ValueError(
             f"No field kept at {frequency:g} Hz; the kept frequencies are "
             f"{', '.join(f'{f:g}' for f in frequencies)} Hz (Driven.keep_fields)."
@@ -1533,7 +1620,8 @@ class DrivenResult:
     def __repr__(self) -> str:
         f = self.frequency
         span = hertz_band(f.min(), f.max(), 4)
-        fields = f", {len(self.e_fields)} kept fields" if self.e_fields else ""
+        kept = len(self.h_fields) or len(self.e_fields)
+        fields = f", {kept} kept fields" if kept else ""
         sweep = "" if self.sweep is None else f", {self.sweep!r}"
         return (
             f"DrivenResult({len(f)} frequencies {span}, ports={list(self.s.ports)}, "
@@ -1541,7 +1629,9 @@ class DrivenResult:
         )
 
 
-register_fields(DrivenResult, ("s", "e_fields", "port_modes", "diffraction_orders"))
+register_fields(
+    DrivenResult, ("s", "e_fields", "port_modes", "diffraction_orders", "h_fields")
+)
 
 
 @dataclasses.dataclass(frozen=True, eq=False)

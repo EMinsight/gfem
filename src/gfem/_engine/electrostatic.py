@@ -292,8 +292,8 @@ def terminal_lifting(
     """
     mesh = model.mesh
     tags = [mesh.region(s).tag for s in surfaces]
-    local = built.triangle_order[
-        np.isin(np.asarray(mesh.triangle_tags)[built.triangle_order], tags)
+    local = built.facet_order[
+        np.isin(np.asarray(mesh.triangle_tags)[built.facet_order], tags)
     ]
     nodes = np.unique(np.asarray(mesh.triangles)[local])
     vertex = np.full(len(mesh.imported_nodes), -1, dtype=np.int64)
@@ -852,7 +852,7 @@ class ElectrostaticRule:
             gf.vec.FV().NumPy()[:] = phi[:, i]
             layout.mark_state(gf.vec)
             form.Assemble()
-            per_tet[built.tetrahedron_order, i] = form.vec.FV().NumPy()
+            per_tet[built.cell_order, i] = form.vec.FV().NumPy()
         active = model._domain.active  # noqa: SLF001
         out = np.zeros((len(self.regions), phi.shape[1]))
         for k, region in enumerate(self.regions):
