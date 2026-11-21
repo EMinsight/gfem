@@ -816,6 +816,24 @@ def _compare(comm: Any, call: str, items: dict[str, str]) -> None:
                 )
 
 
+_GFEM_DIR = str(Path(__file__).parent) + os.sep
+
+
+def outside_gfem() -> int:
+    """The ``stacklevel`` of the first frame outside gfem, for the caller's caller.
+
+    Counted as `warnings.warn` counts it when called by the function that
+    calls this one: a warning there points at the user's line that called
+    gfem, however deep inside gfem it is raised.
+    """
+    frame = sys._getframe(1)  # noqa: SLF001
+    level = 1
+    while frame is not None and frame.f_code.co_filename.startswith(_GFEM_DIR):
+        frame = frame.f_back
+        level += 1
+    return level
+
+
 def warn(
     comm: Any, message: str, category: type[Warning] = UserWarning, stacklevel: int = 1
 ) -> None:

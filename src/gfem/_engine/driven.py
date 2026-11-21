@@ -2614,8 +2614,7 @@ def _layer_stretch(model: Model, grid: Sequence[float]) -> Stretch | None:
     """The layer's stretch over the sweep's ``grid``; warns a thin layer."""
     stretch = _pml.stretch(model, grid)
     if stretch is not None:
-        # from DrivenRule.__init__: the user's call is three frames up
-        stretch.warn_thin(stacklevel=5)
+        stretch.warn_thin()
     return stretch
 
 

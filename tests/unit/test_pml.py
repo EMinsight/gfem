@@ -484,11 +484,11 @@ def test_the_stretch_maximum_meets_the_target_reflection_at_normal_incidence():
     # |R| = exp(-2 k int_0^d sigma dxi), sigma = sigma_max (xi / d)^2
     k, d = 2 * math.pi / 1.5e-6, 0.4e-6
     for target in (1e-2, 1e-6, 1e-9):
-        smax = _pml.sigma_max(target, k, d)
+        smax = _pml.stretch_maximum(target, k, d)
         integral = smax * d / 3
         assert math.exp(-2 * k * integral) == pytest.approx(target, rel=1e-12)
     # -3 ln(1e-6) / (2 * 1 * 1) = 20.723265836946411
-    assert _pml.sigma_max(1e-6, 1.0, 1.0) == pytest.approx(20.723265836946411)
+    assert _pml.stretch_maximum(1e-6, 1.0, 1.0) == pytest.approx(20.723265836946411)
 
 
 def test_the_reflection_falls_with_frequency_and_rises_with_obliquity():
@@ -508,9 +508,9 @@ def _ngsolve_box():
 
 def test_the_pml_tensor_is_the_product_of_the_axis_stretches(tmp_path):
     model = _model(_box(tmp_path, sides=("+x", "-y")))
-    layers = model._layers
-    k_ref, target = 2 * math.pi / 1e-6, 1e-4
-    lam, lam_inv = pml_tensor(layers, k_ref, target, scale=1e-6)
+    # k_ref = 2 pi / 1 um
+    stretch = _pml.Stretch(model._layers, 1e-4, _pml.C0 / 1e-6)
+    lam, lam_inv = pml_tensor(stretch, scale=1e-6)
     mesh = _ngsolve_box()
     # sigma_max = -3 ln(1e-4) / (2 k_ref d), d = 0.5 um: k_ref d = pi
     smax = -3 * math.log(1e-4) / (2 * math.pi)
@@ -703,6 +703,14 @@ def test_a_thin_layer_warns(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("error", gfem.ThinLayerWarning)
         _driven(model, (pml_cases.C0 / 49e-6,))
+
+
+def test_a_thin_layer_warns_a_port_mode_solve(tmp_path):
+    model = _line(tmp_path, gfem.PML("pml"))
+    thin = pml_cases.C0 / 51e-6
+    with pytest.warns(gfem.ThinLayerWarning, match=r"\+z side \(pml\)") as record:
+        gfem.solve(model, gfem.PortMode("p1", (thin,)), options=DIRECT)
+    assert Path(record[0].filename) == Path(__file__)
 
 
 # --- readers ------------------------------------------------------------------------
@@ -938,7 +946,7 @@ def test_a_moved_mesh_pushing_air_past_a_stretched_face_is_refused(tmp_path):
         r"\+z \(z = 1\.5e-06 m\) of the perfectly matched layer"
     )
     with pytest.raises(ValueError, match=match):
-        _pml.check_layer_nodes(moved)
+        _pml.check_layer_nodes(moved, gfem.Driven(pml_cases.F0))
     with pytest.raises(ValueError, match=match):
         _driven(moved)
 
@@ -965,7 +973,30 @@ def test_a_moved_mesh_pushing_air_past_a_stretched_face_is_refused_under_grad(
 def test_a_layer_node_moved_inward_is_accepted(tmp_path):
     # the layer's background has no stretch below its inner face
     model = _line(tmp_path, gfem.PML("pml"), cells=10)
-    _pml.check_layer_nodes(_moved(model, _inner_face_node(model), -0.02e-6))
+    moved = _moved(model, _inner_face_node(model), -0.02e-6)
+    _pml.check_layer_nodes(moved, gfem.Driven(pml_cases.F0))
+
+
+def test_a_moved_mesh_past_a_stretched_face_is_accepted_by_a_static_solve(tmp_path):
+    # an electrostatic solve sees the background: no stretch to act on the air
+    model = _static_box(tmp_path, gfem.PML("pml"))
+    x = np.asarray(model.mesh.imported_nodes)
+    # a node of the +x layer's inner face (x = 1 um) off the cube's edges
+    on = np.flatnonzero(np.abs(x[:, 0] - 1e-6) < 1e-15)
+    node = on[np.argmin(np.abs(x[on, 1] - 0.5e-6) + np.abs(x[on, 2] - 0.5e-6))]
+    nodes = x.copy()
+    nodes[node, 0] += 0.02e-6
+    leaves = [nodes]
+    mesh = jax.tree_util.tree_unflatten(
+        jax.tree_util.tree_structure(model.mesh), leaves
+    )
+    moved = model.replace(mesh=mesh)
+    problem = gfem.Electrostatic(terminals={"t": "top"}, ground="bottom")
+    with pytest.raises(ValueError, match="past the inner face"):
+        _pml.check_layer_nodes(moved, gfem.Driven(pml_cases.F0))
+    _pml.check_layer_nodes(moved, problem)
+    result = gfem.solve(moved, problem, options=DIRECT)
+    assert np.isfinite(np.asarray(result.capacitance)).all()
 
 
 def _walled_box(tmp_path):
@@ -1029,8 +1060,10 @@ def test_a_port_section_inside_side_layers_returns_the_guided_mode(tmp_path):
     # guided mode from them; its tail in the layer warns
     model = _strip(tmp_path, 0.4, quarter=False, length=0.15)
     problem = gfem.PortMode("p1", (pml_cases.STRIP_F,))
-    with pytest.warns(gfem.LayerClearanceWarning, match=r"'p1'.*clearance"):
+    with pytest.warns(gfem.LayerClearanceWarning, match=r"'p1'.*clearance") as record:
         result = gfem.solve(model, problem, options=DIRECT)
+    # it points at the solve call
+    assert Path(record[0].filename) == Path(__file__)
     assert _n_eff(result) == pytest.approx(pml_cases.STRIP_NEFF, abs=1e-3)
 
 

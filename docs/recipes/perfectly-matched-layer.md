@@ -110,8 +110,8 @@ def reflection(target, f, f_ref, cos_theta):
     return target ** (f * cos_theta / f_ref)
 
 
-def sigma_max(target, f_ref, thickness):
-    """The largest damping, at the layer's outer face, 1/m."""
+def stretch_maximum(target, f_ref, thickness):
+    """The stretch maximum, at the layer's outer face, 1/m."""
     k_ref = 2 * math.pi * f_ref / 299_792_458.0
     return -3 * math.log(target) / (2 * k_ref * thickness)
 

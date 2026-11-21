@@ -323,7 +323,7 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
     # A moved mesh must keep its periodic pairs, keep its physical elements
     # off the layer's stretch and stay valid on the solve domain.
     check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
-    check_layer_nodes(model)
+    check_layer_nodes(model, rule.problem)
     _check_quality(
         model.mesh,
         model._domain_of(getattr(rule, "physics", "em")).active,  # noqa: SLF001

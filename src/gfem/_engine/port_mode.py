@@ -631,8 +631,10 @@ def _coefficients(mesh: ngs.Mesh, s: PortSection) -> dict[str, ngs.CoefficientFu
         out[name] = out[name] * lam_tt
     for name in ("eps_nn", "sigma_nn"):
         out[name] = out[name] * lam_nn
-    # n x H of the stretched medium: R^T (mu_tt Lambda_tt)^-1 R, with R a = a
-    # x n, is (R^T Lambda_tt^-1 R) nu_tt = (Lambda_tt^T / det Lambda_tt) nu_tt
+    # n x H of the stretched medium:
+    # $R^\mathsf{T}(\mu_{tt}\Lambda_{tt})^{-1}R$ with $Ra = a\times n$ is
+    # $(R^\mathsf{T}\Lambda_{tt}^{-1}R)\,\nu_{tt}
+    # = (\Lambda_{tt}^\mathsf{T}/\det\Lambda_{tt})\,\nu_{tt}$
     out["nu_tt"] = ((1.0 / det) * lam_tt.trans) * out["nu_tt"]
     out["nu_nn"] = out["nu_nn"] / lam_nn
     return out
@@ -649,13 +651,7 @@ def _section_stretch(s: PortSection) -> tuple[ngs.CoefficientFunction, ...]:
     stretch, f = s.stretch, s.frame
     assert stretch is not None  # noqa: S101 - callers check
     glob = tuple(s.origin[k] + ngs.x * f[0, k] + ngs.y * f[1, k] for k in range(3))
-    sx, sy, sz = stretch_factors(
-        stretch.layers,
-        stretch.k_ref,
-        stretch.target_reflection,
-        s.scale,
-        coords=glob,
-    )
+    sx, sy, sz = stretch_factors(stretch, s.scale, coords=glob)
     diag = (sy * sz / sx, sx * sz / sy, sx * sy / sz)
 
     def entry(a: int, b: int) -> ngs.CoefficientFunction:

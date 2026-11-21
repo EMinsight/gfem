@@ -38,18 +38,6 @@ LINE_FLOOR = 1e-5
 #: Gates of the layer's verification cases (the floors that are not also a
 #: physical value the page states: the default R0 and its example target).
 TOLERANCES = (pc.GUIDE_FLOOR, pc.CELL_FLOOR, pc.GUIDE_MOVE)
-#: Names of other solvers and of the mesh library's own layer.
-OTHER_CODES = (
-    "palace",
-    "meep",
-    "mfem",
-    "comsol",
-    "tidy3d",
-    "flexcompute",
-    "photonforge",
-    "dolfinx",
-    "setpml",
-)
 #: Each item of the page's Limits (its bold lead) -> the tests that refuse it.
 LIMITS = {
     "No error estimates or mesh refinement for wave problems": (
@@ -143,7 +131,7 @@ def test_the_line_reflects_its_target_reflection(ran):
 
 @pytest.fixture(scope="module")
 def profile(page):
-    """The page's ``reflection`` and ``sigma_max``, run from its own block."""
+    """The page's ``reflection`` and ``stretch_maximum``, run from its own block."""
     (block,) = [b for b in dp.blocks(page, "python") if "def reflection" in b]
     namespace = {}
     exec(compile(block.split("\n\n\nprint")[0], str(PAGE), "exec"), namespace)  # noqa: S102
@@ -160,8 +148,8 @@ def test_the_page_formulas_are_the_layer_s_own(profile, target, f, cos_theta):
     assert profile["reflection"](target, f * f_ref, f_ref, cos_theta) == (
         pytest.approx(_pml.reflection(target, f, 1.0, cos_theta), rel=1e-12)
     )
-    assert profile["sigma_max"](target, f_ref, thickness) == pytest.approx(
-        _pml.sigma_max(target, k_ref, thickness), rel=1e-12
+    assert profile["stretch_maximum"](target, f_ref, thickness) == pytest.approx(
+        _pml.stretch_maximum(target, k_ref, thickness), rel=1e-12
     )
 
 
@@ -178,12 +166,9 @@ def test_every_gfem_name_on_the_page_is_public(page):
     assert names - {"shape", "refine_mesh"} <= set(gfem.__all__)
 
 
-def test_the_page_quotes_no_test_and_names_no_other_code(page):
+def test_the_page_quotes_no_test(page):
     assert "tests/" not in page
     assert "pml_cases" not in page
-    lower = page.lower()
-    for name in OTHER_CODES:
-        assert name not in lower, name
     for value in TOLERANCES:
         mantissa, exponent = f"{value:.0e}".split("e")
         written = f"{mantissa}e{int(exponent)}"

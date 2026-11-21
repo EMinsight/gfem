@@ -48,7 +48,6 @@ import os
 import re
 import secrets
 import shutil
-import sys
 import tempfile
 import time
 import warnings
@@ -659,8 +658,6 @@ REPLAYED = (
     errors.LayerClearanceWarning,
 )
 
-_GFEM_DIR = str(Path(gfem.__file__).parent) + os.sep
-
 
 class SolveCache:
     """One call's use of the solve cache named by ``cache=``.
@@ -770,7 +767,7 @@ class SolveCache:
                 "included, use Job.run(out=); to cache a solve with fields, run "
                 "it on one process (comm=MPI.COMM_SELF).",
                 SolveCacheWarning,
-                stacklevel=_outside_gfem(),
+                stacklevel=_mpi.outside_gfem(),
             )
         if self.status == "bypass":
             return None
@@ -804,7 +801,7 @@ class SolveCache:
             return self._hit(decode_entry(entry, head["document"], arrays, model))
 
     def _lookup(self, model: Any, problem: Any, options: SolverOptions) -> Any:
-        stacklevel = _outside_gfem()
+        stacklevel = _mpi.outside_gfem()
         try:  # first: an input the key cannot encode leaves the directory alone
             key, self._env = solve_key(model, problem, options)
         except _codec.UnencodableError as err:
@@ -878,7 +875,7 @@ class SolveCache:
             result,
             run,
             recorded,
-            stacklevel=_outside_gfem(),
+            stacklevel=_mpi.outside_gfem(),
         )
         if isinstance(where, Path):
             _log.info("miss %s: solved and stored (%s)", self.key[:12], where)
@@ -945,7 +942,7 @@ def _show(items: Sequence[_Shown], *, quiet: bool = False) -> None:
 
     ``quiet`` records instead of showing; an ``error`` filter still raises.
     """
-    stacklevel = _outside_gfem()
+    stacklevel = _mpi.outside_gfem()
     with warnings.catch_warnings(record=True) if quiet else contextlib.nullcontext():
         for message, category, filename, lineno, source in items:
             if filename is None or issubclass(category, (*REPLAYED, SolveCacheWarning)):
@@ -954,18 +951,3 @@ def _show(items: Sequence[_Shown], *, quiet: bool = False) -> None:
                 warnings.warn_explicit(
                     message, category, filename, lineno, source=source
                 )
-
-
-def _outside_gfem() -> int:
-    """The ``stacklevel`` of the first frame outside gfem, for the caller's caller.
-
-    Counted as `warnings.warn` counts it when called by the function that
-    calls this one: a warning there points at the user's line that called
-    gfem, however deep inside gfem it is raised.
-    """
-    frame = sys._getframe(1)  # noqa: SLF001
-    level = 1
-    while frame is not None and frame.f_code.co_filename.startswith(_GFEM_DIR):
-        frame = frame.f_back
-        level += 1
-    return level

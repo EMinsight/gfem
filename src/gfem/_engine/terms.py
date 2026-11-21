@@ -90,7 +90,7 @@ from gfem._engine.coefficients import (
 from gfem._engine.domain import boundary_region
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.sensitivity import Derivative
-from gfem._engine.stretch import stretch_tensor
+from gfem._engine.stretch import pml_tensor
 from gfem._materials import Drude
 from gfem._morph import unit_normals
 from gfem._pml import Stretch
@@ -646,7 +646,7 @@ def conductivity_piece(
     values = ETA0 * scale * sigma
     cf = coefficient(built, values)
     if stretch is not None:
-        cf = cf * stretch_tensor(stretch, scale)[0]
+        cf = cf * pml_tensor(stretch, scale)[0]
     return Piece(
         "conductivity",
         lambda w: 1j * k(w),
@@ -676,7 +676,7 @@ def pieces(
     faces: np.ndarray | None = None,
     stretch: Stretch | None = None,
 ) -> tuple[list[Piece], tuple[Piece, ...]]:
-    """The driven operator's pieces on ``model`` (see the module docstring).
+    r"""The driven operator's pieces on ``model`` (see the module docstring).
 
     Returns the pieces and the latent ones: pieces whose matrix is zero at
     this design but whose derivative is not (the conductivity piece where the
@@ -693,11 +693,12 @@ def pieces(
     the mesh sum to the unrestricted pieces. θ and the coefficients do not
     change.
 
-    A perfectly matched layer's ``stretch`` composes its PML tensor Λ, a
-    coefficient of position, into the volume pieces: the curl-curl
-    coefficient becomes mu_r^-1 Λ^-1, the mass eps_r Λ and the conductivity
-    sigma Λ (Λ is the identity outside the layer). θ, ``Piece.values`` and
-    the derivatives keep the background material.
+    A perfectly matched layer's ``stretch`` composes its PML tensor
+    :math:`\Lambda`, a coefficient of position, into the volume pieces: the
+    curl-curl coefficient becomes :math:`\mu_r^{-1}\Lambda^{-1}`, the mass
+    :math:`\varepsilon_r\Lambda` and the conductivity :math:`\sigma\Lambda`
+    (:math:`\Lambda` is the identity outside the layer). :math:`\theta`,
+    ``Piece.values`` and the derivatives keep the background material.
 
     Raises:
         ValueError: A mask is not one boolean per tetrahedron (triangle).
@@ -716,7 +717,7 @@ def pieces(
     nu = coefficient(built, nu_values)
     eps_cf = coefficient(built, eps)
     if stretch is not None:
-        lam, lam_inv = stretch_tensor(stretch, scale)
+        lam, lam_inv = pml_tensor(stretch, scale)
         nu, eps_cf = nu * lam_inv, eps_cf * lam
     out = [
         Piece(
@@ -1563,15 +1564,17 @@ def wave_port_piece(
     theta: Tabulated,
     stretch: Stretch | None = None,
 ) -> Piece:
-    """The Robin term of a wave port: θ ∫ (A E_t) · v_t on its surface.
+    r"""The Robin term of a wave port, :math:`\theta\int (A E_t)\cdot v_t`.
 
-    ``A`` is the port's tangential inverse-permeability tensor, ``1 /
-    mu_r`` for an isotropic element behind the face
+    The integral runs over the port's surface.
+    :math:`A` is the port's tangential inverse-permeability tensor,
+    :math:`\mu_r^{-1}` for an isotropic element behind the face
     (`wave_port_coefficients`). Where the face cuts a perfectly matched
-    layer (``stretch``) it is the stretched medium's, ``N Λ^-1 mu_r^-1
-    N^T = (N Λ^-1 N^T) A`` with ``N = [n]x`` (n a principal axis of both
-    Λ and mu_r there), as the port section's: the port stays exact for its
-    own mode.
+    layer (``stretch``) it is the stretched medium's,
+    :math:`N\Lambda^{-1}\mu_r^{-1}N^\mathsf{T} = (N\Lambda^{-1}N^\mathsf{T})\,A`
+    with :math:`N = [n]_\times` (:math:`n` a principal axis of both
+    :math:`\Lambda` and :math:`\mu_r` there), as the port section's: the
+    port stays exact for its own mode.
     """
     form = _tangential(built, (surface,), order)
     coef = surface_coefficient(built, wave_port_coefficients(model, surface))
@@ -1583,12 +1586,15 @@ def wave_port_piece(
 def _stretched_trace(
     model: Model, built: EngineMesh, surface: str, stretch: Stretch
 ) -> ngs.CoefficientFunction:
-    """``N Λ^-1 N^T`` on a planar wave port ``surface``, 3x3, ``N = [n]x``."""
+    r""":math:`N\Lambda^{-1}N^\mathsf{T}` on a planar wave port ``surface``, 3x3.
+
+    :math:`N = [n]_\times`, the cross-product matrix of the port's normal.
+    """
     mesh = model.mesh
     n = _face_normals(mesh)[mesh.elements(surface)[0]]
     matrix = ((0.0, -n[2], n[1]), (n[2], 0.0, -n[0]), (-n[1], n[0], 0.0))
     cross = ngs.CF(tuple(float(v) for row in matrix for v in row), dims=(3, 3))
-    lam_inv = stretch_tensor(stretch, built.scale)[1]
+    lam_inv = pml_tensor(stretch, built.scale)[1]
     return cross * lam_inv * cross.trans
 
 

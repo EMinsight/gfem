@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 import jax
 import numpy as np
 
+from gfem import _mpi
 from gfem._boundaries import (
     Absorbing,
     Conductor,
@@ -37,6 +38,7 @@ from gfem._boundaries import (
     surfaces_of,
 )
 from gfem._checks import optional_positive, static_float
+from gfem._floquet import C0
 from gfem._materials import Material, MaterialField, PermittivityLaw
 from gfem._periodic import REL_TOL, Pairing
 from gfem._pytree import readonly
@@ -46,13 +48,12 @@ from gfem.errors import (
     ThinLayerWarning,
 )
 from gfem.mesh import LENGTH_UNITS, Mesh, _shortest_edges
+from gfem.problems import Driven, Eigenmode, PortMode
 
 if TYPE_CHECKING:
     from gfem._domain import EMDomain
 
 _AXES = "xyz"
-#: Speed of light in vacuum, m/s.
-C0 = 299792458.0
 #: The faces of a tetrahedron (node positions), each opposite node ``k``.
 _FACES = np.array([[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]])
 #: Largest component of a unit vector counted as zero (a face normal across
@@ -179,7 +180,7 @@ def _regions(value: Any) -> tuple[str, ...]:
 # --- profile -------------------------------------------------------------------
 
 
-def sigma_max(target_reflection: float, k_ref: float, d: float) -> float:
+def stretch_maximum(target_reflection: float, k_ref: float, d: float) -> float:
     r"""The stretch maximum :math:`\sigma_\max = -3\ln R_0/(2 k_\text{ref} d)`.
 
     The quadratic profile :math:`\sigma_\max(\xi/d)^2` then gives the
@@ -609,24 +610,26 @@ def _side_mask(mesh: Mesh, layers: Layers, side: Side) -> np.ndarray:
     ).any(axis=1)
 
 
-def check_layer_nodes(model: Any) -> None:
+def check_layer_nodes(model: Any, problem: Any) -> None:
     """Raise if a moved mesh puts physical tetrahedra past a stretched face.
 
     The stretch is fixed at the imported mesh (its interior box and
     thicknesses), so a vertex of an active tetrahedron outside the layer
     moved beyond a covered face would be stretched with the device
     material. Layer vertices may move inward: below its inner face the
-    layer is its background.
+    layer is its background. Only wave problems (driven, eigenmode and
+    port mode) stretch: the others see the background and pass.
 
     Args:
         model: A model with concrete node coordinates.
+        problem: The problem solved on ``model``.
 
     Raises:
         ValueError: A vertex of an active non-layer tetrahedron lies beyond
             a covered face by more than the node tolerance.
     """
     layers, mesh = model._layers, model.mesh  # noqa: SLF001
-    if layers is None:
+    if layers is None or not isinstance(problem, (Driven, Eigenmode, PortMode)):
         return
     nodes = np.asarray(mesh.nodes)
     if np.array_equal(nodes, mesh.imported_nodes):
@@ -733,6 +736,10 @@ class Stretch:
         r""":math:`k_\text{ref} = 2\pi f_\text{ref}/c`, rad/m (vacuum)."""
         return 2 * math.pi * self.reference_frequency / C0
 
+    def stretch_maximum(self, side: Side) -> float:
+        r"""The stretch maximum :math:`\sigma_\max` of ``side`` (`stretch_maximum`)."""
+        return stretch_maximum(self.target_reflection, self.k_ref, side.thickness)
+
     @functools.cached_property
     def key(self) -> tuple:
         r"""What the stretched operator depends on, for cache keys.
@@ -741,22 +748,18 @@ class Stretch:
         then the reference frequency and the target reflection.
         """
         sides = tuple(
-            (
-                s.axis,
-                s.sign,
-                s.face,
-                s.thickness,
-                sigma_max(self.target_reflection, self.k_ref, s.thickness),
-            )
+            (s.axis, s.sign, s.face, s.thickness, self.stretch_maximum(s))
             for s in self.layers.sides
         )
         return ("pml", sides, self.reference_frequency, self.target_reflection)
 
-    def warn_thin(self, stacklevel: int = 2) -> None:
-        r"""Warn `ThinLayerWarning` for a side with :math:`k_\text{ref}d < 2\pi/100`."""
+    def warn_thin(self) -> None:
+        r"""Warn `ThinLayerWarning` for a side with :math:`k_\text{ref}d < 2\pi/100`.
+
+        The warning points at the user's call into gfem.
+        """
         for side in self.layers.sides:
             kd = self.k_ref * side.thickness
-            smax = sigma_max(self.target_reflection, self.k_ref, side.thickness)
             if kd < THIN:
                 warnings.warn(
                     f"perfectly matched layer, {side.label} side "
@@ -764,11 +767,11 @@ class Stretch:
                     f"{side.thickness * self.reference_frequency / C0:.3g} "
                     "reference wavelengths thick (k_ref d = "
                     f"{kd:.3g} < 2 pi / 100 at {self.reference_frequency:.6g} Hz), "
-                    f"so its stretch maximum {smax:.3g} makes the operator badly "
-                    "conditioned and loses digits. "
+                    f"so its stretch maximum {self.stretch_maximum(side):.3g} makes "
+                    "the operator badly conditioned and loses digits. "
                     "Make the layer about half a wavelength thick.",
                     ThinLayerWarning,
-                    stacklevel=stacklevel + 1,
+                    stacklevel=_mpi.outside_gfem(),
                 )
 
 

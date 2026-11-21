@@ -727,7 +727,7 @@ class EigenmodeRule:
         """
         stretch = layer_stretch(model, [self.problem.target])
         if warn and stretch is not None:
-            stretch.warn_thin(stacklevel=4)
+            stretch.warn_thin()
         return stretch
 
     def _in_layer(self, k: complex, x: np.ndarray) -> bool:

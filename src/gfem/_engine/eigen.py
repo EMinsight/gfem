@@ -43,7 +43,7 @@ from gfem._engine.domain import (
     space_key,
 )
 from gfem._engine.driven import DrivenOperator, real_space
-from gfem._engine.stretch import stretch_tensor
+from gfem._engine.stretch import pml_tensor
 from gfem._linalg import Handle, Operator, ResolvedLinearSolver, Symmetry
 from gfem._linalg.base import free_mask, host_bytes
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
@@ -394,7 +394,7 @@ def _stretched_projector(
         ),
         group=phases,
     )
-    lam = stretch_tensor(stretch, built.scale)[0]
+    lam = pml_tensor(stretch, built.scale)[0]
     weight = coefficient(built, real_eps(model)) * lam
     nodes = np.asarray(model.mesh.nodes) / built.scale
     diameter = float(np.linalg.norm(np.ptp(nodes, axis=0)))
@@ -427,7 +427,10 @@ def _physical_eps(model: Model) -> np.ndarray:
 def layer_energy(
     model: Model, op: DrivenOperator
 ) -> Callable[[np.ndarray], np.ndarray] | None:
-    """``x -> [∫_layer Re(eps_r) |x|^2, ∫ Re(eps_r) |x|^2]``, ``None`` without a layer.
+    r"""The layer and total energies of a coefficient vector; ``None`` without a layer.
+
+    :math:`x \mapsto [W_\text{layer}(x),\ W(x)]` with
+    :math:`W_\Omega(x) = \int_\Omega \operatorname{Re}\varepsilon_r\,|x|^2`.
 
     The background-weighted energy in a perfectly matched layer's
     tetrahedra and in the whole solve domain, of a coefficient vector of

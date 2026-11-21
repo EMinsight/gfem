@@ -282,6 +282,8 @@ class PortModeRule:
         lead = lead_port(ports)
         # the layer meets its target at the lowest frequency, or its pinned one
         stretch = _pml.stretch(model, self.problem.frequency)
+        if stretch is not None:
+            stretch.warn_thin()
         section = port_section(model, lead, stretch)
         with task_manager(self.options.threads, self.comm):
             space = PortModeSpace(section, self.options.order)
@@ -672,7 +674,7 @@ class _Greedy:
                 "the perturbation falls about as exp(-2 gamma_t c) with the "
                 "clearance c and the mode's transverse decay rate gamma_t.",
                 LayerClearanceWarning,
-                stacklevel=10,
+                stacklevel=_mpi.outside_gfem(),
             )
 
     def _keep(self, j: int, cand: _Candidates, picks: list[int]) -> None:
@@ -790,7 +792,7 @@ class _Greedy:
                     "modes at each frequency would switch modes there, so its "
                     "S-parameters differ beyond the crossing.",
                     PortModeTrackingWarning,
-                    stacklevel=10,
+                    stacklevel=_mpi.outside_gfem(),
                 )
                 return
 

@@ -294,7 +294,7 @@ def _solve(  # noqa: PLR0912, PLR0915 - the cache's seam sits between the checks
         # A moved mesh must keep its periodic pairs, keep its physical
         # elements off the layer's stretch and stay valid on the solve domain.
         check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
-        check_layer_nodes(model)
+        check_layer_nodes(model, problem)
         physics = physics_of(problem)
         _check_quality(
             model.mesh,
