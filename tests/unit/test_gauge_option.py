@@ -20,7 +20,7 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
-from gfem._engine import driven, gauge
+from gfem._engine import driven, driven_system, gauge
 from gfem._engine.driven import DrivenRule
 
 L, W, H = 10.0, 2.0, 1.0  # mm
@@ -148,7 +148,7 @@ def test_none_solves_on_the_ungauged_path(line, monkeypatch):
     def refused(*_args, **_kwargs):
         raise AssertionError("gauge='none' built a gauge basis")
 
-    monkeypatch.setattr(driven, "gauge_basis", refused)
+    monkeypatch.setattr(driven_system, "gauge_basis", refused)
     options = gfem.SolverOptions(order=2, linear_solver="direct", gauge="none")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", gfem.LowFrequencyWarning)
