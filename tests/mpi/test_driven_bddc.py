@@ -59,8 +59,8 @@ def _s_and_iterations(directory, frequencies):
         seen["setups"] += 1
         return set_up(*args, **kwargs)
 
-    def spy(self, model, *, keep):
-        outputs, entry = forward(self, model, keep=keep)
+    def spy(self, model, *, keep, request=None):
+        outputs, entry = forward(self, model, keep=keep, request=request)
         seen["iterations"] = outputs["iterations"]
         return outputs, entry
 

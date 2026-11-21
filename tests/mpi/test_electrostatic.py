@@ -436,9 +436,9 @@ def _counted_forwards(function, *args):
     seen = []
     forward = ElectrostaticRule.forward
 
-    def spy(self, model, *, keep):
+    def spy(self, model, *, keep, request=None):
         seen.append(keep)
-        return forward(self, model, keep=keep)
+        return forward(self, model, keep=keep, request=request)
 
     ElectrostaticRule.forward = spy
     try:

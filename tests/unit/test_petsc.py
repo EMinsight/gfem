@@ -21,10 +21,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 import structured_meshes as sm
+from eigen_cases import steer_search
 
 import gfem
 from gfem import _linalg, _mpi, _petsc
-from gfem._eigen import rule as eigen_rule
+from gfem._eigen import arpack
 from gfem._engine import driven, quadrature, workers
 from gfem._engine.mesh import to_ngsolve
 
@@ -205,7 +206,7 @@ def _spy(monkeypatch, owner, name, calls):
 def test_the_solver_is_checked_before_any_assembly(plate, line, problem, monkeypatch):
     calls = []
     _spy(monkeypatch, _linalg, "prepare", calls)
-    _spy(monkeypatch, driven.DrivenRule, "_ports", calls)
+    _spy(monkeypatch, driven.DrivenRule, "system", calls)
     model, p = _case(problem, plate, line)
     options = gfem.SolverOptions(order=1, linear_solver="petsc")
     with pytest.raises(gfem.SolverUnavailableError):
@@ -306,12 +307,18 @@ def test_auto_never_picks_petsc_or_slepc_even_when_installed(
 ):
     petsc, slepc = fake("petsc4py"), fake("slepc4py")
     stack(petsc=petsc, slepc=slepc)
-    seeds = []
-    _spy(monkeypatch, eigen_rule, "shift_invert", seeds)
+    solvers = []
+
+    def spy(shift_invert):
+        solvers.append(shift_invert)
+        return shift_invert
+
+    steer_search(monkeypatch, eigen_solver=spy)
     model, p = _case(problem, plate, line)
     gfem.solve(model, p, options=gfem.SolverOptions(order=1))
     assert petsc.calls == slepc.calls == []
-    assert bool(seeds) == (problem == "eigenmode")  # the ARPACK seed solve
+    # the ARPACK seed solve
+    assert solvers == ([arpack.shift_invert] if problem == "eigenmode" else [])
 
 
 # --- the build script users and CI run: tools/petsc_wheelhouse.sh -------------------

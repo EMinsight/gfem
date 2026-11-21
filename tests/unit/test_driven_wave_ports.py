@@ -853,7 +853,7 @@ def _port1_surface(model, frequencies, order):
 
     problem = gfem.Driven(frequencies)
     rule = DrivenRule(model, problem, gfem.SolverOptions(order=order))
-    system, _ = rule._ports(model)
+    system, _ = rule.system(model)
     return system.operator, system.surfaces[0]
 
 

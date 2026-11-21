@@ -12,12 +12,14 @@ model exactly outside the law's unresolved band. The references:
 - a constant `Material` holding the law's value at a lossless mode.
 """
 
+import dataclasses
 import math
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import structured_meshes as sm
+from eigen_cases import steer_search
 
 import gfem
 from gfem._eigen import rule as eigen_rule
@@ -218,13 +220,15 @@ def plate(tmp_path_factory):
 def seed_solves(monkeypatch):
     """The seed solves the eigenmode solves run."""
     count = [0]
-    shift_invert = eigen_rule.EigenmodeRule._shift_invert
 
-    def spy(self, *args, **kwargs):
-        count[0] += 1
-        return shift_invert(self, *args, **kwargs)
+    def spy(shift_invert):
+        def seed_solve(*args, **kwargs):
+            count[0] += 1
+            return shift_invert(*args, **kwargs)
 
-    monkeypatch.setattr(eigen_rule.EigenmodeRule, "_shift_invert", spy)
+        return seed_solve
+
+    steer_search(monkeypatch, eigen_solver=spy)
     return count
 
 
@@ -362,8 +366,12 @@ def test_a_gradient_pair_at_a_plasma_zero_is_dropped(coarse, kh):
         < 1e-8 * np.linalg.norm(eop.parts(gradient)[2]) * abs(sigma) ** 2
     )
     assert eop.curl_ratio(sigma, gradient) < 1e-4
-    modes, *_ = rule._select(eop, np.array([sigma + 0j]), gradient[:, None], sigma)
-    assert modes == []
+    search = dataclasses.replace(
+        rule.search(),
+        eigen_solver=lambda *_, **__: (np.array([sigma + 0j]), gradient[:, None]),
+    )
+    with pytest.raises(gfem.EigenmodeConvergenceError, match="found 0 of the 1"):
+        search.find(eop, None, sigma, guard=False, polish_isolated=False)
     # the box's lowest transverse field at the same k is far above the threshold
     vacuum = gfem.solve(
         filled(coarse, 1.0), gfem.Eigenmode(target=24 * GHZ, n_modes=1), options=options

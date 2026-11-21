@@ -17,9 +17,13 @@ directory to write it to (a pytest ``tmp_path_factory.mktemp`` directory).
   surface "sheet" across its cross-section, where a capacitive
   `gfem.Impedance` is a shunt capacitor that keeps the field uniform over
   every cross-section.
+- `steer_search`: patch the mode search the eigenmode rule builds
+  (`EigenmodeRule.search`), to spy on or steer its eigen solver, refinement
+  or polish.
 """
 
 import cmath
+import dataclasses
 import math
 from pathlib import Path
 
@@ -112,3 +116,21 @@ def conductor_line(mesh, sigma=SIGMA) -> gfem.Model:
         materials={"dielectric": gfem.Material(eps_r=EPS)},
         boundaries=[gfem.PEC("bottom"), gfem.Conductor("top", sigma)],
     )
+
+
+def steer_search(monkeypatch, **wrap) -> None:
+    """Patch `EigenmodeRule.search`: field ``name`` becomes ``wrap[name](field)``.
+
+    Each wrapper takes the search's own field (``eigen_solver``, ``refine``,
+    ``polish``) and returns the one to use, e.g. a spy that delegates to it.
+    """
+    from gfem._eigen.rule import EigenmodeRule
+
+    original = EigenmodeRule.search
+
+    def search(self):
+        built = original(self)
+        fields = {name: w(getattr(built, name)) for name, w in wrap.items()}
+        return dataclasses.replace(built, **fields)
+
+    monkeypatch.setattr(EigenmodeRule, "search", search)

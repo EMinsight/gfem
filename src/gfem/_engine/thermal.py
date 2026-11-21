@@ -72,6 +72,7 @@ from gfem._engine.sensitivity import (
     Term,
     element_integrals,
 )
+from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
 from gfem._linalg.base import free_mask
 from gfem._pytree import register_fields
@@ -302,11 +303,6 @@ class ThermalRule:
     reads: ClassVar[tuple[str, ...]] = ("thermal_conductivity",)
     #: The problem name in solver logs and messages.
     problem_name: ClassVar[str] = "thermal"
-    #: The wanted input kinds of a differentiated solve (set by
-    #: `gfem._adjoint.solve_vjp` on the host copy), else ``None``.
-    wanted_kinds: frozenset | None = None
-    #: Whether this forward reruns for a backward that lost its entry.
-    rerun: bool = False
 
     def __init__(
         self,
@@ -699,7 +695,7 @@ class SteadyThermalRule(ThermalRule):
         _check_sinks(model, self.active, self.boundaries.sinks)
 
     def forward(
-        self, model: Model, *, keep: bool
+        self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, np.ndarray], Entry | None]:
         """Solve the source-free temperature and the rise on one operator.
 
@@ -708,6 +704,7 @@ class SteadyThermalRule(ThermalRule):
             ``keep``, the cache entry (the prepared operator in a
             `KeptHandle`, ``fields`` the two solutions) or ``None``.
         """
+        del request  # a steady solve keeps the same whatever is wanted
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
         density = np.asarray(self._loads().density)
@@ -757,7 +754,12 @@ class SteadyThermalRule(ThermalRule):
         }
 
     def backward(
-        self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        *,
+        wanted: frozenset | None = None,
     ) -> list[FieldPair | LoadField]:
         """Fold the temperature and rise cotangents into pairs and a load.
 
@@ -767,9 +769,10 @@ class SteadyThermalRule(ThermalRule):
         scale ** 2`` in file units). A temperature cotangent adds the T0
         pair (`_source_free_pair`) unless the boundaries share one
         temperature (T0 is then that constant). Solves on the forward's
-        kept operator; an entry that lost it prepares it again.
+        kept operator; an entry that lost it prepares it again. ``wanted``
+        holds the wanted input kinds.
         """
-        wanted = self.wanted_kinds or frozenset()
+        wanted = wanted or frozenset()
         conduction = "thermal_conductivity" in {
             k[2] for k in wanted if k[0] == "material"
         }
@@ -1009,7 +1012,7 @@ class TransientThermalRule(ThermalRule):
             return np.zeros_like(t0)
         return np.where(free, self._constant(space, start) - t0, 0.0)
 
-    def _trajectory(self, handle: Handle, ndof: int) -> str:
+    def _trajectory(self, handle: Handle, ndof: int, request: SolveRequest) -> str:
         """``"none"``, ``"full"`` or ``"checkpoints"``: what a kept forward stores.
 
         Decided once, before stepping: no trajectory when only the
@@ -1018,10 +1021,10 @@ class TransientThermalRule(ThermalRule):
         ``retain_memory`` alone (the test the cache stores with); else a
         checkpoint every ceil(sqrt(steps)) steps, as a rerun forward does.
         """
-        wanted = self.wanted_kinds
+        wanted = request.wanted
         if wanted is not None and wanted <= SOURCE_KINDS:
             return "none"
-        if self.rerun:
+        if request.rerun:
             return "checkpoints"
         trajectory = 8 * ndof * (self.spec.steps + 1)
         held = _alone(Entry(physics=self.physics, handle=KeptHandle(handle)))
@@ -1156,7 +1159,7 @@ class TransientThermalRule(ThermalRule):
         return stiffness, capacity, free
 
     def forward(
-        self, model: Model, *, keep: bool
+        self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, np.ndarray], Entry | None]:
         """Step the rise over the time grid on one prepared operator.
 
@@ -1165,8 +1168,10 @@ class TransientThermalRule(ThermalRule):
             "source_free": (ndof,)}``, and, if ``keep``, the cache entry
             (the stepping operator in a `KeptHandle`; ``fields`` the states
             and T0, unless only the sources are wanted, see `_trajectory`)
-            or ``None``.
+            or ``None``. ``request`` holds the wanted input kinds and whether
+            this forward reruns for a backward that lost its entry.
         """
+        request = SolveRequest() if request is None else request
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
         density = np.asarray(self._loads().density)
@@ -1183,7 +1188,9 @@ class TransientThermalRule(ThermalRule):
             stepper = self._stepper(model, built, space, dt)
             u = self._start(space, stepper.free, t0)
             steps = self.spec.steps
-            layout = self._trajectory(stepper.handle, len(t0)) if keep else "none"
+            layout = (
+                self._trajectory(stepper.handle, len(t0), request) if keep else "none"
+            )
             stride = 1 if layout == "full" else _stride(steps)
             states = [] if layout == "none" else [u]
             offset = on_t @ t0
@@ -1258,7 +1265,12 @@ class TransientThermalRule(ThermalRule):
                 yield n, segment[k], stages[k], segment[k + 1]
 
     def backward(  # noqa: PLR0912, PLR0915
-        self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        *,
+        wanted: frozenset | None = None,
     ) -> list[FieldPair | LoadField | Integrated]:
         """The discrete adjoint of the exact scheme, run backwards.
 
@@ -1272,11 +1284,12 @@ class TransientThermalRule(ThermalRule):
         states, the conductivity and heat-capacity pairs of every step are
         contracted as the sweep goes (`Integrated`). The cotangents on T0
         (the source-free output, the traces' temperature part and a
-        uniform start's ``-ubar_0``) add the T0 pair.
+        uniform start's ``-ubar_0``) add the T0 pair. ``wanted`` holds the
+        wanted input kinds.
         """
         spec = self.spec
         loads = self._loads()
-        wanted = self.wanted_kinds or frozenset()
+        wanted = wanted or frozenset()
         properties = {k[2] for k in wanted if k[0] == "material"}
         trace_kinds = {k for k in wanted if k[0] == "problem"} - SOURCE_KINDS
         steps = spec.steps

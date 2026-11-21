@@ -206,7 +206,7 @@ def _forced_adjoint(model, result, port, frequency=None):
         frequency = float(result.s.frequency[0])
     omega = 2 * math.pi * frequency
     rule = DrivenRule(model, gfem.Driven([frequency]), OPTIONS)
-    system, ports = rule._ports(model)
+    system, ports = rule.system(model)
     i = model.port_names.index(port)
     with system.sweep() as sweep:
         functional = ports.functional(omega)[:, i]
@@ -391,27 +391,27 @@ def test_an_unconverged_adjoint_is_not_reported_as_a_forward_miss(
 
 def _adjoint_rule(model, problem):
     from gfem._engine.driven import DrivenRule, port_loads
+    from gfem._engine.solve_request import SolveRequest
 
     rule = DrivenRule(model, problem, OPTIONS)
-    rule.adjoint_loads = port_loads(("p2",))
-    return rule
+    return rule, SolveRequest(adjoint_loads=port_loads(("p2",)))
 
 
 def test_adjoint_ports_never_reach_a_differentiated_solve(tmp_path):
     # A backward pass keeps no adjoint columns: the forward refuses them.
     model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
-    rule = _adjoint_rule(model, gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY]))
+    rule, request = _adjoint_rule(model, gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY]))
     with pytest.raises(RuntimeError, match="differentiated"):
-        rule.forward(model, keep=True)
+        rule.forward(model, keep=True, request=request)
 
 
 def test_adjoint_ports_never_reach_an_adaptive_sweep(tmp_path):
     model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
     f = rc.LOSSY_GUIDE_FREQUENCY
     problem = gfem.Driven(np.linspace(f, 1.1 * f, 5), sweep="adaptive")
-    rule = _adjoint_rule(model, problem)
+    rule, request = _adjoint_rule(model, problem)
     with pytest.raises(RuntimeError, match="adaptive"):
-        rule.forward(model, keep=False)
+        rule.forward(model, keep=False, request=request)
 
 
 @pytest.mark.usefixtures("no_solve")
@@ -700,15 +700,15 @@ def test_two_quantities_on_one_mesh_build_one_recovery(step, recoveries):
     # One cycle's estimates share one recovery and one set of recovered
     # errors per field: S21 and S11 at two frequencies read the fields of p1
     # and p2 at each, through one `RecoveryCache`.
-    from gfem.refinement import _estimate
+    from gfem._estimate_kinds import estimate
 
     problem = dataclasses.replace(rc.step_problem(), keep_fields=True)
     result = gfem.solve(step, problem, options=OPTIONS)
     cache = kernels.RecoveryCache()
-    s21 = _estimate(
+    s21 = estimate(
         step, result, gfem.QuantityEstimator(s=("p2", "p1")), threads=None, cache=cache
     )
-    s11 = _estimate(
+    s11 = estimate(
         step, result, gfem.QuantityEstimator(s=("p1", "p1")), threads=None, cache=cache
     )
     assert len(recoveries) == 1

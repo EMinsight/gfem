@@ -192,9 +192,9 @@ def test_entry_over_budget_keeps_its_potentials_and_loses_only_the_operator(
     forwards = []
     forward = ElectrostaticRule.forward
 
-    def counted(self, model, *, keep):
+    def counted(self, model, *, keep, request=None):
         forwards.append(keep)
-        return forward(self, model, keep=keep)
+        return forward(self, model, keep=keep, request=request)
 
     monkeypatch.setattr(ElectrostaticRule, "forward", counted)
     tight = gfem.SolverOptions(

@@ -18,11 +18,10 @@ import numpy as np
 import pytest
 import scipy.sparse.linalg as spla
 import structured_meshes as sm
-from eigen_cases import line_mesh, terminated_line
+from eigen_cases import line_mesh, steer_search, terminated_line
 
 import gfem
 from gfem._eigen import arpack, seed
-from gfem._eigen import rule as eigen_rule
 from gfem._eigen.operator import EigenOperator
 
 BOUND = 5  # the patched restart bound
@@ -64,20 +63,21 @@ def seed_solves(monkeypatch):
         solves[0] += 1
         return solve(self, b)
 
-    rule = eigen_rule.EigenmodeRule
-    shift_invert = rule._shift_invert
     seen = []
 
-    def spy(self, op, project, nev, **kwargs):
-        before = solves[0]
-        try:
-            return shift_invert(self, op, project, nev, **kwargs)
-        finally:
-            dims = seed.seed_operator(op, project).dimensions(nev)
-            seen.append((*dims, solves[0] - before))
+    def spy(shift_invert):
+        def seed_solve(op, project, nev, **kwargs):
+            before = solves[0]
+            try:
+                return shift_invert(op, project, nev, **kwargs)
+            finally:
+                dims = seed.seed_operator(op, project).dimensions(nev)
+                seen.append((*dims, solves[0] - before))
+
+        return seed_solve
 
     monkeypatch.setattr(EigenOperator, "solve", counted)
-    monkeypatch.setattr(rule, "_shift_invert", spy)
+    steer_search(monkeypatch, eigen_solver=spy)
     return seen
 
 

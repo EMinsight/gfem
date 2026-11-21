@@ -68,6 +68,7 @@ import numpy as np
 import scipy.constants as const
 
 from gfem import _mpi, _timing
+from gfem._adjoint import adjoint_tolerance
 from gfem._boundaries import PEC, PMC, Absorbing, WavePort, wave_port_surfaces
 from gfem._domain import h1_unknowns
 from gfem._engine import dispersion, points, quadrature, terms
@@ -86,6 +87,8 @@ from gfem._engine.driven import (
     _check_skipped_port_modes,
     _port_regions,
 )
+from gfem._engine.driven_sweep import SweepSplit
+from gfem._engine.driven_system import DrivenSystemBuilder
 from gfem._engine.fields import dof_shape
 from gfem._engine.gauge import GaugeChoice
 from gfem._engine.port_mode import admittance
@@ -199,13 +202,32 @@ class Driven2DRule(DrivenRule):
         self.nodes_unsupported = _NO_GRADIENTS
         self._mesh = model.mesh
         self._excluded = model._domain.excluded  # noqa: SLF001
-        self.keeps_partial = False
-        self.adjoint_loads = None
-        self.adjoints = {}
-        self.handed_port_modes = None
         #: Per port, the sign its Hz S row and column take (`hz_signs`); ones
         #: in Ez.
         self.signs = hz_signs(model, self.polarization)
+        self.systems = DrivenSystemBuilder(
+            frequency=problem.frequency,
+            columns=tuple(names.index(n) for n in self.excite),
+            excite=tuple(self.excite),
+            port_mode_tolerance=options.port_mode_tolerance,
+            floquet_order_tolerance=options.floquet_order_tolerance,
+            orders=self.orders,
+            order_frequency=self.order_frequency,
+            wave_vector=self.wave_vector,
+            problem_wave_vector=problem.wave_vector,
+            wave_vector_frequency=problem.wave_vector_frequency,
+            swept_spaces=self.swept_spaces,
+            comm=comm,
+            linear=self.linear,
+            adjoint_tolerance=adjoint_tolerance(options),
+            retain_memory=options.retain_memory,
+            gauge=self.gauge.on,
+            polarization=self.polarization,
+        )
+        #: No fixed-angle sweep in 2D.
+        self.children = None
+        #: Frequency workers' blocks, or ``None``.
+        self.split = SweepSplit.of(self)
         _check_low_frequency(model, problem.frequency, None, stacklevel=4)
         _check_skipped_port_modes(model, stacklevel=4)
 
@@ -225,12 +247,6 @@ class Driven2DRule(DrivenRule):
             span.set(ndof=int(op.space.ndof))
         self._last_operator = (model, op)
         return op
-
-    def _forward_other(self, model: Model, *, keep: bool) -> Any:
-        """Frequency workers, else the uniform sweep in this process."""
-        if min(self.options.frequency_workers, len(self.problem.frequency)) > 1:
-            return self._forward_workers(model, keep=keep)
-        return None
 
     def _field_shape(self, model: Model) -> tuple[int, int]:
         """``(width, ndof)`` of a kept field: H1 of the solve order."""

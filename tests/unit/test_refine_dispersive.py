@@ -18,7 +18,7 @@ import refinement_cases as rc
 import structured_meshes as sm
 
 import gfem
-from gfem.refinement import _lossy_elements
+from gfem._estimate_admission import _lossy_elements
 
 GHZ = 1e9
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")

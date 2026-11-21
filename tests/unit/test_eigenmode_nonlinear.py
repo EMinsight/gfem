@@ -35,6 +35,7 @@ from eigen_cases import (
     H,
     conductor_line,
     line_mesh,
+    steer_search,
     terminated_line,
 )
 from gradient_cases import MIRRORED_TARGET, mirrored_cavity
@@ -215,7 +216,6 @@ def seed_solves(monkeypatch):
     One ``(nev, solves)`` per Arnoldi attempt: the pairs the rule asks the
     eigen solver for, and the ``T(sigma)^-1`` solves the seed made.
     """
-    import gfem._eigen.rule as eigen_rule
     from gfem._eigen.operator import EigenOperator
 
     solves = [0]
@@ -225,17 +225,19 @@ def seed_solves(monkeypatch):
         solves[0] += 1
         return solve(self, b)
 
-    shift_invert = eigen_rule.shift_invert
     seen = []
 
-    def spy(op, project, nev, **kwargs):
-        before = solves[0]
-        out = shift_invert(op, project, nev, **kwargs)
-        seen.append((nev, solves[0] - before))
-        return out
+    def spy(shift_invert):
+        def seed_solve(op, project, nev, **kwargs):
+            before = solves[0]
+            out = shift_invert(op, project, nev, **kwargs)
+            seen.append((nev, solves[0] - before))
+            return out
+
+        return seed_solve
 
     monkeypatch.setattr(EigenOperator, "solve", counted)
-    monkeypatch.setattr(eigen_rule, "shift_invert", spy)
+    steer_search(monkeypatch, eigen_solver=spy)
     return seen
 
 
@@ -271,20 +273,20 @@ def cavity(tmp_path_factory):
 @pytest.fixture
 def seed_errors(monkeypatch):
     """The backward error of every non-static pair each seed solve returned."""
-    import gfem._eigen.rule as eigen_rule
-
-    shift_invert = eigen_rule.shift_invert
     seen = []
 
-    def spy(op, project, nev, **kwargs):
-        k, vectors = shift_invert(op, project, nev, **kwargs)
-        for j in range(len(k)):
-            if k[j].real > 1e-6 * op.shift.real:
-                x = np.where(op.free, vectors[:, j], 0)
-                seen.append(op.backward_error(k[j], x / np.linalg.norm(x)))
-        return k, vectors
+    def spy(shift_invert):
+        def seed_solve(op, project, nev, **kwargs):
+            k, vectors = shift_invert(op, project, nev, **kwargs)
+            for j in range(len(k)):
+                if k[j].real > 1e-6 * op.shift.real:
+                    x = np.where(op.free, vectors[:, j], 0)
+                    seen.append(op.backward_error(k[j], x / np.linalg.norm(x)))
+            return k, vectors
 
-    monkeypatch.setattr(eigen_rule, "shift_invert", spy)
+        return seed_solve
+
+    steer_search(monkeypatch, eigen_solver=spy)
     return seen
 
 

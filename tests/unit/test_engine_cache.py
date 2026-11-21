@@ -564,9 +564,9 @@ def forwards(monkeypatch):
     seen = []
     forward = ElectrostaticRule.forward
 
-    def counted(self, model, *, keep):
+    def counted(self, model, *, keep, request=None):
         seen.append(keep)
-        return forward(self, model, keep=keep)
+        return forward(self, model, keep=keep, request=request)
 
     monkeypatch.setattr(ElectrostaticRule, "forward", counted)
     cache.ENTRIES.clear()

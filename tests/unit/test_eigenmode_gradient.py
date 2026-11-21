@@ -17,7 +17,8 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
-from gfem._eigen.rule import EigenmodeRule, clusters
+from gfem._eigen.reach import clusters
+from gfem._eigen.rule import EigenmodeRule
 from gfem._engine import terms
 from gfem._engine.driven import driven_operator
 from gfem._engine.runtime import task_manager

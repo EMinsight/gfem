@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Callable, Hashable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -56,6 +56,7 @@ from gfem._engine.fields import dof_shape, rank_piece
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Derivative, FieldPair, Term, law_key
+from gfem._engine.solve_request import SolveRequest
 from gfem._field import FieldMap
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
 from gfem._linalg.base import free_mask
@@ -165,8 +166,8 @@ class DualContext:
 
 #: An electrostatic dual load callback: given a solve's `DualContext`, the
 #: loads ``(ndof,)`` (file units, ``int eps_r grad u . grad v``'s) to solve
-#: ``K z = load`` for, by key; each dual comes back in
-#: `ElectrostaticRule.adjoints` by key, zero on the fixed DOFs.
+#: ``K z = load`` for, by key; each dual comes back in the request's
+#: `SolveRequest.adjoints` by key, zero on the fixed DOFs.
 ElectrostaticLoads = Callable[[DualContext], Mapping[Hashable, np.ndarray]]
 
 
@@ -421,14 +422,9 @@ class ElectrostaticRule:
         # The potentials live on the mesh as given (traced or not).
         self._mesh = model.mesh
         self._excluded = model._domain.excluded  # noqa: SLF001
-        #: Dual loads to solve with the forward on its handle: set by
-        #: `gfem.refine_mesh` for an objective's duals (`objective_loads`).
-        self.adjoint_loads: ElectrostaticLoads | None = None
-        #: The duals of `adjoint_loads`, by key, after `forward`.
-        self.adjoints: dict[Hashable, np.ndarray] = {}
 
     def forward(
-        self, model: Model, *, keep: bool
+        self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, np.ndarray], Entry | None]:
         """Solve every terminal; return the outputs and, if ``keep``, an entry.
 
@@ -436,6 +432,10 @@ class ElectrostaticRule:
             model: The model, with concrete leaves.
             keep: Keep the potentials and the prepared operator for a
                 backward pass.
+            request: Its ``adjoint_loads`` (`ElectrostaticLoads`, set by
+                `gfem.refine_mesh` for an objective's duals,
+                `objective_loads`) are solved with the forward on its handle;
+                their adjoints land in its ``adjoints`` by key.
 
         Returns:
             ``{"capacitance": (n, n) array in F, "energy": (len(regions), n)
@@ -447,6 +447,7 @@ class ElectrostaticRule:
             ValueError: Part of the solve domain touches no terminal or
                 ground, so its potential is undetermined.
         """
+        request = SolveRequest() if request is None else request
         with task_manager(self.options.threads, self.comm):
             space, built, layout = self._space(model)
             eps = permittivity(model, built)
@@ -471,8 +472,17 @@ class ElectrostaticRule:
                 * scale
                 * self._region_energies(model, built, space, eps, phi, layout=layout)
             )
-            if self.adjoint_loads is not None and np.isfinite(c).all():
-                self._solve_duals(model, handle, space, built=built, eps=eps, phi=phi)
+            if request.adjoint_loads is not None and np.isfinite(c).all():
+                self._solve_duals(
+                    model,
+                    handle,
+                    space,
+                    built=built,
+                    eps=eps,
+                    phi=phi,
+                    loads=cast("ElectrostaticLoads", request.adjoint_loads),
+                    into=request.adjoints,
+                )
         c = 0.5 * (c + c.T)
         if not keep or not np.isfinite(c).all():
             handle.free()
@@ -534,9 +544,13 @@ class ElectrostaticRule:
         built: EngineMesh,
         eps: ngs.CoefficientFunction,
         phi: np.ndarray,
+        loads: ElectrostaticLoads,
+        into: dict[Hashable, np.ndarray],
     ) -> None:
-        """Solve `adjoint_loads` on the forward's handle: one back-substitution."""
-        assert self.adjoint_loads is not None  # noqa: S101 - the caller checked
+        """Solve the dual ``loads`` on the forward's handle: one back-substitution.
+
+        The duals land in ``into`` by key.
+        """
         context = DualContext(
             model=model,
             potential=phi,
@@ -548,9 +562,9 @@ class ElectrostaticRule:
             _support=self.regions,
             _excluded=self._excluded,
         )
-        keyed = dict(self.adjoint_loads(context))
+        keyed = dict(loads(context))
         if keyed:
-            self.adjoints.update(_solve_keyed(handle, space, keyed, reused=True))
+            into.update(_solve_keyed(handle, space, keyed, reused=True))
 
     def _space(self, model: Model) -> tuple[ngs.FESpace, EngineMesh, DofLayout]:
         """The solve space, its mesh, and how it lies across ranks.
@@ -606,7 +620,12 @@ class ElectrostaticRule:
         )
 
     def backward(
-        self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        *,
+        wanted: frozenset | None = None,
     ) -> list[FieldPair]:
         """Fold the capacitance, energy and potential cotangents into field pairs.
 
@@ -626,6 +645,7 @@ class ElectrostaticRule:
         potential cotangent ``sum_r ct_ri K_r phi_i`` (see the module
         docstring).
         """
+        del wanted  # every wanted input reads the same pairs
         phi = entry.fields["potential"]
         eps0 = scipy.constants.epsilon_0
         order = self.options.order

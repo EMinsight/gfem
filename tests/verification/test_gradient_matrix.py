@@ -84,6 +84,7 @@ import periodic_cases as pc
 import pytest
 import thermal_cases as tc
 from anisotropy import TILTED
+from eigen_cases import steer_search
 from finite_differences import (
     assert_gradient_matches,
     assert_taylor_second_order,
@@ -2897,21 +2898,20 @@ def test_gradient_matrix_nearly_parallel_ritz_vectors_keep_the_pair(
 ):
     # ARPACK returns an arbitrary basis of a multiple eigenvalue's eigenspace:
     # how parallel its two vectors are depends on round-off (process state)
-    import gfem._eigen.rule as eigen_rule
+    def nearly_parallel(shift_invert):
+        def seed_solve(*args, **kwargs):
+            k, vectors = shift_invert(*args, **kwargs)
+            i, j = np.argsort(np.where(k.real > 0, k.real, np.inf))[:2]
+            assert abs(k[i] - k[j]) <= 1e-12 * abs(k[i])  # the pair
+            q = np.linalg.qr(vectors[:, [i, j]])[0]
+            vectors = vectors.copy()
+            vectors[:, i] = q[:, 0]
+            vectors[:, j] = overlap * q[:, 0] + np.sqrt(1 - overlap**2) * q[:, 1]
+            return k, vectors
 
-    shift_invert = eigen_rule.shift_invert
+        return seed_solve
 
-    def nearly_parallel(*args, **kwargs):
-        k, vectors = shift_invert(*args, **kwargs)
-        i, j = np.argsort(np.where(k.real > 0, k.real, np.inf))[:2]
-        assert abs(k[i] - k[j]) <= 1e-12 * abs(k[i])  # the pair
-        q = np.linalg.qr(vectors[:, [i, j]])[0]
-        vectors = vectors.copy()
-        vectors[:, i] = q[:, 0]
-        vectors[:, j] = overlap * q[:, 0] + np.sqrt(1 - overlap**2) * q[:, 1]
-        return k, vectors
-
-    monkeypatch.setattr(eigen_rule, "shift_invert", nearly_parallel)
+    steer_search(monkeypatch, eigen_solver=nearly_parallel)
     cavity = designs.mirrored_cavity
     result = _cavity_modes(cavity, _uniform(cavity), 3)
     np.testing.assert_array_equal(np.asarray(result.cluster), [0, 0, 1])
@@ -2992,23 +2992,22 @@ def test_gradient_matrix_conductor_cluster_cut_with_split_ritz_values_raises(
     # the frozen seed's Ritz values of the pair split by 3e-8 (relative, at
     # seed tolerance 1e-3: CI run 41300599403) and its vectors were nearly
     # parallel: both seeds refined to one mode, and the guard showed no cut
-    import gfem._eigen.rule as eigen_rule
+    def split_and_parallel(shift_invert):
+        def seed_solve(*args, **kwargs):
+            k, vectors = shift_invert(*args, **kwargs)
+            i, j = np.argsort(np.where(k.real > 0, k.real, np.inf))[:2]
+            assert abs(k[i] - k[j]) <= 1e-6 * abs(k[i])  # the pair
+            k = k.copy()
+            k[j] = k[i] * (1 + 3e-8)
+            q = np.linalg.qr(vectors[:, [i, j]])[0]
+            vectors = vectors.copy()
+            vectors[:, i] = q[:, 0]
+            vectors[:, j] = 0.95 * q[:, 0] + np.sqrt(1 - 0.95**2) * q[:, 1]
+            return k, vectors
 
-    shift_invert = eigen_rule.shift_invert
+        return seed_solve
 
-    def split_and_parallel(*args, **kwargs):
-        k, vectors = shift_invert(*args, **kwargs)
-        i, j = np.argsort(np.where(k.real > 0, k.real, np.inf))[:2]
-        assert abs(k[i] - k[j]) <= 1e-6 * abs(k[i])  # the pair
-        k = k.copy()
-        k[j] = k[i] * (1 + 3e-8)
-        q = np.linalg.qr(vectors[:, [i, j]])[0]
-        vectors = vectors.copy()
-        vectors[:, i] = q[:, 0]
-        vectors[:, j] = 0.95 * q[:, 0] + np.sqrt(1 - 0.95**2) * q[:, 1]
-        return k, vectors
-
-    monkeypatch.setattr(eigen_rule, "shift_invert", split_and_parallel)
+    steer_search(monkeypatch, eigen_solver=split_and_parallel)
     cavity = designs.mirrored_cavity
 
     def objective(eps):

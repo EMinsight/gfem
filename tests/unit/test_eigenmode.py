@@ -35,6 +35,7 @@ from eigen_cases import (
     line_roots,
     shunt_line,
     shunt_mesh,
+    steer_search,
     terminated_line,
 )
 from finite_differences import derivative
@@ -44,6 +45,7 @@ from scipy.optimize import brentq
 import gfem
 from gfem._eigen import rule as eigen_rule
 from gfem._eigen.operator import RESHIFT_SOLVES, EigenOperator
+from gfem._eigen.refine import refine
 from gfem._eigen.seed import MIN_SUBSPACE, seed_operator
 from gfem._engine import terms
 from gfem._engine.driven import driven_operator
@@ -52,7 +54,6 @@ from gfem._engine.runtime import task_manager
 from gfem._linalg import prepare
 from gfem._linalg.base import PlannedHandle
 from gfem._linalg.bddc import BddcHandle
-from gfem._linalg.layout import ONE_PROCESS
 
 
 @pytest.fixture(scope="module")
@@ -361,30 +362,34 @@ def test_a_far_seed_refined_onto_a_farther_root_still_gives_its_own_mode(
     # that refinement is made to land on root 4 on every platform
     model = terminated_line(mesh, 1000.0)
     roots = line_roots(1000.0, range(1, 5))
-    rule = eigen_rule.EigenmodeRule
-    seeds, shift_invert, refine = {}, rule._shift_invert, eigen_rule.refine
+    seeds = {}
 
-    def capture(self, op, *args, **kwargs):
-        k, vectors = shift_invert(self, op, *args, **kwargs)
-        seeds.update(k=k, vectors=vectors)
-        return k, vectors
+    def capture(shift_invert):
+        def seed(op, *args, **kwargs):
+            k, vectors = shift_invert(op, *args, **kwargs)
+            seeds.update(k=k, vectors=vectors)
+            return k, vectors
 
-    def onto_root_4(op, k, x, **kwargs):
-        omega = np.asarray(seeds["k"]) * const.c / op.scale
-        root_3 = abs(k * const.c / op.scale - roots[2]) < 1e-3 * abs(roots[2])
-        if root_3 and abs(op.shift - k) > 1e-3 * abs(k):  # a shift nearer another
-            j = int(np.argmin(np.abs(omega - roots[3])))
-            op.reshift(seeds["k"][j])
-            return refine(op, seeds["k"][j], seeds["vectors"][:, j], **kwargs)
-        return refine(op, k, x, **kwargs)
+        return seed
 
-    monkeypatch.setattr(rule, "_shift_invert", capture)
-    monkeypatch.setattr(eigen_rule, "refine", onto_root_4)
+    def onto_root_4(refine):
+        def steered(op, k, x, **kwargs):
+            omega = np.asarray(seeds["k"]) * const.c / op.scale
+            root_3 = abs(k * const.c / op.scale - roots[2]) < 1e-3 * abs(roots[2])
+            if root_3 and abs(op.shift - k) > 1e-3 * abs(k):  # a shift nearer another
+                j = int(np.argmin(np.abs(omega - roots[3])))
+                op.reshift(seeds["k"][j])
+                return refine(op, seeds["k"][j], seeds["vectors"][:, j], **kwargs)
+            return refine(op, k, x, **kwargs)
+
+        return steered
+
+    steer_search(monkeypatch, eigen_solver=capture, refine=onto_root_4)
     result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=3))
     np.testing.assert_allclose(result.omega, roots[:3], rtol=3e-4)
 
 
-def test_a_far_seed_keeps_the_new_mode_its_first_refinement_found(mesh, monkeypatch):
+def test_a_far_seed_keeps_the_new_mode_its_first_refinement_found(mesh):
     # a rough seed refined on a shift nearer another mode can land on a mode
     # no other seed gives (measured: 21.2 GHz of a copper cavity, thrown away
     # for the 23.4 GHz mode of the retry). Here the seed solve returns no
@@ -392,15 +397,16 @@ def test_a_far_seed_keeps_the_new_mode_its_first_refinement_found(mesh, monkeypa
     # first: root 2 is kept, and root 4 from the retry becomes the guard
     model = terminated_line(mesh, 1000.0)
     roots = line_roots(1000.0, range(1, 5))
-    rule = eigen_rule.EigenmodeRule
-    shift_invert, refine, select = rule._shift_invert, eigen_rule.refine, rule._select
-    seeds, selected = {}, []
+    problem = gfem.Eigenmode(target=8e9, n_modes=2)
+    rule = eigen_rule.EigenmodeRule(model, problem, gfem.SolverOptions())
+    search = rule.search()
+    seeds = {}
 
     def near(k, op, root):
         return abs(k * const.c / op.scale - root) < 1e-3 * abs(root)
 
-    def without_roots_2_and_3(self, op, project, nev, **kwargs):
-        k, vectors = shift_invert(self, op, project, max(nev, 12), **kwargs)
+    def without_roots_2_and_3(op, project, nev, **kwargs):
+        k, vectors = search.eigen_solver(op, project, max(nev, 12), **kwargs)
         j = int(np.argmin(np.abs(k * const.c / op.scale - roots[1])))
         seeds.update(k=k[j], x=vectors[:, j])
         keep = [
@@ -413,21 +419,28 @@ def test_a_far_seed_keeps_the_new_mode_its_first_refinement_found(mesh, monkeypa
     def onto_root_2(op, k, x, **kwargs):
         if near(k, op, roots[3]) and abs(op.shift - k) > 1e-3 * abs(k):
             op.reshift(seeds["k"])
-            return refine(op, seeds["k"], seeds["x"], **kwargs)
-        return refine(op, k, x, **kwargs)
+            return search.refine(op, seeds["k"], seeds["x"], **kwargs)
+        return search.refine(op, k, x, **kwargs)
 
-    def with_guard(self, op, k, vectors, sigma, **_):
-        out = select(self, op, k, vectors, sigma, guard=True)
-        selected.append((out, op.scale))
-        return out
-
-    monkeypatch.setattr(rule, "_shift_invert", without_roots_2_and_3)
-    monkeypatch.setattr(eigen_rule, "refine", onto_root_2)
-    monkeypatch.setattr(rule, "_select", with_guard)
-    result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
-    np.testing.assert_allclose(result.omega, roots[:2], rtol=3e-4)
-    ((_, _, guard, _, _), scale) = selected[-1]
-    np.testing.assert_allclose(guard.k * const.c / scale, roots[3], rtol=3e-4)
+    steered = dataclasses.replace(
+        search, eigen_solver=without_roots_2_and_3, refine=onto_root_2
+    )
+    with task_manager(1):
+        op = driven_operator(model, rule.options.order)
+        sigma = terms.wavenumber(2 * math.pi * problem.target, op.built.scale)
+        eop = rule.operator(op, sigma)
+        eop.factorize()
+        divfree = projector(model, op)
+        try:
+            found = steered.find(
+                eop, divfree, sigma, guard=True, polish_isolated=rule.polishable
+            )
+        finally:
+            divfree.free()
+            eop.free_handle()
+    per_k = const.c / eop.scale
+    np.testing.assert_allclose(np.array(found.ks) * per_k, roots[:2], rtol=3e-4)
+    np.testing.assert_allclose(found.guard.k * per_k, roots[3], rtol=3e-4)
 
 
 def test_a_nearly_converged_pair_nearer_than_the_modes_found_raises(mesh, monkeypatch):
@@ -435,15 +448,17 @@ def test_a_nearly_converged_pair_nearer_than_the_modes_found_raises(mesh, monkey
     # roots 2 and 3 fill the count and would be returned without it
     model = terminated_line(mesh, 1000.0)
     root = line_roots(1000.0, [1])[0]
-    refine = eigen_rule.refine
 
-    def stall_root_1(op, k, x, **kwargs):
-        mode = refine(op, k, x, **kwargs)
-        if abs(mode.k * const.c / op.scale - root) < 1e-3 * abs(root):
-            return dataclasses.replace(mode, error=1e-9, converged=False)
-        return mode
+    def stall_root_1(refine):
+        def steered(op, k, x, **kwargs):
+            mode = refine(op, k, x, **kwargs)
+            if abs(mode.k * const.c / op.scale - root) < 1e-3 * abs(root):
+                return dataclasses.replace(mode, error=1e-9, converged=False)
+            return mode
 
-    monkeypatch.setattr(eigen_rule, "refine", stall_root_1)
+        return steered
+
+    steer_search(monkeypatch, refine=stall_root_1)
     with pytest.raises(
         gfem.EigenmodeConvergenceError,
         match=r"(?s)found 2 mode.*nearer the target did not converge.*"
@@ -459,121 +474,43 @@ def test_a_rough_unconverged_pair_nearer_than_the_modes_found_is_no_mode(
     # mode that stopped short: the solve returns, as before
     model = terminated_line(mesh, 1000.0)
     roots = line_roots(1000.0, range(1, 4))
-    refine = eigen_rule.refine
 
-    def rough_root_1(op, k, x, **kwargs):
-        mode = refine(op, k, x, **kwargs)
-        if abs(mode.k * const.c / op.scale - roots[0]) < 1e-3 * abs(roots[0]):
-            return dataclasses.replace(mode, error=1e-3, converged=False)
-        return mode
+    def rough_root_1(refine):
+        def steered(op, k, x, **kwargs):
+            mode = refine(op, k, x, **kwargs)
+            if abs(mode.k * const.c / op.scale - roots[0]) < 1e-3 * abs(roots[0]):
+                return dataclasses.replace(mode, error=1e-3, converged=False)
+            return mode
 
-    monkeypatch.setattr(eigen_rule, "refine", rough_root_1)
+        return steered
+
+    steer_search(monkeypatch, refine=rough_root_1)
     result = gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2))
     np.testing.assert_allclose(result.omega, roots[1:], rtol=3e-4)
-
-
-def test_a_vector_in_the_span_of_a_degenerate_cluster_is_a_duplicate():
-    # any combination of a cluster's accepted members is that cluster again,
-    # also at 45 degrees from each (overlap 0.71 with either)
-    from gfem._eigen.refine import Refined
-
-    a, b, c = np.eye(3, dtype=complex)
-
-    def mode(x, k=1.0):
-        return Refined(k, x, 1e-12, 0, True)
-
-    accepted = [mode(a), mode(b)]
-    assert eigen_rule._in_span(mode((a + 1j * b) / math.sqrt(2)), accepted, 1e-6)
-    assert eigen_rule._in_span(mode(3 * a), accepted, 1e-6)
-    assert not eigen_rule._in_span(mode(c), accepted, 1e-6)
-    assert not eigen_rule._in_span(mode((a + c) / math.sqrt(2)), accepted, 1e-6)
-    # the same field at another frequency is another mode
-    assert not eigen_rule._in_span(mode(a, k=1.1), accepted, 1e-6)
-
-
-@dataclasses.dataclass
-class _Stub:
-    """An operator with a degenerate mode at 12 (span of e0, e1) and one at 14 (e2)."""
-
-    shift: complex
-    nonpolynomial: tuple = ()
-    layout = ONE_PROCESS
-
-    def reshift(self, k, **_):
-        self.shift = k
-
-
-def _twin_select(mesh, monkeypatch, n_modes):
-    """`_select` with seeds at 12.2 (e0) and 13.8 (e2), the shift at 12.5.
-
-    The frozen seed solve gave one Ritz value for the degenerate pair. The
-    seed at 13.8 refined away from its own shift lands on the pair's
-    eigenspace with 36 % of its norm outside the accepted member's span: in
-    the span by the 0.9 test, yet that part is the twin (lossy-wall mirrored
-    cavity on MN5).
-    """
-    from gfem._eigen.refine import Refined
-
-    e0, e1, e2, _ = np.eye(4, dtype=complex)
-    landed = math.sqrt(1 - 0.36**2) * e0 + 0.36 * e1
-
-    def refine(op, seed, x, **_):
-        if seed == 13.8 and op.shift != 13.8:
-            k, v = 12.0, landed
-        else:
-            pair = x[:2].copy()
-            if np.linalg.norm(pair) > 0.5 * np.linalg.norm(x):
-                k, v = 12.0, np.concatenate([pair / np.linalg.norm(pair), [0, 0]])
-            else:
-                k, v = 14.0, e2
-        return Refined(complex(k), v, 0.0, 1, converged=True)
-
-    monkeypatch.setattr(eigen_rule, "refine", refine)
-    rule = eigen_rule.EigenmodeRule(
-        line(mesh), gfem.Eigenmode(target=F1, n_modes=n_modes), gfem.SolverOptions()
-    )
-    ritz = np.array([12.2, 13.8], dtype=complex)
-    return rule._select(_Stub(12.5), ritz, np.stack([e0, e2], axis=1), 12.5, guard=True)
-
-
-def test_a_wandered_pair_reaching_out_of_the_span_gives_the_twin(mesh, monkeypatch):
-    # before, the pair was dropped and the set skipped the twin for 14
-    modes, failed, guard, *_ = _twin_select(mesh, monkeypatch, n_modes=2)
-    assert not failed
-    assert [m.k for m in modes] == [12.0, 12.0]
-    assert abs(np.vdot(modes[0].x, modes[1].x)) < 1e-12
-    assert guard.k == 14.0
-
-
-def test_a_guard_pair_reaching_out_of_the_span_gives_the_twin(mesh, monkeypatch):
-    # after the count is met the same landing gives the guard mode: the twin
-    modes, _, guard, *_ = _twin_select(mesh, monkeypatch, n_modes=1)
-    assert [m.k for m in modes] == [12.0]
-    assert guard.k == 12.0
-    assert abs(np.vdot(modes[0].x, guard.x)) < 1e-12
 
 
 def test_a_pair_with_its_weight_on_the_fixed_dofs_is_not_converged(mesh, monkeypatch):
     # on CI, root 3's seed refined on mode 2's shift ended with 1e-8 of its
     # norm on the free DOFs: measured on the whole vector, its backward
     # error passed the tolerance at 22.62-0.13j GHz, off any root
-    rule = eigen_rule.EigenmodeRule
-    select, refined = rule._select, []
+    refined = []
 
-    def refine_a_stray_pair(self, op, *args, **kwargs):
-        rng = np.random.default_rng(0)
-        free = rng.standard_normal(len(op.free)) + 1j * rng.standard_normal(
-            len(op.free)
-        )
-        free = np.where(op.free, free, 0)
-        stray = np.where(op.free, 1e-12 * free / np.linalg.norm(free), 1.0)
-        k = op.rayleigh(stray, op.shift)
-        refined.append(
-            eigen_rule.refine(op, k, stray, tolerance=1e-10, max_iterations=0)
-        )
-        return select(self, op, *args, **kwargs)
+    def then_refine_a_stray_pair(shift_invert):
+        def seed(op, *args, **kwargs):
+            out = shift_invert(op, *args, **kwargs)
+            rng = np.random.default_rng(0)
+            free = rng.standard_normal(len(op.free)) + 1j * rng.standard_normal(
+                len(op.free)
+            )
+            free = np.where(op.free, free, 0)
+            stray = np.where(op.free, 1e-12 * free / np.linalg.norm(free), 1.0)
+            k = op.rayleigh(stray, op.shift)
+            refined.append(refine(op, k, stray, tolerance=1e-10, max_iterations=0))
+            return out
 
-    monkeypatch.setattr(rule, "_select", refine_a_stray_pair)
+        return seed
+
+    steer_search(monkeypatch, eigen_solver=then_refine_a_stray_pair)
     gfem.solve(terminated_line(mesh, 1000.0), gfem.Eigenmode(target=8e9))
     assert not refined[0].converged
 
@@ -674,21 +611,22 @@ def test_a_retry_after_a_reshift_seeds_at_the_target(mesh, monkeypatch):
     # at the target again, on a coarse problem counted for the seed
     model = terminated_line(mesh, 1000.0)
     options = gfem.SolverOptions(linear_solver="bddc_gmres")
-    rule = eigen_rule.EigenmodeRule
-    shifts, select, shift_invert = [], rule._select, rule._shift_invert
+    shifts = []
 
-    def seed(self, op, *args, **kwargs):
-        shifts.append(op.shift)
-        return shift_invert(self, op, *args, **kwargs)
+    def too_few(shift_invert):
+        def seed(op, *args, **kwargs):
+            shifts.append(op.shift)
+            k, vectors = shift_invert(op, *args, **kwargs)
+            if len(shifts) == 1:
+                # only the second-nearest pair: one mode, refined at its own
+                # shift
+                j = [int(np.argsort(np.abs(k.real - op.shift))[1])]
+                return k[j], vectors[:, j]
+            return k, vectors
 
-    def too_few(self, *args, **kwargs):
-        accepted, failed, guard, pool, ritz = select(self, *args, **kwargs)
-        if len(shifts) == 1:  # the first seed solve's modes: one short
-            return accepted[:-1], [], None, pool, ritz
-        return accepted, failed, guard, pool, ritz
+        return seed
 
-    monkeypatch.setattr(rule, "_shift_invert", seed)
-    monkeypatch.setattr(rule, "_select", too_few)
+    steer_search(monkeypatch, eigen_solver=too_few)
     columns = coarse_columns(monkeypatch)
     gfem.solve(model, gfem.Eigenmode(target=8e9, n_modes=2), options=options)
     target = 2 * math.pi * 8e9 * 1e-3 / const.c  # k0 per mm

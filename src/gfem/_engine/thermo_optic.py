@@ -26,6 +26,7 @@ import ngsolve as ngs
 import numpy as np
 import scipy.constants
 
+from gfem._engine.solve_request import SolveRequest
 from gfem._sweep.port_mode import PortModeRule
 from gfem.model import Model
 from gfem.options import SolverOptions
@@ -89,9 +90,11 @@ class ShiftWeightsRule(PortModeRule):
             "value without its derivative."
         )
 
-    def forward(self, model: Model, *, keep: bool) -> tuple[dict, None]:
+    def forward(
+        self, model: Model, *, keep: bool, request: SolveRequest | None = None
+    ) -> tuple[dict, None]:
         """Solve the mode and integrate its energy on each section triangle."""
-        outputs, _ = super().forward(model, keep=keep)
+        outputs, _ = super().forward(model, keep=keep, request=request)
         sweep = outputs["sweep"]
         weights = section_weights(sweep.space, sweep.basis @ sweep.coords[0])
         faces = np.asarray(sweep.space.section.faces)

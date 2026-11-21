@@ -75,8 +75,8 @@ def _s_and_iterations(case, directory):
     seen = {}
     forward = DrivenRule.forward
 
-    def spy(self, model, *, keep):
-        outputs, entry = forward(self, model, keep=keep)
+    def spy(self, model, *, keep, request=None):
+        outputs, entry = forward(self, model, keep=keep, request=request)
         seen["iterations"] = outputs["iterations"]
         return outputs, entry
 
@@ -124,7 +124,7 @@ def _network(case, directory, comm):
         comm=comm,
     )
     with task_manager(1, comm):
-        return rule._ports(model)
+        return rule.system(model)
 
 
 def _reciprocity(case, directory):

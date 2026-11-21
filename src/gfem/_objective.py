@@ -24,7 +24,7 @@ takes those outputs as inputs, so no host kernel runs while tracing. Each
 measured output is evaluated once, eagerly, for its value. A new kind plugs
 in by an entry of `ENTRY_KINDS` (a result leaf) or of `MEASUREMENT_KINDS` (a
 measurement, through `Recorder.output`), and an estimate kernel in
-`gfem.refinement`.
+`gfem._estimate_kinds`.
 
 The classifier relies on JAX internals (``dce_jaxpr``, ``eval_jaxpr``) at the
 pinned JAX version; its unit tests assert a known classification table, so a
@@ -145,6 +145,14 @@ class Read:
         cotangent: The objective's cotangent on it, ``dJ/dx - i dJ/dy`` for a
             complex entry, ``dJ/dx`` for a real one.
         is_complex: Whether the entry is complex.
+        source: What it reads: the leaf's path without its key
+            (``"s.values"``, ``"energy"``), or the measurement
+            (``"power_flow"``, ``"region_mean"``).
+        at: The key in the leaf's path (an energy's or a participation's
+            region), or in the measured field's label (a kept field's index,
+            a terminal); ``None`` for a path with no key.
+        regions: A measurement's side (`gfem.power_flow`) or averaged regions
+            (`gfem.region_mean`); ``()`` for a result entry.
     """
 
     leaf: str
@@ -152,6 +160,9 @@ class Read:
     value: complex
     cotangent: complex
     is_complex: bool
+    source: str = ""
+    at: int | str | None = None
+    regions: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -170,8 +181,6 @@ class Objective:
             blocks a rewrite of the objective shifts.
         floor_scales: Per read, its scale in the tolerance floor: 1 for an
             absolute entry (S), its magnitude otherwise.
-        measurements: Per measurement key the objective reads, its record
-            (`Recorder.output`).
     """
 
     kind: str
@@ -179,7 +188,6 @@ class Objective:
     reads: tuple[Read, ...]
     curvature: np.ndarray
     floor_scales: tuple[float, ...]
-    measurements: Mapping[str, Mapping[str, Any]]
     diagonal: tuple[np.ndarray, ...] = ()
 
     @property
@@ -423,10 +431,19 @@ def _concrete_fields(split: _Split) -> dict[str, Any]:
 
 def _field_at(result: Any, label: str) -> Any:
     """The field of ``result`` at a label: ``".e_fields[2]"``, ``".potential['a']"``."""
-    attribute, _, key = label[1:].partition("[")
-    container = getattr(result, attribute)
+    return getattr(result, label[1:].partition("[")[0])[_bracket(label)]
+
+
+def _bracket(path: str) -> int | str | None:
+    """The key in a path's brackets: ``".e_fields[2]"`` 2, ``".energy['a']"`` ``"a"``.
+
+    ``None`` for a path with no key (``".s.values"``).
+    """
+    _, bracket, key = path[1:].partition("[")
+    if not bracket:
+        return None
     key = key.removesuffix("]")
-    return container[int(key)] if key.isdigit() else container[key.strip("'\"")]
+    return int(key) if key.isdigit() else key.strip("'\"")
 
 
 # --- classification ---------------------------------------------------------------
@@ -479,7 +496,15 @@ def classify(
         leaf, index, absolute = trace.name(trace.live[p])
         x = complex(np.asarray(xs[p]))
         is_complex = bool(jnp.iscomplexobj(xs[p]))
-        reads.append(Read(leaf, index, x, cotangents[p], is_complex))
+        if leaf in trace.specs:
+            spec = trace.specs[leaf]
+            source, at = spec["measurement"], _bracket(spec["label"])
+            regions = tuple(spec.get("side") or spec.get("regions") or ())
+        else:
+            source, at, regions = leaf[1:].partition("[")[0], _bracket(leaf), ()
+        reads.append(
+            Read(leaf, index, x, cotangents[p], is_complex, source, at, regions)
+        )
         scales.append(1.0 if absolute else abs(x))
     return Objective(
         kind=kind,
@@ -488,11 +513,6 @@ def classify(
         curvature=curvature,
         diagonal=diagonal,
         floor_scales=tuple(scales),
-        measurements={
-            key: {k: v for k, v in spec.items() if k != "evaluate"}
-            for key, spec in trace.specs.items()
-            if any(r.leaf == key for r in reads)
-        },
     )
 
 

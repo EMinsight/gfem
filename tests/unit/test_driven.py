@@ -25,9 +25,10 @@ from preconditioners import coarse_columns, count_preconditioners
 from solver_misses import cannot_converge_at
 
 import gfem
-from gfem._engine import driven, terms, workers
+from gfem._engine import driven, driven_sweep, terms, workers
 from gfem._engine.cache import ENTRIES
 from gfem._engine.driven import DrivenRule
+from gfem._engine.solve_request import SolveRequest
 from gfem._engine.system_operator import SystemOperator
 from gfem._linalg import bddc, pardiso, prepare
 from gfem._linalg.base import PlannedHandle, same_pattern
@@ -597,10 +598,9 @@ def test_an_error_holds_a_missed_sweeps_outputs_only_until_they_are_read(
     rule = DrivenRule(
         line, gfem.Driven(frequency=f), gfem.SolverOptions(linear_solver="bddc_gmres")
     )
-    rule.keeps_partial = keeps
     cannot_converge_at(monkeypatch, (f[1],))
     with pytest.raises(gfem.LinearSolverConvergenceError) as caught:
-        rule.forward(line, keep=False)
+        rule.forward(line, keep=False, request=SolveRequest(keeps_partial=keeps))
     partial = rule.partial_result(caught.value)
     if keeps:
         assert partial is not None
@@ -964,7 +964,7 @@ def test_a_direct_handle_sums_the_pieces_into_the_assembled_operator(tmp_path):
     # the ungauged piece sum: on the driven space, as the assembled operator
     options = gfem.SolverOptions(linear_solver="direct", gauge="none")
     rule = DrivenRule(model, gfem.Driven(frequencies), options)
-    system, _ = rule._ports(model)
+    system, _ = rule.system(model)
     names = {p.name for p in system.operator.pieces}
     assert {
         "conductivity",
@@ -1055,13 +1055,13 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
     options = gfem.SolverOptions(linear_solver=kind)
     rule = DrivenRule(line, gfem.Driven(frequency=(4e9, 5e9)), options)
     built = []
-    make_ports = rule._ports
+    make_system = rule.system
 
-    def spy(model):
-        built.append(make_ports(model))
+    def spy(model, **kwargs):
+        built.append(make_system(model, **kwargs))
         return built[-1]
 
-    monkeypatch.setattr(rule, "_ports", spy)
+    monkeypatch.setattr(rule, "system", spy)
     _, entry = rule.forward(line, keep=keep)
     ((system, ports),) = built
     vectors = {
@@ -1372,7 +1372,7 @@ def test_frequency_workers_do_not_repeat_the_low_frequency_warning(mesh, line):
     options = gfem.SolverOptions(linear_solver="direct")
     with warnings.catch_warnings():
         warnings.simplefilter("error", gfem.LowFrequencyWarning)
-        driven._solve_block(*workers.model_parts(line), problem, options, False)
+        driven_sweep.solve_block(*workers.model_parts(line), problem, options, False)
 
 
 def _pi_model(s, f):
