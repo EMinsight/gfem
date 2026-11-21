@@ -247,7 +247,7 @@ def test_the_committed_snippets_regenerate_byte_for_byte(tmp_path):
         mesh_md5=[record / "meshes" / "md5.txt", record / "meshes" / "splits.md5"],
     )
     assert sorted(p.name for p in written) == sorted(
-        p.name for p in SCALING.glob("*.md")
+        f"{name}.md" for name in scale_tables.CAMPAIGN
     )
     for path in written:
         assert path.read_bytes() == (SCALING / path.name).read_bytes(), path.name
