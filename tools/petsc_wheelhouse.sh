@@ -379,8 +379,9 @@ EOF
 # 1.1e10 on 64 and about 3e10 on 128, against 44-47 s of analysis at 32 for any
 # number of ranks. So the stack caps PT-Scotch's ordering processes at 32 (not
 # ParMETIS's, whose fill does not grow with them). MUMPS_PARAORD_MAX overrides
-# the cap at run time, for measurement: N caps at N, 0 restores MUMPS's own
-# count. Rank 0 writes a "PARAORD cap C nprocs P paraord W" line to MUMPS's
+# the cap at run time, for measurement: 0 restores MUMPS's own count, N of 2
+# and more caps at N, and 1 caps at 2 (MUMPS orders on every process when its
+# count is 1); a value that is not a whole number of 0 and more keeps 32. Rank 0 writes a "PARAORD cap C nprocs P paraord W" line to MUMPS's
 # output stream ICNTL(3) when ICNTL(4) is 2 or more. Edit src/tools_common.F
 # (MUMPS_BUILD_COMM_PARA_ANA) at three lines, each found exactly once, into a
 # repacked tarball beside the pristine one. A MUMPS bump fails the sha256 or
@@ -396,7 +397,7 @@ pristine, patched = sys.argv[1:]
 edits = [
     (b"ROOT=0", b"""\
 C     gfem: cap on PT-Scotch parallel-ordering processes, default 32;
-C     MUMPS_PARAORD_MAX overrides it, 0 for no cap
+C     MUMPS_PARAORD_MAX overrides it, 0 for no cap, 1 means 2
       CHARACTER(LEN=16) :: CAPSTR
       INTEGER :: CAPLEN, CAPST, CAPVAL, CAPIN
       CAPVAL = 32
@@ -406,6 +407,8 @@ C     MUMPS_PARAORD_MAX overrides it, 0 for no cap
         READ(CAPSTR(1:CAPLEN), *, IOSTAT=CAPST) CAPIN
         IF (CAPST .EQ. 0 .AND. CAPIN .GE. 0) CAPVAL = CAPIN
       END IF
+C     MUMPS orders on all processes when the count is 1, so 1 means 2
+      IF (CAPVAL .EQ. 1) CAPVAL = 2
 """),
     (b"WORKERS = min(NPROCS,N/16)", b"""\
         IF (KEEP(245).EQ.1 .AND. CAPVAL.GE.1)
