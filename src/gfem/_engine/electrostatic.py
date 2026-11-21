@@ -432,10 +432,10 @@ class ElectrostaticRule:
             model: The model, with concrete leaves.
             keep: Keep the potentials and the prepared operator for a
                 backward pass.
-            request: Dual loads to solve with the forward on its handle
-                (`ElectrostaticLoads`, set by `gfem.refine_mesh` for an
-                objective's duals, `objective_loads`); their duals land in
-                its ``adjoints`` by key.
+            request: Its ``adjoint_loads`` (`ElectrostaticLoads`, set by
+                `gfem.refine_mesh` for an objective's duals,
+                `objective_loads`) are solved with the forward on its handle;
+                their adjoints land in its ``adjoints`` by key.
 
         Returns:
             ``{"capacitance": (n, n) array in F, "energy": (len(regions), n)
