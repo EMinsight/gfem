@@ -24,6 +24,7 @@ orphan: true
 
 - {doc}`solve-a-device`
 - {doc}`prepare-a-mesh`
+- {doc}`2d-models`
 - {doc}`save-and-export`
 - {doc}`mesh-refinement`
 - {doc}`anisotropic-materials`

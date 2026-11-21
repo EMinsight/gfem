@@ -58,6 +58,7 @@ recipes/remesh-and-restart
 
 recipes/solve-a-device
 recipes/prepare-a-mesh
+recipes/2d-models
 recipes/save-and-export
 recipes/mesh-refinement
 recipes/anisotropic-materials

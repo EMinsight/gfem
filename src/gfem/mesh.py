@@ -687,7 +687,7 @@ class Mesh:
 
     @property
     def dim(self) -> int:
-        """The mesh's dimension: 3 for a tetrahedral mesh, 2 for a 2D mesh."""
+        """The dimension of the mesh, 3 for a tetrahedral mesh and 2 for a 2D mesh."""
         return self._topology.dim
 
     @property

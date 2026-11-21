@@ -133,15 +133,16 @@ program, because every gfem solve needs it.
 
 ## Next steps
 
-- The {doc}`topology tutorial <tutorials/topology>` turns this same line into a
-  band-stop filter by optimizing the ceramic pattern, and the
+- The {doc}`topology tutorial <tutorials/topology>` turns this same line, seen
+  from above as a 2D model, into a band-stop filter by optimizing the ceramic
+  pattern, and the
   {doc}`resistive film <tutorials/sheet>` tutorial lays out a 300 Ω film to make
   a matched 3 dB attenuator. The
   {doc}`shape <tutorials/shape>` tutorial moves a coplanar line's conductor walls
   to match it to 50 Ω, the {doc}`transmon <tutorials/transmon>` tutorial
   takes the gradient of a superconducting qubit's dispersive shift with respect
   to its pad gap, the {doc}`bend <tutorials/bend>` tutorial designs a
-  photonic waveguide bend on a slab model, and the
+  photonic waveguide bend on a 2D model, and the
   {doc}`3D bend <tutorials/bend3d>` tutorial designs it again on the real stack,
   a 220 nm silicon guide in oxide. The {doc}`metal bend <tutorials/metal-bend>`
   tutorial places gold in the same bend, over a band of wavelengths, and the

@@ -425,7 +425,7 @@ class LayerDensity:
     `gfem.MaterialField.interpolate`: a solve samples the pixels at its own
     quadrature points. A JAX pytree whose leaf is `pixels`. It has no
     arithmetic and no array value (``numpy.asarray`` raises `TypeError`):
-    filter, project and combine the pixel array before `to_elements`.
+    filter, project and combine the pixel array before `LayerGrid.to_elements`.
 
     Attributes:
         pixels: The pixel values, shape ``grid.shape``.

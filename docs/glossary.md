@@ -120,8 +120,26 @@ Air box
 
 Slab model
   A {term}`model` one element thick between PEC plates, whose field is normal to
-  the plates and uniform through the thickness, so it solves a 2D TM problem;
-  how gfem poses top-view (effective-index) photonic and parallel-plate problems.
+  the plates and uniform through the thickness, so it solves the
+  {term}`Ez polarization` of a {term}`2D model`'s problem on a 3D mesh; the
+  cross-check of 2D models, and the way to pose what they refuse (oblique
+  incidence, periodic cells, lumped ports, sheets).
+
+2D model
+  A {term}`model` whose mesh is a plane of triangles: neither the structure
+  nor the field varies along z, the normal to the plane, and a driven solve
+  computes one {term}`polarization <Ez polarization>`. Its powers and fields
+  are per metre along z.
+
+Hz polarization
+Ez polarization
+  The field component normal to the plane of a {term}`2D model`, the unknown of
+  its driven solve (`Driven(polarization=...)`): Ez has E normal to the plane
+  and H in it, Hz the reverse.
+
+Line port
+  A {term}`wave port` on a straight exterior line of a {term}`2D model`, fed by
+  the mode of that line's cross-section; it carries 1 W/m.
 
 Mirror half model
   A {term}`model` cut on a symmetry plane of the stack and design, with a PMC or

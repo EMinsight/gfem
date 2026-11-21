@@ -11,10 +11,17 @@ v0.1.
   port raises; with a permittivity law, outside the law's
   {term}`unresolved band`), {py:obj}`gfem.Electrostatic` (the
   Maxwell capacitance matrix between named terminals) and {py:obj}`gfem.PortMode`
-  (the 2D mode of a wave port; a permittivity law in its cross-section where
+  (the mode of a wave port's cross-section; a permittivity law in it where
   $\mathrm{Re}\,\varepsilon > 0$). Eigenmode and uniform driven problems take a
   Bloch wave vector (`wave_vector=`, rad/m) on a periodic model; a uniform
   driven sweep may keep the incidence angle fixed (`wave_vector_frequency`).
+- **2D models**: a plane of triangles read with {py:meth}`gfem.Mesh.from_gmsh`,
+  where neither the structure nor the field varies along z. A uniform driven
+  sweep solves one polarization, `Driven(polarization="Ez")` or `"Hz"`, with
+  {term}`line ports <Line port>`, PEC, PMC and first- or second-order absorbing
+  lines, materials (permittivity laws included), material fields and
+  layer-grid designs, with their gradients. Powers and fields are per metre
+  along z, and S equals the slab's ({doc}`recipes/2d-models`).
 - **Ports**: {py:obj}`gfem.LumpedPort` on one or several surfaces driven together,
   and {py:obj}`gfem.WavePort` on an exterior surface, fed by its port mode;
   several wave ports on one surface each request a different mode of it,
@@ -183,6 +190,14 @@ returning a wrong value:
   reference impedance is the mode's complex $Z_{PV}$ (pseudo-waves); give
   every wave port a `voltage_path`, or none, for a symmetric S.
 
+- **2D models**: normal incidence and one polarization only. Eigenmode,
+  electrostatic and thermal problems, lumped and Floquet ports, periodic
+  pairs, conductor and impedance surfaces, sheet designs, anisotropic
+  materials, PMLs, the adaptive sweep, iterative and GPU solvers, several
+  processes, measurements other than `Field.at`, mesh refinement and node
+  gradients raise `NotImplementedError` and name the alternative, most often
+  the {term}`slab model`. In Hz a design blend takes constant permittivities
+  only. Details: {doc}`recipes/2d-models`.
 - **Dispersive materials**: a permittivity law is isotropic, and
   `mu_r` does not disperse; give an anisotropic or magnetic material constant
   values per band. A metal in a wave port's cross-section raises: keep it off

@@ -219,6 +219,9 @@ USER_TERMS = (
     "Settled trace",
     "Per-length quantity",
     "Tree-cotree gauge",
+    "2D model",
+    "Ez polarization",
+    "Line port",
 )
 
 
