@@ -141,19 +141,23 @@ BEND_CORE, BEND_DESIGN, BEND_PORT = 0.275, 1.5, 1.1  # half-widths (um)
 BEND_H = 0.1  # cell size and slab thickness (um)
 
 
-def bend(half=2.5):
-    """The bend mesh in |x|, |y| <= ``half``, as `structured` returns it."""
+def bend(half=2.5, h=BEND_H):
+    """The bend mesh in |x|, |y| <= ``half``, as `structured` returns it.
+
+    ``h`` is the cell size and the slab thickness (um); the reference tier's
+    fine 2D mesh is the z = 0 face of a smaller one.
+    """
     # +-2.5 stays a grid line so a larger box keeps the 5 x 5 um mesh inside
     lines = {BEND_CORE, BEND_PORT, BEND_DESIGN, 2.5, half}
     pts = sorted({-x for x in lines} | lines)
     xy = np.concatenate(
         [[pts[0]]]
         + [
-            np.linspace(a, b, math.ceil((b - a) / BEND_H - 1e-9) + 1)[1:]
+            np.linspace(a, b, math.ceil((b - a) / h - 1e-9) + 1)[1:]
             for a, b in itertools.pairwise(pts)
         ]
     )
-    edges = (xy, xy, np.array([0.0, BEND_H]))
+    edges = (xy, xy, np.array([0.0, h]))
     eps = 1e-9
 
     def volume(c):
@@ -168,7 +172,7 @@ def bend(half=2.5):
 
     def surface(c):
         x, y, z = c
-        if abs(z) < eps or abs(z - BEND_H) < eps:
+        if abs(z) < eps or abs(z - h) < eps:
             return "plates"
         if abs(x + half) < eps:
             return "port1" if abs(y) < BEND_PORT else "outer"
@@ -176,7 +180,7 @@ def bend(half=2.5):
             return "port2" if abs(x) < BEND_PORT else "outer"
         if abs(x - half) < eps or abs(y - half) < eps:
             return "outer"
-        if abs(x) < half - eps and abs(y) < half - eps and eps < z < BEND_H - eps:
+        if abs(x) < half - eps and abs(y) < half - eps and eps < z < h - eps:
             return ""  # the region interfaces carry no boundary
         raise ValueError(f"unclassified exterior face at {c}")
 
