@@ -156,6 +156,8 @@ class Driven2DRule(DrivenRule):
         self.wave_vector = None
         self.swept_spaces = False
         self.orders: dict = {}
+        #: No perfectly matched layer: a 2D model refuses one.
+        self.stretch = self.pml = None
         _check_lines(model, self.polarization)
         _check_materials(model, self.polarization)
         #: The layer grids of two constant ends, whose pixels Hz differentiates.
