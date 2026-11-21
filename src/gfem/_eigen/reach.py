@@ -3,14 +3,16 @@
 A solve's mode fields differentiate only on the CPU with the direct linear
 solver, without a Bloch wave vector or a periodic pair, and at
 ``SolverOptions.eigen_tolerance`` at most `FIELD_TOLERANCE`; `blocker` names
-the first of these conditions a solve fails (the polish subset leaves the
-tolerance out). A found mode's mode fields differentiate, and the forward
-polishes it, only when it is isolated: alone in its cluster (`clusters`,
-frequencies within ``SolverOptions.cluster_rtol``), its cluster not cut short
-by the guard mode (`incomplete`), and its relative gap to its gap set
-(`GapSet`) at least `ISOLATED` (``cluster_rtol`` if larger). `ModeReach`
-holds these answers per mode. The mode search builds the gap set; the
-eigenmode rule and mesh refinement read the answers, each in its own words.
+the reach blocker, the first of these conditions a solve fails (the polish
+subset leaves the tolerance out).
+
+A found mode's mode fields differentiate, and the forward polishes it, only
+when it is isolated: alone in its cluster (`clusters`, frequencies within
+``SolverOptions.cluster_rtol``), its cluster not cut short by the guard mode
+(`incomplete`), and its relative gap to its gap set (`GapSet`) at least
+`ISOLATED` (``cluster_rtol`` if larger). `ModeReach` holds these answers per
+mode. The mode search builds the gap set; the eigenmode rule and mesh
+refinement read the answers, each in its own words.
 """
 
 from __future__ import annotations
@@ -59,7 +61,7 @@ def blocker(
     periodic: bool,
     tolerance: bool = True,
 ) -> Blocker | None:
-    """The first condition that leaves a solve's mode fields out of reach, or ``None``.
+    """The reach blocker: the first condition leaving mode fields out, or ``None``.
 
     In this order: a Bloch ``wave_vector`` (not ``None``), a ``periodic``
     pair, a device other than the CPU, a ``linear`` solver kind other than
@@ -163,7 +165,7 @@ def isolated(
     return (
         single
         & ~np.asarray(incomplete, dtype=bool)
-        & (np.asarray(gap) >= max(ISOLATED, rtol))
+        & (np.asarray(gap) >= threshold(rtol))
     )
 
 
@@ -222,7 +224,7 @@ class ModeReach:
         polish_failed: np.ndarray,
         rtol: float,
     ) -> Self:
-        """The reach of modes ``ks``, with the guard mode's ``guard`` and ``gaps``."""
+        """The reach of modes ``ks``, the guard mode's ``guard``, gap set ``gaps``."""
         labels = clusters(ks, rtol)
         gap = np.array([gaps.gap(k) for k in ks])
         failed = np.asarray(polish_failed, dtype=bool)
@@ -231,7 +233,7 @@ class ModeReach:
 
     @classmethod
     def from_fields(cls, fields: Mapping[str, np.ndarray], rtol: float) -> Self:
-        """The reach an entry's fields (`fields`) record.
+        """The reach an entry's fields record (as `ModeReach.fields` gives them).
 
         An entry without ``polish_failed`` had no polish fail.
         """

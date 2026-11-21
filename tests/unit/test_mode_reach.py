@@ -1,8 +1,9 @@
 """Mode-field reach without a mesh: the options' conditions and per-mode isolation.
 
-`blocker` names the first condition that leaves mode fields out of reach;
-`ModeReach` says which found modes are isolated, built from live modes
-(`ModeReach.of`) or from an entry's fields (`ModeReach.from_fields`).
+`blocker` names the reach blocker, the first condition that leaves mode
+fields out of reach; `ModeReach` says which found modes are isolated, built
+from live modes (`ModeReach.of`) or from an entry's fields
+(`ModeReach.from_fields`).
 """
 
 import dataclasses
@@ -17,7 +18,7 @@ from gfem._eigen.search import ModeSearch
 from gfem._linalg.layout import ONE_PROCESS
 
 
-def test_blocker_names_the_first_condition_in_order():
+def test_the_reach_blocker_is_the_first_condition_in_order():
     loose = gfem.SolverOptions(eigen_tolerance=1e-6)
     assert (
         blocker(loose, "iterative", wave_vector=(1.0, 0.0, 0.0), periodic=True)
@@ -132,12 +133,14 @@ def test_polishing_reads_the_unsnapped_gap_the_entry_the_snapped_one():
         polish=polish,
     )
     found = search.find(_Lossless(10.0), None, 10.0, guard=False, polish_isolated=True)
-    unsnapped = abs(ks[0] - ks[1]) / max(abs(ks[0]), abs(ks[1]))
+    # today's values, exactly: GapSet.gap's arithmetic on each pair
+    unsnapped = float(abs(ks[1] - ks[0]) / max(abs(ks[0]), abs(ks[1])))
+    snapped = float(np.abs(np.complex128(10.0) - 10.0005) / 10.0005)
     assert unsnapped > threshold(options.cluster_rtol)
     assert [i for i, _ in polished] == [0, 1]
-    assert [gap for _, gap in polished] == pytest.approx([unsnapped, unsnapped])
+    assert [gap for _, gap in polished] == [unsnapped, unsnapped]
     assert found.ks == [10.0, 10.0005]
-    assert found.reach.gap == pytest.approx([0.0005 / 10.0005] * 2)
+    np.testing.assert_array_equal(found.reach.gap, [snapped, snapped])
     np.testing.assert_array_equal(found.reach.isolated, [False, False])
     np.testing.assert_array_equal(found.polish_failed, [False, False])
     assert found.labels is found.reach.labels

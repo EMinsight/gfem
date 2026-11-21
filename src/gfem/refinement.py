@@ -1814,14 +1814,14 @@ def _check_mode_field_reach(model: Model, reach: str | None) -> None:
 
 def _check_isolated(omega: np.ndarray, mode: int, rtol: float) -> None:
     """Raise unless ``mode`` is apart from every other mode."""
-    from gfem._eigen.reach import threshold as isolation
+    from gfem._eigen.reach import threshold as isolation_threshold
 
     others = [i for i in range(len(omega)) if i != mode]
     if not others:
         return
     gaps = np.abs(omega[others] - omega[mode]) / abs(omega[mode])
     near = others[int(np.argmin(gaps))]
-    threshold = isolation(rtol)
+    threshold = isolation_threshold(rtol)
     if gaps.min() < threshold:
         raise DegenerateModeError(
             f"An objective of the participation of mode {mode} at "
