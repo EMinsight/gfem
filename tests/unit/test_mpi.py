@@ -301,6 +301,12 @@ def _blocks(nodes: int, per_node: int) -> tuple[int, ...]:
     return tuple(r // per_node for r in range(nodes * per_node))
 
 
+def is_even_layout(factor: int, nodes: tuple[int, ...]) -> bool:
+    """Every node holding a kept rank holds as many: counted here, not by `coarse`."""
+    kept = [nodes[r] for r in range(0, len(nodes), factor)]
+    return len({kept.count(n) for n in set(kept)}) == 1
+
+
 def _cyclic(nodes: int, per_node: int) -> tuple[int, ...]:
     """The node of each rank, dealt round the nodes one rank at a time."""
     return tuple(r % nodes for r in range(nodes * per_node))
@@ -318,14 +324,16 @@ def _cyclic(nodes: int, per_node: int) -> tuple[int, ...]:
         (R05, _blocks(32, 28), 4),
         # 8x14: every fourth rank is 4 then 3 per node, and every seventh rank (2
         # per node, 16 ranks) is the even count nearest 28; fewer than PT-Scotch's
-        # 56, so the stock rule: every second rank, 7 per node
+        # 56, so the most even ranks up to 56: every second rank, 7 per node
         (B2, _blocks(8, 14), 2),
-        # 8x14 on 16 nodes: the even count nearest 56 is 32; the stock rule's 56
-        # ranks are every fourth
-        (B2, _blocks(16, 14), 4),
+        # 8x14 on 16 nodes: the even count nearest 56 is 32, and no even count
+        # lies between 32 and PT-Scotch's 56 (every fourth rank is 4 then 3 per
+        # node), so every seventh rank, 2 per node
+        (B2, _blocks(16, 14), 7),
         # ranks dealt round 8 nodes: every fourth rank is 28 on each of 2 nodes
         (B2, _cyclic(8, 28), 4),
-        # at 14 per node, 14 on each of 2 nodes: fewer than PT-Scotch's 56
+        # at 14 per node, 14 on each of 2 nodes: fewer than PT-Scotch's 56, so
+        # every second rank, 14 on each of 4 nodes
         (B2, _cyclic(8, 14), 2),
         # the launched tier's tiny meshes: one coarse rank
         (1_000, _blocks(1, 8), 8),
@@ -349,6 +357,7 @@ def test_the_coarse_rule_takes_the_even_layout_nearest_every_fourth_rank(
     for columns, seen in ((1, False), (30, True)):
         chosen = coarse.rule(dofs, size, columns, seen=seen, kind=kind, nodes=nodes)
         assert chosen == (ordering, factor)
+    assert is_even_layout(factor, nodes)
 
 
 def test_the_even_coarse_layout_counts_only_the_nodes_holding_a_coarse_rank():
@@ -384,7 +393,8 @@ def test_a_stock_stack_keeps_the_rule_that_reads_counts_only(
     [
         (B2, _blocks(8, 28), 56),
         (B2, _blocks(32, 28), 224),
-        (B2, _blocks(8, 14), 56),  # the stock rule's, as on a capped stack
+        (B2, _blocks(8, 14), 56),  # the most even ranks up to PT-Scotch's 56
+        (B2, _blocks(16, 14), 32),
         (1_000, _blocks(1, 8), 1),
     ],
 )

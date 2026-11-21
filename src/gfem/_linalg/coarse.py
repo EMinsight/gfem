@@ -414,8 +414,11 @@ def even_factor(dofs: int, nodes: Sequence[int]) -> int:
     coarse ranks. Of the factors :math:`f` whose :math:`\lceil P / f \rceil` kept
     ranks are even per node (`is_even`) and at most the floor's
     :math:`\max(1, \lfloor n / 30\,000 \rfloor)`, it takes the count nearest
-    :math:`c^*`, ties to more ranks, then the smallest factor. Every rank holds the
-    same ``nodes``, so every rank picks the same.
+    :math:`c^*`, ties to more ranks, then the smallest factor. A placement whose
+    nearest even count is below stock PT-Scotch's :math:`c_P` (`rule`) takes the
+    most even ranks up to :math:`c_P` instead: an uneven layout would order on
+    every coarse rank, past the cap. Every rank holds the same ``nodes``, so every
+    rank picks the same.
 
     Args:
         dofs: The coarse problem's free DOFs.
@@ -430,13 +433,17 @@ def even_factor(dofs: int, nodes: Sequence[int]) -> int:
         if math.ceil(size / f) <= floor and is_even(f, nodes)
     ]
     # f = size keeps one rank, always even, so ``even`` is never empty
-    return min(even, key=lambda f: (abs(math.ceil(size / f) - target), f))
+    factor = min(even, key=lambda f: (abs(math.ceil(size / f) - target), f))
+    scotch = _scotch_ranks(dofs, size)
+    if math.ceil(size / factor) < scotch:
+        # the floor holds c_P, since 30 k DOFs per rank is below 100 k
+        factor = min(f for f in even if math.ceil(size / f) <= scotch)
+    return factor
 
 
 def capped_ranks(dofs: int, nodes: Sequence[int]) -> int:
     """The coarse ranks `rule` takes on a `CAPPED` stack, for `say_stock`."""
-    size = len(nodes)
-    return max(math.ceil(size / even_factor(dofs, nodes)), _scotch_ranks(dofs, size))
+    return math.ceil(len(nodes) / even_factor(dofs, nodes))
 
 
 def rule(
@@ -452,9 +459,7 @@ def rule(
 
     On a `PARMETIS` or `CAPPED` stack the fill no longer grows with the ranks
     ordering it, so the coarse problem takes ParMETIS or PT-Scotch on the even
-    layout nearest every fourth rank (`even_factor`), for every set-up alike. A
-    layout so placed that it holds fewer ranks than stock PT-Scotch's takes stock
-    PT-Scotch's factor instead.
+    layout nearest every fourth rank (`even_factor`), for every set-up alike.
 
     On a `STOCK` stack, with :math:`n` the coarse DOFs and :math:`P` the ranks,
     PT-Scotch takes :math:`c_P = \max(1, \min(P, \lfloor n / 100\,000 \rfloor,
@@ -479,13 +484,11 @@ def rule(
     Returns:
         The ordering and the factor: PETSc keeps every factor-th rank.
     """
-    scotch = _scotch_ranks(dofs, size)
     if kind != STOCK:
         layout = tuple(nodes) if nodes is not None else (0,) * size
         factor = even_factor(dofs, layout)
-        if math.ceil(size / factor) < scotch:
-            factor = reduction(dofs, size)
         return (PARMETIS if kind == PARMETIS else PT_SCOTCH), factor
+    scotch = _scotch_ranks(dofs, size)
     metis = max(1, min(math.ceil(size / COARSE_EVERY), dofs // COARSE_DOFS_PER_RANK))
     if metis > scotch and (columns >= METIS_COLUMNS or seen):
         return METIS, math.ceil(size / metis)
