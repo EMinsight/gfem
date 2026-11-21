@@ -209,8 +209,22 @@ class FixedAngleChildren:
     """
 
     def __init__(self, rule: DrivenRule) -> None:
-        """The children of ``rule``, a fixed-angle sweep; none built yet."""
-        self.rule = rule
+        """The children of ``rule``, a fixed-angle sweep; none built yet.
+
+        Holds ``rule``'s settings, not ``rule``: the parent owns its children,
+        and no cycle keeps either alive.
+        """
+        self.parent = _Parent(
+            problem=rule.problem,
+            options=rule.options,
+            linear_kind=rule.linear.kind,
+            excite=tuple(rule.excite),
+            kept=rule.kept,
+            comm=rule.comm,
+            order_frequency=rule.order_frequency,
+            gauge=rule.gauge,
+            physics=rule.physics,
+        )
         self.rules: dict[int, DrivenRule] = {}
         self.handed: dict[int, list[dict[str, np.ndarray]] | None] = {}
 
@@ -225,7 +239,7 @@ class FixedAngleChildren:
         """
         from gfem._engine.driven import FORWARD_WARNINGS, DrivenRule
 
-        parent = self.rule
+        parent = self.parent
         rule = self.rules.get(n)
         if rule is not None:
             return rule
@@ -238,7 +252,7 @@ class FixedAngleChildren:
             wave_vector_frequency=parent.problem.wave_vector_frequency,
         )
         options = dataclasses.replace(
-            parent.options, linear_solver=parent.linear.kind, frequency_workers=1
+            parent.options, linear_solver=parent.linear_kind, frequency_workers=1
         )
         with warnings.catch_warnings():
             for category in FORWARD_WARNINGS:
@@ -315,7 +329,7 @@ class FixedAngleChildren:
         """
         from gfem._engine.driven import _Kept
 
-        parent = self.rule
+        parent = self.parent
         solution = entry.fields["solution"]
         width = len(parent.excite)
         ct_s = cotangents.get("s")
@@ -350,6 +364,21 @@ class FixedAngleChildren:
                     sub.handle.free()
                 rule.forget_operator()
         return pairs
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class _Parent:
+    """The settings of a fixed-angle sweep's rule its children are built from."""
+
+    problem: Driven
+    options: SolverOptions
+    linear_kind: str
+    excite: tuple[str, ...]
+    kept: tuple[int, ...]
+    comm: Any
+    order_frequency: tuple[float, ...]
+    gauge: GaugeChoice
+    physics: str
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
@@ -578,7 +607,7 @@ class ReducedKept:
     Its fields are the cache entry's, by name; the entry holds no handle.
 
     Attributes:
-        basis: The reduced basis V.
+        basis: The reduced basis :math:`V`.
         matrices: The reduced matrix at each grid frequency.
         functionals: The reduced S functionals at each grid frequency.
         deembedding: The port network's de-embedding factors.

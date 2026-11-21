@@ -14,6 +14,7 @@ import gfem
 from gfem._engine import driven, driven_sweep
 from gfem._engine.cache import Entry
 from gfem._engine.driven_sweep import (
+    Block,
     BlockOutcome,
     FixedAngleChildren,
     FrequencyWorkers,
@@ -289,3 +290,13 @@ def test_fixed_angle_children_forget_the_operator_on_a_miss(child):
         ("forward", 2e9, True),
         ("forget", 2e9),
     ]
+
+
+def test_a_child_s_backward_stands_on_the_rows_its_forward_was_handed(child):
+    arrays = _arrays(2)
+    split = SweepSplit.of(_rule((1e9, 2e9), fixed_angle=True, wave_ports=("p1",)))
+    request = SolveRequest(port_modes=[arrays])
+    _, entry = split.forward(None, keep=True, request=request)
+    split.runner.backward(None, entry, {"s": np.zeros((2, 1, 1))}, wanted=None)
+    handed = [e[2] for e in child.log if e[0] == "backward"]
+    _assert_rows([Block([n], rows) for n, rows in enumerate(handed)], arrays)
