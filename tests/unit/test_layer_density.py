@@ -186,15 +186,29 @@ def test_the_solve_key_carries_the_pixels_the_geometry_and_the_order(mesh, grid)
     assert key(rho, order=3) != base
 
 
-#: A 3D layer-grid law blend as gfem wrote it before 2D designs: the sha256 of
-#: its materials' JSON, and its solve key in a fixed environment (the key's
-#: environment holds a digest of gfem's code).
-FROZEN_3D_MATERIALS = "65696de8df94e5d93f391b167496469f1206b7487b9cdbc7b83e7d73a1b2270b"
+#: A 3D layer-grid law blend as gfem wrote it before 2D designs: its
+#: materials' JSON (keys sorted), and its solve key in a fixed environment (the
+#: key's environment holds a digest of gfem's code).
+FROZEN_3D_MATERIALS = (
+    '{"air": {"$type": "Material", "axes": null, "conductivity": 0.0, "eps_r": 1.0, "'
+    'mass_density": null, "mu_r": 1.0, "name": null, "specific_heat": null, "tan_delt'
+    'a": 0.0, "thermal_conductivity": null, "thermo_optic_coefficient": null}, "desig'
+    'n": {"$type": "MaterialField", "axes": null, "blend": {"$array": ".model.materia'
+    'ls[\'design\'].blend"}, "blend_ends": {"$type": "Blend", "penalty": 3.0, "scheme":'
+    ' "index", "solid": {"$type": "PermittivityLaw", "eps_inf": 1.0, "terms": [{"$typ'
+    'e": "Drude", "damping": 2000000000.0, "plasma_frequency": 20000000000.0}]}, "voi'
+    'd": {"$complex": [2.0, -0.0]}}, "conductivity": {"$array": ".model.materials[\'de'
+    'sign\'].conductivity"}, "eps_r": null, "mass_density": null, "mu_r": {"$array": "'
+    '.model.materials[\'design\'].mu_r"}, "region": null, "specific_heat": null, "tan_d'
+    'elta": null, "thermal_conductivity": null, "thermo_optic_coefficient": null}, "s'
+    'ubstrate": {"$type": "Material", "axes": null, "conductivity": 0.0, "eps_r": 4.0'
+    ', "mass_density": null, "mu_r": 1.0, "name": null, "specific_heat": null, "tan_d'
+    'elta": 0.0, "thermal_conductivity": null, "thermo_optic_coefficient": null}}'
+)
 FROZEN_3D_KEY = "e7384e61d177d0d8070dae468896bb3d246d65f34217864a6964e1b4d58a07fb"
 
 
 def test_a_3d_layer_grid_job_and_its_key_are_unchanged(tmp_path, monkeypatch):
-    import hashlib
     import json
 
     import structured_meshes as sm
@@ -225,7 +239,7 @@ def test_a_3d_layer_grid_job_and_its_key_are_unchanged(tmp_path, monkeypatch):
     written = gfem.Job(model, problem, options).to_json(tmp_path / "job.json")
     doc = json.loads(written.read_text())
     text = json.dumps(doc["job"]["model"]["materials"], sort_keys=True)
-    assert hashlib.sha256(text.encode()).hexdigest() == FROZEN_3D_MATERIALS
+    assert text == FROZEN_3D_MATERIALS
     assert _solve_cache.solve_key(model, problem, options)[0] == FROZEN_3D_KEY
 
 
