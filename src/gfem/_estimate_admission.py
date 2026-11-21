@@ -866,7 +866,7 @@ def _check_parameters(
 ) -> None:
     """Check the loop's parameters; ``floor``: the solve tolerance's floor too.
 
-    An objective's floor is its sensitivity's (`_check_objective_floors`),
+    An objective's floor is its sensitivity's (`admit_first_estimates`),
     checked on the first estimate.
     """
     for value, name in ((tolerance, "tolerance"), (error_fraction, "error_fraction")):
