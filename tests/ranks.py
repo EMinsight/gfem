@@ -91,7 +91,7 @@ def launcher() -> list[str]:
     return shlex.split(os.environ.get("GFEM_TEST_MPI_LAUNCH", DEFAULT_LAUNCH))
 
 
-def _find(program: str) -> str | None:
+def _which(program: str) -> str | None:
     """A program on ``PATH``, or beside this Python (a venv's ``openmpi``)."""
     return shutil.which(program) or shutil.which(
         program, path=str(Path(sys.executable).parent)
@@ -104,7 +104,7 @@ def unavailable() -> str | None:
     mpi4py loads in a child, so that pytest's process holds no MPI.
     """
     words = launcher()
-    if _find(words[0]) is None:
+    if _which(words[0]) is None:
         return f"no {words[0]} to launch ranks with"
     proc = subprocess.run(
         [sys.executable, "-c", "import mpi4py.MPI"],
@@ -244,7 +244,7 @@ class _Workdir:
 
             pytest.skip(f"{ranks} ranks is above {MAX_RANKS}={cap}")
         words = launcher()
-        words[0] = _find(words[0]) or words[0]
+        words[0] = _which(words[0]) or words[0]
         command = [*words, "-n", str(ranks), *argv]
         environment = os.environ | {name: str(threads) for name in THREAD_VARIABLES}
         environment |= {TAG: self.tag, **(env or {})}
