@@ -228,10 +228,15 @@ STRIP_LENGTH = 1.0
 #: Cell size (um) in the cladding and the layer, 0.1 in the core. Measured
 #: at order 2, one thread: |S11| = 4.5e-5, |S21 - exp(-gamma L)| = 4.3e-4,
 #: n_eff 2.7e-7 off the closed section (at 0.15: 1.3e-4, 1.7e-3, 1.0e-7).
-#: With 0.15 um cells at clearance 0.4 um, |S11| = 2.3e-3 without the
-#: section stretch
-#: and 1.1e-4 with it.
 STRIP_H = 0.1
+#: A clearance where the layer perturbs the mode itself (a clearance
+#: warning) and an unstretched port section mismatches it: with 0.15 um
+#: cells |S11| = 2.3e-3 to 6.3e-3 without the section stretch (as more of
+#: it is dropped), 1.0e-4 with it, n_eff 5.6e-6 off the closed section.
+#: Its effective index bound is 1e-2 exp(-2 gamma_t c).
+NEAR_CLEARANCE = 0.4
+NEAR_H = 0.15
+NEAR_NEFF_TOL = 8e-4
 
 
 def _strip_n_eff(gamma):
@@ -239,12 +244,29 @@ def _strip_n_eff(gamma):
     return complex(gamma).imag / k0
 
 
-def test_a_strip_guide_through_side_layers(tmp_path):
+@pytest.fixture(scope="module")
+def strip_n_eff(tmp_path_factory):
+    """The fundamental's effective index on a wide closed section."""
+    path = pc.strip_guide(
+        tmp_path_factory.mktemp("strip") / "closed.msh",
+        2.0,
+        thickness=0.0,
+        length=0.15,
+        clad_h=STRIP_H,
+    )
+    reference = gfem.solve(
+        pc.strip_model(path),
+        gfem.PortMode("p1", (pc.STRIP_F,)),
+        options=gfem.SolverOptions(order=2),
+    )
+    return _strip_n_eff(np.asarray(reference.gamma)[0])
+
+
+def test_a_strip_guide_through_side_layers(tmp_path, strip_n_eff):
     # both port faces cut the side layers: their sections take the stretch,
     # so each port stays exact for its own mode
-    tmp = tmp_path
     path = pc.strip_guide(
-        tmp / "strip.msh", STRIP_CLEARANCE, length=STRIP_LENGTH, clad_h=STRIP_H
+        tmp_path / "strip.msh", STRIP_CLEARANCE, length=STRIP_LENGTH, clad_h=STRIP_H
     )
     model = pc.strip_model(path)
     with warnings.catch_warnings():
@@ -265,15 +287,23 @@ def test_a_strip_guide_through_side_layers(tmp_path):
     # 1 + 2.7e-5)
     budget = abs(np.exp(-gamma * STRIP_LENGTH * 1e-6)) ** 2
     assert abs(s[0, 0]) ** 2 + abs(s[1, 0]) ** 2 <= budget + 1e-8
-    closed = pc.strip_model(
-        pc.strip_guide(
-            tmp / "closed.msh", 2.0, thickness=0.0, length=0.15, clad_h=STRIP_H
+    assert abs(_strip_n_eff(gamma) - strip_n_eff) <= STRIP_NEFF_TOL
+
+
+def test_a_strip_guide_close_to_its_side_layers(tmp_path, strip_n_eff):
+    # the layer perturbs the mode at this clearance: an unstretched port
+    # section would solve a different mode than the guide carries and
+    # reflect it, the stretched one stays matched
+    path = pc.strip_guide(
+        tmp_path / "strip.msh", NEAR_CLEARANCE, length=STRIP_LENGTH, clad_h=NEAR_H
+    )
+    with pytest.warns(gfem.LayerClearanceWarning, match="clearance"):
+        result = gfem.solve(
+            pc.strip_model(path),
+            gfem.Driven((pc.STRIP_F,)),
+            options=gfem.SolverOptions(order=2, linear_solver="direct"),
         )
-    )
-    reference = gfem.solve(
-        closed,
-        gfem.PortMode("p1", (pc.STRIP_F,)),
-        options=gfem.SolverOptions(order=2),
-    )
-    n_closed = _strip_n_eff(np.asarray(reference.gamma)[0])
-    assert abs(_strip_n_eff(gamma) - n_closed) <= STRIP_NEFF_TOL
+    s = np.asarray(result.s.values)[0]
+    gamma = complex(np.asarray(result.port_modes["p1"].gamma)[0])
+    assert abs(s[0, 0]) <= 5e-4
+    assert abs(_strip_n_eff(gamma) - strip_n_eff) <= NEAR_NEFF_TOL
