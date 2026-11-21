@@ -11,7 +11,8 @@ gfem documents two builds. The no-MPI stack serves one process and rank
 copies, which pass PETSc its launch option; only the MPI stack serves a distributed
 solve (`require_mpi_petsc`). `has_mpi` tells them apart without initialising PETSc.
 A stack whose MUMPS calls ZGEMMT is refused whatever the size of the problem
-(`has_zgemmt`).
+(`has_zgemmt`). The same read of ``libpetsc`` tells whether its MUMPS caps
+PT-Scotch's parallel ordering (`has_paraord_cap`), as gfem's build script makes it.
 
 Every PETSc or SLEPc object gfem creates gets its own options prefix
 (`next_prefix`). gfem's options sit in PETSc's global options database only
@@ -50,6 +51,8 @@ __all__ = [
     "MIN_VERSION",
     "error_text",
     "has_mpi",
+    "has_paraord_cap",
+    "has_parmetis",
     "has_zgemmt",
     "mpi_stack_usable",
     "next_prefix",
@@ -112,7 +115,12 @@ def has_mpi() -> bool:
     return "PETSC_HAVE_MPIUNI" not in header
 
 
-@functools.cache
+#: What `_markers` looks for in ``libpetsc``: MUMPS's import of ZGEMMT, and the
+#: variable that overrides the ordering cap of the stacks gfem's build script makes.
+_ZGEMMT_MARKER = b"\0zgemmt_\0"
+_CAP_MARKER = b"MUMPS_PARAORD_MAX"
+
+
 def has_zgemmt() -> bool:
     """Whether the installed ``libpetsc`` imports ZGEMMT; False without one to read.
 
@@ -125,24 +133,58 @@ def has_zgemmt() -> bool:
         gfem.SolverUnavailableError: A ``libpetsc`` cannot be read, so the check
             cannot tell; the error names it. Not cached.
     """
+    return _ZGEMMT_MARKER in _markers()
+
+
+def has_paraord_cap() -> bool:
+    """Whether the installed ``libpetsc`` carries the ordering cap; False without one.
+
+    The stacks gfem's build script makes cap the processes PT-Scotch orders on inside
+    MUMPS, and ``MUMPS_PARAORD_MAX`` overrides the cap, so MUMPS's code holds that
+    name only on such a stack. Read from the same scan as `has_zgemmt`, which
+    initialises nothing.
+
+    Raises:
+        gfem.SolverUnavailableError: As `has_zgemmt`.
+    """
+    return _CAP_MARKER in _markers()
+
+
+@functools.cache
+def has_parmetis() -> bool:
+    """Whether the installed PETSc stack has ParMETIS; initialises PETSc."""
+    return bool(require_petsc().Sys.hasExternalPackage("parmetis"))
+
+
+@functools.cache
+def _markers() -> frozenset[bytes]:
+    """The markers found in the installed ``libpetsc.so*``, each file read once.
+
+    Raises:
+        gfem.SolverUnavailableError: A ``libpetsc`` cannot be read; the error names
+            it. Not cached.
+    """
     try:
         config = __import__("petsc4py").get_config()
         folder = Path(config["PETSC_DIR"], config.get("PETSC_ARCH") or "", "lib")
         libraries = {path.resolve() for path in folder.glob("libpetsc.so*")}
     except Exception:  # noqa: BLE001 - also a broken install: `_import` tells why
-        return False
-    return any(_names_zgemmt(library) for library in sorted(libraries))
+        return frozenset()
+    found: set[bytes] = set()
+    for library in sorted(libraries):
+        found |= _scan(library)
+    return frozenset(found)
 
 
-def _names_zgemmt(library: Path) -> bool:
+def _scan(library: Path) -> set[bytes]:
     try:
         if not library.is_file() or library.stat().st_size == 0:
-            return False
+            return set()
         with (
             library.open("rb") as file,
             mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as image,
         ):
-            return image.find(b"\0zgemmt_\0") >= 0
+            return {m for m in (_ZGEMMT_MARKER, _CAP_MARKER) if image.find(m) >= 0}
     except (OSError, ValueError) as err:
         raise SolverUnavailableError(
             f"gfem cannot read {library} ({err}) to check whether the installed "

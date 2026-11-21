@@ -35,7 +35,8 @@ def _clear():
     _petsc.require_petsc.cache_clear()
     _petsc.require_slepc.cache_clear()
     _petsc.has_mpi.cache_clear()
-    _petsc.has_zgemmt.cache_clear()
+    _petsc._markers.cache_clear()
+    _petsc.has_parmetis.cache_clear()
 
 
 def fake(name, *, version="3.26.0", scalar=np.complex128, error=None):
@@ -530,6 +531,44 @@ def test_a_source_install_is_read_under_its_arch(stack, tmp_path):
     stack(petsc=petsc)
     with pytest.raises(gfem.SolverUnavailableError, match="ZGEMMT"):
         _petsc.require_petsc()
+
+
+#: The script's MUMPS names the variable that overrides its ordering cap.
+_WITH_CAP = b"\x7fELF\0zgemm_\0MUMPS_PARAORD_MAXmumps_\0"
+
+
+@pytest.mark.parametrize(
+    ("image", "capped"),
+    [(_WITH_CAP, True), (_WITHOUT_ZGEMMT, False), (_WITH_CAP + _WITH_ZGEMMT, True)],
+    ids=["cap", "stock", "cap and zgemmt"],
+)
+def test_a_stack_with_the_ordering_cap_is_told_by_its_marker(
+    stack, tmp_path, image, capped
+):
+    stack(petsc=_with_libpetsc(fake("petsc4py"), tmp_path, image))
+    assert _petsc.has_paraord_cap() is capped
+
+
+def test_a_stack_without_a_libpetsc_to_read_has_no_cap(stack, tmp_path):
+    stack(petsc=_with_conf(fake("petsc4py"), tmp_path, mpiuni=True))
+    assert not _petsc.has_paraord_cap()
+
+
+def test_both_markers_come_from_one_read_of_the_library(stack, tmp_path):
+    stack(petsc=_with_libpetsc(fake("petsc4py"), tmp_path, _WITH_CAP))
+    assert not _petsc.has_zgemmt()
+    # a library read again would now show ZGEMMT and no cap
+    (tmp_path / "lib" / "libpetsc.so.3.26").write_bytes(_WITH_ZGEMMT)
+    assert _petsc.has_paraord_cap()
+    assert not _petsc.has_zgemmt()
+
+
+def test_an_unreadable_libpetsc_stops_the_cap_check_by_name(stack, tmp_path):
+    petsc = _with_libpetsc(fake("petsc4py"), tmp_path, _WITH_CAP)
+    library = _unreadable(tmp_path)
+    stack(petsc=petsc)
+    with pytest.raises(gfem.SolverUnavailableError, match=re.escape(str(library))):
+        _petsc.has_paraord_cap()
 
 
 def test_slepc_on_a_stack_that_imports_zgemmt_is_refused(stack, tmp_path):

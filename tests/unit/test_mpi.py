@@ -311,6 +311,110 @@ def test_metis_orders_sequentially_without_pt_scotch_behind_the_telescope(symmet
     assert scotch["telescope_mat_mumps_icntl_29"] == 1
 
 
+class Agreeing(Stub):
+    """A communicator whose reductions come out as listed; it counts them."""
+
+    def __init__(self, key: int, *results: bool) -> None:
+        super().__init__(4)
+        self.key = key
+        self.results = list(results)
+        self.reductions = 0
+
+    def allreduce(self, value, op=None):  # noqa: ARG002
+        self.reductions += 1
+        return self.results.pop(0) if self.results else value
+
+
+@pytest.fixture
+def stack_of(monkeypatch):
+    """Set what this rank's stack holds: ParMETIS, the ordering cap."""
+    from gfem import _petsc
+
+    monkeypatch.setattr(coarse, "_kinds", {})
+    monkeypatch.setattr(_mpi, "comm_key", lambda comm: comm.key)
+    monkeypatch.setattr(_mpi, "_load_mpi", lambda: types.SimpleNamespace(LAND=None))
+
+    def set_(*, parmetis: bool, cap: bool) -> None:
+        monkeypatch.setattr(_petsc, "has_parmetis", lambda: parmetis)
+        monkeypatch.setattr(_petsc, "has_paraord_cap", lambda: cap)
+
+    return set_
+
+
+@pytest.mark.parametrize(
+    ("parmetis", "cap", "kind"),
+    [
+        (True, True, "parmetis"),
+        (True, False, "parmetis"),
+        (False, True, "capped"),
+        (False, False, "stock"),
+    ],
+)
+def test_the_stack_kind_is_parmetis_then_capped_then_stock(
+    stack_of, parmetis, cap, kind
+):
+    stack_of(parmetis=parmetis, cap=cap)
+    assert coarse.stack_kind(Agreeing(1)) == kind
+
+
+@pytest.mark.parametrize(
+    ("here", "results", "kind"),
+    [
+        ((True, True), [False, True], "capped"),
+        ((True, False), [False, False], "stock"),
+        ((False, True), [False, False], "stock"),
+    ],
+    ids=["parmetis here only", "parmetis here only, no cap", "cap here only"],
+)
+def test_ranks_that_disagree_fall_through_to_the_next_kind_said_once(
+    stack_of, caplog, here, results, kind
+):
+    parmetis, cap = here
+    stack_of(parmetis=parmetis, cap=cap)
+    comm = Agreeing(1, *results)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        assert coarse.stack_kind(comm) == kind
+        assert coarse.stack_kind(comm) == kind
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    assert "another rank" in record.message
+    assert f"{kind} stack" in record.message
+
+
+def test_agreeing_ranks_log_nothing(stack_of, caplog):
+    stack_of(parmetis=False, cap=False)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        assert coarse.stack_kind(Agreeing(1)) == "stock"
+    assert caplog.records == []
+
+
+def test_the_stack_kind_is_agreed_once_per_communicator(stack_of):
+    stack_of(parmetis=False, cap=True)
+    first, second = Agreeing(1), Agreeing(2)
+    assert coarse.stack_kind(first) == "capped"
+    assert first.reductions == 2
+    assert coarse.stack_kind(first) == "capped"
+    assert first.reductions == 2  # cached on its key
+    assert coarse.stack_kind(second) == "capped"
+    assert second.reductions == 2
+
+
+def test_a_stock_stack_says_once_that_a_rebuild_allows_more_coarse_ranks(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(coarse, "_said_stock", [])
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        coarse.say_stock(56, 56)  # the cap would change nothing
+        assert caplog.records == []
+        coarse.say_stock(32, 56)
+        coarse.say_stock(16, 224)
+    (record,) = caplog.records
+    assert record.levelname == "INFO"
+    assert "tools/petsc_wheelhouse.sh --mpi" in record.message
+    assert "32" in record.message
+    assert "56" in record.message
+
+
 def test_the_packaged_mumps_config_sets_metis_niter_to_one():
     assert coarse.MUMPS_CONFIG.read_text() == "METIS_OPTIONS(7)=1\n"
 

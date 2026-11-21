@@ -25,6 +25,11 @@ of it is an option, since S does not change with it beyond round-off.
   `METIS_COLUMNS` columns or more, or a pattern this process has set up before (a
   design loop, a sweep's rebuilds, an eigen reshift), whose analysis the pool keeps.
 
+`stack_kind` tells which PETSc stack every rank runs: one with ParMETIS, one whose
+MUMPS caps PT-Scotch's parallel ordering, as gfem's build script makes it, or a
+stock one. Ranks on different stacks take the kind they
+share, which changes the coarse problem's speed, never S.
+
 METIS's ``NITER=1`` takes about 15 % off that serial analysis for 2 % more fill.
 PETSc has no option for it and MUMPS reads it only from the file named by
 ``MUMPS_CONFIG_FILE``, so a METIS set-up names the packaged `MUMPS_CONFIG` there,
@@ -62,6 +67,7 @@ import atexit
 import contextlib
 import dataclasses
 import hashlib
+import logging
 import math
 import os
 from collections.abc import Generator
@@ -114,6 +120,15 @@ METIS_MUMPS_OPTIONS: tuple[tuple[str, Any], ...] = (
     ("mat_mumps_icntl_7", 5),
 )
 
+#: Says what the stack kind leaves to the user.
+_LOGGER = logging.getLogger("gfem.solver")
+#: The kinds of PETSc stack `stack_kind` tells apart: with ParMETIS, with the cap
+#: gfem's build script puts on PT-Scotch's parallel ordering, or neither.
+PARMETIS: Final = "parmetis"
+CAPPED: Final = "capped"
+STOCK: Final = "stock"
+type StackKind = Literal["parmetis", "capped", "stock"]
+
 #: Failures a larger workspace may cure.
 RETRIED = (MUMPS_WORKSPACE_ERROR,)
 #: The failure read where the factor behind ``PCTELESCOPE`` cannot be: retried too,
@@ -134,6 +149,10 @@ _pool: list[Kept] = []
 #: The keys set up in this process: they outlive eviction, so a pattern met again
 #: after its factorization went is still known as met.
 _seen: set[PoolKey] = set()
+#: Per communicator key, its `stack_kind`.
+_kinds: dict[int | None, StackKind] = {}
+#: Whether `say_stock` has spoken in this process.
+_said_stock: list[bool] = []
 #: Whether `release` runs at exit, before PETSc finalizes.
 _at_exit: list[bool] = []
 
@@ -288,6 +307,62 @@ def _give(kept: Kept) -> None:
     if not _at_exit:
         atexit.register(release)
         _at_exit.append(True)
+
+
+def stack_kind(comm: Any) -> StackKind:
+    """The kind of PETSc stack every rank of ``comm`` runs, once per communicator.
+
+    `PARMETIS` where every rank's stack has ParMETIS, else `CAPPED` where every
+    rank's ``libpetsc`` carries the ordering cap, else `STOCK`. Every rank calls it
+    together, at most two reductions the first time. Ranks that run different stacks
+    fall through to the next kind, and a rank whose own stack has more says so once:
+    the kind changes the coarse problem's speed, never S.
+    """
+    key = _mpi.comm_key(comm)
+    if key in _kinds:
+        return _kinds[key]
+    lost = []
+    kind: StackKind = STOCK
+    for name, here, candidate in (
+        ("ParMETIS", _petsc.has_parmetis, PARMETIS),
+        ("the ordering cap", _petsc.has_paraord_cap, CAPPED),
+    ):
+        mine = here()
+        if _mpi.agree_all(comm, flag=mine):
+            kind = candidate
+            break
+        if mine:
+            lost.append(name)
+    _kinds[key] = kind
+    if lost:
+        _LOGGER.warning(
+            "This rank's PETSc stack has %s and another rank's has not, so the ranks "
+            "run different stacks: BDDC's coarse problem follows the %s stack's rule",
+            " and ".join(lost),
+            kind,
+        )
+    return kind
+
+
+def say_stock(ranks: int, capped: int) -> None:
+    """Say once per process that a rebuilt stack would give the coarse more ranks.
+
+    Args:
+        ranks: The coarse ranks this `STOCK` stack's rule takes.
+        capped: Those it would take on a `CAPPED` stack. Nothing is said, and the
+            once is kept, unless that is more.
+    """
+    if capped <= ranks or _said_stock:
+        return
+    _said_stock.append(True)
+    _LOGGER.info(
+        "BDDC's coarse problem runs on %d ranks: this PETSc stack does not cap "
+        "PT-Scotch's parallel ordering, whose fill grows with the ranks it orders "
+        "on. A stack rebuilt with tools/petsc_wheelhouse.sh --mpi caps it, and "
+        "the coarse problem would then run on %d ranks.",
+        ranks,
+        capped,
+    )
 
 
 def reduction(dofs: int, size: int) -> int:

@@ -86,6 +86,27 @@ def test_the_petsc_stack_is_complex_with_mumps_and_no_non_free_package():
         assert _scotch_version() >= (7, 0, 18)
 
 
+def _configure_options() -> str:
+    """The options PETSc was configured with, from its installed ``petscvariables``."""
+    import petsc4py
+
+    config = petsc4py.get_config()
+    variables = Path(
+        config["PETSC_DIR"], config.get("PETSC_ARCH") or "", "lib", "petsc", "conf"
+    )
+    text = (variables / "petscvariables").read_text()
+    return re.search(r"^CONFIGURE_OPTIONS\s*=(.*)$", text, re.MULTILINE)[1]
+
+
+def test_a_stack_the_script_builds_carries_the_ordering_cap():
+    # the script hands PETSc its own MUMPS tarball, the one with the cap
+    if not re.search(r"MUMPS_[\d.]+-gfem\.tar\.gz", _configure_options()):
+        pytest.skip("a stock stack: its MUMPS is not the build script's")
+    assert _petsc.has_paraord_cap()
+    kind = coarse.PARMETIS if _petsc.has_parmetis() else coarse.CAPPED
+    assert coarse.stack_kind(None) == kind
+
+
 def test_petsc_solves_many_right_hand_sides_on_the_free_dofs(built):
     op, space = _laplace(built)
     handle = prepare(op, symmetry="hermitian", kind="petsc")
