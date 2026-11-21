@@ -20,6 +20,11 @@ tetrahedron behind each face) is integrated per triangle in a face-wise
 (surface P0) pass, and each face's integral is added to its owning
 tetrahedron, so its coefficient rows read like a volume term's.
 
+On a 2D mesh the elements are triangles and the faces line segments, and
+the passes run unchanged on them (counts by role: volume and surface
+elements). The second-order absorbing term there is a **tangential
+gradient** ``int c grad_t u . grad_t v`` along each segment.
+
 **Node coordinates** (shape gradients) are a third pass over the same
 pairs, against the same terms, the operator's pieces with their
 coefficients. Under a node displacement ``W`` (a real P1 vector
@@ -229,7 +234,9 @@ class Term:
         kind: ``"gradient"`` (``int (C grad u) . grad v``, H1), ``"value"``
             (``int (C u) . v``, H(curl)), ``"curl"`` (``int (C curl u) .
             curl v``), ``"trace"`` (``int c u_t . v_t`` on a surface),
-            ``"curl trace"`` (``int c (n . curl u)(n . curl v)``), or
+            ``"curl trace"`` (``int c (n . curl u)(n . curl v)``),
+            ``"tangential gradient"`` (``int c grad_t u . grad_t v`` on a
+            line of a 2D mesh, H1; no node pass), or
             ``"surface"`` (any other surface form, differentiated by
             ``DiffShape``). The material pass integrates the kind's bare
             integrand (`INTEGRANDS`).
@@ -268,7 +275,15 @@ class Term:
     """
 
     name: str
-    kind: Literal["gradient", "value", "curl", "trace", "curl trace", "surface"]
+    kind: Literal[
+        "gradient",
+        "value",
+        "curl",
+        "trace",
+        "curl trace",
+        "tangential gradient",
+        "surface",
+    ]
     coefficient: Any = None
     region: Any = None
     integrand: Callable[[Any, Any], Any] | None = None
@@ -298,6 +313,8 @@ INTEGRANDS: dict[str, Callable[[Any, Any], Any]] = {
     "value": _dot,
     "trace": _tangential,
     "curl trace": lambda u, v: ngs.curl(u).Trace() * ngs.curl(v).Trace(),
+    # on a boundary element an H1 field's gradient is its surface gradient
+    "tangential gradient": lambda u, v: ngs.grad(u) * ngs.grad(v),
 }
 
 #: The symmetric moment ``u (x) v`` of each kind of `Term` with a
@@ -654,7 +671,9 @@ def _element_pass(
         or np.iscomplexobj(p.weights[name])
         for p in pairs
     ) or any(np.iscomplexobj(g) for g in given)
-    out = np.zeros(len(model.mesh.tetrahedra), dtype=complex if is_complex else float)
+    out = np.zeros(
+        len(model.mesh.volume_elements), dtype=complex if is_complex else float
+    )
     for values in given:
         out = out + values
     if not pairs:
@@ -703,7 +722,7 @@ def _load_pass(
 ) -> np.ndarray:
     """``sum_loads scale ** length_power int_e Lambda`` per gfem tetrahedron."""
     built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
-    out = np.zeros(len(model.mesh.tetrahedra))
+    out = np.zeros(len(model.mesh.volume_elements))
     if not loads:
         return out
     p0 = ngs.L2(built.mesh, order=0)
@@ -745,7 +764,7 @@ def _moment_pass(
     )
     owner = term.owner
     face = owner is not None
-    count = len(model.mesh.tetrahedra) if owner is None else len(owner)
+    count = len(model.mesh.volume_elements) if owner is None else len(owner)
     out = np.zeros((count, 3, 3), dtype=complex if is_complex else float)
     if not pairs:
         return out
@@ -1086,6 +1105,10 @@ def _node_pass(
             if theta is None or theta == 0:
                 continue
             weighted = (term, theta * built.scale**term.length_power)
+            if term.kind == "tangential gradient":  # pragma: no cover
+                # a 2D model's rule refuses the node coordinates first
+                msg = f"The term {term.name!r} has no shape derivative."
+                raise NonDifferentiableError(msg)
             if term.kind == "surface":
                 surface.append(weighted)
             elif term.kind in ("trace", "curl trace"):
@@ -1223,7 +1246,7 @@ def _material_sensitivity(
     integrals: dict[tuple[str, int], np.ndarray] = {}
     per_property: dict[str, np.ndarray] = {}
     for prop in sorted({k[2] for k in wants - axis_kinds}):  # ty: ignore[not-subscriptable]
-        total: np.ndarray = np.zeros(len(model.mesh.tetrahedra))
+        total: np.ndarray = np.zeros(len(model.mesh.volume_elements))
         for term in terms:
             derivative = term.derivatives.get(prop)
             if derivative is None:
@@ -1279,7 +1302,7 @@ def _per_axis_sensitivity(
     moments: dict[tuple[str, int], np.ndarray] = {}
     out: dict[str, np.ndarray] = {}
     for prop in sorted(props):
-        total: np.ndarray = np.zeros((len(model.mesh.tetrahedra), 3))
+        total: np.ndarray = np.zeros((len(model.mesh.volume_elements), 3))
         for term in terms:
             derivative = term.derivatives.get(prop)
             if derivative is None:
@@ -1303,7 +1326,7 @@ def _per_axis_sensitivity(
                 part = axis.evaluated() * along
             else:
                 per_face = np.einsum("fkij,fij->fk", axis.evaluated(), moment)
-                part = np.zeros((len(model.mesh.tetrahedra), 3), per_face.dtype)
+                part = np.zeros((len(model.mesh.volume_elements), 3), per_face.dtype)
                 on = term.owner >= 0
                 np.add.at(part, term.owner[on], per_face[on])
             if not axis.holomorphic:
