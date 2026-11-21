@@ -909,26 +909,28 @@ def test_the_build_script_stops_unless_each_place_of_the_cap_is_found_once(
 # MUMPS_BUILD_COMM_PARA_ANA cut down to the three places the cap edits, as a
 # program: PT-Scotch (KEEP(245)=1) on 64 processes and a problem large enough for
 # all of them, reporting on unit 6 at ICNTL(4)=2.
-_CAP_PROGRAM = (
-    b"      PROGRAM CAPTEST\n"
-    b"      INTEGER MYID, ICNTL(4), KEEP(339), N, NPROCS, WORKERS\n"
-    b"      INTEGER NPROCS_PARAORD\n"
-    + _DECLARATIONS_END
-    + b"      MYID = 0\n"
-    b"      ICNTL(3) = 6\n"
-    b"      ICNTL(4) = 2\n"
-    b"      KEEP(245) = 1\n"
-    b"      KEEP(339) = 1\n"
-    b"      N = 100000\n"
-    b"      NPROCS = 64\n"
-    b"      WORKERS = NPROCS\n"
-    b"      IF (KEEP(339).NE.0) THEN\n"
-    + _WORKERS
-    + b"      ENDIF\n"
-    b"      NPROCS_PARAORD = WORKERS\n"
-    + _LABEL_500
-    + b"  600 CONTINUE\n"
-    b"      END PROGRAM CAPTEST\n"
+_CAP_PROGRAM = b"".join(
+    [
+        b"      PROGRAM CAPTEST\n",
+        b"      INTEGER MYID, ICNTL(4), KEEP(339), N, NPROCS, WORKERS\n",
+        b"      INTEGER NPROCS_PARAORD\n",
+        _DECLARATIONS_END,
+        b"      MYID = 0\n",
+        b"      ICNTL(3) = 6\n",
+        b"      ICNTL(4) = 2\n",
+        b"      KEEP(245) = 1\n",
+        b"      KEEP(339) = 1\n",
+        b"      N = 100000\n",
+        b"      NPROCS = 64\n",
+        b"      WORKERS = NPROCS\n",
+        b"      IF (KEEP(339).NE.0) THEN\n",
+        _WORKERS,
+        b"      ENDIF\n",
+        b"      NPROCS_PARAORD = WORKERS\n",
+        _LABEL_500,
+        b"  600 CONTINUE\n",
+        b"      END PROGRAM CAPTEST\n",
+    ]
 )
 
 
