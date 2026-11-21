@@ -502,7 +502,7 @@ def _check_quantity_model(estimator: QuantityEstimator, model: Model) -> None:
 
     ``q`` keeps the mode refusals lifted for ``omega``
     (`_check_lossy_mode`); the omega estimate checks its mode's Re eps when
-    it estimates (`_check_mode_eps`).
+    it estimates (`gfem._estimate_kinds._check_mode_eps`).
     """
     if estimator.q is not None:
         _check_lossy_mode(model, "q")

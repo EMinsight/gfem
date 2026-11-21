@@ -243,7 +243,7 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
-from gfem.refinement import _estimate
+from gfem import _estimate_kinds
 
 OPTIONS = gfem.SolverOptions(order=2, linear_solver="direct")
 
@@ -961,7 +961,9 @@ def _entry_ratios(model, result, reference, *, refused=False):
     for to, source in _ENTRIES:
         estimator = gfem.QuantityEstimator(s=(to, source))
         if refused:
-            estimate = _estimate(model, result, estimator, threads=None, mode=None)
+            estimate = _estimate_kinds.estimate(
+                model, result, estimator, threads=None, mode=None
+            )
         else:
             estimate = gfem.error_estimate(result, estimator, model=model)
         values = np.asarray(result.s[to, source])

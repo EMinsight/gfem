@@ -700,15 +700,15 @@ def test_two_quantities_on_one_mesh_build_one_recovery(step, recoveries):
     # One cycle's estimates share one recovery and one set of recovered
     # errors per field: S21 and S11 at two frequencies read the fields of p1
     # and p2 at each, through one `RecoveryCache`.
-    from gfem.refinement import _estimate
+    from gfem._estimate_kinds import estimate
 
     problem = dataclasses.replace(rc.step_problem(), keep_fields=True)
     result = gfem.solve(step, problem, options=OPTIONS)
     cache = kernels.RecoveryCache()
-    s21 = _estimate(
+    s21 = estimate(
         step, result, gfem.QuantityEstimator(s=("p2", "p1")), threads=None, cache=cache
     )
-    s11 = _estimate(
+    s11 = estimate(
         step, result, gfem.QuantityEstimator(s=("p1", "p1")), threads=None, cache=cache
     )
     assert len(recoveries) == 1
