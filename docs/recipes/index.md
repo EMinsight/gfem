@@ -30,6 +30,7 @@ orphan: true
 - {doc}`dispersive-materials`
 - {doc}`periodic-cell`
 - {doc}`floquet-ports`
+- {doc}`perfectly-matched-layer`
 - {doc}`heater-temperature`
 - {doc}`thermo-optic-phase`
 - {doc}`thermal-step-response`

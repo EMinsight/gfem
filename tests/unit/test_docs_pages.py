@@ -219,6 +219,13 @@ USER_TERMS = (
     "Settled trace",
     "Per-length quantity",
     "Tree-cotree gauge",
+    "Perfectly matched layer",
+    "Target reflection",
+    "Reference frequency",
+    "Interior box",
+    "Physical region",
+    "PML mode",
+    "Clearance",
 )
 
 

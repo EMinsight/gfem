@@ -99,7 +99,8 @@ Absorbing boundary
   A boundary condition on a truncating surface that approximates an open,
   non-reflecting exterior, of first or second order. It reflects a wave that
   meets it obliquely; on a periodic cell a driven solve warns
-  (`gfem.ObliqueAbsorberWarning`) when that reflection reaches 1 %.
+  (`gfem.ObliqueAbsorberWarning`) when that reflection reaches 1 %. A
+  {term}`perfectly matched layer` absorbs at any angle.
 
 Transverse-anisotropic
   An {term}`anisotropic material` with one of its {term}`principal axes`
@@ -116,7 +117,46 @@ Absorbing admittance
 
 Air box
   The truncated exterior region between the device and the
-  {term}`absorbing boundary`.
+  {term}`absorbing boundary` or the {term}`perfectly matched layer`.
+
+Perfectly matched layer
+  A meshed shell of volume regions around the {term}`air box` that absorbs
+  outgoing waves at any angle (`gfem.PML`); short form PML. Each layer region
+  keeps the material it continues, which solves that ignore the layer
+  (electrostatic, DC conduction, thermal) see. The fields inside it are not
+  physical.
+
+Target reflection
+  The reflection $R_0$ a {term}`perfectly matched layer` is designed for, at
+  normal incidence and at its {term}`reference frequency`;
+  `PML.target_reflection`, $10^{-6}$ by default.
+
+Reference frequency
+  The frequency at which a {term}`perfectly matched layer` meets its
+  {term}`target reflection`: `PML.reference_frequency` when given, else the
+  lowest frequency of the solve or the eigenmode target. Above it the layer
+  reflects less.
+
+Interior box
+  The bounding box of the solve domain outside the
+  {term}`perfectly matched layer`. The layer stretches beyond its faces, and
+  each side's thickness is measured from them.
+
+Physical region
+  A volume {term}`region` of the solve domain outside the
+  {term}`perfectly matched layer`. Energies, participations, the mode
+  normalization and a port mode's power count physical regions only.
+
+PML mode
+  A mode that lives in a {term}`perfectly matched layer` rather than in the
+  device, and moves when the layer changes. Eigenmode and port mode solves
+  drop it.
+
+Clearance
+  The distance from a guide's core to a side {term}`perfectly matched layer`.
+  It sets how much the layer perturbs the guided mode: about
+  $10^{-2} e^{-2\gamma_t c}$ in $n_\text{eff}$, with $\gamma_t$ the mode's
+  transverse decay rate and $c$ the clearance.
 
 Slab model
   A {term}`model` one element thick between PEC plates, whose field is normal to

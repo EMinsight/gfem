@@ -127,7 +127,9 @@ The other boundaries follow the same pattern, a class and a surface name:
 - {py:obj}`gfem.Impedance` is a sheet given by its resistance, inductance and
   capacitance per square: a resistive film, a kinetic inductance.
 - {py:obj}`gfem.Absorbing` lets waves leave through a surface of the mesh that
-  stands for open space.
+  stands for open space. For waves that meet it obliquely, mesh a
+  {term}`perfectly matched layer` around the air box instead
+  ({doc}`perfectly-matched-layer`).
 - {py:obj}`gfem.Periodic` pairs two opposite surfaces of a repeating cell
   ({doc}`periodic-cell`).
 

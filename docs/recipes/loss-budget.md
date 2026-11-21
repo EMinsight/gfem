@@ -31,7 +31,9 @@ t1 = 1 / (jnp.real(modes.omega) * inverse_q)  # s, per mode
 ```
 
 - `1 / modes.q` is the loss in the model: materials with a loss, `Conductor`
-  walls, resistive sheets and ports, `Absorbing` boundaries. For a model with
+  walls, resistive sheets and ports, `Absorbing` boundaries, and the
+  radiation a {term}`perfectly matched layer` absorbs
+  ({doc}`perfectly-matched-layer`). For a model with
   none it is 0: leave it out of a differentiated objective, since `|Im omega|`
   has a kink at zero loss.
 - Each {py:obj}`gfem.interface_participation` adds one unmeshed layer: metal

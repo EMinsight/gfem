@@ -621,7 +621,8 @@ class PortModeField:
         """The field at points on the port, ``(n_freq, n_points, 3)`` complex.
 
         Points off the cross-section's elements (inside metal holes or outside
-        the port) give zero.
+        the port) give zero. Points inside a perfectly matched layer give the
+        stretched field, not a physical one.
 
         Args:
             points: ``(n_points, 3)`` (or one ``(3,)``) global coordinates, m,
@@ -680,7 +681,9 @@ class PortModeResult:
             without a voltage path. Real for a lossless line; a wave port's
             reference impedance is its modulus (`gfem.conventions`). For
             the power-current and voltage-current definitions, see
-            `gfem.characteristic_impedance`.
+            `gfem.characteristic_impedance`. On a section cut by a perfectly
+            matched layer, :math:`P` counts the section outside the layer, so
+            :math:`Z_{PV}` is low by the mode's share inside it.
         residual: Backward error of the mode at each frequency,
             :math:`|A x - \lambda B x| / (|A x| + |\lambda| |B x|)` on the 2D port mode
             problem. It exceeds ``SolverOptions.port_mode_tolerance`` only at
@@ -689,8 +692,10 @@ class PortModeResult:
         solved: ``(n_freq,)`` bool, True where the port's cross-section was
             solved exactly (shared by the wave ports of a shared port
             surface); elsewhere it comes from the reduced port mode model.
-        e_field: The mode's electric field, normalized to 1 W; ``None`` on a
-            driven result computed inside `jax.jit`, `jax.grad` or `jax.vmap`.
+        e_field: The mode's electric field, normalized to 1 W through the
+            section outside any perfectly matched layer (S does not depend
+            on it); ``None`` on a driven result computed inside `jax.jit`,
+            `jax.grad` or `jax.vmap`.
         pml: The model's perfectly matched layer (`gfem.PML`) the mode was
             solved with, or ``None``. In its regions the field is the
             stretched one, not a physical field.

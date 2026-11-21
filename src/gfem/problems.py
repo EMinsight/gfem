@@ -1004,6 +1004,13 @@ class Eigenmode:
     losses must be perturbations (Q above about 5); for a strongly radiating
     structure, find the resonance from a `gfem.Driven` sweep.
 
+    With a perfectly matched layer (`gfem.PML`) the radiation it absorbs
+    need not be a perturbation, unlike an `Absorbing` boundary's: Q is the
+    total Q, radiation included. The layer's reference frequency is
+    ``target`` unless pinned, the modes that live in the layer are dropped,
+    and the 1 J normalization and the participations count the regions
+    outside the layer.
+
     Lumped ports are terminations here: nothing is excited. A port with a
     resistance gets a coupling Q, a port with an inductance a participation
     ratio (see `gfem.EigenmodeResult`).

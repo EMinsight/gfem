@@ -573,6 +573,11 @@ def characteristic_impedance(
     any path, after the solve. A constant of the port mode solve: port modes
     are not differentiable.
 
+    On a cross-section cut by a perfectly matched layer (`gfem.PML`),
+    :math:`P` counts the section outside the layer only, so the
+    impedances are low by the mode's share inside the layer, and a path
+    must stay outside it.
+
     The current is the line integral of the in-plane magnetic field, so it
     is the current through a closed path that encircles a conductor, or
     through an open path whose ends lie on magnetic walls (natural edges of
@@ -728,6 +733,11 @@ def power_flow(
     A face term belongs to ``side`` only when every solve-domain element
     beside it does, so a sheet lying on the surface counts as outside.
     A side may cross or touch a `gfem.Periodic` pair.
+
+    With a perfectly matched layer (`gfem.PML`), ``side`` set to the layer
+    regions gives the power they absorb, with the stretch the field was
+    solved with; a side whose surface cuts through the layer has no
+    physical meaning, since the field there is the stretched one.
 
     A field of an adaptive sweep (`gfem.ReducedFields`) is exact at the
     solved frequencies and accurate to the sweep's tolerance in between.
@@ -895,7 +905,9 @@ def region_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
 
     Regions are named, never selected by a predicate: mesh refinement
     (`gfem.refine_mesh`) keeps region tags, so a named mean is the same
-    quantity on every refined mesh. It is the measurement to use in place
+    quantity on every refined mesh. Inside a perfectly matched layer
+    (`gfem.PML`) the field is the stretched one, not a physical field, and
+    so is its mean. It is the measurement to use in place
     of a point value (`gfem.Field.at`) in an objective: a mean over a
     small region has an error estimate (`gfem.QuantityEstimator`), a
     point value has none.
@@ -1039,7 +1051,9 @@ def element_mean(field: Field, region: str | Sequence[str]) -> jax.Array:
     temperature rise per element gives a per-element permittivity, for
     example. It is `region_mean` without the sum: linear in the field's
     coefficients, so differentiable like it, and the volume-weighted
-    average of the element means is the region mean.
+    average of the element means is the region mean. Inside a perfectly
+    matched layer (`gfem.PML`) the means are of the stretched field, not a
+    physical one.
 
     Example:
         A permittivity that follows the temperature rise in the core::

@@ -113,6 +113,10 @@ s = gfem.solve(model, problem).s
   anisotropic material, or a material field with `axes`, touches the surface.
   Use order 1, or put an isotropic buffer layer between the anisotropic
   material and the boundary.
+- **Perfectly matched layers.** An anisotropic material whose principal
+  axes are $x$, $y$ and $z$ may continue into a
+  {term}`perfectly matched layer`; one with tilted axes may not
+  ({doc}`perfectly-matched-layer`).
 
 ## Loss per principal axis
 

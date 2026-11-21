@@ -29,6 +29,9 @@ v0.1.
   and {py:obj}`gfem.Periodic` (a periodic pair of surfaces, with plain
   periodicity or a Bloch wave vector set on the problem;
   {doc}`recipes/periodic-cell`).
+- **Open space**: {py:obj}`gfem.PML` on meshed layer regions around the air
+  box: absorbs outgoing waves at any angle, for driven and eigenmode solves,
+  wave ports and periodic cells ({doc}`recipes/perfectly-matched-layer`).
 - **Materials and designs**: {py:obj}`gfem.Material` per region (isotropic, or
   anisotropic: real symmetric tensors on shared principal axes,
   {doc}`recipes/anisotropic-materials`), {py:obj}`gfem.MaterialField` per
@@ -77,7 +80,9 @@ v0.1.
   memory. Install the `mkl` extra for its fastest factorization.
 - **`linear_solver="bddc_gmres"`**: pick it for a large model, or when the
   direct factorization does not fit in memory; `"auto"` picks it for such a
-  driven problem and for electrostatic problems.
+  driven problem and for electrostatic problems. A model with a perfectly
+  matched layer refuses it, and `"auto"` then picks `"direct"` whatever the
+  memory (MUMPS across MPI ranks).
 - **`linear_solver="petsc"`** and **`eigen_solver="slepc"`**: pick them for
   MUMPS and its options, your own PETSc Krylov method and preconditioner, or
   SLEPc's own controls. With no options, `"petsc"` gives the same results as
@@ -164,7 +169,8 @@ returning a wrong value:
   Electrostatic problems refuse any periodic pair, and a wave port may not
   touch one. An absorbing boundary reflects waves that meet it obliquely,
   and a driven solve warns ({py:obj}`gfem.ObliqueAbsorberWarning`); a
-  Floquet port absorbs them. Details: {doc}`recipes/periodic-cell`.
+  Floquet port absorbs them, or a perfectly matched layer below the cell.
+  Details: {doc}`recipes/periodic-cell`.
 - **Floquet ports**: the half-space behind the face is homogeneous,
   isotropic and lossless, and the face needs two periodic pairs. Only the
   uniform driven sweep on the direct or BDDC + GMRES solver; every other
@@ -173,6 +179,16 @@ returning a wrong value:
   nodes of a Floquet surface. In the gradient matrix, a model with Floquet ports takes the
   rows of the periodic driven problems (plain and Bloch), with S read from
   its Floquet ports. Details: {doc}`recipes/floquet-ports`.
+- **Perfectly matched layers**: no error estimates or mesh refinement for
+  driven and eigenmode problems (electrostatic refinement runs). Box shells
+  around the interior box only, one thickness per side. Each layer region's
+  background is a constant `Material`, isotropic or on axis-aligned
+  principal axes. No `Absorbing` face, `Impedance` or `Conductor` sheet in or
+  on the layer. Lumped ports and Floquet surfaces keep clear of it, and a
+  wave port may cut a side layer but not one stretched along its normal. No
+  stretch along a periodic axis. No `"bddc_gmres"`. The fields inside the
+  layer are not physical; energies, participations and port power count the
+  physical regions. Details: {doc}`recipes/perfectly-matched-layer`.
 - **Unrequested port modes**: a propagating mode that no wave port on its
   surface requests is partly reflected at the port, not converted; request
   it to see where its power goes ({py:obj}`gfem.SkippedPortModeWarning`
