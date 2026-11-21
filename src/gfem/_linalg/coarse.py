@@ -656,8 +656,6 @@ class CoarseMumps(ngs.BaseMatrix):
             total = self._numbering.total
             kind = self._kind = stack_kind(comm)
             nodes = _mpi.node_ids(comm)
-            if kind == STOCK:
-                say_stock(_scotch_ranks(total, comm.size), capped_ranks(total, nodes))
             self._ordering, self._factor = rule(
                 total,
                 comm.size,
@@ -666,11 +664,14 @@ class CoarseMumps(ngs.BaseMatrix):
                 kind=kind,
                 nodes=nodes,
             )
+            ranks = math.ceil(comm.size / self._factor)
+            if kind == STOCK:
+                say_stock(ranks, capped_ranks(total, nodes))
             _LOGGER.info(
                 "BDDC's coarse problem: %s on %d of %d ranks, %d DOFs, on a %s "
                 "PETSc stack",
                 self._ordering,
-                math.ceil(comm.size / self._factor),
+                ranks,
                 comm.size,
                 total,
                 kind,
