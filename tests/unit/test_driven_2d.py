@@ -129,6 +129,25 @@ def test_auto_sizes_a_2d_solve_by_its_h1_unknowns(mesh, caplog):
     assert record.unknowns == ngs.H1(to_ngsolve(mesh).mesh, order=2).ndof
 
 
+@pytest.mark.petsc
+@pytest.mark.parametrize(
+    ("polarization", "boundaries"), [("Ez", ()), ("Hz", (gfem.PEC("side"),))]
+)
+def test_petsc_gives_the_direct_solve(mesh, polarization, boundaries):
+    # PETSc's default is an exact MUMPS factorization: the same S
+    model = line(mesh, design=gfem.Material(eps_r=4.0), boundaries=boundaries)
+    problem = gfem.Driven((4e9, 6e9), polarization=polarization)
+    direct = gfem.solve(
+        model, problem, options=gfem.SolverOptions(linear_solver="direct")
+    )
+    petsc = gfem.solve(
+        model, problem, options=gfem.SolverOptions(linear_solver="petsc")
+    )
+    np.testing.assert_allclose(
+        np.asarray(petsc.s.values), np.asarray(direct.s.values), rtol=0, atol=1e-10
+    )
+
+
 # --- factorization reuse across designs ----------------------------------------------
 
 

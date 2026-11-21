@@ -159,11 +159,6 @@ SOLVE_ITEMS = {
         {"options": gfem.SolverOptions(linear_solver="bddc_gmres")},
         r"'bddc_gmres'.*linear_solver=\"direct\"",
     ),
-    "iterative": (
-        lambda: gfem.Driven(F),
-        {"options": gfem.SolverOptions(linear_solver="petsc")},
-        r"'petsc'.*linear_solver=\"direct\"",
-    ),
     "GPU": (
         lambda: gfem.Driven(F),
         {"options": gfem.SolverOptions(device="cuda")},

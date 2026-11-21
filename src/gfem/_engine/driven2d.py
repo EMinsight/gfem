@@ -110,7 +110,8 @@ class Driven2DRule(DrivenRule):
     """Host-side forward of a `Driven` problem on a 2D `Model`.
 
     The uniform sweep of `DrivenRule` on the scalar operator of the
-    problem's polarization (`driven2d_operator`), serial and direct.
+    problem's polarization (`driven2d_operator`), without MPI ranks; its
+    frequencies may be split over frequency workers.
     """
 
     def __init__(
@@ -336,11 +337,10 @@ _HZ_FREQUENCY_DEPENDENT = (
 def _resolve(
     model: Model, problem: Driven, options: SolverOptions
 ) -> ResolvedLinearSolver:
-    """The linear solver: ``"direct"``, or ``"auto"`` sized by the H1 unknowns.
+    """The linear solver, with ``"auto"`` sized by the H1 unknowns.
 
-    Only the direct solver runs on a 2D mesh (the solve entry refuses the
-    others), so ``"auto"`` resolves to it, and states its estimate from the
-    H1 unknown count.
+    The solve entry refuses BDDC on a 2D mesh, so ``"auto"`` resolves to the
+    direct solver, and states its estimate from the H1 unknown count.
     """
     inputs: dict[str, Any] = {}
     if options.linear_solver == "auto" and options.device == "cpu":

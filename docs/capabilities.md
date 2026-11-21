@@ -193,7 +193,7 @@ returning a wrong value:
 - **2D models**: normal incidence and one polarization only. Eigenmode,
   electrostatic and thermal problems, lumped and Floquet ports, periodic
   pairs, conductor and impedance surfaces, sheet designs, anisotropic
-  materials, PMLs, the adaptive sweep, iterative and GPU solvers, several
+  materials, PMLs, the adaptive sweep, the BDDC and GPU solvers, several
   processes, measurements other than `Field.at`, mesh refinement and node
   gradients raise `NotImplementedError` and name the alternative, most often
   the {term}`slab model`. In Hz a design blend takes constant permittivities
