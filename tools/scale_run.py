@@ -187,7 +187,7 @@ def _instrument_phases(phases: Phases, facts: Facts, comm: Any) -> None:
     phases.wrap(gfem.Mesh, "from_gmsh", "mesh_read")
     phases.wrap(mesh, "_distributed", "partition")
     phases.wrap(driven, "driven_operator", "spaces")
-    phases.wrap(driven.DrivenRule, "_ports", "ports")
+    phases.wrap(driven.DrivenRule, "system", "ports")
     phases.wrap(driven.DrivenRule, "forward", "forward")
     phases.wrap(driven.DrivenRule, "backward", "backward")
     phases.wrap(system_operator, "refactorize_or_prepare", "prepare_or_refactor")

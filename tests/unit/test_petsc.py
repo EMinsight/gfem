@@ -206,7 +206,7 @@ def _spy(monkeypatch, owner, name, calls):
 def test_the_solver_is_checked_before_any_assembly(plate, line, problem, monkeypatch):
     calls = []
     _spy(monkeypatch, _linalg, "prepare", calls)
-    _spy(monkeypatch, driven.DrivenRule, "_ports", calls)
+    _spy(monkeypatch, driven.DrivenRule, "system", calls)
     model, p = _case(problem, plate, line)
     options = gfem.SolverOptions(order=1, linear_solver="petsc")
     with pytest.raises(gfem.SolverUnavailableError):
