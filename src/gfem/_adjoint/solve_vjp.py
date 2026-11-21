@@ -501,8 +501,8 @@ def _local_cotangents(
     if not _mpi.agree_all(comm, flag=entry is not None):
         ENTRIES.discard(int(key))
         # a rerun keeps the least it can
-        rerun = dataclasses.replace(request, wanted=wanted, rerun=True)
-        _, entry = rule.forward(model, keep=True, request=rerun)
+        again = dataclasses.replace(request, wanted=wanted, rerun=True)
+        _, entry = rule.forward(model, keep=True, request=again)
         fresh = entry
     else:
         if entry is not None:  # freed when the next differentiated forward starts

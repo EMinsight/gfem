@@ -35,11 +35,12 @@ __all__ = ["SolveRequest"]
 class SolveRequest:
     """The per-call inputs of one rule forward, and the duals it solved.
 
-    A rule takes ``request=None`` and builds a fresh one: a shared default
-    instance would share its ``adjoints``.
+    A rule takes ``request=None`` and builds a fresh one: a module-level
+    default instance would share its ``adjoints`` across unrelated calls.
+    Requests derived with `dataclasses.replace` share it on purpose.
 
     Attributes:
-        adjoint_loads: The dual loads the forward also solves on its own
+        adjoint_loads: The adjoint loads the forward also solves on its own
             factorization: a driven sweep's per-frequency `AdjointLoads`, an
             electrostatic objective's `ElectrostaticLoads`, an eigenmode
             search's participation duals (`DualRequest`); ``None`` for none.

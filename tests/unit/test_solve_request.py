@@ -14,7 +14,7 @@ def test_two_requests_never_share_adjoints():
 
 def test_replace_keeps_the_reply_dict():
     parent = SolveRequest()
-    child = dataclasses.replace(parent, keeps_partial=True, rerun=True)
-    assert child.adjoints is parent.adjoints
-    child.adjoints["key"] = 1.0
+    derived = dataclasses.replace(parent, keeps_partial=True, rerun=True)
+    assert derived.adjoints is parent.adjoints
+    derived.adjoints["key"] = 1.0
     assert parent.adjoints == {"key": 1.0}
