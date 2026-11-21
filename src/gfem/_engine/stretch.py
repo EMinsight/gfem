@@ -19,7 +19,11 @@ __all__ = ["pml_tensor", "stretch_factors", "stretch_tensor"]
 
 
 def stretch_factors(
-    layers: Layers, k_ref: float, target_reflection: float, scale: float = 1.0
+    layers: Layers,
+    k_ref: float,
+    target_reflection: float,
+    scale: float = 1.0,
+    coords: tuple[Any, Any, Any] | None = None,
 ) -> tuple[Any, Any, Any]:
     r"""The stretch factors :math:`(s_x, s_y, s_z)` as coefficient functions.
 
@@ -33,8 +37,11 @@ def stretch_factors(
         target_reflection: :math:`R_0`.
         scale: Metres per unit of the coefficient functions' coordinates
             (the mesh file unit for gfem's discretizations).
+        coords: The global coordinates as coefficient functions, in units
+            of ``scale``; ``(x, y, z)`` by default (a 3D mesh). A port
+            section passes its plane's map to global coordinates.
     """
-    coord = (x, y, z)
+    coord = (x, y, z) if coords is None else coords
     sigma = [CF(0.0), CF(0.0), CF(0.0)]
     for side in layers.sides:
         smax = sigma_max(target_reflection, k_ref, side.thickness)

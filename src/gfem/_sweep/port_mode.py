@@ -7,7 +7,10 @@ model instead of one exact solve per frequency:
    shift-invert at ``sigma = -1.1 (n_max k0)^2``. At the lowest frequency
    the requested mode is picked in rank order: converged, propagating
    Ritz pairs below the largest bulk wavenumber (the formulation's spurious
-   modes sit above it), by decreasing ``Re 1 / (lam - sigma)``.
+   modes sit above it), by decreasing ``Re 1 / (lam - sigma)``. On a
+   section that cuts a perfectly matched layer, PML modes (layer energy
+   share above 1/2) are dropped too, and the request widens until enough
+   candidates remain.
 2. **Reduced solves** are Rayleigh-Ritz on the affine pencil projected onto
    a real orthonormal basis of the real and imaginary parts of every exact
    mode.
@@ -47,7 +50,7 @@ import numpy as np
 import scipy.constants
 import scipy.linalg
 
-from gfem import _mpi
+from gfem import _mpi, _pml
 from gfem._boundaries import (
     FloquetPort,
     WavePort,
@@ -59,10 +62,10 @@ from gfem._checks import is_traced
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.runtime import task_manager
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
-from gfem._port_section import PortSection, port_section
+from gfem._port_section import PLANE_RTOL, PortSection, port_section
 from gfem._sign import largest_entry
 from gfem._text import hertz, hertz_band
-from gfem.errors import PortModeError, PortModeTrackingWarning
+from gfem.errors import LayerClearanceWarning, PortModeError, PortModeTrackingWarning
 from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import PortMode
@@ -105,6 +108,11 @@ _DEGENERATE_REMEDY = (
 # conductor, an inductive sheet) slows the mode beyond the bulk wavenumber;
 # propagating candidates may then reach this multiple of it.
 _SLOW_WAVE = 2.0
+# A candidate with more of its electric energy in a perfectly matched layer
+# is a PML mode (measured: guided modes at most 0.29, layer modes at least
+# 0.986); a picked mode with more than `_CLEARANCE` warns.
+_PML_SHARE = 0.5
+_CLEARANCE = 1e-2
 # With at most this many frequencies every one is solved exactly.
 _EXACT_ONLY = 3
 # A new mode adds its part orthogonal to the basis unless that part is below
@@ -272,7 +280,9 @@ class PortModeRule:
         ports = self._ports
         modes = [self.mode] if len(ports) == 1 else [p.mode for p in ports]
         lead = lead_port(ports)
-        section = port_section(model, lead)
+        # the layer meets its target at the lowest frequency, or its pinned one
+        stretch = _pml.stretch(model, self.problem.frequency)
+        section = port_section(model, lead, stretch)
         with task_manager(self.options.threads, self.comm):
             space = PortModeSpace(section, self.options.order)
             sweeps, _ = swept_once(
@@ -526,6 +536,8 @@ class _Candidates:
     lam: np.ndarray
     vecs: np.ndarray
     residual: np.ndarray
+    #: Each candidate's layer energy share; ``None`` reads as zero (no layer).
+    share: np.ndarray | None = None
 
 
 class _Greedy:
@@ -581,6 +593,7 @@ class _Greedy:
         for k in range(len(self.modes)):
             self._check_degenerate(first, k)
         self._keep(0, first, [mode - 1 for mode in self.modes])
+        self._warn_clearance(first)
         if n <= _EXACT_ONLY:
             for j in range(1, n):
                 self._exact(j, j - 1, certain=True)
@@ -612,24 +625,55 @@ class _Greedy:
         a, b = space.pencil.at(self.k0[j])
         n = a.shape[0]
         first = max(6, 2 * mode + 4)
-        for want in (first, 4 * first):
+        # PML modes crowd the shift: widen until enough candidates survive
+        layered = space.section.layer is not None
+        wants = itertools.count() if layered else range(2)
+        for step in wants:
+            want = first * (2**step if layered else 4**step)
             lam, vecs = shift_invert_eigs(a, b, self.shift[j], min(want, n - 2))
             beta = np.sqrt(-lam + 0j)
             res = np.array(
                 [backward_error(a, b, lam[i], vecs[:, i]) for i in range(len(lam))]
             )
+            share = space.layer_share(vecs, lam)
             k_max = self.k_max[j]
             ok = (
                 _propagates(beta, k_max)
                 & (beta.real <= k_max * (1 + 1e-6))
                 & (res < _UNCONVERGED)
+                & (share <= _PML_SHARE)
             )
             # Order: largest Re of the shift-inverted eigenvalue
             rank = (1 / (lam - self.shift[j])).real
             ranked = np.flatnonzero(ok)[np.argsort(-rank[ok], kind="stable")]
             if len(ranked) >= mode or want >= n - 2:
                 break
-        return _Candidates(lam=lam[ranked], vecs=vecs[:, ranked], residual=res[ranked])
+        return _Candidates(
+            lam=lam[ranked],
+            vecs=vecs[:, ranked],
+            residual=res[ranked],
+            share=share[ranked],
+        )
+
+    def _warn_clearance(self, first: _Candidates) -> None:
+        """Warn for each picked mode with a layer energy share above `_CLEARANCE`."""
+        if first.share is None:
+            return
+        for k, mode in enumerate(self.modes):
+            share = float(first.share[mode - 1])
+            if share <= _CLEARANCE:
+                continue
+            warnings.warn(
+                f"{self._who(k)}: mode {mode} holds {share:.1%} of its electric "
+                f"energy in the perfectly matched layer at {hertz(self.f[0])}, so "
+                "the layer perturbs the mode itself (its propagation constant "
+                "and power): the clearance between the guide and the layer is "
+                "too small. Move the layer's inner face away from the guide; "
+                "the perturbation falls about as exp(-2 gamma_t c) with the "
+                "clearance c and the mode's transverse decay rate gamma_t.",
+                LayerClearanceWarning,
+                stacklevel=10,
+            )
 
     def _keep(self, j: int, cand: _Candidates, picks: list[int]) -> None:
         """Make candidate ``picks[k]`` of the exact solve at ``j`` mode ``k`` there."""
@@ -1146,12 +1190,20 @@ def _voltage_functional(
 
 
 def _voltage_rule(
-    section: PortSection, path: np.ndarray, name: str, what: str = "voltage_path"
+    section: PortSection,
+    path: np.ndarray,
+    name: str,
+    what: str = "voltage_path",
+    subject: str = "WavePort",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Plane points and weights (local direction x length, m) of a path.
 
-    ``name`` is the wave port the path belongs to and ``what`` the path's
-    name, for messages.
+    ``name`` is the wave port the path belongs to, ``what`` the path's name
+    and ``subject`` what reads it, for messages.
+
+    Raises:
+        ValueError: The path leaves the port plane or passes through a
+            perfectly matched layer.
     """
     path = np.asarray(path, float)
     _local, dist = section.to_local(path)
@@ -1168,7 +1220,37 @@ def _voltage_rule(
             s = (k + (x + 1) / 2) / _PIECES
             pts.append(section.to_local(p + np.outer(s, q - p))[0])
             wts.append(np.outer(w / (2 * _PIECES), d_local))
-    return np.concatenate(pts), np.concatenate(wts)
+    pts = np.concatenate(pts)
+    _refuse_layer_path(section, pts, name, what, subject)
+    return pts, np.concatenate(wts)
+
+
+def _refuse_layer_path(
+    section: PortSection, local: np.ndarray, name: str, what: str, subject: str
+) -> None:
+    """Raise if a path's points lie beyond a face of the layer's interior box.
+
+    The field there is the stretched one, so a line integral along real
+    coordinates is not a voltage or a current.
+    """
+    stretch = section.stretch
+    if stretch is None:
+        return
+    points = section.to_global(local)
+    tol = PLANE_RTOL * section.diameter * section.scale
+    regions = [
+        r
+        for side in stretch.layers.sides
+        if (side.sign * (points[:, side.axis] - side.face) > tol).any()
+        for r in side.regions
+    ]
+    if regions:
+        names = ", ".join(map(repr, dict.fromkeys(regions)))
+        raise ValueError(
+            f"{subject}: {what} on port {name!r} passes through the perfectly "
+            f"matched layer ({names}), where the field is not physical. Keep the "
+            "path in the physical part of the port face."
+        )
 
 
 def path_voltage(
@@ -1177,12 +1259,15 @@ def path_voltage(
     coords: np.ndarray,
     path: np.ndarray,
     name: str,
+    *,
+    subject: str = "WavePort",
 ) -> np.ndarray:
     """``V = int E . dl`` along ``path`` (m) of each field ``basis @ coords[i]``.
 
-    ``name`` is the wave port the field belongs to, for messages.
+    ``name`` is the wave port the field belongs to and ``subject`` what
+    reads it, for messages.
     """
-    rule = _voltage_rule(space.section, path, name)
+    rule = _voltage_rule(space.section, path, name, subject=subject)
     return coords @ _voltage_functional(space, basis, rule)
 
 
@@ -1195,15 +1280,16 @@ def path_current(
     frequency: np.ndarray,
     path: np.ndarray,
     name: str,
+    subject: str = "WavePort",
 ) -> np.ndarray:
     r"""``I = int H . dl`` along ``path`` (m) of each field ``basis @ coords[i]``.
 
     :math:`H_t = \frac{i}{\omega \mu_0} \nu (\nabla E_n + \gamma E_t)
     \times n` (`PortModeSpace.magnetic_parts`), at the propagation constant
     ``gamma[i]`` (1/m) and ``frequency[i]`` (Hz). ``name`` is the wave port
-    the field belongs to, for messages.
+    the field belongs to and ``subject`` what reads it, for messages.
     """
-    rule = _voltage_rule(space.section, path, name, "current_path")
+    rule = _voltage_rule(space.section, path, name, "current_path", subject)
     pts, wts = rule
     hn, ht = space.magnetic_parts(basis.T, pts)
     ln = np.einsum("kpc,pc->k", hn, wts[:, :2])

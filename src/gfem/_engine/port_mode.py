@@ -42,6 +42,7 @@ import scipy.sparse as sp
 from gfem._boundaries import Conductor
 from gfem._engine import quadrature
 from gfem._engine.dispersion import susceptibility
+from gfem._engine.stretch import stretch_factors
 from gfem._engine.terms import surface_impedance
 from gfem._linalg.base import free_mask
 from gfem._port_section import PortSection
@@ -261,15 +262,56 @@ class PortModeSpace:
         return self._matrix([(et * vt + en * vn) * self._dx()]).real.tocsr()
 
     @functools.cached_property
+    def _energy_forms(self) -> tuple[sp.csr_matrix, ...]:
+        """Background-weighted electric energy matrices, on free DOFs.
+
+        ``(T_layer, T, N_layer, N)``: ``int Re(eps_tt) e_t . v_t`` and ``int
+        Re(eps_nn) e_n v_n``, over the layer triangles and over all.
+        """
+        (et, en), (vt, vn) = self.space.TnT()
+        c, dx = self._coef, self._dx()
+        layer = c["layer"]
+        t, n = c["eps_bg_tt"] * et, c["eps_bg_nn"] * en
+        return (
+            self._matrix([layer * t * vt * dx]),
+            self._matrix([t * vt * dx]),
+            self._matrix([layer * n * vn * dx]),
+            self._matrix([n * vn * dx]),
+        )
+
+    def layer_share(self, vecs: np.ndarray, lam: np.ndarray) -> np.ndarray:
+        r"""The layer energy share of each pencil eigenvector.
+
+        :math:`\int_\text{layer} \operatorname{Re}\varepsilon\,|E|^2 /
+        \int \operatorname{Re}\varepsilon\,|E|^2` with the background
+        permittivity, :math:`E_t = e_t / \gamma` and :math:`\gamma^2 =
+        \lambda`. Zero without a layer.
+
+        Args:
+            vecs: ``(n_free, m)`` eigenvectors ``(e_t, e_n)`` on free DOFs.
+            lam: ``(m,)`` their eigenvalues :math:`\gamma^2`.
+        """
+        vecs = np.asarray(vecs).reshape(len(self.free), -1)
+        if self.section.layer is None:
+            return np.zeros(vecs.shape[1])
+        tl, ta, nl, na = self._energy_forms
+
+        def quad(m: sp.csr_matrix) -> np.ndarray:
+            return np.einsum("ik,ik->k", vecs.conj(), m @ vecs).real
+
+        weight = 1.0 / np.abs(np.asarray(lam))
+        return (weight * quad(tl) + quad(nl)) / (weight * quad(ta) + quad(na))
+
+    @functools.cached_property
     def power_forms(self) -> tuple[sp.csr_matrix, sp.csr_matrix]:
         """The matrices of the power integral, on free DOFs.
 
         ``int E_t . conj(nu_tt (grad E_n + gamma E_t)) = c^T G conj(c) +
         conj(gamma) c^T T conj(c)``; rows belong to the unconjugated factor
-        (see `power`).
+        (see `power`). Over the physical triangles only, as `power`.
         """
         (et, en), (vt, _vn) = self.space.TnT()
-        nu = ngs.Conj(self._coef["nu_tt"])
+        nu = self._coef["physical"] * ngs.Conj(self._coef["nu_tt"])
         g = self._matrix([(nu * ngs.grad(en)) * vt * self._dx()])
         t = self._matrix([(nu * et) * vt * self._dx()])
         return g, t
@@ -410,6 +452,10 @@ class PortModeSpace:
     def power(self, coeffs: np.ndarray, gamma: complex, omega: float) -> complex:
         """Complex power ``1/2 int (E x H*) . n dA`` through the port, W.
 
+        Over the triangles outside a perfectly matched layer: the field in
+        the layer is not physical, so the 1 W of a mode does not depend on
+        the layer's thickness or target reflection.
+
         Args:
             coeffs: Full coefficient vector of ``(E_t, E_n)`` (V/m).
             gamma: Propagation constant per local unit.
@@ -418,7 +464,7 @@ class PortModeSpace:
         et, en = self._gridfunction(coeffs).components
         a = ngs.grad(en) + gamma * et
         mu0 = scipy.constants.mu_0
-        cf = et * ngs.Conj(self._coef["nu_tt"] * a)
+        cf = self._coef["physical"] * (et * ngs.Conj(self._coef["nu_tt"] * a))
         value = ngs.Integrate(cf, self.mesh, order=quadrature.degree(self.order))
         return 0.5 * self.section.scale * 1j / (omega * mu0) * complex(value)
 
@@ -561,7 +607,7 @@ def _coefficients(mesh: ngs.Mesh, s: PortSection) -> dict[str, ngs.CoefficientFu
         )
         for k in (0, 1)
     )
-    return {
+    out = {
         "eps_tt": matrix(s.eps_tt),
         "eps_nn": _p0(mesh, s.eps_nn),
         "nu_tt": matrix(s.nu_tt),
@@ -570,4 +616,55 @@ def _coefficients(mesh: ngs.Mesh, s: PortSection) -> dict[str, ngs.CoefficientFu
         "sigma_nn": _p0(mesh, s.sigma_nn.astype(complex)),
         "Y_tau": y_tau,
         "Y_n": y_n,
+        "physical": ngs.CF(1.0),
     }
+    if s.stretch is None or s.layer is None:
+        return out
+    layer = s.layer.astype(float)
+    out["physical"] = _p0(mesh, 1.0 - layer)
+    out["layer"] = _p0(mesh, layer)
+    out["eps_bg_tt"] = matrix(s.eps_tt.real.astype(complex))
+    out["eps_bg_nn"] = _p0(mesh, s.eps_nn.real.astype(complex))
+    lam_tt, lam_nn = _section_stretch(s)
+    det = lam_tt[0, 0] * lam_tt[1, 1] - lam_tt[0, 1] * lam_tt[1, 0]
+    for name in ("eps_tt", "sigma_tt"):
+        out[name] = out[name] * lam_tt
+    for name in ("eps_nn", "sigma_nn"):
+        out[name] = out[name] * lam_nn
+    # n x H of the stretched medium: R^T (mu_tt Lambda_tt)^-1 R, with R a = a
+    # x n, is (R^T Lambda_tt^-1 R) nu_tt = (Lambda_tt^T / det Lambda_tt) nu_tt
+    out["nu_tt"] = ((1.0 / det) * lam_tt.trans) * out["nu_tt"]
+    out["nu_nn"] = out["nu_nn"] / lam_nn
+    return out
+
+
+def _section_stretch(s: PortSection) -> tuple[ngs.CoefficientFunction, ...]:
+    r"""The PML tensor in the port frame: :math:`\Lambda_{tt}` and :math:`\Lambda_{nn}`.
+
+    :math:`F \Lambda F^\mathsf{T}` with :math:`F` the frame's rows, the 3D
+    tensor evaluated at the global position of each plane point. A port
+    normal across every stretch axis it meets (checked when the model is
+    built) leaves no tangential-normal block.
+    """
+    stretch, f = s.stretch, s.frame
+    assert stretch is not None  # noqa: S101 - callers check
+    glob = tuple(s.origin[k] + ngs.x * f[0, k] + ngs.y * f[1, k] for k in range(3))
+    sx, sy, sz = stretch_factors(
+        stretch.layers,
+        stretch.k_ref,
+        stretch.target_reflection,
+        s.scale,
+        coords=glob,
+    )
+    diag = (sy * sz / sx, sx * sz / sy, sx * sy / sz)
+
+    def entry(a: int, b: int) -> ngs.CoefficientFunction:
+        terms = [
+            float(f[a, i] * f[b, i]) * diag[i]
+            for i in range(3)
+            if abs(f[a, i] * f[b, i]) > 0
+        ]
+        return sum(terms[1:], terms[0]) if terms else ngs.CF(0.0)
+
+    tt = ngs.CF(tuple(entry(a, b) for a in (0, 1) for b in (0, 1)), dims=(2, 2))
+    return tt, entry(2, 2)

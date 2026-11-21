@@ -34,6 +34,7 @@ from gfem._materials import (
     lossy_permittivity,
     principal_tensor,
 )
+from gfem._pml import Stretch, layer_tetrahedra
 from gfem._text import hertz
 from gfem.conventions import EXTERIOR_THICKNESS_FACTOR
 from gfem.errors import PortGeometryError
@@ -95,6 +96,13 @@ class PortSection:
             them; ``None`` without laws.
         absorbing_law: ``(n,)`` the index in ``laws`` of the triangle beside
             each absorbing edge, -1 off them; ``None`` without laws.
+        stretch: The perfectly matched layer's stretch of the solve the
+            section serves (`gfem._pml.stretch`), or ``None`` without a
+            layer. The material arrays keep the background; the port mode
+            problem multiplies them by the stretch through the port frame.
+        layer: ``(n_tri,)`` whether each triangle lies on a layer
+            tetrahedron, or ``None`` when none does (then ``stretch`` is
+            ``None`` too).
     """
 
     port: WavePort
@@ -124,6 +132,8 @@ class PortSection:
     laws: tuple[tuple[str, PermittivityLaw], ...] = ()
     law_index: np.ndarray | None = None
     absorbing_law: np.ndarray | None = None
+    stretch: Stretch | None = None
+    layer: np.ndarray | None = None
 
     @property
     def diameter(self) -> float:
@@ -238,8 +248,14 @@ def _norm(tt: np.ndarray, nn: np.ndarray) -> float:
     return max(np.linalg.norm(tt, ord=2, axis=(1, 2)).max(), np.abs(nn).max())
 
 
-def port_section(model: Model, port: WavePort) -> PortSection:
+def port_section(
+    model: Model, port: WavePort, stretch: Stretch | None = None
+) -> PortSection:
     """Extract the cross-section of ``port`` from ``model``.
+
+    ``stretch`` is the layer's stretch of the solve (`gfem._pml.stretch`),
+    at its reference frequency; the section keeps it and marks its layer
+    triangles.
 
     Raises:
         PortGeometryError: The port surface is not planar.
@@ -311,6 +327,11 @@ def port_section(model: Model, port: WavePort) -> PortSection:
     )
     pec, absorbing, admittance, impedance, absorbing_law = edges
     imp_edges, imp_group, imp_terms, imp_fill = impedance
+    in_layer = layer_tetrahedra(mesh, model.pml)
+    layer = None if stretch is None or in_layer is None else in_layer[tets]
+    if layer is not None and not layer.any():
+        # a port clear of the layer: the stretch is the identity on its face
+        layer = None
     return PortSection(
         port=port,
         scale=scale,
@@ -335,6 +356,8 @@ def port_section(model: Model, port: WavePort) -> PortSection:
         laws=laws,
         law_index=law_index if laws else None,
         absorbing_law=absorbing_law if laws else None,
+        stretch=None if layer is None else stretch,
+        layer=layer,
     )
 
 
@@ -342,7 +365,9 @@ def port_section(model: Model, port: WavePort) -> PortSection:
 _PORT_PROPERTIES = ("eps_r", "mu_r", "tan_delta", "conductivity")
 
 
-def port_section_key(model: Model, port: WavePort) -> str:
+def port_section_key(
+    model: Model, port: WavePort, stretch: Stretch | None = None
+) -> str:
     """A digest of what `port_section` reads of ``model`` beyond its mesh.
 
     Two models on one discretization (mesh topology and node coordinates,
@@ -353,8 +378,10 @@ def port_section_key(model: Model, port: WavePort) -> str:
     each surface is to the section's edges), the electromagnetic material
     values (eps_r, mu_r, tan_delta, conductivity, principal axes) of the
     solve-domain tetrahedra beside the port's faces, and the sheet fill of the
-    faces sharing an edge with them. It builds no section: no plane fit and
-    no edge classification, so it costs a fraction of `port_section`.
+    faces sharing an edge with them, and a layer's ``stretch`` (its sides,
+    target reflection and reference frequency). It builds no section: no
+    plane fit and no edge classification, so it costs a fraction of
+    `port_section`.
     """
     mesh = model.mesh
     domain = model._domain  # noqa: SLF001
@@ -364,6 +391,8 @@ def port_section_key(model: Model, port: WavePort) -> str:
         digest.update(repr(parts).encode())
 
     add(mesh.length_unit, domain.excluded, port, model.ports)
+    if stretch is not None:
+        add(stretch.key)
     # a sheet field's repr is not its values: its fill enters below
     add(
         tuple(

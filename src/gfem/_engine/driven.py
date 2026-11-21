@@ -1340,6 +1340,7 @@ class DrivenRule:
                 order=self.options.order,
                 frequency=frequencies,
                 tolerance=self.options.port_mode_tolerance,
+                stretch=self.stretch,
             )
         return swept
 
@@ -1573,6 +1574,7 @@ class DrivenRule:
                     wave_vector=self.wave_vector,
                     wave_vector_frequency=self.problem.wave_vector_frequency,
                 ),
+                stretch=self.stretch,
             )
             kept = disc.ports if disc is not None else None
             if not isinstance(kept, _KeptPorts) or kept.key != key:
@@ -1585,6 +1587,7 @@ class DrivenRule:
                     tolerance=tolerance,
                     layout=op.layout or ONE_PROCESS,
                     swept=self.handed_port_modes,
+                    stretch=self.stretch,
                 )
                 floquet = floquet_couplings(
                     model, op, self.orders, frequency, grid=self.order_frequency
@@ -3146,6 +3149,8 @@ class _KeptPorts:
         frequency: tuple[float, ...],
         tolerance: float,
         floquet: _FloquetKey | None = None,
+        *,
+        stretch: Stretch | None = None,
     ) -> tuple:
         """What the couplings of ``model`` on ``op``'s discretization depend on.
 
@@ -3154,11 +3159,11 @@ class _KeptPorts:
         the output grid, the port mode tolerance, the Floquet surfaces'
         `_FloquetKey` (order table settings and half-space media), the
         ports, and per wave port surface
-        `port_section_key`:
+        `port_section_key` with the layer's ``stretch``:
         never the port section itself.
         """
         sections = tuple(
-            port_section_key(model, lead_port(group))
+            port_section_key(model, lead_port(group), stretch)
             for group in wave_port_surfaces(model.ports).values()
         )
         return (
