@@ -102,7 +102,7 @@ from gfem._eigen.ratios import (
     sheet_capacitors,
     sheet_inductors,
 )
-from gfem._eigen.reach import _ISOLATED, GapSet, _incomplete, isolated
+from gfem._eigen.reach import FIELD_TOLERANCE, ModeReach, blocker
 from gfem._eigen.refine import Refined
 from gfem._eigen.search import FoundModes, ModeSearch
 from gfem._engine import dispersion, terms
@@ -180,9 +180,6 @@ _DEFECTIVE = 1e8
 #: A mode with ``|y^T T'(k) x|`` below this times ``|y| |T'(k) x|`` is
 #: defective: the singular system of its mode-field adjoint has no solution.
 _DEFECTIVE_FIELD = 1e-8
-#: The largest ``SolverOptions.eigen_tolerance`` of a solve whose mode
-#: fields differentiate: it keeps the forward polish's Newton start close.
-_FIELD_TOLERANCE = 1e-10
 #: The outputs that are quantities of the mode fields (mode-field outputs),
 #: with their names on `EigenmodeResult` for messages.
 _MODE_FIELD = {
@@ -435,7 +432,7 @@ class EigenmodeRule:
                     stacklevel=2,
                     comm=comm,
                 )
-                outputs["cluster"] = found.labels
+                outputs["cluster"] = found.reach.labels
                 if request.adjoint_loads:
                     self._ride_duals(
                         model,
@@ -462,10 +459,7 @@ class EigenmodeRule:
                         ks,
                         x,
                         y,
-                        labels=found.labels,
-                        guard=found.guard,
-                        gaps=found.gaps,
-                        polish_failed=found.polish_failed,
+                        reach=found.reach,
                     )
             except LinearSolverConvergenceError as err:
                 raise self._inner_failure(err) from err
@@ -492,19 +486,13 @@ class EigenmodeRule:
 
         Each request takes the mode nearest its previous omega, as
         `gfem.refine_mesh` follows it; a mode out of mode-field reach
-        (`isolated`) gets none, and the estimate raises for it. ``found``
-        holds the modes' cluster labels, the guard mode, the gap set and
-        the failed polishes (`ModeSearch.find`). The duals land in ``into``
-        by ``(start, region)``.
+        (``found.reach.isolated``) gets none, and the estimate raises for it.
+        ``found`` holds the gap set and the modes' reach
+        (`ModeSearch.find`). The duals land in ``into`` by
+        ``(start, region)``.
         """
-        labels, guard = found.labels, found.guard
-        gaps, unpolished = found.gaps, found.polish_failed
-        rtol = self.options.cluster_rtol
-        guard_k = None if guard is None else guard.k
-        gap = np.array(
-            [0.0 if f else gaps.gap(z) for z, f in zip(ks, unpolished, strict=True)]
-        )
-        reach = isolated(labels, _incomplete(ks, labels, guard_k, rtol), gap, rtol)
+        gaps = found.gaps
+        reach = found.reach.isolated
         per_k = const.c / op.built.scale
         omegas = np.array(ks, dtype=complex) * per_k
         for request in loads:
@@ -605,10 +593,14 @@ class EigenmodeRule:
         or a Bloch wave vector: where mode-field gradients reach.
         """
         return (
-            self.options.device == "cpu"
-            and self.linear.kind == "direct"
-            and self.problem.wave_vector is None
-            and not self._periodic_surfaces
+            blocker(
+                self.options,
+                self.linear.kind,
+                wave_vector=self.problem.wave_vector,
+                periodic=bool(self._periodic_surfaces),
+                tolerance=False,
+            )
+            is None
         )
 
     def search(self) -> ModeSearch:
@@ -713,10 +705,7 @@ class EigenmodeRule:
         x: np.ndarray,
         y: np.ndarray | None,
         *,
-        labels: np.ndarray,
-        guard: Refined | None,
-        gaps: GapSet,
-        polish_failed: np.ndarray | None = None,
+        reach: ModeReach,
     ) -> Entry:
         """What the backward pass needs: the kept operator, the modes and their T'.
 
@@ -724,19 +713,17 @@ class EigenmodeRule:
         eigenvectors (``None``: ``x``, complex symmetric). ``gram`` is block
         diagonal by cluster: ``y_i^T T'(k_c) x_j`` for modes i, j of cluster
         c, with ``k_c`` the cluster's mean; under ranks a pairing of loads
-        and states (`DofLayout.pair`), the same on every rank. ``incomplete``
-        flags the modes of a cluster the guard mode belongs to; ``gap`` each
-        mode's relative gap to its gap set (`GapSet.gap`, ``inf`` without a
-        neighbour), 0 for a mode whose polish failed; ``polish_failed`` flags
-        those modes (`isolated` is then false for them: the backward names the
-        failure).
+        and states (`DofLayout.pair`), the same on every rank. ``reach``
+        gives ``cluster``, ``incomplete`` (the modes of a cluster the guard
+        mode belongs to), ``gap`` (each mode's relative gap to its gap set,
+        `GapSet.gap`, ``inf`` without a neighbour, 0 for a mode whose polish
+        failed) and ``polish_failed`` (those modes, never isolated: the
+        backward names the failure) (`ModeReach.fields`).
         """
         left = x if y is None else y
-        labels = np.asarray(labels)
+        labels = reach.labels
         k = np.array(ks, dtype=complex)
         gram = np.zeros((len(k), len(k)), dtype=complex)
-        rtol = self.options.cluster_rtol
-        incomplete = _incomplete(ks, labels, None if guard is None else guard.k, rtol)
         op = cast("EigenOperator", holder.operator)
         for label in np.unique(labels):
             members = np.flatnonzero(labels == label)
@@ -747,18 +734,8 @@ class EigenmodeRule:
             else:
                 # the loads T'(k_c) x paired with the states y: agreed values
                 gram[np.ix_(members, members)] = op.layout.pair(tx, left[:, members]).T
-        fields = {
-            "x": x,
-            "k": k,
-            "cluster": labels,
-            "gram": gram,
-            "incomplete": incomplete,
-            "gap": np.array([gaps.gap(z) for z in k]),
-            "polish_failed": np.zeros(len(k), dtype=bool)
-            if polish_failed is None
-            else np.asarray(polish_failed, dtype=bool),
-        }
-        fields["gap"][fields["polish_failed"]] = 0.0
+        fields = {"x": x, "k": k, "cluster": labels, "gram": gram}
+        fields.update(reach.fields())
         if y is not None:
             fields["y"] = y
         return Entry(self.physics, handle=holder, fields=fields)
@@ -1104,45 +1081,38 @@ class EigenmodeRule:
     def _solve_refusal(self) -> str | None:
         """Why no mode-field output of this solve differentiates, or ``None``."""
         options = self.options
-        reasons = (
-            (
-                self.problem.wave_vector is not None,
-                (
-                    "at a Bloch wave vector: mode-field gradients are for "
-                    "non-periodic models only"
-                ),
-            ),
-            (
-                bool(self._periodic_surfaces),
-                (
-                    "of a periodic model: mode-field gradients are for "
-                    "non-periodic models only"
-                ),
-            ),
-            (
-                options.device != "cpu",
-                (
-                    f'on device="{options.device}": its mode-field adjoint runs on '
-                    'the CPU with linear_solver="direct" only'
-                ),
-            ),
-            (
-                self.linear.kind != "direct",
-                (
-                    f'on linear_solver="{self.linear.kind}": its mode-field adjoint '
-                    'runs on linear_solver="direct" only'
-                ),
-            ),
-            (
-                options.eigen_tolerance > _FIELD_TOLERANCE,
-                (
-                    f"solved with SolverOptions.eigen_tolerance = "
-                    f"{options.eigen_tolerance:g}: mode-field gradients need "
-                    f"eigen_tolerance <= {_FIELD_TOLERANCE:g} (the default)"
-                ),
-            ),
+        why = blocker(
+            options,
+            self.linear.kind,
+            wave_vector=self.problem.wave_vector,
+            periodic=bool(self._periodic_surfaces),
         )
-        return next((why for refused, why in reasons if refused), None)
+        if why is None:
+            return None
+        texts = {
+            "wave_vector": (
+                "at a Bloch wave vector: mode-field gradients are for "
+                "non-periodic models only"
+            ),
+            "periodic": (
+                "of a periodic model: mode-field gradients are for "
+                "non-periodic models only"
+            ),
+            "device": (
+                f'on device="{options.device}": its mode-field adjoint runs on '
+                'the CPU with linear_solver="direct" only'
+            ),
+            "linear": (
+                f'on linear_solver="{self.linear.kind}": its mode-field adjoint '
+                'runs on linear_solver="direct" only'
+            ),
+            "tolerance": (
+                f"solved with SolverOptions.eigen_tolerance = "
+                f"{options.eigen_tolerance:g}: mode-field gradients need "
+                f"eigen_tolerance <= {FIELD_TOLERANCE:g} (the default)"
+            ),
+        }
+        return texts[why]
 
     @staticmethod
     def _input_refusal(
@@ -1407,21 +1377,21 @@ class EigenmodeRule:
         return pairs
 
     def _check_reach(self, entry: Entry, modes: list[int], per_k: float) -> None:
-        """Raise unless every mode of ``modes`` is isolated (`isolated`).
+        """Raise unless every mode of ``modes`` is isolated (`ModeReach.isolated`).
 
         Raises:
             DegenerateModeError: A mode's polish failed in the forward, it
                 belongs to a cluster of several modes or one cut by
-                ``n_modes``, or its relative gap is below `_ISOLATED`
+                ``n_modes``, or its relative gap is below
+                `gfem._eigen.reach.ISOLATED`
                 (``cluster_rtol`` if larger): nearly degenerate.
         """
-        fields = entry.fields
-        k, labels = fields["k"], fields["cluster"]
-        incomplete, gap = fields["incomplete"], fields["gap"]
-        failed = fields.get("polish_failed", np.zeros(len(k), dtype=bool))
+        k = entry.fields["k"]
         rtol = self.options.cluster_rtol
-        threshold = max(_ISOLATED, rtol)
-        reach = isolated(labels, incomplete, gap, rtol)
+        stored = ModeReach.from_fields(entry.fields, rtol)
+        labels, incomplete, gap = stored.labels, stored.incomplete, stored.gap
+        failed, threshold = stored.polish_failed, stored.threshold
+        reach = stored.isolated
         for j in modes:
             if reach[j]:
                 continue

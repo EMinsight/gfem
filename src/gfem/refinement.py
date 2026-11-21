@@ -1761,23 +1761,27 @@ def _estimate_objective_of_participation(
 
 def _mode_field_reach(options: SolverOptions) -> str | None:
     """Why a solve with ``options`` leaves mode-field duals out of reach."""
-    from gfem._eigen.rule import _FIELD_TOLERANCE
+    from gfem._eigen.reach import FIELD_TOLERANCE, blocker
     from gfem._linalg import ResolvedLinearSolver
 
     linear = ResolvedLinearSolver.resolve(
         options, default="direct", problem="eigenmode"
     ).kind
-    if options.device != "cpu":
-        return f'device="{options.device}": it runs on the CPU only'
-    if linear != "direct":
-        return f'linear_solver="{linear}": it runs on linear_solver="direct" only'
-    if options.eigen_tolerance > _FIELD_TOLERANCE:
-        return (
+    # refine_mesh refuses a Floquet port, a Bloch wave vector and a periodic
+    # model before any estimate, so neither of those conditions can block
+    # here: they have no text, and reaching one raises KeyError
+    why = blocker(options, linear, wave_vector=None, periodic=False)
+    if why is None:
+        return None
+    return {
+        "device": f'device="{options.device}": it runs on the CPU only',
+        "linear": f'linear_solver="{linear}": it runs on linear_solver="direct" only',
+        "tolerance": (
             f"SolverOptions.eigen_tolerance = {options.eigen_tolerance:g}: it "
-            f"needs eigen_tolerance <= {_FIELD_TOLERANCE:g} (the default), at "
+            f"needs eigen_tolerance <= {FIELD_TOLERANCE:g} (the default), at "
             "which the forward polishes the modes"
-        )
-    return None
+        ),
+    }[why]
 
 
 def _check_mode_field_reach(model: Model, reach: str | None) -> None:
@@ -1810,14 +1814,14 @@ def _check_mode_field_reach(model: Model, reach: str | None) -> None:
 
 def _check_isolated(omega: np.ndarray, mode: int, rtol: float) -> None:
     """Raise unless ``mode`` is apart from every other mode."""
-    from gfem._eigen.reach import _ISOLATED
+    from gfem._eigen.reach import threshold as isolation
 
     others = [i for i in range(len(omega)) if i != mode]
     if not others:
         return
     gaps = np.abs(omega[others] - omega[mode]) / abs(omega[mode])
     near = others[int(np.argmin(gaps))]
-    threshold = max(_ISOLATED, rtol)
+    threshold = isolation(rtol)
     if gaps.min() < threshold:
         raise DegenerateModeError(
             f"An objective of the participation of mode {mode} at "

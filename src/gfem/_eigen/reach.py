@@ -1,26 +1,89 @@
-"""Mode-field reach: which found modes are isolated.
+"""Mode-field reach: the options that leave mode fields out, the isolated modes.
 
-A found mode's mode fields differentiate, and the forward polishes it, only
-when it is isolated: alone in its cluster (`clusters`, frequencies within
-``SolverOptions.cluster_rtol``), its cluster not cut short by the guard mode
-(`_incomplete`), and its relative gap to its gap set (`GapSet`) at least
-`_ISOLATED` (``cluster_rtol`` if larger). The mode search builds the gap
-set; the eigenmode rule and mesh refinement read the answers.
+A solve's mode fields differentiate only on the CPU with the direct linear
+solver, without a Bloch wave vector or a periodic pair, and at
+``SolverOptions.eigen_tolerance`` at most `FIELD_TOLERANCE`; `blocker` names
+the first of these conditions a solve fails (the polish subset leaves the
+tolerance out). A found mode's mode fields differentiate, and the forward
+polishes it, only when it is isolated: alone in its cluster (`clusters`,
+frequencies within ``SolverOptions.cluster_rtol``), its cluster not cut short
+by the guard mode (`incomplete`), and its relative gap to its gap set
+(`GapSet`) at least `ISOLATED` (``cluster_rtol`` if larger). `ModeReach`
+holds these answers per mode. The mode search builds the gap set; the
+eigenmode rule and mesh refinement read the answers, each in its own words.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import math
+from typing import TYPE_CHECKING, Literal, Self
 
 import numpy as np
 
-__all__ = ["GapSet", "clusters", "isolated"]
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from gfem.options import SolverOptions
+
+__all__ = [
+    "FIELD_TOLERANCE",
+    "ISOLATED",
+    "Blocker",
+    "GapSet",
+    "ModeReach",
+    "blocker",
+    "clusters",
+    "incomplete",
+    "isolated",
+    "threshold",
+]
 
 #: The smallest relative gap of a mode in mode-field reach (with
 #: ``SolverOptions.cluster_rtol`` if larger): an isolated mode,
 #: polished in the forward and given mode-field gradients.
-_ISOLATED = 1e-4
+ISOLATED = 1e-4
+#: The largest ``SolverOptions.eigen_tolerance`` of a solve whose mode
+#: fields differentiate: it keeps the forward polish's Newton start close.
+FIELD_TOLERANCE = 1e-10
+
+#: A condition that leaves mode fields out of reach.
+Blocker = Literal["wave_vector", "periodic", "device", "linear", "tolerance"]
+
+
+def blocker(
+    options: SolverOptions,
+    linear: str,
+    *,
+    wave_vector: object,
+    periodic: bool,
+    tolerance: bool = True,
+) -> Blocker | None:
+    """The first condition that leaves a solve's mode fields out of reach, or ``None``.
+
+    In this order: a Bloch ``wave_vector`` (not ``None``), a ``periodic``
+    pair, a device other than the CPU, a ``linear`` solver kind other than
+    ``"direct"`` (as resolved by the caller), and an
+    ``options.eigen_tolerance`` above `FIELD_TOLERANCE`. With ``tolerance``
+    false, the last is left out: the polish subset, where the forward
+    polishes its isolated modes.
+    """
+    if wave_vector is not None:
+        return "wave_vector"
+    if periodic:
+        return "periodic"
+    if options.device != "cpu":
+        return "device"
+    if linear != "direct":
+        return "linear"
+    if tolerance and options.eigen_tolerance > FIELD_TOLERANCE:
+        return "tolerance"
+    return None
+
+
+def threshold(rtol: float) -> float:
+    """The isolation threshold: `ISOLATED`, or ``rtol`` when that is larger."""
+    return max(ISOLATED, rtol)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -69,7 +132,7 @@ def _close(a: complex, b: complex, rtol: float) -> bool:
     return abs(a - b) <= rtol * max(abs(a), abs(b))
 
 
-def _incomplete(
+def incomplete(
     ks: list[complex], labels: np.ndarray, guard: complex | None, rtol: float
 ) -> np.ndarray:
     """Whether each mode's cluster reaches the guard mode ``guard`` (cut short)."""
@@ -90,7 +153,7 @@ def isolated(
 
     A mode is when it is the only member of its cluster (``labels``), its
     cluster is not cut short by the guard mode (``incomplete``), and its
-    relative gap to its gap set is at least `_ISOLATED`, or ``rtol``
+    relative gap to its gap set is at least `ISOLATED`, or ``rtol``
     (``SolverOptions.cluster_rtol``) when that is larger. An entry stores a
     gap of 0 for a mode whose forward polish failed (its ``polish_failed``
     field), so such a mode is never isolated.
@@ -100,7 +163,7 @@ def isolated(
     return (
         single
         & ~np.asarray(incomplete, dtype=bool)
-        & (np.asarray(gap) >= max(_ISOLATED, rtol))
+        & (np.asarray(gap) >= max(ISOLATED, rtol))
     )
 
 
@@ -119,3 +182,70 @@ def clusters(ks: list[complex], rtol: float) -> np.ndarray:
     for v in labels:
         renumber.setdefault(v, len(renumber))
     return np.array([renumber[v] for v in labels], dtype=np.int64)
+
+
+@dataclasses.dataclass(frozen=True)
+class ModeReach:
+    """Which found modes are in mode-field reach, and the evidence.
+
+    Attributes:
+        labels: The modes' cluster labels (`clusters`).
+        incomplete: Whether each mode's cluster reaches the guard mode.
+        gap: Each mode's relative gap to its gap set (`GapSet.gap`, ``inf``
+            without a neighbour), 0 for a mode whose polish failed.
+        polish_failed: Whether each mode's polish in the forward failed.
+        rtol: ``SolverOptions.cluster_rtol``.
+    """
+
+    labels: np.ndarray
+    incomplete: np.ndarray
+    gap: np.ndarray
+    polish_failed: np.ndarray
+    rtol: float
+
+    @property
+    def isolated(self) -> np.ndarray:
+        """Which modes are isolated (`isolated`)."""
+        return isolated(self.labels, self.incomplete, self.gap, self.rtol)
+
+    @property
+    def threshold(self) -> float:
+        """The isolation threshold (`threshold`) at ``rtol``."""
+        return threshold(self.rtol)
+
+    @classmethod
+    def of(
+        cls,
+        ks: list[complex],
+        guard: complex | None,
+        gaps: GapSet,
+        polish_failed: np.ndarray,
+        rtol: float,
+    ) -> Self:
+        """The reach of modes ``ks``, with the guard mode's ``guard`` and ``gaps``."""
+        labels = clusters(ks, rtol)
+        gap = np.array([gaps.gap(k) for k in ks])
+        failed = np.asarray(polish_failed, dtype=bool)
+        gap[failed] = 0.0
+        return cls(labels, incomplete(ks, labels, guard, rtol), gap, failed, rtol)
+
+    @classmethod
+    def from_fields(cls, fields: Mapping[str, np.ndarray], rtol: float) -> Self:
+        """The reach an entry's fields (`fields`) record.
+
+        An entry without ``polish_failed`` had no polish fail.
+        """
+        failed = fields.get("polish_failed", np.zeros(len(fields["k"]), dtype=bool))
+        return cls(fields["cluster"], fields["incomplete"], fields["gap"], failed, rtol)
+
+    def fields(self) -> dict[str, np.ndarray]:
+        """The entry fields ``cluster``, ``incomplete``, ``gap``, ``polish_failed``.
+
+        The arrays themselves, not copies.
+        """
+        return {
+            "cluster": self.labels,
+            "incomplete": self.incomplete,
+            "gap": self.gap,
+            "polish_failed": self.polish_failed,
+        }

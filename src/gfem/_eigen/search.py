@@ -25,7 +25,7 @@ import scipy.constants as const
 from gfem import _mpi
 from gfem._eigen.adjoint import polish
 from gfem._eigen.operator import EigenOperator
-from gfem._eigen.reach import GapSet, _close, _incomplete, clusters, isolated
+from gfem._eigen.reach import GapSet, ModeReach, _close
 from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
@@ -110,21 +110,30 @@ class FoundModes:
             seed gave one.
         gaps: The gap set of the modes: the pool, the guard mode's ``k`` and
             the Ritz values.
-        polish_failed: Whether each mode's polish failed (kept unpolished).
-        labels: The modes' cluster labels (`clusters` at
-            ``SolverOptions.cluster_rtol``).
+        reach: The modes' mode-field reach (`ModeReach`): their cluster
+            labels at ``SolverOptions.cluster_rtol``, the failed polishes
+            and which modes are isolated, on the snapped ``k``.
     """
 
     modes: list[Refined]
     guard: Refined | None
     gaps: GapSet
-    polish_failed: np.ndarray
-    labels: np.ndarray
+    reach: ModeReach
 
     @property
     def ks(self) -> list[complex]:
         """The modes' ``k``."""
         return [m.k for m in self.modes]
+
+    @property
+    def labels(self) -> np.ndarray:
+        """The modes' cluster labels (`ModeReach.labels`)."""
+        return self.reach.labels
+
+    @property
+    def polish_failed(self) -> np.ndarray:
+        """Whether each mode's polish failed (`ModeReach.polish_failed`)."""
+        return self.reach.polish_failed
 
 
 @dataclasses.dataclass(frozen=True)
@@ -233,30 +242,38 @@ class ModeSearch:
         guard_k = None if found is None else found.k
         unpolished = np.zeros(len(modes), dtype=bool)
         if polish_isolated:
+            # isolation before the snap, on the unsnapped k: the stored reach
+            # below is taken again after it
             gap_set = GapSet(pool, guard_k, ritz)
-            modes, unpolished = self._polish(eop, modes, gap_set, guard_k)
+            pre = ModeReach.of(
+                [m.k for m in modes], guard_k, gap_set, unpolished, self.cluster_rtol
+            )
+            modes, unpolished = self._polish(eop, modes, pre)
         lossless = _is_hermitian if eop.general else _is_real
         if not eop.seed_damped and not eop.nonpolynomial and lossless(eop):
             modes = [dataclasses.replace(m, k=m.k.real) for m in modes]
             if found is not None:
                 found = dataclasses.replace(found, k=found.k.real)
             pool = pool.real.astype(complex)
-        gaps = GapSet(pool, None if found is None else found.k, ritz)
-        labels = clusters([m.k for m in modes], self.cluster_rtol)
-        return FoundModes(modes, found, gaps, unpolished, labels)
+        guard_k = None if found is None else found.k
+        gaps = GapSet(pool, guard_k, ritz)
+        reach = ModeReach.of(
+            [m.k for m in modes], guard_k, gaps, unpolished, self.cluster_rtol
+        )
+        return FoundModes(modes, found, gaps, reach)
 
     def _polish(
         self,
         eop: EigenOperator,
         modes: list[Refined],
-        gaps: GapSet,
-        guard: complex | None,
+        reach: ModeReach,
     ) -> tuple[list[Refined], np.ndarray]:
         """``modes`` with each isolated one polished (`polish`), and which failed.
 
-        A mode is isolated (`isolated`) when it is alone in its cluster, the
-        guard mode is not in its cluster, and its relative gap is at least
-        `_ISOLATED` (``cluster_rtol`` if larger). The guard mode is never
+        A mode is isolated (``reach.isolated``) when it is alone in its
+        cluster, the guard mode is not in its cluster, and its relative gap
+        is at least `gfem._eigen.reach.ISOLATED` (``cluster_rtol`` if
+        larger). The guard mode is never
         polished. A polish that does not converge (or whose solve is not
         accepted) is evidence of a neighbour the gap set missed, such as the
         twin of a degenerate pair the seed solve never returned: the mode
@@ -264,17 +281,13 @@ class ModeSearch:
         records it as not isolated. A
         solve never raises because of polishing.
         """
-        ks = [m.k for m in modes]
-        rtol = self.cluster_rtol
-        labels = clusters(ks, rtol)
-        gap = np.array([gaps.gap(k) for k in ks])
-        reach = isolated(labels, _incomplete(ks, labels, guard, rtol), gap, rtol)
+        isolated = reach.isolated
         failed = np.zeros(len(modes), dtype=bool)
         out = []
         for i, m in enumerate(modes):
-            if reach[i]:
+            if isolated[i]:
                 try:
-                    m = self.polish(eop, m, float(gap[i]), index=i)  # noqa: PLW2901
+                    m = self.polish(eop, m, float(reach.gap[i]), index=i)  # noqa: PLW2901
                 except (EigenmodeConvergenceError, LinearSolverConvergenceError):
                     failed[i] = True
             out.append(m)
