@@ -742,8 +742,13 @@ def _split_box(tmp_path, materials=None):
     return gfem.Model(mesh, materials=materials, pml=gfem.PML(("low_pml", "high_pml")))
 
 
+#: Near the split box's lowest mode of the interior (186 THz, 15 % of its
+#: energy in the layer): the coarse layer's own modes crowd lower targets.
+BOX_TARGET = 1.9e14
+
+
 def _modes(model):
-    problem = gfem.Eigenmode(n_modes=2, target=1.0e14)
+    problem = gfem.Eigenmode(n_modes=1, target=BOX_TARGET)
     return gfem.solve(model, problem, options=DIRECT)
 
 
@@ -765,7 +770,7 @@ def test_a_mode_s_participations_count_the_physical_regions_only(tmp_path):
 
 def test_an_eigenmode_result_carries_its_layer_through_a_result_file(tmp_path):
     model = _split_box(tmp_path)
-    problem = gfem.Eigenmode(n_modes=1, target=1.0e14)
+    problem = gfem.Eigenmode(n_modes=1, target=BOX_TARGET)
     gfem.Job(model, problem, DIRECT).run(out=tmp_path / "out")
     loaded = gfem.load_result(tmp_path / "out")
     assert loaded.pml == model.pml
