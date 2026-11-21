@@ -1553,16 +1553,35 @@ def wave_port_piece(
     port: str,
     surface: str,
     theta: Tabulated,
+    stretch: Stretch | None = None,
 ) -> Piece:
     """The Robin term of a wave port: θ ∫ (A E_t) · v_t on its surface.
 
     ``A`` is the port's tangential inverse-permeability tensor, ``1 /
     mu_r`` for an isotropic element behind the face
-    (`wave_port_coefficients`).
+    (`wave_port_coefficients`). Where the face cuts a perfectly matched
+    layer (``stretch``) it is the stretched medium's, ``N Λ^-1 mu_r^-1
+    N^T = (N Λ^-1 N^T) A`` with ``N = [n]x`` (n a principal axis of both
+    Λ and mu_r there), as the port section's: the port stays exact for its
+    own mode.
     """
     form = _tangential(built, (surface,), order)
     coef = surface_coefficient(built, wave_port_coefficients(model, surface))
+    if stretch is not None:
+        coef = _stretched_trace(model, built, surface, stretch) * coef
     return Piece(f"waveport {port}", theta, lambda u, v: form(u, v, coef), kind="port")
+
+
+def _stretched_trace(
+    model: Model, built: EngineMesh, surface: str, stretch: Stretch
+) -> ngs.CoefficientFunction:
+    """``N Λ^-1 N^T`` on a planar wave port ``surface``, 3x3, ``N = [n]x``."""
+    mesh = model.mesh
+    n = _face_normals(mesh)[mesh.elements(surface)[0]]
+    matrix = ((0.0, -n[2], n[1]), (n[2], 0.0, -n[0]), (-n[1], n[0], 0.0))
+    cross = ngs.CF(tuple(float(v) for row in matrix for v in row), dims=(3, 3))
+    lam_inv = stretch_tensor(stretch, built.scale)[1]
+    return cross * lam_inv * cross.trans
 
 
 def excitation_per_voltage(resistance: float) -> float:

@@ -10,6 +10,7 @@ the file to write; nothing here solves.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from pathlib import Path
 
@@ -217,3 +218,121 @@ def bloch_cell(path: str | Path, *, cells: float = 10, lateral: int = 4) -> Path
         return "air" if c[2] > 0 else "pml"
 
     return sm.write_msh22(path, sm.periodic_cell((side, side, z), volume, paired="xy"))
+
+
+# --- a strip guide through side layers ----------------------------------------------
+
+#: The strip guide's vacuum wavelength (um), core and cladding indices, and
+#: the core's width (x) and height (y), um.
+STRIP_WAVELENGTH = 1.55
+STRIP_F = C0 / (STRIP_WAVELENGTH * 1e-6)
+STRIP_CORE, STRIP_CLADDING = 2.0, 1.45
+STRIP_SIZE = (1.0, 0.4)
+#: Its side layers' thickness, um.
+STRIP_THICKNESS = 0.6
+#: The fundamental's effective index on a wide closed section: 1.6429163,
+#: measured on an unstructured order 2 mesh with PEC walls 2.5 um from the
+#: core edge.
+STRIP_NEFF = 1.6429
+
+
+def _segments(*parts: tuple[float, float]) -> np.ndarray:
+    """Grid lines over consecutive ``(length, cell size)`` segments from 0."""
+    out, start = [np.zeros(1)], 0.0
+    for length, h in parts:
+        n = max(1, math.ceil(length / h - 1e-9))
+        out.append(start + np.linspace(0.0, length, n + 1)[1:])
+        start += length
+    return np.concatenate(out)
+
+
+def strip_guide(
+    path: str | Path,
+    clearance: float,
+    *,
+    thickness: float = STRIP_THICKNESS,
+    length: float = 1.0,
+    quarter: bool = True,
+    core_h: float = 0.1,
+    clad_h: float = 0.15,
+) -> Path:
+    """A straight strip guide along z with side layers on +-x, +-y and their edges.
+
+    The core ("core", `STRIP_SIZE`) is centred on the z axis, the cladding
+    ("clad") reaches ``clearance`` beyond each core edge, and the layer
+    ("pml", ``thickness``; none when 0) wraps it. Surfaces: "p1" at z = 0,
+    "p2" at z = ``length``, "pec" on the outer faces. A ``quarter`` model
+    keeps x, y >= 0 with "pec" on x = 0 and y = 0 unnamed (PMC): the
+    E_x-even fundamental.
+
+    Args:
+        path: The gmsh 2.2 file to write.
+        clearance: Cladding between the core edge and the layer, um.
+        thickness: The layer thickness, um.
+        length: The guide's length, um.
+        quarter: Whether to keep the quarter x, y >= 0.
+        core_h: Cell size in the core, um.
+        clad_h: Cell size in the cladding and the layer, um.
+
+    Returns:
+        ``path``.
+    """
+    w, t = STRIP_SIZE
+    axes = []
+    for half in (w / 2, t / 2):
+        parts = [(half, core_h), (clearance, clad_h)]
+        if thickness:
+            parts.append((thickness, clad_h))
+        upper = _segments(*parts)
+        axes.append(upper if quarter else np.concatenate([-upper[::-1], upper[1:]]))
+    z = _segments((length, clad_h))
+    edges = (axes[0], axes[1], z)
+    outer = (axes[0][-1], axes[1][-1])
+    eps = 1e-9
+
+    def volume(c):
+        x, y = abs(c[0]), abs(c[1])
+        if x > w / 2 + clearance or y > t / 2 + clearance:
+            return "pml"
+        return "core" if x < w / 2 and y < t / 2 else "clad"
+
+    def surface(c):
+        if abs(c[2]) < eps:
+            return "p1"
+        if abs(c[2] - length) < eps:
+            return "p2"
+        if abs(abs(c[0]) - outer[0]) < eps or abs(abs(c[1]) - outer[1]) < eps:
+            return "pec"
+        if quarter and abs(c[0]) < eps:
+            return "pec"
+        return ""
+
+    return sm.write_msh22(path, sm.structured(edges, volume, surface))
+
+
+def strip_model(path: str | Path, pml: object = "default", **kw: object):
+    """The `gfem.Model` of a `strip_guide` mesh, wave ports "p1" and "p2".
+
+    ``pml`` is the layer (by default ``gfem.PML("pml")``); a mesh without
+    a layer takes none.
+    """
+    import gfem
+
+    mesh = gfem.Mesh.from_gmsh(path)
+    materials = {
+        "core": gfem.Material(eps_r=STRIP_CORE**2),
+        "clad": gfem.Material(eps_r=STRIP_CLADDING**2),
+    }
+    if "pml" in mesh.volumes:
+        materials["pml"] = materials["clad"]
+        pml = gfem.PML("pml") if pml == "default" else pml
+    else:
+        pml = None
+    return gfem.Model(
+        mesh,
+        materials=materials,
+        boundaries=[gfem.PEC("pec")],
+        ports=[gfem.WavePort("p1", "p1"), gfem.WavePort("p2", "p2")],
+        pml=pml,
+        **kw,
+    )

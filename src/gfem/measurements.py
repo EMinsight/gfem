@@ -602,9 +602,10 @@ def characteristic_impedance(
     Raises:
         TypeError: ``mode`` is not a `gfem.PortModeResult`, or neither path
             is given.
-        ValueError: A path is malformed or leaves the port plane, or
-            ``mode`` carries no field (a driven result computed inside
-            `jax.jit`, `jax.grad` or `jax.vmap`).
+        ValueError: A path is malformed, leaves the port plane or passes
+            through a perfectly matched layer, or ``mode`` carries no
+            field (a driven result computed inside `jax.jit`, `jax.grad` or
+            `jax.vmap`).
         NonDifferentiableError: A path is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
@@ -642,7 +643,14 @@ def characteristic_impedance(
     gamma = np.asarray(mode.gamma, complex)
     volts = amps = None
     if "voltage_path" in paths:
-        volts = path_voltage(space, basis, coords, paths["voltage_path"], mode.port)
+        volts = path_voltage(
+            space,
+            basis,
+            coords,
+            paths["voltage_path"],
+            mode.port,
+            subject="characteristic_impedance",
+        )
     if "current_path" in paths:
         amps = path_current(
             space,
@@ -652,6 +660,7 @@ def characteristic_impedance(
             frequency=frequency,
             path=paths["current_path"],
             name=mode.port,
+            subject="characteristic_impedance",
         )
     if volts is not None and amps is not None:
         z = volts / amps

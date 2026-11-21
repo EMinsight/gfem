@@ -166,3 +166,60 @@ def test_a_layer_under_a_periodic_cell_absorbs_oblique_waves(cell, pol):
         assert expected >= 100 * pc.CELL_FLOOR, theta
         _close(abs(complex(s[f"R_{pol}", f"R_{pol}"][0])), expected)
         assert abs(complex(s[f"R_{other}", f"R_{pol}"][0])) <= CROSS_TOL, theta
+
+
+# --- a strip guide through side layers -----------------------------------------------
+
+#: The strip's clearance (um) and the bound on its effective index against a
+#: wide closed section, 1e-2 exp(-2 gamma_t c) with the fundamental's
+#: transverse decay gamma_t = k0 sqrt(n_eff^2 - n_cl^2) = 3.13 / um.
+STRIP_CLEARANCE = 1.0
+STRIP_NEFF_TOL = 1.9e-5
+STRIP_LENGTH = 1.0
+#: Cell size (um) in the cladding and the layer, 0.1 in the core. Measured
+#: at order 2, one thread: |S11| = 4.5e-5, |S21 - exp(-gamma L)| = 4.3e-4,
+#: n_eff 2.7e-7 off the closed section (at 0.15: 1.3e-4, 1.7e-3, 1.0e-7).
+#: With 0.15 um cells at clearance 0.4 um, |S11| = 2.3e-3 without the
+#: section stretch
+#: and 1.1e-4 with it.
+STRIP_H = 0.1
+
+
+def _strip_n_eff(gamma):
+    k0 = 2 * math.pi * pc.STRIP_F / pc.C0
+    return complex(gamma).imag / k0
+
+
+def test_a_strip_guide_through_side_layers(tmp_path):
+    # both port faces cut the side layers: their sections take the stretch,
+    # so each port stays exact for its own mode
+    tmp = tmp_path
+    path = pc.strip_guide(
+        tmp / "strip.msh", STRIP_CLEARANCE, length=STRIP_LENGTH, clad_h=STRIP_H
+    )
+    model = pc.strip_model(path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", gfem.LayerClearanceWarning)
+        result = gfem.solve(
+            model,
+            gfem.Driven((pc.STRIP_F,)),
+            options=gfem.SolverOptions(order=2, linear_solver="direct"),
+        )
+    s = np.asarray(result.s.values)[0]
+    gamma = complex(np.asarray(result.port_modes["p1"].gamma)[0])
+    assert abs(s[0, 0]) <= 2e-4
+    assert abs(s[1, 0] - np.exp(-gamma * STRIP_LENGTH * 1e-6)) <= 3e-3
+    assert abs(s[0, 1] - s[1, 0]) <= 1e-8
+    assert abs(s[0, 0]) ** 2 + abs(s[1, 0]) ** 2 <= 1 + 1e-8
+    closed = pc.strip_model(
+        pc.strip_guide(
+            tmp / "closed.msh", 2.0, thickness=0.0, length=0.15, clad_h=STRIP_H
+        )
+    )
+    reference = gfem.solve(
+        closed,
+        gfem.PortMode("p1", (pc.STRIP_F,)),
+        options=gfem.SolverOptions(order=2),
+    )
+    n_closed = _strip_n_eff(np.asarray(reference.gamma)[0])
+    assert abs(_strip_n_eff(gamma) - n_closed) <= STRIP_NEFF_TOL
