@@ -88,6 +88,9 @@ missing, and refuses an MPI other than Open MPI.
 - The stack runs one-process solves too, through the same `linear_solver="petsc"`.
 - An eigenmode solve across ranks finds its modes with SLEPc from this stack:
   `eigen_solver="auto"` names it there, and `"arpack"` raises.
+- The script's MUMPS orders with PT-Scotch on at most 32 processes, so the fill of
+  BDDC's coarse factorization does not grow with the ranks. A stack built by an
+  earlier script lacks this: build it again to get it.
 - A stack runs under the Open MPI it was built on: load the same one to use it.
 - The no-MPI stack under a launcher serves {term}`rank copies` only, and a
   {term}`distributed solve` naming PETSc refuses it, with
