@@ -470,7 +470,10 @@ def hz_signs(model: Model, polarization: str) -> np.ndarray:
     port with inward normal :math:`\hat n` that is
     :math:`(n_x - n_y)\int H_z`, so the slab's mode is the line port's (whose
     :math:`\int w H_z` is positive) times :math:`\operatorname{sign}(n_x -
-    n_y)`. Ones in Ez, where both phasings read :math:`E_z`.
+    n_y)`. Ones in Ez, where both phasings read :math:`E_z`. A port whose
+    normal has :math:`n_x = n_y`, :math:`\pm(1, 1)/\sqrt{2}`, gets +1: there the 3D
+    phasing integral is zero and fixes no sign, so the slab's mode may differ
+    from the 2D port's by its sign.
     """
     out = np.ones(len(model.ports))
     if polarization != "Hz":
