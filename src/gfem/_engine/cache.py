@@ -132,8 +132,9 @@ class Discretization:
             and `_MAX_SWEPT_SETS` swept ones, least recently used out first
             (`space`); the others stay.
         ports: The wave port couplings and port networks the last driven
-            solve on it built, behind their key (`gfem._engine.driven`), or
-            ``None``. Anything with a ``shared()`` of its bytes by identity.
+            solve on it built, behind their key
+            (`gfem._engine.driven_system`), or ``None``. Anything with a
+            ``shared()`` of its bytes by identity.
         guesses: Design initial guesses: a design's solution
             blocks (anything with ``nbytes``), by key, each with what a later
             solve must match to start from it (`guess`).

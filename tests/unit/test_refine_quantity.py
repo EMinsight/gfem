@@ -206,7 +206,7 @@ def _forced_adjoint(model, result, port, frequency=None):
         frequency = float(result.s.frequency[0])
     omega = 2 * math.pi * frequency
     rule = DrivenRule(model, gfem.Driven([frequency]), OPTIONS)
-    system, ports = rule._ports(model)
+    system, ports = rule.system(model)
     i = model.port_names.index(port)
     with system.sweep() as sweep:
         functional = ports.functional(omega)[:, i]
