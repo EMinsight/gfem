@@ -1057,8 +1057,8 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
     built = []
     make_ports = rule._ports
 
-    def spy(model):
-        built.append(make_ports(model))
+    def spy(model, **kwargs):
+        built.append(make_ports(model, **kwargs))
         return built[-1]
 
     monkeypatch.setattr(rule, "_ports", spy)
