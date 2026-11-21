@@ -10,7 +10,7 @@ takes `direct` (MUMPS) under ranks too, where it would otherwise take
 An eigenmode solve with a layer projects on the stretched weight, a complex
 H1 form factored by MUMPS across ranks. The leaky guide of `pml_cases` is
 solved on one process with ``eigen_solver="slepc"`` and on `RANKS` with
-``"auto"`` (SLEPc): the modes, their Q and the leaky mode's eigenfrequency
+``"auto"`` (SLEPc): the modes and the leaky mode's eigenfrequency
 gradient by the core's permittivity must be one process's, and one
 process's SLEPc modes ARPACK's.
 """
@@ -32,7 +32,9 @@ from gfem._engine.driven import DrivenRule
 
 #: Relative to the largest entry of the one-process S.
 S_GATE = 1e-12
-#: Relative to each mode's |omega|, and the Q's, across ranks.
+#: Relative to each mode's |omega|, across ranks. Q follows from omega and is
+#: not compared: a trapped mode's tiny Im omega turns omega's round-off into
+#: 2 Q times as much in its Q (measured 2e-9 at 3 ranks, omega to 5e-16).
 OMEGA_GATE = 1e-10
 #: Relative to each mode's |omega|, SLEPc's seeds against ARPACK's: both are
 #: refined on the same operator.
@@ -131,7 +133,7 @@ def _eigen_options(eigen_solver):
 
 
 def _modes(path, eigen_solver):
-    """The guide's omega and Q, and the leaky mode's d omega / d eps_core."""
+    """The guide's omega, and the leaky mode's d omega / d eps_core."""
     model, problem = _guide(path)
     options = _eigen_options(eigen_solver)
     with warnings.catch_warnings():
@@ -147,7 +149,6 @@ def _modes(path, eigen_solver):
         grad = jax.grad(omega)(jnp.asarray(model.materials["core"].eps_r))
     return {
         "omega": np.asarray(result.omega),
-        "q": np.asarray(result.q),
         "grad": np.asarray(grad),
     }
 
@@ -177,10 +178,9 @@ def test_slepc_finds_arpack_modes_through_a_layer(guide):
 def test_eigen_with_a_layer_matches_one_process(guide):
     (one,) = on_ranks(_modes, guide, "slepc", ranks=1, limit=600)
     got, *_ = on_ranks(_modes, guide, "auto", ranks=RANKS, limit=600)
-    for name in ("omega", "q"):
-        error = _relative(got[name], one[name])
-        print(f"ranks={RANKS} {name} error={error:.3g}")  # noqa: T201
-        assert error < OMEGA_GATE, f"{name} off by {error:.3g} relative"
+    error = _relative(got["omega"], one["omega"])
+    print(f"ranks={RANKS} omega error={error:.3g}")  # noqa: T201
+    assert error < OMEGA_GATE, f"omega off by {error:.3g} relative"
     scale = np.abs(one["grad"]).max()
     assert scale > 0
     error = np.abs(got["grad"] - one["grad"]).max() / scale
