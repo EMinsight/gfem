@@ -30,7 +30,8 @@ from solver_misses import cannot_converge_at
 
 import gfem
 from gfem._engine import cache, driven, runtime, workers
-from gfem._engine.driven import DrivenRule, _solve_block
+from gfem._engine.driven import DrivenRule
+from gfem._engine.driven_sweep import solve_block
 from gfem._linalg import prepare
 from gfem._linalg.direct import DirectHandle
 
@@ -169,7 +170,7 @@ def test_a_worker_does_not_repeat_the_parents_port_mode_warnings():
         DrivenRule(model, problem, options)
     with warnings.catch_warnings():
         warnings.simplefilter("error", gfem.SkippedPortModeWarning)
-        outputs, _, reason, _ = _solve_block(
+        outputs, _, reason, _ = solve_block(
             *workers.model_parts(model), problem, options, keep=False
         )
     assert reason is None
