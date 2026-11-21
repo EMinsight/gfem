@@ -237,7 +237,7 @@ def test_the_transposed_system_is_the_system_at_minus_k(f1_mesh):
     def system(wave_vector):
         problem = gfem.Driven([pc.F1_FREQUENCY], wave_vector=wave_vector)
         rule = DrivenRule(model, problem, P2)
-        return rule._ports(model)[0]
+        return rule.system(model)[0]
 
     plus, minus = system(k), system(tuple(-c for c in k))
     try:

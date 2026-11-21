@@ -964,7 +964,7 @@ def test_a_direct_handle_sums_the_pieces_into_the_assembled_operator(tmp_path):
     # the ungauged piece sum: on the driven space, as the assembled operator
     options = gfem.SolverOptions(linear_solver="direct", gauge="none")
     rule = DrivenRule(model, gfem.Driven(frequencies), options)
-    system, _ = rule._ports(model)
+    system, _ = rule.system(model)
     names = {p.name for p in system.operator.pieces}
     assert {
         "conductivity",
@@ -1055,13 +1055,13 @@ def test_a_forward_holds_its_assembled_pieces_with_its_handles(
     options = gfem.SolverOptions(linear_solver=kind)
     rule = DrivenRule(line, gfem.Driven(frequency=(4e9, 5e9)), options)
     built = []
-    make_ports = rule._ports
+    make_system = rule.system
 
     def spy(model, **kwargs):
-        built.append(make_ports(model, **kwargs))
+        built.append(make_system(model, **kwargs))
         return built[-1]
 
-    monkeypatch.setattr(rule, "_ports", spy)
+    monkeypatch.setattr(rule, "system", spy)
     _, entry = rule.forward(line, keep=keep)
     ((system, ports),) = built
     vectors = {

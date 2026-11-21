@@ -489,7 +489,7 @@ def test_wave_port_low_frequency_backward_errors(reference):
     options = gfem.SolverOptions(threads=THREADS, linear_solver="direct")
     rule = DrivenRule(model, gfem.Driven(frequency=frequency), options)
     with task_manager(THREADS):
-        system, ports = rule._ports(model)
+        system, ports = rule.system(model)
         op = system.operator
         free = np.array(list(op.space.FreeDofs()), dtype=bool)
         for k, f in enumerate(frequency):
