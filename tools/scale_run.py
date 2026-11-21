@@ -601,8 +601,8 @@ def _capture_iterations(store: list) -> None:
 
     forward = DrivenRule.forward
 
-    def spy(self, model, *, keep):
-        outputs, entry = forward(self, model, keep=keep)
+    def spy(self, model, *, keep, request=None):
+        outputs, entry = forward(self, model, keep=keep, request=request)
         store.append(np.asarray(outputs["iterations"], dtype=np.int64))
         return outputs, entry
 
