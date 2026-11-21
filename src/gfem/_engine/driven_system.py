@@ -10,7 +10,7 @@ It owns every piece of state that driven solves keep on a discretization
 across designs, and every key of it: the couplings and their port networks
 (`KeptPorts`, behind `FloquetKey` and the network key) and the design
 initial guesses (`DesignGuess`). Its fields are the rule's resolved
-settings, fixed at construction; the per-call data (a frequency worker's
+settings, fixed at construction; the per-call data (a frequency block's
 rows of its parent's port mode sweep) is an argument.
 """
 
@@ -104,7 +104,7 @@ class DrivenSystemBuilder:
 
         The couplings and the network are kept on the discretization
         (`KeptPorts`) and reused while their key holds: a design away from
-        the port faces runs no port mode sweep. A frequency worker's
+        the port faces runs no port mode sweep. A frequency block's
         couplings stand on ``handed``, its rows of its parent's sweep per wave
         port surface (`SolveRequest.port_modes`).
         """

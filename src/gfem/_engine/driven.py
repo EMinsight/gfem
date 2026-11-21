@@ -976,7 +976,7 @@ class DrivenRule:
                 solves on its own factorization (their adjoints, per
                 ``(frequency, key)`` on the unpaired space, land in its
                 ``adjoints``), whether a partial result is kept, and a
-                frequency worker's rows of its parent's port mode sweep.
+                frequency block's rows of its parent's port mode sweep.
 
         Returns:
             ``{"s": (n_freq, n_ports, n_excited) complex, "z_ref":
@@ -1248,7 +1248,7 @@ class DrivenRule:
 
         The model's operator (`operator`) with its wave and Floquet port
         couplings (`DrivenSystemBuilder.build`), kept on the discretization
-        and reused while their key holds. A frequency worker's couplings
+        and reused while their key holds. A frequency block's couplings
         stand on ``handed``, its rows of its parent's sweep per wave port
         surface (`SolveRequest.port_modes`).
         """
