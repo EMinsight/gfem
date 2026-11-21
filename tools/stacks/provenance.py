@@ -280,7 +280,10 @@ def _check_mumps_block(name: str, package: str, block: dict, report: Report) -> 
     if block["gemmt"]:
         report.errors.append(f"mumps gemmt: {name} uses ?gemmt_")
     if package == "petsc" and "parmetis" in block["orderings"]:
-        report.errors.append(f"mumps orderings: {name} has parmetis")
+        report.errors.append(
+            f"mumps orderings: {name} has parmetis, "
+            "which a recorded stack never holds (licence)"
+        )
     raw = block.get("fflags_raw")
     if raw is not None:
         missing = [flag for flag in block["fflags"].split() if flag not in raw.split()]
@@ -500,7 +503,9 @@ def _petsc_conf(conf: str, errors: list[str]) -> list[str]:
         ordering for name, ordering in PETSC_ORDERINGS if _defined(conf, name)
     ]
     if "parmetis" in orderings:
-        errors.append("PETSc has parmetis")
+        errors.append(
+            "PETSc has parmetis, which a recorded stack never holds (licence)"
+        )
     return sorted(orderings)
 
 

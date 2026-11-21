@@ -93,6 +93,11 @@ missing, and refuses an MPI other than Open MPI.
   {term}`distributed solve` naming PETSc refuses it, with
   `gfem.SolverUnavailableError`.
 
+ParMETIS (free only for non-profit education and research) is part of neither
+stack. `--mpi --with-parmetis` adds it to the MPI stack, for users its terms
+allow; that stack is for its builder alone and must not be shared. gfem then
+orders BDDC's coarse problem with it.
+
 ## Check the build
 
 ```python
