@@ -1509,3 +1509,20 @@ def test_a_coarse_set_up_logs_its_ordering_ranks_and_stack_kind(
     (record,) = [r for r in caplog.records if "coarse problem" in r.message]
     assert "pt-scotch on 1 of 1 ranks" in record.message
     assert "capped PETSc stack" in record.message
+
+
+def test_a_stock_stack_says_the_ranks_its_rule_took_not_pt_scotchs(
+    built, monkeypatch, caplog
+):
+    # PT-Scotch would take 5 ranks; the rule took METIS on the one rank there is
+    monkeypatch.setattr(coarse, "_kinds", {None: coarse.STOCK})
+    monkeypatch.setattr(coarse, "_said_stock", [])
+    monkeypatch.setattr(coarse, "_scotch_ranks", lambda *_: 5)
+    monkeypatch.setattr(coarse, "capped_ranks", lambda *_: 4)
+    made = _coarse_on(monkeypatch, built, 1 - 2j, ordering=coarse.METIS)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        made.set_up()
+    made.free()
+    (record,) = [r for r in caplog.records if "rebuilt" in r.message]
+    assert "runs on 1 ranks" in record.message
+    assert "would then run on 4 ranks" in record.message
