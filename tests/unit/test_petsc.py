@@ -906,6 +906,73 @@ def test_the_build_script_stops_unless_each_place_of_the_cap_is_found_once(
     assert not (tmp_path / "MUMPS_5.9.1-gfem.tar.gz").exists()
 
 
+# MUMPS_BUILD_COMM_PARA_ANA cut down to the three places the cap edits, as a
+# program: PT-Scotch (KEEP(245)=1) on 64 processes and a problem large enough for
+# all of them, reporting on unit 6 at ICNTL(4)=2.
+_CAP_PROGRAM = (
+    b"      PROGRAM CAPTEST\n"
+    b"      INTEGER MYID, ICNTL(4), KEEP(339), N, NPROCS, WORKERS\n"
+    b"      INTEGER NPROCS_PARAORD\n"
+    + _DECLARATIONS_END
+    + b"      MYID = 0\n"
+    b"      ICNTL(3) = 6\n"
+    b"      ICNTL(4) = 2\n"
+    b"      KEEP(245) = 1\n"
+    b"      KEEP(339) = 1\n"
+    b"      N = 100000\n"
+    b"      NPROCS = 64\n"
+    b"      WORKERS = NPROCS\n"
+    b"      IF (KEEP(339).NE.0) THEN\n"
+    + _WORKERS
+    + b"      ENDIF\n"
+    b"      NPROCS_PARAORD = WORKERS\n"
+    + _LABEL_500
+    + b"  600 CONTINUE\n"
+    b"      END PROGRAM CAPTEST\n"
+)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the build script is bash")
+@pytest.mark.skipif(shutil.which("gfortran") is None, reason="needs gfortran")
+@pytest.mark.parametrize(
+    ("value", "cap", "paraord"),
+    [(None, 32, 32), ("8", 8, 8), ("2", 2, 2), ("1", 2, 2), ("0", 0, 64)],
+    ids=["unset", "8", "2", "1 is 2", "0 is none"],
+)
+def test_the_patched_mumps_orders_on_the_capped_count(tmp_path, value, cap, paraord):
+    _mumps(tmp_path, _CAP_PROGRAM)
+    done = _patch_mumps(tmp_path)
+    assert done.returncode == 0, done.stderr
+    with tarfile.open(tmp_path / "MUMPS_5.9.1-gfem.tar.gz") as tarball:
+        member = tarball.extractfile("MUMPS_5.9.1/src/tools_common.F")
+        source = typing.cast("typing.IO[bytes]", member).read()
+    (tmp_path / "captest.F").write_bytes(source)
+    built = subprocess.run(
+        [shutil.which("gfortran"), "-ffixed-form", "-o", "captest", "captest.F"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert built.returncode == 0, built.stderr
+    env = {"PATH": os.environ["PATH"]}
+    if value is not None:
+        env["MUMPS_PARAORD_MAX"] = value
+    ran = subprocess.run(
+        [str(tmp_path / "captest")],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    found = re.findall(
+        r"PARAORD cap\s+(\d+)\s+nprocs\s+(\d+)\s+paraord\s+(\d+)", ran.stdout
+    )
+    assert [tuple(map(int, line)) for line in found] == [(cap, 64, paraord)]
+
+
 _CAPPED = b"\x7fELF\0zgemm_\0MUMPS_PARAORD_MAX\0"
 
 
