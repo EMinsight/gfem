@@ -16,7 +16,15 @@ air, at order 2, and check each gradient to :math:`10^{-6}` relative:
   the layer;
 - a field value read inside the layer (`Field.at`) by the slab's
   permittivity.
+
+The leaky guide of `pml_cases` (a dielectric core radiating through an air
+tail into a PEC-backed layer) checks an eigenfrequency the same way: its
+leaky mode's complex :math:`\omega` by the core's permittivity and by the
+coordinates of a node inside the layer.
 """
+
+import math
+import warnings
 
 import jax
 import jax.numpy as jnp
@@ -136,3 +144,74 @@ def test_a_field_value_inside_the_layer_by_the_slab_permittivity(line):
     eps = jnp.asarray(line.materials["slab"].eps_r)
     directions = unit_directions(np.random.default_rng(2), eps.shape, 2)
     assert_gradient_matches(objective, eps, directions, step=1e-2)
+
+
+# --- a leaky guide's eigenfrequency -------------------------------------------------
+
+#: Mixes the real and imaginary parts of the leaky mode's omega, so both
+#: are checked; scaled to order one.
+OMEGA_WEIGHT = (1.0 - 0.7j) / 1e11
+#: Node steps on the guide, m (edges are 1 mm).
+GUIDE_NODE_STEP = 1e-6
+
+
+@pytest.fixture(scope="module")
+def guide(tmp_path_factory):
+    """The leaky guide with a permittivity field on its core, and its problem."""
+    model, _ = pc.leaky_guide_model(tmp_path_factory.mktemp("pml") / "guide.msh")
+    n = len(model.mesh.elements("core"))
+    model = model.with_material(
+        "core", gfem.MaterialField(eps_r=np.full(n, pc.GUIDE_EPS))
+    )
+    target = pc.guide_root().real * pc.C0 * 1e3 / (2 * math.pi)
+    return model, gfem.Eigenmode(target=target)
+
+
+def _omega(model, problem):
+    with warnings.catch_warnings():
+        # a far mode trapped below the air's cutoff may take the gain sign
+        warnings.simplefilter("ignore", gfem.LayerClearanceWarning)
+        result = gfem.solve(model, problem, options=OPTIONS)
+    return jnp.real(result.omega[0] * OMEGA_WEIGHT)
+
+
+def _with_core(model, eps):
+    return model.with_material("core", gfem.MaterialField(eps_r=eps))
+
+
+def test_the_leaky_guide_solves_its_leaky_mode(guide):
+    model, problem = guide
+    result = gfem.solve(model, problem, options=OPTIONS)
+    k = complex(result.omega[0]) / (pc.C0 * 1e3)
+    assert abs(k - pc.GUIDE_ROOT) <= pc.GUIDE_K_REL * abs(pc.GUIDE_ROOT)
+
+
+def test_an_eigenfrequency_by_the_core_permittivity(guide):
+    model, problem = guide
+    eps = jnp.asarray(model.materials["core"].eps_r)
+    directions = unit_directions(np.random.default_rng(3), eps.shape, 2)
+    assert_gradient_matches(
+        lambda e: _omega(_with_core(model, e), problem), eps, directions, step=1e-2
+    )
+
+
+def test_an_eigenfrequency_by_a_layer_node(guide):
+    model, problem = guide
+    mesh = model.mesh
+    x = np.asarray(mesh.imported_nodes) * 1e3
+    # inside the layer, off its faces and the guide's walls
+    inside = [pc.GUIDE_CORE + pc.GUIDE_TAIL + 2.0, pc.GUIDE_WIDTH / 2, 0.0]
+    node = int(np.argmin(np.linalg.norm(x - inside, axis=1)))
+    structure = jax.tree_util.tree_structure(mesh)
+    x0 = jnp.asarray(mesh.nodes)
+
+    def objective(nodes):
+        moved = jax.tree_util.tree_unflatten(structure, [nodes])
+        return _omega(model.replace(mesh=moved), problem)
+
+    directions = []
+    for axis in (0, 1):
+        d = np.zeros(x0.shape)
+        d[node, axis] = 1.0
+        directions.append(d)
+    assert_gradient_matches(objective, x0, directions, step=GUIDE_NODE_STEP)

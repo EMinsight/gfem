@@ -555,6 +555,37 @@ EXPECTED |= {
     + [("material", "low", p) for p in PERIODIC_EIGEN_PROPERTIES]
 }
 
+# Eigenmode with a perfectly matched layer (the leaky guide: a dielectric
+# core radiating through an air tail into a PEC-backed layer; no ports): as
+# the non-periodic resonator, region "core", whose material field carries
+# only the permittivity and the conductivity. The node rows next to the layer
+# read its stretch at the moved points; the participations count the
+# physical regions only, so the layer has none.
+EXPECTED |= {
+    ("eigenmode_pml", out, kind): (
+        (
+            ZERO
+            if kind == ("nodes",)
+            else GRADIENT
+            if kind[2] == out.removeprefix("materials.core.")
+            else ZERO
+        )
+        if out.startswith("materials.core.")
+        else _eigen_outcome(out, kind)
+    )
+    for out in (
+        "omega",
+        "error",
+        "bulk_participation.core",
+        "bulk_participation.tail",
+        "cluster",
+        *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
+        *(f"materials.core.{p}" for p in PERIODIC_EIGEN_PROPERTIES),
+    )
+    for kind in [("nodes",)]
+    + [("material", "core", p) for p in PERIODIC_EIGEN_PROPERTIES]
+}
+
 # Sheet fields: the fill of a sheet on the glued line (model.boundaries[2],
 # static materials). Driven S and eigenfrequencies differentiate with respect
 # to it like a material; the port mode is not differentiable at all.
@@ -1020,6 +1051,21 @@ def pml_model(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def eigen_pml_case(tmp_path_factory):
+    # the leaky guide, weakly lossy, its core a material field (a gentle ramp,
+    # so the mode nearest the target stays the leaky one, Q about 10)
+    model, _ = pml_cases.leaky_guide_model(
+        tmp_path_factory.mktemp("leaky") / "guide.msh"
+    )
+    ramp = np.linspace(1.0, 1.05, len(model.mesh.elements("core")))
+    core = gfem.MaterialField(
+        eps_r=pml_cases.GUIDE_EPS * (1 - 0.01j) * ramp, conductivity=1e-3 * ramp
+    )
+    target = pml_cases.guide_root().real * pml_cases.C0 * 1e3 / (2 * math.pi)
+    return model.with_material("core", core), gfem.Eigenmode(target=target)
+
+
+@pytest.fixture(scope="module")
 def shared_surface_model(tmp_path_factory):
     # the gradient matrix's hybrid line on the coarsest grid that keeps its
     # quadrant: modes 1 and 2 of each lead on one shared port surface
@@ -1416,6 +1462,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
             request.getfixturevalue("pml_model"),
             gfem.Driven(frequency=pml_cases.F0),
         ),
+        "eigenmode_pml": request.getfixturevalue("eigen_pml_case"),
         **request.getfixturevalue("sheet_cases"),
         **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),

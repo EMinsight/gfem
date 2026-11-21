@@ -310,9 +310,16 @@ def guide_root(k_guess: complex = GUIDE_ROOT) -> complex:
 
 
 def leaky_guide_model(
-    path: str | Path, *, bloch: bool = False, target_reflection: float = 1e-6
+    path: str | Path,
+    *,
+    bloch: bool = False,
+    target_reflection: float = 1e-6,
+    write: bool = True,
 ):
     r"""The model of `leaky_guide`'s mesh at ``path`` (written there first).
+
+    ``write=False`` reads a mesh already written, as ranks do: one process
+    writes it before they start.
 
     Returns:
         The model and the Bloch wave vector (rad/m) its solves take, ``None``
@@ -321,7 +328,8 @@ def leaky_guide_model(
     """
     import gfem
 
-    leaky_guide(path, bloch=bloch)
+    if write:
+        leaky_guide(path, bloch=bloch)
     mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
     boundaries = [gfem.PEC("short"), gfem.PEC("pec")]
     wave_vector = None
