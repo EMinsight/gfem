@@ -54,6 +54,10 @@ value, grad = jax.value_and_grad(objective)(jnp.full(n, 11.45))
   element-wise integral per mode your objective uses. `T'(k)` includes the
   frequency dependence of the conductor surface impedance and of the
   second-order absorbing term.
+- Next to a {term}`perfectly matched layer` the eigenfrequency gradients
+  are exact. The layer's background is not an input: it is a constant
+  `Material`, and the layer's stretch is fixed
+  ({doc}`perfectly-matched-layer`).
 - A differentiated solve refines one mode beyond `n_modes`, to detect a
   degenerate cluster that `n_modes` cuts (see below).
 - For a field with `axes` (an {term}`anisotropic material field`) the

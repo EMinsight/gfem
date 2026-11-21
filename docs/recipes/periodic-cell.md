@@ -190,11 +190,15 @@ How gfem itself is checked on periodic cells: {doc}`../verification`.
   polarization it changes nothing. A driven solve warns with
   {py:obj}`gfem.ObliqueAbsorberWarning` when some propagating wave meets the
   face with a reflection of at least 1 %; a {py:obj}`gfem.FloquetPort` on
-  that face absorbs every order at any angle.
+  that face absorbs every order at any angle, and so does a
+  {term}`perfectly matched layer` meshed beyond it, which also takes a lossy
+  or layered substrate ({doc}`perfectly-matched-layer`).
 - A Bloch eigenmode solve with `gfem.Absorbing` faces meets the same oblique
   reflection, and gives no warning: the Q of a mode that radiates at the
   angle $\theta$ includes it. Floquet ports do not take eigenmode solves; for the
-  resonances and Q of a radiating cell, sweep a driven problem with Floquet
+  resonances and Q of a radiating cell, mesh a perfectly matched layer
+  beyond the open faces instead, stretched along the non-periodic axis
+  ({doc}`perfectly-matched-layer`), or sweep a driven problem with Floquet
   ports and read them off S.
 - Translations only, one to three pairs. For a rotational symmetry, mesh the
   whole structure.

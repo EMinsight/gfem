@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from gfem import _mpi
+from gfem import _mpi, _pml
 from gfem._checks import is_staging, is_traced
 from gfem._domain import physics_of
 from gfem._dual_supply import _adjoint_ports, _excited
@@ -320,6 +320,11 @@ def _check_problem(model: Model, problem: Any) -> None:
         raise TypeError(
             "refine_mesh needs a gfem.Electrostatic, gfem.Driven or "
             f"gfem.Eigenmode problem, got {type(problem).__name__}."
+        )
+    if model.pml is not None and isinstance(problem, (Driven, Eigenmode)):
+        # the electrostatic estimator reads the background the solve sees
+        raise _pml.refuse_estimate(
+            "gfem.refine_mesh", model.pml, type(problem).__name__
         )
     if isinstance(problem, Driven) and problem.sweep == "adaptive":
         raise MeshRefinementUnsupportedError(
@@ -773,6 +778,9 @@ def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
         raise _unsupported_result(result, estimator)
     if any(field._comm is not None for field in _fields(result)):  # noqa: SLF001
         _mpi.refuse_feature("error_estimate")
+    if model.pml is not None and isinstance(result, (DrivenResult, EigenmodeResult)):
+        # the electrostatic estimator reads the background the solve sees
+        raise _pml.refuse_estimate(f"gfem.{type(estimator).__name__}", model.pml)
     if floquet_ports(model.ports):
         raise MeshRefinementUnsupportedError(
             "floquet port",

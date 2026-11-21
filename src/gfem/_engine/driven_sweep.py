@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from gfem._engine.driven import DrivenRule
     from gfem._engine.gauge import GaugeChoice
     from gfem._engine.sensitivity import FieldPair
+    from gfem._pml import Stretch
     from gfem.model import Model
     from gfem.options import SolverOptions
     from gfem.problems import Polarization
@@ -408,6 +409,9 @@ class SweepSplit:
         blocks: Each block's grid indices.
         runner: What runs the blocks.
         polarization: A 2D problem's polarization, else ``None``.
+        stretch: The parent's perfectly matched layer stretch, which the
+            port sections of the whole-grid sweep take; ``None`` without a
+            layer.
     """
 
     frequency: tuple[float, ...]
@@ -419,6 +423,7 @@ class SweepSplit:
     blocks: tuple[Sequence[int] | np.ndarray, ...]
     runner: BlockRunner
     polarization: Polarization | None = None
+    stretch: Stretch | None = None
 
     @classmethod
     def of(cls, rule: DrivenRule) -> SweepSplit | None:
@@ -462,6 +467,7 @@ class SweepSplit:
             blocks=blocks,
             runner=runner,
             polarization=rule.problem.polarization,
+            stretch=rule.stretch,
         )
 
     def forward(
@@ -536,6 +542,7 @@ class SweepSplit:
                 frequency=frequencies,
                 tolerance=self.options.port_mode_tolerance,
                 polarization=self.polarization,
+                stretch=self.stretch,
             )
         return swept
 

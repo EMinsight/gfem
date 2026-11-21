@@ -38,6 +38,12 @@ the z = 0 face of ``line.msh``, ``bend.msh`` and ``bend_7um.msh`` node for
 node. Areas carry the volume names; lines on the boundary carry the side
 names: "port1", "port2" and "side" for the line, "port1", "port2" and "outer"
 for the bend.
+
+``pml_line.msh`` (um): a TEM line along z, 0.2 x 0.2 um, 1.5 um of air
+(volume "air", z < 1.5) closed by 0.5 um of perfectly matched layer (volume
+"pml", 1.5 < z < 2), one cell across and ten per um along z, so the layer's
+inner face is a grid plane. Surfaces "port" (z = 0) and "plates" (the y
+walls); the x walls and the layer's back face (z = 2) stay unnamed.
 """
 
 import itertools
@@ -187,6 +193,32 @@ def bend(half=2.5, h=BEND_H):
     return sm.structured(edges, volume, surface)
 
 
+PML_SECTION, PML_AIR, PML_THICKNESS = 0.2, 1.5, 0.5
+
+
+def pml_line():
+    """The perfectly matched layer recipe's line, as `structured` returns it."""
+    total = PML_AIR + PML_THICKNESS
+    edges = (
+        np.linspace(0, PML_SECTION, 2),
+        np.linspace(0, PML_SECTION, 2),
+        np.linspace(0, total, round(total * 10) + 1),
+    )
+    eps = 1e-9
+
+    def volume(c):
+        return "air" if c[2] < PML_AIR else "pml"
+
+    def surface(c):
+        if abs(c[2]) < eps:
+            return "port"
+        if abs(c[1]) < eps or abs(c[1] - PML_SECTION) < eps:
+            return "plates"
+        return ""
+
+    return sm.structured(edges, volume, surface)
+
+
 def write(out: Path) -> list[Path]:
     """Write every tutorial mesh into the directory ``out``; return the files."""
     out.mkdir(parents=True, exist_ok=True)
@@ -199,6 +231,7 @@ def write(out: Path) -> list[Path]:
         sm.write_msh22(out / "line2d.msh", sm.z0_face(line())),
         sm.write_msh22(out / "bend2d.msh", sm.z0_face(bend())),
         sm.write_msh22(out / "bend2d_7um.msh", sm.z0_face(bend(half=3.5))),
+        sm.write_msh22(out / "pml_line.msh", pml_line()),
     ]
 
 

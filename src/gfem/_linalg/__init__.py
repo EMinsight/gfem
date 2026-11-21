@@ -585,6 +585,7 @@ class ResolvedLinearSolver:
         in_flight: int = 1,
         general: bool = False,
         budget: int | None = None,
+        reason: str | None = None,
     ) -> Self:
         """The linear solver of ``options`` for a ``problem`` problem.
 
@@ -603,6 +604,8 @@ class ResolvedLinearSolver:
             in_flight: The factorizations held at once (frequency workers).
             general: Whether the operator is general (not ``A^T = A``).
             budget: The rule's bytes; required with ``unknowns``.
+            reason: Why ``"auto"`` takes ``default`` without ``unknowns``,
+                for the log.
 
         Raises:
             NotImplementedError: The linear solver is not available.
@@ -621,7 +624,7 @@ class ResolvedLinearSolver:
             report.auto_choice(kind, problem=problem)
         elif comm is not None or unknowns is None:
             kind = default
-            report.auto_choice(kind, problem=problem)
+            report.auto_choice(kind, problem=problem, reason=reason)
         else:
             if budget is None:  # pragma: no cover - a caller error
                 raise TypeError("resolve needs a budget with unknowns.")

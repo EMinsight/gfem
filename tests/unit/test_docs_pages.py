@@ -222,6 +222,13 @@ USER_TERMS = (
     "2D model",
     "Ez polarization",
     "Line port",
+    "Perfectly matched layer",
+    "Target reflection",
+    "Reference frequency",
+    "Interior box",
+    "Physical region",
+    "PML mode",
+    "Clearance",
 )
 
 

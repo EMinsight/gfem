@@ -285,6 +285,9 @@ How gfem itself is checked: {doc}`../verification`.
 - **The skin depth.** A metal's field decays within its skin depth, tens of
   nanometres at optical frequencies. Refine the mesh at the metal walls before
   trusting the second digit.
+- **No law in a perfectly matched layer.** A layer region's background is a
+  constant `Material`: give it the permittivity of the band, or keep the
+  law region inside the air box ({doc}`perfectly-matched-layer`).
 
 ## Next
 

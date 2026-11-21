@@ -124,6 +124,7 @@ from gfem._engine.eigen import (
     eigen_operator,
     element_energy,
     law_scale,
+    layer_energy,
     principal_energy,
     projector,
     scale_per_tetrahedron,
@@ -136,12 +137,16 @@ from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
+from gfem._pml import Stretch, physical_regions
+from gfem._pml import reference_frequency as layer_reference_frequency
+from gfem._pml import stretch as layer_stretch
 from gfem._sign import largest_entry, largest_value
 from gfem._text import hertz
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import (
     DegenerateModeError,
     EigenmodeConvergenceError,
+    LayerClearanceWarning,
     LinearSolverConvergenceError,
     LowFrequencyWarning,
     SolverUnavailableError,
@@ -166,6 +171,12 @@ _INNER = 1e-2
 #: to ask for. It also bounds PETSc Krylov inner solves, whose ``ksp_rtol``
 #: floor is no lower.
 _INNER_FLOOR = 1e-13
+#: A returned mode of a model with a perfectly matched layer whose
+#: ``-Im k`` exceeds this fraction of ``|k|`` grows in time (Q below 5e5):
+#: the stretch acting on an evanescent tail that reaches the layer
+#: (measured 3e-3 for a mode trapped 3 mm in front of a layer). Below it
+#: the gain cannot be told from the layer's discretization error.
+_GAIN = 1e-6
 #: The modal overlap from which a seed solve's error names the region: every
 #: case below it converged in 47 shift solves or fewer, every hang had 70 or
 #: more.
@@ -331,8 +342,19 @@ class EigenmodeRule:
         mesh, active = model.mesh, model._domain.active  # noqa: SLF001
         #: Volume regions with tetrahedra in the solve domain: the field support.
         self.regions = tuple(r for r in mesh.volumes if active[mesh.elements(r)].any())
+        #: The regions of the field support outside a perfectly matched layer:
+        #: the energies and participations, whose element arrays hold the
+        #: layer's background, not its stretch.
+        self.physical = physical_regions(self.regions, model.pml)
         #: The regions with an anisotropic material: the principal split.
-        self.anisotropic = anisotropic_regions(model, self.regions)
+        self.anisotropic = anisotropic_regions(model, self.physical)
+        self._pml = model.pml
+        #: The layer's reference frequency: pinned, else the target.
+        self._reference_frequency = (
+            None
+            if model.pml is None
+            else layer_reference_frequency(model.pml, [problem.target])
+        )
         self._mesh = model.mesh
         self._materials = dict(model.materials)
         self._periodic_surfaces = pair_names(model._periodic)  # noqa: SLF001
@@ -389,9 +411,14 @@ class EigenmodeRule:
         with _mpi.raised_together(ValueError):
             dispersion.check_band(model, self.problem.target, "target")
         with task_manager(opts.threads, comm):
+            stretch = self._stretch(model, warn=True)
             with _timing.phase("discretize") as span:
                 op = driven_operator(
-                    model, order, wave_vector=self.problem.wave_vector, comm=comm
+                    model,
+                    order,
+                    wave_vector=self.problem.wave_vector,
+                    comm=comm,
+                    stretch=stretch,
                 )
                 built = op.built
                 sigma = terms.wavenumber(2 * math.pi * self.problem.target, built.scale)
@@ -401,13 +428,13 @@ class EigenmodeRule:
             entry = None
             try:
                 eop.factorize()  # before the projector's setup
-                divfree = projector(model, op, self.problem.wave_vector)
+                divfree = projector(model, op, self.problem.wave_vector, stretch)
                 # the whole search is one solve: its shift solves are internal
                 with (
                     _timing.phase("solve", iterations=()),
                     _mpi.raised_together(EigenmodeConvergenceError),
                 ):
-                    found = self.search().find(
+                    found = self._search_on(model, op).find(
                         eop,
                         divfree,
                         sigma,
@@ -424,6 +451,7 @@ class EigenmodeRule:
                         dispersion.check_energy(model, f, f"mode {j} at")
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
+                self._warn_gain(ks, built.scale)
                 lowest = min(k.real for k in ks) * const.c / built.scale
                 _check_low_frequency(
                     model,
@@ -536,7 +564,7 @@ class EigenmodeRule:
         ratios = Ratios(
             model,
             op,
-            regions=self.regions,
+            regions=self.physical,
             anisotropic=self.anisotropic,
             resistive=self.resistive,
             inductive=self.inductive,
@@ -546,13 +574,13 @@ class EigenmodeRule:
         omega = complex(k * const.c / op.built.scale)
         out = {}
         for region in regions:
-            unit = np.zeros(len(self.regions))
-            unit[self.regions.index(region)] = 1.0
+            unit = np.zeros(len(self.physical))
+            unit[self.physical.index(region)] = 1.0
             load = ratios.load(u, k, {"bulk": unit}, mode=mode)
             solved = deflated_solve(eop, u, None, -load.w, k=k, gap=gap, mode=mode)
             weights = {
                 r: load.energy[energy_name(r)]
-                for r in self.regions
+                for r in self.physical
                 if energy_name(r) in load.energy
             }
             out[region] = ParticipationDual(
@@ -584,6 +612,61 @@ class EigenmodeRule:
         else:
             message = f"{message} For an eigenmode solve, try {remedy}."
         return LinearSolverConvergenceError(message)
+
+    def _stretch(self, model: Model, *, warn: bool = False) -> Stretch | None:
+        """The layer's stretch for this solve: at the target unless pinned.
+
+        With ``warn``, a thin layer warns (`gfem._pml.Stretch.warn_thin`).
+        """
+        stretch = layer_stretch(model, [self.problem.target])
+        if warn and stretch is not None:
+            stretch.warn_thin()
+        return stretch
+
+    def _search_on(self, model: Model, op: DrivenOperator) -> ModeSearch:
+        """`search` on ``op``: it drops the modes of a perfectly matched layer.
+
+        By their layer and total energies (`layer_energy` of ``op``, summed
+        across the ranks: `ModeSearch.layer_energy`). Without a layer,
+        `search` as it is.
+        """
+        search = self.search()
+        energy = layer_energy(model, op)
+        if energy is None:
+            return search
+        comm = self.comm
+        if comm is None:
+            return dataclasses.replace(search, layer_energy=energy)
+        return dataclasses.replace(
+            search, layer_energy=lambda x: _mpi.reduce_bcast(comm, energy(x))
+        )
+
+    def _warn_gain(self, ks: list[complex], scale: float) -> None:
+        """Warn `LayerClearanceWarning` for each mode that grows in time.
+
+        On a model with a perfectly matched layer, ``Im k < 0`` beyond
+        `_GAIN` comes from the stretch acting on an evanescent tail that
+        reaches the layer, not from the device. Never without a layer.
+        """
+        if self._pml is None:
+            return
+        regions = ", ".join(map(repr, self._pml.regions))
+        per_hz = const.c / scale / (2 * math.pi)
+        for j, k in enumerate(ks):
+            if k.imag < -_GAIN * abs(k):
+                q = abs(k) / (2 * abs(k.imag))
+                _mpi.warn(
+                    self.comm,
+                    f"Eigenmode: mode {j} at {hertz(k.real * per_hz)} grows in "
+                    f"time (Im omega < 0, Q = {q:.4g} with the gain sign) on a "
+                    "model with a perfectly matched layer "
+                    f"({regions}): its evanescent "
+                    "tail most likely reaches the layer, which then pumps it "
+                    "instead of absorbing it. Its Q is not physical. Move the "
+                    "layer farther from the structure (more clearance).",
+                    LayerClearanceWarning,
+                    stacklevel=4,
+                )
 
     @property
     def polishable(self) -> bool:
@@ -776,7 +859,7 @@ class EigenmodeRule:
         n = len(modes)
         omega = np.array([m.k * const.c / scale for m in modes], dtype=complex)
         solve = np.zeros((space.ndof, n), dtype=complex)
-        bulk = np.zeros((len(self.regions), n))
+        bulk = np.zeros((len(self.physical), n))
         principal = np.zeros((len(self.anisotropic), n, 3))
         q_port = np.zeros((len(self.resistive), n))
         participation = np.zeros((len(self.inductive), n))
@@ -806,7 +889,7 @@ class EigenmodeRule:
             energy = volume + capacitors + (0.0 if sheets is None else sheets(x))
             amplitude = math.sqrt(MODE_ENERGY / energy)
             solve[:, j] = x * amplitude
-            for r in range(len(self.regions)):
+            for r in range(len(self.physical)):
                 bulk[r, j] = regions[r] / energy
             for r in range(len(self.anisotropic)):
                 principal[r, j] = axes[r] / energy
@@ -895,7 +978,7 @@ class EigenmodeRule:
         array.
         """
         volume = per_tet.sum()
-        regions = [per_tet[mesh.elements(region)].sum() for region in self.regions]
+        regions = [per_tet[mesh.elements(region)].sum() for region in self.physical]
         axes = []
         if per_axis is not None:
             axes = [
@@ -906,7 +989,7 @@ class EigenmodeRule:
             return volume, regions, axes
         local = np.concatenate([[volume], regions, np.ravel(axes)])
         total = _mpi.reduce_bcast(self.comm, local)
-        n = len(self.regions)
+        n = len(self.physical)
         return (
             float(total[0]),
             list(total[1 : 1 + n]),
@@ -979,7 +1062,7 @@ class EigenmodeRule:
             "participation": jax.ShapeDtypeStruct(
                 (len(self.inductive), n), jnp.float64
             ),
-            "bulk": jax.ShapeDtypeStruct((len(self.regions), n), jnp.float64),
+            "bulk": jax.ShapeDtypeStruct((len(self.physical), n), jnp.float64),
             "principal": jax.ShapeDtypeStruct(
                 (len(self.anisotropic), n, 3), jnp.float64
             ),
@@ -1321,7 +1404,7 @@ class EigenmodeRule:
             ratios = Ratios(
                 model,
                 op,
-                regions=self.regions,
+                regions=self.physical,
                 anisotropic=self.anisotropic,
                 resistive=self.resistive,
                 inductive=self.inductive,
@@ -1455,6 +1538,7 @@ class EigenmodeRule:
             self.options.order,
             wave_vector=self.problem.wave_vector,
             comm=self.comm,
+            stretch=self._stretch(model),
         )
         self._last_driven = (model, op)
         return op
@@ -1484,7 +1568,7 @@ class EigenmodeRule:
         ratios = Ratios(
             model,
             op,
-            regions=self.regions,
+            regions=self.physical,
             anisotropic=self.anisotropic,
             resistive=(),
             inductive=(),
@@ -1592,6 +1676,7 @@ class EigenmodeRule:
                 omega=omega[j],
                 _excluded=self._excluded,
                 _comm=_mpi.static_comm(self.comm),
+                _reference_frequency=self._reference_frequency,
             )
             for j in range(self.problem.n_modes)
         ]
@@ -1608,7 +1693,7 @@ class EigenmodeRule:
             },
             bulk_participation={
                 region: jnp.asarray(outputs["bulk"][r])
-                for r, region in enumerate(self.regions)
+                for r, region in enumerate(self.physical)
             },
             principal_participation={
                 region: jnp.asarray(outputs["principal"][r])
@@ -1622,6 +1707,7 @@ class EigenmodeRule:
             materials=self._materials,
             periodic_surfaces=self._periodic_surfaces,
             cluster=jnp.asarray(outputs["cluster"]),
+            pml=self._pml,
         )
 
 

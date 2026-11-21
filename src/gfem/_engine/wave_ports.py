@@ -79,6 +79,7 @@ from gfem._engine.mesh import EngineMesh, inverse_order
 from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._line_section import LineSection
+from gfem._pml import Stretch
 from gfem._port_section import PortSection, port_section
 from gfem._sweep.port_mode import PortModeSweep, rows_of, sweeps_on, swept_once
 from gfem._text import hertz
@@ -330,6 +331,7 @@ def port_mode_sweeps(
     comm: Any = None,
     handed: Sequence[dict[str, np.ndarray]] | None = None,
     polarization: Polarization | None = None,
+    stretch: Stretch | None = None,
 ) -> list[SweptSurface]:
     """Each wave port surface's port mode sweep over ``frequency``.
 
@@ -345,6 +347,8 @@ def port_mode_sweeps(
         handed: Per surface, a whole-grid sweep's arrays at ``frequency``
             (`SweptSurface.rows`).
         polarization: A 2D model's, for its line ports' modes.
+        stretch: The perfectly matched layer's stretch of the driven solve,
+            which a section cutting the layer takes (`port_section`).
 
     Returns:
         One per surface with wave ports, in the order of each surface's
@@ -361,7 +365,7 @@ def port_mode_sweeps(
         )
     out = []
     for k, group in enumerate(groups):
-        section = port_section(model, lead_port(group))
+        section = port_section(model, lead_port(group), stretch)
         modes = mode_space(section, order, polarization)
         if handed is not None:
             arrays = handed[k]
@@ -391,6 +395,7 @@ def wave_port_couplings(
     layout: DofLayout = ONE_PROCESS,
     swept: Sequence[dict[str, np.ndarray]] | None = None,
     polarization: Polarization | None = None,
+    stretch: Stretch | None = None,
 ) -> list[PortSurfaceCoupling]:
     """Run each wave port surface's port mode sweep and build its driven terms.
 
@@ -409,6 +414,8 @@ def wave_port_couplings(
             handed over in place of the sweep (a frequency worker's rows of
             its parent's whole-grid sweep, `port_mode_sweeps`).
         polarization: A 2D model's, ``"Ez"`` or ``"Hz"``.
+        stretch: The perfectly matched layer's stretch of the solve: the
+            port sections and the Robin terms take it.
 
     Returns:
         One coupling per surface with wave ports, in the order of each
@@ -425,6 +432,7 @@ def wave_port_couplings(
         comm=layout.comm,
         handed=swept,
         polarization=polarization,
+        stretch=stretch,
     )
     for surface in surfaces:
         group, modes, sweeps, columns = (
@@ -489,6 +497,7 @@ def wave_port_couplings(
             port=lead.name,
             surface=lead.surface,
             theta=terms.Tabulated(omegas, gamma0),
+            stretch=section.stretch,
         )
         out.append(PortSurfaceCoupling(piece, vectors, reaction, tuple(ports)))
     return out

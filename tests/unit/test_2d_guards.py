@@ -99,6 +99,10 @@ MODEL_ITEMS = {
         },
         rf"anisotropic.*'a'.*axes.*{SLAB}",
     ),
+    "perfectly matched layer": (
+        {"pml": gfem.PML("c")},
+        rf"perfectly matched layer \(gfem\.PML on 'c'\).*gfem\.Absorbing.*{SLAB}",
+    ),
 }
 
 

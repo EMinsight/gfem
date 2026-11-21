@@ -33,6 +33,8 @@ only if no wave in it is slower than in vacuum, so an anisotropic substrate is
 never taken for vacuum. The thin layer itself is isotropic. A selected side
 in a region with a permittivity law raises `ValueError`, since the layer's
 field reads one permittivity there: measure a surface away from that region.
+Faces with a side in a {term}`perfectly matched layer` do not count, and a
+surface wholly in the layer raises `ValueError`.
 
 On a film with the same medium on both faces, such as an airbridge or a
 suspended film, `"MA"` and `"MS"` count one layer on each face and add the
@@ -66,6 +68,9 @@ e = result.e_field(28e9, excite="p1").at([[0.0, 0.0, 5e-6], [1e-4, 0.0, 5e-6]])
   raises `ValueError`: move it into the solved region.
 - A point outside the mesh by less than 1e-4 of an element's size reads the
   nearest element. Farther out raises `ValueError`: move the point inside.
+- A point inside a {term}`perfectly matched layer` reads the stretched
+  field, which is not physical; so do means and exports there
+  ({doc}`perfectly-matched-layer`).
 
 ## Mean of a field over a region
 
@@ -121,6 +126,11 @@ z_vi = gfem.characteristic_impedance(mode, v_path, current_path=loop)
 
 A wave port with a `voltage_path` already holds $Z_{PV}$ as `mode.Z_PV`.
 
+Where a port's cross-section cuts a {term}`perfectly matched layer`, $P$
+counts the {term}`physical regions <physical region>` of the section only,
+so $Z_{PV}$ is low by the mode's share inside the layer (S is unchanged),
+and a path through the layer raises `ValueError`.
+
 A driven result holds the mode of each wave port too, so
 `result.port_modes["p1"]` takes the place of `mode`, with or without kept
 fields. Inside `jax.jit`, `jax.grad` or `jax.vmap` a driven result's port
@@ -159,6 +169,9 @@ p_box = gfem.power_flow(e, "design", model=model)
   between two surfaces is exactly the power absorbed or radiated between
   them. A `Conductor` or `Impedance` sheet lying on the surface counts as
   outside.
+- **With a perfectly matched layer**, `side` set to the layer regions gives
+  the power they absorb; a surface that cuts through the layer has no
+  physical meaning ({doc}`perfectly-matched-layer`).
 - **Keep the surface off the ports.** A port's term needs its excitation,
   which a field does not record: a surface within one element of a port's
   surface raises `ValueError`. Move it one element away, or put the port's
@@ -235,6 +248,8 @@ p_sub = 2 * (2 * np.pi * f) * tan_delta * w["substrate"]
   `bulk_participation[region][k]` times 1 J.
 - **The model the field was solved with** is a required input, as for
   `power_flow`: a driven result does not carry its materials.
+- **Physical regions only.** The regions of a {term}`perfectly matched layer`
+  get no entry: the field there is not physical.
 - **Not differentiable.** `electric_energy` inside `jax.grad` raises
   `gfem.NonDifferentiableError`.
 - **A region with a permittivity law** is weighed with $\operatorname{Re} \mathrm{d}(\omega\varepsilon)/\mathrm{d}\omega$ at the

@@ -1027,7 +1027,9 @@ def warn_oblique_absorbers(
                 f"{math.degrees(theta):.1f}° (order {order} at {hertz(fw)}), and "
                 f"its first-order condition reflects about {r:.1%} of the "
                 "amplitude of such a wave; a gfem.FloquetPort on "
-                f"{surface!r} absorbs every order at any angle."
+                f"{surface!r} absorbs every order at any angle, and so does a "
+                "perfectly matched layer (gfem.PML) meshed beyond it, which also "
+                "takes a lossy or layered substrate."
             ),
             stacklevel=stacklevel + 1,
         )

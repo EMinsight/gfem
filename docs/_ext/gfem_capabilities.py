@@ -223,6 +223,9 @@ PROBLEMS = {
     "driven_blend": Problem("driven", "s.values", "lumped"),
     # the static permittivity of a law
     "electrostatic_law": Problem("electrostatic", "capacitance"),
+    # a perfectly matched layer: a model option on the driven and eigenmode rows
+    "driven_pml": Problem("driven", "s.values", "wave"),
+    "eigenmode_pml": Problem("eigenmode", "omega"),
     # thermal and DC conduction
     "steady_thermal": Problem("steady_thermal", "temperature.coefficients"),
     "transient_thermal": Problem("transient_thermal", "traces.upper"),
@@ -339,6 +342,14 @@ RAISES_LABELS = {
     "LumpedPort resistance": (
         "Any result, with respect to a lumped port's resistance (its reference "
         "impedance)"
+    ),
+    "PML target reflection (target_reflection)": (
+        "Any result, with respect to a perfectly matched layer's target "
+        "reflection (a fixed value of the layer)"
+    ),
+    "PML target reflection (reference_frequency)": (
+        "Any result, with respect to a perfectly matched layer's reference "
+        "frequency (a fixed value of the layer)"
     ),
     "FloquetPort offset": (
         "Any result, with respect to a Floquet port's de-embedding offset"

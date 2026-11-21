@@ -39,7 +39,10 @@ field, one test function per node and axis) a volume term changes by
 ``int T(u, v) : grad W``, with hand-written **transport tensors** ``T`` on
 the complex fields themselves (gradients and H(curl) values transform
 covariantly, curls contravariantly; element-wise constant coefficients
-travel with their elements):
+travel with their elements). A coefficient that is also a fixed function
+of space (a perfectly matched layer's stretch) is read at the moved
+quadrature points, which adds ``int ((W . grad) C u) . v`` (curls for a
+curl term), on the pinned rule like its forward form:
 
 - value, ``int (C u) . v``: ``T = (C u . v) I - u (x) C^T v - v (x) C u``;
 - curl, ``int (C curl u) . curl v``: ``T = C^T cv (x) cu + C cu (x) cv -
@@ -248,8 +251,9 @@ class Term:
             ``DiffShape``). The material pass integrates the kind's bare
             integrand (`INTEGRANDS`).
         coefficient: For a volume kind, ``C``: an element-wise constant
-            NGSolve coefficient, scalar or 3 x 3, real or complex, the same
-            the forward form reads; for a trace kind, the face-wise
+            NGSolve coefficient (times a fixed function of space when
+            ``position``), scalar or 3 x 3, real or complex, the same the
+            forward form reads; for a trace kind, the face-wise
             constant ``c``: a scalar, or 3 x 3 for an absorbing face next
             to an anisotropic material (no node pass).
         region: For a trace kind, the boundary region it is integrated on.
@@ -283,6 +287,10 @@ class Term:
             points of a layer grid's region (`gfem._engine.points`), that
             region: its derivatives are per point of the region, and the
             point pass reads them. ``None`` otherwise.
+        position: Whether a volume term's ``coefficient`` also varies in
+            position within an element (a perfectly matched layer's
+            stretch, a fixed function of space): the node pass then adds
+            the coefficient's change at the moved quadrature points.
     """
 
     name: str
@@ -306,6 +314,7 @@ class Term:
     lumped: tuple[tuple, float] | None = None
     law: str | None = None
     points: str | None = None
+    position: bool = False
 
 
 def _dot(u: ngs.CoefficientFunction, v: ngs.CoefficientFunction) -> ngs.CF:
@@ -1050,8 +1059,19 @@ def _transport(term: Term, u: Any, v: Any) -> Any:
     return c * ((u * v) * identity - ngs.OuterProduct(u, v) - ngs.OuterProduct(v, u))
 
 
+#: The coordinates a position-dependent coefficient is differentiated by.
+_COORDINATES = (ngs.x, ngs.y, ngs.z)
+
+
+def _position_part(term: Term, u: Any, v: Any, slopes: list) -> list:
+    """``(d_j C u) . v`` (curls for a curl term) per axis ``j``: the moved point."""
+    if term.kind == "curl":
+        u, v = ngs.curl(u), ngs.curl(v)
+    return [(slope * u) * v for slope in slopes]
+
+
 def _volume_shape(
-    terms: Sequence[tuple[Term, complex]], pair: FieldPair, gw: Any
+    terms: Sequence[tuple[Term, complex]], pair: FieldPair, w: Any
 ) -> Any:
     """``int Re(sum_t theta_t sum_k T_t(left_k, right_k)) : grad W``, one pair.
 
@@ -1059,23 +1079,46 @@ def _volume_shape(
     ``DiffShape``, no splitting). Value terms are integrated on the pinned
     rule; curl and gradient terms, products of first derivatives, on the
     exact rule of their lower degree (`quadrature.dx_derivatives`).
+
+    A term whose coefficient varies in position (`Term.position`) adds
+    ``int Re(theta_t ((W . grad) C u) . v)`` (curls for a curl term): its
+    coefficient is read at the moved quadrature points. Such a term is
+    integrated on the pinned rule, as its forward form is.
     """
+    gw = ngs.grad(w)
     totals: dict[bool, Any] = {}
+    moved: list[Any] = [None, None, None]
+    slopes: dict[int, list] = {}
     for a, lefts in _parts(pair.space, pair.left):
         for b, rights in _parts(pair.space, pair.right):
             for term, theta in terms:
                 weight = complex(theta * a * b)
                 factor: complex | float = weight.real if weight.imag == 0 else weight
-                derivatives = term.kind != "value"
+                derivatives = term.kind != "value" and not term.position
+                if term.position and id(term) not in slopes:
+                    slopes[id(term)] = [term.coefficient.Diff(c) for c in _COORDINATES]
                 for u, v in zip(lefts, rights, strict=True):
                     part = factor * _transport(term, u, v)
                     total = totals.get(derivatives)
                     totals[derivatives] = part if total is None else total + part
+                    if not term.position:
+                        continue
+                    for j, at in enumerate(
+                        _position_part(term, u, v, slopes[id(term)])
+                    ):
+                        at = factor * at  # noqa: PLW2901
+                        moved[j] = at if moved[j] is None else moved[j] + at
     out = None
     for derivatives, total in totals.items():
         tensor = total.real if total.is_complex else total
         rule = quadrature.dx_derivatives if derivatives else quadrature.dx
         part = ngs.InnerProduct(gw, tensor) * rule(pair.order, definedon=pair.domain)
+        out = part if out is None else out + part
+    if moved[0] is not None:
+        scalar = sum(
+            (m.real if m.is_complex else m) * w[j] for j, m in enumerate(moved)
+        )
+        part = scalar * quadrature.dx(pair.order, definedon=pair.domain)
         out = part if out is None else out + part
     return out
 
@@ -1188,7 +1231,6 @@ def _node_pass(
     n_nodes = len(model.mesh.imported_nodes)
     space = ngs.VectorH1(built.mesh, order=1)
     w = space.TestFunction()
-    gw = ngs.grad(w)
     form = ngs.LinearForm(space)
     empty = True
     for pair in pairs:
@@ -1209,7 +1251,7 @@ def _node_pass(
             else:
                 volume.append(weighted)
         for part in (
-            _volume_shape(volume, pair, gw) if volume else None,
+            _volume_shape(volume, pair, w) if volume else None,
             _trace_shape(traces, pair, w) if traces else None,
             _surface_shape(surface, pair, w, comm) if surface else None,
         ):

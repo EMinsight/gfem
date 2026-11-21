@@ -372,6 +372,10 @@ class LineModeSpace:
         """
         return -0.5j / (omegas[:, None] * self._vacuum)
 
+    def layer_share(self, vecs: np.ndarray, lam: np.ndarray) -> np.ndarray:  # noqa: ARG002
+        """Each eigenvector's layer energy share: zero, a line meets no layer."""
+        return np.zeros(np.asarray(vecs).reshape(len(self.free), -1).shape[1])
+
     # --- fields ---------------------------------------------------------------
 
     def full(self, x: np.ndarray) -> np.ndarray:

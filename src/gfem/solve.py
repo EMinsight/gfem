@@ -16,6 +16,7 @@ from gfem._domain import physics_of
 from gfem._engine.solve_request import SolveRequest
 from gfem._materials import MaterialField
 from gfem._periodic import check_nodes
+from gfem._pml import check_layer_nodes
 from gfem.errors import LinearSolverConvergenceError
 from gfem.model import _PHYSICS_NAMES, Model
 from gfem.options import SolverOptions
@@ -222,7 +223,7 @@ def _solve_cache(cache: str | os.PathLike | None) -> SolveCache | None:
     return SolveCache(cache)
 
 
-def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
+def _solve(  # noqa: PLR0912, PLR0915 - the cache's seam sits between the checks
     model: Model,
     problem: Any,
     *,
@@ -298,9 +299,10 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
             leaves = problem if inputs is None else inputs(problem)
             traced = SolveRequest(adjoint_loads=adjoint_loads)
             return rule.result(solve_vjp(rule, model, leaves, request=traced)), None
-        # A moved mesh must keep its periodic pairs and stay valid on the solve
-        # domain.
+        # A moved mesh must keep its periodic pairs, keep its physical
+        # elements off the layer's stretch and stay valid on the solve domain.
         check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
+        check_layer_nodes(model, problem)
         physics = physics_of(problem)
         _check_quality(
             model.mesh,

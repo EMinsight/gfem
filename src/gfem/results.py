@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from gfem._engine.line_mode import ModeSpace
     from gfem._line_section import LineSection
+    from gfem._pml import PML
     from gfem._port_section import PortSection
     from gfem.problems import Polarization
 
@@ -629,7 +630,8 @@ class PortModeField:
 
         Points off the cross-section's elements (inside metal holes or outside
         the port) give zero. On a line port of a 2D mesh, the scalar field at
-        ``(n_points, 2)`` points: ``(n_freq, n_points)``.
+        ``(n_points, 2)`` points: ``(n_freq, n_points)``. Points inside a
+        perfectly matched layer give the stretched field, not a physical one.
 
         Args:
             points: ``(n_points, 3)`` (or one ``(3,)``) global coordinates, m,
@@ -700,7 +702,9 @@ class PortModeResult:
             without a voltage path. Real for a lossless line; a wave port's
             reference impedance is its modulus (`gfem.conventions`). For
             the power-current and voltage-current definitions, see
-            `gfem.characteristic_impedance`.
+            `gfem.characteristic_impedance`. On a section cut by a perfectly
+            matched layer, :math:`P` counts the section outside the layer, so
+            :math:`Z_{PV}` is low by the mode's share inside it.
         residual: Backward error of the mode at each frequency,
             :math:`|A x - \lambda B x| / (|A x| + |\lambda| |B x|)` on the 2D port mode
             problem. It exceeds ``SolverOptions.port_mode_tolerance`` only at
@@ -710,11 +714,15 @@ class PortModeResult:
             solved exactly (shared by the wave ports of a shared port
             surface); elsewhere it comes from the reduced port mode model.
         e_field: The mode's electric field, normalized to 1 W (1 W/m for a
-            line port of a 2D mesh); ``None`` on a driven result computed
-            inside `jax.jit`, `jax.grad` or `jax.vmap`, and for an Hz line
-            port, whose field is ``h_field``.
+            line port of a 2D mesh) through the section outside any
+            perfectly matched layer (S does not depend on it); ``None`` on a
+            driven result computed inside `jax.jit`, `jax.grad` or
+            `jax.vmap`, and for an Hz line port, whose field is ``h_field``.
         h_field: The magnetic field ``Hz`` of an Hz line port's mode,
             normalized to 1 W/m; ``None`` otherwise.
+        pml: The model's perfectly matched layer (`gfem.PML`) the mode was
+            solved with, or ``None``. In its regions the field is the
+            stretched one, not a physical field.
     """
 
     port: str
@@ -726,6 +734,7 @@ class PortModeResult:
     solved: jax.Array
     e_field: PortModeField | None = None
     h_field: PortModeField | None = None
+    pml: PML | None = None
 
     @property
     def n_eff(self) -> jax.Array:
@@ -1692,7 +1701,8 @@ class EigenmodeResult:
             :math:`-2\, d\ln\omega / d\ln L`. Differentiable as the ratios
             above.
         bulk_participation: Electric energy participation of each volume
-            region of the solve domain, by region name: the fraction of the
+            region of the solve domain outside a perfectly matched layer, by
+            region name: the fraction of the
             mode's electric energy ``E`` stored in it (in a region with a
             permittivity law, its share of the mode's total energy, weighed
             by the energy permittivity: see `gfem.conventions`). For an isotropic
@@ -1744,6 +1754,12 @@ class EigenmodeResult:
             empty for a model with no pair, and for a result saved before
             gfem recorded them. `gfem.interface_participation` refuses
             these surfaces: they are interior to the periodic cell.
+        pml: The model's perfectly matched layer (`gfem.PML`) the modes were
+            solved with, or ``None``. Its regions hold no energy of the
+            mode: the 1 J, the participations and
+            `gfem.interface_participation` count the physical regions only,
+            and in the layer the field is the stretched one, not a physical
+            field.
         cluster: Integer label per mode, ``(n_modes,)``: modes with the same
             label form a degenerate cluster, frequencies within
             ``SolverOptions.cluster_rtol`` of each other. A cluster's modes
@@ -1767,6 +1783,7 @@ class EigenmodeResult:
     )
     periodic_surfaces: tuple[tuple[str, str], ...] = ()
     sheet_participation: dict[str, jax.Array] = dataclasses.field(default_factory=dict)
+    pml: PML | None = None
 
     def __post_init__(self) -> None:
         """Hold fields, materials and pairs as tuples and dict; label simple modes."""
@@ -1787,7 +1804,11 @@ class EigenmodeResult:
     def q(self) -> jax.Array:
         r"""Quality factors :math:`|\omega| / (2 |\mathrm{Im}\,\omega|)`.
 
-        ``inf`` for a lossless mode.
+        ``inf`` for a lossless mode. The total Q: material and port losses,
+        and with a perfectly matched layer (`gfem.PML`) the radiation it
+        absorbs. A mode whose :math:`\mathrm{Im}\,\omega` has the gain sign
+        on such a model warns `gfem.LayerClearanceWarning`: its Q is the
+        layer's, not the device's.
         """
         return jnp.abs(self.omega) / (2 * jnp.abs(jnp.imag(self.omega)))
 

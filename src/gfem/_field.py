@@ -91,6 +91,10 @@ class Field:
     #: Formed from a frozen reduced basis (`ReducedFields`): its coefficients
     #: differentiate through the reduced coordinates alone.
     _reduced: bool = False
+    #: The reference frequency (Hz) of the perfectly matched layer the field
+    #: was solved with, so that readers of the operator stretch it as the
+    #: solve did; ``None`` without a layer.
+    _reference_frequency: float | None = None
 
     def __post_init__(self) -> None:
         """Check the descriptor against the mesh."""
@@ -140,7 +144,9 @@ class Field:
         field: B lives in H(div) of one order lower. Differentiable with
         respect to the coefficients and ``omega``. A flux of point-sampled
         :math:`E \times B^* / \mu_0` carries a mesh-periodic bias;
-        use `gfem.power_flow` for the power through a surface.
+        use `gfem.power_flow` for the power through a surface. Inside a
+        perfectly matched layer (`gfem.PML`) it is the curl of the stretched
+        field, not a physical flux density.
 
         Returns:
             A `Field` with quantity ``"B"`` in tesla.
@@ -196,7 +202,9 @@ class Field:
         there, such as the normal component of E at a material interface, has no
         single value, so to read one side offset the point into it. A point within
         a small tolerance outside the mesh (1e-4 of an element's size) is still
-        accepted, and evaluates from the nearest element.
+        accepted, and evaluates from the nearest element. Inside a perfectly
+        matched layer (`gfem.PML`) the value is the stretched field's, not a
+        physical one.
 
         On a 2D mesh, read tetrahedron as triangle and face as edge: the points
         lie in the :math:`(x, y)` plane and are given as :math:`(x, y)`.
@@ -238,7 +246,8 @@ class Field:
         real field is the point data ``quantity`` (e.g. ``"V"``); a complex
         one is ``"<quantity>_real"`` and ``"<quantity>_imag"``. The cell data
         ``region`` and ``entity`` give the gmsh physical and entity numbers of
-        the parent tetrahedron.
+        the parent tetrahedron; mask a perfectly matched layer's regions
+        (`gfem.PML`) by ``region``, since the field there is not physical.
 
         Raises:
             TypeError: The field holds JAX tracers: export concrete values,
@@ -371,6 +380,7 @@ class ReducedFields(Sequence[Field]):
     order: int
     support: tuple[str, ...]
     _excluded: tuple[tuple[int, int], ...] = ()
+    _reference_frequency: float | None = None
 
     def __post_init__(self) -> None:
         """Hold the arrays as JAX arrays with matching shapes."""
@@ -414,6 +424,7 @@ class ReducedFields(Sequence[Field]):
             omega=self.omega[k],
             _excluded=self._excluded,
             _reduced=True,
+            _reference_frequency=self._reference_frequency,
         )
 
     def __iter__(self) -> Iterator[Field]:

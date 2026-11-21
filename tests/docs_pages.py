@@ -36,6 +36,7 @@ MESHES = {
     MESH_URL.replace("line.msh", "heater_straight.msh"): MESH.with_name(
         "heater_straight.msh"
     ),
+    MESH_URL.replace("line.msh", "pml_line.msh"): MESH.with_name("pml_line.msh"),
 }
 
 _FENCE = re.compile(

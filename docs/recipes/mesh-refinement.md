@@ -424,8 +424,10 @@ How gfem itself checks the estimates against known answers:
 - `refine_mesh` raises {py:obj}`gfem.MeshRefinementUnsupportedError`, before
   any solve, on an adaptive sweep, a port mode problem, a periodic model, a
   Bloch wave vector, a thermal or DC conduction problem (`feature`
-  `"thermal"` or `"dc_conduction"`) and `SolverOptions(order=1)` (the
-  `"fast"` preset); both
+  `"thermal"` or `"dc_conduction"`), a driven or eigenmode model with a
+  {term}`perfectly matched layer` (the estimators weigh the layer with its
+  background material; electrostatic refinement of such a model runs) and
+  `SolverOptions(order=1)` (the `"fast"` preset); both
   estimators refuse order 1. An estimate of a mode bound to a permittivity
   law region where $\operatorname{Re} \varepsilon < 0$ at the mode (a mode guided along a metal
   surface) raises it when it estimates: refine such a model with the

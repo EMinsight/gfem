@@ -78,6 +78,9 @@ class LineSection:
 
     #: A line port has no impedance edges (the sweep's slow-wave bound).
     impedance_terms = ()
+    #: Nor a perfectly matched layer: a 2D model refuses one.
+    layer = None
+    stretch = None
 
     @property
     def normal(self) -> np.ndarray:

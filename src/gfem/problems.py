@@ -105,7 +105,7 @@ def _wave_vector(value: Any, owner: str) -> tuple[float, float, float] | None:
     return (float(k[0]), float(k[1]), float(k[2]))
 
 
-def _reference_frequency(value: Any, wave_vector: Any) -> float | None:
+def _wave_vector_frequency(value: Any, wave_vector: Any) -> float | None:
     """``None``, or the frequency (Hz) at which ``wave_vector`` holds."""
     if value is None:
         return None
@@ -942,7 +942,7 @@ class Driven:
         object.__setattr__(
             self,
             "wave_vector_frequency",
-            _reference_frequency(wave_vector_frequency, self.wave_vector),
+            _wave_vector_frequency(wave_vector_frequency, self.wave_vector),
         )
         object.__setattr__(self, "polarization", polarization)
 
@@ -1076,6 +1076,13 @@ class Eigenmode:
     frequency and Q do not depend on ``target``. Conductor and radiation
     losses must be perturbations (Q above about 5); for a strongly radiating
     structure, find the resonance from a `gfem.Driven` sweep.
+
+    With a perfectly matched layer (`gfem.PML`) the radiation it absorbs
+    need not be a perturbation, unlike an `Absorbing` boundary's: Q is the
+    total Q, radiation included. The layer's reference frequency is
+    ``target`` unless pinned, the modes that live in the layer are dropped,
+    and the 1 J normalization and the participations count the regions
+    outside the layer.
 
     Lumped ports are terminations here: nothing is excited. A port with a
     resistance gets a coupling Q, a port with an inductance a participation

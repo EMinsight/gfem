@@ -19,7 +19,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.sparse as sp
 
-from gfem import _morph, _mpi, _periodic
+from gfem import _morph, _mpi, _periodic, _pml
 from gfem._boundaries import surfaces_of
 from gfem._checks import is_traced
 from gfem._dim2 import refuse_entry
@@ -336,6 +336,18 @@ class BoundaryMorph:
 jax.tree_util.register_static(BoundaryMorph)
 
 
+def _layer_nodes(model: Model) -> np.ndarray:
+    """The nodes of the perfectly matched layer's tetrahedra, held by a morph.
+
+    The layer's stretch is fixed at the imported mesh: its nodes stay put,
+    so the moved layer is the declared one.
+    """
+    layer = _pml.layer_tetrahedra(model.mesh, model.pml)
+    if layer is None:
+        return np.zeros(0, dtype=np.int64)
+    return np.unique(model.mesh.tetrahedra[layer])
+
+
 def boundary_morph(  # noqa: PLR0915
     model: Model,
     moving: str,
@@ -353,8 +365,10 @@ def boundary_morph(  # noqa: PLR0915
     elastic extension, solved once on the imported mesh. Surfaces play roles:
 
     - the moving nodes are displaced by ``t[i] * normals[i]``;
-    - nodes on port surfaces (from the model) and on ``fixed`` surfaces are
-      held, and are not parameters even when they lie on the moving surface;
+    - nodes on port surfaces (from the model), on ``fixed`` surfaces and of
+      the tetrahedra of a perfectly matched layer are held, and are not
+      parameters even when they lie on the moving surface (the layer's
+      stretch is fixed at the imported mesh);
     - nodes on every other named surface slide within it: a planar facet
       keeps its plane, the line where two facets meet keeps its line, and a
       corner is held;
@@ -384,8 +398,9 @@ def boundary_morph(  # noqa: PLR0915
     ``t = dw / 2 * jnp.ones(morph.n_params)`` widens a strip by ``dw``.
 
     Args:
-        model: The model; its ports are held and its excluded volumes set the
-            sign. Only its imported mesh geometry is used.
+        model: The model; its ports and its perfectly matched layer are
+            held and its excluded volumes set the sign. Only its imported
+            mesh geometry is used.
         moving: The moving surface region.
         where: Optional predicate that narrows the moving nodes. It gets the
             imported coordinates (metres) of the surface's nodes, shape
@@ -404,7 +419,8 @@ def boundary_morph(  # noqa: PLR0915
 
     Raises:
         RegionNotFoundError: A surface or volume name is not in the mesh.
-        ValueError: The selection is empty or entirely held, ``grows`` is
+        ValueError: The selection is empty or entirely held (on ports,
+            ``fixed`` surfaces or in the layer), ``grows`` is
             missing where it is needed (or given where it means nothing),
             ``extension`` is unknown, or ``moving`` is a periodic surface.
         TypeError: An argument has the wrong type.
@@ -447,7 +463,9 @@ def boundary_morph(  # noqa: PLR0915
     tri_tags = mesh.triangle_tags
     held_tri = np.isin(tri_tags, [tag[s] for s in held_surfaces])
     held = np.zeros(n_nodes, dtype=bool)
-    held[ties[mesh.triangles[held_tri].ravel()]] = True
+    held[
+        ties[np.concatenate([mesh.triangles[held_tri].ravel(), _layer_nodes(model)])]
+    ] = True
     held = held[ties]  # a class is held if any member is
     in_tet = np.zeros(n_nodes, dtype=bool)
     in_tet[mesh.tetrahedra.ravel()] = True
@@ -459,8 +477,8 @@ def boundary_morph(  # noqa: PLR0915
     if len(params) == 0:
         msg = (
             f"Every selected node of {moving!r} ({len(selected)}) lies on a held "
-            "surface (a port or fixed=), so nothing can move. Narrow fixed= or "
-            "pick another surface."
+            "surface (a port or fixed=), or lies in the perfectly matched layer, "
+            "so nothing can move. Narrow fixed= or pick another surface."
         )
         raise ValueError(msg)
     # every node of the moving surface in a parameter's class moves with it

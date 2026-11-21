@@ -208,7 +208,34 @@ class ObliqueAbsorberWarning(UserWarning):
     Bloch wave vector and every propagating diffraction order meet the face
     at an angle, so the driven solve warns once per face when that
     reflection reaches 1%. A `gfem.FloquetPort` on the face absorbs every
-    order at any angle. Filter it with Python's `warnings` module.
+    order at any angle, and so does a perfectly matched layer (`gfem.PML`)
+    meshed beyond it, which also takes a lossy or layered substrate. Filter
+    it with Python's `warnings` module.
+    """
+
+
+class ThinLayerWarning(UserWarning):
+    r"""A perfectly matched layer is thin against the reference wavelength.
+
+    It fires when a side of the layer has :math:`k_\text{ref} d < 2\pi/100`,
+    with :math:`d` its thickness and :math:`k_\text{ref}` the vacuum
+    wavenumber at its reference frequency. The stretch maximum
+    :math:`\sigma_\max = -3\ln R_0/(2 k_\text{ref} d)` is then large, so the
+    operator is badly conditioned and the mesh cannot follow the field's
+    decay across the layer. Make the layer about half a wavelength thick, or
+    filter the warning with Python's `warnings` module.
+    """
+
+
+class LayerClearanceWarning(UserWarning):
+    """A mode keeps a noticeable share of its energy in a perfectly matched layer.
+
+    It fires when a wave port's mode, or an eigenmode, holds more than about
+    1% of its electric energy in the layer, or when an eigenmode grows in
+    time beyond round-off: the layer sits too close to the guided field
+    (too little clearance), so it absorbs or distorts the mode itself. Move
+    the layer away from the structure, or filter the warning with Python's
+    `warnings` module.
     """
 
 
@@ -281,7 +308,8 @@ class MeshRefinementUnsupportedError(NotImplementedError):
 
     Attributes:
         feature: What has no path: ``"adaptive sweep"``, ``"port mode"``,
-            ``"periodic"``, ``"bloch"``, ``"floquet port"``, or an estimator
+            ``"periodic"``, ``"bloch"``, ``"floquet port"``,
+            ``"perfectly matched layer"``, or an estimator
             or problem type that this version of gfem cannot estimate yet.
     """
 

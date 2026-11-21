@@ -37,11 +37,13 @@ import ngsolve as ngs
 import numpy as np
 import scipy.constants as const
 
+from gfem import _pml
 from gfem._boundaries import FloquetPort, surfaces_of
 from gfem._engine import probe
 from gfem._engine.driven import DrivenOperator, driven_operator
 from gfem._engine.mesh import inverse_order
 from gfem._periodic import tie_classes
+from gfem._pml import Stretch
 from gfem.mesh import _TET_EDGES, Mesh, _same_topology
 
 if TYPE_CHECKING:
@@ -148,7 +150,8 @@ def power_flow(
             fit (see `gfem.power_flow`).
     """
     check_nodes(field, model)
-    flux = build(field.order, model, surface(field, side, model))
+    where = surface(field, side, model)
+    flux = build(field.order, model, where, stretch=_pml.field_stretch(model, field))
     e = np.asarray(field.coefficients)
     check_size(e, flux.op, field.order)
     return flux.power(e, float(np.asarray(field.omega).real))
@@ -202,10 +205,21 @@ def surface(
     return Surface(tie=tie, inside=inside, layer=layer, rim=rim, faces=faces)
 
 
-def build(order: int, model: Model, where: Surface) -> Flux:
-    """The `Flux` of a surface on ``model`` at its node positions."""
+def build(
+    order: int, model: Model, where: Surface, *, stretch: Stretch | None = None
+) -> Flux:
+    """The `Flux` of a surface on ``model`` at its node positions.
+
+    ``stretch`` is the field's perfectly matched layer stretch
+    (`gfem._pml.field_stretch`).
+    """
     op = driven_operator(
-        model, order, elements=where.layer, faces=where.faces, paired=False
+        model,
+        order,
+        elements=where.layer,
+        faces=where.faces,
+        paired=False,
+        stretch=stretch,
     )
     return Flux(op=op, mask=_dofs(op, where.tie, where.rim, where.rim | where.layer))
 

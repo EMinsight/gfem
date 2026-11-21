@@ -101,6 +101,7 @@ def refuse_model(
     materials: Any,
     items: tuple[Any, ...],
     excluded: tuple[tuple[Any, ...], ...],
+    pml: Any = None,
 ) -> None:
     """Raise for a `gfem.Model` part with no 2D path, on a 2D mesh.
 
@@ -109,6 +110,7 @@ def refuse_model(
         materials: The user's ``materials=``.
         items: The boundaries and ports.
         excluded: The ``excluded=`` entries of each physics.
+        pml: The user's ``pml=``.
 
     Raises:
         NotImplementedError: A part has no 2D path; the message names the remedy.
@@ -119,6 +121,12 @@ def refuse_model(
         for refused, what, remedy in _ITEMS:
             if refused(item):
                 raise _refusal(what(item), remedy)
+    if pml is not None:
+        regions = ", ".join(map(repr, pml.regions))
+        raise _refusal(
+            f"A perfectly matched layer (gfem.PML on {regions})",
+            f"Close the domain with gfem.Absorbing on its outer lines, or {SLAB}.",
+        )
     for entries in excluded:
         for entry in entries:
             if not isinstance(entry, str):

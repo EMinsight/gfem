@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from gfem import _floquet
     from gfem._engine.driven import DrivenOperator
     from gfem._linalg import ResolvedLinearSolver
+    from gfem._pml import Stretch
     from gfem.model import Model
     from gfem.problems import Polarization
 
@@ -70,6 +71,9 @@ class DrivenSystemBuilder:
         retain_memory: ``SolverOptions.retain_memory``, read into a budget
             at each build.
         gauge: Whether the solve runs through the tree-cotree gauge.
+        polarization: A 2D model's polarization, or ``None``.
+        stretch: The perfectly matched layer's stretch (the rule's), which
+            the port sections and their key take; ``None`` without a layer.
     """
 
     frequency: tuple[float, ...]
@@ -89,6 +93,7 @@ class DrivenSystemBuilder:
     retain_memory: int | None
     gauge: bool
     polarization: Polarization | None = None
+    stretch: Stretch | None = None
 
     def build(
         self,
@@ -129,6 +134,7 @@ class DrivenSystemBuilder:
                 wave_vector_frequency=self.wave_vector_frequency,
             ),
             polarization=self.polarization,
+            stretch=self.stretch,
         )
         kept = disc.ports if disc is not None else None
         if not isinstance(kept, KeptPorts) or kept.key != key:
@@ -142,6 +148,7 @@ class DrivenSystemBuilder:
                 layout=op.layout or ONE_PROCESS,
                 swept=handed,
                 polarization=self.polarization,
+                stretch=self.stretch,
             )
             floquet = floquet_couplings(
                 model, op, self.orders, frequency, grid=self.order_frequency
@@ -362,6 +369,7 @@ class KeptPorts:
         floquet: FloquetKey | None = None,
         *,
         polarization: Polarization | None = None,
+        stretch: Stretch | None = None,
     ) -> tuple:
         """What the couplings of ``model`` on ``op``'s discretization depend on.
 
@@ -370,11 +378,11 @@ class KeptPorts:
         the output grid, the port mode tolerance, the Floquet surfaces'
         `FloquetKey` (order table settings and half-space media), the
         ports, per wave port surface
-        `port_section_key`
+        `port_section_key` with the layer's ``stretch``
         (never the port section itself), and a 2D model's ``polarization``.
         """
         sections = tuple(
-            port_section_key(model, lead_port(group))
+            port_section_key(model, lead_port(group), stretch)
             for group in wave_port_surfaces(model.ports).values()
         )
         key = (

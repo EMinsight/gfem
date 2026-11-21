@@ -4,7 +4,8 @@ The host kernel of `gfem.electric_energy`: ``1/4 eps0 ∫ Re(eps_r) E .
 conj(E)`` over each region's tetrahedra in the solve domain, at quadrature
 order ``2 order``, exact for the discrete field and an element-wise
 permittivity. A permittivity law region reads the Brillouin weight ``Re
-d(omega eps)/d omega`` at the field's real frequency instead.
+d(omega eps)/d omega`` at the field's real frequency instead. A perfectly
+matched layer's regions get no entry.
 The field's coefficients are on the unpaired space of the driven operator,
 also on a model with `gfem.Periodic` pairs.
 """
@@ -21,6 +22,7 @@ from gfem._engine import dispersion
 from gfem._engine.driven import driven_operator
 from gfem._engine.eigen import element_energy, law_scale, scale_per_tetrahedron
 from gfem._engine.power_flow import check_field, check_size
+from gfem._pml import physical_regions
 
 if TYPE_CHECKING:
     from gfem._field import Field
@@ -64,7 +66,8 @@ def electric_energy(field: Field, model: Model) -> dict[str, float]:
             model, law_scale(model, omega, dispersion.brillouin_eps)
         )
     out = {}
-    for region in mesh.volumes:
+    # a layer region holds no energy of the device (`element_energy`)
+    for region in physical_regions(mesh.volumes, model.pml):
         tets = mesh.elements(region)
         tets = tets[support[tets]]
         if len(tets):

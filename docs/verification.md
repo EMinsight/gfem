@@ -221,6 +221,51 @@ Tests: [Floquet ports](https://github.com/benvial/gfem/blob/main/tests/verificat
 [identities](https://github.com/benvial/gfem/blob/main/tests/unit/test_floquet_driven.py),
 [orders](https://github.com/benvial/gfem/blob/main/tests/unit/test_floquet_orders.py).
 
+## Perfectly matched layers
+
+Each case ends a guide or a cell with a layer backed by a wall and compares
+the reflection read at a port with the layer's closed form,
+$|R| = R_0^{\,n f \cos\theta / f_\text{ref}}$, at order 3 on meshes layered
+along the stretch:
+
+- **A TEM line ended by a layer.** Its reflection is the target reflection
+  at the reference frequency; with two frequencies and no reference
+  frequency given, the lowest one is the reference and the other reflects
+  less; a pinned reference frequency above the solve frequency reflects
+  more, as the formula says; a background of index $n$ reflects $R_0^{\,n}$.
+- **A TE10 guide ended by a layer.** Its mode is two plane waves at
+  $\cos\theta = \beta/k_0$, and its reflection follows the formula, near
+  cutoff too, where it rises; a reference frequency where $k_0 = \beta$
+  brings it back below the mesh's floor.
+- **A periodic cell over a layer, read at a Floquet port.** Its specular
+  reflection follows the formula at normal, oblique and conical incidence,
+  TE and TM, in vacuum and in a dielectric filling, with no cross-polarized
+  reflection and no warning of an oblique absorber.
+- **A leaky dielectric guide radiating into a layer.** Its complex
+  resonance matches the root of its dispersion relation, plain and under a
+  Bloch wave vector, and every returned mode stays put when the layer's
+  target reflection changes, so no mode of the layer is returned.
+- **A strip guide through side layers.** Between two wave ports cut by the
+  layers, the guide transmits its own mode's propagation and reflects
+  nothing, S is symmetric and passive, and the effective index matches a
+  wide closed section's to the clearance rule.
+
+Identities checked on coarse models: the layer absorbs the power the port
+does not get back; a model without a layer is bitwise unchanged;
+electrostatic and DC conduction solves see the layer's background material;
+changing the target reflection changes the operator and its cache keys;
+energies and participations count the physical regions; a port section cut
+by side layers returns the guided mode; a solve across MPI ranks equals one
+process's. Each refusal of the layer is a test of its own. Gradients next
+to a layer (the permittivity of a slab beside it, nodes in the air, on the
+layer's inner face and inside it, a boundary morph, a probe inside the
+layer and an eigenfrequency) match finite differences. All of these run on
+every change to gfem.
+
+Tests: [closed forms](https://github.com/benvial/gfem/blob/main/tests/verification/test_pml.py),
+[identities and refusals](https://github.com/benvial/gfem/blob/main/tests/unit/test_pml.py),
+[gradients](https://github.com/benvial/gfem/blob/main/tests/verification/test_pml_gradient.py).
+
 ## Anisotropic materials
 
 - An absorbing boundary ending a biaxial, magnetic slab reflects as the

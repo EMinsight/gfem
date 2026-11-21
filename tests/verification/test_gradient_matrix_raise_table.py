@@ -24,6 +24,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import periodic_cases as pc
+import pml_cases
 import pytest
 import structured_meshes as sm
 import thermal_cases as tc
@@ -321,6 +322,27 @@ EXPECTED |= {
     for kind in [("nodes",)] + [("material", "core", p) for p in ALL_PROPERTIES]
 }
 
+# A perfectly matched layer behind a wave port (the layer's TEM line with a
+# design slab in its air): S differentiates in the slab's material and the
+# node coordinates, whose rows next to the layer read its stretch at the
+# moved points; the port mode and z_ref are constants. The layer's background
+# carries no leaf (a constant Material), and its knobs are static.
+EXPECTED |= {
+    ("driven_pml", out, kind): (
+        (GRADIENT if out == "s.values" else ZERO)
+        if kind == ("nodes",)
+        else GRADIENT
+        if out == "s.values" and kind[2] in EM_PROPERTIES
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        *(f"port_modes.p1.{leaf}" for leaf in WAVE_PORT_MODE_OUTPUTS),
+    )
+    for kind in [("nodes",)] + [("material", "slab", p) for p in ALL_PROPERTIES]
+}
+
 # Floquet ports (F1's slab between Floquet ports on both faces, the design
 # the slab, away from both faces; plain and at a conical Bloch wave vector):
 # S differentiates like the periodic line's, in the materials and the node
@@ -531,6 +553,37 @@ EXPECTED |= {
     )
     for kind in [("nodes",)]
     + [("material", "low", p) for p in PERIODIC_EIGEN_PROPERTIES]
+}
+
+# Eigenmode with a perfectly matched layer (the leaky guide: a dielectric
+# core radiating through an air tail into a PEC-backed layer; no ports): as
+# the non-periodic resonator, region "core", whose material field carries
+# only the permittivity and the conductivity. The node rows next to the layer
+# read its stretch at the moved points; the participations count the
+# physical regions only, so the layer has none.
+EXPECTED |= {
+    ("eigenmode_pml", out, kind): (
+        (
+            ZERO
+            if kind == ("nodes",)
+            else GRADIENT
+            if kind[2] == out.removeprefix("materials.core.")
+            else ZERO
+        )
+        if out.startswith("materials.core.")
+        else _eigen_outcome(out, kind)
+    )
+    for out in (
+        "omega",
+        "error",
+        "bulk_participation.core",
+        "bulk_participation.tail",
+        "cluster",
+        *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
+        *(f"materials.core.{p}" for p in PERIODIC_EIGEN_PROPERTIES),
+    )
+    for kind in [("nodes",)]
+    + [("material", "core", p) for p in PERIODIC_EIGEN_PROPERTIES]
 }
 
 # Sheet fields: the fill of a sheet on the glued line (model.boundaries[2],
@@ -981,6 +1034,38 @@ def wave_model(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
+def pml_model(tmp_path_factory):
+    path = pml_cases.slab_line(tmp_path_factory.mktemp("pml") / "line.msh", cells=4)
+    mesh = gfem.Mesh.from_gmsh(path)
+    return gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(),
+            "pml": gfem.Material(),
+            "slab": _field(mesh, "slab"),
+        },
+        boundaries=[gfem.PEC("pec")],
+        ports=[gfem.WavePort("p1", "port")],
+        pml=gfem.PML("pml"),
+    )
+
+
+@pytest.fixture(scope="module")
+def eigen_pml_case(tmp_path_factory):
+    # the leaky guide, weakly lossy, its core a material field (a gentle ramp,
+    # so the mode nearest the target stays the leaky one, Q about 10)
+    model, _ = pml_cases.leaky_guide_model(
+        tmp_path_factory.mktemp("leaky") / "guide.msh"
+    )
+    ramp = np.linspace(1.0, 1.05, len(model.mesh.elements("core")))
+    core = gfem.MaterialField(
+        eps_r=pml_cases.GUIDE_EPS * (1 - 0.01j) * ramp, conductivity=1e-3 * ramp
+    )
+    target = pml_cases.guide_root().real * pml_cases.C0 * 1e3 / (2 * math.pi)
+    return model.with_material("core", core), gfem.Eigenmode(target=target)
+
+
+@pytest.fixture(scope="module")
 def shared_surface_model(tmp_path_factory):
     # the gradient matrix's hybrid line on the coarsest grid that keeps its
     # quadrant: modes 1 and 2 of each lead on one shared port surface
@@ -1373,6 +1458,11 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
         "driven_adaptive": (driven_model, ADAPTIVE),
         **wave_cases,
         "eigenmode": (eigen_model, gfem.Eigenmode(target=17e9)),
+        "driven_pml": (
+            request.getfixturevalue("pml_model"),
+            gfem.Driven(frequency=pml_cases.F0),
+        ),
+        "eigenmode_pml": request.getfixturevalue("eigen_pml_case"),
         **request.getfixturevalue("sheet_cases"),
         **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
@@ -1854,6 +1944,22 @@ def _out_power_flow_of_a_reduced_field(request):
         return gfem.power_flow(field, "core", model=m)
 
     jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_traced_pml_knob(knob):
+    # the stretch is fixed: its knobs are plain numbers, never design inputs
+    def call(request):
+        model = request.getfixturevalue("pml_model")
+
+        def objective(value):
+            layer = gfem.PML("pml", **{knob: value})
+            result = gfem.solve(model.replace(pml=layer), gfem.Driven(pml_cases.F0))
+            return jnp.sum(jnp.abs(result.s.values) ** 2)
+
+        start = 1e-6 if knob == "target_reflection" else pml_cases.F0
+        jax.make_jaxpr(jax.grad(objective))(start)
+
+    return call
 
 
 def _out_driven_traced_wave_vector(request):
@@ -2416,6 +2522,15 @@ def _out_thermal_nodes(name):
 # degenerate eigenmode cluster is in tests/verification/test_gradient_matrix.py.
 HOST = jax.errors.JaxRuntimeError  # a gfem error raised in the backward pass
 OUT_OF_SCOPE = [
+    *(
+        (
+            f"PML target reflection ({knob})",
+            _out_traced_pml_knob(knob),
+            gfem.NonDifferentiableError,
+            "The stretch of a perfectly matched layer is fixed",
+        )
+        for knob in ("target_reflection", "reference_frequency")
+    ),
     (
         "electrostatic x sheet fill",
         _out_electrostatic_sheet,

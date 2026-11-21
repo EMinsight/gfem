@@ -122,7 +122,10 @@ boundary. What it still reflects shows most on gsim's tight default
 {term}`air box` and near deep notches of |S11|, and less as the air box grows.
 Where those notches matter, grow the air box with `sim.set_airbox` until S stops
 changing. `order=1` in `gfem.Absorbing` above gives the first-order boundary;
-keep the second order for your own results.
+keep the second order for your own results. To close the model with a
+{term}`perfectly matched layer` instead ({doc}`perfectly-matched-layer`),
+mesh the layer regions and drop the `Absorbing` entry: gfem refuses an
+absorbing face on the layer and says so.
 
 ## 4. Solve and differentiate
 

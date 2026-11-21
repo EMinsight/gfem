@@ -487,6 +487,8 @@ def test_first_order_absorbing_reflects_an_oblique_wave_as_documented(tmp_path):
     assert [str(w.message).split(" (")[0] for w in caught] == [
         f"Absorbing {face!r} meets a plane wave at 30.0°" for face in ("x_min", "x_max")
     ]
+    # the message names the perfectly matched layer as the other remedy
+    assert all("gfem.PML" in str(w.message) for w in caught)
     s11 = complex(np.asarray(result.s.values).ravel()[0])
 
     cos = math.cos(OBLIQUE_ANGLE)

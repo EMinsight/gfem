@@ -40,6 +40,11 @@ __all__ = ["EigenSolver", "FoundModes", "ModeSearch"]
 #: second-order absorbing wall's cluster lies near Re k = 2 sigma: this test
 #: keeps it, and only the distance to the target ranks the modes ahead of it.
 _STATIC = 1e-6
+#: A pair with more than this share of its background-weighted electric
+#: energy in a perfectly matched layer is a mode of the layer, not of the
+#: device: dropped like a static pair (on a leaky guide the physical modes
+#: measured shares up to 0.24, the layer's modes 0.70 and up).
+_PML_SHARE = 0.5
 #: A converged pair of a law model whose curl energy is at most this fraction
 #: of its electric energy (`EigenOperator.curl_ratio`) is a gradient field at
 #: a zero of eps(omega), a longitudinal mode: dropped like a static pair
@@ -153,6 +158,10 @@ class ModeSearch:
             only when that error is raised.
         refine: Mode refinement (`gfem._eigen.refine.refine`).
         polish: Mode polishing (`gfem._eigen.adjoint.polish`).
+        layer_energy: The layer and total energies of a solve-space vector,
+            over every rank (`gfem._engine.eigen.layer_energy`): the
+            selection drops a mode of a perfectly matched layer
+            (`_in_layer`). ``None`` without a layer.
     """
 
     n_modes: int
@@ -165,6 +174,7 @@ class ModeSearch:
     crowding: Callable[[], str | None]
     refine: Callable[..., Refined] = refine
     polish: Callable[..., Refined] = polish
+    layer_energy: Callable[[np.ndarray], np.ndarray] | None = None
 
     def find(
         self,
@@ -215,19 +225,23 @@ class ModeSearch:
             nev *= 2 if eop.seed_damped else 1
         found = None
         bound = None
+        # the k of the pairs the attempt's selection dropped as modes of the
+        # layer
+        dropped: list[complex] = []
         for _ in range(_ATTEMPTS):
             if eop.shift != sigma:
                 # a retry is a seed solve: at the target, on a
                 # factorization counted for the seed (refinement
                 # reshifted it)
                 eop.reshift(sigma, solves=MIN_SUBSPACE)
+            dropped = []
             try:
                 k, vectors = self.eigen_solver(eop, project, nev, tol=seed_tolerance)
             except SeedBoundReached as err:
                 bound = err
                 k, vectors = err.k, err.vectors
             modes, failed, found, pool, ritz = self._select(
-                eop, k, vectors, sigma, guard=guard
+                eop, k, vectors, sigma, guard=guard, dropped=dropped
             )
             if len(modes) == n_modes or failed or bound is not None:
                 break
@@ -237,7 +251,7 @@ class ModeSearch:
         skipped = self._skipped(modes, failed, sigma, layout=eop.layout)
         if len(modes) < n_modes or skipped:
             raise EigenmodeConvergenceError(
-                self._convergence_message(eop, modes, failed, skipped)
+                self._convergence_message(eop, modes, failed, skipped, dropped)
             )
         guard_k = None if found is None else found.k
         unpolished = np.zeros(len(modes), dtype=bool)
@@ -301,6 +315,7 @@ class ModeSearch:
         sigma: float,
         *,
         guard: bool = False,
+        dropped: list[complex],
     ) -> tuple[list[Refined], list[Refined], Refined | None, np.ndarray, np.ndarray]:
         """Refine the seeds nearest ``sigma`` until ``n_modes`` distinct ones.
 
@@ -325,7 +340,8 @@ class ModeSearch:
         refactorizing) until one more distinct mode converges: the guard
         mode, or the nearest mode cut off when there is one. It is
         best-effort: none is found when no remaining seed converges to a
-        mode.
+        mode. A seed or converged pair of a perfectly matched layer
+        (`_in_layer`) is dropped, its ``k`` recorded in ``dropped``.
 
         Returns:
             The accepted modes, nearest ``sigma`` first (at most
@@ -339,7 +355,12 @@ class ModeSearch:
         """
         n_modes = self.n_modes
         tolerance = self.eigen_tolerance
-        seeds = [j for j in range(len(k)) if k[j].real > _STATIC * sigma]
+        seeds = [
+            j
+            for j in range(len(k))
+            if k[j].real > _STATIC * sigma
+            and not self._in_layer(k[j], vectors[:, j], dropped)
+        ]
         seeds.sort(key=lambda j: abs(k[j].real - sigma))
         layout = op.layout
         vectors = _orthonormal_multiples(k, vectors, layout=layout)
@@ -372,6 +393,7 @@ class ModeSearch:
                 and twin.k.real > _STATIC * sigma
                 and not self._longitudinal(op, twin)
                 and not _in_span(twin, accepted, window, layout=layout)
+                and not self._in_layer(twin.k, twin.x, dropped)
             ):
                 return twin
             return None
@@ -405,6 +427,7 @@ class ModeSearch:
                         layout=layout,
                     )
                     or self._longitudinal(op, mode)
+                    or (mode.converged and self._in_layer(mode.k, mode.x, dropped))
                 )
             ):
                 # a frozen seed rougher than TRUSTED, refined on a shift nearer
@@ -416,6 +439,7 @@ class ModeSearch:
                     mode.converged
                     and mode.k.real > _STATIC * sigma
                     and not self._longitudinal(op, mode)
+                    and not self._in_layer(mode.k, mode.x, dropped)
                 ):
                     kept = distinct(mode)
                     if kept is not None:
@@ -424,7 +448,11 @@ class ModeSearch:
                 mode = self.refine(
                     op, seed, vectors[:, j], tolerance=tolerance, max_iterations=steps
                 )
-            if mode.k.real <= _STATIC * sigma or self._longitudinal(op, mode):
+            if (
+                mode.k.real <= _STATIC * sigma
+                or self._longitudinal(op, mode)
+                or (mode.converged and self._in_layer(mode.k, mode.x, dropped))
+            ):
                 continue
             if not mode.converged:
                 if not full:
@@ -464,6 +492,22 @@ class ModeSearch:
             return False
         return op.curl_ratio(mode.k, mode.x) <= _LONGITUDINAL
 
+    def _in_layer(self, k: complex, x: np.ndarray, dropped: list[complex]) -> bool:
+        """Whether the pair ``(k, x)`` is a mode of the layer.
+
+        It holds more than `_PML_SHARE` of its energy in the layer. Its ``k``
+        joins ``dropped`` unless one there is within 1e-3 (one mode met
+        as a seed and again refined). Never without a layer.
+        """
+        if self.layer_energy is None:
+            return False
+        parts = self.layer_energy(x)
+        if not parts[0] > _PML_SHARE * parts[1]:
+            return False
+        if not any(_close(k, other, 1e-3) for other in dropped):
+            dropped.append(complex(k))
+        return True
+
     def _window(self) -> float:
         """Relative distance in ``k`` within which two refined pairs can be one mode."""
         return max(_DUPLICATE * self.eigen_tolerance, self.cluster_rtol)
@@ -501,8 +545,13 @@ class ModeSearch:
         accepted: list[Refined],
         failed: list[Refined],
         skipped: list[Refined] | None = None,
+        dropped: list[complex] | None = None,
     ) -> str:
-        """Why the solve raises: too few modes, or ``skipped`` (see `_skipped`)."""
+        """Why the solve raises: too few modes, or ``skipped`` (see `_skipped`).
+
+        ``dropped`` holds the ``k`` of the pairs the selection dropped as
+        modes of a perfectly matched layer.
+        """
         c = const.c / op.scale / (2 * math.pi)
         target = hertz(self.target)
         tolerance = (
@@ -529,6 +578,12 @@ class ModeSearch:
                 for m in (skipped or failed)
             ),
         ]
+        if dropped:
+            lines.append(
+                f"  dropped: {len(dropped)} pair(s) with more than half "
+                "their electric energy in the perfectly matched layer (modes of "
+                "the layer, not of the device)."
+            )
         lines.append(
             "Remedies: move Eigenmode.target closer to the wanted modes; loosen "
             "SolverOptions.eigen_tolerance or raise max_refine_iterations; for a "

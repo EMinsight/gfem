@@ -90,8 +90,10 @@ from gfem._engine.coefficients import (
 from gfem._engine.domain import boundary_region
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.sensitivity import Derivative
+from gfem._engine.stretch import pml_tensor
 from gfem._materials import Drude, MaterialField
 from gfem._morph import unit_normals
+from gfem._pml import Stretch
 from gfem._sheet import check_fill
 from gfem.conventions import EXTERIOR_THICKNESS_FACTOR
 from gfem.errors import PortGeometryError
@@ -254,6 +256,10 @@ class Piece:
             (`gfem._engine.points`), that region: its derivatives are per
             point of the region, and the point pass reads them. ``None``
             otherwise.
+        position: Whether ``coefficient`` also varies in position within an
+            element: a perfectly matched layer's stretch composed into a
+            volume piece (shape gradients read it at the moved quadrature
+            points).
 
     Raises:
         ValueError: ``theta`` does not give one scalar: the term is not
@@ -285,6 +291,7 @@ class Piece:
     sheet: tuple[int, float] | None = None
     values: np.ndarray | None = dataclasses.field(default=None, compare=False)
     lumped: LumpedValue | None = dataclasses.field(default=None, compare=False)
+    position: bool = dataclasses.field(default=False, compare=False)
     probe: complex = _PROBE
     law: tuple[str, Callable[[complex], dict[tuple, complex]]] | None = (
         dataclasses.field(default=None, compare=False)
@@ -661,6 +668,7 @@ def conductivity_piece(
     order: int,
     *,
     elements: np.ndarray | None = None,
+    stretch: Stretch | None = None,
 ) -> Piece:
     """The ``conductivity`` piece of ``model``: θ = i k0, ∫ eta0 sigma scale E · v.
 
@@ -668,7 +676,7 @@ def conductivity_piece(
     on the solve domain (a zero matrix, and no damping term for the eigenmode
     operator). Its derivative by the conductivity is not zero there, so a
     backward pass still reads the piece (`gfem._engine.driven.DrivenOperator.latent`).
-    ``elements`` restricts the form as in `pieces`.
+    ``elements`` and ``stretch`` act as in `pieces`.
     """
     scale = built.scale
     k = lambda w: wavenumber(w, scale)  # noqa: E731
@@ -682,6 +690,8 @@ def conductivity_piece(
     # out the length scale
     values = ETA0 * scale * sigma
     cf = coefficient(built, values)
+    if stretch is not None:
+        cf = cf * pml_tensor(stretch, scale)[0]
     return Piece(
         "conductivity",
         lambda w: 1j * k(w),
@@ -689,6 +699,7 @@ def conductivity_piece(
         kind="value",
         coefficient=cf,
         values=values,
+        position=stretch is not None,
         derivatives={
             "conductivity": Derivative(
                 ETA0,
@@ -708,8 +719,9 @@ def pieces(
     *,
     elements: np.ndarray | None = None,
     faces: np.ndarray | None = None,
+    stretch: Stretch | None = None,
 ) -> tuple[list[Piece], tuple[Piece, ...]]:
-    """The driven operator's pieces on ``model`` (see the module docstring).
+    r"""The driven operator's pieces on ``model`` (see the module docstring).
 
     Returns the pieces and the latent ones: pieces whose matrix is zero at
     this design but whose derivative is not (the conductivity piece where the
@@ -725,6 +737,13 @@ def pieces(
     triangles only; ``None`` selects them all. The pieces of a partition of
     the mesh sum to the unrestricted pieces. θ and the coefficients do not
     change.
+
+    A perfectly matched layer's ``stretch`` composes its PML tensor
+    :math:`\Lambda`, a coefficient of position, into the volume pieces: the
+    curl-curl coefficient becomes :math:`\mu_r^{-1}\Lambda^{-1}`, the mass
+    :math:`\varepsilon_r\Lambda` and the conductivity :math:`\sigma\Lambda`
+    (:math:`\Lambda` is the identity outside the layer). :math:`\theta`,
+    ``Piece.values`` and the derivatives keep the background material.
 
     Raises:
         ValueError: A mask is not one boolean per tetrahedron (triangle).
@@ -742,6 +761,9 @@ def pieces(
     nu_values = _inverse(element_tensors(model, "mu_r"))
     nu = coefficient(built, nu_values)
     eps_cf = coefficient(built, eps)
+    if stretch is not None:
+        lam, lam_inv = pml_tensor(stretch, scale)
+        nu, eps_cf = nu * lam_inv, eps_cf * lam
     out = [
         Piece(
             "curl_curl",
@@ -750,6 +772,7 @@ def pieces(
             kind="curl",
             coefficient=nu,
             values=nu_values,
+            position=stretch is not None,
             derivatives={
                 "mu_r": Derivative(
                     lambda: -(element_values(model, "mu_r", per_axis=1.0) ** -2.0),
@@ -768,6 +791,7 @@ def pieces(
             kind="value",
             coefficient=eps_cf,
             values=eps,
+            position=stretch is not None,
             derivatives=mass_derivatives(model),
         ),
     ]
@@ -775,7 +799,9 @@ def pieces(
     # eigen operator splits the pieces by power of k)
     out.extend(susceptibility_pieces(model, built, order, elements=elements))
     out.extend(blend_pieces(model, built, order, elements=elements))
-    conductivity = conductivity_piece(model, built, order, elements=elements)
+    conductivity = conductivity_piece(
+        model, built, order, elements=elements, stretch=stretch
+    )
     latent: tuple[Piece, ...] = ()
     if np.any(conductivity.values):
         out.append(conductivity)
@@ -1598,16 +1624,40 @@ def wave_port_piece(
     port: str,
     surface: str,
     theta: Tabulated,
+    stretch: Stretch | None = None,
 ) -> Piece:
-    """The Robin term of a wave port: θ ∫ (A E_t) · v_t on its surface.
+    r"""The Robin term of a wave port, :math:`\theta\int (A E_t)\cdot v_t`.
 
-    ``A`` is the port's tangential inverse-permeability tensor, ``1 /
-    mu_r`` for an isotropic element behind the face
-    (`wave_port_coefficients`).
+    The integral runs over the port's surface.
+    :math:`A` is the port's tangential inverse-permeability tensor,
+    :math:`\mu_r^{-1}` for an isotropic element behind the face
+    (`wave_port_coefficients`). Where the face cuts a perfectly matched
+    layer (``stretch``) it is the stretched medium's,
+    :math:`N\Lambda^{-1}\mu_r^{-1}N^\mathsf{T} = (N\Lambda^{-1}N^\mathsf{T})\,A`
+    with :math:`N = [n]_\times` (:math:`n` a principal axis of both
+    :math:`\Lambda` and :math:`\mu_r` there), as the port section's: the
+    port stays exact for its own mode.
     """
     form = _tangential(built, (surface,), order)
     coef = surface_coefficient(built, wave_port_coefficients(model, surface))
+    if stretch is not None:
+        coef = _stretched_trace(model, built, surface, stretch) * coef
     return Piece(f"waveport {port}", theta, lambda u, v: form(u, v, coef), kind="port")
+
+
+def _stretched_trace(
+    model: Model, built: EngineMesh, surface: str, stretch: Stretch
+) -> ngs.CoefficientFunction:
+    r""":math:`N\Lambda^{-1}N^\mathsf{T}` on a planar wave port ``surface``, 3x3.
+
+    :math:`N = [n]_\times`, the cross-product matrix of the port's normal.
+    """
+    mesh = model.mesh
+    n = _face_normals(mesh)[mesh.elements(surface)[0]]
+    matrix = ((0.0, -n[2], n[1]), (n[2], 0.0, -n[0]), (-n[1], n[0], 0.0))
+    cross = ngs.CF(tuple(float(v) for row in matrix for v in row), dims=(3, 3))
+    lam_inv = pml_tensor(stretch, built.scale)[1]
+    return cross * lam_inv * cross.trans
 
 
 def excitation_per_voltage(resistance: float) -> float:

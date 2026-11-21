@@ -189,6 +189,7 @@ def transfer_design(model: Model, fine: Mesh, refinement: Refinement) -> Model:
         boundaries=boundaries,
         ports=model.ports,
         excluded=model.excluded,
+        pml=model.pml,
     )
 
 

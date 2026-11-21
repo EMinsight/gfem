@@ -63,6 +63,7 @@ from gfem._materials import (
     PermittivityLaw,
     PixelGeometry,
 )
+from gfem._pml import PML
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
 from gfem._sheet import SheetField
@@ -729,6 +730,8 @@ def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
         "boundaries": model.boundaries,
         "ports": model.ports,
         "excluded": _excluded_args(model),
+        # written only when set: a model without a layer encodes as before
+        **({"pml": model.pml} if model.pml is not None else {}),
     }
 
 
@@ -766,13 +769,31 @@ def _transient_from_args(args: dict[str, Any], _: _codec.Context) -> TransientTh
     return TransientThermal(**args, waveform=tuple(zip(switches, scales, strict=True)))
 
 
-def _field_args(field: Field, _: _codec.Context) -> dict[str, Any]:
-    """A field's arguments: a communicator is not part of what it is."""
-    return {
+def _field_args(field: Any, _: _codec.Context) -> dict[str, Any]:
+    """A field's arguments: a communicator is not part of what it is.
+
+    A layer's reference frequency is written only when set, so that a field
+    without one encodes as before.
+    """
+    out = {
         f.name: getattr(field, f.name)
         for f in dataclasses.fields(field)
         if f.name != "_comm"
     }
+    if out.get("_reference_frequency", 0) is None:
+        del out["_reference_frequency"]
+    return out
+
+
+def _with_layer_args(result: Any, _: _codec.Context) -> dict[str, Any]:
+    """A result's arguments, its layer only when set.
+
+    A result without a layer then encodes as before.
+    """
+    out = {f.name: getattr(result, f.name) for f in dataclasses.fields(result)}
+    if out["pml"] is None:
+        del out["pml"]
+    return out
 
 
 def _port_mode_field_args(field: PortModeField, _: _codec.Context) -> dict[str, Any]:
@@ -869,7 +890,7 @@ _codec.register(
     Model,
     to_args=_model_args,
     from_args=_model_from_args,
-    names=("mesh", "materials", "boundaries", "ports", "excluded"),
+    names=("mesh", "materials", "boundaries", "ports", "excluded", "pml"),
 )
 _codec.register(
     _Excluded,
@@ -917,6 +938,7 @@ for _cls in (
     Conductor,
     Impedance,
     Periodic,
+    PML,
     FixedTemperature,
     Convection,
     HeatFlux,
@@ -930,19 +952,23 @@ for _cls in (
     DiffractionOrderResult,
     NetworkParameters,
     SweepInfo,
-    ReducedFields,
     Eigenmode,
-    EigenmodeResult,
     InterfaceParticipation,
     DCConductionResult,
     SteadyThermalResult,
     TransientThermalResult,
 ):
     _codec.register(_cls)
+_codec.register(EigenmodeResult, to_args=_with_layer_args)
 _codec.register(
     Field,
     to_args=_field_args,
     names=[f.name for f in dataclasses.fields(Field) if f.name != "_comm"],
+)
+_codec.register(
+    ReducedFields,
+    to_args=_field_args,
+    names=[f.name for f in dataclasses.fields(ReducedFields)],
 )
 # a blend's fixed ends (MaterialField.blend_ends); a layer density's grid and
 # other properties only when set, so a 3D blend is written as before
@@ -951,7 +977,9 @@ _codec.register(PixelGeometry)
 _codec.register(SolverOptions, to_args=_options_args)
 _codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None))
 _codec.register(PortMode, to_args=_unset_omitted(PortMode, polarization=None))
-_codec.register(PortModeResult, to_args=_unset_omitted(PortModeResult, h_field=None))
+_codec.register(
+    PortModeResult, to_args=_unset_omitted(PortModeResult, h_field=None, pml=None)
+)
 _codec.register(
     DrivenResult, to_args=_unset_omitted(DrivenResult, h_fields=(), polarization=None)
 )
