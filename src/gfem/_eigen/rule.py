@@ -130,6 +130,7 @@ from gfem._engine.eigen import (
 from gfem._engine.fields import dof_shape, fe_space, one_process_dofs, rank_piece
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped
+from gfem._engine.solve_request import SolveRequest
 from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._materials import Material, PermittivityLaw
@@ -442,15 +443,11 @@ class EigenmodeRule:
         #: Whether a region holds a permittivity law: only then can a
         #: converged pair be a longitudinal mode (`_longitudinal`).
         self._laws = bool(dispersion.law_regions(model))
-        #: Participation duals for `gfem.refine_mesh` to solve on the
-        #: forward's live factors, and the duals solved.
-        self.adjoint_loads: Sequence[DualRequest] | None = None
-        self.adjoints: dict[tuple[int, str], ParticipationDual] = {}
 
     # --- forward -----------------------------------------------------------------
 
     def forward(
-        self, model: Model, *, keep: bool
+        self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, object], Entry | None]:
         """Find the modes.
 
@@ -461,6 +458,10 @@ class EigenmodeRule:
                 guard mode, refined beyond ``n_modes`` for this, each mode's
                 gap, and the eigen operator as the search leaves it, in a
                 `KeptOperator`, instead of freeing it).
+            request: Participation duals (`DualRequest`) for
+                `gfem.refine_mesh` to solve on the forward's live factors;
+                the duals solved land in its ``adjoints`` by ``(start,
+                region)``.
 
         Returns:
             ``{"omega": (n,) complex rad/s, "error": (n,), "q_port":
@@ -479,6 +480,7 @@ class EigenmodeRule:
                 ``SolverOptions.eigen_tolerance``), or a polish step's
                 deflated solve was not accepted.
         """
+        request = SolveRequest() if request is None else request
         opts = self.options
         order = opts.order
         comm = self.comm
@@ -525,7 +527,7 @@ class EigenmodeRule:
                     comm=comm,
                 )
                 outputs["cluster"] = clusters(ks, opts.cluster_rtol)
-                if self.adjoint_loads:
+                if request.adjoint_loads:
                     self._ride_duals(
                         model,
                         op,
@@ -533,6 +535,8 @@ class EigenmodeRule:
                         x=x,
                         ks=ks,
                         found=(outputs["cluster"], guard, gaps, unpolished),
+                        loads=cast("Sequence[DualRequest]", request.adjoint_loads),
+                        into=request.adjoints,
                     )
                 if keep:
                     y = None
@@ -572,14 +576,17 @@ class EigenmodeRule:
         x: np.ndarray,
         ks: list[complex],
         found: tuple[np.ndarray, Refined | None, GapSet, np.ndarray],
+        loads: Sequence[DualRequest],
+        into: dict[tuple[int, str], ParticipationDual],
     ) -> None:
-        """Solve `adjoint_loads`' participation duals on the live factors.
+        """Solve the participation duals of ``loads`` on the live factors.
 
         Each request takes the mode nearest its previous omega, as
         `gfem.refine_mesh` follows it; a mode out of mode-field reach
         (`isolated`) gets none, and the estimate raises for it. ``found``
         holds the modes' cluster labels, the guard mode, the gap set and
-        the failed polishes (`_find`).
+        the failed polishes (`_find`). The duals land in ``into`` by
+        ``(start, region)``.
         """
         labels, guard, gaps, unpolished = found
         rtol = self.options.cluster_rtol
@@ -590,8 +597,7 @@ class EigenmodeRule:
         reach = isolated(labels, _incomplete(ks, labels, guard_k, rtol), gap, rtol)
         per_k = const.c / op.built.scale
         omegas = np.array(ks, dtype=complex) * per_k
-        self.adjoints = {}
-        for request in self.adjoint_loads or ():
+        for request in loads:
             j = int(np.argmin(np.abs(omegas - request.omega)))
             if not reach[j]:
                 continue
@@ -606,7 +612,7 @@ class EigenmodeRule:
                 regions=request.regions,
             )
             for region, dual in duals.items():
-                self.adjoints[request.start, region] = dual
+                into[request.start, region] = dual
 
     def participation_duals(
         self,
@@ -1630,7 +1636,12 @@ class EigenmodeRule:
         return None
 
     def backward(
-        self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        *,
+        wanted: frozenset | None = None,
     ) -> list[FieldPair]:
         """Fold the cotangents into field pairs: per cluster, and per mode.
 
@@ -1663,6 +1674,7 @@ class EigenmodeRule:
                 ``q_port``.
             LinearSolverConvergenceError: An adjoint solve was not accepted.
         """
+        del wanted  # every wanted input reads the same pairs
         fields = entry.fields
         x, k, labels = fields["x"], fields["k"], fields["cluster"]
         y = fields.get("y", x)

@@ -1750,8 +1750,7 @@ def _field_duals(
         for category in driven.FORWARD_WARNINGS:  # the solve of ``result`` warned
             warnings.simplefilter("ignore", category)
         rule = driven.DrivenRule(model, problem, options)
-        rule.adjoint_loads = field_duals.field_loads(keys)
-        return rule.solve_adjoints(model, solutions)
+        return rule.solve_adjoints(model, field_duals.field_loads(keys), solutions)
 
 
 #: The estimate kinds of an objective of an electrostatic result.
@@ -2803,8 +2802,7 @@ def _adjoints(
         for category in driven.FORWARD_WARNINGS:  # the solve of ``result`` warned
             warnings.simplefilter("ignore", category)
         rule = driven.DrivenRule(model, problem, options)
-        rule.adjoint_loads = driven.port_loads(ports)
-        return rule.solve_adjoints(model)
+        return rule.solve_adjoints(model, driven.port_loads(ports))
 
 
 def _lossy_elements(model: Model) -> np.ndarray:

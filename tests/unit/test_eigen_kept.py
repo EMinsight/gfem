@@ -96,8 +96,8 @@ def forwards(monkeypatch):
     seen = []
     forward = EigenmodeRule.forward
 
-    def counted(self, model, *, keep):
-        outputs, entry = forward(self, model, keep=keep)
+    def counted(self, model, *, keep, request=None):
+        outputs, entry = forward(self, model, keep=keep, request=request)
         seen.append((keep, entry))
         return outputs, entry
 

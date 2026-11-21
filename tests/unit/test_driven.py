@@ -28,6 +28,7 @@ import gfem
 from gfem._engine import driven, terms, workers
 from gfem._engine.cache import ENTRIES
 from gfem._engine.driven import DrivenRule
+from gfem._engine.solve_request import SolveRequest
 from gfem._engine.system_operator import SystemOperator
 from gfem._linalg import bddc, pardiso, prepare
 from gfem._linalg.base import PlannedHandle, same_pattern
@@ -597,10 +598,9 @@ def test_an_error_holds_a_missed_sweeps_outputs_only_until_they_are_read(
     rule = DrivenRule(
         line, gfem.Driven(frequency=f), gfem.SolverOptions(linear_solver="bddc_gmres")
     )
-    rule.keeps_partial = keeps
     cannot_converge_at(monkeypatch, (f[1],))
     with pytest.raises(gfem.LinearSolverConvergenceError) as caught:
-        rule.forward(line, keep=False)
+        rule.forward(line, keep=False, request=SolveRequest(keeps_partial=keeps))
     partial = rule.partial_result(caught.value)
     if keeps:
         assert partial is not None

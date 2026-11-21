@@ -20,6 +20,7 @@ import thermal_cases as tc
 import gfem
 from gfem._engine import thermal
 from gfem._engine.sensitivity import LOAD_KIND
+from gfem._engine.solve_request import SolveRequest
 
 L, K, RHO, CP = 4.0, 1.4, 2200.0, 700.0
 STEPS = 9
@@ -117,8 +118,8 @@ def _kept_entry(mesh, wanted, options=None):
     problem = _problem()
     model = _model(mesh)
     rule = thermal.TransientThermalRule(model, problem, options)
-    rule.wanted_kinds = frozenset(wanted)
-    _, entry = rule.forward(model, keep=True)
+    request = SolveRequest(wanted=frozenset(wanted))
+    _, entry = rule.forward(model, keep=True, request=request)
     return rule, entry
 
 

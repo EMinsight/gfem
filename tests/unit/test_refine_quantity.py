@@ -391,27 +391,27 @@ def test_an_unconverged_adjoint_is_not_reported_as_a_forward_miss(
 
 def _adjoint_rule(model, problem):
     from gfem._engine.driven import DrivenRule, port_loads
+    from gfem._engine.solve_request import SolveRequest
 
     rule = DrivenRule(model, problem, OPTIONS)
-    rule.adjoint_loads = port_loads(("p2",))
-    return rule
+    return rule, SolveRequest(adjoint_loads=port_loads(("p2",)))
 
 
 def test_adjoint_ports_never_reach_a_differentiated_solve(tmp_path):
     # A backward pass keeps no adjoint columns: the forward refuses them.
     model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
-    rule = _adjoint_rule(model, gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY]))
+    rule, request = _adjoint_rule(model, gfem.Driven([rc.LOSSY_GUIDE_FREQUENCY]))
     with pytest.raises(RuntimeError, match="differentiated"):
-        rule.forward(model, keep=True)
+        rule.forward(model, keep=True, request=request)
 
 
 def test_adjoint_ports_never_reach_an_adaptive_sweep(tmp_path):
     model = rc.lossy_guide_model(tmp_path, 2, "slab", 0.05)
     f = rc.LOSSY_GUIDE_FREQUENCY
     problem = gfem.Driven(np.linspace(f, 1.1 * f, 5), sweep="adaptive")
-    rule = _adjoint_rule(model, problem)
+    rule, request = _adjoint_rule(model, problem)
     with pytest.raises(RuntimeError, match="adaptive"):
-        rule.forward(model, keep=False)
+        rule.forward(model, keep=False, request=request)
 
 
 @pytest.mark.usefixtures("no_solve")

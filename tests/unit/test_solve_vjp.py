@@ -41,7 +41,7 @@ class ScaledRule:
     def role(self, kind):  # noqa: ARG002
         return "unread"
 
-    def forward(self, model, *, keep):  # noqa: ARG002
+    def forward(self, model, *, keep, request=None):  # noqa: ARG002
         eps = np.asarray(model.materials["box"].eps_r)
         return {"y": float(np.asarray(self.problem.scale)) * eps.sum()}, None
 

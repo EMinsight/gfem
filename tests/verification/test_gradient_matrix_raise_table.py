@@ -2960,8 +2960,8 @@ class _RuleWithExtraOutput(ElectrostaticRule):
     def output_specs(self, model):
         return {**super().output_specs(model), "extra": jax.ShapeDtypeStruct((), float)}
 
-    def forward(self, model, *, keep):
-        outputs, entry = super().forward(model, keep=keep)
+    def forward(self, model, *, keep, request=None):
+        outputs, entry = super().forward(model, keep=keep, request=request)
         return {**outputs, "extra": np.trace(outputs["capacitance"])}, entry
 
 

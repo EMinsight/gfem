@@ -12,6 +12,7 @@ from gfem import _mpi, _timing
 from gfem._adjoint import solve_vjp
 from gfem._checks import is_traced
 from gfem._domain import physics_of
+from gfem._engine.solve_request import SolveRequest
 from gfem._materials import MaterialField
 from gfem._periodic import check_nodes
 from gfem.errors import LinearSolverConvergenceError
@@ -282,14 +283,13 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
                 # the rule reads inputs the entry check has just found equal
                 _mpi.agreed(err)
                 raise
-        if adjoint_loads is not None:
-            rule.adjoint_loads = adjoint_loads
         if is_traced((model, problem)):
             # a rule may differentiate a problem through its own leaves (a thermal
             # problem's summed heat density)
             inputs = getattr(rule, "vjp_problem", None)
             leaves = problem if inputs is None else inputs(problem)
-            return rule.result(solve_vjp(rule, model, leaves)), None
+            traced = SolveRequest(adjoint_loads=adjoint_loads)
+            return rule.result(solve_vjp(rule, model, leaves, request=traced)), None
         # A moved mesh must keep its periodic pairs and stay valid on the solve
         # domain.
         check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
@@ -302,8 +302,9 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
         )
         # a uniform sweep's partial result, built here: never in a JAX callback
         partial_result = getattr(rule, "partial_result", None)
-        if partial_result is not None:
-            rule.keeps_partial = True
+        request = SolveRequest(
+            adjoint_loads=adjoint_loads, keeps_partial=partial_result is not None
+        )
         if cache is not None:
             stored = cache.lookup(model, problem, options)
             if stored is not None:
@@ -313,12 +314,12 @@ def _solve(  # noqa: PLR0912 - the cache's seam sits between the checks
                 _mpi.section(resolved, agreed=_mpi.FORWARD_ERRORS),
                 _timing.scope(_timing.problem_name(problem), resolved),
             ):
-                outputs, _ = rule.forward(model, keep=False)
+                outputs, _ = rule.forward(model, keep=False, request=request)
         except LinearSolverConvergenceError as err:
             if partial_result is not None:
                 err.result = partial_result(err)
             raise
-        adjoints = rule.adjoints if adjoint_loads is not None else None
+        adjoints = request.adjoints if adjoint_loads is not None else None
         result = rule.result(outputs)
         if cache is not None:
             cache.store(model, result, options)

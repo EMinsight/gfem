@@ -51,13 +51,13 @@ A rule provides: ``form`` (its operator family, a key of
 ``input_aware``, a ``nondifferentiable_output(name, kinds)`` that also sees
 the wanted input kinds and returns ``None`` where it can differentiate),
 ``output_specs(model)`` (name -> ``jax.ShapeDtypeStruct``), ``role(kind)``
-(``"read"`` or ``"unread"``), ``forward(model, *, keep)``,
-``backward(model, entry, cotangents)``, ``options`` and ``problem``,
+(``"read"`` or ``"unread"``), ``forward(model, *, keep, request)`` (a
+`gfem._engine.solve_request.SolveRequest` carrying the wanted input kinds,
+so a forward keeps only what the backward reads, and whether it reruns for
+a backward), ``backward(model, entry, cotangents, *, wanted)`` (the wanted
+input kinds again), ``options`` and ``problem``,
 optionally ``pieces`` (the outputs that are a rank's own piece under ranks,
 whose cotangents the ranks compare by shape; none by default),
-``wanted_kinds`` (set on the host copy to the wanted input kinds
-before its forward and backward, so a forward keeps only what the backward
-reads), ``rerun`` (set before a backward reruns the forward),
 ``explicit_problem()`` (problem-leaf cotangents the backward computed itself),
 ``unsupported_input(kind)`` (a reason, or ``None``) for read
 inputs the rule itself cannot differentiate, and ``terms(model, *, nodes)``
@@ -74,6 +74,7 @@ the call's concrete values, so a rule reads problem values from
 from __future__ import annotations
 
 import copy
+import dataclasses
 import functools
 from collections.abc import Collection, Hashable, Sequence
 from typing import Any
@@ -84,6 +85,7 @@ import numpy as np
 from jax.custom_derivatives import SymbolicZero
 
 from gfem import _mpi, _timing
+from gfem._engine.solve_request import SolveRequest
 from gfem.errors import NonDifferentiableError
 
 __all__ = ["adjoint_tolerance", "input_kind", "solve_vjp"]
@@ -149,13 +151,17 @@ def _describe(kind: tuple) -> str:
     return "model." + ".".join(str(k) for k in kind)
 
 
-def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:  # noqa: PLR0915
+def solve_vjp(  # noqa: PLR0915
+    rule: Any, model: Any, problem: Any, *, request: SolveRequest | None = None
+) -> dict[str, jax.Array]:
     """Run ``rule``'s solve as a differentiable JAX function of the leaves.
 
     Args:
         rule: The problem's rule, constructed (static checks done).
         model: The model; its leaves may be JAX tracers.
         problem: The problem; its leaves may be JAX tracers.
+        request: What every host forward is asked beyond the wanted input
+            kinds and the rerun flag, which this function sets.
 
     Returns:
         The rule's outputs by name, as JAX arrays.
@@ -166,6 +172,7 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:  # n
     kinds = [input_kind(path, "model") for path, _ in m_paths] + [
         input_kind(path, "problem") for path, _ in p_paths
     ]
+    request = SolveRequest() if request is None else request
     specs = rule.output_specs(model)
     names = tuple(specs)
     out_specs = tuple(specs[n] for n in names)
@@ -177,9 +184,6 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:  # n
     def host_forward(keep: bool, wanted: frozenset, *values: Any) -> tuple:
         comm = getattr(rule, "comm", None)
         host_rule, host_model = rebuild(values)
-        if hasattr(host_rule, "wanted_kinds"):
-            # what the backward will read: a rule may keep less
-            host_rule = _with_wanted(host_rule, rule, wanted)
         with _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS):
             if comm is not None:
                 _mpi.entry_check(
@@ -191,7 +195,13 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:  # n
                 )
             if keep:
                 _free_consumed(comm, rule.options)
-            outputs, entry = _forward(host_rule, host_model, keep=keep)
+            # what the backward will read: a rule may keep less
+            outputs, entry = _forward(
+                host_rule,
+                host_model,
+                keep=keep,
+                request=dataclasses.replace(request, wanted=wanted),
+            )
             key = -1 if entry is None else _keep(entry, rule.options, comm)
         arrays = tuple(
             np.asarray(outputs[n], dtype=s.dtype).reshape(s.shape)
@@ -245,6 +255,7 @@ def solve_vjp(rule: Any, model: Any, problem: Any) -> dict[str, jax.Array]:  # n
                 functools.partial(
                     _host_backward,
                     rebuild=rebuild,
+                    request=request,
                     kinds=kinds,
                     wanted=wanted,
                     live_names=tuple(n for n, _ in live),
@@ -303,15 +314,7 @@ def _rebuild(
     return host_rule, host_model
 
 
-def _with_wanted(host_rule: Any, rule: Any, wanted: frozenset) -> Any:
-    """``host_rule`` (a copy, never the traced rule) with its wanted kinds set."""
-    if host_rule is rule:
-        host_rule = copy.copy(rule)
-    host_rule.wanted_kinds = wanted
-    return host_rule
-
-
-def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
+def _forward(rule: Any, model: Any, *, keep: bool, request: SolveRequest) -> tuple:
     from gfem._materials import check_field_values
     from gfem._periodic import check_nodes
     from gfem.shape import _check_quality
@@ -330,7 +333,7 @@ def _forward(rule: Any, model: Any, *, keep: bool) -> tuple:
     )
     problem = _timing.problem_name(getattr(rule, "problem", None))
     with _timing.scope(problem, getattr(rule, "comm", None)):
-        return rule.forward(model, keep=keep)
+        return rule.forward(model, keep=keep, request=request)
 
 
 def _free_consumed(comm: Any, options: Any) -> None:
@@ -382,6 +385,7 @@ def _host_backward(
     key: Any,
     *args: Any,
     rebuild: Any,
+    request: SolveRequest,
     kinds: list[tuple],
     wanted: tuple[int, ...],
     live_names: tuple[str, ...],
@@ -407,7 +411,13 @@ def _host_backward(
                 ),
             )
         grads = _local_cotangents(
-            key, rule, model, cotangents, wants={kinds[i] for i in wanted}, comm=comm
+            key,
+            rule,
+            model,
+            cotangents,
+            wants={kinds[i] for i in wanted},
+            comm=comm,
+            request=request,
         )
     out = []
     for i in wanted:
@@ -471,6 +481,7 @@ def _local_cotangents(
     *,
     wants: set[Hashable],
     comm: Any,
+    request: SolveRequest,
 ) -> dict:
     """This rank's part of each wanted cotangent.
 
@@ -478,6 +489,7 @@ def _local_cotangents(
     some ranks alone would hang. A rank that holds one frees it, since the next
     forward on the same design would otherwise keep a second. A rule's
     ``explicit_lumped`` values (by input kind) add to the lumped pass's.
+    ``request`` is the forward's, for a rerun.
     """
     from gfem._engine.cache import ENTRIES, retain_budget
     from gfem._engine.runtime import task_manager
@@ -485,24 +497,20 @@ def _local_cotangents(
 
     entry = ENTRIES.get(int(key)) if int(key) >= 0 else None
     fresh = None
-    if hasattr(rule, "wanted_kinds"):
-        rule.wanted_kinds = frozenset(wants)
+    wanted = frozenset(wants)
     if not _mpi.agree_all(comm, flag=entry is not None):
         ENTRIES.discard(int(key))
-        if hasattr(rule, "rerun"):
-            rule.rerun = True  # a rerun keeps the least it can
-        _, entry = rule.forward(model, keep=True)
+        # a rerun keeps the least it can
+        rerun = dataclasses.replace(request, wanted=wanted, rerun=True)
+        _, entry = rule.forward(model, keep=True, request=rerun)
         fresh = entry
     else:
         if entry is not None:  # freed when the next differentiated forward starts
             entry.consumed = True
         # the base handles of other entries go before this one prepares
         ENTRIES.free_bases(comm, keep=entry)
-    if hasattr(rule, "law_inputs"):
-        # no law parameter wanted: the pairs carry no dθ/dp
-        rule.law_inputs = any(kind[0] == "law" for kind in wants)  # ty: ignore[not-subscriptable]
     try:
-        pairs = rule.backward(model, entry, cotangents)
+        pairs = rule.backward(model, entry, cotangents, wanted=wanted)
         # the element passes assemble on the solve's threads
         with task_manager(rule.options.threads, comm):
             out = sensitivity(

@@ -57,6 +57,7 @@ from gfem._engine.fields import (
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import Derivative, FieldPair, Term
+from gfem._engine.solve_request import SolveRequest
 from gfem._field import FieldMap
 from gfem._linalg import Handle, Kind, Operator, ResolvedLinearSolver, report
 from gfem._linalg.base import free_mask
@@ -295,7 +296,7 @@ class DCConductionRule:
         self._mesh = model.mesh
 
     def forward(
-        self, model: Model, *, keep: bool
+        self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, np.ndarray], Entry | None]:
         """Solve every terminal; return the outputs and, if ``keep``, an entry.
 
@@ -309,6 +310,7 @@ class DCConductionRule:
         Raises:
             ValueError: An element of a conductor has zero conductivity.
         """
+        del request  # no per-call input
         _check_positive(model, self.domain)
         with task_manager(self.options.threads):
             space, built = self._space(model)
@@ -451,7 +453,12 @@ class DCConductionRule:
         )
 
     def backward(
-        self, model: Model, entry: Entry, cotangents: dict[str, np.ndarray]
+        self,
+        model: Model,
+        entry: Entry,
+        cotangents: dict[str, np.ndarray],
+        *,
+        wanted: frozenset | None = None,
     ) -> list[FieldPair]:
         """Fold the conductance, dissipation and potential cotangents into pairs.
 
@@ -466,6 +473,7 @@ class DCConductionRule:
         symmetric cotangent over its volume (`terms`), and the potential
         cotangent ``sum_j 2 int sigma (ct_ij / |e|) grad phi_j . grad v``.
         """
+        del wanted  # every wanted input reads the same pairs
         phi = entry.fields["potential"]
         order = self.options.order
         self._dissipation_terms: list[Term] = []

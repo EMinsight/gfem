@@ -58,6 +58,7 @@ from gfem._boundaries import (
 from gfem._checks import is_traced
 from gfem._engine.port_mode import PortModeSpace
 from gfem._engine.runtime import task_manager
+from gfem._engine.solve_request import SolveRequest
 from gfem._linalg.superlu import backward_error, shift_invert_eigs
 from gfem._port_section import PortSection, port_section
 from gfem._sign import largest_entry
@@ -257,18 +258,21 @@ class PortModeRule:
             "jax.lax.stop_gradient to use its value without its derivative."
         )
 
-    def forward(self, model: Model, *, keep: bool) -> tuple[dict, None]:
+    def forward(
+        self, model: Model, *, keep: bool, request: SolveRequest | None = None
+    ) -> tuple[dict, None]:
         """Run the port mode sweep.
 
         Args:
             model: The model, with concrete leaves.
             keep: Ignored: nothing is kept for a backward pass.
+            request: Ignored: a port mode sweep reads no per-call input.
 
         Returns:
             The per-frequency arrays of `output_specs` plus ``"sweep"`` (the
             `PortModeSweep`), and ``None``.
         """
-        del keep
+        del keep, request
         ports = self._ports
         modes = [self.mode] if len(ports) == 1 else [p.mode for p in ports]
         lead = lead_port(ports)
