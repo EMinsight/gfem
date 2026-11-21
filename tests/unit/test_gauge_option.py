@@ -20,7 +20,7 @@ import scipy.constants as const
 import structured_meshes as sm
 
 import gfem
-from gfem._engine import driven, driven_system, gauge
+from gfem._engine import driven, driven_sweep, driven_system, gauge, workers
 from gfem._engine.driven import DrivenRule
 
 L, W, H = 10.0, 2.0, 1.0  # mm
@@ -378,9 +378,9 @@ def test_none_out_of_scope_keeps_the_ungauged_message(tmp_path):
 def test_a_frequency_worker_takes_its_parent_s_gauge(line, caplog):
     off = gauge.GaugeChoice(on=False, reason="gauge='none'")
     problem = gfem.Driven(1e9)
-    parts = driven.workers.model_parts(line)
+    parts = workers.model_parts(line)
     with caplog.at_level(logging.INFO, logger="gfem.solver"):
-        driven._solve_block(*parts, problem, DIRECT, False, gauge=off)
+        driven_sweep.solve_block(*parts, problem, DIRECT, False, gauge=off)
     # taken as it is: not resolved (and logged) again, no basis built
     assert _gauge_records(caplog) == []
     assert [r for r in caplog.records if hasattr(r, "floating")] == []
