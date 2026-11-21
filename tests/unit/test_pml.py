@@ -743,8 +743,13 @@ def _split_box(tmp_path, materials=None):
     return gfem.Model(mesh, materials=materials, pml=gfem.PML(("low_pml", "high_pml")))
 
 
+#: Near the split box's lowest mode of the interior (186 THz, 15 % of its
+#: energy in the layer): the coarse layer's own modes crowd lower targets.
+BOX_TARGET = 1.9e14
+
+
 def _modes(model):
-    problem = gfem.Eigenmode(n_modes=2, target=1.0e14)
+    problem = gfem.Eigenmode(n_modes=1, target=BOX_TARGET)
     return gfem.solve(model, problem, options=DIRECT)
 
 
@@ -766,7 +771,7 @@ def test_a_mode_s_participations_count_the_physical_regions_only(tmp_path):
 
 def test_an_eigenmode_result_carries_its_layer_through_a_result_file(tmp_path):
     model = _split_box(tmp_path)
-    problem = gfem.Eigenmode(n_modes=1, target=1.0e14)
+    problem = gfem.Eigenmode(n_modes=1, target=BOX_TARGET)
     gfem.Job(model, problem, DIRECT).run(out=tmp_path / "out")
     loaded = gfem.load_result(tmp_path / "out")
     assert loaded.pml == model.pml
@@ -889,89 +894,21 @@ def test_electrostatic_refinement_runs_on_a_layered_model(tmp_path):
     assert np.isfinite(estimate.value)
 
 
-# --- wave ports through side layers --------------------------------------------------
-
-
-def _strip(tmp_path, clearance, name="strip.msh", pml="default", **kw):
-    path = pml_cases.strip_guide(tmp_path / name, clearance, **kw)
-    return pml_cases.strip_model(path, pml)
-
-
-def _n_eff(result):
-    k0 = 2 * math.pi * pml_cases.STRIP_F / pml_cases.C0
-    return complex(np.asarray(result.gamma)[0]).imag / k0
-
-
-def test_a_port_section_inside_side_layers_returns_the_guided_mode(tmp_path):
-    # the full section at clearance 0.4 um: the layer modes crowd the shift
-    # and pass the propagating filter, so only the layer share tells the
-    # guided mode from them; its tail in the layer warns
-    model = _strip(tmp_path, 0.4, quarter=False, length=0.15)
-    problem = gfem.PortMode("p1", (pml_cases.STRIP_F,))
-    with pytest.warns(gfem.LayerClearanceWarning, match=r"'p1'.*clearance"):
-        result = gfem.solve(model, problem, options=DIRECT)
-    assert _n_eff(result) == pytest.approx(pml_cases.STRIP_NEFF, abs=1e-3)
-
-
-def test_a_wave_port_oblique_in_a_layer_is_refused(tmp_path):
-    # the end face x = 0 tilted to x = 0.3 z: where it cuts the +z layer,
-    # the layer is no longer a box shell around the interior box
-    def surface(c):
-        return "end" if abs(c[0]) < 1e-9 else ""
-
-    def tilt(p):
-        return p + np.outer(0.3 * p[:, 2], (1.0, 0.0, 0.0))
-
-    mesh = _box(tmp_path, sides=("+z",), surface=surface, mapping=tilt)
-    with pytest.raises(NotImplementedError, match=r"perfectly matched layer 'pml'"):
-        _model(mesh, ports=[gfem.WavePort("w", "end")])
-
-
-def _quarter_strip(tmp_path, pml="default", name="q.msh"):
-    return _strip(tmp_path, 0.4, name=name, pml=pml, length=0.15)
-
-
-@pytest.mark.parametrize("which", ["voltage_path", "current_path"])
-def test_an_impedance_path_through_the_layer_is_refused(tmp_path, which):
-    model = _quarter_strip(tmp_path)
-    with pytest.warns(gfem.LayerClearanceWarning):
-        mode = gfem.solve(
-            model, gfem.PortMode("p1", (pml_cases.STRIP_F,)), options=DIRECT
+def test_a_mode_with_gain_sign_warns(tmp_path):
+    # a target at 0.3 f finds the mode trapped in the core below the air's
+    # cutoff: the stretch does not damp its evanescent tail, which reaches
+    # the layer and comes back with the gain sign
+    model, _ = pml_cases.leaky_guide_model(tmp_path / "guide.msh")
+    target = 0.3 * pml_cases.guide_root().real * pml_cases.C0 * 1e3 / (2 * math.pi)
+    with pytest.warns(gfem.LayerClearanceWarning, match="grows in time"):
+        result = gfem.solve(
+            model,
+            gfem.Eigenmode(target=target),
+            options=gfem.SolverOptions(order=2, linear_solver="direct"),
         )
-    # from the core's centre across the cladding into the +x layer (m)
-    path = [(0.0, 0.0, 0.0), (1.2e-6, 0.0, 0.0)]
-    with pytest.raises(
-        ValueError,
-        match=rf"characteristic_impedance: {which} on port 'p1' passes through "
-        r"the perfectly matched layer \('pml'\)",
-    ):
-        gfem.characteristic_impedance(mode, **{which: path})
-    # a path in the physical part stays accepted
-    inside = [(0.0, 0.0, 0.0), (0.0, 0.5e-6, 0.0)]
-    assert np.isfinite(gfem.characteristic_impedance(mode, voltage_path=inside)).all()
-
-
-def test_the_port_section_key_follows_the_stretch(tmp_path):
-    from gfem._port_section import port_section_key
-
-    keys = set()
-    for name, pml in (
-        ("a", gfem.PML("pml")),
-        ("b", gfem.PML("pml", target_reflection=1e-3)),
-        ("c", gfem.PML("pml", reference_frequency=2 * pml_cases.STRIP_F)),
-    ):
-        model = _quarter_strip(tmp_path, pml, name=f"{name}.msh")
-        stretch = _pml.stretch(model, [pml_cases.STRIP_F])
-        keys.add(port_section_key(model, model.ports[0], stretch))
-    assert len(keys) == 3
-    # and the lowest solve frequency, when nothing is pinned
-    model = _quarter_strip(tmp_path, name="d.msh")
-    port = model.ports[0]
-    keys = {
-        port_section_key(model, port, _pml.stretch(model, [f]))
-        for f in (pml_cases.STRIP_F, 0.9 * pml_cases.STRIP_F)
-    }
-    assert len(keys) == 2
+    assert float(np.imag(result.omega[0])) < 0
+    # readers of the stretched operator rebuild the solve's stretch
+    assert result.e_fields[0]._reference_frequency == pytest.approx(target)
 
 
 # --- gradients next to a layer ----------------------------------------------------
@@ -1071,3 +1008,88 @@ def test_boundary_morph_of_a_surface_in_the_layer_is_refused(tmp_path):
     model = _walled_box(tmp_path)
     with pytest.raises(ValueError, match="or lies in the perfectly matched layer"):
         boundary_morph(model, "far")
+
+
+# --- wave ports through side layers --------------------------------------------------
+
+
+def _strip(tmp_path, clearance, name="strip.msh", pml="default", **kw):
+    path = pml_cases.strip_guide(tmp_path / name, clearance, **kw)
+    return pml_cases.strip_model(path, pml)
+
+
+def _n_eff(result):
+    k0 = 2 * math.pi * pml_cases.STRIP_F / pml_cases.C0
+    return complex(np.asarray(result.gamma)[0]).imag / k0
+
+
+def test_a_port_section_inside_side_layers_returns_the_guided_mode(tmp_path):
+    # the full section at clearance 0.4 um: the layer modes crowd the shift
+    # and pass the propagating filter, so only the layer share tells the
+    # guided mode from them; its tail in the layer warns
+    model = _strip(tmp_path, 0.4, quarter=False, length=0.15)
+    problem = gfem.PortMode("p1", (pml_cases.STRIP_F,))
+    with pytest.warns(gfem.LayerClearanceWarning, match=r"'p1'.*clearance"):
+        result = gfem.solve(model, problem, options=DIRECT)
+    assert _n_eff(result) == pytest.approx(pml_cases.STRIP_NEFF, abs=1e-3)
+
+
+def test_a_wave_port_oblique_in_a_layer_is_refused(tmp_path):
+    # the end face x = 0 tilted to x = 0.3 z: where it cuts the +z layer,
+    # the layer is no longer a box shell around the interior box
+    def surface(c):
+        return "end" if abs(c[0]) < 1e-9 else ""
+
+    def tilt(p):
+        return p + np.outer(0.3 * p[:, 2], (1.0, 0.0, 0.0))
+
+    mesh = _box(tmp_path, sides=("+z",), surface=surface, mapping=tilt)
+    with pytest.raises(NotImplementedError, match=r"perfectly matched layer 'pml'"):
+        _model(mesh, ports=[gfem.WavePort("w", "end")])
+
+
+def _quarter_strip(tmp_path, pml="default", name="q.msh"):
+    return _strip(tmp_path, 0.4, name=name, pml=pml, length=0.15)
+
+
+@pytest.mark.parametrize("which", ["voltage_path", "current_path"])
+def test_an_impedance_path_through_the_layer_is_refused(tmp_path, which):
+    model = _quarter_strip(tmp_path)
+    with pytest.warns(gfem.LayerClearanceWarning):
+        mode = gfem.solve(
+            model, gfem.PortMode("p1", (pml_cases.STRIP_F,)), options=DIRECT
+        )
+    # from the core's centre across the cladding into the +x layer (m)
+    path = [(0.0, 0.0, 0.0), (1.2e-6, 0.0, 0.0)]
+    with pytest.raises(
+        ValueError,
+        match=rf"characteristic_impedance: {which} on port 'p1' passes through "
+        r"the perfectly matched layer \('pml'\)",
+    ):
+        gfem.characteristic_impedance(mode, **{which: path})
+    # a path in the physical part stays accepted
+    inside = [(0.0, 0.0, 0.0), (0.0, 0.5e-6, 0.0)]
+    assert np.isfinite(gfem.characteristic_impedance(mode, voltage_path=inside)).all()
+
+
+def test_the_port_section_key_follows_the_stretch(tmp_path):
+    from gfem._port_section import port_section_key
+
+    keys = set()
+    for name, pml in (
+        ("a", gfem.PML("pml")),
+        ("b", gfem.PML("pml", target_reflection=1e-3)),
+        ("c", gfem.PML("pml", reference_frequency=2 * pml_cases.STRIP_F)),
+    ):
+        model = _quarter_strip(tmp_path, pml, name=f"{name}.msh")
+        stretch = _pml.stretch(model, [pml_cases.STRIP_F])
+        keys.add(port_section_key(model, model.ports[0], stretch))
+    assert len(keys) == 3
+    # and the lowest solve frequency, when nothing is pinned
+    model = _quarter_strip(tmp_path, name="d.msh")
+    port = model.ports[0]
+    keys = {
+        port_section_key(model, port, _pml.stretch(model, [f]))
+        for f in (pml_cases.STRIP_F, 0.9 * pml_cases.STRIP_F)
+    }
+    assert len(keys) == 2

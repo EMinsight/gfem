@@ -1710,7 +1710,11 @@ class EigenmodeResult:
     def q(self) -> jax.Array:
         r"""Quality factors :math:`|\omega| / (2 |\mathrm{Im}\,\omega|)`.
 
-        ``inf`` for a lossless mode.
+        ``inf`` for a lossless mode. The total Q: material and port losses,
+        and with a perfectly matched layer (`gfem.PML`) the radiation it
+        absorbs. A mode whose :math:`\mathrm{Im}\,\omega` has the gain sign
+        on such a model warns `gfem.LayerClearanceWarning`: its Q is the
+        layer's, not the device's.
         """
         return jnp.abs(self.omega) / (2 * jnp.abs(jnp.imag(self.omega)))
 

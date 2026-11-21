@@ -123,6 +123,7 @@ from gfem._engine.eigen import (
     eigen_operator,
     element_energy,
     law_scale,
+    layer_energy,
     principal_energy,
     projector,
     scale_per_tetrahedron,
@@ -134,13 +135,16 @@ from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
-from gfem._pml import physical_regions
+from gfem._pml import Stretch, physical_regions
+from gfem._pml import reference_frequency as layer_reference_frequency
+from gfem._pml import stretch as layer_stretch
 from gfem._sign import largest_entry, largest_value
 from gfem._text import hertz
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import (
     DegenerateModeError,
     EigenmodeConvergenceError,
+    LayerClearanceWarning,
     LinearSolverConvergenceError,
     LowFrequencyWarning,
     SolverUnavailableError,
@@ -171,6 +175,17 @@ _INNER_FLOOR = 1e-13
 #: second-order absorbing wall's cluster lies near Re k = 2 sigma: this test
 #: keeps it, and only the distance to the target ranks the modes ahead of it.
 _STATIC = 1e-6
+#: A pair with more than this share of its background-weighted electric
+#: energy in a perfectly matched layer is a mode of the layer, not of the
+#: device: dropped like a static pair (on a leaky guide the physical modes
+#: measured shares up to 0.24, the layer's modes 0.70 and up).
+_PML_SHARE = 0.5
+#: A returned mode of a model with a perfectly matched layer whose
+#: ``-Im k`` exceeds this fraction of ``|k|`` grows in time (Q below 5e5):
+#: the stretch acting on an evanescent tail that reaches the layer
+#: (measured 3e-3 for a mode trapped 3 mm in front of a layer). Below it
+#: the gain cannot be told from the layer's discretization error.
+_GAIN = 1e-6
 #: A converged pair of a law model whose curl energy is at most this fraction
 #: of its electric energy (`EigenOperator.curl_ratio`) is a gradient field at
 #: a zero of eps(omega), a longitudinal mode: dropped like a static pair
@@ -437,6 +452,17 @@ class EigenmodeRule:
         #: The regions with an anisotropic material: the principal split.
         self.anisotropic = anisotropic_regions(model, self.physical)
         self._pml = model.pml
+        #: The layer's reference frequency: pinned, else the target.
+        self._reference_frequency = (
+            None
+            if model.pml is None
+            else layer_reference_frequency(model.pml, [problem.target])
+        )
+        #: The layer energy of a solve-space vector (`layer_energy`), set by
+        #: `forward`; ``None`` without a layer.
+        self._layer_energy: Callable[[np.ndarray], np.ndarray] | None = None
+        #: The k of the pairs the last selection dropped as modes of the layer.
+        self._layer_dropped: list[complex] = []
         self._mesh = model.mesh
         self._materials = dict(model.materials)
         self._periodic_surfaces = pair_names(model._periodic)  # noqa: SLF001
@@ -492,9 +518,14 @@ class EigenmodeRule:
         with _mpi.raised_together(ValueError):
             dispersion.check_band(model, self.problem.target, "target")
         with task_manager(opts.threads, comm):
+            stretch = self._stretch(model, warn=True)
             with _timing.phase("discretize") as span:
                 op = driven_operator(
-                    model, order, wave_vector=self.problem.wave_vector, comm=comm
+                    model,
+                    order,
+                    wave_vector=self.problem.wave_vector,
+                    comm=comm,
+                    stretch=stretch,
                 )
                 built = op.built
                 sigma = terms.wavenumber(2 * math.pi * self.problem.target, built.scale)
@@ -504,7 +535,8 @@ class EigenmodeRule:
             entry = None
             try:
                 eop.factorize()  # before the projector's setup
-                divfree = projector(model, op, self.problem.wave_vector)
+                divfree = projector(model, op, self.problem.wave_vector, stretch)
+                self._layer_energy = layer_energy(model, op)
                 # the whole search is one solve: its shift solves are internal
                 with (
                     _timing.phase("solve", iterations=()),
@@ -522,6 +554,7 @@ class EigenmodeRule:
                         dispersion.check_energy(model, f, f"mode {j} at")
                 outputs, x = self._postprocess(model, op, divfree, modes)
                 ks = [m.k for m in modes]
+                self._warn_gain(ks, built.scale)
                 lowest = min(k.real for k in ks) * const.c / built.scale
                 _check_low_frequency(
                     model,
@@ -687,6 +720,61 @@ class EigenmodeRule:
             message = f"{message} For an eigenmode solve, try {remedy}."
         return LinearSolverConvergenceError(message)
 
+    def _stretch(self, model: Model, *, warn: bool = False) -> Stretch | None:
+        """The layer's stretch for this solve: at the target unless pinned.
+
+        With ``warn``, a thin layer warns (`gfem._pml.Stretch.warn_thin`).
+        """
+        stretch = layer_stretch(model, [self.problem.target])
+        if warn and stretch is not None:
+            stretch.warn_thin(stacklevel=4)
+        return stretch
+
+    def _in_layer(self, k: complex, x: np.ndarray) -> bool:
+        """Whether the pair ``(k, x)`` is a mode of the layer.
+
+        It holds more than `_PML_SHARE` of its energy in the layer. Its ``k``
+        joins `_layer_dropped` unless one there is within 1e-3 (one mode met
+        as a seed and again refined). Never without a layer.
+        """
+        if self._layer_energy is None:
+            return False
+        parts = self._layer_energy(x)
+        if self.comm is not None:
+            parts = _mpi.reduce_bcast(self.comm, parts)
+        if not parts[0] > _PML_SHARE * parts[1]:
+            return False
+        if not any(_close(k, other, 1e-3) for other in self._layer_dropped):
+            self._layer_dropped.append(complex(k))
+        return True
+
+    def _warn_gain(self, ks: list[complex], scale: float) -> None:
+        """Warn `LayerClearanceWarning` for each mode that grows in time.
+
+        On a model with a perfectly matched layer, ``Im k < 0`` beyond
+        `_GAIN` comes from the stretch acting on an evanescent tail that
+        reaches the layer, not from the device. Never without a layer.
+        """
+        if self._pml is None:
+            return
+        regions = ", ".join(map(repr, self._pml.regions))
+        per_hz = const.c / scale / (2 * math.pi)
+        for j, k in enumerate(ks):
+            if k.imag < -_GAIN * abs(k):
+                q = abs(k) / (2 * abs(k.imag))
+                _mpi.warn(
+                    self.comm,
+                    f"Eigenmode: mode {j} at {hertz(k.real * per_hz)} grows in "
+                    f"time (Im omega < 0, Q = {q:.4g} with the gain sign) on a "
+                    "model with a perfectly matched layer "
+                    f"({regions}): its evanescent "
+                    "tail most likely reaches the layer, which then pumps it "
+                    "instead of absorbing it. Its Q is not physical. Move the "
+                    "layer farther from the structure (more clearance).",
+                    LayerClearanceWarning,
+                    stacklevel=4,
+                )
+
     def _find(
         self, eop: EigenOperator, divfree, sigma: float, *, guard: bool
     ) -> tuple[list[Refined], Refined | None, GapSet, np.ndarray]:
@@ -734,6 +822,7 @@ class EigenmodeRule:
                 # factorization counted for the seed (refinement
                 # reshifted it)
                 eop.reshift(sigma, solves=MIN_SUBSPACE)
+            self._layer_dropped = []
             try:
                 k, vectors = self._shift_invert(eop, divfree, nev, tol=seed_tolerance)
             except SeedBoundReached as err:
@@ -976,7 +1065,11 @@ class EigenmodeRule:
         """
         n_modes = self.problem.n_modes
         tolerance = self.options.eigen_tolerance
-        seeds = [j for j in range(len(k)) if k[j].real > _STATIC * sigma]
+        seeds = [
+            j
+            for j in range(len(k))
+            if k[j].real > _STATIC * sigma and not self._in_layer(k[j], vectors[:, j])
+        ]
         seeds.sort(key=lambda j: abs(k[j].real - sigma))
         layout = op.layout
         vectors = _orthonormal_multiples(k, vectors, layout=layout)
@@ -1009,6 +1102,7 @@ class EigenmodeRule:
                 and twin.k.real > _STATIC * sigma
                 and not self._longitudinal(op, twin)
                 and not _in_span(twin, accepted, window, layout=layout)
+                and not self._in_layer(twin.k, twin.x)
             ):
                 return twin
             return None
@@ -1042,6 +1136,7 @@ class EigenmodeRule:
                         layout=layout,
                     )
                     or self._longitudinal(op, mode)
+                    or (mode.converged and self._in_layer(mode.k, mode.x))
                 )
             ):
                 # a frozen seed rougher than TRUSTED, refined on a shift nearer
@@ -1053,6 +1148,7 @@ class EigenmodeRule:
                     mode.converged
                     and mode.k.real > _STATIC * sigma
                     and not self._longitudinal(op, mode)
+                    and not self._in_layer(mode.k, mode.x)
                 ):
                     kept = distinct(mode)
                     if kept is not None:
@@ -1061,7 +1157,11 @@ class EigenmodeRule:
                 mode = refine(
                     op, seed, vectors[:, j], tolerance=tolerance, max_iterations=steps
                 )
-            if mode.k.real <= _STATIC * sigma or self._longitudinal(op, mode):
+            if (
+                mode.k.real <= _STATIC * sigma
+                or self._longitudinal(op, mode)
+                or (mode.converged and self._in_layer(mode.k, mode.x))
+            ):
                 continue
             if not mode.converged:
                 if not full:
@@ -1167,6 +1267,12 @@ class EigenmodeRule:
                 for m in (skipped or failed)
             ),
         ]
+        if self._layer_dropped:
+            lines.append(
+                f"  dropped: {len(self._layer_dropped)} pair(s) with more than half "
+                "their electric energy in the perfectly matched layer (modes of "
+                "the layer, not of the device)."
+            )
         lines.append(
             "Remedies: move Eigenmode.target closer to the wanted modes; loosen "
             "SolverOptions.eigen_tolerance or raise max_refine_iterations; for a "
@@ -1932,6 +2038,7 @@ class EigenmodeRule:
             self.options.order,
             wave_vector=self.problem.wave_vector,
             comm=self.comm,
+            stretch=self._stretch(model),
         )
         self._last_driven = (model, op)
         return op
@@ -2069,6 +2176,7 @@ class EigenmodeRule:
                 omega=omega[j],
                 _excluded=self._excluded,
                 _comm=_mpi.static_comm(self.comm),
+                _reference_frequency=self._reference_frequency,
             )
             for j in range(self.problem.n_modes)
         ]
