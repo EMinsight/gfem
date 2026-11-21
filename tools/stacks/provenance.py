@@ -122,7 +122,17 @@ MUMPS_MUST_MATCH = (
     "blas.version",
 )
 #: ... and fields where they may differ, printed by every check.
-MUMPS_ALLOWED = ("arithmetics", "openmp", "orderings", "metis", "blas.threading")
+MUMPS_ALLOWED = (
+    "arithmetics",
+    "openmp",
+    "orderings",
+    "metis",
+    "blas.threading",
+    "paraord_cap",
+)
+#: Allowed fields a block recorded before them lacks, and what that means:
+#: ``paraord_cap`` came with the cap, so a block without it has none.
+MUMPS_DEFAULTS = {"paraord_cap": False}
 #: The packages that build a MUMPS and so must record its block.
 MUMPS_PACKAGES = ("palace", "petsc")
 #: MUMPS's default selective 64-bit build: 32-bit row and column indices.
@@ -234,6 +244,7 @@ def _check_mumps(records: dict, report: Report) -> None:
             if record["package"] in MUMPS_PACKAGES:
                 report.errors.append(f"{name}: no mumps block")
             continue
+        block = {**MUMPS_DEFAULTS, **block}
         missing = [
             dotted
             for dotted in (*MUMPS_MUST_MATCH, *MUMPS_ALLOWED, "gemmt")
@@ -443,6 +454,7 @@ PETSC_BUILD_FILES = (
     "dynsym.txt",
     "needed.txt",
     "compiler.txt",
+    "paraord.txt",
     "tarballs.txt",
 )
 #: PT-Scotch before 7.0.18 crashes MUMPS's parallel analysis.
@@ -538,6 +550,10 @@ def _petsc_blas(needed: str, env: dict[str, str], errors: list[str]) -> dict:
 def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[str]]:
     """The ``mumps`` block of a PETSc prefix, and the gates it fails.
 
+    ``paraord_cap`` records whether the libraries MUMPS is folded into hold
+    ``MUMPS_PARAORD_MAX``, the marker of gfem's cap on PT-Scotch's ordering
+    processes (``tools/petsc_wheelhouse.sh``): an allowed difference, never a gate.
+
     Besides the compared fields, the block records MUMPS's ``Makefile.inc``
     ``OPTF`` and ``FC`` as written (``fflags_raw``, ``compiler_raw``): for
     information, and ``check`` finds the toolchain's ``fflags`` in
@@ -551,8 +567,9 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
     Args:
         build: The text of each of ``PETSC_BUILD_FILES``: installed headers,
             MUMPS's ``Makefile.inc``, ``nm -D`` and ``ldd`` of the libraries
-            MUMPS is folded into, ``<basename of FC> <version>``, and the
-            ``sha256sum`` lines of the ``--download`` tarballs.
+            MUMPS is folded into, ``<basename of FC> <version>``, ``grep -a -o
+            MUMPS_PARAORD_MAX`` of those libraries, and the ``sha256sum`` lines
+            of the ``--download`` tarballs.
         env: The toolchain's ``FFLAGS``, ``STACK_BLAS_VENDOR`` and
             ``STACK_BLAS_VERSION``.
 
@@ -611,6 +628,7 @@ def petsc_mumps(build: dict[str, str], env: dict[str, str]) -> tuple[dict, list[
         "index_bits": 64 if _defined(conf, "PETSC_USE_64BIT_INDICES") else 32,
         "fflags_raw": " ".join(optf_flags),
         "compiler_raw": fc.group(1).strip() if fc else "",
+        "paraord_cap": "MUMPS_PARAORD_MAX" in build["paraord.txt"],
     }
     return block, errors
 

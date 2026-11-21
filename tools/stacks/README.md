@@ -240,7 +240,9 @@ optional, for information).
   `metis` among the `orderings`, no `parmetis` in PETSc's, the toolchain's
   `fflags` among `fflags_raw` when it is there;
 - allowed differences, printed every time: `arithmetics`, `openmp`,
-  `orderings`, `metis` (patch level), `blas.threading`.
+  `orderings`, `metis` (patch level), `blas.threading`, `paraord_cap` (whether
+  MUMPS holds gfem's cap on PT-Scotch's ordering processes; a block recorded
+  without the field has none).
 
 ## The stack venv (`pyenv`)
 
