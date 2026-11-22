@@ -88,10 +88,19 @@ missing, and refuses an MPI other than Open MPI.
 - The stack runs one-process solves too, through the same `linear_solver="petsc"`.
 - An eigenmode solve across ranks finds its modes with SLEPc from this stack:
   `eigen_solver="auto"` names it there, and `"arpack"` raises.
+- The script's MUMPS orders with PT-Scotch on at most 32 processes, so the fill of
+  BDDC's coarse factorization does not grow with the ranks. A stack built by an
+  earlier script lacks this: build it again to get it.
 - A stack runs under the Open MPI it was built on: load the same one to use it.
 - The no-MPI stack under a launcher serves {term}`rank copies` only, and a
   {term}`distributed solve` naming PETSc refuses it, with
   `gfem.SolverUnavailableError`.
+
+ParMETIS is part of neither stack: it is free only for educational and research
+use by non-profit institutions and US government agencies, and for evaluation by
+others; it may not be redistributed. `--mpi --with-parmetis` adds it to the MPI
+stack, for users its terms allow; that stack is for its builder alone and must
+not be shared. gfem then orders BDDC's coarse problem with it.
 
 ## Check the build
 

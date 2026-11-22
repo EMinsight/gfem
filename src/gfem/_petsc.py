@@ -11,20 +11,26 @@ gfem documents two builds. The no-MPI stack serves one process and rank
 copies, which pass PETSc its launch option; only the MPI stack serves a distributed
 solve (`require_mpi_petsc`). `has_mpi` tells them apart without initialising PETSc.
 A stack whose MUMPS calls ZGEMMT is refused whatever the size of the problem
-(`has_zgemmt`).
+(`has_zgemmt`). The same read of ``libpetsc`` tells whether its MUMPS caps
+PT-Scotch's parallel ordering (`has_paraord_cap`), as gfem's build script makes it.
 
 Every PETSc or SLEPc object gfem creates gets its own options prefix
 (`next_prefix`). gfem's options sit in PETSc's global options database only
 while that object reads them (`scoped_options`), so they never reach a
 user's own PETSc objects, and a user's unprefixed options never reach
 gfem's. One process-wide reentrant lock, `LOCK`, guards every PETSc call.
+
+petsc4py has no accessor for the KSP behind ``PCTELESCOPE``, so `telescope_ksp`
+reaches it through ``libpetsc`` by ctypes.
 """
 
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import functools
 import itertools
+import logging
 import mmap
 import re
 import threading
@@ -45,6 +51,8 @@ __all__ = [
     "MIN_VERSION",
     "error_text",
     "has_mpi",
+    "has_paraord_cap",
+    "has_parmetis",
     "has_zgemmt",
     "mpi_stack_usable",
     "next_prefix",
@@ -52,6 +60,8 @@ __all__ = [
     "require_petsc",
     "require_slepc",
     "scoped_options",
+    "telescope_ksp",
+    "telescope_symbols",
     "unread",
     "unwrap",
 ]
@@ -63,6 +73,10 @@ MIN_VERSION = (3, 26)
 #: operator calls gfem's PETSc linear solver from inside a SLEPc solve).
 LOCK = threading.RLock()
 _PREFIXES = itertools.count()
+#: Says once that the factor behind ``PCTELESCOPE`` cannot be read.
+_LOGGER = logging.getLogger("gfem.solver")
+#: The name under which `telescope_ksp` composes the inner KSP on its PC.
+_INNER = b"gfem_telescope_ksp"
 
 _RECIPE = "the 'Solve with PETSc and SLEPc' recipe in the gfem docs"
 #: Lets a PETSc without MPI start under a launcher: each rank is a copy of its own.
@@ -101,7 +115,12 @@ def has_mpi() -> bool:
     return "PETSC_HAVE_MPIUNI" not in header
 
 
-@functools.cache
+#: What `_markers` looks for in ``libpetsc``: MUMPS's import of ZGEMMT, and the
+#: variable that overrides the ordering cap of the stacks gfem's build script makes.
+_ZGEMMT_MARKER = b"\0zgemmt_\0"
+_CAP_MARKER = b"MUMPS_PARAORD_MAX"
+
+
 def has_zgemmt() -> bool:
     """Whether the installed ``libpetsc`` imports ZGEMMT; False without one to read.
 
@@ -114,24 +133,58 @@ def has_zgemmt() -> bool:
         gfem.SolverUnavailableError: A ``libpetsc`` cannot be read, so the check
             cannot tell; the error names it. Not cached.
     """
+    return _ZGEMMT_MARKER in _markers()
+
+
+def has_paraord_cap() -> bool:
+    """Whether the installed ``libpetsc`` carries the ordering cap; False without one.
+
+    The stacks gfem's build script makes cap the processes PT-Scotch orders on inside
+    MUMPS, and ``MUMPS_PARAORD_MAX`` overrides the cap, so MUMPS's code holds that
+    name only on such a stack. Read from the same scan as `has_zgemmt`, which
+    initialises nothing.
+
+    Raises:
+        gfem.SolverUnavailableError: As `has_zgemmt`.
+    """
+    return _CAP_MARKER in _markers()
+
+
+@functools.cache
+def has_parmetis() -> bool:
+    """Whether the installed PETSc stack has ParMETIS; initialises PETSc."""
+    return bool(require_petsc().Sys.hasExternalPackage("parmetis"))
+
+
+@functools.cache
+def _markers() -> frozenset[bytes]:
+    """The markers found in the installed ``libpetsc.so*``, each file read once.
+
+    Raises:
+        gfem.SolverUnavailableError: A ``libpetsc`` cannot be read; the error names
+            it. Not cached.
+    """
     try:
         config = __import__("petsc4py").get_config()
         folder = Path(config["PETSC_DIR"], config.get("PETSC_ARCH") or "", "lib")
         libraries = {path.resolve() for path in folder.glob("libpetsc.so*")}
     except Exception:  # noqa: BLE001 - also a broken install: `_import` tells why
-        return False
-    return any(_names_zgemmt(library) for library in sorted(libraries))
+        return frozenset()
+    found: set[bytes] = set()
+    for library in sorted(libraries):
+        found |= _scan(library)
+    return frozenset(found)
 
 
-def _names_zgemmt(library: Path) -> bool:
+def _scan(library: Path) -> set[bytes]:
     try:
         if not library.is_file() or library.stat().st_size == 0:
-            return False
+            return set()
         with (
             library.open("rb") as file,
             mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_READ) as image,
         ):
-            return image.find(b"\0zgemmt_\0") >= 0
+            return {m for m in (_ZGEMMT_MARKER, _CAP_MARKER) if image.find(m) >= 0}
     except (OSError, ValueError) as err:
         raise SolverUnavailableError(
             f"gfem cannot read {library} ({err}) to check whether the installed "
@@ -364,3 +417,51 @@ def error_text(err: BaseException) -> str:
     lines = (_RANK.sub("", line).strip() for line in str(err).splitlines()[1:])
     reason = " ".join(line for line in lines if line and not _TRACEBACK.search(line))
     return f"{reason} (PETSc error {code})"
+
+
+@functools.cache
+def telescope_symbols() -> tuple[Any, Any] | None:
+    """``PCTelescopeGetKSP`` and ``PetscObjectCompose`` from ``libpetsc``, or ``None``.
+
+    Looked up through petsc4py's own extension, which links ``libpetsc``. A build
+    without them gives ``None``, said once on the ``gfem.solver`` logger.
+    """
+    PETSc = require_petsc()
+    try:
+        library = ctypes.CDLL(PETSc.__file__)
+        get, compose = library.PCTelescopeGetKSP, library.PetscObjectCompose
+    except (OSError, AttributeError) as err:
+        _LOGGER.info(
+            "PCTelescopeGetKSP cannot be loaded from the PETSc stack (%s): the "
+            "factor behind PCTELESCOPE is not read, its bytes count as 0 and every "
+            "failure of it is retried",
+            err,
+        )
+        return None
+    get.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+    compose.argtypes = (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p)
+    get.restype = compose.restype = ctypes.c_int
+    return get, compose
+
+
+def telescope_ksp(pc: Any) -> Any:
+    """The KSP behind a set-up ``PCTELESCOPE`` on a rank it keeps, else ``None``.
+
+    Also ``None`` when `telescope_symbols` cannot be loaded. The KSP is composed on
+    ``pc``, which petsc4py's ``query`` then wraps.
+
+    Raises:
+        RuntimeError: PETSc returned an error code.
+    """
+    symbols = telescope_symbols()
+    if symbols is None:
+        return None
+    get, compose = symbols
+    with LOCK:
+        inner = ctypes.c_void_p()
+        code = get(pc.handle, ctypes.byref(inner))
+        if code == 0 and inner.value:
+            code = compose(pc.handle, _INNER, inner)
+        if code != 0:
+            raise RuntimeError(f"PCTelescopeGetKSP failed (PETSc error {code})")
+        return pc.query(_INNER.decode()) if inner.value else None

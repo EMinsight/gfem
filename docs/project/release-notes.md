@@ -664,6 +664,57 @@ Solvers, memory and ranks:
 - **`gfem.release_memory()`** frees everything gfem keeps between solves in a
   process: solve entries, pooled solver plans and factorizations, and cached
   discretizations. Results are unchanged; a released gradient is recomputed.
+- **BDDC's coarse problem across ranks.** With `bddc_gmres` on the
+  {term}`MPI PETSc stack`, MUMPS factors BDDC's coarse problem on a share of
+  the ranks. gfem picks the share and the ordering from the stack, the coarse
+  problem's size and the number of ranks and nodes:
+  - On a stack built by the current script, PT-Scotch orders it on every
+    fourth rank, at least 30 000 coarse DOFs each, placed so that every node
+    holding one holds as many: 7 per node at 28 ranks per node. The ordering
+    cap below keeps its fill flat as those ranks grow, and every set-up takes
+    the same route.
+  - On a stack you built with ParMETIS, ParMETIS orders it on the same ranks.
+  - On a stack built by an earlier script, without the cap, PT-Scotch orders it
+    on at most one rank per 100 000 coarse DOFs and at most 56 ranks, where its
+    fill stays low. Sequential METIS orders it on every fourth rank, at least
+    30 000 coarse DOFs each, when that gives more ranks than PT-Scotch may take
+    and the set-up will serve 6 right-hand sides or more, or repeats a mesh
+    already set up in this process (the designs of a loop, a sweep's rebuilds).
+    Its ordering and symbolic factorization cost more than PT-Scotch's, and
+    only many right-hand sides or keeping them repays it.
+
+  The same script on the same ranks and stack always takes the same route. It
+  is not an option: $S$ stays that of the coarse problem factored on one rank,
+  to round-off. A singular coarse problem now raises at once; only a MUMPS
+  workspace error is retried, with more workspace, which a PT-Scotch
+  factorization starts with twice as much of.
+- **The MPI stack caps PT-Scotch's parallel ordering: rebuild it to get the
+  cap.** The MUMPS that
+  [`tools/petsc_wheelhouse.sh`](https://github.com/benvial/gfem/blob/main/tools/petsc_wheelhouse.sh)
+  builds now orders with PT-Scotch on at most 32 processes, where every node
+  holds as many processes. Without the cap, MUMPS orders on the largest power of
+  two of its processes, and the fill grows with them. On another layout, such as
+  `direct` with unequal ranks per node, MUMPS still orders on all of them. The
+  variable `MUMPS_PARAORD_MAX` sets another cap for a run, of 2 or more (`1`
+  counts as `2`), or `0` for none. A stack built before this change has no cap: rebuild it with the
+  current script, as {doc}`../recipes/petsc-slepc` says. Until then gfem keeps
+  the earlier coarse route above; where a rebuilt stack would factor the
+  coarse problem on more ranks, it says how many, once per process, at INFO
+  level on the `"gfem.solver"` logger.
+- **ParMETIS, on your own MPI stack.** `tools/petsc_wheelhouse.sh --mpi
+  --with-parmetis` adds ParMETIS to the MPI stack, and gfem then orders BDDC's
+  coarse problem with it. ParMETIS is free only for educational and research
+  use by non-profit institutions and US government agencies, and for
+  evaluation by others; it may not be redistributed. The script prints these
+  terms before it builds. A stack with ParMETIS is for its builder alone: do
+  not share or upload its wheels. gfem's own stacks never hold it.
+- **Repeated solves keep BDDC's coarse ordering.** Under ranks, gfem keeps a
+  coarse factorization when its set-up is freed, and a later set-up on the same
+  mesh in the same process refactorizes it with new values instead of
+  ordering it and factorizing it symbolically again. A kept factorization holds its factors in memory, so
+  under ranks `retain_memory` now also bounds the coarse factorizations kept
+  between solves: `retain_memory=0` keeps none past a solve, and
+  `gfem.release_memory()` frees them.
 - A band sweep no longer grows memory with every wave vector: a discretization
   keeps the spaces of at most 8 Bloch phase sets.
 - Freeing a direct solver handle from another thread during a solve now always

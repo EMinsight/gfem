@@ -223,7 +223,7 @@ def _solve_cache(cache: str | os.PathLike | None) -> SolveCache | None:
     return SolveCache(cache)
 
 
-def _solve(  # noqa: PLR0912, PLR0915 - the cache's seam sits between the checks
+def _solve(
     model: Model,
     problem: Any,
     *,
@@ -298,7 +298,11 @@ def _solve(  # noqa: PLR0912, PLR0915 - the cache's seam sits between the checks
             inputs = getattr(rule, "vjp_problem", None)
             leaves = problem if inputs is None else inputs(problem)
             traced = SolveRequest(adjoint_loads=adjoint_loads)
-            return rule.result(solve_vjp(rule, model, leaves, request=traced)), None
+            return rule.result(
+                _end_of_solve(
+                    options, resolved, solve_vjp(rule, model, leaves, request=traced)
+                )
+            ), None
         # A moved mesh must keep its periodic pairs, keep its physical
         # elements off the layer's stretch and stay valid on the solve domain.
         check_nodes(model.mesh.nodes, model._periodic)  # noqa: SLF001
@@ -325,15 +329,43 @@ def _solve(  # noqa: PLR0912, PLR0915 - the cache's seam sits between the checks
                 _timing.scope(_timing.problem_name(problem), resolved),
             ):
                 outputs, _ = rule.forward(model, keep=False, request=request)
-        except LinearSolverConvergenceError as err:
-            if partial_result is not None:
-                err.result = partial_result(err)
+        except BaseException as err:
+            _end_of_failed_solve(err, options, resolved, partial_result)
             raise
         adjoints = request.adjoints if adjoint_loads is not None else None
-        result = rule.result(outputs)
+        result = rule.result(_end_of_solve(options, resolved, outputs))
         if cache is not None:
             cache.store(model, result, options)
         return result, adjoints
+
+
+def _end_of_failed_solve(
+    error: BaseException, options: SolverOptions, comm: Any, partial_result: Any
+) -> None:
+    """Before ``error`` leaves a forward: its partial result, and `_end_of_solve`.
+
+    Emptying the pool is collective, so it runs on an agreed error only: every rank
+    raises that one together.
+    """
+    if isinstance(error, LinearSolverConvergenceError) and partial_result is not None:
+        error.result = partial_result(error)
+    if comm is None or _mpi.is_agreed(error, _mpi.FORWARD_ERRORS):
+        _end_of_solve(options, comm, None)
+
+
+def _end_of_solve[T](options: SolverOptions, comm: Any, outputs: T) -> T:
+    """``outputs``, the solve's pooled coarse factorizations freed if it keeps none.
+
+    That is ``retain_memory=0``.
+
+    Inside the call they served its later set-ups (a sweep's rebuilds, an eigen
+    reshift); none outlives it, nor a solve that raised an agreed error. Every rank
+    of ``comm`` gets here together.
+    """
+    coarse = sys.modules.get("gfem._linalg.coarse")
+    if options.retain_memory == 0 and coarse is not None:
+        coarse.empty(comm)
+    return outputs
 
 
 def _check_domain(model: Model, problem: Any) -> None:
@@ -434,3 +466,7 @@ def release_memory() -> None:
     cache = sys.modules.get("gfem._engine.cache")
     if cache is not None:
         cache.release_memory()
+    # after the entries, whose handles give their coarse factorizations back
+    coarse = sys.modules.get("gfem._linalg.coarse")
+    if coarse is not None:
+        coarse.release()

@@ -6,10 +6,13 @@ Every test needs complex petsc4py: skipped without it (the ``petsc`` marker).
 """
 
 import dataclasses
+import logging
+import os
 import re
 import types
 from pathlib import Path
 
+import gradient_cases
 import jax
 import jax.numpy as jnp
 import ngsolve as ngs
@@ -20,7 +23,8 @@ from petsc_recipe import KSP_VIEW, MUMPS_LU
 
 import gfem
 from gfem import _petsc
-from gfem._engine import quadrature
+from gfem._engine import cache, quadrature
+from gfem._engine.driven import DrivenRule
 from gfem._engine.mesh import to_ngsolve
 from gfem._linalg import Operator, coarse, petsc, prepare
 from gfem._linalg.petsc import PetscHandle
@@ -62,15 +66,19 @@ def _scotch_version() -> tuple[int, int, int]:
     return major, minor, patch
 
 
+# ParMETIS, not free for commercial use, is on no stack gfem's CI builds; a user's
+# own --with-parmetis stack declares itself with GFEM_PARMETIS_STACK=1.
+PARMETIS_STACK = os.environ.get("GFEM_PARMETIS_STACK") == "1"
+
+
 def test_the_petsc_stack_is_complex_with_mumps_and_no_non_free_package():
     # The licence control (no non-free or non-commercial dependency) for a stack the
     # licence gate cannot see (what tools/petsc_wheelhouse.sh compiles into the petsc
-    # wheel). ParMETIS, which is not free for commercial use, is on neither stack.
+    # wheel).
     PETSc = _petsc.require_petsc()
     assert np.dtype(PETSc.ScalarType) == np.complex128
     assert PETSc.Sys.hasExternalPackage("mumps")
     assert PETSc.Sys.hasExternalPackage("metis")
-    assert not PETSc.Sys.hasExternalPackage("parmetis")
     # OpenBLAS's ZGEMMT overflows on complex fronts of 32,768 or more: MUMPS without it
     assert not _petsc.has_zgemmt()
     has_mpi = _petsc.has_mpi()
@@ -81,6 +89,40 @@ def test_the_petsc_stack_is_complex_with_mumps_and_no_non_free_package():
         # MUMPS's parallel analysis
         assert np.dtype(PETSc.IntType) == np.int64
         assert _scotch_version() >= (7, 0, 18)
+
+
+def _configure_options() -> str:
+    """The options PETSc was configured with, from its installed ``petscvariables``."""
+    import petsc4py
+
+    config = petsc4py.get_config()
+    variables = Path(
+        config["PETSC_DIR"], config.get("PETSC_ARCH") or "", "lib", "petsc", "conf"
+    )
+    text = (variables / "petscvariables").read_text()
+    return re.search(r"^CONFIGURE_OPTIONS\s*=(.*)$", text, re.MULTILINE)[1]
+
+
+def test_a_stack_the_script_builds_carries_the_ordering_cap():
+    # the script hands PETSc its own MUMPS tarball, the one with the cap
+    if not re.search(r"MUMPS_[\d.]+-gfem\.tar\.gz", _configure_options()):
+        pytest.skip("a stock stack: its MUMPS is not the build script's")
+    assert _petsc.has_paraord_cap()
+    kind = coarse.PARMETIS if _petsc.has_parmetis() else coarse.CAPPED
+    assert coarse.stack_kind(None) == kind
+
+
+@pytest.mark.skipif(
+    PARMETIS_STACK, reason="GFEM_PARMETIS_STACK=1: a user's own ParMETIS stack"
+)
+def test_parmetis_is_on_no_stack_gfems_ci_builds():
+    assert not _petsc.require_petsc().Sys.hasExternalPackage("parmetis")
+
+
+@pytest.mark.skipif(not PARMETIS_STACK, reason="GFEM_PARMETIS_STACK is not 1")
+def test_a_users_parmetis_stack_is_an_mpi_stack():
+    if _petsc.require_petsc().Sys.hasExternalPackage("parmetis"):
+        assert _petsc.has_mpi()
 
 
 def test_petsc_solves_many_right_hand_sides_on_the_free_dofs(built):
@@ -1018,3 +1060,469 @@ def test_a_telescoped_coarse_problem_factors_by_symmetry_behind_it(
     options = dict(coarse.options(symmetric, workspace=60, factor=4))
     assert options["pc_type"] == "telescope"
     assert options["telescope_pc_type"] == factorization
+
+
+def _one_process_coarse(monkeypatch, op, space, ordering=coarse.PT_SCOTCH, factor=1):
+    """A real `coarse.CoarseMumps` on ``op``'s assembled matrix, on one process.
+
+    One rank owns every free DOF and agreements are its own values. A ``factor``
+    above 1 puts the factorization behind ``PCTELESCOPE``, which keeps the one rank.
+    Without the MPI stack there is no parallel analysis to ask for.
+    """
+    PETSc = _petsc.require_petsc()
+    monkeypatch.setattr(coarse, "FreeNumbering", lambda *_: _free_numbering(space))
+    monkeypatch.setattr(coarse, "rule", lambda *_, **__: (ordering, factor))
+    options = coarse.options
+
+    def one_rank(*args, **kwargs):
+        pairs = dict(options(*args, **kwargs))
+        if "pc_telescope_reduction_factor" in pairs:
+            pairs["pc_telescope_reduction_factor"] = 1
+        if _petsc.has_mpi():
+            return tuple(pairs.items())
+        return tuple(
+            (k, v)
+            for k, v in pairs.items()
+            if not (k.endswith(PARALLEL_ANALYSIS) and (k.endswith("29") or v == 2))
+        )
+
+    monkeypatch.setattr(coarse, "options", one_rank)
+    for name in ("agree_any", "agree_all"):
+        monkeypatch.setattr(coarse._mpi, name, lambda _, *, flag: flag)
+    for name in ("agree_min", "agree_max"):
+        monkeypatch.setattr(coarse._mpi, name, lambda _, value: value)
+    # the pool keys it as the one-process walk of the cache reads it
+    monkeypatch.setattr(coarse._mpi, "comm_key", lambda _: None)
+    monkeypatch.setattr(coarse._mpi, "reduce_bcast", lambda _, values: values)
+    monkeypatch.setattr(coarse._mpi, "node_ids", lambda comm: (0,) * comm.size)
+    source = types.SimpleNamespace(
+        local_mat=op.form.mat,
+        row_pardofs=None,
+        CreateColVector=op.form.mat.CreateColVector,
+    )
+    return coarse.CoarseMumps(source, space.FreeDofs(), PETSc.COMM_SELF, symmetric=True)
+
+
+@pytest.fixture(autouse=True)
+def empty_coarse_pool():
+    """No pooled coarse factorization outlives a test."""
+    yield
+    coarse.release()
+
+
+@pytest.fixture
+def no_telescope_symbol(monkeypatch):
+    """A PETSc build without ``PCTelescopeGetKSP``."""
+    monkeypatch.setattr(_petsc.ctypes, "CDLL", lambda *_, **__: object())
+    _petsc.telescope_symbols.cache_clear()
+    yield
+    _petsc.telescope_symbols.cache_clear()
+
+
+def _zeroed(monkeypatch):
+    """Every coarse matrix singular by one zero row and column; set-ups counted."""
+    built = coarse.distributed_aij
+    set_ups = []
+
+    def singular(*args, **kwargs):
+        aij, index = built(*args, **kwargs)
+        aij.zeroRowsColumns(np.array([0], dtype=_petsc.require_petsc().IntType), 0.0)
+        return aij, index
+
+    monkeypatch.setattr(coarse, "distributed_aij", singular)
+    monkeypatch.setattr(
+        coarse._petsc,
+        "next_prefix",
+        lambda real=_petsc.next_prefix: set_ups.append(1) or real(),
+    )
+    return set_ups
+
+
+def test_the_factor_behind_telescoping_is_read(built, monkeypatch):
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    made = _one_process_coarse(monkeypatch, op, space, factor=2)
+    made.set_up()
+    try:
+        pc = made._ksp.getPC()
+        assert pc.getType() == "telescope"
+        inner = _petsc.telescope_ksp(pc)
+        assert inner.getPC().getType() == "cholesky"
+        assert made.nbytes > 0
+    finally:
+        made.free()
+
+
+def test_a_singular_coarse_behind_telescoping_raises_after_one_set_up(
+    built, monkeypatch
+):
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    set_ups = _zeroed(monkeypatch)
+    made = _one_process_coarse(monkeypatch, op, space, factor=2)
+    with pytest.raises(gfem._mpi.AgreedError, match=r"INFOG\(1\)=-\d+"):
+        made.set_up()
+    assert len(set_ups) == 1
+
+
+@pytest.mark.usefixtures("no_telescope_symbol")
+def test_without_the_telescope_symbol_the_inner_ksp_is_none_and_said_once(
+    built, monkeypatch, caplog
+):
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    made = _one_process_coarse(monkeypatch, op, space, factor=2)
+    made.set_up()
+    try:
+        pc = made._ksp.getPC()
+        assert _petsc.telescope_ksp(pc) is None
+        assert _petsc.telescope_ksp(pc) is None
+        assert made.nbytes == 0
+    finally:
+        made.free()
+    said = [r for r in caplog.records if "PCTelescopeGetKSP" in r.getMessage()]
+    assert len(said) == 1
+
+
+@pytest.mark.usefixtures("no_telescope_symbol")
+def test_without_the_telescope_symbol_every_coarse_failure_is_retried(
+    built, monkeypatch
+):
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    set_ups = _zeroed(monkeypatch)
+    made = _one_process_coarse(monkeypatch, op, space, factor=2)
+    with pytest.raises(gfem._mpi.AgreedError, match="unread behind PCTELESCOPE"):
+        made.set_up()
+    assert len(set_ups) == petsc.MUMPS_RETRIES + 1
+
+
+@pytest.mark.parametrize("theirs", [False, True])
+def test_a_metis_coarse_set_up_reads_gfems_mumps_config_only_while_it_factors(
+    built, monkeypatch, tmp_path, theirs
+):
+    # one rank, METIS forced: the variable during the set-up, and only then
+    users = None
+    if theirs:  # MUMPS reads it at every job, so it must exist
+        users = str(tmp_path / "mumps.cfg")
+        Path(users).write_text("METIS_OPTIONS(7)=1\n")
+    PETSc = _petsc.require_petsc()
+    op, space = _laplace(built, True, 1 - 2j)
+    op.form.Assemble()
+    seen = []
+
+    class Spy(PETSc.KSP):
+        def setUp(self):
+            seen.append(coarse.os.environ.get(coarse.CONFIG_VARIABLE))
+            return super().setUp()
+
+    spied = types.SimpleNamespace(**{**vars(PETSc), "KSP": Spy})
+    monkeypatch.setattr(_petsc, "require_petsc", lambda *_: spied)
+    if users is None:
+        monkeypatch.delenv(coarse.CONFIG_VARIABLE, raising=False)
+    else:
+        monkeypatch.setenv(coarse.CONFIG_VARIABLE, users)
+    made = _one_process_coarse(monkeypatch, op, space, coarse.METIS)
+    made.set_up()
+    try:
+        assert seen == [str(coarse.MUMPS_CONFIG) if users is None else users]
+        assert coarse.os.environ.get(coarse.CONFIG_VARIABLE) == users
+        factor = made._ksp.getPC().getFactorMatrix()
+        assert (factor.getMumpsIcntl(28), factor.getMumpsIcntl(7)) == (1, 5)
+    finally:
+        made.free()
+
+
+# --- the coarse pool ---------------------------------------------------------------
+
+
+def _coarse_on(monkeypatch, built, shift, order=2, ordering=coarse.PT_SCOTCH):
+    """A one-process coarse factorization of a shifted Laplacian, not set up."""
+    op, space = _laplace(built, True, shift, order=order)
+    op.form.Assemble()
+    return _one_process_coarse(monkeypatch, op, space, ordering)
+
+
+@pytest.fixture
+def analyses():
+    """MUMPS's analyses (symbolic Cholesky factorizations) so far, read on call.
+
+    In a log stage of its own: a PETSc error inside an event leaves that event open
+    in its stage, which then counts it no more.
+    """
+    PETSc = _petsc.require_petsc()
+    PETSc.Log.begin()
+    stage = PETSc.Log.Stage("gfem coarse pool")
+    event = PETSc.Log.Event("MatCholFctrSym")
+    stage.push()
+    yield lambda: event.getPerfInfo(stage.id)["count"]
+    stage.pop()
+
+
+def _coarse_solution(made):
+    """The coarse KSP's solution of one fixed right-hand side."""
+    rhs = np.random.default_rng(7).standard_normal(made._b.getLocalSize())
+    made._b.array[:] = rhs * (1 + 0.5j)
+    made._ksp.solve(made._b, made._x)
+    return made._x.array.copy()
+
+
+def test_a_second_coarse_set_up_on_one_pattern_refactors_numerically_only(
+    built, monkeypatch, analyses
+):
+    before = analyses()
+    first = _coarse_on(monkeypatch, built, 1 - 2j)
+    first.set_up()
+    first.free()
+    kept = _coarse_on(monkeypatch, built, 3 + 1j)  # new values, one pattern
+    kept.set_up()
+    assert analyses() - before == 1
+    assert kept.key == first.key
+    solution = _coarse_solution(kept)
+    kept.free()
+    coarse.release()
+    fresh = _coarse_on(monkeypatch, built, 3 + 1j)
+    fresh.set_up()
+    try:
+        assert analyses() - before == 2
+        assert np.array_equal(solution, _coarse_solution(fresh))
+    finally:
+        fresh.free()
+
+
+def test_another_wirebasket_pattern_analyses_anew(built, monkeypatch, analyses):
+    before = analyses()
+    first = _coarse_on(monkeypatch, built, 1 - 2j)
+    first.set_up()
+    first.free()
+    other = _coarse_on(monkeypatch, built, 1 - 2j, order=3)
+    other.set_up()
+    other.free()
+    assert analyses() - before == 2
+    assert other.key != first.key
+    assert coarse.pooled() == 2
+
+
+def test_two_live_coarse_factorizations_on_one_pattern_hold_two_ksps(
+    built, monkeypatch
+):
+    one = _coarse_on(monkeypatch, built, 1 - 2j)
+    two = _coarse_on(monkeypatch, built, 1 - 2j)
+    one.set_up()
+    two.set_up()
+    assert one.key == two.key
+    assert one._ksp.handle != two._ksp.handle
+    one.free()
+    two.free()
+    assert coarse.pooled() == 2
+    # each frees once: no live owner left to take a pooled KSP back
+    assert one._ksp is None
+    assert two._ksp is None
+
+
+def _failing_once(monkeypatch, failure):
+    """The next coarse set-up's first factorization reads ``failure``."""
+    real = coarse.CoarseMumps._agreed_failure
+    calls = []
+
+    def forced(self):
+        calls.append(1)
+        return failure if len(calls) == 1 else real(self)
+
+    monkeypatch.setattr(coarse.CoarseMumps, "_agreed_failure", forced)
+    return calls
+
+
+def test_a_failed_coarse_refactorization_is_not_pooled(built, monkeypatch):
+    first = _coarse_on(monkeypatch, built, 1 - 2j)
+    first.set_up()
+    first.free()
+    assert coarse.pooled() == 1
+    _failing_once(monkeypatch, -10)  # singular: not retried
+    kept = _coarse_on(monkeypatch, built, 3 + 1j)
+    with pytest.raises(gfem._mpi.AgreedError, match=r"INFOG\(1\)=-10"):
+        kept.set_up()
+    kept.free()
+    assert coarse.pooled() == 0
+
+
+def test_a_workspace_retry_on_refactorization_pools_its_doubled_icntl_14(
+    built, monkeypatch, analyses
+):
+    before = analyses()
+    first = _coarse_on(monkeypatch, built, 1 - 2j)
+    first.set_up()
+    first.free()
+    calls = _failing_once(monkeypatch, coarse.MUMPS_WORKSPACE_ERROR)
+    retried = _coarse_on(monkeypatch, built, 3 + 1j)
+    retried.set_up()
+    assert len(calls) == 2
+    # PT-Scotch's first 120, doubled
+    assert retried._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 240
+    retried.free()
+    assert coarse.pooled() == 1
+    # a new KSP after the failure: one more analysis, then the pooled one serves
+    third = _coarse_on(monkeypatch, built, 2 - 1j)
+    third.set_up()
+    try:
+        assert analyses() - before == 2
+        assert third._ksp.getPC().getFactorMatrix().getMumpsIcntl(14) == 240
+    finally:
+        third.free()
+
+
+def test_switching_a_pattern_to_metis_frees_its_pt_scotch_factorizations(
+    built, monkeypatch, analyses
+):
+    before = analyses()
+    scotch = _coarse_on(monkeypatch, built, 1 - 2j)
+    scotch.set_up()
+    scotch.free()
+    metis = _coarse_on(monkeypatch, built, 1 - 2j, ordering=coarse.METIS)
+    metis.set_up()
+    metis.free()
+    assert analyses() - before == 2
+    assert coarse.pooled() == 1
+
+
+def test_a_seen_pattern_stays_seen_when_its_factorization_is_evicted(
+    built, monkeypatch
+):
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    made.set_up()
+    made.free()
+    assert coarse.seen(made.key)
+    coarse.empty(None)
+    assert coarse.pooled() == 0
+    assert coarse.seen(made.key)
+    gfem.release_memory()
+    assert not coarse.seen(made.key)
+
+
+def test_release_memory_empties_the_coarse_pool(built, monkeypatch):
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    made.set_up()
+    made.free()
+    assert coarse.pooled() == 1
+    gfem.release_memory()
+    assert coarse.pooled() == 0
+
+
+@pytest.mark.parametrize("retain_memory", [0, None])
+def test_retain_memory_0_leaves_the_coarse_pool_empty_after_a_solve(
+    built, monkeypatch, tmp_path, retain_memory
+):
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    made.set_up()
+    made.free()
+    model = gradient_cases.layered_line(tmp_path)
+    options = gfem.SolverOptions(
+        order=1, linear_solver="direct", retain_memory=retain_memory
+    )
+    gfem.solve(model, gfem.Driven(frequency=24e9), options=options)
+    assert coarse.pooled() == (0 if retain_memory == 0 else 1)
+
+
+def test_retain_memory_0_empties_the_coarse_pool_when_the_forward_raises(
+    built, monkeypatch, tmp_path
+):
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    made.set_up()
+    made.free()
+    model = gradient_cases.layered_line(tmp_path)
+
+    def singular(*_, **__):
+        # as a singular coarse set-up raises, on every rank, before any walk
+        raise gfem._mpi.AgreedError("the coarse factorization failed")
+
+    monkeypatch.setattr(DrivenRule, "forward", singular)
+    options = gfem.SolverOptions(order=1, linear_solver="direct", retain_memory=0)
+    with pytest.raises(gfem._mpi.AgreedError):
+        gfem.solve(model, gfem.Driven(frequency=24e9), options=options)
+    assert coarse.pooled() == 0
+
+
+def test_pooled_coarse_factorizations_count_and_go_at_the_caches_tier_3(
+    built, monkeypatch
+):
+    gfem.release_memory()
+    entries = cache.ENTRIES
+    older = _coarse_on(monkeypatch, built, 1 - 2j)
+    latest = _coarse_on(monkeypatch, built, 1 - 2j)
+    older.set_up()
+    latest.set_up()
+    one = older.nbytes
+    assert one > 0
+    older.free()
+    latest.free()
+    assert entries.nbytes >= 2 * one
+    # the default budget leaves the most recently returned one its factors
+    entries.trim(cache.DefaultBudget(0))
+    assert coarse.pooled() == 1
+    entries.trim(0)
+    assert coarse.pooled() == 0
+    assert entries.nbytes == 0
+
+
+def test_a_coarse_set_up_hands_the_rule_its_columns_seen_stack_kind_and_nodes(
+    built, monkeypatch
+):
+    calls = []
+
+    def rule(_dofs, _size, columns, *, seen, kind, nodes):
+        calls.append((columns, seen, kind, nodes))
+        return coarse.PT_SCOTCH, 1
+
+    monkeypatch.setattr(coarse, "_kinds", {})
+    monkeypatch.setattr(coarse._petsc, "has_parmetis", lambda: False)
+    monkeypatch.setattr(coarse._petsc, "has_paraord_cap", lambda: True)
+    for shift in (1 - 2j, 3 + 1j):
+        made = _coarse_on(monkeypatch, built, shift)
+        monkeypatch.setattr(coarse, "rule", rule)
+        coarse._made[None] = [made]
+        assert coarse.finish(made._comm, columns=12) is made
+        made.free()
+    assert calls == [(12, False, "capped", (0,)), (12, True, "capped", (0,))]
+
+
+@pytest.mark.parametrize(
+    ("ordering", "workspace"), [(coarse.PT_SCOTCH, 120), (coarse.METIS, 60)]
+)
+def test_a_coarse_factorization_starts_at_its_orderings_workspace(
+    built, monkeypatch, ordering, workspace
+):
+    made = _coarse_on(monkeypatch, built, 1 - 2j, ordering=ordering)
+    made.set_up()
+    assert int(made._inner_factor().getMumpsIcntl(14)) == workspace
+    made.free()
+
+
+def test_a_coarse_set_up_logs_its_ordering_ranks_and_stack_kind(
+    built, monkeypatch, caplog
+):
+    monkeypatch.setattr(coarse, "_kinds", {None: coarse.CAPPED})
+    made = _coarse_on(monkeypatch, built, 1 - 2j)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        made.set_up()
+    made.free()
+    (record,) = [r for r in caplog.records if "coarse problem" in r.message]
+    assert "pt-scotch on 1 of 1 ranks" in record.message
+    assert "capped PETSc stack" in record.message
+
+
+def test_a_stock_stack_says_the_ranks_its_rule_took_not_pt_scotchs(
+    built, monkeypatch, caplog
+):
+    # PT-Scotch would take 5 ranks; the rule took METIS on the one rank there is
+    monkeypatch.setattr(coarse, "_kinds", {None: coarse.STOCK})
+    monkeypatch.setattr(coarse, "_said_stock", [])
+    monkeypatch.setattr(coarse, "_scotch_ranks", lambda *_: 5)
+    monkeypatch.setattr(coarse, "capped_ranks", lambda *_: 4)
+    made = _coarse_on(monkeypatch, built, 1 - 2j, ordering=coarse.METIS)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        made.set_up()
+    made.free()
+    (record,) = [r for r in caplog.records if "rebuilt" in r.message]
+    assert "runs on 1 ranks" in record.message
+    assert "would then run on 4 ranks" in record.message

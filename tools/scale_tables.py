@@ -1,15 +1,18 @@
 """The scaling page's tables, from the scaling set's run records, as committed snippets.
 
     python scale_tables.py RECORDS OUT --commit 9a57680 [--logs LOGS] [--mesh-md5 FILE]
+    python scale_tables.py RECORDS2 OUT --set coarse --commit COMMIT2 [--logs LOGS2]
 
 Reads every ``*.json`` in ``RECORDS`` that ``scale_run.py`` and ``scale_bench.py`` wrote
-(superseded ones aside) and writes one Markdown snippet per table of `CAMPAIGN` into
-``OUT``, which ``docs/project/scaling.md`` includes. The docs build never runs this
-script, opens a record or computes a number; a person reruns it
-and diffs. Each snippet's first line, a comment the page does not render, names the
-commit and the SHA-256 of the records manifest: one line per record file, its SHA-256
-and its name, sorted by name. What renders names no commit and no Slurm job: the
-records and the scaling record hold those.
+(superseded ones aside) and writes one Markdown snippet per table of a scaling set
+into ``OUT``, which ``docs/project/scaling.md`` includes. ``--set`` picks the set:
+`CAMPAIGN`, the default, or `COARSE`, the second set, on its own commit and records;
+one set never rewrites the other's snippets. The docs build never runs this script,
+opens a record or computes a number; a person reruns it and diffs. Each snippet's first
+line, a comment the page does not render, names the commit and the SHA-256 of the
+records manifest: one line per record file, its SHA-256 and its name, sorted by name.
+What renders names no commit and no Slurm job: the records and the scaling record
+hold those.
 
 It reads times only to print them, and asserts nothing about a time. It refuses, naming
 the record: a record of another commit, a table's record that is missing, a ``check``
@@ -80,9 +83,32 @@ CAMPAIGN: dict[str, dict[str, Any]] = {
     },
 }
 
+#: The second scaling set: the coarse configuration of a later version, at 8, 16 and 32
+#: nodes. ``c2_bddc_N_r1`` is a 3-design loop whose design 0 is also the rung's
+#: one-frequency repeat, and the records say how many repeats a rung has.
+COARSE: dict[str, dict[str, Any]] = {
+    "coarse-strong-108m": {
+        "kind": "ladder",
+        "records": ["c2_bddc_*", "c4_bddc_*"],
+        "base": 8,
+        "coarse": True,
+    },
+    "coarse-design-loop": {"kind": "loop", "records": ["c2_bddc_*_r1"]},
+    "coarse-phases": {"kind": "phases", "records": ["c2_bddc_*", "c4_bddc_*"]},
+}
+#: The scaling sets by the name ``--set`` takes.
+SETS = {"campaign": CAMPAIGN, "coarse": COARSE}
+#: How a table names MUMPS's ordering of the coarse problem.
+ORDERINGS = {"pt-scotch": "PT-Scotch", "metis": "METIS", "parmetis": "ParMETIS"}
+
 TOL_NOTE = (
     "`tol` is `SolverOptions.tolerance`, GMRES's relative preconditioned residual; it "
     "does not apply to `direct`."
+)
+COARSE_NOTE = (
+    " The coarse ordering is MUMPS's ordering of BDDC's coarse problem, and the coarse "
+    "ranks those it is factored on. A run of a design loop counts here by its first "
+    "design, a solve at one frequency, with the memory after it."
 )
 SOLVE_NOTE = (
     "`gfem.solve` is the slowest rank's whole call: spaces, ports, preconditioner or "
@@ -187,6 +213,48 @@ def _iterations(rung: list[Record]) -> str:
     return ", ".join(seen) or "-"
 
 
+def _design_zero(record: Record) -> Record:
+    """A record with designs as its first design, a one-frequency solve, alone.
+
+    Its phases, shares and memory are those up to the end of design 0, its coarse
+    set-ups and their printed entries that design's. A record of the first set has no
+    designs and is itself.
+    """
+    designs = record.get("designs")
+    if not designs:
+        return record
+    first = designs[0]
+    coarse = [c for c in record.get("coarse") or [] if c.get("design", 0) == 0]
+    return {
+        **record,
+        "phases": first["phases"],
+        "krylov": first.get("krylov"),
+        "memory": first["memory"],
+        "coarse": coarse,
+        "mumps_printed": [{"entries": c["entries"]} for c in coarse if "entries" in c],
+    }
+
+
+def _coarse_values(rung: list[Record], key: str) -> list[Any]:
+    return list(
+        dict.fromkeys(
+            c[key]
+            for r in rung
+            for c in r.get("coarse") or []
+            if c.get(key) is not None
+        )
+    )
+
+
+def _ordering(rung: list[Record]) -> str:
+    names = [ORDERINGS.get(o, o) for o in _coarse_values(rung, "ordering")]
+    return ", ".join(names) or "-"
+
+
+def _coarse_ranks(rung: list[Record]) -> str:
+    return ", ".join(map(str, _coarse_values(rung, "ranks"))) or "-"
+
+
 def _dof_of_meshes(records: dict[str, Record]) -> dict[str, int]:
     """Each mesh's DOF, read from its finished runs across ranks."""
     dofs: dict[str, int] = {}
@@ -287,10 +355,17 @@ def ladder(
     base: int | None,
     weak: bool = False,
     logs: Path | None = None,
+    coarse: bool = False,
 ) -> str:
-    """One row per rung, with each failed run as a row of its own."""
+    """One row per rung, with each failed run as a row of its own.
+
+    ``coarse`` adds the coarse problem's ordering and ranks.
+    """
     dofs = _dof_of_meshes(records)
-    rungs = _rungs(chosen)
+    rungs = _rungs([_design_zero(r) for r in chosen])
+    if coarse:  # two meshes in one table: each mesh's rungs together
+        meshes = list(dict.fromkeys(_mesh(r) for r in chosen))
+        rungs.sort(key=lambda rung: meshes.index(_mesh(rung[0])))
     rows = []
     for rung in rungs:
         first = rung[0]
@@ -303,7 +378,7 @@ def ladder(
             high = max(r["dofs"]["owned_max"] for r in rung)
             spread = f"{low / 1e3:.0f}-{high / 1e3:.0f} k"
         if first.get("failed"):
-            repeats, median, span, coarse, memory = (
+            repeats, median, span, apply, memory = (
                 "1",
                 _failure(first, logs),
                 "-",
@@ -315,7 +390,7 @@ def ladder(
             repeats = str(len(rung))
             median = _s(_median(rung, lambda r: _seconds(r, "solve")))
             span = f"{min(solve):.0f}-{max(solve):.0f}" if len(rung) > 1 else "-"
-            coarse = _s(_median(rung, lambda r: _seconds(r, "coarse_apply")))
+            apply = _s(_median(rung, lambda r: _seconds(r, "coarse_apply")))
             memory = (
                 f"{max(r['memory']['peak_rss_largest_node_gib'] for r in rung):.0f}"
             )
@@ -334,7 +409,8 @@ def ladder(
                 "-" if first.get("failed") else _iterations(rung),
                 median,
                 span,
-                coarse,
+                *((_ordering(rung), _coarse_ranks(rung)) if coarse else ()),
+                apply,
                 _efficiency(rung, rungs, base, weak),
                 memory,
             )
@@ -353,6 +429,7 @@ def ladder(
         "Iterations, ports 1/2",
         "`gfem.solve` median, s",
         "Range, s",
+        *(("Coarse ordering", "Coarse ranks") if coarse else ()),
         "Coarse apply median, s",
         f"Efficiency against {base} node{'s' if base != 1 else ''}"
         + (" (weak)" if weak else ""),
@@ -367,7 +444,9 @@ def ladder(
         f"\n{SOLVE_NOTE} Efficiency is the median's {kind}, same solver"
         + ("" if weak else " and mesh")
         + f". {TOL_NOTE} A failed run is its own row, with Slurm's state and the phase "
-        "its trace left open; its DOF are the mesh's.\n"
+        "its trace left open; its DOF are the mesh's."
+        + (COARSE_NOTE if coarse else "")
+        + "\n"
     )
     return _table(titles, rows) + notes
 
@@ -498,7 +577,7 @@ def phases(chosen: list[Record], records: dict[str, Record]) -> str:
     """Each phase's median over a rung's finished repeats, and the Krylov shares."""
     dofs = _dof_of_meshes(records)
     rows = []
-    finished = _rungs([r for r in chosen if not r.get("failed")])
+    finished = _rungs([_design_zero(r) for r in chosen if not r.get("failed")])
     finished.sort(key=lambda rung: (-dofs[_mesh(rung[0])], rung[0]["node_count"]))
     for rung in finished:
         first = rung[0]
@@ -575,6 +654,87 @@ def phases(chosen: list[Record], records: dict[str, Record]) -> str:
         "entries are MUMPS's printed count. " + TOL_NOTE + "\n"
     )
     return _table(titles, rows) + note
+
+
+def loop(chosen: list[Record]) -> str:
+    """A design loop's runs: one row per nodes and design, in the order they ran."""
+    rows = []
+    finished = [r for r in chosen if not r.get("failed") and r.get("designs")]
+    for r in sorted(finished, key=lambda r: r["node_count"]):
+        total = 0.0
+        for design in r["designs"]:
+            i = design["design"]
+            phase = design["phases"]
+            solve = phase.get("solve" if i == 0 else f"solve_{i}", {}).get("max_s")
+            total += solve or 0.0
+            setups = [c for c in r.get("coarse") or [] if c.get("design", 0) == i]
+            apply = phase.get("coarse_apply", {})
+            per_call = (
+                f"{apply['max_s'] / apply['calls']:.2f}" if apply.get("calls") else "-"
+            )
+            wait = phase.get("gmres_reduction", {}).get("max_s")
+            kept = [c.get("kept") for c in setups if c.get("kept") is not None]
+            rows.append(
+                (
+                    r["node_count"],
+                    i,
+                    _ordering([{"coarse": setups}]),
+                    _coarse_ranks([{"coarse": setups}]),
+                    ", ".join("yes" if k else "no" for k in dict.fromkeys(kept)) or "-",
+                    _s(phase.get("coarse_setup", {}).get("max_s")),
+                    _summed(setups, "analysis_s"),
+                    _summed(setups, "factorization_s"),
+                    per_call,
+                    _s(solve),
+                    _s(total),
+                    f"{wait / solve:.1%}" if wait is not None and solve else "-",
+                    _design_iterations(r, i),
+                    f"{design['memory']['peak_rss_largest_node_gib']:.0f}",
+                )
+            )
+    titles = (
+        "Nodes",
+        "Design",
+        "Coarse ordering",
+        "Coarse ranks",
+        "Analysis kept",
+        "Coarse set-up, s",
+        "Coarse analysis, s",
+        "Coarse factorization, s",
+        "Coarse apply per call, s",
+        "`gfem.solve`, s",
+        "Running total, s",
+        "Reduction wait in `gfem.solve`",
+        "Iterations, ports 1/2",
+        "Largest node after this design, GiB",
+    )
+    counts = {len(r["designs"]) for r in finished}
+    several = f"{counts.pop()} designs" if len(counts) == 1 else "several designs"
+    note = (
+        f"\nA design loop solves {several} in one process, on one mesh, one "
+        "`gfem.solve` at one frequency each: design $i$ scales the permittivity of the "
+        "highest-permittivity volume by $1 + 10^{-3} i$, so the designs' S differ by "
+        "design. Design 0 is the first solve. An analysis kept is the coarse "
+        "problem's ordering and symbolic factorization from an earlier design, which "
+        "then only refactors; its analysis and factorization are MUMPS's printed "
+        "times. The coarse apply per call is the slowest rank's time over the calls. "
+        "The running total adds the designs' `gfem.solve`; the mesh read comes "
+        "before design 0. The largest node's memory is its peak so "
+        "far. " + TOL_NOTE + "\n"
+    )
+    return _table(titles, rows) + note
+
+
+def _design_iterations(record: Record, design: int) -> str:
+    key = "iterations" if design == 0 else f"iterations_{design}"
+    rows = (record.get("iterations") or {}).get(key) or [[]]
+    return "/".join(map(str, rows[0])) or "-"
+
+
+def _summed(setups: list[Record], key: str) -> str:
+    """A design's set-ups' printed seconds, ``-`` where MUMPS printed none."""
+    values = [c[key] for c in setups if c.get(key) is not None]
+    return _s(sum(values)) if values else "-"
 
 
 def meshes(
@@ -730,7 +890,10 @@ def write_snippets(
                 base=table.get("base"),
                 weak=table.get("weak", False),
                 logs=logs,
+                coarse=table.get("coarse", False),
             )
+        elif kind == "loop":
+            body = loop(chosen)
         elif kind == "agreement":
             body = agreement(chosen, records)
         elif kind == "ms3":
@@ -751,7 +914,7 @@ def write_snippets(
     return written
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Write the snippets and print the records manifest."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("records", type=Path)
@@ -759,11 +922,15 @@ def main() -> int:
     parser.add_argument("--commit", required=True, help="SCALE_COMMIT, short or full")
     parser.add_argument("--logs", type=Path)
     parser.add_argument("--mesh-md5", type=Path, action="append", default=[])
-    args = parser.parse_args()
+    parser.add_argument(
+        "--set", choices=tuple(SETS), default="campaign", help="the scaling set"
+    )
+    args = parser.parse_args(argv)
     for path in write_snippets(
         args.records,
         args.out,
         commit=args.commit,
+        spec=SETS[args.set],
         logs=args.logs,
         mesh_md5=args.mesh_md5,
     ):

@@ -7,6 +7,7 @@ What a stack without MPI does sits at the end, and is skipped on the MPI stack.
 
 import contextlib
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -521,3 +522,52 @@ def test_workers_under_a_script_importing_mpi4py_at_its_top(tmp_path, solver):
     )
     assert code == 0, log
     assert log.count("workers solved (2, 2, 2)") == 2, log
+
+
+#: `direct` with MUMPS's statistics (ICNTL(4) 2), where the capped MUMPS says how
+#: many processes PT-Scotch ordered on.
+STATISTICS = """
+import sys
+
+from mpi4py import MPI
+
+import gfem
+import gradient_cases as cases
+from gfem._linalg import petsc
+
+defaults = petsc.RankPetscHandle._defaults
+
+
+def with_statistics(self):
+    return (*defaults(self), ("mat_mumps_icntl_4", 2))
+
+
+petsc.RankPetscHandle._defaults = with_statistics
+model = cases.layered_line(sys.argv[1])
+options = cases.tight("direct", threads=1)
+gfem.solve(model, gfem.Driven(5e9), options=options, comm=MPI.COMM_WORLD)
+print("statistics solved", flush=True)
+"""
+
+
+@pytest.mark.skipif(
+    not (_petsc.has_mpi() and _petsc.has_paraord_cap()),
+    reason="needs the MPI stack gfem's build script makes, with the ordering cap",
+)
+@pytest.mark.parametrize(("cap", "paraord"), [(None, 4), ("2", 2)])
+def test_the_ordering_cap_orders_on_at_most_mumps_paraord_max_processes(
+    tmp_path, cap, paraord
+):
+    script = tmp_path / "script.py"
+    script.write_text(STATISTICS)
+    env = {"PYTHONPATH": os.pathsep.join(map(str, SCRIPT_PATH))}
+    if cap is not None:
+        env["MUMPS_PARAORD_MAX"] = cap
+    code, log = on_ranks_argv(
+        [sys.executable, str(script), str(tmp_path)], ranks=4, limit=300, env=env
+    )
+    assert code == 0, log
+    assert log.count("statistics solved") == 4, log
+    found = re.findall(r"PARAORD cap\s+(\d+)\s+nprocs\s+(\d+)\s+paraord\s+(\d+)", log)
+    assert found, log
+    assert {(int(n), int(p)) for _, n, p in found} == {(4, paraord)}, found

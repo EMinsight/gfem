@@ -248,25 +248,362 @@ def test_a_one_process_solve_never_imports_mpi4py(environment, tmp_path):
     assert proc.stdout.strip() == "[]"
 
 
+#: B2's and r0.5's coarse DOFs (wirebasket, 28 ranks x 4 threads per node).
+B2, R05 = 30_399_588, 7_050_000
+
+
 @pytest.mark.parametrize(
-    ("dofs", "size", "factor"),
+    ("dofs", "size", "columns", "seen", "expected"),
     [
-        (3_300_000, 28, 1),  # r10M at 28x4: 119 k per rank, nothing to reduce
-        (3_300_000, 64, 2),  # 32 ranks, as run on MN5
-        (22_356_889, 896, 14),  # r10M_void_split on 32 nodes: 64 ranks, not 180
-        (22_356_889, 64, 1),
-        (33_000_000, 896, 14),  # arithmetic at 100 M DOF: still 64
-        (250_000, 8, 4),
-        (1_000, 8, 8),  # a tiny mesh: one rank
-        (1_000, 1, 1),
+        # B2 on 8 nodes: both would take 56 ranks, so PT-Scotch even when seen
+        (B2, 224, 2, False, ("pt-scotch", 4)),
+        (B2, 224, 30, True, ("pt-scotch", 4)),
+        # B2 on 16 and 32 nodes: one set-up of 2 ports stays on 56 PT-Scotch ranks
+        (B2, 448, 2, False, ("pt-scotch", 8)),
+        (B2, 448, 5, False, ("pt-scotch", 8)),
+        (B2, 448, 6, False, ("metis", 4)),  # 112 ranks from 6 columns
+        (B2, 448, 2, True, ("metis", 4)),  # or from the second set-up
+        (B2, 896, 2, False, ("pt-scotch", 16)),
+        (B2, 896, 30, False, ("metis", 4)),  # a broad sweep: 224 ranks
+        (B2, 896, 2, True, ("metis", 4)),
+        # r0.5
+        (R05, 224, 2, True, ("pt-scotch", 4)),
+        (R05, 896, 2, False, ("pt-scotch", 16)),
+        (R05, 896, 2, True, ("metis", 4)),
+        # r10M at 28x4: 119 k per rank, nothing to reduce
+        (3_300_000, 28, 30, True, ("pt-scotch", 1)),
+        (22_356_889, 896, 2, False, ("pt-scotch", 16)),  # 56 ranks, not 64
+        # tiny meshes of the launched tier: one rank, whatever the set-up
+        (1_000, 8, 30, True, ("pt-scotch", 8)),
+        (50_000, 16, 30, True, ("pt-scotch", 16)),
+        (1_000, 1, 1, False, ("pt-scotch", 1)),
+        # METIS's floor of 30 k DOFs per coarse rank
+        (59_999, 16, 30, True, ("pt-scotch", 16)),
+        (60_000, 16, 30, True, ("metis", 8)),
+        (90_000, 64, 30, True, ("metis", 22)),
     ],
 )
-def test_the_coarse_problem_runs_on_at_most_one_rank_per_100k_dofs_and_64_ranks(
-    dofs, size, factor
+def test_the_coarse_rule_picks_metis_on_every_fourth_rank_only_when_it_repays(
+    dofs, size, columns, seen, expected
 ):
-    assert coarse.reduction(dofs, size) == factor
-    assert math.ceil(size / factor) <= max(1, dofs // coarse.DOFS_PER_RANK)
-    assert math.ceil(size / factor) <= coarse.MAX_RANKS
+    ordering, factor = coarse.rule(dofs, size, columns, seen=seen)
+    assert (ordering, factor) == expected
+    kept = math.ceil(size / factor)
+    if ordering == coarse.PT_SCOTCH:
+        assert kept <= coarse.MAX_RANKS == 56
+        assert kept <= max(1, dofs // coarse.DOFS_PER_RANK)
+    else:
+        assert kept <= math.ceil(size / 4)
+
+
+def _blocks(nodes: int, per_node: int) -> tuple[int, ...]:
+    """The node of each rank, ``per_node`` consecutive ranks to a node."""
+    return tuple(r // per_node for r in range(nodes * per_node))
+
+
+def is_even_layout(factor: int, nodes: tuple[int, ...]) -> bool:
+    """Every node holding a kept rank holds as many: counted here, not by `coarse`."""
+    kept = [nodes[r] for r in range(0, len(nodes), factor)]
+    return len({kept.count(n) for n in set(kept)}) == 1
+
+
+def _cyclic(nodes: int, per_node: int) -> tuple[int, ...]:
+    """The node of each rank, dealt round the nodes one rank at a time."""
+    return tuple(r % nodes for r in range(nodes * per_node))
+
+
+@pytest.mark.parametrize("kind", ["capped", "parmetis"])
+@pytest.mark.parametrize(
+    ("dofs", "nodes", "factor"),
+    [
+        # B2 at 28x4 on 8, 16 and 32 nodes: every fourth rank, 7 per node
+        (B2, _blocks(8, 28), 4),
+        (B2, _blocks(16, 28), 4),
+        (B2, _blocks(32, 28), 4),
+        # r0.5 on 32 nodes: 224 ranks of 31.5 k DOFs each
+        (R05, _blocks(32, 28), 4),
+        # 8x14: every fourth rank is 4 then 3 per node, and every seventh rank (2
+        # per node, 16 ranks) is the even count nearest 28; fewer than PT-Scotch's
+        # 56, so the most even ranks up to 56: every second rank, 7 per node
+        (B2, _blocks(8, 14), 2),
+        # 8x14 on 16 nodes: the even count nearest 56 is 32, and no even count
+        # lies between 32 and PT-Scotch's 56 (every fourth rank is 4 then 3 per
+        # node), so every seventh rank, 2 per node
+        (B2, _blocks(16, 14), 7),
+        # ranks dealt round 8 nodes: every fourth rank is 28 on each of 2 nodes
+        (B2, _cyclic(8, 28), 4),
+        # at 14 per node, 14 on each of 2 nodes: fewer than PT-Scotch's 56, so
+        # every second rank, 14 on each of 4 nodes
+        (B2, _cyclic(8, 14), 2),
+        # the launched tier's tiny meshes: one coarse rank
+        (1_000, _blocks(1, 8), 8),
+        (50_000, _blocks(2, 8), 16),
+        (1_000, (0,), 1),
+        # the 30 k floor: 600 k DOFs take 20 ranks at most; every sixth rank is 5,
+        # 5 and 4 per node, so every seventh, 4 per node
+        (600_000, _blocks(4, 28), 7),
+        # 90 k DOFs on one node of 64 ranks: 3 ranks, every 22nd
+        (90_000, _blocks(1, 64), 22),
+        (59_999, _blocks(1, 16), 16),
+        (60_000, _blocks(1, 16), 8),
+    ],
+)
+def test_the_coarse_rule_takes_the_even_layout_nearest_every_fourth_rank(
+    kind, dofs, nodes, factor
+):
+    size = len(nodes)
+    ordering = coarse.PARMETIS if kind == "parmetis" else coarse.PT_SCOTCH
+    # the same for one column or many, a pattern new or seen: no METIS switch
+    for columns, seen in ((1, False), (30, True)):
+        chosen = coarse.rule(dofs, size, columns, seen=seen, kind=kind, nodes=nodes)
+        assert chosen == (ordering, factor)
+    assert is_even_layout(factor, nodes)
+
+
+def test_the_even_coarse_layout_counts_only_the_nodes_holding_a_coarse_rank():
+    # every 28th rank of 4x28 is one rank on each node; every 56th, one on every
+    # second node: both even
+    nodes = _blocks(4, 28)
+    assert coarse.is_even(28, nodes)
+    assert coarse.is_even(56, nodes)
+    assert coarse.is_even(4, nodes)
+    assert not coarse.is_even(3, nodes)  # 10 then 9 per node
+    assert not coarse.is_even(4, _blocks(2, 14))  # 4 then 3 per node
+
+
+@pytest.mark.parametrize(
+    ("dofs", "size", "columns", "seen", "expected"),
+    [
+        (B2, 224, 30, True, ("pt-scotch", 4)),
+        (B2, 448, 6, False, ("metis", 4)),
+        (B2, 896, 2, False, ("pt-scotch", 16)),
+        (B2, 896, 2, True, ("metis", 4)),
+    ],
+)
+def test_a_stock_stack_keeps_the_rule_that_reads_counts_only(
+    dofs, size, columns, seen, expected
+):
+    nodes = _blocks(size // 28, 28)
+    chosen = coarse.rule(dofs, size, columns, seen=seen, kind="stock", nodes=nodes)
+    assert chosen == expected
+
+
+@pytest.mark.parametrize(
+    ("dofs", "nodes", "ranks"),
+    [
+        (B2, _blocks(8, 28), 56),
+        (B2, _blocks(32, 28), 224),
+        (B2, _blocks(8, 14), 56),  # the most even ranks up to PT-Scotch's 56
+        (B2, _blocks(16, 14), 32),
+        (1_000, _blocks(1, 8), 1),
+    ],
+)
+def test_a_stock_stack_is_told_the_coarse_ranks_a_capped_one_would_take(
+    dofs, nodes, ranks
+):
+    assert coarse.capped_ranks(dofs, nodes) == ranks
+
+
+class _NodeOf:
+    """A node communicator: its first rank's rank in the whole is the leader."""
+
+    def __init__(self, leader: int) -> None:
+        self.leader = leader
+        self.freed = False
+
+    def bcast(self, value, root=0):  # noqa: ARG002
+        return self.leader
+
+    def Free(self):  # noqa: N802 - mpi4py's name
+        self.freed = True
+
+
+class _Placed(Stub):
+    """Rank ``rank`` of ranks whose node leaders are ``leaders``."""
+
+    def __init__(self, rank: int, leaders: list[int]) -> None:
+        super().__init__(len(leaders))
+        self.rank = rank
+        self.leaders = leaders
+        self.node = _NodeOf(leaders[rank])
+        self.key = 7
+
+    def Split_type(self, _kind):  # noqa: N802 - mpi4py's name
+        return self.node
+
+    def allgather(self, value):
+        assert value == self.leaders[self.rank]
+        return list(self.leaders)
+
+
+def _placed_mpi(monkeypatch):
+    shared = types.SimpleNamespace(COMM_TYPE_SHARED=0)
+    monkeypatch.setattr(_mpi, "_load_mpi", lambda: shared)
+    monkeypatch.setattr(_mpi, "comm_key", lambda comm: comm.key)
+    monkeypatch.setattr(_mpi, "_NODE_IDS", {})
+
+
+def test_each_rank_reads_every_ranks_node_numbered_from_zero(monkeypatch):
+    _placed_mpi(monkeypatch)
+    comm = _Placed(3, [0, 0, 2, 2, 4, 4])
+    assert _mpi.node_ids(comm) == (0, 0, 1, 1, 2, 2)
+    assert comm.node.freed
+    assert _mpi.node_ids(None) == (0,)
+
+
+def test_the_node_of_each_rank_is_read_once_per_communicator(monkeypatch):
+    _placed_mpi(monkeypatch)
+    comm = _Placed(0, [0, 1])
+    assert _mpi.node_ids(comm) == (0, 1)
+    comm.leaders = [0, 0]  # a second read would see this
+    assert _mpi.node_ids(comm) == (0, 1)
+
+
+@pytest.mark.parametrize(
+    ("ordering", "workspace"),
+    [("pt-scotch", 120), ("metis", 60), ("parmetis", 60)],
+)
+def test_pt_scotch_starts_its_coarse_workspace_at_120_the_others_at_60(
+    ordering, workspace
+):
+    assert coarse.workspace(ordering) == workspace
+
+
+@pytest.mark.parametrize("symmetric", [False, True])
+def test_parmetis_orders_in_parallel_with_no_config_file(symmetric, monkeypatch):
+    monkeypatch.delenv(coarse.CONFIG_VARIABLE, raising=False)
+    pairs = coarse.options(symmetric, workspace=60, factor=4, ordering=coarse.PARMETIS)
+    options = dict(pairs)
+    assert len(options) == len(pairs)
+    assert options["telescope_mat_mumps_icntl_28"] == 2
+    assert options["telescope_mat_mumps_icntl_29"] == 2
+    assert options["telescope_mat_mumps_icntl_14"] == 60
+    assert not any("icntl_7" in name for name in options)
+    with coarse.mumps_config(coarse.PARMETIS):
+        assert coarse.CONFIG_VARIABLE not in os.environ
+
+
+@pytest.mark.parametrize("symmetric", [False, True])
+def test_metis_orders_sequentially_without_pt_scotch_behind_the_telescope(symmetric):
+    pairs = coarse.options(symmetric, workspace=60, factor=4, ordering=coarse.METIS)
+    options = dict(pairs)
+    assert len(options) == len(pairs)
+    assert options["pc_type"] == "telescope"
+    assert options["telescope_mat_mumps_icntl_28"] == 1
+    assert options["telescope_mat_mumps_icntl_7"] == 5
+    assert options["telescope_mat_mumps_icntl_14"] == 60
+    assert not any("icntl_29" in name for name in options)
+    scotch = dict(coarse.options(symmetric, workspace=60, factor=4))
+    assert scotch["telescope_mat_mumps_icntl_28"] == 2
+    assert scotch["telescope_mat_mumps_icntl_29"] == 1
+
+
+class Agreeing(Stub):
+    """A communicator whose reductions come out as listed; it counts them."""
+
+    def __init__(self, key: int, *results: bool) -> None:
+        super().__init__(4)
+        self.key = key
+        self.results = list(results)
+        self.reductions = 0
+
+    def allreduce(self, value, op=None):  # noqa: ARG002
+        self.reductions += 1
+        return self.results.pop(0) if self.results else value
+
+
+@pytest.fixture
+def stack_of(monkeypatch):
+    """Set what this rank's stack holds: ParMETIS, the ordering cap."""
+    from gfem import _petsc
+
+    monkeypatch.setattr(coarse, "_kinds", {})
+    monkeypatch.setattr(_mpi, "comm_key", lambda comm: comm.key)
+    monkeypatch.setattr(_mpi, "_load_mpi", lambda: types.SimpleNamespace(LAND=None))
+
+    def set_(*, parmetis: bool, cap: bool) -> None:
+        monkeypatch.setattr(_petsc, "has_parmetis", lambda: parmetis)
+        monkeypatch.setattr(_petsc, "has_paraord_cap", lambda: cap)
+
+    return set_
+
+
+@pytest.mark.parametrize(
+    ("parmetis", "cap", "kind"),
+    [
+        (True, True, "parmetis"),
+        (True, False, "parmetis"),
+        (False, True, "capped"),
+        (False, False, "stock"),
+    ],
+)
+def test_the_stack_kind_is_parmetis_then_capped_then_stock(
+    stack_of, parmetis, cap, kind
+):
+    stack_of(parmetis=parmetis, cap=cap)
+    assert coarse.stack_kind(Agreeing(1)) == kind
+
+
+@pytest.mark.parametrize(
+    ("here", "results", "kind"),
+    [
+        ((True, True), [False, True], "capped"),
+        ((True, False), [False, False], "stock"),
+        ((False, True), [False, False], "stock"),
+    ],
+    ids=["parmetis here only", "parmetis here only, no cap", "cap here only"],
+)
+def test_ranks_that_disagree_fall_through_to_the_next_kind_said_once(
+    stack_of, caplog, here, results, kind
+):
+    parmetis, cap = here
+    stack_of(parmetis=parmetis, cap=cap)
+    comm = Agreeing(1, *results)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        assert coarse.stack_kind(comm) == kind
+        assert coarse.stack_kind(comm) == kind
+    (record,) = caplog.records
+    assert record.levelname == "WARNING"
+    assert "another rank" in record.message
+    assert f"{kind} stack" in record.message
+
+
+def test_agreeing_ranks_log_nothing(stack_of, caplog):
+    stack_of(parmetis=False, cap=False)
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        assert coarse.stack_kind(Agreeing(1)) == "stock"
+    assert caplog.records == []
+
+
+def test_the_stack_kind_is_agreed_once_per_communicator(stack_of):
+    stack_of(parmetis=False, cap=True)
+    first, second = Agreeing(1), Agreeing(2)
+    assert coarse.stack_kind(first) == "capped"
+    assert first.reductions == 2
+    assert coarse.stack_kind(first) == "capped"
+    assert first.reductions == 2  # cached on its key
+    assert coarse.stack_kind(second) == "capped"
+    assert second.reductions == 2
+
+
+def test_a_stock_stack_says_once_that_a_rebuild_allows_more_coarse_ranks(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(coarse, "_said_stock", [])
+    with caplog.at_level("INFO", logger="gfem.solver"):
+        coarse.say_stock(56, 56)  # the cap would change nothing
+        assert caplog.records == []
+        coarse.say_stock(32, 56)
+        coarse.say_stock(16, 224)
+    (record,) = caplog.records
+    assert record.levelname == "INFO"
+    assert "tools/petsc_wheelhouse.sh --mpi" in record.message
+    assert "32" in record.message
+    assert "56" in record.message
+
+
+def test_the_packaged_mumps_config_sets_metis_niter_to_one():
+    assert coarse.MUMPS_CONFIG.read_text() == "METIS_OPTIONS(7)=1\n"
 
 
 # --- refusals ---------------------------------------------------------------------

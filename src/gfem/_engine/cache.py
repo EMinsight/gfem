@@ -51,7 +51,9 @@ the walk of a stored entry (`EntryCache.put`):
 2. drops kept fixed parts, whole stores, least recently used discretization
    first; a store whose parts another holder references stays (its bytes
    would not leave), with the digests it has seen;
-3. frees pooled handles, least recently returned first;
+3. frees pooled handles, least recently returned first, then the solve's
+   communicator's pooled coarse factorizations (`gfem._linalg.coarse`), counted
+   by MUMPS's factor bytes summed per node, least recently returned first;
 4. moves live entries' bases to the pool, oldest entry first, where tiers 1
    and 3 run on them again (freed where they cannot pool);
 5. frees whole entries, least recently used first;
@@ -61,7 +63,9 @@ Under the default budget (``retain_memory=None``, a `DefaultBudget`) the walk
 of one process leaves the most recently returned pooled direct base alone,
 factors and all, while the process's peak memory plus a tenth of its memory
 limit stays under that limit; the rest is trimmed as if its
-factors had been released. An explicit ``retain_memory`` is a hard bound.
+factors had been released. The most recently returned pooled coarse
+factorization stays the same way, on every rank where each has that room. An
+explicit ``retain_memory`` is a hard bound.
 
 A handle returning to the pool, or a differentiated forward freeing consumed
 entries, walks tiers 0, 1, 2, 3 and 6 only: a solve evicts other solves' entries
@@ -581,6 +585,60 @@ def _release_for_budget(handle: Any, walk: _Walk) -> Callable[[], None] | None:
     return act
 
 
+#: `_coarse_held`'s owner for every communicator.
+_ALL = object()
+
+
+def _coarse_held(owner: Any) -> list[Any]:
+    """The pooled coarse factorizations of ``owner``'s communicator, oldest first.
+
+    Empty before the coarse factorization was first loaded: only BDDC under ranks
+    pools one.
+    """
+    coarse = sys.modules.get("gfem._linalg.coarse")
+    if coarse is None:
+        return []
+    if owner is _ALL:
+        return list(coarse.held_all())
+    return coarse.held(owner)
+
+
+def _coarse_exempt(owner: int | None, comm: Any) -> Any:
+    """The pooled coarse factorization a default budget's walk leaves alone.
+
+    The most recently returned one of ``owner``'s communicator, while every rank
+    has the room the plan pool's latest base needs (`_room_for_the_latest`).
+    """
+    held = _coarse_held(owner)
+    if not held:
+        return None
+    room = _mpi.agree_all(comm, flag=_room_for_the_latest())
+    return held[-1] if room else None
+
+
+def _free_coarse(walk: _Walk, owner: int | None, kept: Any) -> bool:
+    """Tier 3's coarse part: free ``owner``'s, oldest first; whether it fits.
+
+    Collective under ranks: every rank pooled the same ones in the same order.
+    """
+    coarse = sys.modules.get("gfem._linalg.coarse")
+    for pooled in _coarse_held(owner):
+        if not walk.over():
+            break
+        if pooled is kept or coarse is None:
+            continue
+        walk.step(pooled, functools.partial(coarse.evict, pooled), gone=True)
+    return not walk.over()
+
+
+def _enter_coarse(walk: _Walk, owner: int | None, before: list[Any]) -> None:
+    """Count the coarse factorizations ``owner``'s pool gained since ``before``."""
+    known = {id(k) for k in before}
+    for pooled in _coarse_held(owner):
+        if id(pooled) not in known:
+            walk.enter(pooled)
+
+
 @dataclasses.dataclass(eq=False)
 class _Pooled:
     """A handle in the plan pool, its key, and the mesh topology of its plan."""
@@ -686,7 +744,9 @@ class EntryCache:
         owner = _mpi.comm_key(comm)
         discs = [d for d in self._discretizations() if d.comm_key == owner]
         exempt = self._exempt() if comm is None and default else None
-        walk = _Walk(self._tally(discs, pool=comm is None), budget, comm, exempt)
+        kept = _coarse_exempt(owner, comm) if default else None
+        tally = self._tally(discs, pool=comm is None, owner=owner, skip=kept)
+        walk = _Walk(tally, budget, comm, exempt)
         for disc in discs:
             if disc.guesses and not walk.step(disc, disc.drop_guesses):
                 return
@@ -695,7 +755,9 @@ class EntryCache:
             return
         if comm is None and self._walk_pool(walk, discs, first):
             return
-        if entries and self._walk_entries(walk, owner, comm, pool=comm is None):
+        if _free_coarse(walk, owner, kept):
+            return
+        if entries and self._walk_entries(walk, owner, comm, kept, pool=comm is None):
             return
         for disc in discs:
             if disc.ports is not None and not walk.step(disc, disc.drop_ports):
@@ -764,29 +826,41 @@ class EntryCache:
         return not walk.over()
 
     def _walk_entries(
-        self, walk: _Walk, owner: int | None, comm: Any, *, pool: bool
+        self,
+        walk: _Walk,
+        owner: int | None,
+        comm: Any,
+        kept: Any = None,
+        *,
+        pool: bool,
     ) -> bool:
         """Tiers 4 and 5 (`put`): ``owner``'s bases, then entries; whether it fits.
 
         With ``pool`` (one process) a base given up to the pool joins the tally
-        there, and tiers 1 and 3 run on it before the next entry's base goes.
+        there, and tiers 1 and 3 run on it before the next entry's base goes. A
+        coarse factorization a freed base or entry gives back joins the tally
+        too, and tier 3 frees it before the next one goes; ``kept`` is the
+        coarse factorization the walk leaves alone.
         """
         for key, entry in list(self._entries.items()):
             if self._comms[key] != owner or not hasattr(entry.handle, "free_base"):
                 continue
             if not walk.over():
                 return True
+            returned = _coarse_held(owner)
             pooled = walk.move(
                 entry, functools.partial(self._give_up_base, entry, comm)
             )
-            if not pool:
-                continue
-            for handle in pooled:
-                walk.enter(handle)
-                release = _release_for_budget(handle, walk)
-                if release is not None:
-                    walk.step(handle, release)
-            if self._free_plans(walk):
+            _enter_coarse(walk, owner, returned)
+            if pool:
+                for handle in pooled:
+                    walk.enter(handle)
+                    release = _release_for_budget(handle, walk)
+                    if release is not None:
+                        walk.step(handle, release)
+                if self._free_plans(walk):
+                    return True
+            if _free_coarse(walk, owner, kept):
                 return True
         while walk.over():
             oldest = next((k for k in self._entries if self._comms[k] == owner), None)
@@ -794,7 +868,10 @@ class EntryCache:
                 return False
             del self._comms[oldest]
             entry = self._entries.pop(oldest)
+            returned = _coarse_held(owner)
             walk.step(entry, entry.free, gone=True)
+            _enter_coarse(walk, owner, returned)
+            _free_coarse(walk, owner, kept)
         return True
 
     def _give_up_base(self, entry: Entry, comm: Any) -> list[Any]:
@@ -810,12 +887,24 @@ class EntryCache:
         free_base(comm, walk=False)
         return [p.handle for k, p in self._plans.items() if k not in before]
 
-    def _tally(self, discs: Iterable[Discretization], *, pool: bool) -> _Tally:
-        """Every entry, with ``pool`` the pool's handles, and ``discs``' kept state."""
+    def _tally(
+        self,
+        discs: Iterable[Discretization],
+        *,
+        pool: bool,
+        owner: Any = _ALL,
+        skip: Any = None,
+    ) -> _Tally:
+        """Every entry, with ``pool`` the pool's handles, and ``discs``' kept state.
+
+        And the pooled coarse factorizations of the communicator ``owner`` (of
+        all of them by default), but ``skip``.
+        """
         tally = _Tally()
         holders: list[Any] = [*self._entries.values()]
         if pool:
             holders += [p.handle for p in self._plans.values()]
+        holders += [k for k in _coarse_held(owner) if k is not skip]
         holders += list(discs)
         for holder in holders:
             tally.replace(_NOTHING, _Tally.of(holder))

@@ -70,7 +70,10 @@ whose licence cannot be read from its metadata fails until you record it in
 `tools/licences.toml`; PyPI's `openmpi` wheel is one, so the `mpi` extra leaves it
 out. PETSc and SLEPc are built from source and not declared by gfem, so the gate
 does not see them. A `petsc`-marked test checks that ParMETIS is absent from both
-stacks, and PT-Scotch and ScaLAPACK from the no-MPI stack.
+stacks, and PT-Scotch and ScaLAPACK from the no-MPI stack. That holds for the stacks
+CI builds; to run the tests on your own `--with-parmetis` stack, set
+`GFEM_PARMETIS_STACK=1`, and the test checks instead that ParMETIS sits on an MPI
+stack.
 
 ## Docs
 

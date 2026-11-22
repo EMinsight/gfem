@@ -16,6 +16,12 @@ rank, phases, Krylov vector share, reduction wait, memory, true residual. ``NAME
 holds S, iterations and gradients. S, iterations and gradients are compared bit for bit
 across ranks, and a difference ends the run with exit code 1 once the record is written.
 
+``--solves K`` makes the plain solve a design loop: K solves in one process, design
+``i`` scaling the permittivity of the highest-permittivity volume by ``1 + 1e-3 i``.
+Design 0 is the one-frequency solve every reader sees, phase ``solve``; design ``i``
+is phase ``solve_i``, with ``s_i`` and ``iterations_i``. ``designs`` holds each
+design's phases since the last (design 0's since the start) and the memory after it.
+
 ``--design`` replaces the plain solve by two steps of `jax.value_and_grad` on the
 permittivity of the highest-permittivity volume and the fill of a resistive sheet on the
 largest interface between two volumes, since a sheet needs the domain on both sides.
@@ -30,8 +36,11 @@ difference with no gate, for a run on another mesh.
 ``close`` is the job script's, after every step, and by hand after a job that died
 with its script. A run that left no record gets a stub, ``failed: true``, with Slurm's
 state, the phases its ``--trace`` left open and the figures MUMPS printed. A finished
-run keeps its record, with those figures added, since the coarse's cannot be read
-behind ``PCTELESCOPE``. ``check`` reports a stub as not passed, and ``table`` shows it.
+run keeps its record, with those figures added: the coarse factor's own figures are
+read through ``PCTelescopeGetKSP``, and its MUMPS times only print. Each coarse set-up
+of the trace gets its analysis, METIS, ordering, factorization and solve driver times,
+and on a capped stack the processes its parallel ordering ran on (``PARAORD``).
+``check`` reports a stub as not passed, and ``table`` shows it.
 ``close --state STARTED``, before a run, first moves any record and sidecar of that
 name aside to ``NAME.superseded-N.json`` and ``.npz``, so a killed rerun is not
 reported by an earlier run's record; ``table`` and ``check`` ignore superseded files.
@@ -41,7 +50,12 @@ per node, and with ``--base NODES`` an efficiency against that named rung, stron
 one mesh or ``--weak`` across meshes. It reads times only to print them.
 
 A phase is read through a wrapper around gfem's own functions. These are private names:
-this script is pinned to the commit in its record.
+this script is pinned to the commit in its record. Each coarse set-up's record reads
+the module-level ``rule`` and ``options`` it calls, the factor behind telescoping
+(`gfem._petsc.telescope_ksp`), PETSc's count of symbolic factorizations (none: the
+analysis was kept), the stack kind and the node of each rank it hands ``rule``, and
+``CoarseMumps``'s ``_comm``, ``_numbering``, ``_factor``, ``_ksp`` and ``columns``,
+with its ``_retries``, ``_seen`` and ``_kind`` where it keeps them.
 """
 
 from __future__ import annotations
@@ -60,7 +74,7 @@ import re
 import socket
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -124,9 +138,26 @@ class Phases:
 
         setattr(owner, attribute, timed_call)
 
-    def gathered(self, comm: Any) -> dict[str, dict[str, float]]:
-        """Each phase's seconds, slowest rank and rank 0, and its calls on rank 0."""
-        here = {k: (self.seconds[k], self.calls[k]) for k in sorted(self.seconds)}
+    def snapshot(self) -> dict[str, tuple[float, int]]:
+        """Each phase's seconds and calls so far on this rank."""
+        return {k: (self.seconds[k], self.calls[k]) for k in self.seconds}
+
+    def gathered(
+        self, comm: Any, since: dict[str, tuple[float, int]] | None = None
+    ) -> dict[str, dict[str, float]]:
+        """Each phase's seconds, slowest rank and rank 0, and its calls on rank 0.
+
+        With ``since``, a `snapshot`, only what ran after it.
+        """
+        since = since or {}
+        here = {
+            k: (
+                self.seconds[k] - since.get(k, (0.0, 0))[0],
+                self.calls[k] - since.get(k, (0.0, 0))[1],
+            )
+            for k in sorted(self.seconds)
+            if self.calls[k] != since.get(k, (0.0, 0))[1]
+        }
         every = [here] if comm is None else comm.allgather(here)
         names = sorted({k for rank in every for k in rank})
         return {
@@ -150,6 +181,8 @@ class Facts:
         self.residuals: list[dict[str, Any]] = []
         self.apply: dict[str, float] = {}
         self.layout: Any = None
+        #: The design being solved, for each coarse set-up's record.
+        self.design = 0
 
 
 def _record_dofs(comm: Any, facts: Facts, layout: Any, space: Any) -> None:
@@ -218,9 +251,10 @@ def _instrument_solve(phases: Phases, facts: Facts) -> None:
 
     sweep_solve = system_operator.SystemSweep.solve
 
-    def solve(self, omega, rhs, *, x0=None):
+    def solve(self, omega, rhs, **kwargs):
+        # a later design passes its warm start's origin too
         with phases.timed("sweep_solve"):
-            x, iterations = sweep_solve(self, omega, rhs, x0=x0)
+            x, iterations = sweep_solve(self, omega, rhs, **kwargs)
         handle = self._last[1]
         with phases.timed("true_residual"):
             try:
@@ -331,30 +365,144 @@ def _instrument_petsc(phases: Phases, facts: Facts) -> None:
     petsc.RankPetscHandle._set_up_now = timed_set_up  # noqa: SLF001
 
     phases.wrap(petsc.RankPetscHandle, "_retry_with_more_workspace", "mumps_retry")
-    phases.wrap(coarse.CoarseMumps, "_options", "coarse_attempt")
+    _instrument_coarse(phases, facts, coarse)
+
+
+#: PETSc's log events of a symbolic factorization: none in a set-up kept its analysis.
+SYMBOLIC_EVENTS = ("MatCholFctrSym", "MatLUFactorSym")
+
+
+def _symbolic_count() -> int:
+    """Symbolic factorizations PETSc logged on this rank so far."""
+    from gfem import _petsc
+
+    PETSc = _petsc.require_petsc()
+    return sum(
+        int(PETSc.Log.Event(name).getPerfInfo()["count"]) for name in SYMBOLIC_EVENTS
+    )
+
+
+def _coarse_factor(made: Any) -> Any:
+    """MUMPS's coarse factor on this rank, ``None`` where telescoping drops it."""
+    from gfem import _petsc
+
+    pc = made._ksp.getPC()  # noqa: SLF001
+    if made._factor == 1:  # noqa: SLF001
+        return pc.getFactorMatrix()
+    inner = _petsc.telescope_ksp(pc)
+    return None if inner is None else inner.getPC().getFactorMatrix()
+
+
+def _factor_facts(made: Any) -> dict[str, int]:
+    """This rank's figures of the coarse factor: none on a rank telescoping drops."""
+    factor = _coarse_factor(made)
+    if factor is None:
+        return {}
+    return {
+        "icntl14": int(factor.getMumpsIcntl(14)),
+        "infog29": int(factor.getMumpsInfog(29)),
+        "infog22_mb": int(factor.getMumpsInfog(22)),
+        "infog7": int(factor.getMumpsInfog(7)),
+        "info22_mb": int(factor.getMumpsInfo(22)),
+    }
+
+
+def _instrument_coarse(
+    phases: Phases,
+    facts: Facts,
+    coarse: Any,
+    *,
+    factor_facts: Callable[[Any], dict[str, int]] = _factor_facts,
+    symbolic: Callable[[], int] = _symbolic_count,
+) -> None:
+    """Each coarse set-up's configuration, attempts, analysis and factor, per design.
+
+    ``coarse`` is `gfem._linalg.coarse`: ``CoarseMumps.set_up`` resolves ``rule`` and
+    ``options`` as its module's globals, so wrapping them there reaches each set-up.
+    Every rank reads; the gathers are collective, as a set-up is.
+    """
+    phases.wrap(coarse, "options", "coarse_attempt")
+    calls: dict[str, Any] = {}
+    rule = coarse.rule
+
+    def read_rule(dofs, size, columns, *, seen, **stack):
+        ordering, factor = rule(dofs, size, columns, seen=seen, **stack)
+        calls["rule"] = {"columns": int(columns), "seen": bool(seen)}
+        calls["chose"] = (ordering, factor)
+        calls["stack"] = stack
+        return ordering, factor
+
+    coarse.rule = read_rule
     set_up = coarse.CoarseMumps.set_up
 
     def timed_coarse(self):
+        calls.clear()
+        attempts = phases.calls["coarse_attempt"]
+        before = _quiet(symbolic)
+        start = time.perf_counter()
         with phases.timed("coarse_setup"):
             set_up(self)
-        fact = {
-            "dofs": int(self._numbering.total),
-            "reduction": int(self._factor),
-            "ranks": math.ceil(self._comm.size / self._factor),
+        seconds = time.perf_counter() - start
+        after = _quiet(symbolic)
+        comm = self._comm
+        ordering, factor = calls.get("chose", (None, None))
+        ordering = getattr(self, "_ordering", ordering)
+        factor = int(getattr(self, "_factor", factor) or 1)
+        numbering = getattr(self, "_numbering", None)
+        chosen = calls.get("rule") or {
+            "columns": getattr(self, "columns", None),
+            # unknown: set_up has added the key by now
+            "seen": None,
         }
-        with contextlib.suppress(Exception):  # the inner KSP is absent on some ranks
-            pc = self._ksp.getPC()
-            matrix = (
-                pc.getFactorMatrix()
-                if self._factor == 1
-                else pc.getTelescopeSubKSP().getPC().getFactorMatrix()
-            )
-            fact["infog29"] = int(matrix.getMumpsInfog(29))
-            fact["infog22_mb"] = int(matrix.getMumpsInfog(22))
+        here = {
+            "host": socket.gethostname(),
+            "seconds": seconds,
+            "analysed": None if before is None or after is None else after > before,
+            **_quiet(lambda: factor_facts(self), {}),
+        }
+        every = comm.allgather(here)
+        stack = calls.get("stack", {})
+        layout = stack.get("nodes") or [r["host"] for r in every]
+        read = [r for r in every if "infog29" in r]
+        nodes: dict[str, int] = defaultdict(int)
+        for r in every:
+            nodes[r["host"]] += r.get("info22_mb", 0)
+        analysed = [r["analysed"] for r in every if r["analysed"] is not None]
+        fact = {
+            "design": facts.design,
+            "dofs": None if numbering is None else int(numbering.total),
+            "ordering": ordering,
+            "reduction": factor,
+            "ranks": math.ceil(comm.size / factor),
+            "kind": stack.get("kind", getattr(self, "_kind", None)),
+            # the most on one node: the layout is even on capped and ParMETIS stacks
+            "per_node": max(Counter(layout[::factor]).values()),
+            **chosen,
+            "kept": not any(analysed) if analysed else None,
+            "retries": getattr(
+                self,
+                "_retries",
+                max(0, phases.calls["coarse_attempt"] - attempts - 1),
+            ),
+            "setup_s": max(r["seconds"] for r in every),
+        }
+        if read:
+            fact |= {k: read[0][k] for k in ("infog29", "infog22_mb", "infog7")}
+            fact["icntl14"] = max(r["icntl14"] for r in read)
+            fact["info22_mb_nodes"] = [nodes[h] for h in sorted(nodes)]
+            fact["info22_mb_node_max"] = max(nodes.values())
         facts.coarse.append(fact)
 
     coarse.CoarseMumps.set_up = timed_coarse
     phases.wrap(coarse.CoarseMumps, "Mult", "coarse_apply")
+
+
+def _quiet(read: Callable[[], Any], default: Any = None) -> Any:
+    """What ``read`` returns, or ``default`` where this rank or stack cannot read it."""
+    try:
+        return read()
+    except Exception:  # noqa: BLE001 - a missing figure is a missing field
+        return default
 
 
 def _print_mumps(comm: Any, say: Callable[[str], None]) -> None:
@@ -374,14 +522,21 @@ def _print_mumps(comm: Any, say: Callable[[str], None]) -> None:
         return (*defaults(self), ("mat_mumps_icntl_4", 2))
 
     petsc.RankPetscHandle._defaults = with_statistics  # noqa: SLF001
+    _print_coarse(coarse)
 
-    options = coarse.CoarseMumps._options  # noqa: SLF001
 
-    def with_printing(self, workspace):
-        prefix = "telescope_" if self._factor > 1 else ""
-        return (*options(self, workspace), (f"{prefix}mat_mumps_icntl_4", 2))
+def _print_coarse(coarse: Any) -> None:
+    """``ICNTL(4)=2`` on the coarse factor, behind telescoping if it reduces."""
+    options = coarse.options
 
-    coarse.CoarseMumps._options = with_printing  # noqa: SLF001
+    def with_printing(*args, factor, **kwargs):
+        prefix = "telescope_" if factor > 1 else ""
+        return (
+            *options(*args, factor=factor, **kwargs),
+            (f"{prefix}mat_mumps_icntl_4", 2),
+        )
+
+    coarse.options = with_printing
 
 
 def _factor_events() -> dict[str, float]:
@@ -401,6 +556,14 @@ def _factor_events() -> dict[str, float]:
 TRACE_LINE = re.compile(r"^(\w+) (starts|ends) at [\d.]+ GiB peak$", re.MULTILINE)
 #: MUMPS's line opening a call, ``ICNTL(4)=2``: the job and the system's size.
 MUMPS_CALL = re.compile(r"Entering [SDCZ]MUMPS \S+ .*JOB, N =\s*(\d+)\s+(\d+)")
+#: The ordering cap's line, ``PARAORD cap C nprocs P paraord W``, which a capped
+#: stack's MUMPS prints at each parallel analysis: the cap (0 for none), the
+#: processes MUMPS orders for, and those it orders on.
+PARAORD = {
+    "paraord_cap": r"PARAORD cap\s*(\d+)",
+    "paraord_nprocs": r"PARAORD cap\s*\d+\s*nprocs\s*(\d+)",
+    "paraord": r"PARAORD cap\s*\d+\s*nprocs\s*\d+\s*paraord\s*(\d+)",
+}
 #: MUMPS's lines worth keeping, in the words it prints them.
 MUMPS_FIGURES = {
     "entries_estimated": r"\(20\) Number of entries in factors \(estim\.\)\s*=\s*(\S+)",
@@ -412,7 +575,51 @@ MUMPS_FIGURES = {
     "total_used_mb": r"\(INFOG\(22\)\):\s*(\S+)",
     "entries": r"INFOG \(29\) Number of entries in factors\s*=\s*(\S+)",
     "front": r"INFOG \(11\) Maximum front size\s*=\s*(\S+)",
+    **PARAORD,
 }
+
+
+#: MUMPS's printed times of a coarse set-up, seconds, in the words it prints them,
+#: with its entries and its ordering cap's line.
+MUMPS_TIMES = {
+    "analysis_s": r"Elapsed time in analysis driver\s*=\s*(\S+)",
+    "metis_s": r"ELAPSED TIME SPENT IN METIS reordering\s*=\s*(\S+)",
+    "ordering_s": r"ELAPSED time in (?:parallel )?ordering\s*=\s*(\S+)",
+    "factorization_s": r"Elapsed time in factorization driver\s*=\s*(\S+)",
+    "entries": r"INFOG \(29\) Number of entries in factors\s*=\s*(\S+)",
+    **PARAORD,
+}
+SOLVE_DRIVER = re.compile(r"Elapsed time in solve driver\s*=\s*(\S+)")
+#: ``--trace``'s line opening a coarse set-up.
+COARSE_START = re.compile(r"^coarse_setup starts at ")
+
+
+def _coarse_printed(log: str) -> list[dict[str, Any]]:
+    """MUMPS's times per coarse set-up of a ``--trace`` log, in the order they ran.
+
+    A set-up's solve driver calls are its first apply and those until the next set-up.
+    """
+    entries: list[dict[str, Any]] = []
+    drivers: list[list[float]] = []
+    times = {key: re.compile(pattern) for key, pattern in MUMPS_TIMES.items()}
+    for line in log.splitlines():
+        if COARSE_START.match(line):
+            entries.append({})
+            drivers.append([])
+        elif entries:
+            driver = SOLVE_DRIVER.search(line)
+            if driver:
+                drivers[-1].append(float(driver[1]))
+                continue
+            for key, pattern in times.items():
+                found = pattern.search(line)
+                if found:
+                    entries[-1][key] = _mumps_number(found[1])
+    for entry, driver in zip(entries, drivers, strict=True):
+        if driver:
+            entry["solve_driver_calls"] = len(driver)
+            entry["solve_driver_median_s"] = float(np.median(driver))
+    return entries
 
 
 def _open_phases(log: str) -> list[str]:
@@ -609,16 +816,41 @@ def _capture_iterations(store: list) -> None:
     DrivenRule.forward = spy
 
 
-def _plain(case: Case, args, frequencies, *, arrays, phases, iterations) -> dict:
+def _plain(
+    case: Case, args, frequencies, *, arrays, phases, iterations, facts, comm
+) -> dict:
+    """``--solves`` plain solves, each design's permittivity a step from the case's."""
     import gfem
 
-    with phases.timed("solve"):
-        result = gfem.solve(
-            case.model(), gfem.Driven(list(frequencies)), options=_options(args)
-        )
-    arrays["s"] = np.asarray(result.s.values)
-    arrays["iterations"] = iterations[-1]
-    return {}
+    region = case.design_region
+    eps_r, tan_delta = case.materials[region]
+    since: dict[str, tuple[float, int]] = {}  # design 0 counts from the start
+    designs = []
+    try:
+        for i in range(args.solves):
+            facts.design = i
+            case.materials[region] = (eps_r * (1 + 1e-3 * i), tan_delta)
+            suffix = f"_{i}" if i else ""
+            with phases.timed(f"solve{suffix}"):
+                result = gfem.solve(
+                    case.model(), gfem.Driven(list(frequencies)), options=_options(args)
+                )
+            arrays[f"s{suffix}"] = np.asarray(result.s.values)
+            arrays[f"iterations{suffix}"] = iterations[-1]
+            gathered = phases.gathered(comm, since)
+            since = phases.snapshot()
+            designs.append(
+                {
+                    "design": i,
+                    "eps_r_scale": 1 + 1e-3 * i,
+                    "phases": gathered,
+                    "krylov": _krylov(gathered),
+                    "memory": _memory(comm),
+                }
+            )
+    finally:
+        case.materials[region] = (eps_r, tan_delta)
+    return {"solves": args.solves, "design_volume": region, "designs": designs}
 
 
 def _design(case: Case, args, frequencies, *, arrays, phases, iterations, comm) -> dict:
@@ -782,19 +1014,24 @@ def _environment(comm: Any) -> dict[str, Any]:
     }
 
 
+def _krylov(gathered: dict[str, dict[str, float]]) -> dict[str, float] | None:
+    """GMRES's vector work and reduction wait, of `Phases.gathered`."""
+    gmres = gathered.get("gmres", {}).get("max_s", 0.0)
+    if not gmres:
+        return None
+    vector = gathered.get("gmres_vector", {}).get("max_s", 0.0)
+    reduction = gathered.get("gmres_reduction", {}).get("max_s", 0.0)
+    return {
+        "vector_share": vector / gmres,
+        "reduction_wait_s": reduction,
+        "reduction_share": reduction / gmres,
+    }
+
+
 def _observed(args, phases, facts, comm) -> dict[str, Any]:
     """What the record reads across ranks once the solve is done: collective."""
     gathered = phases.gathered(comm)
-    gmres = gathered.get("gmres", {}).get("max_s", 0.0)
-    krylov = None
-    if gmres:
-        vector = gathered.get("gmres_vector", {}).get("max_s", 0.0)
-        reduction = gathered.get("gmres_reduction", {}).get("max_s", 0.0)
-        krylov = {
-            "vector_share": vector / gmres,
-            "reduction_wait_s": reduction,
-            "reduction_share": reduction / gmres,
-        }
+    krylov = _krylov(gathered)
     apply_time = dict(facts.apply)
     events = _factor_events() if args.solver == "direct" and comm is not None else {}
     if comm is not None:
@@ -872,7 +1109,14 @@ def run(args: argparse.Namespace) -> int:
         )
     else:
         extra = _plain(
-            case, args, frequencies, arrays=arrays, phases=phases, iterations=iterations
+            case,
+            args,
+            frequencies,
+            arrays=arrays,
+            phases=phases,
+            iterations=iterations,
+            facts=facts,
+            comm=comm,
         )
     say("solved")
 
@@ -1216,6 +1460,10 @@ def close(args: argparse.Namespace) -> int:
     figures = {"mumps_printed": _mumps_printed(log)} if log else {}
     if record and not record.get("failed"):
         record |= figures
+        printed = _coarse_printed(log) if log else []
+        if printed and len(printed) == len(record.get("coarse") or []):
+            for fact, times in zip(record["coarse"], printed, strict=True):
+                fact.update(times)
     else:
         opened = _open_phases(log)
         trace = {"open_phases": opened, "last_phase": opened[-1]} if opened else {}
@@ -1248,6 +1496,12 @@ def main() -> int:
     one.add_argument("--order", type=int, default=2)
     one.add_argument("--threads", type=int, default=None)
     one.add_argument("--design", action="store_true")
+    one.add_argument(
+        "--solves",
+        type=int,
+        default=1,
+        help="a design loop of this many plain solves in one process",
+    )
     one.add_argument("--seed", type=int, default=0)
     one.add_argument("--repeat", type=int, default=1, help="this run's repeat index")
     one.add_argument("--spaces-only", action="store_true")

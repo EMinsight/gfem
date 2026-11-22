@@ -262,6 +262,8 @@ smoke_petsc() {
   [[ -f $lib ]] || stack_die "petsc smoke: no $lib"
   nm -D "$lib" "$prefix"/lib/lib*mumps*.so >"$dir/dynsym.txt" 2>/dev/null || nm -D "$lib" >"$dir/dynsym.txt"
   ldd "$lib" >"$dir/needed.txt"
+  # gfem's cap on PT-Scotch's ordering leaves this marker in MUMPS (provenance paraord_cap)
+  grep -a -o -m 1 MUMPS_PARAORD_MAX "$lib" "$prefix"/lib/lib*mumps*.so >"$dir/paraord.txt" 2>/dev/null || true
   cp "$prefix/share/stack/mumps-Makefile.inc" "$dir/Makefile.inc"
   echo "$(basename "$FC") $($FC -dumpfullversion)" >"$dir/compiler.txt"
   local entry
