@@ -23,6 +23,7 @@ import jax
 import numpy as np
 import pytest
 import structured_meshes as sm
+from finite_differences import assert_gradient_matches, unit_directions
 
 import gfem
 from gfem._eigen import rule as eigen_rule
@@ -434,27 +435,38 @@ def test_each_port_of_a_shared_surface_reports_its_own_mode_s_coupling_q(tmp_pat
         assert float(result.q_port[other][j]) >= 1e6 * float(result.q_port[own][j])
 
 
-def test_a_wave_port_s_coupling_q_takes_no_gradient_yet(tmp_path):
+def _case_a_field(mesh, eps):
+    return gfem.Model(
+        mesh,
+        materials={
+            "dielectric": gfem.MaterialField(eps_r=eps),
+            "air": gfem.Material(eps_r=1.0),
+        },
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port")],
+    )
+
+
+GRADIENT_OPTIONS = gfem.SolverOptions(
+    order=2, linear_solver="direct", eigen_tolerance=1e-12
+)
+
+
+def test_a_wave_port_s_coupling_q_gradient_matches_a_central_difference(tmp_path):
+    # the load reads the port mode's amplitude and power at the mode's
+    # complex k through the reduced model's derivatives
     mesh = shorted_guide(tmp_path / "a.msh", CASE_A, nx=4)
-    options = gfem.SolverOptions(order=2, linear_solver="direct", eigen_tolerance=1e-12)
+
+    problem = gfem.Eigenmode(target=11.67e9, n_modes=3)
+    eps = jax.numpy.full(len(mesh.elements("dielectric")), 4.0)
+    first = gfem.solve(_case_a_field(mesh, eps), problem, options=GRADIENT_OPTIONS)
+    j = nearest_error(first, ROOT_A)[1]
 
     def objective(eps):
-        model = gfem.Model(
-            mesh,
-            materials={
-                "dielectric": gfem.MaterialField(eps_r=eps),
-                "air": gfem.Material(eps_r=1.0),
-            },
-            boundaries=[gfem.PEC("walls")],
-            ports=[gfem.WavePort("p1", "port")],
-        )
-        result = gfem.solve(model, gfem.Eigenmode(target=11.67e9), options=options)
-        return 1 / result.q_port["p1"][0]
+        result = gfem.solve(_case_a_field(mesh, eps), problem, options=GRADIENT_OPTIONS)
+        return 1 / result.q_port["p1"][j]
 
-    # raised in the backward: under jax.grad it arrives as a runtime error
-    # that carries the class name
-    with pytest.raises(
-        jax.errors.JaxRuntimeError,
-        match=r"NonDifferentiableError: .*q_port\['p1'\], the coupling Q of a wave",
-    ):
-        jax.grad(objective)(jax.numpy.full(len(mesh.elements("dielectric")), 4.0))
+    rng = np.random.default_rng(3)
+    assert_gradient_matches(
+        objective, eps, unit_directions(rng, eps.shape, 2), step=1e-2
+    )
