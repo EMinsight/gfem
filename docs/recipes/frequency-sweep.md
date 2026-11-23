@@ -30,6 +30,11 @@ result.sweep.sampled_frequencies  # the frequencies solved in full, Hz
   `Driven(excite=...)`, so that gradients are exact at the samples
   ({doc}`adaptive-sweep-gradient`). `excite=` saves solves in a uniform
   sweep, not in an adaptive one.
+- Point dipoles (`Driven(sources=...)`, {doc}`point-dipoles`) sweep too, with
+  or without ports: their emitted power and port waves come from the reduced
+  model at every frequency. An incident field does not: its load is not a
+  fixed vector times a function of frequency, and `Driven` raises
+  `NotImplementedError`.
 - It pays off above about 20 frequencies. Below that, keep the uniform sweep.
 - `result.sweep.solved` marks, frequency by frequency, the ones solved in
   full. The rest come from the reduced model.

@@ -213,7 +213,31 @@ def surface_of(field: Field, selected: np.ndarray, model: Model) -> Surface:
                     "element away from the port, or put the port's elements "
                     "inside the side."
                 )
+    _check_point_sources(field, layer)
     return Surface(tie=tie, inside=inside, layer=layer, rim=rim, faces=faces)
+
+
+def _check_point_sources(field: Field, layer: np.ndarray) -> None:
+    """Raise if a point dipole's load sits in the element layer the power reads.
+
+    Its load would enter the residual as power crossing the surface.
+    """
+    sources = getattr(field, "_point_sources", ())
+    if not sources:
+        return
+    from gfem._probe import layout as probe_layout
+
+    points = np.array([position for _, position in sources], float)
+    located = probe.locate(field.mesh, probe_layout(field), points)
+    for (name, _), tet in zip(sources, located.tetrahedra, strict=True):
+        if layer[tet]:
+            raise ValueError(
+                f"The element layer just outside this side holds the dipole {name!r} "
+                "whose load solved the field: its load would count as power "
+                "crossing the surface. Move the side's surface "
+                "at least one element away from the dipole, or put the dipole "
+                "inside the side."
+            )
 
 
 def build(

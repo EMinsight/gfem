@@ -252,7 +252,14 @@ def test_a_fieldless_encoding_matches_its_specs():
 
 def test_the_differentiable_outputs_are_spec_names():
     specs = SweepOutputs.specs(
-        n_freq=1, n_ports=1, n_excited=1, n_wave=1, ndof=1, n_fields=1, n_sources=1
+        n_freq=1,
+        n_ports=1,
+        n_excited=1,
+        n_wave=1,
+        ndof=1,
+        n_fields=1,
+        n_sources=1,
+        n_dipoles=1,
     )
     reduced = SweepOutputs.specs(
         n_freq=1, n_ports=1, n_excited=1, n_wave=0, ndof=1, n_fields=1, reduced=1
@@ -400,4 +407,27 @@ def test_source_port_waves_follow_the_rows_the_seam_and_the_join():
     joined = SweepOutputs.join([([0, 1, 2], out), ([3], second)])
     np.testing.assert_array_equal(
         joined.port_waves, np.concatenate([out.port_waves, second.port_waves])
+    )
+
+
+def test_emitted_power_follows_the_rows_the_seam_and_the_join():
+    rng = np.random.default_rng(3)
+    power = rng.standard_normal((N_FREQ, 1))
+    rows = (0, 2)
+    out = SweepOutputs.uniform(
+        rows,
+        s=_complex(rng, N_FREQ, N_PORTS, N_EXC),
+        z_ref=rng.random((N_FREQ, N_PORTS)),
+        iterations=[],
+        reused=[],
+        e_field=None,
+        waves=[],
+        emitted_power=power,
+    )
+    np.testing.assert_array_equal(out.emitted_power, power[list(rows)])
+    back = SweepOutputs.read(out.outputs())
+    np.testing.assert_array_equal(back.emitted_power, power[list(rows)])
+    joined = SweepOutputs.join([((0, 1, 2), out), ((3, 4, 5), out)])
+    np.testing.assert_array_equal(
+        joined.emitted_power, np.concatenate([power[list(rows)]] * 2)
     )
