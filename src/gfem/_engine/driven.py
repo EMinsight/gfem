@@ -1899,8 +1899,9 @@ class DrivenRule:
                     _excluded=self._excluded,
                     _comm=_mpi.static_comm(self.comm),
                     _reference_frequency=self._reference_frequency,
+                    _point_sources=self._point_sources(name),
                 )
-                for k, (f, _) in enumerate(kept)
+                for k, (f, name) in enumerate(kept)
             ]
         return DrivenResult(
             s=NetworkParameters(
@@ -1922,6 +1923,12 @@ class DrivenRule:
             diffraction_orders=self._diffraction_orders(out.rows),
             **self._source_leaves(out),
         )
+
+    def _point_sources(
+        self, name: str
+    ) -> tuple[tuple[str, tuple[float, float, float]], ...]:
+        """The point dipole whose load solves column ``name``, if it is one."""
+        return tuple((d.name, d.position) for d in self.dipoles if d.name == name)
 
     @property
     def _labels(self) -> tuple[str, ...]:
@@ -2042,6 +2049,9 @@ class DrivenRule:
                 support=self.regions,
                 _excluded=self._excluded,
                 _reference_frequency=self._reference_frequency,
+                _point_sources=tuple(self._point_sources(name) for _, name in kept)
+                if self.dipoles
+                else (),
             )
         return DrivenResult(
             s=NetworkParameters(

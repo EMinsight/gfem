@@ -7,6 +7,7 @@ closed-form gates at 3 % live in tests/verification/test_dipoles.py.
 
 import free_space_cases as fsc
 import numpy as np
+import pml_cases
 import pytest
 
 import gfem
@@ -178,3 +179,78 @@ def test_a_real_permittivity_law_is_accepted(split):
 def test_a_magnetic_dipole_refuses_like_an_electric_one(split):
     with pytest.raises(ValueError, match=r"MagneticDipole 'd'.*'pml'"):
         _solve(_split_model(split), _at(-0.2, 0.5, 0.5, cls=gfem.MagneticDipole))
+
+
+# --- beside ports: port waves and the power split -----------------------------------
+
+
+@pytest.fixture(scope="module")
+def line(tmp_path_factory):
+    """The layer's TEM line (wave port at z = 0) with a lossy slab in its air."""
+    path = pml_cases.slab_line(tmp_path_factory.mktemp("line") / "line.msh")
+    mesh = gfem.Mesh.from_gmsh(path)
+    return gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(),
+            "pml": gfem.Material(),
+            "slab": gfem.Material(eps_r=2.0, tan_delta=0.1),
+        },
+        boundaries=[gfem.PEC("pec")],
+        ports=[gfem.WavePort("p1", "port")],
+        pml=gfem.PML("pml"),
+    )
+
+
+#: Along the line's E (y), between the port and the slab, off the grid's faces.
+LINE_DIPOLE = gfem.ElectricDipole(
+    "d", position=np.array([0.07, 0.13, 0.23]) * fsc.UM, moment=(0, 1e-28, 0)
+)
+
+
+def _line_solve(model, **kwargs):
+    problem = gfem.Driven(fsc.F0, keep_fields=True, **kwargs)
+    return gfem.solve(model, problem, options=ORDER2)
+
+
+def test_a_port_and_a_dipole_on_one_factorization_equal_their_own_solves(line):
+    both = _line_solve(line, sources=LINE_DIPOLE)
+    port = _line_solve(line)
+    dipole = _line_solve(line, excite=(), sources=LINE_DIPOLE)
+    np.testing.assert_allclose(both.s.values, port.s.values, rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(both.port_waves, dipole.port_waves, rtol=1e-10)
+    np.testing.assert_allclose(
+        both.emitted_power["d"], dipole.emitted_power["d"], rtol=1e-10
+    )
+    np.testing.assert_allclose(
+        both.e_field(fsc.F0, "d").coefficients,
+        dipole.e_field(fsc.F0).coefficients,
+        rtol=1e-10,
+        atol=1e-12 * np.abs(dipole.e_field(fsc.F0).coefficients).max(),
+    )
+    assert dipole.s.values.shape == (1, 1, 0)
+    assert both.port_waves.shape == (1, 1, 1)
+
+
+def test_the_emitted_power_splits_into_ports_layer_and_losses(line):
+    # T14: the discrete balance holds to round-off
+    result = _line_solve(line, excite=(), sources=LINE_DIPOLE)
+    field = result.e_field(fsc.F0)
+    emitted = float(result.emitted_power["d"][0])
+    guided = float(np.abs(result.port_wave("p1", "d")[0]) ** 2)
+    absorbed = -float(gfem.power_flow(field, "slab", model=line))
+    radiated = -float(gfem.power_flow(field, "pml", model=line))
+    assert min(guided, absorbed, radiated) > 1e-3 * emitted
+    assert guided + absorbed + radiated == pytest.approx(emitted, rel=1e-8)
+
+
+def test_power_flow_refuses_a_side_whose_element_layer_holds_a_dipole(line):
+    # the slab's outside layer is z in [0.4, 0.5] um: the load enters the residual
+    near = gfem.ElectricDipole(
+        "d", position=np.array([0.07, 0.13, 0.45]) * fsc.UM, moment=(0, 1e-28, 0)
+    )
+    field = _line_solve(line, excite=(), sources=near).e_field(fsc.F0)
+    with pytest.raises(ValueError, match="outside this side holds the dipole 'd'"):
+        gfem.power_flow(field, "slab", model=line)
+    # a side holding it whole counts its emission
+    assert float(gfem.power_flow(field, "pml", model=line)) < 0
