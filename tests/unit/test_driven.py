@@ -34,6 +34,7 @@ from gfem._linalg import bddc, pardiso, prepare
 from gfem._linalg.base import PlannedHandle, same_pattern
 from gfem._linalg.bddc import BddcHandle
 from gfem._linalg.direct import DirectHandle
+from gfem._linalg.krylov_handle import KrylovHandle
 from gfem._text import hertz
 
 L, W, H = 10.0, 2.0, 1.0  # mm
@@ -439,7 +440,7 @@ def test_a_bddc_sweep_keeps_its_preconditioner_and_matches_fresh_setups(
     s = np.asarray(_s(line, problem, linear_solver="bddc_gmres").s.values)
     assert len(builds) == 1
     # without refactorization, BDDC is set up afresh at each frequency
-    monkeypatch.delattr(BddcHandle, "refactorize")
+    monkeypatch.delattr(KrylovHandle, "refactorize")
     builds.clear()
     fresh = np.asarray(_s(line, problem, linear_solver="bddc_gmres").s.values)
     assert len(builds) == 4
@@ -467,7 +468,7 @@ def test_a_reused_bddc_preconditioner_solves_as_accurately_as_fresh_setups(
     builds = count_preconditioners(monkeypatch)
     reused = np.asarray(_s(line, problem, linear_solver="bddc_gmres").s.values)
     assert len(builds) < 8
-    monkeypatch.delattr(BddcHandle, "refactorize")
+    monkeypatch.delattr(KrylovHandle, "refactorize")
     fresh = np.asarray(_s(line, problem, linear_solver="bddc_gmres").s.values)
     error = np.abs(reused - direct).max(axis=(1, 2))
     error_fresh = np.abs(fresh - direct).max(axis=(1, 2))
