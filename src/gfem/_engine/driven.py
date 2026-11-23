@@ -331,11 +331,17 @@ class DrivenOperator:
             domain=domain,
         )
 
-    def form(self, omega: float) -> ngs.BilinearForm:
-        """``Σ θ_k(ω) a_k``, not assembled (a backend assembles it)."""
+    def form(
+        self, omega: complex, extra: Sequence[terms.Piece] = ()
+    ) -> ngs.BilinearForm:
+        """``Σ θ_k(ω) a_k``, not assembled (a backend assembles it).
+
+        With the pieces ``extra`` beside `pieces` (an eigen operator's wave
+        port Robin pieces), at a complex ``omega`` there.
+        """
         u, v = self.space.TnT()
         form = ngs.BilinearForm(self.space, symmetric=self.symmetric)
-        for piece in self.pieces:
+        for piece in (*self.pieces, *extra):
             form += complex(piece.theta(omega)) * piece.integrand(u, v)
         return form
 

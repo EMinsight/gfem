@@ -190,7 +190,8 @@ def eigen_operator(
     (`gfem._engine.fields.one_process_dofs`).
     """
     space, scale = op.space, op.built.scale
-    pieces = [*op.pieces, *(p.piece for p in ports)]
+    robin = [p.piece for p in ports]
+    pieces = [*op.pieces, *robin]
     seed_orders = {p.piece.name: p.seed_order(sigma) for p in ports}
     classes = split(pieces, scale, sigma)
     powers = classes.powers
@@ -212,16 +213,11 @@ def eigen_operator(
     def _linear_map(matrix) -> LinearMap:
         return _Map(matrix, layout)
 
-    def form(omega: complex) -> ngs.BilinearForm:
-        # the driven operator's form with the Robin pieces of the ports
-        u, v = space.TnT()
-        out = ngs.BilinearForm(space, symmetric=op.symmetric)
-        for piece in pieces:
-            out += complex(piece.theta(omega)) * piece.integrand(u, v)
-        return out
-
     def operator(k: complex) -> Operator:
-        return Operator(form(k * const.c / scale), space.FreeDofs(), layout=op.layout)
+        # the driven operator's form with the Robin pieces of the ports
+        return Operator(
+            op.form(k * const.c / scale, robin), space.FreeDofs(), layout=op.layout
+        )
 
     def prepare_shift(t: Operator, solves: int = MIN_SUBSPACE) -> Handle:
         """Prepare ``t``: ``T(k)`` at one shift (`operator`), for ``solves``.
