@@ -53,7 +53,7 @@ from gfem._engine.eigen import projector
 from gfem._engine.runtime import task_manager
 from gfem._linalg import prepare
 from gfem._linalg.base import PlannedHandle
-from gfem._linalg.bddc import BddcHandle
+from gfem._linalg.krylov_handle import KrylovHandle
 
 
 @pytest.fixture(scope="module")
@@ -578,7 +578,7 @@ def test_a_bddc_reshift_sets_the_preconditioner_up_at_the_new_shift(mesh, monkey
     builds = count_preconditioners(monkeypatch)
     result = gfem.solve(model, problem, options=options)
     assert len(builds) == 2
-    monkeypatch.delattr(BddcHandle, "refactorize")
+    monkeypatch.delattr(KrylovHandle, "refactorize")
     builds.clear()
     fresh = gfem.solve(model, problem, options=options)
     assert len(builds) == 2

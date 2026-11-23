@@ -18,6 +18,7 @@ from gfem._linalg import (
     Operator,
     bddc,
     factorize,
+    krylov_handle,
     low_rank_update,
     pardiso,
     prepare,
@@ -537,7 +538,7 @@ def test_bddc_refactorization_without_a_guess_solves_on_the_kept_preconditioner(
     for shift, ref, setups, action in zip(shifts, refs, (1, 2), actions, strict=True):
         if setups == 2:
             # far away, a column caps (at n_ref, no slack)
-            monkeypatch.setattr(bddc, "_slack", lambda _: 0)
+            monkeypatch.setattr(krylov_handle, "_slack", lambda _: 0)
         handle.refactorize(operator(shift), frequency=1.0, sweep=True)
         X = handle.solve(B)
         assert len(builds) == setups
@@ -689,7 +690,7 @@ def test_a_bddc_handle_names_each_steps_action_and_reason(built, monkeypatch):
     assert step(handle) == ("factorized", "cold solve")
     # far away, a warm column caps (at n_ref, no slack) and sets BDDC up
     # inside the solve
-    monkeypatch.setattr(bddc, "_slack", lambda _: 0)
+    monkeypatch.setattr(krylov_handle, "_slack", lambda _: 0)
     handle.refactorize(operator(-40 + 1j))
     handle.solve(B, x0=previous)
     assert step(handle) == ("reused, capped, refactorized", "capped")
