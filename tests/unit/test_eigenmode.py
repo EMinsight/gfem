@@ -932,7 +932,7 @@ def test_shared_port_surface_raises_naming_the_surface_and_its_ports(mesh):
     assert "LumpedPort" not in message
 
 
-def test_a_design_beside_a_wave_port_face_raises_as_in_the_driven_rule(
+def test_port_geometry_error_beside_a_wave_port_face_matches_the_driven_rule(
     mesh, monkeypatch
 ):
     # the eigenmode solve still refuses the wave port itself; past that refusal
