@@ -315,8 +315,12 @@ How gfem itself is checked: {doc}`../verification`.
   path through the layer, or an interface surface wholly in it, raises.
 - **Moved meshes**: a moved mesh may not push device elements past a
   stretched face, and a morph of a surface wholly in the layer raises.
-- **No iterative solver**: `linear_solver="bddc_gmres"` raises; `"auto"`
-  picks the direct solver, MUMPS across MPI ranks.
+- **Iterative solver**: `linear_solver="pmg_gmres"` solves the layer exactly
+  inside its iterations, at order 2 or 3 on one process; its memory grows with
+  the share of the unknowns in the layer. `"bddc_gmres"` raises, because the
+  stretch stalls its iterations. `"auto"` picks the direct solver while it
+  fits, then `"pmg_gmres"`, then the direct solver whatever the memory (MUMPS
+  across MPI ranks).
 - **Thin layers**: a side thinner than about a hundredth of the reference
   wavelength warns {py:obj}`gfem.ThinLayerWarning`: the stretch is then
   steep, and the solve loses digits.
@@ -326,3 +330,4 @@ How gfem itself is checked: {doc}`../verification`.
 - {doc}`periodic-cell` and {doc}`floquet-ports` for the cells.
 - {doc}`loss-budget` for what the radiation Q joins.
 - {doc}`eigenmode-gradient` for gradients of the modes.
+- {doc}`large-driven-model` for a model too large for the direct solver.

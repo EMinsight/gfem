@@ -15,8 +15,9 @@ Phases, disjoint (a phase's seconds exclude every other phase timed inside it):
   it assembles the first matrix of a setup, so that assembly holds the
   preconditioner's build.
 - ``"setup"``: a factorization or a preconditioner, without its assembly.
-  With ``linear_solver="pmg_gmres"`` it holds the assembly of the smoother's
-  symmetric-storage copy of the operator, which is part of the p-multigrid.
+  With ``linear_solver="pmg_gmres"`` it holds the p-multigrid's build: its
+  direct-set factor, its smoother blocks and the assembly of the smoother's
+  symmetric-storage copy of the operator.
   Adds ``solver`` (the linear solver), ``action`` (``"factorized"``,
   ``"refactorized"``, ``"reused"``, ``"held"``, as on ``gfem.solver``) and
   ``nbytes`` (bytes the solver holds after the setup).

@@ -492,8 +492,8 @@ class LowFrequencyWarning(UserWarning):
     the lowest frequency.
 
     An ungauged driven solve (``gauge="none"``, ``"bddc_gmres"``,
-    ``"petsc"``, ``device="cuda"``, several MPI ranks, a periodic or
-    Floquet model) loses digits in its fields and gradients below the
+    ``"pmg_gmres"``, ``"petsc"``, ``device="cuda"``, several MPI ranks, a
+    periodic or Floquet model) loses digits in its fields and gradients below the
     floor, and with an exact factorization in the capacitive part of S. The
     message ends with why the solve is ungauged and, where one exists, the
     setting that gauges it. For capacitance at low frequency solve
@@ -510,13 +510,14 @@ class LinearSolverConvergenceError(RuntimeError):
     """A Krylov linear solve stopped above its tolerance.
 
     Raised by every iterative linear solve that does not converge
-    (``linear_solver="bddc_gmres"``, or ``"petsc"`` with a Krylov
-    ``ksp_type``) in every problem type. It is a `RuntimeError`, so
+    (``linear_solver="bddc_gmres"`` or ``"pmg_gmres"``, or ``"petsc"`` with
+    a Krylov ``ksp_type``) in every problem type. It is a `RuntimeError`, so
     ``except RuntimeError`` still catches it. A factorization that fails (a
     singular operator, a MUMPS or PARDISO error) raises a plain
     `RuntimeError` instead. The message names the solver, the tolerance,
     the residual reached and the remedies, such as
-    ``linear_solver="direct"`` or a looser tolerance.
+    ``linear_solver="direct"`` or a looser tolerance, or, with
+    ``"pmg_gmres"``, a check of the mesh for layers of thin cells.
 
     A uniform `gfem.Driven` sweep stops at the first frequency that does
     not converge and keeps what it solved before it: ``result`` is the

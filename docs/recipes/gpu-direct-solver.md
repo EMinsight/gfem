@@ -2,7 +2,7 @@
 
 Run the `direct` linear solver's factorization and solves on an NVIDIA GPU,
 with NVIDIA cuDSS. Only that step moves to the GPU. Assembly, the
-`bddc_gmres` solver, the eigenvalue loop and the gradients stay on the CPU,
+iterative solvers, the eigenvalue loop and the gradients stay on the CPU,
 and the results are the same CPU arrays as from a CPU solve. The GPU solver
 is experimental: whether it beats the CPU depends on the card's
 double-precision speed, so measure before you rely on it.
@@ -26,9 +26,9 @@ result = gfem.solve(model, problem, options=options)
 
 - `device="cuda"` is the first GPU, `"cuda:1"` the second.
 - On a GPU the default `linear_solver="auto"` is the direct solver, the only
-  one that runs there; `SolverOptions` refuses `"bddc_gmres"` and `"petsc"`
+  one that runs there; `SolverOptions` refuses every other linear solver
   with a GPU. On the CPU the same `"auto"` options run the problem type's
-  default (for a driven problem, the iterative solver once the factorization
+  default (for a driven problem, an iterative solver once the factorization
   would not fit in half the memory), and so does a saved
   {term}`job` run with `--device cpu`. Write `linear_solver="direct"` to get
   the direct solver on both.

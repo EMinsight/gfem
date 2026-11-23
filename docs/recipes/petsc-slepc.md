@@ -202,7 +202,7 @@ solved. Adaptive sweeps set the preconditioner up at every sample.
 
 - `tolerance` (`adjoint_tolerance` for adjoint solves) becomes `ksp_rtol`: the
   true, unpreconditioned residual relative to the right-hand side.
-  `bddc_gmres` measures its preconditioned residual instead, so the same
+  `bddc_gmres` and `pmg_gmres` measure their preconditioned residual instead, so the same
   `tolerance` is a different norm per backend. `ksp_max_it` defaults to 400.
   Set `ksp_norm_type` for PETSc's own norm.
 - Driven and eigenmode operators are complex symmetric, not Hermitian: use
@@ -210,7 +210,8 @@ solved. Adaptive sweeps set the preconditioner up at every sample.
   a Hermitian operator, and its `ksp_cg_type symmetric` variant stops when the
   real part of $p^T A p$ changes sign, which these operators allow. CG suits
   the electrostatic problem, whose operator is real symmetric positive definite.
-- gfem brings no Krylov preconditioner for curl-curl operators: PETSc's
+- gfem brings no Krylov preconditioner for curl-curl operators to PETSc (its
+  own `bddc_gmres` and `pmg_gmres` are built for them): PETSc's
   algebraic multigrid does not know the curl's null space, and the build has
   no hypre. Incomplete factorizations fail too: GMRES with PETSc's ILU, with or
   without fill levels, does not converge on gfem's driven problems. To try

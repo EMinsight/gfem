@@ -662,6 +662,55 @@ Tests: [quantity estimate](https://github.com/benvial/gfem/blob/main/tests/verif
 [objective estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_objective_estimate.py),
 [field estimate](https://github.com/benvial/gfem/blob/main/tests/verification/test_field_estimate.py).
 
+## The p-multigrid solver
+
+`linear_solver="pmg_gmres"` ({doc}`recipes/large-driven-model`) is checked
+against the direct solver on models that need each part of its
+{term}`direct set`:
+
+- **Against the direct solver.** S of a strip line at orders 2 and 3, with
+  each factorization of the direct set. A two-frequency sweep builds the
+  solver once and matches fresh builds; the adjoint solve runs on the
+  forward's solver. At 50 MHz on a metal line, where `"auto"` picks it once
+  the direct solver does not fit, S matches the direct solver.
+- **A guide between perfectly matched layers.** A strip guide cut by side
+  layers solves in a few iterations, and its S matches the direct solver's.
+  With the layer left to the smoother instead, the solve stalls.
+- **A thin film.** A silicon guide with a film one nanometre thick along its
+  outer faces, meshed one cell across, takes as many iterations as the guide
+  without the film: the film's {term}`poor cells <poor cell>` go on the direct
+  set.
+- **Size in wavelengths.** A silicon guide one wavelength across at order 2,
+  and half a wavelength across at order 3, run on every change. Before each
+  release, the guide two and four wavelengths across takes about the same
+  number of iterations; at two wavelengths S matches the direct solver, and at
+  four it is reciprocal and passive.
+- **Metal lines.** The coplanar lines of the reference cases, before each
+  release, at the frequencies of their reference S, with fewer iterations than
+  `"bddc_gmres"`.
+- **Gradients.** S gradients on lumped and wave ports, the design's initial
+  guess, and a gradient next to a layer are checked against finite
+  differences on `"pmg_gmres"` too. The gradient matrix does not list it.
+- **`"auto"` and refusals.** The memory estimate counts the same direct set
+  as the solver builds. `"auto"` picks the solver only where the direct solver
+  does not fit and the solver's own estimate does. Each refusal (order, problem
+  type, Bloch, periodic and Floquet models, MPI ranks, 2D) is a test of its
+  own.
+
+### At scale
+
+Before the solver was merged, silicon guides of 2.9 and 6.6 million unknowns
+and a half model with a perfectly matched layer of 2.2 million unknowns were
+checked against the direct solver. A bend of 17.2 million unknowns was checked
+against the direct solver's outgoing waves from an earlier run on a
+large-memory node. Times and memory are on {doc}`project/scaling`. This run is
+not part of the release checks.
+
+Tests: [p-multigrid](https://github.com/benvial/gfem/blob/main/tests/unit/test_pmg.py),
+[mechanisms](https://github.com/benvial/gfem/blob/main/tests/verification/test_pmg.py),
+[guides and metal lines](https://github.com/benvial/gfem/blob/main/tests/reference/test_driven.py),
+[`"auto"`](https://github.com/benvial/gfem/blob/main/tests/unit/test_auto_solver.py).
+
 (verification-petsc)=
 ## PETSc and SLEPc
 

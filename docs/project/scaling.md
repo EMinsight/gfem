@@ -2,8 +2,8 @@
 
 ## What to expect
 
-How large a driven model gfem has solved across MPI ranks, and how fast, on one
-cluster. These are observations from two sets of runs, each of one gfem version;
+How large a driven model gfem has solved across MPI ranks, and on one node
+with `pmg_gmres`, and how fast, on one cluster. These are observations from two sets of runs, each of one gfem version;
 each table says which. They are not limits or promises for your model. Every
 number in this summary comes from the tables below.
 
@@ -40,12 +40,19 @@ see {doc}`benchmarks`.
   each on 16 and 153 and 152 s on 32, against 440, 323 and 291 s for the first
   ([table](scaling-design-loop)). The 3 designs together took 1042, 697 and
   596 s.
+- **One node, photonic models.** `linear_solver="pmg_gmres"` took about 10
+  iterations per port on silicon guides from a few to a dozen wavelengths
+  across, and needed about a third of `direct`'s memory. It was faster than
+  `direct` from a few million unknowns on, and solved models where `direct`
+  needs a large-memory node ([table](scaling-pmg)). These are rounded
+  observations; the table holds the measured values.
 - **Before the solve.** Reading and partitioning the mesh come before
   `gfem.solve` and are not in its time: about 200 s at 108,570,046 DOF
   ([table](scaling-phases)).
 
-All of this is one machine, two gfem versions (each table says which), one family
-of meshes (a coplanar line), order 2 and one frequency per solve. A time here is an
+All of this is one machine, three gfem versions (each table says which), two
+families of meshes (a coplanar line across ranks, silicon guides on one node),
+order 2 unless a row says otherwise, and one frequency per solve. A time here is an
 observation, not a promise for another mesh, layout or machine: time a small run of
 your own model before you size a large job. {doc}`../recipes/distributed-solve`
 shows how to run both solvers and how to choose ranks and threads.
@@ -212,6 +219,20 @@ whole run. A later measurement on one node, with the benchmark suite and gfem
 ({ref}`bench-r10m`).
 Layouts were compared up to 4 nodes and 10,248,856 DOF; past that the advice is an
 extrapolation.
+
+(scaling-pmg)=
+## One node, `pmg_gmres`
+
+Silicon strip guides in silicon oxide at 1.55 µm, several cladding wavelengths
+across, and a half model of a guide between perfectly matched layers, solved on
+one MareNostrum 5 general-purpose node in one process with
+`linear_solver="pmg_gmres"` and with `"direct"`, at order 2 (one row at
+order 3). Each row gives the model, its unknowns, its size in wavelengths, the
+GMRES iterations per excited port, and the time and peak memory of each
+solver. The commit and the run records are on the table's first line.
+
+```{include} _scaling/pmg-ladder.md
+```
 
 ## How these were measured
 

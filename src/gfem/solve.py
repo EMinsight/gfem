@@ -195,7 +195,8 @@ def solve(
         NonDifferentiableError: Under `jax.grad`, an input or output gfem
             does not differentiate is perturbed or used.
         LinearSolverConvergenceError: An iterative linear solve
-            (``linear_solver="bddc_gmres"``, or ``"petsc"`` with a Krylov
+            (``linear_solver="bddc_gmres"`` or ``"pmg_gmres"``, or ``"petsc"``
+            with a Krylov
             ``ksp_type``) did not converge; the message gives the remedy. A
             uniform `gfem.Driven` sweep stops there, and the error's
             ``result`` holds the frequencies it solved, ``unsolved`` the

@@ -268,20 +268,33 @@ class SolverOptions:
             factorization (estimated at about 48 KiB per unknown, per
             frequency worker, twice that with a Bloch wave vector) fits in
             half the memory the process may use; else ``"pmg_gmres"`` for a
-            model it solves, when its estimate (about 8 KiB per unknown at
-            order 2, 16 KiB at order 3, plus 48 KiB per higher-order unknown
-            on its direct set, per frequency worker) fits in all of that
-            memory; else ``"bddc_gmres"``, or ``"direct"`` with a perfectly
-            matched layer; ``"bddc_gmres"`` for electrostatic; ``"direct"``
-            for eigenmode and for every problem type on a GPU (``device``);
-            ``"bddc_gmres"`` for a driven problem across MPI ranks (eigenmode
-            keeps ``"direct"``). The choice is logged on the
-            ``gfem.solver`` logger. ``"direct"`` suits small and medium
-            models on one machine: one factorization per frequency serves
+            3D model at order 2 or 3 with no Bloch wave vector, periodic
+            pair, Floquet port or ``gauge="tree_cotree"``, when its estimate
+            (about 8 KiB per unknown at order 2, 16 KiB at order 3, plus
+            48 KiB per higher-order unknown on its direct set, per frequency
+            worker) fits in all of that memory; else ``"bddc_gmres"``, or
+            ``"direct"`` with a perfectly matched layer; ``"bddc_gmres"`` for
+            electrostatic; ``"direct"`` for eigenmode and for every problem
+            type on a GPU (``device``); ``"bddc_gmres"`` for a driven problem
+            across MPI ranks (eigenmode keeps ``"direct"``). The choice is
+            logged on the ``gfem.solver`` logger. ``"direct"`` suits small
+            and medium models on one machine: one factorization per frequency serves
             every port, and the ``mkl`` extra makes it faster (MKL PARDISO);
             for two-port lumped-port lines without the ``mkl`` extra,
             ``"bddc_gmres"`` can be faster. Pick ``"bddc_gmres"`` for large
-            models or limited memory: an iterative solve to ``tolerance``.
+            models or limited memory: an iterative solve to ``tolerance``,
+            across MPI ranks and on periodic and Bloch models too. Pick
+            ``"pmg_gmres"`` for driven models several wavelengths across
+            that the direct solver cannot hold: photonic devices in
+            dielectric cladding, with absorbing faces or a perfectly matched
+            layer, and metal circuits. Its iterations stay near 10 as the
+            model grows in wavelengths, where ``"bddc_gmres"``'s grow with
+            the size. At order 2 it needs about a third of the direct
+            solver's memory, and it is faster than the direct solver from a
+            few million unknowns on. It solves driven problems at order 2 or
+            3 on one process; a Bloch wave vector, periodic pairs, Floquet
+            ports, a GPU and MPI ranks raise. See the "Solve a driven model
+            too large for the direct solver" recipe.
             Pick ``"direct"`` explicitly to lift ``"auto"``'s memory guard.
             Pick ``"petsc"`` to use an
             existing PETSc build (the "Solve with PETSc and SLEPc" recipe):
@@ -343,11 +356,12 @@ class SolverOptions:
             driven model reuse: solver plans, with one factorization per
             frequency while they fit (a later design at the same frequency
             may solve on it, see ``tolerance``), the assembled parts that do
-            not depend on the design, the wave ports' couplings, and BDDC
-            initial guesses (the previous design's solution, from which the
-            next design's first frequency starts). Over budget, gfem drops
-            BDDC initial guesses first, then kept factorizations, then those
-            parts, then solver plans,
+            not depend on the design, the wave ports' couplings, and the
+            iterative solvers' initial guesses (the previous design's
+            solution, from which the next design's first frequency starts).
+            Over budget, gfem drops the iterative solvers' initial guesses
+            first, then kept factorizations, then those parts, then solver
+            plans,
             then the oldest entries, which are recomputed when their gradient
             runs, and port couplings last. ``None`` is half of the memory the
             process may use (the physical memory, or a smaller job memory
@@ -439,7 +453,7 @@ class SolverOptions:
             a word. ``"tree_cotree"`` asks for the gauge and raises
             `ValueError` when the solve starts wherever it does not apply
             (`gfem.DistributedUnsupportedError` across MPI ranks), including
-            an ``"auto"`` linear solver that chose ``"bddc_gmres"``; the
+            an ``"auto"`` linear solver that chose an iterative solver; the
             message names every reason.
             ``"none"`` solves ungauged. The gauge writes the field as
             :math:`x = T y`, :math:`T` square and nonsingular: node potentials
@@ -461,9 +475,10 @@ class SolverOptions:
     Notes:
         ``tolerance`` is a different norm per backend, so the same value
         does not give the same accuracy everywhere. With ``"bddc_gmres"``
-        it is the relative preconditioned residual: :math:`|P(b - Ax)| / |P b|`
-        as GMRES estimates it, or for conjugate gradients (electrostatic)
-        the P-norm of the residual over its first value. The
+        and ``"pmg_gmres"`` it is the relative preconditioned residual:
+        :math:`|P(b - Ax)| / |P b|` as GMRES estimates it, or for conjugate
+        gradients (electrostatic) the P-norm of the residual over its first
+        value. The
         unpreconditioned residual :math:`|b - Ax| / |b|` can be orders larger at
         low frequency and does not measure the error. With ``"petsc"`` and
         a Krylov ``ksp_type`` it is PETSc's ``ksp_rtol`` on the

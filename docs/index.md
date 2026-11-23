@@ -75,6 +75,7 @@ recipes/thermal-step-response
 recipes/shared-port-surface
 recipes/measurements
 recipes/loss-budget
+recipes/large-driven-model
 recipes/gpu-direct-solver
 recipes/petsc-slepc
 recipes/distributed-solve
