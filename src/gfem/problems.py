@@ -1128,15 +1128,16 @@ class Eigenmode:
     mode's Q includes its radiation through the port; a root below that
     mode's cutoff which does not decay in time is dropped with
     `gfem.AntiBoundRootWarning`, and a ``target`` below the cutoff raises
-    `gfem.PortModeError`. A shared port surface raises NotImplementedError:
-    use a `gfem.Driven` sweep. With ``wave_vector``, it raises
+    `gfem.PortModeError` naming the cutoff. A shared port surface, a wave
+    port with ``wave_vector``, and a wave port face in a `gfem.PML` raise
+    NotImplementedError: use a `gfem.Driven` sweep. With ``wave_vector``, it raises
     ValueError on a model without a `gfem.Periodic` pair, for a k with a
     component outside the span of the pairs' translations, and with any
     ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU
     ``device``. Across MPI ranks (the "Run a distributed solve" recipe) the
     eigen solver is SLEPc, and a ``wave_vector``, ``eigen_solver="arpack"``,
-    two or three `gfem.Periodic` pairs and a gradient through a mode's field
-    raise `gfem.DistributedUnsupportedError`.
+    two or three `gfem.Periodic` pairs, a `gfem.WavePort` and a gradient
+    through a mode's field raise `gfem.DistributedUnsupportedError`.
 
     Notes:
         When ``target`` or the lowest mode found is below the mesh's

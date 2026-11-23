@@ -78,6 +78,10 @@ __all__ = ["PortTerm", "PortTermValue", "port_terms", "sweep_band"]
 _CUTOFF, _LOW, _HIGH, _POINTS = 1.05, 0.7, 1.4, 9
 # The cutoff is bracketed to this relative width.
 _CUTOFF_RTOL = 1e-3
+# Doublings of the target that bracket a cutoff above it, for its error.
+_DOUBLINGS = 6
+# The width of that cutoff's estimate.
+_ESTIMATE_RTOL = 1e-2
 # Exact solves that may enrich the basis at one wavenumber.
 _ENRICHMENTS = 3
 # Pairs asked of an exact solve at a complex wavenumber.
@@ -117,24 +121,53 @@ def sweep_band(
         PortModeError: Mode ``mode`` does not propagate at the target.
     """
     if propagating_modes(modes, target, mode) < mode:
-        raise PortModeError(
-            f"{label}: mode {mode} does not propagate at the eigenmode target "
-            f"{hertz(target)} (the target lies below its cutoff), so the port "
-            "has no outgoing wave there. Raise the target above the cutoff, pick "
-            "a lower mode, or use a LumpedPort."
-        )
+        raise _below_cutoff(modes, target, mode, label)
     lo, hi = _LOW / _CUTOFF * target, target
     if propagating_modes(modes, lo, mode) >= mode:
         start = _LOW * target
     else:
-        while hi - lo > _CUTOFF_RTOL * hi:
-            mid = 0.5 * (lo + hi)
-            if propagating_modes(modes, mid, mode) >= mode:
-                hi = mid
-            else:
-                lo = mid
-        start = _CUTOFF * hi
+        start = _CUTOFF * _cutoff(modes, lo, hi, mode, _CUTOFF_RTOL)
     return np.linspace(start, _HIGH * target, _POINTS)
+
+
+def _cutoff(
+    modes: PortModeSpace, lo: float, hi: float, mode: int, rtol: float
+) -> float:
+    """The cutoff of mode ``mode`` bisected in ``[lo, hi]`` to ``rtol``, Hz.
+
+    Mode ``mode`` does not propagate at ``lo`` and does at ``hi``.
+    """
+    while hi - lo > rtol * hi:
+        mid = 0.5 * (lo + hi)
+        if propagating_modes(modes, mid, mode) >= mode:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def _below_cutoff(
+    modes: PortModeSpace, target: float, mode: int, label: str
+) -> PortModeError:
+    """The error of a target below mode ``mode``'s cutoff, naming that cutoff.
+
+    The cutoff is bracketed above the target by doubling, then bisected to 1 %.
+    """
+    lo = hi = target
+    for _ in range(_DOUBLINGS):
+        lo, hi = hi, 2 * hi
+        if propagating_modes(modes, hi, mode) >= mode:
+            cutoff = _cutoff(modes, lo, hi, mode, _ESTIMATE_RTOL)
+            where = f"its cutoff is near {hertz(cutoff, 3)}"
+            break
+    else:
+        where = f"it does not propagate up to {hertz(hi)}"
+    return PortModeError(
+        f"{label}: mode {mode} does not propagate at the eigenmode target "
+        f"{hertz(target)} ({where}), so the port has no outgoing wave there. "
+        "Raise the target above the cutoff, pick a lower mode, or find the "
+        "response from a gfem.Driven sweep."
+    )
 
 
 @dataclasses.dataclass(frozen=True)
