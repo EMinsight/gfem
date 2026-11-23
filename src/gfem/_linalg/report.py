@@ -20,6 +20,15 @@ Resolving ``linear_solver="auto"`` logs one record of the choice
 (`gauge_choice`), and each tree-cotree gauge basis built logs its sizes and
 setup times (`gauge_basis`).
 
+A port mode sweep logs one record when every output frequency passes its
+guard (`port_mode_sweep`): ``ports``, ``frequencies``, ``exact_solves`` and
+``rounds``. An eigenmode mode search logs one record per seed solve
+(`seed_solve`), so a retry shows: ``problem``, ``attempt``, ``pairs``
+(asked), ``returned``, ``modes`` (selected), ``wanted`` and ``bound`` (the
+seed solve stopped at its restart bound). Mesh refinement logs its
+refinement cycles on its own logger, ``gfem.mesh_refinement``
+(`gfem.refinement`).
+
 A frequency worker logs in its own process: `collected` keeps its records,
 on this logger and on ``gfem.timing`` (`gfem._timing`), and the parent logs
 them with `replay`, each on its own logger.
@@ -190,6 +199,75 @@ def gauge_basis(
             "ungauged_nnz": ungauged_nnz,
             "basis_seconds": basis_seconds,
             "template_seconds": template_seconds,
+        },
+    )
+
+
+def seed_solve(
+    *,
+    attempt: int,
+    pairs: int,
+    returned: int,
+    modes: int,
+    wanted: int,
+    bound: bool,
+) -> None:
+    """Log one seed solve of an eigenmode mode search, once it is selected.
+
+    ``attempt`` counts from 1 (a retry asks for twice the pairs);
+    ``pairs`` is how many pairs it asked for, ``returned`` how many it
+    converged, ``modes`` how many of them were selected as modes, against
+    the ``wanted`` count; ``bound`` says it stopped at its restart bound.
+    Attributes ``problem`` (``"eigenmode"``) and the same names.
+    """
+    if not LOGGER.isEnabledFor(logging.INFO):
+        return
+    LOGGER.info(
+        "eigenmode seed solve %d: %d pairs asked, %d returned, "
+        "%d of %d modes selected%s",
+        attempt,
+        pairs,
+        returned,
+        modes,
+        wanted,
+        ", restart bound reached" if bound else "",
+        extra={
+            "problem": "eigenmode",
+            "attempt": attempt,
+            "pairs": pairs,
+            "returned": returned,
+            "modes": modes,
+            "wanted": wanted,
+            "bound": bound,
+        },
+    )
+
+
+def port_mode_sweep(
+    *, ports: Sequence[str], frequencies: int, exact_solves: int, rounds: int
+) -> None:
+    """Log one port mode sweep, once every output frequency passes its guard.
+
+    ``ports`` names the wave ports of the swept surface; ``frequencies`` is
+    the output frequency count, ``exact_solves`` the exact port mode solves
+    the sweep made (retries after a rebuild included) and ``rounds`` the
+    times it checked the reduced model over the grid. The attributes carry
+    the same names, ``ports`` as a tuple.
+    """
+    if not LOGGER.isEnabledFor(logging.INFO):
+        return
+    ports = tuple(ports)
+    LOGGER.info(
+        "port mode sweep for %s over %d frequencies: %d exact solves, %d rounds",
+        ", ".join(ports),
+        frequencies,
+        exact_solves,
+        rounds,
+        extra={
+            "ports": ports,
+            "frequencies": frequencies,
+            "exact_solves": exact_solves,
+            "rounds": rounds,
         },
     )
 
