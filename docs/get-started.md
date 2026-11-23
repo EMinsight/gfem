@@ -14,7 +14,7 @@ gfem needs Python >= {{ python }} on Linux x86_64 (glibc >= 2.28), macOS arm64 o
 Windows x86_64. The plain install solves on the CPU.
 
 gfem is {{ status }}, and its API may change before 1.0. To keep a project
-working, pin a release (`pip install "gfem==0.1.0"`); the
+working, pin a release (`pip install "gfem==0.2.0"`); the
 {doc}`project/release-notes` list the releases.
 
 ## A first solve

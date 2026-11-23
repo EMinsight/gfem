@@ -9,7 +9,7 @@ Differentiable finite-element electromagnetics for RF, microwave, mm-wave and su
 gfem runs on [NGSolve](https://ngsolve.org) for discretization and [JAX](https://jax.readthedocs.io) for
 everything differentiable.
 
-gfem 0.1.0 is the first release. The API may still change before 1.0.
+gfem 0.2.0 is the current release. The API may still change before 1.0.
 
 ## Install
 
