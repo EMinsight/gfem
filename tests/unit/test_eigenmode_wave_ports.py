@@ -221,6 +221,7 @@ CASE_N = (("dielectric", 4.0, 6.0), ("air", 1.0, 5.0))
 # exact roots, GHz: B3 between two TE10 ports; C's TE20 family, on a guide
 # 5 mm high whose one port surface carries TE10 and TE20; N on the outgoing
 # branch, Re f at 0.977 of the TE10 cutoff (6.557 GHz)
+# (relative error at order 3 on these meshes: B3 6.9e-6, C 3.4e-5, N 3.9e-7)
 ROOT_B3 = 9.974259423230 + 0.096704835502j
 ROOT_C20 = 15.216633733515 + 0.207573093830j
 ROOT_N = 6.403885446223 + 0.564967925392j
