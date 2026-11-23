@@ -16,7 +16,7 @@ from gradient_cases import layered_line, line_design, s_functional, tight, with_
 
 import gfem
 
-SOLVERS = ["direct", "bddc_gmres"]
+SOLVERS = ["direct", "bddc_gmres", "pmg_gmres"]
 FREQUENCIES = (18e9, 27e9)
 # Fourth-order differences (see tests/finite_differences.py).
 STEPS = {"eps_r": 1e-2, "conductivity": 5e-2}

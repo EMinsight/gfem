@@ -1,10 +1,11 @@
 """On one process the backward refactorizes the forward's base.
 
-A differentiated serial driven forward on the CPU (``direct`` or ``bddc_gmres``)
-moves its base handle to its entry. A backward that needs adjoint solves
-refactorizes that base at each adjoint frequency, starting from the base's
-frequency, instead of preparing a handle per frequency. Every live entry keeps
-its own base; ``retain_memory`` frees bases before entries.
+A differentiated serial driven forward on the CPU (``direct``, ``bddc_gmres``
+or ``pmg_gmres``) moves its base handle to its entry. A backward that needs
+adjoint solves refactorizes that base at each adjoint frequency, starting
+from the base's frequency, instead of preparing a handle per frequency.
+Every live entry keeps its own base; ``retain_memory`` frees bases before
+entries.
 """
 
 import jax
@@ -18,12 +19,12 @@ from gfem._engine import cache
 from gfem._engine.driven import DrivenRule
 from gfem._linalg import ResolvedLinearSolver
 from gfem._linalg.base import PlannedHandle
-from gfem._linalg.bddc import BddcHandle
+from gfem._linalg.krylov_handle import KrylovHandle
 
 F = (21e9, 24e9)
 #: Excites p1 only: the S21 cotangent takes an adjoint solve at each frequency
 PROBLEM = gfem.Driven(frequency=F, excite="p1")
-SOLVERS = ("direct", "bddc_gmres")
+SOLVERS = ("direct", "bddc_gmres", "pmg_gmres")
 
 
 @pytest.fixture(scope="module")
@@ -83,7 +84,7 @@ def counts(monkeypatch):
 
     monkeypatch.setattr(ResolvedLinearSolver, "prepare", counted_prepare)
     monkeypatch.setattr(DrivenRule, "backward", counted_backward)
-    for cls in (PlannedHandle, BddcHandle):
+    for cls in (PlannedHandle, KrylovHandle):
         refactorize = cls.refactorize
 
         def counted_refactorize(self, *args, _refactorize=refactorize, **kwargs):
@@ -191,10 +192,10 @@ def test_vmapped_variants_each_back_onto_their_own_base(path, counts, solver):
     assert counts.refactorized["backward"] == 3 * (len(F) - 1)
     cache.ENTRIES.clear()
     want = loop(robust(retain_memory=0))
-    # BDDC's forwards there start from the previous design's
+    # the iterative forwards there start from the previous design's
     # solution, these from zero: equal within the solve tolerance
     rel, grad_rel = 1e-12, 1e-10
-    if solver == "bddc_gmres":
+    if solver != "direct":
         rel = grad_rel = 10 * gfem.SolverOptions().tolerance
     for (v, g), (v0, g0) in zip(got, want, strict=True):
         assert v == pytest.approx(v0, rel=rel, abs=0)

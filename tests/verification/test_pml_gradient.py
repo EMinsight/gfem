@@ -66,8 +66,8 @@ def line(tmp_path_factory):
     )
 
 
-def _s11(model):
-    s = gfem.solve(model, PROBLEM, options=OPTIONS).s.values
+def _s11(model, options=OPTIONS):
+    s = gfem.solve(model, PROBLEM, options=options).s.values
     return jnp.abs(s[0, 0, 0]) ** 2
 
 
@@ -75,11 +75,20 @@ def _with_slab(model, eps):
     return model.with_material("slab", gfem.MaterialField(eps_r=eps))
 
 
-def test_s11_by_the_slab_permittivity(line):
+@pytest.mark.parametrize("solver", ["direct", "pmg_gmres"])
+def test_s11_by_the_slab_permittivity(line, solver):
+    # the p-multigrid is the iterative solver a layer admits: its adjoint
+    # runs through the layer's cells on its direct level. The differences
+    # are taken on direct, so the forward's 1e-12 residual does not show.
+    options = gfem.SolverOptions(order=2, linear_solver=solver, tolerance=1e-12)
     eps = jnp.asarray(line.materials["slab"].eps_r)
     directions = unit_directions(np.random.default_rng(0), eps.shape, 2)
     assert_gradient_matches(
-        lambda e: _s11(_with_slab(line, e)), eps, directions, step=1e-2
+        lambda e: _s11(_with_slab(line, e), options),
+        eps,
+        directions,
+        step=1e-2,
+        reference=lambda e: _s11(_with_slab(line, e)),
     )
 
 
