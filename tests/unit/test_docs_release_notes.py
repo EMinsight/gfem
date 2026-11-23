@@ -33,7 +33,7 @@ def test_the_thermal_block_flags_the_density_rename_as_the_code_does():
     import gfem
 
     notes = (DOCS / "project" / "release-notes.md").read_text(encoding="utf-8")
-    release = next(s for s in notes.split("\n## ") if s.startswith("0.1.0"))
+    (release,) = (s for s in notes.split("\n## ") if s.startswith("0.1.0 "))
     assert "\nThermal:\n" in release
     block = " ".join(release.split("\nThermal:\n")[1].split("\n\n")[0].split())
     assert block.startswith("- **Behaviour change: `density` is now `mass_density`.**")

@@ -5,9 +5,12 @@ r"""The numbers of a campaign report, as plain JSON values (``report.json``).
 Markdown prints, so a later reader builds on data, never on scraped Markdown.
 Performance is observed, never judged: no value here is a pass or a fail.
 
-- A **cell** is the passing records of one (case, solver, stack, layout, tolerance),
-  the default layout apart from the grid. A record passes when its status is ``ok``
-  and no check failed; every other record goes to the failures table and to no view.
+- A **cell** is the passing records of one (case, core budget, node class, solver,
+  stack, layout, tolerance), the default layout apart from the grid. Every per-case
+  view is computed per (core budget, node class); a case with several holds them
+  under ``budgets``, a case with one keeps them at its top level. A
+  record passes when its status is ``ok`` and no check failed; every other record
+  goes to the failures table and to no view.
 - Medians over passing repeats, each bucket taken independently; a ``null`` bucket
   stays ``null``. Spread is :math:`(\max - \min) / \mathrm{median}` of work time,
   **noisy** above 10 %.
@@ -20,6 +23,11 @@ Performance is observed, never judged: no value here is a pass or a fail.
   linear interpolation between neighbouring rungs, never extrapolated.
 - A cross-code ratio uses cells of one Slurm job; across jobs it carries the label
   **different nodes**.
+- **Scaling** (``scaling``, a case with passing cells at two or more budgets): per
+  solver its best-layout cell at every (core budget, node class), with speedup
+  :math:`S(c) = T(c_0)/T(c)` and parallel efficiency
+  :math:`E(c) = c_0 T(c_0) / (c\,T(c))` against its smallest budget :math:`c_0` of
+  the same node class, and the cross-code ratios per budget.
 
 Standard library only.
 """
@@ -30,7 +38,7 @@ import itertools
 import math
 import statistics
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 from benchmarks.adapters import ADAPTERS
 from benchmarks.harness import case as case_mod
@@ -39,6 +47,7 @@ from benchmarks.report.load import Inputs, LoadedCampaign, ReportError
 
 SCHEMA = "suite-report/1"
 NOISY = 0.10
+AT_FLOOR = 0.01  # a run within 1 % of its order's discretization floor
 SLOW_NODE = 0.10
 REPEATS = 3
 DEFAULT_ANCHOR = 1e-8
@@ -47,6 +56,12 @@ SAME_MESH = "same-mesh comparison"
 DIFFERENT_DISCRETIZATIONS = "different discretizations"
 TREND_NEEDS = "trend needs two campaigns"
 UNRESOLVED = "unresolved"
+TCP = "TCP between nodes"
+FIRST_NODE = "first node only"
+NOMINAL = (
+    "nominal tolerances differ; iterative kinds compare at equal achieved error "
+    "(the equal-error table of each budget)"
+)
 PHASES = (
     "mesh_read_s",
     "discretize_s",
@@ -98,8 +113,8 @@ CAVEATS = (
     ),
     (
         "Accuracy is against the named converged reference; unresolved errors are "
-        "shown as such; Palace errors carry the definition offset δ; same-code error "
-        "is solver error, not accuracy."
+        "shown as value ± reference bound; Palace errors carry the definition offset "
+        "δ; same-code error is solver error, not accuracy."
     ),
     (
         "Each code runs at its own defaults except the listed pins; structural "
@@ -317,6 +332,8 @@ def _cells(rows: Sequence[records.SuiteRecord]) -> list[dict[str, Any]]:
             continue
         key = (
             r.run.case,
+            r.run.core_budget,
+            r.provenance.machine.node_class or "",
             r.run.solver,
             r.run.stack,
             r.run.layout.asked == "default",
@@ -327,14 +344,24 @@ def _cells(rows: Sequence[records.SuiteRecord]) -> list[dict[str, Any]]:
     out = []
     for key in sorted(groups, key=_cell_order):
         rs = sorted(groups[key], key=lambda r: r.run.repeat)
-        out.append(cell(rs, default=key[3]))
+        out.append(cell(rs, default=key[5]))
     return out
 
 
 def _cell_order(key: tuple) -> tuple:
-    case, solver, stack, default, layout, tol = key
+    case, budget, node_class, solver, stack, default, layout, tol = key
     ranks = int(layout.split("x")[0]) if "x" in layout else 0
-    return (case, solver, stack, not default, ranks, layout, -(tol or 0.0))
+    return (
+        case,
+        budget,
+        node_class,
+        solver,
+        stack,
+        not default,
+        ranks,
+        layout,
+        -(tol or 0.0),
+    )
 
 
 # --- per case -----------------------------------------------------------------------
@@ -503,18 +530,71 @@ def _differences(
     return out
 
 
+def _largest_bound(reference: Mapping[str, Any] | None) -> float | None:
+    """The largest scalar bound over the reference's quantities, else None."""
+    quantities = (reference or {}).get("quantities") or {}
+    bounds = [q.get("bound") for q in quantities.values()]
+    bounds = [b for b in bounds if isinstance(b, (int, float))]
+    return max(bounds) if bounds else None
+
+
 def _floors(
     reference: Mapping[str, Any] | None,
-) -> tuple[dict[str, float | None], float | None]:
-    """Same-mesh error per order and the unresolved band (10 bound)."""
+) -> tuple[dict[str, dict[str, Any]], float | None]:
+    r"""Same-mesh error per order with the reference bound, and the unresolved band.
+
+    A floor is known only as well as the reference: it carries the reference's
+    (largest) bound :math:`b` and is resolved at :math:`f \ge 10b`, like a run's
+    error. The band is :math:`10b`.
+    """
     if reference is None:
         return {}, None
-    floors = {
-        k: num(v) for k, v in sorted((reference.get("same_mesh_error") or {}).items())
-    }
-    bounds = [q.get("bound") for q in (reference.get("quantities") or {}).values()]
-    bounds = [b for b in bounds if isinstance(b, (int, float))]
-    return floors, (num(10 * max(bounds)) if bounds else None)
+    bound = _largest_bound(reference)
+    floors = {}
+    for k, v in sorted((reference.get("same_mesh_error") or {}).items()):
+        f = num(v)
+        floors[k] = {
+            "error": f,
+            "bound": num(bound),
+            "resolved": None if f is None or bound is None else f >= 10 * bound,
+        }
+    return floors, (num(10 * bound) if bound is not None else None)
+
+
+def _at_floor(
+    runs: Sequence[Mapping[str, Any]], floors: Mapping[str, Mapping[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    r"""Per order: how many scored runs sit within 1 % of the order's floor.
+
+    :math:`|e - f_p| \le 0.01 f_p`, the smallest deviation three printed digits
+    show. It does not involve the reference bound.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for order, floor in floors.items():
+        f = floor["error"]
+        if not f:
+            continue
+        mine = [r for r in runs if r["error"] is not None and str(r["order"]) == order]
+        if not mine:
+            continue
+        devs = [abs(r["error"] - f) / f for r in mine]
+        out[order] = {
+            "n": len(mine),
+            "at_floor": sum(d <= AT_FLOOR for d in devs),
+            "largest_deviation": num(max(devs)),
+            "off": [
+                {
+                    "solver": r["solver"],
+                    "layout": r["layout"],
+                    "tolerance": r["tolerance"],
+                    "error": r["error"],
+                    "deviation": num(d),
+                }
+                for r, d in zip(mine, devs, strict=True)
+                if d > AT_FLOOR
+            ],
+        }
+    return out
 
 
 def _error_cost(
@@ -522,7 +602,7 @@ def _error_cost(
     rows: Sequence[records.SuiteRecord],
     reference: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    points_a, ladders, directs, differences = [], [], [], []
+    points_a, ladders, directs, differences, scored = [], [], [], [], []
     has_reference = reference is not None and reference.get("method") != "none"
     gfem_direct = [
         r for r in rows if passing(r) and r.run.solver == "gfem:direct" and r.outputs
@@ -533,13 +613,14 @@ def _error_cost(
             if h["error"] is None:
                 continue
             p = _point(h)
-            unresolved = h["resolved"] is False
             p.update(
                 error=h["error"],
-                unresolved=unresolved,
-                plotted=num(10 * h["bound"]) if unresolved else h["error"],
+                bound=h["bound"],
+                unresolved=h["resolved"] is False,
+                plotted=h["error"],
             )
             points_a.append(p)
+            scored.append(h)
         if info["class"] == "direct":
             if heads:
                 directs.append(_point(heads[0]))
@@ -558,6 +639,7 @@ def _error_cost(
         "reference": has_reference,
         "points": points_a,
         "floors": floors,
+        "at_floor": _at_floor(scored, floors),
         "unresolved_band": band,
         "ladders": ladders,
         "directs": directs,
@@ -668,7 +750,33 @@ def _accuracy(
     return out
 
 
-def _error_items(per_solver: Mapping[str, dict[str, Any]], rows, kind: str):
+def _item_bounds(
+    reference: Mapping[str, Any] | None, xs: Sequence[float], kind: str
+) -> list[float | None]:
+    """The reference bound at each item: per frequency where the reference has it."""
+    quantities = (reference or {}).get("quantities") or {}
+    fallback = num(_largest_bound(reference))
+    per: list[tuple[float, float]] = []
+    if kind != "eigen":
+        for q in quantities.values():
+            per += zip(
+                q.get("frequencies_hz") or [],
+                q.get("bound_per_frequency") or [],
+                strict=False,
+            )
+    out = []
+    for x in xs:
+        hits = [b for f, b in per if math.isclose(f, x, rel_tol=1e-9)]
+        out.append(num(max(hits)) if hits else fallback)
+    return out
+
+
+def _error_items(
+    per_solver: Mapping[str, dict[str, Any]],
+    rows,
+    kind: str,
+    reference: Mapping[str, Any] | None = None,
+):
     lines = []
     for solver, info in per_solver.items():
         h = _headline(info["anchor_cells"], info["layouts"]["best"])
@@ -689,7 +797,16 @@ def _error_items(per_solver: Mapping[str, dict[str, Any]], rows, kind: str):
                 "error": h["error_items"],
             }
         )
-    return {"x": "mode" if kind == "eigen" else "frequency_hz", "lines": lines}
+    out: dict[str, Any] = {
+        "x": "mode" if kind == "eigen" else "frequency_hz",
+        "lines": lines,
+    }
+    unresolved = any(
+        c["resolved"] is False for info in per_solver.values() for c in info["cells"]
+    )
+    if lines and unresolved:
+        out["bound"] = _item_bounds(reference, cast("list[float]", lines[0]["x"]), kind)
+    return out
 
 
 def _snapshot(per_solver: Mapping[str, dict[str, Any]], machines: Mapping[str, Any]):
@@ -812,10 +929,11 @@ def _reference_block(case: str, rows, inputs: Inputs) -> dict[str, Any]:
             r.case.reference.sha256 for r in rows if r.case.reference is not None
         }
         block["sha256_matches"] = named_sha == {ref.sha256}
+    families = set(inputs.families.get(case, ()))
     newer = [
         (x.doc.get("computed_utc") or "", x_id)
         for x_id, x in inputs.references.items()
-        if x.doc.get("family") == case
+        if x.doc.get("family") in families
         and x_id not in named
         and (
             ref is None
@@ -904,22 +1022,63 @@ def _case_order(campaigns: Sequence[LoadedCampaign], rows) -> list[str]:
     return [n for n in order if any(r.run.case == n for r in rows)]
 
 
-def _case(
-    name: str,
+def _partition(rows: Sequence[records.SuiteRecord]) -> list[dict[str, Any]]:
+    """The case's rows per (core budget, node class), smallest budget first.
+
+    A record without a node class (never started, refused) takes its job's class,
+    else its budget's only class.
+    """
+    by_job: dict[str, set[str]] = {}
+    by_budget: dict[int, set[str]] = {}
+    for r in rows:
+        if nc := r.provenance.machine.node_class:
+            by_job.setdefault(r.run.job or "", set()).add(nc)
+            by_budget.setdefault(r.run.core_budget, set()).add(nc)
+
+    def node_class(r: records.SuiteRecord) -> str | None:
+        if nc := r.provenance.machine.node_class:
+            return nc
+        for known in (by_job.get(r.run.job or ""), by_budget.get(r.run.core_budget)):
+            if known and len(known) == 1:
+                return next(iter(known))
+        return None
+
+    groups: dict[tuple[int, str | None], list[records.SuiteRecord]] = {}
+    for r in rows:
+        groups.setdefault((r.run.core_budget, node_class(r)), []).append(r)
+    out = []
+    for (budget, nc), rs in sorted(
+        groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")
+    ):
+        nodes = max((len(r.provenance.machine.nodes) for r in rs), default=0)
+        out.append(
+            {
+                "core_budget": budget,
+                "node_class": nc,
+                "nodes": nodes or None,
+                "rows": rs,
+            }
+        )
+    return out
+
+
+def _kind(rows: Sequence[records.SuiteRecord]) -> str:
+    """``eigen`` when a passing record has eigenfrequencies, else ``driven``."""
+    return "eigen" if any("f_hz" in r.outputs for r in rows if passing(r)) else "driven"
+
+
+def _views(
     rows: Sequence[records.SuiteRecord],
     *,
-    inputs: Inputs,
+    ref_doc: Mapping[str, Any] | None,
     anchor: float,
     machines: Mapping[str, Any],
-    rescore: Mapping[str, str],
+    rescored: tuple[Mapping[str, dict[str, Any]], str] | None,
 ) -> dict[str, Any]:
-    reference = _reference_block(name, rows, inputs)
-    ref_doc = inputs.references[reference["id"]].doc if reference["in_store"] else None
+    """Every per-case view of one (core budget, node class) of a case."""
     cells = _cells(rows)
-    if name in rescore:
-        _attach_rescore(
-            cells, _rescore(name, rescore[name], rows, inputs), rescore[name]
-        )
+    if rescored is not None:
+        _attach_rescore(cells, *rescored)
     per_solver: dict[str, dict[str, Any]] = {}
     for solver in sorted({c["solver"] for c in cells}):
         mine = [c for c in cells if c["solver"] == solver]
@@ -932,7 +1091,49 @@ def _case(
             "anchor_cells": at,
             "layouts": _layouts(solver, at, _unrun(rows, solver, tol)),
         }
-    kind = "eigen" if any("f_hz" in r.outputs for r in rows if passing(r)) else "driven"
+    kind = _kind(rows)
+    error_cost = _error_cost(per_solver, rows, ref_doc)
+    accuracy = _accuracy(cells, ref_doc)
+    return {
+        "cells": cells,
+        "error_cost": error_cost,
+        "phases": _phase_rows(per_solver),
+        "accuracy": accuracy,
+        "accuracy_floor": _at_floor(accuracy, error_cost["floors"]),
+        "error_items": _error_items(per_solver, rows, kind, ref_doc),
+        "layouts": [info["layouts"] for info in per_solver.values()],
+        "snapshot": _snapshot(per_solver, machines),
+    }
+
+
+def _case(
+    name: str,
+    rows: Sequence[records.SuiteRecord],
+    *,
+    inputs: Inputs,
+    anchor: float,
+    machines: Mapping[str, Any],
+    rescore: Mapping[str, str],
+) -> dict[str, Any]:
+    """One case; its views per (core budget, node class) when it has several."""
+    reference = _reference_block(name, rows, inputs)
+    ref_doc = inputs.references[reference["id"]].doc if reference["in_store"] else None
+    rescored = None
+    if name in rescore:
+        rescored = (_rescore(name, rescore[name], rows, inputs), rescore[name])
+    kind = _kind(rows)
+    parts = _partition(rows)
+    blocks = [
+        _views(
+            p["rows"],
+            ref_doc=ref_doc,
+            anchor=anchor,
+            machines=machines,
+            rescored=rescored,
+        )
+        for p in parts
+    ]
+    codes = sorted({code_kind(c["solver"])[0] for b in blocks for c in b["cells"]})
     notes = []
     if ref_doc is not None and ref_doc.get("method") == "none":
         notes.append(
@@ -944,7 +1145,7 @@ def _case(
     rescore_cmd = None
     if "newer" in reference and name not in rescore:
         rescore_cmd = f"--rescore {name}={reference['newer']['id']}"
-    return {
+    out: dict[str, Any] = {
         "name": name,
         "kind": kind,
         "reference": reference,
@@ -954,18 +1155,177 @@ def _case(
         "structural": _structural(rows),
         "pins": {
             code: list(ADAPTERS[code].pins if code in ADAPTERS else ())
-            for code in sorted({i["code"] for i in per_solver.values()})
+            for code in codes
         },
-        "cells": cells,
-        "error_cost": _error_cost(per_solver, rows, ref_doc),
-        "phases": _phase_rows(per_solver),
-        "accuracy": _accuracy(cells, ref_doc),
-        "error_items": _error_items(per_solver, rows, kind),
-        "layouts": [info["layouts"] for info in per_solver.values()],
-        "snapshot": _snapshot(per_solver, machines),
         "notes": notes,
         "figures": {},
     }
+    if len(blocks) == 1:
+        out.update(blocks[0])
+    else:
+        out["budgets"] = [
+            {
+                "core_budget": p["core_budget"],
+                "node_class": p["node_class"],
+                "nodes": p["nodes"],
+                **b,
+                "figures": {},
+            }
+            for p, b in zip(parts, blocks, strict=True)
+        ]
+        scaling = _scaling(parts, blocks)
+        if scaling is not None:
+            out["scaling"] = scaling
+    return out
+
+
+def _scaling_cell(block: Mapping[str, Any], lay: Mapping[str, Any]):
+    """The best-layout cell of one solver in one budget block, and its default."""
+    at = [
+        c
+        for c in block["cells"]
+        if c["solver"] == lay["solver"] and c["tolerance"] == lay["tolerance"]
+    ]
+    default = next((c for c in at if c["default"]), None)
+    best = None
+    if lay["best"] is not None:
+        best = next(
+            (c for c in at if c["layout"] == lay["best"] and not c["default"]), None
+        ) or next((c for c in at if c["layout"] == lay["best"]), None)
+    return best, default
+
+
+def _scaling_point(part: Mapping[str, Any], block: Mapping[str, Any], lay) -> Any:
+    best, default = _scaling_cell(block, lay)
+    c = best or default
+    if c is None or c["work_s"] is None:
+        return None
+    nodes = part["nodes"] or 1
+    if best is None:
+        labels = [f"default, n = {c['n']}"]
+    else:
+        labels = [f"n = {c['n']}"] if c["n"] < REPEATS else []
+    if nodes > 1 and c["stack"] == "wheels" and c["code"] == "palace":
+        labels.append(TCP)
+    if nodes > 1:
+        labels.append(f"largest node GiB: {FIRST_NODE}")
+    return {
+        "core_budget": part["core_budget"],
+        "node_class": part["node_class"],
+        "nodes": part["nodes"],
+        "layout": c["layout"],
+        "tolerance": c["tolerance"],
+        "n": c["n"],
+        "work_s": c["work_s"],
+        "work_min_s": c["work_min_s"],
+        "work_max_s": c["work_max_s"],
+        "default_layout": default["layout"] if default else None,
+        "default_work_s": default["work_s"] if default else None,
+        "peak_rss_sum_gib": c["memory"]["peak_rss_sum_gib"],
+        "peak_rss_largest_node_gib": (
+            c["memory"]["peak_rss_largest_node_gib"] if nodes > 1 else None
+        ),
+        "error": c["error"],
+        "bound": c["bound"],
+        "resolved": c["resolved"],
+        "accuracy_reason": c["accuracy_reason"],
+        "jobs": c["jobs"],
+        "labels": labels,
+    }
+
+
+def _efficiency(points: list[dict[str, Any]]) -> None:
+    r"""Speedup :math:`S(c) = T(c_0)/T(c)` and efficiency :math:`c_0 T(c_0)/(c T(c))`.
+
+    :math:`c_0` is the smallest budget of the point's node class. The points are
+    ordered by (first appearance of their class, budget), so each class is one
+    stretch of the line; the first point of each later stretch restarts it.
+    """
+    seen = list(dict.fromkeys(p["node_class"] for p in points))
+    points.sort(key=lambda p: (seen.index(p["node_class"]), p["core_budget"]))
+    base: dict[str | None, dict[str, Any]] = {}
+    prev: str | None = points[0]["node_class"] if points else None
+    for p in points:
+        nc = p["node_class"]
+        first = base.setdefault(nc, p)
+        p["baseline"] = first["core_budget"]
+        p["speedup"] = num(first["work_s"] / p["work_s"]) if p["work_s"] else None
+        p["efficiency"] = None
+        if p["work_s"] and p["core_budget"]:
+            c0_t0 = first["core_budget"] * first["work_s"]
+            p["efficiency"] = num(c0_t0 / (p["core_budget"] * p["work_s"]))
+        if nc != prev:
+            p["restart"] = f"line restarts: node class {prev} -> {nc}"
+        prev = nc
+
+
+def _scaling(
+    parts: Sequence[Mapping[str, Any]], blocks: Sequence[Mapping[str, Any]]
+) -> dict[str, Any] | None:
+    """Per solver across (core budget, node class) and cross-code ratios per budget.
+
+    None unless passing cells sit at two or more core budgets.
+    """
+    pairs = zip(parts, blocks, strict=True)
+    budgets = {p["core_budget"] for p, b in pairs if b["cells"]}
+    if len(budgets) < 2:
+        return None
+    lines: dict[str, list[dict[str, Any]]] = {}
+    for part, block in zip(parts, blocks, strict=True):
+        for lay in block["layouts"]:
+            point = _scaling_point(part, block, lay)
+            if point is not None:
+                lines.setdefault(lay["solver"], []).append(point)
+    solvers: list[dict[str, Any]] = []
+    for solver, points in sorted(lines.items()):
+        _efficiency(points)
+        code = code_kind(solver)[0]
+        solvers.append(
+            {"solver": solver, "code": code, "class": klass(solver), "points": points}
+        )
+    ratios = []
+    for part in parts:
+        here = {
+            s["solver"]: p
+            for s in solvers
+            for p in s["points"]
+            if (p["core_budget"], p["node_class"])
+            == (part["core_budget"], part["node_class"])
+        }
+        for other in sorted(here):
+            other_point = here[other]
+            if code_kind(other)[0] == "gfem":
+                continue
+            for against in sorted(here):
+                gfem_point = here[against]
+                if code_kind(against)[0] != "gfem" or klass(against) != klass(other):
+                    continue
+                same_job = (
+                    len(gfem_point["jobs"]) == 1
+                    and gfem_point["jobs"] == other_point["jobs"]
+                )
+                ratios.append(
+                    {
+                        "core_budget": part["core_budget"],
+                        "node_class": part["node_class"],
+                        "class": klass(other),
+                        "solver": other,
+                        "against": against,
+                        "work": _ratio(other_point["work_s"], gfem_point["work_s"]),
+                        "memory": _ratio(
+                            other_point["peak_rss_sum_gib"],
+                            gfem_point["peak_rss_sum_gib"],
+                        ),
+                        "pairing": "same job" if same_job else DIFFERENT_NODES,
+                        "caveat": NOMINAL if klass(other) == "iterative" else None,
+                    }
+                )
+    return {"solvers": solvers, "ratios": ratios}
+
+
+def budget_views(case: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The per-budget view blocks of a case: itself when it has a single budget."""
+    return case.get("budgets") or [cast("dict[str, Any]", case)]
 
 
 # --- campaign level -----------------------------------------------------------------
@@ -1174,8 +1534,12 @@ def build(
     flags: Mapping[str, Any],
     inputs_root: str,
     matplotlib: str | None,
+    harness_revision: str | None = None,
 ) -> dict[str, Any]:
-    """The ``suite-report/1`` mapping of ``inputs``."""
+    """The ``suite-report/1`` mapping of ``inputs``.
+
+    ``harness_revision`` is the commit of the harness tree that renders it.
+    """
     rescore = dict(flags.get("rescore") or {})
     campaigns = inputs.campaigns
     rows = [r for c in campaigns for r in c.rows]
@@ -1223,6 +1587,8 @@ def build(
         },
         "command": command([c.manifest.id for c in campaigns], flags),
         "matplotlib": matplotlib,
+        "harness_revision": harness_revision,
+        "reference_families": dict(sorted(inputs.families.items())),
         "stamps": stamps,
         "anchor_tolerance": anchor,
         "header": _header(inputs),
@@ -1238,18 +1604,44 @@ def build(
     return report
 
 
+def _twin(case: Mapping[str, Any], block: Mapping[str, Any]) -> bool:
+    """Whether the block's core budget has a second node class in the case."""
+    budget = block["core_budget"]
+    return sum(b["core_budget"] == budget for b in budget_views(case)) > 1
+
+
+def _suffix(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
+    """``-c<budget>`` on a multi-budget case; ``-<class>`` too if a budget has two."""
+    if "budgets" not in case:
+        return ""
+    twin = f"-{block['node_class']}" if _twin(case, block) else ""
+    return f"-c{block['core_budget']}{twin}"
+
+
+def budget_title(case: Mapping[str, Any], block: Mapping[str, Any]) -> str:
+    """``<case> at c<budget>`` (and the class when a budget has two); else the name."""
+    if "budgets" not in case:
+        return str(case["name"])
+    twin = f" {block['node_class']}" if _twin(case, block) else ""
+    return f"{case['name']} at c{block['core_budget']}{twin}"
+
+
 def assign_figures(report: dict[str, Any]) -> None:
     """Name each figure the report draws (``fig-*.svg``)."""
     for c in report["cases"]:
         name = c["name"]
-        figs = {"error_cost": f"fig-{name}-error-cost.svg"}
-        if c["phases"]:
-            figs["phases"] = f"fig-{name}-phases.svg"
-            figs["memory"] = f"fig-{name}-memory.svg"
-        if c["error_items"]["lines"]:
-            figs["error_items"] = f"fig-{name}-error-items.svg"
-        if any(len(lay["cells"]) > 1 for lay in c["layouts"]):
-            figs["layouts"] = f"fig-{name}-layouts.svg"
+        for b in budget_views(c):
+            tail = _suffix(c, b)
+            figs = {"error_cost": f"fig-{name}-error-cost{tail}.svg"}
+            if b["phases"]:
+                figs["phases"] = f"fig-{name}-phases{tail}.svg"
+                figs["memory"] = f"fig-{name}-memory{tail}.svg"
+            if b["error_items"]["lines"]:
+                figs["error_items"] = f"fig-{name}-error-items{tail}.svg"
+            if any(len(lay["cells"]) > 1 for lay in b["layouts"]):
+                figs["layouts"] = f"fig-{name}-layouts{tail}.svg"
+            b["figures"] = figs
+        if "scaling" in c:
+            c["figures"]["scaling"] = f"fig-{name}-scaling.svg"
         if any(s["case"] == name for s in report["trend"]["series"]):
-            figs["trend"] = f"fig-{name}-trend.svg"
-        c["figures"] = figs
+            c["figures"]["trend"] = f"fig-{name}-trend.svg"

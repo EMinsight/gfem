@@ -220,6 +220,8 @@ jobs:
         docs/tutorials/*.ipynb
 
   lowest:
+    # The floors pyproject.toml declares (JAX's, NumPy's...): the lock carries
+    # the newest, so without this job nothing checks them.
     name: unit, lowest direct dependencies (ubuntu, py3.12)
     if: inputs.tests == ''
     runs-on: ubuntu-latest

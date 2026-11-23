@@ -1,4 +1,4 @@
-"""Deterministic SVG figures of a campaign report.
+r"""Deterministic SVG figures of a campaign report.
 
 Drawn from the ``report.json`` mapping only. matplotlib is imported here and nowhere
 else in the suite, and only when a report is drawn (``uv run --group docs``). Output
@@ -6,9 +6,11 @@ is byte-stable for one matplotlib version: fixed ``svg.hashsalt``, no date or cr
 metadata, text kept as text, explicit light surface.
 
 Encoding: colour = code, marker = solver class (direct square, iterative circle),
-open markers for unresolved errors, an ordinal blue ramp for phases with startup in
-grey, log axes for time, memory and error, one y scale per panel. With at most four
-series the series are labelled directly; with more, a legend sits below the axes.
+open markers with a :math:`\pm` bound bar for unresolved errors (plotted at their
+value), a shaded :math:`\pm` bound band on an unresolved floor, an ordinal blue
+ramp for phases with startup in grey, log axes for time, memory and error, one y
+scale per panel. With at most four series the series are labelled directly; with
+more, a legend sits below the axes.
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ import matplotlib as mpl
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter
+
+from benchmarks.report import views
 
 COLORS = {"gfem": "#2a78d6", "palace": "#eb6834"}
 THIRD = "#1baf7a"
@@ -119,6 +123,16 @@ def _positive(values: Sequence[float | None]) -> bool:
     return any(v is not None and v > 0 for v in values)
 
 
+def _interval(error: float, bound: float) -> tuple[float, float]:
+    """``error ± bound`` on a log axis: below zero, the bar stops a decade down."""
+    return max(error - bound, error / 10), error + bound
+
+
+def _bound_bar(ax: Any, x: float, y: float, bound: float, c: str) -> None:
+    lo, hi = _interval(y, bound)
+    ax.plot([x, x], [lo, hi], color=c, linewidth=1, solid_capstyle="butt")
+
+
 def _accuracy_panel(
     ax: Any,
     ec: Mapping[str, Any],
@@ -159,6 +173,8 @@ def _accuracy_panel(
                 alpha=0.6,
             )
             for p in pts:
+                if p["unresolved"]:
+                    _bound_bar(ax, p[xkey], p["plotted"], p["bound"], c)
                 ax.plot(
                     [p[xkey]],
                     [p["plotted"]],
@@ -170,8 +186,12 @@ def _accuracy_panel(
                     label=solver,
                 )
             labels.append((solver, pts[-1][xkey], pts[-1]["plotted"]))
-        for order, floor in ec["floors"].items():
+        for order, f in ec["floors"].items():
+            floor = f["error"]
             if floor:
+                if f["resolved"] is False:
+                    lo, hi = _interval(floor, f["bound"])
+                    ax.axhspan(lo, hi, color=MUTED, alpha=0.12, linewidth=0)
                 ax.axhline(floor, color=MUTED, linewidth=1, linestyle="--")
                 ax.annotate(
                     f"p{order} floor",
@@ -494,22 +514,107 @@ def _trend(report: Mapping[str, Any], name: str, path: Path) -> None:
     _save(fig, path)
 
 
+LINESTYLES = ("-", "--", "-.")
+
+
+def _scaling(case: Mapping[str, Any], path: Path) -> None:
+    """(a) work time and (b) peak RSS sum against core budget, one line per solver.
+
+    A line is drawn per node class; (a) adds each segment's ideal line from its
+    smallest budget, dotted.
+    """
+    fig = Figure(figsize=(10, 4.4), layout="constrained")
+    axes = fig.subplots(1, 2, squeeze=False)[0]
+    panels = (
+        ("work_s", "work time, median, best layout [s]", "(a) work time"),
+        ("peak_rss_sum_gib", "peak RSS sum, median [GiB]", "(b) memory"),
+    )
+    seen: dict[tuple[str, str], int] = {}
+    for s in case["scaling"]["solvers"]:
+        group = (s["code"], s["class"])
+        style = LINESTYLES[seen.get(group, 0) % len(LINESTYLES)]
+        seen[group] = seen.get(group, 0) + 1
+        segments: dict[str | None, list[dict[str, Any]]] = {}
+        for p in s["points"]:
+            segments.setdefault(p["node_class"], []).append(p)
+        for ax, (key, _, _) in zip(axes, panels, strict=True):
+            for k, pts in enumerate(segments.values()):
+                xy = [(p["core_budget"], p[key]) for p in pts if p[key]]
+                if not xy:
+                    continue
+                xs, ys = zip(*xy, strict=True)
+                ax.plot(
+                    xs,
+                    ys,
+                    color=color(s["code"]),
+                    linestyle=style,
+                    marker=MARKERS[s["class"]],
+                    markersize=7,
+                    label=s["solver"] if k == 0 else None,
+                )
+                if key == "work_s" and len(xy) > 1:
+                    c0, t0 = xy[0]
+                    ax.plot(
+                        xs,
+                        [t0 * c0 / c for c in xs],
+                        color=color(s["code"]),
+                        linestyle=":",
+                        linewidth=1,
+                    )
+    for ax, (_, label, title) in zip(axes, panels, strict=True):
+        _axes_style(ax)
+        if ax.get_lines():
+            _log(ax, "x", "y")
+        budgets = sorted(
+            {p["core_budget"] for s in case["scaling"]["solvers"] for p in s["points"]}
+        )
+        ax.set_xticks(budgets, [str(b) for b in budgets])
+        ax.set_xticks([], minor=True)
+        ax.set_xlabel("core budget")
+        ax.set_ylabel(label)
+        ax.set_title(title, loc="left")
+    if axes[0].get_legend_handles_labels()[0]:
+        fig.legend(
+            *axes[0].get_legend_handles_labels(),
+            loc="outside lower center",
+            ncol=5,
+            frameon=False,
+            fontsize=8,
+        )
+    fig.suptitle(
+        f"{case['name']}: scaling across core budgets (ideal from each "
+        "solver's smallest budget dotted)",
+        x=0.01,
+        ha="left",
+    )
+    _save(fig, path)
+
+
 def render(report: Mapping[str, Any], out: Path) -> list[Path]:
     """Draw every figure the report names into ``out``; return the paths."""
     written = []
+    draw = {
+        "error_cost": _error_cost,
+        "phases": _phases,
+        "memory": _memory,
+        "error_items": _error_items,
+        "layouts": _layouts,
+    }
     with mpl.rc_context(cast("Any", RC)):
         for case in report["cases"]:
-            figs = case["figures"]
-            draw = {
-                "error_cost": lambda p, c=case: _error_cost(c, p),
-                "phases": lambda p, c=case: _phases(c, p),
-                "memory": lambda p, c=case: _memory(c, p),
-                "error_items": lambda p, c=case: _error_items(c, p),
-                "layouts": lambda p, c=case: _layouts(c, p),
-                "trend": lambda p, c=case: _trend(report, c["name"], p),
-            }
-            for view, name in sorted(figs.items()):
+            for block in views.budget_views(case):
+                titled = {**block, "name": views.budget_title(case, block)}
+                for view, name in sorted(block["figures"].items()):
+                    if view in draw:
+                        path = out / name
+                        draw[view](titled, path)
+                        written.append(path)
+            if name := case["figures"].get("scaling"):
                 path = out / name
-                draw[view](path)
+                _scaling(case, path)
+                written.append(path)
+            if name := case["figures"].get("trend"):
+                path = out / name
+                _trend(report, case["name"], path)
                 written.append(path)
     return written

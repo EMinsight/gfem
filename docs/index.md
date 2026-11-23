@@ -88,6 +88,7 @@ recipes/gsim
 
 capabilities
 project/scaling
+project/benchmarks
 verification
 ```
 

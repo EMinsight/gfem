@@ -168,6 +168,20 @@ def test_a_rerun_on_a_later_day_keeps_an_unchanged_reference_and_its_runs_path(
     assert path.read_bytes() == before
 
 
+def test_a_changed_reference_never_reuses_the_id_of_the_one_it_replaces(tmp_path):
+    # the id names the archive and the records scored against it: a
+    # same-day rerun of the same ladder with new values must not take the old id
+    path = tmp_path / "reference.json"
+    shutil.copy(config.CASES_DIR / "microstrip" / "reference.json", path)
+    before = path.read_bytes()
+    doc = json.loads(before)
+    doc["quantities"]["s"]["bound"] = 1.0
+    doc["computed_utc"] = "2099-12-31T00:00:00Z"
+    with pytest.raises(ValueError, match="keeps the id"):
+        refdoc.write(path, doc)
+    assert path.read_bytes() == before
+
+
 def test_reference_command_keeps_dof_pins_added_by_hand(tmp_path):
     cases = _copy_case(tmp_path, "bragg")
     path = cases / "bragg" / "reference.json"
@@ -182,6 +196,13 @@ def test_reference_command_keeps_dof_pins_added_by_hand(tmp_path):
 def test_reference_command_refuses_microstrip_without_a_step(tmp_path, capsys):
     assert main(["reference", "microstrip", "--cases", str(tmp_path)]) == 2
     assert "--plan" in capsys.readouterr().err
+
+
+def test_reference_command_refuses_a_case_scored_by_a_sibling(capsys):
+    assert main(["reference", "microstrip_p3"]) == 2
+    err = capsys.readouterr().err
+    assert "microstrip_p3" in err
+    assert "benchmarks reference microstrip" in err
 
 
 # --- microstrip ladder ---------------------------------------------------------------
@@ -208,7 +229,7 @@ def _ladder(alpha: float, *, l1p3_offset=0.0, algebraic=0.0):
 def test_richardson_reproduces_the_rate_and_the_exact_value():
     exact, l0, l1, l2, l1p3, l1_iter = _ladder(2.0)
     out = microstrip.extrapolate(l0, l1, l2, l1p3=l1p3, l1_iter=l1_iter, l1_direct=l1)
-    assert out.alpha == pytest.approx([2.0, 2.0])
+    assert out.alpha == [pytest.approx([2.0, 2.0])] * 2
     for got, want in zip(out.values, exact, strict=True):
         assert got == pytest.approx(want, abs=1e-14)
     assert out.terms["finer_order"] == pytest.approx([0.0, 0.0], abs=1e-14)
@@ -217,11 +238,27 @@ def test_richardson_reproduces_the_rate_and_the_exact_value():
 
 def test_rate_is_clipped_to_1_and_4():
     *_, l0, l1, l2, l1p3, _ = _ladder(5.0)
-    assert microstrip.extrapolate(l0, l1, l2, l1p3=l1p3).alpha == [4.0, 4.0]
+    assert microstrip.extrapolate(l0, l1, l2, l1p3=l1p3).alpha == [[4.0, 4.0]] * 2
     *_, l0, l1, l2, l1p3, _ = _ladder(0.5)
     out = microstrip.extrapolate(l0, l1, l2, l1p3=l1p3)
-    assert out.alpha == [1.0, 1.0]
-    assert out.raw_alpha == pytest.approx([0.5, 0.5])
+    assert out.alpha == [[1.0, 1.0]] * 2
+    assert out.raw_alpha == [pytest.approx([0.5, 0.5])] * 2
+
+
+def test_rate_is_fitted_per_entry_and_a_slow_entry_is_clipped_to_1():
+    # S11 converges at h^1.6, S21 at h^0.9 (pre-asymptotic): S21 is extrapolated at
+    # its own clipped rate 1, not at the faster S11 rate
+    s11, s21, c11, c21 = 0.1 + 0.2j, 0.9 - 0.3j, 4e-3 + 1e-3j, -2e-2 + 5e-3j
+    l0, l1, l2 = (
+        [[s11 + c11 * 2.0 ** (-1.6 * n), s21 + c21 * 2.0 ** (-0.9 * n)]]
+        for n in range(3)
+    )
+    out = microstrip.extrapolate(l0, l1, l2, l1p3=[[s11, s21]])
+    assert out.raw_alpha == [pytest.approx([1.6, 0.9])]
+    assert out.alpha == [pytest.approx([1.6, 1.0])]
+    assert out.values[0][0] == pytest.approx(s11, abs=1e-14)
+    # at rate 1: S_ref = 2 S_2 - S_1
+    assert out.values[0][1] == pytest.approx(2 * l2[0][1] - l1[0][1], abs=1e-14)
 
 
 def test_bound_terms_are_rate_sensitivity_finer_order_and_algebraic():
@@ -249,7 +286,7 @@ def test_pilot_rate_estimates_alpha_from_the_finer_order():
 
 
 def test_definition_offset_removes_the_part_that_shrinks_with_h():
-    alpha = [2.0, 2.0]
+    alpha = [[2.0, 2.0]] * 2
     delta = [[1e-5, 0.0], [0.0, -2e-5j]]
     d0 = [[d + 4e-3 for d in row] for row in delta]
     d1 = [[d + 1e-3 for d in row] for row in delta]
@@ -339,7 +376,7 @@ def test_from_records_builds_a_reference_with_offset_and_floors():
         palace_versions={"c3": "0.19.0"},
     )
     out = ladder.extrapolate()
-    assert out.alpha == pytest.approx([2.0, 2.0])
+    assert out.alpha == [pytest.approx([2.0, 2.0])] * 2
     floors = ladder.same_mesh_error(out.values)
     assert floors["1"] == pytest.approx(0.05)
     (check,) = ladder.cross_checks(out.alpha)
@@ -528,7 +565,9 @@ def test_from_rundirs_writes_the_microstrip_reference(tmp_path, capsys):
     assert doc["physics_sha256"] == case.physics_sha256(ms)
     assert doc["meshes"][L0]["dof"]["2"] == 315870
     terms = doc["provenance"]["rate"]["terms"]
-    assert doc["provenance"]["rate"]["alpha"] == pytest.approx([2.0] * n_f)
+    rates = doc["provenance"]["rate"]["alpha"]
+    assert list(rates) == list(entries)
+    assert all(r == pytest.approx([2.0] * n_f) for r in rates.values())
     assert doc["quantities"]["s"]["bound"] == max(max(t) for t in terms.values())
     assert max(terms["finer_order"]) == pytest.approx(1e-7, rel=1e-6)
     assert doc["same_mesh_error"]["2"] == pytest.approx(abs(1e-2 + 3e-3j))
