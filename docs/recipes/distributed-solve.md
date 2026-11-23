@@ -77,6 +77,8 @@ A {term}`distributed solve` runs these, with their gradients:
   above. `auto` is `bddc_gmres` for driven and electrostatic solves and
   `direct` for eigenmode. The eigen solver is SLEPc: `eigen_solver="auto"`
   names it across ranks;
+- `gfem.power_flow` and `gfem.cross_sections`, collective calls: every rank
+  calls them and gets the same number;
 - kept fields with `Field.at`, `Field.b` and `Field.to_vtu`, `Job`,
   `python -m gfem run`, `gfem.PortMode`, and the partial result of a
   `gfem.LinearSolverConvergenceError`.

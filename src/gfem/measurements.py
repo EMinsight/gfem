@@ -768,6 +768,10 @@ def power_flow(
     which balances no load. The scattered part (``part="scattered"``) needs
     no correction.
 
+    On a field of a distributed solve it is a collective call: every rank
+    calls it with the same side and model, each pairs its own elements'
+    terms with its piece of the field, and every rank gets the same number.
+
     Differentiable through the field: inside `jax.grad`, `jax.jit` or
     `jax.vmap` the kept field of a solve (lumped or wave ports) carries the
     gradient, so absorbed, radiated and transmitted power are objectives.
@@ -798,7 +802,6 @@ def power_flow(
             incident-field column, the field is its incident part, the side
             holds perfectly-matched-layer elements, or the side reaches a
             wave port's surface.
-        gfem.DistributedUnsupportedError: The field is a piece across ranks.
         NonDifferentiableError: While `jax.grad` traces it: a material
             field with an element in the element layer just outside
             ``side`` (or beside a face that layer's terms read), or the fill
@@ -816,8 +819,6 @@ def power_flow(
     refuse_entry(getattr(field, "mesh", None), "power_flow")
     if not isinstance(field, Field):
         raise TypeError(f"power_flow needs a gfem.Field, got {type(field).__name__}.")
-    if field._communicator is not None:  # noqa: SLF001
-        _mpi.refuse_feature("power_flow")
     if not isinstance(model, Model):
         raise TypeError(
             f"power_flow needs model= a gfem.Model, got {type(model).__name__}."
@@ -828,7 +829,9 @@ def power_flow(
     if recorder is not None:
         return _recorded_power_flow(recorder, field, names, model)
     incident = field._incident is not None  # noqa: SLF001
-    if not (incident or is_traced(field) or is_traced(model)):
+    # across ranks the kernel's collective host call checks the ranks agree
+    ranked = field._communicator is not None  # noqa: SLF001
+    if not (incident or ranked or is_traced(field) or is_traced(model)):
         engine = importlib.import_module("gfem._engine.power_flow")
         return jnp.asarray(engine.power_flow(field, names, model), dtype=float)
     if callable(names) and is_traced((field.mesh.nodes, model.mesh.nodes)):
@@ -1003,6 +1006,9 @@ def cross_sections(
     satisfies) reports the meshed part, :math:`2^{-n}` of the full model's
     cross sections: gfem cannot tell a symmetry plane from a physical wall.
 
+    On a result of a distributed solve it is a collective call: every rank
+    calls it and gets the same cross sections.
+
     Differentiable through the field: inside `jax.grad` the cross sections
     of a material design in the scatterer (a `gfem.MaterialField`) carry
     its gradient; the measurement reads no scatterer material, so no
@@ -1029,7 +1035,6 @@ def cross_sections(
             conductor reaches the truncation layer; the truncation layer
             reaches a wave port; the model has no background.
         NotImplementedError: A lossy background.
-        gfem.DistributedUnsupportedError: The fields are pieces across ranks.
         NonDifferentiableError: While `jax.grad` traces it: a material design
             with an element in the truncation layer, or the node coordinates.
     """
@@ -1072,8 +1077,6 @@ def cross_sections(
     absorbed, scattered = [], []
     for f in frequencies:
         field = result.e_field(f, source)
-        if field._communicator is not None:  # noqa: SLF001
-            _mpi.refuse_feature("cross_sections")
         if field._incident is None:  # noqa: SLF001
             raise ValueError(
                 f"The kept field of {source!r} carries no incident part: solve "

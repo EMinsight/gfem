@@ -56,6 +56,7 @@ from gfem._engine.incident import (
     scatterer_regions,
 )
 from gfem._linalg.base import free_mask
+from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._power_flow import LAYER_REMEDY
 from gfem.errors import NonDifferentiableError
 from gfem.mesh import _TET_EDGES
@@ -203,19 +204,26 @@ def check_side(model: Model, where: Surface, who: str) -> None:
 class IncidentReading:
     r"""What the balance of one incident-field column reads besides the flux.
 
+    Under ranks :math:`\chi\Pi w` is a rank's piece of a state and
+    :math:`b` its part of a load (its own elements' terms), so the load
+    pairing is the layout's, reduced and broadcast.
+
     Attributes:
         incident: :math:`\chi\Pi w` on the field's DOFs.
         pairing: :math:`b` on the DOFs of the side's closure, zero elsewhere.
         scale: :math:`c`, the flux's divisor at the field's ω.
+        layout: How the DOFs lie across ranks.
     """
 
     incident: np.ndarray
     pairing: np.ndarray
     scale: float
+    layout: DofLayout = ONE_PROCESS
 
     def load(self, e: np.ndarray) -> float:
         r""":math:`\operatorname{Im}(e_S^H b)/c`."""
-        return float(np.imag(np.vdot(e, self.pairing))) / self.scale
+        paired = self.layout.pair(self.pairing, np.conj(e))
+        return float(np.imag(paired)) / self.scale
 
     def load_pullback(self) -> np.ndarray:
         """JAX's gradient of `load` in ``e`` (``dP/dx - i dP/dy``)."""
@@ -233,21 +241,24 @@ def reading(
 ) -> IncidentReading:
     """The `IncidentReading` of ``field`` on ``where`` (see the module docstring)."""
     omega = float(np.real(np.asarray(field.omega)))
-    w = np.asarray(incident_coefficients(field, part))
+    comm = field._communicator  # noqa: SLF001
     bg = driven_operator(
         background_model(model, part.background),
         field.order,
         paired=False,
+        comm=comm,
         stretch=stretch,
     )
+    w = pf.local_coefficients(np.asarray(incident_coefficients(field, part)), bg, comm)
     b = np.zeros_like(w, dtype=complex)
     for k, piece in enumerate(bg.pieces):
         if piece.kind != "port":
             b += complex(piece.theta(omega)) * bg.apply(k, w)
     b[~free_mask(bg.space.FreeDofs(), bg.space.ndof)] = 0
-    mask = pf._dofs(bg, where.tie, where.inside, where.inside)  # noqa: SLF001
+    mask = pf.dofs(bg, where.tie, where.inside, where.inside)
     return IncidentReading(
         incident=w,
         pairing=np.where(mask, b, 0.0),
         scale=flux._scale(omega),  # noqa: SLF001
+        layout=flux.layout,
     )
