@@ -254,7 +254,7 @@ def test_raising_cells_name_their_error(derived):
 
 def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     rows = {r["key"]: r for r in derived["raises"]}
-    assert len(rows) == 69
+    assert len(rows) == 72
     assert rows["design in the far-field layer"]["error"] == "ValueError"
     assert "electrostatic x sheet fill" not in rows
     for knob in ("target_reflection", "reference_frequency"):

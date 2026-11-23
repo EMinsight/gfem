@@ -28,7 +28,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gfem import _mpi
 from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import is_traced
@@ -107,7 +106,13 @@ def beam_coupling(
     field, scaled so that the beam carries 1 W through the side. The phase
     is referred to the beam's own (a `gfem.GaussianBeam`'s zero focal
     phase). A `gfem.GaussianBeam` that shows less than 0.999 W through the
-    side is clipped by it, and warns.
+    side is clipped by it, and warns; so does any beam of which more than
+    a thousandth of the power through the layer crosses the truncation where
+    the side's surface meets it.
+
+    On a result of a distributed solve it is a collective call: every rank
+    calls it and gets the same coupling. An `gfem.IncidentField` beam is
+    then evaluated on every rank, at that rank's points.
 
     Example:
         The coupling of a grating's port into a fiber 10° off the normal::
@@ -158,7 +163,6 @@ def beam_coupling(
             satisfies; the beam carries no power into the side; an
             `gfem.IncidentField` beam's layer has moved from the imported
             mesh.
-        gfem.DistributedUnsupportedError: The fields are pieces across ranks.
         NonDifferentiableError: The side is a predicate while the node
             coordinates are traced; and, while `jax.grad` traces it, the
             field's ``omega`` or a material of the layer.
@@ -197,8 +201,6 @@ def beam_coupling(
     incident = isinstance(source, INCIDENT)
     part = "scattered" if incident else "total"
     fields = [result.e_field(f, name, part=part) for f in frequencies]
-    if fields[0]._communicator is not None:  # noqa: SLF001
-        _mpi.refuse_feature("beam_coupling")
     if callable(names) and is_traced((fields[0].mesh.nodes, model.mesh.nodes)):
         raise NonDifferentiableError(
             "beam_coupling's side is a predicate on element centroids, which "
@@ -257,7 +259,9 @@ def _check_power(
         raise ValueError(
             f"The beam {beam.name!r} carries no power into the side ({power:.3g} "
             "W through its layer): describe it travelling toward the device, as "
-            "the fiber launches it."
+            "the fiber launches it, and give a side whose surface crosses the "
+            "beam once (a half-space, not a closed surface around the device, "
+            "through which a beam brings no net power)."
         )
     if layer.crossing > CROSSING * power:
         raise ValueError(
@@ -323,6 +327,7 @@ def _kernel(
         order=field.order,
         imported=np.asarray(model.mesh.imported_nodes, float),
         model=model,
+        comm=field._communicator,  # noqa: SLF001
     )
 
 
@@ -356,11 +361,16 @@ def _model_role(kind: tuple[Any, ...], model: Model, layer: CouplingLayer) -> _R
 
 
 class _CouplingKernel:
-    """The coupling of one field into one beam through one layer."""
+    """The coupling of one field into one beam through one layer.
+
+    Under ranks (``comm``) a collective host call: the coefficients are a
+    rank's piece; the field at the layer's quadrature points is gathered by
+    the probe, so every rank computes the same coupling, and the
+    coefficients' cotangent is a rank's part of a load.
+    """
 
     name = "gfem.beam_coupling"
-    pieces: ClassVar[frozenset[str]] = frozenset()
-    comm = None
+    pieces: ClassVar[frozenset[str]] = frozenset({"coefficients"})
     output_specs: ClassVar[dict[str, jax.ShapeDtypeStruct]] = {
         "coupling": jax.ShapeDtypeStruct((), jnp.complex128)
     }
@@ -378,7 +388,9 @@ class _CouplingKernel:
         order: int,
         imported: np.ndarray,
         model: Model,
+        comm: Any,
     ) -> None:
+        self.comm = comm
         self.roles = roles
         self.field_def = field_def
         self.model_def = model_def
@@ -415,7 +427,8 @@ class _CouplingKernel:
 
         bary, _ = ff.rule(self.order)
         mesh = Mesh(nodes, self.topology)
-        return probe.probe(mesh, layout(field), ff.located(self.layer, bary))  # ty: ignore[invalid-argument-type]
+        located = ff.located(self.layer, bary)  # ty: ignore[invalid-argument-type]
+        return probe.probe(mesh, layout(field), located, self.comm)
 
     def _test(self, omega: float) -> Callable[[Any, Any], tuple[Any, Any]]:
         bc = engine()

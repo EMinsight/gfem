@@ -171,6 +171,41 @@ above it (image theory). gfem finds it from the model's walls; directions
 below the plane raise. The same dipole $0.21\lambda$ above a PEC ground
 gives, at order 3, the pattern of the dipole and its image to 0.2 %.
 
+## Couple into a beam
+
+The same reaction with a beam as the test field gives the
+{term}`beam coupling`: {py:func}`gfem.beam_coupling` reads how much of a
+solved field goes into an incoming beam, such as a fiber's above a grating
+coupler. For a port column fed 1 W it is, by reciprocity, the wave the port
+would receive if the beam lit the device, so the fiber-to-port efficiency
+of every fiber position, angle, waist and polarization comes from one
+port-fed solve: `abs(gfem.beam_coupling(result, "wg", fiber, model=model)) ** 2`.
+
+- The beam is a `gfem.GaussianBeam`, or a `gfem.IncidentField` (a
+  z-invariant fiber on a slab, say), described travelling toward the
+  device. It is scaled to 1 W through the side, so neither its own power
+  nor a slab's thickness enters; the phase is the beam's.
+- By default the side's surface is the truncation face the beam brings most
+  power in through: the physical elements touching it are the layer. A
+  named side or a predicate works too, if its surface crosses the beam once
+  (a half-space; through a closed surface a beam brings no net power) and
+  stays an element away from the truncation under the beam. Perfectly
+  matched layer elements are dropped from the layer, so a plane through
+  the layer ends open there.
+- The layer must be the beam's medium, one constant, isotropic, lossless
+  material, and may end on absorbing faces or on PEC or PMC walls the beam
+  satisfies (a TE beam on a slab's walls); otherwise `beam_coupling` raises
+  a `ValueError`. A `GaussianBeam` seen with less than 0.999 W through the
+  side, or any beam of which more than a thousandth crosses the truncation
+  where the side's surface meets it, is clipped and warns.
+- On a grating slab the coupling equals the beam-lit port wave to 0.14 %,
+  and two planes in the cladding agree to $10^{-5}$.
+- It is differentiable through the field with respect to material fields
+  and the node coordinates. An `IncidentField` beam is interpolated on the
+  imported mesh: once a node of its layer moves, `beam_coupling` raises a
+  `ValueError`; read it on a side whose layer a morph holds, or give a
+  `GaussianBeam`, which is read at the moved nodes.
+
 ## Cost and accuracy
 
 - One far field costs one evaluation of the field and its curl at the

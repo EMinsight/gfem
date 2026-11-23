@@ -880,6 +880,13 @@ Directivity
 Ground plane
   A flat PEC or PMC exterior face that the {term}`far-field layer` meets: the
   far field of the half-space above it includes the image of every source.
+
+Beam coupling
+  The amplitude, in √W, that a driven field sends into an incoming beam (a
+  fiber's), with the beam scaled to 1 W through the side it is read on
+  (`gfem.beam_coupling`); by reciprocity, for a port's field, the
+  {term}`port wave` the port receives when that beam lights the device. Its
+  squared modulus is the coupled power on a real reference.
 ```
 
 ## Thermal

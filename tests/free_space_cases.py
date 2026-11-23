@@ -384,19 +384,19 @@ def half_space_power(height: float, eps: complex | None, *, normal: bool) -> flo
 BEAM_BOX = (2.8, 2.8, 1.2)
 
 
-def beam_box(path: str | Path) -> gfem.Model:
+def beam_box(path: str | Path, *, cells: int = 8) -> gfem.Model:
     """A box of air, `BEAM_BOX` um centred on the origin, in a layer on all sides.
 
-    8 cells per side, the layer 2 cells thick: wide enough to hold a beam
-    of waist 0.5 um focused on its top face (2.2 waists from the axis to
-    the side at the top face).
+    ``cells`` per side, the layer a quarter of the box thick: wide enough
+    to hold a beam of waist 0.5 um focused on its top face (2.2 waists from
+    the axis to the side at the top face).
     """
     scale = np.array(BEAM_BOX)
     path = pc.box(
         path,
         pc.SIDES,
         thickness=0.25,
-        cells=8,
+        cells=cells,
         mapping=lambda p: (p - 0.5) * scale,
     )
     air = gfem.Material()
@@ -493,6 +493,58 @@ def assert_layer_moves(model: gfem.Model, morph, side) -> None:
     at = chi[tets]
     layer = at.any(axis=1) & ~at.all(axis=1)
     assert np.abs(moved[np.unique(tets[layer])]).max() > 0
+
+
+# --- a block under a plane, lit from above (beam-coupling gradients) -------------
+
+#: The plane the block's top face lies in, um: the side below it is open.
+LID = 4 / 6
+#: A dipole below the block, in "below", off every face of the grid, m.
+LID_DIPOLE = np.array([0.43, 0.55, 0.25]) * UM
+
+
+def _lid_volume(c: np.ndarray) -> str:
+    if not ((c > 0) & (c < 1)).all():
+        return "pml"
+    if ((c > 2 / 6) & (c < LID)).all():
+        return "block"
+    return "below" if c[2] < LID else "above"
+
+
+def _lid_surface(c: np.ndarray) -> str:
+    inside = ((c[:2] > 2 / 6) & (c[:2] < LID)).all()
+    return "lid" if abs(c[2] - LID) < 1e-9 and inside else ""
+
+
+def lid_box(path: str | Path, *, field: bool = False) -> gfem.Model:
+    """A dielectric "block" whose top face "lid" lies in the plane z = `LID`.
+
+    The unit cube of air in a 2/6 um "pml" on every side, split at that
+    plane into "below" and "above"; the block (2/6, 4/6)^3 um, of
+    permittivity 2 (a `gfem.MaterialField` with ``field``). The regions
+    "below" and "block" are a side whose surface is the plane: open, it
+    ends on the layer, and the elements above it touch the lid.
+    """
+    mesh = gfem.Mesh.from_gmsh(
+        pc.box(
+            path,
+            sides=pc.SIDES,
+            thickness=2 / 6,
+            cells=6,
+            volume=_lid_volume,
+            surface=_lid_surface,
+        )
+    )
+    air = gfem.Material()
+    n = len(mesh.elements("block"))
+    block = (
+        gfem.MaterialField(eps_r=np.full(n, 2.0)) if field else gfem.Material(eps_r=2.0)
+    )
+    return gfem.Model(
+        mesh,
+        materials={"below": air, "above": air, "pml": air, "block": block},
+        pml=gfem.PML("pml"),
+    )
 
 
 # --- a grating coupler on a slab (beam coupling) ---------------------------------

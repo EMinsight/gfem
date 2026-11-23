@@ -459,6 +459,18 @@ RAISES_LABELS = {
         "A far field (`far_field`) whose layer just outside its side holds a "
         "design region"
     ),
+    "design in the beam_coupling layer": (
+        "A beam coupling (`beam_coupling`) whose layer just outside its side "
+        "holds a design region"
+    ),
+    "beam_coupling with an IncidentField on a moved layer": (
+        "A beam coupling (`beam_coupling`) into a `gfem.IncidentField` beam "
+        "once node coordinates of its layer have moved"
+    ),
+    "traced beam parameters in beam_coupling's test beam": (
+        "A beam coupling (`beam_coupling`), with respect to the parameters of "
+        "its `gfem.GaussianBeam` (waist, focus, angles, polarization)"
+    ),
     "power_flow x material in its layer": (
         "The power through a surface (`power_flow`), with respect to a material "
         "field with elements in the element layer just outside its side"

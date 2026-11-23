@@ -503,19 +503,26 @@ def frozen_reference(
     mesh = model.mesh
     elements = np.zeros(len(np.asarray(mesh.tetrahedra)), bool)
     elements[layer.tetrahedra] = True
+    comm = field._communicator  # noqa: SLF001
     interpolant = field_interpolant(
         field.mesh,
         field.support,
         field._excluded,  # noqa: SLF001
         field.order,
         elements=elements,
+        comm=comm,
     )
     values = _incident.values(beam, layer.background, interpolant.points, frequency)
     coefficients = interpolant(values)
+    if comm is not None:  # a rank's piece, padded like the field's
+        piece = np.zeros(np.shape(field.coefficients)[0], complex)
+        piece[: len(coefficients)] = coefficients
+        coefficients = piece
     imported = np.asarray(mesh.imported_nodes, float)
     at_import = Mesh(imported, mesh._topology)  # noqa: SLF001
     bary, _ = ff.rule(order)
-    prb = probe.probe(at_import, layout(field), ff.located(layer, bary))  # ty: ignore[invalid-argument-type]
+    located = ff.located(layer, bary)  # ty: ignore[invalid-argument-type]
+    prb = probe.probe(at_import, layout(field), located, comm)
     w = prb.values(coefficients)[0]
     curl = prb.values(coefficients, curl=True)[0]
     corners = imported[np.asarray(mesh.tetrahedra)[layer.tetrahedra]]

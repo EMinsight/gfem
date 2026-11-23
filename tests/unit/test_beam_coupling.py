@@ -14,9 +14,9 @@ gates live in tests/verification/test_beam_coupling.py.
 """
 
 import math
+import warnings
 
 import free_space_cases as fsc
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pml_cases
@@ -46,9 +46,7 @@ BEAM = gfem.GaussianBeam(
 
 def _corners(rng):
     """Six jittered tetrahedra of a 0.2 um cube near the beam's focus, m."""
-    cube = np.array(
-        [[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)], float
-    )
+    cube = np.array([[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)], float)
     # the Kuhn split of the cube along its main diagonal
     tets = [
         (0, 1, 3, 7),
@@ -106,44 +104,55 @@ def test_n7_the_kernel_follows_its_layer_nodes(frozen):
 
     x = jnp.asarray(corners.reshape(-1))
     directions = unit_directions(rng, x.shape, 3)
-    assert_gradient_matches(coupling, x, directions, step=2e-9, rtol=1e-8)
+    assert_gradient_matches(coupling, x, directions, step=2e-11, rel=1e-8)
 
 
 # --- solved cases --------------------------------------------------------------------
 
+#: A dipole in the beam box's air, off the faces of its grid, m.
+POSITION = np.array([0.05, -0.03, -0.2]) * UM
+
 
 @pytest.fixture(scope="module")
-def box(tmp_path_factory):
-    return gfem.Mesh.from_gmsh(
-        fsc.dipole_box(tmp_path_factory.mktemp("coupling") / "box.msh")
-    )
+def box_model(tmp_path_factory):
+    return fsc.beam_box(tmp_path_factory.mktemp("coupling") / "box.msh", cells=4)
 
 
-def _vacuum(mesh, **kwargs):
-    return gfem.Model(
-        mesh,
-        materials={"air": gfem.Material(), "pml": gfem.Material()},
-        pml=gfem.PML("pml"),
-        **kwargs,
-    )
-
-
-def _dipole(model):
-    source = gfem.ElectricDipole("d", position=INSIDE, moment=(1e-30, 0, 0))
+def _dipole(model, position=POSITION):
+    source = gfem.ElectricDipole("d", position=position, moment=(1e-30, 0, 0))
     problem = gfem.Driven(fsc.F0, sources=source, keep_fields=True)
     return gfem.solve(model, problem, options=ORDER2)
 
 
 @pytest.fixture(scope="module")
-def dipole(box):
-    model = _vacuum(box)
-    return model, _dipole(model)
+def dipole(box_model):
+    return box_model, _dipole(box_model)
+
+
+def _beam(name="fiber", *, waist=0.5, z=0.6):
+    """A beam coming down 0.2 rad off the normal, focused at height ``z`` um."""
+    return gfem.GaussianBeam(
+        name,
+        waist=waist * UM,
+        focus=(0.1 * UM, 0.0, z * UM),
+        theta=math.pi - 0.2,
+        phi=0.3,
+        polarization="TM",
+    )
+
+
+def _below(z):
+    def side(c):
+        return c[:, 2] < z * UM
+
+    return side
 
 
 def test_a_coupling_per_kept_frequency(dipole):
     model, result = dipole
-    with pytest.warns(UserWarning, match="clips it"):
-        c = gfem.beam_coupling(result, "d", BEAM, model=model)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # held whole: no clipping warning
+        c = gfem.beam_coupling(result, "d", _beam(), model=model)
     assert c.shape == (1,)
     assert np.iscomplexobj(np.asarray(c))
     assert abs(complex(c[0])) > 0
@@ -151,10 +160,9 @@ def test_a_coupling_per_kept_frequency(dipole):
 
 def test_a_beam_wider_than_the_side_is_clipped(dipole):
     model, result = dipole
-    wide = gfem.GaussianBeam(
-        "wide", waist=1.5 * UM, theta=math.pi, polarization="TE"
-    )
-    with pytest.warns(UserWarning, match=r"wide.*W through the side's layer.*clips"):
+    # focused 0.6 um below the top face, the beam is wider there
+    wide = _beam("wide", z=0.0)
+    with pytest.warns(UserWarning, match=r"'wide' carries .* W through.*clips it"):
         gfem.beam_coupling(result, "d", wide, model=model)
 
 
@@ -162,52 +170,67 @@ def test_the_beam_must_travel_toward_the_side(dipole):
     model, result = dipole
 
     def above(c):
-        return c[:, 2] > 0.25 * UM
+        return c[:, 2] > -0.35 * UM
 
-    # the beam comes down, so it leaves the region above z = 0.25 um
+    # the beam comes down, so it leaves the region above z = -0.35 um
     with pytest.raises(ValueError, match="carries no power into the side"):
-        gfem.beam_coupling(result, "d", BEAM, model=model, side=above)
+        gfem.beam_coupling(result, "d", _beam(), model=model, side=above)
+
+
+def test_a_closed_side_brings_no_net_power(dipole):
+    model, result = dipole
+
+    def core(c):
+        return (np.abs(c) < np.array([1.0, 1.0, 0.45]) * UM).all(axis=1)
+
+    with pytest.raises(ValueError, match="not a closed surface"):
+        gfem.beam_coupling(result, "d", _beam(), model=model, side=core)
 
 
 def test_a_side_running_along_the_truncation_under_the_beam(dipole):
     model, result = dipole
 
-    def below(c):
-        return (c[:, 2] < 0.9 * UM) & (c[:, 2] > 0)
+    def patch(c):
+        # below the top row of cells, and a patch of it reaching the layer
+        top = (np.abs(c[:, :2]) < 0.5 * UM).all(axis=1) & (c[:, 2] < 0.6 * UM)
+        return (c[:, 2] < 0.3 * UM) | top
 
     with pytest.raises(ValueError, match="meets the truncation"):
-        gfem.beam_coupling(result, "d", BEAM, model=model, side=below)
+        gfem.beam_coupling(result, "d", _beam(), model=model, side=patch)
 
 
-def test_the_layer_must_be_the_beam_medium(box):
-    glass = gfem.Material(eps_r=2.25)
+def test_the_layer_must_be_the_beam_medium(tmp_path):
+    def volume(c):
+        if not ((c > 0) & (c < 1)).all():
+            return "pml"
+        return "glass" if c[0] < 0.25 else "air"
+
+    path = pml_cases.box(
+        tmp_path / "glass.msh", pml_cases.SIDES, thickness=0.5, cells=4, volume=volume
+    )
+    air = gfem.Material()
     model = gfem.Model(
-        box,
-        materials={"air": gfem.Material(), "pml": glass},
+        gfem.Mesh.from_gmsh(path),
+        materials={"air": air, "pml": air, "glass": gfem.Material(eps_r=2.25)},
         pml=gfem.PML("pml"),
     )
-    result = _dipole(model)
-
-    def core(c):
-        return ((c > 0.25 * UM) & (c < 0.75 * UM)).all(axis=1)
-
-    split = model.replace(
-        materials={"air": gfem.Material(), "pml": glass},
-    )
-    gfem.beam_coupling(result, "d", BEAM, model=split, side=core)  # air: accepted
-    lossy = model.replace(
-        materials={"air": gfem.Material(tan_delta=0.1), "pml": glass}
-    )
-    lossy_result = _dipole(lossy)
+    result = _dipole(model, INSIDE)
+    beam = _beam(z=1.0)
     with pytest.raises(ValueError, match="one constant, isotropic, lossless medium"):
-        gfem.beam_coupling(lossy_result, "d", BEAM, model=lossy, side=core)
+        gfem.beam_coupling(result, "d", beam, model=model, side=_below(0.8))
 
 
 def test_a_pec_wall_the_beam_does_not_satisfy(tmp_path):
     sides = ("-x", "-y", "+y", "-z", "+z")  # +x ends on a wall
     path = pml_cases.box(tmp_path / "wall.msh", sides, thickness=0.5, cells=4)
-    model = _vacuum(gfem.Mesh.from_gmsh(path), boundaries=[gfem.PEC("outer")])
-    result = _dipole(model)
+    air = gfem.Material()
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path),
+        materials={"air": air, "pml": air},
+        boundaries=[gfem.PEC("outer")],
+        pml=gfem.PML("pml"),
+    )
+    result = _dipole(model, INSIDE)
     near = gfem.GaussianBeam(
         "near",
         waist=0.3 * UM,
@@ -215,7 +238,7 @@ def test_a_pec_wall_the_beam_does_not_satisfy(tmp_path):
         theta=math.pi,
         polarization="TM",
     )
-    with pytest.raises(ValueError, match="PEC wall.*tangential electric field"):
+    with pytest.raises(ValueError, match=r"PEC wall.*tangential electric field"):
         gfem.beam_coupling(result, "d", near, model=model)
 
 
@@ -226,9 +249,14 @@ def _plane_wave_down(points, frequency):
     return e
 
 
-def test_an_incident_field_beam_on_a_moved_layer(box):
-    shifted = gfem.Mesh(box.nodes + jnp.array([1e-9, 0, 0]), box._topology)  # noqa: SLF001
-    model = _vacuum(shifted)
+def test_an_incident_field_beam_on_a_moved_layer(box_model):
+    mesh = box_model.mesh
+    nodes = np.asarray(mesh.nodes)
+    # the air's own nodes, off the perfectly matched layer's faces
+    half = np.array(fsc.BEAM_BOX) / 2 * UM
+    inner = (np.abs(nodes) < half - 1e-9).all(axis=1)
+    moved = nodes + np.where(inner[:, None], [0.0, 0.0, 1e-9], 0.0)
+    model = box_model.replace(mesh=gfem.Mesh(jnp.asarray(moved), mesh._topology))
     result = _dipole(model)
     beam = gfem.IncidentField("down", _plane_wave_down)
     with pytest.raises(ValueError, match=r"'down' as interpolated.*have moved"):
@@ -238,10 +266,9 @@ def test_an_incident_field_beam_on_a_moved_layer(box):
 def test_wrong_arguments(dipole):
     model, result = dipole
     wave = gfem.PlaneWave("w", theta=math.pi, polarization="TE")
-    with pytest.raises(TypeError, match="GaussianBeam or a gfem.IncidentField"):
+    with pytest.raises(TypeError, match=r"GaussianBeam or a gfem\.IncidentField"):
         gfem.beam_coupling(result, "d", wave, model=model)
     with pytest.raises(TypeError, match="side must be"):
-        gfem.beam_coupling(result, "d", BEAM, model=model, side=3)
+        gfem.beam_coupling(result, "d", _beam(), model=model, side=3)
     with pytest.raises(KeyError, match="neither an excited port nor a source"):
-        gfem.beam_coupling(result, "nope", BEAM, model=model)
-
+        gfem.beam_coupling(result, "nope", _beam(), model=model)

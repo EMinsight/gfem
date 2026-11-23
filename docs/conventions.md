@@ -573,6 +573,20 @@ accepted and incident power (IEEE 145): a port column is fed
 radar cross section is $4\pi|\mathbf{F}|^2/|E_0|^2$, of its scattered
 field. The module's "Far fields" section has the formulas.
 
+## Port waves and beam coupling
+
+A source column's `port_waves` and {py:obj}`gfem.beam_coupling` are
+amplitudes in √W, like S for a port fed `INCIDENT_POWER`. On a real
+reference (a photonic wave port without a voltage path, on a lossless
+guide) $|b|^2$ is the power a source sends into the port and $|c|^2$ the
+power a port's field couples into a beam; with a voltage path or on a lossy
+guide both are pseudo-waves, like S (`WAVES`). The
+{term}`beam coupling <Beam coupling>` $c$ refers to the beam scaled to 1 W
+through the side it is read on, with the beam's own phase (a Gaussian
+beam's zero focal phase): by reciprocity it is the wave the port receives
+when that beam lights the device. The module's "Port waves and beam
+coupling" section has the formulas.
+
 ## Next
 
 - {py:obj}`gfem.conventions`: every convention in full, with the formulas
