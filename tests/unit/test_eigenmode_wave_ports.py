@@ -40,6 +40,8 @@ from wave_port_cases import (
     SHARED_PORTS,
     TWO_PORTS,
     ghz,
+    hybrid_guide,
+    hybrid_model,
     nearest_error,
     ported_guide,
     ported_model,
@@ -205,6 +207,33 @@ def test_k_holds_across_an_enrichment_of_the_port_basis(hybrid):
         assert np.linalg.norm(eop.parts(x)[0] - kx) <= 1e-14 * np.linalg.norm(kx)
     finally:
         eop.free_handle()
+
+
+@pytest.fixture(scope="module")
+def case_h(tmp_path_factory):
+    return hybrid_model(hybrid_guide(tmp_path_factory.mktemp("h") / "h.msh"))
+
+
+@pytest.mark.parametrize(
+    ("case", "tolerance", "f_ghz"),
+    [("hybrid", 1e-6, 0.2), ("hybrid", 1e-6, 3.0), ("case_h", 1e-3, 0.2)],
+)
+def test_a_root_far_below_cutoff_is_classified_without_touching_the_port_basis(
+    request, case, tolerance, f_ghz
+):
+    # the reduced model holds the band near the target: far below it, the
+    # port term at the real wavenumber needs exact solves (an enrichment of
+    # the forward's basis) and may give up after them; the classification
+    # touches neither
+    model = request.getfixturevalue(case)
+    model = model[0] if isinstance(model, tuple) else model
+    op = driven_operator(model, 2)
+    ports = eigen_ports(model, op, target=12e9, tolerance=tolerance)
+    below = eigen_rule._below_cutoff(ports)
+    per_hz = 2 * math.pi / C0 * op.built.scale
+    assert below(f_ghz * 1e9 * per_hz)
+    assert not below(12e9 * per_hz)
+    assert all(p.term.version == 0 for p in ports)
 
 
 # --- several ports and shared surfaces ------------------------------------------

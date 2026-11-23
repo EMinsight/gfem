@@ -1971,16 +1971,14 @@ def _sheet_energy(op: DrivenOperator) -> Callable[[np.ndarray], float] | None:
 
 
 def _below_cutoff(ports: Sequence[EigenPort]) -> Callable[[float], bool]:
-    r"""Whether a requested port mode of ``ports`` is below cutoff at a real k.
+    """Whether a requested port mode of ``ports`` is below cutoff at a real k.
 
-    Its :math:`\lambda = \gamma^2` on the real axis is positive there
-    (evanescent), negative above.
+    From the modes' cutoffs (`gfem._engine.port_term.PortTerm.below_cutoff`):
+    the port term's basis stays the forward's.
     """
 
     def below(k: float) -> bool:
-        return any(
-            (gamma * gamma).real > 0 for p in ports for gamma in p.term.at(k).gamma
-        )
+        return any(p.term.below_cutoff(k) for p in ports)
 
     return below
 

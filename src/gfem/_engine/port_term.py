@@ -82,6 +82,8 @@ _CUTOFF_RTOL = 1e-3
 _DOUBLINGS = 6
 # The width of that cutoff's estimate.
 _ESTIMATE_RTOL = 1e-2
+# The width of a cutoff that classifies a root below it (`PortTerm.cutoff`).
+_BELOW_RTOL = 1e-6
 # Exact solves that may enrich the basis at one wavenumber.
 _ENRICHMENTS = 3
 # Pairs asked of an exact solve at a complex wavenumber.
@@ -146,6 +148,20 @@ def _cutoff(
         else:
             lo = mid
     return hi
+
+
+def _cutoff_below(modes: PortModeSpace, hi: float, mode: int) -> float:
+    """The cutoff of mode ``mode``, which propagates at ``hi``, Hz.
+
+    Bracketed below ``hi`` by halving, then bisected to `_BELOW_RTOL`; 0
+    when the mode still propagates after `_DOUBLINGS` halvings (a TEM mode).
+    """
+    for _ in range(_DOUBLINGS):
+        lo = hi / 2
+        if propagating_modes(modes, lo, mode) < mode:
+            return _cutoff(modes, lo, hi, mode, _BELOW_RTOL)
+        hi = lo
+    return 0.0
 
 
 def _below_cutoff(
@@ -260,6 +276,7 @@ class PortTerm:
         self._k = np.array([g[0] for g in grid])
         self._k_max = np.array([g[1] for g in grid])
         self._cache: dict[complex, PortTermValue] = {}
+        self._cutoffs: dict[int, float] = {}
         self._columns()
 
     @property
@@ -322,6 +339,29 @@ class PortTerm:
             self._cache.clear()
         self._cache[k] = value
         return value
+
+    def below_cutoff(self, k: float) -> bool:
+        """Whether a port mode of the surface is below its cutoff at the real ``k``.
+
+        ``k`` per file unit. From each mode's `cutoff`, never from `at`: far
+        below the band the reduced model needs exact solves there, which
+        would change the basis the forward stands on, and may not converge.
+        """
+        f = k * scipy.constants.c / (2 * math.pi * self.modes.section.scale)
+        return any(f < self.cutoff(p.mode) for p in self.ports)
+
+    def cutoff(self, mode: int) -> float:
+        """The cutoff of mode ``mode`` in rank order, Hz; 0 without one in reach.
+
+        Bisected to `_BELOW_RTOL` on the port mode problem below the band
+        (where the mode propagates), on first use, then kept.
+        """
+        hit = self._cutoffs.get(mode)
+        if hit is None:
+            hit = self._cutoffs[mode] = _cutoff_below(
+                self.modes, float(self.band[0]), mode
+            )
+        return hit
 
     def _nearest(self, k: complex) -> int:
         return int(np.argmin(np.abs(self._k - k.real)))
