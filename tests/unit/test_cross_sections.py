@@ -47,6 +47,12 @@ def _air(c):
     return "air" if _inside(c, 0, 1) else "pml"
 
 
+def _feed(c):
+    """The scatterer's +x face, a lumped port's surface."""
+    on = abs(c[0] - 0.5) < 1e-9 and 0.25 < c[1] < 0.5 and 0.25 < c[2] < 0.5
+    return "feed" if on else ""
+
+
 def _box(path, volume):
     return gfem.Mesh.from_gmsh(pc.box(path, ALL, thickness=0.25, cells=4, volume=volume))
 
@@ -58,6 +64,16 @@ def meshes(tmp_path_factory):
         "scatterer": _box(tmp / "s.msh", _scatterer),
         "touching": _box(tmp / "t.msh", _touching),
         "empty": _box(tmp / "e.msh", _air),
+        "fed": gfem.Mesh.from_gmsh(
+            pc.box(
+                tmp / "f.msh",
+                ALL,
+                thickness=0.25,
+                cells=4,
+                volume=_scatterer,
+                surface=_feed,
+            )
+        ),
     }
 
 
@@ -140,3 +156,105 @@ def test_without_a_scatterer_every_cross_section_vanishes(meshes, lossy):
     size = reference.extinction[0]
     for value in (xs.extinction, xs.absorption, xs.scattering):
         assert abs(value[0]) <= 1e-12 * size
+
+
+def _windowed(points, frequency):
+    """``TE`` cut off before x = 0.7 um: zero where the slab meets the layer."""
+    k = 2 * np.pi * frequency / pc.C0
+    x = points[:, 0] * 1e6
+    window = np.where(x < 0.7, np.cos(np.clip(x - 0.6, 0, 0.1) * 5 * np.pi) ** 2, 0)
+    return (np.exp(-1j * k * points[:, 2]) * window)[:, None] * np.array([0, 1, 0])
+
+
+def test_an_incident_field_is_normalized_by_its_given_intensity(lossy, meshes):
+    model, result = lossy
+    wave = gfem.IncidentField("f", _plane_te)
+    other = _solve(model, wave)
+    i0 = 1.0 / (2 * ETA0)
+    xs = gfem.cross_sections(other, "f", model=model, intensity=i0)
+    ref = gfem.cross_sections(_solve(model, TE_Z), "z", model=model)
+    np.testing.assert_allclose(xs.extinction, ref.extinction, rtol=1e-10)
+    np.testing.assert_allclose(xs.intensity, [i0])
+
+
+TE_Z = gfem.PlaneWave("z", theta=0.0, phi=0.0, polarization="TE")
+
+
+def _plane_te(points, frequency):
+    """``TE_Z`` as a function: along +z, polarized along +y."""
+    k = 2 * np.pi * frequency / pc.C0
+    return np.exp(-1j * k * points[:, 2])[:, None] * np.array([0, 1, 0])
+
+
+# --- refusals ---------------------------------------------------------------------
+
+
+def test_an_incident_field_needs_its_intensity(lossy):
+    model, _ = lossy
+    result = _solve(model, gfem.IncidentField("f", _plane_te))
+    with pytest.raises(ValueError, match=r"IncidentField 'f' needs intensity="):
+        gfem.cross_sections(result, "f", model=model)
+    with pytest.raises(ValueError, match=r"positive finite number"):
+        gfem.cross_sections(result, "f", model=model, intensity=-1.0)
+
+
+def test_a_plane_wave_takes_no_intensity(lossy):
+    model, result = lossy
+    with pytest.raises(ValueError, match=r"intensity= for an IncidentField only"):
+        gfem.cross_sections(result, "te", model=model, intensity=1.0)
+
+
+def test_a_port_column_has_no_cross_sections(meshes):
+    model = _model(
+        meshes["fed"],
+        LOSSY,
+        ports=[gfem.LumpedPort("p1", "feed", "+z", resistance=50.0)],
+    )
+    result = _solve(model, TE)
+    with pytest.raises(ValueError, match=r"'p1' is a port column"):
+        gfem.cross_sections(result, "p1", model=model)
+    with pytest.raises(KeyError, match=r"'nope' is not a column"):
+        gfem.cross_sections(result, "nope", model=model)
+
+
+def test_cross_sections_need_kept_fields(lossy):
+    model, _ = lossy
+    result = gfem.solve(model, gfem.Driven(F, sources=TE), options=OPTIONS)
+    with pytest.raises(ValueError, match=r"needs the kept fields of 'te'"):
+        gfem.cross_sections(result, "te", model=model)
+
+
+def test_a_scatterer_in_the_truncation_layer_is_refused(meshes):
+    model = _model(meshes["touching"], LOSSY)
+    result = _solve(model, gfem.IncidentField("f", _windowed))
+    with pytest.raises(ValueError, match=r"scatterer region 'scat' reaches the trunc"):
+        gfem.cross_sections(result, "f", model=model, intensity=1.0)
+
+
+def test_a_lossy_background_is_not_measured(meshes):
+    lossy_air = gfem.Material(tan_delta=0.01)
+    model = gfem.Model(
+        meshes["scatterer"],
+        materials={"air": lossy_air, "box": lossy_air, "pml": lossy_air, "scat": LOSSY},
+        pml=gfem.PML("pml"),
+        background=lossy_air,
+    )
+    result = _solve(model, gfem.IncidentField("f", _plane_te))
+    with pytest.raises(NotImplementedError, match=r"lossy background"):
+        gfem.cross_sections(result, "f", model=model, intensity=1.0)
+
+
+def test_power_flow_refuses_the_incident_part(lossy):
+    model, result = lossy
+    incident = result.e_field(F, "te", part="incident")
+    with pytest.raises(ValueError, match=r"incident part .* balances no load"):
+        gfem.power_flow(incident, "scat", model=model)
+
+
+def test_power_flow_refuses_a_side_in_the_layer_of_an_incident_column(lossy):
+    model, result = lossy
+    total = result.e_field(F, "te")
+    with pytest.raises(ValueError, match=r"PML layer region 'pml'"):
+        gfem.power_flow(total, ("scat", "pml"), model=model)
+    with pytest.raises(ValueError, match=r"PML layer region 'pml'"):
+        gfem.power_flow(total, lambda c: c[:, 0] > 0.9e-6, model=model)
