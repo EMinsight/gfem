@@ -14,7 +14,8 @@ slab, at order 2. Each gradient matches a fourth-order central difference to
 - the emitted power by a `boundary_morph` of the slab's face, whose
   extension moves the dipole's element (the point load's transport term);
 - the emitted power on an adaptive sweep, by the slab's permittivity, at a
-  sample and between samples (the frozen basis's gradient).
+  sample (the frozen basis's gradient is the full solve's there), for a
+  real and a circular moment.
 """
 
 import jax
@@ -147,15 +148,34 @@ BAND = tuple(np.linspace(0.9, 1.1, 5) * pc.F0)
 SAMPLES = (BAND[0], BAND[2], BAND[4])
 
 
-@pytest.mark.parametrize("k", [2, 3], ids=["sample", "between"])
-def test_emitted_power_on_an_adaptive_sweep(line, k):
+@pytest.mark.parametrize("dipole", [REAL, CIRCULAR], ids=["real", "circular"])
+def test_emitted_power_on_an_adaptive_sweep(line, dipole):
+    # at a sample the full solution and its adjoint lie in the frozen basis
+    # (a circular moment's adjoint load is solved at every sample), so the
+    # gradient is the full solve's; between samples it follows the reduced
+    # model's error, as S's does
     def power(eps):
         problem = gfem.Driven(
-            BAND, excite=(), sources=REAL, sweep="adaptive", samples=SAMPLES
+            BAND, excite=(), sources=dipole, sweep="adaptive", samples=SAMPLES
         )
         result = gfem.solve(_with_slab(line, eps), problem, options=OPTIONS)
-        return result.emitted_power["d"][k]
+        return result.emitted_power["d"][2]
 
     eps = jnp.asarray(line.materials["slab"].eps_r)
     directions = unit_directions(np.random.default_rng(3), eps.shape, 2)
     assert_gradient_matches(power, eps, directions, step=EPS_STEP)
+
+
+def test_emitted_power_on_an_adaptive_sweep_by_a_morph(line):
+    morph = boundary_morph(line, "front", grows="slab")
+
+    def power(t):
+        problem = gfem.Driven(
+            BAND, excite=(), sources=REAL, sweep="adaptive", samples=SAMPLES
+        )
+        result = gfem.solve(line.replace(mesh=morph(t)), problem, options=OPTIONS)
+        return result.emitted_power["d"][2]
+
+    t = jnp.zeros(morph.n_params)
+    directions = unit_directions(np.random.default_rng(4), t.shape, 2)
+    assert_gradient_matches(power, t, directions, step=NODE_STEP)

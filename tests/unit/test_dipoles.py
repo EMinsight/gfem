@@ -254,3 +254,29 @@ def test_power_flow_refuses_a_side_whose_element_layer_holds_a_dipole(line):
         gfem.power_flow(field, "slab", model=line)
     # a side holding it whole counts its emission
     assert float(gfem.power_flow(field, "pml", model=line)) < 0
+
+
+def test_the_adaptive_sweep_gives_the_dipole_outputs_of_the_uniform_one(line):
+    band = tuple(np.linspace(0.9, 1.1, 9) * fsc.F0)
+
+    def solve(sweep):
+        problem = gfem.Driven(band, excite=(), sources=LINE_DIPOLE, sweep=sweep)
+        return gfem.solve(line, problem, options=ORDER2)
+
+    adaptive, uniform = solve("adaptive"), solve("uniform")
+    np.testing.assert_allclose(
+        adaptive.emitted_power["d"], uniform.emitted_power["d"], rtol=1e-5
+    )
+    np.testing.assert_allclose(adaptive.port_waves, uniform.port_waves, rtol=1e-5)
+
+
+def test_a_port_free_dipole_solves_on_the_adaptive_sweep(box):
+    band = tuple(np.linspace(0.95, 1.05, 5) * fsc.F0)
+    dipole = gfem.ElectricDipole("d", position=INSIDE, moment=(0, 0, 1e-30))
+    problem = gfem.Driven(band, sources=dipole, sweep="adaptive")
+    result = gfem.solve(_vacuum(box), problem, options=ORDER2)
+    assert result.port_waves is None
+    ratio = np.asarray(result.emitted_power["d"]) / [
+        fsc.bulk_power(2 * np.pi * f, np.array([0, 0, 1e-30])) for f in band
+    ]
+    np.testing.assert_allclose(ratio, 1.0, atol=0.08)

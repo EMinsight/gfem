@@ -138,7 +138,7 @@ from gfem._engine.port_network import (
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet, law_key
 from gfem._engine.solve_request import SolveRequest
-from gfem._engine.source_columns import SourceColumns
+from gfem._engine.source_columns import SourceColumns, real_up_to_phase
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces, SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling
@@ -1419,6 +1419,8 @@ class DrivenRule:
         z_scale = float(extent) / scipy.constants.c
         with task_manager(options.threads):
             system, ports = self.system(model)
+            block = self.columns(model, system.operator)
+            size = int(system.operator.space.ndof)
             samples = self.problem.samples
             # samples lie far apart: a reused BDDC would mostly hit its cap
             with system.sweep(
@@ -1440,7 +1442,7 @@ class DrivenRule:
                 affine = AffineSystem(
                     thetas=[piece.theta for piece in system.operator.pieces],
                     apply=system.operator.apply,
-                    excitation=ports.excitation,
+                    excitation=block.excitation(ports.excitation),
                     outputs=ports.outputs,
                     solve=solve,
                     corrections=[
@@ -1448,7 +1450,15 @@ class DrivenRule:
                         for c in system.surfaces
                         if isinstance(c, PortSurfaceCoupling)
                     ],
-                    adjoint_loads=ports.adjoint_loads,
+                    adjoint_loads=lambda w: np.concatenate(
+                        [
+                            ports.adjoint_loads(w)
+                            if ports.outputs
+                            else np.zeros((size, 0), complex),
+                            block.adjoint_loads(w, size),
+                        ],
+                        axis=1,
+                    ),
                 )
                 sweep = adaptive_sweep(
                     affine,
@@ -1480,8 +1490,22 @@ class DrivenRule:
             padded = np.zeros((len(coordinates), width), complex)
             padded[:, :size] = coordinates
             kept_fields = (basis, padded)
+        n_exc = len(self.excite)
+        waves = sweep.outputs if ports.outputs else np.zeros((len(frequencies), 0, 0))
+        waves = np.reshape(waves, (len(frequencies), len(self.port_names), self.width))
+        emitted = None
+        if block.dipoles is not None:
+            projected = sweep.basis.T @ block.dipoles.vectors
+            emitted = np.stack(
+                [
+                    block.reduced_power(2 * np.pi * f, projected, y)
+                    for f, y in zip(frequencies, sweep.coordinates, strict=True)
+                ]
+            )
         out = SweepOutputs.adaptive(
-            s=ports.scattering(sweep.outputs),
+            s=ports.scattering(waves[:, :, :n_exc]),
+            port_waves=self._port_waves(ports, waves[:, :, n_exc:]),
+            emitted_power=emitted,
             z_ref=ports.z_ref,
             iterations=iterations,
             reused=reused,
@@ -1533,13 +1557,16 @@ class DrivenRule:
     def _padded_size(self) -> int:
         """Most basis vectors frozen samples give.
 
-        Two per sample and excited port, and two per sample and adjoint
-        load (`PortNetwork.adjoint_loads`): every wave port, and every
-        lumped port that is not excited and has a resistance.
+        Two per sample and column (excited port or source), and two per
+        sample and adjoint load (`PortNetwork.adjoint_loads`, and
+        `SourceColumns.adjoint_loads`): every wave port, every lumped port
+        that is not excited and has a resistance, and every dipole whose
+        moment is not real up to one phase.
         """
         samples = self.problem.samples or ()
         loads = len(self.wave_ports) + len(self.lumped_loads)
-        return 2 * len(samples) * (len(self.excite) + loads)
+        loads += sum(not real_up_to_phase(d.moment) for d in self.dipoles)
+        return 2 * len(samples) * (self.width + loads)
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each forward output."""
@@ -1748,7 +1775,9 @@ class DrivenRule:
         # wanted, so a gradient beside a law computes and factors none of them
         laws = wanted is None or any(k[0] == "law" for k in wanted)
         if self.adaptive:
-            return self._backward_adaptive(model, entry, cotangents, laws=laws)
+            return self._backward_adaptive(
+                model, entry, cotangents, laws=laws, wanted=wanted
+            )
         if self.children is not None:
             return self.children.backward(model, entry, cotangents, wanted=wanted)
         solution = entry.fields["solution"]
@@ -1916,8 +1945,9 @@ class DrivenRule:
         cotangents: dict[str, np.ndarray],
         *,
         laws: bool,
+        wanted: frozenset | None = None,
     ) -> list[FieldPair]:
-        """The frozen-basis backward of an adaptive sweep: no full-size solve.
+        r"""The frozen-basis backward of an adaptive sweep: no full-size solve.
 
         With the basis V and the sample set held fixed, the reduced solution
         at ω solves ``A_r(ω) y = b_r(ω)``, ``A_r = Vᵀ A(ω) V`` complex
@@ -1931,34 +1961,64 @@ class DrivenRule:
         not grow with the number of frequencies (on the unpaired space on a
         periodic model, `DrivenOperator.pair`: plain periodicity only, P is
         real). A cotangent on the basis itself is refused by the wrapper.
+        A source column's port waves load like S's columns; a dipole's
+        emitted power loads :math:`V^\mathsf{T}` of its power's load
+        (`SourceColumns.reduced_power_loads`), and with the node coordinates
+        wanted, its load's node term reads the adjoint and the solution
+        on the basis (`_add_explicit_nodes`).
         """
         kept = ReducedKept.of(entry)
         basis, matrices = kept.basis, kept.matrices
         functionals, coordinates = kept.functionals, kept.coordinates
         deembedding = kept.deembedding
         columns = [self.port_names.index(p) for p in self.excite]
-        n, n_exc = basis.shape[1], len(self.excite)
-        ct_s = cotangents.get("s")
+        n, n_exc, width = basis.shape[1], len(self.excite), self.width
         ct_c = cotangents.get("e_coordinates")
+        ct_p = cotangents.get("emitted_power")
+        nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
+        self._explicit_nodes = None
         accumulated: dict[str, np.ndarray] = {}
         with task_manager(self.options.threads):
             op = self.operator(model)
+            block = self.columns(model, op)
+            projected = None
+            if block.dipoles is not None:
+                projected = basis.T @ block.dipoles.vectors
             domain = em_region(model, op.built)
             for i, f in enumerate(self.problem.frequency):
                 omega = 2 * math.pi * f
-                g = np.zeros((n, n_exc), complex)
-                if ct_s is not None:
+                g = np.zeros((n, width), complex)
+                ct = np.zeros((len(self.port_names), width), complex)
+                for name, part in (
+                    ("s", slice(0, n_exc)),
+                    ("port_waves", slice(n_exc, None)),
+                ):
+                    if cotangents.get(name) is not None:
+                        ct[:, part] = cotangents[name][i]
+                if ct.any():
                     split = split_cotangent(
-                        ct_s[i], deembedding[i], columns, functionals[i].T
+                        ct, deembedding[i], columns, functionals[i].T
                     )
                     g += split.loads
                     g[:, split.undefined] = np.nan
+                if ct_p is not None and projected is not None:
+                    g += block.reduced_power_loads(omega, projected, ct_p[i])
                 if ct_c is not None and i in self.kept:
                     k = self.kept.index(i)
-                    g += np.asarray(ct_c)[k * n_exc : (k + 1) * n_exc, :n].T
+                    g += np.asarray(ct_c)[k * width : (k + 1) * width, :n].T
                 if not g.any():
                     continue
-                outer = np.linalg.solve(matrices[i].T, g) @ coordinates[i].T
+                adjoint = np.linalg.solve(matrices[i].T, g)
+                if nodes:
+                    self._add_explicit_nodes(
+                        model,
+                        block,
+                        omega,
+                        adjoint=basis @ adjoint,
+                        x=basis @ coordinates[i],
+                        ct=None if ct_p is None else ct_p[i],
+                    )
+                outer = adjoint @ coordinates[i].T
                 for term, theta in op.weights(omega, laws=laws).items():
                     accumulated[term] = accumulated.get(term, 0) + theta * outer
             pairs = []
