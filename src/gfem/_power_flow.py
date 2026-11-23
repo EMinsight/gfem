@@ -23,7 +23,6 @@ topology, so the inputs the measurement reads are known then:
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import jax
@@ -49,6 +48,7 @@ from gfem._probe import NODES_REASON
 
 if TYPE_CHECKING:
     from gfem._engine.power_flow import Surface
+    from gfem._engine.sides import SideSpec
     from gfem._field import Field
     from gfem.model import Model
 
@@ -64,11 +64,7 @@ _FREQUENCY_REASON = (
 )
 
 
-def power_flow(
-    field: Field,
-    side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray],
-    model: Model,
-) -> jax.Array:
+def power_flow(field: Field, side: SideSpec, model: Model) -> jax.Array:
     """`gfem.power_flow` on a field or model that may hold JAX tracers."""
     flow_engine = engine("power_flow")
     where = flow_engine.surface(field, side, model)
