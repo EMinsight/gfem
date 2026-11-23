@@ -55,7 +55,13 @@ def user_pages() -> list[Path]:
 
     The recipes are globbed, so a page is covered from the day it is added.
     """
-    top = ("get-started.md", "conventions.md", "capabilities.md", "verification.md")
+    top = (
+        "get-started.md",
+        "conventions.md",
+        "modes-and-ports.md",
+        "capabilities.md",
+        "verification.md",
+    )
     pages = [DOCS / name for name in top if (DOCS / name).is_file()]
     return pages + sorted((DOCS / "recipes").glob("*.md"))
 

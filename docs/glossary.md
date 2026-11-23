@@ -54,6 +54,40 @@ Port mode problem
   A 2D cross-section eigenmode analysis that supplies the field profile and
   propagation constant of a wave port.
 
+Port mode
+  A wave travelling along a guide, found by a {term}`port mode problem`: the
+  frequency is given and the propagation constant $\gamma = \alpha + i\beta$
+  is found. $\alpha > 0$ when the cross-section is lossy or the mode is a
+  {term}`leaky mode`. Not a {term}`resonant mode` (see {doc}`modes-and-ports`).
+
+Bound mode
+  A {term}`port mode` whose field decays away from the guide: below the light
+  line of every cladding, $\beta > k_0 n$. Lossless, it has $\alpha = 0$. The
+  guided mode of a silicon strip waveguide is bound although the structure is
+  open.
+
+Leaky mode
+  A mode that radiates out of its guide as it travels: a strip waveguide over
+  a thin buried oxide, a bend. As a {term}`port mode` it has $\alpha > 0$ with
+  lossless materials, and its field grows away from the guide, so the section
+  needs an absorbing edge or a {term}`perfectly matched layer`. At a fixed
+  wave number the same wave is a resonant mode with
+  $\mathrm{Im}\,\omega \approx v_g \alpha$.
+
+Resonant mode
+  A source-free field of the whole model, found by an
+  {term}`eigenmode problem`: its complex angular frequency $\omega$ is found,
+  with $\mathrm{Im}\,\omega > 0$ for a decaying mode and
+  $Q = |\omega| / (2\, \mathrm{Im}\,\omega)$. Real in a closed lossless
+  structure.
+
+Quasi-normal mode
+  A {term}`resonant mode` of an open structure, one that loses power through a
+  {term}`perfectly matched layer`, an absorbing boundary or a resistive
+  {term}`lumped port`: complex $\omega$, and a field that grows away from the
+  structure. Short form QNM. A cavity coupled to a guide has quasi-normal
+  modes; the guide's own {term}`bound mode` is not one.
+
 Port mode sweep
   The {term}`port mode problem` solved over a driven problem's output
   frequencies before the 3D solve, giving each wave port's propagation constant
@@ -193,7 +227,15 @@ TM-like mode
 
 Port
   A named excitation and measurement surface, lumped or wave, whose order in the
-  {term}`model` fixes the order of the network parameters.
+  {term}`model` fixes the order of the network parameters. It has three roles:
+  a boundary in every problem (it absorbs), a source when excited, and a row of
+  the S-parameters always.
+
+Excited port
+  A {term}`port` that a {term}`driven problem` feeds, in turn, with 1 W of
+  incident power, giving one column of the S-parameters (`Driven(excite=...)`,
+  every port by default). A port that is not excited still terminates the
+  device and still has its row of S.
 
 Lumped port
   A {term}`port` on a surface that spans from one conductor to another, or on
