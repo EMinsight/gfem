@@ -74,6 +74,8 @@ class DrivenSystemBuilder:
         polarization: A 2D model's polarization, or ``None``.
         stretch: The perfectly matched layer's stretch (the rule's), which
             the port sections and their key take; ``None`` without a layer.
+        n_sources: The source columns after the excited ports' (a block of
+            ``len(columns) + n_sources`` right-hand sides).
     """
 
     frequency: tuple[float, ...]
@@ -94,6 +96,7 @@ class DrivenSystemBuilder:
     gauge: bool
     polarization: Polarization | None = None
     stretch: Stretch | None = None
+    n_sources: int = 0
 
     def build(
         self,
@@ -174,7 +177,7 @@ class DrivenSystemBuilder:
             op,
             [*couplings, *kept.floquet],
             self.linear,
-            width=len(columns),
+            width=len(columns) + self.n_sources,
             adjoint_tolerance=self.adjoint_tolerance,
             transposed=transposed,
             pool_budget=retain_budget(self.retain_memory),
@@ -240,6 +243,7 @@ class DesignGuess:
         key = (
             "design guess",
             tuple(builder.excite),
+            builder.n_sources,
             builder.problem_wave_vector,
             builder.wave_vector_frequency,
         )

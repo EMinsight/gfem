@@ -99,6 +99,7 @@ from gfem._boundaries import (
     wave_port_label,
     wave_port_surfaces,
 )
+from gfem._checks import is_traced
 from gfem._domain import nedelec_unknowns
 from gfem._engine import dispersion, sweep_outputs, terms
 from gfem._engine.cache import (
@@ -108,6 +109,7 @@ from gfem._engine.cache import (
     discretization,
     retain_budget,
 )
+from gfem._engine.dipoles import check_positions, point_loads
 from gfem._engine.domain import (
     element_dofs,
     em_region,
@@ -135,6 +137,7 @@ from gfem._engine.port_network import (
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet, law_key
 from gfem._engine.solve_request import SolveRequest
+from gfem._engine.source_columns import SourceColumns
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces, SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling
@@ -149,6 +152,7 @@ from gfem._periodic import (
     check_wave_vector,
 )
 from gfem._pml import Stretch
+from gfem._sources import DIPOLES, MagneticDipole
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
 from gfem._text import hertz
 from gfem.errors import (
@@ -747,7 +751,7 @@ class DrivenRule:
     #: compare their cotangents' shapes, not their values.
     pieces = frozenset({"e_field"})
 
-    def __init__(
+    def __init__(  # noqa: PLR0915 - every static check of the rule, in order
         self,
         model: Model,
         problem: Driven,
@@ -823,10 +827,11 @@ class DrivenRule:
         )
         # a frequency on a lossless pole, before any assembly or worker
         dispersion.check_frequencies(model, problem.frequency)
-        if not model.ports:
+        if not model.ports and not problem.sources:
             raise ValueError(
-                "The model has no ports, so a driven problem has nothing to "
-                "excite. Add a gfem.LumpedPort to the model's ports."
+                "The model has no ports and the problem no sources, so a driven "
+                "problem has nothing to excite. Add a gfem.LumpedPort to the "
+                "model's ports, or give Driven(sources=...)."
             )
         names = model.port_names
         #: The model's port names: the rows of S.
@@ -919,16 +924,20 @@ class DrivenRule:
         #: mode reads it there.
         self.sheet_ports = _sheet_ports(model)
         #: Why the node coordinates cannot be differentiated, or None.
-        self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
+        self.nodes_unsupported = terms.absorbing_shape_unsupported(
+            model
+        ) or _magnetic_nodes_unsupported(problem.sources)
         # The fields live on the mesh as given (traced or not).
         self._mesh = model.mesh
         self._excluded = model._domain.excluded  # noqa: SLF001
+        self._init_sources(problem, model)
         #: The system operator and port network builder, and the state its
         #: solves keep on a discretization across designs.
         self.systems = DrivenSystemBuilder(
             frequency=problem.frequency,
             columns=tuple(names.index(n) for n in self.excite),
             excite=tuple(self.excite),
+            n_sources=len(self.source_names),
             port_mode_tolerance=options.port_mode_tolerance,
             floquet_order_tolerance=options.floquet_order_tolerance,
             orders=self.orders,
@@ -953,6 +962,79 @@ class DrivenRule:
             model, problem.frequency, self.gauge, stacklevel=4, comm=comm
         )
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
+
+    def _init_sources(self, problem: Driven, model: Model) -> None:
+        """The sources' columns, after the excited ports', and their refusals."""
+        #: The sources' names: the block's columns after the excited ports.
+        self.source_names = tuple(s.name for s in problem.sources)
+        #: The point dipoles, in source order, and their positions among
+        #: the sources.
+        self.dipoles = tuple(s for s in problem.sources if isinstance(s, DIPOLES))
+        self.dipole_columns = tuple(
+            k for k, s in enumerate(problem.sources) if isinstance(s, DIPOLES)
+        )
+        self._check_dipoles(model)
+
+    def _check_dipoles(self, model: Model) -> None:
+        """The dipoles' position refusals, before any assembly.
+
+        A traced model's are checked by its forward, on concrete values.
+        """
+        if self.dipoles and not is_traced(
+            (model.mesh.nodes, list(model.materials.values()))
+        ):
+            check_positions(
+                model,
+                self.dipoles,
+                self._field_layout(),
+                self.problem.frequency,
+                self.comm,
+            )
+
+    def _field_layout(self) -> Any:
+        """The kept fields' probe layout (`gfem._engine.probe.Layout`)."""
+        from gfem._engine.probe import Layout
+
+        return Layout(
+            support=self.regions,
+            excluded=tuple(self._excluded),
+            space="hcurl",
+            order=self.options.order,
+        )
+
+    @property
+    def width(self) -> int:
+        """The block's columns: the excited ports, then the sources."""
+        return len(self.excite) + len(self.source_names)
+
+    def columns(self, model: Model, op: DrivenOperator) -> SourceColumns:
+        """The block layout on ``op``, the dipoles' loads built on its space.
+
+        The last operator's loads are kept, so that a backward pass builds
+        them once.
+        """
+        last = getattr(self, "_last_columns", None)
+        if last is not None and last[0] is op:
+            return last[1]
+        loads = None
+        if self.dipoles:
+            loads = point_loads(
+                model,
+                self.dipoles,
+                self._field_layout(),
+                op.space,
+                self.problem.frequency,
+                dof_layout=op.layout,
+                comm=self.comm,
+            )
+        out = SourceColumns(
+            n_excited=len(self.excite),
+            names=self.source_names,
+            dipoles=loads,
+            dipole_columns=self.dipole_columns,
+        )
+        self._last_columns = (op, out)
+        return out
 
     @property
     def _reference_frequency(self) -> float | None:
@@ -1041,7 +1123,7 @@ class DrivenRule:
         if other is not None:
             return other
         frequencies = self.problem.frequency
-        width = len(self.excite)
+        width, n_exc = self.width, len(self.excite)
         iterations: list[tuple[int, ...]] = []
         reused: list[bool] = []
         fields: list[np.ndarray] = []
@@ -1052,7 +1134,10 @@ class DrivenRule:
         ENTRIES.free_bases(self.comm)
         with task_manager(self.options.threads, self.comm):
             system, ports = self.system(model, handed=request.port_modes)
+            block = self.columns(model, system.operator)
+            size = int(system.operator.space.ndof)
             s = np.zeros((len(frequencies), len(self.port_names), width), complex)
+            emitted = np.zeros((len(frequencies), len(self.dipoles)))
             # the first frequency starts from the previous design
             previous, design = None, self.systems.design_guess(system)
             with system.sweep(
@@ -1061,7 +1146,7 @@ class DrivenRule:
             ) as sweep:
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
-                    rhs = ports.rhs(omega)
+                    rhs = block.rhs(ports, omega, size)
                     try:
                         x, its = design.solve(sweep, omega, rhs, previous)
                     except LinearSolverConvergenceError as err:
@@ -1091,7 +1176,8 @@ class DrivenRule:
                     if n in self.kept:
                         # results keep fields on the unpaired space
                         fields.append(np.array(system.operator.expand(x), complex))
-                    s[n] = ports.outgoing(omega, x)
+                    s[n] = block.outgoing(ports, omega, x)
+                    emitted[n] = block.emitted_power(omega, x)
                 if keep and miss is None:
                     system.keep_base(sweep)
         # no backward pass will prepare from the pieces
@@ -1101,7 +1187,9 @@ class DrivenRule:
             ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
         out = SweepOutputs.uniform(
             tuple(range(n_solved)),
-            s=ports.scattering(s),
+            s=ports.scattering(s[:, :, :n_exc]),
+            port_waves=self._port_waves(ports, s[:, :, n_exc:]),
+            emitted_power=emitted if self.dipoles else None,
             z_ref=ports.z_ref,
             iterations=iterations,
             reused=reused,
@@ -1130,6 +1218,15 @@ class DrivenRule:
                 fields={"solution": np.concatenate(solutions, axis=1)},
             )
         return out.outputs(), entry
+
+    def _port_waves(self, ports: PortNetwork, waves: np.ndarray) -> np.ndarray | None:
+        """The sources' port waves, de-embedded on their port's row like S.
+
+        ``None`` without sources or without ports.
+        """
+        if not self.source_names or not self.port_names:
+            return None
+        return waves * ports.deembedding[: len(waves), :, None]
 
     def solve_adjoints(
         self,
@@ -1463,9 +1560,11 @@ class DrivenRule:
             n_excited=len(self.excite),
             n_wave=len(self.wave_ports),
             ndof=ndof,
-            n_fields=len(self.kept) * len(self.excite),
+            n_fields=len(self.kept) * self.width,
             reduced=self._padded_size() if self.adaptive else None,
             complex_z_ref=complex_reference(model.ports),
+            n_sources=len(self.source_names),
+            n_dipoles=len(self.dipoles),
         )
 
     def role(self, kind: tuple) -> str:
@@ -1770,7 +1869,7 @@ class DrivenRule:
     def result(self, outputs: dict) -> DrivenResult:
         """The public result from the forward outputs."""
         frequencies = self.problem.frequency
-        kept = [(frequencies[n], port) for n in self.kept for port in self.excite]
+        kept = [(frequencies[n], name) for n in self.kept for name in self._labels]
         out = SweepOutputs.read(outputs)
         if self.adaptive:
             return self._adaptive_result(out, kept)
@@ -1781,7 +1880,7 @@ class DrivenRule:
         grid = self.problem.frequency
         frequencies = tuple(grid[i] for i in out.rows)
         kept = [
-            (grid[n], port) for n in self.kept if n in out.rows for port in self.excite
+            (grid[n], name) for n in self.kept if n in out.rows for name in self._labels
         ]
         # NumPy rows, which Field takes as they are
         coefficients: Any = out.e_field
@@ -1821,7 +1920,30 @@ class DrivenRule:
             port_modes=self._port_modes(out),
             offsets=self.offsets,
             diffraction_orders=self._diffraction_orders(out.rows),
+            **self._source_leaves(out),
         )
+
+    @property
+    def _labels(self) -> tuple[str, ...]:
+        """The block's column labels: the excited ports, then the sources."""
+        return (*self.excite, *self.source_names)
+
+    def _source_leaves(self, out: SweepOutputs) -> dict[str, Any]:
+        """The result's leaves of the sources: names, port waves, emitted power."""
+        if not self.source_names:
+            return {}
+        power = out.emitted_power
+        return {
+            "sources": {s.name: s for s in self.problem.sources},
+            "port_waves": None
+            if out.port_waves is None
+            else jnp.asarray(out.port_waves),
+            "emitted_power": {
+                d.name: jnp.asarray(power[:, k]) for k, d in enumerate(self.dipoles)
+            }
+            if power is not None
+            else {},
+        }
 
     def _diffraction_orders(
         self, rows: Sequence[int]
@@ -1934,7 +2056,21 @@ class DrivenRule:
             sweep=sweep,
             port_modes=self._port_modes(out),
             offsets=self.offsets,
+            **self._source_leaves(out),
         )
+
+
+def _magnetic_nodes_unsupported(dipoles: Sequence[Any]) -> str | None:
+    """Why a magnetic dipole's load blocks node gradients, or ``None``."""
+    magnetic = [d for d in dipoles if isinstance(d, MagneticDipole)]
+    if not magnetic:
+        return None
+    return (
+        f"the load of the MagneticDipole {magnetic[0].name!r} evaluates the curl "
+        "of the basis at its position, and this version has no node derivative "
+        "of it. Use an ElectricDipole, a density (gfem.MaterialField) design, or "
+        "wrap the node coordinates in jax.lax.stop_gradient"
+    )
 
 
 def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Term]:

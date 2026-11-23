@@ -1101,10 +1101,13 @@ def _check_model_sources(problem: Any, model: Any) -> None:
                 "stack, but the model has none: give Model(background=...), the "
                 "medium the field solves (a gfem.Material when homogeneous)."
             )
-    raise NotImplementedError(
-        "This gfem declares Driven(sources=...) but cannot solve source columns "
-        "yet; solve the ports alone."
-    )
+    incident = [s for s in problem.sources if isinstance(s, INCIDENT)]
+    if incident:
+        raise NotImplementedError(
+            "This gfem declares Driven(sources=...) but cannot solve source columns "
+            f"of incident fields yet ({incident[0].name!r}); solve the ports and "
+            "dipoles alone."
+        )
 
 
 def _polarization(value: Any, owner: str) -> None:
