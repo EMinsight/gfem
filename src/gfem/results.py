@@ -1575,10 +1575,7 @@ class DrivenResult:
                 f"{name!r} is a {kind} column: it has no incident field, so its "
                 f"only part is the total field; got part={part!r}."
             )
-        raise NotImplementedError(
-            f"The {part} part of the incident field {name!r} is not available "
-            "in this gfem; read the total field."
-        )
+        return _incident_part(field, name, part)
 
     def h_field(self, frequency: float, excite: str | None = None) -> Field:
         """The kept Hz field of a 2D model's Hz solve at ``frequency``.
@@ -1752,6 +1749,40 @@ class DrivenResult:
 
 #: The parts of a kept field (``DrivenResult.e_field(part=...)``).
 _PARTS = ("total", "scattered", "incident")
+
+
+def _incident_part(field: Field, name: str, part: str) -> Field:
+    r"""The ``"scattered"`` or ``"incident"`` part of an incident column's field.
+
+    The incident part is the source's moment interpolant on the field's
+    space, zero in the perfectly matched layer (where the kept field is the
+    scattered one), evaluated again from the source; the scattered part is
+    the kept field minus it. Both are fields of the same space as the kept
+    field, so the three add exactly; the incident part is a constant of any
+    design.
+
+    Raises:
+        ValueError: The field carries no incident part (read from a file
+            written before gfem kept it), or its node coordinates are traced.
+    """
+    from gfem._engine.incident import incident_coefficients
+
+    reference = field._incident  # noqa: SLF001
+    if reference is None:
+        raise ValueError(
+            f"The kept field of {name!r} carries no incident part: solve again "
+            "to read its scattered and incident parts."
+        )
+    if is_traced(field.mesh.nodes) or is_traced(field.omega):
+        raise ValueError(
+            f"The {part} part of {name!r} needs concrete node coordinates: the "
+            "incident part is interpolated on the host. Read it outside jax.jit, "
+            "or from a field whose mesh is not traced."
+        )
+    incident = jnp.asarray(incident_coefficients(field, reference))
+    coefficients = field.coefficients - incident if part == "scattered" else incident
+    return dataclasses.replace(field, coefficients=coefficients, _incident=None)
+
 
 register_fields(
     DrivenResult,

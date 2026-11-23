@@ -252,7 +252,7 @@ def test_a_fieldless_encoding_matches_its_specs():
 
 def test_the_differentiable_outputs_are_spec_names():
     specs = SweepOutputs.specs(
-        n_freq=1, n_ports=1, n_excited=1, n_wave=1, ndof=1, n_fields=1
+        n_freq=1, n_ports=1, n_excited=1, n_wave=1, ndof=1, n_fields=1, n_sources=1
     )
     reduced = SweepOutputs.specs(
         n_freq=1, n_ports=1, n_excited=1, n_wave=0, ndof=1, n_fields=1, reduced=1
@@ -371,3 +371,33 @@ def test_electrostatic_outputs_match_their_specs(tmp_path, terminals):
     n = len(terminals)
     assert specs["capacitance"].shape == (n, n)
     assert specs["energy"].shape == (2, n)
+
+
+def _with_port_waves(rng, rows, n_freq):
+    return SweepOutputs.uniform(
+        rows,
+        s=_complex(rng, n_freq, N_PORTS, N_EXC),
+        z_ref=rng.random((n_freq, N_PORTS)),
+        iterations=[],
+        reused=[],
+        e_field=None,
+        waves=[],
+        port_waves=_complex(rng, n_freq, N_PORTS, 2),
+    )
+
+
+def test_source_port_waves_follow_the_rows_the_seam_and_the_join():
+    rng = np.random.default_rng(9)
+    out = _with_port_waves(rng, (0, 2), 3)
+    assert out.port_waves.shape == (2, N_PORTS, 2)
+    back = SweepOutputs.read(out.outputs())
+    np.testing.assert_array_equal(back.port_waves, out.port_waves)
+    specs = SweepOutputs.specs(
+        n_freq=2, n_ports=N_PORTS, n_excited=N_EXC, n_wave=0, n_sources=2
+    )
+    assert specs["port_waves"].shape == out.port_waves.shape
+    second = _with_port_waves(rng, (0,), 1)
+    joined = SweepOutputs.join([([0, 1, 2], out), ([3], second)])
+    np.testing.assert_array_equal(
+        joined.port_waves, np.concatenate([out.port_waves, second.port_waves])
+    )

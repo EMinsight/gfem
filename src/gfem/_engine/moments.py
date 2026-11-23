@@ -45,10 +45,17 @@ import scipy.sparse as sp
 
 from gfem._engine.cache import discretization
 from gfem._engine.domain import hcurl_space, pec_surfaces, space_key
+from gfem._engine.fields import fe_space
 from gfem._engine.mesh import EngineMesh
+from gfem.mesh import Mesh
 from gfem.model import Model
 
-__all__ = ["MomentInterpolant", "incident_values", "moment_interpolant"]
+__all__ = [
+    "MomentInterpolant",
+    "field_interpolant",
+    "incident_values",
+    "moment_interpolant",
+]
 
 #: NGSolve's reference tetrahedron: vertex ``i`` at row ``i``.
 _REFERENCE = np.array([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0], [0, 0, 0]])
@@ -119,6 +126,41 @@ def moment_interpolant(
         mask = np.asarray(elements, bool)
         mask_key = (len(mask), hashlib.sha256(np.packbits(mask).tobytes()).hexdigest())
     domains = _active_domains(model, built)
+    return disc.space(
+        (*key, "moment interpolant", mask_key),
+        lambda: _build(space, built, order, domains, elements),
+    )
+
+
+def field_interpolant(
+    mesh: Mesh,
+    support: tuple[str, ...],
+    excluded: tuple[tuple[int, int], ...],
+    order: int,
+    *,
+    elements: np.ndarray | None = None,
+) -> MomentInterpolant:
+    """The `MomentInterpolant` of a field's H(curl) space, from its layout alone.
+
+    The space of a `gfem.Field` on ``support`` minus ``excluded``
+    (`gfem._engine.fields.fe_space`): the numbering of a driven solve's
+    space on the same domain, so a kept field and its incident part share
+    their rows. ``elements`` as for `moment_interpolant`. One process only.
+    """
+    built, space, _ = fe_space(mesh, support, excluded, "hcurl", order)
+    names = mesh._region_names()  # noqa: SLF001
+    wanted, out = set(support), set(excluded)
+    domains = np.array(
+        [names[tag] in wanted and (tag, e) not in out for tag, e in built.domains],
+        bool,
+    )
+    if elements is None:
+        mask_key = None
+    else:
+        mask = np.asarray(elements, bool)
+        mask_key = (len(mask), hashlib.sha256(np.packbits(mask).tobytes()).hexdigest())
+    disc = discretization(mesh, (), None)
+    key = (("field", tuple(support), tuple(excluded)), "hcurl", order)
     return disc.space(
         (*key, "moment interpolant", mask_key),
         lambda: _build(space, built, order, domains, elements),

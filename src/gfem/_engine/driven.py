@@ -125,6 +125,12 @@ from gfem._engine.driven_system import DrivenSystemBuilder
 from gfem._engine.fields import dof_shape, rank_piece
 from gfem._engine.floquet_ports import check_excitable
 from gfem._engine.gauge import GaugeChoice, resolve_gauge
+from gfem._engine.incident import (
+    check_contact,
+    check_incident_model,
+    layer_regions,
+    truncation_designs,
+)
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import (
     PortNetwork,
@@ -135,9 +141,11 @@ from gfem._engine.port_network import (
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet, law_key
 from gfem._engine.solve_request import SolveRequest
+from gfem._engine.source_columns import ColumnContext, SourceColumns
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces, SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling
+from gfem._incident import IncidentPart
 from gfem._linalg import Kind, ResolvedLinearSolver, auto_linear_solver, report
 from gfem._linalg.layout import DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
@@ -149,6 +157,7 @@ from gfem._periodic import (
     check_wave_vector,
 )
 from gfem._pml import Stretch
+from gfem._sources import INCIDENT
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
 from gfem._text import hertz
 from gfem.errors import (
@@ -823,10 +832,11 @@ class DrivenRule:
         )
         # a frequency on a lossless pole, before any assembly or worker
         dispersion.check_frequencies(model, problem.frequency)
-        if not model.ports:
+        if not model.ports and not problem.sources:
             raise ValueError(
                 "The model has no ports, so a driven problem has nothing to "
-                "excite. Add a gfem.LumpedPort to the model's ports."
+                "excite. Add a gfem.LumpedPort to the model's ports, or give "
+                "Driven(sources=...)."
             )
         names = model.port_names
         #: The model's port names: the rows of S.
@@ -846,6 +856,7 @@ class DrivenRule:
                     "impedance to feed 1 W through. Give it a resistance, or leave "
                     "it out of Driven.excite."
                 )
+        self._init_sources(model, problem, options, comm)
         #: The grid of the Floquet order table: the whole sweep's, in a
         #: frequency worker too.
         self.order_frequency = tuple(
@@ -918,8 +929,6 @@ class DrivenRule:
         #: the wave ports whose face shares an edge with its surface: the port
         #: mode reads it there.
         self.sheet_ports = _sheet_ports(model)
-        #: Why the node coordinates cannot be differentiated, or None.
-        self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
         # The fields live on the mesh as given (traced or not).
         self._mesh = model.mesh
         self._excluded = model._domain.excluded  # noqa: SLF001
@@ -953,6 +962,29 @@ class DrivenRule:
             model, problem.frequency, self.gauge, stacklevel=4, comm=comm
         )
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
+
+    def _init_sources(
+        self, model: Model, problem: Driven, options: SolverOptions, comm: Any
+    ) -> None:
+        """The sources' attributes and the refusals the model shows of them."""
+        #: The problem's sources, solved after the excited ports.
+        self.sources = problem.sources
+        #: The incident-field sources among them.
+        self.incident = tuple(s for s in problem.sources if isinstance(s, INCIDENT))
+        #: The labels of the solve's columns: the excited ports, then the
+        #: sources.
+        self.columns = (*self.excite, *(s.name for s in problem.sources))
+        _check_sources_supported(self, options, comm)
+        check_incident_model(model, self.incident)
+        #: The model's background stack and its layer's regions, which the
+        #: kept fields of incident columns carry.
+        self.background = model.background
+        self.layers = layer_regions(model)
+        #: Per design region a truncation would make the incident load read,
+        #: why it cannot be differentiated (with incident columns only).
+        self.truncation_designs = truncation_designs(model) if self.incident else {}
+        #: Why the node coordinates cannot be differentiated, or None.
+        self.nodes_unsupported = self._nodes_unsupported(model)
 
     @property
     def _reference_frequency(self) -> float | None:
@@ -1042,6 +1074,7 @@ class DrivenRule:
             return other
         frequencies = self.problem.frequency
         width = len(self.excite)
+        n_ports = len(self.port_names)
         iterations: list[tuple[int, ...]] = []
         reused: list[bool] = []
         fields: list[np.ndarray] = []
@@ -1051,8 +1084,12 @@ class DrivenRule:
         # one factorization at a time under ranks: the last design's goes first
         ENTRIES.free_bases(self.comm)
         with task_manager(self.options.threads, self.comm):
+            # the incident fields' rules read the source alone: before the ports
+            check_contact(model, self.incident, frequencies)
             system, ports = self.system(model, handed=request.port_modes)
-            s = np.zeros((len(frequencies), len(self.port_names), width), complex)
+            sources = self._source_columns(model, system)
+            s = np.zeros((len(frequencies), n_ports, width), complex)
+            waves = np.zeros((len(frequencies), n_ports, len(self.sources)), complex)
             # the first frequency starts from the previous design
             previous, design = None, self.systems.design_guess(system)
             with system.sweep(
@@ -1061,7 +1098,7 @@ class DrivenRule:
             ) as sweep:
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
-                    rhs = ports.rhs(omega)
+                    rhs = _rhs(ports, sources, omega, system, width)
                     try:
                         x, its = design.solve(sweep, omega, rhs, previous)
                     except LinearSolverConvergenceError as err:
@@ -1091,7 +1128,8 @@ class DrivenRule:
                     if n in self.kept:
                         # results keep fields on the unpaired space
                         fields.append(np.array(system.operator.expand(x), complex))
-                    s[n] = ports.outgoing(omega, x)
+                    if n_ports:
+                        s[n], waves[n] = _outgoing(ports, n, omega, x, width)
                 if keep and miss is None:
                     system.keep_base(sweep)
         # no backward pass will prepare from the pieces
@@ -1113,6 +1151,7 @@ class DrivenRule:
             if fields
             else None,
             waves=ports.waves,
+            port_waves=waves if self.sources else None,
         )
         if miss is not None:
             raise_unsolved(
@@ -1130,6 +1169,24 @@ class DrivenRule:
                 fields={"solution": np.concatenate(solutions, axis=1)},
             )
         return out.outputs(), entry
+
+    def _source_columns(
+        self, model: Model, system: SystemOperator
+    ) -> SourceColumns | None:
+        """The source columns of this forward; ``None`` without sources."""
+        if not self.sources:
+            return None
+        with _timing.phase("discretize"):
+            return SourceColumns.build(
+                self.sources,
+                ColumnContext(
+                    model=model,
+                    system=system,
+                    order=self.options.order,
+                    stretch=self.stretch,
+                    frequencies=tuple(self.problem.frequency),
+                ),
+            )
 
     def solve_adjoints(
         self,
@@ -1463,9 +1520,10 @@ class DrivenRule:
             n_excited=len(self.excite),
             n_wave=len(self.wave_ports),
             ndof=ndof,
-            n_fields=len(self.kept) * len(self.excite),
+            n_fields=len(self.kept) * len(self.columns),
             reduced=self._padded_size() if self.adaptive else None,
             complex_z_ref=complex_reference(model.ports),
+            n_sources=len(self.sources),
         )
 
     def role(self, kind: tuple) -> str:
@@ -1548,8 +1606,9 @@ class DrivenRule:
                     "wrap the fill in jax.lax.stop_gradient."
                 )
             return None
-        if kind == ("nodes",):
-            return self.nodes_unsupported
+        if kind == ("nodes",) or kind[1:2] in [(r,) for r in self.truncation_designs]:
+            # nodes, or a design an incident load would read at the truncation
+            return self._unsupported_with_sources(kind)
         if kind[0] == "law":
             reason = self._law_unsupported()
             if reason is not None:
@@ -1573,6 +1632,25 @@ class DrivenRule:
                 "region of their own with a constant gfem.Material), or wrap "
                 "the value in jax.lax.stop_gradient."
             )
+        return None
+
+    def _nodes_unsupported(self, model: Model) -> str | None:
+        """Why the node coordinates cannot be differentiated, or ``None``."""
+        if self.incident:
+            return (
+                f"the incident field {self.incident[0].name!r} enters the load "
+                "through its interpolant on the mesh, whose derivative by the "
+                "node coordinates is not available; use a material design (a "
+                "gfem.MaterialField)"
+            )
+        return terms.absorbing_shape_unsupported(model)
+
+    def _unsupported_with_sources(self, kind: tuple) -> str | None:
+        """`unsupported_input` of the nodes, or of a region at the truncation."""
+        if kind == ("nodes",):
+            return self.nodes_unsupported
+        if kind[0] in ("material", "law"):
+            return self.truncation_designs[kind[1]]
         return None
 
     def _law_unsupported(self) -> str | None:
@@ -1653,8 +1731,10 @@ class DrivenRule:
             return self.children.backward(model, entry, cotangents, wanted=wanted)
         solution = entry.fields["solution"]
         width = len(self.excite)
+        n_columns = len(self.columns)
         ct_s = cotangents.get("s")
         ct_e = cotangents.get("e_field")
+        ct_w = cotangents.get("port_waves")
         frequencies = self.problem.frequency
         pairs: list[FieldPair | None] = [None] * len(frequencies)
         rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
@@ -1668,17 +1748,21 @@ class DrivenRule:
             for n in system.adjoint_order(omegas):
                 f = frequencies[n]
                 omega = 2 * math.pi * f
-                x = solution[:, n * width : (n + 1) * width]
-                if ct_s is not None:
-                    split = ports.pullback(n, omega, ct_s[n], x)
-                    adjoint, load = split.free, split.loads
-                    undefined = split.undefined
-                else:
-                    adjoint, load = np.zeros_like(x), np.zeros_like(x)
-                    undefined = np.zeros(width, bool)
+                x = solution[:, n * n_columns : (n + 1) * n_columns]
+                adjoint, load = np.zeros_like(x), np.zeros_like(x)
+                undefined = np.zeros(n_columns, bool)
+                if ct_s is not None and width:
+                    split = ports.pullback(n, omega, ct_s[n], x[:, :width])
+                    adjoint[:, :width], load[:, :width] = split.free, split.loads
+                    undefined[:width] = split.undefined
+                if ct_w is not None and self.port_names:
+                    # port wave (i, j) = d_i f_i^T x_j: loads f_i d_i ct_ij
+                    d = ports.deembedding[n]
+                    ct = np.asarray(ct_w[n]) * d[:, None]
+                    load[:, width:] += ports.functional(omega) @ ct
                 if ct_e is not None and n in self.kept:
                     k = self.kept.index(n)
-                    g = np.asarray(ct_e)[:, k * width : (k + 1) * width]
+                    g = np.asarray(ct_e)[:, k * n_columns : (k + 1) * n_columns]
                     if self.comm is not None:  # a rank's rows, then its padding
                         g = g[: op.field_ndof]
                     # the field is P x: its cotangent loads P^T g
@@ -1781,8 +1865,16 @@ class DrivenRule:
         grid = self.problem.frequency
         frequencies = tuple(grid[i] for i in out.rows)
         kept = [
-            (grid[n], port) for n in self.kept if n in out.rows for port in self.excite
+            (grid[n], label)
+            for n in self.kept
+            if n in out.rows
+            for label in self.columns
         ]
+        incident = {
+            s.name: IncidentPart(s, self.background, self.layers)
+            for s in self.incident
+            if self.background is not None
+        }
         # NumPy rows, which Field takes as they are
         coefficients: Any = out.e_field
         e_fields = []
@@ -1800,8 +1892,9 @@ class DrivenRule:
                     _excluded=self._excluded,
                     _comm=_mpi.static_comm(self.comm),
                     _reference_frequency=self._reference_frequency,
+                    _incident=incident.get(label),
                 )
-                for k, (f, _) in enumerate(kept)
+                for k, (f, label) in enumerate(kept)
             ]
         return DrivenResult(
             s=NetworkParameters(
@@ -1821,6 +1914,8 @@ class DrivenRule:
             port_modes=self._port_modes(out),
             offsets=self.offsets,
             diffraction_orders=self._diffraction_orders(out.rows),
+            sources={s.name: s for s in self.sources},
+            port_waves=None if out.port_waves is None else jnp.asarray(out.port_waves),
         )
 
     def _diffraction_orders(
@@ -2632,6 +2727,61 @@ def _port_regions(model: Model) -> dict[str, tuple[str, ...]]:
         tags = np.unique(topology.volume_tags[tets[active[tets]]])
         out[port.name] = tuple(names[int(t)] for t in tags)
     return out
+
+
+def _outgoing(
+    ports: PortNetwork, n: int, omega: float, x: np.ndarray, width: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """The outgoing waves of the port columns and of the source columns of ``x``.
+
+    A source column's are de-embedded at their port (its row), as S is.
+    """
+    waves = ports.outgoing(omega, x[:, width:]) if x.shape[1] > width else 0
+    return (
+        ports.outgoing(omega, x[:, :width]),
+        ports.deembedding[n][:, None] * waves,
+    )
+
+
+def _rhs(
+    ports: PortNetwork,
+    sources: SourceColumns | None,
+    omega: float,
+    system: SystemOperator,
+    width: int,
+) -> np.ndarray:
+    """The right-hand sides at ω: the excited ports', then the sources'."""
+    if width == 0:
+        rhs = np.zeros((system.operator.space.ndof, 0), complex)
+    else:
+        rhs = ports.rhs(omega)
+    if sources is None:
+        return rhs
+    return np.concatenate([rhs, sources.rhs(omega)], axis=1)
+
+
+def _check_sources_supported(
+    rule: DrivenRule, options: SolverOptions, comm: Any
+) -> None:
+    """Raise for a solve path that does not take incident columns yet.
+
+    Raises:
+        NotImplementedError: Incident columns across ranks or over frequency
+            workers.
+    """
+    if not rule.incident:
+        return
+    name = rule.incident[0].name
+    if comm is not None:
+        raise NotImplementedError(
+            f"The incident field {name!r} cannot be solved across ranks in this "
+            "gfem version; solve on one process."
+        )
+    if min(options.frequency_workers, len(rule.problem.frequency)) > 1:
+        raise NotImplementedError(
+            f"The incident field {name!r} cannot be solved over frequency "
+            "workers in this gfem version; use frequency_workers=1."
+        )
 
 
 def _check_supported(model: Model) -> None:
