@@ -16,6 +16,7 @@ wavenumber.
 
 import dataclasses
 import math
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -203,3 +204,115 @@ def test_shift_holds_the_low_rank_term_across_a_reshift(hybrid):
         assert np.linalg.norm(eop.parts(x)[0] - kx) <= 1e-10 * np.linalg.norm(kx)
     finally:
         eop.free_handle()
+
+
+# --- several ports and shared surfaces ------------------------------------------
+
+CASE_B3 = (
+    ("air_l", 1.0, 3.0),
+    ("window_1", 10.0, 2.4),
+    ("air_1", 1.0, 20.0),
+    ("window_2", 10.0, 2.4),
+    ("air_2", 1.0, 9.9),
+    ("window_3", 10.0, 2.4),
+    ("air", 1.0, 3.0),
+)
+CASE_N = (("dielectric", 4.0, 6.0), ("air", 1.0, 5.0))
+# exact roots, GHz: B3 between two TE10 ports; C's TE20 family, on a guide
+# 5 mm high whose one port surface carries TE10 and TE20; N on the outgoing
+# branch, Re f at 0.977 of the TE10 cutoff (6.557 GHz)
+ROOT_B3 = 9.974259423230 + 0.096704835502j
+ROOT_C20 = 15.216633733515 + 0.207573093830j
+ROOT_N = 6.403885446223 + 0.564967925392j
+
+
+def ported_guide(path, layers, *, left_port, b_mm=B_MM, nx=6, nz_per_mm=0.5, ny=2):
+    """``layers`` from z = 0 (a short, or the port ``portl``) to ``port``."""
+    tops = np.cumsum([t for _, _, t in layers])
+    zs = [np.zeros(1)]
+    for (_, _, t), z1 in zip(layers, tops, strict=True):
+        n = max(1, round(t * nz_per_mm))
+        zs.append(z1 - t + np.linspace(0, t, n + 1)[1:])
+    edges = (
+        np.linspace(0, A_MM, nx + 1),
+        np.linspace(0, b_mm, ny + 1),
+        np.concatenate(zs),
+    )
+    length = tops[-1]
+
+    def volume(c):
+        return layers[int(np.searchsorted(tops, c[2]))][0]
+
+    def surface(c):
+        if abs(c[2] - length) < 1e-9:
+            return "port"
+        if left_port and abs(c[2]) < 1e-9:
+            return "portl"
+        if any(abs(c[2] - z) < 1e-9 for z in tops[:-1]):
+            return ""
+        return "walls"
+
+    sm.write_msh22(path, sm.structured(edges, volume, surface))
+    return gfem.Mesh.from_gmsh(path, length_unit="mm")
+
+
+def ported_model(mesh, layers, ports):
+    return gfem.Model(
+        mesh,
+        materials={name: gfem.Material(eps_r=eps) for name, eps, _ in layers},
+        boundaries=[gfem.PEC("walls")],
+        ports=ports,
+    )
+
+
+def nearest_error(result, root):
+    f = ghz(result.omega)
+    j = int(np.argmin(np.abs(f - root)))
+    return abs(f[j] - root) / abs(root), j
+
+
+def test_two_port_surfaces_resonance_matches_the_exact_root(tmp_path):
+    mesh = ported_guide(tmp_path / "b3.msh", CASE_B3, left_port=True)
+    model = ported_model(
+        mesh, CASE_B3, [gfem.WavePort("left", "portl"), gfem.WavePort("right", "port")]
+    )
+    result = gfem.solve(
+        model, gfem.Eigenmode(target=9.97e9, n_modes=3), options=ORDER_3
+    )
+    error, j = nearest_error(result, ROOT_B3)
+    assert error <= 1e-4
+    assert result.error[j] <= 1e-12
+
+
+def test_shared_port_surface_resonance_matches_the_exact_root(tmp_path):
+    # the TE20 family needs the surface's modal correction: its propagation
+    # constant is not the lead (TE10) mode's of the Robin term
+    mesh = ported_guide(tmp_path / "c.msh", CASE_A3, left_port=False, b_mm=5.0)
+    model = ported_model(
+        mesh,
+        CASE_A3,
+        [gfem.WavePort("te10", "port"), gfem.WavePort("te20", "port", mode=2)],
+    )
+    result = gfem.solve(
+        model, gfem.Eigenmode(target=15.2e9, n_modes=3), options=ORDER_3
+    )
+    error, j = nearest_error(result, ROOT_C20)
+    assert error <= 1e-4
+    assert result.error[j] <= 1e-12
+
+
+def test_decaying_root_below_cutoff_is_kept_and_its_mirror_dropped(tmp_path):
+    # a low-Q root with Re f below the port's cutoff decays in time: it is a
+    # resonance; its mirror (Im f < 0) grows in time and never comes back
+    mesh = ported_guide(tmp_path / "n.msh", CASE_N, left_port=False)
+    model = ported_model(mesh, CASE_N, [gfem.WavePort("p1", "port")])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", AntiBoundRootWarning)
+        result = gfem.solve(
+            model, gfem.Eigenmode(target=6.7e9, n_modes=4), options=ORDER_3
+        )
+    error, j = nearest_error(result, ROOT_N)
+    assert error <= 1e-4
+    assert result.error[j] <= 1e-12
+    f = ghz(result.omega)
+    assert np.all(f.imag > 0)
