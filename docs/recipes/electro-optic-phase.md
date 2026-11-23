@@ -10,7 +10,7 @@ each crystal's electro-optic tensor.
 
 The device is the section of the {doc}`modulator tutorial
 <../tutorials/modulator>`: two lithium niobate ridges on an x-cut film, one in
-each gap of a ground-signal-ground electrode pattern, at $\lambda$ = 1.55 µm.
+each gap of a ground-signal-ground electrode pattern, at $\lambda = 1.55$ µm.
 The tutorial's {download}`tfln_section.py <../tutorials/tfln_section.py>`
 meshes it with netgen; here at twice the tutorial's edge lengths, which is
 quicker and within 1 % of its numbers. The shift is first order in the

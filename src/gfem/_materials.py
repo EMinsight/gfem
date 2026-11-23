@@ -985,8 +985,9 @@ class Material:
             thermal property or `thermo_optic_coefficient` that is not one
             real number; an `electro_optic_tensor` that is not a real,
             finite 6x3 matrix, has an entry above 1e-8 m/V (a value in
-            pm/V), or sits beside a matrix property, left-handed `axes` or
-            a `PermittivityLaw`.
+            pm/V), or sits beside a matrix property, left-handed `axes`, a
+            `PermittivityLaw` or an `eps_r` of 1 (the crystal's optical
+            permittivity left out).
         TypeError: `eps_r` is a bare dispersion term such as `Drude`; wrap
             it in a `PermittivityLaw`; ``density=`` beside ``mass_density=``.
         NonDifferentiableError: A constant value is computed inside
@@ -1016,12 +1017,7 @@ class Material:
         object.__setattr__(self, "electro_optic_tensor", tensor)
         if isinstance(self.eps_r, PermittivityLaw):
             if tensor is not None:
-                raise ValueError(
-                    f"{owner}: an electro_optic_tensor needs a constant eps_r, but "
-                    "eps_r is a PermittivityLaw, which takes no axes, so the frame "
-                    "of the tensor would be lost. Give the optical permittivity "
-                    "at the wavelength as a constant eps_r, with axes."
-                )
+                raise ValueError(_eo_law_message(owner))
             for name, value in _law_material_values(self, owner).items():
                 object.__setattr__(self, name, value)
             return
@@ -1030,6 +1026,8 @@ class Material:
         }
         if tensor is not None:
             _check_eo_frame(values, self.axes, owner)
+            if np.all(np.asarray(values["eps_r"]) == 1.0):
+                raise ValueError(_eo_without_eps_message(owner))
         values, axes = _principal(values, self.axes, owner)
         for name, value in values.items():
             object.__setattr__(self, name, value)
@@ -1061,6 +1059,29 @@ class Material:
 
 _MATERIAL_FIELDS = tuple(f.name for f in dataclasses.fields(Material))
 _MATERIAL_STATICS = tuple(n for n in _MATERIAL_FIELDS if n != "eps_r")
+
+
+def _eo_law_message(owner: str) -> str:
+    """Why an electro-optic tensor cannot sit beside a permittivity law."""
+    return (
+        f"{owner}: an electro_optic_tensor needs a constant eps_r, but "
+        "eps_r is a PermittivityLaw, which takes no axes, so the frame "
+        "of the tensor would be lost. Give the optical permittivity "
+        "at the wavelength as a constant eps_r, with axes."
+    )
+
+
+def _eo_without_eps_message(owner: str) -> str:
+    """Why an electro-optic tensor needs the crystal's optical permittivity.
+
+    The shift scales as :math:`n^4`: an eps_r left at 1 gives a shift many
+    times too small, with no other sign of the omission.
+    """
+    return (
+        f"{owner}: an electro_optic_tensor needs the crystal's optical eps_r "
+        "at the wavelength, e.g. eps_r=(n_o**2, n_o**2, n_e**2) with axes; "
+        "without it eps_r is 1 and the index shift is n^4 too small."
+    )
 
 
 def _check_eo_frame(values: dict[str, Any], axes: Any, owner: str) -> None:
@@ -1601,7 +1622,7 @@ class MaterialField:
             `axes` is not orthonormal; an `electro_optic_tensor` that is not
             real and finite, of shape ``(6, 3)`` or ``(n_elements, 6, 3)``,
             has an entry above 1e-8 m/V (a value in pm/V), or comes with
-            left-handed `axes`.
+            left-handed `axes`, without `eps_r` or in a blend.
         NonDifferentiableError: `axes` is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
@@ -1639,6 +1660,10 @@ class MaterialField:
         tensor = _field_eo_tensor(self.electro_optic_tensor)
         object.__setattr__(self, "electro_optic_tensor", tensor)
         if tensor is not None:
+            if self.blend is not None:
+                raise ValueError(_eo_law_message("MaterialField"))
+            if self.eps_r is None:
+                raise ValueError(_eo_without_eps_message("MaterialField"))
             if tensor.ndim == 3:
                 sizes.add(tensor.shape[0])
             if self.axes is not None:
@@ -1783,8 +1808,8 @@ class MaterialField:
         The `electro_optic_tensor` blends linearly by the scheme's weight
         (:math:`w = \rho` for ``"index"``), an end without one counting as
         zero, each end's tensor moved to the field's frame: its `axes`, made
-        right-handed, or the global frame for an isotropic field or a law
-        blend. A layer density refuses it.
+        right-handed, or the global frame for an isotropic field. A layer
+        density and a law end refuse it.
 
         Args:
             density: One value per element, in [0, 1] (0 = void, 1 = solid),
@@ -1798,7 +1823,7 @@ class MaterialField:
             ValueError: Unknown scheme, two materials whose tensors have
                 different principal axes, or an anisotropic end under
                 ``"index"`` or beside a law; an electro-optic end under a
-                layer density.
+                layer density or beside a law.
             NonDifferentiableError: An end's law is computed inside
                 `jax.grad`, `jax.jit` or `jax.vmap`: differentiate a law on a
                 `Material` region instead.
@@ -1815,6 +1840,8 @@ class MaterialField:
             return cls._interpolate_pixels(density, void, solid, scheme, penalty)
         rho = jnp.asarray(density, dtype=jnp.float64)
         law = any(isinstance(m.eps_r, PermittivityLaw) for m in (void, solid))
+        if law and _has_eo(void, solid):
+            raise ValueError(_eo_law_message("MaterialField.interpolate"))
         if law or scheme == "index":
             return cls._interpolate_eps(rho, void, solid, scheme, penalty, law=law)
         w = _SCHEMES[scheme](rho, penalty)

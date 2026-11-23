@@ -897,8 +897,19 @@ def test_electro_optic_tensor_is_a_6x3_matrix_in_the_frame_of_the_axes():
             },
             ["PermittivityLaw", "constant eps_r", "axes"],
         ),
+        ({"electro_optic_tensor": _R_LN}, ["optical eps_r", "n^4"]),
     ],
-    ids=["3x3x3", "3x6", "complex", "nan", "pm/V", "matrix", "left-handed", "law"],
+    ids=[
+        "3x3x3",
+        "3x6",
+        "complex",
+        "nan",
+        "pm/V",
+        "matrix",
+        "left-handed",
+        "law",
+        "no-eps_r",
+    ],
 )
 def test_electro_optic_tensor_refusals_name_the_remedy(kwargs, words):
     with pytest.raises(ValueError, match="electro_optic_tensor") as e:
@@ -925,7 +936,7 @@ def test_electro_optic_tensor_under_a_gradient_raises_with_the_field_remedy():
 def test_electro_optic_tensor_per_element_field():
     n = 4
     r = jnp.tile(jnp.asarray(_R_LN), (n, 1, 1)) * jnp.arange(n)[:, None, None]
-    f = gfem.MaterialField(electro_optic_tensor=r)
+    f = gfem.MaterialField(eps_r=4.6, electro_optic_tensor=r)
     assert f.electro_optic_tensor.dtype == jnp.float64
     assert f.n_elements == n
     assert "electro_optic_tensor" in f.properties
@@ -954,8 +965,9 @@ def test_electro_optic_tensor_per_element_field():
             },
             ["right-handed", "reverse"],
         ),
+        ({"electro_optic_tensor": _R_LN}, ["optical eps_r", "n^4"]),
     ],
-    ids=["3x3x3", "4d", "complex", "pm/V", "inf", "left-handed"],
+    ids=["3x3x3", "4d", "complex", "pm/V", "inf", "left-handed", "no-eps_r"],
 )
 def test_electro_optic_tensor_field_refusals_name_the_remedy(kwargs, words):
     with pytest.raises(ValueError, match="electro_optic_tensor") as e:
@@ -1024,14 +1036,22 @@ def test_interpolate_blends_the_electro_optic_tensor_with_a_missing_end_zero():
     g = gfem.MaterialField.interpolate(rho, air, poled)
     assert g.axes is None
     np.testing.assert_allclose(g.electro_optic_tensor[2], expected, atol=1e-25)
-    # the index scheme and a law end blend it in the global frame too
+    # the index scheme blends it in the global frame too
     h = gfem.MaterialField.interpolate(rho, air, poled, scheme="index")
     np.testing.assert_allclose(h.electro_optic_tensor[1], expected / 2, atol=1e-25)
-    law = gfem.Material(eps_r=_LAW)
-    b = gfem.MaterialField.interpolate(rho, law, poled)
-    np.testing.assert_allclose(b.electro_optic_tensor[2], expected, atol=1e-25)
     # ends without a tensor give a field without one
     assert gfem.MaterialField.interpolate(rho, air, air).electro_optic_tensor is None
+
+
+@pytest.mark.parametrize("scheme", ["simp", "index"])
+def test_interpolate_refuses_a_law_end_beside_an_electro_optic_end(scheme):
+    # the tensor's frame needs a constant optical permittivity
+    poled = gfem.Material(eps_r=2.5, axes=_X_CUT, electro_optic_tensor=_R_LN)
+    law = gfem.Material(eps_r=_LAW)
+    with pytest.raises(ValueError, match="electro_optic_tensor") as e:
+        gfem.MaterialField.interpolate(jnp.array([0.0, 1.0]), law, poled, scheme=scheme)
+    for word in ("PermittivityLaw", "constant eps_r", "axes"):
+        assert word in str(e.value)
 
 
 def test_an_electro_optic_material_and_field_round_trip_through_the_job_codec(

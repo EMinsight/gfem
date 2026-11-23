@@ -75,7 +75,7 @@ class ElectroOpticShift:
         phase_per_length_per_volt: :math:`k_0\,\partial n_\mathrm{eff}/
             \partial V`, rad/(V m): the extra phase delay per unit length of
             guide and per volt. A transmission through length :math:`L`
-            turns its argument by minus ``phase_per_length_per_volt * V * L``
+            turns its argument by :math:`-\phi V L`, :math:`\phi` this value
             (`gfem.conventions`).
     """
 
@@ -136,7 +136,7 @@ def _check_potential(potential: Any) -> None:
         )
     if potential.quantity != "V" or potential.space != "h1":
         raise TypeError(
-            f"{_OWNER} takes an electrostatic potential (quantity 'V' on h1), got "
+            f"{_OWNER} takes a potential in volts (quantity 'V' on h1), got "
             f"a field of quantity {potential.quantity!r} on {potential.space}. "
             f"{remedy}"
         )
@@ -201,7 +201,7 @@ def _crystal(
         eps.append(_permittivity(material, pos))
         r.append(_tensor(material, pos))
     if not rows:
-        names = ", ".join(repr(r) for r in regions)
+        names = ", ".join(repr(name) for name in regions)
         raise ValueError(
             f"{_OWNER}: no element of wave port {port!r}'s section has an "
             f"electro_optic_tensor (its regions are {names}), so the shift is "
@@ -271,15 +271,7 @@ def _same_mesh(
     held = engine.in_support(mesh, layout)[tets]
     if not held.all():
         k = int(np.flatnonzero(~held)[0])
-        names = mesh._region_names()  # noqa: SLF001
-        region = names[int(np.asarray(mesh.tetrahedron_tags)[tets[k]])]
-        p = points[k * q]
-        raise ValueError(
-            f"Point ({', '.join(f'{x:.6g}' for x in p)}) m lies in volume region "
-            f"{region!r}, where the field is not defined (its support is "
-            f"{list(layout.support)}, minus the volumes the model excludes from "
-            "the solve)."
-        )
+        raise engine.outside_support(mesh, layout, int(tets[k]), points[k * q])
     return engine.Located(np.repeat(tets, q), np.tile(bary, (len(tets), 1)))
 
 
@@ -321,8 +313,9 @@ def electro_optic_shift(
     electrodes' inner edges: the shift weighs the mode's lateral tail,
     where the static field is strongest. ``potential`` is one terminal's
     potential of a separate electrostatic model (``eps_r`` the static
-    permittivity) on any mesh that holds the section's crystal elements;
-    give the static and the optical crystal the same `axes`, which the
+    permittivity) on any mesh that holds the section's crystal elements (a
+    DC-conduction potential serves too: any potential in volts on H1); give
+    the static and the optical crystal the same `axes`, which the
     shift cannot check. The mode is the port's (``mode=None``) or the one
     given, as `gfem.PortMode` picks it; exclusions or a window make the
     core's mode the first.

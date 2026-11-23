@@ -1,25 +1,31 @@
-"""The first-order weights of a thermo-optic shift on a wave port's section.
+r"""The first-order weights of a thermo-optic shift on a wave port's section.
 
 `ShiftWeightsRule` runs the port's mode solve (`gfem.PortMode`) and turns
-its mode at 1 W into one weight per triangle of the section::
+its mode at 1 W into one weight per triangle of the section:
 
-    w_t = (c eps0 / 4) 2 n0_t int_t |E0|^2 dA
+.. math::
 
-so that ``delta_n_eff = sum_t w_t (dn/dT)_t rise_t``. ``n0_t`` is the
-square root of the real permittivity of the tetrahedron behind triangle
-``t``, as the port mode problem reads it. With ``tensor`` it gives instead
-the real symmetric 3x3 weight per triangle, in the global frame::
+    w_t = \frac{c\varepsilon_0}{4}\, 2 n_{0,t} \int_t |E_0|^2\, dA,
 
-    W_t = (c eps0 / 4) Re int_t E0 E0^H dA
+so that :math:`\Delta n_\mathrm{eff} = \sum_t w_t\, (dn/dT)_t\, \Delta T_t`.
+:math:`n_{0,t}` is the square root of the real permittivity of the
+tetrahedron behind triangle :math:`t`, as the port mode problem reads it.
+With ``tensor`` it gives instead the real symmetric 3x3 weight per
+triangle, in the global frame,
 
-whose trace is ``w_t / (2 n0_t)``, for a tensor perturbation
-``delta_n_eff = sum_t W_t : delta_eps_t``. The weights are constants of the
-mode: no output has a gradient, and every input the port mode
-problem reads (the optical model's ``eps_r``, ``tan_delta``, ``mu_r``,
-``conductivity``, node coordinates, boundary and port values) raises
-`gfem.NonDifferentiableError` under `jax.grad`; the thermal properties and
-the thermo-optic coefficient are not read, so they get exact zeros here and
-differentiate where the shift multiplies them in JAX.
+.. math::
+
+    W_t = \frac{c\varepsilon_0}{4}\, \mathrm{Re} \int_t E_0 E_0^H\, dA,
+
+whose trace is :math:`w_t / (2 n_{0,t})`, for a tensor perturbation
+:math:`\Delta n_\mathrm{eff} = \sum_t W_t : \Delta\varepsilon_t`. The
+weights are constants of the mode: no output has a gradient, and every
+input the port mode problem reads (the optical model's ``eps_r``,
+``tan_delta``, ``mu_r``, ``conductivity``, node coordinates, boundary and
+port values) raises `gfem.NonDifferentiableError` under `jax.grad`; the
+thermal properties and the thermo-optic coefficient are not read, so they
+get exact zeros here and differentiate where the shift multiplies them in
+JAX.
 """
 
 from __future__ import annotations
@@ -145,11 +151,13 @@ def section_weights(space: Any, coefficients: np.ndarray) -> np.ndarray:
 
 
 def section_tensor_weights(space: Any, coefficients: np.ndarray) -> np.ndarray:
-    """``(c eps0 / 4) Re int_t E E^H dA`` per section triangle, global frame.
+    r"""The tensor weight per section triangle, in the global frame.
+
+    It is :math:`\tfrac{c\varepsilon_0}{4}\mathrm{Re}\int_t E E^H\,dA`.
 
     Real symmetric: the imaginary part is antisymmetric, so it meets nothing
     in a symmetric permittivity change. Its trace is ``section_weights``
-    over ``2 n0_t``.
+    over :math:`2 n_{0,t}`.
 
     Args:
         space: The `gfem._engine.port_mode.PortModeSpace` of the section.

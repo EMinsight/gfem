@@ -5,7 +5,7 @@ shows; the CI tutorials job re-executes the page, and its last code cell
 asserts the checks the page relies on: the arms' shifts equal and opposite,
 the push-pull V_pi L at the published section, the tensor's shares, the gap
 gradient against a difference, and an SLSQP optimum on the clearance
-constraint inside the width bounds. This reads the committed notebook, and
+constraint inside the gap and width bounds. This reads the committed notebook, and
 builds the page's section with its helper, docs/tutorials/tfln_section.py,
 which the page imports and offers for download.
 """
@@ -77,12 +77,14 @@ def test_the_closing_cell_asserts_the_physics_checks(cells):
         "fd_error",  # the gap gradient against a difference
         "result.success",  # the optimizer stopped
         "constraint_opt",  # on the clearance constraint
+        "g_opt",  # inside the gap bounds
         "w_opt",  # inside the width bounds
         "v_pi_l_opt",  # below the start
     ):
         assert name in closing, name
     assert "1.61" in closing
     assert "atol=1e-4" in closing  # s_b / s_a = -1 to 1e-4
+    assert "less(fd_error, 1e-3)" in closing  # measured about 2e-5
 
 
 def test_the_asserted_v_pi_l_is_quoted(cells):

@@ -285,6 +285,12 @@ def test_anything_but_one_terminals_potential_raises(model, electrostatic, pick)
         _shift(model, pick(electrostatic))
 
 
+def test_a_field_that_is_no_potential_names_what_is_taken(model, potential):
+    temperature = dataclasses.replace(potential, quantity="T", unit="K")
+    with pytest.raises(TypeError, match=r"a potential in volts \(quantity 'V' on h1"):
+        _shift(model, temperature)
+
+
 def test_a_model_that_is_no_model_raises(potential):
     with pytest.raises(TypeError, match=r"electro_optic_shift needs a gfem\.Model"):
         _shift("model", potential)
@@ -348,6 +354,17 @@ def test_a_crystal_outside_the_potential_raises_naming_the_point(tmp_path, model
     window = tc.section(tmp_path / "window.msh", rects, MAXH, PLATES)
     with pytest.raises(ValueError, match=r"wave port 'p'.*Point \(.*outside the mesh"):
         _shift(model, _potential(window))
+
+
+def test_a_crystal_outside_the_potential_s_support_raises_naming_the_region(
+    model, potential
+):
+    # the same mesh, the crystal left out of the support: probe's message
+    clad_only = dataclasses.replace(potential, support=("clad",))
+    with pytest.raises(
+        ValueError, match=r"Point \(.*\) m lies in volume region '(core|foot)'"
+    ):
+        _shift(model, clad_only)
 
 
 def test_a_sequence_of_frequencies_or_an_unknown_port_raises(model, potential):

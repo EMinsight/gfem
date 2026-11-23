@@ -1,6 +1,7 @@
 """gfem.solve on an Electrostatic problem: inputs, ground rules, result."""
 
 import importlib.util
+import json
 from pathlib import Path
 
 import jax
@@ -10,6 +11,7 @@ import structured_meshes as sm
 from scipy.constants import epsilon_0
 
 import gfem
+from gfem.job import _write_result
 
 DATA = Path(__file__).parent / "data"
 LAYERS = (("oxide", 0.5), ("nitride", 0.25))
@@ -423,3 +425,20 @@ def test_capacitance_per_length_on_a_3d_mesh_names_the_remedy(stack):
     assert "per length" not in repr(result)
     if importlib.util.find_spec("xarray"):
         assert "capacitance_per_length" not in result.to_xarray()
+
+
+def test_a_saved_3d_result_has_no_thickness_and_a_section_keeps_it(
+    stack, plates_path, tmp_path
+):
+    # a 3D result bundle stays as gfem 0.1.0 wrote it and reads there
+    flat = _c(stack, gfem.Electrostatic(terminals=STACK, ground="bottom"))
+    _write_result(tmp_path / "flat", flat, {}, None)
+    written = json.loads((tmp_path / "flat" / "result.json").read_text())["result"]
+    assert "_thickness" not in json.dumps(written)
+    assert gfem.load_result(tmp_path / "flat")._thickness is None
+    section = _plates(plates_path, 1e-6)
+    _write_result(tmp_path / "section", section, {}, None)
+    back = gfem.load_result(tmp_path / "section")
+    np.testing.assert_array_equal(
+        back.capacitance_per_length, section.capacitance_per_length
+    )

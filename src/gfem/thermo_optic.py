@@ -314,7 +314,7 @@ def thermo_optic_shift(
         TypeError: ``rise`` is not a scalar `gfem.Field`.
     """
     _check_model(model, "thermo_optic_shift")
-    f = _frequency(frequency)
+    f = _frequency(frequency, "thermo_optic_shift")
     faces, tets = _section(model, _wave_port(model, port))
     coefficients = _coefficients(model, port, tets)
     owner = f"thermo_optic_shift (wave port {port!r})"

@@ -103,7 +103,7 @@ class _Sampling:
     port: str
 
 
-def _frequency(frequency: Any, owner: str = "thermo_optic_shift") -> float:
+def _frequency(frequency: Any, owner: str) -> float:
     if np.ndim(frequency) != 0:
         raise ValueError(
             f"{owner} takes one frequency, got "

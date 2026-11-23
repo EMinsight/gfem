@@ -117,7 +117,9 @@ class GradientProbe(_probe.Probe):
 
 
 class StaticFieldKernel:
-    """The mean of ``-grad V`` over each optical tetrahedron: ``G c`` and ``G^T``.
+    r"""The mean of :math:`-\nabla V` over each optical tetrahedron, :math:`G c`.
+
+    Its adjoint is :math:`G^T`.
 
     The points are fixed physical points; at given node coordinates of the
     potential's mesh they are located in it (or taken as given, ``located``,
