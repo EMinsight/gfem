@@ -64,17 +64,23 @@ def _stack_function(
 ) -> subprocess.CompletedProcess:
     """Run ``script`` in bash with ``stack.sh``'s helpers sourced (no command run).
 
-    ``$1``... are ``args``; ``provenance.py`` runs on this interpreter.
+    ``$1``... are ``args``; ``provenance.py`` runs on this interpreter. With
+    ``--norc`` and no ``BASH_ENV``: in a Slurm job submitted over ssh, bash takes
+    itself for an ssh command and reads ``~/.bashrc``; on a cluster that and
+    ``BASH_ENV`` start Lmod, whose default modules reset what ``env`` sets, such as
+    ``MKLROOT``.
     """
+    inherited = {k: v for k, v in os.environ.items() if k != "BASH_ENV"}
     return subprocess.run(
         [  # noqa: S607
             "bash",
+            "--norc",
             "-c",
             f'source "{STACK_SH}"; {script}',
             "stack",
             *args,
         ],
-        env={**os.environ, "STACK_PYTHON": sys.executable, **(env or {})},
+        env={**inherited, "STACK_PYTHON": sys.executable, **(env or {})},
         cwd=cwd,
         capture_output=True,
         text=True,
