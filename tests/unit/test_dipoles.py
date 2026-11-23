@@ -204,7 +204,7 @@ def line(tmp_path_factory):
 
 #: Along the line's E (y), between the port and the slab, off the grid's faces.
 LINE_DIPOLE = gfem.ElectricDipole(
-    "d", position=np.array([0.07, 0.13, 0.23]) * fsc.UM, moment=(0, 1e-28, 0)
+    "d", position=np.array([0.07, 0.13, 0.24]) * fsc.UM, moment=(0, 1e-28, 0)
 )
 
 

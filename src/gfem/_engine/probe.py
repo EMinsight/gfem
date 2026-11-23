@@ -402,29 +402,34 @@ class Probe:
         whole[:, self._own] = values
         return _mpi.reduce_bcast(self.comm, whole)
 
-    def gradients(self, coefficients: np.ndarray) -> np.ndarray:
-        """``(n_points, 3, 3)``: the gradient of one H(curl) field, SI, one process.
+    def jet(self, coefficients: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """One H(curl) field's value and gradient at the points this rank holds.
 
-        ``[p, i, j]`` is the derivative along axis ``j`` of component ``i``
-        at point ``p``.
+        SI units: ``(n_points, 3)`` values and ``(n_points, 3, 3)``
+        gradients, ``[p, i, j]`` the derivative along axis ``j`` of component
+        ``i`` at point ``p``; zeros at the points other ranks hold (no rank
+        communicates, so a sum over ranks counts each point once).
+        ``coefficients`` is this rank's piece.
         """
         c = np.asarray(coefficients)[: self.ndof]
-        factor = self.factor / self._built.scale
-        parts = [np.real(c)] + ([np.imag(c)] if np.iscomplexobj(c) else [])
-        out = []
+        scale = self._built.scale
+        dtype = complex if np.iscomplexobj(c) else float
+        values = np.zeros((self.n_points, 3), dtype)
+        grads = np.zeros((self.n_points, 3, 3), dtype)
+        if self._mips is None:
+            return values, grads
+        parts = [(1.0, np.real(c))] + ([(1j, np.imag(c))] if dtype is complex else [])
         with self._lock:
-            for part in parts:
+            for unit, part in parts:
                 gf = ngs.GridFunction(self._fes)
                 gf.vec.FV().NumPy()[:] = part
-                if self._mips is None:  # pragma: no cover - one process holds all
-                    out.append(np.zeros((0, 3, 3)))
-                    continue
+                value = np.asarray(gf(self._mips)).reshape(self._own.size, 3)
                 grad = np.asarray(ngs.Grad(gf)(self._mips))
-                out.append(grad.reshape(self._own.size, 3, 3))
-        values = out[0] if len(out) == 1 else out[0] + 1j * out[1]
-        whole = np.zeros((self.n_points, 3, 3), values.dtype)
-        whole[self._own] = values * factor
-        return whole
+                values[self._own] += unit * value * self.factor
+                grads[self._own] += (
+                    unit * grad.reshape(self._own.size, 3, 3) * self.factor / scale
+                )
+        return values, grads
 
     def _local_dofs(self) -> tuple:
         if self._local is None:

@@ -131,6 +131,7 @@ from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import (
     PortNetwork,
     complex_reference,
+    parallel_scale,
     resistance,
     split_cotangent,
 )
@@ -1751,10 +1752,12 @@ class DrivenRule:
         if self.children is not None:
             return self.children.backward(model, entry, cotangents, wanted=wanted)
         solution = entry.fields["solution"]
-        width = len(self.excite)
-        ct_s = cotangents.get("s")
+        width = self.width
+        ct_p = cotangents.get("emitted_power")
         ct_e = cotangents.get("e_field")
         frequencies = self.problem.frequency
+        nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
+        self._explicit_nodes = None
         pairs: list[FieldPair | None] = [None] * len(frequencies)
         rebuilt = not isinstance(entry.handle, _Kept)  # frequency workers keep none
         with task_manager(self.options.threads, self.comm):
@@ -1762,19 +1765,16 @@ class DrivenRule:
                 entry.handle = _Kept(*self.system(model, handed=port_modes))
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
+            block = self.columns(model, op)
             domain = em_region(model, op.built)
             omegas = [2 * math.pi * f for f in frequencies]
             for n in system.adjoint_order(omegas):
                 f = frequencies[n]
                 omega = 2 * math.pi * f
                 x = solution[:, n * width : (n + 1) * width]
-                if ct_s is not None:
-                    split = ports.pullback(n, omega, ct_s[n], x)
-                    adjoint, load = split.free, split.loads
-                    undefined = split.undefined
-                else:
-                    adjoint, load = np.zeros_like(x), np.zeros_like(x)
-                    undefined = np.zeros(width, bool)
+                adjoint, load, undefined = self._output_loads(
+                    n, ports, block, x, cotangents
+                )
                 if ct_e is not None and n in self.kept:
                     k = self.kept.index(n)
                     g = np.asarray(ct_e)[:, k * width : (k + 1) * width]
@@ -1795,11 +1795,119 @@ class DrivenRule:
                     weights=op.weights(omega, laws=laws),
                     domain=domain,
                 )
+                if nodes:
+                    self._add_explicit_nodes(
+                        model,
+                        block,
+                        omega,
+                        adjoint=adjoint,
+                        x=x,
+                        ct=None if ct_p is None else ct_p[n],
+                    )
         if rebuilt:
             # as a rerun forward's (`gfem._adjoint.solve_vjp`): the kept state
             # this backward built goes down to the budget, no entry evicted
             ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
         return [p for p in pairs if p is not None]
+
+    def _output_loads(
+        self,
+        n: int,
+        ports: PortNetwork,
+        block: SourceColumns,
+        x: np.ndarray,
+        cotangents: Mapping[str, np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Frequency ``n``'s adjoint columns from the outputs' cotangents.
+
+        Returns ``(free, load, undefined)``: the adjoint columns known
+        without a solve (`PortNetwork.pullback`'s reciprocity, the
+        self-adjoint shortcut of `_power_adjoint`), the loads left to
+        solve, and the columns meeting an undefined S row. S's cotangent
+        fills the excited ports' columns, the port waves' the sources'.
+        """
+        omega = 2 * math.pi * self.problem.frequency[n]
+        width, n_exc = self.width, len(self.excite)
+        ct = np.zeros((len(self.port_names), width), complex)
+        for name, part in (("s", slice(0, n_exc)), ("port_waves", slice(n_exc, None))):
+            if cotangents.get(name) is not None:
+                ct[:, part] = cotangents[name][n]
+        if ct.any():
+            split = ports.pullback(n, omega, ct, x)
+            adjoint, load, undefined = split.free, split.loads, split.undefined
+        else:
+            adjoint, load = np.zeros_like(x), np.zeros_like(x)
+            undefined = np.zeros(width, bool)
+        ct_p = cotangents.get("emitted_power")
+        if ct_p is not None:
+            self._power_adjoint(
+                block, ports, omega, ct_p[n], x=x, adjoint=adjoint, load=load
+            )
+        return adjoint, load, undefined
+
+    def _power_adjoint(
+        self,
+        block: SourceColumns,
+        ports: PortNetwork,
+        omega: float,
+        ct: np.ndarray,
+        *,
+        x: np.ndarray,
+        adjoint: np.ndarray,
+        load: np.ndarray,
+    ) -> None:
+        """Fold an emitted power cotangent into ``adjoint`` and ``load``, in place.
+
+        Its load on dipole k's column is parallel to the dipole's own load
+        when the moment is real up to one phase: the adjoint is then the
+        dipole's solution scaled (the self-adjoint shortcut), no solve.
+        Otherwise (a circular moment) it is one more adjoint load.
+        """
+        power = block.power_loads(omega, ct)
+        rhs = block.rhs(ports, omega, len(x))
+        layout = ports.layout
+        for j in [block.n_excited + c for c in block.dipole_columns]:
+            if not power[:, j].any():
+                continue
+            scale = parallel_scale(power[:, j], rhs[:, j], layout)
+            if scale is not None:
+                adjoint[:, j] += scale * x[:, j]
+            else:
+                load[:, j] += power[:, j]
+
+    def _add_explicit_nodes(
+        self,
+        model: Model,
+        block: SourceColumns,
+        omega: float,
+        *,
+        adjoint: np.ndarray,
+        x: np.ndarray,
+        ct: np.ndarray | None,
+    ) -> None:
+        """Add the dipoles' node term at ω to `explicit_nodes`."""
+        loads = block.dipoles
+        if loads is None:
+            return
+        columns = [block.n_excited + c for c in block.dipole_columns]
+        term = loads.nodes(
+            model.mesh,
+            self._field_layout(),
+            omega,
+            adjoint=adjoint[:, columns],
+            solution=x[:, columns],
+            power=np.zeros(len(columns)) if ct is None else np.asarray(ct),
+            comm=self.comm,
+        )
+        held = getattr(self, "_explicit_nodes", None)
+        self._explicit_nodes = term if held is None else held + term
+
+    def explicit_nodes(self) -> np.ndarray | None:
+        """The node cotangent the backward computed itself: the dipoles' loads.
+
+        ``(n_nodes, 3)``, this rank's part, or ``None`` (no dipole moved).
+        """
+        return getattr(self, "_explicit_nodes", None)
 
     def _backward_adaptive(
         self,

@@ -114,6 +114,47 @@ class PointLoads:
         pairs = np.asarray(self.layout.pair(np.conj(b), x))
         return -np.imag(np.diagonal(pairs)) * self._power_scale(omega)
 
+    def nodes(
+        self,
+        mesh: Mesh,
+        layout: Layout,
+        omega: float,
+        *,
+        adjoint: np.ndarray,
+        solution: np.ndarray,
+        power: np.ndarray,
+        comm: Any = None,
+    ) -> np.ndarray:
+        r"""The electric loads' node term at ω, ``(n_nodes, 3)`` real, per metre.
+
+        :math:`\operatorname{Re}(\lambda_k^\mathsf{T}\,\delta b_k)` (the load
+        moves with its element) plus the emitted power's own dependence on
+        the load, :math:`-\operatorname{Im}(\delta b_k^H x_k) / (2\omega\mu_0
+        L)` times its cotangent ``power[k]``. ``adjoint`` and ``solution``
+        are ``(N, n)``, the dipoles' columns (this rank's piece); each rank
+        adds the dipoles it holds, so a sum over ranks counts each once.
+        Magnetic dipoles add nothing (their node gradient is refused).
+        """
+        out = np.zeros((len(mesh.nodes), 3))
+        probed = probe(mesh, layout, self.located, comm)
+        coefficients = self.coefficients(omega)
+        scale = self._power_scale(omega)
+        for k in np.flatnonzero(~self.magnetic):
+            lam_value, lam_grad = probed.jet(adjoint[:, k])
+            x_value, x_grad = probed.jet(solution[:, k])
+            c, p = coefficients[k], self.moments[k]
+            vertices, moved = transport(
+                mesh,
+                self.located,
+                int(k),
+                values=np.stack([lam_value[k], x_value[k]]),
+                gradients=np.stack([lam_grad[k], x_grad[k]]),
+                weight=np.stack([c * p, np.conj(c * p)]),
+            )
+            term = np.real(moved[0]) - power[k] * scale * np.imag(moved[1])
+            np.add.at(out, vertices, term)
+        return out
+
     def power_loads(self, omega: float, cotangent: np.ndarray) -> np.ndarray:
         r"""``(N, n)``: the cotangent on :math:`x_k` of a cotangent on `emitted_power`.
 
@@ -396,17 +437,3 @@ def transport(
     first = np.einsum("ad,id,ac->aic", weight, grad_bary, values)
     second = np.einsum("i,ad,adc->aic", bary, weight, gradients)
     return vertices, -(first + second)
-
-
-def field_point_values(
-    mesh: Mesh, layout: Layout, located: Located, coefficients: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Values ``(m, n, 3)`` and gradients ``(m, n, 3, 3)`` of fields at the points.
-
-    SI units; one process. ``[..., i, j]`` of a gradient is ``d_j l_i``.
-    """
-    probed = probe(mesh, layout, located)
-    c = np.atleast_2d(coefficients)
-    values = probed.values(c)
-    grads = np.stack([probed.gradients(row) for row in c])
-    return values, grads

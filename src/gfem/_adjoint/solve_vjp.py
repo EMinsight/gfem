@@ -59,6 +59,8 @@ input kinds again), ``options`` and ``problem``,
 optionally ``pieces`` (the outputs that are a rank's own piece under ranks,
 whose cotangents the ranks compare by shape; none by default),
 ``explicit_problem()`` (problem-leaf cotangents the backward computed itself),
+``explicit_nodes()`` (a node cotangent the backward computed itself, this
+rank's part, or ``None``),
 ``unsupported_input(kind)`` (a reason, or ``None``) for read
 inputs the rule itself cannot differentiate, and ``terms(model, *, nodes)``
 (its operator as the kernel sees it, a list of
@@ -562,6 +564,13 @@ def _local_cotangents(
         # the eigenmode ratios' 1 / L and C |V|^2 / 2), once over the ranks
         if hasattr(rule, "explicit_lumped") and _mpi.rank(comm) == 0:
             _add_explicit_lumped(out, rule.explicit_lumped(), wants=wants)
+        # the node coordinates' terms outside the operator (a point load's
+        # element moving), each rank's own part
+        explicit = getattr(rule, "explicit_nodes", None)
+        if ("nodes",) in wants and explicit is not None:
+            extra = explicit()
+            if extra is not None:
+                out["nodes",] = out["nodes",] + extra
         # a load form's problem leaves read by the rule itself (the
         # waveform scales, a trace's weights)
         if hasattr(rule, "explicit_problem"):
