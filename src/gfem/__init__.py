@@ -56,10 +56,12 @@ from gfem.errors import (  # noqa: E402
 )
 from gfem.job import Job, load_result  # noqa: E402
 from gfem.measurements import (  # noqa: E402
+    FarField,
     InterfaceParticipation,
     characteristic_impedance,
     electric_energy,
     element_mean,
+    far_field,
     interface_participation,
     power_flow,
     purcell_factor,
@@ -169,6 +171,7 @@ __all__ = [
     "Electrostatic",
     "ElectrostaticResult",
     "ErrorEstimate",
+    "FarField",
     "Field",
     "FieldEstimator",
     "FixedTemperature",
@@ -242,6 +245,7 @@ __all__ = [
     "design",
     "electric_energy",
     "element_mean",
+    "far_field",
     "enclosed_by",
     "error_estimate",
     "interface_participation",
