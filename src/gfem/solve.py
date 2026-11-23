@@ -20,7 +20,7 @@ from gfem._pml import check_layer_nodes
 from gfem.errors import LinearSolverConvergenceError
 from gfem.model import _PHYSICS_NAMES, Model
 from gfem.options import SolverOptions
-from gfem.problems import _check_polarization
+from gfem.problems import check_problem
 from gfem.shape import _check_quality
 
 if TYPE_CHECKING:
@@ -270,7 +270,7 @@ def _solve(
         if resolved is not None:
             _mpi.refuse(model, problem, options)
         rule_class = _rule_class(problem, model.mesh.dim)
-        _check_polarization(problem, model.mesh.dim)
+        check_problem(problem, model)
         _check_domain(model, problem)
         _check_blends(model, problem)
         if resolved is None:

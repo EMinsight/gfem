@@ -36,6 +36,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from gfem import _codec, _mpi
+from gfem._background import Background
 from gfem._boundaries import (
     PEC,
     PMC,
@@ -67,6 +68,14 @@ from gfem._pml import PML
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
 from gfem._sheet import SheetField
+from gfem._sources import (
+    ElectricDipole,
+    GaussianBeam,
+    IncidentField,
+    MagneticDipole,
+    PlaneWave,
+    _qualified,
+)
 from gfem.errors import LinearSolverConvergenceError
 from gfem.measurements import InterfaceParticipation
 from gfem.mesh import (
@@ -732,6 +741,7 @@ def _model_args(model: Model, _: _codec.Context) -> dict[str, Any]:
         "excluded": _excluded_args(model),
         # written only when set: a model without a layer encodes as before
         **({"pml": model.pml} if model.pml is not None else {}),
+        **({"background": model.background} if model.background is not None else {}),
     }
 
 
@@ -855,9 +865,15 @@ def _unset_omitted(cls: Any, **defaults: Any) -> _codec.ToArgs:
     def to_args(obj: Any, _: _codec.Context) -> dict[str, Any]:
         args = {n: getattr(obj, n) for n in names}
         for name, default in defaults.items():
-            # a field sequence equals no default: only an empty one is left out
+            # a field sequence or mapping equals no default: only an empty one
+            # is left out; an array is never compared with None
             value = args[name]
-            unset = not len(value) if isinstance(default, tuple) else value == default
+            if default is None:
+                unset = value is None
+            elif isinstance(default, (tuple, dict)):
+                unset = not len(value)
+            else:
+                unset = value == default
             if unset:
                 del args[name]
         return args
@@ -890,7 +906,7 @@ _codec.register(
     Model,
     to_args=_model_args,
     from_args=_model_from_args,
-    names=("mesh", "materials", "boundaries", "ports", "excluded", "pml"),
+    names=("mesh", "materials", "boundaries", "ports", "excluded", "pml", "background"),
 )
 _codec.register(
     _Excluded,
@@ -975,13 +991,49 @@ _codec.register(
 _codec.register(Blend, to_args=_unset_omitted(Blend, others=(), pixels=None))
 _codec.register(PixelGeometry)
 _codec.register(SolverOptions, to_args=_options_args)
-_codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None))
+_codec.register(Driven, to_args=_unset_omitted(Driven, polarization=None, sources=()))
 _codec.register(PortMode, to_args=_unset_omitted(PortMode, polarization=None))
 _codec.register(
     PortModeResult, to_args=_unset_omitted(PortModeResult, h_field=None, pml=None)
 )
 _codec.register(
-    DrivenResult, to_args=_unset_omitted(DrivenResult, h_fields=(), polarization=None)
+    DrivenResult,
+    to_args=_unset_omitted(
+        DrivenResult,
+        h_fields=(),
+        polarization=None,
+        sources={},
+        port_waves=None,
+        emitted_power={},
+    ),
+)
+for _cls in (PlaneWave, GaussianBeam, ElectricDipole, MagneticDipole):
+    _codec.register(_cls)
+_codec.register(
+    Background, to_args=_unset_omitted(Background, interfaces=(), ground=None)
+)
+
+
+def _incident_field_args(field: IncidentField, _: _codec.Context) -> dict[str, Any]:
+    raise _codec.UnencodableError(
+        f"the IncidentField {field.name!r} (function {_qualified(field.function)}) "
+        "cannot be written: its function is code, not data, and a file without "
+        "it would solve another problem"
+    )
+
+
+def _incident_field_from_args(_args: dict[str, Any], _: _codec.Context) -> Any:
+    raise ValueError(
+        "The file holds an IncidentField, which gfem never writes: its function "
+        "cannot be read from a file."
+    )
+
+
+_codec.register(
+    IncidentField,
+    to_args=_incident_field_args,
+    from_args=_incident_field_from_args,
+    names=("name", "function"),
 )
 _codec.register(
     PortSection,

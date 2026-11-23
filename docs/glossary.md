@@ -11,8 +11,9 @@ Problem type
   {term}`port mode <Port mode problem>` problem.
 
 Driven problem
-  A frequency-domain full-wave analysis excited through {term}`ports <Port>`,
-  producing network parameters and fields at given frequencies.
+  A frequency-domain full-wave analysis excited through {term}`ports <Port>`
+  and {term}`sources <Source>`, producing fields at given frequencies, and
+  network parameters when ports are excited.
 
 Adaptive sweep
   A driven frequency sweep that solves the full problem at a few
@@ -748,6 +749,56 @@ Error estimate
   {gfem-effectivity}`quantity high` times (order 2); each other
   {term}`estimate kind` has its own range ({doc}`verification`). Neither
   sees the faceting of curved surfaces.
+```
+
+## Free space
+
+```{glossary}
+Incident field
+  The field a {term}`source` would have in the {term}`background stack` alone,
+  with no {term}`scatterer`: a plane wave, a Gaussian beam or a field given by a
+  function (`gfem.PlaneWave`, `gfem.GaussianBeam`, `gfem.IncidentField`).
+
+Scattered field
+  The {term}`total field` minus the {term}`incident field`; it is outgoing at
+  the truncation (a {term}`perfectly matched layer` or absorbing faces).
+
+Total field
+  The incident plus the scattered field: the field a source column keeps, and
+  the one every measurement reads by default.
+
+Background stack
+  The planar layers normal to z, each a constant isotropic material, whose
+  exact solution is the {term}`incident field` (`Model(background=...)`,
+  `gfem.Background`); a homogeneous background is a one-layer stack.
+
+Scatterer
+  Where the model differs from the {term}`background stack` at the same
+  height: its elements of another material, and its sheets, conductors and
+  lumped ports.
+
+Source
+  A {term}`driven problem`'s excitation that is not a {term}`port`: an
+  {term}`incident field` or a {term}`point dipole` (`Driven(sources=...)`). It
+  adds a column to the solve and is never part of the device.
+
+Excitation
+  An {term}`excited port` or a {term}`source`: one column of a driven solve,
+  whose name labels its kept fields and its results.
+
+Port wave
+  The outgoing wave at a {term}`port` in a {term}`source`'s column, in √W
+  (`DrivenResult.port_wave`); its squared modulus is the power the source sends
+  into the port.
+
+Point dipole
+  An electric or magnetic point current at one position
+  (`gfem.ElectricDipole`, `gfem.MagneticDipole`).
+
+Emitted power
+  The time-averaged power a {term}`point dipole` gives the field
+  (`DrivenResult.emitted_power`): what it radiates plus what nearby lossy
+  materials absorb.
 ```
 
 ## Thermal

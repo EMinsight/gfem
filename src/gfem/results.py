@@ -8,7 +8,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -19,6 +19,7 @@ from gfem import _objective
 from gfem._checks import is_traced, static_float
 from gfem._field import Field, FieldMap, ReducedFields
 from gfem._pytree import register_fields
+from gfem._sources import INCIDENT, Source
 from gfem._text import hertz, hertz_band
 
 if TYPE_CHECKING:
@@ -1400,6 +1401,18 @@ class DrivenResult:
         polarization: The field normal to the plane that a 2D model's solve
             computed, ``"Ez"`` or ``"Hz"``; ``None`` for a 3D model. A
             static label.
+        sources: The problem's sources (``Driven(sources=...)``) by name, in
+            column order: what a measurement reads of them (a direction, an
+            amplitude, a position). Static; empty without sources.
+        port_waves: The outgoing wave at each port for each source column,
+            ``(n_freq, n_ports, n_sources)``, √W, with every port terminated
+            in its reference impedance (`gfem.conventions`, Incident fields):
+            on a real ``z_ref``, :math:`|b|^2` is the power the source sends
+            into the port, in W. Read one with `port_wave`. Differentiable
+            like S. ``None`` without sources or without ports.
+        emitted_power: The time-averaged power each point dipole gives the
+            field, W, ``(n_freq,)``, by source name (`gfem.conventions`,
+            Point dipoles). Empty without dipoles.
 
     On a 2D model (a mesh of dimension 2, `gfem.conventions`) every port is
     fed 1 W/m time-averaged incident power per metre along :math:`z`, and S is
@@ -1420,6 +1433,9 @@ class DrivenResult:
     )
     h_fields: Sequence[Field] = ()
     polarization: Polarization | None = None
+    sources: Mapping[str, Source] = dataclasses.field(default_factory=dict)
+    port_waves: jax.Array | None = None
+    emitted_power: Mapping[str, jax.Array] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Hold the fields as a sequence matching their labels."""
@@ -1448,34 +1464,119 @@ class DrivenResult:
             raise ValueError(
                 f"{len(fields)} fields but {len(self.kept)} labels in kept."
             )
+        object.__setattr__(self, "sources", dict(self.sources))
+        object.__setattr__(self, "emitted_power", dict(self.emitted_power))
+        self._check_port_waves()
+
+    def _check_port_waves(self) -> None:
+        """Drop empty port waves; check the shape of the others."""
+        waves = self.port_waves
+        if waves is None:
+            return
+        if not self.sources or not self.s.ports:
+            # no source column, or no port row: nothing to read
+            object.__setattr__(self, "port_waves", None)
+            return
+        if is_traced(waves):
+            return
+        shape = (len(self.s.frequency), len(self.s.ports), len(self.sources))
+        if tuple(np.shape(waves)) != shape:
+            raise ValueError(
+                f"port_waves must be (n_freq, n_ports, n_sources) = {shape}, got "
+                f"{tuple(np.shape(waves))}."
+            )
+
+    @property
+    def _excitations(self) -> tuple[str, ...]:
+        """The column labels: the excited ports, then the sources."""
+        return (*self.s.excited, *self.sources)
+
+    def port_wave(self, port: str, source: str) -> jax.Array:
+        """The outgoing wave at ``port`` for the column of ``source``, ``(n_freq,)``.
+
+        √W (`port_waves`); :math:`|b|^2` is the power in W the source sends
+        into the port on a real reference impedance.
+
+        Raises:
+            KeyError: ``port`` is not a port of the result, or ``source`` is
+                not one of its sources.
+        """
+        ports = self.s.ports
+        if port not in ports:
+            raise KeyError(
+                f"No port {port!r}; the ports are {', '.join(map(repr, ports))}."
+            )
+        if not self.sources:
+            raise KeyError(
+                "This result solved no source (Driven(sources=...)), so it has no "
+                "port waves."
+            )
+        if source not in self.sources:
+            raise KeyError(
+                f"No source {source!r}; the sources are "
+                f"{', '.join(map(repr, self.sources))}."
+            )
+        assert self.port_waves is not None  # noqa: S101
+        return self.port_waves[:, ports.index(port), list(self.sources).index(source)]
 
     @property
     def frequency(self) -> np.ndarray:
         """The frequencies in Hz, ``(n_freq,)``."""
         return np.array(self.s.frequency)
 
-    def e_field(self, frequency: float, excite: str | None = None) -> Field:
-        """The kept electric field at ``frequency`` with port ``excite`` fed.
+    def e_field(
+        self,
+        frequency: float,
+        excite: str | None = None,
+        *,
+        part: Literal["total", "scattered", "incident"] = "total",
+    ) -> Field:
+        """The kept electric field at ``frequency`` of one excitation.
 
         On a 2D model, the kept Ez field of an Ez solve.
 
         Args:
             frequency: A kept frequency, Hz (matched to 1e-9 relative).
-            excite: The excited port; may be left out when one port was
-                excited.
+            excite: The excited port or the source; may be left out when the
+                problem had one of them.
+            part: ``"total"``, the field (the default); for an incident-field
+                column also ``"scattered"``, the total minus the incident
+                field, or ``"incident"``, the incident field on the same
+                space, so that the three parts add exactly.
 
         Raises:
             ValueError: No field was kept at ``frequency``, ``excite`` is
-                needed, or the result is a 2D model's Hz solve (read
+                needed, ``part`` is unknown or is not ``"total"`` for a port
+                or a dipole, or the result is a 2D model's Hz solve (read
                 `h_field`).
-            KeyError: ``excite`` is not an excited port.
+            KeyError: ``excite`` is neither an excited port nor a source.
         """
+        if part not in _PARTS:
+            raise ValueError(
+                "DrivenResult.e_field: part must be 'total', 'scattered' or "
+                f"'incident', got {part!r}."
+            )
         if self.polarization == "Hz":
             raise ValueError(
                 "This result solved the Hz polarization of a 2D model: its kept "
                 "field is Hz, read result.h_field(frequency, excite)."
             )
-        return self._kept_field(self.e_fields, frequency, excite)
+        field = self._kept_field(self.e_fields, frequency, excite)
+        if part == "total":
+            return field
+        name = excite if excite is not None else self._excitations[0]
+        source = self.sources.get(name)
+        # a value error: the part asked for does not exist for this column
+        if not isinstance(source, INCIDENT):
+            kind = "port" if source is None else type(source).__name__
+            raise ValueError(  # noqa: TRY004
+                f"{name!r} is a {kind} column: it has no incident field, so its "
+                f"only part is the total field; got part={part!r}."
+            )
+        raise NotImplementedError(
+            f"The {part} part of the incident field {name!r} is not available "
+            "in this gfem; read the total field."
+        )
 
     def h_field(self, frequency: float, excite: str | None = None) -> Field:
         """The kept Hz field of a 2D model's Hz solve at ``frequency``.
@@ -1509,17 +1610,25 @@ class DrivenResult:
                 "This result keeps no fields: solve with Driven(..., "
                 "keep_fields=True) or keep_fields=[frequencies] to keep them."
             )
+        columns = self._excitations
         if excite is None:
-            if len(self.s.excited) > 1:
+            if len(columns) > 1:
+                what = "Ports" if not self.sources else "Excitations"
+                verb = "excited" if not self.sources else "solved"
                 raise ValueError(
-                    f"Ports {', '.join(map(repr, self.s.excited))} were excited; "
+                    f"{what} {', '.join(map(repr, columns))} were {verb}; "
                     "pass excite= to choose one."
                 )
-            excite = self.s.excited[0]
-        if excite not in self.s.excited:
+            excite = columns[0]
+        if excite not in columns:
+            if not self.sources:
+                raise KeyError(
+                    f"Port {excite!r} was not excited; the excited ports are "
+                    f"{', '.join(map(repr, columns))}."
+                )
             raise KeyError(
-                f"Port {excite!r} was not excited; the excited ports are "
-                f"{', '.join(map(repr, self.s.excited))}."
+                f"{excite!r} was not excited; the excited ports and the sources "
+                f"are {', '.join(map(repr, columns))}."
             )
         frequencies = sorted({f for f, _ in self.kept})
         for k, (f, port) in enumerate(self.kept):
@@ -1632,14 +1741,29 @@ class DrivenResult:
         kept = len(self.h_fields) or len(self.e_fields)
         fields = f", {kept} kept fields" if kept else ""
         sweep = "" if self.sweep is None else f", {self.sweep!r}"
+        sources = f", sources={list(self.sources)}" if self.sources else ""
         return (
             f"DrivenResult({len(f)} frequencies {span}, ports={list(self.s.ports)}, "
-            f"excited={list(self.s.excited)}{fields}{sweep})"
+            f"excited={list(self.s.excited)}{sources}{fields}{sweep})"
         )
 
 
+#: The parts of a kept field (``DrivenResult.e_field(part=...)``).
+_PARTS = ("total", "scattered", "incident")
+
 register_fields(
-    DrivenResult, ("s", "e_fields", "port_modes", "diffraction_orders", "h_fields")
+    DrivenResult,
+    (
+        "s",
+        "e_fields",
+        "port_modes",
+        "diffraction_orders",
+        "h_fields",
+        # static source values: nodes without leaves
+        "sources",
+        "port_waves",
+        "emitted_power",
+    ),
 )
 
 
