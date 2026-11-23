@@ -1095,7 +1095,7 @@ class Eigenmode:
     from the model, as a quasi-normal mode's does. ``target`` must lie above
     the cutoff of every requested port mode. Below a cutoff the outgoing
     branch also has roots that are not resonances: a real one (an anti-bound
-    state) or one that grows in time is dropped with
+    root) or one that grows in time is dropped with
     `gfem.AntiBoundRootWarning`, and the next mode is returned; a root that
     decays in time is a resonance and is kept. Each port's mode sweep covers
     a band around ``target``, solved to ``SolverOptions.port_mode_tolerance``.

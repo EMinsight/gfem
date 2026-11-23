@@ -104,7 +104,7 @@ Outgoing branch
   wave leaving the model through the port. At a decaying mode
   $\mathrm{Re}\,\gamma < 0$, so the field grows along the guide away from
   the model, as a {term}`quasi-normal mode`'s does. Below cutoff it also has
-  real roots that are not resonances (anti-bound states), which an
+  real roots that are not resonances (anti-bound roots), which an
   eigenmode solve drops with a warning.
 
 Port mode sweep

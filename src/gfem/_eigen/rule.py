@@ -722,7 +722,7 @@ class EigenmodeRule:
             self.comm,
             f"Eigenmode: dropped {len(roots)} root(s) at {listed}, below the "
             "cutoff of a wave port's mode: there the port's outgoing wave grows "
-            "into its guide (a real root, an anti-bound state) or the root "
+            "into its guide (a real, anti-bound root) or the root "
             "grows in time, so it is not a resonance. The modes returned are "
             "the next nearest the target.",
             AntiBoundRootWarning,

@@ -235,7 +235,7 @@ class AntiBoundRootWarning(UserWarning):
     An eigenmode solve with wave ports continues each port's outgoing wave
     to complex frequencies. Below the cutoff of a requested port mode that
     continuation has roots that are not resonances: real ones (anti-bound
-    states, whose field grows into the guide) and their mirrors that grow in
+    roots, whose field grows into the guide) and their mirrors that grow in
     time. The search drops such a root, names it in this warning, and
     returns the next mode instead. A complex root below cutoff that decays
     in time is a resonance and is kept. Filter the warning with Python's

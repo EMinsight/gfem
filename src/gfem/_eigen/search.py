@@ -168,7 +168,7 @@ class ModeSearch:
             (`_in_layer`). ``None`` without a layer.
         below_cutoff: Whether a requested wave port mode is below its
             cutoff at a real wavenumber per file unit: the selection drops
-            a converged root there that is real (an anti-bound state, its
+            a converged root there that is real (an anti-bound root, its
             field growing into the port's guide) or grows in time (its
             mirror), `_anti_bound`. ``None`` without wave ports.
     """
@@ -522,7 +522,7 @@ class ModeSearch:
 
         On the outgoing branch, below a requested port mode's cutoff at ``Re
         k`` (`below_cutoff`), a real root (to the duplicate window) is an
-        anti-bound state and one with ``Im k < 0`` its mirror, growing in
+        anti-bound root and one with ``Im k < 0`` its mirror, growing in
         time; neither is a resonance. A root there that decays in time is
         one, and is kept. Its ``k`` joins ``anti_bound`` unless one there is
         within 1e-3. Never without wave ports.

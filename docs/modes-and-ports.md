@@ -91,8 +91,8 @@ structure. That is the guide's share of the spatial growth of a
 quasi-normal mode.
 
 The target must lie above the cutoff of every requested port mode. Below a
-cutoff the outgoing branch also has roots that are not resonances: a real
-root (an anti-bound state, whose field grows into the guide) or one that
+cutoff the outgoing branch also has roots that are not resonances: an
+anti-bound root (a real one, whose field grows into the guide) or one that
 grows in time. gfem drops them with {py:obj}`gfem.AntiBoundRootWarning`. A
 root below cutoff that decays in time is a resonance and is kept.
 
