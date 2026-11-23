@@ -157,7 +157,8 @@ class PortModeError(RuntimeError):
     """The port mode problem has no usable mode.
 
     For example the requested mode is below cutoff (evanescent) at some
-    frequency of the band. The message names the port, the frequency and the
+    frequency of the band, or an eigenmode target lies below a requested
+    port mode's cutoff. The message names the port, the frequency and the
     remedy.
     """
 
@@ -180,7 +181,8 @@ class SkippedPortModeWarning(UserWarning):
     highest ``mode`` requested there, for example a lone ``mode=2`` (mode 1
     is skipped) or modes 1 and 3 (mode 2 is skipped). That mode propagates
     wherever the higher one does, and the port partly reflects it instead of
-    absorbing it, so S misses the power the device sends into it. Add a
+    absorbing it, so S misses the power the device sends into it, and an
+    eigenmode's Q and coupling Q miss the power it carries. Add a
     `gfem.WavePort` on the surface for each skipped mode. A lone ``mode=1``
     never warns. Filter it with Python's `warnings` module.
     """

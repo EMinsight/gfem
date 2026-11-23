@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 import structured_meshes as sm
 from finite_differences import assert_gradient_matches, unit_directions
+from wave_port_cases import nearest_error, ported_guide, ported_model
 
 import gfem
 from gfem._eigen import rule as eigen_rule
@@ -229,59 +230,6 @@ CASE_N = (("dielectric", 4.0, 6.0), ("air", 1.0, 5.0))
 ROOT_B3 = 9.974259423230 + 0.096704835502j
 ROOT_C20 = 15.216633733515 + 0.207573093830j
 ROOT_N = 6.403885446223 + 0.564967925392j
-
-
-def ported_guide(
-    path, layers, *, left_port, b_mm=B_MM, nx=6, nz_per_mm=0.5, ny=2, mirror=False
-):
-    """``layers`` from z = 0 (a short, or the port ``portl``) to ``port``.
-
-    ``mirror``: the cells of the upper half in z mirror the lower half's, so
-    a symmetric stack gives a mesh symmetric under the reflection that swaps
-    the ports.
-    """
-    tops = np.cumsum([t for _, _, t in layers])
-    zs = [np.zeros(1)]
-    for (_, _, t), z1 in zip(layers, tops, strict=True):
-        n = max(1, round(t * nz_per_mm))
-        zs.append(z1 - t + np.linspace(0, t, n + 1)[1:])
-    edges = (
-        np.linspace(0, A_MM, nx + 1),
-        np.linspace(0, b_mm, ny + 1),
-        np.concatenate(zs),
-    )
-    length = tops[-1]
-
-    def volume(c):
-        return layers[int(np.searchsorted(tops, c[2]))][0]
-
-    def surface(c):
-        if abs(c[2] - length) < 1e-9:
-            return "port"
-        if left_port and abs(c[2]) < 1e-9:
-            return "portl"
-        if any(abs(c[2] - z) < 1e-9 for z in tops[:-1]):
-            return ""
-        return "walls"
-
-    mesh = sm.structured(edges, volume, surface, mirror=(False, False, mirror))
-    sm.write_msh22(path, mesh)
-    return gfem.Mesh.from_gmsh(path, length_unit="mm")
-
-
-def ported_model(mesh, layers, ports):
-    return gfem.Model(
-        mesh,
-        materials={name: gfem.Material(eps_r=eps) for name, eps, _ in layers},
-        boundaries=[gfem.PEC("walls")],
-        ports=ports,
-    )
-
-
-def nearest_error(result, root):
-    f = ghz(result.omega)
-    j = int(np.argmin(np.abs(f - root)))
-    return abs(f[j] - root) / abs(root), j
 
 
 def test_two_port_surfaces_resonance_matches_the_exact_root(tmp_path):

@@ -17,23 +17,13 @@ import jax.numpy as jnp
 import numpy as np
 from finite_differences import assert_gradient_matches, unit_directions
 from gradient_cases import WAVE_A, WAVE_A_ROOT, wave_guide, wave_resonator
+from wave_port_cases import CASE_B3, ROOT_B3
 
 import gfem
 
 #: d f / d eps_r of the layer (GHz) and d Q / d eps_r, exact.
 DF_DEPS = -1.4557073690 - 0.3555345908j
 DQ_DEPS = 1.15208486
-#: B3: windows of eps_r = 10 between two TE10 ports; exact root, GHz.
-WAVE_B3 = (
-    ("air_l", 1.0, 3.0),
-    ("window_1", 10.0, 2.4),
-    ("air_1", 1.0, 20.0),
-    ("window_2", 10.0, 2.4),
-    ("air_2", 1.0, 9.9),
-    ("window_3", 10.0, 2.4),
-    ("air", 1.0, 3.0),
-)
-ROOT_B3 = 9.974259423230 + 0.096704835502j
 GHZ = 2 * np.pi * 1e9
 
 
@@ -67,7 +57,7 @@ def test_case_a_frequency_and_q_gradients_match_the_exact_derivative(tmp_path):
 
 
 def test_two_ports_coupling_q_gradients_match_central_differences(tmp_path):
-    mesh = wave_guide(tmp_path, WAVE_B3, left_port=True)
+    mesh = wave_guide(tmp_path, CASE_B3, left_port=True)
     problem = gfem.Eigenmode(target=9.97e9, n_modes=3)
     options = gfem.SolverOptions(order=2, linear_solver="direct", eigen_tolerance=1e-12)
     ports = [gfem.WavePort("left", "portl"), gfem.WavePort("right", "port")]
@@ -75,7 +65,7 @@ def test_two_ports_coupling_q_gradients_match_central_differences(tmp_path):
     def solve(eps):
         design = {"air_1": gfem.MaterialField(eps_r=eps)}
         return gfem.solve(
-            wave_resonator(mesh, WAVE_B3, design, ports), problem, options=options
+            wave_resonator(mesh, CASE_B3, design, ports), problem, options=options
         )
 
     eps = jnp.asarray(np.linspace(1.0, 1.2, len(mesh.elements("air_1"))))

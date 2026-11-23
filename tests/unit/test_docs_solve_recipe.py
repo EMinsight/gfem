@@ -4,14 +4,14 @@ docs/recipes/solve-a-device.md runs nothing at docs build time. This runs its
 blocks in order, as a reader does, on the repository's own
 docs/tutorials/data/line.msh, and compares every printed number with a hand
 formula coded here (the matched-line transmission, the plate attenuation, the
-open-ended line's resonances, the plate capacitance) and with the output
-block the page shows under the code.
+open-ended line's resonances, those of the line loaded by a guide, the plate
+capacitance) and with the output block the page shows under the code.
 """
 
 import docs_pages as dp
 import numpy as np
 import pytest
-from scipy.optimize import brentq
+from scipy.optimize import brentq, newton
 
 PAGE = dp.DOCS / "recipes" / "solve-a-device.md"
 C0 = 299792458.0
@@ -62,6 +62,54 @@ def _open_line_resonances(count: int) -> np.ndarray:
     return np.sort(roots)[:count]
 
 
+def _guide_loaded_resonance(guess: complex) -> complex:
+    """A complex resonance (Hz) of the line open at one end, a guide at the other.
+
+    Air 10 mm, eps_r = 10 for 20 mm, air 10 mm, open (a magnetic wall) at the
+    far end; the guide is the air line, of impedance 1 here. Under
+    exp(+i w t) a resonance is a root of Z_in(f) + 1 = 0 at the port, with
+    Z_in looking into the line.
+    """
+    n = np.sqrt(10.0)
+
+    def load(z_load, z, k, length):
+        t = np.tan(k * length)
+        return z * (z_load + 1j * z * t) / (z + 1j * z_load * t)
+
+    def residual(f):
+        k = 2 * np.pi * f / C0
+        z = -1j / np.tan(k * 10e-3)  # the open-ended 10 mm of air
+        z = load(z, 1 / n, n * k, 20e-3)
+        return load(z, 1.0, k, 10e-3) + 1.0
+
+    return complex(newton(residual, guess, tol=1e-3, maxiter=100))
+
+
+def _coupling_q(f: complex) -> float:
+    """The guide's coupling Q, Re w E / P, at the resonance ``f`` (Hz).
+
+    The line's voltage V(z) runs from the open end (V = 1, I = 0) back to the
+    port through each layer's exact transfer matrix; E = (1/2) integral of
+    C |V|^2 dz with C = eps_r / c, the power out of the port
+    P = -(1/2) Re(V I*) with the guide's impedance 1.
+    """
+    w = 2 * np.pi * f
+    state = np.array([1.0 + 0j, 0.0 + 0j])
+    energy = 0.0
+    for length, eps_r in ((10e-3, 1.0), (20e-3, 10.0), (10e-3, 1.0)):
+        k, z = w * np.sqrt(eps_r) / C0, 1 / np.sqrt(eps_r)
+        steps = np.linspace(0.0, length, 2001)
+        v_end, i_end = state
+        # back from the layer's far face: V(s), s the distance from that face
+        v = v_end * np.cos(k * steps) + 1j * z * i_end * np.sin(k * steps)
+        energy += 0.5 * (eps_r / C0) * np.trapezoid(abs(v) ** 2, steps)
+        i = i_end * np.cos(k * length) + 1j * v_end / z * np.sin(k * length)
+        state = np.array([v[-1], i])
+    v_port, i_port = state
+    power = -0.5 * np.real(v_port * np.conj(i_port))
+    return w.real * energy / power
+
+
 def test_the_page_downloads_the_tutorial_mesh():
     first = dp.examples(PAGE.read_text(encoding="utf-8"))[0]
     assert f'url = "{dp.MESH_URL}"' in first.code
@@ -79,6 +127,7 @@ def test_every_section_with_a_number_prints_it(ran):
         "Walls and metals",
         "Resonances and Q",
         "Coupling Q of a port",
+        "A resonator loaded by a guide",
         "Capacitance",
         "Time each phase",
         "Check your results",
@@ -134,6 +183,26 @@ def test_two_equal_ports_halve_the_coupling_q(ran):
     assert q_p2 == pytest.approx(q_p1, rel=1e-9)
     assert parallel == pytest.approx(q_p1 / 2, rel=1e-9)
     assert q == pytest.approx(parallel, rel=1e-5)
+
+
+def test_the_guide_loaded_resonances_are_the_line_roots(ran):
+    (printed,) = _printed(ran, "A resonator loaded by a guide")
+    frequency, q, q_port = (printed[i : i + 2] for i in (0, 2, 4))
+    roots = np.array(
+        [_guide_loaded_resonance(g) for g in (4.4e9 + 0.2e9j, 6.4e9 + 0.2e9j)]
+    )
+    assert roots.real / 1e9 == pytest.approx([4.438665405, 6.406274154], abs=1e-9)
+    assert roots.imag / 1e9 == pytest.approx([0.220892787, 0.184070298], abs=1e-9)
+    # The page says "within 10 kHz".
+    assert frequency * 1e9 == pytest.approx(roots.real, abs=1e4)
+    exact_q = abs(roots) / (2 * roots.imag)
+    exact_q_port = [_coupling_q(f) for f in roots]
+    assert exact_q == pytest.approx([10.0595, 17.4089], abs=1e-4)
+    assert exact_q_port == pytest.approx([10.0471, 17.4017], abs=1e-4)
+    # The page says "the same to the third decimal".
+    assert q == pytest.approx(exact_q, abs=5e-4)
+    assert q_port == pytest.approx(exact_q_port, abs=5e-4)
+    assert (q_port < q).all()
 
 
 def test_the_capacitance_is_two_plate_capacitors(ran):

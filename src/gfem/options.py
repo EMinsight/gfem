@@ -310,7 +310,8 @@ class SolverOptions:
             that end the adaptive sweep.
         port_mode_tolerance: Accuracy of each wave port's mode across the
             sweep: the backward error each mode reaches at every frequency
-            (``PortModeResult.residual``).
+            of the sweep, and at each complex frequency an eigenmode solve
+            evaluates (``PortModeResult.residual``).
         floquet_order_tolerance: Which evanescent diffraction orders a
             Floquet surface models: those whose round trip to the nearest
             structure decays by less than this (:math:`e^{-2|\gamma| d}`

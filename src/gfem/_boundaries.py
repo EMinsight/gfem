@@ -641,6 +641,10 @@ class WavePort:
     shared port surface). A propagating mode no port on the surface requests
     is partly reflected, not converted.
 
+    In a `gfem.Eigenmode` problem the port absorbs its requested mode at the
+    complex eigenfrequency and reports a coupling Q in
+    ``EigenmodeResult.q_port``.
+
     The cross-section may contain anisotropic materials when every tensor
     has a principal axis along the port normal (any orientation in the port
     plane); off-axis tensors would make forward and backward port modes

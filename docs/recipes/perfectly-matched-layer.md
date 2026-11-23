@@ -228,8 +228,9 @@ result = gfem.solve(strip, gfem.Driven(frequency=np.linspace(185e12, 200e12, 31)
   grazing angle, $\cos\theta = \beta/k_0$, and reflect more than $R_0$ (the
   formula above). Set `reference_frequency` to $f\beta/k_0$, where
   $k_0 = \beta$, to restore the target.
-- A port face may cut a side layer, never a layer stretched along its
-  normal, and never obliquely.
+- A port face may cut a side layer in a driven solve, never a layer
+  stretched along its normal, and never obliquely. An eigenmode solve
+  refuses a wave port face that crosses the layer (`NotImplementedError`).
 
 ## Radiation Q of a resonator
 

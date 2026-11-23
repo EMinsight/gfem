@@ -201,6 +201,11 @@ PROBLEMS = {
     "eigenmode_sheet": Problem("eigenmode", "omega"),
     "eigenmode_periodic_plain": Problem("eigenmode_periodic_plain", "omega"),
     "eigenmode_periodic_bloch": Problem("eigenmode_periodic_bloch", "omega"),
+    # wave ports load the resonance: omega on the eigenmode row, the
+    # wave port's q_port under eigenmode_participation
+    "eigenmode_wave": Problem("eigenmode", "omega", "wave"),
+    "eigenmode_wave_shared": Problem("eigenmode", "omega", "wave"),
+    "eigenmode_wave_lossy": Problem("eigenmode", "omega", "wave"),
     # cell-only key: the raise table's eigenmode keys answer for its leaves
     "eigenmode_participation": Problem("eigenmode_participation", "participation"),
     "eigenmode_field": Problem("eigenmode_field", "e_fields.0.coefficients"),
@@ -416,6 +421,22 @@ RAISES_LABELS = {
     "eigenmode mode-field output x nodes of a port surface": (
         "Eigenmode participations, port Q and mode fields, with respect to node "
         "coordinates on a port surface"
+    ),
+    "eigenmode x material on a wave port face": (
+        "Eigenmode results, with respect to the material of a region with "
+        "elements on a wave port's face"
+    ),
+    "eigenmode x law parameter of a region on a wave port face": (
+        "Eigenmode results, with respect to the parameters of a permittivity "
+        "law in a region with elements on a wave port's face"
+    ),
+    "eigenmode x Impedance value beside a wave port": (
+        "Eigenmode results, with respect to the resistance, inductance or "
+        "capacitance of an `Impedance` that shares an edge with a wave port's face"
+    ),
+    "eigenmode x nodes of a wave port surface": (
+        "Eigenmode results with wave ports, with respect to node coordinates on "
+        "a wave port's face"
     ),
     "greedy adaptive sweep under a transformation": (
         '`Driven(sweep="adaptive")` without `samples`, inside `jax.grad`, '

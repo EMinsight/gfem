@@ -125,7 +125,6 @@ from gradient_cases import (
     WAVE_C_ROOT,
     WAVE_L,
     WAVE_L_ROOT,
-    WAVE_L_SECTION,
     WAVE_LUMPED,
     absorbing_guide,
     capacitor,
@@ -1327,14 +1326,9 @@ def _eigen_wave(d: Designs, cell: Cell, options, seed: int) -> Case:
         return _eigen_wave_a(d, cell, options, seed)
     region = "window" if cell.variant == "a4" else "dielectric"
     eps = ramp(mesh, region, 3.8, 4.2) * (2.5 if cell.variant == "a4" else 1.0)
-    section = {}
-    if cell.problem == "eigenmode_wave_lossy":
-        # a complex value goes through a field: principal values on the axes
-        values = np.tile(np.asarray(WAVE_L_SECTION), (len(mesh.elements("section")), 1))
-        section = {"section": gfem.MaterialField(eps_r=values, axes=np.eye(3))}
 
     def model(eps):
-        design = {region: gfem.MaterialField(eps_r=eps)} | section
+        design = {region: gfem.MaterialField(eps_r=eps)}
         return wave_resonator(mesh, layers, design, wave)
 
     j = _wave_mode(model(eps), problem, options, root)

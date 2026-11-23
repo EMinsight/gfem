@@ -172,7 +172,10 @@ this way over 1.5 to 1.6 µm.
   {term}`energy permittivity`. A mode where it is not positive raises
   `ValueError`: model such a lossy metal as {py:obj}`gfem.Conductor` or
   {py:obj}`gfem.PEC`. An `Absorbing` face on a law region raises
-  `NotImplementedError`; put a dielectric layer between them.
+  `NotImplementedError`; put a dielectric layer between them. An
+  absorbing edge beside a law region in a wave port's cross-section raises
+  `NotImplementedError` too: that edge takes $\operatorname{Re} \varepsilon$, which has no value at the
+  complex eigenfrequency. Move the edge off the law's region.
 - **{py:obj}`gfem.PortMode`** and wave ports: a law may sit in a port's
   cross-section (a {term}`dispersive cross-section`) when $\operatorname{Re} \varepsilon > 0$ there at
   every frequency. A metal in the cross-section raises `ValueError` before

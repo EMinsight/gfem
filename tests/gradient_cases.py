@@ -49,6 +49,19 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 import structured_meshes as sm
+from wave_port_cases import (
+    A_MM,
+    B_MM,
+    C_B_MM,
+    CASE_A,
+    CASE_A3,
+    CASE_A4,
+    CASE_L,
+    ROOT_A,
+    ROOT_A4,
+    ROOT_C20,
+    ROOT_L,
+)
 
 import gfem
 
@@ -972,11 +985,9 @@ def junction_law_line(
 # --- eigenmode with wave ports ------------------------------------------------------
 
 #: WR-90's cross-section, mm.
-WR90 = (22.86, 10.16)
-#: Case A: a short, eps_r = 4 for 10 mm, 5 mm of air up to the port (Q 5.5);
-#: exact root 11.665906948910 + 1.062461078093i GHz.
-WAVE_A = (("dielectric", 4.0, 10.0), ("air", 1.0, 5.0))
-WAVE_A_ROOT = 11.665906948910 + 1.062461078093j
+WR90 = (A_MM, B_MM)
+#: Case A: a short, eps_r = 4 for 10 mm, 5 mm of air up to the port (Q 5.5).
+WAVE_A, WAVE_A_ROOT = CASE_A, ROOT_A
 #: Case A with its eps_r = 4 layer split at 6 mm: an inductive lumped port
 #: on the split, the design the first 6 mm, the spacer's interface with the
 #: air the node cells' moving plane.
@@ -984,24 +995,13 @@ WAVE_A_SPLIT = (("dielectric", 4.0, 6.0), ("spacer", 4.0, 4.0), ("air", 1.0, 5.0
 #: The lumped port's inductance and capacitance (H, F) on the split.
 WAVE_LUMPED = (1e-8, 1e-14)
 #: A4: two eps_r = 10 windows, a partial reflector, Q 869.
-WAVE_A4 = (
-    ("air", 1.0, 20.0),
-    ("window", 10.0, 2.4),
-    ("air", 1.0, 9.9),
-    ("window", 10.0, 2.4),
-    ("air", 1.0, 3.0),
-)
-WAVE_A4_ROOT = 9.968822933448 + 0.005732947875j
+WAVE_A4, WAVE_A4_ROOT = CASE_A4, ROOT_A4
 #: C: the A3 stack on a guide 5 mm high, one port surface requesting TE10 and
 #: TE20; the TE20 family's root.
-WAVE_C = (("dielectric", 4.0, 30.0), ("air", 1.0, 5.0))
-WAVE_C_HEIGHT = 5.0
-WAVE_C_ROOT = 15.216633733515 + 0.207573093830j
+WAVE_C, WAVE_C_HEIGHT, WAVE_C_ROOT = CASE_A3, C_B_MM, ROOT_C20
 #: L: case A with a lossy anisotropic section on the port face (TE10 reads
-#: eps_yy alone); exact root 11.669452414901 + 2.116334667323i GHz.
-WAVE_L = (("dielectric", 4.0, 10.0), ("section", 1.0, 5.0))
-WAVE_L_SECTION = (3.0, 2.25 * (1 - 0.01j), 5.0)
-WAVE_L_ROOT = 11.669452414901 + 2.116334667323j
+#: eps_yy alone).
+WAVE_L, WAVE_L_ROOT = CASE_L, ROOT_L
 
 
 def wave_guide(
@@ -1061,7 +1061,10 @@ def wave_guide(
 
 def wave_resonator(mesh: gfem.Mesh, layers, design: dict, ports) -> gfem.Model:
     """The guide's model: ``design`` materials by region, the rest's eps_r."""
-    materials = {name: gfem.Material(eps_r=eps) for name, eps, _ in layers}
+    materials = {
+        name: eps if isinstance(eps, gfem.Material) else gfem.Material(eps_r=eps)
+        for name, eps, _ in layers
+    }
     return gfem.Model(
         mesh,
         materials=materials | design,
