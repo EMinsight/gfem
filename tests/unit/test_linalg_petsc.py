@@ -1443,6 +1443,65 @@ def test_retain_memory_0_empties_the_coarse_pool_when_the_forward_raises(
     assert coarse.pooled() == 0
 
 
+def _traced_s(tmp_path, retain_memory):
+    """S of the layered line as a JAX function of its permittivity, and that value."""
+    line = gradient_cases.layered_line(tmp_path)
+    values, _ = gradient_cases.line_design(line, seed=3)
+    options = gfem.SolverOptions(
+        order=1, linear_solver="direct", retain_memory=retain_memory
+    )
+
+    def s_of(eps):
+        model = gradient_cases.with_fields(line, {**values, "eps_r": eps})
+        solved = gfem.solve(model, gfem.Driven(frequency=24e9), options=options)
+        return gradient_cases.s_functional(solved.s.values)
+
+    return s_of, values["eps_r"]
+
+
+def test_retain_memory_0_empties_the_coarse_pool_when_a_jitted_forward_raises(
+    built, monkeypatch, tmp_path
+):
+    # a primal forward walks no cache before its set-ups, and under jit it runs after
+    # gfem.solve has returned
+    s_of, eps = _traced_s(tmp_path, 0)
+
+    def singular(*_, **__):
+        made = _coarse_on(monkeypatch, built, 1 - 2j)
+        made.set_up()
+        made.free()
+        # as a later singular coarse set-up raises, on every rank
+        raise gfem._mpi.AgreedError("the coarse factorization failed")
+
+    monkeypatch.setattr(DrivenRule, "forward", singular)
+    # the host error reaches the caller through JAX's callback
+    with pytest.raises(Exception, match="the coarse factorization failed"):
+        jax.block_until_ready(jax.jit(s_of)(eps))
+    assert coarse.pooled() == 0
+
+
+@pytest.mark.parametrize("retain_memory", [0, None])
+def test_retain_memory_0_empties_the_coarse_pool_after_a_jitted_forward(
+    built, monkeypatch, tmp_path, retain_memory
+):
+    # under jit the forward runs when the compiled function does, after gfem.solve
+    # has returned
+    s_of, eps = _traced_s(tmp_path, retain_memory)
+    real = DrivenRule.forward
+
+    def pooling(self, *args, **kwargs):
+        solved = real(self, *args, **kwargs)
+        # returned after the forward's last cache walk
+        made = _coarse_on(monkeypatch, built, 1 - 2j)
+        made.set_up()
+        made.free()
+        return solved
+
+    monkeypatch.setattr(DrivenRule, "forward", pooling)
+    jax.block_until_ready(jax.jit(s_of)(eps))
+    assert coarse.pooled() == (0 if retain_memory == 0 else 1)
+
+
 def test_pooled_coarse_factorizations_count_and_go_at_the_caches_tier_3(
     built, monkeypatch
 ):

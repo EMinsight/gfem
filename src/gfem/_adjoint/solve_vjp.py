@@ -73,10 +73,12 @@ the call's concrete values, so a rule reads problem values from
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import functools
-from collections.abc import Collection, Hashable, Sequence
+import sys
+from collections.abc import Collection, Generator, Hashable, Sequence
 from typing import Any
 
 import jax
@@ -184,7 +186,10 @@ def solve_vjp(  # noqa: PLR0915
     def host_forward(keep: bool, wanted: frozenset, *values: Any) -> tuple:
         comm = getattr(rule, "comm", None)
         host_rule, host_model = rebuild(values)
-        with _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS):
+        with (
+            _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS),
+            _coarse_pool_bounded(rule.options, comm),
+        ):
             if comm is not None:
                 _mpi.entry_check(
                     comm,
@@ -338,6 +343,30 @@ def _forward(rule: Any, model: Any, *, keep: bool, request: SolveRequest) -> tup
         return rule.forward(model, keep=keep, request=request)
 
 
+@contextlib.contextmanager
+def _coarse_pool_bounded(options: Any, comm: Any) -> Generator[None]:
+    """With ``retain_memory=0``, no pooled coarse factorization outlives a host call.
+
+    A traced solve's host calls run when JAX runs them, after `gfem.solve` returned
+    under ``jax.jit``, so `gfem.solve` cannot empty the pool itself. Emptying is
+    collective: on an error it runs only when every rank raises that error
+    together; inside `_mpi.section`, any other error ends the job first.
+    """
+    try:
+        yield
+    except BaseException as error:
+        if comm is None or _mpi.is_agreed(error, _mpi.FORWARD_ERRORS):
+            _empty_coarse_pool(options, comm)
+        raise
+    _empty_coarse_pool(options, comm)
+
+
+def _empty_coarse_pool(options: Any, comm: Any) -> None:
+    coarse = sys.modules.get("gfem._linalg.coarse")
+    if options.retain_memory == 0 and coarse is not None:
+        coarse.empty(comm)
+
+
 def _free_consumed(comm: Any, options: Any) -> None:
     """Free the entries a backward has read, before this forward assembles.
 
@@ -399,6 +428,7 @@ def _host_backward(
     cotangents = {n: np.asarray(c) for n, c in zip(live_names, cts, strict=True)}
     with (
         _mpi.section(comm, agreed=_mpi.FORWARD_ERRORS),
+        _coarse_pool_bounded(rule.options, comm),
         _timing.scope(_timing.problem_name(getattr(rule, "problem", None)), comm),
     ):
         if comm is not None:
