@@ -46,8 +46,6 @@ if TYPE_CHECKING:
     from gfem.problems import Polarization
 
 __all__ = [
-    "ADJOINT_ROW",
-    "UNIFORM_ROW",
     "Block",
     "BlockOutcome",
     "BlockRunner",
@@ -60,12 +58,6 @@ __all__ = [
     "solutions_entry",
     "solve_block",
 ]
-
-#: The progress rows of a uniform sweep's forward and adjoint solves. A rule
-#: solving part of a parent's sweep opens a row of the same label, which joins
-#: the parent's.
-UNIFORM_ROW = "uniform sweep"
-ADJOINT_ROW = "uniform sweep (adjoint)"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -178,7 +170,7 @@ class FrequencyWorkers:
             for block in indices
         ]
         parts = workers.model_parts(model)
-        with _progress.task(UNIFORM_ROW, total=len(frequencies)) as row:
+        with _progress.task(_progress.UNIFORM_SWEEP, total=len(frequencies)) as row:
             results = workers.run(
                 solve_block,
                 [(*parts, problem, options, keep) for problem in problems],
@@ -295,7 +287,9 @@ class FixedAngleChildren:
         ``adjoints``; its handles are freed before the next frequency.
         """
         outcomes: list[BlockOutcome] = []
-        with _progress.task(UNIFORM_ROW, total=sum(len(b.indices) for b in blocks)):
+        with _progress.task(
+            _progress.UNIFORM_SWEEP, total=sum(len(b.indices) for b in blocks)
+        ):
             for block in blocks:
                 (n,) = block.indices
                 rule = self.child(model, n)
@@ -350,7 +344,9 @@ class FixedAngleChildren:
         ct_e = cotangents.get("e_field")
         pairs: list[FieldPair] = []
         frequencies = parent.problem.frequency
-        with _progress.task(ADJOINT_ROW, total=len(frequencies)) as row:
+        with _progress.task(
+            _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)
+        ) as row:
             for n in range(len(frequencies)):
                 rule = self.child(model, n)
                 part: dict[str, np.ndarray] = {}

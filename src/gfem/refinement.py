@@ -75,11 +75,8 @@ __all__ = [
 ]
 
 #: One INFO record per refinement cycle, once its outcome is settled (see
-#: `_log_cycle`). Silent by default: Python's root level is WARNING.
+#: `_cycle_settled`). Silent by default: Python's root level is WARNING.
 LOGGER = logging.getLogger("gfem.mesh_refinement")
-
-#: The mesh refinement's progress row: one unit per refinement cycle settled.
-REFINEMENT_ROW = "mesh refinement"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -866,7 +863,7 @@ def _deferred_solve(
     return result, adjoints, deferred.gauge
 
 
-def _loop(
+def _loop(  # noqa: PLR0915 - one refinement loop, each cycle settled in order
     model: Model,
     problem: Any,
     *,
@@ -896,9 +893,11 @@ def _loop(
     tri_parents = np.arange(len(model.mesh.triangles))
     duals = RiddenDuals(estimators, model, problem)
     tracks = _Tracks(estimators)
+    # as the cycles report it: the record's and the row's
+    reported = _shaped(list(tolerances), joint)
     # opened before the first mesh is solved, whose phases show in it; the
     # number of refinement cycles is not known in advance
-    with _progress.task(REFINEMENT_ROW) as row:
+    with _progress.task(_progress.MESH_REFINEMENT) as row:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", MeshQualityWarning)  # `refine_mesh` warned
             result, adjoints, gauge = _deferred_solve(
@@ -958,7 +957,7 @@ def _loop(
                 "max_cycles" if len(cycles) > max_cycles else None
             )
             if stop is not None:
-                _cycle_settled(len(cycles) - 1, cycle, tolerances, joint, stop, row=row)
+                _cycle_settled(len(cycles) - 1, cycle, reported, stop, row=row)
                 break
             marked = _dorfler(_marking(estimates, tolerances, above), error_fraction)
             cycles[-1] = dataclasses.replace(cycle, marked=int(marked.sum()))
@@ -966,9 +965,7 @@ def _loop(
             if max_tetrahedra is not None and len(fine.tetrahedra) > max_tetrahedra:
                 stop = "max_tetrahedra"
             # settled: the record precedes the refined mesh's solve records
-            _cycle_settled(
-                len(cycles) - 1, cycles[-1], tolerances, joint, stop, row=row
-            )
+            _cycle_settled(len(cycles) - 1, cycles[-1], reported, stop, row=row)
             if stop is not None:
                 break
             tracks.bound(
@@ -1021,39 +1018,27 @@ def _loop(
 def _cycle_settled(
     index: int,
     cycle: RefinementCycle,
-    tolerances: tuple[float, ...],
-    joint: bool,
+    tolerance: float | tuple[float, ...],
     stop: str | None,
     *,
-    row: Any,
+    row: _progress.ProgressRow,
 ) -> None:
-    """Refinement cycle ``index``'s outcome is settled: advance ``row``, log it."""
+    """Refinement cycle ``index``'s outcome is settled: advance ``row``, log it.
+
+    The record on `LOGGER` has the cycle's attributes (``modes`` aside: a
+    read-only mapping does not pickle, and a queue handler across processes
+    pickles the record), with ``cycle``, ``tolerance`` (a tuple for a tuple of
+    estimators) and ``stop`` (the loop's stop reason on this cycle, else
+    ``None``).
+    """
     row.advance(
         cycle=index,
         tetrahedra=cycle.tetrahedra,
         estimate=cycle.estimate,
-        tolerance=_shaped(list(tolerances), joint),
+        tolerance=tolerance,
     )
-    _log_cycle(index, cycle, tolerances, joint, stop)
-
-
-def _log_cycle(
-    index: int,
-    cycle: RefinementCycle,
-    tolerances: tuple[float, ...],
-    joint: bool,
-    stop: str | None,
-) -> None:
-    """Log refinement cycle ``index`` on `LOGGER`, its outcome settled.
-
-    The attributes are the cycle's (``modes`` aside: a read-only mapping does
-    not pickle, and a queue handler across processes pickles the record),
-    with ``cycle``, ``tolerance`` (a tuple with ``joint``) and ``stop`` (the
-    loop's stop reason on this cycle, else ``None``).
-    """
     if not LOGGER.isEnabledFor(logging.INFO):
         return
-    tolerance = _shaped(list(tolerances), joint)
     LOGGER.info(
         "mesh refinement cycle %d: %d tetrahedra, %d unknowns, estimate %s "
         "(tolerance %s), marked %d%s",

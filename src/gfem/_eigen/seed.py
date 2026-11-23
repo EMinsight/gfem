@@ -38,7 +38,6 @@ from gfem._eigen.operator import EigenOperator
 
 __all__ = [
     "MIN_SUBSPACE",
-    "MODE_ROW",
     "SeedBoundReached",
     "SeedOperator",
     "seed_operator",
@@ -47,9 +46,6 @@ __all__ = [
 #: The smallest subspace (ncv) a seed solve builds: it applies the seed
 #: operator, one ``T(sigma)`` solve, at least this many times per shift.
 MIN_SUBSPACE = 20
-
-#: The mode search's progress row, which the seed solve's notes join.
-MODE_ROW = "mode search"
 
 #: The most restarts a seed solve makes (ARPACK's ``maxiter``, SLEPc's
 #: ``max_it``, which ``eps_max_it`` overrides). Good cases need 0 to 2, the

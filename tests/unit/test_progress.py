@@ -27,8 +27,6 @@ from gfem._engine import driven
 from gfem._engine.cache import Entry
 from gfem._engine.driven import DrivenRule, port_loads
 from gfem._engine.driven_sweep import (
-    ADJOINT_ROW,
-    UNIFORM_ROW,
     FixedAngleChildren,
     SweepSplit,
 )
@@ -410,7 +408,7 @@ class _Child:
         (self.f,) = problem.frequency
 
     def forward(self, model, *, keep, request):  # noqa: ARG002
-        with _progress.task(UNIFORM_ROW, total=1) as row:
+        with _progress.task(_progress.UNIFORM_SWEEP, total=1) as row:
             row.advance(frequency=self.f)
         out = SweepOutputs.uniform(
             (0,),
@@ -424,7 +422,7 @@ class _Child:
         return out.outputs(), Entry(physics="em", fields={"solution": np.ones((2, 1))})
 
     def backward(self, model, entry, cotangents, *, wanted, port_modes):  # noqa: ARG002
-        with _progress.task(ADJOINT_ROW, total=1) as row:
+        with _progress.task(_progress.UNIFORM_SWEEP_ADJOINT, total=1) as row:
             row.advance(frequency=self.f)
         return []
 
@@ -457,7 +455,10 @@ def test_a_fixed_angle_sweep_s_children_advance_their_parent_s_rows(board, monke
     cotangent = np.zeros((3, 1, 1))
     cotangent[[0, 2]] = 1.0
     split.runner.backward(None, entry, {"s": cotangent}, wanted=None)
-    assert loops(board) == [(UNIFORM_ROW, 3, 3, True), (ADJOINT_ROW, 3, 3, True)]
+    assert loops(board) == [
+        (_progress.UNIFORM_SWEEP, 3, 3, True),
+        (_progress.UNIFORM_SWEEP_ADJOINT, 3, 3, True),
+    ]
 
 
 # ---------------------------------------------------------------- drawn rows

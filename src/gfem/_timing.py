@@ -28,8 +28,9 @@ Every record carries ``phase``, ``seconds`` (wall time on this rank),
 runs no collective for these records: a handler sums them and gathers them
 across ranks. A phase nested in the same phase is part of the outer one.
 
-Each outermost phase is also shown on the log display's progress rows
-(`gfem._progress.phase`), whether or not its record is logged.
+Every span not nested in a span of the same name is also shown on the log
+display's progress rows (`gfem._progress.phase`), whether or not its record is
+logged.
 
 Frequency workers time their blocks in their own processes; the parent logs
 their records (`gfem._linalg.report.replay`). The workers run side by side,

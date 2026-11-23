@@ -52,9 +52,6 @@ from gfem.errors import SweepNotConvergedWarning, SweepRankDeficientWarning
 
 __all__ = ["AffineSystem", "AffineTerm", "ReducedModel", "Sweep", "adaptive_sweep"]
 
-#: The adaptive sweep's progress row: one unit per sample solved in full.
-ADAPTIVE_ROW = "adaptive sweep"
-
 #: A basis candidate whose orthogonal part is below this fraction of its
 #: norm is dropped (already in the span).
 DROP = 1e-10
@@ -312,7 +309,7 @@ def adaptive_sweep(
     errors: list[float] = []
     snapshots: list[np.ndarray] = []
 
-    def add(i: int, *, measure: bool) -> None:
+    def add(i: int, row: _progress.ProgressRow, *, measure: bool) -> None:
         omega = float(omegas[i])
         guess = None
         if model.size:
@@ -336,10 +333,10 @@ def adaptive_sweep(
 
     n_freq = len(omegas)
     # the number of samples is not known before the greedy stops
-    with _progress.task(ADAPTIVE_ROW) as row:
+    with _progress.task(_progress.ADAPTIVE_SWEEP) as row:
         if samples is None:
             for i in dict.fromkeys((0, n_freq - 1)):
-                add(i, measure=False)
+                add(i, row, measure=False)
             streak = 0
             pending = [int(i) for i in dict.fromkeys(seeds) if int(i) not in chosen]
             # the seeds are solved whatever the streak: a model that looks
@@ -350,7 +347,7 @@ def adaptive_sweep(
                     i = pending.pop(0)
                 else:
                     i = _next_sample(z, chosen, snapshots, model.size)
-                add(i, measure=True)
+                add(i, row, measure=True)
                 streak = streak + 1 if errors[-1] < tolerance else 0
             converged = streak >= memory or len(chosen) == n_freq
             if not converged:
@@ -367,7 +364,7 @@ def adaptive_sweep(
                 )
         else:
             for k, i in enumerate(samples):
-                add(int(i), measure=k > 0)
+                add(int(i), row, measure=k > 0)
             streak = next(
                 (k for k, e in enumerate(reversed(errors)) if not e < tolerance),
                 len(errors),

@@ -94,7 +94,7 @@ def run(
     *,
     threads: int,
     keywords: Sequence[dict[str, Any]] | None = None,
-    row: Any = None,
+    row: _progress.ProgressRow | None = None,
 ) -> list[Any]:
     """``function(*a, **k)`` for each ``a`` of ``arguments``, in its own worker.
 
@@ -116,44 +116,50 @@ def run(
     """
     context = multiprocessing.get_context("spawn")
     # a queue and its feeder threads only while a row is drawn
-    forwarded = context.Queue() if isinstance(row, _progress.Row) else None
+    feed = (context.Queue(), row) if isinstance(row, _progress.Row) else None
     pool_options: dict[str, Any] = {}
-    if forwarded is not None:
-        pool_options = {"initializer": _progress.forward_to, "initargs": (forwarded,)}
-    with contextlib.ExitStack() as stack:
-        futures = []
-        # a pool starts its process on the first submit
-        with _worker_environment(threads):
-            for i, args in enumerate(arguments):
-                pool = stack.enter_context(
-                    ProcessPoolExecutor(
-                        max_workers=1, mp_context=context, **pool_options
+    if feed is not None:
+        pool_options = {"initializer": _progress.forward_to, "initargs": feed[:1]}
+    try:
+        with contextlib.ExitStack() as stack:
+            futures = []
+            # a pool starts its process on the first submit
+            with _worker_environment(threads):
+                for i, args in enumerate(arguments):
+                    pool = stack.enter_context(
+                        ProcessPoolExecutor(
+                            max_workers=1, mp_context=context, **pool_options
+                        )
                     )
-                )
-                kwargs = keywords[i] if keywords is not None else {}
-                futures.append(pool.submit(function, *args, **kwargs))
-        if forwarded is not None:
-            _advance_until_done(futures, forwarded, row)
-        out = []
-        for future, label in zip(futures, labels, strict=True):
-            try:
-                out.append(future.result())
-            except BrokenProcessPool as err:
-                raise RuntimeError(
-                    f"The frequency worker solving {label} stopped without a "
-                    "result: it was killed, most likely for lack of memory (each "
-                    "worker holds one solve). Use fewer "
-                    "SolverOptions.frequency_workers, or frequency_workers=1."
-                ) from err
-    if forwarded is not None:
-        # a worker's feeder thread flushes its last advances as it exits, which
-        # the pools' shutdown above waited for
-        _drain(forwarded, row)
-        forwarded.close()
+                    kwargs = keywords[i] if keywords is not None else {}
+                    futures.append(pool.submit(function, *args, **kwargs))
+            if feed is not None:
+                _advance_until_done(futures, *feed)
+            out = []
+            for future, label in zip(futures, labels, strict=True):
+                try:
+                    out.append(future.result())
+                except BrokenProcessPool as err:
+                    raise RuntimeError(
+                        f"The frequency worker solving {label} stopped without a "
+                        "result: it was killed, most likely for lack of memory (each "
+                        "worker holds one solve). Use fewer "
+                        "SolverOptions.frequency_workers, or frequency_workers=1."
+                    ) from err
+        if feed is not None:
+            # a worker's feeder thread flushes its last advances as it exits,
+            # which the pools' shutdown above waited for
+            _drain(*feed)
+    finally:
+        # on every path: a block's error leaves no queue feeder behind
+        if feed is not None:
+            feed[0].close()
     return out
 
 
-def _advance_until_done(futures: Sequence[Future], forwarded: Any, row: Any) -> None:
+def _advance_until_done(
+    futures: Sequence[Future], forwarded: Any, row: _progress.ProgressRow
+) -> None:
     """Advance ``row`` by the workers' advances until every future is done."""
     pending = set(futures)
     while pending:
@@ -161,7 +167,7 @@ def _advance_until_done(futures: Sequence[Future], forwarded: Any, row: Any) -> 
         _drain(forwarded, row)
 
 
-def _drain(forwarded: Any, row: Any) -> None:
+def _drain(forwarded: Any, row: _progress.ProgressRow) -> None:
     """Advance ``row`` by each advance waiting on ``forwarded``."""
     while True:
         try:

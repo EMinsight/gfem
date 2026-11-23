@@ -28,11 +28,10 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
-
 
 def _parser() -> argparse.ArgumentParser:
     from gfem import __version__
+    from gfem.log import _LEVELS
 
     parser = argparse.ArgumentParser(
         prog="gfem",
