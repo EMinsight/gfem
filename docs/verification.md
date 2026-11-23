@@ -108,18 +108,22 @@ exact root or with a driven sweep of the same model:
   layers filling its whole section and a wave port at the other end, has
   resonances that are the roots of one transmission-line equation in
   complex frequency. The eigenfrequency converges at element orders 2 to 4,
-  from Q 5.5 to Q 869, including a resonance just above the port mode's
-  cutoff. The same check covers a guide with a port at each end, a shared
-  port surface carrying TE10 and TE20, a lossy anisotropic port section, a
-  coaxial line (TEM, in closed form) and the TM01 mode of a circular guide.
+  at Q 5.5 and Q 869, by at least ten times per order, to within $10^{-4}$
+  at order 3 and $3\times10^{-7}$ at order 4. Within $10^{-4}$ at order 3
+  are also a resonance just above the port mode's cutoff, a guide with a
+  port at each end, both mode families of a shared port surface carrying
+  TE10 and TE20 (each told apart by its field's symmetry), a lossy
+  anisotropic port section and a coaxial line (TEM, in closed form).
 - **The coupling Q.** With no other loss, the wave ports' $\sum_p 1/q_p$
   matches $1/Q$ to $O(1/Q^2)$, and two ports split the loss as the exact
   powers out of each end do. A mirror-symmetric guide gives its two ports
   the same coupling Q.
 - **Against a driven sweep.** A pole fitted to a driven sweep through the
   same ports, on the same mesh, sits at the eigenfrequency, to the port mode
-  tolerance. One case is a guide partly filled with a dielectric, whose
-  hybrid port mode has no closed form.
+  tolerance and the fit's own bias: within $10^{-12}$ on a single port at
+  Q 869, $5\times10^{-8}$ on the shared port surface's TE20 resonance, and
+  $3\times10^{-7}$ on a guide partly filled with a dielectric, whose hybrid
+  port mode has no closed form.
 - **A line loaded by a guide.** The "Solve a device" recipe's line, open at
   one end and with a wave port at the other, resonates at the roots of
   $Z_\mathrm{in}(f) + Z_0 = 0$, and its `q` and `q_port` match the
