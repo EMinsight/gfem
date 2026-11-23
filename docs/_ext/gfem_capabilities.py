@@ -201,6 +201,11 @@ PROBLEMS = {
     "eigenmode_sheet": Problem("eigenmode", "omega"),
     "eigenmode_periodic_plain": Problem("eigenmode_periodic_plain", "omega"),
     "eigenmode_periodic_bloch": Problem("eigenmode_periodic_bloch", "omega"),
+    # wave ports load the resonance: omega on the eigenmode row, the
+    # wave port's q_port under eigenmode_participation
+    "eigenmode_wave": Problem("eigenmode", "omega", "wave"),
+    "eigenmode_wave_shared": Problem("eigenmode", "omega", "wave"),
+    "eigenmode_wave_lossy": Problem("eigenmode", "omega", "wave"),
     # cell-only key: the raise table's eigenmode keys answer for its leaves
     "eigenmode_participation": Problem("eigenmode_participation", "participation"),
     "eigenmode_field": Problem("eigenmode_field", "e_fields.0.coefficients"),

@@ -99,6 +99,42 @@ Tests: [shared port surface](https://github.com/benvial/gfem/blob/main/tests/ver
 [wave ports](https://github.com/benvial/gfem/blob/main/tests/unit/test_driven_wave_ports.py),
 [silicon strip](https://github.com/benvial/gfem/blob/main/tests/reference/test_shared_port_surface.py).
 
+## Eigenmodes with wave ports
+
+Each case solves an eigenmode problem with wave ports and compares it with an
+exact root or with a driven sweep of the same model:
+
+- **Guides with exact roots.** A rectangular guide shorted at one end, with
+  layers filling its whole section and a wave port at the other end, has
+  resonances that are the roots of one transmission-line equation in
+  complex frequency. The eigenfrequency converges at element orders 2 to 4,
+  from Q 5.5 to Q 869, including a resonance just above the port mode's
+  cutoff. The same check covers a guide with a port at each end, a shared
+  port surface carrying TE10 and TE20, a lossy anisotropic port section, a
+  coaxial line (TEM, in closed form) and the TM01 mode of a circular guide.
+- **The coupling Q.** With no other loss, the wave ports' $\sum_p 1/q_p$
+  matches $1/Q$ to $O(1/Q^2)$, and two ports split the loss as the exact
+  powers out of each end do. A mirror-symmetric guide gives its two ports
+  the same coupling Q.
+- **Against a driven sweep.** A pole fitted to a driven sweep through the
+  same ports, on the same mesh, sits at the eigenfrequency, to the port mode
+  tolerance. One case is a guide partly filled with a dielectric, whose
+  hybrid port mode has no closed form.
+- **A line loaded by a guide.** The "Solve a device" recipe's line, open at
+  one end and with a wave port at the other, resonates at the roots of
+  $Z_\mathrm{in}(f) + Z_0 = 0$, and its `q` and `q_port` match the
+  transmission line's.
+- **Gradients.** The eigenfrequency and the wave port's coupling Q match
+  finite differences with respect to the materials away from the port face.
+- **Refusals.** A target below a port mode's cutoff raises, a real root
+  below cutoff is dropped with a warning, and the unsupported combinations
+  raise by name.
+
+Tests: [exact roots and driven cross-check](https://github.com/benvial/gfem/blob/main/tests/verification/test_eigenmode_wave_ports.py),
+[unit](https://github.com/benvial/gfem/blob/main/tests/unit/test_eigenmode_wave_ports.py),
+[refusals](https://github.com/benvial/gfem/blob/main/tests/unit/test_eigenmode_wave_port_refusals.py),
+[recipe](https://github.com/benvial/gfem/blob/main/tests/unit/test_docs_solve_recipe.py).
+
 ## 2D models
 
 Each case solves a {term}`2D model` and compares it with a closed form, with
