@@ -542,17 +542,10 @@ def main_stage(stage):
     arrays["pad_polygons"] = np.array(hg.pad_polygons(SPIRAL))
     arrays["n_eff"] = np.float64(route.n_eff)
     arrays["route_length"] = np.float64(route.length["spiral"])
-    # Power balance: no source below the buried oxide and insulated sides,
-    # so the heat crossing each plane of the substrate is the same F, and the
-    # substrate's mean rise is F d / (2 k A) (d its thickness, A its area).
-    x0, y0, x1, y1 = footprint()
-    area = (x1 - x0 + 2 * MARGIN) * (y1 - y0 + 2 * MARGIN) * um**2
-    depth = (SUBSTRATE[1] - SUBSTRATE[0]) * um
-    mean = float(gfem.region_mean(steady.rise, "substrate"))
-    arrays["sink_power"] = np.float64(
-        2 * SILICON["thermal_conductivity"] * area * mean / depth
-    )
+    # Power balance: the heat leaving through the sink, from the discrete balance
+    arrays["sink_power"] = np.float64(gfem.heat_flow(steady, "sink", model=thermal))
     # maps per watt: the core's mid-plane, the heater's mid-plane, a cut
+    x0, y0, x1, y1 = footprint()
     box = (x0 - 5, y0 - 5, x1 + 5, y1 + 5)
     step = profile.map_step
     points, xs, ys = grid(step, SPIRAL.core_thickness / 2, box)

@@ -1,16 +1,16 @@
 {
  "profile": "full",
  "provenance": {
-  "commit": "c0ee38d37d599be8e3210cb0f33dd523d439e31f",
+  "commit": "91af3899975b807928a4fb649820d6717d97117d",
   "sha256": {
-   "tools/heater3d_run.py": "dbd8d9c67b0a0285b29a2c90c964823a9524e454409a7b15775e0df162e3ccc4",
+   "tools/heater3d_run.py": "b0355689107efbe2c145d9b13ed1a558fb5a79d650f8264b50b516bcb299a12f",
    "tools/heater_geometry.py": "2a3b1a2bdecf50a41d08f18401eefd942d8997cb6c77aba6fe1b71fac96248f0"
   },
   "stages": {
    "main": {
-    "start_utc": "2026-11-17T04:52:09+00:00",
-    "end_utc": "2026-11-17T05:01:09+00:00",
-    "command": "python tools/heater3d_run.py main --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-c0ee38d-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/c0ee38d-49140659",
+    "start_utc": "2026-11-23T20:47:46+00:00",
+    "end_utc": "2026-11-23T20:56:11+00:00",
+    "command": "python tools/heater3d_run.py main --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-91af389-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/91af389-49356773",
     "environment": {
      "versions": {
       "gfem": "0.1.0",
@@ -28,14 +28,14 @@
      "cpu_model": "Intel(R) Xeon(R) Platinum 8480+",
      "physical_cores": 112,
      "threads": 32,
-     "memory_limit_bytes": 270105440256,
+     "memory_limit_bytes": 270105407488,
      "host": "MN5 GPP"
     }
    },
    "medium": {
-    "start_utc": "2026-11-17T05:01:15+00:00",
-    "end_utc": "2026-11-17T05:11:47+00:00",
-    "command": "python tools/heater3d_run.py medium --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-c0ee38d-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/c0ee38d-49140659",
+    "start_utc": "2026-11-23T20:56:18+00:00",
+    "end_utc": "2026-11-23T21:05:06+00:00",
+    "command": "python tools/heater3d_run.py medium --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-91af389-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/91af389-49356773",
     "environment": {
      "versions": {
       "gfem": "0.1.0",
@@ -53,14 +53,14 @@
      "cpu_model": "Intel(R) Xeon(R) Platinum 8480+",
      "physical_cores": 112,
      "threads": 32,
-     "memory_limit_bytes": 270105440256,
+     "memory_limit_bytes": 270105407488,
      "host": "MN5 GPP"
     }
    },
    "fine": {
-    "start_utc": "2026-11-17T05:11:59+00:00",
-    "end_utc": "2026-11-17T05:21:56+00:00",
-    "command": "python tools/heater3d_run.py fine --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-c0ee38d-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/c0ee38d-49140659",
+    "start_utc": "2026-11-23T21:07:04+00:00",
+    "end_utc": "2026-11-23T21:18:04+00:00",
+    "command": "python tools/heater3d_run.py fine --out /gpfs/scratch/ehpc1083/resl096952/gfem/heater3d/work-91af389-full --profile full --record /gpfs/scratch/ehpc1083/resl096952/gfem/results/91af389-49356773",
     "environment": {
      "versions": {
       "gfem": "0.1.0",
@@ -78,7 +78,7 @@
      "cpu_model": "Intel(R) Xeon(R) Platinum 8480+",
      "physical_cores": 112,
      "threads": 32,
-     "memory_limit_bytes": 270105440256,
+     "memory_limit_bytes": 270105407488,
      "host": "MN5 GPP"
     }
    }
@@ -165,9 +165,9 @@
     "heater_um": 0.2,
     "core_um": 0.3,
     "far_um": 4.0,
-    "tets": 390418,
-    "dof": 544302,
-    "dc_dof": 105148,
+    "tets": 390683,
+    "dof": 544599,
+    "dc_dof": 105159,
     "window_triangles": 674,
     "stage": "main"
    },
@@ -175,9 +175,9 @@
     "heater_um": 0.15,
     "core_um": 0.2,
     "far_um": 4.0,
-    "tets": 606465,
-    "dof": 840018,
-    "dc_dof": 147332,
+    "tets": 606433,
+    "dof": 839973,
+    "dc_dof": 147331,
     "window_triangles": 674,
     "stage": "medium"
    },
@@ -185,9 +185,9 @@
     "heater_um": 0.1,
     "core_um": 0.15,
     "far_um": 4.0,
-    "tets": 875890,
-    "dof": 1207752,
-    "dc_dof": 236004,
+    "tets": 876292,
+    "dof": 1208286,
+    "dc_dof": 236008,
     "window_triangles": 674,
     "stage": "fine"
    }
@@ -218,39 +218,39 @@
  },
  "observations": {
   "main": {
-   "wall_s": 539.7,
-   "peak_rss_bytes": 4876333056,
+   "wall_s": 505.0,
+   "peak_rss_bytes": 4871385088,
    "steps_s": {
-    "mesh_s": 40.77,
-    "read_s": 11.38,
-    "dc_s": 2.25,
-    "steady_s": 4.88,
-    "route_s": 390.37,
-    "maps_s": 2.4,
-    "section_s": 4.95,
-    "transient_s": 77.08
+    "mesh_s": 40.94,
+    "read_s": 12.16,
+    "dc_s": 9.45,
+    "steady_s": 7.07,
+    "route_s": 332.7,
+    "maps_s": 2.14,
+    "section_s": 6.65,
+    "transient_s": 82.34
    }
   },
   "medium": {
-   "wall_s": 632.0,
-   "peak_rss_bytes": 5141549056,
+   "wall_s": 528.3,
+   "peak_rss_bytes": 5170913280,
    "steps_s": {
-    "mesh_s": 61.42,
-    "read_s": 20.15,
-    "dc_s": 4.41,
-    "steady_s": 8.2,
-    "route_s": 536.77
+    "mesh_s": 57.48,
+    "read_s": 18.35,
+    "dc_s": 2.28,
+    "steady_s": 10.89,
+    "route_s": 437.71
    }
   },
   "fine": {
-   "wall_s": 596.9,
-   "peak_rss_bytes": 6979842048,
+   "wall_s": 660.6,
+   "peak_rss_bytes": 7103639552,
    "steps_s": {
-    "mesh_s": 66.14,
-    "read_s": 26.94,
-    "dc_s": 3.75,
-    "steady_s": 11.53,
-    "route_s": 487.44
+    "mesh_s": 68.25,
+    "read_s": 26.55,
+    "dc_s": 4.43,
+    "steady_s": 16.11,
+    "route_s": 543.88
    }
   }
  }
