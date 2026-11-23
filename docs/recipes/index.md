@@ -13,6 +13,7 @@ orphan: true
 - {doc}`shape-gradient`
 - {doc}`adaptive-sweep-gradient`
 - {doc}`thermal-gradient`
+- {doc}`electro-optic-gradient`
 
 ## Designs
 
@@ -34,6 +35,7 @@ orphan: true
 - {doc}`perfectly-matched-layer`
 - {doc}`heater-temperature`
 - {doc}`thermo-optic-phase`
+- {doc}`electro-optic-phase`
 - {doc}`thermal-step-response`
 - {doc}`shared-port-surface`
 - {doc}`measurements`
