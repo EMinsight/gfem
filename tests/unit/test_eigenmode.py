@@ -48,7 +48,7 @@ from gfem._eigen.operator import RESHIFT_SOLVES, EigenOperator
 from gfem._eigen.refine import refine
 from gfem._eigen.seed import MIN_SUBSPACE, seed_operator
 from gfem._engine import terms
-from gfem._engine.driven import driven_operator
+from gfem._engine.driven import DrivenRule, driven_operator
 from gfem._engine.eigen import projector
 from gfem._engine.runtime import task_manager
 from gfem._linalg import prepare
@@ -930,6 +930,40 @@ def test_shared_port_surface_raises_naming_the_surface_and_its_ports(mesh):
     assert "'o1', 'o2'" in message
     assert "gfem.Driven" in message
     assert "LumpedPort" not in message
+
+
+def test_a_design_beside_a_wave_port_face_raises_as_in_the_driven_rule(
+    mesh, monkeypatch
+):
+    # the eigenmode solve still refuses the wave port itself; past that refusal
+    # its gradient check names the same inputs, with the same messages, as the
+    # driven rule's
+    monkeypatch.setattr(eigen_rule, "_check_supported", lambda _model: None)
+    model = gfem.Model(
+        mesh,
+        materials={"dielectric": gfem.Material(eps_r=EPS)},
+        boundaries=[
+            gfem.PEC("bottom"),
+            gfem.Impedance("top", resistance=377.0, inductance=1e-9),
+        ],
+        ports=[gfem.WavePort("o1", "port1")],
+    )
+    eigen = eigen_rule.EigenmodeRule(
+        model, gfem.Eigenmode(target=8e9), gfem.SolverOptions()
+    )
+    driven = DrivenRule(model, gfem.Driven(frequency=[8e9]), gfem.SolverOptions())
+    for kind in [
+        ("material", "dielectric", "eps_r"),
+        ("law", "dielectric", "eps_inf"),
+        ("boundary", 1, "fill", "fill"),
+        ("boundary", 1, "inductance"),
+    ]:
+        with pytest.raises(gfem.PortGeometryError) as driven_raised:
+            driven.unsupported_input(kind)
+        with pytest.raises(gfem.PortGeometryError) as eigen_raised:
+            eigen.unsupported_input(kind)
+        assert str(eigen_raised.value) == str(driven_raised.value)
+        assert "WavePort 'o1'" in str(eigen_raised.value)
 
 
 def test_conductivity_damps_the_line_exactly(mesh):

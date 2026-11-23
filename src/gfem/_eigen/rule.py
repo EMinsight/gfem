@@ -114,6 +114,7 @@ from gfem._engine.driven import (
     LOW_FREQUENCY_FLOOR,
     DrivenOperator,
     LowFrequencyFloor,
+    PortDesign,
     driven_operator,
     lumped_terms,
     operator_terms,
@@ -361,6 +362,8 @@ class EigenmodeRule:
         self._excluded = model._domain.excluded  # noqa: SLF001
         #: Why the node coordinates cannot be differentiated, or None.
         self.nodes_unsupported = terms.absorbing_shape_unsupported(model)
+        #: What the wave ports' modes read, which the design must stay off.
+        self.port_design = PortDesign.of(model)
         #: The last backward's explicit terms in the lumped ports' values.
         self._explicit: dict[tuple, float] = {}
         #: Whether a region holds a permittivity law: only then can a
@@ -1083,7 +1086,13 @@ class EigenmodeRule:
         The node coordinates, next to a tensor absorbing admittance
         (`terms.absorbing_shape_unsupported`); a permittivity law's
         parameter on a periodic model (no verification cell).
+
+        Raises:
+            PortGeometryError: ``kind`` is an input a wave port's mode reads,
+                as in the driven rule (`PortDesign.check`): the port mode is
+                a constant of the solve.
         """
+        self.port_design.check(kind)
         if kind == ("nodes",):
             return self.nodes_unsupported
         if kind[0] == "law" and (
