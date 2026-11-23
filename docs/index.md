@@ -84,6 +84,7 @@ recipes/gsim
 :caption: Free space
 
 recipes/point-dipoles
+recipes/far-field
 ```
 
 ```{toctree}

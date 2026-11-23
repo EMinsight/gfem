@@ -152,5 +152,5 @@ def test_every_refusal_test_has_a_limit_and_every_limit_its_tests():
 
 
 def test_the_lit_strip_scatters_back(ran):
-    (rcs,) = _printed(ran, "Radar cross section")
+    rcs = _printed(ran, "Radar cross section")[0]  # then the 2 of um^2
     assert rcs > 0.01  # um^2

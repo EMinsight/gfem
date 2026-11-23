@@ -152,10 +152,7 @@ def _assert_layer_moves(model, morph, side):
     )
     mesh = model.mesh
     tets = np.asarray(mesh.tetrahedra)
-    if side is None:
-        regions = ("left", "right", "design", "shell")
-    else:
-        regions = side
+    regions = ("left", "right", "design", "shell") if side is None else side
     inside = np.zeros(len(tets), bool)
     for r in regions:
         inside[mesh.elements(r)] = True

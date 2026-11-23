@@ -316,19 +316,7 @@ def far_field(
         raise TypeError(
             f"far_field needs model= a gfem.Model, got {type(model).__name__}."
         )
-    check_fixed(theta, "far_field's theta must be fixed numbers")
-    check_fixed(phi, "far_field's phi must be fixed numbers")
-    try:
-        theta_b, phi_b = np.broadcast_arrays(
-            np.asarray(theta, float), np.asarray(phi, float)
-        )
-    except ValueError:
-        raise ValueError(
-            f"far_field's theta {np.shape(theta)} and phi {np.shape(phi)} do not "
-            "broadcast together."
-        ) from None
-    if not (np.isfinite(theta_b).all() and np.isfinite(phi_b).all()):
-        raise ValueError("far_field's theta and phi must be finite, in rad.")
+    theta_b, phi_b = _angles(theta, phi)
     names = _side(side)
     source = result.sources.get(name)
     if source is None and name not in result.s.excited:
@@ -400,6 +388,24 @@ def far_field(
         incident_amplitude=e0,
         impedance=eta,
     )
+
+
+def _angles(theta: Any, phi: Any) -> tuple[np.ndarray, np.ndarray]:
+    """``theta`` and ``phi`` broadcast together, checked."""
+    check_fixed(theta, "far_field's theta must be fixed numbers")
+    check_fixed(phi, "far_field's phi must be fixed numbers")
+    try:
+        theta_b, phi_b = np.broadcast_arrays(
+            np.asarray(theta, float), np.asarray(phi, float)
+        )
+    except ValueError:
+        raise ValueError(
+            f"far_field's theta {np.shape(theta)} and phi {np.shape(phi)} do not "
+            "broadcast together."
+        ) from None
+    if not (np.isfinite(theta_b).all() and np.isfinite(phi_b).all()):
+        raise ValueError("far_field's theta and phi must be finite, in rad.")
+    return theta_b, phi_b
 
 
 def _side(side: Any) -> Any:
@@ -597,7 +603,9 @@ class _FarFieldKernel:
         mesh = Mesh(nodes, self.topology)
         return probe.probe(mesh, layout(field), ff.located(self.layer, bary))
 
-    def _flux_of(self, values: dict[str, np.ndarray], model: Model, field: Field) -> Any:
+    def _flux_of(
+        self, values: dict[str, np.ndarray], model: Model, field: Field
+    ) -> Any:
         pf = importlib.import_module("gfem._engine.power_flow")
         m_names = self.model_def[1]
         key = b"".join(np.ascontiguousarray(values[n]).tobytes() for n in m_names)
@@ -682,9 +690,7 @@ class _FarFieldKernel:
             if "nodes" in wanted:
                 tets = np.asarray(Mesh(nodes, self.topology).tetrahedra)
                 grad = np.zeros_like(nodes)
-                np.add.at(
-                    grad, tets[self.layer.tetrahedra], np.real(g_corners)
-                )
+                np.add.at(grad, tets[self.layer.tetrahedra], np.real(g_corners))
                 out["nodes"] = grad
         ct_p = cotangents.get("power")
         if ct_p is not None and "coefficients" in wanted:

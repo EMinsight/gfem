@@ -54,8 +54,8 @@ from gfem import _mpi, _objective, _probe
 from gfem._adjoint.measure import measure
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import entry_refusal, refuse_entry
-from gfem._materials import Material, _is_law, field_principal_values
 from gfem._far_field import FarField, far_field
+from gfem._materials import Material, _is_law, field_principal_values
 from gfem._purcell import purcell_factor
 from gfem._pytree import register_fields
 from gfem.conventions import MODE_ENERGY

@@ -177,9 +177,7 @@ def reference_values(corners: Any, e: Any, curl: Any) -> tuple[Any, Any]:
     e = e.reshape(len(corners), -1, 3)
     curl = curl.reshape(len(corners), -1, 3)
     e_ref = jnp.einsum("tji,tpj->tpi", jac, e)
-    c_ref = det[:, None, None] * jnp.einsum(
-        "tij,tpj->tpi", jnp.linalg.inv(jac), curl
-    )
+    c_ref = det[:, None, None] * jnp.einsum("tij,tpj->tpi", jnp.linalg.inv(jac), curl)
     return e_ref, c_ref
 
 
@@ -218,10 +216,10 @@ def amplitudes(
     out = []
     for start in range(0, len(rhat), _CHUNK):
         r = rhat[start : start + _CHUNK]
-        v = _sum(x, a, b, r, k, None)
+        v = _sum(x, a, b, r, k=k, shift=None)
         if ground is not None:
             mirror = np.eye(3) - 2 * np.outer(ground.normal, ground.normal)
-            image = _sum(x, a, b, r @ mirror, k, (ground.point, r))
+            image = _sum(x, a, b, r @ mirror, k=k, shift=(ground.point, r))
             v = v + ground.sign * image @ mirror
         out.append(v)
     return jnp.concatenate(out)
@@ -232,6 +230,7 @@ def _sum(
     a: Any,
     b: Any,
     r: np.ndarray,
+    *,
     k: float,
     shift: tuple[np.ndarray, np.ndarray] | None,
 ) -> Any:
@@ -386,7 +385,8 @@ def _medium(
     for region in sorted(set(region_of[varies])):
         material = model.materials.get(region)
         if isinstance(material, MaterialField):
-            raise ValueError(
+            # a value error: the region's material is valid, the side is not
+            raise ValueError(  # noqa: TRY004
                 f"The far-field layer just outside this side holds the design "
                 f"region {region!r} (a MaterialField): the layer must be the "
                 "exterior medium. Move the side's surface one element away from "
@@ -400,7 +400,8 @@ def _medium(
                 "constant, isotropic, lossless medium. Put the side's surface in "
                 "the background medium, around every scatterer."
             )
-    return float(np.real(medium.eps_r)), float(np.real(medium.mu_r))
+    eps_r = complex(np.asarray(medium.eps_r)).real
+    return eps_r, complex(np.asarray(medium.mu_r)).real
 
 
 def _check_sources(
@@ -448,7 +449,9 @@ def _check_sources(
     layer_nodes[np.unique(tets[varies])] = True
     for item in (*model.boundaries, *model.ports):
         wall = isinstance(item, (PEC, PMC))
-        if not isinstance(item, (*_SHEETS, PEC, PMC, LumpedPort, WavePort, FloquetPort)):
+        if not isinstance(
+            item, (*_SHEETS, PEC, PMC, LumpedPort, WavePort, FloquetPort)
+        ):
             continue  # Absorbing faces: the truncation itself
         port = isinstance(item, (LumpedPort, WavePort, FloquetPort))
         what = (
@@ -541,7 +544,9 @@ def _ground(
     if inward @ normal < 0:
         normal = -normal
     (kind,) = found
-    return Ground(point=point, normal=normal, sign=-1 if kind == "PEC" else 1, kind=kind)
+    return Ground(
+        point=point, normal=normal, sign=-1 if kind == "PEC" else 1, kind=kind
+    )
 
 
 def corners(mesh: Mesh, layer: Layer, nodes: np.ndarray) -> np.ndarray:
@@ -552,4 +557,3 @@ def corners(mesh: Mesh, layer: Layer, nodes: np.ndarray) -> np.ndarray:
 def chi_corners(mesh: Mesh, layer: Layer) -> np.ndarray:
     """``chi`` at the layer's tetrahedra's vertices, ``(n, 4)``."""
     return layer.chi[np.asarray(mesh.tetrahedra)[layer.tetrahedra]]
-

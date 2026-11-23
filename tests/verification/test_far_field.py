@@ -68,8 +68,8 @@ def _basis(theta, phi):
 def _dipoles_far_field(rhat, moments_and_positions):
     """The closed-form amplitude of point dipoles in vacuum, ``(..., 3)``."""
     out = 0
-    for p, r in moments_and_positions:
-        p = np.asarray(p, complex)
+    for moment, r in moments_and_positions:
+        p = np.asarray(moment, complex)
         perp = p - rhat * (rhat @ p)[..., None]
         out = out + perp * np.exp(1j * fsc.K0 * rhat @ r)[..., None]
     return fsc.K0**2 / (4 * math.pi * EPS0) * out

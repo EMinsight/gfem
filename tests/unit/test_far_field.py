@@ -162,7 +162,7 @@ def test_a_direction_below_the_ground_plane_is_refused(grounded):
     dipole = gfem.ElectricDipole("v", position=r0, moment=(0, 0, P))
     problem = gfem.Driven(fsc.F0, sources=dipole, keep_fields=True)
     result = gfem.solve(model, problem, options=ORDER2)
-    with pytest.raises(ValueError, match="PEC ground plane.*below it"):
+    with pytest.raises(ValueError, match=r"PEC ground plane.*below it"):
         gfem.far_field(result, "v", 2.0, 0.0, model=model)
 
 
@@ -238,8 +238,8 @@ def test_a_circular_dipole_radiates_circular_polarization_along_its_axis(box):
     problem = gfem.Driven(fsc.F0, sources=source, keep_fields=True)
     result = gfem.solve(model, problem, options=ORDER2)
     ff = gfem.far_field(result, "c", 0.0, 0.0, model=model)
-    # order 2 at lambda/4: 1.11 measured; the 1 % gate is at order 3
-    # (tests/verification/test_far_field.py)
+    # order 2 at lambda/4: 1.11 measured; the verification tier holds the 1 %
+    # gate, at order 3
     assert float(ff.axial_ratio[0]) == pytest.approx(1.0, abs=0.2)
     assert abs(complex(ff.e_left[0])) < 0.1 * abs(complex(ff.e_right[0]))
     # the other hand: p = P (x + i y)
@@ -305,7 +305,7 @@ def test_far_field_refuses_a_layered_or_lossy_exterior(split):
 def test_far_field_refuses_a_layer_that_is_not_the_exterior_medium(split):
     model, result = _split_solve(split, right=gfem.Material(eps_r=2.0))
     # the default layer touches the PML on the right too
-    with pytest.raises(ValueError, match="region 'right'.*not the exterior medium"):
+    with pytest.raises(ValueError, match=r"region 'right'.*not the exterior medium"):
         gfem.far_field(result, "d", 0.0, 0.0, model=model)
 
 
@@ -329,14 +329,14 @@ def _core(c, lo=0.25):
 
 def test_far_field_refuses_a_source_outside_the_side(split):
     model, result = _split_solve(split, position=np.array([0.8, 0.53, 0.56]) * fsc.UM)
-    with pytest.raises(ValueError, match="dipole 'd'.* outside the far-field layer"):
+    with pytest.raises(ValueError, match=r"dipole 'd'.* outside the far-field layer"):
         gfem.far_field(result, "d", 0.0, 0.0, model=model, side=_core)
 
 
 def test_far_field_refuses_a_source_in_its_layer(split):
     # the core side's outside layer holds x in [0.5, 0.75] um
     model, result = _split_solve(split, position=np.array([0.6, 0.53, 0.56]) * fsc.UM)
-    with pytest.raises(ValueError, match="dipole 'd'.* in the far-field layer"):
+    with pytest.raises(ValueError, match=r"dipole 'd'.* in the far-field layer"):
         gfem.far_field(result, "d", 0.0, 0.0, model=model, side=_core)
 
 
@@ -370,7 +370,9 @@ def test_far_field_refuses_a_closed_model(split):
 def test_far_field_refuses_a_port_in_its_layer(strip):
     model, result = strip
     # a side ending at x = 0.5 um has the strip and its feed on its surface
-    with pytest.raises(ValueError, match="(PEC surface|LumpedPort 'p1') .*far-field layer"):
+    with pytest.raises(
+        ValueError, match=r"(PEC surface|LumpedPort 'p1') .*far-field layer"
+    ):
         gfem.far_field(
             result, "p1", 0.0, 0.0, model=model, side=lambda c: _core(c, 1 / 6)
         )
