@@ -61,7 +61,7 @@ where:
 The estimate is multiplied by `frequency_workers`.
 
 On a mesh without a layer or poor cells, the direct set is about a fifth of
-the unknowns at order 2, and the solver needs about a third of the direct
+the unknowns at order 2, and the solver needs about a quarter of the direct
 solver's memory. In a model with a perfectly matched layer, the layer's
 unknowns are on the direct set: when the layer holds most of the unknowns,
 the memory approaches the direct solver's. `"auto"` picks `"pmg_gmres"` when

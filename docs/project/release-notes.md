@@ -44,7 +44,7 @@ Linear solvers:
   preconditioner: the lowest-order unknowns, and every unknown of a cell in a
   perfectly matched layer or of a poor cell, are solved exactly, and the rest
   is smoothed around each mesh vertex. Its iteration count stays near 10 as a
-  model grows in wavelengths. It needs about a third of the direct solver's
+  model grows in wavelengths. It needs about a quarter of the direct solver's
   memory at order 2, and it is faster from a few million unknowns on. It
   solves models with a perfectly matched layer, which `"bddc_gmres"` refuses.
   Order 2 or 3, 3D, one CPU process, with gradients and reuse across a

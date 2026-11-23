@@ -42,7 +42,8 @@ see {doc}`benchmarks`.
   596 s.
 - **One node, photonic models.** `linear_solver="pmg_gmres"` took about 10
   iterations per port on silicon guides from a few to a dozen wavelengths
-  across, and needed about a third of `direct`'s memory. It was faster than
+  across, and needed about a quarter of `direct`'s memory (two thirds with a
+  perfectly matched layer holding most of the unknowns). It was faster than
   `direct` from a few million unknowns on, and solved models where `direct`
   needs a large-memory node ([table](scaling-pmg)). These are rounded
   observations; the table holds the measured values.

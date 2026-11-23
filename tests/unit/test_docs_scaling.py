@@ -13,10 +13,10 @@ DOCS = Path(__file__).parents[2] / "docs"
 PAGE = DOCS / "project" / "scaling.md"
 SNIPPETS = sorted((DOCS / "project" / "_scaling").glob("*.md"))
 #: Each scaling set's frozen commit, by its snippets' name prefix.
-SETS = {"coarse-": "f199837", "": "9a57680"}
+SETS = {"coarse-": "f199837", "pmg-": "bac84b3", "": "9a57680"}
 #: Snippets whose run has not been made yet: each says so on its first line,
 #: and leaves this set when its run writes it with its set's commit.
-PENDING = {"pmg-ladder.md"}
+PENDING: set[str] = set()
 
 
 def _commit(snippet: Path) -> str:

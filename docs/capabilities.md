@@ -95,7 +95,7 @@ v0.1.
   wavelengths across that the direct solver cannot hold, such as a photonic
   device in dielectric cladding, with absorbing faces or a perfectly matched
   layer, or a metal circuit on a fine mesh. Its iterations stay near 10 as the
-  model grows, it needs about a third of the direct solver's memory at order 2,
+  model grows, it needs about a quarter of the direct solver's memory at order 2,
   and it is faster than the direct solver from a few million unknowns on.
   Driven problems at order 2 or 3 on one CPU process, with gradients, and
   without Bloch, periodic or Floquet models. `"auto"` picks it where the direct

@@ -700,7 +700,7 @@ against the direct solver on models that need each part of its
 ### At scale
 
 Before the solver was merged, silicon guides of 2.9 and 6.6 million unknowns
-and a half model with a perfectly matched layer of 2.2 million unknowns were
+and a half model with a perfectly matched layer of 2.1 million unknowns were
 checked against the direct solver. A bend of 17.2 million unknowns was checked
 against the direct solver's outgoing waves from an earlier run on a
 large-memory node. Times and memory are on {doc}`project/scaling`. This run is
