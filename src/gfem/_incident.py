@@ -71,11 +71,14 @@ class IncidentPart:
         background: The model's background stack.
         layers: The perfectly matched layer's regions, where the incident
             part is zero.
+        is_incident: The field is the incident part itself
+            (``e_field(..., part="incident")``), not the total field.
     """
 
     source: Incident
     background: Background
     layers: tuple[str, ...] = ()
+    is_incident: bool = False
 
 
 def background_material(background: Background) -> Any:

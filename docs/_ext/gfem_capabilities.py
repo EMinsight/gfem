@@ -159,6 +159,20 @@ ROWS = {
         recipe="recipes/measurements",
         front=False,
     ),
+    # sources: Capabilities page only; their node coordinates raise where
+    # the plain driven row's differentiate, so each has its own row
+    "driven_incident": Row(
+        "Driven, incident field",
+        "kept fields and cross sections",
+        recipe="recipes/cross-sections",
+        front=False,
+    ),
+    "driven_dipole": Row(
+        "Driven, electric dipole", "emitted power and port waves", front=False
+    ),
+    "driven_magnetic_dipole": Row(
+        "Driven, magnetic dipole", "emitted power and port waves", front=False
+    ),
     # thermal and DC conduction: Capabilities page only
     "steady_thermal": Row(
         "Steady thermal", "temperature, rise, heat and power", front=False
@@ -226,6 +240,13 @@ PROBLEMS = {
     # a perfectly matched layer: a model option on the driven and eigenmode rows
     "driven_pml": Problem("driven", "s.values", "wave"),
     "eigenmode_pml": Problem("eigenmode", "omega"),
+    # sources: a plane wave on a scatterer (no port; its kept field), and an
+    # electric or magnetic dipole beside a wave port (its emitted power)
+    "driven_planewave": Problem("driven_incident", "e_fields.0.coefficients"),
+    "driven_dipole": Problem("driven_dipole", "emitted_power.d", "wave"),
+    "driven_magnetic_dipole": Problem(
+        "driven_magnetic_dipole", "emitted_power.d", "wave"
+    ),
     # thermal and DC conduction
     "steady_thermal": Problem("steady_thermal", "temperature.coefficients"),
     "transient_thermal": Problem("transient_thermal", "traces.upper"),
@@ -428,6 +449,11 @@ RAISES_LABELS = {
     "electric energy of a field": (
         "The electric energy of a field per region (`electric_energy`), with "
         "respect to the field or the model"
+    ),
+    "cross_sections x design in the truncation layer": (
+        "Cross sections (`cross_sections`), with respect to a material field "
+        "with elements in the truncation layer (the elements touching the "
+        "perfectly matched layer or an absorbing face)"
     ),
     "power_flow x material in its layer": (
         "The power through a surface (`power_flow`), with respect to a material "

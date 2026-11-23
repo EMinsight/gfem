@@ -1017,7 +1017,9 @@ for _cls in (PlaneWave, GaussianBeam, ElectricDipole, MagneticDipole):
 _codec.register(
     Background, to_args=_unset_omitted(Background, interfaces=(), ground=None)
 )
-_codec.register(IncidentPart, to_args=_unset_omitted(IncidentPart, layers=()))
+_codec.register(
+    IncidentPart, to_args=_unset_omitted(IncidentPart, layers=(), is_incident=False)
+)
 
 
 def _incident_field_args(field: IncidentField, _: _codec.Context) -> dict[str, Any]:
