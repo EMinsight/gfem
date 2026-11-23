@@ -321,10 +321,9 @@ class PortTerm:
             if not np.isfinite(lam):  # no reduced pair: start from the band
                 g = self.sweeps[i].gamma[j] * self.modes.section.scale
                 lam, y = g**2 * (k / self._k[j]) ** 2, self._ref(i, j)
-            vals, vecs = shift_invert_eigs(a, b, lam, min(_NEV, n - 2))
+            _, vecs = shift_invert_eigs(a, b, lam, min(_NEV, n - 2))
             ref = self._reduced.lift(y)
             found.append(vecs[:, int(np.argmax(_overlaps(self.modes.mass, ref, vecs)))])
-            del vals
         self._reduced.add(np.stack(found, axis=1))
         self._columns()
         self._cache.clear()
