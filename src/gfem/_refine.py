@@ -244,6 +244,11 @@ def _gather_field(field: MaterialField, region: str, gather) -> MaterialField:
         value = getattr(field, name)
         if value is not None and value.ndim == 1 + field.has_principal_values(name):
             changes[name] = gather(value, region)
+    # an electro-optic tensor per element, (n, 6, 3), gathered as (n, 18)
+    tensor = field.electro_optic_tensor
+    if tensor is not None and tensor.ndim == 3:
+        flat = gather(tensor.reshape(tensor.shape[0], 18), region)
+        changes["electro_optic_tensor"] = flat.reshape(-1, 6, 3)
     # a law blend's density
     if field.blend is not None and field.blend.ndim == 1:
         changes["blend"] = gather(field.blend, region)

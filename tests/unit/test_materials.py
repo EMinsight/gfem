@@ -818,3 +818,276 @@ def test_valid_traced_material_values_still_solve(traced_line):
     )
     assert np.isfinite(float(value))
     assert np.isfinite(np.asarray(grad)).all()
+
+
+# --- electro-optic tensor --------------------------------------------------------
+
+# Voigt rows of the contracted tensor: xx, yy, zz, yz, xz, xy
+_VOIGT = ((0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1))
+# a z-cut-like crystal: r13, r33, r22, r51 of lithium niobate (clamped, m/V)
+_R_LN = np.zeros((6, 3))
+_R_LN[0, 2] = _R_LN[1, 2] = 8.6e-12
+_R_LN[2, 2] = 30.8e-12
+_R_LN[0, 1], _R_LN[1, 1], _R_LN[5, 0] = -3.4e-12, 3.4e-12, -3.4e-12
+_R_LN[3, 1] = _R_LN[4, 0] = 28.0e-12
+# x-cut: crystal x up (global y), crystal y along global z, crystal z lateral
+_LAW = gfem.PermittivityLaw(
+    eps_inf=4.0,
+    terms=[gfem.Lorentz(delta_eps=0.6, resonance_frequency=6e15, damping=0.0)],
+)
+_X_CUT = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+
+
+def _r_global(r, axes):
+    """The contracted tensor in the global frame, through the full r_ijk."""
+    full = np.zeros((3, 3, 3))
+    for row, (i, j) in enumerate(_VOIGT):
+        full[i, j] = full[j, i] = np.asarray(r)[row]
+    a = np.eye(3) if axes is None else np.asarray(axes, dtype=float)
+    g = np.einsum("li,mj,nk,lmn->ijk", a, a, a, full)
+    return np.array([g[i, j] for i, j in _VOIGT])
+
+
+def test_electro_optic_tensor_is_a_6x3_matrix_in_the_frame_of_the_axes():
+    m = gfem.Material(eps_r=(4.6, 4.6, 4.9), axes=_X_CUT, electro_optic_tensor=_R_LN)
+    assert gfem.Material().electro_optic_tensor is None
+    assert m.electro_optic_tensor == tuple(
+        tuple(float(x) for x in row) for row in _R_LN
+    )
+    assert m.axes == _X_CUT
+    # the tensor does not make a material direction-dependent at zero field
+    poled = gfem.Material(eps_r=2.5, axes=_X_CUT, electro_optic_tensor=_R_LN)
+    assert poled.isotropic
+    assert poled.axes == _X_CUT
+    zero = gfem.Material(eps_r=2.0, electro_optic_tensor=np.zeros((6, 3)))
+    assert zero.electro_optic_tensor == ((0.0, 0.0, 0.0),) * 6
+    assert "electro_optic_tensor" in repr(m)
+    assert hash(m) == hash(
+        gfem.Material(eps_r=(4.6, 4.6, 4.9), axes=_X_CUT, electro_optic_tensor=_R_LN)
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "words"),
+    [
+        (
+            {"electro_optic_tensor": np.zeros((3, 3, 3))},
+            ["6x3", "xx, yy, zz, yz, xz, xy"],
+        ),
+        ({"electro_optic_tensor": np.zeros((3, 6))}, ["6x3", "xx, yy, zz, yz, xz, xy"]),
+        ({"electro_optic_tensor": _R_LN * (1 + 1e-3j)}, ["must be real"]),
+        ({"electro_optic_tensor": _R_LN * np.nan}, ["finite"]),
+        ({"electro_optic_tensor": _R_LN * 1e12}, ["m/V", "30.9e-12"]),
+        (
+            {"eps_r": np.diag([4.9, 4.6, 4.9]), "electro_optic_tensor": _R_LN},
+            ["eps_r is a 3x3 matrix", "principal values", "axes"],
+        ),
+        (
+            {
+                "eps_r": (4.6, 4.6, 4.9),
+                "axes": ((0, 0, 1), (0, 1, 0), (1, 0, 0)),
+                "electro_optic_tensor": _R_LN,
+            },
+            ["right-handed", "reverse"],
+        ),
+        (
+            {
+                "eps_r": _LAW,
+                "electro_optic_tensor": _R_LN,
+            },
+            ["PermittivityLaw", "constant eps_r", "axes"],
+        ),
+    ],
+    ids=["3x3x3", "3x6", "complex", "nan", "pm/V", "matrix", "left-handed", "law"],
+)
+def test_electro_optic_tensor_refusals_name_the_remedy(kwargs, words):
+    with pytest.raises(ValueError, match="electro_optic_tensor") as e:
+        gfem.Material(**kwargs)
+    for word in words:
+        assert word in str(e.value)
+
+
+def test_electro_optic_tensor_beside_a_matrix_conductivity_raises():
+    sigma = np.diag([0.0, 1.0, 0.0])
+    with pytest.raises(ValueError, match="conductivity is a 3x3 matrix"):
+        gfem.Material(conductivity=sigma, electro_optic_tensor=_R_LN)
+
+
+def test_electro_optic_tensor_under_a_gradient_raises_with_the_field_remedy():
+    def objective(r33):
+        r = jnp.zeros((6, 3)).at[2, 2].set(r33)
+        return gfem.Material(eps_r=4.6, electro_optic_tensor=r).eps_r
+
+    with pytest.raises(gfem.NonDifferentiableError, match=r"MaterialField\.uniform"):
+        jax.grad(objective)(30.8e-12)
+
+
+def test_electro_optic_tensor_per_element_field():
+    n = 4
+    r = jnp.tile(jnp.asarray(_R_LN), (n, 1, 1)) * jnp.arange(n)[:, None, None]
+    f = gfem.MaterialField(electro_optic_tensor=r)
+    assert f.electro_optic_tensor.dtype == jnp.float64
+    assert f.n_elements == n
+    assert "electro_optic_tensor" in f.properties
+    g = gfem.MaterialField(
+        eps_r=jnp.full((n, 3), 4.6), axes=_X_CUT, electro_optic_tensor=_R_LN
+    )
+    assert g.electro_optic_tensor.shape == (6, 3)
+    assert g.n_elements == n
+    with pytest.raises(ValueError, match="same number of values"):
+        gfem.MaterialField(eps_r=jnp.ones(3), electro_optic_tensor=r)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "words"),
+    [
+        ({"electro_optic_tensor": jnp.zeros((3, 3, 3))}, ["(6, 3)", "xx, yy, zz"]),
+        ({"electro_optic_tensor": jnp.zeros((2, 3, 6, 3))}, ["(n_elements, 6, 3)"]),
+        ({"electro_optic_tensor": _R_LN * 1j}, ["must be real"]),
+        ({"electro_optic_tensor": _R_LN * 1e12}, ["m/V", "30.9e-12"]),
+        ({"electro_optic_tensor": np.full((6, 3), np.inf)}, ["finite"]),
+        (
+            {
+                "eps_r": jnp.ones(3),
+                "axes": ((0, 0, 1), (0, 1, 0), (1, 0, 0)),
+                "electro_optic_tensor": _R_LN,
+            },
+            ["right-handed", "reverse"],
+        ),
+    ],
+    ids=["3x3x3", "4d", "complex", "pm/V", "inf", "left-handed"],
+)
+def test_electro_optic_tensor_field_refusals_name_the_remedy(kwargs, words):
+    with pytest.raises(ValueError, match="electro_optic_tensor") as e:
+        gfem.MaterialField(**kwargs)
+    for word in words:
+        assert word in str(e.value)
+
+
+def test_jax_grad_reaches_a_material_field_s_electro_optic_tensor():
+    field = gfem.MaterialField(
+        eps_r=jnp.full(3, 4.6), axes=_X_CUT, electro_optic_tensor=_R_LN
+    )
+    paths = [
+        jax.tree_util.keystr(p) for p, _ in jax.tree_util.tree_leaves_with_path(field)
+    ]
+    assert ".electro_optic_tensor" in paths
+    weight = jnp.arange(18.0).reshape(6, 3)
+
+    def objective(f):
+        return jnp.sum(weight * f.electro_optic_tensor) + jnp.sum(f.eps_r)
+
+    grad = jax.grad(objective)(field)
+    np.testing.assert_array_equal(grad.electro_optic_tensor, weight)
+    # and when the field is built from a traced tensor
+    built = jax.grad(
+        lambda r: objective(gfem.MaterialField(eps_r=4.6, electro_optic_tensor=r))
+    )(jnp.asarray(_R_LN))
+    np.testing.assert_array_equal(built, weight)
+
+
+def test_uniform_field_carries_the_electro_optic_tensor_in_the_material_s_frame():
+    crystal = gfem.Material(
+        eps_r=(4.6, 4.6, 4.9), axes=_X_CUT, electro_optic_tensor=_R_LN
+    )
+    f = gfem.MaterialField.uniform("core", crystal)
+    assert f.axes == _X_CUT
+    np.testing.assert_array_equal(f.electro_optic_tensor, _R_LN)
+    # an isotropic poled material keeps its frame
+    poled = gfem.Material(eps_r=2.5, axes=_X_CUT, electro_optic_tensor=_R_LN)
+    g = gfem.MaterialField.uniform("core", poled)
+    assert g.axes == _X_CUT
+    np.testing.assert_array_equal(g.eps_r, [2.5, 2.5, 2.5])
+    np.testing.assert_array_equal(g.electro_optic_tensor, _R_LN)
+    assert gfem.MaterialField.uniform("r", gfem.Material(eps_r=2.0)).axes is None
+    assert gfem.MaterialField.uniform("r", gfem.Material()).electro_optic_tensor is None
+
+
+def test_interpolate_blends_the_electro_optic_tensor_with_a_missing_end_zero():
+    crystal = gfem.Material(
+        eps_r=(4.6, 4.6, 4.9), axes=_X_CUT, electro_optic_tensor=_R_LN
+    )
+    air = gfem.Material()
+    expected = _r_global(_R_LN, _X_CUT)
+    # r33 of an x-cut acts along global x: Delta(1/n^2)_xx = r33 E_x
+    assert expected[0, 0] == 30.8e-12
+    rho = jnp.array([0.0, 0.5, 1.0])
+    f = gfem.MaterialField.interpolate(rho, air, crystal)
+    assert f.electro_optic_tensor.shape == (3, 6, 3)
+    assert np.linalg.det(np.asarray(f.axes)) > 0
+    for k, w in enumerate((0.0, 0.5, 1.0)):
+        np.testing.assert_allclose(
+            _r_global(f.electro_optic_tensor[k], f.axes), w * expected, atol=1e-25
+        )
+    # two isotropic ends: an isotropic field, the tensor in the global frame
+    poled = gfem.Material(eps_r=2.5, axes=_X_CUT, electro_optic_tensor=_R_LN)
+    g = gfem.MaterialField.interpolate(rho, air, poled)
+    assert g.axes is None
+    np.testing.assert_allclose(g.electro_optic_tensor[2], expected, atol=1e-25)
+    # the index scheme and a law end blend it in the global frame too
+    h = gfem.MaterialField.interpolate(rho, air, poled, scheme="index")
+    np.testing.assert_allclose(h.electro_optic_tensor[1], expected / 2, atol=1e-25)
+    law = gfem.Material(eps_r=_LAW)
+    b = gfem.MaterialField.interpolate(rho, law, poled)
+    np.testing.assert_allclose(b.electro_optic_tensor[2], expected, atol=1e-25)
+    # ends without a tensor give a field without one
+    assert gfem.MaterialField.interpolate(rho, air, air).electro_optic_tensor is None
+
+
+def test_an_electro_optic_material_and_field_round_trip_through_the_job_codec(
+    tmp_path,
+):
+    mesh_path = sm.write_msh22(
+        tmp_path / "stack.msh",
+        sm.plate(4.0, 3.0, (("oxide", 0.5), ("nitride", 0.25)), (1, 1, 1)),
+    )
+    mesh = gfem.Mesh.from_gmsh(mesh_path)
+    n = len(mesh.elements("oxide"))
+    crystal = gfem.Material(
+        eps_r=(4.6, 4.6, 4.9), axes=_X_CUT, electro_optic_tensor=_R_LN
+    )
+    field = gfem.MaterialField(
+        eps_r=jnp.full((n, 3), 4.6),
+        axes=_X_CUT,
+        electro_optic_tensor=jnp.tile(jnp.asarray(_R_LN), (n, 1, 1)),
+    )
+    model = gfem.Model(mesh, materials={"oxide": field, "nitride": crystal})
+    problem = gfem.Electrostatic(terminals={"top": "top", "mid": "oxide__nitride"})
+    path = gfem.Job(model, problem).to_json(tmp_path / "job.json")
+    back = gfem.Job.from_json(path).model.materials
+    assert back["nitride"] == crystal
+    assert back["oxide"].axes == _X_CUT
+    assert back["oxide"].electro_optic_tensor.dtype == jnp.float64
+    np.testing.assert_array_equal(
+        back["oxide"].electro_optic_tensor, field.electro_optic_tensor
+    )
+
+
+def test_refinement_copies_a_per_element_electro_optic_tensor_to_the_children(
+    tmp_path,
+):
+    from gfem._refine import refine_model
+
+    mesh = gfem.Mesh.from_gmsh(
+        sm.write_msh22(
+            tmp_path / "stack.msh",
+            sm.plate(4.0, 3.0, (("oxide", 0.5), ("nitride", 0.25)), (1, 1, 1)),
+        )
+    )
+    n = len(mesh.elements("oxide"))
+    scale = jnp.linspace(0.5, 1.0, n)[:, None, None]
+    field = gfem.MaterialField(
+        eps_r=jnp.full(n, 4.6), electro_optic_tensor=scale * jnp.asarray(_R_LN)
+    )
+    model = gfem.Model(
+        mesh, materials={"oxide": field, "nitride": gfem.Material(eps_r=7.5)}
+    )
+    marked = np.zeros(len(mesh.tetrahedra), bool)
+    marked[mesh.elements("oxide")[0]] = True
+    fine, _ = refine_model(model, marked)
+    r = fine.materials["oxide"].electro_optic_tensor
+    assert r.shape == (len(fine.mesh.elements("oxide")), 6, 3)
+    assert r.shape[0] > n
+    assert set(np.round(np.asarray(r[:, 2, 2]) / 30.8e-12, 12)) == set(
+        np.round(np.asarray(scale[:, 0, 0]), 12)
+    )
