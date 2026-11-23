@@ -364,3 +364,17 @@ def test_a_magnetic_dipole_refuses_node_gradients(box):
 
     with pytest.raises(gfem.NonDifferentiableError, match="MagneticDipole 'm'"):
         jax.make_jaxpr(jax.grad(power))(box.nodes)
+
+
+def test_a_saved_dipole_field_keeps_its_dipole(line, tmp_path):
+    near = gfem.ElectricDipole(
+        "d", position=np.array([0.07, 0.13, 0.45]) * fsc.UM, moment=(0, 1e-28, 0)
+    )
+    problem = gfem.Driven(fsc.F0, excite=(), sources=near, keep_fields=True)
+    result = gfem.Job(line, problem, ORDER2).run(tmp_path / "dipole")
+    loaded = gfem.load_result(tmp_path / "dipole")
+    field = loaded.e_field(fsc.F0)
+    hash(field._point_sources)  # a static leaf: hashable as saved
+    with pytest.raises(ValueError, match="holds the dipole 'd'"):
+        gfem.power_flow(field, "slab", model=line)
+    np.testing.assert_array_equal(loaded.emitted_power["d"], result.emitted_power["d"])

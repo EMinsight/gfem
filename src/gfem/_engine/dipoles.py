@@ -56,6 +56,7 @@ from gfem._boundaries import (
     surfaces_of,
 )
 from gfem._engine.probe import ON_FACE, Layout, Located, locate, probe
+from gfem._linalg.base import free_mask
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._sources import ElectricDipole, MagneticDipole
 from gfem.mesh import Mesh
@@ -396,8 +397,7 @@ def point_loads(
         g[0, k] = moments[k]
         vectors[:, k] = probed.transpose(g, curl=bool(magnetic[k]))[0]
     vectors = vectors[: space.ndof]
-    free = np.array(list(space.FreeDofs()), bool)
-    vectors[~free] = 0.0
+    vectors[~free_mask(space.FreeDofs(), space.ndof)] = 0.0
     return PointLoads(
         names=tuple(s.name for s in sources),
         moments=moments,

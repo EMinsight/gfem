@@ -17,6 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
+from gfem._materials import PermittivityLaw
 from gfem._sources import DIPOLES, MagneticDipole
 
 if TYPE_CHECKING:
@@ -105,11 +106,13 @@ def purcell_factor(result: DrivenResult, name: str, *, model: Model) -> jax.Arra
     material = model.materials[_region(model, source)]
     omega = 2 * math.pi * np.asarray(result.frequency)
     eps = material.eps_r
-    if callable(eps):  # a permittivity law, real at the solve's frequencies
-        eps_r = jnp.real(jnp.stack([eps(f) for f in result.frequency]))
+    if isinstance(eps, PermittivityLaw):  # real at the solve's frequencies
+        eps_r = jnp.real(jnp.stack([jnp.asarray(eps(f)) for f in result.frequency]))
     else:
         eps_r = jnp.asarray(eps)
-    bulk = bulk_power(source, omega, eps_r=eps_r, mu_r=float(material.mu_r))
+    # the solve refused an anisotropic material at the dipole
+    mu_r = float(np.asarray(material.mu_r))
+    bulk = bulk_power(source, omega, eps_r=eps_r, mu_r=mu_r)
     return result.emitted_power[name] / bulk
 
 

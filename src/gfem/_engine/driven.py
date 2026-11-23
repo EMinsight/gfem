@@ -1565,7 +1565,7 @@ class DrivenRule:
         """
         samples = self.problem.samples or ()
         loads = len(self.wave_ports) + len(self.lumped_loads)
-        loads += sum(not real_up_to_phase(d.moment) for d in self.dipoles)
+        loads += sum(not real_up_to_phase(np.asarray(d.moment)) for d in self.dipoles)
         return 2 * len(samples) * (self.width + loads)
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
