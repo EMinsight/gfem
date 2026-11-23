@@ -1377,8 +1377,10 @@ def _eigen_wave_a(d: Designs, cell: Cell, options, seed: int) -> Case:
             lambda p: read(model(p)), eps0, rng, step=STEPS["eps_r"], taylor=1e-1
         )
     if cell.input == "lumped":
+        # a 10 % step reorders the modes nearest the target (the remainder
+        # jumps to 30); from 3 % on the order holds
         return Case(
-            lambda t: read(model(eps0, t)), jnp.zeros(2), rng, step=1e-3, taylor=1e-1
+            lambda t: read(model(eps0, t)), jnp.zeros(2), rng, step=1e-3, taylor=3e-2
         )
     morph = boundary_morph(model(eps0), "moving", grows="spacer")
     return Case(
