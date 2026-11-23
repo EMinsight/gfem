@@ -11,6 +11,7 @@ DOF, each solved by both codes on the same mesh with the same number of unknowns
 at 8, 16, 32, 56 and 112 cores. Every number on this page
 comes from one campaign report, `20261120-37c723a`. These are observations from one
 set of runs on one machine, not limits or promises for your model.
+For gfem alone across nodes, up to 108,570,046 DOF, see {doc}`scaling`.
 
 ## What we observed
 
