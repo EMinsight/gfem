@@ -177,6 +177,29 @@ def test_an_incident_field_is_normalized_by_its_given_intensity(lossy):
     np.testing.assert_allclose(xs.intensity, [i0])
 
 
+BEAM = gfem.GaussianBeam(
+    "beam", waist=0.4e-6, focus=(0.4e-6, 0.4e-6, 0.4e-6), theta=0.4, polarization="TE"
+)
+
+
+def test_a_beam_is_normalized_by_its_focal_intensity_at_each_frequency(meshes):
+    model = _model(meshes["scatterer"], LOSSY)
+    frequencies = [F, 1.2 * F]
+    problem = gfem.Driven(frequencies, sources=BEAM, keep_fields=True)
+    result = gfem.solve(model, problem, options=OPTIONS)
+    xs = gfem.cross_sections(result, "beam", model=model)
+    i0 = [BEAM.focal_intensity(f, model=model) for f in frequencies]
+    np.testing.assert_allclose(xs.intensity, i0, rtol=1e-14)
+    assert i0[0] != pytest.approx(i0[1], rel=1e-3)
+    for k, f in enumerate(frequencies):
+        absorbed = -_value(
+            gfem.power_flow(result.e_field(f, "beam"), "scat", model=model)
+        )
+        assert xs.absorption[k] * i0[k] == pytest.approx(absorbed, rel=1e-10)
+    with pytest.raises(ValueError, match=r"intensity= for an IncidentField only"):
+        gfem.cross_sections(result, "beam", model=model, intensity=1.0)
+
+
 TE_Z = gfem.PlaneWave("z", theta=0.0, phi=0.0, polarization="TE")
 
 
