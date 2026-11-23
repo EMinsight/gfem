@@ -541,6 +541,40 @@ wavenumber :math:`k = n\omega/c` and wave impedance :math:`\eta =
   emitted power.
 - Bistatic radar cross section of a `gfem.PlaneWave` column, in m²:
   :math:`\sigma(\hat r) = 4\pi|F(\hat r)|^2/|E_0|^2`.
+
+Port waves and beam coupling
+----------------------------
+A source column's port waves (``DrivenResult.port_waves``) and
+`gfem.beam_coupling` are amplitudes in √W, like S for a port fed
+`INCIDENT_POWER`.
+
+- Port wave: :math:`b`, the outgoing wave at a port for the source's
+  column. On a real reference (a photonic `gfem.WavePort` without a voltage
+  path on a lossless guide, whose modal waves carry 1 W) :math:`|b|^2` is
+  the power the source sends into the port, in W; with a voltage path, or
+  on a lossy guide, :math:`b` is a pseudo-wave, like S, and :math:`|b|^2` is
+  not exactly a power.
+- Beam coupling: :math:`c`, the amplitude a field couples into an incoming
+  beam :math:`w` (described travelling toward the device, as a fiber
+  launches it) through the element layer :math:`L` just outside a side of
+  P1 indicator :math:`\chi`, in the beam's medium of permeability
+  :math:`\mu`:
+
+  .. math::
+
+      c = \frac{1}{4i\omega\mu\sqrt P}\int_L \Big[
+          E\cdot(\nabla\chi\times\nabla\times w)
+          + (\nabla\times E)\cdot(\nabla\chi\times w)\Big]\,dV,
+      \qquad
+      P = \frac{1}{2\omega\mu}\operatorname{Im}\int_L
+          \nabla\chi\cdot(w\times\overline{\nabla\times w})\,dV,
+
+  with :math:`P` the beam's power into the side, so that :math:`c` refers
+  to the beam scaled to 1 W through the side. Its phase is the beam's (a
+  `gfem.GaussianBeam`'s zero focal phase). By reciprocity, for a port
+  column :math:`c` is the port wave :math:`b` of the beam's column when the
+  beam lights the device; :math:`|c|^2` is a coupled power on a real
+  reference, a pseudo-wave otherwise, as for :math:`b`.
 """
 
 from __future__ import annotations

@@ -17,10 +17,14 @@ process:
 - the Purcell factor's gradient by the cube's permittivity is one process's;
 - on a finer box, whose truncation layer is background, the cross sections of
   the plane wave, `gfem.power_flow` (the corrected one of the wave's total
-  field, the plain one of the port's field) and the far fields of both
-  columns (amplitudes and radiated power) are one process's to `GATE`;
+  field, the plain one of the port's field), the far fields of both columns
+  (amplitudes and radiated power) and their couplings into a wide Gaussian
+  beam and into a plane wave given as an `gfem.IncidentField` (interpolated
+  on each rank's piece) are one process's to `GATE`;
 - ranks given different backgrounds stop at the entry check, naming it.
 """
+
+import warnings
 
 import free_space_cases as fs
 import jax
@@ -251,6 +255,20 @@ def _inner(centroids):
     return ((centroids > 0.125e-6) & (centroids < 0.875e-6)).all(axis=1)
 
 
+#: Beams coming down onto the box: wider than it (a clipped beam warns).
+BEAM = gfem.GaussianBeam(
+    "beam", waist=3e-6, focus=(0.5e-6, 0.5e-6, 1e-6), theta=np.pi, polarization="TM"
+)
+
+
+def _down_wave(points, frequency):
+    """A plane wave coming down along -z, along y, 1 V/m."""
+    k = 2 * np.pi * frequency / 299792458.0
+    e = np.zeros((len(points), 3), complex)
+    e[:, 1] = np.exp(1j * k * points[:, 2])
+    return e
+
+
 #: Far-field directions, rad: a few off the axes.
 THETA = np.array([0.3, 1.2, 2.5])
 PHI = np.array([0.1, 2.0, 4.0])
@@ -277,6 +295,11 @@ def _balance(path):
         out[f"far_field {label} e_theta"] = np.asarray(ff.e_theta)
         out[f"far_field {label} e_phi"] = np.asarray(ff.e_phi)
         out[f"far_field {label} radiated power"] = np.asarray(ff.radiated_power)
+        for beam in (BEAM, gfem.IncidentField("down", _down_wave)):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)  # clipped by the box
+                c = gfem.beam_coupling(result, label, beam, model=model)
+            out[f"beam_coupling {label} {beam.name}"] = np.asarray(c)
     return out
 
 
