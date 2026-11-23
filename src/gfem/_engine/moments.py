@@ -621,6 +621,9 @@ def _build(
 ) -> MomentInterpolant:
     """Build the `MomentInterpolant` of ``space`` (first-kind Nédélec, ``order``)."""
     start = time.perf_counter()
+    if built.mesh.ngmesh.ne == 0:
+        # a rank of a distributed mesh holding no element (NGSolve's rank 0)
+        return _Assembly().finish(space.ndof, built.scale, start)
     layout = _Layout(order)
     els = _elements(space, built, layout, domains, elements)
     held = {"edge": _first_holders(els.dofs[:, [layout.edge(k)[0] for k in range(6)]])}

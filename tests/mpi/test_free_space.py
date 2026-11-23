@@ -2,7 +2,8 @@
 
 The dielectric cube of `free_space_cases.scatterer_box` (an air box in a
 perfectly matched layer, a lumped port on the cube's +x face), driven by a
-plane wave and an electric dipole, on two ranks against pytest's one process:
+plane wave and an electric dipole, on `RANKS` ranks against pytest's one
+process:
 
 - each rank assembles its own part of a plane wave's load, and the dipole's
   load sits on the one rank holding its element, here not rank 0;
@@ -27,7 +28,8 @@ from ranks import on_ranks
 import gfem
 from gfem import _mpi, _petsc
 
-RANKS = 2
+#: NGSolve's rank 0 holds no element: two more ranks share a partition face.
+RANKS = 3
 #: Relative to the largest one-process value: direct solves of one system
 #: split over ranks (the measurements' gate).
 GATE = 1e-10
@@ -40,7 +42,7 @@ GRID = (F, 1.1 * F)
 WAVE = gfem.PlaneWave("w", theta=0.4, phi=0.3, polarization="TM")
 MOMENT = (0.0, 1e-28, 0.3e-28)
 #: Dipole positions in the air, off every face of the Kuhn grid; the first
-#: one whose element lies on rank 1 alone is used.
+#: one whose element lies on one rank alone, not rank 0, is used.
 CANDIDATES = (
     fs.DIPOLE_POSITION,
     (0.87e-6, 0.59e-6, 0.13e-6),
@@ -85,12 +87,12 @@ def _holders(model, position, comm):
 
 
 def _off_root(model, comm):
-    """The first candidate whose element is held by rank 1 only, and its holders."""
+    """The first candidate whose element one rank alone holds, not rank 0."""
     for position in CANDIDATES:
         holders = _holders(model, position, comm)
-        if holders == [1]:
+        if len(holders) == 1 and holders[0] != 0:
             return position, holders
-    raise AssertionError("no candidate position lies on rank 1 alone")
+    raise AssertionError("no candidate position lies on one rank alone")
 
 
 def _measurements(model, position):
@@ -137,10 +139,11 @@ def _relative(a, b):
 
 
 @needs_stack
-def test_source_measurements_on_two_ranks_are_one_process_s(box):
+def test_source_measurements_across_ranks_are_one_process_s(box):
     got, *_ = on_ranks(_on_ranks_measurements, box, ranks=RANKS, limit=300)
-    # the dipole's load is assembled on rank 1 alone
-    assert got["holders"] == [1]
+    # the dipole's load is assembled on one rank alone, not rank 0
+    assert len(got["holders"]) == 1
+    assert got["holders"][0] != 0
     one = _measurements(fs.scatterer_model(box), got["position"])
     for name, value in one.items():
         error = _relative(got[name], value)
@@ -190,7 +193,7 @@ def _on_ranks_interpolated(path, masked):
 
 
 @pytest.mark.parametrize("masked", [False, True], ids=["domain", "element set"])
-def test_the_moment_interpolant_is_one_process_s_on_two_ranks(box, masked):
+def test_the_moment_interpolant_is_one_process_s_across_ranks(box, masked):
     got, *_ = on_ranks(_on_ranks_interpolated, box, masked, ranks=RANKS, limit=120)
     one = _interpolated(box, masked)
     error = _relative(got, one)
@@ -222,11 +225,12 @@ def _on_ranks_purcell_gradient(path):
 
 
 @needs_stack
-def test_the_purcell_gradient_on_two_ranks_is_one_process_s(box):
+def test_the_purcell_gradient_across_ranks_is_one_process_s(box):
     (position, holders, value, grad), *_ = on_ranks(
-        _on_ranks_purcell_gradient, box, ranks=RANKS, limit=300
+        _on_ranks_purcell_gradient, box, ranks=RANKS, limit=600
     )
-    assert holders == [1]
+    assert len(holders) == 1
+    assert holders[0] != 0
     value_one, grad_one = _purcell_gradient(box, position)
     assert np.abs(grad_one).max() > 0
     assert _relative(value, value_one) < GATE
