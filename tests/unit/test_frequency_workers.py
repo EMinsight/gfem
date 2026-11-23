@@ -477,7 +477,9 @@ def test_two_workers_advance_the_parents_row_once_per_frequency(line, monkeypatc
     assert board.summary() == [("uniform sweep", 4, 4, True)]
     frequencies = sorted(e[3]["frequency"] for e in board.events if e[0] == "advance")
     assert frequencies == list(FREQUENCIES)
-    np.testing.assert_array_equal(on["s"], off["s"])
+    # threaded factorizations are not bitwise reproducible between two runs, so
+    # the progress feed is held to the same tolerance as the other worker checks
+    np.testing.assert_allclose(on["s"], off["s"], rtol=0, atol=1e-12)
 
 
 def test_with_progress_the_first_blocks_error_is_raised(monkeypatch):
