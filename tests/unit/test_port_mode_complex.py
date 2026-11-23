@@ -13,6 +13,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import scipy.linalg
+import wave_port_cases as w
 
 import gfem
 from gfem._engine.driven import driven_operator
@@ -411,3 +413,31 @@ def test_an_absorbing_edge_beside_a_law_raises_at_a_complex_wavenumber(guide_mes
     (term,) = terms_of(model, 2, 10e9)
     with pytest.raises(NotImplementedError, match=r"'p1'.*absorbing edge beside"):
         term.at(wavenumber(10e9) * (1 + 0.05j))
+
+
+# --- a mode whose shape does not change with frequency -------------------------
+
+
+@pytest.fixture(scope="module")
+def tm01_term(tmp_path_factory):
+    # air-filled circular guide: TM01's transverse shape is the same at every
+    # frequency, so the sweep's basis is one mode and the reduced pencil's
+    # other pair is the formulation's null space (gamma = 0)
+    layers = (("air", 1.0, 2.0),)
+    path = tmp_path_factory.mktemp("circle") / "circle.msh"
+    mesh = w.circular_guide(path, layers, n=6)
+    model = w.ported_model(mesh, layers, [gfem.WavePort("p1", "port", mode=3)])
+    (term,) = terms_of(model, 2, 13.4e9)
+    return term
+
+
+@pytest.mark.parametrize("f", [12.5e9, 13.4e9, 16e9])
+def test_a_mode_of_fixed_shape_is_exact_at_a_complex_wavenumber(tm01_term, f):
+    k = wavenumber(f) * (1 + 0.1j)
+    a, b = tm01_term._reduced.matrices(tm01_term.modes.pencil.theta(k))
+    lams = scipy.linalg.eigvals(a, b)
+    assert np.min(np.abs(lams)) <= 1e-12 * abs(k) ** 2  # the null-space pair
+    value = tm01_term.at(k)
+    ((lam, _),) = exact_modes(tm01_term, k, value)
+    assert abs(value.gamma0**2 - lam) <= 1e-12 * abs(lam)
+    assert tm01_term.version == 0  # no exact solve was needed

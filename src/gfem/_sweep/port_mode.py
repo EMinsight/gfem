@@ -1144,6 +1144,10 @@ class _Reduced:
         lam, vecs = scipy.linalg.eig(ar, br)
         beta = np.sqrt(-lam + 0j)
         ok = np.isfinite(lam) & (beta.real <= k_max * (1 + 1e-6))
+        # a pair at gamma ~ 0 is the formulation's null space, not a mode; on
+        # the basis of a mode whose shape does not change with frequency (a
+        # homogeneous cross-section) it overlaps the mode within `_AMBIGUOUS`
+        ok &= np.abs(beta) > _EVANESCENT * k_max
         if not ok.any():
             return [(complex(math.nan), np.zeros(n), math.inf) for _ in refs]
         idx = np.flatnonzero(ok)
