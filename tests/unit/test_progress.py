@@ -495,3 +495,30 @@ def test_a_fixed_angle_sweep_s_children_advance_their_parent_s_rows(board, monke
     cotangent[[0, 2]] = 1.0
     split.runner.backward(None, entry, {"s": cotangent}, wanted=None)
     assert loops(board) == [(UNIFORM_ROW, 3, 3, True), (ADJOINT_ROW, 3, 3, True)]
+
+
+# ---------------------------------------------------------------- drawn rows
+
+#: rich's cursor, erase and style codes.
+CONTROL = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def test_a_sweep_draws_its_row_among_intact_log_lines(line, capsys, monkeypatch):
+    gfem.release_memory()
+    # rich treats the console as a terminal: rows draw into captured stderr
+    monkeypatch.setenv("TTY_COMPATIBLE", "1")
+    monkeypatch.setenv("NO_COLOR", "1")
+    gfem.log.enable()
+    gfem.solve(line, gfem.Driven(F), options=DIRECT)
+    gfem.log.disable()
+    err = capsys.readouterr().err
+    assert "uniform sweep" in err
+    assert "\x1b[2K" in err  # the row was erased, not left in the scroll
+    # a carriage return then an erase wipes the row off its line
+    text = CONTROL.sub("", err.replace("\r", "\n"))
+    solver = re.findall(
+        r"^\d\d:\d\d:\d\d\.\d{3} INFO  solver driven forward .* at (\d+) GHz: direct",
+        text,
+        re.MULTILINE,
+    )
+    assert solver == ["21", "22", "23"]
