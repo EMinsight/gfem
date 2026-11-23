@@ -563,9 +563,12 @@ def _local_cotangents(
         if hasattr(rule, "explicit_lumped") and _mpi.rank(comm) == 0:
             _add_explicit_lumped(out, rule.explicit_lumped(), wants=wants)
         # a load form's problem leaves read by the rule itself (the
-        # waveform scales, a trace's weights)
+        # waveform scales, a trace's weights, and a heat trace's direct
+        # reading of the densities, added to their load pass)
         if hasattr(rule, "explicit_problem"):
-            out |= {k: v for k, v in rule.explicit_problem().items() if k in wants}
+            for k, v in rule.explicit_problem().items():
+                if k in wants:
+                    out[k] = out[k] + v if k in out else v
     finally:
         if fresh is not None:
             fresh.free()
