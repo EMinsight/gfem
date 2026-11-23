@@ -16,6 +16,11 @@ chain (mirror about y = x, Helmholtz filter, projection at beta = 4), is
 checked against a fourth-order difference. The design gets a little pixel
 noise first, so that no filtered density sits on the projection's clamp at 0
 or 1, where the clamp's derivative is zero and a difference is not.
+
+With the design square all gold (a plain law material, no blend), the heat
+it dissipates is the power the field brings into it: `gfem.dissipated_power`
+against `gfem.power_flow`. The absorbing outer boundary keeps S out of this
+identity, and the blended bend is the dissipated power's refusal case.
 """
 
 from pathlib import Path
