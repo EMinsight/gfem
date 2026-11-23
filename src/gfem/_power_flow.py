@@ -140,6 +140,7 @@ def balance(
         inputs[name] = leaf
         roles[name] = _model_role(input_kind(path, "model"), model, where)
     kernel = _PowerFlowKernel(
+        comm=field._communicator,  # noqa: SLF001
         roles=roles,
         field_def=(f_def, tuple(_FIELD_INPUTS[p[0].name] for p, _ in f_paths)),
         model_def=(m_def, tuple(n for n in inputs if n.startswith("model"))),
@@ -225,14 +226,18 @@ _OUTPUTS = {
 
 
 class _PowerFlowKernel:
-    """The power through a fixed surface, and its pullback on the field."""
+    """The power through a fixed surface, and its pullback on the field.
 
-    pieces: ClassVar[frozenset[str]] = frozenset()
-    comm = None
+    Under ranks (``comm``) a collective host call: the coefficients are a
+    rank's piece, the outputs agreed, and the pullback a rank's part of a load.
+    """
+
+    pieces: ClassVar[frozenset[str]] = frozenset({"coefficients"})
 
     def __init__(
         self,
         *,
+        comm: Any,
         roles: dict[str, _Role],
         field_def: tuple[Any, tuple[str, ...]],
         model_def: tuple[Any, tuple[str, ...]],
@@ -240,6 +245,7 @@ class _PowerFlowKernel:
         order: int,
         mode: str = "power",
     ) -> None:
+        self.comm = comm
         self.mode = mode
         self.name = (
             "gfem.cross_sections" if mode == "cross_sections" else "gfem.power_flow"
@@ -274,7 +280,9 @@ class _PowerFlowKernel:
         key += np.ascontiguousarray(values["omega"]).tobytes()
         if self._cached is None or self._cached[0] != key:
             stretch = _pml.field_stretch(model, field)
-            flux = pf.build(self.order, model, self.where, stretch=stretch)
+            flux = pf.build(
+                self.order, model, self.where, stretch=stretch, comm=self.comm
+            )
             reading = None
             part = field._incident  # noqa: SLF001
             if self.mode != "power" and part is not None:
@@ -284,9 +292,17 @@ class _PowerFlowKernel:
                 )
             self._cached = (key, (flux, reading))
         flux, reading = self._cached[1]
-        e = np.asarray(values["coefficients"])
+        e = pf.local_coefficients(
+            np.asarray(values["coefficients"]), flux.op, self.comm
+        )
         pf.check_size(e, flux.op, self.order)
         return flux, reading, e
+
+    def _padded(self, grad: np.ndarray, values: dict[str, np.ndarray]) -> dict:
+        """The coefficients' cotangent at the field's shape (a rank's piece padded)."""
+        out = np.zeros(np.shape(values["coefficients"]), complex)
+        out[: len(grad)] = grad
+        return {"coefficients": out}
 
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         flux, reading, e = self._host(values)
@@ -316,10 +332,10 @@ class _PowerFlowKernel:
             return float(np.asarray(cotangents.get(name, 0.0)))
 
         if self.mode == "power":
-            return {"coefficients": ct("power") * flux.pullback(e, omega)}
+            return self._padded(ct("power") * flux.pullback(e, omega), values)
         if self.mode == "corrected":
             grad = flux.pullback(e, omega) - reading.load_pullback()
-            return {"coefficients": ct("power") * grad}
+            return self._padded(ct("power") * grad, values)
         grad = np.zeros(e.shape, complex)
         if "absorption" in cotangents:
             grad += ct("absorption") * (
@@ -327,4 +343,4 @@ class _PowerFlowKernel:
             )
         if "scattering" in cotangents:
             grad += ct("scattering") * flux.pullback(e - reading.incident, omega)
-        return {"coefficients": grad}
+        return self._padded(grad, values)

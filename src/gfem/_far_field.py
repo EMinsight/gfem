@@ -31,7 +31,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 
-from gfem import _mpi, _pml
+from gfem import _pml
 from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import check_fixed, is_traced
@@ -249,6 +249,9 @@ def far_field(
     far field is that of the sources and their images, in the half-space
     above the plane only.
 
+    On a result of a distributed solve it is a collective call: every rank
+    calls it and gets the same far field.
+
     Example:
         The pattern of a dipole on a 2° grid::
 
@@ -294,7 +297,6 @@ def far_field(
             ground plane.
         NotImplementedError: A layered background (a dielectric or layered
             half-space) or a lossy one.
-        gfem.DistributedUnsupportedError: The fields are pieces across ranks.
         NonDifferentiableError: ``theta`` or ``phi`` is traced; the side is
             a predicate while the node coordinates are traced; and, while
             `jax.grad` traces it, the field's ``omega``, a design in
@@ -341,8 +343,6 @@ def far_field(
     incident = isinstance(source, INCIDENT)
     part = "scattered" if incident else "total"
     fields = [result.e_field(f, name, part=part) for f in frequencies]
-    if fields[0]._communicator is not None:  # noqa: SLF001
-        _mpi.refuse_feature("far_field")
     traced_nodes = is_traced((fields[0].mesh.nodes, model.mesh.nodes))
     if callable(names) and traced_nodes:
         raise NonDifferentiableError(
@@ -493,6 +493,7 @@ def _measure(
             else _model_role(kind, model, where)
         )
     kernel = _FarFieldKernel(
+        comm=field._communicator,  # noqa: SLF001
         roles=roles,
         field_def=(f_def, tuple(_FIELD_INPUTS[p[0].name] for p, _ in f_paths)),
         model_def=(m_def, tuple(n for n in inputs if n.startswith("model"))),
@@ -534,15 +535,22 @@ def _field_role(name: str, field: Field) -> _Role:
 
 
 class _FarFieldKernel:
-    """The far-field amplitude and the radiated power of one field."""
+    """The far-field amplitude and the radiated power of one field.
+
+    Under ranks (``comm``) a collective host call: the coefficients are a
+    rank's piece; the field at the layer's quadrature points is gathered by the
+    probe, so every rank sums the same amplitude, and the radiated power is the
+    flux's pairing, reduced and broadcast. The coefficients' cotangent is a
+    rank's part of a load.
+    """
 
     name = "gfem.far_field"
-    pieces: ClassVar[frozenset[str]] = frozenset()
-    comm = None
+    pieces: ClassVar[frozenset[str]] = frozenset({"coefficients"})
 
     def __init__(
         self,
         *,
+        comm: Any,
         roles: dict[str, _Role],
         field_def: tuple[Any, tuple[str, ...]],
         model_def: tuple[Any, tuple[str, ...]],
@@ -552,6 +560,7 @@ class _FarFieldKernel:
         order: int,
         basis: tuple[np.ndarray, ...],
     ) -> None:
+        self.comm = comm
         self.roles = roles
         self.field_def = field_def
         self.model_def = model_def
@@ -601,7 +610,8 @@ class _FarFieldKernel:
         ff = engine()
         bary, _ = ff.rule(self.order)
         mesh = Mesh(nodes, self.topology)
-        return probe.probe(mesh, layout(field), ff.located(self.layer, bary))
+        located = ff.located(self.layer, bary)
+        return probe.probe(mesh, layout(field), located, self.comm)
 
     def _flux_of(
         self, values: dict[str, np.ndarray], model: Model, field: Field
@@ -611,7 +621,10 @@ class _FarFieldKernel:
         key = b"".join(np.ascontiguousarray(values[n]).tobytes() for n in m_names)
         if self._flux is None or self._flux[0] != key:
             stretch = _pml.field_stretch(model, field)
-            self._flux = (key, pf.build(self.order, model, self.where, stretch=stretch))
+            flux = pf.build(
+                self.order, model, self.where, stretch=stretch, comm=self.comm
+            )
+            self._flux = (key, flux)
         return self._flux[1]
 
     def _function(
@@ -655,13 +668,14 @@ class _FarFieldKernel:
         omega = float(np.asarray(values["omega"]).real)
         e = np.asarray(values["coefficients"])
         flux = self._flux_of(values, model, field)
-        pf.check_size(e, flux.op, self.order)
+        local = pf.local_coefficients(e, flux.op, self.comm)
+        pf.check_size(local, flux.op, self.order)
         prb = self._probe(nodes, field)
         ev = prb.values(e)[0]
         cv = prb.values(e, curl=True)[0]
         function, corners = self._function(nodes, omega)
         amplitude = np.asarray(function(corners, ev, cv))
-        return {"amplitude": amplitude, "power": np.asarray(flux.power(e, omega))}
+        return {"amplitude": amplitude, "power": np.asarray(flux.power(local, omega))}
 
     def backward(
         self,
@@ -694,10 +708,12 @@ class _FarFieldKernel:
                 out["nodes"] = grad
         ct_p = cotangents.get("power")
         if ct_p is not None and "coefficients" in wanted:
+            pf = importlib.import_module("gfem._engine.power_flow")
             flux = self._flux_of(values, model, field)
-            out["coefficients"] = out["coefficients"] + float(ct_p) * flux.pullback(
-                e, omega
-            )
+            local = pf.local_coefficients(e, flux.op, self.comm)
+            # a rank's piece is padded: the pullback fills its first entries
+            grad = float(ct_p) * flux.pullback(local, omega)
+            out["coefficients"][: len(grad)] += grad
         unknown = [
             n
             for n in wanted

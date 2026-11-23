@@ -15,6 +15,10 @@ process:
   `EXACT_GATE`, with and without an element set whose edge crosses the
   partition;
 - the Purcell factor's gradient by the cube's permittivity is one process's;
+- on a finer box, whose truncation layer is background, the cross sections of
+  the plane wave, `gfem.power_flow` (the corrected one of the wave's total
+  field, the plain one of the port's field) and the far fields of both
+  columns (amplitudes and radiated power) are one process's to `GATE`;
 - ranks given different backgrounds stop at the entry check, naming it.
 """
 
@@ -237,6 +241,60 @@ def test_the_purcell_gradient_across_ranks_is_one_process_s(box):
     error = _relative(grad, grad_one)
     print(f"ranks={RANKS} Purcell gradient error={error:.3g}")  # noqa: T201
     assert error < GRADIENT_GATE, f"the gradient off by {error:.3g} relative"
+
+
+# --- the power balance ----------------------------------------------------------------
+
+
+def _inner(centroids):
+    """The elements inside the truncation layer of the finer box: cube and port."""
+    return ((centroids > 0.125e-6) & (centroids < 0.875e-6)).all(axis=1)
+
+
+#: Far-field directions, rad: a few off the axes.
+THETA = np.array([0.3, 1.2, 2.5])
+PHI = np.array([0.1, 2.0, 4.0])
+
+
+def _balance(path):
+    """The cross sections, the power out of `_inner` and the far fields."""
+    model = fs.scatterer_model(path)
+    problem = gfem.Driven(GRID, sources=WAVE, keep_fields=True)
+    result = gfem.solve(model, problem, options=_options())
+    xs = gfem.cross_sections(result, "w", model=model)
+    out = {
+        "extinction": np.asarray(xs.extinction),
+        "absorption": np.asarray(xs.absorption),
+        "scattering": np.asarray(xs.scattering),
+    }
+    for k, f in enumerate(GRID):
+        for label in ("w", "p1"):
+            field = result.e_field(f, label)
+            power = gfem.power_flow(field, _inner, model=model)
+            out[f"power_flow {label} {k}"] = np.asarray(power)
+    for label in ("w", "p1"):
+        ff = gfem.far_field(result, label, THETA, PHI, model=model)
+        out[f"far_field {label} e_theta"] = np.asarray(ff.e_theta)
+        out[f"far_field {label} e_phi"] = np.asarray(ff.e_phi)
+        out[f"far_field {label} radiated power"] = np.asarray(ff.radiated_power)
+    return out
+
+
+@pytest.fixture
+def fine_box(tmp_path):
+    """The scatterer box at 8 cells per um, a two-cell layer."""
+    return str(fs.scatterer_box(tmp_path / "fine.msh", cells=8, thickness=0.25))
+
+
+@needs_stack
+def test_balance_and_far_field_across_ranks_are_one_process_s(fine_box):
+    got, *_ = on_ranks(_balance, fine_box, ranks=RANKS, limit=600)
+    one = _balance(fine_box)
+    assert np.abs(one["absorption"]).min() > 0
+    for name, value in one.items():
+        error = _relative(got[name], value)
+        print(f"ranks={RANKS} {name} error={error:.3g}")  # noqa: T201
+        assert error < GATE, f"{name} off by {error:.3g} relative"
 
 
 # --- the entry check ------------------------------------------------------------------
