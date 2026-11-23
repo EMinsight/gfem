@@ -18,6 +18,7 @@ import contextlib
 import dataclasses
 import hashlib
 import itertools
+import logging
 import os
 import re
 import sys
@@ -39,6 +40,9 @@ from gfem.errors import (
     RegionNotFoundError,
     SolverUnavailableError,
 )
+
+# an explicit name: a private module path would leak into users' filters
+_log = logging.getLogger("gfem.mpi")
 
 __all__ = [
     "AGREED_ERRORS",
@@ -738,10 +742,14 @@ _entry_calls: collections.Counter[int | None] = collections.Counter()
 
 
 def meet(comm: Any, call: str) -> None:
-    """Wait for every rank in Python, saying so on stderr after `ENTRY_PATIENCE`.
+    """Wait for every rank in Python, saying so after `ENTRY_PATIENCE`.
 
     `if rank == 0: gfem.solve(...)` hangs in the first collective with nothing to
-    say. A slow rank is legitimate, so this only reports: it never aborts.
+    say. A slow rank is legitimate, so this only reports: it never aborts. The report
+    is one WARNING record on the ``gfem.mpi`` logger, with ``extra`` ``rank``,
+    ``call`` and ``patience``, not a warning: the wait is rank-local and a warning
+    may only be decided on an agreed value. With no logging configured, Python's
+    last-resort handler prints its bare message on stderr.
     """
     if comm is None:
         return
@@ -751,11 +759,13 @@ def meet(comm: Any, call: str) -> None:
     while not request.Test():
         if not told and time.monotonic() - start > ENTRY_PATIENCE:
             told = True
-            print(  # noqa: T201
-                f"gfem: rank {comm.rank}: waiting over {ENTRY_PATIENCE:g} s for the "
-                f"other ranks at {call}: every rank must make the same gfem calls.",
-                file=sys.stderr,
-                flush=True,
+            _log.warning(
+                "gfem: rank %d: waiting over %g s for the other ranks at %s: every "
+                "rank must make the same gfem calls.",
+                comm.rank,
+                ENTRY_PATIENCE,
+                call,
+                extra={"rank": comm.rank, "call": call, "patience": ENTRY_PATIENCE},
             )
         time.sleep(pause)
         pause = min(2 * pause, 0.05)
