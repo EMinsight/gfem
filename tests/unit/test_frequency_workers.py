@@ -325,7 +325,7 @@ def test_workers_solve_with_the_parents_auto_choice(line, monkeypatch, fits):
     rule = DrivenRule(
         line, gfem.Driven(FREQUENCIES), gfem.SolverOptions(frequency_workers=2)
     )
-    kind = "direct" if fits else "bddc_gmres"
+    kind = "direct" if fits else "pmg_gmres"
     assert rule.linear.kind == kind
     outputs, _ = rule.forward(line, keep=False)
     assert handed == [kind, kind]

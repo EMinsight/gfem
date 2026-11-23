@@ -89,6 +89,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Literal,
+    NamedTuple,
     Protocol,
     Self,
     get_args,
@@ -103,14 +104,16 @@ from gfem import _timing
 if TYPE_CHECKING:
     from gfem._linalg.layout import DofLayout
     from gfem._linalg.pieces import PieceSum
-    from gfem._linalg.pmg import Cells
+    from gfem._linalg.pmg import Cells, DirectSetCount
     from gfem.options import PetscOptions, PetscValue, SolverOptions
 
 __all__ = [
     "KINDS",
+    "AutoChoice",
     "Handle",
     "Kind",
     "Operator",
+    "PmgInputs",
     "Refactorable",
     "ResolvedLinearSolver",
     "Symmetry",
@@ -134,26 +137,125 @@ MAXITER = 400
 DIRECT_BYTES_PER_UNKNOWN = 48 * 2**10
 
 
-def auto_linear_solver(
-    default: Kind, *, unknowns: int, in_flight: int, general: bool, budget: int
-) -> tuple[Kind, str, int]:
-    """``"direct"`` while its factorizations fit ``budget``, else ``default``.
+#: Bytes per unknown of the p-multigrid by order, its direct set's
+#: higher-order DOFs aside: the operator and its symmetric copy, the
+#: vertex-star factors, the Whitney factor and the Krylov vectors, at or
+#: above every measured peak at order 2 (`pmg_estimate`).
+PMG_BYTES_PER_UNKNOWN = {2: 8 * 2**10, 3: 16 * 2**10}
 
-    The estimate is `DIRECT_BYTES_PER_UNKNOWN` times ``unknowns`` per
+
+class PmgInputs(NamedTuple):
+    """What `auto_linear_solver` reads to weigh ``pmg_gmres``.
+
+    Attributes:
+        order: The element order, 2 or 3.
+        limit: The memory the process may use, in bytes: the p-multigrid
+            pools no factor, so its estimate is held to all of it.
+        count: Counts the direct set from the mesh
+            (`gfem._linalg.pmg.direct_set_count`); called only where direct
+            does not fit.
+    """
+
+    order: int
+    limit: int
+    count: Callable[[], DirectSetCount]
+
+
+class AutoChoice(NamedTuple):
+    """What `auto_linear_solver` resolved, and why.
+
+    Attributes:
+        kind: The linear solver.
+        reason: Why, in words, with the numbers.
+        estimate: Direct's estimate, in bytes.
+        pmg_estimate: The p-multigrid's estimate, in bytes, where the rule
+            weighed it; else ``None``.
+        direct_set: The direct set's DOFs it counted; else ``None``.
+    """
+
+    kind: Kind
+    reason: str
+    estimate: int
+    pmg_estimate: int | None = None
+    direct_set: int | None = None
+
+
+def auto_linear_solver(
+    default: Kind,
+    *,
+    unknowns: int,
+    in_flight: int,
+    general: bool,
+    budget: int,
+    pmg: PmgInputs | None = None,
+    reason: str | None = None,
+) -> AutoChoice:
+    """``"direct"`` while it fits, else ``"pmg_gmres"`` where it fits, else ``default``.
+
+    Direct's estimate is `DIRECT_BYTES_PER_UNKNOWN` times ``unknowns`` per
     factorization ``in_flight``, doubled for a ``general`` operator (LU
-    stores L and U). Equal to the budget fits. Reads no clock and no
-    installed library. Returns the kind, why in words, and the
-    estimate in bytes.
+    stores L and U). Where it exceeds ``budget`` and ``pmg`` is given (a
+    model ``pmg_gmres`` solves), the direct set is counted and
+    `pmg_estimate` held to ``pmg.limit``. Equal to the bound fits. Reads no
+    clock and no installed library.
+
+    Args:
+        default: The linear solver where neither fits.
+        unknowns: The system size, an upper bound.
+        in_flight: The factorizations held at once (frequency workers).
+        general: Whether the operator is general (not ``A^T = A``).
+        budget: Direct's bytes.
+        pmg: The p-multigrid's inputs, or ``None`` where it does not apply.
+        reason: Why ``default`` is the fallback, appended where it is chosen
+            past direct's budget.
     """
     estimate = direct_estimate(unknowns, in_flight=in_flight, general=general)
     fits = estimate <= budget
     gib = 2**30
-    reason = (
+    why = (
         f"{unknowns:,} unknowns, est. {estimate / gib:.1f} GiB factorization "
         f"{'<=' if fits else '>'} {budget / gib:.1f} GiB budget "
         f"(half of {2 * budget / gib:.3g} GiB)"
     )
-    return ("direct" if fits else default), reason, estimate
+    if fits:
+        return AutoChoice("direct", why, estimate)
+    pmg_bytes = direct = None
+    if pmg is not None:
+        count = pmg.count()
+        direct = count.direct
+        pmg_bytes = pmg_estimate(
+            unknowns,
+            direct=direct,
+            whitney=count.whitney,
+            order=pmg.order,
+            in_flight=in_flight,
+        )
+        below = pmg_bytes <= pmg.limit
+        why += (
+            f"; p-multigrid est. {pmg_bytes / gib:.1f} GiB (direct set "
+            f"{100 * direct / max(unknowns, 1):.1f} %) {'<=' if below else '>'} "
+            f"{pmg.limit / gib:.3g} GiB memory"
+        )
+        if below:
+            return AutoChoice("pmg_gmres", why, estimate, pmg_bytes, direct)
+    if reason is not None:
+        why += f"; {reason}"
+    return AutoChoice(default, why, estimate, pmg_bytes, direct)
+
+
+def pmg_estimate(
+    unknowns: int, *, direct: int, whitney: int, order: int, in_flight: int
+) -> int:
+    r"""Bytes of ``in_flight`` p-multigrid solves of ``unknowns``.
+
+    $n\,(c_p N + c_d (D - W))$: `PMG_BYTES_PER_UNKNOWN` $c_p$ of ``order``
+    per unknown, and `DIRECT_BYTES_PER_UNKNOWN` $c_d$ per higher-order DOF of
+    the ``direct`` set $D$ (its ``whitney`` DOFs $W$ aside), which is a
+    direct factor.
+    """
+    per_unknown = PMG_BYTES_PER_UNKNOWN[order]
+    higher = DIRECT_BYTES_PER_UNKNOWN * (direct - whitney)
+    return in_flight * (per_unknown * unknowns + higher)
 
 
 def direct_estimate(unknowns: int, *, in_flight: int, general: bool) -> int:
@@ -630,11 +732,13 @@ class ResolvedLinearSolver:
         general: bool = False,
         budget: int | None = None,
         reason: str | None = None,
+        pmg: PmgInputs | None = None,
     ) -> Self:
         """The linear solver of ``options`` for a ``problem`` problem.
 
         With ``unknowns``, ``"auto"`` on one CPU process is `auto_linear_solver`
-        (``"direct"`` while it fits ``budget``, else ``default``). A resolved
+        (``"direct"`` while it fits ``budget``, else ``"pmg_gmres"`` where
+        ``pmg`` is given and fits, else ``default``). A resolved
         ``"auto"`` is logged on ``gfem.solver`` (`report.auto_choice`); an
         explicit choice is not.
 
@@ -648,8 +752,10 @@ class ResolvedLinearSolver:
             in_flight: The factorizations held at once (frequency workers).
             general: Whether the operator is general (not ``A^T = A``).
             budget: The rule's bytes; required with ``unknowns``.
-            reason: Why ``"auto"`` takes ``default`` without ``unknowns``,
-                for the log.
+            reason: Why ``"auto"`` takes ``default`` without ``unknowns``, or
+                past ``budget``, for the log.
+            pmg: The p-multigrid's inputs for the rule, or ``None`` where
+                ``pmg_gmres`` does not solve the model.
 
         Raises:
             ValueError: ``linear_solver="pmg_gmres"`` for a problem other than
@@ -676,20 +782,25 @@ class ResolvedLinearSolver:
         else:
             if budget is None:  # pragma: no cover - a caller error
                 raise TypeError("resolve needs a budget with unknowns.")
-            kind, reason, estimate = auto_linear_solver(
+            choice = auto_linear_solver(
                 default,
                 unknowns=unknowns,
                 in_flight=in_flight,
                 general=general,
                 budget=budget,
+                pmg=pmg,
+                reason=reason,
             )
+            kind = choice.kind
             report.auto_choice(
                 kind,
                 problem=problem,
-                reason=reason,
+                reason=choice.reason,
                 unknowns=unknowns,
-                estimate=estimate,
+                estimate=choice.estimate,
                 budget=budget,
+                pmg_estimate=choice.pmg_estimate,
+                direct_set=choice.direct_set,
             )
         if kind not in KINDS:  # pragma: no cover - SolverOptions validates
             raise NotImplementedError(

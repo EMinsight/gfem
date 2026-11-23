@@ -106,12 +106,16 @@ def auto_choice(
     unknowns: int | None = None,
     estimate: int | None = None,
     budget: int | None = None,
+    pmg_estimate: int | None = None,
+    direct_set: int | None = None,
 ) -> None:
     """Log what ``linear_solver="auto"`` resolved to for a ``problem`` problem.
 
     ``reason`` states the driven rule's numbers; a fixed choice
     has none. Attributes ``linear_solver``, ``unknowns``, ``estimate`` and
-    ``budget`` (bytes; ``None`` for a fixed choice).
+    ``budget`` (bytes; ``None`` for a fixed choice), and ``pmg_estimate``
+    (bytes) and ``direct_set`` (DOFs) where the rule weighed the
+    p-multigrid (``None`` otherwise).
     """
     why = "" if reason is None else f": {reason}"
     LOGGER.info(
@@ -125,6 +129,8 @@ def auto_choice(
             "unknowns": unknowns,
             "estimate": estimate,
             "budget": budget,
+            "pmg_estimate": pmg_estimate,
+            "direct_set": direct_set,
         },
     )
 
