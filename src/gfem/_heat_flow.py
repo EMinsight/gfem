@@ -31,6 +31,7 @@ import numpy as np
 
 from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
+from gfem._checks import is_traced
 from gfem._probe import NODES_REASON
 
 if TYPE_CHECKING:
@@ -74,13 +75,17 @@ def heat_flow(
 ) -> jax.Array:
     """The heat leaving ``side``, W (a slab's on a cross-section).
 
-    ``result`` was checked to be solved on ``model`` (`check_solved`).
+    ``result`` was checked to be solved on ``model`` (``gfem.measurements._heat_side``).
     """
     order = result.temperature.order
     rule = steady_rule(model, order)
-    # the side is topology: read on the mesh at its imported nodes
-    still = model.replace(mesh=rule._still())  # noqa: SLF001
-    weights = engine().side(rule, still, side, who=who)
+    # the side is topology (a predicate side has concrete nodes, checked):
+    # traced nodes are read at their imported positions
+    if is_traced(model.mesh.nodes):
+        model_at = model.replace(mesh=rule._still())  # noqa: SLF001
+    else:
+        model_at = model
+    weights = engine().side(rule, model_at, side, who=who)
     m_paths, m_def = jax.tree_util.tree_flatten_with_path(model)
     inputs: dict[str, Any] = {
         "temperature": result.temperature.coefficients,
