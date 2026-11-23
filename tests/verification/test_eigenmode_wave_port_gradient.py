@@ -52,6 +52,7 @@ def test_case_a_frequency_and_q_gradients_match_the_exact_derivative(tmp_path):
     d_q = float(
         jax.grad(lambda e: jnp.real(omega(e)[j]) / (2 * jnp.imag(omega(e)[j])))(eps)
     )
+    # measured at order 3 on this mesh: 1.1e-5 and 4.7e-5
     assert abs(df - DF_DEPS) <= 1e-4 * abs(DF_DEPS)
     assert abs(d_q - DQ_DEPS) <= 1e-4 * abs(DQ_DEPS)
 
