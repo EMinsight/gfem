@@ -406,6 +406,8 @@ class DrivenOperator:
         """``A_k X`` of piece ``k`` (its form without θ), matrix-free.
 
         ``X`` is ``(ndof,)`` or ``(ndof, m)``; fixed DOFs are not special.
+        Under ranks ``X`` is a state (every holder of a DOF holds its value)
+        and the result this rank's part of a load.
         """
         form = self._piece_forms[k]
         # no reshape to -1: it raises on a rank with no DOFs
@@ -415,6 +417,9 @@ class DrivenOperator:
         out = np.empty(columns.shape, complex)
         for j, column in enumerate(columns.T):
             source.FV().NumPy()[:] = column
+            if self.layout is not None:
+                # a state in, this rank's part of the load out
+                self.layout.mark_state(source)
             form.Apply(source, target)
             out[:, j] = target.FV().NumPy()
         return out.reshape(x.shape)
@@ -863,7 +868,7 @@ class DrivenRule:
                     "impedance to feed 1 W through. Give it a resistance, or leave "
                     "it out of Driven.excite."
                 )
-        self._init_sources(model, problem, options, comm)
+        self._init_sources(model, problem)
         #: The grid of the Floquet order table: the whole sweep's, in a
         #: frequency worker too.
         self.order_frequency = tuple(
@@ -972,9 +977,7 @@ class DrivenRule:
         )
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
-    def _init_sources(
-        self, model: Model, problem: Driven, options: SolverOptions, comm: Any
-    ) -> None:
+    def _init_sources(self, model: Model, problem: Driven) -> None:
         """The sources' attributes and the refusals the model shows of them."""
         #: The problem's sources, solved after the excited ports.
         self.sources = problem.sources
@@ -985,7 +988,6 @@ class DrivenRule:
         #: The labels of the solve's columns: the excited ports, then the
         #: sources.
         self.columns = (*self.excite, *(s.name for s in problem.sources))
-        _check_sources_supported(self, options, comm)
         check_incident_model(model, self.incident)
         #: The model's background stack and its layer's regions, which the
         #: kept fields of incident columns carry.
@@ -1501,8 +1503,9 @@ class DrivenRule:
             )
         out = SweepOutputs.adaptive(
             s=ports.scattering(waves[:, :, :n_exc]),
+            # (n_freq, 0, n_sources) without ports: the traced outputs' width
             port_waves=waves[:, :, n_exc:] * ports.deembedding[:, :, None]
-            if self.sources and self.port_names
+            if self.sources
             else None,
             emitted_power=emitted,
             z_ref=ports.z_ref,
@@ -3023,30 +3026,6 @@ def _adaptive_loads(
         return np.concatenate(parts, axis=1)
 
     return loads
-
-
-def _check_sources_supported(
-    rule: DrivenRule, options: SolverOptions, comm: Any
-) -> None:
-    """Raise for a solve path that does not take incident columns yet.
-
-    Raises:
-        NotImplementedError: Incident columns across ranks or over frequency
-            workers.
-    """
-    if not rule.incident:
-        return
-    name = rule.incident[0].name
-    if comm is not None:
-        raise NotImplementedError(
-            f"The incident field {name!r} cannot be solved across ranks in this "
-            "gfem version; solve on one process."
-        )
-    if min(options.frequency_workers, len(rule.problem.frequency)) > 1:
-        raise NotImplementedError(
-            f"The incident field {name!r} cannot be solved over frequency "
-            "workers in this gfem version; use frequency_workers=1."
-        )
 
 
 def _check_supported(model: Model) -> None:

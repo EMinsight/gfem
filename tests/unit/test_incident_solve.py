@@ -352,13 +352,6 @@ def test_sources_this_version_does_not_solve_are_refused(
         _solve(model, source)
 
 
-def test_frequency_workers_do_not_take_incident_fields_yet(meshes):
-    options = gfem.SolverOptions(order=1, frequency_workers=2)
-    problem = gfem.Driven([F, 1.1 * F], sources=WAVE)
-    with pytest.raises(NotImplementedError, match="frequency_workers=1"):
-        gfem.solve(_model(meshes["empty"]), problem, options=options)
-
-
 # --- gradients ------------------------------------------------------------------------
 
 

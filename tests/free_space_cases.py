@@ -101,3 +101,56 @@ def image_power(height: float, *, normal: bool, sign: int) -> float:
         return 1 + sign * mutual
     mutual = 1.5 * ((1 / x - 1 / x**3) * math.sin(x) + math.cos(x) / x**2)
     return 1 - sign * mutual
+
+
+#: The dielectric cube's permittivity in `scatterer_model`.
+SCATTERER_EPS = 3.0
+#: In the air of `scatterer_box`, outside the cube, off every grid face.
+DIPOLE_POSITION = (0.13e-6, 0.41e-6, 0.87e-6)
+
+
+def _scatterer_volume(c: np.ndarray) -> str:
+    if ((c > 0.25) & (c < 0.75)).all():
+        return "scat"
+    return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+
+def _scatterer_feed(c: np.ndarray) -> str:
+    """The cube's +x face, a lumped port's surface."""
+    on = abs(c[0] - 0.75) < 1e-9 and 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75
+    return "feed" if on else ""
+
+
+def scatterer_box(path: str | Path, *, cells: int = 4) -> Path:
+    """A dielectric cube "scat" in the middle of `dipole_box`, its +x face "feed"."""
+    return pc.box(
+        path,
+        sides=pc.SIDES,
+        cells=cells,
+        volume=_scatterer_volume,
+        surface=_scatterer_feed,
+    )
+
+
+def scatterer_model(path: str | Path, *, field: bool = False):
+    """The model of `scatterer_box`: air background, a 50 ohm port on "feed".
+
+    With ``field`` the cube is a `gfem.MaterialField` of the same value.
+    """
+    import gfem
+
+    mesh = gfem.Mesh.from_gmsh(path)
+    air = gfem.Material()
+    n = len(mesh.elements("scat"))
+    scat = (
+        gfem.MaterialField(eps_r=np.full(n, SCATTERER_EPS))
+        if field
+        else gfem.Material(eps_r=SCATTERER_EPS)
+    )
+    return gfem.Model(
+        mesh,
+        materials={"air": air, "pml": air, "scat": scat},
+        ports=[gfem.LumpedPort("p1", "feed", "+z", resistance=50.0)],
+        pml=gfem.PML("pml"),
+        background=air,
+    )
