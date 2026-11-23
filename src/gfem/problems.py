@@ -942,13 +942,21 @@ class Driven:
             ``linear_solver="petsc"``; use ``"direct"`` or ``"bddc_gmres"``.
             With ``sources``, `gfem.solve` also raises it for a source named
             like a port of the model, and for an incident field on a model
-            without ``background``.
+            without ``background``, with no PML layer and no
+            `gfem.Absorbing` face, with an exterior `gfem.Impedance`,
+            `gfem.Conductor` or `gfem.LumpedPort` face, or above
+            :math:`10^{-3}` of its peak where a scatterer meets the layer or
+            an absorbing face, on a wave port face, or across an exterior
+            PEC or PMC wall (`gfem.conventions`, Incident fields).
         NotImplementedError: ``sources`` with a ``wave_vector`` or a 2D
             ``polarization``, or an incident field with
             ``sweep="adaptive"`` (dipoles are accepted). `gfem.solve` raises
             it for ``wave_vector`` with ``sweep="adaptive"`` or a GPU
-            ``device``; solve a uniform sweep on the CPU; and for
-            ``sources`` on a model with a `gfem.Periodic` pair.
+            ``device``; solve a uniform sweep on the CPU; for
+            ``sources`` on a model with a `gfem.Periodic` pair; and for an
+            incident field that is a `gfem.GaussianBeam`, in a layered or a
+            lossy background (a `gfem.PlaneWave`), across ranks or over
+            frequency workers.
         NonDifferentiableError: ``frequency``, ``samples``, ``keep_fields``,
             ``wave_vector`` or ``wave_vector_frequency`` is computed inside
             `jax.grad`, `jax.jit` or `jax.vmap` from their arguments; pass a
@@ -1077,7 +1085,8 @@ def _check_model_sources(problem: Any, model: Any) -> None:
     Raises:
         ValueError: A source is named like a port of the model, or an
             incident field has no background stack.
-        NotImplementedError: The model has a periodic pair.
+        NotImplementedError: The model has a periodic pair, or a source is
+            a dipole (not solved yet).
     """
     if not isinstance(problem, Driven) or not problem.sources:
         return
@@ -1101,10 +1110,11 @@ def _check_model_sources(problem: Any, model: Any) -> None:
                 "stack, but the model has none: give Model(background=...), the "
                 "medium the field solves (a gfem.Material when homogeneous)."
             )
-    raise NotImplementedError(
-        "This gfem declares Driven(sources=...) but cannot solve source columns "
-        "yet; solve the ports alone."
-    )
+    if any(isinstance(source, DIPOLES) for source in problem.sources):
+        raise NotImplementedError(
+            "This gfem declares Driven(sources=...) but cannot solve source "
+            "columns yet; solve the ports alone."
+        )
 
 
 def _polarization(value: Any, owner: str) -> None:

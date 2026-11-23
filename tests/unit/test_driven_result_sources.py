@@ -258,9 +258,3 @@ def test_a_model_background_round_trips_through_a_job(tmp_path):
     text = bare.to_json(tmp_path / "bare.json").read_text()
     assert "background" not in text
     assert "sources" not in text
-
-
-def test_the_parts_of_an_incident_field_come_with_its_solve():
-    result, _ = _kept()
-    with pytest.raises(NotImplementedError, match="scattered part of the incident"):
-        result.e_field(F, "x", part="scattered")

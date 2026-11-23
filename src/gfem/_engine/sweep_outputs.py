@@ -45,6 +45,7 @@ DIFFERENTIABLE = frozenset(
         "z_ref",
         "e_field",
         "e_coordinates",
+        "port_waves",
         "port_gamma",
         "port_z_pv",
         "port_residual",
@@ -131,6 +132,8 @@ class SweepOutputs:
         ports: The wave ports' modes at the rows, or ``None`` without any.
         sweep: An adaptive sweep's greedy information ``{"samples",
             "errors", "converged", "basis_size"}`` (host only), or ``None``.
+        port_waves: The outgoing wave at each port for each source column,
+            ``(len(rows), n_ports, n_sources)``, or ``None`` without sources.
     """
 
     rows: tuple[int, ...]
@@ -142,6 +145,7 @@ class SweepOutputs:
     reduced: tuple[np.ndarray, np.ndarray] | None
     ports: PortModeRows | None
     sweep: Mapping[str, Any] | None
+    port_waves: np.ndarray | None = None
 
     @classmethod
     def uniform(
@@ -154,11 +158,12 @@ class SweepOutputs:
         reused: list[bool],
         e_field: np.ndarray | None,
         waves: Sequence[WavePortCoupling],
+        port_waves: np.ndarray | None = None,
     ) -> SweepOutputs:
         """A uniform sweep's outputs at ``rows``.
 
-        ``s``, ``z_ref`` and the wave ports' modes are over the grid; the
-        kept fields ``e_field`` are at ``rows`` already.
+        ``s``, ``z_ref``, ``port_waves`` and the wave ports' modes are over
+        the grid; the kept fields ``e_field`` are at ``rows`` already.
         """
         return cls(
             rows=rows,
@@ -170,6 +175,7 @@ class SweepOutputs:
             reduced=None,
             ports=PortModeRows.of([c.sweep for c in waves], rows),
             sweep=None,
+            port_waves=None if port_waves is None else _at(port_waves, rows),
         )
 
     @classmethod
@@ -228,6 +234,7 @@ class SweepOutputs:
                     "parent's port mode sweeps go in sweeps."
                 )
         fields = [b.e_field for _, b in blocks if b.e_field is not None]
+        waves = [b.port_waves for _, b in blocks if b.port_waves is not None]
         rows = tuple(int(grid[r]) for grid, b in blocks for r in b.rows)
         return cls(
             rows=rows,
@@ -239,6 +246,7 @@ class SweepOutputs:
             reduced=None,
             ports=PortModeRows.of(sweeps, rows),
             sweep=None,
+            port_waves=np.concatenate(waves) if waves else None,
         )
 
     def without_port_modes(self) -> SweepOutputs:
@@ -254,8 +262,9 @@ class SweepOutputs:
 
         ``"s"``, ``"z_ref"``, ``"iterations"``, ``"reused"``, ``"sweep"``, the
         wave ports' ``"port_gamma"``, ``"port_z_pv"``, ``"port_residual"``,
-        ``"port_solved"`` and ``"port_sweeps"``, then ``"e_field"`` or
-        ``"e_basis"`` and ``"e_coordinates"``; only the ones present.
+        ``"port_solved"`` and ``"port_sweeps"``, ``"port_waves"``, then
+        ``"e_field"`` or ``"e_basis"`` and ``"e_coordinates"``; only the ones
+        present.
         """
         outputs: dict[str, object] = {"s": self.s, "z_ref": self.z_ref}
         if self.iterations is not None:
@@ -271,6 +280,8 @@ class SweepOutputs:
             outputs["port_solved"] = self.ports.solved
             if self.ports.sweeps is not None:
                 outputs["port_sweeps"] = list(self.ports.sweeps)
+        if self.port_waves is not None:
+            outputs["port_waves"] = self.port_waves
         if self.e_field is not None:
             outputs["e_field"] = self.e_field
         if self.reduced is not None:
@@ -311,6 +322,7 @@ class SweepOutputs:
             reduced=reduced,
             ports=ports,
             sweep=outputs.get("sweep"),
+            port_waves=outputs.get("port_waves"),
         )
 
     @staticmethod
@@ -324,6 +336,7 @@ class SweepOutputs:
         n_fields: int = 0,
         reduced: int | None = None,
         complex_z_ref: bool = False,
+        n_sources: int = 0,
     ) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each output a JAX transformation reads.
 
@@ -333,11 +346,13 @@ class SweepOutputs:
             n_excited: Excited ports (the columns of S).
             n_wave: Wave ports.
             ndof: Kept fields' coefficients; ``None`` keeps no field.
-            n_fields: Kept fields, ``n_kept * n_excited``.
+            n_fields: Kept fields, ``n_kept`` times the excited ports and
+                the sources.
             reduced: An adaptive sweep's padded basis size (its kept fields
                 are reduced); ``None`` for a uniform sweep.
             complex_z_ref: ``z_ref`` is complex
                 (`gfem._engine.port_network.complex_reference`).
+            n_sources: Source columns; their ``port_waves`` with ports.
         """
         specs = {
             "s": jax.ShapeDtypeStruct((n_freq, n_ports, n_excited), jnp.complex128),
@@ -345,6 +360,10 @@ class SweepOutputs:
                 (n_freq, n_ports), jnp.complex128 if complex_z_ref else jnp.float64
             ),
         }
+        if n_sources:
+            specs["port_waves"] = jax.ShapeDtypeStruct(
+                (n_freq, n_ports, n_sources), jnp.complex128
+            )
         if n_wave:
             shape = (n_freq, n_wave)
             specs["port_gamma"] = jax.ShapeDtypeStruct(shape, jnp.complex128)

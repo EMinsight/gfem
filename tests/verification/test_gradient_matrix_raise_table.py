@@ -343,6 +343,26 @@ EXPECTED |= {
     for kind in [("nodes",)] + [("material", "slab", p) for p in ALL_PROPERTIES]
 }
 
+# A plane wave on a dielectric cube in an air box wrapped in a layer, no port:
+# the kept field differentiates in the cube's electromagnetic properties (the
+# load reads the background, never the cube); S is empty. The node
+# coordinates raise: the load is the wave's interpolant on the mesh.
+EXPECTED |= {
+    ("driven_planewave", out, kind): (
+        RAISES
+        if kind == ("nodes",)
+        else GRADIENT
+        if out == "e_fields.0.coefficients" and kind[2] in EM_PROPERTIES
+        else ZERO
+    )
+    for out in (
+        "s.values",
+        "s.z_ref",
+        *(f"e_fields.0.{leaf}" for leaf in ("coefficients", "mesh.nodes", "omega")),
+    )
+    for kind in [("nodes",)] + [("material", "scat", p) for p in ALL_PROPERTIES]
+}
+
 # Floquet ports (F1's slab between Floquet ports on both faces, the design
 # the slab, away from both faces; plain and at a conical Bloch wave vector):
 # S differentiates like the periodic line's, in the materials and the node
@@ -1050,6 +1070,37 @@ def pml_model(tmp_path_factory):
     )
 
 
+def _cube(c):
+    if ((c > 0.25) & (c < 0.75)).all():
+        return "scat"
+    return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+
+@pytest.fixture(scope="module")
+def planewave_case(tmp_path_factory):
+    sides = ("-x", "+x", "-y", "+y", "-z", "+z")
+    path = pml_cases.box(
+        tmp_path_factory.mktemp("planewave") / "box.msh",
+        sides,
+        thickness=0.25,
+        cells=4,
+        volume=_cube,
+    )
+    mesh = gfem.Mesh.from_gmsh(path)
+    model = gfem.Model(
+        mesh,
+        materials={
+            "air": gfem.Material(),
+            "pml": gfem.Material(),
+            "scat": _field(mesh, "scat"),
+        },
+        pml=gfem.PML("pml"),
+        background=gfem.Material(),
+    )
+    wave = gfem.PlaneWave("w", theta=0.4, phi=0.3, polarization="TM")
+    return model, gfem.Driven(frequency=pml_cases.F0, sources=wave, keep_fields=True)
+
+
 @pytest.fixture(scope="module")
 def eigen_pml_case(tmp_path_factory):
     # the leaky guide, weakly lossy, its core a material field (a gentle ramp,
@@ -1463,6 +1514,7 @@ def cases(model, driven_model, eigen_model, wave_cases, request):
             gfem.Driven(frequency=pml_cases.F0),
         ),
         "eigenmode_pml": request.getfixturevalue("eigen_pml_case"),
+        "driven_planewave": request.getfixturevalue("planewave_case"),
         **request.getfixturevalue("sheet_cases"),
         **request.getfixturevalue("lumped_cases"),
         **request.getfixturevalue("driven_periodic_cases"),
