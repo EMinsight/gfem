@@ -1,11 +1,13 @@
 """gfem.solve on an Electrostatic problem: inputs, ground rules, result."""
 
+import importlib.util
 from pathlib import Path
 
 import jax
 import numpy as np
 import pytest
 import structured_meshes as sm
+from scipy.constants import epsilon_0
 
 import gfem
 
@@ -317,3 +319,107 @@ def test_solve_rejects_wrong_argument_types(stack):
         gfem.solve(stack.mesh, gfem.Electrostatic(terminals=STACK))
     with pytest.raises(TypeError, match="SolverOptions"):
         gfem.solve(stack, gfem.Electrostatic(terminals=STACK), options={"order": 2})
+
+
+# --- a slab cross-section: capacitance per length ---------------------------------
+
+#: The plates' section in um: width, and the layers bottom up with eps_r.
+WIDTH = 4.0
+SECTION_LAYERS = (("oxide", 0.5, 3.9), ("nitride", 0.25, 7.5))
+
+
+def _write_plates(path):
+    """Two layers between plates "bottom" (y = 0) and "top", msh 2.2 triangles."""
+    xs = np.linspace(0.0, WIDTH, 5)
+    ys = [0.0, 0.25, 0.5, 0.625, 0.75]
+    nx = len(xs)
+    nodes = [(x, y) for y in ys for x in xs]
+
+    def n(i, j):
+        return j * nx + i + 1
+
+    tags = {"oxide": 1, "nitride": 2, "bottom": 3, "top": 4}
+    tris = []
+    for j in range(len(ys) - 1):
+        name = "oxide" if ys[j] < 0.5 else "nitride"
+        for i in range(nx - 1):
+            a, b, c, d = n(i, j), n(i + 1, j), n(i + 1, j + 1), n(i, j + 1)
+            pair = ((a, b, c), (a, c, d)) if (i + j) % 2 else ((a, b, d), (b, c, d))
+            tris += [(name, t) for t in pair]
+    top = len(ys) - 1
+    lines = [("bottom", (n(i, 0), n(i + 1, 0))) for i in range(nx - 1)]
+    lines += [("top", (n(i, top), n(i + 1, top))) for i in range(nx - 1)]
+    out = ["$MeshFormat", "2.2 0 8", "$EndMeshFormat", "$PhysicalNames", "4"]
+    out += ['2 1 "oxide"', '2 2 "nitride"', '1 3 "bottom"', '1 4 "top"']
+    out += ["$EndPhysicalNames", "$Nodes", str(len(nodes))]
+    out += [f"{k + 1} {float(x)!r} {float(y)!r} 0" for k, (x, y) in enumerate(nodes)]
+    out += ["$EndNodes", "$Elements", str(len(lines) + len(tris))]
+    k = 0
+    for name, (a, b) in lines:
+        k += 1
+        out.append(f"{k} 1 2 {tags[name]} {tags[name]} {a} {b}")
+    for name, (a, b, c) in tris:
+        k += 1
+        out.append(f"{k} 2 2 {tags[name]} {tags[name]} {a} {b} {c}")
+    out.append("$EndElements")
+    path.write_text("\n".join(out) + "\n")
+    return path
+
+
+@pytest.fixture(scope="module")
+def plates_path(tmp_path_factory):
+    return _write_plates(tmp_path_factory.mktemp("plates") / "plates.msh")
+
+
+def _plates(path, thickness):
+    mesh = gfem.Mesh.from_gmsh_cross_section(path, thickness=thickness)
+    materials = {name: gfem.Material(eps_r=e) for name, _, e in SECTION_LAYERS}
+    model = gfem.Model(mesh, materials=materials)
+    problem = gfem.Electrostatic(terminals={"plate": "top"}, ground="bottom")
+    return gfem.solve(model, problem, options=gfem.SolverOptions(order=1))
+
+
+@pytest.mark.parametrize("thickness", [0.3e-6, 2e-6])
+def test_parallel_plates_on_a_section_have_the_series_capacitance_per_length(
+    plates_path, thickness
+):
+    result = _plates(plates_path, thickness)
+    # layers in series between plates of width w: C / L = eps0 w / sum(d / eps_r)
+    um = 1e-6
+    exact = epsilon_0 * WIDTH * um / sum(d * um / e for _, d, e in SECTION_LAYERS)
+    per_length = np.asarray(result.capacitance_per_length)
+    assert per_length.shape == (1, 1)
+    assert float(per_length[0, 0]) == pytest.approx(exact, rel=1e-11)
+    # the slab totals still scale with the slab
+    slab = float(result.capacitance[0, 0])
+    assert slab == pytest.approx(exact * thickness, rel=1e-11)
+
+
+def test_the_repr_of_a_section_shows_the_capacitance_per_length(plates_path):
+    text = repr(_plates(plates_path, 1e-6))
+    assert "slab capacitance in fF" in text
+    assert "capacitance per length in pF/m" in text
+
+
+def test_to_xarray_of_a_section_adds_the_capacitance_per_length(plates_path):
+    pytest.importorskip("xarray")
+    result = _plates(plates_path, 1e-6)
+    ds = result.to_xarray()
+    assert ds["capacitance_per_length"].attrs["units"] == "F/m"
+    np.testing.assert_array_equal(
+        ds["capacitance_per_length"].values, result.capacitance_per_length
+    )
+
+
+def test_capacitance_per_length_on_a_3d_mesh_names_the_remedy(stack):
+    result = _c(stack, gfem.Electrostatic(terminals=STACK, ground="bottom"))
+    with pytest.raises(
+        ValueError,
+        match=r"capacitance_per_length is defined on a cross-section mesh only "
+        r"\(gfem\.Mesh\.from_gmsh_cross_section\).*read "
+        r"ElectrostaticResult\.capacitance instead",
+    ):
+        _ = result.capacitance_per_length
+    assert "per length" not in repr(result)
+    if importlib.util.find_spec("xarray"):
+        assert "capacitance_per_length" not in result.to_xarray()

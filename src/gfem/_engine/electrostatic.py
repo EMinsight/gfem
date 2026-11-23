@@ -841,6 +841,7 @@ class ElectrostaticRule:
             },
             potential=potential,
             _fixed=self.fixed,
+            _thickness=self._mesh.section_thickness,
         )
 
     def _region_energies(
