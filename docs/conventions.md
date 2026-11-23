@@ -57,7 +57,7 @@ The thermal problems use the same SI units, with temperatures in kelvin
 | `thermo_optic_coefficient` | 1/K |
 | heat (`SteadyThermalResult.heat`), `power_density` | W/m³ |
 | time, `duration` | s |
-| on a cross-section: `power_per_length`, `resistance_per_length` | W/m, Ω/m |
+| on a cross-section: `power_per_length`, `resistance_per_length`, `capacitance_per_length` | W/m, Ω/m, F/m |
 
 ## Time dependence
 
