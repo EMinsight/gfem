@@ -6,6 +6,7 @@ selection's twin, guard and gap-set decisions show directly.
 """
 
 import dataclasses
+import logging
 import math
 
 import numpy as np
@@ -15,6 +16,7 @@ import gfem
 from gfem._eigen.reach import GapSet
 from gfem._eigen.refine import Refined
 from gfem._eigen.search import ModeSearch, _in_span
+from gfem._eigen.seed import SeedBoundReached
 from gfem._linalg.layout import ONE_PROCESS
 
 
@@ -145,3 +147,84 @@ def test_gap_set_holds_cut_modes_and_the_guard():
     # the guard alone is a neighbour
     alone = GapSet(np.array([12.6 + 0j]), found.guard.k, found.gaps.ritz)
     assert alone.gap(12.6) == pytest.approx(2.6 / 12.6)
+
+
+# --- the seed solve records ------------------------------------------------------
+
+
+def _seed_records(caplog):
+    return [
+        r
+        for r in caplog.records
+        if r.name == "gfem.solver" and getattr(r, "attempt", None) is not None
+    ]
+
+
+def _identity(op, seed, x, **_):
+    return Refined(complex(seed), x, 0.0, 1, converged=True)
+
+
+def test_each_seed_solve_logs_one_record_so_a_retry_shows(caplog):
+    # the first attempt returns one pair for two modes: the search retries
+    # with twice the pairs and gets both
+    basis = np.eye(4, dtype=complex)
+    asked = []
+
+    def solver(_op, _project, nev, **_):
+        asked.append(nev)
+        if len(asked) == 1:
+            return np.array([10.0 + 0j]), basis[:, :1]
+        return np.array([10.0, 13.0], dtype=complex), basis[:, :2]
+
+    search = dataclasses.replace(
+        _search(2, _identity, None, None), eigen_solver=solver
+    )
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    found = search.find(_Stub(11.4), None, 11.4, guard=False, polish_isolated=False)
+    assert found.ks == [10.0, 13.0]
+    records = _seed_records(caplog)
+    assert [
+        (r.problem, r.attempt, r.pairs, r.returned, r.modes, r.wanted, r.bound)
+        for r in records
+    ] == [
+        ("eigenmode", 1, asked[0], 1, 1, 2, False),
+        ("eigenmode", 2, asked[1], 2, 2, 2, False),
+    ]
+    assert asked[1] == 2 * asked[0]
+    assert records[0].levelno == logging.INFO
+    assert records[1].getMessage() == (
+        f"eigenmode seed solve 2: {asked[1]} pairs asked, 2 returned, "
+        "2 of 2 modes selected"
+    )
+
+
+def test_a_seed_solve_at_its_restart_bound_logs_the_bound(caplog):
+    basis = np.eye(4, dtype=complex)
+
+    def solver(*_, **__):
+        raise SeedBoundReached(
+            np.array([10.0 + 0j]), basis[:, :1], restarts=5, applies=9
+        )
+
+    search = dataclasses.replace(
+        _search(1, _identity, None, None), eigen_solver=solver
+    )
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    search.find(_Stub(11.4), None, 11.4, guard=False, polish_isolated=False)
+    (record,) = _seed_records(caplog)
+    assert record.bound is True
+    assert record.getMessage().endswith(
+        "1 returned, 1 of 1 modes selected, restart bound reached"
+    )
+
+
+def test_no_seed_solve_record_is_built_when_the_logger_is_off(monkeypatch):
+    from gfem._linalg import report
+
+    monkeypatch.setattr(report.LOGGER, "isEnabledFor", lambda _level: False)
+    monkeypatch.setattr(
+        report.LOGGER,
+        "info",
+        lambda *_, **__: pytest.fail("a record was built while off"),
+    )
+    _stub_find()

@@ -28,6 +28,7 @@ from gfem._eigen.operator import EigenOperator
 from gfem._eigen.reach import GapSet, ModeReach, _close
 from gfem._eigen.refine import TRUSTED, Refined, refine
 from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
+from gfem._linalg import report
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._text import hertz
 from gfem.errors import EigenmodeConvergenceError, LinearSolverConvergenceError
@@ -228,7 +229,7 @@ class ModeSearch:
         # the k of the pairs the attempt's selection dropped as modes of the
         # layer
         dropped: list[complex] = []
-        for _ in range(_ATTEMPTS):
+        for attempt in range(1, _ATTEMPTS + 1):
             if eop.shift != sigma:
                 # a retry is a seed solve: at the target, on a
                 # factorization counted for the seed (refinement
@@ -242,6 +243,14 @@ class ModeSearch:
                 k, vectors = err.k, err.vectors
             modes, failed, found, pool, ritz = self._select(
                 eop, k, vectors, sigma, guard=guard, dropped=dropped
+            )
+            report.seed_solve(
+                attempt=attempt,
+                pairs=nev,
+                returned=len(k),
+                modes=len(modes),
+                wanted=n_modes,
+                bound=bound is not None,
             )
             if len(modes) == n_modes or failed or bound is not None:
                 break
