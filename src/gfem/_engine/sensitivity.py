@@ -115,10 +115,13 @@ the load side of the operator, ``F_i = int q psi_i``, so ``dJ / dq_e =
 int_e Lambda`` for the rule's adjoint ``Lambda`` (a transient's is the
 weighted sum of its step adjoints). Its **load pass** integrates the
 adjoint against the constant 1 on each element (P0), times ``scale **
-length_power``; no forward field is involved. The rule returns the adjoint
-as a `LoadField` among its pairs. The other problem leaves of a load form
-(a waveform's scales, a trace's weights) are the rule's explicit terms
-(``explicit_problem``), not passes.
+length_power``; no forward field is involved. A load form's face density
+(`FACE_LOAD_KIND`, one value per triangle: sheet heat) loads ``F_i = int_S
+q_s psi_i``, so its **face load pass** integrates the same adjoint against
+1 on each triangle, one length power below the volume pass. The rule
+returns the adjoint as a `LoadField` among its pairs. The other problem
+leaves of a load form (a waveform's scales, a trace's weights) are the
+rule's explicit terms (``explicit_problem``), not passes.
 
 A rule that contracts its pairs as it goes (the transient reverse sweep,
 whose pairs would otherwise hold every step's fields) returns their
@@ -137,7 +140,8 @@ the field has `axes`),
 ``("boundary", index, "resistance")`` (and the like) a lumped value,
 ``("law", region, "eps_inf")`` and ``("law", region, term_index, name)`` a
 permittivity law's parameter, ``("nodes",)`` the mesh node coordinates,
-and ``("problem", ".density")`` (`LOAD_KIND`) a load form's power density.
+``("problem", ".density")`` (`LOAD_KIND`) a load form's power density,
+and ``("problem", ".face_density")`` (`FACE_LOAD_KIND`) its face density.
 """
 
 from __future__ import annotations
@@ -160,6 +164,7 @@ from gfem.errors import NonDifferentiableError
 from gfem.model import Model
 
 __all__ = [
+    "FACE_LOAD_KIND",
     "INTEGRANDS",
     "LAW_FORMS",
     "LOAD_FORMS",
@@ -505,6 +510,8 @@ LAW_FORMS = frozenset({"driven", "eigenmode", "electrostatic"})
 LOAD_FORMS = frozenset({"steady_thermal", "transient_thermal"})
 #: The input kind of a load form's power density per tetrahedron.
 LOAD_KIND = ("problem", ".density")
+#: The input kind of a load form's power density per triangle (W/m^2).
+FACE_LOAD_KIND = ("problem", ".face_density")
 #: The lumped values that are design inputs, by owner.
 _LUMPED = {
     "port": ("inductance", "capacitance"),
@@ -836,6 +843,30 @@ def _load_pass(
         form += gf * q * quadrature.dx(load.order, definedon=load.domain)
         form.Assemble()
         out[built.cell_order] += form.vec.FV().NumPy() * built.scale**load.length_power
+    return out
+
+
+def _face_load_pass(
+    model: Model, loads: Sequence[LoadField], comm: Any = None
+) -> np.ndarray:
+    """``sum_loads scale ** (length_power - 1) int_f Lambda`` per gfem triangle.
+
+    A face load ``int_S q_s psi`` is one length power below its volume
+    load ``int q psi``, so the pass reads each `LoadField` one power lower.
+    """
+    built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
+    out = np.zeros(len(model.mesh.surface_elements))
+    if not loads:
+        return out
+    space, (q,), read = _surface_tests(built, is_complex=False)
+    for load in loads:
+        gf = ngs.GridFunction(load.space)
+        gf.vec.FV().NumPy()[:] = np.asarray(load.values, dtype=float)
+        form = ngs.LinearForm(space)
+        form += gf * q * quadrature.ds(load.order)
+        form.Assemble()
+        scale = built.scale ** (load.length_power - 1)
+        out[built.facet_order] += read(form)[0] * scale
     return out
 
 
@@ -1325,6 +1356,8 @@ def sensitivity(  # noqa: PLR0912
     pairs = [p for p in pairs if isinstance(p, FieldPair)]
     if LOAD_KIND in wants:
         out[LOAD_KIND] = _load_pass(model, loads, comm)
+    if FACE_LOAD_KIND in wants:
+        out[FACE_LOAD_KIND] = _face_load_pass(model, loads, comm)
     # a load form's other problem leaves are the rule's explicit terms
     wants = {k for k in wants if k[0] != "problem"}  # ty: ignore[not-subscriptable]
     if not wants:
