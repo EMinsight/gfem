@@ -28,6 +28,7 @@ tutorials/metal-bend
 tutorials/metagrating
 tutorials/heater
 tutorials/heater3d
+tutorials/modulator
 ```
 
 ```{toctree}
