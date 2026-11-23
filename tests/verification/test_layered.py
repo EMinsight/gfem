@@ -11,9 +11,11 @@ scattered power. Incidence from the top at 40 degrees and from the
 substrate at 50 degrees (total internal reflection: the particle is lit by
 the evanescent tail), TE and TM.
 
-Measured (order 3, one thread, 2026-11-23): the balance on every side to
-about :math:`10^{-12}`; the values (observations, not gates) are recorded
-in `test_the_values_are_those_of_a_particle_of_its_size`.
+Measured (order 3, one thread, 2026-11-23): every power the same on both
+sides to :math:`5\cdot10^{-13}`; extinction / absorption / scattering over
+the particle's top area :math:`(\lambda/3)^2` (observations, not gates):
+top TE 1.311 / 0.599 / 0.712, top TM 1.595 / 0.597 / 0.999, TIR TE 0.914 /
+0.462 / 0.452, TIR TM 3.142 / 1.187 / 1.955.
 """
 
 import math

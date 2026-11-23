@@ -9,7 +9,9 @@ power over the vacuum bulk power is compared with
 `free_space_cases.half_space_power` (Sommerfeld's reflection integrals,
 checked there against image theory over a perfect conductor).
 
-Measured (order 3, one thread, 2026-11-23): see `MEASURED`; gate 3 %.
+Measured (order 3, one thread, 2026-11-23), emitted power against the
+integral at heights 0.1, 0.2, 0.35: normal +0.16 %, -0.03 %, +0.60 %;
+tangential +0.02 %, +0.04 %, +0.28 %. Gate 3 %, five times the largest.
 """
 
 import free_space_cases as fsc
