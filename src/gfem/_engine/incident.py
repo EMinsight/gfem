@@ -49,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from gfem import _incident
+from gfem import _beam, _incident
 from gfem._background import Background
 from gfem._boundaries import (
     Absorbing,
@@ -64,6 +64,7 @@ from gfem._engine.moments import moment_interpolant
 from gfem._incident import Incident, IncidentPart
 from gfem._linalg.base import free_mask
 from gfem._materials import Material
+from gfem._sources import GaussianBeam
 from gfem.mesh import _TET_FACES, Mesh
 from gfem.model import Model
 
@@ -479,11 +480,16 @@ def check_contact(
 
     Raises:
         ValueError: Naming the face or region, the measured ratio and the
-            remedy.
+            remedy; a `gfem.GaussianBeam` too tight to normalize at one of
+            ``frequencies``.
     """
     background = model.background
     if not sources or background is None:
         return
+    for source in sources:
+        if isinstance(source, GaussianBeam):
+            for f in frequencies:
+                _beam.check_waist(source, background, f)
     checks = _checks(model, background)
     if not checks:
         return

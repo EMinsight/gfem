@@ -809,8 +809,13 @@ Cross sections
 
 Incident intensity
   The power per unit area that {term}`cross sections` are divided by: a plane
-  wave's $|E_0|^2/(2\eta)$, or the value given for an incident field from a
-  function.
+  wave's $|E_0|^2/(2\eta)$, a Gaussian beam's {term}`focal intensity`, or the
+  value given for an incident field from a function.
+
+Focal intensity
+  $I_0 = |E(r_f)|^2/(2\eta)$ at the focus $r_f$ of a Gaussian beam carrying
+  1 W, with $\eta$ the wave impedance of the background
+  (`gfem.GaussianBeam.focal_intensity`).
 
 Incident contact
   The largest {term}`incident field` where a {term}`scatterer` meets a
