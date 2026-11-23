@@ -14,8 +14,8 @@ with :math:`\Pi` the moment interpolant (`gfem._engine.moments`),
 :math:`\chi` the mask of the DOFs of the elements outside the layer, and
 :math:`A_\mathrm{bg}` the **background operator**: the operator of the
 model with every scatterer element's material replaced by the background
-stack's layer at its height, its interior sheets (`gfem.Conductor`, `gfem.Impedance`) and lumped ports
-left out, and the same truncation (layer, `gfem.Absorbing` faces) and wave
+stack's layer at its height, its interior sheets (`gfem.Conductor`,
+`gfem.Impedance`) and lumped ports left out, and the same truncation (layer, `gfem.Absorbing` faces) and wave
 port terms (`background_model`). The scatterer difference
 :math:`D = A - A_\mathrm{bg}` is then the scatterer:
 the elements whose region's material is not the stack's layer at their
