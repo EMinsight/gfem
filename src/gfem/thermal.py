@@ -1,15 +1,17 @@
 """Heat sources, traces and switching times of thermal problems.
 
-`HeatSource` and `joule_heating` give the heat; `Trace` names what a
-`gfem.TransientThermal` solve records at every time step; `rise_time` and
-`time_constant` measure a recorded trace.
+`HeatSource`, `joule_heating` and `electromagnetic_heating` give the heat;
+`Trace` names what a `gfem.TransientThermal` solve records at every time
+step; `rise_time` and `time_constant` measure a recorded trace.
 
 A `HeatSource` is the heat a thermal problem is driven by, given per
-volume region: a uniform amount (`HeatSource.uniform`) or the Joule heat
-of a DC conduction solve (`joule_heating`). It is a frozen pytree: its
+volume region: a uniform amount (`HeatSource.uniform`), the Joule heat
+of a DC conduction solve (`joule_heating`) or the electromagnetic loss of a
+driven solve (`electromagnetic_heating`). It is a frozen pytree: its
 amount (or its power density per element) is a leaf, so a temperature is
 differentiable with respect to it. A thermal solve resolves every source
-to one power density per tetrahedron, in W/m^3.
+to one power density per tetrahedron, in W/m^3, and one per sheet face, in
+W/m^2.
 
 On a cross-section mesh (`gfem.Mesh.from_gmsh_cross_section`) extensive
 amounts are given per unit length (``power_per_length``, W/m): ``power``
@@ -25,10 +27,11 @@ import warnings
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gfem._checks import check_fixed, is_traced
+from gfem._checks import check_fixed, is_traced, static_float
 from gfem._pytree import register_fields
 from gfem.errors import (
     NonDifferentiableError,
@@ -37,12 +40,17 @@ from gfem.errors import (
 )
 
 if TYPE_CHECKING:
-    import jax
-
     from gfem._field import Field
     from gfem.mesh import Mesh
 
-__all__ = ["HeatSource", "Trace", "joule_heating", "rise_time", "time_constant"]
+__all__ = [
+    "HeatSource",
+    "Trace",
+    "electromagnetic_heating",
+    "joule_heating",
+    "rise_time",
+    "time_constant",
+]
 
 _UNITS: dict[str | None, str] = {
     "power": "W",
@@ -81,8 +89,13 @@ def _check_finite(value: Any, what: str) -> Any:
     return out
 
 
-def _per_length_remedy(name: str, owner: str) -> ValueError:
-    """The error of an extensive amount given on a cross-section."""
+def _per_length_remedy(
+    name: str, owner: str, per_length: str = "power_per_length"
+) -> ValueError:
+    """The error of an extensive amount given on a cross-section.
+
+    ``per_length`` is the keyword the remedy names.
+    """
     if name == "voltage":
         remedy = (
             "drive the heater by current instead: current=V / "
@@ -90,7 +103,8 @@ def _per_length_remedy(name: str, owner: str) -> ValueError:
             "or by power_per_length"
         )
     else:
-        remedy = "give power_per_length=P / L for a heater of length L instead"
+        device = "heater" if per_length == "power_per_length" else "device"
+        remedy = f"give {per_length}=P / L for a {device} of length L instead"
     return ValueError(
         f"{owner}: {name}= is not accepted on a cross-section mesh, where the "
         "solve stands for a slab whose thickness is a numerical choice (a slab "
@@ -118,16 +132,18 @@ class HeatSource:
     """Heat delivered to volume regions of a thermal problem.
 
     Build one with `HeatSource.uniform` (an amount spread evenly over
-    regions) or `gfem.joule_heating` (the Joule heat of a DC conduction
-    solve under a drive). Sources superpose: a thermal problem takes one or
-    a sequence. The amount is differentiable.
+    regions), `gfem.joule_heating` (the Joule heat of a DC conduction
+    solve under a drive) or `gfem.electromagnetic_heating` (the loss of a
+    driven solve under a drive, with sheet heat on its faces). Sources
+    superpose: a thermal problem takes one or a sequence. The amount is
+    differentiable.
 
     Attributes:
         regions: The volume regions that receive the heat.
     """
 
     regions: tuple[str, ...]
-    #: ``"uniform"`` or ``"joule"``.
+    #: ``"uniform"``, ``"joule"`` or ``"electromagnetic"``.
     _kind: str = "uniform"
     #: For a uniform source: which amount `_amount` is.
     _quantity: str | None = None
@@ -373,8 +389,8 @@ def joule_heating(
         A `gfem.HeatSource` on the conductors.
 
     Raises:
-        NotImplementedError: ``result`` is a `gfem.DrivenResult`.
-        TypeError: ``result`` is not a DC conduction result.
+        TypeError: ``result`` is not a DC conduction result (a
+            `gfem.DrivenResult` heats through `electromagnetic_heating`).
         ValueError: Not exactly one drive; a drive that does not fit the
             result or the mesh (the message gives the remedy).
         KeyError: A mapping names an unknown terminal.
@@ -382,9 +398,11 @@ def joule_heating(
     from gfem.results import DCConductionResult, DrivenResult
 
     if isinstance(result, DrivenResult):
-        raise NotImplementedError(
-            "heating from electromagnetic loss is not available in this version; "
-            "give the dissipated power per region with gfem.HeatSource.uniform"
+        raise TypeError(
+            "joule_heating takes a DC conduction result; a driven result's "
+            "electromagnetic loss becomes heat through "
+            "gfem.electromagnetic_heating(result, model=, frequency=, "
+            "incident_power=)."
         )
     if not isinstance(result, DCConductionResult):
         raise TypeError(
@@ -446,6 +464,345 @@ def joule_heating(
         _kind="joule",
         _density=density,
         _total=total_power,
+        _thickness=thickness,
+    )
+
+
+_EM = "electromagnetic_heating"
+
+
+@jax.custom_vjp
+def _amplitude(power: jax.Array) -> jax.Array:
+    """``sqrt(power)``, whose cotangent is 0 where none arrives.
+
+    A cross term goes as ``sqrt(P_p) sqrt(P_q)``: at ``P_p = 0`` its
+    derivative is unbounded next to a driven partner (``inf``, as the heat
+    grows like ``sqrt(P_p)``), and exactly 0 when every partner is at 0 W,
+    where plain ``jnp.sqrt`` would give ``0 * inf = nan``.
+    """
+    return jnp.sqrt(power)
+
+
+def _amplitude_fwd(power: jax.Array) -> tuple[jax.Array, jax.Array]:
+    root = jnp.sqrt(power)
+    return root, root
+
+
+def _amplitude_bwd(root: jax.Array, g: jax.Array) -> tuple[jax.Array]:
+    safe = jnp.where(g == 0, 1.0, 2 * root)
+    return (jnp.where(g == 0, 0.0, g / safe),)
+
+
+_amplitude.defvjp(_amplitude_fwd, _amplitude_bwd)
+
+
+def _incident(value: Any, excited: tuple[str, ...], name: str) -> dict[str, Any]:
+    """The incident power of each driven port, in port order (a JAX scalar each).
+
+    Raises:
+        KeyError: A port that is not excited.
+        ValueError: A number with several excited ports, or a negative power.
+        TypeError: A value that is not a real scalar.
+    """
+    if isinstance(value, Mapping):
+        unknown = [k for k in value if k not in excited]
+        if unknown:
+            raise KeyError(
+                f"{_EM}: {name} names port {unknown[0]!r}, which was not excited; "
+                f"the excited ports are {', '.join(map(repr, excited))}. Solve "
+                "with gfem.Driven(excite=...) naming every port the drive feeds."
+            )
+        if not value:
+            raise ValueError(f"{_EM}: {name} is empty: give each driven port's power.")
+        ports = [p for p in excited if p in value]
+        powers = {p: _check_finite(value[p], f"{_EM} {name}[{p!r}]") for p in ports}
+    elif len(excited) != 1:
+        raise ValueError(
+            f"{_EM}: the result has {len(excited)} excited ports "
+            f"({', '.join(map(repr, excited))}), so give {name} as a mapping from "
+            f"port name to value, e.g. {name}={{{excited[0]!r}: ...}}; ports left "
+            "out are at 0."
+        )
+    else:
+        powers = {excited[0]: _check_finite(value, f"{_EM} {name}")}
+    for port, power in powers.items():
+        if not is_traced(power) and float(power) < 0:
+            raise ValueError(
+                f"{_EM}: the {name} of port {port!r} must be >= 0, got {float(power)}."
+            )
+    return powers
+
+
+def _phases(value: Any, ports: tuple[str, ...]) -> dict[str, Any]:
+    """The incident phase of each driven port, rad (0 where not given).
+
+    Raises:
+        TypeError: Not a mapping.
+        KeyError: A port that is not driven.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(
+            f"{_EM}: incident_phase is relative, so one number cannot carry it: give "
+            f"a mapping from port name to phase in rad, e.g. incident_phase="
+            f"{{{ports[-1]!r}: math.pi}}, got {value!r}."
+        )
+    unknown = [k for k in value if k not in ports]
+    if unknown:
+        raise KeyError(
+            f"{_EM}: incident_phase names port {unknown[0]!r}, which the drive does "
+            f"not feed; the driven ports are {', '.join(map(repr, ports))}. Give "
+            "its incident power too."
+        )
+    return {
+        p: _check_finite(v, f"{_EM} incident_phase[{p!r}]") for p, v in value.items()
+    }
+
+
+def _check_heated_result(result: Any, model: Any) -> None:
+    """Raise unless ``result`` is a 3D driven result and ``model`` a model.
+
+    Raises:
+        TypeError: Another result type, or ``model`` not a `gfem.Model`.
+        NotImplementedError: A port mode result, or a 2D model or result.
+    """
+    from gfem._dim2 import entry_refusal, refuse_entry
+    from gfem.model import Model
+    from gfem.results import (
+        DCConductionResult,
+        DrivenResult,
+        EigenmodeResult,
+        PortModeResult,
+    )
+
+    if isinstance(result, DCConductionResult):
+        raise TypeError(
+            f"{_EM} takes a driven result; a DC conduction result's Joule heat is "
+            "gfem.joule_heating(result, voltage=, current=, power=)."
+        )
+    if isinstance(result, PortModeResult):
+        raise NotImplementedError(
+            f"{_EM} does not heat from a port mode (heat per length along a "
+            "line): give the line's loss per length with "
+            "gfem.HeatSource.uniform(..., power_per_length=)."
+        )
+    if isinstance(result, EigenmodeResult):
+        raise TypeError(
+            f"{_EM}: an eigenmode has no drive, so its amplitude and its heat are "
+            "undefined; solve a driven problem at the mode's frequency."
+        )
+    if not isinstance(result, DrivenResult):
+        raise TypeError(
+            f"{_EM} takes the result of gfem.solve(model, gfem.Driven(..., "
+            f"keep_fields=...)), got {type(result).__name__}."
+        )
+    refuse_entry(getattr(model, "mesh", None), _EM)
+    if result.polarization is not None:
+        raise entry_refusal(_EM)
+    if not isinstance(model, Model):
+        raise TypeError(f"{_EM} needs model= a gfem.Model, got {type(model).__name__}.")
+
+
+def _waves(
+    result: Any, frequency: float, powers: dict[str, Any], phases: dict[str, Any]
+) -> tuple[jax.Array, jax.Array]:
+    """The driven ports' incident waves at the port surfaces, and ``|a_p|^2``.
+
+    The fields are fed at the port surfaces, the drive is given at the
+    reference planes: a plane at ``d`` inside the domain sees the incident
+    wave of the surface times ``exp(-gamma d)``, as S does
+    (`gfem.DrivenResult.with_offsets`). ``|a_p|^2`` is formed from the power,
+    linear in it, so a 0 W port takes no square root.
+    """
+    index = next(
+        k
+        for k, g in enumerate(result.frequency)
+        if math.isclose(float(g), frequency, rel_tol=1e-9)
+    )
+    offsets = dict(result.offsets)
+    shift = jnp.stack(
+        [
+            result._plane_shift(p, offsets[p])[index]  # noqa: SLF001
+            if offsets.get(p, 0.0)
+            else jnp.asarray(1.0 + 0j)
+            for p in powers
+        ]
+    )
+    power = jnp.stack(list(powers.values()))
+    phase = jnp.stack([jnp.asarray(phases.get(p, 0.0), jnp.float64) for p in powers])
+    a = _amplitude(power) * jnp.exp(1j * phase) * shift
+    return a, power * jnp.abs(shift) ** 2
+
+
+def _coherent(
+    re: jax.Array, im: jax.Array, a: jax.Array, squared: jax.Array
+) -> jax.Array:
+    """``sum_pq conj(a_p) a_q D[p, q]`` per element, the diagonal as ``|a_p|^2``."""
+    off = 1.0 - jnp.eye(len(a))
+    cross = jnp.einsum("p,epq,q->e", jnp.conj(a), (re + 1j * im) * off, a)
+    own = jnp.einsum("p,ep->e", squared, jnp.diagonal(re, axis1=1, axis2=2))
+    return own + jnp.real(cross)
+
+
+def electromagnetic_heating(
+    result: Any,
+    *,
+    model: Any,
+    frequency: float,
+    incident_power: float | Mapping[str, float] | jax.Array | None = None,
+    incident_power_per_length: float | Mapping[str, float] | jax.Array | None = None,
+    incident_phase: Mapping[str, float] | None = None,
+) -> HeatSource:
+    r"""The heat a driven result's electromagnetic loss gives under a drive.
+
+    The kept fields of the driven ports at ``frequency`` are combined with
+    no new solve, so one `gfem.Driven` result serves every drive. The ports
+    of one call are fed coherently: with incident waves
+    :math:`a_p = \sqrt{P_p}\, e^{i \phi_p}`, each tetrahedron and sheet face
+    receives
+
+    .. math::
+
+        q = \sum_{pq} \overline{a_p} a_q D[p, q],
+
+    :math:`D[p, q]` the power the fields of ports :math:`p` and :math:`q`
+    dissipate together there (`gfem.dissipated_power` gives its diagonal, per
+    region and sheet). A tetrahedron gets its exact mean power density, a
+    `gfem.Conductor` or `gfem.Impedance` sheet face its exact mean power per
+    area, which the thermal problem loads at the face. What is not heat gets
+    none: a perfectly matched layer, an `gfem.Absorbing` face, a port and a
+    lumped port's resistance. Incoherent drives (other tones, unrelated
+    sources) are separate heat sources, which a thermal problem adds.
+
+    Exactly one of ``incident_power`` (W) and ``incident_power_per_length``
+    (W/m, on a cross-section slab from `gfem.Mesh.from_gmsh_cross_section`)
+    is given: a number when one port was excited, else a mapping from port
+    name to power, ports left out at 0. ``incident_phase`` gives each driven
+    port's relative phase, in rad, at its reference plane: a plane moved by
+    ``WavePort(offset=)`` or `gfem.DrivenResult.with_offsets` moves the
+    phase (and, on a lossy port mode, the power) with it, as for S. With a
+    complex port reference impedance a field is per unit :math:`|a|^2`,
+    which is not exactly 1 W incident.
+
+    Differentiable with respect to the drive (powers and phases) and through
+    the driven solve, as `gfem.dissipated_power` is. A diagonal term is
+    linear in its port's power; a cross term grows as
+    :math:`\sqrt{P_p P_q}`, so its derivative with respect to a power of
+    exactly 0 W next to a driven partner is unbounded (``inf``).
+
+    Example:
+        A differential feed of 1 mW per port, then a steady thermal solve::
+
+            driven = gfem.solve(model, gfem.Driven(f, keep_fields=True))
+            heat = gfem.electromagnetic_heating(
+                driven,
+                model=model,
+                frequency=f,
+                incident_power={"p1": 1e-3, "p2": 1e-3},
+                incident_phase={"p2": math.pi},
+            )
+            steady = gfem.solve(model, gfem.SteadyThermal(heat))
+
+    Args:
+        result: A `gfem.DrivenResult` with fields kept at ``frequency`` for
+            every driven port.
+        model: The model the result was solved on.
+        frequency: A kept frequency, Hz (matched to 1e-9 relative).
+        incident_power: The incident power in W (3D meshes).
+        incident_power_per_length: The incident power per unit length in
+            W/m (cross-section slabs).
+        incident_phase: The relative phase of each driven port, rad, 0 where
+            left out.
+
+    Returns:
+        A `gfem.HeatSource` on the solve domain's volume regions outside a
+        perfectly matched layer, with face heat on the sheets.
+
+    Raises:
+        TypeError: ``result`` is not a driven result (a
+            `gfem.DCConductionResult` heats through `joule_heating`), or an
+            `gfem.EigenmodeResult` (a mode has no drive); ``incident_phase``
+            is not a mapping.
+        NotImplementedError: A `gfem.PortModeResult`, a 2D model (pose the
+            driven solve on the slab), or what `gfem.dissipated_power`
+            refuses (complex ``mu_r``, a law blend).
+        ValueError: Not exactly one drive, the wrong one for the mesh, a
+            number for several excited ports, a negative power, or no field
+            kept at ``frequency``.
+        KeyError: A port that was not excited, or a phase for a port the
+            drive does not feed.
+        NonDifferentiableError: ``frequency`` is traced; or what
+            `gfem.dissipated_power` raises under `jax.grad`.
+    """
+    from gfem._engine.heat import sheet_surfaces
+    from gfem._engine.power_flow import _check_support
+    from gfem._heat import loss_matrices
+    from gfem._pml import physical_regions
+    from gfem.measurements import check_heat_field
+
+    _check_heated_result(result, model)
+    f = static_float(
+        frequency,
+        f"{_EM}: frequency",
+        "The frequency is a fixed input of the driven solve: give a kept frequency.",
+    )
+    given = {
+        name: value
+        for name, value in (
+            ("incident_power", incident_power),
+            ("incident_power_per_length", incident_power_per_length),
+        )
+        if value is not None
+    }
+    if len(given) != 1:
+        raise ValueError(
+            f"{_EM} takes exactly one drive: incident_power= (W) or "
+            "incident_power_per_length= (W/m, on a cross-section); got "
+            f"{', '.join(given) or 'none'}."
+        )
+    ((name, value),) = given.items()
+    thickness = model.mesh.section_thickness
+    if thickness is not None and name == "incident_power":
+        raise _per_length_remedy(name, _EM, "incident_power_per_length")
+    if thickness is None and name == "incident_power_per_length":
+        raise ValueError(
+            f"{_EM}: incident_power_per_length= is for a cross-section mesh "
+            "(gfem.Mesh.from_gmsh_cross_section); this model's mesh is 3D: give "
+            "the total incident_power= in W instead."
+        )
+    powers = _incident(value, tuple(result.s.excited), name)
+    ports = tuple(powers)
+    phases = _phases(incident_phase, ports)
+    fields = [result.e_field(f, p) for p in ports]
+    for field in fields:
+        check_heat_field(field, model, _EM)
+    matrices = loss_matrices(fields, model)
+
+    scale = thickness if thickness is not None else 1.0
+    waves = _waves(result, f, {p: w * scale for p, w in powers.items()}, phases)
+    tets = _coherent(matrices["tetrahedra_re"], matrices["tetrahedra_im"], *waves)
+    faces = _coherent(matrices["triangles_re"], matrices["triangles_im"], *waves)
+    mesh = model.mesh
+    density = tets / _tet_volumes(mesh)
+    face_density = faces / _triangle_areas(mesh) if sheet_surfaces(model) else None
+    total = sheet_total = None
+    if not is_traced((tets, faces)):
+        sheet_total = float(jnp.sum(faces))
+        total = float(jnp.sum(tets)) + sheet_total
+    support = _check_support(fields[0], model)
+    regions = tuple(
+        r
+        for r in physical_regions(mesh.volumes, model.pml)
+        if support[mesh.elements(r)].any()
+    )
+    return HeatSource(
+        regions=regions,
+        _kind="electromagnetic",
+        _density=density,
+        _face_density=face_density,
+        _total=total,
+        _sheet_total=sheet_total,
         _thickness=thickness,
     )
 

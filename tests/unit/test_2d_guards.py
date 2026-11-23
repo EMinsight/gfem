@@ -234,6 +234,15 @@ ENTRIES = {
         lambda model: gfem.dissipated_power(field_on(model.mesh), model=model),
         r"dissipated_power.*from_gmsh_cross_section.*thermal problem",
     ),
+    "electromagnetic_heating": (
+        lambda model: gfem.electromagnetic_heating(
+            object.__new__(gfem.DrivenResult),
+            model=model,
+            frequency=F,
+            incident_power=1.0,
+        ),
+        r"electromagnetic_heating.*from_gmsh_cross_section.*incident_power_per",
+    ),
     "interface_participation": (
         lambda model: gfem.interface_participation(
             gfem.EigenmodeResult(

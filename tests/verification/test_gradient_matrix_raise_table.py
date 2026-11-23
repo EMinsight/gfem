@@ -1995,6 +1995,20 @@ def _out_dissipated_power_in_the_frequency(request):
     jax.make_jaxpr(jax.grad(objective))(1.0)
 
 
+def _out_electromagnetic_heating_in_the_frequency(request):
+    # the heat's frequency picks a kept field: a fixed input, as the solve's
+    model = request.getfixturevalue("wave_model")
+    result = gfem.solve(model, gfem.Driven(frequency=20e9, keep_fields=True))
+
+    def objective(f):
+        heat = gfem.electromagnetic_heating(
+            result, model=model, frequency=f, incident_power={"p1": 1.0}
+        )
+        return jnp.sum(heat._density_on(model.mesh))
+
+    jax.make_jaxpr(jax.grad(objective))(20e9)
+
+
 def _out_traced_pml_knob(knob):
     # the stretch is fixed: its knobs are plain numbers, never design inputs
     def call(request):
@@ -2733,6 +2747,12 @@ OUT_OF_SCOPE = [
         _out_dissipated_power_in_the_frequency,
         gfem.NonDifferentiableError,
         r"omega.*frequency is a fixed input of the driven solve",
+    ),
+    (
+        "electromagnetic_heating x frequency",
+        _out_electromagnetic_heating_in_the_frequency,
+        gfem.NonDifferentiableError,
+        r"electromagnetic_heating: frequency is a fixed value.*driven solve",
     ),
     # driven on a periodic model
     (

@@ -215,6 +215,9 @@ _ENTRIES = {
     "electric_energy": f"For the energies, {SLAB}.",
     "dissipated_power": "Pose the driven solve on the slab from "
     "gfem.Mesh.from_gmsh_cross_section, the mesh the thermal problem runs on.",
+    "electromagnetic_heating": "Pose the driven solve on the slab from "
+    "gfem.Mesh.from_gmsh_cross_section, the mesh the thermal problem runs on, "
+    "and give incident_power_per_length=.",
     "interface_participation": f"For the participations, {SLAB}.",
     "characteristic_impedance": "A line port's mode carries 1 W/m and has no "
     "characteristic impedance: its S-parameters need no reference impedance.",

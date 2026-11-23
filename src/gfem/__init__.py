@@ -123,6 +123,7 @@ from gfem.solve import release_memory, solve  # noqa: E402
 from gfem.thermal import (  # noqa: E402
     HeatSource,
     Trace,
+    electromagnetic_heating,
     joule_heating,
     rise_time,
     time_constant,
@@ -230,6 +231,7 @@ __all__ = [
     "design",
     "dissipated_power",
     "electric_energy",
+    "electromagnetic_heating",
     "element_mean",
     "enclosed_by",
     "error_estimate",
