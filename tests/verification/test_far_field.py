@@ -1,7 +1,7 @@
 r"""The far field against closed forms, at order 3.
 
-- T11: a Hertzian dipole in vacuum (:math:`h = \lambda/4`, a
-  :math:`\lambda/2` layer): its pattern :math:`F = k^2 p_\perp
+- T11: a Hertzian dipole in vacuum (:math:`h = \lambda/6`, a
+  :math:`\lambda/3` layer): its pattern :math:`F = k^2 p_\perp
   e^{ik\hat r\cdot r_0}/(4\pi\varepsilon_0)`, the intensity integrated over
   the sphere against the radiated power, the peak directivity 1.5; and a
   dipole of moment :math:`p(\hat x - i\hat y)` (two crossed dipoles in
@@ -34,7 +34,7 @@ R0 = np.array([0.47, 0.53, 0.56]) * fsc.UM
 
 
 def _box(path, sides=pc.SIDES, surface=None):
-    return pc.box(path, sides=sides, thickness=0.5, cells=4, surface=surface)
+    return pc.box(path, sides=sides, thickness=2 / 6, cells=6, surface=surface)
 
 
 def _model(mesh, **kwargs):

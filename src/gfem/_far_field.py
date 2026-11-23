@@ -219,7 +219,91 @@ def far_field(
     model: Model,
     side: str | Sequence[str] | Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> FarField:
-    """See `gfem.measurements.far_field`."""
+    r"""The far field of one excitation on a grid of directions.
+
+    The far-field amplitude :math:`F(\hat r) = \lim r\,e^{+ikr}E(r\hat r)`
+    (V, phase referred to the model origin, :math:`k` of the exterior
+    medium; `gfem.conventions`, Far fields) of a port, point dipole or
+    incident-field column, for each of its kept frequencies, with the IEEE
+    145 quantities built on it (`FarField`): radiation intensity, radiated
+    power, directivity, gain, realized gain, radiation efficiency, circular
+    components, axial ratio, and for a plane wave the bistatic radar cross
+    section of its scattered field.
+
+    The amplitude is a reciprocity integral over the element layer just
+    outside ``side``, with :math:`\chi` the side's P1 indicator and
+    :math:`w = \hat q\,e^{ik\hat r\cdot r}` the plane wave arriving from
+    :math:`\hat r`:
+
+    .. math::
+
+        \hat q\cdot F(\hat r) = \frac{1}{4\pi}\int \Big[
+            E\cdot(\nabla\chi\times\nabla\times w)
+            + (\nabla\times E)\cdot(\nabla\chi\times w)\Big]\,dV,
+
+    the Stratton-Chu surface integral averaged over the layer: no surface,
+    normals or face traces, and the field is read inside elements. The
+    radiated power is `power_flow`'s residual through the same side, exact
+    for the solved field. A flat PEC or PMC exterior face that the layer
+    meets is a ground plane: the test field gets its mirror image, so the
+    far field is that of the sources and their images, in the half-space
+    above the plane only.
+
+    Example:
+        The pattern of a dipole on a 2° grid::
+
+            theta = np.radians(np.arange(0, 181, 2))[:, None]
+            phi = np.radians(np.arange(0, 360, 2))[None, :]
+            ff = gfem.far_field(result, "d", theta, phi, model=model)
+            ff.directivity[0]  # (91, 180)
+
+    Args:
+        result: A `gfem.DrivenResult` that kept the column's fields
+            (``Driven(..., keep_fields=...)``).
+        name: The excited port or the source whose far field to read.
+        theta: Polar angles from :math:`+z`, rad (fixed numbers).
+        phi: Azimuths from :math:`+x`, rad, broadcast against ``theta``.
+        model: The model the result was solved on, with its background as
+            the exterior medium (``Model(background=...)``).
+        side: ``None`` (the default): every physical element with no vertex
+            on the perfectly matched layer or an `gfem.Absorbing` face, so
+            the layer read is the one touching the truncation. Or volume
+            region names, or a predicate ``inside(centroids) -> bool`` on the
+            element centroids (m), as for `power_flow`; the side must hold
+            every source, port, sheet and scatterer, one element clear of
+            its outside layer.
+
+    Returns:
+        A `FarField`; its arrays are ``(n_freq, *shape)`` with ``shape`` the
+        broadcast shape of ``theta`` and ``phi``.
+
+    Raises:
+        TypeError: ``result`` or ``model`` is of the wrong type, or ``side``
+            is neither names, a predicate nor ``None``.
+        KeyError: ``name`` is neither an excited port nor a source.
+        RegionNotFoundError: A named region does not exist.
+        ValueError: No field of ``name`` was kept; the model has no
+            background, no PML layer and no `gfem.Absorbing` face, or
+            `gfem.Periodic` pairs; ``theta`` and ``phi`` do not broadcast or
+            are not finite; the side selects nothing or everything; its
+            outside layer is not the exterior medium (another material, a
+            `gfem.MaterialField`, the perfectly matched layer); a dipole,
+            port, sheet, wall or scatterer is in that layer or outside the
+            side; the layer meets a boundary of the solve domain that is not
+            one flat PEC or PMC ground plane; a direction points below the
+            ground plane.
+        NotImplementedError: A layered background (a dielectric or layered
+            half-space) or a lossy one.
+        gfem.DistributedUnsupportedError: The fields are pieces across ranks.
+        NonDifferentiableError: ``theta`` or ``phi`` is traced; the side is
+            a predicate while the node coordinates are traced; and, while
+            `jax.grad` traces it, the field's ``omega``, a design in
+            `power_flow`'s layer, or the node coordinates of an output read
+            from the radiated power (directivity, gain, radiation
+            efficiency): the amplitude, the intensity and the radar cross
+            section are differentiable in the node coordinates, the radiated
+            power is not in this version.
+    """
     from gfem.model import Model
     from gfem.results import DrivenResult
 
