@@ -1123,11 +1123,13 @@ class Eigenmode:
     of a `gfem.PermittivityLaw` the modes crowd too, and a mode one step farther
     can come back in place of a nearer one: ask for more modes and compare two
     targets. A target or a mode in a law region's unresolved band, where its
-    wavelength is shorter than two of its longest edges, raises ValueError. It
-    raises NotImplementedError for a `WavePort` or a shared port surface (its
-    propagation constants would have to be solved at the complex
-    eigenfrequency): replace a lone wave port with a `LumpedPort` of the line
-    impedance, or use a `gfem.Driven` sweep. With ``wave_vector``, it raises
+    wavelength is shorter than two of its longest edges, raises ValueError. A
+    lone `WavePort` lets its requested mode leave without reflection, so a
+    mode's Q includes its radiation through the port; a root below that
+    mode's cutoff which does not decay in time is dropped with
+    `gfem.AntiBoundRootWarning`, and a ``target`` below the cutoff raises
+    `gfem.PortModeError`. A shared port surface raises NotImplementedError:
+    use a `gfem.Driven` sweep. With ``wave_vector``, it raises
     ValueError on a model without a `gfem.Periodic` pair, for a k with a
     component outside the span of the pairs' translations, and with any
     ``linear_solver`` but ``"direct"``; and NotImplementedError on a GPU

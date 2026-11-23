@@ -899,21 +899,6 @@ def test_a_mode_above_the_low_frequency_floor_does_not_warn(mesh):
 # --- unsupported terms and failures ----------------------------------------------
 
 
-def test_wave_port_raises_from_solve_with_a_remedy(mesh):
-    # the model itself stays valid (a driven problem can use the wave port);
-    # only the eigenmode solve refuses it
-    model = gfem.Model(
-        mesh,
-        materials={"dielectric": gfem.Material(eps_r=EPS)},
-        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
-        ports=[gfem.WavePort("o1", "port1")],
-    )
-    with pytest.raises(
-        NotImplementedError, match=r"(?s)wave port 'o1'.*LumpedPort.*gfem\.Driven"
-    ):
-        gfem.solve(model, gfem.Eigenmode(target=8e9))
-
-
 def test_shared_port_surface_raises_naming_the_surface_and_its_ports(mesh):
     # a lumped port stands in for one mode only and cannot share a surface, so
     # the message drops that advice and points to a driven sweep
@@ -935,9 +920,8 @@ def test_shared_port_surface_raises_naming_the_surface_and_its_ports(mesh):
 def test_port_geometry_error_beside_a_wave_port_face_matches_the_driven_rule(
     mesh, monkeypatch
 ):
-    # the eigenmode solve still refuses the wave port itself; past that refusal
-    # its gradient check names the same inputs, with the same messages, as the
-    # driven rule's
+    # the eigenmode gradient check names the same inputs, with the same
+    # messages, as the driven rule's (past any refusal of the solve itself)
     monkeypatch.setattr(eigen_rule, "_check_supported", lambda _model: None)
     model = gfem.Model(
         mesh,
