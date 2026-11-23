@@ -15,6 +15,9 @@ result reloaded with `gfem.load_result`.
 - `power_flow`: the net power a driven field carries out of a set of
   elements, exact for the solved field (a flux of point-sampled
   ``E x H*`` is not, see the measurements recipe).
+- `dissipated_power`: the time-averaged power a driven field dissipates
+  in each volume region and on each `Conductor` or `Impedance` sheet,
+  exact for the solved field.
 - `heat_flow` and `heat_flow_per_length`: the heat a steady temperature
   carries out of a set of elements or through named surfaces, exact for
   the solved temperature.
@@ -1076,7 +1079,10 @@ def heat_flow(
       boundary there (convection, a heat flux, a fixed temperature) is
       counted inside ``side``. A cut may end on a fixed-temperature
       surface: the reaction of its nodes is split between the two sides by
-      their elements, so a side's flow is minus its complement's.
+      their elements, so a side's flow is minus its complement's. A face
+      belongs to ``side`` when every thermal element beside it does, so
+      the heat of a sheet or a `gfem.HeatFlux` lying exactly on the cut
+      belongs to neither side.
     - a surface name: the heat leaving the thermal domain through it. A
       `gfem.FixedTemperature` surface gives the heat it removes (an
       interior one removes it from both sides), a `gfem.Convection`

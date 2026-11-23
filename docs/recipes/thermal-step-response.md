@@ -86,6 +86,7 @@ step = gfem.TransientThermal(
         "core": gfem.Trace.mean("core"),
         "heater": gfem.Trace.point((0.0, 2.29e-6, section.section_thickness / 2)),
         "phase": phase,
+        "sink": gfem.Trace.heat_out_per_length("bottom"),
     },
     keep_fields=[40e-6],
 )
@@ -119,6 +120,8 @@ phase at switch-off: 3.1203 rad
   `thermo_optic_shift(...).trace()` and `route_phase(...).trace(name)` record
   the phase (per metre on a section, in rad along a route): their mode is
   solved once, before the run, and needs no rise.
+  {py:meth}`gfem.Trace.heat_out_per_length` records the heat that has left
+  through the sink ("The heat that has left").
 - With no `initial_temperature`, the run starts from the
   {term}`source-free temperature`, so every rise starts at 0. A number starts
   the whole device at that uniform temperature, in K.
@@ -168,6 +171,46 @@ time constant: 8.56 us on, 8.56 us off
 - A single exponential has rise time / time constant = $\ln 9 = 2.20$. A ratio
   near it means one slow thermal mode dominates.
 - Both take plain arrays of times and values, from gfem or anywhere else.
+
+## The heat that has left
+
+{py:meth}`gfem.Trace.heat_out_per_length` records the {term}`heat out` of a
+side: the heat that has left it since $t = 0$, in J/m (J on a 3D mesh, with
+{py:meth}`gfem.Trace.heat_out`). It takes the sides of
+{py:obj}`gfem.heat_flow_per_length`: surface names, volume regions or a
+predicate on the element centroids. Its step difference over `dt` is the
+mean {term}`heat flow` over each step, in W/m, which tends to the steady
+flow once the temperature has settled:
+
+```python
+heat_out = np.asarray(run.traces["sink"])  # J/m since t = 0
+dt = t[1] - t[0]
+flow = np.diff(heat_out) / dt  # W/m, the mean over each step
+steady = gfem.solve(model, gfem.SteadyThermal(step.heat))
+held = float(gfem.heat_flow_per_length(steady, "bottom", model=model))
+put_in, out = 70.0 * t_off * 1e3, heat_out[-1] * 1e3  # mJ/m
+print(f"heat in: {put_in:.4f} mJ/m, out by the end: {out:.4f} mJ/m")
+print(f"mean flow over the last step on: {flow[on[1:]][-1]:.4f} W/m")
+print(f"steady flow into the sink: {held:.4f} W/m")
+```
+
+```text
+heat in: 5.6000 mJ/m, out by the end: 5.5988 mJ/m
+mean flow over the last step on: 69.9032 W/m
+steady flow into the sink: 69.9978 W/m
+```
+
+- The heat is read from the discrete heat balance, with the heat the
+  elements store: the heat out of every surface plus the heat stored equals
+  the heat the sources put in, at every time, whatever the time scheme.
+- At switch-off, nine time constants after the switch-on, the flow into
+  the sink is 0.14 % short of the steady one: slower thermal modes than the
+  core's are still filling. By the end of the run the device has given back
+  all but 0.02 % of its heat; the rest is still stored, or left through the
+  top.
+- The trace is a cumulative heat, so {py:func}`gfem.rise_time` and
+  {py:func}`gfem.time_constant` have no meaning on it: take `np.diff` first,
+  and measure the flow.
 
 ## A trace that has not settled
 

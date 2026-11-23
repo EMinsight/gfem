@@ -211,6 +211,7 @@ nitpick_ignore = [
             "Gauge",
             "Device",
             "Estimator",  # FieldEstimator | QuantityEstimator
+            "HeatSide",  # names or a centroid predicate: heat_flow's Args
             # SolverOptions.petsc_options' types, which its Attributes text describes
             "PetscValue",
             "PetscOptions",

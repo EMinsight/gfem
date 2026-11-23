@@ -167,6 +167,52 @@ core temperature: 312.074 K
 - With several terminals, give `voltage=` or `current=` as a mapping from
   terminal name to value; terminals left out are at 0 V or 0 A.
 
+## Where the heat goes
+
+In steady state every watt the heater dissipates leaves the section through a
+{term}`heat sink`: down into the substrate's bottom, or up through the top
+into the air. {py:obj}`gfem.heat_flow_per_length` gives the heat leaving
+through named surfaces, or out of a set of elements, in W/m, positive out
+({term}`heat flow`):
+
+```python
+sink = float(gfem.heat_flow_per_length(steady, "bottom", model=model))  # W/m
+up = float(gfem.heat_flow_per_length(steady, "top", model=model))
+above = gfem.heat_flow_per_length(steady, lambda c: c[:, 1] > -12e-6, model=model)
+down = float(above)  # W/m out of the elements above y = -12 um
+power = float(steady.power_per_length)
+print(f"into the sink: {sink:.4f} W/m, up into the air: {up:.2e} W/m")
+print(f"balance: |sink + up - power| / power = {abs(sink + up - power) / power:.0e}")
+print(f"down across y = -12 um: {down:.4f} W/m")
+```
+
+```text
+into the sink: 70.5375 W/m, up into the air: 2.23e-03 W/m
+balance: |sink + up - power| / power = 1e-11
+down across y = -12 um: 70.5375 W/m
+```
+
+- A surface name gives the heat leaving through it: a
+  {py:obj}`gfem.FixedTemperature` surface the heat it removes, a
+  {py:obj}`gfem.Convection` surface $\int h (T - T_\infty)\, dS$, a
+  {py:obj}`gfem.HeatFlux` surface minus the power it puts in, an insulated
+  one 0. Several names give their union.
+- A volume region, several, or a predicate on the element centroids (m)
+  gives the heat leaving those elements into the rest of the section; what
+  crosses the section's own boundary there counts inside. The cut above is
+  the staircase of element faces nearest $y = -12$ µm, 3.14 µm above the
+  sink. No heat is made below it, so all of the sink's heat crosses it. A
+  cut whose elements reach a fixed-temperature surface takes their share of
+  its heat inside: keep it an element away to read the flow across it.
+- The heat is read from the discrete heat balance of the solved
+  temperature, not from its gradient, so the flows close to round-off, and
+  a set of elements gives minus what its complement gives. A face carrying
+  heat that lies exactly on a cut, a sheet's or a
+  {py:obj}`gfem.HeatFlux`'s, belongs to neither side.
+- On a 3D mesh, {py:obj}`gfem.heat_flow` gives the same in W; each raises
+  on the other kind of mesh, naming its twin. A transient run records it as
+  {py:meth}`gfem.Trace.heat_out` ({doc}`thermal-step-response`).
+
 ## Heat without a current
 
 When you know the power a region dissipates, skip the DC solve:
@@ -186,6 +232,9 @@ HeatSource(uniform, regions=['heater'], power_per_length=70.5398 W/m)
 core rise: 12.074 K
 ```
 
+- The heat of a driven electromagnetic solve's loss comes from
+  {py:obj}`gfem.electromagnetic_heating`, in the same form
+  ({doc}`electromagnetic-heating`).
 - `HeatSource.uniform` takes exactly one amount: `power=` (W, on a 3D mesh),
   `power_per_length=` (W/m, on a cross-section) or `power_density=` (W/m³,
   on either).
@@ -227,9 +276,8 @@ and silicon below, which conduct the heat to the sink far better.
   $1/(\sigma A)$, as above. For your own heater, the number of squares between its
   contacts times the sheet resistance $1/(\sigma t)$ is a close estimate.
 - **The heat balance.** In steady state, every watt the sources put in leaves
-  through the heat sinks. The {doc}`heater tutorial <../tutorials/heater>`
-  reads the flux into the sink from the solved temperature and closes the
-  balance.
+  through the heat sinks: the heat through every sink adds up to
+  `steady.power_per_length`, as in "Where the heat goes".
 - **Convergence.** Raise `gfem.SolverOptions(order=3)` (the default is 2), or
   refine the mesh where the temperature bends most: around the heater and
   across thin layers of low conductivity.

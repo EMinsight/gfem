@@ -33,6 +33,7 @@ orphan: true
 - {doc}`floquet-ports`
 - {doc}`perfectly-matched-layer`
 - {doc}`heater-temperature`
+- {doc}`electromagnetic-heating`
 - {doc}`thermo-optic-phase`
 - {doc}`thermal-step-response`
 - {doc}`shared-port-surface`

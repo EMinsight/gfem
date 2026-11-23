@@ -2,7 +2,9 @@
 
 `HeatSource`, `joule_heating` and `electromagnetic_heating` give the heat;
 `Trace` names what a `gfem.TransientThermal` solve records at every time
-step; `rise_time` and `time_constant` measure a recorded trace.
+step (a temperature, a phase, or with `Trace.heat_out` the heat that has
+left a side); `rise_time` and `time_constant` measure a recorded
+temperature trace.
 
 A `HeatSource` is the heat a thermal problem is driven by, given per
 volume region: a uniform amount (`HeatSource.uniform`), the Joule heat
