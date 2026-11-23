@@ -56,8 +56,10 @@ from gfem.errors import (  # noqa: E402
 )
 from gfem.job import Job, load_result  # noqa: E402
 from gfem.measurements import (  # noqa: E402
+    CrossSections,
     InterfaceParticipation,
     characteristic_impedance,
+    cross_sections,
     electric_energy,
     element_mean,
     interface_participation,
@@ -149,6 +151,7 @@ __all__ = [
     "Background",
     "Conductor",
     "Convection",
+    "CrossSections",
     "DCConduction",
     "DCConductionResult",
     "Debye",
@@ -237,6 +240,7 @@ __all__ = [
     "__version__",
     "characteristic_impedance",
     "conventions",
+    "cross_sections",
     "cuda_available",
     "design",
     "electric_energy",

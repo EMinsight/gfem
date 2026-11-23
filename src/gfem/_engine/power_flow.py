@@ -59,6 +59,7 @@ __all__ = [
     "check_size",
     "power_flow",
     "surface",
+    "surface_of",
 ]
 
 #: The three edges of a triangle, by vertex.
@@ -171,9 +172,19 @@ def surface(
         ValueError: The side or the field does not fit, or the surface is
             within one element of a port (see `gfem.power_flow`).
     """
+    return surface_of(field, _selection(model.mesh, side), model)
+
+
+def surface_of(field: Field, selected: np.ndarray, model: Model) -> Surface:
+    """The surface of the selected tetrahedra (one boolean each), as `surface`.
+
+    Raises:
+        ValueError: The selection or the field does not fit, or the surface
+            is within one element of a port (see `gfem.power_flow`).
+    """
     mesh = model.mesh
     support = _check_support(field, model)
-    inside = _selection(mesh, side) & support
+    inside = selected & support
     outside = support & ~inside
     if not inside.any():
         raise ValueError(

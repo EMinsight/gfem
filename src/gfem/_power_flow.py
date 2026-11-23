@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from gfem._field import Field
     from gfem.model import Model
 
-__all__ = ["LAYER_REMEDY", "power_flow"]
+__all__ = ["LAYER_REMEDY", "balance", "power_flow"]
 
 #: How to keep a design out of the surface's element layer (the measure
 #: wrapper adds jax.lax.stop_gradient as the other way out).
@@ -72,9 +72,59 @@ def power_flow(
     side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray],
     model: Model,
 ) -> jax.Array:
-    """`gfem.power_flow` on a field or model that may hold JAX tracers."""
+    """`gfem.power_flow` on a field or model that may hold JAX tracers.
+
+    The total field of an incident-field column (one carrying its load
+    reference) has its load pairing subtracted (`corrected_where`).
+    """
     pf = engine()
     where = pf.surface(field, side, model)
+    part = field._incident  # noqa: SLF001
+    if part is not None:
+        _check_corrected(field, where, model)
+        return balance(field, where, model, mode="corrected")["power"]
+    return balance(field, where, model)["power"]
+
+
+def _check_corrected(field: Field, where: Surface, model: Model) -> None:
+    """Raise where the corrected power flow of an incident column has no meaning.
+
+    Raises:
+        ValueError: The field is an incident part, or the side holds
+            perfectly-matched-layer elements or reaches a wave port.
+    """
+    part = field._incident  # noqa: SLF001
+    assert part is not None  # noqa: S101 - the caller checked
+    if part.is_incident:
+        raise ValueError(
+            "power_flow of the incident part of an incident-field column "
+            "balances no load: read the total field (the default part) for the "
+            "net power out of a side, part='scattered' for the scattered power, "
+            "or gfem.cross_sections."
+        )
+    mesh = model.mesh
+    for region in part.layers:
+        if where.inside[mesh.elements(region)].any():
+            raise ValueError(
+                f"power_flow: the side holds elements of the PML layer region "
+                f"{region!r}, where an incident-field column's kept field is the "
+                "scattered field, not the total: keep the side outside the "
+                "layer, or use gfem.cross_sections or part='scattered'."
+            )
+    importlib.import_module("gfem._engine.cross_sections").check_side(
+        model, where, "power_flow"
+    )
+
+
+def balance(
+    field: Field,
+    where: Surface,
+    model: Model,
+    *,
+    mode: str = "power",
+) -> dict[str, jax.Array]:
+    """The kernel's outputs on a surface (see `_PowerFlowKernel`)."""
+    pf = engine()
     if not is_traced((field.mesh.nodes, model.mesh.nodes)):
         pf.check_nodes(field, model)
     f_paths, f_def = jax.tree_util.tree_flatten_with_path(field)
@@ -95,8 +145,9 @@ def power_flow(
         model_def=(m_def, tuple(n for n in inputs if n.startswith("model"))),
         where=where,
         order=field.order,
+        mode=mode,
     )
-    return measure(kernel, inputs)["power"]
+    return measure(kernel, inputs)
 
 
 def _field_role(name: str, field: Field) -> _Role:
@@ -161,15 +212,23 @@ def _model_role(kind: tuple[Any, ...], model: Model, where: Surface) -> _Role:
     return _Role("unread", None, "model." + ".".join(str(k) for k in kind))
 
 
+_SCALAR = jax.ShapeDtypeStruct((), jnp.float64)
+#: The kernel's outputs by mode: ``"power"`` the flux of the field,
+#: ``"corrected"`` the flux of an incident column's total field minus its
+#: load pairing, ``"cross_sections"`` the absorbed and scattered powers of
+#: such a field (`gfem._engine.cross_sections`).
+_OUTPUTS = {
+    "power": ("power",),
+    "corrected": ("power",),
+    "cross_sections": ("absorption", "scattering"),
+}
+
+
 class _PowerFlowKernel:
     """The power through a fixed surface, and its pullback on the field."""
 
-    name = "gfem.power_flow"
     pieces: ClassVar[frozenset[str]] = frozenset()
     comm = None
-    output_specs: ClassVar[dict[str, jax.ShapeDtypeStruct]] = {
-        "power": jax.ShapeDtypeStruct((), jnp.float64)
-    }
 
     def __init__(
         self,
@@ -179,7 +238,13 @@ class _PowerFlowKernel:
         model_def: tuple[Any, tuple[str, ...]],
         where: Surface,
         order: int,
+        mode: str = "power",
     ) -> None:
+        self.mode = mode
+        self.name = "gfem.cross_sections" if mode == "cross_sections" else (
+            "gfem.power_flow"
+        )
+        self.output_specs = {n: _SCALAR for n in _OUTPUTS[mode]}
         self.roles = roles
         self.field_def = field_def
         self.model_def = model_def
@@ -197,8 +262,8 @@ class _PowerFlowKernel:
     def describe(self, name: str) -> str:
         return self.roles[name].description
 
-    def _host(self, values: dict[str, np.ndarray]) -> tuple[Any, np.ndarray, float]:
-        """The flux, the coefficients and omega of one design state."""
+    def _host(self, values: dict[str, np.ndarray]) -> tuple[Any, Any, np.ndarray]:
+        """The flux, the incident reading (or ``None``) and the coefficients."""
         pf = engine()
         f_def, f_names = self.field_def
         m_def, m_names = self.model_def
@@ -206,20 +271,35 @@ class _PowerFlowKernel:
         model = jax.tree.unflatten(m_def, [values[n] for n in m_names])
         pf.check_nodes(field, model)
         key = b"".join(np.ascontiguousarray(values[n]).tobytes() for n in m_names)
+        key += np.ascontiguousarray(values["omega"]).tobytes()
         if self._cached is None or self._cached[0] != key:
             stretch = _pml.field_stretch(model, field)
-            self._cached = (
-                key,
-                pf.build(self.order, model, self.where, stretch=stretch),
-            )
-        flux = self._cached[1]
+            flux = pf.build(self.order, model, self.where, stretch=stretch)
+            reading = None
+            part = field._incident  # noqa: SLF001
+            if self.mode != "power" and part is not None:
+                xs = importlib.import_module("gfem._engine.cross_sections")
+                reading = xs.reading(
+                    field, part, model, self.where, flux, stretch=stretch
+                )
+            self._cached = (key, (flux, reading))
+        flux, reading = self._cached[1]
         e = np.asarray(values["coefficients"])
         pf.check_size(e, flux.op, self.order)
-        return flux, e, float(np.asarray(values["omega"]).real)
+        return flux, reading, e
 
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        flux, e, omega = self._host(values)
-        return {"power": np.asarray(flux.power(e, omega))}
+        flux, reading, e = self._host(values)
+        omega = float(np.asarray(values["omega"]).real)
+        if self.mode == "power":
+            return {"power": np.asarray(flux.power(e, omega))}
+        if self.mode == "corrected":
+            return {"power": np.asarray(flux.power(e, omega) - reading.load(e))}
+        scattered = e - reading.incident
+        return {
+            "absorption": np.asarray(reading.load(e) - flux.power(e, omega)),
+            "scattering": np.asarray(flux.power(scattered, omega)),
+        }
 
     def backward(
         self,
@@ -229,6 +309,22 @@ class _PowerFlowKernel:
     ) -> dict[str, np.ndarray]:
         if wanted != ("coefficients",):  # the measure wrapper raised for others
             raise NotImplementedError(f"no power flow gradient for {wanted}")
-        flux, e, omega = self._host(values)
-        ct = float(np.asarray(cotangents["power"]))
-        return {"coefficients": ct * flux.pullback(e, omega)}
+        flux, reading, e = self._host(values)
+        omega = float(np.asarray(values["omega"]).real)
+
+        def ct(name: str) -> float:
+            return float(np.asarray(cotangents.get(name, 0.0)))
+
+        if self.mode == "power":
+            return {"coefficients": ct("power") * flux.pullback(e, omega)}
+        if self.mode == "corrected":
+            grad = flux.pullback(e, omega) - reading.load_pullback()
+            return {"coefficients": ct("power") * grad}
+        grad = np.zeros(e.shape, complex)
+        if "absorption" in cotangents:
+            grad += ct("absorption") * (
+                reading.load_pullback() - flux.pullback(e, omega)
+            )
+        if "scattering" in cotangents:
+            grad += ct("scattering") * flux.pullback(e - reading.incident, omega)
+        return {"coefficients": grad}
