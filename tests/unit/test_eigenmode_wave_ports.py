@@ -23,13 +23,16 @@ import jax
 import numpy as np
 import pytest
 import structured_meshes as sm
+from finite_differences import assert_gradient_matches, unit_directions
 from wave_port_cases import nearest_error, ported_guide, ported_model
 
 import gfem
 from gfem._eigen import rule as eigen_rule
 from gfem._eigen.operator import split
+from gfem._engine import cache
 from gfem._engine.driven import driven_operator, operator_terms
 from gfem._engine.eigen import eigen_ports
+from gfem._engine.port_term import PortTerm
 from gfem.errors import AntiBoundRootWarning
 
 DATA = Path(__file__).parent / "data"
@@ -382,27 +385,189 @@ def test_each_port_of_a_shared_surface_reports_its_own_mode_s_coupling_q(tmp_pat
         assert float(result.q_port[other][j]) >= 1e6 * float(result.q_port[own][j])
 
 
-def test_a_wave_port_s_coupling_q_takes_no_gradient_yet(tmp_path):
+def _case_a_field(mesh, eps):
+    return gfem.Model(
+        mesh,
+        materials={
+            "dielectric": gfem.MaterialField(eps_r=eps),
+            "air": gfem.Material(eps_r=1.0),
+        },
+        boundaries=[gfem.PEC("walls")],
+        ports=[gfem.WavePort("p1", "port")],
+    )
+
+
+GRADIENT_OPTIONS = gfem.SolverOptions(
+    order=2, linear_solver="direct", eigen_tolerance=1e-12
+)
+
+
+def test_a_wave_port_s_coupling_q_gradient_matches_a_central_difference(tmp_path):
+    # the load reads the port mode's amplitude and power at the mode's
+    # complex k through the reduced model's derivatives
     mesh = shorted_guide(tmp_path / "a.msh", CASE_A, nx=4)
-    options = gfem.SolverOptions(order=2, linear_solver="direct", eigen_tolerance=1e-12)
+
+    problem = gfem.Eigenmode(target=11.67e9, n_modes=3)
+    eps = jax.numpy.full(len(mesh.elements("dielectric")), 4.0)
+    first = gfem.solve(_case_a_field(mesh, eps), problem, options=GRADIENT_OPTIONS)
+    j = nearest_error(first, ROOT_A)[1]
 
     def objective(eps):
-        model = gfem.Model(
-            mesh,
-            materials={
-                "dielectric": gfem.MaterialField(eps_r=eps),
-                "air": gfem.Material(eps_r=1.0),
-            },
-            boundaries=[gfem.PEC("walls")],
-            ports=[gfem.WavePort("p1", "port")],
+        result = gfem.solve(_case_a_field(mesh, eps), problem, options=GRADIENT_OPTIONS)
+        return 1 / result.q_port["p1"][j]
+
+    rng = np.random.default_rng(3)
+    assert_gradient_matches(
+        objective, eps, unit_directions(rng, eps.shape, 2), step=1e-2
+    )
+
+
+# --- the kept port model --------------------------------------------------------
+
+
+@pytest.fixture
+def lone_a(tmp_path_factory):
+    mesh = shorted_guide(tmp_path_factory.mktemp("a4x") / "a.msh", CASE_A, nx=4)
+    eps = jax.numpy.full(len(mesh.elements("dielectric")), 4.0)
+    return mesh, eps
+
+
+@pytest.fixture
+def sweeps(monkeypatch):
+    """How many port mode sweeps have run, as a one-item list."""
+    from gfem._engine import port_term
+
+    count = [0]
+    sweep = port_term.port_mode_sweep
+
+    def counted(*args, **kwargs):
+        count[0] += 1
+        return sweep(*args, **kwargs)
+
+    monkeypatch.setattr(port_term, "port_mode_sweep", counted)
+    cache.ENTRIES.clear()
+    yield count
+    cache.ENTRIES.clear()
+
+
+def _budget(model, problem):
+    """A ``retain_memory`` that keeps a forward's fields and port terms only."""
+    rule = eigen_rule.EigenmodeRule(model, problem, GRADIENT_OPTIONS)
+    _, entry = rule.forward(model, keep=True)
+    holder = entry.handle
+    fields = sum(f.nbytes for f in entry.fields.values())
+    ports = holder.nbytes - holder.operator.nbytes
+    assert ports > 0  # the port terms count in the entry's bytes
+    budget = fields + ports + holder.operator.nbytes // 2
+    entry.free()
+    return budget
+
+
+def _objective(mesh, problem, read, **options):
+    def objective(eps):
+        result = gfem.solve(
+            _case_a_field(mesh, eps),
+            problem,
+            options=dataclasses.replace(GRADIENT_OPTIONS, **options),
         )
-        result = gfem.solve(model, gfem.Eigenmode(target=11.67e9), options=options)
+        return read(result)
+
+    return objective
+
+
+def test_frequency_gradient_after_free_base_is_the_kept_one_bit_for_bit(lone_a, sweeps):
+    # one entry's backward before and after its operator is freed: the
+    # frequency pairs read the entry's fields alone, and no port is swept
+    mesh, eps = lone_a
+    model = _case_a_field(mesh, eps)
+    rule = eigen_rule.EigenmodeRule(
+        model, gfem.Eigenmode(target=11.67e9), GRADIENT_OPTIONS
+    )
+    _, entry = rule.forward(model, keep=True)
+    cotangents = {"omega": np.array([1.0 - 30j])}
+    before = rule.backward(model, entry, cotangents)
+    swept = sweeps[0]
+    entry.handle.free_base(None)
+    assert entry.handle.operator is None
+    assert entry.handle.ports  # the port terms stay
+    after = rule.backward(model, entry, cotangents)
+    assert sweeps[0] == swept
+    assert len(after) == len(before) == 1
+    for a, b in zip(after, before, strict=True):
+        np.testing.assert_array_equal(a.left, b.left)
+        np.testing.assert_array_equal(a.right, b.right)
+        assert a.weights == b.weights
+    entry.free()
+
+
+def test_coupling_q_gradient_without_the_operator_reads_the_kept_ports(lone_a, sweeps):
+    # the backward prepares its own eigen operator, with the forward's port
+    # terms, and sweeps no port
+    mesh, eps = lone_a
+    problem = gfem.Eigenmode(target=11.67e9)
+    budget = _budget(_case_a_field(mesh, eps), problem)
+
+    def read(result):
         return 1 / result.q_port["p1"][0]
 
-    # raised in the backward: under jax.grad it arrives as a runtime error
-    # that carries the class name
+    kept = jax.grad(_objective(mesh, problem, read))(eps)
+    value, pullback = jax.vjp(
+        _objective(mesh, problem, read, retain_memory=budget), eps
+    )
+    before = sweeps[0]
+    (grad,) = pullback(jax.numpy.ones_like(value))
+    assert sweeps[0] == before
+    np.testing.assert_allclose(grad, kept, rtol=1e-7, atol=1e-7 * abs(kept).max())
+
+
+# --- refusals of the coupling Q's gradient --------------------------------------
+
+
+def _q_port_gradient(mesh, eps):
+    objective = _objective(
+        mesh, gfem.Eigenmode(target=11.67e9), lambda r: 1 / r.q_port["p1"][0]
+    )
+    return jax.grad(objective)(eps)
+
+
+def test_a_mode_without_power_through_the_port_refuses_its_coupling_q_gradient(
+    lone_a, monkeypatch
+):
+    # a mode with no amplitude on the port's mode (a symmetry) has an
+    # infinite q_port; its power is set to 0 here, which no mesh reaches
+    # exactly
+    mesh, eps = lone_a
+    slopes = PortTerm.power_slopes
+
+    def no_power(self, k, x, pair=None):
+        power, d_x, d_k = slopes(self, k, x, pair)
+        return 0 * power, d_x, d_k
+
+    monkeypatch.setattr(PortTerm, "power_slopes", no_power)
     with pytest.raises(
         jax.errors.JaxRuntimeError,
-        match=r"NonDifferentiableError: .*q_port\['p1'\], the coupling Q of a wave",
+        match=r"NonDifferentiableError: q_port\['p1'\] of mode 0 is infinite",
     ):
-        jax.grad(objective)(jax.numpy.full(len(mesh.elements("dielectric")), 4.0))
+        _q_port_gradient(mesh, eps)
+
+
+def test_a_degenerate_port_mode_refuses_its_coupling_q_gradient(lone_a, monkeypatch):
+    # a requested port mode degenerate with another at the resonance has no
+    # shape derivative; the sweep refuses one degenerate on the real band, so
+    # the degeneracy is forced here
+    mesh, eps = lone_a
+    monkeypatch.setattr(PortTerm, "degenerate", lambda *_: [0])
+    with pytest.raises(
+        jax.errors.JaxRuntimeError,
+        match=r"NonDifferentiableError: q_port\['p1'\] of mode 0 has no derivative: "
+        r"the port's mode is degenerate.*Differentiate omega or q",
+    ):
+        _q_port_gradient(mesh, eps)
+
+
+def test_a_port_mode_is_degenerate_within_the_relative_gap(hybrid):
+    # the hybrid guide's lead mode and the next one of its reduced pencil
+    _, _, op, (port,) = hybrid
+    k = 2 * math.pi * 12e9 / C0 * op.built.scale * (1 + 0.02j)
+    assert port.term.degenerate(k, 1e-6) == []
+    assert port.term.degenerate(k, 10.0) == [0]

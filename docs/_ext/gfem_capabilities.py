@@ -422,6 +422,22 @@ RAISES_LABELS = {
         "Eigenmode participations, port Q and mode fields, with respect to node "
         "coordinates on a port surface"
     ),
+    "eigenmode x material on a wave port face": (
+        "Eigenmode results, with respect to the material of a region with "
+        "elements on a wave port's face"
+    ),
+    "eigenmode x law parameter of a region on a wave port face": (
+        "Eigenmode results, with respect to the parameters of a permittivity "
+        "law in a region with elements on a wave port's face"
+    ),
+    "eigenmode x Impedance value beside a wave port": (
+        "Eigenmode results, with respect to the resistance, inductance or "
+        "capacitance of an `Impedance` that shares an edge with a wave port's face"
+    ),
+    "eigenmode x nodes of a wave port surface": (
+        "Eigenmode results with wave ports, with respect to node coordinates on "
+        "a wave port's face"
+    ),
     "greedy adaptive sweep under a transformation": (
         '`Driven(sweep="adaptive")` without `samples`, inside `jax.grad`, '
         "`jax.jit` or `jax.vmap`"

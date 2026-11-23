@@ -60,7 +60,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import numpy as np
 import scipy.constants as const
@@ -68,6 +68,7 @@ import scipy.constants as const
 from gfem._engine import dispersion, terms
 from gfem._engine.driven import DrivenOperator
 from gfem._engine.eigen import energy_parts
+from gfem._engine.port_term import PortTerm
 from gfem._engine.sensitivity import Term, energy_term
 from gfem.errors import NonDifferentiableError
 from gfem.model import Model
@@ -143,13 +144,29 @@ class Ratios:
         resistive: tuple[str, ...],
         inductive: tuple[str, ...],
         kinetic: tuple[str, ...] = (),
+        coupled: tuple[str, ...] | None = None,
+        waves: Mapping[str, tuple[PortTerm, int]] | None = None,
+        pair: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
+        cluster_rtol: float = 0.0,
     ) -> None:
+        """The forms on ``op``; ``q_port`` rows follow ``coupled``.
+
+        ``coupled`` (default ``resistive``): the ports with a coupling Q, in
+        model order; ``waves`` maps each wave port among them to its
+        surface's term and its index there, ``pair`` is the layout's pairing
+        of load columns and a state, and ``cluster_rtol`` the relative gap
+        under which a wave port's mode is degenerate (`PortTerm.degenerate`).
+        """
         built = op.built
         self.regions = regions
         self.anisotropic = anisotropic
         self.resistive = resistive
         self.inductive = inductive
         self.kinetic = kinetic
+        self.coupled = resistive if coupled is None else coupled
+        self.waves = dict(waves or {})
+        self.pair = pair if pair is not None else (lambda a, b: a.T @ b)
+        self.cluster_rtol = cluster_rtol
         #: J per file-unit integral of ``Re(eps_r) |u|^2``.
         self.unit = 0.5 * const.epsilon_0 * built.scale
         #: rad/s per unit of ``k``.
@@ -223,7 +240,7 @@ class Ratios:
                 are invariant; the normalized mode with a ``field``
                 cotangent).
             k: Its eigenvalue.
-            ct: This mode's cotangents by output: ``"q_port"`` ``(n_resistive,)``,
+            ct: This mode's cotangents by output: ``"q_port"`` ``(n_coupled,)``,
                 ``"participation"`` ``(n_inductive,)``, ``"bulk"``
                 ``(n_regions,)``, ``"principal"`` ``(n_anisotropic, 3)``,
                 ``"sheet"`` ``(n_kinetic,)``; a missing output carries none.
@@ -233,7 +250,9 @@ class Ratios:
 
         Raises:
             NonDifferentiableError: A nonzero cotangent on an infinite
-                ``q_port`` (no voltage on the port).
+                ``q_port`` (no voltage on the port, no amplitude on a wave
+                port's mode), or on a wave port's whose mode is degenerate
+                at ``k``.
         """
         mode_state = _Mode(self, u, k)
         partials = _Partials(self)
@@ -246,9 +265,10 @@ class Ratios:
             mode_state.apply_axes(self)
             for (r, a), share in np.ndenumerate(mode_state.axis_energy):
                 partials.share(principal[r, a], mode_state, (r, a), share)
-        for c, name in zip(ct.get("q_port", ()), self.resistive, strict=False):
+        slopes: dict[int, tuple] = {}
+        for c, name in zip(ct.get("q_port", ()), self.coupled, strict=False):
             if c:
-                partials.q_port(c, mode_state, name, index=mode)
+                self._q_port(c, mode_state, partials, name, slopes, mode=mode)
         for c, name in zip(ct.get("participation", ()), self.inductive, strict=False):
             if c:
                 partials.participation(c, mode_state, name)
@@ -259,6 +279,50 @@ class Ratios:
         if field is None or not np.any(field):
             return load
         return _normalized(self, mode_state, load, field)
+
+    def _q_port(
+        self,
+        c: float,
+        mode_state: _Mode,
+        partials: _Partials,
+        name: str,
+        slopes: dict[int, tuple],
+        *,
+        mode: int,
+    ) -> None:
+        """``c`` times port ``name``'s ``q_port`` into ``partials``.
+
+        A wave port's reads ``slopes``, which keeps each surface's
+        `PortTerm.power_slopes` and `PortTerm.degenerate` for the mode, by
+        the term's identity.
+
+        Raises:
+            NonDifferentiableError: An infinite ``q_port``, or a wave port's
+                mode degenerate at ``k``.
+        """
+        if name not in self.waves:
+            partials.q_port(c, mode_state, name, index=mode)
+            return
+        term, p = self.waves[name]
+        k, u = mode_state.k, mode_state.u
+        if id(term) not in slopes:
+            slopes[id(term)] = (
+                *term.power_slopes(k, u, self.pair),
+                term.degenerate(k, self.cluster_rtol),
+            )
+        power, d_x, d_k, degenerate = slopes[id(term)]
+        if p in degenerate:
+            raise NonDifferentiableError(
+                f"NonDifferentiableError: q_port[{name!r}] of mode {mode} has no "
+                "derivative: the port's mode is degenerate with another mode of "
+                "its surface at the resonance (relative gap under "
+                f"SolverOptions.cluster_rtol={self.cluster_rtol:g}), so its shape "
+                "has no derivative in the frequency. Differentiate omega or q "
+                "instead, or wrap q_port in jax.lax.stop_gradient."
+            )
+        partials.wave_q_port(
+            c, mode_state, name, (power[p], d_x[:, p], d_k[p]), index=mode
+        )
 
 
 class _Mode:
@@ -333,7 +397,9 @@ class _Partials:
         self.axis = np.zeros((len(ratios.anisotropic), 3))
         self.volts2 = dict.fromkeys(ratios.voltage, 0.0)
         self.inductor = np.zeros(len(ratios.kinetic))
-        self.kappa = 0.0
+        self.kappa: complex = 0.0
+        #: ``dG/du`` of the terms no energy form carries (a wave port's power).
+        self.w = None
         #: ``dG`` by each inductive port's ``L`` at fixed ``u`` and ``k``.
         self.inductance = dict.fromkeys(ratios.inductive, 0.0)
 
@@ -363,6 +429,30 @@ class _Partials:
         self.volts2[name] -= c * q / v2
         self.kappa += c * q / (2 * mode.k.real)
 
+    def wave_q_port(
+        self, c: float, mode: _Mode, name: str, power: tuple, *, index: int
+    ) -> None:
+        """``c`` times ``q = omega E / P`` of a wave port.
+
+        ``power``: ``P`` and its Wirtinger partials in ``u`` and ``k``
+        (`PortTerm.power_slopes`); ``index`` the mode, for messages.
+        """
+        value, d_x, d_k = power
+        if not value > 0:
+            raise NonDifferentiableError(
+                f"NonDifferentiableError: q_port[{name!r}] of mode {index} is "
+                "infinite: the mode carries no power out through the port's "
+                "mode, and an infinite value has no derivative. Differentiate "
+                f"1 / q_port[{name!r}] instead, whose value there is an exact 0 "
+                "(and the sum of 1 / Q terms is what a loss objective wants "
+                "anyway)."
+            )
+        q = mode.omega * mode.energy / value
+        self.energy += c * q / mode.energy
+        self.kappa += c * q / (2 * mode.k.real) - c * q / value * d_k
+        w = -c * q / value * d_x
+        self.w = w if self.w is None else self.w + w
+
     def participation(self, c: float, mode: _Mode, name: str) -> None:
         """``c`` times ``p = sign(Re V) |V|^2 / (2 omega^2 L E)``."""
         sign = math.copysign(1.0, mode.volts[name].real)
@@ -390,6 +480,8 @@ class _Partials:
         """
         ratios = self.ratios
         w = np.zeros_like(mode.u, dtype=complex)
+        if self.w is not None:
+            w += self.w
         weights = {}
         whole = self.region + self.energy
         for region, applied, c, s in zip(

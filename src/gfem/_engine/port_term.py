@@ -90,6 +90,8 @@ _NEV = 6
 _CACHE = 64
 # exp(i pi / 4) of the outgoing branch with its cut rotated.
 _ROTATION = cmath.exp(0.25j * math.pi)
+# The step of the power's k-difference, relative to |k|.
+_POWER_STEP = 1e-3
 
 
 def outgoing(lam: complex) -> complex:
@@ -457,13 +459,23 @@ class PortTerm:
                 (``load.T @ state`` on one process).
         """
         value = self.at(k)
-        y, gamma = value.y, value.gamma
+        return self._power(k, value.y, value.gamma, pair(self.vectors, x))
+
+    def _power(
+        self, k: complex, y: np.ndarray, gamma: np.ndarray, ux: np.ndarray
+    ) -> np.ndarray:
+        """`outgoing_power` from the modes' ``y`` and ``gamma``, ``ux = U^T x``."""
+        amplitude, power = self._amplitude(k, y, gamma, ux)
+        return np.abs(amplitude) ** 2 * power
+
+    def _amplitude(
+        self, k: complex, y: np.ndarray, gamma: np.ndarray, ux: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        r"""Each mode's amplitude (SI) and :math:`\mathrm{Re}\,P_\text{mode}`."""
         # the field coordinates (y / gamma, y): n x H is (y, y) on the columns
         t = y / gamma
         phi = np.concatenate([y, y])
-        amplitude = np.linalg.solve(
-            phi.T @ (self._reaction @ t), phi.T @ pair(self.vectors, x)
-        )
+        amplitude = np.linalg.solve(phi.T @ (self._reaction @ t), phi.T @ ux)
         scale = self.modes.section.scale
         omega = k * scipy.constants.c / scale
         power = np.array(
@@ -473,7 +485,79 @@ class PortTerm:
             ]
         )
         # the field is scale times the SI one
-        return np.abs(amplitude / scale) ** 2 * power.real
+        return amplitude / scale, power.real
+
+    def power_slopes(
+        self,
+        k: complex,
+        x: np.ndarray,
+        pair: Callable[[np.ndarray, np.ndarray], np.ndarray] = lambda a, b: a.T @ b,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        r"""`outgoing_power` and its Wirtinger partials in ``x`` and ``k``.
+
+        :math:`P_p = |a_p|^2 S_p` with :math:`a = M^{-1}\Phi^\mathsf{T}
+        U^\mathsf{T} x` linear in :math:`x`, so :math:`\partial P_p/\partial x
+        = S_p\,\overline{a_p}\,U\Phi M^{-\mathsf{T}} e_p`. In :math:`k` at
+        fixed :math:`x`, :math:`P_p` moves with :math:`y(k)`,
+        :math:`\gamma(k)` and :math:`\omega`: a fourth-order difference
+        along the first-order path :math:`y + y'\delta`, :math:`\gamma +
+        \gamma'\delta` (exact to first order, so the difference has only its
+        truncation, :math:`10^{-12}` relative at the step
+        :math:`10^{-3}|k|`; :math:`P_p` does not depend on the scale of
+        :math:`y`, so the bordered solve's normalization does not matter),
+        and :math:`\partial P/\partial k = (\partial_{\mathrm{Re}\,k} -
+        i\,\partial_{\mathrm{Im}\,k}) P / 2`.
+
+        Returns:
+            ``(power (n,), d_x (ndof, n), d_k (n,))``: ``d_x`` load columns.
+        """
+        value = self.at(k)
+        y, gamma, dy, dg = value.y, value.gamma, value.d_y, value.d_gamma
+        ux = pair(self.vectors, x)
+        amplitude, power = self._amplitude(k, y, gamma, ux)
+        phi = np.concatenate([y, y])
+        m = phi.T @ (self._reaction @ (y / gamma))
+        scale = self.modes.section.scale
+        # d a_p / dx: U Phi M^-T e_p, the amplitude in SI
+        rows = self.vectors @ (phi @ np.linalg.inv(m).T) / scale
+        d_x = rows * (power * np.conj(amplitude))
+        h = _POWER_STEP * abs(k)
+
+        def along(delta: complex) -> np.ndarray:
+            return self._power(k + delta, y + dy * delta, gamma + dg * delta, ux)
+
+        parts = []
+        for unit in (1.0, 1j):
+            f = [along(s * h * unit) for s in (-2, -1, 1, 2)]
+            parts.append((f[0] - 8 * f[1] + 8 * f[2] - f[3]) / (12 * h))
+        d_k = 0.5 * (parts[0] - 1j * parts[1])
+        return np.abs(amplitude) ** 2 * power, d_x, d_k
+
+    def degenerate(self, k: complex, rtol: float) -> list[int]:
+        r"""The ports whose mode has another within ``rtol`` at ``k``.
+
+        Among the reduced pencil's eigenvalues :math:`\lambda = \gamma^2`
+        (relative distance): there :math:`y'(k)` is not defined.
+        """
+        value = self.at(k)
+        a, b = self._reduced.matrices(self.modes.pencil.theta(k))  # ty: ignore[invalid-argument-type]
+        lam = scipy.linalg.eigvals(a, b)
+        lam = lam[np.isfinite(lam)]
+        out = []
+        for p, g in enumerate(value.gamma):
+            own = g * g
+            if np.count_nonzero(np.abs(lam - own) <= rtol * abs(own)) > 1:
+                out.append(p)
+        return out
+
+    @property
+    def nbytes(self) -> int:
+        """The dense state a backward reads: the basis, its 3D columns, the sweeps."""
+        held = self._vectors.nbytes + self._reaction.nbytes + self._reduced.v.nbytes
+        held += sum(int(r.nbytes) for r in self._reduced._red)  # noqa: SLF001
+        for sweep in self.sweeps:
+            held += int(sweep.basis.nbytes)
+        return held
 
     # --- the driven piece -------------------------------------------------------
 
