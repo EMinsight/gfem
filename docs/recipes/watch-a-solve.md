@@ -67,8 +67,8 @@ Each line holds, in order:
 
 1. the wall-clock time the record was made, to the millisecond;
 2. the level: `DEBUG`, `INFO`, `WARN`, `ERROR` or `CRIT`;
-3. the logger's short name: `solver` for `gfem.solver`, `timing` for
-   `gfem.timing`, `cache` for `gfem.solve_cache`, `mpi`, `mesh`,
+3. the logger's short name: `solver` for `"gfem.solver"`, `timing` for
+   `"gfem.timing"`, `cache` for `"gfem.solve_cache"`, `mpi`, `mesh`,
    `mesh_refinement`;
 4. under MPI, the rank tag `rN/M` ({ref}`watch-under-mpi`);
 5. the record's message, as gfem wrote it.
