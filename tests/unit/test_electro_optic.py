@@ -12,6 +12,7 @@ checks live in the verification tier.
 import dataclasses
 import types
 
+import electro_optic_cases as eo
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -24,38 +25,14 @@ from strip2d import write_strip
 import gfem
 from gfem.mesh import Mesh
 
-FREQUENCY = scipy.constants.c / 1.55e-6
-N_O, N_E, N_OX = 2.2111, 2.1376, 1.444
-#: Static permittivity of the crystal, principal values along crystal x, y, z.
-LN_STATIC = (44.0, 44.0, 27.9)
-#: The 3m tensor of lithium niobate, crystal frame, m/V (rows xx yy zz yz xz xy).
-R13, R22, R33, R51 = 9.6e-12, 6.8e-12, 30.9e-12, 32.6e-12
-R_LN = (
-    (0.0, -R22, R13),
-    (0.0, R22, R13),
-    (0.0, 0.0, R33),
-    (0.0, R51, 0.0),
-    (R51, 0.0, 0.0),
-    (-R22, 0.0, 0.0),
-)
-#: x-cut, propagation along global z: crystal x up (global y), crystal y along
-#: the guide (global z), crystal z lateral (global x).
-X_CUT = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+FREQUENCY = eo.FREQUENCY
+N_OX = eo.N_OX
+LN_OPTICAL, LN_STATIC = eo.LN_OPTICAL, eo.LN_STATIC
+R22, R_LN, X_CUT = eo.R22, eo.R_LN, eo.X_CUT
 #: A quarter turn about the guide: (x, y) -> (-y, x).
 TURN = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-RECTS = [
-    (-0.5, 0.0, 0.5, 0.6, "core", 0.15),
-    (0.5, 0.0, 1.6, 0.25, "foot", 0.15),
-    (-3.0, -2.0, 3.0, 2.6, "clad", None),
-]
 MAXH = 0.5
-PLATES = [
-    (lambda p: abs(p[1] - 2.6) < 1e-9, "top"),
-    (lambda p: abs(p[1] + 2.0) < 1e-9, "bottom"),
-]
-#: The plates' distance, m: a homogeneous static model has E = -1/GAP along y.
-GAP = 4.6e-6
-LN_OPTICAL = (N_O**2, N_O**2, N_E**2)
+PLATES, GAP = eo.PLATES, eo.GAP
 
 
 def _crystal(axes, eps, tensor=R_LN):
@@ -107,15 +84,14 @@ def _shift(model, potential, **kw):
 @pytest.fixture(scope="module")
 def mesh(tmp_path_factory):
     path = tmp_path_factory.mktemp("electro_optic") / "lchannel.msh"
-    return tc.section(path, RECTS, MAXH, PLATES)
+    return eo.l_core(path, MAXH, 0.15)
 
 
 @pytest.fixture(scope="module")
 def coarse(tmp_path_factory):
     """The same section, coarse: the gradient checks solve the mode many times."""
     path = tmp_path_factory.mktemp("electro_optic") / "coarse.msh"
-    rects = [(*r[:5], None if r[5] is None else 0.4) for r in RECTS]
-    return tc.section(path, rects, 1.2, PLATES)
+    return eo.l_core(path, 1.2, 0.4)
 
 
 @pytest.fixture(scope="module")

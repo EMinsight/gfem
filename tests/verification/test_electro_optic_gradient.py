@@ -26,35 +26,20 @@ while the element moves under it.
 
 import dataclasses
 
+import electro_optic_cases as eo
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import scipy.constants
 import thermal_cases as tc
 from finite_differences import assert_gradient_matches
 
 import gfem
 from gfem.shape import boundary_morph
 
-FREQUENCY = scipy.constants.c / 1.55e-6
-N_O, N_E, N_OX = 2.2111, 2.1376, 1.444
-LN_OPTICAL = (N_O**2, N_O**2, N_E**2)
-#: Static permittivity of the crystal, principal values along crystal x, y, z.
-LN_STATIC = (44.0, 44.0, 27.9)
-#: The 3m tensor of lithium niobate, crystal frame, m/V (rows xx yy zz yz xz xy).
-R13, R22, R33, R51 = 9.6e-12, 6.8e-12, 30.9e-12, 32.6e-12
-R_LN = (
-    (0.0, -R22, R13),
-    (0.0, R22, R13),
-    (0.0, 0.0, R33),
-    (0.0, R51, 0.0),
-    (R51, 0.0, 0.0),
-    (-R22, 0.0, 0.0),
-)
-#: x-cut, propagation along global z: crystal x up (global y), crystal y along
-#: the guide (global z), crystal z lateral (global x).
-X_CUT = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+FREQUENCY = eo.FREQUENCY
+N_OX, LN_OPTICAL, LN_STATIC = eo.N_OX, eo.LN_OPTICAL, eo.LN_STATIC
+R_LN, X_CUT = eo.R_LN, eo.X_CUT
 #: One slab thickness for both meshes: the window's elements lie in the section's.
 THICKNESS = 0.2e-6
 HALF_GAP, WIDTH = 1.5, 0.9  # um
