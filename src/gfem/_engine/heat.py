@@ -132,16 +132,18 @@ def _lossy_sheet(name: str) -> bool:
 
 @dataclasses.dataclass(eq=False)
 class Losses:
-    """The lossy pieces of a model at one frequency, ready to contract fields.
+    r"""The lossy pieces of a model at one frequency, ready to contract fields.
 
     Attributes:
         model: The model (concrete values).
         op: Its driven operator on the unpaired space (result fields' space).
         heat: Per gfem tetrahedron, whether its loss is heat.
         omega: The angular frequency, rad/s.
-        volume: Per tetrahedron, the real symmetric ``sum_k Im(theta_k C_k)``,
-            ``(n,)`` or ``(n, 3, 3)``, zero off `heat`.
-        sheets: The sheet pieces with a lossy θ, with ``Im theta``.
+        volume: Per tetrahedron, the real symmetric
+            :math:`\sum_k \mathrm{Im}(\theta_k C_k)`, ``(n,)`` or
+            ``(n, 3, 3)``, zero off `heat`.
+        sheets: The sheet pieces with a lossy :math:`\theta`, with
+            :math:`\mathrm{Im}\, \theta`.
     """
 
     model: Model
@@ -153,11 +155,11 @@ class Losses:
 
     @property
     def c0(self) -> float:
-        """``2 omega mu0 scale``: the forms' units to W."""
+        r""":math:`c_0 = 2 \omega \mu_0 s`: the forms' units to W."""
         return 2 * self.omega * const.mu_0 * self.op.built.scale
 
     def _fields(self, e: np.ndarray) -> tuple[list, list]:
-        """The fields ``E_p`` and their conjugates as grid functions."""
+        """The fields :math:`E_p` and their conjugates as grid functions."""
         out, conj = [], []
         for column in e.T:
             for values, into in ((column, out), (np.conj(column), conj)):
@@ -216,7 +218,7 @@ class Losses:
         return tets / self.c0, faces / self.c0
 
     def _volume_pass(self, integrand: Any, order: int) -> np.ndarray:
-        """``int_e integrand`` per gfem tetrahedron."""
+        r""":math:`\int_e` ``integrand`` per gfem tetrahedron :math:`e`."""
         built = self.op.built
         space = ngs.L2(built.mesh, order=0, complex=True)
         form = ngs.LinearForm(space)
@@ -227,7 +229,10 @@ class Losses:
         return out
 
     def _face_pass(self, parts: Iterable[tuple[Any, Any]], order: int) -> np.ndarray:
-        """``sum int_f integrand`` per gfem triangle, each part on its region."""
+        r"""The integrals of ``parts`` per gfem triangle, each on its region.
+
+        :math:`\sum \int_f` ``integrand`` on each triangle :math:`f`.
+        """
         built = self.op.built
         space = ngs.SurfaceL2(built.mesh, order=0, complex=True)
         q = space.TestFunction()
@@ -244,8 +249,9 @@ class Losses:
     ) -> np.ndarray:
         """The field term: each field's coefficient cotangent, ``(ndof, P)``.
 
-        ``g_tets`` and ``g_faces`` are the complex cotangents ``G`` of the
-        matrices (real part's plus i times imaginary part's).
+        ``g_tets`` and ``g_faces`` are the complex cotangents :math:`G` of
+        the matrices (the real part's plus :math:`i` times the imaginary
+        part's).
         """
         built, order, space = self.op.built, self.op.order, self.op.space
         n = e.shape[1]
@@ -285,14 +291,16 @@ class Losses:
         g_faces: np.ndarray,
         kinds: set[Hashable],
     ) -> dict[Hashable, np.ndarray]:
-        """The explicit term: each wanted model leaf's cotangent.
+        r"""The explicit term: each wanted model leaf's cotangent.
 
         ``kinds`` are input kinds (`gfem._engine.sensitivity`): materials,
         law parameters, sheet fills and `Impedance` resistances. The values
-        are complex (``sum ct * dy/dp``): the caller takes the real part for
-        a real leaf. Per material kind one value per element of the region
-        (``(n, 3)`` per principal axis); per fill one per face of the
-        surface; one number per law parameter or resistance.
+        are complex (:math:`\sum_y \bar{y} \, \partial y / \partial p` for
+        the outputs :math:`y` and their cotangents :math:`\bar{y}`): the
+        caller takes the real part for a real leaf. Per material kind one
+        value per element of the region (``(n, 3)`` per principal axis); per
+        fill one per face of the surface; one number per law parameter or
+        resistance.
         """
         out: dict[Hashable, np.ndarray] = {}
         materials = {k for k in kinds if k[0] == "material"}  # ty: ignore[not-subscriptable]
@@ -311,10 +319,11 @@ class Losses:
     def _materials(
         self, e: np.ndarray, g: np.ndarray, tau: np.ndarray, kinds: set[Hashable]
     ) -> dict[Hashable, np.ndarray]:
-        """The material leaves' cotangents, through the sensitivity kernel.
+        r"""The material leaves' cotangents, through the sensitivity kernel.
 
-        Each lossy volume piece's contracted integral is ``-i theta tau``
-        (its moment for a per-axis leaf), handed over as `Integrated`.
+        Each lossy volume piece's contracted integral is
+        :math:`-i \theta \tau` (its moment for a per-axis leaf), handed over
+        as `Integrated`.
         """
         model = self.model
         axes = any(_per_axis(model, k) for k in kinds)
@@ -337,7 +346,11 @@ class Losses:
         )
 
     def _law(self, tau: np.ndarray, kind: Any) -> np.ndarray:
-        """A law parameter's cotangent: its pieces' dθ/dp times ``-i c tau``."""
+        r"""A law parameter's cotangent, from its pieces.
+
+        Each piece gives :math:`\partial \theta / \partial p` times
+        :math:`-i \sum_e c_e \tau_e`, :math:`c_e` the piece's element values.
+        """
         total = 0j
         for piece in self.op.pieces:
             if piece.law is None or piece.law[0] != kind[1]:
@@ -371,7 +384,13 @@ class Losses:
         return np.asarray(total)
 
     def _tau(self, e: np.ndarray, g: np.ndarray) -> np.ndarray:
-        """``Re sum conj(G[p, q]) int_e conj(E_p) . E_q / c0`` per tetrahedron."""
+        r"""The contracted integral :math:`\tau_e` per tetrahedron :math:`e`.
+
+        .. math::
+
+            \tau_e = \mathrm{Re} \sum_{pq} \overline{G_e[p, q]}
+                \int_e \overline{E_p} \cdot E_q / c_0
+        """
         fields, conj = self._fields(e)
         n = e.shape[1]
         out = np.zeros(len(self.heat))
@@ -385,7 +404,11 @@ class Losses:
         return np.where(self.heat, out, 0.0) / self.c0
 
     def _tau_moments(self, e: np.ndarray, g: np.ndarray) -> np.ndarray:
-        """`_tau`'s symmetric moment ``int_e sym(conj(E_p) (x) E_q)``, ``(n, 3, 3)``."""
+        r"""`_tau`'s symmetric moment per tetrahedron, ``(n, 3, 3)``.
+
+        `_tau` with :math:`\int_e \mathrm{sym}(\overline{E_p} \otimes E_q)`
+        in place of :math:`\int_e \overline{E_p} \cdot E_q`.
+        """
         fields, conj = self._fields(e)
         n = e.shape[1]
         out = np.zeros((len(self.heat), 3, 3))
@@ -407,7 +430,13 @@ class Losses:
         return out / self.c0
 
     def _tau_faces(self, e: np.ndarray, g: np.ndarray) -> np.ndarray:
-        """``Re sum conj(G[p, q]) int_f conj(E_p)_t . E_q,t / c0`` per triangle."""
+        r"""`_tau` on the sheet faces, per triangle :math:`f`.
+
+        .. math::
+
+            \mathrm{Re} \sum_{pq} \overline{G_f[p, q]}
+                \int_f \overline{E_{p,t}} \cdot E_{q,t} / c_0
+        """
         surfaces = sheet_surfaces(self.model)
         out = np.zeros(self._faces())
         if not surfaces:
@@ -427,7 +456,7 @@ class Losses:
 
 
 def _weights(g: np.ndarray) -> np.ndarray:
-    """``W[p, q] = conj(G[p, q]) + G[q, p]`` per element."""
+    r""":math:`W[p, q] = \overline{G[p, q]} + G[q, p]` per element."""
     return np.conj(g) + np.swapaxes(g, 1, 2)
 
 

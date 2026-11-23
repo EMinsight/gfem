@@ -26,7 +26,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import jax
@@ -320,30 +320,110 @@ class HeatSource:
 register_fields(HeatSource, ("_amount", "_density", "_face_density"))
 
 
+def _one_drive(who: str, keywords: str, drives: dict[str, Any]) -> tuple[str, Any]:
+    """The one drive given among ``drives`` (keyword -> value or ``None``).
+
+    Raises:
+        ValueError: None or several given; ``keywords`` lists them.
+    """
+    given = {name: value for name, value in drives.items() if value is not None}
+    if len(given) != 1:
+        raise ValueError(
+            f"{who} takes exactly one drive: {keywords}; got "
+            f"{', '.join(given) or 'none'}."
+        )
+    ((name, value),) = given.items()
+    return name, value
+
+
+def _per_name(
+    value: Any,
+    names: tuple[str, ...],
+    *,
+    label: str,
+    unknown: Callable[[str], str],
+    several: str,
+) -> dict[str, Any]:
+    """A drive per name, from a mapping or (for one name) a number.
+
+    Each value is a float64 JAX scalar (`_check_finite`, labelled
+    ``label[name]`` for a mapping, ``label`` for a number), in ``names``
+    order; names a mapping leaves out are left out.
+
+    Raises:
+        KeyError: A mapping names something not in ``names``:
+            ``unknown(that key)``.
+        ValueError: A number with several names: ``several``.
+        TypeError: A value that is not a real scalar.
+    """
+    if isinstance(value, Mapping):
+        extra = [k for k in value if k not in names]
+        if extra:
+            raise KeyError(unknown(extra[0]))
+        return {
+            n: _check_finite(value[n], f"{label}[{n!r}]") for n in names if n in value
+        }
+    if len(names) != 1:
+        raise ValueError(several)
+    return {names[0]: _check_finite(value, label)}
+
+
+def _check_non_negative(value: Any, what: str) -> None:
+    """Raise if a concrete ``value`` is negative, naming ``what``.
+
+    Raises:
+        ValueError: ``value < 0``.
+    """
+    if not is_traced(value) and float(value) < 0:
+        raise ValueError(f"{what} must be >= 0, got {float(value)}.")
+
+
+def _check_per_length(
+    name: str,
+    thickness: float | None,
+    who: str,
+    *,
+    extensive: tuple[str, ...],
+    per_length: str,
+    total: str,
+    mesh_3d: str,
+) -> None:
+    """Raise when the drive ``name`` does not fit the mesh kind.
+
+    An ``extensive`` drive on a cross-section (``thickness`` given) raises
+    `_per_length_remedy`; ``per_length`` on a 3D mesh names the ``total``
+    keyword instead, ``mesh_3d`` saying what is 3D.
+
+    Raises:
+        ValueError: Either mismatch.
+    """
+    if thickness is not None and name in extensive:
+        raise _per_length_remedy(name, who, per_length)
+    if thickness is None and name == per_length:
+        raise ValueError(
+            f"{who}: {per_length}= is for a cross-section mesh "
+            f"(gfem.Mesh.from_gmsh_cross_section); {mesh_3d}: give the total "
+            f"{total}= in W instead."
+        )
+
+
 def _drive(value: Any, terminals: tuple[str, ...], what: str) -> jax.Array:
     """A per-terminal drive vector from a number or a mapping (missing: 0)."""
-    if isinstance(value, Mapping):
-        unknown = [k for k in value if k not in terminals]
-        if unknown:
-            raise KeyError(
-                f"joule_heating: {what} names {unknown[0]!r}, which is not a "
-                f"terminal; the terminals are {', '.join(map(repr, terminals))}."
-            )
-        return jnp.stack(
-            [
-                _check_finite(value[t], f"joule_heating {what}[{t!r}]")
-                if t in value
-                else jnp.asarray(0.0)
-                for t in terminals
-            ]
-        )
-    if len(terminals) != 1:
-        raise ValueError(
+    given = _per_name(
+        value,
+        terminals,
+        label=f"joule_heating {what}",
+        unknown=lambda key: (
+            f"joule_heating: {what} names {key!r}, which is not a "
+            f"terminal; the terminals are {', '.join(map(repr, terminals))}."
+        ),
+        several=(
             f"joule_heating: the result has {len(terminals)} terminals "
             f"({', '.join(map(repr, terminals))}), so give {what} as a mapping "
             f"from terminal name to value, e.g. {what}={{{terminals[0]!r}: ...}}."
-        )
-    return _check_finite(value, f"joule_heating {what}")[None]
+        ),
+    )
+    return jnp.stack([given.get(t, jnp.asarray(0.0)) for t in terminals])
 
 
 def joule_heating(
@@ -411,31 +491,26 @@ def joule_heating(
             "joule_heating takes the result of gfem.solve(model, "
             f"gfem.DCConduction(...)), got {type(result).__name__}."
         )
-    given = {
-        name: value
-        for name, value in (
-            ("voltage", voltage),
-            ("current", current),
-            ("power", power),
-            ("power_per_length", power_per_length),
-        )
-        if value is not None
-    }
-    if len(given) != 1:
-        raise ValueError(
-            "joule_heating takes exactly one drive: voltage=, current=, power= or "
-            f"power_per_length=; got {', '.join(given) or 'none'}."
-        )
-    ((name, value),) = given.items()
+    name, value = _one_drive(
+        "joule_heating",
+        "voltage=, current=, power= or power_per_length=",
+        {
+            "voltage": voltage,
+            "current": current,
+            "power": power,
+            "power_per_length": power_per_length,
+        },
+    )
     thickness = result._thickness  # noqa: SLF001
-    if thickness is not None and name in ("voltage", "power"):
-        raise _per_length_remedy(name, "joule_heating")
-    if thickness is None and name == "power_per_length":
-        raise ValueError(
-            "joule_heating: power_per_length= is for a cross-section mesh "
-            "(gfem.Mesh.from_gmsh_cross_section); this result was solved on a 3D "
-            "mesh: give the total power= in W instead."
-        )
+    _check_per_length(
+        name,
+        thickness,
+        "joule_heating",
+        extensive=("voltage", "power"),
+        per_length="power_per_length",
+        total="power",
+        mesh_3d="this result was solved on a 3D mesh",
+    )
     terminals = result.terminals
     g = jnp.asarray(result.conductance)
     if name == "voltage":
@@ -452,8 +527,7 @@ def joule_heating(
                 "terminal voltages or currents instead."
             )
         total = _check_finite(value, f"joule_heating {name}")
-        if not is_traced(total) and float(total) < 0:
-            raise ValueError(f"joule_heating: {name} must be >= 0, got {float(total)}.")
+        _check_non_negative(total, f"joule_heating: {name}")
         if name == "power_per_length":
             total = total * thickness
         v = jnp.sqrt(total / g[0, 0])[None]
@@ -470,17 +544,19 @@ def joule_heating(
     )
 
 
-_EM = "electromagnetic_heating"
+#: The public name of `electromagnetic_heating`, in its messages.
+_EM_HEATING = "electromagnetic_heating"
 
 
 @jax.custom_vjp
 def _amplitude(power: jax.Array) -> jax.Array:
-    """``sqrt(power)``, whose cotangent is 0 where none arrives.
+    r""":math:`\sqrt{P}` of ``power``, whose cotangent is 0 where none arrives.
 
-    A cross term goes as ``sqrt(P_p) sqrt(P_q)``: at ``P_p = 0`` its
+    A cross term goes as :math:`\sqrt{P_p} \sqrt{P_q}`: at :math:`P_p = 0` its
     derivative is unbounded next to a driven partner (``inf``, as the heat
-    grows like ``sqrt(P_p)``), and exactly 0 when every partner is at 0 W,
-    where plain ``jnp.sqrt`` would give ``0 * inf = nan``.
+    grows like :math:`\sqrt{P_p}`), and exactly 0 when every partner is at
+    0 W, where plain ``jnp.sqrt`` would give :math:`0 \cdot \infty`, a
+    ``nan``.
     """
     return jnp.sqrt(power)
 
@@ -506,32 +582,28 @@ def _incident(value: Any, excited: tuple[str, ...], name: str) -> dict[str, Any]
         ValueError: A number with several excited ports, or a negative power.
         TypeError: A value that is not a real scalar.
     """
-    if isinstance(value, Mapping):
-        unknown = [k for k in value if k not in excited]
-        if unknown:
-            raise KeyError(
-                f"{_EM}: {name} names port {unknown[0]!r}, which was not excited; "
-                f"the excited ports are {', '.join(map(repr, excited))}. Solve "
-                "with gfem.Driven(excite=...) naming every port the drive feeds."
-            )
-        if not value:
-            raise ValueError(f"{_EM}: {name} is empty: give each driven port's power.")
-        ports = [p for p in excited if p in value]
-        powers = {p: _check_finite(value[p], f"{_EM} {name}[{p!r}]") for p in ports}
-    elif len(excited) != 1:
-        raise ValueError(
-            f"{_EM}: the result has {len(excited)} excited ports "
+    powers = _per_name(
+        value,
+        excited,
+        label=f"{_EM_HEATING} {name}",
+        unknown=lambda key: (
+            f"{_EM_HEATING}: {name} names port {key!r}, which was not excited; "
+            f"the excited ports are {', '.join(map(repr, excited))}. Solve "
+            "with gfem.Driven(excite=...) naming every port the drive feeds."
+        ),
+        several=(
+            f"{_EM_HEATING}: the result has {len(excited)} excited ports "
             f"({', '.join(map(repr, excited))}), so give {name} as a mapping from "
             f"port name to value, e.g. {name}={{{excited[0]!r}: ...}}; ports left "
             "out are at 0."
+        ),
+    )
+    if not powers:
+        raise ValueError(
+            f"{_EM_HEATING}: {name} is empty: give each driven port's power."
         )
-    else:
-        powers = {excited[0]: _check_finite(value, f"{_EM} {name}")}
     for port, power in powers.items():
-        if not is_traced(power) and float(power) < 0:
-            raise ValueError(
-                f"{_EM}: the {name} of port {port!r} must be >= 0, got {float(power)}."
-            )
+        _check_non_negative(power, f"{_EM_HEATING}: the {name} of port {port!r}")
     return powers
 
 
@@ -546,19 +618,20 @@ def _phases(value: Any, ports: tuple[str, ...]) -> dict[str, Any]:
         return {}
     if not isinstance(value, Mapping):
         raise TypeError(
-            f"{_EM}: incident_phase is relative, so one number cannot carry it: give "
-            f"a mapping from port name to phase in rad, e.g. incident_phase="
-            f"{{{ports[-1]!r}: math.pi}}, got {value!r}."
+            f"{_EM_HEATING}: incident_phase is relative, so one number cannot "
+            "carry it: give a mapping from port name to phase in rad, e.g. "
+            f"incident_phase={{{ports[-1]!r}: math.pi}}, got {value!r}."
         )
     unknown = [k for k in value if k not in ports]
     if unknown:
         raise KeyError(
-            f"{_EM}: incident_phase names port {unknown[0]!r}, which the drive does "
-            f"not feed; the driven ports are {', '.join(map(repr, ports))}. Give "
-            "its incident power too."
+            f"{_EM_HEATING}: incident_phase names port {unknown[0]!r}, which the "
+            "drive does not feed; the driven ports are "
+            f"{', '.join(map(repr, ports))}. Give its incident power too."
         )
     return {
-        p: _check_finite(v, f"{_EM} incident_phase[{p!r}]") for p, v in value.items()
+        p: _check_finite(v, f"{_EM_HEATING} incident_phase[{p!r}]")
+        for p, v in value.items()
     }
 
 
@@ -580,42 +653,44 @@ def _check_heated_result(result: Any, model: Any) -> None:
 
     if isinstance(result, DCConductionResult):
         raise TypeError(
-            f"{_EM} takes a driven result; a DC conduction result's Joule heat is "
-            "gfem.joule_heating(result, voltage=, current=, power=)."
+            f"{_EM_HEATING} takes a driven result; a DC conduction result's Joule "
+            "heat is gfem.joule_heating(result, voltage=, current=, power=)."
         )
     if isinstance(result, PortModeResult):
         raise NotImplementedError(
-            f"{_EM} does not heat from a port mode (heat per length along a "
-            "line): give the line's loss per length with "
+            f"{_EM_HEATING} does not heat from a port mode (heat per length along "
+            "a line): give the line's loss per length with "
             "gfem.HeatSource.uniform(..., power_per_length=)."
         )
     if isinstance(result, EigenmodeResult):
         raise TypeError(
-            f"{_EM}: an eigenmode has no drive, so its amplitude and its heat are "
-            "undefined; solve a driven problem at the mode's frequency."
+            f"{_EM_HEATING}: an eigenmode has no drive, so its amplitude and its "
+            "heat are undefined; solve a driven problem at the mode's frequency."
         )
     if not isinstance(result, DrivenResult):
         raise TypeError(
-            f"{_EM} takes the result of gfem.solve(model, gfem.Driven(..., "
+            f"{_EM_HEATING} takes the result of gfem.solve(model, gfem.Driven(..., "
             f"keep_fields=...)), got {type(result).__name__}."
         )
-    refuse_entry(getattr(model, "mesh", None), _EM)
+    refuse_entry(getattr(model, "mesh", None), _EM_HEATING)
     if result.polarization is not None:
-        raise entry_refusal(_EM)
+        raise entry_refusal(_EM_HEATING)
     if not isinstance(model, Model):
-        raise TypeError(f"{_EM} needs model= a gfem.Model, got {type(model).__name__}.")
+        raise TypeError(
+            f"{_EM_HEATING} needs model= a gfem.Model, got {type(model).__name__}."
+        )
 
 
 def _waves(
     result: Any, frequency: float, powers: dict[str, Any], phases: dict[str, Any]
 ) -> tuple[jax.Array, jax.Array]:
-    """The driven ports' incident waves at the port surfaces, and ``|a_p|^2``.
+    r"""The driven ports' incident waves at the port surfaces, and :math:`|a_p|^2`.
 
     The fields are fed at the port surfaces, the drive is given at the
-    reference planes: a plane at ``d`` inside the domain sees the incident
-    wave of the surface times ``exp(-gamma d)``, as S does
-    (`gfem.DrivenResult.with_offsets`). ``|a_p|^2`` is formed from the power,
-    linear in it, so a 0 W port takes no square root.
+    reference planes: a plane at :math:`d` inside the domain sees the
+    incident wave of the surface times :math:`e^{-\gamma d}`, as S does
+    (`gfem.DrivenResult.with_offsets`). :math:`|a_p|^2` is formed from the
+    power, linear in it, so a 0 W port takes no square root.
     """
     index = next(
         k
@@ -640,7 +715,11 @@ def _waves(
 def _coherent(
     re: jax.Array, im: jax.Array, a: jax.Array, squared: jax.Array
 ) -> jax.Array:
-    """``sum_pq conj(a_p) a_q D[p, q]`` per element, the diagonal as ``|a_p|^2``."""
+    r""":math:`\sum_{pq} \overline{a_p} a_q D[p, q]` per element.
+
+    The diagonal is read with :math:`|a_p|^2` (``squared``) in place of
+    :math:`\overline{a_p} a_p`.
+    """
     off = 1.0 - jnp.eye(len(a))
     cross = jnp.einsum("p,epq,q->e", jnp.conj(a), (re + 1j * im) * off, a)
     own = jnp.einsum("p,ep->e", squared, jnp.diagonal(re, axis1=1, axis2=2))
@@ -738,47 +817,39 @@ def electromagnetic_heating(
             `gfem.dissipated_power` raises under `jax.grad`.
     """
     from gfem._engine.heat import sheet_surfaces
-    from gfem._engine.power_flow import _check_support
-    from gfem._heat import loss_matrices
-    from gfem._pml import physical_regions
+    from gfem._heat import heated_regions, loss_matrices
     from gfem.measurements import check_heat_field
 
     _check_heated_result(result, model)
     f = static_float(
         frequency,
-        f"{_EM}: frequency",
+        f"{_EM_HEATING}: frequency",
         "The frequency is a fixed input of the driven solve: give a kept frequency.",
     )
-    given = {
-        name: value
-        for name, value in (
-            ("incident_power", incident_power),
-            ("incident_power_per_length", incident_power_per_length),
-        )
-        if value is not None
-    }
-    if len(given) != 1:
-        raise ValueError(
-            f"{_EM} takes exactly one drive: incident_power= (W) or "
-            "incident_power_per_length= (W/m, on a cross-section); got "
-            f"{', '.join(given) or 'none'}."
-        )
-    ((name, value),) = given.items()
+    name, value = _one_drive(
+        _EM_HEATING,
+        "incident_power= (W) or incident_power_per_length= (W/m, on a cross-section)",
+        {
+            "incident_power": incident_power,
+            "incident_power_per_length": incident_power_per_length,
+        },
+    )
     thickness = model.mesh.section_thickness
-    if thickness is not None and name == "incident_power":
-        raise _per_length_remedy(name, _EM, "incident_power_per_length")
-    if thickness is None and name == "incident_power_per_length":
-        raise ValueError(
-            f"{_EM}: incident_power_per_length= is for a cross-section mesh "
-            "(gfem.Mesh.from_gmsh_cross_section); this model's mesh is 3D: give "
-            "the total incident_power= in W instead."
-        )
+    _check_per_length(
+        name,
+        thickness,
+        _EM_HEATING,
+        extensive=("incident_power",),
+        per_length="incident_power_per_length",
+        total="incident_power",
+        mesh_3d="this model's mesh is 3D",
+    )
     powers = _incident(value, tuple(result.s.excited), name)
     ports = tuple(powers)
     phases = _phases(incident_phase, ports)
     fields = [result.e_field(f, p) for p in ports]
     for field in fields:
-        check_heat_field(field, model, _EM)
+        check_heat_field(field, model, _EM_HEATING)
     matrices = loss_matrices(fields, model)
 
     scale = thickness if thickness is not None else 1.0
@@ -792,14 +863,8 @@ def electromagnetic_heating(
     if not is_traced((tets, faces)):
         sheet_total = float(jnp.sum(faces))
         total = float(jnp.sum(tets)) + sheet_total
-    support = _check_support(fields[0], model)
-    regions = tuple(
-        r
-        for r in physical_regions(mesh.volumes, model.pml)
-        if support[mesh.elements(r)].any()
-    )
     return HeatSource(
-        regions=regions,
+        regions=tuple(heated_regions(fields[0], model)),
         _kind="electromagnetic",
         _density=density,
         _face_density=face_density,
@@ -929,7 +994,9 @@ class Trace:
         Differentiable with respect to the thermal conductivity, the mass
         density and the specific heat, the heat sources' amounts and the
         waveform's scales. A cross-section result records
-        `Trace.heat_out_per_length` instead.
+        `Trace.heat_out_per_length` instead. Thermal problems have no error
+        estimate, so a solve recording it inside an objective of
+        `gfem.refine_mesh` raises `gfem.MeshRefinementUnsupportedError`.
 
         Args:
             side: The volume region name(s) or predicate

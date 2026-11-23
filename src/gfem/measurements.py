@@ -975,9 +975,7 @@ def dissipated_power(field: Field, *, model: Model) -> dict[str, jax.Array]:
             field is one of an adaptive sweep (`gfem.ReducedFields`).
     """
     from gfem._engine.heat import sheet_surfaces
-    from gfem._engine.power_flow import _check_support
-    from gfem._heat import loss_matrices
-    from gfem._pml import physical_regions
+    from gfem._heat import heated_regions, loss_matrices
 
     check_heat_field(field, model, "dissipated_power")
 
@@ -986,13 +984,10 @@ def dissipated_power(field: Field, *, model: Model) -> dict[str, jax.Array]:
     matrices = loss_matrices([field], model)
     tets = matrices["tetrahedra_re"][:, 0, 0]
     faces = matrices["triangles_re"][:, 0, 0]
-    support = _check_support(field, model)
-    out = {}
-    for region in physical_regions(mesh.volumes, model.pml):
-        elements = mesh.elements(region)
-        elements = elements[support[elements]]
-        if len(elements):
-            out[region] = jnp.sum(tets[elements])
+    out = {
+        region: jnp.sum(tets[elements])
+        for region, elements in heated_regions(field, model).items()
+    }
     for name in sheets:
         out[name] = jnp.sum(faces[mesh.elements(name)])
     return out

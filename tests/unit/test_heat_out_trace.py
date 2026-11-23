@@ -202,6 +202,23 @@ def test_a_side_that_does_not_fit_raises_at_solve_time(section):
         gfem.solve(_model(section), problem, options=SCHEMES["tr_bdf2"])
 
 
+def test_a_heat_out_trace_in_a_refined_objective_raises(section, monkeypatch):
+    from gfem import _objective
+
+    monkeypatch.setattr(_objective, "recording", object)
+    problem = gfem.TransientThermal(
+        _source(section),
+        duration=1e-9,
+        steps=1,
+        traces={"out": gfem.Trace.heat_out_per_length("bottom")},
+    )
+    with pytest.raises(
+        gfem.MeshRefinementUnsupportedError, match="no error estimate"
+    ) as caught:
+        gfem.solve(_model(section), problem, options=SCHEMES["tr_bdf2"])
+    assert caught.value.feature == "Trace.heat_out_per_length"
+
+
 def test_a_side_of_the_wrong_type_raises_when_built():
     with pytest.raises(TypeError, match=r"Trace\.heat_out"):
         gfem.Trace.heat_out(3)

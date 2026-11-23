@@ -48,7 +48,6 @@ elements.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import ngsolve as ngs
@@ -59,6 +58,7 @@ from gfem._engine.coefficients import surface_p0
 from gfem._engine.domain import boundary_region
 from gfem._engine.fields import vertex_dofs
 from gfem._engine.sensitivity import FieldPair, Integrated, element_integrals
+from gfem._engine.sides import SideSpec, selection
 from gfem._linalg.base import free_mask
 
 if TYPE_CHECKING:
@@ -67,9 +67,6 @@ if TYPE_CHECKING:
     from gfem.model import Model
 
 __all__ = ["Balance", "Side", "balance", "capacity_pair", "side", "stored"]
-
-#: A side as `gfem.heat_flow` takes it: names, or a centroid predicate.
-SideSpec = tuple[str, ...] | Callable[[np.ndarray], np.ndarray]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -104,8 +101,8 @@ class Balance:
             + \mathrm{source}^T q + \mathrm{face\_source}^T q_s + Q_0
 
     for the temperature's coefficients :math:`T`, the power density
-    :math:`q` per tetrahedron (W/m^3) and :math:`q_s` per gfem triangle
-    (W/m^2). :math:`1` is the constant 1 (1 on every vertex DOF), which the
+    :math:`q` per tetrahedron (W/m³) and :math:`q_s` per gfem triangle
+    (W/m²). :math:`1` is the constant 1 (1 on every vertex DOF), which the
     conduction maps to zero and each convection to its ambient load, so the
     shifts change nothing in exact arithmetic; they keep the absolute
     temperature's few hundred kelvin out of the round-off. :math:`T_r` is
@@ -118,8 +115,8 @@ class Balance:
         convection: Per `gfem.Convection`, :math:`b_s` per DOF (W/K) and the
             ambient :math:`T_{\infty,s}` (K).
         ones: The constant 1 per DOF.
-        source: ``dQ/dq`` per tetrahedron, m^3.
-        face_source: ``dQ/dq_s`` per gfem triangle, m^2.
+        source: :math:`\partial Q / \partial q` per tetrahedron, m³.
+        face_source: :math:`\partial Q / \partial q_s` per gfem triangle, m².
         constant: :math:`Q_0`, the heat fluxes' part, W.
     """
 
@@ -133,7 +130,7 @@ class Balance:
 
     @property
     def temperature(self) -> np.ndarray:
-        """``dQ/dT`` per DOF, W/K."""
+        r""":math:`\partial Q / \partial T` per DOF, W/K."""
         out = self.conduction.copy()
         for b, _ in self.convection:
             out = out + b
@@ -160,11 +157,13 @@ class Balance:
     def conductivity(
         self, rule: ThermalRule, model: Model, t: np.ndarray
     ) -> Integrated:
-        """The explicit pair ``dQ/dk_e`` per tetrahedron, as the material pass reads it.
+        r"""The explicit pair :math:`\partial Q / \partial k_e` per tetrahedron.
 
-        ``Q`` reads ``k`` in ``s w^T K_E T`` (`Side.fixed`): ``dQ/dk_e = s
-        int_e grad(w) . grad(T)`` on the side's elements. The solve's own
-        pairs carry the rest through the temperature's cotangent.
+        As the material pass reads it. :math:`Q` reads :math:`k` in
+        :math:`s w^T K_E T` (`Side.fixed`):
+        :math:`\partial Q / \partial k_e = s \int_e \nabla w \cdot \nabla T`
+        on the side's elements. The solve's own pairs carry the rest through
+        the temperature's cotangent.
         """
         space, built = rule._space(model)  # noqa: SLF001
         pair = FieldPair(
@@ -246,7 +245,7 @@ def side(
 
 def _volume_side(layout: _Layout, which: SideSpec) -> Side:
     who, active, mesh = layout.who, layout.active, layout.mesh
-    selected = _selection(mesh, which, who) & active
+    selected = selection(mesh, which, subject=f"{who}'s side") & active
     if not selected.any():
         raise ValueError(
             f"{who}'s side selects no element of the thermal domain, so it has no "
@@ -337,29 +336,6 @@ def _check_shared(
                 )
 
 
-def _selection(mesh: Mesh, which: SideSpec, who: str) -> np.ndarray:
-    """The selected tetrahedra: named volume regions or a centroid predicate.
-
-    Raises:
-        ValueError: The predicate does not return one boolean per tetrahedron.
-    """
-    n = len(mesh.tetrahedra)
-    if callable(which):
-        centroids = np.asarray(mesh.nodes)[mesh.tetrahedra].mean(axis=1)
-        out = np.asarray(which(centroids))
-        if out.dtype != bool or out.shape != (n,):
-            raise ValueError(
-                f"{who}'s side predicate must return one boolean per tetrahedron "
-                f"({n},) from the (n_tetrahedra, 3) element centroids, got an "
-                f"array of {out.dtype} of shape {out.shape}."
-            )
-        return out
-    out = np.zeros(n, bool)
-    for name in which:
-        out[mesh.elements(name)] = True
-    return out
-
-
 def balance(rule: ThermalRule, model: Model, weights: Side) -> Balance:
     """The flow of ``weights`` on ``model``'s conductivity and boundary data."""
     space, built = rule._space(model)  # noqa: SLF001
@@ -427,9 +403,10 @@ def balance(rule: ThermalRule, model: Model, weights: Side) -> Balance:
 def stored(rule: ThermalRule, model: Model, weights: Side) -> np.ndarray:
     r"""The side's heat capacity per DOF, J/K: :math:`s\, C_E \psi`.
 
-    The heat stored in the side since t = 0 is ``stored @ (u_n - u_0)``, so
-    a transient heat out is the balance's flow less it (the capacity term
-    of the residual, on the same elements and with the same weight).
+    The heat stored in the side since :math:`t = 0` is ``stored`` times
+    :math:`u_n - u_0`, so a transient heat out is the balance's flow less it
+    (the capacity term of the residual, on the same elements and with the
+    same weight).
     """
     space, built = rule._space(model)  # noqa: SLF001
     form = ngs.BilinearForm(space, symmetric=True)
@@ -441,11 +418,13 @@ def stored(rule: ThermalRule, model: Model, weights: Side) -> np.ndarray:
 def capacity_pair(
     rule: ThermalRule, model: Model, weights: Side, du: np.ndarray
 ) -> Integrated:
-    """The explicit pair of ``-stored @ du`` per tetrahedron, for the material pass.
+    r"""The explicit pair of ``-stored`` times ``du`` per tetrahedron.
 
-    ``d/dc_e (-stored @ du) = -s int_e psi du`` for the capacity coefficient
-    ``c = rho c_p scale ** 2`` (`gfem._engine.thermal.TransientThermalRule.terms`)
-    on the side's elements.
+    For the material pass: with :math:`\Delta u` = ``du``, its derivative in
+    the capacity coefficient :math:`c = \rho c_p s^2`
+    (`gfem._engine.thermal.TransientThermalRule.terms`) is
+    :math:`-s \int_e \psi \, \Delta u` on each of the side's elements
+    :math:`e`.
     """
     space, built = rule._space(model)  # noqa: SLF001
     pair = FieldPair(

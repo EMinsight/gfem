@@ -455,8 +455,11 @@ to gfem.
   same field through the region's surface, for a loss tangent, a
   conductivity, a principal-axis tensor, a complex material field, a
   permittivity law (a gold bend, among others) and a blend. On a closed
-  device whose ports have real references, the losses of every region and
-  metal sheet add up to $1 - \sum_j |S_{j1}|^2$; a perfectly matched layer,
+  device whose ports have real references and sit on uniform stretches of
+  line, solved at element order 3, the losses of every region and metal
+  sheet add up to $1 - \sum_j |S_{j1}|^2$ to $10^{-9}$ (at order 2, S read
+  on a lumped port's faces is about $10^{-6}$ off, and a port on a
+  nonuniform stretch about $10^{-5}$); a perfectly matched layer,
   an absorbing face and a lumped port's load dissipate exactly nothing. The
   heat of a drive is the incident power times that loss, and two ports fed
   together heat as their superposed field. Against transmission-line closed
