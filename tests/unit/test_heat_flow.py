@@ -418,3 +418,36 @@ def test_the_sheet_heat_gradient_matches_finite_differences(brick):
     grad = float(jax.grad(flow)(1.0))
     fd = (float(flow(1.0 + 1e-3)) - float(flow(1.0 - 1e-3))) / 2e-3
     assert grad == pytest.approx(fd, rel=1e-6)
+
+
+INTERFACE_HEAT = 4e7  # W/m^2 on the 4 um x 1 um interface between sub and the rest
+
+
+@pytest.mark.parametrize("how", ["sheet", "flux"])
+def test_heat_on_a_cut_belongs_to_neither_side(brick, how):
+    # a face belongs to a side when every element beside it is in the side,
+    # so heat put on the interface itself leaves through both sides at once:
+    # flow(V) + flow(complement) = -P on the cut
+    model = _model(brick)
+    heat = [_heat(brick)]
+    if how == "sheet":
+        face = np.zeros(len(brick.triangles))
+        face[brick.elements("interface")] = INTERFACE_HEAT
+        heat.append(
+            gfem.HeatSource(
+                regions=(),
+                _kind="electromagnetic",
+                _density=jnp.zeros(len(brick.tetrahedra)),
+                _face_density=jnp.asarray(face),
+            )
+        )
+    else:
+        flux = gfem.HeatFlux("interface", flux=INTERFACE_HEAT)
+        model = model.replace(boundaries=[*model.boundaries, flux])
+    result = gfem.solve(model, gfem.SteadyThermal(tuple(heat)), options=DIRECT)
+    on_cut = INTERFACE_HEAT * 4e-6 * LENGTH * 1e-6
+    out = float(gfem.heat_flow(result, ("clad", "heater"), model=model))
+    back = float(gfem.heat_flow(result, ("sub",), model=model))
+    # 1.4e-14 relative to the cut heat measured
+    assert out + back == pytest.approx(-on_cut, rel=1e-12)
+    assert abs(out) > 1e-2 * on_cut

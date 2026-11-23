@@ -12,7 +12,10 @@ One cell per problem type x input kind x linear solver x frequency sweep:
   eigenfrequency (frequency and loss of a simple mode); steady and
   transient heat conduction (TR-BDF2 and theta, on a kept trajectory and
   from checkpoints) and DC conduction (its conductance, and its
-  dissipation through a Joule heat source);
+  dissipation through a Joule heat source); the dissipated power per
+  region and sheet of a driven field, the steady rise its heat drives
+  (`gfem.electromagnetic_heating`), and the heat through a sink and a cut,
+  steady (`gfem.heat_flow`) and transient (`gfem.Trace.heat_out`);
 - inputs: per-element permittivity ``eps_r`` and conductivity, the same per
   principal value of a field with axes (``eps_r_axes``,
   ``conductivity_axes``: biaxial values on the `TILTED` axes, so every
@@ -22,7 +25,8 @@ One cell per problem type x input kind x linear solver x frequency sweep:
   `gfem.SheetField`,
   and the mesh node coordinates (through `gfem.shape.boundary_morph`); the
   thermal conductivity, mass density and specific heat, and a heat
-  source's amount and a waveform's scales (input ``heat``);
+  source's amount and a waveform's scales (input ``heat``); a two-port
+  drive's incident powers and phase (input ``drive``);
 - solvers: ``direct`` and ``bddc_gmres``; sweeps: uniform and adaptive (with
   frozen samples; the objective reads S at the samples, where the reduced
   model reproduces the full solve of the perturbed design too, so the
@@ -57,7 +61,11 @@ temperature), in the heater's per-element conductivity, every element's
 thermal conductivity, the core's per-element thermo-optic coefficient and
 the current at once, with unequal boundary temperatures (so the
 source-free temperature enters), on both solvers; and its transient twin (a
-phase trace and a mean-temperature trace from a uniform start).
+phase trace and a mean-temperature trace from a uniform start). Its
+electromagnetic twin (``em_chain``) differentiates driven -> electromagnetic
+heating -> steady thermal -> region means in a per-element loss tangent, a
+sheet's fill and resistance, every element's thermal conductivity and the
+two-port drive at once.
 
 Then the consistency checks (JAX transformations and evicted cache entries
 per input kind, reciprocity against an explicit adjoint, adaptive against
@@ -549,6 +557,52 @@ def _thermal_cells() -> list[Cell]:
     return cells
 
 
+def _heat_cells() -> list[Cell]:
+    """Electromagnetic heat and heat flow.
+
+    The dissipated power per region and sheet, and the steady rise an
+    electromagnetic heat source drives, in the electromagnetic inputs (a
+    complex permittivity, the loss tangent per principal value, the
+    conductivity, a law's parameters, the lumped values, a `Conductor` and an
+    `Impedance` sheet's fill), the two-port drive's incident powers and phase
+    and the thermal conductivity; the heat through a sink and a cut, steady
+    and transient (each scheme and layout, as the transient cells), in what
+    the thermal solve reads. Every cell on the direct solver: the heat kernel
+    reads only the field, so one row (the dissipated power in the
+    conductivity) repeats on BDDC + GMRES.
+    """
+    cells = [
+        Cell("dissipated_power", name, "direct")
+        for name in ("eps_r", "conductivity", "tan_delta_axes", "law", "lumped")
+    ]
+    cells.append(Cell("dissipated_power", "conductivity", "bddc_gmres"))
+    cells += [
+        Cell("electromagnetic_heating", name, "direct")
+        for name in ("eps_r", "conductivity", "lumped", "drive", "thermal_conductivity")
+    ]
+    for problem in ("dissipated_power", "electromagnetic_heating"):
+        cells += [
+            Cell(problem, "fill", "direct", variant=s)
+            for s in ("conductor", "impedance")
+        ]
+    cells += [
+        Cell("steady_heat_flow", name, "direct")
+        for name in ("thermal_conductivity", "heat")
+    ]
+    for scheme in ("tr_bdf2", "theta"):
+        for layout in ("full", "checkpoints"):
+            variant = f"{scheme}-{layout}"
+            cells += [
+                Cell("transient_heat_out", name, "direct", variant=variant)
+                for name in ("thermal_conductivity", "mass_density", "specific_heat")
+            ]
+            cells += [
+                Cell("transient_heat_out", "heat", "direct", variant=f"{variant}-{w}")
+                for w in ("amount", "waveform")
+            ]
+    return cells
+
+
 CELLS = [
     *_cells(),
     *_driven_periodic_cells(),
@@ -560,6 +614,7 @@ CELLS = [
     *_blend_cells(),
     *_electrostatic_law_cells(),
     *_thermal_cells(),
+    *_heat_cells(),
 ]
 #: The PETSc stack's cells, one per path its solves take: electrostatic,
 #: driven on both sweeps, the adjoint through a wave port operator's
@@ -814,6 +869,8 @@ STEPS = {
     "mass_density": 2.0,
     "specific_heat": 1.0,
     "heat": 1e-2,
+    # a two-port drive's incident powers (W) and phase (rad), O(1)
+    "drive": 1e-2,
 }
 #: Ranges a cell draws its own ``mu_r`` or ``tan_delta`` from (the other
 #: cells' designs carry neither).
@@ -2337,8 +2394,11 @@ TRANSIENT_DURATION, TRANSIENT_STEPS = 2e-6, 9
 TRANSIENT_SWITCH = TRANSIENT_DURATION * 5 / TRANSIENT_STEPS
 
 
-def _thermal_model(mesh, values):
-    """The slab with per-element thermal properties (missing: their midrange)."""
+def _thermal_model(mesh, values, coefficient=1e4):
+    """The slab with per-element thermal properties (missing: their midrange).
+
+    ``coefficient``: the top's convection, W/(m^2 K).
+    """
     fields = {}
     for region in ("clad", "heater"):
         tets = mesh.elements(region)
@@ -2357,7 +2417,7 @@ def _thermal_model(mesh, values):
             gfem.FixedTemperature("bottom", temperature=300.0),
             # another ambient: the source-free temperature is not uniform,
             # so its own adjoint pair enters
-            gfem.Convection("top", coefficient=1e4, ambient=290.0),
+            gfem.Convection("top", coefficient=coefficient, ambient=290.0),
         ],
     )
 
@@ -2478,6 +2538,284 @@ def _dc_conduction(d: Designs, cell: Cell, options, seed: int) -> Case:
     return Case(objective, x, rng, step=STEPS["heat"], taylor=1e-1)
 
 
+# --- electromagnetic heat and heat flow ---------------------------------------------
+
+#: The heated models' thermal conductivity (W/(m K)) where no cell draws one.
+HEAT_K = 1.4
+#: Weights of the dissipated power per region and sheet (all distinct).
+LOSS_WEIGHTS = {"sub": 1.0, "cover": 0.6, "sheet": 1.3, "core": 1.1}
+#: The two-port drive of the ``drive`` cell: p1's and p2's incident powers (W)
+#: and p2's phase (rad). The other heating cells drive p1 with 1 W.
+DRIVE = (1.0, 0.5, 0.7)
+#: The heating cells' frequency: the line's second, the sheet line's first.
+HEAT_FREQUENCY = {"line": LINE_FREQUENCIES[1], "sheet": SHEET_FREQUENCIES[0]}
+
+
+def _with_thermal(model: gfem.Model, sink: str, k=None) -> gfem.Model:
+    """``model`` conducting heat to a fixed temperature on ``sink``.
+
+    ``k``: per element in mesh order (every region a `gfem.MaterialField`),
+    or None for `HEAT_K` everywhere.
+    """
+    materials = {}
+    for region, material in model.materials.items():
+        if k is None:
+            materials[region] = dataclasses.replace(
+                material,
+                thermal_conductivity=HEAT_K
+                if isinstance(material, gfem.Material)
+                else jnp.full(len(model.mesh.elements(region)), HEAT_K),
+            )
+        else:
+            values = k[model.mesh.elements(region)]
+            materials[region] = dataclasses.replace(
+                material, thermal_conductivity=values
+            )
+    sink_boundary = gfem.FixedTemperature(sink, temperature=300.0)
+    return model.replace(
+        materials=materials, boundaries=[*model.boundaries, sink_boundary]
+    )
+
+
+def _loss(model: gfem.Model, result, frequencies) -> jax.Array:
+    """The weighted dissipated power of p1's fields at ``frequencies``."""
+    total = 0.0
+    for i, f in enumerate(frequencies):
+        lost = gfem.dissipated_power(result.e_field(f, "p1"), model=model)
+        total = total + (1 + 0.3 * i) * sum(
+            LOSS_WEIGHTS.get(name, 0.9) * value for name, value in lost.items()
+        )
+    return total
+
+
+def _heated_rise(model: gfem.Model, result, frequency, drive=None) -> jax.Array:
+    """The mean rise (K / 100) of every region under the heat of ``drive``."""
+    if drive is None:
+        powers, phase = {"p1": 1.0}, None
+    else:
+        powers, phase = {"p1": drive[0], "p2": drive[1]}, {"p2": drive[2]}
+    heat = gfem.electromagnetic_heating(
+        result,
+        model=model,
+        frequency=frequency,
+        incident_power=powers,
+        incident_phase=phase,
+    )
+    steady = gfem.solve(model, gfem.SteadyThermal(heat), options=HEAT_THERMAL)
+    rises = [gfem.region_mean(steady.rise, r) for r in model.materials]
+    return sum((1 + 0.4 * i) * r for i, r in enumerate(rises)) / 100.0
+
+
+#: The thermal solve of the heating cells: direct, whatever the driven solver.
+HEAT_THERMAL = gfem.SolverOptions(order=2, linear_solver="direct")
+
+
+def _heat_value(
+    cell: Cell, model: gfem.Model, options, frequencies, kind, *, drive=None
+):
+    """The cell's heat objective of a model: its loss, or its heated rise."""
+    if cell.problem == "dissipated_power":
+        problem = gfem.Driven(frequency=frequencies, excite="p1", keep_fields=True)
+        return _loss(model, gfem.solve(model, problem, options=options), frequencies)
+    sink = "bottom" if kind == "line" else "plate1"
+    excite = None if drive is not None else "p1"
+    f = HEAT_FREQUENCY[kind]
+    model = (
+        model if cell.input == "thermal_conductivity" else _with_thermal(model, sink)
+    )
+    problem = gfem.Driven(frequency=f, excite=excite, keep_fields=True)
+    result = gfem.solve(model, problem, options=options)
+    return _heated_rise(model, result, f, drive)
+
+
+def _heat_material(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The two-layer line's loss (or heated rise) in one per-element property.
+
+    ``tan_delta_axes``: per principal value on the tilted axes (the line
+    with first-order absorbing sides). ``eps_r``: complex, so the third
+    direction is along i. ``drive`` and ``thermal_conductivity``: the design
+    is fixed, the input is the drive or every element's k.
+    """
+    name = _property(cell.input)
+    if cell.input.endswith(AXES):
+        line, axes = d.axes_line, TILTED
+        values, rng = line_axes_design(line, seed)
+    else:
+        line, axes = d.line, None
+        values, rng = line_design(line, seed)
+    if name in RANGES:
+        drawn = rng.uniform(*RANGES[name], values["eps_r"].shape)
+        values = {**values, name: jnp.asarray(drawn)}
+
+    if cell.input == "drive":
+
+        def objective(p):
+            model = with_fields(line, values, axes)
+            return _heat_value(cell, model, options, None, "line", drive=p)
+
+        return Case(
+            objective, jnp.asarray(DRIVE), rng, step=STEPS["drive"], taylor=1e-1
+        )
+    if cell.input == "thermal_conductivity":
+        n = len(line.mesh.tetrahedra)
+
+        def objective(k):
+            model = _with_thermal(with_fields(line, values, axes), "bottom", k)
+            return _heat_value(cell, model, options, None, "line")
+
+        k = jnp.asarray(rng.uniform(*THERMAL_RANGES["thermal_conductivity"], n))
+        return Case(objective, k, rng, step=STEPS["thermal_conductivity"], taylor=1e-1)
+
+    def objective(p):
+        model = with_fields(line, {**values, name: p}, axes)
+        return _heat_value(cell, model, options, LINE_FREQUENCIES, "line")
+
+    taylor = {"eps_r": 1e-1, "tan_delta": 3e-2, "conductivity": 1.0}
+    p = values[name]
+    return Case(
+        objective,
+        p,
+        rng,
+        step=STEPS[name],
+        taylor=taylor[name],
+        imaginary=bool(jnp.iscomplexobj(p)),
+    )
+
+
+def _heat_fill(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The glued line's sheet loss (or heated rise) in the sheet's per-face fill."""
+    mesh = d.sheet_mesh
+
+    def objective(fill):
+        model = sheet_line(mesh, SHEETS[cell.variant](gfem.SheetField(fill=fill)))
+        return _heat_value(cell, model, options, SHEET_FREQUENCIES, "sheet")
+
+    fill, rng = sheet_fill(mesh, seed)
+    return Case(objective, fill, rng, step=5e-3, taylor=5e-2)
+
+
+def _heat_lumped(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The glued line's loss (or heated rise) in its lumped values.
+
+    Its port's L and C, its sheet's R, L and C, as `_driven_lumped`.
+    """
+    mesh = d.sheet_mesh
+
+    def objective(t):
+        model = lumped_line(mesh, _lumped_values(t))
+        return _heat_value(cell, model, options, SHEET_FREQUENCIES, "sheet")
+
+    return Case(
+        objective,
+        jnp.zeros(len(LUMPED)),
+        np.random.default_rng(seed),
+        step=1e-3,
+        taylor=1e-1,
+    )
+
+
+def _heat_law(d: Designs, _cell: Cell, options, seed: int) -> Case:
+    """The strip line's core loss in its law's parameters (``poles``)."""
+    mesh, law = d.dispersive, LAWS["poles"]
+    frequencies = LAW_FREQUENCIES["poles"]
+    problem = gfem.Driven(frequency=frequencies, excite="p1", keep_fields=True)
+
+    def objective(t):
+        model = dispersive_line(mesh, scaled_law(law, t))
+        return _loss(model, gfem.solve(model, problem, options=options), frequencies)
+
+    return _law_case(objective, law, seed)
+
+
+#: The heat-flow cells' top convection, W/(m^2 K): the top takes about half
+#: the heat, so the flows move with k by tens of %. At the slab cells' 1e4 it
+#: takes 1 %, and a flow's derivative sinks to 1e-4 of the flow, where the
+#: fixed sink's reaction carries the direct solve's 3e-12 (a difference of
+#: 1e-2 then reads it at 1e-5 relative).
+FLOW_CONVECTION = 1e6
+
+
+def _heat_flow_value(result, model, kind):
+    """The heat through the slab's bottom and through a cut above the heater's foot."""
+    cut = lambda c: c[:, 1] > 1.7e-6  # noqa: E731 - through the cladding
+    if kind == "steady":
+        return gfem.heat_flow_per_length(
+            result, "bottom", model=model
+        ) + 0.7 * gfem.heat_flow_per_length(result, cut, model=model)
+    return {
+        "sink": gfem.Trace.heat_out_per_length("bottom"),
+        "cut": gfem.Trace.heat_out_per_length(cut),
+    }
+
+
+def _steady_heat_flow(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The heat through the slab's sink and a cut, in the per-element k or amount."""
+    mesh = d.thermal_slab
+    rng = np.random.default_rng(19 + seed)
+
+    def objective(p):
+        values, amount = {}, 1.0
+        if cell.input == "heat":
+            amount = p[0]
+        else:
+            values = {cell.input: p}
+        heat = gfem.HeatSource.uniform("heater", power_per_length=amount)
+        model = _thermal_model(mesh, values, FLOW_CONVECTION)
+        result = gfem.solve(model, gfem.SteadyThermal(heat), options=options)
+        value = _heat_flow_value(result, model, "steady")
+        # curved in the amount too (the solve is linear in it)
+        return value + 1e-2 * value**2
+
+    if cell.input == "heat":
+        return Case(objective, jnp.asarray([1.0]), rng, step=STEPS["heat"], taylor=1e-1)
+    k = jnp.asarray(
+        rng.uniform(*THERMAL_RANGES["thermal_conductivity"], len(mesh.tetrahedra))
+    )
+    return Case(objective, k, rng, step=STEPS["thermal_conductivity"], taylor=1e-1)
+
+
+def _transient_heat_out(d: Designs, cell: Cell, options, seed: int) -> Case:
+    """The heat out of the slab's sink and a cut, as `_transient_thermal`'s inputs."""
+    mesh = d.thermal_slab
+    options = _thermal_options(cell, options)
+    rng = np.random.default_rng(29 + seed)
+    weights = np.linspace(1.0, 2.0, TRANSIENT_STEPS + 1)
+    what = cell.variant.split("-")[2] if cell.input == "heat" else None
+
+    def objective(p):
+        values, amount, scales = {}, 1.0, (1.0, 0.3)
+        if what == "amount":
+            amount = p[0]
+        elif what == "waveform":
+            scales = (p[0], p[1])
+        else:
+            values = {cell.input: p}
+        problem = gfem.TransientThermal(
+            gfem.HeatSource.uniform("heater", power_per_length=amount),
+            duration=TRANSIENT_DURATION,
+            steps=TRANSIENT_STEPS,
+            waveform=[(0.0, scales[0]), (TRANSIENT_SWITCH, scales[1])],
+            initial_temperature=295.0,
+            traces=_heat_flow_value(None, None, "transient"),
+        )
+        model = _thermal_model(mesh, values, FLOW_CONVECTION)
+        result = gfem.solve(model, problem, options=options)
+        # J/m over about a diffusion time of 1 W/m: O(1e-6)
+        value = 1e6 * (
+            jnp.sum(weights * result.traces["sink"]) + jnp.sum(result.traces["cut"])
+        )
+        return value + 1e-2 * value**2
+
+    if what == "amount":
+        p = jnp.asarray([1.0])
+    elif what == "waveform":
+        p = jnp.asarray([1.0, 0.3])
+    else:
+        p = jnp.asarray(rng.uniform(*THERMAL_RANGES[cell.input], len(mesh.tetrahedra)))
+    step = STEPS[cell.input]
+    return Case(objective, p, rng, step=step, taylor=10 * step)
+
+
 BUILDERS = {
     ("steady_thermal", "thermal_conductivity"): _steady_thermal,
     **{
@@ -2485,6 +2823,25 @@ BUILDERS = {
         for name in (*THERMAL_RANGES, "heat")
     },
     ("dc_conduction", "conductivity"): _dc_conduction,
+    **{
+        ("dissipated_power", name): _heat_material
+        for name in ("eps_r", "conductivity", "tan_delta_axes")
+    },
+    ("dissipated_power", "fill"): _heat_fill,
+    ("dissipated_power", "lumped"): _heat_lumped,
+    ("dissipated_power", "law"): _heat_law,
+    **{
+        ("electromagnetic_heating", name): _heat_material
+        for name in ("eps_r", "conductivity", "drive", "thermal_conductivity")
+    },
+    ("electromagnetic_heating", "fill"): _heat_fill,
+    ("electromagnetic_heating", "lumped"): _heat_lumped,
+    ("steady_heat_flow", "thermal_conductivity"): _steady_heat_flow,
+    ("steady_heat_flow", "heat"): _steady_heat_flow,
+    **{
+        ("transient_heat_out", name): _transient_heat_out
+        for name in (*THERMAL_RANGES, "heat")
+    },
     ("electrostatic", "eps_r"): _electrostatic_eps,
     ("electrostatic", "eps_r_axes"): _electrostatic_eps,
     ("electrostatic", "nodes"): _electrostatic_nodes,
@@ -3219,4 +3576,94 @@ def test_gradient_matrix_chain_matches_central_differences(designs, solver, vari
     # worst of 3 directions on ostau: steady 5e-9, transient 7e-8
     assert_gradient_matches(
         objective, p, unit_directions(rng, p.shape, 3), step=CHAIN_STEP, grad=grad
+    )
+
+
+# --- the electromagnetic chain: driven -> electromagnetic heat -> thermal ------------
+
+#: The glued line's heat chain, on the direct solver: the lower half's
+#: per-element loss tangent (0.05 t), the sheet's per-face fill and its
+#: resistance (2 kohm r), every element's thermal conductivity (HEAT_K k)
+#: and the two-port drive (p1's and p2's incident powers, p2's phase).
+EM_CHAIN_F = SHEET_FREQUENCIES[0]
+EM_CHAIN_STEP = 1e-2
+
+
+def _em_chain(d: Designs):
+    """The EM chain's objective of the normalised inputs, and a random design."""
+    mesh = d.sheet_mesh
+    options = tight("direct")
+    lower = mesh.elements("lower")
+    sizes = [len(lower), len(mesh.elements("sheet")), 1, len(mesh.tetrahedra), 3]
+    cuts = np.cumsum(sizes)[:-1]
+
+    def model(t, fill, r, k):
+        def material(region, eps, **extra):
+            tets = mesh.elements(region)
+            return gfem.MaterialField(
+                eps_r=jnp.full(len(tets), eps),
+                thermal_conductivity=HEAT_K * k[tets],
+                **extra,
+            )
+
+        sheet = gfem.Impedance(
+            "sheet",
+            resistance=2e3 * r[0],
+            inductance=2e-8,
+            fill=gfem.SheetField(fill=fill),
+        )
+        return gfem.Model(
+            mesh,
+            materials={
+                "lower": material("lower", 3.0, tan_delta=0.05 * t),
+                "upper": material("upper", 1.0),
+            },
+            boundaries=[
+                gfem.PEC("plate1"),
+                gfem.PEC("plate2"),
+                sheet,
+                gfem.FixedTemperature("plate1", temperature=300.0),
+            ],
+            ports=[
+                gfem.LumpedPort("p1", "port1", "+y", impedance=200.0),
+                gfem.LumpedPort("p2", "port2", "+y", impedance=200.0),
+            ],
+        )
+
+    def objective(p):
+        t, fill, r, k, drive = jnp.split(p, cuts)
+        m = model(t, fill, r, k)
+        driven = gfem.solve(
+            m, gfem.Driven(frequency=EM_CHAIN_F, keep_fields=True), options=options
+        )
+        return _heated_rise(m, driven, EM_CHAIN_F, drive)
+
+    rng = np.random.default_rng(31)
+    p = jnp.asarray(
+        np.concatenate(
+            [
+                rng.uniform(0.6, 1.4, sizes[0]),
+                rng.uniform(0.2, 0.8, sizes[1]),
+                [1.0],
+                rng.uniform(0.8, 1.2, sizes[3]),
+                DRIVE,
+            ]
+        )
+    )
+    return objective, p, rng, cuts
+
+
+def test_gradient_matrix_em_chain_matches_central_differences(designs):
+    objective, p, rng, cuts = _em_chain(designs)
+    grad = np.asarray(jax.grad(objective)(p))
+    # every input kind moves it: the loss tangent and the fill and resistance
+    # through the heat, k through the rise, the drive through the heat
+    t, fill, r, k, drive = np.split(grad, cuts)
+    assert np.all(t != 0.0)
+    assert np.all(fill != 0.0)
+    assert r[0] != 0.0
+    assert np.all(k != 0.0)
+    assert np.all(drive != 0.0)
+    assert_gradient_matches(
+        objective, p, unit_directions(rng, p.shape, 3), step=EM_CHAIN_STEP, grad=grad
     )

@@ -65,22 +65,26 @@ def _top(mesh):
 H = 2e5  # W/(m^2 K)
 
 
+SINK = (K / (L * UM)) / (H + K / (L * UM))  # the bottom's share under convection
+
+
 @pytest.mark.parametrize(
-    ("top", "rise"),
+    ("top", "rise", "sink"),
     [
         # insulated: all the heat goes in, through the slab to the sink
-        (None, Q_S * L * UM / K),
+        (None, Q_S * L * UM / K, 1.0),
         # convection: the top keeps the share h / (h + k / L) of it
         (
             gfem.Convection("top", coefficient=H, ambient=300.0),
             Q_S / (H + K / (L * UM)),
+            SINK,
         ),
         # fixed: the sink on the face takes it all
-        (gfem.FixedTemperature("top", temperature=300.0), 0.0),
+        (gfem.FixedTemperature("top", temperature=300.0), 0.0, 0.0),
     ],
     ids=["insulated", "convection", "fixed"],
 )
-def test_face_heat_on_a_slab_top_gives_the_closed_form_rise(slab, top, rise):
+def test_face_heat_on_a_slab_top_gives_the_closed_form_rise(slab, top, rise, sink):
     model = _model(slab, top)
     result = gfem.solve(
         model, gfem.SteadyThermal(sheet(slab, "top", Q_S)), options=DIRECT
@@ -88,7 +92,16 @@ def test_face_heat_on_a_slab_top_gives_the_closed_form_rise(slab, top, rise):
     # the rise is linear in depth: exact at order 2, round-off only
     np.testing.assert_allclose(result.rise.at(_top(slab)), rise, rtol=1e-9, atol=1e-12)
     # the power counts the face heat: q_s times the 2 um top, per length
-    np.testing.assert_allclose(result.power_per_length, Q_S * 2 * UM, rtol=1e-12)
+    power = Q_S * 2 * UM
+    np.testing.assert_allclose(result.power_per_length, power, rtol=1e-12)
+    # and the heat flows split it as the face's boundary says (2e-14 measured)
+    flows = [
+        float(gfem.heat_flow_per_length(result, s, model=model))
+        for s in ("bottom", "top")
+    ]
+    np.testing.assert_allclose(
+        flows, [sink * power, (1 - sink) * power], rtol=1e-12, atol=1e-12 * power
+    )
 
 
 def _face_source(mesh, face):

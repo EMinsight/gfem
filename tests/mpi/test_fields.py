@@ -403,8 +403,43 @@ def _refused_methods(directory):
         "error_estimate": _feature(
             lambda: gfem.error_estimate(result, gfem.FieldEstimator(), model=model)
         ),
+        "heat_flow": _feature(
+            lambda: gfem.heat_flow(_spread(model, field), "bottom", model=model)
+        ),
     }
     return seen, _world().allreduce(_world().rank)
+
+
+def _spread(model, field):
+    """A steady thermal result of ``model`` whose temperature is a rank's piece.
+
+    No thermal solve runs across ranks: each rank solves its own copy, and
+    its temperature takes the electric field's communicator, so the heat
+    flow meets a result spread over the ranks as a future one would be.
+    """
+    from mpi4py import MPI
+
+    heated = model.replace(
+        materials={
+            r: dataclasses.replace(
+                m, thermal_conductivity=np.full(len(model.mesh.elements(r)), 1.4)
+            )
+            for r, m in model.materials.items()
+        },
+        boundaries=[
+            *model.boundaries,
+            gfem.FixedTemperature("bottom", temperature=300.0),
+        ],
+    )
+    heat = gfem.HeatSource.uniform("cover", power=1e-3)
+    result = gfem.solve(
+        heated,
+        gfem.SteadyThermal(heat),
+        options=gfem.SolverOptions(order=1, linear_solver="direct", threads=1),
+        comm=MPI.COMM_SELF,
+    )
+    piece = dataclasses.replace(result.temperature, _comm=field._comm)
+    return dataclasses.replace(result, temperature=piece)
 
 
 def test_export_power_flow_and_error_estimate_raise_their_keys_on_every_rank(tmp_path):
@@ -418,6 +453,8 @@ def test_export_power_flow_and_error_estimate_raise_their_keys_on_every_rank(tmp
         "dissipated_power": "dissipated_power",
         "electromagnetic_heating": "electromagnetic_heating",
         "error_estimate": "error_estimate",
+        # no distributed thermal result exists: the thermal solve's key
+        "heat_flow": "thermal",
     }
     assert total == 0 + 1 + 2
 

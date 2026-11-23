@@ -1,6 +1,7 @@
 """Thermal solves against convergent closed forms.
 
-Steady: a strip heater on a slab. Transient: gsim's 1D slab (below).
+Steady: a strip heater on a slab, and the heat its sink takes. Transient:
+gsim's 1D slab (below), its top's trace and the heat out of its sink.
 
 A strip heater on top of a slab of depth H, with a heat sink at the bottom
 and an insulated top, heats the top surface as (per unit length, strip of
@@ -42,7 +43,8 @@ def _exact(x: float) -> float:
 
 
 @pytest.fixture(scope="module")
-def strip(tmp_path_factory):
+def strip_solved(tmp_path_factory):
+    """The strip heater's model and steady result."""
     path = tmp_path_factory.mktemp("strip") / "strip.msh"
     rects = [
         (-L, -H, -W / 2, 0.0, "oxide", None),
@@ -63,8 +65,13 @@ def strip(tmp_path_factory):
         ],
     )
     options = gfem.SolverOptions(order=2, linear_solver="direct")
-    result = gfem.solve(model, gfem.SteadyThermal(), options=options)
-    z = mesh.section_thickness / 2
+    return model, gfem.solve(model, gfem.SteadyThermal(), options=options)
+
+
+@pytest.fixture(scope="module")
+def strip(strip_solved):
+    model, result = strip_solved
+    z = model.mesh.section_thickness / 2
     points = np.stack([XS * UM, np.zeros_like(XS), np.full_like(XS, z)], axis=1)
     return np.asarray(result.temperature.at(points)) - 300.0
 
@@ -81,6 +88,15 @@ def test_the_far_field_decay_length_is_2h_over_pi(strip):
     far = XS >= 8.0
     slope = np.polyfit(XS[far], np.log(strip[far]), 1)[0]
     assert -1 / slope == pytest.approx(2 * H / math.pi, rel=2e-2)
+
+
+def test_v_f1_the_sink_takes_the_strip_s_heat(strip_solved):
+    # an identity of the discrete balance beside the profile checks; it holds
+    # to the direct solve's residual, which this wide, graded section leaves
+    # at 7.3e-11 (gate 1e-10)
+    model, result = strip_solved
+    sink = float(gfem.heat_flow_per_length(result, "bottom", model=model))
+    assert sink == pytest.approx(FLUX * W * UM, rel=1e-10)
 
 
 # --- transient: gsim's 1D slab -------------------------------------------------
@@ -203,3 +219,73 @@ def test_the_final_temperature_is_the_steady_one(slab):
     final = float(result.rise(result.kept_times[-1]).at(top))
     # gate 5e-3 (4.7e-5 measured)
     assert final == pytest.approx(float(steady.rise.at(top)), rel=5e-3)
+
+
+# --- the heat out of the slab -------------------------------------------------
+#
+# The sink's heat out since t = 0 is the source's energy less the stored heat:
+# Q(t) = SQ A SL t - E(t), A the slab's width per length, with
+# E(t) = rho c_p A SL [SQ SL^2 / (3 SK) - sum_n b_n exp(-a l_n^2 t) / (l_n SL)]
+# (the mean over the depth of the rise above).
+
+SLAB_WIDTH = 1.0 * UM  # the section's width, so A per length
+
+
+def _analytic_heat_out(t: np.ndarray, terms: int = 400) -> np.ndarray:
+    a = SK / (RHO * CP)
+    mean = np.full(np.shape(t), SQ * SL**2 / (3 * SK))
+    for n in range(terms):
+        ln = (2 * n + 1) * math.pi / (2 * SL)
+        bn = 2 * SQ / (SL * SK * ln**3)
+        mean = mean - bn * np.exp(-a * ln**2 * np.asarray(t)) / (ln * SL)
+    stored = RHO * CP * SLAB_WIDTH * SL * mean
+    return SQ * SLAB_WIDTH * SL * np.asarray(t) - stored
+
+
+def _heat_out(model, duration, steps, **options):
+    problem = gfem.TransientThermal(
+        gfem.HeatSource.uniform("slab", power_density=SQ),
+        duration=duration,
+        steps=steps,
+        traces={"out": gfem.Trace.heat_out_per_length("bottom")},
+    )
+    options = gfem.SolverOptions(order=2, linear_solver="direct", **options)
+    result = gfem.solve(model, problem, options=options)
+    return np.asarray(result.time), np.asarray(result.traces["out"])
+
+
+def _late_error(t, out):
+    """The largest relative error of the heat out over 2 to 5 tau1."""
+    late = t >= 2 * TAU1
+    return np.max(np.abs(out[late] / _analytic_heat_out(t[late]) - 1))
+
+
+def test_v_f2_the_heat_out_of_tr_bdf2_matches_the_series(slab):
+    t, out = _heat_out(slab, 5 * TAU1, 100)
+    assert out[0] == 0.0
+    # gate 1e-4 (1.7e-5 measured)
+    assert _late_error(t, out) < 1e-4
+
+
+#: Per theta: 8.5e-4 measured at 1 (backward Euler's first-order lag), 1.4e-6
+#: at 0.5.
+HEAT_OUT_GATES = {1.0: 5e-3, 0.5: 1e-5}
+
+
+@pytest.mark.parametrize("theta", HEAT_OUT_GATES)
+def test_v_f2_the_heat_out_of_the_theta_scheme_matches_the_series(slab, theta):
+    t, out = _heat_out(slab, 5 * TAU1, 500, time_scheme="theta", theta=theta)
+    assert _late_error(t, out) < HEAT_OUT_GATES[theta]
+
+
+def test_v_f3_the_late_step_average_is_the_steady_heat_flow(slab):
+    t, out = _heat_out(slab, 10 * TAU1, 100)
+    steady = gfem.solve(
+        slab,
+        gfem.SteadyThermal(gfem.HeatSource.uniform("slab", power_density=SQ)),
+        options=gfem.SolverOptions(order=2, linear_solver="direct"),
+    )
+    flow = float(gfem.heat_flow_per_length(steady, "bottom", model=slab))
+    assert flow == pytest.approx(SQ * SLAB_WIDTH * SL, rel=1e-12)
+    # gate 2e-4 (3.9e-5 measured)
+    assert np.diff(out)[-1] / np.diff(t)[-1] == pytest.approx(flow, rel=2e-4)
