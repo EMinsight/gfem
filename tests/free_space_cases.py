@@ -31,9 +31,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import ngsolve as ngs
 import numpy as np
-import structured_meshes as sm
+import sphere_mesh
 from scipy.special import spherical_jn, spherical_yn
 
 import gfem
@@ -44,13 +43,10 @@ C0 = 299792458.0
 WAVELENGTH = 1.0
 F0 = C0 / (WAVELENGTH * 1e-6)
 #: The sphere's nominal radius, um: :math:`ka = \pi/2`.
-RADIUS = 0.25
-#: Half-side of the air cube and the layer's thickness, um.
-HALF = 0.8
-THICKNESS = 0.35
+RADIUS = sphere_mesh.RADIUS
 #: The global and the sphere's maximal edge lengths, um.
-MAXH = 0.4
-SPHERE_MAXH = 0.2
+MAXH = sphere_mesh.MAXH
+SPHERE_MAXH = sphere_mesh.SPHERE_MAXH
 REFINED_MAXH = 0.08
 #: Relative gates on each cross section (see the module docstring).
 TOLERANCE = 2e-2
@@ -74,63 +70,19 @@ def sphere(
     maxh: float = MAXH,
     sphere_maxh: float = SPHERE_MAXH,
     half: bool = False,
+    mirrored: bool = False,
 ) -> tuple[gfem.Mesh, float]:
     r"""The sphere in air in a layer, and its volume-equivalent radius (um).
 
     The sphere's surface is the surface region "shell". With ``half`` only
     :math:`y \ge 0` is meshed and the plane :math:`y = 0` is the surface
     region "mirror": a TE wave in the xz plane (E along y) satisfies a PEC
-    wall there, a TM wave a PMC wall.
+    wall there, a TM wave a PMC wall; with ``mirrored`` that half and its
+    image make the whole mesh (`sphere_mesh.write`).
     """
-    from netgen.occ import Box, Glue, OCCGeometry, Pnt, Sphere
-
-    ball = Sphere(Pnt(0, 0, 0), RADIUS)
-    ball.mat("sphere")
-    ball.maxh = sphere_maxh
-    ball.solids.maxh = sphere_maxh
-    ball.faces.maxh = sphere_maxh
-    ball.faces.name = "shell"
-    h, t = HALF, HALF + THICKNESS
-    low = 0.0 if half else -h
-    air = Box(Pnt(-h, low, -h), Pnt(h, h, h)) - ball
-    air.mat("air")
-    if half:
-        ball = ball * Box(Pnt(-t, 0, -t), Pnt(t, t, t))
-        ball.mat("sphere")
-        ball.faces.name = "shell"
-    # the layer as boxes split along the interior box's planes, as the layer
-    # needs: no element straddles one of them
-    cuts = [(-t, -h), (-h, h), (h, t)]
-    y_cuts = [(0.0, h), (h, t)] if half else cuts
-    pml = []
-    for x0, x1 in cuts:
-        for y0, y1 in y_cuts:
-            for z0, z1 in cuts:
-                if (x0, z0) == (-h, -h) and y0 in (-h, 0.0):
-                    continue
-                cell = Box(Pnt(x0, y0, z0), Pnt(x1, y1, z1))
-                cell.mat("pml")
-                pml.append(cell)
-    shape = Glue([ball, air, *pml])
-    if half:
-        for face in shape.faces:
-            if abs(face.center.y) < 1e-9:
-                face.name = "mirror"
-    mesh = ngs.Mesh(OCCGeometry(shape).GenerateMesh(maxh=maxh))
-    nodes = np.array([v.point for v in mesh.vertices])
-    tets = np.array([[v.nr for v in el.vertices] for el in mesh.Elements(ngs.VOL)])
-    tet_names = [el.mat for el in mesh.Elements(ngs.VOL)]
-    named = ("shell", "mirror")
-    bnd = [el for el in mesh.Elements(ngs.BND) if el.mat in named]
-    tris = np.array([[v.nr for v in el.vertices] for el in bnd]).reshape(-1, 3)
-    p = nodes[tets]
-    det = np.einsum(
-        "ij,ij->i", np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), p[:, 3] - p[:, 0]
+    volume = sphere_mesh.write(
+        path, maxh=maxh, sphere_maxh=sphere_maxh, half=half, mirrored=mirrored
     )
-    tets[det < 0] = tets[det < 0][:, [0, 2, 1, 3]]
-    inside = np.array([n == "sphere" for n in tet_names])
-    volume = np.abs(det[inside]).sum() / 6 * (2 if half else 1)
-    sm.write_msh22(path, (nodes, tets, tet_names, tris, [el.mat for el in bnd]))
     radius = (3 * volume / (4 * math.pi)) ** (1 / 3)
     return gfem.Mesh.from_gmsh(path, length_unit="um"), radius
 

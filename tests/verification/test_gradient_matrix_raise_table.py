@@ -1963,6 +1963,48 @@ def _out_power_flow_of_a_material_in_its_layer(request):
     jax.make_jaxpr(jax.grad(objective))(eps)
 
 
+def _cut_off_wave(points, frequency):
+    """A wave along +z, zero from x = 0.7 um on: none where the slab meets the layer."""
+    k = 2 * np.pi * frequency / pml_cases.C0
+    x = points[:, 0] * 1e6
+    window = np.where(x < 0.7, np.cos(np.clip(x - 0.6, 0, 0.1) * 5 * np.pi) ** 2, 0)
+    return (np.exp(-1j * k * points[:, 2]) * window)[:, None] * np.array([0, 1, 0])
+
+
+def _out_cross_sections_of_a_design_in_the_truncation_layer(request):
+    # a slab at the cube's +x end touches the layer: the cross sections read
+    # its elements, so its material cannot be differentiated there
+    def volume(c):
+        if c[0] > 0.75 and ((c > 0) & (c < 1)).all():
+            return "slab"
+        return "air" if ((c > 0) & (c < 1)).all() else "pml"
+
+    path = pml_cases.box(
+        request.getfixturevalue("tmp_path") / "slab.msh",
+        ("-x", "+x", "-y", "+y", "-z", "+z"),
+        thickness=0.25,
+        cells=4,
+        volume=volume,
+    )
+    mesh = gfem.Mesh.from_gmsh(path)
+    model = gfem.Model(
+        mesh,
+        materials={"air": gfem.Material(), "pml": gfem.Material(), "slab": _field(mesh, "slab")},
+        pml=gfem.PML("pml"),
+        background=gfem.Material(),
+    )
+    wave = gfem.IncidentField("w", _cut_off_wave)
+    problem = gfem.Driven(frequency=pml_cases.F0, sources=wave, keep_fields=True)
+    result = gfem.solve(model, problem, options=gfem.SolverOptions(order=1))
+
+    def objective(e):
+        m = model.with_material("slab", gfem.MaterialField(eps_r=e))
+        xs = gfem.cross_sections(result, "w", model=m, intensity=1.0)
+        return xs.scattering[0]
+
+    jax.make_jaxpr(jax.grad(objective))(model.materials["slab"].eps_r)
+
+
 def _out_power_flow_in_the_node_coordinates(request):
     model = request.getfixturevalue("wave_model")
     problem = gfem.Driven(frequency=20e9, keep_fields=True)
@@ -2700,6 +2742,12 @@ OUT_OF_SCOPE = [
         _out_electric_energy_of_a_traced_field,
         gfem.NonDifferentiableError,
         r"gfem\.electric_energy is not differentiable",
+    ),
+    (
+        "cross_sections x design in the truncation layer",
+        _out_cross_sections_of_a_design_in_the_truncation_layer,
+        gfem.NonDifferentiableError,
+        r"cross_sections with respect to the material of region 'slab'.*truncation",
     ),
     (
         "power_flow x material in its layer",

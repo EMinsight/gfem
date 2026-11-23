@@ -752,6 +752,18 @@ def power_flow(
     A field of an adaptive sweep (`gfem.ReducedFields`) is exact at the
     solved frequencies and accurate to the sweep's tolerance in between.
 
+    The total field of an incident-field column (``result.e_field(f,
+    "wave")``) is not fed through a port: its residual holds the pairing
+    :math:`\operatorname{Im}(u_S^H b)/(2\omega\mu_0)` of the incident load
+    :math:`b` with the field on the side's DOFs, which is subtracted, so
+    the power is again exact and, for a side of physical elements, minus
+    the power absorbed inside it: ``-power_flow(total, "absorber",
+    model=model)`` is one region's absorption under the wave. A side
+    holding perfectly-matched-layer elements is refused (the field there is
+    the scattered one), as is the incident part (``part="incident"``),
+    which balances no load. The scattered part (``part="scattered"``) needs
+    no correction.
+
     Differentiable through the field: inside `jax.grad`, `jax.jit` or
     `jax.vmap` the kept field of a solve (lumped or wave ports) carries the
     gradient, so absorbed, radiated and transmitted power are objectives.
@@ -777,8 +789,11 @@ def power_flow(
         ValueError: A name is a surface region; the predicate does not
             return one boolean per tetrahedron; ``side`` selects no element
             of the support, or all of them; the field is not a driven
-            electric field, or was not solved on ``model``; or the
-            surface is within one element of a port's surface.
+            electric field, or was not solved on ``model``; the
+            surface is within one element of a port's surface; or, for an
+            incident-field column, the field is its incident part, the side
+            holds perfectly-matched-layer elements, or the side reaches a
+            wave port's surface.
         gfem.DistributedUnsupportedError: The field is a piece across ranks.
         NonDifferentiableError: While `jax.grad` traces it: a material
             field with an element in the element layer just outside
