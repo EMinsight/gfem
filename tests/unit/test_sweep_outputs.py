@@ -380,23 +380,51 @@ def test_electrostatic_outputs_match_their_specs(tmp_path, terminals):
     assert specs["energy"].shape == (2, n)
 
 
-def test_source_outputs_follow_the_rows_and_join_in_order():
-    rng = np.random.default_rng(3)
-    waves = rng.standard_normal((N_FREQ, 2, 1)) + 0j
-    power = rng.standard_normal((N_FREQ, 1))
-    rows = (0, 2)
-    out = SweepOutputs.uniform(
+def _with_port_waves(rng, rows, n_freq):
+    return SweepOutputs.uniform(
         rows,
-        s=np.zeros((N_FREQ, 2, 1), complex),
-        z_ref=np.ones((N_FREQ, 2)),
+        s=_complex(rng, n_freq, N_PORTS, N_EXC),
+        z_ref=rng.random((n_freq, N_PORTS)),
         iterations=[],
         reused=[],
         e_field=None,
         waves=[],
-        port_waves=waves,
+        port_waves=_complex(rng, n_freq, N_PORTS, 2),
+    )
+
+
+def test_source_port_waves_follow_the_rows_the_seam_and_the_join():
+    rng = np.random.default_rng(9)
+    out = _with_port_waves(rng, (0, 2), 3)
+    assert out.port_waves.shape == (2, N_PORTS, 2)
+    back = SweepOutputs.read(out.outputs())
+    np.testing.assert_array_equal(back.port_waves, out.port_waves)
+    specs = SweepOutputs.specs(
+        n_freq=2, n_ports=N_PORTS, n_excited=N_EXC, n_wave=0, n_sources=2
+    )
+    assert specs["port_waves"].shape == out.port_waves.shape
+    second = _with_port_waves(rng, (0,), 1)
+    joined = SweepOutputs.join([([0, 1, 2], out), ([3], second)])
+    np.testing.assert_array_equal(
+        joined.port_waves, np.concatenate([out.port_waves, second.port_waves])
+    )
+
+
+def test_emitted_power_follows_the_rows_the_seam_and_the_join():
+    rng = np.random.default_rng(3)
+    power = rng.standard_normal((N_FREQ, 1))
+    rows = (0, 2)
+    out = SweepOutputs.uniform(
+        rows,
+        s=_complex(rng, N_FREQ, N_PORTS, N_EXC),
+        z_ref=rng.random((N_FREQ, N_PORTS)),
+        iterations=[],
+        reused=[],
+        e_field=None,
+        waves=[],
         emitted_power=power,
     )
-    np.testing.assert_array_equal(out.port_waves, waves[list(rows)])
+    np.testing.assert_array_equal(out.emitted_power, power[list(rows)])
     back = SweepOutputs.read(out.outputs())
     np.testing.assert_array_equal(back.emitted_power, power[list(rows)])
     joined = SweepOutputs.join([((0, 1, 2), out), ((3, 4, 5), out)])

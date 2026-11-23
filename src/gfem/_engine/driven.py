@@ -109,7 +109,7 @@ from gfem._engine.cache import (
     discretization,
     retain_budget,
 )
-from gfem._engine.dipoles import check_positions, point_loads
+from gfem._engine.dipoles import check_positions
 from gfem._engine.domain import (
     element_dofs,
     em_region,
@@ -127,6 +127,12 @@ from gfem._engine.driven_system import DrivenSystemBuilder
 from gfem._engine.fields import dof_shape, rank_piece
 from gfem._engine.floquet_ports import check_excitable
 from gfem._engine.gauge import GaugeChoice, resolve_gauge
+from gfem._engine.incident import (
+    check_contact,
+    check_incident_model,
+    layer_regions,
+    truncation_designs,
+)
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.port_network import (
     PortNetwork,
@@ -138,10 +144,15 @@ from gfem._engine.port_network import (
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import FieldPair, Term, is_lumped, is_sheet, law_key
 from gfem._engine.solve_request import SolveRequest
-from gfem._engine.source_columns import SourceColumns, real_up_to_phase
+from gfem._engine.source_columns import (
+    ColumnContext,
+    SourceColumns,
+    real_up_to_phase,
+)
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces, SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling
+from gfem._incident import IncidentPart
 from gfem._linalg import Kind, ResolvedLinearSolver, auto_linear_solver, report
 from gfem._linalg.layout import DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
@@ -153,7 +164,7 @@ from gfem._periodic import (
     check_wave_vector,
 )
 from gfem._pml import Stretch
-from gfem._sources import DIPOLES, MagneticDipole
+from gfem._sources import DIPOLES, INCIDENT, MagneticDipole
 from gfem._sweep.adaptive import AffineSystem, AffineTerm, adaptive_sweep
 from gfem._text import hertz
 from gfem.errors import (
@@ -830,9 +841,9 @@ class DrivenRule:
         dispersion.check_frequencies(model, problem.frequency)
         if not model.ports and not problem.sources:
             raise ValueError(
-                "The model has no ports and the problem no sources, so a driven "
-                "problem has nothing to excite. Add a gfem.LumpedPort to the "
-                "model's ports, or give Driven(sources=...)."
+                "The model has no ports, so a driven problem has nothing to "
+                "excite. Add a gfem.LumpedPort to the model's ports, or give "
+                "Driven(sources=...)."
             )
         names = model.port_names
         #: The model's port names: the rows of S.
@@ -852,6 +863,7 @@ class DrivenRule:
                     "impedance to feed 1 W through. Give it a resistance, or leave "
                     "it out of Driven.excite."
                 )
+        self._init_sources(model, problem, options, comm)
         #: The grid of the Floquet order table: the whole sweep's, in a
         #: frequency worker too.
         self.order_frequency = tuple(
@@ -924,21 +936,17 @@ class DrivenRule:
         #: the wave ports whose face shares an edge with its surface: the port
         #: mode reads it there.
         self.sheet_ports = _sheet_ports(model)
-        #: Why the node coordinates cannot be differentiated, or None.
-        self.nodes_unsupported = terms.absorbing_shape_unsupported(
-            model
-        ) or _magnetic_nodes_unsupported(problem.sources)
         # The fields live on the mesh as given (traced or not).
         self._mesh = model.mesh
         self._excluded = model._domain.excluded  # noqa: SLF001
-        self._init_sources(problem, model)
+        self._check_dipoles(model)
         #: The system operator and port network builder, and the state its
         #: solves keep on a discretization across designs.
         self.systems = DrivenSystemBuilder(
             frequency=problem.frequency,
             columns=tuple(names.index(n) for n in self.excite),
             excite=tuple(self.excite),
-            n_sources=len(self.source_names),
+            n_sources=len(self.sources),
             port_mode_tolerance=options.port_mode_tolerance,
             floquet_order_tolerance=options.floquet_order_tolerance,
             orders=self.orders,
@@ -964,78 +972,30 @@ class DrivenRule:
         )
         _check_skipped_port_modes(model, stacklevel=4, comm=comm)
 
-    def _init_sources(self, problem: Driven, model: Model) -> None:
-        """The sources' columns, after the excited ports', and their refusals."""
-        #: The sources' names: the block's columns after the excited ports.
-        self.source_names = tuple(s.name for s in problem.sources)
-        #: The point dipoles, in source order, and their positions among
-        #: the sources.
+    def _init_sources(
+        self, model: Model, problem: Driven, options: SolverOptions, comm: Any
+    ) -> None:
+        """The sources' attributes and the refusals the model shows of them."""
+        #: The problem's sources, solved after the excited ports.
+        self.sources = problem.sources
+        #: The incident-field sources among them.
+        self.incident = tuple(s for s in problem.sources if isinstance(s, INCIDENT))
+        #: The point dipoles among them, in source order.
         self.dipoles = tuple(s for s in problem.sources if isinstance(s, DIPOLES))
-        self.dipole_columns = tuple(
-            k for k, s in enumerate(problem.sources) if isinstance(s, DIPOLES)
-        )
-        self._check_dipoles(model)
-
-    def _check_dipoles(self, model: Model) -> None:
-        """The dipoles' position refusals, before any assembly.
-
-        A traced model's are checked by its forward, on concrete values.
-        """
-        if self.dipoles and not is_traced(
-            (model.mesh.nodes, list(model.materials.values()))
-        ):
-            check_positions(
-                model,
-                self.dipoles,
-                self._field_layout(),
-                self.problem.frequency,
-                self.comm,
-            )
-
-    def _field_layout(self) -> Any:
-        """The kept fields' probe layout (`gfem._engine.probe.Layout`)."""
-        from gfem._engine.probe import Layout
-
-        return Layout(
-            support=self.regions,
-            excluded=tuple(self._excluded),
-            space="hcurl",
-            order=self.options.order,
-        )
-
-    @property
-    def width(self) -> int:
-        """The block's columns: the excited ports, then the sources."""
-        return len(self.excite) + len(self.source_names)
-
-    def columns(self, model: Model, op: DrivenOperator) -> SourceColumns:
-        """The block layout on ``op``, the dipoles' loads built on its space.
-
-        The last operator's loads are kept, so that a backward pass builds
-        them once.
-        """
-        last = getattr(self, "_last_columns", None)
-        if last is not None and last[0] is op:
-            return last[1]
-        loads = None
-        if self.dipoles:
-            loads = point_loads(
-                model,
-                self.dipoles,
-                self._field_layout(),
-                op.space,
-                self.problem.frequency,
-                dof_layout=op.layout,
-                comm=self.comm,
-            )
-        out = SourceColumns(
-            n_excited=len(self.excite),
-            names=self.source_names,
-            dipoles=loads,
-            dipole_columns=self.dipole_columns,
-        )
-        self._last_columns = (op, out)
-        return out
+        #: The labels of the solve's columns: the excited ports, then the
+        #: sources.
+        self.columns = (*self.excite, *(s.name for s in problem.sources))
+        _check_sources_supported(self, options, comm)
+        check_incident_model(model, self.incident)
+        #: The model's background stack and its layer's regions, which the
+        #: kept fields of incident columns carry.
+        self.background = model.background
+        self.layers = layer_regions(model)
+        #: Per design region a truncation would make the incident load read,
+        #: why it cannot be differentiated (with incident columns only).
+        self.truncation_designs = truncation_designs(model) if self.incident else {}
+        #: Why the node coordinates cannot be differentiated, or None.
+        self.nodes_unsupported = self._nodes_unsupported(model)
 
     @property
     def _reference_frequency(self) -> float | None:
@@ -1078,7 +1038,7 @@ class DrivenRule:
         dispersion.check_frequencies(model, self.problem.frequency)
         self._check_adjoint_ports(keep=keep, loads=request.adjoint_loads)
 
-    def forward(  # noqa: PLR0915 - one frequency loop with its adjoint columns
+    def forward(  # noqa: PLR0912, PLR0915 - one frequency loop with its adjoint columns
         self, model: Model, *, keep: bool, request: SolveRequest | None = None
     ) -> tuple[dict[str, object], Entry | None]:
         """Solve every excited port at every frequency.
@@ -1124,7 +1084,8 @@ class DrivenRule:
         if other is not None:
             return other
         frequencies = self.problem.frequency
-        width, n_exc = self.width, len(self.excite)
+        width = len(self.excite)
+        n_ports = len(self.port_names)
         iterations: list[tuple[int, ...]] = []
         reused: list[bool] = []
         fields: list[np.ndarray] = []
@@ -1134,10 +1095,12 @@ class DrivenRule:
         # one factorization at a time under ranks: the last design's goes first
         ENTRIES.free_bases(self.comm)
         with task_manager(self.options.threads, self.comm):
+            # the incident fields' rules read the source alone: before the ports
+            check_contact(model, self.incident, frequencies)
             system, ports = self.system(model, handed=request.port_modes)
-            block = self.columns(model, system.operator)
-            size = int(system.operator.space.ndof)
-            s = np.zeros((len(frequencies), len(self.port_names), width), complex)
+            sources = self._source_columns(model, system)
+            s = np.zeros((len(frequencies), n_ports, width), complex)
+            waves = np.zeros((len(frequencies), n_ports, len(self.sources)), complex)
             emitted = np.zeros((len(frequencies), len(self.dipoles)))
             # the first frequency starts from the previous design
             previous, design = None, self.systems.design_guess(system)
@@ -1147,7 +1110,7 @@ class DrivenRule:
             ) as sweep:
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
-                    rhs = block.rhs(ports, omega, size)
+                    rhs = _rhs(ports, sources, omega, system, width)
                     try:
                         x, its = design.solve(sweep, omega, rhs, previous)
                     except LinearSolverConvergenceError as err:
@@ -1177,8 +1140,10 @@ class DrivenRule:
                     if n in self.kept:
                         # results keep fields on the unpaired space
                         fields.append(np.array(system.operator.expand(x), complex))
-                    s[n] = block.outgoing(ports, omega, x)
-                    emitted[n] = block.emitted_power(omega, x)
+                    if n_ports:
+                        s[n], waves[n] = _outgoing(ports, n, omega, x, width)
+                    if sources is not None and self.dipoles:
+                        emitted[n] = sources.emitted_power(omega, x[:, width:])
                 if keep and miss is None:
                     system.keep_base(sweep)
         # no backward pass will prepare from the pieces
@@ -1188,9 +1153,7 @@ class DrivenRule:
             ENTRIES.trim(retain_budget(self.options.retain_memory), self.comm)
         out = SweepOutputs.uniform(
             tuple(range(n_solved)),
-            s=ports.scattering(s[:, :, :n_exc]),
-            port_waves=self._port_waves(ports, s[:, :, n_exc:]),
-            emitted_power=emitted if self.dipoles else None,
+            s=ports.scattering(s),
             z_ref=ports.z_ref,
             iterations=iterations,
             reused=reused,
@@ -1202,6 +1165,8 @@ class DrivenRule:
             if fields
             else None,
             waves=ports.waves,
+            port_waves=waves if self.sources else None,
+            emitted_power=emitted if self.dipoles else None,
         )
         if miss is not None:
             raise_unsolved(
@@ -1220,14 +1185,52 @@ class DrivenRule:
             )
         return out.outputs(), entry
 
-    def _port_waves(self, ports: PortNetwork, waves: np.ndarray) -> np.ndarray | None:
-        """The sources' port waves, de-embedded on their port's row like S.
+    def _check_dipoles(self, model: Model) -> None:
+        """The dipoles' position refusals, before any assembly.
 
-        ``None`` without sources or without ports.
+        A traced model's are checked by its forward, on concrete values.
         """
-        if not self.source_names or not self.port_names:
+        if self.dipoles and not is_traced(
+            (model.mesh.nodes, list(model.materials.values()))
+        ):
+            check_positions(
+                model,
+                self.dipoles,
+                self._field_layout(),
+                self.problem.frequency,
+                self.comm,
+            )
+
+    def _field_layout(self) -> Any:
+        """The kept fields' probe layout (`gfem._engine.probe.Layout`)."""
+        from gfem._engine.probe import Layout
+
+        return Layout(
+            support=self.regions,
+            excluded=tuple(self._excluded),
+            space="hcurl",
+            order=self.options.order,
+        )
+
+    def _source_columns(
+        self, model: Model, system: SystemOperator
+    ) -> SourceColumns | None:
+        """The source columns of this forward; ``None`` without sources."""
+        if not self.sources:
             return None
-        return waves * ports.deembedding[: len(waves), :, None]
+        with _timing.phase("discretize"):
+            return SourceColumns.build(
+                self.sources,
+                ColumnContext(
+                    model=model,
+                    system=system,
+                    order=self.options.order,
+                    stretch=self.stretch,
+                    frequencies=tuple(self.problem.frequency),
+                    field_layout=self._field_layout(),
+                    comm=self.comm,
+                ),
+            )
 
     def solve_adjoints(
         self,
@@ -1419,7 +1422,7 @@ class DrivenRule:
         z_scale = float(extent) / scipy.constants.c
         with task_manager(options.threads):
             system, ports = self.system(model)
-            block = self.columns(model, system.operator)
+            sources = self._source_columns(model, system)
             size = int(system.operator.space.ndof)
             samples = self.problem.samples
             # samples lie far apart: a reused BDDC would mostly hit its cap
@@ -1442,7 +1445,9 @@ class DrivenRule:
                 affine = AffineSystem(
                     thetas=[piece.theta for piece in system.operator.pieces],
                     apply=system.operator.apply,
-                    excitation=block.excitation(ports.excitation),
+                    excitation=ports.excitation
+                    if sources is None
+                    else sources.excitation(ports.excitation, len(self.excite)),
                     outputs=ports.outputs,
                     solve=solve,
                     corrections=[
@@ -1450,15 +1455,7 @@ class DrivenRule:
                         for c in system.surfaces
                         if isinstance(c, PortSurfaceCoupling)
                     ],
-                    adjoint_loads=lambda w: np.concatenate(
-                        [
-                            ports.adjoint_loads(w)
-                            if ports.outputs
-                            else np.zeros((size, 0), complex),
-                            block.adjoint_loads(w, size),
-                        ],
-                        axis=1,
-                    ),
+                    adjoint_loads=_adaptive_loads(ports, sources, size),
                 )
                 sweep = adaptive_sweep(
                     affine,
@@ -1490,21 +1487,23 @@ class DrivenRule:
             padded = np.zeros((len(coordinates), width), complex)
             padded[:, :size] = coordinates
             kept_fields = (basis, padded)
-        n_exc = len(self.excite)
-        waves = sweep.outputs if ports.outputs else np.zeros((len(frequencies), 0, 0))
-        waves = np.reshape(waves, (len(frequencies), len(self.port_names), self.width))
+        n_exc, n_freq = len(self.excite), len(frequencies)
+        waves = sweep.outputs if ports.outputs else np.zeros((n_freq, 0, 0))
+        waves = np.reshape(waves, (n_freq, len(self.port_names), len(self.columns)))
         emitted = None
-        if block.dipoles is not None:
-            projected = sweep.basis.T @ block.dipoles.vectors
+        if sources is not None and sources.dipoles is not None:
+            projected = sweep.basis.T @ sources.dipoles[1].vectors
             emitted = np.stack(
                 [
-                    block.reduced_power(2 * np.pi * f, projected, y)
+                    sources.reduced_power(2 * np.pi * f, projected, y[:, n_exc:])
                     for f, y in zip(frequencies, sweep.coordinates, strict=True)
                 ]
             )
         out = SweepOutputs.adaptive(
             s=ports.scattering(waves[:, :, :n_exc]),
-            port_waves=self._port_waves(ports, waves[:, :, n_exc:]),
+            port_waves=waves[:, :, n_exc:] * ports.deembedding[:, :, None]
+            if self.sources and self.port_names
+            else None,
             emitted_power=emitted,
             z_ref=ports.z_ref,
             iterations=iterations,
@@ -1566,7 +1565,7 @@ class DrivenRule:
         samples = self.problem.samples or ()
         loads = len(self.wave_ports) + len(self.lumped_loads)
         loads += sum(not real_up_to_phase(np.asarray(d.moment)) for d in self.dipoles)
-        return 2 * len(samples) * (self.width + loads)
+        return 2 * len(samples) * (len(self.columns) + loads)
 
     def output_specs(self, model: Model) -> dict[str, jax.ShapeDtypeStruct]:
         """Shape and dtype of each forward output."""
@@ -1588,10 +1587,10 @@ class DrivenRule:
             n_excited=len(self.excite),
             n_wave=len(self.wave_ports),
             ndof=ndof,
-            n_fields=len(self.kept) * self.width,
+            n_fields=len(self.kept) * len(self.columns),
             reduced=self._padded_size() if self.adaptive else None,
             complex_z_ref=complex_reference(model.ports),
-            n_sources=len(self.source_names),
+            n_sources=len(self.sources),
             n_dipoles=len(self.dipoles),
         )
 
@@ -1675,8 +1674,9 @@ class DrivenRule:
                     "wrap the fill in jax.lax.stop_gradient."
                 )
             return None
-        if kind == ("nodes",):
-            return self.nodes_unsupported
+        if kind == ("nodes",) or kind[1:2] in [(r,) for r in self.truncation_designs]:
+            # nodes, or a design an incident load would read at the truncation
+            return self._unsupported_with_sources(kind)
         if kind[0] == "law":
             reason = self._law_unsupported()
             if reason is not None:
@@ -1700,6 +1700,34 @@ class DrivenRule:
                 "region of their own with a constant gfem.Material), or wrap "
                 "the value in jax.lax.stop_gradient."
             )
+        return None
+
+    def _nodes_unsupported(self, model: Model) -> str | None:
+        """Why the node coordinates cannot be differentiated, or ``None``."""
+        if self.incident:
+            return (
+                f"the incident field {self.incident[0].name!r} enters the load "
+                "through its interpolant on the mesh, whose derivative by the "
+                "node coordinates is not available; use a material design (a "
+                "gfem.MaterialField)"
+            )
+        magnetic = [d for d in self.dipoles if isinstance(d, MagneticDipole)]
+        if magnetic:
+            return (
+                f"the load of the MagneticDipole {magnetic[0].name!r} evaluates "
+                "the curl of the basis at its position, and this version has no "
+                "node derivative of it. Use an ElectricDipole, a density "
+                "(gfem.MaterialField) design, or wrap the node coordinates in "
+                "jax.lax.stop_gradient"
+            )
+        return terms.absorbing_shape_unsupported(model)
+
+    def _unsupported_with_sources(self, kind: tuple) -> str | None:
+        """`unsupported_input` of the nodes, or of a region at the truncation."""
+        if kind == ("nodes",):
+            return self.nodes_unsupported
+        if kind[0] in ("material", "law"):
+            return self.truncation_designs[kind[1]]
         return None
 
     def _law_unsupported(self) -> str | None:
@@ -1781,9 +1809,10 @@ class DrivenRule:
         if self.children is not None:
             return self.children.backward(model, entry, cotangents, wanted=wanted)
         solution = entry.fields["solution"]
-        width = self.width
-        ct_p = cotangents.get("emitted_power")
+        width = len(self.excite)
+        n_columns = len(self.columns)
         ct_e = cotangents.get("e_field")
+        ct_p = cotangents.get("emitted_power")
         frequencies = self.problem.frequency
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
         self._explicit_nodes = None
@@ -1794,19 +1823,21 @@ class DrivenRule:
                 entry.handle = _Kept(*self.system(model, handed=port_modes))
             system, ports = entry.handle.system, entry.handle.ports
             op = system.operator
-            block = self.columns(model, op)
+            sources = None
+            if ct_p is not None or nodes:
+                sources = self._source_columns(model, system)
             domain = em_region(model, op.built)
             omegas = [2 * math.pi * f for f in frequencies]
             for n in system.adjoint_order(omegas):
                 f = frequencies[n]
                 omega = 2 * math.pi * f
-                x = solution[:, n * width : (n + 1) * width]
+                x = solution[:, n * n_columns : (n + 1) * n_columns]
                 adjoint, load, undefined = self._output_loads(
-                    n, ports, block, x, cotangents
+                    n, ports, sources, x, cotangents
                 )
                 if ct_e is not None and n in self.kept:
                     k = self.kept.index(n)
-                    g = np.asarray(ct_e)[:, k * width : (k + 1) * width]
+                    g = np.asarray(ct_e)[:, k * n_columns : (k + 1) * n_columns]
                     if self.comm is not None:  # a rank's rows, then its padding
                         g = g[: op.field_ndof]
                     # the field is P x: its cotangent loads P^T g
@@ -1824,13 +1855,13 @@ class DrivenRule:
                     weights=op.weights(omega, laws=laws),
                     domain=domain,
                 )
-                if nodes:
+                if nodes and sources is not None:
                     self._add_explicit_nodes(
                         model,
-                        block,
+                        sources,
                         omega,
-                        adjoint=adjoint,
-                        x=x,
+                        adjoint=adjoint[:, width:],
+                        x=x[:, width:],
                         ct=None if ct_p is None else ct_p[n],
                     )
         if rebuilt:
@@ -1843,100 +1874,38 @@ class DrivenRule:
         self,
         n: int,
         ports: PortNetwork,
-        block: SourceColumns,
+        sources: SourceColumns | None,
         x: np.ndarray,
         cotangents: Mapping[str, np.ndarray],
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Frequency ``n``'s adjoint columns from the outputs' cotangents.
 
         Returns ``(free, load, undefined)``: the adjoint columns known
-        without a solve (`PortNetwork.pullback`'s reciprocity, the
-        self-adjoint shortcut of `_power_adjoint`), the loads left to
-        solve, and the columns meeting an undefined S row. S's cotangent
-        fills the excited ports' columns, the port waves' the sources'.
+        without a solve (S's reciprocity, a dipole's self-adjoint shortcut),
+        the loads left to solve, and the columns meeting an undefined S row.
+        S's cotangent loads the excited ports' columns, the port waves' and
+        the emitted power's the sources'.
         """
         omega = 2 * math.pi * self.problem.frequency[n]
-        width, n_exc = self.width, len(self.excite)
-        ct = np.zeros((len(self.port_names), width), complex)
-        for name, part in (("s", slice(0, n_exc)), ("port_waves", slice(n_exc, None))):
-            if cotangents.get(name) is not None:
-                ct[:, part] = cotangents[name][n]
-        if ct.any():
-            split = ports.pullback(n, omega, ct, x)
-            adjoint, load, undefined = split.free, split.loads, split.undefined
-        else:
-            adjoint, load = np.zeros_like(x), np.zeros_like(x)
-            undefined = np.zeros(width, bool)
+        width = len(self.excite)
+        adjoint, load = np.zeros_like(x), np.zeros_like(x)
+        undefined = np.zeros(x.shape[1], bool)
+        ct_s, ct_w = cotangents.get("s"), cotangents.get("port_waves")
         ct_p = cotangents.get("emitted_power")
-        if ct_p is not None:
-            self._power_adjoint(
-                block, ports, omega, ct_p[n], x=x, adjoint=adjoint, load=load
+        if ct_s is not None and width:
+            split = ports.pullback(n, omega, ct_s[n], x[:, :width])
+            adjoint[:, :width], load[:, :width] = split.free, split.loads
+            undefined[:width] = split.undefined
+        if ct_w is not None and self.port_names:
+            # port wave (i, j) = d_i f_i^T x_j: loads f_i d_i ct_ij
+            d = ports.deembedding[n]
+            ct = np.asarray(ct_w[n]) * d[:, None]
+            load[:, width:] += ports.functional(omega) @ ct
+        if ct_p is not None and sources is not None:
+            _power_adjoint(
+                sources, omega, ct_p[n], ports.layout, x, adjoint, load, width
             )
         return adjoint, load, undefined
-
-    def _power_adjoint(
-        self,
-        block: SourceColumns,
-        ports: PortNetwork,
-        omega: float,
-        ct: np.ndarray,
-        *,
-        x: np.ndarray,
-        adjoint: np.ndarray,
-        load: np.ndarray,
-    ) -> None:
-        """Fold an emitted power cotangent into ``adjoint`` and ``load``, in place.
-
-        Its load on dipole k's column is parallel to the dipole's own load
-        when the moment is real up to one phase: the adjoint is then the
-        dipole's solution scaled (the self-adjoint shortcut), no solve.
-        Otherwise (a circular moment) it is one more adjoint load.
-        """
-        power = block.power_loads(omega, ct)
-        rhs = block.rhs(ports, omega, len(x))
-        layout = ports.layout
-        for j in [block.n_excited + c for c in block.dipole_columns]:
-            if not power[:, j].any():
-                continue
-            scale = parallel_scale(power[:, j], rhs[:, j], layout)
-            if scale is not None:
-                adjoint[:, j] += scale * x[:, j]
-            else:
-                load[:, j] += power[:, j]
-
-    def _add_explicit_nodes(
-        self,
-        model: Model,
-        block: SourceColumns,
-        omega: float,
-        *,
-        adjoint: np.ndarray,
-        x: np.ndarray,
-        ct: np.ndarray | None,
-    ) -> None:
-        """Add the dipoles' node term at ω to `explicit_nodes`."""
-        loads = block.dipoles
-        if loads is None:
-            return
-        columns = [block.n_excited + c for c in block.dipole_columns]
-        term = loads.nodes(
-            model.mesh,
-            self._field_layout(),
-            omega,
-            adjoint=adjoint[:, columns],
-            solution=x[:, columns],
-            power=np.zeros(len(columns)) if ct is None else np.asarray(ct),
-            comm=self.comm,
-        )
-        held = getattr(self, "_explicit_nodes", None)
-        self._explicit_nodes = term if held is None else held + term
-
-    def explicit_nodes(self) -> np.ndarray | None:
-        """The node cotangent the backward computed itself: the dipoles' loads.
-
-        ``(n_nodes, 3)``, this rank's part, or ``None`` (no dipole moved).
-        """
-        return getattr(self, "_explicit_nodes", None)
 
     def _backward_adaptive(
         self,
@@ -1972,7 +1941,7 @@ class DrivenRule:
         functionals, coordinates = kept.functionals, kept.coordinates
         deembedding = kept.deembedding
         columns = [self.port_names.index(p) for p in self.excite]
-        n, n_exc, width = basis.shape[1], len(self.excite), self.width
+        n, n_exc, width = basis.shape[1], len(self.excite), len(self.columns)
         ct_c = cotangents.get("e_coordinates")
         ct_p = cotangents.get("emitted_power")
         nodes = bool(self.dipoles) and (wanted is None or ("nodes",) in wanted)
@@ -1980,10 +1949,12 @@ class DrivenRule:
         accumulated: dict[str, np.ndarray] = {}
         with task_manager(self.options.threads):
             op = self.operator(model)
-            block = self.columns(model, op)
-            projected = None
-            if block.dipoles is not None:
-                projected = basis.T @ block.dipoles.vectors
+            sources, projected = None, None
+            if ct_p is not None or nodes:
+                system, _ = self.system(model)
+                sources = self._source_columns(model, system)
+                if sources is not None and sources.dipoles is not None:
+                    projected = basis.T @ sources.dipoles[1].vectors
             domain = em_region(model, op.built)
             for i, f in enumerate(self.problem.frequency):
                 omega = 2 * math.pi * f
@@ -2001,21 +1972,23 @@ class DrivenRule:
                     )
                     g += split.loads
                     g[:, split.undefined] = np.nan
-                if ct_p is not None and projected is not None:
-                    g += block.reduced_power_loads(omega, projected, ct_p[i])
+                if ct_p is not None and sources is not None and projected is not None:
+                    g[:, n_exc:] += sources.reduced_power_loads(
+                        omega, projected, ct_p[i]
+                    )
                 if ct_c is not None and i in self.kept:
                     k = self.kept.index(i)
                     g += np.asarray(ct_c)[k * width : (k + 1) * width, :n].T
                 if not g.any():
                     continue
                 adjoint = np.linalg.solve(matrices[i].T, g)
-                if nodes:
+                if nodes and sources is not None:
                     self._add_explicit_nodes(
                         model,
-                        block,
+                        sources,
                         omega,
-                        adjoint=basis @ adjoint,
-                        x=basis @ coordinates[i],
+                        adjoint=basis @ adjoint[:, n_exc:],
+                        x=basis @ coordinates[i][:, n_exc:],
                         ct=None if ct_p is None else ct_p[i],
                     )
                 outer = adjoint @ coordinates[i].T
@@ -2034,10 +2007,47 @@ class DrivenRule:
                 )
         return pairs
 
+    def _add_explicit_nodes(
+        self,
+        model: Model,
+        sources: SourceColumns,
+        omega: float,
+        *,
+        adjoint: np.ndarray,
+        x: np.ndarray,
+        ct: np.ndarray | None,
+    ) -> None:
+        """Add the dipoles' node term at ω to `explicit_nodes`.
+
+        ``adjoint`` and ``x`` are the source columns' ``(N, n_sources)``.
+        """
+        found = sources.dipoles
+        if found is None:
+            return
+        positions, loads = found
+        term = loads.nodes(
+            model.mesh,
+            self._field_layout(),
+            omega,
+            adjoint=adjoint[:, positions],
+            solution=x[:, positions],
+            power=np.zeros(len(positions)) if ct is None else np.asarray(ct),
+            comm=self.comm,
+        )
+        held = getattr(self, "_explicit_nodes", None)
+        self._explicit_nodes = term if held is None else held + term
+
+    def explicit_nodes(self) -> np.ndarray | None:
+        """The node cotangent the backward computed itself: the dipoles' loads.
+
+        ``(n_nodes, 3)``, this rank's part, or ``None`` (no dipole moved).
+        """
+        return getattr(self, "_explicit_nodes", None)
+
     def result(self, outputs: dict) -> DrivenResult:
         """The public result from the forward outputs."""
         frequencies = self.problem.frequency
-        kept = [(frequencies[n], name) for n in self.kept for name in self._labels]
+        kept = [(frequencies[n], label) for n in self.kept for label in self.columns]
         out = SweepOutputs.read(outputs)
         if self.adaptive:
             return self._adaptive_result(out, kept)
@@ -2048,8 +2058,16 @@ class DrivenRule:
         grid = self.problem.frequency
         frequencies = tuple(grid[i] for i in out.rows)
         kept = [
-            (grid[n], name) for n in self.kept if n in out.rows for name in self._labels
+            (grid[n], label)
+            for n in self.kept
+            if n in out.rows
+            for label in self.columns
         ]
+        incident = {
+            s.name: IncidentPart(s, self.background, self.layers)
+            for s in self.incident
+            if self.background is not None
+        }
         # NumPy rows, which Field takes as they are
         coefficients: Any = out.e_field
         e_fields = []
@@ -2067,9 +2085,10 @@ class DrivenRule:
                     _excluded=self._excluded,
                     _comm=_mpi.static_comm(self.comm),
                     _reference_frequency=self._reference_frequency,
-                    _point_sources=self._point_sources(name),
+                    _incident=incident.get(label),
+                    _point_sources=self._point_sources(label),
                 )
-                for k, (f, name) in enumerate(kept)
+                for k, (f, label) in enumerate(kept)
             ]
         return DrivenResult(
             s=NetworkParameters(
@@ -2092,33 +2111,24 @@ class DrivenRule:
             **self._source_leaves(out),
         )
 
-    def _point_sources(
-        self, name: str
-    ) -> tuple[tuple[str, tuple[float, float, float]], ...]:
-        """The point dipole whose load solves column ``name``, if it is one."""
-        return tuple((d.name, d.position) for d in self.dipoles if d.name == name)
-
-    @property
-    def _labels(self) -> tuple[str, ...]:
-        """The block's column labels: the excited ports, then the sources."""
-        return (*self.excite, *self.source_names)
-
     def _source_leaves(self, out: SweepOutputs) -> dict[str, Any]:
         """The result's leaves of the sources: names, port waves, emitted power."""
-        if not self.source_names:
-            return {}
         power = out.emitted_power
         return {
-            "sources": {s.name: s for s in self.problem.sources},
+            "sources": {s.name: s for s in self.sources},
             "port_waves": None
             if out.port_waves is None
             else jnp.asarray(out.port_waves),
-            "emitted_power": {
-                d.name: jnp.asarray(power[:, k]) for k, d in enumerate(self.dipoles)
-            }
-            if power is not None
-            else {},
+            "emitted_power": {}
+            if power is None
+            else {d.name: jnp.asarray(power[:, k]) for k, d in enumerate(self.dipoles)},
         }
+
+    def _point_sources(
+        self, label: str
+    ) -> tuple[tuple[str, tuple[float, float, float]], ...]:
+        """The point dipole whose load solves column ``label``, if it is one."""
+        return tuple((d.name, d.position) for d in self.dipoles if d.name == label)
 
     def _diffraction_orders(
         self, rows: Sequence[int]
@@ -2217,7 +2227,7 @@ class DrivenRule:
                 support=self.regions,
                 _excluded=self._excluded,
                 _reference_frequency=self._reference_frequency,
-                _point_sources=tuple(self._point_sources(name) for _, name in kept)
+                _point_sources=tuple(self._point_sources(label) for _, label in kept)
                 if self.dipoles
                 else (),
             )
@@ -2236,19 +2246,6 @@ class DrivenRule:
             offsets=self.offsets,
             **self._source_leaves(out),
         )
-
-
-def _magnetic_nodes_unsupported(dipoles: Sequence[Any]) -> str | None:
-    """Why a magnetic dipole's load blocks node gradients, or ``None``."""
-    magnetic = [d for d in dipoles if isinstance(d, MagneticDipole)]
-    if not magnetic:
-        return None
-    return (
-        f"the load of the MagneticDipole {magnetic[0].name!r} evaluates the curl "
-        "of the basis at its position, and this version has no node derivative "
-        "of it. Use an ElectricDipole, a density (gfem.MaterialField) design, or "
-        "wrap the node coordinates in jax.lax.stop_gradient"
-    )
 
 
 def operator_terms(model: Model, op: DrivenOperator, *, nodes: bool) -> list[Term]:
@@ -2946,6 +2943,110 @@ def _port_regions(model: Model) -> dict[str, tuple[str, ...]]:
         tags = np.unique(topology.volume_tags[tets[active[tets]]])
         out[port.name] = tuple(names[int(t)] for t in tags)
     return out
+
+
+def _outgoing(
+    ports: PortNetwork, n: int, omega: float, x: np.ndarray, width: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """The outgoing waves of the port columns and of the source columns of ``x``.
+
+    A source column's are de-embedded at their port (its row), as S is.
+    """
+    waves = ports.outgoing(omega, x[:, width:]) if x.shape[1] > width else 0
+    return (
+        ports.outgoing(omega, x[:, :width]),
+        ports.deembedding[n][:, None] * waves,
+    )
+
+
+def _rhs(
+    ports: PortNetwork,
+    sources: SourceColumns | None,
+    omega: float,
+    system: SystemOperator,
+    width: int,
+) -> np.ndarray:
+    """The right-hand sides at ω: the excited ports', then the sources'."""
+    if width == 0:
+        rhs = np.zeros((system.operator.space.ndof, 0), complex)
+    else:
+        rhs = ports.rhs(omega)
+    if sources is None:
+        return rhs
+    return np.concatenate([rhs, sources.rhs(omega)], axis=1)
+
+
+def _power_adjoint(  # noqa: PLR0917 - one frequency's columns, in place
+    sources: SourceColumns,
+    omega: float,
+    ct: np.ndarray,
+    layout: DofLayout,
+    x: np.ndarray,
+    adjoint: np.ndarray,
+    load: np.ndarray,
+    width: int,
+) -> None:
+    """Fold an emitted power cotangent into ``adjoint`` and ``load``, in place.
+
+    Its load on dipole k's column is parallel to the dipole's own load when
+    the moment is real up to one phase: the adjoint is then the dipole's
+    solution scaled (the self-adjoint shortcut), no solve. Otherwise (a
+    circular moment) it is one more adjoint load. ``width`` is the excited
+    ports' columns, before the sources'.
+    """
+    power = sources.power_loads(omega, ct)
+    rhs = sources.rhs(omega)
+    for k in range(power.shape[1]):
+        if not power[:, k].any():
+            continue
+        j = width + k
+        scale = parallel_scale(power[:, k], rhs[:, k], layout)
+        if scale is not None:
+            adjoint[:, j] += scale * x[:, j]
+        else:
+            load[:, j] += power[:, k]
+
+
+def _adaptive_loads(
+    ports: PortNetwork, sources: SourceColumns | None, size: int
+) -> Callable[[float], np.ndarray]:
+    """The adaptive sweep's adjoint loads: the ports', then the dipoles'."""
+
+    def loads(omega: float) -> np.ndarray:
+        parts = [
+            ports.adjoint_loads(omega)
+            if ports.outputs
+            else np.zeros((size, 0), complex)
+        ]
+        if sources is not None:
+            parts.append(sources.adjoint_loads(omega))
+        return np.concatenate(parts, axis=1)
+
+    return loads
+
+
+def _check_sources_supported(
+    rule: DrivenRule, options: SolverOptions, comm: Any
+) -> None:
+    """Raise for a solve path that does not take incident columns yet.
+
+    Raises:
+        NotImplementedError: Incident columns across ranks or over frequency
+            workers.
+    """
+    if not rule.incident:
+        return
+    name = rule.incident[0].name
+    if comm is not None:
+        raise NotImplementedError(
+            f"The incident field {name!r} cannot be solved across ranks in this "
+            "gfem version; solve on one process."
+        )
+    if min(options.frequency_workers, len(rule.problem.frequency)) > 1:
+        raise NotImplementedError(
+            f"The incident field {name!r} cannot be solved over frequency "
+            "workers in this gfem version; use frequency_workers=1."
+        )
 
 
 def _check_supported(model: Model) -> None:

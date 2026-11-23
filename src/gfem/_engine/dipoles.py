@@ -103,7 +103,12 @@ class PointLoads:
         """The loads at ω, ``(N, n)``."""
         return self.vectors * self.coefficients(omega)[None, :]
 
-    def _power_scale(self, omega: float) -> float:
+    def __call__(self, omega: float) -> np.ndarray:
+        """`rhs`: the loads of a source kind as `SourceColumns` reads them."""
+        return self.rhs(omega)
+
+    def power_scale(self, omega: float) -> float:
+        r"""Emitted power per :math:`-\operatorname{Im}(b^H x)`, in W."""
         return 1.0 / (2 * omega * const.mu_0 * self.scale)
 
     def emitted_power(self, omega: float, x: np.ndarray) -> np.ndarray:
@@ -113,7 +118,7 @@ class PointLoads:
         """
         b = self.rhs(omega)
         pairs = np.asarray(self.layout.pair(np.conj(b), x))
-        return -np.imag(np.diagonal(pairs)) * self._power_scale(omega)
+        return -np.imag(np.diagonal(pairs)) * self.power_scale(omega)
 
     def nodes(
         self,
@@ -139,7 +144,7 @@ class PointLoads:
         out = np.zeros((len(mesh.nodes), 3))
         probed = probe(mesh, layout, self.located, comm)
         coefficients = self.coefficients(omega)
-        scale = self._power_scale(omega)
+        scale = self.power_scale(omega)
         for k in np.flatnonzero(~self.magnetic):
             lam_value, lam_grad = probed.jet(adjoint[:, k])
             x_value, x_grad = probed.jet(solution[:, k])
@@ -162,7 +167,7 @@ class PointLoads:
         JAX's convention: the cotangent of :math:`-\operatorname{Im}(b^H x)`
         on :math:`x` is :math:`i\bar b`.
         """
-        ct = np.asarray(cotangent, float) * self._power_scale(omega)
+        ct = np.asarray(cotangent, float) * self.power_scale(omega)
         return 1j * np.conj(self.rhs(omega)) * ct[None, :]
 
 

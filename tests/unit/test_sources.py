@@ -338,10 +338,3 @@ def test_sources_refuse_a_periodic_pair(tmp_path):
     model = _line(tmp_path, periodic=True)
     with pytest.raises(NotImplementedError, match=r"ElectricDipole 'd'.*periodic"):
         gfem.solve(model, gfem.Driven(5e9, sources=DIPOLE))
-
-
-def test_solving_a_source_column_is_not_available_yet(tmp_path):
-    # the declarations land first; each source kind's solve replaces this
-    model = _line(tmp_path, background=gfem.Material())
-    with pytest.raises(NotImplementedError, match="cannot solve source columns"):
-        gfem.solve(model, gfem.Driven(5e9, sources=WAVE))

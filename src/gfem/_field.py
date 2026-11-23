@@ -21,6 +21,8 @@ from gfem.mesh import Mesh
 if TYPE_CHECKING:
     import meshio
 
+    from gfem._incident import IncidentPart
+
 __all__ = ["SPACES", "Field", "FieldMap", "ReducedFields"]
 
 #: Finite-element spaces a `Field` can live on, by name: H1 (continuous
@@ -95,6 +97,9 @@ class Field:
     #: was solved with, so that readers of the operator stretch it as the
     #: solve did; ``None`` without a layer.
     _reference_frequency: float | None = None
+    #: A kept field of an incident-field column: what rebuilds its incident
+    #: part (`gfem._incident.IncidentPart`); ``None`` for any other field.
+    _incident: IncidentPart | None = None
     #: The point dipoles whose load solved this field, ``(name, position in
     #: m)`` each: a reader of the discrete equations' residual
     #: (`gfem.power_flow`) must keep its element layer off them.
@@ -188,6 +193,7 @@ class Field:
             unit="T",
             space="hdiv",
             order=max(self.order - 1, 0),
+            _incident=None,
         )
 
     def at(self, points: Any) -> jax.Array:

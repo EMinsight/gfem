@@ -529,8 +529,14 @@ $E_0\,\hat{\mathbf{e}}\,e^{-i k \hat{\mathbf{k}}\cdot\mathbf{r}}$, with the
 phase referred to the model origin. A Gaussian beam carries `INCIDENT_POWER`
 through any plane normal to its axis, like an excited port, with a real
 positive field at its focus. The kept field of a source column is the
-{term}`total field <Total field>`, the incident plus the scattered field. In a
-source column every port is terminated, and `DrivenResult.port_waves` holds
+{term}`total field <Total field>`, the incident plus the scattered field; inside
+a perfectly matched layer, where the incident field is zero, it is the
+scattered field. `DrivenResult.e_field(..., part="scattered")` and
+`part="incident"` give the two parts on the same space, adding exactly to the
+kept field. Where the incident field is dropped or must satisfy a wall it must
+stay at most $10^{-3}$ of its peak: where a scatterer meets the layer or an
+absorbing face, on a wave port face, and across an exterior PEC or PMC wall.
+In a source column every port is terminated, and `DrivenResult.port_waves` holds
 the outgoing wave $b$ at each port in √W: $|b|^2$ is the power the source sends
 into the port. The module's "Incident fields" section has the formulas.
 

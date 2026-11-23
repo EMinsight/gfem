@@ -447,7 +447,18 @@ the normal from above is :math:`\theta = \pi - 30°`).
   the same at every frequency.
 - Total field = incident field + scattered field. A kept field of a source
   column is the total field; the scattered field is outgoing at the
-  truncation.
+  truncation. In a perfectly matched layer the kept field of an incident
+  column is the scattered field: the incident field is zero there. Its
+  incident part (``DrivenResult.e_field(..., part="incident")``) is the
+  incident field interpolated on the kept field's space outside the layer,
+  and its scattered part the kept field minus it, so the three add exactly.
+- Truncation and walls: where the incident field is dropped or must hold a
+  wall, it must stay at most :math:`10^{-3}` of its peak over the physical
+  region: where a scatterer (a region whose material differs from the
+  background, a material field always, or a sheet, conductor or lumped
+  face) meets the layer or an absorbing face, on a wave port face, and as
+  :math:`|n\times E|` on an exterior PEC wall or :math:`\eta|n\times H|`
+  on an exterior PMC wall (named, or by default).
 - Port waves: in a source column every port is terminated in its reference
   impedance, and ``DrivenResult.port_waves`` is the outgoing pseudo-wave
   :math:`b` at each port, in √W as a column of S: on a real ``z_ref``,
