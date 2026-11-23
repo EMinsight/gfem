@@ -344,7 +344,8 @@ def adaptive_sweep(
             pending = [int(i) for i in dict.fromkeys(seeds) if int(i) not in chosen]
             # the seeds are solved whatever the streak: a model that looks
             # converged away from a resonance is wrong next to it
-            while (pending or streak < memory) and len(chosen) < min(n_freq, max_samples):
+            cap = min(n_freq, max_samples)
+            while (pending or streak < memory) and len(chosen) < cap:
                 if pending:
                     i = pending.pop(0)
                 else:

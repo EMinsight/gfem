@@ -211,7 +211,12 @@ class ModeSearch:
         # takes is not known in advance
         with _progress.task(MODE_ROW) as row:
             return self._find(
-                eop, project, sigma, guard=guard, polish_isolated=polish_isolated, row=row
+                eop,
+                project,
+                sigma,
+                guard=guard,
+                polish_isolated=polish_isolated,
+                row=row,
             )
 
     def _find(
@@ -335,7 +340,7 @@ class ModeSearch:
             out.append(m)
         return out, failed
 
-    def _select(
+    def _select(  # noqa: PLR0915 - one selection loop over the seeds
         self,
         op: EigenOperator,
         k: np.ndarray,

@@ -36,7 +36,13 @@ import numpy as np
 
 from gfem._eigen.operator import EigenOperator
 
-__all__ = ["MIN_SUBSPACE", "MODE_ROW", "SeedBoundReached", "SeedOperator", "seed_operator"]
+__all__ = [
+    "MIN_SUBSPACE",
+    "MODE_ROW",
+    "SeedBoundReached",
+    "SeedOperator",
+    "seed_operator",
+]
 
 #: The smallest subspace (ncv) a seed solve builds: it applies the seed
 #: operator, one ``T(sigma)`` solve, at least this many times per shift.
