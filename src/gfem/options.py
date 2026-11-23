@@ -10,8 +10,8 @@ from typing import Any, Literal
 
 __all__ = ["SolverOptions"]
 
-LinearSolver = Literal["auto", "bddc_gmres", "direct", "petsc"]
-_LINEAR_SOLVERS = ("auto", "bddc_gmres", "direct", "petsc")
+LinearSolver = Literal["auto", "bddc_gmres", "direct", "petsc", "pmg_gmres"]
+_LINEAR_SOLVERS = ("auto", "bddc_gmres", "direct", "petsc", "pmg_gmres")
 EigenSolver = Literal["auto", "arpack", "slepc"]
 _EIGEN_SOLVERS = ("auto", "arpack", "slepc")
 TimeScheme = Literal["tr_bdf2", "theta"]
@@ -33,6 +33,21 @@ def _one_of(value: object, name: str, choices: tuple[str, ...]) -> None:
         raise ValueError(
             f"SolverOptions.{name} must be one of "
             f"{', '.join(repr(c) for c in choices)}, got {value!r}."
+        )
+
+
+def _pmg_order(order: int) -> None:
+    """Raise `ValueError` unless ``order`` is one the p-multigrid solves: 2 or 3."""
+    if order == 1:
+        raise ValueError(
+            "linear_solver='pmg_gmres' needs order 2 or 3, got order 1: at order 1 "
+            "its direct level is the whole system. Use linear_solver='direct'."
+        )
+    if order >= 4:
+        raise ValueError(
+            f"linear_solver='pmg_gmres' needs order 2 or 3, got order {order}: its "
+            "vertex-star blocks above order 3 are not verified in this version of "
+            "gfem. Use linear_solver='direct' or 'bddc_gmres'."
         )
 
 
@@ -529,6 +544,8 @@ class SolverOptions:
                 "only the direct solver runs on a GPU, not "
                 f"{self.linear_solver!r}."
             )
+        if self.linear_solver == "pmg_gmres":
+            _pmg_order(self.order)
         if self.threads is not None:
             _int(self.threads, "threads", 1)
         _int(self.adaptive_max_samples, "adaptive_max_samples", 2)

@@ -36,7 +36,7 @@ agreed value: the iterations, the residuals and the norms of
 from __future__ import annotations
 
 import math
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 import ngsolve as ngs
 import numpy as np
@@ -78,6 +78,15 @@ def _reused_reference(n_ref: int, measured: float, tolerance: float) -> int:
         return n_ref
     scale = math.log(REUSED_TOLERANCE * tolerance) / math.log(measured)
     return math.ceil(n_ref * max(scale, 1.0))
+
+
+class Preconditioner(Protocol):
+    """What a setup gives a Krylov solve: an NGSolve preconditioner, or its like."""
+
+    @property
+    def mat(self) -> ngs.BaseMatrix:
+        """The preconditioner as a matrix: its product applies it."""
+        ...
 
 
 class KrylovHandle(NgsHandle):
@@ -139,7 +148,7 @@ class KrylovHandle(NgsHandle):
     def _check_operator(self, operator: Operator) -> None:
         """Hook: refuse an operator the preconditioner cannot serve."""
 
-    def _set_up(self, form: ngs.BilinearForm):
+    def _set_up(self, form: ngs.BilinearForm) -> Preconditioner:
         """Assemble ``form`` and set the preconditioner up on it.
 
         Returns the preconditioner: its ``mat`` applies it. The setup may
@@ -205,7 +214,7 @@ class KrylovHandle(NgsHandle):
             if span.enabled:
                 span.set(solver=self.kind, action="factorized", nbytes=self.nbytes)
 
-    def _held(self) -> tuple[ngs.BaseMatrix, ngs.Preconditioner, ngs.BilinearForm]:
+    def _held(self) -> tuple[ngs.BaseMatrix, Preconditioner, ngs.BilinearForm]:
         """The matrix, its preconditioner and its form.
 
         Raises:
@@ -219,7 +228,7 @@ class KrylovHandle(NgsHandle):
     def _krylov(
         self,
         matrix: ngs.BaseMatrix,
-        pre: ngs.Preconditioner,
+        pre: Preconditioner,
         *,
         maxiter: int | None = None,
         reference: float | None = None,
@@ -253,7 +262,7 @@ class KrylovHandle(NgsHandle):
     def _gmres(
         self,
         matrix: ngs.BaseMatrix,
-        pre: ngs.Preconditioner,
+        pre: Preconditioner,
         *,
         maxiter: int,
         reference: float | None = None,

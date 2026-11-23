@@ -9,7 +9,7 @@ import structured_meshes as sm
 
 import gfem
 from gfem._engine.mesh import to_ngsolve
-from gfem._linalg import pmg
+from gfem._linalg import pardiso, pmg
 
 
 def test_direct_set_regular_tetrahedron_aspect():
@@ -159,3 +159,47 @@ def test_direct_set_leaves_fixed_dofs_out(box):
     assert fixed > 0
     assert (direct.dofs & ~space.FreeDofs()).NumSet() == 0
     assert direct.dofs.NumSet() < pmg.direct_set_count(nodes, tets, 2).direct
+
+
+# --- pmg_gmres end to end -----------------------------------------------------------
+
+#: The strip line of test_driven: 10 x 2 x 1 mm, eps_r 4, between PEC plates.
+LINE = (10.0, 2.0, 1.0)
+EPS = 4.0
+F = 5e9
+
+
+@pytest.fixture(scope="module")
+def line(tmp_path_factory):
+    path = tmp_path_factory.mktemp("line") / "line.msh"
+    sm.write_msh22(path, sm.strip_line(*LINE, (10, 1, 1)))
+    mesh = gfem.Mesh.from_gmsh(path, length_unit="mm")
+    return gfem.Model(
+        mesh,
+        materials={"dielectric": gfem.Material(eps_r=EPS)},
+        boundaries=[gfem.PEC("bottom"), gfem.PEC("top")],
+        ports=[
+            gfem.LumpedPort("p1", "port1", "+z"),
+            gfem.LumpedPort("p2", "port2", "+z"),
+        ],
+    )
+
+
+def _s(model, problem=None, **options):
+    problem = problem or gfem.Driven(frequency=F)
+    return np.asarray(
+        gfem.solve(model, problem, options=gfem.SolverOptions(**options)).s.values
+    )
+
+
+@pytest.mark.parametrize("factor", ["pardiso", "sparse_cholesky"])
+@pytest.mark.parametrize("order", [2, 3])
+def test_pmg_gmres_matches_direct(line, monkeypatch, order, factor):
+    if factor == "pardiso" and not pardiso.pardiso_available():
+        pytest.skip("the mkl extra is not installed")
+    if factor == "sparse_cholesky":
+        # without MKL the direct level is NGSolve's sparse Cholesky
+        monkeypatch.setattr(pmg, "pardiso_inverse", lambda *_, **__: None)
+    s = _s(line, order=order, linear_solver="pmg_gmres")
+    direct = _s(line, order=order, linear_solver="direct")
+    np.testing.assert_allclose(s, direct, rtol=0, atol=1e-6)

@@ -51,6 +51,11 @@ Backends:
   solution, or the previous design's at a design's first frequency); CG
   ignores it. BDDC reads the fixed DOFs from the space, so the operator's
   free DOFs must be the space's ``FreeDofs()``.
+- ``"pmg_gmres"``: GMRES on one V-cycle of a two-level p-multigrid
+  (`gfem._linalg.pmg`), to the same relative preconditioned residual as
+  ``"bddc_gmres"``, with the same preconditioner reuse. Its direct level is
+  factored as ``"direct"`` factors; its smoother needs ``A^T = A``. It reads
+  the solve domain's cells from ``Operator.cells``.
 - ``"cudss"``: the ``direct`` solver on a GPU (``device="cuda"`` or
   ``"cuda:N"``), NVIDIA cuDSS. The host holds all data; the factors stay on
   the GPU. Symmetric and Hermitian operators only. Needs the cuda extra; an
@@ -97,6 +102,7 @@ from gfem import _timing
 
 if TYPE_CHECKING:
     from gfem._linalg.layout import DofLayout
+    from gfem._linalg.pmg import Cells
     from gfem._linalg.pieces import PieceSum
     from gfem.options import PetscOptions, PetscValue, SolverOptions
 
@@ -118,7 +124,7 @@ __all__ = [
 
 Symmetry = Literal["complex_symmetric", "hermitian", "general"]
 #: A linear solver a problem can use (`ResolvedLinearSolver.kind`).
-Kind = Literal["direct", "bddc_gmres", "petsc"]
+Kind = Literal["direct", "bddc_gmres", "petsc", "pmg_gmres"]
 KINDS: tuple[Kind, ...] = get_args(Kind)
 #: Most Krylov iterations of an iterative solve.
 MAXITER = 400
@@ -173,12 +179,20 @@ class Operator:
         layout: How the form's space lies across ranks, on which `prepare`
             dispatches; ``None`` on one process. It cannot be read off the form,
             which is not assembled yet.
+        cells: Builds the solve domain's cells (`gfem._linalg.pmg.Cells`),
+            which ``pmg_gmres`` reads for its direct set; ``None`` for every
+            volume element of the form's mesh, none of them in a perfectly
+            matched layer. The other linear solvers ignore it.
+        frequency: The frequency the operator is at, in Hz, for a linear
+            solver's log; ``None`` when it has none.
     """
 
     form: ngs.BilinearForm
     freedofs: ngs.BitArray
     piece_sum: PieceSum | None = None
     layout: DofLayout | None = None
+    cells: Callable[[], Cells] | None = None
+    frequency: float | None = None
 
 
 class Handle(Protocol):
@@ -483,6 +497,18 @@ def prepare(
             width=width,
             solves=solves,
         )
+    if kind == "pmg_gmres":
+        from gfem._linalg.pmg import PmgHandle
+
+        return PmgHandle(
+            operator,
+            symmetry,
+            tolerance=tolerance,
+            maxiter=maxiter,
+            reuse=reuse_preconditioner,
+            width=width,
+            solves=solves,
+        )
     raise _unavailable(kind)
 
 
@@ -521,7 +547,8 @@ def _prepare_on_ranks(
     from gfem import _mpi
     from gfem._linalg.bddc import BddcHandle
 
-    if kind not in KINDS:
+    if kind not in KINDS or kind == "pmg_gmres":
+        # the p-multigrid runs on one process only
         raise _mpi.agreed(_unavailable(kind))
     if kind in ("direct", "petsc"):
         from gfem import _petsc

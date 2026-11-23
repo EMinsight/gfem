@@ -18,15 +18,36 @@ marking every one of them only spends memory on the cells that need it.
 estimate made before assembly; `direct_set` builds it on a first-kind
 Nédélec space. Both mark the cells through `direct_cells`, so the estimate
 and the solver cannot disagree.
+
+`PmgHandle` is the ``pmg_gmres`` linear solver: GMRES (`KrylovHandle`, with
+its preconditioner reuse across a sweep) preconditioned by one symmetric
+V-cycle (`VCycle`) of the two levels. The direct level is the operator
+restricted to the direct set, factored by gfem's direct inverse: MKL PARDISO
+with gfem's flags (`gfem._linalg.pardiso`), sparse Cholesky without it. The
+smoother is block Gauss-Seidel over vertex stars (every free DOF on an edge,
+face or cell around a vertex), on a copy of the operator in symmetric
+storage, for which NGSolve factors each block as an unpivoted band
+$L D L^\mathsf{T}$: half the memory of dense inverses, and a faster setup.
+GMRES itself runs on the operator in general storage, whose product is
+faster. Each setup logs one INFO record on ``gfem.solver``
+(`gfem._linalg.report.pmg_build`).
 """
 
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from typing import NamedTuple
 
 import ngsolve as ngs
 import numpy as np
+
+from gfem import _timing
+from gfem._linalg import Operator, Symmetry, report
+from gfem._linalg.base import free_mask, host_bytes
+from gfem._linalg.direct import INVERSE, Factors, UpdateFactors
+from gfem._linalg.krylov_handle import KrylovHandle
+from gfem._linalg.pardiso import PardisoFactors, pardiso_inverse
 
 #: Cells of a larger aspect are poor: every DOF of theirs joins the direct set.
 #: Above about 10 a connected layer adds iterations (+3-4 at 20, +9-13 at 50-65);
@@ -218,3 +239,272 @@ def _distinct(rows: np.ndarray) -> int:
         return 0
     rows = rows[np.lexsort(rows.T[::-1])]
     return 1 + int(np.any(rows[1:] != rows[:-1], axis=1).sum())
+
+
+class Cells(NamedTuple):
+    """The cells of a solve domain, as `direct_set` reads them.
+
+    Attributes:
+        nodes: Vertex coordinates, ``(n, 3)``.
+        tets: The tetrahedra the space is defined on, ``(m, 4)``.
+        elements: The NGSolve volume element of each row of ``tets``.
+        pml: Per row of ``tets``, whether it is a cell of a perfectly
+            matched layer; ``None`` for none.
+    """
+
+    nodes: np.ndarray
+    tets: np.ndarray
+    elements: np.ndarray
+    pml: np.ndarray | None = None
+
+
+def mesh_cells(mesh: ngs.Mesh) -> Cells:
+    """Every volume element of an NGSolve mesh, none in a perfectly matched layer."""
+    ngmesh = mesh.ngmesh
+    tets = np.asarray(ngmesh.Elements3D().NumPy()["nodes"][:, :4], dtype=np.int64) - 1
+    return Cells(np.asarray(ngmesh.Coordinates()), tets, np.arange(len(tets)))
+
+
+def vertex_stars(space: ngs.FESpace, free: np.ndarray) -> list[list[int]]:
+    """The free DOFs on each vertex star of ``space``, one block per vertex.
+
+    A vertex star holds every DOF on an edge, face or cell around the vertex.
+    Vertices without a free DOF give no block.
+    """
+    blocks = []
+    for star in space.CreateSmoothingBlocks(blocktype="vertexpatch"):
+        dofs = np.fromiter(star, dtype=np.int64)
+        dofs = np.sort(dofs[free[dofs]])
+        if len(dofs):
+            blocks.append(dofs.tolist())
+    return blocks
+
+
+def _band_bytes(blocks: list[list[int]], *, is_complex: bool) -> int:
+    """At most the bytes of the blocks' band factors: one triangle each.
+
+    Counted in 64-bit integers: the square of a large block count overflows 32.
+    """
+    sizes = np.fromiter((len(b) for b in blocks), dtype=np.int64, count=len(blocks))
+    entry = 16 if is_complex else 8
+    return int(entry * (sizes * (sizes + 1) // 2).sum())
+
+
+def _factor(
+    matrix: ngs.BaseMatrix, dofs: ngs.BitArray, symmetry: Symmetry, *, is_complex: bool
+) -> Factors:
+    """The direct level: ``matrix`` on ``dofs``, factored as the direct solver does.
+
+    gfem's PARDISO (`pardiso_inverse`) with the ``mkl`` extra, sparse
+    Cholesky without it. The inverse is zero off ``dofs``.
+    """
+    pardiso = (
+        pardiso_inverse(symmetry, is_complex=is_complex) if dofs.NumSet() else None
+    )
+    inverse = matrix.Inverse(dofs, inverse=pardiso or INVERSE)
+    if pardiso is None:
+        return UpdateFactors(inverse, dofs.NumSet())
+    mask = free_mask(dofs, int(matrix.height))
+    return PardisoFactors(inverse, mask, is_complex=is_complex)
+
+
+class VCycle(ngs.BaseMatrix):
+    r"""One symmetric V-cycle of the two-level p-multigrid, as an NGSolve matrix.
+
+    ``x = M b``: from $x = 0$, one forward block Gauss-Seidel sweep, the
+    direct correction $x \mathrel{+}= A_{DD}^{-1} (b - A x)_D$ on the direct
+    set $D$, one backward sweep. The cycle is linear in $b$, and complex
+    symmetric when $A$ is.
+
+    Attributes:
+        form: The form the cycle was built on: its matrix is the residual's.
+        direct: DOFs on the direct set.
+        pml_dofs: DOFs on the closure of a PML cell.
+        poor_cells: Poor cells (`POOR_ASPECT`).
+    """
+
+    def __init__(
+        self,
+        form: ngs.BilinearForm,
+        symmetric: ngs.BilinearForm,
+        blocks: list[list[int]],
+        direct: DirectSet,
+        symmetry: Symmetry,
+        *,
+        is_complex: bool,
+    ) -> None:
+        """Factor the direct level and the smoother's blocks of an assembled form.
+
+        ``symmetric`` is ``form``'s operator assembled in symmetric storage,
+        the smoother's; ``form``'s matrix (general storage) is the residual's
+        and the direct level's.
+        """
+        super().__init__()
+        self.form = form
+        matrix = self._matrix = form.mat
+        self._symmetric = symmetric
+        self._complex = is_complex
+        self._smoother = symmetric.mat.CreateBlockSmoother(blocks, parallel=True)
+        self._band = _band_bytes(blocks, is_complex=is_complex)
+        self._factors: Factors | None = _factor(
+            matrix, direct.dofs, symmetry, is_complex=is_complex
+        )
+        self.direct = direct.dofs.NumSet()
+        self.pml_dofs = direct.pml_dofs
+        self.poor_cells = direct.poor_cells
+        self._r = matrix.CreateColVector()
+        self._z = matrix.CreateColVector()
+
+    @property
+    def mat(self) -> ngs.BaseMatrix:
+        """The cycle: what a Krylov solve applies."""
+        return self
+
+    def IsComplex(self) -> bool:  # noqa: N802 - NGSolve's name
+        return self._complex
+
+    def Height(self) -> int:  # noqa: N802
+        return int(self._matrix.height)
+
+    def Width(self) -> int:  # noqa: N802
+        return int(self._matrix.width)
+
+    def CreateRowVector(self) -> ngs.BaseVector:  # noqa: N802
+        return self._matrix.CreateRowVector()
+
+    def CreateColVector(self) -> ngs.BaseVector:  # noqa: N802
+        return self._matrix.CreateColVector()
+
+    def Mult(self, b: ngs.BaseVector, x: ngs.BaseVector) -> None:  # noqa: N802
+        """``x = M b`` (see the class docstring)."""
+        if self._factors is None:
+            raise RuntimeError("This p-multigrid was freed.")
+        r, z = self._r, self._z
+        x[:] = 0
+        self._smoother.Smooth(x, b)
+        r.data = b - self._matrix * x
+        z.data = self._factors.inverse * r
+        x.data += z
+        self._smoother.SmoothBack(x, b)
+
+    @property
+    def nbytes(self) -> int:
+        """Host memory of the symmetric copy, the band factors and the direct level.
+
+        The general-storage matrix is the handle's, not counted here.
+        """
+        factors = self._factors
+        if factors is None:
+            return 0
+        return host_bytes(self._symmetric.mat) + self._band + int(factors.nbytes)
+
+    def free(self) -> None:
+        """Drop the factors, the smoother and the symmetric copy."""
+        self._factors = None
+        self._smoother = None
+        self._symmetric = None
+
+
+class PmgHandle(KrylovHandle):
+    r"""GMRES on one V-cycle of the p-multigrid, reused by a solve per right-hand side.
+
+    The operator must equal its transpose: the smoother factors its blocks
+    as $L D L^\mathsf{T}$. The Krylov solve, its warm start and the
+    preconditioner reuse across a sweep are `KrylovHandle`'s; this handle
+    assembles the operator and builds the V-cycle on it (`VCycle`), and logs
+    each build (`gfem._linalg.report.pmg_build`).
+    """
+
+    kind = "pmg_gmres"
+    preconditioner_name = "p-multigrid"
+
+    def __init__(
+        self,
+        operator: Operator,
+        symmetry: Symmetry,
+        *,
+        tolerance: float,
+        maxiter: int,
+        reuse: bool = True,
+        width: int = 1,
+        solves: int = 1,
+    ) -> None:
+        """Assemble the form, build the V-cycle, and set up GMRES on it.
+
+        ``reuse=False`` builds the V-cycle again at every `refactorize`.
+        ``width`` and ``solves`` are read by the reuse rule only.
+        """
+        self._cells: Callable[[], Cells] | None = operator.cells
+        self._freedofs = operator.freedofs
+        self._frequency = operator.frequency
+        super().__init__(
+            operator,
+            symmetry,
+            tolerance=tolerance,
+            maxiter=maxiter,
+            reuse=reuse,
+            width=width,
+            solves=solves,
+        )
+
+    def refactorize(
+        self,
+        operator: Operator,
+        *,
+        solves: int | None = None,
+        frequency: float | None = None,
+        sweep: bool = False,
+    ) -> None:
+        """As `KrylovHandle.refactorize`; a later build logs ``operator``'s frequency."""
+        with self._lock:
+            self._frequency = operator.frequency
+            super().refactorize(
+                operator, solves=solves, frequency=frequency, sweep=sweep
+            )
+
+    def _set_up(self, form: ngs.BilinearForm) -> VCycle:
+        """Assemble ``form``, then build the V-cycle on its matrix."""
+        with _timing.phase("assemble"):
+            form.Assemble()
+        space = form.space
+        is_complex = bool(space.is_complex)
+        cells = mesh_cells(space.mesh) if self._cells is None else self._cells()
+        direct = direct_set(space, *cells)
+        symmetric = ngs.BilinearForm(space, symmetric=True, symmetric_storage=True)
+        for integrator in form.integrators:
+            symmetric += integrator
+        symmetric.Assemble()
+        free = free_mask(self._freedofs, int(space.ndof))
+        cycle = VCycle(
+            form,
+            symmetric,
+            vertex_stars(space, free),
+            direct,
+            self.symmetry,
+            is_complex=is_complex,
+        )
+        report.pmg_build(
+            direct=cycle.direct,
+            pml_dofs=cycle.pml_dofs,
+            poor_cells=cycle.poor_cells,
+            unknowns=int(free.sum()),
+            frequency=self._frequency,
+        )
+        return cycle
+
+    @property
+    def nbytes(self) -> int:
+        """Host memory of the matrix and the V-cycle, in bytes.
+
+        A V-cycle reused at another matrix also holds its own.
+        """
+        # read once, without the lock: a concurrent free gives 0 or the old count
+        held, pre, form = self._matrix, self._preconditioner, self._form
+        if self._solver is None or held is None or not isinstance(pre, VCycle):
+            return 0
+        own = 0 if pre.form is form else host_bytes(pre.form.mat)
+        return host_bytes(held) + pre.nbytes + own
+
+    def _drop_setup(self) -> None:
+        """Nothing beyond the V-cycle, which goes with the preconditioner."""
+
