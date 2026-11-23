@@ -48,6 +48,9 @@ srun --mpi=pmix python distributed_line.py direct   # under Slurm
   communicator yourself, pass `comm=` to {py:obj}`gfem.solve`, `Job.run`,
   `Mesh.from_gmsh`, `Job.from_json` or `load_result`.
 - A job file runs the same way: `srun --mpi=pmix python -m gfem run job.json --out result`.
+- `gfem.log.enable()` shows rank 0's log lines, tagged `r0/4`, and every
+  rank's warnings; `rank0_only=False` shows every rank's lines
+  ({doc}`watch-a-solve`).
 - On a machine with fewer cores than ranks, add `--oversubscribe --bind-to
   none --mca mpi_yield_when_idle 1` to `mpirun`.
 - The script is a driven solve; an electrostatic or eigenmode script runs the
