@@ -327,6 +327,17 @@ def electro_optic_shift(
     given, as `gfem.PortMode` picks it; exclusions or a window make the
     core's mode the first.
 
+    `jax.grad` reaches the electrostatic mesh's node coordinates (an
+    electrode gap through a `gfem.shape.boundary_morph` of the electrostatic
+    model): the static field is read at fixed points of the optical model,
+    so its derivative counts the potential's change and the static mesh
+    moving under those points. In a gap morph, name the crystal's interfaces
+    in the electrostatic mesh so they slide, and hold the waveguide with
+    ``fixed=``; an unnamed interface deforms with the electrode. With the
+    optical model on another mesh, the shift jumps slightly when a point
+    crosses a face of the moving static mesh: the gradient is that of the
+    smooth piece the design is on.
+
     The shift is linear in the potential: several terminals' shifts add,
     each times its drive. A push-pull modulator's two arms, ``a`` and ``b``
     (two ports on one potential), give
