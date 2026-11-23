@@ -34,3 +34,26 @@ def test_cross_sections_scale_the_efficiencies_by_the_area():
     values = fsc.mie_cross_sections(4.0, fsc.RADIUS)
     q = fsc.mie(4.0, 2 * math.pi * fsc.RADIUS)
     assert values[0] == pytest.approx(q[0] * math.pi * (fsc.RADIUS * 1e-6) ** 2)
+
+
+@pytest.mark.parametrize("normal", [True, False])
+@pytest.mark.parametrize("height", [0.05, 0.2, 0.41])
+def test_the_half_space_integral_over_a_conductor_is_image_theory(normal, height):
+    image = fsc.image_power(height, normal=normal, sign=1)
+    assert fsc.half_space_power(height, None, normal=normal) == pytest.approx(
+        image, rel=1e-9
+    )
+
+
+def test_the_half_space_integral_over_vacuum_is_one():
+    for normal in (True, False):
+        assert fsc.half_space_power(0.2, 1.0, normal=normal) == pytest.approx(
+            1.0, abs=1e-12
+        )
+
+
+def test_far_above_a_dielectric_the_power_tends_to_the_bulk_power():
+    # the reflected field falls as 1/h: within a few percent at 5 wavelengths
+    for normal in (True, False):
+        ratio = fsc.half_space_power(5.0, 2.25, normal=normal)
+        assert ratio == pytest.approx(1.0, abs=0.05)

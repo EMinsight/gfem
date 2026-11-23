@@ -53,6 +53,7 @@ from gfem._engine.incident import (
     background_model,
     incident_coefficients,
     layer_regions,
+    scatterer_elements,
     scatterer_regions,
 )
 from gfem._linalg.base import free_mask
@@ -144,8 +145,9 @@ def check_truncation_layer(
         "the PML layer or Absorbing face, or measure per region with "
         "power_flow and port_wave."
     )
+    scatterer = scatterer_elements(model, background)
     for region in scatterer_regions(model, background):
-        if not read[mesh.elements(region)].any():
+        if not (read & scatterer)[mesh.elements(region)].any():
             continue
         if is_traced(model.materials[region]):
             raise NonDifferentiableError(
