@@ -50,7 +50,7 @@ import numpy as np
 import scipy.constants
 import scipy.linalg
 
-from gfem import _mpi, _pml
+from gfem import _mpi, _pml, _progress
 from gfem._boundaries import (
     FloquetPort,
     WavePort,
@@ -117,6 +117,8 @@ _SLOW_WAVE = 2.0
 # 0.986); a picked mode with more than `_CLEARANCE` warns.
 _PML_SHARE = 0.5
 _CLEARANCE = 1e-2
+#: The port mode sweep's progress row: its output frequencies that pass.
+PORT_MODE_ROW = "port mode sweep"
 # With at most this many frequencies every one is solved exactly.
 _EXACT_ONLY = 3
 # A new mode adds its part orthogonal to the basis unless that part is below
@@ -611,6 +613,12 @@ class _Greedy:
     # --- driver ---------------------------------------------------------------
 
     def run(self) -> None:
+        # the row counts the output frequencies that pass, so it can go down
+        # after a re-selection
+        with _progress.task(PORT_MODE_ROW, total=len(self.f)) as row:
+            self._run(row)
+
+    def _run(self, row: Any) -> None:
         n = len(self.f)
         first = self._solve(0)
         if len(first.lam) < max(self.modes):
@@ -629,6 +637,7 @@ class _Greedy:
             if passed is None:  # a sample was re-selected
                 self._rebuild()
                 continue
+            row.update(completed=int(passed.sum()), exact_solves=self.exact_solves)
             if passed.all():
                 for k in range(len(self.modes)):
                     self._warn_crossing(k)
