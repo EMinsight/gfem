@@ -59,5 +59,4 @@ def test_t15_a_dipole_above_glass_emits_the_sommerfeld_power(tmp_path):
     for name, reference in expected.items():
         ratio = float(result.emitted_power[name][0]) / bulk
         errors[name] = ratio / reference - 1
-    print({name: f"{e:+.2%}" for name, e in errors.items()})
     assert max(abs(e) for e in errors.values()) <= REL, errors
