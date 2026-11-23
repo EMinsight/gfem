@@ -60,6 +60,7 @@ from gfem._engine.fields import (
     support_region,
     surface_triangles,
     tetrahedron_face_keys,
+    vertex_dofs,
 )
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
@@ -500,10 +501,15 @@ class ThermalRule:
         return self._lift(built, space), self._boundary_load(built, space)
 
     def _constant(self, space: ngs.FESpace, value: float) -> np.ndarray:
-        """The coefficients of a uniform temperature ``value``."""
-        gf = ngs.GridFunction(space)
-        gf.Set(ngs.CF(value))
-        return gf.vec.FV().NumPy().copy()
+        """The coefficients of a uniform temperature ``value``.
+
+        Exactly: ``value`` on the vertex DOFs, zero on the others (an
+        interpolation leaves 1e-11 K of round-off on them, which a heat
+        flow's residual reads).
+        """
+        out = np.zeros(space.ndof)
+        out[vertex_dofs(space)] = value
+        return out
 
     def _solve(self, handle: Handle, rhs: np.ndarray) -> np.ndarray:
         x, its = handle.solve_counted(rhs)
