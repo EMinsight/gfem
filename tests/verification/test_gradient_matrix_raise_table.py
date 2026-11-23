@@ -1946,6 +1946,34 @@ def _out_power_flow_of_a_reduced_field(request):
     jax.make_jaxpr(jax.grad(objective))(eps)
 
 
+def _out_heat_flow_in_the_node_coordinates(request):
+    # the residual integrates on the elements the nodes move
+    path = request.getfixturevalue("tmp_path") / "heat.msh"
+    mesh = tc.section(
+        path,
+        [(0.0, 0.0, 2.0, 1.0, "slab", None)],
+        0.5,
+        [(lambda p: abs(p[1]) < 1e-9, "bottom")],
+    )
+    model = gfem.Model(
+        mesh,
+        materials={"slab": gfem.Material(thermal_conductivity=1.4)},
+        boundaries=[gfem.FixedTemperature("bottom", temperature=300.0)],
+    )
+    heat = gfem.HeatSource.uniform("slab", power_per_length=1.0)
+    result = gfem.solve(model, gfem.SteadyThermal(heat))
+
+    def objective(nodes):
+        moved = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        return gfem.heat_flow_per_length(
+            result, "bottom", model=model.replace(mesh=moved)
+        )
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
 def _out_dissipated_power_in_the_node_coordinates(request):
     model = request.getfixturevalue("wave_model")
     problem = gfem.Driven(frequency=20e9, keep_fields=True)
@@ -2721,6 +2749,12 @@ OUT_OF_SCOPE = [
     (
         "power_flow x node coordinates",
         _out_power_flow_in_the_node_coordinates,
+        gfem.NonDifferentiableError,
+        r"mesh node coordinates.*stop_gradient",
+    ),
+    (
+        "heat_flow x node coordinates",
+        _out_heat_flow_in_the_node_coordinates,
         gfem.NonDifferentiableError,
         r"mesh node coordinates.*stop_gradient",
     ),

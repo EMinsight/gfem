@@ -263,6 +263,9 @@ def test_raises_list_is_the_out_of_scope_rows_off_the_grid(derived):
     assert route["label"].startswith("`route_phase`")
     assert rows["law parameter of a blend's end"]["error"] == "NonDifferentiableError"
     assert rows["probe x node coordinates"]["error"] == "NonDifferentiableError"
+    heat = rows["heat_flow x node coordinates"]
+    assert heat["error"] == "NonDifferentiableError"
+    assert heat["label"].startswith("The heat through a surface")
     assert rows["material axes (orientation)"] == {
         "key": "material axes (orientation)",
         "label": "Any result, with respect to a material's principal axes",

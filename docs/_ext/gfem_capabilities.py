@@ -436,6 +436,10 @@ RAISES_LABELS = {
     "power_flow x node coordinates": (
         "The power through a surface (`power_flow`), with respect to node coordinates"
     ),
+    "heat_flow x node coordinates": (
+        "The heat through a surface (`heat_flow`, `heat_flow_per_length`), with "
+        "respect to node coordinates"
+    ),
     "power_flow x reduced field": (
         "The power through a surface (`power_flow`) of a field of an adaptive "
         "sweep, with respect to anything the field depends on"
