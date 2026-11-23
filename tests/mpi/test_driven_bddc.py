@@ -273,16 +273,21 @@ def test_a_capped_stack_takes_one_rule_for_many_columns_or_a_pattern_seen(tmp_pa
 
 
 def _kind_and_nodes():
-    """The stack kind and each rank's node, as the coarse set-up reads them."""
+    """The stack kind, each rank's node and whether the stack has ParMETIS.
+
+    `_petsc.has_parmetis` initialises PETSc, so it is read on the ranks: on the MPI
+    stack it would make pytest's process an MPI singleton, whose state later
+    launches inherit and whose finalize can hang at exit.
+    """
     world = _world()
-    return coarse.stack_kind(world), _mpi.node_ids(world)
+    return coarse.stack_kind(world), _mpi.node_ids(world), _petsc.has_parmetis()
 
 
 @needs_stack
 def test_every_rank_reads_the_stack_kind_and_one_node_here():
-    (kind, nodes), *_ = on_ranks(_kind_and_nodes, ranks=4)
+    (kind, nodes, parmetis), *_ = on_ranks(_kind_and_nodes, ranks=4)
     expected = coarse.CAPPED if _petsc.has_paraord_cap() else coarse.STOCK
-    assert kind == (coarse.PARMETIS if _petsc.has_parmetis() else expected)
+    assert kind == (coarse.PARMETIS if parmetis else expected)
     assert nodes == (0, 0, 0, 0)  # a launch of this tier is on one node
 
 
