@@ -106,6 +106,13 @@ def _tet_volumes(mesh: Mesh) -> np.ndarray:
     return np.abs(np.einsum("ij,ij->i", np.cross(a, b), c)) / 6.0
 
 
+def _triangle_areas(mesh: Mesh) -> np.ndarray:
+    """Area of each gfem triangle in m^2, from host node positions."""
+    nodes = mesh.imported_nodes if is_traced(mesh.nodes) else np.asarray(mesh.nodes)
+    p = nodes[mesh.triangles]
+    return np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1) / 2
+
+
 @dataclasses.dataclass(frozen=True, eq=False)
 class HeatSource:
     """Heat delivered to volume regions of a thermal problem.
@@ -126,12 +133,19 @@ class HeatSource:
     _quantity: str | None = None
     #: For a uniform source: the amount, a scalar (W, W/m or W/m^3).
     _amount: Any = None
-    #: For a joule source: the power density per tetrahedron, W/m^3.
+    #: For a source built from a solve: the power density per tetrahedron,
+    #: W/m^3.
     _density: Any = None
-    #: For a joule source: its total power in W (slab total on a
+    #: For a source built from a solve: the power density per gfem triangle
+    #: (`gfem.Mesh.triangles` order), W/m^2, or ``None`` (no face heat).
+    _face_density: Any = None
+    #: For a source built from a solve: its total power in W (slab total on a
     #: cross-section), when concrete; for the repr.
     _total: float | None = None
-    #: For a joule source: the cross-section thickness in m, else ``None``.
+    #: The part of `_total` carried by faces (sheet heat), when concrete.
+    _sheet_total: float | None = None
+    #: For a source built from a solve: the cross-section thickness in m,
+    #: else ``None``.
     _thickness: float | None = None
 
     @classmethod
@@ -201,14 +215,9 @@ class HeatSource:
                 source from another mesh.
         """
         n = len(mesh.tetrahedra)
-        if self._kind == "joule":
+        if self._density is not None:
             if self._density.shape != (n,):
-                raise ValueError(
-                    f"This Joule heat source holds {self._density.shape[0]} "
-                    f"elements, but the mesh has {n}: a DC conduction result heats "
-                    "the mesh it was solved on. Solve DCConduction on the thermal "
-                    "model's mesh."
-                )
+                raise self._other_mesh(self._density.shape[0], n)
             return self._density
         for name in self.regions:
             if name not in mesh.volumes:
@@ -238,17 +247,51 @@ class HeatSource:
             volume /= mesh.section_thickness
         return jnp.asarray(inside, jnp.float64) * (self._amount / volume)
 
+    def _face_density_on(self, mesh: Mesh) -> jax.Array:
+        """The power density per gfem triangle of ``mesh`` (W/m^2), in JAX.
+
+        All zero for a source without face heat.
+
+        Raises:
+            ValueError: The face density is from another mesh.
+        """
+        n = len(mesh.triangles)
+        if self._face_density is None:
+            return jnp.zeros(n, jnp.float64)
+        if self._face_density.shape != (n,):
+            raise self._other_mesh(self._face_density.shape[0], n, "faces")
+        return self._face_density
+
+    def _other_mesh(self, held: int, n: int, what: str = "elements") -> ValueError:
+        """The error of a source built on another mesh than the thermal one."""
+        if self._kind == "joule":
+            return ValueError(
+                f"This Joule heat source holds {held} {what}, but the mesh has "
+                f"{n}: a DC conduction result heats the mesh it was solved on. "
+                "Solve DCConduction on the thermal model's mesh."
+            )
+        return ValueError(
+            f"This {self._kind} heat source holds {held} {what}, but the mesh has "
+            f"{n}: a heat source built from a solve heats the mesh it was solved "
+            "on. Solve on the thermal model's mesh."
+        )
+
     def __repr__(self) -> str:
         regions = list(self.regions)
-        if self._kind == "joule":
+        if self._kind != "uniform":
+            head = f"HeatSource({self._kind}, regions={regions}"
             if self._total is None:
-                return f"HeatSource(joule, regions={regions})"
-            if self._thickness is None:
-                return (
-                    f"HeatSource(joule, regions={regions}, total {self._total:.6g} W)"
-                )
-            per_length = self._total / self._thickness
-            return f"HeatSource(joule, regions={regions}, total {per_length:.6g} W/m)"
+                return head + ")"
+            per = 1.0 if self._thickness is None else self._thickness
+            unit = "W" if self._thickness is None else "W/m"
+            total = f"{head}, total {self._total / per:.6g} {unit}"
+            sheet = self._sheet_total
+            if not sheet:
+                return total + ")"
+            volume = (self._total - sheet) / per
+            return (
+                f"{total}: volume {volume:.6g} {unit}, sheet {sheet / per:.6g} {unit})"
+            )
         try:
             amount = f"{float(np.asarray(self._amount)):.6g} {_UNITS[self._quantity]}"
         except (TypeError, ValueError, Exception):  # noqa: BLE001 - a tracer
@@ -256,7 +299,7 @@ class HeatSource:
         return f"HeatSource(uniform, regions={regions}, {self._quantity}={amount})"
 
 
-register_fields(HeatSource, ("_amount", "_density"))
+register_fields(HeatSource, ("_amount", "_density", "_face_density"))
 
 
 def _drive(value: Any, terminals: tuple[str, ...], what: str) -> jax.Array:
