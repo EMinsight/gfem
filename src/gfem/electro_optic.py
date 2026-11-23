@@ -75,7 +75,7 @@ class ElectroOpticShift:
         phase_per_length_per_volt: :math:`k_0\,\partial n_\mathrm{eff}/
             \partial V`, rad/(V m): the extra phase delay per unit length of
             guide and per volt. A transmission through length :math:`L`
-            turns its argument by minus ``phase_per_length_per_volt * V * L``
+            turns its argument by :math:`-\phi V L`, :math:`\phi` this value
             (`gfem.conventions`).
     """
 

@@ -488,8 +488,8 @@ with only $r_{33}$ in the tensor.
 1 V, every other terminal and the ground at 0 V, and the shift is per volt
 of it. `phase_per_length_per_volt` is $k_0\,\partial n_\mathrm{eff}/\partial V$, the extra
 phase delay per metre and per volt, like the thermo-optic phase: a
-transmission through a length $L$ at $V$ volts turns its argument by minus
-`phase_per_length_per_volt * V * L`. On the right-hand arm the field points
+transmission through a length $L$ at $V$ volts turns its argument by
+$-\phi V L$, with $\phi$ the `phase_per_length_per_volt`. On the right-hand arm the field points
 along the crystal's $+z$ and lowers the index, so the delay is negative and
 the argument turns forward:
 

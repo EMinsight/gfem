@@ -431,7 +431,7 @@ terminals' shifts add, each times its drive.
 ``phase_per_length_per_volt`` is :math:`k_0\, \partial n_\mathrm{eff} /
 \partial V` in rad/(V m), a phase delay like the thermo-optic phase: a
 transmission through a length :math:`L` at :math:`V` turns its argument by
-minus ``phase_per_length_per_volt * V * L``.
+:math:`-\phi V L`, with :math:`\phi` the ``phase_per_length_per_volt``.
 
 ``v_pi_l`` is one arm's voltage-length product,
 :math:`V_\pi L = \lambda / (2\, |\partial n_\mathrm{eff} / \partial V|)` in
