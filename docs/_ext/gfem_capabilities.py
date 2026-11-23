@@ -962,6 +962,7 @@ REFUSAL_LABELS = {
     "device": '`device="cuda"`',
     "bddc_order_1": '`linear_solver="bddc_gmres"` at `order=1`',
     "bddc_order_1_auto": '`linear_solver="auto"` at `order=1`',
+    "pmg_gmres": '`linear_solver="pmg_gmres"`',
     "petsc_preconditioner": (
         '`linear_solver="petsc"` with a `pc_type` that has no distributed form '
         "(`ilu`, `icc`, or `lu` or `cholesky` on a package other than MUMPS)"

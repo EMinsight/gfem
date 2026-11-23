@@ -404,6 +404,11 @@ class PmgHandle(KrylovHandle):
 
     kind = "pmg_gmres"
     preconditioner_name = "p-multigrid"
+    # layers of thin cells are the one measured cause of extra iterations
+    convergence_remedy = (
+        "Use linear_solver='direct' if it fits, or a looser tolerance, and check "
+        "the mesh for layers of thin cells."
+    )
 
     def __init__(
         self,

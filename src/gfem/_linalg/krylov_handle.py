@@ -110,6 +110,10 @@ class KrylovHandle(NgsHandle):
 
     #: The preconditioner's name in a convergence error.
     preconditioner_name: ClassVar[str]
+    #: The remedies a convergence error ends with.
+    convergence_remedy: ClassVar[str] = (
+        "Use linear_solver='direct', or a looser tolerance."
+    )
 
     def __init__(
         self,
@@ -409,8 +413,7 @@ class KrylovHandle(NgsHandle):
             what = f" in {self.maxiter} iterations (reached {reached})"
         raise LinearSolverConvergenceError(
             f"{self.preconditioner_name} + {name} did not converge to the relative "
-            f"tolerance {self.tolerance:g}{what}. Use linear_solver='direct', or a "
-            "looser tolerance."
+            f"tolerance {self.tolerance:g}{what}. {self.convergence_remedy}"
         )
 
     def _inverse_map(

@@ -182,7 +182,7 @@ def refuse_solve(model: Model, problem: Any, options: SolverOptions, comm: Any) 
             "A solve under several processes (comm=)",
             "Solve on one process: leave comm out.",
         )
-    if options.linear_solver == "bddc_gmres":
+    if options.linear_solver in ("bddc_gmres", "pmg_gmres"):
         raise _refusal(
             f"linear_solver={options.linear_solver!r}",
             'Use linear_solver="direct", "auto" or "petsc".',
