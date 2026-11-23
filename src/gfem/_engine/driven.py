@@ -141,6 +141,7 @@ from gfem._engine.wave_ports import PortSurfaceCoupling
 from gfem._linalg import Kind, ResolvedLinearSolver, auto_linear_solver, report
 from gfem._linalg.layout import DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
+from gfem._linalg.pmg import Cells
 from gfem._materials import MaterialField
 from gfem._periodic import (
     bloch_phases,
@@ -263,6 +264,9 @@ class DrivenOperator:
             forward assembles them, but whose derivative is not: the
             conductivity piece where the conductivity is zero everywhere.
             Only a backward pass reads them (`weights`, `operator_terms`).
+        cells: Builds the cells ``space`` is defined on, with the
+            perfectly matched layer's marked (`solve_cells`), for the
+            ``pmg_gmres`` linear solver; ``None`` under ranks.
     """
 
     built: EngineMesh
@@ -277,6 +281,7 @@ class DrivenOperator:
     topology: Any = None
     space_key: tuple = ()
     latent: tuple[terms.Piece, ...] = ()
+    cells: Callable[[], Cells] | None = None
 
     def expand(self, x: np.ndarray) -> np.ndarray:
         """``P x``: solve-space coefficients ``(ndof, ...)`` as a result field's.
@@ -506,6 +511,30 @@ def driven_operator(
         topology=model.mesh._topology,  # noqa: SLF001
         space_key=solve_key,
         latent=latent,
+        cells=None
+        if comm is not None
+        else functools.partial(solve_cells, model, built),
+    )
+
+
+def solve_cells(model: Model, built: EngineMesh) -> Cells:
+    """The tetrahedra of ``model``'s electromagnetic domain, in NGSolve's order.
+
+    Each with its NGSolve volume element, and marked when it lies in a region
+    of the model's perfectly matched layer.
+    """
+    mesh = model.mesh
+    order = built.cell_order
+    active = model._domain_of("em").active[order]  # noqa: SLF001
+    pml = None
+    if model.pml is not None:
+        tags = [mesh.region(name).tag for name in model.pml.regions]
+        pml = np.isin(mesh.tetrahedron_tags[order][active], tags)
+    return Cells(
+        np.asarray(mesh.nodes),
+        mesh.tetrahedra[order][active],
+        np.flatnonzero(active),
+        pml,
     )
 
 

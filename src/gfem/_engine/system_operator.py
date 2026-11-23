@@ -614,7 +614,7 @@ class SystemOperator:
         """``A(ω)``, the operator without the modal corrections, to prepare.
 
         Its form, and its piece sum for the ``direct`` and ``petsc`` linear
-        solvers. Under a gauge, the gauged piece sum on the gauge space's free
+        solvers; its cells for ``pmg_gmres``. Under a gauge, the gauged piece sum on the gauge space's free
         DOFs; the form stays the driven space's (a backend reads only whether
         its space is complex, and never assembles it: the gauged piece sum
         always has its pattern).
@@ -626,6 +626,8 @@ class SystemOperator:
             free,
             piece_sum=PieceSum(self._pieces, self._weights(omega)),
             layout=op.layout,
+            cells=op.cells,
+            frequency=omega / (2 * math.pi),
         )
 
     def _weights(self, omega: float) -> tuple[complex, ...]:

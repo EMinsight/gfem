@@ -1,9 +1,11 @@
 """The p-multigrid: its direct set and the topological count of it."""
 
+import logging
 import math
 
 import ngsolve as ngs
 import numpy as np
+import pml_cases
 import pytest
 import structured_meshes as sm
 
@@ -203,3 +205,46 @@ def test_pmg_gmres_matches_direct(line, monkeypatch, order, factor):
     s = _s(line, order=order, linear_solver="pmg_gmres")
     direct = _s(line, order=order, linear_solver="direct")
     np.testing.assert_allclose(s, direct, rtol=0, atol=1e-6)
+
+
+def test_each_pmg_build_logs_its_direct_set_and_is_timed_as_setup(line, caplog):
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    caplog.set_level(logging.INFO, logger="gfem.timing")
+    problem = gfem.Driven(frequency=(5e9, 5.5e9))
+    _s(line, problem, linear_solver="pmg_gmres")
+    (build,) = [r for r in caplog.records if hasattr(r, "direct_set")]
+    # the free Whitney DOFs alone: no cell is poor or in a layer
+    assert build.direct_set == 63
+    assert 0 < build.direct_share < 0.5
+    assert (build.pml_share, build.poor_cells) == (0.0, 0)
+    assert build.frequency == pytest.approx(5e9)
+    assert "on the direct set" in build.getMessage()
+    setups = [
+        r
+        for r in caplog.records
+        if getattr(r, "phase", None) == "setup" and r.solver == "pmg_gmres"
+    ]
+    assert setups
+    assert setups[0].nbytes > 0
+
+
+def test_pmg_gmres_solves_a_perfectly_matched_layer_on_its_direct_level(
+    tmp_path, caplog
+):
+    # the TEM line of pml_cases ended by a layer, fed by a wave port
+    mesh = gfem.Mesh.from_gmsh(pml_cases.tem_line(tmp_path / "line.msh", cells=6))
+    model = gfem.Model(
+        mesh,
+        materials={"air": gfem.Material(), "pml": gfem.Material()},
+        boundaries=[gfem.PEC("pec")],
+        ports=[gfem.WavePort("p1", "port")],
+        pml=gfem.PML("pml"),
+    )
+    problem = gfem.Driven(frequency=pml_cases.F0)
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+    s = _s(model, problem, linear_solver="pmg_gmres")
+    (build,) = [r for r in caplog.records if hasattr(r, "direct_set")]
+    assert 0 < build.pml_share < build.direct_share
+    np.testing.assert_allclose(
+        s, _s(model, problem, linear_solver="direct"), rtol=0, atol=1e-6
+    )
