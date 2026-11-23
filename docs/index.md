@@ -57,6 +57,7 @@ recipes/remesh-and-restart
 :caption: Solving
 
 recipes/solve-a-device
+recipes/watch-a-solve
 recipes/prepare-a-mesh
 recipes/2d-models
 recipes/save-and-export

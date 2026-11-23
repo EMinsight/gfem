@@ -16,7 +16,8 @@ them.
 is asked for, and `disable` (or the next `enable`) calls `stop`. While no
 progress is shown, ``_LIVE`` is ``None`` and `task` and `phase` return the one
 shared no-op `_NULL`: a loop pays one global read per call, builds nothing
-and imports nothing.
+and imports nothing. A frequency worker has no display: while the parent
+shows progress, `forward_to` makes the worker's advances the parent's.
 
 Rows nest per context, as timing phases do: a row opened while a row with the
 same label is open joins it, so a fixed-angle sweep's one-frequency solves
@@ -117,6 +118,18 @@ def start(console: Any) -> None:
     _LIVE = (
         Live(_RichBoard(console)) if shown(console, rank=_mpi.world_rank()) else None
     )
+
+
+def forward_to(queue: Any) -> None:
+    """Send this frequency worker's advances to the parent through ``queue``.
+
+    A worker pool's initializer: a worker runs one counted loop, its block of
+    the uniform sweep, and each ``advance`` of it puts ``(n, fields)`` on
+    ``queue`` for the parent to advance its own row. Phases stay in the worker:
+    the parent's row shows the parent's, and a phase per worker would flicker.
+    """
+    global _LIVE  # noqa: PLW0603 - the one switch every loop reads
+    _LIVE = Live(_QueueBoard(queue))
 
 
 def stop() -> None:
@@ -243,6 +256,36 @@ class _Phase:
             self._row.live.board.phase(self._row.key, self._previous)
         elif self._spinner is not None:
             self._spinner.__exit__(*exc)
+
+
+class _QueueBoard:
+    """A frequency worker's board: advances go to the parent, nothing is drawn.
+
+    The arguments it ignores are those of `Board`.
+    """
+
+    def __init__(self, queue: Any) -> None:
+        self.queue = queue
+
+    def open(self, label: str, total: int | None, depth: int, *, spinner: bool) -> Any:  # noqa: ARG002
+        return None
+
+    def advance(self, key: Any, n: int, fields: Mapping[str, Any]) -> None:  # noqa: ARG002
+        self.queue.put((n, dict(fields)))
+
+    def update(
+        self,
+        key: Any,  # noqa: ARG002
+        completed: int | None,  # noqa: ARG002
+        fields: Mapping[str, Any],  # noqa: ARG002
+    ) -> None:
+        return None
+
+    def phase(self, key: Any, name: str) -> None:  # noqa: ARG002
+        return None
+
+    def close(self, key: Any) -> None:  # noqa: ARG002
+        return None
 
 
 # ---------------------------------------------------------------- the rich board

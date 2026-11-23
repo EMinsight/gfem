@@ -17,6 +17,8 @@ turns it off again.
 
 Users who want their own handlers attach them to the ``gfem`` logger and skip
 `enable`: the records and their ``extra`` attributes are the same either way.
+The "Watch a solve run" recipe shows the display on a sweep, its progress
+rows, and its use under MPI.
 """
 
 from __future__ import annotations

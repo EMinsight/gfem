@@ -121,6 +121,7 @@ An extra goes in brackets after `gfem` in the same install line:
 | `xarray` | Results as xarray datasets (`.to_xarray()`). | all |
 | `viz` | Fields as PyVista grids (`.to_pyvista()`). | all |
 | `mpi` | One driven, electrostatic or eigenmode solve across the ranks of an MPI job; Open MPI comes from your machine. See {doc}`recipes/distributed-solve`. | Linux x86_64 |
+| `log` | Coloured log lines and progress rows while a solve runs; see {doc}`recipes/watch-a-solve`. | all |
 
 On a platform outside its list, an extra installs nothing and gfem solves with
 the plain install's CPU solvers.

@@ -178,22 +178,24 @@ class FrequencyWorkers:
             for block in indices
         ]
         parts = workers.model_parts(model)
-        results = workers.run(
-            solve_block,
-            [(*parts, problem, options, keep) for problem in problems],
-            [_describe(problem.frequency) for problem in problems],
-            threads=threads,
-            keywords=[
-                {
-                    "port_modes": block.port_modes,
-                    "order_frequency": tuple(frequencies),
-                    "log": report.LOGGER.isEnabledFor(logging.INFO)
-                    or _timing.LOGGER.isEnabledFor(logging.INFO),
-                    "gauge": self.gauge,
-                }
-                for block in blocks
-            ],
-        )
+        with _progress.task(UNIFORM_ROW, total=len(frequencies)) as row:
+            results = workers.run(
+                solve_block,
+                [(*parts, problem, options, keep) for problem in problems],
+                [_describe(problem.frequency) for problem in problems],
+                threads=threads,
+                row=row,
+                keywords=[
+                    {
+                        "port_modes": block.port_modes,
+                        "order_frequency": tuple(frequencies),
+                        "log": report.LOGGER.isEnabledFor(logging.INFO)
+                        or _timing.LOGGER.isEnabledFor(logging.INFO),
+                        "gauge": self.gauge,
+                    }
+                    for block in blocks
+                ],
+            )
         for r in results:
             report.replay(r[3])
         # each block stopped at its first miss: its solved rows lead it

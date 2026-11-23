@@ -225,6 +225,9 @@ print(sorted(run))
   ranks and the wall time in seconds.
 - From Python, `gfem.Job.from_json("job.json").run(out="result")` does the
   same as the command line.
+- `--log info` (or `debug`, `warning`, ...) shows gfem's log lines on stderr
+  while the job runs, as `gfem.log.enable` does ({doc}`watch-a-solve`);
+  without it the command prints nothing more.
 - `--device cpu` (or `cuda`, `cuda:1`) overrides the job's device, so a job
   written for a GPU runs on a CPU machine, and the other way round
   ({doc}`gpu-direct-solver`). The bundle records the device used.
@@ -260,6 +263,9 @@ miss 4c0b6f1e9d27: solved and stored (solves/4c0b6f1e9d27a8530f62c1d9b4e7a03f5c8
 hit 4c0b6f1e9d27 (solves/4c0b6f1e9d27a8530f62c1d9b4e7a03f5c8d21e6b9f0a47c3d5e8b1f2a6c904e)
 0.0
 ```
+
+`gfem.log.enable()` shows these records too, as log lines on stderr beside
+the rest of gfem's ({doc}`watch-a-solve`).
 
 A job takes the same directory, from Python as `Job.run(out=..., cache=...)`
 or from the command line:
