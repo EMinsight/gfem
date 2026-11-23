@@ -66,14 +66,9 @@ def _volume(c):
 BOX = ("particle", "box_sub", "box_film", "box_air")
 
 
-@pytest.fixture(scope="module")
-def solved(tmp_path_factory):
+def _solve(tmp_path):
     path = pc.box(
-        tmp_path_factory.mktemp("layered") / "particle.msh",
-        pc.SIDES,
-        thickness=1 / 3,
-        cells=6,
-        volume=_volume,
+        tmp_path / "particle.msh", pc.SIDES, thickness=1 / 3, cells=6, volume=_volume
     )
     mesh = gfem.Mesh.from_gmsh(path)
     materials = {"particle": PARTICLE}
@@ -87,49 +82,35 @@ def solved(tmp_path_factory):
         background=STACK,
     )
     problem = gfem.Driven(F, sources=SOURCES, keep_fields=True)
-    result = gfem.solve(model, problem, options=OPTIONS)
-    sections = {
-        s.name: gfem.cross_sections(result, s.name, model=model) for s in SOURCES
-    }
-    return model, result, sections
+    return model, gfem.solve(model, problem, options=OPTIONS)
 
 
 def _value(x):
     return float(np.asarray(x).reshape(-1)[0])
 
 
-@pytest.mark.parametrize("name", [s.name for s in SOURCES])
-def test_t18_extinction_is_absorption_plus_scattering(solved, name):
-    _, _, sections = solved
-    xs = sections[name]
-    ext, absorption, sca = (
-        _value(xs.extinction),
-        _value(xs.absorption),
-        _value(xs.scattering),
-    )
-    assert ext == pytest.approx(absorption + sca, rel=REL)
-    assert absorption > 0
-    assert sca > 0
-
-
-@pytest.mark.parametrize("name", [s.name for s in SOURCES])
-@pytest.mark.parametrize("side", [("particle",), BOX], ids=["particle", "box"])
-def test_t18_each_power_is_the_same_on_any_side(solved, name, side):
-    model, result, sections = solved
-    xs = sections[name]
-    i0 = _value(xs.intensity)
-    total = result.e_field(F, name)
-    scattered = result.e_field(F, name, part="scattered")
-    absorbed = _value(gfem.power_flow(total, side, model=model))
-    assert absorbed == pytest.approx(-_value(xs.absorption) * i0, rel=REL)
-    flow = _value(gfem.power_flow(scattered, side, model=model))
-    assert flow == pytest.approx(_value(xs.scattering) * i0, rel=REL)
-
-
-def test_the_values_are_those_of_a_particle_of_its_size(solved):
-    _, _, sections = solved
+def test_t18_a_particle_on_a_substrate_balances_its_power_on_any_side(tmp_path):
+    # one test, so that a sharded run builds the order-3 solve once
+    model, result = _solve(tmp_path)
     area = (EDGE * UM) ** 2
-    for name, xs in sections.items():
-        ext = _value(xs.extinction)
+    for source in SOURCES:
+        name = source.name
+        xs = gfem.cross_sections(result, name, model=model)
+        ext, absorption, sca = (
+            _value(xs.extinction),
+            _value(xs.absorption),
+            _value(xs.scattering),
+        )
+        assert ext == pytest.approx(absorption + sca, rel=REL), name
+        assert absorption > 0, name
+        assert sca > 0, name
         # a resonant-size lossy particle: extinction of order its area
         assert 0.05 * area < ext < 10 * area, (name, ext / area)
+        i0 = _value(xs.intensity)
+        total = result.e_field(F, name)
+        scattered = result.e_field(F, name, part="scattered")
+        for side in (("particle",), BOX):
+            absorbed = _value(gfem.power_flow(total, side, model=model))
+            assert absorbed == pytest.approx(-absorption * i0, rel=REL), (name, side)
+            flow = _value(gfem.power_flow(scattered, side, model=model))
+            assert flow == pytest.approx(sca * i0, rel=REL), (name, side)
