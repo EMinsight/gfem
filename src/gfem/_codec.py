@@ -202,7 +202,14 @@ class Encoder:
             return out
         codec = _BY_TYPE.get(type(value))
         if codec is not None:
-            args = codec.to_args(value, self.context)
+            try:
+                args = codec.to_args(value, self.context)
+            except UnencodableError as err:
+                # a registered class that refuses to be written says why
+                if err.path:
+                    raise
+                where = path or "the value"
+                raise UnencodableError(f"Cannot write {where}: {err}.", path) from None
             return {"$type": codec.tag} | self._mapping(args, path, attrs=True)
         if isinstance(value, (tuple, list)):
             return [self.encode(v, f"{path}[{i}]") for i, v in enumerate(value)]

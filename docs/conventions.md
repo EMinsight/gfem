@@ -499,6 +499,56 @@ $E^{\mathrm{2D}} = \sqrt{h}\,E^{\mathrm{slab}}$. The time dependence, the phasor
 the sign of loss are those above. The module's "2D models" section gives the
 equation of each polarization and which line is a conductor in each.
 
+## Incident fields
+
+A {py:obj}`gfem.PlaneWave` or {py:obj}`gfem.GaussianBeam` is given by its
+propagation direction in spherical angles from $+z$, in rad:
+$\hat{\mathbf{k}} = (\sin\theta\cos\phi, \sin\theta\sin\phi, \cos\theta)$. A
+wave with $\theta < \pi/2$ travels up, one with $\theta > \pi/2$ down, so a
+wave arriving 30° off the normal from above is `theta=np.pi - np.radians(30)`.
+
+| Polarization | Field direction | Also called |
+| --- | --- | --- |
+| `"TM"` | $\hat{\boldsymbol{\theta}} = (\cos\theta\cos\phi, \cos\theta\sin\phi, -\sin\theta)$ | p |
+| `"TE"` | $\hat{\boldsymbol{\phi}} = (-\sin\phi, \cos\phi, 0)$ | s |
+| `"RCP"` | $(\hat{\boldsymbol{\theta}} - i\hat{\boldsymbol{\phi}})/\sqrt{2}$ | right-handed (IEEE) |
+| `"LCP"` | $(\hat{\boldsymbol{\theta}} + i\hat{\boldsymbol{\phi}})/\sqrt{2}$ | left-handed (IEEE) |
+| $(a_\mathrm{TM}, a_\mathrm{TE})$ | $(a_\mathrm{TM}\hat{\boldsymbol{\theta}} + a_\mathrm{TE}\hat{\boldsymbol{\phi}})/\lVert a \rVert$ | Jones pair |
+
+$(\hat{\boldsymbol{\theta}}, \hat{\boldsymbol{\phi}}, \hat{\mathbf{k}})$ is
+right-handed, and along $\pm z$ the azimuth $\phi$ still fixes the plane of
+incidence. TE is the TE reference of a Floquet port in every direction; TM
+points along the Floquet TM reference for a wave going up and against it for
+a wave going down. Under `TIME_DEPENDENCE`, the real field of RCP turns from
+$\hat{\boldsymbol{\theta}}$ to $\hat{\boldsymbol{\phi}}$ with the thumb along
+$\hat{\mathbf{k}}$.
+
+A plane wave's `amplitude` $E_0$ is the peak field in V/m (`PHASOR`) in the
+layer it comes from; in a homogeneous background its field is
+$E_0\,\hat{\mathbf{e}}\,e^{-i k \hat{\mathbf{k}}\cdot\mathbf{r}}$, with the
+phase referred to the model origin. A Gaussian beam carries `INCIDENT_POWER`
+through any plane normal to its axis, like an excited port, with a real
+positive field at its focus. The kept field of a source column is the
+{term}`total field <Total field>`, the incident plus the scattered field. In a
+source column every port is terminated, and `DrivenResult.port_waves` holds
+the outgoing wave $b$ at each port in √W: $|b|^2$ is the power the source sends
+into the port. The module's "Incident fields" section has the formulas.
+
+## Point dipoles
+
+A {py:obj}`gfem.ElectricDipole` of moment $p$ (C·m) at $\mathbf{r}_0$ is the
+current $\mathbf{J} = i\omega \mathbf{p}\,\delta(\mathbf{r} - \mathbf{r}_0)$;
+a {py:obj}`gfem.MagneticDipole` of moment $m$ (A·m²) the magnetic current
+$\mathbf{M} = i\omega\mu_0 \mathbf{m}\,\delta(\mathbf{r} - \mathbf{r}_0)$.
+Both moments are peak phasors, the same at every frequency, and an antenna's
+current moment $Il$ (A·m) is $p = Il/(i\omega)$. The
+{term}`emitted power <Emitted power>`
+$P = -\tfrac{\omega}{2}\operatorname{Im}(\mathbf{p}^*\cdot\mathbf{E}(\mathbf{r}_0))$
+is positive for a dipole that radiates; the Purcell factor divides it by the
+power of the same dipole in the bulk material at $\mathbf{r}_0$. The module's
+"Point dipoles" section gives that bulk power and the local density of
+states.
+
 ## Next
 
 - {py:obj}`gfem.conventions`: every convention in full, with the formulas

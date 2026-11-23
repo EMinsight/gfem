@@ -402,6 +402,89 @@ coefficient and rise; :math:`P_\pi = \pi P /` ``phase`` for a heater
 dissipating :math:`P`). Its window is in route-local coordinates: the
 section's x points to the left of travel (``up x tangent``), its y along
 ``up``, and the station sits at the section's origin.
+
+Incident fields
+---------------
+A `gfem.PlaneWave` or `gfem.GaussianBeam` travels along
+
+.. math::
+
+    \hat k = (\sin\theta\cos\phi, \sin\theta\sin\phi, \cos\theta),
+
+the propagation direction in spherical angles from :math:`+z`, in rad:
+:math:`\theta < \pi/2` travels up, :math:`\theta > \pi/2` down (30° off
+the normal from above is :math:`\theta = \pi - 30°`).
+
+- Polarization basis: TM (p) is :math:`\hat\theta = \partial_\theta \hat k
+  = (\cos\theta\cos\phi, \cos\theta\sin\phi, -\sin\theta)`, TE (s) is
+  :math:`\hat\phi = \hat z \times \hat\kappa = (-\sin\phi, \cos\phi, 0)`
+  with :math:`\hat\kappa = (\cos\phi, \sin\phi, 0)`; :math:`(\hat\theta,
+  \hat\phi, \hat k)` is right-handed. Along :math:`\pm z`, :math:`\phi`
+  still fixes the plane of incidence: TM is :math:`(\cos\phi, \sin\phi, 0)`
+  at :math:`\theta = 0` and :math:`-(\cos\phi, \sin\phi, 0)` at
+  :math:`\theta = \pi`.
+- Floquet references: TE equals a `gfem.FloquetPort`'s TE reference in
+  every direction. TM's tangential part is :math:`\cos\theta\,\hat\kappa`,
+  along the Floquet TM reference for a wave going up and opposite to it for
+  a wave going down.
+- A polarization is a Jones pair :math:`(a_\mathrm{TM}, a_\mathrm{TE})`,
+  normalized: the field direction is :math:`(a_\mathrm{TM}\hat\theta +
+  a_\mathrm{TE}\hat\phi) / \lVert a\rVert`. ``"TM"`` is :math:`(1, 0)`,
+  ``"TE"`` :math:`(0, 1)`, ``"RCP"`` :math:`(1, -i)/\sqrt2` and ``"LCP"``
+  :math:`(1, i)/\sqrt2`, IEEE handedness under :math:`e^{+i\omega t}`: with
+  the thumb along :math:`\hat k`, the real field of RCP turns from
+  :math:`\hat\theta` to :math:`\hat\phi` (right hand), as for the Floquet
+  ports' circular combination.
+- Plane wave amplitude: :math:`E_\mathrm{inc}(r) = E_0\, \hat e\,
+  e^{-i k \hat k \cdot r}` in a homogeneous background of wavenumber
+  :math:`k`, with :math:`E_0` (``amplitude``) the peak field in V/m in the
+  layer the wave comes from, complex for a phase, and :math:`r` the model
+  coordinates: the phase is referred to the model origin, as the Floquet
+  in-plane phase is.
+- Gaussian beam: 1 W (`INCIDENT_POWER`) time-averaged power through any
+  plane normal to its axis, and the field at the focus real and positive
+  along the polarization (zero phase at the focus); the waist is a length,
+  the same at every frequency.
+- Total field = incident field + scattered field. A kept field of a source
+  column is the total field; the scattered field is outgoing at the
+  truncation.
+- Port waves: in a source column every port is terminated in its reference
+  impedance, and ``DrivenResult.port_waves`` is the outgoing pseudo-wave
+  :math:`b` at each port, in √W as a column of S: on a real ``z_ref``,
+  :math:`|b|^2` is the power in W the source sends into the port.
+
+Point dipoles
+-------------
+A `gfem.ElectricDipole` of moment :math:`p` (C·m) at :math:`r_0` is the
+current :math:`J = i\omega p\, \delta(r - r_0)` under :math:`e^{+i\omega t}`;
+a `gfem.MagneticDipole` of moment :math:`m` (A·m²) is the current
+:math:`J = \nabla \times (m\, \delta(r - r_0))`, i.e. the magnetic current
+:math:`M = i\omega\mu_0 m\, \delta(r - r_0)`. Both moments are peak
+phasors, the same at every frequency. An antenna current moment :math:`Il`
+(A·m) is :math:`p = Il / (i\omega)`.
+
+- Emitted power: the time-averaged power the dipole gives the field,
+
+  .. math::
+
+      P = -\frac{\omega}{2} \operatorname{Im}\left(p^* \cdot E(r_0)\right),
+
+  positive for a dipole that radiates or drives a lossy medium; gfem pairs
+  the dipole's load with the discrete solution, which is finite although the
+  exact field at :math:`r_0` is not. Its real counterpart, the
+  self-reaction, has no limit and is never reported.
+- Bulk power: the emitted power of the same dipole in the unbounded,
+  lossless material at :math:`r_0`, with :math:`n = \sqrt{\varepsilon_r
+  \mu_r}` and :math:`c` the speed of light in vacuum,
+
+  .. math::
+
+      P_0^{(p)} = \frac{\mu_0 \mu_r n\, \omega^4 |p|^2}{12 \pi c}, \qquad
+      P_0^{(m)} = \frac{\mu_0 \varepsilon_r n\, \omega^4 |m|^2}{12 \pi c^3}.
+
+- Purcell factor: :math:`F = P / P_0`. In a non-magnetic medium the partial
+  local density of states along :math:`p` is :math:`\rho_p = \rho_0 F`, with
+  :math:`\rho_0 = \omega^2 n / (\pi^2 c^3)`.
 """
 
 from __future__ import annotations
