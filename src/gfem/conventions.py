@@ -402,6 +402,44 @@ coefficient and rise; :math:`P_\pi = \pi P /` ``phase`` for a heater
 dissipating :math:`P`). Its window is in route-local coordinates: the
 section's x points to the left of travel (``up x tangent``), its y along
 ``up``, and the station sits at the section's origin.
+
+Electro-optic shift
+-------------------
+A material's ``electro_optic_tensor`` is the contracted tensor
+:math:`r_{Ik}` in m/V, shape (6, 3): rows :math:`I` the Voigt pairs
+:math:`xx, yy, zz, yz, xz, xy`, columns :math:`k` the field components
+:math:`x, y, z`, all in the frame whose axes are the rows of the material's
+``axes`` (right-handed), rotated into the model's frame with the
+permittivity. A static field :math:`E_\mathrm{s} = -\nabla V` changes the
+optical permittivity by
+
+.. math::
+
+    \Delta\varepsilon_r = -\varepsilon_r\, (r \cdot E_\mathrm{s})\,
+        \varepsilon_r, \qquad (r \cdot E_\mathrm{s})_{ij} = \sum_k r_{ijk}
+        E_{\mathrm{s},k},
+
+which is :math:`\Delta(1/n^2)_{ij} = \sum_k r_{ijk} E_{\mathrm{s},k}` to
+first order. The static permittivity is the ``eps_r`` of a separate
+electrostatic model; give both models' crystal the same ``axes``.
+
+`gfem.electro_optic_shift` is first order in the field, about the port's
+mode :math:`E_0` at 1 W on a lossless section, and per volt: the potential
+is one terminal's at 1 V, every other terminal and the ground at 0 V. A
+drive :math:`V` multiplies every per-volt value by :math:`V`, and several
+terminals' shifts add, each times its drive.
+``phase_per_length_per_volt`` is :math:`k_0\, \partial n_\mathrm{eff} /
+\partial V` in rad/(V m), a phase delay like the thermo-optic phase: a
+transmission through a length :math:`L` at :math:`V` turns its argument by
+minus ``phase_per_length_per_volt * V * L``.
+
+``v_pi_l`` is one arm's voltage-length product,
+:math:`V_\pi L = \lambda / (2\, |\partial n_\mathrm{eff} / \partial V|)` in
+V m. A push-pull pair of arms :math:`a` and :math:`b` driven by one
+potential has :math:`V_\pi L = \lambda / (2\, |s_a - s_b|)`, with :math:`s`
+each arm's ``delta_n_eff_per_volt``. Solve the mode on an optical window
+that reaches the electrodes' inner edges: the shift weighs the mode's tail
+there.
 """
 
 from __future__ import annotations

@@ -28,6 +28,7 @@ tutorials/metal-bend
 tutorials/metagrating
 tutorials/heater
 tutorials/heater3d
+tutorials/modulator
 ```
 
 ```{toctree}
@@ -41,6 +42,7 @@ recipes/quantum-metrics
 recipes/shape-gradient
 recipes/adaptive-sweep-gradient
 recipes/thermal-gradient
+recipes/electro-optic-gradient
 ```
 
 ```{toctree}
@@ -68,6 +70,7 @@ recipes/floquet-ports
 recipes/perfectly-matched-layer
 recipes/heater-temperature
 recipes/thermo-optic-phase
+recipes/electro-optic-phase
 recipes/thermal-step-response
 recipes/shared-port-surface
 recipes/measurements

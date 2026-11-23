@@ -28,7 +28,8 @@ MESH = DOCS / "tutorials" / "data" / "line.msh"
 MESH_URL = (
     "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/data/line.msh"
 )
-#: Every mesh an executed page may download: its address -> the repository's copy.
+#: Every file an executed page may download (meshes, and the modulator
+#: tutorial's section builder): its address -> the repository's copy.
 MESHES = {
     MESH_URL: MESH,
     MESH_URL.replace("line.msh", "metagrating.msh"): MESH.with_name("metagrating.msh"),
@@ -37,6 +38,9 @@ MESHES = {
         "heater_straight.msh"
     ),
     MESH_URL.replace("line.msh", "pml_line.msh"): MESH.with_name("pml_line.msh"),
+    MESH_URL.replace("data/line.msh", "tfln_section.py"): DOCS
+    / "tutorials"
+    / "tfln_section.py",
 }
 
 _FENCE = re.compile(
