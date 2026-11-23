@@ -327,8 +327,12 @@ def test_auto_is_direct_while_it_fits(line, monkeypatch, caplog):
     (record,) = [r for r in caplog.records if hasattr(r, "linear_solver")]
     assert record.linear_solver == "direct"
     assert record.estimate <= record.budget
-    # a budget below the estimate: GMRES + BDDC
+    # a budget below the estimate: the p-multigrid, which fits the memory
     monkeypatch.setattr(driven, "default_retain_memory", lambda: record.estimate - 1)
+    rule = DrivenRule(line, problem, gfem.SolverOptions())
+    assert rule.linear.kind == "pmg_gmres"
+    # and where it does not: GMRES + BDDC
+    monkeypatch.setattr(driven, "memory_limit", lambda: 0)
     rule = DrivenRule(line, problem, gfem.SolverOptions())
     assert rule.linear.kind == "bddc_gmres"
 

@@ -267,9 +267,13 @@ class SolverOptions:
             a driven problem on the CPU in one process, ``"direct"`` when its
             factorization (estimated at about 48 KiB per unknown, per
             frequency worker, twice that with a Bloch wave vector) fits in
-            half the memory the process may use, else ``"bddc_gmres"``;
-            ``"bddc_gmres"`` for electrostatic; ``"direct"`` for eigenmode
-            and for every problem type on a GPU (``device``);
+            half the memory the process may use; else ``"pmg_gmres"`` for a
+            model it solves, when its estimate (about 8 KiB per unknown at
+            order 2, 16 KiB at order 3, plus 48 KiB per higher-order unknown
+            on its direct set, per frequency worker) fits in all of that
+            memory; else ``"bddc_gmres"``, or ``"direct"`` with a perfectly
+            matched layer; ``"bddc_gmres"`` for electrostatic; ``"direct"``
+            for eigenmode and for every problem type on a GPU (``device``);
             ``"bddc_gmres"`` for a driven problem across MPI ranks (eigenmode
             keeps ``"direct"``). The choice is logged on the
             ``gfem.solver`` logger. ``"direct"`` suits small and medium

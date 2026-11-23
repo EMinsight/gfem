@@ -106,6 +106,7 @@ from gfem._engine.cache import (
     Entry,
     default_retain_memory,
     discretization,
+    memory_limit,
     retain_budget,
 )
 from gfem._engine.domain import (
@@ -138,10 +139,17 @@ from gfem._engine.solve_request import SolveRequest
 from gfem._engine.sweep_outputs import SweepOutputs
 from gfem._engine.system_operator import FixedPieces, SystemOperator, SystemSweep
 from gfem._engine.wave_ports import PortSurfaceCoupling
-from gfem._linalg import Kind, ResolvedLinearSolver, auto_linear_solver, report
+from gfem._linalg import (
+    PMG_BYTES_PER_UNKNOWN,
+    Kind,
+    PmgInputs,
+    ResolvedLinearSolver,
+    auto_linear_solver,
+    report,
+)
 from gfem._linalg.layout import DofLayout, RankLayout
 from gfem._linalg.pieces import KeptParts
-from gfem._linalg.pmg import Cells
+from gfem._linalg.pmg import Cells, DirectSetCount, direct_set_count
 from gfem._materials import MaterialField
 from gfem._periodic import (
     bloch_phases,
@@ -196,9 +204,9 @@ __all__ = [
 #: Hermitian.
 DrivenSymmetry = Literal["complex_symmetric", "general"]
 
-#: The linear solver for ``linear_solver="auto"`` when direct does not fit
-#: (`gfem._linalg.auto_linear_solver`): direct while it fits, else GMRES +
-#: BDDC.
+#: The linear solver for ``linear_solver="auto"`` when neither direct nor the
+#: p-multigrid fits, or the p-multigrid does not solve the model
+#: (`gfem._linalg.auto_linear_solver`).
 DEFAULT_SOLVER: Kind = "bddc_gmres"
 
 #: k0 * h_min below which a driven solve warns (gfem.LowFrequencyWarning).
@@ -2399,7 +2407,45 @@ def _auto_inputs(
         "in_flight": min(workers, len(problem.frequency)),
         "general": problem.wave_vector is not None,
         "budget": default_retain_memory(),
+        "pmg": _pmg_inputs(model, problem, options),
     }
+
+
+def _pmg_inputs(
+    model: Model, problem: Driven, options: SolverOptions
+) -> PmgInputs | None:
+    """The p-multigrid's inputs to the rule, or ``None`` where it does not apply.
+
+    ``pmg_gmres`` solves order 2 and 3, an operator equal to its transpose
+    (no Bloch wave vector), no periodic pair or Floquet port, and an
+    ungauged solve (``gauge="tree_cotree"`` needs ``direct``). The direct
+    set is counted on first call, once.
+    """
+    if (
+        options.order not in PMG_BYTES_PER_UNKNOWN
+        or problem.wave_vector is not None
+        or model._periodic  # noqa: SLF001
+        or _floquet.floquet_ports(model.ports)
+        or options.gauge == "tree_cotree"
+    ):
+        return None
+    count = functools.cache(functools.partial(_direct_set, model, options.order))
+    return PmgInputs(options.order, memory_limit(), count)
+
+
+def _direct_set(model: Model, order: int) -> DirectSetCount:
+    """The direct set of ``model``'s electromagnetic domain at ``order``, counted.
+
+    The cells `solve_cells` hands the builder, in the mesh's order, so the
+    count is the built set's.
+    """
+    mesh = model.mesh
+    active = model._domain_of("em").active  # noqa: SLF001
+    pml = None
+    if model.pml is not None:
+        tags = [mesh.region(name).tag for name in model.pml.regions]
+        pml = np.isin(mesh.tetrahedron_tags[active], tags)
+    return direct_set_count(mesh.nodes, mesh.tetrahedra[active], order, pml)
 
 
 def _resolve(
@@ -2420,7 +2466,8 @@ def _resolve(
     refusal comes before the linear solver's (a missing PETSc stack).
 
     A perfectly matched layer stalls ``bddc_gmres``: an explicit one raises,
-    and ``"auto"`` resolves to ``direct`` whatever the memory estimate.
+    and ``"auto"`` resolves to ``direct`` where neither direct's nor the
+    p-multigrid's estimate fits.
 
     Raises:
         ValueError: ``linear_solver="bddc_gmres"`` with a perfectly matched
@@ -2431,7 +2478,7 @@ def _resolve(
     layer = model.pml is not None
     if layer and options.linear_solver == "bddc_gmres":
         raise _pml.refuse_bddc(model.pml)
-    inputs = {} if layer else _auto_inputs(model, problem, options, comm)
+    inputs = _auto_inputs(model, problem, options, comm)
     known = _known_kind(options, comm, layer=layer)
     if gauge is None and known is not None:
         gauge = _resolve_gauge(model, problem, options, comm=comm, kind=known)
@@ -2447,7 +2494,7 @@ def _resolve(
         return linear, gauge
     auto_reason = None
     if inputs and linear.kind != "direct":
-        auto_reason = auto_linear_solver(DEFAULT_SOLVER, **inputs)[1]
+        auto_reason = auto_linear_solver(DEFAULT_SOLVER, **inputs).reason
     choice = _resolve_gauge(
         model, problem, options, comm=comm, kind=linear.kind, auto_reason=auto_reason
     )
@@ -2472,7 +2519,8 @@ def _refuse_pmg(model: Model) -> None:
         )
 
 
-#: Why ``linear_solver="auto"`` picks ``direct`` for a model with a layer.
+#: Why ``linear_solver="auto"`` falls back on ``direct`` for a model with a
+#: layer.
 _LAYER_DIRECT = (
     "the perfectly matched layer excludes 'bddc_gmres', whose iterations stall "
     "on its stretch"
@@ -2485,14 +2533,16 @@ def _known_kind(
     """The linear solver ``options`` resolve to without the rule, or ``None``.
 
     ``None`` for ``"auto"`` on one CPU process, which `auto_linear_solver`
-    decides from the system size; ``direct`` with a perfectly matched
-    ``layer``.
+    decides from the system size; across ranks, ``direct`` with a perfectly
+    matched ``layer``.
     """
     if options.linear_solver != "auto":
         return options.linear_solver
-    if options.device != "cpu" or layer:
+    if options.device != "cpu":
         return "direct"
-    return DEFAULT_SOLVER if comm is not None else None
+    if comm is None:
+        return None
+    return "direct" if layer else DEFAULT_SOLVER
 
 
 def _resolve_gauge(
