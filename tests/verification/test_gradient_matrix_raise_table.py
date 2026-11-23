@@ -397,7 +397,7 @@ for _problem, _nodes in (
     }
 # A plane wave on a dielectric cube in an air box wrapped in a layer, no port:
 # the kept field differentiates in the cube's electromagnetic properties and
-# the fill of a conducting sheet across it (the load reads the background,
+# the fill of a conducting sheet on its +x face (the load reads the background,
 # never the cube or its sheet); S is empty. The node coordinates raise: the
 # load is the wave's interpolant on the mesh.
 PLANEWAVE_FILL = ("boundary", 0, "fill", "fill")
@@ -1136,9 +1136,9 @@ def _cube(c):
 
 
 def _cube_sheet(c):
-    """A face across the cube scatterer's middle: an interior sheet."""
+    """The cube scatterer's +x face: an interior sheet."""
     inside = 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75
-    return "sheet" if abs(c[0] - 0.5) < 1e-9 and inside else ""
+    return "sheet" if abs(c[0] - 0.75) < 1e-9 and inside else ""
 
 
 def _source_sheet(mesh, surface):

@@ -808,9 +808,9 @@ def _cube(c):
 
 
 def _cube_sheet(c):
-    """A face across the cube scatterer's middle: an interior sheet."""
+    """The cube scatterer's +x face: an interior sheet."""
     inside = 0.25 < c[1] < 0.75 and 0.25 < c[2] < 0.75
-    return "sheet" if abs(c[0] - 0.5) < 1e-9 and inside else ""
+    return "sheet" if abs(c[0] - 0.75) < 1e-9 and inside else ""
 
 
 def _sheet(mesh, surface, fill=None):
@@ -1237,10 +1237,8 @@ def _planewave_material(d: Designs, cell: Cell, options, seed: int) -> Case:
     problem = gfem.Driven(pml_cases.F0, sources=SOURCE_WAVE, keep_fields=True)
 
     def objective(p):
-        design = gfem.MaterialField(**{**values, cell.input: p})
-        result = gfem.solve(
-            model.with_material("scat", design), problem, options=options
-        )
+        moved = _with_source_design(model, "scat", values, cell.input, p)
+        result = gfem.solve(moved, problem, options=options)
         coefficients = result.e_field(pml_cases.F0).coefficients
         return jnp.sum(jnp.abs(coefficients) ** 2) / coefficients.shape[0]
 
@@ -1259,10 +1257,8 @@ def _dipole_material(d: Designs, cell: Cell, options, seed: int) -> Case:
     problem, scale = _dipole_problem(cell)
 
     def objective(p):
-        design = gfem.MaterialField(**{**values, cell.input: p})
-        result = gfem.solve(
-            model.with_material("slab", design), problem, options=options
-        )
+        moved = _with_source_design(model, "slab", values, cell.input, p)
+        result = gfem.solve(moved, problem, options=options)
         return result.emitted_power["d"][0] / scale
 
     return _source_case(cell, objective, values, rng)
