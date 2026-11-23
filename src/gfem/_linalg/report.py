@@ -20,6 +20,15 @@ Resolving ``linear_solver="auto"`` logs one record of the choice
 (`gauge_choice`), and each tree-cotree gauge basis built logs its sizes and
 setup times (`gauge_basis`).
 
+A port mode sweep logs one record when every output frequency passes its
+guard (`port_mode_sweep`): ``ports``, ``frequencies``, ``exact_solves`` and
+``rounds``. An eigenmode mode search logs one record per seed solve
+(`seed_solve`), so a retry shows: ``problem``, ``attempt``, ``pairs``
+(asked), ``returned``, ``modes`` (selected), ``wanted`` and ``bound`` (the
+seed solve stopped at its restart bound). Mesh refinement logs its
+refinement cycles on its own logger, ``gfem.mesh_refinement``
+(`gfem.refinement`).
+
 A frequency worker logs in its own process: `collected` keeps its records,
 on this logger and on ``gfem.timing`` (`gfem._timing`), and the parent logs
 them with `replay`, each on its own logger.

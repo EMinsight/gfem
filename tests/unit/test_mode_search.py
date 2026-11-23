@@ -160,7 +160,7 @@ def _seed_records(caplog):
     ]
 
 
-def _identity(op, seed, x, **_):
+def _identity(_op, seed, x, **_):
     return Refined(complex(seed), x, 0.0, 1, converged=True)
 
 
@@ -176,9 +176,7 @@ def test_each_seed_solve_logs_one_record_so_a_retry_shows(caplog):
             return np.array([10.0 + 0j]), basis[:, :1]
         return np.array([10.0, 13.0], dtype=complex), basis[:, :2]
 
-    search = dataclasses.replace(
-        _search(2, _identity, None, None), eigen_solver=solver
-    )
+    search = dataclasses.replace(_search(2, _identity, None, None), eigen_solver=solver)
     caplog.set_level(logging.INFO, logger="gfem.solver")
     found = search.find(_Stub(11.4), None, 11.4, guard=False, polish_isolated=False)
     assert found.ks == [10.0, 13.0]
@@ -206,9 +204,7 @@ def test_a_seed_solve_at_its_restart_bound_logs_the_bound(caplog):
             np.array([10.0 + 0j]), basis[:, :1], restarts=5, applies=9
         )
 
-    search = dataclasses.replace(
-        _search(1, _identity, None, None), eigen_solver=solver
-    )
+    search = dataclasses.replace(_search(1, _identity, None, None), eigen_solver=solver)
     caplog.set_level(logging.INFO, logger="gfem.solver")
     search.find(_Stub(11.4), None, 11.4, guard=False, polish_isolated=False)
     (record,) = _seed_records(caplog)

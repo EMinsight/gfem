@@ -31,6 +31,11 @@ across ranks. A phase nested in the same phase is part of the outer one.
 Frequency workers time their blocks in their own processes; the parent logs
 their records (`gfem._linalg.report.replay`). The workers run side by side,
 so their seconds can add up to more than the parent's wall time.
+
+The loops above these phases log their units elsewhere: a solve step, a
+settled port mode sweep and an eigenmode seed solve on ``gfem.solver``
+(`gfem._linalg.report`), a refinement cycle on ``gfem.mesh_refinement``
+(`gfem.refinement`).
 """
 
 from __future__ import annotations
