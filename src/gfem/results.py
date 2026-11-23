@@ -1780,8 +1780,13 @@ def _incident_part(field: Field, name: str, part: str) -> Field:
             "or from a field whose mesh is not traced."
         )
     incident = jnp.asarray(incident_coefficients(field, reference))
-    coefficients = field.coefficients - incident if part == "scattered" else incident
-    return dataclasses.replace(field, coefficients=coefficients, _incident=None)
+    if part == "scattered":
+        return dataclasses.replace(
+            field, coefficients=field.coefficients - incident, _incident=None
+        )
+    # marked, so that power_flow refuses it (its flux balances no load)
+    marked = dataclasses.replace(reference, is_incident=True)
+    return dataclasses.replace(field, coefficients=incident, _incident=marked)
 
 
 register_fields(

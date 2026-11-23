@@ -66,6 +66,8 @@ recipes/dispersive-materials
 recipes/periodic-cell
 recipes/floquet-ports
 recipes/perfectly-matched-layer
+recipes/incident-fields
+recipes/cross-sections
 recipes/heater-temperature
 recipes/thermo-optic-phase
 recipes/thermal-step-response
