@@ -476,23 +476,28 @@ def _objective(mesh, problem, read, **options):
 
 
 def test_frequency_gradient_after_free_base_is_the_kept_one_bit_for_bit(lone_a, sweeps):
+    # one entry's backward before and after its operator is freed: the
+    # frequency pairs read the entry's fields alone, and no port is swept
     mesh, eps = lone_a
-    problem = gfem.Eigenmode(target=11.67e9)
-    budget = _budget(_case_a_field(mesh, eps), problem)
-
-    def read(result):
-        return jax.numpy.real(result.omega[0]) / 1e10 + result.q[0]
-
-    kept = jax.grad(_objective(mesh, problem, read))(eps)
-    freed = _objective(mesh, problem, read, retain_memory=budget)
-    value, pullback = jax.vjp(freed, eps)
-    (entry,) = cache.ENTRIES._entries.values()
-    assert entry.handle.operator is None  # freed by the budget
+    model = _case_a_field(mesh, eps)
+    rule = eigen_rule.EigenmodeRule(
+        model, gfem.Eigenmode(target=11.67e9), GRADIENT_OPTIONS
+    )
+    _, entry = rule.forward(model, keep=True)
+    cotangents = {"omega": np.array([1.0 - 30j])}
+    before = rule.backward(model, entry, cotangents)
+    swept = sweeps[0]
+    entry.handle.free_base(None)
+    assert entry.handle.operator is None
     assert entry.handle.ports  # the port terms stay
-    before = sweeps[0]
-    (grad,) = pullback(jax.numpy.ones_like(value))
-    assert sweeps[0] == before
-    np.testing.assert_array_equal(grad, kept)
+    after = rule.backward(model, entry, cotangents)
+    assert sweeps[0] == swept
+    assert len(after) == len(before) == 1
+    for a, b in zip(after, before, strict=True):
+        np.testing.assert_array_equal(a.left, b.left)
+        np.testing.assert_array_equal(a.right, b.right)
+        assert a.weights == b.weights
+    entry.free()
 
 
 def test_coupling_q_gradient_without_the_operator_reads_the_kept_ports(lone_a, sweeps):
