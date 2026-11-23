@@ -13,8 +13,10 @@ points is the Eulerian one: the change of the coefficients through the
 electrostatic solve, plus the change of :math:`-\nabla V` at a fixed point
 while the element moves under it.
 
-- With the coefficients held, the sampler alone against a difference at a
-  :math:`10^{-12}` m step on every node, at orders 1 to 3.
+- With the coefficients held, the sampler alone (a fixed random linear
+  functional of the field it reads, so no mode solve's round-off enters
+  the difference) against a difference at a :math:`10^{-12}` m step on
+  every node, at orders 1 to 3.
 - The whole gap chain (morph, solve, sample) with the optical model on the
   static model's mesh, against a fourth-order difference at 2 nm. The
   points then stay in their tetrahedra, so the objective is smooth.
@@ -206,14 +208,20 @@ def _gap_objective(static, morph, model, order=2, *, frozen=False):
 
 @pytest.mark.parametrize("order", [1, 2, 3])
 def test_the_sampler_alone_matches_a_difference_on_every_node(static, optical, order):
+    from gfem.electro_optic import _static_field
+
     potential = gfem.solve(static, PROBLEM, options=_options(order)).potential["s"]
     structure = jax.tree_util.tree_structure(potential.mesh)
+    mesh = optical.mesh
+    crystal = np.concatenate([mesh.elements("film"), mesh.elements("ridge")])
+    rng = np.random.default_rng(order)
+    weights = jnp.asarray(rng.standard_normal((len(crystal), 3)))
 
     def objective(nodes):
-        mesh = jax.tree_util.tree_unflatten(structure, [nodes])
-        return _shift(optical, dataclasses.replace(potential, mesh=mesh))
+        moved = jax.tree_util.tree_unflatten(structure, [nodes])
+        field = dataclasses.replace(potential, mesh=moved)
+        return jnp.sum(weights * _static_field(field, mesh, crystal, "test"))
 
-    rng = np.random.default_rng(order)
     nodes = jnp.asarray(potential.mesh.nodes)
     # every node moves by about the step (a unit RMS per coordinate)
     directions = [rng.standard_normal(nodes.shape) for _ in range(2)]
