@@ -440,9 +440,13 @@ class Integrated:
             right_k)`` per gfem tetrahedron, on the mesh in file units
             (`element_integrals`; the material pass applies the term's
             ``scale ** length_power``).
+        moments: Per term name, the same contraction of the symmetric
+            moments (`_moment_pass`), ``(n_tetrahedra, 3, 3)``, for a
+            per-axis leaf; empty when the rule has none.
     """
 
     values: Mapping[str, np.ndarray]
+    moments: Mapping[str, np.ndarray] = dataclasses.field(default_factory=dict)
 
 
 def energy_term(
@@ -1440,6 +1444,7 @@ def _material_sensitivity(
         {k[2] for k in axis_kinds},  # ty: ignore[not-subscriptable]
         terms,
         comm,
+        integrated=integrated,
     )
     return on_points | {
         kind: (per_axis if kind in axis_kinds else per_property)[kind[2]][  # ty: ignore[not-subscriptable]
@@ -1455,11 +1460,14 @@ def _per_axis_sensitivity(
     props: set[str],
     terms: Sequence[Term],
     comm: Any = None,
+    *,
+    integrated: Sequence[Integrated] = (),
 ) -> dict[str, np.ndarray]:
     """Each property's cotangent per tetrahedron and principal axis, ``(n, 3)``.
 
-    From the terms' `Derivative.per_axis` forms and the moment pass, on the
-    axes of each tetrahedron's field (`element_axes`).
+    From the terms' `Derivative.per_axis` forms and the moment pass (plus the
+    rule's own ``integrated`` moments), on the axes of each tetrahedron's
+    field (`element_axes`).
 
     Raises:
         NotImplementedError: A term reads a wanted property on an element
@@ -1490,6 +1498,12 @@ def _per_axis_sensitivity(
             key = (term.name, term.length_power + axis.length_power)
             if key not in moments:
                 moments[key] = _moment_pass(model, pairs, term, key[1], comm)
+                given = [
+                    i.moments[term.name] for i in integrated if term.name in i.moments
+                ]
+                if given and term.owner is None:
+                    built = discretization(model.mesh, model._periodic, comm).built  # noqa: SLF001
+                    moments[key] = moments[key] + sum(given) * built.scale ** key[1]
             moment = moments[key]
             if term.owner is None:
                 # s_k a_k^T M a_k per tetrahedron and axis

@@ -230,6 +230,10 @@ ENTRIES = {
         lambda model: gfem.electric_energy(field_on(model.mesh), model=model),
         rf"electric_energy.*{SLAB}",
     ),
+    "dissipated_power": (
+        lambda model: gfem.dissipated_power(field_on(model.mesh), model=model),
+        r"dissipated_power.*from_gmsh_cross_section.*thermal problem",
+    ),
     "interface_participation": (
         lambda model: gfem.interface_participation(
             gfem.EigenmodeResult(
