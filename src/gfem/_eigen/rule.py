@@ -155,7 +155,6 @@ from gfem.errors import (
     LayerClearanceWarning,
     LinearSolverConvergenceError,
     LowFrequencyWarning,
-    NonDifferentiableError,
     SolverUnavailableError,
 )
 from gfem.mesh import Mesh, _at_imported_nodes
@@ -500,7 +499,7 @@ class EigenmodeRule:
                     # left: the entry's holder owns it from here
                     store = None if op.fixed is None else op.fixed.store
                     entry = self._entry(
-                        KeptOperator(eop, store),
+                        KeptOperator(eop, store, ports),
                         ks,
                         x,
                         y,
@@ -998,28 +997,6 @@ class EigenmodeRule:
         )
         return outputs, x
 
-    def _lumped_q_port(self, cts: dict[str, np.ndarray]) -> None:
-        """Keep the rows of ``cts["q_port"]`` (if any) for `resistive` alone.
-
-        Raises:
-            NonDifferentiableError: A nonzero cotangent on a wave port's row.
-        """
-        ct = cts.get("q_port")
-        if ct is None:
-            return
-        rows = []
-        for name, row in zip(self.coupled, ct, strict=True):
-            if name in self.resistive:
-                rows.append(row)
-            elif np.any(row):
-                raise NonDifferentiableError(
-                    f"NonDifferentiableError: gfem cannot differentiate "
-                    f"q_port[{name!r}], the coupling Q of a wave port, in this "
-                    "version. Differentiate omega or q instead, or wrap it in "
-                    "jax.lax.stop_gradient to use its value without its derivative."
-                )
-        cts["q_port"] = np.array(rows).reshape(len(rows), *ct.shape[1:])
-
     def _coupling_q(
         self,
         outputs: dict[str, object],
@@ -1497,7 +1474,6 @@ class EigenmodeRule:
             for n in names
             if n in cotangents and np.any(cotangents[n])
         }
-        self._lumped_q_port(cts)
         # the normalized field's cotangent, complex (non-periodic: the solve
         # space is the unpaired one)
         field = cotangents.get("e_field")
@@ -1524,11 +1500,19 @@ class EigenmodeRule:
         self._check_reach(entry, wanted, per_k)
         holder = entry.handle
         eop = getattr(holder, "operator", None)
+        # the forward's port terms: the backward never sweeps a port again
+        terms_kept = [p.term for p in getattr(holder, "ports", ())]
         own = eop is None
         gap = fields["gap"]
         if own:
             first = wanted[0]
-            eop = self.operator(op, k[first] * (1 + reshift_offset(float(gap[first]))))
+            ports = tuple(
+                EigenPort(term, term.robin_piece(model, op.built, op.order))
+                for term in terms_kept
+            )
+            eop = self.operator(
+                op, k[first] * (1 + reshift_offset(float(gap[first]))), ports=ports
+            )
         pairs = []
         try:
             # every mode's guard before any form is built
@@ -1552,6 +1536,14 @@ class EigenmodeRule:
                 resistive=self.resistive,
                 inductive=self.inductive,
                 kinetic=self.kinetic,
+                coupled=self.coupled,
+                waves={
+                    wave.name: (term, p)
+                    for term in terms_kept
+                    for p, wave in enumerate(term.ports)
+                },
+                pair=_layout(op).pair,
+                cluster_rtol=self.options.cluster_rtol,
             )
             index = {port.name: i for i, port in enumerate(model.ports)}
             for j in wanted:

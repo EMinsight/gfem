@@ -305,8 +305,8 @@ def test_mode_field_backward_without_the_operator_prepares_and_frees_one(mesh):
     built = []
     make = rule.operator
 
-    def operator(op, sigma):
-        eop = make(op, sigma)
+    def operator(op, sigma, **kwargs):
+        eop = make(op, sigma, **kwargs)
         built.append((eop, sigma))
         return eop
 

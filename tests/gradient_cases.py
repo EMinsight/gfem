@@ -49,6 +49,19 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.constants as const
 import structured_meshes as sm
+from wave_port_cases import (
+    A_MM,
+    B_MM,
+    C_B_MM,
+    CASE_A,
+    CASE_A3,
+    CASE_A4,
+    CASE_L,
+    ROOT_A,
+    ROOT_A4,
+    ROOT_C20,
+    ROOT_L,
+)
 
 import gfem
 
@@ -966,4 +979,95 @@ def junction_law_line(
             gfem.LumpedPort("jj", "port1", "+z", inductance=inductance),
             gfem.LumpedPort("r", "port2", "+z", impedance=JUNCTION_R),
         ],
+    )
+
+
+# --- eigenmode with wave ports ------------------------------------------------------
+
+#: WR-90's cross-section, mm.
+WR90 = (A_MM, B_MM)
+#: Case A: a short, eps_r = 4 for 10 mm, 5 mm of air up to the port (Q 5.5).
+WAVE_A, WAVE_A_ROOT = CASE_A, ROOT_A
+#: Case A with its eps_r = 4 layer split at 6 mm: an inductive lumped port
+#: on the split, the design the first 6 mm, the spacer's interface with the
+#: air the node cells' moving plane.
+WAVE_A_SPLIT = (("dielectric", 4.0, 6.0), ("spacer", 4.0, 4.0), ("air", 1.0, 5.0))
+#: The lumped port's inductance and capacitance (H, F) on the split.
+WAVE_LUMPED = (1e-8, 1e-14)
+#: A4: two eps_r = 10 windows, a partial reflector, Q 869.
+WAVE_A4, WAVE_A4_ROOT = CASE_A4, ROOT_A4
+#: C: the A3 stack on a guide 5 mm high, one port surface requesting TE10 and
+#: TE20; the TE20 family's root.
+WAVE_C, WAVE_C_HEIGHT, WAVE_C_ROOT = CASE_A3, C_B_MM, ROOT_C20
+#: L: case A with a lossy anisotropic section on the port face (TE10 reads
+#: eps_yy alone).
+WAVE_L, WAVE_L_ROOT = CASE_L, ROOT_L
+
+
+def wave_guide(
+    directory: Path,
+    layers,
+    *,
+    height: float = WR90[1],
+    lumped: float | None = None,
+    moving: float | None = None,
+    left_port: bool = False,
+    nx: int = 6,
+    ny: int = 2,
+    nz_per_mm: float = 0.5,
+) -> gfem.Mesh:
+    """WR-90 with ``layers`` ``(name, eps_r, mm)`` from a short to ``"port"``.
+
+    ``lumped``: the plane (mm) of a layer interface that holds surface
+    ``"lumped"``, a strip across the guide's height over its two middle
+    cells in x; ``moving``: the plane of a layer interface named
+    ``"moving"`` (for `gfem.shape.boundary_morph`); ``left_port``: the
+    plane z = 0 is surface ``"portl"`` instead of a short. The other
+    surfaces are ``"walls"``.
+    """
+    a = WR90[0]
+    tops = np.cumsum([t for _, _, t in layers])
+    zs = [np.zeros(1)]
+    for (_, _, t), z1 in zip(layers, tops, strict=True):
+        n = max(1, round(t * nz_per_mm))
+        zs.append(z1 - t + np.linspace(0, t, n + 1)[1:])
+    edges = (
+        np.linspace(0, a, nx + 1),
+        np.linspace(0, height, ny + 1),
+        np.concatenate(zs),
+    )
+    length = tops[-1]
+    cell = a / nx
+
+    def volume(c):
+        return layers[int(np.searchsorted(tops, c[2]))][0]
+
+    def surface(c):
+        if abs(c[2] - length) < 1e-9:
+            return "port"
+        if left_port and abs(c[2]) < 1e-9:
+            return "portl"
+        if lumped is not None and abs(c[2] - lumped) < 1e-9:
+            return "lumped" if abs(c[0] - a / 2) < cell else ""
+        if moving is not None and abs(c[2] - moving) < 1e-9:
+            return "moving"
+        if any(abs(c[2] - z) < 1e-9 for z in tops[:-1]):
+            return ""
+        return "walls"
+
+    name = "_".join(n for n, _, _ in layers)
+    return _mesh(directory, f"{name}.msh", sm.structured(edges, volume, surface))
+
+
+def wave_resonator(mesh: gfem.Mesh, layers, design: dict, ports) -> gfem.Model:
+    """The guide's model: ``design`` materials by region, the rest's eps_r."""
+    materials = {
+        name: eps if isinstance(eps, gfem.Material) else gfem.Material(eps_r=eps)
+        for name, eps, _ in layers
+    }
+    return gfem.Model(
+        mesh,
+        materials=materials | design,
+        boundaries=[gfem.PEC("walls")],
+        ports=ports,
     )
