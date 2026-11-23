@@ -6,8 +6,9 @@
 Reads every ``*.json`` in ``RECORDS`` that ``scale_run.py`` and ``scale_bench.py`` wrote
 (superseded ones aside) and writes one Markdown snippet per table of a scaling set
 into ``OUT``, which ``docs/project/scaling.md`` includes. ``--set`` picks the set:
-`CAMPAIGN`, the default, or `COARSE`, the second set, on its own commit and records;
-one set never rewrites the other's snippets. The docs build never runs this script,
+`CAMPAIGN`, the default; `COARSE`, the second set, on its own commit and records; or
+`PMG`, ``pmg_gmres`` against ``direct`` on one node. One set never rewrites
+another's snippets. The docs build never runs this script,
 opens a record or computes a number; a person reruns it and diffs. Each snippet's first
 line, a comment the page does not render, names the commit and the SHA-256 of the
 records manifest: one line per record file, its SHA-256 and its name, sorted by name.
@@ -96,8 +97,11 @@ COARSE: dict[str, dict[str, Any]] = {
     "coarse-design-loop": {"kind": "loop", "records": ["c2_bddc_*_r1"]},
     "coarse-phases": {"kind": "phases", "records": ["c2_bddc_*", "c4_bddc_*"]},
 }
+#: The third set: ``pmg_gmres`` against ``direct`` on one node, one process per model
+#: and solver; each record's ``row`` orders the table.
+PMG: dict[str, dict[str, Any]] = {"pmg-ladder": {"kind": "pmg", "records": ["*"]}}
 #: The scaling sets by the name ``--set`` takes.
-SETS = {"campaign": CAMPAIGN, "coarse": COARSE}
+SETS = {"campaign": CAMPAIGN, "coarse": COARSE, "pmg": PMG}
 #: How a table names MUMPS's ordering of the coarse problem.
 ORDERINGS = {"pt-scotch": "PT-Scotch", "metis": "METIS", "parmetis": "ParMETIS"}
 
@@ -759,6 +763,76 @@ def meshes(
     return _table(("Mesh", "Tetrahedra", "DOF", "md5"), rows) + note
 
 
+def _per_port(record: Record) -> str:
+    counts = [n for sample in record["iterations"] for n in sample]
+    low, high = min(counts), max(counts)
+    return str(low) if low == high else f"{low}-{high}"
+
+
+def pmg(chosen: list[Record]) -> str:
+    """One row per iterative run, next to the direct run of its model, if any."""
+    ordered = sorted(chosen, key=lambda r: (r.get("row", 0), r["name"]))
+
+    def model(r: Record) -> tuple:
+        return (r["case"], r["wavelengths"], r["order"])
+
+    direct = {model(r): r for r in ordered if r["solver"] == "direct"}
+    rows, skipped = [], {}
+    for r in ordered:
+        if r["solver"] == "direct":
+            continue
+        d = direct.get(model(r))
+        share = r.get("direct_share")
+        rows.append(
+            [
+                r["model"],
+                f"{r['unknowns']:,}",
+                f"{r['wavelengths']:g}",
+                r["order"],
+                f"`{r['solver']}`",
+                r["threads"],
+                "-" if share is None else f"{100 * share:.1f} %",
+                _per_port(r),
+                f"{r['solve_s']:.0f}",
+                f"{r['solve_peak_gib']:.1f}",
+                "-" if d is None else f"{d['solve_s']:.0f}",
+                "-" if d is None else f"{d['solve_peak_gib']:.1f}",
+            ]
+        )
+        if d is None and r.get("direct_skipped"):
+            skipped[r["model"]] = r["direct_skipped"]
+    text = _table(
+        (
+            "Model",
+            "Unknowns",
+            "Wavelengths",
+            "Order",
+            "Solver",
+            "Threads",
+            "Direct set",
+            "Iterations per port",
+            "Solver, s",
+            "Solver, GiB",
+            "`direct`, s",
+            "`direct`, GiB",
+        ),
+        rows,
+    )
+    note = (
+        "Each run is one process and one `gfem.solve` at one frequency, both ports "
+        "excited, `tolerance=1e-6`. A time is the whole call, from the model to S "
+        "(assembly, port modes and the solver's setup included); memory is the "
+        "process's peak resident set during it. Wavelengths is the box width in "
+        "silica wavelengths; the direct set is the share of the unknowns "
+        "`pmg_gmres` solves exactly, from its INFO record. The `direct` columns repeat "
+        "the model's one `direct` run, made at the thread count of its first row."
+    )
+    notes = [note] + [
+        f"{name}: `direct` not run, {why}." for name, why in skipped.items()
+    ]
+    return text + "\n" + "\n\n".join(notes) + "\n"
+
+
 def bench(chosen: list[Record]) -> str:
     """The machine benchmark: one node by threads, then the network."""
     node = next(r for r in chosen if r.get("mode") == "node")
@@ -906,6 +980,8 @@ def write_snippets(
             body = meshes(chosen, records, md5)
         elif kind == "bench":
             body = bench(chosen)
+        elif kind == "pmg":
+            body = pmg(chosen)
         else:
             _refuse(f"unknown table kind {kind} for {name}")
         path = out / f"{name}.md"
