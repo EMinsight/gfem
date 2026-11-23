@@ -857,7 +857,12 @@ def _unset_omitted(cls: Any, **defaults: Any) -> _codec.ToArgs:
         for name, default in defaults.items():
             # a field sequence equals no default: only an empty one is left out
             value = args[name]
-            unset = not len(value) if isinstance(default, tuple) else value == default
+            if default is None:  # an array field is unset only when None
+                unset = value is None
+            elif isinstance(default, tuple):
+                unset = not len(value)
+            else:
+                unset = value == default
             if unset:
                 del args[name]
         return args
@@ -920,6 +925,9 @@ def _renamed_density_from_args(cls: type) -> _codec.FromArgs:
 for _cls in (Material, MaterialField):
     _codec.register(
         _cls,
+        # no electro-optic tensor: written as an older gfem wrote it, so the
+        # file and its solve key are unchanged
+        to_args=_unset_omitted(_cls, electro_optic_tensor=None),
         from_args=_renamed_density_from_args(_cls),
         # "density": the mass density as gfem 0.1 wrote it (a read alias)
         names=[f.name for f in dataclasses.fields(_cls) if f.init] + ["density"],
