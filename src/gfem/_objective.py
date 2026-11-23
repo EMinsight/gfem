@@ -791,15 +791,27 @@ _JAX_DIR = str(pathlib.Path(jax.__file__).parent) + os.sep
 _SMOOTH_HIGHER_ORDER = frozenset({"custom_linear_solve"})
 
 
+#: JAX before 0.10 holds call bodies as closed jaxprs; later JAX has no such type.
+_CLOSED: tuple[type, ...] = (
+    (jcore.ClosedJaxpr,) if hasattr(jcore, "ClosedJaxpr") else ()
+)
+_JAXPRS: tuple[type, ...] = (jcore.Jaxpr, *_CLOSED)
+
+
 def _jaxprs(params: Mapping[str, Any]) -> Iterator[tuple[str, int | None, Any]]:
     """Each jaxpr held in an equation's ``params``: (key, tuple index, jaxpr)."""
     for key, value in params.items():
-        if isinstance(value, jcore.Jaxpr):
+        if isinstance(value, _JAXPRS):
             yield key, None, value
         elif isinstance(value, tuple):
             for i, item in enumerate(value):
-                if isinstance(item, jcore.Jaxpr):
+                if isinstance(item, _JAXPRS):
                     yield key, i, item
+
+
+def _open(jaxpr: Any) -> Any:
+    """The open jaxpr of ``jaxpr``, closed or not."""
+    return jaxpr.jaxpr if isinstance(jaxpr, _CLOSED) else jaxpr
 
 
 def _rule(eqn: Any) -> tuple[str, bool]:
@@ -910,7 +922,7 @@ def _walk_custom(eqn: Any, ins: list[bool], reaches: list[bool]) -> list[bool]:
 def _walk_call(eqn: Any, ins: list[bool], live: bool) -> list[bool]:
     """A call: its one sub-jaxpr, on its operands one to one."""
     ((_, _, sub),) = list(_jaxprs(eqn.params))
-    return _walk(sub, ins, [live] * len(eqn.outvars))
+    return _walk(_open(sub), ins, [live] * len(eqn.outvars))
 
 
 def _walk_cond(eqn: Any, ins: list[bool], live: bool) -> list[bool]:
@@ -1002,7 +1014,11 @@ def _identity_stop_gradient(jaxpr: Any) -> Any:
 def _stripped_params(params: Mapping[str, Any]) -> dict[str, Any]:
     out = dict(params)
     for key, index, sub in _jaxprs(params):
-        stripped = _identity_stop_gradient(sub)
+        stripped = (
+            sub.replace(jaxpr=_identity_stop_gradient(sub.jaxpr))
+            if isinstance(sub, _CLOSED)
+            else _identity_stop_gradient(sub)
+        )
         if index is None:
             out[key] = stripped
         else:

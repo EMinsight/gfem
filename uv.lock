@@ -1263,7 +1263,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "jax", specifier = ">=0.12" },
+    { name = "jax", specifier = ">=0.8.3" },
     { name = "meshio", specifier = ">=5.3.5" },
     { name = "mkl", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'mkl') or (platform_machine == 'AMD64' and sys_platform == 'win32' and extra == 'mkl')", specifier = ">=2026.2" },
     { name = "mpi4py", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'mpi'", specifier = ">=4.1.2,<5" },

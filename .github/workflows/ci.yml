@@ -71,6 +71,31 @@ jobs:
     - name: Unit tier
       run: uv run pytest -m unit
 
+  jax-floor:
+    # The oldest JAX pyproject.toml admits: the lock carries the newest, so
+    # without this job nothing checks the floor.
+    name: unit (ubuntu, py3.12, jax floor)
+    if: inputs.tests == ''
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: astral-sh/setup-uv@v6
+      with:
+        version: ${{ env.UV_VERSION }}
+        python-version: "3.12"
+        enable-cache: true
+        cache-suffix: jax-floor
+    - name: Install
+      run: |
+        uv sync --locked --extra viz
+        floor=$(uv run --no-sync python -c "import re, tomllib;
+        deps = tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies'];
+        print(next(re.fullmatch(r'jax>=(\S+)', d)[1] for d in deps if d.startswith('jax>=')))")
+        uv pip install "jax==$floor" "jaxlib==$floor"
+        uv run --no-sync python -c "import jax; print('jax', jax.__version__)"
+    - name: Unit tier
+      run: uv run --no-sync pytest -m unit
+
   verification:
     # Serial, the tier takes over 3 h on one runner: split into shards, each
     # running every 8th test (conftest.py's --shard), with and without MKL.
