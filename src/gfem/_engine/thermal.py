@@ -7,7 +7,10 @@ excluded from thermal problems). The steady operator is
     a(u, v) = int k grad u . grad v  +  sum_Convection int_S h u v,
 
 the load is ``int q v`` for the heat sources' power density q (one P0
-value per tetrahedron), ``int_S flux v`` per `gfem.HeatFlux` and
+value per tetrahedron) plus ``int_S q_s v`` for their face density q_s
+(one P0 value per gfem triangle: sheet heat, which the face's own
+condition then takes, splits or sends in), ``int_S flux v`` per
+`gfem.HeatFlux` and
 ``int_S h T_ambient v`` per `gfem.Convection`, and the
 `gfem.FixedTemperature` surfaces are Dirichlet surfaces, lifted with their
 values (a Dirichlet value wins on nodes shared with another condition).
@@ -50,7 +53,7 @@ from gfem._boundaries import Convection, FixedTemperature, HeatFlux
 from gfem._checks import is_traced
 from gfem._engine import quadrature
 from gfem._engine.cache import Entry, _alone, retain_budget
-from gfem._engine.coefficients import element_values, p0
+from gfem._engine.coefficients import element_values, p0, surface_p0
 from gfem._engine.domain import boundary_region
 from gfem._engine.electrostatic import KeptHandle
 from gfem._engine.fields import (
@@ -65,6 +68,7 @@ from gfem._engine.fields import (
 from gfem._engine.mesh import EngineMesh
 from gfem._engine.runtime import task_manager
 from gfem._engine.sensitivity import (
+    FACE_LOAD_KIND,
     LOAD_KIND,
     Derivative,
     FieldPair,
@@ -83,7 +87,7 @@ from gfem.model import Model
 from gfem.options import SolverOptions
 from gfem.problems import SteadyThermal, TransientThermal
 from gfem.results import Field, SteadyThermalResult, TransientThermalResult
-from gfem.thermal import Trace, _FieldTrace, _tet_volumes
+from gfem.thermal import Trace, _FieldTrace, _tet_volumes, _triangle_areas
 
 __all__ = ["Loads", "SteadyThermalRule", "ThermalRule", "TransientThermalRule"]
 
@@ -105,34 +109,56 @@ def source_density(problem: SteadyThermal | TransientThermal, mesh: Mesh) -> jax
     return density
 
 
+def source_face_density(
+    problem: SteadyThermal | TransientThermal, mesh: Mesh
+) -> jax.Array:
+    """The summed face power density of the problem's heat sources per triangle.
+
+    W/m^2 in `gfem.Mesh.triangles` order, in JAX: linear in each source's
+    amount. Zero without sheet heat.
+    """
+    density = jnp.zeros(len(mesh.triangles), jnp.float64)
+    for source in problem.heat:
+        density = density + source._face_density_on(mesh)  # noqa: SLF001
+    return density
+
+
 @dataclasses.dataclass(frozen=True, eq=False)
 class Loads:
     """A thermal problem as `gfem._adjoint.solve_vjp` sees it.
 
     Its differentiable leaves only: every heat source resolved in JAX to one
-    summed power density per tetrahedron, and for a transient the waveform
-    scales and the traces (whose leaves are a section's thermo-optic
-    weights). The rule reads everything else from the problem it was built
-    with (`ThermalRule.spec`). The input kinds are ``("problem",
-    ".density")`` (`gfem._engine.sensitivity.LOAD_KIND`), ``("problem",
-    ".scales")`` and ``("problem", ".traces['<name>']...")``.
+    summed power density per tetrahedron and one summed face density per
+    triangle, and for a transient the waveform scales and the traces (whose
+    leaves are a section's thermo-optic weights). The rule reads everything
+    else from the problem it was built with (`ThermalRule.spec`). The input
+    kinds are ``("problem", ".density")``
+    (`gfem._engine.sensitivity.LOAD_KIND`), ``("problem", ".face_density")``
+    (`gfem._engine.sensitivity.FACE_LOAD_KIND`), ``("problem", ".scales")``
+    and ``("problem", ".traces['<name>']...")``.
 
     Attributes:
         density: W/m^3 per tetrahedron (`gfem.Mesh.tetrahedra` order).
+        face_density: W/m^2 per triangle (`gfem.Mesh.triangles` order), or
+            ``None`` (no face heat).
         scales: The waveform's scales, or ``None`` (steady).
         traces: The traces by name, or ``None`` (steady).
     """
 
     density: Any
+    face_density: Any = None
     scales: Any = None
     traces: Any = None
 
 
-register_fields(Loads, ("density", "scales", "traces"))
+register_fields(Loads, ("density", "face_density", "scales", "traces"))
 
+#: The input kinds of the sources' densities: one adjoint load field
+#: serves both (`LoadField`).
+LOAD_KINDS = frozenset({LOAD_KIND, FACE_LOAD_KIND})
 #: The input kinds of the sources alone: their gradient needs the step
 #: adjoints only, so no trajectory is kept for them.
-SOURCE_KINDS = frozenset({LOAD_KIND, ("problem", ".scales")})
+SOURCE_KINDS = LOAD_KINDS | {("problem", ".scales")}
 
 
 def _stride(steps: int) -> int:
@@ -221,21 +247,57 @@ def _check_sinks(model: Model, active: np.ndarray, sinks: tuple[str, ...]) -> No
     )
 
 
-def _check_heat_inside(mesh: Mesh, active: np.ndarray, density: np.ndarray) -> None:
-    """Raise for heat on a tetrahedron outside the thermal domain.
+def _watts(mesh: Mesh, power: float) -> str:
+    """``power`` (W, a slab total on a cross-section) as the user reads it."""
+    if mesh.section_thickness is None:
+        return f"{power:.3g} W"
+    return f"{power / mesh.section_thickness:.3g} W/m"
+
+
+def _check_heat_inside(
+    mesh: Mesh,
+    active: np.ndarray,
+    density: np.ndarray,
+    face: np.ndarray | None = None,
+) -> None:
+    """Raise for heat outside the thermal domain, naming where and how much.
+
+    Volume heat on a tetrahedron outside the domain raises with its region;
+    face heat on a triangle with no tetrahedron of the domain on either side
+    raises with its surface. A face with one side in the domain is fine: its
+    heat enters there.
 
     Raises:
         ValueError: A heat source heats an element excluded from thermal
-            problems.
+            problems, or a face with no thermal side.
     """
     outside = (np.asarray(density) != 0) & ~active
-    if not outside.any():
+    if outside.any():
+        where = next(r for r in mesh.volumes if outside[mesh.elements(r)].any())
+        on = np.zeros_like(outside)
+        on[mesh.elements(where)] = outside[mesh.elements(where)]
+        power = float(np.sum(np.asarray(density)[on] * _tet_volumes(mesh)[on]))
+        raise ValueError(
+            f"A heat source puts {_watts(mesh, power)} on region {where!r}, which "
+            "is excluded from thermal problems, so the heat has nowhere to go. "
+            f"Heat a region of the thermal domain, or keep {where!r} in it (drop "
+            'it from excluded={"thermal": ...}).'
+        )
+    if face is None:
         return
-    where = next(r for r in mesh.volumes if outside[mesh.elements(r)].any())
+    neighbours = mesh._topology.surface_neighbours  # noqa: SLF001
+    sides = np.where(neighbours >= 0, active[np.maximum(neighbours, 0)], False)
+    loose = (np.asarray(face) != 0) & ~sides.any(axis=1)
+    if not loose.any():
+        return
+    where = next(s for s in mesh.surfaces if loose[mesh.elements(s)].any())
+    on = np.zeros_like(loose)
+    on[mesh.elements(where)] = loose[mesh.elements(where)]
+    power = float(np.sum(np.asarray(face)[on] * _triangle_areas(mesh)[on]))
     raise ValueError(
-        f"A heat source heats region {where!r}, which is excluded from thermal "
-        "problems, so the heat has nowhere to go. Heat a region of the thermal "
-        f"domain, or keep {where!r} in it (drop it from "
+        f"A heat source puts {_watts(mesh, power)} on surface {where!r}, which "
+        "touches no region of the thermal domain, so the heat has nowhere to go. "
+        f"Keep a region next to {where!r} in the thermal domain (drop it from "
         'excluded={"thermal": ...}).'
     )
 
@@ -359,11 +421,23 @@ class ThermalRule:
             # concrete sources: evaluated now, even inside a traced function
             with jax.ensure_compile_time_eval():
                 density = np.asarray(source_density(problem, mesh))
-            _check_heat_inside(mesh, self.active, density)
+                face = np.asarray(source_face_density(problem, mesh))
+            _check_heat_inside(mesh, self.active, density, face)
 
     def vjp_problem(self, problem: Any) -> Loads:
         """The problem's differentiable leaves, resolved in JAX (`Loads`)."""
-        return Loads(density=source_density(problem, self._mesh))
+        return Loads(
+            density=source_density(problem, self._mesh),
+            face_density=source_face_density(problem, self._mesh),
+        )
+
+    def _checked_loads(self, mesh: Mesh) -> tuple[np.ndarray, np.ndarray | None]:
+        """This call's densities on the host, after `_check_heat_inside`."""
+        loads = self._loads()
+        density = np.asarray(loads.density)
+        face = None if loads.face_density is None else np.asarray(loads.face_density)
+        _check_heat_inside(mesh, self.active, density, face)
+        return density, face
 
     def _loads(self) -> Loads:
         """This call's `Loads`: the host copy's problem, or resolved here."""
@@ -470,13 +544,26 @@ class ThermalRule:
         return form.vec.FV().NumPy().copy()
 
     def _source_load(
-        self, built: EngineMesh, space: ngs.FESpace, density: np.ndarray
+        self,
+        built: EngineMesh,
+        space: ngs.FESpace,
+        density: np.ndarray,
+        face: np.ndarray | None = None,
     ) -> np.ndarray:
-        """The heat sources' load ``int q v`` (file units)."""
+        """The heat sources' load ``int q v + int_S q_s v`` (file units).
+
+        A face density loads every face it is nonzero on, interior or
+        exterior: the conditions of an exterior face act on its heat as on
+        any boundary load.
+        """
+        order = self.options.order
         v = space.TestFunction()
         form = ngs.LinearForm(space)
         q = p0(built, np.asarray(density, float) * built.scale**2)
-        form += q * v * quadrature.dx(self.options.order)
+        form += q * v * quadrature.dx(order)
+        if face is not None and np.any(face):
+            q_s = surface_p0(built, np.asarray(face, float) * built.scale)
+            form += q_s * v * quadrature.ds(order)
         form.Assemble()
         return form.vec.FV().NumPy().copy()
 
@@ -554,8 +641,12 @@ class ThermalRule:
         )
 
     def _heat(self) -> tuple[Field, jax.Array]:
-        """The heat field and the sources' total power (W), in JAX."""
+        """The volume heat field and the sources' total power (W), in JAX.
+
+        The power holds the face heat too.
+        """
         density = source_density(self.spec, self._mesh)
+        face = source_face_density(self.spec, self._mesh)
         heat = Field(
             coefficients=density[self._heat_order()],
             mesh=self._mesh,
@@ -566,7 +657,9 @@ class ThermalRule:
             support=self.regions,
             _excluded=self._excluded,
         )
-        power = jnp.sum(density * _tet_volumes(self._mesh))
+        power = jnp.sum(density * _tet_volumes(self._mesh)) + jnp.sum(
+            face * _triangle_areas(self._mesh)
+        )
         return heat, power
 
     # --- the differentiation interface ----------------------------------------
@@ -713,12 +806,11 @@ class SteadyThermalRule(ThermalRule):
         del request  # a steady solve keeps the same whatever is wanted
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
-        density = np.asarray(self._loads().density)
-        _check_heat_inside(mesh, self.active, density)
+        density, face = self._checked_loads(mesh)
         uniform = self.boundaries.uniform
         with task_manager(self.options.threads):
             space, built = self._space(model)
-            source = self._source_load(built, space, density)
+            source = self._source_load(built, space, density, face)
             # T0 needs a solve unless it is one uniform value
             boundary = (
                 None if uniform is not None else self._boundary_data(built, space)
@@ -817,19 +909,22 @@ class SteadyThermalRule(ThermalRule):
                     t0 = entry.fields["temperature"] - rise
                     ct0 = np.where(free, np.asarray(ct_t, dtype=float), 0.0)
                     pairs.append(self._source_free_pair(model, built, space, ct0, t0))
-            if LOAD_KIND in wanted:
+            if wanted & LOAD_KINDS:
                 pairs.append(LoadField(space, lam, order, domain, length_power=2))
         return pairs
 
     def result(self, outputs: dict) -> SteadyThermalResult:
         """The public result from the forward outputs."""
         heat, power = self._heat()
+        # face heat, kept for the heat flow's residual when a source has any
+        sheets = any(s._face_density is not None for s in self.spec.heat)  # noqa: SLF001
         return SteadyThermalResult(
             temperature=self._field(outputs["temperature"], "T"),
             rise=self._field(outputs["rise"], "dT"),
             heat=heat,
             power=power,
             _thickness=self._mesh.section_thickness,
+            _face_heat=(source_face_density(self.spec, self._mesh) if sheets else None),
         )
 
 
@@ -979,6 +1074,7 @@ class TransientThermalRule(ThermalRule):
         """The density, the waveform scales and the traces (`Loads`)."""
         return Loads(
             density=source_density(problem, self._mesh),
+            face_density=source_face_density(problem, self._mesh),
             scales=problem._scales,  # noqa: SLF001
             traces=dict(problem.traces),
         )
@@ -1180,8 +1276,7 @@ class TransientThermalRule(ThermalRule):
         request = SolveRequest() if request is None else request
         mesh = model.mesh
         check_properties(model, self.active, self.reads)
-        density = np.asarray(self._loads().density)
-        _check_heat_inside(mesh, self.active, density)
+        density, face = self._checked_loads(mesh)
         dt, _, kept = self._grid
         scales = self.scales()
         on_t, on_rise = self._trace_rows(mesh)
@@ -1189,7 +1284,7 @@ class TransientThermalRule(ThermalRule):
         rows = on_t + on_rise
         with task_manager(self.options.threads):
             space, built = self._space(model)
-            source = self._source_load(built, space, density)
+            source = self._source_load(built, space, density, face)
             t0 = self._source_free(model, built, space)
             stepper = self._stepper(model, built, space, dt)
             u = self._start(space, stepper.free, t0)
@@ -1323,7 +1418,13 @@ class TransientThermalRule(ThermalRule):
             space, built = self._space(model)
             domain = self._domain(model, built)
             free = free_mask(space.FreeDofs(), space.ndof)
-            source = self._source_load(built, space, np.asarray(loads.density))
+            face = loads.face_density
+            source = self._source_load(
+                built,
+                space,
+                np.asarray(loads.density),
+                None if face is None else np.asarray(face),
+            )
             handle = None if entry.handle is None else entry.handle.handle
             reused = handle is not None
             stepper = self._stepper(model, built, space, dt, handle=handle)
@@ -1457,7 +1558,7 @@ class TransientThermalRule(ThermalRule):
                     self._explicit = self._trace_gradients(
                         loads, summed, ct_tr.sum(axis=0), t0
                     )
-            if LOAD_KIND in wanted:
+            if wanted & LOAD_KINDS:
                 pairs.append(LoadField(space, load, order, domain, length_power=2))
         explicit = getattr(self, "_explicit", {})
         if ("problem", ".scales") in wanted:

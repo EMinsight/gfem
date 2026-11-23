@@ -370,3 +370,51 @@ def test_a_face_density_weighs_like_the_heat_flux_it_equals(solved, side):
         weights = engine.side(rule, m, side)
         flows.append(engine.balance(rule, m, weights).flow(t, density, extra))
     assert flows[1] == pytest.approx(flows[0], rel=1e-13)
+
+
+# --- sheet heat --------------------------------------------------------------------
+
+
+def _sheet(mesh, scale=1.0):
+    """Face heat on the fixed bottom and the convection top, beside the heater's."""
+    face = np.zeros(len(mesh.triangles))
+    face[mesh.elements("bottom")] = 3e7
+    face[mesh.elements("top")] = 2e7
+    return gfem.HeatSource(
+        regions=(),
+        _kind="electromagnetic",
+        _density=jnp.zeros(len(mesh.tetrahedra)),
+        _face_density=jnp.asarray(face) * scale,
+    )
+
+
+@pytest.fixture(scope="module")
+def sheet_solved(brick):
+    model = _model(brick)
+    problem = gfem.SteadyThermal((_heat(brick), _sheet(brick)))
+    return model, gfem.solve(model, problem, options=DIRECT)
+
+
+def test_sheet_heat_on_a_fixed_face_is_in_the_balance(sheet_solved):
+    model, result = sheet_solved
+    # 4 um x 1 um faces: 3e7 and 2e7 W/m^2 on 4e-12 m^2 each
+    power = float(result.power)
+    assert power == pytest.approx(2e-4 + 2e-4, rel=1e-12)
+    flows = sum(float(gfem.heat_flow(result, s, model=model)) for s in SURFACES)
+    assert flows == pytest.approx(power, rel=1e-12)
+    out = float(gfem.heat_flow(result, CUTS["left half"], model=model))
+    back = float(gfem.heat_flow(result, lambda c: ~CUTS["left half"](c), model=model))
+    assert out + back == pytest.approx(0.0, abs=1e-12 * power)
+
+
+def test_the_sheet_heat_gradient_matches_finite_differences(brick):
+    model = _model(brick)
+
+    def flow(scale):
+        problem = gfem.SteadyThermal((_heat(brick), _sheet(brick, scale)))
+        result = gfem.solve(model, problem, options=DIRECT)
+        return gfem.heat_flow(result, "bottom", model=model)
+
+    grad = float(jax.grad(flow)(1.0))
+    fd = (float(flow(1.0 + 1e-3)) - float(flow(1.0 - 1e-3))) / 2e-3
+    assert grad == pytest.approx(fd, rel=1e-6)

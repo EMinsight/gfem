@@ -444,6 +444,18 @@ RAISES_LABELS = {
         "The power through a surface (`power_flow`) of a field of an adaptive "
         "sweep, with respect to anything the field depends on"
     ),
+    "dissipated_power x node coordinates": (
+        "The dissipated power per region and sheet (`dissipated_power`), with "
+        "respect to node coordinates"
+    ),
+    "dissipated_power x reduced field": (
+        "The dissipated power per region and sheet (`dissipated_power`) of a "
+        "field of an adaptive sweep, with respect to anything the field depends on"
+    ),
+    "dissipated_power x frequency": (
+        "The dissipated power per region and sheet (`dissipated_power`), with "
+        "respect to the field's frequency (a fixed input of the driven solve)"
+    ),
     "driven x wave_vector": (
         "Driven S-parameters, with respect to the Bloch wave vector"
     ),
@@ -976,6 +988,7 @@ REFUSAL_LABELS = {
     "region_mean": "`region_mean`",
     "element_mean": "`element_mean`",
     "electric_energy": "`electric_energy`",
+    "dissipated_power": "`dissipated_power`",
     "error_estimate": "`error_estimate` of a result solved across ranks",
     "mesh_refinement": "`refine_mesh`",
     "mode_field_gradient": (

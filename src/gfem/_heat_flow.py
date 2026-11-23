@@ -7,8 +7,8 @@ gives it the solve's JAX semantics:
 
 - the temperature coefficients: differentiable, the weights of `Balance`
   (the solve carries them on to its own inputs);
-- the heat field's coefficients (the source density): differentiable,
-  linear;
+- the heat field's coefficients (the source density) and the result's
+  face heat: differentiable, linear;
 - a material leaf of the thermal conductivity: differentiable through the
   explicit pair, ``dQ/dk_e = scale * int_e grad(w) . grad(T)`` on the side's
   elements, contracted by the sensitivity kernel's material pass;
@@ -92,7 +92,10 @@ def heat_flow(
         "heat": result.heat.coefficients,
         "nodes": result.temperature.mesh.nodes,
     }
+    if result._face_heat is not None:  # noqa: SLF001
+        inputs["face_heat"] = result._face_heat  # noqa: SLF001
     roles = {
+        "face_heat": _Role("read", None, "the heat sources' face heat"),
         "temperature": _Role("read", None, "the temperature's coefficients"),
         "heat": _Role("read", None, "the heat sources' power density"),
         "nodes": _Role(
@@ -192,7 +195,9 @@ class _HeatFlowKernel:
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         _, _, balance = self._host(values)
         t = np.asarray(values["temperature"], dtype=float)
-        return {"flow": np.asarray(balance.flow(t, self._density(values)))}
+        face = values.get("face_heat")
+        flow = balance.flow(t, self._density(values), face)
+        return {"flow": np.asarray(flow)}
 
     def backward(
         self,
@@ -209,6 +214,8 @@ class _HeatFlowKernel:
             out["temperature"] = ct * balance.temperature
         if "heat" in wanted:
             out["heat"] = ct * balance.source[self.heat_order]
+        if "face_heat" in wanted:
+            out["face_heat"] = ct * balance.face_source
         materials = {n: self.kinds[n] for n in wanted if n in self.kinds}
         if materials:
             t = np.asarray(values["temperature"], dtype=float)

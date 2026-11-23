@@ -1974,6 +1974,55 @@ def _out_heat_flow_in_the_node_coordinates(request):
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
 
+def _out_dissipated_power_in_the_node_coordinates(request):
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(frequency=20e9, keep_fields=True)
+
+    def objective(nodes):
+        mesh = jax.tree_util.tree_unflatten(
+            jax.tree_util.tree_structure(model.mesh), [nodes]
+        )
+        frozen = model.replace(mesh=jax.lax.stop_gradient(mesh))
+        field = gfem.solve(frozen, problem).e_field(20e9, "p1")
+        field = dataclasses.replace(field, mesh=mesh)
+        return gfem.dissipated_power(field, model=frozen)["core"]
+
+    jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
+
+
+def _out_dissipated_power_of_a_reduced_field(request):
+    # an adaptive sweep's basis holds no adjoint of the dissipated power
+    model = request.getfixturevalue("wave_model")
+    problem = gfem.Driven(
+        frequency=(18e9, 20e9, 22e9),
+        sweep="adaptive",
+        samples=(18e9, 22e9),
+        keep_fields=20e9,
+    )
+    eps = model.materials["core"].eps_r
+
+    def objective(e):
+        m = model.with_material("core", gfem.MaterialField(eps_r=e))
+        field = gfem.solve(m, problem).e_field(20e9, "p1")
+        return gfem.dissipated_power(field, model=m)["core"]
+
+    jax.make_jaxpr(jax.grad(objective))(eps)
+
+
+def _out_dissipated_power_in_the_frequency(request):
+    # the frequency is a fixed input of the driven solve
+    model = request.getfixturevalue("wave_model")
+    field = gfem.solve(model, gfem.Driven(frequency=20e9, keep_fields=True)).e_field(
+        20e9, "p1"
+    )
+
+    def objective(scale):
+        moved = dataclasses.replace(field, omega=field.omega * scale)
+        return gfem.dissipated_power(moved, model=model)["core"]
+
+    jax.make_jaxpr(jax.grad(objective))(1.0)
+
+
 def _out_traced_pml_knob(knob):
     # the stretch is fixed: its knobs are plain numbers, never design inputs
     def call(request):
@@ -2700,6 +2749,24 @@ OUT_OF_SCOPE = [
         _out_power_flow_of_a_reduced_field,
         gfem.NonDifferentiableError,
         r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
+    ),
+    (
+        "dissipated_power x node coordinates",
+        _out_dissipated_power_in_the_node_coordinates,
+        gfem.NonDifferentiableError,
+        r"mesh node coordinates.*stop_gradient",
+    ),
+    (
+        "dissipated_power x reduced field",
+        _out_dissipated_power_of_a_reduced_field,
+        gfem.NonDifferentiableError,
+        r"adaptive sweep.*frozen reduced basis.*sweep=\"uniform\"",
+    ),
+    (
+        "dissipated_power x frequency",
+        _out_dissipated_power_in_the_frequency,
+        gfem.NonDifferentiableError,
+        r"omega.*frequency is a fixed input of the driven solve",
     ),
     # driven on a periodic model
     (
