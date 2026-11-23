@@ -230,6 +230,12 @@ ENTRIES = {
         lambda model: gfem.electric_energy(field_on(model.mesh), model=model),
         rf"electric_energy.*{SLAB}",
     ),
+    "electro_optic_shift": (
+        lambda model: gfem.electro_optic_shift(
+            model, field_on(model.mesh), port="p", frequency=F
+        ),
+        rf"electro_optic_shift.*{SLAB}",
+    ),
     "interface_participation": (
         lambda model: gfem.interface_participation(
             gfem.EigenmodeResult(
