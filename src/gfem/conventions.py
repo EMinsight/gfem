@@ -441,6 +441,16 @@ the normal from above is :math:`\theta = \pi - 30°`).
   layer the wave comes from, complex for a phase, and :math:`r` the model
   coordinates: the phase is referred to the model origin, as the Floquet
   in-plane phase is.
+- Layered background (`gfem.Background` of several layers, or over a
+  ground plane): the incident field is the stack's whole solution for that
+  plane wave, its reflected and transmitted waves included. The wave comes
+  from the incidence layer (the bottom for :math:`\theta < \pi/2`, the top
+  for :math:`\theta > \pi/2`), which must be lossless; :math:`E_0` and its
+  phase at the model origin are those of the incident wave in that layer,
+  extended over all space. Its lateral wave vector is real, so total
+  internal reflection gives an evanescent field across the other layers. A
+  layer's :math:`\varepsilon_r(1 - i\tan\delta) - i\sigma/(\omega
+  \varepsilon_0)` is evaluated at each frequency.
 - Gaussian beam: 1 W (`INCIDENT_POWER`) time-averaged power through any
   plane normal to its axis, and the field at the focus real and positive
   along the polarization (zero phase at the focus); the waist is a length,
@@ -454,11 +464,11 @@ the normal from above is :math:`\theta = \pi - 30°`).
   and its scattered part the kept field minus it, so the three add exactly.
 - Truncation and walls: where the incident field is dropped or must hold a
   wall, it must stay at most :math:`10^{-3}` of its peak over the physical
-  region: where a scatterer (a region whose material differs from the
-  background, a material field always, or a sheet, conductor or lumped
-  face) meets the layer or an absorbing face, on a wave port face, and as
-  :math:`|n\times E|` on an exterior PEC wall or :math:`\eta|n\times H|`
-  on an exterior PMC wall (named, or by default).
+  region: where a scatterer (an element whose region's material differs
+  from the background stack at its height, a material field always, or a
+  sheet, conductor or lumped face) meets the layer or an absorbing face, on
+  a wave port face, and as :math:`|n\times E|` on an exterior PEC wall or
+  :math:`\eta|n\times H|` on an exterior PMC wall (named, or by default).
 - Port waves: in a source column every port is terminated in its reference
   impedance, and ``DrivenResult.port_waves`` is the outgoing pseudo-wave
   :math:`b` at each port, in √W as a column of S: on a real ``z_ref``,
@@ -496,6 +506,41 @@ phasors, the same at every frequency. An antenna current moment :math:`Il`
 - Purcell factor: :math:`F = P / P_0`. In a non-magnetic medium the partial
   local density of states along :math:`p` is :math:`\rho_p = \rho_0 F`, with
   :math:`\rho_0 = \omega^2 n / (\pi^2 c^3)`.
+
+Far fields
+----------
+`gfem.far_field` reads the field radiated into the exterior medium, the
+model's background (one constant, isotropic, lossless `gfem.Material`), of
+wavenumber :math:`k = n\omega/c` and wave impedance :math:`\eta =
+\eta_0\sqrt{\mu_r/\varepsilon_r}`.
+
+- Far-field amplitude: under :math:`e^{+i\omega t}` an outgoing wave is
+  :math:`e^{-ikr}/r`, and
+
+  .. math::
+
+      F(\hat r) = \lim_{r\to\infty} r\,e^{+ikr} E(r\hat r),
+
+  in V, with :math:`r` measured from the model origin, the phase reference.
+  :math:`\hat r` is given by the same angles as an incident field's
+  :math:`\hat k`, and :math:`F = F_\theta\hat\theta + F_\phi\hat\phi`
+  in that basis. For an incident-field column it is the scattered field's.
+- Circular components: :math:`F_R = (F_\theta + iF_\phi)/\sqrt2` and
+  :math:`F_L = (F_\theta - iF_\phi)/\sqrt2`, the field's components along
+  ``"RCP"`` and ``"LCP"`` (IEEE handedness); axial ratio
+  :math:`(|F_R| + |F_L|)/\big||F_R| - |F_L|\big|`, 1 for circular and
+  infinite for linear polarization.
+- Radiation intensity :math:`U = |F|^2/(2\eta)` in W/sr (peak phasors);
+  radiated power :math:`P_\mathrm{rad}`, the power flowing out through the
+  far-field layer. The IEEE 145 ratios: directivity :math:`D = 4\pi
+  U/P_\mathrm{rad}`, gain :math:`G = 4\pi U/P_\mathrm{acc}`, realized gain
+  :math:`G_r = 4\pi U/P_\mathrm{inc}`, radiation efficiency
+  :math:`P_\mathrm{rad}/P_\mathrm{acc}`. For a port column
+  :math:`P_\mathrm{inc}` is `INCIDENT_POWER` and :math:`P_\mathrm{acc} = 1 -
+  |S_{ii}|^2`, so :math:`G_r = 4\pi U`; for a point dipole both are its
+  emitted power.
+- Bistatic radar cross section of a `gfem.PlaneWave` column, in m²:
+  :math:`\sigma(\hat r) = 4\pi|F(\hat r)|^2/|E_0|^2`.
 """
 
 from __future__ import annotations

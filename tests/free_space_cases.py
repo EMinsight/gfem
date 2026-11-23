@@ -315,3 +315,64 @@ def mie_cross_sections(eps: complex | None, radius_um: float) -> np.ndarray:
     k = 2 * math.pi / WAVELENGTH
     area = math.pi * (radius_um * 1e-6) ** 2
     return np.array(mie(eps, k * radius_um)) * area
+
+
+def half_space_power(height: float, eps: complex | None, *, normal: bool) -> float:
+    r"""An electric dipole's power above a half-space over its vacuum power.
+
+    The dipole sits in vacuum at ``height`` wavelengths above the plane of a
+    half-space of permittivity ``eps`` (``None``: a perfect conductor).
+    Sommerfeld's reflection integrals (Novotny and Hecht, Principles of
+    Nano-Optics, 2012, ch. 10), with :math:`s = k_\rho/k`,
+    :math:`s_z = \sqrt{1 - s^2}`, :math:`s_{z2} = \sqrt{\varepsilon - s^2}`
+    (non-negative imaginary parts, their :math:`e^{-i\omega t}`; the power
+    ratio is real, so the sign convention does not enter) and
+    :math:`x = 2kh`:
+
+    .. math::
+
+        \frac{P_\perp}{P_0} = 1 + \tfrac32\operatorname{Re}\int_0^\infty
+            \frac{s^3}{s_z} r_p\, e^{i x s_z}\,ds, \qquad
+        \frac{P_\parallel}{P_0} = 1 + \tfrac34\operatorname{Re}\int_0^\infty
+            \frac{s}{s_z}\left(r_s - s_z^2 r_p\right) e^{i x s_z}\,ds,
+
+    :math:`r_s = (s_z - s_{z2})/(s_z + s_{z2})`, :math:`r_p = (\varepsilon s_z
+    - s_{z2})/(\varepsilon s_z + s_{z2})`. The propagating part
+    (:math:`s = \sin t`) and the evanescent part (:math:`s = \cosh u`,
+    :math:`s_z = i\sinh u`) are integrated separately, with no singularity.
+    """
+    from scipy.integrate import quad
+
+    x = 2 * 2 * math.pi * height
+
+    def reflections(s: complex, sz: complex) -> tuple[complex, complex]:
+        if eps is None:
+            return -1.0, 1.0
+        sz2 = np.sqrt(complex(eps) - s * s)
+        sz2 = sz2 if sz2.imag >= 0 else -sz2
+        return (sz - sz2) / (sz + sz2), (eps * sz - sz2) / (eps * sz + sz2)
+
+    def term(s: float, sz: complex) -> complex:
+        rs, rp = reflections(s, sz)
+        kernel = s**2 * rp if normal else (rs - sz * sz * rp) / 2
+        return s * kernel * np.exp(1j * x * sz)
+
+    # ds / s_z = dt on s = sin t; ds / s_z = -i du on s = cosh u
+    propagating = quad(
+        lambda t: term(math.sin(t), complex(math.cos(t))).real,
+        0,
+        math.pi / 2,
+        limit=200,
+    )[0]
+    u_max = math.asinh(40 / x)
+    kinks = []
+    if eps is not None and complex(eps).real > 1:
+        kinks = [math.acosh(math.sqrt(complex(eps).real))]
+    evanescent = quad(
+        lambda u: (-1j * term(math.cosh(u), 1j * math.sinh(u))).real,
+        0,
+        u_max,
+        points=kinks or None,
+        limit=400,
+    )[0]
+    return 1 + 1.5 * (propagating + evanescent)

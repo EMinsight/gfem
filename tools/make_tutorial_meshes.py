@@ -44,6 +44,12 @@ for the bend.
 "pml", 1.5 < z < 2), one cell across and ten per um along z, so the layer's
 inner face is a grid plane. Surfaces "port" (z = 0) and "plates" (the y
 walls); the x walls and the layer's back face (z = 2) stay unnamed.
+
+``antenna_box.msh`` (um): the unit cube of air, volumes "left" (x < 0.5)
+and "right", wrapped in 1/3 um of perfectly matched layer (volume "pml") on
+every side, six cells per um. A strip in the plane x = 0.5 between them,
+0.5 < y < 2/3: its feed "feed" (1/2 < z < 2/3) and its arms "wire" (the rest
+of 1/6 < z < 5/6), a strip dipole two thirds of a wavelength long at 1 um.
 """
 
 import itertools
@@ -219,6 +225,36 @@ def pml_line():
     return sm.structured(edges, volume, surface)
 
 
+ANTENNA_CELLS, ANTENNA_THICKNESS = 6, 2 / 6
+
+
+def antenna_box():
+    """The far-field recipe's strip dipole in a box, as `structured` returns it."""
+    edges = tuple(
+        np.linspace(
+            -ANTENNA_THICKNESS,
+            1 + ANTENNA_THICKNESS,
+            round((1 + 2 * ANTENNA_THICKNESS) * ANTENNA_CELLS) + 1,
+        )
+        for _ in range(3)
+    )
+    eps = 1e-9
+
+    def volume(c):
+        if not ((c > 0) & (c < 1)).all():
+            return "pml"
+        return "left" if c[0] < 0.5 else "right"
+
+    def surface(c):
+        if abs(c[0] - 0.5) > eps or not 0.5 < c[1] < 4 / 6:
+            return ""
+        if 3 / 6 < c[2] < 4 / 6:
+            return "feed"
+        return "wire" if 1 / 6 < c[2] < 5 / 6 else ""
+
+    return sm.structured(edges, volume, surface)
+
+
 def write(out: Path) -> list[Path]:
     """Write every tutorial mesh into the directory ``out``; return the files."""
     out.mkdir(parents=True, exist_ok=True)
@@ -232,6 +268,7 @@ def write(out: Path) -> list[Path]:
         sm.write_msh22(out / "bend2d.msh", sm.z0_face(bend())),
         sm.write_msh22(out / "bend2d_7um.msh", sm.z0_face(bend(half=3.5))),
         sm.write_msh22(out / "pml_line.msh", pml_line()),
+        sm.write_msh22(out / "antenna_box.msh", antenna_box()),
     ]
 
 

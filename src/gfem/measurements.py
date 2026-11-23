@@ -21,6 +21,9 @@ result reloaded with `gfem.load_result`.
   solved field (an electric field's, or a potential's).
 - `purcell_factor`: a point dipole's emitted power over its power in the
   unbounded material at its position.
+- `far_field`: the far-field amplitude of a port, dipole or incident-field
+  column on a grid of directions, with the IEEE 145 radiation outputs
+  (`FarField`).
 
 Measurements run on the CPU and work under `jax.jit` and `jax.vmap`; under
 `jax.grad` they differentiate with respect to the field coefficients (so
@@ -51,6 +54,7 @@ from gfem import _mpi, _objective, _probe
 from gfem._adjoint.measure import measure
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import entry_refusal, refuse_entry
+from gfem._far_field import FarField, far_field
 from gfem._materials import Material, _is_law, field_principal_values
 from gfem._purcell import purcell_factor
 from gfem._pytree import register_fields
@@ -66,11 +70,13 @@ if TYPE_CHECKING:
 __all__ = [
     "INTERFACE_KINDS",
     "CrossSections",
+    "FarField",
     "InterfaceParticipation",
     "characteristic_impedance",
     "cross_sections",
     "electric_energy",
     "element_mean",
+    "far_field",
     "interface_participation",
     "power_flow",
     "purcell_factor",
@@ -996,11 +1002,17 @@ def cross_sections(
     power over the source's intensity :math:`I`:
 
     - `gfem.PlaneWave`: :math:`|E_0|^2 / (2\eta)`, :math:`\eta` the wave
-      impedance of the background;
+      impedance of the layer it comes from;
     - `gfem.GaussianBeam`: its focal intensity
       :math:`I_0 = |E(r_f)|^2 / (2\eta)` at each frequency
       (`gfem.GaussianBeam.focal_intensity`);
     - `gfem.IncidentField`: ``intensity=``, required.
+
+    On a layered background (`gfem.Background`) the extinction is the
+    power the scatterer removes from the stack's own field, the incident
+    wave with its reflected and transmitted waves, not from the incident
+    wave alone; the scattered power is what the scattered field carries to
+    the truncation, into every layer. Every layer must be lossless.
 
     A model reduced by :math:`n` mirror planes (walls the incident field
     satisfies) reports the meshed part, :math:`2^{-n}` of the full model's
@@ -1034,7 +1046,8 @@ def cross_sections(
             and finite; a scatterer region, sheet, lumped port or perfect
             conductor reaches the truncation layer; the truncation layer
             reaches a wave port; the model has no background.
-        NotImplementedError: A lossy background.
+        NotImplementedError: A lossy background, or a lossy layer of a
+            layered one.
         NonDifferentiableError: While `jax.grad` traces it: a material design
             with an element in the truncation layer, or the node coordinates.
     """
@@ -1132,7 +1145,7 @@ def _intensity(
             source, or not positive and finite.
     """
     from gfem import _beam
-    from gfem._incident import impedance
+    from gfem._incident import impedance_of, incidence_material
     from gfem._sources import GaussianBeam, IncidentField, PlaneWave
 
     n = len(frequencies)
@@ -1166,7 +1179,8 @@ def _intensity(
             "own (see gfem.cross_sections)."
         )
     if isinstance(source, PlaneWave):
-        return np.full(n, abs(source.amplitude) ** 2 / (2 * impedance(background)))
+        eta = impedance_of(incidence_material(source, background))
+        return np.full(n, abs(source.amplitude) ** 2 / (2 * eta))
     assert isinstance(source, GaussianBeam)  # noqa: S101 - the incident sources
     eta = _beam.impedance(source, background)
     return np.array(

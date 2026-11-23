@@ -1782,6 +1782,24 @@ def _out_lumped_port_resistance(request):
     jax.grad(objective)(50.0)
 
 
+def _out_far_field_layer_design(request):
+    # the far field reads the field over its layer in the exterior medium: a
+    # design there is refused (a side around one cell of the scatterer)
+    model, problem = request.getfixturevalue("planewave_case")
+    eps = jnp.asarray(model.materials["scat"].eps_r)
+
+    def one_cell(c):
+        return ((c > 0.25e-6) & (c < 0.5e-6)).all(axis=1)
+
+    def objective(e):
+        moved = model.with_material("scat", gfem.MaterialField(eps_r=e))
+        result = gfem.solve(moved, problem)
+        ff = gfem.far_field(result, "w", 0.3, 0.2, model=moved, side=one_cell)
+        return ff.rcs[0]
+
+    jax.grad(objective)(eps)
+
+
 def _out_floquet_port_offset(_request):
     # a Floquet port's de-embedding offset is static (raised by the constructor)
     def objective(offset):
@@ -2749,6 +2767,12 @@ OUT_OF_SCOPE = [
         _out_lumped_port_resistance,
         gfem.NonDifferentiableError,
         r"LumpedPort\.resistance is a fixed value.*inductance and capacitance",
+    ),
+    (
+        "design in the far-field layer",
+        _out_far_field_layer_design,
+        ValueError,
+        r"far-field layer just outside this side holds the design region 'scat'",
     ),
     (
         "FloquetPort offset",

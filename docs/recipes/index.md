@@ -49,3 +49,4 @@ orphan: true
 ## Free space
 
 - {doc}`point-dipoles`
+- {doc}`far-field`

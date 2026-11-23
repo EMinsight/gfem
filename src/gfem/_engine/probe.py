@@ -373,10 +373,12 @@ class Probe:
         out = np.asarray((ngs.curl(gf) if curl else gf)(self._mips))
         return out.reshape(self._own.size, -1)
 
-    def values(self, coefficients: np.ndarray) -> np.ndarray:
+    def values(self, coefficients: np.ndarray, *, curl: bool = False) -> np.ndarray:
         """``Phi c`` in SI units, ``(m, n_points, dim)`` for ``(m, width)``.
 
-        Under ranks it is collective, with the same bits on every rank.
+        With ``curl``, an H(curl) field's curl at the points instead, per
+        metre more. Under ranks it is collective, with the same bits on every
+        rank.
         """
         c = np.atleast_2d(coefficients)
         if c.shape[1] != self.width:
@@ -391,11 +393,11 @@ class Probe:
         parts = [np.real(c)] + ([np.imag(c)] if np.iscomplexobj(c) else [])
         with self._lock:
             out = [
-                np.stack([self._evaluate(self._fes, row) for row in part])
+                np.stack([self._evaluate(self._fes, row, curl=curl) for row in part])
                 for part in parts
             ]
         values = out[0] if len(out) == 1 else out[0] + 1j * out[1]
-        values = values * self.factor
+        values = values * (self.factor / self._built.scale if curl else self.factor)
         if self.comm is None:
             return values
         whole = np.zeros((c.shape[0], self.n_points, values.shape[2]), values.dtype)

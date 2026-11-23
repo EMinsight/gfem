@@ -155,7 +155,8 @@ Mie; the rest is set by the exterior mesh and the layer.
 The powers are divided by:
 
 - {py:obj}`gfem.PlaneWave`: $|E_0|^2 / (2\eta)$, $\eta$ the wave impedance
-  of the background (`xs.intensity` holds it);
+  of the background, or of the layer the wave comes from in a stack
+  (`xs.intensity` holds it);
 - {py:obj}`gfem.GaussianBeam`: its {term}`focal intensity` at each frequency,
   `beam.focal_intensity(f, model=model)`: a beam wide against the scatterer
   then gives the plane wave's cross sections;
@@ -163,6 +164,19 @@ The powers are divided by:
   one per kept frequency: gfem cannot tell the intensity of a field it only
   evaluates. Passing `intensity=` for a plane wave or a beam is refused, so
   each source has one normalization.
+
+## On a substrate
+
+On a layered {py:obj}`gfem.Background` the same balance holds, and the
+incident field is the stack's own solution: the incident wave with its
+reflected and transmitted waves. Extinction is then the power the
+scatterer removes from that stack field, not from the incident wave alone;
+scattering is what the scattered field carries to the truncation through
+every layer, the substrate included, and absorption the loss in the
+scatterer. The truncation layer may run through the stack: its elements
+are background where their material is the stack's at their height. Every
+layer must be lossless, or a layer's own loss of the stack field would
+count as absorption.
 
 ## Absorption per region
 
@@ -210,8 +224,9 @@ ranks for its cross sections; no second run on one process is needed.
   layer has no finite cross section and is refused; leave one background
   element between them, or measure per region with
   {py:obj}`gfem.power_flow`.
-- **Lossless backgrounds**: in a lossy background the absorption would hold
-  the background's own loss of the incident field, so it is refused.
+- **Lossless backgrounds**: in a lossy background, or a stack with a lossy
+  layer, the absorption would hold the background's own loss of the
+  incident field, so it is refused.
 - **Wave ports outside the side**: the incident load next to a wave port
   holds the port's terms, so a side (or the region inside the truncation
   layer) whose elements reach a wave port's face is refused; keep the port at

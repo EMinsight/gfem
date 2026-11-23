@@ -770,7 +770,13 @@ Total field
 Background stack
   The planar layers normal to z, each a constant isotropic material, whose
   exact solution is the {term}`incident field` (`Model(background=...)`,
-  `gfem.Background`); a homogeneous background is a one-layer stack.
+  `gfem.Background`), optionally ending below on a PEC ground plane; a
+  homogeneous background is a one-layer stack.
+
+Incidence layer
+  The layer of the {term}`background stack` a plane wave comes from: the
+  bottom one for $\theta < \pi/2$, the top one for $\theta > \pi/2$. It
+  must be lossless; the wave's amplitude and phase are given there.
 
 Scatterer
   Where the model differs from the {term}`background stack` at the same
@@ -847,6 +853,33 @@ Radiative efficiency
   The share of a {term}`point dipole`'s {term}`emitted power` that leaves the
   model (through ports, a {term}`perfectly matched layer` or absorbing faces)
   rather than being absorbed by lossy materials.
+
+Exterior medium
+  The constant, isotropic, lossless material a field radiates into, the
+  model's background: its wavenumber and wave impedance scale the
+  {term}`far-field amplitude`.
+
+Far-field amplitude
+  The field far from every source with its outgoing spherical factor
+  $e^{-ikr}/r$ removed, in V, per direction (`gfem.far_field`, `FarField`).
+
+Far-field layer
+  The elements just outside the side `gfem.far_field` reads, all in the
+  {term}`exterior medium`; by default the physical elements that touch a
+  {term}`perfectly matched layer` or an absorbing face.
+
+Radiation intensity
+  The power radiated per unit solid angle, $|F|^2/(2\eta)$ in W/sr.
+
+Directivity
+  $4\pi$ times the {term}`radiation intensity` over the radiated power. The
+  gain divides by the accepted power instead, the realized gain by the
+  incident power, and the radiation efficiency is the radiated over the
+  accepted power (IEEE 145).
+
+Ground plane
+  A flat PEC or PMC exterior face that the {term}`far-field layer` meets: the
+  far field of the half-space above it includes the image of every source.
 ```
 
 ## Thermal
