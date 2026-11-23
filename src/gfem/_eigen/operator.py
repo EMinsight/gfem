@@ -12,9 +12,17 @@ second-order absorbing boundary) makes the problem nonlinear: it stays a
 separate term ``θ_p(k) A_p`` of ``A(k)``, applied with its exact θ and
 dθ/dk.
 
+A wave port adds a low-rank term ``U C(k) U^T`` (`LowRank`, its modal
+correction): ``U`` is fixed by the port mode basis and only the small
+``C(k)`` moves. The prepared ``T(sigma)`` holds it as a Woodbury update of
+the factorized rest (`gfem._linalg.low_rank_update`); a reshift
+refactorizes the rest on its plan and wraps it again.
+
 The seed problem freezes each nonpolynomial factor at the shift ``sigma``
 to first order, ``θ_p(k) ≈ θ_p(sigma) + θ_p'(sigma) (k - sigma)``, which
-adds it to ``K`` and ``D``. The seed's ``T(sigma)`` is then the true
+adds it to ``K`` and ``D`` (a term may ask for its value alone,
+``θ_p(sigma)``, into ``K``: `NonPolynomial.seed_order`). The seed's
+``T(sigma)`` is then the true
 ``T(sigma)``, so the one prepared operator serves both the shift-invert
 Arnoldi of the seed and the refinement of its pairs. A seed can be far
 from its root when a nonpolynomial term is large (18 % for a
@@ -49,9 +57,10 @@ from typing import Any, Literal, Protocol
 
 import numpy as np
 import scipy.constants as const
+import scipy.linalg
 
 from gfem._engine import terms
-from gfem._linalg import Handle, Operator, refactorize_or_prepare
+from gfem._linalg import Handle, Operator, low_rank_update, refactorize_or_prepare
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 
 __all__ = [
@@ -59,6 +68,7 @@ __all__ = [
     "EigenOperator",
     "EigenSymmetry",
     "LinearMap",
+    "LowRank",
     "NonPolynomial",
     "Split",
     "split",
@@ -151,12 +161,15 @@ class NonPolynomial:
         matrix: ``A``, a linear map (applied matrix-free).
         value: ``θ(k)`` for the wavenumber per file unit ``k`` (complex).
         derivative: ``dθ/dk``.
+        seed_order: How the seed freezes θ at the shift: ``1`` to first
+            order, ``0`` at its value alone (no slope in the seed's damping).
     """
 
     name: str
     matrix: LinearMap
     value: Callable[[complex], complex]
     derivative: Callable[[complex], complex]
+    seed_order: Literal[0, 1] = 1
 
     def linear(self, k: complex) -> tuple[complex, complex]:
         """``(c0, c1)`` with ``θ(z) ≈ c0 + c1 z`` to first order around ``k``."""
@@ -165,7 +178,12 @@ class NonPolynomial:
 
     @classmethod
     def from_piece(
-        cls, piece: terms.Piece, matrix: LinearMap, scale: float
+        cls,
+        piece: terms.Piece,
+        matrix: LinearMap,
+        scale: float,
+        *,
+        seed_order: Literal[0, 1] = 1,
     ) -> NonPolynomial:
         """The term of ``piece`` (θ in ω) in the wavenumber per file unit."""
         per_k = const.c / scale  # omega per unit k
@@ -177,7 +195,55 @@ class NonPolynomial:
             matrix,
             lambda k: complex(piece.theta(k * per_k)),
             lambda k: complex(d_theta(k * per_k)) * per_k,
+            seed_order,
         )
+
+
+class LowRankSource(Protocol):
+    """What a `LowRank` term reads: ``U`` and ``C(k)``, ``C'(k)`` on it.
+
+    `gfem._engine.port_term.PortTerm`: ``at(k)`` may change ``vectors``
+    (an enrichment of the port mode basis), so ``vectors`` is read after it.
+    """
+
+    @property
+    def vectors(self) -> np.ndarray:
+        """``U``, ``(ndof, p)``."""
+        ...
+
+    def at(self, k: complex) -> Any:
+        """The term at ``k``: its ``c`` is ``C(k)`` and its ``d_c`` ``C'(k)``."""
+        ...
+
+
+@dataclasses.dataclass(frozen=True)
+class LowRank:
+    """One low-rank term ``U C(k) U^T`` of the eigenmode operator.
+
+    A wave port surface's modal correction. ``C`` is complex symmetric, so
+    the term is its own transpose.
+
+    Attributes:
+        name: For messages.
+        source: ``U`` and ``C(k)``.
+        free: Free-DOF mask: ``U`` is taken on the free rows.
+        seed_order: As `NonPolynomial.seed_order`.
+    """
+
+    name: str
+    source: LowRankSource
+    free: np.ndarray
+    seed_order: Literal[0, 1] = 1
+
+    def at(self, k: complex) -> tuple[np.ndarray, np.ndarray]:
+        """``(U, C(k))``, ``U`` zero on the fixed rows."""
+        c = self.source.at(k).c
+        return np.where(self.free[:, None], self.source.vectors, 0), c
+
+    def slope(self, k: complex) -> tuple[np.ndarray, np.ndarray]:
+        """``(U, C'(k))``."""
+        d_c = self.source.at(k).d_c
+        return np.where(self.free[:, None], self.source.vectors, 0), d_c
 
 
 class ShiftPreparer(Protocol):
@@ -192,11 +258,13 @@ class ShiftPreparer(Protocol):
 
 @dataclasses.dataclass(eq=False)
 class EigenOperator:
-    """``T(k) = K + k D + k^2 M + Σ θ_p(k) A_p`` on the free DOFs.
+    """``T(k) = K + k D + k^2 M + Σ θ_p(k) A_p + Σ U_q C_q(k) U_q^T`` on the free DOFs.
 
-    ``T(sigma)`` is prepared. Vectors are NumPy arrays over all DOFs of the
+    ``T(sigma)`` is prepared: the rest of ``T`` factorized, the low-rank
+    terms held by a Woodbury update of it. Vectors are NumPy arrays over all DOFs of the
     space, zero on the fixed (`PEC`) DOFs. ``K`` is never stored: ``K x =
-    T(sigma) x - sigma D x - sigma^2 M x - Σ θ_p(sigma) A_p x``. A
+    A(sigma) x - sigma D x - sigma^2 M x - Σ θ_p(sigma) A_p x`` with
+    ``A(sigma)`` the factorized rest, whose low-rank terms are not in it. A
     ``"general"`` operator applies and solves its transpose too
     (``transpose=True``: the transposed maps, the prepared handle's
     transposed apply and solve on the same factors).
@@ -213,6 +281,8 @@ class EigenOperator:
         free: Free-DOF mask.
         scale: Metres per mesh file unit.
         nonpolynomial: The nonpolynomial terms ``θ_p(k) A_p``.
+        low_rank: The low-rank terms ``U_q C_q(k) U_q^T`` (complex
+            symmetric), on one process.
         symmetry: ``"complex_symmetric"``, or ``"general"`` under a Bloch
             wave vector (the driven operator's).
         law_constant: The part of ``K`` from polynomial permittivity law
@@ -244,8 +314,11 @@ class EigenOperator:
     numbers: np.ndarray | None = None
     numbering: Any = None
     shifts: int = 0
+    low_rank: tuple[LowRank, ...] = ()
     _norms: tuple[float, ...] | None = None
     _handle: Handle | None = None
+    _base: Handle | None = None
+    _range: tuple[np.ndarray, np.ndarray] | None = None
 
     @property
     def handle(self) -> Handle:
@@ -255,8 +328,53 @@ class EigenOperator:
     def factorize(self) -> Handle:
         """Prepare ``T(shift)`` now unless it is prepared, and return it."""
         if self._handle is None:
-            self._handle = self.prepare(self.operator(self.shift))
+            self._base = self.prepare(self.operator(self.shift))
+            self._handle = self._wrap(self._base, self.shift)
         return self._handle
+
+    def _wrap(self, base: Handle, k: complex) -> Handle:
+        """``base`` with the low-rank terms at ``k`` (``base`` itself without).
+
+        The update borrows ``base``: a reshift refactorizes it and wraps it
+        again.
+        """
+        if not self.low_rank:
+            return base
+        u, c = self._stacked(k)
+        return low_rank_update(base, u, c, borrow=True)
+
+    def _stacked(
+        self,
+        k: complex,
+        *,
+        slope: bool = False,
+        which: tuple[LowRank, ...] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The low-rank terms' ``U`` side by side, ``C(k)`` (``C'(k)``) block-diagonal.
+
+        ``which``: those, instead of every one.
+        """
+        which = self.low_rank if which is None else which
+        parts = [t.slope(k) if slope else t.at(k) for t in which]
+        return (
+            np.concatenate([u for u, _ in parts], axis=1),
+            scipy.linalg.block_diag(*(c for _, c in parts)),
+        )
+
+    def _low_rank(
+        self,
+        k: complex,
+        x: np.ndarray,
+        *,
+        slope: bool = False,
+        transpose: bool = False,
+        which: tuple[LowRank, ...] | None = None,
+    ) -> np.ndarray:
+        """``Σ U C(k) U^T x`` (``slope``: with ``C'(k)``; ``transpose``: ``C^T``)."""
+        u, c = self._stacked(k, slope=slope, which=which)
+        if transpose:
+            c = c.T
+        return u @ (c @ self.layout.pair(u, np.where(self.free, x, 0)))
 
     def reshift(self, k: complex, *, solves: int = RESHIFT_SOLVES) -> None:
         """Refactorize at ``k``.
@@ -272,12 +390,15 @@ class EigenOperator:
         the seed's count when it moves back to the target for a seed solve.
         """
         if self._handle is not None:
-            self._handle = refactorize_or_prepare(
-                self._handle,
+            if self._handle is not self._base:
+                self._handle.free()  # the update's own columns
+            self._base = refactorize_or_prepare(
+                self._base,
                 self.operator(k),
                 lambda t: self.prepare(t, solves),
                 solves=solves,
             )
+            self._handle = self._wrap(self._base, k)
         self.shift = k
         self.shifts += 1
 
@@ -288,9 +409,11 @@ class EigenOperator:
 
     def free_handle(self) -> None:
         """Release the prepared operator."""
-        if self._handle is not None:
+        if self._handle is not None and self._handle is not self._base:
             self._handle.free()
-            self._handle = None
+        if self._base is not None:
+            self._base.free()
+        self._handle = self._base = None
 
     @property
     def nbytes(self) -> int:
@@ -334,7 +457,12 @@ class EigenOperator:
             self._matvec(t.matrix, x, transpose=transpose) for t in self.nonpolynomial
         ]
         s = self.shift
-        tx = self.handle.apply(x, transpose=True) if transpose else self.handle.apply(x)
+        self.factorize()
+        base = self._base
+        if base is None:  # pragma: no cover - factorize sets it
+            raise RuntimeError("The shift is not prepared.")
+        # the factorized rest: the low-rank terms the update holds are not in it
+        tx = base.apply(x, transpose=True) if transpose else base.apply(x)
         kx = np.where(self.free, tx, 0) - s * dx - s * s * mx
         for t, a in zip(self.nonpolynomial, ax, strict=True):
             kx = kx - t.value(s) * a
@@ -355,10 +483,14 @@ class EigenOperator:
         out = kx + k * dx + k * k * mx
         for t, a in zip(self.nonpolynomial, ax, strict=True):
             out = out + t.value(k) * a
+        if self.low_rank:
+            out = out + self._low_rank(k, x, transpose=transpose and self.general)
         return out
 
     def derivative(self, k: complex, x: np.ndarray) -> np.ndarray:
-        """``T'(k) x = D x + 2 k M x + Σ θ_p'(k) A_p x``, ``'`` = ``d/dk``.
+        """``T'(k) x = D x + 2 k M x + Σ θ_p'(k) A_p x + Σ U C'(k) U^T x``.
+
+        ``'`` is ``d/dk``.
 
         The denominator of the eigenvalue derivative ``dk/dp = -y^T (dT/dp)
         x / y^T T'(k) x`` (``y`` the left eigenvector, ``x`` when complex
@@ -370,6 +502,8 @@ class EigenOperator:
             out = out + self._matvec(self.damping, x)
         for t in self.nonpolynomial:
             out = out + t.derivative(k) * self._matvec(t.matrix, x)
+        if self.low_rank:
+            out = out + self._low_rank(k, x, slope=True)
         return out
 
     def curl_ratio(self, k: complex, x: np.ndarray) -> float:
@@ -394,20 +528,28 @@ class EigenOperator:
     @property
     def seed_damped(self) -> bool:
         """Whether the seed problem has a damping term (``D`` or a frozen one)."""
-        return self.damping is not None or bool(self.nonpolynomial)
+        return (
+            self.damping is not None or bool(self.nonpolynomial) or bool(self.low_rank)
+        )
 
     def seed_damping(self, x: np.ndarray) -> np.ndarray:
         """The seed's damping on ``x``: ``D`` plus each ``θ_p'(sigma) A_p``.
 
-        (The seed's ``K`` adds ``θ_p(sigma) - sigma θ_p'(sigma)`` per term,
-        which only enters through ``T(sigma)``.)
+        And each low-rank ``U C'(sigma) U^T``; a term with ``seed_order``
+        0 adds nothing. (The seed's ``K`` adds ``θ_p(sigma) - sigma
+        θ_p'(sigma)`` per term, or ``θ_p(sigma)`` at order 0, which only
+        enters through ``T(sigma)``.)
         """
         s = self.shift
         d = np.zeros(len(self.free), dtype=complex)
         if self.damping is not None:
             d = self._matvec(self.damping, x)
         for t in self.nonpolynomial:
-            d = d + t.derivative(s) * self._matvec(t.matrix, x)
+            if t.seed_order:
+                d = d + t.derivative(s) * self._matvec(t.matrix, x)
+        sloped = tuple(t for t in self.low_rank if t.seed_order)
+        if sloped:
+            d = d + self._low_rank(s, x, slope=True, which=sloped)
         return d
 
     def seed_mass(self, x: np.ndarray) -> np.ndarray:
@@ -425,7 +567,8 @@ class EigenOperator:
         Newton iteration that keeps the quadratic exact: each step takes the
         root nearest the current ``k`` of the quadratic with every term
         linearized around ``k`` (`NonPolynomial.linear`), so it stays on the
-        branch of the start and converges quadratically.
+        branch of the start and converges quadratically. A low-rank term
+        enters as the scalar ``y^T U C(k) U^T x``, linearized the same way.
         """
         y = x if left is None else np.where(self.free, left, 0)
         kx, dx, mx, ax = self._parts(x)
@@ -436,7 +579,7 @@ class EigenOperator:
             return complex(self.layout.pair(load, y))
 
         a, b, c = pair(kx), pair(dx), pair(mx)
-        if not self.nonpolynomial:
+        if not self.nonpolynomial and not self.low_rank:
             return _nearest_root((a, b, c), k)
         pairs = [(t, pair(v)) for t, v in zip(self.nonpolynomial, ax, strict=True)]
         k = complex(k)
@@ -446,6 +589,11 @@ class EigenOperator:
                 c0, c1 = t.linear(k)
                 linear[0] += c0 * n
                 linear[1] += c1 * n
+            if self.low_rank:
+                w = pair(self._low_rank(k, x))
+                dw = pair(self._low_rank(k, x, slope=True))
+                linear[0] += w - k * dw
+                linear[1] += dw
             new = _nearest_root(linear, k)
             done = abs(new - k) <= _NEWTON_RTOL * abs(new)
             k = new
@@ -494,12 +642,24 @@ class EigenOperator:
             return np.random.default_rng(0).standard_normal(len(self.free))
         return _hashed(self.numbers)
 
+    def _low_rank_norm(self, k: complex) -> float:
+        """``|Σ U C(k) U^T|_2 = |R C(k) R^T|_2`` with ``U = Q R``.
+
+        ``R`` is kept until ``U`` changes (an enrichment of its basis).
+        """
+        u, c = self._stacked(k)
+        if self._range is None or not np.array_equal(self._range[0], u):
+            self._range = (u, np.linalg.qr(u, mode="r"))
+        r = self._range[1]
+        return float(np.linalg.norm(r @ c @ r.T, 2))
+
     def backward_error(
         self, k: complex, x: np.ndarray, *, transpose: bool = False
     ) -> float:
-        """``|T(k) x| / ((|K| + |k| |D| + |k|^2 |M| + Σ |θ_p(k)| |A_p|) |x|)``.
+        """``|T(k) x| / ((|K| + |k| |D| + |k|^2 |M| + Σ |θ_p(k)| |A_p| + |W|) |x|)``.
 
-        ``transpose``: of ``T(k)^T x``, a left eigenvector's.
+        ``W = Σ U_q C_q(k) U_q^T`` (`_low_rank_norm`). ``transpose``: of
+        ``T(k)^T x``, a left eigenvector's.
         """
         nk, nd, nm, *na = self.norms
         layout = self.layout
@@ -508,6 +668,8 @@ class EigenOperator:
         den += sum(
             abs(t.value(k)) * a for t, a in zip(self.nonpolynomial, na, strict=True)
         )
+        if self.low_rank:
+            den += self._low_rank_norm(k)
         den *= layout.state_norm(x)
         return float(r / den) if den > 0 else math.inf
 
