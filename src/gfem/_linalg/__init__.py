@@ -520,6 +520,18 @@ def _unavailable(kind: str) -> NotImplementedError:
     )
 
 
+def _driven_only(problem: str, default: Kind) -> str:
+    """The refusal of ``pmg_gmres`` for a ``problem`` problem, naming its ``"auto"``."""
+    if default == "direct":
+        remedy = "Use linear_solver='direct' (or 'auto', which picks it)."
+    else:
+        remedy = f"Use linear_solver='auto', which picks {default!r}, or 'direct'."
+    return (
+        "linear_solver='pmg_gmres' solves driven problems only, not "
+        f"{problem} problems. {remedy}"
+    )
+
+
 def _prepare_on_ranks(
     operator: Operator,
     layout: DofLayout,
@@ -540,6 +552,8 @@ def _prepare_on_ranks(
 
     Raises:
         NotImplementedError: No backend of ``kind``, on every rank.
+        gfem.DistributedUnsupportedError: ``pmg_gmres``, which runs on one
+            process only, on every rank.
         ValueError: ``petsc`` and an operator without :math:`A^T = A`, on every rank.
         gfem.SolverUnavailableError: ``direct`` or ``petsc`` without the MPI PETSc
             stack.
@@ -547,8 +561,11 @@ def _prepare_on_ranks(
     from gfem import _mpi
     from gfem._linalg.bddc import BddcHandle
 
-    if kind not in KINDS or kind == "pmg_gmres":
-        # the p-multigrid runs on one process only
+    if kind == "pmg_gmres":
+        # `gfem._mpi.refuse` stops it before any mesh; a caller below that meets
+        # the same refusal, on every rank
+        _mpi.refuse_feature("pmg_gmres")
+    if kind not in KINDS:
         raise _mpi.agreed(_unavailable(kind))
     if kind in ("direct", "petsc"):
         from gfem import _petsc
@@ -635,6 +652,8 @@ class ResolvedLinearSolver:
                 for the log.
 
         Raises:
+            ValueError: ``linear_solver="pmg_gmres"`` for a problem other than
+                ``"driven"``.
             NotImplementedError: The linear solver is not available.
             gfem.SolverUnavailableError: ``linear_solver="petsc"`` and PETSc
                 cannot be used, or ``"direct"`` or ``"petsc"`` under ``comm``
@@ -644,6 +663,8 @@ class ResolvedLinearSolver:
         from gfem.options import split_petsc_options
 
         name = options.linear_solver
+        if name == "pmg_gmres" and problem != "driven":
+            raise ValueError(_driven_only(problem, default))
         if name != "auto":
             kind = name
         elif options.device != "cpu":

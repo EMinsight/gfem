@@ -2,15 +2,20 @@
 
 import logging
 import math
+import sys
+import types
 
 import jax
 import jax.numpy as jnp
+import mpi_cases
 import ngsolve as ngs
 import numpy as np
+import periodic_cases as pc
 import pml_cases
 import pytest
 import structured_meshes as sm
 from preconditioners import count_builds
+from strip2d import write_strip
 
 import gfem
 from gfem._engine.driven import DrivenRule
@@ -382,3 +387,205 @@ def test_pmg_gmres_takes_order_2_or_3_only(order, message):
         gfem.SolverOptions(linear_solver="pmg_gmres", order=order)
     for taken in (2, 3):
         gfem.SolverOptions(linear_solver="pmg_gmres", order=taken)
+
+
+# --- refusals ------------------------------------------------------------------------
+
+
+def _eigenmode(directory):
+    return mpi_cases.refused("arpack", directory)[0], gfem.Eigenmode(F, n_modes=1)
+
+
+def _electrostatic(directory):
+    return mpi_cases.stack(directory), mpi_cases.ELECTROSTATIC
+
+
+def _thermal(directory):
+    return mpi_cases.stack(directory), gfem.SteadyThermal()
+
+
+def _dc_conduction(directory):
+    return mpi_cases.stack(directory), gfem.DCConduction(terminals=mpi_cases.TERMINALS)
+
+
+def _two_d(directory):
+    mesh = gfem.Mesh.from_gmsh(write_strip(directory / "strip.msh"), length_unit="um")
+    materials = {name: gfem.Material(eps_r=2.0) for name in "abc"}
+    model = gfem.Model(mesh, materials=materials, boundaries=(gfem.PEC("outer"),))
+    return model, gfem.Driven(F)
+
+
+def _bloch(directory):
+    problem = gfem.Driven(pc.C1_FREQUENCY, wave_vector=pc.C1_K)
+    return pc.c1(pc.c1_mesh(directory)), problem
+
+
+def _periodic(directory):
+    return pc.c1(pc.c1_mesh(directory)), gfem.Driven(pc.C1_FREQUENCY)
+
+
+def _floquet(directory):
+    return pc.f1(pc.f1_mesh(directory)), gfem.Driven(pc.F1_FREQUENCY)
+
+
+def _strip_line(directory):
+    return mpi_cases.refused("device", directory)[0], gfem.Driven(F)
+
+
+#: Per refusal: the case, extra options, the error, and its message.
+REFUSALS = {
+    "eigenmode": (
+        _eigenmode,
+        {},
+        ValueError,
+        (
+            r"linear_solver='pmg_gmres' solves driven problems only, not eigenmode "
+            r"problems\. Use linear_solver='direct' \(or 'auto', which picks it\)\.$"
+        ),
+    ),
+    "electrostatic": (
+        _electrostatic,
+        {},
+        ValueError,
+        (
+            r"solves driven problems only, not electrostatic problems\. Use "
+            r"linear_solver='auto', which picks 'bddc_gmres', or 'direct'\.$"
+        ),
+    ),
+    "thermal": (
+        _thermal,
+        {},
+        ValueError,
+        r"not steady thermal problems\. Use linear_solver='direct'",
+    ),
+    "dc_conduction": (
+        _dc_conduction,
+        {},
+        ValueError,
+        r"not DC conduction problems\. Use linear_solver='direct'",
+    ),
+    "2d": (
+        _two_d,
+        {},
+        NotImplementedError,
+        (
+            r"linear_solver='pmg_gmres' is not available on a 2D mesh\. Use "
+            r"linear_solver=\"direct\""
+        ),
+    ),
+    "bloch": (
+        _bloch,
+        {},
+        ValueError,
+        (
+            r"Driven\.wave_vector sets a Bloch phase, so the operator is not "
+            r"symmetric, and linear_solver='pmg_gmres' factors symmetric operators "
+            r"only: use linear_solver='direct' or 'bddc_gmres'\.$"
+        ),
+    ),
+    "periodic": (
+        _periodic,
+        {},
+        ValueError,
+        (
+            r"linear_solver='pmg_gmres' does not solve models with periodic pairs or "
+            r"Floquet ports in this version of gfem \(Periodic\(.*\)\)\. Use "
+            r"linear_solver='direct' \(or 'auto', which picks it while it fits\)\.$"
+        ),
+    ),
+    "floquet_port": (
+        _floquet,
+        {},
+        ValueError,
+        r"periodic pairs or Floquet ports in this version of gfem \(.*FloquetPort",
+    ),
+    "mpi": (
+        _strip_line,
+        {"comm": 4},
+        gfem.DistributedUnsupportedError,
+        (
+            r"linear_solver='pmg_gmres' runs on one process in this version of gfem\. "
+            r"Across MPI ranks use linear_solver='bddc_gmres' \(or 'auto', which picks "
+            r"it\) or 'direct' with the MPI PETSc stack, or run independent "
+            r"one-process copies with comm=MPI\.COMM_SELF\.$"
+        ),
+    ),
+    "tree_cotree": (
+        _strip_line,
+        {"gauge": "tree_cotree"},
+        ValueError,
+        r"gauge='tree_cotree' needs linear_solver='direct', not 'pmg_gmres'",
+    ),
+    "gpu": (
+        _strip_line,
+        {"device": "cuda"},
+        ValueError,
+        r"device='cuda' needs linear_solver='direct'",
+    ),
+}
+
+
+class _Ranks:
+    """As much of a communicator as resolution reads."""
+
+    rank = 0
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+
+
+def _with_ranks(monkeypatch, size):
+    """A stub Open MPI of ``size`` ranks; its world communicator."""
+    world = _Ranks(size)
+    mpi = types.SimpleNamespace(
+        COMM_WORLD=world,
+        COMM_SELF=_Ranks(1),
+        get_vendor=lambda: ("Open MPI", (0, 0, 0)),
+        Is_initialized=lambda: True,
+        Is_finalized=lambda: False,
+    )
+    module = types.ModuleType("mpi4py")
+    module.MPI = mpi
+    monkeypatch.setitem(sys.modules, "mpi4py", module)
+    monkeypatch.setitem(sys.modules, "mpi4py.MPI", mpi)
+    monkeypatch.setattr(sys, "excepthook", sys.excepthook)
+    return world
+
+
+@pytest.mark.parametrize("refusal", REFUSALS)
+def test_refuses_what_it_does_not_solve_before_assembly(refusal, tmp_path, monkeypatch):
+    case, extra, error, message = REFUSALS[refusal]
+    model, problem = case(tmp_path)
+    extra = dict(extra)
+    kwargs = {}
+    if "comm" in extra:
+        kwargs["comm"] = _with_ranks(monkeypatch, extra.pop("comm"))
+
+    def assembled(*_, **__):
+        raise AssertionError("assembled before the refusal")
+
+    monkeypatch.setattr(ngs.BilinearForm, "Assemble", assembled)
+    monkeypatch.setattr(ngs.LinearForm, "Assemble", assembled)
+
+    def solve():
+        options = gfem.SolverOptions(linear_solver="pmg_gmres", **extra)
+        gfem.solve(model, problem, options=options, **kwargs)
+
+    with pytest.raises(error, match=message):
+        solve()
+
+
+def test_a_pmg_solve_that_does_not_converge_names_thin_cells(line, monkeypatch):
+    init = pmg.PmgHandle.__init__
+
+    def one_iteration(self, *args, **kwargs):
+        init(self, *args, **{**kwargs, "maxiter": 1})
+
+    monkeypatch.setattr(pmg.PmgHandle, "__init__", one_iteration)
+    with pytest.raises(
+        gfem.LinearSolverConvergenceError,
+        match=r"p-multigrid \+ GMRES did not converge .*Use linear_solver='direct' "
+        r"if it fits, or a looser tolerance, and check the mesh for layers of thin "
+        r"cells",
+    ):
+        _s(line, linear_solver="pmg_gmres", tolerance=1e-12)

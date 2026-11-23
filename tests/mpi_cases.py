@@ -118,6 +118,9 @@ def refused(key: str, directory: Path):  # noqa: PLR0911, PLR0912
         case "bddc_order_1_auto":
             options = gfem.SolverOptions(order=1)
             return _line(directory), gfem.Driven(FREQUENCY), options
+        case "pmg_gmres":
+            options = gfem.SolverOptions(linear_solver="pmg_gmres")
+            return _line(directory), gfem.Driven(FREQUENCY), options
         case "petsc_preconditioner":
             options = gfem.SolverOptions(
                 linear_solver="petsc", petsc_options={"pc_type": "ilu"}
@@ -140,6 +143,7 @@ KEYS = (
     "device",
     "bddc_order_1",
     "bddc_order_1_auto",
+    "pmg_gmres",
     "petsc_preconditioner",
 )
 

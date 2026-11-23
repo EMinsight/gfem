@@ -2424,8 +2424,10 @@ def _resolve(
 
     Raises:
         ValueError: ``linear_solver="bddc_gmres"`` with a perfectly matched
-            layer.
+            layer, or ``"pmg_gmres"`` with periodic pairs or Floquet ports.
     """
+    if options.linear_solver == "pmg_gmres":
+        _refuse_pmg(model)
     layer = model.pml is not None
     if layer and options.linear_solver == "bddc_gmres":
         raise _pml.refuse_bddc(model.pml)
@@ -2450,6 +2452,24 @@ def _resolve(
         model, problem, options, comm=comm, kind=linear.kind, auto_reason=auto_reason
     )
     return linear, choice
+
+
+def _refuse_pmg(model: Model) -> None:
+    """Raise where ``pmg_gmres`` meets periodic pairs or Floquet ports.
+
+    They have no path through it in this version. A Bloch wave vector is
+    refused earlier, with the other solvers that factor symmetric operators
+    only (`check_bloch`).
+    """
+    floquet = _floquet.floquet_ports(model.ports)
+    periodic = model._periodic  # noqa: SLF001
+    if floquet or periodic:
+        label = f"FloquetPort {floquet[0].name!r}" if floquet else periodic[0].label
+        raise ValueError(
+            "linear_solver='pmg_gmres' does not solve models with periodic pairs "
+            f"or Floquet ports in this version of gfem ({label}). Use "
+            "linear_solver='direct' (or 'auto', which picks it while it fits)."
+        )
 
 
 #: Why ``linear_solver="auto"`` picks ``direct`` for a model with a layer.

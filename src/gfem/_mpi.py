@@ -178,6 +178,11 @@ _REFUSALS = {
         "Job.run(out=) and call it on one process on the field load_result "
         f"gives, {_COPIES}."
     ),
+    "pmg_gmres": (
+        "linear_solver='pmg_gmres' runs on one process in this version of gfem. "
+        "Across MPI ranks use linear_solver='bddc_gmres' (or 'auto', which picks "
+        f"it) or 'direct' with the MPI PETSc stack, {_COPIES}."
+    ),
     "petsc_preconditioner": (
         "This PETSc preconditioner has no distributed form (pc_type ilu or icc, "
         "or lu or cholesky with a pc_factor_mat_solver_type other than mumps): "
@@ -351,6 +356,8 @@ def _refuse_options(options: Any) -> None:
         refuse_feature("device")
     if options.order == 1 and options.linear_solver in ("auto", "bddc_gmres"):
         refuse_feature("bddc_order_1")
+    if options.linear_solver == "pmg_gmres":
+        refuse_feature("pmg_gmres")
     if options.linear_solver == "petsc" and _serial_only_preconditioner(
         dict(options.petsc_options)
     ):

@@ -672,7 +672,11 @@ def test_changing_the_target_reflection_changes_the_operator(tmp_path):
 def test_an_explicit_bddc_gmres_refuses_the_layer(tmp_path):
     model = _line(tmp_path, gfem.PML("pml"))
     options = gfem.SolverOptions(linear_solver="bddc_gmres")
-    with pytest.raises(ValueError, match=r"bddc_gmres.*perfectly matched layer.*'pml'"):
+    with pytest.raises(
+        ValueError,
+        match=r"bddc_gmres.*perfectly matched layer.*'pml'.*Use "
+        r"linear_solver='pmg_gmres', which solves the layer exactly",
+    ):
         _driven(model, options=options)
 
 
