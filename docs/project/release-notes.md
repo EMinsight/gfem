@@ -17,9 +17,11 @@
   thin for its reference wavelength, and a port mode or eigenmode that keeps
   over about 1% of its electric energy in the layer. A 2D model refuses a
   layer.
-- **JAX 0.8.3 or later.** gfem now installs next to packages that cap JAX
-  below 0.10 (0.1.0 required JAX 0.12). CI runs the unit tests on the oldest
-  supported JAX.
+- **JAX 0.8.3 or later, NumPy 2.2 or later.** gfem now installs next to
+  packages that cap JAX below 0.10 (0.1.0 required JAX 0.12). NumPy 2.2 is
+  now required directly: on NumPy 2.0, `Job.to_json` and the solve cache
+  wrote a stray `allow_pickle` array into their `.npz` files. CI runs the
+  unit tests on the oldest supported versions.
 - **BDDC's coarse problem across ranks.** With `bddc_gmres` on the
   {term}`MPI PETSc stack`, MUMPS factors BDDC's coarse problem on a share of
   the ranks. gfem picks the share and the ordering from the stack, the coarse
