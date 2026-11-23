@@ -54,7 +54,9 @@ def _feed(c):
 
 
 def _box(path, volume):
-    return gfem.Mesh.from_gmsh(pc.box(path, ALL, thickness=0.25, cells=4, volume=volume))
+    return gfem.Mesh.from_gmsh(
+        pc.box(path, ALL, thickness=0.25, cells=4, volume=volume)
+    )
 
 
 @pytest.fixture(scope="module")

@@ -241,8 +241,8 @@ class _PowerFlowKernel:
         mode: str = "power",
     ) -> None:
         self.mode = mode
-        self.name = "gfem.cross_sections" if mode == "cross_sections" else (
-            "gfem.power_flow"
+        self.name = (
+            "gfem.cross_sections" if mode == "cross_sections" else ("gfem.power_flow")
         )
         self.output_specs = {n: _SCALAR for n in _OUTPUTS[mode]}
         self.roles = roles

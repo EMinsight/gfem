@@ -932,7 +932,8 @@ class CrossSections:
     def __repr__(self) -> str:
         try:
             values = [
-                np.asarray(x) for x in (self.extinction, self.absorption, self.scattering)
+                np.asarray(x)
+                for x in (self.extinction, self.absorption, self.scattering)
             ]
         except (TypeError, jax.errors.TracerArrayConversionError):
             return "CrossSections(traced)"
@@ -1095,9 +1096,7 @@ def _column_kind(result: DrivenResult, name: str) -> str | None:
     )
 
 
-def _intensity(
-    source: Any, intensity: Any, n: int, background: Any
-) -> np.ndarray:
+def _intensity(source: Any, intensity: Any, n: int, background: Any) -> np.ndarray:
     """The intensity of ``source`` per kept frequency, W/m² (see `cross_sections`).
 
     Raises:
@@ -1119,9 +1118,11 @@ def _intensity(
                 "cross_sections' intensity is static: wrap it in "
                 "jax.lax.stop_gradient or pass a number."
             )
-        values = np.broadcast_to(np.asarray(intensity, float), (n,)).copy() if (
-            np.ndim(intensity) == 0 or np.shape(intensity) == (n,)
-        ) else None
+        values = (
+            np.broadcast_to(np.asarray(intensity, float), (n,)).copy()
+            if (np.ndim(intensity) == 0 or np.shape(intensity) == (n,))
+            else None
+        )
         if values is None or not (np.isfinite(values).all() and (values > 0).all()):
             raise ValueError(
                 "cross_sections' intensity must be a positive finite number or "
