@@ -117,8 +117,6 @@ _SLOW_WAVE = 2.0
 # 0.986); a picked mode with more than `_CLEARANCE` warns.
 _PML_SHARE = 0.5
 _CLEARANCE = 1e-2
-#: The port mode sweep's progress row: its output frequencies that pass.
-PORT_MODE_ROW = "port mode sweep"
 # With at most this many frequencies every one is solved exactly.
 _EXACT_ONLY = 3
 # A new mode adds its part orthogonal to the basis unless that part is below
@@ -615,10 +613,10 @@ class _Greedy:
     def run(self) -> None:
         # the row counts the output frequencies that pass, so it can go down
         # after a re-selection
-        with _progress.task(PORT_MODE_ROW, total=len(self.f)) as row:
+        with _progress.task(_progress.PORT_MODE_SWEEP, total=len(self.f)) as row:
             self._run(row)
 
-    def _run(self, row: Any) -> None:
+    def _run(self, row: _progress.ProgressRow) -> None:
         n = len(self.f)
         first = self._solve(0)
         if len(first.lam) < max(self.modes):

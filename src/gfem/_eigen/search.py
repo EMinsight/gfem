@@ -17,7 +17,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Protocol
 
 import numpy as np
 import scipy.constants as const
@@ -27,7 +27,7 @@ from gfem._eigen.adjoint import polish
 from gfem._eigen.operator import EigenOperator
 from gfem._eigen.reach import GapSet, ModeReach, _close
 from gfem._eigen.refine import TRUSTED, Refined, refine
-from gfem._eigen.seed import MIN_SUBSPACE, MODE_ROW, SeedBoundReached
+from gfem._eigen.seed import MIN_SUBSPACE, SeedBoundReached
 from gfem._linalg import report
 from gfem._linalg.layout import ONE_PROCESS, DofLayout
 from gfem._text import hertz
@@ -209,7 +209,7 @@ class ModeSearch:
         """
         # stage notes only: how many seed solves and refinements a search
         # takes is not known in advance
-        with _progress.task(MODE_ROW) as row:
+        with _progress.task(_progress.MODE_SEARCH) as row:
             return self._find(
                 eop,
                 project,
@@ -227,7 +227,7 @@ class ModeSearch:
         *,
         guard: bool,
         polish_isolated: bool,
-        row: Any,
+        row: _progress.ProgressRow,
     ) -> FoundModes:
         """`find`, its stages noted on the mode search's ``row``."""
         n_modes = self.n_modes
@@ -349,7 +349,7 @@ class ModeSearch:
         *,
         guard: bool = False,
         dropped: list[complex],
-        row: Any,
+        row: _progress.ProgressRow,
     ) -> tuple[list[Refined], list[Refined], Refined | None, np.ndarray, np.ndarray]:
         """Refine the seeds nearest ``sigma`` until ``n_modes`` distinct ones.
 

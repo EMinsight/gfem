@@ -116,8 +116,6 @@ from gfem._engine.domain import (
     space_key,
 )
 from gfem._engine.driven_sweep import (
-    ADJOINT_ROW,
-    UNIFORM_ROW,
     FixedAngleChildren,
     ReducedKept,
     SweepSplit,
@@ -1062,7 +1060,7 @@ class DrivenRule:
                     solves=len(frequencies),
                     pool_budget=retain_budget(self.options.retain_memory),
                 ) as sweep,
-                _progress.task(UNIFORM_ROW, total=len(frequencies)) as row,
+                _progress.task(_progress.UNIFORM_SWEEP, total=len(frequencies)) as row,
             ):
                 for n, f in enumerate(frequencies):
                     omega = 2 * math.pi * f
@@ -1160,7 +1158,9 @@ class DrivenRule:
                 frequencies = self.problem.frequency
                 with (
                     system.sweep(solves=len(frequencies)) as sweep,
-                    _progress.task(ADJOINT_ROW, total=len(frequencies)) as row,
+                    _progress.task(
+                        _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)
+                    ) as row,
                 ):
                     for f in frequencies:
                         rhs = ports.rhs(2 * math.pi * f)
@@ -1676,7 +1676,9 @@ class DrivenRule:
             op = system.operator
             domain = em_region(model, op.built)
             omegas = [2 * math.pi * f for f in frequencies]
-            with _progress.task(ADJOINT_ROW, total=len(frequencies)) as row:
+            with _progress.task(
+                _progress.UNIFORM_SWEEP_ADJOINT, total=len(frequencies)
+            ) as row:
                 for n in system.adjoint_order(omegas):
                     f = frequencies[n]
                     omega = 2 * math.pi * f

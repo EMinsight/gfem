@@ -1,23 +1,25 @@
-"""Progress rows on the log display's console.
+r"""Progress rows on the log display's console.
 
 A long loop opens one row and advances it once per unit::
 
-    with _progress.task("uniform sweep", total=len(frequencies)) as row:
+    with _progress.task(_progress.UNIFORM_SWEEP, total=len(frequencies)) as row:
         for f in frequencies:
             ...
             row.advance(frequency=f, iterations=its)
 
-and `gfem._timing.phase` reports each outermost phase it enters (`phase`),
-shown in the innermost open row, or as a spinner row of its own when no row is
-open. The keywords are values the loop already holds; the display formats
-them.
+and `gfem._timing.phase` reports each span it enters that is not nested in
+one of the same name (`phase`), shown in the innermost open row, or as a
+spinner row of its own when no row is open. A loop passes values it already
+holds and computes nothing costly for its row (a cheap conversion such as
+:math:`\omega / 2\pi` is fine); the display formats them.
 
 `gfem.log.enable` calls `start` with the display's rich console when progress
 is asked for, and `disable` (or the next `enable`) calls `stop`. While no
 progress is shown, ``_LIVE`` is ``None`` and `task` and `phase` return the one
 shared no-op `_NULL`: a loop pays one global read per call, builds nothing
 and imports nothing. A frequency worker has no display: while the parent
-shows progress, `forward_to` makes the worker's advances the parent's.
+shows progress, `forward_to` makes its uniform sweep row's advances the
+parent's.
 
 Rows nest per context, as timing phases do: a row opened while a row with the
 same label is open joins it, so a fixed-angle sweep's one-frequency solves
@@ -47,6 +49,30 @@ MESH_REFINEMENT = "mesh refinement"
 _LIVE: Live | None = None
 
 
+class ProgressRow(Protocol):
+    """A loop's row as the loop sees it: a live `Row`, or `_NULL` while off."""
+
+    def advance(self, n: int = 1, **fields: Any) -> None:
+        """Count ``n`` more units done; ``fields`` show beside the count."""
+        ...
+
+    def update(self, completed: int | None = None, **fields: Any) -> None:
+        """Set the units done (``None`` keeps them); ``fields`` as in `advance`."""
+        ...
+
+    def note(self, **fields: Any) -> None:
+        """Show ``fields`` on the row, the count unchanged."""
+        ...
+
+
+class RowContext(Protocol):
+    """What `task` returns: entering it gives the loop's row."""
+
+    def __enter__(self) -> ProgressRow: ...
+
+    def __exit__(self, *exc: object) -> None: ...
+
+
 class _Null:
     """The row and phase of a display that is off: every call does nothing."""
 
@@ -71,7 +97,7 @@ class _Null:
 _NULL = _Null()
 
 
-def task(label: str, total: int | None = None) -> Any:
+def task(label: str, total: int | None = None) -> RowContext:
     """A context manager for a loop's row: ``total`` units, ``None`` if unknown.
 
     Entering it gives the row, whose ``advance``, ``update`` and ``note`` take
@@ -271,8 +297,8 @@ class _Phase:
 class _QueueBoard:
     """A frequency worker's board: its uniform sweep row's advances go to the parent.
 
-    Nothing is drawn; a row's key says whether it is forwarded. The arguments it ignores are
-    those of `Board`.
+    Nothing is drawn; a row's key says whether it is forwarded. The arguments
+    it ignores are those of `Board`.
     """
 
     def __init__(self, queue: Any) -> None:
