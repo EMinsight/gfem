@@ -30,6 +30,10 @@ mesh (`sphere_mesh.write`):
   -0.10 %; lossless :math:`\varepsilon = 4` -0.25 % (TE), -0.56 % (TM); PEC
   +1.99 % (TE), +1.44 % (TM). Gates `TOLERANCE` and `PEC_TOLERANCE`. The half
   model with its mirror wall equals the whole to :math:`10^{-13}`.
+- Gaussian beams of waist 3 um focused on the lossy sphere, same directions,
+  over their focal intensity, against the plane waves: -0.24 / -0.47 /
+  -0.11 % (TE and TM alike), the beam's non-uniformity over the sphere.
+  Gate `BEAM_TOLERANCE`.
 - Sphere refined to `REFINED_MAXH` (:math:`\lambda_\mathrm{in}/6`): gate
   `REFINED_TOLERANCE`.
 """
@@ -67,6 +71,9 @@ REFINED_MAXH = 0.08
 TOLERANCE = 2e-2
 PEC_TOLERANCE = 3e-2
 REFINED_TOLERANCE = 1e-2
+#: Relative gate on a Gaussian beam's cross sections (waist 3 um, focused on
+#: the sphere) against the plane wave's (see the module docstring).
+BEAM_TOLERANCE = 2e-2
 #: The lossy and lossless spheres' materials, :math:`\varepsilon = 4 - i`
 #: and 4 under :math:`e^{+i\omega t}`.
 LOSSY = gfem.Material(eps_r=4.0, tan_delta=0.25)

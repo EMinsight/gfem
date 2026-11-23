@@ -1,6 +1,7 @@
 r"""Incident fields as host values: a source in its background stack.
 
-An incident-field column (`gfem.PlaneWave`, `gfem.IncidentField`) enters a
+An incident-field column (`gfem.PlaneWave`, `gfem.GaussianBeam`,
+`gfem.IncidentField`) enters a
 driven solve through its electric field at points (`values`), evaluated on
 the host as NumPy values; the magnetic field a wall check reads comes from
 the same values by central differences (`magnetic`). A kept field of such a
@@ -29,6 +30,7 @@ from typing import Any
 import numpy as np
 import scipy.constants as const
 
+from gfem import _beam
 from gfem._background import Background
 from gfem._sources import (
     GaussianBeam,
@@ -105,14 +107,12 @@ def check_solvable(source: Incident, background: Background) -> None:
     """Raise if this version cannot solve ``source`` in ``background``.
 
     Raises:
-        NotImplementedError: A `gfem.GaussianBeam`, a layered background, or
-            a `gfem.PlaneWave` in a lossy background.
+        NotImplementedError: A layered background, or a `gfem.PlaneWave` or
+            `gfem.GaussianBeam` in a lossy background.
     """
     if isinstance(source, GaussianBeam):
-        raise NotImplementedError(
-            f"The GaussianBeam {source.name!r} is not solved in this gfem "
-            "version; give its field as a gfem.IncidentField."
-        )
+        _beam.check_background(source, background)
+        return
     material = background_material(background)
     if isinstance(source, PlaneWave) and not _lossless(material):
         raise NotImplementedError(
@@ -158,7 +158,8 @@ def values(
 
     Raises:
         ValueError: An `gfem.IncidentField` function returned a wrong shape,
-            a non-numeric array or a non-finite value.
+            a non-numeric array or a non-finite value; a `gfem.GaussianBeam`
+            whose waist is too small at ``frequency`` (`gfem._beam`).
         gfem.NonDifferentiableError: An `gfem.IncidentField` function
             computed its value from a JAX tracer.
     """
@@ -172,6 +173,8 @@ def values(
         return np.exp(-1j * k * (points @ k_hat))[:, None] * e[None, :]
     if isinstance(source, IncidentField):
         return _function_values(source, points, frequency)
+    if isinstance(source, GaussianBeam):
+        return _beam.values(source, background, points, frequency)
     check_solvable(source, background)  # raises for what is not solved here
     raise AssertionError(source)  # pragma: no cover
 

@@ -1,8 +1,9 @@
 # Light a scatterer with an incident field
 
 An {term}`incident field` is the field a {term}`source` would have in the
-{term}`background stack` alone: a plane wave ({py:obj}`gfem.PlaneWave`) or a
-field you give as a function ({py:obj}`gfem.IncidentField`). Pass it to
+{term}`background stack` alone: a plane wave ({py:obj}`gfem.PlaneWave`), a
+focused Gaussian beam ({py:obj}`gfem.GaussianBeam`) or a field you give as a
+function ({py:obj}`gfem.IncidentField`). Pass it to
 {py:obj}`gfem.Driven` as `sources=`; each source adds a column to the solve,
 beside the excited ports, on the same factorization. Use it for anything lit
 from outside: a particle, an antenna receiving a wave, an absorber.
@@ -81,6 +82,31 @@ DrivenResult(1 frequencies 299.8 THz, ports=[], excited=[], sources=['te', 'tm']
 A model with no port takes sources alone; `result.s` then has no rows. With
 ports, `excite=()` solves the sources only, and `result.port_wave(port,
 source)` is the wave each source sends into each port.
+
+## Focus a Gaussian beam
+
+A {py:obj}`gfem.GaussianBeam` takes the plane wave's angles and
+polarizations, a waist $w_0$ (m, the same at every frequency) and a focus
+(m). It is an exact solution of Maxwell's equations whose paraxial limit is
+the fundamental Gaussian beam, so it leaves no spurious source however tight
+it is. Like an excited port it carries 1 W through any plane across its axis,
+with a real, positive field at its focus; its focal field and
+{term}`focal intensity` depend on the background, so they take the frequency
+and the model:
+
+```python
+beam = gfem.GaussianBeam("beam", waist=3e-6, theta=theta, phi=0.0, polarization="TE")
+print(f"focal field {beam.focal_field(f, model=model):.4g} V/m")
+print(f"focal intensity {beam.focal_intensity(f, model=model):.4g} W/m²")
+```
+
+```text
+focal field 7.27e+06 V/m
+focal intensity 7.014e+10 W/m²
+```
+
+Pass it in `sources=` beside the plane waves: each is one more column on the
+same factorization. The focus may sit anywhere, inside the scatterer too.
 
 ## Read the total, scattered and incident fields
 
@@ -177,9 +203,12 @@ it found and the remedy.
   crosses is refused.
 - **Ports outside the incident field**: a wave port face it reaches is
   refused.
-- **Homogeneous, lossless backgrounds**: plane waves and functions in one
-  lossless material; Gaussian beams, layered stacks and lossy backgrounds
-  for plane waves are refused in this version.
+- **Homogeneous, lossless backgrounds**: plane waves, beams and functions in
+  one lossless material; layered stacks, and lossy backgrounds for plane
+  waves and beams, are refused in this version.
+- **Beams not too tight**: a beam with $k w_0 < 0.2$ (a waist under about
+  $\lambda/30$) at a solved frequency cannot be normalized to 1 W and is
+  refused.
 - **One process per solve**: frequency workers do not take incident fields
   yet.
 - **Material gradients**: gradients flow to the scatterer's material fields;

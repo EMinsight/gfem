@@ -156,10 +156,13 @@ The powers are divided by:
 
 - {py:obj}`gfem.PlaneWave`: $|E_0|^2 / (2\eta)$, $\eta$ the wave impedance
   of the background (`xs.intensity` holds it);
+- {py:obj}`gfem.GaussianBeam`: its {term}`focal intensity` at each frequency,
+  `beam.focal_intensity(f, model=model)`: a beam wide against the scatterer
+  then gives the plane wave's cross sections;
 - {py:obj}`gfem.IncidentField`: the `intensity=` you pass, W/m², a number or
   one per kept frequency: gfem cannot tell the intensity of a field it only
-  evaluates. Passing `intensity=` for a plane wave is refused, so each source
-  has one normalization.
+  evaluates. Passing `intensity=` for a plane wave or a beam is refused, so
+  each source has one normalization.
 
 ## Absorption per region
 
@@ -194,7 +197,7 @@ its intensity and the frequency are static.
   keep).
 - **One intensity per source**: an {py:obj}`gfem.IncidentField` needs
   `intensity=`, a positive number or one per kept frequency; a plane wave
-  takes none.
+  or a beam takes none.
 - **A background truncation layer**: a scatterer that reaches the truncation
   layer has no finite cross section and is refused; leave one background
   element between them, or measure per region with

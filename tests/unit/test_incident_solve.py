@@ -94,8 +94,20 @@ def _norm(field):
     return float(np.linalg.norm(np.asarray(field.coefficients)))
 
 
-def test_without_a_scatterer_the_scattered_field_vanishes(meshes):
-    result = _solve(_model(meshes["empty"]), WAVE)
+#: A beam focused in the middle of the cube, tilted, circular.
+BEAM = gfem.GaussianBeam(
+    "w",
+    waist=0.6e-6,
+    focus=(0.5e-6, 0.5e-6, 0.5e-6),
+    theta=0.5,
+    phi=1.0,
+    polarization="RCP",
+)
+
+
+@pytest.mark.parametrize("source", [WAVE, BEAM], ids=["plane_wave", "beam"])
+def test_without_a_scatterer_the_scattered_field_vanishes(meshes, source):
+    result = _solve(_model(meshes["empty"]), source)
     total = result.e_field(F, "w")
     scattered = result.e_field(F, "w", part="scattered")
     assert _norm(scattered) <= 1e-12 * _norm(total)
@@ -332,9 +344,14 @@ def test_an_exterior_lossy_or_lumped_face_is_refused(meshes, item, match):
     ("background", "source", "match"),
     [
         (
-            AIR,
+            gfem.Background([AIR, gfem.Material(eps_r=2.0)], interfaces=[0.5e-6]),
             gfem.GaussianBeam("b", waist=1e-6, theta=0.0, polarization="TM"),
-            "GaussianBeam 'b' is not solved",
+            "GaussianBeam 'b' is solved in a homogeneous background",
+        ),
+        (
+            gfem.Material(tan_delta=0.1),
+            gfem.GaussianBeam("b", waist=1e-6, theta=0.0, polarization="TM"),
+            "GaussianBeam 'b' travels in a lossy background",
         ),
         (
             gfem.Background([AIR, gfem.Material(eps_r=2.0)], interfaces=[0.5e-6]),
@@ -350,6 +367,16 @@ def test_sources_this_version_does_not_solve_are_refused(
     model = _model(meshes["empty"]).replace(background=background)
     with pytest.raises(NotImplementedError, match=match):
         _solve(model, source)
+
+
+def test_a_beam_too_tight_at_one_frequency_is_refused_before_factorization(meshes):
+    # k w0 = 0.19 at the lower frequency only
+    beam = gfem.GaussianBeam(
+        "b", waist=0.19 / (2 * np.pi) * 1e-6, theta=0.0, polarization="TE"
+    )
+    problem = gfem.Driven([F, 1.5 * F], sources=beam)
+    with pytest.raises(ValueError, match=r"GaussianBeam 'b' has k w0 = 0\.19"):
+        gfem.solve(_model(meshes["empty"]), problem, options=OPTIONS)
 
 
 def test_frequency_workers_do_not_take_incident_fields_yet(meshes):
