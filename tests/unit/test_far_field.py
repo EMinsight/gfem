@@ -249,3 +249,147 @@ def test_a_circular_dipole_radiates_circular_polarization_along_its_axis(box):
         gfem.solve(model, problem, options=ORDER2), "l", 0.0, 0.0, model=model
     )
     assert abs(complex(left.e_right[0])) < 0.1 * abs(complex(left.e_left[0]))
+
+
+# --- refusals -----------------------------------------------------------------------
+
+
+def _split_volume(c):
+    if not ((c > 0) & (c < 1)).all():
+        return "pml"
+    return "air" if c[0] < 0.5 else "right"
+
+
+@pytest.fixture(scope="module")
+def split(tmp_path_factory):
+    """The box with its cube split at x = 0.5 um into "air" and "right"."""
+    path = fsc.dipole_box(
+        tmp_path_factory.mktemp("split") / "split.msh", cells=4, volume=_split_volume
+    )
+    return gfem.Mesh.from_gmsh(path)
+
+
+def _split_solve(mesh, right=None, position=INSIDE, **kwargs):
+    vacuum = gfem.Material()
+    model = gfem.Model(
+        mesh,
+        materials={"air": vacuum, "pml": vacuum, "right": right or vacuum},
+        pml=gfem.PML("pml"),
+        **({"background": vacuum} | kwargs),
+    )
+    dipole = gfem.ElectricDipole("d", position=position, moment=(0, 0, P))
+    problem = gfem.Driven(fsc.F0, sources=dipole, keep_fields=True)
+    return model, gfem.solve(model, problem, options=ORDER2)
+
+
+def test_far_field_needs_the_background(split):
+    model, result = _split_solve(split, background=None)
+    with pytest.raises(ValueError, match=r"Model\(background="):
+        gfem.far_field(result, "d", 0.0, 0.0, model=model)
+
+
+def test_far_field_refuses_a_layered_or_lossy_exterior(split):
+    model, result = _split_solve(split)
+    layered = model.replace(
+        background=gfem.Background(
+            [gfem.Material(), gfem.Material(eps_r=2.0)], interfaces=[0.0]
+        )
+    )
+    with pytest.raises(NotImplementedError, match="layered background"):
+        gfem.far_field(result, "d", 0.0, 0.0, model=layered)
+    lossy = model.replace(background=gfem.Material(tan_delta=0.1))
+    with pytest.raises(NotImplementedError, match="lossy exterior"):
+        gfem.far_field(result, "d", 0.0, 0.0, model=lossy)
+
+
+def test_far_field_refuses_a_layer_that_is_not_the_exterior_medium(split):
+    model, result = _split_solve(split, right=gfem.Material(eps_r=2.0))
+    # the default layer touches the PML on the right too
+    with pytest.raises(ValueError, match="region 'right'.*not the exterior medium"):
+        gfem.far_field(result, "d", 0.0, 0.0, model=model)
+
+
+def test_far_field_refuses_a_design_in_its_layer(split):
+    n = len(split.elements("right"))
+    design = gfem.MaterialField(eps_r=np.ones(n))
+    model, result = _split_solve(split, right=design)
+    with pytest.raises(ValueError, match="design region 'right'"):
+        gfem.far_field(result, "d", 0.0, 0.0, model=model)
+
+
+def _core(c, lo=0.25):
+    """A side clear of the layer: x in (lo, 0.5) um, y and z in (lo, 1 - lo)."""
+    u = c / fsc.UM
+    return (
+        (u[:, 0] > lo)
+        & (u[:, 0] < 0.5)
+        & ((u[:, 1:] > lo) & (u[:, 1:] < 1 - lo)).all(axis=1)
+    )
+
+
+def test_far_field_refuses_a_source_outside_the_side(split):
+    model, result = _split_solve(split, position=np.array([0.8, 0.53, 0.56]) * fsc.UM)
+    with pytest.raises(ValueError, match="dipole 'd'.* outside the far-field layer"):
+        gfem.far_field(result, "d", 0.0, 0.0, model=model, side=_core)
+
+
+def test_far_field_refuses_a_source_in_its_layer(split):
+    # the core side's outside layer holds x in [0.5, 0.75] um
+    model, result = _split_solve(split, position=np.array([0.6, 0.53, 0.56]) * fsc.UM)
+    with pytest.raises(ValueError, match="dipole 'd'.* in the far-field layer"):
+        gfem.far_field(result, "d", 0.0, 0.0, model=model, side=_core)
+
+
+def test_far_field_refuses_a_side_whose_layer_is_the_pml(box):
+    model = _vacuum(box)
+    with pytest.raises(ValueError, match="holds the PML region 'pml'"):
+        _far_side(model, "air")
+
+
+def _far_side(model, side):
+    dipole = gfem.ElectricDipole("d", position=INSIDE, moment=(0, 0, P))
+    problem = gfem.Driven(fsc.F0, sources=dipole, keep_fields=True)
+    result = gfem.solve(model, problem, options=ORDER2)
+    return gfem.far_field(result, "d", 0.0, 0.0, model=model, side=side)
+
+
+def test_far_field_refuses_a_closed_model(split):
+    vacuum = gfem.Material()
+    model = gfem.Model(
+        split,
+        materials={"air": vacuum, "pml": vacuum, "right": vacuum},
+        background=vacuum,
+    )
+    dipole = gfem.ElectricDipole("d", position=INSIDE, moment=(0, 0, P))
+    problem = gfem.Driven(fsc.F0, sources=dipole, keep_fields=True)
+    result = gfem.solve(model, problem, options=ORDER2)
+    with pytest.raises(ValueError, match="no PML layer and no Absorbing face"):
+        gfem.far_field(result, "d", 0.0, 0.0, model=model)
+
+
+def test_far_field_refuses_a_port_in_its_layer(strip):
+    model, result = strip
+    # a side ending at x = 0.5 um has the strip and its feed on its surface
+    with pytest.raises(ValueError, match="(PEC surface|LumpedPort 'p1') .*far-field layer"):
+        gfem.far_field(
+            result, "p1", 0.0, 0.0, model=model, side=lambda c: _core(c, 1 / 6)
+        )
+
+
+def test_far_field_needs_a_kept_field_of_a_column(box):
+    model = _vacuum(box)
+    dipole = gfem.ElectricDipole("d", position=INSIDE, moment=(0, 0, P))
+    result = gfem.solve(model, gfem.Driven(fsc.F0, sources=dipole), options=ORDER2)
+    with pytest.raises(ValueError, match="keep_fields=True"):
+        gfem.far_field(result, "d", 0.0, 0.0, model=model)
+    with pytest.raises(KeyError, match="neither an excited port nor a source"):
+        gfem.far_field(result, "x", 0.0, 0.0, model=model)
+
+
+def test_far_field_outputs_belong_to_their_column(dipole):
+    model, result = dipole
+    ff = gfem.far_field(result, "d", [0.3, 0.5], 0.0, model=model)
+    with pytest.raises(ValueError, match="radar cross section is a plane wave's"):
+        _ = ff.rcs
+    with pytest.raises(ValueError, match="do not broadcast"):
+        gfem.far_field(result, "d", [0.1, 0.2], [0.0, 0.1, 0.2], model=model)
