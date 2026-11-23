@@ -672,13 +672,16 @@ class SectionReduction:
         """The field's coordinates ``(y / gamma, y)`` of a pencil vector's."""
         return np.concatenate([y / gamma, y])
 
-    def power(self, z: np.ndarray, gamma: complex, omega: float) -> complex:
-        """Complex power through the port, W (`PortModeSpace.power`)."""
+    def power(self, z: np.ndarray, gamma: complex, omega: complex) -> complex:
+        r"""Complex power through the port, W (`PortModeSpace.power`).
+
+        ``omega`` may be complex: :math:`H^*` carries :math:`1/\omega^*`.
+        """
         return (
             0.5
             * self.space.section.scale
             * 1j
-            / (omega * scipy.constants.mu_0)
+            / (np.conj(omega) * scipy.constants.mu_0)
             * (z @ self._g @ z.conj() + gamma.conjugate() * (z @ self._t @ z.conj()))
         )
 
