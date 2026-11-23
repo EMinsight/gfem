@@ -53,6 +53,7 @@ from gfem._engine.incident import (
     background_model,
     incident_coefficients,
     layer_regions,
+    scatterer_elements,
     scatterer_regions,
 )
 from gfem._linalg.base import free_mask
@@ -109,14 +110,19 @@ def check_lossless(background: Background) -> None:
             absorption would hold the background's own loss of the incident
             field.
     """
-    material = _incident.background_material(background)
-    if np.any(material.tan_delta) or np.any(material.conductivity):
-        raise NotImplementedError(
-            f"cross_sections in a lossy background ({material!r}) is not "
-            "measured in this gfem version: the absorption would include the "
-            "background's own loss of the incident field. Give a lossless "
-            "background."
-        )
+    for j, material in enumerate(background.layers):
+        if np.any(material.tan_delta) or np.any(material.conductivity):
+            where = (
+                f"layer {j} of the background stack"
+                if _incident.layered(background)
+                else "the background"
+            )
+            raise NotImplementedError(
+                f"cross_sections in a lossy background ({where} is "
+                f"{material!r}) is not measured in this gfem version: the "
+                "absorption would include the background's own loss of the "
+                "incident field. Give lossless layers."
+            )
 
 
 _SHEETS = (Conductor, Impedance, LumpedPort, PEC)
@@ -139,8 +145,9 @@ def check_truncation_layer(
         "the PML layer or Absorbing face, or measure per region with "
         "power_flow and port_wave."
     )
+    scatterer = scatterer_elements(model, background)
     for region in scatterer_regions(model, background):
-        if not read[mesh.elements(region)].any():
+        if not (read & scatterer)[mesh.elements(region)].any():
             continue
         if is_traced(model.materials[region]):
             raise NonDifferentiableError(

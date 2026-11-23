@@ -62,7 +62,19 @@ class Background:
 
     An incident field (`PlaneWave`, `GaussianBeam`, `IncidentField`) is the
     field of its source in this stack alone; where the model's material
-    differs from the stack at the same height is the scatterer.
+    differs from the stack at the same height is the scatterer. gfem
+    computes a plane wave's field in the stack itself, per frequency, angle
+    and polarization, reflected and transmitted waves included.
+
+    The mesh is matched to the stack at `gfem.solve`, element by element:
+    no tetrahedron may cross a stack plane, each takes the layer at its
+    centroid, and it belongs to the background when its region's material
+    equals that layer's (pass the same `Material` to both), to the
+    scatterer otherwise. The perfectly matched layer's regions follow the
+    same rule, so they are split at the planes and carry the stack's
+    materials; one that does not is a scatterer in the layer, refused under
+    a plane wave. A ground plane needs an exterior `gfem.PEC` face on that
+    plane under the physical region, and a plane wave from above.
 
     Example:
         Silicon on a 2 µm buried oxide over a silicon substrate, under air::

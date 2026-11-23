@@ -353,11 +353,6 @@ def test_an_exterior_lossy_or_lumped_face_is_refused(meshes, item, match):
             gfem.GaussianBeam("b", waist=1e-6, theta=0.0, polarization="TM"),
             "GaussianBeam 'b' travels in a lossy background",
         ),
-        (
-            gfem.Background([AIR, gfem.Material(eps_r=2.0)], interfaces=[0.5e-6]),
-            WAVE,
-            "layered background",
-        ),
         (gfem.Material(tan_delta=0.1), WAVE, "lossy background"),
     ],
 )
