@@ -58,7 +58,8 @@ When the structure loses power, $\omega$ is complex and
 $\mathrm{Im}\,\omega > 0$ (time dependence $e^{+i\omega t}$, so the field decays
 as $e^{-\mathrm{Im}\,\omega\, t}$). Material loss does this, and so does
 anything that lets the field leave: a resistive {term}`lumped port`, a
-first-order `Absorbing` boundary, a perfectly matched layer. A resonant mode of
+{term}`wave port`, a first-order `Absorbing` boundary, a perfectly matched
+layer. A resonant mode of
 an open structure is a {term}`quasi-normal mode` (QNM). Its field decays in
 time and, because the power it loses travels outwards, grows away from the
 structure; the perfectly matched layer damps that growth inside the layer.
@@ -73,10 +74,32 @@ gives the modes of that wave vector; one problem per wave vector traces the
 band diagram $\omega(k)$. In a lossless cell a band of bound modes is real and a
 band of leaky modes is complex.
 
-`Eigenmode` does not take a {term}`wave port`: the port's propagation constant
-would have to be found at a complex frequency. Terminate the guide with a
-perfectly matched layer, or find the resonance from a {term}`driven problem`
-sweep through the port.
+### A resonance through a wave port
+
+A {term}`wave port` in an `Eigenmode` problem absorbs its mode at the
+complex eigenfrequency. Its propagation constant there is the
+{term}`outgoing branch`,
+
+$$
+\gamma = i\sqrt{\varepsilon_r \mu_r k_0^2 - k_c^2},
+$$
+
+continued from real frequencies above the cutoff $k_c$, where it is the wave
+leaving the model. At a decaying mode, $\mathrm{Im}\,\omega > 0$, this gives
+$\mathrm{Re}\,\gamma < 0$: the field grows along the guide away from the
+structure. That is the guide's share of the spatial growth of a
+quasi-normal mode.
+
+The target must lie above the cutoff of every requested port mode. Below a
+cutoff the outgoing branch also has roots that are not resonances: a real
+root (an anti-bound state, whose field grows into the guide) or one that
+grows in time. gfem drops them with {py:obj}`gfem.AntiBoundRootWarning`. A
+root below cutoff that decays in time is a resonance and is kept.
+
+The port's $\gamma$ at the complex eigenfrequency is not reported;
+{py:obj}`gfem.PortMode` gives it at real frequencies. Each wave port reports
+its {term}`coupling Q` in `EigenmodeResult.q_port`. An example on a line:
+"A resonator loaded by a guide" in {doc}`recipes/solve-a-device`.
 
 ## One leak, seen from both sides
 
@@ -93,7 +116,9 @@ $$
 The same holds for the losses of a bound mode. A guide coupled to a cavity
 mixes the two pictures: the guide's own mode stays bound, while the cavity's
 resonance becomes a quasi-normal mode whose $\mathrm{Im}\,\omega$ counts the
-power it loses into the guide.
+power it loses into the guide. An `Eigenmode` problem with a wave port on the
+guide finds that quasi-normal mode directly, and `q_port` gives the share of
+its loss that leaves through the guide.
 
 ## The three roles of a port
 
@@ -102,9 +127,10 @@ A {term}`port` does three things, and only one of them depends on the problem.
 1. **It is a boundary, always.** A wave port absorbs its own mode without
    reflection; a lumped port is a resistor, with an optional inductance and
    capacitance. Both are in the operator of every problem on the model, so
-   they set the resonances and their Q. In an `Eigenmode` problem a lumped
-   port is only this boundary, and a resistive one adds a coupling Q
-   (`EigenmodeResult.q_port`).
+   they set the resonances and their Q. In an `Eigenmode` problem a port is
+   only this boundary: a resistive lumped port and every wave port add a
+   {term}`coupling Q` (`EigenmodeResult.q_port`), and an inductive lumped
+   port a participation ratio.
 2. **It is a source, when excited.** A {term}`driven problem` feeds each
    {term}`excited port <Excited port>` in turn with 1 W, one column of the
    {term}`S-parameters` each. `Driven(excite=...)` names those ports; the

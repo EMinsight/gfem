@@ -245,6 +245,8 @@ USER_TERMS = (
     "Resonant mode",
     "Quasi-normal mode",
     "Excited port",
+    "Coupling Q",
+    "Outgoing branch",
 )
 
 
