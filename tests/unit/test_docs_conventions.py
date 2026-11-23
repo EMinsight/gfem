@@ -3,8 +3,9 @@
 docs/conventions.md runs nothing at docs build time. This checks that the
 page names every constant of the module (so a constant added there without a
 line on the page fails here) with its value, and runs the page's blocks on
-the repository's own docs/tutorials/data/line.msh: what they print is what
-the page shows, and is what each convention says it must be.
+the repository's own docs/tutorials/data/line.msh (and heater and modulator
+sections): what they print is what the page shows, and is what each
+convention says it must be.
 """
 
 import docs_pages as dp
@@ -23,7 +24,10 @@ def page():
 
 @pytest.fixture(scope="module")
 def ran(tmp_path_factory):
-    return dp.run_page(PAGE, tmp_path_factory.mktemp("conventions"))
+    workdir = tmp_path_factory.mktemp("conventions")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.syspath_prepend(str(workdir))  # the section builder it downloads
+        return dp.run_page(PAGE, workdir)
 
 
 def _printed(ran, section: str) -> np.ndarray:
@@ -230,3 +234,41 @@ def test_the_units_table_lists_the_thermal_units(page):
     units = dp.section(page, "Units")
     for unit in ("W/m/K", "kg/m³", "J/kg/K", "W/m²/K", "S/m", "1/K", "W/m³", "| K |"):
         assert unit in units, unit
+
+
+# -- Electro-optic shift: the modulator section of the electro-optic recipes
+
+
+def _electro_optic(ran) -> list:
+    return [e for e in ran if e.section == "Electro-optic shift"]
+
+
+def test_the_electro_optic_phase_is_a_delay_per_volt(ran):
+    lowers, delay, angle = _electro_optic(ran)[0].printed.splitlines()
+    assert lowers == "True"  # a field along the crystal's +z lowers n_e
+    assert float(delay) < 0
+    # the argument turns by minus the delay
+    assert float(angle) == pytest.approx(-float(delay), abs=1e-4)
+
+
+def test_push_pull_needs_half_an_arms_v_pi_l(ran):
+    arm, pair = dp.numbers(_electro_optic(ran)[1].printed)
+    # the coarse arms are mirror images to a few 1e-3
+    assert pair == pytest.approx(arm / 2, rel=5e-3)
+
+
+def test_the_electro_optic_section_states_the_tensor_frame(page):
+    section = " ".join(dp._prose(dp.section(page, "Electro-optic shift")).split())
+    for text in (
+        "m/V",
+        "rows $xx, yy, zz, yz, xz, xy$",
+        "`axes`",
+        "right-handed",
+        r"-\varepsilon_r (r \cdot E_\mathrm{s}) \varepsilon_r",
+        "{doc}`recipes/electro-optic-phase`",
+        "optical window",
+    ):
+        assert text in section, text
+    module = " ".join(gfem.conventions.__doc__.split())
+    assert "Electro-optic shift" in module
+    assert "Voigt" in module
