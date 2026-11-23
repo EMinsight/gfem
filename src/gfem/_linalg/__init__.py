@@ -102,8 +102,8 @@ from gfem import _timing
 
 if TYPE_CHECKING:
     from gfem._linalg.layout import DofLayout
-    from gfem._linalg.pmg import Cells
     from gfem._linalg.pieces import PieceSum
+    from gfem._linalg.pmg import Cells
     from gfem.options import PetscOptions, PetscValue, SolverOptions
 
 __all__ = [

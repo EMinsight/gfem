@@ -311,9 +311,9 @@ def _factor(
 class VCycle(ngs.BaseMatrix):
     r"""One symmetric V-cycle of the two-level p-multigrid, as an NGSolve matrix.
 
-    ``x = M b``: from $x = 0$, one forward block Gauss-Seidel sweep, the
-    direct correction $x \mathrel{+}= A_{DD}^{-1} (b - A x)_D$ on the direct
-    set $D$, one backward sweep. The cycle is linear in $b$, and complex
+    $y = M x$: from $y = 0$, one forward block Gauss-Seidel sweep on
+    $A y = x$, the direct correction $y \mathrel{+}= A_{DD}^{-1} (x - A y)_D$
+    on the direct set $D$, one backward sweep. The cycle is linear in $b$, and complex
     symmetric when $A$ is.
 
     Attributes:
@@ -346,9 +346,7 @@ class VCycle(ngs.BaseMatrix):
         self._complex = is_complex
         self._smoother = symmetric.mat.CreateBlockSmoother(blocks, parallel=True)
         self._band = _band_bytes(blocks, is_complex=is_complex)
-        self._factors: Factors | None = _factor(
-            matrix, direct.dofs, symmetry, is_complex=is_complex
-        )
+        self._factors = _factor(matrix, direct.dofs, symmetry, is_complex=is_complex)
         self.direct = direct.dofs.NumSet()
         self.pml_dofs = direct.pml_dofs
         self.poor_cells = direct.poor_cells
@@ -369,23 +367,21 @@ class VCycle(ngs.BaseMatrix):
     def Width(self) -> int:  # noqa: N802
         return int(self._matrix.width)
 
-    def CreateRowVector(self) -> ngs.BaseVector:  # noqa: N802
+    def CreateRowVector(self) -> ngs.BaseVector:  # noqa: N802  # ty: ignore[invalid-method-override]
         return self._matrix.CreateRowVector()
 
-    def CreateColVector(self) -> ngs.BaseVector:  # noqa: N802
+    def CreateColVector(self) -> ngs.BaseVector:  # noqa: N802  # ty: ignore[invalid-method-override]
         return self._matrix.CreateColVector()
 
-    def Mult(self, b: ngs.BaseVector, x: ngs.BaseVector) -> None:  # noqa: N802
-        """``x = M b`` (see the class docstring)."""
-        if self._factors is None:
-            raise RuntimeError("This p-multigrid was freed.")
+    def Mult(self, x: ngs.BaseVector, y: ngs.BaseVector) -> None:  # noqa: N802
+        """``y = M x`` (see the class docstring)."""
         r, z = self._r, self._z
-        x[:] = 0
-        self._smoother.Smooth(x, b)
-        r.data = b - self._matrix * x
+        y[:] = 0
+        self._smoother.Smooth(y, x)
+        r.data = x - self._matrix * y
         z.data = self._factors.inverse * r
-        x.data += z
-        self._smoother.SmoothBack(x, b)
+        y.data += z
+        self._smoother.SmoothBack(y, x)
 
     @property
     def nbytes(self) -> int:
@@ -393,16 +389,7 @@ class VCycle(ngs.BaseMatrix):
 
         The general-storage matrix is the handle's, not counted here.
         """
-        factors = self._factors
-        if factors is None:
-            return 0
-        return host_bytes(self._symmetric.mat) + self._band + int(factors.nbytes)
-
-    def free(self) -> None:
-        """Drop the factors, the smoother and the symmetric copy."""
-        self._factors = None
-        self._smoother = None
-        self._symmetric = None
+        return host_bytes(self._symmetric.mat) + self._band + int(self._factors.nbytes)
 
 
 class PmgHandle(KrylovHandle):
@@ -436,7 +423,6 @@ class PmgHandle(KrylovHandle):
         """
         self._cells: Callable[[], Cells] | None = operator.cells
         self._freedofs = operator.freedofs
-        self._frequency = operator.frequency
         super().__init__(
             operator,
             symmetry,
@@ -446,21 +432,6 @@ class PmgHandle(KrylovHandle):
             width=width,
             solves=solves,
         )
-
-    def refactorize(
-        self,
-        operator: Operator,
-        *,
-        solves: int | None = None,
-        frequency: float | None = None,
-        sweep: bool = False,
-    ) -> None:
-        """As `KrylovHandle.refactorize`; a later build logs ``operator``'s frequency."""
-        with self._lock:
-            self._frequency = operator.frequency
-            super().refactorize(
-                operator, solves=solves, frequency=frequency, sweep=sweep
-            )
 
     def _set_up(self, form: ngs.BilinearForm) -> VCycle:
         """Assemble ``form``, then build the V-cycle on its matrix."""
@@ -507,4 +478,3 @@ class PmgHandle(KrylovHandle):
 
     def _drop_setup(self) -> None:
         """Nothing beyond the V-cycle, which goes with the preconditioner."""
-

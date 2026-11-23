@@ -3,15 +3,20 @@
 import logging
 import math
 
+import jax
+import jax.numpy as jnp
 import ngsolve as ngs
 import numpy as np
 import pml_cases
 import pytest
 import structured_meshes as sm
+from preconditioners import count_builds
 
 import gfem
+from gfem._engine.driven import DrivenRule
 from gfem._engine.mesh import to_ngsolve
-from gfem._linalg import pardiso, pmg
+from gfem._linalg import krylov_handle, pardiso, pmg
+from gfem._linalg.krylov_handle import KrylovHandle
 
 
 def test_direct_set_regular_tetrahedron_aspect():
@@ -248,3 +253,132 @@ def test_pmg_gmres_solves_a_perfectly_matched_layer_on_its_direct_level(
     np.testing.assert_allclose(
         s, _s(model, problem, linear_solver="direct"), rtol=0, atol=1e-6
     )
+
+
+# --- reuse across a sweep, and the backward on the forward's handle -------------------
+
+TWO_FREQUENCIES = gfem.Driven(frequency=(5e9, 5.5e9))
+
+
+def test_a_pmg_sweep_builds_once_and_matches_fresh_builds(line, monkeypatch):
+    builds = count_builds(monkeypatch, "pmg_gmres")
+    options = gfem.SolverOptions(linear_solver="pmg_gmres")
+    result = gfem.solve(line, TWO_FREQUENCIES, options=options)
+    assert len(builds) == 1
+    assert result.sweep.preconditioner_reused == (False, True)
+    # without refactorization, a V-cycle is built at each frequency
+    monkeypatch.delattr(KrylovHandle, "refactorize")
+    builds.clear()
+    fresh = _s(line, TWO_FREQUENCIES, linear_solver="pmg_gmres")
+    assert len(builds) == 2
+    np.testing.assert_allclose(result.s.values, fresh, rtol=0, atol=1e-6)
+
+
+def test_a_reused_pmg_solve_past_its_cap_builds_again(line, monkeypatch):
+    # no slack: the second frequency's columns cap at n_ref and build there
+    monkeypatch.setattr(krylov_handle, "_slack", lambda _: 0)
+    builds = count_builds(monkeypatch, "pmg_gmres")
+    problem = gfem.Driven(frequency=(3e9, 3.5e9))
+    s = _s(line, problem, linear_solver="pmg_gmres")
+    assert len(builds) == 2
+    np.testing.assert_allclose(
+        s, _s(line, problem, linear_solver="direct"), rtol=0, atol=1e-6
+    )
+
+
+def test_an_adaptive_pmg_sweep_builds_at_each_sample(line, monkeypatch):
+    builds = count_builds(monkeypatch, "pmg_gmres")
+    problem = gfem.Driven(frequency=np.linspace(3e9, 6e9, 31), sweep="adaptive")
+    options = gfem.SolverOptions(linear_solver="pmg_gmres")
+    result = gfem.solve(line, problem, options=options)
+    assert len(builds) == len(result.sweep.sampled_frequencies) > 1
+
+
+def test_the_pmg_backward_builds_nothing_new(line, monkeypatch):
+    builds = count_builds(monkeypatch, "pmg_gmres")
+    backward = DrivenRule.backward
+    during = []
+
+    def counted_backward(self, *args, **kwargs):
+        before = len(builds)
+        try:
+            return backward(self, *args, **kwargs)
+        finally:
+            during.append(len(builds) - before)
+
+    monkeypatch.setattr(DrivenRule, "backward", counted_backward)
+    options = gfem.SolverOptions(linear_solver="pmg_gmres")
+    problem = gfem.Driven(frequency=(5e9, 5.5e9), excite="p1")
+
+    def s21(eps):
+        model = line.with_material("dielectric", gfem.MaterialField(eps_r=eps))
+        s = gfem.solve(model, problem, options=options).s
+        return jnp.sum(jnp.abs(s["p2", "p1"]) ** 2)
+
+    gfem.release_memory()
+    jax.grad(s21)(jnp.full(len(line.mesh.tetrahedra), EPS))
+    assert len(builds) == 1
+    assert during == [0]
+
+
+def test_a_pmg_sweep_takes_the_same_iterations_every_run(line):
+    # the reuse rule counts iterations, never times (each run from no kept
+    # state: the second would start from the first's solution)
+    problem = gfem.Driven(frequency=(3e9, 3.5e9, 4e9, 6e9))
+    rule = DrivenRule(line, problem, gfem.SolverOptions(linear_solver="pmg_gmres"))
+    gfem.release_memory()
+    first, _ = rule.forward(line, keep=False)
+    gfem.release_memory()
+    second, _ = rule.forward(line, keep=False)
+    assert first["iterations"] == second["iterations"]
+
+
+def test_a_pmg_design_starts_from_the_previous_designs_solution(line, caplog):
+    gfem.release_memory()
+    caplog.set_level(logging.INFO, logger="gfem.solver")
+
+    def guesses():
+        logged = [r for r in caplog.records if getattr(r, "direction", None)]
+        caplog.clear()
+        return [r.guess for r in logged if r.direction == "forward"]  # ty: ignore[unresolved-attribute]
+
+    def design(eps):
+        return line.with_material("dielectric", gfem.Material(eps_r=eps))
+
+    first = gfem.solve(
+        design(EPS),
+        TWO_FREQUENCIES,
+        options=gfem.SolverOptions(linear_solver="pmg_gmres"),
+    )
+    assert guesses() == [None, None]
+    second = gfem.solve(
+        design(1.02 * EPS),
+        TWO_FREQUENCIES,
+        options=gfem.SolverOptions(linear_solver="pmg_gmres"),
+    )
+    assert guesses() == ["previous design", None]
+    assert max(second.sweep.iterations[0]) < max(first.sweep.iterations[0])
+    direct = _s(design(1.02 * EPS), TWO_FREQUENCIES, linear_solver="direct")
+    np.testing.assert_allclose(second.s.values, direct, rtol=0, atol=1e-5)
+    gfem.release_memory()
+
+
+# --- the options -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("order", "message"),
+    [
+        (1, r"order 2 or 3, got order 1: at order 1 its direct level is the whole"),
+        (4, r"order 2 or 3, got order 4: its vertex-star blocks above order 3"),
+        (
+            12,
+            r"order 2 or 3, got order 12: .*Use linear_solver='direct' or 'bddc_gmres'",
+        ),
+    ],
+)
+def test_pmg_gmres_takes_order_2_or_3_only(order, message):
+    with pytest.raises(ValueError, match=rf"linear_solver='pmg_gmres' needs {message}"):
+        gfem.SolverOptions(linear_solver="pmg_gmres", order=order)
+    for taken in (2, 3):
+        gfem.SolverOptions(linear_solver="pmg_gmres", order=taken)

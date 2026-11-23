@@ -13,7 +13,7 @@ Usage::
 
 import ngsolve as ngs
 
-from gfem._linalg import bddc
+from gfem._linalg import bddc, pmg  # noqa: F401  (each handle class, imported)
 from gfem._linalg.krylov_handle import KrylovHandle
 
 

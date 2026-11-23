@@ -135,6 +135,8 @@ class KrylovHandle(NgsHandle):
         self.reuse = reuse
         self._expected_columns = self._columns_per_setup(solves)
         self.symmetry = symmetry
+        # the held operator's frequency (Hz), which a setup may log
+        self._frequency = operator.frequency
         preconditioner = self._set_up(form)
         is_complex = bool(form.space.is_complex)
         super().__init__(form.mat, operator.freedofs, symmetry, is_complex=is_complex)
@@ -328,6 +330,7 @@ class KrylovHandle(NgsHandle):
             _, pre, _ = self._held()
             if solves is not None:
                 self._expected_columns = self._columns_per_setup(solves)
+            self._frequency = operator.frequency
             if self._rebuild or not self.reuse or self._reference_iterations is None:
                 reason = "rebuild rule" if self.reuse and self._rebuild else "first"
                 self._build(form)

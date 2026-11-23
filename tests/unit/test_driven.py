@@ -32,7 +32,6 @@ from gfem._engine.solve_request import SolveRequest
 from gfem._engine.system_operator import SystemOperator
 from gfem._linalg import bddc, pardiso, prepare
 from gfem._linalg.base import PlannedHandle, same_pattern
-from gfem._linalg.bddc import BddcHandle
 from gfem._linalg.direct import DirectHandle
 from gfem._linalg.krylov_handle import KrylovHandle
 from gfem._text import hertz
@@ -334,14 +333,18 @@ def test_auto_is_direct_while_it_fits(line, monkeypatch, caplog):
     assert rule.linear.kind == "bddc_gmres"
 
 
-def test_bddc_tolerance_is_the_preconditioned_residual(line, monkeypatch):
+@pytest.mark.parametrize("linear_solver", ["bddc_gmres", "pmg_gmres"])
+def test_the_iterative_tolerance_is_the_preconditioned_residual(
+    line, monkeypatch, linear_solver
+):
     # GMRES stops on |P(b - Ax)| <= tol |P b|; S is accurate to about tol,
-    # while |b - Ax| / |b| (1.6e-5 here) is not asserted: it is no error measure
+    # while |b - Ax| / |b| (1.6e-5 here with BDDC) is not asserted: it is no
+    # error measure
     import ngsolve as ngs
 
     tolerance = 1e-6
     residuals = []
-    solve = BddcHandle._inverse_map
+    solve = KrylovHandle._inverse_map
 
     def spy(self, B, tol, x0=None):
         X, its = solve(self, B, tol, x0)
@@ -356,9 +359,9 @@ def test_bddc_tolerance_is_the_preconditioned_residual(line, monkeypatch):
             residuals.append(ngs.Norm(pr) / ngs.Norm(pb))
         return X, its
 
-    monkeypatch.setattr(BddcHandle, "_inverse_map", spy)
+    monkeypatch.setattr(KrylovHandle, "_inverse_map", spy)
     problem = gfem.Driven(frequency=1e9)
-    s = _s(line, problem, linear_solver="bddc_gmres", tolerance=tolerance).s.values
+    s = _s(line, problem, linear_solver=linear_solver, tolerance=tolerance).s.values
     direct = _s(line, problem).s.values
     assert len(residuals) == 2
     assert max(residuals) <= 1.01 * tolerance
