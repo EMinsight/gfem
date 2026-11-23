@@ -89,7 +89,10 @@ design: 0.166443
   $1 - \sum_j |S_{j1}|^2$, the power that neither returns nor reaches another
   port. That needs every port to have a real reference impedance and to
   sit on a uniform stretch of line: here both lumped ports have a real
-  resistance, in air. On a wave port on a lossy
+  resistance, in air. To round-off it also needs element order 3 or
+  more: at the default order 2, S read on a lumped port's faces is off by
+  about $10^{-6}$, below the six digits printed here, and a port on a
+  nonuniform stretch is off by about $10^{-5}$. On a wave port on a lossy
   line, whose reference impedance is complex, the field is per unit
   $|a|^2$, which is not exactly 1 W incident, and S does not close the
   balance: read the power entering a region with {py:obj}`gfem.power_flow`

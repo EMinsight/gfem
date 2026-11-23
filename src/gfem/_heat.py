@@ -1,11 +1,12 @@
-"""The loss matrices of driven fields under JAX transformations.
+r"""The loss matrices of driven fields under JAX transformations.
 
 `loss_matrices` gives, for the kept fields of the ports driven together at
-one frequency, the per-tetrahedron and per-triangle Hermitian P x P loss
-matrices (`gfem._engine.heat`): the power each element and sheet face
-dissipates is ``sum_pq conj(a_p) a_q D[p, q]`` W for incident waves
-``a_p`` (|a_p|^2 W). `gfem._adjoint.measure` gives the host kernel the
-solve's JAX semantics, as for `gfem.power_flow`.
+one frequency, the per-tetrahedron and per-triangle Hermitian
+:math:`P \times P` loss matrices (`gfem._engine.heat`): the power each
+element and sheet face dissipates is
+:math:`\sum_{pq} \overline{a_p} a_q D[p, q]` W for incident waves
+:math:`a_p` (:math:`|a_p|^2` W). `gfem._adjoint.measure` gives the host
+kernel the solve's JAX semantics, as for `gfem.power_flow`.
 
 The inputs are the fields' coefficients, node coordinates and ``omega``,
 and the model's leaves:
@@ -24,25 +25,34 @@ and the model's leaves:
 
 from __future__ import annotations
 
-import importlib
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
 from gfem._adjoint.measure import measure
-from gfem._adjoint.solve_vjp import input_kind
 from gfem._boundaries import Conductor, Impedance
 from gfem._checks import is_traced
+from gfem._field_kernels import (
+    Role,
+    RoleKernel,
+    design_key,
+    engine,
+    field_inputs,
+    field_role,
+    model_inputs,
+    rebuild,
+    reduced_reason,
+)
 from gfem._probe import NODES_REASON
 
 if TYPE_CHECKING:
     from gfem._field import Field
     from gfem.model import Model
 
-__all__ = ["FREQUENCY_REASON", "REDUCED_REASON", "loss_matrices"]
+__all__ = ["FREQUENCY_REASON", "REDUCED_REASON", "heated_regions", "loss_matrices"]
 
 #: Why a field's frequency has no derivative here.
 FREQUENCY_REASON = (
@@ -50,28 +60,10 @@ FREQUENCY_REASON = (
     "dissipates has no derivative with respect to it"
 )
 #: Why a field of an adaptive sweep has no gradient here.
-REDUCED_REASON = (
-    "the field is formed from an adaptive sweep's frozen reduced basis, "
-    "which holds no adjoint of the dissipated power, so the frozen-basis "
-    'gradient is not the solve\'s: solve with sweep="uniform" at the '
-    "frequency whose dissipated power you differentiate"
-)
-_FIELD_INPUTS = {"coefficients": "coefficients", "mesh": "nodes", "omega": "omega"}
+REDUCED_REASON = reduced_reason("dissipated power")
 #: The outputs: real and imaginary parts of the tetrahedra's and the
 #: triangles' matrices.
 OUTPUTS = ("tetrahedra_re", "tetrahedra_im", "triangles_re", "triangles_im")
-
-
-class _Role(NamedTuple):
-    role: str
-    unsupported: str | None
-    description: str
-    kind: tuple | None = None
-
-
-def engine() -> Any:
-    """The NGSolve heat module, imported on first use."""
-    return importlib.import_module("gfem._engine.heat")
 
 
 def loss_matrices(fields: Sequence[Field], model: Model) -> dict[str, jax.Array]:
@@ -85,36 +77,30 @@ def loss_matrices(fields: Sequence[Field], model: Model) -> dict[str, jax.Array]
     The caller has checked the fields (driven, solved on ``model``, one
     frequency) and the refusals by name.
     """
-    heat = engine()
-    pf = importlib.import_module("gfem._engine.power_flow")
-    concrete = not is_traced((*(f.mesh.nodes for f in fields), model.mesh.nodes))
-    for field in fields:
-        support = pf.check_field(field, model) if concrete else _support(field, model)
+    heat = engine("heat")
+    support = _support(fields, model)
     heated = heat.heat_elements(model, support)
     inputs: dict[str, Any] = {}
-    roles: dict[str, _Role] = {}
-    field_defs = []
-    for i, field in enumerate(fields):
-        paths, definition = jax.tree_util.tree_flatten_with_path(field)
-        names = []
-        for path, leaf in paths:
-            base = _FIELD_INPUTS[path[0].name]
-            name = f"{base}[{i}]"
-            inputs[name] = leaf
-            roles[name] = _field_role(base, field)
-            names.append(name)
-        field_defs.append((definition, tuple(names)))
-    m_paths, m_def = jax.tree_util.tree_flatten_with_path(model)
-    m_names = []
-    for path, leaf in m_paths:
-        name = "model" + jax.tree_util.keystr(tuple(path))
-        inputs[name] = leaf
-        roles[name] = _model_role(input_kind(path, "model"), model, heated)
-        m_names.append(name)
+    roles: dict[str, Role] = {}
+    field_defs = tuple(
+        field_inputs(
+            field,
+            inputs,
+            roles,
+            lambda name, field=field: field_role(
+                name, field, omega=FREQUENCY_REASON, reduced=REDUCED_REASON
+            ),
+            suffix=f"[{i}]",
+        )
+        for i, field in enumerate(fields)
+    )
+    model_def, _ = model_inputs(
+        model, inputs, roles, lambda kind: _model_role(kind, model, heated)
+    )
     kernel = _HeatKernel(
         roles=roles,
-        field_defs=tuple(field_defs),
-        model_def=(m_def, tuple(m_names)),
+        field_defs=field_defs,
+        model_def=model_def,
         support=support,
         order=fields[0].order,
         n_triangles=len(model.mesh.triangles),
@@ -123,39 +109,60 @@ def loss_matrices(fields: Sequence[Field], model: Model) -> dict[str, jax.Array]
     return measure(kernel, inputs)
 
 
-def _support(field: Field, model: Model) -> np.ndarray:
-    """The field's support from the topology only (traced node coordinates)."""
-    pf = importlib.import_module("gfem._engine.power_flow")
-    return pf._check_support(field, model)  # noqa: SLF001
+def heated_regions(field: Field, model: Model) -> dict[str, np.ndarray]:
+    """The volume regions whose loss is heat, with their elements in the support.
+
+    The regions outside a perfectly matched layer that hold an element of
+    the field's support, in mesh order, each with those elements.
+
+    Raises:
+        ValueError: The field's mesh topology or support is not the model's.
+    """
+    from gfem._pml import physical_regions
+
+    support = engine("power_flow").check_support(field, model)
+    mesh = model.mesh
+    out = {}
+    for region in physical_regions(mesh.volumes, model.pml):
+        elements = mesh.elements(region)
+        elements = elements[support[elements]]
+        if len(elements):
+            out[region] = elements
+    return out
 
 
-def _field_role(name: str, field: Field) -> _Role:
-    if name == "nodes":
-        return _Role(
-            "read", NODES_REASON, "the mesh node coordinates (field.mesh.nodes)"
+def _support(fields: Sequence[Field], model: Model) -> np.ndarray:
+    """The fields' common support, after checking each was solved on ``model``.
+
+    With traced node coordinates only the topology is checked.
+
+    Raises:
+        ValueError: A field was not solved on ``model``, or the fields have
+            different supports.
+    """
+    flow_engine = engine("power_flow")
+    concrete = not is_traced((*(f.mesh.nodes for f in fields), model.mesh.nodes))
+    check = flow_engine.check_field if concrete else flow_engine.check_support
+    supports = [check(field, model) for field in fields]
+    if any(not np.array_equal(s, supports[0]) for s in supports[1:]):
+        raise ValueError(
+            "The fields have different supports: the loss matrices couple "
+            "fields of one solve domain only."
         )
-    if name == "omega":
-        return _Role("read", FREQUENCY_REASON, "the field's omega")
-    if field._reduced:  # noqa: SLF001
-        return _Role(
-            "read",
-            REDUCED_REASON,
-            "the coefficients of a field of an adaptive sweep (gfem.ReducedFields)",
-        )
-    return _Role("read", None, "the field coefficients")
+    return supports[0]
 
 
-def _model_role(kind: tuple, model: Model, heated: np.ndarray) -> _Role:
+def _model_role(kind: tuple, model: Model, heated: np.ndarray) -> Role:
     """The role of a model leaf, by its `input_kind`."""
     if kind[0] == "nodes":
-        return _Role(
+        return Role(
             "read", NODES_REASON, "the mesh node coordinates (model.mesh.nodes)"
         )
     if kind[0] in ("material", "law"):
         rest = "".join(f".{k}" for k in kind[2:])
         described = f"model.materials[{kind[1]!r}]{rest}"
         read = heated[model.mesh.elements(kind[1])].any() and (
-            kind[0] == "law" or kind[2] in engine().LOSSY_PROPERTIES
+            kind[0] == "law" or kind[2] in engine("heat").LOSSY_PROPERTIES
         )
     elif kind[0] == "boundary":
         described = f"model.boundaries[{kind[1]}]" + "".join(f".{k}" for k in kind[2:])
@@ -167,11 +174,11 @@ def _model_role(kind: tuple, model: Model, heated: np.ndarray) -> _Role:
     else:
         described, read = "model." + ".".join(str(k) for k in kind), False
     if read:
-        return _Role("read", None, described, kind)
-    return _Role("unread", None, described)
+        return Role("read", None, described, kind)
+    return Role("unread", None, described)
 
 
-class _HeatKernel:
+class _HeatKernel(RoleKernel):
     """The loss matrices of P fields at one frequency, and their pullback.
 
     The forward gives `OUTPUTS`; the backward the fields' coefficient
@@ -179,13 +186,11 @@ class _HeatKernel:
     """
 
     name = "gfem.dissipated_power"
-    pieces: frozenset[str] = frozenset()
-    comm = None
 
     def __init__(
         self,
         *,
-        roles: dict[str, _Role],
+        roles: dict[str, Role],
         field_defs: tuple[tuple[Any, tuple[str, ...]], ...],
         model_def: tuple[Any, tuple[str, ...]],
         support: np.ndarray,
@@ -208,25 +213,14 @@ class _HeatKernel:
         # the lossy pieces of the last design state and frequency
         self._cached: tuple[bytes, Any] | None = None
 
-    def role(self, name: str) -> str:
-        return self.roles[name].role
-
-    def unsupported(self, name: str) -> str | None:
-        return self.roles[name].unsupported
-
-    def describe(self, name: str) -> str:
-        return self.roles[name].description
-
     def _host(self, values: dict[str, np.ndarray]) -> tuple[Any, np.ndarray, Any]:
         """The losses, the fields' coefficients ``(ndof, P)`` and the model."""
-        heat = engine()
-        pf = importlib.import_module("gfem._engine.power_flow")
-        m_def, m_names = self.model_def
-        model = jax.tree.unflatten(m_def, [values[n] for n in m_names])
+        flow_engine = engine("power_flow")
+        model = rebuild(self.model_def, values)
         columns, omegas = [], []
-        for definition, names in self.field_defs:
-            field = jax.tree.unflatten(definition, [values[n] for n in names])
-            pf.check_nodes(field, model)
+        for definition in self.field_defs:
+            field = rebuild(definition, values)
+            flow_engine.check_nodes(field, model)
             columns.append(np.asarray(field.coefficients))
             omegas.append(float(np.real(np.asarray(field.omega))))
         if any(w != omegas[0] for w in omegas):
@@ -234,18 +228,15 @@ class _HeatKernel:
                 "The fields have different frequencies: the loss matrices "
                 "couple fields of one frequency only."
             )
-        key = (
-            b"".join(np.ascontiguousarray(values[n]).tobytes() for n in m_names)
-            + np.float64(omegas[0]).tobytes()
-        )
+        key = design_key(values, self.model_def[1]) + np.float64(omegas[0]).tobytes()
         if self._cached is None or self._cached[0] != key:
             self._cached = (
                 key,
-                heat.build(model, self.order, self.support, omegas[0]),
+                engine("heat").build(model, self.order, self.support, omegas[0]),
             )
         losses = self._cached[1]
         e = np.stack(columns, axis=1)
-        pf.check_size(e[:, 0], losses.op, self.order)
+        flow_engine.check_size(e[:, 0], losses.op, self.order)
         return losses, e, model
 
     def forward(self, values: dict[str, np.ndarray]) -> dict[str, np.ndarray]:

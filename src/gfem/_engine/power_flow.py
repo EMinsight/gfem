@@ -30,7 +30,6 @@ space, expanded). No wave vector is needed.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import ngsolve as ngs
@@ -42,6 +41,7 @@ from gfem._boundaries import FloquetPort, surfaces_of
 from gfem._engine import probe
 from gfem._engine.driven import DrivenOperator, driven_operator
 from gfem._engine.mesh import inverse_order
+from gfem._engine.sides import SideSpec, selection
 from gfem._periodic import tie_classes
 from gfem._pml import Stretch
 from gfem.mesh import _TET_EDGES, Mesh, _same_topology
@@ -57,6 +57,7 @@ __all__ = [
     "check_field",
     "check_nodes",
     "check_size",
+    "check_support",
     "power_flow",
     "surface",
 ]
@@ -137,11 +138,7 @@ class Flux:
         return 2 * np.conj(h)
 
 
-def power_flow(
-    field: Field,
-    side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray],
-    model: Model,
-) -> float:
+def power_flow(field: Field, side: SideSpec, model: Model) -> float:
     """Net time-averaged power leaving ``side``, W (see `gfem.power_flow`).
 
     Raises:
@@ -157,11 +154,7 @@ def power_flow(
     return flux.power(e, float(np.asarray(field.omega).real))
 
 
-def surface(
-    field: Field,
-    side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray],
-    model: Model,
-) -> Surface:
+def surface(field: Field, side: SideSpec, model: Model) -> Surface:
     """The surface of ``side``, from the mesh topology.
 
     A predicate side reads the node coordinates too.
@@ -172,8 +165,8 @@ def surface(
             within one element of a port (see `gfem.power_flow`).
     """
     mesh = model.mesh
-    support = _check_support(field, model)
-    inside = _selection(mesh, side) & support
+    support = check_support(field, model)
+    inside = selection(mesh, side, refuse_surfaces="power_flow") & support
     outside = support & ~inside
     if not inside.any():
         raise ValueError(
@@ -262,10 +255,10 @@ def check_field(field: Field, model: Model) -> np.ndarray:
         ValueError: The mesh, its nodes or the support differ.
     """
     check_nodes(field, model)
-    return _check_support(field, model)
+    return check_support(field, model)
 
 
-def _check_support(field: Field, model: Model) -> np.ndarray:
+def check_support(field: Field, model: Model) -> np.ndarray:
     """The field's support mask, after checking its topology is the model's.
 
     Raises:
@@ -283,38 +276,6 @@ def _check_support(field: Field, model: Model) -> np.ndarray:
             "or exclusions): pass the model the field was solved with."
         )
     return support
-
-
-def _selection(
-    mesh: Mesh, side: tuple[str, ...] | Callable[[np.ndarray], np.ndarray]
-) -> np.ndarray:
-    """The selected tetrahedra: named volume regions or a centroid predicate.
-
-    Raises:
-        RegionNotFoundError: A named region does not exist.
-        ValueError: A name is a surface, or the predicate does not return
-            one boolean per tetrahedron.
-    """
-    n = len(mesh.tetrahedra)
-    if callable(side):
-        centroids = np.asarray(mesh.nodes)[mesh.tetrahedra].mean(axis=1)
-        out = np.asarray(side(centroids))
-        if out.dtype != bool or out.shape != (n,):
-            raise ValueError(
-                f"The side predicate must return one boolean per tetrahedron "
-                f"({n},) from the (n_tetrahedra, 3) element centroids, got an "
-                f"array of {out.dtype} of shape {out.shape}."
-            )
-        return out
-    out = np.zeros(n, bool)
-    for name in side:
-        if mesh.region(name).dim != mesh.dim:
-            raise ValueError(
-                f"{name!r} is a surface region; power_flow's side is a set of "
-                "elements: volume regions, or a predicate on element centroids."
-            )
-        out[mesh.elements(name)] = True
-    return out
 
 
 def _edge_keys(tie: np.ndarray, cells: np.ndarray, pairs: np.ndarray) -> np.ndarray:

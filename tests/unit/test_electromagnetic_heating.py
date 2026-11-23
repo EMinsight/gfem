@@ -545,6 +545,26 @@ def test_two_ports_driven_together_dissipate_the_superposed_field_s_power(mesh):
     assert got == pytest.approx(want, rel=1e-12)
 
 
+def test_fields_on_different_supports_raise(mesh, monkeypatch):
+    # every field's support is checked against the model's solve domain, so
+    # two differing supports cannot reach the kernel from the public entries:
+    # the kernel still refuses them rather than keep one of them
+    from gfem._engine import power_flow
+    from gfem._heat import loss_matrices
+
+    model = _line(mesh, gfem.Material(eps_r=3.0, tan_delta=0.05))
+    result = gfem.solve(
+        model, gfem.Driven(frequency=F, keep_fields=True), options=OPTIONS
+    )
+    fields = [result.e_field(F, "p1"), result.e_field(F, "p2")]
+    supports = iter(
+        [np.ones(len(mesh.tetrahedra), bool), np.zeros(len(mesh.tetrahedra), bool)]
+    )
+    monkeypatch.setattr(power_flow, "check_field", lambda *_: next(supports))
+    with pytest.raises(ValueError, match="different supports"):
+        loss_matrices(fields, model)
+
+
 def test_gradient_of_a_coherent_two_port_drive(mesh):
     from gfem._heat import loss_matrices
 
