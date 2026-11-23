@@ -142,7 +142,7 @@ from gfem._linalg import Kind, ResolvedLinearSolver
 from gfem._linalg.layout import ONE_PROCESS, DofLayout, RankLayout
 from gfem._materials import Material, PermittivityLaw
 from gfem._periodic import check_bloch, check_wave_vector, pair_names
-from gfem._pml import Stretch, physical_regions
+from gfem._pml import Stretch, physical_regions, wave_ports_in_layer
 from gfem._pml import reference_frequency as layer_reference_frequency
 from gfem._pml import stretch as layer_stretch
 from gfem._sign import largest_entry, largest_value
@@ -333,6 +333,7 @@ class EigenmodeRule:
         elif options.eigen_solver == "slepc":
             _petsc.require_slepc("eigen_solver")
         _check_supported(model)
+        _check_wave_ports(model, problem)
         lumped = [p for p in model.ports if isinstance(p, LumpedPort)]
         #: Ports with a resistance (coupling Q) and with an inductance
         #: (participation), in model order.
@@ -1982,6 +1983,35 @@ def _below_cutoff(ports: Sequence[EigenPort]) -> Callable[[float], bool]:
         )
 
     return below
+
+
+def _check_wave_ports(model: Model, problem: Eigenmode) -> None:
+    """Raise for a wave port this version cannot solve as an eigenmode.
+
+    The first wave port in model order is named: under a Bloch wave vector
+    (two-sided refinement with the port's term is unverified), or with a face
+    in a perfectly matched layer (its section's layer modes are not
+    filtered at a complex port wavenumber).
+    """
+    ports = [p for p in model.ports if isinstance(p, WavePort)]
+    if not ports:
+        return
+    if problem.wave_vector is not None:
+        raise NotImplementedError(
+            f"Eigenmode does not support WavePort {ports[0].name!r} with a "
+            "wave_vector in this version of gfem: the Bloch modes refine on the "
+            "transposed system too, which is not verified with the port's term. "
+            "Find the resonances and Q from a gfem.Driven sweep at the same "
+            "wave_vector."
+        )
+    if cut := wave_ports_in_layer(model):
+        raise NotImplementedError(
+            f"Eigenmode does not support WavePort {cut[0].name!r} on "
+            f"{cut[0].surface!r}, whose face crosses the perfectly matched layer, "
+            "in this version of gfem: the layer's own modes of the port section "
+            "are not told apart at a complex frequency. Keep the port face in "
+            "the air box, or find the resonances and Q from a gfem.Driven sweep."
+        )
 
 
 def _check_supported(model: Model) -> None:

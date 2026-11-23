@@ -957,6 +957,7 @@ REFUSAL_LABELS = {
         "problem; `Electrostatic` on a periodic model"
     ),
     "bloch": "`Eigenmode(wave_vector=...)`",
+    "eigenmode_wave_port": "A `WavePort` on an `Eigenmode` problem",
     "floquet_port": "A `FloquetPort` on a `Driven` problem",
     "frequency_workers": "`frequency_workers` above 1, on more than one frequency",
     "device": '`device="cuda"`',

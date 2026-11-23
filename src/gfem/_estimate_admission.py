@@ -25,7 +25,14 @@ from gfem._floquet import floquet_ports
 from gfem._text import hertz
 from gfem.errors import MeshRefinementUnsupportedError, NonDifferentiableError
 from gfem.mesh import _is_model_mesh
-from gfem.model import Absorbing, Impedance, LumpedPort, Model, surfaces_of
+from gfem.model import (
+    Absorbing,
+    Impedance,
+    LumpedPort,
+    Model,
+    WavePort,
+    surfaces_of,
+)
 from gfem.options import SolverOptions
 from gfem.problems import Driven, Eigenmode, Electrostatic, PortMode
 from gfem.refinement import (
@@ -65,6 +72,8 @@ def admit_refinement(
         if isinstance(each, QuantityEstimator) and each.objective is None:
             _check_entries(each, _entries_of_problem(problem, model))
             _check_quantity_model(each, model)
+        if isinstance(each, QuantityEstimator) and isinstance(problem, Eigenmode):
+            _check_wave_port_mode(model, _describe(each))
     if isinstance(problem, Driven):
         from gfem._engine import dispersion
 
@@ -628,6 +637,22 @@ def _check_lossy_mode(model: Model, keyword: str) -> None:
         )
 
 
+def _check_wave_port_mode(model: Model, what: str) -> None:
+    """Raise for a quantity estimate of a mode of a model with a wave port.
+
+    No estimate of an eigenfrequency carrying a port term (``omega``, ``q``
+    or an objective of the mode) is verified; ``what`` names the estimator.
+    """
+    port = next((p for p in model.ports if isinstance(p, WavePort)), None)
+    if port is not None:
+        raise MeshRefinementUnsupportedError(
+            "lossy eigenmode",
+            f"{what} has no verified estimate for a mode with WavePort "
+            f"{port.name!r}: its port term is not in the error identity. Use "
+            "gfem.FieldEstimator().",
+        )
+
+
 def _lossy_anisotropic_region(model: Model) -> str | None:
     """The first anisotropic material region holding loss, if any."""
     from gfem._engine.coefficients import anisotropic_regions
@@ -773,6 +798,9 @@ def _touching(model: Model, surface: str) -> np.ndarray:
 def _check_estimable(result: Any, estimator: Estimator, model: Model) -> None:
     if isinstance(estimator, QuantityEstimator) and estimator.objective is None:
         _check_entries(estimator, _entries_of_result(result))
+    if isinstance(estimator, QuantityEstimator) and isinstance(result, EigenmodeResult):
+        _check_wave_port_mode(model, _describe(estimator))
+    if isinstance(estimator, QuantityEstimator) and estimator.objective is None:
         _check_quantity_model(estimator, model)
     if not isinstance(result, (ElectrostaticResult, DrivenResult, EigenmodeResult)):
         raise _unsupported_result(result, estimator)
