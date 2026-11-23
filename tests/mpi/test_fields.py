@@ -388,7 +388,6 @@ def _refused_methods(directory):
     seen = {
         "to_meshio": _feature(field.to_meshio),
         "to_pyvista": _feature(field.to_pyvista),
-        "power_flow": _feature(lambda: gfem.power_flow(field, "sub", model=model)),
         "region_mean": _feature(lambda: gfem.region_mean(field, "sub")),
         "electric_energy": _feature(lambda: gfem.electric_energy(field, model=model)),
         "error_estimate": _feature(
@@ -398,12 +397,11 @@ def _refused_methods(directory):
     return seen, _world().allreduce(_world().rank)
 
 
-def test_export_power_flow_and_error_estimate_raise_their_keys_on_every_rank(tmp_path):
+def test_export_means_energy_and_estimate_raise_their_keys_on_every_rank(tmp_path):
     (seen, total), *_ = on_ranks(_refused_methods, tmp_path, ranks=3, limit=120)
     assert seen == {
         "to_meshio": "field_export",
         "to_pyvista": "field_export",
-        "power_flow": "power_flow",
         "region_mean": "region_mean",
         "electric_energy": "electric_energy",
         "error_estimate": "error_estimate",

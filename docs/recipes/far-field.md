@@ -181,6 +181,9 @@ gives, at order 3, the pattern of the dipole and its image to 0.2 %.
   a Hertzian dipole's pattern is within 0.2-1 % of its closed form, its
   directivity within 0.1 %. With a point source the error follows the
   emitted power's; it is the field's discretization, not the transform's.
+- On a result of a {term}`distributed solve`, `far_field` is a collective
+  call: call it on every rank, and every rank gets the same far field
+  ({doc}`distributed-solve`).
 
 ## Gradients
 
@@ -208,7 +211,4 @@ gives, at order 3, the pattern of the dipole and its image to 0.2 %.
   the layer or outside the side raises a `ValueError`.
 - **Ground planes flat, PEC or PMC**: the layer may end on one flat PEC or
   PMC wall only; directions below it raise a `ValueError`.
-- **One process**: the fields of a solve across ranks raise a
-  `gfem.DistributedUnsupportedError`; read them on one process from the
-  saved result.
 - **No node gradient of the radiated power**: see Gradients.

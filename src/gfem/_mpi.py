@@ -168,16 +168,6 @@ _REFUSALS = {
         "Job.run(out=) and call it on one process on the field load_result "
         f"gives, {_COPIES}."
     ),
-    "far_field": (
-        "gfem.far_field has no distributed path in this version: write the "
-        "result with Job.run(out=) and call it on one process on the field "
-        f"load_result gives, {_COPIES}."
-    ),
-    "power_flow": (
-        "gfem.power_flow has no distributed path: write the result with "
-        "Job.run(out=) and call it on one process on the field load_result "
-        f"gives, {_COPIES}."
-    ),
     "electric_energy": (
         "gfem.electric_energy has no distributed path: write the result with "
         "Job.run(out=) and call it on one process on the field load_result "

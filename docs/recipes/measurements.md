@@ -179,6 +179,9 @@ p_box = gfem.power_flow(e, "design", model=model)
 - **The model the field was solved with** is a required input: the residual
   reads its materials and boundaries. Pass the same model: gfem does not
   detect a design solved with other `MaterialField` values.
+- **Across ranks.** On a field of a {term}`distributed solve` it is a
+  collective call: call it on every rank with the same side and model, and
+  every rank gets the same number ({doc}`distributed-solve`).
 - **Several ports fed at once.** `power_flow` is quadratic in the field, and
   the kept fields add up: for incident waves `a1` and `a2` (in sqrt(W)) at two
   ports, at one frequency,

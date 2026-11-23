@@ -455,6 +455,10 @@ RAISES_LABELS = {
         "with elements in the truncation layer (the elements touching the "
         "perfectly matched layer or an absorbing face)"
     ),
+    "design in the far-field layer": (
+        "A far field (`far_field`) whose layer just outside its side holds a "
+        "design region"
+    ),
     "power_flow x material in its layer": (
         "The power through a surface (`power_flow`), with respect to a material "
         "field with elements in the element layer just outside its side"
@@ -994,7 +998,6 @@ REFUSAL_LABELS = {
     ),
     "field_export": "`Field.to_meshio`, `Field.to_pyvista`",
     "load_result_fields": "`load_result` of a bundle with fields",
-    "power_flow": "`power_flow`",
     "region_mean": "`region_mean`",
     "element_mean": "`element_mean`",
     "electric_energy": "`electric_energy`",
