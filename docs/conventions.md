@@ -57,7 +57,9 @@ The thermal problems use the same SI units, with temperatures in kelvin
 | `thermo_optic_coefficient` | 1/K |
 | heat (`SteadyThermalResult.heat`), `power_density` | W/m³ |
 | time, `duration` | s |
-| on a cross-section: `power_per_length`, `resistance_per_length` | W/m, Ω/m |
+| on a cross-section: `power_per_length`, `resistance_per_length`, `capacitance_per_length` | W/m, Ω/m, F/m |
+| `electro_optic_tensor` | m/V |
+| `delta_n_eff_per_volt`, `phase_per_length_per_volt`, `v_pi_l` | 1/V, rad/(V m), V m |
 
 ## Time dependence
 
@@ -469,6 +471,105 @@ True
 The {doc}`recipes/thermo-optic-phase` recipe turns the phase into $P_\pi$, and
 the {py:obj}`gfem.conventions` module, "Temperature and thermo-optic phase",
 gives the first-order formula.
+
+## Electro-optic shift
+
+A crystal's `electro_optic_tensor` is the contracted tensor $r_{Ik}$ in m/V,
+a 6 × 3 array: rows $xx, yy, zz, yz, xz, xy$, columns $x, y, z$, in the frame
+of the material's `axes`, whose rows are the crystal's $x$, $y$ and $z$ in the
+model's coordinates (a right-handed set). A static field
+$E_\mathrm{s} = -\nabla V$ changes the optical permittivity by
+$\Delta\varepsilon_r = -\varepsilon_r (r \cdot E_\mathrm{s}) \varepsilon_r$.
+The device here is the section of {doc}`recipes/electro-optic-phase`: x-cut
+lithium niobate ridges between a signal and two grounds, coarsely meshed,
+with only $r_{33}$ in the tensor.
+
+**Per volt, and the phase is a delay.** The potential is one terminal's at
+1 V, every other terminal and the ground at 0 V, and the shift is per volt
+of it. `phase_per_length_per_volt` is $k_0\,\partial n_\mathrm{eff}/\partial V$, the extra
+phase delay per metre and per volt, like the thermo-optic phase: a
+transmission through a length $L$ at $V$ volts turns its argument by
+$-\phi V L$, with $\phi$ the `phase_per_length_per_volt`. On the right-hand arm the field points
+along the crystal's $+z$ and lowers the index, so the delay is negative and
+the argument turns forward:
+
+```python
+url = (
+    "https://raw.githubusercontent.com/benvial/gfem/main/docs/tutorials/tfln_section.py"
+)
+urllib.request.urlretrieve(url, "tfln_section.py")
+from tfln_section import tfln_section  # noqa: E402
+
+axes = ((0.0, 1.0, 0.0), (0.0, 0.0, 1.0), (1.0, 0.0, 0.0))  # x-cut
+r33_only = np.zeros((6, 3))
+r33_only[2, 2] = 30.9e-12  # row zz, column z, m/V
+ln_static = gfem.Material(eps_r=(44.0, 44.0, 27.9), axes=axes)
+ln = gfem.Material(
+    eps_r=(2.2111**2, 2.2111**2, 2.1376**2), axes=axes, electro_optic_tensor=r33_only
+)
+oxide_static, oxide = gfem.Material(eps_r=3.9), gfem.Material(eps_r=1.444**2)
+modulator = tfln_section(gap=3.5e-6, width=0.9e-6, coarsen=2.0)
+electrodes = ["signal", "ground_r", "ground_l"]
+static = gfem.Model(
+    modulator.static,
+    materials={
+        "air": gfem.Material(),
+        **dict.fromkeys(("cladding", "box"), oxide_static),
+        **dict.fromkeys(("slab", "ridge_a", "ridge_b"), ln_static),
+        **{name: gfem.Material() for name in electrodes},
+    },
+    excluded={"em": electrodes},
+)
+es = gfem.solve(
+    static,
+    gfem.Electrostatic({"signal": ["signal_s"]}, ground=["ground_s"]),
+    options=gfem.SolverOptions(order=2),
+)
+arms = {}
+for arm, mesh in (("a", modulator.window_a), ("b", modulator.window_b)):
+    window = gfem.Model(
+        mesh,
+        materials={"cladding": oxide, "box": oxide, "slab": ln, "ridge": ln},
+        ports=[gfem.WavePort(arm, "front")],
+    )
+    arms[arm] = gfem.electro_optic_shift(
+        window, es.potential["signal"], port=arm, frequency=f_optical, mode=2
+    )
+a = arms["a"]
+print(float(a.delta_n_eff_per_volt) < 0)
+volts, length = 5.0, 2e-3  # V, m
+delay = float(a.phase_per_length_per_volt) * volts * length  # rad
+print(f"{delay:.4f}")
+print(f"{np.angle(np.exp(-1j * delay)):.4f}")  # the transmission's argument
+```
+
+```text
+True
+-0.9452
+0.9452
+```
+
+**$V_\pi L$ per arm, and push-pull.** `v_pi_l` is one arm's
+$V_\pi L = \lambda / (2\,|\partial n_\mathrm{eff}/\partial V|)$ in V m. A push-pull pair of arms
+driven by one potential has $V_\pi L = \lambda / (2\,|s_a - s_b|)$, with $s$ each
+arm's `delta_n_eff_per_volt`; here the arms' shifts are equal and opposite
+to the coarse meshes' asymmetry, so the pair needs half an arm's:
+
+```python
+b = arms["b"]
+pair = 1.55e-6 / (2 * abs(float(a.delta_n_eff_per_volt - b.delta_n_eff_per_volt)))
+print(f"arm a {100 * float(a.v_pi_l):.3f} V cm, push-pull {100 * pair:.3f} V cm")
+```
+
+```text
+arm a 3.324 V cm, push-pull 1.660 V cm
+```
+
+Solve each arm's mode on an optical window that reaches the electrodes'
+inner edges, as here: the shift weighs the mode's tail, where the static
+field is strongest. The {py:obj}`gfem.conventions` module, "Electro-optic
+shift", gives the formulas, and {doc}`recipes/electro-optic-phase` the
+whole calculation.
 
 ## Thin metals
 

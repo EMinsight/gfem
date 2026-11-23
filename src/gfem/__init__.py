@@ -21,6 +21,7 @@ from gfem._materials import (  # noqa: E402
     Lorentz,
     PermittivityLaw,
 )
+from gfem.electro_optic import ElectroOpticShift, electro_optic_shift  # noqa: E402
 from gfem.errors import (  # noqa: E402
     DegenerateModeError,
     DeviceMemoryWarning,
@@ -157,6 +158,7 @@ __all__ = [
     "Eigenmode",
     "EigenmodeConvergenceError",
     "EigenmodeResult",
+    "ElectroOpticShift",
     "Electrostatic",
     "ElectrostaticResult",
     "ErrorEstimate",
@@ -228,6 +230,7 @@ __all__ = [
     "cuda_available",
     "design",
     "electric_energy",
+    "electro_optic_shift",
     "element_mean",
     "enclosed_by",
     "error_estimate",

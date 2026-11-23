@@ -68,6 +68,110 @@ _TRACED_REMEDY = (
 
 _TENSOR_TOL = 1e-9  # symmetry, diagonality and equal principal values, relative
 
+# The electro-optic tensor's contracted (Voigt) rows: xx, yy, zz, yz, xz, xy.
+_VOIGT_I = np.array([0, 1, 2, 1, 0, 0])
+_VOIGT_J = np.array([0, 1, 2, 2, 2, 1])
+# row of the contracted tensor holding r_ij (and r_ji)
+_VOIGT_ROW = np.array([[0, 5, 4], [5, 1, 3], [4, 3, 2]])
+_EO_FORM = (
+    "the contracted 6x3 matrix r_Ik in m/V (rows xx, yy, zz, yz, xz, xy; "
+    "columns x, y, z of the field)"
+)
+# m/V: above the largest known coefficients (about 1.3e-9), far below a value
+# typed in pm/V
+_EO_MAX = 1e-8
+
+
+def _eo_shape_error(owner: str, shape: tuple, field: bool) -> ValueError:
+    want = (
+        "shape (6, 3) for the whole region or (n_elements, 6, 3) per element"
+        if field
+        else "shape (6, 3)"
+    )
+    full = (
+        "; contract a full r_ijk to its rows ij = xx, yy, zz, yz, xz, xy"
+        if tuple(shape[-3:]) == (3, 3, 3)
+        else ""
+    )
+    return ValueError(
+        f"{owner}: electro_optic_tensor is {_EO_FORM}, {want}, got shape "
+        f"{tuple(shape)}{full}."
+    )
+
+
+def _check_eo_values(arr: np.ndarray, owner: str) -> None:
+    """Raise unless a concrete electro-optic tensor is finite and in m/V."""
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{owner}: electro_optic_tensor must be finite.")
+    big = float(np.abs(arr).max(initial=0.0))
+    if big > _EO_MAX:
+        raise ValueError(
+            f"{owner}: electro_optic_tensor has an entry of {_short(big)} m/V, "
+            f"above {_EO_MAX:g} m/V: the tensor is in m/V, so 30.9 pm/V is "
+            "30.9e-12."
+        )
+
+
+def _eo_real(owner: str) -> ValueError:
+    return ValueError(
+        f"{owner}: electro_optic_tensor must be real; electro-absorption is not "
+        "modelled."
+    )
+
+
+def _material_eo_tensor(
+    value: Any, owner: str
+) -> tuple[tuple[float, float, float], ...] | None:
+    """A checked constant electro-optic tensor: six rows of three floats."""
+    if value is None:
+        return None
+    if is_traced(value):
+        raise NonDifferentiableError(
+            f"{owner}: electro_optic_tensor is computed inside jax.grad, jax.jit "
+            f"or jax.vmap, but Material values are fixed constants. {_TRACED_REMEDY}"
+        )
+    arr = np.asarray(value)
+    if np.iscomplexobj(arr):
+        raise _eo_real(owner)
+    try:
+        arr = arr.astype(float)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{owner}: electro_optic_tensor must be {_EO_FORM}, got {value!r}."
+        ) from None
+    if arr.shape != (6, 3):
+        raise _eo_shape_error(owner, arr.shape, field=False)
+    _check_eo_values(arr, owner)
+    return tuple(tuple(float(x) for x in row) for row in arr)  # ty: ignore[invalid-return-type]
+
+
+def _check_right_handed(axes: Any, owner: str) -> None:
+    """Raise if orthonormal ``axes`` are left-handed (the frame of a tensor)."""
+    if np.linalg.det(np.asarray(axes, dtype=float)) < 0:
+        raise ValueError(
+            f"{owner}: axes are left-handed (det -1), but the electro_optic_tensor "
+            "is given in the frame whose x, y, z are the rows of axes, which must "
+            "be right-handed: reverse one axis (for example the last row)."
+        )
+
+
+def electro_optic_in_frame(r: Any, source: Any, target: Any = None) -> Any:
+    r"""A contracted electro-optic tensor moved from one frame to another.
+
+    With :math:`a_l` the rows of ``source`` and :math:`b_p` those of
+    ``target``, :math:`r^t_{pqs} = \sum_{lmn} Q_{pl} Q_{qm} Q_{sn}
+    r^s_{lmn}`, :math:`Q = b a^T`; ``None`` is the global frame. The
+    tensor is ``(..., 6, 3)``, a NumPy array (the result is one) or a JAX
+    array (traced values stay traced).
+    """
+    xp = np if isinstance(r, np.ndarray) else jnp
+    a = np.eye(3) if source is None else np.asarray(source, dtype=float)
+    b = np.eye(3) if target is None else np.asarray(target, dtype=float)
+    q = b @ a.T
+    full = r[..., _VOIGT_ROW, :]
+    out = xp.einsum("pl,qm,sn,...lmn->...pqs", q, q, q, full)
+    return out[..., _VOIGT_I, _VOIGT_J, :]
+
 
 def _bound_error(
     prop: _Property, owner: str, value: Any, axis: str | None = None
@@ -853,6 +957,20 @@ class Material:
         thermo_optic_coefficient: dn/dT, the change of the refractive index
             with temperature, in 1/K: one real number of any sign.
             ``None`` means the index does not change with temperature.
+        electro_optic_tensor: The linear electro-optic (Pockels) tensor
+            :math:`r_{Ik}` in m/V, contracted to a 6x3 matrix: rows
+            :math:`I` in the order xx, yy, zz, yz, xz, xy, columns
+            :math:`k` the field components x, y, z, so that
+            :math:`\Delta(\varepsilon_r^{-1})_{ij} = r_{ijk} E_k`. It is
+            given in the frame whose x, y, z are the rows of `axes`, in
+            order and with sign (the global frame when `axes` is ``None``):
+            an x-cut and a z-cut film differ by their `axes`. Enter the
+            clamped (constant-strain) coefficients for thin films and for
+            drives above the acoustic resonances. With it, every tensor
+            property is one value or three principal values (a matrix
+            raises), `axes` are right-handed, and `eps_r` is a constant.
+            It leaves `isotropic` unchanged. ``None``: no electro-optic
+            effect.
         name: A free-form label (for example ``"silicon"``), shown in reprs.
 
     Raises:
@@ -865,7 +983,11 @@ class Material:
             tensor `mu_r` or `conductivity`; a law or term as `mu_r` (only
             eps_r depends on frequency); a thermal property <= 0; a
             thermal property or `thermo_optic_coefficient` that is not one
-            real number.
+            real number; an `electro_optic_tensor` that is not a real,
+            finite 6x3 matrix, has an entry above 1e-8 m/V (a value in
+            pm/V), or sits beside a matrix property, left-handed `axes`, a
+            `PermittivityLaw` or an `eps_r` of 1 (the crystal's optical
+            permittivity left out).
         TypeError: `eps_r` is a bare dispersion term such as `Drude`; wrap
             it in a `PermittivityLaw`; ``density=`` beside ``mass_density=``.
         NonDifferentiableError: A constant value is computed inside
@@ -884,19 +1006,28 @@ class Material:
     mass_density: float | None = None
     specific_heat: float | None = None
     thermo_optic_coefficient: float | None = None
+    electro_optic_tensor: tuple[tuple[float, float, float], ...] | None = None
     name: str | None = None
 
     density = property(_no_density_attribute)
 
     def __post_init__(self) -> None:
         owner = f"Material {self.name!r}" if self.name else "Material"
+        tensor = _material_eo_tensor(self.electro_optic_tensor, owner)
+        object.__setattr__(self, "electro_optic_tensor", tensor)
         if isinstance(self.eps_r, PermittivityLaw):
+            if tensor is not None:
+                raise ValueError(_eo_law_message(owner))
             for name, value in _law_material_values(self, owner).items():
                 object.__setattr__(self, name, value)
             return
         values = {
             p.name: _material_value(p, getattr(self, p.name), owner) for p in PROPERTIES
         }
+        if tensor is not None:
+            _check_eo_frame(values, self.axes, owner)
+            if np.all(np.asarray(values["eps_r"]) == 1.0):
+                raise ValueError(_eo_without_eps_message(owner))
         values, axes = _principal(values, self.axes, owner)
         for name, value in values.items():
             object.__setattr__(self, name, value)
@@ -928,6 +1059,49 @@ class Material:
 
 _MATERIAL_FIELDS = tuple(f.name for f in dataclasses.fields(Material))
 _MATERIAL_STATICS = tuple(n for n in _MATERIAL_FIELDS if n != "eps_r")
+
+
+def _eo_law_message(owner: str) -> str:
+    """Why an electro-optic tensor cannot sit beside a permittivity law."""
+    return (
+        f"{owner}: an electro_optic_tensor needs a constant eps_r, but "
+        "eps_r is a PermittivityLaw, which takes no axes, so the frame "
+        "of the tensor would be lost. Give the optical permittivity "
+        "at the wavelength as a constant eps_r, with axes."
+    )
+
+
+def _eo_without_eps_message(owner: str) -> str:
+    """Why an electro-optic tensor needs the crystal's optical permittivity.
+
+    The shift scales as :math:`n^4`: an eps_r left at 1 gives a shift many
+    times too small, with no other sign of the omission.
+    """
+    return (
+        f"{owner}: an electro_optic_tensor needs the crystal's optical eps_r "
+        "at the wavelength, e.g. eps_r=(n_o**2, n_o**2, n_e**2) with axes; "
+        "without it eps_r is 1 and the index shift is n^4 too small."
+    )
+
+
+def _check_eo_frame(values: dict[str, Any], axes: Any, owner: str) -> None:
+    """Raise unless a material's tensors fix the frame of its electro-optic tensor.
+
+    The tensor is third-rank, so the order and sign of the axes matter:
+    a matrix input derives axes of neither, and a reflection flips the
+    sign of every coefficient.
+    """
+    matrices = [name for name, v in values.items() if isinstance(v, np.ndarray)]
+    if matrices:
+        raise ValueError(
+            f"{owner}: {matrices[0]} is a 3x3 matrix, but beside an "
+            "electro_optic_tensor every tensor property takes one value or "
+            "three principal values along explicit `axes`: a matrix's "
+            "derived axes fix neither the order nor the sign of the frame "
+            "the tensor is given in."
+        )
+    if axes is not None:
+        _check_right_handed(_axes(axes, owner), owner)
 
 
 def _flatten_material_with_keys(m: Material) -> tuple[tuple, tuple]:
@@ -1064,6 +1238,21 @@ def _check_field_values(prop: _Property, arr: np.ndarray) -> None:
         raise err
 
 
+def _field_eo_tensor(value: Any) -> jax.Array | None:
+    """A checked field electro-optic tensor, ``(6, 3)`` or ``(n_elements, 6, 3)``."""
+    if value is None:
+        return None
+    arr = jnp.asarray(value)
+    if jnp.iscomplexobj(arr):
+        raise _eo_real("MaterialField")
+    arr = arr.astype(jnp.float64)
+    if arr.ndim not in (2, 3) or arr.shape[-2:] != (6, 3):
+        raise _eo_shape_error("MaterialField", arr.shape, field=True)
+    if not is_traced(arr):
+        _check_eo_values(np.asarray(arr), "MaterialField")
+    return arr
+
+
 def _check_blend_values(rho: np.ndarray) -> None:
     """Raise unless a blend's concrete density is finite and in [0, 1].
 
@@ -1102,13 +1291,15 @@ def check_field_values(materials: Mapping[str, Any]) -> None:
             _check_law(region, material.eps_r)
         if not isinstance(material, MaterialField):
             continue
-        for name in (*PROPERTY_NAMES, "blend"):
+        for name in (*PROPERTY_NAMES, "electro_optic_tensor", "blend"):
             value = getattr(material, name)
             if value is None:
                 continue
             try:
                 if name == "blend":
                     _check_blend_values(np.asarray(value))
+                elif name == "electro_optic_tensor":
+                    _check_eo_values(np.asarray(value), "MaterialField")
                 else:
                     _check_field_values(_BY_NAME[name], np.asarray(value))
             except ValueError as err:
@@ -1353,6 +1544,26 @@ def _common_axes(
     return _axes(a, "MaterialField.interpolate"), (ends[0], ends[1])
 
 
+def _has_eo(*materials: Material) -> bool:
+    return any(m.electro_optic_tensor is not None for m in materials)
+
+
+def _blend_eo(void: Material, solid: Material, axes: Any, w: Any) -> Any:
+    """The electro-optic tensor blended by weight ``w`` in the frame of ``axes``.
+
+    An end without a tensor counts as zero; ``None`` when neither has one.
+    """
+    if not _has_eo(void, solid):
+        return None
+    a, b = (
+        np.zeros((6, 3))
+        if m.electro_optic_tensor is None
+        else electro_optic_in_frame(np.asarray(m.electro_optic_tensor), m.axes, axes)
+        for m in (void, solid)
+    )
+    return a + jnp.asarray(w)[..., None, None] * (b - a)
+
+
 @_renamed_density
 @dataclasses.dataclass(frozen=True, kw_only=True, eq=False)
 class MaterialField:
@@ -1379,6 +1590,12 @@ class MaterialField:
     values vary, the principal axes do not. `jax.grad` gives one derivative
     per principal value, in the shape of the values; the axes have none.
 
+    `electro_optic_tensor` is the contracted 6x3 tensor :math:`r_{Ik}` of
+    `Material` (m/V, rows xx, yy, zz, yz, xz, xy), shape ``(6, 3)`` for the
+    whole region or ``(n_elements, 6, 3)`` per element, in the frame whose
+    x, y, z are the rows of `axes` (the global frame if ``None``); with it,
+    `axes` must be right-handed. `jax.grad` reaches its entries.
+
     Build one with `MaterialField.interpolate` (a design density blended
     between two materials) or `MaterialField.uniform` (a whole region whose
     constant material should be differentiable).
@@ -1402,7 +1619,10 @@ class MaterialField:
         ValueError: A value is not passive or finite, a tensor property's
             shape does not fit `axes` (a 2-D array needs `axes`; with `axes`
             the last dimension is 3), the per-element sizes differ, or
-            `axes` is not orthonormal.
+            `axes` is not orthonormal; an `electro_optic_tensor` that is not
+            real and finite, of shape ``(6, 3)`` or ``(n_elements, 6, 3)``,
+            has an entry above 1e-8 m/V (a value in pm/V), or comes with
+            left-handed `axes`, without `eps_r` or in a blend.
         NonDifferentiableError: `axes` is computed inside `jax.grad`,
             `jax.jit` or `jax.vmap` from their arguments; pass a fixed value.
     """
@@ -1415,6 +1635,7 @@ class MaterialField:
     mass_density: jax.Array | None = None
     specific_heat: jax.Array | None = None
     thermo_optic_coefficient: jax.Array | None = None
+    electro_optic_tensor: jax.Array | None = None
     region: str | None = None
     axes: tuple[tuple[float, float, float], ...] | None = None
     blend: jax.Array | None = None
@@ -1436,10 +1657,21 @@ class MaterialField:
             object.__setattr__(self, prop.name, value)
             if value is not None and value.ndim == 1 + principal:
                 sizes.add(value.shape[0])
+        tensor = _field_eo_tensor(self.electro_optic_tensor)
+        object.__setattr__(self, "electro_optic_tensor", tensor)
+        if tensor is not None:
+            if self.blend is not None:
+                raise ValueError(_eo_law_message("MaterialField"))
+            if self.eps_r is None:
+                raise ValueError(_eo_without_eps_message("MaterialField"))
+            if tensor.ndim == 3:
+                sizes.add(tensor.shape[0])
+            if self.axes is not None:
+                _check_right_handed(self.axes, "MaterialField")
         size = self._check_blend()
         if size is not None:
             sizes.add(size)
-        if self.blend is None and all(getattr(self, n) is None for n in PROPERTY_NAMES):
+        if self.blend is None and not self.properties:
             raise ValueError(
                 "MaterialField needs at least one property, e.g. "
                 "MaterialField(eps_r=values)."
@@ -1492,6 +1724,9 @@ class MaterialField:
             v = getattr(self, name)
             if v is not None and v.ndim == 1 + self.has_principal_values(name):
                 return int(v.shape[0])
+        r = self.electro_optic_tensor
+        if r is not None and r.ndim == 3:
+            return int(r.shape[0])
         return None
 
     def has_principal_values(self, name: str) -> bool:
@@ -1501,7 +1736,8 @@ class MaterialField:
     @property
     def properties(self) -> tuple[str, ...]:
         """Names of the properties this field gives."""
-        return tuple(n for n in PROPERTY_NAMES if getattr(self, n) is not None)
+        names = (*PROPERTY_NAMES, "electro_optic_tensor")
+        return tuple(n for n in names if getattr(self, n) is not None)
 
     @classmethod
     def interpolate(
@@ -1569,6 +1805,12 @@ class MaterialField:
         geometry, and a solve applies the scheme at each of its quadrature
         points. Its ends are isotropic.
 
+        The `electro_optic_tensor` blends linearly by the scheme's weight
+        (:math:`w = \rho` for ``"index"``), an end without one counting as
+        zero, each end's tensor moved to the field's frame: its `axes`, made
+        right-handed, or the global frame for an isotropic field. A layer
+        density and a law end refuse it.
+
         Args:
             density: One value per element, in [0, 1] (0 = void, 1 = solid),
                 or a `gfem.design.LayerDensity` on a 2D model.
@@ -1580,7 +1822,8 @@ class MaterialField:
         Raises:
             ValueError: Unknown scheme, two materials whose tensors have
                 different principal axes, or an anisotropic end under
-                ``"index"`` or beside a law.
+                ``"index"`` or beside a law; an electro-optic end under a
+                layer density or beside a law.
             NonDifferentiableError: An end's law is computed inside
                 `jax.grad`, `jax.jit` or `jax.vmap`: differentiate a law on a
                 `Material` region instead.
@@ -1597,6 +1840,8 @@ class MaterialField:
             return cls._interpolate_pixels(density, void, solid, scheme, penalty)
         rho = jnp.asarray(density, dtype=jnp.float64)
         law = any(isinstance(m.eps_r, PermittivityLaw) for m in (void, solid))
+        if law and _has_eo(void, solid):
+            raise ValueError(_eo_law_message("MaterialField.interpolate"))
         if law or scheme == "index":
             return cls._interpolate_eps(rho, void, solid, scheme, penalty, law=law)
         w = _SCHEMES[scheme](rho, penalty)
@@ -1607,13 +1852,19 @@ class MaterialField:
             )
         else:
             axes, ends = _common_axes(void, solid)
+            if _has_eo(void, solid) and np.linalg.det(np.asarray(axes)) < 0:
+                # the tensor's frame is right-handed; the sign of a principal
+                # axis leaves the principal values unchanged
+                flip = np.array([[1.0], [1.0], [-1.0]])
+                axes = _axes(np.asarray(axes) * flip, "MaterialField.interpolate")
         props = {}
         for name in PROPERTY_NAMES:
             a, b = ends[0][name], ends[1][name]
             if a is not None and b is not None:
                 principal = axes is not None and _BY_NAME[name].may_be_tensor
                 props[name] = a + (w[..., None] if principal else w) * (b - a)
-        return cls(**props, axes=axes)
+        tensor = _blend_eo(void, solid, axes, w)
+        return cls(**props, electro_optic_tensor=tensor, axes=axes)
 
     @classmethod
     def _interpolate_eps(
@@ -1640,6 +1891,7 @@ class MaterialField:
             a, b = getattr(void, name), getattr(solid, name)
             if a is not None and b is not None:
                 props[name] = a + w * (b - a)
+        props["electro_optic_tensor"] = _blend_eo(void, solid, None, w)
         if law:
             blend = Blend(ends[0], ends[1], scheme, float(penalty))
             return cls(**props, blend=rho, blend_ends=blend)
@@ -1666,6 +1918,13 @@ class MaterialField:
                 raise ValueError(
                     f"MaterialField.interpolate: the {which} end is anisotropic, "
                     "but a layer density of a 2D model takes isotropic ends only."
+                )
+            if m.electro_optic_tensor is not None:
+                raise ValueError(
+                    f"MaterialField.interpolate: the {which} end has an "
+                    "electro_optic_tensor, but a layer density of a 2D model "
+                    "does not blend it; give the region a Material or a "
+                    "MaterialField per element."
                 )
         ends = (_blend_end(void, "void"), _blend_end(solid, "solid"))
         others = []
@@ -1694,7 +1953,9 @@ class MaterialField:
         ``jax.grad`` gives the sensitivity to the region's eps_r,
         conductivity, ... directly. An anisotropic material gives a field
         on its `axes` (the coordinate axes if ``None``) whose tensor
-        properties are ``(3,)`` arrays of principal values.
+        properties are ``(3,)`` arrays of principal values, and so does a
+        material with an `electro_optic_tensor` and `axes`, whose frame the
+        field keeps; the tensor is one ``(6, 3)`` array.
 
         Args:
             region: The volume region the field is for.
@@ -1707,7 +1968,8 @@ class MaterialField:
                 "parameters directly (the law is a pytree)."
             )
         axes = None
-        if not material.isotropic:
+        tensor = material.electro_optic_tensor
+        if not material.isotropic or (tensor is not None and material.axes):
             axes = material.axes or _axes(np.eye(3), "MaterialField.uniform")
         props: dict[str, Any] = {}
         for n in PROPERTY_NAMES:
@@ -1718,6 +1980,8 @@ class MaterialField:
             if axes is not None and _BY_NAME[n].may_be_tensor:
                 arr = jnp.broadcast_to(arr, (3,))
             props[n] = arr
+        if tensor is not None:
+            props["electro_optic_tensor"] = jnp.asarray(tensor, dtype=jnp.float64)
         return cls(**props, region=region, axes=axes)
 
     def __repr__(self) -> str:
@@ -1750,7 +2014,7 @@ class MaterialField:
         return f"MaterialField({size}{where}, {', '.join(parts)})"
 
 
-register_fields(MaterialField, (*PROPERTY_NAMES, "blend"))
+register_fields(MaterialField, (*PROPERTY_NAMES, "electro_optic_tensor", "blend"))
 
 
 def field_principal_values(

@@ -148,17 +148,22 @@ def locate(mesh: Mesh, layout: Layout, points: np.ndarray, comm: Any = None) -> 
     inside = support[tets]
     if not inside.all():
         k = int(np.flatnonzero(~inside)[0])
-        names = mesh._region_names()  # noqa: SLF001
-        region = names[int(mesh._topology.volume_tags[tets[k]])]  # noqa: SLF001
-        raise _mpi.agreed(
-            ValueError(
-                f"Point {_fmt(points[k])} m lies in volume region "
-                f"{region!r}, where the field is not defined (its support is "
-                f"{list(layout.support)}, minus the volumes the model excludes from "
-                "the solve)."
-            )
-        )
+        raise _mpi.agreed(outside_support(mesh, layout, int(tets[k]), points[k]))
     return Located(tets, bary)
+
+
+def outside_support(
+    mesh: Mesh, layout: Layout, tet: int, point: np.ndarray
+) -> ValueError:
+    """The error for ``point``, in tetrahedron ``tet`` outside the support."""
+    names = mesh._region_names()  # noqa: SLF001
+    region = names[int(mesh._topology.volume_tags[tet])]  # noqa: SLF001
+    return ValueError(
+        f"Point {_fmt(point)} m lies in volume region "
+        f"{region!r}, where the field is not defined (its support is "
+        f"{list(layout.support)}, minus the volumes the model excludes from "
+        "the solve)."
+    )
 
 
 def _agree_location(comm: Any, tets: np.ndarray) -> np.ndarray:

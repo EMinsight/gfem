@@ -1,5 +1,42 @@
 # Release notes
 
+## Unreleased
+
+Electro-optics:
+
+- **The electro-optic shift.** `gfem.electro_optic_shift` gives the change of
+  a guided mode's effective index, and of its phase per length, per volt on
+  one terminal of an electrostatic solve, through each crystal's
+  electro-optic tensor, on a cross-section. It is first order in the static
+  field, with the mode solved once and held constant, and reads the static
+  field at the optical model's elements, so the optical model may be a
+  window on a mesh of its own. It returns a `gfem.ElectroOpticShift`:
+  `n_eff`, `delta_n_eff_per_volt`, `phase_per_length_per_volt` and `v_pi_l`,
+  the voltage-length product of one arm. `jax.grad` reaches the tensor, the
+  static permittivity, the drive and the electrostatic mesh's nodes (an
+  electrode gap through a shape morph); the optical model's inputs raise
+  `gfem.NonDifferentiableError`.
+
+- **Electro-optic tensors.** `Material(electro_optic_tensor=..., axes=...)`
+  and `MaterialField.electro_optic_tensor` take the contracted tensor $r_{Ik}$,
+  a 6 × 3 array in m/V, rows $xx, yy, zz, yz, xz, xy$ in the frame of the
+  material's `axes`, which must be right-handed. The static permittivity
+  goes in a separate electrostatic model's `eps_r`.
+
+- **Capacitance per length.** `ElectrostaticResult.capacitance_per_length`
+  gives the Maxwell capacitance matrix per metre of a cross-section, in F/m,
+  and `to_xarray` carries it. Behaviour change: the repr of an electrostatic
+  result on a cross-section now also prints the capacitance per length in
+  pF/m.
+
+- **Documentation.** A tutorial, "An electro-optic modulator: x-cut thin-film
+  lithium niobate, push-pull", computes a push-pull modulator's $V_\pi L$,
+  shows where the field does its work, and co-designs the electrode gap and
+  the ridge width under an electrode clearance. Two recipes ("Find the phase a
+  voltage puts on a waveguide", "Differentiate an electro-optic phase"), an
+  "Electro-optic shift" section of the conventions and an "Electro-optics"
+  section of the glossary.
+
 ## 0.2.0 (2026-11-23)
 
 - **Native 2D models.** A gmsh file of triangles at one height reads as a
