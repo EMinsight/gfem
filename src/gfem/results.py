@@ -82,6 +82,10 @@ class ElectrostaticResult:
     Excitation ``i`` puts terminal ``i`` at 1 V and every other terminal
     and the ground at 0 V.
 
+    On a cross-section mesh the values are those of the slab the mesh
+    stands for (`gfem.Mesh.section_thickness`): read
+    `capacitance_per_length` rather than `capacitance`.
+
     Attributes:
         capacitance: The Maxwell capacitance matrix in farads, shape
             ``(n_terminals, n_terminals)``, rows and columns in `terminals`
@@ -111,6 +115,8 @@ class ElectrostaticResult:
     #: The surfaces held at a fixed potential (terminals and ground), which
     #: `gfem.error_estimate` cuts its flux recovery along.
     _fixed: tuple[str, ...] = ()
+    #: The slab thickness in m of a cross-section mesh, else ``None``.
+    _thickness: float | None = None
 
     def __post_init__(self) -> None:
         """Hold the potentials as a read-only, ordered mapping."""
@@ -139,6 +145,22 @@ class ElectrostaticResult:
         """
         return jnp.linalg.inv(self.capacitance)
 
+    @property
+    def capacitance_per_length(self) -> jax.Array:
+        """`capacitance` per unit length along a cross-section, in F/m.
+
+        Electrodes of length L have the Maxwell matrix
+        ``capacitance_per_length * L``.
+
+        Raises:
+            ValueError: The result was not solved on a cross-section mesh.
+        """
+        if self._thickness is None:
+            raise _not_a_section(
+                "ElectrostaticResult", "capacitance_per_length", "capacitance"
+            )
+        return self.capacitance / self._thickness
+
     def index(self, terminal: str) -> int:
         """Row / column of ``terminal`` in `capacitance`.
 
@@ -156,10 +178,11 @@ class ElectrostaticResult:
     def to_xarray(self) -> xarray.Dataset:
         """The capacitance matrix and region energies as an `xarray.Dataset`.
 
-        ``capacitance`` (F) has dimensions ``("terminal", "excitation")``,
-        both labelled by `terminals`; ``energy`` (J), when present, has
-        ``("region", "excitation")``. Needs the ``xarray`` extra: ``pip
-        install "gfem[xarray]"``.
+        ``capacitance`` (F, the slab's on a cross-section) has dimensions
+        ``("terminal", "excitation")``, both labelled by `terminals`, and so
+        has ``capacitance_per_length`` (F/m) on a cross-section; ``energy``
+        (J), when present, has ``("region", "excitation")``. Needs the
+        ``xarray`` extra: ``pip install "gfem[xarray]"``.
 
         Raises:
             ImportError: xarray is not installed.
@@ -169,6 +192,10 @@ class ElectrostaticResult:
         data = {
             "capacitance": _variable(("terminal", "excitation"), self.capacitance, "F")
         }
+        if self._thickness is not None:
+            data["capacitance_per_length"] = _variable(
+                ("terminal", "excitation"), self.capacitance_per_length, "F/m"
+            )
         coords: dict[str, Any] = {
             "terminal": list(self.terminals),
             "excitation": list(self.terminals),
@@ -186,13 +213,21 @@ class ElectrostaticResult:
         except (TypeError, jax.errors.TracerArrayConversionError):
             return f"ElectrostaticResult(terminals={list(self.terminals)})"
         width = max(len(t) for t in self.terminals)
-        rows = [
-            f"  {t:>{width}}: " + "  ".join(f"{v:10.4g}" for v in row)
-            for t, row in zip(self.terminals, c, strict=True)
-        ]
+
+        def rows(matrix: np.ndarray) -> str:
+            return "\n".join(
+                f"  {t:>{width}}: " + "  ".join(f"{v:10.4g}" for v in row)
+                for t, row in zip(self.terminals, matrix, strict=True)
+            )
+
+        head = f"ElectrostaticResult(terminals={list(self.terminals)}, "
+        if self._thickness is None:
+            return f"{head}capacitance in fF:\n{rows(c)})"
+        # pF/m from fF: 1e-3 for the unit, over the thickness in m
+        per_length = c * 1e-3 / self._thickness
         return (
-            f"ElectrostaticResult(terminals={list(self.terminals)}, "
-            "capacitance in fF:\n" + "\n".join(rows) + ")"
+            f"{head}slab capacitance in fF:\n{rows(c)}\n"
+            f"capacitance per length in pF/m:\n{rows(per_length)})"
         )
 
 
