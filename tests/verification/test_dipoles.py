@@ -8,7 +8,8 @@ domain, not of the point load), and asserts the emitted power to 3 %:
 - T8: in vacuum, electric moments along x and z and a magnetic moment
   along z at three positions, against the bulk power :math:`P_0`;
 - T9: in a medium of :math:`\varepsilon_r = 4`, against :math:`n P_0` with
-  :math:`n = 2` (the Purcell factor, which divides by the local bulk power,
+  :math:`n = 2` for an electric moment, :math:`\varepsilon_r n P_0` for a
+  magnetic one (the Purcell factor, which divides by the local bulk power,
   near 1);
 - T10: above a ground plane at five heights, normal and tangential, against
   image theory, as a perfect conductor and then as a perfect magnetic wall,
@@ -114,7 +115,9 @@ def test_t9_a_dipole_in_a_dielectric_emits_n_times_more(tmp_path):
     vacuum = _ratios(model, dipoles)
     purcell = _ratios(model, dipoles, eps_r=4.0)
     for name, ratio in vacuum.items():
-        assert ratio == pytest.approx(2.0, rel=REL), (name, ratio)
+        # P0 grows as n (electric), as eps_r n (magnetic)
+        expected = 8.0 if name.startswith("m") else 2.0
+        assert ratio == pytest.approx(expected, rel=REL), (name, ratio)
         assert purcell[name] == pytest.approx(1.0, rel=REL), (name, purcell[name])
 
 
