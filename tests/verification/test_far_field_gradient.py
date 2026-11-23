@@ -9,10 +9,15 @@ fourth-order central difference to :math:`10^{-6}` relative
   `gfem.MaterialField` (the field-only kernel: the design is inside the
   side, away from the layer);
 - N3: :math:`|F|^2` of the port-fed strip under a `boundary_morph` of its
-  arms, on a named side whose element layer moves and on the default side
-  (the kernel's node pass: the plane wave's position-gradient term);
+  arms, on a named side whose element layer moves (the kernel's node pass:
+  the plane wave's position-gradient term) and on the default side, whose
+  layer, touching the perfectly matched layer, the morph holds; the strip
+  then sits in a margin of air, so that the shell around the core is not
+  held;
 - N4: :math:`|F|^2` of an electric dipole under the same morph, whose
-  extension moves the dipole's element (its point-transport term).
+  extension moves the dipole's element (its point-transport term);
+- the directivity of the strip under the morph, on the named side: the
+  radiated power it divides by goes through `gfem.power_flow`'s node pass.
 """
 
 import math
@@ -36,9 +41,18 @@ NODE_STEP = 1e-9
 THETA, PHI = 1.1, 0.4
 
 
+#: The side around the strip's core.
+CORE = ("left", "right", "design")
+
+
 @pytest.fixture(scope="module")
 def strip(tmp_path_factory):
     return fsc.strip(tmp_path_factory.mktemp("strip") / "strip.msh")
+
+
+@pytest.fixture(scope="module")
+def wide_strip(tmp_path_factory):
+    return fsc.strip(tmp_path_factory.mktemp("wide") / "strip.msh", margin=True)
 
 
 def _with_design(model, eps):
@@ -84,8 +98,9 @@ def _morph(model):
     return morph
 
 
-@pytest.mark.parametrize("side", [None, ("left", "right", "design")])
-def test_n3_far_field_of_a_port_fed_strip_under_a_morph(strip, side):
+@pytest.mark.parametrize("side", [None, CORE], ids=["default", "core"])
+def test_n3_far_field_of_a_port_fed_strip_under_a_morph(wide_strip, side):
+    strip = wide_strip
     morph = _morph(strip)
     problem = gfem.Driven(fsc.F0, keep_fields=True)
 
@@ -94,7 +109,10 @@ def test_n3_far_field_of_a_port_fed_strip_under_a_morph(strip, side):
         return jnp.abs(ff.e_theta[0]) ** 2 + jnp.abs(ff.e_phi[0]) ** 2
 
     t = jnp.zeros(morph.n_params)
-    fsc.assert_layer_moves(strip, morph, side)
+    if side is None:
+        fsc.assert_truncation_layer_held(strip, morph)
+    else:
+        fsc.assert_layer_moves(strip, morph, side)
     directions = unit_directions(np.random.default_rng(2), t.shape, 2)
     assert_gradient_matches(power, t, directions, step=NODE_STEP)
 
@@ -115,15 +133,18 @@ def test_n4_far_field_of_a_dipole_under_a_morph(strip):
     assert_gradient_matches(power, t, directions, step=NODE_STEP)
 
 
-def test_the_radiated_power_refuses_node_gradients(strip):
+def test_the_directivity_of_the_strip_under_a_morph(wide_strip):
+    strip = wide_strip
     morph = _morph(strip)
     problem = gfem.Driven(fsc.F0, keep_fields=True)
 
     def directivity(t):
-        return _far(strip.replace(mesh=morph(t)), "p1", problem).directivity[0]
+        return _far(strip.replace(mesh=morph(t)), "p1", problem, CORE).directivity[0]
 
-    with pytest.raises(gfem.NonDifferentiableError, match="radiated power"):
-        jax.grad(directivity)(jnp.zeros(morph.n_params))
+    t = jnp.zeros(morph.n_params)
+    fsc.assert_layer_moves(strip, morph, CORE)
+    directions = unit_directions(np.random.default_rng(4), t.shape, 2)
+    assert_gradient_matches(directivity, t, directions, step=NODE_STEP)
 
 
 def test_far_field_directions_are_fixed(strip):

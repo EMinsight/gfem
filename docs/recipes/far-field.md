@@ -203,8 +203,9 @@ port-fed solve: `abs(gfem.beam_coupling(result, "wg", fiber, model=model)) ** 2`
 - It is differentiable through the field with respect to material fields
   and the node coordinates. An `IncidentField` beam is interpolated on the
   imported mesh: once a node of its layer moves, `beam_coupling` raises a
-  `ValueError`; read it on a side whose layer a morph holds, or give a
-  `GaussianBeam`, which is read at the moved nodes.
+  `ValueError`; read it on the default side, whose layer
+  `boundary_morph` holds, or give a `GaussianBeam`, which is read at the
+  moved nodes.
 
 ## Cost and accuracy
 
@@ -225,12 +226,11 @@ port-fed solve: `abs(gfem.beam_coupling(result, "wg", fiber, model=model)) ** 2`
 - `e_theta`, `e_phi`, `intensity`, `directivity`, `gain` and `rcs` are
   differentiable with respect to material fields through the solved field;
   a design inside the side costs one adjoint column.
-- With respect to the node coordinates
-  ({py:func}`gfem.shape.boundary_morph`), the amplitude, the intensity and
-  the radar cross section are differentiable: the layer's test field is read
-  at the moved quadrature points. The radiated power, and the directivity,
-  gain and efficiency divided by it, raise a `gfem.NonDifferentiableError`
-  there in this version.
+- Every output is differentiable with respect to the node coordinates
+  ({py:func}`gfem.shape.boundary_morph`): the layer's test field is read at
+  the moved quadrature points, and the radiated power follows the moved
+  layer as `gfem.power_flow` does. `boundary_morph` holds the elements
+  touching the truncation, so the default side's layer stays as meshed.
 - Directions, the side and the frequency are fixed values.
 
 ## Limits
@@ -246,4 +246,3 @@ port-fed solve: `abs(gfem.beam_coupling(result, "wg", fiber, model=model)) ** 2`
   the layer or outside the side raises a `ValueError`.
 - **Ground planes flat, PEC or PMC**: the layer may end on one flat PEC or
   PMC wall only; directions below it raise a `ValueError`.
-- **No node gradient of the radiated power**: see Gradients.

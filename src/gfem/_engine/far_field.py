@@ -60,6 +60,7 @@ from gfem._engine import power_flow as pf
 from gfem._engine import probe
 from gfem._engine.incident import _Faces, _same_material, layer_regions
 from gfem._materials import Material, MaterialField
+from gfem._truncation import truncation
 from gfem.mesh import Mesh
 
 if TYPE_CHECKING:
@@ -298,12 +299,7 @@ def exterior_layer(
     for region in layer_regions(model):
         pml[mesh.elements(region)] = True
     if side is None:
-        cut = np.zeros(n_nodes, bool)
-        cut[np.unique(tets[pml & support])] = True
-        for item in absorbing:
-            for name in surfaces_of(item):
-                cut[np.unique(np.asarray(mesh.triangles)[mesh.elements(name)])] = True
-        chi = (~cut).astype(float)
+        chi = (~truncation(model).marked).astype(float)
         used = np.zeros(n_nodes, bool)
         used[np.unique(tets[support])] = True
         chi[~used] = 0.0

@@ -60,6 +60,7 @@ __all__ = [
     "check_size",
     "dofs",
     "local_coefficients",
+    "node_pullback",
     "power_flow",
     "surface",
     "surface_of",
@@ -286,6 +287,66 @@ def build(
     )
     mask = dofs(op, where.tie, where.rim, where.rim | where.layer)
     return Flux(op=op, mask=mask, layout=op.layout or ONE_PROCESS)
+
+
+def node_pullback(
+    flux: Flux,
+    model: Model,
+    where: Surface,
+    e: np.ndarray,
+    omega: float,
+    *,
+    comm: Any = None,
+) -> np.ndarray:
+    r"""The power's gradient in the node coordinates at fixed coefficients.
+
+    :math:`P = \operatorname{Im}(\overline{De}^\mathsf{T} M e) / c_0` is a sum
+    of the layer's pieces on the pair :math:`(\overline{De}, e)`, so it goes
+    through the sensitivity kernel's node pass (`gfem._engine.sensitivity`)
+    with weights :math:`-i\theta_k / c_0` (the pass takes real parts): the
+    transport of the field and of the element-wise coefficients, a
+    perfectly matched layer's stretch read at the moved quadrature points,
+    and the face terms, each restricted to the layer's elements and faces
+    as the flux's pieces are. The mask is topology and the field moves with
+    the nodes at fixed coefficients.
+
+    Returns:
+        ``(n_nodes, 3)``, real, per metre; under ranks summed over them, the
+        same on every rank.
+    """
+    from gfem._engine.domain import em_region
+    from gfem._engine.driven import operator_terms
+    from gfem._engine.sensitivity import _node_pass
+    from gfem._engine.terms import _bits
+
+    op = flux.op
+    built = op.built
+    part = built.comm is not None
+    bits = {
+        "volume": _bits(where.layer, built.cell_order, "tetrahedron", part=part),
+        "surface": _bits(where.faces, built.facet_order, "triangle", part=part),
+    }
+    terms = [
+        dataclasses.replace(
+            t,
+            elements=bits["surface" if t.kind in ("trace", "curl trace") else "volume"],
+        )
+        for t in operator_terms(model, op, nodes=False)
+    ]
+    scale = flux._scale(omega)  # noqa: SLF001
+    weights = {
+        p.name: -1j * complex(p.theta(omega)) / scale
+        for p in op.pieces
+        if p.kind != "port"
+    }
+    w = np.where(flux.mask, e, 0.0)
+    pair = op.pair(np.conj(w), e, weights=weights, domain=em_region(model, built))
+    out = _node_pass(model, [pair], terms, comm)
+    if comm is not None:
+        from gfem import _mpi
+
+        out = np.asarray(_mpi.reduce_bcast(comm, out))
+    return out
 
 
 def check_size(e: np.ndarray, op: DrivenOperator, order: int) -> None:

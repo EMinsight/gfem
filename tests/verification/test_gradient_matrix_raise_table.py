@@ -2181,18 +2181,20 @@ def _out_cross_sections_of_a_design_in_the_truncation_layer(request):
     jax.make_jaxpr(jax.grad(objective))(model.materials["slab"].eps_r)
 
 
-def _out_power_flow_in_the_node_coordinates(request):
-    model = request.getfixturevalue("wave_model")
-    problem = gfem.Driven(frequency=20e9, keep_fields=True)
+def _out_cross_sections_in_the_node_coordinates(request):
+    # the absorption reads the incident load, whose interpolant has no node
+    # derivative: the solve of the incident column refuses the nodes first
+    model, problem = request.getfixturevalue("planewave_case")
 
     def objective(nodes):
         mesh = jax.tree_util.tree_unflatten(
             jax.tree_util.tree_structure(model.mesh), [nodes]
         )
-        frozen = model.replace(mesh=jax.lax.stop_gradient(mesh))
-        field = gfem.solve(frozen, problem).e_field(20e9, "p1")
-        field = dataclasses.replace(field, mesh=mesh)
-        return gfem.power_flow(field, "core", model=frozen)
+        moved = model.replace(mesh=mesh)
+        result = gfem.solve(moved, problem)
+        return gfem.cross_sections(result, "w", model=moved, intensity=1.0).absorption[
+            0
+        ]
 
     jax.make_jaxpr(jax.grad(objective))(jnp.asarray(model.mesh.nodes))
 
@@ -2956,10 +2958,10 @@ OUT_OF_SCOPE = [
         r"materials\['core'\]\.eps_r.*element layer.*move the surface",
     ),
     (
-        "power_flow x node coordinates",
-        _out_power_flow_in_the_node_coordinates,
+        "cross_sections x node coordinates",
+        _out_cross_sections_in_the_node_coordinates,
         gfem.NonDifferentiableError,
-        r"mesh node coordinates.*stop_gradient",
+        r"incident field 'w' enters the load.*node coordinates",
     ),
     (
         "power_flow x reduced field",

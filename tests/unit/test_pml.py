@@ -1037,8 +1037,85 @@ def test_boundary_morph_of_a_surface_in_the_layer_is_refused(tmp_path):
     from gfem.shape import boundary_morph
 
     model = _walled_box(tmp_path)
-    with pytest.raises(ValueError, match="or lies in the perfectly matched layer"):
+    with pytest.raises(ValueError, match="in the perfectly matched layer"):
         boundary_morph(model, "far")
+
+
+def _truncation_layer_nodes(model):
+    """The nodes of the physical tetrahedra touching the layer or an Absorbing face."""
+    mesh = model.mesh
+    tets = np.asarray(mesh.tetrahedra)
+    marked = np.zeros(len(mesh.imported_nodes), bool)
+    layer = _pml.layer_tetrahedra(mesh, model.pml)
+    if layer is not None:
+        marked[np.unique(tets[layer])] = True
+        physical = ~layer
+    else:
+        physical = np.ones(len(tets), bool)
+    triangles = np.asarray(mesh.triangles)
+    for b in model.boundaries:
+        if isinstance(b, gfem.Absorbing):
+            marked[np.unique(triangles[mesh.elements(b.surface)])] = True
+    touching = physical & marked[tets].any(axis=1)
+    return np.unique(tets[touching])
+
+
+def test_boundary_morph_holds_the_truncation_layer_beside_the_pml(tmp_path):
+    from gfem.shape import boundary_morph
+
+    model = _walled_box(tmp_path)
+    morph = boundary_morph(model, "wall", grows="core")
+    nodes = np.asarray(morph(0.05e-6 * np.ones(morph.n_params)).nodes)
+    x0 = np.asarray(model.mesh.imported_nodes)
+    held = _truncation_layer_nodes(model)
+    # the elements touching the layer's inner face, not only the face itself
+    assert (x0[held, 0] < 1.0 - 1e-9).any()
+    assert np.any(nodes != x0, axis=1).any()
+    np.testing.assert_array_equal(nodes[held], x0[held])
+
+
+def _absorbing_box(tmp_path):
+    """The unit cube, a "core" below x = 0.5, Absorbing on its outer faces."""
+
+    def volume(c):
+        return "core" if c[0] < 0.5 else "air"
+
+    def surface(c):
+        if abs(c[0] - 0.5) < 1e-9 and 0 < c[1] < 1 and 0 < c[2] < 1:
+            return "wall"
+        return ""
+
+    mesh = _box(tmp_path, (), cells=4, volume=volume, surface=surface)
+    return gfem.Model(
+        mesh,
+        materials={"air": AIR, "core": AIR},
+        boundaries=[gfem.Absorbing("outer")],
+    )
+
+
+def test_boundary_morph_holds_the_truncation_layer_beside_an_absorbing_face(tmp_path):
+    from gfem.shape import boundary_morph
+
+    model = _absorbing_box(tmp_path)
+    morph = boundary_morph(model, "wall", grows="core")
+    nodes = np.asarray(morph(0.05e-6 * np.ones(morph.n_params)).nodes)
+    x0 = np.asarray(model.mesh.imported_nodes)
+    held = _truncation_layer_nodes(model)
+    assert np.any(nodes != x0, axis=1).any()
+    np.testing.assert_array_equal(nodes[held], x0[held])
+    # the wall's nodes in that layer (next to the outer faces) are no parameters
+    wall = np.unique(np.asarray(model.mesh.triangles)[model.mesh.elements("wall")])
+    assert np.isin(wall, held).any()
+    points = np.asarray(morph.points)
+    assert not (np.abs(points[:, None] - x0[held][None]).sum(axis=2) < 1e-15).any()
+
+
+def test_boundary_morph_of_a_surface_in_the_truncation_layer_is_refused(tmp_path):
+    from gfem.shape import boundary_morph
+
+    model = _absorbing_box(tmp_path)
+    with pytest.raises(ValueError, match="elements touching the truncation"):
+        boundary_morph(model, "wall", grows="core", where=lambda x: x[:, 1] < 0.3e-6)
 
 
 # --- wave ports through side layers --------------------------------------------------

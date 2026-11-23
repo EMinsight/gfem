@@ -10,9 +10,8 @@ wrapper (`gfem._adjoint.measure`):
 
 - the field coefficients: differentiable (both outputs), unless the field
   is formed from an adaptive sweep's frozen basis;
-- the field's node coordinates: differentiable for the amplitude; the
-  radiated power has no node gradient in this version and raises once it
-  carries a cotangent;
+- the field's node coordinates: differentiable (both outputs; the radiated
+  power through `power_flow`'s node pass);
 - ``omega``: read, not differentiable;
 - the model's leaves: as `gfem.power_flow` reads them (a design in its
   layer raises; the far-field layer refuses a design before that).
@@ -36,11 +35,11 @@ from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import check_fixed, is_traced
 from gfem._dim2 import refuse_entry
-from gfem._power_flow import _model_role, _Role
+from gfem._power_flow import _model_role, _Role, concrete_field
 from gfem._pytree import register_fields
 from gfem._sources import DIPOLES, INCIDENT, PlaneWave
 from gfem.errors import NonDifferentiableError
-from gfem.mesh import Mesh, _at_imported_nodes
+from gfem.mesh import Mesh
 
 if TYPE_CHECKING:
     from gfem._engine.far_field import Layer
@@ -52,13 +51,6 @@ if TYPE_CHECKING:
 __all__ = ["FarField", "far_field"]
 
 _FIELD_INPUTS = {"coefficients": "coefficients", "mesh": "nodes", "omega": "omega"}
-#: Why the radiated power (and what divides by it) has no node gradient.
-POWER_NODES_REASON = (
-    "the radiated power is read from power_flow's residual, which this version "
-    "does not differentiate with respect to the node coordinates; differentiate "
-    "the far-field amplitude or the radiation intensity instead, or wrap the "
-    "radiated power in jax.lax.stop_gradient"
-)
 
 
 def engine() -> Any:
@@ -299,12 +291,9 @@ def far_field(
             half-space) or a lossy one.
         NonDifferentiableError: ``theta`` or ``phi`` is traced; the side is
             a predicate while the node coordinates are traced; and, while
-            `jax.grad` traces it, the field's ``omega``, a design in
-            `power_flow`'s layer, or the node coordinates of an output read
-            from the radiated power (directivity, gain, radiation
-            efficiency): the amplitude, the intensity and the radar cross
-            section are differentiable in the node coordinates, the radiated
-            power is not in this version.
+            `jax.grad` traces it, the field's ``omega`` or a design in
+            `power_flow`'s layer. Every output is differentiable in the node
+            coordinates.
     """
     from gfem.model import Model
     from gfem.results import DrivenResult
@@ -351,7 +340,7 @@ def far_field(
             "jax.grad, jax.jit or jax.vjp here: name the side's volume regions "
             "instead, so that its surface is known before the transformation runs."
         )
-    concrete = _concrete(fields[0])
+    concrete = concrete_field(fields[0])
     ff = engine()
     layer = ff.exterior_layer(
         concrete,
@@ -420,18 +409,6 @@ def _side(side: Any) -> Any:
         "far_field's side must be None (the layer touching the truncation), "
         "volume region names, or a predicate on element centroids, got "
         f"{type(side).__name__}."
-    )
-
-
-def _concrete(field: Field) -> Field:
-    """``field`` at the imported node positions if its nodes are traced."""
-    if not is_traced(field.mesh.nodes):
-        return field
-    return dataclasses.replace(
-        field,
-        mesh=_at_imported_nodes(field.mesh),
-        coefficients=np.zeros(field.coefficients.shape, field.coefficients.dtype),
-        omega=None if field.omega is None else 0.0,
     )
 
 
@@ -584,16 +561,6 @@ class _FarFieldKernel:
     def describe(self, name: str) -> str:
         return self.roles[name].description
 
-    def check_backward(self, wanted: tuple[str, ...], live: tuple[str, ...]) -> None:
-        """Raise at trace time for a node gradient of the radiated power."""
-        nodes = [n for n in wanted if n == "nodes" or n.startswith("model.mesh")]
-        if "power" in live and nodes:
-            raise NonDifferentiableError(
-                f"gfem cannot differentiate {self.name}'s radiated power (and "
-                "the directivity, gain and efficiency divided by it) with respect "
-                f"to {self.describe(nodes[0])}: {POWER_NODES_REASON}."
-            )
-
     # --- host -------------------------------------------------------------------
 
     def _unflatten(self, values: dict[str, np.ndarray]) -> tuple[Field, Model]:
@@ -684,36 +651,45 @@ class _FarFieldKernel:
         wanted: tuple[str, ...],
     ) -> dict[str, np.ndarray]:
         field, model = self._unflatten(values)
-        nodes = np.asarray(values["nodes"], float)
+        positions = np.asarray(values["nodes"], float)
         omega = float(np.asarray(values["omega"]).real)
         e = np.asarray(values["coefficients"])
         out: dict[str, np.ndarray] = {}
         for name in wanted:
             out[name] = np.zeros_like(values[name])
+        nodes = [n for n in wanted if n == "nodes" or n.startswith("model.mesh")]
+        # the field's and the model's nodes are one position (the host refuses
+        # others): the gradient goes to the first wanted
+        grad = np.zeros(np.shape(values["nodes"]))
         ct_a = cotangents.get("amplitude")
-        if ct_a is not None and ("coefficients" in wanted or "nodes" in wanted):
-            prb = self._probe(nodes, field)
+        if ct_a is not None and ("coefficients" in wanted or nodes):
+            prb = self._probe(positions, field)
             ev = prb.values(e)[0]
             cv = prb.values(e, curl=True)[0]
-            function, corners = self._function(nodes, omega)
+            function, corners = self._function(positions, omega)
             _, pull = jax.vjp(function, corners, ev, cv)
             g_corners, g_e, g_c = (np.asarray(g) for g in pull(jnp.asarray(ct_a)))
             if "coefficients" in wanted:
                 g = prb.transpose(g_e[None]) + prb.transpose(g_c[None], curl=True)
                 out["coefficients"] = out["coefficients"] + g[0]
-            if "nodes" in wanted:
-                tets = np.asarray(Mesh(nodes, self.topology).tetrahedra)
-                grad = np.zeros_like(nodes)
+            if nodes:
+                tets = np.asarray(Mesh(positions, self.topology).tetrahedra)
                 np.add.at(grad, tets[self.layer.tetrahedra], np.real(g_corners))
-                out["nodes"] = grad
         ct_p = cotangents.get("power")
-        if ct_p is not None and "coefficients" in wanted:
+        if ct_p is not None and ("coefficients" in wanted or nodes):
             pf = importlib.import_module("gfem._engine.power_flow")
             flux = self._flux_of(values, model, field)
             local = pf.local_coefficients(e, flux.op, self.comm)
-            # a rank's piece is padded: the pullback fills its first entries
-            grad = float(ct_p) * flux.pullback(local, omega)
-            out["coefficients"][: len(grad)] += grad
+            if "coefficients" in wanted:
+                # a rank's piece is padded: the pullback fills its first entries
+                g = float(ct_p) * flux.pullback(local, omega)
+                out["coefficients"][: len(g)] += g
+            if nodes:
+                grad += float(ct_p) * pf.node_pullback(
+                    flux, model, self.where, local, omega, comm=self.comm
+                )
+        if nodes:
+            out[nodes[0]] = grad.reshape(np.shape(values[nodes[0]]))
         unknown = [
             n
             for n in wanted

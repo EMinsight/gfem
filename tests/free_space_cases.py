@@ -432,32 +432,53 @@ def _strip_surface(c: np.ndarray) -> str:
     return "wire" if 1 / 6 < c[2] < 5 / 6 else ""
 
 
-def strip(path: str | Path) -> gfem.Model:
+def strip(path: str | Path, *, margin: bool = False) -> gfem.Model:
     """A PEC strip fed by lumped port "p1", beside a design block, in a layer.
 
     The unit cube of air in a 2/6 um "pml" on every side; inside it a
     "shell", and a core split at x = 0.5 um into "left" and "right", with
-    the "design" block (a `gfem.MaterialField`, 2) in the right half.
+    the "design" block (a `gfem.MaterialField`, 2) in the right half. With
+    ``margin``, a 1/6 um "margin" of air between the cube and the layer: the
+    elements touching the layer, which a morph holds, are then the margin,
+    and the shell around the core can move.
     """
+    if margin:
+        cells, thickness = 8, 2 / 8
+
+        def shift(c: np.ndarray) -> np.ndarray:
+            return c * 8 / 6 - 1 / 6
+
+        def volume(c: np.ndarray) -> str:
+            if not ((c > 0) & (c < 1)).all():
+                return "pml"
+            q = shift(c)
+            return "margin" if not ((q > 0) & (q < 1)).all() else _strip_volume(q)
+
+        def surface(c: np.ndarray) -> str:
+            return _strip_surface(shift(c))
+
+        mapping = shift
+    else:
+        cells, thickness = 6, 2 / 6
+        volume, surface, mapping = _strip_volume, _strip_surface, None
     mesh = gfem.Mesh.from_gmsh(
         pc.box(
             path,
             sides=pc.SIDES,
-            thickness=2 / 6,
-            cells=6,
-            volume=_strip_volume,
-            surface=_strip_surface,
+            thickness=thickness,
+            cells=cells,
+            volume=volume,
+            surface=surface,
+            mapping=mapping,
         )
     )
     air = gfem.Material()
     n = len(mesh.elements("design"))
+    regions = ("left", "right", "shell", "pml", *(("margin",) if margin else ()))
     return gfem.Model(
         mesh,
         materials={
-            "left": air,
-            "right": air,
-            "shell": air,
-            "pml": air,
+            **dict.fromkeys(regions, air),
             "design": gfem.MaterialField(eps_r=np.full(n, 2.0)),
         },
         boundaries=[gfem.PEC("wire")],
@@ -467,32 +488,42 @@ def strip(path: str | Path) -> gfem.Model:
     )
 
 
+def _moved(model: gfem.Model, morph) -> np.ndarray:
+    """How far each node moves under ``morph`` at 10 nm, m."""
+    import jax.numpy as jnp
+
+    moved = np.asarray(morph(jnp.ones(morph.n_params) * 1e-8).nodes)
+    return np.abs(moved - np.asarray(model.mesh.nodes)).max(axis=1)
+
+
 def assert_layer_moves(model: gfem.Model, morph, side) -> None:
-    """The layer outside ``side`` (``None``: the one touching the layer) moves.
+    """The element layer outside the named ``side`` moves under ``morph``.
 
     So that a node gradient through ``morph`` exercises the kernel's node pass.
     """
-    import jax.numpy as jnp
-
-    moved = np.asarray(morph(jnp.ones(morph.n_params) * 1e-8).nodes) - np.asarray(
-        model.mesh.nodes
-    )
     mesh = model.mesh
     tets = np.asarray(mesh.tetrahedra)
-    regions = ("left", "right", "design", "shell") if side is None else side
-    inside = np.zeros(len(tets), bool)
-    for r in regions:
-        inside[mesh.elements(r)] = True
-    if side is None:
-        cut = np.zeros(len(mesh.nodes), bool)
-        cut[np.unique(tets[mesh.elements("pml")])] = True
-        chi = ~cut
-    else:
-        chi = np.zeros(len(mesh.nodes), bool)
-        chi[np.unique(tets[inside])] = True
+    chi = np.zeros(len(mesh.nodes), bool)
+    for r in side:
+        chi[np.unique(tets[mesh.elements(r)])] = True
     at = chi[tets]
     layer = at.any(axis=1) & ~at.all(axis=1)
-    assert np.abs(moved[np.unique(tets[layer])]).max() > 0
+    assert _moved(model, morph)[np.unique(tets[layer])].max() > 0
+
+
+def assert_truncation_layer_held(model: gfem.Model, morph) -> None:
+    """The elements touching the layer stay where they were imported, bit for bit."""
+    mesh = model.mesh
+    tets = np.asarray(mesh.tetrahedra)
+    pml = np.zeros(len(tets), bool)
+    for r in model.pml.regions:
+        pml[mesh.elements(r)] = True
+    cut = np.zeros(len(mesh.nodes), bool)
+    cut[np.unique(tets[pml])] = True
+    touching = ~pml & cut[tets].any(axis=1)
+    moved = _moved(model, morph)
+    assert moved.max() > 0
+    assert not moved[np.unique(tets[touching])].any()
 
 
 # --- a block under a plane, lit from above (beam-coupling gradients) -------------
@@ -567,7 +598,7 @@ GRATING_PML = 0.6
 
 
 def grating_slab(
-    path: str | Path, *, h_si: float = 0.08, h_ox: float = 0.25
+    path: str | Path, *, h_si: float = 0.08, h_ox: float = 0.25, wall: bool = False
 ) -> gfem.Mesh:
     """A silicon guide with `TEETH` trenches in oxide, as a slab mesh.
 
@@ -576,7 +607,9 @@ def grating_slab(
     layers "pml_top" and "pml_bottom" above and below; edges "port" (the
     window on the left end, across the guide), "left" (the rest of that
     end), "right"; the slab's end faces "front" and "back". The guide runs
-    from the port to the right end, where it meets an absorbing face.
+    from the port to the right end, where it meets an absorbing face. With
+    ``wall``, the first tooth's right sidewall (silicon on its left, the
+    first trench on its right) is the edge "wall", for a shape design.
     """
     import thermal_cases
 
@@ -605,6 +638,13 @@ def grating_slab(
         (lambda c: abs(c[0] - x0) < eps and y0 < c[1] < y1, "left"),
         (lambda c: abs(c[0] - x1) < eps and y0 < c[1] < y1, "right"),
     ]
+    if wall:
+        edges.append(
+            (
+                lambda c: abs(c[0] - FILL * PERIOD) < eps and base < c[1] < T_SI,
+                "wall",
+            )
+        )
     return thermal_cases.section(Path(path), rects, h_ox, edges)
 
 

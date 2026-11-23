@@ -39,7 +39,6 @@ from gfem import _incident
 from gfem._background import Background
 from gfem._boundaries import (
     PEC,
-    Absorbing,
     Conductor,
     Impedance,
     LumpedPort,
@@ -52,7 +51,6 @@ from gfem._engine.driven import driven_operator
 from gfem._engine.incident import (
     background_model,
     incident_coefficients,
-    layer_regions,
     scatterer_elements,
     scatterer_regions,
 )
@@ -75,31 +73,7 @@ __all__ = [
     "check_side",
     "check_truncation_layer",
     "reading",
-    "truncation_side",
 ]
-
-
-def truncation_side(model: Model) -> np.ndarray:
-    """The elements inside the truncation layer, one boolean per tetrahedron.
-
-    The solve domain's physical elements (outside the perfectly matched
-    layer) with no vertex on a layer element or on an `gfem.Absorbing`
-    face: the truncation layer is then the physical elements that touch the
-    layer or such a face.
-    """
-    mesh = model.mesh
-    tets = mesh.tetrahedra
-    layer = np.zeros(len(tets), bool)
-    for region in layer_regions(model):
-        layer[mesh.elements(region)] = True
-    marked = np.zeros(len(mesh.imported_nodes), bool)
-    marked[np.unique(tets[layer])] = True
-    for item in model.boundaries:
-        if isinstance(item, Absorbing):
-            for surface in surfaces_of(item):
-                marked[np.unique(mesh.triangles[mesh.elements(surface)])] = True
-    physical = model._domain.active & ~layer  # noqa: SLF001
-    return physical & ~marked[tets].any(axis=1)
 
 
 def check_lossless(background: Background) -> None:

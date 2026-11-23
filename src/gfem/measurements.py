@@ -61,6 +61,7 @@ from gfem._far_field import FarField, far_field
 from gfem._materials import Material, _is_law, field_principal_values
 from gfem._purcell import purcell_factor
 from gfem._pytree import register_fields
+from gfem._truncation import truncation
 from gfem.conventions import MODE_ENERGY
 from gfem.errors import MeshRefinementUnsupportedError, NonDifferentiableError
 from gfem.mesh import Mesh
@@ -788,7 +789,11 @@ def power_flow(
     The model's leaves are read only in the element layer just outside
     ``side``; a traced material field there has no gradient here and
     raises, and any other leaf gets an exact zero from this measurement
-    (its influence arrives through the field).
+    (its influence arrives through the field). The node coordinates (a
+    shape design, `gfem.shape.boundary_morph`) are differentiable too: the
+    element layer moves with its nodes, and the field with them at fixed
+    coefficients; the corrected power of an incident-field column is not
+    (its solve refuses them first).
 
     Args:
         field: A driven electric field (quantity ``"E"``, in H(curl),
@@ -817,8 +822,10 @@ def power_flow(
             ``side`` (or beside a face that layer's terms read), or the fill
             of a sheet with a face there, is differentiated (move the
             surface one element away from the design region, or wrap the
-            value in `jax.lax.stop_gradient`); the node coordinates or the
-            field's ``omega`` are differentiated; the field is one of an
+            value in `jax.lax.stop_gradient`); the field's ``omega`` is
+            differentiated, or the node coordinates of an incident-field
+            column or beside an anisotropic `gfem.Absorbing` face; the field
+            is one of an
             adaptive sweep (`gfem.ReducedFields`) and is differentiated. And
             whenever the node coordinates are traced and ``side`` is a
             predicate: name its regions.
@@ -1100,7 +1107,7 @@ def cross_sections(
                 "again to measure its cross sections."
             )
         pf = importlib.import_module("gfem._engine.power_flow")
-        where = pf.surface_of(field, xs.truncation_side(model), model)
+        where = pf.surface_of(field, truncation(model).side, model)
         xs.check_truncation_layer(model, background, where)
         xs.check_side(model, where, "cross_sections")
         from gfem._power_flow import balance

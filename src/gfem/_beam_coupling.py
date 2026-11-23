@@ -32,8 +32,8 @@ from gfem._adjoint.measure import measure
 from gfem._adjoint.solve_vjp import input_kind
 from gfem._checks import is_traced
 from gfem._dim2 import refuse_entry
-from gfem._far_field import _concrete, _field_role
-from gfem._power_flow import _Role
+from gfem._far_field import _field_role
+from gfem._power_flow import _Role, concrete_field
 from gfem._sources import INCIDENT, GaussianBeam, IncidentField
 from gfem.errors import NonDifferentiableError
 from gfem.mesh import Mesh
@@ -210,7 +210,7 @@ def beam_coupling(
         )
     out = []
     for field, frequency in zip(fields, frequencies, strict=True):
-        concrete = _concrete(field)
+        concrete = concrete_field(field)
         nodes = np.asarray(concrete.mesh.nodes)
         layer = engine().coupling_layer(
             concrete, model, names, beam, frequency, nodes=nodes, incident=incident
