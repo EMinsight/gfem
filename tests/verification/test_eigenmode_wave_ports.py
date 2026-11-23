@@ -175,18 +175,9 @@ def test_a_root_just_above_the_port_s_cutoff_meets_the_exact_root(meshes):
     assert error <= 3e-6  # 3.5e-7
 
 
-# The TM01 mode of the circular guide has the same transverse shape at every
-# frequency (a homogeneous cross-section), so its port mode sweep keeps a
-# basis of two vectors; at a wavenumber off the band's grid the reduced
-# pencil's other pair (gamma near 0) overlaps the swept mode within the
-# ambiguity margin (0.995 against 0.9998), the backward error is infinite,
-# and exact solves add nothing to the span.
-@pytest.mark.xfail(
-    raises=PortModeError,
-    strict=True,
-    reason="the port term's reduced solve cannot tell a TM mode of a homogeneous "
-    "cross-section from its spurious partner off the band grid",
-)
+# The port absorbs TM01 only, so the guide's other families ring at high Q
+# around the target, nearer it than the low-Q TM01 root (Q 3.7): 8 modes
+# reach it (7 do not).
 def test_a_port_mode_with_a_normal_field_meets_the_line_root(meshes):
     # straight-sided mesh of the disk (16 x 16): the reference takes the
     # port's discrete cutoff, so only the 3D discretization error remains
@@ -198,9 +189,9 @@ def test_a_port_mode_with_a_normal_field_meets_the_line_root(meshes):
     gamma = complex(np.asarray(modes.gamma).ravel()[0])
     kc = float(np.sqrt((gamma**2 + k0**2).real))
     root = w.line_root("TM", kc, [(4.0, 10.0), (1.0, 5.0)], 13.4 + 1.8j)
-    result = eigen(model, f0, 1, 3)
+    result = eigen(model, f0, 8, 3)
     error, _ = w.nearest_error(result, root)
-    assert error <= 3e-4
+    assert error <= 3e-4  # 2.3e-6
 
 
 # --- the driven cross-check -----------------------------------------------------
