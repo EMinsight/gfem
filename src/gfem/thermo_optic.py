@@ -36,12 +36,22 @@ from typing import TYPE_CHECKING, Any
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.constants
 
 from gfem._adjoint.measure import measure
 from gfem._checks import is_traced
 from gfem._field import Field
 from gfem._materials import Material, MaterialField, PermittivityLaw
+from gfem._optical_shift import (
+    _check_model,
+    _frequency,
+    _lossy,
+    _mode_weights,
+    _region_rows,
+    _Sampling,
+    _section,
+    _values,
+    _wave_port,
+)
 from gfem._pytree import register_fields
 from gfem.thermal import Trace
 
@@ -50,63 +60,6 @@ if TYPE_CHECKING:
     from gfem.model import Model
 
 __all__ = ["RoutePhase", "ThermoOpticShift", "route_phase", "thermo_optic_shift"]
-
-
-def _section(model: Model, port: Any) -> tuple[np.ndarray, np.ndarray]:
-    """The gfem triangles of a wave port's section and the tetrahedra behind them.
-
-    The triangles of the port's surface with the electromagnetic solve
-    domain on exactly one side, as the port mode problem takes them.
-    """
-    mesh = model.mesh
-    active = model._domain.active  # noqa: SLF001
-    tag = mesh.region(port.surface).tag
-    nb = np.asarray(mesh.triangle_neighbours)
-    faces = np.flatnonzero(np.asarray(mesh.triangle_tags) == tag)
-    side = (nb[faces] >= 0) & active[np.maximum(nb[faces], 0)]
-    one = side.sum(axis=1) == 1
-    faces, side = faces[one], side[one]
-    tets = np.where(side[:, 0], nb[faces, 0], nb[faces, 1])
-    return faces, tets
-
-
-def _region_rows(mesh: Mesh, tets: np.ndarray) -> dict[str, np.ndarray]:
-    """The positions in ``tets`` of each volume region's tetrahedra."""
-    names = mesh._region_names()  # noqa: SLF001
-    tags = np.asarray(mesh.tetrahedron_tags)[tets]
-    return {names[int(t)]: np.flatnonzero(tags == t) for t in np.unique(tags)}
-
-
-def _values(value: Any, pos: np.ndarray) -> Any:
-    """A material value at element positions ``pos`` of its region."""
-    if is_traced(value):
-        arr = jnp.asarray(value)
-        return jnp.broadcast_to(arr, pos.shape) if arr.ndim == 0 else arr[pos]
-    arr = np.asarray(value)
-    return np.broadcast_to(arr, pos.shape) if arr.ndim == 0 else arr[pos]
-
-
-def _lossy(material: Material | MaterialField, pos: np.ndarray) -> str | None:
-    """Which loss a region's material has on elements ``pos``, or ``None``."""
-    if isinstance(material, Material):
-        if isinstance(material.eps_r, PermittivityLaw):
-            return "a permittivity law"
-        eps = np.asarray(material.eps_r, complex)
-        tan, sigma = material.tan_delta, material.conductivity
-    else:
-        if material.blend_ends is not None:
-            return "a permittivity law (a density blend's end)"
-        eps, tan, sigma = material.eps_r, material.tan_delta, material.conductivity
-        eps = None if eps is None or is_traced(eps) else _values(eps, pos)
-        tan = None if tan is None or is_traced(tan) else _values(tan, pos)
-        sigma = None if sigma is None or is_traced(sigma) else _values(sigma, pos)
-    if eps is not None and np.any(np.asarray(eps).imag != 0):
-        return "a complex eps_r"
-    if tan is not None and np.any(np.asarray(tan) != 0):
-        return "a nonzero tan_delta"
-    if sigma is not None and np.any(np.asarray(sigma) != 0):
-        return "a nonzero conductivity"
-    return None
 
 
 def _coefficients(
@@ -199,15 +152,6 @@ def _element_rise(rise: Any, mesh: Mesh, tets: np.ndarray, owner: str) -> jax.Ar
 
 
 @dataclasses.dataclass(frozen=True, eq=False)
-class _Sampling:
-    """Where a shift trace reads the rise: tetrahedra of the optical mesh."""
-
-    mesh: Any
-    tetrahedra: np.ndarray
-    port: str
-
-
-@dataclasses.dataclass(frozen=True, eq=False)
 class _ShiftTrace(Trace):
     """The thermo-optic phase per length of a section, rad/m, on the rise."""
 
@@ -297,62 +241,6 @@ class ThermoOpticShift:
 register_fields(
     ThermoOpticShift, ("n_eff", "delta_n_eff", "phase_per_length", "_trace")
 )
-
-
-def _frequency(frequency: Any, owner: str = "thermo_optic_shift") -> float:
-    if np.ndim(frequency) != 0:
-        raise ValueError(
-            f"{owner} takes one frequency, got "
-            f"{np.size(frequency)} values: call it once per frequency in a loop."
-        )
-    if is_traced(frequency):
-        raise TypeError(
-            f"{owner}: the frequency is a fixed number, not a differentiable input."
-        )
-    f = float(frequency)
-    if not (math.isfinite(f) and f > 0):
-        raise ValueError(f"{owner}: frequency must be > 0 Hz, got {f}.")
-    return f
-
-
-def _wave_port(model: Model, port: str) -> Any:
-    from gfem._sweep.port_mode import _wave_port as find
-
-    return find(model, port)
-
-
-def _check_model(model: Any, owner: str) -> None:
-    from gfem.model import Model
-
-    if not isinstance(model, Model):
-        raise TypeError(f"{owner} needs a gfem.Model, got {type(model).__name__}.")
-
-
-def _mode_weights(
-    model: Model, port: str, frequency: float, mode: int | None, faces: np.ndarray
-) -> tuple[int, jax.Array, jax.Array, float]:
-    """The port's mode on ``model`` and its first-order weight per section triangle.
-
-    Returns:
-        The mode number, ``n_eff`` (a constant), the weights ``w_t`` (``(n_tri,)``,
-        in the order of ``faces``; ``delta_n_eff = sum_t w_t (dn/dT)_t rise_t``)
-        and ``k0`` (1/m).
-    """
-    from gfem._adjoint import solve_vjp
-    from gfem._engine.thermo_optic import ShiftWeightsRule
-    from gfem.options import SolverOptions
-    from gfem.problems import PortMode
-
-    problem = PortMode(port, frequency, mode=mode)
-    rule = ShiftWeightsRule(model, problem, SolverOptions(), faces)
-    if is_traced(model):
-        outputs = solve_vjp(rule, model, problem)
-    else:
-        outputs, _ = rule.forward(model, keep=False)
-    k0 = 2 * math.pi * frequency / scipy.constants.c
-    gamma = jnp.asarray(outputs["gamma"])[0]
-    n_eff = jnp.real(gamma / (1j * k0))
-    return rule.mode, n_eff, jnp.asarray(outputs["weights"]), k0
 
 
 def thermo_optic_shift(

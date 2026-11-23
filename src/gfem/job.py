@@ -63,6 +63,7 @@ from gfem._materials import (
     PermittivityLaw,
     PixelGeometry,
 )
+from gfem._optical_shift import _Sampling
 from gfem._pml import PML
 from gfem._port_section import PortSection
 from gfem._pytree import register_fields
@@ -108,7 +109,7 @@ from gfem.results import (
 )
 from gfem.solve import _solve, _solve_cache, solve
 from gfem.thermal import HeatSource, _FieldTrace
-from gfem.thermo_optic import _RouteSampler, _RouteTrace, _Sampling, _ShiftTrace
+from gfem.thermo_optic import _RouteSampler, _RouteTrace, _ShiftTrace
 
 __all__ = ["Job", "load_result"]
 
