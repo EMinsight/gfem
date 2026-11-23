@@ -318,6 +318,9 @@ class EigenOperator:
     _norms: tuple[float, ...] | None = None
     _handle: Handle | None = None
     _base: Handle | None = None
+    #: θ_p of the shift the base was prepared at: K subtracts these, since an
+    #: enrichment of a port basis since then moves θ_p(shift) off them
+    _thetas: tuple[complex, ...] = ()
     _range: tuple[np.ndarray, np.ndarray] | None = None
 
     @property
@@ -328,9 +331,17 @@ class EigenOperator:
     def factorize(self) -> Handle:
         """Prepare ``T(shift)`` now unless it is prepared, and return it."""
         if self._handle is None:
-            self._base = self.prepare(self.operator(self.shift))
+            t = self._operator(self.shift)
+            self._base = self.prepare(t)
             self._handle = self._wrap(self._base, self.shift)
         return self._handle
+
+    def _operator(self, k: complex) -> Operator:
+        """``operator(k)``, holding the θ_p it was assembled with (`_thetas`)."""
+        t = self.operator(k)
+        # the port term keeps its value at k: these are the ones in the form
+        self._thetas = tuple(p.value(k) for p in self.nonpolynomial)
+        return t
 
     def _wrap(self, base: Handle, k: complex) -> Handle:
         """``base`` with the low-rank terms at ``k`` (``base`` itself without).
@@ -394,7 +405,7 @@ class EigenOperator:
                 self._handle.free()  # the update's own columns
             self._base = refactorize_or_prepare(
                 self._base,
-                self.operator(k),
+                self._operator(k),
                 lambda t: self.prepare(t, solves),
                 solves=solves,
             )
@@ -464,8 +475,8 @@ class EigenOperator:
         # the factorized rest: the low-rank terms the update holds are not in it
         tx = base.apply(x, transpose=True) if transpose else base.apply(x)
         kx = np.where(self.free, tx, 0) - s * dx - s * s * mx
-        for t, a in zip(self.nonpolynomial, ax, strict=True):
-            kx = kx - t.value(s) * a
+        for theta, a in zip(self._thetas, ax, strict=True):
+            kx = kx - theta * a
         return kx, dx, mx, ax
 
     def parts(

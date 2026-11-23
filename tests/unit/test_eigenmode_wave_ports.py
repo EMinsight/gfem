@@ -182,6 +182,31 @@ def test_shift_holds_the_low_rank_term_across_a_reshift(hybrid):
         eop.free_handle()
 
 
+def test_k_holds_across_an_enrichment_of_the_port_basis(hybrid):
+    # an enrichment between preparing T(s) and recovering K moves gamma_0(s),
+    # but not the factorized operator K is read from
+    model, rule, op, _ = hybrid
+    target = 12e9
+    ports = eigen_ports(model, op, target=target, tolerance=1e-2)  # own basis
+    (port,) = ports
+    sigma = 2 * math.pi * target / C0 * op.built.scale
+    eop = rule.operator(op, sigma, ports=ports)
+    try:
+        s = sigma * (1.05 + 0.1j)
+        eop.reshift(s)
+        x = free_vector(eop, 2)
+        kx = eop.parts(x)[0]
+        before = port.term.at(s).gamma0
+        k = sigma * (1.05 + 0.12j)
+        pairs, _ = port.term._pairs(k)
+        port.term._enrich(k, pairs, list(range(len(pairs))))
+        assert abs(port.term.at(s).gamma0 - before) > 1e-10 * abs(before)  # 2e-8
+        # 8e-10 when K subtracts gamma_0(s) recomputed after the enrichment
+        assert np.linalg.norm(eop.parts(x)[0] - kx) <= 1e-14 * np.linalg.norm(kx)
+    finally:
+        eop.free_handle()
+
+
 # --- several ports and shared surfaces ------------------------------------------
 
 # relative error at order 3 on these meshes: B3 6.9e-6, C 3.4e-5, N 3.9e-7
