@@ -348,3 +348,19 @@ def test_the_purcell_factor_refuses_an_incident_field(line):
     result = gfem.DrivenResult(s, sources={"x": wave})
     with pytest.raises(ValueError, match="'x' is a PlaneWave column"):
         gfem.purcell_factor(result, "x", model=line)
+
+
+def test_a_magnetic_dipole_refuses_node_gradients(box):
+    import jax
+
+    model = _vacuum(box)
+    dipole = gfem.MagneticDipole("m", position=INSIDE, moment=(0, 0, 1e-22))
+    structure = jax.tree_util.tree_structure(box)
+
+    def power(nodes):
+        moved = model.replace(mesh=jax.tree_util.tree_unflatten(structure, [nodes]))
+        result = gfem.solve(moved, gfem.Driven(fsc.F0, sources=dipole))
+        return result.emitted_power["m"][0]
+
+    with pytest.raises(gfem.NonDifferentiableError, match="MagneticDipole 'm'"):
+        jax.make_jaxpr(jax.grad(power))(box.nodes)

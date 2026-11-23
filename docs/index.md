@@ -81,6 +81,13 @@ recipes/gsim
 
 ```{toctree}
 :hidden:
+:caption: Free space
+
+recipes/point-dipoles
+```
+
+```{toctree}
+:hidden:
 :caption: Capabilities
 
 capabilities
