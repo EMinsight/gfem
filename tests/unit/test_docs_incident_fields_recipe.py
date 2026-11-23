@@ -57,6 +57,9 @@ LIMITS = {
         "test_elements_below_the_ground_plane_are_refused",
         "test_a_layer_region_off_the_stack_is_refused_by_its_contact",
     ),
+    "Beams not too tight": (
+        "test_a_beam_too_tight_at_one_frequency_is_refused_before_factorization",
+    ),
     "One process per solve": (
         "test_frequency_workers_do_not_take_incident_fields_yet",
     ),
@@ -80,6 +83,7 @@ TERMS = (
     "Scattered field",
     "Scatterer",
     "Incident contact",
+    "Focal intensity",
 )
 
 

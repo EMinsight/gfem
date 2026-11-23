@@ -16,11 +16,11 @@ slab, at order 2. Each gradient matches a fourth-order central difference to
 - the emitted power on an adaptive sweep, by the slab's permittivity, at a
   sample (the frozen basis's gradient is the full solve's there), for a
   real and a circular moment;
-- the cross sections of a lossy cube under plane waves, and the corrected
-  power flow of its total field, by the cube's permittivity. Both read
-  background elements, the load and the incident interpolant only, so the
-  design reaches them through the solved field alone, which a frozen-field
-  check asserts.
+- the cross sections of a lossy cube under plane waves and under a
+  Gaussian beam, and the corrected power flow of its total field, by the
+  cube's permittivity. Both read background elements, the load and the
+  incident interpolant only, so the design reaches them through the solved
+  field alone, which a frozen-field check asserts.
 """
 
 import jax
@@ -274,6 +274,32 @@ def test_cross_sections_read_no_scatterer_material(cube):
 
     gradient = jax.grad(objective)(_start(model))
     assert np.all(np.asarray(gradient) == 0)
+
+
+#: A beam focused on the cube, tighter than the box.
+BEAM = gfem.GaussianBeam(
+    "beam",
+    waist=0.8e-6,
+    focus=(0.5e-6, 0.5e-6, 0.5e-6),
+    theta=0.4,
+    phi=0.3,
+    polarization="RCP",
+)
+
+
+def test_a_cross_section_under_a_gaussian_beam_by_the_scatterer_permittivity(cube):
+    model = cube
+
+    def objective(eps):
+        moved = _design(model, eps)
+        problem = gfem.Driven(F, sources=BEAM, keep_fields=True)
+        result = gfem.solve(moved, problem, options=OPTIONS)
+        xs = gfem.cross_sections(result, "beam", model=moved)
+        return 1e12 * (xs.extinction[0] + 0.5 * xs.absorption[0])
+
+    eps = _start(model)
+    directions = unit_directions(np.random.default_rng(8), eps.shape, 2)
+    assert_gradient_matches(objective, eps, directions, step=1e-2)
 
 
 def test_corrected_power_flow_by_the_absorber_permittivity(cube):

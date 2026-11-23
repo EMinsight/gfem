@@ -54,7 +54,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from gfem import _incident
+from gfem import _beam, _incident
 from gfem._background import Background
 from gfem._boundaries import (
     PEC,
@@ -70,6 +70,7 @@ from gfem._engine.moments import moment_interpolant
 from gfem._incident import Incident, IncidentPart, layered
 from gfem._linalg.base import free_mask
 from gfem._materials import Material, MaterialField
+from gfem._sources import GaussianBeam
 from gfem._transfer_matrix import layer_index, number
 from gfem.mesh import _TET_FACES, Mesh
 from gfem.model import Model
@@ -637,11 +638,16 @@ def check_contact(
 
     Raises:
         ValueError: Naming the face or region, the measured ratio and the
-            remedy.
+            remedy; a `gfem.GaussianBeam` too tight to normalize at one of
+            ``frequencies``.
     """
     background = model.background
     if not sources or background is None:
         return
+    for source in sources:
+        if isinstance(source, GaussianBeam):
+            for f in frequencies:
+                _beam.check_waist(source, background, f)
     checks = _checks(model, background)
     if not checks:
         return

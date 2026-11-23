@@ -3,7 +3,8 @@
 Lossy, lossless and perfectly conducting spheres of `free_space_cases`, a
 plane wave at 30 degrees in TE and TM as two columns of one solve, compared
 with the Bohren-Huffman series at the meshed sphere's volume-equivalent
-radius; the measured errors and the gates are recorded in
+radius, and on the lossy sphere Gaussian beams of the same directions
+against the plane waves; the measured errors and the gates are recorded in
 `free_space_cases`. The refined spheres run in the reference tier.
 """
 
@@ -34,15 +35,38 @@ def mesh(tmp_path_factory):
     return fsc.sphere(tmp_path_factory.mktemp("mie") / "sphere.msh", mirrored=True)
 
 
+#: Gaussian beams along the plane waves, focused on the sphere, wide enough
+#: to light it like a plane wave: over the sphere the focal field varies by
+#: about :math:`(a/w_0)^2 = 0.7` %.
+BEAMS = tuple(
+    gfem.GaussianBeam(
+        f"beam_{s.name}",
+        waist=3e-6,
+        theta=s.theta,
+        phi=s.phi,
+        polarization=s.polarization,
+    )
+    for s in fsc.SOURCES
+)
+
+
 @pytest.fixture(scope="module")
 def lossy(mesh):
-    return _cross_sections(fsc.model(mesh[0], fsc.LOSSY))
+    # the beams share the plane waves' factorization
+    return _cross_sections(fsc.model(mesh[0], fsc.LOSSY), (*fsc.SOURCES, *BEAMS))
 
 
 @pytest.mark.parametrize("name", ["te", "tm"])
 def test_a_lossy_sphere_matches_mie(mesh, lossy, name):
     reference = fsc.mie_cross_sections(4 - 1j, mesh[1])
     np.testing.assert_allclose(_values(lossy[name]), reference, rtol=fsc.TOLERANCE)
+
+
+@pytest.mark.parametrize("name", ["te", "tm"])
+def test_a_wide_beam_over_its_focal_intensity_is_the_plane_wave(lossy, name):
+    np.testing.assert_allclose(
+        _values(lossy[f"beam_{name}"]), _values(lossy[name]), rtol=fsc.BEAM_TOLERANCE
+    )
 
 
 def test_a_lossless_sphere_matches_mie_and_absorbs_nothing(mesh):

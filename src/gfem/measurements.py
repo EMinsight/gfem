@@ -994,6 +994,9 @@ def cross_sections(
 
     - `gfem.PlaneWave`: :math:`|E_0|^2 / (2\eta)`, :math:`\eta` the wave
       impedance of the layer it comes from;
+    - `gfem.GaussianBeam`: its focal intensity
+      :math:`I_0 = |E(r_f)|^2 / (2\eta)` at each frequency
+      (`gfem.GaussianBeam.focal_intensity`);
     - `gfem.IncidentField`: ``intensity=``, required.
 
     On a layered background (`gfem.Background`) the extinction is the
@@ -1053,7 +1056,8 @@ def cross_sections(
     if kind is not None:
         raise ValueError(
             f"cross_sections: {source!r} is a {kind} column; cross sections are "
-            "measured for an incident field (gfem.PlaneWave, gfem.IncidentField)."
+            "measured for an incident field (gfem.PlaneWave, gfem.GaussianBeam, "
+            "gfem.IncidentField)."
         )
     wave = result.sources[source]
     assert isinstance(wave, INCIDENT)  # noqa: S101 - _column_kind checked
@@ -1071,7 +1075,7 @@ def cross_sections(
         )
     xs = importlib.import_module("gfem._engine.cross_sections")
     xs.check_lossless(background)
-    i0 = _intensity(wave, intensity, len(frequencies), background)
+    i0 = _intensity(wave, intensity, frequencies, background)
     absorbed, scattered = [], []
     for f in frequencies:
         field = result.e_field(f, source)
@@ -1122,16 +1126,20 @@ def _column_kind(result: DrivenResult, name: str) -> str | None:
     )
 
 
-def _intensity(source: Any, intensity: Any, n: int, background: Any) -> np.ndarray:
+def _intensity(
+    source: Any, intensity: Any, frequencies: Sequence[float], background: Any
+) -> np.ndarray:
     """The intensity of ``source`` per kept frequency, W/m² (see `cross_sections`).
 
     Raises:
         ValueError: Missing for an `gfem.IncidentField`, given for another
             source, or not positive and finite.
     """
+    from gfem import _beam
     from gfem._incident import impedance_of, incidence_material
-    from gfem._sources import IncidentField, PlaneWave
+    from gfem._sources import GaussianBeam, IncidentField, PlaneWave
 
+    n = len(frequencies)
     if isinstance(source, IncidentField):
         if intensity is None:
             raise ValueError(
@@ -1164,9 +1172,10 @@ def _intensity(source: Any, intensity: Any, n: int, background: Any) -> np.ndarr
     if isinstance(source, PlaneWave):
         eta = impedance_of(incidence_material(source, background))
         return np.full(n, abs(source.amplitude) ** 2 / (2 * eta))
-    raise NotImplementedError(  # pragma: no cover - beams are refused at solve
-        f"cross_sections of a {type(source).__name__} is not measured in this "
-        "gfem version."
+    assert isinstance(source, GaussianBeam)  # noqa: S101 - the incident sources
+    eta = _beam.impedance(source, background)
+    return np.array(
+        [_beam.focal_field(source, background, f) ** 2 / (2 * eta) for f in frequencies]
     )
 
 

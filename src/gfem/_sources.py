@@ -271,7 +271,32 @@ class GaussianBeam:
     time-averaged power through any plane normal to its axis, with the
     focal field real and positive along the polarization (zero phase at the
     focus; `gfem.conventions`, Incident fields). Every output is linear in
-    that power, so there is no amplitude.
+    that power, so there is no amplitude; `focal_field` and
+    `focal_intensity` give the field and intensity at the focus, which
+    `gfem.cross_sections` divides by.
+
+    In the beam's frame (focus at the origin, axis :math:`\hat z`, TM along
+    :math:`\hat x`) it is the field of an electric :math:`\hat x` and a
+    magnetic :math:`\hat y` dipole at the complex point :math:`-ib\hat z`,
+    :math:`b = k w_0^2/2`: a superposition of propagating plane waves of
+    weight :math:`(1 + \cos\theta)\,e^{a(\cos\theta - 1)}`,
+    :math:`a = kb`, regular everywhere, so the focus may lie anywhere,
+    inside a scatterer too. TE is the TM beam turned by 90° about the axis.
+
+    The background must be one lossless material, and :math:`k w_0` at
+    least 0.2 at every solved frequency, where the 1 W normalization is
+    exact to round-off; `gfem.solve` refuses anything else.
+
+    Example:
+        A beam of waist 3 µm coming down 10° off the normal, focused on
+        the surface::
+
+            beam = gfem.GaussianBeam(
+                "fiber",
+                waist=3e-6,
+                theta=np.pi - np.radians(10),
+                polarization="TE",
+            )
 
     Args:
         name: The label of its column and of its kept fields; unique among
@@ -325,12 +350,65 @@ class GaussianBeam:
             polarization=_polarization(polarization, "GaussianBeam"),
         )
 
+    def focal_field(self, frequency: float, *, model: Any) -> float:
+        r"""The peak field at the focus, V/m, real and positive.
+
+        It depends on the background's wavenumber :math:`k`, so on the
+        frequency and the model's background: about
+        :math:`\sqrt{4\eta/(\pi w_0^2)}` for 1 W in the paraxial limit,
+        less for a tight waist.
+
+        Args:
+            frequency: Hz.
+            model: The model the beam lights, whose background
+                (``Model(background=...)``) it travels in.
+
+        Raises:
+            TypeError: ``model`` is not a `gfem.Model`.
+            ValueError: The model has no background, or :math:`k w_0 < 0.2`,
+                too tight to normalize.
+            NotImplementedError: A layered or lossy background.
+        """
+        from gfem import _beam
+
+        return _beam.focal_field(self, _background(model, self.name), frequency)
+
+    def focal_intensity(self, frequency: float, *, model: Any) -> float:
+        r"""The focal intensity :math:`I_0 = |E(r_f)|^2/(2\eta)`, W/m².
+
+        The intensity `gfem.cross_sections` divides a beam's powers by;
+        :math:`\eta` is the background's wave impedance. Arguments and
+        errors as for `focal_field`.
+        """
+        from gfem import _beam
+
+        background = _background(model, self.name)
+        peak = _beam.focal_field(self, background, frequency)
+        return peak**2 / (2 * _beam.impedance(self, background))
+
     def __repr__(self) -> str:
         return (
             f"GaussianBeam({self.name!r}, waist={self.waist!r}, "
             f"focus={self.focus!r}, theta={self.theta!r}, phi={self.phi!r}, "
             f"polarization={self.polarization!r})"
         )
+
+
+def _background(model: Any, name: str) -> Any:
+    """The background of ``model``, which a beam's focal values read."""
+    from gfem.model import Model
+
+    if not isinstance(model, Model):
+        raise TypeError(
+            f"The GaussianBeam {name!r} reads its medium from model= a "
+            f"gfem.Model, got {type(model).__name__}."
+        )
+    if model.background is None:
+        raise ValueError(
+            f"The GaussianBeam {name!r} travels in the model's background: "
+            "give it one, Model(background=...)."
+        )
+    return model.background
 
 
 def _qualified(function: Callable) -> str:

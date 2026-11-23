@@ -1,6 +1,7 @@
 r"""Incident fields as host values: a source in its background stack.
 
-An incident-field column (`gfem.PlaneWave`, `gfem.IncidentField`) enters a
+An incident-field column (`gfem.PlaneWave`, `gfem.GaussianBeam`,
+`gfem.IncidentField`) enters a
 driven solve through its electric field at points (`values`), evaluated on
 the host as NumPy values; the magnetic field a wall check reads comes from
 the same values by central differences (`magnetic`). A kept field of such a
@@ -31,6 +32,7 @@ from typing import Any
 import numpy as np
 import scipy.constants as const
 
+from gfem import _beam
 from gfem._background import Background
 from gfem._materials import Material
 from gfem._sources import (
@@ -122,13 +124,7 @@ def incidence_material(source: PlaneWave, background: Background) -> Material:
 
 def _check_layered(source: Incident, background: Background) -> None:
     if isinstance(source, GaussianBeam):
-        raise NotImplementedError(
-            f"The GaussianBeam {source.name!r} meets a background of several "
-            "layers or a ground plane, where gfem does not solve a beam in this "
-            "version. Feed the beam from its homogeneous side and read it with "
-            "gfem.beam_coupling (reciprocity), or give its field in the stack "
-            "as a gfem.IncidentField."
-        )
+        _beam.check_background(source, background)  # raises on a stack
     if not isinstance(source, PlaneWave):
         return
     if abs(math.cos(source.theta)) < 1e-12:
@@ -158,8 +154,8 @@ def check_solvable(source: Incident, background: Background) -> None:
     """Raise if this version cannot solve ``source`` in ``background``.
 
     Raises:
-        NotImplementedError: A `gfem.GaussianBeam`, or a `gfem.PlaneWave`
-            from a lossy layer.
+        NotImplementedError: A `gfem.PlaneWave` from a lossy layer, or a
+            `gfem.GaussianBeam` in a layered or lossy background.
         ValueError: A `gfem.PlaneWave` at grazing incidence on a layered
             background, or from below its ground plane.
     """
@@ -167,10 +163,8 @@ def check_solvable(source: Incident, background: Background) -> None:
         _check_layered(source, background)
         return
     if isinstance(source, GaussianBeam):
-        raise NotImplementedError(
-            f"The GaussianBeam {source.name!r} is not solved in this gfem "
-            "version; give its field as a gfem.IncidentField."
-        )
+        _beam.check_background(source, background)
+        return
     material = background_material(background)
     if isinstance(source, PlaneWave) and not _lossless(material):
         raise NotImplementedError(
@@ -236,7 +230,8 @@ def values(
 
     Raises:
         ValueError: An `gfem.IncidentField` function returned a wrong shape,
-            a non-numeric array or a non-finite value.
+            a non-numeric array or a non-finite value; a `gfem.GaussianBeam`
+            whose waist is too small at ``frequency`` (`gfem._beam`).
         gfem.NonDifferentiableError: An `gfem.IncidentField` function
             computed its value from a JAX tracer.
     """
@@ -252,6 +247,8 @@ def values(
         return np.exp(-1j * k * (points @ k_hat))[:, None] * e[None, :]
     if isinstance(source, IncidentField):
         return _function_values(source, points, frequency)
+    if isinstance(source, GaussianBeam):
+        return _beam.values(source, background, points, frequency)
     check_solvable(source, background)  # raises for what is not solved here
     raise AssertionError(source)  # pragma: no cover
 

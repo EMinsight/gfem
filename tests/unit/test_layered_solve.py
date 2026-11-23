@@ -264,7 +264,7 @@ def test_elements_below_the_ground_plane_are_refused(meshes):
 
 def test_a_gaussian_beam_on_several_layers_is_refused(meshes):
     beam = gfem.GaussianBeam("b", waist=0.5 * UM, theta=TOP, polarization="TE")
-    with pytest.raises(NotImplementedError, match=r"beam_coupling.*IncidentField"):
+    with pytest.raises(NotImplementedError, match=r"layered background.*IncidentField"):
         _solve(_model(meshes["stack"]), beam)
 
 
