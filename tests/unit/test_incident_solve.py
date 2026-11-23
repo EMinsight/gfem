@@ -292,12 +292,18 @@ NORMAL_TM = gfem.PlaneWave("n", theta=0.0, polarization="TM")
 NORMAL_TE = gfem.PlaneWave("n", theta=0.0, polarization="TE")
 
 
+#: The scattered field of a wall-bounded wave is round-off: up to 8.3e-13 of
+#: the total with 8 threads (one thread 7.9e-13), so ten times that.
+WALL_GATE = 1e-11
+
+
 def test_walls_the_incident_field_satisfies_are_accepted(meshes):
     # PEC where E is normal, PMC (by default) where H is normal
     model = _walled(meshes["walls"], boundaries=[gfem.PEC("xwall"), gfem.PEC("xfeed")])
     result = _solve(model, NORMAL_TM)
     total = result.e_field(F)
-    assert _norm(result.e_field(F, part="scattered")) <= 1e-12 * _norm(total)
+    ratio = _norm(result.e_field(F, part="scattered")) / _norm(total)
+    assert ratio <= WALL_GATE, f"scattered over total {ratio:.3g}"
 
 
 def test_a_pec_wall_the_incident_field_crosses_is_refused(meshes):
