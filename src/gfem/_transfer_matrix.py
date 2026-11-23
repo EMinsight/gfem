@@ -38,6 +38,7 @@ model origin; :math:`H = k\times E/(\omega\mu_0\mu_j)`.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 import scipy.constants as const
@@ -50,23 +51,29 @@ __all__ = [
     "incidence_layer",
     "layer_constants",
     "layer_index",
+    "number",
 ]
+
+
+def number(value: Any) -> float:
+    """A background layer's property as a float (layers are constant, isotropic)."""
+    return float(value)
 
 
 def layer_constants(
     background: Background, frequency: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    r"""Each layer's complex :math:`\varepsilon_r` and :math:`\mu_r` at ``frequency``."""
+    r"""Each layer's complex :math:`\varepsilon_r` and :math:`\mu_r` at a frequency."""
     omega = 2 * math.pi * frequency
     eps = np.array(
         [
-            float(m.eps_r) * (1 - 1j * float(m.tan_delta))
-            - 1j * float(m.conductivity) / (omega * const.epsilon_0)
+            number(m.eps_r) * (1 - 1j * number(m.tan_delta))
+            - 1j * number(m.conductivity) / (omega * const.epsilon_0)
             for m in background.layers
         ],
         complex,
     )
-    mu = np.array([float(m.mu_r) for m in background.layers], complex)
+    mu = np.array([number(m.mu_r) for m in background.layers], complex)
     return eps, mu
 
 

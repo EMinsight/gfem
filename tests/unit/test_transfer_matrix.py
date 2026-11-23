@@ -122,9 +122,7 @@ def test_one_interface_is_fresnel(pol, eps_in, eps_out, degrees, upward):
     expected_near = a0 * (np.exp(-1j * s * kz1 * zn) + r * np.exp(1j * s * kz1 * zn))
     # the scalar is tangential, so continuous: t = 1 + r
     expected_far = a0 * (1 + r) * np.exp(-1j * s * kz2 * zf)
-    _check(
-        _scalar(wave, background, near, pol), expected_near * _lateral(near, kt)
-    )
+    _check(_scalar(wave, background, near, pol), expected_near * _lateral(near, kt))
     _check(_scalar(wave, background, far, pol), expected_far * _lateral(far, kt))
 
 
@@ -156,12 +154,8 @@ def test_a_lossy_film_is_airy(pol, degrees):
     expected_below = a * (np.exp(-1j * kz[0] * zb) + r * np.exp(1j * kz[0] * zb))
     expected_above = a * t * np.exp(-1j * kz[2] * za)
     wave = _wave(pol, theta)
-    _check(
-        _scalar(wave, background, below, pol), expected_below * _lateral(below, kt)
-    )
-    _check(
-        _scalar(wave, background, above, pol), expected_above * _lateral(above, kt)
-    )
+    _check(_scalar(wave, background, below, pol), expected_below * _lateral(below, kt))
+    _check(_scalar(wave, background, above, pol), expected_above * _lateral(above, kt))
 
 
 def _flux(wave, background, z):
@@ -229,14 +223,17 @@ def test_over_a_ground_plane_the_wave_is_standing(pol):
 
 def test_a_ground_plane_holds_no_tangential_field_under_a_stack():
     background = gfem.Background(
-        [gfem.Material(eps_r=2.25), gfem.Material(eps_r=4.0, tan_delta=0.1)]
-        + [gfem.Material()],
+        [
+            gfem.Material(eps_r=2.25),
+            gfem.Material(eps_r=4.0, tan_delta=0.1),
+            gfem.Material(),
+        ],
         interfaces=[0.0, 0.12 * UM],
         ground=-0.3 * UM,
     )
     w = StackWave(background, _wave((0.6, 0.8j), math.pi - 0.6), F)
     on = np.c_[RNG.uniform(-1, 1, (20, 2)) * UM, np.full(20, -0.3 * UM)]
-    above = on + [0, 0, 0.5 * UM]
+    above = on + np.array([0, 0, 0.5 * UM])
     tangential = np.abs(w.electric(on)[:, :2]).max()
     assert tangential <= 1e-14 * np.abs(w.electric(above)).max()
     # lossy film, PEC below: what comes down and is not reflected is absorbed

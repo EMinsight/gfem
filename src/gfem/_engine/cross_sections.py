@@ -109,14 +109,19 @@ def check_lossless(background: Background) -> None:
             absorption would hold the background's own loss of the incident
             field.
     """
-    material = _incident.background_material(background)
-    if np.any(material.tan_delta) or np.any(material.conductivity):
-        raise NotImplementedError(
-            f"cross_sections in a lossy background ({material!r}) is not "
-            "measured in this gfem version: the absorption would include the "
-            "background's own loss of the incident field. Give a lossless "
-            "background."
-        )
+    for j, material in enumerate(background.layers):
+        if np.any(material.tan_delta) or np.any(material.conductivity):
+            where = (
+                f"layer {j} of the background stack"
+                if _incident.layered(background)
+                else "the background"
+            )
+            raise NotImplementedError(
+                f"cross_sections in a lossy background ({where} is "
+                f"{material!r}) is not measured in this gfem version: the "
+                "absorption would include the background's own loss of the "
+                "incident field. Give lossless layers."
+            )
 
 
 _SHEETS = (Conductor, Impedance, LumpedPort, PEC)

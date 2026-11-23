@@ -1122,7 +1122,7 @@ def _intensity(source: Any, intensity: Any, n: int, background: Any) -> np.ndarr
         ValueError: Missing for an `gfem.IncidentField`, given for another
             source, or not positive and finite.
     """
-    from gfem._incident import impedance
+    from gfem._incident import impedance_of, incidence_material
     from gfem._sources import IncidentField, PlaneWave
 
     if isinstance(source, IncidentField):
@@ -1155,7 +1155,8 @@ def _intensity(source: Any, intensity: Any, n: int, background: Any) -> np.ndarr
             "own (see gfem.cross_sections)."
         )
     if isinstance(source, PlaneWave):
-        return np.full(n, abs(source.amplitude) ** 2 / (2 * impedance(background)))
+        eta = impedance_of(incidence_material(source, background))
+        return np.full(n, abs(source.amplitude) ** 2 / (2 * eta))
     raise NotImplementedError(  # pragma: no cover - beams are refused at solve
         f"cross_sections of a {type(source).__name__} is not measured in this "
         "gfem version."
