@@ -6,7 +6,7 @@ class RecordingBoard:
 
     def __init__(self):
         self.events = []
-        self.rows = {}  # key -> [label, total, depth, completed, closed]
+        self.rows = {}  # key -> {label, total, depth, spinner, done, closed}
 
     def open(self, label, total, depth, *, spinner):
         key = len(self.rows)
