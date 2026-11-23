@@ -93,7 +93,6 @@ from gfem._boundaries import (
     Impedance,
     LumpedPort,
     WavePort,
-    wave_port_surfaces,
 )
 from gfem._eigen import arpack, slepc
 from gfem._eigen.adjoint import deflated_solve, reshift_offset
@@ -1996,8 +1995,7 @@ def _below_cutoff(ports: Sequence[EigenPort]) -> Callable[[float], bool]:
 def _check_supported(model: Model) -> None:
     """Raise for model terms this version cannot solve as eigenmodes.
 
-    The first Floquet port or shared wave port surface in model order is
-    reported, the latter naming the surface and all its wave ports.
+    The first Floquet port in model order is reported.
     """
     for port in model.ports:
         if isinstance(port, FloquetPort):
@@ -2008,15 +2006,4 @@ def _check_supported(model: Model) -> None:
                 "Q from a gfem.Driven sweep, or end the cell with gfem.Absorbing "
                 f"on {port.surface!r} (first order: it reflects oblique waves)."
             )
-        if isinstance(port, WavePort):
-            shared = [p.name for p in wave_port_surfaces(model.ports)[port.surface]]
-            if len(shared) > 1:
-                raise NotImplementedError(
-                    f"Eigenmode does not support the shared port surface "
-                    f"{port.surface!r} (wave ports "
-                    f"{', '.join(repr(n) for n in shared)}) in this version of "
-                    "gfem: the propagation constants of its modes must be solved "
-                    "at the complex eigenfrequency. Find the resonances and Q "
-                    "from a gfem.Driven sweep."
-                )
     terms.check_absorbing(model)
