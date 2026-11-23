@@ -17,6 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 import structured_meshes as sm
+from recording_board import RecordingBoard
 from solver_misses import cannot_converge_at
 
 import gfem
@@ -169,52 +170,9 @@ def test_rich_is_imported_only_inside_functions(module):
 # ---------------------------------------------------------------- rows
 
 
-class Board:
-    """A board that records what it is asked to draw, as ``(event, ...)`` tuples."""
-
-    def __init__(self):
-        self.events = []
-        self.rows = {}  # key -> [label, total, depth, completed, closed]
-
-    def open(self, label, total, depth, *, spinner):
-        key = len(self.rows)
-        self.rows[key] = {
-            "label": label,
-            "total": total,
-            "depth": depth,
-            "spinner": spinner,
-            "done": 0,
-            "closed": False,
-        }
-        self.events.append(("open", label, total, depth, spinner))
-        return key
-
-    def advance(self, key, n, fields):
-        self.rows[key]["done"] += n
-        self.events.append(("advance", self.rows[key]["label"], n, dict(fields)))
-
-    def update(self, key, completed, fields):
-        if completed is not None:
-            self.rows[key]["done"] = completed
-        self.events.append(("update", self.rows[key]["label"], completed, dict(fields)))
-
-    def phase(self, key, name):
-        self.events.append(("phase", self.rows[key]["label"], name))
-
-    def close(self, key):
-        self.rows[key]["closed"] = True
-        self.events.append(("close", self.rows[key]["label"]))
-
-    def summary(self):
-        """Each row opened: label, total, units done, closed."""
-        return [
-            (r["label"], r["total"], r["done"], r["closed"]) for r in self.rows.values()
-        ]
-
-
 @pytest.fixture
 def board(monkeypatch):
-    out = Board()
+    out = RecordingBoard()
     monkeypatch.setattr(_progress, "_LIVE", _progress.Live(out))
     return out
 
