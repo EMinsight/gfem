@@ -26,6 +26,7 @@ tutorials/bend
 tutorials/bend3d
 tutorials/metal-bend
 tutorials/metagrating
+tutorials/nanosphere
 tutorials/heater
 tutorials/heater3d
 ```
