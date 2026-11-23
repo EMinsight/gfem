@@ -10,10 +10,10 @@ r"""The far field against closed forms, at order 3.
   against image theory: the far field of the dipole and its image.
 
 Pattern errors are the largest :math:`|F_h - F|` over the directions,
-relative to the largest :math:`|F|`. Measured (order 3, one thread): T11
-pattern 1.6e-3, power 6e-5, directivity +0.02 %, axial ratio 1.002; T12
-(height 0.21 um) 1.5e-3 to 2.6e-3. The layer's own reflection floor is
-6e-4 to 1e-3 at this thickness.
+relative to the largest :math:`|F|`. Measured (order 3, about 60 000
+unknowns): T11 pattern 2.2e-3, integrated intensity against the radiated
+power -6e-6, directivity +0.01 %, axial ratio 1.002. A third of a
+wavelength of layer reflects 6e-4 to 1e-3 of the pattern.
 """
 
 import math

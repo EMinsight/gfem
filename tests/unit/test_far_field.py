@@ -393,3 +393,46 @@ def test_far_field_outputs_belong_to_their_column(dipole):
         _ = ff.rcs
     with pytest.raises(ValueError, match="do not broadcast"):
         gfem.far_field(result, "d", [0.1, 0.2], [0.0, 0.1, 0.2], model=model)
+
+
+# --- a plane wave's scatterer -------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def block(tmp_path_factory):
+    """A lossless dielectric cube (0.25-0.75 um) in the box, lit along +z."""
+
+    def volume(c):
+        if not ((c > 0) & (c < 1)).all():
+            return "pml"
+        return "block" if ((c > 0.25) & (c < 0.75)).all() else "air"
+
+    path = fsc.dipole_box(
+        tmp_path_factory.mktemp("block") / "block.msh", cells=4, volume=volume
+    )
+    vacuum = gfem.Material()
+    model = gfem.Model(
+        gfem.Mesh.from_gmsh(path),
+        materials={"air": vacuum, "pml": vacuum, "block": gfem.Material(eps_r=2.0)},
+        pml=gfem.PML("pml"),
+        background=vacuum,
+    )
+    wave = gfem.PlaneWave("w", theta=0.0, phi=0.0, polarization="TM", amplitude=2.0)
+    problem = gfem.Driven(fsc.F0, sources=wave, keep_fields=True)
+    return model, gfem.solve(model, problem, options=ORDER2)
+
+
+def test_a_lossless_scatterer_meets_the_optical_theorem(block):
+    model, result = block
+    theta, phi, weights = _sphere()
+    ff = gfem.far_field(result, "w", theta, phi, model=model)
+    e0 = 2.0
+    intensity = e0**2 / (2 * ff.impedance)
+    # the scattered power: the residual flux, and the radar cross section
+    scattering = float(ff.radiated_power[0]) / intensity
+    integrated = float(np.sum(np.asarray(ff.rcs[0]) * weights)) / (4 * math.pi)
+    assert integrated == pytest.approx(scattering, rel=3e-2)
+    # extinction from the forward amplitude (theta = 0: TM is along +x)
+    forward = gfem.far_field(result, "w", 0.0, 0.0, model=model)
+    extinction = -4 * math.pi / fsc.K0 * float(np.imag(forward.e_theta[0])) / e0
+    assert extinction == pytest.approx(scattering, rel=5e-2)
