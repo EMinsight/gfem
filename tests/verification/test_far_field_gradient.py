@@ -21,7 +21,6 @@ import free_space_cases as fsc
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pml_cases as pc
 import pytest
 from finite_differences import assert_gradient_matches, unit_directions
 
@@ -37,54 +36,9 @@ NODE_STEP = 1e-9
 THETA, PHI = 1.1, 0.4
 
 
-def _volume(c):
-    """A core (1/6, 5/6)^3 um split at x = 0.5 um, a shell, the layer."""
-    if not ((c > 0) & (c < 1)).all():
-        return "pml"
-    if not ((c > 1 / 6) & (c < 5 / 6)).all():
-        return "shell"
-    if ((c > 2 / 6) & (c < 4 / 6)).all() and c[0] > 0.5:
-        return "design"
-    return "left" if c[0] < 0.5 else "right"
-
-
-def _surface(c):
-    """A strip in the plane x = 0.5 um: its arms "wire" and its feed."""
-    eps = 1e-9
-    if abs(c[0] - 0.5) > eps or not 0.5 < c[1] < 4 / 6:
-        return ""
-    if 3 / 6 < c[2] < 4 / 6:
-        return "feed"
-    return "wire" if 1 / 6 < c[2] < 5 / 6 else ""
-
-
 @pytest.fixture(scope="module")
 def strip(tmp_path_factory):
-    path = pc.box(
-        tmp_path_factory.mktemp("strip") / "strip.msh",
-        sides=pc.SIDES,
-        thickness=2 / 6,
-        cells=6,
-        volume=_volume,
-        surface=_surface,
-    )
-    mesh = gfem.Mesh.from_gmsh(path)
-    air = gfem.Material()
-    n = len(mesh.elements("design"))
-    return gfem.Model(
-        mesh,
-        materials={
-            "left": air,
-            "right": air,
-            "shell": air,
-            "pml": air,
-            "design": gfem.MaterialField(eps_r=np.full(n, 2.0)),
-        },
-        boundaries=[gfem.PEC("wire")],
-        ports=[gfem.LumpedPort("p1", "feed", "+z", resistance=50.0)],
-        pml=gfem.PML("pml"),
-        background=air,
-    )
+    return fsc.strip(tmp_path_factory.mktemp("strip") / "strip.msh")
 
 
 def _with_design(model, eps):
@@ -140,32 +94,9 @@ def test_n3_far_field_of_a_port_fed_strip_under_a_morph(strip, side):
         return jnp.abs(ff.e_theta[0]) ** 2 + jnp.abs(ff.e_phi[0]) ** 2
 
     t = jnp.zeros(morph.n_params)
-    _assert_layer_moves(strip, morph, side)
+    fsc.assert_layer_moves(strip, morph, side)
     directions = unit_directions(np.random.default_rng(2), t.shape, 2)
     assert_gradient_matches(power, t, directions, step=NODE_STEP)
-
-
-def _assert_layer_moves(model, morph, side):
-    """The far-field layer's nodes move with ``t``: the node pass is exercised."""
-    moved = np.asarray(morph(jnp.ones(morph.n_params) * 1e-8).nodes) - np.asarray(
-        model.mesh.nodes
-    )
-    mesh = model.mesh
-    tets = np.asarray(mesh.tetrahedra)
-    regions = ("left", "right", "design", "shell") if side is None else side
-    inside = np.zeros(len(tets), bool)
-    for r in regions:
-        inside[mesh.elements(r)] = True
-    if side is None:
-        cut = np.zeros(len(mesh.nodes), bool)
-        cut[np.unique(tets[mesh.elements("pml")])] = True
-        chi = ~cut
-    else:
-        chi = np.zeros(len(mesh.nodes), bool)
-        chi[np.unique(tets[inside])] = True
-    at = chi[tets]
-    layer = at.any(axis=1) & ~at.all(axis=1)
-    assert np.abs(moved[np.unique(tets[layer])]).max() > 0
 
 
 def test_n4_far_field_of_a_dipole_under_a_morph(strip):

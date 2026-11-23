@@ -1800,6 +1800,63 @@ def _out_far_field_layer_design(request):
     jax.grad(objective)(eps)
 
 
+#: A beam coming down onto the unit cube, for the beam-coupling rows.
+_COUPLING_BEAM = dict(focus=(0.5e-6, 0.5e-6, 1e-6), theta=np.pi, polarization="TM")
+
+
+def _out_beam_coupling_layer_design(request):
+    # the coupling reads the beam's medium over its layer: a design there is
+    # refused (a side around one cell of the scatterer)
+    model, problem = request.getfixturevalue("planewave_case")
+    eps = jnp.asarray(model.materials["scat"].eps_r)
+    beam = gfem.GaussianBeam("b", waist=0.3e-6, **_COUPLING_BEAM)
+
+    def one_cell(c):
+        return ((c > 0.25e-6) & (c < 0.5e-6)).all(axis=1)
+
+    def objective(e):
+        moved = model.with_material("scat", gfem.MaterialField(eps_r=e))
+        result = gfem.solve(moved, problem)
+        c = gfem.beam_coupling(result, "w", beam, model=moved, side=one_cell)
+        return jnp.abs(c[0]) ** 2
+
+    jax.grad(objective)(eps)
+
+
+def _down_wave(points, frequency):
+    """A plane wave coming down along -z, along x, 1 V/m."""
+    k = 2 * np.pi * frequency / 299792458.0
+    e = np.zeros((len(points), 3), complex)
+    e[:, 0] = np.exp(1j * k * points[:, 2])
+    return e
+
+
+def _out_beam_coupling_incident_field_on_a_moved_layer(request):
+    # an IncidentField beam is interpolated on the imported mesh: once its
+    # layer's nodes move it would move with them, so the host forward refuses
+    model, _ = request.getfixturevalue("planewave_case")
+    nodes = np.asarray(model.mesh.nodes)
+    inner = ((nodes > 1e-15) & (nodes < 1e-6 - 1e-15)).all(axis=1)
+    moved = nodes + np.where(inner[:, None], [0.0, 0.0, 1e-9], 0.0)
+    model = model.replace(mesh=gfem.Mesh(jnp.asarray(moved), model.mesh._topology))
+    dipole = gfem.ElectricDipole(
+        "d", position=(0.1e-6, 0.12e-6, 0.14e-6), moment=(1e-30, 0, 0)
+    )
+    result = gfem.solve(
+        model, gfem.Driven(pml_cases.F0, sources=dipole, keep_fields=True)
+    )
+    gfem.beam_coupling(result, "d", gfem.IncidentField("down", _down_wave), model=model)
+
+
+def _out_beam_coupling_traced_beam(_request):
+    # a beam's parameters are fixed values (raised by the constructor)
+    def objective(waist):
+        beam = gfem.GaussianBeam("b", waist=waist, **_COUPLING_BEAM)
+        return beam.waist
+
+    jax.grad(objective)(0.3e-6)
+
+
 def _out_floquet_port_offset(_request):
     # a Floquet port's de-embedding offset is static (raised by the constructor)
     def objective(offset):
@@ -2773,6 +2830,24 @@ OUT_OF_SCOPE = [
         _out_far_field_layer_design,
         ValueError,
         r"far-field layer just outside this side holds the design region 'scat'",
+    ),
+    (
+        "design in the beam_coupling layer",
+        _out_beam_coupling_layer_design,
+        ValueError,
+        r"beam_coupling's layer just outside the side holds region 'scat'",
+    ),
+    (
+        "beam_coupling with an IncidentField on a moved layer",
+        _out_beam_coupling_incident_field_on_a_moved_layer,
+        ValueError,
+        r"IncidentField 'down' as interpolated on the imported mesh.*have moved",
+    ),
+    (
+        "traced beam parameters in beam_coupling's test beam",
+        _out_beam_coupling_traced_beam,
+        gfem.NonDifferentiableError,
+        r"GaussianBeam\.waist is a fixed value",
     ),
     (
         "FloquetPort offset",
