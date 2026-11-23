@@ -301,7 +301,7 @@ def electro_optic_shift(
     :math:`E_0` is the mode at 1 W, :math:`t` runs over the triangles of
     the port's section, :math:`\varepsilon_t` and :math:`r_t` are the
     optical permittivity and the electro-optic tensor of the tetrahedron
-    behind it (in the global frame, rotated from the material's `axes`),
+    behind it (in the global frame, rotated from the material's ``axes``),
     and :math:`E_{\mathrm{s},t}` is the mean of :math:`-\nabla V` over that
     tetrahedron. Elements without a tensor contribute nothing. The full
     tensor counts, off-diagonal entries included.
@@ -315,7 +315,7 @@ def electro_optic_shift(
     potential of a separate electrostatic model (``eps_r`` the static
     permittivity) on any mesh that holds the section's crystal elements (a
     DC-conduction potential serves too: any potential in volts on H1); give
-    the static and the optical crystal the same `axes`, which the
+    the static and the optical crystal the same ``axes``, which the
     shift cannot check. The mode is the port's (``mode=None``) or the one
     given, as `gfem.PortMode` picks it; exclusions or a window make the
     core's mode the first.
